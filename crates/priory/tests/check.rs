@@ -9,7 +9,7 @@ description = "Implements one task."
 harness = "claude-code"
 session = "per-task"
 mcpServers = ["github"]
-permissions = { defaultMode = "acceptEdits", allow = ["Bash(cargo test:*)", "Edit"], deny = ["Bash(git push:*)"] }
+permissions = { defaultMode = "auto", allow = ["Bash(cargo test:*)", "Edit"], deny = ["Bash(git push:*)"] }
 +++
 # Implementation
 Make the smallest correct change.

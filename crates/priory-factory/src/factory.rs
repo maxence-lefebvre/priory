@@ -1,6 +1,6 @@
 use crate::lines::{self, Lines};
-use serde::Deserialize;
 use serde::de::DeserializeOwned;
+use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fmt;
 use std::fs;
@@ -53,9 +53,10 @@ pub struct Agent {
 }
 
 /// Claude Code's own `permissions` settings, so a person can copy rules across.
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default, Deserialize, Serialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct Permissions {
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub default_mode: Option<PermissionMode>,
     #[serde(default)]
     pub allow: Vec<String>,
@@ -63,26 +64,15 @@ pub struct Permissions {
     pub deny: Vec<String>,
 }
 
-#[derive(Debug, Clone, Copy, Deserialize)]
+#[derive(Debug, Clone, Copy, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum PermissionMode {
     Default,
     AcceptEdits,
     Plan,
+    Auto,
     DontAsk,
     BypassPermissions,
-}
-
-impl PermissionMode {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Default => "default",
-            Self::AcceptEdits => "acceptEdits",
-            Self::Plan => "plan",
-            Self::DontAsk => "dontAsk",
-            Self::BypassPermissions => "bypassPermissions",
-        }
-    }
 }
 
 #[derive(Debug, Deserialize)]

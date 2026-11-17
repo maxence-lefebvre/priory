@@ -351,11 +351,7 @@ fn start(
         },
     )?;
     let agent = &agent.value;
-    let mut permissions =
-        serde_json::json!({ "allow": agent.permissions.allow, "deny": agent.permissions.deny });
-    if let Some(mode) = agent.permissions.default_mode {
-        permissions["defaultMode"] = mode.as_str().into();
-    }
+    let permissions = serde_json::to_value(&agent.permissions).expect("permissions serialize");
     Ok(runtime::launch(&Launch {
         tmux: &tmux,
         dir: &worktree,
