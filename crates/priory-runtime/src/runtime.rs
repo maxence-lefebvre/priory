@@ -6,7 +6,7 @@ use std::process::{Command, Stdio};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::time::Duration;
 
-/// Priory's own directory: `PRIORY_HOME`, else `$XDG_STATE_HOME/priory`, else `~/.local/state/priory`.
+/// Priory's own directory: `PRIORY_HOME`, else `$XDG_STATE_HOME/priory-oss`, else `~/.local/state/priory-oss`.
 pub fn home() -> PathBuf {
     if let Some(home) = std::env::var_os("PRIORY_HOME").filter(|home| !home.is_empty()) {
         return PathBuf::from(home);
@@ -17,7 +17,7 @@ pub fn home() -> PathBuf {
         .unwrap_or_else(|| {
             PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(".local/state")
         });
-    state.join("priory")
+    state.join("priory-oss")
 }
 
 /// Runs `command` and returns its stdout, or an error naming it with its stderr.
