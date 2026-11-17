@@ -26,7 +26,8 @@ pub struct NewTask {
     pub source: String,
 }
 
-/// The task key a message names: a task request's own, or `github:{repo}#{issue}` for a GitHub event.
+/// The task key a message names: a task request's own, or `github:{repo}#{number}` for a GitHub
+/// event, its issue or pull request number. GitHub numbers both from one sequence per repository.
 pub fn key(message: &Message) -> Option<String> {
     let data = &message.data;
     if message.kind == TASK_REQUESTED {
@@ -38,7 +39,9 @@ pub fn key(message: &Message) -> Option<String> {
     Some(format!(
         "github:{}#{}",
         data["repo"].as_str()?,
-        data["issue"].as_u64()?
+        data.get("issue")
+            .unwrap_or(&data["pull_request"])
+            .as_u64()?
     ))
 }
 
