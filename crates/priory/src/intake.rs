@@ -17,7 +17,7 @@ const REVIEWED: &str = "github.pull_request_review.submitted";
 const CHECKED: &str = "github.check_run.completed";
 /// The streams of a repo: the message type each is named after.
 const STREAMS: [&str; 4] = [LABELED, OPENED, REVIEWED, CHECKED];
-const TASK_REQUESTED: &str = "factory.task.requested";
+pub const TASK_REQUESTED: &str = "factory.task.requested";
 const BASELINE: &str = "factory.intake.baseline";
 const PAGE: usize = 100;
 const EVERY: Duration = Duration::from_secs(60);
@@ -28,6 +28,24 @@ type Stream = (String, &'static str);
 /// Where polling stopped, per stream: the highest issue event id for labeled events, the highest
 /// issue number for opened issues. A stream without one is still in its baseline.
 type Cursors = BTreeMap<Stream, u64>;
+
+/// The `factory.intake` declaration, shared with `priory request`, which publishes on it too.
+pub fn output() -> Output {
+    Output::new(OUTPUT)
+        .describe("Priory intake: source events and the tasks they request")
+        .types([
+            LABELED,
+            OPENED,
+            PR_OPENED,
+            PR_LABELED,
+            PR_CLOSED,
+            REVIEWED,
+            CHECKED,
+            crate::request::REQUESTED,
+            TASK_REQUESTED,
+            BASELINE,
+        ])
+}
 
 pub fn run(factory: &Factory, once: bool) -> Result<(), String> {
     let triggers: Vec<(&str, &Trigger)> = factory
@@ -41,22 +59,7 @@ pub fn run(factory: &Factory, once: bool) -> Result<(), String> {
         .filter_map(|(_, trigger)| trigger.repo.as_deref())
         .collect();
     let bus = Bus::open_default().map_err(|error| error.to_string())?;
-    bus.declare(
-        &Output::new(OUTPUT)
-            .describe("Priory intake: source events and the tasks they request")
-            .types([
-                LABELED,
-                OPENED,
-                PR_OPENED,
-                PR_LABELED,
-                PR_CLOSED,
-                REVIEWED,
-                CHECKED,
-                TASK_REQUESTED,
-                BASELINE,
-            ]),
-    )
-    .map_err(|error| error.to_string())?;
+    bus.declare(&output()).map_err(|error| error.to_string())?;
     let (newest, mut cursors) = newest(&bus, &repos).map_err(|error| error.to_string())?;
     for (stream, source) in newest {
         // A crash may have stopped between this source and its task requests.
@@ -306,7 +309,7 @@ fn task_requested(name: &str, trigger: &Trigger, source: &Message) -> Message {
 }
 
 /// UUIDv5 in Priory's namespace, so a retried publish keeps its id.
-fn id(name: &str) -> Uuid {
+pub fn id(name: &str) -> Uuid {
     let namespace = Uuid::new_v5(
         &Uuid::NAMESPACE_URL,
         b"https://github.com/maxence-lefebvre/priory/intake",

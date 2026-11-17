@@ -15,8 +15,8 @@ Every message is a herdr-bus `Message`, shaped like a CloudEvent:
 | Field     | Type          | Meaning                                                    |
 | --------- | ------------- | ---------------------------------------------------------- |
 | `id`      | UUID string   | A UUIDv5, stable across retries (see Message ids)          |
-| `type`    | string        | A GitHub type below, `factory.task.requested` or `factory.intake.baseline` |
-| `subject` | string        | `owner/name#42` for a GitHub event, the task key for a task request, `owner/name <stream>` for a baseline marker |
+| `type`    | string        | A GitHub type below, `priory.task.requested.cli`, `factory.task.requested` or `factory.intake.baseline` |
+| `subject` | string        | `owner/name#42` for a GitHub event, the task key for a CLI request or a task request, `owner/name <stream>` for a baseline marker |
 | `time`    | RFC 3339      | When the GitHub event happened; for a baseline marker, when it was published |
 | `data`    | object        | The fields below, by type                                  |
 | `links`   | array         | GitHub events carry one `{ "label": "issue" or "pull_request", "url": ... }`, with the event's `url` |
@@ -231,10 +231,69 @@ The intake reads check runs, not check suites: branch protection and R6.6 name r
 check run, such as `test (ubuntu)`, and a suite folds every run of one app into one conclusion.
 Commit statuses are not published. A re-run gets a new check run id, so it publishes again.
 
+## `priory.task.requested.cli`
+
+`priory request [DIR] --workflow <name> --key <key> [--band <band>] [--lane <lane>] [--repo <owner/name>] <text>`
+publishes this source event, then one `factory.task.requested` for it. It loads the factory as
+`priory check` does and refuses an unknown workflow, publishing nothing. `DIR` defaults to `.`.
+
+The type has no `github.` prefix because no GitHub event produced it, and ends in `.cli` because a
+later source, such as Linear, adds its own `priory.task.requested.<source>`. It is a request, not a
+fact about a repository, so it names the person and the text, not a GitHub id.
+
+| Field    | Type           | Meaning                                                    |
+| -------- | -------------- | ---------------------------------------------------------- |
+| `text`   | string         | The request, as typed                                      |
+| `person` | string or null | `$USER`; null when it is unset                             |
+| `time`   | RFC 3339       | When the command ran                                       |
+| `repo`   | string or null | `--repo`, or null                                          |
+
+The message's `subject` is the task key, `cli:<key>`, and its `time` equals `data.time`. The task
+request that follows has `trigger` `cli`, `source` set to this message's `id`, `band` and `lane`
+from the flags (null when absent), and the same key. No trigger file is involved.
+
+```json
+{
+  "id": "3772d6b8-37cf-5fa7-a618-c4f8cea438af",
+  "type": "priory.task.requested.cli",
+  "subject": "cli:docs-1",
+  "time": "2026-11-17T18:00:00Z",
+  "data": {
+    "text": "Fix the docs",
+    "person": "max",
+    "time": "2026-11-17T18:00:00Z",
+    "repo": "owner/repo"
+  },
+  "links": []
+}
+```
+
+```json
+{
+  "id": "64559b95-9a12-5ffe-83ba-69a0bbbeb498",
+  "type": "factory.task.requested",
+  "subject": "cli:docs-1",
+  "time": "2026-11-17T18:00:00Z",
+  "data": {
+    "workflow": "implement",
+    "key": "cli:docs-1",
+    "band": "today",
+    "lane": null,
+    "trigger": "cli",
+    "source": "3772d6b8-37cf-5fa7-a618-c4f8cea438af"
+  },
+  "links": []
+}
+```
+
+Running the same command again, with the same key and text, adds nothing: the ids come from those
+two values (see Message ids), so herdr-bus drops both messages. Another text under the same key is
+a new request for the same task.
+
 ## `factory.task.requested`
 
 One message per source event and trigger that matches it, the triggers its source lists in
-`triggers`. A trigger matches when its `repo` is the event's repository, its `on` names the event's
+`triggers`. `priory request` publishes one with `trigger` `cli` for its own source event. A trigger matches when its `repo` is the event's repository, its `on` names the event's
 type (`pull_request.opened` names `github.pull_request.opened`), and its `filter`, if any, names the
 event's `label`. A trigger can start from `issues.labeled`, `issues.opened`, `pull_request.labeled`
 or `pull_request.opened`. A baseline event matches only a trigger
@@ -283,6 +342,7 @@ of these names:
 | `github.pull_request.opened` | `github:{repo}:issues:{github_id}:opened` |
 | `github.pull_request_review.submitted` | `github:{repo}:pulls/reviews:{github_id}` |
 | `github.check_run.completed` | `github:{repo}:check-runs:{github_id}:pulls/{pull_request}`, since one check run can sit on the head of two pull requests |
+| `priory.task.requested.cli` | `priory.task.requested.cli:{key}:{text}`, with the `cli:` key |
 | `factory.task.requested` | `factory.task.requested:{trigger}:{source}`  |
 | `factory.intake.baseline` | `factory.intake.baseline:{repo}:{stream}`   |
 
