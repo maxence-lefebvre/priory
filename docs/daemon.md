@@ -231,8 +231,8 @@ task's latest result. The task sleeps with no process, at the step of that resul
 that made it fixes what the checks find. A task whose latest result names no commit is blocked
 instead.
 
-The daemon judges this wait on every event the task kept about the pull request, including events
-the agent already read, and on the ignored events about it from before the task existed. It judges
+The daemon judges this wait on every event the inbox kept or ignored about the pull request,
+including events the agent already read and those an earlier task kept. It judges
 when it stores the wait and at each new event:
 
 | Condition                                                                           | Effect                                 |

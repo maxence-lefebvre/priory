@@ -427,8 +427,8 @@ impl Seen {
     }
 }
 
-/// Judges the daemon's checks wait `wait` on everything the task kept about its pull request, so
-/// that events the agent already read count too. The newest event tells the head: one after the
+/// Judges the daemon's checks wait `wait` on every event the inbox kept or ignored about its pull
+/// request, so that events the agent already read, or an earlier owner kept, count too. The newest event tells the head: one after the
 /// result that names another head wakes the agent. The newest check at the result's commit then
 /// decides: red wakes the agent, and green with none pending or failing marks the task done.
 fn judge(tx: &Transaction, wait: i64) -> rusqlite::Result<bool> {
@@ -442,11 +442,11 @@ fn judge(tx: &Transaction, wait: i64) -> rusqlite::Result<bool> {
     {
         let mut statement = tx.prepare(
             "SELECT seq, type, data FROM inbox
-             WHERE ((task = ?1 AND outcome = 'kept') OR outcome = 'ignored')
-             AND 'github:' || json_extract(data, '$.repo') || '#' || json_extract(data, '$.pull_request') = ?2
+             WHERE outcome IN ('kept', 'ignored')
+             AND 'github:' || json_extract(data, '$.repo') || '#' || json_extract(data, '$.pull_request') = ?1
              AND json_extract(data, '$.head_sha') IS NOT NULL ORDER BY seq DESC",
         )?;
-        let mut rows = statement.query(params![task, resource])?;
+        let mut rows = statement.query(params![resource])?;
         while let Some(row) = rows.next()? {
             let data: Value =
                 serde_json::from_str(&row.get::<_, String>(2)?).expect("inbox data is JSON");
