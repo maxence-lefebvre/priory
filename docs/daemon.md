@@ -57,17 +57,25 @@ current turn. A message kept for a task in any other state waits for the task's 
 
 ## Runs
 
-A run is one `claude` process working on one task step. The daemon starts at most one run at a time
-until the runner's room check lands. It picks the oldest `queued` task whose step decides `model`,
-and finds the repository through the task's trigger.
+A run is one task step worked by a `claude` process. When a step leads to another model step, the
+process carries on into a new run, so each run has at most one result. The daemon starts at most one
+run at a time until the runner's room check lands. It picks the oldest `queued` or `ready` task whose
+step decides `model`, and finds the repository through the task's trigger.
 
 The daemon creates the worktree, records the run and the task as `running`, then starts
 `claude` in a detached tmux session named `priory-<task id>`, in the worktree:
 
-- `--session-id`: a UUID Priory chooses and stores, so a later run can resume the conversation.
+- `--session-id`: a UUID Priory chooses and stores, so a later run can resume the conversation. A
+  task whose earlier run reached `SessionStart` gets `--resume <that id>` instead, in the same
+  worktree.
 - `--model` and `--effort`: the agent's, when it sets them.
 - `--append-system-prompt`: the agent body, the Markdown after its frontmatter.
-- `--settings`: hooks that run `priory hook SessionStart`, `UserPromptSubmit` and `Stop`.
+- `--settings`: hooks that run `priory hook SessionStart`, `UserPromptSubmit` and `Stop`, a
+  permission for the `priory` MCP server's tools, and a `PreToolUse` hook that denies
+  `AskUserQuestion` and tells the agent to call `ask` instead.
+- `--mcp-config`: the `priory` MCP server, `priory mcp --session <id>`, described under Tools.
+
+Before it starts tmux, the daemon kills any session left with the run's tmux name.
 
 The same tmux command tags the new pane with a pane option `@priory` set to the harness session
 id, so a pane is never left untagged. The daemon types only into that pane, even when a person
@@ -107,6 +115,50 @@ daemon applies the spool before it removes it.
 
 The daemon never reads the terminal screen to decide that an agent is idle.
 
+## Tools
+
+`priory mcp --session <id>` is a stdio MCP server. It answers `initialize`, `ping`, `tools/list`
+and `tools/call`, and sends each tool call to the daemon over `priory.sock` as
+`{"tool": ..., "session": ..., "arguments": ...}`. The daemon applies it in one transaction and
+replies with the tool's text or error. With no daemon listening, the call fails and nothing is
+stored.
+
+- `result(outcome, summary, evidence?, commit?)` stores the run's result, which nothing can change
+  or delete. The outcome must be a key of the step's `next`; otherwise the error lists the valid
+  outcomes.
+- `ask(question, options, recommendation, tradeoff)` stores an ask at revision 1.
+
+A run has at most one result and one open ask, never both: a second call is refused.
+
+### Moving on
+
+When the run's turn ends, its `Stop` moves the task by its result to `next[outcome]`:
+
+| Target     | Task                                                 | Run                       |
+| ---------- | ---------------------------------------------------- | ------------------------- |
+| model step | at that step, `running`, with its prompt queued      | `moved`, into a new run   |
+| human step | at that step, `asleep`, with an ask of its `options` | `asleep`                  |
+| code step  | at that step, `blocked`: code steps are not built yet | `blocked`                 |
+| `done`     | `done`                                               | `done`                    |
+| `stop`     | `dropped`                                            | `dropped`                 |
+
+A run with an open ask and no result ends `asleep`, and its task sleeps. The daemon kills a run's
+tmux session when the run ends, after the hook has its reply. The worktree stays.
+
+### Asks and answers
+
+`priory asks` prints each open ask: id, task, revision, question and options.
+`priory answer <ask> <option-or-text> --revision <n>` sends the answer to the daemon. The first
+answer to the ask's revision stands. An answer to another revision, a second answer, or, for a
+step's ask, a text that is not one of its options, is refused.
+
+- A step's ask moves the task by `next[option]`, as in the table. A model step makes the task
+  `ready` with that step's prompt queued.
+- An agent's ask queues the answer as the task's next prompt. An asleep task becomes `ready`. A
+  task whose run has not stopped yet stays `running`, and the answer is typed after its `Stop`.
+
+A `ready` task's next run resumes the stored session and types its queued prompts.
+
 ## Outbox
 
 Every prompt the daemon types goes through the outbox. A prompt moves through these states:
@@ -120,6 +172,8 @@ Every prompt the daemon types goes through the outbox. A prompt moves through th
 
 A run's first prompt is its step's `prompt`, then one line per event: the task's source event and
 every event it kept that no prompt carried yet. Each line holds the type, the subject and the data.
+A resumed run's first prompt has only those event lines, and none when there are no new events: the
+prompt that woke the task is already queued.
 
 The daemon types the oldest queued prompt of a task once its run is idle. It loads the text into a
 tmux buffer from stdin and pastes it as one bracketed paste, so newlines do not submit and no text
@@ -132,5 +186,5 @@ further prompt, since text may still sit in the agent's input.
 `priory tasks` prints each task: id, key, workflow, step, state, band, lane and reason.
 `priory runs` prints each run: id, task, step, tmux session, harness session, started, ended and
 how it ended. `priory outbox` prints each prompt: id, task, run, state and text, with newlines
-shown as `\n`. They read `PRIORY_DB` and print `-` for an empty cell, tab-separated after a header
+shown as `\n`. `priory asks` is described under Tools. They read `PRIORY_DB` and print `-` for an empty cell, tab-separated after a header
 line.

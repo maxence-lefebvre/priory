@@ -2,6 +2,7 @@ use crate::factory::Factory;
 use crate::intake::OUTPUT;
 use crate::runtime::{self, Launch, Line};
 use crate::state::{self, Admission, NewRun, Signal};
+use crate::tools::{self, Answer, Call};
 use herdr_bus::{Bus, Start};
 use rusqlite::Connection;
 use std::path::Path;
@@ -31,36 +32,61 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
     let listening = runtime::listen(&home)?;
     state::uncertain(&db)?;
     runtime::replay(&home, |line| {
-        take(&mut db, line).map_err(|error| error.to_string())
+        let (_, kill) = take(&mut db, line, factory).map_err(|error| error.to_string())?;
+        kill.inspect(|tmux| runtime::kill(tmux));
+        Ok(())
     })?;
     loop {
         drain(&bus, &mut db, factory)?;
         while let Ok(line) = listening.lines.try_recv() {
-            apply(&mut db, line)?;
+            apply(&mut db, line, factory)?;
         }
         tend(&mut db, factory, &home)?;
         match listening.lines.recv_timeout(EVERY) {
-            Ok(line) => apply(&mut db, line)?,
+            Ok(line) => apply(&mut db, line, factory)?,
             Err(RecvTimeoutError::Timeout) => {}
             Err(RecvTimeoutError::Disconnected) => return Err("the signal socket closed".into()),
         }
     }
 }
 
-/// Applies a line from the socket, then tells its sender.
-fn apply(db: &mut Connection, line: Line) -> Result<(), Error> {
-    take(db, &line.text)?;
-    let _ = line.applied.send(());
+/// Applies a line from the socket and replies to its sender. A run its line ended is killed after
+/// the reply, so the hook that sent it is not killed first.
+fn apply(db: &mut Connection, line: Line, factory: &Factory) -> Result<(), Error> {
+    let (reply, kill) = take(db, &line.text, factory)?;
+    let _ = line.applied.send(reply);
+    kill.inspect(|tmux| runtime::kill(tmux));
     Ok(())
 }
 
-/// Applies one signal line. A line that is not a signal is reported and dropped.
-fn take(db: &mut Connection, line: &str) -> Result<(), Error> {
-    match serde_json::from_str::<Signal>(line) {
-        Ok(signal) => Ok(state::signal(db, &signal)?),
+/// What arrives on the socket: a hook's signal, a run's tool call or a person's answer.
+#[derive(serde::Deserialize)]
+#[serde(untagged)]
+enum Input {
+    Signal(Signal),
+    Call(Call),
+    Answer(Answer),
+}
+
+/// Applies one line and returns its reply, with a tmux session to kill. A signal's reply is `ok`;
+/// a call's or an answer's is the JSON of its `Result`. A line that is none of them is reported
+/// and dropped.
+fn take(
+    db: &mut Connection,
+    line: &str,
+    factory: &Factory,
+) -> Result<(String, Option<String>), Error> {
+    let workflows = &factory.workflows;
+    let replied = |result: Result<String, String>| {
+        serde_json::to_string(&result).expect("a result serializes")
+    };
+    match serde_json::from_str::<Input>(line) {
+        Ok(Input::Signal(signal)) => Ok(("ok".to_owned(), state::signal(db, &signal, workflows)?)),
+        Ok(Input::Call(call)) => Ok((replied(tools::call(db, &call, workflows)?), None)),
+        Ok(Input::Answer(answer)) => Ok((replied(tools::answer(db, &answer, workflows)?), None)),
         Err(error) => {
-            eprintln!("priory daemon: dropped signal {line:?}: {error}");
-            Ok(())
+            eprintln!("priory daemon: dropped line {line:?}: {error}");
+            Ok((replied(Err(format!("unreadable line: {error}"))), None))
         }
     }
 }
@@ -133,8 +159,12 @@ fn start(
         Ok(found) => found,
         Err(reason) => return Ok(Err(reason)),
     };
-    let session = uuid::Uuid::new_v4().to_string();
+    let resumed = state::resumable(db, admission.task)?;
+    let resume = resumed.is_some();
+    let session = resumed.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
     let tmux = format!("priory-{}", admission.task);
+    // A crash between ending a run and killing its session leaves the old agent running.
+    runtime::kill(&tmux);
     state::start(
         db,
         &NewRun {
@@ -144,7 +174,7 @@ fn start(
             session: &session,
             branch: &branch,
             worktree: &worktree.to_string_lossy(),
-            prompt: step.prompt.as_deref().unwrap_or_default(),
+            prompt: (!resume).then(|| step.prompt.as_deref().unwrap_or_default()),
         },
     )?;
     let agent = &agent.value;
@@ -153,6 +183,7 @@ fn start(
         dir: &worktree,
         home,
         session: &session,
+        resume,
         model: agent.model.as_deref(),
         effort: agent.effort.as_deref(),
         body: &agent.body,

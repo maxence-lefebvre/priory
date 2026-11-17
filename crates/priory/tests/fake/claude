@@ -2,14 +2,19 @@
 # A stand-in for Claude Code: runs the --settings hooks as Claude would and logs every prompt typed into it.
 # FAKE_DIR holds args.log, typed.log, pending (a paste arrived), the hold files hold-submit and hold-stop,
 # and silent (never report SessionStart, as when Claude waits on its trust dialog).
+# Each turn pops the first line of FAKE_DIR/calls, if any: a tools/call params object such as
+# {"name":"result","arguments":{...}}. It calls that tool through the --mcp-config server, or, for
+# AskUserQuestion, runs the matching PreToolUse hooks, and appends the reply to tools.log.
 set -u
 settings='{}'
+mcp='{}'
 session=''
 printf '%s\n' "$@" > "$FAKE_DIR/args.log"
 while [ $# -gt 0 ]; do
   case "$1" in
-    --session-id) session=$2; shift 2 ;;
+    --session-id|--resume) session=$2; shift 2 ;;
     --settings) settings=$2; shift 2 ;;
+    --mcp-config) mcp=$2; shift 2 ;;
     *) shift ;;
   esac
 done
@@ -19,6 +24,34 @@ hook() {
     jq -nc --arg session "$session" --arg event "$1" --arg prompt "${2-}" \
       '{session_id: $session, hook_event_name: $event} + if $prompt == "" then {} else {prompt: $prompt} end' | sh -c "$command"
   done
+}
+
+# Calls one tool as Claude does: start the server, initialize, then tools/call.
+tool() {
+  local name
+  name=$(jq -r .name <<<"$1")
+  if [ "$name" = AskUserQuestion ]; then
+    jq -r '.hooks.PreToolUse[]? | select(.matcher == "AskUserQuestion") | .hooks[].command' <<<"$settings" |
+      while IFS= read -r command; do
+        jq -nc --arg session "$session" '{session_id: $session, hook_event_name: "PreToolUse", tool_name: "AskUserQuestion"}' |
+          sh -c "$command" >> "$FAKE_DIR/tools.log"
+        echo >> "$FAKE_DIR/tools.log"
+      done
+    return
+  fi
+  local command args env reply
+  command=$(jq -r '.mcpServers.priory.command' <<<"$mcp")
+  mapfile -t args < <(jq -r '.mcpServers.priory.args[]' <<<"$mcp")
+  mapfile -t env < <(jq -r '.mcpServers.priory.env // {} | to_entries[] | "\(.key)=\(.value)"' <<<"$mcp")
+  coproc server { env "${env[@]}" "$command" "${args[@]}"; }
+  echo '{"jsonrpc":"2.0","id":0,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"fake","version":"0"}}}' >&"${server[1]}"
+  read -r reply <&"${server[0]}"
+  echo '{"jsonrpc":"2.0","method":"notifications/initialized"}' >&"${server[1]}"
+  jq -c '{jsonrpc: "2.0", id: 1, method: "tools/call", params: .}' <<<"$1" >&"${server[1]}"
+  read -r reply <&"${server[0]}"
+  printf '%s\n' "$reply" >> "$FAKE_DIR/tools.log"
+  exec {server[1]}>&-
+  wait "$server_PID"
 }
 
 wait_while() { while [ -e "$FAKE_DIR/$1" ]; do sleep 0.05; done; }
@@ -37,6 +70,11 @@ while :; do
   wait_while hold-submit
   printf '%s---\n' "$prompt" >> "$FAKE_DIR/typed.log"
   hook UserPromptSubmit "$prompt"
+  if [ -s "$FAKE_DIR/calls" ]; then
+    call=$(head -n 1 "$FAKE_DIR/calls")
+    sed -i 1d "$FAKE_DIR/calls"
+    [ -n "$call" ] && tool "$call"
+  fi
   wait_while hold-stop
   hook Stop
 done

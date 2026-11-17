@@ -94,6 +94,8 @@ pub struct Launch<'a> {
     pub dir: &'a Path,
     pub home: &'a Path,
     pub session: &'a str,
+    /// Continue `session`, which an earlier run of the task started, instead of creating it.
+    pub resume: bool,
     pub model: Option<&'a str>,
     pub effort: Option<&'a str>,
     pub body: &'a str,
@@ -119,7 +121,13 @@ pub fn launch(launch: &Launch) -> Result<(), String> {
         .arg(launch.dir)
         .arg("-e")
         .arg(format!("PRIORY_HOME={}", launch.home.display()))
-        .args(["--", "claude", "--session-id", launch.session]);
+        .args(["--", "claude"])
+        .arg(if launch.resume {
+            "--resume"
+        } else {
+            "--session-id"
+        })
+        .arg(launch.session);
     if let Some(model) = launch.model {
         command.args(["--model", model]);
     }
@@ -130,11 +138,25 @@ pub fn launch(launch: &Launch) -> Result<(), String> {
         command.args(["--append-system-prompt", launch.body]);
     }
     command.arg("--settings").arg(settings(&exe));
+    command.arg("--mcp-config").arg(mcp_config(&exe, launch));
     command.args([";", "set-option", "-p", "@priory", launch.session]);
     run(&mut command).map(drop)
 }
 
-/// Claude Code settings whose hooks call `priory hook <event>`.
+/// The MCP server that serves Priory's tools to the run: `priory mcp --session <id>`.
+fn mcp_config(exe: &Path, launch: &Launch) -> String {
+    serde_json::json!({ "mcpServers": { "priory": {
+        "command": exe,
+        "args": ["mcp", "--session", launch.session],
+        "env": { "PRIORY_HOME": launch.home },
+    } } })
+    .to_string()
+}
+
+const ASK_INSTEAD: &str = r#"{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"Priory runs this session unattended. Call the ask tool of the priory MCP server instead."}}"#;
+
+/// Claude Code settings whose hooks call `priory hook <event>`, that allow Priory's tools, and that
+/// deny the built-in question tool in favour of `ask` (R6.4).
 fn settings(exe: &Path) -> String {
     let quoted = format!("'{}'", exe.display().to_string().replace('\'', r"'\''"));
     let hooks: serde_json::Map<_, _> = ["SessionStart", "UserPromptSubmit", "Stop"]
@@ -147,7 +169,15 @@ fn settings(exe: &Path) -> String {
             )
         })
         .collect();
-    serde_json::json!({ "hooks": hooks }).to_string()
+    let mut hooks = hooks;
+    hooks.insert(
+        "PreToolUse".to_owned(),
+        serde_json::json!([{
+            "matcher": "AskUserQuestion",
+            "hooks": [{ "type": "command", "command": format!("printf '%s' '{ASK_INSTEAD}'") }],
+        }]),
+    );
+    serde_json::json!({ "hooks": hooks, "permissions": { "allow": ["mcp__priory"] } }).to_string()
 }
 
 /// The pane of the tmux session `name` that runs the harness session `session`, if it lives.
@@ -212,10 +242,10 @@ fn spool(home: &Path) -> PathBuf {
     home.join("signals.spool")
 }
 
-/// One line from the socket, with the sender to call once it is applied.
+/// One line from the socket, with the sender that takes its reply once it is applied.
 pub struct Line {
     pub text: String,
-    pub applied: Sender<()>,
+    pub applied: Sender<String>,
 }
 
 /// The daemon's end of the socket: its lock, and the lines that arrive.
@@ -224,8 +254,8 @@ pub struct Listening {
     pub lines: Receiver<Line>,
 }
 
-/// Takes the daemon lock under `home` and binds the signal socket. Each connection's line is
-/// answered `ok` once the daemon applied it.
+/// Takes the daemon lock under `home` and binds the signal socket. Each connection's line gets
+/// the daemon's reply once the daemon applied it.
 pub fn listen(home: &Path) -> Result<Listening, String> {
     let at = |error: std::io::Error| format!("{}: {error}", home.display());
     fs::create_dir_all(home).map_err(at)?;
@@ -246,8 +276,8 @@ pub fn listen(home: &Path) -> Result<Listening, String> {
             if sender.send(Line { text, applied }).is_err() {
                 return;
             }
-            if done.recv().is_ok() {
-                let _ = stream.write_all(b"ok\n");
+            if let Ok(reply) = done.recv() {
+                let _ = stream.write_all(format!("{reply}\n").as_bytes());
             }
         }
     });
@@ -271,6 +301,25 @@ pub fn replay(
         }
         fs::remove_file(&taken).map_err(at)?;
     }
+}
+
+/// Sends one line to the daemon and returns its reply. Nothing is spooled: with no daemon, it fails.
+pub fn call(home: &Path, line: &str) -> Result<String, String> {
+    let wait = Some(Duration::from_secs(10));
+    let path = socket(home);
+    let mut stream = UnixStream::connect(&path)
+        .map_err(|error| format!("no priory daemon listens on {}: {error}", path.display()))?;
+    let mut reply = String::new();
+    stream
+        .set_write_timeout(wait)
+        .and_then(|()| stream.set_read_timeout(wait))
+        .and_then(|()| stream.write_all(format!("{line}\n").as_bytes()))
+        .and_then(|()| BufReader::new(&stream).read_line(&mut reply))
+        .map_err(|error| format!("the daemon did not reply: {error}"))?;
+    if reply.is_empty() {
+        return Err("the daemon closed the connection without a reply".to_owned());
+    }
+    Ok(reply.trim_end().to_owned())
 }
 
 /// Sends one line to the daemon and waits up to 10 seconds for it to be applied. Only when no

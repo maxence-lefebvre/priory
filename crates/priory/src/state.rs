@@ -5,7 +5,7 @@ use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, 
 use std::collections::BTreeMap;
 use std::time::Duration;
 
-const VERSION: i64 = 2;
+const VERSION: i64 = 3;
 
 const SCHEMA: &str = "
 CREATE TABLE tasks (
@@ -66,6 +66,39 @@ ALTER TABLE inbox ADD COLUMN outbox INTEGER REFERENCES outbox (id);
 PRAGMA user_version = 2;
 ";
 
+const SCHEMA_3: &str = "
+CREATE TABLE results (
+  run        INTEGER PRIMARY KEY REFERENCES runs (id),
+  task       INTEGER NOT NULL REFERENCES tasks (id),
+  step       TEXT NOT NULL,
+  outcome    TEXT NOT NULL,
+  summary    TEXT NOT NULL,
+  evidence   TEXT,
+  commit_sha TEXT,
+  created    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+);
+CREATE TRIGGER results_are_immutable BEFORE UPDATE ON results
+  BEGIN SELECT RAISE(ABORT, 'results are immutable'); END;
+CREATE TRIGGER results_stay BEFORE DELETE ON results
+  BEGIN SELECT RAISE(ABORT, 'results are immutable'); END;
+CREATE TABLE asks (
+  id             INTEGER PRIMARY KEY AUTOINCREMENT,
+  task           INTEGER NOT NULL REFERENCES tasks (id),
+  run            INTEGER REFERENCES runs (id),
+  step           TEXT NOT NULL,
+  kind           TEXT NOT NULL CHECK (kind IN ('step', 'agent')),
+  revision       INTEGER NOT NULL DEFAULT 1,
+  question       TEXT NOT NULL,
+  options        TEXT NOT NULL,
+  recommendation TEXT,
+  tradeoff       TEXT,
+  answer         TEXT,
+  answered       TEXT,
+  created        TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+);
+PRAGMA user_version = 3;
+";
+
 const NOW: &str = "strftime('%Y-%m-%dT%H:%M:%SZ', 'now')";
 
 pub struct Task {
@@ -105,9 +138,12 @@ pub fn open() -> Result<Connection, String> {
     let version = version(&tx).map_err(at)?;
     match version {
         0 => tx
-            .execute_batch(&format!("{SCHEMA}{SCHEMA_2}"))
+            .execute_batch(&format!("{SCHEMA}{SCHEMA_2}{SCHEMA_3}"))
             .map_err(at)?,
-        1 => tx.execute_batch(SCHEMA_2).map_err(at)?,
+        1 => tx
+            .execute_batch(&format!("{SCHEMA_2}{SCHEMA_3}"))
+            .map_err(at)?,
+        2 => tx.execute_batch(SCHEMA_3).map_err(at)?,
         VERSION => {}
         _ => {
             return Err(format!(
@@ -248,7 +284,7 @@ pub struct Admission {
     pub trigger: String,
 }
 
-/// The oldest queued task at a model step, when no run is live.
+/// The oldest queued or ready task at a model step, when no run is live.
 pub fn admissible(
     db: &Connection,
     workflows: &BTreeMap<String, Loaded<Workflow>>,
@@ -261,7 +297,7 @@ pub fn admissible(
         return Ok(None);
     }
     let mut statement = db.prepare(
-        "SELECT id, workflow, step, trigger FROM tasks WHERE state = 'queued' ORDER BY id",
+        "SELECT id, workflow, step, trigger FROM tasks WHERE state IN ('queued', 'ready') ORDER BY id",
     )?;
     let queued = statement.query_map([], |row| {
         Ok(Admission {
@@ -293,11 +329,22 @@ pub struct NewRun<'a> {
     pub session: &'a str,
     pub branch: &'a str,
     pub worktree: &'a str,
-    pub prompt: &'a str,
+    /// The step's prompt, for a new session. A resumed session has its waking prompt queued.
+    pub prompt: Option<&'a str>,
 }
 
-/// Records a run and its first prompt: the step's prompt, then the task's source event and every
-/// event it kept that no prompt carried yet. Returns the run id.
+/// The harness session of the task's latest run that Claude started, which a new run resumes.
+pub fn resumable(db: &Connection, task: i64) -> rusqlite::Result<Option<String>> {
+    db.query_row(
+        "SELECT session FROM runs WHERE task = ?1 AND ready = 1 ORDER BY id DESC LIMIT 1",
+        [task],
+        |row| row.get(0),
+    )
+    .optional()
+}
+
+/// Records a run and its first prompt: the step's prompt, if any, then the task's source event and
+/// every event it kept that no prompt carried yet. Returns the run id.
 pub fn start(db: &mut Connection, run: &NewRun) -> rusqlite::Result<i64> {
     let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
     tx.execute(
@@ -310,7 +357,7 @@ pub fn start(db: &mut Connection, run: &NewRun) -> rusqlite::Result<i64> {
         params![run.task, run.branch, run.worktree],
     )?;
     let mut events = Vec::new();
-    let mut text = run.prompt.to_owned();
+    let mut text = run.prompt.unwrap_or_default().to_owned();
     {
         let mut statement = tx.prepare(
             "SELECT seq, type, subject, data FROM inbox WHERE outbox IS NULL
@@ -320,13 +367,19 @@ pub fn start(db: &mut Connection, run: &NewRun) -> rusqlite::Result<i64> {
         let mut rows = statement.query([run.task])?;
         while let Some(row) = rows.next()? {
             events.push(row.get::<_, i64>(0)?);
-            text.push('\n');
+            if !text.is_empty() {
+                text.push('\n');
+            }
             text.push_str(&line(
                 &row.get::<_, String>(1)?,
                 row.get::<_, Option<String>>(2)?.as_deref(),
                 &row.get::<_, String>(3)?,
             ));
         }
+    }
+    if text.is_empty() {
+        tx.commit()?;
+        return Ok(id);
     }
     tx.execute(
         "INSERT INTO outbox (task, text) VALUES (?1, ?2)",
@@ -400,7 +453,12 @@ pub struct Signal {
 
 /// Applies a hook signal: the run is idle after `SessionStart` or `Stop`, and busy after
 /// `UserPromptSubmit`, which also confirms its attempted prompt when the submitted text matches.
-pub fn signal(db: &mut Connection, signal: &Signal) -> rusqlite::Result<()> {
+/// After `Stop`, the task moves on by the run's result or ask. Returns a tmux session to kill.
+pub fn signal(
+    db: &mut Connection,
+    signal: &Signal,
+    workflows: &BTreeMap<String, Loaded<Workflow>>,
+) -> rusqlite::Result<Option<String>> {
     let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
     let Some(run) = tx
         .query_row(
@@ -410,14 +468,16 @@ pub fn signal(db: &mut Connection, signal: &Signal) -> rusqlite::Result<()> {
         )
         .optional()?
     else {
-        return Ok(());
+        return Ok(None);
     };
+    let mut kill = None;
     match signal.event.as_str() {
         "SessionStart" => {
             tx.execute("UPDATE runs SET idle = 1, ready = 1 WHERE id = ?1", [run])?;
         }
         "Stop" => {
             tx.execute("UPDATE runs SET idle = 1 WHERE id = ?1", [run])?;
+            kill = crate::tools::stop(&tx, &signal.session, workflows)?;
         }
         "UserPromptSubmit" => {
             tx.execute("UPDATE runs SET idle = 0 WHERE id = ?1", [run])?;
@@ -444,7 +504,8 @@ pub fn signal(db: &mut Connection, signal: &Signal) -> rusqlite::Result<()> {
         }
         _ => {}
     }
-    tx.commit()
+    tx.commit()?;
+    Ok(kill)
 }
 
 /// Marks the oldest queued prompt of an idle live run `attempted` and the run busy, in one
