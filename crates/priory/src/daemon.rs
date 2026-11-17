@@ -1,6 +1,6 @@
 use crate::factory::Factory;
 use crate::intake::OUTPUT;
-use crate::runtime::{self, Launch};
+use crate::runtime::{self, Launch, Line};
 use crate::state::{self, Admission, NewRun, Signal};
 use herdr_bus::{Bus, Start};
 use rusqlite::Connection;
@@ -30,24 +30,31 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
     let home = runtime::home();
     let listening = runtime::listen(&home)?;
     state::uncertain(&db)?;
-    for line in &listening.spooled {
-        take(&mut db, line)?;
-    }
+    runtime::replay(&home, |line| {
+        take(&mut db, line).map_err(|error| error.to_string())
+    })?;
     loop {
         drain(&bus, &mut db, factory)?;
         while let Ok(line) = listening.lines.try_recv() {
-            take(&mut db, &line)?;
+            apply(&mut db, line)?;
         }
         tend(&mut db, factory, &home)?;
         match listening.lines.recv_timeout(EVERY) {
-            Ok(line) => take(&mut db, &line)?,
+            Ok(line) => apply(&mut db, line)?,
             Err(RecvTimeoutError::Timeout) => {}
             Err(RecvTimeoutError::Disconnected) => return Err("the signal socket closed".into()),
         }
     }
 }
 
-/// Applies one line from the socket. A line that is not a signal is reported and dropped.
+/// Applies a line from the socket, then tells its sender.
+fn apply(db: &mut Connection, line: Line) -> Result<(), Error> {
+    take(db, &line.text)?;
+    let _ = line.applied.send(());
+    Ok(())
+}
+
+/// Applies one signal line. A line that is not a signal is reported and dropped.
 fn take(db: &mut Connection, line: &str) -> Result<(), Error> {
     match serde_json::from_str::<Signal>(line) {
         Ok(signal) => Ok(state::signal(db, &signal)?),
@@ -61,7 +68,7 @@ fn take(db: &mut Connection, line: &str) -> Result<(), Error> {
 /// Ends runs whose tmux session is gone, starts a run if one is admissible, and types prompts.
 fn tend(db: &mut Connection, factory: &Factory, home: &Path) -> Result<(), Error> {
     for run in state::live(db)? {
-        if !runtime::owns(&run.tmux, &run.session) {
+        if runtime::pane(&run.tmux, &run.session).is_none() {
             let reason = format!("run {} exited: tmux session {} is gone", run.id, run.tmux);
             state::block(db, run.task, "exited", &reason)?;
         }
@@ -71,8 +78,11 @@ fn tend(db: &mut Connection, factory: &Factory, home: &Path) -> Result<(), Error
     {
         state::block(db, admission.task, "failed", &reason)?;
     }
-    while let Some((tmux, text)) = state::attempt(db)? {
-        if let Err(error) = runtime::type_text(&tmux, &text) {
+    while let Some((tmux, session, text)) = state::attempt(db)? {
+        let typed = runtime::pane(&tmux, &session)
+            .ok_or_else(|| "its pane is gone".to_owned())
+            .and_then(|pane| runtime::type_text(&pane, &text));
+        if let Err(error) = typed {
             eprintln!("priory daemon: typing into {tmux}: {error}");
         }
     }

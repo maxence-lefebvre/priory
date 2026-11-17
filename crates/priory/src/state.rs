@@ -126,7 +126,7 @@ pub fn handle(
     message: &Message,
     workflows: &BTreeMap<String, Loaded<Workflow>>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let tx = db.transaction()?;
+    let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
     let seen = tx
         .query_row(
             "SELECT 1 FROM inbox WHERE id = ?1",
@@ -298,7 +298,7 @@ pub struct NewRun<'a> {
 /// Records a run and its first prompt: the step's prompt, then the task's source event and every
 /// event it kept that no prompt carried yet. Returns the run id.
 pub fn start(db: &mut Connection, run: &NewRun) -> rusqlite::Result<i64> {
-    let tx = db.transaction()?;
+    let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
     tx.execute(
         "INSERT INTO runs (task, step, tmux, session) VALUES (?1, ?2, ?3, ?4)",
         params![run.task, run.step, run.tmux, run.session],
@@ -344,7 +344,7 @@ pub fn start(db: &mut Connection, run: &NewRun) -> rusqlite::Result<i64> {
 
 /// Blocks `task` with `reason`, ending its live run first as `ended_as`, if it has one.
 pub fn block(db: &mut Connection, task: i64, ended_as: &str, reason: &str) -> rusqlite::Result<()> {
-    let tx = db.transaction()?;
+    let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
     tx.execute(
         &format!("UPDATE runs SET ended = {NOW}, ended_as = ?2 WHERE task = ?1 AND ended IS NULL"),
         params![task, ended_as],
@@ -390,7 +390,7 @@ pub struct Signal {
 /// Applies a hook signal: the run is idle after `SessionStart` or `Stop`, and busy after
 /// `UserPromptSubmit`, which also confirms its attempted prompt when the submitted text matches.
 pub fn signal(db: &mut Connection, signal: &Signal) -> rusqlite::Result<()> {
-    let tx = db.transaction()?;
+    let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
     let Some(run) = tx
         .query_row(
             "SELECT id FROM runs WHERE session = ?1 AND ended IS NULL",
@@ -435,11 +435,11 @@ pub fn signal(db: &mut Connection, signal: &Signal) -> rusqlite::Result<()> {
 
 /// Marks the oldest queued prompt of an idle live run `attempted` and the run busy, in one
 /// transaction, before anything is typed. A run with an attempted or uncertain prompt gets none.
-pub fn attempt(db: &mut Connection) -> rusqlite::Result<Option<(String, String)>> {
-    let tx = db.transaction()?;
+pub fn attempt(db: &mut Connection) -> rusqlite::Result<Option<(String, String, String)>> {
+    let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
     let next = tx
         .query_row(
-            "SELECT outbox.id, runs.id, runs.tmux, outbox.text FROM runs
+            "SELECT outbox.id, runs.id, runs.tmux, runs.session, outbox.text FROM runs
              JOIN outbox ON outbox.task = runs.task AND outbox.state = 'queued'
              WHERE runs.ended IS NULL AND runs.idle = 1 AND NOT EXISTS (
                SELECT 1 FROM outbox AS open WHERE open.task = runs.task
@@ -452,11 +452,12 @@ pub fn attempt(db: &mut Connection) -> rusqlite::Result<Option<(String, String)>
                     row.get::<_, i64>(1)?,
                     row.get::<_, String>(2)?,
                     row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
                 ))
             },
         )
         .optional()?;
-    let Some((outbox, run, tmux, text)) = next else {
+    let Some((outbox, run, tmux, session, text)) = next else {
         return Ok(None);
     };
     tx.execute(
@@ -467,7 +468,7 @@ pub fn attempt(db: &mut Connection) -> rusqlite::Result<Option<(String, String)>
     )?;
     tx.execute("UPDATE runs SET idle = 0 WHERE id = ?1", [run])?;
     tx.commit()?;
-    Ok(Some((tmux, text)))
+    Ok(Some((tmux, session, text)))
 }
 
 /// After a restart, a prompt attempted but never confirmed may or may not have been typed.

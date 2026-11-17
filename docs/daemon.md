@@ -48,7 +48,8 @@ current turn. A message kept for a task in any other state waits for the task's 
 - `repos/<owner>/<name>.git`: a bare clone of `https://github.com/<owner>/<name>.git`. Git's own
   `url.<base>.insteadOf` setting can point it elsewhere, such as an SSH remote or a local mirror.
 - `worktrees/<owner>/<name>/<task id>`: one worktree per task, on branch `priory/<task id>`, from
-  the remote's default branch. The task's `worktree` names it only when Priory created it.
+  the remote's default branch. The task's `worktree` names it only when Priory created it. A start
+  reuses an existing worktree only when it belongs to Priory's clone and is on that branch.
 - `priory.sock`: the socket hooks report to. `signals.spool`: the signals sent while no daemon
   listened, which the next daemon applies first.
 - `daemon.lock`: one daemon per home. A second one refuses to start.
@@ -67,9 +68,10 @@ The daemon creates the worktree, records the run and the task as `running`, then
 - `--append-system-prompt`: the agent body, the Markdown after its frontmatter.
 - `--settings`: hooks that run `priory hook SessionStart`, `UserPromptSubmit` and `Stop`.
 
-The session carries a tmux option `@priory` set to the harness session id. Each second, the daemon
-ends a run whose session is gone or carries another id as `exited`, and blocks its task with the
-reason. A git or tmux error ends the run as `failed`, or blocks the task when no run exists yet.
+The same tmux command tags the new pane with a pane option `@priory` set to the harness session
+id, so a pane is never left untagged. The daemon types only into that pane, even when a person
+opens other panes in the session. Each second, it ends a run whose tagged pane is gone as
+`exited`, and blocks its task with the reason. A git or tmux error ends the run as `failed`, or blocks the task when no run exists yet.
 
 tmux owns the agents, so the daemon can stop and start again without stopping them. When it starts,
 it keeps every live run whose session still exists.
@@ -82,7 +84,9 @@ queued.
 
 `priory hook <event>` reads Claude's hook JSON on stdin and sends one JSON line to the daemon over
 `priory.sock`: `{"event": "Stop", "session": "<id>", "prompt": "<text>"}`. `prompt` comes only with
-`UserPromptSubmit`. When no daemon listens, the line goes to `signals.spool` instead.
+`UserPromptSubmit`. The daemon answers `ok` once the signal is committed. When no daemon answers
+within 10 seconds, the line goes to `signals.spool` instead. The next daemon applies the spool
+before it removes it.
 
 - `SessionStart`: the harness is up and its input is ready, so the run is idle.
 - `UserPromptSubmit`: the run is busy. Its attempted prompt is confirmed if the submitted text has

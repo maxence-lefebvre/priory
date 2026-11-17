@@ -3,7 +3,8 @@ use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::mpsc::{self, Receiver};
+use std::sync::mpsc::{self, Receiver, Sender};
+use std::time::Duration;
 
 /// Priory's own directory: `PRIORY_HOME`, else `$XDG_STATE_HOME/priory`, else `~/.local/state/priory`.
 pub fn home() -> PathBuf {
@@ -41,31 +42,38 @@ fn git(dir: &Path) -> Command {
 }
 
 /// The task's worktree on `priory/<task>`, from the default branch of Priory's own clone of `repo`
-/// (`owner/name`). A worktree left by an interrupted start is reused when it is on that branch.
+/// (`owner/name`). A worktree of that clone left on that branch by an interrupted start is reused.
 pub fn worktree(home: &Path, repo: &str, task: i64) -> Result<(PathBuf, String), String> {
     let clone = home.join("repos").join(format!("{repo}.git"));
     let branch = format!("priory/{task}");
     let path = home.join("worktrees").join(repo).join(task.to_string());
     if !clone.exists() {
+        // A clone interrupted before the rename leaves only the partial directory, which is replaced.
+        let partial = clone.with_extension("partial");
+        let _ = fs::remove_dir_all(&partial);
         fs::create_dir_all(clone.parent().expect("clone has a parent"))
             .map_err(|error| error.to_string())?;
         run(Command::new("git")
             .args(["clone", "--quiet", "--bare"])
             .arg(format!("https://github.com/{repo}.git"))
-            .arg(&clone))?;
-        run(git(&clone).args([
+            .arg(&partial))?;
+        run(git(&partial).args([
             "config",
             "remote.origin.fetch",
             "+refs/heads/*:refs/remotes/origin/*",
         ]))?;
+        fs::rename(&partial, &clone).map_err(|error| error.to_string())?;
     }
     if path.exists() {
+        let common =
+            run(git(&path).args(["rev-parse", "--path-format=absolute", "--git-common-dir"]))?;
         let current = run(git(&path).args(["branch", "--show-current"]))?;
-        if current.trim() != branch {
+        let ours = fs::canonicalize(common.trim()).ok() == fs::canonicalize(&clone).ok();
+        if !ours || current.trim() != branch {
             return Err(format!(
-                "{} exists on {:?}, not {branch}",
+                "{} exists but is not {branch} of {}",
                 path.display(),
-                current.trim()
+                clone.display()
             ));
         }
         return Ok((path, branch));
@@ -94,8 +102,8 @@ pub struct Launch<'a> {
     pub body: &'a str,
 }
 
-/// Starts `claude` in a detached tmux session, with hooks that report to this daemon, and tags the
-/// session with the run's harness session id so the daemon can tell its own sessions apart.
+/// Starts `claude` in a detached tmux session, with hooks that report to this daemon. The same tmux
+/// command tags the new pane with the run's harness session id, so a crash cannot leave it untagged.
 pub fn launch(launch: &Launch) -> Result<(), String> {
     let exe = std::env::current_exe().map_err(|error| error.to_string())?;
     let mut command = tmux();
@@ -125,15 +133,8 @@ pub fn launch(launch: &Launch) -> Result<(), String> {
         command.args(["--append-system-prompt", launch.body]);
     }
     command.arg("--settings").arg(settings(&exe));
-    run(&mut command)?;
-    run(tmux().args([
-        "set-option",
-        "-t",
-        &format!("={}:", launch.tmux),
-        "@priory",
-        launch.session,
-    ]))?;
-    Ok(())
+    command.args([";", "set-option", "-p", "@priory", launch.session]);
+    run(&mut command).map(drop)
 }
 
 /// Claude Code settings whose hooks call `priory hook <event>`.
@@ -152,16 +153,27 @@ fn settings(exe: &Path) -> String {
     serde_json::json!({ "hooks": hooks }).to_string()
 }
 
-/// Whether the tmux session `name` lives and belongs to the run with harness session `session`.
-pub fn owns(name: &str, session: &str) -> bool {
-    run(tmux().args(["show-options", "-qv", "-t", &format!("={name}:"), "@priory"]))
-        .is_ok_and(|tag| tag.trim() == session)
+/// The pane of the tmux session `name` that runs the harness session `session`, if it lives.
+pub fn pane(name: &str, session: &str) -> Option<String> {
+    let panes = run(tmux().args([
+        "list-panes",
+        "-s",
+        "-t",
+        &format!("={name}:"),
+        "-F",
+        "#{pane_id} #{@priory}",
+    ]))
+    .ok()?;
+    panes.lines().find_map(|line| {
+        let (pane, tag) = line.split_once(' ')?;
+        (tag == session).then(|| pane.to_owned())
+    })
 }
 
-/// Pastes `text` into the session's pane as one bracketed paste, then presses Enter. tmux reads the
-/// text from stdin, so none of it is taken for key names.
-pub fn type_text(name: &str, text: &str) -> Result<(), String> {
-    let buffer = format!("priory-{name}");
+/// Pastes `text` into `pane` as one bracketed paste, then presses Enter. tmux reads the text from
+/// stdin, so none of it is taken for key names.
+pub fn type_text(pane: &str, text: &str) -> Result<(), String> {
+    let buffer = format!("priory{pane}");
     let mut load = tmux()
         .args(["load-buffer", "-b", &buffer, "-"])
         .stdin(Stdio::piped())
@@ -177,9 +189,8 @@ pub fn type_text(name: &str, text: &str) -> Result<(), String> {
     if !loaded.status.success() {
         return Err(String::from_utf8_lossy(&loaded.stderr).into_owned());
     }
-    let pane = format!("={name}:");
-    run(tmux().args(["paste-buffer", "-p", "-d", "-b", &buffer, "-t", &pane]))?;
-    run(tmux().args(["send-keys", "-t", &pane, "Enter"]))?;
+    run(tmux().args(["paste-buffer", "-p", "-d", "-b", &buffer, "-t", pane]))?;
+    run(tmux().args(["send-keys", "-t", pane, "Enter"]))?;
     Ok(())
 }
 
@@ -191,15 +202,20 @@ fn spool(home: &Path) -> PathBuf {
     home.join("signals.spool")
 }
 
-/// The daemon's end of the socket: its lock, the signals spooled while no daemon listened, and a
-/// channel of the lines that arrive from now on.
-pub struct Listening {
-    _lock: File,
-    pub spooled: Vec<String>,
-    pub lines: Receiver<String>,
+/// One line from the socket, with the sender to call once it is applied.
+pub struct Line {
+    pub text: String,
+    pub applied: Sender<()>,
 }
 
-/// Takes the daemon lock under `home`, binds the signal socket and reads the spool.
+/// The daemon's end of the socket: its lock, and the lines that arrive.
+pub struct Listening {
+    _lock: File,
+    pub lines: Receiver<Line>,
+}
+
+/// Takes the daemon lock under `home` and binds the signal socket. Each connection's line is
+/// answered `ok` once the daemon applied it.
 pub fn listen(home: &Path) -> Result<Listening, String> {
     let at = |error: std::io::Error| format!("{}: {error}", home.display());
     fs::create_dir_all(home).map_err(at)?;
@@ -211,37 +227,55 @@ pub fn listen(home: &Path) -> Result<Listening, String> {
     let listener = UnixListener::bind(&path).map_err(at)?;
     let (sender, lines) = mpsc::channel();
     std::thread::spawn(move || {
-        for stream in listener.incoming().flatten() {
-            for line in BufReader::new(stream).lines().map_while(Result::ok) {
-                if sender.send(line).is_err() {
-                    return;
-                }
+        for mut stream in listener.incoming().flatten() {
+            let mut text = String::new();
+            if BufReader::new(&stream).read_line(&mut text).is_err() {
+                continue;
+            }
+            let (applied, done) = mpsc::channel();
+            if sender.send(Line { text, applied }).is_err() {
+                return;
+            }
+            if done.recv().is_ok() {
+                let _ = stream.write_all(b"ok\n");
             }
         }
     });
-    // shortcut: a hook that opened the spool before this rename and writes after the read is lost; ack signals when slice 5 adds replies.
-    let taken = home.join("signals.spool.taken");
-    let spooled = match fs::rename(spool(home), &taken) {
-        Ok(()) => {
-            let lines = fs::read_to_string(&taken).map_err(at)?;
-            fs::remove_file(&taken).map_err(at)?;
-            lines.lines().map(str::to_owned).collect()
-        }
-        Err(_) => Vec::new(),
-    };
-    Ok(Listening {
-        _lock: lock,
-        spooled,
-        lines,
-    })
+    Ok(Listening { _lock: lock, lines })
 }
 
-/// Sends one line to the daemon, or appends it to the spool when no daemon listens.
+/// The signals spooled while no daemon listened. `apply` runs on each before the spool is removed.
+pub fn replay(
+    home: &Path,
+    mut apply: impl FnMut(&str) -> Result<(), String>,
+) -> Result<(), String> {
+    let taken = home.join("signals.spool.taken");
+    let at = |error: std::io::Error| format!("{}: {error}", taken.display());
+    loop {
+        // shortcut: a hook that opened the spool before this rename and writes after the read is lost; move the spool into SQLite if that shows up.
+        if !taken.exists() && fs::rename(spool(home), &taken).is_err() {
+            return Ok(());
+        }
+        for line in fs::read_to_string(&taken).map_err(at)?.lines() {
+            apply(line)?;
+        }
+        fs::remove_file(&taken).map_err(at)?;
+    }
+}
+
+/// Sends one line to the daemon and waits for it to be applied, or appends it to the spool when no
+/// daemon answers in time.
 pub fn send(home: &Path, line: &str) -> Result<(), String> {
     let line = format!("{line}\n");
-    if let Ok(mut stream) = UnixStream::connect(socket(home))
-        && stream.write_all(line.as_bytes()).is_ok()
-    {
+    let answered = || -> std::io::Result<bool> {
+        let mut stream = UnixStream::connect(socket(home))?;
+        stream.set_read_timeout(Some(Duration::from_secs(10)))?;
+        stream.write_all(line.as_bytes())?;
+        let mut answer = String::new();
+        BufReader::new(stream).read_line(&mut answer)?;
+        Ok(answer == "ok\n")
+    };
+    if answered().unwrap_or(false) {
         return Ok(());
     }
     fs::create_dir_all(home).map_err(|error| error.to_string())?;

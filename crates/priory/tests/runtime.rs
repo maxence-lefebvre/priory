@@ -207,6 +207,15 @@ impl Setup {
             .collect()
     }
 
+    /// Waits until the file `path`, under the test's directory, exists.
+    fn exists(&self, path: &str) {
+        let deadline = Instant::now() + Duration::from_secs(15);
+        while !self.dir.join(path).exists() {
+            assert!(Instant::now() < deadline, "{path} never appeared");
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+
     fn hold(&self, at: &str) {
         fs::write(self.dir.join("fake").join(at), "").unwrap();
     }
@@ -374,17 +383,14 @@ fn a_prompt_attempted_but_not_confirmed_before_a_crash_becomes_uncertain_and_is_
     setup.hold("hold-submit");
     setup.start();
     setup.until("outbox", |rows| with(rows, 3, "attempted") == 1);
-    let deadline = Instant::now() + Duration::from_secs(15);
-    while !setup.dir.join("fake/pending").exists() {
-        assert!(Instant::now() < deadline, "the paste never reached claude");
-        std::thread::sleep(Duration::from_millis(50));
-    }
+    setup.exists("fake/pending");
 
     setup.crash();
     setup.start();
 
     setup.until("outbox", |rows| with(rows, 3, "uncertain") == 1);
     setup.release("hold-submit");
+    setup.exists("fake/typed.log");
     std::thread::sleep(Duration::from_millis(1500));
     assert_eq!(setup.typed().len(), 1);
     assert_eq!(setup.rows("outbox")[0][3], "uncertain");
@@ -400,7 +406,7 @@ fn a_signal_sent_while_the_daemon_is_down_is_applied_when_it_comes_back() {
 
     setup.crash();
     setup.release("hold-stop");
-    std::thread::sleep(Duration::from_millis(500));
+    setup.exists("home/signals.spool");
     setup.publish(&labeled(42));
     setup.start();
 
@@ -441,4 +447,23 @@ fn only_one_run_starts_while_one_is_running() {
     assert_eq!(setup.rows("runs").len(), 1);
     let tasks = setup.rows("tasks");
     assert_eq!([&tasks[0][4], &tasks[1][4]], ["running", "queued"]);
+}
+
+#[test]
+fn a_prompt_reaches_the_agent_pane_when_a_person_opened_another_pane() {
+    let mut setup = Setup::new("pane");
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") == 1);
+
+    assert!(
+        setup
+            .tmux(&["split-window", "-t", "=priory-1:", "--", "cat"])
+            .status
+            .success()
+    );
+    setup.publish(&labeled(42));
+
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") == 2);
+    assert_eq!(setup.typed().len(), 2);
 }
