@@ -17,7 +17,7 @@ const REVIEWED: &str = "github.pull_request_review.submitted";
 const CHECKED: &str = "github.check_run.completed";
 /// The streams of a repo: the message type each is named after.
 const STREAMS: [&str; 4] = [LABELED, OPENED, REVIEWED, CHECKED];
-pub const TASK_REQUESTED: &str = "factory.task.requested";
+pub(crate) const TASK_REQUESTED: &str = "factory.task.requested";
 const BASELINE: &str = "factory.intake.baseline";
 const PAGE: usize = 100;
 const EVERY: Duration = Duration::from_secs(60);
@@ -30,7 +30,7 @@ type Stream = (String, &'static str);
 type Cursors = BTreeMap<Stream, u64>;
 
 /// The `factory.intake` declaration, shared with `priory request`, which publishes on it too.
-pub fn output() -> Output {
+pub(crate) fn output() -> Output {
     Output::new(OUTPUT)
         .describe("Priory intake: source events and the tasks they request")
         .types([
@@ -309,7 +309,7 @@ fn task_requested(name: &str, trigger: &Trigger, source: &Message) -> Message {
 }
 
 /// UUIDv5 in Priory's namespace, so a retried publish keeps its id.
-pub fn id(name: &str) -> Uuid {
+pub(crate) fn id(name: &str) -> Uuid {
     let namespace = Uuid::new_v5(
         &Uuid::NAMESPACE_URL,
         b"https://github.com/maxence-lefebvre/priory/intake",

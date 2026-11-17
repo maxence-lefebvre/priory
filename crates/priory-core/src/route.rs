@@ -4,18 +4,18 @@ use priory_factory::factory::{Loaded, Workflow};
 use serde::Deserialize;
 use std::collections::BTreeMap;
 
-pub const TASK_REQUESTED: &str = "factory.task.requested";
+const TASK_REQUESTED: &str = "factory.task.requested";
 
 /// What the daemon does with one inbox entry.
 #[derive(Debug, PartialEq)]
-pub enum Decision {
+pub(crate) enum Decision {
     Create(NewTask),
     Keep(i64),
     Ignore,
 }
 
 #[derive(Debug, PartialEq, Deserialize)]
-pub struct NewTask {
+pub(crate) struct NewTask {
     pub workflow: String,
     #[serde(skip)]
     pub step: String,
@@ -28,7 +28,7 @@ pub struct NewTask {
 
 /// The task key a message names: a task request's own, a CLI request's subject, or `github:{repo}#{number}` for a GitHub
 /// event, its issue or pull request number. GitHub numbers both from one sequence per repository.
-pub fn key(message: &Message) -> Option<String> {
+pub(crate) fn key(message: &Message) -> Option<String> {
     let data = &message.data;
     if message.kind == TASK_REQUESTED {
         return data["key"].as_str().map(str::to_owned);
@@ -50,7 +50,7 @@ pub fn key(message: &Message) -> Option<String> {
 
 /// Routes `message`, given the active task that owns its key, if any. A task request for a
 /// workflow the factory lacks is an error, so that it waits unacked until the workflow is back.
-pub fn route(
+pub(crate) fn route(
     message: &Message,
     owner: Option<&Task>,
     workflows: &BTreeMap<String, Loaded<Workflow>>,
