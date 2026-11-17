@@ -290,12 +290,12 @@ Moving on. An action that is not built yet blocks the task with `action <name> i
 Its status is `opened` or `failed`. A failure records the error, which a human step reached by
 `next.failed` shows in its question. On `opened`, the task owns the pull request, so its events
 route to the task. A pull request that another active task owns fails instead, with that task named.
-When the task then reaches `done`, the checks wait of Done and checks pins the commit that `open-pr`
-pushed.
+When the task then reaches `done` and its latest result names no `commit`, the checks wait of Done
+and checks pins the commit that `open-pr` pushed.
 
-Each action runs at most once per pass through its step. A daemon that stops after `gh pr create`
-and before recording it runs the action again at its next start: the push repeats and the open pull
-request is reused. If someone closed that pull request meanwhile, a second one opens.
+A daemon that stops after `gh pr create` and before recording it runs the action again at its next
+start, once the approval still holds: the push repeats and the open pull request is reused. If
+someone closed that pull request meanwhile, a second one opens.
 
 #### Approvals
 
@@ -308,12 +308,13 @@ branch's commit now:
 
 | Approval                       | Effect                                                              |
 | ------------------------------ | ------------------------------------------------------------------- |
-| at the same commit             | the action runs                                                     |
-| at another commit              | the ask gets a new revision, with a line naming both commits, and the task sleeps at that human step |
+| at the same commit             | the step runs                                                       |
+| at another commit              | the ask gets a new revision, with a line naming both commits, and the task sleeps at that human step. The step's queued prompt is taken back, so the next run never reads it |
 | none                           | the task blocks: `step <id> is irreversible and no answer approved it` |
 
-`priory check` refuses an irreversible step that a path reaches with no approving human step, so the
-last row needs a factory changed while the task ran.
+A branch with no commit to compare blocks the task too. `priory check` refuses an irreversible step
+that a path reaches with no approving human step, so the `none` row needs a factory changed while
+the task ran.
 
 `priory actions` prints each action run: id, task, step, action, status, pull request, pushed commit
 and error.
@@ -382,9 +383,9 @@ A task owns a pull request when its `open-pr` opened it, when one of its waits n
 event it kept comes from a pull request on its branch, or when a pull request event created it. An
 opened one comes first, then a waited one, then the latest from its branch. When such a task reaches
 `done`, by a result, an answer or an action, it is not done yet. The daemon stores a checks wait of
-its own on that pull request, pinned to the commit that `open-pr` pushed after the task's latest
-result, else to that result's `commit`. The task sleeps with no process, at the step of that result, so the agent
-that made it fixes what the checks find. A task whose latest result names no commit is blocked
+its own on that pull request, pinned to the `commit` of the task's latest result, else to the commit
+that `open-pr` pushed after that result. The task sleeps with no process, at the step of that result,
+so the agent that made it fixes what the checks find. A task with neither commit is blocked
 instead.
 
 The daemon judges this wait on every event the inbox kept or ignored about the pull request,
