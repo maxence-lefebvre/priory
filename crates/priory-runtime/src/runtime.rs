@@ -4,7 +4,7 @@ use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::mpsc::{self, Receiver, Sender};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// Priory's own directory: `PRIORY_HOME`, else `$XDG_STATE_HOME/priory-oss`, else `~/.local/state/priory-oss`.
 pub fn home() -> PathBuf {
@@ -273,8 +273,14 @@ pub fn listen(home: &Path) -> Result<Listening, String> {
     let at = |error: std::io::Error| format!("{}: {error}", home.display());
     fs::create_dir_all(home).map_err(at)?;
     let lock = File::create(home.join("daemon.lock")).map_err(at)?;
-    lock.try_lock()
-        .map_err(|_| format!("{}: another daemon holds its lock", home.display()))?;
+    // A killed daemon's lock lingers while a child it forked has not yet exec'd.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while lock.try_lock().is_err() {
+        if Instant::now() >= deadline {
+            return Err(format!("{}: another daemon holds its lock", home.display()));
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
     let path = socket(home);
     let _ = fs::remove_file(&path);
     let listener = UnixListener::bind(&path).map_err(at)?;
@@ -348,10 +354,16 @@ pub fn send(home: &Path, line: &str) -> Result<(), String> {
     });
     if let Ok(stream) = sent {
         let mut answer = String::new();
-        if BufReader::new(stream).read_line(&mut answer).is_err() || answer != "ok\n" {
-            eprintln!("priory hook: the daemon took the signal but has not applied it yet");
+        // A daemon that closes or resets without replying died holding the line: spool it.
+        match BufReader::new(stream).read_line(&mut answer) {
+            Ok(0) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::ConnectionReset => {}
+            Ok(_) if answer == "ok\n" => return Ok(()),
+            Ok(_) | Err(_) => {
+                eprintln!("priory hook: the daemon took the signal but has not applied it yet");
+                return Ok(());
+            }
         }
-        return Ok(());
     }
     fs::create_dir_all(home).map_err(|error| error.to_string())?;
     OpenOptions::new()

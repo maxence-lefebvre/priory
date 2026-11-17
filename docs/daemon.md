@@ -58,7 +58,7 @@ Waits. A message kept for a task in any other state waits for the task's next ru
   reuses an existing worktree only when it belongs to Priory's clone and is on that branch.
 - `priory.sock`: the socket hooks report to. `signals.spool`: the signals sent while no daemon
   listened, which the next daemon applies first.
-- `daemon.lock`: one daemon per home. A second one refuses to start.
+- `daemon.lock`: one daemon per home. A second one waits up to 5 seconds for the lock, then refuses to start.
 
 ## Runs
 
