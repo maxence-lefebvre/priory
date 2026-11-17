@@ -286,6 +286,14 @@ until its run starts.
   last open blocker. M1
 - R4.6 Heavy commands inside a run queue behind one memory gate:
   `priory memory acquire --gb N -- <command>`. M1
+- R4.7 On a systemd host, each run starts in its own scope inside one user slice,
+  `priory-agents.slice`, through `systemd-run --user --scope --slice=priory-agents.slice -- <agent>`
+  in its tmux pane. The slice caps every agent and everything it runs together, at a share of CPU and
+  memory set in `factory.toml` (90 % by default). Agents yield CPU to the user's own apps, and past
+  their memory share they slow down instead of being killed. A host without systemd relies on the
+  room check alone. M1
+- R4.8 The daemon runs as a systemd user service. On an always-on machine, user lingering keeps it
+  and its agents running with nobody logged in. M0
 
 ### R5. Agent runtime
 
