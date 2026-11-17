@@ -82,7 +82,7 @@ The Warp column comes from Warp's public page and is blank where that page says 
 | Wait       | The conditions an agent names before it sleeps                            |              | `retire --on`    |
 | Ask        | A question to a person, with options, a recommendation and a trade-off    | review gate  | ask              |
 | Result     | The immutable record of a run's outcome and its evidence                  |              | result           |
-| Trace      | One record per step: decider, effect, outcome, tokens and time            |              |                  |
+| Trace      | One record per step: decider, effect, outcome, tokens and time; exported as OpenTelemetry spans | |                  |
 | View       | A layout of panels that shows the factory and acts on it                  |              | Herdr mods       |
 | Queue      | The tasks waiting for a run, in band order, then a person's order, then age |              | queue            |
 | Lane       | A `<team>/<theme>` label that groups tasks in views and reports           |              | lane             |
@@ -410,16 +410,21 @@ Priory serves these as MCP tools.
 
 ### R10. Measurement
 
-- R10.1 Every step emits a CloudEvents trace: factory, workflow, task, run, step, decider, effect,
-  outcome, tokens, wall time and machine. M1
-- R10.2 Reports give per-step outcome counts and rates. A rate's denominator is the runs that reached
+- R10.1 Every step appends a trace record to the log, as a CloudEvents envelope with `type`
+  `priory.step.ended` and `data` holding factory, workflow, task, run, step, decider, effect, outcome,
+  tokens, wall time and machine. Reports read these records, so they need no tracing backend. M1
+- R10.2 An exporter turns the records into OpenTelemetry spans over OTLP: a task is a trace, and
+  each run and step is a span. Attributes follow OpenTelemetry's GenAI conventions where one exists.
+  Runs set the harness's own telemetry, such as Claude Code's OpenTelemetry export, with the task and
+  run ids, so both line up in one backend. M2
+- R10.3 Reports give per-step outcome counts and rates. A rate's denominator is the runs that reached
   the step, and the report shows it. M1
-- R10.3 Cost per task, from token counts and a price table in the factory. M1
-- R10.4 Every report and view can group by lane. M1
-- R10.5 Estimate the chance that a wrong step outcome reaches an irreversible step. Its labels
+- R10.4 Cost per task, from token counts and a price table in the factory. M1
+- R10.5 Every report and view can group by lane. M1
+- R10.6 Estimate the chance that a wrong step outcome reaches an irreversible step. Its labels
   (rejected approval, red CI after merge, revert), estimator and assumptions are specified before it
   ships. M4
-- R10.6 Scorers grade finished runs. Benchmarks replay past tasks under another model or
+- R10.7 Scorers grade finished runs. Benchmarks replay past tasks under another model or
   configuration. M4
 
 ### R11. Sharing between machines
