@@ -446,6 +446,48 @@ fn a_restarted_daemon_reattaches_to_its_run_and_types_nothing_twice() {
 }
 
 #[test]
+fn a_signal_the_daemon_dies_holding_is_spooled_for_the_next_daemon() {
+    let setup = Setup::new("dying");
+    fs::create_dir_all(setup.dir.join("home")).unwrap();
+    let listener =
+        std::os::unix::net::UnixListener::bind(setup.dir.join("home/priory.sock")).unwrap();
+    // A daemon killed after it accepted the line closes the connection with no reply.
+    let daemon = std::thread::spawn(move || {
+        let (stream, _) = listener.accept().unwrap();
+        let mut line = String::new();
+        std::io::BufRead::read_line(&mut std::io::BufReader::new(&stream), &mut line).unwrap();
+    });
+
+    let mut hook = setup
+        .command(env!("CARGO_BIN_EXE_priory"))
+        .args(["hook", "Stop"])
+        .stdin(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    std::io::Write::write_all(&mut hook.stdin.take().unwrap(), br#"{"session_id":"s1"}"#).unwrap();
+    assert!(hook.wait().unwrap().success());
+    daemon.join().unwrap();
+
+    let spool = fs::read_to_string(setup.dir.join("home/signals.spool")).unwrap_or_default();
+    assert_eq!(spool.lines().count(), 1, "{spool:?}");
+}
+
+#[test]
+fn a_daemon_started_while_a_dead_daemons_lock_lingers_waits_for_it() {
+    let mut setup = Setup::new("lingering-lock");
+    fs::create_dir_all(setup.dir.join("home")).unwrap();
+    let lock = fs::File::create(setup.dir.join("home/daemon.lock")).unwrap();
+    lock.lock().unwrap();
+
+    setup.publish(&requested(42));
+    setup.start();
+    std::thread::sleep(Duration::from_millis(1500));
+    drop(lock);
+
+    setup.until("runs", |rows| rows.len() == 1);
+}
+
+#[test]
 fn a_prompt_attempted_but_not_confirmed_before_a_crash_becomes_uncertain_and_is_not_typed_again() {
     let mut setup = Setup::new("uncertain");
     setup.publish(&requested(42));
