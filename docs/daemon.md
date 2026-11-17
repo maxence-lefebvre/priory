@@ -255,7 +255,7 @@ When the run's turn ends, its `Stop` moves the task by its result to `next[outco
 | Target     | Task                                                 | Run                       |
 | ---------- | ---------------------------------------------------- | ------------------------- |
 | model step, same agent | at that step, `running`, with its prompt queued | `moved`, into a new run |
-| model step, other agent | at that step, `ready`, with its prompt queued | `moved`                 |
+| model step, other agent or irreversible | at that step, `ready`, with its prompt queued | `moved` |
 | human step | at that step, `asleep`, with an ask of its `options` | `asleep`                  |
 | code step  | at that step, `ready`: see Code steps                | `moved`                   |
 | `done`     | `done`, or `asleep` on its checks: see Done and checks | `done`, or `asleep`       |
@@ -281,20 +281,30 @@ Moving on. An action that is not built yet blocks the task with `action <name> i
 
 `open-pr` is the one built-in action:
 
-1. It pushes the task's branch from its worktree to the clone's `origin`.
+1. It pushes the commit of the task's branch, the one its approval covers, to that branch on the
+   clone's `origin`.
 2. It reuses the pull request already open from that branch, if `gh pr list` finds one.
 3. Otherwise it runs `gh pr create -R <repo> --base <default branch> --head <branch>`. The title is
    the first line of the latest result's `summary`, and the body is the summary, then its `evidence`.
 
 Its status is `opened` or `failed`. A failure records the error, which a human step reached by
 `next.failed` shows in its question. On `opened`, the task owns the pull request, so its events
-route to the task. When the task then reaches `done`, the checks wait of Done and checks pins the
-commit that `open-pr` pushed.
+route to the task. A pull request that another active task owns fails instead, with that task named.
+When the task then reaches `done`, the checks wait of Done and checks pins the commit that `open-pr`
+pushed.
 
-An irreversible code step runs only when an answer approved it at the task's current commit, unless
-it sets `autonomous`. A step's ask approves each step in its `approves` that `next[option]` leads to:
-the daemon records the approval with the commit checked out in the task's worktree at the answer.
-Before the step runs, the daemon compares that commit with the worktree's commit now:
+Each action runs at most once per pass through its step. A daemon that stops after `gh pr create`
+and before recording it runs the action again at its next start: the push repeats and the open pull
+request is reused. If someone closed that pull request meanwhile, a second one opens.
+
+#### Approvals
+
+An irreversible step, code or model, runs only when an answer approved it at the task's current
+commit, unless it sets `autonomous`. A step's ask approves each step in its `approves` that
+`next[option]` leads to: the daemon records the approval with the commit of the task's branch at the
+answer. A run never carries on into an irreversible model step, so each one starts a new run. Before
+the step runs, or before that run starts, the daemon compares the approval's commit with the
+branch's commit now:
 
 | Approval                       | Effect                                                              |
 | ------------------------------ | ------------------------------------------------------------------- |
