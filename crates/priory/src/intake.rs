@@ -40,7 +40,9 @@ pub fn run(factory: &Factory, once: bool) -> Result<(), String> {
     let mut cursors = Cursors::new();
     for ((repo, kind), source) in newest {
         // A crash may have stopped between this source and its task requests.
-        dispatch(&bus, &triggers, &source)?;
+        if source.data["baseline"] != true {
+            dispatch(&bus, &triggers, &source)?;
+        }
         cursors.insert((repo, kind), position(&source.data, kind));
     }
     loop {
@@ -125,7 +127,7 @@ fn publish_all(
     cursors: &mut Cursors,
 ) -> Result<(), String> {
     for event in observed {
-        let source = event.message()?;
+        let source = event.message(triggers)?;
         publish(bus, &source)?;
         dispatch(bus, triggers, &source)?;
         cursors.insert((event.repo, event.kind), position(&source.data, event.kind));
@@ -133,18 +135,11 @@ fn publish_all(
     Ok(())
 }
 
-/// Publishes one task request per trigger that matches `source`.
+/// Publishes a task request for each trigger the source names, among those still defined.
 fn dispatch(bus: &Bus, triggers: &[(&str, &Trigger)], source: &Message) -> Result<(), String> {
-    let data = &source.data;
-    for (name, trigger) in triggers {
-        let label = trigger
-            .filter
-            .as_ref()
-            .and_then(|filter| filter.get("label"));
-        let matches = trigger.repo.as_deref() == data["repo"].as_str()
-            && format!("github.{}", trigger.on) == source.kind
-            && label.is_none_or(|label| data["label"].as_str() == Some(label));
-        if matches {
+    let named = source.data["triggers"].as_array().into_iter().flatten();
+    for name in named.filter_map(|name| name.as_str()) {
+        if let Some((name, trigger)) = triggers.iter().find(|(other, _)| *other == name) {
             publish(bus, &task_requested(name, trigger, source))?;
         }
     }
@@ -166,10 +161,12 @@ struct Observed {
     label: Option<String>,
     actor: Option<String>,
     time: String,
+    /// From the first poll of its repo and type, which requests tasks only for `backfill` triggers.
+    baseline: bool,
 }
 
 impl Observed {
-    fn message(&self) -> Result<Message, String> {
+    fn message(&self, triggers: &[(&str, &Trigger)]) -> Result<Message, String> {
         let time: Timestamp = self
             .time
             .parse()
@@ -182,6 +179,8 @@ impl Observed {
             "actor": self.actor,
             "time": self.time,
             "github_id": self.github_id,
+            "baseline": self.baseline,
+            "triggers": self.matching(triggers),
         });
         if let Some(label) = &self.label {
             data["label"] = json!(label);
@@ -195,6 +194,24 @@ impl Observed {
             .subject(format!("{}#{}", self.repo, self.issue.number))
             .time(time)
             .link("issue", &self.issue.html_url))
+    }
+
+    fn matching<'a>(&self, triggers: &[(&'a str, &Trigger)]) -> Vec<&'a str> {
+        let matches = |trigger: &Trigger| {
+            let label = trigger
+                .filter
+                .as_ref()
+                .and_then(|filter| filter.get("label"));
+            trigger.repo.as_deref() == Some(self.repo.as_str())
+                && format!("github.{}", trigger.on) == self.kind
+                && label.is_none_or(|label| self.label.as_ref() == Some(label))
+                && (!self.baseline || trigger.backfill == Some(true))
+        };
+        triggers
+            .iter()
+            .filter(|(_, trigger)| matches(trigger))
+            .map(|(name, _)| *name)
+            .collect()
     }
 }
 
@@ -275,6 +292,7 @@ fn labeled(repo: &str, cursor: Option<u64>) -> Result<Vec<Observed>, String> {
             actor: event.actor.map(|actor| actor.login),
             time: event.created_at,
             issue: event.issue,
+            baseline: cursor.is_none(),
         })
         .collect())
 }
@@ -296,6 +314,7 @@ fn opened(repo: &str, cursor: Option<u64>) -> Result<Vec<Observed>, String> {
             actor: issue.user.as_ref().map(|user| user.login.clone()),
             time: issue.created_at.clone(),
             issue,
+            baseline: cursor.is_none(),
         })
         .collect())
 }

@@ -158,6 +158,7 @@ on = "issues.labeled"           # or "issues.opened"
 filter = { label = "agent" }
 workflow = "implement"
 key = "issue.number"
+backfill = false                # true: also start tasks for the events of the first poll
 ```
 
 ### Lanes

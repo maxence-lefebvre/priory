@@ -543,3 +543,37 @@ fn a_github_trigger_uses_a_supported_event_and_filter() {
          triggers/agent-label.toml: a GitHub trigger's `key` is `issue.number`\n"
     );
 }
+
+#[test]
+fn backfill_is_a_boolean() {
+    let trigger = format!("{TRIGGER}backfill = \"yes\"\n");
+
+    let outcome = check(&factory(
+        "backfill-type",
+        &with("triggers/agent-label.toml", &trigger),
+    ));
+
+    assert_eq!(outcome.code, 1);
+    assert!(
+        outcome.stderr.starts_with("triggers/agent-label.toml:8:")
+            && outcome.stderr.contains("expected a boolean"),
+        "{}",
+        outcome.stderr
+    );
+}
+
+#[test]
+fn only_a_github_trigger_has_backfill() {
+    let trigger = "source = \"linear.view\"\nview = \"agent-ready\"\non = \"issue.entered\"\nworkflow = \"implement\"\nbackfill = true\n";
+
+    let outcome = check(&factory(
+        "backfill-source",
+        &with("triggers/agent-label.toml", trigger),
+    ));
+
+    assert_eq!(outcome.code, 1);
+    assert_eq!(
+        outcome.stderr,
+        "triggers/agent-label.toml: only a GitHub trigger has `backfill`\n"
+    );
+}

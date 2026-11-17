@@ -39,6 +39,8 @@ pull requests, and other issue events such as `closed` or `mentioned`, are not p
 | `actor`     | string or null | GitHub login: who added the label, or who opened the issue. Null for a deleted user |
 | `time`      | RFC 3339       | When the label was added, or the issue was created               |
 | `github_id` | integer        | GitHub's issue event id for `labeled`, the issue id for `opened` |
+| `baseline`  | boolean        | True when the event came from the first poll of its repository and type (see Baseline) |
+| `triggers`  | array of strings | The triggers the intake requested a task for, from this event; may be empty |
 
 ```json
 {
@@ -54,7 +56,9 @@ pull requests, and other issue events such as `closed` or `mentioned`, are not p
     "label": "needs-investigation",
     "actor": "babakks",
     "time": "2026-11-17T15:18:55Z",
-    "github_id": 36421224333
+    "github_id": 36421224333,
+    "baseline": false,
+    "triggers": ["agent-label"]
   },
   "links": [{ "label": "issue", "url": "https://github.com/cli/cli/issues/15066" }]
 }
@@ -66,9 +70,10 @@ issue was opened with.
 
 ## `factory.task.requested`
 
-One message per source event and trigger that matches it. A trigger matches when its `repo` is the
-event's repository, its `on` names the event's type, and its `filter`, if any, names the event's
-`label`. Only this message creates a task.
+One message per source event and trigger that matches it, the triggers its source lists in
+`triggers`. A trigger matches when its `repo` is the event's repository, its `on` names the event's
+type, and its `filter`, if any, names the event's `label`. A baseline event matches only a trigger
+with `backfill = true`. Only this message creates a task.
 
 | Field      | Type           | Meaning                                                      |
 | ---------- | -------------- | ------------------------------------------------------------ |
@@ -111,23 +116,32 @@ of these names:
 | `github.issues.opened`   | `github:{repo}:issues:{github_id}:opened`    |
 | `factory.task.requested` | `factory.task.requested:{trigger}:{source}`  |
 
+## Baseline
+
+The first poll of a repository and type is a baseline. It reads GitHub's first page: up to 100
+recent issue events, or up to 100 recent issues. It publishes each of those events with
+`baseline: true`, which records where polling stands. It requests no task for them, except for a
+trigger with `backfill = true`, which gets a task for each event it matches.
+
 ## Where polling stops
 
 The intake keeps no state file. On start, it reads `factory.intake` back, newest first, for the
 newest `labeled` and `opened` message of each repository. Their issue event id and issue number are
-where polling stopped. It publishes the task requests of those two messages again, so a crash
-between a source event and its task requests loses nothing; herdr-bus drops the repeats. Each poll
+where polling stopped. When such a message is not a baseline, the intake publishes again the task
+requests of the triggers it lists, so a crash between a source event and its task requests loses
+nothing; herdr-bus drops the repeats. A trigger added since gets no task from this, because it is not
+in the list. Each poll
 then publishes, oldest first, the events after that point. Without `--once`, a failing `gh` is
 logged and retried on the next poll, while a failing publish ends the intake, so that its restart
 recovers what it left out.
 
 Limits:
 
-- The point is kept per repository and type, not per trigger. On a repository that has no
-  `labeled` or no `opened` message yet, the intake reads GitHub's first page of that type: up to
-  100 recent issue events or 100 recent issues. A first `issues.opened` trigger on a new repository
-  therefore requests a task for each of up to 100 existing issues. A trigger added later for a
-  repository the intake already polls starts from where that repository stands.
+- The point is kept per repository and type, not per trigger. A trigger added later for a repository
+  the intake already polls starts from where that repository stands, so `backfill` has no effect
+  on it.
+- A crash between a baseline event and the task request of a `backfill` trigger loses that task
+  request: start-up recovery never dispatches a baseline event.
 - Until a repository has a `labeled` message, the intake reads only the first page of its issue
   events. A label added there and followed by 100 or more other issue events within one poll is
   missed.

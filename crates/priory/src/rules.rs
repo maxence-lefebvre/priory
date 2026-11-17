@@ -14,6 +14,11 @@ pub fn check(factory: &Factory) -> Vec<Problem> {
         }
         if trigger.value.source == "github" {
             check_github(trigger, &mut problems);
+        } else if trigger.value.backfill.is_some() {
+            problems.push(problem(
+                trigger,
+                "only a GitHub trigger has `backfill`".into(),
+            ));
         }
     }
     for workflow in factory.workflows.values() {

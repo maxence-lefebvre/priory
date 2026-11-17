@@ -70,6 +70,7 @@ pub struct Trigger {
     pub key: Option<String>,
     pub band: Option<String>,
     pub lane: Option<String>,
+    pub backfill: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]

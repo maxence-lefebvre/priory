@@ -53,15 +53,28 @@ impl Setup {
         for (path, content) in files {
             write(&dir.join(path), content);
         }
+        let setup = Setup { dir };
+        setup.answer(answers);
+        setup
+    }
+
+    /// Makes the fake `gh` answer each `gh api <path>` from `answers`, and `[]` otherwise.
+    fn answer(&self, answers: &[(&str, serde_json::Value)]) {
         let mut script = String::from("#!/bin/sh\ncase \"$*\" in\n");
         for (path, answer) in answers {
-            let file = dir.join(format!("answer-{}.json", script.len()));
+            let file = self.dir.join(format!("answer-{}.json", script.len()));
             write(&file, &answer.to_string());
             script.push_str(&format!("  \"api {path}\") cat '{}' ;;\n", file.display()));
         }
         script.push_str("  *) echo '[]' ;;\nesac\n");
-        Setup::fake_gh(&dir, &script);
-        Setup { dir }
+        Setup::fake_gh(&self.dir, &script);
+    }
+
+    /// A first poll of `owner/repo`, which only records where polling stands.
+    fn baseline(name: &str) -> Self {
+        let setup = Setup::new(name, &[(EVENTS_PATH, json!([labeled(100, 41, "bug")]))]);
+        succeeded(&setup.intake());
+        setup
     }
 
     fn fake_gh(dir: &Path, script: &str) {
@@ -133,17 +146,20 @@ fn succeeded(output: &Output) {
 
 #[test]
 fn a_labeled_event_that_matches_a_trigger_requests_a_task() {
-    let setup = Setup::new(
-        "labeled-match",
-        &[(EVENTS_PATH, json!([labeled(101, 42, "agent")]))],
-    );
+    let setup = Setup::baseline("labeled-match");
+    setup.answer(&[(
+        EVENTS_PATH,
+        json!([labeled(101, 42, "agent"), labeled(100, 41, "bug")]),
+    )]);
 
     succeeded(&setup.intake());
 
     let published = setup.published();
-    let kinds: Vec<_> = published.iter().map(|m| m.message.kind.as_str()).collect();
-    assert_eq!(kinds, ["github.issues.labeled", "factory.task.requested"]);
-    let (source, task) = (&published[0].message, &published[1].message);
+    assert_eq!(
+        kinds(&published[1..]),
+        ["github.issues.labeled", "factory.task.requested"]
+    );
+    let (source, task) = (&published[1].message, &published[2].message);
     assert_eq!(
         source.data,
         json!({
@@ -154,7 +170,9 @@ fn a_labeled_event_that_matches_a_trigger_requests_a_task() {
             "label": "agent",
             "actor": "max",
             "time": "2026-11-17T10:00:00Z",
-            "github_id": 101
+            "github_id": 101,
+            "baseline": false,
+            "triggers": ["agent-label"]
         })
     );
     assert_eq!(
@@ -170,20 +188,49 @@ fn a_labeled_event_that_matches_a_trigger_requests_a_task() {
     );
 }
 
+#[test]
+fn a_first_poll_is_a_baseline_that_requests_no_task() {
+    let setup = Setup::new(
+        "baseline",
+        &[(EVENTS_PATH, json!([labeled(101, 42, "agent")]))],
+    );
+
+    succeeded(&setup.intake());
+
+    let published = setup.published();
+    assert_eq!(kinds(&published), ["github.issues.labeled"]);
+    assert_eq!(published[0].message.data["baseline"], true);
+    assert_eq!(published[0].message.data["triggers"], json!([]));
+}
+
+#[test]
+fn a_restart_after_a_baseline_publishes_nothing() {
+    let setup = Setup::new(
+        "baseline-restart",
+        &[(EVENTS_PATH, json!([labeled(101, 42, "agent")]))],
+    );
+    succeeded(&setup.intake());
+    setup.answer(&[]);
+
+    succeeded(&setup.intake());
+
+    assert_eq!(kinds(&setup.published()), ["github.issues.labeled"]);
+}
+
 fn kinds(published: &[Stored]) -> Vec<&str> {
     published.iter().map(|m| m.message.kind.as_str()).collect()
 }
 
 #[test]
 fn a_label_that_matches_no_trigger_publishes_only_the_source_event() {
-    let setup = Setup::new(
-        "labeled-no-match",
-        &[(EVENTS_PATH, json!([labeled(101, 42, "bug")]))],
-    );
+    let setup = Setup::baseline("labeled-no-match");
+    setup.answer(&[(EVENTS_PATH, json!([labeled(101, 42, "bug")]))]);
 
     succeeded(&setup.intake());
 
-    assert_eq!(kinds(&setup.published()), ["github.issues.labeled"]);
+    let published = setup.published();
+    assert_eq!(kinds(&published[1..]), ["github.issues.labeled"]);
+    assert_eq!(published[1].message.data["triggers"], json!([]));
 }
 
 #[test]
@@ -200,7 +247,7 @@ fn a_second_poll_of_the_same_events_publishes_nothing_new() {
 
     succeeded(&setup.intake());
 
-    assert_eq!(first.len(), 4);
+    assert_eq!(first.len(), 2);
     assert_eq!(setup.published().len(), first.len());
 }
 
@@ -243,7 +290,7 @@ fn a_failing_gh_exits_non_zero_and_publishes_nothing() {
 }
 
 #[test]
-fn an_opened_issue_requests_a_task() {
+fn a_backfill_trigger_requests_tasks_for_the_first_poll() {
     let setup = Setup::new(
         "opened",
         &[(
@@ -269,7 +316,7 @@ fn an_opened_issue_requests_a_task() {
 
     write(
         &setup.dir.join("factory/triggers/opened.toml"),
-        "source = \"github\"\nrepo = \"owner/repo\"\non = \"issues.opened\"\nworkflow = \"implement\"\n",
+        "source = \"github\"\nrepo = \"owner/repo\"\non = \"issues.opened\"\nworkflow = \"implement\"\nbackfill = true\n",
     );
 
     succeeded(&setup.intake());
@@ -289,7 +336,9 @@ fn an_opened_issue_requests_a_task() {
             "url": "https://github.com/owner/repo/issues/42",
             "actor": "max",
             "time": "2026-11-17T09:00:00Z",
-            "github_id": 9042
+            "github_id": 9042,
+            "baseline": true,
+            "triggers": ["opened"]
         })
     );
 }
@@ -320,7 +369,14 @@ fn a_restart_requests_the_tasks_a_crash_left_out() {
     let bus = Bus::open(&setup.dir.join("bus.db")).unwrap();
     let source = Message::new(
         "github.issues.labeled",
-        json!({ "repo": "owner/repo", "issue": 42, "label": "agent", "github_id": 101 }),
+        json!({
+            "repo": "owner/repo",
+            "issue": 42,
+            "label": "agent",
+            "github_id": 101,
+            "baseline": false,
+            "triggers": ["agent-label"]
+        }),
     );
     bus.publish("factory.intake", &source).unwrap();
 
@@ -333,4 +389,24 @@ fn a_restart_requests_the_tasks_a_crash_left_out() {
     );
     assert_eq!(published[1].message.data["source"], source.id.to_string());
     assert_eq!(published[1].message.data["key"], "github:owner/repo#42");
+}
+
+#[test]
+fn a_trigger_added_later_gets_no_task_for_events_already_dispatched() {
+    let setup = Setup::baseline("added-trigger");
+    setup.answer(&[(
+        EVENTS_PATH,
+        json!([labeled(101, 42, "agent"), labeled(100, 41, "bug")]),
+    )]);
+    succeeded(&setup.intake());
+    let before = setup.published().len();
+    write(
+        &setup.dir.join("factory/triggers/agent-label-too.toml"),
+        TRIGGER,
+    );
+    setup.answer(&[]);
+
+    succeeded(&setup.intake());
+
+    assert_eq!(setup.published().len(), before);
 }
