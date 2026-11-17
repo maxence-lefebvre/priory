@@ -117,7 +117,9 @@ The intake keeps no state file. On start, it reads `factory.intake` back, newest
 newest `labeled` and `opened` message of each repository. Their issue event id and issue number are
 where polling stopped. It publishes the task requests of those two messages again, so a crash
 between a source event and its task requests loses nothing; herdr-bus drops the repeats. Each poll
-then publishes, oldest first, the events after that point.
+then publishes, oldest first, the events after that point. Without `--once`, a failing `gh` is
+logged and retried on the next poll, while a failing publish ends the intake, so that its restart
+recovers what it left out.
 
 Limits:
 
@@ -127,7 +129,7 @@ Limits:
   therefore requests a task for each of up to 100 existing issues. A trigger added later for a
   repository the intake already polls starts from where that repository stands.
 - Until a repository has a `labeled` message, the intake reads only the first page of its issue
-  events. A label added there and followed by more than 100 other issue events within one poll is
+  events. A label added there and followed by 100 or more other issue events within one poll is
   missed.
 - `opened` pages follow creation time and stop at issue numbers. An issue transferred or imported
   into the repository with an older creation time can be missed.

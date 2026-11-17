@@ -44,12 +44,14 @@ pub fn run(factory: &Factory, once: bool) -> Result<(), String> {
         cursors.insert((repo, kind), position(&source.data, kind));
     }
     loop {
-        let polled = poll(&bus, &triggers, &repos, &mut cursors);
-        if once {
-            return polled;
+        match fetch(&repos, &cursors) {
+            // A publish error ends the intake: its restart recovers the source it left behind.
+            Ok(observed) => publish_all(&bus, &triggers, observed, &mut cursors)?,
+            Err(error) if once => return Err(error),
+            Err(error) => eprintln!("{error}"),
         }
-        if let Err(error) = polled {
-            eprintln!("{error}");
+        if once {
+            return Ok(());
         }
         std::thread::sleep(EVERY);
     }
@@ -101,12 +103,7 @@ fn position(data: &serde_json::Value, kind: &str) -> u64 {
 }
 
 /// Fetches every repo first, so that a failing `gh` publishes nothing.
-fn poll(
-    bus: &Bus,
-    triggers: &[(&str, &Trigger)],
-    repos: &BTreeSet<&str>,
-    cursors: &mut Cursors,
-) -> Result<(), String> {
+fn fetch(repos: &BTreeSet<&str>, cursors: &Cursors) -> Result<Vec<Observed>, String> {
     let mut observed = Vec::new();
     for repo in repos {
         observed.extend(labeled(
@@ -118,6 +115,15 @@ fn poll(
             cursors.get(&(repo.to_string(), OPENED)).copied(),
         )?);
     }
+    Ok(observed)
+}
+
+fn publish_all(
+    bus: &Bus,
+    triggers: &[(&str, &Trigger)],
+    observed: Vec<Observed>,
+    cursors: &mut Cursors,
+) -> Result<(), String> {
     for event in observed {
         let source = event.message()?;
         publish(bus, &source)?;
