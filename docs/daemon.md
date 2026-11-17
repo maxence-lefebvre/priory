@@ -149,7 +149,7 @@ When the run's turn ends, its `Stop` moves the task by its result to `next[outco
 | model step, other agent | at that step, `ready`, with its prompt queued | `moved`                 |
 | human step | at that step, `asleep`, with an ask of its `options` | `asleep`                  |
 | code step  | at that step, `blocked`: code steps are not built yet | `blocked`                 |
-| `done`     | `done`, or `asleep` on its checks: see Done and checks | `done`, or `asleep`     |
+| `done`     | `done`, or `asleep` on its checks: see Done and checks | `done`, or `asleep`       |
 | `stop`     | `dropped`                                            | `dropped`                 |
 
 A prompt that a move or an answer queues goes ahead of the prompts already queued for the task, and
@@ -223,33 +223,38 @@ conclusion other than `success`, `neutral` or `skipped` in the same poll.
 
 ### Done and checks
 
-A task owns a pull request once one of its waits named it. When such a task reaches `done` by a
-result, it is not done yet. The daemon stores a checks wait of its own on the pull request its latest
-wait named, pinned to the result's `commit`. The run ends `asleep` and the task sleeps with no
-process. The daemon then looks at the events kept since the agent's last prompt, as for any wait.
+A task owns a pull request when one of its waits named it, when an event it kept comes from a pull
+request on its branch, or when a pull request event created it. A waited one comes first, then the
+latest from its branch. When such a task reaches `done`, by a result or by an answer, it is not done
+yet. The daemon stores a checks wait of its own on that pull request, pinned to the `commit` of the
+task's latest result. The task sleeps with no process, at the step of that result, so the agent
+that made it fixes what the checks find. A task whose latest result names no commit is blocked
+instead.
 
-| Event on that pull request                                        | Effect                                   |
-| ----------------------------------------------------------------- | ---------------------------------------- |
-| A check at the commit with a conclusion other than `success`, `neutral` or `skipped` | wakes the agent: `wait <id> fired: check <name> at <commit> concluded <conclusion> <url>` |
-| A check at the commit with `pending` 0 and `failing` 0            | marks the task done and starts no run    |
-| Any event whose `head_sha` is neither the commit nor a commit an earlier result of the task named | wakes the agent: `wait <id> fired: the head of <pull request> moved to <sha>, away from your result's commit <commit>` |
-| Any other                                                         | stays kept                               |
+The daemon judges this wait on every event the task kept about the pull request, including events
+the agent already read, when it stores the wait and at each new event:
+
+| Condition                                                                           | Effect                                 |
+| ----------------------------------------------------------------------------------- | -------------------------------------- |
+| The newest event came after the result and its `head_sha` is not the commit        | wakes the agent: `wait <id> fired: the head of <pull request> moved to <sha>, away from your result's commit <commit>` |
+| Else, the newest check at the commit has a conclusion other than `success`, `neutral` or `skipped` | wakes the agent: `wait <id> fired: check <name> at <commit> concluded <conclusion> <url>` |
+| Else, the newest check at the commit has `pending` 0 and `failing` 0               | marks the task done and starts no run  |
+| Otherwise                                                                           | the task sleeps on                     |
 
 Each wake line is followed by the event's own line. The woken agent can fix the failure and send a
-new result, which stores a new checks wait at its new commit. A late check for an older result's
-commit is not a moved head, so it stays kept.
+new result, which stores a new checks wait at its new commit. Checks of the old commit that finish
+before that result are history, so they do not count as a moved head. One that the intake reports
+after the result does, since the daemon cannot tell it from a head moved back.
 
 The `result` tool refuses an outcome that leads to `done` without `commit` when the task owns a pull
-request, so every such wait has a commit to match.
+request.
 
 Known limits:
 
 - Priory reads no branch protection, so every check run reported for the head counts as required.
   Commit statuses are not check runs and do not count.
 - A pull request whose head never gets a check run keeps the task asleep.
-- A step ask whose answer leads to `done` finishes the task at once: it has no result commit.
-- A pull request the agent opened without naming it in a wait is not owned, so it does not hold
-  the task back.
+- A check event from an intake older than `failing` cannot mark a task done.
 
 ## Outbox
 

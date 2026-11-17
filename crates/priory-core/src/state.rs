@@ -130,6 +130,7 @@ PRAGMA user_version = 5;
 
 const SCHEMA_6: &str = "
 ALTER TABLE waits ADD COLUMN daemon INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE results ADD COLUMN inbox INTEGER REFERENCES inbox (seq);
 PRAGMA user_version = 6;
 ";
 
