@@ -1655,3 +1655,61 @@ fn an_answer_reaching_done_holds_the_task_on_the_checks_of_its_last_result() {
     let runs = setup.until("runs", |rows| rows.len() == 3);
     assert_eq!(runs[2][2], "implement");
 }
+
+#[test]
+fn a_green_check_counting_a_failure_wakes_the_agent_with_the_failed_check() {
+    let mut setup = Setup::new("gate-failing");
+    setup.calls(&[wait(on_pull_7("review")), passed_at("abc")]);
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("runs", |rows| rows.len() == 1 && rows[0][7] == "asleep");
+    setup.hold("hold-submit");
+    setup.publish(&reviewed());
+    setup.until("outbox", |rows| with(rows, 3, "attempted") == 1);
+    // Both checks completed in one poll: the red one, then a green one that counts it.
+    let mut red = check(1, 0);
+    red.data["name"] = json!("test");
+    red.data["conclusion"] = json!("failure");
+    red.data["failing"] = json!(1);
+    let mut green = check(2, 0);
+    green.data["failing"] = json!(1);
+    setup.publish(&red);
+    setup.publish(&green);
+    setup.until("inbox", |rows| rows.len() == 4);
+
+    setup.release("hold-submit");
+
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") == 3);
+    let typed = setup.typed();
+    assert!(
+        typed[2].starts_with("wait 2 fired: check test at abc concluded failure\n"),
+        "{typed:?}"
+    );
+    assert_eq!(
+        typed[2].matches(r#""github_id":1,"#).count(),
+        1,
+        "{typed:?}"
+    );
+}
+
+#[test]
+fn green_checks_at_the_result_commit_do_not_finish_the_task_when_the_head_moved_before_it() {
+    let mut setup = Setup::new("gate-moved-before");
+    setup.calls(&[wait(on_pull_7("review")), passed_at("abc")]);
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("runs", |rows| rows.len() == 1 && rows[0][7] == "asleep");
+    setup.hold("hold-submit");
+    setup.publish(&reviewed());
+    setup.until("outbox", |rows| with(rows, 3, "attempted") == 1);
+    setup.publish(&check(1, 0));
+    let mut moved = on_pull("github.pull_request.labeled", json!({ "github_id": 500 }));
+    moved.data["head_sha"] = json!("def");
+    setup.publish(&moved);
+    setup.until("inbox", |rows| rows.len() == 4);
+
+    setup.release("hold-submit");
+
+    setup.until("runs", |rows| rows.len() == 2 && rows[1][7] == "asleep");
+    stays_asleep_after(&setup, 2);
+}

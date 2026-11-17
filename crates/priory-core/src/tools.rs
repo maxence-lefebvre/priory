@@ -418,7 +418,13 @@ struct Seen {
     kind: String,
     head: String,
     data: Value,
-    line: String,
+}
+
+impl Seen {
+    fn red(&self) -> bool {
+        self.kind == CHECKED
+            && !PASSING.contains(&self.data["conclusion"].as_str().unwrap_or("none"))
+    }
 }
 
 /// Judges the daemon's checks wait `wait` on everything the task kept about its pull request, so
@@ -435,20 +441,19 @@ fn judge(tx: &Transaction, wait: i64) -> rusqlite::Result<bool> {
     let mut seen = Vec::new();
     {
         let mut statement = tx.prepare(
-            "SELECT seq, type, subject, data FROM inbox WHERE task = ?1 AND outcome = 'kept'
+            "SELECT seq, type, data FROM inbox
+             WHERE ((task = ?1 AND outcome = 'kept') OR outcome = 'ignored')
              AND 'github:' || json_extract(data, '$.repo') || '#' || json_extract(data, '$.pull_request') = ?2
              AND json_extract(data, '$.head_sha') IS NOT NULL ORDER BY seq DESC",
         )?;
         let mut rows = statement.query(params![task, resource])?;
         while let Some(row) = rows.next()? {
-            let kind: String = row.get(1)?;
-            let raw: String = row.get(3)?;
-            let data: Value = serde_json::from_str(&raw).expect("inbox data is JSON");
+            let data: Value =
+                serde_json::from_str(&row.get::<_, String>(2)?).expect("inbox data is JSON");
             seen.push(Seen {
                 seq: row.get(0)?,
+                kind: row.get(1)?,
                 head: data["head_sha"].as_str().unwrap_or_default().to_owned(),
-                line: crate::state::line(&kind, row.get::<_, Option<String>>(2)?.as_deref(), &raw),
-                kind,
                 data,
             });
         }
@@ -456,36 +461,46 @@ fn judge(tx: &Transaction, wait: i64) -> rusqlite::Result<bool> {
     let Some(newest) = seen.first() else {
         return Ok(false);
     };
-    if newest.seq > mark.unwrap_or_default() && newest.head != commit {
-        let text = format!(
-            "wait {wait} fired: the head of {resource} moved to {}, away from your result's commit {commit}\n{}",
-            newest.head, newest.line
+    if newest.head != commit {
+        // A head seen before the result may be one the agent's commit replaced since.
+        if newest.seq <= mark.unwrap_or_default() {
+            return Ok(false);
+        }
+        let reason = format!(
+            "wait {wait} fired: the head of {resource} moved to {}, away from your result's commit {commit}",
+            newest.head
         );
-        fire(tx, wait, task, &text, Some(newest.seq))?;
+        fire(tx, wait, task, &reason, Some(newest.seq))?;
         return Ok(true);
     }
-    let Some(check) = seen
+    let mut checks = seen
         .iter()
-        .find(|event| event.kind == CHECKED && event.head == commit)
-    else {
+        .filter(|event| event.kind == CHECKED && event.head == commit);
+    let Some(check) = checks.next() else {
         return Ok(false);
     };
-    let conclusion = check.data["conclusion"].as_str().unwrap_or("none");
-    if !PASSING.contains(&conclusion) {
-        let url = check.data["url"]
+    let failing = check.data["failing"].as_u64();
+    let red = match failing {
+        _ if check.red() => Some(check),
+        // The red check counted here came earlier, or its event follows from the same poll.
+        Some(1..) => checks.find(|event| event.red()),
+        _ => None,
+    };
+    if let Some(red) = red {
+        let url = red.data["url"]
             .as_str()
             .filter(|url| !url.is_empty())
             .map(|url| format!(" {url}"))
             .unwrap_or_default();
-        let name = check.data["name"].as_str().unwrap_or("-");
-        let text = format!(
-            "wait {wait} fired: check {name} at {commit} concluded {conclusion}{url}\n{}",
-            check.line
+        let reason = format!(
+            "wait {wait} fired: check {} at {commit} concluded {}{url}",
+            red.data["name"].as_str().unwrap_or("-"),
+            red.data["conclusion"].as_str().unwrap_or("none"),
         );
-        fire(tx, wait, task, &text, Some(check.seq))?;
+        fire(tx, wait, task, &reason, Some(red.seq))?;
         return Ok(true);
     }
-    if check.data["pending"].as_u64() != Some(0) || check.data["failing"].as_u64() != Some(0) {
+    if check.data["pending"].as_u64() != Some(0) || failing != Some(0) {
         return Ok(false);
     }
     tx.execute(
@@ -528,7 +543,8 @@ pub(crate) fn due(tx: &Transaction) -> rusqlite::Result<()> {
     Ok(())
 }
 
-/// Queues `text`, then the kept events no prompt carries, as the task's next prompt.
+/// Queues `text`, then the event `seq` unless `text` is its line or another prompt carries it, then
+/// the kept events no prompt carries, as the task's next prompt.
 fn fire(
     tx: &Transaction,
     wait: i64,
@@ -541,6 +557,7 @@ fn fire(
         params![wait, seq],
     )?;
     let mut carried = Vec::new();
+    let mut text = text.to_owned();
     if let Some(seq) = seq {
         let (prompt, own, line): (Option<i64>, bool, String) = tx.query_row(
             "SELECT inbox.outbox, coalesce(outbox.state = 'queued' AND outbox.text = line, 0), line
@@ -562,8 +579,10 @@ fn fire(
             (Some(_), false) => {}
             (None, _) => carried.push(seq),
         }
+        if carried.contains(&seq) && text != line {
+            text = format!("{text}\n{line}");
+        }
     }
-    let mut text = text.to_owned();
     {
         let mut statement = tx.prepare(
             "SELECT seq, type, subject, data FROM inbox
