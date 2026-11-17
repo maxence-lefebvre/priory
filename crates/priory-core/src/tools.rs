@@ -1,5 +1,6 @@
 use crate::route;
 use priory_factory::factory::{Decider, Loaded, Step, Workflow};
+use priory_intake::intake::{CHECKED, PASSING};
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -161,6 +162,15 @@ fn result(
             valid.join(", ")
         )));
     };
+    if next == "done"
+        && commit.is_none()
+        && let Some(resource) = pull_request(tx, run.task)?
+    {
+        return Ok(Err(format!(
+            "task {} owns {resource}: send the result with the commit its head must match",
+            run.task
+        )));
+    }
     tx.execute(
         "INSERT INTO results (run, task, step, outcome, summary, evidence, commit_sha)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
@@ -317,26 +327,10 @@ fn wait(
         }
     }
     let id = tx.last_insert_rowid();
-    let mut candidates = Vec::new();
-    {
-        let mut statement = tx.prepare(
-            "SELECT inbox.seq FROM inbox LEFT JOIN outbox ON outbox.id = inbox.outbox
-             WHERE inbox.task = ?1 AND inbox.outcome = 'kept'
-             AND (inbox.outbox IS NULL OR outbox.state = 'queued')
-             AND inbox.seq NOT IN (SELECT inbox FROM waits WHERE inbox IS NOT NULL)
-             ORDER BY inbox.seq",
-        )?;
-        let mut rows = statement.query([run.task])?;
-        while let Some(row) = rows.next()? {
-            candidates.push(row.get::<_, i64>(0)?);
-        }
-    }
-    for seq in candidates {
-        if event(tx, run.task, seq)? {
-            return Ok(Ok(format!(
-                "wait {id} already holds: end your turn; the event that satisfies it is your next prompt"
-            )));
-        }
+    if catch_up(tx, run.task)? {
+        return Ok(Ok(format!(
+            "wait {id} already holds: end your turn; the event that satisfies it is your next prompt"
+        )));
     }
     due(tx)?;
     let fired = tx.query_row(
@@ -354,11 +348,37 @@ fn wait(
     )))
 }
 
+/// Fires the task's open wait on the first event since the agent's last prompt that satisfies it:
+/// one not typed yet, on which no wait fired. Says whether one did.
+fn catch_up(tx: &Transaction, task: i64) -> rusqlite::Result<bool> {
+    let mut candidates = Vec::new();
+    {
+        let mut statement = tx.prepare(
+            "SELECT inbox.seq FROM inbox LEFT JOIN outbox ON outbox.id = inbox.outbox
+             WHERE inbox.task = ?1 AND inbox.outcome = 'kept'
+             AND (inbox.outbox IS NULL OR outbox.state = 'queued')
+             AND inbox.seq NOT IN (SELECT inbox FROM waits WHERE inbox IS NOT NULL)
+             ORDER BY inbox.seq",
+        )?;
+        let mut rows = statement.query([task])?;
+        while let Some(row) = rows.next()? {
+            candidates.push(row.get::<_, i64>(0)?);
+        }
+    }
+    for seq in candidates {
+        if event(tx, task, seq)? {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
 /// Fires the task's open wait if the inbox entry `seq` satisfies it, and says whether it did.
 pub(crate) fn event(tx: &Transaction, task: i64, seq: i64) -> rusqlite::Result<bool> {
     let open = tx
         .query_row(
-            "SELECT waits.id, waits.kind, waits.resource, waits.head_sha FROM waits JOIN tasks ON tasks.id = waits.task
+            "SELECT waits.id, waits.kind, waits.resource, waits.head_sha, waits.daemon FROM waits
+             JOIN tasks ON tasks.id = waits.task
              WHERE waits.task = ?1 AND waits.fired IS NULL AND tasks.state IN ('running', 'asleep')",
             [task],
             |row| {
@@ -367,11 +387,12 @@ pub(crate) fn event(tx: &Transaction, task: i64, seq: i64) -> rusqlite::Result<b
                     row.get::<_, String>(1)?,
                     row.get::<_, Option<String>>(2)?,
                     row.get::<_, Option<String>>(3)?,
+                    row.get::<_, bool>(4)?,
                 ))
             },
         )
         .optional()?;
-    let Some((wait, kind, Some(resource), head)) = open else {
+    let Some((wait, kind, Some(resource), head, daemon)) = open else {
         return Ok(false);
     };
     let (kind_of_event, subject, data): (String, Option<String>, String) = tx.query_row(
@@ -379,12 +400,87 @@ pub(crate) fn event(tx: &Transaction, task: i64, seq: i64) -> rusqlite::Result<b
         [seq],
         |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
     )?;
+    let line = crate::state::line(&kind_of_event, subject.as_deref(), &data);
     let data: Value = serde_json::from_str(&data).expect("inbox data is JSON");
+    if let (true, Some(commit)) = (daemon, head.as_deref()) {
+        return checked(
+            tx,
+            (wait, task, seq),
+            &resource,
+            commit,
+            &kind_of_event,
+            &data,
+            &line,
+        );
+    }
     if !route::satisfies(&kind, &resource, head.as_deref(), &kind_of_event, &data) {
         return Ok(false);
     }
-    let line = crate::state::line(&kind_of_event, subject.as_deref(), &data.to_string());
     fire(tx, wait, task, &line, Some(seq))?;
+    Ok(true)
+}
+
+/// Applies an event to the checks wait the daemon stored when the task reached `done` at `commit`.
+/// Green checks at the commit finish the task. A red check or a head that moved wakes the agent.
+fn checked(
+    tx: &Transaction,
+    (wait, task, seq): (i64, i64, i64),
+    resource: &str,
+    commit: &str,
+    kind: &str,
+    data: &Value,
+    line: &str,
+) -> rusqlite::Result<bool> {
+    let names = data["repo"]
+        .as_str()
+        .zip(data["pull_request"].as_u64())
+        .is_some_and(|(repo, number)| route::pull_request(repo, number) == resource);
+    let Some(head) = data["head_sha"].as_str().filter(|_| names) else {
+        return Ok(false);
+    };
+    if head != commit {
+        // Checks of a commit an earlier result named finish late, while the agent fixes it.
+        let earlier = tx
+            .query_row(
+                "SELECT 1 FROM results WHERE task = ?1 AND commit_sha = ?2",
+                params![task, head],
+                |_| Ok(()),
+            )
+            .optional()?;
+        if earlier.is_some() {
+            return Ok(false);
+        }
+        let text = format!(
+            "wait {wait} fired: the head of {resource} moved to {head}, away from your result's commit {commit}\n{line}"
+        );
+        fire(tx, wait, task, &text, Some(seq))?;
+        return Ok(true);
+    }
+    if kind != CHECKED {
+        return Ok(false);
+    }
+    let conclusion = data["conclusion"].as_str().unwrap_or("none");
+    if !PASSING.contains(&conclusion) {
+        let url = data["url"]
+            .as_str()
+            .filter(|url| !url.is_empty())
+            .map(|url| format!(" {url}"))
+            .unwrap_or_default();
+        let name = data["name"].as_str().unwrap_or("-");
+        let text = format!(
+            "wait {wait} fired: check {name} at {commit} concluded {conclusion}{url}\n{line}"
+        );
+        fire(tx, wait, task, &text, Some(seq))?;
+        return Ok(true);
+    }
+    if data["pending"].as_u64() != Some(0) || data["failing"].as_u64() != Some(0) {
+        return Ok(false);
+    }
+    tx.execute(
+        &format!("UPDATE waits SET fired = {NOW}, inbox = ?2 WHERE id = ?1"),
+        params![wait, seq],
+    )?;
+    set(tx, task, "done", None, None)?;
     Ok(true)
 }
 
@@ -434,9 +530,10 @@ fn fire(
     )?;
     if let Some(seq) = seq {
         let (prompt, own): (Option<i64>, bool) = tx.query_row(
-            "SELECT inbox.outbox, coalesce(outbox.state = 'queued' AND outbox.text = ?2, 0)
+            "SELECT inbox.outbox, coalesce(outbox.state = 'queued'
+               AND outbox.text = inbox.type || ' ' || coalesce(inbox.subject, '-') || ' ' || inbox.data, 0)
              FROM inbox LEFT JOIN outbox ON outbox.id = inbox.outbox WHERE inbox.seq = ?1",
-            params![seq, text],
+            [seq],
             |row| Ok((row.get(0)?, row.get(1)?)),
         )?;
         match (prompt, own) {
@@ -557,6 +654,16 @@ fn queue_first(tx: &Transaction, task: i64, text: &str) -> rusqlite::Result<i64>
     Ok(id)
 }
 
+/// The pull request the task's latest pull request wait named, which the task owns since.
+fn pull_request(tx: &Transaction, task: i64) -> rusqlite::Result<Option<String>> {
+    tx.query_row(
+        "SELECT resource FROM waits WHERE task = ?1 AND resource IS NOT NULL ORDER BY id DESC LIMIT 1",
+        [task],
+        |row| row.get(0),
+    )
+    .optional()
+}
+
 fn end(tx: &Transaction, run: i64, ended_as: &str) -> rusqlite::Result<()> {
     tx.execute(
         &format!("UPDATE runs SET ended = {NOW}, ended_as = ?2 WHERE id = ?1"),
@@ -597,6 +704,25 @@ fn enter(
         end(tx, run.id, ended_as)?;
         Ok(Some(run.tmux.clone()))
     };
+    if target == "done"
+        && let Some(run) = from
+        && let Some(resource) = pull_request(tx, task)?
+        && let Some(commit) = tx.query_row(
+            "SELECT commit_sha FROM results WHERE run = ?1",
+            [run.id],
+            |row| row.get::<_, Option<String>>(0),
+        )?
+    {
+        tx.execute(
+            "INSERT INTO waits (task, run, kind, resource, head_sha, daemon)
+             VALUES (?1, ?2, 'checks', ?3, ?4, 1)",
+            params![task, run.id, resource, commit],
+        )?;
+        end(tx, run.id, "asleep")?;
+        set(tx, task, "asleep", None, None)?;
+        catch_up(tx, task)?;
+        return Ok(Some(run.tmux.clone()));
+    }
     if target == "done" || target == "stop" {
         let state = if target == "done" { "done" } else { "dropped" };
         set(tx, task, state, None, None)?;

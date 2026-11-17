@@ -131,7 +131,8 @@ stored.
 
 - `result(outcome, summary, evidence?, commit?)` stores the run's result, which nothing can change
   or delete. The outcome must be a key of the step's `next`; otherwise the error lists the valid
-  outcomes.
+  outcomes. An outcome that leads to `done` needs `commit` when the task owns a pull request,
+  as described under Done and checks.
 - `ask(question, options, recommendation, tradeoff)` stores an ask at revision 1.
 
 - `wait(on)` stores a wait, described under Waits.
@@ -148,7 +149,7 @@ When the run's turn ends, its `Stop` moves the task by its result to `next[outco
 | model step, other agent | at that step, `ready`, with its prompt queued | `moved`                 |
 | human step | at that step, `asleep`, with an ask of its `options` | `asleep`                  |
 | code step  | at that step, `blocked`: code steps are not built yet | `blocked`                 |
-| `done`     | `done`                                               | `done`                    |
+| `done`     | `done`, or `asleep` on its checks: see Done and checks | `done`, or `asleep`     |
 | `stop`     | `dropped`                                            | `dropped`                 |
 
 A prompt that a move or an answer queues goes ahead of the prompts already queued for the task, and
@@ -215,7 +216,40 @@ a line for each event the task kept while it slept. An asleep task becomes `read
 resumes the session of its step's agent with that prompt. An event that does not satisfy the wait so
 stays kept until the wake.
 
+A check event also carries `failing`: how many of the completed check runs on the head commit had a
+conclusion other than `success`, `neutral` or `skipped` in the same poll.
+
 `priory waits` prints each open wait: id, task, run, kind, what it waits on and when it was stored.
+
+### Done and checks
+
+A task owns a pull request once one of its waits named it. When such a task reaches `done` by a
+result, it is not done yet. The daemon stores a checks wait of its own on the pull request its latest
+wait named, pinned to the result's `commit`. The run ends `asleep` and the task sleeps with no
+process. The daemon then looks at the events kept since the agent's last prompt, as for any wait.
+
+| Event on that pull request                                        | Effect                                   |
+| ----------------------------------------------------------------- | ---------------------------------------- |
+| A check at the commit with a conclusion other than `success`, `neutral` or `skipped` | wakes the agent: `wait <id> fired: check <name> at <commit> concluded <conclusion> <url>` |
+| A check at the commit with `pending` 0 and `failing` 0            | marks the task done and starts no run    |
+| Any event whose `head_sha` is neither the commit nor a commit an earlier result of the task named | wakes the agent: `wait <id> fired: the head of <pull request> moved to <sha>, away from your result's commit <commit>` |
+| Any other                                                         | stays kept                               |
+
+Each wake line is followed by the event's own line. The woken agent can fix the failure and send a
+new result, which stores a new checks wait at its new commit. A late check for an older result's
+commit is not a moved head, so it stays kept.
+
+The `result` tool refuses an outcome that leads to `done` without `commit` when the task owns a pull
+request, so every such wait has a commit to match.
+
+Known limits:
+
+- Priory reads no branch protection, so every check run reported for the head counts as required.
+  Commit statuses are not check runs and do not count.
+- A pull request whose head never gets a check run keeps the task asleep.
+- A step ask whose answer leads to `done` finishes the task at once: it has no result commit.
+- A pull request the agent opened without naming it in a wait is not owned, so it does not hold
+  the task back.
 
 ## Outbox
 
