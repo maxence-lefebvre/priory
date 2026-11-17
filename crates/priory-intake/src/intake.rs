@@ -1,5 +1,5 @@
-use crate::factory::{Factory, Trigger};
 use herdr_bus::{Bus, Message, MessageQuery, Output, Timestamp, Uuid};
+use priory_factory::factory::{Factory, Trigger};
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
 use serde_json::json;

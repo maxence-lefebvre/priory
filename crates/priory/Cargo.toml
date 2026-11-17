@@ -6,10 +6,13 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
-herdr-bus = { git = "https://github.com/flupke/herdr-bus", version = "0.1.0" }
-rusqlite = { version = "0.38.0", features = ["bundled"] }
-serde = { version = "1.0.229", features = ["derive"] }
-serde-saphyr = "2.1.1"
-serde_json = "1"
-toml = "1.2.1"
-uuid = { version = "1", features = ["v4", "v5"] }
+priory-core.workspace = true
+priory-factory.workspace = true
+priory-intake.workspace = true
+priory-runtime.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+herdr-bus.workspace = true
+toml.workspace = true
+uuid.workspace = true

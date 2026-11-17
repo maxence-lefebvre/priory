@@ -1,6 +1,6 @@
-use crate::factory::{Loaded, Workflow};
 use crate::state::Task;
 use herdr_bus::Message;
+use priory_factory::factory::{Loaded, Workflow};
 use serde::Deserialize;
 use std::collections::BTreeMap;
 
@@ -33,7 +33,7 @@ pub fn key(message: &Message) -> Option<String> {
     if message.kind == TASK_REQUESTED {
         return data["key"].as_str().map(str::to_owned);
     }
-    if message.kind == crate::request::REQUESTED {
+    if message.kind == priory_intake::request::REQUESTED {
         return message.subject.clone();
     }
     if !message.kind.starts_with("github.") {

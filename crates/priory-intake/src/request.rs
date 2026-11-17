@@ -1,6 +1,6 @@
-use crate::factory::Factory;
 use crate::intake::{self, OUTPUT, TASK_REQUESTED};
 use herdr_bus::{Bus, Message, Timestamp};
+use priory_factory::factory::Factory;
 use serde_json::json;
 use std::path::PathBuf;
 

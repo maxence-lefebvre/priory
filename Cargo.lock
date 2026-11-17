@@ -367,12 +367,53 @@ name = "priory"
 version = "0.0.0"
 dependencies = [
  "herdr-bus",
- "rusqlite",
- "serde",
- "serde-saphyr",
+ "priory-core",
+ "priory-factory",
+ "priory-intake",
+ "priory-runtime",
  "serde_json",
  "toml",
  "uuid",
+]
+
+[[package]]
+name = "priory-core"
+version = "0.0.0"
+dependencies = [
+ "herdr-bus",
+ "priory-factory",
+ "priory-intake",
+ "priory-runtime",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "uuid",
+]
+
+[[package]]
+name = "priory-factory"
+version = "0.0.0"
+dependencies = [
+ "serde",
+ "serde-saphyr",
+ "toml",
+]
+
+[[package]]
+name = "priory-intake"
+version = "0.0.0"
+dependencies = [
+ "herdr-bus",
+ "priory-factory",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "priory-runtime"
+version = "0.0.0"
+dependencies = [
+ "serde_json",
 ]
 
 [[package]]
