@@ -91,7 +91,7 @@ consumer can route it to the task that owns the pull request or its branch.
 | `head_sha`     | string or null   | The pull request's head commit when the intake saw the event; for a check, the commit it ran on |
 | `base_branch`  | string or null   | The branch the pull request merges into                        |
 | `label`        | string           | The label added. `labeled` only                                |
-| `merged`       | boolean or null  | Whether the pull request is merged. `closed` only              |
+| `merged`       | boolean or null  | Whether this close merged it: the pull request is merged and this is its last `closed` event the poll read. `closed` only |
 | `state`        | string           | `approved`, `changes_requested`, `commented` or `dismissed`, at poll time. Review only |
 | `name`         | string           | The check run's name, as branch protection names a required check. Check only |
 | `conclusion`   | string           | `success`, `failure`, `neutral`, `cancelled`, `skipped`, `timed_out`, `action_required`, `stale` or `startup_failure`. Check only |
@@ -103,6 +103,55 @@ consumer can route it to the task that owns the pull request or its branch.
 | `triggers`     | array of strings | As for issue events. Always empty for `closed`, reviews and checks: no trigger starts a task from them |
 
 Head and base fields are null when GitHub no longer returns the pull request.
+
+```json
+{
+  "id": "ba9864b6-2145-501f-8cc7-3929df5a8fbf",
+  "type": "github.pull_request.opened",
+  "subject": "cli/cli#14972",
+  "time": "2026-11-06T19:32:28Z",
+  "data": {
+    "repo": "cli/cli",
+    "pull_request": 14972,
+    "title": "Remove accidental triage model pin",
+    "url": "https://github.com/cli/cli/pull/14972",
+    "head_branch": "bagtoad/triage-ghmock-skill",
+    "head_sha": "3e6aeafb1b796b862389c1abe4deba5e60fa0b01",
+    "base_branch": "trunk",
+    "actor": "BagToad",
+    "time": "2026-11-06T19:32:28Z",
+    "github_id": 6249313623,
+    "baseline": true,
+    "triggers": []
+  },
+  "links": [{ "label": "pull_request", "url": "https://github.com/cli/cli/pull/14972" }]
+}
+```
+
+```json
+{
+  "id": "536415c5-20f5-5b2d-a0ea-671ed78728bf",
+  "type": "github.pull_request.labeled",
+  "subject": "owner/name#43",
+  "time": "2026-11-17T10:00:00Z",
+  "data": {
+    "repo": "owner/name",
+    "pull_request": 43,
+    "title": "Add the thing",
+    "url": "https://github.com/owner/name/pull/43",
+    "head_branch": "feature",
+    "head_sha": "abc123",
+    "base_branch": "main",
+    "label": "agent",
+    "actor": "max",
+    "time": "2026-11-17T10:00:00Z",
+    "github_id": 101,
+    "baseline": false,
+    "triggers": ["pr-label"]
+  },
+  "links": [{ "label": "pull_request", "url": "https://github.com/owner/name/pull/43" }]
+}
+```
 
 ```json
 {
@@ -295,7 +344,9 @@ nothing, and herdr-bus drops the repeats. A trigger added since gets no task fro
 is not in the list. Each poll then publishes, oldest first, the events after that point. The review and check streams
 have no such point: each poll reads the current reviews and checks again and publishes those not on
 the output yet. The intake remembers the ids it published, and herdr-bus drops the rest, so after a
-restart the first poll offers every current review and check again. Without `--once`, a failing `gh` is
+restart the first poll offers every current review and check again. A poll publishes reviews and
+checks before the issue streams, so a crash after a pull request's `closed` event cannot skip the
+reviews and checks that only that event made the poll read. Without `--once`, a failing `gh` is
 logged and retried on the next poll, while a failing publish ends the intake, so that its restart
 recovers what it left out.
 

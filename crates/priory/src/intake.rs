@@ -432,6 +432,10 @@ fn fetch_repo(repo: &str, cursors: &Cursors) -> Result<Vec<Polled>, String> {
         .map(|issue| issue.number)
         .collect();
     let pulls = pull_requests(repo, &numbers)?;
+    let mut last_close = BTreeMap::new();
+    for event in events.iter().filter(|event| event.event == "closed") {
+        last_close.insert(event.issue.number, event.id);
+    }
     let source = |kind, baseline, issue: &Issue, id: u64, actor: Option<&Login>, time: &str| {
         let mut data = json!({
             "repo": repo,
@@ -481,8 +485,10 @@ fn fetch_repo(repo: &str, cursors: &Cursors) -> Result<Vec<Polled>, String> {
             );
             observed.name = format!("github:{repo}:issues/events:{}", event.id);
             if kind == PR_CLOSED {
+                // The pull request's state is today's: only its last close can be the merge.
+                let last = last_close.get(&event.issue.number) == Some(&event.id);
                 let pull = pulls.get(&event.issue.number);
-                observed.data["merged"] = json!(pull.map(|pull| pull.merged));
+                observed.data["merged"] = json!(pull.map(|pull| pull.merged && last));
             } else {
                 observed.label = event.label.as_ref().map(|label| label.name.clone());
                 observed.data["label"] = json!(observed.label);
@@ -511,9 +517,47 @@ fn fetch_repo(repo: &str, cursors: &Cursors) -> Result<Vec<Polled>, String> {
         })
         .collect();
     let open = open_pulls(repo)?;
+    let (reviews, checks) = reviews_and_checks(repo, open.iter().chain(pulls.values()), cursor);
+    let top = |events: &[Observed]| {
+        events
+            .iter()
+            .filter_map(|event| event.data["github_id"].as_u64())
+            .max()
+    };
+    // Reviews and checks first: a crash after a close would end their polling.
+    Ok(vec![
+        Polled {
+            stream: (repo.to_string(), REVIEWED),
+            top: top(&reviews),
+            events: reviews,
+        },
+        Polled {
+            stream: (repo.to_string(), CHECKED),
+            top: top(&checks),
+            events: checks,
+        },
+        Polled {
+            stream: (repo.to_string(), LABELED),
+            events: labeled,
+            top: events_top,
+        },
+        Polled {
+            stream: (repo.to_string(), OPENED),
+            events: opened,
+            top: issues_top,
+        },
+    ])
+}
+
+/// The submitted reviews and completed check runs of `pulls`, oldest first.
+fn reviews_and_checks<'a>(
+    repo: &str,
+    pulls: impl Iterator<Item = &'a Pull>,
+    cursor: impl Fn(&'static str) -> Option<u64>,
+) -> (Vec<Observed>, Vec<Observed>) {
     let mut reviews = Vec::new();
     let mut checks = Vec::new();
-    for pull in open.iter().chain(pulls.values()) {
+    for pull in pulls {
         let on_pull = |kind, name: String, github_id: u64, time: &str, url: &str| {
             let data = json!({
                 "repo": repo,
@@ -574,34 +618,7 @@ fn fetch_repo(repo: &str, cursors: &Cursors) -> Result<Vec<Polled>, String> {
     }
     reviews.sort_by_key(|review| review.data["github_id"].as_u64());
     checks.sort_by_key(|check| check.data["github_id"].as_u64());
-    let top = |events: &[Observed]| {
-        events
-            .iter()
-            .filter_map(|event| event.data["github_id"].as_u64())
-            .max()
-    };
-    Ok(vec![
-        Polled {
-            stream: (repo.to_string(), LABELED),
-            events: labeled,
-            top: events_top,
-        },
-        Polled {
-            stream: (repo.to_string(), OPENED),
-            events: opened,
-            top: issues_top,
-        },
-        Polled {
-            stream: (repo.to_string(), REVIEWED),
-            top: top(&reviews),
-            events: reviews,
-        },
-        Polled {
-            stream: (repo.to_string(), CHECKED),
-            top: top(&checks),
-            events: checks,
-        },
-    ])
+    (reviews, checks)
 }
 
 const PULL_FIELDS: &str = "fragment pull on PullRequest { number headRefName headRefOid baseRefName merged \

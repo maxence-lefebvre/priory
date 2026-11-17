@@ -208,17 +208,17 @@ fn a_first_poll_is_a_baseline_that_requests_no_task() {
     assert_eq!(
         kinds(&output),
         [
+            "factory.intake.baseline",
+            "factory.intake.baseline",
             "github.issues.labeled",
-            "factory.intake.baseline",
-            "factory.intake.baseline",
             "factory.intake.baseline",
             "factory.intake.baseline"
         ]
     );
-    assert_eq!(output[0].message.data["baseline"], true);
-    assert_eq!(output[0].message.data["triggers"], json!([]));
+    assert_eq!(output[2].message.data["baseline"], true);
+    assert_eq!(output[2].message.data["triggers"], json!([]));
     assert_eq!(
-        output[1].message.data,
+        output[3].message.data,
         json!({ "repo": "owner/repo", "stream": "github.issues.labeled", "position": 101 })
     );
 }
@@ -843,4 +843,54 @@ fn a_failing_graphql_query_publishes_nothing() {
 
     assert_eq!(output.status.code(), Some(1));
     assert_eq!(setup.published().len(), 1);
+}
+
+#[test]
+fn only_the_last_close_of_a_merged_pull_request_is_merged() {
+    let setup = Setup::baseline("pr-reopened");
+    setup.answer(&[
+        (
+            EVENTS_PATH,
+            json!([
+                pull_event(103, 43, "closed", None),
+                pull_event(102, 43, "reopened", None),
+                pull_event(101, 43, "closed", None),
+            ]),
+        ),
+        (PULLS, pulls(&[pull(43, true, json!([]), json!([]))])),
+    ]);
+
+    succeeded(&setup.intake());
+
+    let merged: Vec<_> = setup.published()[1..]
+        .iter()
+        .map(|m| m.message.data["merged"].clone())
+        .collect();
+    assert_eq!(merged, [json!(false), json!(true)]);
+}
+
+#[test]
+fn reviews_publish_before_the_close_that_ends_their_polling() {
+    let setup = Setup::baseline("pr-close-order");
+    let review = json!([{
+        "databaseId": 501,
+        "state": "APPROVED",
+        "submittedAt": "2026-11-17T12:00:00Z",
+        "url": "u",
+        "author": null
+    }]);
+    setup.answer(&[
+        (EVENTS_PATH, json!([pull_event(103, 43, "closed", None)])),
+        (PULLS, pulls(&[pull(43, true, review, json!([]))])),
+    ]);
+
+    succeeded(&setup.intake());
+
+    assert_eq!(
+        kinds(&setup.published()[1..]),
+        [
+            "github.pull_request_review.submitted",
+            "github.pull_request.closed"
+        ]
+    );
 }
