@@ -1,4 +1,4 @@
-use crate::factory::{Decider, Loaded, Step, Workflow};
+use priory_factory::factory::{Decider, Loaded, Step, Workflow};
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -9,7 +9,7 @@ const NOW: &str = "strftime('%Y-%m-%dT%H:%M:%SZ', 'now')";
 
 /// A tool call from a run's `priory mcp`, as it arrives on the socket.
 #[derive(serde::Serialize, serde::Deserialize)]
-pub struct Call {
+pub(crate) struct Call {
     pub tool: String,
     pub session: String,
     #[serde(default)]
@@ -79,7 +79,7 @@ fn optional(arguments: &Value, name: &str) -> Result<Option<String>, String> {
 
 /// Applies a tool call from the run whose harness session is `call.session`. The inner error is
 /// the tool's error, returned to the agent with nothing stored.
-pub fn call(
+pub(crate) fn call(
     db: &mut Connection,
     call: &Call,
     workflows: &Workflows,
@@ -209,7 +209,7 @@ fn ask(tx: &Transaction, run: &Run, arguments: &Value) -> rusqlite::Result<Resul
 
 /// After a run's turn ends: moves its task by its result, or puts it to sleep on its open ask.
 /// Returns the tmux session to kill once the hook has its reply.
-pub fn stop(
+pub(crate) fn stop(
     tx: &Transaction,
     session: &str,
     workflows: &Workflows,
@@ -380,7 +380,7 @@ fn enter(
 
 /// Applies a person's answer. The first answer to an ask's current revision stands. A step's ask
 /// moves the task by the chosen option; an agent's ask queues the answer as its next prompt.
-pub fn answer(
+pub(crate) fn answer(
     db: &mut Connection,
     answer: &Answer,
     workflows: &Workflows,

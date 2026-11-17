@@ -1,18 +1,7 @@
-mod daemon;
-#[expect(
-    dead_code,
-    reason = "check validates fields that only the daemon will read"
-)]
-mod factory;
-mod intake;
-mod mcp;
-mod request;
-mod route;
-mod rules;
-mod runtime;
-mod state;
-mod tools;
-
+use priory_core::{daemon, state, tools};
+use priory_factory::{factory, rules};
+use priory_intake::{intake, request};
+use priory_runtime::{mcp, runtime};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 

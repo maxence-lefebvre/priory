@@ -6,7 +6,12 @@ Read it before you change behaviour or name a concept, and use its Concepts tabl
 
 ## Layout
 
-- `crates/`: one Cargo workspace. Each crate is a member; `crates/priory` builds the `priory` binary.
+- `crates/`: one Cargo workspace. Each crate is a member.
+- `crates/priory-factory`: the factory schema, its loader and the `check` rules.
+- `crates/priory-intake`: the GitHub and CLI publishers and the message contract.
+- `crates/priory-runtime`: tmux, git worktrees, the hook socket and the MCP bridge. It depends on no Priory crate.
+- `crates/priory-core`: the state database, routing, tools and the daemon. It depends on the three crates above.
+- `crates/priory`: `main.rs` only. It builds the `priory` binary, and its CLI tests live in `tests/`.
 - `docs/prd.md`: what Priory does and in which milestone.
 - `docs/adr/`: one file per hard-to-reverse decision, `NNNN-<decision-as-a-sentence>.md`.
 

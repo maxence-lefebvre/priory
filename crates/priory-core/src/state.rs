@@ -1,6 +1,6 @@
-use crate::factory::{Loaded, Workflow};
 use crate::route::{self, Decision};
 use herdr_bus::Message;
+use priory_factory::factory::{Loaded, Workflow};
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 use std::collections::BTreeMap;
 use std::time::Duration;
@@ -101,7 +101,7 @@ PRAGMA user_version = 3;
 
 const NOW: &str = "strftime('%Y-%m-%dT%H:%M:%SZ', 'now')";
 
-pub struct Task {
+pub(crate) struct Task {
     pub id: i64,
 }
 
@@ -158,7 +158,7 @@ pub fn open() -> Result<Connection, String> {
 
 /// Records `message` in the inbox and applies its route, in one transaction. A message
 /// already in the inbox changes nothing.
-pub fn handle(
+pub(crate) fn handle(
     db: &mut Connection,
     message: &Message,
     workflows: &BTreeMap<String, Loaded<Workflow>>,
@@ -277,7 +277,7 @@ fn line(kind: &str, subject: Option<&str>, data: &str) -> String {
 }
 
 /// A queued task the daemon may start a run for.
-pub struct Admission {
+pub(crate) struct Admission {
     pub task: i64,
     pub workflow: String,
     pub step: String,
@@ -285,7 +285,7 @@ pub struct Admission {
 }
 
 /// The oldest queued or ready task at a model step, when no run is live.
-pub fn admissible(
+pub(crate) fn admissible(
     db: &Connection,
     workflows: &BTreeMap<String, Loaded<Workflow>>,
 ) -> rusqlite::Result<Option<Admission>> {
@@ -311,7 +311,7 @@ pub fn admissible(
         let admission = admission?;
         let model = workflows.get(&admission.workflow).is_some_and(|workflow| {
             workflow.value.steps.iter().any(|step| {
-                step.id == admission.step && step.decides == crate::factory::Decider::Model
+                step.id == admission.step && step.decides == priory_factory::factory::Decider::Model
             })
         });
         if model {
@@ -322,7 +322,7 @@ pub fn admissible(
 }
 
 /// What a new run needs recorded before its tmux session starts.
-pub struct NewRun<'a> {
+pub(crate) struct NewRun<'a> {
     pub task: i64,
     pub step: &'a str,
     pub tmux: &'a str,
@@ -334,7 +334,7 @@ pub struct NewRun<'a> {
 }
 
 /// The harness session of the task's latest run that Claude started, which a new run resumes.
-pub fn resumable(db: &Connection, task: i64) -> rusqlite::Result<Option<String>> {
+pub(crate) fn resumable(db: &Connection, task: i64) -> rusqlite::Result<Option<String>> {
     db.query_row(
         "SELECT session FROM runs WHERE task = ?1 AND ready = 1 ORDER BY id DESC LIMIT 1",
         [task],
@@ -345,7 +345,7 @@ pub fn resumable(db: &Connection, task: i64) -> rusqlite::Result<Option<String>>
 
 /// Records a run and its first prompt: the step's prompt, if any, then the task's source event and
 /// every event it kept that no prompt carried yet. Returns the run id.
-pub fn start(db: &mut Connection, run: &NewRun) -> rusqlite::Result<i64> {
+pub(crate) fn start(db: &mut Connection, run: &NewRun) -> rusqlite::Result<i64> {
     let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
     tx.execute(
         "INSERT INTO runs (task, step, tmux, session) VALUES (?1, ?2, ?3, ?4)",
@@ -397,7 +397,12 @@ pub fn start(db: &mut Connection, run: &NewRun) -> rusqlite::Result<i64> {
 }
 
 /// Blocks `task` with `reason`, ending its live run first as `ended_as`, if it has one.
-pub fn block(db: &mut Connection, task: i64, ended_as: &str, reason: &str) -> rusqlite::Result<()> {
+pub(crate) fn block(
+    db: &mut Connection,
+    task: i64,
+    ended_as: &str,
+    reason: &str,
+) -> rusqlite::Result<()> {
     let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
     tx.execute(
         &format!("UPDATE runs SET ended = {NOW}, ended_as = ?2 WHERE task = ?1 AND ended IS NULL"),
@@ -410,7 +415,7 @@ pub fn block(db: &mut Connection, task: i64, ended_as: &str, reason: &str) -> ru
     tx.commit()
 }
 
-pub struct LiveRun {
+pub(crate) struct LiveRun {
     pub id: i64,
     pub task: i64,
     pub tmux: String,
@@ -420,9 +425,9 @@ pub struct LiveRun {
     pub late: bool,
 }
 
-pub const READY_WITHIN: &str = "60 seconds";
+pub(crate) const READY_WITHIN: &str = "60 seconds";
 
-pub fn live(db: &Connection) -> rusqlite::Result<Vec<LiveRun>> {
+pub(crate) fn live(db: &Connection) -> rusqlite::Result<Vec<LiveRun>> {
     let mut statement = db.prepare(&format!(
         "SELECT runs.id, runs.task, runs.tmux, runs.session, tasks.worktree,
          NOT runs.ready AND runs.started <= strftime('%Y-%m-%dT%H:%M:%SZ', 'now', '-{READY_WITHIN}')
@@ -454,7 +459,7 @@ pub struct Signal {
 /// Applies a hook signal: the run is idle after `SessionStart` or `Stop`, and busy after
 /// `UserPromptSubmit`, which also confirms its attempted prompt when the submitted text matches.
 /// After `Stop`, the task moves on by the run's result or ask. Returns a tmux session to kill.
-pub fn signal(
+pub(crate) fn signal(
     db: &mut Connection,
     signal: &Signal,
     workflows: &BTreeMap<String, Loaded<Workflow>>,
@@ -510,7 +515,7 @@ pub fn signal(
 
 /// Marks the oldest queued prompt of an idle live run `attempted` and the run busy, in one
 /// transaction, before anything is typed. A run with an attempted or uncertain prompt gets none.
-pub fn attempt(db: &mut Connection) -> rusqlite::Result<Option<(String, String, String)>> {
+pub(crate) fn attempt(db: &mut Connection) -> rusqlite::Result<Option<(String, String, String)>> {
     let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
     let next = tx
         .query_row(
@@ -547,7 +552,9 @@ pub fn attempt(db: &mut Connection) -> rusqlite::Result<Option<(String, String, 
 }
 
 /// The harness sessions of ended runs that no live run carries on.
-pub fn ended_sessions(db: &Connection) -> rusqlite::Result<std::collections::BTreeSet<String>> {
+pub(crate) fn ended_sessions(
+    db: &Connection,
+) -> rusqlite::Result<std::collections::BTreeSet<String>> {
     let mut statement = db.prepare(
         "SELECT DISTINCT session FROM runs WHERE ended IS NOT NULL
          AND session NOT IN (SELECT session FROM runs WHERE ended IS NULL)",
@@ -556,7 +563,7 @@ pub fn ended_sessions(db: &Connection) -> rusqlite::Result<std::collections::BTr
 }
 
 /// After a restart, a prompt attempted but never confirmed may or may not have been typed.
-pub fn uncertain(db: &Connection) -> rusqlite::Result<usize> {
+pub(crate) fn uncertain(db: &Connection) -> rusqlite::Result<usize> {
     db.execute(
         "UPDATE outbox SET state = 'uncertain' WHERE state = 'attempted'",
         [],
