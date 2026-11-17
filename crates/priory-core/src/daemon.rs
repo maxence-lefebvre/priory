@@ -1,5 +1,5 @@
 use crate::state::{self, Admission, NewRun, Signal};
-use crate::tools::{self, Answer, Call};
+use crate::tools::{self, Act, Answer, Call};
 use herdr_bus::{Bus, Start};
 use priory_factory::factory::Factory;
 use priory_intake::intake::OUTPUT;
@@ -12,6 +12,8 @@ use std::time::Duration;
 const CONSUMER: &str = "priory";
 // shortcut: polls the bus file; switch to herdr-bus-client's notify with the systemd service.
 const EVERY: Duration = Duration::from_secs(1);
+/// How long a turn may run when its step sets no `timeout`.
+const TIMEOUT: Duration = Duration::from_secs(3 * 3600);
 
 type Error = Box<dyn std::error::Error>;
 
@@ -44,6 +46,15 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
         kill.inspect(|tmux| runtime::kill(tmux));
         Ok(())
     })?;
+    // A reboot or a killed tmux server takes the agents with it; that is the host's doing, not theirs.
+    for run in state::live(&db)? {
+        if runtime::pane(&run.tmux, &run.session).is_none()
+            && !tools::gone(&mut db, &run.session, &factory.workflows)?
+        {
+            runtime::kill(&run.tmux);
+            tools::lost(&mut db, &run.session, &run.tmux)?;
+        }
+    }
     loop {
         drain(&bus, &mut db, factory)?;
         while let Ok(line) = listening.lines.try_recv() {
@@ -67,13 +78,14 @@ fn apply(db: &mut Connection, line: Line, factory: &Factory) -> Result<(), Error
     Ok(())
 }
 
-/// What arrives on the socket: a hook's signal, a run's tool call or a person's answer.
+/// What arrives on the socket: a hook's signal, a run's tool call, or a person's answer or desk action.
 #[derive(serde::Deserialize)]
 #[serde(untagged)]
 enum Input {
     Signal(Signal),
     Call(Call),
     Answer(Answer),
+    Act(Act),
 }
 
 /// Applies one line and returns its reply, with a tmux session to kill. A signal's reply is `ok`;
@@ -92,6 +104,10 @@ fn take(
         Ok(Input::Signal(signal)) => Ok(("ok".to_owned(), state::signal(db, &signal, workflows)?)),
         Ok(Input::Call(call)) => Ok((replied(tools::call(db, &call, workflows)?), None)),
         Ok(Input::Answer(answer)) => Ok((replied(tools::answer(db, &answer, workflows)?), None)),
+        Ok(Input::Act(act)) => {
+            let (reply, kill) = tools::act(db, &act)?;
+            Ok((replied(reply), kill))
+        }
         Err(error) => {
             eprintln!("priory daemon: dropped line {line:?}: {error}");
             Ok((replied(Err(format!("unreadable line: {error}"))), None))
@@ -99,26 +115,24 @@ fn take(
     }
 }
 
-/// Ends runs whose tmux session is gone, fires due waits, starts a run if one is admissible, and
-/// types prompts.
+/// Ends runs that exited, timed out or wait on a prompt, fires due waits, starts a run if one is
+/// admissible, and types prompts.
 fn tend(db: &mut Connection, factory: &Factory, home: &Path) -> Result<(), Error> {
     for run in state::live(db)? {
         if runtime::pane(&run.tmux, &run.session).is_none() {
-            let reason = format!("run {} exited: tmux session {} is gone", run.id, run.tmux);
-            state::block(db, run.task, "exited", &reason)?;
-        } else if run.late {
-            // Claude asks whether to trust a new folder before any hook; Priory never answers it.
+            // A dead pane that remain-on-exit keeps holds the session open.
             runtime::kill(&run.tmux);
-            let clone = run
-                .worktree
-                .as_deref()
-                .and_then(|worktree| runtime::clone_of(Path::new(worktree)))
-                .map_or_else(|| "<clone>".to_owned(), |clone| clone.display().to_string());
+            if tools::gone(db, &run.session, &factory.workflows)? {
+                continue;
+            }
             let reason = format!(
-                "claude showed no SessionStart within {}; trust the clone once: cd {clone} && claude, accept, exit",
-                state::READY_WITHIN.replace(" seconds", "s")
+                "run {} exited: claude no longer runs in tmux session {}",
+                run.id, run.tmux
             );
             state::block(db, run.task, "exited", &reason)?;
+        } else if let Some((ended_as, reason)) = verdict(&run, factory) {
+            runtime::kill(&run.tmux);
+            state::block(db, run.task, ended_as, &reason)?;
         }
     }
     state::due(db)?;
@@ -136,6 +150,38 @@ fn tend(db: &mut Connection, factory: &Factory, home: &Path) -> Result<(), Error
         }
     }
     Ok(())
+}
+
+/// Why a live run must end: no `SessionStart`, a permission prompt, or a turn past its step's timeout.
+fn verdict(run: &state::LiveRun, factory: &Factory) -> Option<(&'static str, String)> {
+    if run.late {
+        // Claude asks whether to trust a new folder before any hook; Priory never answers it.
+        let clone = run
+            .worktree
+            .as_deref()
+            .and_then(|worktree| runtime::clone_of(Path::new(worktree)))
+            .map_or_else(|| "<clone>".to_owned(), |clone| clone.display().to_string());
+        let reason = format!(
+            "claude showed no SessionStart within {}; trust the clone once: cd {clone} && claude, accept, exit",
+            state::READY_WITHIN.replace(" seconds", "s")
+        );
+        return Some(("exited", reason));
+    }
+    if let Some(message) = &run.prompted {
+        let reason = format!("run {} stopped on a permission prompt: {message}", run.id);
+        return Some(("permission", reason));
+    }
+    let limit = factory
+        .workflows
+        .get(&run.workflow)
+        .and_then(|workflow| workflow.value.steps.iter().find(|step| step.id == run.step))
+        .and_then(|step| step.timeout)
+        .unwrap_or(TIMEOUT)
+        .as_secs();
+    run.turn.filter(|turn| *turn >= limit as i64).map(|_| {
+        let reason = format!("run {} timed out: its turn ran past {limit}s", run.id);
+        ("timeout", reason)
+    })
 }
 
 /// Starts a run for `admission`. The outer error stops the daemon; the inner one blocks the task.

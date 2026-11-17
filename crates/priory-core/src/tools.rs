@@ -624,6 +624,34 @@ pub(crate) fn stop(
     let Some(run) = run(tx, session)? else {
         return Ok(None);
     };
+    Ok(settle(tx, &run, workflows)?.flatten())
+}
+
+/// Settles the live run of `session`, whose agent process is gone, as its `Stop` would have, when a
+/// result, ask or wait ended its turn. Says whether one did; otherwise nothing changes.
+pub(crate) fn gone(
+    db: &mut Connection,
+    session: &str,
+    workflows: &Workflows,
+) -> rusqlite::Result<bool> {
+    let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let Some(mut run) = run(&tx, session)? else {
+        return Ok(false);
+    };
+    // No process carries on, so even a next step of the same agent needs a new run.
+    run.agent = None;
+    let settled = settle(&tx, &run, workflows)?.is_some();
+    tx.commit()?;
+    Ok(settled)
+}
+
+/// Moves the run's task by its result, or puts it to sleep on its open ask or wait. `None` when
+/// none of them ended the turn; otherwise the tmux session to kill, if any.
+fn settle(
+    tx: &Transaction,
+    run: &Run,
+    workflows: &Workflows,
+) -> rusqlite::Result<Option<Option<String>>> {
     let outcome = tx
         .query_row(
             "SELECT outcome, summary FROM results WHERE run = ?1",
@@ -641,10 +669,11 @@ pub(crate) fn stop(
             run.task,
             &run.workflow,
             &target,
-            Some(&run),
+            Some(run),
             &summary,
             workflows,
-        );
+        )
+        .map(Some);
     }
     let asked = tx
         .query_row(
@@ -658,7 +687,7 @@ pub(crate) fn stop(
     }
     end(tx, run.id, "asleep")?;
     set(tx, run.task, "asleep", None, None)?;
-    Ok(Some(run.tmux))
+    Ok(Some(Some(run.tmux.clone())))
 }
 
 /// Queues `text` as the task's next prompt, ahead of the prompts already queued, which it carries
@@ -905,4 +934,108 @@ pub(crate) fn answer(
     }
     tx.commit()?;
     Ok(Ok(format!("ask {} answered", answer.ask)))
+}
+
+/// A person's desk action on a task, as `priory resume` or `priory cancel` sends it on the socket.
+#[derive(serde::Serialize, serde::Deserialize)]
+pub struct Act {
+    pub act: String,
+    pub task: i64,
+}
+
+/// Applies a desk action. `resume` makes a blocked task `ready`, with a prompt that says why it
+/// stopped. `cancel` drops an active task and ends its live run. Returns the reply and a tmux
+/// session to kill.
+pub(crate) fn act(
+    db: &mut Connection,
+    act: &Act,
+) -> rusqlite::Result<(Result<String, String>, Option<String>)> {
+    let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let Some((state, reason)) = tx
+        .query_row(
+            "SELECT state, reason FROM tasks WHERE id = ?1",
+            [act.task],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?)),
+        )
+        .optional()?
+    else {
+        return Ok((Err(format!("there is no task {}", act.task)), None));
+    };
+    match act.act.as_str() {
+        "resume" if state == "blocked" => {
+            let text = format!(
+                "A person resumed this task after: {}. Check the worktree, then continue.",
+                reason.as_deref().unwrap_or("no reason")
+            );
+            queue_first(&tx, act.task, &text)?;
+            set(&tx, act.task, "ready", None, None)?;
+            tx.commit()?;
+            Ok((Ok(format!("task {} is ready", act.task)), None))
+        }
+        "resume" => Ok((
+            Err(format!("task {} is {state}, not blocked", act.task)),
+            None,
+        )),
+        "cancel" if ["done", "failed", "dropped"].contains(&state.as_str()) => {
+            Ok((Err(format!("task {} is already {state}", act.task)), None))
+        }
+        "cancel" => {
+            let tmux = tx
+                .query_row(
+                    "SELECT tmux FROM runs WHERE task = ?1 AND ended IS NULL",
+                    [act.task],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()?;
+            tx.execute(
+                &format!(
+                    "UPDATE runs SET ended = {NOW}, ended_as = 'cancelled' WHERE task = ?1 AND ended IS NULL"
+                ),
+                [act.task],
+            )?;
+            set(
+                &tx,
+                act.task,
+                "dropped",
+                None,
+                Some("cancelled from the desk"),
+            )?;
+            tx.commit()?;
+            Ok((Ok(format!("task {} dropped", act.task)), tmux))
+        }
+        other => Ok((Err(format!("unknown action {other}")), None)),
+    }
+}
+
+/// Ends the live run of `session`, whose tmux session was gone when the daemon started, as `lost`.
+/// Its task becomes `ready` with a prompt that says so, unless the task's previous run was lost too:
+/// then no result, ask or wait came in between, and the task blocks.
+pub(crate) fn lost(db: &mut Connection, session: &str, tmux: &str) -> rusqlite::Result<()> {
+    let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let Some(run) = run(&tx, session)? else {
+        return Ok(());
+    };
+    end(&tx, run.id, "lost")?;
+    let again = tx
+        .query_row(
+            "SELECT ended_as = 'lost' FROM runs WHERE task = ?1 AND id < ?2 ORDER BY id DESC LIMIT 1",
+            params![run.task, run.id],
+            |row| row.get::<_, bool>(0),
+        )
+        .optional()?
+        .unwrap_or(false);
+    if again {
+        let reason = format!(
+            "run {} was lost again before it made progress: tmux session {tmux} is gone",
+            run.id
+        );
+        set(&tx, run.task, "blocked", None, Some(&reason))?;
+    } else {
+        let text = format!(
+            "Priory restarted and found tmux session {tmux} gone, as after a reboot, so this run was interrupted. Check the worktree, then continue."
+        );
+        queue_first(&tx, run.task, &text)?;
+        set(&tx, run.task, "ready", None, None)?;
+    }
+    tx.commit()
 }

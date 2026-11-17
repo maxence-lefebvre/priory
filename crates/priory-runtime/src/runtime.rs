@@ -155,8 +155,11 @@ fn mcp_config(exe: &Path, launch: &Launch) -> String {
 
 const ASK_INSTEAD: &str = r#"{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"Priory runs this session unattended. Call the ask tool of the priory MCP server instead."}}"#;
 
-/// Claude Code settings whose hooks call `priory hook <event>`, that allow Priory's tools, and that
-/// deny the built-in question tool in favour of `ask` (R6.4).
+const DENY: &str = r#"{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"deny","message":"Priory runs this session unattended and never approves a permission prompt, so it denied this one. Go on without it. If the task cannot go on without it, call the ask or result tool of the priory MCP server."}}}"#;
+
+/// Claude Code settings whose hooks call `priory hook <event>`, that allow Priory's tools, deny the
+/// built-in question tool in favour of `ask` (R6.4), deny every permission request (R7.2), and
+/// report a permission prompt that shows anyway.
 fn settings(exe: &Path) -> String {
     let quoted = format!("'{}'", exe.display().to_string().replace('\'', r"'\''"));
     let hooks: serde_json::Map<_, _> = ["SessionStart", "UserPromptSubmit", "Stop"]
@@ -177,10 +180,24 @@ fn settings(exe: &Path) -> String {
             "hooks": [{ "type": "command", "command": format!("printf '%s' '{ASK_INSTEAD}'") }],
         }]),
     );
+    hooks.insert(
+        "PermissionRequest".to_owned(),
+        serde_json::json!([{
+            "hooks": [{ "type": "command", "command": format!("printf '%s' '{DENY}'") }],
+        }]),
+    );
+    hooks.insert(
+        "Notification".to_owned(),
+        serde_json::json!([{
+            "matcher": "permission_prompt",
+            "hooks": [{ "type": "command", "command": format!("{quoted} hook PermissionPrompt") }],
+        }]),
+    );
     serde_json::json!({ "hooks": hooks, "permissions": { "allow": ["mcp__priory"] } }).to_string()
 }
 
-/// The pane of the tmux session `name` that runs the harness session `session`, if it lives.
+/// The pane of the tmux session `name` that runs the harness session `session`, if its process
+/// lives. A tmux with `remain-on-exit` keeps a dead pane, which counts as gone.
 pub fn pane(name: &str, session: &str) -> Option<String> {
     let panes = run(tmux().args([
         "list-panes",
@@ -188,12 +205,13 @@ pub fn pane(name: &str, session: &str) -> Option<String> {
         "-t",
         &format!("={name}:"),
         "-F",
-        "#{pane_id} #{@priory}",
+        "#{pane_id} #{pane_dead} #{@priory}",
     ]))
     .ok()?;
     panes.lines().find_map(|line| {
-        let (pane, tag) = line.split_once(' ')?;
-        (tag == session).then(|| pane.to_owned())
+        let mut fields = line.splitn(3, ' ');
+        let (pane, dead, tag) = (fields.next()?, fields.next()?, fields.next()?);
+        (dead == "0" && tag == session).then(|| pane.to_owned())
     })
 }
 

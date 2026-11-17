@@ -6,6 +6,7 @@ use std::fmt;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 #[derive(Debug)]
 pub struct Problem {
@@ -99,6 +100,22 @@ pub struct Step {
     pub approves: Vec<String>,
     pub next: BTreeMap<String, String>,
     pub autonomous: Option<String>,
+    /// How long one turn of a model step may run before Priory ends it.
+    #[serde(default, deserialize_with = "duration")]
+    pub timeout: Option<Duration>,
+}
+
+/// A duration such as `90s`, `15m` or `2h`.
+fn duration<'de, D: serde::Deserializer<'de>>(input: D) -> Result<Option<Duration>, D::Error> {
+    let text = String::deserialize(input)?;
+    [("s", 1), ("m", 60), ("h", 3600)]
+        .into_iter()
+        .find_map(|(unit, scale)| Some(text.strip_suffix(unit)?.parse::<u64>().ok()? * scale))
+        .filter(|seconds| *seconds > 0)
+        .map(|seconds| Some(Duration::from_secs(seconds)))
+        .ok_or_else(|| {
+            serde::de::Error::custom(format!("{text:?} is not a duration such as 90s, 15m or 2h"))
+        })
 }
 
 #[derive(Debug, Deserialize, PartialEq, Eq)]
