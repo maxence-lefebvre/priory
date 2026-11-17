@@ -62,8 +62,9 @@ Waits. A message kept for a task in any other state waits for the task's next ru
 
 ## Runs
 
-A run is one task step worked by a `claude` process. When a step leads to another model step, the
-process carries on into a new run, so each run has at most one result. The daemon starts at most one
+A run is one task step worked by one agent's `claude` process. When a step leads to another model
+step with the same agent, the process carries on into a new run, so each run has at most one result.
+A model step with another agent gets a new run and a new process, as described under Moving on. The daemon starts at most one
 run at a time until the runner's room check lands. It picks the oldest `queued` or `ready` task whose
 step decides `model`, and finds the repository through the task's trigger.
 
@@ -71,8 +72,8 @@ The daemon creates the worktree, records the run and the task as `running`, then
 `claude` in a detached tmux session named `priory-<task id>`, in the worktree:
 
 - `--session-id`: a UUID Priory chooses and stores, so a later run can resume the conversation. A
-  task whose earlier run reached `SessionStart` gets `--resume <that id>` instead, in the same
-  worktree.
+  task keeps one session per agent: when an earlier run of the step's agent reached `SessionStart`,
+  the run gets `--resume <that id>` instead, in the same worktree.
 - `--model` and `--effort`: the agent's, when it sets them.
 - `--append-system-prompt`: the agent body, the Markdown after its frontmatter.
 - `--settings`: hooks that run `priory hook SessionStart`, `UserPromptSubmit` and `Stop`, a
@@ -143,7 +144,8 @@ When the run's turn ends, its `Stop` moves the task by its result to `next[outco
 
 | Target     | Task                                                 | Run                       |
 | ---------- | ---------------------------------------------------- | ------------------------- |
-| model step | at that step, `running`, with its prompt queued      | `moved`, into a new run   |
+| model step, same agent | at that step, `running`, with its prompt queued | `moved`, into a new run |
+| model step, other agent | at that step, `ready`, with its prompt queued | `moved`                 |
 | human step | at that step, `asleep`, with an ask of its `options` | `asleep`                  |
 | code step  | at that step, `blocked`: code steps are not built yet | `blocked`                 |
 | `done`     | `done`                                               | `done`                    |
@@ -152,6 +154,10 @@ When the run's turn ends, its `Stop` moves the task by its result to `next[outco
 A prompt that a move or an answer queues goes ahead of the prompts already queued for the task, and
 carries them after it, so an event kept during the last turn never reaches the agent before its new
 instructions.
+
+A `ready` task's next run starts the step's agent, with its own system prompt, model and settings,
+and resumes that agent's session for the task, or starts a new one when the agent has not run for
+it yet.
 
 A run with an open ask or wait and no result ends `asleep`, and its task sleeps. The daemon kills a run's
 tmux session when the run ends, after the hook has its reply. The worktree stays.
@@ -168,7 +174,8 @@ step's ask, a text that is not one of its options, is refused.
 - An agent's ask queues the answer as the task's next prompt. An asleep task becomes `ready`. A
   task whose run has not stopped yet stays `running`, and the answer is typed after its `Stop`.
 
-A `ready` task's next run resumes the stored session and types its queued prompts.
+A `ready` task's next run resumes the session of the current step's agent and types its queued
+prompts.
 
 ### Waits
 
@@ -205,8 +212,8 @@ event is typed after its `Stop`.
 A wait that fires queues one prompt ahead of the task's other queued prompts: the event's line, or
 for time and task, `wait <id> fired: <until> passed` or `wait <id> fired: task <id> is <state>`, then
 a line for each event the task kept while it slept. An asleep task becomes `ready`, and its next run
-resumes the session with that prompt. An event that does not satisfy the wait so stays kept until the
-wake.
+resumes the session of its step's agent with that prompt. An event that does not satisfy the wait so
+stays kept until the wake.
 
 `priory waits` prints each open wait: id, task, run, kind, what it waits on and when it was stored.
 
@@ -223,8 +230,8 @@ Every prompt the daemon types goes through the outbox. A prompt moves through th
 
 A run's first prompt is its step's `prompt`, then one line per event: the task's source event and
 every event it kept that no prompt carried yet. Each line holds the type, the subject and the data.
-A resumed run's first prompt has only those event lines, and none when there are no new events: the
-prompt that woke the task is already queued.
+A `ready` task's run has only those event lines, and none when there are no new events: the prompt
+that moved or woke the task is already queued.
 
 The daemon types the oldest queued prompt of a task once its run is idle. It loads the text into a
 tmux buffer from stdin and pastes it as one bracketed paste, so newlines do not submit and no text

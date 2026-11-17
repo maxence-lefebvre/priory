@@ -30,6 +30,7 @@ struct Run {
     id: i64,
     task: i64,
     step: String,
+    agent: Option<String>,
     workflow: String,
     tmux: String,
     session: String,
@@ -38,7 +39,7 @@ struct Run {
 /// The live run of the harness session `session`.
 fn run(tx: &Transaction, session: &str) -> rusqlite::Result<Option<Run>> {
     tx.query_row(
-        "SELECT runs.id, runs.task, runs.step, tasks.workflow, runs.tmux, runs.session
+        "SELECT runs.id, runs.task, runs.step, runs.agent, tasks.workflow, runs.tmux, runs.session
          FROM runs JOIN tasks ON tasks.id = runs.task WHERE runs.ended IS NULL AND runs.session = ?1",
         [session],
         |row| {
@@ -46,9 +47,10 @@ fn run(tx: &Transaction, session: &str) -> rusqlite::Result<Option<Run>> {
                 id: row.get(0)?,
                 task: row.get(1)?,
                 step: row.get(2)?,
-                workflow: row.get(3)?,
-                tmux: row.get(4)?,
-                session: row.get(5)?,
+                agent: row.get(3)?,
+                workflow: row.get(4)?,
+                tmux: row.get(5)?,
+                session: row.get(6)?,
             })
         },
     )
@@ -608,14 +610,15 @@ fn enter(
     match step.decides {
         Decider::Model => {
             queue_first(tx, task, step.prompt.as_deref().unwrap_or_default())?;
-            let Some(run) = from else {
+            let Some(run) = from.filter(|run| run.agent == step.agent) else {
                 set(tx, task, "ready", Some(target), None)?;
-                return Ok(None);
+                return finish("moved");
             };
             end(tx, run.id, "moved")?;
             tx.execute(
-                "INSERT INTO runs (task, step, tmux, session, idle, ready) VALUES (?1, ?2, ?3, ?4, 1, 1)",
-                params![task, target, run.tmux, run.session],
+                "INSERT INTO runs (task, step, agent, tmux, session, idle, ready)
+                 VALUES (?1, ?2, ?3, ?4, ?5, 1, 1)",
+                params![task, target, run.agent, run.tmux, run.session],
             )?;
             set(tx, task, "running", Some(target), None)?;
             Ok(None)
