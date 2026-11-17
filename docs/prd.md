@@ -403,8 +403,10 @@ Priory serves these as MCP tools.
 - R9.2 A runner keeps its tasks going while the other machines are offline. Answers given on another
   machine meanwhile are delivered when it reconnects, through the revision check in R6.3. M3
 - R9.3 State goes through an event log with cursors, plus requests with a deadline, a take and a
-  reply. SQLite backs it from M0. Postgres and herdr-bus adapters arrive in M3, with one contract
-  test suite run against each.
+  reply, in the shape herdr-bus uses. In M0 one SQLite file holds that log and the task state, so a
+  state change and its event commit in one transaction. M0
+- R9.4 Herdr-bus and Postgres adapters carry the log between machines, and a factory can switch
+  between them. One contract test suite runs against every adapter. M3
 
 ### R10. Measurement
 
@@ -468,14 +470,13 @@ MIT.
 
 ## Open questions
 
-1. The default multi-machine state backend: a central Postgres or one herdr-bus per machine.
-2. Whether to propose the trace schema to herdr-bowtie early, so both factories can be measured the
+1. Whether to propose the trace schema to herdr-bowtie early, so both factories can be measured the
    same way.
-3. Whether workflow branching stays limited to outcome labels or gains expressions.
-4. Whether to support jj workspaces alongside git worktrees.
-5. Whether a Windows machine runs agents through WSL, and whether a runner file then needs more than
+2. Whether workflow branching stays limited to outcome labels or gains expressions.
+3. Whether to support jj workspaces alongside git worktrees.
+4. Whether a Windows machine runs agents through WSL, and whether a runner file then needs more than
    `platform`, such as an environment loader like direnv.
-6. Whether third-party panels load as plugins, and in which form.
+5. Whether third-party panels load as plugins, and in which form.
 
 ## Risks
 
