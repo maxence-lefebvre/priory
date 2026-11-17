@@ -2417,8 +2417,10 @@ fn a_commit_made_after_the_approval_asks_again_instead_of_opening() {
     assert!(setup.gh().is_empty());
 
     setup.calls(&[passed_with_evidence()]);
+    let stale = setup.priory(&["answer", "1", "open", "--revision", "1"]);
     let again = setup.priory(&["answer", "1", "open", "--revision", "2"]);
 
+    assert!(!stale.status.success(), "{stale:?}");
     assert!(again.status.success(), "{again:?}");
     let actions = setup.until("actions", |rows| rows.len() == 1);
     assert_eq!(actions[0][4..6], ["opened", "github:owner/repo#7"]);
@@ -2496,4 +2498,84 @@ fn an_action_that_is_not_built_blocks_the_task_with_its_name() {
         ["merge", "action merge-pr is not built yet"]
     );
     assert!(setup.rows("actions").is_empty());
+}
+
+#[test]
+fn reusing_a_pull_request_another_active_task_owns_fails() {
+    let mut setup = Setup::with_workflow("open-pr-owned", AUTONOMOUS);
+    setup.calls(&[wait(on_pull_7("review")), passed_with_evidence()]);
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("runs", |rows| {
+        rows.first().is_some_and(|row| row[7] == "asleep")
+    });
+
+    setup.publish(&requested(43));
+
+    let actions = setup.until("actions", |rows| rows.len() == 1);
+    assert_eq!(actions[0][1..6], ["2", "open-pr", "open-pr", "failed", "-"]);
+    assert_eq!(
+        actions[0][7],
+        "github:owner/repo#7 belongs to task 1, not this one"
+    );
+    assert_eq!(setup.rows("tasks")[1][4], "dropped");
+}
+
+const APPROVE_THEN_SHIP: &str = r#"
+start = "implement"
+
+[[steps]]
+id = "implement"
+decides = "model"
+agent = "implementer"
+prompt = "Implement the issue."
+effect = "reversible"
+next = { passed = "approve-pr", failed = "stop" }
+
+[[steps]]
+id = "approve-pr"
+decides = "human"
+effect = "none"
+approves = ["ship"]
+options = ["open", "stop"]
+next = { open = "polish", stop = "stop" }
+
+[[steps]]
+id = "polish"
+decides = "model"
+agent = "implementer"
+prompt = "Polish the change."
+effect = "reversible"
+next = { passed = "ship" }
+
+[[steps]]
+id = "ship"
+decides = "model"
+agent = "implementer"
+prompt = "Ship it."
+effect = "irreversible"
+next = { passed = "done" }
+"#;
+
+#[test]
+fn an_irreversible_model_step_asks_again_after_a_commit_instead_of_starting() {
+    let setup = asked_to_open("ship-moved", APPROVE_THEN_SHIP);
+    setup.calls(&[passed_with_evidence()]);
+    setup.hold("hold-stop");
+    let answered = setup.priory(&["answer", "1", "open", "--revision", "1"]);
+    assert!(answered.status.success(), "{answered:?}");
+    setup.written("fake/tools.log");
+    while setup.replies().len() < 2 {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    setup.commit(1, "polish.txt");
+
+    setup.release("hold-stop");
+
+    let asks = setup.until("asks", |rows| rows.len() == 1);
+    assert_eq!(asks[0][2], "2");
+    let tasks = setup.rows("tasks");
+    assert_eq!([&tasks[0][3], &tasks[0][4]], ["approve-pr", "asleep"]);
+    let runs = setup.rows("runs");
+    assert!(runs.iter().all(|run| run[2] != "ship"), "{runs:?}");
 }

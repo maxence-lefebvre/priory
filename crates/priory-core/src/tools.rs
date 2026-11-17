@@ -60,12 +60,7 @@ fn run(tx: &Transaction, session: &str) -> rusqlite::Result<Option<Run>> {
 }
 
 fn step<'a>(workflows: &'a Workflows, workflow: &str, id: &str) -> Option<&'a Step> {
-    workflows
-        .get(workflow)?
-        .value
-        .steps
-        .iter()
-        .find(|step| step.id == id)
+    workflows.get(workflow)?.value.step(id)
 }
 
 fn text(arguments: &Value, name: &str) -> Result<String, String> {
@@ -836,7 +831,9 @@ fn enter(
     match step.decides {
         Decider::Model => {
             queue_first(tx, task, step.prompt.as_deref().unwrap_or_default())?;
-            let Some(run) = from.filter(|run| run.agent == step.agent) else {
+            // An irreversible step starts a new run, whose start checks its approval.
+            let carry = |run: &&Run| run.agent == step.agent && step.effect != Effect::Irreversible;
+            let Some(run) = from.filter(carry) else {
                 set(tx, task, "ready", Some(target), None)?;
                 return finish("moved");
             };
@@ -882,7 +879,7 @@ pub(crate) fn answer(
     db: &mut Connection,
     answer: &Answer,
     workflows: &Workflows,
-    head: &dyn Fn(&Path) -> Option<String>,
+    head: &dyn Fn(&Path, &str) -> Option<String>,
 ) -> rusqlite::Result<Result<String, String>> {
     let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
     let ask = tx
@@ -1080,16 +1077,19 @@ fn approve(
     task: i64,
     answer: &Answer,
     approved: &[&String],
-    head: &dyn Fn(&Path) -> Option<String>,
+    head: &dyn Fn(&Path, &str) -> Option<String>,
 ) -> rusqlite::Result<()> {
     if approved.is_empty() {
         return Ok(());
     }
-    let worktree: Option<String> =
-        tx.query_row("SELECT worktree FROM tasks WHERE id = ?1", [task], |row| {
-            row.get(0)
-        })?;
-    let commit = worktree.and_then(|worktree| head(Path::new(&worktree)));
+    let (worktree, branch): (Option<String>, Option<String>) = tx.query_row(
+        "SELECT worktree, branch FROM tasks WHERE id = ?1",
+        [task],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )?;
+    let commit = worktree
+        .zip(branch)
+        .and_then(|(worktree, branch)| head(Path::new(&worktree), &branch));
     for step in approved {
         tx.execute(
             "INSERT INTO approvals (task, step, ask, revision, commit_sha) VALUES (?1, ?2, ?3, ?4, ?5)",
@@ -1099,7 +1099,7 @@ fn approve(
     Ok(())
 }
 
-/// Whether the irreversible code step `at` may run at the task's commit `head`. With no approval,
+/// Whether the irreversible step `at` may run at the task's commit `head`. With no approval,
 /// the task blocks. With one given at another commit, its ask gets a new revision and the task
 /// sleeps at the approving step until a person answers it again.
 pub(crate) fn approved(
@@ -1166,10 +1166,22 @@ pub(crate) fn performed(
     task: i64,
     workflow: &str,
     at: &Step,
-    done: &Done,
+    mut done: Done,
     workflows: &Workflows,
 ) -> rusqlite::Result<()> {
     let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    if let Some(resource) = done.pull_request.take() {
+        match crate::state::owner(&tx, std::slice::from_ref(&resource))? {
+            Some(other) if other.id != task => {
+                done.status = "failed";
+                done.error = Some(format!(
+                    "{resource} belongs to task {}, not this one",
+                    other.id
+                ));
+            }
+            _ => done.pull_request = Some(resource),
+        }
+    }
     tx.execute(
         "INSERT INTO actions (task, step, action, status, pull_request, commit_sha, error, result, inbox)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7,

@@ -211,16 +211,12 @@ fn perform(db: &mut Connection, factory: &Factory) -> Result<(), Error> {
         .value
         .step(&due.step)
         .expect("actionable checked the step");
-    let head = due
-        .worktree
-        .as_deref()
-        .map(Path::new)
-        .and_then(runtime::head);
+    let head = head(due.worktree.as_deref(), due.branch.as_deref());
     if !tools::approved(db, due.task, step, head.as_deref())? {
         return Ok(());
     }
     let done = match step.action.as_deref().unwrap_or_default() {
-        "open-pr" => open_pr(db, factory, &due)?,
+        "open-pr" => open_pr(db, factory, &due, head.as_deref())?,
         other => {
             let reason = format!("action {other} is not built yet");
             return Ok(state::block(db, due.task, "blocked", &reason)?);
@@ -231,37 +227,52 @@ fn perform(db: &mut Connection, factory: &Factory) -> Result<(), Error> {
         due.task,
         &due.workflow,
         step,
-        &done,
+        done,
         &factory.workflows,
     )?)
 }
 
-/// Pushes the task's branch and opens its pull request, titled and described by its latest result.
-fn open_pr(db: &Connection, factory: &Factory, due: &state::Due) -> Result<Done, Error> {
+/// The commit of the task's branch, which an approval covers.
+fn head(worktree: Option<&str>, branch: Option<&str>) -> Option<String> {
+    runtime::head(Path::new(worktree?), branch?)
+}
+
+/// Pushes `commit` to the task's branch and opens its pull request, titled and described by its
+/// latest result.
+fn open_pr(
+    db: &Connection,
+    factory: &Factory,
+    due: &state::Due,
+    commit: Option<&str>,
+) -> Result<Done, Error> {
     let described = state::last_result(db, due.task)?;
     let repo = factory
         .triggers
         .get(&due.trigger)
         .and_then(|trigger| trigger.value.repo.as_deref());
-    let opened = match (repo, &due.worktree, &due.branch, described) {
+    let opened = match (repo, due.worktree.as_deref().zip(commit), described) {
         (None, ..) => Err(format!("trigger {} names no repo", due.trigger)),
-        (_, None, ..) | (_, _, None, _) => Err("the task has no worktree yet".to_owned()),
+        (_, None, _) => Err("the task's branch has no commit yet".to_owned()),
         (.., None) => Err("no result describes the pull request".to_owned()),
-        (Some(repo), Some(worktree), Some(branch), Some((summary, evidence))) => {
+        (Some(repo), Some((worktree, commit)), Some((summary, evidence))) => {
+            let branch = due
+                .branch
+                .as_deref()
+                .expect("a commit comes from the branch");
             let title = summary.lines().next().unwrap_or_default();
             let body = match evidence {
                 Some(evidence) => format!("{summary}\n\n{evidence}"),
                 None => summary.clone(),
             };
-            runtime::open_pull_request(Path::new(worktree), repo, branch, title, &body)
-                .map(|(number, commit)| (route::pull_request(repo, number), commit))
+            runtime::open_pull_request(Path::new(worktree), repo, branch, commit, title, &body)
+                .map(|number| route::pull_request(repo, number))
         }
     };
     Ok(match opened {
-        Ok((pull_request, commit)) => Done {
+        Ok(pull_request) => Done {
             status: "opened",
             pull_request: Some(pull_request),
-            commit: Some(commit),
+            commit: commit.map(str::to_owned),
             error: None,
         },
         Err(error) => Done {
@@ -282,9 +293,7 @@ fn start(
 ) -> Result<Result<(), String>, Error> {
     let step = factory.workflows[&admission.workflow]
         .value
-        .steps
-        .iter()
-        .find(|step| step.id == admission.step)
+        .step(&admission.step)
         .expect("admissible checked the step");
     let Some((name, agent)) = step
         .agent
@@ -304,6 +313,10 @@ fn start(
         Ok(found) => found,
         Err(reason) => return Ok(Err(reason)),
     };
+    let head = runtime::head(&worktree, &branch);
+    if !tools::approved(db, admission.task, step, head.as_deref())? {
+        return Ok(Ok(()));
+    }
     let resumed = state::resumable(db, admission.task, name)?;
     let resume = resumed.is_some();
     let session = resumed.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
