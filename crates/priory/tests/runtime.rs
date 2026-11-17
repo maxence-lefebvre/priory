@@ -207,8 +207,15 @@ impl Setup {
             }
             assert!(
                 Instant::now() < deadline,
-                "timed out on `priory {verb}`: {rows:?}\ndaemon: {}",
-                fs::read_to_string(self.dir.join("daemon.log")).unwrap_or_default()
+                "timed out on `priory {verb}`: {rows:?}\ndaemon: {}\noutbox: {:?}\nfake: {:?}",
+                fs::read_to_string(self.dir.join("daemon.log")).unwrap_or_default(),
+                self.priory(&["outbox"]).stdout.escape_ascii().to_string(),
+                fs::read_dir(self.dir.join("fake"))
+                    .map(|dir| dir
+                        .flatten()
+                        .map(|entry| entry.file_name())
+                        .collect::<Vec<_>>())
+                    .unwrap_or_default()
             );
             std::thread::sleep(Duration::from_millis(50));
         }
