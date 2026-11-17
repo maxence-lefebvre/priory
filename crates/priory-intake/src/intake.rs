@@ -378,7 +378,14 @@ struct Rollup {
 
 #[derive(Deserialize)]
 struct Contexts {
-    contexts: Nodes<Context>,
+    contexts: Page<Context>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct Page<T> {
+    total_count: usize,
+    nodes: Vec<T>,
 }
 
 /// A check run, or a commit status with every field absent.
@@ -592,10 +599,24 @@ fn reviews_and_checks<'a>(
             observed.data["actor"] = json!(review.author.as_ref().map(|author| &author.login));
             reviews.push(observed);
         }
-        let contexts = pull.commits.nodes.iter().flat_map(|commit| {
-            let rollup = commit.commit.status_check_rollup.as_ref();
-            rollup.into_iter().flat_map(|rollup| &rollup.contexts.nodes)
-        });
+        let pages: Vec<_> = pull
+            .commits
+            .nodes
+            .iter()
+            .filter_map(|commit| commit.commit.status_check_rollup.as_ref())
+            .map(|rollup| &rollup.contexts)
+            .collect();
+        // Contexts past the first page may be check runs still running, so they count as pending.
+        let pending: usize = pages
+            .iter()
+            .map(|page| {
+                let running = page.nodes.iter().filter(|check| {
+                    check.database_id.is_some() && check.status.as_deref() != Some("COMPLETED")
+                });
+                running.count() + page.total_count.saturating_sub(page.nodes.len())
+            })
+            .sum();
+        let contexts = pages.iter().flat_map(|page| &page.nodes);
         for check in contexts.filter(|check| check.status.as_deref() == Some("COMPLETED")) {
             let (Some(id), Some(time)) = (check.database_id, check.completed_at.as_deref()) else {
                 continue;
@@ -616,6 +637,7 @@ fn reviews_and_checks<'a>(
                 .as_ref()
                 .and_then(|suite| suite.app.as_ref());
             observed.data["app"] = json!(app.map(|app| &app.slug));
+            observed.data["pending"] = json!(pending);
             checks.push(observed);
         }
     }
@@ -626,7 +648,7 @@ fn reviews_and_checks<'a>(
 
 const PULL_FIELDS: &str = "fragment pull on PullRequest { number headRefName headRefOid baseRefName merged \
     reviews(last: 50) { nodes { databaseId state submittedAt url author { login } } } \
-    commits(last: 1) { nodes { commit { statusCheckRollup { contexts(first: 100) { nodes { \
+    commits(last: 1) { nodes { commit { statusCheckRollup { contexts(first: 100) { totalCount nodes { \
     __typename ... on CheckRun { databaseId name status conclusion completedAt url checkSuite { app { slug } } } \
     } } } } } } }";
 

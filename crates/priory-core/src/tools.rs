@@ -1,3 +1,4 @@
+use crate::route;
 use priory_factory::factory::{Decider, Loaded, Step, Workflow};
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 use serde_json::Value;
@@ -111,9 +112,13 @@ pub(crate) fn call(
     {
         return Ok(Err(format!("run {} already waits on ask {ask}", run.id)));
     }
+    if let Some(wait) = open_wait(&tx, run.id)? {
+        return Ok(Err(format!("run {} already waits on wait {wait}", run.id)));
+    }
     let stored = match call.tool.as_str() {
         "result" => result(&tx, &run, &call.arguments, workflows)?,
         "ask" => ask(&tx, &run, &call.arguments)?,
+        "wait" => wait(&tx, &run, &call.arguments)?,
         tool => Err(format!("unknown tool {tool}")),
     };
     if stored.is_ok() {
@@ -207,7 +212,251 @@ fn ask(tx: &Transaction, run: &Run, arguments: &Value) -> rusqlite::Result<Resul
     )))
 }
 
-/// After a run's turn ends: moves its task by its result, or puts it to sleep on its open ask.
+fn open_wait(tx: &Transaction, run: i64) -> rusqlite::Result<Option<i64>> {
+    tx.query_row(
+        "SELECT id FROM waits WHERE run = ?1 AND fired IS NULL",
+        [run],
+        |row| row.get(0),
+    )
+    .optional()
+}
+
+const CONDITIONS: &str = "pull_request, checks, review, time or task";
+
+/// Stores the wait `arguments["on"]` names, then fires it at once if it already holds.
+fn wait(
+    tx: &Transaction,
+    run: &Run,
+    arguments: &Value,
+) -> rusqlite::Result<Result<String, String>> {
+    let on = &arguments["on"];
+    let kind = on["type"].as_str().unwrap_or_default();
+    match kind {
+        "pull_request" | "checks" | "review" => {
+            let (Some(repo), Some(number)) = (on["repo"].as_str(), on["pull_request"].as_u64())
+            else {
+                return Ok(Err(format!(
+                    "a {kind} wait needs repo, as owner/name, and pull_request, a number"
+                )));
+            };
+            let resource = route::pull_request(repo, number);
+            if let Some(other) = crate::state::owner(tx, std::slice::from_ref(&resource))?
+                && other.id != run.task
+            {
+                return Ok(Err(format!(
+                    "{resource} belongs to task {}, not this one",
+                    other.id
+                )));
+            }
+            tx.execute(
+                "INSERT OR IGNORE INTO owns (task, resource) VALUES (?1, ?2)",
+                params![run.task, resource],
+            )?;
+            tx.execute(
+                "INSERT INTO waits (task, run, kind, resource) VALUES (?1, ?2, ?3, ?4)",
+                params![run.task, run.id, kind, resource],
+            )?;
+        }
+        "time" => {
+            let until = on["until"].as_str().unwrap_or_default();
+            let instant = until.parse::<herdr_bus::Timestamp>().ok();
+            // A duration is an SQLite date modifier, such as `30 seconds`; the `+` refuses `start of day` and negatives.
+            let at: Option<String> = match instant {
+                Some(instant) => tx.query_row(
+                    "SELECT strftime('%Y-%m-%dT%H:%M:%SZ', ?1)",
+                    [instant.to_string()],
+                    |row| row.get(0),
+                )?,
+                None => tx.query_row(
+                    "SELECT strftime('%Y-%m-%dT%H:%M:%SZ', 'now', '+' || ?1)",
+                    [until],
+                    |row| row.get(0),
+                )?,
+            };
+            let Some(at) = at else {
+                return Ok(Err(format!(
+                    "until {until:?} is neither an RFC 3339 instant nor a duration such as 30 seconds, 5 minutes or 2 hours"
+                )));
+            };
+            tx.execute(
+                "INSERT INTO waits (task, run, kind, until) VALUES (?1, ?2, 'time', ?3)",
+                params![run.task, run.id, at],
+            )?;
+        }
+        "task" => {
+            let target = on["task"].as_i64().unwrap_or_default();
+            let known = tx
+                .query_row("SELECT 1 FROM tasks WHERE id = ?1", [target], |_| Ok(()))
+                .optional()?;
+            if known.is_none() || target == run.task {
+                return Ok(Err(format!(
+                    "task must name another task's id, not {}",
+                    on["task"]
+                )));
+            }
+            tx.execute(
+                "INSERT INTO waits (task, run, kind, target) VALUES (?1, ?2, 'task', ?3)",
+                params![run.task, run.id, target],
+            )?;
+        }
+        other => {
+            return Ok(Err(format!(
+                "unknown condition {other:?}: wait on {CONDITIONS}"
+            )));
+        }
+    }
+    let id = tx.last_insert_rowid();
+    let mut candidates = Vec::new();
+    {
+        // Events after the agent's last prompt: kept and not typed yet, and no wait fired on them.
+        let mut statement = tx.prepare(
+            "SELECT inbox.seq FROM inbox LEFT JOIN outbox ON outbox.id = inbox.outbox
+             WHERE inbox.task = ?1 AND inbox.outcome = 'kept'
+             AND (inbox.outbox IS NULL OR outbox.state = 'queued')
+             AND inbox.seq NOT IN (SELECT inbox FROM waits WHERE inbox IS NOT NULL)
+             ORDER BY inbox.seq",
+        )?;
+        let mut rows = statement.query([run.task])?;
+        while let Some(row) = rows.next()? {
+            candidates.push(row.get::<_, i64>(0)?);
+        }
+    }
+    for seq in candidates {
+        if event(tx, run.task, seq)? {
+            return Ok(Ok(format!(
+                "wait {id} already holds: end your turn; the event that satisfies it is your next prompt"
+            )));
+        }
+    }
+    due(tx)?;
+    let fired = tx.query_row(
+        "SELECT fired IS NOT NULL FROM waits WHERE id = ?1",
+        [id],
+        |row| row.get::<_, bool>(0),
+    )?;
+    if fired {
+        return Ok(Ok(format!(
+            "wait {id} already holds: end your turn; your next prompt says so"
+        )));
+    }
+    Ok(Ok(format!(
+        "wait {id} stored: end your turn now; Priory wakes you with the event that satisfies it"
+    )))
+}
+
+/// Fires the task's open event wait if the inbox entry `seq` satisfies it. Returns whether it did.
+pub(crate) fn event(tx: &Transaction, task: i64, seq: i64) -> rusqlite::Result<bool> {
+    let open = tx
+        .query_row(
+            "SELECT waits.id, waits.kind, waits.resource FROM waits JOIN tasks ON tasks.id = waits.task
+             WHERE waits.task = ?1 AND waits.fired IS NULL AND tasks.state IN ('running', 'asleep')",
+            [task],
+            |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                ))
+            },
+        )
+        .optional()?;
+    let Some((wait, kind, Some(resource))) = open else {
+        return Ok(false);
+    };
+    let (kind_of_event, subject, data): (String, Option<String>, String) = tx.query_row(
+        "SELECT type, subject, data FROM inbox WHERE seq = ?1",
+        [seq],
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+    )?;
+    let data: Value = serde_json::from_str(&data).expect("inbox data is JSON");
+    if !route::satisfies(&kind, &resource, &kind_of_event, &data) {
+        return Ok(false);
+    }
+    let line = crate::state::line(&kind_of_event, subject.as_deref(), &data.to_string());
+    fire(tx, wait, task, &line, Some(seq))?;
+    Ok(true)
+}
+
+/// Fires every open time wait whose instant passed and task wait whose task ended.
+pub(crate) fn due(tx: &Transaction) -> rusqlite::Result<()> {
+    let mut fired = Vec::new();
+    {
+        let mut statement = tx.prepare(&format!(
+            "SELECT waits.id, waits.task, waits.until, waits.target, target.state FROM waits
+             JOIN tasks ON tasks.id = waits.task LEFT JOIN tasks AS target ON target.id = waits.target
+             WHERE waits.fired IS NULL AND tasks.state IN ('running', 'asleep')
+             AND ((waits.kind = 'time' AND waits.until <= {NOW})
+               OR (waits.kind = 'task' AND target.state IN ('done', 'failed', 'dropped')))
+             ORDER BY waits.id"
+        ))?;
+        let mut rows = statement.query([])?;
+        while let Some(row) = rows.next()? {
+            let id: i64 = row.get(0)?;
+            let text = match row.get::<_, Option<String>>(2)? {
+                Some(until) => format!("wait {id} fired: {until} passed"),
+                None => format!(
+                    "wait {id} fired: task {} is {}",
+                    row.get::<_, i64>(3)?,
+                    row.get::<_, String>(4)?
+                ),
+            };
+            fired.push((id, row.get::<_, i64>(1)?, text));
+        }
+    }
+    for (id, task, text) in &fired {
+        fire(tx, *id, *task, text, None)?;
+    }
+    Ok(())
+}
+
+/// Marks the wait fired and queues `text` as the task's next prompt, ahead of the others. The
+/// inbox entry `seq` that fired it, if any, moves into that prompt. An asleep task becomes ready;
+/// a running one types it after its `Stop`.
+fn fire(
+    tx: &Transaction,
+    wait: i64,
+    task: i64,
+    text: &str,
+    seq: Option<i64>,
+) -> rusqlite::Result<()> {
+    tx.execute(
+        &format!("UPDATE waits SET fired = {NOW}, inbox = ?2 WHERE id = ?1"),
+        params![wait, seq],
+    )?;
+    if let Some(seq) = seq {
+        let (prompt, own): (Option<i64>, bool) = tx.query_row(
+            "SELECT inbox.outbox, coalesce(outbox.state = 'queued' AND outbox.text = ?2, 0)
+             FROM inbox LEFT JOIN outbox ON outbox.id = inbox.outbox WHERE inbox.seq = ?1",
+            params![seq, text],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        match (prompt, own) {
+            // A running task's event has a queued prompt of its own: take it out so it comes first.
+            (Some(prompt), true) => {
+                tx.execute("UPDATE inbox SET outbox = NULL WHERE seq = ?1", [seq])?;
+                tx.execute("DELETE FROM outbox WHERE id = ?1", [prompt])?;
+            }
+            // Its prompt carries other text too: leave the event where it is.
+            (Some(_), false) => return set_ready(tx, task),
+            (None, _) => {}
+        }
+    }
+    let id = queue_first(tx, task, text)?;
+    if let Some(seq) = seq {
+        tx.execute("UPDATE inbox SET outbox = ?1 WHERE seq = ?2", [id, seq])?;
+    }
+    set_ready(tx, task)
+}
+
+fn set_ready(tx: &Transaction, task: i64) -> rusqlite::Result<()> {
+    tx.execute(
+        "UPDATE tasks SET state = 'ready', reason = NULL WHERE id = ?1 AND state = 'asleep'",
+        [task],
+    )
+    .map(drop)
+}
+
+/// After a run's turn ends: moves its task by its result, or puts it to sleep on its open ask or wait.
 /// Returns the tmux session to kill once the hook has its reply.
 pub(crate) fn stop(
     tx: &Transaction,
@@ -246,7 +495,7 @@ pub(crate) fn stop(
             |_| Ok(()),
         )
         .optional()?;
-    if asked.is_none() {
+    if asked.is_none() && open_wait(tx, run.id)?.is_none() {
         return Ok(None);
     }
     end(tx, run.id, "asleep")?;
@@ -256,7 +505,7 @@ pub(crate) fn stop(
 
 /// Queues `text` as the task's next prompt, ahead of the prompts already queued, which it carries
 /// after it: an event kept during the last turn must not reach the agent before its new instructions.
-fn queue_first(tx: &Transaction, task: i64, text: &str) -> rusqlite::Result<()> {
+fn queue_first(tx: &Transaction, task: i64, text: &str) -> rusqlite::Result<i64> {
     let mut merged = text.to_owned();
     let mut queued = Vec::new();
     {
@@ -279,7 +528,7 @@ fn queue_first(tx: &Transaction, task: i64, text: &str) -> rusqlite::Result<()> 
         tx.execute("UPDATE inbox SET outbox = ?1 WHERE outbox = ?2", [id, old])?;
         tx.execute("DELETE FROM outbox WHERE id = ?1", [old])?;
     }
-    Ok(())
+    Ok(id)
 }
 
 fn end(tx: &Transaction, run: i64, ended_as: &str) -> rusqlite::Result<()> {

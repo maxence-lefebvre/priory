@@ -99,7 +99,8 @@ fn take(
     }
 }
 
-/// Ends runs whose tmux session is gone, starts a run if one is admissible, and types prompts.
+/// Ends runs whose tmux session is gone, fires due waits, starts a run if one is admissible, and
+/// types prompts.
 fn tend(db: &mut Connection, factory: &Factory, home: &Path) -> Result<(), Error> {
     for run in state::live(db)? {
         if runtime::pane(&run.tmux, &run.session).is_none() {
@@ -120,6 +121,7 @@ fn tend(db: &mut Connection, factory: &Factory, home: &Path) -> Result<(), Error
             state::block(db, run.task, "exited", &reason)?;
         }
     }
+    state::due(db)?;
     if let Some(admission) = state::admissible(db, &factory.workflows)?
         && let Err(reason) = start(db, factory, home, &admission)?
     {
@@ -178,6 +180,7 @@ fn start(
             step: &step.id,
             tmux: &tmux,
             session: &session,
+            repo,
             branch: &branch,
             worktree: &worktree.to_string_lossy(),
             prompt: (!resume).then(|| step.prompt.as_deref().unwrap_or_default()),

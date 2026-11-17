@@ -19,13 +19,17 @@ handles that message again.
 
 ## Routing
 
-A message names a task key: a task request its `key`, a GitHub event `github:{repo}#{issue}`. The
-active task that owns that key, if any, decides the route. A task is active in any state except
-done, failed and dropped.
+A task owns resources, stored in one table: its trigger key from its creation, its branch
+`github:{repo}@priory/{id}` from its first run, and each pull request `github:{repo}#{n}` a wait of
+its names. A message names resources too: a task request its `key`, a CLI request its subject, a
+GitHub event its issue or pull request `github:{repo}#{n}` and, for a pull request event, its head
+branch `github:{repo}@{head_branch}`. The oldest active task that owns any of them decides the route.
+A task is active in any state except done, failed and dropped. So an agent that opens a pull request
+from its branch gets that pull request's events, with no trigger involved.
 
 | Message                                   | Outcome   | Task                                         |
 | ----------------------------------------- | --------- | -------------------------------------------- |
-| Any, with an active task owning its key   | `kept`    | that task                                    |
+| Any, with an active task owning a resource it names | `kept` | that task                             |
 | `factory.task.requested`, no active task  | `created` | a new task, `queued` at its workflow's start |
 | `factory.task.requested`, malformed       | `ignored` | none                                         |
 | Any other                                 | `ignored` | none                                         |
@@ -38,7 +42,8 @@ A source event comes before its task request, so it is recorded as `ignored`. Th
 id in `source`.
 
 A message kept for a `running` task also gets an outbox prompt, so the agent reads it after its
-current turn. A message kept for a task in any other state waits for the task's first run.
+current turn. A message kept for an asleep task that satisfies its wait wakes it, as described under
+Waits. A message kept for a task in any other state waits for the task's next run.
 
 ## Priory home
 
@@ -128,7 +133,9 @@ stored.
   outcomes.
 - `ask(question, options, recommendation, tradeoff)` stores an ask at revision 1.
 
-A run has at most one result and one open ask, never both: a second call is refused.
+- `wait(on)` stores a wait, described under Waits.
+
+A run has at most one of a result, an open ask and an open wait: any later call is refused.
 
 ### Moving on
 
@@ -146,7 +153,7 @@ A prompt that a move or an answer queues goes ahead of the prompts already queue
 carries them after it, so an event kept during the last turn never reaches the agent before its new
 instructions.
 
-A run with an open ask and no result ends `asleep`, and its task sleeps. The daemon kills a run's
+A run with an open ask or wait and no result ends `asleep`, and its task sleeps. The daemon kills a run's
 tmux session when the run ends, after the hook has its reply. The worktree stays.
 
 ### Asks and answers
@@ -162,6 +169,43 @@ step's ask, a text that is not one of its options, is refused.
   task whose run has not stopped yet stays `running`, and the answer is typed after its `Stop`.
 
 A `ready` task's next run resumes the stored session and types its queued prompts.
+
+### Waits
+
+`wait(on)` names one condition in `on.type`. Each condition fires the wait on:
+
+| `type`         | Fields                  | Fires on                                                                |
+| -------------- | ----------------------- | ----------------------------------------------------------------------- |
+| `pull_request` | `repo`, `pull_request`  | `github.pull_request.closed` for it, merged or not                      |
+| `checks`       | `repo`, `pull_request`  | `github.check_run.completed` for it, with `pending` 0                   |
+| `review`       | `repo`, `pull_request`  | `github.pull_request_review.submitted` for it                           |
+| `time`         | `until`                 | the daemon's loop, once `until` has passed                              |
+| `task`         | `task`                  | the daemon's loop, once that task is done, failed or dropped            |
+
+`until` is an RFC 3339 instant, or a duration such as `30 seconds`, `5 minutes` or `2 hours`: an
+SQLite date modifier, which Priory adds to the time of the call. An unknown type or a missing field
+is refused, and nothing is stored. A pull request condition makes the task own the pull request; it
+is refused when another active task owns it already.
+
+The intake publishes one `github.check_run.completed` per check run, and only once it completed, so
+the daemon cannot count the runs it has not seen. The intake reads every check run on the head
+commit in the same poll, so each check event carries `pending`: how many of them had not completed
+then. "Every check run has completed" is a check event with `pending` 0. Two runs that complete
+between two polls both carry 0: the first fires the wait, and the second is kept. A check run that
+GitHub has not created yet is not counted. A pull request with no check runs never fires a checks
+wait.
+
+When the wait is stored, the daemon looks at the events the task kept since the agent's last prompt:
+those not typed yet, and on which no wait fired. The first one that satisfies the wait fires it at
+once, and the time and task conditions are checked at once too. The run then does not sleep: the
+event is typed after its `Stop`.
+
+A wait that fires queues its prompt ahead of the task's other queued prompts: the event's line, or
+for time and task, `wait <id> fired: <until> passed` or `wait <id> fired: task <id> is <state>`. An
+asleep task becomes `ready`, and its next run resumes the session with that prompt. An event that
+does not satisfy the wait stays kept, and the run after the wake types it after the waking prompt.
+
+`priory waits` prints each open wait: id, task, run, kind, what it waits on and when it was stored.
 
 ## Outbox
 
@@ -190,5 +234,5 @@ further prompt, since text may still sit in the agent's input.
 `priory tasks` prints each task: id, key, workflow, step, state, band, lane and reason.
 `priory runs` prints each run: id, task, step, tmux session, harness session, started, ended and
 how it ended. `priory outbox` prints each prompt: id, task, run, state and text, with newlines
-shown as `\n`. `priory asks` is described under Tools. They read `PRIORY_DB` and print `-` for an empty cell, tab-separated after a header
+shown as `\n`. `priory asks` and `priory waits` are described under Tools. They read `PRIORY_DB` and print `-` for an empty cell, tab-separated after a header
 line.

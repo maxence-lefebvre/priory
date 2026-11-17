@@ -26,26 +26,42 @@ pub(crate) struct NewTask {
     pub source: String,
 }
 
-/// The task key a message names: a task request's own, a CLI request's subject, or `github:{repo}#{number}` for a GitHub
-/// event, its issue or pull request number. GitHub numbers both from one sequence per repository.
-pub(crate) fn key(message: &Message) -> Option<String> {
+/// The resources a message names, which a task may own: a task request's key, a CLI request's
+/// subject, or for a GitHub event its issue or pull request and its pull request's head branch.
+pub(crate) fn resources(message: &Message) -> Vec<String> {
     let data = &message.data;
     if message.kind == TASK_REQUESTED {
-        return data["key"].as_str().map(str::to_owned);
+        return data["key"]
+            .as_str()
+            .map(str::to_owned)
+            .into_iter()
+            .collect();
     }
     if message.kind == priory_intake::request::REQUESTED {
-        return message.subject.clone();
+        return message.subject.clone().into_iter().collect();
     }
-    if !message.kind.starts_with("github.") {
-        return None;
-    }
-    Some(format!(
-        "github:{}#{}",
-        data["repo"].as_str()?,
-        data.get("issue")
-            .unwrap_or(&data["pull_request"])
-            .as_u64()?
-    ))
+    let Some(repo) = data["repo"]
+        .as_str()
+        .filter(|_| message.kind.starts_with("github."))
+    else {
+        return Vec::new();
+    };
+    let number = data.get("issue").unwrap_or(&data["pull_request"]).as_u64();
+    let head = data["head_branch"].as_str();
+    number
+        .map(|number| pull_request(repo, number))
+        .into_iter()
+        .chain(head.map(|head| branch(repo, head)))
+        .collect()
+}
+
+/// An issue or pull request, as a resource: GitHub numbers both from one sequence per repository.
+pub(crate) fn pull_request(repo: &str, number: u64) -> String {
+    format!("github:{repo}#{number}")
+}
+
+pub(crate) fn branch(repo: &str, branch: &str) -> String {
+    format!("github:{repo}@{branch}")
 }
 
 /// Routes `message`, given the active task that owns its key, if any. A task request for a
@@ -72,4 +88,20 @@ pub(crate) fn route(
     };
     task.step.clone_from(&workflow.value.start);
     Ok(Decision::Create(task))
+}
+
+/// Whether an event of type `kind` with `data` satisfies a wait of `wait` kind on the pull request
+/// `resource`. A checks wait needs a completed check with no check run still pending on its commit.
+pub(crate) fn satisfies(wait: &str, resource: &str, kind: &str, data: &serde_json::Value) -> bool {
+    let wanted = match wait {
+        "pull_request" => "github.pull_request.closed",
+        "review" => "github.pull_request_review.submitted",
+        "checks" => "github.check_run.completed",
+        _ => return false,
+    };
+    let names = data["repo"]
+        .as_str()
+        .zip(data["pull_request"].as_u64())
+        .is_some_and(|(repo, number)| pull_request(repo, number) == resource);
+    kind == wanted && names && (wait != "checks" || data["pending"].as_u64() == Some(0))
 }
