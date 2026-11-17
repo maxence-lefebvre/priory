@@ -42,8 +42,8 @@ current turn. A message kept for a task in any other state waits for the task's 
 
 ## Priory home
 
-`PRIORY_HOME` names Priory's own directory. It defaults to `$XDG_STATE_HOME/priory`, then
-`~/.local/state/priory`. It holds:
+`PRIORY_HOME` names Priory's own directory. It defaults to `$XDG_STATE_HOME/priory-oss`, then
+`~/.local/state/priory-oss`. It holds:
 
 - `repos/<owner>/<name>`: a clone of `https://github.com/<owner>/<name>.git`, with no checkout.
   Git's own `url.<base>.insteadOf` setting can point it elsewhere, such as an SSH remote or a
