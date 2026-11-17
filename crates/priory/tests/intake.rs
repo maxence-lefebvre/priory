@@ -561,7 +561,10 @@ fn pull(
         "baseRefName": "main",
         "merged": merged,
         "reviews": { "nodes": reviews },
-        "commits": { "nodes": [{ "commit": { "statusCheckRollup": { "contexts": { "nodes": checks } } } }] }
+        "commits": { "nodes": [{ "commit": { "statusCheckRollup": { "contexts": {
+            "totalCount": checks.as_array().map_or(0, Vec::len),
+            "nodes": checks
+        } } } }] }
     })
 }
 
@@ -798,12 +801,37 @@ fn a_submitted_review_and_a_completed_check_publish_once() {
             "name": "test (ubuntu)",
             "conclusion": "failure",
             "app": "github-actions",
+            "pending": 1,
             "time": "2026-11-17T12:05:00Z",
             "github_id": 601,
             "baseline": false,
             "triggers": []
         })
     );
+}
+
+#[test]
+fn a_check_counts_the_runs_past_the_first_page_as_pending() {
+    let setup = Setup::baseline("pr-check-page");
+    let completed = json!({
+        "__typename": "CheckRun",
+        "databaseId": 601,
+        "name": "test",
+        "status": "COMPLETED",
+        "conclusion": "SUCCESS",
+        "completedAt": "2026-11-17T12:05:00Z",
+        "url": "u",
+        "checkSuite": null
+    });
+    let mut pull = pull(43, false, json!([]), json!([completed]));
+    pull["commits"]["nodes"][0]["commit"]["statusCheckRollup"]["contexts"]["totalCount"] =
+        json!(101);
+    setup.answer(&[(OPEN_PULLS, open_pulls(&[pull]))]);
+
+    succeeded(&setup.intake());
+
+    let published = setup.published();
+    assert_eq!(published[1].message.data["pending"], 100);
 }
 
 #[test]

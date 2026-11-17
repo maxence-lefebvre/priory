@@ -96,6 +96,7 @@ consumer can route it to the task that owns the pull request or its branch.
 | `name`         | string           | The check run's name, as branch protection names a required check. Check only |
 | `conclusion`   | string           | `success`, `failure`, `neutral`, `cancelled`, `skipped`, `timed_out`, `action_required`, `stale` or `startup_failure`. Check only |
 | `app`          | string or null   | The slug of the GitHub App that ran the check. Check only      |
+| `pending`      | integer          | How many check runs on the same commit had not completed when the intake polled, counting those past the first 100 as not completed. Check only |
 | `actor`        | string or null   | GitHub login: who opened, labeled or closed it, or who reviewed. Absent on a check |
 | `time`         | RFC 3339         | When it was opened, labeled, closed, submitted or completed    |
 | `github_id`    | integer          | GitHub's id: the issue id for `opened`, the issue event id for `labeled` and `closed`, the review id, the check run id |
@@ -218,6 +219,7 @@ Head and base fields are null when GitHub no longer returns the pull request.
     "name": "pr-auto",
     "conclusion": "success",
     "app": "github-actions",
+    "pending": 0,
     "time": "2026-02-14T01:51:37Z",
     "github_id": 63598796976,
     "baseline": true,

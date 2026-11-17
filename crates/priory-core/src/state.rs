@@ -5,7 +5,7 @@ use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, 
 use std::collections::BTreeMap;
 use std::time::Duration;
 
-const VERSION: i64 = 3;
+const VERSION: i64 = 4;
 
 const SCHEMA: &str = "
 CREATE TABLE tasks (
@@ -99,6 +99,30 @@ CREATE TABLE asks (
 PRAGMA user_version = 3;
 ";
 
+const SCHEMA_4: &str = "
+CREATE TABLE owns (
+  task     INTEGER NOT NULL REFERENCES tasks (id),
+  resource TEXT NOT NULL,
+  PRIMARY KEY (task, resource)
+);
+CREATE INDEX owns_by_resource ON owns (resource);
+INSERT INTO owns (task, resource) SELECT id, key FROM tasks;
+CREATE TABLE waits (
+  id       INTEGER PRIMARY KEY AUTOINCREMENT,
+  task     INTEGER NOT NULL REFERENCES tasks (id),
+  run      INTEGER NOT NULL REFERENCES runs (id),
+  kind     TEXT NOT NULL CHECK (kind IN ('pull_request', 'checks', 'review', 'time', 'task')),
+  resource TEXT,
+  until    TEXT,
+  target   INTEGER REFERENCES tasks (id),
+  head_sha TEXT,
+  created  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+  fired    TEXT,
+  inbox    INTEGER REFERENCES inbox (seq)
+);
+PRAGMA user_version = 4;
+";
+
 const NOW: &str = "strftime('%Y-%m-%dT%H:%M:%SZ', 'now')";
 
 pub(crate) struct Task {
@@ -138,12 +162,15 @@ pub fn open() -> Result<Connection, String> {
     let version = version(&tx).map_err(at)?;
     match version {
         0 => tx
-            .execute_batch(&format!("{SCHEMA}{SCHEMA_2}{SCHEMA_3}"))
+            .execute_batch(&format!("{SCHEMA}{SCHEMA_2}{SCHEMA_3}{SCHEMA_4}"))
             .map_err(at)?,
         1 => tx
-            .execute_batch(&format!("{SCHEMA_2}{SCHEMA_3}"))
+            .execute_batch(&format!("{SCHEMA_2}{SCHEMA_3}{SCHEMA_4}"))
             .map_err(at)?,
-        2 => tx.execute_batch(SCHEMA_3).map_err(at)?,
+        2 => tx
+            .execute_batch(&format!("{SCHEMA_3}{SCHEMA_4}"))
+            .map_err(at)?,
+        3 => tx.execute_batch(SCHEMA_4).map_err(at)?,
         VERSION => {}
         _ => {
             return Err(format!(
@@ -174,10 +201,7 @@ pub(crate) fn handle(
     if seen.is_some() {
         return Ok(());
     }
-    let owner = match route::key(message) {
-        Some(key) => active(&tx, &key)?,
-        None => None,
-    };
+    let owner = owner(&tx, &route::resources(message))?;
     let (task, outcome) = match route::route(message, owner.as_ref(), workflows)? {
         Decision::Create(new) => {
             tx.execute(
@@ -193,7 +217,12 @@ pub(crate) fn handle(
                     new.source
                 ],
             )?;
-            (Some(tx.last_insert_rowid()), "created")
+            let id = tx.last_insert_rowid();
+            tx.execute(
+                "INSERT INTO owns (task, resource) VALUES (?1, ?2)",
+                params![id, new.key],
+            )?;
+            (Some(id), "created")
         }
         Decision::Keep(id) => (Some(id), "kept"),
         Decision::Ignore => (None, "ignored"),
@@ -238,13 +267,27 @@ pub(crate) fn handle(
             outbox
         ],
     )?;
+    if let Some(task) = task.filter(|_| outcome == "kept") {
+        crate::tools::event(&tx, task, tx.last_insert_rowid())?;
+    }
     Ok(tx.commit()?)
 }
 
-fn active(tx: &Transaction, key: &str) -> rusqlite::Result<Option<Task>> {
+/// Fires every time wait whose instant passed and task wait whose task ended.
+pub(crate) fn due(db: &mut Connection) -> rusqlite::Result<()> {
+    let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    crate::tools::due(&tx)?;
+    tx.commit()
+}
+
+/// The oldest active task that owns any of `resources`.
+pub(crate) fn owner(tx: &Transaction, resources: &[String]) -> rusqlite::Result<Option<Task>> {
+    let resources = serde_json::to_string(resources).expect("resources serialize");
     tx.query_row(
-        "SELECT id FROM tasks WHERE key = ?1 AND state NOT IN ('done', 'failed', 'dropped')",
-        [key],
+        "SELECT tasks.id FROM owns JOIN tasks ON tasks.id = owns.task
+         WHERE owns.resource IN (SELECT value FROM json_each(?1))
+         AND tasks.state NOT IN ('done', 'failed', 'dropped') ORDER BY tasks.id LIMIT 1",
+        [resources],
         |row| Ok(Task { id: row.get(0)? }),
     )
     .optional()
@@ -272,7 +315,7 @@ pub fn print(db: &Connection, header: &str, query: &str) -> rusqlite::Result<()>
 }
 
 /// One event as an agent reads it: type, subject and data on one line.
-fn line(kind: &str, subject: Option<&str>, data: &str) -> String {
+pub(crate) fn line(kind: &str, subject: Option<&str>, data: &str) -> String {
     format!("{kind} {} {data}", subject.unwrap_or("-"))
 }
 
@@ -327,6 +370,7 @@ pub(crate) struct NewRun<'a> {
     pub step: &'a str,
     pub tmux: &'a str,
     pub session: &'a str,
+    pub repo: &'a str,
     pub branch: &'a str,
     pub worktree: &'a str,
     /// The step's prompt, for a new session. A resumed session has its waking prompt queued.
@@ -355,6 +399,10 @@ pub(crate) fn start(db: &mut Connection, run: &NewRun) -> rusqlite::Result<i64> 
     tx.execute(
         "UPDATE tasks SET state = 'running', branch = ?2, worktree = ?3, reason = NULL WHERE id = ?1",
         params![run.task, run.branch, run.worktree],
+    )?;
+    tx.execute(
+        "INSERT OR IGNORE INTO owns (task, resource) VALUES (?1, ?2)",
+        params![run.task, route::branch(run.repo, run.branch)],
     )?;
     let mut events = Vec::new();
     let mut text = run.prompt.unwrap_or_default().to_owned();

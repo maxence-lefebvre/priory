@@ -48,6 +48,11 @@ fn main() -> ExitCode {
             "SELECT id, task, revision, replace(question, char(10), '\\n'), options FROM asks
              WHERE answer IS NULL ORDER BY id",
         ),
+        Some("waits") => list(
+            "id\ttask\trun\tkind\ton\tcreated",
+            "SELECT id, task, run, kind, coalesce(resource, until, 'task ' || target), created
+             FROM waits WHERE fired IS NULL ORDER BY id",
+        ),
         Some("answer") => answer(args.map(|arg| arg.to_string_lossy().into_owned()).collect()),
         Some("mcp") => match (args.next(), args.next(), args.next()) {
             (Some(flag), Some(session), None) if flag == "--session" => {
@@ -65,7 +70,7 @@ fn main() -> ExitCode {
 
 fn usage() -> ExitCode {
     eprintln!(
-        "usage: priory check [DIR]\n       priory intake [DIR] [--once]\n       priory daemon [DIR] [--once]\n       priory request [DIR] --workflow <name> --key <key> [--band <band>] [--lane <lane>] [--repo <owner/name>] <text>\n       priory inbox\n       priory tasks\n       priory runs\n       priory outbox\n       priory asks\n       priory answer ASK OPTION-OR-TEXT --revision N\n       priory mcp --session ID\n       priory hook EVENT"
+        "usage: priory check [DIR]\n       priory intake [DIR] [--once]\n       priory daemon [DIR] [--once]\n       priory request [DIR] --workflow <name> --key <key> [--band <band>] [--lane <lane>] [--repo <owner/name>] <text>\n       priory inbox\n       priory tasks\n       priory runs\n       priory outbox\n       priory asks\n       priory waits\n       priory answer ASK OPTION-OR-TEXT --revision N\n       priory mcp --session ID\n       priory hook EVENT"
     );
     ExitCode::from(2)
 }

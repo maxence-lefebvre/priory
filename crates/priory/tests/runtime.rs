@@ -859,7 +859,7 @@ fn the_built_in_question_tool_is_denied_and_points_to_ask() {
 }
 
 #[test]
-fn the_mcp_server_lists_the_result_and_ask_tools() {
+fn the_mcp_server_lists_the_result_ask_and_wait_tools() {
     let setup = Setup::new("list");
 
     let replies = setup.mcp(
@@ -879,7 +879,7 @@ fn the_mcp_server_lists_the_result_and_ask_tools() {
         .iter()
         .map(|tool| tool["name"].as_str().unwrap())
         .collect();
-    assert_eq!(names, ["result", "ask"]);
+    assert_eq!(names, ["result", "ask", "wait"]);
 }
 
 #[test]
@@ -967,4 +967,271 @@ fn a_restarted_daemon_kills_the_session_of_a_run_that_ended() {
     setup.start();
 
     setup.gone("priory-1");
+}
+
+/// A GitHub event on pull request 7 of `owner/repo`, from the branch `priory/1`.
+fn on_pull(kind: &str, extra: serde_json::Value) -> Message {
+    let mut data = json!({
+        "repo": "owner/repo",
+        "pull_request": 7,
+        "head_branch": "priory/1",
+        "head_sha": "abc",
+        "base_branch": "main",
+    });
+    data.as_object_mut()
+        .unwrap()
+        .extend(extra.as_object().unwrap().clone());
+    Message::new(kind, data).subject("owner/repo#7")
+}
+
+#[test]
+fn a_pull_request_event_naming_the_task_branch_reaches_the_task() {
+    let mut setup = Setup::new("branch");
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") == 1);
+
+    setup.publish(&on_pull("github.pull_request.opened", json!({})));
+
+    let inbox = setup.until("inbox", |rows| rows.len() == 2);
+    assert_eq!(
+        inbox[1][1..],
+        ["github.pull_request.opened", "owner/repo#7", "1", "kept"]
+    );
+}
+
+fn wait(on: serde_json::Value) -> serde_json::Value {
+    json!({ "name": "wait", "arguments": { "on": on } })
+}
+
+#[test]
+fn an_unknown_condition_is_refused_and_nothing_is_stored() {
+    let mut setup = Setup::new("unknown-wait");
+    setup.calls(&[wait(json!({ "type": "moon" }))]);
+    setup.publish(&requested(42));
+
+    setup.start();
+
+    setup.written("fake/tools.log");
+    let (text, error) = reply(&setup.replies()[0]);
+    assert!(error, "{text}");
+    assert_eq!(
+        text,
+        "unknown condition \"moon\": wait on pull_request, checks, review, time or task"
+    );
+    std::thread::sleep(Duration::from_millis(1500));
+    assert!(setup.rows("waits").is_empty());
+    assert_eq!(setup.rows("tasks")[0][4], "running");
+    assert_eq!(setup.rows("runs")[0][7], "-");
+}
+
+fn on_pull_7(kind: &str) -> serde_json::Value {
+    json!({ "type": kind, "repo": "owner/repo", "pull_request": 7 })
+}
+
+fn check(id: u64, pending: u64) -> Message {
+    on_pull(
+        "github.check_run.completed",
+        json!({ "name": format!("check {id}"), "conclusion": "success", "github_id": id, "pending": pending }),
+    )
+}
+
+/// Starts task 1, whose first turn calls `wait(on)`, and returns once its run ended asleep.
+fn asleep_on(name: &str, on: serde_json::Value) -> Setup {
+    let mut setup = Setup::new(name);
+    setup.calls(&[wait(on)]);
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("runs", |rows| {
+        rows.first().is_some_and(|row| row[7] == "asleep")
+    });
+    setup.gone("priory-1");
+    setup
+}
+
+/// Asserts the task stays asleep with no new run for a while.
+fn stays_asleep(setup: &Setup) {
+    std::thread::sleep(Duration::from_millis(1500));
+    assert_eq!(setup.rows("tasks")[0][4], "asleep");
+    assert_eq!(setup.rows("runs").len(), 1);
+}
+
+#[test]
+fn a_run_waiting_on_checks_sleeps_and_only_the_last_check_wakes_it() {
+    let setup = asleep_on("checks", on_pull_7("checks"));
+    let (text, error) = reply(&setup.replies()[0]);
+    assert!(!error, "{text}");
+    assert_eq!(setup.rows("tasks")[0][4], "asleep");
+    assert_eq!(
+        setup.rows("waits")[0][1..5],
+        ["1", "1", "checks", "github:owner/repo#7"]
+    );
+
+    setup.publish(&check(1, 1));
+    stays_asleep(&setup);
+    setup.publish(&check(2, 0));
+
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") == 2);
+    let typed = setup.typed();
+    let lines: Vec<_> = typed[1].lines().collect();
+    assert!(
+        lines[0].starts_with("github.check_run.completed owner/repo#7 {")
+            && lines[0].contains(r#""github_id":2"#),
+        "{typed:?}"
+    );
+    assert!(lines[1].contains(r#""github_id":1"#), "{typed:?}");
+    assert!(setup.rows("waits").is_empty());
+    let runs = setup.rows("runs");
+    assert_eq!(runs[0][4], runs[1][4], "the woken run resumes the session");
+    assert_eq!(setup.rows("tasks")[0][4], "running");
+}
+
+fn reviewed() -> Message {
+    on_pull(
+        "github.pull_request_review.submitted",
+        json!({ "state": "approved", "github_id": 300 }),
+    )
+}
+
+fn closed() -> Message {
+    on_pull(
+        "github.pull_request.closed",
+        json!({ "merged": true, "github_id": 400 }),
+    )
+}
+
+#[test]
+fn a_review_or_a_close_wakes_a_task_waiting_on_it() {
+    for (kind, event, line) in [
+        (
+            "review",
+            reviewed(),
+            "github.pull_request_review.submitted owner/repo#7 {",
+        ),
+        (
+            "pull_request",
+            closed(),
+            "github.pull_request.closed owner/repo#7 {",
+        ),
+    ] {
+        let setup = asleep_on(&format!("wake-{kind}"), on_pull_7(kind));
+
+        setup.publish(&event);
+
+        setup.until("outbox", |rows| with(rows, 3, "confirmed") == 2);
+        let typed = setup.typed();
+        assert!(typed[1].starts_with(line), "{kind}: {typed:?}");
+        assert_eq!(setup.rows("tasks")[0][4], "running");
+    }
+}
+
+#[test]
+fn an_event_that_does_not_match_the_wait_stays_kept_and_reaches_the_next_run() {
+    let setup = asleep_on("unmatched", on_pull_7("pull_request"));
+
+    setup.publish(&reviewed());
+    stays_asleep(&setup);
+    assert_eq!(setup.rows("inbox")[1][4], "kept");
+    setup.publish(&closed());
+
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") == 2);
+    std::thread::sleep(Duration::from_millis(1500));
+    let typed = setup.typed();
+    assert_eq!(typed.len(), 2, "{typed:?}");
+    let lines: Vec<_> = typed[1].lines().collect();
+    assert!(
+        lines[0].starts_with("github.pull_request.closed owner/repo#7 {"),
+        "{typed:?}"
+    );
+    assert!(
+        lines[1].starts_with("github.pull_request_review.submitted owner/repo#7 {"),
+        "{typed:?}"
+    );
+}
+
+#[test]
+fn a_checks_wait_on_a_head_ignores_checks_of_another_commit() {
+    let mut on = on_pull_7("checks");
+    on["head_sha"] = json!("def");
+    let setup = asleep_on("checks-head", on);
+
+    setup.publish(&check(1, 0));
+    stays_asleep(&setup);
+    let mut last = check(2, 0);
+    last.data["head_sha"] = json!("def");
+    setup.publish(&last);
+
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") == 2);
+    let typed = setup.typed();
+    assert!(typed[1].contains(r#""github_id":2"#), "{typed:?}");
+}
+
+#[test]
+fn a_time_wait_fires_after_its_instant_and_not_before() {
+    let setup = asleep_on("time", json!({ "type": "time", "until": "4 seconds" }));
+    let waits = setup.rows("waits");
+    assert_eq!(waits[0][3], "time");
+
+    stays_asleep(&setup);
+
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") == 2);
+    assert_eq!(
+        setup.typed()[1],
+        format!("wait 1 fired: {} passed\n", waits[0][4])
+    );
+    let runs = setup.rows("runs");
+    let (asleep, woken) = (&runs[0][6], &runs[1][5]);
+    assert!(
+        woken.as_str() >= waits[0][4].as_str(),
+        "woke at {woken}, before {}",
+        waits[0][4]
+    );
+    assert!(asleep.as_str() < waits[0][4].as_str());
+}
+
+#[test]
+fn a_task_wait_fires_when_the_other_task_is_done() {
+    let mut setup = Setup::new("task-wait");
+    setup.calls(&[wait(json!({ "type": "task", "task": 2 })), result("passed")]);
+    setup.publish(&requested(42));
+    setup.publish(&requested(43));
+
+    setup.start();
+
+    setup.until("tasks", |rows| rows.len() == 2 && rows[1][4] == "done");
+    setup.until("outbox", |rows| {
+        rows.iter().any(|row| {
+            row[1] == "1" && row[3] == "confirmed" && row[4] == "wait 1 fired: task 2 is done"
+        })
+    });
+    assert_eq!(setup.rows("tasks")[0][4], "running");
+}
+
+#[test]
+fn an_event_that_already_satisfies_the_wait_when_it_is_stored_wakes_the_task_at_once() {
+    let mut setup = Setup::new("already");
+    setup.calls(&[wait(on_pull_7("pull_request"))]);
+    setup.hold("hold-submit");
+    setup.publish(&requested(42));
+    setup.start();
+    setup.written("fake/pending");
+    // The pull request closes after the agent read its prompt and before it calls wait.
+    setup.publish(&closed());
+    setup.until("outbox", |rows| rows.len() == 2);
+
+    setup.release("hold-submit");
+
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") == 2);
+    let (text, error) = reply(&setup.replies()[0]);
+    assert!(!error, "{text}");
+    assert!(text.starts_with("wait 1 already holds"), "{text}");
+    assert!(
+        setup.typed()[1].starts_with("github.pull_request.closed owner/repo#7 {"),
+        "{:?}",
+        setup.typed()
+    );
+    assert!(setup.rows("waits").is_empty());
+    let runs = setup.rows("runs");
+    assert_eq!(runs.len(), 1, "the run never slept: {runs:?}");
+    assert_eq!(runs[0][7], "-");
 }

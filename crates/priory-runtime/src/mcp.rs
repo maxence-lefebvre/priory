@@ -106,5 +106,28 @@ fn tools() -> Value {
                 "required": ["question", "options", "recommendation", "tradeoff"],
             },
         },
+        {
+            "name": "wait",
+            "description": "Sleep until one condition holds, then end your turn. Priory stops this process and resumes the session with the event that satisfies the condition as your next prompt. Waiting on a pull request makes its events yours.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "on": {
+                        "type": "object",
+                        "description": "The condition: {type: pull_request|checks|review, repo, pull_request} for a pull request that closes, whose checks all complete, or that gets a review; {type: time, until} for an RFC 3339 instant or a duration such as 30 seconds, 5 minutes or 2 hours; {type: task, task} for another task that ends.",
+                        "properties": {
+                            "type": { "type": "string", "enum": ["pull_request", "checks", "review", "time", "task"] },
+                            "repo": text("owner/name, for a pull request condition."),
+                            "pull_request": { "type": "integer", "description": "The pull request number." },
+                            "head_sha": text("For checks: the commit whose checks you wait for. Without it, any head of the pull request."),
+                            "until": text("For time: an RFC 3339 instant, or a duration such as 30 seconds."),
+                            "task": { "type": "integer", "description": "For task: the id of the task to wait for." },
+                        },
+                        "required": ["type"],
+                    },
+                },
+                "required": ["on"],
+            },
+        },
     ])
 }
