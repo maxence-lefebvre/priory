@@ -115,6 +115,7 @@ CREATE TABLE waits (
   resource TEXT,
   until    TEXT,
   target   INTEGER REFERENCES tasks (id),
+  head_sha TEXT,
   created  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
   fired    TEXT,
   inbox    INTEGER REFERENCES inbox (seq)

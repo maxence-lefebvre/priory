@@ -90,9 +90,14 @@ pub(crate) fn route(
     Ok(Decision::Create(task))
 }
 
-/// Whether an event of type `kind` with `data` satisfies a wait of `wait` kind on the pull request
-/// `resource`. A checks wait needs a completed check with no check run still pending on its commit.
-pub(crate) fn satisfies(wait: &str, resource: &str, kind: &str, data: &serde_json::Value) -> bool {
+/// Whether an event satisfies a pull request wait. A checks wait needs no check run still pending.
+pub(crate) fn satisfies(
+    wait: &str,
+    resource: &str,
+    head: Option<&str>,
+    kind: &str,
+    data: &serde_json::Value,
+) -> bool {
     let wanted = match wait {
         "pull_request" => "github.pull_request.closed",
         "review" => "github.pull_request_review.submitted",
@@ -103,5 +108,8 @@ pub(crate) fn satisfies(wait: &str, resource: &str, kind: &str, data: &serde_jso
         .as_str()
         .zip(data["pull_request"].as_u64())
         .is_some_and(|(repo, number)| pull_request(repo, number) == resource);
-    kind == wanted && names && (wait != "checks" || data["pending"].as_u64() == Some(0))
+    let checked = wait != "checks"
+        || (data["pending"].as_u64() == Some(0)
+            && head.is_none_or(|head| data["head_sha"].as_str() == Some(head)));
+    kind == wanted && names && checked
 }

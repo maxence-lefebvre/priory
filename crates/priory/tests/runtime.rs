@@ -1071,14 +1071,15 @@ fn a_run_waiting_on_checks_sleeps_and_only_the_last_check_wakes_it() {
     stays_asleep(&setup);
     setup.publish(&check(2, 0));
 
-    setup.until("outbox", |rows| with(rows, 3, "confirmed") == 3);
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") == 2);
     let typed = setup.typed();
+    let lines: Vec<_> = typed[1].lines().collect();
     assert!(
-        typed[1].starts_with("github.check_run.completed owner/repo#7 {")
-            && typed[1].contains(r#""github_id":2"#),
+        lines[0].starts_with("github.check_run.completed owner/repo#7 {")
+            && lines[0].contains(r#""github_id":2"#),
         "{typed:?}"
     );
-    assert!(typed[2].contains(r#""github_id":1"#), "{typed:?}");
+    assert!(lines[1].contains(r#""github_id":1"#), "{typed:?}");
     assert!(setup.rows("waits").is_empty());
     let runs = setup.rows("runs");
     assert_eq!(runs[0][4], runs[1][4], "the woken run resumes the session");
@@ -1133,16 +1134,36 @@ fn an_event_that_does_not_match_the_wait_stays_kept_and_reaches_the_next_run() {
     assert_eq!(setup.rows("inbox")[1][4], "kept");
     setup.publish(&closed());
 
-    setup.until("outbox", |rows| with(rows, 3, "confirmed") == 3);
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") == 2);
+    std::thread::sleep(Duration::from_millis(1500));
     let typed = setup.typed();
+    assert_eq!(typed.len(), 2, "{typed:?}");
+    let lines: Vec<_> = typed[1].lines().collect();
     assert!(
-        typed[1].starts_with("github.pull_request.closed owner/repo#7 {"),
+        lines[0].starts_with("github.pull_request.closed owner/repo#7 {"),
         "{typed:?}"
     );
     assert!(
-        typed[2].starts_with("github.pull_request_review.submitted owner/repo#7 {"),
+        lines[1].starts_with("github.pull_request_review.submitted owner/repo#7 {"),
         "{typed:?}"
     );
+}
+
+#[test]
+fn a_checks_wait_on_a_head_ignores_checks_of_another_commit() {
+    let mut on = on_pull_7("checks");
+    on["head_sha"] = json!("def");
+    let setup = asleep_on("checks-head", on);
+
+    setup.publish(&check(1, 0));
+    stays_asleep(&setup);
+    let mut last = check(2, 0);
+    last.data["head_sha"] = json!("def");
+    setup.publish(&last);
+
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") == 2);
+    let typed = setup.typed();
+    assert!(typed[1].contains(r#""github_id":2"#), "{typed:?}");
 }
 
 #[test]

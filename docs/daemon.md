@@ -177,7 +177,7 @@ A `ready` task's next run resumes the stored session and types its queued prompt
 | `type`         | Fields                  | Fires on                                                                |
 | -------------- | ----------------------- | ----------------------------------------------------------------------- |
 | `pull_request` | `repo`, `pull_request`  | `github.pull_request.closed` for it, merged or not                      |
-| `checks`       | `repo`, `pull_request`  | `github.check_run.completed` for it, with `pending` 0                   |
+| `checks`       | `repo`, `pull_request`, optional `head_sha` | `github.check_run.completed` for it, with `pending` 0, on `head_sha` if given |
 | `review`       | `repo`, `pull_request`  | `github.pull_request_review.submitted` for it                           |
 | `time`         | `until`                 | the daemon's loop, once `until` has passed                              |
 | `task`         | `task`                  | the daemon's loop, once that task is done, failed or dropped            |
@@ -193,17 +193,20 @@ commit in the same poll, so each check event carries `pending`: how many of them
 then. "Every check run has completed" is a check event with `pending` 0. Two runs that complete
 between two polls both carry 0: the first fires the wait, and the second is kept. A check run that
 GitHub has not created yet is not counted. A pull request with no check runs never fires a checks
-wait.
+wait. A checks wait without `head_sha` takes a check event on any head, so a late event for an older
+head can fire it. More than 100 check runs and statuses on a commit keep `pending` above 0, so such a
+pull request never fires a checks wait.
 
 When the wait is stored, the daemon looks at the events the task kept since the agent's last prompt:
 those not typed yet, and on which no wait fired. The first one that satisfies the wait fires it at
 once, and the time and task conditions are checked at once too. The run then does not sleep: the
 event is typed after its `Stop`.
 
-A wait that fires queues its prompt ahead of the task's other queued prompts: the event's line, or
-for time and task, `wait <id> fired: <until> passed` or `wait <id> fired: task <id> is <state>`. An
-asleep task becomes `ready`, and its next run resumes the session with that prompt. An event that
-does not satisfy the wait stays kept, and the run after the wake types it after the waking prompt.
+A wait that fires queues one prompt ahead of the task's other queued prompts: the event's line, or
+for time and task, `wait <id> fired: <until> passed` or `wait <id> fired: task <id> is <state>`, then
+a line for each event the task kept while it slept. An asleep task becomes `ready`, and its next run
+resumes the session with that prompt. An event that does not satisfy the wait so stays kept until the
+wake.
 
 `priory waits` prints each open wait: id, task, run, kind, what it waits on and when it was stored.
 

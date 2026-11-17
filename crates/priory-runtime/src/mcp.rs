@@ -119,6 +119,7 @@ fn tools() -> Value {
                             "type": { "type": "string", "enum": ["pull_request", "checks", "review", "time", "task"] },
                             "repo": text("owner/name, for a pull request condition."),
                             "pull_request": { "type": "integer", "description": "The pull request number." },
+                            "head_sha": text("For checks: the commit whose checks you wait for. Without it, any head of the pull request."),
                             "until": text("For time: an RFC 3339 instant, or a duration such as 30 seconds."),
                             "task": { "type": "integer", "description": "For task: the id of the task to wait for." },
                         },

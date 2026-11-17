@@ -223,7 +223,7 @@ fn open_wait(tx: &Transaction, run: i64) -> rusqlite::Result<Option<i64>> {
 
 const CONDITIONS: &str = "pull_request, checks, review, time or task";
 
-/// Stores the wait `arguments["on"]` names, then fires it at once if it already holds.
+/// Stores the wait and fires it at once if an event since the agent's last prompt satisfies it (R6.2).
 fn wait(
     tx: &Transaction,
     run: &Run,
@@ -252,23 +252,24 @@ fn wait(
                 "INSERT OR IGNORE INTO owns (task, resource) VALUES (?1, ?2)",
                 params![run.task, resource],
             )?;
+            let head = on["head_sha"].as_str().filter(|_| kind == "checks");
             tx.execute(
-                "INSERT INTO waits (task, run, kind, resource) VALUES (?1, ?2, ?3, ?4)",
-                params![run.task, run.id, kind, resource],
+                "INSERT INTO waits (task, run, kind, resource, head_sha) VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![run.task, run.id, kind, resource, head],
             )?;
         }
         "time" => {
             let until = on["until"].as_str().unwrap_or_default();
             let instant = until.parse::<herdr_bus::Timestamp>().ok();
-            // A duration is an SQLite date modifier, such as `30 seconds`; the `+` refuses `start of day` and negatives.
+            // The `+` refuses the SQLite modifiers that are not durations, such as `start of day`.
             let at: Option<String> = match instant {
                 Some(instant) => tx.query_row(
-                    "SELECT strftime('%Y-%m-%dT%H:%M:%SZ', ?1)",
+                    "SELECT strftime('%Y-%m-%dT%H:%M:%fZ', ?1)",
                     [instant.to_string()],
                     |row| row.get(0),
                 )?,
                 None => tx.query_row(
-                    "SELECT strftime('%Y-%m-%dT%H:%M:%SZ', 'now', '+' || ?1)",
+                    "SELECT strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '+' || ?1)",
                     [until],
                     |row| row.get(0),
                 )?,
@@ -308,7 +309,6 @@ fn wait(
     let id = tx.last_insert_rowid();
     let mut candidates = Vec::new();
     {
-        // Events after the agent's last prompt: kept and not typed yet, and no wait fired on them.
         let mut statement = tx.prepare(
             "SELECT inbox.seq FROM inbox LEFT JOIN outbox ON outbox.id = inbox.outbox
              WHERE inbox.task = ?1 AND inbox.outcome = 'kept'
@@ -344,11 +344,11 @@ fn wait(
     )))
 }
 
-/// Fires the task's open event wait if the inbox entry `seq` satisfies it. Returns whether it did.
+/// Fires the task's open wait if the inbox entry `seq` satisfies it, and says whether it did.
 pub(crate) fn event(tx: &Transaction, task: i64, seq: i64) -> rusqlite::Result<bool> {
     let open = tx
         .query_row(
-            "SELECT waits.id, waits.kind, waits.resource FROM waits JOIN tasks ON tasks.id = waits.task
+            "SELECT waits.id, waits.kind, waits.resource, waits.head_sha FROM waits JOIN tasks ON tasks.id = waits.task
              WHERE waits.task = ?1 AND waits.fired IS NULL AND tasks.state IN ('running', 'asleep')",
             [task],
             |row| {
@@ -356,11 +356,12 @@ pub(crate) fn event(tx: &Transaction, task: i64, seq: i64) -> rusqlite::Result<b
                     row.get::<_, i64>(0)?,
                     row.get::<_, String>(1)?,
                     row.get::<_, Option<String>>(2)?,
+                    row.get::<_, Option<String>>(3)?,
                 ))
             },
         )
         .optional()?;
-    let Some((wait, kind, Some(resource))) = open else {
+    let Some((wait, kind, Some(resource), head)) = open else {
         return Ok(false);
     };
     let (kind_of_event, subject, data): (String, Option<String>, String) = tx.query_row(
@@ -369,7 +370,7 @@ pub(crate) fn event(tx: &Transaction, task: i64, seq: i64) -> rusqlite::Result<b
         |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
     )?;
     let data: Value = serde_json::from_str(&data).expect("inbox data is JSON");
-    if !route::satisfies(&kind, &resource, &kind_of_event, &data) {
+    if !route::satisfies(&kind, &resource, head.as_deref(), &kind_of_event, &data) {
         return Ok(false);
     }
     let line = crate::state::line(&kind_of_event, subject.as_deref(), &data.to_string());
@@ -381,14 +382,14 @@ pub(crate) fn event(tx: &Transaction, task: i64, seq: i64) -> rusqlite::Result<b
 pub(crate) fn due(tx: &Transaction) -> rusqlite::Result<()> {
     let mut fired = Vec::new();
     {
-        let mut statement = tx.prepare(&format!(
+        let mut statement = tx.prepare(
             "SELECT waits.id, waits.task, waits.until, waits.target, target.state FROM waits
              JOIN tasks ON tasks.id = waits.task LEFT JOIN tasks AS target ON target.id = waits.target
              WHERE waits.fired IS NULL AND tasks.state IN ('running', 'asleep')
-             AND ((waits.kind = 'time' AND waits.until <= {NOW})
+             AND ((waits.kind = 'time' AND waits.until <= strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
                OR (waits.kind = 'task' AND target.state IN ('done', 'failed', 'dropped')))
-             ORDER BY waits.id"
-        ))?;
+             ORDER BY waits.id",
+        )?;
         let mut rows = statement.query([])?;
         while let Some(row) = rows.next()? {
             let id: i64 = row.get(0)?;
@@ -409,9 +410,8 @@ pub(crate) fn due(tx: &Transaction) -> rusqlite::Result<()> {
     Ok(())
 }
 
-/// Marks the wait fired and queues `text` as the task's next prompt, ahead of the others. The
-/// inbox entry `seq` that fired it, if any, moves into that prompt. An asleep task becomes ready;
-/// a running one types it after its `Stop`.
+/// Marks the wait fired and queues `text`, then the kept events no prompt carries, ahead of the
+/// task's other prompts. An asleep task becomes ready; a running one reads it after its `Stop`.
 fn fire(
     tx: &Transaction,
     wait: i64,
@@ -436,13 +436,30 @@ fn fire(
                 tx.execute("UPDATE inbox SET outbox = NULL WHERE seq = ?1", [seq])?;
                 tx.execute("DELETE FROM outbox WHERE id = ?1", [prompt])?;
             }
-            // Its prompt carries other text too: leave the event where it is.
             (Some(_), false) => return set_ready(tx, task),
             (None, _) => {}
         }
     }
-    let id = queue_first(tx, task, text)?;
-    if let Some(seq) = seq {
+    let mut text = text.to_owned();
+    let mut carried: Vec<i64> = seq.into_iter().collect();
+    {
+        let mut statement = tx.prepare(
+            "SELECT seq, type, subject, data FROM inbox
+             WHERE task = ?1 AND outcome = 'kept' AND outbox IS NULL AND seq IS NOT ?2 ORDER BY seq",
+        )?;
+        let mut rows = statement.query(params![task, seq])?;
+        while let Some(row) = rows.next()? {
+            carried.push(row.get(0)?);
+            text.push('\n');
+            text.push_str(&crate::state::line(
+                &row.get::<_, String>(1)?,
+                row.get::<_, Option<String>>(2)?.as_deref(),
+                &row.get::<_, String>(3)?,
+            ));
+        }
+    }
+    let id = queue_first(tx, task, &text)?;
+    for seq in carried {
         tx.execute("UPDATE inbox SET outbox = ?1 WHERE seq = ?2", [id, seq])?;
     }
     set_ready(tx, task)
