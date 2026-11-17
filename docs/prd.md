@@ -120,10 +120,12 @@ Read the issue and acceptance criteria, make the smallest correct change, test i
 ```
 
 `runners/xps13.toml`, named by the machine's Tailscale hostname. Capacity is measured live, so the
-file holds no limits:
+file holds the platform and, optionally, the share of the machine its agents may take together
+(R4.7):
 
 ```toml
 platform = { os = "linux" }
+agents = { cpu = "50%", memory = "60%" }   # a laptop in use; omit for the 90 % default
 ```
 
 A trigger names one event source, its filter and the workflow it starts. The workflow names the
@@ -289,7 +291,7 @@ until its run starts.
 - R4.7 On a systemd host, each run starts in its own scope inside one user slice,
   `priory-agents.slice`, through `systemd-run --user --scope --slice=priory-agents.slice -- <agent>`
   in its tmux pane. The slice caps every agent and everything it runs together, at a share of CPU and
-  memory set in `factory.toml` (90 % by default). Agents yield CPU to the user's own apps, and past
+  memory set by the runner's `agents` field (90 % by default). Agents yield CPU to the user's own apps, and past
   their memory share they slow down instead of being killed. A host without systemd relies on the
   room check alone. M1
 - R4.8 The daemon runs as a systemd user service. On an always-on machine, user lingering keeps it
