@@ -15,9 +15,9 @@ Every message is a herdr-bus `Message`, shaped like a CloudEvent:
 | Field     | Type          | Meaning                                                    |
 | --------- | ------------- | ---------------------------------------------------------- |
 | `id`      | UUID string   | A UUIDv5, stable across retries (see Message ids)          |
-| `type`    | string        | `github.issues.labeled`, `github.issues.opened` or `factory.task.requested` |
-| `subject` | string        | `owner/name#42` for a GitHub event, the task key for a task request |
-| `time`    | RFC 3339      | When the GitHub event happened                             |
+| `type`    | string        | `github.issues.labeled`, `github.issues.opened`, `factory.task.requested` or `factory.intake.baseline` |
+| `subject` | string        | `owner/name#42` for a GitHub event, the task key for a task request, `owner/name <stream>` for a baseline marker |
+| `time`    | RFC 3339      | When the GitHub event happened; for a baseline marker, when it was published |
 | `data`    | object        | The fields below, by type                                  |
 | `links`   | array         | GitHub events carry one `{ "label": "issue", "url": ... }` |
 
@@ -40,7 +40,7 @@ pull requests, and other issue events such as `closed` or `mentioned`, are not p
 | `time`      | RFC 3339       | When the label was added, or the issue was created               |
 | `github_id` | integer        | GitHub's issue event id for `labeled`, the issue id for `opened` |
 | `baseline`  | boolean        | True when the event came from the first poll of its repository and type (see Baseline) |
-| `triggers`  | array of strings | The triggers the intake requested a task for, from this event; may be empty |
+| `triggers`  | array of strings | The triggers this event matched when the intake published it, so the triggers it requests tasks for; may be empty |
 
 ```json
 {
@@ -115,23 +115,45 @@ of these names:
 | `github.issues.labeled`  | `github:{repo}:issues/events:{github_id}`    |
 | `github.issues.opened`   | `github:{repo}:issues:{github_id}:opened`    |
 | `factory.task.requested` | `factory.task.requested:{trigger}:{source}`  |
+| `factory.intake.baseline` | `factory.intake.baseline:{repo}:{stream}`   |
 
 ## Baseline
 
-The first poll of a repository and type is a baseline. It reads GitHub's first page: up to 100
-recent issue events, or up to 100 recent issues. It publishes each of those events with
-`baseline: true`, which records where polling stands. It requests no task for them, except for a
-trigger with `backfill = true`, which gets a task for each event it matches.
+The first poll of a repository and type, a stream, is a baseline. It reads GitHub's first page: up to
+100 recent issue events, or up to 100 recent issues. It publishes each of those events with
+`baseline: true`, and requests no task for them, except for a trigger with `backfill = true`, which
+gets a task for each event it matches. It then publishes one `factory.intake.baseline` message for
+the stream, even when the page held no event. A consumer can ignore that message.
+
+| Field      | Type    | Meaning                                                                |
+| ---------- | ------- | ---------------------------------------------------------------------- |
+| `repo`     | string  | `owner/name`                                                           |
+| `stream`   | string  | `github.issues.labeled` or `github.issues.opened`                      |
+| `position` | integer | The highest issue event id, or issue number, on that page; 0 when empty |
+
+```json
+{
+  "id": "40b37648-1c78-5b20-afb0-fd16d84af39e",
+  "type": "factory.intake.baseline",
+  "subject": "cli/cli github.issues.labeled",
+  "time": "2026-11-17T16:58:50.369119964Z",
+  "data": { "repo": "cli/cli", "stream": "github.issues.labeled", "position": 36430795541 },
+  "links": []
+}
+```
+
+Until that message is on the output, the stream is still in its baseline: a crash during the
+baseline makes the next start read the first page again as a baseline.
 
 ## Where polling stops
 
-The intake keeps no state file. On start, it reads `factory.intake` back, newest first, for the
-newest `labeled` and `opened` message of each repository. Their issue event id and issue number are
-where polling stopped. When such a message is not a baseline, the intake publishes again the task
-requests of the triggers it lists, so a crash between a source event and its task requests loses
-nothing; herdr-bus drops the repeats. A trigger added since gets no task from this, because it is not
-in the list. Each poll
-then publishes, oldest first, the events after that point. Without `--once`, a failing `gh` is
+The intake keeps no state file. On start, it reads `factory.intake` back, newest first, to each
+stream's `factory.intake.baseline` message. Where polling stopped is the higher of that message's
+`position` and the position of the stream's newest source event. When that newest event is not a
+baseline, the intake publishes again its task requests, for the triggers in its `triggers` that
+the factory still defines. A crash between a source event and its task requests then loses
+nothing, and herdr-bus drops the repeats. A trigger added since gets no task from this, because it
+is not in the list. Each poll then publishes, oldest first, the events after that point. Without `--once`, a failing `gh` is
 logged and retried on the next poll, while a failing publish ends the intake, so that its restart
 recovers what it left out.
 
@@ -142,8 +164,7 @@ Limits:
   on it.
 - A crash between a baseline event and the task request of a `backfill` trigger loses that task
   request: start-up recovery never dispatches a baseline event.
-- Until a repository has a `labeled` message, the intake reads only the first page of its issue
-  events. A label added there and followed by 100 or more other issue events within one poll is
-  missed.
+- A trigger removed after a crash and before the restart gets no recovered task request.
+- Each start reads the output back to the baseline markers, which grows with the output.
 - `opened` pages follow creation time and stop at issue numbers. An issue transferred or imported
   into the repository with an older creation time can be missed.

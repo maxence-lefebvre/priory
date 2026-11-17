@@ -98,8 +98,15 @@ impl Setup {
             .unwrap()
     }
 
-    /// What `factory.intake` holds, oldest first.
+    /// The source events and task requests on `factory.intake`, oldest first.
     fn published(&self) -> Vec<Stored> {
+        let mut messages = self.output();
+        messages.retain(|m| m.message.kind != "factory.intake.baseline");
+        messages
+    }
+
+    /// Everything on `factory.intake`, oldest first.
+    fn output(&self) -> Vec<Stored> {
         let bus = Bus::open(&self.dir.join("bus.db")).unwrap();
         let mut messages = bus
             .messages(&MessageQuery {
@@ -197,10 +204,21 @@ fn a_first_poll_is_a_baseline_that_requests_no_task() {
 
     succeeded(&setup.intake());
 
-    let published = setup.published();
-    assert_eq!(kinds(&published), ["github.issues.labeled"]);
-    assert_eq!(published[0].message.data["baseline"], true);
-    assert_eq!(published[0].message.data["triggers"], json!([]));
+    let output = setup.output();
+    assert_eq!(
+        kinds(&output),
+        [
+            "github.issues.labeled",
+            "factory.intake.baseline",
+            "factory.intake.baseline"
+        ]
+    );
+    assert_eq!(output[0].message.data["baseline"], true);
+    assert_eq!(output[0].message.data["triggers"], json!([]));
+    assert_eq!(
+        output[1].message.data,
+        json!({ "repo": "owner/repo", "stream": "github.issues.labeled", "position": 101 })
+    );
 }
 
 #[test]
@@ -409,4 +427,74 @@ fn a_trigger_added_later_gets_no_task_for_events_already_dispatched() {
     succeeded(&setup.intake());
 
     assert_eq!(setup.published().len(), before);
+}
+
+#[test]
+fn a_first_poll_with_no_events_still_sets_the_baseline() {
+    let setup = Setup::new("empty-baseline", &[]);
+    succeeded(&setup.intake());
+    setup.answer(&[(EVENTS_PATH, json!([labeled(101, 42, "agent")]))]);
+
+    succeeded(&setup.intake());
+
+    let tasks = kinds(&setup.published())
+        .into_iter()
+        .filter(|kind| *kind == "factory.task.requested")
+        .count();
+    assert_eq!(tasks, 1);
+}
+
+/// A bus holding `source` on `factory.intake`, as a crash would leave it.
+fn seed(setup: &Setup, source: &Message) {
+    let bus = Bus::open(&setup.dir.join("bus.db")).unwrap();
+    bus.declare(&herdr_bus::Output::new("factory.intake"))
+        .unwrap();
+    bus.publish("factory.intake", source).unwrap();
+}
+
+fn baseline_source(github_id: u64, triggers: serde_json::Value) -> Message {
+    Message::new(
+        "github.issues.labeled",
+        json!({
+            "repo": "owner/repo",
+            "issue": 42,
+            "label": "agent",
+            "github_id": github_id,
+            "baseline": true,
+            "triggers": triggers
+        }),
+    )
+}
+
+#[test]
+fn a_baseline_a_crash_interrupted_stays_a_baseline() {
+    let setup = Setup::new(
+        "interrupted-baseline",
+        &[(
+            EVENTS_PATH,
+            json!([labeled(102, 43, "agent"), labeled(101, 42, "agent")]),
+        )],
+    );
+    seed(&setup, &baseline_source(101, json!([])));
+
+    succeeded(&setup.intake());
+
+    let published = setup.published();
+    assert!(!kinds(&published).contains(&"factory.task.requested"));
+    assert!(
+        published
+            .iter()
+            .filter(|m| m.message.kind == "github.issues.labeled")
+            .all(|m| m.message.data["baseline"] == true)
+    );
+}
+
+#[test]
+fn a_restart_never_dispatches_a_baseline_source() {
+    let setup = Setup::new("baseline-guard", &[]);
+    seed(&setup, &baseline_source(101, json!(["agent-label"])));
+
+    succeeded(&setup.intake());
+
+    assert!(!kinds(&setup.published()).contains(&"factory.task.requested"));
 }

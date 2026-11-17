@@ -11,12 +11,16 @@ pub const OUTPUT: &str = "factory.intake";
 const LABELED: &str = "github.issues.labeled";
 const OPENED: &str = "github.issues.opened";
 const TASK_REQUESTED: &str = "factory.task.requested";
+const BASELINE: &str = "factory.intake.baseline";
 const PAGE: usize = 100;
 const EVERY: Duration = Duration::from_secs(60);
 
-/// Where polling stopped, per repo and message type: the highest issue event id for labeled
-/// events, the highest issue number for opened issues.
-type Cursors = BTreeMap<(String, &'static str), u64>;
+/// A repo and the source message type polled for it.
+type Stream = (String, &'static str);
+
+/// Where polling stopped, per stream: the highest issue event id for labeled events, the highest
+/// issue number for opened issues. A stream without one is still in its baseline.
+type Cursors = BTreeMap<Stream, u64>;
 
 pub fn run(factory: &Factory, once: bool) -> Result<(), String> {
     let triggers: Vec<(&str, &Trigger)> = factory
@@ -33,22 +37,23 @@ pub fn run(factory: &Factory, once: bool) -> Result<(), String> {
     bus.declare(
         &Output::new(OUTPUT)
             .describe("Priory intake: source events and the tasks they request")
-            .types([LABELED, OPENED, TASK_REQUESTED]),
+            .types([LABELED, OPENED, TASK_REQUESTED, BASELINE]),
     )
     .map_err(|error| error.to_string())?;
-    let newest = newest(&bus, &repos).map_err(|error| error.to_string())?;
-    let mut cursors = Cursors::new();
-    for ((repo, kind), source) in newest {
+    let (newest, mut cursors) = newest(&bus, &repos).map_err(|error| error.to_string())?;
+    for (stream, source) in newest {
         // A crash may have stopped between this source and its task requests.
         if source.data["baseline"] != true {
             dispatch(&bus, &triggers, &source)?;
         }
-        cursors.insert((repo, kind), position(&source.data, kind));
+        if let Some(cursor) = cursors.get_mut(&stream) {
+            *cursor = (*cursor).max(position(&source.data, stream.1));
+        }
     }
     loop {
         match fetch(&repos, &cursors) {
             // A publish error ends the intake: its restart recovers the source it left behind.
-            Ok(observed) => publish_all(&bus, &triggers, observed, &mut cursors)?,
+            Ok(polled) => publish_all(&bus, &triggers, polled, &mut cursors)?,
             Err(error) if once => return Err(error),
             Err(error) => eprintln!("{error}"),
         }
@@ -59,16 +64,19 @@ pub fn run(factory: &Factory, once: bool) -> Result<(), String> {
     }
 }
 
-/// The newest source event published per repo and type, read back newest first.
+/// The newest source event per stream, and the baseline position of each stream that finished
+/// its baseline, read back newest first.
 fn newest(
     bus: &Bus,
     repos: &BTreeSet<&str>,
-) -> herdr_bus::Result<BTreeMap<(String, &'static str), Message>> {
+) -> herdr_bus::Result<(BTreeMap<Stream, Message>, Cursors)> {
     let wanted = repos.len() * 2;
     let mut newest = BTreeMap::new();
+    let mut baselines = Cursors::new();
     let mut before = None;
-    // shortcut: a repo with no event of one type makes this read the whole output, once per start.
-    while newest.len() < wanted {
+    // shortcut: reads back to each stream's baseline marker, once per start; a stored cursor would
+    // make this constant once the output is large.
+    while baselines.len() < wanted {
         let page = bus.messages(&MessageQuery {
             output: Some(OUTPUT.into()),
             before,
@@ -80,22 +88,35 @@ fn newest(
         };
         before = Some(oldest.seq);
         for stored in &page {
-            let kind = match stored.message.kind.as_str() {
-                LABELED => LABELED,
-                OPENED => OPENED,
-                _ => continue,
-            };
-            let Some(repo) = stored.message.data["repo"].as_str() else {
+            let data = &stored.message.data;
+            let Some(repo) = data["repo"].as_str().filter(|repo| repos.contains(repo)) else {
                 continue;
             };
-            if repos.contains(repo) {
-                newest
-                    .entry((repo.to_string(), kind))
-                    .or_insert_with(|| stored.message.clone());
+            match stored.message.kind.as_str() {
+                BASELINE => {
+                    let Some(kind) = kind(data["stream"].as_str().unwrap_or_default()) else {
+                        continue;
+                    };
+                    let position = data["position"].as_u64().unwrap_or_default();
+                    baselines
+                        .entry((repo.to_string(), kind))
+                        .or_insert(position);
+                }
+                other => {
+                    if let Some(kind) = kind(other) {
+                        newest
+                            .entry((repo.to_string(), kind))
+                            .or_insert_with(|| stored.message.clone());
+                    }
+                }
             }
         }
     }
-    Ok(newest)
+    Ok((newest, baselines))
+}
+
+fn kind(name: &str) -> Option<&'static str> {
+    [LABELED, OPENED].into_iter().find(|kind| *kind == name)
 }
 
 /// Where a source event stands in its stream: its issue event id, or its issue number.
@@ -104,35 +125,68 @@ fn position(data: &serde_json::Value, kind: &str) -> u64 {
     data[field].as_u64().unwrap_or_default()
 }
 
+/// What one poll of a stream found: its new events, oldest first, and the highest position seen.
+struct Polled {
+    stream: Stream,
+    events: Vec<Observed>,
+    top: Option<u64>,
+}
+
 /// Fetches every repo first, so that a failing `gh` publishes nothing.
-fn fetch(repos: &BTreeSet<&str>, cursors: &Cursors) -> Result<Vec<Observed>, String> {
-    let mut observed = Vec::new();
+fn fetch(repos: &BTreeSet<&str>, cursors: &Cursors) -> Result<Vec<Polled>, String> {
+    let mut polled = Vec::new();
     for repo in repos {
-        observed.extend(labeled(
-            repo,
-            cursors.get(&(repo.to_string(), LABELED)).copied(),
-        )?);
-        observed.extend(opened(
-            repo,
-            cursors.get(&(repo.to_string(), OPENED)).copied(),
-        )?);
+        for kind in [LABELED, OPENED] {
+            let stream = (repo.to_string(), kind);
+            let cursor = cursors.get(&stream).copied();
+            let (events, top) = if kind == LABELED {
+                labeled(repo, cursor)?
+            } else {
+                opened(repo, cursor)?
+            };
+            polled.push(Polled {
+                stream,
+                events,
+                top,
+            });
+        }
     }
-    Ok(observed)
+    Ok(polled)
 }
 
 fn publish_all(
     bus: &Bus,
     triggers: &[(&str, &Trigger)],
-    observed: Vec<Observed>,
+    polled: Vec<Polled>,
     cursors: &mut Cursors,
 ) -> Result<(), String> {
-    for event in observed {
-        let source = event.message(triggers)?;
-        publish(bus, &source)?;
-        dispatch(bus, triggers, &source)?;
-        cursors.insert((event.repo, event.kind), position(&source.data, event.kind));
+    for Polled {
+        stream,
+        events,
+        top,
+    } in polled
+    {
+        for event in events {
+            let source = event.message(triggers)?;
+            publish(bus, &source)?;
+            dispatch(bus, triggers, &source)?;
+        }
+        let cursor = cursors.get(&stream).copied();
+        let top = top.max(cursor).unwrap_or_default();
+        if cursor.is_none() {
+            publish(bus, &baseline(&stream, top))?;
+        }
+        cursors.insert(stream, top);
     }
     Ok(())
+}
+
+/// Marks the end of a stream's baseline, even when its first page held no event.
+fn baseline((repo, kind): &Stream, position: u64) -> Message {
+    let data = json!({ "repo": repo, "stream": kind, "position": position });
+    Message::new(BASELINE, data)
+        .id(id(&format!("{BASELINE}:{repo}:{kind}")))
+        .subject(format!("{repo} {kind}"))
 }
 
 /// Publishes a task request for each trigger the source names, among those still defined.
@@ -275,13 +329,13 @@ struct IssueEvent {
     issue: Issue,
 }
 
-fn labeled(repo: &str, cursor: Option<u64>) -> Result<Vec<Observed>, String> {
-    let events: Vec<IssueEvent> = pages(
+fn labeled(repo: &str, cursor: Option<u64>) -> Result<(Vec<Observed>, Option<u64>), String> {
+    let (events, top): (Vec<IssueEvent>, _) = pages(
         &format!("repos/{repo}/issues/events?"),
         cursor,
         |event: &IssueEvent| event.id,
     )?;
-    Ok(events
+    let observed = events
         .into_iter()
         .filter(|event| event.event == "labeled" && event.issue.pull_request.is_none())
         .map(|event| Observed {
@@ -294,16 +348,17 @@ fn labeled(repo: &str, cursor: Option<u64>) -> Result<Vec<Observed>, String> {
             issue: event.issue,
             baseline: cursor.is_none(),
         })
-        .collect())
+        .collect();
+    Ok((observed, top))
 }
 
-fn opened(repo: &str, cursor: Option<u64>) -> Result<Vec<Observed>, String> {
-    let issues: Vec<Issue> = pages(
+fn opened(repo: &str, cursor: Option<u64>) -> Result<(Vec<Observed>, Option<u64>), String> {
+    let (issues, top): (Vec<Issue>, _) = pages(
         &format!("repos/{repo}/issues?state=all&sort=created&direction=desc&"),
         cursor,
         |issue: &Issue| issue.number,
     )?;
-    Ok(issues
+    let observed = issues
         .into_iter()
         .filter(|issue| issue.pull_request.is_none())
         .map(|issue| Observed {
@@ -316,16 +371,17 @@ fn opened(repo: &str, cursor: Option<u64>) -> Result<Vec<Observed>, String> {
             issue,
             baseline: cursor.is_none(),
         })
-        .collect())
+        .collect();
+    Ok((observed, top))
 }
 
-/// Newest-first pages until one reaches `cursor`, returned oldest first from `cursor` on.
-/// Without a cursor, only the first page: older history is not published.
+/// Newest-first pages until one reaches `cursor`: the items after `cursor`, oldest first, and the
+/// highest position seen. Without a cursor, only the first page: older history is not published.
 fn pages<T: DeserializeOwned>(
     path: &str,
     cursor: Option<u64>,
     order: impl Fn(&T) -> u64,
-) -> Result<Vec<T>, String> {
+) -> Result<(Vec<T>, Option<u64>), String> {
     let mut items: Vec<T> = Vec::new();
     for page in 1.. {
         let batch: Vec<T> = gh(&format!("{path}per_page={PAGE}&page={page}"))?;
@@ -336,9 +392,10 @@ fn pages<T: DeserializeOwned>(
             break;
         }
     }
+    let top = items.iter().map(&order).max();
     items.retain(|item| cursor.is_none_or(|cursor| order(item) > cursor));
     items.sort_by_key(&order);
-    Ok(items)
+    Ok((items, top))
 }
 
 fn gh<T: DeserializeOwned>(path: &str) -> Result<T, String> {
