@@ -1,9 +1,10 @@
 use crate::route;
-use priory_factory::factory::{Decider, Loaded, Step, Workflow};
+use priory_factory::factory::{Decider, Effect, Loaded, Step, Workflow};
 use priory_intake::intake::{CHECKED, PASSING};
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 use serde_json::Value;
 use std::collections::BTreeMap;
+use std::path::Path;
 
 type Workflows = BTreeMap<String, Loaded<Workflow>>;
 
@@ -433,8 +434,10 @@ impl Seen {
 /// decides: red wakes the agent, and green with none pending or failing marks the task done.
 fn judge(tx: &Transaction, wait: i64) -> rusqlite::Result<bool> {
     let (task, resource, commit, mark): (i64, String, String, Option<i64>) = tx.query_row(
-        "SELECT waits.task, waits.resource, waits.head_sha, results.inbox FROM waits
-         JOIN results ON results.run = waits.run WHERE waits.id = ?1",
+        "SELECT waits.task, waits.resource, waits.head_sha, coalesce(
+           (SELECT max(inbox) FROM actions WHERE result = waits.run AND commit_sha = waits.head_sha),
+           results.inbox)
+         FROM waits JOIN results ON results.run = waits.run WHERE waits.id = ?1",
         [wait],
         |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
     )?;
@@ -718,12 +721,15 @@ fn queue_first(tx: &Transaction, task: i64, text: &str) -> rusqlite::Result<i64>
     Ok(id)
 }
 
-/// The pull request the task owns: the one its latest wait named, else the latest one opened from
-/// its branch, else its key when a pull request event created it.
+/// The pull request the task owns: the latest one its actions opened, else the one its latest wait
+/// named, else the latest one opened from its branch, else its key when a pull request event created it.
 fn pull_request(tx: &Transaction, task: i64) -> rusqlite::Result<Option<String>> {
     tx.query_row(
         "SELECT resource FROM (
-           SELECT resource, 2 AS rank, id AS at FROM waits WHERE task = ?1 AND resource IS NOT NULL
+           SELECT pull_request AS resource, 3 AS rank, id AS at FROM actions
+             WHERE task = ?1 AND pull_request IS NOT NULL
+           UNION ALL
+           SELECT resource, 2, id FROM waits WHERE task = ?1 AND resource IS NOT NULL
            UNION ALL
            SELECT 'github:' || json_extract(inbox.data, '$.repo') || '#' || json_extract(inbox.data, '$.pull_request'), 1, inbox.seq
              FROM inbox JOIN tasks ON tasks.id = inbox.task
@@ -785,9 +791,19 @@ fn enter(
     {
         let last = tx
             .query_row(
-                "SELECT run, step, commit_sha FROM results WHERE task = ?1 ORDER BY run DESC LIMIT 1",
+                "SELECT results.run, results.step, coalesce(
+                   (SELECT commit_sha FROM actions WHERE result = results.run AND status = 'opened'
+                    ORDER BY id DESC LIMIT 1),
+                   results.commit_sha)
+                 FROM results WHERE task = ?1 ORDER BY run DESC LIMIT 1",
                 [task],
-                |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?, row.get::<_, Option<String>>(2)?)),
+                |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, Option<String>>(2)?,
+                    ))
+                },
             )
             .optional()?;
         let Some((result_run, at, Some(commit))) = last else {
@@ -852,24 +868,21 @@ fn enter(
             finish("asleep")
         }
         Decider::Code => {
-            set(
-                tx,
-                task,
-                "blocked",
-                Some(target),
-                Some("code steps are not built yet"),
-            )?;
-            finish("blocked")
+            set(tx, task, "ready", Some(target), None)?;
+            finish("moved")
         }
     }
 }
 
 /// Applies a person's answer. The first answer to an ask's current revision stands. A step's ask
 /// moves the task by the chosen option; an agent's ask queues the answer as its next prompt.
+/// An answer toward a step the asked step `approves` records an approval at the task's commit, which
+/// `head` reads from its worktree.
 pub(crate) fn answer(
     db: &mut Connection,
     answer: &Answer,
     workflows: &Workflows,
+    head: &dyn Fn(&Path) -> Option<String>,
 ) -> rusqlite::Result<Result<String, String>> {
     let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
     let ask = tx
@@ -927,6 +940,18 @@ pub(crate) fn answer(
             .and_then(|step| step.next.get(&answer.text))
             .cloned()
             .unwrap_or_else(|| format!("{at}?{}", answer.text));
+        let approved: Vec<&String> = workflows
+            .get(&workflow)
+            .and_then(|flow| Some((&flow.value, flow.value.step(&at)?)))
+            .into_iter()
+            .flat_map(|(flow, asked)| {
+                asked
+                    .approves
+                    .iter()
+                    .filter(|approved| flow.reaches(&target, approved))
+            })
+            .collect();
+        approve(&tx, task, answer, &approved, head)?;
         enter(&tx, task, &workflow, &target, None, "", workflows)?;
     } else {
         queue_first(&tx, task, &answer.text)?;
@@ -1046,5 +1071,131 @@ pub(crate) fn lost(db: &mut Connection, session: &str, tmux: &str) -> rusqlite::
         queue_first(&tx, run.task, &text)?;
         set(&tx, run.task, "ready", None, None)?;
     }
+    tx.commit()
+}
+
+/// Records `answer` as the approval of each step in `approved`, at the task's commit.
+fn approve(
+    tx: &Transaction,
+    task: i64,
+    answer: &Answer,
+    approved: &[&String],
+    head: &dyn Fn(&Path) -> Option<String>,
+) -> rusqlite::Result<()> {
+    if approved.is_empty() {
+        return Ok(());
+    }
+    let worktree: Option<String> =
+        tx.query_row("SELECT worktree FROM tasks WHERE id = ?1", [task], |row| {
+            row.get(0)
+        })?;
+    let commit = worktree.and_then(|worktree| head(Path::new(&worktree)));
+    for step in approved {
+        tx.execute(
+            "INSERT INTO approvals (task, step, ask, revision, commit_sha) VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![task, step, answer.ask, answer.revision, commit],
+        )?;
+    }
+    Ok(())
+}
+
+/// Whether the irreversible code step `at` may run at the task's commit `head`. With no approval,
+/// the task blocks. With one given at another commit, its ask gets a new revision and the task
+/// sleeps at the approving step until a person answers it again.
+pub(crate) fn approved(
+    db: &mut Connection,
+    task: i64,
+    at: &Step,
+    head: Option<&str>,
+) -> rusqlite::Result<bool> {
+    if at.effect != Effect::Irreversible || at.autonomous.is_some() {
+        return Ok(true);
+    }
+    let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let approval = tx
+        .query_row(
+            "SELECT approvals.ask, approvals.commit_sha, asks.step FROM approvals
+             JOIN asks ON asks.id = approvals.ask
+             WHERE approvals.task = ?1 AND approvals.step = ?2 ORDER BY approvals.id DESC LIMIT 1",
+            params![task, at.id],
+            |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, Option<String>>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            },
+        )
+        .optional()?;
+    let Some((ask, commit, approving)) = approval else {
+        let reason = format!("step {} is irreversible and no answer approved it", at.id);
+        set(&tx, task, "blocked", None, Some(&reason))?;
+        tx.commit()?;
+        return Ok(false);
+    };
+    if commit.as_deref() == head {
+        return Ok(true);
+    }
+    let moved = format!(
+        "\nasked again: the branch moved from {} to {} since this was answered",
+        commit.as_deref().unwrap_or("-"),
+        head.unwrap_or("-")
+    );
+    tx.execute(
+        "UPDATE asks SET revision = revision + 1, answer = NULL, answered = NULL,
+         question = question || ?2 WHERE id = ?1",
+        params![ask, moved],
+    )?;
+    set(&tx, task, "asleep", Some(&approving), None)?;
+    tx.commit()?;
+    Ok(false)
+}
+
+/// What an action did: its status, a key of the step's `next`, and what it opened or why it failed.
+pub(crate) struct Done {
+    pub status: &'static str,
+    pub pull_request: Option<String>,
+    pub commit: Option<String>,
+    pub error: Option<String>,
+}
+
+/// Records the run of the code step `at`'s action, makes the task own the pull request it opened,
+/// and moves the task by `next[status]`.
+pub(crate) fn performed(
+    db: &mut Connection,
+    task: i64,
+    workflow: &str,
+    at: &Step,
+    done: &Done,
+    workflows: &Workflows,
+) -> rusqlite::Result<()> {
+    let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    tx.execute(
+        "INSERT INTO actions (task, step, action, status, pull_request, commit_sha, error, result, inbox)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7,
+           (SELECT max(run) FROM results WHERE task = ?1), (SELECT max(seq) FROM inbox))",
+        params![
+            task,
+            at.id,
+            at.action,
+            done.status,
+            done.pull_request,
+            done.commit,
+            done.error
+        ],
+    )?;
+    if let Some(resource) = &done.pull_request {
+        tx.execute(
+            "INSERT OR IGNORE INTO owns (task, resource) VALUES (?1, ?2)",
+            params![task, resource],
+        )?;
+    }
+    let target = at
+        .next
+        .get(done.status)
+        .cloned()
+        .unwrap_or_else(|| format!("{}?{}", at.id, done.status));
+    let context = done.error.as_deref().unwrap_or_default();
+    enter(&tx, task, workflow, &target, None, context, workflows)?;
     tx.commit()
 }

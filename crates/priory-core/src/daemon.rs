@@ -1,6 +1,7 @@
 use crate::room::Share;
+use crate::route;
 use crate::state::{self, Admission, NewRun, Signal};
-use crate::tools::{self, Act, Answer, Call};
+use crate::tools::{self, Act, Answer, Call, Done};
 use herdr_bus::{Bus, Start};
 use priory_factory::factory::Factory;
 use priory_intake::intake::OUTPUT;
@@ -108,7 +109,10 @@ fn take(
     match serde_json::from_str::<Input>(line) {
         Ok(Input::Signal(signal)) => Ok(("ok".to_owned(), state::signal(db, &signal, workflows)?)),
         Ok(Input::Call(call)) => Ok((replied(tools::call(db, &call, workflows)?), None)),
-        Ok(Input::Answer(answer)) => Ok((replied(tools::answer(db, &answer, workflows)?), None)),
+        Ok(Input::Answer(answer)) => Ok((
+            replied(tools::answer(db, &answer, workflows, &runtime::head)?),
+            None,
+        )),
         Ok(Input::Act(act)) => {
             let (reply, kill) = tools::act(db, &act)?;
             Ok((replied(reply), kill))
@@ -142,6 +146,7 @@ fn tend(db: &mut Connection, factory: &Factory, share: &Share, home: &Path) -> R
         }
     }
     state::due(db)?;
+    perform(db, factory)?;
     loop {
         // Measured again after each start, since its clone and worktree take disk.
         let measured = OnceCell::new();
@@ -193,6 +198,78 @@ fn verdict(run: &state::LiveRun, factory: &Factory) -> Option<(&'static str, Str
     run.turn.filter(|turn| *turn >= limit as i64).map(|_| {
         let reason = format!("run {} timed out: its turn ran past {limit}s", run.id);
         ("timeout", reason)
+    })
+}
+
+/// Runs the action of the oldest task at a code step, once an irreversible step's approval holds.
+/// An action that is not built yet blocks the task.
+fn perform(db: &mut Connection, factory: &Factory) -> Result<(), Error> {
+    let Some(due) = state::actionable(db, &factory.workflows)? else {
+        return Ok(());
+    };
+    let step = factory.workflows[&due.workflow]
+        .value
+        .step(&due.step)
+        .expect("actionable checked the step");
+    let head = due
+        .worktree
+        .as_deref()
+        .map(Path::new)
+        .and_then(runtime::head);
+    if !tools::approved(db, due.task, step, head.as_deref())? {
+        return Ok(());
+    }
+    let done = match step.action.as_deref().unwrap_or_default() {
+        "open-pr" => open_pr(db, factory, &due)?,
+        other => {
+            let reason = format!("action {other} is not built yet");
+            return Ok(state::block(db, due.task, "blocked", &reason)?);
+        }
+    };
+    Ok(tools::performed(
+        db,
+        due.task,
+        &due.workflow,
+        step,
+        &done,
+        &factory.workflows,
+    )?)
+}
+
+/// Pushes the task's branch and opens its pull request, titled and described by its latest result.
+fn open_pr(db: &Connection, factory: &Factory, due: &state::Due) -> Result<Done, Error> {
+    let described = state::last_result(db, due.task)?;
+    let repo = factory
+        .triggers
+        .get(&due.trigger)
+        .and_then(|trigger| trigger.value.repo.as_deref());
+    let opened = match (repo, &due.worktree, &due.branch, described) {
+        (None, ..) => Err(format!("trigger {} names no repo", due.trigger)),
+        (_, None, ..) | (_, _, None, _) => Err("the task has no worktree yet".to_owned()),
+        (.., None) => Err("no result describes the pull request".to_owned()),
+        (Some(repo), Some(worktree), Some(branch), Some((summary, evidence))) => {
+            let title = summary.lines().next().unwrap_or_default();
+            let body = match evidence {
+                Some(evidence) => format!("{summary}\n\n{evidence}"),
+                None => summary.clone(),
+            };
+            runtime::open_pull_request(Path::new(worktree), repo, branch, title, &body)
+                .map(|(number, commit)| (route::pull_request(repo, number), commit))
+        }
+    };
+    Ok(match opened {
+        Ok((pull_request, commit)) => Done {
+            status: "opened",
+            pull_request: Some(pull_request),
+            commit: Some(commit),
+            error: None,
+        },
+        Err(error) => Done {
+            status: "failed",
+            pull_request: None,
+            commit: None,
+            error: Some(error),
+        },
     })
 }
 
