@@ -64,9 +64,10 @@ Waits. A message kept for a task in any other state waits for the task's next ru
 
 A run is one task step worked by one agent's `claude` process. When a step leads to another model
 step with the same agent, the process carries on into a new run, so each run has at most one result.
-A model step with another agent gets a new run and a new process, as described under Moving on. The daemon starts at most one
-run at a time until the runner's room check lands. It picks the oldest `queued` or `ready` task whose
-step decides `model`, and finds the repository through the task's trigger.
+A model step with another agent gets a new run and a new process, as described under Moving on. Each
+second, the daemon goes through the `queued` and `ready` tasks whose step decides `model`, oldest
+first, and starts a run for each one that fits in the room, as described under Room. It finds the
+repository through the task's trigger.
 
 The daemon creates the worktree, records the run and the task as `running`, then starts
 `claude` in a detached tmux session named `priory-<task id>`, in the worktree:
@@ -100,6 +101,47 @@ then continue.` The next run resumes the session in the same worktree. This happ
 task's previous run was lost too and this run stored no ask or wait, the task blocks with
 `run <id> was lost again before it made progress: tmux session <name> is gone`. A prompt the lost
 run had attempted stays `uncertain` and is never typed again.
+
+### Room
+
+The daemon admits a run only when the machine has room for it, measured live:
+
+| Measure | Read from | Admits when |
+| ------- | --------- | ----------- |
+| Memory | `MemAvailable` and `MemTotal` in `/proc/meminfo` | free memory, minus the memory promised to starting runs, minus the agent's `memory`, stays at or above `(1 - memory share) × MemTotal` |
+| Disk | `df -Pk` on `PRIORY_HOME`, which reads `statvfs` | free disk stays above 10 % of the disk, or above 20 GB on a disk over 200 GB |
+| CPU | the 1-minute load in `/proc/loadavg`, and the CPUs this process may use | the load stays below `cpu share × CPUs` |
+
+The shares come from `agents` in `runners/<host>.toml`, where `<host>` is the name in
+`/proc/sys/kernel/hostname`. Each part defaults to 90 %, as when the file or the field is missing.
+So by default a run must leave 10 % of memory free, and the load must stay below 90 % of the CPUs.
+`agents` has no disk part, so disk always keeps 10 % free, and at most 20 GB, so that a large disk
+with tens of GB free still admits runs.
+
+An agent declares its `memory` as a size such as `512MB` or `6GB`, where a GB is 1024³ bytes, as
+in `/proc/meminfo`. An agent with no `memory` declares 4 GB: Claude Code takes about 0.5 GB, and an
+agent runs builds and tests beside it. Declaring too much only delays a start; declaring too little
+lets agents run the machine out of memory.
+
+A run promises its agent's `memory` from its start until its `SessionStart`, since free memory does
+not show its use before then. So two runs admitted in the same second cannot both take the same
+free memory.
+
+A task that does not fit stays `queued` or `ready`, and its reason says why it waits, such as
+`waits for room: 3.1 GB of memory free, needs 6.0 GB and keeps 6.4 GB free`, `waits for room: 12.0
+GB of disk free, keeps 20.0 GB free` or `waits for room: load 7.50 on 8 CPUs, keeps it under 7.20`.
+`priory tasks` shows it. A younger task that fits starts ahead of it.
+
+`PRIORY_PROC` names a directory to read in place of `/proc`. The tests use it, with a fake `df` on
+`PATH`, to steer the measurements.
+
+Known limits:
+
+- After `SessionStart`, a run counts only for the memory it uses, so an agent that grows past what
+  was free when it started can still crowd the machine. R4.9's memory gate and R4.10's slice address
+  that in M1.
+- A large task can wait behind younger tasks that keep taking the room. Queue order is R4.4, in M1.
+- The measurements need Linux's `/proc`.
 
 ### Trusting a clone
 

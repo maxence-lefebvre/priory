@@ -63,6 +63,9 @@ impl Setup {
         }
         fs::create_dir_all(setup.dir.join("fake")).unwrap();
         fs::create_dir_all(setup.dir.join("tmux")).unwrap();
+        fs::create_dir_all(setup.dir.join("proc")).unwrap();
+        setup.memory(60);
+        setup.load(0.0);
         setup.origin();
         setup.bus().declare(&Output::new(OUTPUT)).unwrap();
         // A new state file switches to WAL on first open, which does not wait for a concurrent opener.
@@ -125,6 +128,7 @@ impl Setup {
             .env("PRIORY_DB", self.dir.join("priory.db"))
             .env("PRIORY_HOME", self.dir.join("home"))
             .env("FAKE_DIR", self.dir.join("fake"))
+            .env("PRIORY_PROC", self.dir.join("proc"))
             .env("GIT_CONFIG_COUNT", "1")
             .env(
                 "GIT_CONFIG_KEY_0",
@@ -307,6 +311,40 @@ impl Setup {
     fn release(&self, at: &str) {
         fs::remove_file(self.dir.join("fake").join(at)).unwrap();
     }
+
+    /// Makes the daemon measure `available` GiB of free memory out of 64 GiB.
+    fn memory(&self, available: u64) {
+        let meminfo = format!(
+            "MemTotal:       {} kB\nMemFree:        1024 kB\nMemAvailable:   {} kB\n",
+            64 << 20,
+            available << 20
+        );
+        write_atomic(&self.dir.join("proc/meminfo"), &meminfo);
+    }
+
+    /// Makes the daemon measure a 1-minute load average of `load`.
+    fn load(&self, load: f64) {
+        let loadavg = format!("{load:.2} 0.00 0.00 1/100 12345\n");
+        write_atomic(&self.dir.join("proc/loadavg"), &loadavg);
+    }
+
+    /// Makes the daemon measure `free` GiB of disk free out of 1000 GiB.
+    fn disk(&self, free: u64) {
+        let df = format!(
+            "Filesystem 1024-blocks Used Available Capacity Mounted on\nfake {} {} {} 50% /\n",
+            1000 << 20,
+            (1000 - free) << 20,
+            free << 20
+        );
+        write_atomic(&self.dir.join("fake/df"), &df);
+    }
+}
+
+/// Writes through a rename, so the daemon never reads a half-written file.
+fn write_atomic(path: &Path, content: &str) {
+    let partial = path.with_extension("partial");
+    fs::write(&partial, content).unwrap();
+    fs::rename(partial, path).unwrap();
 }
 
 impl Drop for Setup {
@@ -592,10 +630,12 @@ fn a_run_that_ends_its_turn_with_a_result_or_an_ask_is_not_flagged_when_its_agen
     setup.hold("crash");
     setup.calls(&[result("hopeless"), ask()]);
     setup.publish(&requested(42));
-    setup.publish(&requested(43));
 
     setup.start();
 
+    // The two runs share one fake `claude`, so the second task arrives after the first run ends.
+    setup.until("runs", |rows| rows.len() == 1 && rows[0][7] != "-");
+    setup.publish(&requested(43));
     let runs = setup.until("runs", |rows| rows.len() == 2 && rows[1][7] != "-");
     assert_eq!([&runs[0][7], &runs[1][7]], ["dropped", "asleep"]);
     let tasks = setup.rows("tasks");
@@ -628,18 +668,95 @@ fn a_turn_longer_than_its_step_timeout_ends_the_run_and_blocks_its_task() {
 }
 
 #[test]
-fn only_one_run_starts_while_one_is_running() {
-    let mut setup = Setup::new("one-run");
+fn two_tasks_that_fit_both_start_without_waiting_for_each_other() {
+    let mut setup = Setup::new("two-fit");
     setup.publish(&requested(42));
     setup.publish(&requested(43));
 
     setup.start();
 
-    setup.until("runs", |rows| rows.len() == 1);
+    let tasks = setup.until("tasks", |rows| with(rows, 4, "running") == 2);
+    assert_eq!([&tasks[0][7], &tasks[1][7]], ["-", "-"]);
+    let runs = setup.rows("runs");
+    assert_eq!(with(&runs, 6, "-"), 2, "two live runs: {runs:?}");
+}
+
+#[test]
+fn a_task_that_does_not_fit_waits_with_its_reason_and_starts_when_room_appears() {
+    let mut setup = Setup::new("no-room");
+    setup.memory(8);
+    setup.publish(&requested(42));
+
+    setup.start();
+
+    let reason = "waits for room: 8.0 GB of memory free, needs 4.0 GB and keeps 6.4 GB free";
+    setup.until("tasks", |rows| rows.len() == 1 && rows[0][7] == reason);
+    assert_eq!(setup.rows("tasks")[0][4], "queued");
+    assert!(setup.rows("runs").is_empty());
+    setup.memory(12);
+    let tasks = setup.until("tasks", |rows| rows[0][4] == "running");
+    assert_eq!(tasks[0][7], "-");
+}
+
+#[test]
+fn two_admissions_in_one_tick_count_each_others_declared_memory() {
+    let mut setup = Setup::new("one-tick");
+    setup.memory(12);
+    // A run counts its declared memory until its SessionStart, so keep the first one from sending it.
+    setup.hold("silent");
+    setup.publish(&requested(42));
+    setup.publish(&requested(43));
+
+    setup.start();
+
+    let reason = "waits for room: 8.0 GB of memory free, needs 4.0 GB and keeps 6.4 GB free";
+    setup.until("tasks", |rows| rows.len() == 2 && rows[1][7] == reason);
     std::thread::sleep(Duration::from_millis(1500));
-    assert_eq!(setup.rows("runs").len(), 1);
     let tasks = setup.rows("tasks");
     assert_eq!([&tasks[0][4], &tasks[1][4]], ["running", "queued"]);
+    assert_eq!(setup.rows("runs").len(), 1);
+}
+
+#[test]
+fn high_load_or_low_disk_holds_admission() {
+    let mut setup = Setup::new("load-disk");
+    setup.load(100_000.0);
+    setup.publish(&requested(42));
+
+    setup.start();
+
+    setup.until("tasks", |rows| {
+        rows.len() == 1 && rows[0][7].starts_with("waits for room: load 100000.00 on ")
+    });
+    setup.disk(10);
+    setup.load(0.0);
+    let reason = "waits for room: 10.0 GB of disk free, keeps 20.0 GB free";
+    setup.until("tasks", |rows| rows[0][7] == reason);
+    assert_eq!(setup.rows("tasks")[0][4], "queued");
+    assert!(setup.rows("runs").is_empty());
+    setup.disk(100);
+    setup.until("tasks", |rows| rows[0][4] == "running");
+}
+
+#[test]
+fn the_room_takes_the_agent_memory_and_the_share_of_the_runner_named_by_the_host() {
+    let mut setup = Setup::new("share");
+    let agent = AGENT.replacen("+++\n", "+++\nmemory = \"6GB\"\n", 1);
+    fs::write(setup.dir.join("factory/agents/implementer/agent.md"), agent).unwrap();
+    let runner = "platform = { os = \"linux\" }\nagents = { cpu = \"50%\", memory = \"50%\" }\n";
+    fs::create_dir_all(setup.dir.join("factory/runners")).unwrap();
+    fs::write(setup.dir.join("factory/runners/box.toml"), runner).unwrap();
+    fs::create_dir_all(setup.dir.join("proc/sys/kernel")).unwrap();
+    fs::write(setup.dir.join("proc/sys/kernel/hostname"), "box\n").unwrap();
+    setup.memory(37);
+    setup.publish(&requested(42));
+
+    setup.start();
+
+    let reason = "waits for room: 37.0 GB of memory free, needs 6.0 GB and keeps 32.0 GB free";
+    setup.until("tasks", |rows| rows.len() == 1 && rows[0][7] == reason);
+    setup.memory(38);
+    setup.until("tasks", |rows| rows[0][4] == "running");
 }
 
 #[test]
@@ -1142,7 +1259,6 @@ fn the_desk_lists_an_uncertain_prompt_a_blocked_task_and_an_open_ask_oldest_firs
     setup.calls(&[serde_json::Value::Null, ask()]);
     setup.hold("hold-submit");
     setup.publish(&requested(42));
-    setup.publish(&requested(43));
     setup.start();
     setup.until("outbox", |rows| with(rows, 3, "attempted") == 1);
     setup.written("fake/pending");
@@ -1160,9 +1276,10 @@ fn the_desk_lists_an_uncertain_prompt_a_blocked_task_and_an_open_ask_oldest_firs
             .success()
     );
     setup.until("tasks", |rows| rows[0][4] == "blocked");
+    setup.publish(&requested(43));
     std::thread::sleep(Duration::from_millis(1100));
     setup.release("hold-submit");
-    setup.until("tasks", |rows| rows[1][4] == "asleep");
+    setup.until("tasks", |rows| rows.len() == 2 && rows[1][4] == "asleep");
 
     let desk = setup.rows("desk");
     let items: Vec<_> = desk
@@ -1243,12 +1360,12 @@ fn a_daemon_started_after_its_tmux_server_died_resumes_each_lost_run_once() {
     let mut setup = Setup::with_workflow("lost", STEPS);
     setup.calls(&[ask()]);
     setup.publish(&requested(42));
-    setup.publish(&requested(43));
     setup.start();
     setup.until("tasks", |rows| {
         rows.first().is_some_and(|row| row[4] == "asleep")
     });
     setup.hold("hold-submit");
+    setup.publish(&requested(43));
     setup.until("outbox", |rows| with(rows, 3, "attempted") == 1);
     setup.written("fake/pending");
     let session = setup.rows("runs")[1][4].clone();

@@ -40,7 +40,9 @@ pub struct Agent {
     pub runner: Option<String>,
     #[serde(default)]
     pub session: Session,
-    pub memory: Option<String>,
+    /// What a runner must have free to admit a run of this agent, in bytes.
+    #[serde(default, deserialize_with = "size")]
+    pub memory: Option<u64>,
     #[serde(default)]
     pub mcp_servers: Vec<String>,
     /// The Markdown after the frontmatter: the agent's instructions.
@@ -124,6 +126,22 @@ fn duration<'de, D: serde::Deserializer<'de>>(input: D) -> Result<Option<Duratio
         })
 }
 
+/// A size such as `512MB`, `6GB` or `1.5TB`, in bytes. Units are binary, as in `/proc/meminfo`.
+fn size<'de, D: serde::Deserializer<'de>>(input: D) -> Result<Option<u64>, D::Error> {
+    let text = String::deserialize(input)?;
+    [("KB", 10), ("MB", 20), ("GB", 30), ("TB", 40)]
+        .into_iter()
+        .find_map(|(unit, shift)| {
+            let number = text.strip_suffix(unit)?.parse::<f64>().ok()?;
+            let bytes = number * (1u64 << shift) as f64;
+            (bytes >= 1.0 && bytes < u64::MAX as f64).then_some(bytes as u64)
+        })
+        .map(Some)
+        .ok_or_else(|| {
+            serde::de::Error::custom(format!("{text:?} is not a size such as 512MB or 6GB"))
+        })
+}
+
 #[derive(Debug, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
 pub enum Decider {
@@ -176,8 +194,24 @@ pub enum Os {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Share {
-    pub cpu: Option<String>,
-    pub memory: Option<String>,
+    /// The fraction of the machine's CPUs the runner's agents may load together.
+    #[serde(default, deserialize_with = "percent")]
+    pub cpu: Option<f64>,
+    /// The fraction of the machine's memory the runner's agents may take together.
+    #[serde(default, deserialize_with = "percent")]
+    pub memory: Option<f64>,
+}
+
+/// A share such as `60%`, as a fraction above 0 and at most 1.
+fn percent<'de, D: serde::Deserializer<'de>>(input: D) -> Result<Option<f64>, D::Error> {
+    let text = String::deserialize(input)?;
+    text.strip_suffix('%')
+        .and_then(|number| number.parse::<f64>().ok())
+        .filter(|number| *number > 0.0 && *number <= 100.0)
+        .map(|number| Some(number / 100.0))
+        .ok_or_else(|| {
+            serde::de::Error::custom(format!("{text:?} is not a share such as 60% or 90%"))
+        })
 }
 
 pub struct Loaded<T> {

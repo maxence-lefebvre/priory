@@ -1,10 +1,13 @@
+use crate::room::Share;
 use crate::state::{self, Admission, NewRun, Signal};
 use crate::tools::{self, Act, Answer, Call};
 use herdr_bus::{Bus, Start};
 use priory_factory::factory::Factory;
 use priory_intake::intake::OUTPUT;
+use priory_runtime::room;
 use priory_runtime::runtime::{self, Launch, Line};
 use rusqlite::Connection;
+use std::cell::OnceCell;
 use std::path::Path;
 use std::sync::mpsc::RecvTimeoutError;
 use std::time::Duration;
@@ -32,6 +35,7 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
     }
     let home = runtime::home();
     let listening = runtime::listen(&home)?;
+    let share = Share::of(factory, room::hostname().as_deref());
     state::uncertain(&db)?;
     // A crash between ending a run and killing its session leaves its agent running.
     let ended = state::ended_sessions(&db)?;
@@ -61,7 +65,7 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
         while let Ok(line) = listening.lines.try_recv() {
             apply(&mut db, line, factory)?;
         }
-        tend(&mut db, factory, &home)?;
+        tend(&mut db, factory, &share, &home)?;
         match listening.lines.recv_timeout(EVERY) {
             Ok(line) => apply(&mut db, line, factory)?,
             Err(RecvTimeoutError::Timeout) => {}
@@ -116,9 +120,9 @@ fn take(
     }
 }
 
-/// Ends runs that exited, timed out or wait on a prompt, fires due waits, starts a run if one is
-/// admissible, and types prompts.
-fn tend(db: &mut Connection, factory: &Factory, home: &Path) -> Result<(), Error> {
+/// Ends runs that exited, timed out or wait on a prompt, fires due waits, starts every run that
+/// fits in the room, and types prompts.
+fn tend(db: &mut Connection, factory: &Factory, share: &Share, home: &Path) -> Result<(), Error> {
     for run in state::live(db)? {
         if runtime::pane(&run.tmux, &run.session).is_none() {
             // A dead pane that remain-on-exit keeps holds the session open.
@@ -138,10 +142,12 @@ fn tend(db: &mut Connection, factory: &Factory, home: &Path) -> Result<(), Error
         }
     }
     state::due(db)?;
-    if let Some(admission) = state::admissible(db, &factory.workflows)?
-        && let Err(reason) = start(db, factory, home, &admission)?
-    {
-        state::block(db, admission.task, "failed", &reason)?;
+    let measured = OnceCell::new();
+    let room = || measured.get_or_init(|| room::measure(home));
+    while let Some(admission) = state::admissible(db, factory, share, room)? {
+        if let Err(reason) = start(db, factory, home, &admission)? {
+            state::block(db, admission.task, "failed", &reason)?;
+        }
     }
     while let Some((tmux, session, text)) = state::attempt(db)? {
         let typed = runtime::pane(&tmux, &session)
