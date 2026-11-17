@@ -20,6 +20,8 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 ```
 
+CI runs the same three commands on every push to `main` and every pull request.
+
 ## Code
 
 - Keep the core pure: it takes one input at a time and returns effects. IO lives in adapters.
