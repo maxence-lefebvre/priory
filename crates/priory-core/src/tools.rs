@@ -223,7 +223,7 @@ fn open_wait(tx: &Transaction, run: i64) -> rusqlite::Result<Option<i64>> {
 
 const CONDITIONS: &str = "pull_request, checks, review, time or task";
 
-/// Stores the wait and fires it at once if an event since the agent's last prompt satisfies it (R6.2).
+/// Stores the wait and fires it at once if an event since the agent's last prompt satisfies it.
 fn wait(
     tx: &Transaction,
     run: &Run,
@@ -252,7 +252,15 @@ fn wait(
                 "INSERT OR IGNORE INTO owns (task, resource) VALUES (?1, ?2)",
                 params![run.task, resource],
             )?;
-            let head = on["head_sha"].as_str().filter(|_| kind == "checks");
+            let head = match &on["head_sha"] {
+                Value::Null => None,
+                Value::String(head) if kind == "checks" => Some(head.as_str()),
+                _ => {
+                    return Ok(Err(
+                        "head_sha must be a commit, on a checks wait only".into()
+                    ));
+                }
+            };
             tx.execute(
                 "INSERT INTO waits (task, run, kind, resource, head_sha) VALUES (?1, ?2, ?3, ?4, ?5)",
                 params![run.task, run.id, kind, resource, head],
@@ -410,8 +418,7 @@ pub(crate) fn due(tx: &Transaction) -> rusqlite::Result<()> {
     Ok(())
 }
 
-/// Marks the wait fired and queues `text`, then the kept events no prompt carries, ahead of the
-/// task's other prompts. An asleep task becomes ready; a running one reads it after its `Stop`.
+/// Queues `text`, then the kept events no prompt carries, as the task's next prompt.
 fn fire(
     tx: &Transaction,
     wait: i64,
