@@ -41,6 +41,9 @@ pub struct Agent {
     pub memory: Option<String>,
     #[serde(default)]
     pub mcp_servers: Vec<String>,
+    /// The Markdown after the frontmatter: the agent's instructions.
+    #[serde(skip)]
+    pub body: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -198,7 +201,11 @@ pub fn load(dir: &Path) -> (Factory, Vec<Problem>) {
         .filter(|path| path.is_dir())
     {
         let file = path.join("agent.md");
-        if let Some(value) = found.parse::<Agent>(&file) {
+        let Some(source) = found.read(&file) else {
+            continue;
+        };
+        if let Some(mut value) = found.parse_source::<Agent>(&file, &source) {
+            value.body = body(&source);
             found.define(&mut factory.agents, file_name(&path), &file, value);
         }
     }
@@ -291,29 +298,37 @@ impl Loader<'_> {
             .collect()
     }
 
-    fn parse<T: DeserializeOwned>(&mut self, file: &Path) -> Option<T> {
-        let relative = self.relative(file);
-        let source = match fs::read_to_string(file) {
-            Ok(source) => source,
+    fn read(&mut self, file: &Path) -> Option<String> {
+        match fs::read_to_string(file) {
+            Ok(source) => Some(source),
             Err(error) => {
                 self.problems.push(Problem {
-                    file: relative,
+                    file: self.relative(file),
                     at: None,
                     message: error.to_string(),
                 });
-                return None;
+                None
             }
-        };
+        }
+    }
+
+    fn parse<T: DeserializeOwned>(&mut self, file: &Path) -> Option<T> {
+        let source = self.read(file)?;
+        self.parse_source(file, &source)
+    }
+
+    fn parse_source<T: DeserializeOwned>(&mut self, file: &Path, source: &str) -> Option<T> {
+        let relative = self.relative(file);
         let parsed = match file.extension().and_then(|ext| ext.to_str()) {
-            Some("md") => frontmatter(&source),
+            Some("md") => frontmatter(source),
             Some("toml") => Ok(Document {
                 format: Format::Toml,
-                text: &source,
+                text: source,
                 first_line: 1,
             }),
             _ => Ok(Document {
                 format: Format::Yaml,
-                text: &source,
+                text: source,
                 first_line: 1,
             }),
         }
@@ -402,6 +417,17 @@ fn frontmatter(source: &str) -> Result<Document<'_>, ParseError> {
         Some("1:1".into()),
         format!("frontmatter is not closed by {fence}"),
     ))
+}
+
+/// The text after a frontmatter that `frontmatter` accepted.
+fn body(source: &str) -> String {
+    let (fence, rest) = source.split_once('\n').unwrap_or((source, ""));
+    rest.split_inclusive('\n')
+        .skip_while(|line| line.trim_end() != fence.trim_end())
+        .skip(1)
+        .collect::<String>()
+        .trim()
+        .to_owned()
 }
 
 fn line_column(text: &str, offset: usize) -> (usize, usize) {

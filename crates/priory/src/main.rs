@@ -7,6 +7,7 @@ mod factory;
 mod intake;
 mod route;
 mod rules;
+mod runtime;
 mod state;
 
 use std::path::{Path, PathBuf};
@@ -38,16 +39,28 @@ fn main() -> ExitCode {
             "SELECT seq, type, subject, task, outcome FROM inbox ORDER BY seq",
         ),
         Some("tasks") => list(
-            "id\tkey\tworkflow\tstep\tstate\tband\tlane",
-            "SELECT id, key, workflow, step, state, band, lane FROM tasks ORDER BY id",
+            "id\tkey\tworkflow\tstep\tstate\tband\tlane\treason",
+            "SELECT id, key, workflow, step, state, band, lane, reason FROM tasks ORDER BY id",
         ),
+        Some("runs") => list(
+            "id\ttask\tstep\ttmux\tsession\tstarted\tended\tend",
+            "SELECT id, task, step, tmux, session, started, ended, ended_as FROM runs ORDER BY id",
+        ),
+        Some("outbox") => list(
+            "id\ttask\trun\tstate\ttext",
+            "SELECT id, task, run, state, replace(text, char(10), '\\n') FROM outbox ORDER BY id",
+        ),
+        Some("hook") => match (args.next(), args.next()) {
+            (Some(event), None) => hook(&event.to_string_lossy()),
+            _ => usage(),
+        },
         _ => usage(),
     }
 }
 
 fn usage() -> ExitCode {
     eprintln!(
-        "usage: priory check [DIR]\n       priory intake [DIR] [--once]\n       priory daemon [DIR] [--once]\n       priory inbox\n       priory tasks"
+        "usage: priory check [DIR]\n       priory intake [DIR] [--once]\n       priory daemon [DIR] [--once]\n       priory inbox\n       priory tasks\n       priory runs\n       priory outbox\n       priory hook EVENT"
     );
     ExitCode::from(2)
 }
@@ -115,5 +128,34 @@ fn count(n: usize, noun: &str) -> String {
         format!("1 {noun}")
     } else {
         format!("{n} {noun}s")
+    }
+}
+
+/// Reports a Claude Code hook to the daemon: `event`, with the session and prompt from the hook's
+/// JSON on stdin.
+fn hook(event: &str) -> ExitCode {
+    let input: serde_json::Value = match serde_json::from_reader(std::io::stdin()) {
+        Ok(input) => input,
+        Err(error) => {
+            eprintln!("priory hook: stdin: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let Some(session) = input["session_id"].as_str() else {
+        eprintln!("priory hook: stdin has no session_id");
+        return ExitCode::FAILURE;
+    };
+    let signal = state::Signal {
+        event: event.to_owned(),
+        session: session.to_owned(),
+        prompt: input["prompt"].as_str().map(str::to_owned),
+    };
+    let line = serde_json::to_string(&signal).expect("signal serializes");
+    match runtime::send(&runtime::home(), &line) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(error) => {
+            eprintln!("priory hook: {error}");
+            ExitCode::FAILURE
+        }
     }
 }
