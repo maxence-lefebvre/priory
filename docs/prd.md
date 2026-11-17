@@ -410,9 +410,9 @@ Priory serves these as MCP tools.
 
 ### R10. Measurement
 
-- R10.1 Every step appends a trace record to the log, as a CloudEvents envelope with `type`
-  `priory.step.ended` and `data` holding factory, workflow, task, run, step, decider, effect, outcome,
-  tokens, wall time and machine. Reports read these records, so they need no tracing backend. M1
+- R10.1 Every step appends a `factory.step.ended` record to the log, and later judgements append
+  `factory.step.labeled`, as `docs/trace-schema.md` defines. Reports read these records, so they need
+  no tracing backend. M1
 - R10.2 An exporter turns the records into OpenTelemetry spans over OTLP: a task is a trace, and
   each run and step is a span. Attributes follow OpenTelemetry's GenAI conventions where one exists.
   Runs set the harness's own telemetry, such as Claude Code's OpenTelemetry export, with the task and
@@ -475,13 +475,11 @@ MIT.
 
 ## Open questions
 
-1. Whether to propose the trace schema to herdr-bowtie early, so both factories can be measured the
-   same way.
-2. Whether workflow branching stays limited to outcome labels or gains expressions.
-3. Whether to support jj workspaces alongside git worktrees.
-4. Whether a Windows machine runs agents through WSL, and whether a runner file then needs more than
+1. Whether workflow branching stays limited to outcome labels or gains expressions.
+2. Whether to support jj workspaces alongside git worktrees.
+3. Whether a Windows machine runs agents through WSL, and whether a runner file then needs more than
    `platform`, such as an environment loader like direnv.
-5. Whether third-party panels load as plugins, and in which form.
+4. Whether third-party panels load as plugins, and in which form.
 
 ## Risks
 

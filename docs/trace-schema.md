@@ -1,0 +1,88 @@
+# Trace schema
+
+Status: draft, 2026-11-17. Proposed as a shared format, so any factory can emit it and any
+measurement tool can read it.
+
+A factory appends one record each time a workflow step ends. A later judgement about that step,
+such as a revert, arrives as a second record that points at the first. Each record is a
+[CloudEvents 1.0](https://cloudevents.io) event in JSON, and the fields below live in `data`.
+
+## `factory.step.ended`
+
+```json
+{
+  "specversion": "1.0",
+  "id": "0196f1c2-7a3e-7c41-9b2d-5e8f0a1b2c3d",
+  "source": "factory://example/xps13",
+  "type": "factory.step.ended",
+  "time": "2026-11-17T16:20:05Z",
+  "datacontenttype": "application/json",
+  "data": {
+    "factory": "example",
+    "factory_revision": "999daf0",
+    "workflow": "implement",
+    "task": "0196f1b0-0000-7000-8000-000000000001",
+    "key": "github:example/app#42",
+    "lane": "3D/mobile",
+    "run": "0196f1b0-0000-7000-8000-000000000002",
+    "generation": 1,
+    "step": "plan",
+    "decider": "model",
+    "effect": "reversible",
+    "outcome": "green",
+    "harness": "claude-code",
+    "model": "claude-opus-5-5",
+    "machine": "xps13",
+    "started": "2026-11-17T16:12:41Z",
+    "duration_ms": 444000,
+    "tokens": { "input": 51234, "output": 3120, "cache_read": 402113, "cache_write": 20480 }
+  }
+}
+```
+
+| Field              | Required | Meaning                                                               |
+| ------------------ | -------- | --------------------------------------------------------------------- |
+| `factory`          | yes      | The factory's name                                                    |
+| `factory_revision` | yes      | The commit of the factory's files, so runs of two configs can be compared |
+| `workflow`         | yes      | The workflow the step belongs to                                      |
+| `task`             | yes      | The task's id                                                         |
+| `key`              | no       | What the task works on, prefixed by its source                        |
+| `lane`             | no       | A `<team>/<theme>` grouping                                           |
+| `run`              | no       | The agent run that produced the step; absent for `human` and `code`   |
+| `generation`       | yes      | Starts at 1 and grows each time the task is revived                   |
+| `step`             | yes      | The step's id in the workflow                                         |
+| `decider`          | yes      | `code`, `model` or `human`                                            |
+| `effect`           | yes      | `none`, `read`, `reversible` or `irreversible`                        |
+| `outcome`          | yes      | The label that chose the next step, such as `approved` or `failed`    |
+| `harness`, `model` | no       | For `model` steps                                                     |
+| `machine`          | yes      | Where the step ran                                                    |
+| `started`          | yes      | When the step started                                                 |
+| `duration_ms`      | yes      | Wall time from start to end                                           |
+| `tokens`           | no       | For `model` steps: `input`, `output`, `cache_read`, `cache_write`     |
+
+## `factory.step.labeled`
+
+A judgement that arrives after the step, such as a rejected approval, red CI after a merge, or a
+revert. `step_event` is the `id` of the `factory.step.ended` record it judges.
+
+```json
+{
+  "specversion": "1.0",
+  "id": "0196f1d0-0000-7000-8000-000000000003",
+  "source": "factory://example/xps13",
+  "type": "factory.step.labeled",
+  "time": "2026-11-18T09:02:11Z",
+  "data": {
+    "step_event": "0196f1c2-7a3e-7c41-9b2d-5e8f0a1b2c3d",
+    "label": "reverted",
+    "evidence": "https://github.com/example/app/pull/57"
+  }
+}
+```
+
+## Rules
+
+- `id` is a UUID, stable across retries, so a reader drops duplicates by `id`.
+- Readers ignore fields and types they do not know.
+- A factory may add fields under its own prefix, such as `priory_` or `bowtie_`.
+- Report counts next to every rate, and leave a rate unknown when no record supports it.
