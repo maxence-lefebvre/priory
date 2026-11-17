@@ -84,9 +84,9 @@ queued.
 
 `priory hook <event>` reads Claude's hook JSON on stdin and sends one JSON line to the daemon over
 `priory.sock`: `{"event": "Stop", "session": "<id>", "prompt": "<text>"}`. `prompt` comes only with
-`UserPromptSubmit`. The daemon answers `ok` once the signal is committed. When no daemon answers
-within 10 seconds, the line goes to `signals.spool` instead. The next daemon applies the spool
-before it removes it.
+`UserPromptSubmit`. The daemon answers `ok` once the signal is committed, and the hook waits up to
+10 seconds for it. When no daemon takes the line, it goes to `signals.spool` instead. The next
+daemon applies the spool before it removes it.
 
 - `SessionStart`: the harness is up and its input is ready, so the run is idle.
 - `UserPromptSubmit`: the run is busy. Its attempted prompt is confirmed if the submitted text has

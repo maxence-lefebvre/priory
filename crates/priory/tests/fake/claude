@@ -32,7 +32,7 @@ while :; do
   done || exit 0
   prompt=${prompt//$'\e[200~'/}
   prompt=${prompt//$'\e[201~'/}
-  : > "$FAKE_DIR/pending"
+  printf '%s' "$prompt" > "$FAKE_DIR/pending"
   wait_while hold-submit
   printf '%s---\n' "$prompt" >> "$FAKE_DIR/typed.log"
   hook UserPromptSubmit "$prompt"

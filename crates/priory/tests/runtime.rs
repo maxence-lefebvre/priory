@@ -207,10 +207,10 @@ impl Setup {
             .collect()
     }
 
-    /// Waits until the file `path`, under the test's directory, exists.
-    fn exists(&self, path: &str) {
+    /// Waits until the file `path`, under the test's directory, has content.
+    fn written(&self, path: &str) {
         let deadline = Instant::now() + Duration::from_secs(15);
-        while !self.dir.join(path).exists() {
+        while fs::metadata(self.dir.join(path)).map_or(true, |file| file.len() == 0) {
             assert!(Instant::now() < deadline, "{path} never appeared");
             std::thread::sleep(Duration::from_millis(50));
         }
@@ -383,14 +383,14 @@ fn a_prompt_attempted_but_not_confirmed_before_a_crash_becomes_uncertain_and_is_
     setup.hold("hold-submit");
     setup.start();
     setup.until("outbox", |rows| with(rows, 3, "attempted") == 1);
-    setup.exists("fake/pending");
+    setup.written("fake/pending");
 
     setup.crash();
     setup.start();
 
     setup.until("outbox", |rows| with(rows, 3, "uncertain") == 1);
     setup.release("hold-submit");
-    setup.exists("fake/typed.log");
+    setup.written("fake/typed.log");
     std::thread::sleep(Duration::from_millis(1500));
     assert_eq!(setup.typed().len(), 1);
     assert_eq!(setup.rows("outbox")[0][3], "uncertain");
@@ -406,7 +406,7 @@ fn a_signal_sent_while_the_daemon_is_down_is_applied_when_it_comes_back() {
 
     setup.crash();
     setup.release("hold-stop");
-    setup.exists("home/signals.spool");
+    setup.written("home/signals.spool");
     setup.publish(&labeled(42));
     setup.start();
 

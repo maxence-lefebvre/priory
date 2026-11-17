@@ -263,19 +263,22 @@ pub fn replay(
     }
 }
 
-/// Sends one line to the daemon and waits for it to be applied, or appends it to the spool when no
-/// daemon answers in time.
+/// Sends one line to the daemon and waits up to 10 seconds for it to be applied. Only when no
+/// daemon takes the line is it appended to the spool, so a slow daemon never gets it twice.
 pub fn send(home: &Path, line: &str) -> Result<(), String> {
     let line = format!("{line}\n");
-    let answered = || -> std::io::Result<bool> {
-        let mut stream = UnixStream::connect(socket(home))?;
-        stream.set_read_timeout(Some(Duration::from_secs(10)))?;
+    let wait = Some(Duration::from_secs(10));
+    let sent = UnixStream::connect(socket(home)).and_then(|mut stream| {
+        stream.set_write_timeout(wait)?;
+        stream.set_read_timeout(wait)?;
         stream.write_all(line.as_bytes())?;
+        Ok(stream)
+    });
+    if let Ok(stream) = sent {
         let mut answer = String::new();
-        BufReader::new(stream).read_line(&mut answer)?;
-        Ok(answer == "ok\n")
-    };
-    if answered().unwrap_or(false) {
+        if BufReader::new(stream).read_line(&mut answer).is_err() || answer != "ok\n" {
+            eprintln!("priory hook: the daemon took the signal but has not applied it yet");
+        }
         return Ok(());
     }
     fs::create_dir_all(home).map_err(|error| error.to_string())?;
