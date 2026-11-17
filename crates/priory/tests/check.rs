@@ -661,3 +661,19 @@ fn a_step_timeout_must_be_a_duration_in_seconds_minutes_or_hours() {
         bad.stderr
     );
 }
+
+#[test]
+fn a_step_timeout_too_large_to_count_is_refused() {
+    let bad = workflow_with(
+        "timeout-huge",
+        "prompt = \"Implement the issue.\"\n",
+        "prompt = \"Implement the issue.\"\ntimeout = \"18446744073709551615h\"\n",
+    );
+
+    assert_eq!(bad.code, 1);
+    assert!(
+        bad.stderr.contains("is not a duration such as"),
+        "{}",
+        bad.stderr
+    );
+}

@@ -895,6 +895,9 @@ pub(crate) fn answer(
     let Some((task, kind, at, revision, options, answered, workflow, state)) = ask else {
         return Ok(Err(format!("there is no ask {}", answer.ask)));
     };
+    if ["done", "failed", "dropped"].contains(&state.as_str()) {
+        return Ok(Err(format!("task {task} is {state}")));
+    }
     if let Some(answered) = answered {
         return Ok(Err(format!(
             "ask {} is already answered: {answered}",
@@ -1008,8 +1011,8 @@ pub(crate) fn act(
 }
 
 /// Ends the live run of `session`, whose tmux session was gone when the daemon started, as `lost`.
-/// Its task becomes `ready` with a prompt that says so, unless the task's previous run was lost too:
-/// then no result, ask or wait came in between, and the task blocks.
+/// Its task becomes `ready` with a prompt that says so, unless the task's previous run was lost too
+/// and this one stored no ask or wait: then the task blocks. A result would have settled it instead.
 pub(crate) fn lost(db: &mut Connection, session: &str, tmux: &str) -> rusqlite::Result<()> {
     let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
     let Some(run) = run(&tx, session)? else {
@@ -1023,7 +1026,13 @@ pub(crate) fn lost(db: &mut Connection, session: &str, tmux: &str) -> rusqlite::
             |row| row.get::<_, bool>(0),
         )
         .optional()?
-        .unwrap_or(false);
+        .unwrap_or(false)
+        && tx.query_row(
+            "SELECT NOT EXISTS (SELECT 1 FROM asks WHERE run = ?1)
+             AND NOT EXISTS (SELECT 1 FROM waits WHERE run = ?1)",
+            [run.id],
+            |row| row.get::<_, bool>(0),
+        )?;
     if again {
         let reason = format!(
             "run {} was lost again before it made progress: tmux session {tmux} is gone",

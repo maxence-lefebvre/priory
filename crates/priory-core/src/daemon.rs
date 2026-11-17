@@ -48,10 +48,11 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
     })?;
     // A reboot or a killed tmux server takes the agents with it; that is the host's doing, not theirs.
     for run in state::live(&db)? {
-        if runtime::pane(&run.tmux, &run.session).is_none()
-            && !tools::gone(&mut db, &run.session, &factory.workflows)?
-        {
-            runtime::kill(&run.tmux);
+        if runtime::pane(&run.tmux, &run.session).is_some() {
+            continue;
+        }
+        runtime::kill(&run.tmux);
+        if !tools::gone(&mut db, &run.session, &factory.workflows)? {
             tools::lost(&mut db, &run.session, &run.tmux)?;
         }
     }
@@ -131,8 +132,9 @@ fn tend(db: &mut Connection, factory: &Factory, home: &Path) -> Result<(), Error
             );
             state::block(db, run.task, "exited", &reason)?;
         } else if let Some((ended_as, reason)) = verdict(&run, factory) {
-            runtime::kill(&run.tmux);
+            // Committed first, so a crash before the kill leaves an ended run, not a lost one.
             state::block(db, run.task, ended_as, &reason)?;
+            runtime::kill(&run.tmux);
         }
     }
     state::due(db)?;

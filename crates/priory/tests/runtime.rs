@@ -1280,6 +1280,90 @@ fn a_daemon_started_after_its_tmux_server_died_resumes_each_lost_run_once() {
 }
 
 #[test]
+fn an_answer_to_the_ask_of_a_cancelled_task_is_refused() {
+    let mut setup = Setup::with_workflow("cancel-ask", STEPS);
+    setup.calls(&[result("unsure")]);
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == "asleep")
+    });
+    assert!(setup.priory(&["cancel", "1"]).status.success());
+
+    let answered = setup.priory(&["answer", "1", "approved", "--revision", "1"]);
+
+    assert!(!answered.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&answered.stderr),
+        "priory answer: task 1 is dropped\n"
+    );
+    assert_eq!(setup.rows("tasks")[0][4], "dropped");
+}
+
+#[test]
+fn a_resumed_task_gets_its_prompts_although_its_exited_run_left_an_uncertain_one() {
+    let mut setup = Setup::new("resume-uncertain");
+    setup.hold("hold-submit");
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("outbox", |rows| with(rows, 3, "attempted") == 1);
+    setup.written("fake/pending");
+    setup.crash();
+    setup.start();
+    setup.until("outbox", |rows| with(rows, 3, "uncertain") == 1);
+    setup.release("hold-submit");
+    assert!(
+        setup
+            .tmux(&["kill-session", "-t", "priory-1"])
+            .status
+            .success()
+    );
+    setup.until("tasks", |rows| rows[0][4] == "blocked");
+
+    assert!(setup.priory(&["resume", "1"]).status.success());
+
+    let outbox = setup.until("outbox", |rows| with(rows, 3, "confirmed") == 1);
+    assert_eq!(with(&outbox, 3, "uncertain"), 1);
+    assert!(
+        setup
+            .typed()
+            .last()
+            .unwrap()
+            .starts_with("A person resumed")
+    );
+}
+
+#[test]
+fn a_lost_run_that_asked_since_the_last_loss_resumes_again() {
+    let mut setup = Setup::with_workflow("lost-progress", STEPS);
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") == 1);
+    setup.reboot();
+    setup.calls(&[ask()]);
+    setup.hold("hold-stop");
+    setup.start();
+    setup.written("fake/tools.log");
+    assert!(
+        setup
+            .priory(&["answer", "1", "sqlite", "--revision", "1"])
+            .status
+            .success()
+    );
+
+    setup.reboot();
+    setup.release("hold-stop");
+    setup.start();
+
+    let runs = setup.until("runs", |rows| rows.len() == 3);
+    assert_eq!(
+        [&runs[0][7], &runs[1][7], &runs[2][7]],
+        ["lost", "lost", "-"]
+    );
+    assert_eq!(setup.rows("tasks")[0][4], "running");
+}
+
+#[test]
 fn the_mcp_server_lists_the_result_ask_and_wait_tools() {
     let setup = Setup::new("list");
 

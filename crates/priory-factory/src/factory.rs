@@ -110,8 +110,14 @@ fn duration<'de, D: serde::Deserializer<'de>>(input: D) -> Result<Option<Duratio
     let text = String::deserialize(input)?;
     [("s", 1), ("m", 60), ("h", 3600)]
         .into_iter()
-        .find_map(|(unit, scale)| Some(text.strip_suffix(unit)?.parse::<u64>().ok()? * scale))
-        .filter(|seconds| *seconds > 0)
+        .find_map(|(unit, scale)| {
+            text.strip_suffix(unit)?
+                .parse::<u64>()
+                .ok()?
+                .checked_mul(scale)
+        })
+        // The daemon compares turns in SQLite's signed seconds.
+        .filter(|seconds| (1..=i64::MAX as u64).contains(seconds))
         .map(|seconds| Some(Duration::from_secs(seconds)))
         .ok_or_else(|| {
             serde::de::Error::custom(format!("{text:?} is not a duration such as 90s, 15m or 2h"))

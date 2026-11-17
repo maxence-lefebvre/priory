@@ -97,10 +97,9 @@ a killed server, so the agent is not at fault. Unless its result, ask or wait en
 under Health, the run ends `lost` and its task becomes `ready`, with the prompt `Priory restarted and
 found tmux session <name> gone, as after a reboot, so this run was interrupted. Check the worktree,
 then continue.` The next run resumes the session in the same worktree. This happens once: when the
-task's previous run was lost too, no result, ask or wait came in between, and the task blocks with
+task's previous run was lost too and this run stored no ask or wait, the task blocks with
 `run <id> was lost again before it made progress: tmux session <name> is gone`. A prompt the lost
-run had attempted stays `uncertain` and is never typed again, but it no longer holds back the
-task's other prompts, since no new process can hold its text.
+run had attempted stays `uncertain` and is never typed again.
 
 ### Trusting a clone
 
@@ -147,13 +146,16 @@ Each second, the daemon gives every live run one of these verdicts, in this orde
 | Timeout | a turn older than its step's `timeout` | `timeout` | `blocked` | `run <id> timed out: its turn ran past <n>s` |
 
 Every verdict blocks the task rather than failing it: a person reads the reason on the desk and
-either resumes the task or cancels it. The daemon kills the run's tmux session in every case.
+either resumes the task or cancels it. The daemon commits the verdict, then kills the run's tmux
+session, so a crash in between leaves an ended run, which the next start cleans up.
 
 A run whose agent is gone after its result, ask or wait ended the turn is not an unexpected exit.
 It settles as its `Stop` would have, as under Moving on, except that a next model step always gets
 a new run, since no process carries on.
 
-A model step's `timeout` is a duration such as `90s`, `15m` or `2h`, and defaults to `3h`. It
+A model step's `timeout` is a duration such as `90s`, `15m` or `2h`, and defaults to `3h`. A run
+whose agent exits after a wait already fired, or after its ask was answered, but before its `Stop`,
+counts as an unexpected exit; `priory resume` recovers it. It
 bounds one turn, from `UserPromptSubmit` to `Stop`, not the step.
 
 Priory never approves a permission prompt. Each run's settings carry a `PermissionRequest` hook
@@ -181,7 +183,7 @@ task after: <reason>. Check the worktree, then continue.` ahead of the task's ot
 so its next run resumes the session of the step's agent with it. `priory cancel <task>` drops an
 active task with the reason `cancelled from the desk`, ends its live run as `cancelled` and kills
 its tmux session. Both go to the daemon over `priory.sock`, as `priory answer` does, and are refused
-for a task in any other state.
+for a task in any other state. An answer to an ask of a done, failed or dropped task is refused too.
 
 ## Tools
 
@@ -339,7 +341,9 @@ that moved or woke the task is already queued.
 The daemon types the oldest queued prompt of a task once its run is idle. It loads the text into a
 tmux buffer from stdin and pastes it as one bracketed paste, so newlines do not submit and no text
 is read as a key name. Then it presses Enter. A task with an attempted or uncertain prompt gets no
-further prompt, since text may still sit in the agent's input.
+further prompt while its text may still sit in the agent's input: while the run it went to is live,
+or moved on into another run. Once that run ended any other way, its process is gone, and the task's
+next run gets its prompts. The prompt itself stays `uncertain` on the desk.
 
 ## Running as services
 

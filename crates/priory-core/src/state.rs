@@ -632,8 +632,8 @@ pub(crate) fn signal(
 }
 
 /// Marks the oldest queued prompt of an idle live run `attempted` and the run busy, in one
-/// transaction, before anything is typed. A task with an attempted or uncertain prompt gets none,
-/// unless the run it went to was lost: its text cannot sit in a new process's input.
+/// transaction, before anything is typed. A task with an attempted or uncertain prompt gets none
+/// while the process it went to may still hold its text: its run is live or moved on.
 pub(crate) fn attempt(db: &mut Connection) -> rusqlite::Result<Option<(String, String, String)>> {
     let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
     let next = tx
@@ -641,9 +641,9 @@ pub(crate) fn attempt(db: &mut Connection) -> rusqlite::Result<Option<(String, S
             "SELECT outbox.id, runs.id, runs.tmux, runs.session, outbox.text FROM runs
              JOIN outbox ON outbox.task = runs.task AND outbox.state = 'queued'
              WHERE runs.ended IS NULL AND runs.idle = 1 AND NOT EXISTS (
-               SELECT 1 FROM outbox AS open LEFT JOIN runs AS typed ON typed.id = open.run
+               SELECT 1 FROM outbox AS open JOIN runs AS typed ON typed.id = open.run
                WHERE open.task = runs.task AND open.state IN ('attempted', 'uncertain')
-               AND typed.ended_as IS NOT 'lost')
+               AND (typed.ended IS NULL OR typed.ended_as = 'moved'))
              ORDER BY outbox.id LIMIT 1",
             [],
             |row| {
