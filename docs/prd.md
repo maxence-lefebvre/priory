@@ -343,7 +343,8 @@ until its run starts.
 - R5.1 Start a run in its own git worktree, in a tmux session Priory owns, with one harness: Claude
   Code in M0, Codex in M1. M0
 - R5.2 tmux owns agent processes. The daemon can restart without stopping them, and it reconnects
-  to their sessions when it comes back. M0
+  to their sessions when it comes back. A run lost with its tmux server, as in a reboot, resumes its
+  session once; a second loss with no result, wait or ask in between blocks the task. M0
 - R5.3 A `per-task` session starts with the task and ends with it. A `shared` session carries one
   conversation across tasks. Either way, a waiting session holds no process. M0
 - R5.4 Prompts go through a stored outbox and are typed only when the agent is idle. Priory records

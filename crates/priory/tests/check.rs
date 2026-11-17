@@ -638,3 +638,42 @@ fn a_pull_request_trigger_rejects_other_events_and_keys() {
          triggers/keyed.toml:7: a GitHub trigger's `key` is `pull_request.number`\n"
     );
 }
+
+#[test]
+fn a_step_timeout_must_be_a_duration_in_seconds_minutes_or_hours() {
+    let ok = workflow_with(
+        "timeout-ok",
+        "prompt = \"Implement the issue.\"\n",
+        "prompt = \"Implement the issue.\"\ntimeout = \"45m\"\n",
+    );
+    let bad = workflow_with(
+        "timeout-bad",
+        "prompt = \"Implement the issue.\"\n",
+        "prompt = \"Implement the issue.\"\ntimeout = \"soon\"\n",
+    );
+
+    assert_eq!((ok.code, ok.stderr.as_str()), (0, ""));
+    assert_eq!(bad.code, 1);
+    assert!(
+        bad.stderr
+            .contains("\"soon\" is not a duration such as 90s, 15m or 2h"),
+        "{}",
+        bad.stderr
+    );
+}
+
+#[test]
+fn a_step_timeout_too_large_to_count_is_refused() {
+    let bad = workflow_with(
+        "timeout-huge",
+        "prompt = \"Implement the issue.\"\n",
+        "prompt = \"Implement the issue.\"\ntimeout = \"18446744073709551615h\"\n",
+    );
+
+    assert_eq!(bad.code, 1);
+    assert!(
+        bad.stderr.contains("is not a duration such as"),
+        "{}",
+        bad.stderr
+    );
+}

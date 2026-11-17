@@ -5,7 +5,7 @@ use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, 
 use std::collections::BTreeMap;
 use std::time::Duration;
 
-const VERSION: i64 = 6;
+const VERSION: i64 = 7;
 
 const SCHEMA: &str = "
 CREATE TABLE tasks (
@@ -134,6 +134,16 @@ ALTER TABLE results ADD COLUMN inbox INTEGER REFERENCES inbox (seq);
 PRAGMA user_version = 6;
 ";
 
+const SCHEMA_7: &str = "
+ALTER TABLE runs ADD COLUMN turn TEXT;
+ALTER TABLE runs ADD COLUMN prompted TEXT;
+ALTER TABLE tasks ADD COLUMN changed TEXT;
+UPDATE tasks SET changed = strftime('%Y-%m-%dT%H:%M:%SZ', 'now');
+CREATE TRIGGER task_changed AFTER UPDATE OF state ON tasks WHEN NEW.state IS NOT OLD.state
+  BEGIN UPDATE tasks SET changed = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') WHERE id = NEW.id; END;
+PRAGMA user_version = 7;
+";
+
 const NOW: &str = "strftime('%Y-%m-%dT%H:%M:%SZ', 'now')";
 
 pub(crate) struct Task {
@@ -174,24 +184,29 @@ pub fn open() -> Result<Connection, String> {
     match version {
         0 => tx
             .execute_batch(&format!(
-                "{SCHEMA}{SCHEMA_2}{SCHEMA_3}{SCHEMA_4}{SCHEMA_5}{SCHEMA_6}"
+                "{SCHEMA}{SCHEMA_2}{SCHEMA_3}{SCHEMA_4}{SCHEMA_5}{SCHEMA_6}{SCHEMA_7}"
             ))
             .map_err(at)?,
         1 => tx
             .execute_batch(&format!(
-                "{SCHEMA_2}{SCHEMA_3}{SCHEMA_4}{SCHEMA_5}{SCHEMA_6}"
+                "{SCHEMA_2}{SCHEMA_3}{SCHEMA_4}{SCHEMA_5}{SCHEMA_6}{SCHEMA_7}"
             ))
             .map_err(at)?,
         2 => tx
-            .execute_batch(&format!("{SCHEMA_3}{SCHEMA_4}{SCHEMA_5}{SCHEMA_6}"))
+            .execute_batch(&format!(
+                "{SCHEMA_3}{SCHEMA_4}{SCHEMA_5}{SCHEMA_6}{SCHEMA_7}"
+            ))
             .map_err(at)?,
         3 => tx
-            .execute_batch(&format!("{SCHEMA_4}{SCHEMA_5}{SCHEMA_6}"))
+            .execute_batch(&format!("{SCHEMA_4}{SCHEMA_5}{SCHEMA_6}{SCHEMA_7}"))
             .map_err(at)?,
         4 => tx
-            .execute_batch(&format!("{SCHEMA_5}{SCHEMA_6}"))
+            .execute_batch(&format!("{SCHEMA_5}{SCHEMA_6}{SCHEMA_7}"))
             .map_err(at)?,
-        5 => tx.execute_batch(SCHEMA_6).map_err(at)?,
+        5 => tx
+            .execute_batch(&format!("{SCHEMA_6}{SCHEMA_7}"))
+            .map_err(at)?,
+        6 => tx.execute_batch(SCHEMA_7).map_err(at)?,
         VERSION => {}
         _ => {
             return Err(format!(
@@ -496,19 +511,26 @@ pub(crate) fn block(
 pub(crate) struct LiveRun {
     pub id: i64,
     pub task: i64,
+    pub step: String,
+    pub workflow: String,
     pub tmux: String,
     pub session: String,
     pub worktree: Option<String>,
     /// No `SessionStart` arrived within `READY_WITHIN` of the start.
     pub late: bool,
+    /// How long its current turn has run, in seconds.
+    pub turn: Option<i64>,
+    /// Claude's message for the permission prompt it shows, if any.
+    pub prompted: Option<String>,
 }
 
 pub(crate) const READY_WITHIN: &str = "60 seconds";
 
 pub(crate) fn live(db: &Connection) -> rusqlite::Result<Vec<LiveRun>> {
     let mut statement = db.prepare(&format!(
-        "SELECT runs.id, runs.task, runs.tmux, runs.session, tasks.worktree,
-         NOT runs.ready AND runs.started <= strftime('%Y-%m-%dT%H:%M:%SZ', 'now', '-{READY_WITHIN}')
+        "SELECT runs.id, runs.task, runs.step, tasks.workflow, runs.tmux, runs.session, tasks.worktree,
+         NOT runs.ready AND runs.started <= strftime('%Y-%m-%dT%H:%M:%SZ', 'now', '-{READY_WITHIN}'),
+         unixepoch('now') - unixepoch(runs.turn), runs.prompted
          FROM runs JOIN tasks ON tasks.id = runs.task WHERE runs.ended IS NULL ORDER BY runs.id"
     ))?;
     statement
@@ -516,10 +538,14 @@ pub(crate) fn live(db: &Connection) -> rusqlite::Result<Vec<LiveRun>> {
             Ok(LiveRun {
                 id: row.get(0)?,
                 task: row.get(1)?,
-                tmux: row.get(2)?,
-                session: row.get(3)?,
-                worktree: row.get(4)?,
-                late: row.get(5)?,
+                step: row.get(2)?,
+                workflow: row.get(3)?,
+                tmux: row.get(4)?,
+                session: row.get(5)?,
+                worktree: row.get(6)?,
+                late: row.get(7)?,
+                turn: row.get(8)?,
+                prompted: row.get(9)?,
             })
         })?
         .collect()
@@ -532,6 +558,8 @@ pub struct Signal {
     pub session: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prompt: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
 }
 
 /// Applies a hook signal: the run is idle after `SessionStart` or `Stop`, and busy after
@@ -556,14 +584,20 @@ pub(crate) fn signal(
     let mut kill = None;
     match signal.event.as_str() {
         "SessionStart" => {
-            tx.execute("UPDATE runs SET idle = 1, ready = 1 WHERE id = ?1", [run])?;
+            tx.execute(
+                "UPDATE runs SET idle = 1, ready = 1, turn = NULL WHERE id = ?1",
+                [run],
+            )?;
         }
         "Stop" => {
-            tx.execute("UPDATE runs SET idle = 1 WHERE id = ?1", [run])?;
+            tx.execute("UPDATE runs SET idle = 1, turn = NULL WHERE id = ?1", [run])?;
             kill = crate::tools::stop(&tx, &signal.session, workflows)?;
         }
         "UserPromptSubmit" => {
-            tx.execute("UPDATE runs SET idle = 0 WHERE id = ?1", [run])?;
+            tx.execute(
+                &format!("UPDATE runs SET idle = 0, turn = {NOW} WHERE id = ?1"),
+                [run],
+            )?;
             let attempted = tx
                 .query_row(
                     "SELECT id, text FROM outbox WHERE run = ?1 AND state = 'attempted'",
@@ -585,6 +619,12 @@ pub(crate) fn signal(
                 )?;
             }
         }
+        "PermissionPrompt" => {
+            tx.execute(
+                "UPDATE runs SET prompted = coalesce(?2, 'a permission prompt') WHERE id = ?1",
+                params![run, signal.message],
+            )?;
+        }
         _ => {}
     }
     tx.commit()?;
@@ -592,7 +632,8 @@ pub(crate) fn signal(
 }
 
 /// Marks the oldest queued prompt of an idle live run `attempted` and the run busy, in one
-/// transaction, before anything is typed. A run with an attempted or uncertain prompt gets none.
+/// transaction, before anything is typed. A task with an attempted or uncertain prompt gets none
+/// while the process it went to may still hold its text: its run is live or moved on.
 pub(crate) fn attempt(db: &mut Connection) -> rusqlite::Result<Option<(String, String, String)>> {
     let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
     let next = tx
@@ -600,8 +641,9 @@ pub(crate) fn attempt(db: &mut Connection) -> rusqlite::Result<Option<(String, S
             "SELECT outbox.id, runs.id, runs.tmux, runs.session, outbox.text FROM runs
              JOIN outbox ON outbox.task = runs.task AND outbox.state = 'queued'
              WHERE runs.ended IS NULL AND runs.idle = 1 AND NOT EXISTS (
-               SELECT 1 FROM outbox AS open WHERE open.task = runs.task
-               AND open.state IN ('attempted', 'uncertain'))
+               SELECT 1 FROM outbox AS open JOIN runs AS typed ON typed.id = open.run
+               WHERE open.task = runs.task AND open.state IN ('attempted', 'uncertain')
+               AND (typed.ended IS NULL OR typed.ended_as = 'moved'))
              ORDER BY outbox.id LIMIT 1",
             [],
             |row| {

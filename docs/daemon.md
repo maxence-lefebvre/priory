@@ -77,19 +77,29 @@ The daemon creates the worktree, records the run and the task as `running`, then
 - `--model` and `--effort`: the agent's, when it sets them.
 - `--append-system-prompt`: the agent body, the Markdown after its frontmatter.
 - `--settings`: hooks that run `priory hook SessionStart`, `UserPromptSubmit` and `Stop`, a
-  permission for the `priory` MCP server's tools, and a `PreToolUse` hook that denies
-  `AskUserQuestion` and tells the agent to call `ask` instead.
+  permission for the `priory` MCP server's tools, a `PreToolUse` hook that denies
+  `AskUserQuestion` and tells the agent to call `ask` instead, and the permission hooks described
+  under Health.
 - `--mcp-config`: the `priory` MCP server, `priory mcp --session <id>`, described under Tools.
 
 The same tmux command tags the new pane with a pane option `@priory` set to the harness session
 id, so a pane is never left untagged. The daemon types only into that pane, even when a person
-opens other panes in the session. Each second, it ends a run whose tagged pane is gone as
-`exited`, and blocks its task with the reason. A git or tmux error ends the run as `failed`, or blocks the task when no run exists yet.
+opens other panes in the session. Each second, it checks every live run's health, as described
+under Health. A git or tmux error ends the run as `failed`, or blocks the task when no run exists yet.
 
 tmux owns the agents, so the daemon can stop and start again without stopping them. When it starts,
 it keeps every live run whose session still exists. It kills each tmux session whose tagged pane
 carries the harness session of an ended run that no live run continues, as a crash between ending a
 run and killing its session leaves.
+
+A live run whose pane is gone when the daemon starts was lost with its tmux server, by a reboot or
+a killed server, so the agent is not at fault. Unless its result, ask or wait ended the turn, as
+under Health, the run ends `lost` and its task becomes `ready`, with the prompt `Priory restarted and
+found tmux session <name> gone, as after a reboot, so this run was interrupted. Check the worktree,
+then continue.` The next run resumes the session in the same worktree. This happens once: when the
+task's previous run was lost too and this run stored no ask or wait, the task blocks with
+`run <id> was lost again before it made progress: tmux session <name> is gone`. A prompt the lost
+run had attempted stays `uncertain` and is never typed again.
 
 ### Trusting a clone
 
@@ -118,8 +128,62 @@ daemon applies the spool before it removes it.
 - `UserPromptSubmit`: the run is busy. Its attempted prompt is confirmed if the submitted text has
   the same words.
 - `Stop`: the turn ended, so the run is idle.
+- `PermissionPrompt`: Claude shows a permission prompt, with its `message`, as described under
+  Health.
 
+`UserPromptSubmit` also stamps the start of the run's turn, and `SessionStart` and `Stop` clear it.
 The daemon never reads the terminal screen to decide that an agent is idle.
+
+## Health
+
+Each second, the daemon gives every live run one of these verdicts, in this order:
+
+| Verdict | Detected by | Run ends | Task | Reason |
+| ------- | ----------- | -------- | ---- | ------ |
+| Unexpected exit | the tagged pane is gone, or dead under `remain-on-exit`, and no result, ask or wait ended the turn | `exited` | `blocked` | `run <id> exited: claude no longer runs in tmux session <name>` |
+| No `SessionStart` | 60 seconds with no `SessionStart`, as under Trusting a clone | `exited` | `blocked` | `claude showed no SessionStart within 60s; ...` |
+| Permission prompt | a `PermissionPrompt` signal | `permission` | `blocked` | `run <id> stopped on a permission prompt: <message>` |
+| Timeout | a turn older than its step's `timeout` | `timeout` | `blocked` | `run <id> timed out: its turn ran past <n>s` |
+
+Every verdict blocks the task rather than failing it: a person reads the reason on the desk and
+either resumes the task or cancels it. The daemon commits the verdict, then kills the run's tmux
+session, so a crash in between leaves an ended run, which the next start cleans up.
+
+A run whose agent is gone after its result, ask or wait ended the turn is not an unexpected exit.
+It settles as its `Stop` would have, as under Moving on, except that a next model step always gets
+a new run, since no process carries on.
+
+A model step's `timeout` is a duration such as `90s`, `15m` or `2h`, and defaults to `3h`. A run
+whose agent exits after a wait already fired, or after its ask was answered, but before its `Stop`,
+counts as an unexpected exit; `priory resume` recovers it. It
+bounds one turn, from `UserPromptSubmit` to `Stop`, not the step.
+
+Priory never approves a permission prompt. Each run's settings carry a `PermissionRequest` hook
+that denies every request and tells the agent: `Priory runs this session unattended and never
+approves a permission prompt, so it denied this one. Go on without it. If the task cannot go on
+without it, call the ask or result tool of the priory MCP server.` What the agent does next is its
+own: the desk hears of it only through that ask, or a verdict if the run then stalls. A
+`Notification` hook with the matcher `permission_prompt` runs `priory hook PermissionPrompt`, so a
+prompt that shows anyway, when the deny hook failed, ends the run on the next tick.
+
+## Desk
+
+`priory desk` prints what waits on a person, oldest first: since, kind, id, task and what.
+
+| Kind | Id | What | Since |
+| ---- | -- | ---- | ----- |
+| `ask` | the ask | its question, then its options | it was asked |
+| `blocked` | the task | its reason | the task last changed state |
+| `prompt` | the outbox prompt | its text, for an `uncertain` prompt | it was attempted |
+
+It lists only asks and prompts of active tasks. `priory asks` still prints every open ask.
+
+`priory resume <task>` makes a blocked task `ready`. It queues the prompt `A person resumed this
+task after: <reason>. Check the worktree, then continue.` ahead of the task's other queued prompts,
+so its next run resumes the session of the step's agent with it. `priory cancel <task>` drops an
+active task with the reason `cancelled from the desk`, ends its live run as `cancelled` and kills
+its tmux session. Both go to the daemon over `priory.sock`, as `priory answer` does, and are refused
+for a task in any other state. An answer to an ask of a done, failed or dropped task is refused too.
 
 ## Tools
 
@@ -277,7 +341,9 @@ that moved or woke the task is already queued.
 The daemon types the oldest queued prompt of a task once its run is idle. It loads the text into a
 tmux buffer from stdin and pastes it as one bracketed paste, so newlines do not submit and no text
 is read as a key name. Then it presses Enter. A task with an attempted or uncertain prompt gets no
-further prompt, since text may still sit in the agent's input.
+further prompt while its text may still sit in the agent's input: while the run it went to is live,
+or moved on into another run. Once that run ended any other way, its process is gone, and the task's
+next run gets its prompts. The prompt itself stays `uncertain` on the desk.
 
 ## Running as services
 
@@ -336,5 +402,6 @@ running; end one with `tmux kill-session -t =priory-<task id>` when you mean to.
 `priory tasks` prints each task: id, key, workflow, step, state, band, lane and reason.
 `priory runs` prints each run: id, task, step, tmux session, harness session, started, ended and
 how it ended. `priory outbox` prints each prompt: id, task, run, state and text, with newlines
-shown as `\n`. `priory asks` and `priory waits` are described under Tools. They read `PRIORY_DB` and print `-` for an empty cell, tab-separated after a header
+shown as `\n`. `priory asks` and `priory waits` are described under Tools, and `priory desk` under
+Desk. They read `PRIORY_DB` and print `-` for an empty cell, tab-separated after a header
 line.

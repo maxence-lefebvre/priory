@@ -53,6 +53,26 @@ fn main() -> ExitCode {
             "SELECT id, task, run, kind, coalesce(resource, until, 'task ' || target), created
              FROM waits WHERE fired IS NULL ORDER BY id",
         ),
+        Some("desk") => list(
+            "since\tkind\tid\ttask\twhat",
+            "SELECT * FROM (
+               SELECT asks.created, 'ask', asks.id, asks.task,
+                 replace(asks.question, char(10), '\\n') || ' ' || asks.options
+               FROM asks JOIN tasks ON tasks.id = asks.task
+               WHERE asks.answer IS NULL AND tasks.state NOT IN ('done', 'failed', 'dropped')
+               UNION ALL
+               SELECT changed, 'blocked', id, id, reason FROM tasks WHERE state = 'blocked'
+               UNION ALL
+               SELECT outbox.attempted, 'prompt', outbox.id, outbox.task,
+                 replace(outbox.text, char(10), '\\n')
+               FROM outbox JOIN tasks ON tasks.id = outbox.task
+               WHERE outbox.state = 'uncertain' AND tasks.state NOT IN ('done', 'failed', 'dropped')
+             ) ORDER BY 1, 2, 3",
+        ),
+        Some(verb @ ("resume" | "cancel")) => act(
+            verb,
+            args.map(|arg| arg.to_string_lossy().into_owned()).collect(),
+        ),
         Some("answer") => answer(args.map(|arg| arg.to_string_lossy().into_owned()).collect()),
         Some("mcp") => match (args.next(), args.next(), args.next()) {
             (Some(flag), Some(session), None) if flag == "--session" => {
@@ -70,7 +90,7 @@ fn main() -> ExitCode {
 
 fn usage() -> ExitCode {
     eprintln!(
-        "usage: priory check [DIR]\n       priory intake [DIR] [--once]\n       priory daemon [DIR] [--once]\n       priory request [DIR] --workflow <name> --key <key> [--band <band>] [--lane <lane>] [--repo <owner/name>] <text>\n       priory inbox\n       priory tasks\n       priory runs\n       priory outbox\n       priory asks\n       priory waits\n       priory answer ASK OPTION-OR-TEXT --revision N\n       priory mcp --session ID\n       priory hook EVENT"
+        "usage: priory check [DIR]\n       priory intake [DIR] [--once]\n       priory daemon [DIR] [--once]\n       priory request [DIR] --workflow <name> --key <key> [--band <band>] [--lane <lane>] [--repo <owner/name>] <text>\n       priory inbox\n       priory tasks\n       priory runs\n       priory outbox\n       priory asks\n       priory waits\n       priory desk\n       priory resume TASK\n       priory cancel TASK\n       priory answer ASK OPTION-OR-TEXT --revision N\n       priory mcp --session ID\n       priory hook EVENT"
     );
     ExitCode::from(2)
 }
@@ -163,7 +183,28 @@ fn answer(mut args: Vec<String>) -> ExitCode {
         text: text.clone(),
     })
     .expect("an answer serializes");
-    let reply = runtime::call(&runtime::home(), &line).and_then(|reply| {
+    send("answer", &line)
+}
+
+/// Sends `priory resume TASK` or `priory cancel TASK` to the daemon, which applies it.
+fn act(act: &str, args: Vec<String>) -> ExitCode {
+    let [task] = &args[..] else {
+        return usage();
+    };
+    let Ok(task) = task.parse() else {
+        return usage();
+    };
+    let line = serde_json::to_string(&tools::Act {
+        act: act.to_owned(),
+        task,
+    })
+    .expect("an action serializes");
+    send(act, &line)
+}
+
+/// Sends `line` to the daemon and prints its reply.
+fn send(verb: &str, line: &str) -> ExitCode {
+    let reply = runtime::call(&runtime::home(), line).and_then(|reply| {
         serde_json::from_str::<Result<String, String>>(&reply)
             .map_err(|error| format!("unreadable reply {reply:?}: {error}"))?
     });
@@ -173,7 +214,7 @@ fn answer(mut args: Vec<String>) -> ExitCode {
             ExitCode::SUCCESS
         }
         Err(error) => {
-            eprintln!("priory answer: {error}");
+            eprintln!("priory {verb}: {error}");
             ExitCode::FAILURE
         }
     }
@@ -219,6 +260,7 @@ fn hook(event: &str) -> ExitCode {
         event: event.to_owned(),
         session: session.to_owned(),
         prompt: input["prompt"].as_str().map(str::to_owned),
+        message: input["message"].as_str().map(str::to_owned),
     };
     let line = serde_json::to_string(&signal).expect("signal serializes");
     match runtime::send(&runtime::home(), &line) {
