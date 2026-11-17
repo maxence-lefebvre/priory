@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # A stand-in for Claude Code: runs the --settings hooks as Claude would and logs every prompt typed into it.
-# FAKE_DIR holds args.log, typed.log, pending (a paste arrived), and the hold files hold-submit and hold-stop.
+# FAKE_DIR holds args.log, typed.log, pending (a paste arrived), the hold files hold-submit and hold-stop,
+# and silent (never report SessionStart, as when Claude waits on its trust dialog).
 set -u
 settings='{}'
 session=''
@@ -23,7 +24,7 @@ hook() {
 wait_while() { while [ -e "$FAKE_DIR/$1" ]; do sleep 0.05; done; }
 
 printf '\e[?2004h'
-hook SessionStart
+[ -e "$FAKE_DIR/silent" ] || hook SessionStart
 while :; do
   prompt=''
   while IFS= read -r line; do

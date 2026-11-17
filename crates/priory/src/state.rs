@@ -43,6 +43,7 @@ CREATE TABLE runs (
   tmux     TEXT NOT NULL,
   session  TEXT NOT NULL,
   idle     INTEGER NOT NULL DEFAULT 0,
+  ready    INTEGER NOT NULL DEFAULT 0,
   started  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
   ended    TEXT,
   ended_as TEXT
@@ -361,11 +362,19 @@ pub struct LiveRun {
     pub task: i64,
     pub tmux: String,
     pub session: String,
+    pub worktree: Option<String>,
+    /// No `SessionStart` arrived within `READY_WITHIN` of the start.
+    pub late: bool,
 }
 
+pub const READY_WITHIN: &str = "60 seconds";
+
 pub fn live(db: &Connection) -> rusqlite::Result<Vec<LiveRun>> {
-    let mut statement =
-        db.prepare("SELECT id, task, tmux, session FROM runs WHERE ended IS NULL ORDER BY id")?;
+    let mut statement = db.prepare(&format!(
+        "SELECT runs.id, runs.task, runs.tmux, runs.session, tasks.worktree,
+         NOT runs.ready AND runs.started <= strftime('%Y-%m-%dT%H:%M:%SZ', 'now', '-{READY_WITHIN}')
+         FROM runs JOIN tasks ON tasks.id = runs.task WHERE runs.ended IS NULL ORDER BY runs.id"
+    ))?;
     statement
         .query_map([], |row| {
             Ok(LiveRun {
@@ -373,6 +382,8 @@ pub fn live(db: &Connection) -> rusqlite::Result<Vec<LiveRun>> {
                 task: row.get(1)?,
                 tmux: row.get(2)?,
                 session: row.get(3)?,
+                worktree: row.get(4)?,
+                late: row.get(5)?,
             })
         })?
         .collect()
@@ -402,7 +413,10 @@ pub fn signal(db: &mut Connection, signal: &Signal) -> rusqlite::Result<()> {
         return Ok(());
     };
     match signal.event.as_str() {
-        "SessionStart" | "Stop" => {
+        "SessionStart" => {
+            tx.execute("UPDATE runs SET idle = 1, ready = 1 WHERE id = ?1", [run])?;
+        }
+        "Stop" => {
             tx.execute("UPDATE runs SET idle = 1 WHERE id = ?1", [run])?;
         }
         "UserPromptSubmit" => {

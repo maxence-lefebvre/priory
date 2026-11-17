@@ -71,6 +71,19 @@ fn tend(db: &mut Connection, factory: &Factory, home: &Path) -> Result<(), Error
         if runtime::pane(&run.tmux, &run.session).is_none() {
             let reason = format!("run {} exited: tmux session {} is gone", run.id, run.tmux);
             state::block(db, run.task, "exited", &reason)?;
+        } else if run.late {
+            // Claude asks whether to trust a new folder before any hook; Priory never answers it.
+            runtime::kill(&run.tmux);
+            let clone = run
+                .worktree
+                .as_deref()
+                .and_then(|worktree| runtime::clone_of(Path::new(worktree)))
+                .map_or_else(|| "<clone>".to_owned(), |clone| clone.display().to_string());
+            let reason = format!(
+                "claude showed no SessionStart within {}; trust the clone once: cd {clone} && claude, accept, exit",
+                state::READY_WITHIN.replace(" seconds", "s")
+            );
+            state::block(db, run.task, "exited", &reason)?;
         }
     }
     if let Some(admission) = state::admissible(db, &factory.workflows)?

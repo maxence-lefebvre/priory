@@ -42,33 +42,30 @@ fn git(dir: &Path) -> Command {
 }
 
 /// The task's worktree on `priory/<task>`, from the default branch of Priory's own clone of `repo`
-/// (`owner/name`). A worktree of that clone left on that branch by an interrupted start is reused.
+/// (`owner/name`). The clone has no checkout: a person trusts it once in Claude, and its worktrees
+/// inherit that trust. A worktree of that clone left on that branch by an interrupted start is reused.
 pub fn worktree(home: &Path, repo: &str, task: i64) -> Result<(PathBuf, String), String> {
-    let clone = home.join("repos").join(format!("{repo}.git"));
+    let clone = home.join("repos").join(repo);
     let branch = format!("priory/{task}");
     let path = home.join("worktrees").join(repo).join(task.to_string());
     if !clone.exists() {
         // A clone interrupted before the rename leaves only the partial directory, which is replaced.
-        let partial = clone.with_extension("partial");
+        let partial = PathBuf::from(format!("{}.partial", clone.display()));
         let _ = fs::remove_dir_all(&partial);
         fs::create_dir_all(clone.parent().expect("clone has a parent"))
             .map_err(|error| error.to_string())?;
         run(Command::new("git")
-            .args(["clone", "--quiet", "--bare"])
+            .args(["clone", "--quiet", "--no-checkout"])
             .arg(format!("https://github.com/{repo}.git"))
             .arg(&partial))?;
-        run(git(&partial).args([
-            "config",
-            "remote.origin.fetch",
-            "+refs/heads/*:refs/remotes/origin/*",
-        ]))?;
         fs::rename(&partial, &clone).map_err(|error| error.to_string())?;
     }
     if path.exists() {
         let common =
             run(git(&path).args(["rev-parse", "--path-format=absolute", "--git-common-dir"]))?;
         let current = run(git(&path).args(["branch", "--show-current"]))?;
-        let ours = fs::canonicalize(common.trim()).ok() == fs::canonicalize(&clone).ok();
+        let ours =
+            fs::canonicalize(common.trim()).ok() == fs::canonicalize(clone.join(".git")).ok();
         if !ours || current.trim() != branch {
             return Err(format!(
                 "{} exists but is not {branch} of {}",
@@ -168,6 +165,19 @@ pub fn pane(name: &str, session: &str) -> Option<String> {
         let (pane, tag) = line.split_once(' ')?;
         (tag == session).then(|| pane.to_owned())
     })
+}
+
+/// Kills the tmux session `name`, if it still exists.
+pub fn kill(name: &str) {
+    let _ = run(tmux().args(["kill-session", "-t", &format!("={name}")]));
+}
+
+/// The clone a worktree belongs to: the folder holding its common `.git`.
+pub fn clone_of(worktree: &Path) -> Option<PathBuf> {
+    let common =
+        run(git(worktree).args(["rev-parse", "--path-format=absolute", "--git-common-dir"]))
+            .ok()?;
+    Path::new(common.trim()).parent().map(Path::to_path_buf)
 }
 
 /// Pastes `text` into `pane` as one bracketed paste, then presses Enter. tmux reads the text from

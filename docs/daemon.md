@@ -45,8 +45,9 @@ current turn. A message kept for a task in any other state waits for the task's 
 `PRIORY_HOME` names Priory's own directory. It defaults to `$XDG_STATE_HOME/priory`, then
 `~/.local/state/priory`. It holds:
 
-- `repos/<owner>/<name>.git`: a bare clone of `https://github.com/<owner>/<name>.git`. Git's own
-  `url.<base>.insteadOf` setting can point it elsewhere, such as an SSH remote or a local mirror.
+- `repos/<owner>/<name>`: a clone of `https://github.com/<owner>/<name>.git`, with no checkout.
+  Git's own `url.<base>.insteadOf` setting can point it elsewhere, such as an SSH remote or a
+  local mirror.
 - `worktrees/<owner>/<name>/<task id>`: one worktree per task, on branch `priory/<task id>`, from
   the remote's default branch. The task's `worktree` names it only when Priory created it. A start
   reuses an existing worktree only when it belongs to Priory's clone and is on that branch.
@@ -76,9 +77,20 @@ opens other panes in the session. Each second, it ends a run whose tagged pane i
 tmux owns the agents, so the daemon can stop and start again without stopping them. When it starts,
 it keeps every live run whose session still exists.
 
+### Trusting a clone
+
 Claude asks whether to trust a folder the first time it runs there, before any hook fires. Priory
-does not answer that dialog. Until the folder is trusted, the run waits with its first prompt
-queued.
+never answers that dialog and never writes Claude's settings. A worktree inherits the trust of the
+repository it belongs to, so a person trusts each clone once, after Priory created it:
+
+```sh
+cd "$PRIORY_HOME/repos/<owner>/<name>" && claude   # accept the dialog, then /exit
+```
+
+A run that sends no `SessionStart` within 60 seconds of its start ends as `exited`. The daemon kills
+its tmux session and blocks its task with the reason `claude showed no SessionStart within 60s;
+trust the clone once: cd <clone path> && claude, accept, exit`. Its queued prompts stay queued, so
+the task's next run types them.
 
 ## Signals
 

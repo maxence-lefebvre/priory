@@ -183,7 +183,16 @@ impl Setup {
 
     /// Polls `priory <verb>` until `done` holds for its rows, and returns them.
     fn until(&self, verb: &str, done: impl Fn(&[Vec<String>]) -> bool) -> Vec<Vec<String>> {
-        let deadline = Instant::now() + Duration::from_secs(15);
+        self.within(15, verb, done)
+    }
+
+    fn within(
+        &self,
+        seconds: u64,
+        verb: &str,
+        done: impl Fn(&[Vec<String>]) -> bool,
+    ) -> Vec<Vec<String>> {
+        let deadline = Instant::now() + Duration::from_secs(seconds);
         loop {
             let rows = self.rows(verb);
             if done(&rows) {
@@ -466,4 +475,36 @@ fn a_prompt_reaches_the_agent_pane_when_a_person_opened_another_pane() {
 
     setup.until("outbox", |rows| with(rows, 3, "confirmed") == 2);
     assert_eq!(setup.typed().len(), 2);
+}
+
+#[test]
+fn a_run_with_no_session_start_within_60_seconds_ends_and_names_the_clone_to_trust() {
+    let mut setup = Setup::new("untrusted");
+    setup.publish(&requested(42));
+    setup.hold("silent");
+    setup.start();
+    setup.until("runs", |rows| rows.len() == 1);
+
+    let runs = setup.within(75, "runs", |rows| rows[0][7] == "exited");
+
+    assert_ne!(runs[0][6], "-");
+    assert!(
+        !setup
+            .tmux(&["has-session", "-t", "=priory-1"])
+            .status
+            .success()
+    );
+    let clone = setup.dir.join("home/repos/owner/repo");
+    let tasks = setup.rows("tasks");
+    assert_eq!(tasks[0][4], "blocked");
+    assert_eq!(
+        tasks[0][7],
+        format!(
+            "claude showed no SessionStart within 60s; trust the clone once: cd {} && claude, accept, exit",
+            clone.display()
+        )
+    );
+    let outbox = setup.rows("outbox");
+    assert_eq!(outbox.len(), 1);
+    assert_eq!(outbox[0][3], "queued");
 }
