@@ -918,7 +918,10 @@ fn an_answer_that_beats_the_stop_is_typed_into_the_same_run_once() {
     let answered = setup.priory(&["answer", "1", "sqlite", "--revision", "1"]);
 
     assert!(answered.status.success(), "{answered:?}");
+    std::thread::sleep(Duration::from_millis(1500));
     assert_eq!(setup.rows("tasks")[0][4], "running");
+    assert_eq!(setup.rows("outbox")[1][3], "queued");
+    assert_eq!(setup.typed().len(), 1);
     setup.release("hold-stop");
     setup.until("outbox", |rows| with(rows, 3, "confirmed") == 2);
     std::thread::sleep(Duration::from_millis(1500));
@@ -938,6 +941,7 @@ fn a_restarted_daemon_kills_the_session_of_a_run_that_ended() {
     let runs = setup.until("runs", |rows| {
         rows.first().is_some_and(|row| row[7] == "asleep")
     });
+    setup.gone("priory-1");
     setup.crash();
     // As if the daemon had crashed after ending the run and before killing its session.
     let session = &runs[0][4];
