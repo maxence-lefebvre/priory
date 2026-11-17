@@ -19,6 +19,8 @@ next = { passed = "done", failed = "stop" }
 
 const AGENT: &str = "+++\ndescription = \"Implements one task.\"\nharness = \"claude-code\"\nmodel = \"haiku\"\neffort = \"low\"\n+++\nYou implement one issue.\n";
 
+const REVIEWER: &str = "+++\ndescription = \"Reviews one change.\"\nharness = \"claude-code\"\n+++\nYou review one change.\n";
+
 const TRIGGER: &str = r#"
 source = "github"
 repo = "owner/repo"
@@ -50,6 +52,7 @@ impl Setup {
         let files = [
             ("factory/factory.toml", "name = \"demo\""),
             ("factory/agents/implementer/agent.md", AGENT),
+            ("factory/agents/reviewer/agent.md", REVIEWER),
             ("factory/workflows/implement.toml", workflow),
             ("factory/triggers/agent-label.toml", TRIGGER),
         ];
@@ -731,6 +734,117 @@ fn a_human_step_asks_ends_the_run_and_sleeps_until_an_answer_resumes_the_session
     );
     assert_eq!(setup.typed()[1], "Implement the plan.\n");
     assert_eq!(setup.rows("tasks")[0][4], "running");
+}
+
+const TWO_AGENTS: &str = r#"
+start = "implement"
+
+[[steps]]
+id = "implement"
+decides = "model"
+agent = "implementer"
+prompt = "Implement the issue."
+effect = "reversible"
+next = { passed = "review", failed = "stop" }
+
+[[steps]]
+id = "review"
+decides = "model"
+agent = "reviewer"
+prompt = "Review the change."
+effect = "none"
+next = { approved = "done", changes = "implement" }
+"#;
+
+/// The arguments the fake `claude` got at its latest launch.
+fn launched(setup: &Setup) -> Vec<String> {
+    fs::read_to_string(setup.dir.join("fake/args.log"))
+        .unwrap()
+        .lines()
+        .map(str::to_owned)
+        .collect()
+}
+
+fn has(args: &[String], pair: [&str; 2]) -> bool {
+    args.windows(2).any(|w| w == pair)
+}
+
+#[test]
+fn a_result_moving_to_another_agent_ends_the_run_and_starts_that_agent_in_a_new_session() {
+    let mut setup = Setup::with_workflow("other-agent", TWO_AGENTS);
+    setup.calls(&[result("passed")]);
+    setup.publish(&requested(42));
+
+    setup.start();
+
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") == 2);
+    let runs = setup.rows("runs");
+    assert_eq!(runs.len(), 2, "{runs:?}");
+    assert_eq!([&runs[0][2], &runs[0][7]], ["implement", "moved"]);
+    assert_eq!([&runs[1][2], &runs[1][7]], ["review", "-"]);
+    assert_ne!(runs[0][4], runs[1][4], "each agent has its own session");
+    let args = launched(&setup);
+    assert!(has(&args, ["--session-id", &runs[1][4]]), "{args:?}");
+    assert!(
+        has(&args, ["--append-system-prompt", "You review one change."]),
+        "{args:?}"
+    );
+    assert!(!args.iter().any(|arg| arg == "--model"), "{args:?}");
+    assert_eq!(setup.typed()[1], "Review the change.\n");
+    let tasks = setup.rows("tasks");
+    assert_eq!([&tasks[0][3], &tasks[0][4]], ["review", "running"]);
+}
+
+#[test]
+fn a_workflow_coming_back_to_an_agent_resumes_that_agent_session() {
+    let mut setup = Setup::with_workflow("back-to-agent", TWO_AGENTS);
+    setup.calls(&[result("passed"), result("changes")]);
+    setup.publish(&requested(42));
+
+    setup.start();
+
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") == 3);
+    let runs = setup.rows("runs");
+    assert_eq!(runs.len(), 3, "{runs:?}");
+    assert_eq!([&runs[1][2], &runs[1][7]], ["review", "moved"]);
+    assert_eq!([&runs[2][2], &runs[2][4]], ["implement", &runs[0][4]]);
+    let args = launched(&setup);
+    assert!(has(&args, ["--resume", &runs[0][4]]), "{args:?}");
+    assert!(
+        has(
+            &args,
+            ["--append-system-prompt", "You implement one issue."]
+        ),
+        "{args:?}"
+    );
+    assert_eq!(setup.typed()[2], "Implement the issue.\n");
+}
+
+#[test]
+fn an_answer_on_the_second_agent_step_resumes_the_second_agent_session() {
+    let mut setup = Setup::with_workflow("wake-agent", TWO_AGENTS);
+    setup.calls(&[result("passed"), ask()]);
+    setup.publish(&requested(42));
+    setup.start();
+    let runs = setup.until("runs", |rows| {
+        rows.get(1).is_some_and(|row| row[7] == "asleep")
+    });
+    setup.gone("priory-1");
+
+    let answered = setup.priory(&["answer", "1", "sqlite", "--revision", "1"]);
+
+    assert!(answered.status.success(), "{answered:?}");
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") == 3);
+    let resumed = setup.rows("runs");
+    assert_eq!([&resumed[2][2], &resumed[2][4]], ["review", &runs[1][4]]);
+    assert_ne!(runs[0][4], runs[1][4]);
+    let args = launched(&setup);
+    assert!(has(&args, ["--resume", &runs[1][4]]), "{args:?}");
+    assert!(
+        has(&args, ["--append-system-prompt", "You review one change."]),
+        "{args:?}"
+    );
+    assert_eq!(setup.typed()[2], "sqlite\n");
 }
 
 fn ask() -> serde_json::Value {

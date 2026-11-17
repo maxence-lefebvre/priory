@@ -5,7 +5,7 @@ use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, 
 use std::collections::BTreeMap;
 use std::time::Duration;
 
-const VERSION: i64 = 4;
+const VERSION: i64 = 5;
 
 const SCHEMA: &str = "
 CREATE TABLE tasks (
@@ -123,6 +123,11 @@ CREATE TABLE waits (
 PRAGMA user_version = 4;
 ";
 
+const SCHEMA_5: &str = "
+ALTER TABLE runs ADD COLUMN agent TEXT;
+PRAGMA user_version = 5;
+";
+
 const NOW: &str = "strftime('%Y-%m-%dT%H:%M:%SZ', 'now')";
 
 pub(crate) struct Task {
@@ -162,15 +167,18 @@ pub fn open() -> Result<Connection, String> {
     let version = version(&tx).map_err(at)?;
     match version {
         0 => tx
-            .execute_batch(&format!("{SCHEMA}{SCHEMA_2}{SCHEMA_3}{SCHEMA_4}"))
+            .execute_batch(&format!("{SCHEMA}{SCHEMA_2}{SCHEMA_3}{SCHEMA_4}{SCHEMA_5}"))
             .map_err(at)?,
         1 => tx
-            .execute_batch(&format!("{SCHEMA_2}{SCHEMA_3}{SCHEMA_4}"))
+            .execute_batch(&format!("{SCHEMA_2}{SCHEMA_3}{SCHEMA_4}{SCHEMA_5}"))
             .map_err(at)?,
         2 => tx
-            .execute_batch(&format!("{SCHEMA_3}{SCHEMA_4}"))
+            .execute_batch(&format!("{SCHEMA_3}{SCHEMA_4}{SCHEMA_5}"))
             .map_err(at)?,
-        3 => tx.execute_batch(SCHEMA_4).map_err(at)?,
+        3 => tx
+            .execute_batch(&format!("{SCHEMA_4}{SCHEMA_5}"))
+            .map_err(at)?,
+        4 => tx.execute_batch(SCHEMA_5).map_err(at)?,
         VERSION => {}
         _ => {
             return Err(format!(
@@ -325,6 +333,8 @@ pub(crate) struct Admission {
     pub workflow: String,
     pub step: String,
     pub trigger: String,
+    /// Queued, not ready: its run is the task's first and gets the step's prompt.
+    pub fresh: bool,
 }
 
 /// The oldest queued or ready task at a model step, when no run is live.
@@ -340,7 +350,7 @@ pub(crate) fn admissible(
         return Ok(None);
     }
     let mut statement = db.prepare(
-        "SELECT id, workflow, step, trigger FROM tasks WHERE state IN ('queued', 'ready') ORDER BY id",
+        "SELECT id, workflow, step, trigger, state = 'queued' FROM tasks WHERE state IN ('queued', 'ready') ORDER BY id",
     )?;
     let queued = statement.query_map([], |row| {
         Ok(Admission {
@@ -348,6 +358,7 @@ pub(crate) fn admissible(
             workflow: row.get(1)?,
             step: row.get(2)?,
             trigger: row.get(3)?,
+            fresh: row.get(4)?,
         })
     })?;
     for admission in queued {
@@ -368,20 +379,26 @@ pub(crate) fn admissible(
 pub(crate) struct NewRun<'a> {
     pub task: i64,
     pub step: &'a str,
+    pub agent: &'a str,
     pub tmux: &'a str,
     pub session: &'a str,
     pub repo: &'a str,
     pub branch: &'a str,
     pub worktree: &'a str,
-    /// The step's prompt, for a new session. A resumed session has its waking prompt queued.
+    /// The step's prompt, for a fresh task. A ready task has its prompt queued.
     pub prompt: Option<&'a str>,
 }
 
-/// The harness session of the task's latest run that Claude started, which a new run resumes.
-pub(crate) fn resumable(db: &Connection, task: i64) -> rusqlite::Result<Option<String>> {
+/// The harness session of the task's latest run of `agent` that Claude started, which a new run of
+/// that agent resumes.
+pub(crate) fn resumable(
+    db: &Connection,
+    task: i64,
+    agent: &str,
+) -> rusqlite::Result<Option<String>> {
     db.query_row(
-        "SELECT session FROM runs WHERE task = ?1 AND ready = 1 ORDER BY id DESC LIMIT 1",
-        [task],
+        "SELECT session FROM runs WHERE task = ?1 AND agent = ?2 AND ready = 1 ORDER BY id DESC LIMIT 1",
+        params![task, agent],
         |row| row.get(0),
     )
     .optional()
@@ -392,8 +409,8 @@ pub(crate) fn resumable(db: &Connection, task: i64) -> rusqlite::Result<Option<S
 pub(crate) fn start(db: &mut Connection, run: &NewRun) -> rusqlite::Result<i64> {
     let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
     tx.execute(
-        "INSERT INTO runs (task, step, tmux, session) VALUES (?1, ?2, ?3, ?4)",
-        params![run.task, run.step, run.tmux, run.session],
+        "INSERT INTO runs (task, step, agent, tmux, session) VALUES (?1, ?2, ?3, ?4, ?5)",
+        params![run.task, run.step, run.agent, run.tmux, run.session],
     )?;
     let id = tx.last_insert_rowid();
     tx.execute(

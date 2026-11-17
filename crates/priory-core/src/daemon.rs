@@ -151,10 +151,10 @@ fn start(
         .iter()
         .find(|step| step.id == admission.step)
         .expect("admissible checked the step");
-    let Some(agent) = step
+    let Some((name, agent)) = step
         .agent
         .as_ref()
-        .and_then(|name| factory.agents.get(name))
+        .and_then(|name| Some((name, factory.agents.get(name)?)))
     else {
         return Ok(Err(format!("step {} names no known agent", step.id)));
     };
@@ -169,7 +169,7 @@ fn start(
         Ok(found) => found,
         Err(reason) => return Ok(Err(reason)),
     };
-    let resumed = state::resumable(db, admission.task)?;
+    let resumed = state::resumable(db, admission.task, name)?;
     let resume = resumed.is_some();
     let session = resumed.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
     let tmux = format!("priory-{}", admission.task);
@@ -178,12 +178,15 @@ fn start(
         &NewRun {
             task: admission.task,
             step: &step.id,
+            agent: name,
             tmux: &tmux,
             session: &session,
             repo,
             branch: &branch,
             worktree: &worktree.to_string_lossy(),
-            prompt: (!resume).then(|| step.prompt.as_deref().unwrap_or_default()),
+            prompt: admission
+                .fresh
+                .then(|| step.prompt.as_deref().unwrap_or_default()),
         },
     )?;
     let agent = &agent.value;
