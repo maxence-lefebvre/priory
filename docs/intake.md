@@ -114,11 +114,20 @@ of these names:
 ## Where polling stops
 
 The intake keeps no state file. On start, it reads `factory.intake` back, newest first, for the
-highest issue event id of each repository's `labeled` messages and the highest issue number of its
-`opened` messages. Each poll then publishes, oldest first, the events from that point on. It
-republishes the newest one it already published, so a crash between a source event and its task
-request is repaired on the next poll; herdr-bus drops the repeats.
+newest `labeled` and `opened` message of each repository. Their issue event id and issue number are
+where polling stopped. It publishes the task requests of those two messages again, so a crash
+between a source event and its task requests loses nothing; herdr-bus drops the repeats. Each poll
+then publishes, oldest first, the events after that point.
 
-A repository the intake has never published for starts from GitHub's first page: up to 100 recent
-issue events and 100 recent issues. A new trigger on `issues.opened` therefore requests a task for
-each of up to 100 existing issues on its first poll.
+Limits:
+
+- The point is kept per repository and type, not per trigger. On a repository that has no
+  `labeled` or no `opened` message yet, the intake reads GitHub's first page of that type: up to
+  100 recent issue events or 100 recent issues. A first `issues.opened` trigger on a new repository
+  therefore requests a task for each of up to 100 existing issues. A trigger added later for a
+  repository the intake already polls starts from where that repository stands.
+- Until a repository has a `labeled` message, the intake reads only the first page of its issue
+  events. A label added there and followed by more than 100 other issue events within one poll is
+  missed.
+- `opened` pages follow creation time and stop at issue numbers. An issue transferred or imported
+  into the repository with an older creation time can be missed.

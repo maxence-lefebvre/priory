@@ -1,4 +1,4 @@
-use herdr_bus::{Bus, MessageQuery, Stored};
+use herdr_bus::{Bus, Message, MessageQuery, Stored};
 use serde_json::json;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
@@ -94,7 +94,7 @@ impl Setup {
                 limit: 1000,
                 ..MessageQuery::default()
             })
-            .unwrap_or_default();
+            .unwrap();
         messages.reverse();
         messages
     }
@@ -243,7 +243,7 @@ fn a_failing_gh_exits_non_zero_and_publishes_nothing() {
 }
 
 #[test]
-fn an_opened_issue_publishes_its_source_event() {
+fn an_opened_issue_requests_a_task() {
     let setup = Setup::new(
         "opened",
         &[(
@@ -267,10 +267,19 @@ fn an_opened_issue_publishes_its_source_event() {
         )],
     );
 
+    write(
+        &setup.dir.join("factory/triggers/opened.toml"),
+        "source = \"github\"\nrepo = \"owner/repo\"\non = \"issues.opened\"\nworkflow = \"implement\"\n",
+    );
+
     succeeded(&setup.intake());
 
     let published = setup.published();
-    assert_eq!(kinds(&published), ["github.issues.opened"]);
+    assert_eq!(
+        kinds(&published),
+        ["github.issues.opened", "factory.task.requested"]
+    );
+    assert_eq!(published[1].message.data["trigger"], "opened");
     assert_eq!(
         published[0].message.data,
         json!({
@@ -302,4 +311,26 @@ fn polling_resumes_where_it_stopped() {
     succeeded(&setup.intake());
 
     assert_eq!(setup.published().len(), 102);
+}
+
+#[test]
+fn a_restart_requests_the_tasks_a_crash_left_out() {
+    let setup = Setup::new("recover", &[]);
+    succeeded(&setup.intake());
+    let bus = Bus::open(&setup.dir.join("bus.db")).unwrap();
+    let source = Message::new(
+        "github.issues.labeled",
+        json!({ "repo": "owner/repo", "issue": 42, "label": "agent", "github_id": 101 }),
+    );
+    bus.publish("factory.intake", &source).unwrap();
+
+    succeeded(&setup.intake());
+
+    let published = setup.published();
+    assert_eq!(
+        kinds(&published),
+        ["github.issues.labeled", "factory.task.requested"]
+    );
+    assert_eq!(published[1].message.data["source"], source.id.to_string());
+    assert_eq!(published[1].message.data["key"], "github:owner/repo#42");
 }

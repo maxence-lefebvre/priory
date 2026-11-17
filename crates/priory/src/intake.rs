@@ -36,7 +36,13 @@ pub fn run(factory: &Factory, once: bool) -> Result<(), String> {
             .types([LABELED, OPENED, TASK_REQUESTED]),
     )
     .map_err(|error| error.to_string())?;
-    let mut cursors = cursors(&bus, &repos).map_err(|error| error.to_string())?;
+    let newest = newest(&bus, &repos).map_err(|error| error.to_string())?;
+    let mut cursors = Cursors::new();
+    for ((repo, kind), source) in newest {
+        // A crash may have stopped between this source and its task requests.
+        dispatch(&bus, &triggers, &source)?;
+        cursors.insert((repo, kind), position(&source.data, kind));
+    }
     loop {
         let polled = poll(&bus, &triggers, &repos, &mut cursors);
         if once {
@@ -49,12 +55,16 @@ pub fn run(factory: &Factory, once: bool) -> Result<(), String> {
     }
 }
 
-/// Reads the cursors back from what the intake already published, newest first.
-fn cursors(bus: &Bus, repos: &BTreeSet<&str>) -> herdr_bus::Result<Cursors> {
+/// The newest source event published per repo and type, read back newest first.
+fn newest(
+    bus: &Bus,
+    repos: &BTreeSet<&str>,
+) -> herdr_bus::Result<BTreeMap<(String, &'static str), Message>> {
     let wanted = repos.len() * 2;
-    let mut cursors = Cursors::new();
+    let mut newest = BTreeMap::new();
     let mut before = None;
-    while cursors.len() < wanted {
+    // shortcut: a repo with no event of one type makes this read the whole output, once per start.
+    while newest.len() < wanted {
         let page = bus.messages(&MessageQuery {
             output: Some(OUTPUT.into()),
             before,
@@ -71,18 +81,23 @@ fn cursors(bus: &Bus, repos: &BTreeSet<&str>) -> herdr_bus::Result<Cursors> {
                 OPENED => OPENED,
                 _ => continue,
             };
-            let data = &stored.message.data;
-            let position = if kind == OPENED { "issue" } else { "github_id" };
-            let (Some(repo), Some(id)) = (data["repo"].as_str(), data[position].as_u64()) else {
+            let Some(repo) = stored.message.data["repo"].as_str() else {
                 continue;
             };
             if repos.contains(repo) {
-                let cursor = cursors.entry((repo.to_string(), kind)).or_default();
-                *cursor = (*cursor).max(id);
+                newest
+                    .entry((repo.to_string(), kind))
+                    .or_insert_with(|| stored.message.clone());
             }
         }
     }
-    Ok(cursors)
+    Ok(newest)
+}
+
+/// Where a source event stands in its stream: its issue event id, or its issue number.
+fn position(data: &serde_json::Value, kind: &str) -> u64 {
+    let field = if kind == OPENED { "issue" } else { "github_id" };
+    data[field].as_u64().unwrap_or_default()
 }
 
 /// Fetches every repo first, so that a failing `gh` publishes nothing.
@@ -105,17 +120,35 @@ fn poll(
     }
     for event in observed {
         let source = event.message()?;
-        let publish = |message: &Message| {
-            bus.publish(OUTPUT, message)
-                .map_err(|error| format!("publish on {OUTPUT}: {error}"))
-        };
-        publish(&source)?;
-        for (name, trigger) in triggers.iter().filter(|(_, t)| event.matches(t)) {
-            publish(&task_requested(name, trigger, &event, &source))?;
-        }
-        cursors.insert((event.repo.clone(), event.kind), event.position());
+        publish(bus, &source)?;
+        dispatch(bus, triggers, &source)?;
+        cursors.insert((event.repo, event.kind), position(&source.data, event.kind));
     }
     Ok(())
+}
+
+/// Publishes one task request per trigger that matches `source`.
+fn dispatch(bus: &Bus, triggers: &[(&str, &Trigger)], source: &Message) -> Result<(), String> {
+    let data = &source.data;
+    for (name, trigger) in triggers {
+        let label = trigger
+            .filter
+            .as_ref()
+            .and_then(|filter| filter.get("label"));
+        let matches = trigger.repo.as_deref() == data["repo"].as_str()
+            && format!("github.{}", trigger.on) == source.kind
+            && label.is_none_or(|label| data["label"].as_str() == Some(label));
+        if matches {
+            publish(bus, &task_requested(name, trigger, source))?;
+        }
+    }
+    Ok(())
+}
+
+fn publish(bus: &Bus, message: &Message) -> Result<(), String> {
+    bus.publish(OUTPUT, message)
+        .map(drop)
+        .map_err(|error| format!("publish on {OUTPUT}: {error}"))
 }
 
 /// One GitHub event the intake publishes, oldest first within its type.
@@ -157,28 +190,14 @@ impl Observed {
             .time(time)
             .link("issue", &self.issue.html_url))
     }
-
-    fn position(&self) -> u64 {
-        if self.kind == OPENED {
-            return self.issue.number;
-        }
-        self.github_id
-    }
-
-    fn matches(&self, trigger: &Trigger) -> bool {
-        let on = format!("github.{}", trigger.on);
-        let label = trigger
-            .filter
-            .as_ref()
-            .and_then(|filter| filter.get("label"));
-        trigger.repo.as_deref() == Some(self.repo.as_str())
-            && on == self.kind
-            && label.is_none_or(|label| self.label.as_ref() == Some(label))
-    }
 }
 
-fn task_requested(name: &str, trigger: &Trigger, event: &Observed, source: &Message) -> Message {
-    let key = format!("github:{}#{}", event.repo, event.issue.number);
+fn task_requested(name: &str, trigger: &Trigger, source: &Message) -> Message {
+    let key = format!(
+        "github:{}#{}",
+        source.data["repo"].as_str().unwrap_or_default(),
+        source.data["issue"]
+    );
     let data = json!({
         "workflow": trigger.workflow,
         "key": key,
@@ -292,7 +311,7 @@ fn pages<T: DeserializeOwned>(
             break;
         }
     }
-    items.retain(|item| cursor.is_none_or(|cursor| order(item) >= cursor));
+    items.retain(|item| cursor.is_none_or(|cursor| order(item) > cursor));
     items.sort_by_key(&order);
     Ok(items)
 }
