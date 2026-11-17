@@ -9,6 +9,7 @@ pub fn check(factory: &Factory) -> Vec<Problem> {
         if !factory.workflows.contains_key(&trigger.value.workflow) {
             problems.push(problem(
                 trigger,
+                trigger.lines.field("workflow"),
                 format!("workflow `{}` does not exist", trigger.value.workflow),
             ));
         }
@@ -17,6 +18,7 @@ pub fn check(factory: &Factory) -> Vec<Problem> {
         } else if trigger.value.backfill.is_some() {
             problems.push(problem(
                 trigger,
+                trigger.lines.field("backfill"),
                 "only a GitHub trigger has `backfill`".into(),
             ));
         }
@@ -35,6 +37,10 @@ fn check_github(trigger: &Loaded<Trigger>, problems: &mut Vec<Problem>) {
     {
         problems.push(problem(
             trigger,
+            trigger
+                .lines
+                .field("repo")
+                .or(trigger.lines.field("source")),
             "a GitHub trigger needs `repo = \"owner/name\"`".into(),
         ));
     }
@@ -47,6 +53,7 @@ fn check_github(trigger: &Loaded<Trigger>, problems: &mut Vec<Problem>) {
     if !ON.contains(&value.on.as_str()) {
         problems.push(problem(
             trigger,
+            trigger.lines.field("on"),
             format!(
                 "a GitHub trigger handles `issues.labeled`, `issues.opened`, `pull_request.labeled` or `pull_request.opened`, not `{}`",
                 value.on
@@ -59,6 +66,7 @@ fn check_github(trigger: &Loaded<Trigger>, problems: &mut Vec<Problem>) {
     if !value.filter.as_ref().is_none_or(label_only) {
         problems.push(problem(
             trigger,
+            trigger.lines.field("filter"),
             "`filter` works only with `on = \"*.labeled\"`, on `label`".into(),
         ));
     }
@@ -70,6 +78,7 @@ fn check_github(trigger: &Loaded<Trigger>, problems: &mut Vec<Problem>) {
     if value.key.as_deref().is_some_and(|key| key != number) {
         problems.push(problem(
             trigger,
+            trigger.lines.field("key"),
             format!("a GitHub trigger's `key` is `{number}`"),
         ));
     }
@@ -77,10 +86,12 @@ fn check_github(trigger: &Loaded<Trigger>, problems: &mut Vec<Problem>) {
 
 fn check_workflow(factory: &Factory, workflow: &Loaded<Workflow>, problems: &mut Vec<Problem>) {
     let mut steps: BTreeMap<&str, &Step> = BTreeMap::new();
-    for step in &workflow.value.steps {
+    for (index, step) in workflow.value.steps.iter().enumerate() {
+        let line = workflow.lines.step(index);
         if ENDS.contains(&step.id.as_str()) {
             problems.push(problem(
                 workflow,
+                line,
                 format!(
                     "step id `{}` is reserved for the end of a workflow",
                     step.id
@@ -91,6 +102,7 @@ fn check_workflow(factory: &Factory, workflow: &Loaded<Workflow>, problems: &mut
         if steps.insert(step.id.as_str(), step).is_some() {
             problems.push(problem(
                 workflow,
+                line,
                 format!("step `{}` is defined twice", step.id),
             ));
             return;
@@ -98,13 +110,21 @@ fn check_workflow(factory: &Factory, workflow: &Loaded<Workflow>, problems: &mut
     }
     let start = workflow.value.start.as_str();
     if !steps.contains_key(start) {
-        problems.push(problem(workflow, format!("start `{start}` is not a step")));
+        problems.push(problem(
+            workflow,
+            workflow.lines.field("start"),
+            format!("start `{start}` is not a step"),
+        ));
         return;
     }
     let reached = reachable(&steps, start, |_| false);
-    for step in &workflow.value.steps {
+    for (index, step) in workflow.value.steps.iter().enumerate() {
         let mut report = |message: String| {
-            problems.push(problem(workflow, format!("step `{}`: {message}", step.id)))
+            problems.push(problem(
+                workflow,
+                workflow.lines.step(index),
+                format!("step `{}`: {message}", step.id),
+            ))
         };
         let fields = [
             (step.agent.is_some(), Decider::Model, "an `agent`"),
@@ -217,10 +237,10 @@ fn reachable<'a>(
     reached
 }
 
-fn problem<T>(loaded: &Loaded<T>, message: String) -> Problem {
+fn problem<T>(loaded: &Loaded<T>, line: Option<usize>, message: String) -> Problem {
     Problem {
         file: loaded.file.clone(),
-        at: None,
+        at: line.map(|line| line.to_string()),
         message,
     }
 }

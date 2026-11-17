@@ -131,6 +131,30 @@ fn a_factory_in_yaml_passes() {
     assert_eq!(outcome.code, 0);
 }
 
+#[test]
+fn a_yaml_rule_problem_names_its_line() {
+    let files = [
+        ("factory.yaml", "name: demo\n"),
+        (
+            "triggers/agent-label.yaml",
+            "source: github\nrepo: owner/repo\non: issues.labeled\nworkflow: deploy\n",
+        ),
+        (
+            "workflows/implement.yaml",
+            "start: implement\nsteps:\n  - id: implement\n    decides: model\n    agent: reviewer\n    prompt: Implement the issue.\n    effect: reversible\n    next: { passed: done }\n",
+        ),
+    ];
+
+    let outcome = check(&factory("yaml-lines", &files));
+
+    assert_eq!(outcome.code, 1);
+    assert_eq!(
+        outcome.stderr,
+        "triggers/agent-label.yaml:4: workflow `deploy` does not exist\n\
+         workflows/implement.yaml:3: step `implement`: agent `reviewer` does not exist\n"
+    );
+}
+
 fn with<'a>(path: &'a str, content: &'a str) -> Vec<(&'a str, &'a str)> {
     let mut files: Vec<_> = valid()
         .into_iter()
@@ -182,7 +206,7 @@ fn a_trigger_must_name_an_existing_workflow() {
     assert_eq!(outcome.code, 1);
     assert_eq!(
         outcome.stderr,
-        "triggers/agent-label.toml: workflow `deploy` does not exist\n"
+        "triggers/agent-label.toml:4: workflow `deploy` does not exist\n"
     );
 }
 
@@ -198,7 +222,7 @@ fn a_model_step_must_name_an_existing_agent() {
     assert_eq!(outcome.code, 1);
     assert_eq!(
         outcome.stderr,
-        "workflows/implement.toml: step `implement`: agent `reviewer` does not exist\n"
+        "workflows/implement.toml:4: step `implement`: agent `reviewer` does not exist\n"
     );
 }
 
@@ -218,7 +242,7 @@ fn next_must_name_a_step_done_or_stop() {
     assert_eq!(outcome.code, 1);
     assert_eq!(
         outcome.stderr,
-        "workflows/implement.toml: step `implement`: outcome `failed` leads to `retry`, which is not a step, `done` or `stop`\n"
+        "workflows/implement.toml:4: step `implement`: outcome `failed` leads to `retry`, which is not a step, `done` or `stop`\n"
     );
 }
 
@@ -229,7 +253,7 @@ fn start_must_name_a_step() {
     assert_eq!(outcome.code, 1);
     assert_eq!(
         outcome.stderr,
-        "workflows/implement.toml: start `plan` is not a step\n"
+        "workflows/implement.toml:2: start `plan` is not a step\n"
     );
 }
 
@@ -244,7 +268,7 @@ fn every_step_must_be_reachable_from_start() {
     assert_eq!(outcome.code, 1);
     assert_eq!(
         outcome.stderr,
-        "workflows/implement.toml: step `implement`: no path from start reaches it\n"
+        "workflows/implement.toml:4: step `implement`: no path from start reaches it\n"
     );
 }
 
@@ -259,8 +283,8 @@ fn a_human_step_maps_each_option_to_a_next_step() {
     assert_eq!(outcome.code, 1);
     assert_eq!(
         outcome.stderr,
-        "workflows/implement.toml: step `approve-pr`: option `later` has no `next`\n\
-         workflows/implement.toml: step `approve-pr`: `next` has outcome `stop`, which is not an option\n"
+        "workflows/implement.toml:12: step `approve-pr`: option `later` has no `next`\n\
+         workflows/implement.toml:12: step `approve-pr`: `next` has outcome `stop`, which is not an option\n"
     );
 }
 
@@ -271,7 +295,7 @@ fn a_code_step_needs_an_action() {
     assert_eq!(outcome.code, 1);
     assert_eq!(
         outcome.stderr,
-        "workflows/implement.toml: step `open-pr`: a code step needs an `action`\n"
+        "workflows/implement.toml:20: step `open-pr`: a code step needs an `action`\n"
     );
 }
 
@@ -282,18 +306,22 @@ fn a_model_step_needs_an_agent() {
     assert_eq!(outcome.code, 1);
     assert_eq!(
         outcome.stderr,
-        "workflows/implement.toml: step `implement`: a model step needs an `agent`\n"
+        "workflows/implement.toml:4: step `implement`: a model step needs an `agent`\n"
     );
 }
 
-const UNAPPROVED: &str = "workflows/implement.toml: step `open-pr`: irreversible, and a path from start reaches it with no human step that approves it\n";
+fn unapproved(line: usize) -> String {
+    format!(
+        "workflows/implement.toml:{line}: step `open-pr`: irreversible, and a path from start reaches it with no human step that approves it\n"
+    )
+}
 
 #[test]
 fn an_irreversible_step_needs_approval() {
     let outcome = workflow_with("no-approval", "approves = [\"open-pr\"]\n", "");
 
     assert_eq!(outcome.code, 1);
-    assert_eq!(outcome.stderr, UNAPPROVED);
+    assert_eq!(outcome.stderr, unapproved(19));
 }
 
 #[test]
@@ -305,7 +333,7 @@ fn every_path_to_an_irreversible_step_needs_approval() {
     );
 
     assert_eq!(outcome.code, 1);
-    assert_eq!(outcome.stderr, UNAPPROVED);
+    assert_eq!(outcome.stderr, unapproved(20));
 }
 
 #[test]
@@ -335,7 +363,7 @@ fn approves_must_name_an_irreversible_step() {
     assert_eq!(outcome.code, 1);
     assert_eq!(
         outcome.stderr,
-        "workflows/implement.toml: step `approve-pr`: approves `implement`, which is not an irreversible step\n"
+        "workflows/implement.toml:12: step `approve-pr`: approves `implement`, which is not an irreversible step\n"
     );
 }
 
@@ -353,7 +381,7 @@ fn step_ids_are_unique() {
     assert_eq!(outcome.code, 1);
     assert_eq!(
         outcome.stderr,
-        "workflows/implement.toml: step `open-pr` is defined twice\n"
+        "workflows/implement.toml:27: step `open-pr` is defined twice\n"
     );
 }
 
@@ -389,7 +417,8 @@ fn an_autonomous_step_needs_a_reason() {
     assert_eq!(
         outcome.stderr,
         format!(
-            "workflows/implement.toml: step `open-pr`: `autonomous` needs a reason\n{UNAPPROVED}"
+            "workflows/implement.toml:19: step `open-pr`: `autonomous` needs a reason\n{}",
+            unapproved(19)
         )
     );
 }
@@ -401,7 +430,7 @@ fn a_model_step_needs_a_prompt() {
     assert_eq!(outcome.code, 1);
     assert_eq!(
         outcome.stderr,
-        "workflows/implement.toml: step `implement`: a model step needs a `prompt`\n"
+        "workflows/implement.toml:4: step `implement`: a model step needs a `prompt`\n"
     );
 }
 
@@ -416,7 +445,7 @@ fn every_step_needs_a_next() {
     assert_eq!(outcome.code, 1);
     assert_eq!(
         outcome.stderr,
-        "workflows/implement.toml: step `open-pr`: `next` is empty\n"
+        "workflows/implement.toml:20: step `open-pr`: `next` is empty\n"
     );
 }
 
@@ -431,7 +460,7 @@ fn a_step_holds_only_its_deciders_fields() {
     assert_eq!(outcome.code, 1);
     assert_eq!(
         outcome.stderr,
-        "workflows/implement.toml: step `open-pr`: only a model step has an `agent`\n"
+        "workflows/implement.toml:20: step `open-pr`: only a model step has an `agent`\n"
     );
 }
 
@@ -449,7 +478,7 @@ fn done_and_stop_are_not_step_ids() {
     assert_eq!(outcome.code, 1);
     assert_eq!(
         outcome.stderr,
-        "workflows/implement.toml: step id `stop` is reserved for the end of a workflow\n"
+        "workflows/implement.toml:27: step id `stop` is reserved for the end of a workflow\n"
     );
 }
 
@@ -521,7 +550,7 @@ fn a_github_trigger_names_its_repo() {
     assert_eq!(outcome.code, 1);
     assert_eq!(
         outcome.stderr,
-        "triggers/agent-label.toml: a GitHub trigger needs `repo = \"owner/name\"`\n"
+        "triggers/agent-label.toml:2: a GitHub trigger needs `repo = \"owner/name\"`\n"
     );
 }
 
@@ -539,8 +568,8 @@ fn a_github_trigger_uses_a_supported_event_and_filter() {
     assert_eq!(outcome.code, 1);
     assert_eq!(
         outcome.stderr,
-        "triggers/agent-label.toml: `filter` works only with `on = \"*.labeled\"`, on `label`\n\
-         triggers/agent-label.toml: a GitHub trigger's `key` is `issue.number`\n"
+        "triggers/agent-label.toml:5: `filter` works only with `on = \"*.labeled\"`, on `label`\n\
+         triggers/agent-label.toml:7: a GitHub trigger's `key` is `issue.number`\n"
     );
 }
 
@@ -574,7 +603,7 @@ fn only_a_github_trigger_has_backfill() {
     assert_eq!(outcome.code, 1);
     assert_eq!(
         outcome.stderr,
-        "triggers/agent-label.toml: only a GitHub trigger has `backfill`\n"
+        "triggers/agent-label.toml:5: only a GitHub trigger has `backfill`\n"
     );
 }
 
@@ -605,7 +634,7 @@ fn a_pull_request_trigger_rejects_other_events_and_keys() {
     assert_eq!(outcome.code, 1);
     assert_eq!(
         outcome.stderr,
-        "triggers/agent-label.toml: a GitHub trigger handles `issues.labeled`, `issues.opened`, `pull_request.labeled` or `pull_request.opened`, not `pull_request.closed`\n\
-         triggers/keyed.toml: a GitHub trigger's `key` is `pull_request.number`\n"
+        "triggers/agent-label.toml:3: a GitHub trigger handles `issues.labeled`, `issues.opened`, `pull_request.labeled` or `pull_request.opened`, not `pull_request.closed`\n\
+         triggers/keyed.toml:7: a GitHub trigger's `key` is `pull_request.number`\n"
     );
 }

@@ -1,3 +1,4 @@
+use crate::lines::{self, Lines};
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
 use std::collections::BTreeMap;
@@ -159,6 +160,7 @@ pub struct Share {
 pub struct Loaded<T> {
     pub file: PathBuf,
     pub value: T,
+    pub lines: Lines,
 }
 
 #[derive(Default)]
@@ -179,12 +181,12 @@ pub fn load(dir: &Path) -> (Factory, Vec<Problem>) {
 
     let mut settings = BTreeMap::new();
     for file in ["factory.toml", "factory.yaml", "factory.yml"].map(|name| dir.join(name)) {
-        if let Some(value) = file
+        if let Some((value, lines)) = file
             .is_file()
             .then(|| found.parse::<Settings>(&file))
             .flatten()
         {
-            found.define(&mut settings, "factory".into(), &file, value);
+            found.define(&mut settings, "factory".into(), &file, value, lines);
         }
     }
     if settings.is_empty() && found.problems.is_empty() {
@@ -204,24 +206,24 @@ pub fn load(dir: &Path) -> (Factory, Vec<Problem>) {
         let Some(source) = found.read(&file) else {
             continue;
         };
-        if let Some(mut value) = found.parse_source::<Agent>(&file, &source) {
+        if let Some((mut value, lines)) = found.parse_source::<Agent>(&file, &source) {
             value.body = body(&source);
-            found.define(&mut factory.agents, file_name(&path), &file, value);
+            found.define(&mut factory.agents, file_name(&path), &file, value, lines);
         }
     }
     for file in found.config_files("triggers") {
-        if let Some(value) = found.parse::<Trigger>(&file) {
-            found.define(&mut factory.triggers, stem(&file), &file, value);
+        if let Some((value, lines)) = found.parse::<Trigger>(&file) {
+            found.define(&mut factory.triggers, stem(&file), &file, value, lines);
         }
     }
     for file in found.config_files("workflows") {
-        if let Some(value) = found.parse::<Workflow>(&file) {
-            found.define(&mut factory.workflows, stem(&file), &file, value);
+        if let Some((value, lines)) = found.parse::<Workflow>(&file) {
+            found.define(&mut factory.workflows, stem(&file), &file, value, lines);
         }
     }
     for file in found.config_files("runners") {
-        if let Some(value) = found.parse::<Runner>(&file) {
-            found.define(&mut factory.runners, stem(&file), &file, value);
+        if let Some((value, lines)) = found.parse::<Runner>(&file) {
+            found.define(&mut factory.runners, stem(&file), &file, value, lines);
         }
     }
     (factory, problems)
@@ -243,6 +245,7 @@ impl Loader<'_> {
         name: String,
         file: &Path,
         value: T,
+        lines: Lines,
     ) {
         let file = self.relative(file);
         if let Some(existing) = map.get(&name) {
@@ -254,7 +257,7 @@ impl Loader<'_> {
             });
             return;
         }
-        map.insert(name, Loaded { file, value });
+        map.insert(name, Loaded { file, value, lines });
     }
 
     /// The entries of a factory folder; a missing folder has none.
@@ -312,12 +315,16 @@ impl Loader<'_> {
         }
     }
 
-    fn parse<T: DeserializeOwned>(&mut self, file: &Path) -> Option<T> {
+    fn parse<T: DeserializeOwned>(&mut self, file: &Path) -> Option<(T, Lines)> {
         let source = self.read(file)?;
         self.parse_source(file, &source)
     }
 
-    fn parse_source<T: DeserializeOwned>(&mut self, file: &Path, source: &str) -> Option<T> {
+    fn parse_source<T: DeserializeOwned>(
+        &mut self,
+        file: &Path,
+        source: &str,
+    ) -> Option<(T, Lines)> {
         let relative = self.relative(file);
         let parsed = match file.extension().and_then(|ext| ext.to_str()) {
             Some("md") => frontmatter(source),
@@ -332,9 +339,12 @@ impl Loader<'_> {
                 first_line: 1,
             }),
         }
-        .and_then(Document::deserialize);
+        .and_then(|document| {
+            let value = document.deserialize()?;
+            Ok((value, document.lines()))
+        });
         match parsed {
-            Ok(value) => Some(value),
+            Ok(parsed) => Some(parsed),
             Err((at, message)) => {
                 self.problems.push(Problem {
                     file: relative,
@@ -347,11 +357,13 @@ impl Loader<'_> {
     }
 }
 
+#[derive(Clone, Copy)]
 enum Format {
     Toml,
     Yaml,
 }
 
+#[derive(Clone, Copy)]
 struct Document<'a> {
     format: Format,
     text: &'a str,
@@ -361,6 +373,14 @@ struct Document<'a> {
 type ParseError = (Option<String>, String);
 
 impl Document<'_> {
+    fn lines(self) -> Lines {
+        match self.format {
+            Format::Toml => lines::toml(self.text, self.first_line),
+            Format::Yaml => lines::yaml(self.text, self.first_line),
+        }
+        .unwrap_or_default()
+    }
+
     fn deserialize<T: DeserializeOwned>(self) -> Result<T, ParseError> {
         let offset = self.first_line - 1;
         match self.format {
@@ -430,7 +450,7 @@ fn body(source: &str) -> String {
         .to_owned()
 }
 
-fn line_column(text: &str, offset: usize) -> (usize, usize) {
+pub(crate) fn line_column(text: &str, offset: usize) -> (usize, usize) {
     let before = &text[..offset.min(text.len())];
     let line = before.matches('\n').count() + 1;
     let column = before

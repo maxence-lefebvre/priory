@@ -254,7 +254,7 @@ Milestones are defined below. Each requirement names the milestone that delivers
 ### R1. Configuration
 
 - R1.1 `priory check` validates a factory in either format and reports errors with file and line.
-  A rule error, such as an unreachable step, names its file and step until its line is tracked too. M0
+  A rule error, such as an unreachable step, names the line of its step, trigger field or `start`. M0
 - R1.2 `priory check` enforces the workflow rules and the approval rule above. M0
 - R1.3 `priory draw` renders a workflow in the decider and effect notation. M1
 
