@@ -233,9 +233,9 @@ Commit statuses are not published. A re-run gets a new check run id, so it publi
 
 ## `priory.task.requested.cli`
 
-`priory request [DIR] --workflow <name> --key <key> [--band <band>] [--lane <lane>] [--repo <owner/name>] <text>`
+`priory request [DIR] --workflow <name> --key <key> [--band <band>] [--lane <lane>] [--repo <owner/name>] [--] <text>`
 publishes this source event, then one `factory.task.requested` for it. It loads the factory as
-`priory check` does and refuses an unknown workflow, publishing nothing. `DIR` defaults to `.`.
+`priory check` does and refuses an unknown workflow, publishing nothing. `DIR` defaults to `.`. A flag value cannot start with `--`; put `--` before text that does.
 
 The type has no `github.` prefix because no GitHub event produced it, and ends in `.cli` because a
 later source, such as Linear, adds its own `priory.task.requested.<source>`. It is a request, not a
@@ -254,7 +254,7 @@ from the flags (null when absent), and the same key. No trigger file is involved
 
 ```json
 {
-  "id": "3772d6b8-37cf-5fa7-a618-c4f8cea438af",
+  "id": "b770d2d3-3057-5e09-bfca-a0bb555bafc8",
   "type": "priory.task.requested.cli",
   "subject": "cli:docs-1",
   "time": "2026-11-17T18:00:00Z",
@@ -270,7 +270,7 @@ from the flags (null when absent), and the same key. No trigger file is involved
 
 ```json
 {
-  "id": "64559b95-9a12-5ffe-83ba-69a0bbbeb498",
+  "id": "1d4a502b-b1b3-54da-8165-013fe15a8d3a",
   "type": "factory.task.requested",
   "subject": "cli:docs-1",
   "time": "2026-11-17T18:00:00Z",
@@ -280,7 +280,7 @@ from the flags (null when absent), and the same key. No trigger file is involved
     "band": "today",
     "lane": null,
     "trigger": "cli",
-    "source": "3772d6b8-37cf-5fa7-a618-c4f8cea438af"
+    "source": "b770d2d3-3057-5e09-bfca-a0bb555bafc8"
   },
   "links": []
 }
@@ -342,7 +342,7 @@ of these names:
 | `github.pull_request.opened` | `github:{repo}:issues:{github_id}:opened` |
 | `github.pull_request_review.submitted` | `github:{repo}:pulls/reviews:{github_id}` |
 | `github.check_run.completed` | `github:{repo}:check-runs:{github_id}:pulls/{pull_request}`, since one check run can sit on the head of two pull requests |
-| `priory.task.requested.cli` | `priory.task.requested.cli:{key}:{text}`, with the `cli:` key |
+| `priory.task.requested.cli` | `priory.task.requested.cli:{len}:{key}:{text}`, with the `cli:` key and `len` its byte length, so a `:` in the key or text cannot make two requests collide |
 | `factory.task.requested` | `factory.task.requested:{trigger}:{source}`  |
 | `factory.intake.baseline` | `factory.intake.baseline:{repo}:{stream}`   |
 

@@ -16,12 +16,15 @@ pub struct Request {
     text: String,
 }
 
-/// The factory directory (default `.`) and the request, or `None` on a usage error.
 pub fn parse(args: Vec<String>) -> Option<(PathBuf, Request)> {
     let (mut workflow, mut key, mut band, mut lane, mut repo) = (None, None, None, None, None);
     let mut positional = vec![];
     let mut args = args.into_iter();
     while let Some(arg) = args.next() {
+        if arg == "--" {
+            positional.extend(args);
+            break;
+        }
         let flag = match arg.as_str() {
             "--workflow" => &mut workflow,
             "--key" => &mut key,
@@ -33,7 +36,7 @@ pub fn parse(args: Vec<String>) -> Option<(PathBuf, Request)> {
                 continue;
             }
         };
-        *flag = Some(args.next()?);
+        *flag = Some(args.next().filter(|value| !value.starts_with("--"))?);
     }
     let (dir, text) = match <[String; 1]>::try_from(positional) {
         Ok([text]) => (PathBuf::from("."), text),
@@ -53,22 +56,27 @@ pub fn parse(args: Vec<String>) -> Option<(PathBuf, Request)> {
     Some((dir, request))
 }
 
-/// Publishes the request's source event and its task request on `factory.intake`.
 pub fn run(factory: &Factory, request: &Request) -> Result<(), String> {
     if !factory.workflows.contains_key(&request.workflow) {
         return Err(format!("unknown workflow `{}`", request.workflow));
     }
     let key = format!("cli:{}", request.key);
     let person = std::env::var("USER").ok();
+    let time = Timestamp::now();
     let data = json!({
         "text": request.text,
         "person": person,
-        "time": Timestamp::now().to_string(),
+        "time": time.to_string(),
         "repo": request.repo,
     });
     let source = Message::new(REQUESTED, data)
-        .id(intake::id(&format!("{REQUESTED}:{key}:{}", request.text)))
-        .subject(&key);
+        .id(intake::id(&format!(
+            "{REQUESTED}:{}:{key}:{}",
+            key.len(),
+            request.text
+        )))
+        .subject(&key)
+        .time(time);
     let data = json!({
         "workflow": request.workflow,
         "key": key,

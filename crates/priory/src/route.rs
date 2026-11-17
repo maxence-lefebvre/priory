@@ -26,12 +26,15 @@ pub struct NewTask {
     pub source: String,
 }
 
-/// The task key a message names: a task request's own, or `github:{repo}#{number}` for a GitHub
+/// The task key a message names: a task request's own, a CLI request's subject, or `github:{repo}#{number}` for a GitHub
 /// event, its issue or pull request number. GitHub numbers both from one sequence per repository.
 pub fn key(message: &Message) -> Option<String> {
     let data = &message.data;
     if message.kind == TASK_REQUESTED {
         return data["key"].as_str().map(str::to_owned);
+    }
+    if message.kind == crate::request::REQUESTED {
+        return message.subject.clone();
     }
     if !message.kind.starts_with("github.") {
         return None;

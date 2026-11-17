@@ -18,7 +18,6 @@ next = { passed = "done", failed = "stop" }
 
 const AGENT: &str = "+++\ndescription = \"Implements one task.\"\nharness = \"claude-code\"\n+++\n";
 
-/// A factory with one workflow, a bus file and a Priory state file under the test's own directory.
 struct Setup {
     dir: PathBuf,
 }
@@ -52,7 +51,6 @@ impl Setup {
             .unwrap()
     }
 
-    /// `priory request <factory> <args>`.
     fn request(&self, args: &[&str]) -> Output {
         let factory = self.dir.join("factory");
         let mut all = vec!["request", factory.to_str().unwrap()];
@@ -60,7 +58,6 @@ impl Setup {
         self.priory(&all)
     }
 
-    /// Everything on `factory.intake`, oldest first; none before anything was published.
     fn published(&self) -> Vec<Stored> {
         let Ok(bus) = Bus::open(&self.dir.join("bus.db")) else {
             return vec![];
@@ -75,7 +72,6 @@ impl Setup {
         messages
     }
 
-    /// The rows `priory tasks` prints, each split on tabs, after its header.
     fn tasks(&self) -> Vec<Vec<String>> {
         let output = self.priory(&["tasks"]);
         succeeded(&output);
@@ -188,4 +184,64 @@ fn the_daemon_turns_a_request_into_one_queued_task() {
             "docs"
         ]]
     );
+}
+
+#[test]
+fn a_colon_in_the_key_or_text_does_not_merge_two_requests() {
+    let setup = Setup::new("collision");
+
+    succeeded(&setup.request(&["--workflow", "implement", "--key", "a:b", "c"]));
+    succeeded(&setup.request(&["--workflow", "implement", "--key", "a", "b:c"]));
+
+    assert_eq!(setup.published().len(), 4);
+}
+
+#[test]
+fn a_flag_without_its_value_is_a_usage_error_and_publishes_nothing() {
+    let setup = Setup::new("missing-value");
+
+    let output = setup.request(&["--workflow", "implement", "--key", "--band", "today"]);
+
+    assert_eq!(output.status.code(), Some(2));
+    assert!(setup.published().is_empty());
+}
+
+#[test]
+fn text_after_a_double_dash_is_literal() {
+    let setup = Setup::new("literal");
+
+    succeeded(&setup.request(&["--workflow", "implement", "--key", "k", "--", "--band"]));
+
+    assert_eq!(setup.published()[0].message.data["text"], "--band");
+}
+
+#[test]
+fn the_source_event_time_is_the_time_in_its_data() {
+    let setup = Setup::new("time");
+    succeeded(&setup.request(&["--workflow", "implement", "--key", "k", "text"]));
+
+    let source = &setup.published()[0].message;
+
+    assert_eq!(source.time.to_string(), source.data["time"]);
+}
+
+#[test]
+fn a_second_request_for_a_key_is_kept_on_its_task() {
+    let setup = Setup::new("follow-up");
+    let factory = setup.dir.join("factory");
+    succeeded(&setup.request(&["--workflow", "implement", "--key", "k", "first"]));
+    succeeded(&setup.priory(&["daemon", factory.to_str().unwrap(), "--once"]));
+    succeeded(&setup.request(&["--workflow", "implement", "--key", "k", "second"]));
+    succeeded(&setup.priory(&["daemon", factory.to_str().unwrap(), "--once"]));
+
+    let inbox = String::from_utf8(setup.priory(&["inbox"]).stdout).unwrap();
+    let outcomes: Vec<_> = inbox
+        .lines()
+        .skip(1)
+        .map(|l| l.split('\t').collect::<Vec<_>>())
+        .collect();
+
+    assert_eq!(outcomes.len(), 4);
+    assert_eq!(outcomes[2][3..], ["1", "kept"]);
+    assert_eq!(setup.tasks().len(), 1);
 }
