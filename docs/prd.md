@@ -77,6 +77,7 @@ The Warp column comes from Warp's public page and is blank where that page says 
 | Run        | One agent process working on a task, from start to sleep or exit         | run          | worker launch    |
 | Session    | An agent's conversation, which survives the runs that resume it          |              | session          |
 | Event      | Something that happened: a poll result, a webhook, a schedule, an answer | delivery     | event            |
+| Intake     | The process that polls sources, matches triggers and publishes events     |              | watch-poll       |
 | Inbox      | The durable list of events, each routed to the task it concerns          |              | inbox            |
 | Desk       | What waits on a person: asks, blocked tasks and reports                   |              | asks panel       |
 | Wait       | The conditions an agent names before it sleeps                            |              | `retire --on`    |
@@ -254,10 +255,16 @@ Milestones are defined below. Each requirement names the milestone that delivers
 - R1.2 `priory check` enforces the workflow rules and the approval rule above. M0
 - R1.3 `priory draw` renders a workflow in the decider and effect notation. M1
 
-### R2. Events and triggers
+### R2. Intake: events and triggers
 
-- R2.1 Load triggers from `triggers/`. A trigger that matches an event starts its workflow, through
-  the inbox rules in R3. M0
+The intake runs as its own process. It polls the sources, loads `triggers/`, and publishes on one
+herdr-bus output, `factory.intake`: every source event as a CloudEvents message of its own type,
+such as `github.issues.labeled`, and one `factory.task.requested` message for each event a trigger
+matches. That message names the workflow, key, band, lane and source event. The Priory daemon reads
+the output as one consumer and acks each message after its own transaction commits. Another
+factory, such as herdr-bowtie, can read the same output as another consumer.
+
+- R2.1 Run the intake as its own process, publishing to `factory.intake` as above. M0
 - R2.2 Accept tasks from the CLI, and GitHub events: issues, pull requests, check runs, reviews and
   merges. M0
 - R2.3 Deliver each event at least once and drop duplicates by event id. M0
@@ -274,15 +281,15 @@ that created it, its branch, its pull request, its asks and its waits. An event 
 that owns a resource it names, such as a check run on the task's pull request or an answer to its
 ask.
 
-Only a trigger creates a task. An event that concerns no active task starts a new one when a trigger
-matches it, and is recorded with no action otherwise. A task is active in any state except done,
+Only a `factory.task.requested` message creates a task. Any other event that concerns no active task
+is recorded with no action. A task is active in any state except done,
 failed and dropped. An event for a failed task stays on it, for its repair.
 
 The daemon then reconciles the task with the event:
 
 | The task                                  | The daemon                                                      |
 | ----------------------------------------- | --------------------------------------------------------------- |
-| None active, and a trigger matches        | creates a task and starts its workflow                          |
+| None active, and the message is `factory.task.requested` | creates a task and starts its workflow   |
 | Queued, held, ready or blocked            | keeps the event and delivers it to the task's first run         |
 | Running                                   | sends the event to the agent as a message, through the outbox   |
 | Asleep, and the event matches its wait    | wakes it: makes it ready, then resumes its session in its worktree with the event |
@@ -440,6 +447,8 @@ Priory serves these as MCP tools.
   transaction.
 - Prompts and slow effects are stored, so a daemon restart resumes them where they stood.
 - Agents outlive the daemon. Their MCP tools reach it through a stdio bridge on a local socket.
+- The intake and the daemon are separate processes joined by a herdr-bus output, so another factory
+  can consume the intake too.
 - Four boundaries: state, agent runtime, event sources and views. Each becomes a swappable adapter
   only in the milestone that brings its second adapter.
 - Written in Rust. The first version reuses Fleet's code where it fits.

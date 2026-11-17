@@ -26,7 +26,10 @@ cargo test --workspace
 - Add an adapter trait in the change that brings its second adapter.
 - Test behaviour through the CLI and public interfaces. Substitute only the clock, filesystem, network and terminal host.
 - Write a comment only for a reason the code cannot show, in one line.
-- Propose a new dependency with its license and last release before you add it.
+- Before you write generic logic (parsing, validation, graphs, retries, CLI, time), search crates.io
+  for a maintained crate that does it, and use it when it fits.
+- When you write generic logic yourself, name the crate you rejected and why in your reply.
+- Propose a new dependency with its license and last release, and wait for approval before you add it.
 
 ## Writing
 
