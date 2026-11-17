@@ -280,7 +280,7 @@ restarting the unit would also kill the tmux server the daemon started, since tm
 unit's cgroup, and with it every agent. `process` signals only the daemon, so the agents keep
 running and the new daemon reconnects to them. Systemd logs `Unit process ... (tmux: server) remains
 running after unit stopped`, which is expected. `systemctl --user stop` therefore leaves agents
-running; end them with `tmux kill-server` when you mean to.
+running; end one with `tmux kill-session -t =priory-<task id>` when you mean to.
 
 ## Listings
 
