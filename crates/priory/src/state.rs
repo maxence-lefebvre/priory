@@ -43,7 +43,9 @@ pub struct Task {
 
 /// Opens the state file `PRIORY_DB`, creating its schema on first use.
 pub fn open() -> Result<Connection, String> {
-    let path = std::env::var_os("PRIORY_DB").ok_or("PRIORY_DB is not set: name the state file")?;
+    let path = std::env::var_os("PRIORY_DB")
+        .filter(|path| !path.is_empty() && path != ":memory:")
+        .ok_or("PRIORY_DB is not set: name the state file")?;
     let at = |error: rusqlite::Error| format!("{}: {error}", path.display());
     let db = Connection::open(&path).map_err(at)?;
     db.busy_timeout(Duration::from_secs(5)).map_err(at)?;
@@ -71,7 +73,7 @@ pub fn handle(
     db: &mut Connection,
     message: &Message,
     workflows: &BTreeMap<String, Loaded<Workflow>>,
-) -> rusqlite::Result<()> {
+) -> Result<(), Box<dyn std::error::Error>> {
     let tx = db.transaction()?;
     let seen = tx
         .query_row(
@@ -87,7 +89,7 @@ pub fn handle(
         Some(key) => active(&tx, &key)?,
         None => None,
     };
-    let (task, outcome) = match route::route(message, owner.as_ref(), workflows) {
+    let (task, outcome) = match route::route(message, owner.as_ref(), workflows)? {
         Decision::Create(new) => {
             tx.execute(
                 "INSERT INTO tasks (key, workflow, step, state, band, lane, trigger, source)
@@ -121,7 +123,7 @@ pub fn handle(
             outcome
         ],
     )?;
-    tx.commit()
+    Ok(tx.commit()?)
 }
 
 fn active(tx: &Transaction, key: &str) -> rusqlite::Result<Option<Task>> {

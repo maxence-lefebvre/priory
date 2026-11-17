@@ -254,17 +254,37 @@ fn a_message_of_an_unknown_type_is_ignored_and_acked() {
 }
 
 #[test]
-fn a_task_request_for_a_workflow_the_factory_lacks_is_ignored() {
+fn a_task_request_for_a_workflow_the_factory_lacks_waits_unacked_until_it_is_back() {
     let setup = Setup::new("unknown-workflow");
     let source = labeled(42);
     let mut request = requested(&source, 42);
     request.data["workflow"] = json!("triage");
     setup.publish(&request);
 
-    succeeded(&setup.daemon());
+    let output = setup.daemon();
 
-    assert!(setup.rows("tasks").is_empty());
-    assert_eq!(routes(&setup), [route("-", "ignored")]);
+    assert_eq!(output.status.code(), Some(1));
+    assert!(setup.rows("inbox").is_empty());
+    assert_eq!(setup.bus().connections().unwrap()[0].lag, 1);
+    fs::write(setup.dir.join("factory/workflows/triage.toml"), WORKFLOW).unwrap();
+    succeeded(&setup.daemon());
+    assert_eq!(setup.rows("tasks")[0][2], "triage");
+}
+
+#[test]
+fn a_state_file_that_vanishes_on_exit_is_refused() {
+    let setup = Setup::new("memory-db");
+    let factory = setup.dir.join("factory");
+    for db in ["", ":memory:"] {
+        let output = Command::new(env!("CARGO_BIN_EXE_priory"))
+            .args(["daemon", factory.to_str().unwrap(), "--once"])
+            .env("HERDR_BUS_DB", setup.dir.join("bus.db"))
+            .env("PRIORY_DB", db)
+            .output()
+            .unwrap();
+
+        assert_eq!(output.status.code(), Some(1), "PRIORY_DB={db:?}");
+    }
 }
 
 /// A task request and its source, handled by one `priory daemon --once`.

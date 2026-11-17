@@ -5,7 +5,8 @@ records each message in the inbox and routes it to a task. It checks the factory
 `priory check` does, and refuses to start while it has problems. `--once` handles what is pending
 and exits. Without it, the daemon looks for new messages every second.
 
-State is one SQLite file, named by `PRIORY_DB`. The daemon refuses to start without it.
+State is one SQLite file, named by `PRIORY_DB`. The daemon refuses to start without it, or with an
+empty name or `:memory:`, which SQLite would not keep.
 
 ## One message at a time
 
@@ -25,8 +26,12 @@ done, failed and dropped.
 | ----------------------------------------- | --------- | -------------------------------------------- |
 | Any, with an active task owning its key   | `kept`    | that task                                    |
 | `factory.task.requested`, no active task  | `created` | a new task, `queued` at its workflow's start |
-| `factory.task.requested` for a workflow the factory lacks, or malformed | `ignored` | none |
+| `factory.task.requested`, malformed       | `ignored` | none                                         |
 | Any other                                 | `ignored` | none                                         |
+
+A task request for a workflow the factory lacks stops the daemon with an error, before its ack. The
+request waits on the bus until the workflow is back. A malformed request is ignored instead, so that
+it cannot block the output.
 
 A source event comes before its task request, so it is recorded as `ignored`. The task keeps its
 id in `source`.

@@ -42,24 +42,28 @@ pub fn key(message: &Message) -> Option<String> {
     ))
 }
 
-/// Routes `message`, given the active task that owns its key, if any.
+/// Routes `message`, given the active task that owns its key, if any. A task request for a
+/// workflow the factory lacks is an error, so that it waits unacked until the workflow is back.
 pub fn route(
     message: &Message,
     owner: Option<&Task>,
     workflows: &BTreeMap<String, Loaded<Workflow>>,
-) -> Decision {
+) -> Result<Decision, String> {
     if let Some(task) = owner {
-        return Decision::Keep(task.id);
+        return Ok(Decision::Keep(task.id));
     }
     if message.kind != TASK_REQUESTED {
-        return Decision::Ignore;
+        return Ok(Decision::Ignore);
     }
     let Ok(mut task) = NewTask::deserialize(&message.data) else {
-        return Decision::Ignore;
+        return Ok(Decision::Ignore);
     };
     let Some(workflow) = workflows.get(&task.workflow) else {
-        return Decision::Ignore;
+        return Err(format!(
+            "task request {} names workflow {:?}, which the factory lacks",
+            message.id, task.workflow
+        ));
     };
     task.step.clone_from(&workflow.value.start);
-    Decision::Create(task)
+    Ok(Decision::Create(task))
 }
