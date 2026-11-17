@@ -498,3 +498,29 @@ fn a_restart_never_dispatches_a_baseline_source() {
 
     assert!(!kinds(&setup.published()).contains(&"factory.task.requested"));
 }
+
+#[test]
+fn a_baseline_requests_tasks_only_for_backfill_triggers() {
+    let setup = Setup::new(
+        "mixed-backfill",
+        &[(EVENTS_PATH, json!([labeled(101, 42, "agent")]))],
+    );
+    write(
+        &setup.dir.join("factory/triggers/agent-backfill.toml"),
+        &format!("{TRIGGER}backfill = true\n"),
+    );
+
+    succeeded(&setup.intake());
+
+    let published = setup.published();
+    assert_eq!(
+        published[0].message.data["triggers"],
+        json!(["agent-backfill"])
+    );
+    let tasks: Vec<_> = published
+        .iter()
+        .filter(|m| m.message.kind == "factory.task.requested")
+        .map(|m| m.message.data["trigger"].clone())
+        .collect();
+    assert_eq!(tasks, [json!("agent-backfill")]);
+}

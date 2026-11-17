@@ -165,6 +165,8 @@ Limits:
 - A crash between a baseline event and the task request of a `backfill` trigger loses that task
   request: start-up recovery never dispatches a baseline event.
 - A trigger removed after a crash and before the restart gets no recovered task request.
+- An event that happens while a crash interrupts a baseline, before the restart, lands on the
+  replayed first page and is published as a baseline: it gets a task only from a `backfill` trigger.
 - Each start reads the output back to the baseline markers, which grows with the output.
 - `opened` pages follow creation time and stop at issue numbers. An issue transferred or imported
   into the repository with an older creation time can be missed.
