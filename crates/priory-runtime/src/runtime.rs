@@ -140,6 +140,8 @@ pub struct Launch<'a> {
     pub model: Option<&'a str>,
     pub effort: Option<&'a str>,
     pub body: &'a str,
+    /// The agent's Claude Code `permissions` settings, merged into Priory's own.
+    pub permissions: serde_json::Value,
 }
 
 /// Starts `claude` in a detached tmux session, with hooks that report to this daemon. The same tmux
@@ -180,7 +182,9 @@ pub fn launch(launch: &Launch) -> Result<(), String> {
     }
     // The user's own mode, such as auto, would decide prompts that Priory's hook must deny (R7.2).
     command.args(["--permission-mode", "manual"]);
-    command.arg("--settings").arg(settings(&exe));
+    command
+        .arg("--settings")
+        .arg(settings(&exe, &launch.permissions));
     command.arg("--mcp-config").arg(mcp_config(&exe, launch));
     command.args([";", "set-option", "-p", "@priory", launch.session]);
     run(&mut command).map(drop)
@@ -203,7 +207,7 @@ const DENY: &str = r#"{"hookSpecificOutput":{"hookEventName":"PermissionRequest"
 /// Claude Code settings whose hooks call `priory hook <event>`, that allow Priory's tools, deny the
 /// built-in question tool in favour of `ask` (R6.4), deny every permission request (R7.2), and
 /// report a permission prompt that shows anyway.
-fn settings(exe: &Path) -> String {
+fn settings(exe: &Path, permissions: &serde_json::Value) -> String {
     let quoted = format!("'{}'", exe.display().to_string().replace('\'', r"'\''"));
     let hooks: serde_json::Map<_, _> = ["SessionStart", "UserPromptSubmit", "Stop"]
         .into_iter()
@@ -236,7 +240,12 @@ fn settings(exe: &Path) -> String {
             "hooks": [{ "type": "command", "command": format!("{quoted} hook PermissionPrompt") }],
         }]),
     );
-    serde_json::json!({ "hooks": hooks, "permissions": { "allow": ["mcp__priory"] } }).to_string()
+    let mut permissions = permissions.clone();
+    permissions["allow"]
+        .as_array_mut()
+        .expect("allow is an array")
+        .insert(0, "mcp__priory".into());
+    serde_json::json!({ "hooks": hooks, "permissions": permissions }).to_string()
 }
 
 /// The pane of the tmux session `name` that runs the harness session `session`, if its process

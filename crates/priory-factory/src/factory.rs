@@ -45,9 +45,44 @@ pub struct Agent {
     pub memory: Option<u64>,
     #[serde(default)]
     pub mcp_servers: Vec<String>,
+    #[serde(default)]
+    pub permissions: Permissions,
     /// The Markdown after the frontmatter: the agent's instructions.
     #[serde(skip)]
     pub body: String,
+}
+
+/// Claude Code's own `permissions` settings, so a person can copy rules across.
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct Permissions {
+    pub default_mode: Option<PermissionMode>,
+    #[serde(default)]
+    pub allow: Vec<String>,
+    #[serde(default)]
+    pub deny: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum PermissionMode {
+    Default,
+    AcceptEdits,
+    Plan,
+    DontAsk,
+    BypassPermissions,
+}
+
+impl PermissionMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Default => "default",
+            Self::AcceptEdits => "acceptEdits",
+            Self::Plan => "plan",
+            Self::DontAsk => "dontAsk",
+            Self::BypassPermissions => "bypassPermissions",
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]

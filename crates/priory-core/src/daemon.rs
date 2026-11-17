@@ -351,6 +351,11 @@ fn start(
         },
     )?;
     let agent = &agent.value;
+    let mut permissions =
+        serde_json::json!({ "allow": agent.permissions.allow, "deny": agent.permissions.deny });
+    if let Some(mode) = agent.permissions.default_mode {
+        permissions["defaultMode"] = mode.as_str().into();
+    }
     Ok(runtime::launch(&Launch {
         tmux: &tmux,
         dir: &worktree,
@@ -360,6 +365,7 @@ fn start(
         model: agent.model.as_deref(),
         effort: agent.effort.as_deref(),
         body: &agent.body,
+        permissions,
     }))
 }
 

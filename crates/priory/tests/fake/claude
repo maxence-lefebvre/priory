@@ -17,7 +17,7 @@ echo $$ > "$FAKE_DIR/pid"
 while [ $# -gt 0 ]; do
   case "$1" in
     --session-id|--resume) session=$2; shift 2 ;;
-    --settings) settings=$2; shift 2 ;;
+    --settings) settings=$2; printf '%s' "$2" > "$FAKE_DIR/settings.json"; shift 2 ;;
     --mcp-config) mcp=$2; shift 2 ;;
     *) shift ;;
   esac

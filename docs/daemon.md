@@ -81,7 +81,8 @@ The daemon creates the worktree, records the run and the task as `running`, then
 - `--permission-mode manual`: so a permission request reaches Priory's deny hook, described under
   Health, whatever mode the user's own settings choose, such as `auto`.
 - `--settings`: hooks that run `priory hook SessionStart`, `UserPromptSubmit` and `Stop`, a
-  permission for the `priory` MCP server's tools, a `PreToolUse` hook that denies
+  permission for the `priory` MCP server's tools plus the agent's own `permissions` (`defaultMode`,
+  `allow` and `deny`, in Claude Code's syntax), a `PreToolUse` hook that denies
   `AskUserQuestion` and tells the agent to call `ask` instead, and the permission hooks described
   under Health.
 - `--mcp-config`: the `priory` MCP server, `priory mcp --session <id>`, described under Tools.
