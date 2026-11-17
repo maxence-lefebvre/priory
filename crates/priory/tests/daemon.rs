@@ -275,7 +275,7 @@ fn a_task_request_for_a_workflow_the_factory_lacks_waits_unacked_until_it_is_bac
 fn a_state_file_that_vanishes_on_exit_is_refused() {
     let setup = Setup::new("memory-db");
     let factory = setup.dir.join("factory");
-    for db in ["", ":memory:"] {
+    for db in ["", ":memory:", "file::memory:"] {
         let output = Command::new(env!("CARGO_BIN_EXE_priory"))
             .args(["daemon", factory.to_str().unwrap(), "--once"])
             .env("HERDR_BUS_DB", setup.dir.join("bus.db"))
@@ -285,6 +285,7 @@ fn a_state_file_that_vanishes_on_exit_is_refused() {
 
         assert_eq!(output.status.code(), Some(1), "PRIORY_DB={db:?}");
     }
+    assert!(setup.bus().connections().unwrap().is_empty());
 }
 
 /// A task request and its source, handled by one `priory daemon --once`.

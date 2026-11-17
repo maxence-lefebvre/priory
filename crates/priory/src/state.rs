@@ -44,8 +44,12 @@ pub struct Task {
 /// Opens the state file `PRIORY_DB`, creating its schema on first use.
 pub fn open() -> Result<Connection, String> {
     let path = std::env::var_os("PRIORY_DB")
-        .filter(|path| !path.is_empty() && path != ":memory:")
-        .ok_or("PRIORY_DB is not set: name the state file")?;
+        // SQLite keeps nothing on disk for "", ":memory:" or a URI such as "file::memory:".
+        .filter(|path| {
+            let name = path.to_string_lossy();
+            !name.is_empty() && name != ":memory:" && !name.starts_with("file:")
+        })
+        .ok_or("PRIORY_DB is not set to a file: name the state file")?;
     let at = |error: rusqlite::Error| format!("{}: {error}", path.display());
     let db = Connection::open(&path).map_err(at)?;
     db.busy_timeout(Duration::from_secs(5)).map_err(at)?;

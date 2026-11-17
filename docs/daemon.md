@@ -6,7 +6,7 @@ records each message in the inbox and routes it to a task. It checks the factory
 and exits. Without it, the daemon looks for new messages every second.
 
 State is one SQLite file, named by `PRIORY_DB`. The daemon refuses to start without it, or with an
-empty name or `:memory:`, which SQLite would not keep.
+empty name, `:memory:` or a `file:` URI, which SQLite may not keep on disk.
 
 ## One message at a time
 
