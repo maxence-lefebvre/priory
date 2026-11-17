@@ -142,9 +142,13 @@ fn tend(db: &mut Connection, factory: &Factory, share: &Share, home: &Path) -> R
         }
     }
     state::due(db)?;
-    let measured = OnceCell::new();
-    let room = || measured.get_or_init(|| room::measure(home));
-    while let Some(admission) = state::admissible(db, factory, share, room)? {
+    loop {
+        // Measured again after each start, since its clone and worktree take disk.
+        let measured = OnceCell::new();
+        let room = || measured.get_or_init(|| room::measure(home));
+        let Some(admission) = state::admissible(db, factory, share, room)? else {
+            break;
+        };
         if let Err(reason) = start(db, factory, home, &admission)? {
             state::block(db, admission.task, "failed", &reason)?;
         }

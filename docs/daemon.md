@@ -123,9 +123,10 @@ in `/proc/meminfo`. An agent with no `memory` declares 4 GB: Claude Code takes a
 agent runs builds and tests beside it. Declaring too much only delays a start; declaring too little
 lets agents run the machine out of memory.
 
-A run promises its agent's `memory` from its start until its `SessionStart`, since free memory does
-not show its use before then. So two runs admitted in the same second cannot both take the same
-free memory.
+A live run promises its agent's `memory` from its start until it ends, since no run reports its own
+use yet. The room subtracts every promise from the measured free memory, so two runs admitted one
+after the other cannot both take the same free memory. The daemon measures again before each
+admission, since a start's clone and worktree take disk.
 
 A task that does not fit stays `queued` or `ready`, and its reason says why it waits, such as
 `waits for room: 3.1 GB of memory free, needs 6.0 GB and keeps 6.4 GB free`, `waits for room: 12.0
@@ -137,9 +138,11 @@ GB of disk free, keeps 20.0 GB free` or `waits for room: load 7.50 on 8 CPUs, ke
 
 Known limits:
 
-- After `SessionStart`, a run counts only for the memory it uses, so an agent that grows past what
-  was free when it started can still crowd the machine. R4.9's memory gate and R4.10's slice address
-  that in M1.
+- A run's actual use already lowers the measured free memory, and its promise counts again on top,
+  so the room errs on the side of starting fewer runs. A run that reports its own use would end the
+  double count.
+- An agent that grows past its declared `memory` can still crowd the machine. R4.9's memory gate
+  and R4.10's slice address that in M1.
 - A large task can wait behind younger tasks that keep taking the room. Queue order is R4.4, in M1.
 - The measurements need Linux's `/proc`.
 

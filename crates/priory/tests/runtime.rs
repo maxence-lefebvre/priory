@@ -702,8 +702,8 @@ fn a_task_that_does_not_fit_waits_with_its_reason_and_starts_when_room_appears()
 fn two_admissions_in_one_tick_count_each_others_declared_memory() {
     let mut setup = Setup::new("one-tick");
     setup.memory(12);
-    // A run counts its declared memory until its SessionStart, so keep the first one from sending it.
-    setup.hold("silent");
+    setup.hold("hold-stop");
+    setup.calls(&[result("passed")]);
     setup.publish(&requested(42));
     setup.publish(&requested(43));
 
@@ -711,19 +711,30 @@ fn two_admissions_in_one_tick_count_each_others_declared_memory() {
 
     let reason = "waits for room: 8.0 GB of memory free, needs 4.0 GB and keeps 6.4 GB free";
     setup.until("tasks", |rows| rows.len() == 2 && rows[1][7] == reason);
+    // The first run's promise outlives its SessionStart: it holds until the run ends.
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") == 1);
     std::thread::sleep(Duration::from_millis(1500));
     let tasks = setup.rows("tasks");
     assert_eq!([&tasks[0][4], &tasks[1][4]], ["running", "queued"]);
     assert_eq!(setup.rows("runs").len(), 1);
+    setup.release("hold-stop");
+    setup.until("tasks", |rows| {
+        rows[0][4] == "done" && rows[1][4] == "running"
+    });
 }
 
 #[test]
 fn high_load_or_low_disk_holds_admission() {
     let mut setup = Setup::new("load-disk");
-    setup.load(100_000.0);
+    setup.load(f64::NAN);
     setup.publish(&requested(42));
 
     setup.start();
+
+    setup.until("tasks", |rows| {
+        rows.len() == 1 && rows[0][7].starts_with("waits for room: cannot measure it: no load in ")
+    });
+    setup.load(100_000.0);
 
     setup.until("tasks", |rows| {
         rows.len() == 1 && rows[0][7].starts_with("waits for room: load 100000.00 on ")
@@ -1821,6 +1832,8 @@ fn a_time_wait_fires_after_its_instant_and_not_before() {
 #[test]
 fn a_task_wait_fires_when_the_other_task_is_done() {
     let mut setup = Setup::new("task-wait");
+    // Room for one run, so the two runs take the shared fake's calls in turn.
+    setup.memory(12);
     setup.calls(&[wait(json!({ "type": "task", "task": 2 })), result("passed")]);
     setup.publish(&requested(42));
     setup.publish(&requested(43));

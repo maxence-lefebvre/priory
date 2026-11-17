@@ -34,6 +34,7 @@ pub fn measure(home: &Path) -> Result<Room, String> {
         .split_whitespace()
         .next()
         .and_then(|load| load.parse::<f64>().ok())
+        .filter(|load| load.is_finite() && *load >= 0.0)
         .ok_or_else(|| format!("no load in {}", proc.join("loadavg").display()))?;
     let (disk_total, disk_free) = disk(home)?;
     Ok(Room {

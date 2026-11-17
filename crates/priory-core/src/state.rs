@@ -426,15 +426,15 @@ pub(crate) fn admissible<'r>(
     Ok(None)
 }
 
-/// The memory declared by the agents of live runs that have not reported `SessionStart`, whose use
-/// the measured free memory does not show yet.
+/// The memory declared by the agents of live runs. No run reports its own use yet, so each one
+/// keeps its whole declaration until it ends.
 fn promised(db: &Connection, factory: &Factory) -> rusqlite::Result<u64> {
-    let mut statement = db.prepare("SELECT agent FROM runs WHERE ended IS NULL AND ready = 0")?;
-    let mut agents = statement.query_map([], |row| row.get::<_, String>(0))?;
+    let mut statement = db.prepare("SELECT agent FROM runs WHERE ended IS NULL")?;
+    // A run recorded before schema 5 has no agent.
+    let mut agents = statement.query_map([], |row| row.get::<_, Option<String>>(0))?;
     agents.try_fold(0, |sum: u64, agent| {
-        Ok(sum.saturating_add(room::need(
-            factory.agents.get(&agent?).map(|agent| &agent.value),
-        )))
+        let agent = agent?.and_then(|name| factory.agents.get(&name));
+        Ok(sum.saturating_add(room::need(agent.map(|agent| &agent.value))))
     })
 }
 
