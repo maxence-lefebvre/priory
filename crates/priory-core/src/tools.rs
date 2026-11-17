@@ -1,5 +1,6 @@
 use crate::route;
 use priory_factory::factory::{Decider, Loaded, Step, Workflow};
+use priory_intake::intake::{CHECKED, PASSING};
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -161,9 +162,18 @@ fn result(
             valid.join(", ")
         )));
     };
+    if next == "done"
+        && commit.is_none()
+        && let Some(resource) = pull_request(tx, run.task)?
+    {
+        return Ok(Err(format!(
+            "task {} owns {resource}: send the result with the commit its head must match",
+            run.task
+        )));
+    }
     tx.execute(
-        "INSERT INTO results (run, task, step, outcome, summary, evidence, commit_sha)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        "INSERT INTO results (run, task, step, outcome, summary, evidence, commit_sha, inbox)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, (SELECT max(seq) FROM inbox))",
         params![
             run.id, run.task, run.step, outcome, summary, evidence, commit
         ],
@@ -317,26 +327,10 @@ fn wait(
         }
     }
     let id = tx.last_insert_rowid();
-    let mut candidates = Vec::new();
-    {
-        let mut statement = tx.prepare(
-            "SELECT inbox.seq FROM inbox LEFT JOIN outbox ON outbox.id = inbox.outbox
-             WHERE inbox.task = ?1 AND inbox.outcome = 'kept'
-             AND (inbox.outbox IS NULL OR outbox.state = 'queued')
-             AND inbox.seq NOT IN (SELECT inbox FROM waits WHERE inbox IS NOT NULL)
-             ORDER BY inbox.seq",
-        )?;
-        let mut rows = statement.query([run.task])?;
-        while let Some(row) = rows.next()? {
-            candidates.push(row.get::<_, i64>(0)?);
-        }
-    }
-    for seq in candidates {
-        if event(tx, run.task, seq)? {
-            return Ok(Ok(format!(
-                "wait {id} already holds: end your turn; the event that satisfies it is your next prompt"
-            )));
-        }
+    if catch_up(tx, run.task)? {
+        return Ok(Ok(format!(
+            "wait {id} already holds: end your turn; the event that satisfies it is your next prompt"
+        )));
     }
     due(tx)?;
     let fired = tx.query_row(
@@ -354,11 +348,37 @@ fn wait(
     )))
 }
 
+/// Fires the task's open wait on the first event since the agent's last prompt that satisfies it:
+/// one not typed yet, on which no wait fired. Says whether one did.
+fn catch_up(tx: &Transaction, task: i64) -> rusqlite::Result<bool> {
+    let mut candidates = Vec::new();
+    {
+        let mut statement = tx.prepare(
+            "SELECT inbox.seq FROM inbox LEFT JOIN outbox ON outbox.id = inbox.outbox
+             WHERE inbox.task = ?1 AND inbox.outcome = 'kept'
+             AND (inbox.outbox IS NULL OR outbox.state = 'queued')
+             AND inbox.seq NOT IN (SELECT inbox FROM waits WHERE inbox IS NOT NULL)
+             ORDER BY inbox.seq",
+        )?;
+        let mut rows = statement.query([task])?;
+        while let Some(row) = rows.next()? {
+            candidates.push(row.get::<_, i64>(0)?);
+        }
+    }
+    for seq in candidates {
+        if event(tx, task, seq)? {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
 /// Fires the task's open wait if the inbox entry `seq` satisfies it, and says whether it did.
 pub(crate) fn event(tx: &Transaction, task: i64, seq: i64) -> rusqlite::Result<bool> {
     let open = tx
         .query_row(
-            "SELECT waits.id, waits.kind, waits.resource, waits.head_sha FROM waits JOIN tasks ON tasks.id = waits.task
+            "SELECT waits.id, waits.kind, waits.resource, waits.head_sha, waits.daemon FROM waits
+             JOIN tasks ON tasks.id = waits.task
              WHERE waits.task = ?1 AND waits.fired IS NULL AND tasks.state IN ('running', 'asleep')",
             [task],
             |row| {
@@ -367,24 +387,127 @@ pub(crate) fn event(tx: &Transaction, task: i64, seq: i64) -> rusqlite::Result<b
                     row.get::<_, String>(1)?,
                     row.get::<_, Option<String>>(2)?,
                     row.get::<_, Option<String>>(3)?,
+                    row.get::<_, bool>(4)?,
                 ))
             },
         )
         .optional()?;
-    let Some((wait, kind, Some(resource), head)) = open else {
+    let Some((wait, kind, Some(resource), head, daemon)) = open else {
         return Ok(false);
     };
+    if daemon {
+        return judge(tx, wait);
+    }
     let (kind_of_event, subject, data): (String, Option<String>, String) = tx.query_row(
         "SELECT type, subject, data FROM inbox WHERE seq = ?1",
         [seq],
         |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
     )?;
+    let line = crate::state::line(&kind_of_event, subject.as_deref(), &data);
     let data: Value = serde_json::from_str(&data).expect("inbox data is JSON");
     if !route::satisfies(&kind, &resource, head.as_deref(), &kind_of_event, &data) {
         return Ok(false);
     }
-    let line = crate::state::line(&kind_of_event, subject.as_deref(), &data.to_string());
     fire(tx, wait, task, &line, Some(seq))?;
+    Ok(true)
+}
+
+/// An event the task kept on the pull request of a daemon's checks wait.
+struct Seen {
+    seq: i64,
+    kind: String,
+    head: String,
+    data: Value,
+}
+
+impl Seen {
+    fn red(&self) -> bool {
+        self.kind == CHECKED
+            && !PASSING.contains(&self.data["conclusion"].as_str().unwrap_or("none"))
+    }
+}
+
+/// Judges the daemon's checks wait `wait` on every event the inbox kept or ignored about its pull
+/// request, so that events the agent already read, or an earlier owner kept, count too. The newest event tells the head: one after the
+/// result that names another head wakes the agent. The newest check at the result's commit then
+/// decides: red wakes the agent, and green with none pending or failing marks the task done.
+fn judge(tx: &Transaction, wait: i64) -> rusqlite::Result<bool> {
+    let (task, resource, commit, mark): (i64, String, String, Option<i64>) = tx.query_row(
+        "SELECT waits.task, waits.resource, waits.head_sha, results.inbox FROM waits
+         JOIN results ON results.run = waits.run WHERE waits.id = ?1",
+        [wait],
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+    )?;
+    let mut seen = Vec::new();
+    {
+        let mut statement = tx.prepare(
+            "SELECT seq, type, data FROM inbox
+             WHERE outcome IN ('kept', 'ignored')
+             AND 'github:' || json_extract(data, '$.repo') || '#' || json_extract(data, '$.pull_request') = ?1
+             AND json_extract(data, '$.head_sha') IS NOT NULL ORDER BY seq DESC",
+        )?;
+        let mut rows = statement.query(params![resource])?;
+        while let Some(row) = rows.next()? {
+            let data: Value =
+                serde_json::from_str(&row.get::<_, String>(2)?).expect("inbox data is JSON");
+            seen.push(Seen {
+                seq: row.get(0)?,
+                kind: row.get(1)?,
+                head: data["head_sha"].as_str().unwrap_or_default().to_owned(),
+                data,
+            });
+        }
+    }
+    let Some(newest) = seen.first() else {
+        return Ok(false);
+    };
+    if newest.head != commit {
+        // A head seen before the result may be one the agent's commit replaced since.
+        if newest.seq <= mark.unwrap_or_default() {
+            return Ok(false);
+        }
+        let reason = format!(
+            "wait {wait} fired: the head of {resource} moved to {}, away from your result's commit {commit}",
+            newest.head
+        );
+        fire(tx, wait, task, &reason, Some(newest.seq))?;
+        return Ok(true);
+    }
+    let mut checks = seen
+        .iter()
+        .filter(|event| event.kind == CHECKED && event.head == commit);
+    let Some(check) = checks.next() else {
+        return Ok(false);
+    };
+    let failing = check.data["failing"].as_u64();
+    let red = match failing {
+        _ if check.red() => Some(check),
+        // The red check counted here came earlier, or its event follows from the same poll.
+        Some(1..) => checks.find(|event| event.red()),
+        _ => None,
+    };
+    if let Some(red) = red {
+        let url = red.data["url"]
+            .as_str()
+            .filter(|url| !url.is_empty())
+            .map(|url| format!(" {url}"))
+            .unwrap_or_default();
+        let reason = format!(
+            "wait {wait} fired: check {} at {commit} concluded {}{url}",
+            red.data["name"].as_str().unwrap_or("-"),
+            red.data["conclusion"].as_str().unwrap_or("none"),
+        );
+        fire(tx, wait, task, &reason, Some(red.seq))?;
+        return Ok(true);
+    }
+    if check.data["pending"].as_u64() != Some(0) || failing != Some(0) {
+        return Ok(false);
+    }
+    tx.execute(
+        &format!("UPDATE waits SET fired = {NOW}, inbox = ?2 WHERE id = ?1"),
+        params![wait, check.seq],
+    )?;
+    set(tx, task, "done", None, None)?;
     Ok(true)
 }
 
@@ -420,7 +543,8 @@ pub(crate) fn due(tx: &Transaction) -> rusqlite::Result<()> {
     Ok(())
 }
 
-/// Queues `text`, then the kept events no prompt carries, as the task's next prompt.
+/// Queues `text`, then the event `seq` unless `text` is its line or another prompt carries it, then
+/// the kept events no prompt carries, as the task's next prompt.
 fn fire(
     tx: &Transaction,
     wait: i64,
@@ -432,25 +556,33 @@ fn fire(
         &format!("UPDATE waits SET fired = {NOW}, inbox = ?2 WHERE id = ?1"),
         params![wait, seq],
     )?;
+    let mut carried = Vec::new();
+    let mut text = text.to_owned();
     if let Some(seq) = seq {
-        let (prompt, own): (Option<i64>, bool) = tx.query_row(
-            "SELECT inbox.outbox, coalesce(outbox.state = 'queued' AND outbox.text = ?2, 0)
-             FROM inbox LEFT JOIN outbox ON outbox.id = inbox.outbox WHERE inbox.seq = ?1",
-            params![seq, text],
-            |row| Ok((row.get(0)?, row.get(1)?)),
+        let (prompt, own, line): (Option<i64>, bool, String) = tx.query_row(
+            "SELECT inbox.outbox, coalesce(outbox.state = 'queued' AND outbox.text = line, 0), line
+             FROM (SELECT seq, outbox, type || ' ' || coalesce(subject, '-') || ' ' || data AS line
+                   FROM inbox WHERE seq = ?1) AS inbox
+             LEFT JOIN outbox ON outbox.id = inbox.outbox",
+            [seq],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         )?;
         match (prompt, own) {
             // A running task's event has a queued prompt of its own: take it out so it comes first.
             (Some(prompt), true) => {
                 tx.execute("UPDATE inbox SET outbox = NULL WHERE seq = ?1", [seq])?;
                 tx.execute("DELETE FROM outbox WHERE id = ?1", [prompt])?;
+                carried.push(seq);
             }
-            (Some(_), false) => return set_ready(tx, task),
-            (None, _) => {}
+            // Another prompt carries the event already: only a wake reason of the daemon adds to it.
+            (Some(_), false) if text == line => return set_ready(tx, task),
+            (Some(_), false) => {}
+            (None, _) => carried.push(seq),
+        }
+        if carried.contains(&seq) && text != line {
+            text = format!("{text}\n{line}");
         }
     }
-    let mut text = text.to_owned();
-    let mut carried: Vec<i64> = seq.into_iter().collect();
     {
         let mut statement = tx.prepare(
             "SELECT seq, type, subject, data FROM inbox
@@ -557,6 +689,28 @@ fn queue_first(tx: &Transaction, task: i64, text: &str) -> rusqlite::Result<i64>
     Ok(id)
 }
 
+/// The pull request the task owns: the one its latest wait named, else the latest one opened from
+/// its branch, else its key when a pull request event created it.
+fn pull_request(tx: &Transaction, task: i64) -> rusqlite::Result<Option<String>> {
+    tx.query_row(
+        "SELECT resource FROM (
+           SELECT resource, 2 AS rank, id AS at FROM waits WHERE task = ?1 AND resource IS NOT NULL
+           UNION ALL
+           SELECT 'github:' || json_extract(inbox.data, '$.repo') || '#' || json_extract(inbox.data, '$.pull_request'), 1, inbox.seq
+             FROM inbox JOIN tasks ON tasks.id = inbox.task
+             WHERE inbox.task = ?1 AND inbox.outcome = 'kept'
+             AND json_extract(inbox.data, '$.pull_request') IS NOT NULL
+             AND json_extract(inbox.data, '$.head_branch') = tasks.branch
+           UNION ALL
+           SELECT tasks.key, 0, 0 FROM tasks JOIN inbox ON inbox.id = tasks.source
+             WHERE tasks.id = ?1 AND inbox.type LIKE 'github.pull_request.%'
+         ) ORDER BY rank DESC, at DESC LIMIT 1",
+        [task],
+        |row| row.get(0),
+    )
+    .optional()
+}
+
 fn end(tx: &Transaction, run: i64, ended_as: &str) -> rusqlite::Result<()> {
     tx.execute(
         &format!("UPDATE runs SET ended = {NOW}, ended_as = ?2 WHERE id = ?1"),
@@ -597,6 +751,33 @@ fn enter(
         end(tx, run.id, ended_as)?;
         Ok(Some(run.tmux.clone()))
     };
+    if target == "done"
+        && let Some(resource) = pull_request(tx, task)?
+    {
+        let last = tx
+            .query_row(
+                "SELECT run, step, commit_sha FROM results WHERE task = ?1 ORDER BY run DESC LIMIT 1",
+                [task],
+                |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?, row.get::<_, Option<String>>(2)?)),
+            )
+            .optional()?;
+        let Some((result_run, at, Some(commit))) = last else {
+            let reason =
+                format!("task reached done owning {resource}, but no result names a commit");
+            set(tx, task, "blocked", None, Some(&reason))?;
+            return finish("blocked");
+        };
+        tx.execute(
+            "INSERT INTO waits (task, run, kind, resource, head_sha, daemon)
+             VALUES (?1, ?2, 'checks', ?3, ?4, 1)",
+            params![task, result_run, resource, commit],
+        )?;
+        let wait = tx.last_insert_rowid();
+        // The agent of the result's step fixes what the checks find, even after a human step.
+        set(tx, task, "asleep", Some(&at), None)?;
+        judge(tx, wait)?;
+        return finish("asleep");
+    }
     if target == "done" || target == "stop" {
         let state = if target == "done" { "done" } else { "dropped" };
         set(tx, task, state, None, None)?;

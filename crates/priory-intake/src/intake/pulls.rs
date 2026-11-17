@@ -135,6 +135,20 @@ pub(super) fn reviews_and_checks<'a>(
             })
             .sum();
         let contexts = pages.iter().flat_map(|page| &page.nodes);
+        let failing = contexts
+            .clone()
+            .filter(|check| {
+                check.database_id.is_some() && check.status.as_deref() == Some("COMPLETED")
+            })
+            .filter(|check| {
+                let conclusion = check
+                    .conclusion
+                    .as_deref()
+                    .unwrap_or_default()
+                    .to_lowercase();
+                !super::PASSING.contains(&conclusion.as_str())
+            })
+            .count();
         for check in contexts.filter(|check| check.status.as_deref() == Some("COMPLETED")) {
             let (Some(id), Some(time)) = (check.database_id, check.completed_at.as_deref()) else {
                 continue;
@@ -156,6 +170,7 @@ pub(super) fn reviews_and_checks<'a>(
                 .and_then(|suite| suite.app.as_ref());
             observed.data["app"] = json!(app.map(|app| &app.slug));
             observed.data["pending"] = json!(pending);
+            observed.data["failing"] = json!(failing);
             checks.push(observed);
         }
     }

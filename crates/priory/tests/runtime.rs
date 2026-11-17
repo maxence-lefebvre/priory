@@ -1188,7 +1188,7 @@ fn on_pull_7(kind: &str) -> serde_json::Value {
 fn check(id: u64, pending: u64) -> Message {
     on_pull(
         "github.check_run.completed",
-        json!({ "name": format!("check {id}"), "conclusion": "success", "github_id": id, "pending": pending }),
+        json!({ "name": format!("check {id}"), "conclusion": "success", "github_id": id, "pending": pending, "failing": 0 }),
     )
 }
 
@@ -1390,4 +1390,326 @@ fn an_event_that_already_satisfies_the_wait_when_it_is_stored_wakes_the_task_at_
     let runs = setup.rows("runs");
     assert_eq!(runs.len(), 1, "the run never slept: {runs:?}");
     assert_eq!(runs[0][7], "-");
+}
+
+fn passed_at(commit: &str) -> serde_json::Value {
+    json!({ "name": "result", "arguments": { "outcome": "passed", "summary": "passed it", "commit": commit } })
+}
+
+/// Task 1 owns pull request 7 through a review wait, then a review wakes it and its result
+/// reaches `done` at commit `abc`. Returns once that run ended.
+fn gated(name: &str) -> Setup {
+    let mut setup = Setup::new(name);
+    setup.calls(&[wait(on_pull_7("review")), passed_at("abc")]);
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("runs", |rows| rows.len() == 1 && rows[0][7] == "asleep");
+    setup.publish(&reviewed());
+    setup.until("runs", |rows| rows.len() == 2 && rows[1][7] != "-");
+    setup.gone("priory-1");
+    setup
+}
+
+#[test]
+fn reaching_done_with_an_owned_pull_request_sleeps_the_task_on_its_checks() {
+    let setup = gated("gate");
+
+    let (text, error) = reply(&setup.replies()[1]);
+    assert!(!error, "{text}");
+    assert_eq!(setup.rows("runs")[1][7], "asleep");
+    stays_asleep_after(&setup, 2);
+    assert_eq!(
+        setup.rows("waits")[0][1..5],
+        ["1", "2", "checks", "github:owner/repo#7"]
+    );
+}
+
+/// Asserts the task stays asleep with `runs` runs for a while.
+fn stays_asleep_after(setup: &Setup, runs: usize) {
+    std::thread::sleep(Duration::from_millis(1500));
+    assert_eq!(setup.rows("tasks")[0][4], "asleep");
+    assert_eq!(setup.rows("runs").len(), runs);
+}
+
+#[test]
+fn green_checks_at_the_result_commit_mark_the_task_done_and_start_no_run() {
+    let setup = gated("gate-green");
+    // A red check completed in the same poll, so its event comes next.
+    let mut seen_red = check(4, 0);
+    seen_red.data["failing"] = json!(1);
+
+    setup.publish(&check(1, 1));
+    setup.publish(&seen_red);
+    stays_asleep_after(&setup, 2);
+    setup.publish(&check(2, 0));
+
+    setup.until("tasks", |rows| rows[0][4] == "done");
+    std::thread::sleep(Duration::from_millis(1500));
+    assert_eq!(setup.rows("runs").len(), 2);
+    assert_eq!(setup.typed().len(), 2, "{:?}", setup.typed());
+    assert!(setup.rows("waits").is_empty());
+}
+
+#[test]
+fn a_red_check_at_the_result_commit_wakes_the_agent_with_the_failure() {
+    let setup = gated("gate-red");
+    let mut red = check(1, 1);
+    red.data["name"] = json!("test");
+    red.data["conclusion"] = json!("failure");
+    red.data["url"] = json!("https://github.com/owner/repo/runs/1");
+    setup.calls(&[passed_at("def")]);
+    setup.hold("hold-submit");
+
+    setup.publish(&red);
+    setup.until("outbox", |rows| with(rows, 3, "attempted") == 1);
+    // A check of the old commit finishes while the agent fixes it.
+    setup.publish(&check(3, 0));
+    setup.until("inbox", |rows| rows.len() == 4);
+    setup.release("hold-submit");
+
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") == 3);
+    let typed = setup.typed();
+    let lines: Vec<_> = typed[2].lines().collect();
+    assert_eq!(
+        lines[0],
+        "wait 2 fired: check test at abc concluded failure https://github.com/owner/repo/runs/1",
+        "{typed:?}"
+    );
+    assert!(lines[1].starts_with("github.check_run.completed owner/repo#7 {"));
+    let runs = setup.until("runs", |rows| rows.len() == 3 && rows[2][7] == "asleep");
+    assert_eq!(
+        setup.rows("waits")[0][2],
+        runs[2][0],
+        "the fix gets a gate of its own"
+    );
+    stays_asleep_after(&setup, 3);
+    let mut green = check(2, 0);
+    green.data["head_sha"] = json!("def");
+    setup.publish(&green);
+    setup.until("tasks", |rows| rows[0][4] == "done");
+}
+
+#[test]
+fn a_head_that_moved_from_the_result_commit_wakes_the_agent() {
+    let setup = gated("gate-moved");
+    let mut moved = on_pull("github.pull_request.labeled", json!({ "github_id": 500 }));
+    moved.data["head_sha"] = json!("def");
+
+    setup.publish(&moved);
+
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") == 3);
+    let typed = setup.typed();
+    let lines: Vec<_> = typed[2].lines().collect();
+    assert_eq!(
+        lines[0],
+        "wait 2 fired: the head of github:owner/repo#7 moved to def, away from your result's commit abc",
+        "{typed:?}"
+    );
+    assert!(lines[1].starts_with("github.pull_request.labeled owner/repo#7 {"));
+    assert_eq!(setup.rows("tasks")[0][4], "running");
+}
+
+#[test]
+fn a_result_reaching_done_without_a_commit_is_refused_when_the_task_owns_a_pull_request() {
+    let mut setup = Setup::new("gate-no-commit");
+    setup.calls(&[wait(on_pull_7("review")), result("passed")]);
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("runs", |rows| rows.len() == 1 && rows[0][7] == "asleep");
+
+    setup.publish(&reviewed());
+
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") == 2);
+    setup.until("runs", |_| setup.replies().len() == 2);
+    let (text, error) = reply(&setup.replies()[1]);
+    assert!(error, "{text}");
+    assert_eq!(
+        text,
+        "task 1 owns github:owner/repo#7: send the result with the commit its head must match"
+    );
+    std::thread::sleep(Duration::from_millis(1500));
+    assert_eq!(setup.rows("tasks")[0][4], "running");
+}
+
+#[test]
+fn green_checks_kept_before_the_final_stop_mark_the_task_done_when_the_gate_is_stored() {
+    let mut setup = Setup::new("gate-early");
+    setup.calls(&[wait(on_pull_7("review")), passed_at("abc")]);
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("runs", |rows| rows.len() == 1 && rows[0][7] == "asleep");
+    setup.hold("hold-stop");
+    setup.publish(&reviewed());
+    setup.until("runs", |_| setup.replies().len() == 2);
+    setup.publish(&check(1, 0));
+    setup.until("inbox", |rows| rows.len() == 3);
+
+    setup.release("hold-stop");
+
+    setup.until("tasks", |rows| rows[0][4] == "done");
+    assert_eq!(setup.rows("runs").len(), 2);
+    assert_eq!(setup.rows("runs")[1][7], "asleep");
+}
+
+#[test]
+fn a_head_that_moved_after_green_checks_kept_before_the_final_stop_wakes_the_agent() {
+    let mut setup = Setup::new("gate-early-moved");
+    setup.calls(&[wait(on_pull_7("review")), passed_at("abc")]);
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("runs", |rows| rows.len() == 1 && rows[0][7] == "asleep");
+    setup.hold("hold-stop");
+    setup.publish(&reviewed());
+    setup.until("runs", |_| setup.replies().len() == 2);
+    setup.publish(&check(1, 0));
+    let mut moved = on_pull("github.pull_request.labeled", json!({ "github_id": 500 }));
+    moved.data["head_sha"] = json!("def");
+    setup.publish(&moved);
+    setup.until("inbox", |rows| rows.len() == 4);
+
+    setup.release("hold-stop");
+
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") == 3);
+    assert!(
+        setup.typed()[2].starts_with("wait 2 fired: the head of github:owner/repo#7 moved to def"),
+        "{:?}",
+        setup.typed()
+    );
+}
+
+#[test]
+fn green_checks_the_agent_already_waited_on_mark_the_task_done_at_its_result() {
+    let mut setup = Setup::new("gate-seen");
+    setup.calls(&[wait(on_pull_7("checks")), passed_at("abc")]);
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("runs", |rows| rows.len() == 1 && rows[0][7] == "asleep");
+
+    setup.publish(&check(1, 0));
+
+    setup.until("tasks", |rows| rows[0][4] == "done");
+    assert_eq!(setup.rows("runs").len(), 2);
+}
+
+#[test]
+fn a_pull_request_opened_from_the_task_branch_holds_the_task_at_done() {
+    let mut setup = Setup::new("gate-branch");
+    setup.calls(&[passed_at("abc")]);
+    setup.hold("hold-submit");
+    setup.publish(&requested(42));
+    setup.start();
+    setup.written("fake/pending");
+    setup.publish(&on_pull(
+        "github.pull_request.opened",
+        json!({ "github_id": 600 }),
+    ));
+    setup.until("inbox", |rows| rows.len() == 2);
+
+    setup.release("hold-submit");
+
+    setup.until("runs", |rows| rows[0][7] == "asleep");
+    assert_eq!(setup.rows("tasks")[0][4], "asleep");
+    assert_eq!(
+        setup.rows("waits")[0][3..5],
+        ["checks", "github:owner/repo#7"]
+    );
+}
+
+const APPROVAL: &str = r#"
+start = "implement"
+
+[[steps]]
+id = "implement"
+decides = "model"
+agent = "implementer"
+prompt = "Implement the issue."
+effect = "reversible"
+next = { passed = "approve", failed = "stop" }
+
+[[steps]]
+id = "approve"
+decides = "human"
+effect = "none"
+options = ["approved", "rejected"]
+next = { approved = "done", rejected = "stop" }
+"#;
+
+#[test]
+fn an_answer_reaching_done_holds_the_task_on_the_checks_of_its_last_result() {
+    let mut setup = Setup::with_workflow("gate-answer", APPROVAL);
+    setup.calls(&[wait(on_pull_7("review")), passed_at("abc")]);
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("runs", |rows| rows.len() == 1 && rows[0][7] == "asleep");
+    setup.publish(&reviewed());
+    setup.until("asks", |rows| rows.len() == 1);
+
+    let answered = setup.priory(&["answer", "1", "approved", "--revision", "1"]);
+
+    assert!(answered.status.success(), "{answered:?}");
+    stays_asleep_after(&setup, 2);
+    assert_eq!(setup.rows("tasks")[0][3], "implement");
+    let mut red = check(1, 1);
+    red.data["conclusion"] = json!("failure");
+    setup.publish(&red);
+    let runs = setup.until("runs", |rows| rows.len() == 3);
+    assert_eq!(runs[2][2], "implement");
+}
+
+#[test]
+fn a_green_check_counting_a_failure_wakes_the_agent_with_the_failed_check() {
+    let mut setup = Setup::new("gate-failing");
+    setup.calls(&[wait(on_pull_7("review")), passed_at("abc")]);
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("runs", |rows| rows.len() == 1 && rows[0][7] == "asleep");
+    setup.hold("hold-submit");
+    setup.publish(&reviewed());
+    setup.until("outbox", |rows| with(rows, 3, "attempted") == 1);
+    // Both checks completed in one poll: the red one, then a green one that counts it.
+    let mut red = check(1, 0);
+    red.data["name"] = json!("test");
+    red.data["conclusion"] = json!("failure");
+    red.data["failing"] = json!(1);
+    let mut green = check(2, 0);
+    green.data["failing"] = json!(1);
+    setup.publish(&red);
+    setup.publish(&green);
+    setup.until("inbox", |rows| rows.len() == 4);
+
+    setup.release("hold-submit");
+
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") == 3);
+    let typed = setup.typed();
+    assert!(
+        typed[2].starts_with("wait 2 fired: check test at abc concluded failure\n"),
+        "{typed:?}"
+    );
+    assert_eq!(
+        typed[2].matches(r#""github_id":1,"#).count(),
+        1,
+        "{typed:?}"
+    );
+}
+
+#[test]
+fn green_checks_at_the_result_commit_do_not_finish_the_task_when_the_head_moved_before_it() {
+    let mut setup = Setup::new("gate-moved-before");
+    setup.calls(&[wait(on_pull_7("review")), passed_at("abc")]);
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("runs", |rows| rows.len() == 1 && rows[0][7] == "asleep");
+    setup.hold("hold-submit");
+    setup.publish(&reviewed());
+    setup.until("outbox", |rows| with(rows, 3, "attempted") == 1);
+    setup.publish(&check(1, 0));
+    let mut moved = on_pull("github.pull_request.labeled", json!({ "github_id": 500 }));
+    moved.data["head_sha"] = json!("def");
+    setup.publish(&moved);
+    setup.until("inbox", |rows| rows.len() == 4);
+
+    setup.release("hold-submit");
+
+    setup.until("runs", |rows| rows.len() == 2 && rows[1][7] == "asleep");
+    stays_asleep_after(&setup, 2);
 }

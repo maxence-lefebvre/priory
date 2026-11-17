@@ -802,6 +802,7 @@ fn a_submitted_review_and_a_completed_check_publish_once() {
             "conclusion": "failure",
             "app": "github-actions",
             "pending": 1,
+            "failing": 1,
             "time": "2026-11-17T12:05:00Z",
             "github_id": 601,
             "baseline": false,
@@ -832,6 +833,7 @@ fn a_check_counts_the_runs_past_the_first_page_as_pending() {
 
     let published = setup.published();
     assert_eq!(published[1].message.data["pending"], 100);
+    assert_eq!(published[1].message.data["failing"], 0);
 }
 
 #[test]

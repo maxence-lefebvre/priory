@@ -5,7 +5,7 @@ use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, 
 use std::collections::BTreeMap;
 use std::time::Duration;
 
-const VERSION: i64 = 5;
+const VERSION: i64 = 6;
 
 const SCHEMA: &str = "
 CREATE TABLE tasks (
@@ -128,6 +128,12 @@ ALTER TABLE runs ADD COLUMN agent TEXT;
 PRAGMA user_version = 5;
 ";
 
+const SCHEMA_6: &str = "
+ALTER TABLE waits ADD COLUMN daemon INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE results ADD COLUMN inbox INTEGER REFERENCES inbox (seq);
+PRAGMA user_version = 6;
+";
+
 const NOW: &str = "strftime('%Y-%m-%dT%H:%M:%SZ', 'now')";
 
 pub(crate) struct Task {
@@ -167,18 +173,25 @@ pub fn open() -> Result<Connection, String> {
     let version = version(&tx).map_err(at)?;
     match version {
         0 => tx
-            .execute_batch(&format!("{SCHEMA}{SCHEMA_2}{SCHEMA_3}{SCHEMA_4}{SCHEMA_5}"))
+            .execute_batch(&format!(
+                "{SCHEMA}{SCHEMA_2}{SCHEMA_3}{SCHEMA_4}{SCHEMA_5}{SCHEMA_6}"
+            ))
             .map_err(at)?,
         1 => tx
-            .execute_batch(&format!("{SCHEMA_2}{SCHEMA_3}{SCHEMA_4}{SCHEMA_5}"))
+            .execute_batch(&format!(
+                "{SCHEMA_2}{SCHEMA_3}{SCHEMA_4}{SCHEMA_5}{SCHEMA_6}"
+            ))
             .map_err(at)?,
         2 => tx
-            .execute_batch(&format!("{SCHEMA_3}{SCHEMA_4}{SCHEMA_5}"))
+            .execute_batch(&format!("{SCHEMA_3}{SCHEMA_4}{SCHEMA_5}{SCHEMA_6}"))
             .map_err(at)?,
         3 => tx
-            .execute_batch(&format!("{SCHEMA_4}{SCHEMA_5}"))
+            .execute_batch(&format!("{SCHEMA_4}{SCHEMA_5}{SCHEMA_6}"))
             .map_err(at)?,
-        4 => tx.execute_batch(SCHEMA_5).map_err(at)?,
+        4 => tx
+            .execute_batch(&format!("{SCHEMA_5}{SCHEMA_6}"))
+            .map_err(at)?,
+        5 => tx.execute_batch(SCHEMA_6).map_err(at)?,
         VERSION => {}
         _ => {
             return Err(format!(
