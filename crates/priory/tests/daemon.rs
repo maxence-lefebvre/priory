@@ -341,3 +341,38 @@ fn a_factory_with_problems_stops_the_daemon() {
     assert_eq!(output.status.code(), Some(1));
     assert!(!setup.dir.join("priory.db").exists());
 }
+
+#[test]
+fn a_pull_request_event_is_kept_on_the_task_that_owns_its_key() {
+    let setup = Setup::new("pull-request-events");
+    let source = labeled(42);
+    let check = Message::new(
+        "github.check_run.completed",
+        json!({
+            "repo": "owner/repo",
+            "pull_request": 42,
+            "head_branch": "feature",
+            "head_sha": "abc123",
+            "base_branch": "main",
+            "name": "test",
+            "conclusion": "success",
+            "github_id": 601,
+            "baseline": false,
+            "triggers": []
+        }),
+    );
+    for message in [&source, &requested(&source, 42), &check] {
+        setup.publish(message);
+    }
+
+    succeeded(&setup.daemon());
+
+    assert_eq!(
+        routes(&setup),
+        [
+            route("-", "ignored"),
+            route("1", "created"),
+            route("1", "kept")
+        ]
+    );
+}

@@ -58,13 +58,13 @@ impl Setup {
         setup
     }
 
-    /// Makes the fake `gh` answer each `gh api <path>` from `answers`, and `[]` otherwise.
+    /// Makes the fake `gh` answer each `gh api <path>...` from `answers`, and `[]` otherwise.
     fn answer(&self, answers: &[(&str, serde_json::Value)]) {
         let mut script = String::from("#!/bin/sh\ncase \"$*\" in\n");
         for (path, answer) in answers {
             let file = self.dir.join(format!("answer-{}.json", script.len()));
             write(&file, &answer.to_string());
-            script.push_str(&format!("  \"api {path}\") cat '{}' ;;\n", file.display()));
+            script.push_str(&format!("  \"api {path}\"*) cat '{}' ;;\n", file.display()));
         }
         script.push_str("  *) echo '[]' ;;\nesac\n");
         Setup::fake_gh(&self.dir, &script);
@@ -210,6 +210,8 @@ fn a_first_poll_is_a_baseline_that_requests_no_task() {
         [
             "github.issues.labeled",
             "factory.intake.baseline",
+            "factory.intake.baseline",
+            "factory.intake.baseline",
             "factory.intake.baseline"
         ]
     );
@@ -342,11 +344,15 @@ fn a_backfill_trigger_requests_tasks_for_the_first_poll() {
     let published = setup.published();
     assert_eq!(
         kinds(&published),
-        ["github.issues.opened", "factory.task.requested"]
+        [
+            "github.pull_request.opened",
+            "github.issues.opened",
+            "factory.task.requested"
+        ]
     );
-    assert_eq!(published[1].message.data["trigger"], "opened");
+    assert_eq!(published[2].message.data["trigger"], "opened");
     assert_eq!(
-        published[0].message.data,
+        published[1].message.data,
         json!({
             "repo": "owner/repo",
             "issue": 42,
@@ -523,4 +529,318 @@ fn a_baseline_requests_tasks_only_for_backfill_triggers() {
         .map(|m| m.message.data["trigger"].clone())
         .collect();
     assert_eq!(tasks, [json!("agent-backfill")]);
+}
+
+const OPEN_PULLS: &str = "graphql --paginate";
+const PULLS: &str = "graphql -f";
+
+/// A pull request as `issues` lists it.
+fn pull_issue(number: u64) -> serde_json::Value {
+    json!({
+        "id": 9000 + number,
+        "number": number,
+        "title": "Add the thing",
+        "html_url": format!("https://github.com/owner/repo/pull/{number}"),
+        "user": { "login": "dev" },
+        "created_at": "2026-11-17T11:00:00Z",
+        "pull_request": { "url": format!("https://api.github.com/repos/owner/repo/pulls/{number}") }
+    })
+}
+
+/// A pull request as the GraphQL queries return it.
+fn pull(
+    number: u64,
+    merged: bool,
+    reviews: serde_json::Value,
+    checks: serde_json::Value,
+) -> serde_json::Value {
+    json!({
+        "number": number,
+        "headRefName": "feature",
+        "headRefOid": "abc123",
+        "baseRefName": "main",
+        "merged": merged,
+        "reviews": { "nodes": reviews },
+        "commits": { "nodes": [{ "commit": { "statusCheckRollup": { "contexts": { "nodes": checks } } } }] }
+    })
+}
+
+/// The answer to the query for the pull requests some events name.
+fn pulls(pulls: &[serde_json::Value]) -> serde_json::Value {
+    let repository: serde_json::Map<_, _> = pulls
+        .iter()
+        .map(|pull| (format!("pr{}", pull["number"]), pull.clone()))
+        .collect();
+    json!({ "data": { "repository": repository } })
+}
+
+/// The answer to the paginated query for open pull requests.
+fn open_pulls(pulls: &[serde_json::Value]) -> serde_json::Value {
+    json!([{ "data": { "repository": { "pullRequests": { "nodes": pulls } } } }])
+}
+
+fn pr_trigger(setup: &Setup, name: &str, toml: &str) {
+    write(
+        &setup.dir.join(format!("factory/triggers/{name}.toml")),
+        &format!(
+            "source = \"github\"\nrepo = \"owner/repo\"\nworkflow = \"implement\"\nkey = \"pull_request.number\"\n{toml}"
+        ),
+    );
+}
+
+#[test]
+fn an_opened_pull_request_that_matches_a_trigger_requests_a_task() {
+    let setup = Setup::baseline("pr-opened");
+    pr_trigger(&setup, "pr-opened", "on = \"pull_request.opened\"\n");
+    setup.answer(&[
+        (ISSUES_PATH, json!([pull_issue(43)])),
+        (PULLS, pulls(&[pull(43, false, json!([]), json!([]))])),
+    ]);
+
+    succeeded(&setup.intake());
+
+    let published = setup.published();
+    assert_eq!(
+        kinds(&published[1..]),
+        ["github.pull_request.opened", "factory.task.requested"]
+    );
+    let (source, task) = (&published[1].message, &published[2].message);
+    assert_eq!(
+        source.data,
+        json!({
+            "repo": "owner/repo",
+            "pull_request": 43,
+            "title": "Add the thing",
+            "url": "https://github.com/owner/repo/pull/43",
+            "head_branch": "feature",
+            "head_sha": "abc123",
+            "base_branch": "main",
+            "actor": "dev",
+            "time": "2026-11-17T11:00:00Z",
+            "github_id": 9043,
+            "baseline": false,
+            "triggers": ["pr-opened"]
+        })
+    );
+    assert_eq!(source.subject.as_deref(), Some("owner/repo#43"));
+    assert_eq!(task.data["key"], "github:owner/repo#43");
+    assert_eq!(task.data["trigger"], "pr-opened");
+}
+
+/// An issue event on pull request `number`.
+fn pull_event(id: u64, number: u64, name: &str, label: Option<&str>) -> serde_json::Value {
+    let mut event = labeled(id, number, label.unwrap_or_default());
+    event["event"] = json!(name);
+    event["issue"] = pull_issue(number);
+    if label.is_none() {
+        event["label"] = json!(null);
+    }
+    event
+}
+
+#[test]
+fn a_labeled_pull_request_requests_a_task_only_for_a_matching_label() {
+    let setup = Setup::baseline("pr-labeled");
+    pr_trigger(
+        &setup,
+        "pr-label",
+        "on = \"pull_request.labeled\"\nfilter = { label = \"agent\" }\n",
+    );
+    setup.answer(&[
+        (
+            EVENTS_PATH,
+            json!([
+                pull_event(102, 43, "labeled", Some("bug")),
+                pull_event(101, 43, "labeled", Some("agent")),
+            ]),
+        ),
+        (PULLS, pulls(&[pull(43, false, json!([]), json!([]))])),
+    ]);
+
+    succeeded(&setup.intake());
+
+    let published = setup.published();
+    assert_eq!(
+        kinds(&published[1..]),
+        [
+            "github.pull_request.labeled",
+            "factory.task.requested",
+            "github.pull_request.labeled"
+        ]
+    );
+    assert_eq!(
+        published[1].message.data,
+        json!({
+            "repo": "owner/repo",
+            "pull_request": 43,
+            "title": "Add the thing",
+            "url": "https://github.com/owner/repo/pull/43",
+            "head_branch": "feature",
+            "head_sha": "abc123",
+            "base_branch": "main",
+            "label": "agent",
+            "actor": "max",
+            "time": "2026-11-17T10:00:00Z",
+            "github_id": 101,
+            "baseline": false,
+            "triggers": ["pr-label"]
+        })
+    );
+    assert_eq!(published[2].message.data["key"], "github:owner/repo#43");
+    assert_eq!(published[3].message.data["triggers"], json!([]));
+}
+
+#[test]
+fn a_merged_pull_request_publishes_closed_with_merged() {
+    let setup = Setup::baseline("pr-merged");
+    setup.answer(&[
+        (
+            EVENTS_PATH,
+            json!([
+                pull_event(103, 43, "closed", None),
+                pull_event(102, 43, "merged", None),
+            ]),
+        ),
+        (PULLS, pulls(&[pull(43, true, json!([]), json!([]))])),
+    ]);
+
+    succeeded(&setup.intake());
+
+    let published = setup.published();
+    assert_eq!(kinds(&published[1..]), ["github.pull_request.closed"]);
+    let data = &published[1].message.data;
+    assert_eq!(
+        (
+            &data["pull_request"],
+            &data["merged"],
+            &data["actor"],
+            &data["github_id"]
+        ),
+        (&json!(43), &json!(true), &json!("max"), &json!(103))
+    );
+}
+
+#[test]
+fn a_submitted_review_and_a_completed_check_publish_once() {
+    let setup = Setup::baseline("pr-review-check");
+    let reviews = json!([
+        {
+            "databaseId": 501,
+            "state": "APPROVED",
+            "submittedAt": "2026-11-17T12:00:00Z",
+            "url": "https://github.com/owner/repo/pull/43#pullrequestreview-501",
+            "author": { "login": "reviewer" }
+        },
+        { "databaseId": 502, "state": "PENDING", "submittedAt": null, "url": "u", "author": null }
+    ]);
+    let checks = json!([
+        {
+            "__typename": "CheckRun",
+            "databaseId": 601,
+            "name": "test (ubuntu)",
+            "status": "COMPLETED",
+            "conclusion": "FAILURE",
+            "completedAt": "2026-11-17T12:05:00Z",
+            "url": "https://github.com/owner/repo/runs/601",
+            "checkSuite": { "app": { "slug": "github-actions" } }
+        },
+        {
+            "__typename": "CheckRun",
+            "databaseId": 602,
+            "name": "lint",
+            "status": "IN_PROGRESS",
+            "conclusion": null,
+            "completedAt": null,
+            "url": "https://github.com/owner/repo/runs/602",
+            "checkSuite": { "app": { "slug": "github-actions" } }
+        },
+        { "__typename": "StatusContext" }
+    ]);
+    setup.answer(&[(OPEN_PULLS, open_pulls(&[pull(43, false, reviews, checks)]))]);
+
+    succeeded(&setup.intake());
+    succeeded(&setup.intake());
+
+    let published = setup.published();
+    assert_eq!(
+        kinds(&published[1..]),
+        [
+            "github.pull_request_review.submitted",
+            "github.check_run.completed"
+        ]
+    );
+    assert_eq!(
+        published[1].message.data,
+        json!({
+            "repo": "owner/repo",
+            "pull_request": 43,
+            "url": "https://github.com/owner/repo/pull/43#pullrequestreview-501",
+            "head_branch": "feature",
+            "head_sha": "abc123",
+            "base_branch": "main",
+            "state": "approved",
+            "actor": "reviewer",
+            "time": "2026-11-17T12:00:00Z",
+            "github_id": 501,
+            "baseline": false,
+            "triggers": []
+        })
+    );
+    assert_eq!(
+        published[2].message.data,
+        json!({
+            "repo": "owner/repo",
+            "pull_request": 43,
+            "url": "https://github.com/owner/repo/runs/601",
+            "head_branch": "feature",
+            "head_sha": "abc123",
+            "base_branch": "main",
+            "name": "test (ubuntu)",
+            "conclusion": "failure",
+            "app": "github-actions",
+            "time": "2026-11-17T12:05:00Z",
+            "github_id": 601,
+            "baseline": false,
+            "triggers": []
+        })
+    );
+}
+
+#[test]
+fn a_restart_requests_the_task_a_crash_left_out_for_a_pull_request() {
+    let setup = Setup::new("pr-recover", &[]);
+    succeeded(&setup.intake());
+    let source = Message::new(
+        "github.pull_request.labeled",
+        json!({
+            "repo": "owner/repo",
+            "pull_request": 43,
+            "label": "agent",
+            "github_id": 101,
+            "baseline": false,
+            "triggers": ["agent-label"]
+        }),
+    );
+    seed(&setup, &source);
+
+    succeeded(&setup.intake());
+
+    let published = setup.published();
+    assert_eq!(kinds(&published[1..]), ["factory.task.requested"]);
+    assert_eq!(published[1].message.data["key"], "github:owner/repo#43");
+}
+
+#[test]
+fn a_failing_graphql_query_publishes_nothing() {
+    let setup = Setup::baseline("graphql-fails");
+    let script = format!(
+        "#!/bin/sh\ncase \"$*\" in\n  \"api graphql\"*) echo 'GraphQL: rate limited' >&2; exit 1 ;;\n  \"api {EVENTS_PATH}\") echo '{}' ;;\n  *) echo '[]' ;;\nesac\n",
+        json!([labeled(101, 42, "agent")])
+    );
+    Setup::fake_gh(&setup.dir, &script);
+
+    let output = setup.intake();
+
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(setup.published().len(), 1);
 }

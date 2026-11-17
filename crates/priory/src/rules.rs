@@ -38,32 +38,39 @@ fn check_github(trigger: &Loaded<Trigger>, problems: &mut Vec<Problem>) {
             "a GitHub trigger needs `repo = \"owner/name\"`".into(),
         ));
     }
-    if !["issues.labeled", "issues.opened"].contains(&value.on.as_str()) {
+    const ON: [&str; 4] = [
+        "issues.labeled",
+        "issues.opened",
+        "pull_request.labeled",
+        "pull_request.opened",
+    ];
+    if !ON.contains(&value.on.as_str()) {
         problems.push(problem(
             trigger,
             format!(
-                "a GitHub trigger handles `issues.labeled` or `issues.opened`, not `{}`",
+                "a GitHub trigger handles `issues.labeled`, `issues.opened`, `pull_request.labeled` or `pull_request.opened`, not `{}`",
                 value.on
             ),
         ));
     }
     let label_only = |filter: &BTreeMap<String, String>| {
-        value.on == "issues.labeled" && filter.keys().all(|key| key == "label")
+        value.on.ends_with(".labeled") && filter.keys().all(|key| key == "label")
     };
     if !value.filter.as_ref().is_none_or(label_only) {
         problems.push(problem(
             trigger,
-            "`filter` works only with `on = \"issues.labeled\"`, on `label`".into(),
+            "`filter` works only with `on = \"*.labeled\"`, on `label`".into(),
         ));
     }
-    if value
-        .key
-        .as_deref()
-        .is_some_and(|key| key != "issue.number")
-    {
+    let number = if value.on.starts_with("pull_request.") {
+        "pull_request.number"
+    } else {
+        "issue.number"
+    };
+    if value.key.as_deref().is_some_and(|key| key != number) {
         problems.push(problem(
             trigger,
-            "a GitHub trigger's `key` is `issue.number`".into(),
+            format!("a GitHub trigger's `key` is `{number}`"),
         ));
     }
 }

@@ -154,10 +154,10 @@ lane = "3D/mobile"           # optional: otherwise lanes.toml derives it
 ```toml
 source = "github"
 repo = "owner/name"
-on = "issues.labeled"           # or "issues.opened"
-filter = { label = "agent" }
+on = "issues.labeled"           # or "issues.opened", "pull_request.labeled", "pull_request.opened"
+filter = { label = "agent" }    # only with a `*.labeled` event
 workflow = "implement"
-key = "issue.number"
+key = "issue.number"            # "pull_request.number" for a pull_request event
 backfill = false                # true: also start tasks for the events of the first poll
 ```
 

@@ -539,7 +539,7 @@ fn a_github_trigger_uses_a_supported_event_and_filter() {
     assert_eq!(outcome.code, 1);
     assert_eq!(
         outcome.stderr,
-        "triggers/agent-label.toml: `filter` works only with `on = \"issues.labeled\"`, on `label`\n\
+        "triggers/agent-label.toml: `filter` works only with `on = \"*.labeled\"`, on `label`\n\
          triggers/agent-label.toml: a GitHub trigger's `key` is `issue.number`\n"
     );
 }
@@ -575,5 +575,37 @@ fn only_a_github_trigger_has_backfill() {
     assert_eq!(
         outcome.stderr,
         "triggers/agent-label.toml: only a GitHub trigger has `backfill`\n"
+    );
+}
+
+#[test]
+fn a_pull_request_trigger_starts_from_opened_or_labeled() {
+    let labeled = TRIGGER
+        .replace("issues.labeled", "pull_request.labeled")
+        .replace("issue.number", "pull_request.number");
+    let opened = "source = \"github\"\nrepo = \"owner/repo\"\non = \"pull_request.opened\"\nworkflow = \"implement\"\nkey = \"pull_request.number\"\n";
+    let mut files = with("triggers/agent-label.toml", &labeled);
+    files.push(("triggers/pr-opened.toml", opened));
+
+    let outcome = check(&factory("pull-request-on", &files));
+
+    assert_eq!(outcome.stderr, "");
+    assert_eq!(outcome.code, 0);
+}
+
+#[test]
+fn a_pull_request_trigger_rejects_other_events_and_keys() {
+    let trigger = "source = \"github\"\nrepo = \"owner/repo\"\non = \"pull_request.closed\"\nworkflow = \"implement\"\n";
+    let keyed = TRIGGER.replace("issues.labeled", "pull_request.labeled");
+    let mut files = with("triggers/agent-label.toml", trigger);
+    files.push(("triggers/keyed.toml", &keyed));
+
+    let outcome = check(&factory("pull-request-closed", &files));
+
+    assert_eq!(outcome.code, 1);
+    assert_eq!(
+        outcome.stderr,
+        "triggers/agent-label.toml: a GitHub trigger handles `issues.labeled`, `issues.opened`, `pull_request.labeled` or `pull_request.opened`, not `pull_request.closed`\n\
+         triggers/keyed.toml: a GitHub trigger's `key` is `pull_request.number`\n"
     );
 }

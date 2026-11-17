@@ -6,7 +6,7 @@ that output: the Priory daemon, and another factory such as herdr-bowtie.
 
 The intake checks the factory first, as `priory check` does, and refuses to start while it has
 problems. `--once` polls once and exits. Without it, the intake polls every 60 seconds. It reads
-GitHub only, through `gh api`, as the user `gh` is logged in as.
+GitHub only, through `gh api` and `gh api graphql`, as the user `gh` is logged in as.
 
 ## The envelope
 
@@ -15,19 +15,19 @@ Every message is a herdr-bus `Message`, shaped like a CloudEvent:
 | Field     | Type          | Meaning                                                    |
 | --------- | ------------- | ---------------------------------------------------------- |
 | `id`      | UUID string   | A UUIDv5, stable across retries (see Message ids)          |
-| `type`    | string        | `github.issues.labeled`, `github.issues.opened`, `factory.task.requested` or `factory.intake.baseline` |
+| `type`    | string        | A GitHub type below, `factory.task.requested` or `factory.intake.baseline` |
 | `subject` | string        | `owner/name#42` for a GitHub event, the task key for a task request, `owner/name <stream>` for a baseline marker |
 | `time`    | RFC 3339      | When the GitHub event happened; for a baseline marker, when it was published |
 | `data`    | object        | The fields below, by type                                  |
-| `links`   | array         | GitHub events carry one `{ "label": "issue", "url": ... }` |
+| `links`   | array         | GitHub events carry one `{ "label": "issue" or "pull_request", "url": ... }`, with the event's `url` |
 
 herdr-bus drops a message whose `(output, id)` is already on the output. A consumer can still see a
 message twice, after its own crash before its ack, so it deduplicates by `id`.
 
 ## `github.issues.labeled` and `github.issues.opened`
 
-One message per GitHub event, published once. The intake publishes only these two types. Events on
-pull requests, and other issue events such as `closed` or `mentioned`, are not published yet.
+One message per GitHub event, published once. Other issue events, such as `closed` or `mentioned`,
+are not published.
 
 | Field       | Type           | Meaning                                                          |
 | ----------- | -------------- | ---------------------------------------------------------------- |
@@ -68,17 +68,133 @@ GitHub's issue events list has no `opened` event, so the intake reads `opened` f
 newest first. Its `title` is the title at the time of the poll, which may differ from the title the
 issue was opened with.
 
+## Pull request events
+
+The intake publishes five pull request types. Each names the pull request and its branches, so a
+consumer can route it to the task that owns the pull request or its branch.
+
+| Type                                   | One message per                                   |
+| -------------------------------------- | ------------------------------------------------- |
+| `github.pull_request.opened`           | pull request opened                               |
+| `github.pull_request.labeled`          | label added to a pull request                     |
+| `github.pull_request.closed`           | pull request closed, merged or not                |
+| `github.pull_request_review.submitted` | review submitted; pending reviews are skipped     |
+| `github.check_run.completed`           | completed check run on a pull request's head commit, per pull request |
+
+| Field          | Type             | Meaning                                                        |
+| -------------- | ---------------- | -------------------------------------------------------------- |
+| `repo`         | string           | `owner/name`                                                   |
+| `pull_request` | integer          | The pull request number                                        |
+| `title`        | string           | The pull request title when the intake saw the event. `opened`, `labeled` and `closed` only |
+| `url`          | string           | The pull request's page; the review's for a review, the check run's for a check |
+| `head_branch`  | string or null   | The pull request's head branch when the intake saw the event   |
+| `head_sha`     | string or null   | The pull request's head commit when the intake saw the event; for a check, the commit it ran on |
+| `base_branch`  | string or null   | The branch the pull request merges into                        |
+| `label`        | string           | The label added. `labeled` only                                |
+| `merged`       | boolean or null  | Whether the pull request is merged. `closed` only              |
+| `state`        | string           | `approved`, `changes_requested`, `commented` or `dismissed`, at poll time. Review only |
+| `name`         | string           | The check run's name, as branch protection names a required check. Check only |
+| `conclusion`   | string           | `success`, `failure`, `neutral`, `cancelled`, `skipped`, `timed_out`, `action_required`, `stale` or `startup_failure`. Check only |
+| `app`          | string or null   | The slug of the GitHub App that ran the check. Check only      |
+| `actor`        | string or null   | GitHub login: who opened, labeled or closed it, or who reviewed. Absent on a check |
+| `time`         | RFC 3339         | When it was opened, labeled, closed, submitted or completed    |
+| `github_id`    | integer          | GitHub's id: the issue id for `opened`, the issue event id for `labeled` and `closed`, the review id, the check run id |
+| `baseline`     | boolean          | As for issue events                                            |
+| `triggers`     | array of strings | As for issue events. Always empty for `closed`, reviews and checks: no trigger starts a task from them |
+
+Head and base fields are null when GitHub no longer returns the pull request.
+
+```json
+{
+  "id": "5ff24b78-5284-58d7-b5d3-64feff5f8f46",
+  "type": "github.pull_request.closed",
+  "subject": "maxence-lefebvre/priory#1",
+  "time": "2026-11-17T16:36:14Z",
+  "data": {
+    "repo": "maxence-lefebvre/priory",
+    "pull_request": 1,
+    "title": "Run the repository checks in CI",
+    "url": "https://github.com/maxence-lefebvre/priory/pull/1",
+    "head_branch": "ci",
+    "head_sha": "b1e04cd5f3194049908b7672f5285ab5c9e23f1a",
+    "base_branch": "main",
+    "merged": true,
+    "actor": "maxence-lefebvre",
+    "time": "2026-11-17T16:36:14Z",
+    "github_id": 36429719781,
+    "baseline": true,
+    "triggers": []
+  },
+  "links": [{ "label": "pull_request", "url": "https://github.com/maxence-lefebvre/priory/pull/1" }]
+}
+```
+
+```json
+{
+  "id": "88803d8e-0f8c-5ca8-8ae8-0596a26c2a77",
+  "type": "github.pull_request_review.submitted",
+  "subject": "cli/cli#10275",
+  "time": "2025-01-20T07:55:23Z",
+  "data": {
+    "repo": "cli/cli",
+    "pull_request": 10275,
+    "url": "https://github.com/cli/cli/pull/10275#pullrequestreview-2561579718",
+    "head_branch": "issue10262",
+    "head_sha": "dc16499be87ac81f8443f74d641150c4f14cf49c",
+    "base_branch": "trunk",
+    "state": "commented",
+    "actor": "heaths",
+    "time": "2025-01-20T07:55:23Z",
+    "github_id": 2561579718,
+    "baseline": true,
+    "triggers": []
+  },
+  "links": [{ "label": "pull_request", "url": "https://github.com/cli/cli/pull/10275#pullrequestreview-2561579718" }]
+}
+```
+
+```json
+{
+  "id": "53160d53-b108-539d-958f-6fbe8794707d",
+  "type": "github.check_run.completed",
+  "subject": "cli/cli#12682",
+  "time": "2026-02-14T01:51:37Z",
+  "data": {
+    "repo": "cli/cli",
+    "pull_request": 12682,
+    "url": "https://github.com/cli/cli/runs/63598796976",
+    "head_branch": "terminal-hyperlinks",
+    "head_sha": "4b2ee8eb670ba9f77d54d59ab97ced618f024fb9",
+    "base_branch": "trunk",
+    "name": "pr-auto",
+    "conclusion": "success",
+    "app": "github-actions",
+    "time": "2026-02-14T01:51:37Z",
+    "github_id": 63598796976,
+    "baseline": true,
+    "triggers": []
+  },
+  "links": [{ "label": "pull_request", "url": "https://github.com/cli/cli/runs/63598796976" }]
+}
+```
+
+The intake reads check runs, not check suites: branch protection and R6.6 name required checks by
+check run, such as `test (ubuntu)`, and a suite folds every run of one app into one conclusion.
+Commit statuses are not published. A re-run gets a new check run id, so it publishes again.
+
 ## `factory.task.requested`
 
 One message per source event and trigger that matches it, the triggers its source lists in
 `triggers`. A trigger matches when its `repo` is the event's repository, its `on` names the event's
-type, and its `filter`, if any, names the event's `label`. A baseline event matches only a trigger
+type (`pull_request.opened` names `github.pull_request.opened`), and its `filter`, if any, names the
+event's `label`. A trigger can start from `issues.labeled`, `issues.opened`, `pull_request.labeled`
+or `pull_request.opened`. A baseline event matches only a trigger
 with `backfill = true`. Only this message creates a task.
 
 | Field      | Type           | Meaning                                                      |
 | ---------- | -------------- | ------------------------------------------------------------ |
 | `workflow` | string         | The workflow the task starts                                 |
-| `key`      | string         | Which events are the same work: `github:owner/name#42`       |
+| `key`      | string         | Which events are the same work: `github:owner/name#42`, the issue or pull request number. GitHub numbers both from one sequence per repository |
 | `band`     | string or null | The trigger's `band`, or null when it sets none              |
 | `lane`     | string or null | The trigger's `lane`, or null when `lanes.toml` derives it   |
 | `trigger`  | string         | The trigger's name: its file name without the extension      |
@@ -114,13 +230,26 @@ of these names:
 | ------------------------ | -------------------------------------------- |
 | `github.issues.labeled`  | `github:{repo}:issues/events:{github_id}`    |
 | `github.issues.opened`   | `github:{repo}:issues:{github_id}:opened`    |
+| `github.pull_request.labeled`, `github.pull_request.closed` | `github:{repo}:issues/events:{github_id}` |
+| `github.pull_request.opened` | `github:{repo}:issues:{github_id}:opened` |
+| `github.pull_request_review.submitted` | `github:{repo}:pulls/reviews:{github_id}` |
+| `github.check_run.completed` | `github:{repo}:check-runs:{github_id}:pulls/{pull_request}`, since one check run can sit on the head of two pull requests |
 | `factory.task.requested` | `factory.task.requested:{trigger}:{source}`  |
 | `factory.intake.baseline` | `factory.intake.baseline:{repo}:{stream}`   |
 
 ## Baseline
 
-The first poll of a repository and type, a stream, is a baseline. It reads GitHub's first page: up to
-100 recent issue events, or up to 100 recent issues. It publishes each of those events with
+A repository has four streams, each named after a type:
+
+| Stream                                 | Reads                                        | Holds                                   | Position |
+| -------------------------------------- | -------------------------------------------- | --------------------------------------- | -------- |
+| `github.issues.labeled`                | `issues/events`, newest first                | issue and pull request `labeled`, pull request `closed` | issue event id |
+| `github.issues.opened`                 | `issues`, newest first by creation           | issue and pull request `opened`          | number   |
+| `github.pull_request_review.submitted` | GraphQL: every open pull request, and every pull request a new event above names | reviews | review id |
+| `github.check_run.completed`           | the same query                               | check runs on each pull request's head commit | check run id |
+
+The first poll of a stream is a baseline. It reads GitHub's first page: up to 100 recent issue
+events, up to 100 recent issues, or the reviews and checks of every open pull request. It publishes each of those events with
 `baseline: true`, and requests no task for them, except for a trigger with `backfill = true`, which
 gets a task for each event it matches. It then publishes one `factory.intake.baseline` message for
 the stream, even when the page held no event. A consumer can ignore that message.
@@ -128,8 +257,8 @@ the stream, even when the page held no event. A consumer can ignore that message
 | Field      | Type    | Meaning                                                                |
 | ---------- | ------- | ---------------------------------------------------------------------- |
 | `repo`     | string  | `owner/name`                                                           |
-| `stream`   | string  | `github.issues.labeled` or `github.issues.opened`                      |
-| `position` | integer | The highest issue event id, or issue number, on that page; 0 when empty |
+| `stream`   | string  | One of the four streams above                                          |
+| `position` | integer | The highest position on that page; 0 when empty                        |
 
 ```json
 {
@@ -145,6 +274,16 @@ the stream, even when the page held no event. A consumer can ignore that message
 Until that message is on the output, the stream is still in its baseline: a crash during the
 baseline makes the next start read the first page again as a baseline.
 
+## GitHub calls
+
+One poll of a repository with N open pull requests and nothing new makes 3 `gh` calls: 2 REST
+requests (`issues/events` and `issues`, one page each) and 1 GraphQL query, which pages itself
+when N is over 100 (ceil(N/100) requests). The query costs 3 points per page on `cli/cli`. A poll
+that finds new pull request events adds 1 GraphQL query for the pull requests they name. At one
+poll a minute, that is 120 REST requests and about 180 GraphQL points an hour per repository, each
+against GitHub's 5,000 an hour. A stream with more than 100 new events since the last poll reads one
+more REST page per 100.
+
 ## Where polling stops
 
 The intake keeps no state file. On start, it reads `factory.intake` back, newest first, to each
@@ -153,7 +292,10 @@ stream's `factory.intake.baseline` message. Where polling stopped is the higher 
 baseline, the intake publishes again its task requests, for the triggers in its `triggers` that
 the factory still defines. A crash between a source event and its task requests then loses
 nothing, and herdr-bus drops the repeats. A trigger added since gets no task from this, because it
-is not in the list. Each poll then publishes, oldest first, the events after that point. Without `--once`, a failing `gh` is
+is not in the list. Each poll then publishes, oldest first, the events after that point. The review and check streams
+have no such point: each poll reads the current reviews and checks again and publishes those not on
+the output yet. The intake remembers the ids it published, and herdr-bus drops the rest, so after a
+restart the first poll offers every current review and check again. Without `--once`, a failing `gh` is
 logged and retried on the next poll, while a failing publish ends the intake, so that its restart
 recovers what it left out.
 
@@ -170,3 +312,9 @@ Limits:
 - Each start reads the output back to the baseline markers, which grows with the output.
 - `opened` pages follow creation time and stop at issue numbers. An issue transferred or imported
   into the repository with an older creation time can be missed.
+- Head and base fields come from the pull request when the intake polls, not when the event
+  happened.
+- Reviews and checks are read for open pull requests, and for a pull request a new issue event
+  names, such as its `closed` event. A check that completes after its pull request closed and a poll
+  passed is missed.
+- The query reads the last 50 reviews and the first 100 checks of the head commit per pull request.
