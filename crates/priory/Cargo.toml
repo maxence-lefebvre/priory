@@ -6,6 +6,9 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+herdr-bus = { git = "https://github.com/flupke/herdr-bus", version = "0.1.0" }
 serde = { version = "1.0.229", features = ["derive"] }
 serde-saphyr = "2.1.1"
+serde_json = "1"
 toml = "1.2.1"
+uuid = { version = "1", features = ["v5"] }

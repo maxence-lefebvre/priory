@@ -1,4 +1,4 @@
-use crate::factory::{Decider, Effect, Factory, Loaded, Problem, Step, Workflow};
+use crate::factory::{Decider, Effect, Factory, Loaded, Problem, Step, Trigger, Workflow};
 use std::collections::{BTreeMap, BTreeSet};
 
 const ENDS: [&str; 2] = ["done", "stop"];
@@ -12,11 +12,60 @@ pub fn check(factory: &Factory) -> Vec<Problem> {
                 format!("workflow `{}` does not exist", trigger.value.workflow),
             ));
         }
+        if trigger.value.source == "github" {
+            check_github(trigger, &mut problems);
+        } else if trigger.value.backfill.is_some() {
+            problems.push(problem(
+                trigger,
+                "only a GitHub trigger has `backfill`".into(),
+            ));
+        }
     }
     for workflow in factory.workflows.values() {
         check_workflow(factory, workflow, &mut problems);
     }
     problems
+}
+
+fn check_github(trigger: &Loaded<Trigger>, problems: &mut Vec<Problem>) {
+    let value = &trigger.value;
+    let repo = value.repo.as_deref().and_then(|repo| repo.split_once('/'));
+    if !repo
+        .is_some_and(|(owner, name)| !owner.is_empty() && !name.is_empty() && !name.contains('/'))
+    {
+        problems.push(problem(
+            trigger,
+            "a GitHub trigger needs `repo = \"owner/name\"`".into(),
+        ));
+    }
+    if !["issues.labeled", "issues.opened"].contains(&value.on.as_str()) {
+        problems.push(problem(
+            trigger,
+            format!(
+                "a GitHub trigger handles `issues.labeled` or `issues.opened`, not `{}`",
+                value.on
+            ),
+        ));
+    }
+    let label_only = |filter: &BTreeMap<String, String>| {
+        value.on == "issues.labeled" && filter.keys().all(|key| key == "label")
+    };
+    if !value.filter.as_ref().is_none_or(label_only) {
+        problems.push(problem(
+            trigger,
+            "`filter` works only with `on = \"issues.labeled\"`, on `label`".into(),
+        ));
+    }
+    if value
+        .key
+        .as_deref()
+        .is_some_and(|key| key != "issue.number")
+    {
+        problems.push(problem(
+            trigger,
+            "a GitHub trigger's `key` is `issue.number`".into(),
+        ));
+    }
 }
 
 fn check_workflow(factory: &Factory, workflow: &Loaded<Workflow>, problems: &mut Vec<Problem>) {
