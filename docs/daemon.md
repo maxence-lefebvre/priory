@@ -75,15 +75,15 @@ The daemon creates the worktree, records the run and the task as `running`, then
   `AskUserQuestion` and tells the agent to call `ask` instead.
 - `--mcp-config`: the `priory` MCP server, `priory mcp --session <id>`, described under Tools.
 
-Before it starts tmux, the daemon kills any session left with the run's tmux name.
-
 The same tmux command tags the new pane with a pane option `@priory` set to the harness session
 id, so a pane is never left untagged. The daemon types only into that pane, even when a person
 opens other panes in the session. Each second, it ends a run whose tagged pane is gone as
 `exited`, and blocks its task with the reason. A git or tmux error ends the run as `failed`, or blocks the task when no run exists yet.
 
 tmux owns the agents, so the daemon can stop and start again without stopping them. When it starts,
-it keeps every live run whose session still exists.
+it keeps every live run whose session still exists. It kills each tmux session whose tagged pane
+carries the harness session of an ended run that no live run continues, as a crash between ending a
+run and killing its session leaves.
 
 ### Trusting a clone
 
@@ -141,6 +141,10 @@ When the run's turn ends, its `Stop` moves the task by its result to `next[outco
 | code step  | at that step, `blocked`: code steps are not built yet | `blocked`                 |
 | `done`     | `done`                                               | `done`                    |
 | `stop`     | `dropped`                                            | `dropped`                 |
+
+A prompt that a move or an answer queues goes ahead of the prompts already queued for the task, and
+carries them after it, so an event kept during the last turn never reaches the agent before its new
+instructions.
 
 A run with an open ask and no result ends `asleep`, and its task sleeps. The daemon kills a run's
 tmux session when the run ends, after the hook has its reply. The worktree stays.

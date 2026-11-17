@@ -269,6 +269,19 @@ impl Setup {
             .collect()
     }
 
+    /// Waits until the tmux session `name` is gone.
+    fn gone(&self, name: &str) {
+        let deadline = Instant::now() + Duration::from_secs(15);
+        while self
+            .tmux(&["has-session", "-t", &format!("={name}")])
+            .status
+            .success()
+        {
+            assert!(Instant::now() < deadline, "{name} still runs");
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+
     fn hold(&self, at: &str) {
         fs::write(self.dir.join("fake").join(at), "").unwrap();
     }
@@ -689,12 +702,7 @@ fn a_human_step_asks_ends_the_run_and_sleeps_until_an_answer_resumes_the_session
     let session = runs[0][4].clone();
     let tasks = setup.rows("tasks");
     assert_eq!([&tasks[0][3], &tasks[0][4]], ["approve", "asleep"]);
-    assert!(
-        !setup
-            .tmux(&["has-session", "-t", "=priory-1"])
-            .status
-            .success()
-    );
+    setup.gone("priory-1");
     let asks = setup.rows("asks");
     assert_eq!(
         asks,
@@ -818,12 +826,7 @@ fn reaching_done_marks_the_task_done_and_reaching_stop_drops_it() {
 
     let runs = setup.until("runs", |rows| rows.len() == 2 && rows[1][7] == "done");
     assert_eq!(setup.rows("tasks")[0][4], "done");
-    assert!(
-        !setup
-            .tmux(&["has-session", "-t", "=priory-1"])
-            .status
-            .success()
-    );
+    setup.gone("priory-1");
     assert_ne!(runs[1][6], "-");
     setup.crash();
     fs::remove_file(setup.dir.join("fake/typed.log")).unwrap();
@@ -877,4 +880,87 @@ fn the_mcp_server_lists_the_result_and_ask_tools() {
         .map(|tool| tool["name"].as_str().unwrap())
         .collect();
     assert_eq!(names, ["result", "ask"]);
+}
+
+#[test]
+fn an_event_kept_during_a_step_reaches_the_agent_after_the_next_step_prompt() {
+    let mut setup = Setup::with_workflow("event-order", STEPS);
+    setup.calls(&[result("ready")]);
+    setup.hold("hold-stop");
+    setup.publish(&requested(42));
+    setup.start();
+    setup.written("fake/tools.log");
+
+    setup.publish(&labeled(42));
+    setup.until("outbox", |rows| rows.len() == 2);
+    setup.release("hold-stop");
+
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") == 2);
+    let typed = setup.typed();
+    assert_eq!(typed.len(), 2, "{typed:?}");
+    assert!(
+        typed[1].starts_with("Implement the plan.\ngithub.issues.labeled owner/repo#42 {"),
+        "{typed:?}"
+    );
+    let inbox = setup.rows("inbox");
+    assert_eq!(inbox.len(), 2);
+}
+
+#[test]
+fn an_answer_that_beats_the_stop_is_typed_into_the_same_run_once() {
+    let mut setup = Setup::with_workflow("early-answer", STEPS);
+    setup.calls(&[ask()]);
+    setup.hold("hold-stop");
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("asks", |rows| rows.len() == 1);
+
+    let answered = setup.priory(&["answer", "1", "sqlite", "--revision", "1"]);
+
+    assert!(answered.status.success(), "{answered:?}");
+    assert_eq!(setup.rows("tasks")[0][4], "running");
+    setup.release("hold-stop");
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") == 2);
+    std::thread::sleep(Duration::from_millis(1500));
+    assert_eq!(setup.typed(), ["Plan the change.\n", "sqlite\n"]);
+    let runs = setup.rows("runs");
+    assert_eq!(runs.len(), 1, "{runs:?}");
+    assert_eq!(runs[0][7], "-");
+    assert_eq!(setup.rows("tasks")[0][4], "running");
+}
+
+#[test]
+fn a_restarted_daemon_kills_the_session_of_a_run_that_ended() {
+    let mut setup = Setup::with_workflow("orphan", STEPS);
+    setup.calls(&[ask()]);
+    setup.publish(&requested(42));
+    setup.start();
+    let runs = setup.until("runs", |rows| {
+        rows.first().is_some_and(|row| row[7] == "asleep")
+    });
+    setup.crash();
+    // As if the daemon had crashed after ending the run and before killing its session.
+    let session = &runs[0][4];
+    assert!(
+        setup
+            .tmux(&[
+                "new-session",
+                "-d",
+                "-s",
+                "priory-1",
+                "--",
+                "cat",
+                ";",
+                "set-option",
+                "-p",
+                "@priory",
+                session
+            ])
+            .status
+            .success()
+    );
+
+    setup.start();
+
+    setup.gone("priory-1");
 }

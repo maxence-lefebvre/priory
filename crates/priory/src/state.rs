@@ -546,6 +546,15 @@ pub fn attempt(db: &mut Connection) -> rusqlite::Result<Option<(String, String, 
     Ok(Some((tmux, session, text)))
 }
 
+/// The harness sessions of ended runs that no live run carries on.
+pub fn ended_sessions(db: &Connection) -> rusqlite::Result<std::collections::BTreeSet<String>> {
+    let mut statement = db.prepare(
+        "SELECT DISTINCT session FROM runs WHERE ended IS NOT NULL
+         AND session NOT IN (SELECT session FROM runs WHERE ended IS NULL)",
+    )?;
+    statement.query_map([], |row| row.get(0))?.collect()
+}
+
 /// After a restart, a prompt attempted but never confirmed may or may not have been typed.
 pub fn uncertain(db: &Connection) -> rusqlite::Result<usize> {
     db.execute(

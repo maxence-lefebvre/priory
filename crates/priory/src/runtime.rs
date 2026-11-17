@@ -197,6 +197,19 @@ pub fn pane(name: &str, session: &str) -> Option<String> {
     })
 }
 
+/// Every tmux session with a pane Priory tagged, and that pane's harness session id.
+pub fn tagged() -> Vec<(String, String)> {
+    let panes = run(tmux().args(["list-panes", "-a", "-F", "#{session_name} #{@priory}"]))
+        .unwrap_or_default();
+    panes
+        .lines()
+        .filter_map(|line| {
+            let (name, tag) = line.rsplit_once(' ')?;
+            (!tag.is_empty()).then(|| (name.to_owned(), tag.to_owned()))
+        })
+        .collect()
+}
+
 /// Kills the tmux session `name`, if it still exists.
 pub fn kill(name: &str) {
     let _ = run(tmux().args(["kill-session", "-t", &format!("={name}")]));

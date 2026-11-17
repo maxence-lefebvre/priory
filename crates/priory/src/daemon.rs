@@ -31,6 +31,14 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
     let home = runtime::home();
     let listening = runtime::listen(&home)?;
     state::uncertain(&db)?;
+    // A crash between ending a run and killing its session leaves its agent running.
+    let ended = state::ended_sessions(&db)?;
+    for (tmux, _) in runtime::tagged()
+        .into_iter()
+        .filter(|(_, session)| ended.contains(session))
+    {
+        runtime::kill(&tmux);
+    }
     runtime::replay(&home, |line| {
         let (_, kill) = take(&mut db, line, factory).map_err(|error| error.to_string())?;
         kill.inspect(|tmux| runtime::kill(tmux));
@@ -163,8 +171,6 @@ fn start(
     let resume = resumed.is_some();
     let session = resumed.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
     let tmux = format!("priory-{}", admission.task);
-    // A crash between ending a run and killing its session leaves the old agent running.
-    runtime::kill(&tmux);
     state::start(
         db,
         &NewRun {

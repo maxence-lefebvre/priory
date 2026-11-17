@@ -34,13 +34,12 @@ struct Run {
     session: String,
 }
 
-fn run(tx: &Transaction, filter: &str, key: &dyn rusqlite::ToSql) -> rusqlite::Result<Option<Run>> {
+/// The live run of the harness session `session`.
+fn run(tx: &Transaction, session: &str) -> rusqlite::Result<Option<Run>> {
     tx.query_row(
-        &format!(
-            "SELECT runs.id, runs.task, runs.step, tasks.workflow, runs.tmux, runs.session
-             FROM runs JOIN tasks ON tasks.id = runs.task WHERE runs.ended IS NULL AND {filter}"
-        ),
-        [key],
+        "SELECT runs.id, runs.task, runs.step, tasks.workflow, runs.tmux, runs.session
+         FROM runs JOIN tasks ON tasks.id = runs.task WHERE runs.ended IS NULL AND runs.session = ?1",
+        [session],
         |row| {
             Ok(Run {
                 id: row.get(0)?,
@@ -86,7 +85,7 @@ pub fn call(
     workflows: &Workflows,
 ) -> rusqlite::Result<Result<String, String>> {
     let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
-    let Some(run) = run(&tx, "runs.session = ?1", &call.session)? else {
+    let Some(run) = run(&tx, &call.session)? else {
         return Ok(Err(format!("no live run has session {}", call.session)));
     };
     if let Some(outcome) = tx
@@ -215,7 +214,7 @@ pub fn stop(
     session: &str,
     workflows: &Workflows,
 ) -> rusqlite::Result<Option<String>> {
-    let Some(run) = run(tx, "runs.session = ?1", &session)? else {
+    let Some(run) = run(tx, session)? else {
         return Ok(None);
     };
     let outcome = tx
@@ -253,6 +252,34 @@ pub fn stop(
     end(tx, run.id, "asleep")?;
     set(tx, run.task, "asleep", None, None)?;
     Ok(Some(run.tmux))
+}
+
+/// Queues `text` as the task's next prompt, ahead of the prompts already queued, which it carries
+/// after it: an event kept during the last turn must not reach the agent before its new instructions.
+fn queue_first(tx: &Transaction, task: i64, text: &str) -> rusqlite::Result<()> {
+    let mut merged = text.to_owned();
+    let mut queued = Vec::new();
+    {
+        let mut statement = tx.prepare(
+            "SELECT id, text FROM outbox WHERE task = ?1 AND state = 'queued' ORDER BY id",
+        )?;
+        let mut rows = statement.query([task])?;
+        while let Some(row) = rows.next()? {
+            queued.push(row.get::<_, i64>(0)?);
+            merged.push('\n');
+            merged.push_str(&row.get::<_, String>(1)?);
+        }
+    }
+    tx.execute(
+        "INSERT INTO outbox (task, text) VALUES (?1, ?2)",
+        params![task, merged],
+    )?;
+    let id = tx.last_insert_rowid();
+    for old in queued {
+        tx.execute("UPDATE inbox SET outbox = ?1 WHERE outbox = ?2", [id, old])?;
+        tx.execute("DELETE FROM outbox WHERE id = ?1", [old])?;
+    }
+    Ok(())
 }
 
 fn end(tx: &Transaction, run: i64, ended_as: &str) -> rusqlite::Result<()> {
@@ -307,10 +334,7 @@ fn enter(
     };
     match step.decides {
         Decider::Model => {
-            tx.execute(
-                "INSERT INTO outbox (task, text) VALUES (?1, ?2)",
-                params![task, step.prompt.as_deref().unwrap_or_default()],
-            )?;
+            queue_first(tx, task, step.prompt.as_deref().unwrap_or_default())?;
             let Some(run) = from else {
                 set(tx, task, "ready", Some(target), None)?;
                 return Ok(None);
@@ -416,10 +440,7 @@ pub fn answer(
             .unwrap_or_else(|| format!("{at}?{}", answer.text));
         enter(&tx, task, &workflow, &target, None, "", workflows)?;
     } else {
-        tx.execute(
-            "INSERT INTO outbox (task, text) VALUES (?1, ?2)",
-            params![task, answer.text],
-        )?;
+        queue_first(&tx, task, &answer.text)?;
         // An answer that beats the run's Stop leaves it running: the answer is its next prompt.
         if state == "asleep" {
             set(&tx, task, "ready", None, None)?;
