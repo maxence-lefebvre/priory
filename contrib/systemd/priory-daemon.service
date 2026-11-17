@@ -1,0 +1,14 @@
+[Unit]
+Description=Priory daemon
+After=network-online.target
+
+[Service]
+EnvironmentFile=%h/.config/priory/env
+ExecStart=%h/.cargo/bin/priory daemon ${PRIORY_FACTORY}
+Restart=on-failure
+RestartSec=5
+# Stop only the daemon. tmux and the agents it started stay up (R5.2).
+KillMode=process
+
+[Install]
+WantedBy=default.target

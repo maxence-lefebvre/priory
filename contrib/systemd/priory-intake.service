@@ -1,0 +1,12 @@
+[Unit]
+Description=Priory GitHub intake
+After=network-online.target
+
+[Service]
+EnvironmentFile=%h/.config/priory/env
+ExecStart=%h/.cargo/bin/priory intake ${PRIORY_FACTORY}
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target
