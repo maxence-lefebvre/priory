@@ -39,6 +39,10 @@ struct Setup {
 
 impl Setup {
     fn new(name: &str) -> Self {
+        Self::with_workflow(name, WORKFLOW)
+    }
+
+    fn with_workflow(name: &str, workflow: &str) -> Self {
         let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join("rt").join(name);
         let setup = Setup { dir, daemon: None };
         setup.kill_tmux();
@@ -46,7 +50,7 @@ impl Setup {
         let files = [
             ("factory/factory.toml", "name = \"demo\""),
             ("factory/agents/implementer/agent.md", AGENT),
-            ("factory/workflows/implement.toml", WORKFLOW),
+            ("factory/workflows/implement.toml", workflow),
             ("factory/triggers/agent-label.toml", TRIGGER),
         ];
         for (path, content) in files {
@@ -221,6 +225,59 @@ impl Setup {
         let deadline = Instant::now() + Duration::from_secs(15);
         while fs::metadata(self.dir.join(path)).map_or(true, |file| file.len() == 0) {
             assert!(Instant::now() < deadline, "{path} never appeared");
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+
+    /// Queues tool calls for the fake `claude`: one per turn, in order. An empty one skips a turn.
+    fn calls(&self, calls: &[serde_json::Value]) {
+        let lines: String = calls
+            .iter()
+            .map(|call| match call {
+                serde_json::Value::Null => "\n".to_owned(),
+                call => format!("{call}\n"),
+            })
+            .collect();
+        fs::write(self.dir.join("fake/calls"), lines).unwrap();
+    }
+
+    /// The replies the fake `claude` got from its tool calls, one per line.
+    fn replies(&self) -> Vec<serde_json::Value> {
+        fs::read_to_string(self.dir.join("fake/tools.log"))
+            .unwrap_or_default()
+            .lines()
+            .filter(|line| !line.is_empty())
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect()
+    }
+
+    /// Sends `lines` to `priory mcp --session <session>` and returns its replies.
+    fn mcp(&self, session: &str, lines: &[serde_json::Value]) -> Vec<serde_json::Value> {
+        let input: String = lines.iter().map(|line| format!("{line}\n")).collect();
+        let mut mcp = self
+            .command(env!("CARGO_BIN_EXE_priory"))
+            .args(["mcp", "--session", session])
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        std::io::Write::write_all(&mut mcp.stdin.take().unwrap(), input.as_bytes()).unwrap();
+        String::from_utf8(mcp.wait_with_output().unwrap().stdout)
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect()
+    }
+
+    /// Waits until the tmux session `name` is gone.
+    fn gone(&self, name: &str) {
+        let deadline = Instant::now() + Duration::from_secs(15);
+        while self
+            .tmux(&["has-session", "-t", &format!("={name}")])
+            .status
+            .success()
+        {
+            assert!(Instant::now() < deadline, "{name} still runs");
             std::thread::sleep(Duration::from_millis(50));
         }
     }
@@ -436,7 +493,9 @@ fn a_run_whose_tmux_session_dies_ends_exited_and_blocks_its_task() {
             .success()
     );
 
-    let runs = setup.until("runs", |rows| rows[0][7] == "exited");
+    let runs = setup.until("runs", |rows| {
+        rows.first().is_some_and(|row| row[7] == "exited")
+    });
     assert_ne!(runs[0][6], "-");
     let tasks = setup.rows("tasks");
     assert_eq!(tasks[0][4], "blocked");
@@ -485,7 +544,9 @@ fn a_run_with_no_session_start_within_60_seconds_ends_and_names_the_clone_to_tru
     setup.start();
     setup.until("runs", |rows| rows.len() == 1);
 
-    let runs = setup.within(75, "runs", |rows| rows[0][7] == "exited");
+    let runs = setup.within(75, "runs", |rows| {
+        rows.first().is_some_and(|row| row[7] == "exited")
+    });
 
     assert_ne!(runs[0][6], "-");
     assert!(
@@ -507,4 +568,403 @@ fn a_run_with_no_session_start_within_60_seconds_ends_and_names_the_clone_to_tru
     let outbox = setup.rows("outbox");
     assert_eq!(outbox.len(), 1);
     assert_eq!(outbox[0][3], "queued");
+}
+
+const STEPS: &str = r#"
+start = "plan"
+
+[[steps]]
+id = "plan"
+decides = "model"
+agent = "implementer"
+prompt = "Plan the change."
+effect = "reversible"
+next = { ready = "implement", unsure = "approve", hopeless = "stop" }
+
+[[steps]]
+id = "approve"
+decides = "human"
+effect = "none"
+options = ["approved", "rejected"]
+next = { approved = "implement", rejected = "stop" }
+
+[[steps]]
+id = "implement"
+decides = "model"
+agent = "implementer"
+prompt = "Implement the plan."
+effect = "reversible"
+next = { passed = "done", failed = "stop" }
+"#;
+
+fn result(outcome: &str) -> serde_json::Value {
+    json!({ "name": "result", "arguments": { "outcome": outcome, "summary": format!("{outcome} it") } })
+}
+
+/// The text of a tool reply, and whether it is an error.
+fn reply(reply: &serde_json::Value) -> (String, bool) {
+    let result = &reply["result"];
+    (
+        result["content"][0]["text"]
+            .as_str()
+            .unwrap_or_default()
+            .to_owned(),
+        result["isError"].as_bool().unwrap_or(false),
+    )
+}
+
+#[test]
+fn a_result_with_a_valid_outcome_moves_the_task_to_the_next_model_step_after_stop() {
+    let mut setup = Setup::with_workflow("result", STEPS);
+    setup.calls(&[result("ready")]);
+    setup.publish(&requested(42));
+
+    setup.start();
+
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") == 2);
+    let typed = setup.typed();
+    assert_eq!(typed[1], "Implement the plan.\n", "{typed:?}");
+    let (text, error) = reply(&setup.replies()[0]);
+    assert!(!error, "{text}");
+    let tasks = setup.rows("tasks");
+    assert_eq!([&tasks[0][3], &tasks[0][4]], ["implement", "running"]);
+    let runs = setup.rows("runs");
+    assert_eq!(runs.len(), 2, "{runs:?}");
+    assert_eq!([&runs[0][2], &runs[0][7]], ["plan", "moved"]);
+    assert_eq!([&runs[1][2], &runs[1][7]], ["implement", "-"]);
+    assert_eq!(
+        runs[0][4], runs[1][4],
+        "one session carries the conversation"
+    );
+    assert_eq!(runs[0][3], runs[1][3]);
+}
+
+#[test]
+fn a_result_with_an_unknown_outcome_is_refused_with_the_valid_outcomes_and_the_task_stays() {
+    let mut setup = Setup::with_workflow("unknown-outcome", STEPS);
+    setup.calls(&[result("maybe")]);
+    setup.publish(&requested(42));
+
+    setup.start();
+
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") == 1);
+    setup.written("fake/tools.log");
+    let (text, error) = reply(&setup.replies()[0]);
+    assert!(error, "{text}");
+    assert_eq!(
+        text,
+        r#"outcome "maybe" is not one of step plan's outcomes: hopeless, ready, unsure"#
+    );
+    std::thread::sleep(Duration::from_millis(1500));
+    let tasks = setup.rows("tasks");
+    assert_eq!([&tasks[0][3], &tasks[0][4]], ["plan", "running"]);
+    assert_eq!(setup.rows("runs").len(), 1);
+    assert_eq!(setup.typed().len(), 1);
+}
+
+#[test]
+fn a_second_result_for_a_run_is_refused() {
+    let mut setup = Setup::with_workflow("second-result", STEPS);
+    setup.calls(&[result("ready")]);
+    setup.hold("hold-stop");
+    setup.publish(&requested(42));
+    setup.start();
+    setup.written("fake/tools.log");
+    let session = setup.rows("runs")[0][4].clone();
+
+    // The same turn calls result again before its Stop.
+    let replies = setup.mcp(
+        &session,
+        &[json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": result("unsure")})],
+    );
+
+    let (text, error) = reply(&replies[0]);
+    assert!(error, "{text}");
+    assert_eq!(text, "run 1 already has a result, ready; a result is final");
+    setup.release("hold-stop");
+    let tasks = setup.until("tasks", |rows| {
+        rows.first().is_some_and(|row| row[3] == "implement")
+    });
+    assert_eq!(tasks[0][4], "running");
+}
+
+#[test]
+fn a_human_step_asks_ends_the_run_and_sleeps_until_an_answer_resumes_the_session() {
+    let mut setup = Setup::with_workflow("human", STEPS);
+    setup.calls(&[result("unsure")]);
+    setup.publish(&requested(42));
+
+    setup.start();
+
+    let runs = setup.until("runs", |rows| {
+        rows.first().is_some_and(|row| row[7] == "asleep")
+    });
+    let session = runs[0][4].clone();
+    let tasks = setup.rows("tasks");
+    assert_eq!([&tasks[0][3], &tasks[0][4]], ["approve", "asleep"]);
+    setup.gone("priory-1");
+    let asks = setup.rows("asks");
+    assert_eq!(
+        asks,
+        [[
+            "1",
+            "1",
+            "1",
+            "approve: unsure it",
+            r#"["approved","rejected"]"#
+        ]]
+    );
+
+    let answered = setup.priory(&["answer", "1", "approved", "--revision", "1"]);
+
+    assert!(answered.status.success(), "{answered:?}");
+    assert!(setup.rows("asks").is_empty());
+    let runs = setup.until("outbox", |rows| with(rows, 3, "confirmed") == 2);
+    assert_eq!(runs.len(), 2);
+    let runs = setup.rows("runs");
+    assert_eq!([&runs[1][2], &runs[1][4]], ["implement", &session]);
+    let args = fs::read_to_string(setup.dir.join("fake/args.log")).unwrap();
+    let args: Vec<_> = args.lines().collect();
+    assert!(
+        args.windows(2).any(|w| w == ["--resume", session.as_str()]),
+        "{args:?}"
+    );
+    assert_eq!(setup.typed()[1], "Implement the plan.\n");
+    assert_eq!(setup.rows("tasks")[0][4], "running");
+}
+
+fn ask() -> serde_json::Value {
+    json!({ "name": "ask", "arguments": {
+        "question": "Which database?",
+        "options": ["sqlite", "postgres"],
+        "recommendation": "sqlite: one file",
+        "tradeoff": "postgres scales, sqlite needs no server",
+    } })
+}
+
+#[test]
+fn an_agent_ask_sleeps_the_task_and_the_answer_wakes_it_as_its_prompt() {
+    let mut setup = Setup::with_workflow("agent-ask", STEPS);
+    setup.calls(&[ask()]);
+    setup.publish(&requested(42));
+
+    setup.start();
+
+    setup.until("runs", |rows| {
+        rows.first().is_some_and(|row| row[7] == "asleep")
+    });
+    assert_eq!(setup.rows("tasks")[0][4], "asleep");
+    assert_eq!(
+        setup.rows("asks"),
+        [["1", "1", "1", "Which database?", r#"["sqlite","postgres"]"#]]
+    );
+
+    let answered = setup.priory(&["answer", "1", "duckdb, actually", "--revision", "1"]);
+
+    assert!(answered.status.success(), "{answered:?}");
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") == 2);
+    assert_eq!(setup.typed()[1], "duckdb, actually\n");
+    let tasks = setup.rows("tasks");
+    assert_eq!([&tasks[0][3], &tasks[0][4]], ["plan", "running"]);
+}
+
+#[test]
+fn an_answer_to_a_stale_revision_or_a_second_answer_is_refused() {
+    let mut setup = Setup::with_workflow("stale", STEPS);
+    setup.calls(&[ask()]);
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == "asleep")
+    });
+
+    let stale = setup.priory(&["answer", "1", "sqlite", "--revision", "2"]);
+    let first = setup.priory(&["answer", "1", "sqlite", "--revision", "1"]);
+    let second = setup.priory(&["answer", "1", "postgres", "--revision", "1"]);
+
+    assert!(!stale.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&stale.stderr),
+        "priory answer: ask 1 is at revision 1, not 2\n"
+    );
+    assert!(first.status.success(), "{first:?}");
+    assert!(!second.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&second.stderr),
+        "priory answer: ask 1 is already answered: sqlite\n"
+    );
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") == 2);
+    assert_eq!(setup.typed()[1], "sqlite\n");
+}
+
+#[test]
+fn a_step_ask_takes_only_its_options() {
+    let mut setup = Setup::with_workflow("options", STEPS);
+    setup.calls(&[result("unsure")]);
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == "asleep")
+    });
+
+    let answered = setup.priory(&["answer", "1", "sure", "--revision", "1"]);
+
+    assert!(!answered.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&answered.stderr),
+        "priory answer: ask 1 takes one of: approved, rejected\n"
+    );
+    assert_eq!(setup.rows("asks").len(), 1);
+}
+
+#[test]
+fn reaching_done_marks_the_task_done_and_reaching_stop_drops_it() {
+    let mut setup = Setup::with_workflow("done", STEPS);
+    setup.calls(&[result("ready"), result("passed")]);
+    setup.publish(&requested(42));
+    setup.start();
+
+    let runs = setup.until("runs", |rows| rows.len() == 2 && rows[1][7] == "done");
+    assert_eq!(setup.rows("tasks")[0][4], "done");
+    setup.gone("priory-1");
+    assert_ne!(runs[1][6], "-");
+    setup.crash();
+    fs::remove_file(setup.dir.join("fake/typed.log")).unwrap();
+    setup.calls(&[result("hopeless")]);
+    setup.publish(&requested(43));
+    setup.start();
+
+    let runs = setup.until("runs", |rows| rows.len() == 3 && rows[2][7] == "dropped");
+    assert_ne!(runs[2][6], "-");
+    assert_eq!(setup.rows("tasks")[1][4], "dropped");
+}
+
+#[test]
+fn the_built_in_question_tool_is_denied_and_points_to_ask() {
+    let mut setup = Setup::new("deny");
+    setup.calls(&[json!({ "name": "AskUserQuestion" })]);
+    setup.publish(&requested(42));
+
+    setup.start();
+
+    setup.written("fake/tools.log");
+    let denied = &setup.replies()[0]["hookSpecificOutput"];
+    assert_eq!(denied["permissionDecision"], "deny");
+    assert!(
+        denied["permissionDecisionReason"]
+            .as_str()
+            .unwrap()
+            .contains("ask tool")
+    );
+}
+
+#[test]
+fn the_mcp_server_lists_the_result_and_ask_tools() {
+    let setup = Setup::new("list");
+
+    let replies = setup.mcp(
+        "s",
+        &[
+            json!({"jsonrpc": "2.0", "id": 0, "method": "initialize", "params": {"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "t", "version": "0"}}}),
+            json!({"jsonrpc": "2.0", "method": "notifications/initialized"}),
+            json!({"jsonrpc": "2.0", "id": 1, "method": "tools/list"}),
+        ],
+    );
+
+    assert_eq!(replies.len(), 2, "{replies:?}");
+    assert_eq!(replies[0]["result"]["protocolVersion"], "2025-06-18");
+    let names: Vec<_> = replies[1]["result"]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|tool| tool["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(names, ["result", "ask"]);
+}
+
+#[test]
+fn an_event_kept_during_a_step_reaches_the_agent_after_the_next_step_prompt() {
+    let mut setup = Setup::with_workflow("event-order", STEPS);
+    setup.calls(&[result("ready")]);
+    setup.hold("hold-stop");
+    setup.publish(&requested(42));
+    setup.start();
+    setup.written("fake/tools.log");
+
+    setup.publish(&labeled(42));
+    setup.until("outbox", |rows| rows.len() == 2);
+    setup.release("hold-stop");
+
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") == 2);
+    let typed = setup.typed();
+    assert_eq!(typed.len(), 2, "{typed:?}");
+    assert!(
+        typed[1].starts_with("Implement the plan.\ngithub.issues.labeled owner/repo#42 {"),
+        "{typed:?}"
+    );
+    let inbox = setup.rows("inbox");
+    assert_eq!(inbox.len(), 2);
+}
+
+#[test]
+fn an_answer_that_beats_the_stop_is_typed_into_the_same_run_once() {
+    let mut setup = Setup::with_workflow("early-answer", STEPS);
+    setup.calls(&[ask()]);
+    setup.hold("hold-stop");
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("asks", |rows| rows.len() == 1);
+
+    let answered = setup.priory(&["answer", "1", "sqlite", "--revision", "1"]);
+
+    assert!(answered.status.success(), "{answered:?}");
+    std::thread::sleep(Duration::from_millis(1500));
+    assert_eq!(setup.rows("tasks")[0][4], "running");
+    assert_eq!(setup.rows("outbox")[1][3], "queued");
+    assert_eq!(setup.typed().len(), 1);
+    setup.release("hold-stop");
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") == 2);
+    std::thread::sleep(Duration::from_millis(1500));
+    assert_eq!(setup.typed(), ["Plan the change.\n", "sqlite\n"]);
+    let runs = setup.rows("runs");
+    assert_eq!(runs.len(), 1, "{runs:?}");
+    assert_eq!(runs[0][7], "-");
+    assert_eq!(setup.rows("tasks")[0][4], "running");
+}
+
+#[test]
+fn a_restarted_daemon_kills_the_session_of_a_run_that_ended() {
+    let mut setup = Setup::with_workflow("orphan", STEPS);
+    setup.calls(&[ask()]);
+    setup.publish(&requested(42));
+    setup.start();
+    let runs = setup.until("runs", |rows| {
+        rows.first().is_some_and(|row| row[7] == "asleep")
+    });
+    setup.gone("priory-1");
+    setup.crash();
+    // As if the daemon had crashed after ending the run and before killing its session.
+    let session = &runs[0][4];
+    assert!(
+        setup
+            .tmux(&[
+                "new-session",
+                "-d",
+                "-s",
+                "priory-1",
+                "--",
+                "cat",
+                ";",
+                "set-option",
+                "-p",
+                "@priory",
+                session
+            ])
+            .status
+            .success()
+    );
+
+    setup.start();
+
+    setup.gone("priory-1");
 }

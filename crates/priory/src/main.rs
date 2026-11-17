@@ -5,11 +5,13 @@ mod daemon;
 )]
 mod factory;
 mod intake;
+mod mcp;
 mod request;
 mod route;
 mod rules;
 mod runtime;
 mod state;
+mod tools;
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -52,6 +54,18 @@ fn main() -> ExitCode {
             "id\ttask\trun\tstate\ttext",
             "SELECT id, task, run, state, replace(text, char(10), '\\n') FROM outbox ORDER BY id",
         ),
+        Some("asks") => list(
+            "id\ttask\trevision\tquestion\toptions",
+            "SELECT id, task, revision, replace(question, char(10), '\\n'), options FROM asks
+             WHERE answer IS NULL ORDER BY id",
+        ),
+        Some("answer") => answer(args.map(|arg| arg.to_string_lossy().into_owned()).collect()),
+        Some("mcp") => match (args.next(), args.next(), args.next()) {
+            (Some(flag), Some(session), None) if flag == "--session" => {
+                exit("mcp", mcp::serve(&session.to_string_lossy()))
+            }
+            _ => usage(),
+        },
         Some("hook") => match (args.next(), args.next()) {
             (Some(event), None) => hook(&event.to_string_lossy()),
             _ => usage(),
@@ -62,7 +76,7 @@ fn main() -> ExitCode {
 
 fn usage() -> ExitCode {
     eprintln!(
-        "usage: priory check [DIR]\n       priory intake [DIR] [--once]\n       priory daemon [DIR] [--once]\n       priory request [DIR] --workflow <name> --key <key> [--band <band>] [--lane <lane>] [--repo <owner/name>] <text>\n       priory inbox\n       priory tasks\n       priory runs\n       priory outbox\n       priory hook EVENT"
+        "usage: priory check [DIR]\n       priory intake [DIR] [--once]\n       priory daemon [DIR] [--once]\n       priory request [DIR] --workflow <name> --key <key> [--band <band>] [--lane <lane>] [--repo <owner/name>] <text>\n       priory inbox\n       priory tasks\n       priory runs\n       priory outbox\n       priory asks\n       priory answer ASK OPTION-OR-TEXT --revision N\n       priory mcp --session ID\n       priory hook EVENT"
     );
     ExitCode::from(2)
 }
@@ -122,6 +136,50 @@ fn request(args: Vec<String>) -> ExitCode {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
             eprintln!("priory request: {error}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn exit(verb: &str, done: Result<(), String>) -> ExitCode {
+    match done {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(error) => {
+            eprintln!("priory {verb}: {error}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// Sends `priory answer ASK TEXT --revision N` to the daemon, which applies it.
+fn answer(mut args: Vec<String>) -> ExitCode {
+    let Some(flag) = args.iter().position(|arg| arg == "--revision") else {
+        return usage();
+    };
+    let revision = args.drain(flag..(flag + 2).min(args.len())).nth(1);
+    let (Some(revision), [ask, text]) = (revision.and_then(|n| n.parse().ok()), &args[..]) else {
+        return usage();
+    };
+    let Ok(ask) = ask.parse() else {
+        return usage();
+    };
+    let line = serde_json::to_string(&tools::Answer {
+        ask,
+        revision,
+        text: text.clone(),
+    })
+    .expect("an answer serializes");
+    let reply = runtime::call(&runtime::home(), &line).and_then(|reply| {
+        serde_json::from_str::<Result<String, String>>(&reply)
+            .map_err(|error| format!("unreadable reply {reply:?}: {error}"))?
+    });
+    match reply {
+        Ok(text) => {
+            println!("{text}");
+            ExitCode::SUCCESS
+        }
+        Err(error) => {
+            eprintln!("priory answer: {error}");
             ExitCode::FAILURE
         }
     }
