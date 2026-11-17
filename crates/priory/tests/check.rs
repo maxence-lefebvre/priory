@@ -16,6 +16,7 @@ Make the smallest correct change.
 
 const TRIGGER: &str = r#"
 source = "github"
+repo = "owner/repo"
 on = "issues.labeled"
 filter = { label = "agent" }
 workflow = "implement"
@@ -115,7 +116,7 @@ fn a_factory_in_yaml_passes() {
         ),
         (
             "triggers/agent-label.yaml",
-            "source: github\non: issues.labeled\nworkflow: implement\n",
+            "source: github\nrepo: owner/repo\non: issues.labeled\nworkflow: implement\n",
         ),
         (
             "workflows/implement.yaml",
@@ -171,7 +172,7 @@ fn a_toml_syntax_error_names_its_file_and_line() {
 
 #[test]
 fn a_trigger_must_name_an_existing_workflow() {
-    let trigger = "source = \"github\"\non = \"issues.labeled\"\nworkflow = \"deploy\"\n";
+    let trigger = "source = \"github\"\nrepo = \"owner/repo\"\non = \"issues.labeled\"\nworkflow = \"deploy\"\n";
 
     let outcome = check(&factory(
         "trigger-workflow",
@@ -504,5 +505,41 @@ fn an_unreadable_folder_fails_the_check() {
         outcome.stderr.starts_with("workflows: "),
         "{}",
         outcome.stderr
+    );
+}
+
+#[test]
+fn a_github_trigger_names_its_repo() {
+    let outcome = check(&factory(
+        "github-repo",
+        &with(
+            "triggers/agent-label.toml",
+            &TRIGGER.replace("repo = \"owner/repo\"\n", ""),
+        ),
+    ));
+
+    assert_eq!(outcome.code, 1);
+    assert_eq!(
+        outcome.stderr,
+        "triggers/agent-label.toml: a GitHub trigger needs `repo = \"owner/name\"`\n"
+    );
+}
+
+#[test]
+fn a_github_trigger_uses_a_supported_event_and_filter() {
+    let trigger = TRIGGER
+        .replace("issues.labeled", "issues.opened")
+        .replace("key = \"issue.number\"", "key = \"issue.id\"");
+
+    let outcome = check(&factory(
+        "github-on",
+        &with("triggers/agent-label.toml", &trigger),
+    ));
+
+    assert_eq!(outcome.code, 1);
+    assert_eq!(
+        outcome.stderr,
+        "triggers/agent-label.toml: `filter` works only with `on = \"issues.labeled\"`, on `label`\n\
+         triggers/agent-label.toml: a GitHub trigger's `key` is `issue.number`\n"
     );
 }

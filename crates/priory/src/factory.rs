@@ -62,6 +62,7 @@ pub enum Session {
 #[serde(deny_unknown_fields)]
 pub struct Trigger {
     pub source: String,
+    pub repo: Option<String>,
     pub on: String,
     pub view: Option<String>,
     pub filter: Option<BTreeMap<String, String>>,

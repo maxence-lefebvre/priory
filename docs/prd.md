@@ -153,7 +153,8 @@ lane = "3D/mobile"           # optional: otherwise lanes.toml derives it
 
 ```toml
 source = "github"
-on = "issues.labeled"
+repo = "owner/name"
+on = "issues.labeled"           # or "issues.opened"
 filter = { label = "agent" }
 workflow = "implement"
 key = "issue.number"
