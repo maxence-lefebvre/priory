@@ -373,6 +373,10 @@ Priory serves these as MCP tools.
 - Memory held by waiting agents, which should be zero.
 - Time to add a machine to a factory.
 
+## License
+
+MIT.
+
 ## Non-goals
 
 - A hosted service or billing.
@@ -383,16 +387,15 @@ Priory serves these as MCP tools.
 
 ## Open questions
 
-1. License. MIT is permissive and matches Gas City and herdr-bus.
-2. Which terminal host comes first: tmux, which most users have, or Herdr, which the author uses.
-3. The default multi-machine state backend: a central Postgres or one herdr-bus per machine.
-4. Whether to propose the trace schema to herdr-bowtie early, so both factories can be measured the
+1. Which terminal host comes first: tmux, which most users have, or Herdr, which the author uses.
+2. The default multi-machine state backend: a central Postgres or one herdr-bus per machine.
+3. Whether to propose the trace schema to herdr-bowtie early, so both factories can be measured the
    same way.
-5. Whether workflow branching stays limited to outcome labels or gains expressions.
-6. Whether to support jj workspaces alongside git worktrees.
-7. Whether a Windows machine runs agents through WSL, and whether a runner file then needs more than
+4. Whether workflow branching stays limited to outcome labels or gains expressions.
+5. Whether to support jj workspaces alongside git worktrees.
+6. Whether a Windows machine runs agents through WSL, and whether a runner file then needs more than
    `platform`, such as an environment loader like direnv.
-8. Whether third-party panels load as plugins, and in which form.
+7. Whether third-party panels load as plugins, and in which form.
 
 ## Risks
 
