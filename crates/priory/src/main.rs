@@ -5,6 +5,7 @@ mod daemon;
 )]
 mod factory;
 mod intake;
+mod request;
 mod route;
 mod rules;
 mod runtime;
@@ -34,6 +35,7 @@ fn main() -> ExitCode {
             };
             serve(verb, &dir, run, !once.is_empty())
         }
+        Some("request") => request(args.map(|arg| arg.to_string_lossy().into_owned()).collect()),
         Some("inbox") => list(
             "seq\ttype\tsubject\ttask\toutcome",
             "SELECT seq, type, subject, task, outcome FROM inbox ORDER BY seq",
@@ -60,7 +62,7 @@ fn main() -> ExitCode {
 
 fn usage() -> ExitCode {
     eprintln!(
-        "usage: priory check [DIR]\n       priory intake [DIR] [--once]\n       priory daemon [DIR] [--once]\n       priory inbox\n       priory tasks\n       priory runs\n       priory outbox\n       priory hook EVENT"
+        "usage: priory check [DIR]\n       priory intake [DIR] [--once]\n       priory daemon [DIR] [--once]\n       priory request [DIR] --workflow <name> --key <key> [--band <band>] [--lane <lane>] [--repo <owner/name>] <text>\n       priory inbox\n       priory tasks\n       priory runs\n       priory outbox\n       priory hook EVENT"
     );
     ExitCode::from(2)
 }
@@ -104,6 +106,22 @@ fn list(header: &str, query: &str) -> ExitCode {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
             eprintln!("priory: {error}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn request(args: Vec<String>) -> ExitCode {
+    let Some((dir, request)) = request::parse(args) else {
+        return usage();
+    };
+    let Some(factory) = load(&dir) else {
+        return ExitCode::FAILURE;
+    };
+    match request::run(&factory, &request) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(error) => {
+            eprintln!("priory request: {error}");
             ExitCode::FAILURE
         }
     }
