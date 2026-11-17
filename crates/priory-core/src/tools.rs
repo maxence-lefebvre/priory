@@ -786,10 +786,9 @@ fn enter(
     {
         let last = tx
             .query_row(
-                "SELECT results.run, results.step, coalesce(
+                "SELECT results.run, results.step, coalesce(results.commit_sha,
                    (SELECT commit_sha FROM actions WHERE result = results.run AND status = 'opened'
-                    ORDER BY id DESC LIMIT 1),
-                   results.commit_sha)
+                    ORDER BY id DESC LIMIT 1))
                  FROM results WHERE task = ?1 ORDER BY run DESC LIMIT 1",
                 [task],
                 |row| {
@@ -1099,9 +1098,9 @@ fn approve(
     Ok(())
 }
 
-/// Whether the irreversible step `at` may run at the task's commit `head`. With no approval,
-/// the task blocks. With one given at another commit, its ask gets a new revision and the task
-/// sleeps at the approving step until a person answers it again.
+/// Whether the irreversible step `at` may run at the task's commit `head`. With no commit or no
+/// approval, the task blocks. With an approval given at another commit, its ask gets a new revision
+/// and the task sleeps at the approving step until a person answers it again.
 pub(crate) fn approved(
     db: &mut Connection,
     task: i64,
@@ -1112,6 +1111,15 @@ pub(crate) fn approved(
         return Ok(true);
     }
     let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let Some(head) = head else {
+        let reason = format!(
+            "step {} is irreversible and the task's branch has no commit",
+            at.id
+        );
+        set(&tx, task, "blocked", None, Some(&reason))?;
+        tx.commit()?;
+        return Ok(false);
+    };
     let approval = tx
         .query_row(
             "SELECT approvals.ask, approvals.commit_sha, asks.step FROM approvals
@@ -1133,22 +1141,53 @@ pub(crate) fn approved(
         tx.commit()?;
         return Ok(false);
     };
-    if commit.as_deref() == head {
+    if commit.as_deref() == Some(head) {
         return Ok(true);
     }
     let moved = format!(
-        "\nasked again: the branch moved from {} to {} since this was answered",
+        "\nasked again: the branch moved from {} to {head} since this was answered",
         commit.as_deref().unwrap_or("-"),
-        head.unwrap_or("-")
     );
     tx.execute(
         "UPDATE asks SET revision = revision + 1, answer = NULL, answered = NULL,
          question = question || ?2 WHERE id = ?1",
         params![ask, moved],
     )?;
+    if let Some(prompt) = at.prompt.as_deref() {
+        unqueue(&tx, task, prompt)?;
+    }
     set(&tx, task, "asleep", Some(&approving), None)?;
     tx.commit()?;
     Ok(false)
+}
+
+/// Takes `prompt`, which entering a step queued first, out of the task's queued prompt, keeping the
+/// events it carries after it.
+fn unqueue(tx: &Transaction, task: i64, prompt: &str) -> rusqlite::Result<()> {
+    let queued = tx
+        .query_row(
+            "SELECT id, text FROM outbox WHERE task = ?1 AND state = 'queued' ORDER BY id LIMIT 1",
+            [task],
+            |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)),
+        )
+        .optional()?;
+    let Some((id, text)) = queued else {
+        return Ok(());
+    };
+    match text.strip_prefix(prompt) {
+        Some("") => {
+            tx.execute("UPDATE inbox SET outbox = NULL WHERE outbox = ?1", [id])?;
+            tx.execute("DELETE FROM outbox WHERE id = ?1", [id])?;
+        }
+        Some(rest) if rest.starts_with('\n') => {
+            tx.execute(
+                "UPDATE outbox SET text = ?2 WHERE id = ?1",
+                params![id, &rest[1..]],
+            )?;
+        }
+        _ => {}
+    }
+    Ok(())
 }
 
 /// What an action did: its status, a key of the step's `next`, and what it opened or why it failed.

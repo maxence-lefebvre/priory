@@ -2578,4 +2578,15 @@ fn an_irreversible_model_step_asks_again_after_a_commit_instead_of_starting() {
     assert_eq!([&tasks[0][3], &tasks[0][4]], ["approve-pr", "asleep"]);
     let runs = setup.rows("runs");
     assert!(runs.iter().all(|run| run[2] != "ship"), "{runs:?}");
+
+    setup.calls(&[passed_with_evidence()]);
+    let again = setup.priory(&["answer", "1", "open", "--revision", "2"]);
+
+    assert!(again.status.success(), "{again:?}");
+    setup.until("outbox", |rows| {
+        rows.iter()
+            .any(|row| row[4] == "Ship it." && row[3] == "confirmed")
+    });
+    let typed = setup.typed();
+    assert_eq!(typed[2..], ["Polish the change.\n", "Ship it.\n"]);
 }
