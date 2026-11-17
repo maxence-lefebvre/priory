@@ -84,6 +84,8 @@ The Warp column comes from Warp's public page and is blank where that page says 
 | Result     | The immutable record of a run's outcome and its evidence                  |              | result           |
 | Trace      | One record per step: decider, effect, outcome, tokens and time            |              |                  |
 | View       | A layout of panels that shows the factory and acts on it                  |              | Herdr mods       |
+| Queue      | The tasks waiting for a run, in band order, then a person's order, then age |              | queue            |
+| Lane       | A `<team>/<theme>` label that groups tasks in views and reports           |              | lane             |
 
 ## Configuration
 
@@ -94,6 +96,7 @@ triggers/<name>.toml         # or .yaml
 workflows/<name>.toml        # or .yaml
 runners/<tailscale-hostname>.toml
 views/<name>.toml
+lanes.toml                   # or lanes.yaml
 skills/<name>/SKILL.md
 webhooks/  scorers/  benchmarks/
 ```
@@ -121,7 +124,7 @@ Read the issue and acceptance criteria, make the smallest correct change, test i
 
 `runners/xps13.toml`, named by the machine's Tailscale hostname. Capacity is measured live, so the
 file holds the platform and, optionally, the share of the machine its agents may take together
-(R4.7):
+(R4.10):
 
 ```toml
 platform = { os = "linux" }
@@ -141,6 +144,8 @@ view = "agent-ready"         # a saved Linear view
 on = "issue.entered"         # an issue entered the view
 workflow = "implement"
 key = "issue.id"
+band = "today"
+lane = "3D/mobile"           # optional: otherwise lanes.toml derives it
 ```
 
 `triggers/agent-label.toml`:
@@ -152,6 +157,25 @@ filter = { label = "agent" }
 workflow = "implement"
 key = "issue.number"
 ```
+
+### Lanes
+
+A lane groups related work, such as `3D/mobile`, so views and reports show it together. A trigger
+can set a task's lane. Otherwise `lanes.toml` derives it, and the first matching rule wins:
+
+```toml
+fallback = "{team}/misc"     # {team} is the issue's team; "none/misc" without one
+
+[[rules]]
+key = "3D-600"
+lane = "3D/mobile"
+
+[[rules]]
+branch = "*desktop*"         # a glob on the task's branch
+lane = "FND/desktop"
+```
+
+A rule matches on the task's key, its issue's team or project, or its branch.
 
 ### Workflows
 
@@ -259,7 +283,7 @@ The daemon then reconciles the task with the event:
 | The task                                  | The daemon                                                      |
 | ----------------------------------------- | --------------------------------------------------------------- |
 | None active, and a trigger matches        | creates a task and starts its workflow                          |
-| Queued, ready or blocked                  | keeps the event and delivers it to the task's first run         |
+| Queued, held, ready or blocked            | keeps the event and delivers it to the task's first run         |
 | Running                                   | sends the event to the agent as a message, through the outbox   |
 | Asleep, and the event matches its wait    | wakes it: makes it ready, then resumes its session in its worktree with the event |
 | Retired, and the event matches its wait   | resurrects it: makes it ready, recreates the worktree from its branch, then resumes its session |
@@ -277,24 +301,31 @@ until its run starts.
 
 ### R4. Tasks and scheduling
 
-- R4.1 A task moves through queued, ready, running, asleep, blocked, done, failed and dropped. An
+- R4.1 A task moves through queued, held, ready, running, asleep, blocked, done, failed and dropped. An
   asleep task has no agent process and keeps its worktree. M0
 - R4.2 A retired task has no process and no worktree, and keeps its branch and its session. M1
 - R4.3 A runner admits a run only when its live free memory, disk and CPU leave room for the agent's
   declared needs. M0
-- R4.4 Tasks have priority bands. A higher band only starts earlier: it never skips the room
-  check. M1
-- R4.5 A task can be held until a time, another task's end, a pull request's merge, or its issue's
-  last open blocker. M1
-- R4.6 Heavy commands inside a run queue behind one memory gate:
+- R4.4 The queue starts ready tasks in band order, then in the order a person set inside the band,
+  then oldest first. The bands default to `blocker`, `now`, `today` and `later`, and `factory.toml`
+  can rename them. A trigger or workflow sets a task's default band. A higher band only starts
+  earlier: it never skips the room check. M1
+- R4.5 A person can move a task to another band or position, from the CLI or a view. M1
+- R4.6 A task can be held with a reason, by a person or until a time, another task's end, a pull
+  request's merge, or its issue's last open blocker. A hold on a pull request also says what happens
+  if the pull request closes without a merge: release the task, drop it, or ask. M1
+- R4.7 A person can revive a failed or dropped task. The revived task gets a new generation, and the
+  asks and waits of the old one are withdrawn, so a late answer cannot reach it. M1
+- R4.8 Every task has a lane, set by its trigger or derived from `lanes.toml`. M1
+- R4.9 Heavy commands inside a run queue behind one memory gate:
   `priory memory acquire --gb N -- <command>`. M1
-- R4.7 On a systemd host, each run starts in its own scope inside one user slice,
+- R4.10 On a systemd host, each run starts in its own scope inside one user slice,
   `priory-agents.slice`, through `systemd-run --user --scope --slice=priory-agents.slice -- <agent>`
   in its tmux pane. The slice caps every agent and everything it runs together, at a share of CPU and
   memory set by the runner's `agents` field (90 % by default). Agents yield CPU to the user's own apps, and past
   their memory share they slow down instead of being killed. A host without systemd relies on the
   room check alone. M1
-- R4.8 The daemon runs as a systemd user service. On an always-on machine, user lingering keeps it
+- R4.11 The daemon runs as a systemd user service. On an always-on machine, user lingering keeps it
   and its agents running with nobody logged in. M0
 
 ### R5. Agent runtime
@@ -359,7 +390,7 @@ Priory serves these as MCP tools.
 - R8.2 A view is a layout file in `views/`: a tree of rows, columns and tabs whose leaves are
   panels, in the manner of Herdr's layouts. The user can change every view, including the
   defaults Priory ships. M2
-- R8.3 Priory ships panels for the desk, the inbox, tasks, runs, agent terminals, workflow diagrams and
+- R8.3 Priory ships panels for the desk, the inbox, the queue, tasks, runs, agent terminals, workflow diagrams and
   reports. A panel reads the factory's state and acts through the same commands as the CLI. M2
 - R8.4 Views render in a browser and work on a phone. M2
 - R8.5 Any machine of the factory can serve the views and act on the factory's state. M3
@@ -382,10 +413,11 @@ Priory serves these as MCP tools.
 - R10.2 Reports give per-step outcome counts and rates. A rate's denominator is the runs that reached
   the step, and the report shows it. M1
 - R10.3 Cost per task, from token counts and a price table in the factory. M1
-- R10.4 Estimate the chance that a wrong step outcome reaches an irreversible step. Its labels
+- R10.4 Every report and view can group by lane. M1
+- R10.5 Estimate the chance that a wrong step outcome reaches an irreversible step. Its labels
   (rejected approval, red CI after merge, revert), estimator and assumptions are specified before it
   ships. M4
-- R10.5 Scorers grade finished runs. Benchmarks replay past tasks under another model or
+- R10.6 Scorers grade finished runs. Benchmarks replay past tasks under another model or
   configuration. M4
 
 ### R11. Sharing between machines
@@ -410,7 +442,7 @@ Priory serves these as MCP tools.
 | Milestone | Scope                                                                                    | Done when                                                                                                            |
 | --------- | ---------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------- |
 | M0        | One machine, tmux, one harness, CLI and GitHub intake, inbox, workflows, waits, asks, results, health | The example workflow above runs end to end, with the agent asleep on the `approve-pr` ask until it is answered, the task waiting on the pull request's checks, a daemon restart, a duplicate event and a failed run |
-| M1        | Linear, schedules, holds, bands, memory gate, agents slice, retire and resurrect, traces, reports, nudges, repair, Codex | The author's own factory runs on Priory for one week                                                     |
+| M1        | Linear, schedules, queue order, holds, revive, lanes, bands, memory gate, agents slice, retire and resurrect, traces, reports, nudges, repair, Codex | The author's own factory runs on Priory for one week                                                     |
 | M2        | Web view, webhooks, terminal attach, command answers                                     | One working day of asks answered from a phone only                                                                   |
 | M3        | Several machines, state adapters, shared skills and memories                             | A runner is disconnected for an hour while tasks run, then reconnected, with no task run twice and no answer lost    |
 | M4        | Risk estimate, scorers and benchmarks                                                    | A configuration change is compared on replayed tasks before it merges                                                |
