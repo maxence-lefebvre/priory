@@ -449,7 +449,11 @@ fn a_signal_the_daemon_dies_holding_is_spooled_for_the_next_daemon() {
     let listener =
         std::os::unix::net::UnixListener::bind(setup.dir.join("home/priory.sock")).unwrap();
     // A daemon killed after it accepted the line closes the connection with no reply.
-    std::thread::spawn(move || drop(listener.accept()));
+    let daemon = std::thread::spawn(move || {
+        let (stream, _) = listener.accept().unwrap();
+        let mut line = String::new();
+        std::io::BufRead::read_line(&mut std::io::BufReader::new(&stream), &mut line).unwrap();
+    });
 
     let mut hook = setup
         .command(env!("CARGO_BIN_EXE_priory"))
@@ -459,6 +463,7 @@ fn a_signal_the_daemon_dies_holding_is_spooled_for_the_next_daemon() {
         .unwrap();
     std::io::Write::write_all(&mut hook.stdin.take().unwrap(), br#"{"session_id":"s1"}"#).unwrap();
     assert!(hook.wait().unwrap().success());
+    daemon.join().unwrap();
 
     let spool = fs::read_to_string(setup.dir.join("home/signals.spool")).unwrap_or_default();
     assert_eq!(spool.lines().count(), 1, "{spool:?}");
@@ -470,13 +475,11 @@ fn a_daemon_started_while_a_dead_daemons_lock_lingers_waits_for_it() {
     fs::create_dir_all(setup.dir.join("home")).unwrap();
     let lock = fs::File::create(setup.dir.join("home/daemon.lock")).unwrap();
     lock.lock().unwrap();
-    std::thread::spawn(move || {
-        std::thread::sleep(Duration::from_millis(500));
-        drop(lock);
-    });
 
     setup.publish(&requested(42));
     setup.start();
+    std::thread::sleep(Duration::from_millis(1500));
+    drop(lock);
 
     setup.until("runs", |rows| rows.len() == 1);
 }
