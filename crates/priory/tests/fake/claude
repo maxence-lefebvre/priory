@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+# A stand-in for Claude Code: runs the --settings hooks as Claude would and logs every prompt typed into it.
+# FAKE_DIR holds args.log, typed.log, pending (a paste arrived), and the hold files hold-submit and hold-stop.
+set -u
+settings='{}'
+session=''
+printf '%s\n' "$@" > "$FAKE_DIR/args.log"
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --session-id) session=$2; shift 2 ;;
+    --settings) settings=$2; shift 2 ;;
+    *) shift ;;
+  esac
+done
+
+hook() {
+  jq -r --arg event "$1" '.hooks[$event][]?.hooks[]?.command' <<<"$settings" | while IFS= read -r command; do
+    jq -nc --arg session "$session" --arg event "$1" --arg prompt "${2-}" \
+      '{session_id: $session, hook_event_name: $event} + if $prompt == "" then {} else {prompt: $prompt} end' | sh -c "$command"
+  done
+}
+
+wait_while() { while [ -e "$FAKE_DIR/$1" ]; do sleep 0.05; done; }
+
+printf '\e[?2004h'
+hook SessionStart
+while :; do
+  prompt=''
+  while IFS= read -r line; do
+    prompt+="$line"$'\n'
+    [[ $line == *$'\e[201~'* ]] && break
+  done || exit 0
+  prompt=${prompt//$'\e[200~'/}
+  prompt=${prompt//$'\e[201~'/}
+  : > "$FAKE_DIR/pending"
+  wait_while hold-submit
+  printf '%s---\n' "$prompt" >> "$FAKE_DIR/typed.log"
+  hook UserPromptSubmit "$prompt"
+  wait_while hold-stop
+  hook Stop
+done
