@@ -2922,3 +2922,39 @@ fn a_per_task_agent_gets_one_session_per_task() {
     let runs = setup.until("runs", |rows| with(rows, 6, "-") == 2);
     assert_ne!(runs[0][4], runs[1][4]);
 }
+
+#[test]
+fn an_agent_turned_back_to_per_task_starts_new_sessions_rather_than_resume_the_shared_one() {
+    let mut setup = shared("unshared");
+    setup.calls(&[ask(), ask()]);
+    setup.publish(&requested(42));
+    setup.publish(&requested(43));
+    setup.start();
+    let runs = setup.until("runs", |rows| with(rows, 7, "asleep") == 2);
+    let shared = runs[0][4].clone();
+    setup.crash();
+    fs::write(setup.dir.join("factory/agents/implementer/agent.md"), AGENT).unwrap();
+    setup.start();
+
+    let deadline = Instant::now() + Duration::from_secs(15);
+    for ask in ["1", "2"] {
+        while !setup
+            .priory(&["answer", ask, "sqlite", "--revision", "1"])
+            .status
+            .success()
+        {
+            assert!(
+                Instant::now() < deadline,
+                "the daemon never took answer {ask}"
+            );
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+
+    let runs = setup.until("runs", |rows| with(rows, 6, "-") == 2);
+    let (first, second) = (&runs[2][4], &runs[3][4]);
+    assert!(
+        first != &shared && second != &shared && first != second,
+        "{runs:?}"
+    );
+}

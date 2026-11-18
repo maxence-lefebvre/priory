@@ -91,8 +91,8 @@ under Health. A git or tmux error ends the run as `failed`, or blocks the task w
 
 tmux owns the agents, so the daemon can stop and start again without stopping them. When it starts,
 it keeps every live run whose session still exists. It kills each tmux session whose tagged pane
-carries the harness session of an ended run that no live run continues, as a crash between ending a
-run and killing its session leaves.
+carries the harness session of an ended run that no live run continues in that tmux session, as a
+crash between ending a run and killing its session leaves.
 
 A live run whose pane is gone when the daemon starts was lost with its tmux server, by a reboot or
 a killed server, so the agent is not at fault. Unless its result, ask or wait ended the turn, as
@@ -163,16 +163,22 @@ younger task that needs another agent can start ahead of it.
 
 Each task keeps its own worktree and branch, and the resumed session starts in the task's worktree.
 One worktree for the agent would put every task's commits on one branch and leave the sweep with no
-task to judge it by. When the conversation's last turn served another task, or the session is new,
-the task's first queued prompt starts with
+task to judge it by. Each new run of a shared agent starts its task's first queued prompt with
 `This is task <id> (<key>), from trigger <trigger>, in the worktree <path>. Earlier turns of this
-conversation may belong to other tasks.` So the conversation can tell its tasks apart.
+conversation may belong to other tasks.` So the conversation can tell its tasks apart, even after a
+crash cut a prompt short.
+
+A session that an agent once shared stays shared: when the factory turns the agent back to
+`per-task`, each task starts a new session rather than resuming the shared one.
 
 Known limits:
 
 - A long shared conversation is never compacted by Priory.
 - Claude keeps a session's transcript under the directory it started in. Whether `--resume` finds
   it from another task's worktree depends on the Claude version, and no test runs a real Claude.
+- Signals and tool calls name the harness session, not the process. The daemon kills a run's tmux
+  session before it admits the next task, but a process that survived that kill could still report
+  for the run that resumed its session.
 
 ### Trusting a clone
 

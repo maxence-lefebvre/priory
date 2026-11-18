@@ -45,7 +45,7 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
     let ended = state::ended_sessions(&db)?;
     for (tmux, _) in runtime::tagged()
         .into_iter()
-        .filter(|(_, session)| ended.contains(session))
+        .filter(|pair| ended.contains(pair))
     {
         runtime::kill(&tmux);
     }

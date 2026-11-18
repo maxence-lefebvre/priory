@@ -426,14 +426,13 @@ pub(crate) fn admissible<'r>(
                 }),
             _ => None,
         };
-        let waits = match (busy, room()) {
-            (Some(busy), _) => Some(busy),
-            (None, Ok(measured)) => {
+        let waits = busy.or_else(|| match room() {
+            Ok(measured) => {
                 let need = room::need(agent.map(|(_, agent)| agent));
                 room::wait(measured, share, promised, need)
             }
-            (None, Err(error)) => Some(format!("waits for room: cannot measure it: {error}")),
-        };
+            Err(error) => Some(format!("waits for room: cannot measure it: {error}")),
+        });
         let Some(reason) = waits else {
             return Ok(Some(admission));
         };
@@ -557,7 +556,9 @@ pub(crate) fn resumable(
     agent: &str,
 ) -> rusqlite::Result<Option<String>> {
     db.query_row(
-        "SELECT session FROM runs WHERE task = ?1 AND agent = ?2 AND ready = 1 ORDER BY id DESC LIMIT 1",
+        // A session the agent once shared stays shared, so two tasks cannot both resume it.
+        "SELECT session FROM runs WHERE task = ?1 AND agent = ?2 AND ready = 1
+         AND session NOT IN (SELECT session FROM shared_sessions) ORDER BY id DESC LIMIT 1",
         params![task, agent],
         |row| row.get(0),
     )
@@ -622,24 +623,13 @@ pub(crate) fn start(db: &mut Connection, run: &NewRun) -> rusqlite::Result<i64> 
     Ok(id)
 }
 
-/// Records the run's session as its agent's shared one. When the conversation last served another
-/// task, or none, the task's first queued prompt starts by naming the task, its trigger and worktree.
+/// Records the run's session as its agent's shared one, and names the task in its first prompt.
 fn share(tx: &Transaction, run: &NewRun) -> rusqlite::Result<()> {
     tx.execute(
         "INSERT INTO shared_sessions (agent, session) VALUES (?1, ?2)
          ON CONFLICT (agent) DO UPDATE SET session = excluded.session",
         params![run.agent, run.session],
     )?;
-    let last: Option<i64> = tx
-        .query_row(
-            "SELECT task FROM runs WHERE session = ?1 AND ready = 1 ORDER BY id DESC LIMIT 1",
-            [run.session],
-            |row| row.get(0),
-        )
-        .optional()?;
-    if last == Some(run.task) {
-        return Ok(());
-    }
     let (key, trigger): (String, String) = tx.query_row(
         "SELECT key, trigger FROM tasks WHERE id = ?1",
         [run.task],
@@ -845,15 +835,18 @@ pub(crate) fn attempt(db: &mut Connection) -> rusqlite::Result<Option<(String, S
     Ok(Some((tmux, session, text)))
 }
 
-/// The harness sessions of ended runs that no live run carries on.
+/// The tmux sessions and harness sessions of ended runs that no live run carries on in that tmux
+/// session. A shared harness session lives on in another task's tmux session.
 pub(crate) fn ended_sessions(
     db: &Connection,
-) -> rusqlite::Result<std::collections::BTreeSet<String>> {
+) -> rusqlite::Result<std::collections::BTreeSet<(String, String)>> {
     let mut statement = db.prepare(
-        "SELECT DISTINCT session FROM runs WHERE ended IS NOT NULL
-         AND session NOT IN (SELECT session FROM runs WHERE ended IS NULL)",
+        "SELECT DISTINCT tmux, session FROM runs WHERE ended IS NOT NULL
+         AND (tmux, session) NOT IN (SELECT tmux, session FROM runs WHERE ended IS NULL)",
     )?;
-    statement.query_map([], |row| row.get(0))?.collect()
+    statement
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+        .collect()
 }
 
 /// After a restart, a prompt attempted but never confirmed may or may not have been typed.
