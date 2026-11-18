@@ -2905,3 +2905,108 @@ fn a_sweep_removes_the_worktree_of_a_squash_merged_pull_request_and_git_keeps_th
     setup.removed(1);
     assert!(setup.branches().contains("priory/1"));
 }
+
+const LEAD: &str = "+++\ndescription = \"Leads every task.\"\nharness = \"claude-code\"\nsession = \"shared\"\n+++\nYou implement one issue.\n";
+
+/// A setup whose implementer keeps one shared session across tasks.
+fn shared(name: &str) -> Setup {
+    let setup = Setup::new(name);
+    fs::write(setup.dir.join("factory/agents/implementer/agent.md"), LEAD).unwrap();
+    setup
+}
+
+#[test]
+fn two_tasks_of_a_shared_agent_resume_one_session_one_after_the_other() {
+    let mut setup = shared("shared-resume");
+    setup.calls(&[result("passed")]);
+    setup.publish(&requested(42));
+    setup.publish(&requested(43));
+
+    setup.start();
+
+    let runs = setup.until("runs", |rows| rows.len() == 2);
+    assert_eq!([&runs[0][1], &runs[0][7]], ["1", "done"], "{runs:?}");
+    assert_eq!(runs[1][1], "2");
+    assert_eq!(runs[0][4], runs[1][4], "one session serves both tasks");
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") == 2);
+    assert!(has(&launched(&setup), ["--resume", &runs[0][4]]));
+    let typed = setup.typed();
+    let worktree = setup.dir.join("home/worktrees/owner/repo/2");
+    let intro = typed[1].lines().next().unwrap();
+    for part in [
+        "task 2",
+        "github:owner/repo#43",
+        "agent-label",
+        worktree.to_str().unwrap(),
+    ] {
+        assert!(intro.contains(part), "{part} in {intro}");
+    }
+}
+
+#[test]
+fn a_task_waits_for_a_shared_agent_while_another_task_runs_it_then_starts() {
+    let mut setup = shared("shared-wait");
+    setup.calls(&[result("passed")]);
+    setup.hold("hold-stop");
+    setup.publish(&requested(42));
+    setup.publish(&requested(43));
+
+    setup.start();
+
+    let reason = "waits for agent implementer: its shared session serves task 1";
+    let tasks = setup.until("tasks", |rows| rows.len() == 2 && rows[1][7] == reason);
+    assert_eq!([&tasks[0][4], &tasks[1][4]], ["running", "queued"]);
+    std::thread::sleep(Duration::from_millis(1500));
+    assert_eq!(setup.rows("runs").len(), 1);
+    setup.release("hold-stop");
+    let tasks = setup.until("tasks", |rows| rows[1][4] == "running");
+    assert_eq!([&tasks[0][4], &tasks[1][7]], ["done", "-"]);
+}
+
+#[test]
+fn a_per_task_agent_gets_one_session_per_task() {
+    let mut setup = Setup::new("per-task-sessions");
+    setup.publish(&requested(42));
+    setup.publish(&requested(43));
+
+    setup.start();
+
+    let runs = setup.until("runs", |rows| with(rows, 6, "-") == 2);
+    assert_ne!(runs[0][4], runs[1][4]);
+}
+
+#[test]
+fn an_agent_turned_back_to_per_task_starts_new_sessions_rather_than_resume_the_shared_one() {
+    let mut setup = shared("unshared");
+    setup.calls(&[ask(), ask()]);
+    setup.publish(&requested(42));
+    setup.publish(&requested(43));
+    setup.start();
+    let runs = setup.until("runs", |rows| with(rows, 7, "asleep") == 2);
+    let shared = runs[0][4].clone();
+    setup.crash();
+    fs::write(setup.dir.join("factory/agents/implementer/agent.md"), AGENT).unwrap();
+    setup.start();
+
+    let deadline = Instant::now() + Duration::from_secs(15);
+    for ask in ["1", "2"] {
+        while !setup
+            .priory(&["answer", ask, "sqlite", "--revision", "1"])
+            .status
+            .success()
+        {
+            assert!(
+                Instant::now() < deadline,
+                "the daemon never took answer {ask}"
+            );
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+
+    let runs = setup.until("runs", |rows| with(rows, 6, "-") == 2);
+    let (first, second) = (&runs[2][4], &runs[3][4]);
+    assert!(
+        first != &shared && second != &shared && first != second,
+        "{runs:?}"
+    );
+}
