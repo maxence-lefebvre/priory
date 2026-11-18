@@ -2688,7 +2688,11 @@ fn a_sweep_removes_the_worktree_and_branch_of_a_done_task_whose_branch_merged() 
     setup.start();
 
     setup.removed(1);
-    assert_eq!(setup.branches(), "");
+    let deadline = Instant::now() + Duration::from_secs(15);
+    while !setup.branches().is_empty() {
+        assert!(Instant::now() < deadline, "branch stays");
+        std::thread::sleep(Duration::from_millis(50));
+    }
 }
 
 impl Setup {
@@ -2754,6 +2758,43 @@ fn a_sweep_keeps_an_untracked_file_and_the_desk_says_so() {
 }
 
 #[test]
+fn a_git_setting_that_hides_untracked_files_does_not_hide_them_from_the_sweep() {
+    let (_setup, reason) = kept_by("sweep-hidden", |setup| {
+        setup.git(
+            &setup.clone(),
+            &["config", "status.showUntrackedFiles", "no"],
+        );
+        fs::write(setup.worktree(2).join("notes.txt"), "x\n").unwrap();
+    });
+    assert_eq!(reason.as_deref(), Some("untracked files"));
+}
+
+#[test]
+fn a_sweep_keeps_a_worktree_the_task_does_not_record() {
+    let mut setup = Setup::ended("sweep-unrecorded", 1);
+    let other = setup.dir.join("home/worktrees/other/repo/1");
+    fs::create_dir_all(other.parent().unwrap()).unwrap();
+    setup.git(
+        &setup.clone(),
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            "other",
+            other.to_str().unwrap(),
+        ],
+    );
+
+    setup.start();
+    setup.removed(1);
+
+    let desk = setup.rows("desk");
+    assert_eq!(desk[0][2], other.display().to_string());
+    assert_eq!(desk[0][4], "not recorded as the worktree of task 1");
+}
+
+#[test]
 fn a_sweep_keeps_a_worktree_a_process_runs_in() {
     let mut process = None;
     let (_setup, reason) = kept_by("sweep-process", |setup| {
@@ -2795,13 +2836,16 @@ fn a_sweep_leaves_the_worktree_of_a_running_or_asleep_task() {
 fn a_sweep_removes_the_worktree_of_a_squash_merged_pull_request_and_git_keeps_the_branch() {
     let mut setup = Setup::ended("sweep-squashed", 1);
     setup.work_on(1);
+    setup.push(1);
     let head = setup.git(&setup.worktree(1), &["rev-parse", "HEAD"]);
     setup.publish(&on_pull(
         "github.pull_request.closed",
         json!({ "merged": true, "head_sha": head.trim() }),
     ));
     setup.start();
-    setup.until("inbox", |rows| rows.len() == 1);
+    setup.until("inbox", |rows| {
+        with(rows, 1, "github.pull_request.closed") == 1
+    });
     setup.crash();
 
     setup.start();

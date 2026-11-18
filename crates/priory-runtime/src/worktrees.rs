@@ -51,57 +51,66 @@ pub fn found(home: &Path) -> Vec<Found> {
     all
 }
 
-/// Fetches `origin` into Priory's clone of `repo` and moves the clone's branch up to
-/// `origin/HEAD`, so that `git branch -d` sees what merged.
+/// Fetches `origin` into Priory's clone of `repo` and refreshes `origin/HEAD`.
 pub fn fetch(home: &Path, repo: &str) -> Result<(), String> {
     let clone = home.join("repos").join(repo);
     run(git(&clone).args(["fetch", "--quiet", "origin"]))?;
-    if run(git(&clone).args(["merge-base", "--is-ancestor", "HEAD", "origin/HEAD"])).is_ok() {
-        run(git(&clone).args(["update-ref", "HEAD", "origin/HEAD"]))?;
-    }
-    Ok(())
+    run(git(&clone).args(["remote", "set-head", "origin", "--auto"])).map(drop)
 }
 
 /// Why the worktree must stay, or `None` when it can go. `merged_head` is the head commit of the
-/// task's merged pull request, which a squash merge leaves out of the default branch.
+/// task's merged pull request, which a squash merge leaves out of the default branch. A check that
+/// cannot run keeps the worktree.
 pub fn blocker(home: &Path, found: &Found, merged_head: Option<&str>) -> Option<String> {
+    blocked(home, found, merged_head).unwrap_or_else(|error| Some(format!("cannot check: {error}")))
+}
+
+fn blocked(
+    home: &Path,
+    found: &Found,
+    merged_head: Option<&str>,
+) -> Result<Option<String>, String> {
     let clone = found.clone(home);
     let path = &found.path;
     let ours =
         clone_of(path).and_then(|of| fs::canonicalize(of).ok()) == fs::canonicalize(&clone).ok();
     if !ours {
-        return Some(format!("not a worktree of {}", clone.display()));
+        return Ok(Some(format!("not a worktree of {}", clone.display())));
     }
     let branch = found.branch();
-    let on = run(git(path).args(["branch", "--show-current"])).ok()?;
-    if on.trim() != branch {
-        return Some(format!("not on branch {branch}"));
+    if run(git(path).args(["branch", "--show-current"]))?.trim() != branch {
+        return Ok(Some(format!("not on branch {branch}")));
     }
-    let status = run(git(path).args(["status", "--porcelain"])).ok()?;
+    let status = run(git(path).args([
+        "status",
+        "--porcelain",
+        "--untracked-files=all",
+        "--ignore-submodules=none",
+    ]))?;
     if status.lines().any(|line| !line.starts_with("??")) {
-        return Some("uncommitted changes".to_owned());
+        return Ok(Some("uncommitted changes".to_owned()));
     }
     if !status.is_empty() {
-        return Some("untracked files".to_owned());
+        return Ok(Some("untracked files".to_owned()));
     }
     if occupied(path) {
-        return Some("a process runs in it".to_owned());
+        return Ok(Some("a process runs in it".to_owned()));
     }
-    let tip = run(git(path).args(["rev-parse", "HEAD"])).ok()?;
+    let tip = run(git(path).args(["rev-parse", "HEAD"]))?;
     let tip = tip.trim();
     let merged = run(git(path).args(["merge-base", "--is-ancestor", tip, "origin/HEAD"])).is_ok();
     if merged || merged_head == Some(tip) {
-        return None;
+        return Ok(None);
     }
-    let unpushed = run(git(path).args(["rev-list", "-n1", tip, "--not", "--remotes"])).ok()?;
-    Some(
+    let unpushed = run(git(path).args(["rev-list", "-n1", tip, "--not", "--remotes"]))?;
+    Ok(Some(
         if unpushed.is_empty() {
             "not merged"
         } else {
             "unpushed commits"
         }
         .to_owned(),
-    )
+    ))
 }
 
 /// Whether a process has its working directory inside `path`.

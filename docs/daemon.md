@@ -235,14 +235,15 @@ for a task in any other state. An answer to an ask of a done, failed or dropped 
 ## Sweep
 
 The daemon removes the worktrees of ended tasks. It sweeps when it starts and every 10 minutes after,
-not on every tick. A sweep fetches `origin` into each clone with a worktree, moves the clone's
-default branch up to `origin/HEAD`, then looks at each folder `worktrees/<owner>/<name>/<id>`.
+not on every tick. A sweep fetches `origin` into each clone with a worktree and refreshes
+`origin/HEAD`, then looks at each folder `worktrees/<owner>/<name>/<id>`. A clone whose fetch
+failed is skipped until the next sweep.
 
 It removes a folder, and its branch `priory/<id>`, only when every check holds:
 
-- Task `<id>` is `done`, `failed` or `dropped`.
+- Task `<id>` is `done`, `failed` or `dropped`, and its recorded `worktree` is this folder.
 - It is a worktree of Priory's clone `repos/<owner>/<name>`, on branch `priory/<id>`.
-- Nothing is uncommitted or untracked.
+- Nothing is uncommitted or untracked, whatever `status.showUntrackedFiles` says.
 - No process has its working directory inside it (read from `/proc`).
 - The branch tip is in `origin/HEAD`, or it is the head commit of a merged pull request for the
   branch (a `github.pull_request.closed` event with `merged` true). Otherwise it stays as
@@ -250,12 +251,13 @@ It removes a folder, and its branch `priory/<id>`, only when every check holds:
 
 The sweep runs `git worktree remove`, then `git branch -d`, both without force, so git refuses
 what the checks missed. A squash-merged branch is not in the default branch, so `git branch -d`
-refuses it: the worktree goes and the branch stays. A failed removal is logged and retried at the
-next sweep.
+refuses it: the worktree goes and the branch stays, and no sweep looks at that branch again. A
+failed worktree removal is logged and retried at the next sweep. A git command that cannot run
+keeps the worktree, as `cannot check: <error>`.
 
 `priory desk` runs the same checks without fetching or removing, and lists every folder that stays
 with its reason: `no task <id>`, `task <id> still <state>`, `not a worktree of <clone>`,
-`not on branch priory/<id>`, `uncommitted changes`, `untracked files`, `a process runs in it`,
+`not recorded as the worktree of task <id>`, `not on branch priory/<id>`, `uncommitted changes`, `untracked files`, `a process runs in it`,
 `unpushed commits` or `not merged`. It reads the refs of the last fetch.
 
 ## Tools
