@@ -21,7 +21,7 @@ pub fn home() -> PathBuf {
 }
 
 /// Runs `command` and returns its stdout, or an error naming it with its stderr.
-fn run(command: &mut Command) -> Result<String, String> {
+pub(crate) fn run(command: &mut Command) -> Result<String, String> {
     let output = command
         .stdin(Stdio::null())
         .output()
@@ -35,7 +35,7 @@ fn run(command: &mut Command) -> Result<String, String> {
     Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
-fn git(dir: &Path) -> Command {
+pub(crate) fn git(dir: &Path) -> Command {
     let mut command = Command::new("git");
     command.arg("-C").arg(dir);
     command

@@ -1294,7 +1294,11 @@ fn the_desk_lists_an_uncertain_prompt_a_blocked_task_and_an_open_ask_oldest_firs
     setup.release("hold-submit");
     setup.until("tasks", |rows| rows.len() == 2 && rows[1][4] == "asleep");
 
-    let desk = setup.rows("desk");
+    let desk: Vec<_> = setup
+        .rows("desk")
+        .into_iter()
+        .filter(|row| row[1] != "worktree")
+        .collect();
     let items: Vec<_> = desk
         .iter()
         .map(|row| [&row[1], &row[2], &row[3]].map(String::as_str))
@@ -2589,4 +2593,219 @@ fn an_irreversible_model_step_asks_again_after_a_commit_instead_of_starting() {
     });
     let typed = setup.typed();
     assert_eq!(typed[2..], ["Polish the change.\n", "Ship it.\n"]);
+}
+
+impl Setup {
+    /// A setup whose tasks 1 to `n` ran to done, with the daemon stopped.
+    fn ended(name: &str, n: u64) -> Setup {
+        let mut setup = Setup::new(name);
+        setup.calls(&vec![result("passed"); n as usize]);
+        setup.start();
+        for issue in 1..=n {
+            setup.publish(&requested(issue));
+            setup.until("tasks", |rows| with(rows, 4, "done") == issue as usize);
+        }
+        setup.crash();
+        setup
+    }
+
+    fn worktree(&self, task: u64) -> PathBuf {
+        self.dir.join(format!("home/worktrees/owner/repo/{task}"))
+    }
+
+    fn clone(&self) -> PathBuf {
+        self.dir.join("home/repos/owner/repo")
+    }
+
+    fn git(&self, dir: &Path, args: &[&str]) -> String {
+        let output = self
+            .command("git")
+            .current_dir(dir)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "git {args:?}: {output:?}");
+        String::from_utf8(output.stdout).unwrap()
+    }
+
+    /// Commits in the worktree of `task`, without pushing.
+    fn work_on(&self, task: u64) {
+        let args = [
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@t",
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            &format!("work on {task}"),
+        ];
+        self.git(&self.worktree(task), &args);
+    }
+
+    fn push(&self, task: u64) {
+        self.git(
+            &self.worktree(task),
+            &["push", "-q", "origin", &format!("priory/{task}")],
+        );
+    }
+
+    /// Fast-forwards `main` of origin to the branch of `task`, as a merged pull request does.
+    fn merge(&self, task: u64) {
+        let bare = self.dir.join("origin/owner/repo.git");
+        self.git(
+            &bare,
+            &[
+                "update-ref",
+                "refs/heads/main",
+                &format!("refs/heads/priory/{task}"),
+            ],
+        );
+    }
+
+    fn branches(&self) -> String {
+        self.git(&self.clone(), &["branch", "--list", "priory/*"])
+    }
+
+    /// Waits until the worktree of `task` is gone.
+    fn removed(&self, task: u64) {
+        let deadline = Instant::now() + Duration::from_secs(15);
+        while self.worktree(task).exists() {
+            assert!(Instant::now() < deadline, "worktree {task} stays");
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+}
+
+#[test]
+fn a_sweep_removes_the_worktree_and_branch_of_a_done_task_whose_branch_merged() {
+    let mut setup = Setup::ended("sweep-merged", 1);
+    setup.work_on(1);
+    setup.push(1);
+    setup.merge(1);
+
+    setup.start();
+
+    setup.removed(1);
+    assert_eq!(setup.branches(), "");
+}
+
+impl Setup {
+    /// The reason `priory desk` gives for keeping the worktree of `task`, if it lists one.
+    fn stays(&self, task: u64) -> Option<String> {
+        let wanted = self.worktree(task).display().to_string();
+        self.rows("desk")
+            .into_iter()
+            .find(|row| row[1] == "worktree" && row[2] == wanted)
+            .map(|row| row[4].clone())
+    }
+
+    /// Merges task 1, the control, starts the daemon, and waits until its sweep removed task 1.
+    fn swept(&mut self) {
+        self.work_on(1);
+        self.push(1);
+        self.merge(1);
+        self.start();
+        self.removed(1);
+    }
+}
+
+/// Tasks 1 and 2 are done. The test spoils task 2 with `spoil`, which must leave it a worktree.
+fn kept_by(name: &str, spoil: impl FnOnce(&Setup)) -> (Setup, Option<String>) {
+    let mut setup = Setup::ended(name, 2);
+    spoil(&setup);
+    setup.swept();
+    let reason = setup.stays(2);
+    assert!(setup.worktree(2).is_dir());
+    assert!(setup.branches().contains("priory/2"));
+    (setup, reason)
+}
+
+#[test]
+fn a_sweep_keeps_a_branch_that_is_not_merged_and_the_desk_says_so() {
+    let (_setup, reason) = kept_by("sweep-unmerged", |setup| {
+        setup.work_on(2);
+        setup.push(2);
+    });
+    assert_eq!(reason.as_deref(), Some("not merged"));
+}
+
+#[test]
+fn a_sweep_keeps_an_unpushed_commit_and_the_desk_says_so() {
+    let (_setup, reason) = kept_by("sweep-unpushed", |setup| setup.work_on(2));
+    assert_eq!(reason.as_deref(), Some("unpushed commits"));
+}
+
+#[test]
+fn a_sweep_keeps_an_uncommitted_change_and_the_desk_says_so() {
+    let (_setup, reason) = kept_by("sweep-dirty", |setup| {
+        fs::write(setup.worktree(2).join("README.md"), "changed\n").unwrap();
+    });
+    assert_eq!(reason.as_deref(), Some("uncommitted changes"));
+}
+
+#[test]
+fn a_sweep_keeps_an_untracked_file_and_the_desk_says_so() {
+    let (_setup, reason) = kept_by("sweep-untracked", |setup| {
+        fs::write(setup.worktree(2).join("notes.txt"), "x\n").unwrap();
+    });
+    assert_eq!(reason.as_deref(), Some("untracked files"));
+}
+
+#[test]
+fn a_sweep_keeps_a_worktree_a_process_runs_in() {
+    let mut process = None;
+    let (_setup, reason) = kept_by("sweep-process", |setup| {
+        process = Some(
+            Command::new("sleep")
+                .arg("60")
+                .current_dir(setup.worktree(2))
+                .spawn()
+                .unwrap(),
+        );
+    });
+    let mut process = process.unwrap();
+    process.kill().unwrap();
+    process.wait().unwrap();
+    assert_eq!(reason.as_deref(), Some("a process runs in it"));
+}
+
+#[test]
+fn a_sweep_leaves_the_worktree_of_a_running_or_asleep_task() {
+    let mut setup = Setup::new("sweep-active");
+    setup.calls(&[result("passed"), serde_json::Value::Null, ask()]);
+    setup.start();
+    for (issue, state) in [(1, "done"), (2, "running"), (3, "asleep")] {
+        setup.publish(&requested(issue));
+        setup.until("tasks", |rows| {
+            rows.len() == issue as usize && rows[issue as usize - 1][4] == state
+        });
+    }
+    setup.crash();
+
+    setup.swept();
+
+    assert_eq!(setup.stays(2).as_deref(), Some("task 2 still running"));
+    assert_eq!(setup.stays(3).as_deref(), Some("task 3 still asleep"));
+    assert!(setup.branches().contains("priory/2") && setup.branches().contains("priory/3"));
+}
+
+#[test]
+fn a_sweep_removes_the_worktree_of_a_squash_merged_pull_request_and_git_keeps_the_branch() {
+    let mut setup = Setup::ended("sweep-squashed", 1);
+    setup.work_on(1);
+    let head = setup.git(&setup.worktree(1), &["rev-parse", "HEAD"]);
+    setup.publish(&on_pull(
+        "github.pull_request.closed",
+        json!({ "merged": true, "head_sha": head.trim() }),
+    ));
+    setup.start();
+    setup.until("inbox", |rows| rows.len() == 1);
+    setup.crash();
+
+    setup.start();
+
+    setup.removed(1);
+    assert!(setup.branches().contains("priory/1"));
 }

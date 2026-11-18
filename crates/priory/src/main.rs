@@ -1,4 +1,4 @@
-use priory_core::{daemon, state, tools};
+use priory_core::{daemon, state, sweep, tools};
 use priory_factory::{factory, rules};
 use priory_intake::{intake, request};
 use priory_runtime::{mcp, runtime};
@@ -53,22 +53,7 @@ fn main() -> ExitCode {
             "SELECT id, task, run, kind, coalesce(resource, until, 'task ' || target), created
              FROM waits WHERE fired IS NULL ORDER BY id",
         ),
-        Some("desk") => list(
-            "since\tkind\tid\ttask\twhat",
-            "SELECT * FROM (
-               SELECT asks.created, 'ask', asks.id, asks.task,
-                 replace(asks.question, char(10), '\\n') || ' ' || asks.options
-               FROM asks JOIN tasks ON tasks.id = asks.task
-               WHERE asks.answer IS NULL AND tasks.state NOT IN ('done', 'failed', 'dropped')
-               UNION ALL
-               SELECT changed, 'blocked', id, id, reason FROM tasks WHERE state = 'blocked'
-               UNION ALL
-               SELECT outbox.attempted, 'prompt', outbox.id, outbox.task,
-                 replace(outbox.text, char(10), '\\n')
-               FROM outbox JOIN tasks ON tasks.id = outbox.task
-               WHERE outbox.state = 'uncertain' AND tasks.state NOT IN ('done', 'failed', 'dropped')
-             ) ORDER BY 1, 2, 3",
-        ),
+        Some("desk") => desk(),
         Some(verb @ ("resume" | "cancel")) => act(
             verb,
             args.map(|arg| arg.to_string_lossy().into_owned()).collect(),
@@ -131,6 +116,30 @@ fn serve(
         }
     }
 }
+
+/// What waits on a person, then every worktree under `PRIORY_HOME` that stays and why.
+fn desk() -> ExitCode {
+    let printed = state::open().and_then(|db| {
+        state::print(&db, "since\tkind\tid\ttask\twhat", DESK)
+            .and_then(|()| sweep::print_stays(&db, &runtime::home()))
+            .map_err(|error| error.to_string())
+    });
+    exit("desk", printed)
+}
+
+const DESK: &str = "SELECT * FROM (
+               SELECT asks.created, 'ask', asks.id, asks.task,
+                 replace(asks.question, char(10), '\\n') || ' ' || asks.options
+               FROM asks JOIN tasks ON tasks.id = asks.task
+               WHERE asks.answer IS NULL AND tasks.state NOT IN ('done', 'failed', 'dropped')
+               UNION ALL
+               SELECT changed, 'blocked', id, id, reason FROM tasks WHERE state = 'blocked'
+               UNION ALL
+               SELECT outbox.attempted, 'prompt', outbox.id, outbox.task,
+                 replace(outbox.text, char(10), '\\n')
+               FROM outbox JOIN tasks ON tasks.id = outbox.task
+               WHERE outbox.state = 'uncertain' AND tasks.state NOT IN ('done', 'failed', 'dropped')
+             ) ORDER BY 1, 2, 3";
 
 fn list(header: &str, query: &str) -> ExitCode {
     let printed = state::open()

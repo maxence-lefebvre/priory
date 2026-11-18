@@ -1,6 +1,7 @@
 use crate::room::Share;
 use crate::route;
 use crate::state::{self, Admission, NewRun, Signal};
+use crate::sweep;
 use crate::tools::{self, Act, Answer, Call, Done};
 use herdr_bus::{Bus, Start};
 use priory_factory::factory::Factory;
@@ -11,11 +12,13 @@ use rusqlite::Connection;
 use std::cell::OnceCell;
 use std::path::Path;
 use std::sync::mpsc::RecvTimeoutError;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 const CONSUMER: &str = "priory";
 // shortcut: polls the bus file; switch to herdr-bus-client's notify with the systemd service.
 const EVERY: Duration = Duration::from_secs(1);
+/// How often the daemon removes the worktrees of ended tasks.
+const SWEEP: Duration = Duration::from_secs(600);
 /// How long a turn may run when its step sets no `timeout`.
 const TIMEOUT: Duration = Duration::from_secs(3 * 3600);
 
@@ -61,12 +64,17 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
             tools::lost(&mut db, &run.session, &run.tmux)?;
         }
     }
+    let mut swept: Option<Instant> = None;
     loop {
         drain(&bus, &mut db, factory)?;
         while let Ok(line) = listening.lines.try_recv() {
             apply(&mut db, line, factory)?;
         }
         tend(&mut db, factory, &share, &home)?;
+        if swept.is_none_or(|at| at.elapsed() >= SWEEP) {
+            swept = Some(Instant::now());
+            sweep::run(&db, &home)?;
+        }
         match listening.lines.recv_timeout(EVERY) {
             Ok(line) => apply(&mut db, line, factory)?,
             Err(RecvTimeoutError::Timeout) => {}
