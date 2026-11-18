@@ -1,6 +1,6 @@
 use crate::route;
 use priory_factory::factory::{Decider, Effect, Loaded, Step, Workflow};
-use priory_intake::intake::{CHECKED, PASSING};
+use priory_intake::intake::{CHECK_RUNS, CHECKED, PASSING};
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -426,7 +426,8 @@ impl Seen {
 /// Judges the daemon's checks wait `wait` on every event the inbox kept or ignored about its pull
 /// request, so that events the agent already read, or an earlier owner kept, count too. The newest event tells the head: one after the
 /// result that names another head wakes the agent. The newest check at the result's commit then
-/// decides: red wakes the agent, and green with none pending or failing marks the task done.
+/// decides: red wakes the agent, and green with none pending or failing marks the task done. With
+/// no check at the commit, a newest snapshot of no check runs marks it done too.
 fn judge(tx: &Transaction, wait: i64) -> rusqlite::Result<bool> {
     let (task, resource, commit, mark): (i64, String, String, Option<i64>) = tx.query_row(
         "SELECT waits.task, waits.resource, waits.head_sha, coalesce(
@@ -474,7 +475,12 @@ fn judge(tx: &Transaction, wait: i64) -> rusqlite::Result<bool> {
     let mut checks = seen
         .iter()
         .filter(|event| event.kind == CHECKED && event.head == commit);
-    let Some(check) = checks.next() else {
+    // A snapshot decides only before any check completed at the commit.
+    let snapshot = || {
+        seen.iter()
+            .find(|event| event.kind == CHECK_RUNS && event.head == commit)
+    };
+    let Some(check) = checks.next().or_else(snapshot) else {
         return Ok(false);
     };
     let failing = check.data["failing"].as_u64();
@@ -498,7 +504,11 @@ fn judge(tx: &Transaction, wait: i64) -> rusqlite::Result<bool> {
         fire(tx, wait, task, &reason, Some(red.seq))?;
         return Ok(true);
     }
-    if check.data["pending"].as_u64() != Some(0) || failing != Some(0) {
+    let green = match check.kind.as_str() {
+        CHECK_RUNS => check.data["runs"].as_u64() == Some(0),
+        _ => check.data["pending"].as_u64() == Some(0) && failing == Some(0),
+    };
+    if !green {
         return Ok(false);
     }
     tx.execute(

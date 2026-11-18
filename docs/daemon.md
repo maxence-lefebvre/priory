@@ -427,7 +427,8 @@ when it stores the wait and at each new event:
 | The newest event names another head and came after the result                    | wakes the agent: `wait <id> fired: the head of <pull request> moved to <sha>, away from your result's commit <commit>` |
 | The newest event names another head and came before the result                   | the task sleeps on, since a later event tells whether the head is the commit |
 | Else, the newest check at the commit is red, or counts `failing` and a red check at the commit was seen | wakes the agent with that red check: `wait <id> fired: check <name> at <commit> concluded <conclusion> <url>` |
-| Else, the newest check at the commit has `pending` 0 and `failing` 0               | marks the task done and starts no run  |
+| Else, the newest check at the commit has `pending` 0 and `failing` 0             | marks the task done and starts no run  |
+| Else, no check at the commit, and the newest `github.pull_request.check_runs` snapshot at it has `runs` 0 | marks the task done and starts no run  |
 | Otherwise                                                                           | the task sleeps on                     |
 
 Each wake line is followed by the event's own line, unless a queued prompt already carries it. The woken agent can fix the failure and send a
@@ -442,7 +443,13 @@ Known limits:
 
 - Priory reads no branch protection, so every check run reported for the head counts as required.
   Commit statuses are not check runs and do not count.
-- A pull request whose head never gets a check run keeps the task asleep.
+- A head with no check runs finishes the task only once the intake publishes its snapshot: at least
+  5 minutes after the last update of the pull request, and later when polls fail. A check run
+  that appears after the task finished does not count.
+- A head pushed again after it had a snapshot with `runs` 0 reuses that snapshot, so a result at
+  that head can finish the task within the grace period.
+- An agent's own checks wait does not fire on `github.pull_request.check_runs`. Only the done gate
+  takes it.
 - A check event from an intake older than `failing` cannot mark a task done.
 
 ## Outbox

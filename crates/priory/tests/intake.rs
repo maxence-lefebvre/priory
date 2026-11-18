@@ -560,6 +560,8 @@ fn pull(
         "headRefOid": "abc123",
         "baseRefName": "main",
         "merged": merged,
+        // Within any grace period: a head with no check runs yet publishes nothing.
+        "updatedAt": "2999-01-01T00:00:00Z",
         "reviews": { "nodes": reviews },
         "commits": { "nodes": [{ "commit": { "statusCheckRollup": { "contexts": {
             "totalCount": checks.as_array().map_or(0, Vec::len),
@@ -769,9 +771,11 @@ fn a_submitted_review_and_a_completed_check_publish_once() {
         kinds(&published[1..]),
         [
             "github.pull_request_review.submitted",
+            "github.pull_request.check_runs",
             "github.check_run.completed"
         ]
     );
+    assert_eq!(published[2].message.data["runs"], 2);
     assert_eq!(
         published[1].message.data,
         json!({
@@ -790,7 +794,7 @@ fn a_submitted_review_and_a_completed_check_publish_once() {
         })
     );
     assert_eq!(
-        published[2].message.data,
+        published[3].message.data,
         json!({
             "repo": "owner/repo",
             "pull_request": 43,
@@ -832,8 +836,9 @@ fn a_check_counts_the_runs_past_the_first_page_as_pending() {
     succeeded(&setup.intake());
 
     let published = setup.published();
-    assert_eq!(published[1].message.data["pending"], 100);
-    assert_eq!(published[1].message.data["failing"], 0);
+    assert_eq!(published[1].message.data["runs"], 101);
+    assert_eq!(published[2].message.data["pending"], 100);
+    assert_eq!(published[2].message.data["failing"], 0);
 }
 
 #[test]
@@ -923,4 +928,134 @@ fn reviews_publish_before_the_close_that_ends_their_polling() {
             "github.pull_request.closed"
         ]
     );
+}
+
+/// An RFC 3339 time `seconds` ago.
+fn ago(seconds: i64) -> serde_json::Value {
+    let now = herdr_bus::Timestamp::now().as_second();
+    json!(
+        herdr_bus::Timestamp::from_second(now - seconds)
+            .unwrap()
+            .to_string()
+    )
+}
+
+fn queued() -> serde_json::Value {
+    json!({
+        "__typename": "CheckRun",
+        "databaseId": 601,
+        "name": "test",
+        "status": "QUEUED",
+        "conclusion": null,
+        "completedAt": null,
+        "url": "u",
+        "checkSuite": null
+    })
+}
+
+#[test]
+fn a_head_with_no_check_runs_past_the_grace_period_publishes_a_snapshot_once() {
+    let setup = Setup::baseline("pr-no-checks");
+    let mut pull = pull(
+        43,
+        false,
+        json!([]),
+        json!([{ "__typename": "StatusContext" }]),
+    );
+    pull["updatedAt"] = json!("2026-11-17T12:00:00Z");
+    setup.answer(&[(OPEN_PULLS, open_pulls(&[pull]))]);
+
+    succeeded(&setup.intake());
+    succeeded(&setup.intake());
+
+    let published = setup.published();
+    assert_eq!(kinds(&published[1..]), ["github.pull_request.check_runs"]);
+    let message = &published[1].message;
+    assert_eq!(message.subject.as_deref(), Some("owner/repo#43"));
+    let mut data = message.data.clone();
+    let time = data.as_object_mut().unwrap().remove("time").unwrap();
+    assert_eq!(time.as_str(), Some(message.time.to_string().as_str()));
+    assert_eq!(
+        data,
+        json!({
+            "repo": "owner/repo",
+            "pull_request": 43,
+            "url": "https://github.com/owner/repo/pull/43",
+            "head_branch": "feature",
+            "head_sha": "abc123",
+            "base_branch": "main",
+            "runs": 0,
+            "updated_at": "2026-11-17T12:00:00Z",
+            "baseline": false,
+            "triggers": []
+        })
+    );
+}
+
+#[test]
+fn a_head_with_no_check_runs_within_the_grace_period_publishes_nothing_until_it_passes() {
+    let setup = Setup::baseline("pr-no-checks-grace");
+    let mut pull = pull(43, false, json!([]), json!([]));
+    pull["updatedAt"] = ago(4 * 60);
+    setup.answer(&[(OPEN_PULLS, open_pulls(std::slice::from_ref(&pull)))]);
+
+    succeeded(&setup.intake());
+    assert_eq!(kinds(&setup.published()[1..]), Vec::<&str>::new());
+
+    pull["updatedAt"] = ago(6 * 60);
+    setup.answer(&[(OPEN_PULLS, open_pulls(&[pull]))]);
+    succeeded(&setup.intake());
+    let published = setup.published();
+    assert_eq!(kinds(&published[1..]), ["github.pull_request.check_runs"]);
+    assert_eq!(published[1].message.data["runs"], 0);
+}
+
+#[test]
+fn a_check_run_appearing_after_a_snapshot_of_none_publishes_a_snapshot_of_some() {
+    let setup = Setup::baseline("pr-queued-check");
+    let mut pull = pull(43, false, json!([]), json!([]));
+    pull["updatedAt"] = ago(6 * 60);
+    setup.answer(&[(OPEN_PULLS, open_pulls(std::slice::from_ref(&pull)))]);
+    succeeded(&setup.intake());
+
+    pull["commits"]["nodes"][0]["commit"]["statusCheckRollup"]["contexts"] =
+        json!({ "totalCount": 1, "nodes": [queued()] });
+    setup.answer(&[(OPEN_PULLS, open_pulls(std::slice::from_ref(&pull)))]);
+    succeeded(&setup.intake());
+    succeeded(&setup.intake());
+
+    let published = setup.published();
+    let runs: Vec<_> = published[1..]
+        .iter()
+        .map(|stored| stored.message.data["runs"].clone())
+        .collect();
+    assert_eq!(runs, [json!(0), json!(1)]);
+}
+
+#[test]
+fn a_poll_judges_a_pull_request_on_its_open_snapshot_when_an_event_names_it_too() {
+    let setup = Setup::baseline("pr-two-snapshots");
+    let mut named = pull(43, false, json!([]), json!([]));
+    named["updatedAt"] = ago(6 * 60);
+    let mut open = named.clone();
+    open["commits"]["nodes"][0]["commit"]["statusCheckRollup"]["contexts"] =
+        json!({ "totalCount": 1, "nodes": [queued()] });
+    setup.answer(&[
+        (
+            EVENTS_PATH,
+            json!([pull_event(103, 43, "labeled", Some("bug"))]),
+        ),
+        (PULLS, pulls(&[named])),
+        (OPEN_PULLS, open_pulls(&[open])),
+    ]);
+
+    succeeded(&setup.intake());
+
+    let snapshots: Vec<_> = setup
+        .published()
+        .iter()
+        .filter(|stored| stored.message.kind == "github.pull_request.check_runs")
+        .map(|stored| stored.message.data["runs"].clone())
+        .collect();
+    assert_eq!(snapshots, [json!(1)]);
 }

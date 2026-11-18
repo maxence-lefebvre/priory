@@ -139,7 +139,11 @@ pub(super) fn fetch_repo(repo: &str, cursors: &Cursors) -> Result<Vec<Polled>, S
         })
         .collect();
     let open = open_pulls(repo)?;
-    let (reviews, checks) = reviews_and_checks(repo, open.iter().chain(pulls.values()), cursor);
+    // The open list is the later snapshot of a pull request both queries read.
+    let closed = pulls
+        .values()
+        .filter(|pull| !open.iter().any(|other| other.number == pull.number));
+    let (reviews, checks) = reviews_and_checks(repo, open.iter().chain(closed), cursor);
     let top = |events: &[Observed]| {
         events
             .iter()

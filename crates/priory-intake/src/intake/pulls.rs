@@ -1,17 +1,22 @@
 use super::gh::{Login, gh};
-use super::{CHECKED, Observed, REVIEWED};
+use super::{CHECK_RUNS, CHECKED, Observed, REVIEWED};
+use herdr_bus::Timestamp;
 use serde::Deserialize;
 use serde_json::json;
 use std::collections::{BTreeMap, BTreeSet};
 
+/// GitHub creates check runs seconds after a push, and a push updates the pull request.
+const GRACE_SECONDS: i64 = 5 * 60;
+
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(super) struct Pull {
-    number: u64,
+    pub(super) number: u64,
     pub(super) head_ref_name: String,
     pub(super) head_ref_oid: String,
     pub(super) base_ref_name: String,
     pub(super) merged: bool,
+    updated_at: String,
     reviews: Nodes<Review>,
     commits: Nodes<Commit>,
 }
@@ -77,7 +82,8 @@ struct App {
     slug: String,
 }
 
-/// The submitted reviews and completed check runs of `pulls`, oldest first.
+/// The submitted reviews and completed check runs of `pulls`, oldest first, and a snapshot of
+/// each head's check runs once it has some, or has none past the grace period.
 pub(super) fn reviews_and_checks<'a>(
     repo: &str,
     pulls: impl Iterator<Item = &'a Pull>,
@@ -134,6 +140,36 @@ pub(super) fn reviews_and_checks<'a>(
                 running.count() + page.total_count.saturating_sub(page.nodes.len())
             })
             .sum();
+        let runs: usize = pages
+            .iter()
+            .map(|page| {
+                let runs = page
+                    .nodes
+                    .iter()
+                    .filter(|check| check.database_id.is_some());
+                runs.count() + page.total_count.saturating_sub(page.nodes.len())
+            })
+            .sum();
+        let now = Timestamp::now();
+        let quiet = pull
+            .updated_at
+            .parse::<Timestamp>()
+            .is_ok_and(|updated| updated.as_second() + GRACE_SECONDS <= now.as_second());
+        if runs > 0 || quiet {
+            let some = if runs > 0 { "some" } else { "none" };
+            let name = format!(
+                "github:{repo}:pulls/{}:check-runs:{}:{some}",
+                pull.number, pull.head_ref_oid
+            );
+            let url = format!("https://github.com/{repo}/pull/{}", pull.number);
+            let mut observed = on_pull(CHECK_RUNS, name, 0, &now.to_string(), &url);
+            observed.baseline = cursor(CHECKED).is_none();
+            let data = observed.data.as_object_mut().expect("an object");
+            data.remove("github_id");
+            data.insert("runs".into(), json!(runs));
+            data.insert("updated_at".into(), json!(pull.updated_at));
+            checks.push(observed);
+        }
         let contexts = pages.iter().flat_map(|page| &page.nodes);
         let failing = contexts
             .clone()
@@ -181,7 +217,7 @@ pub(super) fn reviews_and_checks<'a>(
 
 const PULL_FIELDS: &str = "fragment pull on PullRequest { number headRefName headRefOid baseRefName merged \
     reviews(last: 50) { nodes { databaseId state submittedAt url author { login } } } \
-    commits(last: 1) { nodes { commit { statusCheckRollup { contexts(first: 100) { totalCount nodes { \
+    updatedAt commits(last: 1) { nodes { commit { statusCheckRollup { contexts(first: 100) { totalCount nodes { \
     __typename ... on CheckRun { databaseId name status conclusion completedAt url checkSuite { app { slug } } } \
     } } } } } } }";
 
