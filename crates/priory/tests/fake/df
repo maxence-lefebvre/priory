@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# A stand-in for `df -Pk`: prints FAKE_DIR/df when a test wrote one, else a disk with 100 GiB free of 200 GiB.
+if [ -e "$FAKE_DIR/df" ]; then
+  cat "$FAKE_DIR/df"
+else
+  printf 'Filesystem 1024-blocks Used Available Capacity Mounted on\nfake 209715200 104857600 104857600 50%% /\n'
+fi

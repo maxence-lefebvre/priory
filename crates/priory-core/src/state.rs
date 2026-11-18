@@ -1,6 +1,8 @@
+use crate::room::{self, Share};
 use crate::route::{self, Decision};
 use herdr_bus::Message;
-use priory_factory::factory::{Loaded, Workflow};
+use priory_factory::factory::{Factory, Loaded, Workflow};
+use priory_runtime::room::Room;
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 use std::collections::BTreeMap;
 use std::time::Duration;
@@ -365,42 +367,75 @@ pub(crate) struct Admission {
     pub fresh: bool,
 }
 
-/// The oldest queued or ready task at a model step, when no run is live.
-pub(crate) fn admissible(
+/// The oldest queued or ready task at a model step that fits in the runner's room. Each older one
+/// that does not fit gets the reason it waits.
+pub(crate) fn admissible<'r>(
     db: &Connection,
-    workflows: &BTreeMap<String, Loaded<Workflow>>,
+    factory: &Factory,
+    share: &Share,
+    room: impl Fn() -> &'r Result<Room, String>,
 ) -> rusqlite::Result<Option<Admission>> {
-    // shortcut: one live run at a time stands in for R4.3's room check; replace it with that check.
-    let live = db
-        .query_row("SELECT 1 FROM runs WHERE ended IS NULL", [], |_| Ok(()))
-        .optional()?;
-    if live.is_some() {
-        return Ok(None);
-    }
     let mut statement = db.prepare(
         "SELECT id, workflow, step, trigger, state = 'queued' FROM tasks WHERE state IN ('queued', 'ready') ORDER BY id",
     )?;
-    let queued = statement.query_map([], |row| {
-        Ok(Admission {
-            task: row.get(0)?,
-            workflow: row.get(1)?,
-            step: row.get(2)?,
-            trigger: row.get(3)?,
-            fresh: row.get(4)?,
-        })
-    })?;
-    for admission in queued {
-        let admission = admission?;
-        let model = workflows.get(&admission.workflow).is_some_and(|workflow| {
-            workflow.value.steps.iter().any(|step| {
-                step.id == admission.step && step.decides == priory_factory::factory::Decider::Model
+    let queued = statement
+        .query_map([], |row| {
+            Ok(Admission {
+                task: row.get(0)?,
+                workflow: row.get(1)?,
+                step: row.get(2)?,
+                trigger: row.get(3)?,
+                fresh: row.get(4)?,
             })
-        });
-        if model {
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    let promised = promised(db, factory)?;
+    for admission in queued {
+        let Some(step) = factory
+            .workflows
+            .get(&admission.workflow)
+            .and_then(|workflow| {
+                workflow
+                    .value
+                    .steps
+                    .iter()
+                    .find(|step| step.id == admission.step)
+            })
+            .filter(|step| step.decides == priory_factory::factory::Decider::Model)
+        else {
+            continue;
+        };
+        let need = room::need(
+            step.agent
+                .as_ref()
+                .and_then(|name| factory.agents.get(name))
+                .map(|agent| &agent.value),
+        );
+        let waits = match room() {
+            Ok(measured) => room::wait(measured, share, promised, need),
+            Err(error) => Some(format!("waits for room: cannot measure it: {error}")),
+        };
+        let Some(reason) = waits else {
             return Ok(Some(admission));
-        }
+        };
+        db.execute(
+            "UPDATE tasks SET reason = ?2 WHERE id = ?1 AND reason IS NOT ?2",
+            params![admission.task, reason],
+        )?;
     }
     Ok(None)
+}
+
+/// The memory declared by the agents of live runs. No run reports its own use yet, so each one
+/// keeps its whole declaration until it ends.
+fn promised(db: &Connection, factory: &Factory) -> rusqlite::Result<u64> {
+    let mut statement = db.prepare("SELECT agent FROM runs WHERE ended IS NULL")?;
+    // A run recorded before schema 5 has no agent.
+    let mut agents = statement.query_map([], |row| row.get::<_, Option<String>>(0))?;
+    agents.try_fold(0, |sum: u64, agent| {
+        let agent = agent?.and_then(|name| factory.agents.get(&name));
+        Ok(sum.saturating_add(room::need(agent.map(|agent| &agent.value))))
+    })
 }
 
 /// What a new run needs recorded before its tmux session starts.
