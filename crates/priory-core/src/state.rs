@@ -7,7 +7,7 @@ use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, 
 use std::collections::BTreeMap;
 use std::time::Duration;
 
-const VERSION: i64 = 7;
+const VERSION: i64 = 8;
 
 const SCHEMA: &str = "
 CREATE TABLE tasks (
@@ -146,6 +146,37 @@ CREATE TRIGGER task_changed AFTER UPDATE OF state ON tasks WHEN NEW.state IS NOT
 PRAGMA user_version = 7;
 ";
 
+const SCHEMA_8: &str = "
+CREATE TABLE approvals (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  task       INTEGER NOT NULL REFERENCES tasks (id),
+  step       TEXT NOT NULL,
+  ask        INTEGER NOT NULL REFERENCES asks (id),
+  revision   INTEGER NOT NULL,
+  commit_sha TEXT,
+  created    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+);
+CREATE TABLE actions (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  task         INTEGER NOT NULL REFERENCES tasks (id),
+  step         TEXT NOT NULL,
+  action       TEXT NOT NULL,
+  status       TEXT NOT NULL,
+  pull_request TEXT,
+  commit_sha   TEXT,
+  error        TEXT,
+  result       INTEGER REFERENCES results (run),
+  inbox        INTEGER REFERENCES inbox (seq),
+  created      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+);
+PRAGMA user_version = 8;
+";
+
+/// Each schema change in order: a file at version `n` applies those from index `n` on.
+const MIGRATIONS: [&str; VERSION as usize] = [
+    SCHEMA, SCHEMA_2, SCHEMA_3, SCHEMA_4, SCHEMA_5, SCHEMA_6, SCHEMA_7, SCHEMA_8,
+];
+
 const NOW: &str = "strftime('%Y-%m-%dT%H:%M:%SZ', 'now')";
 
 pub(crate) struct Task {
@@ -183,40 +214,16 @@ pub fn open() -> Result<Connection, String> {
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .map_err(at)?;
     let version = version(&tx).map_err(at)?;
-    match version {
-        0 => tx
-            .execute_batch(&format!(
-                "{SCHEMA}{SCHEMA_2}{SCHEMA_3}{SCHEMA_4}{SCHEMA_5}{SCHEMA_6}{SCHEMA_7}"
-            ))
-            .map_err(at)?,
-        1 => tx
-            .execute_batch(&format!(
-                "{SCHEMA_2}{SCHEMA_3}{SCHEMA_4}{SCHEMA_5}{SCHEMA_6}{SCHEMA_7}"
-            ))
-            .map_err(at)?,
-        2 => tx
-            .execute_batch(&format!(
-                "{SCHEMA_3}{SCHEMA_4}{SCHEMA_5}{SCHEMA_6}{SCHEMA_7}"
-            ))
-            .map_err(at)?,
-        3 => tx
-            .execute_batch(&format!("{SCHEMA_4}{SCHEMA_5}{SCHEMA_6}{SCHEMA_7}"))
-            .map_err(at)?,
-        4 => tx
-            .execute_batch(&format!("{SCHEMA_5}{SCHEMA_6}{SCHEMA_7}"))
-            .map_err(at)?,
-        5 => tx
-            .execute_batch(&format!("{SCHEMA_6}{SCHEMA_7}"))
-            .map_err(at)?,
-        6 => tx.execute_batch(SCHEMA_7).map_err(at)?,
-        VERSION => {}
-        _ => {
-            return Err(format!(
-                "{}: state schema {version} is newer than this priory knows ({VERSION})",
-                path.display()
-            ));
-        }
-    }
+    let Some(pending) = usize::try_from(version)
+        .ok()
+        .and_then(|done| MIGRATIONS.get(done..))
+    else {
+        return Err(format!(
+            "{}: state schema {version} is newer than this priory knows ({VERSION})",
+            path.display()
+        ));
+    };
+    tx.execute_batch(&pending.concat()).map_err(at)?;
     tx.commit().map_err(at)?;
     Ok(db)
 }
@@ -394,13 +401,7 @@ pub(crate) fn admissible<'r>(
         let Some(step) = factory
             .workflows
             .get(&admission.workflow)
-            .and_then(|workflow| {
-                workflow
-                    .value
-                    .steps
-                    .iter()
-                    .find(|step| step.id == admission.step)
-            })
+            .and_then(|workflow| workflow.value.step(&admission.step))
             .filter(|step| step.decides == priory_factory::factory::Decider::Model)
         else {
             continue;
@@ -436,6 +437,61 @@ fn promised(db: &Connection, factory: &Factory) -> rusqlite::Result<u64> {
         let agent = agent?.and_then(|name| factory.agents.get(&name));
         Ok(sum.saturating_add(room::need(agent.map(|agent| &agent.value))))
     })
+}
+
+/// A task at a code step, whose action the daemon runs.
+pub(crate) struct Due {
+    pub task: i64,
+    pub workflow: String,
+    pub step: String,
+    pub trigger: String,
+    pub branch: Option<String>,
+    pub worktree: Option<String>,
+}
+
+/// The oldest queued or ready task at a code step.
+pub(crate) fn actionable(
+    db: &Connection,
+    workflows: &BTreeMap<String, Loaded<Workflow>>,
+) -> rusqlite::Result<Option<Due>> {
+    let mut statement = db.prepare(
+        "SELECT id, workflow, step, trigger, branch, worktree FROM tasks
+         WHERE state IN ('queued', 'ready') ORDER BY id",
+    )?;
+    let tasks = statement.query_map([], |row| {
+        Ok(Due {
+            task: row.get(0)?,
+            workflow: row.get(1)?,
+            step: row.get(2)?,
+            trigger: row.get(3)?,
+            branch: row.get(4)?,
+            worktree: row.get(5)?,
+        })
+    })?;
+    for due in tasks {
+        let due = due?;
+        let code = workflows
+            .get(&due.workflow)
+            .and_then(|workflow| workflow.value.step(&due.step))
+            .is_some_and(|step| step.decides == priory_factory::factory::Decider::Code);
+        if code {
+            return Ok(Some(due));
+        }
+    }
+    Ok(None)
+}
+
+/// The summary and evidence of the task's latest result.
+pub(crate) fn last_result(
+    db: &Connection,
+    task: i64,
+) -> rusqlite::Result<Option<(String, Option<String>)>> {
+    db.query_row(
+        "SELECT summary, evidence FROM results WHERE task = ?1 ORDER BY run DESC LIMIT 1",
+        [task],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )
+    .optional()
 }
 
 /// What a new run needs recorded before its tmux session starts.

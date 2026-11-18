@@ -255,9 +255,9 @@ When the run's turn ends, its `Stop` moves the task by its result to `next[outco
 | Target     | Task                                                 | Run                       |
 | ---------- | ---------------------------------------------------- | ------------------------- |
 | model step, same agent | at that step, `running`, with its prompt queued | `moved`, into a new run |
-| model step, other agent | at that step, `ready`, with its prompt queued | `moved`                 |
+| model step, other agent or irreversible | at that step, `ready`, with its prompt queued | `moved` |
 | human step | at that step, `asleep`, with an ask of its `options` | `asleep`                  |
-| code step  | at that step, `blocked`: code steps are not built yet | `blocked`                 |
+| code step  | at that step, `ready`: see Code steps                | `moved`                   |
 | `done`     | `done`, or `asleep` on its checks: see Done and checks | `done`, or `asleep`       |
 | `stop`     | `dropped`                                            | `dropped`                 |
 
@@ -271,6 +271,53 @@ it yet.
 
 A run with an open ask or wait and no result ends `asleep`, and its task sleeps. The daemon kills a run's
 tmux session when the run ends, after the hook has its reply. The worktree stays.
+
+### Code steps
+
+A code step runs its `action` in the daemon, with no agent and no run. Each loop, the daemon takes
+the oldest `queued` or `ready` task at a code step and runs its action outside any transaction. Then
+one transaction records the action run and moves the task by `next[status]`, as in the table under
+Moving on. An action that is not built yet blocks the task with `action <name> is not built yet`.
+
+`open-pr` is the one built-in action:
+
+1. It pushes the commit of the task's branch, the one its approval covers, to that branch on the
+   clone's `origin`.
+2. It reuses the pull request already open from that branch, if `gh pr list` finds one.
+3. Otherwise it runs `gh pr create -R <repo> --base <default branch> --head <branch>`. The title is
+   the first line of the latest result's `summary`, and the body is the summary, then its `evidence`.
+
+Its status is `opened` or `failed`. A failure records the error, which a human step reached by
+`next.failed` shows in its question. On `opened`, the task owns the pull request, so its events
+route to the task. A pull request that another active task owns fails instead, with that task named.
+When the task then reaches `done` and its latest result names no `commit`, the checks wait of Done
+and checks pins the commit that `open-pr` pushed.
+
+A daemon that stops after `gh pr create` and before recording it runs the action again at its next
+start, once the approval still holds: the push repeats and the open pull request is reused. If
+someone closed that pull request meanwhile, a second one opens.
+
+#### Approvals
+
+An irreversible step, code or model, runs only when an answer approved it at the task's current
+commit, unless it sets `autonomous`. A step's ask approves each step in its `approves` that
+`next[option]` leads to: the daemon records the approval with the commit of the task's branch at the
+answer. A run never carries on into an irreversible model step, so each one starts a new run. Before
+the step runs, or before that run starts, the daemon compares the approval's commit with the
+branch's commit now:
+
+| Approval                       | Effect                                                              |
+| ------------------------------ | ------------------------------------------------------------------- |
+| at the same commit             | the step runs                                                       |
+| at another commit              | the ask gets a new revision, with a line naming both commits, and the task sleeps at that human step. The step's queued prompt is taken back, so the next run never reads it |
+| none                           | the task blocks: `step <id> is irreversible and no answer approved it` |
+
+A branch with no commit to compare blocks the task too. `priory check` refuses an irreversible step
+that a path reaches with no approving human step, so the `none` row needs a factory changed while
+the task ran.
+
+`priory actions` prints each action run: id, task, step, action, status, pull request, pushed commit
+and error.
 
 ### Asks and answers
 
@@ -332,12 +379,13 @@ conclusion other than `success`, `neutral` or `skipped` in the same poll.
 
 ### Done and checks
 
-A task owns a pull request when one of its waits named it, when an event it kept comes from a pull
-request on its branch, or when a pull request event created it. A waited one comes first, then the
-latest from its branch. When such a task reaches `done`, by a result or by an answer, it is not done
-yet. The daemon stores a checks wait of its own on that pull request, pinned to the `commit` of the
-task's latest result. The task sleeps with no process, at the step of that result, so the agent
-that made it fixes what the checks find. A task whose latest result names no commit is blocked
+A task owns a pull request when its `open-pr` opened it, when one of its waits named it, when an
+event it kept comes from a pull request on its branch, or when a pull request event created it. An
+opened one comes first, then a waited one, then the latest from its branch. When such a task reaches
+`done`, by a result, an answer or an action, it is not done yet. The daemon stores a checks wait of
+its own on that pull request, pinned to the `commit` of the task's latest result, else to the commit
+that `open-pr` pushed after that result. The task sleeps with no process, at the step of that result,
+so the agent that made it fixes what the checks find. A task with neither commit is blocked
 instead.
 
 The daemon judges this wait on every event the inbox kept or ignored about the pull request,
@@ -447,6 +495,6 @@ running; end one with `tmux kill-session -t =priory-<task id>` when you mean to.
 `priory tasks` prints each task: id, key, workflow, step, state, band, lane and reason.
 `priory runs` prints each run: id, task, step, tmux session, harness session, started, ended and
 how it ended. `priory outbox` prints each prompt: id, task, run, state and text, with newlines
-shown as `\n`. `priory asks` and `priory waits` are described under Tools, and `priory desk` under
-Desk. They read `PRIORY_DB` and print `-` for an empty cell, tab-separated after a header
+shown as `\n`. `priory asks` and `priory waits` are described under Tools, `priory actions` under Code steps,
+and `priory desk` under Desk. They read `PRIORY_DB` and print `-` for an empty cell, tab-separated after a header
 line.

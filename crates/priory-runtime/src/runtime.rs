@@ -84,6 +84,47 @@ pub fn worktree(home: &Path, repo: &str, task: i64) -> Result<(PathBuf, String),
     Ok((path, branch))
 }
 
+/// The commit `branch` points to in the repository of `worktree`.
+pub fn head(worktree: &Path, branch: &str) -> Option<String> {
+    let commit = format!("refs/heads/{branch}^{{commit}}");
+    run(git(worktree).args(["rev-parse", "--verify", "--quiet", &commit]))
+        .ok()
+        .map(|head| head.trim().to_owned())
+}
+
+/// Pushes `commit` from `worktree` to `branch` on its `origin`, then reuses the pull request open
+/// from that branch on `repo`, or opens one against the remote's default branch. Returns its number.
+pub fn open_pull_request(
+    worktree: &Path,
+    repo: &str,
+    branch: &str,
+    commit: &str,
+    title: &str,
+    body: &str,
+) -> Result<u64, String> {
+    let target = format!("{commit}:refs/heads/{branch}");
+    run(git(worktree).args(["push", "--quiet", "origin", &target]))?;
+    let open = run(Command::new("gh").args([
+        "pr", "list", "-R", repo, "--head", branch, "--state", "open", "--json", "number",
+    ]))?;
+    let open: Vec<serde_json::Value> = serde_json::from_str(&open)
+        .map_err(|error| format!("gh pr list printed {open:?}: {error}"))?;
+    if let Some(number) = open.first().and_then(|pull| pull["number"].as_u64()) {
+        return Ok(number);
+    }
+    let base = run(git(worktree).args(["rev-parse", "--abbrev-ref", "origin/HEAD"]))?;
+    let base = base.trim().trim_start_matches("origin/");
+    let url = run(Command::new("gh").args([
+        "pr", "create", "-R", repo, "--base", base, "--head", branch, "--title", title, "--body",
+        body,
+    ]))?;
+    url.trim()
+        .rsplit('/')
+        .next()
+        .and_then(|number| number.parse().ok())
+        .ok_or_else(|| format!("gh pr create printed {url:?}, not a pull request URL"))
+}
+
 fn tmux() -> Command {
     Command::new("tmux")
 }

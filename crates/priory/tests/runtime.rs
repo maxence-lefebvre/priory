@@ -1286,7 +1286,9 @@ fn the_desk_lists_an_uncertain_prompt_a_blocked_task_and_an_open_ask_oldest_firs
             .status
             .success()
     );
-    setup.until("tasks", |rows| rows[0][4] == "blocked");
+    setup.until("tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == "blocked")
+    });
     setup.publish(&requested(43));
     std::thread::sleep(Duration::from_millis(1100));
     setup.release("hold-submit");
@@ -1330,7 +1332,9 @@ fn resume_restarts_a_blocked_task_in_its_session_and_cancel_drops_it_and_ends_it
             .status
             .success()
     );
-    setup.until("tasks", |rows| rows[0][4] == "blocked");
+    setup.until("tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == "blocked")
+    });
 
     let resumed = setup.priory(&["resume", "1"]);
 
@@ -1453,7 +1457,9 @@ fn a_resumed_task_gets_its_prompts_although_its_exited_run_left_an_uncertain_one
             .status
             .success()
     );
-    setup.until("tasks", |rows| rows[0][4] == "blocked");
+    setup.until("tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == "blocked")
+    });
 
     assert!(setup.priory(&["resume", "1"]).status.success());
 
@@ -2198,4 +2204,389 @@ fn green_checks_at_the_result_commit_do_not_finish_the_task_when_the_head_moved_
 
     setup.until("runs", |rows| rows.len() == 2 && rows[1][7] == "asleep");
     stays_asleep_after(&setup, 2);
+}
+
+const OPEN_PR: &str = r#"
+start = "implement"
+
+[[steps]]
+id = "implement"
+decides = "model"
+agent = "implementer"
+prompt = "Implement the issue."
+effect = "reversible"
+next = { passed = "approve-pr", failed = "stop" }
+
+[[steps]]
+id = "approve-pr"
+decides = "human"
+effect = "none"
+approves = ["open-pr"]
+options = ["open", "stop"]
+next = { open = "open-pr", stop = "stop" }
+
+[[steps]]
+id = "open-pr"
+decides = "code"
+action = "open-pr"
+effect = "irreversible"
+next = { opened = "done", failed = "stop" }
+"#;
+
+fn passed_with_evidence() -> serde_json::Value {
+    json!({ "name": "result", "arguments": {
+        "outcome": "passed",
+        "summary": "Add the widget\nIt draws a box.",
+        "evidence": "cargo test passed",
+    } })
+}
+
+impl Setup {
+    /// Commits a file on the task's branch in its worktree and returns the commit.
+    fn commit(&self, task: i64, file: &str) -> String {
+        let worktree = self.dir.join(format!("home/worktrees/owner/repo/{task}"));
+        fs::write(worktree.join(file), "change\n").unwrap();
+        for args in [
+            &["add", file][..],
+            &[
+                "-c",
+                "user.name=t",
+                "-c",
+                "user.email=t@t",
+                "commit",
+                "-qm",
+                file,
+            ],
+        ] {
+            assert!(git(&worktree).args(args).status().unwrap().success());
+        }
+        let head = git(&worktree).args(["rev-parse", "HEAD"]).output().unwrap();
+        String::from_utf8(head.stdout).unwrap().trim().to_owned()
+    }
+
+    /// The commit `branch` points to in the bare origin.
+    fn pushed(&self, branch: &str) -> String {
+        let bare = self.dir.join("origin/owner/repo.git");
+        let output = git(&bare).args(["rev-parse", branch]).output().unwrap();
+        String::from_utf8(output.stdout).unwrap().trim().to_owned()
+    }
+
+    /// The arguments of each call the fake `gh` got, in order.
+    fn gh(&self) -> Vec<Vec<String>> {
+        fs::read_to_string(self.dir.join("fake/gh.log"))
+            .unwrap_or_default()
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect()
+    }
+}
+
+/// Starts task 1 on `workflow`, whose implement run passes, and returns once it asks `approve-pr`.
+fn asked_to_open(name: &str, workflow: &str) -> Setup {
+    let mut setup = Setup::with_workflow(name, workflow);
+    setup.calls(&[passed_with_evidence()]);
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("asks", |rows| rows.len() == 1);
+    setup.gone("priory-1");
+    setup
+}
+
+#[test]
+fn an_approved_open_pr_pushes_the_branch_opens_a_pull_request_and_the_task_owns_it() {
+    let setup = asked_to_open("open-pr", OPEN_PR);
+    let commit = setup.commit(1, "widget.txt");
+
+    let answered = setup.priory(&["answer", "1", "open", "--revision", "1"]);
+
+    assert!(answered.status.success(), "{answered:?}");
+    let actions = setup.until("actions", |rows| rows.len() == 1);
+    assert_eq!(
+        actions[0][1..],
+        [
+            "1",
+            "open-pr",
+            "open-pr",
+            "opened",
+            "github:owner/repo#7",
+            &commit,
+            "-"
+        ]
+    );
+    assert_eq!(setup.pushed("priory/1"), commit);
+    let created = setup.gh().pop().unwrap();
+    let wanted: Vec<String> = [
+        "pr",
+        "create",
+        "-R",
+        "owner/repo",
+        "--base",
+        "main",
+        "--head",
+        "priory/1",
+        "--title",
+        "Add the widget",
+        "--body",
+        "Add the widget\nIt draws a box.\n\ncargo test passed",
+    ]
+    .map(str::to_owned)
+    .into();
+    assert_eq!(created, wanted);
+    let waits = setup.rows("waits");
+    assert_eq!(waits[0][3..5], ["checks", "github:owner/repo#7"]);
+    let tasks = setup.rows("tasks");
+    assert_eq!([&tasks[0][3], &tasks[0][4]], ["implement", "asleep"]);
+}
+
+#[test]
+fn a_failing_open_pr_follows_next_failed_with_the_error() {
+    let setup = asked_to_open("open-pr-fails", OPEN_PR);
+    setup.hold("gh-fail");
+
+    let answered = setup.priory(&["answer", "1", "open", "--revision", "1"]);
+
+    assert!(answered.status.success(), "{answered:?}");
+    let actions = setup.until("actions", |rows| rows.len() == 1);
+    assert_eq!(actions[0][4..7], ["failed", "-", "-"]);
+    assert!(
+        actions[0][7].ends_with("pull request create failed: GraphQL: denied"),
+        "{actions:?}"
+    );
+    assert_eq!(setup.rows("tasks")[0][4], "dropped");
+}
+
+const APPROVE_THEN_POLISH: &str = r#"
+start = "implement"
+
+[[steps]]
+id = "implement"
+decides = "model"
+agent = "implementer"
+prompt = "Implement the issue."
+effect = "reversible"
+next = { passed = "approve-pr", failed = "stop" }
+
+[[steps]]
+id = "approve-pr"
+decides = "human"
+effect = "none"
+approves = ["open-pr"]
+options = ["open", "stop"]
+next = { open = "polish", stop = "stop" }
+
+[[steps]]
+id = "polish"
+decides = "model"
+agent = "implementer"
+prompt = "Polish the change."
+effect = "reversible"
+next = { passed = "open-pr" }
+
+[[steps]]
+id = "open-pr"
+decides = "code"
+action = "open-pr"
+effect = "irreversible"
+next = { opened = "done", failed = "stop" }
+"#;
+
+#[test]
+fn a_commit_made_after_the_approval_asks_again_instead_of_opening() {
+    let setup = asked_to_open("open-pr-moved", APPROVE_THEN_POLISH);
+    setup.calls(&[passed_with_evidence()]);
+    setup.hold("hold-stop");
+    let answered = setup.priory(&["answer", "1", "open", "--revision", "1"]);
+    assert!(answered.status.success(), "{answered:?}");
+    setup.written("fake/tools.log");
+    while setup.replies().len() < 2 {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let commit = setup.commit(1, "polish.txt");
+
+    setup.release("hold-stop");
+
+    let asks = setup.until("asks", |rows| rows.len() == 1);
+    assert_eq!(asks[0][2], "2");
+    assert!(
+        asks[0][3].contains(&format!(" to {commit} since")),
+        "{asks:?}"
+    );
+    let tasks = setup.rows("tasks");
+    assert_eq!([&tasks[0][3], &tasks[0][4]], ["approve-pr", "asleep"]);
+    assert!(setup.rows("actions").is_empty());
+    assert!(setup.gh().is_empty());
+
+    setup.calls(&[passed_with_evidence()]);
+    let stale = setup.priory(&["answer", "1", "open", "--revision", "1"]);
+    let again = setup.priory(&["answer", "1", "open", "--revision", "2"]);
+
+    assert!(!stale.status.success(), "{stale:?}");
+    assert!(again.status.success(), "{again:?}");
+    let actions = setup.until("actions", |rows| rows.len() == 1);
+    assert_eq!(actions[0][4..6], ["opened", "github:owner/repo#7"]);
+    assert_eq!(setup.pushed("priory/1"), actions[0][6]);
+}
+
+const AUTONOMOUS: &str = r#"
+start = "implement"
+
+[[steps]]
+id = "implement"
+decides = "model"
+agent = "implementer"
+prompt = "Implement the issue."
+effect = "reversible"
+next = { passed = "open-pr", failed = "stop" }
+
+[[steps]]
+id = "open-pr"
+decides = "code"
+action = "open-pr"
+effect = "irreversible"
+autonomous = "a draft for review, which a person merges"
+next = { opened = "done", failed = "stop" }
+"#;
+
+#[test]
+fn an_autonomous_irreversible_step_runs_without_an_ask() {
+    let mut setup = Setup::with_workflow("open-pr-autonomous", AUTONOMOUS);
+    setup.calls(&[passed_with_evidence()]);
+    setup.publish(&requested(42));
+
+    setup.start();
+
+    let actions = setup.until("actions", |rows| rows.len() == 1);
+    assert_eq!(
+        actions[0][2..6],
+        ["open-pr", "open-pr", "opened", "github:owner/repo#7"]
+    );
+    assert!(setup.rows("asks").is_empty());
+}
+
+const UNKNOWN_ACTION: &str = r#"
+start = "implement"
+
+[[steps]]
+id = "implement"
+decides = "model"
+agent = "implementer"
+prompt = "Implement the issue."
+effect = "reversible"
+next = { passed = "merge", failed = "stop" }
+
+[[steps]]
+id = "merge"
+decides = "code"
+action = "merge-pr"
+effect = "reversible"
+next = { merged = "done" }
+"#;
+
+#[test]
+fn an_action_that_is_not_built_blocks_the_task_with_its_name() {
+    let mut setup = Setup::with_workflow("unknown-action", UNKNOWN_ACTION);
+    setup.calls(&[passed_with_evidence()]);
+    setup.publish(&requested(42));
+
+    setup.start();
+
+    let tasks = setup.until("tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == "blocked")
+    });
+    assert_eq!(
+        [&tasks[0][3], &tasks[0][7]],
+        ["merge", "action merge-pr is not built yet"]
+    );
+    assert!(setup.rows("actions").is_empty());
+}
+
+#[test]
+fn reusing_a_pull_request_another_active_task_owns_fails() {
+    let mut setup = Setup::with_workflow("open-pr-owned", AUTONOMOUS);
+    setup.calls(&[wait(on_pull_7("review")), passed_with_evidence()]);
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("runs", |rows| {
+        rows.first().is_some_and(|row| row[7] == "asleep")
+    });
+
+    setup.publish(&requested(43));
+
+    let actions = setup.until("actions", |rows| rows.len() == 1);
+    assert_eq!(actions[0][1..6], ["2", "open-pr", "open-pr", "failed", "-"]);
+    assert_eq!(
+        actions[0][7],
+        "github:owner/repo#7 belongs to task 1, not this one"
+    );
+    assert_eq!(setup.rows("tasks")[1][4], "dropped");
+}
+
+const APPROVE_THEN_SHIP: &str = r#"
+start = "implement"
+
+[[steps]]
+id = "implement"
+decides = "model"
+agent = "implementer"
+prompt = "Implement the issue."
+effect = "reversible"
+next = { passed = "approve-pr", failed = "stop" }
+
+[[steps]]
+id = "approve-pr"
+decides = "human"
+effect = "none"
+approves = ["ship"]
+options = ["open", "stop"]
+next = { open = "polish", stop = "stop" }
+
+[[steps]]
+id = "polish"
+decides = "model"
+agent = "implementer"
+prompt = "Polish the change."
+effect = "reversible"
+next = { passed = "ship" }
+
+[[steps]]
+id = "ship"
+decides = "model"
+agent = "implementer"
+prompt = "Ship it."
+effect = "irreversible"
+next = { passed = "done" }
+"#;
+
+#[test]
+fn an_irreversible_model_step_asks_again_after_a_commit_instead_of_starting() {
+    let setup = asked_to_open("ship-moved", APPROVE_THEN_SHIP);
+    setup.calls(&[passed_with_evidence()]);
+    setup.hold("hold-stop");
+    let answered = setup.priory(&["answer", "1", "open", "--revision", "1"]);
+    assert!(answered.status.success(), "{answered:?}");
+    setup.written("fake/tools.log");
+    while setup.replies().len() < 2 {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    setup.commit(1, "polish.txt");
+
+    setup.release("hold-stop");
+
+    let asks = setup.until("asks", |rows| rows.len() == 1);
+    assert_eq!(asks[0][2], "2");
+    let tasks = setup.rows("tasks");
+    assert_eq!([&tasks[0][3], &tasks[0][4]], ["approve-pr", "asleep"]);
+    let runs = setup.rows("runs");
+    assert!(runs.iter().all(|run| run[2] != "ship"), "{runs:?}");
+
+    setup.calls(&[passed_with_evidence()]);
+    let again = setup.priory(&["answer", "1", "open", "--revision", "2"]);
+
+    assert!(again.status.success(), "{again:?}");
+    setup.until("outbox", |rows| {
+        rows.iter()
+            .any(|row| row[4] == "Ship it." && row[3] == "confirmed")
+    });
+    let typed = setup.typed();
+    assert_eq!(typed[2..], ["Polish the change.\n", "Ship it.\n"]);
 }

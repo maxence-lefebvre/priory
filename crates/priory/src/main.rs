@@ -73,6 +73,11 @@ fn main() -> ExitCode {
             verb,
             args.map(|arg| arg.to_string_lossy().into_owned()).collect(),
         ),
+        Some("actions") => list(
+            "id\ttask\tstep\taction\tstatus\tpull_request\tcommit\terror",
+            "SELECT id, task, step, action, status, pull_request, commit_sha,
+             replace(error, char(10), '\\n') FROM actions ORDER BY id",
+        ),
         Some("answer") => answer(args.map(|arg| arg.to_string_lossy().into_owned()).collect()),
         Some("mcp") => match (args.next(), args.next(), args.next()) {
             (Some(flag), Some(session), None) if flag == "--session" => {
@@ -90,7 +95,7 @@ fn main() -> ExitCode {
 
 fn usage() -> ExitCode {
     eprintln!(
-        "usage: priory check [DIR]\n       priory intake [DIR] [--once]\n       priory daemon [DIR] [--once]\n       priory request [DIR] --workflow <name> --key <key> [--band <band>] [--lane <lane>] [--repo <owner/name>] <text>\n       priory inbox\n       priory tasks\n       priory runs\n       priory outbox\n       priory asks\n       priory waits\n       priory desk\n       priory resume TASK\n       priory cancel TASK\n       priory answer ASK OPTION-OR-TEXT --revision N\n       priory mcp --session ID\n       priory hook EVENT"
+        "usage: priory check [DIR]\n       priory intake [DIR] [--once]\n       priory daemon [DIR] [--once]\n       priory request [DIR] --workflow <name> --key <key> [--band <band>] [--lane <lane>] [--repo <owner/name>] <text>\n       priory inbox\n       priory tasks\n       priory runs\n       priory outbox\n       priory asks\n       priory waits\n       priory actions\n       priory desk\n       priory resume TASK\n       priory cancel TASK\n       priory answer ASK OPTION-OR-TEXT --revision N\n       priory mcp --session ID\n       priory hook EVENT"
     );
     ExitCode::from(2)
 }

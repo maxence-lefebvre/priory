@@ -87,6 +87,22 @@ pub struct Workflow {
     pub steps: Vec<Step>,
 }
 
+impl Workflow {
+    pub fn step(&self, id: &str) -> Option<&Step> {
+        self.steps.iter().find(|step| step.id == id)
+    }
+
+    /// Whether a path from the step `from` reaches the step `to`, `from` itself included.
+    pub fn reaches(&self, from: &str, to: &str) -> bool {
+        let steps = self
+            .steps
+            .iter()
+            .map(|step| (step.id.as_str(), step))
+            .collect();
+        crate::rules::reachable(&steps, from, |_| false).contains(to)
+    }
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Step {

@@ -217,7 +217,7 @@ fn check_workflow(factory: &Factory, workflow: &Loaded<Workflow>, problems: &mut
 }
 
 /// Steps reachable from `start`, never walking past a step for which `stops` holds.
-fn reachable<'a>(
+pub(crate) fn reachable<'a>(
     steps: &BTreeMap<&'a str, &'a Step>,
     start: &'a str,
     stops: impl Fn(&Step) -> bool,
