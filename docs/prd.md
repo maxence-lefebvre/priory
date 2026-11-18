@@ -414,8 +414,10 @@ Priory serves these as MCP tools.
 - R9.2 A runner keeps its tasks going while the other machines are offline. Answers given on another
   machine meanwhile are delivered when it reconnects, through the revision check in R6.3. M3
 - R9.3 State goes through an event log with cursors, plus requests with a deadline, a take and a
-  reply, in the shape herdr-bus uses. In M0 one SQLite file holds that log and the task state, so a
-  state change and its event commit in one transaction. M0
+  reply, in the shape herdr-bus uses. In M0 the log is herdr-bus's SQLite file and the task state is
+  Priory's own. The daemon acks a message only after its state change commits, and drops a
+  redelivered message by its event id, so each event changes state exactly once. One store for both
+  waits for the adapters of R9.4. M0
 - R9.4 Herdr-bus and Postgres adapters carry the log between machines, and a factory can switch
   between them. One contract test suite runs against every adapter. M3
 
