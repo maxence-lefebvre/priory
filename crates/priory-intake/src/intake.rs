@@ -16,6 +16,7 @@ const PR_LABELED: &str = "github.pull_request.labeled";
 const PR_CLOSED: &str = "github.pull_request.closed";
 const REVIEWED: &str = "github.pull_request_review.submitted";
 pub const CHECKED: &str = "github.check_run.completed";
+pub const CHECK_RUNS: &str = "github.pull_request.check_runs";
 /// The check run conclusions that count as green, lowercase as a check event carries them.
 pub const PASSING: [&str; 3] = ["success", "neutral", "skipped"];
 /// The streams of a repo: the message type each is named after.
@@ -43,6 +44,7 @@ pub(crate) fn output() -> Output {
             PR_CLOSED,
             REVIEWED,
             CHECKED,
+            CHECK_RUNS,
             crate::request::REQUESTED,
             TASK_REQUESTED,
             BASELINE,

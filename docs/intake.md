@@ -70,7 +70,7 @@ issue was opened with.
 
 ## Pull request events
 
-The intake publishes five pull request types. Each names the pull request and its branches, so a
+The intake publishes six pull request types. Each names the pull request and its branches, so a
 consumer can route it to the task that owns the pull request or its branch.
 
 | Type                                   | One message per                                   |
@@ -80,6 +80,7 @@ consumer can route it to the task that owns the pull request or its branch.
 | `github.pull_request.closed`           | pull request closed, merged or not                |
 | `github.pull_request_review.submitted` | review submitted; pending reviews are skipped     |
 | `github.check_run.completed`           | completed check run on a pull request's head commit, per pull request |
+| `github.pull_request.check_runs`       | pull request head whose check runs first appeared, or that has none past the grace period (see Check run snapshots) |
 
 | Field          | Type             | Meaning                                                        |
 | -------------- | ---------------- | -------------------------------------------------------------- |
@@ -233,6 +234,59 @@ The intake reads check runs, not check suites: branch protection and R6.6 name r
 check run, such as `test (ubuntu)`, and a suite folds every run of one app into one conclusion.
 Commit statuses are not published. A re-run gets a new check run id, so it publishes again.
 
+### Check run snapshots
+
+A repository that runs no checks never produces a `github.check_run.completed` event, and a check
+run that is queued or running produces none yet. So the intake publishes
+`github.pull_request.check_runs`, a snapshot of a pull request head's check runs, at most twice per
+pull request and head:
+
+- `runs` above 0, the first time a poll finds any check run on the head, completed or not;
+- `runs` 0, the first time a poll finds no check run on the head and the pull request not updated
+  for 5 minutes, the grace period (`GRACE_SECONDS` in `crates/priory-intake/src/intake/pulls.rs`).
+
+GitHub creates check runs a few seconds after a push, and a push updates the pull request, so the
+grace period counts from the last push or later. Commit statuses do not count as check runs.
+Contexts past the first 100 count as check runs. When an event names a pull request that is also
+open, the poll takes its snapshot from the open list, the later of its two reads.
+
+| Field          | Type             | Meaning                                                        |
+| -------------- | ---------------- | -------------------------------------------------------------- |
+| `repo`         | string           | `owner/name`                                                   |
+| `pull_request` | integer          | The pull request number                                        |
+| `url`          | string           | The pull request's page                                        |
+| `head_branch`  | string           | The pull request's head branch at the poll                     |
+| `head_sha`     | string           | The head commit                                                |
+| `base_branch`  | string           | The branch the pull request merges into                        |
+| `runs`         | integer          | How many check runs the head had at the poll                   |
+| `updated_at`   | RFC 3339         | When GitHub last updated the pull request, before the poll     |
+| `time`         | RFC 3339         | When the poll read the head                                    |
+| `baseline`     | boolean          | As for check events                                            |
+| `triggers`     | array of strings | Always empty                                                   |
+
+```json
+{
+  "id": "128fb513-3328-5df1-8323-e15a99050dad",
+  "type": "github.pull_request.check_runs",
+  "subject": "owner/name#43",
+  "time": "2026-11-18T09:12:00.123456789Z",
+  "data": {
+    "repo": "owner/name",
+    "pull_request": 43,
+    "url": "https://github.com/owner/name/pull/43",
+    "head_branch": "feature",
+    "head_sha": "abc123",
+    "base_branch": "main",
+    "runs": 0,
+    "updated_at": "2026-11-18T09:05:41Z",
+    "time": "2026-11-18T09:12:00.123456789Z",
+    "baseline": false,
+    "triggers": []
+  },
+  "links": [{ "label": "pull_request", "url": "https://github.com/owner/name/pull/43" }]
+}
+```
+
 ## `priory.task.requested.cli`
 
 `priory request [DIR] --workflow <name> --key <key> [--band <band>] [--lane <lane>] [--repo <owner/name>] [--] <text>`
@@ -344,6 +398,7 @@ of these names:
 | `github.pull_request.opened` | `github:{repo}:issues:{github_id}:opened` |
 | `github.pull_request_review.submitted` | `github:{repo}:pulls/reviews:{github_id}` |
 | `github.check_run.completed` | `github:{repo}:check-runs:{github_id}:pulls/{pull_request}`, since one check run can sit on the head of two pull requests |
+| `github.pull_request.check_runs` | `github:{repo}:pulls/{pull_request}:check-runs:{head_sha}:{some or none}` |
 | `priory.task.requested.cli` | `priory.task.requested.cli:{len}:{key}:{text}`, with the `cli:` key and `len` its byte length, so a `:` in the key or text cannot make two requests collide |
 | `factory.task.requested` | `factory.task.requested:{trigger}:{source}`  |
 | `factory.intake.baseline` | `factory.intake.baseline:{repo}:{stream}`   |
@@ -357,7 +412,7 @@ A repository has four streams, each named after a type:
 | `github.issues.labeled`                | `issues/events`, newest first                | issue and pull request `labeled`, pull request `closed` | issue event id |
 | `github.issues.opened`                 | `issues`, newest first by creation           | issue and pull request `opened`          | number   |
 | `github.pull_request_review.submitted` | GraphQL: every open pull request, and every pull request a new event above names | reviews | review id |
-| `github.check_run.completed`           | the same query                               | check runs on each pull request's head commit | check run id |
+| `github.check_run.completed`           | the same query                               | check runs on each pull request's head commit, and snapshots of them | check run id |
 
 The first poll of a stream is a baseline. It reads GitHub's first page: up to 100 recent issue
 events, up to 100 recent issues, or the reviews and checks of every open pull request. It publishes each of those events with

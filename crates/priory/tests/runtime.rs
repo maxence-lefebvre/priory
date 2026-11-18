@@ -1946,6 +1946,58 @@ fn green_checks_at_the_result_commit_mark_the_task_done_and_start_no_run() {
     assert!(setup.rows("waits").is_empty());
 }
 
+fn check_runs(runs: u64) -> Message {
+    on_pull("github.pull_request.check_runs", json!({ "runs": runs }))
+}
+
+#[test]
+fn a_head_with_no_check_runs_at_the_result_commit_marks_the_task_done_and_starts_no_run() {
+    let setup = gated("gate-no-checks");
+
+    setup.publish(&check_runs(0));
+
+    setup.until("tasks", |rows| rows[0][4] == "done");
+    std::thread::sleep(Duration::from_millis(1500));
+    assert_eq!(setup.rows("runs").len(), 2);
+    assert!(setup.rows("waits").is_empty());
+}
+
+#[test]
+fn a_check_run_appearing_after_none_at_the_same_head_is_judged_as_any_check() {
+    let mut setup = Setup::new("gate-late-check");
+    setup.calls(&[wait(on_pull_7("review")), passed_at("abc")]);
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("runs", |rows| rows.len() == 1 && rows[0][7] == "asleep");
+    setup.publish(&check_runs(0));
+    setup.publish(&check_runs(1));
+    setup.until("inbox", |rows| rows.len() == 3);
+
+    setup.publish(&reviewed());
+    setup.until("runs", |rows| rows.len() == 2 && rows[1][7] != "-");
+    setup.gone("priory-1");
+
+    stays_asleep_after(&setup, 2);
+    setup.publish(&check(2, 0));
+    setup.until("tasks", |rows| rows[0][4] == "done");
+}
+
+#[test]
+fn a_snapshot_with_runs_after_green_checks_leaves_the_checks_to_decide() {
+    let mut setup = Setup::new("gate-upgrade");
+    setup.calls(&[wait(on_pull_7("review")), passed_at("abc")]);
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("runs", |rows| rows.len() == 1 && rows[0][7] == "asleep");
+    setup.publish(&check(1, 0));
+    setup.publish(&check_runs(1));
+    setup.until("inbox", |rows| rows.len() == 3);
+
+    setup.publish(&reviewed());
+
+    setup.until("tasks", |rows| rows[0][4] == "done");
+}
+
 #[test]
 fn a_red_check_at_the_result_commit_wakes_the_agent_with_the_failure() {
     let setup = gated("gate-red");
