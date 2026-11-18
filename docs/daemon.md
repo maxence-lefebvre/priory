@@ -74,7 +74,8 @@ The daemon creates the worktree, records the run and the task as `running`, then
 
 - `--session-id`: a UUID Priory chooses and stores, so a later run can resume the conversation. A
   task keeps one session per agent: when an earlier run of the step's agent reached `SessionStart`,
-  the run gets `--resume <that id>` instead, in the same worktree.
+  the run gets `--resume <that id>` instead, in the same worktree. An agent with
+  `session = "shared"` keeps one session across tasks instead, as described under Shared sessions.
 - `--model` and `--effort`: the agent's, when it sets them.
 - `--append-system-prompt`: the agent body, the Markdown after its frontmatter.
 - `--settings`: hooks that run `priory hook SessionStart`, `UserPromptSubmit` and `Stop`, a
@@ -145,6 +146,33 @@ Known limits:
   and R4.10's slice address that in M1.
 - A large task can wait behind younger tasks that keep taking the room. Queue order is R4.4, in M1.
 - The measurements need Linux's `/proc`.
+
+### Shared sessions
+
+An agent's `session` is `per-task`, the default, or `shared`. A `per-task` agent gets one session
+per task, as above. A `shared` agent, such as a lead, keeps one conversation across every task it
+serves. The state stores that session per agent. Once a run of it reached `SessionStart`, every
+later run of the agent, for any task, resumes it with `--resume`. Until then, a new run starts a new
+session and records it as the agent's.
+
+A session runs one turn at a time, so a shared agent has at most one live run. A task that needs
+the agent while another task's run of it is live stays `queued` or `ready`, with the reason
+`waits for agent <name>: its shared session serves task <id>`, which `priory tasks` shows. It starts
+once that run ends, by its result, ask, wait or a verdict. The room is checked after that, and a
+younger task that needs another agent can start ahead of it.
+
+Each task keeps its own worktree and branch, and the resumed session starts in the task's worktree.
+One worktree for the agent would put every task's commits on one branch and leave the sweep with no
+task to judge it by. When the conversation's last turn served another task, or the session is new,
+the task's first queued prompt starts with
+`This is task <id> (<key>), from trigger <trigger>, in the worktree <path>. Earlier turns of this
+conversation may belong to other tasks.` So the conversation can tell its tasks apart.
+
+Known limits:
+
+- A long shared conversation is never compacted by Priory.
+- Claude keeps a session's transcript under the directory it started in. Whether `--resume` finds
+  it from another task's worktree depends on the Claude version, and no test runs a real Claude.
 
 ### Trusting a clone
 

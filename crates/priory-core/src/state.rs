@@ -1,13 +1,13 @@
 use crate::room::{self, Share};
 use crate::route::{self, Decision};
 use herdr_bus::Message;
-use priory_factory::factory::{Factory, Loaded, Workflow};
+use priory_factory::factory::{Factory, Loaded, Session, Workflow};
 use priory_runtime::room::Room;
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 use std::collections::BTreeMap;
 use std::time::Duration;
 
-const VERSION: i64 = 8;
+const VERSION: i64 = 9;
 
 const SCHEMA: &str = "
 CREATE TABLE tasks (
@@ -172,9 +172,18 @@ CREATE TABLE actions (
 PRAGMA user_version = 8;
 ";
 
+const SCHEMA_9: &str = "
+CREATE TABLE shared_sessions (
+  agent   TEXT PRIMARY KEY,
+  session TEXT NOT NULL
+);
+CREATE UNIQUE INDEX one_live_run_per_session ON runs (session) WHERE ended IS NULL;
+PRAGMA user_version = 9;
+";
+
 /// Each schema change in order: a file at version `n` applies those from index `n` on.
 const MIGRATIONS: [&str; VERSION as usize] = [
-    SCHEMA, SCHEMA_2, SCHEMA_3, SCHEMA_4, SCHEMA_5, SCHEMA_6, SCHEMA_7, SCHEMA_8,
+    SCHEMA, SCHEMA_2, SCHEMA_3, SCHEMA_4, SCHEMA_5, SCHEMA_6, SCHEMA_7, SCHEMA_8, SCHEMA_9,
 ];
 
 const NOW: &str = "strftime('%Y-%m-%dT%H:%M:%SZ', 'now')";
@@ -406,15 +415,24 @@ pub(crate) fn admissible<'r>(
         else {
             continue;
         };
-        let need = room::need(
-            step.agent
-                .as_ref()
-                .and_then(|name| factory.agents.get(name))
-                .map(|agent| &agent.value),
-        );
-        let waits = match room() {
-            Ok(measured) => room::wait(measured, share, promised, need),
-            Err(error) => Some(format!("waits for room: cannot measure it: {error}")),
+        let agent = step
+            .agent
+            .as_ref()
+            .and_then(|name| Some((name, &factory.agents.get(name)?.value)));
+        let busy = match agent {
+            Some((name, agent)) if matches!(agent.session, Session::Shared) => serving(db, name)?
+                .map(|task| {
+                    format!("waits for agent {name}: its shared session serves task {task}")
+                }),
+            _ => None,
+        };
+        let waits = match (busy, room()) {
+            (Some(busy), _) => Some(busy),
+            (None, Ok(measured)) => {
+                let need = room::need(agent.map(|(_, agent)| agent));
+                room::wait(measured, share, promised, need)
+            }
+            (None, Err(error)) => Some(format!("waits for room: cannot measure it: {error}")),
         };
         let Some(reason) = waits else {
             return Ok(Some(admission));
@@ -425,6 +443,16 @@ pub(crate) fn admissible<'r>(
         )?;
     }
     Ok(None)
+}
+
+/// The task whose live run holds `agent`'s shared session, which runs one turn at a time.
+fn serving(db: &Connection, agent: &str) -> rusqlite::Result<Option<i64>> {
+    db.query_row(
+        "SELECT task FROM runs WHERE agent = ?1 AND ended IS NULL",
+        [agent],
+        |row| row.get(0),
+    )
+    .optional()
 }
 
 /// The memory declared by the agents of live runs. No run reports its own use yet, so each one
@@ -506,6 +534,19 @@ pub(crate) struct NewRun<'a> {
     pub worktree: &'a str,
     /// The step's prompt, for a fresh task. A ready task has its prompt queued.
     pub prompt: Option<&'a str>,
+    /// The session is the agent's shared one, which other tasks' runs resume too.
+    pub shared: bool,
+}
+
+/// The agent's shared session, once a run of it reached `SessionStart`, which every task resumes.
+pub(crate) fn shared(db: &Connection, agent: &str) -> rusqlite::Result<Option<String>> {
+    db.query_row(
+        "SELECT session FROM shared_sessions WHERE agent = ?1
+         AND EXISTS (SELECT 1 FROM runs WHERE runs.session = shared_sessions.session AND ready = 1)",
+        [agent],
+        |row| row.get(0),
+    )
+    .optional()
 }
 
 /// The harness session of the task's latest run of `agent` that Claude started, which a new run of
@@ -561,23 +602,65 @@ pub(crate) fn start(db: &mut Connection, run: &NewRun) -> rusqlite::Result<i64> 
             ));
         }
     }
-    if text.is_empty() {
-        tx.commit()?;
-        return Ok(id);
-    }
-    tx.execute(
-        "INSERT INTO outbox (task, text) VALUES (?1, ?2)",
-        params![run.task, text],
-    )?;
-    let outbox = tx.last_insert_rowid();
-    for seq in events {
+    if !text.is_empty() {
         tx.execute(
-            "UPDATE inbox SET outbox = ?1 WHERE seq = ?2",
-            params![outbox, seq],
+            "INSERT INTO outbox (task, text) VALUES (?1, ?2)",
+            params![run.task, text],
         )?;
+        let outbox = tx.last_insert_rowid();
+        for seq in events {
+            tx.execute(
+                "UPDATE inbox SET outbox = ?1 WHERE seq = ?2",
+                params![outbox, seq],
+            )?;
+        }
+    }
+    if run.shared {
+        share(&tx, run)?;
     }
     tx.commit()?;
     Ok(id)
+}
+
+/// Records the run's session as its agent's shared one. When the conversation last served another
+/// task, or none, the task's first queued prompt starts by naming the task, its trigger and worktree.
+fn share(tx: &Transaction, run: &NewRun) -> rusqlite::Result<()> {
+    tx.execute(
+        "INSERT INTO shared_sessions (agent, session) VALUES (?1, ?2)
+         ON CONFLICT (agent) DO UPDATE SET session = excluded.session",
+        params![run.agent, run.session],
+    )?;
+    let last: Option<i64> = tx
+        .query_row(
+            "SELECT task FROM runs WHERE session = ?1 AND ready = 1 ORDER BY id DESC LIMIT 1",
+            [run.session],
+            |row| row.get(0),
+        )
+        .optional()?;
+    if last == Some(run.task) {
+        return Ok(());
+    }
+    let (key, trigger): (String, String) = tx.query_row(
+        "SELECT key, trigger FROM tasks WHERE id = ?1",
+        [run.task],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )?;
+    let intro = format!(
+        "This is task {} ({key}), from trigger {trigger}, in the worktree {}. Earlier turns of this conversation may belong to other tasks.",
+        run.task, run.worktree
+    );
+    let prepended = tx.execute(
+        "UPDATE outbox SET text = ?2 || char(10) || text WHERE id =
+         (SELECT min(id) FROM outbox WHERE task = ?1 AND state = 'queued')",
+        params![run.task, intro],
+    )?;
+    if prepended == 0 {
+        tx.execute(
+            "INSERT INTO outbox (task, text) VALUES (?1, ?2)",
+            params![run.task, intro],
+        )?;
+    }
+    Ok(())
 }
 
 /// Blocks `task` with `reason`, ending its live run first as `ended_as`, if it has one.

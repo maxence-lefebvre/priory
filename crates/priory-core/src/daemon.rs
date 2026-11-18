@@ -4,7 +4,7 @@ use crate::state::{self, Admission, NewRun, Signal};
 use crate::sweep;
 use crate::tools::{self, Act, Answer, Call, Done};
 use herdr_bus::{Bus, Start};
-use priory_factory::factory::Factory;
+use priory_factory::factory::{Factory, Session};
 use priory_intake::intake::OUTPUT;
 use priory_runtime::room;
 use priory_runtime::runtime::{self, Launch, Line};
@@ -325,7 +325,12 @@ fn start(
     if !tools::approved(db, admission.task, step, head.as_deref())? {
         return Ok(Ok(()));
     }
-    let resumed = state::resumable(db, admission.task, name)?;
+    let shared = matches!(agent.value.session, Session::Shared);
+    let resumed = if shared {
+        state::shared(db, name)?
+    } else {
+        state::resumable(db, admission.task, name)?
+    };
     let resume = resumed.is_some();
     let session = resumed.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
     let tmux = format!("priory-{}", admission.task);
@@ -343,6 +348,7 @@ fn start(
             prompt: admission
                 .fresh
                 .then(|| step.prompt.as_deref().unwrap_or_default()),
+            shared,
         },
     )?;
     let agent = &agent.value;
