@@ -220,8 +220,10 @@ prompt that shows anyway, when the deny hook failed, ends the run on the next ti
 | `ask` | the ask | its question, then its options | it was asked |
 | `blocked` | the task | its reason | the task last changed state |
 | `prompt` | the outbox prompt | its text, for an `uncertain` prompt | it was attempted |
+| `worktree` | the worktree's path | why it stays: see Sweep | `-` |
 
-It lists only asks and prompts of active tasks. `priory asks` still prints every open ask.
+It lists only asks and prompts of active tasks, and it ends with one `worktree` row for every worktree
+the sweep keeps. `priory asks` still prints every open ask.
 
 `priory resume <task>` makes a blocked task `ready`. It queues the prompt `A person resumed this
 task after: <reason>. Check the worktree, then continue.` ahead of the task's other queued prompts,
@@ -229,6 +231,34 @@ so its next run resumes the session of the step's agent with it. `priory cancel 
 active task with the reason `cancelled from the desk`, ends its live run as `cancelled` and kills
 its tmux session. Both go to the daemon over `priory.sock`, as `priory answer` does, and are refused
 for a task in any other state. An answer to an ask of a done, failed or dropped task is refused too.
+
+## Sweep
+
+The daemon removes the worktrees of ended tasks. It sweeps when it starts and every 10 minutes after,
+not on every tick. A sweep fetches `origin` into each clone with a worktree and refreshes
+`origin/HEAD`, then looks at each folder `worktrees/<owner>/<name>/<id>`. A clone whose fetch
+failed is skipped until the next sweep.
+
+It removes a folder, and its branch `priory/<id>`, only when every check holds:
+
+- Task `<id>` is `done`, `failed` or `dropped`, and its recorded `worktree` is this folder.
+- It is a worktree of Priory's clone `repos/<owner>/<name>`, on branch `priory/<id>`.
+- Nothing is uncommitted or untracked, whatever `status.showUntrackedFiles` says.
+- No process has its working directory inside it (read from `/proc`).
+- The branch tip is in `origin/HEAD`, or it is the head commit of a merged pull request for the
+  branch (a `github.pull_request.closed` event with `merged` true). Otherwise it stays as
+  `unpushed commits` when a commit is on no remote branch, else as `not merged`.
+
+The sweep runs `git worktree remove`, then `git branch -d`, both without force, so git refuses
+what the checks missed. A squash-merged branch is not in the default branch, so `git branch -d`
+refuses it: the worktree goes and the branch stays, and no sweep looks at that branch again. A
+failed worktree removal is logged and retried at the next sweep. A git command that cannot run
+keeps the worktree, as `cannot check: <error>`.
+
+`priory desk` runs the same checks without fetching or removing, and lists every folder that stays
+with its reason: `no task <id>`, `task <id> still <state>`, `not a worktree of <clone>`,
+`not recorded as the worktree of task <id>`, `not on branch priory/<id>`, `uncommitted changes`, `untracked files`, `a process runs in it`,
+`unpushed commits` or `not merged`. It reads the refs of the last fetch.
 
 ## Tools
 
@@ -270,7 +300,7 @@ and resumes that agent's session for the task, or starts a new one when the agen
 it yet.
 
 A run with an open ask or wait and no result ends `asleep`, and its task sleeps. The daemon kills a run's
-tmux session when the run ends, after the hook has its reply. The worktree stays.
+tmux session when the run ends, after the hook has its reply. The worktree stays until a sweep removes it.
 
 ### Code steps
 
