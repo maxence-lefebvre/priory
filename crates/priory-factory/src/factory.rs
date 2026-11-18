@@ -1,5 +1,5 @@
 use crate::lines::{self, Lines};
-use serde::de::DeserializeOwned;
+use serde::de::{DeserializeOwned, Deserializer, Error as _, IntoDeserializer};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fmt;
@@ -56,7 +56,11 @@ pub struct Agent {
 #[derive(Debug, Default, Deserialize, Serialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct Permissions {
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "refuse_bypass",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub default_mode: Option<PermissionMode>,
     #[serde(default)]
     pub allow: Vec<String>,
@@ -72,7 +76,20 @@ pub enum PermissionMode {
     Plan,
     Auto,
     DontAsk,
-    BypassPermissions,
+}
+
+fn refuse_bypass<'de, D: Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<PermissionMode>, D::Error> {
+    let Some(mode) = Option::<String>::deserialize(deserializer)? else {
+        return Ok(None);
+    };
+    if mode == "bypassPermissions" {
+        return Err(D::Error::custom(
+            "`bypassPermissions` is not allowed: Priory never skips permission checks",
+        ));
+    }
+    PermissionMode::deserialize(mode.into_deserializer()).map(Some)
 }
 
 #[derive(Debug, Deserialize)]

@@ -200,6 +200,26 @@ fn an_unknown_permission_mode_names_its_file_and_line() {
 }
 
 #[test]
+fn the_bypass_permissions_mode_is_refused() {
+    let agent = "+++\ndescription = \"Implements one task.\"\nharness = \"claude-code\"\npermissions = { defaultMode = \"bypassPermissions\" }\n+++\n";
+
+    let outcome = check(&factory(
+        "bypass-mode",
+        &with("agents/implementer/agent.md", agent),
+    ));
+
+    assert_eq!(outcome.code, 1);
+    assert!(
+        outcome.stderr.starts_with("agents/implementer/agent.md:4:")
+            && outcome
+                .stderr
+                .contains("Priory never skips permission checks"),
+        "{}",
+        outcome.stderr
+    );
+}
+
+#[test]
 fn a_toml_syntax_error_names_its_file_and_line() {
     let runner = "platform = { os = \"linux\" }\nagents = { cpu = 50% }\n";
 
