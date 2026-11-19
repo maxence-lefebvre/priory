@@ -21,7 +21,8 @@ impl Lines {
 
 #[derive(Deserialize)]
 struct Steps<S> {
-    #[serde(default = "Vec::new")]
+    // The rules of a lanes file are indexed the same way as the steps of a workflow.
+    #[serde(default = "Vec::new", alias = "rules")]
     steps: Vec<S>,
 }
 

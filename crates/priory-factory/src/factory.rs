@@ -1,3 +1,4 @@
+use crate::lanes::Lanes;
 use crate::lines::{self, Lines};
 use serde::de::{DeserializeOwned, Deserializer, Error as _, IntoDeserializer};
 use serde::{Deserialize, Serialize};
@@ -420,10 +421,20 @@ pub struct Factory {
     pub runners: BTreeMap<String, Loaded<Runner>>,
     /// `prices.toml`: each model's price.
     pub prices: BTreeMap<String, Price>,
+    pub lanes: Option<Loaded<Lanes>>,
     pub settings: Option<Loaded<Settings>>,
 }
 
 impl Factory {
+    /// The factory's lanes, or the built-in ones: no rules and the `{team}/misc` fallback.
+    pub fn lanes(&self) -> &Lanes {
+        static BUILT_IN: Lanes = Lanes {
+            fallback: None,
+            rules: Vec::new(),
+        };
+        self.lanes.as_ref().map_or(&BUILT_IN, |lanes| &lanes.value)
+    }
+
     pub fn bands(&self) -> Vec<&str> {
         match self
             .settings
@@ -467,6 +478,18 @@ pub fn load(dir: &Path) -> (Factory, Vec<Problem>) {
             message: "missing: a factory needs factory.toml or factory.yaml".into(),
         });
     }
+
+    let mut lanes = BTreeMap::new();
+    for file in ["lanes.toml", "lanes.yaml", "lanes.yml"].map(|name| dir.join(name)) {
+        if let Some((value, lines)) = file
+            .is_file()
+            .then(|| found.parse::<Lanes>(&file))
+            .flatten()
+        {
+            found.define(&mut lanes, "lanes".into(), &file, value, lines);
+        }
+    }
+    factory.lanes = lanes.remove("lanes");
 
     factory.settings = settings.remove("factory");
     for path in found
