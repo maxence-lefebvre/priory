@@ -12,8 +12,8 @@ const DISK: f64 = 20.0 * GB;
 
 /// The share of this machine's memory and CPUs that its agents may take together.
 pub(crate) struct Share {
-    memory: f64,
-    cpu: f64,
+    pub(crate) memory: f64,
+    pub(crate) cpu: f64,
 }
 
 impl Share {

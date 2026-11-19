@@ -248,6 +248,8 @@ pub struct Launch<'a> {
     pub permissions: serde_json::Value,
     /// The agent's `defaultMode`, or `manual`.
     pub permission_mode: &'a str,
+    /// The command that starts the run in its own systemd scope, or none on a host without systemd.
+    pub scope: &'a [String],
 }
 
 /// A coding agent CLI that Priory runs in tmux, with hooks and tools that report to the daemon.
@@ -428,7 +430,9 @@ pub fn launch(harness: &dyn Harness, launch: &Launch) -> Result<(), String> {
             ])
             .arg(&file);
     }
+    // A scope execs the agent in place, so the pane's process is still the agent's.
     command
+        .args(launch.scope)
         .arg("env")
         .args(NESTED.iter().flat_map(|name| ["-u", name]))
         .arg(harness.program())

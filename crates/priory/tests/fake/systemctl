@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+# A stand-in for systemctl: appends its arguments, one call per line, to FAKE_DIR/systemctl.log.
+# FAKE_DIR/no-systemd makes it fail as on a host with no systemd user manager.
+if [ -e "$FAKE_DIR/no-systemd" ]; then
+  echo 'Failed to connect to bus: No medium found' >&2
+  exit 1
+fi
+echo "$*" >> "$FAKE_DIR/systemctl.log"
