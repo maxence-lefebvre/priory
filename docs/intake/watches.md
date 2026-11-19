@@ -8,8 +8,8 @@ last prompt time. A hold gives its pull request and the time it was set.
 
 - For a pull request, waited on or held for, the intake polls its repository as it polls a trigger's (see
   `github-polling.md`). A repository that no trigger names starts with a baseline, whose reviews and
-  checks still reach the wait. A restart resumes it from where it stopped, as long as a wait still
-  names it.
+  checks still reach the wait. A restart resumes it from where it stopped, as long as a wait or hold
+  still names it.
 - For each Slack thread, the intake reads `conversations.replies` from that time on, every poll,
   until the wait fires or is withdrawn. herdr-bus drops replies it already holds.
 - For a Linear issue, the intake starts the issues and comments streams when no Linear trigger

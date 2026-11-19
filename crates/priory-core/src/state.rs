@@ -497,12 +497,13 @@ pub(crate) fn handle(
         return Ok(());
     }
     let resources = route::resources(message);
-    let owner = if route::requests(message) {
-        keyed(&tx, resources.first())?
+    let (keyed, owners) = if route::requests(message) {
+        (keyed(&tx, resources.first())?, Vec::new())
     } else {
-        owner(&tx, &resources)?
+        (None, owners(&tx, &resources)?)
     };
-    let (task, outcome) = match route::route(message, owner.as_ref(), factory) {
+    let owner = keyed.as_ref().or(owners.first());
+    let (task, outcome) = match route::route(message, owner, factory) {
         Decision::Create(new) => {
             tx.execute(
                 "INSERT INTO tasks
@@ -597,13 +598,8 @@ pub(crate) fn handle(
     let seq = tx.last_insert_rowid();
     crate::hold::event(&tx, &resources)?;
     // The keyed task keeps the event; another task that shares the resource hears it through its wait.
-    if !route::requests(message) {
-        for other in owners(&tx, &resources)?
-            .iter()
-            .filter(|other| Some(other.id) != task)
-        {
-            crate::tools::event(&tx, other.id, seq)?;
-        }
+    for other in owners.iter().filter(|other| Some(other.id) != task) {
+        crate::tools::event(&tx, other.id, seq)?;
     }
     match (task, outcome) {
         (Some(task), "kept") => drop(crate::tools::event(&tx, task, seq)?),
@@ -701,6 +697,26 @@ fn keyed(tx: &Transaction, key: Option<&String>) -> rusqlite::Result<Option<Task
 /// The active task that owns any of `resources`: one whose own key is among them, else the oldest.
 pub(crate) fn owner(tx: &Transaction, resources: &[String]) -> rusqlite::Result<Option<Task>> {
     Ok(owners(tx, resources)?.into_iter().next())
+}
+
+/// Why `task` cannot take `resource`: another task owns it and `task` does not own it yet.
+pub(crate) fn taken(
+    tx: &Transaction,
+    task: i64,
+    resource: &str,
+) -> rusqlite::Result<Option<String>> {
+    let owns = tx
+        .query_row(
+            "SELECT 1 FROM owns WHERE task = ?1 AND resource = ?2",
+            params![task, resource],
+            |_| Ok(()),
+        )
+        .optional()?;
+    if owns.is_some() {
+        return Ok(None);
+    }
+    let other = owner(tx, &[resource.to_owned()])?.filter(|other| other.id != task);
+    Ok(other.map(|other| format!("{resource} belongs to task {}, not this one", other.id)))
 }
 
 /// Every active task that owns any of `resources`, in the order `owner` ranks them.

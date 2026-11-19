@@ -411,22 +411,8 @@ fn wait(
                 Ok(named) => named,
                 Err(error) => return Ok(Err(error)),
             };
-            let owns = tx
-                .query_row(
-                    "SELECT 1 FROM owns WHERE task = ?1 AND resource = ?2",
-                    params![run.task, resource],
-                    |_| Ok(()),
-                )
-                .optional()?
-                .is_some();
-            if let Some(other) = crate::state::owner(tx, std::slice::from_ref(&resource))?
-                && other.id != run.task
-                && !owns
-            {
-                return Ok(Err(format!(
-                    "{resource} belongs to task {}, not this one",
-                    other.id
-                )));
+            if let Some(refused) = crate::state::taken(tx, run.task, &resource)? {
+                return Ok(Err(refused));
             }
             tx.execute(
                 "INSERT OR IGNORE INTO owns (task, resource) VALUES (?1, ?2)",
@@ -542,16 +528,20 @@ pub(crate) fn instant(tx: &Transaction, until: &str) -> rusqlite::Result<Result<
     }))
 }
 
-/// Fires the task's open wait on the first event since the agent's last prompt that satisfies it:
-/// one not typed yet, on which no wait fired. Says whether one did.
+/// Fires the task's open wait on the first event since the agent's last prompt that satisfies it,
+/// on which none of its waits fired: one it kept and was not typed yet, or one another task kept
+/// since that prompt. Says whether one did.
 fn catch_up(tx: &Transaction, task: i64) -> rusqlite::Result<bool> {
     let mut candidates = Vec::new();
     {
         let mut statement = tx.prepare(
             "SELECT inbox.seq FROM inbox LEFT JOIN outbox ON outbox.id = inbox.outbox
-             WHERE inbox.task = ?1 AND inbox.outcome = 'kept'
-             AND (inbox.outbox IS NULL OR outbox.state = 'queued')
-             AND inbox.seq NOT IN (SELECT inbox FROM waits WHERE inbox IS NOT NULL)
+             WHERE inbox.outcome = 'kept'
+             AND (inbox.task = ?1 AND (inbox.outbox IS NULL OR outbox.state = 'queued')
+               OR inbox.task IS NOT ?1 AND julianday(inbox.time) >= julianday(coalesce(
+                 (SELECT max(confirmed) FROM outbox WHERE task = ?1),
+                 (SELECT max(started) FROM runs WHERE task = ?1))))
+             AND inbox.seq NOT IN (SELECT inbox FROM waits WHERE task = ?1 AND inbox IS NOT NULL)
              ORDER BY inbox.seq",
         )?;
         let mut rows = statement.query([task])?;
@@ -596,18 +586,35 @@ pub(crate) fn event(tx: &Transaction, task: i64, seq: i64) -> rusqlite::Result<b
     if daemon {
         return judge(tx, wait);
     }
-    let (kind_of_event, subject, data, after): (String, Option<String>, String, bool) = tx
-        .query_row(
-            "SELECT type, subject, data, coalesce(julianday(time) >= julianday(?2), 1)
+    let (kind_of_event, subject, data, after, kept): (String, Option<String>, String, bool, bool) =
+        tx.query_row(
+            "SELECT type, subject, data, coalesce(julianday(time) >= julianday(?2), 1), task IS ?3
              FROM inbox WHERE seq = ?1",
-            params![seq, since],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            params![seq, since, task],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                ))
+            },
         )?;
     let line = crate::state::line(&kind_of_event, subject.as_deref(), &data);
     let data: Value = serde_json::from_str(&data).expect("inbox data is JSON");
     let wanted = head.as_deref().or(state.as_deref());
     if !after || !route::satisfies(&kind, &resource, wanted, &kind_of_event, &data) {
         return Ok(false);
+    }
+    if !kept {
+        // Another task kept the event and its prompt: this one gets the line in a prompt of its own.
+        tx.execute(
+            &format!("UPDATE waits SET fired = {NOW}, inbox = ?2 WHERE id = ?1"),
+            params![wait, seq],
+        )?;
+        wake_on(tx, task, &line, None)?;
+        return Ok(true);
     }
     fire(tx, wait, task, &line, Some(seq))?;
     Ok(true)
@@ -1957,15 +1964,12 @@ pub(crate) fn performed(
 ) -> rusqlite::Result<()> {
     let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
     if let Some(resource) = done.pull_request.take() {
-        match crate::state::owner(&tx, std::slice::from_ref(&resource))? {
-            Some(other) if other.id != task => {
+        match crate::state::taken(&tx, task, &resource)? {
+            Some(refused) => {
                 done.status = "failed";
-                done.error = Some(format!(
-                    "{resource} belongs to task {}, not this one",
-                    other.id
-                ));
+                done.error = Some(refused);
             }
-            _ => done.pull_request = Some(resource),
+            None => done.pull_request = Some(resource),
         }
     }
     tx.execute(

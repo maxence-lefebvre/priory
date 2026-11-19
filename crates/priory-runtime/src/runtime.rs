@@ -77,11 +77,15 @@ fn fed_within(command: &mut Command, input: Option<Vec<u8>>) -> std::io::Result<
     let stdin = child.stdin.take();
     let (sender, receiver) = mpsc::channel();
     std::thread::spawn(move || {
-        // A failed write shows in the command's own exit and stderr.
-        if let (Some(mut stdin), Some(input)) = (stdin, input) {
-            let _ = stdin.write_all(&input);
-        }
-        sender.send(child.wait_with_output())
+        let written = match (stdin, input) {
+            (Some(mut stdin), Some(input)) => stdin.write_all(&input),
+            _ => Ok(()),
+        };
+        sender.send(
+            child
+                .wait_with_output()
+                .and_then(|output| written.map(|()| output)),
+        )
     });
     if let Ok(output) = receiver.recv_timeout(command_timeout()) {
         return output.map(Some);

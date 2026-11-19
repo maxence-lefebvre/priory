@@ -161,7 +161,8 @@ impl Setup {
     fn kill_tmux(&self) {
         let mut marker = format!("FAKE_DIR={}", self.dir.join("fake").display()).into_bytes();
         marker.push(0);
-        loop {
+        // Bounded, so a process that will not die cannot hang the suite in `Drop`.
+        for _ in 0..100 {
             let found: Vec<String> = fs::read_dir("/proc")
                 .unwrap()
                 .filter_map(|entry| entry.ok()?.file_name().into_string().ok())
@@ -178,6 +179,7 @@ impl Setup {
                 break;
             }
             let _ = Command::new("kill").arg("-9").args(&found).output();
+            std::thread::sleep(Duration::from_millis(20));
         }
         let _ = self.tmux(&["kill-server"]);
     }
@@ -3755,16 +3757,32 @@ fn an_event_on_a_key_goes_to_its_task_and_still_fires_another_owners_wait() {
     setup.publish(&requested(7));
     setup.until("runs", |rows| rows.len() == 2 && rows[1][7] == "asleep");
     setup.calls(&[wait(on_pull_7("pull_request"))]);
+    setup.hold("hold-call");
 
     setup.publish(&reviewed());
 
     let inbox = setup.until("inbox", |rows| rows.len() == 3);
     assert_eq!(inbox[2][3..5], ["2", "kept"]);
-    let waits = setup.until("waits", |rows| {
-        rows.iter().any(|row| row[3] == "pull_request")
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 3);
+    // Task 2 keeps the close; task 1, mid-turn, waits on it next and is caught up.
+    setup.publish(&closed());
+    setup.until("inbox", |rows| rows.len() == 4);
+    setup.release("hold-call");
+    setup.until("runs", |_| setup.replies().len() == 3);
+    let (text, error) = reply(&setup.replies()[2]);
+    assert!(!error, "{text}");
+    assert!(text.starts_with("wait 3 already holds"), "{text}");
+    // Task 2 still reads the review that fired task 1's wait.
+    setup.publish(&check(1, 0));
+    let outbox = setup.until("outbox", |rows| {
+        rows.iter()
+            .any(|row| row[1] == "2" && row[4].contains("check_run"))
     });
-    let tasks: Vec<_> = waits.iter().map(|row| &row[1..4]).collect();
-    assert_eq!(tasks, [["2", "2", "checks"], ["1", "3", "pull_request"]]);
+    let woke = outbox.iter().rev().find(|row| row[1] == "2").unwrap();
+    assert!(
+        woke[4].contains("pull_request_review.submitted"),
+        "{outbox:?}"
+    );
 }
 
 #[test]
@@ -4550,7 +4568,7 @@ fn a_gh_call_past_the_command_timeout_is_killed_and_its_action_fails() {
 }
 
 #[test]
-fn a_tmux_load_buffer_past_the_command_timeout_is_killed_and_the_daemon_goes_on() {
+fn a_tmux_load_buffer_past_the_command_timeout_is_killed_and_logged() {
     let mut setup = Setup::new("load-buffer-hangs");
     fs::write(
         setup.dir.join("factory/factory.toml"),
