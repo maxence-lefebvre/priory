@@ -129,7 +129,7 @@ A short model call that read a stalled run's screen and chose what to do with it
 | `text`     | yes      | The nudge's text, or why it restarted or left the run              |
 | `cost_usd` | no       | The cost the harness reported for the call                         |
 
-Priory writes these records as described under Trace in [the daemon](daemon.md).
+Priory writes these records as described under Trace in [the daemon](daemon/trace.md).
 
 ## Rules
 

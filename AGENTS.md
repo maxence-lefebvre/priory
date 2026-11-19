@@ -13,6 +13,8 @@ Read it before you change behaviour or name a concept, and use its Concepts tabl
 - `crates/priory-core`: the state database, routing, tools and the daemon. It depends on the three crates above.
 - `crates/priory`: `main.rs` only. It builds the `priory` binary, and its CLI tests live in `tests/`.
 - `docs/prd.md`: what Priory does and in which milestone.
+- `docs/daemon/`: how the daemon runs tasks, one file per topic. Its `README.md` says which file to read.
+- `docs/intake/`: the intake's message contract, one file per source. Its `README.md` says which file to read.
 - `docs/adr/`: one file per hard-to-reverse decision, `NNNN-<decision-as-a-sentence>.md`.
 
 ## Verify
