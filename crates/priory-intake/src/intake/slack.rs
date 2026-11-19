@@ -60,17 +60,21 @@ impl<'a> Slack<'a> {
                 Err(error) => failed.push(error),
             }
         }
+        let threads: Vec<(&str, &str, Timestamp)> = watched
+            .iter()
+            .filter_map(|watch| {
+                let thread = watch.resource.strip_prefix("slack:")?;
+                let (channel, thread) = thread.split_once(':')?;
+                Some((channel, thread, watch.since))
+            })
+            .collect();
+        // Slack lets a new app read one thread a minute: each minute starts at the next thread.
+        let minute = super::now()?.as_second().div_euclid(60);
+        let start = minute.rem_euclid(threads.len().max(1) as i64) as usize;
         let mut replies = Vec::new();
-        for watch in watched {
-            let Some((channel, thread)) = watch
-                .resource
-                .strip_prefix("slack:")
-                .and_then(|thread| thread.split_once(':'))
-            else {
-                continue;
-            };
+        for (channel, thread, since) in threads[start..].iter().chain(&threads[..start]) {
             // A deleted thread or a channel the bot left fails only its own wait's poll.
-            match self.replies(channel, thread, watch.since) {
+            match self.replies(channel, thread, *since) {
                 Ok(found) => replies.extend(found),
                 Err(error) => eprintln!("{error}"),
             }

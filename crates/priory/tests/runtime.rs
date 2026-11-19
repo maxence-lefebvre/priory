@@ -5664,6 +5664,10 @@ impl Setup {
 
     /// Runs one poll of `priory intake` on a factory with no trigger, against the fakes in `bin`.
     fn intake(&self) {
+        self.intake_with(&[]);
+    }
+
+    fn intake_with(&self, env: &[(&str, &str)]) {
         let factory = self.dir.join("intake-factory");
         for (path, content) in [
             ("factory.toml", "name = \"demo\""),
@@ -5686,6 +5690,7 @@ impl Setup {
             .env("PATH", path)
             .env("SLACK_BOT_TOKEN", SLACK_TOKEN)
             .env("LINEAR_API_KEY", "lin_api_secret_test_key")
+            .envs(env.iter().copied())
             .output()
             .unwrap();
         assert!(
@@ -5736,6 +5741,88 @@ fn a_reply_posted_before_the_wait_wakes_the_task_and_the_bots_own_reply_never_do
     assert!(stdin.contains(SLACK_TOKEN));
     let args = fs::read_to_string(setup.dir.join("curl-args")).unwrap();
     assert!(!args.contains(SLACK_TOKEN), "{args}");
+}
+
+#[test]
+fn the_intake_stops_polling_the_thread_of_a_cancelled_tasks_wait() {
+    let setup = asleep_on(
+        "slack-cancelled",
+        json!({ "type": "slack_reply", "channel": "C0123", "thread_ts": THREAD }),
+    );
+    assert!(setup.priory(&["cancel", "1"]).status.success());
+    setup.answer_slack(&[]);
+
+    setup.intake();
+
+    let args = fs::read_to_string(setup.dir.join("curl-args")).unwrap_or_default();
+    assert!(!args.contains("conversations.replies"), "{args}");
+}
+
+#[test]
+fn a_rate_limited_poll_starts_with_a_different_thread_each_minute() {
+    let mut setup = Setup::new("slack-starve");
+    let other = "1763500009.000100";
+    setup.calls(&[
+        wait(json!({ "type": "slack_reply", "channel": "C0123", "thread_ts": THREAD })),
+        wait(json!({ "type": "slack_reply", "channel": "C0123", "thread_ts": other })),
+    ]);
+    setup.publish(&requested(42));
+    setup.start();
+    // One run at a time, so each takes its own call from the fake's queue.
+    setup.until("runs", |rows| {
+        rows.first().is_some_and(|row| row[7] == "asleep")
+    });
+    setup.publish(&requested(43));
+    setup.until("runs", |rows| {
+        rows.len() == 2 && rows.iter().all(|row| row[7] == "asleep")
+    });
+    let later = |seconds| {
+        ts(herdr_bus::Timestamp::now()
+            .checked_add(Duration::from_secs(seconds))
+            .unwrap())
+    };
+    let (first, second) = (later(3600), later(3601));
+    let bin = setup.dir.join("bin");
+    fs::create_dir_all(&bin).unwrap();
+    let auth = json!({ "ok": true, "user_id": "U0BOT", "bot_id": "B0BOT" });
+    // Slack lets a new app read one thread a minute: every later call in a poll is refused.
+    let script = format!(
+        "#!/bin/sh\ncat > /dev/null\ncase \"$*\" in\n  *auth.test*) echo '{auth}' ;;\n  *conversations.replies*)\n    \
+         if [ -e '{dir}/called' ]; then echo '{{\"ok\":false,\"error\":\"ratelimited\"}}'; exit 0; fi\n    \
+         touch '{dir}/called'\n    thread=$(echo \"$*\" | sed 's/.*ts=\\([0-9.]*\\).*oldest.*/\\1/')\n    \
+         reply={first}; [ \"$thread\" = {other} ] && reply={second}\n    \
+         echo \"{{\\\"ok\\\":true,\\\"has_more\\\":false,\\\"messages\\\":[{{\\\"ts\\\":\\\"$reply\\\",\\\"thread_ts\\\":\\\"$thread\\\",\\\"user\\\":\\\"U0PERSON\\\",\\\"text\\\":\\\"done\\\"}}]}}\" ;;\nesac\n",
+        dir = setup.dir.display(),
+    );
+    fs::write(bin.join("curl"), script).unwrap();
+    fs::set_permissions(bin.join("curl"), fs::Permissions::from_mode(0o755)).unwrap();
+
+    for now in ["2026-11-19T10:00:00Z", "2026-11-19T10:01:00Z"] {
+        let _ = fs::remove_file(setup.dir.join("called"));
+        setup.intake_with(&[("PRIORY_NOW", now)]);
+    }
+
+    let replied: Vec<String> = setup
+        .bus()
+        .messages(&herdr_bus::MessageQuery {
+            output: Some(OUTPUT.into()),
+            limit: 100,
+            ..herdr_bus::MessageQuery::default()
+        })
+        .unwrap()
+        .into_iter()
+        .filter(|stored| stored.message.kind == "slack.thread.replied")
+        .map(|stored| {
+            stored.message.data["thread_ts"]
+                .as_str()
+                .unwrap()
+                .to_owned()
+        })
+        .collect();
+    assert!(
+        replied.contains(&THREAD.to_owned()) && replied.contains(&other.to_owned()),
+        "{replied:?}"
+    );
 }
 
 /// A Linear GraphQL answer holding `nodes` at `field`.

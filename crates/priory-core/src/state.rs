@@ -602,9 +602,11 @@ pub(crate) fn due(db: &mut Connection) -> rusqlite::Result<()> {
 /// The resource and the agent's last prompt of each open wait that the intake polls for.
 pub fn watched(db: &Connection) -> rusqlite::Result<Vec<(String, String)>> {
     db.prepare(
-        "SELECT resource, coalesce(since, created) FROM waits WHERE fired IS NULL AND withdrawn IS NULL
-         AND kind IN ('linear_comment', 'linear_state', 'slack_reply', 'pull_request', 'checks', 'review')
-         ORDER BY id",
+        "SELECT waits.resource, coalesce(waits.since, waits.created) FROM waits
+         JOIN tasks ON tasks.id = waits.task AND tasks.state NOT IN ('done', 'failed', 'dropped')
+         WHERE waits.fired IS NULL AND waits.withdrawn IS NULL
+         AND waits.kind IN ('linear_comment', 'linear_state', 'slack_reply', 'pull_request', 'checks', 'review')
+         ORDER BY waits.id",
     )?
     .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
     .collect()
