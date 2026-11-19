@@ -697,7 +697,8 @@ prompts.
 A Linear or Slack condition makes the task own `linear:<issue>` or `slack:<channel>:<thread_ts>`, as
 a pull request condition owns its pull request, and is refused when another active task owns it. It
 stores the time of the agent's last prompt, and only an event at or after that time fires it: an
-event's `time`, to the second. The intake watches the issue or thread from then on, as
+event's `time`, to the second. The wait also takes the events on its resource from that time on
+that the daemon ignored because no task owned it, so one of them can fire it at once. The intake watches the issue or thread from then on, as
 `docs/intake.md` describes, so a reply posted after the prompt and before the wait fires the wait at
 the next poll.
 
