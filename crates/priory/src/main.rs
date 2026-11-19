@@ -49,7 +49,8 @@ fn main() -> ExitCode {
         }
         Some("runs") => list(
             "id\ttask\tstep\ttmux\tsession\tstarted\tended\tend",
-            "SELECT id, task, step, tmux, session, started, ended, ended_as FROM runs ORDER BY id",
+            "SELECT id, task, step, tmux, coalesce(thread, session), started, ended, ended_as FROM runs
+             ORDER BY id",
         ),
         Some("outbox") => list(
             "id\ttask\trun\tstate\ttext",
@@ -431,8 +432,8 @@ fn count(n: usize, noun: &str) -> String {
     }
 }
 
-/// Reports a Claude Code hook to the daemon: `event`, with the session and prompt from the hook's
-/// JSON on stdin.
+/// Reports a harness hook to the daemon: `event`, with the session and prompt from the hook's JSON
+/// on stdin. A run's pane sets `PRIORY_SESSION`; a stdin session apart from it is the harness's own.
 fn hook(event: &str) -> ExitCode {
     let input: serde_json::Value = match serde_json::from_reader(std::io::stdin()) {
         Ok(input) => input,
@@ -445,12 +446,20 @@ fn hook(event: &str) -> ExitCode {
         eprintln!("priory hook: stdin has no session_id");
         return ExitCode::FAILURE;
     };
+    let priory = std::env::var("PRIORY_SESSION")
+        .ok()
+        .filter(|id| !id.is_empty());
+    let thread = priory
+        .as_ref()
+        .filter(|id| *id != session)
+        .map(|_| session.to_owned());
     let signal = state::Signal {
         event: event.to_owned(),
-        session: session.to_owned(),
+        session: priory.unwrap_or_else(|| session.to_owned()),
         prompt: input["prompt"].as_str().map(str::to_owned),
         message: input["message"].as_str().map(str::to_owned),
         transcript: input["transcript_path"].as_str().map(str::to_owned),
+        thread,
     };
     let line = serde_json::to_string(&signal).expect("signal serializes");
     match runtime::send(&runtime::home(), &line) {

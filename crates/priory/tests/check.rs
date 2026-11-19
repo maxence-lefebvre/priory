@@ -200,6 +200,30 @@ fn an_unknown_permission_mode_names_its_file_and_line() {
 }
 
 #[test]
+fn a_codex_agent_passes_and_its_claude_only_permissions_are_refused_with_their_line() {
+    let codex = "+++\ndescription = \"Implements one task.\"\nharness = \"codex\"\nmodel = \"gpt-6-astra\"\neffort = \"high\"\npermissions = { defaultMode = \"acceptEdits\" }\n+++\nMake the change.\n";
+    let outcome = check(&factory(
+        "codex",
+        &with("agents/implementer/agent.md", codex),
+    ));
+    assert_eq!((outcome.code, outcome.stderr.as_str()), (0, ""));
+
+    let claude_only = "+++\ndescription = \"Implements one task.\"\nharness = \"codex\"\n\n[permissions]\ndefaultMode = \"plan\"\nallow = [\"Bash(cargo test:*)\"]\ndeny = [\"Bash(git push:*)\"]\n+++\n";
+    let outcome = check(&factory(
+        "codex-claude-only",
+        &with("agents/implementer/agent.md", claude_only),
+    ));
+
+    assert_eq!(outcome.code, 1);
+    assert_eq!(
+        outcome.stderr,
+        "agents/implementer/agent.md:5: a codex agent cannot take `permissions.defaultMode = \"plan\"`: use manual, acceptEdits, auto or dontAsk\n\
+         agents/implementer/agent.md:5: a codex agent cannot take `permissions.allow`: Codex has no per-tool rules, so its sandbox and approvals follow `defaultMode` alone\n\
+         agents/implementer/agent.md:5: a codex agent cannot take `permissions.deny`: Codex has no per-tool rules, so its sandbox and approvals follow `defaultMode` alone\n"
+    );
+}
+
+#[test]
 fn the_bypass_permissions_mode_is_refused() {
     let agent = "+++\ndescription = \"Implements one task.\"\nharness = \"claude-code\"\npermissions = { defaultMode = \"bypassPermissions\" }\n+++\n";
 

@@ -10,7 +10,7 @@ use std::collections::BTreeMap;
 use std::io::Write;
 use std::time::Duration;
 
-const VERSION: i64 = 14;
+const VERSION: i64 = 15;
 
 const SCHEMA: &str = "
 CREATE TABLE tasks (
@@ -223,16 +223,21 @@ PRAGMA user_version = 13;
 ";
 
 const SCHEMA_14: &str = "
+ALTER TABLE runs ADD COLUMN thread TEXT;
+PRAGMA user_version = 14;
+";
+
+const SCHEMA_15: &str = "
 ALTER TABLE tasks ADD COLUMN generation INTEGER NOT NULL DEFAULT 1;
 ALTER TABLE asks ADD COLUMN withdrawn INTEGER;
 ALTER TABLE waits ADD COLUMN withdrawn INTEGER;
-PRAGMA user_version = 14;
+PRAGMA user_version = 15;
 ";
 
 /// Each schema change in order: a file at version `n` applies those from index `n` on.
 const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA, SCHEMA_2, SCHEMA_3, SCHEMA_4, SCHEMA_5, SCHEMA_6, SCHEMA_7, SCHEMA_8, SCHEMA_9,
-    SCHEMA_10, SCHEMA_11, SCHEMA_12, SCHEMA_13, SCHEMA_14,
+    SCHEMA_10, SCHEMA_11, SCHEMA_12, SCHEMA_13, SCHEMA_14, SCHEMA_15,
 ];
 
 /// The order the queue starts tasks in: band, then a person's order, then age. A band the factory
@@ -707,10 +712,23 @@ pub(crate) fn resumable(
     agent: &str,
 ) -> rusqlite::Result<Option<String>> {
     db.query_row(
-        // A session the agent once shared stays shared, so two tasks cannot both resume it.
+        // A session the agent once shared stays shared, so two tasks cannot both resume it, even
+        // after a harness change gave the agent another shared session.
         "SELECT session FROM runs WHERE task = ?1 AND agent = ?2 AND ready = 1
-         AND session NOT IN (SELECT session FROM shared_sessions) ORDER BY id DESC LIMIT 1",
+         AND session NOT IN (SELECT session FROM shared_sessions)
+         AND session NOT IN (SELECT session FROM runs GROUP BY session HAVING count(DISTINCT task) > 1)
+         ORDER BY id DESC LIMIT 1",
         params![task, agent],
+        |row| row.get(0),
+    )
+    .optional()
+}
+
+/// The harness's own id for `session`, when it differs from Priory's, as Codex's thread id does.
+pub(crate) fn thread(db: &Connection, session: &str) -> rusqlite::Result<Option<String>> {
+    db.query_row(
+        "SELECT thread FROM runs WHERE session = ?1 AND thread IS NOT NULL ORDER BY id DESC LIMIT 1",
+        [session],
         |row| row.get(0),
     )
     .optional()
@@ -868,6 +886,7 @@ pub(crate) struct LiveRun {
     pub id: i64,
     pub task: i64,
     pub step: String,
+    pub agent: String,
     pub workflow: String,
     pub tmux: String,
     pub session: String,
@@ -886,7 +905,7 @@ pub(crate) fn live(db: &Connection) -> rusqlite::Result<Vec<LiveRun>> {
     let mut statement = db.prepare(&format!(
         "SELECT runs.id, runs.task, runs.step, tasks.workflow, runs.tmux, runs.session, tasks.worktree,
          NOT runs.ready AND runs.started <= strftime('%Y-%m-%dT%H:%M:%SZ', 'now', '-{READY_WITHIN}'),
-         unixepoch('now') - unixepoch(runs.turn), runs.prompted
+         unixepoch('now') - unixepoch(runs.turn), runs.prompted, coalesce(runs.agent, '')
          FROM runs JOIN tasks ON tasks.id = runs.task WHERE runs.ended IS NULL ORDER BY runs.id"
     ))?;
     statement
@@ -902,6 +921,7 @@ pub(crate) fn live(db: &Connection) -> rusqlite::Result<Vec<LiveRun>> {
                 late: row.get(7)?,
                 turn: row.get(8)?,
                 prompted: row.get(9)?,
+                agent: row.get(10)?,
             })
         })?
         .collect()
@@ -919,6 +939,9 @@ pub struct Signal {
     /// The session transcript Claude names in every hook.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub transcript: Option<String>,
+    /// The harness's own session id, when it chose one apart from `session`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thread: Option<String>,
 }
 
 /// Applies a hook signal: the run is idle after `SessionStart` or `Stop`, and busy after
@@ -944,8 +967,9 @@ pub(crate) fn signal(
     match signal.event.as_str() {
         "SessionStart" => {
             tx.execute(
-                "UPDATE runs SET idle = 1, ready = 1, turn = NULL WHERE id = ?1",
-                [run],
+                "UPDATE runs SET idle = 1, ready = 1, turn = NULL, thread = coalesce(?2, thread)
+                 WHERE id = ?1",
+                params![run, signal.thread],
             )?;
             crate::trace::begin(&tx, trace, run, signal.transcript.as_deref())?;
         }

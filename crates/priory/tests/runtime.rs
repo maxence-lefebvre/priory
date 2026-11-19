@@ -479,6 +479,200 @@ fn an_agent_in_auto_mode_gets_a_run_in_auto_mode_and_its_rules_join_priorys_own(
     assert!(settings["hooks"]["PermissionRequest"].is_array());
 }
 
+const CODEX: &str = "+++\ndescription = \"Reviews one change.\"\nharness = \"codex\"\nmodel = \"gpt-6-astra\"\neffort = \"low\"\n+++\nYou review one change.\n";
+
+/// The `-c` overrides the fake `codex` got at its latest launch, merged into one table.
+fn codex_config(setup: &Setup) -> serde_json::Value {
+    serde_json::from_str(&fs::read_to_string(setup.dir.join("fake/codex-config.json")).unwrap())
+        .unwrap()
+}
+
+fn codex_args(setup: &Setup) -> Vec<String> {
+    fs::read_to_string(setup.dir.join("fake/codex-args.log"))
+        .unwrap()
+        .lines()
+        .map(str::to_owned)
+        .collect()
+}
+
+#[test]
+fn a_codex_agent_runs_codex_with_priorys_hooks_mcp_server_and_a_sandbox_that_asks() {
+    let mut setup = Setup::new("codex-start");
+    fs::write(setup.dir.join("factory/agents/implementer/agent.md"), CODEX).unwrap();
+    setup.publish(&requested(42));
+
+    setup.start();
+
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") == 1);
+    let args = codex_args(&setup);
+    assert_ne!(args.first().map(String::as_str), Some("resume"), "{args:?}");
+    assert!(
+        !args.iter().any(|arg| arg.contains("bypass")),
+        "Priory never skips Codex's hook trust: {args:?}"
+    );
+    let config = codex_config(&setup);
+    let exe = Path::new(env!("CARGO_BIN_EXE_priory"));
+    assert_eq!(
+        config["mcp_servers"]["priory"],
+        json!({
+            "command": exe,
+            "args": ["mcp", "--session", tmux_tag(&setup)],
+            "env": { "PRIORY_HOME": setup.dir.join("home") },
+            "default_tools_approval_mode": "approve",
+        })
+    );
+    for (key, value) in [
+        ("model", "gpt-6-astra"),
+        ("model_reasoning_effort", "low"),
+        ("developer_instructions", "You review one change."),
+        ("sandbox_mode", "read-only"),
+        ("approval_policy", "on-request"),
+        ("approvals_reviewer", "user"),
+    ] {
+        assert_eq!(config[key], value, "{key} in {config}");
+    }
+    for event in [
+        "SessionStart",
+        "UserPromptSubmit",
+        "Stop",
+        "PermissionRequest",
+        "PreToolUse",
+    ] {
+        assert!(config["hooks"][event].is_array(), "{event} in {config}");
+    }
+    let hooks = config["hooks"].to_string();
+    assert!(
+        !hooks.contains(&tmux_tag(&setup)),
+        "a person trusts the hooks once, so no run's session is in them: {hooks}"
+    );
+    assert_eq!(setup.rows("tasks")[0][4], "running");
+}
+
+#[test]
+fn a_codex_run_with_no_session_start_names_the_codex_command_whose_hooks_to_trust() {
+    let mut setup = Setup::new("codex-untrusted");
+    fs::write(setup.dir.join("factory/agents/implementer/agent.md"), CODEX).unwrap();
+    setup.publish(&requested(42));
+    setup.hold("silent");
+    setup.start();
+    setup.until("runs", |rows| rows.len() == 1);
+
+    let tasks = setup.within(75, "tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == "blocked")
+    });
+
+    let clone = setup.dir.join("home/repos/owner/repo");
+    let reason = &tasks[0][7];
+    let prefix = format!(
+        "codex showed no SessionStart within 60s; trust the clone and Priory's hooks once: cd {} && codex -c ",
+        clone.display()
+    );
+    assert!(reason.starts_with(&prefix), "{reason}");
+    assert!(
+        reason.ends_with(", accept the folder, type /hooks and trust Priory's hooks, then exit"),
+        "{reason}"
+    );
+    for event in [
+        "SessionStart",
+        "UserPromptSubmit",
+        "Stop",
+        "PreToolUse",
+        "PermissionRequest",
+    ] {
+        assert!(
+            reason.contains(&format!(" -c 'hooks.{event}=")),
+            "{event} in {reason}"
+        );
+    }
+}
+
+/// The `@priory` tag of task 1's pane: the id Priory gave its run, which its tools carry too.
+fn tmux_tag(setup: &Setup) -> String {
+    let out = setup.tmux(&["list-panes", "-s", "-t", "=priory-1:", "-F", "#{@priory}"]);
+    String::from_utf8(out.stdout).unwrap().trim().to_owned()
+}
+
+#[test]
+fn a_codex_run_stores_the_thread_codex_chose_and_an_answer_resumes_it() {
+    let mut setup = Setup::with_workflow("codex-resume", STEPS);
+    fs::write(setup.dir.join("factory/agents/implementer/agent.md"), CODEX).unwrap();
+    setup.calls(&[ask()]);
+    setup.publish(&requested(42));
+    setup.start();
+    let runs = setup.until("runs", |rows| {
+        rows.first().is_some_and(|row| row[7] == "asleep")
+    });
+    let thread = fs::read_to_string(setup.dir.join("fake/thread")).unwrap();
+    assert_eq!(
+        runs[0][4], thread,
+        "priory runs shows the thread Codex chose"
+    );
+    setup.gone("priory-1");
+
+    let answered = setup.priory(&["answer", "1", "sqlite", "--revision", "1"]);
+
+    assert!(answered.status.success(), "{answered:?}");
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") == 2);
+    let args = codex_args(&setup);
+    assert_eq!(args[..2], ["resume", thread.as_str()], "{args:?}");
+    let runs = setup.rows("runs");
+    assert_eq!([&runs[1][2], &runs[1][4]], ["plan", &thread]);
+    assert!(
+        setup.typed()[1].starts_with("sqlite\n"),
+        "{:?}",
+        setup.typed()
+    );
+}
+
+#[test]
+fn a_codex_run_carried_into_the_next_step_keeps_its_thread() {
+    let mut setup = Setup::with_workflow("codex-carry", STEPS);
+    fs::write(setup.dir.join("factory/agents/implementer/agent.md"), CODEX).unwrap();
+    setup.calls(&[result("ready")]);
+    setup.publish(&requested(42));
+
+    setup.start();
+
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") == 2);
+    let thread = fs::read_to_string(setup.dir.join("fake/thread")).unwrap();
+    let runs = setup.rows("runs");
+    assert_eq!([&runs[0][2], &runs[0][4]], ["plan", &thread]);
+    assert_eq!([&runs[1][2], &runs[1][4]], ["implement", &thread]);
+}
+
+#[test]
+fn a_workflow_with_a_claude_step_then_a_codex_step_runs_to_done() {
+    let mut setup = Setup::with_workflow("mixed", TWO_AGENTS);
+    fs::write(setup.dir.join("factory/agents/reviewer/agent.md"), CODEX).unwrap();
+    setup.calls(&[result("passed"), result("approved")]);
+    setup.publish(&requested(42));
+
+    setup.start();
+
+    let tasks = setup.until("tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == "done")
+    });
+    assert_eq!(tasks[0][3], "review");
+    let runs = setup.rows("runs");
+    assert_eq!(runs.len(), 2, "{runs:?}");
+    assert_eq!([&runs[0][2], &runs[0][7]], ["implement", "moved"]);
+    assert_eq!([&runs[1][2], &runs[1][7]], ["review", "done"]);
+    let thread = fs::read_to_string(setup.dir.join("fake/thread")).unwrap();
+    assert_eq!(runs[1][4], thread);
+    assert_ne!(runs[0][4], thread);
+    assert_eq!(
+        codex_config(&setup)["developer_instructions"],
+        "You review one change."
+    );
+    let typed = setup.typed();
+    assert_eq!(
+        typed[1],
+        format!("{}\n", prompted("Review the change.", "approved, changes"))
+    );
+    let replies = setup.replies();
+    assert!(replies.iter().all(|r| !reply(r).1), "{replies:?}");
+}
+
 #[test]
 fn a_run_starts_without_the_variables_of_the_claude_session_that_started_the_daemon() {
     let mut setup = Setup::new("nested-env");

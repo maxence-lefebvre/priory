@@ -5,7 +5,7 @@ use crate::sweep;
 use crate::tools::{self, Act, Answer, Call, Done};
 use crate::trace::Trace;
 use herdr_bus::{Bus, Start};
-use priory_factory::factory::{Factory, PermissionMode, Session};
+use priory_factory::factory::{Factory, Harness, PermissionMode, Session};
 use priory_intake::intake::OUTPUT;
 use priory_runtime::runtime::{self, Launch, Line};
 use priory_runtime::{room, transcript};
@@ -149,8 +149,10 @@ fn tend(db: &mut Connection, trace: &Trace, share: &Share, home: &Path) -> Resul
                 continue;
             }
             let reason = format!(
-                "run {} exited: claude no longer runs in tmux session {}",
-                run.id, run.tmux
+                "run {} exited: {} no longer runs in tmux session {}",
+                run.id,
+                harness_of(factory, &run.agent).program(),
+                run.tmux
             );
             state::block(db, trace, run.task, "exited", &reason)?;
         } else if let Some((ended_as, reason)) = verdict(&run, factory) {
@@ -186,15 +188,20 @@ fn tend(db: &mut Connection, trace: &Trace, share: &Share, home: &Path) -> Resul
 /// Why a live run must end: no `SessionStart`, a permission prompt, or a turn past its step's timeout.
 fn verdict(run: &state::LiveRun, factory: &Factory) -> Option<(&'static str, String)> {
     if run.late {
-        // Claude asks whether to trust a new folder before any hook; Priory never answers it.
+        // Claude and Codex ask whether to trust a folder, and Codex its hooks, before any hook; Priory
+        // never answers.
         let clone = run
             .worktree
             .as_deref()
             .and_then(|worktree| runtime::clone_of(Path::new(worktree)))
             .map_or_else(|| "<clone>".to_owned(), |clone| clone.display().to_string());
+        let harness = harness_of(factory, &run.agent);
+        let exe = std::env::current_exe().unwrap_or_else(|_| "priory".into());
         let reason = format!(
-            "claude showed no SessionStart within {}; trust the clone once: cd {clone} && claude, accept, exit",
-            state::READY_WITHIN.replace(" seconds", "s")
+            "{} showed no SessionStart within {}; {}",
+            harness.program(),
+            state::READY_WITHIN.replace(" seconds", "s"),
+            harness.trust(&exe, &clone)
         );
         return Some(("exited", reason));
     }
@@ -338,8 +345,18 @@ fn start(
     } else {
         state::resumable(db, admission.task, name)?
     };
-    let resume = resumed.is_some();
-    let session = resumed.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+    let harness = harness(&agent.value.harness);
+    let resume = match (&resumed, &agent.value.harness) {
+        (Some(session), Harness::Codex) => state::thread(db, session)?,
+        (Some(session), Harness::ClaudeCode) => {
+            (state::thread(db, session)?.is_none()).then(|| session.clone())
+        }
+        (None, _) => None,
+    };
+    // A session the harness cannot resume, such as one of another harness, starts again.
+    let session = resumed
+        .filter(|_| resume.is_some())
+        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
     let tmux = format!("priory-{}", admission.task);
     let prompt = tools::step_prompt(step);
     state::start(
@@ -361,21 +378,39 @@ fn start(
     )?;
     let agent = &agent.value;
     let permissions = serde_json::to_value(&agent.permissions).expect("permissions serialize");
-    Ok(runtime::launch(&Launch {
-        tmux: &tmux,
-        dir: &worktree,
-        home,
-        session: &session,
-        resume,
-        model: agent.model.as_deref(),
-        effort: agent.effort.as_deref(),
-        body: &agent.body,
-        permissions,
-        permission_mode: agent
-            .permissions
-            .default_mode
-            .map_or("manual", PermissionMode::as_str),
-    }))
+    Ok(runtime::launch(
+        harness,
+        &Launch {
+            tmux: &tmux,
+            dir: &worktree,
+            home,
+            session: &session,
+            resume: resume.as_deref(),
+            model: agent.model.as_deref(),
+            effort: agent.effort.as_deref(),
+            body: &agent.body,
+            permissions,
+            permission_mode: agent
+                .permissions
+                .default_mode
+                .map_or("manual", PermissionMode::as_str),
+        },
+    ))
+}
+
+/// The harness that runs `agent`; Claude Code for an agent the factory lost.
+fn harness_of(factory: &Factory, agent: &str) -> &'static dyn runtime::Harness {
+    factory
+        .agents
+        .get(agent)
+        .map_or(&runtime::ClaudeCode, |agent| harness(&agent.value.harness))
+}
+
+fn harness(harness: &Harness) -> &'static dyn runtime::Harness {
+    match harness {
+        Harness::ClaudeCode => &runtime::ClaudeCode,
+        Harness::Codex => &runtime::Codex,
+    }
 }
 
 fn drain(bus: &Bus, db: &mut Connection, factory: &Factory) -> Result<(), Error> {
