@@ -6040,3 +6040,28 @@ fn a_run_gets_at_most_three_handler_calls() {
     assert_eq!(setup.handler_records().len(), 3);
     assert_eq!(setup.rows("outbox").len(), 5);
 }
+
+#[test]
+fn a_left_stall_gets_no_second_call_even_after_a_daemon_restart() {
+    let mut setup = stalls("handler-leave", WORKFLOW);
+    setup.answers(&[json!({ "action": "leave", "why": "it reads a long log" })]);
+    setup.publish(&requested(42));
+
+    setup.start();
+
+    setup.within(20, "outbox", |rows| with(rows, 3, "confirmed") == 2);
+    let deadline = Instant::now() + Duration::from_secs(15);
+    while setup.handler_records().is_empty() {
+        assert!(Instant::now() < deadline, "no handler call");
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    setup.crash();
+    setup.start();
+    std::thread::sleep(Duration::from_secs(5));
+    assert_eq!(setup.handled().len(), 1);
+    let records = setup.handler_records();
+    assert_eq!(
+        [&records[0]["data"]["action"], &records[0]["data"]["text"]],
+        ["leave", "it reads a long log"]
+    );
+}
