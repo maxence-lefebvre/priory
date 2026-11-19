@@ -22,6 +22,21 @@ pub fn home() -> PathBuf {
     state.join("priory-oss")
 }
 
+/// The path hooks and MCP servers run Priory by: `PRIORY_EXE`, else the absolute path Priory was
+/// invoked by, else its resolved binary. Codex keys hook trust on the command, so a path that
+/// survives upgrades, such as a profile link rather than a Nix store path, keeps that trust.
+pub fn exe() -> Result<PathBuf, String> {
+    if let Some(exe) = std::env::var_os("PRIORY_EXE").filter(|exe| !exe.is_empty()) {
+        return Ok(PathBuf::from(exe));
+    }
+    if let Some(invoked) = std::env::args_os().next().map(PathBuf::from)
+        && invoked.is_absolute()
+    {
+        return Ok(invoked);
+    }
+    std::env::current_exe().map_err(|error| error.to_string())
+}
+
 /// Runs `command` and returns its stdout, or an error naming it with its stderr.
 pub(crate) fn run(command: &mut Command) -> Result<String, String> {
     let output = command
@@ -175,6 +190,8 @@ pub struct Launch<'a> {
     pub model: Option<&'a str>,
     pub effort: Option<&'a str>,
     pub body: &'a str,
+    /// The run's first prompt, for a harness that takes it as an argument rather than a paste.
+    pub prompt: Option<&'a str>,
     /// The agent's Claude Code `permissions` settings, merged into Priory's own.
     pub permissions: serde_json::Value,
     /// The agent's `defaultMode`, or `manual`.
@@ -273,6 +290,12 @@ impl Harness for Codex {
         for (key, value) in config {
             args.extend(["-c".to_owned(), override_of(key, value)?]);
         }
+        // A shared server would lend the run another session's environment and hook trust.
+        args.push("--no-daemon".to_owned());
+        // Codex 0.170 fires SessionStart with the first turn, so a paste after it would never come.
+        if let Some(prompt) = launch.prompt {
+            args.extend(["--".to_owned(), prompt.to_owned()]);
+        }
         Ok(args)
     }
 
@@ -323,7 +346,7 @@ fn codex_hooks(exe: &Path) -> Vec<(&'static str, serde_json::Value)> {
 /// Starts the harness in a detached tmux session, with hooks that report to this daemon. The same
 /// tmux command tags the new pane with the run's session id, so a crash cannot leave it untagged.
 pub fn launch(harness: &dyn Harness, launch: &Launch) -> Result<(), String> {
-    let exe = std::env::current_exe().map_err(|error| error.to_string())?;
+    let exe = exe()?;
     let mut command = tmux();
     command
         .args([
@@ -442,6 +465,19 @@ pub fn tagged() -> Vec<(String, String)> {
             (!tag.is_empty()).then(|| (name.to_owned(), tag.to_owned()))
         })
         .collect()
+}
+
+/// The last 30 non-empty lines on the screen of the tmux session `name`, or none once it is gone.
+pub fn screen(name: &str) -> Vec<String> {
+    let shown =
+        run(tmux().args(["capture-pane", "-p", "-t", &format!("={name}:")])).unwrap_or_default();
+    let lines: Vec<_> = shown
+        .lines()
+        .map(str::trim_end)
+        .filter(|line| !line.is_empty())
+        .map(str::to_owned)
+        .collect();
+    lines[lines.len().saturating_sub(30)..].to_vec()
 }
 
 /// Kills the tmux session `name`, if it still exists.

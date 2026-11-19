@@ -196,13 +196,26 @@ fn verdict(run: &state::LiveRun, factory: &Factory) -> Option<(&'static str, Str
             .and_then(|worktree| runtime::clone_of(Path::new(worktree)))
             .map_or_else(|| "<clone>".to_owned(), |clone| clone.display().to_string());
         let harness = harness_of(factory, &run.agent);
-        let exe = std::env::current_exe().unwrap_or_else(|_| "priory".into());
-        let reason = format!(
+        let exe = runtime::exe().unwrap_or_else(|_| "priory".into());
+        let mut reason = format!(
             "{} showed no SessionStart within {}; {}",
             harness.program(),
             state::READY_WITHIN.replace(" seconds", "s"),
             harness.trust(&exe, &clone)
         );
+        let screen = runtime::screen(&run.tmux);
+        eprintln!(
+            "priory daemon: run {} never started; its pane ended with:\n{}",
+            run.id,
+            screen.join("\n")
+        );
+        let tail: Vec<_> = screen[screen.len().saturating_sub(5)..]
+            .iter()
+            .map(|line| line.trim())
+            .collect();
+        if !tail.is_empty() {
+            reason.push_str(&format!(". Its pane ended with: {}", tail.join(" | ")));
+        }
         return Some(("exited", reason));
     }
     if let Some(message) = &run.prompted {
@@ -359,7 +372,7 @@ fn start(
         .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
     let tmux = format!("priory-{}", admission.task);
     let prompt = tools::step_prompt(step);
-    state::start(
+    let run = state::start(
         db,
         &NewRun {
             task: admission.task,
@@ -376,6 +389,10 @@ fn start(
             lanes: factory.lanes(),
         },
     )?;
+    let first = match agent.value.harness {
+        Harness::Codex => state::claim(db, run)?,
+        Harness::ClaudeCode => None,
+    };
     let agent = &agent.value;
     let permissions = serde_json::to_value(&agent.permissions).expect("permissions serialize");
     Ok(runtime::launch(
@@ -389,6 +406,7 @@ fn start(
             model: agent.model.as_deref(),
             effort: agent.effort.as_deref(),
             body: &agent.body,
+            prompt: first.as_deref(),
             permissions,
             permission_mode: agent
                 .permissions
