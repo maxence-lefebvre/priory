@@ -1,6 +1,7 @@
 use herdr_bus::{Bus, Message, Output};
 use serde_json::json;
 use std::fs;
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output as Exit};
 use std::time::{Duration, Instant};
@@ -4965,4 +4966,163 @@ fn a_slack_reply_wait_fires_on_a_new_reply_in_its_thread_only() {
             && typed[1].contains("reply 1763500001.000003"),
         "{typed:?}"
     );
+}
+
+const SLACK_TOKEN: &str = "xoxb-secret-test-token";
+
+impl Setup {
+    /// Makes the fake `curl` answer each call whose arguments contain a pattern of `answers`, and
+    /// record its arguments and standard input.
+    fn answer_curl(&self, answers: &[(&str, serde_json::Value)]) {
+        let bin = self.dir.join("bin");
+        fs::create_dir_all(&bin).unwrap();
+        let mut script = format!(
+            "#!/bin/sh\necho \"$*\" >> '{dir}/curl-args'\ncat >> '{dir}/curl-stdin'\ncase \"$*\" in\n",
+            dir = self.dir.display()
+        );
+        for (index, (pattern, answer)) in answers.iter().enumerate() {
+            let file = self.dir.join(format!("curl-answer-{index}.json"));
+            fs::write(&file, answer.to_string()).unwrap();
+            script.push_str(&format!("  *'{pattern}'*) cat '{}' ;;\n", file.display()));
+        }
+        script.push_str("  *) echo \"unexpected call $*\" >&2; exit 2 ;;\nesac\n");
+        let curl = bin.join("curl");
+        fs::write(&curl, script).unwrap();
+        fs::set_permissions(&curl, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    /// Makes the fake `curl` answer Slack's Web API: `auth.test` as bot U0BOT, and each
+    /// `conversations.replies` with `replies`, the thread's first message included.
+    fn answer_slack(&self, replies: &[serde_json::Value]) {
+        let mut messages = vec![json!({ "ts": THREAD, "thread_ts": THREAD, "user": "U0PERSON", "text": "first" })];
+        messages.extend_from_slice(replies);
+        self.answer_curl(&[
+            ("auth.test", json!({ "ok": true, "user_id": "U0BOT", "bot_id": "B0BOT" })),
+            ("conversations.replies", json!({ "ok": true, "messages": messages, "has_more": false })),
+        ]);
+    }
+
+    /// Runs one poll of `priory intake` on a factory with no trigger, against the fakes in `bin`.
+    fn intake(&self) {
+        let factory = self.dir.join("intake-factory");
+        for (path, content) in [
+            ("factory.toml", "name = \"demo\""),
+            ("agents/implementer/agent.md", AGENT),
+            ("workflows/implement.toml", WORKFLOW),
+        ] {
+            let file = factory.join(path);
+            fs::create_dir_all(file.parent().unwrap()).unwrap();
+            fs::write(file, content).unwrap();
+        }
+        let path = std::env::join_paths(
+            std::iter::once(self.dir.join("bin"))
+                .chain(std::env::split_paths(&std::env::var_os("PATH").unwrap())),
+        )
+        .unwrap();
+        let output = self
+            .command(env!("CARGO_BIN_EXE_priory"))
+            .args(["intake", "--once"])
+            .arg(&factory)
+            .env("PATH", path)
+            .env("SLACK_BOT_TOKEN", SLACK_TOKEN)
+            .env("LINEAR_API_KEY", "lin_api_secret_test_key")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "intake: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+}
+
+/// A message in the thread, by `user`, posted at `ts`.
+fn slack_message(ts: &str, user: &str) -> serde_json::Value {
+    json!({ "ts": ts, "thread_ts": THREAD, "user": user, "text": format!("said {ts}") })
+}
+
+/// Slack's `ts` for `time`: seconds since the epoch, with six decimals.
+fn ts(time: herdr_bus::Timestamp) -> String {
+    format!("{}.{:06}", time.as_second(), time.subsec_microsecond())
+}
+
+#[test]
+fn a_reply_posted_before_the_wait_wakes_the_task_and_the_bots_own_reply_never_does() {
+    let setup = asleep_on(
+        "slack-intake",
+        json!({ "type": "slack_reply", "channel": "C0123", "thread_ts": THREAD }),
+    );
+    // The second the wait was stored in: after the agent's last prompt, before the intake polls.
+    let stored: herdr_bus::Timestamp = setup.rows("waits")[0][5].parse().unwrap();
+    let before_prompt = stored.checked_sub(Duration::from_secs(3600)).unwrap();
+    let old = slack_message(&ts(before_prompt), "U0PERSON");
+    let mine = slack_message(&ts(herdr_bus::Timestamp::now()), "U0BOT");
+    setup.answer_slack(&[old.clone(), mine.clone()]);
+
+    setup.intake();
+    stays_asleep(&setup);
+    let person = stored;
+    setup.answer_slack(&[old, slack_message(&ts(person), "U0PERSON"), mine]);
+    setup.intake();
+
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 2);
+    let typed = setup.typed();
+    assert!(
+        typed[1].starts_with(&format!("slack.thread.replied C0123:{THREAD} {{"))
+            && typed[1].contains(&format!("said {}", ts(person))),
+        "{typed:?}"
+    );
+    let stdin = fs::read_to_string(setup.dir.join("curl-stdin")).unwrap();
+    assert!(stdin.contains(SLACK_TOKEN));
+    let args = fs::read_to_string(setup.dir.join("curl-args")).unwrap();
+    assert!(!args.contains(SLACK_TOKEN), "{args}");
+}
+
+/// A Linear GraphQL answer holding `nodes` at `field`.
+fn linear_page(field: &str, nodes: serde_json::Value) -> serde_json::Value {
+    json!({ "data": { field: { "nodes": nodes, "pageInfo": { "hasNextPage": false, "endCursor": null } } } })
+}
+
+fn linear_comment(issue: &str, body: &str) -> serde_json::Value {
+    json!({
+        "id": format!("comment-{issue}"),
+        "body": body,
+        "url": format!("https://linear.app/acme/issue/{issue}#comment"),
+        "createdAt": herdr_bus::Timestamp::now().to_string(),
+        "user": { "displayName": "max" },
+        "issue": {
+            "id": format!("issue-{issue}"), "identifier": issue, "title": "Fix the thing",
+            "url": format!("https://linear.app/acme/issue/{issue}"),
+            "team": { "key": "ENG" }, "project": null, "state": { "name": "In Progress" },
+            "labels": { "nodes": [] }
+        }
+    })
+}
+
+#[test]
+fn a_linear_wait_makes_an_intake_without_linear_triggers_poll_linear_for_its_issue() {
+    let setup = asleep_on(
+        "linear-intake",
+        json!({ "type": "linear_comment", "issue": "ENG-7" }),
+    );
+    setup.answer_curl(&[
+        ("query Issues", linear_page("issues", json!([]))),
+        (
+            "query Comments",
+            linear_page(
+                "comments",
+                json!([linear_comment("ENG-8", "elsewhere"), linear_comment("ENG-7", "Covered.")]),
+            ),
+        ),
+    ]);
+
+    setup.intake();
+
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 2);
+    let typed = setup.typed();
+    assert!(
+        typed[1].starts_with("linear.comment.created ENG-7 {") && typed[1].contains("Covered."),
+        "{typed:?}"
+    );
+    assert!(!typed[1].contains("elsewhere"), "{typed:?}");
 }

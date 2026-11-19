@@ -506,6 +506,16 @@ pub(crate) fn due(db: &mut Connection) -> rusqlite::Result<()> {
     tx.commit()
 }
 
+/// The resource and the agent's last prompt of each open wait that the intake polls for.
+pub fn watched(db: &Connection) -> rusqlite::Result<Vec<(String, String)>> {
+    db.prepare(
+        "SELECT resource, since FROM waits WHERE fired IS NULL AND withdrawn IS NULL
+         AND kind IN ('linear_comment', 'linear_state', 'slack_reply') ORDER BY id",
+    )?
+    .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+    .collect()
+}
+
 /// The oldest active task that owns any of `resources`.
 pub(crate) fn owner(tx: &Transaction, resources: &[String]) -> rusqlite::Result<Option<Task>> {
     let resources = serde_json::to_string(resources).expect("resources serialize");

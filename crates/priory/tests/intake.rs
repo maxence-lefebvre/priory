@@ -1468,7 +1468,7 @@ fn a_linear_trigger_without_the_key_fails_and_publishes_nothing() {
     assert_eq!(output.status.code(), Some(1));
     assert_eq!(
         String::from_utf8_lossy(&output.stderr),
-        "priory intake: LINEAR_API_KEY is not set: the Linear triggers need a Linear API key\n"
+        "priory intake: LINEAR_API_KEY is not set: the Linear triggers and waits need a Linear API key\n"
     );
     assert!(setup.output().is_empty());
 }
