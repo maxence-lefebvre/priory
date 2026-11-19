@@ -1416,6 +1416,78 @@ pub(crate) fn lost(
     tx.commit()
 }
 
+/// What a repair found about a failed run, what it did, and whether the agent may start again.
+pub(crate) struct Repair {
+    pub cause: String,
+    pub action: &'static str,
+    pub gone: bool,
+}
+
+/// Whether `run` followed a repair of this generation and stored no result, ask or wait.
+pub(crate) fn spent(db: &Connection, run: i64) -> rusqlite::Result<bool> {
+    db.query_row(
+        "SELECT EXISTS (SELECT 1 FROM trace WHERE type = 'factory.task.repaired'
+           AND json_extract(event, '$.data.outcome') = 'ready'
+           AND json_extract(event, '$.data.generation') = (SELECT generation FROM tasks
+             WHERE id = (SELECT task FROM runs WHERE id = ?1))
+           AND json_extract(event, '$.data.run') = (SELECT CAST(max(id) AS TEXT) FROM runs
+             WHERE task = (SELECT task FROM runs WHERE id = ?1) AND id < ?1))
+         AND NOT EXISTS (SELECT 1 FROM results WHERE run = ?1)
+         AND NOT EXISTS (SELECT 1 FROM asks WHERE run = ?1)
+         AND NOT EXISTS (SELECT 1 FROM waits WHERE run = ?1)",
+        [run],
+        |row| row.get(0),
+    )
+}
+
+/// Fails the blocked task of `run`, then makes it ready with the cause in its prompt when `repair` allows.
+pub(crate) fn fail(
+    db: &mut Connection,
+    trace: &Trace,
+    task: i64,
+    run: i64,
+    reason: &str,
+    repair: Option<&Repair>,
+) -> rusqlite::Result<()> {
+    let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let blocked: bool = tx.query_row(
+        "SELECT state = 'blocked' FROM tasks WHERE id = ?1",
+        [task],
+        |row| row.get(0),
+    )?;
+    if !blocked {
+        return Ok(());
+    }
+    let Some(repair) = repair else {
+        let reason = format!(
+            "{reason}; it failed again after its repair, so Priory did not restart the agent"
+        );
+        set(&tx, task, "failed", None, Some(&reason))?;
+        return tx.commit();
+    };
+    let outcome = if repair.gone { "ready" } else { "failed" };
+    trace::repaired(
+        &tx,
+        trace,
+        task,
+        run,
+        [&repair.cause, repair.action, outcome],
+    )?;
+    let found = format!("Cause: {}. Action: {}.", repair.cause, repair.action);
+    if repair.gone {
+        let text = format!(
+            "Priory repaired this task after: {reason}. {found} Check the worktree, then continue."
+        );
+        wake(&tx, task, &text)?;
+        set(&tx, task, "ready", None, None)?;
+    } else {
+        let reason =
+            format!("{reason}. {found} The cause persists, so Priory did not restart the agent.");
+        set(&tx, task, "failed", None, Some(&reason))?;
+    }
+    tx.commit()
+}
+
 /// Records `answer` as the approval of each step in `approved`, at the task's commit.
 fn approve(
     tx: &Transaction,

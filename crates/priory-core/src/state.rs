@@ -1077,6 +1077,8 @@ pub(crate) struct LiveRun {
     pub tmux: String,
     pub session: String,
     pub worktree: Option<String>,
+    /// Its `SessionStart` arrived.
+    pub ready: bool,
     /// No `SessionStart` arrived within `READY_WITHIN` of the start.
     pub late: bool,
     /// How long its current turn has run, in seconds.
@@ -1091,7 +1093,7 @@ pub(crate) fn live(db: &Connection) -> rusqlite::Result<Vec<LiveRun>> {
     let mut statement = db.prepare(&format!(
         "SELECT runs.id, runs.task, runs.step, tasks.workflow, runs.tmux, runs.session, tasks.worktree,
          NOT runs.ready AND runs.started <= strftime('%Y-%m-%dT%H:%M:%SZ', 'now', '-{READY_WITHIN}'),
-         unixepoch('now') - unixepoch(runs.turn), runs.prompted, coalesce(runs.agent, '')
+         unixepoch('now') - unixepoch(runs.turn), runs.prompted, coalesce(runs.agent, ''), runs.ready
          FROM runs JOIN tasks ON tasks.id = runs.task WHERE runs.ended IS NULL ORDER BY runs.id"
     ))?;
     statement
@@ -1108,6 +1110,7 @@ pub(crate) fn live(db: &Connection) -> rusqlite::Result<Vec<LiveRun>> {
                 turn: row.get(8)?,
                 prompted: row.get(9)?,
                 agent: row.get(10)?,
+                ready: row.get(11)?,
             })
         })?
         .collect()
