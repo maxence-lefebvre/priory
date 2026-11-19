@@ -70,9 +70,15 @@ fn text(arguments: &Value, name: &str) -> Result<String, String> {
         .ok_or_else(|| format!("{name} must be a string"))
 }
 
-/// GitHub reports full SHAs, so an abbreviated one could never match a pull request head.
-fn full_sha(commit: &str) -> bool {
-    matches!(commit.len(), 40 | 64) && commit.bytes().all(|byte| byte.is_ascii_hexdigit())
+/// `commit` in lower case, as GitHub names a pull request head; an abbreviated SHA could never
+/// match one.
+fn full_sha(commit: &str) -> Result<String, String> {
+    if matches!(commit.len(), 40 | 64) && commit.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Ok(commit.to_ascii_lowercase());
+    }
+    Err(format!(
+        "commit {commit:?} is not a full commit SHA: send the 40 characters that git rev-parse HEAD prints"
+    ))
 }
 
 fn optional(arguments: &Value, name: &str) -> Result<Option<String>, String> {
@@ -149,11 +155,10 @@ fn result(
         Ok(fields) => fields,
         Err(error) => return Ok(Err(error)),
     };
-    if let Some(commit) = commit.as_deref().filter(|commit| !full_sha(commit)) {
-        return Ok(Err(format!(
-            "commit {commit:?} is not a full commit SHA: send the 40 characters that git rev-parse HEAD prints"
-        )));
-    }
+    let commit = match commit.as_deref().map(full_sha).transpose() {
+        Ok(commit) => commit,
+        Err(error) => return Ok(Err(error)),
+    };
     let Some(step) = step(workflows, &run.workflow, &run.step) else {
         return Ok(Err(format!(
             "step {} is not in workflow {}",
@@ -272,7 +277,10 @@ fn wait(
             )?;
             let head = match &on["head_sha"] {
                 Value::Null => None,
-                Value::String(head) if kind == "checks" => Some(head.as_str()),
+                Value::String(head) if kind == "checks" => match full_sha(head) {
+                    Ok(head) => Some(head),
+                    Err(error) => return Ok(Err(error)),
+                },
                 _ => {
                     return Ok(Err(
                         "head_sha must be a commit, on a checks wait only".into()

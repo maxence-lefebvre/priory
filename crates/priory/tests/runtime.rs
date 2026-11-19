@@ -1895,11 +1895,13 @@ fn passed_at(commit: &str) -> serde_json::Value {
 /// Task 1 owns pull request 7 through a review wait, then a review wakes it and its result
 /// reaches `done` at commit `abc0000000000000000000000000000000000000`. Returns once that run ended.
 fn gated(name: &str) -> Setup {
+    gated_at(name, "abc0000000000000000000000000000000000000")
+}
+
+/// As `gated`, with the result naming `commit`.
+fn gated_at(name: &str, commit: &str) -> Setup {
     let mut setup = Setup::new(name);
-    setup.calls(&[
-        wait(on_pull_7("review")),
-        passed_at("abc0000000000000000000000000000000000000"),
-    ]);
+    setup.calls(&[wait(on_pull_7("review")), passed_at(commit)]);
     setup.publish(&requested(42));
     setup.start();
     setup.until("runs", |rows| rows.len() == 1 && rows[0][7] == "asleep");
@@ -1907,6 +1909,35 @@ fn gated(name: &str) -> Setup {
     setup.until("runs", |rows| rows.len() == 2 && rows[1][7] != "-");
     setup.gone("priory-1");
     setup
+}
+
+#[test]
+fn a_result_commit_in_capitals_matches_the_same_head_in_lower_case() {
+    let setup = gated_at("gate-capitals", "ABC0000000000000000000000000000000000000");
+
+    setup.publish(&check(1, 0));
+
+    setup.until("tasks", |rows| rows[0][4] == "done");
+}
+
+#[test]
+fn a_checks_wait_on_an_abbreviated_head_is_refused_and_nothing_is_stored() {
+    let mut on = on_pull_7("checks");
+    on["head_sha"] = json!("def0000");
+    let mut setup = Setup::new("checks-short-head");
+    setup.calls(&[wait(on)]);
+    setup.publish(&requested(42));
+
+    setup.start();
+
+    setup.written("fake/tools.log");
+    let (text, error) = reply(&setup.replies()[0]);
+    assert!(error, "{text}");
+    assert_eq!(
+        text,
+        "commit \"def0000\" is not a full commit SHA: send the 40 characters that git rev-parse HEAD prints"
+    );
+    assert!(setup.rows("waits").is_empty());
 }
 
 #[test]

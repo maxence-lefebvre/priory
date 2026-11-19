@@ -305,8 +305,9 @@ stored.
 - `result(outcome, summary, evidence?, commit?)` stores the run's result, which nothing can change
   or delete. The outcome must be a key of the step's `next`; otherwise the error lists the valid
   outcomes. An outcome that leads to `done` needs `commit` when the task owns a pull request,
-  as described under Done and checks. A `commit` must be a full SHA, since GitHub names pull
-  request heads by theirs; an abbreviated one is refused.
+  as described under Done and checks. A `commit`, like a checks wait's `head_sha`, must be a full
+  SHA, since GitHub names pull request heads by theirs: an abbreviated one is refused, and one in
+  capitals is stored in lower case.
 - `ask(question, options, recommendation, tradeoff)` stores an ask at revision 1.
 
 - `wait(on)` stores a wait, described under Waits.
