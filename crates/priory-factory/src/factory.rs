@@ -41,6 +41,15 @@ pub struct Settings {
     /// How long one git, gh or tmux command may run before Priory kills it.
     #[serde(default, deserialize_with = "duration")]
     pub command_timeout: Option<Duration>,
+    pub telemetry: Option<Telemetry>,
+}
+
+/// Where the daemon exports its trace records as OpenTelemetry spans.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Telemetry {
+    /// The OTLP/HTTP base URL, such as `http://127.0.0.1:4318`; spans go to its `/v1/traces`.
+    pub otlp: String,
 }
 
 /// How the daemon frees room: the built-in worktree sweep, the person's scripts, and the sweeper
@@ -589,6 +598,12 @@ impl Factory {
             .as_ref()
             .and_then(|settings| settings.value.command_timeout)
             .unwrap_or(Duration::from_secs(300))
+    }
+
+    /// The OTLP/HTTP base URL the daemon exports spans to; none sends nothing.
+    pub fn otlp(&self) -> Option<&str> {
+        let telemetry = self.settings.as_ref()?.value.telemetry.as_ref()?;
+        Some(telemetry.otlp.as_str())
     }
 
     pub fn bands(&self) -> Vec<&str> {

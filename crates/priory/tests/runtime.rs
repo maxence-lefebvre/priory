@@ -125,6 +125,7 @@ impl Setup {
         let mut command = Command::new(program);
         command
             .env_remove("TMUX")
+            .env_remove("OTEL_RESOURCE_ATTRIBUTES")
             .env("PATH", path)
             .env("TMUX_TMPDIR", self.dir.join("tmux"))
             .env("HERDR_BUS_DB", self.dir.join("bus.db"))
@@ -7554,4 +7555,301 @@ fn a_factory_without_a_handler_never_calls_one() {
     std::thread::sleep(Duration::from_secs(5));
     assert!(setup.handled().is_empty(), "{:?}", setup.handled());
     assert!(setup.handler_records().is_empty());
+}
+
+impl Setup {
+    /// Turns the OTLP exporter on in `factory.toml`, sending to `endpoint`.
+    fn telemetry(&self, endpoint: &str) {
+        let factory = format!("name = \"demo\"\n\n[telemetry]\notlp = \"{endpoint}\"\n");
+        fs::write(self.dir.join("factory/factory.toml"), factory).unwrap();
+    }
+
+    /// The OTLP requests the fake `curl` received, each `{url, body}`, oldest first.
+    fn posts(&self) -> Vec<serde_json::Value> {
+        fs::read_to_string(self.dir.join("fake/otlp.jsonl"))
+            .unwrap_or_default()
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect()
+    }
+
+    /// Waits until the requests hold `count` spans, and returns them.
+    fn until_spans(&self, count: usize) -> Vec<serde_json::Value> {
+        let deadline = Instant::now() + Duration::from_secs(15);
+        loop {
+            let spans = spans(&self.posts());
+            if spans.len() >= count {
+                return spans;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "only {} spans: {spans:?}\ndaemon: {}",
+                spans.len(),
+                fs::read_to_string(self.dir.join("daemon.log")).unwrap_or_default()
+            );
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+}
+
+/// Every span in `posts`, in the order they were sent.
+fn spans(posts: &[serde_json::Value]) -> Vec<serde_json::Value> {
+    posts
+        .iter()
+        .flat_map(|post| post["body"]["resourceSpans"].as_array().unwrap().clone())
+        .flat_map(|resource| resource["scopeSpans"].as_array().unwrap().clone())
+        .flat_map(|scope| scope["spans"].as_array().unwrap().clone())
+        .collect()
+}
+
+/// The value of attribute `key` in an OTLP attribute list, as JSON.
+fn attribute(attributes: &serde_json::Value, key: &str) -> serde_json::Value {
+    attributes
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|attribute| attribute["key"] == key)
+        .map_or(serde_json::Value::Null, |attribute| {
+            let value = &attribute["value"];
+            value
+                .get("stringValue")
+                .cloned()
+                .or_else(|| {
+                    value
+                        .get("intValue")
+                        .and_then(|int| int.as_str())
+                        .map(|int| json!(int.parse::<i64>().unwrap()))
+                })
+                .unwrap_or_else(|| value.clone())
+        })
+}
+
+fn is_hex(id: &serde_json::Value, digits: usize) -> bool {
+    id.as_str()
+        .is_some_and(|id| id.len() == digits && id.bytes().all(|byte| byte.is_ascii_hexdigit()))
+}
+
+#[test]
+fn a_finished_task_sends_one_trace_with_a_span_per_run_and_a_span_per_step_under_its_run() {
+    let mut setup = Setup::with_workflow("otlp", STEPS);
+    setup.telemetry("http://127.0.0.1:4318");
+    setup.calls(&[result("ready"), result("passed")]);
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == "done")
+    });
+
+    let spans = setup.until_spans(4);
+
+    let posts = setup.posts();
+    for post in &posts {
+        assert_eq!(post["url"], "http://127.0.0.1:4318/v1/traces");
+        let resource = &post["body"]["resourceSpans"][0]["resource"]["attributes"];
+        assert_eq!(attribute(resource, "service.name"), "priory");
+        assert_eq!(attribute(resource, "host.name"), "runner");
+    }
+    assert_eq!(spans.len(), 4, "{spans:?}");
+    let trace = &spans[0]["traceId"];
+    assert!(is_hex(trace, 32), "{trace}");
+    assert!(spans.iter().all(|span| &span["traceId"] == trace));
+    let ids: std::collections::HashSet<_> =
+        spans.iter().map(|span| span["spanId"].clone()).collect();
+    assert_eq!(ids.len(), 4);
+    assert!(ids.iter().all(|id| is_hex(id, 16)));
+    let records = setup.trace();
+    assert_eq!(records.len(), 2);
+    for record in &records {
+        let data = &record["data"];
+        let step = spans
+            .iter()
+            .find(|span| span["name"] == data["step"])
+            .unwrap_or_else(|| panic!("no span for step {}: {spans:?}", data["step"]));
+        let run = spans
+            .iter()
+            .find(|span| {
+                span["name"] == "invoke_agent implementer"
+                    && attribute(&span["attributes"], "priory.run.id") == data["run"]
+            })
+            .unwrap_or_else(|| panic!("no span for run {}: {spans:?}", data["run"]));
+        assert_eq!(step["parentSpanId"], run["spanId"]);
+        assert!(
+            run.get("parentSpanId").is_none_or(|parent| parent == ""),
+            "{run}"
+        );
+        let attributes = &step["attributes"];
+        assert_eq!(attribute(attributes, "priory.task.id"), "1");
+        assert_eq!(attribute(attributes, "priory.run.id"), data["run"]);
+        assert_eq!(attribute(attributes, "priory.step"), data["step"]);
+        assert_eq!(attribute(attributes, "priory.outcome"), data["outcome"]);
+        assert_eq!(attribute(attributes, "priory.lane"), "none/misc");
+        assert_eq!(attribute(attributes, "gen_ai.request.model"), data["model"]);
+        let tokens = &data["tokens"];
+        let input = ["input", "cache_read", "cache_write"]
+            .map(|kind| tokens[kind].as_i64().unwrap())
+            .iter()
+            .sum::<i64>();
+        assert_eq!(attribute(attributes, "gen_ai.usage.input_tokens"), input);
+        assert_eq!(
+            attribute(attributes, "gen_ai.usage.cache_read.input_tokens"),
+            tokens["cache_read"]
+        );
+        assert_eq!(
+            attribute(attributes, "gen_ai.usage.output_tokens"),
+            data["tokens"]["output"]
+        );
+        assert_eq!(
+            attribute(&run["attributes"], "gen_ai.agent.name"),
+            "implementer"
+        );
+        assert_eq!(attribute(&run["attributes"], "priory.task.id"), "1");
+        let start: u64 = step["startTimeUnixNano"].as_str().unwrap().parse().unwrap();
+        let end: u64 = step["endTimeUnixNano"].as_str().unwrap().parse().unwrap();
+        assert_eq!(
+            (end - start) / 1_000_000,
+            data["duration_ms"].as_u64().unwrap()
+        );
+    }
+}
+
+#[test]
+fn without_telemetry_nothing_is_sent_and_runs_get_no_otel_resource_attributes() {
+    let mut setup = Setup::with_workflow("otlp-off", STEPS);
+    setup.calls(&[result("ready"), result("passed")]);
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == "done")
+    });
+    std::thread::sleep(Duration::from_secs(2));
+
+    assert!(setup.posts().is_empty(), "{:?}", setup.posts());
+    assert_eq!(
+        fs::read_to_string(setup.dir.join("fake/otel.log")).unwrap(),
+        ""
+    );
+}
+
+#[test]
+fn a_run_gets_its_task_and_run_ids_in_otel_resource_attributes_after_the_daemons_own() {
+    let mut setup = Setup::new("otlp-resource");
+    setup.telemetry("http://127.0.0.1:4318");
+    setup.publish(&requested(42));
+    let exe = Path::new(env!("CARGO_BIN_EXE_priory"));
+    setup.start_with(exe, &[("OTEL_RESOURCE_ATTRIBUTES", "team=core")]);
+
+    setup.written("fake/otel.log");
+
+    assert_eq!(
+        fs::read_to_string(setup.dir.join("fake/otel.log")).unwrap(),
+        "OTEL_RESOURCE_ATTRIBUTES=team=core,priory.task.id=1,priory.run.id=1\n"
+    );
+}
+
+/// A task run to `done` through two model steps, its spans sent to `endpoint`.
+fn exported(name: &str, endpoint: &str) -> (Setup, Vec<serde_json::Value>) {
+    let mut setup = Setup::with_workflow(name, STEPS);
+    setup.telemetry(endpoint);
+    setup.calls(&[result("ready"), result("passed")]);
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == "done")
+    });
+    let spans = setup.until_spans(4);
+    (setup, spans)
+}
+
+#[test]
+fn a_restarted_daemon_resends_no_span() {
+    let (mut setup, _) = exported("otlp-restart", "http://127.0.0.1:4318");
+    // The cursor moves on the tick after curl ends; a crash before it resends, with the same ids.
+    std::thread::sleep(Duration::from_millis(1500));
+    let posts = setup.posts().len();
+
+    setup.crash();
+    setup.start();
+    setup.until("tasks", |rows| rows.len() == 1);
+    std::thread::sleep(Duration::from_secs(3));
+
+    assert_eq!(setup.posts().len(), posts, "{:?}", setup.posts());
+    assert_eq!(spans(&setup.posts()).len(), 4);
+}
+
+#[test]
+fn a_new_endpoint_gets_every_record_with_the_same_trace_and_span_ids() {
+    let (mut setup, first) = exported("otlp-ids", "http://127.0.0.1:4318");
+    setup.crash();
+    setup.telemetry("http://127.0.0.1:4319/");
+    setup.start();
+
+    let all = setup.until_spans(8);
+
+    let ids = |spans: &[serde_json::Value]| {
+        let mut ids: Vec<_> = spans
+            .iter()
+            .map(|span| {
+                [&span["traceId"], &span["spanId"], &span["parentSpanId"]].map(|id| id.to_string())
+            })
+            .collect();
+        ids.sort();
+        ids
+    };
+    let resent: Vec<_> = setup
+        .posts()
+        .into_iter()
+        .filter(|post| post["url"] == "http://127.0.0.1:4319/v1/traces")
+        .collect();
+    assert_eq!(ids(&spans(&resent)), ids(&first));
+    assert_eq!(all.len(), 8);
+}
+
+#[test]
+fn a_failed_send_is_retried_and_its_spans_arrive_once() {
+    let mut setup = Setup::with_workflow("otlp-retry", STEPS);
+    setup.telemetry("http://127.0.0.1:4318");
+    setup.hold("curl-fail");
+    setup.calls(&[result("ready"), result("passed")]);
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == "done")
+    });
+
+    setup.until_spans(4);
+
+    assert!(!setup.dir.join("fake/curl-fail").exists());
+    let log = fs::read_to_string(setup.dir.join("daemon.log")).unwrap();
+    assert!(
+        log.contains("sending spans to http://127.0.0.1:4318 failed"),
+        "{log}"
+    );
+    assert!(log.contains("curl: (7)"), "{log}");
+    std::thread::sleep(Duration::from_secs(2));
+    assert_eq!(spans(&setup.posts()).len(), 4);
+}
+
+#[test]
+fn a_batch_the_endpoint_rejects_as_malformed_is_skipped_rather_than_retried() {
+    let mut setup = Setup::with_workflow("otlp-rejected", STEPS);
+    setup.telemetry("http://127.0.0.1:4318");
+    fs::write(setup.dir.join("fake/curl-status"), "400").unwrap();
+    setup.calls(&[result("ready"), result("passed")]);
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == "done")
+    });
+    std::thread::sleep(Duration::from_secs(7));
+
+    let calls = fs::read_to_string(setup.dir.join("fake/curl.log")).unwrap();
+    assert_eq!(calls.lines().count(), setup.posts().len() + 1, "{calls}");
+    // A retry would deliver the rejected spans, making all four arrive.
+    assert!(spans(&setup.posts()).len() < 4, "{:?}", setup.posts());
+    let log = fs::read_to_string(setup.dir.join("daemon.log")).unwrap();
+    assert_eq!(
+        log.matches("rejected spans with HTTP 400").count(),
+        1,
+        "{log}"
+    );
 }
