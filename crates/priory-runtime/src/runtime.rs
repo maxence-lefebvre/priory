@@ -1,9 +1,9 @@
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
-use std::os::unix::process::ExitStatusExt;
+use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::{Command, Output, Stdio};
 use std::sync::OnceLock;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::time::{Duration, Instant};
@@ -46,38 +46,44 @@ pub fn bound_commands(timeout: Duration) {
     let _ = COMMAND_TIMEOUT.set(timeout);
 }
 
-fn command_timeout() -> Duration {
+pub fn command_timeout() -> Duration {
     COMMAND_TIMEOUT
         .get()
         .copied()
         .unwrap_or(Duration::from_secs(300))
 }
 
-/// `program` under coreutils `timeout`, which kills its whole process group past the command
-/// timeout, so a hung fetch cannot stop the daemon's one thread. KILL, not TERM: a child that
-/// ignores TERM would keep the output pipe open after its leader exits.
-fn bounded(program: &str) -> Command {
-    let mut command = Command::new("timeout");
-    command
-        .arg("--signal=KILL")
-        .arg(format!("{}s", command_timeout().as_secs()))
-        .arg(program);
-    command
+/// Runs `command` in its own process group and returns its output, or `None` when it ran past the
+/// command timeout. Then it kills the whole group, so a hung fetch cannot stop the daemon's one
+/// thread, and no child that ignores TERM keeps the output pipe open.
+pub fn output_within(command: &mut Command) -> std::io::Result<Option<Output>> {
+    let child = command
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .process_group(0)
+        .spawn()?;
+    let group = child.id();
+    let (sender, receiver) = mpsc::channel();
+    std::thread::spawn(move || sender.send(child.wait_with_output()));
+    if let Ok(output) = receiver.recv_timeout(command_timeout()) {
+        return output.map(Some);
+    }
+    crate::script::kill(group);
+    let _ = receiver.recv();
+    Ok(None)
 }
 
 /// Runs `command` and returns its stdout, or an error naming it with its stderr.
 pub(crate) fn run(command: &mut Command) -> Result<String, String> {
-    let output = command
-        .stdin(Stdio::null())
-        .output()
-        .map_err(|error| format!("{command:?}: {error}"))?;
-    // `timeout` sends KILL to its own process group, so it dies by that signal too.
-    if output.status.signal() == Some(9) {
-        return Err(format!(
-            "{command:?}: timed out after {}s",
-            command_timeout().as_secs()
-        ));
-    }
+    let output = output_within(command)
+        .map_err(|error| format!("{command:?}: {error}"))?
+        .ok_or_else(|| {
+            format!(
+                "{command:?}: timed out after {}s",
+                command_timeout().as_secs()
+            )
+        })?;
     if !output.status.success() {
         return Err(format!(
             "{command:?}: {}",
@@ -88,7 +94,7 @@ pub(crate) fn run(command: &mut Command) -> Result<String, String> {
 }
 
 pub(crate) fn git(dir: &Path) -> Command {
-    let mut command = bounded("git");
+    let mut command = Command::new("git");
     command.arg("-C").arg(dir);
     command
 }
@@ -106,7 +112,7 @@ pub fn worktree(home: &Path, repo: &str, task: i64) -> Result<(PathBuf, String),
         let _ = fs::remove_dir_all(&partial);
         fs::create_dir_all(clone.parent().expect("clone has a parent"))
             .map_err(|error| error.to_string())?;
-        run(bounded("git")
+        run(Command::new("git")
             .args(["clone", "--quiet", "--no-checkout"])
             .arg(format!("https://github.com/{repo}.git"))
             .arg(&partial))?;
@@ -187,7 +193,7 @@ pub fn open_pull_request(
 ) -> Result<u64, String> {
     let target = format!("{commit}:refs/heads/{branch}");
     run(git(worktree).args(["push", "--quiet", "origin", &target]))?;
-    let open = run(bounded("gh").args([
+    let open = run(Command::new("gh").args([
         "pr", "list", "-R", repo, "--head", branch, "--state", "open", "--json", "number",
     ]))?;
     let open: Vec<serde_json::Value> = serde_json::from_str(&open)
@@ -197,7 +203,7 @@ pub fn open_pull_request(
     }
     let base = run(git(worktree).args(["rev-parse", "--abbrev-ref", "origin/HEAD"]))?;
     let base = base.trim().trim_start_matches("origin/");
-    let url = run(bounded("gh").args([
+    let url = run(Command::new("gh").args([
         "pr", "create", "-R", repo, "--base", base, "--head", branch, "--title", title, "--body",
         body,
     ]))?;
@@ -211,7 +217,7 @@ pub fn open_pull_request(
 /// Opens an issue on `repo` and returns its number. `mark`, a unique line the body ends with, finds
 /// the issue that an earlier attempt opened before a crash, in any state, so none opens twice.
 pub fn open_issue(repo: &str, title: &str, body: &str, mark: &str) -> Result<u64, String> {
-    let found = run(bounded("gh").args([
+    let found = run(Command::new("gh").args([
         "issue",
         "list",
         "-R",
@@ -237,7 +243,7 @@ pub fn open_issue(repo: &str, title: &str, body: &str, mark: &str) -> Result<u64
         return Ok(number);
     }
     let body = format!("{body}\n\n{mark}");
-    let url = run(bounded("gh").args([
+    let url = run(Command::new("gh").args([
         "issue", "create", "-R", repo, "--title", title, "--body", &body,
     ]))?;
     url.trim()
@@ -248,7 +254,7 @@ pub fn open_issue(repo: &str, title: &str, body: &str, mark: &str) -> Result<u64
 }
 
 fn tmux() -> Command {
-    bounded("tmux")
+    Command::new("tmux")
 }
 
 /// What a Claude Code session sets for its children. User settings such as `CLAUDE_CODE_USE_BEDROCK` stay.

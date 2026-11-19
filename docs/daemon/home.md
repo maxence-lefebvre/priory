@@ -15,9 +15,9 @@
   clone still lists it.
 - `priory.sock`: the socket hooks report to. `signals.spool`: signals sent while no daemon
   listened, which the next daemon applies first.
-- Every `git`, `gh` and `tmux` command runs under coreutils `timeout`. After 5 minutes, or after
-  `command_timeout` in `factory.toml`, it sends KILL to the command's whole process group: a helper
-  that ignores TERM could keep the output open. Set `command_timeout = "20m"` for a first clone of
+- Every `git`, `gh` and `tmux` command runs in its own process group. After 5 minutes, or after
+  `command_timeout` in `factory.toml`, Priory sends KILL to that whole group: a helper that ignores
+  TERM could keep the output open. Set `command_timeout = "20m"` for a first clone of
   a large repository. The daemon has one thread, so a hung fetch would stop every hook, tool call
   and answer. A timed-out command fails like any other, with `timed out after <n>s`.
 - `daemon.lock`: one daemon per home. A second waits up to 5 seconds for the lock, then refuses

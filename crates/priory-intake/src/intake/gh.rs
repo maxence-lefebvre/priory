@@ -1,9 +1,7 @@
+use priory_runtime::runtime::{command_timeout, output_within};
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
-use std::os::unix::process::ExitStatusExt;
 use std::process::Command;
-use std::sync::OnceLock;
-use std::time::Duration;
 
 const PAGE: usize = 100;
 
@@ -35,21 +33,13 @@ pub(super) fn pages<T: DeserializeOwned>(
     Ok((items, top))
 }
 
-/// How long one `gh api` call may run, which `intake::run` sets from the factory.
-pub(super) static TIMEOUT: OnceLock<Duration> = OnceLock::new();
-
 pub(super) fn gh<T: DeserializeOwned>(path: &str, fields: &[&str]) -> Result<T, String> {
-    let timeout = TIMEOUT.get().map_or(300, Duration::as_secs);
-    // coreutils `timeout` kills a hung `gh` and its whole process group, itself included, so one
-    // call cannot stop every source.
-    let output = Command::new("timeout")
-        .args(["--signal=KILL", &format!("{timeout}s"), "gh", "api", path])
-        .args(fields)
-        .output()
-        .map_err(|error| format!("gh api {path}: {error}"))?;
-    if output.status.signal() == Some(9) {
-        return Err(format!("gh api {path} timed out after {timeout}s"));
-    }
+    let output = output_within(Command::new("gh").args(["api", path]).args(fields))
+        .map_err(|error| format!("gh api {path}: {error}"))?
+        .ok_or_else(|| {
+            let timeout = command_timeout().as_secs();
+            format!("gh api {path} timed out after {timeout}s")
+        })?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         return Err(format!("gh api {path} failed: {}", stderr.trim()));

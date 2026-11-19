@@ -77,7 +77,7 @@ pub fn run(
     once: bool,
     watched: fn() -> Result<Vec<Watch>, String>,
 ) -> Result<(), String> {
-    let _ = gh::TIMEOUT.set(factory.command_timeout());
+    priory_runtime::runtime::bound_commands(factory.command_timeout());
     let from = |source: &str| -> Vec<(&str, &Trigger)> {
         factory
             .triggers
