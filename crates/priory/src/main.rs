@@ -40,8 +40,8 @@ fn main() -> ExitCode {
             "SELECT seq, type, subject, task, outcome FROM inbox ORDER BY seq",
         ),
         Some("tasks") => list(
-            "id\tkey\tworkflow\tstep\tstate\tband\tlane\treason",
-            "SELECT id, key, workflow, step, state, band, lane, reason FROM tasks ORDER BY id",
+            "id\tkey\tworkflow\tstep\tstate\tband\tlane\treason\tgeneration",
+            "SELECT id, key, workflow, step, state, band, lane, reason, generation FROM tasks ORDER BY id",
         ),
         Some("runs") => list(
             "id\ttask\tstep\ttmux\tsession\tstarted\tended\tend",
@@ -54,17 +54,17 @@ fn main() -> ExitCode {
         Some("asks") => list(
             "id\ttask\trevision\tquestion\toptions",
             "SELECT id, task, revision, replace(question, char(10), '\\n'), options FROM asks
-             WHERE answer IS NULL ORDER BY id",
+             WHERE answer IS NULL AND withdrawn IS NULL ORDER BY id",
         ),
         Some("waits") => list(
             "id\ttask\trun\tkind\ton\tcreated",
             "SELECT id, task, run, kind, coalesce(resource, until, 'task ' || target), created
-             FROM waits WHERE fired IS NULL ORDER BY id",
+             FROM waits WHERE fired IS NULL AND withdrawn IS NULL ORDER BY id",
         ),
         Some("desk") => desk(),
         Some("trace") => trace(),
         Some("report") => report(args.map(|arg| arg.to_string_lossy().into_owned()).collect()),
-        Some(verb @ ("resume" | "cancel")) => act(
+        Some(verb @ ("resume" | "cancel" | "revive")) => act(
             verb,
             args.map(|arg| arg.to_string_lossy().into_owned()).collect(),
         ),
@@ -90,7 +90,7 @@ fn main() -> ExitCode {
 
 fn usage() -> ExitCode {
     eprintln!(
-        "usage: priory check [DIR]\n       priory draw [DIR] WORKFLOW\n       priory intake [DIR] [--once]\n       priory daemon [DIR] [--once]\n       priory request [DIR] --workflow <name> --key <key> [--band <band>] [--lane <lane>] [--repo <owner/name>] <text>\n       priory inbox\n       priory tasks\n       priory runs\n       priory outbox\n       priory asks\n       priory waits\n       priory actions\n       priory desk\n       priory trace\n       priory report [DIR] --workflow <name> [--since <instant-or-duration>] [--cost]\n       priory resume TASK\n       priory cancel TASK\n       priory answer ASK OPTION-OR-TEXT --revision N\n       priory mcp --session ID\n       priory hook EVENT"
+        "usage: priory check [DIR]\n       priory draw [DIR] WORKFLOW\n       priory intake [DIR] [--once]\n       priory daemon [DIR] [--once]\n       priory request [DIR] --workflow <name> --key <key> [--band <band>] [--lane <lane>] [--repo <owner/name>] <text>\n       priory inbox\n       priory tasks\n       priory runs\n       priory outbox\n       priory asks\n       priory waits\n       priory actions\n       priory desk\n       priory trace\n       priory report [DIR] --workflow <name> [--since <instant-or-duration>] [--cost]\n       priory resume TASK\n       priory cancel TASK\n       priory revive TASK [--step STEP]\n       priory answer ASK OPTION-OR-TEXT --revision N\n       priory mcp --session ID\n       priory hook EVENT"
     );
     ExitCode::from(2)
 }
@@ -189,9 +189,14 @@ const DESK: &str = "SELECT * FROM (
                SELECT asks.created, 'ask', asks.id, asks.task,
                  replace(asks.question, char(10), '\\n') || ' ' || asks.options
                FROM asks JOIN tasks ON tasks.id = asks.task
-               WHERE asks.answer IS NULL AND tasks.state NOT IN ('done', 'failed', 'dropped')
+               WHERE asks.answer IS NULL AND asks.withdrawn IS NULL
+                 AND tasks.state NOT IN ('done', 'failed', 'dropped')
                UNION ALL
                SELECT changed, 'blocked', id, id, reason FROM tasks WHERE state = 'blocked'
+               UNION ALL
+               SELECT changed, 'failed', id, id,
+                 coalesce(reason, 'failed') || '; revive: priory revive ' || id
+               FROM tasks WHERE state = 'failed'
                UNION ALL
                SELECT outbox.attempted, 'prompt', outbox.id, outbox.task,
                  replace(outbox.text, char(10), '\\n')
@@ -258,8 +263,14 @@ fn answer(mut args: Vec<String>) -> ExitCode {
     send("answer", &line)
 }
 
-/// Sends `priory resume TASK` or `priory cancel TASK` to the daemon, which applies it.
-fn act(act: &str, args: Vec<String>) -> ExitCode {
+/// Sends `priory resume TASK`, `priory cancel TASK` or `priory revive TASK [--step STEP]` to the
+/// daemon, which applies it.
+fn act(act: &str, mut args: Vec<String>) -> ExitCode {
+    let step = match args.iter().position(|arg| arg == "--step") {
+        Some(flag) if act == "revive" && flag + 1 < args.len() => args.drain(flag..flag + 2).nth(1),
+        Some(_) => return usage(),
+        None => None,
+    };
     let [task] = &args[..] else {
         return usage();
     };
@@ -269,6 +280,7 @@ fn act(act: &str, args: Vec<String>) -> ExitCode {
     let line = serde_json::to_string(&tools::Act {
         act: act.to_owned(),
         task,
+        step,
     })
     .expect("an action serializes");
     send(act, &line)

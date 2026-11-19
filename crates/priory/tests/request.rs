@@ -182,7 +182,8 @@ fn the_daemon_turns_a_request_into_one_queued_task() {
             "queued",
             "-",
             "docs",
-            "-"
+            "-",
+            "1"
         ]]
     );
 }

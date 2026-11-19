@@ -98,7 +98,7 @@ pub(crate) fn ended(
 ) -> rusqlite::Result<()> {
     let ended = tx.query_row(
         "SELECT workflow, step, key, entered, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
-         CAST(round((julianday('now') - julianday(entered)) * 86400000) AS INTEGER), tokens, model
+         CAST(round((julianday('now') - julianday(entered)) * 86400000) AS INTEGER), tokens, model, generation
          FROM tasks WHERE id = ?1",
         [task],
         |row| {
@@ -111,6 +111,7 @@ pub(crate) fn ended(
                 duration: row.get(5)?,
                 tokens: row.get(6)?,
                 model: row.get(7)?,
+                generation: row.get(8)?,
             })
         },
     )?;
@@ -129,7 +130,7 @@ pub(crate) fn ended(
         "task": task.to_string(),
         "key": ended.key,
         "run": run.map(|run| run.to_string()),
-        "generation": 1,
+        "generation": ended.generation,
         "step": ended.step,
         "decider": step.decides.name(),
         "effect": step.effect,
@@ -185,4 +186,5 @@ struct Ended {
     duration: i64,
     tokens: Option<String>,
     model: Option<String>,
+    generation: i64,
 }

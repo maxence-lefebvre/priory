@@ -9,7 +9,7 @@ use std::collections::BTreeMap;
 use std::io::Write;
 use std::time::Duration;
 
-const VERSION: i64 = 11;
+const VERSION: i64 = 12;
 
 const SCHEMA: &str = "
 CREATE TABLE tasks (
@@ -205,10 +205,17 @@ ALTER TABLE runs ADD COLUMN read INTEGER NOT NULL DEFAULT 0;
 PRAGMA user_version = 11;
 ";
 
+const SCHEMA_12: &str = "
+ALTER TABLE tasks ADD COLUMN generation INTEGER NOT NULL DEFAULT 1;
+ALTER TABLE asks ADD COLUMN withdrawn INTEGER;
+ALTER TABLE waits ADD COLUMN withdrawn INTEGER;
+PRAGMA user_version = 12;
+";
+
 /// Each schema change in order: a file at version `n` applies those from index `n` on.
 const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA, SCHEMA_2, SCHEMA_3, SCHEMA_4, SCHEMA_5, SCHEMA_6, SCHEMA_7, SCHEMA_8, SCHEMA_9,
-    SCHEMA_10, SCHEMA_11,
+    SCHEMA_10, SCHEMA_11, SCHEMA_12,
 ];
 
 const NOW: &str = "strftime('%Y-%m-%dT%H:%M:%SZ', 'now')";
@@ -308,7 +315,7 @@ pub(crate) fn handle(
             let asleep_at: Option<(String, String)> = tx
                 .query_row(
                     "SELECT workflow, step FROM tasks WHERE id = ?1 AND state = 'asleep'
-                     AND NOT EXISTS (SELECT 1 FROM waits WHERE task = ?1 AND fired IS NULL AND daemon)",
+                     AND NOT EXISTS (SELECT 1 FROM waits WHERE task = ?1 AND fired IS NULL AND withdrawn IS NULL AND daemon)",
                     [id],
                     |row| Ok((row.get(0)?, row.get(1)?)),
                 )
@@ -655,11 +662,11 @@ pub(crate) fn start(db: &mut Connection, run: &NewRun) -> rusqlite::Result<i64> 
     )?;
     // A schedule's tick wakes a task with its ask or wait still open: this run sleeps on them again.
     tx.execute(
-        "UPDATE asks SET run = ?2 WHERE task = ?1 AND run IS NOT NULL AND answer IS NULL",
+        "UPDATE asks SET run = ?2 WHERE task = ?1 AND run IS NOT NULL AND answer IS NULL AND withdrawn IS NULL",
         params![run.task, id],
     )?;
     tx.execute(
-        "UPDATE waits SET run = ?2 WHERE task = ?1 AND fired IS NULL AND NOT daemon",
+        "UPDATE waits SET run = ?2 WHERE task = ?1 AND fired IS NULL AND withdrawn IS NULL AND NOT daemon",
         params![run.task, id],
     )?;
     tx.execute(

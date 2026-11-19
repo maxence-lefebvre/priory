@@ -126,7 +126,7 @@ fn take(db: &mut Connection, line: &str, trace: &Trace) -> Result<(String, Optio
             None,
         )),
         Ok(Input::Act(act)) => {
-            let (reply, kill) = tools::act(db, &act)?;
+            let (reply, kill) = tools::act(db, &act, workflows)?;
             Ok((replied(reply), kill))
         }
         Err(error) => {

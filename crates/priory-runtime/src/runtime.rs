@@ -75,6 +75,14 @@ pub fn worktree(home: &Path, repo: &str, task: i64) -> Result<(PathBuf, String),
         }
         return Ok((path, branch));
     }
+    // A revived task whose worktree the sweep removed carries on from the branch it left.
+    if head(&clone, &branch).is_some() {
+        run(git(&clone)
+            .args(["worktree", "add", "--quiet"])
+            .arg(&path)
+            .arg(&branch))?;
+        return Ok((path, branch));
+    }
     run(git(&clone).args(["fetch", "--quiet", "origin"]))?;
     run(git(&clone).args(["remote", "set-head", "origin", "--auto"]))?;
     run(git(&clone)

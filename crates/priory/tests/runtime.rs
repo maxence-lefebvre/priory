@@ -3677,3 +3677,180 @@ fn a_cost_report_keeps_a_model_step_whose_tokens_are_unknown_and_marks_its_total
         ]
     );
 }
+
+const REVIVED: &str = "A person revived this task as generation 2 after it was dropped. The asks and waits of its earlier generation are withdrawn. Check the worktree, then continue.\nPlan the change.\nEnd this step by calling the result tool of the priory MCP server with one of these outcomes: hopeless, ready, unsure.\n";
+
+#[test]
+fn a_dropped_task_revives_at_its_step_in_its_session_as_generation_2() {
+    let mut setup = Setup::with_workflow("revive", STEPS);
+    setup.calls(&[result("hopeless"), result("ready")]);
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == "dropped")
+    });
+    let session = setup.rows("runs")[0][4].clone();
+    setup.gone("priory-1");
+
+    let revived = setup.priory(&["revive", "1"]);
+
+    assert!(revived.status.success(), "{revived:?}");
+    assert_eq!(
+        String::from_utf8_lossy(&revived.stdout),
+        "task 1 is ready at plan, generation 2\n"
+    );
+    let tasks = setup.until("tasks", |rows| rows[0][3] == "implement");
+    assert_eq!([&tasks[0][4], &tasks[0][8]], ["running", "2"]);
+    assert_eq!(setup.rows("runs")[1][4], session);
+    let args = fs::read_to_string(setup.dir.join("fake/args.log")).unwrap();
+    assert!(args.contains(&format!("--resume\n{session}\n")), "{args}");
+    assert_eq!(setup.typed()[1], REVIVED);
+    let ended: Vec<_> = setup
+        .trace()
+        .iter()
+        .map(|record| {
+            (
+                record["data"]["outcome"].clone(),
+                record["data"]["generation"].clone(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        ended,
+        [(json!("hopeless"), json!(1)), (json!("ready"), json!(2))]
+    );
+}
+
+#[test]
+fn an_answer_to_the_ask_of_an_earlier_generation_is_refused() {
+    let mut setup = Setup::with_workflow("revive-ask", STEPS);
+    setup.calls(&[ask()]);
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == "asleep")
+    });
+    assert!(setup.priory(&["cancel", "1"]).status.success());
+    assert!(setup.priory(&["revive", "1"]).status.success());
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") == 2);
+
+    let answered = setup.priory(&["answer", "1", "sqlite", "--revision", "1"]);
+
+    assert!(!answered.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&answered.stderr),
+        "priory answer: ask 1 was withdrawn when task 1 was revived as generation 2\n"
+    );
+    assert!(setup.rows("asks").is_empty());
+    assert_eq!(setup.rows("tasks")[0][4], "running");
+}
+
+#[test]
+fn an_event_for_the_wait_of_an_earlier_generation_does_not_wake_the_revived_task() {
+    let mut setup = Setup::new("revive-wait");
+    setup.calls(&[wait(on_pull_7("pull_request")), ask()]);
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("runs", |rows| {
+        rows.first().is_some_and(|row| row[7] == "asleep")
+    });
+    assert!(setup.priory(&["cancel", "1"]).status.success());
+    assert!(setup.priory(&["revive", "1"]).status.success());
+    setup.until("runs", |rows| {
+        rows.get(1).is_some_and(|row| row[7] == "asleep")
+    });
+    setup.gone("priory-1");
+    assert!(setup.rows("waits").is_empty());
+
+    setup.publish(&closed());
+
+    setup.until("inbox", |rows| with(rows, 4, "kept") == 1);
+    std::thread::sleep(Duration::from_millis(1500));
+    assert_eq!(setup.rows("tasks")[0][4], "asleep");
+    assert_eq!(setup.rows("runs").len(), 2);
+}
+
+#[test]
+fn a_revive_on_a_key_that_another_task_holds_is_refused() {
+    let mut setup = Setup::new("revive-key");
+    setup.calls(&[result("failed")]);
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == "dropped")
+    });
+    setup.publish(&requested(42));
+    setup.until("tasks", |rows| rows.len() == 2);
+
+    let revived = setup.priory(&["revive", "1"]);
+
+    assert!(!revived.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&revived.stderr),
+        "priory revive: task 2 is already active on key github:owner/repo#42\n"
+    );
+    let tasks = setup.rows("tasks");
+    assert_eq!([&tasks[0][4], &tasks[0][8]], ["dropped", "1"]);
+}
+
+#[test]
+fn a_failed_task_offers_revive_on_the_desk_and_revives_at_a_chosen_step_in_its_recreated_worktree()
+{
+    let mut setup = Setup::with_workflow("revive-failed", STEPS);
+    setup.calls(&[result("ready"), result("failed")]);
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == "dropped")
+    });
+    setup.gone("priory-1");
+    let commit = setup.commit(1, "widget.txt");
+    // Nothing fails a task yet (R7.5 will), so the test fails it by hand.
+    rusqlite::Connection::open(setup.dir.join("priory.db"))
+        .unwrap()
+        .execute(
+            "UPDATE tasks SET state = 'failed', reason = 'the repair found no cause' WHERE id = 1",
+            [],
+        )
+        .unwrap();
+    let clone = setup.dir.join("home/repos/owner/repo");
+    let worktree = setup.dir.join("home/worktrees/owner/repo/1");
+    assert!(
+        git(&clone)
+            .args(["worktree", "remove", "--force"])
+            .arg(&worktree)
+            .status()
+            .unwrap()
+            .success()
+    );
+    let failed: Vec<_> = setup
+        .rows("desk")
+        .into_iter()
+        .filter(|row| row[1] == "failed")
+        .collect();
+    assert_eq!(
+        failed[0][2..],
+        [
+            "1",
+            "1",
+            "the repair found no cause; revive: priory revive 1"
+        ]
+    );
+
+    let revived = setup.priory(&["revive", "1", "--step", "plan"]);
+
+    assert!(revived.status.success(), "{revived:?}");
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") == 3);
+    assert_eq!(
+        setup.typed()[2],
+        "A person revived this task as generation 2 after it was failed: the repair found no cause. The asks and waits of its earlier generation are withdrawn. Check the worktree, then continue.\nPlan the change.\nEnd this step by calling the result tool of the priory MCP server with one of these outcomes: hopeless, ready, unsure.\n"
+    );
+    let tasks = setup.rows("tasks");
+    assert_eq!(
+        [&tasks[0][3], &tasks[0][4], &tasks[0][8]],
+        ["plan", "running", "2"]
+    );
+    let head = git(&worktree).args(["rev-parse", "HEAD"]).output().unwrap();
+    assert_eq!(String::from_utf8(head.stdout).unwrap().trim(), commit);
+    assert!(!setup.rows("desk").iter().any(|row| row[1] == "failed"));
+}
