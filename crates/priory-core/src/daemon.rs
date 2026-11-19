@@ -4,7 +4,7 @@ use crate::route;
 use crate::state::{self, Admission, NewRun, Signal};
 use crate::tools::{self, Act, Answer, Call, Done, Repair};
 use crate::trace::Trace;
-use crate::{stall, sweep};
+use crate::{handler, stall, sweep};
 use herdr_bus::{Bus, Start};
 use priory_factory::factory::{self, Factory, Harness, PermissionMode, Session};
 use priory_intake::intake::OUTPUT;
@@ -13,6 +13,7 @@ use priory_runtime::script::{self, Script};
 use priory_runtime::{room, slice, transcript};
 use rusqlite::Connection;
 use std::cell::OnceCell;
+use std::collections::HashMap;
 use std::path::Path;
 use std::sync::mpsc::RecvTimeoutError;
 use std::time::{Duration, Instant};
@@ -28,6 +29,26 @@ const AFTER: Duration = Duration::from_secs(1800);
 const SCRIPT_TIMEOUT: Duration = Duration::from_secs(300);
 /// How long a turn may run when its step sets no `timeout`.
 const TIMEOUT: Duration = Duration::from_secs(3 * 3600);
+/// How long a run goes without a hook event or a pane change before it counts as stalled.
+const STALLED: Duration = Duration::from_secs(600);
+/// How long a handler call may take.
+const HANDLER_TIMEOUT: Duration = Duration::from_secs(120);
+
+/// What the daemon watches for stalls: each live run's last screen and when it changed, and the
+/// handler calls in flight.
+#[derive(Default)]
+struct Stalls {
+    screens: HashMap<i64, (Vec<String>, Instant)>,
+    calls: Vec<Handling>,
+}
+
+/// A handler call in flight on `run`.
+struct Handling {
+    id: i64,
+    run: i64,
+    script: Script,
+    started: Instant,
+}
 
 type Error = Box<dyn std::error::Error>;
 
@@ -98,6 +119,20 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
     }
     // A crash between ending its last script and marking it swept leaves a stall unswept.
     stall::swept(&db)?;
+    // A handler call a stopped daemon started still counts, and its answer is recorded but not applied.
+    let handlers = home.join("handlers");
+    for (id, group) in handler::orphans(&db)? {
+        if let Some((pid, _)) =
+            group.filter(|(pid, started)| memory::started(*pid) == Some(*started))
+        {
+            script::kill(pid);
+        }
+        let output = runtime::answer(&handlers, id);
+        let status = handler::INTERRUPTED;
+        handler::answered(&mut db, &trace, id, output.as_deref(), status, true)?;
+        runtime::forget(&handlers, id);
+    }
+    let mut stalls = Stalls::default();
     let mut scripts = Vec::new();
     let every = factory.sweep().every.unwrap_or(SWEEP);
     let mut swept: Option<Instant> = None;
@@ -107,6 +142,7 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
             apply(&mut db, line, &trace)?;
         }
         tend(&mut db, &trace, &share, &home, &scope)?;
+        handle_stalls(&mut db, &trace, &home, &mut stalls)?;
         if sweep_scripts(&db, factory, &home, &mut scripts)? {
             swept = None;
         }
@@ -128,6 +164,104 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
             Err(RecvTimeoutError::Disconnected) => return Err("the signal socket closed".into()),
         }
     }
+}
+
+/// Applies the answers of the handler calls that ended, then calls the handler on each run stalled
+/// past the factory's `stalled`, once per stall and at most `handler::CALLS` times per run.
+fn handle_stalls(
+    db: &mut Connection,
+    trace: &Trace,
+    home: &Path,
+    stalls: &mut Stalls,
+) -> Result<(), Error> {
+    let factory = trace.factory;
+    let Some(model) = handler::model(factory) else {
+        return Ok(());
+    };
+    let dir = home.join("handlers");
+    // Screens first, so an answer is checked against what the run shows now.
+    let quiet = handler::quiet(db)?;
+    stalls
+        .screens
+        .retain(|run, _| quiet.iter().any(|quiet| quiet.run == *run));
+    for run in &quiet {
+        let screen = runtime::screen(&run.tmux);
+        let seen = stalls
+            .screens
+            .entry(run.run)
+            .or_insert_with(|| (screen.clone(), Instant::now()));
+        let joined = screen.join("\n");
+        if seen.0 != screen {
+            *seen = (screen, Instant::now());
+        }
+        if run
+            .left
+            .as_deref()
+            .is_some_and(|left| !left.is_empty() && left != joined)
+        {
+            handler::redrawn(db, run.run)?;
+        }
+    }
+    for mut call in std::mem::take(&mut stalls.calls) {
+        let Some((status, log)) = call.script.poll() else {
+            stalls.calls.push(call);
+            continue;
+        };
+        let output = runtime::answer(&dir, call.id);
+        let moved = stalls
+            .screens
+            .get(&call.run)
+            .is_some_and(|(_, changed)| *changed > call.started);
+        let status = if status == "exit 0" || log.is_empty() {
+            status
+        } else {
+            format!("{status}: {log}")
+        };
+        let kill = handler::answered(db, trace, call.id, output.as_deref(), &status, moved)?;
+        runtime::forget(&dir, call.id);
+        kill.inspect(|tmux| runtime::kill(tmux));
+    }
+    let stalled = factory
+        .settings
+        .as_ref()
+        .and_then(|settings| settings.value.stalled)
+        .unwrap_or(STALLED)
+        .as_secs() as i64;
+    for run in handler::quiet(db)? {
+        let Some((screen, changed)) = stalls.screens.get(&run.run) else {
+            continue;
+        };
+        let stalled_for = run.silent.min(changed.elapsed().as_secs() as i64);
+        // One call per stall, also across a daemon restart: `left` is the screen the last call read.
+        let due = stalled_for >= stalled
+            && run.calls < handler::CALLS
+            && run.handled.is_none_or(|handled| handled > stalled_for)
+            && run.left.as_deref() != Some(screen.join("\n").as_str())
+            && !stalls.calls.iter().any(|call| call.run == run.run);
+        if !due {
+            continue;
+        }
+        let screen = screen.clone();
+        let id = handler::called(db, run.run, &screen)?;
+        let prompt = handler::prompt(db, factory, run.run, stalled_for, &screen)?;
+        match runtime::ask_handler(&dir, id, model, &prompt, HANDLER_TIMEOUT) {
+            Ok(script) => {
+                handler::spawned(db, id, script.pid(), memory::started(script.pid()))?;
+                stalls.calls.push(Handling {
+                    id,
+                    run: run.run,
+                    script,
+                    started: Instant::now(),
+                });
+            }
+            Err(error) => {
+                let status = format!("cannot start: {error}");
+                handler::answered(db, trace, id, None, &status, false)?;
+                runtime::forget(&dir, id);
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Records the sweep scripts that ended, then starts the scripts of a stall that just opened, for

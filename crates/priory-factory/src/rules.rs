@@ -32,6 +32,18 @@ pub fn check(factory: &Factory) -> Vec<Problem> {
                 format!("the sweeper agent `{agent}` does not exist"),
             ));
         }
+        if let Some(name) = &settings.value.handler {
+            let refused = match factory.agents.get(name) {
+                None => Some(format!("the handler agent `{name}` does not exist")),
+                Some(agent) if !matches!(agent.value.harness, Harness::ClaudeCode) => Some(
+                    format!("the handler agent `{name}` needs harness = \"claude-code\""),
+                ),
+                Some(_) => None,
+            };
+            if let Some(message) = refused {
+                problems.push(problem(settings, settings.lines.field("handler"), message));
+            }
+        }
         if !owner_name(settings.value.sweep.repo()) {
             problems.push(problem(
                 settings,

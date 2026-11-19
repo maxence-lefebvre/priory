@@ -33,6 +33,11 @@ pub struct Settings {
     pub bands: Option<Vec<String>>,
     #[serde(default)]
     pub sweep: Sweep,
+    /// The agent whose model reads a stalled run's screen; no handler runs without one.
+    pub handler: Option<String>,
+    /// How long a run goes without a hook event or a change on its pane before it counts as stalled.
+    #[serde(default, deserialize_with = "duration")]
+    pub stalled: Option<Duration>,
 }
 
 /// How the daemon frees room: the built-in worktree sweep, the person's scripts, and the sweeper

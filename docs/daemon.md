@@ -623,6 +623,66 @@ own: the desk hears of it only through that ask, or a verdict if the run then st
 `Notification` hook with the matcher `permission_prompt` runs `priory hook PermissionPrompt`, so a
 prompt that shows anyway, when the deny hook failed, ends the run on the next tick.
 
+### Stalls and the handler
+
+A live run is stalled when it sent no hook event and its pane did not change for 10 minutes, or for
+the `stalled` duration of `factory.toml`. Each tick, the daemon reads the screen of every live run
+that reached `SessionStart`, shows no permission prompt and has no open ask or wait. A run asleep on
+a wait or an ask never counts, and neither does a run whose spinner or output still moves.
+
+The handler is opt-in: `handler` in `factory.toml` names the agent whose model it uses, which needs
+`harness = "claude-code"`. Without it, no handler runs, as no sweeper runs without `[sweep] agent`.
+On a stall, the daemon calls the handler: one headless `claude -p --output-format json` call, in
+`PRIORY_HOME/handlers`, with no settings or MCP servers of the user's and no session kept. The model
+is the agent's, or `haiku` when the agent sets none.
+
+```toml
+handler = "handler"   # an agent with harness = "claude-code"; no handler runs when unset
+stalled = "10m"
+```
+
+The handler reads the step's prompt, the last three prompts the task received, the task's last three
+trace records and the last 30 lines of the screen. It answers one of:
+
+- `nudge` with a text. Priory queues `Priory's handler read your screen after this run stalled:
+  <text>` ahead of the task's other prompts and marks the run idle, since the handler read on its
+  screen that it waits for input. The outbox types it on the next tick. It counts as a nudge, so a
+  silent turn after it gets no Stop nudge.
+- `restart` with a reason. Priory ends the run as `restarted`, kills its tmux session and makes the
+  task `ready` with the prompt `Priory's handler restarted this run after it stalled: <why>. Check
+  the worktree, then continue.` The next run resumes the same session in the same worktree.
+- `leave` with a reason, which Priory records and acts on no further.
+
+The handler call runs in the background, in its own process group, so the daemon keeps ticking. It
+is killed after 2 minutes. Only a call that exits 0 with a successful result may act. A call that
+fails, times out or answers no known action counts as `leave`, with the error as its reason, and
+keeps the tokens it reported.
+
+Before it applies an answer, the daemon reads the screen again. It records the answer with
+`(not applied: the run moved on)` when, since the call, the run ended, sent a hook event, changed its
+pane, stored a result, ask or wait, or was typed a prompt. A run whose earlier prompt is still
+`attempted` or `uncertain` cannot take a nudge: the handler's prompt says so, and a nudge it still
+answers is recorded with `(not applied: an earlier prompt still waits for its confirmation)`.
+
+A run gets one handler call per stall: a stall ends with the next hook event or pane change. Each
+call stores the screen it read, so a restarted daemon does not call again on that screen until a
+hook event arrives or the pane shows something else. A run gets at most 3 calls, after which the step's `timeout` and the other
+verdicts above still apply. The handler never answers an ask or a permission prompt: the runs that
+show one are not read, and its prompt tells it to answer `leave` on a question or a menu. Priory
+cannot check the text of a nudge.
+
+Each answered call appends a `factory.handler.called` record to the trace, with the action, its text,
+the model, the tokens and Claude's own `cost_usd`. A daemon that stops while a call runs kills that
+call's process group when it starts again, after checking its start time in `/proc`. It then records
+the call's answer, if the call wrote one, as not applied, or `leave` with `the handler call failed:
+interrupted by a daemon restart`. The call still counts.
+
+Known limits:
+
+- Only Claude Code runs the handler. A Codex agent can be stalled and handled, but not be the handler.
+- A nudge waits in the outbox until the next tick types it. A run that stores a result in that second
+  carries the nudge into its next step's prompt.
+
 ## Desk
 
 `priory desk` prints the stall banner first while the queue is stalled (see Room), then what waits on a person, oldest first: since, kind, id, task, lane, what and the
@@ -1130,6 +1190,8 @@ cache_write = 6.25
 A model with no price keeps its tokens, and its cost reads `price missing for <model>`, as does its
 task's total. A model step with no `tokens` shows `-` and `tokens unknown`, and its task's total names
 it. `priory check` refuses a price below zero or not finite. Prices apply when the report runs, so a changed price changes past costs too.
+The handler calls of a task show as one more row per model, with the step `handler`, and count in its
+total.
 
 ## Running as services
 

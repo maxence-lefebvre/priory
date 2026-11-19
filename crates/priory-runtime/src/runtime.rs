@@ -506,6 +506,42 @@ fn settings(exe: &Path, permissions: &serde_json::Value) -> String {
     json!({ "hooks": hooks, "permissions": permissions }).to_string()
 }
 
+/// Starts a headless `claude -p` call of `model` on `prompt`, in `dir`, with no settings or MCP
+/// servers of the user's, so it cannot be granted a tool that needs permission. Its JSON answer goes to `<id>.json` in `dir`, which [`answer`] reads.
+pub fn ask_handler(
+    dir: &Path,
+    id: i64,
+    model: &str,
+    prompt: &str,
+    timeout: Duration,
+) -> Result<crate::script::Script, String> {
+    let file = |extension: &str| dir.join(format!("{id}.{extension}"));
+    fs::create_dir_all(dir)
+        .and_then(|()| fs::write(file("prompt"), prompt))
+        .map_err(|error| format!("{}: {error}", dir.display()))?;
+    let unset: String = NESTED.iter().map(|name| format!("-u {name} ")).collect();
+    let run = format!(
+        "exec env {unset}claude -p --output-format json --model {} --no-session-persistence \
+         --strict-mcp-config --setting-sources project < {} > {}",
+        quote(Path::new(model)),
+        quote(&file("prompt")),
+        quote(&file("json"))
+    );
+    crate::script::spawn(&run, dir, &file("log"), timeout)
+}
+
+/// The JSON answer of handler call `id` in `dir`, if it wrote one.
+pub fn answer(dir: &Path, id: i64) -> Option<String> {
+    fs::read_to_string(dir.join(format!("{id}.json"))).ok()
+}
+
+/// Removes the files of handler call `id` in `dir`, once its answer is recorded.
+pub fn forget(dir: &Path, id: i64) {
+    for extension in ["prompt", "json", "log"] {
+        let _ = fs::remove_file(dir.join(format!("{id}.{extension}")));
+    }
+}
+
 /// The pane of the tmux session `name` that runs the harness session `session`, if its process
 /// lives. A tmux with `remain-on-exit` keeps a dead pane, which counts as gone.
 pub fn pane(name: &str, session: &str) -> Option<String> {
