@@ -1,6 +1,7 @@
 use herdr_bus::{Bus, Message, Output};
 use serde_json::json;
 use std::fs;
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output as Exit};
 use std::time::{Duration, Instant};
@@ -158,10 +159,15 @@ impl Setup {
     }
 
     fn start(&mut self) {
+        self.start_as(Path::new(env!("CARGO_BIN_EXE_priory")));
+    }
+
+    /// Starts the daemon through the path `exe`, as a person or a service invokes it.
+    fn start_as(&mut self, exe: &Path) {
         let factory = self.dir.join("factory");
         let log = fs::File::create(self.dir.join("daemon.log")).unwrap();
         self.daemon = Some(
-            self.command(env!("CARGO_BIN_EXE_priory"))
+            self.command(exe.to_str().unwrap())
                 .args(["daemon", factory.to_str().unwrap()])
                 .env("CLAUDECODE", "1")
                 .env("CLAUDE_CODE_ENTRYPOINT", "cli")
@@ -199,9 +205,40 @@ impl Setup {
         String::from_utf8(output.stdout)
             .unwrap()
             .lines()
+            // The desk's stall banner, before its header, has no tab.
+            .skip_while(|line| !line.contains('\t'))
             .skip(1)
             .map(|line| line.split('\t').map(str::to_owned).collect())
             .collect()
+    }
+
+    /// The banner line `priory desk` starts with, if any.
+    fn banner(&self) -> Option<String> {
+        let output = self.priory(&["desk"]);
+        assert!(output.status.success());
+        String::from_utf8(output.stdout)
+            .unwrap()
+            .lines()
+            .next()
+            .filter(|line| !line.contains('\t'))
+            .map(str::to_owned)
+    }
+
+    /// Polls the desk's banner until `done` holds for it, and returns it.
+    fn until_banner(&self, done: impl Fn(Option<&str>) -> bool) -> Option<String> {
+        let deadline = Instant::now() + Duration::from_secs(15);
+        loop {
+            let banner = self.banner();
+            if done(banner.as_deref()) {
+                return banner;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "timed out on the desk banner: {banner:?}\ndaemon: {}",
+                fs::read_to_string(self.dir.join("daemon.log")).unwrap_or_default()
+            );
+            std::thread::sleep(Duration::from_millis(50));
+        }
     }
 
     /// Polls `priory <verb>` until `done` holds for its rows, and returns them.
@@ -568,11 +605,42 @@ fn a_codex_agent_runs_codex_with_priorys_hooks_mcp_server_and_a_sandbox_that_ask
 }
 
 #[test]
+fn a_codex_run_starts_on_its_own_with_the_steps_prompt_as_its_last_argument() {
+    // Longer than the 16 KiB tmux takes in one command.
+    let long = "context ".repeat(2500);
+    let workflow = WORKFLOW.replace(
+        "prompt = \"Implement the issue.\"",
+        &format!("prompt = '''\n- Read \"the issue\" and Max's notes.\n  Then implement it; $HOME stays literal.\n{long}\n'''"),
+    );
+    let mut setup = Setup::with_workflow("codex-prompt", &workflow);
+    fs::write(setup.dir.join("factory/agents/implementer/agent.md"), CODEX).unwrap();
+    setup.publish(&requested(42));
+
+    setup.start();
+
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 1);
+    let prompt = format!(
+        "- Read \"the issue\" and Max's notes.\n  Then implement it; $HOME stays literal.\n{long}\n\nEnd this step by calling the result tool of the priory MCP server with one of these outcomes: failed, passed."
+    );
+    let args = codex_args(&setup);
+    assert!(args.contains(&"--no-daemon".to_owned()), "{args:?}");
+    assert_eq!(
+        fs::read_to_string(setup.dir.join("fake/codex-prompt")).unwrap(),
+        prompt
+    );
+    assert_eq!(setup.typed()[0], format!("{prompt}\n"));
+}
+
+#[test]
 fn a_codex_run_with_no_session_start_names_the_codex_command_whose_hooks_to_trust() {
     let mut setup = Setup::new("codex-untrusted");
     fs::write(setup.dir.join("factory/agents/implementer/agent.md"), CODEX).unwrap();
     setup.publish(&requested(42));
-    setup.hold("silent");
+    fs::write(
+        setup.dir.join("fake/silent"),
+        "  Hooks need review\n\n  3 hooks are new or changed\n  › 1. Review hooks\n",
+    )
+    .unwrap();
     setup.start();
     setup.until("runs", |rows| rows.len() == 1);
 
@@ -588,8 +656,18 @@ fn a_codex_run_with_no_session_start_names_the_codex_command_whose_hooks_to_trus
     );
     assert!(reason.starts_with(&prefix), "{reason}");
     assert!(
-        reason.ends_with(", accept the folder, type /hooks and trust Priory's hooks, then exit"),
+        reason.ends_with(
+            ", accept the folder, type /hooks and trust Priory's hooks, then exit. Its pane ended with: Hooks need review | 3 hooks are new or changed | › 1. Review hooks"
+        ),
         "{reason}"
+    );
+    let log = fs::read_to_string(setup.dir.join("daemon.log")).unwrap();
+    assert!(log.contains("  3 hooks are new or changed\n"), "{log}");
+    let outbox = setup.rows("outbox");
+    assert_eq!(
+        [outbox.len(), with(&outbox, 3, "queued")],
+        [1, 1],
+        "the next run gets the prompt this one never saw: {outbox:?}"
     );
     for event in [
         "SessionStart",
@@ -603,6 +681,27 @@ fn a_codex_run_with_no_session_start_names_the_codex_command_whose_hooks_to_trus
             "{event} in {reason}"
         );
     }
+}
+
+#[test]
+fn a_codex_run_names_priory_by_the_path_it_was_invoked_by_so_an_upgrade_keeps_hook_trust() {
+    let mut setup = Setup::new("codex-stable-exe");
+    fs::write(setup.dir.join("factory/agents/implementer/agent.md"), CODEX).unwrap();
+    let profile = setup.dir.join("profile/bin/priory");
+    fs::create_dir_all(profile.parent().unwrap()).unwrap();
+    std::os::unix::fs::symlink(env!("CARGO_BIN_EXE_priory"), &profile).unwrap();
+    setup.publish(&requested(42));
+
+    setup.start_as(&profile);
+
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 1);
+    let config = codex_config(&setup);
+    let hook = &config["hooks"]["SessionStart"][0]["hooks"][0]["command"];
+    assert_eq!(
+        hook.as_str().unwrap(),
+        format!("'{}' hook SessionStart", profile.display())
+    );
+    assert_eq!(config["mcp_servers"]["priory"]["command"], json!(profile));
 }
 
 /// The `@priory` tag of task 1's pane: the id Priory gave its run, which its tools carry too.
@@ -634,6 +733,12 @@ fn a_codex_run_stores_the_thread_codex_chose_and_an_answer_resumes_it() {
     setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 2);
     let args = codex_args(&setup);
     assert_eq!(args[..2], ["resume", thread.as_str()], "{args:?}");
+    assert!(args.contains(&"--no-daemon".to_owned()), "{args:?}");
+    assert!(
+        fs::read_to_string(setup.dir.join("fake/codex-prompt"))
+            .unwrap()
+            .starts_with("sqlite\n")
+    );
     let runs = setup.rows("runs");
     assert_eq!([&runs[1][2], &runs[1][4]], ["plan", &thread]);
     assert!(
@@ -1170,6 +1275,241 @@ fn high_load_or_low_disk_holds_admission() {
     assert!(setup.rows("runs").is_empty());
     setup.disk(100);
     setup.until("tasks", |rows| rows[0][4] == "running");
+}
+
+#[test]
+fn the_desk_starts_with_a_stall_banner_while_the_head_waits_for_room_and_drops_it_when_room_returns()
+ {
+    let mut setup = Setup::new("stall-banner");
+    setup.disk(10);
+    setup.publish(&requested(42));
+
+    setup.start();
+
+    let banner = setup.until_banner(|banner| banner.is_some()).unwrap();
+    let (since, rest) = banner
+        .strip_prefix("stalled since ")
+        .and_then(|rest| rest.split_once(": "))
+        .unwrap_or_else(|| panic!("{banner}"));
+    assert!(since.ends_with('Z') && since.len() == 20, "{banner}");
+    assert_eq!(rest, "short of disk by 10.0 GB; task 1 waits for room");
+    // The stall's start survives a restart.
+    setup.crash();
+    setup.start();
+    std::thread::sleep(Duration::from_millis(1500));
+    assert_eq!(setup.banner(), Some(banner));
+    setup.disk(100);
+    setup.until("tasks", |rows| rows[0][4] == "running");
+    assert_eq!(setup.until_banner(|banner| banner.is_none()), None);
+}
+
+const SWEEP_SCRIPTS: &str = r#"name = "demo"
+
+[sweep]
+scripts = [
+  { run = "echo once >> \"$FAKE_DIR/swept\"; echo freed 3 GB", when = "disk" },
+  { run = "echo nope; exit 3", when = "disk" },
+  { run = "sleep 30", when = "disk", timeout = "1s" },
+  { run = "echo memory >> \"$FAKE_DIR/swept\"", when = "memory" },
+]
+"#;
+
+#[test]
+fn a_disk_stall_runs_the_disk_scripts_once_with_a_timeout_and_the_desk_shows_their_output() {
+    let mut setup = Setup::new("stall-scripts");
+    fs::write(setup.dir.join("factory/factory.toml"), SWEEP_SCRIPTS).unwrap();
+    setup.disk(10);
+    setup.publish(&requested(42));
+
+    setup.start();
+
+    let desk = setup.until("desk", |rows| {
+        rows.iter()
+            .filter(|row| row[1] == "sweep" && !row[5].ends_with(": running"))
+            .count()
+            == 3
+    });
+    let sweeps: Vec<_> = desk
+        .iter()
+        .filter(|row| row[1] == "sweep")
+        .map(|row| [row[3].as_str(), row[5].as_str()])
+        .collect();
+    assert_eq!(
+        sweeps,
+        [
+            [
+                "1",
+                "echo once >> \"$FAKE_DIR/swept\"; echo freed 3 GB: exit 0: freed 3 GB"
+            ],
+            ["1", "echo nope; exit 3: exit 3: nope"],
+            ["1", "sleep 30: timed out after 1s"],
+        ]
+    );
+    std::thread::sleep(Duration::from_millis(1500));
+    assert_eq!(
+        fs::read_to_string(setup.dir.join("fake/swept")).unwrap(),
+        "once\n"
+    );
+    setup.disk(100);
+    setup.until("tasks", |rows| rows[0][4] == "running");
+    setup.until("desk", |rows| !rows.iter().any(|row| row[1] == "sweep"));
+}
+
+const SWEEPER: &str = r#"name = "demo"
+
+[sweep]
+after = "1s"
+agent = "sweeper"
+repo = "owner/repo"
+scripts = [{ run = "echo nothing to free", when = "disk" }]
+"#;
+
+/// A factory with a sweeper agent, short of disk, and one task waiting for room.
+fn stalled_with_sweeper(name: &str) -> Setup {
+    let setup = Setup::new(name);
+    fs::write(setup.dir.join("factory/factory.toml"), SWEEPER).unwrap();
+    let agent = setup.dir.join("factory/agents/sweeper/agent.md");
+    fs::create_dir_all(agent.parent().unwrap()).unwrap();
+    fs::write(
+        agent,
+        "+++\ndescription = \"Frees room.\"\nharness = \"claude-code\"\n+++\nYou free room.\n",
+    )
+    .unwrap();
+    setup.disk(10);
+    setup.publish(&requested(42));
+    setup
+}
+
+#[test]
+fn a_stall_past_its_threshold_starts_one_sweeper_task_that_skips_the_room_check() {
+    let mut setup = stalled_with_sweeper("sweeper-once");
+    setup.hold("hold-stop");
+
+    setup.start();
+
+    // The sweeper takes the highest band, so it lists first.
+    let tasks = setup.until("tasks", |rows| rows.len() == 2 && rows[0][4] == "running");
+    assert_eq!(
+        [&tasks[1][4], &tasks[0][1], &tasks[0][2], &tasks[0][6]],
+        ["queued", "priory:sweep", "sweep", "priory/sweep"]
+    );
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") == 1);
+    setup.written("fake/typed.log");
+    let prompt = &setup.typed()[0];
+    for part in [
+        "priory.queue.stalled",
+        r#""resource":"disk""#,
+        r#""missing":"10.0 GB""#,
+        r#""script":"echo nothing to free","status":"exit 0","output":"nothing to free""#,
+    ] {
+        assert!(prompt.contains(part), "{part} not in {prompt}");
+    }
+    std::thread::sleep(Duration::from_millis(2500));
+    assert_eq!(setup.rows("tasks").len(), 2);
+}
+
+#[test]
+fn a_sweeper_that_cleaned_opens_an_issue_on_the_sweep_repository_once_a_person_approves() {
+    let mut setup = stalled_with_sweeper("sweeper-issue");
+    setup.calls(&[json!({ "name": "result", "arguments": {
+        "outcome": "cleaned",
+        "summary": "Sweep the Docker build cache\nRemoved 30 GB of build cache with docker builder prune.",
+    } })]);
+
+    setup.start();
+
+    let asks = setup.until("asks", |rows| rows.len() == 1);
+    assert_eq!(asks[0][1], "2");
+    assert!(asks[0][3].starts_with("approve-issue"), "{asks:?}");
+    assert!(setup.gh().is_empty());
+    let answered = setup.priory(&["answer", "1", "open", "--revision", "1"]);
+    assert!(answered.status.success(), "{answered:?}");
+    setup.until("tasks", |rows| rows[0][4] == "done");
+    let gh = setup.gh();
+    assert_eq!(gh.len(), 2, "{gh:?}");
+    assert_eq!(
+        gh[0][..6],
+        ["issue", "list", "-R", "owner/repo", "--state", "all"]
+    );
+    let (body, mark) = gh[1][7].rsplit_once("\n\n").unwrap();
+    assert_eq!(
+        gh[1][..7],
+        [
+            "issue",
+            "create",
+            "-R",
+            "owner/repo",
+            "--title",
+            "Sweep the Docker build cache",
+            "--body",
+        ]
+    );
+    assert_eq!(
+        body,
+        "Sweep the Docker build cache\nRemoved 30 GB of build cache with docker builder prune."
+    );
+    assert!(
+        mark.starts_with("Filed by Priory for event ") && gh[0][7].contains(mark),
+        "{gh:?}"
+    );
+}
+
+/// Two tasks on a disk with 30 GB free, which keeps 20 GB, for an implementer declaring `disk`.
+fn two_on_disk(name: &str, disk: Option<&str>) -> Setup {
+    let mut setup = Setup::new(name);
+    if let Some(disk) = disk {
+        let agent = AGENT.replace("effort", &format!("disk = \"{disk}\"\neffort"));
+        fs::write(setup.dir.join("factory/agents/implementer/agent.md"), agent).unwrap();
+    }
+    setup.disk(30);
+    setup.publish(&requested(42));
+    setup.publish(&requested(43));
+    setup.start();
+    setup
+}
+
+#[test]
+fn two_agents_declaring_disk_cannot_both_start_when_only_one_fits() {
+    let setup = two_on_disk("disk-one-fits", Some("8GB"));
+
+    let reason = "waits for room: 22.0 GB of disk free, needs 8.0 GB and keeps 20.0 GB free";
+    let tasks = setup.until("tasks", |rows| rows.len() == 2 && rows[1][7] == reason);
+    assert_eq!([&tasks[0][4], &tasks[1][4]], ["running", "queued"]);
+    assert_eq!(
+        setup.banner().as_deref(),
+        Some(&*format!(
+            "stalled since {}: short of disk by 6.0 GB; task 2 waits for room",
+            setup.banner().unwrap()[14..34].to_owned()
+        ))
+    );
+}
+
+#[test]
+fn a_head_that_declares_more_disk_than_the_runner_has_holds_back_no_one() {
+    let mut setup = Setup::new("disk-never-fits");
+    with_review(&setup, "4GB");
+    // The disk is 1000 GB, so 2000 GB never fits.
+    fs::write(
+        setup.dir.join("factory/agents/implementer/agent.md"),
+        AGENT.replace("effort", "disk = \"2000GB\"\neffort"),
+    )
+    .unwrap();
+    setup.disk(500);
+    setup.publish(&requested_in(42, Some("now")));
+    setup.publish(&review_requested(43));
+
+    setup.start();
+
+    let tasks = setup.until("tasks", |rows| rows.len() == 2 && rows[1][4] == "running");
+    assert_eq!(tasks[0][4], "queued");
+    assert_eq!(setup.banner(), None);
+}
+
+#[test]
+fn an_agent_without_disk_reserves_none() {
+    let setup = two_on_disk("disk-none", None);
+
+    setup.until("tasks", |rows| with(rows, 4, "running") == 2);
 }
 
 #[test]
@@ -2105,6 +2445,48 @@ fn resume_restarts_a_blocked_task_in_its_session_and_cancel_drops_it_and_ends_it
     assert!(setup.rows("desk").is_empty());
 }
 
+#[test]
+fn resuming_a_task_whose_runs_never_started_queues_one_resume_line_and_one_ending() {
+    let typed = resume_three_failed_launches(Setup::new("resume-unstarted"));
+    assert_eq!(
+        typed,
+        "A person resumed this task. Check the worktree, then continue.\nImplement the issue.\nEnd this step by calling the result tool of the priory MCP server with one of these outcomes: failed, passed.\n"
+    );
+}
+
+#[test]
+fn resuming_a_shared_agents_task_whose_runs_never_started_queues_one_resume_line() {
+    let typed = resume_three_failed_launches(shared("resume-shared"));
+    assert_eq!(
+        typed.matches("A person resumed this task").count(),
+        1,
+        "{typed}"
+    );
+}
+
+/// The first prompt a run takes after three launches that died and a fourth resume.
+fn resume_three_failed_launches(mut setup: Setup) -> String {
+    setup.publish(&requested(42));
+    setup.hold("die");
+    setup.start();
+    let blocked = |rows: &[Vec<String>]| rows.first().is_some_and(|row| row[4] == "blocked");
+    setup.until("tasks", blocked);
+    for _ in 0..2 {
+        assert!(setup.priory(&["resume", "1"]).status.success());
+        setup.until("runs", |rows| {
+            rows.len() >= 2 && rows.iter().all(|row| row[6] != "-")
+        });
+        setup.until("tasks", blocked);
+    }
+    setup.release("die");
+
+    let resumed = setup.priory(&["resume", "1"]);
+
+    assert!(resumed.status.success(), "{resumed:?}");
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 1);
+    setup.typed().remove(0)
+}
+
 const INTERRUPTED: &str = "Priory restarted and found tmux session priory-2 gone, as after a reboot, so this run was interrupted. Check the worktree, then continue.\nEnd this step by calling the result tool of the priory MCP server with one of these outcomes: hopeless, ready, unsure.\n";
 
 #[test]
@@ -2259,6 +2641,14 @@ fn the_mcp_server_lists_the_result_ask_and_wait_tools() {
 
     assert_eq!(replies.len(), 2, "{replies:?}");
     assert_eq!(replies[0]["result"]["protocolVersion"], "2025-06-18");
+    let instructions = replies[0]["result"]["instructions"].as_str().unwrap();
+    assert!(
+        instructions.contains(&format!(
+            "{} memory acquire --gb N -- <command>",
+            env!("CARGO_BIN_EXE_priory")
+        )),
+        "{instructions}"
+    );
     let names: Vec<_> = replies[1]["result"]["tools"]
         .as_array()
         .unwrap()
@@ -2416,7 +2806,7 @@ fn an_unknown_condition_is_refused_and_nothing_is_stored() {
     assert!(error, "{text}");
     assert_eq!(
         text,
-        "unknown condition \"moon\": wait on pull_request, checks, review, time or task"
+        "unknown condition \"moon\": wait on pull_request, checks, review, time, task, linear_comment, linear_state or slack_reply"
     );
     std::thread::sleep(Duration::from_millis(1500));
     assert!(setup.rows("waits").is_empty());
@@ -4855,4 +5245,580 @@ fn a_turn_a_person_typed_into_the_pane_gets_no_nudge() {
 
     assert_eq!(setup.typed().len(), 3, "{:?}", setup.typed());
     assert_eq!(setup.rows("outbox").len(), 2);
+}
+
+fn linear_event(kind: &str, issue: &str, extra: serde_json::Value) -> Message {
+    let mut data = json!({
+        "issue": issue,
+        "linear_id": format!("{issue}-{kind}"),
+        "title": "Fix the thing",
+        "url": format!("https://linear.app/acme/issue/{issue}"),
+        "team": "ENG",
+        "project": null,
+        "state": "In Progress",
+        "labels": [],
+        "time": herdr_bus::Timestamp::now().to_string(),
+        "baseline": false,
+        "triggers": [],
+    });
+    data.as_object_mut()
+        .unwrap()
+        .extend(extra.as_object().unwrap().clone());
+    Message::new(kind, data).subject(issue)
+}
+
+#[test]
+fn a_linear_comment_wait_fires_on_a_comment_on_its_issue_and_not_another() {
+    let setup = asleep_on(
+        "linear-comment",
+        json!({ "type": "linear_comment", "issue": "ENG-7" }),
+    );
+    assert_eq!(
+        setup.rows("waits")[0][3..5],
+        ["linear_comment", "linear:ENG-7"]
+    );
+
+    setup.publish(&linear_event(
+        "linear.comment.created",
+        "ENG-8",
+        json!({ "body": "elsewhere" }),
+    ));
+    stays_asleep(&setup);
+    setup.publish(&linear_event(
+        "linear.comment.created",
+        "ENG-7",
+        json!({ "body": "Please cover the empty case." }),
+    ));
+
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 2);
+    let typed = setup.typed();
+    assert!(
+        typed[1].starts_with("linear.comment.created ENG-7 {")
+            && typed[1].contains("Please cover the empty case."),
+        "{typed:?}"
+    );
+    assert_eq!(setup.rows("tasks")[0][4], "running");
+}
+
+#[test]
+fn a_linear_state_wait_fires_when_its_issue_moves_to_its_state_and_not_otherwise() {
+    let setup = asleep_on(
+        "linear-state",
+        json!({ "type": "linear_state", "issue": "ENG-7", "state": "Done" }),
+    );
+    let moved = |issue: &str, to: &str| {
+        linear_event(
+            "linear.issue.state_changed",
+            issue,
+            json!({ "linear_id": format!("{issue}-{to}"), "from": "In Progress", "to": to }),
+        )
+    };
+
+    setup.publish(&moved("ENG-8", "Done"));
+    setup.publish(&moved("ENG-7", "In Review"));
+    stays_asleep(&setup);
+    setup.publish(&moved("ENG-7", "Done"));
+
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 2);
+    let typed = setup.typed();
+    let lines: Vec<_> = typed[1].lines().collect();
+    assert!(
+        lines[0].starts_with("linear.issue.state_changed ENG-7 {")
+            && lines[0].contains(r#""to":"Done""#),
+        "{typed:?}"
+    );
+    assert!(lines[1].contains(r#""to":"In Review""#), "{typed:?}");
+}
+
+const THREAD: &str = "1763500000.000100";
+
+/// A reply in `thread` of channel C0123, posted at `time`.
+fn replied(thread: &str, ts: &str, time: herdr_bus::Timestamp) -> Message {
+    Message::new(
+        "slack.thread.replied",
+        json!({ "channel": "C0123", "thread_ts": thread, "ts": ts, "user": "U0PERSON",
+                "text": format!("reply {ts}"), "time": time.to_string() }),
+    )
+    .subject(format!("C0123:{thread}"))
+    .time(time)
+}
+
+#[test]
+fn a_slack_reply_wait_fires_on_a_new_reply_in_its_thread_only() {
+    let setup = asleep_on(
+        "slack-reply",
+        json!({ "type": "slack_reply", "channel": "C0123", "thread_ts": THREAD }),
+    );
+    assert_eq!(
+        setup.rows("waits")[0][3..5],
+        ["slack_reply", format!("slack:C0123:{THREAD}").as_str()]
+    );
+    let now = herdr_bus::Timestamp::now();
+    let hour_ago = now.checked_sub(Duration::from_secs(3600)).unwrap();
+
+    setup.publish(&replied("1763500000.000200", "1763500001.000001", now));
+    setup.publish(&replied(THREAD, "1763500001.000002", hour_ago));
+    stays_asleep(&setup);
+    setup.publish(&replied(THREAD, "1763500001.000003", now));
+
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 2);
+    let typed = setup.typed();
+    assert!(
+        typed[1].starts_with(&format!("slack.thread.replied C0123:{THREAD} {{"))
+            && typed[1].contains("reply 1763500001.000003"),
+        "{typed:?}"
+    );
+}
+
+const SLACK_TOKEN: &str = "xoxb-secret-test-token";
+
+impl Setup {
+    /// Makes the fake `curl` answer each call whose arguments contain a pattern of `answers`, and
+    /// record its arguments and standard input.
+    fn answer_curl(&self, answers: &[(&str, serde_json::Value)]) {
+        let bin = self.dir.join("bin");
+        fs::create_dir_all(&bin).unwrap();
+        let mut script = format!(
+            "#!/bin/sh\necho \"$*\" >> '{dir}/curl-args'\ncat >> '{dir}/curl-stdin'\ncase \"$*\" in\n",
+            dir = self.dir.display()
+        );
+        for (index, (pattern, answer)) in answers.iter().enumerate() {
+            let file = self.dir.join(format!("curl-answer-{index}.json"));
+            fs::write(&file, answer.to_string()).unwrap();
+            script.push_str(&format!("  *'{pattern}'*) cat '{}' ;;\n", file.display()));
+        }
+        script.push_str("  *) echo \"unexpected call $*\" >&2; exit 2 ;;\nesac\n");
+        let curl = bin.join("curl");
+        fs::write(&curl, script).unwrap();
+        fs::set_permissions(&curl, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    /// Makes the fake `curl` answer Slack's Web API: `auth.test` as bot U0BOT, and each
+    /// `conversations.replies` with `replies`, the thread's first message included.
+    fn answer_slack(&self, replies: &[serde_json::Value]) {
+        let mut messages =
+            vec![json!({ "ts": THREAD, "thread_ts": THREAD, "user": "U0PERSON", "text": "first" })];
+        messages.extend_from_slice(replies);
+        self.answer_curl(&[
+            (
+                "auth.test",
+                json!({ "ok": true, "user_id": "U0BOT", "bot_id": "B0BOT" }),
+            ),
+            (
+                "conversations.replies",
+                json!({ "ok": true, "messages": messages, "has_more": false }),
+            ),
+        ]);
+    }
+
+    /// Runs one poll of `priory intake` on a factory with no trigger, against the fakes in `bin`.
+    fn intake(&self) {
+        let factory = self.dir.join("intake-factory");
+        for (path, content) in [
+            ("factory.toml", "name = \"demo\""),
+            ("agents/implementer/agent.md", AGENT),
+            ("workflows/implement.toml", WORKFLOW),
+        ] {
+            let file = factory.join(path);
+            fs::create_dir_all(file.parent().unwrap()).unwrap();
+            fs::write(file, content).unwrap();
+        }
+        let path = std::env::join_paths(
+            std::iter::once(self.dir.join("bin"))
+                .chain(std::env::split_paths(&std::env::var_os("PATH").unwrap())),
+        )
+        .unwrap();
+        let output = self
+            .command(env!("CARGO_BIN_EXE_priory"))
+            .args(["intake", "--once"])
+            .arg(&factory)
+            .env("PATH", path)
+            .env("SLACK_BOT_TOKEN", SLACK_TOKEN)
+            .env("LINEAR_API_KEY", "lin_api_secret_test_key")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "intake: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+}
+
+/// A message in the thread, by `user`, posted at `ts`.
+fn slack_message(ts: &str, user: &str) -> serde_json::Value {
+    json!({ "ts": ts, "thread_ts": THREAD, "user": user, "text": format!("said {ts}") })
+}
+
+/// Slack's `ts` for `time`: seconds since the epoch, with six decimals.
+fn ts(time: herdr_bus::Timestamp) -> String {
+    format!("{}.{:06}", time.as_second(), time.subsec_microsecond())
+}
+
+#[test]
+fn a_reply_posted_before_the_wait_wakes_the_task_and_the_bots_own_reply_never_does() {
+    let setup = asleep_on(
+        "slack-intake",
+        json!({ "type": "slack_reply", "channel": "C0123", "thread_ts": THREAD }),
+    );
+    // The second the wait was stored in: after the agent's last prompt, before the intake polls.
+    let stored: herdr_bus::Timestamp = setup.rows("waits")[0][5].parse().unwrap();
+    let before_prompt = stored.checked_sub(Duration::from_secs(3600)).unwrap();
+    let old = slack_message(&ts(before_prompt), "U0PERSON");
+    let mine = slack_message(&ts(herdr_bus::Timestamp::now()), "U0BOT");
+    setup.answer_slack(&[old.clone(), mine.clone()]);
+
+    setup.intake();
+    stays_asleep(&setup);
+    let person = stored;
+    setup.answer_slack(&[old, slack_message(&ts(person), "U0PERSON"), mine]);
+    setup.intake();
+
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 2);
+    let typed = setup.typed();
+    assert!(
+        typed[1].starts_with(&format!("slack.thread.replied C0123:{THREAD} {{"))
+            && typed[1].contains(&format!("said {}", ts(person))),
+        "{typed:?}"
+    );
+    let stdin = fs::read_to_string(setup.dir.join("curl-stdin")).unwrap();
+    assert!(stdin.contains(SLACK_TOKEN));
+    let args = fs::read_to_string(setup.dir.join("curl-args")).unwrap();
+    assert!(!args.contains(SLACK_TOKEN), "{args}");
+}
+
+/// A Linear GraphQL answer holding `nodes` at `field`.
+fn linear_page(field: &str, nodes: serde_json::Value) -> serde_json::Value {
+    json!({ "data": { field: { "nodes": nodes, "pageInfo": { "hasNextPage": false, "endCursor": null } } } })
+}
+
+fn linear_comment(issue: &str, body: &str) -> serde_json::Value {
+    json!({
+        "id": format!("comment-{issue}"),
+        "body": body,
+        "url": format!("https://linear.app/acme/issue/{issue}#comment"),
+        "createdAt": herdr_bus::Timestamp::now().to_string(),
+        "user": { "displayName": "max" },
+        "issue": {
+            "id": format!("issue-{issue}"), "identifier": issue, "title": "Fix the thing",
+            "url": format!("https://linear.app/acme/issue/{issue}"),
+            "team": { "key": "ENG" }, "project": null, "state": { "name": "In Progress" },
+            "labels": { "nodes": [] }
+        }
+    })
+}
+
+#[test]
+fn a_linear_wait_makes_an_intake_without_linear_triggers_poll_linear_for_its_issue() {
+    let setup = asleep_on(
+        "linear-intake",
+        json!({ "type": "linear_comment", "issue": "ENG-7" }),
+    );
+    setup.answer_curl(&[
+        ("query Issues", linear_page("issues", json!([]))),
+        (
+            "query Comments",
+            linear_page(
+                "comments",
+                json!([
+                    linear_comment("ENG-8", "elsewhere"),
+                    linear_comment("ENG-7", "Covered.")
+                ]),
+            ),
+        ),
+    ]);
+
+    setup.intake();
+
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 2);
+    let typed = setup.typed();
+    assert!(
+        typed[1].starts_with("linear.comment.created ENG-7 {") && typed[1].contains("Covered."),
+        "{typed:?}"
+    );
+    assert!(!typed[1].contains("elsewhere"), "{typed:?}");
+}
+
+/// Waits until the daemon answers on its socket.
+fn listening(setup: &Setup) {
+    let deadline = Instant::now() + Duration::from_secs(15);
+    while !setup.dir.join("home/priory.sock").exists() {
+        assert!(Instant::now() < deadline, "the daemon never listened");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+/// Starts `priory memory acquire --gb <gb> -- sh -c <script>` in the test's `fake` directory.
+fn acquire(setup: &Setup, gb: &str, script: &str) -> Child {
+    setup
+        .command(env!("CARGO_BIN_EXE_priory"))
+        .args(["memory", "acquire", "--gb", gb, "--", "sh", "-c", script])
+        .current_dir(setup.dir.join("fake"))
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap()
+}
+
+#[test]
+fn a_gated_command_runs_and_its_exit_code_passes_through() {
+    let mut setup = Setup::new("gate-exit");
+    setup.start();
+    listening(&setup);
+
+    let done = acquire(&setup, "8", "echo built; exit 7")
+        .wait_with_output()
+        .unwrap();
+
+    assert_eq!(
+        done.status.code(),
+        Some(7),
+        "stderr: {}",
+        String::from_utf8_lossy(&done.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&done.stdout), "built\n");
+    assert!(setup.rows("memory").is_empty());
+}
+
+/// A command that logs its start, runs while the file `hold-<name>` exists, then logs its end.
+fn held(name: &str) -> String {
+    format!(
+        "echo start-{name} >> order; while [ -e hold-{name} ]; do sleep 0.05; done; echo end-{name} >> order"
+    )
+}
+
+fn order(setup: &Setup) -> Vec<String> {
+    fs::read_to_string(setup.dir.join("fake/order"))
+        .unwrap_or_default()
+        .lines()
+        .map(str::to_owned)
+        .collect()
+}
+
+#[test]
+fn acquires_that_do_not_fit_together_run_one_after_the_other_in_fifo_order() {
+    let mut setup = Setup::new("gate-fifo");
+    setup.start();
+    listening(&setup);
+    setup.hold("hold-a");
+    setup.hold("hold-b");
+
+    let a = acquire(&setup, "40", &held("a"));
+    setup.until("memory", |rows| rows.len() == 1 && rows[0][2] == "held");
+    let b = acquire(&setup, "40", &held("b"));
+    setup.until("memory", |rows| rows.len() == 2);
+    // 10 GB fits beside a, but waits behind b.
+    let c = acquire(&setup, "10", &held("c"));
+    setup.until("memory", |rows| rows.len() == 3);
+    std::thread::sleep(Duration::from_millis(1000));
+
+    let rows: Vec<_> = setup
+        .rows("memory")
+        .into_iter()
+        .map(|row| [row[2].clone(), row[3].clone(), row[4].clone()])
+        .collect();
+    assert_eq!(
+        rows,
+        [
+            [
+                "held".to_owned(),
+                "40.0".to_owned(),
+                format!("sh -c {}", held("a"))
+            ],
+            [
+                "waiting".to_owned(),
+                "40.0".to_owned(),
+                format!("sh -c {}", held("b"))
+            ],
+            [
+                "waiting".to_owned(),
+                "10.0".to_owned(),
+                format!("sh -c {}", held("c"))
+            ],
+        ]
+    );
+    assert_eq!(order(&setup), ["start-a"]);
+    let desk: Vec<_> = setup
+        .rows("desk")
+        .into_iter()
+        .filter(|row| row[1] == "memory")
+        .map(|row| [row[3].clone(), row[5].clone()])
+        .collect();
+    assert_eq!(
+        desk,
+        [
+            [
+                "-".to_owned(),
+                format!("waits for 40.0 GB: sh -c {}", held("b"))
+            ],
+            [
+                "-".to_owned(),
+                format!("waits for 10.0 GB: sh -c {}", held("c"))
+            ],
+        ]
+    );
+    setup.release("hold-a");
+    assert!(a.wait_with_output().unwrap().status.success());
+    setup.until("memory", |rows| rows.iter().all(|row| row[2] == "held"));
+    setup.release("hold-b");
+    assert!(b.wait_with_output().unwrap().status.success());
+    assert!(c.wait_with_output().unwrap().status.success());
+    let order = order(&setup);
+    let at = |line: &str| order.iter().position(|logged| logged == line).unwrap();
+    assert_eq!(&order[..2], ["start-a", "end-a"]);
+    assert!(at("start-b") > at("end-a") && at("start-c") > at("end-a"));
+    assert!(setup.rows("memory").is_empty());
+}
+
+#[test]
+fn a_grant_is_released_when_its_command_fails_or_is_killed_or_its_holder_dies() {
+    let mut setup = Setup::new("gate-release");
+    setup.start();
+    listening(&setup);
+
+    let failed = acquire(&setup, "40", "exit 1").wait_with_output().unwrap();
+    assert_eq!(failed.status.code(), Some(1));
+    assert!(setup.rows("memory").is_empty());
+    let killed = acquire(&setup, "40", "kill -9 $$")
+        .wait_with_output()
+        .unwrap();
+    assert_eq!(killed.status.code(), Some(137));
+    assert!(setup.rows("memory").is_empty());
+
+    setup.hold("hold-orphan");
+    let mut holder = acquire(&setup, "40", &held("orphan"));
+    setup.written("fake/order");
+    holder.kill().unwrap();
+    holder.wait().unwrap();
+    // The orphaned command still runs, so its grant still holds.
+    std::thread::sleep(Duration::from_millis(1500));
+    assert_eq!(setup.rows("memory")[0][2], "held");
+    setup.release("hold-orphan");
+    setup.until("memory", |rows| rows.is_empty());
+    let next = acquire(&setup, "40", "exit 0").wait_with_output().unwrap();
+
+    assert!(
+        next.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&next.stderr)
+    );
+    assert!(setup.rows("memory").is_empty());
+}
+
+#[test]
+fn without_a_daemon_the_command_fails_fast_and_never_runs() {
+    let setup = Setup::new("gate-no-daemon");
+
+    let done = acquire(&setup, "1", "echo ran > ran")
+        .wait_with_output()
+        .unwrap();
+
+    assert_eq!(done.status.code(), Some(125));
+    let stderr = String::from_utf8_lossy(&done.stderr);
+    assert!(
+        stderr.contains("no priory daemon listens") && stderr.contains("the command did not run"),
+        "{stderr}"
+    );
+    assert!(!setup.dir.join("fake/ran").exists());
+}
+
+#[test]
+fn an_acquire_that_waits_past_its_timeout_gives_up_and_leaves_no_grant() {
+    let mut setup = Setup::new("gate-timeout");
+    setup.start();
+    listening(&setup);
+    setup.hold("hold-a");
+    let a = acquire(&setup, "40", &held("a"));
+    setup.until("memory", |rows| rows.len() == 1 && rows[0][2] == "held");
+
+    let late = setup
+        .command(env!("CARGO_BIN_EXE_priory"))
+        .args([
+            "memory",
+            "acquire",
+            "--gb",
+            "40",
+            "--timeout",
+            "1s",
+            "--",
+            "true",
+        ])
+        .output()
+        .unwrap();
+    setup.release("hold-a");
+
+    assert_eq!(late.status.code(), Some(125));
+    assert!(a.wait_with_output().unwrap().status.success());
+    assert!(setup.rows("memory").is_empty());
+}
+
+#[test]
+fn a_run_waits_for_room_while_a_grant_holds_memory() {
+    let mut setup = Setup::new("gate-run");
+    setup.start();
+    listening(&setup);
+    setup.hold("hold-a");
+    let a = acquire(&setup, "50", &held("a"));
+    setup.until("memory", |rows| rows.len() == 1 && rows[0][2] == "held");
+
+    setup.publish(&requested(42));
+
+    let reason = "waits for room: 10.0 GB of memory free, needs 4.0 GB and keeps 6.4 GB free";
+    setup.until("tasks", |rows| rows.len() == 1 && rows[0][7] == reason);
+    assert!(setup.rows("runs").is_empty());
+    setup.release("hold-a");
+    assert!(a.wait_with_output().unwrap().status.success());
+    setup.until("tasks", |rows| rows[0][4] == "running");
+}
+
+#[test]
+fn a_task_that_waited_on_a_linear_issue_is_done_on_its_result_without_a_pull_request() {
+    let mut setup = Setup::new("linear-done");
+    setup.calls(&[
+        wait(json!({ "type": "linear_comment", "issue": "ENG-7" })),
+        result("passed"),
+    ]);
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("runs", |rows| {
+        rows.first().is_some_and(|row| row[7] == "asleep")
+    });
+
+    setup.publish(&linear_event(
+        "linear.comment.created",
+        "ENG-7",
+        json!({ "body": "Go ahead." }),
+    ));
+
+    setup.until("tasks", |rows| rows[0][4] == "done");
+}
+
+#[test]
+fn a_linear_comment_no_task_owned_before_the_wait_wakes_the_task_at_once() {
+    let mut setup = Setup::new("linear-already");
+    setup.calls(&[wait(json!({ "type": "linear_comment", "issue": "ENG-7" }))]);
+    setup.hold("hold-call");
+    setup.publish(&requested(42));
+    setup.start();
+    setup.written("fake/submitted");
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") == 1);
+    // The comment lands after the agent's prompt, while no task owns ENG-7 yet.
+    setup.publish(&linear_event(
+        "linear.comment.created",
+        "ENG-7",
+        json!({ "body": "Already answered." }),
+    ));
+    setup.until("inbox", |rows| rows.len() == 2 && rows[1][4] == "ignored");
+
+    setup.release("hold-call");
+
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 2);
+    let (text, error) = reply(&setup.replies()[0]);
+    assert!(!error, "{text}");
+    assert!(text.starts_with("wait 1 already holds"), "{text}");
+    assert!(
+        setup.typed()[1].starts_with("linear.comment.created ENG-7 {"),
+        "{:?}",
+        setup.typed()
+    );
 }

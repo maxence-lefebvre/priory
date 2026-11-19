@@ -177,7 +177,7 @@ fn an_unknown_field_names_its_file_and_line() {
     assert_eq!(outcome.code, 1);
     assert_eq!(
         outcome.stderr,
-        "agents/implementer/agent.md:4:1: unknown field `modle`, expected one of description, harness, model, effort, runner, session, memory, mcpServers, permissions\n"
+        "agents/implementer/agent.md:4:1: unknown field `modle`, expected one of description, harness, model, effort, runner, session, memory, disk, mcpServers, permissions\n"
     );
 }
 
@@ -655,9 +655,9 @@ fn backfill_is_a_boolean() {
 }
 
 #[test]
-fn only_a_github_or_linear_trigger_has_backfill() {
+fn only_a_github_linear_or_slack_trigger_has_backfill() {
     let trigger =
-        "source = \"slack\"\non = \"message\"\nworkflow = \"implement\"\nbackfill = true\n";
+        "source = \"email\"\non = \"message\"\nworkflow = \"implement\"\nbackfill = true\n";
 
     let outcome = check(&factory(
         "backfill-source",
@@ -667,7 +667,7 @@ fn only_a_github_or_linear_trigger_has_backfill() {
     assert_eq!(outcome.code, 1);
     assert_eq!(
         outcome.stderr,
-        "triggers/agent-label.toml:4: only a GitHub or Linear trigger has `backfill`\n"
+        "triggers/agent-label.toml:4: only a GitHub, Linear or Slack trigger has `backfill`\n"
     );
 }
 
@@ -1023,6 +1023,28 @@ fn a_linear_trigger_uses_a_supported_event_filter_and_key() {
 }
 
 #[test]
+fn a_slack_trigger_names_its_channel_and_filters_on_text_only() {
+    let good = "source = \"slack\"\nchannel = \"C0123\"\non = \"message.posted\"\nfilter = { text = \"deploy\" }\nworkflow = \"implement\"\nbackfill = true\n";
+    let wrong = "source = \"slack\"\non = \"message\"\nfilter = { user = \"U1\" }\nworkflow = \"implement\"\nkey = \"ts\"\n";
+    let stray = "source = \"linear\"\nchannel = \"C0123\"\non = \"comment.created\"\nworkflow = \"implement\"\n";
+    let mut files = with("triggers/agent-label.toml", good);
+    files.push(("triggers/wrong.toml", wrong));
+    files.push(("triggers/stray.toml", stray));
+
+    let outcome = check(&factory("slack-triggers", &files));
+
+    assert_eq!(outcome.code, 1);
+    assert_eq!(
+        outcome.stderr,
+        "triggers/stray.toml:2: only a Slack trigger names a `channel`\n\
+         triggers/wrong.toml:2: a Slack trigger handles `message.posted`, not `message`\n\
+         triggers/wrong.toml:1: a Slack trigger needs `channel = \"<channel id>\"`\n\
+         triggers/wrong.toml:3: a Slack trigger filters on `text` only\n\
+         triggers/wrong.toml:5: a Slack trigger's `key` is `message.ts`\n"
+    );
+}
+
+#[test]
 fn a_trigger_or_workflow_naming_an_unknown_band_names_its_line() {
     let trigger = format!("{TRIGGER}band = \"someday\"\n");
     let workflow = WORKFLOW.replacen(
@@ -1067,5 +1089,58 @@ fn factory_toml_renames_the_bands() {
         duplicate.stderr,
         "factory.toml:2: `bands` needs at least one band, each named once\n\
          triggers/agent-label.toml:8: band `p1` is not one of p0, p0\n"
+    );
+}
+
+#[test]
+fn a_sweep_table_passes_and_a_bad_one_names_its_line() {
+    let good = "name = \"demo\"\n\n[sweep]\nevery = \"5m\"\nafter = \"30m\"\nagent = \"implementer\"\nrepo = \"owner/priory\"\nscripts = [{ run = \"docker system prune -f\", when = \"disk\", timeout = \"2m\" }]\n";
+    let ok = check(&factory("sweep-ok", &with("factory.toml", good)));
+    let resource = good.replace("when = \"disk\"", "when = \"swap\"");
+    let bad_resource = check(&factory("sweep-resource", &with("factory.toml", &resource)));
+    let agent = good.replace("agent = \"implementer\"", "agent = \"sweeper\"");
+    let bad_agent = check(&factory("sweep-agent", &with("factory.toml", &agent)));
+
+    assert_eq!((ok.code, ok.stderr.as_str()), (0, ""));
+    assert_eq!(bad_resource.code, 1);
+    assert!(
+        bad_resource.stderr.starts_with(
+            "factory.toml:8:53: unknown variant `swap`, expected one of `memory`, `disk`, `cpu`"
+        ),
+        "{}",
+        bad_resource.stderr
+    );
+    assert_eq!(bad_agent.code, 1);
+    assert_eq!(
+        bad_agent.stderr,
+        "factory.toml:3: the sweeper agent `sweeper` does not exist\n"
+    );
+    let repo = good.replace("owner/priory", "priory");
+    let bad_repo = check(&factory("sweep-repo", &with("factory.toml", &repo)));
+    assert_eq!(
+        (bad_repo.code, bad_repo.stderr.as_str()),
+        (
+            1,
+            "factory.toml:3: `[sweep] repo` needs to be `owner/name`\n"
+        )
+    );
+}
+
+#[test]
+fn an_agent_disk_that_is_not_a_size_names_its_line() {
+    let agent = AGENT.replace(
+        "session = \"per-task\"\n",
+        "session = \"per-task\"\ndisk = \"lots\"\n",
+    );
+
+    let outcome = check(&factory(
+        "bad-disk",
+        &with("agents/implementer/agent.md", &agent),
+    ));
+
+    assert_eq!(outcome.code, 1);
+    assert_eq!(
+        outcome.stderr,
+        "agents/implementer/agent.md:5:8: \"lots\" is not a size such as 512MB or 6GB\n"
     );
 }

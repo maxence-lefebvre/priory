@@ -246,7 +246,56 @@ fn open_wait(tx: &Transaction, run: i64) -> rusqlite::Result<Option<i64>> {
     .optional()
 }
 
-const CONDITIONS: &str = "pull_request, checks, review, time or task";
+const CONDITIONS: &str =
+    "pull_request, checks, review, time, task, linear_comment, linear_state or slack_reply";
+
+/// What a resource wait names: its resource, and the head or the state it wants.
+type Named = (String, Option<String>, Option<String>);
+
+/// The resource `on` names for a resource wait of `kind`, with its head or state.
+fn named(kind: &str, on: &Value) -> Result<Named, String> {
+    let text = |field: &str| on[field].as_str().filter(|value| !value.is_empty());
+    match kind {
+        "pull_request" | "checks" | "review" => {
+            let (Some(repo), Some(number)) = (text("repo"), on["pull_request"].as_u64()) else {
+                return Err(format!(
+                    "a {kind} wait needs repo, as owner/name, and pull_request, a number"
+                ));
+            };
+            let head = match &on["head_sha"] {
+                Value::Null => None,
+                Value::String(head) if kind == "checks" => Some(full_sha(head)?),
+                _ => return Err("head_sha must be a commit, on a checks wait only".into()),
+            };
+            Ok((route::pull_request(repo, number), head, None))
+        }
+        "linear_comment" | "linear_state" => {
+            let state = text("state").filter(|_| kind == "linear_state");
+            match (text("issue"), state) {
+                (Some(issue), None) if kind == "linear_comment" => {
+                    Ok((format!("linear:{issue}"), None, None))
+                }
+                (Some(issue), Some(state)) => {
+                    Ok((format!("linear:{issue}"), None, Some(state.to_owned())))
+                }
+                _ if kind == "linear_comment" => {
+                    Err("a linear_comment wait needs issue, such as ENG-7".into())
+                }
+                _ => Err(
+                    "a linear_state wait needs issue, such as ENG-7, and state, such as Done"
+                        .into(),
+                ),
+            }
+        }
+        _ => match (text("channel"), text("thread_ts")) {
+            (Some(channel), Some(thread)) => Ok((format!("slack:{channel}:{thread}"), None, None)),
+            _ => Err(
+                "a slack_reply wait needs channel, such as C0123, and thread_ts, the ts of the thread's first message"
+                    .into(),
+            ),
+        },
+    }
+}
 
 /// Stores the wait and fires it at once if an event since the agent's last prompt satisfies it.
 fn wait(
@@ -257,14 +306,12 @@ fn wait(
     let on = &arguments["on"];
     let kind = on["type"].as_str().unwrap_or_default();
     match kind {
-        "pull_request" | "checks" | "review" => {
-            let (Some(repo), Some(number)) = (on["repo"].as_str(), on["pull_request"].as_u64())
-            else {
-                return Ok(Err(format!(
-                    "a {kind} wait needs repo, as owner/name, and pull_request, a number"
-                )));
+        "pull_request" | "checks" | "review" | "linear_comment" | "linear_state"
+        | "slack_reply" => {
+            let (resource, head, state) = match named(kind, on) {
+                Ok(named) => named,
+                Err(error) => return Ok(Err(error)),
             };
-            let resource = route::pull_request(repo, number);
             if let Some(other) = crate::state::owner(tx, std::slice::from_ref(&resource))?
                 && other.id != run.task
             {
@@ -277,21 +324,26 @@ fn wait(
                 "INSERT OR IGNORE INTO owns (task, resource) VALUES (?1, ?2)",
                 params![run.task, resource],
             )?;
-            let head = match &on["head_sha"] {
-                Value::Null => None,
-                Value::String(head) if kind == "checks" => match full_sha(head) {
-                    Ok(head) => Some(head),
-                    Err(error) => return Ok(Err(error)),
-                },
-                _ => {
-                    return Ok(Err(
-                        "head_sha must be a commit, on a checks wait only".into()
-                    ));
-                }
-            };
+            // A Linear or Slack event reaches the task only once it waits, so the agent's last
+            // prompt bounds it: an event at or after it counts, one before it does not.
             tx.execute(
-                "INSERT INTO waits (task, run, kind, resource, head_sha) VALUES (?1, ?2, ?3, ?4, ?5)",
-                params![run.task, run.id, kind, resource, head],
+                "INSERT INTO waits (task, run, kind, resource, head_sha, state, since)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, iif(?3 IN ('linear_comment', 'linear_state', 'slack_reply'),
+                   coalesce((SELECT max(confirmed) FROM outbox WHERE task = ?1),
+                     (SELECT started FROM runs WHERE id = ?2)), NULL))",
+                params![run.task, run.id, kind, resource, head, state],
+            )?;
+            // No task owned the resource before: its events since the last prompt were ignored.
+            tx.execute(
+                "UPDATE inbox SET task = ?1, outcome = 'kept'
+                 WHERE outcome = 'ignored' AND task IS NULL
+                 AND julianday(time) >= julianday((SELECT since FROM waits WHERE id = ?2))
+                 AND ?3 = CASE
+                   WHEN type LIKE 'linear.%' THEN 'linear:' || json_extract(data, '$.issue')
+                   WHEN type LIKE 'slack.%' THEN 'slack:' || json_extract(data, '$.channel') || ':'
+                     || coalesce(json_extract(data, '$.thread_ts'), json_extract(data, '$.ts'))
+                 END",
+                params![run.task, tx.last_insert_rowid(), resource],
             )?;
         }
         "time" => {
@@ -400,7 +452,8 @@ fn catch_up(tx: &Transaction, task: i64) -> rusqlite::Result<bool> {
 pub(crate) fn event(tx: &Transaction, task: i64, seq: i64) -> rusqlite::Result<bool> {
     let open = tx
         .query_row(
-            "SELECT waits.id, waits.kind, waits.resource, waits.head_sha, waits.daemon FROM waits
+            "SELECT waits.id, waits.kind, waits.resource, waits.head_sha, waits.state,
+               waits.since, waits.daemon FROM waits
              JOIN tasks ON tasks.id = waits.task
              WHERE waits.task = ?1 AND waits.fired IS NULL AND waits.withdrawn IS NULL
              AND tasks.state IN ('running', 'asleep')",
@@ -411,25 +464,30 @@ pub(crate) fn event(tx: &Transaction, task: i64, seq: i64) -> rusqlite::Result<b
                     row.get::<_, String>(1)?,
                     row.get::<_, Option<String>>(2)?,
                     row.get::<_, Option<String>>(3)?,
-                    row.get::<_, bool>(4)?,
+                    row.get::<_, Option<String>>(4)?,
+                    row.get::<_, Option<String>>(5)?,
+                    row.get::<_, bool>(6)?,
                 ))
             },
         )
         .optional()?;
-    let Some((wait, kind, Some(resource), head, daemon)) = open else {
+    let Some((wait, kind, Some(resource), head, state, since, daemon)) = open else {
         return Ok(false);
     };
     if daemon {
         return judge(tx, wait);
     }
-    let (kind_of_event, subject, data): (String, Option<String>, String) = tx.query_row(
-        "SELECT type, subject, data FROM inbox WHERE seq = ?1",
-        [seq],
-        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-    )?;
+    let (kind_of_event, subject, data, after): (String, Option<String>, String, bool) = tx
+        .query_row(
+            "SELECT type, subject, data, coalesce(julianday(time) >= julianday(?2), 1)
+             FROM inbox WHERE seq = ?1",
+            params![seq, since],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )?;
     let line = crate::state::line(&kind_of_event, subject.as_deref(), &data);
     let data: Value = serde_json::from_str(&data).expect("inbox data is JSON");
-    if !route::satisfies(&kind, &resource, head.as_deref(), &kind_of_event, &data) {
+    let wanted = head.as_deref().or(state.as_deref());
+    if !after || !route::satisfies(&kind, &resource, wanted, &kind_of_event, &data) {
         return Ok(false);
     }
     fire(tx, wait, task, &line, Some(seq))?;
@@ -757,12 +815,53 @@ fn settle(tx: &Transaction, run: &Run, trace: &Trace) -> rusqlite::Result<Option
     Ok(Some(Some(run.tmux.clone())))
 }
 
-/// Queues `text` as a wake prompt: `text`, then how to end the step the task is in, if it is a model step.
+const RESUMED: &str = "A person resumed this task";
+const CONTINUE: &str = "Check the worktree, then continue.";
+
+/// Takes the line of an earlier resume that no run took out of the task's queued prompt.
+fn unresume(tx: &Transaction, task: i64) -> rusqlite::Result<()> {
+    let queued = tx
+        .query_row(
+            "SELECT id, text FROM outbox WHERE task = ?1 AND state = 'queued' ORDER BY id LIMIT 1",
+            [task],
+            |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)),
+        )
+        .optional()?;
+    let Some((id, text)) = queued else {
+        return Ok(());
+    };
+    // A shared session's task intro may come first.
+    let Some(start) = (text.starts_with(RESUMED))
+        .then_some(0)
+        .or_else(|| text.find(&format!("\n{RESUMED}")).map(|at| at + 1))
+    else {
+        return Ok(());
+    };
+    let end = format!("{CONTINUE}\n");
+    let Some(length) = text[start..].find(&end) else {
+        return Ok(());
+    };
+    let rest = format!("{}{}", &text[..start], &text[start + length + end.len()..]);
+    tx.execute(
+        "UPDATE outbox SET text = ?2 WHERE id = ?1",
+        params![id, rest],
+    )
+    .map(drop)
+}
+
+/// Queues `text` as a wake prompt: `text`, then how to end the step the task is in, if it is a
+/// model step and no queued prompt says so already.
 fn wake(tx: &Transaction, task: i64, text: &str) -> rusqlite::Result<i64> {
-    let ending: Option<String> =
-        tx.query_row("SELECT ending FROM tasks WHERE id = ?1", [task], |row| {
-            row.get(0)
-        })?;
+    let ending: Option<String> = tx
+        .query_row(
+            "SELECT ending FROM tasks WHERE id = ?1 AND NOT EXISTS (
+           SELECT 1 FROM outbox WHERE task = ?1 AND state = 'queued'
+           AND instr(char(10) || text || char(10), char(10) || ending || char(10)) > 0)",
+            [task],
+            |row| row.get(0),
+        )
+        .optional()?
+        .flatten();
     match ending {
         Some(ending) => queue_first(tx, task, &format!("{text}\n{ending}")),
         None => queue_first(tx, task, text),
@@ -805,7 +904,8 @@ fn pull_request(tx: &Transaction, task: i64) -> rusqlite::Result<Option<String>>
            SELECT pull_request AS resource, 3 AS rank, id AS at FROM actions
              WHERE task = ?1 AND pull_request IS NOT NULL
            UNION ALL
-           SELECT resource, 2, id FROM waits WHERE task = ?1 AND resource IS NOT NULL
+           SELECT resource, 2, id FROM waits
+             WHERE task = ?1 AND kind IN ('pull_request', 'checks', 'review')
            UNION ALL
            SELECT 'github:' || json_extract(inbox.data, '$.repo') || '#' || json_extract(inbox.data, '$.pull_request'), 1, inbox.seq
              FROM inbox JOIN tasks ON tasks.id = inbox.task
@@ -1104,10 +1204,17 @@ pub(crate) fn act(
     };
     match act.act.as_str() {
         "resume" if state == "blocked" => {
-            let text = format!(
-                "A person resumed this task after: {}. Check the worktree, then continue.",
-                reason.as_deref().unwrap_or("no reason")
-            );
+            // A reason from a run that never started describes the launch, not the agent's work.
+            let started: bool = tx.query_row(
+                "SELECT coalesce((SELECT ready FROM runs WHERE task = ?1 ORDER BY id DESC LIMIT 1), 0)",
+                [act.task],
+                |row| row.get(0),
+            )?;
+            let text = match reason.as_deref().filter(|_| started) {
+                Some(reason) => format!("{RESUMED} after: {reason}. {CONTINUE}"),
+                None => format!("{RESUMED}. {CONTINUE}"),
+            };
+            unresume(&tx, act.task)?;
             wake(&tx, act.task, &text)?;
             set(&tx, act.task, "ready", None, None)?;
             tx.commit()?;

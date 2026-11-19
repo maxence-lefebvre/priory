@@ -5,6 +5,7 @@ mod issues;
 mod linear;
 mod pulls;
 mod schedule;
+mod slack;
 
 use serde_json::json;
 use std::collections::{BTreeMap, BTreeSet, HashSet};
@@ -55,12 +56,27 @@ pub(crate) fn output() -> Output {
             linear::STATE_CHANGED,
             linear::BLOCKERS,
             linear::COMMENTED,
+            slack::POSTED,
+            slack::REPLIED,
             TASK_REQUESTED,
             BASELINE,
         ])
 }
 
-pub fn run(factory: &Factory, once: bool) -> Result<(), String> {
+/// A resource an open wait names, `linear:<issue>` or `slack:<channel>:<thread ts>`, and the time
+/// of its agent's last prompt: the intake publishes what happens to it from then on.
+pub struct Watch {
+    pub resource: String,
+    pub since: Timestamp,
+}
+
+/// Polls the sources until stopped, or once. `watched` reads the open waits on each poll, so that
+/// the intake polls the Slack threads they name and Linear when they name an issue.
+pub fn run(
+    factory: &Factory,
+    once: bool,
+    watched: fn() -> Result<Vec<Watch>, String>,
+) -> Result<(), String> {
     let from = |source: &str| -> Vec<(&str, &Trigger)> {
         factory
             .triggers
@@ -75,13 +91,15 @@ pub fn run(factory: &Factory, once: bool) -> Result<(), String> {
         .filter_map(|(_, trigger)| trigger.repo.as_deref())
         .collect();
     let linear_triggers = [from("linear"), from("linear.view")].concat();
+    let slack_triggers = from("slack");
     let bus = Bus::open_default().map_err(|error| error.to_string())?;
     bus.declare(&output()).map_err(|error| error.to_string())?;
-    let mut linear = if linear_triggers.is_empty() {
-        None
-    } else {
-        Some(linear::Linear::start(&bus, linear_triggers)?)
-    };
+    let mut linear = (!linear_triggers.is_empty())
+        .then(|| linear::Linear::start(&bus, linear_triggers.clone()))
+        .transpose()?;
+    let mut slack = (!slack_triggers.is_empty())
+        .then(|| slack::Slack::start(&bus, slack_triggers.clone()))
+        .transpose()?;
     let (newest, mut cursors) = newest(&bus, &repos).map_err(|error| error.to_string())?;
     for (stream, source) in newest {
         // A crash may have stopped between this source and its task requests.
@@ -96,6 +114,34 @@ pub fn run(factory: &Factory, once: bool) -> Result<(), String> {
     // pull requests if a long-running intake ever needs it.
     let mut published = HashSet::new();
     loop {
+        let watching = match watched() {
+            Ok(watching) => watching,
+            Err(error) if once => return Err(error),
+            Err(error) => {
+                eprintln!("{error}");
+                Vec::new()
+            }
+        };
+        let names = |source: &str| {
+            watching
+                .iter()
+                .any(|watch| watch.resource.starts_with(source))
+        };
+        // A wait starts a source the triggers left off; a missing key fails that poll only.
+        if linear.is_none() && names("linear:") {
+            match linear::Linear::start(&bus, Vec::new()) {
+                Ok(started) => linear = Some(started),
+                Err(error) if once => return Err(error),
+                Err(error) => eprintln!("{error}"),
+            }
+        }
+        if slack.is_none() && names("slack:") {
+            match slack::Slack::start(&bus, Vec::new()) {
+                Ok(started) => slack = Some(started),
+                Err(error) if once => return Err(error),
+                Err(error) => eprintln!("{error}"),
+            }
+        }
         schedule::fire(&bus, &schedules, now()?)?;
         match fetch(&repos, &cursors) {
             // A publish error ends the intake: its restart recovers the source it left behind.
@@ -106,6 +152,13 @@ pub fn run(factory: &Factory, once: bool) -> Result<(), String> {
         if let Some(linear) = &mut linear {
             match linear.fetch() {
                 Ok(polled) => linear.publish_all(&bus, polled)?,
+                Err(error) if once => return Err(error),
+                Err(error) => eprintln!("{error}"),
+            }
+        }
+        if let Some(slack) = &mut slack {
+            match slack.poll(&bus, &watching) {
+                Ok(()) => {}
                 Err(error) if once => return Err(error),
                 Err(error) => eprintln!("{error}"),
             }
@@ -262,9 +315,13 @@ fn dispatch(bus: &Bus, triggers: &[(&str, &Trigger)], source: &Message) -> Resul
         if let Some((name, trigger)) = triggers.iter().find(|(other, _)| *other == name) {
             let data = &source.data;
             let number = data.get("issue").unwrap_or(&data["pull_request"]);
-            let key = match number.as_str() {
-                Some(identifier) => format!("linear:{identifier}"),
-                None => format!(
+            let key = match (number.as_str(), data["channel"].as_str()) {
+                (_, Some(channel)) => format!(
+                    "slack:{channel}:{}",
+                    data["ts"].as_str().unwrap_or_default()
+                ),
+                (Some(identifier), _) => format!("linear:{identifier}"),
+                (None, None) => format!(
                     "github:{}#{number}",
                     data["repo"].as_str().unwrap_or_default()
                 ),
@@ -345,6 +402,11 @@ fn task_requested(name: &str, trigger: &Trigger, source: &Message, key: String) 
         "trigger": name,
         "source": source.id.to_string(),
     });
+    for field in ["team", "project"] {
+        if let Some(value) = source.data.get(field) {
+            data[field] = value.clone();
+        }
+    }
     if let Some(hold) = &trigger.hold {
         data["hold"] = json!(hold);
     }

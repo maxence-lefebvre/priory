@@ -206,8 +206,8 @@ The daemon admits a run only when the machine has room for it, measured live:
 
 | Measure | Read from | Admits when |
 | ------- | --------- | ----------- |
-| Memory | `MemAvailable` and `MemTotal` in `/proc/meminfo` | free memory, minus the memory promised to starting runs, minus the agent's `memory`, stays at or above `(1 - memory share) × MemTotal` |
-| Disk | `df -Pk` on `PRIORY_HOME`, which reads `statvfs` | free disk stays above 10 % of the disk, or above 20 GB on a disk over 200 GB |
+| Memory | `MemAvailable` and `MemTotal` in `/proc/meminfo` | free memory, minus the memory promised to live runs and held by memory grants, minus the agent's `memory`, stays at or above `(1 - memory share) × MemTotal` |
+| Disk | `df -Pk` on `PRIORY_HOME`, which reads `statvfs` | free disk, minus the disk promised to live runs, minus the agent's `disk`, stays above 10 % of the disk, or above 20 GB on a disk over 200 GB |
 | CPU | the 1-minute load in `/proc/loadavg`, and the CPUs this process may use | the load stays below `cpu share × CPUs` |
 
 The shares come from `agents` in `runners/<host>.toml`, where `<host>` is the name in
@@ -221,9 +221,15 @@ in `/proc/meminfo`. An agent with no `memory` declares 4 GB: Claude Code takes a
 agent runs builds and tests beside it. Declaring too much only delays a start; declaring too little
 lets agents run the machine out of memory.
 
-A live run promises its agent's `memory` from its start until it ends, since no run reports its own
-use yet. The room subtracts every promise from the measured free memory, so two runs admitted one
-after the other cannot both take the same free memory. The daemon measures again before each
+An agent may also declare `disk`, a size reserved above the disk floor. An agent with no `disk`
+reserves none. A run that waits for disk it declared gets the reason `waits for room: 22.0 GB of
+disk free, needs 8.0 GB and keeps 20.0 GB free`.
+
+A live run promises its agent's `memory` and `disk` from its start until it ends, since no run
+reports its own use yet. The room subtracts every promise and every held memory grant, described
+under Memory gate, from the measured free memory and disk, so two runs admitted one after the other
+cannot both take the same free room, and a run never starts into memory a build holds. The daemon
+measures again before each
 admission, since a start's clone and worktree take disk.
 
 A task that does not fit stays `queued` or `ready`, and its reason says why it waits, such as
@@ -235,9 +241,17 @@ The first task that waits for room holds back every task behind it in the queue,
 that fits. Each of those gets the reason `waits behind task <id>, which waits for room`. So a higher
 band only starts earlier: it never skips the room check, and a large task is never starved by
 smaller ones that keep taking the room it waits for. The cost is idle room while it waits. A task
-whose agent declares more memory than the runner's share of the machine can never fit, so it holds
-back no one. A task that waits for a shared agent holds back no one either, as described under
+whose agent declares more memory than the runner's share of the machine, or more disk than the disk
+holds above its floor, can never fit, so it holds back no one. A task that waits for a shared agent holds back no one either, as described under
 Shared sessions.
+
+While the head of the queue waits for room, the queue is stalled. The daemon records the stall in
+the state file, so its start survives a restart, and `priory desk` starts with one banner line:
+`stalled since 2026-11-19T10:00:00Z: short of disk by 10.0 GB; task 3 waits for room`. Another
+task heading the queue for the same resource keeps the stall; a different resource starts a new one.
+The stall ends when no task waits for room at the head. A task waiting because the room cannot be
+measured holds the queue without a stall. The sweep scripts and the sweeper act on stalls, as
+described under Sweep.
 
 `PRIORY_PROC` names a directory to read in place of `/proc`. The tests use it, with a fake `df` on
 `PATH`, to steer the measurements.
@@ -247,11 +261,59 @@ Known limits:
 - A run's actual use already lowers the measured free memory, and its promise counts again on top,
   so the room errs on the side of starting fewer runs. A run that reports its own use would end the
   double count.
-- An agent that grows past its declared `memory` can still crowd the machine. R4.9's memory gate
-  and R4.10's slice address that in M1.
-- Load and disk are not declared per agent, so the head of the queue holds back the others only
-  through memory in practice: when load or disk leaves no room, no task fits anyway.
+- An agent that grows past its declared `memory` can still crowd the machine. The memory gate
+  covers the builds an agent wraps in it, and R4.10's slice addresses the rest in M1.
+- Load is not declared per agent, so when load leaves no room, no task fits anyway.
 - The measurements need Linux's `/proc`.
+
+### Memory gate
+
+`priory memory acquire --gb N [--timeout D] -- <command>` runs a heavy command, such as a build or
+a test suite, only once the machine has room for it. Several agents' builds then queue instead of
+running the machine out of memory. N is a number of GB, such as `8` or `1.5`. D is a duration such
+as `90s`, `15m` or `2h`.
+
+1. The command asks the daemon over `priory.sock` for a grant of N GB. It sends its own pid and,
+   inside a run, the run's `PRIORY_SESSION`, which names the grant's task.
+2. The grant waits in one queue, oldest first. The daemon grants the oldest waiting grant when the
+   measured free memory, minus the memory promised to live runs and every held grant, minus N,
+   stays at or above `(1 - memory share) × MemTotal`, as the room check for runs does. A grant
+   that does not fit holds back every grant behind it, even a smaller one that fits, so a large
+   build is never starved.
+3. The command polls the daemon every 250 ms. Once its grant is held, it runs the command with its
+   own working directory, environment and terminal, and hands the grant to the command's process.
+4. When the command exits, however it exits, the grant is released. `acquire` exits with the
+   command's code, or 128 plus the signal that killed it.
+
+The daemon removes a grant whose holder is gone, on each tick and on each gate message. The holder
+is the `acquire` process while the grant waits, then the command's process. The daemon knows a
+holder by its pid and its start time in `/proc/<pid>/stat`, so a zombie or a reused pid counts as
+gone. So a killed `acquire` that waits frees its place within a second. A killed `acquire` whose
+command still runs keeps its grant until that command ends.
+
+`acquire` exits 125 and never runs the command when no daemon listens, when the daemon cannot
+measure the room or refuses the grant, or when the grant still waits after `--timeout`. A grant of more than the runner's share of
+the machine can never fit, so the daemon refuses it at once, as
+`9.0 GB never fits: this runner's agents may take 7.2 GB`. A command that cannot start exits 127.
+
+`priory memory` prints each grant in the order it was requested: id, task, state (`held` or
+`waiting`), GB, command and age. A held grant's age counts from its grant, a waiting one's from its
+request. `priory desk` shows each waiting grant as a `memory` row.
+
+Every agent learns the gate from the MCP server's instructions, which ask it to wrap each heavy
+command in `priory memory acquire --gb N -- <command>`, with the path of this `priory`.
+
+Known limits:
+
+- A grant counts on top of the memory its run already promised, so a build inside a run counts
+  twice, as a run's own use does under Room. The gate errs on the side of waiting.
+- Runs and grants queue apart: a run that fits starts even while a grant waits, and can take the
+  room the grant waits for.
+- The command's process holds the grant, not the processes it leaves behind: a daemonized child
+  of a build runs on without a grant.
+- A grant that arrives in the last poll before `--timeout` still runs its command, up to 250 ms late.
+- A daemon that stops while a command waits fails that command with 125. A held grant survives a
+  daemon restart in the state database.
 
 ### Shared sessions
 
@@ -298,23 +360,37 @@ cd "$PRIORY_HOME/repos/<owner>/<name>" && claude   # accept the dialog, then /ex
 
 A run that sends no `SessionStart` within 60 seconds of its start ends as `exited`. The daemon kills
 its tmux session and blocks its task with the reason `claude showed no SessionStart within 60s;
-trust the clone once: cd <clone path> && claude, accept, exit`. Its queued prompts stay queued, so
-the task's next run types them. A Codex run blocks with the Codex instruction under Codex.
+trust the clone once: cd <clone path> && claude, accept, exit`, then `. Its pane ended with: ` and
+the last 5 non-empty lines of its pane, joined by ` | `, so a person sees the dialog or warning
+that stopped it. The daemon log gets the last 30. Its queued prompts stay queued, and a prompt it
+was launched with goes back to the queue, so the task's next run gets them. A Codex run blocks
+with the Codex instruction under Codex.
 
 ### Codex
 
-A run of a `harness = "codex"` agent starts `codex`, or `codex resume <thread>`, in the same tmux
+A run of a `harness = "codex"` agent starts `codex --no-daemon`, or `codex resume <thread>
+--no-daemon`, in the same tmux
 session, worktree and outbox as a Claude run. Codex chooses its own session id, its thread, so
 Priory keeps a UUID of its own as the run's session: the pane's `@priory` tag, the hooks and the
 tools carry it. The pane sets `PRIORY_SESSION` to it, and the thread arrives on `SessionStart`
 stdin. Every setting goes in as a `-c key=value` override, so Priory writes no
-Codex file.
+Codex file. `--no-daemon` keeps the run off the background server that a person's other Codex
+sessions share, with its environment and its cached hook trust.
+
+Codex 0.170 fires `SessionStart` with the first turn, not at startup, so a Codex run cannot wait
+for it before its first prompt. The daemon marks the task's oldest queued prompt `attempted` by the
+run and passes it as Codex's last argument, after `--`. tmux refuses a command over about 16 KiB,
+so the prompt goes through a file under `$PRIORY_HOME/prompts`, which a `sh` wrapper reads, removes
+and appends. `UserPromptSubmit` confirms it as it does a paste. Every later prompt, such as an answer or a nudge, is pasted. A Claude run still gets its
+first prompt pasted after `SessionStart`, which Claude fires at startup, so its paste and its
+confirmation stay as they are.
 
 | Priory duty | Claude Code | Codex |
 | ----------- | ----------- | ----- |
 | The `priory` MCP server | `--mcp-config` | `-c mcp_servers.priory={command, args, env}`, with `default_tools_approval_mode = "approve"` in place of Claude's `mcp__priory` allow rule |
 | Session id (R5.5) | `--session-id <UUID>` Priory chooses | the thread from the `SessionStart` hook's `session_id`, stored on the run; `priory runs` shows it |
 | Resume | `--resume <session>` | `codex resume <thread>` |
+| First prompt | pasted after `SessionStart` | the last argument, `-- <prompt>` |
 | Idle signal for the outbox (R5.4) | `SessionStart`, `UserPromptSubmit`, `Stop` hooks in `--settings` | the same three hooks, as `-c hooks.<Event>`; Codex hooks take Claude's stdin and output shapes |
 | Stop signal for health (R7.1) | `Stop` hook, and the pane for an exit | the same |
 | A prompt shown anyway | `Notification` hook with `permission_prompt` | no equivalent: Codex has no notification hook for an approval prompt. A prompt that shows despite the deny hook stalls the turn until its step `timeout` blocks the task |
@@ -342,14 +418,22 @@ the same in every run, since the run's session reaches them as `PRIORY_SESSION`,
 them once, with the clone. A Codex run that sends no `SessionStart` within 60 seconds blocks its
 task with `codex showed no SessionStart within 60s; trust the clone and Priory's hooks once: cd
 <clone path> && codex -c 'hooks.SessionStart=...' ..., accept the folder, type /hooks and trust
-Priory's hooks, then exit`. The command carries Priory's hooks exactly as runs get them.
+Priory's hooks, then exit`, then the pane's last lines as under Trusting a clone. The command
+carries Priory's hooks exactly as runs get them. A hook nobody trusted shows Codex's `Hooks need
+review` dialog, which those lines show.
+
+The hooks and the MCP server name Priory by `PRIORY_EXE` when it is set, else by the absolute path
+Priory was invoked by, else by its resolved binary. Codex keys hook trust on the command, so that
+path must survive upgrades: under Nix, run Priory by its profile link, such as
+`~/.nix-profile/bin/priory`, or set `PRIORY_EXE` to it, rather than a store path that changes on
+every deploy. Changing that path changes the hooks, so a person trusts them again.
 
 Known limits:
 
-- No test runs a real Codex. Whether `/hooks` lists and keeps trust for `-c` hooks, whether
-  `SessionStart` fires before the first prompt, and whether `auto_review` runs before the deny hook
-  are read from Codex's documentation, not checked.
-- A new `priory` binary path changes the hooks' hash, so a person trusts them again after moving it.
+- No test runs a real Codex. Whether `/hooks` lists and keeps trust for `-c` hooks and whether
+  `auto_review` runs before the deny hook are read from Codex's documentation, not checked. That
+  `SessionStart` comes with the first turn was seen with Codex 0.170.
+- Priory invoked by a bare name, as from `PATH`, names its resolved binary; set `PRIORY_EXE` then.
 - An agent whose harness changes during a task starts a new session, since neither harness resumes
   the other's.
 - Codex keeps its transcripts under `~/.codex/sessions`, by thread. The traces slice reads token use
@@ -428,7 +512,7 @@ prompt that shows anyway, when the deny hook failed, ends the run on the next ti
 
 ## Desk
 
-`priory desk` prints what waits on a person, oldest first: since, kind, id, task, lane, what and the
+`priory desk` prints the stall banner first while the queue is stalled (see Room), then what waits on a person, oldest first: since, kind, id, task, lane, what and the
 task's generation.
 
 | Kind | Id | What | Since |
@@ -438,17 +522,23 @@ task's generation.
 | `failed` | the task | its reason, then `revive: priory revive <task>` | the task last changed state |
 | `prompt` | the outbox prompt | its text, for an `uncertain` prompt | it was attempted |
 | `held` | the hold | the task's reason: why it is held, and until what | it was held |
+| `memory` | the memory grant | `waits for <N> GB: <command>` | it was requested |
 | `queue` | the task's place in the queue | its band, then its reason when it has one | the task last changed state |
+| `sweep` | the script's run | its command, then `running`, or its status and output, for the open stall | it started |
 | `worktree` | the worktree's path | why it stays: see Sweep | `-` |
 
 The lane column is the task's lane, and `-` for a `worktree` row.
 
-It lists only asks and prompts of active tasks, and holds of held tasks. After them come the `queue` rows, in start order,
+It lists only asks and prompts of active tasks, holds of held tasks, and waiting memory grants. After them come the `queue` rows, in start order,
 and last one `worktree` row for every worktree the sweep keeps. `priory asks` still prints every open ask.
 
 `priory resume <task>` makes a blocked task `ready`. It queues the prompt `A person resumed this
 task after: <reason>. Check the worktree, then continue.` ahead of the task's other queued prompts,
-so its next run resumes the session of the step's agent with it. `priory cancel <task>` drops an
+so its next run resumes the session of the step's agent with it. When the task's latest run never
+reached `SessionStart`, or it has none, the reason is about the launch, not the agent's work, so the
+prompt is only `A person resumed this task. Check the worktree, then continue.` A resume line that
+no run took yet is replaced, not repeated, and the line that ends the step is added only when no
+queued prompt carries it already. `priory cancel <task>` drops an
 active task with the reason `cancelled from the desk`, ends its live run as `cancelled` and kills
 its tmux session. Both go to the daemon over `priory.sock`, as `priory answer` does, and are refused
 for a task in any other state. An answer to an ask of a done, failed or dropped task is refused too.
@@ -491,8 +581,8 @@ desk's `failed` rows stay empty.
 
 ## Sweep
 
-The daemon removes the worktrees of ended tasks. It sweeps when it starts and every 10 minutes after,
-not on every tick. A sweep fetches `origin` into each clone with a worktree and refreshes
+The daemon removes the worktrees of ended tasks. It sweeps when it starts, when a stall short of
+disk starts, and every 10 minutes after, or every `[sweep] every`, not on every tick. A sweep fetches `origin` into each clone with a worktree and refreshes
 `origin/HEAD`, then looks at each folder `worktrees/<owner>/<name>/<id>`. A clone whose fetch
 failed is skipped until the next sweep.
 
@@ -516,6 +606,66 @@ keeps the worktree, as `cannot check: <error>`.
 with its reason: `no task <id>`, `task <id> still <state>`, `not a worktree of <clone>`,
 `not recorded as the worktree of task <id>`, `not on branch priory/<id>`, `uncommitted changes`, `untracked files`, `a process runs in it`,
 `unpushed commits` or `not merged`. It reads the refs of the last fetch.
+
+### Sweep scripts and the sweeper
+
+`factory.toml` can add a `[sweep]` table:
+
+```toml
+[sweep]
+every = "10m"                 # the built-in worktree sweep's cadence
+scripts = [
+  { run = "docker builder prune -f", when = "disk", timeout = "5m" },
+]
+after = "30m"                 # how long the queue stays stalled after its scripts
+agent = "sweeper"             # no agent, no sweeper
+repo = "maxence-lefebvre/priory"  # where the sweeper works and files its issue; this is the default
+```
+
+When a stall starts, the daemon runs every script whose `when` names its resource: `memory`, `disk`
+or `cpu`. Each runs once per stall, through `sh -c` in `PRIORY_HOME`, in its own process group. A
+script past its `timeout`, 5 minutes by default, is killed with its children. The daemon keeps the
+last 2000 bytes of its output and its status, `exit <code>` or `timed out after <n>s`, and the desk
+lists each script of the open stall as a `sweep` row. When a script ends, children it left in the
+background are killed too. A script that fails or cannot start never stops the daemon. A restarted
+daemon kills the scripts its predecessor left running, after checking each process group's start
+time in `/proc` so that a reused pid is left alone, and records them as `interrupted by a daemon
+restart` with the tail of their output.
+
+Once the stall's scripts have ended, or at its start when none matches, the stall waits `after`, 30
+minutes by default. If it still holds and `agent` names an agent, the daemon creates a task with the
+key `priory:sweep` and the trigger `priory/sweep` on the `sweep` workflow, in the highest band and
+the lane `priory/sweep`. A stall gets at most one sweeper. A key has at most one active task, so while
+the sweeper of an earlier stall is still active, a new stall waits for it to end before it gets its
+own. A sweeper task skips the room check: it frees the room the queue waits for.
+Its source event, `priory.queue.stalled`, carries the stall, `PRIORY_HOME` and each script's
+command, status and output, so its first prompt names them.
+
+Unless the factory defines its own `sweep` workflow, the sweeper runs this built-in one:
+
+1. `clean`, a model step with the sweeper agent. It removes only what Priory or the scripts manage
+   and never a worktree with unpushed, uncommitted or untracked work. It is `irreversible` and
+   `autonomous`: it deletes files, and waiting for a person would keep the queue stalled. It ends
+   `cleaned`, with a summary whose first line titles an issue, or `nothing`, which ends the task.
+2. `approve-issue`, a human step with the options `open` and `skip`, which approves `open-issue`.
+3. `open-issue`, a code step that runs `gh issue create -R <repo>` with the latest result's summary
+   and evidence, as `open-pr` does. The body ends with `Filed by Priory for event <id>`, the sweeper's
+   source event. Before it creates one, the step looks for an issue in any state whose body holds
+   that line, which a crash after its creation leaves, and reuses it. It is irreversible and needs that approval: it posts an agent's
+   text to a repository other people read, and a sweeper runs rarely, so the ask costs little.
+
+`priory check` refuses a `[sweep]` field it does not know, a malformed duration or resource, and an
+`agent` the factory lacks, and a `repo` that is not `owner/name`, with its line.
+
+Known limits:
+
+- The sweeper's worktree is a clone of `repo`, which takes some disk on a disk stall.
+- What the sweeper may remove is set by its prompt, not enforced on paths.
+- A script's log file grows until it ends; only its tail is read.
+- A crash between starting a script and recording its pid leaves that script unbounded.
+- A restarted daemon cannot kill the background children of a lost script whose shell already
+  exited, since it cannot tell that group from a process that reused the shell's pid.
+- A stall that alternates between two resources starts a new stall, and new scripts, at each change.
 
 ## Tools
 
@@ -634,6 +784,22 @@ prompts.
 | `review`       | `repo`, `pull_request`  | `github.pull_request_review.submitted` for it                           |
 | `time`         | `until`                 | the daemon's loop, once `until` has passed                              |
 | `task`         | `task`                  | the daemon's loop, once that task is done, failed or dropped            |
+| `linear_comment` | `issue`, such as `ENG-7` | `linear.comment.created` on that issue                               |
+| `linear_state` | `issue`, `state`, such as `Done` | `linear.issue.state_changed` on that issue, with `to` equal to `state` |
+| `slack_reply`  | `channel`, `thread_ts`  | `slack.thread.replied` in that thread, which the intake never publishes for its own bot |
+
+```json
+{ "on": { "type": "linear_state", "issue": "ENG-7", "state": "Done" } }
+{ "on": { "type": "slack_reply", "channel": "C0123", "thread_ts": "1763500000.000100" } }
+```
+
+A Linear or Slack condition makes the task own `linear:<issue>` or `slack:<channel>:<thread_ts>`, as
+a pull request condition owns its pull request, and is refused when another active task owns it. It
+stores the time of the agent's last prompt, and only an event at or after that time fires it: an
+event's `time`, to the second. The wait also takes the events on its resource from that time on
+that the daemon ignored because no task owned it, so one of them can fire it at once. The intake watches the issue or thread from then on, as
+`docs/intake.md` describes, so a reply posted after the prompt and before the wait fires the wait at
+the next poll.
 
 `until` is an RFC 3339 instant, or a duration such as `30 seconds`, `5 minutes` or `2 hours`: an
 SQLite date modifier, which Priory adds to the time of the call. An unknown type or a missing field
@@ -875,6 +1041,6 @@ position, the task's place in the queue from 1 when it is `queued` or `ready`, a
 `priory tasks --lane L` prints only the tasks in lane `L`.
 `priory runs` prints each run: id, task, step, tmux session, harness session (a Codex run's
 thread), started, ended and how it ended. `priory outbox` prints each prompt: id, task, run, state and text, with newlines
-shown as `\n`. `priory asks` and `priory waits` are described under Tools, `priory actions` under Code steps,
+shown as `\n`. `priory asks` and `priory waits` are described under Tools, `priory memory` under Memory gate, `priory actions` under Code steps,
 and `priory desk` under Desk. They read `PRIORY_DB` and print `-` for an empty cell, tab-separated after a header
 line.

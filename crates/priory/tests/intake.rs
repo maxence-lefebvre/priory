@@ -103,7 +103,8 @@ impl Setup {
             .args(["intake", "--once"])
             .arg(self.dir.join("factory"))
             .env("PATH", path)
-            .env("HERDR_BUS_DB", self.dir.join("bus.db"));
+            .env("HERDR_BUS_DB", self.dir.join("bus.db"))
+            .env("PRIORY_DB", self.dir.join("priory.db"));
         command
     }
 
@@ -1372,6 +1373,7 @@ fn an_issue_entering_a_view_publishes_the_event_and_one_task_request() {
             "title": "Fix the thing",
             "url": "https://linear.app/acme/issue/ENG-7/fix-the-thing",
             "team": "ENG",
+            "project": null,
             "state": "Todo",
             "labels": ["agent"],
             "baseline": false,
@@ -1385,6 +1387,8 @@ fn an_issue_entering_a_view_publishes_the_event_and_one_task_request() {
             "key": "linear:ENG-7",
             "band": "today",
             "lane": null,
+            "team": "ENG",
+            "project": null,
             "trigger": "agent-ready",
             "source": source.id.to_string()
         })
@@ -1465,7 +1469,7 @@ fn a_linear_trigger_without_the_key_fails_and_publishes_nothing() {
     assert_eq!(output.status.code(), Some(1));
     assert_eq!(
         String::from_utf8_lossy(&output.stderr),
-        "priory intake: LINEAR_API_KEY is not set: the Linear triggers need a Linear API key\n"
+        "priory intake: LINEAR_API_KEY is not set: the Linear triggers and waits need a Linear API key\n"
     );
     assert!(setup.output().is_empty());
 }
@@ -1549,6 +1553,7 @@ fn a_comment_on_a_tasks_issue_reaches_its_task_in_the_inbox() {
             "title": "Fix the thing",
             "url": "https://linear.app/acme/issue/ENG-7/fix-the-thing#comment-comment-1",
             "team": "ENG",
+            "project": null,
             "state": "Todo",
             "labels": ["agent"],
             "body": "Please also cover the empty case.",
@@ -1636,6 +1641,7 @@ fn a_state_change_that_matches_a_filter_requests_a_task_once() {
             "title": "Fix the thing",
             "url": "https://linear.app/acme/issue/ENG-7/fix-the-thing",
             "team": "ENG",
+            "project": null,
             "state": "In Progress",
             "labels": ["agent"],
             "blockers": [],
@@ -1927,6 +1933,7 @@ fn a_blocker_that_changes_publishes_the_open_blockers_of_the_issue_it_blocks() {
             "title": "Fix the thing",
             "url": "https://linear.app/acme/issue/ENG-7/fix-the-thing",
             "team": "ENG",
+            "project": null,
             "state": "Todo",
             "labels": ["agent"],
             "blockers": ["ENG-4"],
@@ -1956,4 +1963,176 @@ fn a_trigger_with_a_hold_files_its_tasks_held() {
         task.data["hold"],
         json!({ "reason": "triage first", "blockers": true })
     );
+}
+
+fn in_project(number: u64, project: &str) -> serde_json::Value {
+    let mut issue = linear_issue(number);
+    issue["project"] = json!({ "name": project });
+    issue
+}
+
+#[test]
+fn a_linear_task_request_carries_its_issues_team_and_project() {
+    let setup = Setup::linear("linear-project", &[("agent-ready", VIEW_TRIGGER)]);
+    succeeded(&setup.intake());
+    setup.answer_linear(&Linear {
+        view: vec![in_project(7, "Desktop")],
+        ..Linear::default()
+    });
+
+    succeeded(&setup.intake());
+
+    let published = setup.published();
+    let (source, task) = (&published[0].message, &published[1].message);
+    assert_eq!(source.data["project"], "Desktop");
+    assert_eq!(task.data["team"], "ENG");
+    assert_eq!(task.data["project"], "Desktop");
+    let queries = fs::read_to_string(setup.dir.join("curl-args")).unwrap();
+    assert!(queries.contains("project { name }"), "{queries}");
+}
+
+#[test]
+fn a_linear_task_lands_in_the_lane_its_team_and_project_derive() {
+    let setup = Setup::linear("linear-lane", &[("agent-ready", VIEW_TRIGGER)]);
+    write(
+        &setup.dir.join("factory/lanes.toml"),
+        "[[rules]]\nteam = \"ENG\"\nproject = \"Desktop\"\nlane = \"ENG/desktop\"\n",
+    );
+    succeeded(&setup.intake());
+    setup.answer_linear(&Linear {
+        view: vec![in_project(7, "Desktop"), linear_issue(8)],
+        ..Linear::default()
+    });
+    succeeded(&setup.intake());
+    setup.inbox();
+
+    let tasks = Command::new(env!("CARGO_BIN_EXE_priory"))
+        .arg("tasks")
+        .env("PRIORY_DB", setup.dir.join("priory.db"))
+        .output()
+        .unwrap();
+
+    succeeded(&tasks);
+    let lanes: Vec<[String; 2]> = String::from_utf8(tasks.stdout)
+        .unwrap()
+        .lines()
+        .skip(1)
+        .map(|line| {
+            let cells: Vec<&str> = line.split('\t').collect();
+            [cells[1].to_owned(), cells[6].to_owned()]
+        })
+        .collect();
+    assert_eq!(
+        lanes,
+        [
+            ["linear:ENG-7", "ENG/desktop"],
+            ["linear:ENG-8", "ENG/misc"],
+        ]
+        .map(|row| row.map(str::to_owned))
+    );
+}
+
+const SLACK_TRIGGER: &str = r#"
+source = "slack"
+channel = "C0123"
+on = "message.posted"
+filter = { text = "deploy" }
+workflow = "implement"
+"#;
+
+impl Setup {
+    /// Makes the fake `curl` answer Slack's `auth.test` as bot U0BOT, and the channel's history
+    /// with `messages`, newest first as Slack lists them.
+    fn answer_slack(&self, messages: &[serde_json::Value]) {
+        let auth = self.dir.join("slack-auth.json");
+        write(
+            &auth,
+            &json!({ "ok": true, "user_id": "U0BOT", "bot_id": "B0BOT" }).to_string(),
+        );
+        let history = self.dir.join("slack-history.json");
+        write(
+            &history,
+            &json!({ "ok": true, "messages": messages, "has_more": false }).to_string(),
+        );
+        let script = format!(
+            "#!/bin/sh\necho \"$*\" >> '{dir}/curl-args'\ncat >> '{dir}/curl-stdin'\n\
+             case \"$*\" in\n  *auth.test*) cat '{auth}' ;;\n  *conversations.history*) cat '{history}' ;;\n\
+             *) echo 'unexpected call' >&2; exit 2 ;;\nesac\n",
+            dir = self.dir.display(),
+            auth = auth.display(),
+            history = history.display(),
+        );
+        let curl = self.dir.join("bin/curl");
+        write(&curl, &script);
+        fs::set_permissions(&curl, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    fn slack_intake(&self) -> Output {
+        self.command()
+            .env("SLACK_BOT_TOKEN", "xoxb-secret-test-token")
+            .output()
+            .unwrap()
+    }
+}
+
+fn slack_message(ts: &str, user: &str, text: &str) -> serde_json::Value {
+    json!({ "type": "message", "ts": ts, "user": user, "text": text })
+}
+
+#[test]
+fn a_slack_trigger_requests_one_task_per_matching_message_and_drops_a_duplicate() {
+    let setup = Setup::linear("slack-trigger", &[("deploys", SLACK_TRIGGER)]);
+    setup.answer_slack(&[slack_message(
+        "1763500000.000100",
+        "U0PERSON",
+        "deploy of old",
+    )]);
+    succeeded(&setup.slack_intake());
+    assert!(
+        kinds(&setup.published()) == ["slack.message.posted"],
+        "a first poll is a baseline: {:?}",
+        kinds(&setup.published())
+    );
+    setup.answer_slack(&[
+        slack_message("1763500003.000100", "U0BOT", "I deploy nothing"),
+        slack_message("1763500002.000100", "U0PERSON", "lunch?"),
+        slack_message("1763500001.000200", "U0PERSON", "Please DEPLOY the API"),
+        slack_message("1763500001.000100", "U0PERSON", "deploy the web app"),
+        slack_message("1763500000.000100", "U0PERSON", "deploy of old"),
+    ]);
+
+    succeeded(&setup.slack_intake());
+    succeeded(&setup.slack_intake());
+
+    let requested: Vec<serde_json::Value> = setup
+        .published()
+        .iter()
+        .filter(|stored| stored.message.kind == "factory.task.requested")
+        .map(|stored| stored.message.data["key"].clone())
+        .collect();
+    assert_eq!(
+        requested,
+        [
+            json!("slack:C0123:1763500001.000100"),
+            json!("slack:C0123:1763500001.000200")
+        ]
+    );
+    assert_eq!(
+        kinds(&setup.published()),
+        [
+            "slack.message.posted",
+            "slack.message.posted",
+            "factory.task.requested",
+            "slack.message.posted",
+            "factory.task.requested",
+            "slack.message.posted",
+        ]
+    );
+    setup.inbox();
+    let tasks = Command::new(env!("CARGO_BIN_EXE_priory"))
+        .arg("tasks")
+        .env("PRIORY_DB", setup.dir.join("priory.db"))
+        .output()
+        .unwrap();
+    assert_eq!(String::from_utf8(tasks.stdout).unwrap().lines().count(), 3);
 }

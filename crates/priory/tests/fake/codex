@@ -2,10 +2,12 @@
 # A stand-in for Codex: logs its arguments to codex-args.log and its merged -c overrides to
 # codex-config.json, then runs the fake claude with those hooks and that MCP server, under a thread
 # id it chooses as Codex does, or the one `codex resume <id>` names. FAKE_DIR/thread holds that id.
+# The prompt after `--` is the first turn, as Codex 0.170 takes it, which alone fires SessionStart.
 set -u
 printf '%s\n' "$@" > "$FAKE_DIR/codex-args.log"
 thread=''
 overrides=()
+prompt=''
 if [ "${1-}" = resume ]; then
   thread=$2
   shift 2
@@ -13,6 +15,8 @@ fi
 while [ $# -gt 0 ]; do
   case "$1" in
     -c) overrides+=("$2"); shift 2 ;;
+    --no-daemon) shift ;;
+    --) prompt=$2; shift 2 ;;
     *) echo "fake codex: unexpected argument $1" >&2; exit 2 ;;
   esac
 done
@@ -32,4 +36,5 @@ print(json.dumps(config))
 ' "${overrides[@]}" > "$FAKE_DIR/codex-config.json"
 settings=$(jq -c '{hooks: (.hooks // {})}' "$FAKE_DIR/codex-config.json")
 mcp=$(jq -c '{mcpServers: (.mcp_servers // {})}' "$FAKE_DIR/codex-config.json")
-exec "$(dirname "$0")/claude" --session-id "$thread" --settings "$settings" --mcp-config "$mcp"
+printf '%s' "$prompt" > "$FAKE_DIR/codex-prompt"
+FAKE_LAZY_START=1 exec "$(dirname "$0")/claude" --session-id "$thread" --settings "$settings" --mcp-config "$mcp" ${prompt:+-- "$prompt"}

@@ -1,7 +1,8 @@
 # Intake messages
 
 `priory intake [DIR] [--once]` polls GitHub for the repositories that the factory's triggers name,
-and Linear when the factory has a Linear trigger. It publishes on the herdr-bus output `factory.intake`. This page is the contract for every consumer of
+Linear when the factory has a Linear trigger or an open wait names a Linear issue, and Slack when
+the factory has a Slack trigger or an open wait names a Slack thread (see Slack events). It publishes on the herdr-bus output `factory.intake`. This page is the contract for every consumer of
 that output: the Priory daemon, and another factory such as herdr-bowtie.
 
 The intake checks the factory first, as `priory check` does, and refuses to start while it has
@@ -17,8 +18,8 @@ Every message is a herdr-bus `Message`, shaped like a CloudEvent:
 | Field     | Type          | Meaning                                                    |
 | --------- | ------------- | ---------------------------------------------------------- |
 | `id`      | UUID string   | A UUIDv5, stable across retries (see Message ids)          |
-| `type`    | string        | A GitHub or Linear type below, `priory.task.requested.cli`, `schedule.fired`, `factory.task.requested` or `factory.intake.baseline` |
-| `subject` | string        | `owner/name#42` for a GitHub event, the issue identifier such as `ENG-7` for a Linear event, the task key for a CLI request or a task request, `schedule:<trigger>@<time>` for a firing, `owner/name <stream>` or the Linear stream for a baseline marker |
+| `type`    | string        | A GitHub, Linear or Slack type below, `priory.task.requested.cli`, `schedule.fired`, `factory.task.requested` or `factory.intake.baseline` |
+| `subject` | string        | `owner/name#42` for a GitHub event, the issue identifier such as `ENG-7` for a Linear event, `<channel>:<ts>` for a Slack event (the thread's `ts` for a reply), the task key for a CLI request or a task request, `schedule:<trigger>@<time>` for a firing, `owner/name <stream>` or the Linear stream for a baseline marker |
 | `time`    | RFC 3339      | When the GitHub or Linear event happened; for a firing, its scheduled time; for a view event or a baseline marker, when it was published |
 | `data`    | object        | The fields below, by type                                  |
 | `links`   | array         | GitHub and Linear events carry one `{ "label": "issue" or "pull_request", "url": ... }`, with the event's `url` |
@@ -377,6 +378,7 @@ and comment events do not: a view event that leaves can carry the issue's fields
 | `title`     | string           | The issue title when the intake saw the event                   |
 | `url`       | string           | The issue's page, or the comment's for `comment.created`        |
 | `team`      | string           | The issue's team key                                            |
+| `project`   | string or null   | The issue's project name; null when the issue has no project    |
 | `state`     | string           | The issue's state when the intake saw the event                 |
 | `labels`    | array of strings | The issue's labels when the intake saw the event                |
 | `blockers`  | array of strings or null | The identifiers of the issues that block it and are neither completed nor canceled. Null when the issue has more than 20 relations, since one past the first page could block it. `created`, `state_changed` and `blockers` only |
@@ -401,6 +403,7 @@ and comment events do not: a view event that leaves can carry the issue's fields
     "title": "Fix the thing",
     "url": "https://linear.app/acme/issue/ENG-7/fix-the-thing#comment-6f1c1c9e",
     "team": "ENG",
+    "project": "Desktop",
     "state": "In Progress",
     "labels": ["agent"],
     "body": "Please also cover the empty case.",
@@ -412,6 +415,75 @@ and comment events do not: a view event that leaves can carry the issue's fields
   "links": [{ "label": "issue", "url": "https://linear.app/acme/issue/ENG-7/fix-the-thing#comment-6f1c1c9e" }]
 }
 ```
+
+## Slack events
+
+A trigger with `source = "slack"` names a `channel` by its id, such as `C0123`, and starts on
+`message.posted`. It may filter on `text`: the trigger matches a message whose text contains it,
+ignoring case. It takes `backfill`, and its `key`, when set, is `message.ts`. Each task it requests
+has the key `slack:<channel>:<ts>`.
+
+| Type                   | One message per                                                     |
+| ---------------------- | ------------------------------------------------------------------- |
+| `slack.message.posted` | message posted in a trigger's channel, outside a thread             |
+| `slack.thread.replied` | reply in a thread that an open `slack_reply` wait names, posted at or after its agent's last prompt |
+
+The intake publishes neither for a message by its own bot, nor for a message with a `subtype`, such
+as a join. A reply never names a trigger. The daemon routes both to the active task that owns
+`slack:<channel>:<thread ts>`: a task a Slack trigger started, or one whose wait names the thread.
+
+| Field       | Type             | Meaning                                                           |
+| ----------- | ---------------- | ----------------------------------------------------------------- |
+| `channel`   | string           | The channel id                                                    |
+| `ts`        | string           | Slack's id of the message: seconds since the epoch, with microseconds |
+| `thread_ts` | string           | The `ts` of the thread's first message. `slack.thread.replied` only |
+| `user`      | string or null   | The Slack user id of the author                                   |
+| `text`      | string           | The message, in Slack's markup                                    |
+| `time`      | RFC 3339         | The instant `ts` names                                            |
+| `baseline`  | boolean          | True when the message came from the first poll of its channel. Always false for a reply |
+| `triggers`  | array of strings | As for GitHub events; empty for a reply                           |
+
+```json
+{
+  "id": "0b8a4c1e-56f3-5a0e-9d7b-0d6d1c3f6a21",
+  "type": "slack.thread.replied",
+  "subject": "C0123:1763500000.000100",
+  "time": "2026-11-18T21:06:41.000200Z",
+  "data": {
+    "channel": "C0123",
+    "thread_ts": "1763500000.000100",
+    "ts": "1763500001.000200",
+    "user": "U0PERSON",
+    "text": "Looks good, ship it.",
+    "time": "2026-11-18T21:06:41.000200Z",
+    "baseline": false,
+    "triggers": []
+  },
+  "links": []
+}
+```
+
+A channel is a stream named `slack.channel:<channel>`, whose position is the `ts` of the newest
+message seen. Its first poll reads the 50 newest messages as a baseline; later polls read
+`conversations.history` after the position, every page of 200. A poll that moves the position
+publishes a `factory.intake.baseline` marker with it, and a restart starts from the newest marker. A
+crash before the marker reads the same messages again, and herdr-bus drops the repeats.
+
+### Which threads and issues the intake watches
+
+The intake reads the open waits on `linear_comment`, `linear_state` and `slack_reply` from the state
+file `PRIORY_DB` on every poll; without `PRIORY_DB` it watches none. Each wait gives a resource and
+the time of its agent's last prompt.
+
+- For each Slack thread, the intake reads `conversations.replies` from that time on, every poll,
+  until the wait fires or is withdrawn. herdr-bus drops the replies it already holds.
+- For a Linear issue, the intake starts the issues and comments streams when no Linear trigger has.
+  Those streams read every issue updated and every comment created in the workspace since their
+  position, in two queries, so the intake never polls one issue at a time. Their first poll is a
+  baseline, whose events still reach the wait: the daemon judges an event by its time, not by
+  `baseline`.
+
+A missing key fails only the poll of that source, so a wait cannot stop the GitHub polling.
 
 ## `priory.task.requested.cli`
 
@@ -486,11 +558,10 @@ with `backfill = true`. Only this message creates a task.
 | ---------- | -------------- | ------------------------------------------------------------ |
 | `workflow` | string         | The workflow the task starts                                 |
 | `key`      | string         | Which events are the same work: `github:owner/name#42`, the issue or pull request number. GitHub numbers both from one sequence per repository. `linear:ENG-7` for a Linear issue. A schedule's key is under `schedule.fired` |
-| `key`      | string         | Which events are the same work: `github:owner/name#42`, the issue or pull request number, as GitHub numbers both from one sequence per repository; `linear:ENG-7` for a Linear issue |
 | `band`     | string or null | The trigger's `band`, or null when it sets none              |
 | `lane`     | string or null | The trigger's `lane`, or null when `lanes.toml` derives it   |
-| `team`     | string, absent or null | The source issue's team, when the source has one: a Linear issue does, a GitHub issue does not |
-| `project`  | string, absent or null | The source issue's project, under the same condition |
+| `team`     | string, absent or null | The Linear issue's team key. Absent when the source is not a Linear event |
+| `project`  | string, absent or null | The Linear issue's project name, or null when it has none. Absent when the source is not a Linear event |
 | `trigger`  | string         | The trigger's name: its file name without the extension      |
 | `source`   | UUID string    | The `id` of the source event's message, on the same output   |
 | `hold`     | object         | Optional: files the task held. The trigger's `hold`, or `priory request --hold` |
@@ -541,12 +612,13 @@ of these names:
 | `priory.task.requested.cli` | `priory.task.requested.cli:{len}:{key}:{text}`, with the `cli:` key and `len` its byte length, so a `:` in the key or text cannot make two requests collide |
 | `schedule.fired`         | `schedule.fired:{trigger}@{scheduled}`       |
 | `factory.task.requested` | `factory.task.requested:{trigger}:{source}`  |
-| `factory.intake.baseline` | `factory.intake.baseline:{repo}:{stream}`, or `factory.intake.baseline:{stream}:{position}` for a Linear stream |
+| `factory.intake.baseline` | `factory.intake.baseline:{repo}:{stream}`, or `factory.intake.baseline:{stream}:{position}` for a Linear stream or a Slack channel |
 | `linear.issue.entered`, `linear.issue.left` | `linear.view:{view}:{position}:{issue id}:{type}`, with the view stream's new position |
 | `linear.issue.created`   | `linear:issue:{issue id}:created`          |
 | `linear.issue.state_changed` | `linear:history:{history id}`          |
 | `linear.comment.created` | `linear:comment:{comment id}`              |
 | `linear.issue.blockers`  | `linear:blockers:{blocked issue id}:{blocker issue id}:{blocker updatedAt}` |
+| `slack.message.posted`, `slack.thread.replied` | `slack:{channel}:{ts}` |
 
 ## Baseline
 
@@ -652,6 +724,19 @@ can log the key, and the intake replaces the key in any error it prints. A reque
 60 seconds, and the next poll retries it. A poll makes one query per view and two for
 issues and comments, plus one per extra page of 100, and one for each 50 issues that the updated
 issues block. Linear allows 1,500 requests an hour per key.
+
+## Slack calls
+
+The intake reads a bot token from the environment variable `SLACK_BOT_TOKEN`, and refuses to start
+without it when the factory has a Slack trigger. It calls `https://slack.com/api/<method>` with
+`curl --get`, which reads the `Authorization` header from its standard input as for Linear, so the
+token never appears in a process list or an error. On start it calls `auth.test` once to learn its
+own bot. Each poll then makes one `conversations.history` call per trigger channel and one
+`conversations.replies` call per watched thread, plus one per extra page. The bot needs the
+`channels:history` scope, and `groups:history` for a private channel, and must be a member of the
+channel. Slack limits these two methods per app: an app outside the Slack Marketplace created after
+May 2025 gets one call a minute and 15 messages per call, so it can watch one channel or thread per
+minute at most.
 
 ## GitHub calls
 

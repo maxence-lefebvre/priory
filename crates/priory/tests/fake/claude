@@ -1,8 +1,12 @@
 #!/usr/bin/env bash
 # A stand-in for Claude Code: runs the --settings hooks as Claude would and logs every prompt typed into it.
-# FAKE_DIR holds args.log, pid, typed.log, pending (a paste arrived), the hold files hold-submit and hold-stop,
-# silent (never report SessionStart, as when Claude waits on its trust dialog), and crash (exit
-# before the turn's Stop, leaving a dead pane as a tmux with remain-on-exit does).
+# FAKE_DIR holds args.log, pid, typed.log, pending (a paste arrived), submitted (a prompt was submitted),
+# the hold files hold-submit, hold-call (after the submit, before the turn's tool call) and hold-stop,
+# silent (show its content and never report a hook, as when Claude waits on its trust dialog), and
+# die (show its content and exit before any hook, as a harness that fails to start), and
+# crash (exit before the turn's Stop, leaving a dead pane as a tmux with remain-on-exit does).
+# A prompt after `--` is the first turn. FAKE_LAZY_START fires SessionStart with the first turn, as
+# Codex 0.170 does, rather than at startup.
 # Each turn pops the first line of FAKE_DIR/calls, if any: a tools/call params object such as
 # {"name":"result","arguments":{...}}. It calls that tool through the --mcp-config server, or, for
 # AskUserQuestion, runs the matching PreToolUse hooks, and appends the reply to tools.log. Any other
@@ -16,6 +20,7 @@ set -u
 settings='{}'
 mcp='{}'
 session=''
+first=''
 printf '%s\n' "$@" > "$FAKE_DIR/args.log"
 echo $$ > "$FAKE_DIR/pid"
 env | cut -d= -f1 > "$FAKE_DIR/env.log"
@@ -24,6 +29,7 @@ while [ $# -gt 0 ]; do
     --session-id|--resume) session=$2; shift 2 ;;
     --settings) settings=$2; shift 2 ;;
     --mcp-config) mcp=$2; shift 2 ;;
+    --) first=$2; shift 2 ;;
     *) shift ;;
   esac
 done
@@ -86,17 +92,37 @@ tool() {
 
 wait_while() { while [ -e "$FAKE_DIR/$1" ]; do sleep 0.05; done; }
 
+started=''
+start() {
+  [ -n "$started" ] && return
+  started=1
+  hook SessionStart
+}
+
 printf '\e[?2004h'
-[ -e "$FAKE_DIR/silent" ] || hook SessionStart
+if [ -e "$FAKE_DIR/die" ]; then
+  cat "$FAKE_DIR/die"
+  exit 1
+fi
+if [ -e "$FAKE_DIR/silent" ]; then
+  cat "$FAKE_DIR/silent"
+  exec sleep infinity
+fi
+[ -n "${FAKE_LAZY_START-}" ] || start
 while :; do
   prompt=''
-  # A pane killed mid-read must exit here, not log an empty prompt and take the next queued call.
-  while IFS= read -r line || exit 0; do
-    prompt+="$line"$'\n'
-    [[ $line == *$'\e[201~'* ]] && break
-  done
+  if [ -n "$first" ]; then
+    prompt="$first"$'\n'
+  else
+    # A pane killed mid-read must exit here, not log an empty prompt and take the next queued call.
+    while IFS= read -r line || exit 0; do
+      prompt+="$line"$'\n'
+      [[ $line == *$'\e[201~'* ]] && break
+    done
+  fi
   prompt=${prompt//$'\e[200~'/}
   prompt=${prompt//$'\e[201~'/}
+  start
   printf '%s' "$prompt" > "$FAKE_DIR/pending"
   wait_while hold-submit
   printf '%s---\n' "$prompt" >> "$FAKE_DIR/typed.log"
@@ -104,12 +130,19 @@ while :; do
   # trailer: text Claude would submit after the tag, so the prompt is not the one typed alone.
   trailer=''
   [ -e "$FAKE_DIR/trailer" ] && trailer=$(cat "$FAKE_DIR/trailer")
-  hook UserPromptSubmit $'\n\n<pasted_content id="9d7a">\n'"${prompt%$'\n'}"$'</pasted_content id="9d7a">'"$trailer"
+  if [ -n "$first" ]; then
+    hook UserPromptSubmit "$first"
+    first=''
+  else
+    hook UserPromptSubmit $'\n\n<pasted_content id="9d7a">\n'"${prompt%$'\n'}"$'</pasted_content id="9d7a">'"$trailer"
+  fi
   turn=$(( $(cat "$FAKE_DIR/turns" 2>/dev/null || echo 0) + 1 ))
   echo "$turn" > "$FAKE_DIR/turns"
   message=$(jq -nc --argjson n "$turn" '{type: "assistant", message: {id: "msg_\($n)", model: "claude-fake-5",
     usage: {input_tokens: (100 + $n), output_tokens: (10 + $n), cache_read_input_tokens: (1000 + $n), cache_creation_input_tokens: (50 + $n)}}}')
   [ -e "$FAKE_DIR/no-transcript" ] || printf '%s\n%s\n' "$message" "$message" >> "$FAKE_DIR/transcript.jsonl"
+  printf '%s' "$turn" > "$FAKE_DIR/submitted"
+  wait_while hold-call
   if [ -s "$FAKE_DIR/calls" ]; then
     call=$(head -n 1 "$FAKE_DIR/calls")
     sed -i 1d "$FAKE_DIR/calls"

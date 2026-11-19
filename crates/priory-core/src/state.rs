@@ -10,7 +10,7 @@ use std::collections::BTreeMap;
 use std::io::Write;
 use std::time::Duration;
 
-const VERSION: i64 = 17;
+const VERSION: i64 = 20;
 
 const SCHEMA: &str = "
 CREATE TABLE tasks (
@@ -260,10 +260,81 @@ CREATE UNIQUE INDEX one_open_hold_per_task ON holds (task) WHERE released IS NUL
 PRAGMA user_version = 17;
 ";
 
+const SCHEMA_18: &str = "
+CREATE TABLE grants (
+  id      INTEGER PRIMARY KEY AUTOINCREMENT,
+  bytes   INTEGER NOT NULL,
+  pid     INTEGER NOT NULL,
+  started INTEGER NOT NULL,
+  task    INTEGER REFERENCES tasks (id),
+  command TEXT NOT NULL,
+  state   TEXT NOT NULL DEFAULT 'waiting' CHECK (state IN ('waiting', 'held')),
+  created TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+  granted TEXT
+);
+PRAGMA user_version = 18;
+";
+
+const SCHEMA_19: &str = "
+CREATE TABLE stalls (
+  id       INTEGER PRIMARY KEY AUTOINCREMENT,
+  resource TEXT NOT NULL,
+  missing  TEXT NOT NULL,
+  task     INTEGER NOT NULL REFERENCES tasks (id),
+  since    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+  scripts  TEXT,
+  swept    TEXT,
+  sweeper  INTEGER REFERENCES tasks (id),
+  ended    TEXT
+);
+CREATE UNIQUE INDEX one_open_stall ON stalls ((ended IS NULL)) WHERE ended IS NULL;
+CREATE TABLE sweeps (
+  id      INTEGER PRIMARY KEY AUTOINCREMENT,
+  stall   INTEGER NOT NULL REFERENCES stalls (id),
+  script  TEXT NOT NULL,
+  started TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+  ended   TEXT,
+  status  TEXT,
+  output  TEXT,
+  pid     INTEGER,
+  pid_started INTEGER
+);
+PRAGMA user_version = 19;
+";
+
+const SCHEMA_20: &str = "
+CREATE TABLE waits_20 (
+  id        INTEGER PRIMARY KEY AUTOINCREMENT,
+  task      INTEGER NOT NULL REFERENCES tasks (id),
+  run       INTEGER NOT NULL REFERENCES runs (id),
+  kind      TEXT NOT NULL CHECK (kind IN ('pull_request', 'checks', 'review', 'time', 'task',
+              'linear_comment', 'linear_state', 'slack_reply')),
+  resource  TEXT,
+  until     TEXT,
+  target    INTEGER REFERENCES tasks (id),
+  head_sha  TEXT,
+  created   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+  fired     TEXT,
+  inbox     INTEGER REFERENCES inbox (seq),
+  daemon    INTEGER NOT NULL DEFAULT 0,
+  withdrawn INTEGER,
+  state     TEXT,
+  since     TEXT
+);
+INSERT INTO waits_20 (id, task, run, kind, resource, until, target, head_sha, created, fired, inbox,
+  daemon, withdrawn)
+  SELECT id, task, run, kind, resource, until, target, head_sha, created, fired, inbox, daemon,
+  withdrawn FROM waits;
+DROP TABLE waits;
+ALTER TABLE waits_20 RENAME TO waits;
+PRAGMA user_version = 20;
+";
+
 /// Each schema change in order: a file at version `n` applies those from index `n` on.
 const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA, SCHEMA_2, SCHEMA_3, SCHEMA_4, SCHEMA_5, SCHEMA_6, SCHEMA_7, SCHEMA_8, SCHEMA_9,
     SCHEMA_10, SCHEMA_11, SCHEMA_12, SCHEMA_13, SCHEMA_14, SCHEMA_15, SCHEMA_16, SCHEMA_17,
+    SCHEMA_18, SCHEMA_19, SCHEMA_20,
 ];
 
 /// The order the queue starts tasks in: band, then a person's order, then age. A band the factory
@@ -477,6 +548,16 @@ pub(crate) fn due(db: &mut Connection) -> rusqlite::Result<()> {
     tx.commit()
 }
 
+/// The resource and the agent's last prompt of each open wait that the intake polls for.
+pub fn watched(db: &Connection) -> rusqlite::Result<Vec<(String, String)>> {
+    db.prepare(
+        "SELECT resource, since FROM waits WHERE fired IS NULL AND withdrawn IS NULL
+         AND kind IN ('linear_comment', 'linear_state', 'slack_reply') ORDER BY id",
+    )?
+    .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+    .collect()
+}
+
 /// The oldest active task that owns any of `resources`.
 pub(crate) fn owner(tx: &Transaction, resources: &[String]) -> rusqlite::Result<Option<Task>> {
     let resources = serde_json::to_string(resources).expect("resources serialize");
@@ -575,6 +656,7 @@ pub(crate) fn admissible<'r>(
     let promised = promised(db, factory)?;
     // The first task that waits for room: no task behind it starts, so it is never starved.
     let mut head = None;
+    let mut stall = None;
     for admission in queued {
         let Some(step) = factory
             .workflows
@@ -597,24 +679,29 @@ pub(crate) fn admissible<'r>(
         };
         let waits = match (busy, head) {
             (Some(reason), _) => Some(reason),
+            // The sweeper frees the room the queue waits for, so it never waits for room itself.
+            (None, _) if admission.trigger == crate::stall::TRIGGER => None,
             (None, Some(head)) => Some(format!("waits behind task {head}, which waits for room")),
             (None, None) => {
                 let need = room::need(agent.map(|(_, agent)| agent));
-                let (reason, holds) = match room() {
-                    Ok(measured) => (
-                        room::wait(measured, share, promised, need),
-                        room::fits_ever(measured, share, need),
-                    ),
-                    Err(error) => (
-                        Some(format!("waits for room: cannot measure it: {error}")),
-                        true,
-                    ),
-                };
-                // A task that can never fit would hold the queue forever.
-                if reason.is_some() && holds {
-                    head = Some(admission.task);
+                match room() {
+                    Ok(measured) => {
+                        let short = room::wait(measured, share, promised, need);
+                        let reason = short.as_ref().map(|short| short.reason.clone());
+                        // A task that can never fit would hold the queue forever.
+                        if let Some(short) =
+                            short.filter(|_| room::fits_ever(measured, share, need))
+                        {
+                            head = Some(admission.task);
+                            stall = Some((admission.task, short));
+                        }
+                        reason
+                    }
+                    Err(error) => {
+                        head = Some(admission.task);
+                        Some(format!("waits for room: cannot measure it: {error}"))
+                    }
                 }
-                reason
             }
         };
         let Some(reason) = waits else {
@@ -625,6 +712,7 @@ pub(crate) fn admissible<'r>(
             params![admission.task, reason],
         )?;
     }
+    crate::stall::record(db, stall.as_ref().map(|(task, short)| (*task, short)))?;
     Ok(None)
 }
 
@@ -638,15 +726,24 @@ fn serving(db: &Connection, agent: &str) -> rusqlite::Result<Option<i64>> {
     .optional()
 }
 
-/// The memory declared by the agents of live runs. No run reports its own use yet, so each one
-/// keeps its whole declaration until it ends.
-fn promised(db: &Connection, factory: &Factory) -> rusqlite::Result<u64> {
+/// The memory and disk declared by the agents of live runs, plus every held memory grant. No run
+/// reports its own use yet, so each one keeps its whole declaration until it ends.
+pub(crate) fn promised(db: &Connection, factory: &Factory) -> rusqlite::Result<room::Need> {
+    let held: i64 = db.query_row(
+        "SELECT coalesce(sum(bytes), 0) FROM grants WHERE state = 'held'",
+        [],
+        |row| row.get(0),
+    )?;
     let mut statement = db.prepare("SELECT agent FROM runs WHERE ended IS NULL")?;
     // A run recorded before schema 5 has no agent.
     let mut agents = statement.query_map([], |row| row.get::<_, Option<String>>(0))?;
-    agents.try_fold(0, |sum: u64, agent| {
+    let held = room::Need {
+        memory: held as u64,
+        disk: 0,
+    };
+    agents.try_fold(held, |sum, agent| {
         let agent = agent?.and_then(|name| factory.agents.get(&name));
-        Ok(sum.saturating_add(room::need(agent.map(|agent| &agent.value))))
+        Ok(sum.plus(room::need(agent.map(|agent| &agent.value))))
     })
 }
 
@@ -902,6 +999,12 @@ pub(crate) fn block(
     if let Some(run) = live {
         // The step goes on after a resume, so the turn cut short still counts toward it.
         crate::trace::account(&tx, trace, run, None)?;
+        // A run that never reached SessionStart never took the prompt it was launched with.
+        tx.execute(
+            "UPDATE outbox SET state = 'queued', run = NULL, attempted = NULL
+             WHERE run = ?1 AND state = 'attempted' AND (SELECT NOT ready FROM runs WHERE id = ?1)",
+            [run],
+        )?;
     }
     tx.execute(
         &format!("UPDATE runs SET ended = {NOW}, ended_as = ?2 WHERE task = ?1 AND ended IS NULL"),
@@ -1109,6 +1212,22 @@ pub(crate) fn attempt(db: &mut Connection) -> rusqlite::Result<Option<(String, S
     tx.execute("UPDATE runs SET idle = 0 WHERE id = ?1", [run])?;
     tx.commit()?;
     Ok(Some((tmux, session, text)))
+}
+
+/// Marks the task's oldest queued prompt `attempted` by `run`, which takes it as its first prompt
+/// at launch, and returns its text.
+pub(crate) fn claim(db: &mut Connection, run: i64) -> rusqlite::Result<Option<String>> {
+    db.query_row(
+        &format!(
+            "UPDATE outbox SET state = 'attempted', run = ?1, attempted = {NOW} WHERE id =
+             (SELECT min(outbox.id) FROM outbox JOIN runs ON runs.task = outbox.task
+              WHERE runs.id = ?1 AND outbox.state = 'queued')
+             RETURNING text"
+        ),
+        [run],
+        |row| row.get(0),
+    )
+    .optional()
 }
 
 /// The tmux sessions and harness sessions of ended runs that no live run carries on in that tmux
