@@ -2,18 +2,17 @@
 
 ## Slack events
 
-A trigger with `source = "slack"` names a `channel` by its id, such as `C0123`, and starts on
-`message.posted`. It may filter on `text`: the trigger matches a message whose text contains it,
-ignoring case. It takes `backfill`, and its `key`, when set, is `message.ts`. Each task it requests
-has the key `slack:<channel>:<ts>`.
+A trigger with `source = "slack"` names a `channel` by id, such as `C0123`, and starts on
+`message.posted`. It may filter on `text`: it matches a message whose text contains it, ignoring case. It takes `backfill`, and
+its `key`, when set, is `message.ts`. Requested tasks get the key `slack:<channel>:<ts>`.
 
 | Type                   | One message per                                                     |
 | ---------------------- | ------------------------------------------------------------------- |
 | `slack.message.posted` | message posted in a trigger's channel, outside a thread             |
 | `slack.thread.replied` | reply in a thread that an open `slack_reply` wait names, posted at or after its agent's last prompt |
 
-The intake publishes neither for a message by its own bot, nor for a message with a `subtype`, such
-as a join. A reply never names a trigger. The daemon routes both to the active task that owns
+The intake publishes neither for its own bot's message nor for one with a `subtype`, such as a
+join. A reply never names a trigger. The daemon routes both to the active task owning
 `slack:<channel>:<thread ts>`: a task a Slack trigger started, or one whose wait names the thread.
 
 | Field       | Type             | Meaning                                                           |
@@ -48,20 +47,19 @@ as a join. A reply never names a trigger. The daemon routes both to the active t
 ```
 
 A channel is a stream named `slack.channel:<channel>`, whose position is the `ts` of the newest
-message seen. Its first poll reads the 50 newest messages as a baseline; later polls read
+message seen. The first poll reads the 50 newest messages as a baseline. Later polls read
 `conversations.history` after the position, every page of 200. A poll that moves the position
-publishes a `factory.intake.baseline` marker with it, and a restart starts from the newest marker. A
-crash before the marker reads the same messages again, and herdr-bus drops the repeats.
+publishes a `factory.intake.baseline` marker with it. A restart starts from the newest marker. A
+crash before the marker rereads the same messages, and herdr-bus drops the repeats.
 
 ## Slack calls
 
-The intake reads a bot token from the environment variable `SLACK_BOT_TOKEN`, and refuses to start
+The intake reads a bot token from the environment variable `SLACK_BOT_TOKEN`. It refuses to start
 without it when the factory has a Slack trigger. It calls `https://slack.com/api/<method>` with
-`curl --get`, which reads the `Authorization` header from its standard input as for Linear, so the
-token never appears in a process list or an error. On start it calls `auth.test` once to learn its
-own bot. Each poll then makes one `conversations.history` call per trigger channel and one
-`conversations.replies` call per watched thread, plus one per extra page. The bot needs the
-`channels:history` scope, and `groups:history` for a private channel, and must be a member of the
-channel. Slack limits these two methods per app: an app outside the Slack Marketplace created after
-May 2025 gets one call a minute and 15 messages per call, so it can watch one channel or thread per
-minute at most.
+`curl --get`, which reads the `Authorization` header from stdin as for Linear, so the token never
+shows in a process list or error. On start it calls `auth.test` once to learn its own bot. Each poll
+makes one `conversations.history` call per trigger channel, one `conversations.replies` call per
+watched thread, plus one per extra page. The bot needs the `channels:history` scope, `groups:history`
+for a private channel, and must be a channel member. Slack limits both methods per app. An app
+outside the Slack Marketplace created after May 2025 gets one call a minute and 15 messages per call,
+so it can watch one channel or thread per minute at most.

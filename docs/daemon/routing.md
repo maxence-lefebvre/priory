@@ -3,10 +3,9 @@
 ## One message at a time
 
 Each message is handled in one SQLite transaction: its inbox entry, any task it creates, and the
-entry's outcome. The daemon acks the message on the bus only after that transaction commits. A
-message delivered again, after a crash between the commit and the ack, adds nothing: the inbox
-drops a message id it already holds. An error stops the daemon before the ack, so the next start
-handles that message again.
+entry's outcome. The daemon acks it on the bus only after the commit. A message redelivered after
+a crash between commit and ack adds nothing: the inbox drops a message id it already holds. An
+error stops the daemon before the ack, so the next start handles it again.
 
 ## Routing
 
@@ -14,12 +13,12 @@ A task owns resources, stored in one table: its trigger key from its creation, i
 `github:{repo}@priory/{id}` from its first run, and each pull request `github:{repo}#{n}` a wait of
 its names. A message names resources too: a task request its `key`, a CLI request its subject, a
 GitHub event its issue or pull request `github:{repo}#{n}` and, for a pull request event, its head
-branch `github:{repo}@{head_branch}`. The oldest active task that owns any of them decides the route.
+branch `github:{repo}@{head_branch}`. The oldest active task owning any of them decides the route.
 A task request is the exception: only an active task whose own key is the request's `key` keeps it.
 A task that owns that key only as a pull request or an issue it waits on does not, so the request
 creates its task.
 A task is active in any state except done, failed and dropped. So an agent that opens a pull request
-from its branch gets that pull request's events, with no trigger involved.
+from its branch gets that pull request's events, with no trigger.
 
 | Message                                   | Outcome   | Task                                         |
 | ----------------------------------------- | --------- | -------------------------------------------- |
@@ -30,24 +29,24 @@ from its branch gets that pull request's events, with no trigger involved.
 | `factory.task.requested`, malformed       | `ignored` | none                                         |
 | Any other                                 | `ignored` | none                                         |
 
-A task request for a workflow the factory lacks stops the daemon with an error, before its ack. The
-request waits on the bus until the workflow is back. A malformed request is ignored instead, so that
-it cannot block the output.
+A task request for a workflow the factory lacks stops the daemon with an error before its ack.
+It waits on the bus until the workflow is back. A malformed request is ignored instead, so it
+cannot block the output.
 
 A source event comes before its task request, so it is recorded as `ignored`. The task keeps its
 id in `source`.
 
-A schedule's task request carries `scheduled` (see `docs/intake/schedule.md`). Only a schedule with a fixed
-`key` sends a second one for the same key. One that finds the task asleep at a model step wakes it,
-even when its wait does not match: its prompt is the trigger's `prompt`, then the firing's line,
-which carries the firing time, then the events the task kept while it slept. Its open ask and wait
-stay open: at its `Stop`, a run with no result takes over the task's open asks and agent waits,
-so the task sleeps on them again. A run that calls `result`, `ask` or `wait` instead moves on: the
-call withdraws the open asks and agent waits of earlier runs. One that finds the task in any other state, such as running,
-asleep at a human step, or asleep on the daemon's checks gate, is recorded as `coalesced` and is
-never typed, so firings never stack.
+A schedule's task request carries `scheduled` (see `docs/intake/schedule.md`). Only a schedule with
+a fixed `key` sends a second one for the same key. A request that finds the task asleep at a model
+step wakes it, even when its wait does not match. Its prompt is the trigger's `prompt`, then the
+firing's line (which carries the firing time), then the events the task kept while asleep. Its open
+ask and wait stay open. At its `Stop`, a run with no result takes over the task's open asks and agent
+waits, so the task sleeps on them again. A run that calls `result`, `ask` or `wait` instead moves on:
+the call withdraws the open asks and agent waits of earlier runs. A request that finds the task in any other state, such
+as running, asleep at a human step, or asleep on the daemon's checks gate, is recorded as
+`coalesced` and never typed, so firings never stack.
 
 A message kept for a `running` task also gets an outbox prompt, so the agent reads it after its
 current turn. A message kept for a task that satisfies its open wait fires the wait in any active
-state, as described under Waits: an asleep task wakes, and a ready, blocked or held task gets the
-prompt for its next run. A message kept for a task in any other case waits for the task's next run.
+state (see Waits): an asleep task wakes, and a ready, blocked or held task gets the prompt for its
+next run. Any other message kept for a task waits for its next run.
