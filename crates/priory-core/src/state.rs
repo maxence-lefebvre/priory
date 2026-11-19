@@ -773,7 +773,7 @@ pub(crate) fn signal(
                 && signal
                     .prompt
                     .as_deref()
-                    .is_some_and(|prompt| prompt.split_whitespace().eq(text.split_whitespace()))
+                    .is_some_and(|prompt| words(prompt).contains(&words(&text)))
             {
                 tx.execute(
                     &format!(
@@ -793,6 +793,15 @@ pub(crate) fn signal(
     }
     tx.commit()?;
     Ok(kill)
+}
+
+/// The words of `text`, each between spaces, so a containment check matches whole words only.
+/// Claude may wrap a pasted prompt, such as in a `pasted_content` tag, before its hook sees it.
+fn words(text: &str) -> String {
+    format!(
+        " {} ",
+        text.split_whitespace().collect::<Vec<_>>().join(" ")
+    )
 }
 
 /// Marks the oldest queued prompt of an idle live run `attempted` and the run busy, in one
