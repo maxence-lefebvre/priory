@@ -2,6 +2,7 @@ pub mod daemon;
 mod handler;
 mod hold;
 pub mod memory;
+mod otlp;
 pub mod report;
 mod room;
 mod route;

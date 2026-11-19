@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # A stand-in for Claude Code: runs the --settings hooks as Claude would and logs every prompt typed into it.
-# FAKE_DIR holds args.log, pid, typed.log, pending (a paste arrived), submitted (a prompt was submitted),
+# FAKE_DIR holds args.log, env.log (variable names), otel.log (OTEL_RESOURCE_ATTRIBUTES, if set), pid, typed.log, pending (a paste arrived), submitted (a prompt was submitted),
 # the hold files hold-submit, hold-call (after the submit, before the turn's tool call) and hold-stop,
 # silent (show its content and never report a hook, as when Claude waits on its trust dialog), and
 # die (show its content and exit before any hook, as a harness that fails to start), and
@@ -46,6 +46,7 @@ first=''
 printf '%s\n' "$@" > "$FAKE_DIR/args.log"
 echo $$ > "$FAKE_DIR/pid"
 env | cut -d= -f1 > "$FAKE_DIR/env.log"
+env | grep '^OTEL_RESOURCE_ATTRIBUTES=' > "$FAKE_DIR/otel.log"
 while [ $# -gt 0 ]; do
   case "$1" in
     --session-id|--resume) session=$2; shift 2 ;;
