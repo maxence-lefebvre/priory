@@ -95,6 +95,16 @@ pub fn run(factory: &Factory, request: &Request) -> Result<(), String> {
     if let Some(band) = request.band.as_deref().filter(|band| !bands.contains(band)) {
         return Err(format!("band `{band}` is not one of {}", bands.join(", ")));
     }
+    let trigger_repo = factory
+        .triggers
+        .get(TRIGGER)
+        .and_then(|trigger| trigger.value.repo.as_ref());
+    if request.repo.is_none() && trigger_repo.is_none() {
+        return Err(
+            "the request names no repo; pass --repo owner/name, or set repo in triggers/cli.toml"
+                .to_owned(),
+        );
+    }
     let key = format!("cli:{}", request.key);
     let person = std::env::var("USER").ok();
     let time = Timestamp::now();

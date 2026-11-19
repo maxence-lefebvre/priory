@@ -13,7 +13,13 @@ A task owns resources, stored in one table: its trigger key from its creation, i
 `github:{repo}@priory/{id}` from its first run, and each pull request `github:{repo}#{n}` a wait of
 its names. A message names resources too: a task request its `key`, a CLI request its subject, a
 GitHub event its issue or pull request `github:{repo}#{n}` and, for a pull request event, its head
-branch `github:{repo}@{head_branch}`. The oldest active task owning any of them decides the route.
+branch `github:{repo}@{head_branch}`. The active task whose own key is one of them decides the
+route, else the oldest active task owning any of them. Each other active task that owns one of them
+still has its open wait fired when the message satisfies it, so two tasks can share a pull request:
+task B, created for pull request 7, gets its events, and task A, which waited on 7 before B existed,
+still wakes on the close or review it waits for, in a prompt of its own. A task may wait again on
+a resource it already owns, or report a pull request it already owns, even while another task's key
+decides its route. Its new wait catches up on an event another task kept since its last prompt.
 A task request is the exception: only an active task whose own key is the request's `key` keeps it.
 A task that owns that key only as a pull request or an issue it waits on does not, so the request
 creates its task.
