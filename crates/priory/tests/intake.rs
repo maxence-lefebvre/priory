@@ -326,7 +326,11 @@ fn a_gh_call_past_the_command_timeout_is_killed_and_the_poll_fails() {
         &setup.dir.join("factory/factory.toml"),
         "name = \"demo\"\ncommand_timeout = \"1s\"\n",
     );
-    Setup::fake_gh(&setup.dir, "#!/bin/sh\nsleep 60\n");
+    // A child that ignores TERM keeps stdout open, so only killing the whole group ends the call.
+    Setup::fake_gh(
+        &setup.dir,
+        "#!/bin/sh\n(trap '' TERM; sleep 60) & sleep 60\n",
+    );
     let started = std::time::Instant::now();
 
     let output = setup.intake();

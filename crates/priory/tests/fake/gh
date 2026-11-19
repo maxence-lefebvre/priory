@@ -8,7 +8,8 @@ case "$1 $2" in
   "pr list")
     if [ -e "$FAKE_DIR/open-pr" ]; then echo "[{\"number\":$(cat "$FAKE_DIR/open-pr")}]"; else echo '[]'; fi ;;
   "pr create")
-    if [ -e "$FAKE_DIR/gh-hang" ]; then sleep 60; fi
+    # A helper that ignores TERM and keeps stdout open, as a stuck credential helper can.
+    if [ -e "$FAKE_DIR/gh-hang" ]; then (trap '' TERM; sleep 60) & sleep 60; fi
     if [ -e "$FAKE_DIR/gh-fail" ]; then echo 'pull request create failed: GraphQL: denied' >&2; exit 1; fi
     echo 'https://github.com/owner/repo/pull/7' ;;
   "issue list")

@@ -2,6 +2,7 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
+use std::os::unix::process::ExitStatusExt;
 use std::process::{Command, Stdio};
 use std::sync::OnceLock;
 use std::sync::mpsc::{self, Receiver, Sender};
@@ -53,11 +54,12 @@ fn command_timeout() -> Duration {
 }
 
 /// `program` under coreutils `timeout`, which kills its whole process group past the command
-/// timeout, so a hung fetch cannot stop the daemon's one thread.
-pub fn bounded(program: &str) -> Command {
+/// timeout, so a hung fetch cannot stop the daemon's one thread. KILL, not TERM: a child that
+/// ignores TERM would keep the output pipe open after its leader exits.
+fn bounded(program: &str) -> Command {
     let mut command = Command::new("timeout");
     command
-        .arg("--kill-after=5s")
+        .arg("--signal=KILL")
         .arg(format!("{}s", command_timeout().as_secs()))
         .arg(program);
     command
@@ -69,8 +71,8 @@ pub(crate) fn run(command: &mut Command) -> Result<String, String> {
         .stdin(Stdio::null())
         .output()
         .map_err(|error| format!("{command:?}: {error}"))?;
-    // `timeout` exits 124 when it stopped the command, and 137 when it had to kill it.
-    if matches!(output.status.code(), Some(124 | 137)) {
+    // `timeout` sends KILL to its own process group, so it dies by that signal too.
+    if output.status.signal() == Some(9) {
         return Err(format!(
             "{command:?}: timed out after {}s",
             command_timeout().as_secs()

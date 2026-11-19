@@ -655,8 +655,9 @@ pub(crate) fn enter_queued(db: &mut Connection, workflows: &Workflows) -> rusqli
     let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
     let tasks = tx
         .prepare(
-            "SELECT id, workflow, step, state FROM tasks WHERE state IN ('queued', 'ready')
-             AND NOT EXISTS (SELECT 1 FROM asks WHERE task = tasks.id AND answer IS NULL AND withdrawn IS NULL)",
+            "SELECT id, workflow, step, state,
+               EXISTS (SELECT 1 FROM asks WHERE task = tasks.id AND answer IS NULL AND withdrawn IS NULL)
+             FROM tasks WHERE state IN ('queued', 'ready')",
         )?
         .query_map([], |row| {
             Ok((
@@ -664,10 +665,11 @@ pub(crate) fn enter_queued(db: &mut Connection, workflows: &Workflows) -> rusqli
                 row.get::<_, String>(1)?,
                 row.get::<_, String>(2)?,
                 row.get::<_, String>(3)?,
+                row.get::<_, bool>(4)?,
             ))
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
-    for (task, workflow, at, state) in tasks {
+    for (task, workflow, at, state, asked) in tasks {
         let Some(flow) = workflows.get(&workflow) else {
             let reason = format!("waits for workflow {workflow}, which the factory lacks");
             tx.execute(
@@ -687,7 +689,7 @@ pub(crate) fn enter_queued(db: &mut Connection, workflows: &Workflows) -> rusqli
                 let reason = format!("step {at} is not in workflow {workflow}");
                 set(&tx, task, "blocked", None, Some(&reason))?;
             }
-            Some(step) if step.decides == Decider::Human => {
+            Some(step) if step.decides == Decider::Human && !asked => {
                 enter(&tx, task, &workflow, &at, None, "", workflows)?;
             }
             Some(_) => {}

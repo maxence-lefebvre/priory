@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# Runs the real git, found on PATH after this directory. FAKE_DIR/git-hang makes `fetch` hang in a
+# helper that ignores TERM and keeps stdout open, as a stuck network fetch can.
+case " $* " in
+  *" fetch "*) if [ -e "$FAKE_DIR/git-hang" ]; then (trap '' TERM; sleep 60) & sleep 60; fi ;;
+esac
+PATH=${PATH#*:} exec git "$@"

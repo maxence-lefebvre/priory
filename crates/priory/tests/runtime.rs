@@ -3950,6 +3950,25 @@ fn a_gh_call_past_the_command_timeout_is_killed_and_its_action_fails() {
     assert!(actions[0][7].ends_with("timed out after 1s"), "{actions:?}");
 }
 
+#[test]
+fn a_git_fetch_past_the_command_timeout_is_killed_and_its_task_blocks() {
+    let mut setup = Setup::new("fetch-hangs");
+    fs::write(
+        setup.dir.join("factory/factory.toml"),
+        "name = \"demo\"\ncommand_timeout = \"1s\"\n",
+    )
+    .unwrap();
+    setup.hold("git-hang");
+    setup.publish(&requested(42));
+
+    setup.start();
+
+    let tasks = setup.until("tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == "blocked")
+    });
+    assert!(tasks[0][7].ends_with("timed out after 1s"), "{tasks:?}");
+}
+
 const APPROVE_THEN_POLISH: &str = r#"
 start = "implement"
 

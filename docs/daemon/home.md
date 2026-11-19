@@ -18,6 +18,6 @@
 - Every `git`, `gh` and `tmux` command runs under coreutils `timeout`, which kills it and its
   children after 5 minutes, or after `command_timeout` in `factory.toml`, such as
   `command_timeout = "20m"` for a first clone of a large repository. The daemon has one thread, so a
-  hung fetch would stop every hook, tool call and answer. A timed-out command fails like any other,
+  hung fetch would stop every hook, tool call and answer. It sends KILL to the whole process group, since a helper that ignores TERM could keep the output open. A timed-out command fails like any other,
   with `timed out after <n>s`.
 - `daemon.lock`: one daemon per home. A second one waits up to 5 seconds for the lock, then refuses to start.
