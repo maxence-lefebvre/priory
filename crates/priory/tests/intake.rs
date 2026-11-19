@@ -1372,6 +1372,7 @@ fn an_issue_entering_a_view_publishes_the_event_and_one_task_request() {
             "title": "Fix the thing",
             "url": "https://linear.app/acme/issue/ENG-7/fix-the-thing",
             "team": "ENG",
+            "project": null,
             "state": "Todo",
             "labels": ["agent"],
             "baseline": false,
@@ -1385,6 +1386,8 @@ fn an_issue_entering_a_view_publishes_the_event_and_one_task_request() {
             "key": "linear:ENG-7",
             "band": "today",
             "lane": null,
+            "team": "ENG",
+            "project": null,
             "trigger": "agent-ready",
             "source": source.id.to_string()
         })
@@ -1549,6 +1552,7 @@ fn a_comment_on_a_tasks_issue_reaches_its_task_in_the_inbox() {
             "title": "Fix the thing",
             "url": "https://linear.app/acme/issue/ENG-7/fix-the-thing#comment-comment-1",
             "team": "ENG",
+            "project": null,
             "state": "Todo",
             "labels": ["agent"],
             "body": "Please also cover the empty case.",
@@ -1636,6 +1640,7 @@ fn a_state_change_that_matches_a_filter_requests_a_task_once() {
             "title": "Fix the thing",
             "url": "https://linear.app/acme/issue/ENG-7/fix-the-thing",
             "team": "ENG",
+            "project": null,
             "state": "In Progress",
             "labels": ["agent"],
             "blockers": [],
@@ -1927,6 +1932,7 @@ fn a_blocker_that_changes_publishes_the_open_blockers_of_the_issue_it_blocks() {
             "title": "Fix the thing",
             "url": "https://linear.app/acme/issue/ENG-7/fix-the-thing",
             "team": "ENG",
+            "project": null,
             "state": "Todo",
             "labels": ["agent"],
             "blockers": ["ENG-4"],
@@ -1955,5 +1961,72 @@ fn a_trigger_with_a_hold_files_its_tasks_held() {
     assert_eq!(
         task.data["hold"],
         json!({ "reason": "triage first", "blockers": true })
+    );
+}
+
+fn in_project(number: u64, project: &str) -> serde_json::Value {
+    let mut issue = linear_issue(number);
+    issue["project"] = json!({ "name": project });
+    issue
+}
+
+#[test]
+fn a_linear_task_request_carries_its_issues_team_and_project() {
+    let setup = Setup::linear("linear-project", &[("agent-ready", VIEW_TRIGGER)]);
+    succeeded(&setup.intake());
+    setup.answer_linear(&Linear {
+        view: vec![in_project(7, "Desktop")],
+        ..Linear::default()
+    });
+
+    succeeded(&setup.intake());
+
+    let published = setup.published();
+    let (source, task) = (&published[0].message, &published[1].message);
+    assert_eq!(source.data["project"], "Desktop");
+    assert_eq!(task.data["team"], "ENG");
+    assert_eq!(task.data["project"], "Desktop");
+    let queries = fs::read_to_string(setup.dir.join("curl-args")).unwrap();
+    assert!(queries.contains("project { name }"), "{queries}");
+}
+
+#[test]
+fn a_linear_task_lands_in_the_lane_its_team_and_project_derive() {
+    let setup = Setup::linear("linear-lane", &[("agent-ready", VIEW_TRIGGER)]);
+    write(
+        &setup.dir.join("factory/lanes.toml"),
+        "[[rules]]\nteam = \"ENG\"\nproject = \"Desktop\"\nlane = \"ENG/desktop\"\n",
+    );
+    succeeded(&setup.intake());
+    setup.answer_linear(&Linear {
+        view: vec![in_project(7, "Desktop"), linear_issue(8)],
+        ..Linear::default()
+    });
+    succeeded(&setup.intake());
+    setup.inbox();
+
+    let tasks = Command::new(env!("CARGO_BIN_EXE_priory"))
+        .arg("tasks")
+        .env("PRIORY_DB", setup.dir.join("priory.db"))
+        .output()
+        .unwrap();
+
+    succeeded(&tasks);
+    let lanes: Vec<[String; 2]> = String::from_utf8(tasks.stdout)
+        .unwrap()
+        .lines()
+        .skip(1)
+        .map(|line| {
+            let cells: Vec<&str> = line.split('\t').collect();
+            [cells[1].to_owned(), cells[6].to_owned()]
+        })
+        .collect();
+    assert_eq!(
+        lanes,
+        [
+            ["linear:ENG-7", "ENG/desktop"],
+            ["linear:ENG-8", "ENG/misc"],
+        ]
+        .map(|row| row.map(str::to_owned))
     );
 }

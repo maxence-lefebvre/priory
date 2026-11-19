@@ -377,6 +377,7 @@ and comment events do not: a view event that leaves can carry the issue's fields
 | `title`     | string           | The issue title when the intake saw the event                   |
 | `url`       | string           | The issue's page, or the comment's for `comment.created`        |
 | `team`      | string           | The issue's team key                                            |
+| `project`   | string or null   | The issue's project name; null when the issue has no project    |
 | `state`     | string           | The issue's state when the intake saw the event                 |
 | `labels`    | array of strings | The issue's labels when the intake saw the event                |
 | `blockers`  | array of strings or null | The identifiers of the issues that block it and are neither completed nor canceled. Null when the issue has more than 20 relations, since one past the first page could block it. `created`, `state_changed` and `blockers` only |
@@ -401,6 +402,7 @@ and comment events do not: a view event that leaves can carry the issue's fields
     "title": "Fix the thing",
     "url": "https://linear.app/acme/issue/ENG-7/fix-the-thing#comment-6f1c1c9e",
     "team": "ENG",
+    "project": "Desktop",
     "state": "In Progress",
     "labels": ["agent"],
     "body": "Please also cover the empty case.",
@@ -486,11 +488,10 @@ with `backfill = true`. Only this message creates a task.
 | ---------- | -------------- | ------------------------------------------------------------ |
 | `workflow` | string         | The workflow the task starts                                 |
 | `key`      | string         | Which events are the same work: `github:owner/name#42`, the issue or pull request number. GitHub numbers both from one sequence per repository. `linear:ENG-7` for a Linear issue. A schedule's key is under `schedule.fired` |
-| `key`      | string         | Which events are the same work: `github:owner/name#42`, the issue or pull request number, as GitHub numbers both from one sequence per repository; `linear:ENG-7` for a Linear issue |
 | `band`     | string or null | The trigger's `band`, or null when it sets none              |
 | `lane`     | string or null | The trigger's `lane`, or null when `lanes.toml` derives it   |
-| `team`     | string, absent or null | The source issue's team, when the source has one: a Linear issue does, a GitHub issue does not |
-| `project`  | string, absent or null | The source issue's project, under the same condition |
+| `team`     | string, absent or null | The Linear issue's team key. Absent when the source is not a Linear event |
+| `project`  | string, absent or null | The Linear issue's project name, or null when it has none. Absent when the source is not a Linear event |
 | `trigger`  | string         | The trigger's name: its file name without the extension      |
 | `source`   | UUID string    | The `id` of the source event's message, on the same output   |
 | `hold`     | object         | Optional: files the task held. The trigger's `hold`, or `priory request --hold` |

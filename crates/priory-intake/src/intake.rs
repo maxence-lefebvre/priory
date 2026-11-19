@@ -345,6 +345,11 @@ fn task_requested(name: &str, trigger: &Trigger, source: &Message, key: String) 
         "trigger": name,
         "source": source.id.to_string(),
     });
+    for field in ["team", "project"] {
+        if let Some(value) = source.data.get(field) {
+            data[field] = value.clone();
+        }
+    }
     if let Some(hold) = &trigger.hold {
         data["hold"] = json!(hold);
     }
