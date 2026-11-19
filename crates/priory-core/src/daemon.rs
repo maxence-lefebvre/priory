@@ -185,7 +185,7 @@ fn handle_stalls(
         .screens
         .retain(|run, _| quiet.iter().any(|quiet| quiet.run == *run));
     for run in &quiet {
-        let screen = runtime::screen(&run.tmux);
+        let screen = runtime::agent_screen(&run.tmux, &run.session);
         let seen = stalls
             .screens
             .entry(run.run)
@@ -440,7 +440,7 @@ fn diagnose(
 ) -> Result<Repair, Error> {
     let need = crate::room::need(factory.agents.get(agent).map(|agent| &agent.value));
     let short = |db: &Connection| -> Result<Result<Option<crate::room::Short>, String>, Error> {
-        let promised = state::promised(db, factory)?;
+        let promised = state::promised(db, factory, None)?;
         Ok(room::measure(home).map(|room| crate::room::wait(&room, share, promised, need)))
     };
     let missing = |short: &crate::room::Short| {

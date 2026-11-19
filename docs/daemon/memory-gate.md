@@ -10,6 +10,7 @@ as `90s`, `15m` or `2h`.
 2. The grant waits in one queue, oldest first. The daemon grants the oldest waiting grant when the
    measured free memory, minus the memory promised to live runs and every held grant, minus N,
    stays at or above `(1 - memory share) × MemTotal`, as the room check for runs does. A grant
+   leaves out the promise of its own task's run, which would otherwise wait for itself. A grant
    that does not fit holds back every grant behind it, even a smaller one that fits, so a large
    build is never starved.
 3. The command polls the daemon every 250 ms. Once its grant is held, it runs the command with its
@@ -24,7 +25,8 @@ gone. So a killed `acquire` that waits frees its place within a second. A killed
 command still runs keeps its grant until that command ends.
 
 `acquire` exits 125 and never runs the command when no daemon listens, when the daemon cannot
-measure the room or refuses the grant, or when the grant still waits after `--timeout`. A grant of more than the runner's share of
+measure the room or refuses the grant, or when the grant still waits after `--timeout`, 1 hour by
+default. A grant of more than the runner's share of
 the machine can never fit, so the daemon refuses it at once, as
 `9.0 GB never fits: this runner's agents may take 7.2 GB`. A command that cannot start exits 127.
 
@@ -37,8 +39,8 @@ command in `priory memory acquire --gb N -- <command>`, with the path of this `p
 
 Known limits:
 
-- A grant counts on top of the memory its run already promised, so a build inside a run counts
-  twice, as a run's own use does under Room. The gate errs on the side of waiting.
+- Two runs' grants can each wait for the other run's promise. The default timeout ends that wait
+  after an hour, and the agent sees the failure.
 - Runs and grants queue apart: a run that fits starts even while a grant waits, and can take the
   room the grant waits for.
 - The command's process holds the grant, not the processes it leaves behind: a daemonized child

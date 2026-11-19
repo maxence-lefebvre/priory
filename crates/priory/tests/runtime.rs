@@ -1439,6 +1439,27 @@ fn a_disk_stall_runs_the_disk_scripts_once_with_a_timeout_and_the_desk_shows_the
     setup.until("desk", |rows| !rows.iter().any(|row| row[1] == "sweep"));
 }
 
+#[test]
+fn a_head_that_waits_only_for_live_runs_to_end_opens_no_stall() {
+    let mut setup = Setup::new("backpressure");
+    fs::write(setup.dir.join("factory/factory.toml"), SWEEP_SCRIPTS).unwrap();
+    setup.memory(12);
+    setup.hold("hold-stop");
+    setup.calls(&[result("passed")]);
+    setup.publish(&requested(42));
+    setup.publish(&requested(43));
+
+    setup.start();
+
+    let reason = "waits for room: 8.0 GB of memory free, needs 4.0 GB and keeps 6.4 GB free";
+    setup.until("tasks", |rows| rows.len() == 2 && rows[1][7] == reason);
+    std::thread::sleep(Duration::from_millis(1500));
+    assert_eq!(setup.banner(), None);
+    assert!(!setup.dir.join("fake/swept").exists());
+    setup.release("hold-stop");
+    setup.until("tasks", |rows| rows[1][4] == "running");
+}
+
 const SWEEPER: &str = r#"name = "demo"
 
 [sweep]
@@ -1538,6 +1559,27 @@ fn a_sweeper_that_cleaned_opens_an_issue_on_the_sweep_repository_once_a_person_a
     );
 }
 
+#[test]
+fn a_sweeper_asleep_on_its_approval_while_disk_stays_short_still_opens_its_issue() {
+    let mut setup = stalled_with_sweeper("sweeper-short");
+    setup.calls(&[json!({ "name": "result", "arguments": {
+        "outcome": "cleaned",
+        "summary": "Nothing freed\nThe disk is still short.",
+    } })]);
+    setup.start();
+    setup.until("asks", |rows| rows.len() == 1);
+
+    // A daemon start sweeps and retires asleep tasks while the disk is short.
+    setup.crash();
+    setup.start();
+    std::thread::sleep(Duration::from_millis(1500));
+    let answered = setup.priory(&["answer", "1", "open", "--revision", "1"]);
+    assert!(answered.status.success(), "{answered:?}");
+
+    setup.until("tasks", |rows| rows[0][4] == "done");
+    assert_eq!(setup.gh()[1][..2], ["issue", "create"]);
+}
+
 /// Two tasks on a disk with 30 GB free, which keeps 20 GB, for an implementer declaring `disk`.
 fn two_on_disk(name: &str, disk: Option<&str>) -> Setup {
     let mut setup = Setup::new(name);
@@ -1559,13 +1601,8 @@ fn two_agents_declaring_disk_cannot_both_start_when_only_one_fits() {
     let reason = "waits for room: 22.0 GB of disk free, needs 8.0 GB and keeps 20.0 GB free";
     let tasks = setup.until("tasks", |rows| rows.len() == 2 && rows[1][7] == reason);
     assert_eq!([&tasks[0][4], &tasks[1][4]], ["running", "queued"]);
-    assert_eq!(
-        setup.banner().as_deref(),
-        Some(&*format!(
-            "stalled since {}: short of disk by 6.0 GB; task 2 waits for room",
-            setup.banner().unwrap()[14..34].to_owned()
-        ))
-    );
+    // Task 2 waits only for task 1's promise to end, which is no stall.
+    assert_eq!(setup.banner(), None);
 }
 
 #[test]
@@ -4632,6 +4669,7 @@ fn each_step_that_ends_appends_one_step_ended_record_with_its_outcome_and_decide
         ("key", json!("github:owner/repo#42")),
         ("run", json!("1")),
         ("generation", json!(1)),
+        ("lane", json!("none/misc")),
         ("machine", json!("runner")),
         ("harness", json!("claude-code")),
     ] {
@@ -4639,9 +4677,7 @@ fn each_step_that_ends_appends_one_step_ended_record_with_its_outcome_and_decide
     }
     assert!(data["duration_ms"].is_u64(), "{data}");
     assert!(data["started"].is_string(), "{data}");
-    for absent in ["lane", "factory_revision"] {
-        assert!(data.get(absent).is_none(), "{absent} in {data}");
-    }
+    assert!(data.get("factory_revision").is_none(), "{data}");
     for later in &records[1..] {
         let data = &later["data"];
         for absent in ["run", "harness", "model", "tokens"] {
@@ -5962,6 +5998,49 @@ fn a_run_waits_for_room_while_a_grant_holds_memory() {
     setup.until("tasks", |rows| rows[0][4] == "running");
 }
 
+#[test]
+fn a_grant_inside_a_run_does_not_wait_for_that_run_own_promise() {
+    let mut setup = Setup::new("gate-own-run");
+    setup.memory(20);
+    setup.hold("hold-stop");
+    setup.calls(&[result("passed")]);
+    setup.publish(&requested(42));
+    setup.start();
+    let runs = setup.until("runs", |rows| rows.len() == 1);
+    let session = runs[0][4].clone();
+
+    // 20 GB free keeps 6.4 GB: 12 GB fits only without the run's own 4 GB promise.
+    let gated = |session: Option<&str>| {
+        let mut command = setup.command(env!("CARGO_BIN_EXE_priory"));
+        if let Some(session) = session {
+            command.env("PRIORY_SESSION", session);
+        }
+        command
+            .args([
+                "memory",
+                "acquire",
+                "--gb",
+                "12",
+                "--timeout",
+                "2s",
+                "--",
+                "true",
+            ])
+            .output()
+            .unwrap()
+    };
+    let inside = gated(Some(&session));
+    let outside = gated(None);
+    setup.release("hold-stop");
+
+    assert!(
+        inside.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&inside.stderr)
+    );
+    assert_eq!(outside.status.code(), Some(125));
+}
+
 /// Task 1 sleeps on pull request 7 with a commit on its branch, then the disk runs short while task
 /// 2 waits for room, so the disk stall sweeps.
 fn asleep_when_disk_runs_short(name: &str, spoil: impl FnOnce(&Setup)) -> (Setup, String) {
@@ -6174,6 +6253,29 @@ fn a_stalled_run_gets_a_handler_call_whose_nudge_reaches_its_pane_and_whose_cost
         ),
         "{report:?}"
     );
+}
+
+#[test]
+fn the_handler_reads_the_agent_pane_when_a_person_opened_another_pane() {
+    let mut setup = stalls("handler-pane", WORKFLOW);
+    setup.answers(&[json!({ "action": "nudge", "text": "Run the tests, then call result." })]);
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 1);
+
+    // The new pane is active and changes all the time, while the agent's pane stays still.
+    let ticker = "while :; do echo tick-$(date +%s%N); sleep 0.2; done";
+    assert!(
+        setup
+            .tmux(&["split-window", "-t", "=priory-1:", "--", "sh", "-c", ticker])
+            .status
+            .success()
+    );
+
+    setup.written("fake/handler.log");
+    let asked = setup.handled();
+    assert!(asked[0].contains("fake turn"), "{asked:?}");
+    assert!(!asked[0].contains("tick-"), "{asked:?}");
 }
 
 #[test]

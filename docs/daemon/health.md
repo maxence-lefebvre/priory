@@ -79,9 +79,11 @@ A run whose agent is gone after its result, ask or wait ended the turn is not an
 It settles as its `Stop` would have, as under Moving on, except that a next model step always gets
 a new run, since no process carries on.
 
-A model step's `timeout` is a duration such as `90s`, `15m` or `2h`, and defaults to `3h`. A run
-whose agent exits after a wait already fired, or after its ask was answered, but before its `Stop`,
-counts as an unexpected exit; `priory resume` recovers it. It
+A run whose agent exits after a wait already fired, or after its ask was answered, but before its
+`Stop`, counts as an unexpected exit: its repair restarts it or fails the task, as above. `priory
+revive` recovers a failed task; `priory resume` refuses one.
+
+A model step's `timeout` is a duration such as `90s`, `15m` or `2h`, and defaults to `3h`. It
 bounds one turn, from `UserPromptSubmit` to `Stop`, not the step.
 
 Priory never approves a permission prompt. Each run's settings carry a `PermissionRequest` hook
@@ -96,7 +98,8 @@ prompt that shows anyway, when the deny hook failed, ends the run on the next ti
 
 A live run is stalled when it sent no hook event and its pane did not change for 10 minutes, or for
 the `stalled` duration of `factory.toml`. Each tick, the daemon reads the screen of every live run
-that reached `SessionStart`, shows no permission prompt and has no open ask or wait. A run asleep on
+that reached `SessionStart`, shows no permission prompt and has no open ask or wait. It reads the
+pane Priory tagged for the agent, even when a person made another pane of the session active. A run asleep on
 a wait or an ask never counts, and neither does a run whose spinner or output still moves.
 
 The handler is opt-in: `handler` in `factory.toml` names the agent whose model it uses, which needs

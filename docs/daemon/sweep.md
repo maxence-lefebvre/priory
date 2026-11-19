@@ -51,6 +51,9 @@ under the floor, the task stays `ready` with the reason `waits for room to add b
 or `waits for room: <error>` when the disk cannot be measured,
 and the code steps behind it wait too.
 
+A sweeper task never retires: its `open-issue` would otherwise wait for the very disk it reports,
+and hold back the sweepers of later stalls.
+
 A task that cannot retire gets the reason `cannot retire: <why>`, with the same reasons as the
 sweep's, such as `untracked files`. The daemon sets it, and logs it, only when it changes, so it is
 reported once. A wake clears it.
@@ -110,7 +113,8 @@ Unless the factory defines its own `sweep` workflow, the sweeper runs this built
 
 Known limits:
 
-- The sweeper's worktree is a clone of `repo`, which takes some disk on a disk stall.
+- The sweeper's worktree is a clone of `repo`, which takes some disk on a disk stall and stays
+  while the sweeper sleeps.
 - What the sweeper may remove is set by its prompt, not enforced on paths.
 - A script's log file grows until it ends; only its tail is read.
 - A crash between starting a script and recording its pid leaves that script unbounded.

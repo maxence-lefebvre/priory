@@ -22,7 +22,7 @@ record's `id` to drop a duplicate.
 | `factory_revision` | the last commit that changed the factory's folder; absent outside git |
 | `task`, `run` | the task's and the run's ids; `run` only for a model step, the run that sent the result |
 | `generation` | the task's generation when the step ended: 1, plus one per revive |
-| `lane` | absent until lanes land |
+| `lane` | the task's lane when the step ended; absent for a task created before lanes |
 | `machine` | the host name, which also names the runner |
 | `started` | when the task entered the step, so it includes the time the task waited for a run |
 | `harness`, `model`, `tokens` | for a model step: the agent's harness, the model the transcript names, else the agent's |
