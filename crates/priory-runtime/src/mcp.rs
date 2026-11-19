@@ -87,7 +87,7 @@ fn tools() -> Value {
                     "outcome": text("One of the outcomes the step's prompt names."),
                     "summary": text("What you did and why, in a few sentences."),
                     "evidence": text("How you checked it: commands, exits, links."),
-                    "commit": text("The commit the result is about, if any."),
+                    "commit": text("The full SHA of the commit the result is about, if any, as git rev-parse HEAD prints it."),
                 },
                 "required": ["outcome", "summary"],
             },

@@ -70,6 +70,11 @@ fn text(arguments: &Value, name: &str) -> Result<String, String> {
         .ok_or_else(|| format!("{name} must be a string"))
 }
 
+/// GitHub reports full SHAs, so an abbreviated one could never match a pull request head.
+fn full_sha(commit: &str) -> bool {
+    matches!(commit.len(), 40 | 64) && commit.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
 fn optional(arguments: &Value, name: &str) -> Result<Option<String>, String> {
     match &arguments[name] {
         Value::Null => Ok(None),
@@ -144,6 +149,11 @@ fn result(
         Ok(fields) => fields,
         Err(error) => return Ok(Err(error)),
     };
+    if let Some(commit) = commit.as_deref().filter(|commit| !full_sha(commit)) {
+        return Ok(Err(format!(
+            "commit {commit:?} is not a full commit SHA: send the 40 characters that git rev-parse HEAD prints"
+        )));
+    }
     let Some(step) = step(workflows, &run.workflow, &run.step) else {
         return Ok(Err(format!(
             "step {} is not in workflow {}",
