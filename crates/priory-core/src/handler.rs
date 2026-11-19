@@ -1,7 +1,8 @@
+use crate::stall::Group;
 use crate::tools;
 use crate::trace::{self, Handled, Trace};
 use priory_factory::factory::Factory;
-use rusqlite::{Connection, TransactionBehavior, params};
+use rusqlite::{Connection, Transaction, TransactionBehavior, params};
 use serde_json::Value;
 
 /// The most handler calls one run gets.
@@ -9,6 +10,11 @@ pub(crate) const CALLS: i64 = 3;
 
 /// The model of a handler agent that names none, and of the built-in handler.
 pub(crate) const MODEL: &str = "haiku";
+
+/// Why a run cannot take a nudge: its earlier prompt may still sit in its input.
+const BLOCKED: &str = "EXISTS (SELECT 1 FROM outbox JOIN runs AS typed ON typed.id = outbox.run
+  WHERE outbox.task = runs.task AND outbox.state IN ('attempted', 'uncertain')
+  AND (typed.ended IS NULL OR typed.ended_as = 'moved'))";
 
 /// A live run that might be stalled: it reached `SessionStart`, shows no permission prompt, and
 /// sleeps on no open ask or wait.
@@ -19,15 +25,20 @@ pub(crate) struct Quiet {
     pub silent: i64,
     /// Seconds since its last handler call, if it had one.
     pub handled: Option<i64>,
+    /// The screen its last handler call read, when no hook event came since.
+    pub left: Option<String>,
     pub calls: i64,
 }
 
 pub(crate) fn quiet(db: &Connection) -> rusqlite::Result<Vec<Quiet>> {
     let mut statement = db.prepare(
         "SELECT runs.id, runs.tmux, unixepoch('now') - unixepoch(coalesce(runs.signaled, runs.started)),
-         (SELECT unixepoch('now') - unixepoch(max(called)) FROM handlers WHERE run = runs.id),
+         unixepoch('now') - unixepoch(last.called),
+         iif(runs.signaled IS NULL OR runs.signaled < last.called, last.screen, NULL),
          (SELECT count(*) FROM handlers WHERE run = runs.id)
-         FROM runs WHERE runs.ended IS NULL AND runs.ready AND runs.prompted IS NULL
+         FROM runs LEFT JOIN handlers AS last
+           ON last.id = (SELECT max(id) FROM handlers WHERE run = runs.id)
+         WHERE runs.ended IS NULL AND runs.ready AND runs.prompted IS NULL
          AND NOT EXISTS (SELECT 1 FROM asks WHERE asks.run = runs.id AND asks.answer IS NULL)
          AND NOT EXISTS (SELECT 1 FROM waits WHERE waits.run = runs.id AND waits.fired IS NULL
            AND waits.withdrawn IS NULL)
@@ -40,7 +51,8 @@ pub(crate) fn quiet(db: &Connection) -> rusqlite::Result<Vec<Quiet>> {
                 tmux: row.get(1)?,
                 silent: row.get(2)?,
                 handled: row.get(3)?,
-                calls: row.get(4)?,
+                left: row.get(4)?,
+                calls: row.get(5)?,
             })
         })?
         .collect()
@@ -63,6 +75,8 @@ const ASK: &str = r#"You are Priory's handler. Priory runs coding agents unatten
 {"action": "leave", "why": "<one line>"} when it still works, or waits on something a message cannot fix.
 Never answer a question the agent puts to a person, and never approve, deny or pick an option of a permission prompt or a menu: answer leave instead."#;
 
+const NO_NUDGE: &str = "An earlier prompt may still sit in its input, so a nudge cannot reach it: answer restart or leave.";
+
 /// What the handler reads for the stalled run `run`: its step's prompt, the prompts it received
 /// last, its task's recent trace and the last lines of its screen.
 pub(crate) fn prompt(
@@ -72,11 +86,13 @@ pub(crate) fn prompt(
     stalled: i64,
     screen: &[String],
 ) -> rusqlite::Result<String> {
-    let (task, workflow, step): (i64, String, String) = db.query_row(
-        "SELECT runs.task, tasks.workflow, runs.step FROM runs JOIN tasks ON tasks.id = runs.task
-         WHERE runs.id = ?1",
+    let (task, workflow, step, blocked): (i64, String, String, bool) = db.query_row(
+        &format!(
+            "SELECT runs.task, tasks.workflow, runs.step, {BLOCKED} FROM runs
+             JOIN tasks ON tasks.id = runs.task WHERE runs.id = ?1"
+        ),
         [run],
-        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
     )?;
     let step_prompt = factory
         .workflows
@@ -97,53 +113,74 @@ pub(crate) fn prompt(
         "SELECT json_extract(event, '$.data') FROM trace
          WHERE json_extract(event, '$.data.task') = CAST(?1 AS TEXT) ORDER BY seq DESC LIMIT 3",
     )?;
+    let no_nudge = if blocked { NO_NUDGE } else { "" };
     Ok(format!(
-        "{ASK}\n\nIt has been stalled for {stalled}s.\n\nIts step's prompt:\n{step_prompt}\n\n\
+        "{ASK}\n{no_nudge}\n\nIt has been stalled for {stalled}s.\n\nIts step's prompt:\n{step_prompt}\n\n\
          The last prompts it received:\n{prompts}\n\nIts task's recent trace:\n{records}\n\n\
          The last lines of its screen:\n{}\n",
         screen.join("\n")
     ))
 }
 
-/// Records a handler call on `run` and returns its id.
-pub(crate) fn called(db: &Connection, run: i64) -> rusqlite::Result<i64> {
+/// Records a handler call on `run`, which read `screen`, and returns its id.
+pub(crate) fn called(db: &Connection, run: i64, screen: &[String]) -> rusqlite::Result<i64> {
     db.query_row(
-        "INSERT INTO handlers (run) VALUES (?1) RETURNING id",
-        [run],
+        "INSERT INTO handlers (run, screen) VALUES (?1, ?2) RETURNING id",
+        params![run, screen.join("\n")],
         |row| row.get(0),
     )
 }
 
-/// A daemon that stopped left its handler calls unanswered; their runs keep the call in their count.
-pub(crate) fn interrupted(db: &Connection) -> rusqlite::Result<usize> {
+/// Records the process group of handler call `id` and its start time, so a restarted daemon kills
+/// it and never a process that reused its pid.
+pub(crate) fn spawned(
+    db: &Connection,
+    id: i64,
+    pid: u32,
+    started: Option<i64>,
+) -> rusqlite::Result<()> {
     db.execute(
-        "UPDATE handlers SET answered = strftime('%Y-%m-%dT%H:%M:%SZ', 'now'), action = 'leave',
-         text = 'interrupted by a daemon restart' WHERE answered IS NULL",
-        [],
+        "UPDATE handlers SET pid = ?2, pid_started = ?3 WHERE id = ?1",
+        params![id, pid, started],
     )
+    .map(drop)
+}
+
+/// The handler calls a stopped daemon left unanswered, with their process group and its start time.
+pub(crate) fn orphans(db: &Connection) -> rusqlite::Result<Vec<(i64, Option<Group>)>> {
+    let mut statement =
+        db.prepare("SELECT id, pid, pid_started FROM handlers WHERE answered IS NULL")?;
+    statement
+        .query_map([], |row| {
+            let pid: Option<u32> = row.get(1)?;
+            Ok((row.get(0)?, pid.zip(row.get(2)?)))
+        })?
+        .collect()
+}
+
+/// What the handler chose, as its JSON names it.
+#[derive(serde::Deserialize)]
+#[serde(tag = "action", rename_all = "lowercase")]
+enum Choice {
+    Nudge { text: String },
+    Restart { why: String },
+    Leave { why: String },
 }
 
 /// What a handler call answered, read from Claude's `--output-format json`.
 struct Answer {
-    action: &'static str,
-    text: String,
+    choice: Choice,
     model: Option<String>,
     tokens: Option<Value>,
     cost_usd: Option<f64>,
 }
 
+/// Reads the call's output. Only a call that exited 0 with a successful result may act; any other
+/// becomes `leave`, keeping its usage.
 fn read(output: Option<&str>, status: &str) -> Answer {
-    let parsed: Option<Value> = output.and_then(|output| serde_json::from_str(output).ok());
-    let failed = |text: String| Answer {
-        action: "leave",
-        text,
-        model: None,
-        tokens: None,
-        cost_usd: None,
-    };
-    let Some(parsed) = parsed else {
-        return failed(format!("the handler call gave no answer: {status}"));
-    };
+    let parsed: Value = output
+        .and_then(|output| serde_json::from_str(output).ok())
+        .unwrap_or(Value::Null);
     let usage = &parsed["usage"];
     let tokens = usage.is_object().then(|| {
         serde_json::json!({
@@ -153,44 +190,58 @@ fn read(output: Option<&str>, status: &str) -> Answer {
             "cache_write": usage["cache_creation_input_tokens"].as_i64().unwrap_or(0),
         })
     });
-    let model = parsed["modelUsage"]
-        .as_object()
-        .and_then(|models| models.keys().next().cloned());
     let result = parsed["result"].as_str().unwrap_or_default();
+    let succeeded = status == "exit 0" && parsed["is_error"] == false;
     // A model may wrap its JSON in prose or a code fence.
-    let chosen: Option<Value> = result
+    let chosen = result
         .find('{')
         .zip(result.rfind('}'))
-        .and_then(|(start, end)| serde_json::from_str(result.get(start..=end)?).ok());
-    let field = |name: &str| {
-        chosen
-            .as_ref()
-            .and_then(|chosen| chosen[name].as_str())
-            .map(str::trim)
-            .filter(|text| !text.is_empty())
-            .map(str::to_owned)
-    };
-    let (action, text) = match field("action").as_deref() {
-        Some("nudge") => match field("text") {
-            Some(text) => ("nudge", text),
-            None => ("leave", "the handler nudged with no text".to_owned()),
+        .and_then(|(start, end)| serde_json::from_str::<Choice>(result.get(start..=end)?).ok())
+        .filter(|choice| match choice {
+            Choice::Nudge { text } => !text.trim().is_empty(),
+            Choice::Restart { .. } | Choice::Leave { .. } => true,
+        });
+    let choice = match chosen {
+        Some(choice) if succeeded => choice,
+        _ if !succeeded => Choice::Leave {
+            why: format!("the handler call failed: {status}"),
         },
-        Some("restart") => ("restart", field("why").unwrap_or_default()),
-        Some("leave") => ("leave", field("why").unwrap_or_default()),
-        _ => ("leave", format!("the handler gave no action: {result}")),
+        _ => Choice::Leave {
+            why: format!("the handler gave no action: {result}"),
+        },
     };
     Answer {
-        action,
-        text,
-        model,
+        choice,
+        model: parsed["modelUsage"]
+            .as_object()
+            .and_then(|models| models.keys().next().cloned()),
         tokens,
         cost_usd: parsed["total_cost_usd"].as_f64(),
     }
 }
 
-/// Records handler call `id`'s answer, from its JSON `output`, and applies it unless its run ended
-/// or `moved` on since the call: a nudge goes through the outbox, a restart ends the run so its
-/// task resumes the session in a new one. Returns a tmux session to kill.
+/// Why the answer to call `id` must not act on its run, if it must not: the run ended, sent a hook
+/// event, stored a result, ask or wait, or took a prompt since the call.
+fn moved_on(tx: &Transaction, id: i64) -> rusqlite::Result<bool> {
+    tx.query_row(
+        "SELECT runs.ended IS NOT NULL OR runs.signaled >= handlers.called
+         OR EXISTS (SELECT 1 FROM results WHERE run = runs.id)
+         OR EXISTS (SELECT 1 FROM asks WHERE run = runs.id AND created >= handlers.called)
+         OR EXISTS (SELECT 1 FROM waits WHERE run = runs.id AND created >= handlers.called)
+         OR EXISTS (SELECT 1 FROM outbox WHERE run = runs.id AND attempted >= handlers.called)
+         FROM handlers JOIN runs ON runs.id = handlers.run WHERE handlers.id = ?1",
+        [id],
+        |row| {
+            row.get::<_, Option<bool>>(0)
+                .map(|moved| moved.unwrap_or(false))
+        },
+    )
+}
+
+/// Records handler call `id`'s answer, from its JSON `output` and process `status`, and applies it
+/// unless the run `moved` on its screen or otherwise since the call: a nudge goes through the
+/// outbox, a restart ends the run so its task resumes the session in a new one. Returns a tmux
+/// session to kill.
 pub(crate) fn answered(
     db: &mut Connection,
     trace: &Trace,
@@ -201,35 +252,48 @@ pub(crate) fn answered(
 ) -> rusqlite::Result<Option<String>> {
     let answer = read(output, status);
     let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
-    let (run, live): (i64, bool) = tx.query_row(
-        "SELECT handlers.run, runs.ended IS NULL AND (runs.signaled IS NULL
-           OR runs.signaled < handlers.called)
-         FROM handlers JOIN runs ON runs.id = handlers.run WHERE handlers.id = ?1",
+    let (run, blocked): (i64, bool) = tx.query_row(
+        &format!(
+            "SELECT runs.id, {BLOCKED} FROM handlers JOIN runs ON runs.id = handlers.run
+             WHERE handlers.id = ?1"
+        ),
         [id],
         |row| Ok((row.get(0)?, row.get(1)?)),
     )?;
-    let mut text = answer.text.clone();
-    let mut kill = None;
-    if !live || moved {
-        if answer.action != "leave" {
-            text.push_str(" (not applied: the run moved on)");
+    let skipped = if moved || moved_on(&tx, id)? {
+        Some("the run moved on")
+    } else if blocked && matches!(answer.choice, Choice::Nudge { .. }) {
+        Some("an earlier prompt still waits for its confirmation")
+    } else {
+        None
+    };
+    let (action, mut text, kill) = match (&answer.choice, skipped) {
+        (Choice::Leave { why }, _) => ("leave", why.clone(), None),
+        (Choice::Nudge { text }, None) => {
+            tools::nudge_stalled(&tx, run, text)?;
+            ("nudge", text.clone(), None)
         }
-    } else if answer.action == "nudge" {
-        tools::nudge_stalled(&tx, run, &answer.text)?;
-    } else if answer.action == "restart" {
-        kill = Some(tools::restart(&tx, trace, run, &answer.text)?);
+        (Choice::Restart { why }, None) => {
+            let tmux = tools::restart(&tx, trace, run, why)?;
+            ("restart", why.clone(), Some(tmux))
+        }
+        (Choice::Nudge { text }, Some(_)) => ("nudge", text.clone(), None),
+        (Choice::Restart { why }, Some(_)) => ("restart", why.clone(), None),
+    };
+    if let (Some(why), false) = (skipped, action == "leave") {
+        text.push_str(&format!(" (not applied: {why})"));
     }
     tx.execute(
         "UPDATE handlers SET answered = strftime('%Y-%m-%dT%H:%M:%SZ', 'now'), action = ?2,
          text = ?3 WHERE id = ?1",
-        params![id, answer.action, text],
+        params![id, action, text],
     )?;
     trace::handled(
         &tx,
         trace,
         &Handled {
             run,
-            action: answer.action,
+            action,
             text: &text,
             model: answer
                 .model

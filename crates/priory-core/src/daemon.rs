@@ -112,7 +112,19 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
     }
     // A crash between ending its last script and marking it swept leaves a stall unswept.
     stall::swept(&db)?;
-    handler::interrupted(&db)?;
+    // A handler call a stopped daemon started still counts, and its answer is recorded but not applied.
+    let handlers = home.join("handlers");
+    for (id, group) in handler::orphans(&db)? {
+        if let Some((pid, _)) =
+            group.filter(|(pid, started)| memory::started(*pid) == Some(*started))
+        {
+            script::kill(pid);
+        }
+        let output = runtime::answer(&handlers, id);
+        let status = "interrupted by a daemon restart";
+        handler::answered(&mut db, &trace, id, output.as_deref(), status, true)?;
+        runtime::forget(&handlers, id);
+    }
     let mut stalls = Stalls::default();
     let mut scripts = Vec::new();
     let every = factory.sweep().every.unwrap_or(SWEEP);
@@ -136,6 +148,8 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
         if swept.is_none_or(|at| at.elapsed() >= every) {
             swept = Some(Instant::now());
             sweep::run(&db, &home)?;
+            let short = || room::measure(&home).is_ok_and(|room| crate::room::short_of_disk(&room));
+            sweep::retire(&db, &home, short)?;
         }
         match listening.lines.recv_timeout(EVERY) {
             Ok(line) => apply(&mut db, line, &trace)?,
@@ -155,6 +169,21 @@ fn handle_stalls(
 ) -> Result<(), Error> {
     let factory = trace.factory;
     let dir = home.join("handlers");
+    // Screens first, so an answer is checked against what the run shows now.
+    let quiet = handler::quiet(db)?;
+    stalls
+        .screens
+        .retain(|run, _| quiet.iter().any(|quiet| quiet.run == *run));
+    for run in &quiet {
+        let screen = runtime::screen(&run.tmux);
+        let seen = stalls
+            .screens
+            .entry(run.run)
+            .or_insert_with(|| (screen.clone(), Instant::now()));
+        if seen.0 != screen {
+            *seen = (screen, Instant::now());
+        }
+    }
     for mut call in std::mem::take(&mut stalls.calls) {
         let Some((status, log)) = call.script.poll() else {
             stalls.calls.push(call);
@@ -165,12 +194,14 @@ fn handle_stalls(
             .screens
             .get(&call.run)
             .is_some_and(|(_, changed)| *changed > call.started);
-        let status = format!("{status}: {log}");
-        if let Some(tmux) =
-            handler::answered(db, trace, call.id, output.as_deref(), &status, moved)?
-        {
-            runtime::kill(&tmux);
-        }
+        let status = if status == "exit 0" || log.is_empty() {
+            status
+        } else {
+            format!("{status}: {log}")
+        };
+        let kill = handler::answered(db, trace, call.id, output.as_deref(), &status, moved)?;
+        runtime::forget(&dir, call.id);
+        kill.inspect(|tmux| runtime::kill(tmux));
     }
     let stalled = factory
         .settings
@@ -178,40 +209,37 @@ fn handle_stalls(
         .and_then(|settings| settings.value.stalled)
         .unwrap_or(STALLED)
         .as_secs() as i64;
-    let quiet = handler::quiet(db)?;
-    stalls
-        .screens
-        .retain(|run, _| quiet.iter().any(|quiet| quiet.run == *run));
-    for run in quiet {
-        let screen = runtime::screen(&run.tmux);
-        let seen = stalls
-            .screens
-            .entry(run.run)
-            .or_insert_with(|| (screen.clone(), Instant::now()));
-        if seen.0 != screen {
-            *seen = (screen.clone(), Instant::now());
-        }
-        let stalled_for = run.silent.min(seen.1.elapsed().as_secs() as i64);
-        // A handler called after the stall began already handled it.
+    for run in handler::quiet(db)? {
+        let Some((screen, changed)) = stalls.screens.get(&run.run) else {
+            continue;
+        };
+        let stalled_for = run.silent.min(changed.elapsed().as_secs() as i64);
+        // One call per stall: none since it began, and none on this screen with no hook event since.
         let due = stalled_for >= stalled
             && run.calls < handler::CALLS
             && run.handled.is_none_or(|handled| handled > stalled_for)
+            && run.left.as_deref() != Some(screen.join("\n").as_str())
             && !stalls.calls.iter().any(|call| call.run == run.run);
         if !due {
             continue;
         }
-        let id = handler::called(db, run.run)?;
+        let screen = screen.clone();
+        let id = handler::called(db, run.run, &screen)?;
         let prompt = handler::prompt(db, factory, run.run, stalled_for, &screen)?;
         match runtime::ask_handler(&dir, id, handler::model(factory), &prompt, HANDLER_TIMEOUT) {
-            Ok(script) => stalls.calls.push(Handling {
-                id,
-                run: run.run,
-                script,
-                started: Instant::now(),
-            }),
+            Ok(script) => {
+                handler::spawned(db, id, script.pid(), memory::started(script.pid()))?;
+                stalls.calls.push(Handling {
+                    id,
+                    run: run.run,
+                    script,
+                    started: Instant::now(),
+                });
+            }
             Err(error) => {
                 let status = format!("cannot start: {error}");
                 handler::answered(db, trace, id, None, &status, false)?;
+                runtime::forget(&dir, id);
             }
         }
     }
@@ -296,7 +324,9 @@ fn take(db: &mut Connection, line: &str, trace: &Trace) -> Result<(String, Optio
         Ok(Input::Signal(signal)) => Ok(("ok".to_owned(), state::signal(db, &signal, trace)?)),
         Ok(Input::Call(call)) => Ok((replied(tools::call(db, &call, workflows)?), None)),
         Ok(Input::Answer(answer)) => Ok((
-            replied(tools::answer(db, &answer, trace, &runtime::head)?),
+            replied(tools::answer(db, &answer, trace, &|worktree, branch| {
+                runtime::kept_head(&runtime::home(), worktree, branch)
+            })?),
             None,
         )),
         Ok(Input::Act(act)) => {
@@ -351,8 +381,9 @@ fn tend(db: &mut Connection, trace: &Trace, share: &Share, home: &Path) -> Resul
         }
     }
     state::due(db)?;
+    state::disk_due(db, || room::measure(home).ok().map(|room| room.disk_free))?;
     memory::reclaim(db)?;
-    perform(db, trace)?;
+    perform(db, trace, home)?;
     loop {
         // Measured again after each start, since its clone and worktree take disk.
         let measured = OnceCell::new();
@@ -471,7 +502,7 @@ fn verdict(run: &state::LiveRun, factory: &Factory) -> Option<(&'static str, Str
 
 /// Runs the action of the oldest task at a code step, once an irreversible step's approval holds.
 /// An action that is not built yet blocks the task.
-fn perform(db: &mut Connection, trace: &Trace) -> Result<(), Error> {
+fn perform(db: &mut Connection, trace: &Trace, home: &Path) -> Result<(), Error> {
     let factory = trace.factory;
     let Some(due) = state::actionable(db, &factory.workflows)? else {
         return Ok(());
@@ -480,6 +511,33 @@ fn perform(db: &mut Connection, trace: &Trace) -> Result<(), Error> {
         .value
         .step(&due.step)
         .expect("actionable checked the step");
+    // The sweep or a retirement removed the worktree; its branch still holds the work.
+    if let Some(repo) = repo_of(factory, &due.trigger)
+        && due
+            .worktree
+            .as_deref()
+            .is_some_and(|worktree| !Path::new(worktree).exists())
+    {
+        // A resurrected task goes through the room check, which a code step otherwise skips.
+        let waits = match room::measure(home) {
+            Err(error) => Some(format!("waits for room: {error}")),
+            Ok(room) if crate::room::short_of_disk(&room) => {
+                Some("waits for room to add back its worktree".to_owned())
+            }
+            Ok(_) => None,
+        };
+        if let Some(reason) = waits {
+            db.execute(
+                "UPDATE tasks SET reason = ?2 WHERE id = ?1 AND reason IS NOT ?2",
+                rusqlite::params![due.task, reason],
+            )?;
+            return Ok(());
+        }
+        if let Err(reason) = runtime::worktree(home, repo, due.task) {
+            return Ok(state::block(db, trace, due.task, "blocked", &reason)?);
+        }
+        db.execute("UPDATE tasks SET retired = NULL WHERE id = ?1", [due.task])?;
+    }
     let head = head(due.worktree.as_deref(), due.branch.as_deref());
     if !tools::approved(db, due.task, step, head.as_deref())? {
         return Ok(());

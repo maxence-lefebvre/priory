@@ -109,6 +109,19 @@ pub fn worktree(home: &Path, repo: &str, task: i64) -> Result<(PathBuf, String),
     Ok((path, branch))
 }
 
+/// The commit `branch` points to, read from Priory's clone under `home` when `worktree` is gone, as
+/// after a retirement or a sweep.
+pub fn kept_head(home: &Path, worktree: &Path, branch: &str) -> Option<String> {
+    if worktree.exists() {
+        return head(worktree, branch);
+    }
+    let repo = worktree
+        .parent()?
+        .strip_prefix(home.join("worktrees"))
+        .ok()?;
+    head(&home.join("repos").join(repo), branch)
+}
+
 /// The commit `branch` points to in the repository of `worktree`.
 pub fn head(worktree: &Path, branch: &str) -> Option<String> {
     let commit = format!("refs/heads/{branch}^{{commit}}");
@@ -513,14 +526,16 @@ pub fn ask_handler(
     crate::script::spawn(&run, dir, &file("log"), timeout)
 }
 
-/// The JSON answer of handler call `id` in `dir`, removing its files.
+/// The JSON answer of handler call `id` in `dir`, if it wrote one.
 pub fn answer(dir: &Path, id: i64) -> Option<String> {
-    let file = |extension: &str| dir.join(format!("{id}.{extension}"));
-    let answer = fs::read_to_string(file("json")).ok();
-    for extension in ["prompt", "json"] {
-        let _ = fs::remove_file(file(extension));
+    fs::read_to_string(dir.join(format!("{id}.json"))).ok()
+}
+
+/// Removes the files of handler call `id` in `dir`, once its answer is recorded.
+pub fn forget(dir: &Path, id: i64) {
+    for extension in ["prompt", "json", "log"] {
+        let _ = fs::remove_file(dir.join(format!("{id}.{extension}")));
     }
-    answer
 }
 
 /// The pane of the tmux session `name` that runs the harness session `session`, if its process
