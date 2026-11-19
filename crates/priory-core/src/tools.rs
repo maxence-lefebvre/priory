@@ -375,7 +375,9 @@ fn wait(
         }
         "disk" => {
             let Some(gb) = on["gb"].as_f64().filter(|gb| gb.is_finite() && *gb > 0.0) else {
-                return Ok(Err("a disk wait needs gb, the free disk in GB to wait for".into()));
+                return Ok(Err(
+                    "a disk wait needs gb, the free disk in GB to wait for".into()
+                ));
             };
             tx.execute(
                 "INSERT INTO waits (task, run, kind, bytes) VALUES (?1, ?2, 'disk', ?3)",
@@ -656,7 +658,9 @@ pub(crate) fn disk_due(tx: &Transaction, free: u64) -> rusqlite::Result<()> {
              WHERE waits.fired IS NULL AND waits.withdrawn IS NULL AND waits.kind = 'disk'
              AND tasks.state IN ('running', 'asleep') AND waits.bytes <= ?1 ORDER BY waits.id",
         )?
-        .query_map([free as i64], |row| Ok((row.get::<_, i64>(0)?, row.get(1)?)))?
+        .query_map([free as i64], |row| {
+            Ok((row.get::<_, i64>(0)?, row.get(1)?))
+        })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     let text = format!("{:.1} GB of disk free", free as f64 / GB);
     for (id, task) in fired {

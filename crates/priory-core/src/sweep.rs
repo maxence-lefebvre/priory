@@ -86,7 +86,11 @@ pub fn run(db: &Connection, home: &Path) -> rusqlite::Result<()> {
 
 /// Retires asleep tasks, longest asleep first, while `short` says the disk is short: removes each
 /// clean worktree and keeps its branch and sessions. A task that cannot retire gets the reason once.
-pub(crate) fn retire(db: &Connection, home: &Path, mut short: impl FnMut() -> bool) -> rusqlite::Result<()> {
+pub(crate) fn retire(
+    db: &Connection,
+    home: &Path,
+    mut short: impl FnMut() -> bool,
+) -> rusqlite::Result<()> {
     if !short() {
         return Ok(());
     }
@@ -105,8 +109,8 @@ pub(crate) fn retire(db: &Connection, home: &Path, mut short: impl FnMut() -> bo
         else {
             continue;
         };
-        let stays = worktrees::retire_blocker(home, found)
-            .or_else(|| worktrees::retire(home, found).err());
+        let stays =
+            worktrees::retire_blocker(home, found).or_else(|| worktrees::retire(home, found).err());
         let Some(stays) = stays else {
             db.execute(
                 "UPDATE tasks SET retired = strftime('%Y-%m-%dT%H:%M:%SZ', 'now'), reason = NULL

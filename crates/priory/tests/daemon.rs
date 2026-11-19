@@ -163,7 +163,8 @@ fn a_task_request_creates_one_queued_task_at_its_workflow_start() {
             "none/misc",
             "-",
             "1",
-            "1"
+            "1",
+            "-"
         ])]
     );
     assert_eq!(

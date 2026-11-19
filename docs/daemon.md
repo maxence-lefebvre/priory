@@ -67,8 +67,9 @@ Waits. A message kept for a task in any other state waits for the task's next ru
 - `worktrees/<owner>/<name>/<task id>`: one worktree per task, on branch `priory/<task id>`, from
   the remote's default branch. The task's `worktree` names it only when Priory created it. A start
   reuses an existing worktree only when it belongs to Priory's clone and is on that branch. When
-  the folder is gone but the branch is not, as for a revived task the sweep cleaned up, the start
-  adds the worktree back on that branch.
+  the folder is gone but the branch is not, as for a revived task the sweep cleaned up or a retired
+  task, the start adds the worktree back on that branch. A code step does the same before its
+  action runs.
 - `priory.sock`: the socket hooks report to. `signals.spool`: the signals sent while no daemon
   listened, which the next daemon applies first.
 - `daemon.lock`: one daemon per home. A second one waits up to 5 seconds for the lock, then refuses to start.
@@ -525,6 +526,7 @@ task's generation.
 | `memory` | the memory grant | `waits for <N> GB: <command>` | it was requested |
 | `queue` | the task's place in the queue | its band, then its reason when it has one | the task last changed state |
 | `sweep` | the script's run | its command, then `running`, or its status and output, for the open stall | it started |
+| `retired` | the task | `its worktree was removed to free disk; it resurrects from <branch> when its wait fires` | it retired |
 | `worktree` | the worktree's path | why it stays: see Sweep | `-` |
 
 The lane column is the task's lane, and `-` for a `worktree` row.
@@ -566,9 +568,8 @@ The task keeps its id, key, branch, worktree and sessions. Its next run resumes 
 step's agent, like a resume. The agent keeps what it learned in the earlier generation, and the
 revive prompt tells it that the asks and waits it remembers are gone. A new session would lose that
 context, and the worktree already holds the earlier generation's work. When the sweep removed the
-worktree, the next run adds it back from the branch, as under Priory home. A code step starts no
-run, so a revive straight into one, such as `open-pr`, finds no worktree and blocks the task;
-revive it at a model step instead.
+worktree, the next run adds it back from the branch, as under Priory home. A revive straight into a
+code step, such as `open-pr`, adds it back before the action runs.
 
 A withdrawn ask or wait stays in the state file but counts as closed. An answer to a withdrawn ask
 is refused with `ask <id> was withdrawn when task <task> was revived as generation <n>`. An event
@@ -606,6 +607,31 @@ keeps the worktree, as `cannot check: <error>`.
 with its reason: `no task <id>`, `task <id> still <state>`, `not a worktree of <clone>`,
 `not recorded as the worktree of task <id>`, `not on branch priory/<id>`, `uncommitted changes`, `untracked files`, `a process runs in it`,
 `unpushed commits` or `not merged`. It reads the refs of the last fetch.
+
+### Retiring asleep tasks
+
+After each sweep, when free disk is at or under the room's disk floor (see Room), the daemon retires
+asleep tasks, the longest asleep first, until the floor is met again. Retiring runs
+`git worktree remove` without force: the worktree goes, and the branch `priory/<id>` and the task's
+sessions stay. A task retires only when its worktree is Priory's, on its branch, has nothing
+uncommitted or untracked, and no process runs in it.
+
+Its commits need not be pushed: the branch stays in Priory's clone, on the same disk, and no sweep
+deletes the branch of an active task. Requiring a push would keep most asleep tasks, since an agent
+pushes only at `open-pr`, and pushing is an irreversible step Priory does not take on its own.
+
+A retired task stays `asleep`, with its `retired` time set. It keeps every wait, ask and event, so
+routing, holds and waits treat it as any asleep task, and R4.1's states stay as they are. When its
+wait fires or its ask is answered, it becomes `ready`, as R3.2 says. Its next run adds the worktree
+back from the branch, at the same path, so `claude --resume` finds the session it stored for that
+folder. Starting the run, or a code step's action, clears `retired`.
+
+A task that cannot retire gets the reason `cannot retire: <why>`, with the same reasons as the
+sweep's, such as `untracked files`. The daemon sets it, and logs it, only when it changes, so it is
+reported once. A wake clears it.
+
+Retiring runs only at a sweep: when the daemon starts, when a disk stall starts, and every `[sweep]
+every`. A disk that runs short with nothing waiting for room waits for the next sweep.
 
 ### Sweep scripts and the sweeper
 
@@ -787,6 +813,7 @@ prompts.
 | `linear_comment` | `issue`, such as `ENG-7` | `linear.comment.created` on that issue                               |
 | `linear_state` | `issue`, `state`, such as `Done` | `linear.issue.state_changed` on that issue, with `to` equal to `state` |
 | `slack_reply`  | `channel`, `thread_ts`  | `slack.thread.replied` in that thread, which the intake never publishes for its own bot |
+| `disk`         | `gb`, a number above 0  | the daemon's loop, once the room's disk reading shows `gb` GB free (a GB is 1024³ bytes) |
 
 ```json
 { "on": { "type": "linear_state", "issue": "ENG-7", "state": "Done" } }
@@ -819,10 +846,12 @@ pull request never fires a checks wait.
 When the wait is stored, the daemon looks at the events the task kept since the agent's last prompt:
 those not typed yet, and on which no wait fired. The first one that satisfies the wait fires it at
 once, and the time and task conditions are checked at once too. The run then does not sleep: the
-event is typed after its `Stop`.
+event is typed after its `Stop`. A disk wait is checked at the next tick: each tick measures the
+disk with the room's reading, `df` on `PRIORY_HOME`, only while a disk wait is open.
 
 A wait that fires queues one prompt ahead of the task's other queued prompts: the event's line, or
-for time and task, `wait <id> fired: <until> passed` or `wait <id> fired: task <id> is <state>`, then
+for time, task and disk, `wait <id> fired: <until> passed`, `wait <id> fired: task <id> is <state>`
+or `wait <id> fired: <N> GB of disk free`, then
 a line for each event the task kept while it slept. An asleep task becomes `ready`, and its next run
 resumes the session of its step's agent with that prompt. An event that does not satisfy the wait so
 stays kept until the wake.
@@ -830,7 +859,8 @@ stays kept until the wake.
 A check event also carries `failing`: how many of the completed check runs on the head commit had a
 conclusion other than `success`, `neutral` or `skipped` in the same poll.
 
-`priory waits` prints each open wait: id, task, run, kind, what it waits on and when it was stored.
+`priory waits` prints each open wait: id, task, run, kind, what it waits on, such as `50.0 GB free`
+for a disk wait, and when it was stored.
 
 ### Done and checks
 
@@ -1037,7 +1067,8 @@ running; end one with `tmux kill-session -t =priory-<task id>` when you mean to.
 
 `priory inbox` prints each entry, oldest first: seq, type, subject, task and outcome.
 `priory tasks` prints each task in start order: id, key, workflow, step, state, band, lane, reason,
-position, the task's place in the queue from 1 when it is `queued` or `ready`, and generation.
+position, the task's place in the queue from 1 when it is `queued` or `ready`, generation, and when
+it retired, for a retired task (see Retiring asleep tasks).
 `priory tasks --lane L` prints only the tasks in lane `L`.
 `priory runs` prints each run: id, task, step, tmux session, harness session (a Codex run's
 thread), started, ended and how it ended. `priory outbox` prints each prompt: id, task, run, state and text, with newlines
