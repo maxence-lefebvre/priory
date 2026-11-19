@@ -10,7 +10,7 @@ use std::collections::BTreeMap;
 use std::io::Write;
 use std::time::Duration;
 
-const VERSION: i64 = 20;
+const VERSION: i64 = 21;
 
 const SCHEMA: &str = "
 CREATE TABLE tasks (
@@ -330,11 +330,41 @@ ALTER TABLE waits_20 RENAME TO waits;
 PRAGMA user_version = 20;
 ";
 
+const SCHEMA_21: &str = "
+ALTER TABLE tasks ADD COLUMN retired TEXT;
+CREATE TABLE waits_21 (
+  id        INTEGER PRIMARY KEY AUTOINCREMENT,
+  task      INTEGER NOT NULL REFERENCES tasks (id),
+  run       INTEGER NOT NULL REFERENCES runs (id),
+  kind      TEXT NOT NULL CHECK (kind IN ('pull_request', 'checks', 'review', 'time', 'task',
+              'linear_comment', 'linear_state', 'slack_reply', 'disk')),
+  resource  TEXT,
+  until     TEXT,
+  target    INTEGER REFERENCES tasks (id),
+  head_sha  TEXT,
+  created   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+  fired     TEXT,
+  inbox     INTEGER REFERENCES inbox (seq),
+  daemon    INTEGER NOT NULL DEFAULT 0,
+  withdrawn INTEGER,
+  state     TEXT,
+  since     TEXT,
+  bytes     INTEGER
+);
+INSERT INTO waits_21 (id, task, run, kind, resource, until, target, head_sha, created, fired, inbox,
+  daemon, withdrawn, state, since)
+  SELECT id, task, run, kind, resource, until, target, head_sha, created, fired, inbox, daemon,
+  withdrawn, state, since FROM waits;
+DROP TABLE waits;
+ALTER TABLE waits_21 RENAME TO waits;
+PRAGMA user_version = 21;
+";
+
 /// Each schema change in order: a file at version `n` applies those from index `n` on.
 const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA, SCHEMA_2, SCHEMA_3, SCHEMA_4, SCHEMA_5, SCHEMA_6, SCHEMA_7, SCHEMA_8, SCHEMA_9,
     SCHEMA_10, SCHEMA_11, SCHEMA_12, SCHEMA_13, SCHEMA_14, SCHEMA_15, SCHEMA_16, SCHEMA_17,
-    SCHEMA_18, SCHEMA_19, SCHEMA_20,
+    SCHEMA_18, SCHEMA_19, SCHEMA_20, SCHEMA_21,
 ];
 
 /// The order the queue starts tasks in: band, then a person's order, then age. A band the factory
@@ -556,6 +586,26 @@ pub fn watched(db: &Connection) -> rusqlite::Result<Vec<(String, String)>> {
     )?
     .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
     .collect()
+}
+
+/// Fires the disk waits the free disk that `free` measures satisfies; measures only while one is open.
+pub(crate) fn disk_due(
+    db: &mut Connection,
+    free: impl FnOnce() -> Option<u64>,
+) -> rusqlite::Result<()> {
+    let open = db
+        .query_row(
+            "SELECT 1 FROM waits WHERE kind = 'disk' AND fired IS NULL AND withdrawn IS NULL",
+            [],
+            |_| Ok(()),
+        )
+        .optional()?;
+    let Some(free) = open.and_then(|()| free()) else {
+        return Ok(());
+    };
+    let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    crate::tools::disk_due(&tx, free)?;
+    tx.commit()
 }
 
 /// The oldest active task that owns any of `resources`.
@@ -873,7 +923,8 @@ pub(crate) fn start(db: &mut Connection, run: &NewRun) -> rusqlite::Result<i64> 
     )?;
     let id = tx.last_insert_rowid();
     tx.execute(
-        "UPDATE tasks SET state = 'running', branch = ?2, worktree = ?3, reason = NULL, ending = ?4
+        "UPDATE tasks SET state = 'running', branch = ?2, worktree = ?3, reason = NULL, ending = ?4,
+           retired = NULL
          WHERE id = ?1",
         params![run.task, run.branch, run.worktree, run.ending],
     )?;

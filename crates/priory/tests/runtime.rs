@@ -2991,7 +2991,7 @@ fn an_unknown_condition_is_refused_and_nothing_is_stored() {
     assert!(error, "{text}");
     assert_eq!(
         text,
-        "unknown condition \"moon\": wait on pull_request, checks, review, time, task, linear_comment, linear_state or slack_reply"
+        "unknown condition \"moon\": wait on pull_request, checks, review, time, task, linear_comment, linear_state, slack_reply or disk"
     );
     std::thread::sleep(Duration::from_millis(1500));
     assert!(setup.rows("waits").is_empty());
@@ -5961,6 +5961,77 @@ fn a_run_waits_for_room_while_a_grant_holds_memory() {
     setup.until("tasks", |rows| rows[0][4] == "running");
 }
 
+/// Task 1 sleeps on pull request 7 with a commit on its branch, then the disk runs short while task
+/// 2 waits for room, so the disk stall sweeps.
+fn asleep_when_disk_runs_short(name: &str, spoil: impl FnOnce(&Setup)) -> (Setup, String) {
+    let setup = asleep_on(name, on_pull_7("pull_request"));
+    let commit = setup.commit(1, "widget.txt");
+    spoil(&setup);
+    setup.disk(10);
+    setup.publish(&requested(43));
+    setup.until_banner(|banner| banner.is_some());
+    (setup, commit)
+}
+
+#[test]
+fn a_clean_asleep_task_retires_when_disk_runs_short_and_resurrects_with_its_worktree_and_session() {
+    let (setup, commit) = asleep_when_disk_runs_short("retire", |setup| {
+        setup.calls(&[result("passed")]);
+    });
+    let session = setup.rows("runs")[0][4].clone();
+
+    setup.removed(1);
+
+    let tasks = setup.until("tasks", |rows| rows[0][10] != "-");
+    assert_eq!(tasks[0][4], "asleep");
+    assert!(setup.branches().contains("priory/1"));
+    let retired: Vec<_> = setup
+        .rows("desk")
+        .into_iter()
+        .filter(|row| row[1] == "retired")
+        .map(|row| [row[2].clone(), row[5].clone()])
+        .collect();
+    assert_eq!(
+        retired,
+        [[
+            "1".to_owned(),
+            "its worktree was removed to free disk; it resurrects from priory/1 when its wait fires"
+                .to_owned()
+        ]]
+    );
+
+    setup.disk(100);
+    setup.until("tasks", |rows| rows[1][4] == "done");
+    setup.publish(&closed());
+
+    setup.until("outbox", |rows| {
+        rows.iter()
+            .any(|row| row[2] == "3" && row[3] == "confirmed")
+    });
+    assert_eq!(setup.rows("tasks")[0][10], "-");
+    let head = setup.git(&setup.worktree(1), &["rev-parse", "HEAD"]);
+    assert_eq!(head.trim(), commit);
+    let runs = setup.rows("runs");
+    assert_eq!([&runs[2][1], &runs[2][4]], ["1", &session]);
+    let args = fs::read_to_string(setup.dir.join("fake/args.log")).unwrap();
+    assert!(args.contains(&format!("--resume\n{session}\n")), "{args}");
+}
+
+#[test]
+fn a_dirty_asleep_task_never_retires_and_says_why() {
+    let (setup, _) = asleep_when_disk_runs_short("retire-dirty", |setup| {
+        fs::write(setup.worktree(1).join("notes.txt"), "x\n").unwrap();
+    });
+
+    let tasks = setup.until("tasks", |rows| rows[0][7] != "-");
+
+    assert_eq!(
+        [&tasks[0][4], &tasks[0][7], &tasks[0][10]],
+        ["asleep", "cannot retire: untracked files", "-"]
+    );
+    assert!(setup.worktree(1).join("notes.txt").exists());
+}
+
 #[test]
 fn a_task_that_waited_on_a_linear_issue_is_done_on_its_result_without_a_pull_request() {
     let mut setup = Setup::new("linear-done");
@@ -6011,4 +6082,73 @@ fn a_linear_comment_no_task_owned_before_the_wait_wakes_the_task_at_once() {
         "{:?}",
         setup.typed()
     );
+}
+
+#[test]
+fn a_free_disk_wait_fires_when_room_comes_back() {
+    let mut setup = Setup::new("disk-wait");
+    setup.disk(30);
+    setup.calls(&[wait(json!({ "type": "disk", "gb": 50 }))]);
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("runs", |rows| {
+        rows.first().is_some_and(|row| row[7] == "asleep")
+    });
+    assert_eq!(setup.rows("waits")[0][3..5], ["disk", "50.0 GB free"]);
+    stays_asleep(&setup);
+
+    setup.disk(60);
+
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 2);
+    assert_eq!(
+        setup.typed()[1],
+        "wait 1 fired: 60.0 GB of disk free\nEnd this step by calling the result tool of the priory MCP server with one of these outcomes: failed, passed.\n"
+    );
+}
+
+#[test]
+fn a_revive_into_a_code_step_recreates_a_swept_worktree() {
+    let mut setup = Setup::with_workflow("revive-code-step", AUTONOMOUS);
+    let mut failed = passed_with_evidence();
+    failed["arguments"]["outcome"] = json!("failed");
+    setup.calls(&[failed]);
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == "dropped")
+    });
+    setup.gone("priory-1");
+    let commit = setup.commit(1, "widget.txt");
+    setup.git(
+        &setup.clone(),
+        &["worktree", "remove", setup.worktree(1).to_str().unwrap()],
+    );
+
+    let revived = setup.priory(&["revive", "1", "--step", "open-pr"]);
+
+    assert!(revived.status.success(), "{revived:?}");
+    let actions = setup.until("actions", |rows| rows.len() == 1);
+    assert_eq!(actions[0][4..7], ["opened", "github:owner/repo#7", &commit]);
+    assert_eq!(setup.pushed("priory/1"), commit);
+}
+
+#[test]
+fn an_approval_answered_while_retired_opens_the_pull_request_once_disk_allows() {
+    let mut setup = asked_to_open("retire-approval", OPEN_PR);
+    let commit = setup.commit(1, "widget.txt");
+    setup.crash();
+    setup.disk(10);
+    setup.start();
+    setup.removed(1);
+
+    let answered = setup.priory(&["answer", "1", "open", "--revision", "1"]);
+
+    assert!(answered.status.success(), "{answered:?}");
+    setup.until("tasks", |rows| {
+        rows[0][4] == "ready" && rows[0][7] == "waits for room to add back its worktree"
+    });
+    assert!(setup.rows("actions").is_empty());
+    setup.disk(100);
+    let actions = setup.until("actions", |rows| rows.len() == 1);
+    assert_eq!(actions[0][4..7], ["opened", "github:owner/repo#7", &commit]);
 }
