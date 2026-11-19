@@ -1264,6 +1264,8 @@ struct Linear {
     view: Vec<serde_json::Value>,
     issues: Vec<serde_json::Value>,
     comments: Vec<serde_json::Value>,
+    /// The issues that the updated issues block, as the `Blocked` query reads them by id.
+    blocked: Vec<serde_json::Value>,
 }
 
 impl Setup {
@@ -1284,25 +1286,26 @@ impl Setup {
     /// Makes the fake `curl` answer Linear's GraphQL queries from `linear`, and record its
     /// arguments and standard input.
     fn answer_linear(&self, linear: &Linear) {
-        let page = |field: &str, nodes: &[serde_json::Value]| {
+        let page = |name: &str, field: &str, nodes: &[serde_json::Value]| {
             let answer = match field {
                 "customView" => json!({ "data": { "customView": { "issues": {
                     "nodes": nodes, "pageInfo": { "hasNextPage": false, "endCursor": null } } } } }),
                 field => json!({ "data": { field: {
                     "nodes": nodes, "pageInfo": { "hasNextPage": false, "endCursor": null } } } }),
             };
-            let file = self.dir.join(format!("linear-{field}.json"));
+            let file = self.dir.join(format!("linear-{name}.json"));
             write(&file, &answer.to_string());
             file.display().to_string()
         };
         let script = format!(
             "#!/bin/sh\necho \"$*\" >> '{dir}/curl-args'\ncat >> '{dir}/curl-stdin'\n\
              case \"$*\" in\n  *'query View'*) cat '{view}' ;;\n  *'query Issues'*) cat '{issues}' ;;\n\
-             *'query Comments'*) cat '{comments}' ;;\n  *) echo 'unexpected query' >&2; exit 2 ;;\nesac\n",
+             *'query Comments'*) cat '{comments}' ;;\n  *'query Blocked'*) cat '{blocked}' ;;\n  *) echo 'unexpected query' >&2; exit 2 ;;\nesac\n",
             dir = self.dir.display(),
-            view = page("customView", &linear.view),
-            issues = page("issues", &linear.issues),
-            comments = page("comments", &linear.comments),
+            view = page("customView", "customView", &linear.view),
+            issues = page("issues", "issues", &linear.issues),
+            comments = page("comments", "comments", &linear.comments),
+            blocked = page("blocked", "issues", &linear.blocked),
         );
         let curl = self.dir.join("bin/curl");
         write(&curl, &script);
@@ -1330,7 +1333,8 @@ fn linear_issue(number: u64) -> serde_json::Value {
         "state": { "name": "Todo" },
         "labels": { "nodes": [{ "name": "agent" }] },
         "creator": { "displayName": "max" },
-        "history": { "nodes": [] }
+        "history": { "nodes": [] },
+        "inverseRelations": { "nodes": [], "pageInfo": { "hasNextPage": false } }
     })
 }
 
@@ -1634,6 +1638,7 @@ fn a_state_change_that_matches_a_filter_requests_a_task_once() {
             "team": "ENG",
             "state": "In Progress",
             "labels": ["agent"],
+            "blockers": [],
             "from": "Todo",
             "to": "In Progress",
             "actor": "max",
@@ -1845,5 +1850,110 @@ fn a_restart_after_a_crash_at_the_same_instant_keeps_the_events_already_handled(
             .filter(|stored| stored.message.data["linear_id"] == "comment-a")
             .count(),
         1
+    );
+}
+
+/// `issue`, blocked by each of `blockers`, an identifier and its state type, and related to ENG-5.
+fn blocked_by(
+    mut issue: serde_json::Value,
+    blockers: &[(&str, &str)],
+    more: bool,
+) -> serde_json::Value {
+    let mut nodes: Vec<_> = blockers
+        .iter()
+        .map(|(identifier, state)| {
+            json!({ "type": "blocks", "issue": { "identifier": identifier, "state": { "type": state } } })
+        })
+        .collect();
+    nodes.push(json!({ "type": "related", "issue": { "identifier": "ENG-5", "state": { "type": "started" } } }));
+    issue["inverseRelations"] = json!({ "nodes": nodes, "pageInfo": { "hasNextPage": more } });
+    issue
+}
+
+#[test]
+fn a_blocker_that_changes_publishes_the_open_blockers_of_the_issue_it_blocks() {
+    let setup = Setup::linear("linear-blockers", &[("started", STATE_TRIGGER)]);
+    setup.answer_linear(&Linear {
+        issues: vec![linear_issue(1)],
+        ..Linear::default()
+    });
+    succeeded(&setup.intake());
+    let time = "2026-11-17T11:00:00.000Z";
+    let mut blocker = moved(3, "history-3", "Done", time);
+    blocker["relations"] = json!({ "nodes": [
+        { "type": "blocks", "relatedIssue": { "id": "issue-7" } },
+        { "type": "related", "relatedIssue": { "id": "issue-9" } },
+        { "type": "blocks", "relatedIssue": { "id": "issue-8" } }
+    ] });
+    let mut blocked = vec![
+        blocked_by(
+            linear_issue(7),
+            &[("ENG-3", "completed"), ("ENG-4", "started")],
+            false,
+        ),
+        blocked_by(linear_issue(8), &[("ENG-3", "completed")], true),
+    ];
+    // Linear answers a filter by id in its own order.
+    blocked.reverse();
+    setup.answer_linear(&Linear {
+        issues: vec![blocker],
+        blocked,
+        ..Linear::default()
+    });
+
+    succeeded(&setup.intake());
+    succeeded(&setup.intake());
+
+    let published = setup.published();
+    assert_eq!(
+        kinds(&published),
+        [
+            "linear.issue.created",
+            "linear.issue.state_changed",
+            "linear.issue.blockers",
+            "linear.issue.blockers"
+        ]
+    );
+    assert_eq!(published[1].message.data["blockers"], json!([]));
+    // A blocker list past its first page could hide an open blocker, so it reads as unknown.
+    assert_eq!(published[3].message.data["blockers"], json!(null));
+    let blockers = &published[2].message;
+    assert_eq!(blockers.subject.as_deref(), Some("ENG-7"));
+    assert_eq!(
+        blockers.data,
+        json!({
+            "issue": "ENG-7",
+            "linear_id": "issue-7",
+            "title": "Fix the thing",
+            "url": "https://linear.app/acme/issue/ENG-7/fix-the-thing",
+            "team": "ENG",
+            "state": "Todo",
+            "labels": ["agent"],
+            "blockers": ["ENG-4"],
+            "blocker": "ENG-3",
+            "time": time,
+            "baseline": false,
+            "triggers": []
+        })
+    );
+}
+
+#[test]
+fn a_trigger_with_a_hold_files_its_tasks_held() {
+    let trigger =
+        format!("{VIEW_TRIGGER}hold = {{ reason = \"triage first\", blockers = true }}\n");
+    let setup = Setup::linear("linear-hold", &[("agent-ready", &trigger)]);
+    succeeded(&setup.intake());
+    setup.answer_linear(&Linear {
+        view: vec![linear_issue(7)],
+        ..Linear::default()
+    });
+
+    succeeded(&setup.intake());
+
+    let task = &setup.published()[1].message;
+    assert_eq!(
+        task.data["hold"],
+        json!({ "reason": "triage first", "blockers": true })
     );
 }

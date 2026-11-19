@@ -4283,6 +4283,248 @@ fn a_cost_report_keeps_a_model_step_whose_tokens_are_unknown_and_marks_its_total
     );
 }
 
+/// Runs `priory <verb> <args>` and returns its stdout, failing on a non-zero exit.
+fn person(setup: &Setup, verb: &str, args: &[&str]) -> String {
+    let output = setup.priory(&[&[verb], args].concat());
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8(output.stdout).unwrap()
+}
+
+/// A running daemon with task 1 queued, which no run can start until memory comes back.
+fn queued_without_room(name: &str) -> Setup {
+    let mut setup = Setup::new(name);
+    setup.memory(0);
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("tasks", |rows| rows.len() == 1);
+    setup
+}
+
+/// The state and reason of task `id`.
+fn held_as(setup: &Setup, id: &str) -> [String; 2] {
+    let tasks = setup.rows("tasks");
+    let row = tasks.iter().find(|row| row[0] == id).unwrap();
+    [row[4].clone(), row[7].clone()]
+}
+
+#[test]
+fn a_held_task_never_starts_until_a_person_releases_it() {
+    let setup = queued_without_room("hold-person");
+
+    let reply = person(
+        &setup,
+        "hold",
+        &["1", "--reason", "waits for the design review"],
+    );
+    setup.memory(60);
+    std::thread::sleep(Duration::from_millis(2100));
+
+    let reason = "held: waits for the design review, until a person releases it";
+    assert_eq!(reply, format!("task 1 {reason}\n"));
+    assert_eq!(held_as(&setup, "1"), ["held", reason]);
+    assert!(setup.rows("runs").is_empty());
+    let desk = setup.rows("desk");
+    let held: Vec<_> = desk.iter().map(|row| &row[1..]).collect();
+    assert_eq!(held, [["held", "1", "1", "none/misc", reason, "1"]]);
+
+    assert_eq!(person(&setup, "release", &["1"]), "task 1 is queued\n");
+    setup.until("tasks", |rows| rows[0][4] == "running");
+}
+
+#[test]
+fn a_time_hold_releases_the_task_once_its_time_passes() {
+    let setup = queued_without_room("hold-time");
+    let past = person(
+        &setup,
+        "hold",
+        &["1", "--reason", "late", "--until", "2000-01-01T00:00:00Z"],
+    );
+    assert_eq!(
+        past,
+        "task 1 held: late, until 2000-01-01T00:00:00.000Z; released at once: 2000-01-01T00:00:00.000Z passed\n"
+    );
+    assert_eq!(held_as(&setup, "1")[0], "queued");
+    setup.memory(60);
+
+    let reply = person(
+        &setup,
+        "hold",
+        &["1", "--reason", "after lunch", "--until", "2 seconds"],
+    );
+
+    assert!(
+        reply.starts_with("task 1 held: after lunch, until 20"),
+        "{reply}"
+    );
+    assert_eq!(held_as(&setup, "1")[0], "held");
+    setup.until("tasks", |rows| rows[0][4] == "running");
+}
+
+#[test]
+fn a_task_hold_releases_the_task_when_the_other_task_ends() {
+    let mut setup = Setup::new("hold-task");
+    setup.memory(12);
+    setup.hold("hold-stop");
+    setup.calls(&[result("passed")]);
+    setup.publish(&requested(42));
+    setup.publish(&requested(43));
+    setup.start();
+    setup.until("tasks", |rows| rows.len() == 2 && rows[0][4] == "running");
+
+    let reply = person(
+        &setup,
+        "hold",
+        &["2", "--reason", "same files", "--after", "1"],
+    );
+    setup.release("hold-stop");
+
+    assert_eq!(reply, "task 2 held: same files, until task 1 ends\n");
+    setup.until("tasks", |rows| {
+        with(rows, 4, "done") == 1 && with(rows, 4, "running") == 1
+    });
+}
+
+#[test]
+fn a_running_task_cannot_be_held() {
+    let mut setup = Setup::new("hold-running");
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == "running")
+    });
+
+    let refused = setup.priory(&["hold", "1", "--reason", "too late"]);
+
+    assert!(!refused.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&refused.stderr),
+        "priory hold: task 1 is running: only a queued or ready task can be held\n"
+    );
+}
+
+/// Pull request 7 closed, from a branch no task owns.
+fn closed_7(merged: bool, github_id: u64) -> Message {
+    on_pull(
+        "github.pull_request.closed",
+        json!({ "merged": merged, "github_id": github_id, "head_branch": "feature" }),
+    )
+}
+
+#[test]
+fn a_merge_hold_releases_the_task_when_its_pull_request_merges() {
+    let setup = queued_without_room("hold-merge");
+    let reply = person(
+        &setup,
+        "hold",
+        &["1", "--reason", "needs the schema", "--merge", "7"],
+    );
+    setup.memory(60);
+    std::thread::sleep(Duration::from_millis(1100));
+    assert_eq!(held_as(&setup, "1")[0], "held");
+
+    setup.publish(&closed_7(true, 400));
+
+    assert_eq!(
+        reply,
+        "task 1 held: needs the schema, until github:owner/repo#7 merges, and asks if it closes unmerged\n"
+    );
+    setup.until("tasks", |rows| rows[0][4] == "running");
+}
+
+#[test]
+fn a_pull_request_closed_unmerged_drops_or_asks_as_its_hold_says() {
+    let setup = queued_without_room("hold-closed");
+    setup.publish(&requested(43));
+    setup.until("tasks", |rows| rows.len() == 2);
+    let merge = ["--merge", "owner/repo#7", "--if-closed"];
+    person(
+        &setup,
+        "hold",
+        &[&["1", "--reason", "a"], &merge[..], &["drop"]].concat(),
+    );
+    person(
+        &setup,
+        "hold",
+        &[&["2", "--reason", "b"], &merge[..], &["ask"]].concat(),
+    );
+
+    setup.publish(&closed_7(false, 400));
+
+    setup.until("tasks", |rows| rows[0][4] == "dropped");
+    assert_eq!(
+        held_as(&setup, "1"),
+        ["dropped", "github:owner/repo#7 closed without a merge"]
+    );
+    let asks = setup.until("asks", |rows| rows.len() == 1);
+    assert_eq!(
+        asks[0][1..],
+        [
+            "2",
+            "1",
+            "Pull request github:owner/repo#7 closed without a merge, and task 2 was held until it merged: b. Release the task, or drop it?",
+            r#"["release","drop"]"#
+        ]
+    );
+    assert_eq!(held_as(&setup, "2")[0], "held");
+
+    person(
+        &setup,
+        "answer",
+        &[&asks[0][0], "release", "--revision", "1"],
+    );
+
+    // The next tick gives the released task its reason to wait for room.
+    assert_eq!(held_as(&setup, "2")[0], "queued");
+}
+
+/// A Linear event about ENG-7 whose open blockers are `blockers`.
+fn linear_7(kind: &str, blockers: &[&str]) -> Message {
+    Message::new(
+        kind,
+        json!({ "issue": "ENG-7", "linear_id": "issue-7", "state": "Todo", "blockers": blockers }),
+    )
+    .subject("ENG-7")
+}
+
+#[test]
+fn a_blockers_hold_releases_the_task_when_its_issue_has_no_open_blocker_left() {
+    let mut setup = Setup::new("hold-blockers");
+    setup.memory(0);
+    // A view event carries no blockers: the hold waits for an event that does.
+    let mut source = linear_7("linear.issue.entered", &[]);
+    source.data.as_object_mut().unwrap().remove("blockers");
+    let mut request = requested(42);
+    request.data["key"] = json!("linear:ENG-7");
+    request.data["source"] = json!(source.id.to_string());
+    setup.publish(&source);
+    setup.publish(&request);
+    setup.publish(&requested(43));
+    setup.start();
+    setup.until("tasks", |rows| rows.len() == 2);
+
+    let reply = person(&setup, "hold", &["1", "--reason", "blocked", "--blockers"]);
+    let refused = setup.priory(&["hold", "2", "--reason", "blocked", "--blockers"]);
+    setup.memory(60);
+    setup.publish(&linear_7("linear.issue.blockers", &["ENG-4"]));
+    std::thread::sleep(Duration::from_millis(1100));
+    assert_eq!(held_as(&setup, "1")[0], "held");
+    setup.publish(&linear_7("linear.issue.blockers", &[]));
+
+    assert_eq!(
+        reply,
+        "task 1 held: blocked, until linear:ENG-7 has no open blocker\n"
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&refused.stderr),
+        "priory hold: task 2 comes from no Linear issue, so Priory cannot see its blockers\n"
+    );
+    setup.until("tasks", |rows| rows[0][4] == "running");
+}
+
 const REVIVED: &str = "A person revived this task as generation 2 after it was dropped. The asks and waits of its earlier generation are withdrawn. Check the worktree, then continue.\nPlan the change.\nEnd this step by calling the result tool of the priory MCP server with one of these outcomes: hopeless, ready, unsure.\n";
 
 #[test]

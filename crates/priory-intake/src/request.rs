@@ -1,6 +1,6 @@
 use crate::intake::{self, OUTPUT, TASK_REQUESTED};
 use herdr_bus::{Bus, Message, Timestamp};
-use priory_factory::factory::Factory;
+use priory_factory::factory::{Factory, Hold};
 use serde_json::json;
 use std::path::PathBuf;
 
@@ -13,11 +13,15 @@ pub struct Request {
     band: Option<String>,
     lane: Option<String>,
     repo: Option<String>,
+    hold: Option<Hold>,
     text: String,
 }
 
 pub fn parse(args: Vec<String>) -> Option<(PathBuf, Request)> {
     let (mut workflow, mut key, mut band, mut lane, mut repo) = (None, None, None, None, None);
+    let (mut reason, mut until, mut after, mut merge, mut if_closed) =
+        (None, None, None, None, None);
+    let mut blockers = false;
     let mut positional = vec![];
     let mut args = args.into_iter();
     while let Some(arg) = args.next() {
@@ -31,6 +35,15 @@ pub fn parse(args: Vec<String>) -> Option<(PathBuf, Request)> {
             "--band" => &mut band,
             "--lane" => &mut lane,
             "--repo" => &mut repo,
+            "--hold" => &mut reason,
+            "--until" => &mut until,
+            "--after" => &mut after,
+            "--merge" => &mut merge,
+            "--if-closed" => &mut if_closed,
+            "--blockers" => {
+                blockers = true;
+                continue;
+            }
             _ => {
                 positional.push(arg);
                 continue;
@@ -45,12 +58,26 @@ pub fn parse(args: Vec<String>) -> Option<(PathBuf, Request)> {
             (PathBuf::from(dir), text)
         }
     };
+    let conditions = until.is_some() || after.is_some() || merge.is_some() || blockers;
+    let hold = match reason {
+        Some(reason) => Some(Hold {
+            reason,
+            until,
+            after: after.map(|after| after.parse()).transpose().ok()?,
+            merge,
+            if_closed,
+            blockers,
+        }),
+        None if conditions || if_closed.is_some() => return None,
+        None => None,
+    };
     let request = Request {
         workflow: workflow?,
         key: key?,
         band,
         lane,
         repo,
+        hold,
         text,
     };
     Some((dir, request))
@@ -81,7 +108,7 @@ pub fn run(factory: &Factory, request: &Request) -> Result<(), String> {
         )))
         .subject(&key)
         .time(time);
-    let data = json!({
+    let mut data = json!({
         "workflow": request.workflow,
         "key": key,
         "band": request.band,
@@ -89,6 +116,9 @@ pub fn run(factory: &Factory, request: &Request) -> Result<(), String> {
         "trigger": TRIGGER,
         "source": source.id.to_string(),
     });
+    if let Some(hold) = &request.hold {
+        data["hold"] = json!(hold);
+    }
     let task = Message::new(TASK_REQUESTED, data)
         .id(intake::id(&format!(
             "{TASK_REQUESTED}:{TRIGGER}:{}",

@@ -155,6 +155,30 @@ pub struct Trigger {
     pub timezone: Option<jiff::tz::TimeZone>,
     /// What a schedule's firing tells the task it wakes.
     pub prompt: Option<String>,
+    /// Files each task held, so it waits for a person or a condition before it starts.
+    pub hold: Option<Hold>,
+}
+
+/// Why a task is held, and at most one condition that releases it. With none, a person does.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Hold {
+    pub reason: String,
+    /// An RFC 3339 instant, or a duration such as `2 hours` after the hold.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub until: Option<String>,
+    /// Another task's id: the hold lasts until it ends.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub after: Option<i64>,
+    /// A pull request, `owner/name#42` or `42` in the task's repository: until it merges.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub merge: Option<String>,
+    /// What a pull request closed without a merge does: `release`, `drop` or `ask`, the default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub if_closed: Option<String>,
+    /// Until the task's Linear issue has no open blocker.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub blockers: bool,
 }
 
 /// The end of a schedule's day of firings: a time of day, or a duration after `at`.

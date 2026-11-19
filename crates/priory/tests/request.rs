@@ -270,3 +270,54 @@ fn a_second_request_for_a_key_is_kept_on_its_task() {
     assert_eq!(outcomes[2][3..], ["1", "kept"]);
     assert_eq!(setup.tasks().len(), 1);
 }
+
+#[test]
+fn a_request_with_a_hold_files_its_task_held() {
+    let setup = Setup::new("held");
+    let request = ["--workflow", "implement", "--key"];
+    succeeded(
+        &setup.request(
+            &[
+                &request[..],
+                &["docs-1", "--hold", "after the release"],
+                &["--until", "2030-01-01T00:00:00Z", "Fix the docs"],
+            ]
+            .concat(),
+        ),
+    );
+    succeeded(
+        &setup.request(
+            &[
+                &request[..],
+                &["docs-2", "--hold", "later", "--after", "99", "Fix more"],
+            ]
+            .concat(),
+        ),
+    );
+    let factory = setup.dir.join("factory");
+
+    succeeded(&setup.priory(&["daemon", factory.to_str().unwrap(), "--once"]));
+
+    assert_eq!(
+        setup.published()[1].message.data["hold"],
+        json!({ "reason": "after the release", "until": "2030-01-01T00:00:00Z" })
+    );
+    let tasks: Vec<_> = setup
+        .tasks()
+        .into_iter()
+        .map(|row| [row[4].clone(), row[7].clone()])
+        .collect();
+    assert_eq!(
+        tasks,
+        [
+            [
+                "held",
+                "held: after the release, until 2030-01-01T00:00:00.000Z"
+            ],
+            [
+                "held",
+                "held: later, until a person releases it, since its condition failed: after must name another task, not 99"
+            ]
+        ]
+    );
+}

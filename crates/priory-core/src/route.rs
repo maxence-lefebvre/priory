@@ -28,6 +28,8 @@ pub(crate) struct NewTask {
     pub lane_derived: bool,
     pub trigger: String,
     pub source: String,
+    #[serde(default)]
+    pub hold: Option<priory_factory::factory::Hold>,
 }
 
 /// The resources a message names, which a task may own: a task request's key, a CLI request's
