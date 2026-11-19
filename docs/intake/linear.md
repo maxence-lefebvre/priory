@@ -6,7 +6,8 @@ A `source = "linear.view"` trigger names a saved view by its id or by the slug i
 starts on `issue.entered` or `issue.left`. A `source = "linear"` trigger starts on `issue.created`,
 `issue.state_changed` or `comment.created`. It may filter on `team` (a team key), `label` (one label
 of the issue) and `state` (the state an issue moved to, or the issue's state for the other two).
-Both take `backfill`. Their `key`, when set, is `issue.identifier`.
+Both take `backfill`. Their `key`, when set, is `issue.identifier`. Either may name the `repo`,
+`owner/name`, that its tasks work in. Without one, its tasks block before their first run.
 
 | Type                         | One message per                                                  |
 | ---------------------------- | ---------------------------------------------------------------- |

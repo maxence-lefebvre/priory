@@ -10,7 +10,7 @@ use std::collections::BTreeMap;
 use std::io::Write;
 use std::time::Duration;
 
-const VERSION: i64 = 23;
+const VERSION: i64 = 24;
 
 const SCHEMA: &str = "
 CREATE TABLE tasks (
@@ -394,11 +394,19 @@ AND EXISTS (
     AND mid.id > typed.id AND mid.id < heir.id AND mid.ended_as IS NOT 'moved'));
 PRAGMA user_version = 23;
 ";
+
+const SCHEMA_24: &str = "
+ALTER TABLE tasks ADD COLUMN repo TEXT;
+UPDATE tasks SET repo = (SELECT json_extract(inbox.data, '$.repo') FROM inbox
+  WHERE inbox.id = tasks.source AND inbox.type = 'priory.task.requested.cli')
+  WHERE trigger = 'cli';
+PRAGMA user_version = 24;
+";
 /// Each schema change in order: a file at version `n` applies those from index `n` on.
 const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA, SCHEMA_2, SCHEMA_3, SCHEMA_4, SCHEMA_5, SCHEMA_6, SCHEMA_7, SCHEMA_8, SCHEMA_9,
     SCHEMA_10, SCHEMA_11, SCHEMA_12, SCHEMA_13, SCHEMA_14, SCHEMA_15, SCHEMA_16, SCHEMA_17,
-    SCHEMA_18, SCHEMA_19, SCHEMA_20, SCHEMA_21, SCHEMA_22, SCHEMA_23,
+    SCHEMA_18, SCHEMA_19, SCHEMA_20, SCHEMA_21, SCHEMA_22, SCHEMA_23, SCHEMA_24,
 ];
 
 /// The order the queue starts tasks in: band, then a person's order, then age. A band the factory
@@ -485,8 +493,8 @@ pub(crate) fn handle(
         Decision::Create(new) => {
             tx.execute(
                 "INSERT INTO tasks
-                   (key, workflow, step, state, band, lane, team, project, lane_derived, trigger, source, entered)
-                 VALUES (?1, ?2, ?3, 'queued', ?4, ?5, ?6, ?7, ?8, ?9, ?10, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))",
+                   (key, workflow, step, state, band, lane, team, project, lane_derived, trigger, source, repo, entered)
+                 VALUES (?1, ?2, ?3, 'queued', ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))",
                 params![
                     new.key,
                     new.workflow,
@@ -497,7 +505,8 @@ pub(crate) fn handle(
                     new.project,
                     new.lane_derived,
                     new.trigger,
-                    new.source
+                    new.source,
+                    new.repo
                 ],
             )?;
             let id = tx.last_insert_rowid();
@@ -619,8 +628,11 @@ pub(crate) fn due(db: &mut Connection) -> rusqlite::Result<()> {
 /// The resource and the agent's last prompt of each open wait that the intake polls for.
 pub fn watched(db: &Connection) -> rusqlite::Result<Vec<(String, String)>> {
     db.prepare(
-        "SELECT resource, since FROM waits WHERE fired IS NULL AND withdrawn IS NULL
-         AND kind IN ('linear_comment', 'linear_state', 'slack_reply') ORDER BY id",
+        "SELECT waits.resource, coalesce(waits.since, waits.created) FROM waits
+         JOIN tasks ON tasks.id = waits.task AND tasks.state NOT IN ('done', 'failed', 'dropped')
+         WHERE waits.fired IS NULL AND waits.withdrawn IS NULL
+         AND waits.kind IN ('linear_comment', 'linear_state', 'slack_reply', 'pull_request', 'checks', 'review')
+         ORDER BY waits.id",
     )?
     .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
     .collect()
@@ -725,6 +737,7 @@ pub(crate) struct Admission {
     pub workflow: String,
     pub step: String,
     pub trigger: String,
+    pub repo: Option<String>,
     /// Queued, not ready: its run is the task's first and gets the step's prompt.
     pub fresh: bool,
 }
@@ -738,7 +751,7 @@ pub(crate) fn admissible<'r>(
     room: impl Fn() -> &'r Result<Room, String>,
 ) -> rusqlite::Result<Option<Admission>> {
     let mut statement = db.prepare(&format!(
-        "SELECT id, workflow, step, trigger, state = 'queued' FROM tasks
+        "SELECT id, workflow, step, trigger, state = 'queued', repo FROM tasks
              WHERE state IN ('queued', 'ready') ORDER BY {START_ORDER}"
     ))?;
     let queued = statement
@@ -749,6 +762,7 @@ pub(crate) fn admissible<'r>(
                 step: row.get(2)?,
                 trigger: row.get(3)?,
                 fresh: row.get(4)?,
+                repo: row.get(5)?,
             })
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -858,6 +872,7 @@ pub(crate) struct Due {
     pub workflow: String,
     pub step: String,
     pub trigger: String,
+    pub repo: Option<String>,
     pub branch: Option<String>,
     pub worktree: Option<String>,
 }
@@ -868,7 +883,7 @@ pub(crate) fn actionable(
     workflows: &BTreeMap<String, Loaded<Workflow>>,
 ) -> rusqlite::Result<Option<Due>> {
     let mut statement = db.prepare(
-        "SELECT id, workflow, step, trigger, branch, worktree FROM tasks
+        "SELECT id, workflow, step, trigger, branch, worktree, repo FROM tasks
          WHERE state IN ('queued', 'ready') ORDER BY id",
     )?;
     let tasks = statement.query_map([], |row| {
@@ -879,6 +894,7 @@ pub(crate) fn actionable(
             trigger: row.get(3)?,
             branch: row.get(4)?,
             worktree: row.get(5)?,
+            repo: row.get(6)?,
         })
     })?;
     for due in tasks {

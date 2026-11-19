@@ -18,12 +18,13 @@ message creates a task.
 | `project`  | string, absent or null | The Linear issue's project name, or null when it has none. Absent when the source is not a Linear event |
 | `trigger`  | string         | The trigger's name: its file name without the extension      |
 | `source`   | UUID string    | The `id` of the source event's message, on the same output   |
+| `repo`     | string, absent or null | The repository the task works in, `owner/name`. `priory request --repo` sets it; without it the daemon uses the trigger's `repo` |
 | `hold`     | object         | Optional: files the task held. The trigger's `hold`, or `priory request --hold` |
 
 `hold` holds the new task before it can start, as `priory hold` does (see Holds in
 `docs/daemon/runs.md`). It has a `reason` and at most one condition: `until`, an RFC 3339 instant or a
 duration such as `2 hours`; `after`, another task's id; `merge`, a pull request as `owner/name#42`
-or `42` in the trigger's repository, with `if_closed` set to `release`, `drop` or `ask`, the
+or `42` in the task's repository, with `if_closed` set to `release`, `drop` or `ask`, the
 default; or `blockers: true`. A trigger sets it as a table, such as
 `hold = { reason = "triage first", blockers = true }`. A condition the daemon cannot use, such as `blockers` on
 a GitHub issue, leaves the task held for a person, with the error in its reason.

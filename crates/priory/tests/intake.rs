@@ -320,6 +320,43 @@ fn a_failing_gh_exits_non_zero_and_publishes_nothing() {
 }
 
 #[test]
+fn a_failing_repository_still_lets_the_others_publish() {
+    let setup = Setup::new("gh-one-fails", &[]);
+    write(
+        &setup.dir.join("factory/triggers/other.toml"),
+        &TRIGGER.replace("owner/repo", "other/repo"),
+    );
+    let events = setup.dir.join("other-events.json");
+    write(
+        &events,
+        &json!([labeled(100, 41, "agent")])
+            .to_string()
+            .replace("owner/repo", "other/repo"),
+    );
+    Setup::fake_gh(
+        &setup.dir,
+        &format!(
+            "#!/bin/sh\ncase \"$*\" in\n  *owner/repo*) echo 'HTTP 404: Not Found' >&2; exit 1 ;;\n  *other/repo/issues/events*) cat '{}' ;;\n  *) echo '[]' ;;\nesac\n",
+            events.display()
+        ),
+    );
+
+    let output = setup.intake();
+
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(
+        String::from_utf8_lossy(&output.stderr),
+        format!("priory intake: gh api {EVENTS_PATH} failed: HTTP 404: Not Found\n")
+    );
+    let subjects: Vec<_> = setup
+        .published()
+        .into_iter()
+        .map(|stored| stored.message.subject.unwrap_or_default())
+        .collect();
+    assert_eq!(subjects, ["other/repo#41"]);
+}
+
+#[test]
 fn a_backfill_trigger_requests_tasks_for_the_first_poll() {
     let setup = Setup::new(
         "opened",
@@ -1093,6 +1130,32 @@ fn tasks(setup: &Setup) -> Vec<Message> {
         .map(|stored| stored.message)
         .filter(|message| message.kind == "factory.task.requested")
         .collect()
+}
+
+#[test]
+fn a_schedule_triggers_repository_is_polled_without_a_github_trigger() {
+    let setup = Setup::new(
+        "schedule-repo",
+        &[(
+            "repos/other/repo/issues/events",
+            json!([labeled(100, 41, "bug")]),
+        )],
+    );
+    fs::remove_file(setup.dir.join("factory/triggers/agent-label.toml")).unwrap();
+    write(
+        &setup.dir.join("factory/triggers/standup.toml"),
+        &SCHEDULE.replace("owner/repo", "other/repo"),
+    );
+
+    succeeded(&setup.intake_at("2026-11-19T07:00:00Z"));
+
+    let repos: Vec<_> = setup
+        .output()
+        .into_iter()
+        .filter(|stored| stored.message.kind == "factory.intake.baseline")
+        .map(|stored| stored.message.data["repo"].clone())
+        .collect();
+    assert!(repos.contains(&json!("other/repo")), "{repos:?}");
 }
 
 #[test]
@@ -2077,6 +2140,32 @@ impl Setup {
 
 fn slack_message(ts: &str, user: &str, text: &str) -> serde_json::Value {
     json!({ "type": "message", "ts": ts, "user": user, "text": text })
+}
+
+#[test]
+fn a_failing_slack_channel_still_lets_the_others_publish() {
+    let left = SLACK_TRIGGER.replace("C0123", "C0999");
+    let setup = Setup::linear(
+        "slack-one-fails",
+        &[("deploys", SLACK_TRIGGER), ("left", &left)],
+    );
+    setup.answer_slack(&[slack_message("1763500000.000100", "U0PERSON", "deploy")]);
+    let curl = setup.dir.join("bin/curl");
+    let script = fs::read_to_string(&curl).unwrap().replace(
+        "case \"$*\" in\n",
+        "case \"$*\" in\n  *channel=C0999*) echo '{\"ok\":false,\"error\":\"not_in_channel\"}' ;;\n",
+    );
+    write(&curl, &script);
+
+    let output = setup.slack_intake();
+
+    assert_eq!(output.status.code(), Some(1));
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("not_in_channel"),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(kinds(&setup.published()), ["slack.message.posted"]);
 }
 
 #[test]

@@ -115,6 +115,7 @@ pub fn run(factory: &Factory, request: &Request) -> Result<(), String> {
         "lane": request.lane,
         "trigger": TRIGGER,
         "source": source.id.to_string(),
+        "repo": request.repo,
     });
     if let Some(hold) = &request.hold {
         data["hold"] = json!(hold);

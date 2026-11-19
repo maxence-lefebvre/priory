@@ -4,8 +4,9 @@ A run is one task step worked by one agent's `claude` process. A model step that
 model step with the same agent carries the process on into a new run, so each run has at most one
 result. A model step with another agent gets a new run and a new process (see Moving on). Each
 second, the daemon starts a run for each `queued` or `ready` task whose step decides `model`, in
-queue order, if it fits in the room (see Queue and Room). It finds the repository through the
-task's trigger.
+queue order, if it fits in the room (see Queue and Room). It works in the task's repository: its
+task request's `repo`, else its trigger's, stored when the task is created. A task stored before
+tasks kept a repository uses its trigger's.
 
 The daemon creates the worktree, records the run and task as `running`, then starts the agent's
 harness in a detached tmux session named `priory-<task id>`, in the worktree. An agent with
@@ -97,7 +98,7 @@ A hold takes at most one condition, which releases it without a person:
 | none | a person runs `priory release` |
 | `--until <time>` | the time passes: an RFC 3339 instant, or a duration such as `2 hours` from the hold, as for a time wait |
 | `--after <task>` | the other task is done, failed or dropped |
-| `--merge <pr>` | the pull request merges: `owner/name#42`, or `42` in the repository of the task's trigger |
+| `--merge <pr>` | the pull request merges: `owner/name#42`, or `42` in the task's repository |
 | `--blockers` | the task's Linear issue has no open blocker left |
 
 `--merge` takes `--if-closed release|drop|ask` for a pull request closed without a merge. `release`
