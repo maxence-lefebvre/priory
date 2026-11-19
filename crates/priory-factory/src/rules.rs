@@ -13,14 +13,15 @@ pub fn check(factory: &Factory) -> Vec<Problem> {
                 format!("workflow `{}` does not exist", trigger.value.workflow),
             ));
         }
-        if trigger.value.source == "github" {
-            check_github(trigger, &mut problems);
-        } else if trigger.value.backfill.is_some() {
-            problems.push(problem(
+        match trigger.value.source.as_str() {
+            "github" => check_github(trigger, &mut problems),
+            "linear" | "linear.view" => check_linear(trigger, &mut problems),
+            _ if trigger.value.backfill.is_some() => problems.push(problem(
                 trigger,
                 trigger.lines.field("backfill"),
-                "only a GitHub trigger has `backfill`".into(),
-            ));
+                "only a GitHub or Linear trigger has `backfill`".into(),
+            )),
+            _ => {}
         }
         if trigger.value.source == "schedule" {
             check_schedule(trigger, &mut problems);
@@ -137,6 +138,67 @@ fn check_github(trigger: &Loaded<Trigger>, problems: &mut Vec<Problem>) {
             trigger.lines.field("key"),
             format!("a GitHub trigger's `key` is `{number}`"),
         ));
+    }
+}
+
+fn check_linear(trigger: &Loaded<Trigger>, problems: &mut Vec<Problem>) {
+    let value = &trigger.value;
+    let view = value.source == "linear.view";
+    let (on, filters): (&[&str], &[&str]) = if view {
+        (&["issue.entered", "issue.left"], &[])
+    } else {
+        (
+            &["issue.created", "issue.state_changed", "comment.created"],
+            &["team", "label", "state"],
+        )
+    };
+    let mut report = |field: &str, message: String| {
+        let line = trigger.lines.field(field).or(trigger.lines.field("source"));
+        problems.push(problem(trigger, line, message));
+    };
+    if view != value.view.is_some() {
+        report(
+            "view",
+            "a `linear.view` trigger, and only it, names a `view`".into(),
+        );
+    }
+    if !on.contains(&value.on.as_str()) {
+        let on = on
+            .iter()
+            .map(|on| format!("`{on}`"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        report(
+            "on",
+            format!(
+                "a `{}` trigger handles {on}, not `{}`",
+                value.source, value.on
+            ),
+        );
+    }
+    let unknown = |filter: &BTreeMap<String, String>| {
+        filter.keys().any(|key| !filters.contains(&key.as_str()))
+    };
+    if value.filter.as_ref().is_some_and(unknown) {
+        let message = if view {
+            "a `linear.view` trigger takes no `filter`: its view filters".to_string()
+        } else {
+            "a `linear` trigger filters on `team`, `label` or `state`".to_string()
+        };
+        report("filter", message);
+    }
+    if value.repo.is_some() {
+        report("repo", "a Linear trigger names no `repo`".into());
+    }
+    if value
+        .key
+        .as_deref()
+        .is_some_and(|key| key != "issue.identifier")
+    {
+        report(
+            "key",
+            "a Linear trigger's `key` is `issue.identifier`".into(),
+        );
     }
 }
 

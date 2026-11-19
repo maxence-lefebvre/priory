@@ -631,8 +631,9 @@ fn backfill_is_a_boolean() {
 }
 
 #[test]
-fn only_a_github_trigger_has_backfill() {
-    let trigger = "source = \"linear.view\"\nview = \"agent-ready\"\non = \"issue.entered\"\nworkflow = \"implement\"\nbackfill = true\n";
+fn only_a_github_or_linear_trigger_has_backfill() {
+    let trigger =
+        "source = \"slack\"\non = \"message\"\nworkflow = \"implement\"\nbackfill = true\n";
 
     let outcome = check(&factory(
         "backfill-source",
@@ -642,7 +643,7 @@ fn only_a_github_trigger_has_backfill() {
     assert_eq!(outcome.code, 1);
     assert_eq!(
         outcome.stderr,
-        "triggers/agent-label.toml:5: only a GitHub trigger has `backfill`\n"
+        "triggers/agent-label.toml:4: only a GitHub or Linear trigger has `backfill`\n"
     );
 }
 
@@ -873,4 +874,24 @@ fn a_negative_or_infinite_price_names_its_file_and_line() {
             outcome.stderr
         );
     }
+}
+
+#[test]
+fn a_linear_trigger_uses_a_supported_event_filter_and_key() {
+    let view = "source = \"linear.view\"\nview = \"6b3c2f9a1d4e\"\non = \"issue.entered\"\nworkflow = \"implement\"\nkey = \"issue.identifier\"\nbackfill = true\n";
+    let issues = "source = \"linear\"\non = \"comment.created\"\nfilter = { team = \"ENG\", label = \"agent\" }\nworkflow = \"implement\"\n";
+    let wrong = "source = \"linear\"\non = \"issue.entered\"\nfilter = { project = \"x\" }\nworkflow = \"implement\"\nkey = \"issue.id\"\n";
+    let mut files = with("triggers/agent-label.toml", view);
+    files.push(("triggers/comments.toml", issues));
+    files.push(("triggers/wrong.toml", wrong));
+
+    let outcome = check(&factory("linear-triggers", &files));
+
+    assert_eq!(outcome.code, 1);
+    assert_eq!(
+        outcome.stderr,
+        "triggers/wrong.toml:2: a `linear` trigger handles `issue.created`, `issue.state_changed`, `comment.created`, not `issue.entered`\n\
+         triggers/wrong.toml:3: a `linear` trigger filters on `team`, `label` or `state`\n\
+         triggers/wrong.toml:5: a Linear trigger's `key` is `issue.identifier`\n"
+    );
 }

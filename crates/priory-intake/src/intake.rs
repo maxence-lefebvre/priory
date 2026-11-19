@@ -2,6 +2,7 @@ use herdr_bus::{Bus, Message, MessageQuery, Output, Timestamp, Uuid};
 use priory_factory::factory::{Factory, Trigger};
 mod gh;
 mod issues;
+mod linear;
 mod pulls;
 mod schedule;
 
@@ -48,6 +49,11 @@ pub(crate) fn output() -> Output {
             CHECK_RUNS,
             crate::request::REQUESTED,
             schedule::FIRED,
+            linear::ENTERED,
+            linear::LEFT,
+            linear::CREATED,
+            linear::STATE_CHANGED,
+            linear::COMMENTED,
             TASK_REQUESTED,
             BASELINE,
         ])
@@ -67,8 +73,14 @@ pub fn run(factory: &Factory, once: bool) -> Result<(), String> {
         .iter()
         .filter_map(|(_, trigger)| trigger.repo.as_deref())
         .collect();
+    let linear_triggers = [from("linear"), from("linear.view")].concat();
     let bus = Bus::open_default().map_err(|error| error.to_string())?;
     bus.declare(&output()).map_err(|error| error.to_string())?;
+    let mut linear = if linear_triggers.is_empty() {
+        None
+    } else {
+        Some(linear::Linear::start(&bus, linear_triggers)?)
+    };
     let (newest, mut cursors) = newest(&bus, &repos).map_err(|error| error.to_string())?;
     for (stream, source) in newest {
         // A crash may have stopped between this source and its task requests.
@@ -89,6 +101,13 @@ pub fn run(factory: &Factory, once: bool) -> Result<(), String> {
             Ok(polled) => publish_all(&bus, &triggers, polled, &mut cursors, &mut published)?,
             Err(error) if once => return Err(error),
             Err(error) => eprintln!("{error}"),
+        }
+        if let Some(linear) = &mut linear {
+            match linear.fetch() {
+                Ok(polled) => linear.publish_all(&bus, polled)?,
+                Err(error) if once => return Err(error),
+                Err(error) => eprintln!("{error}"),
+            }
         }
         if once {
             return Ok(());
@@ -242,10 +261,13 @@ fn dispatch(bus: &Bus, triggers: &[(&str, &Trigger)], source: &Message) -> Resul
         if let Some((name, trigger)) = triggers.iter().find(|(other, _)| *other == name) {
             let data = &source.data;
             let number = data.get("issue").unwrap_or(&data["pull_request"]);
-            let key = format!(
-                "github:{}#{number}",
-                data["repo"].as_str().unwrap_or_default()
-            );
+            let key = match number.as_str() {
+                Some(identifier) => format!("linear:{identifier}"),
+                None => format!(
+                    "github:{}#{number}",
+                    data["repo"].as_str().unwrap_or_default()
+                ),
+            };
             publish(bus, &task_requested(name, trigger, source, key))?;
         }
     }
