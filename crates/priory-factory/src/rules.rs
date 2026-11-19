@@ -1,4 +1,7 @@
-use crate::factory::{Decider, Effect, Factory, Loaded, Problem, Step, Trigger, Until, Workflow};
+use crate::factory::{
+    Agent, Decider, Effect, Factory, Harness, Loaded, PermissionMode, Problem, Step, Trigger,
+    Until, Workflow,
+};
 use std::collections::{BTreeMap, BTreeSet};
 
 const ENDS: [&str; 2] = ["done", "stop"];
@@ -61,6 +64,9 @@ pub fn check(factory: &Factory) -> Vec<Problem> {
             }
         }
     }
+    for agent in factory.agents.values() {
+        check_codex(agent, &mut problems);
+    }
     for workflow in factory.workflows.values() {
         check_band(
             workflow,
@@ -85,6 +91,29 @@ fn check_band<T>(
             loaded.lines.field("band"),
             format!("band `{band}` is not one of {}", bands.join(", ")),
         ));
+    }
+}
+
+/// Refuses the Claude Code permissions a Codex run cannot apply.
+fn check_codex(agent: &Loaded<Agent>, problems: &mut Vec<Problem>) {
+    let value = &agent.value;
+    if !matches!(value.harness, Harness::Codex) {
+        return;
+    }
+    let line = agent.lines.field("permissions");
+    let permissions = &value.permissions;
+    if matches!(permissions.default_mode, Some(PermissionMode::Plan)) {
+        let message = "a codex agent cannot take `permissions.defaultMode = \"plan\"`: use manual, acceptEdits, auto or dontAsk";
+        problems.push(problem(agent, line, message.into()));
+    }
+    for (field, rules) in [("allow", &permissions.allow), ("deny", &permissions.deny)] {
+        if !rules.is_empty() {
+            problems.push(problem(
+                agent,
+                line,
+                format!("a codex agent cannot take `permissions.{field}`: Codex has no per-tool rules, so its sandbox and approvals follow `defaultMode` alone"),
+            ));
+        }
     }
 }
 

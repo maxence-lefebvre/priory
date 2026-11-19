@@ -81,7 +81,10 @@ order, and starts a run for each one that fits in the room, as described under Q
 repository through the task's trigger.
 
 The daemon creates the worktree, records the run and the task as `running`, then starts
-`claude` in a detached tmux session named `priory-<task id>`, in the worktree:
+the agent's harness in a detached tmux session named `priory-<task id>`, in the worktree. An agent
+with `harness = "claude-code"` runs `claude`, as below. One with `harness = "codex"` runs `codex`,
+as described under Codex. Each step starts its own agent's harness, so one workflow can mix both.
+`claude` gets:
 
 - `--session-id`: a UUID Priory chooses and stores, so a later run can resume the conversation. A
   task keeps one session per agent: when an earlier run of the step's agent reached `SessionStart`,
@@ -248,13 +251,66 @@ cd "$PRIORY_HOME/repos/<owner>/<name>" && claude   # accept the dialog, then /ex
 A run that sends no `SessionStart` within 60 seconds of its start ends as `exited`. The daemon kills
 its tmux session and blocks its task with the reason `claude showed no SessionStart within 60s;
 trust the clone once: cd <clone path> && claude, accept, exit`. Its queued prompts stay queued, so
-the task's next run types them.
+the task's next run types them. A Codex run names `codex` in the same reason.
+
+### Codex
+
+A run of a `harness = "codex"` agent starts `codex`, or `codex resume <thread>`, in the same tmux
+session, worktree and outbox as a Claude run. Codex chooses its own session id, its thread, so
+Priory keeps a UUID of its own as the run's session: the pane's `@priory` tag, the hooks and the
+tools carry it. Each hook runs `priory hook <event> --session <that UUID>`, and the thread arrives
+on `SessionStart` stdin. Every setting goes in as a `-c key=value` override, so Priory writes no
+Codex file.
+
+| Priory duty | Claude Code | Codex |
+| ----------- | ----------- | ----- |
+| The `priory` MCP server | `--mcp-config` | `-c mcp_servers.priory={command, args, env}`, with `default_tools_approval_mode = "approve"` in place of Claude's `mcp__priory` allow rule |
+| Session id (R5.5) | `--session-id <UUID>` Priory chooses | the thread from the `SessionStart` hook's `session_id`, stored on the run; `priory runs` shows it |
+| Resume | `--resume <session>` | `codex resume <thread>` |
+| Idle signal for the outbox (R5.4) | `SessionStart`, `UserPromptSubmit`, `Stop` hooks in `--settings` | the same three hooks, as `-c hooks.<Event>`; Codex hooks take Claude's stdin and output shapes |
+| Stop signal for health (R7.1) | `Stop` hook, and the pane for an exit | the same |
+| A prompt shown anyway | `Notification` hook with `permission_prompt` | no equivalent: Codex has no notification hook for an approval prompt. A prompt that shows despite the deny hook stalls the turn until its step `timeout` blocks the task |
+| Permission policy (R7.2) | `--permission-mode`, `allow` and `deny` rules, `PermissionRequest` deny hook | `sandbox_mode`, `approval_policy` and `approvals_reviewer` by `defaultMode`, below, and the same `PermissionRequest` deny hook |
+| Built-in question tool (R6.4) | `PreToolUse` deny on `AskUserQuestion` | `PreToolUse` deny on `request_user_input`, which Codex offers only in plan collaboration mode, which Priory never sets |
+| Model, effort, agent body | `--model`, `--effort`, `--append-system-prompt` | `-c model`, `-c model_reasoning_effort`, `-c developer_instructions` |
+
+`defaultMode` maps to Codex's sandbox and approvals. `approvals_reviewer` is always set, so a user
+config that routes approvals to Codex's reviewer does not decide a `manual` run's prompts:
+
+| `defaultMode` | `sandbox_mode` | `approval_policy` | `approvals_reviewer` |
+| ------------- | -------------- | ----------------- | -------------------- |
+| `manual`, or none | `read-only` | `on-request` | `user`, so the deny hook answers |
+| `acceptEdits` | `workspace-write` | `on-request` | `user` |
+| `auto` | `workspace-write` | `on-request` | `auto_review`: Codex's reviewer decides, as Claude's auto mode does |
+| `dontAsk` | `read-only` | `never` | `user` |
+
+`priory check` refuses what cannot map, with its line: `defaultMode = "plan"`, since Codex's CLI has
+no plan permission mode, and any `allow` or `deny` rule, since Codex has no per-tool rules to put
+them in.
+
+Codex skips a hook that no person trusted in its `/hooks` review. Priory wrote these hooks, so it
+starts Codex with `--dangerously-bypass-hook-trust`. That flag also runs the user's own untrusted
+hooks, such as those in `~/.codex/hooks.json`, in Priory's runs. Codex asks whether to trust a
+folder as Claude does, and Priory never answers it: trust the clone once with
+`cd <clone path> && codex`.
+
+Known limits:
+
+- No test runs a real Codex. Whether `-c` hooks need the trust bypass, whether `SessionStart` fires
+  before the first prompt, and whether `auto_review` runs before the deny hook are read from
+  Codex's documentation, not checked.
+- An agent whose harness changes during a task starts a new session, since neither harness resumes
+  the other's.
+- Codex keeps its transcripts under `~/.codex/sessions`, by thread. The traces slice reads token use
+  from there; Priory reads nothing from them yet.
 
 ## Signals
 
 `priory hook <event>` reads Claude's hook JSON on stdin and sends one JSON line to the daemon over
 `priory.sock`: `{"event": "Stop", "session": "<id>", "prompt": "<text>"}`. `prompt` comes only with
-`UserPromptSubmit`. The daemon answers `ok` once the signal is committed, and the hook waits up to
+`UserPromptSubmit`. `priory hook <event> --session <id>` sends `<id>` as the session instead, and
+the stdin `session_id` as `thread`, which `SessionStart` stores, as under Codex. The daemon answers
+`ok` once the signal is committed, and the hook waits up to
 10 seconds for it. When no daemon takes the line, it goes to `signals.spool` instead. The next
 daemon applies the spool before it removes it.
 
@@ -703,10 +759,20 @@ running; end one with `tmux kill-session -t =priory-<task id>` when you mean to.
 ## Listings
 
 `priory inbox` prints each entry, oldest first: seq, type, subject, task and outcome.
+<<<<<<< HEAD
 `priory tasks` prints each task in start order: id, key, workflow, step, state, band, lane, reason
 and position, the task's place in the queue from 1 when it is `queued` or `ready`.
 `priory runs` prints each run: id, task, step, tmux session, harness session, started, ended and
 how it ended. `priory outbox` prints each prompt: id, task, run, state and text, with newlines
+||||||| parent of 5f198ef (Run an agent under Codex with harness = "codex")
+`priory tasks` prints each task: id, key, workflow, step, state, band, lane and reason.
+`priory runs` prints each run: id, task, step, tmux session, harness session, started, ended and
+how it ended. `priory outbox` prints each prompt: id, task, run, state and text, with newlines
+=======
+`priory tasks` prints each task: id, key, workflow, step, state, band, lane and reason.
+`priory runs` prints each run: id, task, step, tmux session, harness session (a Codex run's
+thread), started, ended and how it ended. `priory outbox` prints each prompt: id, task, run, state and text, with newlines
+>>>>>>> 5f198ef (Run an agent under Codex with harness = "codex")
 shown as `\n`. `priory asks` and `priory waits` are described under Tools, `priory actions` under Code steps,
 and `priory desk` under Desk. They read `PRIORY_DB` and print `-` for an empty cell, tab-separated after a header
 line.

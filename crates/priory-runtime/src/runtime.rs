@@ -6,6 +6,8 @@ use std::process::{Command, Stdio};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::time::{Duration, Instant};
 
+use serde_json::json;
+
 /// Priory's own directory: `PRIORY_HOME`, else `$XDG_STATE_HOME/priory-oss`, else `~/.local/state/priory-oss`.
 pub fn home() -> PathBuf {
     if let Some(home) = std::env::var_os("PRIORY_HOME").filter(|home| !home.is_empty()) {
@@ -153,26 +155,145 @@ const NESTED: [&str; 12] = [
     "CLAUDE_EFFORT",
 ];
 
-/// What `claude` needs to start a run.
+/// What a harness needs to start a run.
 pub struct Launch<'a> {
     pub tmux: &'a str,
     pub dir: &'a Path,
     pub home: &'a Path,
+    /// Priory's id for the run's conversation, which its pane, hooks and tools carry.
     pub session: &'a str,
-    /// Continue `session`, which an earlier run of the task started, instead of creating it.
-    pub resume: bool,
+    /// The harness's own id of the conversation to continue, which an earlier run of the task started.
+    pub resume: Option<&'a str>,
     pub model: Option<&'a str>,
     pub effort: Option<&'a str>,
     pub body: &'a str,
     /// The agent's Claude Code `permissions` settings, merged into Priory's own.
     pub permissions: serde_json::Value,
-    /// The run's `--permission-mode`: the agent's `defaultMode`, or `manual`.
+    /// The agent's `defaultMode`, or `manual`.
     pub permission_mode: &'a str,
 }
 
-/// Starts `claude` in a detached tmux session, with hooks that report to this daemon. The same tmux
-/// command tags the new pane with the run's harness session id, so a crash cannot leave it untagged.
-pub fn launch(launch: &Launch) -> Result<(), String> {
+/// A coding agent CLI that Priory runs in tmux, with hooks and tools that report to the daemon.
+pub trait Harness {
+    /// The program's name, as a person types it.
+    fn program(&self) -> &'static str;
+    /// The program's arguments for `launch`, whose hooks and MCP server run `exe`.
+    fn args(&self, exe: &Path, launch: &Launch) -> Result<Vec<String>, String>;
+}
+
+pub struct ClaudeCode;
+
+impl Harness for ClaudeCode {
+    fn program(&self) -> &'static str {
+        "claude"
+    }
+
+    fn args(&self, exe: &Path, launch: &Launch) -> Result<Vec<String>, String> {
+        let mut args = match launch.resume {
+            Some(id) => vec!["--resume".to_owned(), id.to_owned()],
+            None => vec!["--session-id".to_owned(), launch.session.to_owned()],
+        };
+        if let Some(model) = launch.model {
+            args.extend(["--model".to_owned(), model.to_owned()]);
+        }
+        if let Some(effort) = launch.effort {
+            args.extend(["--effort".to_owned(), effort.to_owned()]);
+        }
+        if !launch.body.is_empty() {
+            args.extend(["--append-system-prompt".to_owned(), launch.body.to_owned()]);
+        }
+        // Without the flag, the user's own mode, such as auto, would decide the run's prompts (R7.2).
+        args.extend([
+            "--permission-mode".to_owned(),
+            launch.permission_mode.to_owned(),
+        ]);
+        args.extend(["--settings".to_owned(), settings(exe, &launch.permissions)]);
+        args.extend(["--mcp-config".to_owned(), mcp_config(exe, launch)]);
+        Ok(args)
+    }
+}
+
+pub struct Codex;
+
+impl Harness for Codex {
+    fn program(&self) -> &'static str {
+        "codex"
+    }
+
+    /// Codex chooses its own thread id, so each hook names Priory's session in its command line.
+    fn args(&self, exe: &Path, launch: &Launch) -> Result<Vec<String>, String> {
+        let quoted = quote(exe);
+        let hook = |event: &str| {
+            json!([{ "hooks": [{
+                "type": "command",
+                "command": format!("{quoted} hook {event} --session {}", launch.session),
+            }] }])
+        };
+        let respond = |matcher: Option<&str>, output: &str| {
+            let mut group = json!({ "hooks": [{
+                "type": "command",
+                "command": format!("printf '%s' '{output}'"),
+            }] });
+            if let Some(matcher) = matcher {
+                group["matcher"] = matcher.into();
+            }
+            json!([group])
+        };
+        // Without these, the user's own config, such as an auto reviewer, would decide the prompts (R7.2).
+        let (sandbox, approval, reviewer) = match launch.permission_mode {
+            "acceptEdits" => ("workspace-write", "on-request", "user"),
+            "auto" => ("workspace-write", "on-request", "auto_review"),
+            "dontAsk" => ("read-only", "never", "user"),
+            _ => ("read-only", "on-request", "user"),
+        };
+        let mut config = vec![
+            ("sandbox_mode", json!(sandbox)),
+            ("approval_policy", json!(approval)),
+            ("approvals_reviewer", json!(reviewer)),
+            (
+                "mcp_servers.priory",
+                json!({
+                    "command": exe,
+                    "args": ["mcp", "--session", launch.session],
+                    "env": { "PRIORY_HOME": launch.home },
+                    "default_tools_approval_mode": "approve",
+                }),
+            ),
+            ("hooks.SessionStart", hook("SessionStart")),
+            ("hooks.UserPromptSubmit", hook("UserPromptSubmit")),
+            ("hooks.Stop", hook("Stop")),
+            (
+                "hooks.PreToolUse",
+                respond(Some("^request_user_input$"), ASK_INSTEAD),
+            ),
+            ("hooks.PermissionRequest", respond(None, DENY)),
+        ];
+        if let Some(model) = launch.model {
+            config.push(("model", json!(model)));
+        }
+        if let Some(effort) = launch.effort {
+            config.push(("model_reasoning_effort", json!(effort)));
+        }
+        if !launch.body.is_empty() {
+            config.push(("developer_instructions", json!(launch.body)));
+        }
+        let mut args = match launch.resume {
+            Some(thread) => vec!["resume".to_owned(), thread.to_owned()],
+            None => Vec::new(),
+        };
+        // Priory wrote these hooks; Codex otherwise skips hooks no person trusted in its /hooks review.
+        args.push("--dangerously-bypass-hook-trust".to_owned());
+        for (key, value) in config {
+            let value = toml::Value::try_from(value).map_err(|error| error.to_string())?;
+            args.extend(["-c".to_owned(), format!("{key}={value}")]);
+        }
+        Ok(args)
+    }
+}
+
+/// Starts the harness in a detached tmux session, with hooks that report to this daemon. The same
+/// tmux command tags the new pane with the run's session id, so a crash cannot leave it untagged.
+pub fn launch(harness: &dyn Harness, launch: &Launch) -> Result<(), String> {
     let exe = std::env::current_exe().map_err(|error| error.to_string())?;
     let mut command = tmux();
     command
@@ -192,40 +313,24 @@ pub fn launch(launch: &Launch) -> Result<(), String> {
         .arg(format!("PRIORY_HOME={}", launch.home.display()))
         .args(["--", "env"])
         .args(NESTED.iter().flat_map(|name| ["-u", name]))
-        .arg("claude")
-        .arg(if launch.resume {
-            "--resume"
-        } else {
-            "--session-id"
-        })
-        .arg(launch.session);
-    if let Some(model) = launch.model {
-        command.args(["--model", model]);
-    }
-    if let Some(effort) = launch.effort {
-        command.args(["--effort", effort]);
-    }
-    if !launch.body.is_empty() {
-        command.args(["--append-system-prompt", launch.body]);
-    }
-    // Without the flag, the user's own mode, such as auto, would decide the run's prompts (R7.2).
-    command.args(["--permission-mode", launch.permission_mode]);
-    command
-        .arg("--settings")
-        .arg(settings(&exe, &launch.permissions));
-    command.arg("--mcp-config").arg(mcp_config(&exe, launch));
+        .arg(harness.program())
+        .args(harness.args(&exe, launch)?);
     command.args([";", "set-option", "-p", "@priory", launch.session]);
     run(&mut command).map(drop)
 }
 
 /// The MCP server that serves Priory's tools to the run: `priory mcp --session <id>`.
 fn mcp_config(exe: &Path, launch: &Launch) -> String {
-    serde_json::json!({ "mcpServers": { "priory": {
+    json!({ "mcpServers": { "priory": {
         "command": exe,
         "args": ["mcp", "--session", launch.session],
         "env": { "PRIORY_HOME": launch.home },
     } } })
     .to_string()
+}
+
+fn quote(exe: &Path) -> String {
+    format!("'{}'", exe.display().to_string().replace('\'', r"'\''"))
 }
 
 const ASK_INSTEAD: &str = r#"{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"Priory runs this session unattended. Call the ask tool of the priory MCP server instead."}}"#;
@@ -236,34 +341,34 @@ const DENY: &str = r#"{"hookSpecificOutput":{"hookEventName":"PermissionRequest"
 /// built-in question tool in favour of `ask` (R6.4), deny every permission request (R7.2), and
 /// report a permission prompt that shows anyway.
 fn settings(exe: &Path, permissions: &serde_json::Value) -> String {
-    let quoted = format!("'{}'", exe.display().to_string().replace('\'', r"'\''"));
+    let quoted = quote(exe);
     let hooks: serde_json::Map<_, _> = ["SessionStart", "UserPromptSubmit", "Stop"]
         .into_iter()
         .map(|event| {
             let command = format!("{quoted} hook {event}");
             (
                 event.to_owned(),
-                serde_json::json!([{ "hooks": [{ "type": "command", "command": command }] }]),
+                json!([{ "hooks": [{ "type": "command", "command": command }] }]),
             )
         })
         .collect();
     let mut hooks = hooks;
     hooks.insert(
         "PreToolUse".to_owned(),
-        serde_json::json!([{
+        json!([{
             "matcher": "AskUserQuestion",
             "hooks": [{ "type": "command", "command": format!("printf '%s' '{ASK_INSTEAD}'") }],
         }]),
     );
     hooks.insert(
         "PermissionRequest".to_owned(),
-        serde_json::json!([{
+        json!([{
             "hooks": [{ "type": "command", "command": format!("printf '%s' '{DENY}'") }],
         }]),
     );
     hooks.insert(
         "Notification".to_owned(),
-        serde_json::json!([{
+        json!([{
             "matcher": "permission_prompt",
             "hooks": [{ "type": "command", "command": format!("{quoted} hook PermissionPrompt") }],
         }]),
@@ -273,7 +378,7 @@ fn settings(exe: &Path, permissions: &serde_json::Value) -> String {
         .as_array_mut()
         .expect("allow is an array")
         .insert(0, "mcp__priory".into());
-    serde_json::json!({ "hooks": hooks, "permissions": permissions }).to_string()
+    json!({ "hooks": hooks, "permissions": permissions }).to_string()
 }
 
 /// The pane of the tmux session `name` that runs the harness session `session`, if its process
