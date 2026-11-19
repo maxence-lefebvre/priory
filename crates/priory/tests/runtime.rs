@@ -404,7 +404,7 @@ fn a_queued_task_at_a_model_step_gets_a_worktree_a_tmux_session_and_a_run() {
 
     setup.start();
 
-    setup.until("outbox", |rows| with(rows, 3, "confirmed") == 1);
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 1);
     let runs = setup.rows("runs");
     let [id, task, step, tmux, session, _started, ended, end] = &runs[0][..] else {
         panic!("runs: {runs:?}");
@@ -459,7 +459,7 @@ fn an_agent_in_auto_mode_gets_a_run_in_auto_mode_and_its_rules_join_priorys_own(
 
     setup.start();
 
-    setup.until("outbox", |rows| with(rows, 3, "confirmed") == 1);
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 1);
     let args = launched(&setup);
     let after = |flag: &str| -> Vec<String> {
         args.windows(2)
@@ -680,7 +680,7 @@ fn a_run_starts_without_the_variables_of_the_claude_session_that_started_the_dae
 
     setup.start();
 
-    setup.until("outbox", |rows| with(rows, 3, "confirmed") == 1);
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 1);
     let env = fs::read_to_string(setup.dir.join("fake/env.log")).unwrap();
     let names: Vec<_> = env.lines().collect();
     assert!(names.contains(&"PRIORY_HOME"), "{names:?}");
@@ -717,10 +717,9 @@ fn the_first_prompt_is_the_step_prompt_and_the_task_events_typed_once_and_confir
 
     setup.start();
 
-    let outbox = setup.until("outbox", |rows| with(rows, 3, "confirmed") == 1);
-    assert_eq!(outbox.len(), 1);
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 2);
     let typed = setup.typed();
-    assert_eq!(typed.len(), 1, "{typed:?}");
+    assert_eq!(typed.len(), 2, "{typed:?}");
     let lines: Vec<_> = typed[0].lines().collect();
     assert_eq!(lines.len(), 4, "{lines:?}");
     assert_eq!(lines[0], "Implement the issue.");
@@ -732,7 +731,8 @@ fn the_first_prompt_is_the_step_prompt_and_the_task_events_typed_once_and_confir
     assert!(lines[2].contains(r#""label":"agent""#));
     assert!(lines[3].contains(r#""label":"it's \"urgent\"; C-c Enter""#));
     std::thread::sleep(Duration::from_millis(1500));
-    assert_eq!(setup.typed().len(), 1);
+    assert_eq!(setup.typed().len(), 2, "the silent turn gets one nudge");
+    assert!(setup.typed()[1].starts_with("Your turn ended"));
 }
 
 #[test]
@@ -741,7 +741,7 @@ fn an_event_kept_while_the_run_is_running_is_typed_after_the_next_stop() {
     setup.publish(&requested(42));
     setup.hold("hold-stop");
     setup.start();
-    setup.until("outbox", |rows| with(rows, 3, "confirmed") == 1);
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 1);
 
     setup.publish(&labeled(42));
 
@@ -750,10 +750,13 @@ fn an_event_kept_while_the_run_is_running_is_typed_after_the_next_stop() {
     assert_eq!(setup.rows("outbox")[1][3], "queued");
     assert_eq!(setup.typed().len(), 1);
     setup.release("hold-stop");
-    setup.until("outbox", |rows| with(rows, 3, "confirmed") == 2);
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 2);
     let typed = setup.typed();
-    assert_eq!(typed.len(), 2);
-    assert!(typed[1].starts_with("github.issues.labeled owner/repo#42 {"));
+    assert!(typed[1].starts_with("Your turn ended"), "{typed:?}");
+    assert!(
+        typed[1].contains("\ngithub.issues.labeled owner/repo#42 {"),
+        "{typed:?}"
+    );
 }
 
 #[test]
@@ -761,16 +764,25 @@ fn a_restarted_daemon_reattaches_to_its_run_and_types_nothing_twice() {
     let mut setup = Setup::new("restart");
     setup.publish(&requested(42));
     setup.start();
-    setup.until("outbox", |rows| with(rows, 3, "confirmed") == 1);
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 2);
     let runs = setup.rows("runs");
 
     setup.crash();
     setup.start();
     setup.publish(&labeled(42));
 
-    setup.until("outbox", |rows| with(rows, 3, "confirmed") == 2);
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 3);
     assert_eq!(setup.rows("runs"), runs);
-    assert_eq!(setup.typed().len(), 2);
+    let typed = setup.typed();
+    assert!(typed[1].starts_with("Your turn ended"), "{typed:?}");
+    assert!(typed[2].starts_with("github.issues.labeled"), "{typed:?}");
+    assert_eq!(
+        typed
+            .iter()
+            .filter(|prompt| prompt.contains("labeled"))
+            .count(),
+        1
+    );
 }
 
 #[test]
@@ -854,7 +866,7 @@ fn a_signal_sent_while_the_daemon_is_down_is_applied_when_it_comes_back() {
     setup.publish(&requested(42));
     setup.hold("hold-stop");
     setup.start();
-    setup.until("outbox", |rows| with(rows, 3, "confirmed") == 1);
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 1);
 
     setup.crash();
     setup.release("hold-stop");
@@ -862,7 +874,7 @@ fn a_signal_sent_while_the_daemon_is_down_is_applied_when_it_comes_back() {
     setup.publish(&labeled(42));
     setup.start();
 
-    setup.until("outbox", |rows| with(rows, 3, "confirmed") == 2);
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 2);
 }
 
 #[test]
@@ -870,7 +882,7 @@ fn a_run_whose_tmux_session_dies_ends_exited_and_blocks_its_task() {
     let mut setup = Setup::new("exited");
     setup.publish(&requested(42));
     setup.start();
-    setup.until("outbox", |rows| with(rows, 3, "confirmed") == 1);
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 1);
 
     assert!(
         setup
@@ -917,7 +929,7 @@ fn a_derived_lane_is_derived_again_when_the_first_run_gives_the_task_a_branch() 
     setup.until("tasks", |rows| {
         rows[0][4] == "running" && rows[0][6] == "FND/desktop"
     });
-    setup.until("outbox", |rows| with(rows, 3, "confirmed") == 1);
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 1);
     assert!(
         setup
             .tmux(&["kill-session", "-t", "priory-1"])
@@ -947,7 +959,7 @@ fn a_derived_lane_stays_when_the_task_runs_again_after_lanes_toml_changed() {
     .unwrap();
     setup.publish(&requested(42));
     setup.start();
-    setup.until("outbox", |rows| with(rows, 3, "confirmed") == 1);
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 1);
     assert_eq!(setup.rows("tasks")[0][6], "FND/desktop");
     assert!(
         setup
@@ -991,7 +1003,7 @@ fn a_lane_the_request_set_stays_when_the_first_run_gives_the_task_a_branch() {
 
     setup.start();
 
-    setup.until("outbox", |rows| with(rows, 3, "confirmed") == 1);
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 1);
     assert_eq!(setup.rows("tasks")[0][6], "OPS/chores");
 }
 
@@ -1104,7 +1116,7 @@ fn two_admissions_in_one_tick_count_each_others_declared_memory() {
     let reason = "waits for room: 8.0 GB of memory free, needs 4.0 GB and keeps 6.4 GB free";
     setup.until("tasks", |rows| rows.len() == 2 && rows[1][7] == reason);
     // The first run's promise outlives its SessionStart: it holds until the run ends.
-    setup.until("outbox", |rows| with(rows, 3, "confirmed") == 1);
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 1);
     std::thread::sleep(Duration::from_millis(1500));
     let tasks = setup.rows("tasks");
     assert_eq!([&tasks[0][4], &tasks[1][4]], ["running", "queued"]);
@@ -1431,7 +1443,7 @@ fn a_prompt_reaches_the_agent_pane_when_a_person_opened_another_pane() {
     let mut setup = Setup::new("pane");
     setup.publish(&requested(42));
     setup.start();
-    setup.until("outbox", |rows| with(rows, 3, "confirmed") == 1);
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 1);
 
     assert!(
         setup
@@ -1441,8 +1453,16 @@ fn a_prompt_reaches_the_agent_pane_when_a_person_opened_another_pane() {
     );
     setup.publish(&labeled(42));
 
-    setup.until("outbox", |rows| with(rows, 3, "confirmed") == 2);
-    assert_eq!(setup.typed().len(), 2);
+    setup.until("outbox", |rows| {
+        rows.iter()
+            .any(|row| row[3] == "confirmed" && row[4].starts_with("github.issues.labeled"))
+    });
+    let events = setup
+        .typed()
+        .iter()
+        .filter(|prompt| prompt.contains("github.issues.labeled"))
+        .count();
+    assert_eq!(events, 1);
 }
 
 #[test]
@@ -1537,7 +1557,7 @@ fn a_result_with_a_valid_outcome_moves_the_task_to_the_next_model_step_after_sto
 
     setup.start();
 
-    setup.until("outbox", |rows| with(rows, 3, "confirmed") == 2);
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 2);
     let typed = setup.typed();
     assert_eq!(
         typed[1],
@@ -1567,7 +1587,7 @@ fn a_result_with_an_unknown_outcome_is_refused_with_the_valid_outcomes_and_the_t
 
     setup.start();
 
-    setup.until("outbox", |rows| with(rows, 3, "confirmed") == 1);
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 1);
     setup.written("fake/tools.log");
     let (text, error) = reply(&setup.replies()[0]);
     assert!(error, "{text}");
@@ -1579,7 +1599,11 @@ fn a_result_with_an_unknown_outcome_is_refused_with_the_valid_outcomes_and_the_t
     let tasks = setup.rows("tasks");
     assert_eq!([&tasks[0][3], &tasks[0][4]], ["plan", "running"]);
     assert_eq!(setup.rows("runs").len(), 1);
-    assert_eq!(setup.typed().len(), 1);
+    assert_eq!(
+        setup.typed().len(),
+        2,
+        "the refused result leaves a silent turn"
+    );
 }
 
 #[test]
@@ -1639,8 +1663,7 @@ fn a_human_step_asks_ends_the_run_and_sleeps_until_an_answer_resumes_the_session
 
     assert!(answered.status.success(), "{answered:?}");
     assert!(setup.rows("asks").is_empty());
-    let runs = setup.until("outbox", |rows| with(rows, 3, "confirmed") == 2);
-    assert_eq!(runs.len(), 2);
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 2);
     let runs = setup.rows("runs");
     assert_eq!([&runs[1][2], &runs[1][4]], ["implement", &session]);
     let args = fs::read_to_string(setup.dir.join("fake/args.log")).unwrap();
@@ -1697,7 +1720,7 @@ fn a_result_moving_to_another_agent_ends_the_run_and_starts_that_agent_in_a_new_
 
     setup.start();
 
-    setup.until("outbox", |rows| with(rows, 3, "confirmed") == 2);
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 2);
     let runs = setup.rows("runs");
     assert_eq!(runs.len(), 2, "{runs:?}");
     assert_eq!([&runs[0][2], &runs[0][7]], ["implement", "moved"]);
@@ -1726,7 +1749,7 @@ fn a_workflow_coming_back_to_an_agent_resumes_that_agent_session() {
 
     setup.start();
 
-    setup.until("outbox", |rows| with(rows, 3, "confirmed") == 3);
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 3);
     let runs = setup.rows("runs");
     assert_eq!(runs.len(), 3, "{runs:?}");
     assert_eq!([&runs[1][2], &runs[1][7]], ["review", "moved"]);
@@ -1760,7 +1783,7 @@ fn an_answer_on_the_second_agent_step_resumes_the_second_agent_session() {
     let answered = setup.priory(&["answer", "1", "sqlite", "--revision", "1"]);
 
     assert!(answered.status.success(), "{answered:?}");
-    setup.until("outbox", |rows| with(rows, 3, "confirmed") == 3);
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 3);
     let resumed = setup.rows("runs");
     assert_eq!([&resumed[2][2], &resumed[2][4]], ["review", &runs[1][4]]);
     assert_ne!(runs[0][4], runs[1][4]);
@@ -1808,7 +1831,7 @@ fn an_agent_ask_sleeps_the_task_and_the_answer_wakes_it_as_its_prompt() {
     let answered = setup.priory(&["answer", "1", "duckdb, actually", "--revision", "1"]);
 
     assert!(answered.status.success(), "{answered:?}");
-    setup.until("outbox", |rows| with(rows, 3, "confirmed") == 2);
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 2);
     assert_eq!(
         setup.typed()[1],
         "duckdb, actually\nEnd this step by calling the result tool of the priory MCP server with one of these outcomes: hopeless, ready, unsure.\n"
@@ -1842,7 +1865,7 @@ fn an_answer_to_a_stale_revision_or_a_second_answer_is_refused() {
         String::from_utf8_lossy(&second.stderr),
         "priory answer: ask 1 is already answered: sqlite\n"
     );
-    setup.until("outbox", |rows| with(rows, 3, "confirmed") == 2);
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 2);
     assert_eq!(
         setup.typed()[1],
         "sqlite\nEnd this step by calling the result tool of the priory MCP server with one of these outcomes: hopeless, ready, unsure.\n"
@@ -2019,7 +2042,7 @@ fn resume_restarts_a_blocked_task_in_its_session_and_cancel_drops_it_and_ends_it
     let mut setup = Setup::new("resume");
     setup.publish(&requested(42));
     setup.start();
-    setup.until("outbox", |rows| with(rows, 3, "confirmed") == 1);
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 2);
     let session = setup.rows("runs")[0][4].clone();
     assert!(
         setup
@@ -2034,14 +2057,14 @@ fn resume_restarts_a_blocked_task_in_its_session_and_cancel_drops_it_and_ends_it
     let resumed = setup.priory(&["resume", "1"]);
 
     assert!(resumed.status.success(), "{resumed:?}");
-    setup.until("outbox", |rows| with(rows, 3, "confirmed") == 2);
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 3);
     let runs = setup.rows("runs");
     assert_eq!([&runs[1][4], &runs[1][7]], [&session, "-"]);
     let args = fs::read_to_string(setup.dir.join("fake/args.log")).unwrap();
     assert!(args.contains(&format!("--resume\n{session}\n")), "{args}");
     assert!(args.contains("--permission-mode\nmanual\n"), "{args}");
     assert_eq!(
-        setup.typed()[1],
+        setup.typed()[2],
         "A person resumed this task after: run 1 exited: claude no longer runs in tmux session priory-1. Check the worktree, then continue.\nEnd this step by calling the result tool of the priory MCP server with one of these outcomes: failed, passed.\n"
     );
     let again = setup.priory(&["resume", "1"]);
@@ -2085,7 +2108,7 @@ fn a_daemon_started_after_its_tmux_server_died_resumes_each_lost_run_once() {
 
     setup.start();
 
-    let outbox = setup.until("outbox", |rows| with(rows, 3, "confirmed") == 2);
+    let outbox = setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 2);
     assert_eq!(with(&outbox, 3, "uncertain"), 1);
     let runs = setup.rows("runs");
     assert_eq!(
@@ -2097,7 +2120,7 @@ fn a_daemon_started_after_its_tmux_server_died_resumes_each_lost_run_once() {
         args.starts_with(&format!("--resume\n{session}\n")),
         "{args}"
     );
-    assert_eq!(setup.typed()[1..], [INTERRUPTED]);
+    assert_eq!(setup.typed()[1..2], [INTERRUPTED]);
     let tasks = setup.rows("tasks");
     assert_eq!([&tasks[0][4], &tasks[1][4]], ["asleep", "running"]);
 
@@ -2159,14 +2182,16 @@ fn a_resumed_task_gets_its_prompts_although_its_exited_run_left_an_uncertain_one
 
     assert!(setup.priory(&["resume", "1"]).status.success());
 
-    let outbox = setup.until("outbox", |rows| with(rows, 3, "confirmed") == 1);
+    let outbox = setup.until("outbox", |rows| {
+        rows.iter()
+            .any(|row| row[3] == "confirmed" && row[4].starts_with("A person resumed"))
+    });
     assert_eq!(with(&outbox, 3, "uncertain"), 1);
     assert!(
         setup
             .typed()
-            .last()
-            .unwrap()
-            .starts_with("A person resumed")
+            .iter()
+            .any(|prompt| prompt.starts_with("A person resumed"))
     );
 }
 
@@ -2175,7 +2200,7 @@ fn a_lost_run_that_asked_since_the_last_loss_resumes_again() {
     let mut setup = Setup::with_workflow("lost-progress", STEPS);
     setup.publish(&requested(42));
     setup.start();
-    setup.until("outbox", |rows| with(rows, 3, "confirmed") == 1);
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 1);
     setup.reboot();
     setup.calls(&[ask()]);
     setup.hold("hold-stop");
@@ -2237,9 +2262,9 @@ fn an_event_kept_during_a_step_reaches_the_agent_after_the_next_step_prompt() {
     setup.until("outbox", |rows| rows.len() == 2);
     setup.release("hold-stop");
 
-    setup.until("outbox", |rows| with(rows, 3, "confirmed") == 2);
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 2);
     let typed = setup.typed();
-    assert_eq!(typed.len(), 2, "{typed:?}");
+    assert!(typed.len() >= 2, "{typed:?}");
     assert!(
         typed[1].starts_with(&format!(
             "{}\ngithub.issues.labeled owner/repo#42 {{",
@@ -2268,7 +2293,7 @@ fn an_answer_that_beats_the_stop_is_typed_into_the_same_run_once() {
     assert_eq!(setup.rows("outbox")[1][3], "queued");
     assert_eq!(setup.typed().len(), 1);
     setup.release("hold-stop");
-    setup.until("outbox", |rows| with(rows, 3, "confirmed") == 2);
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 2);
     std::thread::sleep(Duration::from_millis(1500));
     assert_eq!(
         setup.typed(),
@@ -2277,7 +2302,8 @@ fn an_answer_that_beats_the_stop_is_typed_into_the_same_run_once() {
                 "{}\n",
                 prompted("Plan the change.", "hopeless, ready, unsure")
             ),
-            format!("{}\n", prompted("sqlite", "hopeless, ready, unsure"))
+            format!("{}\n", prompted("sqlite", "hopeless, ready, unsure")),
+            NUDGE.replace("failed, passed", "hopeless, ready, unsure")
         ]
     );
     let runs = setup.rows("runs");
@@ -2343,7 +2369,7 @@ fn a_pull_request_event_naming_the_task_branch_reaches_the_task() {
     let mut setup = Setup::new("branch");
     setup.publish(&requested(42));
     setup.start();
-    setup.until("outbox", |rows| with(rows, 3, "confirmed") == 1);
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 1);
 
     setup.publish(&on_pull("github.pull_request.opened", json!({})));
 
@@ -2425,7 +2451,7 @@ fn a_run_waiting_on_checks_sleeps_and_only_the_last_check_wakes_it() {
     stays_asleep(&setup);
     setup.publish(&check(2, 0));
 
-    setup.until("outbox", |rows| with(rows, 3, "confirmed") == 2);
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 2);
     let typed = setup.typed();
     let lines: Vec<_> = typed[1].lines().collect();
     assert!(
@@ -2472,7 +2498,7 @@ fn a_review_or_a_close_wakes_a_task_waiting_on_it() {
 
         setup.publish(&event);
 
-        setup.until("outbox", |rows| with(rows, 3, "confirmed") == 2);
+        setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 2);
         let typed = setup.typed();
         assert!(typed[1].starts_with(line), "{kind}: {typed:?}");
         assert_eq!(setup.rows("tasks")[0][4], "running");
@@ -2488,10 +2514,10 @@ fn an_event_that_does_not_match_the_wait_stays_kept_and_reaches_the_next_run() {
     assert_eq!(setup.rows("inbox")[1][4], "kept");
     setup.publish(&closed());
 
-    setup.until("outbox", |rows| with(rows, 3, "confirmed") == 2);
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 2);
     std::thread::sleep(Duration::from_millis(1500));
     let typed = setup.typed();
-    assert_eq!(typed.len(), 2, "{typed:?}");
+    assert_eq!(typed.len(), 3, "{typed:?}");
     let lines: Vec<_> = typed[1].lines().collect();
     assert!(
         lines[0].starts_with("github.pull_request.closed owner/repo#7 {"),
@@ -2515,7 +2541,7 @@ fn a_checks_wait_on_a_head_ignores_checks_of_another_commit() {
     last.data["head_sha"] = json!("def0000000000000000000000000000000000000");
     setup.publish(&last);
 
-    setup.until("outbox", |rows| with(rows, 3, "confirmed") == 2);
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 2);
     let typed = setup.typed();
     assert!(typed[1].contains(r#""github_id":2"#), "{typed:?}");
 }
@@ -2528,7 +2554,7 @@ fn a_time_wait_fires_after_its_instant_and_not_before() {
 
     stays_asleep(&setup);
 
-    setup.until("outbox", |rows| with(rows, 3, "confirmed") == 2);
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 2);
     assert_eq!(
         setup.typed()[1],
         format!(
@@ -2582,7 +2608,7 @@ fn an_event_that_already_satisfies_the_wait_when_it_is_stored_wakes_the_task_at_
 
     setup.release("hold-submit");
 
-    setup.until("outbox", |rows| with(rows, 3, "confirmed") == 2);
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 2);
     let (text, error) = reply(&setup.replies()[0]);
     assert!(!error, "{text}");
     assert!(text.starts_with("wait 1 already holds"), "{text}");
@@ -2764,7 +2790,7 @@ fn a_red_check_at_the_result_commit_wakes_the_agent_with_the_failure() {
     setup.until("inbox", |rows| rows.len() == 4);
     setup.release("hold-submit");
 
-    setup.until("outbox", |rows| with(rows, 3, "confirmed") == 3);
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 3);
     let typed = setup.typed();
     let lines: Vec<_> = typed[2].lines().collect();
     assert_eq!(
@@ -2794,7 +2820,7 @@ fn a_head_that_moved_from_the_result_commit_wakes_the_agent() {
 
     setup.publish(&moved);
 
-    setup.until("outbox", |rows| with(rows, 3, "confirmed") == 3);
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 3);
     let typed = setup.typed();
     let lines: Vec<_> = typed[2].lines().collect();
     assert_eq!(
@@ -2816,7 +2842,7 @@ fn a_result_reaching_done_without_a_commit_is_refused_when_the_task_owns_a_pull_
 
     setup.publish(&reviewed());
 
-    setup.until("outbox", |rows| with(rows, 3, "confirmed") == 2);
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 2);
     setup.until("runs", |_| setup.replies().len() == 2);
     let (text, error) = reply(&setup.replies()[1]);
     assert!(error, "{text}");
@@ -2891,7 +2917,7 @@ fn a_head_that_moved_after_green_checks_kept_before_the_final_stop_wakes_the_age
 
     setup.release("hold-stop");
 
-    setup.until("outbox", |rows| with(rows, 3, "confirmed") == 3);
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 3);
     assert!(
         setup.typed()[2].starts_with("wait 2 fired: the head of github:owner/repo#7 moved to def0000000000000000000000000000000000000"),
         "{:?}",
@@ -2982,7 +3008,7 @@ fn an_answer_reaching_done_holds_the_task_on_the_checks_of_its_last_result() {
     setup.publish(&red);
     let runs = setup.until("runs", |rows| rows.len() == 3);
     assert_eq!(runs[2][2], "implement");
-    setup.until("outbox", |rows| with(rows, 3, "confirmed") == 3);
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 3);
     let typed = setup.typed();
     assert!(
         typed
@@ -3019,7 +3045,7 @@ fn a_green_check_counting_a_failure_wakes_the_agent_with_the_failed_check() {
 
     setup.release("hold-submit");
 
-    setup.until("outbox", |rows| with(rows, 3, "confirmed") == 3);
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 3);
     let typed = setup.typed();
     assert!(
         typed[2].starts_with("wait 2 fired: check test at abc0000000000000000000000000000000000000 concluded failure\n"),
@@ -3441,7 +3467,7 @@ fn an_irreversible_model_step_asks_again_after_a_commit_instead_of_starting() {
     });
     let typed = setup.typed();
     assert_eq!(
-        typed[2..],
+        typed[2..4],
         [
             format!("{}\n", prompted("Polish the change.", "passed")),
             format!("{ship}\n")
@@ -3669,13 +3695,23 @@ fn a_sweep_keeps_a_worktree_a_process_runs_in() {
 #[test]
 fn a_sweep_leaves_the_worktree_of_a_running_or_asleep_task() {
     let mut setup = Setup::new("sweep-active");
-    setup.calls(&[result("passed"), serde_json::Value::Null, ask()]);
+    let silent = serde_json::Value::Null;
+    setup.calls(&[result("passed"), silent.clone(), silent, ask()]);
     setup.start();
     for (issue, state) in [(1, "done"), (2, "running"), (3, "asleep")] {
         setup.publish(&requested(issue));
         setup.until("tasks", |rows| {
             rows.len() == issue as usize && rows[issue as usize - 1][4] == state
         });
+        if issue == 2 {
+            // Task 2's silent turn and its nudge turn use up two calls before task 3 starts.
+            setup.until("outbox", |rows| {
+                rows.iter()
+                    .filter(|row| row[1] == "2" && row[3] == "confirmed")
+                    .count()
+                    >= 2
+            });
+        }
     }
     setup.crash();
 
@@ -3730,7 +3766,7 @@ fn two_tasks_of_a_shared_agent_resume_one_session_one_after_the_other() {
     assert_eq!([&runs[0][1], &runs[0][7]], ["1", "done"], "{runs:?}");
     assert_eq!(runs[1][1], "2");
     assert_eq!(runs[0][4], runs[1][4], "one session serves both tasks");
-    setup.until("outbox", |rows| with(rows, 3, "confirmed") == 2);
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 2);
     assert!(has(&launched(&setup), ["--resume", &runs[0][4]]));
     let typed = setup.typed();
     let worktree = setup.dir.join("home/worktrees/owner/repo/2");
@@ -3885,7 +3921,7 @@ fn a_fixed_key_firing_wakes_an_asleep_task_and_its_ask_stays_open() {
 
     setup.publish(&tick("2026-11-19T09:00:00Z"));
 
-    setup.until("outbox", |rows| with(rows, 3, "confirmed") == 2);
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 2);
     let typed = setup.typed();
     let lines: Vec<_> = typed[1].lines().collect();
     assert_eq!(lines[0], "Sweep the support queue.", "{typed:?}");
@@ -3900,7 +3936,7 @@ fn a_fixed_key_firing_wakes_an_asleep_task_and_its_ask_stays_open() {
     // The tick's run sleeps again on the ask it inherits, so the next tick wakes it again.
     setup.until("tasks", |rows| rows[0][4] == "asleep");
     setup.publish(&tick("2026-11-19T10:00:00Z"));
-    setup.until("outbox", |rows| with(rows, 3, "confirmed") == 3);
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 3);
     assert_eq!(setup.rows("asks").len(), 1);
 }
 
@@ -3928,7 +3964,7 @@ fn a_firing_while_the_task_runs_is_coalesced_and_not_typed() {
     setup.publish(&tick("2026-11-19T08:00:00Z"));
     setup.hold("hold-stop");
     setup.start();
-    setup.until("outbox", |rows| with(rows, 3, "confirmed") == 1);
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 1);
 
     setup.publish(&tick("2026-11-19T09:00:00Z"));
 
@@ -3936,8 +3972,10 @@ fn a_firing_while_the_task_runs_is_coalesced_and_not_typed() {
     assert_eq!(setup.rows("inbox")[1][4], "coalesced");
     setup.release("hold-stop");
     std::thread::sleep(Duration::from_millis(1500));
-    assert_eq!(setup.rows("outbox").len(), 1);
-    assert_eq!(setup.typed().len(), 1);
+    let typed = setup.typed();
+    assert_eq!(typed.len(), 2, "{typed:?}");
+    assert!(typed[1].starts_with("Your turn ended"), "{typed:?}");
+    assert!(!typed[1].contains("09:00"), "{typed:?}");
 }
 
 impl Setup {
@@ -4494,4 +4532,71 @@ fn a_revive_at_an_irreversible_step_asks_its_withdrawn_approval_again() {
     assert!(answered.status.success(), "{answered:?}");
     let actions = setup.until("actions", |rows| rows.len() == 1);
     assert_eq!(actions[0][4], "opened");
+}
+
+const NUDGE: &str = "Your turn ended without calling wait, ask or result of the priory MCP server. Call one of them: result to end the step, ask to put a question to a person, or wait to sleep until an event.\nEnd this step by calling the result tool of the priory MCP server with one of these outcomes: failed, passed.\n";
+
+#[test]
+fn a_silent_turn_gets_one_nudge_and_a_second_silent_turn_gets_none() {
+    let mut setup = Setup::new("nudge-once");
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 2);
+
+    std::thread::sleep(Duration::from_millis(2500));
+
+    assert_eq!(setup.typed()[1], NUDGE);
+    assert_eq!(setup.rows("outbox").len(), 2);
+    assert_eq!(setup.typed().len(), 2);
+    assert_eq!(setup.rows("tasks")[0][4], "running");
+}
+
+#[test]
+fn a_turn_that_called_wait_gets_no_nudge() {
+    let setup = asleep_on("nudge-wait", on_pull_7("checks"));
+
+    std::thread::sleep(Duration::from_millis(1500));
+
+    assert_eq!(setup.rows("outbox").len(), 1);
+    assert_eq!(setup.typed().len(), 1);
+}
+
+#[test]
+fn a_turn_a_person_typed_into_the_pane_gets_no_nudge() {
+    let mut setup = Setup::new("nudge-person");
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 2);
+    std::thread::sleep(Duration::from_millis(1000));
+
+    assert!(
+        setup
+            .tmux(&["set-buffer", "hello from a person"])
+            .status
+            .success()
+    );
+    assert!(
+        setup
+            .tmux(&["paste-buffer", "-p", "-t", "priory-1"])
+            .status
+            .success()
+    );
+    assert!(
+        setup
+            .tmux(&["send-keys", "-t", "priory-1", "Enter"])
+            .status
+            .success()
+    );
+    let deadline = Instant::now() + Duration::from_secs(15);
+    while setup.typed().len() < 3 {
+        assert!(
+            Instant::now() < deadline,
+            "the person's prompt never arrived"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    std::thread::sleep(Duration::from_millis(2500));
+
+    assert_eq!(setup.typed().len(), 3, "{:?}", setup.typed());
+    assert_eq!(setup.rows("outbox").len(), 2);
 }

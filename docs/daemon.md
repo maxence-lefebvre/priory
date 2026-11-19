@@ -331,6 +331,23 @@ Each signal also carries the `transcript_path` of Claude's hook JSON, which Trac
 `UserPromptSubmit` also stamps the start of the run's turn, and `SessionStart` and `Stop` clear it.
 The daemon never reads the terminal screen to decide that an agent is idle.
 
+### Nudge
+
+A turn that ends with no `wait`, `ask` or `result` gets one nudge. The `Stop` signal finds the run
+with no result, open ask or open wait, and queues a prompt that names the three tools, then the
+step's ending line from `tasks.ending`. The next tick types it like any other prompt.
+
+Priory tells its own turns from a person's by the prompt it confirmed. `UserPromptSubmit` marks the
+turn nudgeable only when the submitted text matches the prompt Priory attempted and that prompt is
+not itself a nudge. A turn a person typed into the pane matches nothing, so it is never nudged.
+A successful `wait`, `ask` or `result` call, `SessionStart` and `Stop` clear it, so a turn whose ask was answered or whose wait fired before `Stop` is not nudged.
+
+So a nudge starts at most one turn, and a silent turn after it is not nudged again. The run is then
+left to the health check, like any run that sends no exit. A prompt already queued when the turn
+ends follows the nudge in the same prompt. The nudge is an outbox prompt rather than
+the hook's `decision: block`: the daemon already confirms, retries and survives a restart for
+outbox prompts, and the hook has no reply channel beyond `ok`.
+
 ## Health
 
 Each second, the daemon gives every live run one of these verdicts, in this order:
