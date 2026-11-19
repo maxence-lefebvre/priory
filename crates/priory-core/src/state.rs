@@ -628,7 +628,7 @@ pub(crate) struct NewRun<'a> {
     /// The session is the agent's shared one, which other tasks' runs resume too.
     pub shared: bool,
     /// Derives the lane of a task again, once, now that its branch is known.
-    pub lanes: Option<&'a Lanes>,
+    pub lanes: &'a Lanes,
 }
 
 /// The agent's shared session, once a run of it reached `SessionStart`, which every task resumes.
@@ -689,16 +689,14 @@ pub(crate) fn start(db: &mut Connection, run: &NewRun) -> rusqlite::Result<i64> 
             |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
         )?;
     if derived {
-        let lane = run.lanes.and_then(|lanes| {
-            lanes.lane(&Subject {
-                key: &key,
-                team: team.as_deref(),
-                project: project.as_deref(),
-                branch: Some(run.branch),
-            })
+        let lane = run.lanes.lane(&Subject {
+            key: &key,
+            team: team.as_deref(),
+            project: project.as_deref(),
+            branch: Some(run.branch),
         });
         tx.execute(
-            "UPDATE tasks SET lane = coalesce(?2, lane), lane_derived = 0 WHERE id = ?1",
+            "UPDATE tasks SET lane = ?2, lane_derived = 0 WHERE id = ?1",
             params![run.task, lane],
         )?;
     }

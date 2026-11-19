@@ -1,6 +1,7 @@
 use serde::Deserialize;
 
-/// `lanes.toml`: how a task without a lane of its own gets one.
+/// `lanes.toml`: how a task without a lane of its own gets one. Without the file, every task gets
+/// the `{team}/misc` fallback.
 #[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Lanes {
@@ -31,16 +32,18 @@ pub struct Subject<'a> {
 }
 
 impl Lanes {
-    /// The lane of the first matching rule, else the fallback, else none.
-    pub fn lane(&self, subject: &Subject) -> Option<String> {
+    /// The lane of the first matching rule, else the fallback, else `{team}/misc`.
+    pub fn lane(&self, subject: &Subject) -> String {
         self.rules
             .iter()
             .find(|rule| rule.matches(subject))
-            .map(|rule| rule.lane.clone())
-            .or_else(|| {
-                let fallback = self.fallback.as_deref()?;
-                Some(fallback.replace("{team}", subject.team.unwrap_or("none")))
-            })
+            .map_or_else(
+                || {
+                    let fallback = self.fallback.as_deref().unwrap_or("{team}/misc");
+                    fallback.replace("{team}", subject.team.unwrap_or("none"))
+                },
+                |rule| rule.lane.clone(),
+            )
     }
 }
 

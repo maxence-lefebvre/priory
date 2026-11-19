@@ -98,14 +98,12 @@ pub(crate) fn route(
     };
     task.step.clone_from(&workflow.value.start);
     if task.lane.is_none() {
-        task.lane = factory.lanes.as_ref().and_then(|lanes| {
-            lanes.value.lane(&Subject {
-                key: &task.key,
-                team: task.team.as_deref(),
-                project: task.project.as_deref(),
-                branch: None,
-            })
-        });
+        task.lane = Some(factory.lanes().lane(&Subject {
+            key: &task.key,
+            team: task.team.as_deref(),
+            project: task.project.as_deref(),
+            branch: None,
+        }));
         task.lane_derived = true;
     }
     Ok(Decision::Create(Box::new(task)))

@@ -355,7 +355,7 @@ fn start(
             prompt: admission.fresh.then_some(prompt.as_str()),
             ending: &tools::ending(step),
             shared,
-            lanes: factory.lanes.as_ref().map(|lanes| &lanes.value),
+            lanes: factory.lanes(),
         },
     )?;
     let agent = &agent.value;

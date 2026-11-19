@@ -160,7 +160,7 @@ fn a_task_request_creates_one_queued_task_at_its_workflow_start() {
             "implement",
             "queued",
             "today",
-            "-",
+            "none/misc",
             "-"
         ])]
     );
@@ -465,8 +465,19 @@ fn the_fallback_fills_team_from_the_event_and_says_none_without_one() {
 }
 
 #[test]
-fn a_task_has_no_lane_without_a_lanes_file() {
-    assert_eq!(lane_of("lane-absent", None, 7, json!({})), "-");
+fn a_task_falls_back_to_team_slash_misc_without_a_lanes_file_or_a_fallback() {
+    let absent = lane_of("lane-absent", None, 7, json!({ "team": "FND" }));
+    let unmatched = lane_of(
+        "lane-unmatched",
+        Some("[[rules]]\nkey = \"x\"\nlane = \"A/b\"\n"),
+        7,
+        json!({}),
+    );
+
+    assert_eq!(
+        (absent.as_str(), unmatched.as_str()),
+        ("FND/misc", "none/misc")
+    );
 }
 
 #[test]

@@ -185,7 +185,7 @@ A lane groups related work, such as `3D/mobile`, so views and reports show it to
 can set a task's lane. Otherwise `lanes.toml` derives it, and the first matching rule wins:
 
 ```toml
-fallback = "{team}/misc"     # {team} is the issue's team; "none/misc" without one
+fallback = "{team}/misc"     # {team} is the issue's team; "none/misc" without one; this is the default
 
 [[rules]]
 key = "3D-600"
@@ -202,7 +202,7 @@ matches any run of characters. `priory check` rejects a lane that is not `<team>
 with no field to match on, and an unknown rule field, with its line.
 
 The daemon sets a task's lane when it creates the task, from the request's lane, else the first
-matching rule, else the fallback. The team and project come from the source event when it carries
+matching rule, else the fallback, which is `{team}/misc` when `lanes.toml` is absent or sets none, so every task has a lane. The team and project come from the source event when it carries
 them, and `{team}` becomes `none` without a team. No branch exists yet, so a branch rule cannot match
 then. When the task's first run creates its branch, a lane that was derived is derived again with the
 branch, so a branch rule can then win. A lane the request set never changes, and neither does a

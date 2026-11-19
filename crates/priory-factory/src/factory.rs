@@ -417,6 +417,17 @@ pub struct Factory {
     pub lanes: Option<Loaded<Lanes>>,
 }
 
+impl Factory {
+    /// The factory's lanes, or the built-in ones: no rules and the `{team}/misc` fallback.
+    pub fn lanes(&self) -> &Lanes {
+        static BUILT_IN: Lanes = Lanes {
+            fallback: None,
+            rules: Vec::new(),
+        };
+        self.lanes.as_ref().map_or(&BUILT_IN, |lanes| &lanes.value)
+    }
+}
+
 pub fn load(dir: &Path) -> (Factory, Vec<Problem>) {
     let mut factory = Factory {
         dir: dir.to_path_buf(),
