@@ -158,10 +158,15 @@ impl Setup {
     }
 
     fn start(&mut self) {
+        self.start_as(Path::new(env!("CARGO_BIN_EXE_priory")));
+    }
+
+    /// Starts the daemon through the path `exe`, as a person or a service invokes it.
+    fn start_as(&mut self, exe: &Path) {
         let factory = self.dir.join("factory");
         let log = fs::File::create(self.dir.join("daemon.log")).unwrap();
         self.daemon = Some(
-            self.command(env!("CARGO_BIN_EXE_priory"))
+            self.command(exe.to_str().unwrap())
                 .args(["daemon", factory.to_str().unwrap()])
                 .env("CLAUDECODE", "1")
                 .env("CLAUDE_CODE_ENTRYPOINT", "cli")
@@ -191,9 +196,40 @@ impl Setup {
         String::from_utf8(output.stdout)
             .unwrap()
             .lines()
+            // The desk's stall banner, before its header, has no tab.
+            .skip_while(|line| !line.contains('\t'))
             .skip(1)
             .map(|line| line.split('\t').map(str::to_owned).collect())
             .collect()
+    }
+
+    /// The banner line `priory desk` starts with, if any.
+    fn banner(&self) -> Option<String> {
+        let output = self.priory(&["desk"]);
+        assert!(output.status.success());
+        String::from_utf8(output.stdout)
+            .unwrap()
+            .lines()
+            .next()
+            .filter(|line| !line.contains('\t'))
+            .map(str::to_owned)
+    }
+
+    /// Polls the desk's banner until `done` holds for it, and returns it.
+    fn until_banner(&self, done: impl Fn(Option<&str>) -> bool) -> Option<String> {
+        let deadline = Instant::now() + Duration::from_secs(15);
+        loop {
+            let banner = self.banner();
+            if done(banner.as_deref()) {
+                return banner;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "timed out on the desk banner: {banner:?}\ndaemon: {}",
+                fs::read_to_string(self.dir.join("daemon.log")).unwrap_or_default()
+            );
+            std::thread::sleep(Duration::from_millis(50));
+        }
     }
 
     /// Polls `priory <verb>` until `done` holds for its rows, and returns them.
@@ -550,11 +586,42 @@ fn a_codex_agent_runs_codex_with_priorys_hooks_mcp_server_and_a_sandbox_that_ask
 }
 
 #[test]
+fn a_codex_run_starts_on_its_own_with_the_steps_prompt_as_its_last_argument() {
+    // Longer than the 16 KiB tmux takes in one command.
+    let long = "context ".repeat(2500);
+    let workflow = WORKFLOW.replace(
+        "prompt = \"Implement the issue.\"",
+        &format!("prompt = '''\n- Read \"the issue\" and Max's notes.\n  Then implement it; $HOME stays literal.\n{long}\n'''"),
+    );
+    let mut setup = Setup::with_workflow("codex-prompt", &workflow);
+    fs::write(setup.dir.join("factory/agents/implementer/agent.md"), CODEX).unwrap();
+    setup.publish(&requested(42));
+
+    setup.start();
+
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 1);
+    let prompt = format!(
+        "- Read \"the issue\" and Max's notes.\n  Then implement it; $HOME stays literal.\n{long}\n\nEnd this step by calling the result tool of the priory MCP server with one of these outcomes: failed, passed."
+    );
+    let args = codex_args(&setup);
+    assert!(args.contains(&"--no-daemon".to_owned()), "{args:?}");
+    assert_eq!(
+        fs::read_to_string(setup.dir.join("fake/codex-prompt")).unwrap(),
+        prompt
+    );
+    assert_eq!(setup.typed()[0], format!("{prompt}\n"));
+}
+
+#[test]
 fn a_codex_run_with_no_session_start_names_the_codex_command_whose_hooks_to_trust() {
     let mut setup = Setup::new("codex-untrusted");
     fs::write(setup.dir.join("factory/agents/implementer/agent.md"), CODEX).unwrap();
     setup.publish(&requested(42));
-    setup.hold("silent");
+    fs::write(
+        setup.dir.join("fake/silent"),
+        "  Hooks need review\n\n  3 hooks are new or changed\n  › 1. Review hooks\n",
+    )
+    .unwrap();
     setup.start();
     setup.until("runs", |rows| rows.len() == 1);
 
@@ -570,8 +637,18 @@ fn a_codex_run_with_no_session_start_names_the_codex_command_whose_hooks_to_trus
     );
     assert!(reason.starts_with(&prefix), "{reason}");
     assert!(
-        reason.ends_with(", accept the folder, type /hooks and trust Priory's hooks, then exit"),
+        reason.ends_with(
+            ", accept the folder, type /hooks and trust Priory's hooks, then exit. Its pane ended with: Hooks need review | 3 hooks are new or changed | › 1. Review hooks"
+        ),
         "{reason}"
+    );
+    let log = fs::read_to_string(setup.dir.join("daemon.log")).unwrap();
+    assert!(log.contains("  3 hooks are new or changed\n"), "{log}");
+    let outbox = setup.rows("outbox");
+    assert_eq!(
+        [outbox.len(), with(&outbox, 3, "queued")],
+        [1, 1],
+        "the next run gets the prompt this one never saw: {outbox:?}"
     );
     for event in [
         "SessionStart",
@@ -585,6 +662,27 @@ fn a_codex_run_with_no_session_start_names_the_codex_command_whose_hooks_to_trus
             "{event} in {reason}"
         );
     }
+}
+
+#[test]
+fn a_codex_run_names_priory_by_the_path_it_was_invoked_by_so_an_upgrade_keeps_hook_trust() {
+    let mut setup = Setup::new("codex-stable-exe");
+    fs::write(setup.dir.join("factory/agents/implementer/agent.md"), CODEX).unwrap();
+    let profile = setup.dir.join("profile/bin/priory");
+    fs::create_dir_all(profile.parent().unwrap()).unwrap();
+    std::os::unix::fs::symlink(env!("CARGO_BIN_EXE_priory"), &profile).unwrap();
+    setup.publish(&requested(42));
+
+    setup.start_as(&profile);
+
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 1);
+    let config = codex_config(&setup);
+    let hook = &config["hooks"]["SessionStart"][0]["hooks"][0]["command"];
+    assert_eq!(
+        hook.as_str().unwrap(),
+        format!("'{}' hook SessionStart", profile.display())
+    );
+    assert_eq!(config["mcp_servers"]["priory"]["command"], json!(profile));
 }
 
 /// The `@priory` tag of task 1's pane: the id Priory gave its run, which its tools carry too.
@@ -616,6 +714,12 @@ fn a_codex_run_stores_the_thread_codex_chose_and_an_answer_resumes_it() {
     setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 2);
     let args = codex_args(&setup);
     assert_eq!(args[..2], ["resume", thread.as_str()], "{args:?}");
+    assert!(args.contains(&"--no-daemon".to_owned()), "{args:?}");
+    assert!(
+        fs::read_to_string(setup.dir.join("fake/codex-prompt"))
+            .unwrap()
+            .starts_with("sqlite\n")
+    );
     let runs = setup.rows("runs");
     assert_eq!([&runs[1][2], &runs[1][4]], ["plan", &thread]);
     assert!(
@@ -1236,6 +1340,241 @@ fn high_load_or_low_disk_holds_admission() {
     assert!(setup.rows("runs").is_empty());
     setup.disk(100);
     setup.until("tasks", |rows| rows[0][4] == "running");
+}
+
+#[test]
+fn the_desk_starts_with_a_stall_banner_while_the_head_waits_for_room_and_drops_it_when_room_returns()
+ {
+    let mut setup = Setup::new("stall-banner");
+    setup.disk(10);
+    setup.publish(&requested(42));
+
+    setup.start();
+
+    let banner = setup.until_banner(|banner| banner.is_some()).unwrap();
+    let (since, rest) = banner
+        .strip_prefix("stalled since ")
+        .and_then(|rest| rest.split_once(": "))
+        .unwrap_or_else(|| panic!("{banner}"));
+    assert!(since.ends_with('Z') && since.len() == 20, "{banner}");
+    assert_eq!(rest, "short of disk by 10.0 GB; task 1 waits for room");
+    // The stall's start survives a restart.
+    setup.crash();
+    setup.start();
+    std::thread::sleep(Duration::from_millis(1500));
+    assert_eq!(setup.banner(), Some(banner));
+    setup.disk(100);
+    setup.until("tasks", |rows| rows[0][4] == "running");
+    assert_eq!(setup.until_banner(|banner| banner.is_none()), None);
+}
+
+const SWEEP_SCRIPTS: &str = r#"name = "demo"
+
+[sweep]
+scripts = [
+  { run = "echo once >> \"$FAKE_DIR/swept\"; echo freed 3 GB", when = "disk" },
+  { run = "echo nope; exit 3", when = "disk" },
+  { run = "sleep 30", when = "disk", timeout = "1s" },
+  { run = "echo memory >> \"$FAKE_DIR/swept\"", when = "memory" },
+]
+"#;
+
+#[test]
+fn a_disk_stall_runs_the_disk_scripts_once_with_a_timeout_and_the_desk_shows_their_output() {
+    let mut setup = Setup::new("stall-scripts");
+    fs::write(setup.dir.join("factory/factory.toml"), SWEEP_SCRIPTS).unwrap();
+    setup.disk(10);
+    setup.publish(&requested(42));
+
+    setup.start();
+
+    let desk = setup.until("desk", |rows| {
+        rows.iter()
+            .filter(|row| row[1] == "sweep" && !row[5].ends_with(": running"))
+            .count()
+            == 3
+    });
+    let sweeps: Vec<_> = desk
+        .iter()
+        .filter(|row| row[1] == "sweep")
+        .map(|row| [row[3].as_str(), row[5].as_str()])
+        .collect();
+    assert_eq!(
+        sweeps,
+        [
+            [
+                "1",
+                "echo once >> \"$FAKE_DIR/swept\"; echo freed 3 GB: exit 0: freed 3 GB"
+            ],
+            ["1", "echo nope; exit 3: exit 3: nope"],
+            ["1", "sleep 30: timed out after 1s"],
+        ]
+    );
+    std::thread::sleep(Duration::from_millis(1500));
+    assert_eq!(
+        fs::read_to_string(setup.dir.join("fake/swept")).unwrap(),
+        "once\n"
+    );
+    setup.disk(100);
+    setup.until("tasks", |rows| rows[0][4] == "running");
+    setup.until("desk", |rows| !rows.iter().any(|row| row[1] == "sweep"));
+}
+
+const SWEEPER: &str = r#"name = "demo"
+
+[sweep]
+after = "1s"
+agent = "sweeper"
+repo = "owner/repo"
+scripts = [{ run = "echo nothing to free", when = "disk" }]
+"#;
+
+/// A factory with a sweeper agent, short of disk, and one task waiting for room.
+fn stalled_with_sweeper(name: &str) -> Setup {
+    let setup = Setup::new(name);
+    fs::write(setup.dir.join("factory/factory.toml"), SWEEPER).unwrap();
+    let agent = setup.dir.join("factory/agents/sweeper/agent.md");
+    fs::create_dir_all(agent.parent().unwrap()).unwrap();
+    fs::write(
+        agent,
+        "+++\ndescription = \"Frees room.\"\nharness = \"claude-code\"\n+++\nYou free room.\n",
+    )
+    .unwrap();
+    setup.disk(10);
+    setup.publish(&requested(42));
+    setup
+}
+
+#[test]
+fn a_stall_past_its_threshold_starts_one_sweeper_task_that_skips_the_room_check() {
+    let mut setup = stalled_with_sweeper("sweeper-once");
+    setup.hold("hold-stop");
+
+    setup.start();
+
+    // The sweeper takes the highest band, so it lists first.
+    let tasks = setup.until("tasks", |rows| rows.len() == 2 && rows[0][4] == "running");
+    assert_eq!(
+        [&tasks[1][4], &tasks[0][1], &tasks[0][2], &tasks[0][6]],
+        ["queued", "priory:sweep", "sweep", "priory/sweep"]
+    );
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") == 1);
+    setup.written("fake/typed.log");
+    let prompt = &setup.typed()[0];
+    for part in [
+        "priory.queue.stalled",
+        r#""resource":"disk""#,
+        r#""missing":"10.0 GB""#,
+        r#""script":"echo nothing to free","status":"exit 0","output":"nothing to free""#,
+    ] {
+        assert!(prompt.contains(part), "{part} not in {prompt}");
+    }
+    std::thread::sleep(Duration::from_millis(2500));
+    assert_eq!(setup.rows("tasks").len(), 2);
+}
+
+#[test]
+fn a_sweeper_that_cleaned_opens_an_issue_on_the_sweep_repository_once_a_person_approves() {
+    let mut setup = stalled_with_sweeper("sweeper-issue");
+    setup.calls(&[json!({ "name": "result", "arguments": {
+        "outcome": "cleaned",
+        "summary": "Sweep the Docker build cache\nRemoved 30 GB of build cache with docker builder prune.",
+    } })]);
+
+    setup.start();
+
+    let asks = setup.until("asks", |rows| rows.len() == 1);
+    assert_eq!(asks[0][1], "2");
+    assert!(asks[0][3].starts_with("approve-issue"), "{asks:?}");
+    assert!(setup.gh().is_empty());
+    let answered = setup.priory(&["answer", "1", "open", "--revision", "1"]);
+    assert!(answered.status.success(), "{answered:?}");
+    setup.until("tasks", |rows| rows[0][4] == "done");
+    let gh = setup.gh();
+    assert_eq!(gh.len(), 2, "{gh:?}");
+    assert_eq!(
+        gh[0][..6],
+        ["issue", "list", "-R", "owner/repo", "--state", "all"]
+    );
+    let (body, mark) = gh[1][7].rsplit_once("\n\n").unwrap();
+    assert_eq!(
+        gh[1][..7],
+        [
+            "issue",
+            "create",
+            "-R",
+            "owner/repo",
+            "--title",
+            "Sweep the Docker build cache",
+            "--body",
+        ]
+    );
+    assert_eq!(
+        body,
+        "Sweep the Docker build cache\nRemoved 30 GB of build cache with docker builder prune."
+    );
+    assert!(
+        mark.starts_with("Filed by Priory for event ") && gh[0][7].contains(mark),
+        "{gh:?}"
+    );
+}
+
+/// Two tasks on a disk with 30 GB free, which keeps 20 GB, for an implementer declaring `disk`.
+fn two_on_disk(name: &str, disk: Option<&str>) -> Setup {
+    let mut setup = Setup::new(name);
+    if let Some(disk) = disk {
+        let agent = AGENT.replace("effort", &format!("disk = \"{disk}\"\neffort"));
+        fs::write(setup.dir.join("factory/agents/implementer/agent.md"), agent).unwrap();
+    }
+    setup.disk(30);
+    setup.publish(&requested(42));
+    setup.publish(&requested(43));
+    setup.start();
+    setup
+}
+
+#[test]
+fn two_agents_declaring_disk_cannot_both_start_when_only_one_fits() {
+    let setup = two_on_disk("disk-one-fits", Some("8GB"));
+
+    let reason = "waits for room: 22.0 GB of disk free, needs 8.0 GB and keeps 20.0 GB free";
+    let tasks = setup.until("tasks", |rows| rows.len() == 2 && rows[1][7] == reason);
+    assert_eq!([&tasks[0][4], &tasks[1][4]], ["running", "queued"]);
+    assert_eq!(
+        setup.banner().as_deref(),
+        Some(&*format!(
+            "stalled since {}: short of disk by 6.0 GB; task 2 waits for room",
+            setup.banner().unwrap()[14..34].to_owned()
+        ))
+    );
+}
+
+#[test]
+fn a_head_that_declares_more_disk_than_the_runner_has_holds_back_no_one() {
+    let mut setup = Setup::new("disk-never-fits");
+    with_review(&setup, "4GB");
+    // The disk is 1000 GB, so 2000 GB never fits.
+    fs::write(
+        setup.dir.join("factory/agents/implementer/agent.md"),
+        AGENT.replace("effort", "disk = \"2000GB\"\neffort"),
+    )
+    .unwrap();
+    setup.disk(500);
+    setup.publish(&requested_in(42, Some("now")));
+    setup.publish(&review_requested(43));
+
+    setup.start();
+
+    let tasks = setup.until("tasks", |rows| rows.len() == 2 && rows[1][4] == "running");
+    assert_eq!(tasks[0][4], "queued");
+    assert_eq!(setup.banner(), None);
+}
+
+#[test]
+fn an_agent_without_disk_reserves_none() {
+    let setup = two_on_disk("disk-none", None);
+
+    setup.until("tasks", |rows| with(rows, 4, "running") == 2);
 }
 
 #[test]
@@ -2168,6 +2507,48 @@ fn resume_restarts_a_blocked_task_in_its_session_and_cancel_drops_it_and_ends_it
     assert_eq!(setup.rows("runs")[1][7], "cancelled");
     setup.gone("priory-1");
     assert!(setup.rows("desk").is_empty());
+}
+
+#[test]
+fn resuming_a_task_whose_runs_never_started_queues_one_resume_line_and_one_ending() {
+    let typed = resume_three_failed_launches(Setup::new("resume-unstarted"));
+    assert_eq!(
+        typed,
+        "A person resumed this task. Check the worktree, then continue.\nImplement the issue.\nEnd this step by calling the result tool of the priory MCP server with one of these outcomes: failed, passed.\n"
+    );
+}
+
+#[test]
+fn resuming_a_shared_agents_task_whose_runs_never_started_queues_one_resume_line() {
+    let typed = resume_three_failed_launches(shared("resume-shared"));
+    assert_eq!(
+        typed.matches("A person resumed this task").count(),
+        1,
+        "{typed}"
+    );
+}
+
+/// The first prompt a run takes after three launches that died and a fourth resume.
+fn resume_three_failed_launches(mut setup: Setup) -> String {
+    setup.publish(&requested(42));
+    setup.hold("die");
+    setup.start();
+    let blocked = |rows: &[Vec<String>]| rows.first().is_some_and(|row| row[4] == "blocked");
+    setup.until("tasks", blocked);
+    for _ in 0..2 {
+        assert!(setup.priory(&["resume", "1"]).status.success());
+        setup.until("runs", |rows| {
+            rows.len() >= 2 && rows.iter().all(|row| row[6] != "-")
+        });
+        setup.until("tasks", blocked);
+    }
+    setup.release("die");
+
+    let resumed = setup.priory(&["resume", "1"]);
+
+    assert!(resumed.status.success(), "{resumed:?}");
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 1);
+    setup.typed().remove(0)
 }
 
 const INTERRUPTED: &str = "Priory restarted and found tmux session priory-2 gone, as after a reboot, so this run was interrupted. Check the worktree, then continue.\nEnd this step by calling the result tool of the priory MCP server with one of these outcomes: hopeless, ready, unsure.\n";

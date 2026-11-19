@@ -118,6 +118,7 @@ model = "sonnet"
 runner = "any"
 session = "per-task"         # or "shared": one conversation across tasks, such as a lead
 memory = "6GB"               # what a runner must have free to admit a run
+disk = "20GB"                # optional: disk a run reserves above the runner's floor
 mcpServers = ["github"]
 # defaultMode is the run's mode: manual when unset; bypassPermissions is refused
 permissions = { defaultMode = "auto", allow = ["Bash(cargo test:*)"], deny = ["Bash(git push:*)"] }
@@ -394,7 +395,9 @@ until its run starts.
   asleep task has no agent process and keeps its worktree. M0
 - R4.2 A retired task has no process and no worktree, and keeps its branch and its session. M1
 - R4.3 A runner admits a run only when its live free memory, disk and CPU leave room for the agent's
-  declared needs. M0
+  declared needs. M0 An agent may declare `disk`, which a run reserves like `memory` until it ends.
+  While the head of the queue waits for room, the desk starts with a banner naming the short
+  resource, how much is missing, since when and the waiting task. M1
 - R4.4 The queue starts ready tasks in band order, then in the order a person set inside the band,
   then oldest first. The bands default to `blocker`, `now`, `today` and `later`, and `factory.toml`
   can rename them. A trigger or workflow sets a task's default band. A higher band only starts
@@ -471,7 +474,11 @@ Priory serves these as MCP tools.
   `auto` lets Claude's auto mode decide its prompts. M0
 - R7.3 Remove the worktree of a task that ended only when Priory created it, its branch merged, it
   has no unpushed commits, no uncommitted changes and no untracked files, and no process runs in it.
-  Report every other worktree instead. Retiring an active task follows R3.3. M0
+  Report every other worktree instead. Retiring an active task follows R3.3. M0 The `[sweep]` table
+  of `factory.toml` sets the sweep's cadence and lists scripts that run, with a timeout, when the
+  resource they name stalls the queue. When the queue stays stalled past a set time after them, a
+  sweeper agent cleans by hand and asks, through an approved issue, for the sweep that would have
+  done it. M1
 - R7.4 A short handler session reads a stalled agent's screen and nudges or restarts it. M1
 - R7.5 A failed task gets one repair attempt per run. The repair restarts the agent only on a cause
   it changed or confirmed gone. M1
