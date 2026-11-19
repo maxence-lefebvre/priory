@@ -34,6 +34,11 @@ key = "issue.number"
 
 const OUTPUT: &str = "factory.intake";
 
+/// Takes a state file back before schema 28, which added search.
+const UNDO_SEARCH: &str = "DROP TRIGGER search_task_created; DROP TRIGGER search_tldr_changed;
+  DROP TRIGGER search_result_stored; DROP VIEW task_text; DROP TABLE search; DROP TABLE summaries;
+  DROP TABLE embedder; DROP TABLE vectors; ALTER TABLE tasks DROP COLUMN tldr;";
+
 /// A factory, bus, state, Priory home, tmux server, origin repository and fake `claude`, all under
 /// the test's own directory. Dropping it kills the daemon and the tmux server.
 struct Setup {
@@ -517,6 +522,15 @@ fn a_queued_task_at_a_model_step_gets_a_worktree_a_tmux_session_and_a_run() {
     ] {
         assert!(args.windows(2).any(|w| w == pair), "{pair:?} in {args:?}");
     }
+    let mcp = args.windows(2).find(|w| w[0] == "--mcp-config").unwrap()[1];
+    let mcp: serde_json::Value = serde_json::from_str(mcp).unwrap();
+    assert_eq!(
+        mcp["mcpServers"]["priory"]["env"],
+        json!({
+            "PRIORY_HOME": setup.dir.join("home"),
+            "PRIORY_DB": setup.dir.join("priory.db"),
+        })
+    );
     assert_eq!(setup.rows("tasks")[0][4], "running");
 }
 
@@ -579,6 +593,7 @@ fn a_cli_task_stored_before_tasks_kept_a_repository_starts_in_its_requests_repos
     setup.crash();
     // The state file as version 23 left it: tasks without a repository.
     let db = rusqlite::Connection::open(setup.dir.join("priory.db")).unwrap();
+    db.execute_batch(UNDO_SEARCH).unwrap();
     db.execute_batch("ALTER TABLE tasks DROP COLUMN repo; ALTER TABLE outbox DROP COLUMN compact; PRAGMA user_version = 23;")
         .unwrap();
     drop(db);
@@ -694,7 +709,10 @@ fn a_codex_agent_runs_codex_with_priorys_hooks_mcp_server_and_a_sandbox_that_ask
         json!({
             "command": exe,
             "args": ["mcp", "--session", tmux_tag(&setup)],
-            "env": { "PRIORY_HOME": setup.dir.join("home") },
+            "env": {
+                "PRIORY_HOME": setup.dir.join("home"),
+                "PRIORY_DB": setup.dir.join("priory.db"),
+            },
             "default_tools_approval_mode": "approve",
         })
     );
@@ -2559,6 +2577,7 @@ fn a_task_queued_before_schema_11_ends_its_first_step_once_upgraded() {
     route(&setup);
     // Schema 10 inserted a queued task with no `changed`, which migration 11 copied into `entered`.
     let db = rusqlite::Connection::open(setup.dir.join("priory.db")).unwrap();
+    db.execute_batch(UNDO_SEARCH).unwrap();
     db.execute_batch(
         "UPDATE tasks SET entered = NULL; ALTER TABLE outbox DROP COLUMN compact;
          PRAGMA user_version = 24;",
@@ -3305,6 +3324,7 @@ fn an_upgrade_hands_the_unconfirmed_prompt_of_a_moved_run_to_the_live_run_that_c
     setup.crash();
     // The state as the version before this fix left it.
     let db = rusqlite::Connection::open(setup.dir.join("priory.db")).unwrap();
+    db.execute_batch(UNDO_SEARCH).unwrap();
     db.execute_batch(
         "UPDATE outbox SET run = 1 WHERE id = 1; ALTER TABLE tasks DROP COLUMN repo; ALTER TABLE outbox DROP COLUMN compact;
          PRAGMA user_version = 22;",
@@ -3435,7 +3455,7 @@ fn a_lost_run_that_asked_since_the_last_loss_resumes_again() {
 }
 
 #[test]
-fn the_mcp_server_lists_the_result_ask_wait_and_compact_tools() {
+fn the_mcp_server_lists_its_tools() {
     let setup = Setup::new("list");
 
     let replies = setup.mcp(
@@ -3463,7 +3483,10 @@ fn the_mcp_server_lists_the_result_ask_wait_and_compact_tools() {
         .iter()
         .map(|tool| tool["name"].as_str().unwrap())
         .collect();
-    assert_eq!(names, ["result", "ask", "wait", "compact"]);
+    assert_eq!(
+        names,
+        ["result", "ask", "wait", "compact", "tldr", "search"]
+    );
     let on = &replies[1]["result"]["tools"][2]["inputSchema"]["properties"]["on"];
     assert_eq!(
         on["properties"]["type"]["enum"],
@@ -7555,6 +7578,48 @@ fn a_factory_without_a_handler_never_calls_one() {
     std::thread::sleep(Duration::from_secs(5));
     assert!(setup.handled().is_empty(), "{:?}", setup.handled());
     assert!(setup.handler_records().is_empty());
+}
+
+#[test]
+fn the_tldr_tool_refuses_a_tldr_over_the_limit_with_its_count_then_stores_one_the_search_tool_finds()
+ {
+    let mut setup = Setup::new("tldr-tool");
+    let long = vec!["gate"; 181].join(" ");
+    setup.calls(&[
+        json!({ "name": "tldr", "arguments": { "text": long } }),
+        json!({ "name": "tldr", "arguments": { "text": "Rework the done gate so it ends on a close." } }),
+    ]);
+    setup.publish(&requested(42));
+
+    setup.start();
+
+    setup.calls_left(0);
+    let deadline = Instant::now() + Duration::from_secs(15);
+    while setup.replies().len() < 2 {
+        assert!(Instant::now() < deadline, "{:?}", setup.replies());
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let (refused, error) = reply(&setup.replies()[0]);
+    assert!(
+        error && refused.contains("181 words") && refused.contains("180"),
+        "{refused}"
+    );
+    let (stored, error) = reply(&setup.replies()[1]);
+    assert!(!error, "{stored}");
+    let session = setup.rows("runs")[0][4].clone();
+    let replies = setup.mcp(
+        &session,
+        &[json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "search", "arguments": {"query": "who touches the done gate?"}}})],
+    );
+    let (found, error) = reply(&replies[0]);
+    assert!(!error, "{found}");
+    let rows: Vec<&str> = found.lines().skip(1).collect();
+    assert_eq!(rows.len(), 1, "{found}");
+    assert!(
+        rows[0].starts_with("1\t")
+            && rows[0].ends_with("Rework the done gate so it ends on a close."),
+        "{found}"
+    );
 }
 
 impl Setup {

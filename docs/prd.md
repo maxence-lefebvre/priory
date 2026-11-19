@@ -545,6 +545,26 @@ Priory serves these as MCP tools.
 - R11.2 Build caches such as sccache or a Nix cache belong to the runner's environment. Priory
   documents them and does not run them.
 
+### R12. Search
+
+A person or an agent finds tasks by what they are about, such as other tasks that touch the same
+code, or one that already did the work.
+
+- R12.1 Every task has a TL;DR, a summary short enough for the embedding model's input. A request
+  can carry it. Otherwise a summarizer agent named in `factory.toml` writes it from the request, once,
+  outside the task's runs, and never delays the task. The task's agent can replace it through a
+  `tldr` tool, and a person through `priory tldr`. Until it exists, the request's title and opening
+  text stand in. M2
+- R12.2 Every writer goes through one limit: the model's tokens with embeddings on, else 180 words.
+  The tool and the CLI refuse a longer TL;DR with its count. M2
+- R12.3 Keyword search is always on: an FTS5 index over each task's title, request, TL;DR and
+  results, ranked by bm25, from `priory search` and a `search` tool. M2
+- R12.4 Embeddings are opt-in, from a model Priory runs in process or a person's command. Search
+  merges the keyword and vector rankings by reciprocal rank fusion. A change of embedder embeds
+  every task again in the background. M2
+- R12.5 An embedder that is missing or fails never blocks a task. Search falls back to keywords and
+  says why. M2
+
 ## Architecture
 
 - One thread owns the state. It takes one input at a time and returns effects. Effects run
@@ -564,7 +584,7 @@ Priory serves these as MCP tools.
 | --------- | ---------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------- |
 | M0        | One machine, tmux, one harness, CLI and GitHub intake, inbox, workflows, waits, asks, results, health | The example workflow above runs end to end, with the agent asleep on the `approve-pr` ask until it is answered, the task waiting on the pull request's checks, a daemon restart, a duplicate event and a failed run |
 | M1        | Linear, schedules, queue order, holds, revive, lanes, bands, memory gate, agents slice, retire and resurrect, traces, reports, nudges, repair, Codex | The author's own factory runs on Priory for one week                                                     |
-| M2        | Web view, webhooks, terminal attach, command answers, OpenTelemetry export                                     | One working day of asks answered from a phone only                                                                   |
+| M2        | Web view, webhooks, terminal attach, command answers, OpenTelemetry export, search                             | One working day of asks answered from a phone only                                                                   |
 | M3        | Several machines, state adapters, shared skills and memories                             | A runner is disconnected for an hour while tasks run, then reconnected, with no task run twice and no answer lost    |
 | M4        | Risk estimate, scorers and benchmarks                                                    | A configuration change is compared on replayed tasks before it merges                                                |
 

@@ -31,6 +31,8 @@ pub(crate) struct NewTask {
     pub repo: Option<String>,
     #[serde(default)]
     pub hold: Option<priory_factory::factory::Hold>,
+    #[serde(default)]
+    pub tldr: Option<String>,
 }
 
 /// The resources a message names, which a task may own: a task request's key, a CLI request's

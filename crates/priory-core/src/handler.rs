@@ -179,17 +179,18 @@ enum Choice {
 /// What a handler call answered, read from Claude's `--output-format json`.
 struct Answer {
     choice: Choice,
-    model: Option<String>,
-    tokens: Option<Value>,
-    cost_usd: Option<f64>,
+    usage: Usage,
 }
 
-/// The status of a call a stopped daemon left: its output, if any, is read but never applied.
-pub(crate) const INTERRUPTED: &str = "interrupted by a daemon restart";
+/// What a one-shot `claude -p` call reported about itself.
+pub(crate) struct Usage {
+    pub model: Option<String>,
+    pub tokens: Option<Value>,
+    pub cost_usd: Option<f64>,
+}
 
-/// Reads the call's output. Only a call that exited 0, or was interrupted after it wrote, with a
-/// successful result counts; any other becomes `leave`, keeping its usage.
-fn read(output: Option<&str>, status: &str) -> Answer {
+/// A one-shot call's output, if it parses, with its usage.
+pub(crate) fn parse(output: Option<&str>) -> (Value, Usage) {
     let parsed: Value = output
         .and_then(|output| serde_json::from_str(output).ok())
         .unwrap_or(Value::Null);
@@ -202,10 +203,32 @@ fn read(output: Option<&str>, status: &str) -> Answer {
             "cache_write": usage["cache_creation_input_tokens"].as_i64().unwrap_or(0),
         })
     });
-    let result = parsed["result"].as_str().unwrap_or_default();
-    let succeeded = matches!(status, "exit 0" | INTERRUPTED)
+    let usage = Usage {
+        model: parsed["modelUsage"]
+            .as_object()
+            .and_then(|models| models.keys().next().cloned()),
+        tokens,
+        cost_usd: parsed["total_cost_usd"].as_f64(),
+    };
+    (parsed, usage)
+}
+
+/// Whether a one-shot call that ended with `status` answered successfully.
+pub(crate) fn succeeded(parsed: &Value, status: &str) -> bool {
+    matches!(status, "exit 0" | INTERRUPTED)
         && parsed["is_error"] == false
-        && parsed["subtype"] == "success";
+        && parsed["subtype"] == "success"
+}
+
+/// The status of a call a stopped daemon left: its output, if any, is read but never applied.
+pub(crate) const INTERRUPTED: &str = "interrupted by a daemon restart";
+
+/// Reads the call's output. Only a call that exited 0, or was interrupted after it wrote, with a
+/// successful result counts; any other becomes `leave`, keeping its usage.
+fn read(output: Option<&str>, status: &str) -> Answer {
+    let (parsed, usage) = parse(output);
+    let result = parsed["result"].as_str().unwrap_or_default();
+    let succeeded = succeeded(&parsed, status);
     // A model may wrap its JSON in prose or a code fence.
     let chosen = result
         .find('{')
@@ -226,14 +249,7 @@ fn read(output: Option<&str>, status: &str) -> Answer {
             why: format!("the handler gave no action: {result}"),
         },
     };
-    Answer {
-        choice,
-        model: parsed["modelUsage"]
-            .as_object()
-            .and_then(|models| models.keys().next().cloned()),
-        tokens,
-        cost_usd: parsed["total_cost_usd"].as_f64(),
-    }
+    Answer { choice, usage }
 }
 
 /// Why the answer to call `id` must not act on its run, if it must not: the run ended, sent a hook
@@ -312,12 +328,13 @@ pub(crate) fn answered(
             action,
             text: &text,
             model: answer
+                .usage
                 .model
                 .as_deref()
                 .or_else(|| model(trace.factory))
                 .unwrap_or(MODEL),
-            tokens: answer.tokens,
-            cost_usd: answer.cost_usd,
+            tokens: answer.usage.tokens,
+            cost_usd: answer.usage.cost_usd,
         },
     )?;
     tx.commit()?;

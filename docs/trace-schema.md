@@ -131,6 +131,19 @@ A short model call that read a stalled run's screen and chose what to do with it
 
 Priory writes these records as described under Trace in [the daemon](daemon/trace.md).
 
+## `factory.summarizer.called`
+
+A short model call that wrote, or failed to write, a new task's TL;DR. Its `data` holds `factory`,
+`factory_revision`, `workflow`, `task`, `key`, `generation`, `step`, `harness`, `model`, `machine`
+and `tokens` as above, and:
+
+| Field      | Required | Meaning                                                            |
+| ---------- | -------- | ------------------------------------------------------------------ |
+| `status`   | yes      | `written`, or why the call wrote no TL;DR                          |
+| `cost_usd` | no       | The cost the harness reported for the call                         |
+
+Priory writes these records as described in [search](daemon/search.md).
+
 ## Rules
 
 - `id` is a UUID, stable across retries, so a reader drops duplicates by `id`.

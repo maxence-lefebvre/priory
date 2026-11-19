@@ -57,11 +57,15 @@ pub fn command_timeout() -> Duration {
 /// command timeout. Then it kills the whole group, so a hung fetch cannot stop the daemon's one
 /// thread, and no child that ignores TERM keeps the output pipe open.
 pub fn output_within(command: &mut Command) -> std::io::Result<Option<Output>> {
-    fed_within(command, None)
+    fed_within(command, None, command_timeout())
 }
 
-/// As `output_within`, with `input` written to the command's stdin within the same deadline.
-fn fed_within(command: &mut Command, input: Option<Vec<u8>>) -> std::io::Result<Option<Output>> {
+/// As `output_within`, with `input` written to the command's stdin, and `timeout` as its deadline.
+pub fn fed_within(
+    command: &mut Command,
+    input: Option<Vec<u8>>,
+    timeout: Duration,
+) -> std::io::Result<Option<Output>> {
     let stdin = if input.is_some() {
         Stdio::piped()
     } else {
@@ -81,13 +85,17 @@ fn fed_within(command: &mut Command, input: Option<Vec<u8>>) -> std::io::Result<
             (Some(mut stdin), Some(input)) => stdin.write_all(&input),
             _ => Ok(()),
         };
-        sender.send(
-            child
-                .wait_with_output()
-                .and_then(|output| written.map(|()| output)),
-        )
+        // A command that failed before reading its input explains itself better than the pipe.
+        sender.send(child.wait_with_output().and_then(|output| match written {
+            Err(error)
+                if error.kind() == std::io::ErrorKind::BrokenPipe && !output.status.success() =>
+            {
+                Ok(output)
+            }
+            written => written.map(|()| output),
+        }))
     });
-    if let Ok(output) = receiver.recv_timeout(command_timeout()) {
+    if let Ok(output) = receiver.recv_timeout(timeout) {
         return output.map(Some);
     }
     crate::script::kill(group);
@@ -134,7 +142,7 @@ pub(crate) fn run(command: &mut Command) -> Result<String, String> {
 
 /// As `run`, with `input` on the command's stdin.
 fn fed(command: &mut Command, input: Option<Vec<u8>>) -> Result<String, String> {
-    let output = fed_within(command, input)
+    let output = fed_within(command, input, command_timeout())
         .map_err(|error| format!("{command:?}: {error}"))?
         .ok_or_else(|| {
             format!(
@@ -425,7 +433,7 @@ impl Harness for Codex {
                 json!({
                     "command": exe,
                     "args": ["mcp", "--session", launch.session],
-                    "env": { "PRIORY_HOME": launch.home },
+                    "env": mcp_env(launch.home),
                     "default_tools_approval_mode": "approve",
                 }),
             ),
@@ -555,9 +563,19 @@ fn mcp_config(exe: &Path, launch: &Launch) -> String {
     json!({ "mcpServers": { "priory": {
         "command": exe,
         "args": ["mcp", "--session", launch.session],
-        "env": { "PRIORY_HOME": launch.home },
+        "env": mcp_env(launch.home),
     } } })
     .to_string()
+}
+
+/// What `priory mcp` needs from the daemon: its home, and its state file as an absolute path, since
+/// the bridge reads that file itself from the agent's worktree.
+fn mcp_env(home: &Path) -> serde_json::Value {
+    let mut env = json!({ "PRIORY_HOME": home });
+    if let Some(db) = std::env::var_os("PRIORY_DB").and_then(|db| std::path::absolute(db).ok()) {
+        env["PRIORY_DB"] = json!(db);
+    }
+    env
 }
 
 fn quote(exe: &Path) -> String {
@@ -614,7 +632,7 @@ fn settings(exe: &Path, permissions: &serde_json::Value) -> String {
 
 /// Starts a headless `claude -p` call of `model` on `prompt`, in `dir`, with no settings or MCP
 /// servers of the user's, so it cannot be granted a tool that needs permission. Its JSON answer goes to `<id>.json` in `dir`, which [`answer`] reads.
-pub fn ask_handler(
+pub fn ask_claude(
     dir: &Path,
     id: i64,
     model: &str,

@@ -32,17 +32,32 @@ pub fn check(factory: &Factory) -> Vec<Problem> {
                 format!("the sweeper agent `{agent}` does not exist"),
             ));
         }
-        if let Some(name) = &settings.value.handler {
+        let one_shots = [
+            ("handler", "handler", settings.value.handler.as_ref()),
+            ("search", "summarizer", settings.value.search.tldr.as_ref()),
+        ];
+        for (field, role, name) in one_shots {
+            let Some(name) = name else {
+                continue;
+            };
             let refused = match factory.agents.get(name) {
-                None => Some(format!("the handler agent `{name}` does not exist")),
+                None => Some(format!("the {role} agent `{name}` does not exist")),
                 Some(agent) if !matches!(agent.value.harness, Harness::ClaudeCode) => Some(
-                    format!("the handler agent `{name}` needs harness = \"claude-code\""),
+                    format!("the {role} agent `{name}` needs harness = \"claude-code\""),
                 ),
                 Some(_) => None,
             };
             if let Some(message) = refused {
-                problems.push(problem(settings, settings.lines.field("handler"), message));
+                problems.push(problem(settings, settings.lines.field(field), message));
             }
+        }
+        let search = &settings.value.search;
+        if search.model.is_some() && search.command.is_some() {
+            problems.push(problem(
+                settings,
+                settings.lines.field("search"),
+                "[search] names both a model and a command: keep one".to_owned(),
+            ));
         }
         if !owner_name(settings.value.sweep.repo()) {
             problems.push(problem(

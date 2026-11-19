@@ -125,4 +125,4 @@ A model with no price keeps its tokens. Its cost reads `price missing for <model
 total. A model step with no `tokens` shows `-` and `tokens unknown`, and its task's total names it.
 `priory check` refuses a price below zero or not finite. Prices apply at report time, so a changed
 price changes past costs too. A task's handler calls show as one more row per model, with step
-`handler`, and count in its total.
+`handler`, and count in its total. Its summarizer call does too, with step `summarizer`.

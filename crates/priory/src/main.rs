@@ -1,5 +1,5 @@
 use priory_core::memory::Gate;
-use priory_core::{daemon, report, stall, state, sweep, tools};
+use priory_core::{daemon, embed, report, search, stall, state, sweep, tools};
 use priory_factory::{factory, rules};
 use priory_intake::{intake, request};
 use priory_runtime::{mcp, runtime};
@@ -86,11 +86,20 @@ fn main() -> ExitCode {
             "SELECT id, task, step, action, status, pull_request, commit_sha,
              replace(error, char(10), '\\n') FROM actions ORDER BY id",
         ),
+        Some("tldr") => match (args.next(), args.next(), args.next()) {
+            (Some(task), Some(text), None) => tldr(&task.to_string_lossy(), &text.to_string_lossy()),
+            _ => usage(),
+        },
+        Some("search") => search(args.map(|arg| arg.to_string_lossy().into_owned()).collect()),
         Some("memory") => memory(args.collect()),
         Some("answer") => answer(args.map(|arg| arg.to_string_lossy().into_owned()).collect()),
         Some("mcp") => match (args.next(), args.next(), args.next()) {
             (Some(flag), Some(session), None) if flag == "--session" => {
-                exit("mcp", mcp::serve(&session.to_string_lossy()))
+                let session = session.to_string_lossy();
+                let local = |tool: &str, arguments: &serde_json::Value| {
+                    search::tool(&session, tool, arguments, &runtime::home())
+                };
+                exit("mcp", mcp::serve(&session, &local))
             }
             _ => usage(),
         },
@@ -104,7 +113,7 @@ fn main() -> ExitCode {
 
 fn usage() -> ExitCode {
     eprintln!(
-        "usage: priory check [DIR]\n       priory draw [DIR] WORKFLOW\n       priory intake [DIR] [--once]\n       priory daemon [DIR] [--once]\n       priory request [DIR] --workflow <name> --key <key> [--band <band>] [--lane <lane>] [--repo <owner/name>] [--hold <reason> [CONDITION]] <text>\n       priory inbox\n       priory tasks [--lane <lane>]\n       priory runs\n       priory outbox\n       priory asks\n       priory waits\n       priory actions\n       priory attach (TASK | --run RUN) [--read-only] [--print]\n       priory desk\n       priory trace\n       priory report [DIR] --workflow <name> [--since <instant-or-duration>] [--cost] [--by lane]\n       priory move TASK [--band <band>] [--top | --before TASK | --after TASK]\n       priory resume TASK\n       priory cancel TASK\n       priory revive TASK [--step STEP]\n       priory hold TASK --reason TEXT [--until TIME | --after TASK | --merge PR [--if-closed release|drop|ask] | --blockers]\n       priory release TASK\n       priory memory [acquire --gb N [--timeout D] -- COMMAND...]\n       priory answer ASK OPTION-OR-TEXT --revision N\n       priory mcp --session ID\n       priory hook EVENT"
+        "usage: priory check [DIR]\n       priory draw [DIR] WORKFLOW\n       priory intake [DIR] [--once]\n       priory daemon [DIR] [--once]\n       priory request [DIR] --workflow <name> --key <key> [--band <band>] [--lane <lane>] [--repo <owner/name>] [--hold <reason> [CONDITION]] <text>\n       priory inbox\n       priory tasks [--lane <lane>]\n       priory runs\n       priory outbox\n       priory asks\n       priory waits\n       priory actions\n       priory attach (TASK | --run RUN) [--read-only] [--print]\n       priory desk\n       priory trace\n       priory report [DIR] --workflow <name> [--since <instant-or-duration>] [--cost] [--by lane]\n       priory move TASK [--band <band>] [--top | --before TASK | --after TASK]\n       priory resume TASK\n       priory cancel TASK\n       priory revive TASK [--step STEP]\n       priory hold TASK --reason TEXT [--until TIME | --after TASK | --merge PR [--if-closed release|drop|ask] | --blockers]\n       priory release TASK\n       priory tldr TASK TEXT\n       priory search QUERY [--state STATE[,STATE...]] [--limit N]\n       priory memory [acquire --gb N [--timeout D] -- COMMAND...]\n       priory answer ASK OPTION-OR-TEXT --revision N\n       priory mcp --session ID\n       priory hook EVENT"
     );
     ExitCode::from(2)
 }
@@ -551,6 +560,54 @@ fn answer(mut args: Vec<String>) -> ExitCode {
     })
     .expect("an answer serializes");
     send("answer", &line)
+}
+
+/// Sets a task's TL;DR by hand.
+fn tldr(task: &str, text: &str) -> ExitCode {
+    let Ok(task) = task.parse() else {
+        return usage();
+    };
+    let set = state::open()
+        .and_then(|db| {
+            let counter = search::counter(&db, &runtime::home());
+            search::set(&db, task, text, counter.as_ref())
+        })
+        .map(|done| println!("{done}"));
+    exit("tldr", set)
+}
+
+/// Prints the tasks that match a query, best first.
+fn search(args: Vec<String>) -> ExitCode {
+    let (mut query, mut states, mut limit) = (None, Vec::new(), search::LIMIT);
+    let mut args = args.into_iter();
+    while let Some(arg) = args.next() {
+        match (arg.as_str(), query.is_some()) {
+            ("--state", _) => match args.next() {
+                Some(value) => states.extend(value.split(',').map(str::to_owned)),
+                None => return usage(),
+            },
+            ("--limit", _) => match args.next().map(|value| value.parse()) {
+                Some(Ok(value)) => limit = value,
+                _ => return usage(),
+            },
+            (flag, _) if flag.starts_with("--") => return usage(),
+            (_, true) => return usage(),
+            (_, false) => query = Some(arg),
+        }
+    }
+    let Some(query) = query else {
+        return usage();
+    };
+    let mut embedder = embed::Lazy::new(&runtime::home(), false);
+    let printed = state::open()
+        .and_then(|db| search::search(&db, &query, &states, limit, &mut embedder))
+        .map(|found| {
+            if let Some(why) = found.unavailable {
+                eprintln!("priory search: embeddings are unavailable, so this matched keywords only: {why}");
+            }
+            print!("{}", found.table);
+        });
+    exit("search", printed)
 }
 
 /// Sets a task's band and its place in the band's person order.

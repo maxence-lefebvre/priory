@@ -15,15 +15,16 @@ fn instructions() -> String {
 }
 
 /// Serves Priory's agent tools over MCP on stdin and stdout, for the run whose harness session is
-/// `session`. Each tool call goes to the daemon, which applies it and replies.
-pub fn serve(session: &str) -> Result<(), String> {
+/// `session`. `local` answers the tools this process serves itself; every other call goes to the
+/// daemon, which applies it and replies.
+pub fn serve(session: &str, local: &Local) -> Result<(), String> {
     let stdout = std::io::stdout();
     for line in std::io::stdin().lock().lines() {
         let line = line.map_err(|error| error.to_string())?;
         if line.trim().is_empty() {
             continue;
         }
-        let Some(reply) = respond(session, &line) else {
+        let Some(reply) = respond(session, &line, local) else {
             continue;
         };
         let mut out = stdout.lock();
@@ -35,7 +36,7 @@ pub fn serve(session: &str) -> Result<(), String> {
 }
 
 /// The reply to one JSON-RPC message, or `None` for a notification.
-fn respond(session: &str, line: &str) -> Option<Value> {
+fn respond(session: &str, line: &str, local: &Local) -> Option<Value> {
     let Ok(request) = serde_json::from_str::<Value>(line) else {
         return Some(error(Value::Null, -32700, "parse error"));
     };
@@ -57,7 +58,7 @@ fn respond(session: &str, line: &str) -> Option<Value> {
         }
         "ping" => json!({}),
         "tools/list" => json!({ "tools": tools() }),
-        "tools/call" => call(session, params),
+        "tools/call" => call(session, params, local),
         method => return Some(error(id, -32601, &format!("unknown method {method}"))),
     };
     Some(json!({ "jsonrpc": "2.0", "id": id, "result": result }))
@@ -67,16 +68,23 @@ fn error(id: Value, code: i64, message: &str) -> Value {
     json!({ "jsonrpc": "2.0", "id": id, "error": { "code": code, "message": message } })
 }
 
-/// Sends the call to the daemon. A tool error, or no daemon, is a tool result with `isError`.
-fn call(session: &str, params: &Value) -> Value {
-    let line = json!({
-        "tool": params["name"],
-        "session": session,
-        "arguments": params["arguments"],
-    });
-    let reply = runtime::call(&runtime::home(), &line.to_string()).and_then(|reply| {
-        serde_json::from_str::<Result<String, String>>(&reply)
-            .map_err(|error| format!("unreadable reply {reply:?}: {error}"))?
+/// A tool this process answers without the daemon, by its name and arguments; `None` for another.
+pub type Local<'a> = dyn Fn(&str, &Value) -> Option<Result<String, String>> + 'a;
+
+/// Answers the call here or sends it to the daemon. A tool error, or no daemon, is a tool result
+/// with `isError`.
+fn call(session: &str, params: &Value, local: &Local) -> Value {
+    let name = params["name"].as_str().unwrap_or_default();
+    let reply = local(name, &params["arguments"]).unwrap_or_else(|| {
+        let line = json!({
+            "tool": params["name"],
+            "session": session,
+            "arguments": params["arguments"],
+        });
+        runtime::call(&runtime::home(), &line.to_string()).and_then(|reply| {
+            serde_json::from_str::<Result<String, String>>(&reply)
+                .map_err(|error| format!("unreadable reply {reply:?}: {error}"))?
+        })
     });
     let (text, failed) = match reply {
         Ok(text) => (text, false),
@@ -152,6 +160,30 @@ fn tools() -> Value {
                 "properties": {
                     "focus": text("What the summary must keep, such as the current plan and open failures. Codex ignores it."),
                 },
+            },
+        },
+        {
+            "name": "tldr",
+            "description": "Replace your task's TL;DR, the short summary search reads, when your work drifted from the request. It does not end your turn.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "text": text("What the task is about now, in a few sentences of at most 180 words."),
+                },
+                "required": ["text"],
+            },
+        },
+        {
+            "name": "search",
+            "description": "Find tasks by what they are about, such as other tasks that touch the code you change, or one that already did your work. Prints task, key, state, step and TL;DR, best match first. It does not end your turn.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "query": text("What to look for, in words."),
+                    "states": { "type": "array", "items": { "type": "string" }, "description": "Only tasks in these states, such as running or done." },
+                    "limit": { "type": "integer", "description": "The most tasks to return; 10 when unset." },
+                },
+                "required": ["query"],
             },
         },
     ])

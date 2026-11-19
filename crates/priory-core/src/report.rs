@@ -120,7 +120,9 @@ pub fn cost(
     let mut statement = db
         .prepare(
             "SELECT json_extract(event, '$.data.task') AS task,
-               iif(type = 'factory.handler.called', 'handler', json_extract(event, '$.data.step')) AS step,
+               CASE type WHEN 'factory.handler.called' THEN 'handler'
+                 WHEN 'factory.summarizer.called' THEN 'summarizer'
+                 ELSE json_extract(event, '$.data.step') END AS step,
                coalesce(json_extract(event, '$.data.model'), '-') AS model,
                sum(json_extract(event, '$.data.tokens.input')),
                sum(json_extract(event, '$.data.tokens.output')),
@@ -128,7 +130,8 @@ pub fn cost(
                sum(json_extract(event, '$.data.tokens.cache_write')),
                count(json_extract(event, '$.data.tokens')) = count(*)
              FROM trace WHERE json_extract(event, '$.data.workflow') = ?1 AND time >= ?2
-             AND (type = 'factory.handler.called' OR (type = 'factory.step.ended'
+             AND (type IN ('factory.handler.called', 'factory.summarizer.called')
+               OR (type = 'factory.step.ended'
                AND json_extract(event, '$.data.decider') = 'model'))
              GROUP BY task, step, model ORDER BY CAST(task AS INTEGER), min(seq)",
         )

@@ -5,7 +5,7 @@ use crate::route;
 use crate::state::{self, Admission, NewRun, Signal};
 use crate::tools::{self, Act, Answer, Call, Done, Repair};
 use crate::trace::Trace;
-use crate::{handler, stall, sweep};
+use crate::{embed, handler, search, stall, summary, sweep};
 use herdr_bus::{Bus, Start};
 use priory_factory::factory::{self, Factory, Harness, PermissionMode, Session};
 use priory_intake::intake::OUTPUT;
@@ -74,12 +74,23 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
     tools::backfill_endings(&mut db, &factory.workflows)?;
     let bus = Bus::open_default()?;
     state::bands(&mut db, &factory.bands())?;
+    let embedder = factory.search().embedder().map(|spec| embed::name(&spec));
+    search::configure(&db, embedder.as_deref())?;
+    let home = runtime::home();
+    let mut counting = Counting {
+        embedder: embedder.clone(),
+        counter: None,
+        tried: None,
+    };
     if once {
-        drain(&bus, &mut db, factory)?;
+        drain(&bus, &mut db, factory, counting.get(&home))?;
         return Ok(());
     }
-    let home = runtime::home();
     let listening = runtime::listen(&home)?;
+    if let Some(name) = embedder.clone() {
+        let home = home.clone();
+        std::thread::spawn(move || embed_all(&name, embed::Lazy::new(&home, true)));
+    }
     let trace = Trace {
         factory,
         revision: runtime::revision(&factory.dir),
@@ -143,6 +154,20 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
         handler::answered(&mut db, &trace, id, output.as_deref(), status, true)?;
         runtime::forget(&handlers, id);
     }
+    let summaries = home.join("summaries");
+    for (id, group) in summary::orphans(&db)? {
+        if let Some((pid, _)) =
+            group.filter(|(pid, started)| memory::started(*pid) == Some(*started))
+        {
+            script::kill(pid);
+        }
+        let output = runtime::answer(&summaries, id);
+        let status = handler::INTERRUPTED;
+        let counter = counting.get(&home);
+        summary::answered(&mut db, &trace, id, output.as_deref(), status, counter)?;
+        runtime::forget(&summaries, id);
+    }
+    let mut summarizing = Vec::new();
     let mut stalls = Stalls::default();
     let mut export = factory.otlp().map(|endpoint| Export {
         endpoint: endpoint.trim_end_matches('/').to_owned(),
@@ -153,12 +178,14 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
     let every = factory.sweep().every.unwrap_or(SWEEP);
     let mut swept: Option<Instant> = None;
     loop {
-        drain(&bus, &mut db, factory)?;
+        drain(&bus, &mut db, factory, counting.get(&home))?;
         while let Ok(line) = listening.lines.try_recv() {
             apply(&mut db, line, &trace)?;
         }
         tend(&mut db, &trace, &share, &home, &scope)?;
         handle_stalls(&mut db, &trace, &home, &mut stalls)?;
+        let counter = counting.get(&home);
+        summarize(&mut db, &trace, &summaries, &mut summarizing, counter)?;
         if let Some(export) = &mut export {
             send_spans(&db, &trace, &home, export)?;
         }
@@ -183,6 +210,116 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
             Err(RecvTimeoutError::Disconnected) => return Err("the signal socket closed".into()),
         }
     }
+}
+
+/// How often the daemon looks again for a tokenizer it could not load.
+const COUNTER_RETRY: Duration = Duration::from_secs(10);
+
+/// The token counter of the factory's embedder, loaded from what the embedding thread downloaded.
+/// The daemon's own thread never downloads: until the tokenizer is on disk, TL;DRs count words.
+struct Counting {
+    embedder: Option<String>,
+    counter: Option<embed::Counter>,
+    tried: Option<Instant>,
+}
+
+impl Counting {
+    fn get(&mut self, home: &Path) -> Option<&embed::Counter> {
+        let due = self.tried.is_none_or(|at| at.elapsed() >= COUNTER_RETRY);
+        if let (None, Some(name), true) = (&self.counter, &self.embedder, due) {
+            self.tried = Some(Instant::now());
+            self.counter = embed::counter(name, home).ok().flatten();
+        }
+        self.counter.as_ref()
+    }
+}
+
+/// How long the embedding thread waits between looks for TL;DRs to embed.
+const EMBED_EVERY: Duration = Duration::from_secs(1);
+
+/// How long the embedding thread waits after its embedder failed.
+const EMBED_RETRY: Duration = Duration::from_secs(60);
+
+/// Embeds, in the background, each task whose vector by the embedder `name` is missing or stale.
+/// A failure is logged once, recorded for `priory search`, and retried later.
+fn embed_all(name: &str, mut embedder: embed::Lazy) {
+    let db = match state::open() {
+        Ok(db) => db,
+        Err(error) => return eprintln!("priory daemon: embeddings are unavailable: {error}"),
+    };
+    loop {
+        let mut pass = || -> Result<(), String> {
+            let stale = search::stale(&db, name).map_err(|error| error.to_string())?;
+            for (task, text) in stale {
+                let vector = embedder.embed(name, &text)?;
+                search::store(&db, task, name, &text, &vector)
+                    .map_err(|error| error.to_string())?;
+            }
+            Ok(())
+        };
+        let pass = pass();
+        let wait = match &pass {
+            Ok(()) => EMBED_EVERY,
+            Err(_) => EMBED_RETRY,
+        };
+        match search::failed(&db, name, pass.as_ref().err().map(String::as_str)) {
+            Ok(true) => {
+                if let Err(error) = &pass {
+                    eprintln!("priory daemon: embeddings are unavailable: {error}");
+                }
+            }
+            Ok(false) => {}
+            Err(error) => eprintln!("priory daemon: cannot record the embedder's state: {error}"),
+        }
+        std::thread::sleep(wait);
+    }
+}
+
+/// Records the summarizer calls that ended, then calls the summarizer on the tasks that have no
+/// TL;DR yet, at most `summary::CALLS` at once. A factory with no summarizer marks them skipped.
+fn summarize(
+    db: &mut Connection,
+    trace: &Trace,
+    dir: &Path,
+    calls: &mut Vec<(i64, Script)>,
+    counter: Option<&embed::Counter>,
+) -> Result<(), Error> {
+    for (id, mut script) in std::mem::take(calls) {
+        let Some((status, log)) = script.poll() else {
+            calls.push((id, script));
+            continue;
+        };
+        let status = if status == "exit 0" || log.is_empty() {
+            status
+        } else {
+            format!("{status}: {log}")
+        };
+        let output = runtime::answer(dir, id);
+        summary::answered(db, trace, id, output.as_deref(), &status, counter)?;
+        runtime::forget(dir, id);
+    }
+    let Some(model) = summary::model(trace.factory) else {
+        for (task, ..) in summary::due(db, usize::MAX >> 1)? {
+            summary::skipped(db, task, "no summarizer")?;
+        }
+        return Ok(());
+    };
+    for (task, title, request) in summary::due(db, summary::CALLS.saturating_sub(calls.len()))? {
+        let id = summary::called(db, task)?;
+        let prompt = summary::prompt(&title, &request);
+        match runtime::ask_claude(dir, id, model, &prompt, HANDLER_TIMEOUT) {
+            Ok(script) => {
+                summary::spawned(db, id, script.pid(), memory::started(script.pid()))?;
+                calls.push((id, script));
+            }
+            Err(error) => {
+                let status = format!("cannot start: {error}");
+                summary::answered(db, trace, id, None, &status, counter)?;
+                runtime::forget(dir, id);
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Applies the answers of the handler calls that ended, then calls the handler on each run stalled
@@ -263,7 +400,7 @@ fn handle_stalls(
         let screen = screen.clone();
         let id = handler::called(db, run.run, &screen)?;
         let prompt = handler::prompt(db, factory, run.run, stalled_for, &screen)?;
-        match runtime::ask_handler(&dir, id, model, &prompt, HANDLER_TIMEOUT) {
+        match runtime::ask_claude(&dir, id, model, &prompt, HANDLER_TIMEOUT) {
             Ok(script) => {
                 handler::spawned(db, id, script.pid(), memory::started(script.pid()))?;
                 stalls.calls.push(Handling {
@@ -899,7 +1036,12 @@ fn harness(harness: &Harness) -> &'static dyn runtime::Harness {
     }
 }
 
-fn drain(bus: &Bus, db: &mut Connection, factory: &Factory) -> Result<(), Error> {
+fn drain(
+    bus: &Bus,
+    db: &mut Connection,
+    factory: &Factory,
+    counter: Option<&embed::Counter>,
+) -> Result<(), Error> {
     match bus.connect(CONSUMER, OUTPUT, Start::Beginning) {
         // The intake has not declared its output yet: nothing is pending.
         Err(herdr_bus::Error::UnknownOutput(_)) => return Ok(()),
@@ -911,7 +1053,7 @@ fn drain(bus: &Bus, db: &mut Connection, factory: &Factory) -> Result<(), Error>
             return Ok(());
         }
         for delivery in deliveries {
-            state::handle(db, &delivery.message, factory)?;
+            state::handle(db, &delivery.message, factory, counter)?;
             bus.ack(delivery.connection, delivery.seq)?;
         }
     }
