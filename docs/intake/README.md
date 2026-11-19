@@ -8,7 +8,9 @@ that output: the Priory daemon, and another factory such as herdr-bowtie.
 The intake checks the factory first, as `priory check` does, and refuses to start while it has
 problems. `--once` polls once and exits. Without it, the intake polls every 60 seconds. It reads
 GitHub through `gh api` and `gh api graphql`, as the user `gh` is logged in as, and Linear through
-`curl` (see Linear calls). Each poll also fires the factory's schedule triggers that are due (see
+`curl` (see Linear calls). Each `gh api` call runs under coreutils `timeout`: past 5 minutes, or
+`command_timeout` in `factory.toml`, it is killed and the poll fails with `timed out after <n>s`,
+so a hung call cannot hold schedules, Linear and Slack forever. Each poll also fires the factory's schedule triggers that are due (see
 `schedule.fired`).
 
 ## Which file to read

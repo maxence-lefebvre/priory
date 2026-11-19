@@ -2149,7 +2149,11 @@ fn a_task_request_for_a_workflow_the_factory_lacks_waits_queued_and_starts_once_
     let tasks = setup.rows("tasks");
     assert_eq!(
         [&tasks[0][2], &tasks[0][4], &tasks[0][7]],
-        ["triage", "queued", "waits for workflow triage, which the factory lacks"]
+        [
+            "triage",
+            "queued",
+            "waits for workflow triage, which the factory lacks"
+        ]
     );
     setup.crash();
     fs::write(setup.dir.join("factory/workflows/triage.toml"), WORKFLOW).unwrap();
@@ -2805,6 +2809,23 @@ fn a_daemon_started_after_its_tmux_server_died_resumes_each_lost_run_once() {
     assert_eq!(tasks[0][4], "asleep");
     let runs = setup.rows("runs");
     assert_eq!([runs.len(), with(&runs, 7, "lost")], [3, 2]);
+}
+
+#[test]
+fn a_worktree_a_person_deleted_is_added_back_from_its_branch_on_the_next_run() {
+    let mut setup = Setup::new("deleted-worktree");
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") == 1);
+    setup.reboot();
+    let worktree = setup.dir.join("home/worktrees/owner/repo/1");
+    fs::remove_dir_all(&worktree).unwrap();
+
+    setup.start();
+
+    let runs = setup.until("runs", |rows| rows.len() == 2 && rows[1][7] == "-");
+    assert_eq!(runs[0][7], "lost");
+    assert!(worktree.join("README.md").exists());
 }
 
 #[test]
@@ -3904,6 +3925,29 @@ fn a_failing_open_pr_follows_next_failed_with_the_error() {
         "{actions:?}"
     );
     assert_eq!(setup.rows("tasks")[0][4], "dropped");
+}
+
+#[test]
+fn a_gh_call_past_the_command_timeout_is_killed_and_its_action_fails() {
+    let mut setup = Setup::with_workflow("open-pr-hangs", OPEN_PR);
+    fs::write(
+        setup.dir.join("factory/factory.toml"),
+        "name = \"demo\"\ncommand_timeout = \"1s\"\n",
+    )
+    .unwrap();
+    setup.calls(&[passed_with_evidence()]);
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("asks", |rows| rows.len() == 1);
+    setup.gone("priory-1");
+    setup.hold("gh-hang");
+
+    let answered = setup.priory(&["answer", "1", "open", "--revision", "1"]);
+
+    assert!(answered.status.success(), "{answered:?}");
+    let actions = setup.until("actions", |rows| rows.len() == 1);
+    assert_eq!(actions[0][4], "failed");
+    assert!(actions[0][7].ends_with("timed out after 1s"), "{actions:?}");
 }
 
 const APPROVE_THEN_POLISH: &str = r#"

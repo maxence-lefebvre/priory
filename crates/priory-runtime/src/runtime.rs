@@ -3,6 +3,7 @@ use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::OnceLock;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::time::{Duration, Instant};
 
@@ -37,12 +38,44 @@ pub fn exe() -> Result<PathBuf, String> {
     std::env::current_exe().map_err(|error| error.to_string())
 }
 
+static COMMAND_TIMEOUT: OnceLock<Duration> = OnceLock::new();
+
+/// Sets how long one git, gh or tmux command may run, once per process; 5 minutes when unset.
+pub fn bound_commands(timeout: Duration) {
+    let _ = COMMAND_TIMEOUT.set(timeout);
+}
+
+fn command_timeout() -> Duration {
+    COMMAND_TIMEOUT
+        .get()
+        .copied()
+        .unwrap_or(Duration::from_secs(300))
+}
+
+/// `program` under coreutils `timeout`, which kills its whole process group past the command
+/// timeout, so a hung fetch cannot stop the daemon's one thread.
+pub fn bounded(program: &str) -> Command {
+    let mut command = Command::new("timeout");
+    command
+        .arg("--kill-after=5s")
+        .arg(format!("{}s", command_timeout().as_secs()))
+        .arg(program);
+    command
+}
+
 /// Runs `command` and returns its stdout, or an error naming it with its stderr.
 pub(crate) fn run(command: &mut Command) -> Result<String, String> {
     let output = command
         .stdin(Stdio::null())
         .output()
         .map_err(|error| format!("{command:?}: {error}"))?;
+    // `timeout` exits 124 when it stopped the command, and 137 when it had to kill it.
+    if matches!(output.status.code(), Some(124 | 137)) {
+        return Err(format!(
+            "{command:?}: timed out after {}s",
+            command_timeout().as_secs()
+        ));
+    }
     if !output.status.success() {
         return Err(format!(
             "{command:?}: {}",
@@ -53,7 +86,7 @@ pub(crate) fn run(command: &mut Command) -> Result<String, String> {
 }
 
 pub(crate) fn git(dir: &Path) -> Command {
-    let mut command = Command::new("git");
+    let mut command = bounded("git");
     command.arg("-C").arg(dir);
     command
 }
@@ -71,7 +104,7 @@ pub fn worktree(home: &Path, repo: &str, task: i64) -> Result<(PathBuf, String),
         let _ = fs::remove_dir_all(&partial);
         fs::create_dir_all(clone.parent().expect("clone has a parent"))
             .map_err(|error| error.to_string())?;
-        run(Command::new("git")
+        run(bounded("git")
             .args(["clone", "--quiet", "--no-checkout"])
             .arg(format!("https://github.com/{repo}.git"))
             .arg(&partial))?;
@@ -94,6 +127,8 @@ pub fn worktree(home: &Path, repo: &str, task: i64) -> Result<(PathBuf, String),
     }
     // A revived task whose worktree the sweep removed carries on from the branch it left.
     if head(&clone, &branch).is_some() {
+        // A worktree folder a person deleted stays registered, and git refuses to add it again.
+        run(git(&clone).args(["worktree", "prune"]))?;
         run(git(&clone)
             .args(["worktree", "add", "--quiet"])
             .arg(&path)
@@ -150,7 +185,7 @@ pub fn open_pull_request(
 ) -> Result<u64, String> {
     let target = format!("{commit}:refs/heads/{branch}");
     run(git(worktree).args(["push", "--quiet", "origin", &target]))?;
-    let open = run(Command::new("gh").args([
+    let open = run(bounded("gh").args([
         "pr", "list", "-R", repo, "--head", branch, "--state", "open", "--json", "number",
     ]))?;
     let open: Vec<serde_json::Value> = serde_json::from_str(&open)
@@ -160,7 +195,7 @@ pub fn open_pull_request(
     }
     let base = run(git(worktree).args(["rev-parse", "--abbrev-ref", "origin/HEAD"]))?;
     let base = base.trim().trim_start_matches("origin/");
-    let url = run(Command::new("gh").args([
+    let url = run(bounded("gh").args([
         "pr", "create", "-R", repo, "--base", base, "--head", branch, "--title", title, "--body",
         body,
     ]))?;
@@ -174,7 +209,7 @@ pub fn open_pull_request(
 /// Opens an issue on `repo` and returns its number. `mark`, a unique line the body ends with, finds
 /// the issue that an earlier attempt opened before a crash, in any state, so none opens twice.
 pub fn open_issue(repo: &str, title: &str, body: &str, mark: &str) -> Result<u64, String> {
-    let found = run(Command::new("gh").args([
+    let found = run(bounded("gh").args([
         "issue",
         "list",
         "-R",
@@ -200,7 +235,7 @@ pub fn open_issue(repo: &str, title: &str, body: &str, mark: &str) -> Result<u64
         return Ok(number);
     }
     let body = format!("{body}\n\n{mark}");
-    let url = run(Command::new("gh").args([
+    let url = run(bounded("gh").args([
         "issue", "create", "-R", repo, "--title", title, "--body", &body,
     ]))?;
     url.trim()
@@ -211,7 +246,7 @@ pub fn open_issue(repo: &str, title: &str, body: &str, mark: &str) -> Result<u64
 }
 
 fn tmux() -> Command {
-    Command::new("tmux")
+    bounded("tmux")
 }
 
 /// What a Claude Code session sets for its children. User settings such as `CLAUDE_CODE_USE_BEDROCK` stay.

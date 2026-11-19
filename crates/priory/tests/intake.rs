@@ -320,6 +320,26 @@ fn a_failing_gh_exits_non_zero_and_publishes_nothing() {
 }
 
 #[test]
+fn a_gh_call_past_the_command_timeout_is_killed_and_the_poll_fails() {
+    let setup = Setup::new("gh-hangs", &[]);
+    write(
+        &setup.dir.join("factory/factory.toml"),
+        "name = \"demo\"\ncommand_timeout = \"1s\"\n",
+    );
+    Setup::fake_gh(&setup.dir, "#!/bin/sh\nsleep 60\n");
+    let started = std::time::Instant::now();
+
+    let output = setup.intake();
+
+    assert!(started.elapsed() < std::time::Duration::from_secs(30));
+    assert_eq!(
+        String::from_utf8_lossy(&output.stderr),
+        format!("priory intake: gh api {EVENTS_PATH} timed out after 1s\n")
+    );
+    assert!(setup.published().is_empty());
+}
+
+#[test]
 fn a_backfill_trigger_requests_tasks_for_the_first_poll() {
     let setup = Setup::new(
         "opened",

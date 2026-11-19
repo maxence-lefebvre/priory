@@ -7,6 +7,11 @@ second, the daemon goes through the `queued` and `ready` tasks whose step decide
 order, and starts a run for each one that fits in the room, as described under Queue and Room. It finds the
 repository through the task's trigger.
 
+Before that, each tick checks every `queued` and `ready` task's step. A step its workflow no longer
+has blocks the task with `step <id> is not in workflow <name>`. A human step with no open ask gets
+its ask and the task falls `asleep`, as a move into the step does, so a workflow can start at a human
+step. A held task gets its ask once its hold releases it.
+
 The daemon creates the worktree, records the run and the task as `running`, then starts
 the agent's harness in a detached tmux session named `priory-<task id>`, in the worktree. An agent
 with `harness = "claude-code"` runs `claude`, as below. One with `harness = "codex"` runs `codex`,

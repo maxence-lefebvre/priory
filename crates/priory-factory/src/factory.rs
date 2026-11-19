@@ -38,6 +38,9 @@ pub struct Settings {
     /// How long a run goes without a hook event or a change on its pane before it counts as stalled.
     #[serde(default, deserialize_with = "duration")]
     pub stalled: Option<Duration>,
+    /// How long one git, gh or tmux command may run before Priory kills it.
+    #[serde(default, deserialize_with = "duration")]
+    pub command_timeout: Option<Duration>,
 }
 
 /// How the daemon frees room: the built-in worktree sweep, the person's scripts, and the sweeper
@@ -578,6 +581,14 @@ impl Factory {
         self.settings
             .as_ref()
             .map_or(&BUILT_IN, |settings| &settings.value.sweep)
+    }
+
+    /// How long one git, gh or tmux command may run; 5 minutes when unset.
+    pub fn command_timeout(&self) -> Duration {
+        self.settings
+            .as_ref()
+            .and_then(|settings| settings.value.command_timeout)
+            .unwrap_or(Duration::from_secs(300))
     }
 
     pub fn bands(&self) -> Vec<&str> {
