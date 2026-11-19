@@ -59,18 +59,18 @@ fn main() -> ExitCode {
         Some("asks") => list(
             "id\ttask\trevision\tquestion\toptions",
             "SELECT id, task, revision, replace(question, char(10), '\\n'), options FROM asks
-             WHERE answer IS NULL ORDER BY id",
+             WHERE answer IS NULL AND withdrawn IS NULL ORDER BY id",
         ),
         Some("waits") => list(
             "id\ttask\trun\tkind\ton\tcreated",
             "SELECT id, task, run, kind, coalesce(resource, until, 'task ' || target), created
-             FROM waits WHERE fired IS NULL ORDER BY id",
+             FROM waits WHERE fired IS NULL AND withdrawn IS NULL ORDER BY id",
         ),
         Some("desk") => desk(),
         Some("trace") => trace(),
         Some("report") => report(args.map(|arg| arg.to_string_lossy().into_owned()).collect()),
         Some("move") => move_task(args.map(|arg| arg.to_string_lossy().into_owned()).collect()),
-        Some(verb @ ("resume" | "cancel" | "release")) => act(
+        Some(verb @ ("resume" | "cancel" | "revive" | "release")) => act(
             verb,
             args.map(|arg| arg.to_string_lossy().into_owned()).collect(),
             None,
@@ -98,7 +98,7 @@ fn main() -> ExitCode {
 
 fn usage() -> ExitCode {
     eprintln!(
-        "usage: priory check [DIR]\n       priory draw [DIR] WORKFLOW\n       priory intake [DIR] [--once]\n       priory daemon [DIR] [--once]\n       priory request [DIR] --workflow <name> --key <key> [--band <band>] [--lane <lane>] [--repo <owner/name>] [--hold <reason> [CONDITION]] <text>\n       priory inbox\n       priory tasks [--lane <lane>]\n       priory runs\n       priory outbox\n       priory asks\n       priory waits\n       priory actions\n       priory desk\n       priory trace\n       priory report [DIR] --workflow <name> [--since <instant-or-duration>] [--cost] [--by lane]\n       priory move TASK [--band <band>] [--top | --before TASK | --after TASK]\n       priory resume TASK\n       priory cancel TASK\n       priory hold TASK --reason TEXT [--until TIME | --after TASK | --merge PR [--if-closed release|drop|ask] | --blockers]\n       priory release TASK\n       priory answer ASK OPTION-OR-TEXT --revision N\n       priory mcp --session ID\n       priory hook EVENT"
+        "usage: priory check [DIR]\n       priory draw [DIR] WORKFLOW\n       priory intake [DIR] [--once]\n       priory daemon [DIR] [--once]\n       priory request [DIR] --workflow <name> --key <key> [--band <band>] [--lane <lane>] [--repo <owner/name>] [--hold <reason> [CONDITION]] <text>\n       priory inbox\n       priory tasks [--lane <lane>]\n       priory runs\n       priory outbox\n       priory asks\n       priory waits\n       priory actions\n       priory desk\n       priory trace\n       priory report [DIR] --workflow <name> [--since <instant-or-duration>] [--cost] [--by lane]\n       priory move TASK [--band <band>] [--top | --before TASK | --after TASK]\n       priory resume TASK\n       priory cancel TASK\n       priory revive TASK [--step STEP]\n       priory hold TASK --reason TEXT [--until TIME | --after TASK | --merge PR [--if-closed release|drop|ask] | --blockers]\n       priory release TASK\n       priory answer ASK OPTION-OR-TEXT --revision N\n       priory mcp --session ID\n       priory hook EVENT"
     );
     ExitCode::from(2)
 }
@@ -140,7 +140,7 @@ fn desk() -> ExitCode {
     let printed = state::open().and_then(|db| {
         state::print(
             &db,
-            "since\tkind\tid\ttask\tlane\twhat",
+            "since\tkind\tid\ttask\tlane\twhat\tgeneration",
             &format!("{} {DESK}", queue()),
             [],
         )
@@ -205,14 +205,20 @@ fn report(args: Vec<String>) -> ExitCode {
 }
 
 /// Asks, blocked tasks and uncertain prompts oldest first, then the queue in start order.
-const DESK: &str = "SELECT since, kind, id, task, lane, what FROM (
+const DESK: &str = "SELECT since, kind, id, task, lane, what,
+               (SELECT generation FROM tasks WHERE tasks.id = task) FROM (
                SELECT 0 AS part, asks.created AS since, 'ask' AS kind, asks.id AS id,
                  asks.task AS task, tasks.lane AS lane,
                  replace(asks.question, char(10), '\\n') || ' ' || asks.options AS what
                FROM asks JOIN tasks ON tasks.id = asks.task
-               WHERE asks.answer IS NULL AND tasks.state NOT IN ('done', 'failed', 'dropped')
+               WHERE asks.answer IS NULL AND asks.withdrawn IS NULL
+                 AND tasks.state NOT IN ('done', 'failed', 'dropped')
                UNION ALL
                SELECT 0, changed, 'blocked', id, id, lane, reason FROM tasks WHERE state = 'blocked'
+               UNION ALL
+               SELECT 0, changed, 'failed', id, id, lane,
+                 coalesce(reason, 'failed') || '; revive: priory revive ' || id
+               FROM tasks WHERE state = 'failed'
                UNION ALL
                SELECT 0, outbox.attempted, 'prompt', outbox.id, outbox.task, tasks.lane,
                  replace(outbox.text, char(10), '\\n')
@@ -241,9 +247,9 @@ fn tasks(lane: Option<&String>) -> ExitCode {
     let printed = state::open().and_then(|db| {
         state::print(
             &db,
-            "id\tkey\tworkflow\tstep\tstate\tband\tlane\treason\tposition",
+            "id\tkey\tworkflow\tstep\tstate\tband\tlane\treason\tposition\tgeneration",
             &format!(
-                "{} SELECT id, key, workflow, step, state, band, lane, reason, queue.place
+                "{} SELECT id, key, workflow, step, state, band, lane, reason, queue.place, generation
                  FROM tasks LEFT JOIN queue USING (id) WHERE ?1 IS NULL OR lane = ?1 ORDER BY {}",
                 queue(),
                 state::START_ORDER
@@ -390,8 +396,14 @@ fn hold(args: Vec<String>) -> ExitCode {
     act("hold", vec![task], Some(hold))
 }
 
-/// Sends `priory resume`, `cancel`, `release` or `hold` for one task to the daemon, which applies it.
-fn act(act: &str, args: Vec<String>, hold: Option<factory::Hold>) -> ExitCode {
+/// Sends `priory resume`, `cancel`, `revive TASK [--step STEP]`, `release` or `hold` for one task to
+/// the daemon, which applies it.
+fn act(act: &str, mut args: Vec<String>, hold: Option<factory::Hold>) -> ExitCode {
+    let step = match args.iter().position(|arg| arg == "--step") {
+        Some(flag) if act == "revive" && flag + 1 < args.len() => args.drain(flag..flag + 2).nth(1),
+        Some(_) => return usage(),
+        None => None,
+    };
     let [task] = &args[..] else {
         return usage();
     };
@@ -401,6 +413,7 @@ fn act(act: &str, args: Vec<String>, hold: Option<factory::Hold>) -> ExitCode {
     let line = serde_json::to_string(&tools::Act {
         act: act.to_owned(),
         task,
+        step,
         hold,
     })
     .expect("an action serializes");

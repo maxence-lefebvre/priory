@@ -10,7 +10,7 @@ use std::collections::BTreeMap;
 use std::io::Write;
 use std::time::Duration;
 
-const VERSION: i64 = 16;
+const VERSION: i64 = 17;
 
 const SCHEMA: &str = "
 CREATE TABLE tasks (
@@ -234,6 +234,13 @@ PRAGMA user_version = 15;
 ";
 
 const SCHEMA_16: &str = "
+ALTER TABLE tasks ADD COLUMN generation INTEGER NOT NULL DEFAULT 1;
+ALTER TABLE asks ADD COLUMN withdrawn INTEGER;
+ALTER TABLE waits ADD COLUMN withdrawn INTEGER;
+PRAGMA user_version = 16;
+";
+
+const SCHEMA_17: &str = "
 CREATE TABLE holds (
   id          INTEGER PRIMARY KEY AUTOINCREMENT,
   task        INTEGER NOT NULL REFERENCES tasks (id),
@@ -250,13 +257,13 @@ CREATE TABLE holds (
   released_as TEXT
 );
 CREATE UNIQUE INDEX one_open_hold_per_task ON holds (task) WHERE released IS NULL;
-PRAGMA user_version = 16;
+PRAGMA user_version = 17;
 ";
 
 /// Each schema change in order: a file at version `n` applies those from index `n` on.
 const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA, SCHEMA_2, SCHEMA_3, SCHEMA_4, SCHEMA_5, SCHEMA_6, SCHEMA_7, SCHEMA_8, SCHEMA_9,
-    SCHEMA_10, SCHEMA_11, SCHEMA_12, SCHEMA_13, SCHEMA_14, SCHEMA_15, SCHEMA_16,
+    SCHEMA_10, SCHEMA_11, SCHEMA_12, SCHEMA_13, SCHEMA_14, SCHEMA_15, SCHEMA_16, SCHEMA_17,
 ];
 
 /// The order the queue starts tasks in: band, then a person's order, then age. A band the factory
@@ -369,7 +376,7 @@ pub(crate) fn handle(
             let asleep_at: Option<(String, String)> = tx
                 .query_row(
                     "SELECT workflow, step FROM tasks WHERE id = ?1 AND state = 'asleep'
-                     AND NOT EXISTS (SELECT 1 FROM waits WHERE task = ?1 AND fired IS NULL AND daemon)",
+                     AND NOT EXISTS (SELECT 1 FROM waits WHERE task = ?1 AND fired IS NULL AND withdrawn IS NULL AND daemon)",
                     [id],
                     |row| Ok((row.get(0)?, row.get(1)?)),
                 )
@@ -775,11 +782,11 @@ pub(crate) fn start(db: &mut Connection, run: &NewRun) -> rusqlite::Result<i64> 
     )?;
     // A schedule's tick wakes a task with its ask or wait still open: this run sleeps on them again.
     tx.execute(
-        "UPDATE asks SET run = ?2 WHERE task = ?1 AND run IS NOT NULL AND answer IS NULL",
+        "UPDATE asks SET run = ?2 WHERE task = ?1 AND run IS NOT NULL AND answer IS NULL AND withdrawn IS NULL",
         params![run.task, id],
     )?;
     tx.execute(
-        "UPDATE waits SET run = ?2 WHERE task = ?1 AND fired IS NULL AND NOT daemon",
+        "UPDATE waits SET run = ?2 WHERE task = ?1 AND fired IS NULL AND withdrawn IS NULL AND NOT daemon",
         params![run.task, id],
     )?;
     let (key, team, project, derived): (String, Option<String>, Option<String>, bool) = tx

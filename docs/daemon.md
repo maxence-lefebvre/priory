@@ -66,7 +66,9 @@ Waits. A message kept for a task in any other state waits for the task's next ru
   local mirror.
 - `worktrees/<owner>/<name>/<task id>`: one worktree per task, on branch `priory/<task id>`, from
   the remote's default branch. The task's `worktree` names it only when Priory created it. A start
-  reuses an existing worktree only when it belongs to Priory's clone and is on that branch.
+  reuses an existing worktree only when it belongs to Priory's clone and is on that branch. When
+  the folder is gone but the branch is not, as for a revived task the sweep cleaned up, the start
+  adds the worktree back on that branch.
 - `priory.sock`: the socket hooks report to. `signals.spool`: the signals sent while no daemon
   listened, which the next daemon applies first.
 - `daemon.lock`: one daemon per home. A second one waits up to 5 seconds for the lock, then refuses to start.
@@ -426,12 +428,14 @@ prompt that shows anyway, when the deny hook failed, ends the run on the next ti
 
 ## Desk
 
-`priory desk` prints what waits on a person, oldest first: since, kind, id, task, lane and what.
+`priory desk` prints what waits on a person, oldest first: since, kind, id, task, lane, what and the
+task's generation.
 
 | Kind | Id | What | Since |
 | ---- | -- | ---- | ----- |
 | `ask` | the ask | its question, then its options | it was asked |
 | `blocked` | the task | its reason | the task last changed state |
+| `failed` | the task | its reason, then `revive: priory revive <task>` | the task last changed state |
 | `prompt` | the outbox prompt | its text, for an `uncertain` prompt | it was attempted |
 | `held` | the hold | the task's reason: why it is held, and until what | it was held |
 | `queue` | the task's place in the queue | its band, then its reason when it has one | the task last changed state |
@@ -448,6 +452,42 @@ so its next run resumes the session of the step's agent with it. `priory cancel 
 active task with the reason `cancelled from the desk`, ends its live run as `cancelled` and kills
 its tmux session. Both go to the daemon over `priory.sock`, as `priory answer` does, and are refused
 for a task in any other state. An answer to an ask of a done, failed or dropped task is refused too.
+
+### Revive
+
+`priory revive <task> [--step <step>]` restarts a failed or dropped task as its next generation. A
+task starts at generation 1. The revive goes to the daemon over `priory.sock` and, in one
+transaction:
+
+1. Withdraws every open ask and wait of the task, recording the new generation on each.
+2. Raises the task's generation by one.
+3. Enters the step the task ended on, or `<step>`, as a move into it would (see Moving on): a model
+   step makes the task `ready` with its prompt queued, a human step asks again, and a code step
+   makes the task `ready`.
+4. At a model step, queues ahead of that prompt: `A person revived this task as generation <n>
+   after it was <state>: <reason>. The asks and waits of its earlier generation are withdrawn. Check
+   the worktree, then continue.`
+
+It replies `task <id> is <state> at <step>, generation <n>`. It refuses a task in any other state, a
+step the task's workflow lacks, and a task whose key another active task holds, naming that task:
+a factory holds at most one active task per key.
+
+The task keeps its id, key, branch, worktree and sessions. Its next run resumes the session of the
+step's agent, like a resume. The agent keeps what it learned in the earlier generation, and the
+revive prompt tells it that the asks and waits it remembers are gone. A new session would lose that
+context, and the worktree already holds the earlier generation's work. When the sweep removed the
+worktree, the next run adds it back from the branch, as under Priory home. A code step starts no
+run, so a revive straight into one, such as `open-pr`, finds no worktree and blocks the task;
+revive it at a model step instead.
+
+A withdrawn ask or wait stays in the state file but counts as closed. An answer to a withdrawn ask
+is refused with `ask <id> was withdrawn when task <task> was revived as generation <n>`. An event
+for a withdrawn wait fires nothing: the task keeps it, as it keeps any event that matches no wait,
+and the next run reads it. `priory asks`, `priory waits` and the desk leave withdrawn ones out. A
+new run never takes over a withdrawn ask or wait.
+
+Nothing fails a task yet: repair (R7.5) will. Until then a revive applies to dropped tasks, and the
+desk's `failed` rows stay empty.
 
 ## Sweep
 
@@ -718,7 +758,7 @@ record's `id` to drop a duplicate.
 | `factory` | `name` in `factory.toml` |
 | `factory_revision` | the last commit that changed the factory's folder; absent outside git |
 | `task`, `run` | the task's and the run's ids; `run` only for a model step, the run that sent the result |
-| `generation` | 1: Priory does not revive tasks yet |
+| `generation` | the task's generation when the step ended: 1, plus one per revive |
 | `lane` | absent until lanes land |
 | `machine` | the host name, which also names the runner |
 | `started` | when the task entered the step, so it includes the time the task waited for a run |
@@ -830,8 +870,8 @@ running; end one with `tmux kill-session -t =priory-<task id>` when you mean to.
 ## Listings
 
 `priory inbox` prints each entry, oldest first: seq, type, subject, task and outcome.
-`priory tasks` prints each task in start order: id, key, workflow, step, state, band, lane, reason
-and position, the task's place in the queue from 1 when it is `queued` or `ready`.
+`priory tasks` prints each task in start order: id, key, workflow, step, state, band, lane, reason,
+position, the task's place in the queue from 1 when it is `queued` or `ready`, and generation.
 `priory tasks --lane L` prints only the tasks in lane `L`.
 `priory runs` prints each run: id, task, step, tmux session, harness session (a Codex run's
 thread), started, ended and how it ended. `priory outbox` prints each prompt: id, task, run, state and text, with newlines

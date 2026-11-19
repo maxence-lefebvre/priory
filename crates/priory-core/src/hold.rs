@@ -246,7 +246,7 @@ fn release(tx: &Transaction, id: i64, how: &str) -> rusqlite::Result<()> {
     tx.execute(
         &format!(
             "UPDATE asks SET answer = ?2, answered = {NOW}
-             WHERE id = (SELECT ask FROM holds WHERE id = ?1) AND answer IS NULL"
+             WHERE id = (SELECT ask FROM holds WHERE id = ?1) AND answer IS NULL AND withdrawn IS NULL"
         ),
         params![id, how],
     )?;
