@@ -76,8 +76,8 @@ Waits. A message kept for a task in any other state waits for the task's next ru
 A run is one task step worked by one agent's `claude` process. When a step leads to another model
 step with the same agent, the process carries on into a new run, so each run has at most one result.
 A model step with another agent gets a new run and a new process, as described under Moving on. Each
-second, the daemon goes through the `queued` and `ready` tasks whose step decides `model`, oldest
-first, and starts a run for each one that fits in the room, as described under Room. It finds the
+second, the daemon goes through the `queued` and `ready` tasks whose step decides `model`, in queue
+order, and starts a run for each one that fits in the room, as described under Queue and Room. It finds the
 repository through the task's trigger.
 
 The daemon creates the worktree, records the run and the task as `running`, then starts
@@ -119,6 +119,33 @@ task's previous run was lost too and this run stored no ask or wait, the task bl
 `run <id> was lost again before it made progress: tmux session <name> is gone`. A prompt the lost
 run had attempted stays `uncertain` and is never typed again.
 
+### Queue
+
+The queue holds the `queued` and `ready` tasks. It starts them in band order, then in the order a
+person set inside the band, then oldest first.
+
+The bands default to `blocker`, `now`, `today` and `later`, highest first. `factory.toml` can name
+its own, highest first:
+
+```toml
+name = "demo"
+bands = ["urgent", "normal", "someday"]
+```
+
+A new task's band is its request's `band`, else its trigger's, else its workflow's `band`, else the
+last band. `priory check` refuses a trigger or workflow that names a band the factory lacks, with
+its line, and `priory request --band` refuses one too. The daemon records the bands in the state
+file when it starts, so the listings and `priory move` read them without the factory. A task whose
+band a later `factory.toml` dropped comes after the last band.
+
+`priory move <task> --band <band>` puts an active task in another band, after the tasks a person
+ordered there. `priory move <task> --top`, `--before <other>` or `--after <other>` sets its place in
+the person's order of its band, or of the other task's band, which it joins. `--band` combines with
+`--top`, or with `--before` and `--after` when it names the other task's band. A move numbers every
+active task of the band in its current order, so tasks that arrive later go after them, oldest first.
+`priory move` writes the state file directly: it needs no daemon, and the daemon reads the new order
+on its next tick.
+
 ### Room
 
 The daemon admits a run only when the machine has room for it, measured live:
@@ -148,7 +175,15 @@ admission, since a start's clone and worktree take disk.
 A task that does not fit stays `queued` or `ready`, and its reason says why it waits, such as
 `waits for room: 3.1 GB of memory free, needs 6.0 GB and keeps 6.4 GB free`, `waits for room: 12.0
 GB of disk free, keeps 20.0 GB free` or `waits for room: load 7.50 on 8 CPUs, keeps it under 7.20`.
-`priory tasks` shows it. A younger task that fits starts ahead of it.
+`priory tasks` shows it.
+
+The first task that waits for room holds back every task behind it in the queue, even a smaller one
+that fits. Each of those gets the reason `waits behind task <id>, which waits for room`. So a higher
+band only starts earlier: it never skips the room check, and a large task is never starved by
+smaller ones that keep taking the room it waits for. The cost is idle room while it waits. A task
+whose agent declares more memory than the runner's share of the machine can never fit, so it holds
+back no one. A task that waits for a shared agent holds back no one either, as described under
+Shared sessions.
 
 `PRIORY_PROC` names a directory to read in place of `/proc`. The tests use it, with a fake `df` on
 `PATH`, to steer the measurements.
@@ -160,7 +195,8 @@ Known limits:
   double count.
 - An agent that grows past its declared `memory` can still crowd the machine. R4.9's memory gate
   and R4.10's slice address that in M1.
-- A large task can wait behind younger tasks that keep taking the room. Queue order is R4.4, in M1.
+- Load and disk are not declared per agent, so the head of the queue holds back the others only
+  through memory in practice: when load or disk leaves no room, no task fits anyway.
 - The measurements need Linux's `/proc`.
 
 ### Shared sessions
@@ -175,7 +211,7 @@ A session runs one turn at a time, so a shared agent has at most one live run. A
 the agent while another task's run of it is live stays `queued` or `ready`, with the reason
 `waits for agent <name>: its shared session serves task <id>`, which `priory tasks` shows. It starts
 once that run ends, by its result, ask, wait or a verdict. The room is checked after that, and a
-younger task that needs another agent can start ahead of it.
+task behind it that needs another agent can start ahead of it.
 
 Each task keeps its own worktree and branch, and the resumed session starts in the task's worktree.
 One worktree for the agent would put every task's commits on one branch and leave the sweep with no
@@ -272,10 +308,11 @@ prompt that shows anyway, when the deny hook failed, ends the run on the next ti
 | `ask` | the ask | its question, then its options | it was asked |
 | `blocked` | the task | its reason | the task last changed state |
 | `prompt` | the outbox prompt | its text, for an `uncertain` prompt | it was attempted |
+| `queue` | the task's place in the queue | its band, then its reason when it has one | the task last changed state |
 | `worktree` | the worktree's path | why it stays: see Sweep | `-` |
 
-It lists only asks and prompts of active tasks, and it ends with one `worktree` row for every worktree
-the sweep keeps. `priory asks` still prints every open ask.
+It lists only asks and prompts of active tasks. After them come the `queue` rows, in start order,
+and last one `worktree` row for every worktree the sweep keeps. `priory asks` still prints every open ask.
 
 `priory resume <task>` makes a blocked task `ready`. It queues the prompt `A person resumed this
 task after: <reason>. Check the worktree, then continue.` ahead of the task's other queued prompts,
@@ -663,7 +700,8 @@ running; end one with `tmux kill-session -t =priory-<task id>` when you mean to.
 ## Listings
 
 `priory inbox` prints each entry, oldest first: seq, type, subject, task and outcome.
-`priory tasks` prints each task: id, key, workflow, step, state, band, lane and reason.
+`priory tasks` prints each task in start order: id, key, workflow, step, state, band, lane, reason
+and position, the task's place in the queue from 1 when it is `queued` or `ready`.
 `priory runs` prints each run: id, task, step, tmux session, harness session, started, ended and
 how it ended. `priory outbox` prints each prompt: id, task, run, state and text, with newlines
 shown as `\n`. `priory asks` and `priory waits` are described under Tools, `priory actions` under Code steps,

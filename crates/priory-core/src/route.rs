@@ -1,8 +1,7 @@
 use crate::state::Task;
 use herdr_bus::Message;
-use priory_factory::factory::{Loaded, Workflow};
+use priory_factory::factory::Factory;
 use serde::Deserialize;
-use std::collections::BTreeMap;
 
 const TASK_REQUESTED: &str = "factory.task.requested";
 
@@ -79,10 +78,11 @@ pub(crate) fn tick(message: &Message) -> bool {
 
 /// Routes `message`, given the active task that owns its key, if any. A task request for a
 /// workflow the factory lacks is an error, so that it waits unacked until the workflow is back.
+/// A new task's band is its request's, else its trigger's, else its workflow's, else the last one.
 pub(crate) fn route(
     message: &Message,
     owner: Option<&Task>,
-    workflows: &BTreeMap<String, Loaded<Workflow>>,
+    factory: &Factory,
 ) -> Result<Decision, String> {
     if let Some(task) = owner {
         return Ok(Decision::Keep(task.id));
@@ -93,13 +93,19 @@ pub(crate) fn route(
     let Ok(mut task) = NewTask::deserialize(&message.data) else {
         return Ok(Decision::Ignore);
     };
-    let Some(workflow) = workflows.get(&task.workflow) else {
+    let Some(workflow) = factory.workflows.get(&task.workflow) else {
         return Err(format!(
             "task request {} names workflow {:?}, which the factory lacks",
             message.id, task.workflow
         ));
     };
     task.step.clone_from(&workflow.value.start);
+    let trigger = factory.triggers.get(&task.trigger);
+    task.band = task
+        .band
+        .or_else(|| trigger.and_then(|trigger| trigger.value.band.clone()))
+        .or_else(|| workflow.value.band.clone())
+        .or_else(|| factory.bands().last().map(|band| (*band).to_owned()));
     Ok(Decision::Create(task))
 }
 

@@ -60,6 +60,10 @@ pub fn run(factory: &Factory, request: &Request) -> Result<(), String> {
     if !factory.workflows.contains_key(&request.workflow) {
         return Err(format!("unknown workflow `{}`", request.workflow));
     }
+    let bands = factory.bands();
+    if let Some(band) = request.band.as_deref().filter(|band| !bands.contains(band)) {
+        return Err(format!("band `{band}` is not one of {}", bands.join(", ")));
+    }
     let key = format!("cli:{}", request.key);
     let person = std::env::var("USER").ok();
     let time = Timestamp::now();
