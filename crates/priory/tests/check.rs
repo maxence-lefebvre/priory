@@ -655,9 +655,9 @@ fn backfill_is_a_boolean() {
 }
 
 #[test]
-fn only_a_github_or_linear_trigger_has_backfill() {
+fn only_a_github_linear_or_slack_trigger_has_backfill() {
     let trigger =
-        "source = \"slack\"\non = \"message\"\nworkflow = \"implement\"\nbackfill = true\n";
+        "source = \"email\"\non = \"message\"\nworkflow = \"implement\"\nbackfill = true\n";
 
     let outcome = check(&factory(
         "backfill-source",
@@ -667,7 +667,7 @@ fn only_a_github_or_linear_trigger_has_backfill() {
     assert_eq!(outcome.code, 1);
     assert_eq!(
         outcome.stderr,
-        "triggers/agent-label.toml:4: only a GitHub or Linear trigger has `backfill`\n"
+        "triggers/agent-label.toml:4: only a GitHub, Linear or Slack trigger has `backfill`\n"
     );
 }
 
@@ -1019,6 +1019,28 @@ fn a_linear_trigger_uses_a_supported_event_filter_and_key() {
         "triggers/wrong.toml:2: a `linear` trigger handles `issue.created`, `issue.state_changed`, `comment.created`, not `issue.entered`\n\
          triggers/wrong.toml:3: a `linear` trigger filters on `team`, `label` or `state`\n\
          triggers/wrong.toml:5: a Linear trigger's `key` is `issue.identifier`\n"
+    );
+}
+
+#[test]
+fn a_slack_trigger_names_its_channel_and_filters_on_text_only() {
+    let good = "source = \"slack\"\nchannel = \"C0123\"\non = \"message.posted\"\nfilter = { text = \"deploy\" }\nworkflow = \"implement\"\nbackfill = true\n";
+    let wrong = "source = \"slack\"\non = \"message\"\nfilter = { user = \"U1\" }\nworkflow = \"implement\"\nkey = \"ts\"\n";
+    let stray = "source = \"linear\"\nchannel = \"C0123\"\non = \"comment.created\"\nworkflow = \"implement\"\n";
+    let mut files = with("triggers/agent-label.toml", good);
+    files.push(("triggers/wrong.toml", wrong));
+    files.push(("triggers/stray.toml", stray));
+
+    let outcome = check(&factory("slack-triggers", &files));
+
+    assert_eq!(outcome.code, 1);
+    assert_eq!(
+        outcome.stderr,
+        "triggers/stray.toml:2: only a Slack trigger names a `channel`\n\
+         triggers/wrong.toml:2: a Slack trigger handles `message.posted`, not `message`\n\
+         triggers/wrong.toml:1: a Slack trigger needs `channel = \"<channel id>\"`\n\
+         triggers/wrong.toml:3: a Slack trigger filters on `text` only\n\
+         triggers/wrong.toml:5: a Slack trigger's `key` is `message.ts`\n"
     );
 }
 
