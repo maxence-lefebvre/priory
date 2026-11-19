@@ -103,7 +103,8 @@ impl Setup {
             .args(["intake", "--once"])
             .arg(self.dir.join("factory"))
             .env("PATH", path)
-            .env("HERDR_BUS_DB", self.dir.join("bus.db"));
+            .env("HERDR_BUS_DB", self.dir.join("bus.db"))
+            .env("PRIORY_DB", self.dir.join("priory.db"));
         command
     }
 
@@ -1468,7 +1469,7 @@ fn a_linear_trigger_without_the_key_fails_and_publishes_nothing() {
     assert_eq!(output.status.code(), Some(1));
     assert_eq!(
         String::from_utf8_lossy(&output.stderr),
-        "priory intake: LINEAR_API_KEY is not set: the Linear triggers need a Linear API key\n"
+        "priory intake: LINEAR_API_KEY is not set: the Linear triggers and waits need a Linear API key\n"
     );
     assert!(setup.output().is_empty());
 }
@@ -2029,4 +2030,109 @@ fn a_linear_task_lands_in_the_lane_its_team_and_project_derive() {
         ]
         .map(|row| row.map(str::to_owned))
     );
+}
+
+const SLACK_TRIGGER: &str = r#"
+source = "slack"
+channel = "C0123"
+on = "message.posted"
+filter = { text = "deploy" }
+workflow = "implement"
+"#;
+
+impl Setup {
+    /// Makes the fake `curl` answer Slack's `auth.test` as bot U0BOT, and the channel's history
+    /// with `messages`, newest first as Slack lists them.
+    fn answer_slack(&self, messages: &[serde_json::Value]) {
+        let auth = self.dir.join("slack-auth.json");
+        write(
+            &auth,
+            &json!({ "ok": true, "user_id": "U0BOT", "bot_id": "B0BOT" }).to_string(),
+        );
+        let history = self.dir.join("slack-history.json");
+        write(
+            &history,
+            &json!({ "ok": true, "messages": messages, "has_more": false }).to_string(),
+        );
+        let script = format!(
+            "#!/bin/sh\necho \"$*\" >> '{dir}/curl-args'\ncat >> '{dir}/curl-stdin'\n\
+             case \"$*\" in\n  *auth.test*) cat '{auth}' ;;\n  *conversations.history*) cat '{history}' ;;\n\
+             *) echo 'unexpected call' >&2; exit 2 ;;\nesac\n",
+            dir = self.dir.display(),
+            auth = auth.display(),
+            history = history.display(),
+        );
+        let curl = self.dir.join("bin/curl");
+        write(&curl, &script);
+        fs::set_permissions(&curl, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    fn slack_intake(&self) -> Output {
+        self.command()
+            .env("SLACK_BOT_TOKEN", "xoxb-secret-test-token")
+            .output()
+            .unwrap()
+    }
+}
+
+fn slack_message(ts: &str, user: &str, text: &str) -> serde_json::Value {
+    json!({ "type": "message", "ts": ts, "user": user, "text": text })
+}
+
+#[test]
+fn a_slack_trigger_requests_one_task_per_matching_message_and_drops_a_duplicate() {
+    let setup = Setup::linear("slack-trigger", &[("deploys", SLACK_TRIGGER)]);
+    setup.answer_slack(&[slack_message(
+        "1763500000.000100",
+        "U0PERSON",
+        "deploy of old",
+    )]);
+    succeeded(&setup.slack_intake());
+    assert!(
+        kinds(&setup.published()) == ["slack.message.posted"],
+        "a first poll is a baseline: {:?}",
+        kinds(&setup.published())
+    );
+    setup.answer_slack(&[
+        slack_message("1763500003.000100", "U0BOT", "I deploy nothing"),
+        slack_message("1763500002.000100", "U0PERSON", "lunch?"),
+        slack_message("1763500001.000200", "U0PERSON", "Please DEPLOY the API"),
+        slack_message("1763500001.000100", "U0PERSON", "deploy the web app"),
+        slack_message("1763500000.000100", "U0PERSON", "deploy of old"),
+    ]);
+
+    succeeded(&setup.slack_intake());
+    succeeded(&setup.slack_intake());
+
+    let requested: Vec<serde_json::Value> = setup
+        .published()
+        .iter()
+        .filter(|stored| stored.message.kind == "factory.task.requested")
+        .map(|stored| stored.message.data["key"].clone())
+        .collect();
+    assert_eq!(
+        requested,
+        [
+            json!("slack:C0123:1763500001.000100"),
+            json!("slack:C0123:1763500001.000200")
+        ]
+    );
+    assert_eq!(
+        kinds(&setup.published()),
+        [
+            "slack.message.posted",
+            "slack.message.posted",
+            "factory.task.requested",
+            "slack.message.posted",
+            "factory.task.requested",
+            "slack.message.posted",
+        ]
+    );
+    setup.inbox();
+    let tasks = Command::new(env!("CARGO_BIN_EXE_priory"))
+        .arg("tasks")
+        .env("PRIORY_DB", setup.dir.join("priory.db"))
+        .output()
+        .unwrap();
+    assert_eq!(String::from_utf8(tasks.stdout).unwrap().lines().count(), 3);
 }

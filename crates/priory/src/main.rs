@@ -31,7 +31,7 @@ fn main() -> ExitCode {
                 _ => return usage(),
             };
             let run = if verb == "intake" {
-                intake::run
+                |factory: &factory::Factory, once| intake::run(factory, once, watched)
             } else {
                 daemon::run
             };
@@ -121,6 +121,25 @@ fn load(dir: &Path) -> Option<factory::Factory> {
 }
 
 /// Runs `run` on the factory in `dir`, once it loads with no problems.
+/// The open waits the intake polls for, read from `PRIORY_DB`; none when the intake runs without
+/// a state file.
+fn watched() -> Result<Vec<intake::Watch>, String> {
+    if std::env::var_os("PRIORY_DB").is_none() {
+        return Ok(Vec::new());
+    }
+    let db = state::open()?;
+    let watched = state::watched(&db).map_err(|error| format!("open waits: {error}"))?;
+    watched
+        .into_iter()
+        .map(|(resource, since)| {
+            let since = since
+                .parse()
+                .map_err(|error| format!("wait on {resource} since `{since}`: {error}"))?;
+            Ok(intake::Watch { resource, since })
+        })
+        .collect()
+}
+
 fn serve(
     verb: &str,
     dir: &Path,
