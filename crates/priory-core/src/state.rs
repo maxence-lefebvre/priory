@@ -770,10 +770,11 @@ pub(crate) fn signal(
                 )
                 .optional()?;
             if let Some((id, text)) = attempted
-                && signal
-                    .prompt
-                    .as_deref()
-                    .is_some_and(|prompt| prompt.split_whitespace().eq(text.split_whitespace()))
+                && signal.prompt.as_deref().is_some_and(|prompt| {
+                    pasted(prompt)
+                        .split_whitespace()
+                        .eq(text.split_whitespace())
+                })
             {
                 tx.execute(
                     &format!(
@@ -793,6 +794,17 @@ pub(crate) fn signal(
     }
     tx.commit()?;
     Ok(kill)
+}
+
+/// The prompt inside the `pasted_content` tag that Claude Code 2.1.328 wraps a paste in, before its
+/// hook sees it; `prompt` itself when it has no such tag.
+fn pasted(prompt: &str) -> &str {
+    prompt
+        .trim()
+        .strip_prefix("<pasted_content")
+        .and_then(|rest| rest.split_once('>'))
+        .and_then(|(attributes, body)| body.strip_suffix(&format!("</pasted_content{attributes}>")))
+        .unwrap_or(prompt)
 }
 
 /// Marks the oldest queued prompt of an idle live run `attempted` and the run busy, in one

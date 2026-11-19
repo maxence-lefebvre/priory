@@ -205,7 +205,7 @@ daemon applies the spool before it removes it.
 
 - `SessionStart`: the harness is up and its input is ready, so the run is idle.
 - `UserPromptSubmit`: the run is busy. Its attempted prompt is confirmed if the submitted text has
-  the same words.
+  the same words, once the `pasted_content` tag that Claude wraps a pasted prompt in is removed.
 - `Stop`: the turn ended, so the run is idle.
 - `PermissionPrompt`: Claude shows a permission prompt, with its `message`, as described under
   Health.
