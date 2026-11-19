@@ -241,6 +241,51 @@ effect = "irreversible"
 next = { opened = "done", failed = "stop" }
 ```
 
+### Drawing a workflow
+
+`priory draw [DIR] <workflow>` prints a Mermaid flowchart of a workflow, after the same checks as
+`priory check`. The notation shows the decider and the effect of every step:
+
+| Part                  | Drawn as                                                  |
+| --------------------- | --------------------------------------------------------- |
+| `model` step          | a stadium, `([...])`                                      |
+| `human` step          | a hexagon, `{{...}}`                                      |
+| `code` step           | a rectangle, `[...]`                                      |
+| Effect                | the second line of the label, after the decider           |
+| `irreversible` effect | a red border and a `⚠` after the effect                   |
+| Outcome               | an arrow from the step to its target, labelled            |
+| `done` and `stop`     | circles                                                   |
+| `start`               | a circle with an arrow to the workflow's `start` step     |
+| `approves`            | a dotted arrow, labelled `approves`, to the approved step |
+
+Steps get the ids `n0`, `n1` and so on, in file order, so any step id is safe. The example above
+draws as:
+
+```mermaid
+flowchart TD
+    classDef irreversible stroke:#c00,stroke-width:3px
+    n0(["plan<br/>model, reversible"])
+    n1{{"approve-plan<br/>human, none"}}
+    n2(["implement<br/>model, reversible"])
+    n3{{"approve-pr<br/>human, none"}}
+    n4["open-pr<br/>code, irreversible ⚠"]:::irreversible
+    done((done))
+    stop((stop))
+    start((start)) --> n0
+    n0 -->|"green"| n2
+    n0 -->|"red"| n1
+    n0 -->|"yellow"| n2
+    n1 -->|"approved"| n2
+    n1 -->|"rejected"| stop
+    n2 -->|"failed"| stop
+    n2 -->|"passed"| n3
+    n3 -->|"open"| n4
+    n3 -->|"stop"| stop
+    n3 -.->|approves| n4
+    n4 -->|"failed"| stop
+    n4 -->|"opened"| done
+```
+
 ### Approval of irreversible steps
 
 An irreversible step needs either a human step that lists it in `approves` on every path that

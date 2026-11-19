@@ -238,6 +238,17 @@ pub enum Effect {
     Irreversible,
 }
 
+impl Effect {
+    pub fn name(&self) -> &'static str {
+        match self {
+            Effect::None => "none",
+            Effect::Read => "read",
+            Effect::Reversible => "reversible",
+            Effect::Irreversible => "irreversible",
+        }
+    }
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Runner {
