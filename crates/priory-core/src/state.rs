@@ -497,12 +497,13 @@ pub(crate) fn handle(
         return Ok(());
     }
     let resources = route::resources(message);
-    let owner = if route::requests(message) {
-        keyed(&tx, resources.first())?
+    let (keyed, owners) = if route::requests(message) {
+        (keyed(&tx, resources.first())?, Vec::new())
     } else {
-        owner(&tx, &resources)?
+        (None, owners(&tx, &resources)?)
     };
-    let (task, outcome) = match route::route(message, owner.as_ref(), factory) {
+    let owner = keyed.as_ref().or(owners.first());
+    let (task, outcome) = match route::route(message, owner, factory) {
         Decision::Create(new) => {
             tx.execute(
                 "INSERT INTO tasks
@@ -596,6 +597,10 @@ pub(crate) fn handle(
     )?;
     let seq = tx.last_insert_rowid();
     crate::hold::event(&tx, &resources)?;
+    // The keyed task keeps the event; another task that shares the resource hears it through its wait.
+    for other in owners.iter().filter(|other| Some(other.id) != task) {
+        crate::tools::event(&tx, other.id, seq)?;
+    }
     match (task, outcome) {
         (Some(task), "kept") => drop(crate::tools::event(&tx, task, seq)?),
         (Some(task), "woke") => {
@@ -638,14 +643,21 @@ pub(crate) fn due(db: &mut Connection) -> rusqlite::Result<()> {
     tx.commit()
 }
 
-/// The resource and the agent's last prompt of each open wait that the intake polls for.
+/// The resource and the agent's last prompt of each open wait that the intake polls for, then the
+/// pull request and creation time of each open merge hold.
 pub fn watched(db: &Connection) -> rusqlite::Result<Vec<(String, String)>> {
     db.prepare(
-        "SELECT waits.resource, coalesce(waits.since, waits.created) FROM waits
-         JOIN tasks ON tasks.id = waits.task AND tasks.state NOT IN ('done', 'failed', 'dropped')
-         WHERE waits.fired IS NULL AND waits.withdrawn IS NULL
-         AND waits.kind IN ('linear_comment', 'linear_state', 'slack_reply', 'pull_request', 'checks', 'review')
-         ORDER BY waits.id",
+        "SELECT resource, since FROM (
+           SELECT 0 AS source, waits.id, waits.resource, coalesce(waits.since, waits.created) AS since
+           FROM waits
+           JOIN tasks ON tasks.id = waits.task AND tasks.state NOT IN ('done', 'failed', 'dropped')
+           WHERE waits.fired IS NULL AND waits.withdrawn IS NULL
+           AND waits.kind IN ('linear_comment', 'linear_state', 'slack_reply', 'pull_request', 'checks', 'review')
+           UNION ALL
+           SELECT 1, holds.id, holds.resource, holds.created FROM holds
+           JOIN tasks ON tasks.id = holds.task AND tasks.state NOT IN ('done', 'failed', 'dropped')
+           WHERE holds.kind = 'merge' AND holds.released IS NULL
+         ) ORDER BY source, id",
     )?
     .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
     .collect()
@@ -682,17 +694,42 @@ fn keyed(tx: &Transaction, key: Option<&String>) -> rusqlite::Result<Option<Task
     .optional()
 }
 
-/// The oldest active task that owns any of `resources`.
+/// The active task that owns any of `resources`: one whose own key is among them, else the oldest.
 pub(crate) fn owner(tx: &Transaction, resources: &[String]) -> rusqlite::Result<Option<Task>> {
+    Ok(owners(tx, resources)?.into_iter().next())
+}
+
+/// Why `task` cannot take `resource`: another task owns it and `task` does not own it yet.
+pub(crate) fn taken(
+    tx: &Transaction,
+    task: i64,
+    resource: &str,
+) -> rusqlite::Result<Option<String>> {
+    let owns = tx
+        .query_row(
+            "SELECT 1 FROM owns WHERE task = ?1 AND resource = ?2",
+            params![task, resource],
+            |_| Ok(()),
+        )
+        .optional()?;
+    if owns.is_some() {
+        return Ok(None);
+    }
+    let other = owner(tx, &[resource.to_owned()])?.filter(|other| other.id != task);
+    Ok(other.map(|other| format!("{resource} belongs to task {}, not this one", other.id)))
+}
+
+/// Every active task that owns any of `resources`, in the order `owner` ranks them.
+fn owners(tx: &Transaction, resources: &[String]) -> rusqlite::Result<Vec<Task>> {
     let resources = serde_json::to_string(resources).expect("resources serialize");
-    tx.query_row(
-        "SELECT tasks.id FROM owns JOIN tasks ON tasks.id = owns.task
+    tx.prepare(
+        "SELECT DISTINCT tasks.id, tasks.key IN (SELECT value FROM json_each(?1)) AS keyed
+         FROM owns JOIN tasks ON tasks.id = owns.task
          WHERE owns.resource IN (SELECT value FROM json_each(?1))
-         AND tasks.state NOT IN ('done', 'failed', 'dropped') ORDER BY tasks.id LIMIT 1",
-        [resources],
-        |row| Ok(Task { id: row.get(0)? }),
-    )
-    .optional()
+         AND tasks.state NOT IN ('done', 'failed', 'dropped') ORDER BY keyed DESC, tasks.id",
+    )?
+    .query_map([resources], |row| Ok(Task { id: row.get(0)? }))?
+    .collect()
 }
 
 /// The rows of `query`, each column as text and `-` for null, tab-separated after `header`.

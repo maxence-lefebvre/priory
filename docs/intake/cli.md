@@ -18,8 +18,9 @@ repository fact, so it names the person and text, not a GitHub id.
 
 The message's `subject` is the task key, `cli:<key>`, and its `time` equals `data.time`. The following
 task request has `trigger` `cli`, `source` set to this message's `id`, `band`, `lane` and `repo`
-from the flags (null when absent), and the same key. No trigger file is involved, so a task
-requested without `--repo` blocks with `task <id> names no repo`.
+from the flags (null when absent), and the same key. A run needs a repository, so without
+`--repo` the request refuses to publish unless `triggers/cli.toml` sets `repo`:
+`the request names no repo; pass --repo owner/name, or set repo in triggers/cli.toml`.
 
 ```json
 {

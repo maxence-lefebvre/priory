@@ -57,15 +57,36 @@ pub fn command_timeout() -> Duration {
 /// command timeout. Then it kills the whole group, so a hung fetch cannot stop the daemon's one
 /// thread, and no child that ignores TERM keeps the output pipe open.
 pub fn output_within(command: &mut Command) -> std::io::Result<Option<Output>> {
-    let child = command
-        .stdin(Stdio::null())
+    fed_within(command, None)
+}
+
+/// As `output_within`, with `input` written to the command's stdin within the same deadline.
+fn fed_within(command: &mut Command, input: Option<Vec<u8>>) -> std::io::Result<Option<Output>> {
+    let stdin = if input.is_some() {
+        Stdio::piped()
+    } else {
+        Stdio::null()
+    };
+    let mut child = command
+        .stdin(stdin)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .process_group(0)
         .spawn()?;
     let group = child.id();
+    let stdin = child.stdin.take();
     let (sender, receiver) = mpsc::channel();
-    std::thread::spawn(move || sender.send(child.wait_with_output()));
+    std::thread::spawn(move || {
+        let written = match (stdin, input) {
+            (Some(mut stdin), Some(input)) => stdin.write_all(&input),
+            _ => Ok(()),
+        };
+        sender.send(
+            child
+                .wait_with_output()
+                .and_then(|output| written.map(|()| output)),
+        )
+    });
     if let Ok(output) = receiver.recv_timeout(command_timeout()) {
         return output.map(Some);
     }
@@ -76,7 +97,12 @@ pub fn output_within(command: &mut Command) -> std::io::Result<Option<Output>> {
 
 /// Runs `command` and returns its stdout, or an error naming it with its stderr.
 pub(crate) fn run(command: &mut Command) -> Result<String, String> {
-    let output = output_within(command)
+    fed(command, None)
+}
+
+/// As `run`, with `input` on the command's stdin.
+fn fed(command: &mut Command, input: Option<Vec<u8>>) -> Result<String, String> {
+    let output = fed_within(command, input)
         .map_err(|error| format!("{command:?}: {error}"))?
         .ok_or_else(|| {
             format!(
@@ -659,21 +685,10 @@ pub fn clone_of(worktree: &Path) -> Option<PathBuf> {
 /// stdin, so none of it is taken for key names.
 pub fn type_text(pane: &str, text: &str) -> Result<(), String> {
     let buffer = format!("priory{pane}");
-    let mut load = tmux()
-        .args(["load-buffer", "-b", &buffer, "-"])
-        .stdin(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|error| error.to_string())?;
-    load.stdin
-        .take()
-        .expect("stdin is piped")
-        .write_all(text.as_bytes())
-        .map_err(|error| error.to_string())?;
-    let loaded = load.wait_with_output().map_err(|error| error.to_string())?;
-    if !loaded.status.success() {
-        return Err(String::from_utf8_lossy(&loaded.stderr).into_owned());
-    }
+    fed(
+        tmux().args(["load-buffer", "-b", &buffer, "-"]),
+        Some(text.as_bytes().to_vec()),
+    )?;
     run(tmux().args(["paste-buffer", "-p", "-d", "-b", &buffer, "-t", pane]))?;
     run(tmux().args(["send-keys", "-t", pane, "Enter"]))?;
     Ok(())

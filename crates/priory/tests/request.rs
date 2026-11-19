@@ -51,9 +51,10 @@ impl Setup {
             .unwrap()
     }
 
+    /// Runs `priory request` in repository `owner/repo`; a later `--repo` in `args` wins.
     fn request(&self, args: &[&str]) -> Output {
         let factory = self.dir.join("factory");
-        let mut all = vec!["request", factory.to_str().unwrap()];
+        let mut all = vec!["request", factory.to_str().unwrap(), "--repo", "owner/repo"];
         all.extend(args);
         self.priory(&all)
     }
@@ -103,8 +104,6 @@ fn a_request_publishes_its_source_event_then_the_task_request() {
         "docs-1",
         "--band",
         "today",
-        "--repo",
-        "owner/repo",
         "Fix the docs",
     ]));
 
@@ -133,6 +132,29 @@ fn a_request_publishes_its_source_event_then_the_task_request() {
         })
     );
     assert_eq!(task.subject.as_deref(), Some("cli:docs-1"));
+}
+
+#[test]
+fn a_request_with_no_repo_exits_non_zero_and_publishes_nothing() {
+    let setup = Setup::new("no-repo");
+    let factory = setup.dir.join("factory");
+
+    let output = setup.priory(&[
+        "request",
+        factory.to_str().unwrap(),
+        "--workflow",
+        "implement",
+        "--key",
+        "docs-1",
+        "Fix the docs",
+    ]);
+
+    assert!(!output.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&output.stderr),
+        "priory request: the request names no repo; pass --repo owner/name, or set repo in triggers/cli.toml\n"
+    );
+    assert!(setup.published().is_empty());
 }
 
 #[test]
