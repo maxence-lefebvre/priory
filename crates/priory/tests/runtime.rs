@@ -1093,7 +1093,7 @@ fn a_derived_lane_is_derived_again_when_the_first_run_gives_the_task_a_branch() 
                 .success()
         );
     }
-    setup.until("tasks", |rows| rows[0][4] == "dropped");
+    setup.until("tasks", |rows| rows[0][4] == "failed");
     let desk = setup.priory(&["desk"]);
     let desk = String::from_utf8(desk.stdout).unwrap();
     let mut lines = desk.lines();
@@ -1170,7 +1170,7 @@ fn a_crash_on_a_full_disk_the_sweep_cannot_free_fails_without_a_restart() {
             .success()
     );
 
-    let tasks = setup.until("tasks", |rows| rows[0][4] == "dropped");
+    let tasks = setup.until("tasks", |rows| rows[0][4] == "failed");
     let cause = "disk full (10.0 GB of disk free, keeps 20.0 GB free)";
     assert_eq!(
         tasks[0][7],
