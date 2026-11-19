@@ -572,8 +572,8 @@ poll from the newest one. A missing marker means the stream is still in its base
 | Stream             | Reads                                                   | Position                     |
 | ------------------ | ------------------------------------------------------- | ---------------------------- |
 | `linear.view:<view>` | every issue of the view                               | a count of membership changes; the marker also holds `members`, the fields of each issue in the view |
-| `linear.issues`    | issues updated at or after the position, with their last 50 history entries | the latest `updatedAt` seen |
-| `linear.comments`  | comments created at or after the position               | the latest `createdAt` seen  |
+| `linear.issues`    | issues updated at or after the position, archived ones included, with their last 50 history entries | the latest `updatedAt` seen; the marker also holds `seen`, the ids of the events at that instant |
+| `linear.comments`  | comments created at or after the position               | the latest `createdAt` seen, and `seen` as above |
 
 The first poll of a view publishes each of its issues as `linear.issue.entered` with `baseline:
 true`. The first poll of the other two reads their 50 most recent nodes, and publishes what they
@@ -584,18 +584,30 @@ trigger. When that first page is empty, the stream starts from 1970.
 {
   "type": "factory.intake.baseline",
   "subject": "linear.comments",
-  "data": { "stream": "linear.comments", "position": "2026-11-17T11:00:00.000Z" }
+  "data": {
+    "stream": "linear.comments",
+    "position": "2026-11-17T11:00:00.000Z",
+    "seen": ["f0352bb3-8810-574d-940d-8d6c29e73f60"]
+  }
 }
 ```
 
+A poll reads again the events at its stream's position, because two events can share a millisecond.
+It skips those the marker lists in `seen`, so a baseline event read again never requests a task.
+
 A crash between an event and its stream's marker makes the next poll start from the older marker.
 It finds the same events with the same ids, so herdr-bus drops them, and their task requests are
-published again or dropped.
+published again or dropped. On start, the intake also publishes again the task requests of each
+stream's newest event after its marker, from that event's `triggers`, as the GitHub source does.
 
 Limits:
 
 - A view event's `time` is when the intake noticed the change, at most one poll late.
-- An issue that enters and leaves a view between two polls produces no event.
+- An issue that enters and leaves a view between two polls produces no event. The same holds
+  across a crash: an issue that entered just before the crash and left before the restart gets its
+  task request, but no `linear.issue.left`.
+- A task's key names the issue identifier. Moving the issue to another team changes its
+  identifier, so later events of that issue no longer reach the task.
 - A view marker holds every issue of the view and is published whenever one of them changes, so a
   large, busy view grows the output.
 - A state change past the last 50 entries of an issue's history between two polls is missed.
@@ -605,7 +617,9 @@ Limits:
 The intake reads the API key from the environment variable `LINEAR_API_KEY`, and refuses to start
 without it when the factory has a Linear trigger. It posts each GraphQL query to
 `https://api.linear.app/graphql` with `curl`, which reads the key from its standard input, so the
-key never appears in a process list, an error or a log. A poll makes one query per view and two for
+key never appears in a process list. `--disable` makes curl ignore `~/.curlrc`, so no trace option
+can log the key, and the intake replaces the key in any error it prints. A request times out after
+60 seconds, and the next poll retries it. A poll makes one query per view and two for
 issues and comments, plus one per extra page of 100. Linear allows 1,500 requests an hour per key.
 
 ## GitHub calls

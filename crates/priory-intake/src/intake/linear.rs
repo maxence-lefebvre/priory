@@ -1,8 +1,8 @@
 use super::{BASELINE, OUTPUT, dispatch, id, publish};
-use herdr_bus::{Bus, Message, MessageQuery, Timestamp, Uuid};
+use herdr_bus::{Bus, Message, MessageQuery, Timestamp};
 use priory_factory::factory::Trigger;
 use serde_json::{Value, json};
-use std::collections::{BTreeMap, HashSet};
+use std::collections::BTreeMap;
 use std::io::Write;
 use std::process::{Command, Stdio};
 
@@ -28,7 +28,6 @@ pub(super) struct Linear<'a> {
     key: String,
     triggers: Vec<(&'a str, &'a Trigger)>,
     streams: BTreeMap<String, Option<Value>>,
-    published: HashSet<Uuid>,
 }
 
 /// What one poll of a stream found: its new events, oldest first, and its new marker data.
@@ -55,12 +54,15 @@ impl<'a> Linear<'a> {
             .collect();
         streams.insert(ISSUES.into(), None);
         streams.insert(COMMENTS.into(), None);
-        resume(bus, &mut streams).map_err(|error| error.to_string())?;
+        let newest = resume(bus, &mut streams).map_err(|error| error.to_string())?;
+        // A crash may have stopped between an event and its task requests.
+        for event in newest.iter().filter(|event| event.data["baseline"] != true) {
+            dispatch(bus, &triggers, event)?;
+        }
         Ok(Linear {
             key,
             triggers,
             streams,
-            published: HashSet::new(),
         })
     }
 
@@ -85,8 +87,15 @@ impl<'a> Linear<'a> {
             marker,
         } in polled
         {
+            let current = self.streams.get_mut(&stream).expect("a polled stream");
+            let seen = current
+                .as_ref()
+                .and_then(|marker| marker["seen"].as_array())
+                .cloned()
+                .unwrap_or_default();
             for event in events {
-                if !self.published.insert(event.id) {
+                // Read again at the stream's position, and handled by an earlier poll.
+                if seen.contains(&json!(event.id.to_string())) {
                     continue;
                 }
                 publish(bus, &event)?;
@@ -98,7 +107,7 @@ impl<'a> Linear<'a> {
                 let position = position
                     .as_str()
                     .map_or(position.to_string(), str::to_owned);
-                let name = format!("{BASELINE}:{stream}:{position}");
+                let name = format!("{BASELINE}:{stream}:{position}:{}", marker["seen"]);
                 let message = Message::new(BASELINE, marker.clone())
                     .id(id(&name))
                     .subject(&stream);
@@ -176,7 +185,8 @@ impl<'a> Linear<'a> {
         let since = marker.and_then(|marker| marker["position"].as_str());
         let query = format!(
             "query Issues($filter: IssueFilter, $first: Int!, $after: String) {{ \
-             issues(filter: $filter, first: $first, after: $after, orderBy: updatedAt) {{ nodes {{ \
+             issues(filter: $filter, first: $first, after: $after, orderBy: updatedAt, \
+             includeArchived: true) {{ nodes {{ \
              ...issue history(first: 50, orderBy: createdAt) {{ nodes {{ id createdAt \
              fromState {{ name }} toState {{ name }} actor {{ displayName }} }} }} }} {PAGE} }} }} {ISSUE}"
         );
@@ -344,6 +354,7 @@ fn after(since: Option<&str>, time: &Value) -> bool {
 
 /// A time stream's poll: its events oldest first, and its position, the latest `field` of
 /// `nodes`. A first page with nothing means Linear holds none yet, so the stream starts at 1970.
+/// The marker lists the events at that position, which the next poll reads again.
 fn polled(
     stream: &str,
     mut events: Vec<Message>,
@@ -362,10 +373,16 @@ fn polled(
             || Timestamp::UNIX_EPOCH.to_string(),
             |(_, raw)| raw.to_string(),
         );
+    let position = latest.parse::<Timestamp>().ok();
+    let seen: Vec<String> = events
+        .iter()
+        .filter(|event| Some(event.time) == position)
+        .map(|event| event.id.to_string())
+        .collect();
     Polled {
         stream: stream.into(),
         events,
-        marker: json!({ "stream": stream, "position": latest }),
+        marker: json!({ "stream": stream, "position": latest, "seen": seen }),
     }
 }
 
@@ -396,8 +413,13 @@ fn fields(issue: &Value) -> Value {
     })
 }
 
-/// Fills each stream with its newest marker, read back newest first.
-fn resume(bus: &Bus, streams: &mut BTreeMap<String, Option<Value>>) -> herdr_bus::Result<()> {
+/// Fills each stream with its newest marker, read back newest first, and returns the newest event
+/// of each stream published after that marker.
+fn resume(
+    bus: &Bus,
+    streams: &mut BTreeMap<String, Option<Value>>,
+) -> herdr_bus::Result<Vec<Message>> {
+    let mut newest: BTreeMap<String, Message> = BTreeMap::new();
     let mut before = None;
     // shortcut: reads back to each stream's newest marker, once per start; a stored cursor would
     // make this constant once the output is large.
@@ -412,26 +434,42 @@ fn resume(bus: &Bus, streams: &mut BTreeMap<String, Option<Value>>) -> herdr_bus
             break;
         };
         before = Some(oldest.seq);
-        for stored in page.iter().filter(|stored| stored.message.kind == BASELINE) {
-            let data = &stored.message.data;
-            let stream = data["stream"].as_str().unwrap_or_default();
-            if let Some(marker @ None) = streams.get_mut(stream) {
-                *marker = Some(data.clone());
+        for stored in &page {
+            let message = &stored.message;
+            let stream = match message.kind.as_str() {
+                BASELINE => text(&message.data["stream"]).to_string(),
+                ENTERED | LEFT => view_stream(text(&message.data["view"])),
+                CREATED | STATE_CHANGED => ISSUES.to_string(),
+                COMMENTED => COMMENTS.to_string(),
+                _ => continue,
+            };
+            let Some(marker @ None) = streams.get_mut(&stream) else {
+                continue;
+            };
+            if message.kind == BASELINE {
+                *marker = Some(message.data.clone());
+            } else {
+                newest.entry(stream).or_insert_with(|| message.clone());
             }
         }
     }
-    Ok(())
+    Ok(newest.into_values().collect())
 }
 
 /// One query to Linear's GraphQL API. The key goes to `curl` on its standard input, so that it
-/// never shows in a process list.
+/// never shows in a process list, and `--disable` keeps a `.curlrc` from tracing it.
 fn graphql(key: &str, query: &str, variables: &Value) -> Result<Value, String> {
     let operation = query.split(['(', ' ']).nth(1).unwrap_or("query");
     let body = json!({ "query": query, "variables": variables }).to_string();
     let mut child = Command::new("curl")
         .args([
+            "--disable",
             "--silent",
             "--show-error",
+            "--connect-timeout",
+            "10",
+            "--max-time",
+            "60",
             "--fail-with-body",
             "--config",
             "-",
@@ -462,10 +500,10 @@ fn graphql(key: &str, query: &str, variables: &Value) -> Result<Value, String> {
     let stdout = String::from_utf8_lossy(&output.stdout);
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
+        let error = format!("{} {}", stderr.trim(), stdout.trim());
         return Err(format!(
-            "Linear {operation} failed: {} {}",
-            stderr.trim(),
-            stdout.trim()
+            "Linear {operation} failed: {}",
+            error.replace(key, "<LINEAR_API_KEY>")
         ));
     }
     let answer: Value =

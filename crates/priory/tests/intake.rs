@@ -1461,6 +1461,7 @@ fn the_key_reaches_linear_on_standard_input_only() {
     let stdin = fs::read_to_string(setup.dir.join("curl-stdin")).unwrap();
     assert!(stdin.contains(&format!("header = \"Authorization: {KEY}\"")));
     let args = fs::read_to_string(setup.dir.join("curl-args")).unwrap();
+    assert!(args.lines().all(|line| line.starts_with("--disable ")));
     assert!(!args.contains(KEY));
     assert!(!String::from_utf8_lossy(&output.stderr).contains(KEY));
 }
@@ -1628,4 +1629,64 @@ fn a_state_change_that_matches_a_filter_requests_a_task_once() {
     );
     assert_eq!(task.data["key"], "linear:ENG-7");
     assert_eq!(published[3].message.data["triggers"], json!([]));
+}
+
+const COMMENT_TRIGGER: &str = r#"
+source = "linear"
+on = "comment.created"
+workflow = "implement"
+"#;
+
+#[test]
+fn a_restart_requests_no_task_for_a_baseline_comment_read_again() {
+    let setup = Setup::linear("linear-restart-baseline", &[("commented", COMMENT_TRIGGER)]);
+    setup.answer_linear(&Linear {
+        comments: vec![linear_comment("comment-1", 7, "2026-11-17T11:00:00.000Z")],
+        ..Linear::default()
+    });
+    succeeded(&setup.intake());
+
+    succeeded(&setup.intake());
+
+    assert_eq!(kinds(&setup.published()), ["linear.comment.created"]);
+}
+
+#[test]
+fn a_restart_requests_the_task_a_crash_left_out_for_a_view() {
+    let setup = Setup::linear("linear-crash", &[("agent-ready", VIEW_TRIGGER)]);
+    succeeded(&setup.intake());
+    setup.answer_linear(&Linear {
+        view: vec![linear_issue(7)],
+        ..Linear::default()
+    });
+    succeeded(&setup.intake());
+    let entered = setup.published()[0].message.clone();
+    let crashed = Setup::linear("linear-crash-replay", &[("agent-ready", VIEW_TRIGGER)]);
+    succeeded(&crashed.intake());
+    seed(&crashed, &entered);
+
+    succeeded(&crashed.intake());
+
+    assert_eq!(
+        kinds(&crashed.published()),
+        ["linear.issue.entered", "factory.task.requested"]
+    );
+}
+
+#[test]
+fn a_failing_linear_query_reports_the_error_without_the_key() {
+    let setup = Setup::linear("linear-fails", &[("agent-ready", VIEW_TRIGGER)]);
+    let curl = setup.dir.join("bin/curl");
+    let script = format!(
+        "#!/bin/sh\ncat > /dev/null\necho \"> Authorization: {KEY}\" >&2\necho 'curl: (22) 401' >&2\nexit 22\n"
+    );
+    write(&curl, &script);
+
+    let output = setup.intake();
+
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("curl: (22) 401"), "{stderr}");
+    assert!(!stderr.contains(KEY), "{stderr}");
+    assert!(setup.published().is_empty());
 }
