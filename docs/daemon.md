@@ -29,7 +29,9 @@ from its branch gets that pull request's events, with no trigger involved.
 
 | Message                                   | Outcome   | Task                                         |
 | ----------------------------------------- | --------- | -------------------------------------------- |
-| Any, with an active task owning a resource it names | `kept` | that task                             |
+| A schedule's `factory.task.requested`, with a task asleep at a model step owning its key | `woke` | that task, now `ready` |
+| A schedule's `factory.task.requested`, with a task in another active state owning its key | `coalesced` | that task, unchanged |
+| Any other, with an active task owning a resource it names | `kept` | that task                   |
 | `factory.task.requested`, no active task  | `created` | a new task, `queued` at its workflow's start |
 | `factory.task.requested`, malformed       | `ignored` | none                                         |
 | Any other                                 | `ignored` | none                                         |
@@ -40,6 +42,15 @@ it cannot block the output.
 
 A source event comes before its task request, so it is recorded as `ignored`. The task keeps its
 id in `source`.
+
+A schedule's task request carries `scheduled` (see `docs/intake.md`). Only a schedule with a fixed
+`key` sends a second one for the same key. One that finds the task asleep at a model step wakes it,
+even when its wait does not match: its prompt is the trigger's `prompt`, then the firing's line,
+which carries the firing time, then the events the task kept while it slept. Its open ask and wait
+stay open: each new run of a task takes over its open asks and agent waits, so the next `Stop`
+puts the task back to sleep on them. One that finds the task in any other state, such as running,
+asleep at a human step, or asleep on the daemon's checks gate, is recorded as `coalesced` and is
+never typed, so firings never stack.
 
 A message kept for a `running` task also gets an outbox prompt, so the agent reads it after its
 current turn. A message kept for an asleep task that satisfies its wait wakes it, as described under

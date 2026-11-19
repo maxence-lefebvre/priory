@@ -163,6 +163,21 @@ key = "issue.number"            # "pull_request.number" for a pull_request event
 backfill = false                # true: also start tasks for the events of the first poll
 ```
 
+`triggers/support-day.toml`:
+
+```toml
+source = "schedule"
+repo = "owner/name"             # the repository its runs work in
+at = "09:00"                    # local time of day
+days = ["mon", "tue", "wed", "thu", "fri"]  # optional: every day when unset
+every = "1h"                    # optional: fire again every hour after `at`, the same day
+until = "18:00"                 # optional: a time of day or a duration after `at`, such as "9h"
+timezone = "Europe/Paris"       # optional: the machine's zone when unset
+key = "support-day"             # optional: every firing names the same task
+prompt = "Sweep the support queue."  # what a firing tells the asleep task it wakes
+workflow = "support"
+```
+
 ### Lanes
 
 A lane groups related work, such as `3D/mobile`, so views and reports show it together. A trigger
@@ -320,7 +335,12 @@ factory, such as herdr-bowtie, can read the same output as another consumer.
 - R2.3 Deliver each event at least once and drop duplicates by event id. M0
 - R2.4 Trigger on Linear saved views (an issue enters or leaves) and on Linear issues and comments.
   Poll the Slack threads that waits name. M1
-- R2.5 Trigger on schedules. M1
+- R2.5 Trigger on schedules: a time of day, weekdays, an optional repeat until an end, and a
+  timezone. Each firing publishes one task request, once, and a restart fires only the latest
+  missed firing. Without a fixed `key`, each firing starts its own task. With one, a firing creates
+  the task when none is active, wakes it with the trigger's `prompt` when it is asleep, even when
+  its wait does not match and while its ask stays open, and is coalesced when it is in any other
+  state, so firings never stack. A recurring wake is a schedule trigger, not an agent's own loop. M1
 - R2.6 Accept signed webhooks and check the signature before any trigger sees the payload. M2
 
 ### R3. Inbox

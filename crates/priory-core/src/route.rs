@@ -64,6 +64,11 @@ pub(crate) fn branch(repo: &str, branch: &str) -> String {
     format!("github:{repo}@{branch}")
 }
 
+/// Whether `message` is a schedule's firing, which wakes or is coalesced into the task it finds.
+pub(crate) fn tick(message: &Message) -> bool {
+    message.kind == TASK_REQUESTED && message.data.get("scheduled").is_some()
+}
+
 /// Routes `message`, given the active task that owns its key, if any. A task request for a
 /// workflow the factory lacks is an error, so that it waits unacked until the workflow is back.
 pub(crate) fn route(

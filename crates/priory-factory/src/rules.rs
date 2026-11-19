@@ -1,4 +1,4 @@
-use crate::factory::{Decider, Effect, Factory, Loaded, Problem, Step, Trigger, Workflow};
+use crate::factory::{Decider, Effect, Factory, Loaded, Problem, Step, Trigger, Until, Workflow};
 use std::collections::{BTreeMap, BTreeSet};
 
 const ENDS: [&str; 2] = ["done", "stop"];
@@ -22,6 +22,26 @@ pub fn check(factory: &Factory) -> Vec<Problem> {
                 "only a GitHub trigger has `backfill`".into(),
             ));
         }
+        if trigger.value.source == "schedule" {
+            check_schedule(trigger, &mut problems);
+        } else {
+            let value = &trigger.value;
+            let fields = [
+                ("at", value.at.is_some()),
+                ("days", value.days.is_some()),
+                ("every", value.every.is_some()),
+                ("until", value.until.is_some()),
+                ("timezone", value.timezone.is_some()),
+                ("prompt", value.prompt.is_some()),
+            ];
+            for (field, _) in fields.into_iter().filter(|(_, set)| *set) {
+                problems.push(problem(
+                    trigger,
+                    trigger.lines.field(field),
+                    format!("only a schedule trigger has `{field}`"),
+                ));
+            }
+        }
     }
     for workflow in factory.workflows.values() {
         check_workflow(factory, workflow, &mut problems);
@@ -29,9 +49,40 @@ pub fn check(factory: &Factory) -> Vec<Problem> {
     problems
 }
 
-fn check_github(trigger: &Loaded<Trigger>, problems: &mut Vec<Problem>) {
+/// A schedule's run works in `repo`, as a GitHub trigger's does.
+fn check_schedule(trigger: &Loaded<Trigger>, problems: &mut Vec<Problem>) {
     let value = &trigger.value;
-    let repo = value.repo.as_deref().and_then(|repo| repo.split_once('/'));
+    check_repo(trigger, "schedule", problems);
+    let Some(at) = value.at else {
+        problems.push(problem(
+            trigger,
+            trigger.lines.field("source"),
+            "a schedule trigger needs `at = \"HH:MM\"`".into(),
+        ));
+        return;
+    };
+    if value.every.is_some_and(|every| every.as_secs() < 60) {
+        problems.push(problem(
+            trigger,
+            trigger.lines.field("every"),
+            "`every` is shorter than the intake's 1-minute poll".into(),
+        ));
+    }
+    if matches!(value.until, Some(Until::At(until)) if until < at) {
+        problems.push(problem(
+            trigger,
+            trigger.lines.field("until"),
+            "`until` is before `at`, so it never fires".into(),
+        ));
+    }
+}
+
+fn check_repo(trigger: &Loaded<Trigger>, source: &str, problems: &mut Vec<Problem>) {
+    let repo = trigger
+        .value
+        .repo
+        .as_deref()
+        .and_then(|repo| repo.split_once('/'));
     if !repo
         .is_some_and(|(owner, name)| !owner.is_empty() && !name.is_empty() && !name.contains('/'))
     {
@@ -41,9 +92,14 @@ fn check_github(trigger: &Loaded<Trigger>, problems: &mut Vec<Problem>) {
                 .lines
                 .field("repo")
                 .or(trigger.lines.field("source")),
-            "a GitHub trigger needs `repo = \"owner/name\"`".into(),
+            format!("a {source} trigger needs `repo = \"owner/name\"`"),
         ));
     }
+}
+
+fn check_github(trigger: &Loaded<Trigger>, problems: &mut Vec<Problem>) {
+    let value = &trigger.value;
+    check_repo(trigger, "GitHub", problems);
     const ON: [&str; 4] = [
         "issues.labeled",
         "issues.opened",
@@ -53,7 +109,7 @@ fn check_github(trigger: &Loaded<Trigger>, problems: &mut Vec<Problem>) {
     if !ON.contains(&value.on.as_str()) {
         problems.push(problem(
             trigger,
-            trigger.lines.field("on"),
+            trigger.lines.field("on").or(trigger.lines.field("source")),
             format!(
                 "a GitHub trigger handles `issues.labeled`, `issues.opened`, `pull_request.labeled` or `pull_request.opened`, not `{}`",
                 value.on

@@ -285,6 +285,24 @@ pub(crate) fn handle(
             )?;
             (Some(id), "created")
         }
+        Decision::Keep(id) if route::tick(message) => {
+            // A human step or a daemon's checks gate has no agent turn for a tick to wake.
+            let asleep_at: Option<(String, String)> = tx
+                .query_row(
+                    "SELECT workflow, step FROM tasks WHERE id = ?1 AND state = 'asleep'
+                     AND NOT EXISTS (SELECT 1 FROM waits WHERE task = ?1 AND fired IS NULL AND daemon)",
+                    [id],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .optional()?;
+            let wakes = asleep_at.is_some_and(|(workflow, step)| {
+                workflows
+                    .get(&workflow)
+                    .and_then(|workflow| workflow.value.step(&step))
+                    .is_some_and(|step| step.decides == priory_factory::factory::Decider::Model)
+            });
+            (Some(id), if wakes { "woke" } else { "coalesced" })
+        }
         Decision::Keep(id) => (Some(id), "kept"),
         Decision::Ignore => (None, "ignored"),
     };
@@ -328,8 +346,19 @@ pub(crate) fn handle(
             outbox
         ],
     )?;
-    if let Some(task) = task.filter(|_| outcome == "kept") {
-        crate::tools::event(&tx, task, tx.last_insert_rowid())?;
+    let seq = tx.last_insert_rowid();
+    match (task, outcome) {
+        (Some(task), "kept") => drop(crate::tools::event(&tx, task, seq)?),
+        (Some(task), "woke") => {
+            let line = line(
+                &message.kind,
+                message.subject.as_deref(),
+                &message.data.to_string(),
+            );
+            let text = message.data["prompt"].as_str().unwrap_or(&line);
+            crate::tools::wake_on(&tx, task, text, Some(seq))?;
+        }
+        _ => {}
     }
     Ok(tx.commit()?)
 }
@@ -599,6 +628,15 @@ pub(crate) fn start(db: &mut Connection, run: &NewRun) -> rusqlite::Result<i64> 
         "UPDATE tasks SET state = 'running', branch = ?2, worktree = ?3, reason = NULL, ending = ?4
          WHERE id = ?1",
         params![run.task, run.branch, run.worktree, run.ending],
+    )?;
+    // A schedule's tick wakes a task with its ask or wait still open: this run sleeps on them again.
+    tx.execute(
+        "UPDATE asks SET run = ?2 WHERE task = ?1 AND run IS NOT NULL AND answer IS NULL",
+        params![run.task, id],
+    )?;
+    tx.execute(
+        "UPDATE waits SET run = ?2 WHERE task = ?1 AND fired IS NULL AND NOT daemon",
+        params![run.task, id],
     )?;
     tx.execute(
         "INSERT OR IGNORE INTO owns (task, resource) VALUES (?1, ?2)",

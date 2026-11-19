@@ -6,7 +6,8 @@ that output: the Priory daemon, and another factory such as herdr-bowtie.
 
 The intake checks the factory first, as `priory check` does, and refuses to start while it has
 problems. `--once` polls once and exits. Without it, the intake polls every 60 seconds. It reads
-GitHub only, through `gh api` and `gh api graphql`, as the user `gh` is logged in as.
+GitHub only, through `gh api` and `gh api graphql`, as the user `gh` is logged in as. Each poll also
+fires the factory's schedule triggers that are due (see `schedule.fired`).
 
 ## The envelope
 
@@ -15,9 +16,9 @@ Every message is a herdr-bus `Message`, shaped like a CloudEvent:
 | Field     | Type          | Meaning                                                    |
 | --------- | ------------- | ---------------------------------------------------------- |
 | `id`      | UUID string   | A UUIDv5, stable across retries (see Message ids)          |
-| `type`    | string        | A GitHub type below, `priory.task.requested.cli`, `factory.task.requested` or `factory.intake.baseline` |
-| `subject` | string        | `owner/name#42` for a GitHub event, the task key for a CLI request or a task request, `owner/name <stream>` for a baseline marker |
-| `time`    | RFC 3339      | When the GitHub event happened; for a baseline marker, when it was published |
+| `type`    | string        | A GitHub type below, `priory.task.requested.cli`, `schedule.fired`, `factory.task.requested` or `factory.intake.baseline` |
+| `subject` | string        | `owner/name#42` for a GitHub event, the task key for a CLI request or a task request, `schedule:<trigger>@<time>` for a firing, `owner/name <stream>` for a baseline marker |
+| `time`    | RFC 3339      | When the GitHub event happened; for a firing, its scheduled time; for a baseline marker, when it was published |
 | `data`    | object        | The fields below, by type                                  |
 | `links`   | array         | GitHub events carry one `{ "label": "issue" or "pull_request", "url": ... }`, with the event's `url` |
 
@@ -287,6 +288,59 @@ open, the poll takes its snapshot from the open list, the later of its two reads
 }
 ```
 
+## `schedule.fired`
+
+A trigger with `source = "schedule"` fires at `at`, a local time of day, in `timezone` (an IANA
+name; the machine's zone when unset), on the weekdays `days` lists (every day when unset). With
+`every`, it fires again every that long after `at`, the same day, up to `until` included: a time of
+day such as `"18:00"` or a duration after `at` such as `"9h"`. `until` defaults to the end of the
+day, and a duration stops there too. `every` is at least `1m`, the intake's poll.
+
+Each poll publishes, for each schedule trigger, its latest firing at or before now: this source
+event, then one `factory.task.requested`. The firing's time names both messages' ids, so a second
+poll in the same slot publishes nothing new, and a restart after missed slots publishes only the
+latest of them, once.
+
+| Field       | Type     | Meaning                              |
+| ----------- | -------- | ------------------------------------ |
+| `trigger`   | string   | The trigger's name                   |
+| `scheduled` | RFC 3339 | When the firing was due, in UTC       |
+
+Its task request adds two fields to those below: `scheduled`, the same time, and `prompt`, the
+trigger's `prompt` or null. Its `key` is `schedule:<key>` when the trigger sets a fixed `key`, so
+every firing names the same work, and `schedule:<trigger>@<scheduled>` otherwise, so each firing is
+its own task. The daemon routes a firing to a task that already owns a fixed key by the task's
+state (see `docs/daemon.md`).
+
+```json
+{
+  "id": "5b0e9c8c-6c0a-5b8e-9a4d-2f7f3c1e8a10",
+  "type": "factory.task.requested",
+  "subject": "schedule:support-day",
+  "time": "2026-11-19T09:00:00Z",
+  "data": {
+    "workflow": "support",
+    "key": "schedule:support-day",
+    "band": null,
+    "lane": null,
+    "trigger": "support-day",
+    "source": "0f4a6d1e-3c1b-5d55-8a8e-6d2b0c9e7f21",
+    "scheduled": "2026-11-19T09:00:00Z",
+    "prompt": "Sweep the support queue."
+  },
+  "links": []
+}
+```
+
+Limits:
+
+- A new schedule trigger fires its latest past slot on its first poll, as a missed firing would.
+- Only the latest slot fires, so a poll delayed past two slots, such as by a slow `gh`, skips the
+  older one. The last slot of a day fires even when the poll that finds it comes after `until`.
+- Changing `at`, `every` or `until` names new slots, so the latest of them can fire at once.
+- `every` counts real time from `at`, so a daylight saving change on that day shifts the later
+  firings by the hour it adds or removes.
+
 ## `priory.task.requested.cli`
 
 `priory request [DIR] --workflow <name> --key <key> [--band <band>] [--lane <lane>] [--repo <owner/name>] [--] <text>`
@@ -358,7 +412,7 @@ with `backfill = true`. Only this message creates a task.
 | Field      | Type           | Meaning                                                      |
 | ---------- | -------------- | ------------------------------------------------------------ |
 | `workflow` | string         | The workflow the task starts                                 |
-| `key`      | string         | Which events are the same work: `github:owner/name#42`, the issue or pull request number. GitHub numbers both from one sequence per repository |
+| `key`      | string         | Which events are the same work: `github:owner/name#42`, the issue or pull request number. GitHub numbers both from one sequence per repository. A schedule's key is under `schedule.fired` |
 | `band`     | string or null | The trigger's `band`, or null when it sets none              |
 | `lane`     | string or null | The trigger's `lane`, or null when `lanes.toml` derives it   |
 | `trigger`  | string         | The trigger's name: its file name without the extension      |
@@ -400,6 +454,7 @@ of these names:
 | `github.check_run.completed` | `github:{repo}:check-runs:{github_id}:pulls/{pull_request}`, since one check run can sit on the head of two pull requests |
 | `github.pull_request.check_runs` | `github:{repo}:pulls/{pull_request}:check-runs:{head_sha}:{some or none}` |
 | `priory.task.requested.cli` | `priory.task.requested.cli:{len}:{key}:{text}`, with the `cli:` key and `len` its byte length, so a `:` in the key or text cannot make two requests collide |
+| `schedule.fired`         | `schedule.fired:{trigger}@{scheduled}`       |
 | `factory.task.requested` | `factory.task.requested:{trigger}:{source}`  |
 | `factory.intake.baseline` | `factory.intake.baseline:{repo}:{stream}`   |
 

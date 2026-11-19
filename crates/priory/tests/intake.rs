@@ -84,18 +84,27 @@ impl Setup {
     }
 
     fn intake(&self) -> Output {
+        self.command().output().unwrap()
+    }
+
+    /// Runs `priory intake --once` with the clock set to `now`.
+    fn intake_at(&self, now: &str) -> Output {
+        self.command().env("PRIORY_NOW", now).output().unwrap()
+    }
+
+    fn command(&self) -> Command {
         let path = format!(
             "{}:{}",
             self.dir.join("bin").display(),
             std::env::var("PATH").unwrap()
         );
-        Command::new(env!("CARGO_BIN_EXE_priory"))
+        let mut command = Command::new(env!("CARGO_BIN_EXE_priory"));
+        command
             .args(["intake", "--once"])
             .arg(self.dir.join("factory"))
             .env("PATH", path)
-            .env("HERDR_BUS_DB", self.dir.join("bus.db"))
-            .output()
-            .unwrap()
+            .env("HERDR_BUS_DB", self.dir.join("bus.db"));
+        command
     }
 
     /// The source events and task requests on `factory.intake`, oldest first.
@@ -1058,4 +1067,167 @@ fn a_poll_judges_a_pull_request_on_its_open_snapshot_when_an_event_names_it_too(
         .map(|stored| stored.message.data["runs"].clone())
         .collect();
     assert_eq!(snapshots, [json!(1)]);
+}
+
+const SCHEDULE: &str = r#"
+source = "schedule"
+repo = "owner/repo"
+at = "09:00"
+timezone = "Europe/Paris"
+workflow = "implement"
+band = "today"
+"#;
+
+/// A factory with the `standup` schedule trigger, firing at 09:00 Paris time.
+fn scheduled(name: &str) -> Setup {
+    let setup = Setup::new(name, &[]);
+    write(&setup.dir.join("factory/triggers/standup.toml"), SCHEDULE);
+    setup
+}
+
+fn tasks(setup: &Setup) -> Vec<Message> {
+    setup
+        .published()
+        .into_iter()
+        .map(|stored| stored.message)
+        .filter(|message| message.kind == "factory.task.requested")
+        .collect()
+}
+
+#[test]
+fn a_due_schedule_requests_one_task() {
+    let setup = scheduled("schedule-due");
+
+    succeeded(&setup.intake_at("2026-11-19T08:30:00Z"));
+
+    let published = setup.published();
+    assert_eq!(
+        kinds(&published),
+        ["schedule.fired", "factory.task.requested"]
+    );
+    let (source, task) = (&published[0].message, &published[1].message);
+    assert_eq!(
+        source.data,
+        json!({ "trigger": "standup", "scheduled": "2026-11-19T08:00:00Z" })
+    );
+    assert_eq!(
+        task.data,
+        json!({
+            "workflow": "implement",
+            "key": "schedule:standup@2026-11-19T08:00:00Z",
+            "band": "today",
+            "lane": null,
+            "trigger": "standup",
+            "source": source.id.to_string(),
+            "scheduled": "2026-11-19T08:00:00Z",
+            "prompt": null
+        })
+    );
+}
+
+const SUPPORT_DAY: &str = r#"
+source = "schedule"
+repo = "owner/repo"
+at = "09:00"
+every = "1h"
+until = "12:00"
+timezone = "Europe/Paris"
+key = "support-day"
+prompt = "Sweep the support queue."
+workflow = "implement"
+"#;
+
+#[test]
+fn a_recurring_schedule_fires_every_slot_until_its_end_under_one_key() {
+    let setup = scheduled("schedule-until");
+    write(
+        &setup.dir.join("factory/triggers/standup.toml"),
+        SUPPORT_DAY,
+    );
+
+    // 10:30, 12:30 and 13:30 in Paris: the 10:00 and 12:00 firings, then none past 12:00.
+    for now in [
+        "2026-11-19T09:30:00Z",
+        "2026-11-19T11:30:00Z",
+        "2026-11-19T12:30:00Z",
+    ] {
+        succeeded(&setup.intake_at(now));
+    }
+
+    let tasks = tasks(&setup);
+    let fired: Vec<_> = tasks.iter().map(|task| &task.data["scheduled"]).collect();
+    assert_eq!(fired, ["2026-11-19T09:00:00Z", "2026-11-19T11:00:00Z"]);
+    assert!(
+        tasks
+            .iter()
+            .all(|task| task.data["key"] == "schedule:support-day"
+                && task.data["prompt"] == "Sweep the support queue."),
+        "{tasks:?}"
+    );
+}
+
+#[test]
+fn a_second_poll_in_the_same_slot_requests_no_task() {
+    let setup = scheduled("schedule-same-slot");
+    succeeded(&setup.intake_at("2026-11-19T08:30:00Z"));
+
+    succeeded(&setup.intake_at("2026-11-19T08:31:00Z"));
+
+    assert_eq!(tasks(&setup).len(), 1);
+}
+
+#[test]
+fn a_restart_after_several_missed_slots_requests_one_task() {
+    let setup = scheduled("schedule-missed");
+    succeeded(&setup.intake_at("2026-11-16T08:30:00Z"));
+
+    succeeded(&setup.intake_at("2026-11-19T10:00:00Z"));
+
+    let keys: Vec<_> = tasks(&setup)
+        .into_iter()
+        .map(|task| task.data["key"].clone())
+        .collect();
+    assert_eq!(
+        keys,
+        [
+            "schedule:standup@2026-11-16T08:00:00Z",
+            "schedule:standup@2026-11-19T08:00:00Z"
+        ]
+    );
+}
+
+#[test]
+fn a_schedule_waits_for_its_time_and_its_days() {
+    let setup = scheduled("schedule-days");
+    let weekdays = format!("{SCHEDULE}days = [\"mon\", \"tue\", \"wed\", \"thu\", \"fri\"]\n");
+    write(&setup.dir.join("factory/triggers/standup.toml"), &weekdays);
+
+    // Saturday 2026-11-21, after 09:00 Paris: the latest firing is Friday's.
+    succeeded(&setup.intake_at("2026-11-21T10:00:00Z"));
+    // Monday before 09:00 Paris: still Friday's.
+    succeeded(&setup.intake_at("2026-11-23T07:59:00Z"));
+
+    let tasks = tasks(&setup);
+    assert_eq!(tasks.len(), 1);
+    assert_eq!(
+        tasks[0].data["key"],
+        "schedule:standup@2026-11-20T08:00:00Z"
+    );
+}
+
+#[test]
+fn a_duration_until_ends_at_midnight() {
+    let setup = scheduled("schedule-midnight");
+    let late = "source = \"schedule\"\nrepo = \"owner/repo\"\nat = \"23:00\"\ndays = [\"fri\"]\nevery = \"1h\"\nuntil = \"2h\"\ntimezone = \"UTC\"\nworkflow = \"implement\"\n";
+    write(&setup.dir.join("factory/triggers/standup.toml"), late);
+
+    // Friday 23:30, then Saturday 00:30.
+    succeeded(&setup.intake_at("2026-11-20T23:30:00Z"));
+    succeeded(&setup.intake_at("2026-11-21T00:30:00Z"));
+
+    let fired: Vec<_> = tasks(&setup)
+        .into_iter()
+        .map(|task| task.data["scheduled"].clone())
+        .collect();
+    assert_eq!(fired, ["2026-11-20T23:00:00Z"]);
 }

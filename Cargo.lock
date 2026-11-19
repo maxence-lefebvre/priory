@@ -393,6 +393,7 @@ dependencies = [
 name = "priory-factory"
 version = "0.0.0"
 dependencies = [
+ "jiff",
  "serde",
  "serde-saphyr",
  "toml",
@@ -403,6 +404,7 @@ name = "priory-intake"
 version = "0.0.0"
 dependencies = [
  "herdr-bus",
+ "jiff",
  "priory-factory",
  "serde",
  "serde_json",
