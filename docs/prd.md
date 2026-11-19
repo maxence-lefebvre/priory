@@ -118,7 +118,8 @@ runner = "any"
 session = "per-task"         # or "shared": one conversation across tasks, such as a lead
 memory = "6GB"               # what a runner must have free to admit a run
 mcpServers = ["github"]
-permissions = { defaultMode = "acceptEdits", allow = ["Bash(cargo test:*)"], deny = ["Bash(git push:*)"] }
+# defaultMode is the run's mode: manual when unset; bypassPermissions is refused
+permissions = { defaultMode = "auto", allow = ["Bash(cargo test:*)"], deny = ["Bash(git push:*)"] }
 +++
 # Implementation
 Read the issue and acceptance criteria, make the smallest correct change, test it.
@@ -389,7 +390,8 @@ Priory serves these as MCP tools.
   actions. M0
 - R7.2 Priory never approves a permission prompt. It denies it, tells the agent why, and adds an
   item on the desk if the task cannot go on without it. What an agent may do without asking comes from
-  its `permissions` field. M0
+  its `permissions` field. Runs start in Claude's `manual` mode. An agent whose `defaultMode` is
+  `auto` lets Claude's auto mode decide its prompts. M0
 - R7.3 Remove the worktree of a task that ended only when Priory created it, its branch merged, it
   has no unpushed commits, no uncommitted changes and no untracked files, and no process runs in it.
   Report every other worktree instead. Retiring an active task follows R3.3. M0

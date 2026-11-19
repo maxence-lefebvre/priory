@@ -142,6 +142,8 @@ pub struct Launch<'a> {
     pub body: &'a str,
     /// The agent's Claude Code `permissions` settings, merged into Priory's own.
     pub permissions: serde_json::Value,
+    /// The run's `--permission-mode`: the agent's `defaultMode`, or `manual`.
+    pub permission_mode: &'a str,
 }
 
 /// Starts `claude` in a detached tmux session, with hooks that report to this daemon. The same tmux
@@ -180,8 +182,8 @@ pub fn launch(launch: &Launch) -> Result<(), String> {
     if !launch.body.is_empty() {
         command.args(["--append-system-prompt", launch.body]);
     }
-    // The user's own mode, such as auto, would decide prompts that Priory's hook must deny (R7.2).
-    command.args(["--permission-mode", "manual"]);
+    // Without the flag, the user's own mode, such as auto, would decide the run's prompts (R7.2).
+    command.args(["--permission-mode", launch.permission_mode]);
     command
         .arg("--settings")
         .arg(settings(&exe, &launch.permissions));

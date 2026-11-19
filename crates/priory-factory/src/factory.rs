@@ -56,11 +56,8 @@ pub struct Agent {
 #[derive(Debug, Default, Deserialize, Serialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct Permissions {
-    #[serde(
-        default,
-        deserialize_with = "refuse_bypass",
-        skip_serializing_if = "Option::is_none"
-    )]
+    /// The run's `--permission-mode`, not a setting: Claude's flag outranks every settings file.
+    #[serde(default, deserialize_with = "refuse_bypass", skip_serializing)]
     pub default_mode: Option<PermissionMode>,
     #[serde(default)]
     pub allow: Vec<String>,
@@ -68,14 +65,28 @@ pub struct Permissions {
     pub deny: Vec<String>,
 }
 
-#[derive(Debug, Clone, Copy, Deserialize, Serialize)]
+#[derive(Debug, Clone, Copy, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum PermissionMode {
-    Default,
+    /// Claude Code's `--permission-mode` no longer takes `default`, its older name for `manual`.
+    #[serde(alias = "default")]
+    Manual,
     AcceptEdits,
     Plan,
     Auto,
     DontAsk,
+}
+
+impl PermissionMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Manual => "manual",
+            Self::AcceptEdits => "acceptEdits",
+            Self::Plan => "plan",
+            Self::Auto => "auto",
+            Self::DontAsk => "dontAsk",
+        }
+    }
 }
 
 fn refuse_bypass<'de, D: Deserializer<'de>>(

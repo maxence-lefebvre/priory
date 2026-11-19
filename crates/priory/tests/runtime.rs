@@ -17,7 +17,7 @@ effect = "reversible"
 next = { passed = "done", failed = "stop" }
 "#;
 
-const AGENT: &str = "+++\ndescription = \"Implements one task.\"\nharness = \"claude-code\"\nmodel = \"haiku\"\neffort = \"low\"\npermissions = { defaultMode = \"acceptEdits\", allow = [\"Bash(cargo test:*)\"], deny = [\"Bash(git push:*)\"] }\n+++\nYou implement one issue.\n";
+const AGENT: &str = "+++\ndescription = \"Implements one task.\"\nharness = \"claude-code\"\nmodel = \"haiku\"\neffort = \"low\"\npermissions = { allow = [\"Bash(cargo test:*)\"], deny = [\"Bash(git push:*)\"] }\n+++\nYou implement one issue.\n";
 
 const REVIEWER: &str = "+++\ndescription = \"Reviews one change.\"\nharness = \"claude-code\"\n+++\nYou review one change.\n";
 
@@ -434,8 +434,14 @@ fn a_queued_task_at_a_model_step_gets_a_worktree_a_tmux_session_and_a_run() {
 }
 
 #[test]
-fn an_agents_permissions_join_priorys_own_in_the_run_settings() {
+fn an_agent_in_auto_mode_gets_a_run_in_auto_mode_and_its_rules_join_priorys_own() {
     let mut setup = Setup::new("permissions");
+    let agent = AGENT.replacen(
+        "permissions = { ",
+        "permissions = { defaultMode = \"auto\", ",
+        1,
+    );
+    fs::write(setup.dir.join("factory/agents/implementer/agent.md"), agent).unwrap();
     let source = labeled(42);
     let mut request = requested(42);
     request.data["source"] = json!(source.id.to_string());
@@ -446,12 +452,19 @@ fn an_agents_permissions_join_priorys_own_in_the_run_settings() {
     setup.start();
 
     setup.until("outbox", |rows| with(rows, 3, "confirmed") == 1);
+    let args = fs::read_to_string(setup.dir.join("fake/args.log")).unwrap();
+    let args: Vec<_> = args.lines().collect();
+    let modes: Vec<_> = args
+        .windows(2)
+        .filter(|w| w[0] == "--permission-mode")
+        .map(|w| w[1])
+        .collect();
+    assert_eq!(modes, ["auto"], "{args:?}");
     let settings = fs::read_to_string(setup.dir.join("fake/settings.json")).unwrap();
     let settings: serde_json::Value = serde_json::from_str(&settings).unwrap();
     assert_eq!(
         settings["permissions"],
         json!({
-            "defaultMode": "acceptEdits",
             "allow": ["mcp__priory", "Bash(cargo test:*)"],
             "deny": ["Bash(git push:*)"],
         })

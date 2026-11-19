@@ -78,13 +78,15 @@ The daemon creates the worktree, records the run and the task as `running`, then
   `session = "shared"` keeps one session across tasks instead, as described under Shared sessions.
 - `--model` and `--effort`: the agent's, when it sets them.
 - `--append-system-prompt`: the agent body, the Markdown after its frontmatter.
-- `--permission-mode manual`: so a permission request reaches Priory's deny hook, described under
-  Health, whatever mode the user's own settings choose, such as `auto`.
+- `--permission-mode`: the agent's `permissions.defaultMode`, or `manual` when it sets none, whatever
+  mode the user's own settings choose. In `manual` mode, every permission request reaches Priory's
+  deny hook, described under Health. In `auto` mode, Claude's auto mode decides the run's permission
+  prompts. `priory check` refuses `bypassPermissions`, and accepts `default` as Claude's older name
+  for `manual`.
 - `--settings`: hooks that run `priory hook SessionStart`, `UserPromptSubmit` and `Stop`, a
-  permission for the `priory` MCP server's tools plus the agent's own `permissions` (`defaultMode`,
-  `allow` and `deny`, in Claude Code's syntax; `priory check` refuses `bypassPermissions`), a `PreToolUse` hook that denies
-  `AskUserQuestion` and tells the agent to call `ask` instead, and the permission hooks described
-  under Health.
+  permission for the `priory` MCP server's tools plus the agent's own `allow` and `deny` rules, in
+  Claude Code's syntax, a `PreToolUse` hook that denies `AskUserQuestion` and tells the agent to
+  call `ask` instead, and the permission hooks described under Health.
 - `--mcp-config`: the `priory` MCP server, `priory mcp --session <id>`, described under Tools.
 
 The same tmux command tags the new pane with a pane option `@priory` set to the harness session
