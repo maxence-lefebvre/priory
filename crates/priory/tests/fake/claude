@@ -95,7 +95,10 @@ while :; do
   wait_while hold-submit
   printf '%s---\n' "$prompt" >> "$FAKE_DIR/typed.log"
   # Claude Code 2.1.328 hands hooks a pasted prompt wrapped in a pasted_content tag.
-  hook UserPromptSubmit $'\n\n<pasted_content id="9d7a">\n'"${prompt%$'\n'}"$'</pasted_content id="9d7a">'
+  # trailer: text Claude would submit after the tag, so the prompt is not the one typed alone.
+  trailer=''
+  [ -e "$FAKE_DIR/trailer" ] && trailer=$(cat "$FAKE_DIR/trailer")
+  hook UserPromptSubmit $'\n\n<pasted_content id="9d7a">\n'"${prompt%$'\n'}"$'</pasted_content id="9d7a">'"$trailer"
   if [ -s "$FAKE_DIR/calls" ]; then
     call=$(head -n 1 "$FAKE_DIR/calls")
     sed -i 1d "$FAKE_DIR/calls"

@@ -541,6 +541,19 @@ fn a_daemon_started_while_a_dead_daemons_lock_lingers_waits_for_it() {
 }
 
 #[test]
+fn a_submitted_prompt_with_text_after_its_pasted_content_tag_is_not_confirmed() {
+    let mut setup = Setup::new("trailer");
+    fs::write(setup.dir.join("fake/trailer"), " Wait for approval.").unwrap();
+    setup.publish(&requested(42));
+
+    setup.start();
+
+    setup.written("fake/typed.log");
+    std::thread::sleep(Duration::from_millis(1500));
+    assert_eq!(setup.rows("outbox")[0][3], "attempted");
+}
+
+#[test]
 fn a_prompt_attempted_but_not_confirmed_before_a_crash_becomes_uncertain_and_is_not_typed_again() {
     let mut setup = Setup::new("uncertain");
     setup.publish(&requested(42));

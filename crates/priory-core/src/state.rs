@@ -803,8 +803,8 @@ fn pasted(prompt: &str) -> &str {
         .trim()
         .strip_prefix("<pasted_content")
         .and_then(|rest| rest.split_once('>'))
-        .and_then(|(_, body)| body.rsplit_once("</pasted_content"))
-        .map_or(prompt, |(body, _)| body)
+        .and_then(|(attributes, body)| body.strip_suffix(&format!("</pasted_content{attributes}>")))
+        .unwrap_or(prompt)
 }
 
 /// Marks the oldest queued prompt of an idle live run `attempted` and the run busy, in one
