@@ -751,7 +751,7 @@ pub(crate) fn admissible<'r>(
             })
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
-    let promised = promised(db, factory)?;
+    let promised = promised(db, factory, None)?;
     // The first task that waits for room: no task behind it starts, so it is never starved.
     let mut head = None;
     let mut stall = None;
@@ -787,11 +787,11 @@ pub(crate) fn admissible<'r>(
                         let short = room::wait(measured, share, promised, need);
                         let reason = short.as_ref().map(|short| short.reason.clone());
                         // A task that can never fit would hold the queue forever.
-                        if let Some(short) =
-                            short.filter(|_| room::fits_ever(measured, share, need))
-                        {
+                        if short.is_some() && room::fits_ever(measured, share, need) {
                             head = Some(admission.task);
-                            stall = Some((admission.task, short));
+                            // Waiting only for live runs to end is backpressure, not a stall.
+                            stall = room::wait(measured, share, room::Need::default(), need)
+                                .map(|short| (admission.task, short));
                         }
                         reason
                     }
@@ -824,17 +824,23 @@ fn serving(db: &Connection, agent: &str) -> rusqlite::Result<Option<i64>> {
     .optional()
 }
 
-/// The memory and disk declared by the agents of live runs, plus every held memory grant. No run
-/// reports its own use yet, so each one keeps its whole declaration until it ends.
-pub(crate) fn promised(db: &Connection, factory: &Factory) -> rusqlite::Result<room::Need> {
+/// The memory and disk declared by the agents of live runs, except those of task `except`, plus every
+/// held memory grant. No run reports its own use yet, so each one keeps its whole declaration until
+/// it ends.
+pub(crate) fn promised(
+    db: &Connection,
+    factory: &Factory,
+    except: Option<i64>,
+) -> rusqlite::Result<room::Need> {
     let held: i64 = db.query_row(
         "SELECT coalesce(sum(bytes), 0) FROM grants WHERE state = 'held'",
         [],
         |row| row.get(0),
     )?;
-    let mut statement = db.prepare("SELECT agent FROM runs WHERE ended IS NULL")?;
+    let mut statement =
+        db.prepare("SELECT agent FROM runs WHERE ended IS NULL AND task IS NOT ?1")?;
     // A run recorded before schema 5 has no agent.
-    let mut agents = statement.query_map([], |row| row.get::<_, Option<String>>(0))?;
+    let mut agents = statement.query_map([except], |row| row.get::<_, Option<String>>(0))?;
     let held = room::Need {
         memory: held as u64,
         disk: 0,

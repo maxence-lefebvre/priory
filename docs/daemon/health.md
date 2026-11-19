@@ -81,10 +81,12 @@ A run whose agent is gone after its result, ask or wait ended the turn is not an
 It settles as its `Stop` would, as under Moving on, but a next model step always gets a new run,
 since no process carries on.
 
-A model step's `timeout` is a duration such as `90s`, `15m` or `2h`, and defaults to `3h`. A run
-whose agent exits after a wait already fired, or after its ask was answered, but before its `Stop`,
-counts as an unexpected exit; `priory resume` recovers it. The timeout bounds one turn, from
-`UserPromptSubmit` to `Stop`, not the step.
+A run whose agent exits after a wait already fired, or after its ask was answered, but before its
+`Stop`, counts as an unexpected exit: its repair restarts it or fails the task, as above. `priory
+revive` recovers a failed task; `priory resume` refuses one.
+
+A model step's `timeout` is a duration such as `90s`, `15m` or `2h`, and defaults to `3h`. The
+timeout bounds one turn, from `UserPromptSubmit` to `Stop`, not the step.
 
 Priory never approves a permission prompt. Each run's settings carry a `PermissionRequest` hook
 that denies every request and tells the agent: `Priory runs this session unattended and never
@@ -98,8 +100,9 @@ prompt that shows anyway, when the deny hook failed, ends the run on the next ti
 
 A live run is stalled when it sent no hook event and its pane did not change for 10 minutes, or for
 the `stalled` duration of `factory.toml`. Each tick, the daemon reads the screen of every live run
-that reached `SessionStart`, shows no permission prompt and has no open ask or wait. Runs asleep on
-a wait or an ask never count, nor do runs whose spinner or output still moves.
+that reached `SessionStart`, shows no permission prompt and has no open ask or wait. It reads the
+pane Priory tagged for the agent, even when a person made another pane of the session active. Runs
+asleep on a wait or an ask never count, nor do runs whose spinner or output still moves.
 
 The handler is opt-in. `handler` in `factory.toml` names the agent whose model it uses, which needs
 `harness = "claude-code"`. Without it, no handler runs, as no sweeper runs without `[sweep] agent`.

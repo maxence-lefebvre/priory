@@ -42,12 +42,15 @@ whose agent declares more memory than the runner's share of the
 machine, or more disk than the disk holds above its floor, can never fit, so it holds back no one. Nor does a task waiting for a shared
 agent (see Shared sessions).
 
-While the head of the queue waits for room, the queue is stalled. The daemon records the stall in
-the state file, so its start survives a restart. `priory desk` starts with one banner line:
-`stalled since 2026-11-19T10:00:00Z: short of disk by 10.0 GB; task 3 waits for room`. Another task
-heading the queue for the same resource keeps the stall. A different resource starts a new one. The
-stall ends when no task waits for room at the head. A task waiting because room cannot be measured
-holds the queue without a stall. The sweep scripts and the sweeper act on stalls (see Sweep).
+While the head of the queue waits for room it would lack even with no live run, the queue is
+stalled. A head that waits only for live runs' promises to end is ordinary backpressure: it waits
+with its reason and opens no stall. The daemon records the stall in the state file, so its start
+survives a restart. `priory desk` starts with one banner line:
+`stalled since 2026-11-19T10:00:00Z: short of disk by 10.0 GB; task 3 waits for room`. The amount
+it is short by leaves out the promises too. Another task heading the queue for the same resource
+keeps the stall. A different resource starts a new one. The stall ends when no task waits for room
+at the head. A task waiting because room cannot be measured holds the queue without a stall. The
+sweep scripts and the sweeper act on stalls (see Sweep).
 
 `PRIORY_PROC` names a directory to read in place of `/proc`. The tests use it, with a fake `df` on
 `PATH`, to steer measurements.

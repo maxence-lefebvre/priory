@@ -185,7 +185,7 @@ fn handle_stalls(
         .screens
         .retain(|run, _| quiet.iter().any(|quiet| quiet.run == *run));
     for run in &quiet {
-        let screen = runtime::screen(&run.tmux);
+        let screen = runtime::agent_screen(&run.tmux, &run.session);
         let seen = stalls
             .screens
             .entry(run.run)
@@ -440,7 +440,7 @@ fn diagnose(
 ) -> Result<Repair, Error> {
     let need = crate::room::need(factory.agents.get(agent).map(|agent| &agent.value));
     let short = |db: &Connection| -> Result<Result<Option<crate::room::Short>, String>, Error> {
-        let promised = state::promised(db, factory)?;
+        let promised = state::promised(db, factory, None)?;
         Ok(room::measure(home).map(|room| crate::room::wait(&room, share, promised, need)))
     };
     let missing = |short: &crate::room::Short| {
@@ -535,8 +535,10 @@ fn perform(db: &mut Connection, trace: &Trace, home: &Path) -> Result<(), Error>
         .value
         .step(&due.step)
         .expect("actionable checked the step");
-    // The sweep or a retirement removed the worktree; its branch still holds the work.
+    // The sweep or a retirement removed the worktree; its branch still holds the work. Only
+    // `open-pr` pushes from it, so no other action waits for disk to add it back.
     if let Some(repo) = repo_of(factory, &due.trigger, due.repo.as_deref())
+        && step.action.as_deref() == Some("open-pr")
         && due
             .worktree
             .as_deref()
@@ -562,7 +564,11 @@ fn perform(db: &mut Connection, trace: &Trace, home: &Path) -> Result<(), Error>
         }
         db.execute("UPDATE tasks SET retired = NULL WHERE id = ?1", [due.task])?;
     }
-    let head = head(due.worktree.as_deref(), due.branch.as_deref());
+    let head = due
+        .worktree
+        .as_deref()
+        .zip(due.branch.as_deref())
+        .and_then(|(worktree, branch)| runtime::kept_head(home, Path::new(worktree), branch));
     if !tools::approved(db, due.task, step, head.as_deref())? {
         return Ok(());
     }
@@ -582,11 +588,6 @@ fn perform(db: &mut Connection, trace: &Trace, home: &Path) -> Result<(), Error>
         done,
         trace,
     )?)
-}
-
-/// The commit of the task's branch, which an approval covers.
-fn head(worktree: Option<&str>, branch: Option<&str>) -> Option<String> {
-    runtime::head(Path::new(worktree?), branch?)
 }
 
 /// Pushes `commit` to the task's branch and opens its pull request, titled and described by its

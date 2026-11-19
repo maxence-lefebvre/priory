@@ -351,7 +351,7 @@ factory, such as herdr-bowtie, can read the same output as another consumer.
 - R2.5 Trigger on schedules: a time of day, weekdays, an optional repeat until an end, and a
   timezone. Each firing publishes one task request, once, and a restart fires only the latest
   missed firing. Without a fixed `key`, each firing starts its own task. With one, a firing creates
-  the task when none is active, wakes it with the trigger's `prompt` when it is asleep, even when
+  the task when none is active, wakes it with the trigger's `prompt` when it is asleep at a model step, even when
   its wait does not match and while its ask stays open, and is coalesced when it is in any other
   state, so firings never stack. A recurring wake is a schedule trigger, not an agent's own loop. M1
 - R2.6 Accept signed webhooks and check the signature before any trigger sees the payload. M2
@@ -366,7 +366,8 @@ ask.
 
 Only a `factory.task.requested` message creates a task. Any other event that concerns no active task
 is recorded with no action. A task is active in any state except done,
-failed and dropped. An event for a failed task stays on it, for its repair.
+failed and dropped. So an event for a failed task is recorded with no action, and a task request
+for its key creates a new task. `priory revive` brings the failed task back.
 
 The daemon then reconciles the task with the event:
 
