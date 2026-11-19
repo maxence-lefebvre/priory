@@ -20,8 +20,10 @@ const COMMENTS: &str = "linear.comments";
 const FIRST: u64 = 50;
 
 const ISSUE: &str = "fragment issue on Issue { id identifier title url createdAt updatedAt \
-    team { key } state { name } labels { nodes { name } } creator { displayName } \
-    inverseRelations(first: 50) { nodes { type issue { identifier state { type } } } } }";
+    team { key } state { name } labels { nodes { name } } creator { displayName } }";
+/// The issues that block an issue, kept small: Linear multiplies a query's cost by page sizes.
+const BLOCKING: &str = "inverseRelations(first: 20) { nodes { type issue { identifier state { type } } } \
+    pageInfo { hasNextPage } }";
 const PAGE: &str = "pageInfo { hasNextPage endCursor }";
 
 /// The Linear streams the triggers need, and where each stands: its last marker's data, or none
@@ -194,7 +196,7 @@ impl<'a> Linear<'a> {
              includeArchived: true) {{ nodes {{ \
              ...issue history(first: 50, orderBy: createdAt) {{ nodes {{ id createdAt \
              fromState {{ name }} toState {{ name }} actor {{ displayName }} }} }} \
-             relations(first: 50) {{ nodes {{ type relatedIssue {{ ...issue }} }} }} }} {PAGE} }} }} {ISSUE}"
+             {BLOCKING} relations(first: 20) {{ nodes {{ type relatedIssue {{ id }} }} }} }} {PAGE} }} }} {ISSUE}"
         );
         let issues = self.nodes(&query, page(since, "updatedAt"), "/issues", since.is_some())?;
         let mut events = Vec::new();
@@ -202,6 +204,7 @@ impl<'a> Linear<'a> {
             if after(since, &issue["createdAt"]) {
                 let mut data = fields(issue);
                 data["actor"] = issue["creator"]["displayName"].clone();
+                data["blockers"] = blockers(issue);
                 data["time"] = issue["createdAt"].clone();
                 let name = format!("linear:issue:{}:created", text(&issue["id"]));
                 events.push(self.message(CREATED, &name, data, since.is_none())?);
@@ -217,25 +220,51 @@ impl<'a> Linear<'a> {
                 data["from"] = change["fromState"]["name"].clone();
                 data["to"] = change["toState"]["name"].clone();
                 data["actor"] = change["actor"]["displayName"].clone();
+                data["blockers"] = blockers(issue);
                 data["time"] = change["createdAt"].clone();
                 let name = format!("linear:history:{}", text(&change["id"]));
                 events.push(self.message(STATE_CHANGED, &name, data, since.is_none())?);
             }
-            // A blocker that closes changes the issues it blocks, which Linear does not update.
-            let blocked = issue["relations"]["nodes"].as_array().into_iter().flatten();
-            for relation in blocked.filter(|relation| relation["type"] == "blocks") {
-                let blocked = &relation["relatedIssue"];
-                let mut data = fields(blocked);
-                data["blocker"] = issue["identifier"].clone();
-                data["time"] = issue["updatedAt"].clone();
-                let name = format!(
-                    "linear:blockers:{}:{}:{}",
-                    text(&blocked["id"]),
-                    text(&issue["id"]),
-                    text(&issue["updatedAt"])
-                );
-                events.push(self.message(BLOCKERS, &name, data, since.is_none())?);
-            }
+        }
+        // A blocker that closes changes the issues it blocks, which Linear does not update.
+        let blocking: Vec<(&Value, &str)> = issues
+            .iter()
+            .flat_map(|issue| {
+                let relations = issue["relations"]["nodes"].as_array().into_iter().flatten();
+                relations
+                    .filter(|relation| relation["type"] == "blocks")
+                    .map(move |relation| (issue, text(&relation["relatedIssue"]["id"])))
+            })
+            .collect();
+        let ids: Vec<&str> = blocking.iter().map(|(_, id)| *id).collect();
+        let mut blocked = BTreeMap::new();
+        for ids in ids.chunks(50) {
+            let query = format!(
+                "query Blocked($ids: [ID!], $first: Int!) {{ \
+                 issues(filter: {{ id: {{ in: $ids }} }}, first: $first) {{ nodes {{ \
+                 ...issue {BLOCKING} }} {PAGE} }} }} {ISSUE}"
+            );
+            let found = self.nodes(&query, json!({ "ids": ids, "first": 50 }), "/issues", false)?;
+            blocked.extend(
+                found
+                    .into_iter()
+                    .map(|issue| (text(&issue["id"]).to_owned(), issue)),
+            );
+        }
+        for (blocker, id) in blocking {
+            let Some(issue) = blocked.get(id) else {
+                continue;
+            };
+            let mut data = fields(issue);
+            data["blockers"] = blockers(issue);
+            data["blocker"] = blocker["identifier"].clone();
+            data["time"] = blocker["updatedAt"].clone();
+            let name = format!(
+                "linear:blockers:{id}:{}:{}",
+                text(&blocker["id"]),
+                text(&blocker["updatedAt"])
+            );
+            events.push(self.message(BLOCKERS, &name, data, since.is_none())?);
         }
         Ok(polled(ISSUES, events, &issues, "updatedAt", since))
     }
@@ -478,7 +507,25 @@ fn fields(issue: &Value) -> Value {
         .flatten()
         .map(|label| &label["name"])
         .collect();
-    let blockers: Vec<&Value> = issue["inverseRelations"]["nodes"]
+    json!({
+        "issue": issue["identifier"],
+        "linear_id": issue["id"],
+        "title": issue["title"],
+        "url": issue["url"],
+        "team": issue["team"]["key"],
+        "state": issue["state"]["name"],
+        "labels": labels,
+    })
+}
+
+/// The identifiers of the issues that block `issue` and are neither completed nor canceled. Null
+/// when Linear has more relations than one page holds, since one of those could block it.
+fn blockers(issue: &Value) -> Value {
+    let relations = &issue["inverseRelations"];
+    if relations["pageInfo"]["hasNextPage"] != false {
+        return Value::Null;
+    }
+    let open: Vec<&Value> = relations["nodes"]
         .as_array()
         .into_iter()
         .flatten()
@@ -491,16 +538,7 @@ fn fields(issue: &Value) -> Value {
         })
         .map(|relation| &relation["issue"]["identifier"])
         .collect();
-    json!({
-        "issue": issue["identifier"],
-        "linear_id": issue["id"],
-        "title": issue["title"],
-        "url": issue["url"],
-        "team": issue["team"]["key"],
-        "state": issue["state"]["name"],
-        "labels": labels,
-        "blockers": blockers,
-    })
+    json!(open)
 }
 
 /// Fills each stream with its newest marker, read back newest first, and returns the events of

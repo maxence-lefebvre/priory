@@ -4490,7 +4490,9 @@ fn linear_7(kind: &str, blockers: &[&str]) -> Message {
 fn a_blockers_hold_releases_the_task_when_its_issue_has_no_open_blocker_left() {
     let mut setup = Setup::new("hold-blockers");
     setup.memory(0);
-    let source = linear_7("linear.issue.created", &["ENG-3", "ENG-4"]);
+    // A view event carries no blockers: the hold waits for an event that does.
+    let mut source = linear_7("linear.issue.entered", &[]);
+    source.data.as_object_mut().unwrap().remove("blockers");
     let mut request = requested(42);
     request.data["key"] = json!("linear:ENG-7");
     request.data["source"] = json!(source.id.to_string());

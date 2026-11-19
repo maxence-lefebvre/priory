@@ -172,7 +172,7 @@ fn condition(
     if hold.blockers {
         let issue = tx.query_row(
             "SELECT json_extract(inbox.data, '$.issue') FROM tasks JOIN inbox ON inbox.id = tasks.source
-             WHERE tasks.id = ?1 AND json_type(inbox.data, '$.blockers') = 'array'",
+             WHERE tasks.id = ?1 AND inbox.type LIKE 'linear.%'",
             [task],
             |row| row.get::<_, Option<String>>(0),
         );

@@ -364,8 +364,10 @@ triggers start on, so that a task receives the comments and state changes of its
 daemon routes a Linear event to the active task whose key is `linear:<issue>`.
 
 Linear does not update an issue when one of its blockers closes, so the issues stream publishes
-`linear.issue.blockers` for it instead. For each updated issue, it reads the issues that issue blocks,
-and publishes one event per blocked issue, with the blocked issue's fields and open blockers. A
+`linear.issue.blockers` for it instead. For each updated issue, it reads the issues that issue blocks
+in a second query, by id, and publishes one event per blocked issue, with the blocked issue's fields
+and open blockers. `linear.issue.created` and `linear.issue.state_changed` carry `blockers` too. View
+and comment events do not: a view event that leaves can carry the issue's fields from an earlier poll.
 `priory hold --blockers` reads them, as `docs/daemon.md` describes under Holds.
 
 | Field       | Type             | Meaning                                                         |
@@ -377,7 +379,7 @@ and publishes one event per blocked issue, with the blocked issue's fields and o
 | `team`      | string           | The issue's team key                                            |
 | `state`     | string           | The issue's state when the intake saw the event                 |
 | `labels`    | array of strings | The issue's labels when the intake saw the event                |
-| `blockers`  | array of strings | The identifiers of the issues that block it and are neither completed nor canceled, from its first 50 relations |
+| `blockers`  | array of strings or null | The identifiers of the issues that block it and are neither completed nor canceled. Null when the issue has more than 20 relations, since one past the first page could block it. `created`, `state_changed` and `blockers` only |
 | `blocker`   | string           | The issue whose change published the event. `blockers` only     |
 | `view`      | string           | The view, as the trigger names it. View events only             |
 | `from`, `to`| string           | The states the issue moved from and to. `state_changed` only     |
@@ -401,7 +403,6 @@ and publishes one event per blocked issue, with the blocked issue's fields and o
     "team": "ENG",
     "state": "In Progress",
     "labels": ["agent"],
-    "blockers": [],
     "body": "Please also cover the empty case.",
     "actor": "max",
     "time": "2026-11-17T11:00:00.000Z",
@@ -635,9 +636,11 @@ Limits:
 - A view marker holds every issue of the view and is published whenever one of them changes, so a
   large, busy view grows the output.
 - A state change past the last 50 entries of an issue's history between two polls is missed.
-- `blockers` reads 50 relations of an issue, and `linear.issue.blockers` reads 50 relations of its
-  blocker. A blocker that loses its relation, rather than closing, publishes a new event only if
-  Linear updates the blocker's `updatedAt` for it.
+- `blockers` reads 20 relations of an issue, and `linear.issue.blockers` follows 20 relations of
+  each updated blocker, so an issue with more is unknown, and a blocker with more misses some.
+- A blocking relation that is removed, rather than its blocker closing, publishes no event about the
+  issue it blocked: the blocker no longer names it. A hold on its blockers stays until another event
+  about the issue says it has none, or a person releases it.
 
 ## Linear calls
 
@@ -647,7 +650,8 @@ without it when the factory has a Linear trigger. It posts each GraphQL query to
 key never appears in a process list. `--disable` makes curl ignore `~/.curlrc`, so no trace option
 can log the key, and the intake replaces the key in any error it prints. A request times out after
 60 seconds, and the next poll retries it. A poll makes one query per view and two for
-issues and comments, plus one per extra page of 100. Linear allows 1,500 requests an hour per key.
+issues and comments, plus one per extra page of 100, and one for each 50 issues that the updated
+issues block. Linear allows 1,500 requests an hour per key.
 
 ## GitHub calls
 

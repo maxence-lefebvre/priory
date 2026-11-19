@@ -177,9 +177,10 @@ default, puts an ask on the desk with the options `release` and `drop` while the
 `priory answer` takes either. A merge after the ask releases the task and answers the ask.
 
 `--blockers` reads the `blockers` field of Linear events (see `docs/intake.md`). It is refused for
-a task whose source event carries none, such as a GitHub issue or a CLI request. The hold is released
-by the newest event about the issue whose `blockers` is empty: an event on the issue itself, or a
-`linear.issue.blockers` that a closed blocker published.
+a task whose source event is not a Linear event, such as a GitHub issue or a CLI request. The newest
+event about the issue that carries `blockers` decides: an empty list releases the task, and a null
+one, which Linear's paging left unknown, does not. That event is a creation or state change of the
+issue, or a `linear.issue.blockers` that one of its blockers published when it changed.
 
 The daemon judges a hold when it is stored, then a time or task hold on each tick and a merge or
 blockers hold on each message that names its pull request or issue, whatever the message's route.

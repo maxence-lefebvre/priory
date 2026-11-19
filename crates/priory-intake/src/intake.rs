@@ -53,6 +53,7 @@ pub(crate) fn output() -> Output {
             linear::LEFT,
             linear::CREATED,
             linear::STATE_CHANGED,
+            linear::BLOCKERS,
             linear::COMMENTED,
             TASK_REQUESTED,
             BASELINE,
