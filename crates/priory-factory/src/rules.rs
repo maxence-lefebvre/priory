@@ -334,7 +334,10 @@ fn check_slack(trigger: &Loaded<Trigger>, problems: &mut Vec<Problem>) {
     if value.on != "message.posted" {
         report(
             "on",
-            format!("a Slack trigger handles `message.posted`, not `{}`", value.on),
+            format!(
+                "a Slack trigger handles `message.posted`, not `{}`",
+                value.on
+            ),
         );
     }
     if value.channel.as_deref().is_none_or(str::is_empty) {

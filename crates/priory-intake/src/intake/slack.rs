@@ -113,7 +113,12 @@ impl<'a> Slack<'a> {
     }
 
     /// The replies in `thread` posted at or after `since`, by anyone but the bot itself.
-    fn replies(&self, channel: &str, thread: &str, since: Timestamp) -> Result<Vec<Message>, String> {
+    fn replies(
+        &self,
+        channel: &str,
+        thread: &str,
+        since: Timestamp,
+    ) -> Result<Vec<Message>, String> {
         let oldest = format!("{}.{:06}", since.as_second(), since.subsec_microsecond());
         let query = vec![
             ("channel", channel.to_owned()),
@@ -153,7 +158,9 @@ impl<'a> Slack<'a> {
     fn by_someone(&self, message: &Value) -> bool {
         message.get("subtype").is_none()
             && text(&message["user"]) != self.user
-            && message.get("bot_id").is_none_or(|bot| text(bot) != self.bot)
+            && message
+                .get("bot_id")
+                .is_none_or(|bot| text(bot) != self.bot)
     }
 
     /// A channel message, with the triggers it matches.
@@ -227,7 +234,9 @@ fn time(ts: &str) -> Result<Timestamp, String> {
     let invalid = || format!("Slack ts `{ts}` is not seconds.microseconds");
     let (seconds, micros) = ts.split_once('.').ok_or_else(invalid)?;
     let seconds: i64 = seconds.parse().map_err(|_| invalid())?;
-    let micros: i32 = format!("{micros:0<6}")[..6].parse().map_err(|_| invalid())?;
+    let micros: i32 = format!("{micros:0<6}")[..6]
+        .parse()
+        .map_err(|_| invalid())?;
     Timestamp::new(seconds, micros * 1000).map_err(|_| invalid())
 }
 
@@ -273,31 +282,30 @@ fn resume(bus: &Bus, channels: &mut BTreeMap<String, Option<String>>) -> herdr_b
 /// One call to Slack's Web API. The token goes to `curl` on its standard input, so that it never
 /// shows in a process list, and `--disable` keeps a `.curlrc` from tracing it.
 fn call(token: &str, method: &str, query: &[(&str, String)]) -> Result<Value, String> {
-    let mut child = Command::new("curl")
-        .args([
-            "--disable",
-            "--silent",
-            "--show-error",
-            "--connect-timeout",
-            "10",
-            "--max-time",
-            "60",
-            "--fail-with-body",
-            "--get",
-            "--config",
-            "-",
-        ])
-        .args(
-            query
-                .iter()
-                .flat_map(|(name, value)| ["--data-urlencode".to_owned(), format!("{name}={value}")]),
-        )
-        .arg(format!("{API}{method}"))
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|error| format!("Slack {method}: curl: {error}"))?;
+    let mut child =
+        Command::new("curl")
+            .args([
+                "--disable",
+                "--silent",
+                "--show-error",
+                "--connect-timeout",
+                "10",
+                "--max-time",
+                "60",
+                "--fail-with-body",
+                "--get",
+                "--config",
+                "-",
+            ])
+            .args(query.iter().flat_map(|(name, value)| {
+                ["--data-urlencode".to_owned(), format!("{name}={value}")]
+            }))
+            .arg(format!("{API}{method}"))
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(|error| format!("Slack {method}: curl: {error}"))?;
     let escaped = token.replace('\\', "\\\\").replace('"', "\\\"");
     child
         .stdin
@@ -309,7 +317,12 @@ fn call(token: &str, method: &str, query: &[(&str, String)]) -> Result<Value, St
         .wait_with_output()
         .map_err(|error| format!("Slack {method}: curl: {error}"))?;
     let stdout = String::from_utf8_lossy(&output.stdout);
-    let failed = |error: &str| format!("Slack {method} failed: {}", error.replace(token, "<SLACK_BOT_TOKEN>"));
+    let failed = |error: &str| {
+        format!(
+            "Slack {method} failed: {}",
+            error.replace(token, "<SLACK_BOT_TOKEN>")
+        )
+    };
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         return Err(failed(&format!("{} {}", stderr.trim(), stdout.trim())));

@@ -122,7 +122,11 @@ pub fn run(
                 Vec::new()
             }
         };
-        let names = |source: &str| watching.iter().any(|watch| watch.resource.starts_with(source));
+        let names = |source: &str| {
+            watching
+                .iter()
+                .any(|watch| watch.resource.starts_with(source))
+        };
         // A wait starts a source the triggers left off; a missing key fails that poll only.
         if linear.is_none() && names("linear:") {
             match linear::Linear::start(&bus, Vec::new()) {
@@ -312,7 +316,10 @@ fn dispatch(bus: &Bus, triggers: &[(&str, &Trigger)], source: &Message) -> Resul
             let data = &source.data;
             let number = data.get("issue").unwrap_or(&data["pull_request"]);
             let key = match (number.as_str(), data["channel"].as_str()) {
-                (_, Some(channel)) => format!("slack:{channel}:{}", data["ts"].as_str().unwrap_or_default()),
+                (_, Some(channel)) => format!(
+                    "slack:{channel}:{}",
+                    data["ts"].as_str().unwrap_or_default()
+                ),
                 (Some(identifier), _) => format!("linear:{identifier}"),
                 (None, None) => format!(
                     "github:{}#{number}",

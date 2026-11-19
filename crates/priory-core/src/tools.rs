@@ -264,10 +264,7 @@ fn named(kind: &str, on: &Value) -> Result<Named, String> {
             };
             let head = match &on["head_sha"] {
                 Value::Null => None,
-                Value::String(head) if kind == "checks" => match full_sha(head) {
-                    Ok(head) => Some(head),
-                    Err(error) => return Err(error),
-                },
+                Value::String(head) if kind == "checks" => Some(full_sha(head)?),
                 _ => return Err("head_sha must be a commit, on a checks wait only".into()),
             };
             Ok((route::pull_request(repo, number), head, None))

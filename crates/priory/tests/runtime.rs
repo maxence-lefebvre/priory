@@ -2399,7 +2399,7 @@ fn an_unknown_condition_is_refused_and_nothing_is_stored() {
     assert!(error, "{text}");
     assert_eq!(
         text,
-        "unknown condition \"moon\": wait on pull_request, checks, review, time or task"
+        "unknown condition \"moon\": wait on pull_request, checks, review, time, task, linear_comment, linear_state or slack_reply"
     );
     std::thread::sleep(Duration::from_millis(1500));
     assert!(setup.rows("waits").is_empty());
@@ -4994,11 +4994,18 @@ impl Setup {
     /// Makes the fake `curl` answer Slack's Web API: `auth.test` as bot U0BOT, and each
     /// `conversations.replies` with `replies`, the thread's first message included.
     fn answer_slack(&self, replies: &[serde_json::Value]) {
-        let mut messages = vec![json!({ "ts": THREAD, "thread_ts": THREAD, "user": "U0PERSON", "text": "first" })];
+        let mut messages =
+            vec![json!({ "ts": THREAD, "thread_ts": THREAD, "user": "U0PERSON", "text": "first" })];
         messages.extend_from_slice(replies);
         self.answer_curl(&[
-            ("auth.test", json!({ "ok": true, "user_id": "U0BOT", "bot_id": "B0BOT" })),
-            ("conversations.replies", json!({ "ok": true, "messages": messages, "has_more": false })),
+            (
+                "auth.test",
+                json!({ "ok": true, "user_id": "U0BOT", "bot_id": "B0BOT" }),
+            ),
+            (
+                "conversations.replies",
+                json!({ "ok": true, "messages": messages, "has_more": false }),
+            ),
         ]);
     }
 
@@ -5111,7 +5118,10 @@ fn a_linear_wait_makes_an_intake_without_linear_triggers_poll_linear_for_its_iss
             "query Comments",
             linear_page(
                 "comments",
-                json!([linear_comment("ENG-8", "elsewhere"), linear_comment("ENG-7", "Covered.")]),
+                json!([
+                    linear_comment("ENG-8", "elsewhere"),
+                    linear_comment("ENG-7", "Covered.")
+                ]),
             ),
         ),
     ]);

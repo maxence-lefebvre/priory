@@ -2045,7 +2045,10 @@ impl Setup {
     /// with `messages`, newest first as Slack lists them.
     fn answer_slack(&self, messages: &[serde_json::Value]) {
         let auth = self.dir.join("slack-auth.json");
-        write(&auth, &json!({ "ok": true, "user_id": "U0BOT", "bot_id": "B0BOT" }).to_string());
+        write(
+            &auth,
+            &json!({ "ok": true, "user_id": "U0BOT", "bot_id": "B0BOT" }).to_string(),
+        );
         let history = self.dir.join("slack-history.json");
         write(
             &history,
@@ -2079,7 +2082,11 @@ fn slack_message(ts: &str, user: &str, text: &str) -> serde_json::Value {
 #[test]
 fn a_slack_trigger_requests_one_task_per_matching_message_and_drops_a_duplicate() {
     let setup = Setup::linear("slack-trigger", &[("deploys", SLACK_TRIGGER)]);
-    setup.answer_slack(&[slack_message("1763500000.000100", "U0PERSON", "deploy of old")]);
+    setup.answer_slack(&[slack_message(
+        "1763500000.000100",
+        "U0PERSON",
+        "deploy of old",
+    )]);
     succeeded(&setup.slack_intake());
     assert!(
         kinds(&setup.published()) == ["slack.message.posted"],
@@ -2105,7 +2112,10 @@ fn a_slack_trigger_requests_one_task_per_matching_message_and_drops_a_duplicate(
         .collect();
     assert_eq!(
         requested,
-        [json!("slack:C0123:1763500001.000100"), json!("slack:C0123:1763500001.000200")]
+        [
+            json!("slack:C0123:1763500001.000100"),
+            json!("slack:C0123:1763500001.000200")
+        ]
     );
     assert_eq!(
         kinds(&setup.published()),
