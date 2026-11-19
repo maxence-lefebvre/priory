@@ -362,6 +362,8 @@ fn memory(args: Vec<OsString>) -> ExitCode {
 
 /// The exit code of `priory memory acquire` when the gate itself fails, as `env` and `timeout` use.
 const GATE_FAILED: u8 = 125;
+/// How long a grant waits without `--timeout`: two runs' grants can wait on each other's promises.
+const GATE_TIMEOUT: Duration = Duration::from_secs(60 * 60);
 
 /// Runs a command once the daemon grants it `--gb` GB of memory, and releases the grant when it
 /// exits. Exits with the command's code.
@@ -415,17 +417,17 @@ fn acquire(args: &[OsString]) -> ExitCode {
     };
     let (id, _) = reply.split_once(' ').unwrap_or_default();
     let grant: i64 = id.parse().expect("the daemon replies with the grant id");
-    let deadline = timeout.map(|timeout| Instant::now() + timeout);
+    let timeout = timeout.unwrap_or(GATE_TIMEOUT);
+    let deadline = Instant::now() + timeout;
     let mut said = String::new();
     while !reply.ends_with(" held") {
         if said != reply {
             eprintln!("priory memory: grant {reply} for {gb} GB");
             said = reply.clone();
         }
-        if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+        if Instant::now() >= deadline {
             let _ = gate(&Gate::Release { grant });
-            let waited = timeout.unwrap_or_default();
-            return failed(format!("grant {grant} still waits after {waited:?}"));
+            return failed(format!("grant {grant} still waits after {timeout:?}"));
         }
         std::thread::sleep(Duration::from_millis(250));
         reply = match gate(&Gate::Poll { grant }) {

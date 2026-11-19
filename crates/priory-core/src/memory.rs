@@ -146,18 +146,23 @@ pub(crate) fn started(pid: u32) -> Option<i64> {
     fields.get(19)?.parse().ok()
 }
 
-/// Grants waiting grants oldest first while each fits beside the live runs and held grants. The
-/// first that does not fit holds back the rest, so a large build is never starved.
+/// Grants waiting grants oldest first while each fits beside the live runs and held grants. A grant
+/// does not count its own run's promise, which would make it wait for that run to end. The first that
+/// does not fit holds back the rest, so a large build is never starved.
 fn admit(db: &Connection, factory: &Factory, share: &Share, room: &Room) -> rusqlite::Result<()> {
-    let mut promised = state::promised(db, factory)?.memory;
     let mut statement =
-        db.prepare("SELECT id, bytes FROM grants WHERE state = 'waiting' ORDER BY id")?;
+        db.prepare("SELECT id, bytes, task FROM grants WHERE state = 'waiting' ORDER BY id")?;
     let waiting = statement
         .query_map([], |row| {
-            Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)? as u64))
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, i64>(1)? as u64,
+                row.get::<_, Option<i64>>(2)?,
+            ))
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
-    for (id, bytes) in waiting {
+    for (id, bytes, task) in waiting {
+        let promised = state::promised(db, factory, task)?.memory;
         if !room::fits(room, share, promised, bytes) {
             break;
         }
@@ -166,7 +171,6 @@ fn admit(db: &Connection, factory: &Factory, share: &Share, room: &Room) -> rusq
              WHERE id = ?1",
             [id],
         )?;
-        promised += bytes;
     }
     Ok(())
 }
