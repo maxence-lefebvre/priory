@@ -67,7 +67,7 @@ pub(crate) fn gate(
                 Ok(room) => room,
                 Err(error) => return Ok(Err(format!("cannot measure room: {error}"))),
             };
-            if !room::fits_ever(&room, share, *bytes) {
+            if *bytes as f64 > room::ceiling(&room, share) {
                 return Ok(Err(format!(
                     "{:.1} GB never fits: this runner's agents may take {:.1} GB",
                     *bytes as f64 / GB,
@@ -137,7 +137,7 @@ pub(crate) fn reclaim(db: &Connection) -> rusqlite::Result<()> {
 }
 
 /// When the live, unreaped process `pid` started, in clock ticks since boot, from `/proc/<pid>/stat`.
-fn started(pid: u32) -> Option<i64> {
+pub(crate) fn started(pid: u32) -> Option<i64> {
     let stat =
         std::fs::read_to_string(Path::new("/proc").join(pid.to_string()).join("stat")).ok()?;
     // The command name, in parentheses, may hold spaces; the fields after it are state, ppid, ...
@@ -149,7 +149,7 @@ fn started(pid: u32) -> Option<i64> {
 /// Grants waiting grants oldest first while each fits beside the live runs and held grants. The
 /// first that does not fit holds back the rest, so a large build is never starved.
 fn admit(db: &Connection, factory: &Factory, share: &Share, room: &Room) -> rusqlite::Result<()> {
-    let mut promised = state::promised(db, factory)?;
+    let mut promised = state::promised(db, factory)?.memory;
     let mut statement =
         db.prepare("SELECT id, bytes FROM grants WHERE state = 'waiting' ORDER BY id")?;
     let waiting = statement

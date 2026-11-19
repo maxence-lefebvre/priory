@@ -10,7 +10,7 @@ use std::collections::BTreeMap;
 use std::io::Write;
 use std::time::Duration;
 
-const VERSION: i64 = 18;
+const VERSION: i64 = 19;
 
 const SCHEMA: &str = "
 CREATE TABLE tasks (
@@ -275,11 +275,38 @@ CREATE TABLE grants (
 PRAGMA user_version = 18;
 ";
 
+const SCHEMA_19: &str = "
+CREATE TABLE stalls (
+  id       INTEGER PRIMARY KEY AUTOINCREMENT,
+  resource TEXT NOT NULL,
+  missing  TEXT NOT NULL,
+  task     INTEGER NOT NULL REFERENCES tasks (id),
+  since    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+  scripts  TEXT,
+  swept    TEXT,
+  sweeper  INTEGER REFERENCES tasks (id),
+  ended    TEXT
+);
+CREATE UNIQUE INDEX one_open_stall ON stalls ((ended IS NULL)) WHERE ended IS NULL;
+CREATE TABLE sweeps (
+  id      INTEGER PRIMARY KEY AUTOINCREMENT,
+  stall   INTEGER NOT NULL REFERENCES stalls (id),
+  script  TEXT NOT NULL,
+  started TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+  ended   TEXT,
+  status  TEXT,
+  output  TEXT,
+  pid     INTEGER,
+  pid_started INTEGER
+);
+PRAGMA user_version = 19;
+";
+
 /// Each schema change in order: a file at version `n` applies those from index `n` on.
 const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA, SCHEMA_2, SCHEMA_3, SCHEMA_4, SCHEMA_5, SCHEMA_6, SCHEMA_7, SCHEMA_8, SCHEMA_9,
     SCHEMA_10, SCHEMA_11, SCHEMA_12, SCHEMA_13, SCHEMA_14, SCHEMA_15, SCHEMA_16, SCHEMA_17,
-    SCHEMA_18,
+    SCHEMA_18, SCHEMA_19,
 ];
 
 /// The order the queue starts tasks in: band, then a person's order, then age. A band the factory
@@ -591,6 +618,7 @@ pub(crate) fn admissible<'r>(
     let promised = promised(db, factory)?;
     // The first task that waits for room: no task behind it starts, so it is never starved.
     let mut head = None;
+    let mut stall = None;
     for admission in queued {
         let Some(step) = factory
             .workflows
@@ -613,24 +641,29 @@ pub(crate) fn admissible<'r>(
         };
         let waits = match (busy, head) {
             (Some(reason), _) => Some(reason),
+            // The sweeper frees the room the queue waits for, so it never waits for room itself.
+            (None, _) if admission.trigger == crate::stall::TRIGGER => None,
             (None, Some(head)) => Some(format!("waits behind task {head}, which waits for room")),
             (None, None) => {
                 let need = room::need(agent.map(|(_, agent)| agent));
-                let (reason, holds) = match room() {
-                    Ok(measured) => (
-                        room::wait(measured, share, promised, need),
-                        room::fits_ever(measured, share, need),
-                    ),
-                    Err(error) => (
-                        Some(format!("waits for room: cannot measure it: {error}")),
-                        true,
-                    ),
-                };
-                // A task that can never fit would hold the queue forever.
-                if reason.is_some() && holds {
-                    head = Some(admission.task);
+                match room() {
+                    Ok(measured) => {
+                        let short = room::wait(measured, share, promised, need);
+                        let reason = short.as_ref().map(|short| short.reason.clone());
+                        // A task that can never fit would hold the queue forever.
+                        if let Some(short) =
+                            short.filter(|_| room::fits_ever(measured, share, need))
+                        {
+                            head = Some(admission.task);
+                            stall = Some((admission.task, short));
+                        }
+                        reason
+                    }
+                    Err(error) => {
+                        head = Some(admission.task);
+                        Some(format!("waits for room: cannot measure it: {error}"))
+                    }
                 }
-                reason
             }
         };
         let Some(reason) = waits else {
@@ -641,6 +674,7 @@ pub(crate) fn admissible<'r>(
             params![admission.task, reason],
         )?;
     }
+    crate::stall::record(db, stall.as_ref().map(|(task, short)| (*task, short)))?;
     Ok(None)
 }
 
@@ -654,9 +688,9 @@ fn serving(db: &Connection, agent: &str) -> rusqlite::Result<Option<i64>> {
     .optional()
 }
 
-/// The memory declared by the agents of live runs, plus every held memory grant. No run reports its
-/// own use yet, so each one keeps its whole declaration until it ends.
-pub(crate) fn promised(db: &Connection, factory: &Factory) -> rusqlite::Result<u64> {
+/// The memory and disk declared by the agents of live runs, plus every held memory grant. No run
+/// reports its own use yet, so each one keeps its whole declaration until it ends.
+pub(crate) fn promised(db: &Connection, factory: &Factory) -> rusqlite::Result<room::Need> {
     let held: i64 = db.query_row(
         "SELECT coalesce(sum(bytes), 0) FROM grants WHERE state = 'held'",
         [],
@@ -665,9 +699,13 @@ pub(crate) fn promised(db: &Connection, factory: &Factory) -> rusqlite::Result<u
     let mut statement = db.prepare("SELECT agent FROM runs WHERE ended IS NULL")?;
     // A run recorded before schema 5 has no agent.
     let mut agents = statement.query_map([], |row| row.get::<_, Option<String>>(0))?;
-    agents.try_fold(held as u64, |sum: u64, agent| {
+    let held = room::Need {
+        memory: held as u64,
+        disk: 0,
+    };
+    agents.try_fold(held, |sum, agent| {
         let agent = agent?.and_then(|name| factory.agents.get(&name));
-        Ok(sum.saturating_add(room::need(agent.map(|agent| &agent.value))))
+        Ok(sum.plus(room::need(agent.map(|agent| &agent.value))))
     })
 }
 
