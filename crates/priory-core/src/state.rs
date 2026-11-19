@@ -182,12 +182,12 @@ CREATE UNIQUE INDEX one_live_run_per_session ON runs (session) WHERE ended IS NU
 PRAGMA user_version = 9;
 ";
 
-/// Each schema change in order: a file at version `n` applies those from index `n` on.
 const SCHEMA_10: &str = "
 ALTER TABLE tasks ADD COLUMN ending TEXT;
 PRAGMA user_version = 10;
 ";
 
+/// Each schema change in order: a file at version `n` applies those from index `n` on.
 const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA, SCHEMA_2, SCHEMA_3, SCHEMA_4, SCHEMA_5, SCHEMA_6, SCHEMA_7, SCHEMA_8, SCHEMA_9,
     SCHEMA_10,
@@ -377,9 +377,14 @@ pub fn print(db: &Connection, header: &str, query: &str) -> rusqlite::Result<()>
 
 /// Prints `line`. A reader that closed the pipe, as `head` does, ends the listing without a message.
 pub fn emit(line: &str) {
-    if writeln!(std::io::stdout(), "{line}").is_err() {
+    let Err(error) = writeln!(std::io::stdout(), "{line}") else {
+        return;
+    };
+    if error.kind() == std::io::ErrorKind::BrokenPipe {
         std::process::exit(0);
     }
+    eprintln!("priory: stdout: {error}");
+    std::process::exit(1);
 }
 
 /// One event as an agent reads it: type, subject and data on one line.

@@ -129,9 +129,7 @@ fn tmux() -> Command {
     Command::new("tmux")
 }
 
-/// The variables a Claude Code session sets for its children. A run that inherited them would
-/// think it is nested in that session. Settings the user chose, such as `CLAUDE_CODE_USE_BEDROCK`
-/// or `CLAUDE_CODE_PLUGIN_DIRS`, stay.
+/// What a Claude Code session sets for its children. User settings such as `CLAUDE_CODE_USE_BEDROCK` stay.
 const NESTED: [&str; 12] = [
     "CLAUDECODE",
     "CLAUDE_CODE_ENTRYPOINT",

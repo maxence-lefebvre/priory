@@ -164,6 +164,7 @@ impl Setup {
                 .args(["daemon", factory.to_str().unwrap()])
                 .env("CLAUDECODE", "1")
                 .env("CLAUDE_CODE_ENTRYPOINT", "cli")
+                .env("CLAUDE_CODE_USE_BEDROCK", "0")
                 .stderr(log)
                 .spawn()
                 .unwrap(),
@@ -482,11 +483,25 @@ fn a_run_starts_without_the_variables_of_the_claude_session_that_started_the_dae
 
     setup.until("outbox", |rows| with(rows, 3, "confirmed") == 1);
     let env = fs::read_to_string(setup.dir.join("fake/env.log")).unwrap();
-    let names: Vec<_> = env.lines().filter_map(|l| l.split('=').next()).collect();
+    let names: Vec<_> = env.lines().collect();
     assert!(names.contains(&"PRIORY_HOME"), "{names:?}");
-    for leaked in ["CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT"] {
-        assert!(!names.contains(&leaked), "{leaked} leaked: {names:?}");
-    }
+    let session = [
+        "CLAUDECODE",
+        "CLAUDE_CODE_ENTRYPOINT",
+        "CLAUDE_CODE_EXECPATH",
+        "CLAUDE_CODE_SESSION_ID",
+        "CLAUDE_CODE_CHILD_SESSION",
+        "CLAUDE_CODE_SESSION_ATTENDED",
+        "CLAUDE_CODE_CHILD_NOTES_DIR",
+        "CLAUDE_CODE_MESSAGING_SOCKET",
+        "CLAUDE_CODE_MESSAGING_TOKEN",
+        "CLAUDE_CODE_BRIDGE_SESSION_ID",
+        "CLAUDE_PID",
+        "CLAUDE_EFFORT",
+    ];
+    let leaked: Vec<_> = session.iter().filter(|name| names.contains(name)).collect();
+    assert!(leaked.is_empty(), "{leaked:?} leaked: {names:?}");
+    assert!(names.contains(&"CLAUDE_CODE_USE_BEDROCK"), "{names:?}");
 }
 
 #[test]
@@ -2400,6 +2415,15 @@ fn an_answer_reaching_done_holds_the_task_on_the_checks_of_its_last_result() {
     setup.publish(&red);
     let runs = setup.until("runs", |rows| rows.len() == 3);
     assert_eq!(runs[2][2], "implement");
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") == 3);
+    let typed = setup.typed();
+    assert!(
+        typed
+            .last()
+            .unwrap()
+            .contains("\nEnd this step by calling the result tool"),
+        "{typed:?}"
+    );
 }
 
 #[test]
@@ -3225,7 +3249,6 @@ fn an_agent_turned_back_to_per_task_starts_new_sessions_rather_than_resume_the_s
 #[test]
 fn a_listing_exits_quietly_when_its_reader_closes_the_pipe() {
     let setup = Setup::new("closed-pipe");
-    setup.priory(&["tasks"]);
     let mut child = setup
         .command(env!("CARGO_BIN_EXE_priory"))
         .arg("desk")
@@ -3235,8 +3258,6 @@ fn a_listing_exits_quietly_when_its_reader_closes_the_pipe() {
         .unwrap();
     drop(child.stdout.take());
     let output = child.wait_with_output().unwrap();
-    assert!(
-        !String::from_utf8_lossy(&output.stderr).contains("panicked"),
-        "{output:?}"
-    );
+    assert!(output.status.success(), "{output:?}");
+    assert!(output.stderr.is_empty(), "{output:?}");
 }

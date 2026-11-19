@@ -854,6 +854,7 @@ fn enter(
         let wait = tx.last_insert_rowid();
         // The agent of the result's step fixes what the checks find, even after a human step.
         set(tx, task, "asleep", Some(&at), None)?;
+        set_ending(tx, task, step(workflows, workflow, &at))?;
         judge(tx, wait)?;
         return finish("asleep");
     }
@@ -867,11 +868,7 @@ fn enter(
         set(tx, task, "blocked", None, Some(&reason))?;
         return finish("blocked");
     };
-    let ending = (step.decides == Decider::Model).then(|| ending(step));
-    tx.execute(
-        "UPDATE tasks SET ending = ?2 WHERE id = ?1",
-        params![task, ending],
-    )?;
+    set_ending(tx, task, Some(step))?;
     match step.decides {
         Decider::Model => {
             queue_first(tx, task, &step_prompt(step))?;
@@ -1202,6 +1199,36 @@ pub(crate) fn approved(
     set(&tx, task, "asleep", Some(&approving), None)?;
     tx.commit()?;
     Ok(false)
+}
+
+/// Stores how `step` ends, or nothing when it is no model step, for the wake prompts of `task`.
+pub(crate) fn set_ending(tx: &Transaction, task: i64, step: Option<&Step>) -> rusqlite::Result<()> {
+    let ending = step
+        .filter(|step| step.decides == Decider::Model)
+        .map(ending);
+    tx.execute(
+        "UPDATE tasks SET ending = ?2 WHERE id = ?1",
+        params![task, ending],
+    )
+    .map(drop)
+}
+
+/// Fills `ending` for tasks stored before it existed.
+pub fn backfill_endings(db: &mut Connection, workflows: &Workflows) -> rusqlite::Result<()> {
+    let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let tasks: Vec<(i64, String, String)> = {
+        let mut statement = tx.prepare(
+            "SELECT id, workflow, step FROM tasks
+             WHERE ending IS NULL AND state NOT IN ('done', 'failed', 'dropped')",
+        )?;
+        statement
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?
+            .collect::<rusqlite::Result<_>>()?
+    };
+    for (task, workflow, at) in tasks {
+        set_ending(&tx, task, step(workflows, &workflow, &at))?;
+    }
+    tx.commit()
 }
 
 /// The line that tells a model step's agent how to end the step.
