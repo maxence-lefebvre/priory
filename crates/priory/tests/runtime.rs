@@ -164,10 +164,15 @@ impl Setup {
 
     /// Starts the daemon through the path `exe`, as a person or a service invokes it.
     fn start_as(&mut self, exe: &Path) {
+        self.start_with(exe, &[]);
+    }
+
+    fn start_with(&mut self, exe: &Path, env: &[(&str, &str)]) {
         let factory = self.dir.join("factory");
         let log = fs::File::create(self.dir.join("daemon.log")).unwrap();
         self.daemon = Some(
             self.command(exe.to_str().unwrap())
+                .envs(env.iter().copied())
                 .args(["daemon", factory.to_str().unwrap()])
                 .env("CLAUDECODE", "1")
                 .env("CLAUDE_CODE_ENTRYPOINT", "cli")
@@ -1864,6 +1869,122 @@ fn the_room_takes_the_agent_memory_and_the_share_of_the_runner_named_by_the_host
     setup.until("tasks", |rows| rows.len() == 1 && rows[0][7] == reason);
     setup.memory(38);
     setup.until("tasks", |rows| rows[0][4] == "running");
+}
+
+/// The lines the fake `name` logged under `fake/`, one per call.
+fn fake_log(setup: &Setup, name: &str) -> Vec<String> {
+    fs::read_to_string(setup.dir.join("fake").join(name))
+        .unwrap_or_default()
+        .lines()
+        .map(str::to_owned)
+        .collect()
+}
+
+#[test]
+fn a_run_starts_in_its_own_scope_inside_the_agents_slice_capped_at_90_percent() {
+    let mut setup = Setup::new("slice");
+    setup.publish(&requested(42));
+
+    setup.start();
+
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 1);
+    assert_eq!(
+        fake_log(&setup, "systemd-run.log"),
+        ["--user --scope --quiet --collect --expand-environment=no --slice=priory-agents.slice"]
+    );
+    let cpus = std::thread::available_parallelism().unwrap().get();
+    // CPU weights split the CPU between siblings, so the weight goes on the top-level slice.
+    assert_eq!(
+        fake_log(&setup, "systemctl.log"),
+        [
+            "--user set-property --runtime priory.slice CPUWeight=20".to_owned(),
+            format!(
+                "--user set-property --runtime priory-agents.slice CPUQuota={}% MemoryHigh=90%",
+                cpus * 90
+            )
+        ]
+    );
+    assert_eq!(setup.rows("runs")[0][7], "-");
+}
+
+#[test]
+fn agent_text_reaches_the_agent_as_written_through_a_scope_that_would_expand_it() {
+    let mut setup = Setup::new("slice-literal");
+    let agent = AGENT.replace("You implement one issue.", "Keep ${HOME} as written.");
+    fs::write(setup.dir.join("factory/agents/implementer/agent.md"), agent).unwrap();
+    setup.publish(&requested(42));
+
+    setup.start();
+
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 1);
+    let args = fs::read_to_string(setup.dir.join("fake/args.log")).unwrap();
+    assert!(
+        args.lines().any(|line| line == "Keep ${HOME} as written."),
+        "{args}"
+    );
+}
+
+#[test]
+fn a_systemd_older_than_254_starts_runs_without_the_expand_environment_option() {
+    let mut setup = Setup::new("slice-old");
+    fs::write(setup.dir.join("fake/systemd-version"), "252\n").unwrap();
+    setup.publish(&requested(42));
+
+    setup.start();
+
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 1);
+    assert_eq!(
+        fake_log(&setup, "systemd-run.log"),
+        ["--user --scope --quiet --collect --slice=priory-agents.slice"]
+    );
+}
+
+#[test]
+fn the_agents_slice_takes_its_name_from_priory_slice_and_its_caps_from_the_runner() {
+    let mut setup = Setup::new("slice-share");
+    let runner = "platform = { os = \"linux\" }\nagents = { cpu = \"50%\", memory = \"60%\" }\n";
+    fs::create_dir_all(setup.dir.join("factory/runners")).unwrap();
+    fs::write(setup.dir.join("factory/runners/runner.toml"), runner).unwrap();
+    setup.publish(&requested(42));
+
+    setup.start_with(
+        Path::new(env!("CARGO_BIN_EXE_priory")),
+        &[("PRIORY_SLICE", "scratch.slice")],
+    );
+
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 1);
+    assert_eq!(
+        fake_log(&setup, "systemd-run.log"),
+        ["--user --scope --quiet --collect --expand-environment=no --slice=scratch.slice"]
+    );
+    let cpus = std::thread::available_parallelism().unwrap().get();
+    assert_eq!(
+        fake_log(&setup, "systemctl.log"),
+        [
+            "--user set-property --runtime scratch.slice CPUWeight=20".to_owned(),
+            format!(
+                "--user set-property --runtime scratch.slice CPUQuota={}% MemoryHigh=60%",
+                cpus * 50
+            )
+        ]
+    );
+}
+
+#[test]
+fn a_host_without_systemd_starts_its_runs_as_before_and_logs_why() {
+    let mut setup = Setup::new("no-systemd");
+    fs::write(setup.dir.join("fake/no-systemd"), "").unwrap();
+    setup.publish(&requested(42));
+
+    setup.start();
+
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 1);
+    assert_eq!(setup.rows("tasks")[0][4], "running");
+    let log = fs::read_to_string(setup.dir.join("daemon.log")).unwrap();
+    assert!(
+        log.contains("no systemd user manager, so runs start outside priory-agents.slice"),
+        "daemon log: {log}"
+    );
 }
 
 #[test]
