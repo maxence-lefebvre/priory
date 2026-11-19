@@ -1059,6 +1059,11 @@ fn enter(
                  SELECT ?1, ?2, ?3, ?4, ?5, 1, 1, transcript, read, thread FROM runs WHERE id = ?6",
                 params![task, target, run.agent, run.tmux, run.session, run.id],
             )?;
+            // Its process carries on, so an unconfirmed prompt may still sit in its input.
+            tx.execute(
+                "UPDATE outbox SET run = ?2 WHERE run = ?1 AND state IN ('attempted', 'uncertain')",
+                params![run.id, tx.last_insert_rowid()],
+            )?;
             set(tx, task, "running", Some(target), None)?;
             Ok(None)
         }
@@ -1236,6 +1241,18 @@ pub(crate) fn act(
     };
     match act.act.as_str() {
         "resume" if state == "blocked" => {
+            // No run ever took its step prompt: it starts as new.
+            let unstarted: bool = tx.query_row(
+                "SELECT NOT EXISTS (SELECT 1 FROM runs WHERE task = ?1)
+                 AND NOT EXISTS (SELECT 1 FROM outbox WHERE task = ?1 AND state = 'queued')",
+                [act.task],
+                |row| row.get(0),
+            )?;
+            if unstarted {
+                set(&tx, act.task, "queued", None, None)?;
+                tx.commit()?;
+                return Ok((Ok(format!("task {} is queued", act.task)), None));
+            }
             // A reason from a run that never started describes the launch, not the agent's work.
             let started: bool = tx.query_row(
                 "SELECT coalesce((SELECT ready FROM runs WHERE task = ?1 ORDER BY id DESC LIMIT 1), 0)",
@@ -1351,6 +1368,10 @@ fn revive(
         [act.task, generation],
     )?;
     tx.execute(
+        "UPDATE outbox SET state = 'withdrawn' WHERE task = ?1 AND state = 'queued'",
+        [act.task],
+    )?;
+    tx.execute(
         "UPDATE tasks SET generation = ?2 WHERE id = ?1",
         [act.task, generation],
     )?;
@@ -1386,6 +1407,12 @@ pub(crate) fn lost(
     };
     trace::account(&tx, trace, run.id, None)?;
     end(&tx, run.id, "lost")?;
+    // A run that never reached SessionStart never took the prompt it was launched with.
+    tx.execute(
+        "UPDATE outbox SET state = 'queued', run = NULL, attempted = NULL
+         WHERE run = ?1 AND state IN ('attempted', 'uncertain') AND (SELECT NOT ready FROM runs WHERE id = ?1)",
+        [run.id],
+    )?;
     let again = tx
         .query_row(
             "SELECT ended_as = 'lost' FROM runs WHERE task = ?1 AND id < ?2 ORDER BY id DESC LIMIT 1",
