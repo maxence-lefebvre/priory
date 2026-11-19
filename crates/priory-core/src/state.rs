@@ -923,6 +923,12 @@ pub(crate) fn block(
     if let Some(run) = live {
         // The step goes on after a resume, so the turn cut short still counts toward it.
         crate::trace::account(&tx, trace, run, None)?;
+        // A run that never reached SessionStart never took the prompt it was launched with.
+        tx.execute(
+            "UPDATE outbox SET state = 'queued', run = NULL, attempted = NULL
+             WHERE run = ?1 AND state = 'attempted' AND (SELECT NOT ready FROM runs WHERE id = ?1)",
+            [run],
+        )?;
     }
     tx.execute(
         &format!("UPDATE runs SET ended = {NOW}, ended_as = ?2 WHERE task = ?1 AND ended IS NULL"),
@@ -1130,6 +1136,22 @@ pub(crate) fn attempt(db: &mut Connection) -> rusqlite::Result<Option<(String, S
     tx.execute("UPDATE runs SET idle = 0 WHERE id = ?1", [run])?;
     tx.commit()?;
     Ok(Some((tmux, session, text)))
+}
+
+/// Marks the task's oldest queued prompt `attempted` by `run`, which takes it as its first prompt
+/// at launch, and returns its text.
+pub(crate) fn claim(db: &mut Connection, run: i64) -> rusqlite::Result<Option<String>> {
+    db.query_row(
+        &format!(
+            "UPDATE outbox SET state = 'attempted', run = ?1, attempted = {NOW} WHERE id =
+             (SELECT min(outbox.id) FROM outbox JOIN runs ON runs.task = outbox.task
+              WHERE runs.id = ?1 AND outbox.state = 'queued')
+             RETURNING text"
+        ),
+        [run],
+        |row| row.get(0),
+    )
+    .optional()
 }
 
 /// The tmux sessions and harness sessions of ended runs that no live run carries on in that tmux

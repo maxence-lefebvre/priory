@@ -757,12 +757,53 @@ fn settle(tx: &Transaction, run: &Run, trace: &Trace) -> rusqlite::Result<Option
     Ok(Some(Some(run.tmux.clone())))
 }
 
-/// Queues `text` as a wake prompt: `text`, then how to end the step the task is in, if it is a model step.
+const RESUMED: &str = "A person resumed this task";
+const CONTINUE: &str = "Check the worktree, then continue.";
+
+/// Takes the line of an earlier resume that no run took out of the task's queued prompt.
+fn unresume(tx: &Transaction, task: i64) -> rusqlite::Result<()> {
+    let queued = tx
+        .query_row(
+            "SELECT id, text FROM outbox WHERE task = ?1 AND state = 'queued' ORDER BY id LIMIT 1",
+            [task],
+            |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)),
+        )
+        .optional()?;
+    let Some((id, text)) = queued else {
+        return Ok(());
+    };
+    // A shared session's task intro may come first.
+    let Some(start) = (text.starts_with(RESUMED))
+        .then_some(0)
+        .or_else(|| text.find(&format!("\n{RESUMED}")).map(|at| at + 1))
+    else {
+        return Ok(());
+    };
+    let end = format!("{CONTINUE}\n");
+    let Some(length) = text[start..].find(&end) else {
+        return Ok(());
+    };
+    let rest = format!("{}{}", &text[..start], &text[start + length + end.len()..]);
+    tx.execute(
+        "UPDATE outbox SET text = ?2 WHERE id = ?1",
+        params![id, rest],
+    )
+    .map(drop)
+}
+
+/// Queues `text` as a wake prompt: `text`, then how to end the step the task is in, if it is a
+/// model step and no queued prompt says so already.
 fn wake(tx: &Transaction, task: i64, text: &str) -> rusqlite::Result<i64> {
-    let ending: Option<String> =
-        tx.query_row("SELECT ending FROM tasks WHERE id = ?1", [task], |row| {
-            row.get(0)
-        })?;
+    let ending: Option<String> = tx
+        .query_row(
+            "SELECT ending FROM tasks WHERE id = ?1 AND NOT EXISTS (
+           SELECT 1 FROM outbox WHERE task = ?1 AND state = 'queued'
+           AND instr(char(10) || text || char(10), char(10) || ending || char(10)) > 0)",
+            [task],
+            |row| row.get(0),
+        )
+        .optional()?
+        .flatten();
     match ending {
         Some(ending) => queue_first(tx, task, &format!("{text}\n{ending}")),
         None => queue_first(tx, task, text),
@@ -1104,10 +1145,17 @@ pub(crate) fn act(
     };
     match act.act.as_str() {
         "resume" if state == "blocked" => {
-            let text = format!(
-                "A person resumed this task after: {}. Check the worktree, then continue.",
-                reason.as_deref().unwrap_or("no reason")
-            );
+            // A reason from a run that never started describes the launch, not the agent's work.
+            let started: bool = tx.query_row(
+                "SELECT coalesce((SELECT ready FROM runs WHERE task = ?1 ORDER BY id DESC LIMIT 1), 0)",
+                [act.task],
+                |row| row.get(0),
+            )?;
+            let text = match reason.as_deref().filter(|_| started) {
+                Some(reason) => format!("{RESUMED} after: {reason}. {CONTINUE}"),
+                None => format!("{RESUMED}. {CONTINUE}"),
+            };
+            unresume(&tx, act.task)?;
             wake(&tx, act.task, &text)?;
             set(&tx, act.task, "ready", None, None)?;
             tx.commit()?;
