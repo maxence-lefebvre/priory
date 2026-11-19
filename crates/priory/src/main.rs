@@ -40,8 +40,13 @@ fn main() -> ExitCode {
             "SELECT seq, type, subject, task, outcome FROM inbox ORDER BY seq",
         ),
         Some("tasks") => list(
-            "id\tkey\tworkflow\tstep\tstate\tband\tlane\treason",
-            "SELECT id, key, workflow, step, state, band, lane, reason FROM tasks ORDER BY id",
+            "id\tkey\tworkflow\tstep\tstate\tband\tlane\treason\tposition",
+            &format!(
+                "{} SELECT id, key, workflow, step, state, band, lane, reason, queue.place
+                 FROM tasks LEFT JOIN queue USING (id) ORDER BY {}",
+                queue(),
+                state::START_ORDER
+            ),
         ),
         Some("runs") => list(
             "id\ttask\tstep\ttmux\tsession\tstarted\tended\tend",
@@ -64,6 +69,7 @@ fn main() -> ExitCode {
         Some("desk") => desk(),
         Some("trace") => trace(),
         Some("report") => report(args.map(|arg| arg.to_string_lossy().into_owned()).collect()),
+        Some("move") => move_task(args.map(|arg| arg.to_string_lossy().into_owned()).collect()),
         Some(verb @ ("resume" | "cancel")) => act(
             verb,
             args.map(|arg| arg.to_string_lossy().into_owned()).collect(),
@@ -90,7 +96,7 @@ fn main() -> ExitCode {
 
 fn usage() -> ExitCode {
     eprintln!(
-        "usage: priory check [DIR]\n       priory draw [DIR] WORKFLOW\n       priory intake [DIR] [--once]\n       priory daemon [DIR] [--once]\n       priory request [DIR] --workflow <name> --key <key> [--band <band>] [--lane <lane>] [--repo <owner/name>] <text>\n       priory inbox\n       priory tasks\n       priory runs\n       priory outbox\n       priory asks\n       priory waits\n       priory actions\n       priory desk\n       priory trace\n       priory report [DIR] --workflow <name> [--since <instant-or-duration>] [--cost]\n       priory resume TASK\n       priory cancel TASK\n       priory answer ASK OPTION-OR-TEXT --revision N\n       priory mcp --session ID\n       priory hook EVENT"
+        "usage: priory check [DIR]\n       priory draw [DIR] WORKFLOW\n       priory intake [DIR] [--once]\n       priory daemon [DIR] [--once]\n       priory request [DIR] --workflow <name> --key <key> [--band <band>] [--lane <lane>] [--repo <owner/name>] <text>\n       priory inbox\n       priory tasks\n       priory runs\n       priory outbox\n       priory asks\n       priory waits\n       priory actions\n       priory desk\n       priory trace\n       priory report [DIR] --workflow <name> [--since <instant-or-duration>] [--cost]\n       priory move TASK [--band <band>] [--top | --before TASK | --after TASK]\n       priory resume TASK\n       priory cancel TASK\n       priory answer ASK OPTION-OR-TEXT --revision N\n       priory mcp --session ID\n       priory hook EVENT"
     );
     ExitCode::from(2)
 }
@@ -130,9 +136,13 @@ fn serve(
 /// What waits on a person, then every worktree under `PRIORY_HOME` that stays and why.
 fn desk() -> ExitCode {
     let printed = state::open().and_then(|db| {
-        state::print(&db, "since\tkind\tid\ttask\twhat", DESK)
-            .and_then(|()| sweep::print_stays(&db, &runtime::home()))
-            .map_err(|error| error.to_string())
+        state::print(
+            &db,
+            "since\tkind\tid\ttask\twhat",
+            &format!("{} {DESK}", queue()),
+        )
+        .and_then(|()| sweep::print_stays(&db, &runtime::home()))
+        .map_err(|error| error.to_string())
     });
     exit("desk", printed)
 }
@@ -185,19 +195,34 @@ fn report(args: Vec<String>) -> ExitCode {
     exit("report", printed)
 }
 
-const DESK: &str = "SELECT * FROM (
-               SELECT asks.created, 'ask', asks.id, asks.task,
-                 replace(asks.question, char(10), '\\n') || ' ' || asks.options
+/// Asks, blocked tasks and uncertain prompts oldest first, then the queue in start order.
+const DESK: &str = "SELECT since, kind, id, task, what FROM (
+               SELECT 0 AS part, asks.created AS since, 'ask' AS kind, asks.id AS id,
+                 asks.task AS task,
+                 replace(asks.question, char(10), '\\n') || ' ' || asks.options AS what
                FROM asks JOIN tasks ON tasks.id = asks.task
                WHERE asks.answer IS NULL AND tasks.state NOT IN ('done', 'failed', 'dropped')
                UNION ALL
-               SELECT changed, 'blocked', id, id, reason FROM tasks WHERE state = 'blocked'
+               SELECT 0, changed, 'blocked', id, id, reason FROM tasks WHERE state = 'blocked'
                UNION ALL
-               SELECT outbox.attempted, 'prompt', outbox.id, outbox.task,
+               SELECT 0, outbox.attempted, 'prompt', outbox.id, outbox.task,
                  replace(outbox.text, char(10), '\\n')
                FROM outbox JOIN tasks ON tasks.id = outbox.task
                WHERE outbox.state = 'uncertain' AND tasks.state NOT IN ('done', 'failed', 'dropped')
-             ) ORDER BY 1, 2, 3";
+               UNION ALL
+               SELECT 1, tasks.changed, 'queue', queue.place, tasks.id,
+                 coalesce(tasks.band, '-') || coalesce(': ' || tasks.reason, '')
+               FROM tasks JOIN queue USING (id)
+             ) ORDER BY part, CASE WHEN part = 0 THEN since END, kind, id";
+
+/// Each queued or ready task's place in the start order, from 1.
+fn queue() -> String {
+    format!(
+        "WITH queue AS (SELECT id, row_number() OVER (ORDER BY {}) AS place
+         FROM tasks WHERE state IN ('queued', 'ready'))",
+        state::START_ORDER
+    )
+}
 
 fn list(header: &str, query: &str) -> ExitCode {
     let printed = state::open()
@@ -256,6 +281,47 @@ fn answer(mut args: Vec<String>) -> ExitCode {
     })
     .expect("an answer serializes");
     send("answer", &line)
+}
+
+/// Sets a task's band and its place in the band's person order.
+fn move_task(args: Vec<String>) -> ExitCode {
+    let mut args = args.into_iter();
+    let Some(Ok(task)) = args.next().map(|task| task.parse()) else {
+        return usage();
+    };
+    let (mut band, mut place) = (None, None);
+    while let Some(flag) = args.next() {
+        let mut task = || args.next().and_then(|task| task.parse().ok());
+        let parsed = match flag.as_str() {
+            "--band" if band.is_none() => {
+                band = args.next();
+                band.is_some()
+            }
+            _ if place.is_some() => false,
+            "--top" => {
+                place = Some(state::Place::Top);
+                true
+            }
+            "--before" => {
+                place = task().map(state::Place::Before);
+                place.is_some()
+            }
+            "--after" => {
+                place = task().map(state::Place::After);
+                place.is_some()
+            }
+            _ => false,
+        };
+        if !parsed {
+            return usage();
+        }
+    }
+    if band.is_none() && place.is_none() {
+        return usage();
+    }
+    let moved =
+        state::open().and_then(|mut db| state::move_task(&mut db, task, band.as_deref(), place));
+    exit("move", moved)
 }
 
 /// Sends `priory resume TASK` or `priory cancel TASK` to the daemon, which applies it.

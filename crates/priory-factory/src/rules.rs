@@ -5,7 +5,24 @@ const ENDS: [&str; 2] = ["done", "stop"];
 
 pub fn check(factory: &Factory) -> Vec<Problem> {
     let mut problems = Vec::new();
+    let bands = factory.bands();
+    if let Some(settings) = &factory.settings {
+        let unique: BTreeSet<_> = bands.iter().collect();
+        if bands.is_empty() || unique.len() < bands.len() {
+            problems.push(problem(
+                settings,
+                settings.lines.field("bands"),
+                "`bands` needs at least one band, each named once".into(),
+            ));
+        }
+    }
     for trigger in factory.triggers.values() {
+        check_band(
+            trigger,
+            trigger.value.band.as_deref(),
+            &bands,
+            &mut problems,
+        );
         if !factory.workflows.contains_key(&trigger.value.workflow) {
             problems.push(problem(
                 trigger,
@@ -45,9 +62,30 @@ pub fn check(factory: &Factory) -> Vec<Problem> {
         }
     }
     for workflow in factory.workflows.values() {
+        check_band(
+            workflow,
+            workflow.value.band.as_deref(),
+            &bands,
+            &mut problems,
+        );
         check_workflow(factory, workflow, &mut problems);
     }
     problems
+}
+
+fn check_band<T>(
+    loaded: &Loaded<T>,
+    band: Option<&str>,
+    bands: &[&str],
+    problems: &mut Vec<Problem>,
+) {
+    if let Some(band) = band.filter(|band| !bands.contains(band)) {
+        problems.push(problem(
+            loaded,
+            loaded.lines.field("band"),
+            format!("band `{band}` is not one of {}", bands.join(", ")),
+        ));
+    }
 }
 
 /// A schedule's run works in `repo`, as a GitHub trigger's does.

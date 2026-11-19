@@ -34,6 +34,11 @@ pub(crate) fn need(agent: Option<&Agent>) -> u64 {
     agent.and_then(|agent| agent.memory).unwrap_or(MEMORY)
 }
 
+/// Whether a run needing `need` bytes fits in this machine's share once nothing else runs.
+pub(crate) fn fits_ever(room: &Room, share: &Share, need: u64) -> bool {
+    need as f64 <= room.memory_total as f64 * share.memory
+}
+
 /// Why a run needing `need` bytes does not fit in `room`, where `promised` bytes are already
 /// promised to runs that started but have not reported yet.
 pub(crate) fn wait(room: &Room, share: &Share, promised: u64, need: u64) -> Option<String> {

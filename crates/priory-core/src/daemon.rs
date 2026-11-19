@@ -35,6 +35,7 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
     let mut db = state::open()?;
     tools::backfill_endings(&mut db, &factory.workflows)?;
     let bus = Bus::open_default()?;
+    state::bands(&mut db, &factory.bands())?;
     if once {
         drain(&bus, &mut db, factory)?;
         return Ok(());
@@ -388,7 +389,7 @@ fn drain(bus: &Bus, db: &mut Connection, factory: &Factory) -> Result<(), Error>
             return Ok(());
         }
         for delivery in deliveries {
-            state::handle(db, &delivery.message, &factory.workflows)?;
+            state::handle(db, &delivery.message, factory)?;
             bus.ack(delivery.connection, delivery.seq)?;
         }
     }

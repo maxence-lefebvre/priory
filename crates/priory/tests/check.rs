@@ -895,3 +895,51 @@ fn a_linear_trigger_uses_a_supported_event_filter_and_key() {
          triggers/wrong.toml:5: a Linear trigger's `key` is `issue.identifier`\n"
     );
 }
+
+#[test]
+fn a_trigger_or_workflow_naming_an_unknown_band_names_its_line() {
+    let trigger = format!("{TRIGGER}band = \"someday\"\n");
+    let workflow = WORKFLOW.replacen(
+        "start = \"implement\"\n",
+        "start = \"implement\"\nband = \"urgent\"\n",
+        1,
+    );
+    let mut files = with("triggers/agent-label.toml", &trigger);
+    files.retain(|(file, _)| *file != "workflows/implement.toml");
+    files.push(("workflows/implement.toml", &workflow));
+
+    let outcome = check(&factory("unknown-band", &files));
+
+    assert_eq!(outcome.code, 1);
+    assert_eq!(
+        outcome.stderr,
+        "triggers/agent-label.toml:8: band `someday` is not one of blocker, now, today, later\n\
+         workflows/implement.toml:3: band `urgent` is not one of blocker, now, today, later\n"
+    );
+}
+
+#[test]
+fn factory_toml_renames_the_bands() {
+    let trigger = format!("{TRIGGER}band = \"p1\"\n");
+    let mut files = with("triggers/agent-label.toml", &trigger);
+    files.retain(|(file, _)| *file != "factory.toml");
+    files.push((
+        "factory.toml",
+        "name = \"demo\"\nbands = [\"p0\", \"p1\"]\n",
+    ));
+    let ok = check(&factory("renamed-bands", &files));
+    files.retain(|(file, _)| *file != "factory.toml");
+    files.push((
+        "factory.toml",
+        "name = \"demo\"\nbands = [\"p0\", \"p0\"]\n",
+    ));
+    let duplicate = check(&factory("duplicate-bands", &files));
+
+    assert_eq!((ok.code, ok.stderr.as_str()), (0, ""));
+    assert_eq!(duplicate.code, 1);
+    assert_eq!(
+        duplicate.stderr,
+        "factory.toml:2: `bands` needs at least one band, each named once\n\
+         triggers/agent-label.toml:8: band `p1` is not one of p0, p0\n"
+    );
+}
