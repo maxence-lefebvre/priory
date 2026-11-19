@@ -1,6 +1,7 @@
 use herdr_bus::{Bus, Message, Output};
 use serde_json::json;
 use std::fs;
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output as Exit};
 use std::time::{Duration, Instant};
@@ -2787,7 +2788,7 @@ fn an_unknown_condition_is_refused_and_nothing_is_stored() {
     assert!(error, "{text}");
     assert_eq!(
         text,
-        "unknown condition \"moon\": wait on pull_request, checks, review, time or task"
+        "unknown condition \"moon\": wait on pull_request, checks, review, time, task, linear_comment, linear_state or slack_reply"
     );
     std::thread::sleep(Duration::from_millis(1500));
     assert!(setup.rows("waits").is_empty());
@@ -5233,6 +5234,298 @@ fn a_turn_a_person_typed_into_the_pane_gets_no_nudge() {
     assert_eq!(setup.rows("outbox").len(), 2);
 }
 
+fn linear_event(kind: &str, issue: &str, extra: serde_json::Value) -> Message {
+    let mut data = json!({
+        "issue": issue,
+        "linear_id": format!("{issue}-{kind}"),
+        "title": "Fix the thing",
+        "url": format!("https://linear.app/acme/issue/{issue}"),
+        "team": "ENG",
+        "project": null,
+        "state": "In Progress",
+        "labels": [],
+        "time": herdr_bus::Timestamp::now().to_string(),
+        "baseline": false,
+        "triggers": [],
+    });
+    data.as_object_mut()
+        .unwrap()
+        .extend(extra.as_object().unwrap().clone());
+    Message::new(kind, data).subject(issue)
+}
+
+#[test]
+fn a_linear_comment_wait_fires_on_a_comment_on_its_issue_and_not_another() {
+    let setup = asleep_on(
+        "linear-comment",
+        json!({ "type": "linear_comment", "issue": "ENG-7" }),
+    );
+    assert_eq!(
+        setup.rows("waits")[0][3..5],
+        ["linear_comment", "linear:ENG-7"]
+    );
+
+    setup.publish(&linear_event(
+        "linear.comment.created",
+        "ENG-8",
+        json!({ "body": "elsewhere" }),
+    ));
+    stays_asleep(&setup);
+    setup.publish(&linear_event(
+        "linear.comment.created",
+        "ENG-7",
+        json!({ "body": "Please cover the empty case." }),
+    ));
+
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 2);
+    let typed = setup.typed();
+    assert!(
+        typed[1].starts_with("linear.comment.created ENG-7 {")
+            && typed[1].contains("Please cover the empty case."),
+        "{typed:?}"
+    );
+    assert_eq!(setup.rows("tasks")[0][4], "running");
+}
+
+#[test]
+fn a_linear_state_wait_fires_when_its_issue_moves_to_its_state_and_not_otherwise() {
+    let setup = asleep_on(
+        "linear-state",
+        json!({ "type": "linear_state", "issue": "ENG-7", "state": "Done" }),
+    );
+    let moved = |issue: &str, to: &str| {
+        linear_event(
+            "linear.issue.state_changed",
+            issue,
+            json!({ "linear_id": format!("{issue}-{to}"), "from": "In Progress", "to": to }),
+        )
+    };
+
+    setup.publish(&moved("ENG-8", "Done"));
+    setup.publish(&moved("ENG-7", "In Review"));
+    stays_asleep(&setup);
+    setup.publish(&moved("ENG-7", "Done"));
+
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 2);
+    let typed = setup.typed();
+    let lines: Vec<_> = typed[1].lines().collect();
+    assert!(
+        lines[0].starts_with("linear.issue.state_changed ENG-7 {")
+            && lines[0].contains(r#""to":"Done""#),
+        "{typed:?}"
+    );
+    assert!(lines[1].contains(r#""to":"In Review""#), "{typed:?}");
+}
+
+const THREAD: &str = "1763500000.000100";
+
+/// A reply in `thread` of channel C0123, posted at `time`.
+fn replied(thread: &str, ts: &str, time: herdr_bus::Timestamp) -> Message {
+    Message::new(
+        "slack.thread.replied",
+        json!({ "channel": "C0123", "thread_ts": thread, "ts": ts, "user": "U0PERSON",
+                "text": format!("reply {ts}"), "time": time.to_string() }),
+    )
+    .subject(format!("C0123:{thread}"))
+    .time(time)
+}
+
+#[test]
+fn a_slack_reply_wait_fires_on_a_new_reply_in_its_thread_only() {
+    let setup = asleep_on(
+        "slack-reply",
+        json!({ "type": "slack_reply", "channel": "C0123", "thread_ts": THREAD }),
+    );
+    assert_eq!(
+        setup.rows("waits")[0][3..5],
+        ["slack_reply", format!("slack:C0123:{THREAD}").as_str()]
+    );
+    let now = herdr_bus::Timestamp::now();
+    let hour_ago = now.checked_sub(Duration::from_secs(3600)).unwrap();
+
+    setup.publish(&replied("1763500000.000200", "1763500001.000001", now));
+    setup.publish(&replied(THREAD, "1763500001.000002", hour_ago));
+    stays_asleep(&setup);
+    setup.publish(&replied(THREAD, "1763500001.000003", now));
+
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 2);
+    let typed = setup.typed();
+    assert!(
+        typed[1].starts_with(&format!("slack.thread.replied C0123:{THREAD} {{"))
+            && typed[1].contains("reply 1763500001.000003"),
+        "{typed:?}"
+    );
+}
+
+const SLACK_TOKEN: &str = "xoxb-secret-test-token";
+
+impl Setup {
+    /// Makes the fake `curl` answer each call whose arguments contain a pattern of `answers`, and
+    /// record its arguments and standard input.
+    fn answer_curl(&self, answers: &[(&str, serde_json::Value)]) {
+        let bin = self.dir.join("bin");
+        fs::create_dir_all(&bin).unwrap();
+        let mut script = format!(
+            "#!/bin/sh\necho \"$*\" >> '{dir}/curl-args'\ncat >> '{dir}/curl-stdin'\ncase \"$*\" in\n",
+            dir = self.dir.display()
+        );
+        for (index, (pattern, answer)) in answers.iter().enumerate() {
+            let file = self.dir.join(format!("curl-answer-{index}.json"));
+            fs::write(&file, answer.to_string()).unwrap();
+            script.push_str(&format!("  *'{pattern}'*) cat '{}' ;;\n", file.display()));
+        }
+        script.push_str("  *) echo \"unexpected call $*\" >&2; exit 2 ;;\nesac\n");
+        let curl = bin.join("curl");
+        fs::write(&curl, script).unwrap();
+        fs::set_permissions(&curl, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    /// Makes the fake `curl` answer Slack's Web API: `auth.test` as bot U0BOT, and each
+    /// `conversations.replies` with `replies`, the thread's first message included.
+    fn answer_slack(&self, replies: &[serde_json::Value]) {
+        let mut messages =
+            vec![json!({ "ts": THREAD, "thread_ts": THREAD, "user": "U0PERSON", "text": "first" })];
+        messages.extend_from_slice(replies);
+        self.answer_curl(&[
+            (
+                "auth.test",
+                json!({ "ok": true, "user_id": "U0BOT", "bot_id": "B0BOT" }),
+            ),
+            (
+                "conversations.replies",
+                json!({ "ok": true, "messages": messages, "has_more": false }),
+            ),
+        ]);
+    }
+
+    /// Runs one poll of `priory intake` on a factory with no trigger, against the fakes in `bin`.
+    fn intake(&self) {
+        let factory = self.dir.join("intake-factory");
+        for (path, content) in [
+            ("factory.toml", "name = \"demo\""),
+            ("agents/implementer/agent.md", AGENT),
+            ("workflows/implement.toml", WORKFLOW),
+        ] {
+            let file = factory.join(path);
+            fs::create_dir_all(file.parent().unwrap()).unwrap();
+            fs::write(file, content).unwrap();
+        }
+        let path = std::env::join_paths(
+            std::iter::once(self.dir.join("bin"))
+                .chain(std::env::split_paths(&std::env::var_os("PATH").unwrap())),
+        )
+        .unwrap();
+        let output = self
+            .command(env!("CARGO_BIN_EXE_priory"))
+            .args(["intake", "--once"])
+            .arg(&factory)
+            .env("PATH", path)
+            .env("SLACK_BOT_TOKEN", SLACK_TOKEN)
+            .env("LINEAR_API_KEY", "lin_api_secret_test_key")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "intake: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+}
+
+/// A message in the thread, by `user`, posted at `ts`.
+fn slack_message(ts: &str, user: &str) -> serde_json::Value {
+    json!({ "ts": ts, "thread_ts": THREAD, "user": user, "text": format!("said {ts}") })
+}
+
+/// Slack's `ts` for `time`: seconds since the epoch, with six decimals.
+fn ts(time: herdr_bus::Timestamp) -> String {
+    format!("{}.{:06}", time.as_second(), time.subsec_microsecond())
+}
+
+#[test]
+fn a_reply_posted_before_the_wait_wakes_the_task_and_the_bots_own_reply_never_does() {
+    let setup = asleep_on(
+        "slack-intake",
+        json!({ "type": "slack_reply", "channel": "C0123", "thread_ts": THREAD }),
+    );
+    // The second the wait was stored in: after the agent's last prompt, before the intake polls.
+    let stored: herdr_bus::Timestamp = setup.rows("waits")[0][5].parse().unwrap();
+    let before_prompt = stored.checked_sub(Duration::from_secs(3600)).unwrap();
+    let old = slack_message(&ts(before_prompt), "U0PERSON");
+    let mine = slack_message(&ts(herdr_bus::Timestamp::now()), "U0BOT");
+    setup.answer_slack(&[old.clone(), mine.clone()]);
+
+    setup.intake();
+    stays_asleep(&setup);
+    let person = stored;
+    setup.answer_slack(&[old, slack_message(&ts(person), "U0PERSON"), mine]);
+    setup.intake();
+
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 2);
+    let typed = setup.typed();
+    assert!(
+        typed[1].starts_with(&format!("slack.thread.replied C0123:{THREAD} {{"))
+            && typed[1].contains(&format!("said {}", ts(person))),
+        "{typed:?}"
+    );
+    let stdin = fs::read_to_string(setup.dir.join("curl-stdin")).unwrap();
+    assert!(stdin.contains(SLACK_TOKEN));
+    let args = fs::read_to_string(setup.dir.join("curl-args")).unwrap();
+    assert!(!args.contains(SLACK_TOKEN), "{args}");
+}
+
+/// A Linear GraphQL answer holding `nodes` at `field`.
+fn linear_page(field: &str, nodes: serde_json::Value) -> serde_json::Value {
+    json!({ "data": { field: { "nodes": nodes, "pageInfo": { "hasNextPage": false, "endCursor": null } } } })
+}
+
+fn linear_comment(issue: &str, body: &str) -> serde_json::Value {
+    json!({
+        "id": format!("comment-{issue}"),
+        "body": body,
+        "url": format!("https://linear.app/acme/issue/{issue}#comment"),
+        "createdAt": herdr_bus::Timestamp::now().to_string(),
+        "user": { "displayName": "max" },
+        "issue": {
+            "id": format!("issue-{issue}"), "identifier": issue, "title": "Fix the thing",
+            "url": format!("https://linear.app/acme/issue/{issue}"),
+            "team": { "key": "ENG" }, "project": null, "state": { "name": "In Progress" },
+            "labels": { "nodes": [] }
+        }
+    })
+}
+
+#[test]
+fn a_linear_wait_makes_an_intake_without_linear_triggers_poll_linear_for_its_issue() {
+    let setup = asleep_on(
+        "linear-intake",
+        json!({ "type": "linear_comment", "issue": "ENG-7" }),
+    );
+    setup.answer_curl(&[
+        ("query Issues", linear_page("issues", json!([]))),
+        (
+            "query Comments",
+            linear_page(
+                "comments",
+                json!([
+                    linear_comment("ENG-8", "elsewhere"),
+                    linear_comment("ENG-7", "Covered.")
+                ]),
+            ),
+        ),
+    ]);
+
+    setup.intake();
+
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 2);
+    let typed = setup.typed();
+    assert!(
+        typed[1].starts_with("linear.comment.created ENG-7 {") && typed[1].contains("Covered."),
+        "{typed:?}"
+    );
+    assert!(!typed[1].contains("elsewhere"), "{typed:?}");
+}
+
 /// Waits until the daemon answers on its socket.
 fn listening(setup: &Setup) {
     let deadline = Instant::now() + Duration::from_secs(15);
@@ -5463,4 +5756,56 @@ fn a_run_waits_for_room_while_a_grant_holds_memory() {
     setup.release("hold-a");
     assert!(a.wait_with_output().unwrap().status.success());
     setup.until("tasks", |rows| rows[0][4] == "running");
+}
+
+#[test]
+fn a_task_that_waited_on_a_linear_issue_is_done_on_its_result_without_a_pull_request() {
+    let mut setup = Setup::new("linear-done");
+    setup.calls(&[
+        wait(json!({ "type": "linear_comment", "issue": "ENG-7" })),
+        result("passed"),
+    ]);
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("runs", |rows| {
+        rows.first().is_some_and(|row| row[7] == "asleep")
+    });
+
+    setup.publish(&linear_event(
+        "linear.comment.created",
+        "ENG-7",
+        json!({ "body": "Go ahead." }),
+    ));
+
+    setup.until("tasks", |rows| rows[0][4] == "done");
+}
+
+#[test]
+fn a_linear_comment_no_task_owned_before_the_wait_wakes_the_task_at_once() {
+    let mut setup = Setup::new("linear-already");
+    setup.calls(&[wait(json!({ "type": "linear_comment", "issue": "ENG-7" }))]);
+    setup.hold("hold-call");
+    setup.publish(&requested(42));
+    setup.start();
+    setup.written("fake/submitted");
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") == 1);
+    // The comment lands after the agent's prompt, while no task owns ENG-7 yet.
+    setup.publish(&linear_event(
+        "linear.comment.created",
+        "ENG-7",
+        json!({ "body": "Already answered." }),
+    ));
+    setup.until("inbox", |rows| rows.len() == 2 && rows[1][4] == "ignored");
+
+    setup.release("hold-call");
+
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 2);
+    let (text, error) = reply(&setup.replies()[0]);
+    assert!(!error, "{text}");
+    assert!(text.starts_with("wait 1 already holds"), "{text}");
+    assert!(
+        setup.typed()[1].starts_with("linear.comment.created ENG-7 {"),
+        "{:?}",
+        setup.typed()
+    );
 }
