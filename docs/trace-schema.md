@@ -58,7 +58,7 @@ such as a revert, arrives as a second record that points at the first. Each reco
 | `machine`          | yes      | Where the step ran                                                    |
 | `started`          | yes      | When the step started                                                 |
 | `duration_ms`      | yes      | Wall time from start to end                                           |
-| `tokens`           | no       | For `model` steps: `input`, `output`, `cache_read`, `cache_write`     |
+| `tokens`           | no       | For `model` steps: `input`, `output`, `cache_read`, `cache_write`, summed over the step's turns |
 
 ## `factory.step.labeled`
 
@@ -79,6 +79,8 @@ revert. `step_event` is the `id` of the `factory.step.ended` record it judges.
   }
 }
 ```
+
+Priory writes these records as described under Trace in [the daemon](daemon.md).
 
 ## Rules
 

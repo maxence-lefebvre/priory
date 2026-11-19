@@ -372,6 +372,16 @@ fn percent<'de, D: serde::Deserializer<'de>>(input: D) -> Result<Option<f64>, D:
         })
 }
 
+/// Dollars per million tokens of each kind, for one model.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Price {
+    pub input: f64,
+    pub output: f64,
+    pub cache_read: f64,
+    pub cache_write: f64,
+}
+
 pub struct Loaded<T> {
     pub file: PathBuf,
     pub value: T,
@@ -387,6 +397,8 @@ pub struct Factory {
     pub triggers: BTreeMap<String, Loaded<Trigger>>,
     pub workflows: BTreeMap<String, Loaded<Workflow>>,
     pub runners: BTreeMap<String, Loaded<Runner>>,
+    /// `prices.toml`: each model's price.
+    pub prices: BTreeMap<String, Price>,
 }
 
 pub fn load(dir: &Path) -> (Factory, Vec<Problem>) {
@@ -449,6 +461,14 @@ pub fn load(dir: &Path) -> (Factory, Vec<Problem>) {
         if let Some((value, lines)) = found.parse::<Runner>(&file) {
             found.define(&mut factory.runners, stem(&file), &file, value, lines);
         }
+    }
+    if let Some(file) = ["prices.toml", "prices.yaml", "prices.yml"]
+        .map(|name| dir.join(name))
+        .into_iter()
+        .find(|file| file.is_file())
+        && let Some((prices, _)) = found.parse(&file)
+    {
+        factory.prices = prices;
     }
     (factory, problems)
 }

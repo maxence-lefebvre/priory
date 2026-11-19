@@ -1,0 +1,154 @@
+use priory_factory::factory::Price;
+use rusqlite::Connection;
+use std::collections::BTreeMap;
+
+/// The window a report covers when it names none.
+pub const SINCE: &str = "7 days";
+
+/// The start of the window `since`: an RFC 3339 instant, or a duration back from now such as
+/// `7 days`, as an SQLite date modifier.
+fn start(db: &Connection, since: &str) -> Result<String, String> {
+    let start: Option<String> = db
+        .query_row(
+            "SELECT coalesce(strftime('%Y-%m-%dT%H:%M:%fZ', ?1),
+               strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-' || ?1))",
+            [since],
+            |row| row.get(0),
+        )
+        .map_err(|error| error.to_string())?;
+    start.ok_or_else(|| {
+        format!("--since {since:?} is neither an RFC 3339 instant nor a duration such as 7 days")
+    })
+}
+
+/// Prints each step's outcome counts for `workflow` since `since`, with the records that reached
+/// the step as each rate's denominator.
+pub fn outcomes(db: &Connection, workflow: &str, since: &str) -> Result<(), String> {
+    let start = start(db, since)?;
+    let mut statement = db
+        .prepare(
+            "WITH ended AS (
+               SELECT json_extract(event, '$.data.step') AS step,
+                 json_extract(event, '$.data.outcome') AS outcome
+               FROM trace WHERE type = 'factory.step.ended'
+               AND json_extract(event, '$.data.workflow') = ?1 AND time >= ?2)
+             SELECT step, outcome, count(*), (SELECT count(*) FROM ended AS reached
+               WHERE reached.step = ended.step)
+             FROM ended GROUP BY step, outcome ORDER BY step, outcome",
+        )
+        .map_err(|error| error.to_string())?;
+    let rows = statement
+        .query_map([workflow, &start], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, i64>(2)?,
+                row.get::<_, i64>(3)?,
+            ))
+        })
+        .and_then(Iterator::collect::<rusqlite::Result<Vec<_>>>)
+        .map_err(|error| error.to_string())?;
+    println!("step\toutcome\tcount\treached\trate");
+    for (step, outcome, count, reached) in rows {
+        let rate = 100.0 * count as f64 / reached as f64;
+        println!("{step}\t{outcome}\t{count}\t{reached}\t{rate:.1}%");
+    }
+    Ok(())
+}
+
+/// Tokens of each kind, as a step record counts them.
+#[derive(Default)]
+struct Tokens([i64; 4]);
+
+impl Tokens {
+    fn add(&mut self, other: &Tokens) {
+        for (sum, more) in self.0.iter_mut().zip(other.0) {
+            *sum += more;
+        }
+    }
+
+    fn dollars(&self, price: &Price) -> f64 {
+        let rates = [
+            price.input,
+            price.output,
+            price.cache_read,
+            price.cache_write,
+        ];
+        self.0
+            .iter()
+            .zip(rates)
+            .map(|(tokens, rate)| *tokens as f64 * rate / 1_000_000.0)
+            .sum()
+    }
+
+    fn cells(&self) -> String {
+        self.0.map(|tokens| tokens.to_string()).join("\t")
+    }
+}
+
+/// Prints the tokens and cost of each task of `workflow` since `since`, per step, then in total. A
+/// model missing from `prices` keeps its tokens and names the missing price instead of a cost.
+pub fn cost(
+    db: &Connection,
+    workflow: &str,
+    since: &str,
+    prices: &BTreeMap<String, Price>,
+) -> Result<(), String> {
+    let start = start(db, since)?;
+    let mut statement = db
+        .prepare(
+            "SELECT json_extract(event, '$.data.task') AS task, json_extract(event, '$.data.step') AS step,
+               coalesce(json_extract(event, '$.data.model'), '-') AS model,
+               sum(json_extract(event, '$.data.tokens.input')),
+               sum(json_extract(event, '$.data.tokens.output')),
+               sum(json_extract(event, '$.data.tokens.cache_read')),
+               sum(json_extract(event, '$.data.tokens.cache_write'))
+             FROM trace WHERE type = 'factory.step.ended'
+             AND json_extract(event, '$.data.workflow') = ?1 AND time >= ?2
+             AND json_extract(event, '$.data.tokens') IS NOT NULL
+             GROUP BY task, step, model ORDER BY CAST(task AS INTEGER), min(seq)",
+        )
+        .map_err(|error| error.to_string())?;
+    let rows = statement
+        .query_map([workflow, &start], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                Tokens([row.get(3)?, row.get(4)?, row.get(5)?, row.get(6)?]),
+            ))
+        })
+        .and_then(Iterator::collect::<rusqlite::Result<Vec<_>>>)
+        .map_err(|error| error.to_string())?;
+    println!("task\tstep\tmodel\tinput\toutput\tcache_read\tcache_write\tcost");
+    let mut rows = rows.into_iter().peekable();
+    while let Some((task, ..)) = rows.peek() {
+        let task = task.clone();
+        let mut total = Tokens::default();
+        let mut dollars = 0.0;
+        let mut missing = Vec::new();
+        while let Some((_, step, model, tokens)) = rows.next_if(|row| row.0 == task) {
+            let cost = match prices.get(&model) {
+                Some(price) => {
+                    dollars += tokens.dollars(price);
+                    format!("${:.6}", tokens.dollars(price))
+                }
+                None => {
+                    if !missing.contains(&model) {
+                        missing.push(model.clone());
+                    }
+                    format!("price missing for {model}")
+                }
+            };
+            println!("{task}\t{step}\t{model}\t{}\t{cost}", tokens.cells());
+            total.add(&tokens);
+        }
+        let cost = if missing.is_empty() {
+            format!("${dollars:.6}")
+        } else {
+            format!("price missing for {}", missing.join(", "))
+        };
+        println!("{task}\ttotal\t-\t{}\t{cost}", total.cells());
+    }
+    Ok(())
+}

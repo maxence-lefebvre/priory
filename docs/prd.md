@@ -98,6 +98,7 @@ workflows/<name>.toml        # or .yaml
 runners/<tailscale-hostname>.toml
 views/<name>.toml
 lanes.toml                   # or lanes.yaml
+prices.toml                  # or prices.yaml: dollars per million tokens, by model
 skills/<name>/SKILL.md
 webhooks/  scorers/  benchmarks/
 ```

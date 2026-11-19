@@ -3464,7 +3464,9 @@ fn a_model_step_record_sums_the_tokens_of_its_turns_from_the_session_transcript(
     let answered = setup.priory(&["answer", "1", "sqlite", "--revision", "1"]);
 
     assert!(answered.status.success(), "{answered:?}");
-    setup.until("tasks", |rows| rows[0][4] == "done");
+    setup.until("tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == "done")
+    });
     let records = setup.trace();
     let tokens: Vec<_> = records
         .iter()
@@ -3490,6 +3492,152 @@ fn a_model_step_record_sums_the_tokens_of_its_turns_from_the_session_transcript(
                 json!("claude-fake-5"),
                 json!({ "input": 103, "output": 13, "cache_read": 1003, "cache_write": 53 })
             ),
+        ]
+    );
+}
+
+impl Setup {
+    /// The rows `priory report` prints for the test's factory, each split on tabs, header included.
+    fn report(&self, args: &[&str]) -> Vec<Vec<String>> {
+        let factory = self.dir.join("factory");
+        let mut all = vec!["report", factory.to_str().unwrap()];
+        all.extend(args);
+        let output = self.priory(&all);
+        assert!(output.status.success(), "{output:?}");
+        String::from_utf8(output.stdout)
+            .unwrap()
+            .lines()
+            .map(|line| line.split('\t').map(str::to_owned).collect())
+            .collect()
+    }
+}
+
+/// Runs task 1 through implement, review asking for changes, implement again and an approving review.
+fn reviewed_twice(name: &str) -> Setup {
+    let mut setup = Setup::with_workflow(name, TWO_AGENTS);
+    setup.calls(&[
+        result("passed"),
+        result("changes"),
+        result("passed"),
+        result("approved"),
+    ]);
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == "done")
+    });
+    setup
+}
+
+#[test]
+fn a_report_counts_each_steps_outcomes_with_the_runs_that_reached_the_step() {
+    let setup = reviewed_twice("report");
+
+    let report = setup.report(&["--workflow", "implement", "--since", "1 hour"]);
+
+    assert_eq!(
+        report,
+        [
+            ["step", "outcome", "count", "reached", "rate"],
+            ["implement", "passed", "2", "2", "100.0%"],
+            ["review", "approved", "1", "2", "50.0%"],
+            ["review", "changes", "1", "2", "50.0%"],
+        ]
+    );
+    let later = setup.report(&["--workflow", "implement", "--since", "2999-01-01T00:00:00Z"]);
+    assert_eq!(later, [["step", "outcome", "count", "reached", "rate"]]);
+}
+
+#[test]
+fn a_cost_report_prices_each_task_and_step_by_the_factory_price_table_and_names_a_missing_price() {
+    let mut setup = Setup::with_workflow("report-cost", STEPS);
+    setup.calls(&[result("ready"), result("passed")]);
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == "done")
+    });
+    let prices = setup.dir.join("factory/prices.toml");
+    let header = [
+        "task",
+        "step",
+        "model",
+        "input",
+        "output",
+        "cache_read",
+        "cache_write",
+        "cost",
+    ];
+
+    fs::write(
+        &prices,
+        "[other-model]\ninput = 1.0\noutput = 1.0\ncache_read = 1.0\ncache_write = 1.0\n",
+    )
+    .unwrap();
+    let missing = setup.report(&["--workflow", "implement", "--cost"]);
+
+    let price = "price missing for claude-fake-5";
+    assert_eq!(
+        missing,
+        [
+            &header[..],
+            &[
+                "1",
+                "plan",
+                "claude-fake-5",
+                "101",
+                "11",
+                "1001",
+                "51",
+                price
+            ],
+            &[
+                "1",
+                "implement",
+                "claude-fake-5",
+                "102",
+                "12",
+                "1002",
+                "52",
+                price
+            ],
+            &["1", "total", "-", "203", "23", "2003", "103", price],
+        ]
+    );
+
+    // Dollars per million tokens of each kind.
+    fs::write(
+        &prices,
+        "[claude-fake-5]\ninput = 3.0\noutput = 15.0\ncache_read = 0.3\ncache_write = 3.75\n",
+    )
+    .unwrap();
+    let priced = setup.report(&["--workflow", "implement", "--cost"]);
+
+    assert_eq!(
+        priced,
+        [
+            &header[..],
+            &[
+                "1",
+                "plan",
+                "claude-fake-5",
+                "101",
+                "11",
+                "1001",
+                "51",
+                "$0.000960"
+            ],
+            &[
+                "1",
+                "implement",
+                "claude-fake-5",
+                "102",
+                "12",
+                "1002",
+                "52",
+                "$0.000982"
+            ],
+            &["1", "total", "-", "203", "23", "2003", "103", "$0.001941"],
         ]
     );
 }
