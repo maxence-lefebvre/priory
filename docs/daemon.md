@@ -306,7 +306,8 @@ prompt that shows anyway, when the deny hook failed, ends the run on the next ti
 
 ## Desk
 
-`priory desk` prints what waits on a person, oldest first: since, kind, id, task, lane and what.
+`priory desk` prints what waits on a person, oldest first: since, kind, id, task, lane, what and the
+task's generation.
 
 | Kind | Id | What | Since |
 | ---- | -- | ---- | ----- |
@@ -352,7 +353,9 @@ The task keeps its id, key, branch, worktree and sessions. Its next run resumes 
 step's agent, like a resume. The agent keeps what it learned in the earlier generation, and the
 revive prompt tells it that the asks and waits it remembers are gone. A new session would lose that
 context, and the worktree already holds the earlier generation's work. When the sweep removed the
-worktree, the run adds it back from the branch, as under Priory home.
+worktree, the next run adds it back from the branch, as under Priory home. A code step starts no
+run, so a revive straight into one, such as `open-pr`, finds no worktree and blocks the task;
+revive it at a model step instead.
 
 A withdrawn ask or wait stays in the state file but counts as closed. An answer to a withdrawn ask
 is refused with `ask <id> was withdrawn when task <task> was revived as generation <n>`. An event

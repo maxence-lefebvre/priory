@@ -137,7 +137,7 @@ fn desk() -> ExitCode {
     let printed = state::open().and_then(|db| {
         state::print(
             &db,
-            "since\tkind\tid\ttask\tlane\twhat",
+            "since\tkind\tid\ttask\tlane\twhat\tgeneration",
             &format!("{} {DESK}", queue()),
             [],
         )
@@ -202,7 +202,8 @@ fn report(args: Vec<String>) -> ExitCode {
 }
 
 /// Asks, blocked tasks and uncertain prompts oldest first, then the queue in start order.
-const DESK: &str = "SELECT since, kind, id, task, lane, what FROM (
+const DESK: &str = "SELECT since, kind, id, task, lane, what,
+               (SELECT generation FROM tasks WHERE tasks.id = task) FROM (
                SELECT 0 AS part, asks.created AS since, 'ask' AS kind, asks.id AS id,
                  asks.task AS task, tasks.lane AS lane,
                  replace(asks.question, char(10), '\\n') || ' ' || asks.options AS what

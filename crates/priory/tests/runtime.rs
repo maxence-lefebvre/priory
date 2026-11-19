@@ -734,7 +734,10 @@ fn a_derived_lane_is_derived_again_when_the_first_run_gives_the_task_a_branch() 
     let desk = setup.priory(&["desk"]);
     let desk = String::from_utf8(desk.stdout).unwrap();
     let mut lines = desk.lines();
-    assert_eq!(lines.next(), Some("since\tkind\tid\ttask\tlane\twhat"));
+    assert_eq!(
+        lines.next(),
+        Some("since\tkind\tid\ttask\tlane\twhat\tgeneration")
+    );
     let cells: Vec<_> = lines.next().unwrap().split('\t').collect();
     assert_eq!(cells[1..5], ["blocked", "1", "1", "FND/desktop"]);
 }
@@ -4130,6 +4133,13 @@ fn an_event_for_the_wait_of_an_earlier_generation_does_not_wake_the_revived_task
     });
     setup.gone("priory-1");
     assert!(setup.rows("waits").is_empty());
+    let asked: Vec<_> = setup
+        .rows("desk")
+        .into_iter()
+        .filter(|row| row[1] == "ask")
+        .map(|row| [row[2].clone(), row[6].clone()])
+        .collect();
+    assert_eq!(asked, [["1", "2"]]);
 
     setup.publish(&closed());
 
@@ -4198,11 +4208,12 @@ fn a_failed_task_offers_revive_on_the_desk_and_revives_at_a_chosen_step_in_its_r
         .filter(|row| row[1] == "failed")
         .collect();
     assert_eq!(
-        [&failed[0][2], &failed[0][3], &failed[0][5]],
+        [&failed[0][2], &failed[0][3], &failed[0][5], &failed[0][6]],
         [
             "1",
             "1",
-            "the repair found no cause; revive: priory revive 1"
+            "the repair found no cause; revive: priory revive 1",
+            "1"
         ]
     );
 
@@ -4257,4 +4268,36 @@ fn a_report_by_lane_counts_each_lane_apart() {
             ["3D/mobile", "review", "changes", "1", "2", "50.0%"],
         ]
     );
+}
+
+#[test]
+fn a_revive_at_an_irreversible_step_asks_its_withdrawn_approval_again() {
+    let setup = asked_to_open("revive-approval", APPROVE_THEN_POLISH);
+    setup.calls(&[passed_with_evidence()]);
+    setup.hold("hold-stop");
+    assert!(
+        setup
+            .priory(&["answer", "1", "open", "--revision", "1"])
+            .status
+            .success()
+    );
+    setup.written("fake/tools.log");
+    while setup.replies().len() < 2 {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    setup.commit(1, "polish.txt");
+    setup.release("hold-stop");
+    setup.until("asks", |rows| rows.first().is_some_and(|row| row[2] == "2"));
+    assert!(setup.priory(&["cancel", "1"]).status.success());
+
+    let revived = setup.priory(&["revive", "1", "--step", "open-pr"]);
+
+    assert!(revived.status.success(), "{revived:?}");
+    let asks = setup.until("asks", |rows| rows.first().is_some_and(|row| row[2] == "3"));
+    assert_eq!(asks[0][..2], ["1", "1"]);
+    setup.calls(&[passed_with_evidence()]);
+    let answered = setup.priory(&["answer", "1", "open", "--revision", "3"]);
+    assert!(answered.status.success(), "{answered:?}");
+    let actions = setup.until("actions", |rows| rows.len() == 1);
+    assert_eq!(actions[0][4], "opened");
 }

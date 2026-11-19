@@ -1298,7 +1298,8 @@ pub(crate) fn approved(
         commit.as_deref().unwrap_or("-"),
     );
     tx.execute(
-        "UPDATE asks SET revision = revision + 1, answer = NULL, answered = NULL,
+        // Asked again, an ask that a revive withdrew belongs to the current generation.
+        "UPDATE asks SET revision = revision + 1, answer = NULL, answered = NULL, withdrawn = NULL,
          question = question || ?2 WHERE id = ?1",
         params![ask, moved],
     )?;
