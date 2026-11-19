@@ -1,13 +1,14 @@
 use crate::room::Share;
 use crate::route;
 use crate::state::{self, Admission, NewRun, Signal};
-use crate::sweep;
 use crate::tools::{self, Act, Answer, Call, Done};
 use crate::trace::Trace;
+use crate::{stall, sweep};
 use herdr_bus::{Bus, Start};
-use priory_factory::factory::{Factory, Harness, PermissionMode, Session};
+use priory_factory::factory::{self, Factory, Harness, PermissionMode, Session};
 use priory_intake::intake::OUTPUT;
 use priory_runtime::runtime::{self, Launch, Line};
+use priory_runtime::script::{self, Script};
 use priory_runtime::{room, transcript};
 use rusqlite::Connection;
 use std::cell::OnceCell;
@@ -20,6 +21,10 @@ const CONSUMER: &str = "priory";
 const EVERY: Duration = Duration::from_secs(1);
 /// How often the daemon removes the worktrees of ended tasks.
 const SWEEP: Duration = Duration::from_secs(600);
+/// How long the queue stays stalled after its scripts before the sweeper starts, unless `after` says.
+const AFTER: Duration = Duration::from_secs(1800);
+/// How long a sweep script may run when it sets no `timeout`.
+const SCRIPT_TIMEOUT: Duration = Duration::from_secs(300);
 /// How long a turn may run when its step sets no `timeout`.
 const TIMEOUT: Duration = Duration::from_secs(3 * 3600);
 
@@ -73,6 +78,9 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
             tools::lost(&mut db, &trace, &run.session, &run.tmux)?;
         }
     }
+    stall::orphaned(&db)?;
+    let mut scripts = Vec::new();
+    let every = factory.sweep().every.unwrap_or(SWEEP);
     let mut swept: Option<Instant> = None;
     loop {
         drain(&bus, &mut db, factory)?;
@@ -80,7 +88,16 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
             apply(&mut db, line, &trace)?;
         }
         tend(&mut db, &trace, &share, &home)?;
-        if swept.is_none_or(|at| at.elapsed() >= SWEEP) {
+        if sweep_scripts(&db, factory, &home, &mut scripts)? {
+            swept = None;
+        }
+        let sweep = factory.sweep();
+        if let (Some(_), Some(workflow)) = (&sweep.agent, factory.workflows.get(factory::SWEEP)) {
+            let after = sweep.after.unwrap_or(AFTER);
+            let band = factory.bands().first().copied();
+            stall::call_sweeper(&mut db, after, band, &workflow.value.start, &home)?;
+        }
+        if swept.is_none_or(|at| at.elapsed() >= every) {
             swept = Some(Instant::now());
             sweep::run(&db, &home)?;
         }
@@ -90,6 +107,43 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
             Err(RecvTimeoutError::Disconnected) => return Err("the signal socket closed".into()),
         }
     }
+}
+
+/// Records the sweep scripts that ended, then starts the scripts of a stall that just opened, for
+/// its resource. Returns whether that stall is short of disk, which the built-in sweep frees too.
+fn sweep_scripts(
+    db: &Connection,
+    factory: &Factory,
+    home: &Path,
+    running: &mut Vec<(i64, Script)>,
+) -> Result<bool, Error> {
+    let mut still = Vec::new();
+    for (id, mut script) in running.drain(..) {
+        match script.poll() {
+            Some((status, output)) => stall::ended(db, id, &status, &output)?,
+            None => still.push((id, script)),
+        }
+    }
+    *running = still;
+    let Some((stall, resource)) = stall::unswept(db)? else {
+        return Ok(false);
+    };
+    for script in factory
+        .sweep()
+        .scripts
+        .iter()
+        .filter(|script| script.when.name() == resource)
+    {
+        let id = stall::started(db, stall, &script.run)?;
+        let log = home.join("sweeps").join(format!("{id}.log"));
+        let timeout = script.timeout.unwrap_or(SCRIPT_TIMEOUT);
+        match script::spawn(&script.run, home, &log, timeout) {
+            Ok(child) => running.push((id, child)),
+            Err(error) => stall::ended(db, id, &format!("cannot start: {error}"), "")?,
+        }
+    }
+    stall::swept(db)?;
+    Ok(resource == "disk")
 }
 
 /// Applies a line from the socket and replies to its sender. A run its line ended is killed after
@@ -239,6 +293,7 @@ fn perform(db: &mut Connection, trace: &Trace) -> Result<(), Error> {
     }
     let done = match step.action.as_deref().unwrap_or_default() {
         "open-pr" => open_pr(db, factory, &due, head.as_deref())?,
+        "open-issue" => open_issue(db, factory, &due)?,
         other => {
             let reason = format!("action {other} is not built yet");
             return Ok(state::block(db, trace, due.task, "blocked", &reason)?);
@@ -306,6 +361,39 @@ fn open_pr(
     })
 }
 
+/// Opens an issue on the task's repository, titled and described by its latest result.
+fn open_issue(db: &Connection, factory: &Factory, due: &state::Due) -> Result<Done, Error> {
+    let opened = match (
+        repo_of(factory, &due.trigger),
+        state::last_result(db, due.task)?,
+    ) {
+        (None, _) => Err(format!("trigger {} names no repo", due.trigger)),
+        (_, None) => Err("no result describes the issue".to_owned()),
+        (Some(repo), Some((summary, evidence))) => {
+            let title = summary.lines().next().unwrap_or_default();
+            let body = match evidence {
+                Some(evidence) => format!("{summary}\n\n{evidence}"),
+                None => summary.clone(),
+            };
+            runtime::open_issue(repo, title, &body)
+        }
+    };
+    Ok(match opened {
+        Ok(_) => Done {
+            status: "opened",
+            pull_request: None,
+            commit: None,
+            error: None,
+        },
+        Err(error) => Done {
+            status: "failed",
+            pull_request: None,
+            commit: None,
+            error: Some(error),
+        },
+    })
+}
+
 /// Starts a run for `admission`. The outer error stops the daemon; the inner one blocks the task.
 fn start(
     db: &mut Connection,
@@ -324,11 +412,7 @@ fn start(
     else {
         return Ok(Err(format!("step {} names no known agent", step.id)));
     };
-    let Some(repo) = factory
-        .triggers
-        .get(&admission.trigger)
-        .and_then(|trigger| trigger.value.repo.as_deref())
-    else {
+    let Some(repo) = repo_of(factory, &admission.trigger) else {
         return Ok(Err(format!("trigger {} names no repo", admission.trigger)));
     };
     let (worktree, branch) = match runtime::worktree(home, repo, admission.task) {
@@ -396,6 +480,14 @@ fn start(
                 .map_or("manual", PermissionMode::as_str),
         },
     ))
+}
+
+/// The repository a task of `trigger` works in; a sweeper's is the `[sweep]` repository.
+fn repo_of<'f>(factory: &'f Factory, trigger: &str) -> Option<&'f str> {
+    match factory.triggers.get(trigger) {
+        Some(found) => found.value.repo.as_deref(),
+        None => (trigger == stall::TRIGGER).then(|| factory.sweep().repo()),
+    }
 }
 
 /// The harness that runs `agent`; Claude Code for an agent the factory lost.

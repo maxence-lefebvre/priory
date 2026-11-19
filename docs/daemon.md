@@ -207,7 +207,7 @@ The daemon admits a run only when the machine has room for it, measured live:
 | Measure | Read from | Admits when |
 | ------- | --------- | ----------- |
 | Memory | `MemAvailable` and `MemTotal` in `/proc/meminfo` | free memory, minus the memory promised to starting runs, minus the agent's `memory`, stays at or above `(1 - memory share) × MemTotal` |
-| Disk | `df -Pk` on `PRIORY_HOME`, which reads `statvfs` | free disk stays above 10 % of the disk, or above 20 GB on a disk over 200 GB |
+| Disk | `df -Pk` on `PRIORY_HOME`, which reads `statvfs` | free disk, minus the disk promised to live runs, minus the agent's `disk`, stays above 10 % of the disk, or above 20 GB on a disk over 200 GB |
 | CPU | the 1-minute load in `/proc/loadavg`, and the CPUs this process may use | the load stays below `cpu share × CPUs` |
 
 The shares come from `agents` in `runners/<host>.toml`, where `<host>` is the name in
@@ -221,7 +221,11 @@ in `/proc/meminfo`. An agent with no `memory` declares 4 GB: Claude Code takes a
 agent runs builds and tests beside it. Declaring too much only delays a start; declaring too little
 lets agents run the machine out of memory.
 
-A live run promises its agent's `memory` from its start until it ends, since no run reports its own
+An agent may also declare `disk`, a size reserved above the disk floor. An agent with no `disk`
+reserves none. A run that waits for disk it declared gets the reason `waits for room: 22.0 GB of
+disk free, needs 8.0 GB and keeps 20.0 GB free`.
+
+A live run promises its agent's `memory` and `disk` from its start until it ends, since no run reports its own
 use yet. The room subtracts every promise from the measured free memory, so two runs admitted one
 after the other cannot both take the same free memory. The daemon measures again before each
 admission, since a start's clone and worktree take disk.
@@ -239,6 +243,14 @@ whose agent declares more memory than the runner's share of the machine can neve
 back no one. A task that waits for a shared agent holds back no one either, as described under
 Shared sessions.
 
+While the head of the queue waits for room, the queue is stalled. The daemon records the stall in
+the state file, so its start survives a restart, and `priory desk` starts with one banner line:
+`stalled since 2026-11-19T10:00:00Z: short of disk by 10.0 GB; task 3 waits for room`. Another
+task heading the queue for the same resource keeps the stall; a different resource starts a new one.
+The stall ends when no task waits for room at the head. A task waiting because the room cannot be
+measured holds the queue without a stall. The sweep scripts and the sweeper act on stalls, as
+described under Sweep.
+
 `PRIORY_PROC` names a directory to read in place of `/proc`. The tests use it, with a fake `df` on
 `PATH`, to steer the measurements.
 
@@ -249,8 +261,7 @@ Known limits:
   double count.
 - An agent that grows past its declared `memory` can still crowd the machine. R4.9's memory gate
   and R4.10's slice address that in M1.
-- Load and disk are not declared per agent, so the head of the queue holds back the others only
-  through memory in practice: when load or disk leaves no room, no task fits anyway.
+- Load is not declared per agent, so when load leaves no room, no task fits anyway.
 - The measurements need Linux's `/proc`.
 
 ### Shared sessions
@@ -428,7 +439,7 @@ prompt that shows anyway, when the deny hook failed, ends the run on the next ti
 
 ## Desk
 
-`priory desk` prints what waits on a person, oldest first: since, kind, id, task, lane, what and the
+`priory desk` prints the stall banner first while the queue is stalled (see Room), then what waits on a person, oldest first: since, kind, id, task, lane, what and the
 task's generation.
 
 | Kind | Id | What | Since |
@@ -439,6 +450,7 @@ task's generation.
 | `prompt` | the outbox prompt | its text, for an `uncertain` prompt | it was attempted |
 | `held` | the hold | the task's reason: why it is held, and until what | it was held |
 | `queue` | the task's place in the queue | its band, then its reason when it has one | the task last changed state |
+| `sweep` | the script's run | its command, then `running`, or its status and output, for the open stall | it started |
 | `worktree` | the worktree's path | why it stays: see Sweep | `-` |
 
 The lane column is the task's lane, and `-` for a `worktree` row.
@@ -491,8 +503,8 @@ desk's `failed` rows stay empty.
 
 ## Sweep
 
-The daemon removes the worktrees of ended tasks. It sweeps when it starts and every 10 minutes after,
-not on every tick. A sweep fetches `origin` into each clone with a worktree and refreshes
+The daemon removes the worktrees of ended tasks. It sweeps when it starts, when a stall short of
+disk starts, and every 10 minutes after, or every `[sweep] every`, not on every tick. A sweep fetches `origin` into each clone with a worktree and refreshes
 `origin/HEAD`, then looks at each folder `worktrees/<owner>/<name>/<id>`. A clone whose fetch
 failed is skipped until the next sweep.
 
@@ -516,6 +528,55 @@ keeps the worktree, as `cannot check: <error>`.
 with its reason: `no task <id>`, `task <id> still <state>`, `not a worktree of <clone>`,
 `not recorded as the worktree of task <id>`, `not on branch priory/<id>`, `uncommitted changes`, `untracked files`, `a process runs in it`,
 `unpushed commits` or `not merged`. It reads the refs of the last fetch.
+
+### Sweep scripts and the sweeper
+
+`factory.toml` can add a `[sweep]` table:
+
+```toml
+[sweep]
+every = "10m"                 # the built-in worktree sweep's cadence
+scripts = [
+  { run = "docker builder prune -f", when = "disk", timeout = "5m" },
+]
+after = "30m"                 # how long the queue stays stalled after its scripts
+agent = "sweeper"             # no agent, no sweeper
+repo = "maxence-lefebvre/priory"  # where the sweeper works and files its issue; this is the default
+```
+
+When a stall starts, the daemon runs every script whose `when` names its resource: `memory`, `disk`
+or `cpu`. Each runs once per stall, through `sh -c` in `PRIORY_HOME`, in its own process group. A
+script past its `timeout`, 5 minutes by default, is killed with its children. The daemon keeps the
+last 2000 bytes of its output and its status, `exit <code>` or `timed out after <n>s`, and the desk
+lists each script of the open stall as a `sweep` row. A script that fails or cannot start never stops
+the daemon. Scripts a stopped daemon left running end as `lost when the daemon stopped`.
+
+Once the stall's scripts have ended, or at its start when none matches, the stall waits `after`, 30
+minutes by default. If it still holds and `agent` names an agent, the daemon creates a task with the
+key `priory:sweep` on the `sweep` workflow, in the highest band and the lane `priory/sweep`. A stall
+gets at most one sweeper, and an active sweeper of an earlier stall serves a new one, since a key has
+at most one active task. A sweeper task skips the room check: it frees the room the queue waits for.
+Its source event, `priory.queue.stalled`, carries the stall, `PRIORY_HOME` and each script's
+command, status and output, so its first prompt names them.
+
+Unless the factory defines its own `sweep` workflow, the sweeper runs this built-in one:
+
+1. `clean`, a model step with the sweeper agent. It removes only what Priory or the scripts manage
+   and never a worktree with unpushed, uncommitted or untracked work. It is `irreversible` and
+   `autonomous`: it deletes files, and waiting for a person would keep the queue stalled. It ends
+   `cleaned`, with a summary whose first line titles an issue, or `nothing`, which ends the task.
+2. `approve-issue`, a human step with the options `open` and `skip`, which approves `open-issue`.
+3. `open-issue`, a code step that runs `gh issue create -R <repo>` with the latest result's summary
+   and evidence, as `open-pr` does. It is irreversible and needs that approval: it posts an agent's
+   text to a repository other people read, and a sweeper runs rarely, so the ask costs little.
+
+`priory check` refuses a `[sweep]` field it does not know, a malformed duration or resource, and an
+`agent` the factory lacks, with its line.
+
+Known limits:
+
+- The sweeper's worktree is a clone of `repo`, which takes some disk on a disk stall.
+- A stall that alternates between two resources starts a new stall, and new scripts, at each change.
 
 ## Tools
 

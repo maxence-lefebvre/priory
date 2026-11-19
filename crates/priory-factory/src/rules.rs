@@ -19,6 +19,19 @@ pub fn check(factory: &Factory) -> Vec<Problem> {
                 "`bands` needs at least one band, each named once".into(),
             ));
         }
+        if let Some(agent) = settings
+            .value
+            .sweep
+            .agent
+            .as_ref()
+            .filter(|agent| !factory.agents.contains_key(*agent))
+        {
+            problems.push(problem(
+                settings,
+                settings.lines.field("sweep"),
+                format!("the sweeper agent `{agent}` does not exist"),
+            ));
+        }
     }
     for trigger in factory.triggers.values() {
         check_band(

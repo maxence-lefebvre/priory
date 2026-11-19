@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# A stand-in for the GitHub CLI's pull request commands. Appends each call's arguments, as a JSON
+# A stand-in for the GitHub CLI's pull request and issue commands. Appends each call's arguments, as a JSON
 # array, to FAKE_DIR/gh.log. FAKE_DIR/open-pr holds the number `pr list` reports as open, and
 # FAKE_DIR/gh-fail makes `pr create` fail.
 set -u
@@ -10,5 +10,7 @@ case "$1 $2" in
   "pr create")
     if [ -e "$FAKE_DIR/gh-fail" ]; then echo 'pull request create failed: GraphQL: denied' >&2; exit 1; fi
     echo 'https://github.com/owner/repo/pull/7' ;;
+  "issue create")
+    echo 'https://github.com/owner/repo/issues/9' ;;
   *) echo "fake gh: unexpected $*" >&2; exit 1 ;;
 esac

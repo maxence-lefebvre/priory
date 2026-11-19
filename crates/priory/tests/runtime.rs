@@ -191,9 +191,40 @@ impl Setup {
         String::from_utf8(output.stdout)
             .unwrap()
             .lines()
+            // The desk's stall banner, before its header, has no tab.
+            .skip_while(|line| !line.contains('\t'))
             .skip(1)
             .map(|line| line.split('\t').map(str::to_owned).collect())
             .collect()
+    }
+
+    /// The banner line `priory desk` starts with, if any.
+    fn banner(&self) -> Option<String> {
+        let output = self.priory(&["desk"]);
+        assert!(output.status.success());
+        String::from_utf8(output.stdout)
+            .unwrap()
+            .lines()
+            .next()
+            .filter(|line| !line.contains('\t'))
+            .map(str::to_owned)
+    }
+
+    /// Polls the desk's banner until `done` holds for it, and returns it.
+    fn until_banner(&self, done: impl Fn(Option<&str>) -> bool) -> Option<String> {
+        let deadline = Instant::now() + Duration::from_secs(15);
+        loop {
+            let banner = self.banner();
+            if done(banner.as_deref()) {
+                return banner;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "timed out on the desk banner: {banner:?}\ndaemon: {}",
+                fs::read_to_string(self.dir.join("daemon.log")).unwrap_or_default()
+            );
+            std::thread::sleep(Duration::from_millis(50));
+        }
     }
 
     /// Polls `priory <verb>` until `done` holds for its rows, and returns them.
@@ -1152,6 +1183,206 @@ fn high_load_or_low_disk_holds_admission() {
     assert!(setup.rows("runs").is_empty());
     setup.disk(100);
     setup.until("tasks", |rows| rows[0][4] == "running");
+}
+
+#[test]
+fn the_desk_starts_with_a_stall_banner_while_the_head_waits_for_room_and_drops_it_when_room_returns()
+ {
+    let mut setup = Setup::new("stall-banner");
+    setup.disk(10);
+    setup.publish(&requested(42));
+
+    setup.start();
+
+    let banner = setup.until_banner(|banner| banner.is_some()).unwrap();
+    let (since, rest) = banner
+        .strip_prefix("stalled since ")
+        .and_then(|rest| rest.split_once(": "))
+        .unwrap_or_else(|| panic!("{banner}"));
+    assert!(since.ends_with('Z') && since.len() == 20, "{banner}");
+    assert_eq!(rest, "short of disk by 10.0 GB; task 1 waits for room");
+    // The stall's start survives a restart.
+    setup.crash();
+    setup.start();
+    std::thread::sleep(Duration::from_millis(1500));
+    assert_eq!(setup.banner(), Some(banner));
+    setup.disk(100);
+    setup.until("tasks", |rows| rows[0][4] == "running");
+    assert_eq!(setup.until_banner(|banner| banner.is_none()), None);
+}
+
+const SWEEP_SCRIPTS: &str = r#"name = "demo"
+
+[sweep]
+scripts = [
+  { run = "echo once >> \"$FAKE_DIR/swept\"; echo freed 3 GB", when = "disk" },
+  { run = "echo nope; exit 3", when = "disk" },
+  { run = "sleep 30", when = "disk", timeout = "1s" },
+  { run = "echo memory >> \"$FAKE_DIR/swept\"", when = "memory" },
+]
+"#;
+
+#[test]
+fn a_disk_stall_runs_the_disk_scripts_once_with_a_timeout_and_the_desk_shows_their_output() {
+    let mut setup = Setup::new("stall-scripts");
+    fs::write(setup.dir.join("factory/factory.toml"), SWEEP_SCRIPTS).unwrap();
+    setup.disk(10);
+    setup.publish(&requested(42));
+
+    setup.start();
+
+    let desk = setup.until("desk", |rows| {
+        rows.iter()
+            .filter(|row| row[1] == "sweep" && !row[5].ends_with(": running"))
+            .count()
+            == 3
+    });
+    let sweeps: Vec<_> = desk
+        .iter()
+        .filter(|row| row[1] == "sweep")
+        .map(|row| [row[3].as_str(), row[5].as_str()])
+        .collect();
+    assert_eq!(
+        sweeps,
+        [
+            [
+                "1",
+                "echo once >> \"$FAKE_DIR/swept\"; echo freed 3 GB: exit 0: freed 3 GB"
+            ],
+            ["1", "echo nope; exit 3: exit 3: nope"],
+            ["1", "sleep 30: timed out after 1s"],
+        ]
+    );
+    std::thread::sleep(Duration::from_millis(1500));
+    assert_eq!(
+        fs::read_to_string(setup.dir.join("fake/swept")).unwrap(),
+        "once\n"
+    );
+    setup.disk(100);
+    setup.until("tasks", |rows| rows[0][4] == "running");
+    setup.until("desk", |rows| !rows.iter().any(|row| row[1] == "sweep"));
+}
+
+const SWEEPER: &str = r#"name = "demo"
+
+[sweep]
+after = "1s"
+agent = "sweeper"
+repo = "owner/repo"
+scripts = [{ run = "echo nothing to free", when = "disk" }]
+"#;
+
+/// A factory with a sweeper agent, short of disk, and one task waiting for room.
+fn stalled_with_sweeper(name: &str) -> Setup {
+    let setup = Setup::new(name);
+    fs::write(setup.dir.join("factory/factory.toml"), SWEEPER).unwrap();
+    let agent = setup.dir.join("factory/agents/sweeper/agent.md");
+    fs::create_dir_all(agent.parent().unwrap()).unwrap();
+    fs::write(
+        agent,
+        "+++\ndescription = \"Frees room.\"\nharness = \"claude-code\"\n+++\nYou free room.\n",
+    )
+    .unwrap();
+    setup.disk(10);
+    setup.publish(&requested(42));
+    setup
+}
+
+#[test]
+fn a_stall_past_its_threshold_starts_one_sweeper_task_that_skips_the_room_check() {
+    let mut setup = stalled_with_sweeper("sweeper-once");
+    setup.hold("hold-stop");
+
+    setup.start();
+
+    // The sweeper takes the highest band, so it lists first.
+    let tasks = setup.until("tasks", |rows| rows.len() == 2 && rows[0][4] == "running");
+    assert_eq!(
+        [&tasks[1][4], &tasks[0][1], &tasks[0][2], &tasks[0][6]],
+        ["queued", "priory:sweep", "sweep", "priory/sweep"]
+    );
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") == 1);
+    setup.written("fake/typed.log");
+    let prompt = &setup.typed()[0];
+    for part in [
+        "priory.queue.stalled",
+        r#""resource":"disk""#,
+        r#""missing":"10.0 GB""#,
+        r#""script":"echo nothing to free","status":"exit 0","output":"nothing to free""#,
+    ] {
+        assert!(prompt.contains(part), "{part} not in {prompt}");
+    }
+    std::thread::sleep(Duration::from_millis(2500));
+    assert_eq!(setup.rows("tasks").len(), 2);
+}
+
+#[test]
+fn a_sweeper_that_cleaned_opens_an_issue_on_the_sweep_repository_once_a_person_approves() {
+    let mut setup = stalled_with_sweeper("sweeper-issue");
+    setup.calls(&[json!({ "name": "result", "arguments": {
+        "outcome": "cleaned",
+        "summary": "Sweep the Docker build cache\nRemoved 30 GB of build cache with docker builder prune.",
+    } })]);
+
+    setup.start();
+
+    let asks = setup.until("asks", |rows| rows.len() == 1);
+    assert_eq!(asks[0][1], "2");
+    assert!(asks[0][3].starts_with("approve-issue"), "{asks:?}");
+    assert!(setup.gh().is_empty());
+    let answered = setup.priory(&["answer", "1", "open", "--revision", "1"]);
+    assert!(answered.status.success(), "{answered:?}");
+    setup.until("tasks", |rows| rows[0][4] == "done");
+    assert_eq!(
+        setup.gh(),
+        [[
+            "issue",
+            "create",
+            "-R",
+            "owner/repo",
+            "--title",
+            "Sweep the Docker build cache",
+            "--body",
+            "Sweep the Docker build cache\nRemoved 30 GB of build cache with docker builder prune.",
+        ]]
+    );
+}
+
+/// Two tasks on a disk with 30 GB free, which keeps 20 GB, for an implementer declaring `disk`.
+fn two_on_disk(name: &str, disk: Option<&str>) -> Setup {
+    let mut setup = Setup::new(name);
+    if let Some(disk) = disk {
+        let agent = AGENT.replace("effort", &format!("disk = \"{disk}\"\neffort"));
+        fs::write(setup.dir.join("factory/agents/implementer/agent.md"), agent).unwrap();
+    }
+    setup.disk(30);
+    setup.publish(&requested(42));
+    setup.publish(&requested(43));
+    setup.start();
+    setup
+}
+
+#[test]
+fn two_agents_declaring_disk_cannot_both_start_when_only_one_fits() {
+    let setup = two_on_disk("disk-one-fits", Some("8GB"));
+
+    let reason = "waits for room: 22.0 GB of disk free, needs 8.0 GB and keeps 20.0 GB free";
+    let tasks = setup.until("tasks", |rows| rows.len() == 2 && rows[1][7] == reason);
+    assert_eq!([&tasks[0][4], &tasks[1][4]], ["running", "queued"]);
+    assert_eq!(
+        setup.banner().as_deref(),
+        Some(&*format!(
+            "stalled since {}: short of disk by 6.0 GB; task 2 waits for room",
+            setup.banner().unwrap()[14..34].to_owned()
+        ))
+    );
+}
+
+#[test]
+fn an_agent_without_disk_reserves_none() {
+    let setup = two_on_disk("disk-none", None);
+
+    setup.until("tasks", |rows| with(rows, 4, "running") == 2);
 }
 
 #[test]

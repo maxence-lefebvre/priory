@@ -143,6 +143,18 @@ pub fn open_pull_request(
         .ok_or_else(|| format!("gh pr create printed {url:?}, not a pull request URL"))
 }
 
+/// Opens an issue on `repo` and returns its number.
+pub fn open_issue(repo: &str, title: &str, body: &str) -> Result<u64, String> {
+    let url = run(Command::new("gh").args([
+        "issue", "create", "-R", repo, "--title", title, "--body", body,
+    ]))?;
+    url.trim()
+        .rsplit('/')
+        .next()
+        .and_then(|number| number.parse().ok())
+        .ok_or_else(|| format!("gh issue create printed {url:?}, not an issue URL"))
+}
+
 fn tmux() -> Command {
     Command::new("tmux")
 }
