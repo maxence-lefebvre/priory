@@ -2840,10 +2840,12 @@ fn a_run_moved_into_another_agents_step_with_an_unconfirmed_prompt_does_not_hold
     // The agent submits other text, so its first prompt stays attempted.
     fs::write(setup.dir.join("fake/trailer"), " Wait.").unwrap();
     setup.calls(&[result("ready")]);
+    setup.hold("hold-call");
     setup.publish(&requested(42));
     setup.start();
-    setup.until("runs", |rows| rows.len() == 2);
+    setup.written("fake/submitted");
     fs::remove_file(setup.dir.join("fake/trailer")).unwrap();
+    setup.release("hold-call");
 
     let outbox = setup.until("outbox", |rows| {
         rows.iter()
@@ -2867,6 +2869,28 @@ fn a_run_carried_into_the_next_step_gets_no_prompt_while_its_process_may_hold_an
     std::thread::sleep(Duration::from_millis(1500));
 
     assert_eq!(runs[0][7], "moved");
+    assert_eq!(setup.typed().len(), 1);
+    assert_eq!(setup.rows("outbox")[1][3], "queued");
+}
+
+#[test]
+fn an_upgrade_hands_the_unconfirmed_prompt_of_a_moved_run_to_the_live_run_that_carries_its_process()
+{
+    let mut setup = Setup::with_workflow("carried-upgrade", STEPS);
+    fs::write(setup.dir.join("fake/trailer"), " Wait.").unwrap();
+    setup.calls(&[result("ready")]);
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("runs", |rows| rows.len() == 2);
+    setup.crash();
+    // The state as the version before this fix left it.
+    let db = rusqlite::Connection::open(setup.dir.join("priory.db")).unwrap();
+    db.execute_batch("UPDATE outbox SET run = 1 WHERE id = 1; PRAGMA user_version = 22;")
+        .unwrap();
+
+    setup.start();
+
+    std::thread::sleep(Duration::from_millis(1500));
     assert_eq!(setup.typed().len(), 1);
     assert_eq!(setup.rows("outbox")[1][3], "queued");
 }
@@ -2930,6 +2954,31 @@ fn a_revived_task_gets_none_of_the_prompts_its_earlier_generation_left_queued() 
     let revived = setup.typed().pop().unwrap();
     assert!(revived.contains("\nImplement the issue.\n"), "{revived}");
     assert!(!revived.contains("github.issues.labeled"), "{revived}");
+}
+
+#[test]
+fn a_codex_run_that_exits_before_its_session_start_after_a_daemon_restart_keeps_its_first_prompt() {
+    let mut setup = Setup::new("codex-exit-unstarted");
+    fs::write(setup.dir.join("factory/agents/implementer/agent.md"), CODEX).unwrap();
+    setup.hold("silent");
+    setup.publish(&requested(42));
+    setup.start();
+    setup.written("fake/pid");
+    setup.crash();
+    setup.start();
+    setup.until("outbox", |rows| with(rows, 3, "uncertain") == 1);
+    let pid = fs::read_to_string(setup.dir.join("fake/pid")).unwrap();
+    // The restarted daemon checks the panes it found before this one exits.
+    std::thread::sleep(Duration::from_millis(1500));
+    let _ = Command::new("kill").args(["-9", pid.trim()]).status();
+    setup.until("tasks", |rows| rows[0][4] == "blocked");
+    setup.release("silent");
+
+    assert!(setup.priory(&["resume", "1"]).status.success());
+
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 1);
+    let prompt = fs::read_to_string(setup.dir.join("fake/codex-prompt")).unwrap();
+    assert!(prompt.contains("Implement the issue.\n"), "{prompt}");
 }
 
 #[test]

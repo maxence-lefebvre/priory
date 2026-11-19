@@ -104,7 +104,7 @@ pub(crate) fn prompt(
         Ok(rows.into_iter().rev().collect::<Vec<_>>().join("\n\n"))
     };
     let prompts = latest(
-        "SELECT text FROM outbox WHERE task = ?1 AND state != 'queued' ORDER BY id DESC LIMIT 3",
+        "SELECT text FROM outbox WHERE task = ?1 AND state NOT IN ('queued', 'withdrawn') ORDER BY id DESC LIMIT 3",
     )?;
     let records = latest(
         "SELECT json_extract(event, '$.data') FROM trace

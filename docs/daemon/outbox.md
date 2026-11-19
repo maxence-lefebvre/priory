@@ -25,3 +25,5 @@ A run carried into the next step takes over that prompt, since its process carri
 holding the prompt ended any other way, its process is gone, and the task's next run gets its
 prompts. A `UserPromptSubmit` with the same words, even one the daemon reads after a restart,
 confirms an `uncertain` prompt of its run. Otherwise the prompt stays `uncertain` on the desk.
+The schema upgrade that brought this rule hands an unconfirmed prompt on a `moved` run to the live
+run that carries on its process, when no run ended any other way in between.

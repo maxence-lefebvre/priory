@@ -13,7 +13,9 @@ A verdict blocks the task when a person must act: the trust dialog, a permission
 or a turn that may be legitimately long. A person reads the reason on the desk and either resumes
 the task or cancels it. An unexpected exit fails the task instead, since the daemon can often tell
 why the agent died and act on it, as under Repair. An exit before the run's `SessionStart` still
-blocks the task: a harness that never came up dies the same way when restarted. The daemon commits
+blocks the task: a harness that never came up dies the same way when restarted. Such a run never
+took the prompt it was launched with, even one a daemon restart made `uncertain`, so that prompt is
+queued again for the next run. The daemon commits
 the verdict, then kills the run's tmux session, so a crash in between leaves an ended run, which the
 next start cleans up.
 
@@ -110,7 +112,8 @@ handler = "handler"   # an agent with harness = "claude-code"; no handler runs w
 stalled = "10m"
 ```
 
-The handler reads the step's prompt, the last three prompts the task received, the task's last three
+The handler reads the step's prompt, the last three prompts the task received, not counting
+`withdrawn` ones, the task's last three
 trace records and the last 30 lines of the screen. It answers one of:
 
 - `nudge` with a text. Priory queues `Priory's handler read your screen after this run stalled:
