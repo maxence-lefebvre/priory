@@ -1384,6 +1384,44 @@ pub(crate) fn lost(
     tx.commit()
 }
 
+/// Ends the stalled run `run` as `restarted` and makes its task ready, so its next run resumes the
+/// same session. Returns the tmux session to kill.
+pub(crate) fn restart(
+    tx: &Transaction,
+    trace: &Trace,
+    run: i64,
+    why: &str,
+) -> rusqlite::Result<String> {
+    let (task, tmux): (i64, String) =
+        tx.query_row("SELECT task, tmux FROM runs WHERE id = ?1", [run], |row| {
+            Ok((row.get(0)?, row.get(1)?))
+        })?;
+    trace::account(tx, trace, run, None)?;
+    end(tx, run, "restarted")?;
+    let text = format!(
+        "Priory's handler restarted this run after it stalled: {why}. Check the worktree, then continue."
+    );
+    wake(tx, task, &text)?;
+    set(tx, task, "ready", None, None)?;
+    Ok(tmux)
+}
+
+/// Queues the handler's `text` for the stalled run `run`, ahead of the task's other prompts, and
+/// marks the run idle: the handler read on its screen that it waits for input.
+pub(crate) fn nudge_stalled(tx: &Transaction, run: i64, text: &str) -> rusqlite::Result<()> {
+    let task: i64 = tx.query_row("SELECT task FROM runs WHERE id = ?1", [run], |row| {
+        row.get(0)
+    })?;
+    let id = queue_first(
+        tx,
+        task,
+        &format!("Priory's handler read your screen after this run stalled: {text}"),
+    )?;
+    tx.execute("UPDATE outbox SET nudge = 1 WHERE id = ?1", [id])?;
+    tx.execute("UPDATE runs SET idle = 1 WHERE id = ?1", [run])
+        .map(drop)
+}
+
 /// Records `answer` as the approval of each step in `approved`, at the task's commit.
 fn approve(
     tx: &Transaction,

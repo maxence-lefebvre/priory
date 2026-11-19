@@ -510,6 +510,56 @@ own: the desk hears of it only through that ask, or a verdict if the run then st
 `Notification` hook with the matcher `permission_prompt` runs `priory hook PermissionPrompt`, so a
 prompt that shows anyway, when the deny hook failed, ends the run on the next tick.
 
+### Stalls and the handler
+
+A live run is stalled when it sent no hook event and its pane did not change for 10 minutes, or for
+the `stalled` duration of `factory.toml`. Each tick, the daemon reads the screen of every live run
+that reached `SessionStart`, shows no permission prompt and has no open ask or wait. A run asleep on
+a wait or an ask never counts, and neither does a run whose spinner or output still moves.
+
+On a stall, the daemon calls the handler: one headless `claude -p --output-format json` call, in
+`PRIORY_HOME/handlers`, with no settings or MCP servers of the user's and no session kept. `handler`
+in `factory.toml` names the agent whose model it uses, which needs `harness = "claude-code"`. Without
+one, or when that agent sets no model, the model is `haiku`.
+
+```toml
+handler = "handler"   # an agent with harness = "claude-code"; Claude's haiku when unset
+stalled = "10m"
+```
+
+The handler reads the step's prompt, the last three prompts the task received, the task's last three
+trace records and the last 30 lines of the screen. It answers one of:
+
+- `nudge` with a text. Priory queues `Priory's handler read your screen after this run stalled:
+  <text>` ahead of the task's other prompts and marks the run idle, since the handler read on its
+  screen that it waits for input. The outbox types it on the next tick. It counts as a nudge, so a
+  silent turn after it gets no Stop nudge.
+- `restart` with a reason. Priory ends the run as `restarted`, kills its tmux session and makes the
+  task `ready` with the prompt `Priory's handler restarted this run after it stalled: <why>. Check
+  the worktree, then continue.` The next run resumes the same session in the same worktree.
+- `leave` with a reason, which Priory records and acts on no further.
+
+The handler call runs in the background, so the daemon keeps ticking, and it is killed after 2
+minutes. A call that fails, times out or answers no known action counts as `leave`, with the error as
+its reason. Priory never applies an answer to a run that ended, or that sent a hook event or changed
+its pane since the call: it records the answer with `(not applied: the run moved on)`.
+
+A run gets one handler call per stall: a stall ends with the next hook event or pane change. A run
+gets at most 3 calls, after which the step's `timeout` and the other verdicts above still apply.
+The handler never answers an ask or a permission prompt: the runs that show one are not read, and its
+prompt tells it to answer `leave` on a question or a menu. Priory cannot check the text of a nudge.
+
+Each answered call appends a `factory.handler.called` record to the trace, with the action, its text,
+the model, the tokens and Claude's own `cost_usd`. A daemon that stops while a call runs records it,
+when it starts again, as `leave` with `interrupted by a daemon restart`, and the call still counts.
+
+Known limits:
+
+- Only Claude Code runs the handler. A Codex agent can be stalled and handled, but not be the handler.
+- A restarted daemon reads every screen afresh, so a stall seen before the restart starts again.
+- A nudge to a run whose earlier prompt is still `attempted` waits behind it, as every outbox prompt
+  does; a `restart` frees it.
+
 ## Desk
 
 `priory desk` prints the stall banner first while the queue is stalled (see Room), then what waits on a person, oldest first: since, kind, id, task, lane, what and the
@@ -981,6 +1031,8 @@ cache_write = 6.25
 A model with no price keeps its tokens, and its cost reads `price missing for <model>`, as does its
 task's total. A model step with no `tokens` shows `-` and `tokens unknown`, and its task's total names
 it. `priory check` refuses a price below zero or not finite. Prices apply when the report runs, so a changed price changes past costs too.
+The handler calls of a task show as one more row per model, with the step `handler`, and count in its
+total.
 
 ## Running as services
 

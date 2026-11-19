@@ -5809,3 +5809,152 @@ fn a_linear_comment_no_task_owned_before_the_wait_wakes_the_task_at_once() {
         setup.typed()
     );
 }
+
+/// A factory whose runs count as stalled after 2 seconds without a hook event or a pane change.
+fn stalls(name: &str, workflow: &str) -> Setup {
+    let setup = Setup::with_workflow(name, workflow);
+    fs::write(
+        setup.dir.join("factory/factory.toml"),
+        "name = \"demo\"\nstalled = \"2s\"\n",
+    )
+    .unwrap();
+    setup
+}
+
+impl Setup {
+    /// What the handler was asked, one prompt per call.
+    fn handled(&self) -> Vec<String> {
+        fs::read_to_string(self.dir.join("fake/handler.log"))
+            .unwrap_or_default()
+            .split_terminator("---\n")
+            .map(str::to_owned)
+            .collect()
+    }
+
+    /// Queues the handler's answers, one per call.
+    fn answers(&self, answers: &[serde_json::Value]) {
+        let lines: String = answers.iter().map(|answer| format!("{answer}\n")).collect();
+        fs::write(self.dir.join("fake/handler"), lines).unwrap();
+    }
+
+    /// The `factory.handler.called` records of the trace.
+    fn handler_records(&self) -> Vec<serde_json::Value> {
+        self.trace()
+            .into_iter()
+            .filter(|record| record["type"] == "factory.handler.called")
+            .collect()
+    }
+}
+
+#[test]
+fn a_stalled_run_gets_a_handler_call_whose_nudge_reaches_its_pane_and_whose_cost_is_reported() {
+    let mut setup = stalls("handler-nudge", WORKFLOW);
+    setup.answers(&[json!({ "action": "nudge", "text": "Run the tests, then call result." })]);
+    setup.publish(&requested(42));
+
+    setup.start();
+
+    // The silent turn, its Stop nudge, then the handler's nudge.
+    setup.within(20, "outbox", |rows| with(rows, 3, "confirmed") == 3);
+    let typed = setup.typed();
+    assert!(
+        typed[2].contains("Run the tests, then call result."),
+        "{typed:?}"
+    );
+    let asked = setup.handled();
+    assert_eq!(asked.len(), 1, "{asked:?}");
+    for part in ["Implement the issue.", "fake turn 2 ended", "\"action\""] {
+        assert!(asked[0].contains(part), "{part} not in {}", asked[0]);
+    }
+    let args = fs::read_to_string(setup.dir.join("fake/handler-args.log")).unwrap();
+    assert!(args.contains("haiku"), "{args}");
+    let records = setup.handler_records();
+    assert_eq!(records.len(), 1, "{records:?}");
+    let data = &records[0]["data"];
+    assert_eq!(
+        [&data["task"], &data["run"], &data["action"], &data["model"]],
+        ["1", "1", "nudge", "claude-fake-haiku"]
+    );
+    fs::write(
+        setup.dir.join("factory/prices.toml"),
+        "[claude-fake-haiku]\ninput = 1.0\noutput = 5.0\ncache_read = 0.1\ncache_write = 1.25\n",
+    )
+    .unwrap();
+    let report = setup.report(&["--workflow", "implement", "--cost"]);
+    assert!(
+        report.contains(
+            &[
+                "1",
+                "handler",
+                "claude-fake-haiku",
+                "300",
+                "20",
+                "0",
+                "40",
+                "$0.000450"
+            ]
+            .map(str::to_owned)
+            .to_vec()
+        ),
+        "{report:?}"
+    );
+}
+
+#[test]
+fn a_restart_answer_ends_the_stalled_run_and_resumes_its_session_in_a_new_run() {
+    let mut setup = stalls("handler-restart", WORKFLOW);
+    setup.answers(&[json!({ "action": "restart", "why": "its input looks wedged" })]);
+    setup.publish(&requested(42));
+
+    setup.start();
+
+    let runs = setup.within(20, "runs", |rows| rows.len() == 2);
+    assert_eq!(runs[0][7], "restarted");
+    assert_eq!(runs[1][4], runs[0][4]);
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") == 3);
+    assert!(has(&launched(&setup), ["--resume", &runs[0][4]]));
+    let typed = setup.typed();
+    assert!(
+        typed[2].starts_with(
+            "Priory's handler restarted this run after it stalled: its input looks wedged."
+        ),
+        "{typed:?}"
+    );
+    assert_eq!(setup.handler_records()[0]["data"]["action"], "restart");
+}
+
+#[test]
+fn a_run_asleep_on_a_wait_never_gets_a_handler_call() {
+    let mut setup = stalls("handler-asleep", WORKFLOW);
+    setup.calls(&[wait(json!({ "type": "time", "until": "1 hour" }))]);
+    // The run stays live on its open wait until its Stop.
+    setup.hold("hold-stop");
+    setup.publish(&requested(42));
+
+    setup.start();
+
+    setup.until("waits", |rows| rows.len() == 1);
+    std::thread::sleep(Duration::from_secs(4));
+    setup.release("hold-stop");
+    setup.until("tasks", |rows| rows[0][4] == "asleep");
+    std::thread::sleep(Duration::from_secs(3));
+    assert!(setup.handled().is_empty(), "{:?}", setup.handled());
+    assert!(setup.handler_records().is_empty());
+}
+
+#[test]
+fn a_run_gets_at_most_three_handler_calls() {
+    let mut setup = stalls("handler-cap", WORKFLOW);
+    let nudge = json!({ "action": "nudge", "text": "Carry on." });
+    setup.answers(&[nudge.clone(), nudge.clone(), nudge.clone(), nudge]);
+    setup.publish(&requested(42));
+
+    setup.start();
+
+    // The silent turn, its Stop nudge, then one prompt per handler call.
+    setup.within(30, "outbox", |rows| with(rows, 3, "confirmed") == 5);
+    std::thread::sleep(Duration::from_secs(5));
+    assert_eq!(setup.handled().len(), 3);
+    assert_eq!(setup.handler_records().len(), 3);
+    assert_eq!(setup.rows("outbox").len(), 5);
+}

@@ -1,4 +1,5 @@
 pub mod daemon;
+mod handler;
 mod hold;
 pub mod memory;
 pub mod report;

@@ -80,6 +80,18 @@ revert. `step_event` is the `id` of the `factory.step.ended` record it judges.
 }
 ```
 
+## `factory.handler.called`
+
+A short model call that read a stalled run's screen and chose what to do with it. Its `data` holds
+`factory`, `factory_revision`, `workflow`, `task`, `key`, `run`, `generation`, `step`, `harness`,
+`model`, `machine` and `tokens` as above, and:
+
+| Field      | Required | Meaning                                                            |
+| ---------- | -------- | ------------------------------------------------------------------ |
+| `action`   | yes      | `nudge`, `restart` or `leave`                                      |
+| `text`     | yes      | The nudge's text, or why it restarted or left the run              |
+| `cost_usd` | no       | The cost the harness reported for the call                         |
+
 Priory writes these records as described under Trace in [the daemon](daemon.md).
 
 ## Rules

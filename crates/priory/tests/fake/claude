@@ -16,7 +16,23 @@
 # Claude's session transcript, one assistant message written as two lines, as Claude writes one per
 # content block, using 100+n input, 10+n output, 1000+n cache read and 50+n cache write tokens.
 # FAKE_DIR/no-transcript skips that write.
+# With -p, it is a handler call: it appends its stdin to handler.log, ended by ---, and its args to
+# handler-args.log, then prints Claude's --output-format json with the first line of
+# FAKE_DIR/handler as its result, which it pops, or a leave answer when none is left.
 set -u
+if [[ " $* " == *" -p "* ]]; then
+  { cat; echo '---'; } >> "$FAKE_DIR/handler.log"
+  printf '%s\n' "$@" >> "$FAKE_DIR/handler-args.log"
+  answer='{"action":"leave","why":"no answer queued"}'
+  if [ -s "$FAKE_DIR/handler" ]; then
+    answer=$(head -n 1 "$FAKE_DIR/handler")
+    sed -i 1d "$FAKE_DIR/handler"
+  fi
+  jq -nc --arg answer "$answer" '{type: "result", subtype: "success", is_error: false, result: $answer,
+    total_cost_usd: 0.0021, usage: {input_tokens: 300, output_tokens: 20, cache_read_input_tokens: 0, cache_creation_input_tokens: 40},
+    modelUsage: {"claude-fake-haiku": {inputTokens: 300, outputTokens: 20, cacheReadInputTokens: 0, cacheCreationInputTokens: 40, costUSD: 0.0021}}}'
+  exit 0
+fi
 settings='{}'
 mcp='{}'
 session=''
@@ -153,4 +169,5 @@ while :; do
   fi
   wait_while hold-stop
   hook Stop
+  printf 'fake turn %s ended\n' "$turn"
 done

@@ -1144,3 +1144,32 @@ fn an_agent_disk_that_is_not_a_size_names_its_line() {
         "agents/implementer/agent.md:5:8: \"lots\" is not a size such as 512MB or 6GB\n"
     );
 }
+
+#[test]
+fn a_handler_agent_passes_and_an_unknown_or_codex_one_names_its_line() {
+    let good = "name = \"demo\"\nhandler = \"implementer\"\nstalled = \"10m\"\n";
+    let ok = check(&factory("handler-ok", &with("factory.toml", good)));
+    let unknown = good.replace("\"implementer\"", "\"watcher\"");
+    let bad_agent = check(&factory("handler-agent", &with("factory.toml", &unknown)));
+    let codex = "+++\ndescription = \"Implements one task.\"\nharness = \"codex\"\n+++\n";
+    let mut files = with("factory.toml", good);
+    files.retain(|(path, _)| *path != "agents/implementer/agent.md");
+    files.push(("agents/implementer/agent.md", codex));
+    let bad_harness = check(&factory("handler-codex", &files));
+
+    assert_eq!((ok.code, ok.stderr.as_str()), (0, ""));
+    assert_eq!(
+        (bad_agent.code, bad_agent.stderr.as_str()),
+        (
+            1,
+            "factory.toml:2: the handler agent `watcher` does not exist\n"
+        )
+    );
+    assert_eq!(
+        (bad_harness.code, bad_harness.stderr.as_str()),
+        (
+            1,
+            "factory.toml:2: the handler agent `implementer` needs harness = \"claude-code\"\n"
+        )
+    );
+}
