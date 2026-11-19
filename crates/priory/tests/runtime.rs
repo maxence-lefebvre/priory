@@ -2,6 +2,7 @@ use herdr_bus::{Bus, Message, Output};
 use serde_json::json;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
+use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output as Exit};
 use std::time::{Duration, Instant};
@@ -155,7 +156,32 @@ impl Setup {
         self.command("tmux").args(args).output().unwrap()
     }
 
+    /// Kills every process this test started, the tmux server among them, then the server's socket.
+    /// A child the daemon left in its own process group can start a server after any `kill-server`,
+    /// so the processes are found by the `FAKE_DIR` they inherit.
     fn kill_tmux(&self) {
+        let mut marker = format!("FAKE_DIR={}", self.dir.join("fake").display()).into_bytes();
+        marker.push(0);
+        // Bounded, so a process that will not die cannot hang the suite in `Drop`.
+        for _ in 0..100 {
+            let found: Vec<String> = fs::read_dir("/proc")
+                .unwrap()
+                .filter_map(|entry| entry.ok()?.file_name().into_string().ok())
+                .filter(|pid| pid.bytes().all(|byte| byte.is_ascii_digit()))
+                .filter(|pid| {
+                    fs::read(format!("/proc/{pid}/environ")).is_ok_and(|environ| {
+                        environ
+                            .split_inclusive(|byte| *byte == 0)
+                            .any(|variable| variable == marker)
+                    })
+                })
+                .collect();
+            if found.is_empty() {
+                break;
+            }
+            let _ = Command::new("kill").arg("-9").args(&found).output();
+            std::thread::sleep(Duration::from_millis(20));
+        }
         let _ = self.tmux(&["kill-server"]);
     }
 
@@ -1603,6 +1629,30 @@ fn two_admissions_in_one_tick_count_each_others_declared_memory() {
     setup.until("tasks", |rows| {
         rows[0][4] == "done" && rows[1][4] == "running"
     });
+}
+
+#[test]
+fn teardown_kills_a_tmux_server_that_a_late_child_starts() {
+    let setup = Setup::new("teardown-late-tmux");
+    // As a daemon's child in its own process group, still starting a session when the test ends.
+    let mut late = setup
+        .command("sh")
+        .args(["-c", "sleep 0.5; tmux new-session -d sleep 100"])
+        .process_group(0)
+        .spawn()
+        .unwrap();
+    let mut listed = setup.command("tmux");
+    listed.arg("list-sessions");
+    let mut killed = setup.command("tmux");
+    killed.arg("kill-server");
+
+    drop(setup);
+    late.wait().unwrap();
+    std::thread::sleep(Duration::from_millis(1000));
+
+    let listed = listed.output().unwrap();
+    let _ = killed.output();
+    assert!(!listed.status.success(), "a tmux server outlived its test");
 }
 
 #[test]
@@ -3702,6 +3752,41 @@ fn a_task_request_for_a_key_another_task_owns_as_a_resource_creates_its_task() {
 }
 
 #[test]
+fn an_event_on_a_key_goes_to_its_task_and_still_fires_another_owners_wait() {
+    let setup = asleep_on("request-owned-event", on_pull_7("review"));
+    setup.calls(&[wait(on_pull_7("checks"))]);
+    setup.publish(&requested(7));
+    setup.until("runs", |rows| rows.len() == 2 && rows[1][7] == "asleep");
+    setup.calls(&[wait(on_pull_7("pull_request"))]);
+    setup.hold("hold-call");
+
+    setup.publish(&reviewed());
+
+    let inbox = setup.until("inbox", |rows| rows.len() == 3);
+    assert_eq!(inbox[2][3..5], ["2", "kept"]);
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 3);
+    // Task 2 keeps the close; task 1, mid-turn, waits on it next and is caught up.
+    setup.publish(&closed());
+    setup.until("inbox", |rows| rows.len() == 4);
+    setup.release("hold-call");
+    setup.until("runs", |_| setup.replies().len() == 3);
+    let (text, error) = reply(&setup.replies()[2]);
+    assert!(!error, "{text}");
+    assert!(text.starts_with("wait 3 already holds"), "{text}");
+    // Task 2 still reads the review that fired task 1's wait.
+    setup.publish(&check(1, 0));
+    let outbox = setup.until("outbox", |rows| {
+        rows.iter()
+            .any(|row| row[1] == "2" && row[4].contains("check_run"))
+    });
+    let woke = outbox.iter().rev().find(|row| row[1] == "2").unwrap();
+    assert!(
+        woke[4].contains("pull_request_review.submitted"),
+        "{outbox:?}"
+    );
+}
+
+#[test]
 fn an_event_that_does_not_match_the_wait_stays_kept_and_reaches_the_next_run() {
     let setup = asleep_on("unmatched", on_pull_7("pull_request"));
 
@@ -4481,6 +4566,30 @@ fn a_gh_call_past_the_command_timeout_is_killed_and_its_action_fails() {
     let actions = setup.until("actions", |rows| rows.len() == 1);
     assert_eq!(actions[0][4], "failed");
     assert!(actions[0][7].ends_with("timed out after 1s"), "{actions:?}");
+}
+
+#[test]
+fn a_tmux_load_buffer_past_the_command_timeout_is_killed_and_logged() {
+    let mut setup = Setup::new("load-buffer-hangs");
+    fs::write(
+        setup.dir.join("factory/factory.toml"),
+        "name = \"demo\"\ncommand_timeout = \"1s\"\n",
+    )
+    .unwrap();
+    setup.hold("tmux-hang");
+    setup.publish(&requested(42));
+
+    setup.start();
+
+    let deadline = Instant::now() + Duration::from_secs(15);
+    loop {
+        let log = fs::read_to_string(setup.dir.join("daemon.log")).unwrap_or_default();
+        if log.contains("load-buffer") && log.contains("timed out after 1s") {
+            break;
+        }
+        assert!(Instant::now() < deadline, "daemon log: {log}");
+        std::thread::sleep(Duration::from_millis(100));
+    }
 }
 
 #[test]
@@ -6656,16 +6765,7 @@ fn a_linear_wait_makes_an_intake_without_linear_triggers_poll_linear_for_its_iss
 #[test]
 fn a_pull_request_wait_makes_an_intake_without_github_triggers_poll_its_repository() {
     let setup = asleep_on("review-intake", on_pull_7("review"));
-    let bin = setup.dir.join("bin");
-    fs::create_dir_all(&bin).unwrap();
-    let gh = bin.join("gh");
-    let log = setup.dir.join("gh-args");
-    fs::write(
-        &gh,
-        format!("#!/bin/sh\necho \"$*\" >> '{}'\necho '[]'\n", log.display()),
-    )
-    .unwrap();
-    fs::set_permissions(&gh, fs::Permissions::from_mode(0o755)).unwrap();
+    let log = fake_gh(&setup);
 
     setup.intake();
 
@@ -6674,6 +6774,39 @@ fn a_pull_request_wait_makes_an_intake_without_github_triggers_poll_its_reposito
         calls.contains("api repos/owner/repo/issues/events"),
         "{calls}"
     );
+}
+
+#[test]
+fn a_merge_hold_makes_the_intake_poll_its_pull_requests_repository() {
+    let setup = queued_without_room("hold-merge-intake");
+    person(
+        &setup,
+        "hold",
+        &["1", "--reason", "needs it", "--merge", "other/repo#7"],
+    );
+    let log = fake_gh(&setup);
+
+    setup.intake();
+
+    let calls = fs::read_to_string(&log).unwrap_or_default();
+    assert!(
+        calls.contains("api repos/other/repo/issues/events"),
+        "{calls}"
+    );
+}
+
+/// Installs a `gh` that answers `[]` and logs its arguments to the returned file.
+fn fake_gh(setup: &Setup) -> std::path::PathBuf {
+    let bin = setup.dir.join("bin");
+    fs::create_dir_all(&bin).unwrap();
+    let log = setup.dir.join("gh-args");
+    fs::write(
+        bin.join("gh"),
+        format!("#!/bin/sh\necho \"$*\" >> '{}'\necho '[]'\n", log.display()),
+    )
+    .unwrap();
+    fs::set_permissions(bin.join("gh"), fs::Permissions::from_mode(0o755)).unwrap();
+    log
 }
 
 #[test]
