@@ -7844,6 +7844,8 @@ fn a_batch_the_endpoint_rejects_as_malformed_is_skipped_rather_than_retried() {
 
     let calls = fs::read_to_string(setup.dir.join("fake/curl.log")).unwrap();
     assert_eq!(calls.lines().count(), setup.posts().len() + 1, "{calls}");
+    // A retry would deliver the rejected spans, making all four arrive.
+    assert!(spans(&setup.posts()).len() < 4, "{:?}", setup.posts());
     let log = fs::read_to_string(setup.dir.join("daemon.log")).unwrap();
     assert_eq!(
         log.matches("rejected spans with HTTP 400").count(),
