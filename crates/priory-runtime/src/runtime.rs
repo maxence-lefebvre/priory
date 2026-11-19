@@ -158,6 +158,45 @@ pub fn open_pull_request(
         .ok_or_else(|| format!("gh pr create printed {url:?}, not a pull request URL"))
 }
 
+/// Opens an issue on `repo` and returns its number. `mark`, a unique line the body ends with, finds
+/// the issue that an earlier attempt opened before a crash, in any state, so none opens twice.
+pub fn open_issue(repo: &str, title: &str, body: &str, mark: &str) -> Result<u64, String> {
+    let found = run(Command::new("gh").args([
+        "issue",
+        "list",
+        "-R",
+        repo,
+        "--state",
+        "all",
+        "--search",
+        &format!("\"{mark}\" in:body"),
+        "--json",
+        "number,body",
+    ]))?;
+    let found: Vec<serde_json::Value> = serde_json::from_str(&found)
+        .map_err(|error| format!("gh issue list printed {found:?}: {error}"))?;
+    if let Some(number) = found
+        .iter()
+        .find(|issue| {
+            issue["body"]
+                .as_str()
+                .is_some_and(|text| text.contains(mark))
+        })
+        .and_then(|issue| issue["number"].as_u64())
+    {
+        return Ok(number);
+    }
+    let body = format!("{body}\n\n{mark}");
+    let url = run(Command::new("gh").args([
+        "issue", "create", "-R", repo, "--title", title, "--body", &body,
+    ]))?;
+    url.trim()
+        .rsplit('/')
+        .next()
+        .and_then(|number| number.parse().ok())
+        .ok_or_else(|| format!("gh issue create printed {url:?}, not an issue URL"))
+}
+
 fn tmux() -> Command {
     Command::new("tmux")
 }

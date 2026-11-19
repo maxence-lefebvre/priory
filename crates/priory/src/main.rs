@@ -1,5 +1,5 @@
 use priory_core::memory::Gate;
-use priory_core::{daemon, report, state, sweep, tools};
+use priory_core::{daemon, report, stall, state, sweep, tools};
 use priory_factory::{factory, rules};
 use priory_intake::{intake, request};
 use priory_runtime::{mcp, runtime};
@@ -158,9 +158,13 @@ fn serve(
     }
 }
 
-/// What waits on a person, then every worktree under `PRIORY_HOME` that stays and why.
+/// A stalled queue's banner, what waits on a person, then every worktree under `PRIORY_HOME` that
+/// stays and why.
 fn desk() -> ExitCode {
     let printed = state::open().and_then(|db| {
+        stall::banner(&db)
+            .map_err(|error| error.to_string())?
+            .inspect(|banner| state::emit(banner));
         state::print(
             &db,
             "since\tkind\tid\ttask\tlane\twhat\tgeneration",
@@ -251,6 +255,13 @@ const DESK: &str = "SELECT since, kind, id, task, lane, what,
                SELECT 0, holds.created, 'held', holds.id, holds.task, tasks.lane, tasks.reason
                FROM holds JOIN tasks ON tasks.id = holds.task
                WHERE holds.released IS NULL AND tasks.state = 'held'
+               UNION ALL
+               SELECT 0, sweeps.started, 'sweep', sweeps.id, stalls.task, tasks.lane,
+                 sweeps.script || ': ' || coalesce(sweeps.status
+                   || coalesce(nullif(': ' || replace(sweeps.output, char(10), '\\n'), ': '), ''),
+                   'running')
+               FROM sweeps JOIN stalls ON stalls.id = sweeps.stall JOIN tasks ON tasks.id = stalls.task
+               WHERE stalls.ended IS NULL
                UNION ALL
                SELECT 0, grants.created, 'memory', grants.id, grants.task, tasks.lane,
                  'waits for ' || printf('%.1f', grants.bytes / 1073741824.0) || ' GB: '

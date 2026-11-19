@@ -31,6 +31,103 @@ pub struct Settings {
     pub name: String,
     /// The bands, highest first, when they are not the default ones.
     pub bands: Option<Vec<String>>,
+    #[serde(default)]
+    pub sweep: Sweep,
+}
+
+/// How the daemon frees room: the built-in worktree sweep, the person's scripts, and the sweeper
+/// agent it starts when they do not free enough.
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Sweep {
+    /// How often the built-in worktree sweep runs; every 10 minutes when unset.
+    #[serde(default, deserialize_with = "duration")]
+    pub every: Option<Duration>,
+    /// Scripts run when the resource they name stalls the queue.
+    #[serde(default)]
+    pub scripts: Vec<Script>,
+    /// How long the queue stays stalled after its scripts ran before the sweeper starts; 30 minutes
+    /// when unset.
+    #[serde(default, deserialize_with = "duration")]
+    pub after: Option<Duration>,
+    /// The agent of the built-in `sweep` workflow; no sweeper starts without one.
+    pub agent: Option<String>,
+    /// The repository the sweeper works in and files its issue on, `owner/name`.
+    pub repo: Option<String>,
+}
+
+impl Sweep {
+    pub fn repo(&self) -> &str {
+        self.repo.as_deref().unwrap_or("maxence-lefebvre/priory")
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Script {
+    /// A shell command, run by `sh -c` in `PRIORY_HOME`.
+    pub run: String,
+    pub when: Resource,
+    /// How long it may run before Priory kills it; 5 minutes when unset.
+    #[serde(default, deserialize_with = "duration")]
+    pub timeout: Option<Duration>,
+}
+
+/// The built-in workflow a sweeper task runs, unless the factory defines its own.
+pub const SWEEP: &str = "sweep";
+
+/// Opening the issue waits for a person: it posts an agent's text to a repository others read.
+const SWEEP_WORKFLOW: &str = r#"
+start = "clean"
+
+[[steps]]
+id = "clean"
+decides = "model"
+prompt = """The queue is stalled: its head waits for room that the sweep scripts did not free. \
+The event below names the short resource, how much is missing, and each script's output. \
+Free that resource on this machine. Remove only what Priory or the sweep scripts manage, such as \
+caches and build outputs under PRIORY_HOME. Never remove a worktree with unpushed commits, \
+uncommitted changes or untracked files: `priory desk` lists the worktrees the sweep keeps and why. \
+End with `cleaned` when you freed room, with a summary for an issue on Priory: its first line is \
+the title, then what you removed by hand and the kind of sweep that would have done it. End with \
+`nothing` when you freed nothing."""
+effect = "irreversible"
+autonomous = "it removes only what Priory or the sweep scripts manage, after they failed to free room"
+next = { cleaned = "approve-issue", nothing = "done" }
+
+[[steps]]
+id = "approve-issue"
+decides = "human"
+effect = "none"
+approves = ["open-issue"]
+options = ["open", "skip"]
+next = { open = "open-issue", skip = "done" }
+
+[[steps]]
+id = "open-issue"
+decides = "code"
+action = "open-issue"
+effect = "irreversible"
+next = { opened = "done", failed = "stop" }
+"#;
+
+/// A resource the room check measures.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Resource {
+    Memory,
+    Disk,
+    Cpu,
+}
+
+impl Resource {
+    pub fn name(self) -> &'static str {
+        match self {
+            Resource::Memory => "memory",
+            Resource::Disk => "disk",
+            Resource::Cpu => "CPU",
+        }
+    }
 }
 
 /// The bands a factory has when `factory.toml` names none, highest first.
@@ -49,6 +146,9 @@ pub struct Agent {
     /// What a runner must have free to admit a run of this agent, in bytes.
     #[serde(default, deserialize_with = "size")]
     pub memory: Option<u64>,
+    /// What a runner keeps free on disk for a run of this agent, past its floor, in bytes.
+    #[serde(default, deserialize_with = "size")]
+    pub disk: Option<u64>,
     #[serde(default)]
     pub mcp_servers: Vec<String>,
     #[serde(default)]
@@ -461,6 +561,20 @@ impl Factory {
         self.lanes.as_ref().map_or(&BUILT_IN, |lanes| &lanes.value)
     }
 
+    /// The factory's `[sweep]` table, or the built-in sweep alone.
+    pub fn sweep(&self) -> &Sweep {
+        static BUILT_IN: Sweep = Sweep {
+            every: None,
+            scripts: Vec::new(),
+            after: None,
+            agent: None,
+            repo: None,
+        };
+        self.settings
+            .as_ref()
+            .map_or(&BUILT_IN, |settings| &settings.value.sweep)
+    }
+
     pub fn bands(&self) -> Vec<&str> {
         match self
             .settings
@@ -546,6 +660,27 @@ pub fn load(dir: &Path) -> (Factory, Vec<Problem>) {
         if let Some((value, lines)) = found.parse::<Runner>(&file) {
             found.define(&mut factory.runners, stem(&file), &file, value, lines);
         }
+    }
+    if let Some(agent) = factory.sweep().agent.clone()
+        && factory.agents.contains_key(&agent)
+        && !factory.workflows.contains_key(SWEEP)
+    {
+        let mut workflow: Workflow =
+            toml::from_str(SWEEP_WORKFLOW).expect("the sweep workflow parses");
+        workflow.steps[0].agent = Some(agent);
+        let file = factory.settings.as_ref().map_or_else(
+            || PathBuf::from("factory.toml"),
+            |settings| settings.file.clone(),
+        );
+        let lines = Lines::default();
+        factory.workflows.insert(
+            SWEEP.to_owned(),
+            Loaded {
+                file,
+                value: workflow,
+                lines,
+            },
+        );
     }
     if let Some(file) = ["prices.toml", "prices.yaml", "prices.yml"]
         .map(|name| dir.join(name))

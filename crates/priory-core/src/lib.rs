@@ -4,6 +4,7 @@ pub mod memory;
 pub mod report;
 mod room;
 mod route;
+pub mod stall;
 pub mod state;
 pub mod sweep;
 pub mod tools;
