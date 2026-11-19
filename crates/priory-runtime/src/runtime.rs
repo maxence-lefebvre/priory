@@ -385,6 +385,8 @@ fn codex_hooks(exe: &Path) -> Vec<(&'static str, serde_json::Value)> {
         ("hooks.SessionStart", signal("SessionStart")),
         ("hooks.UserPromptSubmit", signal("UserPromptSubmit")),
         ("hooks.Stop", signal("Stop")),
+        // Codex 0.170 fires SessionStart with source compact only with the next turn.
+        ("hooks.PostCompact", signal("PostCompact")),
         (
             "hooks.PreToolUse",
             hook(respond(ASK_INSTEAD), Some("^request_user_input$")),

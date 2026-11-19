@@ -334,13 +334,12 @@ enum Input {
 /// a call's or an answer's is the JSON of its `Result`. A line that is none of them is reported
 /// and dropped.
 fn take(db: &mut Connection, line: &str, trace: &Trace) -> Result<(String, Option<String>), Error> {
-    let workflows = &trace.factory.workflows;
     let replied = |result: Result<String, String>| {
         serde_json::to_string(&result).expect("a result serializes")
     };
     match serde_json::from_str::<Input>(line) {
         Ok(Input::Signal(signal)) => Ok(("ok".to_owned(), state::signal(db, &signal, trace)?)),
-        Ok(Input::Call(call)) => Ok((replied(tools::call(db, &call, workflows)?), None)),
+        Ok(Input::Call(call)) => Ok((replied(tools::call(db, &call, trace.factory)?), None)),
         Ok(Input::Answer(answer)) => Ok((
             replied(tools::answer(db, &answer, trace, &|worktree, branch| {
                 runtime::kept_head(&runtime::home(), worktree, branch)

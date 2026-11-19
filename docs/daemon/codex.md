@@ -23,6 +23,7 @@ fires at startup, so its paste and confirmation stay as they are.
 | Resume | `--resume <session>` | `codex resume <thread>` |
 | First prompt | pasted after `SessionStart` | the last argument, `-- <prompt>` |
 | Idle signal for the outbox (R5.4) | `SessionStart`, `UserPromptSubmit`, `Stop` hooks in `--settings` | the same three hooks, as `-c hooks.<Event>`; Codex hooks take Claude's stdin and output shapes |
+| End of a `/compact` | `SessionStart` with `source: compact` | `PostCompact`, since Codex 0.170 fires `SessionStart` with `source: compact` only at the next turn's start |
 | Stop signal for health (R7.1) | `Stop` hook, and the pane for an exit | the same |
 | A prompt shown anyway | `Notification` hook with `permission_prompt` | no equivalent: Codex has no notification hook for an approval prompt. A prompt that shows despite the deny hook stalls the turn until its step `timeout` blocks the task |
 | Permission policy (R7.2) | `--permission-mode`, `allow` and `deny` rules, `PermissionRequest` deny hook | `sandbox_mode`, `approval_policy` and `approvals_reviewer` by `defaultMode`, below, and the same `PermissionRequest` deny hook |
@@ -55,7 +56,7 @@ review` dialog, which those lines show.
 The hooks and the MCP server name Priory by `PRIORY_EXE` if set, else by the absolute path it was
 invoked by, else by its resolved binary. Codex keys hook trust on that command, so the path must
 survive upgrades. Under Nix, use the profile link, such as `~/.nix-profile/bin/priory`, or set
-`PRIORY_EXE` to it, not a store path that changes on every deploy. A changed path changes the hooks, so a person trusts them again.
+`PRIORY_EXE` to it, not a store path that changes on every deploy. A changed path changes the hooks, so a person trusts them again. So does a new hook, such as `PostCompact`.
 
 Known limits:
 

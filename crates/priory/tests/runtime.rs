@@ -552,7 +552,7 @@ fn a_cli_task_stored_before_tasks_kept_a_repository_starts_in_its_requests_repos
     setup.crash();
     // The state file as version 23 left it: tasks without a repository.
     let db = rusqlite::Connection::open(setup.dir.join("priory.db")).unwrap();
-    db.execute_batch("ALTER TABLE tasks DROP COLUMN repo; PRAGMA user_version = 23;")
+    db.execute_batch("ALTER TABLE tasks DROP COLUMN repo; ALTER TABLE outbox DROP COLUMN compact; PRAGMA user_version = 23;")
         .unwrap();
     drop(db);
     let _ = fs::remove_file(setup.dir.join("home/priory.sock"));
@@ -992,6 +992,117 @@ fn a_compaction_mid_turn_leaves_the_turn_busy_so_no_prompt_is_typed_into_it() {
     std::thread::sleep(Duration::from_millis(1500));
     assert_eq!(setup.rows("outbox")[1][3], "queued");
     assert_eq!(setup.typed().len(), 1);
+}
+
+fn compact(focus: &str) -> serde_json::Value {
+    json!({ "name": "compact", "arguments": { "focus": focus } })
+}
+
+const CONTINUED: &str = "Priory compacted this conversation, as you asked. You are on task 1, at step implement. Carry on with the step.\nEnd this step by calling the result tool of the priory MCP server with one of these outcomes: failed, passed.\n";
+
+#[test]
+fn the_compact_tool_types_compact_once_idle_then_a_continuation_after_the_compaction() {
+    let mut setup = Setup::new("compact-tool");
+    setup.calls(&[compact("the failing test")]);
+    setup.publish(&requested(42));
+
+    setup.start();
+
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 3);
+    let typed = setup.typed();
+    assert_eq!(typed[1], "/compact the failing test\n", "{typed:?}");
+    assert_eq!(typed[2], CONTINUED, "{typed:?}");
+    assert_eq!(
+        typed
+            .iter()
+            .filter(|prompt| prompt.starts_with("/compact"))
+            .count(),
+        1,
+        "{typed:?}"
+    );
+}
+
+#[test]
+fn a_second_compact_before_the_first_is_typed_is_refused() {
+    let mut setup = Setup::new("compact-twice");
+    setup.calls(&[compact("the plan")]);
+    setup.hold("hold-stop");
+    setup.publish(&requested(42));
+    setup.start();
+    setup.written("fake/tools.log");
+    let session = setup.rows("runs")[0][4].clone();
+
+    // The same turn asks again before its Stop, so the first is still queued.
+    let replies = setup.mcp(
+        &session,
+        &[json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": compact("again")})],
+    );
+
+    let (text, error) = reply(&replies[0]);
+    assert!(error, "{text}");
+    assert_eq!(
+        text,
+        "a compact is already queued for this run; end your turn"
+    );
+    setup.release("hold-stop");
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 3);
+    let typed = setup.typed();
+    assert_eq!(typed[1], "/compact the plan\n", "{typed:?}");
+    assert_eq!(
+        typed
+            .iter()
+            .filter(|prompt| prompt.starts_with("/compact"))
+            .count(),
+        1,
+        "{typed:?}"
+    );
+}
+
+#[test]
+fn a_queued_answer_and_its_nudge_are_typed_before_the_compact_asked_ahead_of_them() {
+    let mut setup = Setup::with_workflow("compact-answer", STEPS);
+    setup.calls(&[compact("the plan")]);
+    setup.hold("hold-stop");
+    setup.publish(&requested(42));
+    setup.start();
+    setup.written("fake/tools.log");
+    let session = setup.rows("runs")[0][4].clone();
+    setup.mcp(
+        &session,
+        &[json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": ask()})],
+    );
+    setup.release("hold-stop");
+    setup.until("tasks", |rows| rows[0][4] == "asleep");
+
+    let answered = setup.priory(&["answer", "1", "sqlite", "--revision", "1"]);
+
+    assert!(answered.status.success(), "{answered:?}");
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 5);
+    let typed = setup.typed();
+    assert!(typed[1].starts_with("sqlite\n"), "{typed:?}");
+    assert!(typed[2].starts_with("Your turn ended"), "{typed:?}");
+    assert_eq!(typed[3], "/compact the plan\n", "{typed:?}");
+    assert!(
+        typed[4].starts_with(
+            "Priory compacted this conversation, as you asked. You are on task 1, at step plan."
+        ),
+        "{typed:?}"
+    );
+}
+
+#[test]
+fn a_codex_run_gets_a_bare_compact_and_its_post_compact_hook_brings_the_continuation() {
+    let mut setup = Setup::new("compact-codex");
+    fs::write(setup.dir.join("factory/agents/implementer/agent.md"), CODEX).unwrap();
+    setup.calls(&[compact("the failing test")]);
+    setup.publish(&requested(42));
+
+    setup.start();
+
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 3);
+    let typed = setup.typed();
+    assert_eq!(typed[1], "/compact\n", "{typed:?}");
+    assert_eq!(typed[2], CONTINUED, "{typed:?}");
 }
 
 #[test]
@@ -3020,7 +3131,7 @@ fn an_upgrade_hands_the_unconfirmed_prompt_of_a_moved_run_to_the_live_run_that_c
     // The state as the version before this fix left it.
     let db = rusqlite::Connection::open(setup.dir.join("priory.db")).unwrap();
     db.execute_batch(
-        "UPDATE outbox SET run = 1 WHERE id = 1; ALTER TABLE tasks DROP COLUMN repo;
+        "UPDATE outbox SET run = 1 WHERE id = 1; ALTER TABLE tasks DROP COLUMN repo; ALTER TABLE outbox DROP COLUMN compact;
          PRAGMA user_version = 22;",
     )
     .unwrap();
@@ -3149,7 +3260,7 @@ fn a_lost_run_that_asked_since_the_last_loss_resumes_again() {
 }
 
 #[test]
-fn the_mcp_server_lists_the_result_ask_and_wait_tools() {
+fn the_mcp_server_lists_the_result_ask_wait_and_compact_tools() {
     let setup = Setup::new("list");
 
     let replies = setup.mcp(
@@ -3177,7 +3288,7 @@ fn the_mcp_server_lists_the_result_ask_and_wait_tools() {
         .iter()
         .map(|tool| tool["name"].as_str().unwrap())
         .collect();
-    assert_eq!(names, ["result", "ask", "wait"]);
+    assert_eq!(names, ["result", "ask", "wait", "compact"]);
     let on = &replies[1]["result"]["tools"][2]["inputSchema"]["properties"]["on"];
     assert_eq!(
         on["properties"]["type"]["enum"],

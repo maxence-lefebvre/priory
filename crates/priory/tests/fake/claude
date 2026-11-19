@@ -17,6 +17,9 @@
 # content block, using 100+n input, 10+n output, 1000+n cache read and 50+n cache write tokens.
 # FAKE_DIR/no-transcript skips that write. FAKE_DIR/compact fires SessionStart with source compact
 # mid-turn, as Claude does when it compacts the conversation.
+# A typed prompt that starts with /compact is no turn: it fires SessionStart with source compact, as
+# Claude does, or with FAKE_LAZY_START PostCompact, as Codex 0.170 does, and no
+# UserPromptSubmit or Stop.
 # With -p, it is a handler call: it appends its stdin to handler.log, ended by ---, and its args to
 # handler-args.log, then prints Claude's --output-format json with the first line of
 # FAKE_DIR/handler as its result, which it pops, or a leave answer when none is left. With
@@ -146,6 +149,10 @@ while :; do
   printf '%s' "$prompt" > "$FAKE_DIR/pending"
   wait_while hold-submit
   printf '%s---\n' "$prompt" >> "$FAKE_DIR/typed.log"
+  if [[ $prompt == /compact* ]]; then
+    if [ -n "${FAKE_LAZY_START-}" ]; then hook PostCompact; else hook SessionStart '' compact; fi
+    continue
+  fi
   # Claude Code 2.1.328 hands hooks a pasted prompt wrapped in a pasted_content tag.
   # trailer: text Claude would submit after the tag, so the prompt is not the one typed alone.
   trailer=''

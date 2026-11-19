@@ -1,6 +1,6 @@
 use crate::route;
 use crate::trace::{self, Trace};
-use priory_factory::factory::{Decider, Effect, Loaded, Step, Workflow};
+use priory_factory::factory::{Decider, Effect, Factory, Harness, Loaded, Step, Workflow};
 use priory_intake::intake::{CHECK_RUNS, CHECKED, PASSING, PR_CLOSED as CLOSED};
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 use serde_json::Value;
@@ -94,8 +94,9 @@ fn optional(arguments: &Value, name: &str) -> Result<Option<String>, String> {
 pub(crate) fn call(
     db: &mut Connection,
     call: &Call,
-    workflows: &Workflows,
+    factory: &Factory,
 ) -> rusqlite::Result<Result<String, String>> {
+    let workflows = &factory.workflows;
     let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
     let Some(run) = run(&tx, &call.session)? else {
         return Ok(Err(format!("no live run has session {}", call.session)));
@@ -142,6 +143,7 @@ pub(crate) fn call(
         "result" => result(&tx, &run, &call.arguments, workflows)?,
         "ask" => ask(&tx, &run, &call.arguments)?,
         "wait" => wait(&tx, &run, &call.arguments)?,
+        "compact" => compact(&tx, &run, &call.arguments, factory)?,
         tool => Err(format!("unknown tool {tool}")),
     };
     if stored.is_ok() {
@@ -206,6 +208,84 @@ fn result(
     Ok(Ok(format!(
         "result stored: the task moves to {next} when this turn ends"
     )))
+}
+
+/// Queues `/compact` for the outbox to type once the run is idle. Codex's `/compact` takes no focus.
+fn compact(
+    tx: &Transaction,
+    run: &Run,
+    arguments: &Value,
+    factory: &Factory,
+) -> rusqlite::Result<Result<String, String>> {
+    let focus = match optional(arguments, "focus") {
+        Ok(focus) => focus,
+        Err(error) => return Ok(Err(error)),
+    };
+    let pending: bool = tx.query_row(
+        "SELECT EXISTS (SELECT 1 FROM outbox WHERE task = ?1 AND compact = 1
+           AND state IN ('queued', 'attempted'))",
+        [run.task],
+        |row| row.get(0),
+    )?;
+    if pending {
+        return Ok(Err(
+            "a compact is already queued for this run; end your turn".to_owned(),
+        ));
+    }
+    let codex = run
+        .agent
+        .as_ref()
+        .and_then(|agent| factory.agents.get(agent))
+        .is_some_and(|agent| matches!(agent.value.harness, Harness::Codex));
+    let text = match focus {
+        Some(focus) if !codex => {
+            format!(
+                "/compact {}",
+                focus.split_whitespace().collect::<Vec<_>>().join(" ")
+            )
+        }
+        _ => "/compact".to_owned(),
+    };
+    tx.execute(
+        "INSERT INTO outbox (task, text, compact) VALUES (?1, ?2, 1)",
+        params![run.task, text.trim_end()],
+    )?;
+    Ok(Ok(format!(
+        "Queued {text}. End your turn now: Priory types it once you are idle, then a prompt to carry on."
+    )))
+}
+
+/// After the compaction a queued `/compact` started: confirms it, marks the run idle and queues the
+/// prompt to carry on. A compaction Priory did not ask for changes nothing.
+pub(crate) fn compacted(tx: &Transaction, run: i64) -> rusqlite::Result<()> {
+    let Some((id, task, step)) = tx
+        .query_row(
+            "SELECT outbox.id, runs.task, tasks.step FROM outbox
+             JOIN runs ON runs.id = outbox.run JOIN tasks ON tasks.id = runs.task
+             WHERE outbox.run = ?1 AND outbox.compact = 1 AND outbox.state IN ('attempted', 'uncertain')",
+            [run],
+            |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?, row.get::<_, String>(2)?)),
+        )
+        .optional()?
+    else {
+        return Ok(());
+    };
+    tx.execute(
+        &format!("UPDATE outbox SET state = 'confirmed', confirmed = {NOW} WHERE id = ?1"),
+        [id],
+    )?;
+    tx.execute(
+        "UPDATE runs SET idle = 1, turn = NULL, nudgeable = 0 WHERE id = ?1",
+        [run],
+    )?;
+    wake(
+        tx,
+        task,
+        &format!(
+            "Priory compacted this conversation, as you asked. You are on task {task}, at step {step}. Carry on with the step."
+        ),
+    )
+    .map(drop)
 }
 
 fn ask(tx: &Transaction, run: &Run, arguments: &Value) -> rusqlite::Result<Result<String, String>> {
@@ -946,7 +1026,8 @@ fn queue_first(tx: &Transaction, task: i64, text: &str) -> rusqlite::Result<i64>
     let mut queued = Vec::new();
     {
         let mut statement = tx.prepare(
-            "SELECT id, text FROM outbox WHERE task = ?1 AND state = 'queued' ORDER BY id",
+            "SELECT id, text FROM outbox WHERE task = ?1 AND state = 'queued' AND compact = 0
+             ORDER BY id",
         )?;
         let mut rows = statement.query([task])?;
         while let Some(row) = rows.next()? {
@@ -964,6 +1045,16 @@ fn queue_first(tx: &Transaction, task: i64, text: &str) -> rusqlite::Result<i64>
         tx.execute("UPDATE inbox SET outbox = ?1 WHERE outbox = ?2", [id, old])?;
         tx.execute("DELETE FROM outbox WHERE id = ?1", [old])?;
     }
+    // A queued `/compact` must be typed alone, so it follows the new prompt instead of joining it.
+    tx.execute(
+        "INSERT INTO outbox (task, text, compact) SELECT task, text, 1 FROM outbox
+         WHERE task = ?1 AND state = 'queued' AND compact = 1 AND id < ?2",
+        [task, id],
+    )?;
+    tx.execute(
+        "DELETE FROM outbox WHERE task = ?1 AND state = 'queued' AND compact = 1 AND id < ?2",
+        [task, id],
+    )?;
     Ok(id)
 }
 
