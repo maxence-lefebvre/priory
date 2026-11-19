@@ -14,6 +14,12 @@ nothing.
 - `ask(question, options, recommendation, tradeoff)` stores an ask at revision 1.
 
 - `wait(on)` stores a wait (see Waits).
+- `compact(focus?)` queues `/compact <focus>` in the outbox and tells the agent to end its turn. An
+  agent cannot type `/compact` itself, since only typed input reaches its harness. A Codex run gets a
+  bare `/compact`, because Codex's `/compact` takes no argument. A task holds at most one queued
+  compact, so a second call is refused, and so is `result` until it is typed: a result could move
+  the task to another agent's conversation first. `ask` and `wait` resume the same conversation, so
+  the compact follows their answer or event. Compacting is described under Compact in Outbox.
 
 A run holds at most one of a result, an open ask and an open wait. Any later call is refused.
 
