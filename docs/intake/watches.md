@@ -1,9 +1,14 @@
 # Which threads and issues the intake watches
 
-The intake reads open waits on `linear_comment`, `linear_state` and `slack_reply` from the state
-file `PRIORY_DB` every poll. Without `PRIORY_DB`, it watches none. Each wait gives a resource and
-its agent's last prompt time.
+The intake reads open waits on `linear_comment`, `linear_state`, `slack_reply`, `pull_request`,
+`checks` and `review` from the state file `PRIORY_DB` every poll. Without `PRIORY_DB`, it watches
+none. It skips the waits of a task that is `done`, `failed` or `dropped`. Each wait gives a resource
+and its agent's last prompt time.
 
+- For a pull request, the intake polls its repository as it polls a trigger's (see
+  `github-polling.md`). A repository that no trigger names starts with a baseline, whose reviews and
+  checks still reach the wait. A restart resumes it from where it stopped, as long as a wait still
+  names it.
 - For each Slack thread, the intake reads `conversations.replies` from that time on, every poll,
   until the wait fires or is withdrawn. herdr-bus drops replies it already holds.
 - For a Linear issue, the intake starts the issues and comments streams when no Linear trigger

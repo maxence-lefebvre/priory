@@ -1,6 +1,7 @@
 # Intake messages
 
 `priory intake [DIR] [--once]` polls GitHub for the repositories that the factory's triggers name,
+whatever their source, and those of open pull request waits,
 Linear when the factory has a Linear trigger or an open wait names a Linear issue, and Slack when
 the factory has a Slack trigger or an open wait names a Slack thread (see Slack events). It publishes on the herdr-bus output `factory.intake`. This page is the contract for every consumer of
 that output: the Priory daemon, and another factory such as herdr-bowtie.
@@ -21,7 +22,7 @@ so a hung call cannot hold schedules, Linear and Slack forever. Each poll also f
 - [schedule.md](schedule.md): `schedule.fired` and when a schedule trigger fires.
 - [linear.md](linear.md): Linear events, Linear streams and Linear API calls.
 - [slack.md](slack.md): Slack events, the channel stream and Slack API calls.
-- [watches.md](watches.md): the Linear issues and Slack threads an open wait makes the intake watch.
+- [watches.md](watches.md): the Linear issues, Slack threads and pull requests an open wait makes the intake watch.
 - [cli.md](cli.md): `priory request` and the `priory.task.requested.cli` event.
 - [task-requests.md](task-requests.md): `factory.task.requested`, which creates tasks, and its `hold`.
 - [github-polling.md](github-polling.md): GitHub streams, baselines, API cost and recovery after a restart.

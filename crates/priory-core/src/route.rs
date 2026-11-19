@@ -28,6 +28,7 @@ pub(crate) struct NewTask {
     pub lane_derived: bool,
     pub trigger: String,
     pub source: String,
+    pub repo: Option<String>,
     #[serde(default)]
     pub hold: Option<priory_factory::factory::Hold>,
 }
@@ -87,6 +88,11 @@ pub(crate) fn branch(repo: &str, branch: &str) -> String {
     format!("github:{repo}@{branch}")
 }
 
+/// Whether `message` requests a task.
+pub(crate) fn requests(message: &Message) -> bool {
+    message.kind == TASK_REQUESTED
+}
+
 /// Whether `message` is a schedule's firing, which wakes or is coalesced into the task it finds.
 pub(crate) fn tick(message: &Message) -> bool {
     message.kind == TASK_REQUESTED && message.data.get("scheduled").is_some()
@@ -111,6 +117,9 @@ pub(crate) fn route(message: &Message, owner: Option<&Task>, factory: &Factory) 
         task.step.clone_from(&workflow.value.start);
     }
     let trigger = factory.triggers.get(&task.trigger);
+    task.repo = task
+        .repo
+        .or_else(|| trigger.and_then(|trigger| trigger.value.repo.clone()));
     let bands = factory.bands();
     // A message published before a band was renamed can carry a band the factory lacks.
     task.band = task

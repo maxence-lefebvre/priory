@@ -1023,6 +1023,27 @@ fn a_linear_trigger_uses_a_supported_event_filter_and_key() {
 }
 
 #[test]
+fn a_linear_or_slack_trigger_may_name_the_repo_its_tasks_work_in() {
+    let linear = "source = \"linear\"\nrepo = \"owner/repo\"\non = \"issue.created\"\nworkflow = \"implement\"\n";
+    let slack = "source = \"slack\"\nchannel = \"C0123\"\nrepo = \"owner/repo\"\non = \"message.posted\"\nworkflow = \"implement\"\n";
+    let bare = "source = \"linear.view\"\nview = \"6b3c2f9a1d4e\"\nrepo = \"repo\"\non = \"issue.entered\"\nworkflow = \"implement\"\n";
+    let mut files = with("triggers/agent-label.toml", linear);
+    files.push(("triggers/slack.toml", slack));
+    let ok = check(&factory("linear-slack-repo", &files));
+    files.push(("triggers/bare.toml", bare));
+    let bad = check(&factory("linear-bare-repo", &files));
+
+    assert_eq!((ok.code, ok.stderr.as_str()), (0, ""));
+    assert_eq!(
+        (bad.code, bad.stderr.as_str()),
+        (
+            1,
+            "triggers/bare.toml:3: a Linear trigger's `repo` is `owner/name`\n"
+        )
+    );
+}
+
+#[test]
 fn a_slack_trigger_names_its_channel_and_filters_on_text_only() {
     let good = "source = \"slack\"\nchannel = \"C0123\"\non = \"message.posted\"\nfilter = { text = \"deploy\" }\nworkflow = \"implement\"\nbackfill = true\n";
     let wrong = "source = \"slack\"\non = \"message\"\nfilter = { user = \"U1\" }\nworkflow = \"implement\"\nkey = \"ts\"\n";

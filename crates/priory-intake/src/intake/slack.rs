@@ -21,6 +21,9 @@ pub(super) struct Slack<'a> {
     bot: String,
     triggers: Vec<(&'a str, &'a Trigger)>,
     channels: BTreeMap<String, Option<String>>,
+    /// Which watched thread the next poll reads first, modulo their count. It starts at the
+    /// minute, so that successive `--once` runs rotate too.
+    turn: i64,
 }
 
 impl<'a> Slack<'a> {
@@ -45,27 +48,37 @@ impl<'a> Slack<'a> {
             token,
             triggers,
             channels,
+            turn: super::now()?.as_second().div_euclid(60),
         })
     }
 
     /// Publishes the new messages of each trigger channel and the replies in each watched thread.
-    /// A message published again keeps its id, so the bus drops it.
+    /// A message published again keeps its id, so the bus drops it. A failing channel publishes
+    /// nothing and fails the poll once the rest is published.
     pub(super) fn poll(&mut self, bus: &Bus, watched: &[Watch]) -> Result<(), String> {
         let mut polled = Vec::new();
+        let mut failed = Vec::new();
         for (channel, cursor) in &self.channels {
-            polled.push(self.channel(channel, cursor.as_deref())?);
+            match self.channel(channel, cursor.as_deref()) {
+                Ok(found) => polled.push(found),
+                Err(error) => failed.push(error),
+            }
         }
+        let threads: Vec<(&str, &str, Timestamp)> = watched
+            .iter()
+            .filter_map(|watch| {
+                let thread = watch.resource.strip_prefix("slack:")?;
+                let (channel, thread) = thread.split_once(':')?;
+                Some((channel, thread, watch.since))
+            })
+            .collect();
+        // Slack lets a new app read one thread a minute: each poll starts at the next thread.
+        let start = self.turn.rem_euclid(threads.len().max(1) as i64) as usize;
+        self.turn += 1;
         let mut replies = Vec::new();
-        for watch in watched {
-            let Some((channel, thread)) = watch
-                .resource
-                .strip_prefix("slack:")
-                .and_then(|thread| thread.split_once(':'))
-            else {
-                continue;
-            };
+        for (channel, thread, since) in threads[start..].iter().chain(&threads[..start]) {
             // A deleted thread or a channel the bot left fails only its own wait's poll.
-            match self.replies(channel, thread, watch.since) {
+            match self.replies(channel, thread, *since) {
                 Ok(found) => replies.extend(found),
                 Err(error) => eprintln!("{error}"),
             }
@@ -85,7 +98,10 @@ impl<'a> Slack<'a> {
         for reply in &replies {
             publish(bus, reply)?;
         }
-        Ok(())
+        if failed.is_empty() {
+            return Ok(());
+        }
+        Err(failed.join("\n"))
     }
 
     /// The messages of `channel` after `cursor`, oldest first, and the newest `ts` seen.

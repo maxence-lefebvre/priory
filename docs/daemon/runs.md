@@ -4,8 +4,9 @@ A run is one task step worked by one agent's `claude` process. A model step that
 model step with the same agent carries the process on into a new run, so each run has at most one
 result. A model step with another agent gets a new run and a new process (see Moving on). Each
 second, the daemon starts a run for each `queued` or `ready` task whose step decides `model`, in
-queue order, if it fits in the room (see Queue and Room). It finds the repository through the
-task's trigger.
+queue order, if it fits in the room (see Queue and Room). It works in the task's repository: its
+task request's `repo`, else its trigger's, stored when the task is created. A task stored before
+tasks kept a repository uses its trigger's.
 
 Before that, each tick checks every `queued` and `ready` task's step. A step its workflow no longer
 has blocks the task with `step <id> is not in workflow <name>`. A human step with no open ask gets
@@ -102,13 +103,15 @@ A hold takes at most one condition, which releases it without a person:
 | none | a person runs `priory release` |
 | `--until <time>` | the time passes: an RFC 3339 instant, or a duration such as `2 hours` from the hold, as for a time wait |
 | `--after <task>` | the other task is done, failed or dropped |
-| `--merge <pr>` | the pull request merges: `owner/name#42`, or `42` in the repository of the task's trigger |
+| `--merge <pr>` | the pull request merges: `owner/name#42`, or `42` in the task's repository |
 | `--blockers` | the task's Linear issue has no open blocker left |
 
 `--merge` takes `--if-closed release|drop|ask` for a pull request closed without a merge. `release`
 lets the task go. `drop` drops it with the reason `<pr> closed without a merge`. `ask`, the default,
 puts an ask on the desk with the options `release` and `drop` while the task stays held.
-`priory answer` takes either. A merge after the ask releases the task and answers it.
+`priory answer` takes either. A merge after the ask releases the task and answers it. A close whose
+`merged` is null, because GitHub no longer returns the pull request, does not say whether it merged,
+so it asks whatever `--if-closed` says.
 
 `--blockers` reads the `blockers` field of Linear events (see `docs/intake/linear.md`). It is refused
 for a task whose source event is not a Linear event, such as a GitHub issue or a CLI request. The

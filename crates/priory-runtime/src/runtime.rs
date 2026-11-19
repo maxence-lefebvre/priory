@@ -617,10 +617,20 @@ pub fn tagged() -> Vec<(String, String)> {
         .collect()
 }
 
-/// The last 30 non-empty lines on the screen of the tmux session `name`, or none once it is gone.
+/// The last 30 non-empty lines on the active pane of the tmux session `name`, or none once it is
+/// gone.
 pub fn screen(name: &str) -> Vec<String> {
-    let shown =
-        run(tmux().args(["capture-pane", "-p", "-t", &format!("={name}:")])).unwrap_or_default();
+    shown(&format!("={name}:"))
+}
+
+/// The last 30 non-empty lines on the pane of the tmux session `name` that runs the harness session
+/// `session`, whichever pane is active, or none once it is gone.
+pub fn agent_screen(name: &str, session: &str) -> Vec<String> {
+    pane(name, session).map_or_else(Vec::new, |pane| shown(&pane))
+}
+
+fn shown(target: &str) -> Vec<String> {
+    let shown = run(tmux().args(["capture-pane", "-p", "-t", target])).unwrap_or_default();
     let lines: Vec<_> = shown
         .lines()
         .map(str::trim_end)

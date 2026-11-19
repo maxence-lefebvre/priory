@@ -186,7 +186,7 @@ fn handle_stalls(
         .screens
         .retain(|run, _| quiet.iter().any(|quiet| quiet.run == *run));
     for run in &quiet {
-        let screen = runtime::screen(&run.tmux);
+        let screen = runtime::agent_screen(&run.tmux, &run.session);
         let seen = stalls
             .screens
             .entry(run.run)
@@ -442,7 +442,7 @@ fn diagnose(
 ) -> Result<Repair, Error> {
     let need = crate::room::need(factory.agents.get(agent).map(|agent| &agent.value));
     let short = |db: &Connection| -> Result<Result<Option<crate::room::Short>, String>, Error> {
-        let promised = state::promised(db, factory)?;
+        let promised = state::promised(db, factory, None)?;
         Ok(room::measure(home).map(|room| crate::room::wait(&room, share, promised, need)))
     };
     let missing = |short: &crate::room::Short| {
@@ -537,8 +537,10 @@ fn perform(db: &mut Connection, trace: &Trace, home: &Path) -> Result<(), Error>
         .value
         .step(&due.step)
         .expect("actionable checked the step");
-    // The sweep or a retirement removed the worktree; its branch still holds the work.
-    if let Some(repo) = repo_of(factory, &due.trigger)
+    // The sweep or a retirement removed the worktree; its branch still holds the work. Only
+    // `open-pr` pushes from it, so no other action waits for disk to add it back.
+    if let Some(repo) = repo_of(factory, &due.trigger, due.repo.as_deref())
+        && step.action.as_deref() == Some("open-pr")
         && due
             .worktree
             .as_deref()
@@ -564,7 +566,11 @@ fn perform(db: &mut Connection, trace: &Trace, home: &Path) -> Result<(), Error>
         }
         db.execute("UPDATE tasks SET retired = NULL WHERE id = ?1", [due.task])?;
     }
-    let head = head(due.worktree.as_deref(), due.branch.as_deref());
+    let head = due
+        .worktree
+        .as_deref()
+        .zip(due.branch.as_deref())
+        .and_then(|(worktree, branch)| runtime::kept_head(home, Path::new(worktree), branch));
     if !tools::approved(db, due.task, step, head.as_deref())? {
         return Ok(());
     }
@@ -586,11 +592,6 @@ fn perform(db: &mut Connection, trace: &Trace, home: &Path) -> Result<(), Error>
     )?)
 }
 
-/// The commit of the task's branch, which an approval covers.
-fn head(worktree: Option<&str>, branch: Option<&str>) -> Option<String> {
-    runtime::head(Path::new(worktree?), branch?)
-}
-
 /// Pushes `commit` to the task's branch and opens its pull request, titled and described by its
 /// latest result.
 fn open_pr(
@@ -600,12 +601,9 @@ fn open_pr(
     commit: Option<&str>,
 ) -> Result<Done, Error> {
     let described = state::last_result(db, due.task)?;
-    let repo = factory
-        .triggers
-        .get(&due.trigger)
-        .and_then(|trigger| trigger.value.repo.as_deref());
+    let repo = repo_of(factory, &due.trigger, due.repo.as_deref());
     let opened = match (repo, due.worktree.as_deref().zip(commit), described) {
-        (None, ..) => Err(format!("trigger {} names no repo", due.trigger)),
+        (None, ..) => Err(format!("task {} names no repo", due.task)),
         (_, None, _) => Err("the task's branch has no commit yet".to_owned()),
         (.., None) => Err("no result describes the pull request".to_owned()),
         (Some(repo), Some((worktree, commit)), Some((summary, evidence))) => {
@@ -641,10 +639,10 @@ fn open_pr(
 /// Opens an issue on the task's repository, titled and described by its latest result.
 fn open_issue(db: &Connection, factory: &Factory, due: &state::Due) -> Result<Done, Error> {
     let opened = match (
-        repo_of(factory, &due.trigger),
+        repo_of(factory, &due.trigger, due.repo.as_deref()),
         state::last_result(db, due.task)?,
     ) {
-        (None, _) => Err(format!("trigger {} names no repo", due.trigger)),
+        (None, _) => Err(format!("task {} names no repo", due.task)),
         (_, None) => Err("no result describes the issue".to_owned()),
         (Some(repo), Some((summary, evidence))) => {
             let title = summary.lines().next().unwrap_or_default();
@@ -696,8 +694,8 @@ fn start(
     else {
         return Ok(Err(format!("step {} names no known agent", step.id)));
     };
-    let Some(repo) = repo_of(factory, &admission.trigger) else {
-        return Ok(Err(format!("trigger {} names no repo", admission.trigger)));
+    let Some(repo) = repo_of(factory, &admission.trigger, admission.repo.as_deref()) else {
+        return Ok(Err(format!("task {} names no repo", admission.task)));
     };
     let (worktree, branch) = match runtime::worktree(home, repo, admission.task) {
         Ok(found) => found,
@@ -772,12 +770,17 @@ fn start(
     ))
 }
 
-/// The repository a task of `trigger` works in; a sweeper's is the `[sweep]` repository.
-fn repo_of<'f>(factory: &'f Factory, trigger: &str) -> Option<&'f str> {
+/// The repository a task works in: its own, else its trigger's for a task stored before tasks
+/// had one; a sweeper's is the `[sweep]` repository.
+pub(crate) fn repo_of<'f>(
+    factory: &'f Factory,
+    trigger: &str,
+    repo: Option<&'f str>,
+) -> Option<&'f str> {
     if trigger == stall::TRIGGER {
         return Some(factory.sweep().repo());
     }
-    factory.triggers.get(trigger)?.value.repo.as_deref()
+    repo.or_else(|| factory.triggers.get(trigger)?.value.repo.as_deref())
 }
 
 /// The harness that runs `agent`; Claude Code for an agent the factory lost.

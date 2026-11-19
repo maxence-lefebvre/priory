@@ -21,6 +21,7 @@ const BLOCKED: &str = "EXISTS (SELECT 1 FROM outbox JOIN runs AS typed ON typed.
 pub(crate) struct Quiet {
     pub run: i64,
     pub tmux: String,
+    pub session: String,
     /// Seconds since its last hook event, or its start.
     pub silent: i64,
     /// Seconds since its last handler call, if it had one.
@@ -32,7 +33,7 @@ pub(crate) struct Quiet {
 
 pub(crate) fn quiet(db: &Connection) -> rusqlite::Result<Vec<Quiet>> {
     let mut statement = db.prepare(
-        "SELECT runs.id, runs.tmux, unixepoch('now') - unixepoch(coalesce(runs.signaled, runs.started)),
+        "SELECT runs.id, runs.tmux, runs.session, unixepoch('now') - unixepoch(coalesce(runs.signaled, runs.started)),
          unixepoch('now') - unixepoch(last.called),
          iif(runs.signaled IS NULL OR runs.signaled < last.called, last.screen, NULL),
          (SELECT count(*) FROM handlers WHERE run = runs.id)
@@ -49,10 +50,11 @@ pub(crate) fn quiet(db: &Connection) -> rusqlite::Result<Vec<Quiet>> {
             Ok(Quiet {
                 run: row.get(0)?,
                 tmux: row.get(1)?,
-                silent: row.get(2)?,
-                handled: row.get(3)?,
-                left: row.get(4)?,
-                calls: row.get(5)?,
+                session: row.get(2)?,
+                silent: row.get(3)?,
+                handled: row.get(4)?,
+                left: row.get(5)?,
+                calls: row.get(6)?,
             })
         })?
         .collect()

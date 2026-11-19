@@ -16,7 +16,7 @@ const LABELED: &str = "github.issues.labeled";
 const OPENED: &str = "github.issues.opened";
 const PR_OPENED: &str = "github.pull_request.opened";
 const PR_LABELED: &str = "github.pull_request.labeled";
-const PR_CLOSED: &str = "github.pull_request.closed";
+pub const PR_CLOSED: &str = "github.pull_request.closed";
 const REVIEWED: &str = "github.pull_request_review.submitted";
 pub const CHECKED: &str = "github.check_run.completed";
 pub const CHECK_RUNS: &str = "github.pull_request.check_runs";
@@ -63,15 +63,16 @@ pub(crate) fn output() -> Output {
         ])
 }
 
-/// A resource an open wait names, `linear:<issue>` or `slack:<channel>:<thread ts>`, and the time
-/// of its agent's last prompt: the intake publishes what happens to it from then on.
+/// A resource an open wait names, `linear:<issue>`, `slack:<channel>:<thread ts>` or
+/// `github:<owner/name>#<number>`, and the time of its agent's last prompt: the intake publishes
+/// what happens to it from then on.
 pub struct Watch {
     pub resource: String,
     pub since: Timestamp,
 }
 
 /// Polls the sources until stopped, or once. `watched` reads the open waits on each poll, so that
-/// the intake polls the Slack threads they name and Linear when they name an issue.
+/// the intake polls the Slack threads, Linear issues and pull request repositories they name.
 pub fn run(
     factory: &Factory,
     once: bool,
@@ -87,9 +88,11 @@ pub fn run(
             .collect()
     };
     let (triggers, schedules) = (from("github"), from("schedule"));
-    let repos: BTreeSet<&str> = triggers
-        .iter()
-        .filter_map(|(_, trigger)| trigger.repo.as_deref())
+    // Any trigger's task can open a pull request whose checks and reviews its waits need.
+    let repos: BTreeSet<&str> = factory
+        .triggers
+        .values()
+        .filter_map(|trigger| trigger.value.repo.as_deref())
         .collect();
     let linear_triggers = [from("linear"), from("linear.view")].concat();
     let slack_triggers = from("slack");
@@ -101,7 +104,14 @@ pub fn run(
     let mut slack = (!slack_triggers.is_empty())
         .then(|| slack::Slack::start(&bus, slack_triggers.clone()))
         .transpose()?;
-    let (newest, mut cursors) = newest(&bus, &repos).map_err(|error| error.to_string())?;
+    // The loop reports a failing read of the waits; here it only costs those repos their cursors.
+    let waiting = watched().unwrap_or_default();
+    let resumed: BTreeSet<&str> = repos
+        .iter()
+        .copied()
+        .chain(waiting.iter().filter_map(pull_request_repo))
+        .collect();
+    let (newest, mut cursors) = newest(&bus, &resumed).map_err(|error| error.to_string())?;
     for (stream, source) in newest {
         // A crash may have stopped between this source and its task requests.
         if source.data["baseline"] != true {
@@ -144,11 +154,16 @@ pub fn run(
             }
         }
         schedule::fire(&bus, &schedules, now()?)?;
-        match fetch(&repos, &cursors) {
-            // A publish error ends the intake: its restart recovers the source it left behind.
-            Ok(polled) => publish_all(&bus, &triggers, polled, &mut cursors, &mut published)?,
-            Err(error) if once => return Err(error),
-            Err(error) => eprintln!("{error}"),
+        let waited = watching.iter().filter_map(pull_request_repo);
+        let polled: BTreeSet<&str> = repos.iter().copied().chain(waited).collect();
+        let (found, failed) = fetch(&polled, &cursors);
+        // A publish error ends the intake: its restart recovers the source it left behind.
+        publish_all(&bus, &triggers, found, &mut cursors, &mut published)?;
+        for error in failed {
+            if once {
+                return Err(error);
+            }
+            eprintln!("{error}");
         }
         if let Some(linear) = &mut linear {
             match linear.fetch() {
@@ -169,6 +184,12 @@ pub fn run(
         }
         std::thread::sleep(EVERY);
     }
+}
+
+/// The repository of a pull request wait, `owner/name` from `github:owner/name#42`.
+fn pull_request_repo(watch: &Watch) -> Option<&str> {
+    let pull = watch.resource.strip_prefix("github:")?;
+    pull.split(['#', '@']).next()
 }
 
 /// The time, or `PRIORY_NOW` when set, so a test can stand at any time.
@@ -260,13 +281,18 @@ struct Polled {
     top: Option<u64>,
 }
 
-/// Fetches every repo first, so that a failing `gh` publishes nothing.
-fn fetch(repos: &BTreeSet<&str>, cursors: &Cursors) -> Result<Vec<Polled>, String> {
+/// Fetches every repo, and the error of each that fails: a failing `gh` publishes nothing for its
+/// repo, and the others still publish.
+fn fetch(repos: &BTreeSet<&str>, cursors: &Cursors) -> (Vec<Polled>, Vec<String>) {
     let mut polled = Vec::new();
+    let mut failed = Vec::new();
     for repo in repos {
-        polled.extend(issues::fetch_repo(repo, cursors)?);
+        match issues::fetch_repo(repo, cursors) {
+            Ok(found) => polled.extend(found),
+            Err(error) => failed.push(error),
+        }
     }
-    Ok(polled)
+    (polled, failed)
 }
 
 fn publish_all(

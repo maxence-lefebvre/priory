@@ -14,6 +14,9 @@ A task owns resources, stored in one table: its trigger key from its creation, i
 its names. A message names resources too: a task request its `key`, a CLI request its subject, a
 GitHub event its issue or pull request `github:{repo}#{n}` and, for a pull request event, its head
 branch `github:{repo}@{head_branch}`. The oldest active task owning any of them decides the route.
+A task request is the exception: only an active task whose own key is the request's `key` keeps it.
+A task that owns that key only as a pull request or an issue it waits on does not, so the request
+creates its task.
 A task is active in any state except done, failed and dropped. So an agent that opens a pull request
 from its branch gets that pull request's events, with no trigger.
 
@@ -38,11 +41,13 @@ A schedule's task request carries `scheduled` (see `docs/intake/schedule.md`). O
 a fixed `key` sends a second one for the same key. A request that finds the task asleep at a model
 step wakes it, even when its wait does not match. Its prompt is the trigger's `prompt`, then the
 firing's line (which carries the firing time), then the events the task kept while asleep. Its open
-ask and wait stay open: each new run takes over the task's open asks and agent waits, so the next
-`Stop` puts the task back to sleep on them. A request that finds the task in any other state, such
+ask and wait stay open. At its `Stop`, a run with no result takes over the task's open asks and agent
+waits, so the task sleeps on them again. A run that calls `result`, `ask` or `wait` instead moves on:
+the call withdraws the open asks and agent waits of earlier runs. A request that finds the task in any other state, such
 as running, asleep at a human step, or asleep on the daemon's checks gate, is recorded as
 `coalesced` and never typed, so firings never stack.
 
 A message kept for a `running` task also gets an outbox prompt, so the agent reads it after its
-current turn. A message kept for an asleep task that satisfies its wait wakes it (see Waits). A
-message kept for a task in any other state waits for its next run.
+current turn. A message kept for a task that satisfies its open wait fires the wait in any active
+state (see Waits): an asleep task wakes, and a ready, blocked or held task gets the prompt for its
+next run. Any other message kept for a task waits for its next run.

@@ -6,7 +6,8 @@
 `session_id` differs from it, as in a Codex run, the hook sends `PRIORY_SESSION` as the session and
 the stdin id as `thread`, which `SessionStart` stores. The daemon answers `ok` once the signal is
 committed; the hook waits up to 10 seconds. If no daemon takes the line, it goes to
-`signals.spool`. The next daemon applies the spool before it removes it.
+`signals.spool`. The next daemon first marks every attempted prompt `uncertain`, then applies the
+spool and removes it. So a spooled `UserPromptSubmit` no longer confirms the prompt it submitted.
 
 - `SessionStart`: the harness is up and its input is ready, so the run is idle. One whose `source`
   is `compact` changes nothing: Claude fires it when it compacts the conversation, mid-turn.

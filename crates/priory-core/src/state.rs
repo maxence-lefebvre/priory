@@ -10,7 +10,7 @@ use std::collections::BTreeMap;
 use std::io::Write;
 use std::time::Duration;
 
-const VERSION: i64 = 24;
+const VERSION: i64 = 25;
 
 const SCHEMA: &str = "
 CREATE TABLE tasks (
@@ -395,16 +395,24 @@ AND EXISTS (
 PRAGMA user_version = 23;
 ";
 
-// A task queued on schema 10 had no `changed`, so migration 11 left its `entered` NULL.
 const SCHEMA_24: &str = "
-UPDATE tasks SET entered = coalesce(changed, strftime('%Y-%m-%dT%H:%M:%SZ', 'now')) WHERE entered IS NULL;
+ALTER TABLE tasks ADD COLUMN repo TEXT;
+UPDATE tasks SET repo = (SELECT json_extract(inbox.data, '$.repo') FROM inbox
+  WHERE inbox.id = tasks.source AND inbox.type = 'priory.task.requested.cli')
+  WHERE trigger = 'cli';
 PRAGMA user_version = 24;
+";
+
+// A task queued on schema 10 had no `changed`, so migration 11 left its `entered` NULL.
+const SCHEMA_25: &str = "
+UPDATE tasks SET entered = coalesce(changed, strftime('%Y-%m-%dT%H:%M:%SZ', 'now')) WHERE entered IS NULL;
+PRAGMA user_version = 25;
 ";
 /// Each schema change in order: a file at version `n` applies those from index `n` on.
 const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA, SCHEMA_2, SCHEMA_3, SCHEMA_4, SCHEMA_5, SCHEMA_6, SCHEMA_7, SCHEMA_8, SCHEMA_9,
     SCHEMA_10, SCHEMA_11, SCHEMA_12, SCHEMA_13, SCHEMA_14, SCHEMA_15, SCHEMA_16, SCHEMA_17,
-    SCHEMA_18, SCHEMA_19, SCHEMA_20, SCHEMA_21, SCHEMA_22, SCHEMA_23, SCHEMA_24,
+    SCHEMA_18, SCHEMA_19, SCHEMA_20, SCHEMA_21, SCHEMA_22, SCHEMA_23, SCHEMA_24, SCHEMA_25,
 ];
 
 /// The order the queue starts tasks in: band, then a person's order, then age. A band the factory
@@ -482,13 +490,17 @@ pub(crate) fn handle(
         return Ok(());
     }
     let resources = route::resources(message);
-    let owner = owner(&tx, &resources)?;
+    let owner = if route::requests(message) {
+        keyed(&tx, resources.first())?
+    } else {
+        owner(&tx, &resources)?
+    };
     let (task, outcome) = match route::route(message, owner.as_ref(), factory) {
         Decision::Create(new) => {
             tx.execute(
                 "INSERT INTO tasks
-                   (key, workflow, step, state, band, lane, team, project, lane_derived, trigger, source, entered)
-                 VALUES (?1, ?2, ?3, 'queued', ?4, ?5, ?6, ?7, ?8, ?9, ?10, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))",
+                   (key, workflow, step, state, band, lane, team, project, lane_derived, trigger, source, repo, entered)
+                 VALUES (?1, ?2, ?3, 'queued', ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))",
                 params![
                     new.key,
                     new.workflow,
@@ -499,7 +511,8 @@ pub(crate) fn handle(
                     new.project,
                     new.lane_derived,
                     new.trigger,
-                    new.source
+                    new.source,
+                    new.repo
                 ],
             )?;
             let id = tx.last_insert_rowid();
@@ -621,8 +634,11 @@ pub(crate) fn due(db: &mut Connection) -> rusqlite::Result<()> {
 /// The resource and the agent's last prompt of each open wait that the intake polls for.
 pub fn watched(db: &Connection) -> rusqlite::Result<Vec<(String, String)>> {
     db.prepare(
-        "SELECT resource, since FROM waits WHERE fired IS NULL AND withdrawn IS NULL
-         AND kind IN ('linear_comment', 'linear_state', 'slack_reply') ORDER BY id",
+        "SELECT waits.resource, coalesce(waits.since, waits.created) FROM waits
+         JOIN tasks ON tasks.id = waits.task AND tasks.state NOT IN ('done', 'failed', 'dropped')
+         WHERE waits.fired IS NULL AND waits.withdrawn IS NULL
+         AND waits.kind IN ('linear_comment', 'linear_state', 'slack_reply', 'pull_request', 'checks', 'review')
+         ORDER BY waits.id",
     )?
     .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
     .collect()
@@ -646,6 +662,17 @@ pub(crate) fn disk_due(
     let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
     crate::tools::disk_due(&tx, free)?;
     tx.commit()
+}
+
+/// The active task whose own key is `key`: owning the key as a resource is not enough.
+fn keyed(tx: &Transaction, key: Option<&String>) -> rusqlite::Result<Option<Task>> {
+    tx.query_row(
+        "SELECT id FROM tasks WHERE key = ?1
+         AND state NOT IN ('done', 'failed', 'dropped') ORDER BY id LIMIT 1",
+        [key],
+        |row| Ok(Task { id: row.get(0)? }),
+    )
+    .optional()
 }
 
 /// The oldest active task that owns any of `resources`.
@@ -716,6 +743,7 @@ pub(crate) struct Admission {
     pub workflow: String,
     pub step: String,
     pub trigger: String,
+    pub repo: Option<String>,
     /// Queued, not ready: its run is the task's first and gets the step's prompt.
     pub fresh: bool,
 }
@@ -729,7 +757,7 @@ pub(crate) fn admissible<'r>(
     room: impl Fn() -> &'r Result<Room, String>,
 ) -> rusqlite::Result<Option<Admission>> {
     let mut statement = db.prepare(&format!(
-        "SELECT id, workflow, step, trigger, state = 'queued' FROM tasks
+        "SELECT id, workflow, step, trigger, state = 'queued', repo FROM tasks
              WHERE state IN ('queued', 'ready') ORDER BY {START_ORDER}"
     ))?;
     let queued = statement
@@ -740,10 +768,11 @@ pub(crate) fn admissible<'r>(
                 step: row.get(2)?,
                 trigger: row.get(3)?,
                 fresh: row.get(4)?,
+                repo: row.get(5)?,
             })
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
-    let promised = promised(db, factory)?;
+    let promised = promised(db, factory, None)?;
     // The first task that waits for room: no task behind it starts, so it is never starved.
     let mut head = None;
     let mut stall = None;
@@ -779,11 +808,11 @@ pub(crate) fn admissible<'r>(
                         let short = room::wait(measured, share, promised, need);
                         let reason = short.as_ref().map(|short| short.reason.clone());
                         // A task that can never fit would hold the queue forever.
-                        if let Some(short) =
-                            short.filter(|_| room::fits_ever(measured, share, need))
-                        {
+                        if short.is_some() && room::fits_ever(measured, share, need) {
                             head = Some(admission.task);
-                            stall = Some((admission.task, short));
+                            // Waiting only for live runs to end is backpressure, not a stall.
+                            stall = room::wait(measured, share, room::Need::default(), need)
+                                .map(|short| (admission.task, short));
                         }
                         reason
                     }
@@ -816,17 +845,23 @@ fn serving(db: &Connection, agent: &str) -> rusqlite::Result<Option<i64>> {
     .optional()
 }
 
-/// The memory and disk declared by the agents of live runs, plus every held memory grant. No run
-/// reports its own use yet, so each one keeps its whole declaration until it ends.
-pub(crate) fn promised(db: &Connection, factory: &Factory) -> rusqlite::Result<room::Need> {
+/// The memory and disk declared by the agents of live runs, except those of task `except`, plus every
+/// held memory grant. No run reports its own use yet, so each one keeps its whole declaration until
+/// it ends.
+pub(crate) fn promised(
+    db: &Connection,
+    factory: &Factory,
+    except: Option<i64>,
+) -> rusqlite::Result<room::Need> {
     let held: i64 = db.query_row(
         "SELECT coalesce(sum(bytes), 0) FROM grants WHERE state = 'held'",
         [],
         |row| row.get(0),
     )?;
-    let mut statement = db.prepare("SELECT agent FROM runs WHERE ended IS NULL")?;
+    let mut statement =
+        db.prepare("SELECT agent FROM runs WHERE ended IS NULL AND task IS NOT ?1")?;
     // A run recorded before schema 5 has no agent.
-    let mut agents = statement.query_map([], |row| row.get::<_, Option<String>>(0))?;
+    let mut agents = statement.query_map([except], |row| row.get::<_, Option<String>>(0))?;
     let held = room::Need {
         memory: held as u64,
         disk: 0,
@@ -843,6 +878,7 @@ pub(crate) struct Due {
     pub workflow: String,
     pub step: String,
     pub trigger: String,
+    pub repo: Option<String>,
     pub branch: Option<String>,
     pub worktree: Option<String>,
 }
@@ -853,7 +889,7 @@ pub(crate) fn actionable(
     workflows: &BTreeMap<String, Loaded<Workflow>>,
 ) -> rusqlite::Result<Option<Due>> {
     let mut statement = db.prepare(
-        "SELECT id, workflow, step, trigger, branch, worktree FROM tasks
+        "SELECT id, workflow, step, trigger, branch, worktree, repo FROM tasks
          WHERE state IN ('queued', 'ready') ORDER BY id",
     )?;
     let tasks = statement.query_map([], |row| {
@@ -864,6 +900,7 @@ pub(crate) fn actionable(
             trigger: row.get(3)?,
             branch: row.get(4)?,
             worktree: row.get(5)?,
+            repo: row.get(6)?,
         })
     })?;
     for due in tasks {
@@ -967,15 +1004,6 @@ pub(crate) fn start(db: &mut Connection, run: &NewRun) -> rusqlite::Result<i64> 
            retired = NULL
          WHERE id = ?1",
         params![run.task, run.branch, run.worktree, run.ending],
-    )?;
-    // A schedule's tick wakes a task with its ask or wait still open: this run sleeps on them again.
-    tx.execute(
-        "UPDATE asks SET run = ?2 WHERE task = ?1 AND run IS NOT NULL AND answer IS NULL AND withdrawn IS NULL",
-        params![run.task, id],
-    )?;
-    tx.execute(
-        "UPDATE waits SET run = ?2 WHERE task = ?1 AND fired IS NULL AND withdrawn IS NULL AND NOT daemon",
-        params![run.task, id],
     )?;
     let (key, team, project, derived): (String, Option<String>, Option<String>, bool) = tx
         .query_row(

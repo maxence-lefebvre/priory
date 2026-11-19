@@ -494,6 +494,103 @@ fn a_queued_task_at_a_model_step_gets_a_worktree_a_tmux_session_and_a_run() {
 }
 
 #[test]
+fn a_cli_request_starts_its_run_in_the_repository_it_names() {
+    let mut setup = Setup::new("cli-repo");
+    let factory = setup.dir.join("factory");
+    let requested = setup.priory(&[
+        "request",
+        factory.to_str().unwrap(),
+        "--workflow",
+        "implement",
+        "--key",
+        "fix-it",
+        "--repo",
+        "owner/repo",
+        "Fix it.",
+    ]);
+    assert!(
+        requested.status.success(),
+        "{}",
+        String::from_utf8_lossy(&requested.stderr)
+    );
+
+    setup.start();
+
+    setup.until("tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == "running")
+    });
+    assert!(
+        setup
+            .dir
+            .join("home/worktrees/owner/repo/1/README.md")
+            .is_file()
+    );
+}
+
+#[test]
+fn a_cli_task_stored_before_tasks_kept_a_repository_starts_in_its_requests_repository() {
+    let mut setup = Setup::new("cli-repo-upgrade");
+    let factory = setup.dir.join("factory");
+    let requested = setup.priory(&[
+        "request",
+        factory.to_str().unwrap(),
+        "--workflow",
+        "implement",
+        "--key",
+        "fix-it",
+        "--repo",
+        "owner/repo",
+        "--hold",
+        "later",
+        "Fix it.",
+    ]);
+    assert!(requested.status.success());
+    setup.start();
+    setup.until("tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == "held")
+    });
+    setup.crash();
+    // The state file as version 23 left it: tasks without a repository.
+    let db = rusqlite::Connection::open(setup.dir.join("priory.db")).unwrap();
+    db.execute_batch("ALTER TABLE tasks DROP COLUMN repo; PRAGMA user_version = 23;")
+        .unwrap();
+    drop(db);
+    let _ = fs::remove_file(setup.dir.join("home/priory.sock"));
+
+    setup.start();
+    listening(&setup);
+    person(&setup, "release", &["1"]);
+
+    setup.until("tasks", |rows| rows[0][4] == "running");
+}
+
+#[test]
+fn a_linear_task_starts_its_run_in_its_triggers_repository() {
+    let mut setup = Setup::new("linear-repo");
+    fs::write(
+        setup.dir.join("factory/triggers/linear.toml"),
+        "source = \"linear\"\nrepo = \"owner/repo\"\non = \"issue.created\"\nworkflow = \"implement\"\n",
+    )
+    .unwrap();
+    let mut request = requested(42);
+    request.data["key"] = json!("linear:ENG-7");
+    request.data["trigger"] = json!("linear");
+    setup.publish(&request);
+
+    setup.start();
+
+    setup.until("tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == "running")
+    });
+    assert!(
+        setup
+            .dir
+            .join("home/worktrees/owner/repo/1/README.md")
+            .is_file()
+    );
+}
+
+#[test]
 fn an_agent_in_auto_mode_gets_a_run_in_auto_mode_and_its_rules_join_priorys_own() {
     let mut setup = Setup::new("permissions");
     let agent = AGENT.replacen(
@@ -1475,6 +1572,27 @@ fn a_disk_stall_runs_the_disk_scripts_once_with_a_timeout_and_the_desk_shows_the
     setup.until("desk", |rows| !rows.iter().any(|row| row[1] == "sweep"));
 }
 
+#[test]
+fn a_head_that_waits_only_for_live_runs_to_end_opens_no_stall() {
+    let mut setup = Setup::new("backpressure");
+    fs::write(setup.dir.join("factory/factory.toml"), SWEEP_SCRIPTS).unwrap();
+    setup.memory(12);
+    setup.hold("hold-stop");
+    setup.calls(&[result("passed")]);
+    setup.publish(&requested(42));
+    setup.publish(&requested(43));
+
+    setup.start();
+
+    let reason = "waits for room: 8.0 GB of memory free, needs 4.0 GB and keeps 6.4 GB free";
+    setup.until("tasks", |rows| rows.len() == 2 && rows[1][7] == reason);
+    std::thread::sleep(Duration::from_millis(1500));
+    assert_eq!(setup.banner(), None);
+    assert!(!setup.dir.join("fake/swept").exists());
+    setup.release("hold-stop");
+    setup.until("tasks", |rows| rows[1][4] == "running");
+}
+
 const SWEEPER: &str = r#"name = "demo"
 
 [sweep]
@@ -1574,6 +1692,27 @@ fn a_sweeper_that_cleaned_opens_an_issue_on_the_sweep_repository_once_a_person_a
     );
 }
 
+#[test]
+fn a_sweeper_asleep_on_its_approval_while_disk_stays_short_still_opens_its_issue() {
+    let mut setup = stalled_with_sweeper("sweeper-short");
+    setup.calls(&[json!({ "name": "result", "arguments": {
+        "outcome": "cleaned",
+        "summary": "Nothing freed\nThe disk is still short.",
+    } })]);
+    setup.start();
+    setup.until("asks", |rows| rows.len() == 1);
+
+    // A daemon start sweeps and retires asleep tasks while the disk is short.
+    setup.crash();
+    setup.start();
+    std::thread::sleep(Duration::from_millis(1500));
+    let answered = setup.priory(&["answer", "1", "open", "--revision", "1"]);
+    assert!(answered.status.success(), "{answered:?}");
+
+    setup.until("tasks", |rows| rows[0][4] == "done");
+    assert_eq!(setup.gh()[1][..2], ["issue", "create"]);
+}
+
 /// Two tasks on a disk with 30 GB free, which keeps 20 GB, for an implementer declaring `disk`.
 fn two_on_disk(name: &str, disk: Option<&str>) -> Setup {
     let mut setup = Setup::new(name);
@@ -1595,13 +1734,8 @@ fn two_agents_declaring_disk_cannot_both_start_when_only_one_fits() {
     let reason = "waits for room: 22.0 GB of disk free, needs 8.0 GB and keeps 20.0 GB free";
     let tasks = setup.until("tasks", |rows| rows.len() == 2 && rows[1][7] == reason);
     assert_eq!([&tasks[0][4], &tasks[1][4]], ["running", "queued"]);
-    assert_eq!(
-        setup.banner().as_deref(),
-        Some(&*format!(
-            "stalled since {}: short of disk by 6.0 GB; task 2 waits for room",
-            setup.banner().unwrap()[14..34].to_owned()
-        ))
-    );
+    // Task 2 waits only for task 1's promise to end, which is no stall.
+    assert_eq!(setup.banner(), None);
 }
 
 #[test]
@@ -2238,7 +2372,7 @@ fn a_task_queued_before_schema_11_ends_its_first_step_once_upgraded() {
     route(&setup);
     // Schema 10 inserted a queued task with no `changed`, which migration 11 copied into `entered`.
     let db = rusqlite::Connection::open(setup.dir.join("priory.db")).unwrap();
-    db.execute_batch("UPDATE tasks SET entered = NULL; PRAGMA user_version = 23;")
+    db.execute_batch("UPDATE tasks SET entered = NULL; PRAGMA user_version = 24;")
         .unwrap();
 
     setup.start();
@@ -2981,8 +3115,11 @@ fn an_upgrade_hands_the_unconfirmed_prompt_of_a_moved_run_to_the_live_run_that_c
     setup.crash();
     // The state as the version before this fix left it.
     let db = rusqlite::Connection::open(setup.dir.join("priory.db")).unwrap();
-    db.execute_batch("UPDATE outbox SET run = 1 WHERE id = 1; PRAGMA user_version = 22;")
-        .unwrap();
+    db.execute_batch(
+        "UPDATE outbox SET run = 1 WHERE id = 1; ALTER TABLE tasks DROP COLUMN repo;
+         PRAGMA user_version = 22;",
+    )
+    .unwrap();
 
     setup.start();
 
@@ -3137,6 +3274,24 @@ fn the_mcp_server_lists_the_result_ask_and_wait_tools() {
         .map(|tool| tool["name"].as_str().unwrap())
         .collect();
     assert_eq!(names, ["result", "ask", "wait"]);
+    let on = &replies[1]["result"]["tools"][2]["inputSchema"]["properties"]["on"];
+    assert_eq!(
+        on["properties"]["type"]["enum"],
+        json!([
+            "pull_request",
+            "checks",
+            "review",
+            "time",
+            "task",
+            "linear_comment",
+            "linear_state",
+            "slack_reply",
+            "disk"
+        ])
+    );
+    for field in ["issue", "state", "channel", "thread_ts"] {
+        assert!(on["properties"][field].is_object(), "{field} in {on}");
+    }
 }
 
 #[test]
@@ -3396,6 +3551,17 @@ fn a_review_or_a_close_wakes_a_task_waiting_on_it() {
 }
 
 #[test]
+fn a_task_request_for_a_key_another_task_owns_as_a_resource_creates_its_task() {
+    let setup = asleep_on("request-owned", on_pull_7("review"));
+
+    setup.publish(&requested(7));
+
+    let tasks = setup.until("tasks", |rows| rows.len() == 2);
+    assert_eq!(tasks[1][1], "github:owner/repo#7");
+    assert_eq!(setup.rows("inbox")[1][4], "created");
+}
+
+#[test]
 fn an_event_that_does_not_match_the_wait_stays_kept_and_reaches_the_next_run() {
     let setup = asleep_on("unmatched", on_pull_7("pull_request"));
 
@@ -3602,6 +3768,39 @@ fn green_checks_at_the_result_commit_mark_the_task_done_and_start_no_run() {
     assert_eq!(setup.rows("runs").len(), 2);
     assert_eq!(setup.typed().len(), 2, "{:?}", setup.typed());
     assert!(setup.rows("waits").is_empty());
+}
+
+#[test]
+fn a_merge_with_a_check_still_running_marks_the_task_done() {
+    let setup = gated("gate-merged");
+    setup.publish(&check(1, 1));
+    stays_asleep_after(&setup, 2);
+
+    setup.publish(&closed());
+
+    setup.until("tasks", |rows| rows[0][4] == "done");
+    assert_eq!(setup.rows("runs").len(), 2);
+}
+
+#[test]
+fn a_close_without_a_merge_with_a_check_still_running_wakes_the_agent() {
+    let setup = gated("gate-closed");
+    setup.publish(&check(1, 1));
+    stays_asleep_after(&setup, 2);
+
+    setup.publish(&on_pull(
+        "github.pull_request.closed",
+        json!({ "merged": false, "github_id": 400 }),
+    ));
+
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 3);
+    let typed = setup.typed();
+    assert!(
+        typed[2].starts_with(
+            "wait 2 fired: github:owner/repo#7 closed without a merge\ngithub.pull_request.closed owner/repo#7 {"
+        ),
+        "{typed:?}"
+    );
 }
 
 fn check_runs(runs: u64) -> Message {
@@ -4867,6 +5066,73 @@ fn a_fixed_key_firing_wakes_an_asleep_task_and_its_ask_stays_open() {
 }
 
 #[test]
+fn a_woken_run_can_wait_on_something_else_and_so_withdraws_the_ask_it_took_over() {
+    let mut setup = support_day("tick-wait-instead");
+    setup.calls(&[ask(), wait(json!({ "type": "time", "until": "1 hour" }))]);
+    setup.publish(&tick("2026-11-19T08:00:00Z"));
+    setup.start();
+    setup.until("tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == "asleep")
+    });
+
+    setup.publish(&tick("2026-11-19T09:00:00Z"));
+
+    setup.until("waits", |rows| rows.len() == 1);
+    setup.until("tasks", |rows| rows[0][4] == "asleep");
+    assert!(setup.rows("asks").is_empty());
+    let answer = setup.priory(&["answer", "1", "sqlite", "--revision", "1"]);
+    assert_eq!(
+        String::from_utf8_lossy(&answer.stderr),
+        "priory answer: ask 1 was withdrawn when a later run of task 1 called another tool\n"
+    );
+}
+
+#[test]
+fn a_woken_run_that_waits_on_another_condition_is_caught_up_on_the_events_of_its_turn() {
+    let mut setup = support_day("tick-rewait");
+    setup.calls(&[wait(on_pull_7("review")), wait(on_pull_7("pull_request"))]);
+    setup.publish(&tick("2026-11-19T08:00:00Z"));
+    setup.start();
+    setup.until("tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == "asleep")
+    });
+    setup.gone("priory-1");
+    setup.hold("hold-call");
+    setup.publish(&tick("2026-11-19T09:00:00Z"));
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 2);
+    setup.publish(&closed());
+    setup.until("inbox", |rows| rows.len() == 3);
+
+    setup.release("hold-call");
+
+    setup.until("runs", |_| setup.replies().len() == 2);
+    let (text, error) = reply(&setup.replies()[1]);
+    assert!(!error, "{text}");
+    assert!(text.starts_with("wait 2 already holds"), "{text}");
+}
+
+#[test]
+fn an_event_that_satisfies_the_wait_of_a_woken_task_waiting_for_room_fires_it() {
+    let mut setup = support_day("tick-wait");
+    setup.calls(&[wait(on_pull_7("pull_request")), result("failed")]);
+    setup.publish(&tick("2026-11-19T08:00:00Z"));
+    setup.start();
+    setup.until("tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == "asleep")
+    });
+    setup.gone("priory-1");
+    setup.memory(0);
+    setup.publish(&tick("2026-11-19T09:00:00Z"));
+    setup.until("tasks", |rows| rows[0][4] == "ready");
+
+    setup.publish(&closed());
+
+    setup.until("waits", |rows| rows.is_empty());
+    setup.memory(60);
+    setup.until("tasks", |rows| rows[0][4] == "dropped");
+}
+
+#[test]
 fn a_firing_at_a_human_step_is_coalesced() {
     let mut setup = support_day_with("tick-human", STEPS);
     setup.calls(&[result("unsure")]);
@@ -4964,6 +5230,7 @@ fn each_step_that_ends_appends_one_step_ended_record_with_its_outcome_and_decide
         ("key", json!("github:owner/repo#42")),
         ("run", json!("1")),
         ("generation", json!(1)),
+        ("lane", json!("none/misc")),
         ("machine", json!("runner")),
         ("harness", json!("claude-code")),
     ] {
@@ -4971,9 +5238,7 @@ fn each_step_that_ends_appends_one_step_ended_record_with_its_outcome_and_decide
     }
     assert!(data["duration_ms"].is_u64(), "{data}");
     assert!(data["started"].is_string(), "{data}");
-    for absent in ["lane", "factory_revision"] {
-        assert!(data.get(absent).is_none(), "{absent} in {data}");
-    }
+    assert!(data.get("factory_revision").is_none(), "{data}");
     for later in &records[1..] {
         let data = &later["data"];
         for absent in ["run", "harness", "model", "tokens"] {
@@ -5451,6 +5716,53 @@ fn a_blockers_hold_releases_the_task_when_its_issue_has_no_open_blocker_left() {
     setup.until("tasks", |rows| rows[0][4] == "running");
 }
 
+#[test]
+fn a_blockers_hold_stays_when_the_newest_blockers_are_unknown() {
+    let mut setup = Setup::new("hold-blockers-unknown");
+    setup.memory(0);
+    let source = linear_7("linear.issue.blockers", &[]);
+    let mut request = requested(42);
+    request.data["key"] = json!("linear:ENG-7");
+    request.data["source"] = json!(source.id.to_string());
+    setup.publish(&source);
+    let mut unknown = linear_7("linear.issue.blockers", &[]);
+    unknown.data["blockers"] = json!(null);
+    setup.publish(&unknown);
+    setup.publish(&request);
+    setup.start();
+    setup.until("tasks", |rows| rows.len() == 1);
+
+    let reply = person(&setup, "hold", &["1", "--reason", "blocked", "--blockers"]);
+
+    assert_eq!(
+        reply,
+        "task 1 held: blocked, until linear:ENG-7 has no open blocker\n"
+    );
+    assert_eq!(held_as(&setup, "1")[0], "held");
+}
+
+#[test]
+fn a_close_that_does_not_say_whether_it_merged_asks_rather_than_drops() {
+    let setup = queued_without_room("hold-merged-unknown");
+    person(
+        &setup,
+        "hold",
+        &["1", "--reason", "a", "--merge", "7", "--if-closed", "drop"],
+    );
+
+    setup.publish(&on_pull(
+        "github.pull_request.closed",
+        json!({ "merged": null, "github_id": 400, "head_branch": "feature" }),
+    ));
+
+    let asks = setup.until("asks", |rows| rows.len() == 1);
+    assert_eq!(
+        asks[0][3],
+        "Pull request github:owner/repo#7 closed, and GitHub no longer says whether it merged, and task 1 was held until it merged: a. Release the task, or drop it?"
+    );
+    assert_eq!(held_as(&setup, "1")[0], "held");
+}
+
 const REVIVED: &str = "A person revived this task as generation 2 after it was dropped. The asks and waits of its earlier generation are withdrawn. Check the worktree, then continue.\nPlan the change.\nEnd this step by calling the result tool of the priory MCP server with one of these outcomes: hopeless, ready, unsure.\n";
 
 #[test]
@@ -5571,6 +5883,30 @@ fn a_revive_on_a_key_that_another_task_holds_is_refused() {
     );
     let tasks = setup.rows("tasks");
     assert_eq!([&tasks[0][4], &tasks[0][9]], ["dropped", "1"]);
+}
+
+#[test]
+fn a_revive_while_another_task_owns_one_of_its_resources_is_refused() {
+    let mut setup = Setup::new("revive-resource");
+    let on = on_pull_7("review");
+    setup.calls(&[wait(on.clone()), result("failed"), wait(on)]);
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == "asleep")
+    });
+    setup.publish(&reviewed());
+    setup.until("tasks", |rows| rows[0][4] == "dropped");
+    setup.publish(&requested(43));
+    setup.until("waits", |rows| rows.len() == 1);
+
+    let revived = setup.priory(&["revive", "1"]);
+
+    assert!(!revived.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&revived.stderr),
+        "priory revive: task 2 is already active on github:owner/repo#7\n"
+    );
 }
 
 #[test]
@@ -5936,6 +6272,20 @@ impl Setup {
 
     /// Runs one poll of `priory intake` on a factory with no trigger, against the fakes in `bin`.
     fn intake(&self) {
+        self.intake_with(&[]);
+    }
+
+    fn intake_with(&self, env: &[(&str, &str)]) {
+        let output = self.poll(env);
+        assert!(
+            output.status.success(),
+            "intake: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    /// One poll of `priory intake`, which may fail.
+    fn poll(&self, env: &[(&str, &str)]) -> Exit {
         let factory = self.dir.join("intake-factory");
         for (path, content) in [
             ("factory.toml", "name = \"demo\""),
@@ -5951,20 +6301,15 @@ impl Setup {
                 .chain(std::env::split_paths(&std::env::var_os("PATH").unwrap())),
         )
         .unwrap();
-        let output = self
-            .command(env!("CARGO_BIN_EXE_priory"))
+        self.command(env!("CARGO_BIN_EXE_priory"))
             .args(["intake", "--once"])
             .arg(&factory)
             .env("PATH", path)
             .env("SLACK_BOT_TOKEN", SLACK_TOKEN)
             .env("LINEAR_API_KEY", "lin_api_secret_test_key")
+            .envs(env.iter().copied())
             .output()
-            .unwrap();
-        assert!(
-            output.status.success(),
-            "intake: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
+            .unwrap()
     }
 }
 
@@ -6008,6 +6353,112 @@ fn a_reply_posted_before_the_wait_wakes_the_task_and_the_bots_own_reply_never_do
     assert!(stdin.contains(SLACK_TOKEN));
     let args = fs::read_to_string(setup.dir.join("curl-args")).unwrap();
     assert!(!args.contains(SLACK_TOKEN), "{args}");
+}
+
+#[test]
+fn a_failing_slack_channel_still_lets_a_watched_thread_publish_its_reply() {
+    let setup = asleep_on(
+        "slack-channel-fails",
+        json!({ "type": "slack_reply", "channel": "C0123", "thread_ts": THREAD }),
+    );
+    let trigger = setup.dir.join("intake-factory/triggers/left.toml");
+    fs::create_dir_all(trigger.parent().unwrap()).unwrap();
+    fs::write(
+        trigger,
+        "source = \"slack\"\nchannel = \"C0999\"\non = \"message.posted\"\nworkflow = \"implement\"\n",
+    )
+    .unwrap();
+    let stored: herdr_bus::Timestamp = setup.rows("waits")[0][5].parse().unwrap();
+    // The fake answers no `conversations.history`, so the trigger's channel fails.
+    setup.answer_slack(&[slack_message(&ts(stored), "U0PERSON")]);
+
+    let output = setup.poll(&[]);
+
+    assert_eq!(output.status.code(), Some(1));
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 2);
+    assert!(setup.typed()[1].starts_with(&format!("slack.thread.replied C0123:{THREAD} {{")));
+}
+
+#[test]
+fn the_intake_stops_polling_the_thread_of_a_cancelled_tasks_wait() {
+    let setup = asleep_on(
+        "slack-cancelled",
+        json!({ "type": "slack_reply", "channel": "C0123", "thread_ts": THREAD }),
+    );
+    assert!(setup.priory(&["cancel", "1"]).status.success());
+    setup.answer_slack(&[]);
+
+    setup.intake();
+
+    let args = fs::read_to_string(setup.dir.join("curl-args")).unwrap_or_default();
+    assert!(!args.contains("conversations.replies"), "{args}");
+}
+
+#[test]
+fn a_rate_limited_poll_starts_with_a_different_thread_each_minute() {
+    let mut setup = Setup::new("slack-starve");
+    let other = "1763500009.000100";
+    setup.calls(&[
+        wait(json!({ "type": "slack_reply", "channel": "C0123", "thread_ts": THREAD })),
+        wait(json!({ "type": "slack_reply", "channel": "C0123", "thread_ts": other })),
+    ]);
+    setup.publish(&requested(42));
+    setup.start();
+    // One run at a time, so each takes its own call from the fake's queue.
+    setup.until("runs", |rows| {
+        rows.first().is_some_and(|row| row[7] == "asleep")
+    });
+    setup.publish(&requested(43));
+    setup.until("runs", |rows| {
+        rows.len() == 2 && rows.iter().all(|row| row[7] == "asleep")
+    });
+    let later = |seconds| {
+        ts(herdr_bus::Timestamp::now()
+            .checked_add(Duration::from_secs(seconds))
+            .unwrap())
+    };
+    let (first, second) = (later(3600), later(3601));
+    let bin = setup.dir.join("bin");
+    fs::create_dir_all(&bin).unwrap();
+    let auth = json!({ "ok": true, "user_id": "U0BOT", "bot_id": "B0BOT" });
+    // Slack lets a new app read one thread a minute: every later call in a poll is refused.
+    let script = format!(
+        "#!/bin/sh\ncat > /dev/null\ncase \"$*\" in\n  *auth.test*) echo '{auth}' ;;\n  *conversations.replies*)\n    \
+         if [ -e '{dir}/called' ]; then echo '{{\"ok\":false,\"error\":\"ratelimited\"}}'; exit 0; fi\n    \
+         touch '{dir}/called'\n    thread=$(echo \"$*\" | sed 's/.*ts=\\([0-9.]*\\).*oldest.*/\\1/')\n    \
+         reply={first}; [ \"$thread\" = {other} ] && reply={second}\n    \
+         echo \"{{\\\"ok\\\":true,\\\"has_more\\\":false,\\\"messages\\\":[{{\\\"ts\\\":\\\"$reply\\\",\\\"thread_ts\\\":\\\"$thread\\\",\\\"user\\\":\\\"U0PERSON\\\",\\\"text\\\":\\\"done\\\"}}]}}\" ;;\nesac\n",
+        dir = setup.dir.display(),
+    );
+    fs::write(bin.join("curl"), script).unwrap();
+    fs::set_permissions(bin.join("curl"), fs::Permissions::from_mode(0o755)).unwrap();
+
+    for now in ["2026-11-19T10:00:00Z", "2026-11-19T10:01:00Z"] {
+        let _ = fs::remove_file(setup.dir.join("called"));
+        setup.intake_with(&[("PRIORY_NOW", now)]);
+    }
+
+    let replied: Vec<String> = setup
+        .bus()
+        .messages(&herdr_bus::MessageQuery {
+            output: Some(OUTPUT.into()),
+            limit: 100,
+            ..herdr_bus::MessageQuery::default()
+        })
+        .unwrap()
+        .into_iter()
+        .filter(|stored| stored.message.kind == "slack.thread.replied")
+        .map(|stored| {
+            stored.message.data["thread_ts"]
+                .as_str()
+                .unwrap()
+                .to_owned()
+        })
+        .collect();
+    assert!(
+        replied.contains(&THREAD.to_owned()) && replied.contains(&other.to_owned()),
+        "{replied:?}"
+    );
 }
 
 /// A Linear GraphQL answer holding `nodes` at `field`.
@@ -6060,6 +6511,71 @@ fn a_linear_wait_makes_an_intake_without_linear_triggers_poll_linear_for_its_iss
         "{typed:?}"
     );
     assert!(!typed[1].contains("elsewhere"), "{typed:?}");
+}
+
+#[test]
+fn a_pull_request_wait_makes_an_intake_without_github_triggers_poll_its_repository() {
+    let setup = asleep_on("review-intake", on_pull_7("review"));
+    let bin = setup.dir.join("bin");
+    fs::create_dir_all(&bin).unwrap();
+    let gh = bin.join("gh");
+    let log = setup.dir.join("gh-args");
+    fs::write(
+        &gh,
+        format!("#!/bin/sh\necho \"$*\" >> '{}'\necho '[]'\n", log.display()),
+    )
+    .unwrap();
+    fs::set_permissions(&gh, fs::Permissions::from_mode(0o755)).unwrap();
+
+    setup.intake();
+
+    let calls = fs::read_to_string(&log).unwrap_or_default();
+    assert!(
+        calls.contains("api repos/owner/repo/issues/events"),
+        "{calls}"
+    );
+}
+
+#[test]
+fn a_restarted_intake_resumes_a_wait_only_repository_where_it_stopped() {
+    let setup = asleep_on("review-resume", on_pull_7("review"));
+    let bin = setup.dir.join("bin");
+    fs::create_dir_all(&bin).unwrap();
+    let events = setup.dir.join("events.json");
+    fs::write(&events, "[]").unwrap();
+    fs::write(
+        bin.join("gh"),
+        format!(
+            "#!/bin/sh\ncase \"$*\" in\n  *issues/events*) cat '{}' ;;\n  *) echo '[]' ;;\nesac\n",
+            events.display()
+        ),
+    )
+    .unwrap();
+    fs::set_permissions(bin.join("gh"), fs::Permissions::from_mode(0o755)).unwrap();
+    setup.intake();
+    let event = json!([{
+        "id": 100, "event": "labeled", "created_at": "2026-11-19T10:00:00Z",
+        "actor": { "login": "max" }, "label": { "name": "bug" },
+        "issue": { "id": 9041, "number": 41, "title": "Fix it", "html_url": "https://github.com/owner/repo/issues/41",
+                   "user": { "login": "max" }, "created_at": "2026-11-19T09:00:00Z" }
+    }]);
+    fs::write(&events, event.to_string()).unwrap();
+
+    setup.intake();
+
+    let labeled: Vec<_> = setup
+        .bus()
+        .messages(&herdr_bus::MessageQuery {
+            output: Some(OUTPUT.into()),
+            limit: 100,
+            ..herdr_bus::MessageQuery::default()
+        })
+        .unwrap()
+        .into_iter()
+        .filter(|stored| stored.message.kind == "github.issues.labeled")
+        .map(|stored| stored.message.data["baseline"].clone())
+        .collect();
+    assert_eq!(labeled, [json!(false)]);
 }
 
 /// Waits until the daemon answers on its socket.
@@ -6294,6 +6810,49 @@ fn a_run_waits_for_room_while_a_grant_holds_memory() {
     setup.until("tasks", |rows| rows[0][4] == "running");
 }
 
+#[test]
+fn a_grant_inside_a_run_does_not_wait_for_that_run_own_promise() {
+    let mut setup = Setup::new("gate-own-run");
+    setup.memory(20);
+    setup.hold("hold-stop");
+    setup.calls(&[result("passed")]);
+    setup.publish(&requested(42));
+    setup.start();
+    let runs = setup.until("runs", |rows| rows.len() == 1);
+    let session = runs[0][4].clone();
+
+    // 20 GB free keeps 6.4 GB: 12 GB fits only without the run's own 4 GB promise.
+    let gated = |session: Option<&str>| {
+        let mut command = setup.command(env!("CARGO_BIN_EXE_priory"));
+        if let Some(session) = session {
+            command.env("PRIORY_SESSION", session);
+        }
+        command
+            .args([
+                "memory",
+                "acquire",
+                "--gb",
+                "12",
+                "--timeout",
+                "2s",
+                "--",
+                "true",
+            ])
+            .output()
+            .unwrap()
+    };
+    let inside = gated(Some(&session));
+    let outside = gated(None);
+    setup.release("hold-stop");
+
+    assert!(
+        inside.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&inside.stderr)
+    );
+    assert_eq!(outside.status.code(), Some(125));
+}
+
 /// Task 1 sleeps on pull request 7 with a commit on its branch, then the disk runs short while task
 /// 2 waits for room, so the disk stall sweeps.
 fn asleep_when_disk_runs_short(name: &str, spoil: impl FnOnce(&Setup)) -> (Setup, String) {
@@ -6506,6 +7065,29 @@ fn a_stalled_run_gets_a_handler_call_whose_nudge_reaches_its_pane_and_whose_cost
         ),
         "{report:?}"
     );
+}
+
+#[test]
+fn the_handler_reads_the_agent_pane_when_a_person_opened_another_pane() {
+    let mut setup = stalls("handler-pane", WORKFLOW);
+    setup.answers(&[json!({ "action": "nudge", "text": "Run the tests, then call result." })]);
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 1);
+
+    // The new pane is active and changes all the time, while the agent's pane stays still.
+    let ticker = "while :; do echo tick-$(date +%s%N); sleep 0.2; done";
+    assert!(
+        setup
+            .tmux(&["split-window", "-t", "=priory-1:", "--", "sh", "-c", ticker])
+            .status
+            .success()
+    );
+
+    setup.written("fake/handler.log");
+    let asked = setup.handled();
+    assert!(asked[0].contains("fake turn"), "{asked:?}");
+    assert!(!asked[0].contains("tick-"), "{asked:?}");
 }
 
 #[test]

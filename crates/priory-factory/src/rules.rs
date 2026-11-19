@@ -341,8 +341,8 @@ fn check_linear(trigger: &Loaded<Trigger>, problems: &mut Vec<Problem>) {
         };
         report("filter", message);
     }
-    if value.repo.is_some() {
-        report("repo", "a Linear trigger names no `repo`".into());
+    if value.repo.as_deref().is_some_and(|repo| !owner_name(repo)) {
+        report("repo", "a Linear trigger's `repo` is `owner/name`".into());
     }
     if value
         .key
@@ -384,8 +384,11 @@ fn check_slack(trigger: &Loaded<Trigger>, problems: &mut Vec<Problem>) {
     {
         report("filter", "a Slack trigger filters on `text` only".into());
     }
-    if value.repo.is_some() || value.view.is_some() {
-        report("source", "a Slack trigger names no `repo` or `view`".into());
+    if value.view.is_some() {
+        report("source", "a Slack trigger names no `view`".into());
+    }
+    if value.repo.as_deref().is_some_and(|repo| !owner_name(repo)) {
+        report("repo", "a Slack trigger's `repo` is `owner/name`".into());
     }
     if value.key.as_deref().is_some_and(|key| key != "message.ts") {
         report("key", "a Slack trigger's `key` is `message.ts`".into());

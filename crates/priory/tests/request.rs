@@ -129,6 +129,7 @@ fn a_request_publishes_its_source_event_then_the_task_request() {
             "lane": null,
             "trigger": "cli",
             "source": source.id.to_string(),
+            "repo": "owner/repo",
         })
     );
     assert_eq!(task.subject.as_deref(), Some("cli:docs-1"));
