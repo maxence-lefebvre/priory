@@ -162,6 +162,9 @@ impl Setup {
         self.daemon = Some(
             self.command(env!("CARGO_BIN_EXE_priory"))
                 .args(["daemon", factory.to_str().unwrap()])
+                .env("CLAUDECODE", "1")
+                .env("CLAUDE_CODE_ENTRYPOINT", "cli")
+                .env("CLAUDE_CODE_USE_BEDROCK", "0")
                 .stderr(log)
                 .spawn()
                 .unwrap(),
@@ -469,6 +472,36 @@ fn an_agent_in_auto_mode_gets_a_run_in_auto_mode_and_its_rules_join_priorys_own(
         })
     );
     assert!(settings["hooks"]["PermissionRequest"].is_array());
+}
+
+#[test]
+fn a_run_starts_without_the_variables_of_the_claude_session_that_started_the_daemon() {
+    let mut setup = Setup::new("nested-env");
+    setup.publish(&requested(42));
+
+    setup.start();
+
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") == 1);
+    let env = fs::read_to_string(setup.dir.join("fake/env.log")).unwrap();
+    let names: Vec<_> = env.lines().collect();
+    assert!(names.contains(&"PRIORY_HOME"), "{names:?}");
+    let session = [
+        "CLAUDECODE",
+        "CLAUDE_CODE_ENTRYPOINT",
+        "CLAUDE_CODE_EXECPATH",
+        "CLAUDE_CODE_SESSION_ID",
+        "CLAUDE_CODE_CHILD_SESSION",
+        "CLAUDE_CODE_SESSION_ATTENDED",
+        "CLAUDE_CODE_CHILD_NOTES_DIR",
+        "CLAUDE_CODE_MESSAGING_SOCKET",
+        "CLAUDE_CODE_MESSAGING_TOKEN",
+        "CLAUDE_CODE_BRIDGE_SESSION_ID",
+        "CLAUDE_PID",
+        "CLAUDE_EFFORT",
+    ];
+    let leaked: Vec<_> = session.iter().filter(|name| names.contains(name)).collect();
+    assert!(leaked.is_empty(), "{leaked:?} leaked: {names:?}");
+    assert!(names.contains(&"CLAUDE_CODE_USE_BEDROCK"), "{names:?}");
 }
 
 #[test]
@@ -1170,7 +1203,13 @@ fn an_answer_on_the_second_agent_step_resumes_the_second_agent_session() {
         has(&args, ["--append-system-prompt", "You review one change."]),
         "{args:?}"
     );
-    assert_eq!(setup.typed()[2], "sqlite\n");
+    assert_eq!(
+        setup.typed()[2],
+        format!(
+            "sqlite\n{}\n",
+            "End this step by calling the result tool of the priory MCP server with one of these outcomes: approved, changes."
+        )
+    );
 }
 
 fn ask() -> serde_json::Value {
@@ -1203,7 +1242,10 @@ fn an_agent_ask_sleeps_the_task_and_the_answer_wakes_it_as_its_prompt() {
 
     assert!(answered.status.success(), "{answered:?}");
     setup.until("outbox", |rows| with(rows, 3, "confirmed") == 2);
-    assert_eq!(setup.typed()[1], "duckdb, actually\n");
+    assert_eq!(
+        setup.typed()[1],
+        "duckdb, actually\nEnd this step by calling the result tool of the priory MCP server with one of these outcomes: hopeless, ready, unsure.\n"
+    );
     let tasks = setup.rows("tasks");
     assert_eq!([&tasks[0][3], &tasks[0][4]], ["plan", "running"]);
 }
@@ -1234,7 +1276,10 @@ fn an_answer_to_a_stale_revision_or_a_second_answer_is_refused() {
         "priory answer: ask 1 is already answered: sqlite\n"
     );
     setup.until("outbox", |rows| with(rows, 3, "confirmed") == 2);
-    assert_eq!(setup.typed()[1], "sqlite\n");
+    assert_eq!(
+        setup.typed()[1],
+        "sqlite\nEnd this step by calling the result tool of the priory MCP server with one of these outcomes: hopeless, ready, unsure.\n"
+    );
 }
 
 #[test]
@@ -1430,7 +1475,7 @@ fn resume_restarts_a_blocked_task_in_its_session_and_cancel_drops_it_and_ends_it
     assert!(args.contains("--permission-mode\nmanual\n"), "{args}");
     assert_eq!(
         setup.typed()[1],
-        "A person resumed this task after: run 1 exited: claude no longer runs in tmux session priory-1. Check the worktree, then continue.\n"
+        "A person resumed this task after: run 1 exited: claude no longer runs in tmux session priory-1. Check the worktree, then continue.\nEnd this step by calling the result tool of the priory MCP server with one of these outcomes: failed, passed.\n"
     );
     let again = setup.priory(&["resume", "1"]);
     assert!(!again.status.success());
@@ -1452,7 +1497,7 @@ fn resume_restarts_a_blocked_task_in_its_session_and_cancel_drops_it_and_ends_it
     assert!(setup.rows("desk").is_empty());
 }
 
-const INTERRUPTED: &str = "Priory restarted and found tmux session priory-2 gone, as after a reboot, so this run was interrupted. Check the worktree, then continue.\n";
+const INTERRUPTED: &str = "Priory restarted and found tmux session priory-2 gone, as after a reboot, so this run was interrupted. Check the worktree, then continue.\nEnd this step by calling the result tool of the priory MCP server with one of these outcomes: hopeless, ready, unsure.\n";
 
 #[test]
 fn a_daemon_started_after_its_tmux_server_died_resumes_each_lost_run_once() {
@@ -1665,7 +1710,7 @@ fn an_answer_that_beats_the_stop_is_typed_into_the_same_run_once() {
                 "{}\n",
                 prompted("Plan the change.", "hopeless, ready, unsure")
             ),
-            "sqlite\n".to_owned()
+            format!("{}\n", prompted("sqlite", "hopeless, ready, unsure"))
         ]
     );
     let runs = setup.rows("runs");
@@ -1919,7 +1964,10 @@ fn a_time_wait_fires_after_its_instant_and_not_before() {
     setup.until("outbox", |rows| with(rows, 3, "confirmed") == 2);
     assert_eq!(
         setup.typed()[1],
-        format!("wait 1 fired: {} passed\n", waits[0][4])
+        format!(
+            "wait 1 fired: {} passed\nEnd this step by calling the result tool of the priory MCP server with one of these outcomes: failed, passed.\n",
+            waits[0][4]
+        )
     );
     let runs = setup.rows("runs");
     let (asleep, woken) = (&runs[0][6], &runs[1][5]);
@@ -1945,7 +1993,9 @@ fn a_task_wait_fires_when_the_other_task_is_done() {
     setup.until("tasks", |rows| rows.len() == 2 && rows[1][4] == "done");
     setup.until("outbox", |rows| {
         rows.iter().any(|row| {
-            row[1] == "1" && row[3] == "confirmed" && row[4] == "wait 1 fired: task 2 is done"
+            row[1] == "1"
+                && row[3] == "confirmed"
+                && row[4].starts_with("wait 1 fired: task 2 is done\\nEnd this step")
         })
     });
     assert_eq!(setup.rows("tasks")[0][4], "running");
@@ -2365,6 +2415,15 @@ fn an_answer_reaching_done_holds_the_task_on_the_checks_of_its_last_result() {
     setup.publish(&red);
     let runs = setup.until("runs", |rows| rows.len() == 3);
     assert_eq!(runs[2][2], "implement");
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") == 3);
+    let typed = setup.typed();
+    assert!(
+        typed
+            .last()
+            .unwrap()
+            .contains("\nEnd this step by calling the result tool"),
+        "{typed:?}"
+    );
 }
 
 #[test]
@@ -3185,4 +3244,20 @@ fn an_agent_turned_back_to_per_task_starts_new_sessions_rather_than_resume_the_s
         first != &shared && second != &shared && first != second,
         "{runs:?}"
     );
+}
+
+#[test]
+fn a_listing_exits_quietly_when_its_reader_closes_the_pipe() {
+    let setup = Setup::new("closed-pipe");
+    let mut child = setup
+        .command(env!("CARGO_BIN_EXE_priory"))
+        .arg("desk")
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    drop(child.stdout.take());
+    let output = child.wait_with_output().unwrap();
+    assert!(output.status.success(), "{output:?}");
+    assert!(output.stderr.is_empty(), "{output:?}");
 }

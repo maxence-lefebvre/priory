@@ -14,6 +14,7 @@ mcp='{}'
 session=''
 printf '%s\n' "$@" > "$FAKE_DIR/args.log"
 echo $$ > "$FAKE_DIR/pid"
+env | cut -d= -f1 > "$FAKE_DIR/env.log"
 while [ $# -gt 0 ]; do
   case "$1" in
     --session-id|--resume) session=$2; shift 2 ;;
