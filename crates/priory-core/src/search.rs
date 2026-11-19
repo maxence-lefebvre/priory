@@ -1,5 +1,8 @@
+use crate::embed::{Counter, Lazy};
 use rusqlite::{Connection, OptionalExtension, params};
+use serde_json::Value;
 use std::collections::HashMap;
+use std::path::Path;
 
 /// The most words a TL;DR holds when no tokenizer counts it.
 pub const WORDS: usize = 180;
@@ -18,15 +21,15 @@ const RANKED: usize = 200;
 const SIMILAR: f32 = 0.3;
 
 /// The length of `text` and the limit it must stay under, in the unit that limit counts.
-pub struct Measure {
-    pub count: usize,
-    pub limit: usize,
-    pub unit: &'static str,
+struct Measure {
+    count: usize,
+    limit: usize,
+    unit: &'static str,
 }
 
-/// Counts `text` against the TL;DR limit: in `tokens` when a tokenizer counted them, else in words.
-pub fn measure(text: &str, tokens: Option<(usize, usize)>) -> Measure {
-    match tokens {
+/// Counts `text` against the TL;DR limit: in tokens with the model's tokenizer, else in words.
+fn measure(text: &str, counter: Option<&Counter>) -> Measure {
+    match counter.and_then(|counter| counter(text)) {
         Some((count, limit)) => Measure {
             count,
             limit,
@@ -48,40 +51,37 @@ pub fn cut(text: &str) -> String {
         .join(" ")
 }
 
-/// `text` cut to the TL;DR limit: the word limit, then the token limit `tokens` gives, if any.
-pub fn fit(text: &str, tokens: &mut dyn FnMut(&str) -> Option<(usize, usize)>) -> String {
-    let mut words: Vec<&str> = text.split_whitespace().take(WORDS).collect();
-    while !words.is_empty() && tokens(&words.join(" ")).is_some_and(|(count, limit)| count > limit)
-    {
+/// `text` cut to the TL;DR limit, word by word.
+pub fn fit(text: &str, counter: Option<&Counter>) -> String {
+    let mut words: Vec<&str> = text.split_whitespace().collect();
+    while !words.is_empty() && {
+        let Measure { count, limit, .. } = measure(&words.join(" "), counter);
+        count > limit
+    } {
         words.pop();
     }
     words.join(" ")
 }
 
-/// The token count and limit of `text` for the factory's embedder, when embeddings are on and it
-/// has a tokenizer.
-pub fn tokens(
-    db: &Connection,
-    embedders: &crate::embed::Shared,
-    text: &str,
-) -> Option<(usize, usize)> {
+/// The factory's token counter for a process that never downloads: the CLI and an agent's tools.
+/// A model whose tokenizer is not downloaded yet counts words.
+pub fn counter(db: &Connection, home: &Path) -> Option<Counter> {
     let (name, _) = embedder(db).ok()??;
-    crate::embed::tokens_shared(embedders, &name, text)
+    crate::embed::counter(&name, home, false).ok()?
 }
 
-/// Sets task `task`'s TL;DR, refusing one over the limit with its count. `tokens` counts its tokens
-/// and gives the limit, when the embedding model's tokenizer is at hand.
+/// Sets task `task`'s TL;DR, refusing one over the limit with its count.
 pub fn set(
     db: &Connection,
     task: i64,
     text: &str,
-    tokens: Option<(usize, usize)>,
+    counter: Option<&Counter>,
 ) -> Result<String, String> {
     let text = text.trim();
     if text.is_empty() {
         return Err("a TL;DR needs text".to_owned());
     }
-    let Measure { count, limit, unit } = measure(text, tokens);
+    let Measure { count, limit, unit } = measure(text, counter);
     if count > limit {
         return Err(format!(
             "the TL;DR has {count} {unit}, over the limit of {limit}: shorten it"
@@ -198,30 +198,32 @@ pub struct Found {
     pub unavailable: Option<String>,
 }
 
-/// Embeds a text with the embedder a name stands for.
-pub type Embed<'a> = dyn FnMut(&str, &str) -> Result<Vec<f32>, String> + 'a;
-
 /// The tasks matching `query`, best first, in `states` when it names any, as a table with a header.
-/// With embeddings on, `embed` turns the query into a vector, and the keyword and vector rankings
-/// merge by reciprocal rank fusion. Tasks the embedder has not reached match by keyword alone.
+/// With embeddings on, `embedders` turns the query into a vector, and the keyword and vector
+/// rankings merge by reciprocal rank fusion. A task whose current text has no vector yet matches by
+/// keyword alone.
 pub fn search(
     db: &Connection,
     query: &str,
     states: &[String],
     limit: usize,
-    embed: &mut Embed,
+    embedders: &mut Lazy,
 ) -> Result<Found, String> {
     let states = serde_json::to_string(states).expect("states serialize");
+    let depth = limit.max(RANKED);
     let keyword = match any_word(query) {
-        Some(words) => keyword_ranking(db, &words, &states).map_err(|error| error.to_string())?,
+        Some(words) => {
+            keyword_ranking(db, &words, &states, depth).map_err(|error| error.to_string())?
+        }
         None => Vec::new(),
     };
     let (vector, unavailable) = match embedder(db).map_err(|error| error.to_string())? {
         None => (Vec::new(), None),
         Some((_, Some(error))) => (Vec::new(), Some(error)),
-        Some((name, None)) => match embed(&name, query) {
+        Some((name, None)) => match embedders.embed(&name, query) {
             Ok(query) => (
-                vector_ranking(db, &name, &query, &states).map_err(|error| error.to_string())?,
+                vector_ranking(db, &name, &query, &states, depth)
+                    .map_err(|error| error.to_string())?,
                 None,
             ),
             Err(error) => (Vec::new(), Some(error)),
@@ -266,33 +268,51 @@ pub fn search(
 }
 
 /// The tasks whose text matches `words`, best bm25 score first.
-fn keyword_ranking(db: &Connection, words: &str, states: &str) -> rusqlite::Result<Vec<i64>> {
+fn keyword_ranking(
+    db: &Connection,
+    words: &str,
+    states: &str,
+    depth: usize,
+) -> rusqlite::Result<Vec<i64>> {
     let mut statement = db.prepare(&format!(
         "SELECT tasks.id FROM search JOIN tasks ON tasks.id = search.rowid
          WHERE search MATCH ?1 AND {IN_STATES} ORDER BY bm25(search), tasks.id LIMIT ?3"
     ))?;
     statement
-        .query_map(params![words, states, RANKED as i64], |row| row.get(0))?
+        .query_map(params![words, states, depth as i64], |row| row.get(0))?
         .collect()
 }
 
-/// The tasks whose vector by the embedder `name` is similar enough to `query`, most similar first.
+/// The tasks whose vector by the embedder `name`, of their current text, is similar enough to
+/// `query`, most similar first.
 fn vector_ranking(
     db: &Connection,
     name: &str,
     query: &[f32],
     states: &str,
+    depth: usize,
 ) -> rusqlite::Result<Vec<i64>> {
     let mut statement = db.prepare(&format!(
-        "SELECT tasks.id, vectors.vector FROM vectors JOIN tasks ON tasks.id = vectors.task
+        "SELECT tasks.id, vectors.vector, vectors.text, tasks.tldr, task_text.title,
+           task_text.request
+         FROM vectors JOIN tasks ON tasks.id = vectors.task
+         JOIN task_text ON task_text.task = tasks.id
          WHERE vectors.embedder = ?1 AND {IN_STATES}"
     ))?;
     let mut similar: Vec<(i64, f32)> = statement
         .query_map(params![name, states], |row| {
-            Ok((row.get::<_, i64>(0)?, row.get::<_, Vec<u8>>(1)?))
+            let current = match row.get::<_, Option<String>>(3)? {
+                Some(tldr) => tldr,
+                None => fallback(&row.get::<_, String>(4)?, &row.get::<_, String>(5)?),
+            };
+            let fresh = row.get::<_, String>(2)? == current;
+            Ok((row.get::<_, i64>(0)?, row.get::<_, Vec<u8>>(1)?, fresh))
         })?
         .filter_map(|row| {
-            let (task, bytes) = row.ok()?;
+            let (task, bytes, fresh) = row.ok()?;
+            if !fresh {
+                return None;
+            }
             let vector: Vec<f32> = bytes
                 .chunks_exact(4)
                 .map(|chunk| f32::from_le_bytes(chunk.try_into().expect("4 bytes")))
@@ -302,8 +322,62 @@ fn vector_ranking(
         .filter(|(_, similarity)| *similarity >= SIMILAR)
         .collect();
     similar.sort_by(|a, b| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0)));
-    similar.truncate(RANKED);
+    similar.truncate(depth);
     Ok(similar.into_iter().map(|(task, _)| task).collect())
+}
+
+/// Answers the `tldr` and `search` tools in the agent's own `priory mcp` process, as the CLI does,
+/// so a slow embedder never holds up the daemon. Any other tool is the daemon's: `None`.
+pub fn tool(
+    session: &str,
+    tool: &str,
+    arguments: &Value,
+    home: &Path,
+) -> Option<Result<String, String>> {
+    if !matches!(tool, "tldr" | "search") {
+        return None;
+    }
+    let text = |name: &str| {
+        arguments[name]
+            .as_str()
+            .map(str::to_owned)
+            .ok_or_else(|| format!("{name} must be a string"))
+    };
+    Some(crate::state::open().and_then(|db| {
+        let task: i64 = db
+            .query_row(
+                "SELECT task FROM runs WHERE ended IS NULL AND session = ?1",
+                [session],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| format!("no live run has session {session}"))?;
+        if tool == "tldr" {
+            return set(&db, task, &text("text")?, counter(&db, home).as_ref());
+        }
+        let limit = arguments["limit"].as_u64().map_or(LIMIT, |n| n as usize);
+        let states: Vec<String> = arguments["states"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|state| state.as_str().map(str::to_owned))
+            .collect();
+        let found = search(
+            &db,
+            &text("query")?,
+            &states,
+            limit,
+            &mut Lazy::new(home, false),
+        )?;
+        Ok(match found.unavailable {
+            Some(why) => format!(
+                "embeddings are unavailable, so this matched keywords only: {why}\n{}",
+                found.table
+            ),
+            None => found.table,
+        })
+    }))
 }
 
 /// The cosine similarity of two vectors of one length, if neither is zero.

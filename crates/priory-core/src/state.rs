@@ -533,6 +533,7 @@ pub(crate) fn handle(
     db: &mut Connection,
     message: &Message,
     factory: &Factory,
+    counter: Option<&crate::embed::Counter>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
     let seen = tx
@@ -574,7 +575,7 @@ pub(crate) fn handle(
                         .as_deref()
                         .map(str::trim)
                         .filter(|tldr| !tldr.is_empty())
-                        .map(crate::search::cut)
+                        .map(|tldr| crate::search::fit(tldr, counter))
                 ],
             )?;
             let id = tx.last_insert_rowid();

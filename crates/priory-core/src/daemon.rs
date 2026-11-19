@@ -16,7 +16,6 @@ use std::cell::OnceCell;
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::mpsc::RecvTimeoutError;
-use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 const CONSUMER: &str = "priory";
@@ -67,18 +66,25 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
     state::bands(&mut db, &factory.bands())?;
     let embedder = factory.search().embedder().map(|spec| embed::name(&spec));
     search::configure(&db, embedder.as_deref())?;
+    let home = runtime::home();
+    // Only the serving daemon downloads the tokenizer, a small file, before it routes anything.
+    let counter = match embedder.as_deref() {
+        Some(name) => embed::counter(name, &home, !once).unwrap_or_else(|error| {
+            eprintln!("priory daemon: TL;DRs count words, not tokens: {error}");
+            None
+        }),
+        None => None,
+    };
+    let counter = counter.as_ref();
     if once {
-        drain(&bus, &mut db, factory)?;
+        drain(&bus, &mut db, factory, counter)?;
         return Ok(());
     }
-    let home = runtime::home();
     let listening = runtime::listen(&home)?;
-    let embedders = Arc::new(Mutex::new(embed::Lazy::new(&home)));
     if let Some(name) = embedder.clone() {
-        let embedders = Arc::clone(&embedders);
-        std::thread::spawn(move || embed_all(&name, &embedders));
+        let home = home.clone();
+        std::thread::spawn(move || embed_all(&name, embed::Lazy::new(&home, true)));
     }
-    let tokens = |text: &str| embed::tokens_shared(&embedders, embedder.as_deref()?, text);
     let trace = Trace {
         factory,
         revision: runtime::revision(&factory.dir),
@@ -103,8 +109,7 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
         runtime::kill(&tmux);
     }
     runtime::replay(&home, |line| {
-        let (_, kill) =
-            take(&mut db, line, &trace, &embedders).map_err(|error| error.to_string())?;
+        let (_, kill) = take(&mut db, line, &trace).map_err(|error| error.to_string())?;
         kill.inspect(|tmux| runtime::kill(tmux));
         Ok(())
     })?;
@@ -152,7 +157,7 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
         }
         let output = runtime::answer(&summaries, id);
         let status = handler::INTERRUPTED;
-        summary::answered(&mut db, &trace, id, output.as_deref(), status, &mut &tokens)?;
+        summary::answered(&mut db, &trace, id, output.as_deref(), status, counter)?;
         runtime::forget(&summaries, id);
     }
     let mut summarizing = Vec::new();
@@ -161,13 +166,13 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
     let every = factory.sweep().every.unwrap_or(SWEEP);
     let mut swept: Option<Instant> = None;
     loop {
-        drain(&bus, &mut db, factory)?;
+        drain(&bus, &mut db, factory, counter)?;
         while let Ok(line) = listening.lines.try_recv() {
-            apply(&mut db, line, &trace, &embedders)?;
+            apply(&mut db, line, &trace)?;
         }
         tend(&mut db, &trace, &share, &home, &scope)?;
         handle_stalls(&mut db, &trace, &home, &mut stalls)?;
-        summarize(&mut db, &trace, &summaries, &mut summarizing, &mut &tokens)?;
+        summarize(&mut db, &trace, &summaries, &mut summarizing, counter)?;
         if sweep_scripts(&db, factory, &home, &mut scripts)? {
             swept = None;
         }
@@ -184,7 +189,7 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
             sweep::retire(&db, &home, short)?;
         }
         match listening.lines.recv_timeout(EVERY) {
-            Ok(line) => apply(&mut db, line, &trace, &embedders)?,
+            Ok(line) => apply(&mut db, line, &trace)?,
             Err(RecvTimeoutError::Timeout) => {}
             Err(RecvTimeoutError::Disconnected) => return Err("the signal socket closed".into()),
         }
@@ -199,21 +204,22 @@ const EMBED_RETRY: Duration = Duration::from_secs(60);
 
 /// Embeds, in the background, each task whose vector by the embedder `name` is missing or stale.
 /// A failure is logged once, recorded for `priory search`, and retried later.
-fn embed_all(name: &str, embedders: &Mutex<embed::Lazy>) {
+fn embed_all(name: &str, mut embedder: embed::Lazy) {
     let db = match state::open() {
         Ok(db) => db,
         Err(error) => return eprintln!("priory daemon: embeddings are unavailable: {error}"),
     };
     loop {
-        let pass = (|| -> Result<(), String> {
+        let mut pass = || -> Result<(), String> {
             let stale = search::stale(&db, name).map_err(|error| error.to_string())?;
             for (task, text) in stale {
-                let vector = embed::embed_shared(embedders, name, &text, true)?;
+                let vector = embedder.embed(name, &text)?;
                 search::store(&db, task, name, &text, &vector)
                     .map_err(|error| error.to_string())?;
             }
             Ok(())
-        })();
+        };
+        let pass = pass();
         let wait = match &pass {
             Ok(()) => EMBED_EVERY,
             Err(_) => EMBED_RETRY,
@@ -238,7 +244,7 @@ fn summarize(
     trace: &Trace,
     dir: &Path,
     calls: &mut Vec<(i64, Script)>,
-    tokens: &mut dyn FnMut(&str) -> Option<(usize, usize)>,
+    counter: Option<&embed::Counter>,
 ) -> Result<(), Error> {
     for (id, mut script) in std::mem::take(calls) {
         let Some((status, log)) = script.poll() else {
@@ -251,7 +257,7 @@ fn summarize(
             format!("{status}: {log}")
         };
         let output = runtime::answer(dir, id);
-        summary::answered(db, trace, id, output.as_deref(), &status, tokens)?;
+        summary::answered(db, trace, id, output.as_deref(), &status, counter)?;
         runtime::forget(dir, id);
     }
     let Some(model) = summary::model(trace.factory) else {
@@ -270,7 +276,7 @@ fn summarize(
             }
             Err(error) => {
                 let status = format!("cannot start: {error}");
-                summary::answered(db, trace, id, None, &status, tokens)?;
+                summary::answered(db, trace, id, None, &status, counter)?;
                 runtime::forget(dir, id);
             }
         }
@@ -423,13 +429,8 @@ fn log_of(home: &Path, id: i64) -> std::path::PathBuf {
 
 /// Applies a line from the socket and replies to its sender. A run its line ended is killed after
 /// the reply, so the hook that sent it is not killed first.
-fn apply(
-    db: &mut Connection,
-    line: Line,
-    trace: &Trace,
-    embedders: &Mutex<embed::Lazy>,
-) -> Result<(), Error> {
-    let (reply, kill) = take(db, &line.text, trace, embedders)?;
+fn apply(db: &mut Connection, line: Line, trace: &Trace) -> Result<(), Error> {
+    let (reply, kill) = take(db, &line.text, trace)?;
     let _ = line.applied.send(reply);
     kill.inspect(|tmux| runtime::kill(tmux));
     Ok(())
@@ -450,21 +451,13 @@ enum Input {
 /// Applies one line and returns its reply, with a tmux session to kill. A signal's reply is `ok`;
 /// a call's or an answer's is the JSON of its `Result`. A line that is none of them is reported
 /// and dropped.
-fn take(
-    db: &mut Connection,
-    line: &str,
-    trace: &Trace,
-    embedders: &Mutex<embed::Lazy>,
-) -> Result<(String, Option<String>), Error> {
+fn take(db: &mut Connection, line: &str, trace: &Trace) -> Result<(String, Option<String>), Error> {
     let replied = |result: Result<String, String>| {
         serde_json::to_string(&result).expect("a result serializes")
     };
     match serde_json::from_str::<Input>(line) {
         Ok(Input::Signal(signal)) => Ok(("ok".to_owned(), state::signal(db, &signal, trace)?)),
-        Ok(Input::Call(call)) => Ok((
-            replied(tools::call(db, &call, trace.factory, embedders)?),
-            None,
-        )),
+        Ok(Input::Call(call)) => Ok((replied(tools::call(db, &call, trace.factory)?), None)),
         Ok(Input::Answer(answer)) => Ok((
             replied(tools::answer(db, &answer, trace, &|worktree, branch| {
                 runtime::kept_head(&runtime::home(), worktree, branch)
@@ -921,7 +914,12 @@ fn harness(harness: &Harness) -> &'static dyn runtime::Harness {
     }
 }
 
-fn drain(bus: &Bus, db: &mut Connection, factory: &Factory) -> Result<(), Error> {
+fn drain(
+    bus: &Bus,
+    db: &mut Connection,
+    factory: &Factory,
+    counter: Option<&embed::Counter>,
+) -> Result<(), Error> {
     match bus.connect(CONSUMER, OUTPUT, Start::Beginning) {
         // The intake has not declared its output yet: nothing is pending.
         Err(herdr_bus::Error::UnknownOutput(_)) => return Ok(()),
@@ -933,7 +931,7 @@ fn drain(bus: &Bus, db: &mut Connection, factory: &Factory) -> Result<(), Error>
             return Ok(());
         }
         for delivery in deliveries {
-            state::handle(db, &delivery.message, factory)?;
+            state::handle(db, &delivery.message, factory, counter)?;
             bus.ack(delivery.connection, delivery.seq)?;
         }
     }

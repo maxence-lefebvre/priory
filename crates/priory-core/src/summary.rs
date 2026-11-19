@@ -93,12 +93,12 @@ pub(crate) fn answered(
     id: i64,
     output: Option<&str>,
     status: &str,
-    tokens: &mut dyn FnMut(&str) -> Option<(usize, usize)>,
+    counter: Option<&crate::embed::Counter>,
 ) -> rusqlite::Result<()> {
     let (parsed, usage) = handler::parse(output);
     let text = parsed["result"]
         .as_str()
-        .map(|text| search::fit(text, tokens))
+        .map(|text| search::fit(text, counter))
         .unwrap_or_default();
     let status = match (handler::succeeded(&parsed, status), text.is_empty()) {
         (true, false) => "written".to_owned(),

@@ -94,7 +94,11 @@ fn main() -> ExitCode {
         Some("answer") => answer(args.map(|arg| arg.to_string_lossy().into_owned()).collect()),
         Some("mcp") => match (args.next(), args.next(), args.next()) {
             (Some(flag), Some(session), None) if flag == "--session" => {
-                exit("mcp", mcp::serve(&session.to_string_lossy()))
+                let session = session.to_string_lossy();
+                let local = |tool: &str, arguments: &serde_json::Value| {
+                    search::tool(&session, tool, arguments, &runtime::home())
+                };
+                exit("mcp", mcp::serve(&session, &local))
             }
             _ => usage(),
         },
@@ -506,11 +510,10 @@ fn tldr(task: &str, text: &str) -> ExitCode {
     let Ok(task) = task.parse() else {
         return usage();
     };
-    let embedders = embed::Shared::new(embed::Lazy::new(&runtime::home()));
     let set = state::open()
         .and_then(|db| {
-            let tokens = search::tokens(&db, &embedders, text);
-            search::set(&db, task, text, tokens)
+            let counter = search::counter(&db, &runtime::home());
+            search::set(&db, task, text, counter.as_ref())
         })
         .map(|done| println!("{done}"));
     exit("tldr", set)
@@ -538,10 +541,9 @@ fn search(args: Vec<String>) -> ExitCode {
     let Some(query) = query else {
         return usage();
     };
-    let embedders = embed::Shared::new(embed::Lazy::new(&runtime::home()));
-    let mut embed = |name: &str, text: &str| embed::embed_shared(&embedders, name, text, true);
+    let mut embedder = embed::Lazy::new(&runtime::home(), false);
     let printed = state::open()
-        .and_then(|db| search::search(&db, &query, &states, limit, &mut embed))
+        .and_then(|db| search::search(&db, &query, &states, limit, &mut embedder))
         .map(|found| {
             if let Some(why) = found.unavailable {
                 eprintln!("priory search: embeddings are unavailable, so this matched keywords only: {why}");

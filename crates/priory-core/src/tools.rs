@@ -89,68 +89,18 @@ fn optional(arguments: &Value, name: &str) -> Result<Option<String>, String> {
     }
 }
 
-/// The `search` tool's answer: the table, after a line saying why embeddings are unavailable, if
-/// they are.
-fn search(
-    db: &Connection,
-    query: &str,
-    arguments: &Value,
-    embedders: &crate::embed::Shared,
-) -> Result<String, String> {
-    let limit = arguments["limit"]
-        .as_u64()
-        .map_or(crate::search::LIMIT, |n| n as usize);
-    let states: Vec<String> = arguments["states"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .filter_map(|state| state.as_str().map(str::to_owned))
-        .collect();
-    let mut embed =
-        |name: &str, text: &str| crate::embed::embed_shared(embedders, name, text, false);
-    let found = crate::search::search(db, query, &states, limit, &mut embed)?;
-    Ok(match found.unavailable {
-        Some(why) => format!(
-            "embeddings are unavailable, so this matched keywords only: {why}\n{}",
-            found.table
-        ),
-        None => found.table,
-    })
-}
-
 /// Applies a tool call from the run whose harness session is `call.session`. The inner error is
 /// the tool's error, returned to the agent with nothing stored.
 pub(crate) fn call(
     db: &mut Connection,
     call: &Call,
     factory: &Factory,
-    embedders: &crate::embed::Shared,
 ) -> rusqlite::Result<Result<String, String>> {
     let workflows = &factory.workflows;
     let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
     let Some(run) = run(&tx, &call.session)? else {
         return Ok(Err(format!("no live run has session {}", call.session)));
     };
-    // A TL;DR or a search neither ends the turn nor counts as the run's answer.
-    match call.tool.as_str() {
-        "tldr" => {
-            let stored = text(&call.arguments, "text").and_then(|text| {
-                let tokens = crate::search::tokens(&tx, embedders, &text);
-                crate::search::set(&tx, run.task, &text, tokens)
-            });
-            if stored.is_ok() {
-                tx.commit()?;
-            }
-            return Ok(stored);
-        }
-        "search" => {
-            // A query embedding can take a while: no write lock waits on it.
-            drop(tx);
-            return Ok(text(&call.arguments, "query")
-                .and_then(|query| search(db, &query, &call.arguments, embedders)));
-        }
-        _ => {}
-    }
     if let Some(outcome) = tx
         .query_row(
             "SELECT outcome FROM results WHERE run = ?1",

@@ -461,3 +461,20 @@ fn a_failing_embedder_leaves_keyword_search_and_search_says_why() {
         setup.log()
     );
 }
+
+#[test]
+fn a_changed_tldr_no_longer_matches_by_its_old_vector() {
+    let mut setup = Setup::embedding("stale-vector", "embed");
+    setup.request(
+        "kitten",
+        "Feed the kitten.",
+        &["--tldr", "Feed the kitten twice a day."],
+    );
+    setup.start();
+    until("the first embedding", || setup.search(&["feline"]) == ["1"]);
+    setup.stop();
+
+    succeeded(&setup.tldr("1", "Speed up the compile step."));
+
+    assert!(setup.search(&["feline"]).is_empty());
+}
