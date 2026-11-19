@@ -89,6 +89,8 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
         let output = script::collect(&log_of(&home, id));
         stall::ended(&db, id, "interrupted by a daemon restart", &output)?;
     }
+    // A crash between ending its last script and marking it swept leaves a stall unswept.
+    stall::swept(&db)?;
     let mut scripts = Vec::new();
     let every = factory.sweep().every.unwrap_or(SWEEP);
     let mut swept: Option<Instant> = None;

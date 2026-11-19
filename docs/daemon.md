@@ -637,6 +637,8 @@ Known limits:
 - What the sweeper may remove is set by its prompt, not enforced on paths.
 - A script's log file grows until it ends; only its tail is read.
 - A crash between starting a script and recording its pid leaves that script unbounded.
+- A restarted daemon cannot kill the background children of a lost script whose shell already
+  exited, since it cannot tell that group from a process that reused the shell's pid.
 - A stall that alternates between two resources starts a new stall, and new scripts, at each change.
 
 ## Tools
