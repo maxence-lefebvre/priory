@@ -1677,7 +1677,7 @@ fn on_pull(kind: &str, extra: serde_json::Value) -> Message {
         "repo": "owner/repo",
         "pull_request": 7,
         "head_branch": "priory/1",
-        "head_sha": "abc",
+        "head_sha": "abc0000000000000000000000000000000000000",
         "base_branch": "main",
     });
     data.as_object_mut()
@@ -1854,13 +1854,13 @@ fn an_event_that_does_not_match_the_wait_stays_kept_and_reaches_the_next_run() {
 #[test]
 fn a_checks_wait_on_a_head_ignores_checks_of_another_commit() {
     let mut on = on_pull_7("checks");
-    on["head_sha"] = json!("def");
+    on["head_sha"] = json!("def0000000000000000000000000000000000000");
     let setup = asleep_on("checks-head", on);
 
     setup.publish(&check(1, 0));
     stays_asleep(&setup);
     let mut last = check(2, 0);
-    last.data["head_sha"] = json!("def");
+    last.data["head_sha"] = json!("def0000000000000000000000000000000000000");
     setup.publish(&last);
 
     setup.until("outbox", |rows| with(rows, 3, "confirmed") == 2);
@@ -1945,10 +1945,15 @@ fn passed_at(commit: &str) -> serde_json::Value {
 }
 
 /// Task 1 owns pull request 7 through a review wait, then a review wakes it and its result
-/// reaches `done` at commit `abc`. Returns once that run ended.
+/// reaches `done` at commit `abc0000000000000000000000000000000000000`. Returns once that run ended.
 fn gated(name: &str) -> Setup {
+    gated_at(name, "abc0000000000000000000000000000000000000")
+}
+
+/// As `gated`, with the result naming `commit`.
+fn gated_at(name: &str, commit: &str) -> Setup {
     let mut setup = Setup::new(name);
-    setup.calls(&[wait(on_pull_7("review")), passed_at("abc")]);
+    setup.calls(&[wait(on_pull_7("review")), passed_at(commit)]);
     setup.publish(&requested(42));
     setup.start();
     setup.until("runs", |rows| rows.len() == 1 && rows[0][7] == "asleep");
@@ -1956,6 +1961,35 @@ fn gated(name: &str) -> Setup {
     setup.until("runs", |rows| rows.len() == 2 && rows[1][7] != "-");
     setup.gone("priory-1");
     setup
+}
+
+#[test]
+fn a_result_commit_in_capitals_matches_the_same_head_in_lower_case() {
+    let setup = gated_at("gate-capitals", "ABC0000000000000000000000000000000000000");
+
+    setup.publish(&check(1, 0));
+
+    setup.until("tasks", |rows| rows[0][4] == "done");
+}
+
+#[test]
+fn a_checks_wait_on_an_abbreviated_head_is_refused_and_nothing_is_stored() {
+    let mut on = on_pull_7("checks");
+    on["head_sha"] = json!("def0000");
+    let mut setup = Setup::new("checks-short-head");
+    setup.calls(&[wait(on)]);
+    setup.publish(&requested(42));
+
+    setup.start();
+
+    setup.written("fake/tools.log");
+    let (text, error) = reply(&setup.replies()[0]);
+    assert!(error, "{text}");
+    assert_eq!(
+        text,
+        "commit \"def0000\" is not a full commit SHA: send the 40 characters that git rev-parse HEAD prints"
+    );
+    assert!(setup.rows("waits").is_empty());
 }
 
 #[test]
@@ -2017,7 +2051,10 @@ fn a_head_with_no_check_runs_at_the_result_commit_marks_the_task_done_and_starts
 #[test]
 fn a_check_run_appearing_after_none_at_the_same_head_is_judged_as_any_check() {
     let mut setup = Setup::new("gate-late-check");
-    setup.calls(&[wait(on_pull_7("review")), passed_at("abc")]);
+    setup.calls(&[
+        wait(on_pull_7("review")),
+        passed_at("abc0000000000000000000000000000000000000"),
+    ]);
     setup.publish(&requested(42));
     setup.start();
     setup.until("runs", |rows| rows.len() == 1 && rows[0][7] == "asleep");
@@ -2037,7 +2074,10 @@ fn a_check_run_appearing_after_none_at_the_same_head_is_judged_as_any_check() {
 #[test]
 fn a_snapshot_with_runs_after_green_checks_leaves_the_checks_to_decide() {
     let mut setup = Setup::new("gate-upgrade");
-    setup.calls(&[wait(on_pull_7("review")), passed_at("abc")]);
+    setup.calls(&[
+        wait(on_pull_7("review")),
+        passed_at("abc0000000000000000000000000000000000000"),
+    ]);
     setup.publish(&requested(42));
     setup.start();
     setup.until("runs", |rows| rows.len() == 1 && rows[0][7] == "asleep");
@@ -2057,7 +2097,7 @@ fn a_red_check_at_the_result_commit_wakes_the_agent_with_the_failure() {
     red.data["name"] = json!("test");
     red.data["conclusion"] = json!("failure");
     red.data["url"] = json!("https://github.com/owner/repo/runs/1");
-    setup.calls(&[passed_at("def")]);
+    setup.calls(&[passed_at("def0000000000000000000000000000000000000")]);
     setup.hold("hold-submit");
 
     setup.publish(&red);
@@ -2072,7 +2112,7 @@ fn a_red_check_at_the_result_commit_wakes_the_agent_with_the_failure() {
     let lines: Vec<_> = typed[2].lines().collect();
     assert_eq!(
         lines[0],
-        "wait 2 fired: check test at abc concluded failure https://github.com/owner/repo/runs/1",
+        "wait 2 fired: check test at abc0000000000000000000000000000000000000 concluded failure https://github.com/owner/repo/runs/1",
         "{typed:?}"
     );
     assert!(lines[1].starts_with("github.check_run.completed owner/repo#7 {"));
@@ -2084,7 +2124,7 @@ fn a_red_check_at_the_result_commit_wakes_the_agent_with_the_failure() {
     );
     stays_asleep_after(&setup, 3);
     let mut green = check(2, 0);
-    green.data["head_sha"] = json!("def");
+    green.data["head_sha"] = json!("def0000000000000000000000000000000000000");
     setup.publish(&green);
     setup.until("tasks", |rows| rows[0][4] == "done");
 }
@@ -2093,7 +2133,7 @@ fn a_red_check_at_the_result_commit_wakes_the_agent_with_the_failure() {
 fn a_head_that_moved_from_the_result_commit_wakes_the_agent() {
     let setup = gated("gate-moved");
     let mut moved = on_pull("github.pull_request.labeled", json!({ "github_id": 500 }));
-    moved.data["head_sha"] = json!("def");
+    moved.data["head_sha"] = json!("def0000000000000000000000000000000000000");
 
     setup.publish(&moved);
 
@@ -2102,7 +2142,7 @@ fn a_head_that_moved_from_the_result_commit_wakes_the_agent() {
     let lines: Vec<_> = typed[2].lines().collect();
     assert_eq!(
         lines[0],
-        "wait 2 fired: the head of github:owner/repo#7 moved to def, away from your result's commit abc",
+        "wait 2 fired: the head of github:owner/repo#7 moved to def0000000000000000000000000000000000000, away from your result's commit abc0000000000000000000000000000000000000",
         "{typed:?}"
     );
     assert!(lines[1].starts_with("github.pull_request.labeled owner/repo#7 {"));
@@ -2132,9 +2172,31 @@ fn a_result_reaching_done_without_a_commit_is_refused_when_the_task_owns_a_pull_
 }
 
 #[test]
+fn a_result_with_an_abbreviated_commit_is_refused() {
+    let mut setup = Setup::new("short-commit");
+    setup.calls(&[passed_at("3eebfbb")]);
+    setup.publish(&requested(42));
+
+    setup.start();
+
+    setup.until("runs", |_| !setup.replies().is_empty());
+    let (text, error) = reply(&setup.replies()[0]);
+    assert!(error, "{text}");
+    assert_eq!(
+        text,
+        "commit \"3eebfbb\" is not a full commit SHA: send the 40 characters that git rev-parse HEAD prints"
+    );
+    std::thread::sleep(Duration::from_millis(1500));
+    assert_eq!(setup.rows("tasks")[0][4], "running");
+}
+
+#[test]
 fn green_checks_kept_before_the_final_stop_mark_the_task_done_when_the_gate_is_stored() {
     let mut setup = Setup::new("gate-early");
-    setup.calls(&[wait(on_pull_7("review")), passed_at("abc")]);
+    setup.calls(&[
+        wait(on_pull_7("review")),
+        passed_at("abc0000000000000000000000000000000000000"),
+    ]);
     setup.publish(&requested(42));
     setup.start();
     setup.until("runs", |rows| rows.len() == 1 && rows[0][7] == "asleep");
@@ -2154,7 +2216,10 @@ fn green_checks_kept_before_the_final_stop_mark_the_task_done_when_the_gate_is_s
 #[test]
 fn a_head_that_moved_after_green_checks_kept_before_the_final_stop_wakes_the_agent() {
     let mut setup = Setup::new("gate-early-moved");
-    setup.calls(&[wait(on_pull_7("review")), passed_at("abc")]);
+    setup.calls(&[
+        wait(on_pull_7("review")),
+        passed_at("abc0000000000000000000000000000000000000"),
+    ]);
     setup.publish(&requested(42));
     setup.start();
     setup.until("runs", |rows| rows.len() == 1 && rows[0][7] == "asleep");
@@ -2163,7 +2228,7 @@ fn a_head_that_moved_after_green_checks_kept_before_the_final_stop_wakes_the_age
     setup.until("runs", |_| setup.replies().len() == 2);
     setup.publish(&check(1, 0));
     let mut moved = on_pull("github.pull_request.labeled", json!({ "github_id": 500 }));
-    moved.data["head_sha"] = json!("def");
+    moved.data["head_sha"] = json!("def0000000000000000000000000000000000000");
     setup.publish(&moved);
     setup.until("inbox", |rows| rows.len() == 4);
 
@@ -2171,7 +2236,7 @@ fn a_head_that_moved_after_green_checks_kept_before_the_final_stop_wakes_the_age
 
     setup.until("outbox", |rows| with(rows, 3, "confirmed") == 3);
     assert!(
-        setup.typed()[2].starts_with("wait 2 fired: the head of github:owner/repo#7 moved to def"),
+        setup.typed()[2].starts_with("wait 2 fired: the head of github:owner/repo#7 moved to def0000000000000000000000000000000000000"),
         "{:?}",
         setup.typed()
     );
@@ -2180,7 +2245,10 @@ fn a_head_that_moved_after_green_checks_kept_before_the_final_stop_wakes_the_age
 #[test]
 fn green_checks_the_agent_already_waited_on_mark_the_task_done_at_its_result() {
     let mut setup = Setup::new("gate-seen");
-    setup.calls(&[wait(on_pull_7("checks")), passed_at("abc")]);
+    setup.calls(&[
+        wait(on_pull_7("checks")),
+        passed_at("abc0000000000000000000000000000000000000"),
+    ]);
     setup.publish(&requested(42));
     setup.start();
     setup.until("runs", |rows| rows.len() == 1 && rows[0][7] == "asleep");
@@ -2194,7 +2262,7 @@ fn green_checks_the_agent_already_waited_on_mark_the_task_done_at_its_result() {
 #[test]
 fn a_pull_request_opened_from_the_task_branch_holds_the_task_at_done() {
     let mut setup = Setup::new("gate-branch");
-    setup.calls(&[passed_at("abc")]);
+    setup.calls(&[passed_at("abc0000000000000000000000000000000000000")]);
     setup.hold("hold-submit");
     setup.publish(&requested(42));
     setup.start();
@@ -2237,7 +2305,10 @@ next = { approved = "done", rejected = "stop" }
 #[test]
 fn an_answer_reaching_done_holds_the_task_on_the_checks_of_its_last_result() {
     let mut setup = Setup::with_workflow("gate-answer", APPROVAL);
-    setup.calls(&[wait(on_pull_7("review")), passed_at("abc")]);
+    setup.calls(&[
+        wait(on_pull_7("review")),
+        passed_at("abc0000000000000000000000000000000000000"),
+    ]);
     setup.publish(&requested(42));
     setup.start();
     setup.until("runs", |rows| rows.len() == 1 && rows[0][7] == "asleep");
@@ -2259,7 +2330,10 @@ fn an_answer_reaching_done_holds_the_task_on_the_checks_of_its_last_result() {
 #[test]
 fn a_green_check_counting_a_failure_wakes_the_agent_with_the_failed_check() {
     let mut setup = Setup::new("gate-failing");
-    setup.calls(&[wait(on_pull_7("review")), passed_at("abc")]);
+    setup.calls(&[
+        wait(on_pull_7("review")),
+        passed_at("abc0000000000000000000000000000000000000"),
+    ]);
     setup.publish(&requested(42));
     setup.start();
     setup.until("runs", |rows| rows.len() == 1 && rows[0][7] == "asleep");
@@ -2282,7 +2356,7 @@ fn a_green_check_counting_a_failure_wakes_the_agent_with_the_failed_check() {
     setup.until("outbox", |rows| with(rows, 3, "confirmed") == 3);
     let typed = setup.typed();
     assert!(
-        typed[2].starts_with("wait 2 fired: check test at abc concluded failure\n"),
+        typed[2].starts_with("wait 2 fired: check test at abc0000000000000000000000000000000000000 concluded failure\n"),
         "{typed:?}"
     );
     assert_eq!(
@@ -2295,7 +2369,10 @@ fn a_green_check_counting_a_failure_wakes_the_agent_with_the_failed_check() {
 #[test]
 fn green_checks_at_the_result_commit_do_not_finish_the_task_when_the_head_moved_before_it() {
     let mut setup = Setup::new("gate-moved-before");
-    setup.calls(&[wait(on_pull_7("review")), passed_at("abc")]);
+    setup.calls(&[
+        wait(on_pull_7("review")),
+        passed_at("abc0000000000000000000000000000000000000"),
+    ]);
     setup.publish(&requested(42));
     setup.start();
     setup.until("runs", |rows| rows.len() == 1 && rows[0][7] == "asleep");
@@ -2304,7 +2381,7 @@ fn green_checks_at_the_result_commit_do_not_finish_the_task_when_the_head_moved_
     setup.until("outbox", |rows| with(rows, 3, "attempted") == 1);
     setup.publish(&check(1, 0));
     let mut moved = on_pull("github.pull_request.labeled", json!({ "github_id": 500 }));
-    moved.data["head_sha"] = json!("def");
+    moved.data["head_sha"] = json!("def0000000000000000000000000000000000000");
     setup.publish(&moved);
     setup.until("inbox", |rows| rows.len() == 4);
 

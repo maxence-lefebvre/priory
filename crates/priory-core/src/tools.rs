@@ -70,6 +70,17 @@ fn text(arguments: &Value, name: &str) -> Result<String, String> {
         .ok_or_else(|| format!("{name} must be a string"))
 }
 
+/// `commit` in lower case, as GitHub names a pull request head; an abbreviated SHA could never
+/// match one.
+fn full_sha(commit: &str) -> Result<String, String> {
+    if matches!(commit.len(), 40 | 64) && commit.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Ok(commit.to_ascii_lowercase());
+    }
+    Err(format!(
+        "commit {commit:?} is not a full commit SHA: send the 40 characters that git rev-parse HEAD prints"
+    ))
+}
+
 fn optional(arguments: &Value, name: &str) -> Result<Option<String>, String> {
     match &arguments[name] {
         Value::Null => Ok(None),
@@ -142,6 +153,10 @@ fn result(
     })();
     let (outcome, summary, evidence, commit) = match fields {
         Ok(fields) => fields,
+        Err(error) => return Ok(Err(error)),
+    };
+    let commit = match commit.as_deref().map(full_sha).transpose() {
+        Ok(commit) => commit,
         Err(error) => return Ok(Err(error)),
     };
     let Some(step) = step(workflows, &run.workflow, &run.step) else {
@@ -262,7 +277,10 @@ fn wait(
             )?;
             let head = match &on["head_sha"] {
                 Value::Null => None,
-                Value::String(head) if kind == "checks" => Some(head.as_str()),
+                Value::String(head) if kind == "checks" => match full_sha(head) {
+                    Ok(head) => Some(head),
+                    Err(error) => return Ok(Err(error)),
+                },
                 _ => {
                     return Ok(Err(
                         "head_sha must be a commit, on a checks wait only".into()
