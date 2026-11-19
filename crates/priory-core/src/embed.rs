@@ -73,18 +73,18 @@ fn unbuilt(model: &str) -> String {
     )
 }
 
-/// The token counter of the embedder `name`: the model's tokenizer, without its weights. A command
-/// has none, so its TL;DRs count words.
-pub fn counter(name: &str, home: &Path, download: bool) -> Result<Option<Counter>, String> {
+/// The token counter of the embedder `name`: the model's tokenizer, without its weights, from the
+/// files the daemon's embedding thread downloaded. A command has none, so its TL;DRs count words.
+pub fn counter(name: &str, home: &Path) -> Result<Option<Counter>, String> {
     if name.starts_with("command ") {
         return Ok(None);
     }
-    counter_of(model_of(name)?, home, download).map(Some)
+    counter_of(model_of(name)?, home).map(Some)
 }
 
 #[cfg(feature = "model")]
-fn counter_of(model: &str, home: &Path, download: bool) -> Result<Counter, String> {
-    let files = crate::model::Files::new(model, &home.join("models"), download);
+fn counter_of(model: &str, home: &Path) -> Result<Counter, String> {
+    let files = crate::model::Files::new(model, &home.join("models"), false);
     let counter = crate::model::Counter::load(&files)?;
     Ok(Box::new(move |text| {
         Some((counter.count(text)?, counter.limit))
@@ -92,7 +92,7 @@ fn counter_of(model: &str, home: &Path, download: bool) -> Result<Counter, Strin
 }
 
 #[cfg(not(feature = "model"))]
-fn counter_of(model: &str, _home: &Path, _download: bool) -> Result<Counter, String> {
+fn counter_of(model: &str, _home: &Path) -> Result<Counter, String> {
     Err(unbuilt(model))
 }
 

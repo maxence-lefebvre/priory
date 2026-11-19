@@ -67,7 +67,7 @@ pub fn fit(text: &str, counter: Option<&Counter>) -> String {
 /// A model whose tokenizer is not downloaded yet counts words.
 pub fn counter(db: &Connection, home: &Path) -> Option<Counter> {
     let (name, _) = embedder(db).ok()??;
-    crate::embed::counter(&name, home, false).ok()?
+    crate::embed::counter(&name, home).ok()?
 }
 
 /// Sets task `task`'s TL;DR, refusing one over the limit with its count.
@@ -343,19 +343,29 @@ pub fn tool(
             .map(str::to_owned)
             .ok_or_else(|| format!("{name} must be a string"))
     };
-    Some(crate::state::open().and_then(|db| {
-        let task: i64 = db
-            .query_row(
-                "SELECT task FROM runs WHERE ended IS NULL AND session = ?1",
-                [session],
-                |row| row.get(0),
-            )
-            .optional()
-            .map_err(|error| error.to_string())?
-            .ok_or_else(|| format!("no live run has session {session}"))?;
+    let live = |db: &Connection| {
+        db.query_row(
+            "SELECT task FROM runs WHERE ended IS NULL AND session = ?1",
+            [session],
+            |row| row.get::<_, i64>(0),
+        )
+        .optional()
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| format!("no live run has session {session}"))
+    };
+    let at = |error: rusqlite::Error| error.to_string();
+    Some(crate::state::open().and_then(|mut db| {
         if tool == "tldr" {
-            return set(&db, task, &text("text")?, counter(&db, home).as_ref());
+            let (text, counter) = (text("text")?, counter(&db, home));
+            // The run must still be live when the TL;DR lands, as for the daemon's own tools.
+            let tx = db
+                .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+                .map_err(at)?;
+            let done = set(&tx, live(&tx)?, &text, counter.as_ref())?;
+            tx.commit().map_err(at)?;
+            return Ok(done);
         }
+        live(&db)?;
         let limit = arguments["limit"].as_u64().map_or(LIMIT, |n| n as usize);
         let states: Vec<String> = arguments["states"]
             .as_array()

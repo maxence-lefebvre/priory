@@ -6,7 +6,7 @@ task already do this?". Search reads each task's title, request, TL;DR and resul
 ## TL;DR
 
 A task's TL;DR is a short summary of what it is about, kept beside its request. Until a task has
-one, search uses its request's title and opening text instead, cut at the limit below. Four writers
+one, search uses its request's title and opening text instead, cut at 180 words. Four writers
 can set it:
 
 1. A request can carry `tldr`, such as `priory request --tldr TEXT`. The summarizer then skips the
@@ -20,9 +20,9 @@ Every writer goes through one limit. With the in-process `model` on, Priory coun
 model's tokenizer, and the limit is the input the model was trained on (256 tokens for
 all-MiniLM-L6-v2). Otherwise the limit is 180 words. The tool and the CLI refuse a longer TL;DR
 with its count and the limit. A summarizer answer and a request's `tldr` are cut, word by word, to
-fit. The tokenizer is a small file apart from the model's weights: the daemon downloads it when it
-starts, and counting never waits for the model. Until it is downloaded, or when it cannot load,
-TL;DRs count words, and the daemon logs why once.
+fit. Counting needs only the model's tokenizer, a small file apart from its weights, so it never
+waits for the model to load. The daemon's embedding thread downloads both. Until the tokenizer is on
+disk, every writer counts words; the daemon looks for it again every 10 seconds.
 
 ## The summarizer
 
@@ -101,7 +101,8 @@ first line.
 `model` runs in process with [candle](https://github.com/huggingface/candle) and the Hugging Face
 `tokenizers` crate, both pure Rust, on the CPU. Priory downloads the model's `config.json`,
 `tokenizer.json`, `sentence_bert_config.json` and `model.safetensors` with `curl` at first use, into
-`PRIORY_HOME/models`, and loads them from there afterwards. Only the daemon downloads, each file into
+`PRIORY_HOME/models`, and loads them from there afterwards. Only the daemon's embedding thread
+downloads, with `curl` bounded at 30 minutes per file, each file into
 a temporary file of its own that it renames when complete. Nothing is fetched at build time, so a
 Nix build without network works. It pools the token vectors by their mean and normalizes the result,
 as sentence-transformers does. Runtimes such as `ort` (ONNX Runtime) download a native library at

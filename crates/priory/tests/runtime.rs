@@ -522,6 +522,15 @@ fn a_queued_task_at_a_model_step_gets_a_worktree_a_tmux_session_and_a_run() {
     ] {
         assert!(args.windows(2).any(|w| w == pair), "{pair:?} in {args:?}");
     }
+    let mcp = args.windows(2).find(|w| w[0] == "--mcp-config").unwrap()[1];
+    let mcp: serde_json::Value = serde_json::from_str(mcp).unwrap();
+    assert_eq!(
+        mcp["mcpServers"]["priory"]["env"],
+        json!({
+            "PRIORY_HOME": setup.dir.join("home"),
+            "PRIORY_DB": setup.dir.join("priory.db"),
+        })
+    );
     assert_eq!(setup.rows("tasks")[0][4], "running");
 }
 
@@ -700,7 +709,10 @@ fn a_codex_agent_runs_codex_with_priorys_hooks_mcp_server_and_a_sandbox_that_ask
         json!({
             "command": exe,
             "args": ["mcp", "--session", tmux_tag(&setup)],
-            "env": { "PRIORY_HOME": setup.dir.join("home") },
+            "env": {
+                "PRIORY_HOME": setup.dir.join("home"),
+                "PRIORY_DB": setup.dir.join("priory.db"),
+            },
             "default_tools_approval_mode": "approve",
         })
     );

@@ -77,17 +77,13 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
     let embedder = factory.search().embedder().map(|spec| embed::name(&spec));
     search::configure(&db, embedder.as_deref())?;
     let home = runtime::home();
-    // Only the serving daemon downloads the tokenizer, a small file, before it routes anything.
-    let counter = match embedder.as_deref() {
-        Some(name) => embed::counter(name, &home, !once).unwrap_or_else(|error| {
-            eprintln!("priory daemon: TL;DRs count words, not tokens: {error}");
-            None
-        }),
-        None => None,
+    let mut counting = Counting {
+        embedder: embedder.clone(),
+        counter: None,
+        tried: None,
     };
-    let counter = counter.as_ref();
     if once {
-        drain(&bus, &mut db, factory, counter)?;
+        drain(&bus, &mut db, factory, counting.get(&home))?;
         return Ok(());
     }
     let listening = runtime::listen(&home)?;
@@ -167,6 +163,7 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
         }
         let output = runtime::answer(&summaries, id);
         let status = handler::INTERRUPTED;
+        let counter = counting.get(&home);
         summary::answered(&mut db, &trace, id, output.as_deref(), status, counter)?;
         runtime::forget(&summaries, id);
     }
@@ -181,12 +178,13 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
     let every = factory.sweep().every.unwrap_or(SWEEP);
     let mut swept: Option<Instant> = None;
     loop {
-        drain(&bus, &mut db, factory, counter)?;
+        drain(&bus, &mut db, factory, counting.get(&home))?;
         while let Ok(line) = listening.lines.try_recv() {
             apply(&mut db, line, &trace)?;
         }
         tend(&mut db, &trace, &share, &home, &scope)?;
         handle_stalls(&mut db, &trace, &home, &mut stalls)?;
+        let counter = counting.get(&home);
         summarize(&mut db, &trace, &summaries, &mut summarizing, counter)?;
         if let Some(export) = &mut export {
             send_spans(&db, &trace, &home, export)?;
@@ -211,6 +209,28 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
             Err(RecvTimeoutError::Timeout) => {}
             Err(RecvTimeoutError::Disconnected) => return Err("the signal socket closed".into()),
         }
+    }
+}
+
+/// How often the daemon looks again for a tokenizer it could not load.
+const COUNTER_RETRY: Duration = Duration::from_secs(10);
+
+/// The token counter of the factory's embedder, loaded from what the embedding thread downloaded.
+/// The daemon's own thread never downloads: until the tokenizer is on disk, TL;DRs count words.
+struct Counting {
+    embedder: Option<String>,
+    counter: Option<embed::Counter>,
+    tried: Option<Instant>,
+}
+
+impl Counting {
+    fn get(&mut self, home: &Path) -> Option<&embed::Counter> {
+        let due = self.tried.is_none_or(|at| at.elapsed() >= COUNTER_RETRY);
+        if let (None, Some(name), true) = (&self.counter, &self.embedder, due) {
+            self.tried = Some(Instant::now());
+            self.counter = embed::counter(name, home).ok().flatten();
+        }
+        self.counter.as_ref()
     }
 }
 

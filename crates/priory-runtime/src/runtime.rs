@@ -429,7 +429,7 @@ impl Harness for Codex {
                 json!({
                     "command": exe,
                     "args": ["mcp", "--session", launch.session],
-                    "env": { "PRIORY_HOME": launch.home },
+                    "env": mcp_env(launch.home),
                     "default_tools_approval_mode": "approve",
                 }),
             ),
@@ -559,9 +559,19 @@ fn mcp_config(exe: &Path, launch: &Launch) -> String {
     json!({ "mcpServers": { "priory": {
         "command": exe,
         "args": ["mcp", "--session", launch.session],
-        "env": { "PRIORY_HOME": launch.home },
+        "env": mcp_env(launch.home),
     } } })
     .to_string()
+}
+
+/// What `priory mcp` needs from the daemon: its home, and its state file as an absolute path, since
+/// the bridge reads that file itself from the agent's worktree.
+fn mcp_env(home: &Path) -> serde_json::Value {
+    let mut env = json!({ "PRIORY_HOME": home });
+    if let Some(db) = std::env::var_os("PRIORY_DB").and_then(|db| std::path::absolute(db).ok()) {
+        env["PRIORY_DB"] = json!(db);
+    }
+    env
 }
 
 fn quote(exe: &Path) -> String {
