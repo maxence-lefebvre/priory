@@ -265,21 +265,23 @@ fn a_message_of_an_unknown_type_is_ignored_and_acked() {
 }
 
 #[test]
-fn a_task_request_for_a_workflow_the_factory_lacks_waits_unacked_until_it_is_back() {
+fn a_task_request_for_a_workflow_the_factory_lacks_creates_its_task_with_no_step_and_is_acked() {
     let setup = Setup::new("unknown-workflow");
     let source = labeled(42);
     let mut request = requested(&source, 42);
     request.data["workflow"] = json!("triage");
     setup.publish(&request);
+    setup.publish(&requested(&labeled(43), 43));
 
-    let output = setup.daemon();
-
-    assert_eq!(output.status.code(), Some(1));
-    assert!(setup.rows("inbox").is_empty());
-    assert_eq!(setup.bus().connections().unwrap()[0].lag, 1);
-    fs::write(setup.dir.join("factory/workflows/triage.toml"), WORKFLOW).unwrap();
     succeeded(&setup.daemon());
-    assert_eq!(setup.rows("tasks")[0][2], "triage");
+
+    let tasks = setup.rows("tasks");
+    assert_eq!(
+        [&tasks[0][2], &tasks[0][3], &tasks[0][4]],
+        ["triage", "", "queued"]
+    );
+    assert_eq!(tasks[1][3], "implement");
+    assert_eq!(setup.bus().connections().unwrap()[0].lag, 0);
 }
 
 #[test]

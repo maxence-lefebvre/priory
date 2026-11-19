@@ -2415,6 +2415,88 @@ fn a_result_with_a_valid_outcome_moves_the_task_to_the_next_model_step_after_sto
 }
 
 #[test]
+fn a_task_request_for_a_workflow_the_factory_lacks_waits_queued_and_starts_once_it_is_back() {
+    let mut setup = Setup::new("missing-workflow");
+    let mut triage = requested(42);
+    triage.data["workflow"] = json!("triage");
+    setup.publish(&triage);
+    setup.publish(&requested(43));
+
+    setup.start();
+
+    setup.until("tasks", |rows| {
+        rows.len() == 2 && rows[1][4] == "running" && rows[0][7] != "-"
+    });
+    let tasks = setup.rows("tasks");
+    assert_eq!(
+        [&tasks[0][2], &tasks[0][4], &tasks[0][7]],
+        [
+            "triage",
+            "queued",
+            "waits for workflow triage, which the factory lacks"
+        ]
+    );
+    setup.crash();
+    fs::write(setup.dir.join("factory/workflows/triage.toml"), WORKFLOW).unwrap();
+    setup.start();
+    let tasks = setup.until("tasks", |rows| rows[0][4] == "running");
+    assert_eq!(tasks[0][3], "implement");
+}
+
+#[test]
+fn a_queued_task_at_a_step_its_workflow_lost_is_blocked_with_the_reason() {
+    let mut setup = Setup::with_workflow("lost-step", STEPS);
+    setup.publish(&requested(42));
+    route(&setup);
+    fs::write(setup.dir.join("factory/workflows/implement.toml"), WORKFLOW).unwrap();
+
+    setup.start();
+
+    let tasks = setup.until("tasks", |rows| rows[0][4] == "blocked");
+    assert_eq!(tasks[0][7], "step plan is not in workflow implement");
+}
+
+#[test]
+fn a_workflow_that_starts_at_a_human_step_asks_its_question_when_the_task_is_created() {
+    let workflow = STEPS
+        .replace("start = \"plan\"", "start = \"approve\"")
+        .replace("approved = \"implement\"", "approved = \"plan\"");
+    let mut setup = Setup::with_workflow("human-start", &workflow);
+    setup.publish(&requested(42));
+
+    setup.start();
+
+    let asks = setup.until("asks", |rows| rows.len() == 1);
+    assert_eq!(
+        [&asks[0][3], &asks[0][4]],
+        ["approve", r#"["approved","rejected"]"#]
+    );
+    let tasks = setup.rows("tasks");
+    assert_eq!([&tasks[0][3], &tasks[0][4]], ["approve", "asleep"]);
+}
+
+#[test]
+fn a_task_queued_before_schema_11_ends_its_first_step_once_upgraded() {
+    let mut setup = Setup::with_workflow("legacy-entered", STEPS);
+    setup.calls(&[result("ready")]);
+    setup.publish(&requested(42));
+    route(&setup);
+    // Schema 10 inserted a queued task with no `changed`, which migration 11 copied into `entered`.
+    let db = rusqlite::Connection::open(setup.dir.join("priory.db")).unwrap();
+    db.execute_batch(
+        "UPDATE tasks SET entered = NULL; ALTER TABLE outbox DROP COLUMN compact;
+         PRAGMA user_version = 24;",
+    )
+    .unwrap();
+
+    setup.start();
+
+    let tasks = setup.until("tasks", |rows| rows[0][3] == "implement");
+    assert_eq!(tasks[0][4], "running");
+    assert_eq!(setup.trace()[0]["data"]["step"], "plan");
+}
+
+#[test]
 fn a_result_with_an_unknown_outcome_is_refused_with_the_valid_outcomes_and_the_task_stays() {
     let mut setup = Setup::with_workflow("unknown-outcome", STEPS);
     setup.calls(&[result("maybe")]);
@@ -3014,6 +3096,23 @@ fn a_daemon_started_after_its_tmux_server_died_resumes_each_lost_run_once() {
     assert_eq!(tasks[0][4], "asleep");
     let runs = setup.rows("runs");
     assert_eq!([runs.len(), with(&runs, 7, "lost")], [3, 2]);
+}
+
+#[test]
+fn a_worktree_a_person_deleted_is_added_back_from_its_branch_on_the_next_run() {
+    let mut setup = Setup::new("deleted-worktree");
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 1);
+    setup.reboot();
+    let worktree = setup.dir.join("home/worktrees/owner/repo/1");
+    fs::remove_dir_all(&worktree).unwrap();
+
+    setup.start();
+
+    let runs = setup.until("runs", |rows| rows.len() == 2 && rows[1][7] == "-");
+    assert_eq!(runs[0][7], "lost");
+    assert!(worktree.join("README.md").exists());
 }
 
 #[test]
@@ -4333,6 +4432,48 @@ fn a_failing_open_pr_follows_next_failed_with_the_error() {
         "{actions:?}"
     );
     assert_eq!(setup.rows("tasks")[0][4], "dropped");
+}
+
+#[test]
+fn a_gh_call_past_the_command_timeout_is_killed_and_its_action_fails() {
+    let mut setup = Setup::with_workflow("open-pr-hangs", OPEN_PR);
+    fs::write(
+        setup.dir.join("factory/factory.toml"),
+        "name = \"demo\"\ncommand_timeout = \"1s\"\n",
+    )
+    .unwrap();
+    setup.calls(&[passed_with_evidence()]);
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("asks", |rows| rows.len() == 1);
+    setup.gone("priory-1");
+    setup.hold("gh-hang");
+
+    let answered = setup.priory(&["answer", "1", "open", "--revision", "1"]);
+
+    assert!(answered.status.success(), "{answered:?}");
+    let actions = setup.until("actions", |rows| rows.len() == 1);
+    assert_eq!(actions[0][4], "failed");
+    assert!(actions[0][7].ends_with("timed out after 1s"), "{actions:?}");
+}
+
+#[test]
+fn a_git_fetch_past_the_command_timeout_is_killed_and_its_task_blocks() {
+    let mut setup = Setup::new("fetch-hangs");
+    fs::write(
+        setup.dir.join("factory/factory.toml"),
+        "name = \"demo\"\ncommand_timeout = \"1s\"\n",
+    )
+    .unwrap();
+    setup.hold("git-hang");
+    setup.publish(&requested(42));
+
+    setup.start();
+
+    let tasks = setup.until("tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == "blocked")
+    });
+    assert!(tasks[0][7].ends_with("timed out after 1s"), "{tasks:?}");
 }
 
 const APPROVE_THEN_POLISH: &str = r#"

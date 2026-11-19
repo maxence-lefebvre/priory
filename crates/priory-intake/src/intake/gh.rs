@@ -1,3 +1,4 @@
+use priory_runtime::runtime::{command_timeout, output_within};
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
 use std::process::Command;
@@ -33,11 +34,12 @@ pub(super) fn pages<T: DeserializeOwned>(
 }
 
 pub(super) fn gh<T: DeserializeOwned>(path: &str, fields: &[&str]) -> Result<T, String> {
-    let output = Command::new("gh")
-        .args(["api", path])
-        .args(fields)
-        .output()
-        .map_err(|error| format!("gh api {path}: {error}"))?;
+    let output = output_within(Command::new("gh").args(["api", path]).args(fields))
+        .map_err(|error| format!("gh api {path}: {error}"))?
+        .ok_or_else(|| {
+            let timeout = command_timeout().as_secs();
+            format!("gh api {path} timed out after {timeout}s")
+        })?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         return Err(format!("gh api {path} failed: {}", stderr.trim()));

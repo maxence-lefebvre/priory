@@ -408,6 +408,7 @@ dependencies = [
  "herdr-bus",
  "jiff",
  "priory-factory",
+ "priory-runtime",
  "serde",
  "serde_json",
 ]
