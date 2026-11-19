@@ -1384,19 +1384,20 @@ pub(crate) fn lost(
     tx.commit()
 }
 
-/// What a repair found about a failed run, what it did, and whether the cause is gone.
+/// What a repair found about a failed run, what it did, and whether the agent may start again.
 pub(crate) struct Repair {
     pub cause: String,
     pub action: &'static str,
     pub gone: bool,
 }
 
-/// Whether `run` was the restart of a repair and stored no result, ask or wait, so its failure gets
-/// no second repair.
+/// Whether `run` followed a repair of this generation and stored no result, ask or wait.
 pub(crate) fn spent(db: &Connection, run: i64) -> rusqlite::Result<bool> {
     db.query_row(
         "SELECT EXISTS (SELECT 1 FROM trace WHERE type = 'factory.task.repaired'
-           AND json_extract(event, '$.data.outcome') = 'restarted'
+           AND json_extract(event, '$.data.outcome') = 'ready'
+           AND json_extract(event, '$.data.generation') = (SELECT generation FROM tasks
+             WHERE id = (SELECT task FROM runs WHERE id = ?1))
            AND json_extract(event, '$.data.run') = (SELECT CAST(max(id) AS TEXT) FROM runs
              WHERE task = (SELECT task FROM runs WHERE id = ?1) AND id < ?1))
          AND NOT EXISTS (SELECT 1 FROM results WHERE run = ?1)
@@ -1407,9 +1408,7 @@ pub(crate) fn spent(db: &Connection, run: i64) -> rusqlite::Result<bool> {
     )
 }
 
-/// Fails the blocked task of `run`, which ended for `reason`. With `repair` and its cause gone, the
-/// task is ready again with a prompt naming the cause; otherwise it stays failed with the cause in
-/// its reason. The trace records each repair.
+/// Fails the blocked task of `run`, then makes it ready with the cause in its prompt when `repair` allows.
 pub(crate) fn fail(
     db: &mut Connection,
     trace: &Trace,
@@ -1434,7 +1433,7 @@ pub(crate) fn fail(
         set(&tx, task, "failed", None, Some(&reason))?;
         return tx.commit();
     };
-    let outcome = if repair.gone { "restarted" } else { "failed" };
+    let outcome = if repair.gone { "ready" } else { "failed" };
     trace::repaired(
         &tx,
         trace,

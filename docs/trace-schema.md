@@ -95,7 +95,7 @@ names the run that failed.
 | --------- | -------- | ------------------------------------------------------------------------- |
 | `cause`   | yes      | Why the run failed, as the factory classified it                          |
 | `action`  | yes      | What the factory did about the cause, such as `sweep` or `wait for room`  |
-| `outcome` | yes      | `restarted` when the agent starts again, `failed` when the task stays failed |
+| `outcome` | yes      | `ready` when the task waits to start its agent again, `failed` when it stays failed |
 
 ## `factory.step.labeled`
 

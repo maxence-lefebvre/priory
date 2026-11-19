@@ -278,8 +278,7 @@ fn tend(db: &mut Connection, trace: &Trace, share: &Share, home: &Path) -> Resul
     Ok(())
 }
 
-/// Classifies why the agent of a run exited, and acts on the cause: a sweep frees disk, and the room
-/// check holds the restart until memory is back.
+/// Classifies why a run's agent exited; the admission's room check holds a memory restart.
 fn diagnose(
     db: &Connection,
     factory: &Factory,
@@ -288,11 +287,9 @@ fn diagnose(
     agent: &str,
 ) -> Result<Repair, Error> {
     let need = crate::room::need(factory.agents.get(agent).map(|agent| &agent.value));
-    let short = |db: &Connection| -> Result<Option<crate::room::Short>, Error> {
+    let short = |db: &Connection| -> Result<Result<Option<crate::room::Short>, String>, Error> {
         let promised = state::promised(db, factory)?;
-        Ok(room::measure(home)
-            .ok()
-            .and_then(|room| crate::room::wait(&room, share, promised, need)))
+        Ok(room::measure(home).map(|room| crate::room::wait(&room, share, promised, need)))
     };
     let missing = |short: &crate::room::Short| {
         short
@@ -301,14 +298,16 @@ fn diagnose(
             .to_owned()
     };
     match short(db)? {
-        Some(found) if found.resource == "memory" => Ok(Repair {
+        Ok(Some(found)) if found.resource == "memory" => Ok(Repair {
             cause: format!("out of memory ({})", missing(&found)),
             action: "wait for room",
             gone: true,
         }),
-        Some(found) if found.resource == "disk" => {
+        Ok(Some(found)) if found.resource == "disk" => {
             sweep::run(db, home)?;
-            let gone = short(db)?.is_none_or(|after| after.resource != "disk");
+            // An unreadable room confirms nothing.
+            let gone =
+                short(db)?.is_ok_and(|after| after.is_none_or(|after| after.resource != "disk"));
             Ok(Repair {
                 cause: format!("disk full ({})", missing(&found)),
                 action: "sweep",

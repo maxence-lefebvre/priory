@@ -536,7 +536,7 @@ not restart the agent`. Once a run stores a result, ask or wait, a later exit ge
 and so does the first exit after a revive. `priory revive` restarts a failed task either way.
 
 Each repair appends a `factory.task.repaired` record to the trace, with its cause, action and
-outcome, `restarted` or `failed`, as [the trace schema](trace-schema.md) defines it.
+outcome, `ready` or `failed`, as [the trace schema](trace-schema.md) defines it.
 
 Known limits:
 
@@ -545,6 +545,15 @@ Known limits:
 - A harness that crashes for a reason the room cannot see, such as a bad binary after its first
   turn, gets one restart before it stays failed.
 - Waiting for room has no deadline: a task waits as any task in the queue does.
+- The daemon ends the run, then repairs in a second transaction, since the sweep runs outside any
+  transaction. A daemon that stops in between leaves the task `blocked` with the exit's reason, as
+  before repair existed.
+- `ready` means the task waits to start its agent, not that the agent started: a cancel or a room
+  that never frees can still stop it.
+- A sweeper task never waits for room, so its memory repair starts it at once.
+- A repair's run lost with its tmux server is replaced by a run that gets a repair of its own.
+- A room that cannot be measured confirms no freed disk, but a crash with an unreadable room reads
+  as `the harness crashed`, and the admission then waits until the room reads again.
 
 A run whose agent is gone after its result, ask or wait ended the turn is not an unexpected exit.
 It settles as its `Stop` would have, as under Moving on, except that a next model step always gets

@@ -1030,8 +1030,11 @@ fn a_derived_lane_is_derived_again_when_the_first_run_gives_the_task_a_branch() 
         rows[0][4] == "running" && rows[0][6] == "FND/desktop"
     });
     // The second exit follows a repair with no progress, so the task fails onto the desk.
-    for confirmed in [1, 2] {
-        setup.until("outbox", |rows| with(rows, 3, "confirmed") >= confirmed);
+    for typed in ["Implement the issue.", "Priory repaired this task"] {
+        setup.until("outbox", |rows| {
+            rows.iter()
+                .any(|row| row[3] == "confirmed" && row[4].starts_with(typed))
+        });
         assert!(
             setup
                 .tmux(&["kill-session", "-t", "priory-1"])
@@ -1157,7 +1160,7 @@ fn a_crash_after_its_repair_leaves_the_task_failed_until_a_revive() {
     ));
     assert_eq!(
         repairs(&setup),
-        [["the harness crashed", "restart", "restarted"].map(str::to_owned)]
+        [["the harness crashed", "restart", "ready"].map(str::to_owned)]
     );
     setup.gone("priory-1");
     setup.release("crash");
@@ -1204,7 +1207,7 @@ fn a_crash_out_of_memory_restarts_the_agent_once_room_is_back_with_the_cause_in_
     let cause = "out of memory (1.0 GB of memory free, needs 4.0 GB and keeps 6.4 GB free)";
     assert_eq!(
         repairs(&setup),
-        [[cause, "wait for room", "restarted"].map(str::to_owned)]
+        [[cause, "wait for room", "ready"].map(str::to_owned)]
     );
     setup.release("crash");
     setup.memory(60);
