@@ -101,7 +101,9 @@ A hold takes at most one condition, which releases it without a person:
 `--merge` takes `--if-closed release|drop|ask` for a pull request closed without a merge: `release`
 lets the task go, `drop` drops it with the reason `<pr> closed without a merge`, and `ask`, the
 default, puts an ask on the desk with the options `release` and `drop` while the task stays held.
-`priory answer` takes either. A merge after the ask releases the task and answers the ask.
+`priory answer` takes either. A merge after the ask releases the task and answers the ask. A close
+whose `merged` is null, because GitHub no longer returns the pull request, does not say whether it
+merged, so it asks whatever `--if-closed` says.
 
 `--blockers` reads the `blockers` field of Linear events (see `docs/intake/linear.md`). It is refused for
 a task whose source event is not a Linear event, such as a GitHub issue or a CLI request. The newest

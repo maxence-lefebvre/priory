@@ -68,8 +68,9 @@ disk with the room's reading, `df` on `PRIORY_HOME`, only while a disk wait is o
 A wait that fires queues one prompt ahead of the task's other queued prompts: the event's line, or
 for time, task and disk, `wait <id> fired: <until> passed`, `wait <id> fired: task <id> is <state>`
 or `wait <id> fired: <N> GB of disk free`, then
-a line for each event the task kept while it slept. An asleep task becomes `ready`, and its next run
-resumes the session of its step's agent with that prompt. An event that does not satisfy the wait so
+a line for each event the task kept while it slept. A wait fires in any active state. An asleep task
+becomes `ready`, and its next run resumes the session of its step's agent with that prompt. A ready,
+blocked or held task keeps its state, and its next run gets that prompt. An event that does not satisfy the wait so
 stays kept until the wake.
 
 A check event also carries `failing`: how many of the completed check runs on the head commit had a
@@ -95,8 +96,10 @@ when it stores the wait and at each new event:
 
 | Condition                                                                           | Effect                                 |
 | ----------------------------------------------------------------------------------- | -------------------------------------- |
-| The newest event names another head and came after the result                    | wakes the agent: `wait <id> fired: the head of <pull request> moved to <sha>, away from your result's commit <commit>` |
-| The newest event names another head and came before the result                   | the task sleeps on, since a later event tells whether the head is the commit |
+| The newest event is `github.pull_request.closed` with `merged` true                 | marks the task done and starts no run  |
+| The newest event is `github.pull_request.closed` without `merged` true              | wakes the agent: `wait <id> fired: <pull request> closed without a merge`, or `closed, and GitHub no longer says whether it merged` when `merged` is null |
+| Else, the newest event names another head and came after the result              | wakes the agent: `wait <id> fired: the head of <pull request> moved to <sha>, away from your result's commit <commit>` |
+| Else, the newest event names another head and came before the result             | the task sleeps on, since a later event tells whether the head is the commit |
 | Else, the newest check at the commit is red, or counts `failing` and a red check at the commit was seen | wakes the agent with that red check: `wait <id> fired: check <name> at <commit> concluded <conclusion> <url>` |
 | Else, the newest check at the commit has `pending` 0 and `failing` 0             | marks the task done and starts no run  |
 | Else, no check at the commit, and the newest `github.pull_request.check_runs` snapshot at it has `runs` 0 | marks the task done and starts no run  |
