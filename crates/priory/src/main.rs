@@ -12,6 +12,14 @@ fn main() -> ExitCode {
             args.next()
                 .map_or_else(|| PathBuf::from("."), PathBuf::from),
         ),
+        Some("draw") => {
+            let args: Vec<_> = args.collect();
+            match &args[..] {
+                [workflow] => draw(Path::new("."), workflow),
+                [dir, workflow] => draw(Path::new(dir), workflow),
+                _ => usage(),
+            }
+        }
         Some(verb @ ("intake" | "daemon")) => {
             let (once, dirs): (Vec<_>, Vec<_>) = args.partition(|arg| arg == "--once");
             let dir = match dirs.as_slice() {
@@ -80,7 +88,7 @@ fn main() -> ExitCode {
 
 fn usage() -> ExitCode {
     eprintln!(
-        "usage: priory check [DIR]\n       priory intake [DIR] [--once]\n       priory daemon [DIR] [--once]\n       priory request [DIR] --workflow <name> --key <key> [--band <band>] [--lane <lane>] [--repo <owner/name>] <text>\n       priory inbox\n       priory tasks\n       priory runs\n       priory outbox\n       priory asks\n       priory waits\n       priory actions\n       priory desk\n       priory resume TASK\n       priory cancel TASK\n       priory answer ASK OPTION-OR-TEXT --revision N\n       priory mcp --session ID\n       priory hook EVENT"
+        "usage: priory check [DIR]\n       priory draw [DIR] WORKFLOW\n       priory intake [DIR] [--once]\n       priory daemon [DIR] [--once]\n       priory request [DIR] --workflow <name> --key <key> [--band <band>] [--lane <lane>] [--repo <owner/name>] <text>\n       priory inbox\n       priory tasks\n       priory runs\n       priory outbox\n       priory asks\n       priory waits\n       priory actions\n       priory desk\n       priory resume TASK\n       priory cancel TASK\n       priory answer ASK OPTION-OR-TEXT --revision N\n       priory mcp --session ID\n       priory hook EVENT"
     );
     ExitCode::from(2)
 }
@@ -246,6 +254,20 @@ fn check(dir: PathBuf) -> ExitCode {
         count(factory.runners.len(), "runner"),
     );
     ExitCode::SUCCESS
+}
+
+fn draw(dir: &Path, workflow: &std::ffi::OsStr) -> ExitCode {
+    let Some(factory) = load(dir) else {
+        return ExitCode::FAILURE;
+    };
+    let name = workflow.to_string_lossy();
+    match factory.workflows.get(name.as_ref()) {
+        Some(workflow) => {
+            print!("{}", priory_factory::draw::mermaid(&workflow.value));
+            ExitCode::SUCCESS
+        }
+        None => exit("draw", Err(format!("unknown workflow `{name}`"))),
+    }
 }
 
 fn count(n: usize, noun: &str) -> String {
