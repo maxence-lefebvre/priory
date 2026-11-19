@@ -140,6 +140,11 @@ pub(crate) fn call(
         params![run.task, run.id],
     )?;
     let stored = match call.tool.as_str() {
+        // A result moves the task, maybe to another agent's conversation, before the compact is typed.
+        "result" if compact_queued(&tx, run.task)? => Err(
+            "a compact is queued for this run; end your turn and call result after the compaction"
+                .to_owned(),
+        ),
         "result" => result(&tx, &run, &call.arguments, workflows)?,
         "ask" => ask(&tx, &run, &call.arguments)?,
         "wait" => wait(&tx, &run, &call.arguments)?,
@@ -210,7 +215,16 @@ fn result(
     )))
 }
 
-/// Queues `/compact` for the outbox to type once the run is idle. Codex's `/compact` takes no focus.
+/// Queues `/compact` for the outbox to type once the run is idle. Codex's `/compact` takes no focus;
+/// a typed one needs no check, since an agent mid-compaction calls no tool.
+fn compact_queued(tx: &Transaction, task: i64) -> rusqlite::Result<bool> {
+    tx.query_row(
+        "SELECT EXISTS (SELECT 1 FROM outbox WHERE task = ?1 AND compact = 1 AND state = 'queued')",
+        [task],
+        |row| row.get(0),
+    )
+}
+
 fn compact(
     tx: &Transaction,
     run: &Run,
@@ -221,13 +235,7 @@ fn compact(
         Ok(focus) => focus,
         Err(error) => return Ok(Err(error)),
     };
-    let pending: bool = tx.query_row(
-        "SELECT EXISTS (SELECT 1 FROM outbox WHERE task = ?1 AND compact = 1
-           AND state IN ('queued', 'attempted'))",
-        [run.task],
-        |row| row.get(0),
-    )?;
-    if pending {
+    if compact_queued(tx, run.task)? {
         return Ok(Err(
             "a compact is already queued for this run; end your turn".to_owned(),
         ));
@@ -255,8 +263,7 @@ fn compact(
     )))
 }
 
-/// After the compaction a queued `/compact` started: confirms it, marks the run idle and queues the
-/// prompt to carry on. A compaction Priory did not ask for changes nothing.
+/// Ends a `/compact` Priory typed into `run`; a compaction it did not type changes nothing.
 pub(crate) fn compacted(tx: &Transaction, run: i64) -> rusqlite::Result<()> {
     let Some((id, task, step)) = tx
         .query_row(

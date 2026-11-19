@@ -1044,6 +1044,7 @@ fn a_second_compact_before_the_first_is_typed_is_refused() {
         text,
         "a compact is already queued for this run; end your turn"
     );
+    assert_eq!(setup.typed().len(), 1, "nothing is typed into a busy turn");
     setup.release("hold-stop");
     setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 3);
     let typed = setup.typed();
@@ -1055,6 +1056,30 @@ fn a_second_compact_before_the_first_is_typed_is_refused() {
             .count(),
         1,
         "{typed:?}"
+    );
+}
+
+#[test]
+fn a_result_after_a_compact_in_the_same_turn_is_refused_so_the_compact_reaches_its_own_conversation()
+ {
+    let mut setup = Setup::with_workflow("compact-result", STEPS);
+    setup.calls(&[compact("the plan")]);
+    setup.hold("hold-stop");
+    setup.publish(&requested(42));
+    setup.start();
+    setup.written("fake/tools.log");
+    let session = setup.rows("runs")[0][4].clone();
+
+    let replies = setup.mcp(
+        &session,
+        &[json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": result("ready")})],
+    );
+
+    let (text, error) = reply(&replies[0]);
+    assert!(error, "{text}");
+    assert_eq!(
+        text,
+        "a compact is queued for this run; end your turn and call result after the compaction"
     );
 }
 

@@ -42,6 +42,7 @@ Typing it marks the run busy and starts its turn, so the step's `timeout` covers
 compaction ends with Claude's `SessionStart` with `source: compact`, or Codex's `PostCompact`. Either
 confirms the `/compact`, marks the run idle and queues a prompt ahead of the others: `Priory
 compacted this conversation, as you asked. You are on task <id>, at step <step>. Carry on with the
-step.`, then the step's ending line. That prompt starts a new turn, so the timeout restarts. The
-transcript stays the same, so the next `Stop` counts the compaction's tokens with the turn's.
+step.`, then the step's ending line. That prompt starts a new turn, so the timeout restarts. For
+Claude, the compaction keeps the transcript and Priory's read offset in it, so the next `Stop`
+counts tokens from where the last one stopped. Priory reads no Codex tokens yet (see Codex).
 A compaction Priory did not type, as Claude's automatic one mid-turn, changes nothing.

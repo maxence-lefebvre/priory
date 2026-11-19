@@ -1236,8 +1236,7 @@ pub(crate) fn signal(
     )?;
     let mut kill = None;
     match signal.event.as_str() {
-        // A compaction fires it in the same conversation and transcript: mid-turn, unless Priory
-        // typed its `/compact`. Codex 0.170 fires it only with the next turn, and PostCompact first.
+        // Claude also fires it for its own compaction mid-turn; Codex 0.170 only with the next turn.
         "SessionStart" | "PostCompact"
             if signal.event == "PostCompact" || signal.source.as_deref() == Some("compact") =>
         {
