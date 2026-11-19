@@ -334,6 +334,7 @@ fn start(
     let resume = resumed.is_some();
     let session = resumed.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
     let tmux = format!("priory-{}", admission.task);
+    let prompt = tools::step_prompt(step);
     state::start(
         db,
         &NewRun {
@@ -345,9 +346,7 @@ fn start(
             repo,
             branch: &branch,
             worktree: &worktree.to_string_lossy(),
-            prompt: admission
-                .fresh
-                .then(|| step.prompt.as_deref().unwrap_or_default()),
+            prompt: admission.fresh.then_some(prompt.as_str()),
             shared,
         },
     )?;

@@ -451,11 +451,15 @@ fn the_first_prompt_is_the_step_prompt_and_the_task_events_typed_once_and_confir
     let typed = setup.typed();
     assert_eq!(typed.len(), 1, "{typed:?}");
     let lines: Vec<_> = typed[0].lines().collect();
-    assert_eq!(lines.len(), 3, "{lines:?}");
+    assert_eq!(lines.len(), 4, "{lines:?}");
     assert_eq!(lines[0], "Implement the issue.");
-    assert!(lines[1].starts_with("github.issues.labeled owner/repo#42 {"));
-    assert!(lines[1].contains(r#""label":"agent""#));
-    assert!(lines[2].contains(r#""label":"it's \"urgent\"; C-c Enter""#));
+    assert_eq!(
+        lines[1],
+        "End this step by calling the result tool of the priory MCP server with one of these outcomes: failed, passed."
+    );
+    assert!(lines[2].starts_with("github.issues.labeled owner/repo#42 {"));
+    assert!(lines[2].contains(r#""label":"agent""#));
+    assert!(lines[3].contains(r#""label":"it's \"urgent\"; C-c Enter""#));
     std::thread::sleep(Duration::from_millis(1500));
     assert_eq!(setup.typed().len(), 1);
 }
@@ -863,6 +867,13 @@ effect = "reversible"
 next = { passed = "done", failed = "stop" }
 "#;
 
+/// A model step's first prompt: its own, then how to end the step.
+fn prompted(prompt: &str, outcomes: &str) -> String {
+    format!(
+        "{prompt}\nEnd this step by calling the result tool of the priory MCP server with one of these outcomes: {outcomes}."
+    )
+}
+
 fn result(outcome: &str) -> serde_json::Value {
     json!({ "name": "result", "arguments": { "outcome": outcome, "summary": format!("{outcome} it") } })
 }
@@ -889,7 +900,11 @@ fn a_result_with_a_valid_outcome_moves_the_task_to_the_next_model_step_after_sto
 
     setup.until("outbox", |rows| with(rows, 3, "confirmed") == 2);
     let typed = setup.typed();
-    assert_eq!(typed[1], "Implement the plan.\n", "{typed:?}");
+    assert_eq!(
+        typed[1],
+        format!("{}\n", prompted("Implement the plan.", "failed, passed")),
+        "{typed:?}"
+    );
     let (text, error) = reply(&setup.replies()[0]);
     assert!(!error, "{text}");
     let tasks = setup.rows("tasks");
@@ -995,7 +1010,10 @@ fn a_human_step_asks_ends_the_run_and_sleeps_until_an_answer_resumes_the_session
         args.windows(2).any(|w| w == ["--resume", session.as_str()]),
         "{args:?}"
     );
-    assert_eq!(setup.typed()[1], "Implement the plan.\n");
+    assert_eq!(
+        setup.typed()[1],
+        format!("{}\n", prompted("Implement the plan.", "failed, passed"))
+    );
     assert_eq!(setup.rows("tasks")[0][4], "running");
 }
 
@@ -1053,7 +1071,10 @@ fn a_result_moving_to_another_agent_ends_the_run_and_starts_that_agent_in_a_new_
         "{args:?}"
     );
     assert!(!args.iter().any(|arg| arg == "--model"), "{args:?}");
-    assert_eq!(setup.typed()[1], "Review the change.\n");
+    assert_eq!(
+        setup.typed()[1],
+        format!("{}\n", prompted("Review the change.", "approved, changes"))
+    );
     let tasks = setup.rows("tasks");
     assert_eq!([&tasks[0][3], &tasks[0][4]], ["review", "running"]);
 }
@@ -1080,7 +1101,10 @@ fn a_workflow_coming_back_to_an_agent_resumes_that_agent_session() {
         ),
         "{args:?}"
     );
-    assert_eq!(setup.typed()[2], "Implement the issue.\n");
+    assert_eq!(
+        setup.typed()[2],
+        format!("{}\n", prompted("Implement the issue.", "failed, passed"))
+    );
 }
 
 #[test]
@@ -1324,7 +1348,10 @@ fn the_desk_lists_an_uncertain_prompt_a_blocked_task_and_an_open_ask_oldest_firs
             ["ask", "1", "2"]
         ]
     );
-    assert_eq!(desk[0][4], "Plan the change.");
+    assert_eq!(
+        desk[0][4],
+        prompted("Plan the change.", "hopeless, ready, unsure").replace('\n', "\\n")
+    );
     assert_eq!(
         desk[1][4],
         "run 1 exited: claude no longer runs in tmux session priory-1"
@@ -1562,7 +1589,10 @@ fn an_event_kept_during_a_step_reaches_the_agent_after_the_next_step_prompt() {
     let typed = setup.typed();
     assert_eq!(typed.len(), 2, "{typed:?}");
     assert!(
-        typed[1].starts_with("Implement the plan.\ngithub.issues.labeled owner/repo#42 {"),
+        typed[1].starts_with(&format!(
+            "{}\ngithub.issues.labeled owner/repo#42 {{",
+            prompted("Implement the plan.", "failed, passed")
+        )),
         "{typed:?}"
     );
     let inbox = setup.rows("inbox");
@@ -1588,7 +1618,16 @@ fn an_answer_that_beats_the_stop_is_typed_into_the_same_run_once() {
     setup.release("hold-stop");
     setup.until("outbox", |rows| with(rows, 3, "confirmed") == 2);
     std::thread::sleep(Duration::from_millis(1500));
-    assert_eq!(setup.typed(), ["Plan the change.\n", "sqlite\n"]);
+    assert_eq!(
+        setup.typed(),
+        [
+            format!(
+                "{}\n",
+                prompted("Plan the change.", "hopeless, ready, unsure")
+            ),
+            "sqlite\n".to_owned()
+        ]
+    );
     let runs = setup.rows("runs");
     assert_eq!(runs.len(), 1, "{runs:?}");
     assert_eq!(runs[0][7], "-");
@@ -2652,12 +2691,19 @@ fn an_irreversible_model_step_asks_again_after_a_commit_instead_of_starting() {
     let again = setup.priory(&["answer", "1", "open", "--revision", "2"]);
 
     assert!(again.status.success(), "{again:?}");
+    let ship = prompted("Ship it.", "passed");
     setup.until("outbox", |rows| {
         rows.iter()
-            .any(|row| row[4] == "Ship it." && row[3] == "confirmed")
+            .any(|row| row[4] == ship.replace('\n', "\\n") && row[3] == "confirmed")
     });
     let typed = setup.typed();
-    assert_eq!(typed[2..], ["Polish the change.\n", "Ship it.\n"]);
+    assert_eq!(
+        typed[2..],
+        [
+            format!("{}\n", prompted("Polish the change.", "passed")),
+            format!("{ship}\n")
+        ]
+    );
 }
 
 impl Setup {

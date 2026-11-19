@@ -497,8 +497,10 @@ Every prompt the daemon types goes through the outbox. A prompt moves through th
 | `confirmed` | Its `UserPromptSubmit` arrived                                                   |
 | `uncertain` | Attempted before a daemon stop, never confirmed. Priory never types it again     |
 
-A run's first prompt is its step's `prompt`, then one line per event: the task's source event and
-every event it kept that no prompt carried yet. Each line holds the type, the subject and the data.
+A model step's prompt is the step's `prompt`, then the line `End this step by calling the result
+tool of the priory MCP server with one of these outcomes: <the keys of next>.` A run's first prompt
+is that, then one line per event: the task's source event and every event it kept that no prompt
+carried yet. Each line holds the type, the subject and the data.
 A `ready` task's run has only those event lines, and none when there are no new events: the prompt
 that moved or woke the task is already queued.
 
