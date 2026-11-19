@@ -1,7 +1,7 @@
 # Pull request events
 
-The intake publishes six pull request types. Each names the pull request and its branches, so a
-consumer can route it to the task that owns the pull request or its branch.
+The intake publishes six pull request types. Each names the pull request and its branches, so
+consumers can route it to the task that owns the pull request or branch.
 
 | Type                                   | One message per                                   |
 | -------------------------------------- | ------------------------------------------------- |
@@ -160,25 +160,24 @@ Head and base fields are null when GitHub no longer returns the pull request.
 }
 ```
 
-The intake reads check runs, not check suites: branch protection and R6.6 name required checks by
-check run, such as `test (ubuntu)`, and a suite folds every run of one app into one conclusion.
+The intake reads check runs, not check suites. Branch protection and R6.6 name required checks by
+check run, such as `test (ubuntu)`; a suite folds every run of one app into one conclusion.
 Commit statuses are not published. A re-run gets a new check run id, so it publishes again.
 
 ## Check run snapshots
 
-A repository that runs no checks never produces a `github.check_run.completed` event, and a check
-run that is queued or running produces none yet. So the intake publishes
-`github.pull_request.check_runs`, a snapshot of a pull request head's check runs, at most twice per
-pull request and head:
+A repository that runs no checks never produces a `github.check_run.completed` event, and a queued
+or running check run produces none yet. So the intake publishes `github.pull_request.check_runs`, a
+snapshot of a pull request head's check runs, at most twice per pull request and head:
 
 - `runs` above 0, the first time a poll finds any check run on the head, completed or not;
 - `runs` 0, the first time a poll finds no check run on the head and the pull request not updated
   for 5 minutes, the grace period (`GRACE_SECONDS` in `crates/priory-intake/src/intake/pulls.rs`).
 
 GitHub creates check runs a few seconds after a push, and a push updates the pull request, so the
-grace period counts from the last push or later. Commit statuses do not count as check runs.
-Contexts past the first 100 count as check runs. When an event names a pull request that is also
-open, the poll takes its snapshot from the open list, the later of its two reads.
+grace period counts from the last push or later. Commit statuses do not count as check runs, but
+contexts past the first 100 do. When an event names a pull request that is also open, the poll takes
+its snapshot from the open list, the later of its two reads.
 
 | Field          | Type             | Meaning                                                        |
 | -------------- | ---------------- | -------------------------------------------------------------- |

@@ -39,5 +39,5 @@ are not published.
 ```
 
 GitHub's issue events list has no `opened` event, so the intake reads `opened` from the issues list,
-newest first. Its `title` is the title at the time of the poll, which may differ from the title the
-issue was opened with.
+newest first. Its `title` is the title at poll time, which may differ from the title the issue was
+opened with.
