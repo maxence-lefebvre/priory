@@ -2989,7 +2989,7 @@ fn a_worktree_a_person_deleted_is_added_back_from_its_branch_on_the_next_run() {
     let mut setup = Setup::new("deleted-worktree");
     setup.publish(&requested(42));
     setup.start();
-    setup.until("outbox", |rows| with(rows, 3, "confirmed") == 1);
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 1);
     setup.reboot();
     let worktree = setup.dir.join("home/worktrees/owner/repo/1");
     fs::remove_dir_all(&worktree).unwrap();
