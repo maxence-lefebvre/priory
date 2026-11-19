@@ -9,6 +9,7 @@ description = "Implements one task."
 harness = "claude-code"
 session = "per-task"
 mcpServers = ["github"]
+permissions = { defaultMode = "auto", allow = ["Bash(cargo test:*)", "Edit"], deny = ["Bash(git push:*)"] }
 +++
 # Implementation
 Make the smallest correct change.
@@ -176,7 +177,45 @@ fn an_unknown_field_names_its_file_and_line() {
     assert_eq!(outcome.code, 1);
     assert_eq!(
         outcome.stderr,
-        "agents/implementer/agent.md:4:1: unknown field `modle`, expected one of description, harness, model, effort, runner, session, memory, mcpServers\n"
+        "agents/implementer/agent.md:4:1: unknown field `modle`, expected one of description, harness, model, effort, runner, session, memory, mcpServers, permissions\n"
+    );
+}
+
+#[test]
+fn an_unknown_permission_mode_names_its_file_and_line() {
+    let agent = "+++\ndescription = \"Implements one task.\"\nharness = \"claude-code\"\npermissions = { defaultMode = \"yolo\" }\n+++\n";
+
+    let outcome = check(&factory(
+        "unknown-mode",
+        &with("agents/implementer/agent.md", agent),
+    ));
+
+    assert_eq!(outcome.code, 1);
+    assert!(
+        outcome.stderr.starts_with("agents/implementer/agent.md:4:")
+            && outcome.stderr.contains("yolo"),
+        "{}",
+        outcome.stderr
+    );
+}
+
+#[test]
+fn the_bypass_permissions_mode_is_refused() {
+    let agent = "+++\ndescription = \"Implements one task.\"\nharness = \"claude-code\"\npermissions = { defaultMode = \"bypassPermissions\" }\n+++\n";
+
+    let outcome = check(&factory(
+        "bypass-mode",
+        &with("agents/implementer/agent.md", agent),
+    ));
+
+    assert_eq!(outcome.code, 1);
+    assert!(
+        outcome.stderr.starts_with("agents/implementer/agent.md:4:")
+            && outcome
+                .stderr
+                .contains("Priory never skips permission checks"),
+        "{}",
+        outcome.stderr
     );
 }
 

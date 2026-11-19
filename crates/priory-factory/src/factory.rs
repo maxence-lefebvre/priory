@@ -1,6 +1,6 @@
 use crate::lines::{self, Lines};
-use serde::Deserialize;
-use serde::de::DeserializeOwned;
+use serde::de::{DeserializeOwned, Deserializer, Error as _, IntoDeserializer};
+use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fmt;
 use std::fs;
@@ -45,9 +45,62 @@ pub struct Agent {
     pub memory: Option<u64>,
     #[serde(default)]
     pub mcp_servers: Vec<String>,
+    #[serde(default)]
+    pub permissions: Permissions,
     /// The Markdown after the frontmatter: the agent's instructions.
     #[serde(skip)]
     pub body: String,
+}
+
+/// Claude Code's own `permissions` settings, so a person can copy rules across.
+#[derive(Debug, Default, Deserialize, Serialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct Permissions {
+    /// The run's `--permission-mode`, not a setting: Claude's flag outranks every settings file.
+    #[serde(default, deserialize_with = "refuse_bypass", skip_serializing)]
+    pub default_mode: Option<PermissionMode>,
+    #[serde(default)]
+    pub allow: Vec<String>,
+    #[serde(default)]
+    pub deny: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum PermissionMode {
+    /// Claude Code's `--permission-mode` no longer takes `default`, its older name for `manual`.
+    #[serde(alias = "default")]
+    Manual,
+    AcceptEdits,
+    Plan,
+    Auto,
+    DontAsk,
+}
+
+impl PermissionMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Manual => "manual",
+            Self::AcceptEdits => "acceptEdits",
+            Self::Plan => "plan",
+            Self::Auto => "auto",
+            Self::DontAsk => "dontAsk",
+        }
+    }
+}
+
+fn refuse_bypass<'de, D: Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<PermissionMode>, D::Error> {
+    let Some(mode) = Option::<String>::deserialize(deserializer)? else {
+        return Ok(None);
+    };
+    if mode == "bypassPermissions" {
+        return Err(D::Error::custom(
+            "`bypassPermissions` is not allowed: Priory never skips permission checks",
+        ));
+    }
+    PermissionMode::deserialize(mode.into_deserializer()).map(Some)
 }
 
 #[derive(Debug, Deserialize)]

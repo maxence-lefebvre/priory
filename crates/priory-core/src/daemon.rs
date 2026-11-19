@@ -4,7 +4,7 @@ use crate::state::{self, Admission, NewRun, Signal};
 use crate::sweep;
 use crate::tools::{self, Act, Answer, Call, Done};
 use herdr_bus::{Bus, Start};
-use priory_factory::factory::{Factory, Session};
+use priory_factory::factory::{Factory, PermissionMode, Session};
 use priory_intake::intake::OUTPUT;
 use priory_runtime::room;
 use priory_runtime::runtime::{self, Launch, Line};
@@ -351,6 +351,7 @@ fn start(
         },
     )?;
     let agent = &agent.value;
+    let permissions = serde_json::to_value(&agent.permissions).expect("permissions serialize");
     Ok(runtime::launch(&Launch {
         tmux: &tmux,
         dir: &worktree,
@@ -360,6 +361,11 @@ fn start(
         model: agent.model.as_deref(),
         effort: agent.effort.as_deref(),
         body: &agent.body,
+        permissions,
+        permission_mode: agent
+            .permissions
+            .default_mode
+            .map_or("manual", PermissionMode::as_str),
     }))
 }
 
