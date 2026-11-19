@@ -201,7 +201,9 @@ fn take(db: &mut Connection, line: &str, trace: &Trace) -> Result<(String, Optio
         Ok(Input::Signal(signal)) => Ok(("ok".to_owned(), state::signal(db, &signal, trace)?)),
         Ok(Input::Call(call)) => Ok((replied(tools::call(db, &call, workflows)?), None)),
         Ok(Input::Answer(answer)) => Ok((
-            replied(tools::answer(db, &answer, trace, &runtime::head)?),
+            replied(tools::answer(db, &answer, trace, &|worktree, branch| {
+                runtime::kept_head(&runtime::home(), worktree, branch)
+            })?),
             None,
         )),
         Ok(Input::Act(act)) => {
@@ -339,6 +341,14 @@ fn perform(db: &mut Connection, trace: &Trace, home: &Path) -> Result<(), Error>
             .as_deref()
             .is_some_and(|worktree| !Path::new(worktree).exists())
     {
+        // A resurrected task goes through the room check, which a code step otherwise skips.
+        if room::measure(home).is_ok_and(|room| crate::room::short_of_disk(&room)) {
+            db.execute(
+                "UPDATE tasks SET reason = ?2 WHERE id = ?1 AND reason IS NOT ?2",
+                rusqlite::params![due.task, "waits for room to add back its worktree"],
+            )?;
+            return Ok(());
+        }
         if let Err(reason) = runtime::worktree(home, repo, due.task) {
             return Ok(state::block(db, trace, due.task, "blocked", &reason)?);
         }

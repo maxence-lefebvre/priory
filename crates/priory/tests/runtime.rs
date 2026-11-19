@@ -5928,3 +5928,24 @@ fn a_revive_into_a_code_step_recreates_a_swept_worktree() {
     assert_eq!(actions[0][4..7], ["opened", "github:owner/repo#7", &commit]);
     assert_eq!(setup.pushed("priory/1"), commit);
 }
+
+#[test]
+fn an_approval_answered_while_retired_opens_the_pull_request_once_disk_allows() {
+    let mut setup = asked_to_open("retire-approval", OPEN_PR);
+    let commit = setup.commit(1, "widget.txt");
+    setup.crash();
+    setup.disk(10);
+    setup.start();
+    setup.removed(1);
+
+    let answered = setup.priory(&["answer", "1", "open", "--revision", "1"]);
+
+    assert!(answered.status.success(), "{answered:?}");
+    setup.until("tasks", |rows| {
+        rows[0][4] == "ready" && rows[0][7] == "waits for room to add back its worktree"
+    });
+    assert!(setup.rows("actions").is_empty());
+    setup.disk(100);
+    let actions = setup.until("actions", |rows| rows.len() == 1);
+    assert_eq!(actions[0][4..7], ["opened", "github:owner/repo#7", &commit]);
+}

@@ -152,7 +152,6 @@ fn occupied(path: &Path) -> bool {
 
 /// Removes the worktree and its branch. Git refuses both when anything is left to lose.
 pub fn remove(home: &Path, found: &Found) -> Result<(), String> {
-    let clone = found.clone(home);
-    run(git(&clone).args(["worktree", "remove"]).arg(&found.path))?;
-    run(git(&clone).args(["branch", "-d", &found.branch()])).map(drop)
+    retire(home, found)?;
+    run(git(&found.clone(home)).args(["branch", "-d", &found.branch()])).map(drop)
 }

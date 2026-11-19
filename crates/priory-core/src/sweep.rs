@@ -109,14 +109,20 @@ pub(crate) fn retire(
         else {
             continue;
         };
-        let stays =
-            worktrees::retire_blocker(home, found).or_else(|| worktrees::retire(home, found).err());
-        let Some(stays) = stays else {
+        // Marked first, so a crash before the removal leaves a mark on a worktree, not the reverse.
+        let mut stays = worktrees::retire_blocker(home, found);
+        if stays.is_none() {
             db.execute(
                 "UPDATE tasks SET retired = strftime('%Y-%m-%dT%H:%M:%SZ', 'now'), reason = NULL
                  WHERE id = ?1",
                 [task],
             )?;
+            stays = worktrees::retire(home, found).err();
+            if stays.is_some() {
+                db.execute("UPDATE tasks SET retired = NULL WHERE id = ?1", [task])?;
+            }
+        }
+        let Some(stays) = stays else {
             if short() {
                 continue;
             }
