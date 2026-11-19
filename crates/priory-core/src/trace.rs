@@ -10,7 +10,7 @@ pub struct Trace<'a> {
     pub factory: &'a Factory,
     pub revision: Option<String>,
     pub machine: Option<String>,
-    pub usage: fn(&Path, u64) -> Usage,
+    pub usage: fn(&Path, u64) -> Option<Usage>,
 }
 
 /// Records the run's transcript at its `SessionStart`. What it holds already belongs to earlier runs
@@ -24,15 +24,19 @@ pub(crate) fn begin(
     let Some(transcript) = transcript else {
         return Ok(());
     };
-    let end = (trace.usage)(Path::new(transcript), 0).end;
+    let Some(usage) = (trace.usage)(Path::new(transcript), 0) else {
+        return Ok(());
+    };
     tx.execute(
         "UPDATE runs SET transcript = ?2, read = ?3 WHERE id = ?1",
-        params![run, transcript, end as i64],
+        params![run, transcript, usage.end as i64],
     )?;
     Ok(())
 }
 
-/// Adds the tokens of the run's turns since its last read to its task's current step.
+/// Adds the tokens of the run's turns since its last read to its task's current step. A run with no
+/// transcript recorded, as one live across the upgrade that added it, only starts reading there,
+/// since its transcript may hold other runs' turns. An unreadable transcript keeps the offset.
 pub(crate) fn account(
     tx: &Transaction,
     trace: &Trace,
@@ -41,20 +45,26 @@ pub(crate) fn account(
 ) -> rusqlite::Result<()> {
     let known = tx
         .query_row(
-            "SELECT coalesce(transcript, ?2), read FROM runs WHERE id = ?1",
-            params![run, transcript],
+            "SELECT transcript, read FROM runs WHERE id = ?1",
+            [run],
             |row| Ok((row.get::<_, Option<String>>(0)?, row.get::<_, i64>(1)?)),
         )
         .optional()?;
-    let Some((Some(transcript), read)) = known else {
+    let Some((recorded, read)) = known else {
         return Ok(());
     };
-    let usage = (trace.usage)(Path::new(&transcript), read as u64);
+    let Some(path) = recorded.as_deref().or(transcript) else {
+        return Ok(());
+    };
+    let from = if recorded.is_some() { read as u64 } else { 0 };
+    let Some(usage) = (trace.usage)(Path::new(path), from) else {
+        return Ok(());
+    };
     tx.execute(
         "UPDATE runs SET transcript = ?2, read = ?3 WHERE id = ?1",
-        params![run, transcript, usage.end as i64],
+        params![run, path, usage.end as i64],
     )?;
-    if usage.messages == 0 {
+    if recorded.is_none() || usage.messages == 0 {
         return Ok(());
     }
     tx.execute(
@@ -87,7 +97,7 @@ pub(crate) fn ended(
     run: Option<i64>,
 ) -> rusqlite::Result<()> {
     let ended = tx.query_row(
-        "SELECT workflow, step, key, lane, entered, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
+        "SELECT workflow, step, key, entered, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
          CAST(round((julianday('now') - julianday(entered)) * 86400000) AS INTEGER), tokens, model
          FROM tasks WHERE id = ?1",
         [task],
@@ -96,12 +106,11 @@ pub(crate) fn ended(
                 workflow: row.get(0)?,
                 step: row.get(1)?,
                 key: row.get(2)?,
-                lane: row.get(3)?,
-                started: row.get(4)?,
-                time: row.get(5)?,
-                duration: row.get(6)?,
-                tokens: row.get(7)?,
-                model: row.get(8)?,
+                started: row.get(3)?,
+                time: row.get(4)?,
+                duration: row.get(5)?,
+                tokens: row.get(6)?,
+                model: row.get(7)?,
             })
         },
     )?;
@@ -119,7 +128,6 @@ pub(crate) fn ended(
         "workflow": ended.workflow,
         "task": task.to_string(),
         "key": ended.key,
-        "lane": ended.lane,
         "run": run.map(|run| run.to_string()),
         "generation": 1,
         "step": ended.step,
@@ -172,7 +180,6 @@ struct Ended {
     workflow: String,
     step: String,
     key: String,
-    lane: Option<String>,
     started: String,
     time: String,
     duration: i64,

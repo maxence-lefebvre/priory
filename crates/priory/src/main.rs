@@ -141,7 +141,7 @@ fn desk() -> ExitCode {
 fn trace() -> ExitCode {
     let printed = state::open().and_then(|db| {
         let events = state::events(&db).map_err(|error| error.to_string())?;
-        events.iter().for_each(|event| println!("{event}"));
+        events.iter().for_each(|event| state::emit(event));
         Ok(())
     });
     exit("trace", printed)

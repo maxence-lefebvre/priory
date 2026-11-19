@@ -737,14 +737,27 @@ fn share(tx: &Transaction, run: &NewRun) -> rusqlite::Result<()> {
     Ok(())
 }
 
-/// Blocks `task` with `reason`, ending its live run first as `ended_as`, if it has one.
+/// Blocks `task` with `reason`, ending its live run first as `ended_as`, if it has one, after reading
+/// its transcript.
 pub(crate) fn block(
     db: &mut Connection,
+    trace: &Trace,
     task: i64,
     ended_as: &str,
     reason: &str,
 ) -> rusqlite::Result<()> {
     let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let live = tx
+        .query_row(
+            "SELECT id FROM runs WHERE task = ?1 AND ended IS NULL",
+            [task],
+            |row| row.get::<_, i64>(0),
+        )
+        .optional()?;
+    if let Some(run) = live {
+        // The step goes on after a resume, so the turn cut short still counts toward it.
+        crate::trace::account(&tx, trace, run, None)?;
+    }
     tx.execute(
         &format!("UPDATE runs SET ended = {NOW}, ended_as = ?2 WHERE task = ?1 AND ended IS NULL"),
         params![task, ended_as],

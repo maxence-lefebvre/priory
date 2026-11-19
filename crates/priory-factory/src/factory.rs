@@ -376,10 +376,24 @@ fn percent<'de, D: serde::Deserializer<'de>>(input: D) -> Result<Option<f64>, D:
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Price {
+    #[serde(deserialize_with = "dollars")]
     pub input: f64,
+    #[serde(deserialize_with = "dollars")]
     pub output: f64,
+    #[serde(deserialize_with = "dollars")]
     pub cache_read: f64,
+    #[serde(deserialize_with = "dollars")]
     pub cache_write: f64,
+}
+
+fn dollars<'de, D: Deserializer<'de>>(deserializer: D) -> Result<f64, D::Error> {
+    let rate = f64::deserialize(deserializer)?;
+    if rate.is_finite() && rate >= 0.0 {
+        return Ok(rate);
+    }
+    Err(D::Error::custom(format!(
+        "{rate} is not a price: give dollars per million tokens, zero or more"
+    )))
 }
 
 pub struct Loaded<T> {

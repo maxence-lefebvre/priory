@@ -554,7 +554,7 @@ record's `id` to drop a duplicate.
 | `factory_revision` | the last commit that changed the factory's folder; absent outside git |
 | `task`, `run` | the task's and the run's ids; `run` only for a model step, the run that sent the result |
 | `generation` | 1: Priory does not revive tasks yet |
-| `lane` | the task's lane, absent while it has none |
+| `lane` | absent until lanes land |
 | `machine` | the host name, which also names the runner |
 | `started` | when the task entered the step, so it includes the time the task waited for a run |
 | `harness`, `model`, `tokens` | for a model step: the agent's harness, the model the transcript names, else the agent's |
@@ -563,13 +563,18 @@ A model step's `tokens` come from Claude's session transcript, the file that `tr
 A run records the file and its length at `SessionStart`, since a resumed session's file already
 holds earlier runs' turns. At each `Stop`, the daemon reads the lines added since and adds the usage
 of each assistant message to the task's current step. Claude writes a message once per content block,
-each line with the message's usage, so a message id counts once. Entering a step starts its count
-again. A step with no assistant message read has no `tokens`.
+each line with the message's usage, so a message id counts once. A run the daemon blocks or finds
+lost is read as it ends, since a resume carries on the same step. Entering a step starts its count
+again. A step with no assistant message read has no `tokens`. A transcript that cannot be read keeps
+its offset, so the next read counts its turns once.
 
 Known limits:
 
-- A turn that ends without `Stop`, as when its agent exits or the daemon blocks the run, is read only
-  when the agent exits after its result, ask or wait. Its tokens are otherwise lost.
+- A run that was live when the daemon upgraded to this schema has no transcript recorded. Its first
+  `Stop` only marks where its reading starts, so that turn's tokens are lost rather than counted
+  with other runs' turns.
+- A step that used two models, as when an agent's model changed between its runs, records the last
+  one, and `--cost` prices all its tokens at that model's price.
 - `factory.step.labeled` is not written yet.
 - `factory_revision` names the last commit, even when the factory has uncommitted changes.
 
@@ -584,7 +589,8 @@ review	approved	1	2	50.0%
 review	changes	1	2	50.0%
 ```
 
-A record reaches its step when the step ends, so a task still at a step is not counted yet.
+A visit reaches its step when it ends there, or while an active task is still at it, so the
+outcome rates of a step with tasks in progress add up to less than 100 %.
 `--since` takes an RFC 3339 instant or a duration such as `7 days`, the default, back from now.
 
 `--cost` prints each task's tokens and cost instead, per step, then in total. The prices come from
@@ -600,7 +606,8 @@ cache_write = 6.25
 ```
 
 A model with no price keeps its tokens, and its cost reads `price missing for <model>`, as does its
-task's total. Prices apply when the report runs, so a changed price changes past costs too.
+task's total. A model step with no `tokens` shows `-` and `tokens unknown`, and its task's total names
+it. `priory check` refuses a price below zero or not finite. Prices apply when the report runs, so a changed price changes past costs too.
 
 ## Running as services
 

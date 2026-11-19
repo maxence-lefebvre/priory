@@ -3532,6 +3532,9 @@ fn reviewed_twice(name: &str) -> Setup {
 #[test]
 fn a_report_counts_each_steps_outcomes_with_the_runs_that_reached_the_step() {
     let setup = reviewed_twice("report");
+    // A second task reaches implement and is still there.
+    setup.publish(&requested(43));
+    setup.until("runs", |rows| rows.iter().any(|row| row[1] == "2"));
 
     let report = setup.report(&["--workflow", "implement", "--since", "1 hour"]);
 
@@ -3539,7 +3542,7 @@ fn a_report_counts_each_steps_outcomes_with_the_runs_that_reached_the_step() {
         report,
         [
             ["step", "outcome", "count", "reached", "rate"],
-            ["implement", "passed", "2", "2", "100.0%"],
+            ["implement", "passed", "2", "3", "66.7%"],
             ["review", "approved", "1", "2", "50.0%"],
             ["review", "changes", "1", "2", "50.0%"],
         ]
@@ -3638,6 +3641,39 @@ fn a_cost_report_prices_each_task_and_step_by_the_factory_price_table_and_names_
                 "$0.000982"
             ],
             &["1", "total", "-", "203", "23", "2003", "103", "$0.001941"],
+        ]
+    );
+}
+
+#[test]
+fn a_cost_report_keeps_a_model_step_whose_tokens_are_unknown_and_marks_its_total() {
+    let mut setup = Setup::with_workflow("report-unknown", STEPS);
+    setup.hold("no-transcript");
+    setup.calls(&[result("ready"), result("passed")]);
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == "done")
+    });
+
+    let report = setup.report(&["--workflow", "implement", "--cost"]);
+
+    let unknown = "tokens unknown";
+    assert_eq!(
+        report[1..],
+        [
+            ["1", "plan", "haiku", "-", "-", "-", "-", unknown],
+            ["1", "implement", "haiku", "-", "-", "-", "-", unknown],
+            [
+                "1",
+                "total",
+                "-",
+                "0",
+                "0",
+                "0",
+                "0",
+                "tokens unknown for plan, implement"
+            ],
         ]
     );
 }

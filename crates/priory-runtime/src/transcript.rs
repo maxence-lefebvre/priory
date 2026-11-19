@@ -1,5 +1,7 @@
 use serde_json::Value;
 use std::collections::BTreeMap;
+use std::fs::File;
+use std::io::{ErrorKind, Read, Seek, SeekFrom};
 use std::path::Path;
 
 /// The tokens of the assistant messages in part of a Claude Code session transcript.
@@ -18,17 +20,24 @@ pub struct Usage {
 
 /// Sums the usage of the assistant messages in the transcript at `path` from byte `from`. Claude
 /// writes one line per content block, each with its message's usage, so a message id counts once.
-/// A missing file reads as empty.
-pub fn usage(path: &Path, from: u64) -> Usage {
-    let bytes = std::fs::read(path).unwrap_or_default();
-    let start = usize::try_from(from).unwrap_or(usize::MAX).min(bytes.len());
-    let whole = bytes[start..]
+/// A missing file reads as empty; `None` when the file cannot be read.
+pub fn usage(path: &Path, from: u64) -> Option<Usage> {
+    let mut bytes = Vec::new();
+    match File::open(path) {
+        Ok(mut file) => {
+            file.seek(SeekFrom::Start(from)).ok()?;
+            file.read_to_end(&mut bytes).ok()?;
+        }
+        Err(error) if error.kind() == ErrorKind::NotFound => {}
+        Err(_) => return None,
+    }
+    let whole = bytes
         .iter()
         .rposition(|&byte| byte == b'\n')
         .map_or(0, |last| last + 1);
     let mut messages = BTreeMap::new();
     let mut model = None;
-    for line in bytes[start..start + whole].split(|&byte| byte == b'\n') {
+    for line in bytes[..whole].split(|&byte| byte == b'\n') {
         let Ok(entry) = serde_json::from_slice::<Value>(line) else {
             continue;
         };
@@ -47,7 +56,7 @@ pub fn usage(path: &Path, from: u64) -> Usage {
         messages.insert(id, message["usage"].clone());
     }
     let mut usage = Usage {
-        end: (start + whole) as u64,
+        end: from + whole as u64,
         messages: messages.len(),
         model,
         ..Usage::default()
@@ -59,5 +68,5 @@ pub fn usage(path: &Path, from: u64) -> Usage {
         usage.cache_read += tokens("cache_read_input_tokens");
         usage.cache_write += tokens("cache_creation_input_tokens");
     }
-    usage
+    Some(usage)
 }

@@ -1086,11 +1086,17 @@ pub(crate) fn act(
 /// Ends the live run of `session`, whose tmux session was gone when the daemon started, as `lost`.
 /// Its task becomes `ready` with a prompt that says so, unless the task's previous run was lost too
 /// and this one stored no ask or wait: then the task blocks. A result would have settled it instead.
-pub(crate) fn lost(db: &mut Connection, session: &str, tmux: &str) -> rusqlite::Result<()> {
+pub(crate) fn lost(
+    db: &mut Connection,
+    trace: &Trace,
+    session: &str,
+    tmux: &str,
+) -> rusqlite::Result<()> {
     let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
     let Some(run) = run(&tx, session)? else {
         return Ok(());
     };
+    trace::account(&tx, trace, run.id, None)?;
     end(&tx, run.id, "lost")?;
     let again = tx
         .query_row(

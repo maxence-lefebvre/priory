@@ -69,7 +69,7 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
         }
         runtime::kill(&run.tmux);
         if !tools::gone(&mut db, &run.session, &trace)? {
-            tools::lost(&mut db, &run.session, &run.tmux)?;
+            tools::lost(&mut db, &trace, &run.session, &run.tmux)?;
         }
     }
     let mut swept: Option<Instant> = None;
@@ -151,10 +151,10 @@ fn tend(db: &mut Connection, trace: &Trace, share: &Share, home: &Path) -> Resul
                 "run {} exited: claude no longer runs in tmux session {}",
                 run.id, run.tmux
             );
-            state::block(db, run.task, "exited", &reason)?;
+            state::block(db, trace, run.task, "exited", &reason)?;
         } else if let Some((ended_as, reason)) = verdict(&run, factory) {
             // Committed first, so a crash before the kill leaves an ended run, not a lost one.
-            state::block(db, run.task, ended_as, &reason)?;
+            state::block(db, trace, run.task, ended_as, &reason)?;
             runtime::kill(&run.tmux);
         }
     }
@@ -168,7 +168,7 @@ fn tend(db: &mut Connection, trace: &Trace, share: &Share, home: &Path) -> Resul
             break;
         };
         if let Err(reason) = start(db, factory, home, &admission)? {
-            state::block(db, admission.task, "failed", &reason)?;
+            state::block(db, trace, admission.task, "failed", &reason)?;
         }
     }
     while let Some((tmux, session, text)) = state::attempt(db)? {
@@ -233,7 +233,7 @@ fn perform(db: &mut Connection, trace: &Trace) -> Result<(), Error> {
         "open-pr" => open_pr(db, factory, &due, head.as_deref())?,
         other => {
             let reason = format!("action {other} is not built yet");
-            return Ok(state::block(db, due.task, "blocked", &reason)?);
+            return Ok(state::block(db, trace, due.task, "blocked", &reason)?);
         }
     };
     Ok(tools::performed(
