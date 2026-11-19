@@ -14,7 +14,7 @@ pub(crate) const MODEL: &str = "haiku";
 /// Why a run cannot take a nudge: its earlier prompt may still sit in its input.
 const BLOCKED: &str = "EXISTS (SELECT 1 FROM outbox JOIN runs AS typed ON typed.id = outbox.run
   WHERE outbox.task = runs.task AND outbox.state IN ('attempted', 'uncertain')
-  AND (typed.ended IS NULL OR typed.ended_as = 'moved'))";
+  AND typed.ended IS NULL)";
 
 /// A live run that might be stalled: it reached `SessionStart`, shows no permission prompt, and
 /// sleeps on no open ask or wait.

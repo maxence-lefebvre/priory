@@ -676,6 +676,7 @@ fn hook(event: &str) -> ExitCode {
         message: input["message"].as_str().map(str::to_owned),
         transcript: input["transcript_path"].as_str().map(str::to_owned),
         thread,
+        source: input["source"].as_str().map(str::to_owned),
     };
     let line = serde_json::to_string(&signal).expect("signal serializes");
     match runtime::send(&runtime::home(), &line) {

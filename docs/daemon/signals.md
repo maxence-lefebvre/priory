@@ -8,7 +8,8 @@ the stdin id as `thread`, which `SessionStart` stores. The daemon answers `ok` o
 committed, and the hook waits up to 10 seconds for it. When no daemon takes the line, it goes to `signals.spool` instead. The next
 daemon applies the spool before it removes it.
 
-- `SessionStart`: the harness is up and its input is ready, so the run is idle.
+- `SessionStart`: the harness is up and its input is ready, so the run is idle. One whose `source`
+  is `compact` changes nothing: Claude fires it when it compacts the conversation, mid-turn.
 - `UserPromptSubmit`: the run is busy. Its attempted prompt is confirmed if the submitted text has
   the same words, once the `pasted_content` tag that Claude wraps a pasted prompt in is removed.
 - `Stop`: the turn ended, so the run is idle.

@@ -21,7 +21,9 @@ The lane column is the task's lane, and `-` for a `worktree` row.
 It lists only asks and prompts of active tasks, holds of held tasks, and waiting memory grants. After them come the `queue` rows, in start order,
 and last one `worktree` row for every worktree the sweep keeps. `priory asks` still prints every open ask.
 
-`priory resume <task>` makes a blocked task `ready`. It queues the prompt `A person resumed this
+`priory resume <task>` makes a blocked task `ready`. A task that has no run and no queued prompt,
+as when its first clone failed, becomes `queued` instead, so its next run gets the step's prompt as
+a new task does, and the reply is `task <id> is queued`. It queues the prompt `A person resumed this
 task after: <reason>. Check the worktree, then continue.` ahead of the task's other queued prompts,
 so its next run resumes the session of the step's agent with it. When the task's latest run never
 reached `SessionStart`, or it has none, the reason is about the launch, not the agent's work, so the
@@ -38,7 +40,8 @@ for a task in any other state. An answer to an ask of a done, failed or dropped 
 task starts at generation 1. The revive goes to the daemon over `priory.sock` and, in one
 transaction:
 
-1. Withdraws every open ask and wait of the task, recording the new generation on each.
+1. Withdraws every open ask and wait of the task, recording the new generation on each, and marks
+   its queued prompts `withdrawn`.
 2. Raises the task's generation by one.
 3. Enters the step the task ended on, or `<step>`, as a move into it would (see Moving on): a model
    step makes the task `ready` with its prompt queued, a human step asks again, and a code step

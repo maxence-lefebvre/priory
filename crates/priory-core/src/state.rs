@@ -1146,6 +1146,9 @@ pub struct Signal {
     /// The harness's own session id, when it chose one apart from `session`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub thread: Option<String>,
+    /// Why `SessionStart` fired, such as `startup` or `compact`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
 }
 
 /// Applies a hook signal: the run is idle after `SessionStart` or `Stop`, and busy after
@@ -1173,6 +1176,8 @@ pub(crate) fn signal(
     )?;
     let mut kill = None;
     match signal.event.as_str() {
+        // A compaction fires it mid-turn, in the same conversation and transcript.
+        "SessionStart" if signal.source.as_deref() == Some("compact") => {}
         "SessionStart" => {
             tx.execute(
                 "UPDATE runs SET idle = 1, ready = 1, turn = NULL, nudgeable = 0, thread = coalesce(?2, thread)
@@ -1194,7 +1199,7 @@ pub(crate) fn signal(
             )?;
             let attempted = tx
                 .query_row(
-                    "SELECT id, text, nudge FROM outbox WHERE run = ?1 AND state = 'attempted'",
+                    "SELECT id, text, nudge FROM outbox WHERE run = ?1 AND state IN ('attempted', 'uncertain')",
                     [run],
                     |row| {
                         Ok((
@@ -1249,7 +1254,8 @@ fn pasted(prompt: &str) -> &str {
 
 /// Marks the oldest queued prompt of an idle live run `attempted` and the run busy, in one
 /// transaction, before anything is typed. A task with an attempted or uncertain prompt gets none
-/// while the process it went to may still hold its text: its run is live or moved on.
+/// while the process it went to may still hold its text: its run is live, as a run carried into the
+/// next step takes over the prompts of the run it continues.
 pub(crate) fn attempt(db: &mut Connection) -> rusqlite::Result<Option<(String, String, String)>> {
     let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
     let next = tx
@@ -1259,7 +1265,7 @@ pub(crate) fn attempt(db: &mut Connection) -> rusqlite::Result<Option<(String, S
              WHERE runs.ended IS NULL AND runs.idle = 1 AND NOT EXISTS (
                SELECT 1 FROM outbox AS open JOIN runs AS typed ON typed.id = open.run
                WHERE open.task = runs.task AND open.state IN ('attempted', 'uncertain')
-               AND (typed.ended IS NULL OR typed.ended_as = 'moved'))
+               AND typed.ended IS NULL)
              ORDER BY outbox.id LIMIT 1",
             [],
             |row| {
