@@ -10,7 +10,7 @@ use std::collections::BTreeMap;
 use std::io::Write;
 use std::time::Duration;
 
-const VERSION: i64 = 22;
+const VERSION: i64 = 23;
 
 const SCHEMA: &str = "
 CREATE TABLE tasks (
@@ -375,11 +375,17 @@ CREATE TABLE handlers (
 );
 PRAGMA user_version = 22;
 ";
+
+// A task queued on schema 10 had no `changed`, so migration 11 left its `entered` NULL.
+const SCHEMA_23: &str = "
+UPDATE tasks SET entered = coalesce(changed, strftime('%Y-%m-%dT%H:%M:%SZ', 'now')) WHERE entered IS NULL;
+PRAGMA user_version = 23;
+";
 /// Each schema change in order: a file at version `n` applies those from index `n` on.
 const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA, SCHEMA_2, SCHEMA_3, SCHEMA_4, SCHEMA_5, SCHEMA_6, SCHEMA_7, SCHEMA_8, SCHEMA_9,
     SCHEMA_10, SCHEMA_11, SCHEMA_12, SCHEMA_13, SCHEMA_14, SCHEMA_15, SCHEMA_16, SCHEMA_17,
-    SCHEMA_18, SCHEMA_19, SCHEMA_20, SCHEMA_21, SCHEMA_22,
+    SCHEMA_18, SCHEMA_19, SCHEMA_20, SCHEMA_21, SCHEMA_22, SCHEMA_23,
 ];
 
 /// The order the queue starts tasks in: band, then a person's order, then age. A band the factory
@@ -458,7 +464,7 @@ pub(crate) fn handle(
     }
     let resources = route::resources(message);
     let owner = owner(&tx, &resources)?;
-    let (task, outcome) = match route::route(message, owner.as_ref(), factory)? {
+    let (task, outcome) = match route::route(message, owner.as_ref(), factory) {
         Decision::Create(new) => {
             tx.execute(
                 "INSERT INTO tasks

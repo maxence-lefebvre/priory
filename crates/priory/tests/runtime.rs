@@ -2134,6 +2134,81 @@ fn a_result_with_a_valid_outcome_moves_the_task_to_the_next_model_step_after_sto
 }
 
 #[test]
+fn a_task_request_for_a_workflow_the_factory_lacks_waits_queued_and_starts_once_it_is_back() {
+    let mut setup = Setup::new("missing-workflow");
+    let mut triage = requested(42);
+    triage.data["workflow"] = json!("triage");
+    setup.publish(&triage);
+    setup.publish(&requested(43));
+
+    setup.start();
+
+    setup.until("tasks", |rows| {
+        rows.len() == 2 && rows[1][4] == "running" && rows[0][7] != "-"
+    });
+    let tasks = setup.rows("tasks");
+    assert_eq!(
+        [&tasks[0][2], &tasks[0][4], &tasks[0][7]],
+        ["triage", "queued", "waits for workflow triage, which the factory lacks"]
+    );
+    setup.crash();
+    fs::write(setup.dir.join("factory/workflows/triage.toml"), WORKFLOW).unwrap();
+    setup.start();
+    let tasks = setup.until("tasks", |rows| rows[0][4] == "running");
+    assert_eq!(tasks[0][3], "implement");
+}
+
+#[test]
+fn a_queued_task_at_a_step_its_workflow_lost_is_blocked_with_the_reason() {
+    let mut setup = Setup::with_workflow("lost-step", STEPS);
+    setup.publish(&requested(42));
+    route(&setup);
+    fs::write(setup.dir.join("factory/workflows/implement.toml"), WORKFLOW).unwrap();
+
+    setup.start();
+
+    let tasks = setup.until("tasks", |rows| rows[0][4] == "blocked");
+    assert_eq!(tasks[0][7], "step plan is not in workflow implement");
+}
+
+#[test]
+fn a_workflow_that_starts_at_a_human_step_asks_its_question_when_the_task_is_created() {
+    let workflow = STEPS
+        .replace("start = \"plan\"", "start = \"approve\"")
+        .replace("approved = \"implement\"", "approved = \"plan\"");
+    let mut setup = Setup::with_workflow("human-start", &workflow);
+    setup.publish(&requested(42));
+
+    setup.start();
+
+    let asks = setup.until("asks", |rows| rows.len() == 1);
+    assert_eq!(
+        [&asks[0][3], &asks[0][4]],
+        ["approve", r#"["approved","rejected"]"#]
+    );
+    let tasks = setup.rows("tasks");
+    assert_eq!([&tasks[0][3], &tasks[0][4]], ["approve", "asleep"]);
+}
+
+#[test]
+fn a_task_queued_before_schema_11_ends_its_first_step_once_upgraded() {
+    let mut setup = Setup::with_workflow("legacy-entered", STEPS);
+    setup.calls(&[result("ready")]);
+    setup.publish(&requested(42));
+    route(&setup);
+    // Schema 10 inserted a queued task with no `changed`, which migration 11 copied into `entered`.
+    let db = rusqlite::Connection::open(setup.dir.join("priory.db")).unwrap();
+    db.execute_batch("UPDATE tasks SET entered = NULL; PRAGMA user_version = 22;")
+        .unwrap();
+
+    setup.start();
+
+    let tasks = setup.until("tasks", |rows| rows[0][3] == "implement");
+    assert_eq!(tasks[0][4], "running");
+    assert_eq!(setup.trace()[0]["data"]["step"], "plan");
+}
+
+#[test]
 fn a_result_with_an_unknown_outcome_is_refused_with_the_valid_outcomes_and_the_task_stays() {
     let mut setup = Setup::with_workflow("unknown-outcome", STEPS);
     setup.calls(&[result("maybe")]);

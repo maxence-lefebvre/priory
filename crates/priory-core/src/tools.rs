@@ -648,6 +648,54 @@ pub(crate) fn due(tx: &Transaction) -> rusqlite::Result<()> {
     Ok(())
 }
 
+/// Readies each queued or ready task's step before a run or action takes it: a task requested
+/// before its workflow existed starts at the workflow's start once it does, a step its workflow
+/// lost blocks it, and a human step gets its ask.
+pub(crate) fn enter_queued(db: &mut Connection, workflows: &Workflows) -> rusqlite::Result<()> {
+    let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let tasks = tx
+        .prepare(
+            "SELECT id, workflow, step, state FROM tasks WHERE state IN ('queued', 'ready')
+             AND NOT EXISTS (SELECT 1 FROM asks WHERE task = tasks.id AND answer IS NULL AND withdrawn IS NULL)",
+        )?
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+            ))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    for (task, workflow, at, state) in tasks {
+        let Some(flow) = workflows.get(&workflow) else {
+            let reason = format!("waits for workflow {workflow}, which the factory lacks");
+            tx.execute(
+                "UPDATE tasks SET reason = ?2 WHERE id = ?1 AND reason IS NOT ?2",
+                params![task, reason],
+            )?;
+            continue;
+        };
+        let at = if at.is_empty() {
+            set(&tx, task, &state, Some(&flow.value.start), None)?;
+            flow.value.start.clone()
+        } else {
+            at
+        };
+        match flow.value.step(&at) {
+            None => {
+                let reason = format!("step {at} is not in workflow {workflow}");
+                set(&tx, task, "blocked", None, Some(&reason))?;
+            }
+            Some(step) if step.decides == Decider::Human => {
+                enter(&tx, task, &workflow, &at, None, "", workflows)?;
+            }
+            Some(_) => {}
+        }
+    }
+    tx.commit()
+}
+
 const GB: f64 = (1u64 << 30) as f64;
 
 /// Fires every open disk wait that `free` bytes of free disk satisfy.

@@ -405,6 +405,7 @@ fn tend(
         }
     }
     state::due(db)?;
+    tools::enter_queued(db, &factory.workflows)?;
     state::disk_due(db, || room::measure(home).ok().map(|room| room.disk_free))?;
     memory::reclaim(db)?;
     perform(db, trace, home)?;
