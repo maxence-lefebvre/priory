@@ -415,11 +415,16 @@ pub(crate) fn owner(tx: &Transaction, resources: &[String]) -> rusqlite::Result<
 }
 
 /// The rows of `query`, each column as text and `-` for null, tab-separated after `header`.
-pub fn print(db: &Connection, header: &str, query: &str) -> rusqlite::Result<()> {
+pub fn print(
+    db: &Connection,
+    header: &str,
+    query: &str,
+    params: impl rusqlite::Params,
+) -> rusqlite::Result<()> {
     emit(header);
     let mut statement = db.prepare(query)?;
     let columns = statement.column_count();
-    let mut rows = statement.query([])?;
+    let mut rows = statement.query(params)?;
     while let Some(row) = rows.next()? {
         let cells = (0..columns)
             .map(|i| {

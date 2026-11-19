@@ -265,7 +265,7 @@ prompt that shows anyway, when the deny hook failed, ends the run on the next ti
 
 ## Desk
 
-`priory desk` prints what waits on a person, oldest first: since, kind, id, task and what.
+`priory desk` prints what waits on a person, oldest first: since, kind, id, task, lane and what.
 
 | Kind | Id | What | Since |
 | ---- | -- | ---- | ----- |
@@ -273,6 +273,8 @@ prompt that shows anyway, when the deny hook failed, ends the run on the next ti
 | `blocked` | the task | its reason | the task last changed state |
 | `prompt` | the outbox prompt | its text, for an `uncertain` prompt | it was attempted |
 | `worktree` | the worktree's path | why it stays: see Sweep | `-` |
+
+The lane column is the task's lane, and `-` for a `worktree` row.
 
 It lists only asks and prompts of active tasks, and it ends with one `worktree` row for every worktree
 the sweep keeps. `priory asks` still prints every open ask.
@@ -664,6 +666,7 @@ running; end one with `tmux kill-session -t =priory-<task id>` when you mean to.
 
 `priory inbox` prints each entry, oldest first: seq, type, subject, task and outcome.
 `priory tasks` prints each task: id, key, workflow, step, state, band, lane and reason.
+`priory tasks --lane L` prints only the tasks in lane `L`.
 `priory runs` prints each run: id, task, step, tmux session, harness session, started, ended and
 how it ended. `priory outbox` prints each prompt: id, task, run, state and text, with newlines
 shown as `\n`. `priory asks` and `priory waits` are described under Tools, `priory actions` under Code steps,

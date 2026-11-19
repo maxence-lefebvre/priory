@@ -468,3 +468,26 @@ fn the_fallback_fills_team_from_the_event_and_says_none_without_one() {
 fn a_task_has_no_lane_without_a_lanes_file() {
     assert_eq!(lane_of("lane-absent", None, 7, json!({})), "-");
 }
+
+#[test]
+fn tasks_filtered_by_lane_lists_only_that_lane() {
+    let setup = Setup::with_lanes("lane-filter", Some(LANES));
+    for issue in [7, 8] {
+        let source = labeled(issue);
+        setup.publish(&source);
+        setup.publish(&requested(&source, issue));
+    }
+    succeeded(&setup.daemon());
+
+    let output = setup.priory(&["tasks", "--lane", "3D/mobile"]);
+
+    succeeded(&output);
+    let text = String::from_utf8(output.stdout).unwrap();
+    let keys: Vec<_> = text
+        .lines()
+        .skip(1)
+        .map(|line| line.split('\t').nth(1).unwrap())
+        .collect();
+    assert_eq!(keys, ["github:owner/repo#7"]);
+    assert!(!setup.priory(&["tasks", "--lane"]).status.success());
+}
