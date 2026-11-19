@@ -27,7 +27,8 @@ pub(crate) struct NewTask {
 }
 
 /// The resources a message names, which a task may own: a task request's key, a CLI request's
-/// subject, or for a GitHub event its issue or pull request and its pull request's head branch.
+/// subject, a Linear event's issue, or for a GitHub event its issue or pull request and its pull
+/// request's head branch.
 pub(crate) fn resources(message: &Message) -> Vec<String> {
     let data = &message.data;
     if message.kind == TASK_REQUESTED {
@@ -39,6 +40,13 @@ pub(crate) fn resources(message: &Message) -> Vec<String> {
     }
     if message.kind == priory_intake::request::REQUESTED {
         return message.subject.clone().into_iter().collect();
+    }
+    if message.kind.starts_with("linear.") {
+        let issue = data["issue"].as_str();
+        return issue
+            .map(|issue| format!("linear:{issue}"))
+            .into_iter()
+            .collect();
     }
     let Some(repo) = data["repo"]
         .as_str()

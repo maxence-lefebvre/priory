@@ -1,0 +1,484 @@
+use super::{BASELINE, OUTPUT, dispatch, id, publish};
+use herdr_bus::{Bus, Message, MessageQuery, Timestamp, Uuid};
+use priory_factory::factory::Trigger;
+use serde_json::{Value, json};
+use std::collections::{BTreeMap, HashSet};
+use std::io::Write;
+use std::process::{Command, Stdio};
+
+pub(super) const KEY: &str = "LINEAR_API_KEY";
+const ENDPOINT: &str = "https://api.linear.app/graphql";
+pub(super) const ENTERED: &str = "linear.issue.entered";
+pub(super) const LEFT: &str = "linear.issue.left";
+pub(super) const CREATED: &str = "linear.issue.created";
+pub(super) const STATE_CHANGED: &str = "linear.issue.state_changed";
+pub(super) const COMMENTED: &str = "linear.comment.created";
+const ISSUES: &str = "linear.issues";
+const COMMENTS: &str = "linear.comments";
+/// How many issues or comments a stream's first poll reads.
+const FIRST: u64 = 50;
+
+const ISSUE: &str = "fragment issue on Issue { id identifier title url createdAt updatedAt \
+    team { key } state { name } labels { nodes { name } } creator { displayName } }";
+const PAGE: &str = "pageInfo { hasNextPage endCursor }";
+
+/// The Linear streams the triggers need, and where each stands: its last marker's data, or none
+/// while it is still in its baseline.
+pub(super) struct Linear<'a> {
+    key: String,
+    triggers: Vec<(&'a str, &'a Trigger)>,
+    streams: BTreeMap<String, Option<Value>>,
+    published: HashSet<Uuid>,
+}
+
+/// What one poll of a stream found: its new events, oldest first, and its new marker data.
+pub(super) struct Polled {
+    stream: String,
+    events: Vec<Message>,
+    marker: Value,
+}
+
+impl<'a> Linear<'a> {
+    /// Reads the API key and where each stream stands. Every Linear trigger polls issues and
+    /// comments, so that a task receives its issue's events whatever started it.
+    pub(super) fn start(bus: &Bus, triggers: Vec<(&'a str, &'a Trigger)>) -> Result<Self, String> {
+        let key = std::env::var(KEY)
+            .ok()
+            .filter(|key| !key.is_empty())
+            .ok_or_else(|| {
+                format!("{KEY} is not set: the Linear triggers need a Linear API key")
+            })?;
+        let mut streams: BTreeMap<String, Option<Value>> = triggers
+            .iter()
+            .filter_map(|(_, trigger)| trigger.view.as_deref())
+            .map(|view| (view_stream(view), None))
+            .collect();
+        streams.insert(ISSUES.into(), None);
+        streams.insert(COMMENTS.into(), None);
+        resume(bus, &mut streams).map_err(|error| error.to_string())?;
+        Ok(Linear {
+            key,
+            triggers,
+            streams,
+            published: HashSet::new(),
+        })
+    }
+
+    /// Queries every stream first, so that a failing query publishes nothing.
+    pub(super) fn fetch(&self) -> Result<Vec<Polled>, String> {
+        let now = Timestamp::now();
+        let mut polled = Vec::new();
+        for (stream, marker) in &self.streams {
+            polled.push(match stream.as_str() {
+                ISSUES => self.issues(marker.as_ref())?,
+                COMMENTS => self.comments(marker.as_ref())?,
+                _ => self.view(stream, marker.as_ref(), now)?,
+            });
+        }
+        Ok(polled)
+    }
+
+    pub(super) fn publish_all(&mut self, bus: &Bus, polled: Vec<Polled>) -> Result<(), String> {
+        for Polled {
+            stream,
+            events,
+            marker,
+        } in polled
+        {
+            for event in events {
+                if !self.published.insert(event.id) {
+                    continue;
+                }
+                publish(bus, &event)?;
+                dispatch(bus, &self.triggers, &event)?;
+            }
+            let current = self.streams.get_mut(&stream).expect("a polled stream");
+            if current.as_ref() != Some(&marker) {
+                let position = &marker["position"];
+                let position = position
+                    .as_str()
+                    .map_or(position.to_string(), str::to_owned);
+                let name = format!("{BASELINE}:{stream}:{position}");
+                let message = Message::new(BASELINE, marker.clone())
+                    .id(id(&name))
+                    .subject(&stream);
+                publish(bus, &message)?;
+                *current = Some(marker);
+            }
+        }
+        Ok(())
+    }
+
+    /// The issues that entered and left a view since its last marker, which holds its members.
+    fn view(&self, stream: &str, marker: Option<&Value>, now: Timestamp) -> Result<Polled, String> {
+        let view = stream.trim_start_matches("linear.view:");
+        let query = format!(
+            "query View($view: String!, $after: String) {{ customView(id: $view) {{ \
+             issues(first: 100, after: $after) {{ nodes {{ ...issue }} {PAGE} }} }} }} {ISSUE}"
+        );
+        let issues = self.nodes(&query, json!({ "view": view }), "/customView/issues", true)?;
+        let members: BTreeMap<String, Value> = issues
+            .iter()
+            .map(|issue| {
+                (
+                    issue["id"].as_str().unwrap_or_default().to_string(),
+                    fields(issue),
+                )
+            })
+            .collect();
+        let before: BTreeMap<String, Value> = marker
+            .and_then(|marker| marker["members"].as_array())
+            .into_iter()
+            .flatten()
+            .map(|member| {
+                (
+                    member["linear_id"].as_str().unwrap_or_default().to_string(),
+                    member.clone(),
+                )
+            })
+            .collect();
+        let baseline = marker.is_none();
+        let version = marker.map_or(0, |marker| {
+            marker["position"].as_u64().unwrap_or_default() + 1
+        });
+        let entered = members
+            .iter()
+            .filter(|(id, _)| !before.contains_key(*id))
+            .map(|(_, member)| (ENTERED, member));
+        let left = before
+            .iter()
+            .filter(|(id, _)| !members.contains_key(*id))
+            .map(|(_, member)| (LEFT, member));
+        let events = entered
+            .chain(left)
+            .map(|(kind, member)| {
+                let mut data = member.clone();
+                data["view"] = json!(view);
+                data["time"] = json!(now.to_string());
+                let name = format!("{stream}:{version}:{}:{kind}", text(&member["linear_id"]));
+                self.message(kind, &name, data, baseline)
+            })
+            .collect::<Result<_, _>>()?;
+        let changed = baseline || members != before;
+        Ok(Polled {
+            stream: stream.into(),
+            events,
+            marker: json!({
+                "stream": stream,
+                "position": if changed { version } else { version - 1 },
+                "members": members.into_values().collect::<Vec<_>>(),
+            }),
+        })
+    }
+
+    /// Issues created and state changes since the stream's position, the last `updatedAt` seen.
+    fn issues(&self, marker: Option<&Value>) -> Result<Polled, String> {
+        let since = marker.and_then(|marker| marker["position"].as_str());
+        let query = format!(
+            "query Issues($filter: IssueFilter, $first: Int!, $after: String) {{ \
+             issues(filter: $filter, first: $first, after: $after, orderBy: updatedAt) {{ nodes {{ \
+             ...issue history(first: 50, orderBy: createdAt) {{ nodes {{ id createdAt \
+             fromState {{ name }} toState {{ name }} actor {{ displayName }} }} }} }} {PAGE} }} }} {ISSUE}"
+        );
+        let issues = self.nodes(&query, page(since, "updatedAt"), "/issues", since.is_some())?;
+        let mut events = Vec::new();
+        for issue in &issues {
+            if after(since, &issue["createdAt"]) {
+                let mut data = fields(issue);
+                data["actor"] = issue["creator"]["displayName"].clone();
+                data["time"] = issue["createdAt"].clone();
+                let name = format!("linear:issue:{}:created", text(&issue["id"]));
+                events.push(self.message(CREATED, &name, data, since.is_none())?);
+            }
+            let changes = issue["history"]["nodes"].as_array().into_iter().flatten();
+            for change in changes.filter(|change| {
+                change["fromState"].is_object()
+                    && change["toState"].is_object()
+                    && after(since, &change["createdAt"])
+            }) {
+                let mut data = fields(issue);
+                data["linear_id"] = change["id"].clone();
+                data["from"] = change["fromState"]["name"].clone();
+                data["to"] = change["toState"]["name"].clone();
+                data["actor"] = change["actor"]["displayName"].clone();
+                data["time"] = change["createdAt"].clone();
+                let name = format!("linear:history:{}", text(&change["id"]));
+                events.push(self.message(STATE_CHANGED, &name, data, since.is_none())?);
+            }
+        }
+        Ok(polled(ISSUES, events, &issues, "updatedAt", since))
+    }
+
+    /// Comments created since the stream's position, the last `createdAt` seen.
+    fn comments(&self, marker: Option<&Value>) -> Result<Polled, String> {
+        let since = marker.and_then(|marker| marker["position"].as_str());
+        let query = format!(
+            "query Comments($filter: CommentFilter, $first: Int!, $after: String) {{ \
+             comments(filter: $filter, first: $first, after: $after, orderBy: createdAt) {{ nodes {{ \
+             id body url createdAt user {{ displayName }} issue {{ ...issue }} }} {PAGE} }} }} {ISSUE}"
+        );
+        let comments = self.nodes(
+            &query,
+            page(since, "createdAt"),
+            "/comments",
+            since.is_some(),
+        )?;
+        let mut events = Vec::new();
+        // A comment on a project update or a document has no issue.
+        for comment in comments
+            .iter()
+            .filter(|comment| comment["issue"].is_object() && after(since, &comment["createdAt"]))
+        {
+            let mut data = fields(&comment["issue"]);
+            data["linear_id"] = comment["id"].clone();
+            data["url"] = comment["url"].clone();
+            data["body"] = comment["body"].clone();
+            data["actor"] = comment["user"]["displayName"].clone();
+            data["time"] = comment["createdAt"].clone();
+            let name = format!("linear:comment:{}", text(&comment["id"]));
+            events.push(self.message(COMMENTED, &name, data, since.is_none())?);
+        }
+        Ok(polled(COMMENTS, events, &comments, "createdAt", since))
+    }
+
+    /// A Linear event, with the triggers it matches.
+    fn message(
+        &self,
+        kind: &str,
+        name: &str,
+        mut data: Value,
+        baseline: bool,
+    ) -> Result<Message, String> {
+        let raw = data["time"].as_str().unwrap_or_default();
+        let time: Timestamp = raw
+            .parse()
+            .map_err(|error| format!("Linear time `{raw}`: {error}"))?;
+        data["baseline"] = json!(baseline);
+        data["triggers"] = json!(self.matching(kind, &data, baseline));
+        let subject = data["issue"].as_str().unwrap_or_default().to_string();
+        let url = data["url"].as_str().unwrap_or_default().to_string();
+        Ok(Message::new(kind, data)
+            .id(id(name))
+            .subject(subject)
+            .time(time)
+            .link("issue", &url))
+    }
+
+    fn matching(&self, kind: &str, data: &Value, baseline: bool) -> Vec<&'a str> {
+        let filtered = |trigger: &Trigger| {
+            let state = data.get("to").unwrap_or(&data["state"]);
+            trigger
+                .filter
+                .iter()
+                .flatten()
+                .all(|(field, value)| match field.as_str() {
+                    "team" => data["team"] == *value,
+                    "state" => *state == *value,
+                    "label" => data["labels"]
+                        .as_array()
+                        .is_some_and(|labels| labels.iter().any(|label| label == value)),
+                    _ => false,
+                })
+        };
+        self.triggers
+            .iter()
+            .filter(|(_, trigger)| {
+                format!("linear.{}", trigger.on) == kind
+                    && trigger
+                        .view
+                        .as_deref()
+                        .is_none_or(|view| data["view"] == view)
+                    && filtered(trigger)
+                    && (!baseline || trigger.backfill == Some(true))
+            })
+            .map(|(name, _)| *name)
+            .collect()
+    }
+
+    /// The nodes of the connection at `path`, every page or only the first.
+    fn nodes(
+        &self,
+        query: &str,
+        mut variables: Value,
+        path: &str,
+        all: bool,
+    ) -> Result<Vec<Value>, String> {
+        let mut nodes = Vec::new();
+        loop {
+            let data = graphql(&self.key, query, &variables)?;
+            let connection = data
+                .pointer(path)
+                .ok_or_else(|| format!("Linear answered no {path}"))?;
+            nodes.extend(
+                connection["nodes"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .cloned(),
+            );
+            let next = &connection["pageInfo"];
+            if !all || next["hasNextPage"] != true {
+                return Ok(nodes);
+            }
+            variables["after"] = next["endCursor"].clone();
+        }
+    }
+}
+
+/// The variables of a time stream's query: its first page on a baseline, every node at or after
+/// `since` otherwise. Linear compares to the millisecond, so `gte` rereads the last node.
+fn page(since: Option<&str>, field: &str) -> Value {
+    match since {
+        None => json!({ "first": FIRST, "filter": null }),
+        Some(since) => json!({ "first": 100, "filter": { field: { "gte": since } } }),
+    }
+}
+
+fn after(since: Option<&str>, time: &Value) -> bool {
+    let parse = |raw: &str| raw.parse::<Timestamp>().ok();
+    let time = time.as_str().and_then(parse);
+    since
+        .and_then(parse)
+        .is_none_or(|since| time.is_none_or(|time| time >= since))
+}
+
+/// A time stream's poll: its events oldest first, and its position, the latest `field` of
+/// `nodes`. A first page with nothing means Linear holds none yet, so the stream starts at 1970.
+fn polled(
+    stream: &str,
+    mut events: Vec<Message>,
+    nodes: &[Value],
+    field: &str,
+    since: Option<&str>,
+) -> Polled {
+    events.sort_by_key(|event| event.time);
+    let latest = nodes
+        .iter()
+        .filter_map(|node| node[field].as_str())
+        .chain(since)
+        .filter_map(|raw| Some((raw.parse::<Timestamp>().ok()?, raw)))
+        .max()
+        .map_or_else(
+            || Timestamp::UNIX_EPOCH.to_string(),
+            |(_, raw)| raw.to_string(),
+        );
+    Polled {
+        stream: stream.into(),
+        events,
+        marker: json!({ "stream": stream, "position": latest }),
+    }
+}
+
+fn text(value: &Value) -> &str {
+    value.as_str().unwrap_or_default()
+}
+
+fn view_stream(view: &str) -> String {
+    format!("linear.view:{view}")
+}
+
+/// The fields every Linear event carries about its issue.
+fn fields(issue: &Value) -> Value {
+    let labels: Vec<&Value> = issue["labels"]["nodes"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|label| &label["name"])
+        .collect();
+    json!({
+        "issue": issue["identifier"],
+        "linear_id": issue["id"],
+        "title": issue["title"],
+        "url": issue["url"],
+        "team": issue["team"]["key"],
+        "state": issue["state"]["name"],
+        "labels": labels,
+    })
+}
+
+/// Fills each stream with its newest marker, read back newest first.
+fn resume(bus: &Bus, streams: &mut BTreeMap<String, Option<Value>>) -> herdr_bus::Result<()> {
+    let mut before = None;
+    // shortcut: reads back to each stream's newest marker, once per start; a stored cursor would
+    // make this constant once the output is large.
+    while streams.values().any(Option::is_none) {
+        let page = bus.messages(&MessageQuery {
+            output: Some(OUTPUT.into()),
+            before,
+            limit: 500,
+            ..MessageQuery::default()
+        })?;
+        let Some(oldest) = page.last() else {
+            break;
+        };
+        before = Some(oldest.seq);
+        for stored in page.iter().filter(|stored| stored.message.kind == BASELINE) {
+            let data = &stored.message.data;
+            let stream = data["stream"].as_str().unwrap_or_default();
+            if let Some(marker @ None) = streams.get_mut(stream) {
+                *marker = Some(data.clone());
+            }
+        }
+    }
+    Ok(())
+}
+
+/// One query to Linear's GraphQL API. The key goes to `curl` on its standard input, so that it
+/// never shows in a process list.
+fn graphql(key: &str, query: &str, variables: &Value) -> Result<Value, String> {
+    let operation = query.split(['(', ' ']).nth(1).unwrap_or("query");
+    let body = json!({ "query": query, "variables": variables }).to_string();
+    let mut child = Command::new("curl")
+        .args([
+            "--silent",
+            "--show-error",
+            "--fail-with-body",
+            "--config",
+            "-",
+        ])
+        .args([
+            "--header",
+            "Content-Type: application/json",
+            "--data-binary",
+        ])
+        .arg(&body)
+        .arg(ENDPOINT)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|error| format!("Linear {operation}: curl: {error}"))?;
+    let escaped = key.replace('\\', "\\\\").replace('"', "\\\"");
+    let config = format!("header = \"Authorization: {escaped}\"\n");
+    child
+        .stdin
+        .take()
+        .expect("a piped stdin")
+        .write_all(config.as_bytes())
+        .map_err(|error| format!("Linear {operation}: curl: {error}"))?;
+    let output = child
+        .wait_with_output()
+        .map_err(|error| format!("Linear {operation}: curl: {error}"))?;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!(
+            "Linear {operation} failed: {} {}",
+            stderr.trim(),
+            stdout.trim()
+        ));
+    }
+    let answer: Value =
+        serde_json::from_str(&stdout).map_err(|error| format!("Linear {operation}: {error}"))?;
+    if let Some(errors) = answer["errors"].as_array() {
+        let messages: Vec<&str> = errors
+            .iter()
+            .filter_map(|error| error["message"].as_str())
+            .collect();
+        return Err(format!(
+            "Linear {operation} failed: {}",
+            messages.join("; ")
+        ));
+    }
+    Ok(answer["data"].clone())
+}

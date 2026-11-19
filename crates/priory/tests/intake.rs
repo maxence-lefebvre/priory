@@ -84,7 +84,7 @@ impl Setup {
     }
 
     fn intake(&self) -> Output {
-        self.command().output().unwrap()
+        self.command().env("LINEAR_API_KEY", KEY).output().unwrap()
     }
 
     /// Runs `priory intake --once` with the clock set to `now`.
@@ -1230,4 +1230,402 @@ fn a_duration_until_ends_at_midnight() {
         .map(|task| task.data["scheduled"].clone())
         .collect();
     assert_eq!(fired, ["2026-11-20T23:00:00Z"]);
+}
+
+const KEY: &str = "lin_api_secret_test_key";
+
+const VIEW_TRIGGER: &str = r#"
+source = "linear.view"
+view = "6b3c2f9a1d4e"
+on = "issue.entered"
+workflow = "implement"
+key = "issue.identifier"
+band = "today"
+"#;
+
+/// What the fake Linear answers to each query: the view's issues, updated issues and comments.
+#[derive(Default)]
+struct Linear {
+    view: Vec<serde_json::Value>,
+    issues: Vec<serde_json::Value>,
+    comments: Vec<serde_json::Value>,
+}
+
+impl Setup {
+    /// A factory with only the Linear triggers `triggers`, and a fake Linear with nothing in it.
+    fn linear(name: &str, triggers: &[(&str, &str)]) -> Self {
+        let setup = Setup::new(name, &[]);
+        fs::remove_file(setup.dir.join("factory/triggers/agent-label.toml")).unwrap();
+        for (name, trigger) in triggers {
+            write(
+                &setup.dir.join(format!("factory/triggers/{name}.toml")),
+                trigger,
+            );
+        }
+        setup.answer_linear(&Linear::default());
+        setup
+    }
+
+    /// Makes the fake `curl` answer Linear's GraphQL queries from `linear`, and record its
+    /// arguments and standard input.
+    fn answer_linear(&self, linear: &Linear) {
+        let page = |field: &str, nodes: &[serde_json::Value]| {
+            let answer = match field {
+                "customView" => json!({ "data": { "customView": { "issues": {
+                    "nodes": nodes, "pageInfo": { "hasNextPage": false, "endCursor": null } } } } }),
+                field => json!({ "data": { field: {
+                    "nodes": nodes, "pageInfo": { "hasNextPage": false, "endCursor": null } } } }),
+            };
+            let file = self.dir.join(format!("linear-{field}.json"));
+            write(&file, &answer.to_string());
+            file.display().to_string()
+        };
+        let script = format!(
+            "#!/bin/sh\necho \"$*\" >> '{dir}/curl-args'\ncat >> '{dir}/curl-stdin'\n\
+             case \"$*\" in\n  *'query View'*) cat '{view}' ;;\n  *'query Issues'*) cat '{issues}' ;;\n\
+             *'query Comments'*) cat '{comments}' ;;\n  *) echo 'unexpected query' >&2; exit 2 ;;\nesac\n",
+            dir = self.dir.display(),
+            view = page("customView", &linear.view),
+            issues = page("issues", &linear.issues),
+            comments = page("comments", &linear.comments),
+        );
+        let curl = self.dir.join("bin/curl");
+        write(&curl, &script);
+        fs::set_permissions(&curl, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    /// Without `LINEAR_API_KEY` in the environment.
+    fn intake_without_key(&self) -> Output {
+        self.command()
+            .env_remove("LINEAR_API_KEY")
+            .output()
+            .unwrap()
+    }
+}
+
+fn linear_issue(number: u64) -> serde_json::Value {
+    json!({
+        "id": format!("issue-{number}"),
+        "identifier": format!("ENG-{number}"),
+        "title": "Fix the thing",
+        "url": format!("https://linear.app/acme/issue/ENG-{number}/fix-the-thing"),
+        "createdAt": "2026-11-17T09:00:00.000Z",
+        "updatedAt": "2026-11-17T10:00:00.000Z",
+        "team": { "key": "ENG" },
+        "state": { "name": "Todo" },
+        "labels": { "nodes": [{ "name": "agent" }] },
+        "creator": { "displayName": "max" },
+        "history": { "nodes": [] }
+    })
+}
+
+/// The data of a Linear view event, without its `time`, which is when the intake polled.
+fn timeless(message: &Message) -> serde_json::Value {
+    let mut data = message.data.clone();
+    data.as_object_mut().unwrap().remove("time");
+    data
+}
+
+#[test]
+fn an_issue_entering_a_view_publishes_the_event_and_one_task_request() {
+    let setup = Setup::linear("linear-entered", &[("agent-ready", VIEW_TRIGGER)]);
+    succeeded(&setup.intake());
+    setup.answer_linear(&Linear {
+        view: vec![linear_issue(7)],
+        ..Linear::default()
+    });
+
+    succeeded(&setup.intake());
+
+    let published = setup.published();
+    assert_eq!(
+        kinds(&published),
+        ["linear.issue.entered", "factory.task.requested"]
+    );
+    let (source, task) = (&published[0].message, &published[1].message);
+    assert_eq!(source.subject.as_deref(), Some("ENG-7"));
+    assert_eq!(
+        timeless(source),
+        json!({
+            "view": "6b3c2f9a1d4e",
+            "issue": "ENG-7",
+            "linear_id": "issue-7",
+            "title": "Fix the thing",
+            "url": "https://linear.app/acme/issue/ENG-7/fix-the-thing",
+            "team": "ENG",
+            "state": "Todo",
+            "labels": ["agent"],
+            "baseline": false,
+            "triggers": ["agent-ready"]
+        })
+    );
+    assert_eq!(
+        task.data,
+        json!({
+            "workflow": "implement",
+            "key": "linear:ENG-7",
+            "band": "today",
+            "lane": null,
+            "trigger": "agent-ready",
+            "source": source.id.to_string()
+        })
+    );
+}
+
+#[test]
+fn an_issue_leaving_a_view_publishes_issue_left() {
+    let setup = Setup::linear("linear-left", &[("agent-ready", VIEW_TRIGGER)]);
+    setup.answer_linear(&Linear {
+        view: vec![linear_issue(7), linear_issue(8)],
+        ..Linear::default()
+    });
+    succeeded(&setup.intake());
+    setup.answer_linear(&Linear {
+        view: vec![linear_issue(8)],
+        ..Linear::default()
+    });
+
+    succeeded(&setup.intake());
+    succeeded(&setup.intake());
+
+    let published = setup.published();
+    assert_eq!(
+        kinds(&published),
+        [
+            "linear.issue.entered",
+            "linear.issue.entered",
+            "linear.issue.left"
+        ]
+    );
+    let left = &published[2].message;
+    assert_eq!(left.subject.as_deref(), Some("ENG-7"));
+    assert_eq!(left.data["baseline"], false);
+    assert_eq!(left.data["triggers"], json!([]));
+}
+
+#[test]
+fn a_first_linear_poll_is_a_baseline_that_requests_no_task() {
+    let setup = Setup::linear("linear-baseline", &[("agent-ready", VIEW_TRIGGER)]);
+    setup.answer_linear(&Linear {
+        view: vec![linear_issue(7)],
+        ..Linear::default()
+    });
+
+    succeeded(&setup.intake());
+    succeeded(&setup.intake());
+
+    let published = setup.published();
+    assert_eq!(kinds(&published), ["linear.issue.entered"]);
+    assert_eq!(published[0].message.data["baseline"], true);
+    assert_eq!(published[0].message.data["triggers"], json!([]));
+}
+
+#[test]
+fn a_backfill_view_trigger_requests_a_task_for_the_first_poll() {
+    let trigger = format!("{VIEW_TRIGGER}backfill = true\n");
+    let setup = Setup::linear("linear-backfill", &[("agent-ready", &trigger)]);
+    setup.answer_linear(&Linear {
+        view: vec![linear_issue(7)],
+        ..Linear::default()
+    });
+
+    succeeded(&setup.intake());
+
+    assert_eq!(
+        kinds(&setup.published()),
+        ["linear.issue.entered", "factory.task.requested"]
+    );
+}
+
+#[test]
+fn a_linear_trigger_without_the_key_fails_and_publishes_nothing() {
+    let setup = Setup::linear("linear-no-key", &[("agent-ready", VIEW_TRIGGER)]);
+
+    let output = setup.intake_without_key();
+
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(
+        String::from_utf8_lossy(&output.stderr),
+        "priory intake: LINEAR_API_KEY is not set: the Linear triggers need a Linear API key\n"
+    );
+    assert!(setup.output().is_empty());
+}
+
+#[test]
+fn the_key_reaches_linear_on_standard_input_only() {
+    let setup = Setup::linear("linear-key", &[("agent-ready", VIEW_TRIGGER)]);
+
+    let output = setup.intake();
+
+    succeeded(&output);
+    let stdin = fs::read_to_string(setup.dir.join("curl-stdin")).unwrap();
+    assert!(stdin.contains(&format!("header = \"Authorization: {KEY}\"")));
+    let args = fs::read_to_string(setup.dir.join("curl-args")).unwrap();
+    assert!(!args.contains(KEY));
+    assert!(!String::from_utf8_lossy(&output.stderr).contains(KEY));
+}
+
+fn linear_comment(id: &str, issue: u64, time: &str) -> serde_json::Value {
+    json!({
+        "id": id,
+        "body": "Please also cover the empty case.",
+        "url": format!("https://linear.app/acme/issue/ENG-{issue}/fix-the-thing#comment-{id}"),
+        "createdAt": time,
+        "user": { "displayName": "max" },
+        "issue": linear_issue(issue)
+    })
+}
+
+impl Setup {
+    /// The rows of `priory inbox` after `priory daemon --once` reads the intake's output.
+    fn inbox(&self) -> Vec<Vec<String>> {
+        let priory = |args: &[&str]| {
+            let output = Command::new(env!("CARGO_BIN_EXE_priory"))
+                .args(args)
+                .env("HERDR_BUS_DB", self.dir.join("bus.db"))
+                .env("PRIORY_DB", self.dir.join("priory.db"))
+                .output()
+                .unwrap();
+            succeeded(&output);
+            String::from_utf8(output.stdout).unwrap()
+        };
+        priory(&[
+            "daemon",
+            self.dir.join("factory").to_str().unwrap(),
+            "--once",
+        ]);
+        priory(&["inbox"])
+            .lines()
+            .skip(1)
+            .map(|line| line.split('\t').map(str::to_owned).collect())
+            .collect()
+    }
+}
+
+#[test]
+fn a_comment_on_a_tasks_issue_reaches_its_task_in_the_inbox() {
+    let setup = Setup::linear("linear-comment", &[("agent-ready", VIEW_TRIGGER)]);
+    succeeded(&setup.intake());
+    setup.answer_linear(&Linear {
+        view: vec![linear_issue(7)],
+        ..Linear::default()
+    });
+    succeeded(&setup.intake());
+    setup.answer_linear(&Linear {
+        view: vec![linear_issue(7)],
+        comments: vec![linear_comment("comment-1", 7, "2026-11-17T11:00:00.000Z")],
+        ..Linear::default()
+    });
+
+    succeeded(&setup.intake());
+
+    let comment = setup.published().pop().unwrap().message;
+    assert_eq!(comment.kind, "linear.comment.created");
+    assert_eq!(
+        comment.data,
+        json!({
+            "issue": "ENG-7",
+            "linear_id": "comment-1",
+            "title": "Fix the thing",
+            "url": "https://linear.app/acme/issue/ENG-7/fix-the-thing#comment-comment-1",
+            "team": "ENG",
+            "state": "Todo",
+            "labels": ["agent"],
+            "body": "Please also cover the empty case.",
+            "actor": "max",
+            "time": "2026-11-17T11:00:00.000Z",
+            "baseline": false,
+            "triggers": []
+        })
+    );
+    let routed: Vec<[String; 3]> = setup
+        .inbox()
+        .into_iter()
+        .filter(|row| row[1] != "factory.intake.baseline")
+        .map(|row| [row[1].clone(), row[3].clone(), row[4].clone()])
+        .collect();
+    assert_eq!(
+        routed,
+        [
+            ["linear.issue.entered", "-", "ignored"],
+            ["factory.task.requested", "1", "created"],
+            ["linear.comment.created", "1", "kept"],
+        ]
+        .map(|row| row.map(str::to_owned))
+    );
+}
+
+const STATE_TRIGGER: &str = r#"
+source = "linear"
+on = "issue.state_changed"
+filter = { team = "ENG", state = "In Progress" }
+workflow = "implement"
+"#;
+
+fn moved(number: u64, id: &str, to: &str, time: &str) -> serde_json::Value {
+    let mut issue = linear_issue(number);
+    issue["createdAt"] = json!("2026-11-17T09:00:00.000Z");
+    issue["updatedAt"] = json!(time);
+    issue["state"] = json!({ "name": to });
+    issue["history"] = json!({ "nodes": [{
+        "id": id,
+        "createdAt": time,
+        "fromState": { "name": "Todo" },
+        "toState": { "name": to },
+        "actor": { "displayName": "max" }
+    }] });
+    issue
+}
+
+#[test]
+fn a_state_change_that_matches_a_filter_requests_a_task_once() {
+    let setup = Setup::linear("linear-state", &[("started", STATE_TRIGGER)]);
+    setup.answer_linear(&Linear {
+        issues: vec![linear_issue(1)],
+        ..Linear::default()
+    });
+    succeeded(&setup.intake());
+    setup.answer_linear(&Linear {
+        issues: vec![
+            moved(7, "history-7", "In Progress", "2026-11-17T11:00:00.000Z"),
+            moved(8, "history-8", "Done", "2026-11-17T11:30:00.000Z"),
+        ],
+        ..Linear::default()
+    });
+
+    succeeded(&setup.intake());
+    succeeded(&setup.intake());
+
+    let published = setup.published();
+    assert_eq!(
+        kinds(&published),
+        [
+            "linear.issue.created",
+            "linear.issue.state_changed",
+            "factory.task.requested",
+            "linear.issue.state_changed"
+        ]
+    );
+    assert_eq!(published[0].message.data["baseline"], true);
+    let (change, task) = (&published[1].message, &published[2].message);
+    assert_eq!(
+        change.data,
+        json!({
+            "issue": "ENG-7",
+            "linear_id": "history-7",
+            "title": "Fix the thing",
+            "url": "https://linear.app/acme/issue/ENG-7/fix-the-thing",
+            "team": "ENG",
+            "state": "In Progress",
+            "labels": ["agent"],
+            "from": "Todo",
+            "to": "In Progress",
+            "actor": "max",
+            "time": "2026-11-17T11:00:00.000Z",
+            "baseline": false,
+            "triggers": ["started"]
+        })
+    );
+    assert_eq!(task.data["key"], "linear:ENG-7");
+    assert_eq!(published[3].message.data["triggers"], json!([]));
 }

@@ -1,13 +1,14 @@
 # Intake messages
 
-`priory intake [DIR] [--once]` polls GitHub for the repositories that the factory's triggers name. It
-publishes on the herdr-bus output `factory.intake`. This page is the contract for every consumer of
+`priory intake [DIR] [--once]` polls GitHub for the repositories that the factory's triggers name,
+and Linear when the factory has a Linear trigger. It publishes on the herdr-bus output `factory.intake`. This page is the contract for every consumer of
 that output: the Priory daemon, and another factory such as herdr-bowtie.
 
 The intake checks the factory first, as `priory check` does, and refuses to start while it has
 problems. `--once` polls once and exits. Without it, the intake polls every 60 seconds. It reads
-GitHub only, through `gh api` and `gh api graphql`, as the user `gh` is logged in as. Each poll also
-fires the factory's schedule triggers that are due (see `schedule.fired`).
+GitHub through `gh api` and `gh api graphql`, as the user `gh` is logged in as, and Linear through
+`curl` (see Linear calls). Each poll also fires the factory's schedule triggers that are due (see
+`schedule.fired`).
 
 ## The envelope
 
@@ -16,11 +17,11 @@ Every message is a herdr-bus `Message`, shaped like a CloudEvent:
 | Field     | Type          | Meaning                                                    |
 | --------- | ------------- | ---------------------------------------------------------- |
 | `id`      | UUID string   | A UUIDv5, stable across retries (see Message ids)          |
-| `type`    | string        | A GitHub type below, `priory.task.requested.cli`, `schedule.fired`, `factory.task.requested` or `factory.intake.baseline` |
-| `subject` | string        | `owner/name#42` for a GitHub event, the task key for a CLI request or a task request, `schedule:<trigger>@<time>` for a firing, `owner/name <stream>` for a baseline marker |
-| `time`    | RFC 3339      | When the GitHub event happened; for a firing, its scheduled time; for a baseline marker, when it was published |
+| `type`    | string        | A GitHub or Linear type below, `priory.task.requested.cli`, `schedule.fired`, `factory.task.requested` or `factory.intake.baseline` |
+| `subject` | string        | `owner/name#42` for a GitHub event, the issue identifier such as `ENG-7` for a Linear event, the task key for a CLI request or a task request, `schedule:<trigger>@<time>` for a firing, `owner/name <stream>` or the Linear stream for a baseline marker |
+| `time`    | RFC 3339      | When the GitHub or Linear event happened; for a firing, its scheduled time; for a view event or a baseline marker, when it was published |
 | `data`    | object        | The fields below, by type                                  |
-| `links`   | array         | GitHub events carry one `{ "label": "issue" or "pull_request", "url": ... }`, with the event's `url` |
+| `links`   | array         | GitHub and Linear events carry one `{ "label": "issue" or "pull_request", "url": ... }`, with the event's `url` |
 
 herdr-bus drops a message whose `(output, id)` is already on the output. A consumer can still see a
 message twice, after its own crash before its ack, so it deduplicates by `id`.
@@ -341,6 +342,67 @@ Limits:
 - `every` counts real time from `at`, so a daylight saving change on that day shifts the later
   firings by the hour it adds or removes.
 
+## Linear events
+
+A trigger with `source = "linear.view"` names a saved view by its id, or by the slug id that ends its
+URL, and starts on `issue.entered` or `issue.left`. A trigger with `source = "linear"` starts on
+`issue.created`, `issue.state_changed` or `comment.created`, and may filter on `team` (a team key),
+`label` (one label of the issue) and `state` (the state an issue moved to, or the issue's state for
+the other two). Both take `backfill`. Their `key`, when set, is `issue.identifier`.
+
+| Type                         | One message per                                                  |
+| ---------------------------- | ---------------------------------------------------------------- |
+| `linear.issue.entered`       | issue found in a view that was not in it at the previous poll     |
+| `linear.issue.left`          | issue gone from a view that was in it at the previous poll        |
+| `linear.issue.created`       | issue created                                                    |
+| `linear.issue.state_changed` | entry of an issue's history that moves it from one state to another |
+| `linear.comment.created`     | comment on an issue                                              |
+
+The intake polls issues and comments whenever the factory has a Linear trigger, whatever the
+triggers start on, so that a task receives the comments and state changes of its issue (R3). The
+daemon routes a Linear event to the active task whose key is `linear:<issue>`.
+
+| Field       | Type             | Meaning                                                         |
+| ----------- | ---------------- | --------------------------------------------------------------- |
+| `issue`     | string           | The issue identifier, such as `ENG-7`                           |
+| `linear_id` | string           | Linear's id of what the event is about: the issue for a view event or `created`, the history entry for `state_changed`, the comment for `comment.created` |
+| `title`     | string           | The issue title when the intake saw the event                   |
+| `url`       | string           | The issue's page, or the comment's for `comment.created`        |
+| `team`      | string           | The issue's team key                                            |
+| `state`     | string           | The issue's state when the intake saw the event                 |
+| `labels`    | array of strings | The issue's labels when the intake saw the event                |
+| `view`      | string           | The view, as the trigger names it. View events only             |
+| `from`, `to`| string           | The states the issue moved from and to. `state_changed` only     |
+| `body`      | string           | The comment, in Markdown. `comment.created` only                |
+| `actor`     | string or null   | Linear display name: who created the issue, moved it or commented. Absent on view events |
+| `time`      | RFC 3339         | When the issue was created, moved or commented; for a view event, when the intake polled |
+| `baseline`  | boolean          | True when the event came from the first poll of its stream (see Baseline) |
+| `triggers`  | array of strings | As for GitHub events                                            |
+
+```json
+{
+  "id": "f0352bb3-8810-574d-940d-8d6c29e73f60",
+  "type": "linear.comment.created",
+  "subject": "ENG-7",
+  "time": "2026-11-17T11:00:00Z",
+  "data": {
+    "issue": "ENG-7",
+    "linear_id": "6f1c1c9e-2b7a-4d39-9a43-2d6a3e1b8f10",
+    "title": "Fix the thing",
+    "url": "https://linear.app/acme/issue/ENG-7/fix-the-thing#comment-6f1c1c9e",
+    "team": "ENG",
+    "state": "In Progress",
+    "labels": ["agent"],
+    "body": "Please also cover the empty case.",
+    "actor": "max",
+    "time": "2026-11-17T11:00:00.000Z",
+    "baseline": false,
+    "triggers": []
+  },
+  "links": [{ "label": "issue", "url": "https://linear.app/acme/issue/ENG-7/fix-the-thing#comment-6f1c1c9e" }]
+}
+```
+
 ## `priory.task.requested.cli`
 
 `priory request [DIR] --workflow <name> --key <key> [--band <band>] [--lane <lane>] [--repo <owner/name>] [--] <text>`
@@ -412,7 +474,8 @@ with `backfill = true`. Only this message creates a task.
 | Field      | Type           | Meaning                                                      |
 | ---------- | -------------- | ------------------------------------------------------------ |
 | `workflow` | string         | The workflow the task starts                                 |
-| `key`      | string         | Which events are the same work: `github:owner/name#42`, the issue or pull request number. GitHub numbers both from one sequence per repository. A schedule's key is under `schedule.fired` |
+| `key`      | string         | Which events are the same work: `github:owner/name#42`, the issue or pull request number. GitHub numbers both from one sequence per repository. `linear:ENG-7` for a Linear issue. A schedule's key is under `schedule.fired` |
+| `key`      | string         | Which events are the same work: `github:owner/name#42`, the issue or pull request number, as GitHub numbers both from one sequence per repository; `linear:ENG-7` for a Linear issue |
 | `band`     | string or null | The trigger's `band`, or null when it sets none              |
 | `lane`     | string or null | The trigger's `lane`, or null when `lanes.toml` derives it   |
 | `trigger`  | string         | The trigger's name: its file name without the extension      |
@@ -456,7 +519,11 @@ of these names:
 | `priory.task.requested.cli` | `priory.task.requested.cli:{len}:{key}:{text}`, with the `cli:` key and `len` its byte length, so a `:` in the key or text cannot make two requests collide |
 | `schedule.fired`         | `schedule.fired:{trigger}@{scheduled}`       |
 | `factory.task.requested` | `factory.task.requested:{trigger}:{source}`  |
-| `factory.intake.baseline` | `factory.intake.baseline:{repo}:{stream}`   |
+| `factory.intake.baseline` | `factory.intake.baseline:{repo}:{stream}`, or `factory.intake.baseline:{stream}:{position}` for a Linear stream |
+| `linear.issue.entered`, `linear.issue.left` | `linear.view:{view}:{position}:{issue id}:{type}`, with the view stream's new position |
+| `linear.issue.created`   | `linear:issue:{issue id}:created`          |
+| `linear.issue.state_changed` | `linear:history:{history id}`          |
+| `linear.comment.created` | `linear:comment:{comment id}`              |
 
 ## Baseline
 
@@ -494,6 +561,52 @@ the stream, even when the page held no event. A consumer can ignore that message
 
 Until that message is on the output, the stream is still in its baseline: a crash during the
 baseline makes the next start read the first page again as a baseline.
+
+## Linear streams
+
+Linear has one stream per view that a trigger names, `linear.view:<view>`, and two streams for the
+whole workspace, `linear.issues` and `linear.comments`. Unlike a GitHub stream, a Linear stream
+publishes a `factory.intake.baseline` message after every poll that moves it, and starts the next
+poll from the newest one. A missing marker means the stream is still in its baseline.
+
+| Stream             | Reads                                                   | Position                     |
+| ------------------ | ------------------------------------------------------- | ---------------------------- |
+| `linear.view:<view>` | every issue of the view                               | a count of membership changes; the marker also holds `members`, the fields of each issue in the view |
+| `linear.issues`    | issues updated at or after the position, with their last 50 history entries | the latest `updatedAt` seen |
+| `linear.comments`  | comments created at or after the position               | the latest `createdAt` seen  |
+
+The first poll of a view publishes each of its issues as `linear.issue.entered` with `baseline:
+true`. The first poll of the other two reads their 50 most recent nodes, and publishes what they
+hold with `baseline: true`. As for GitHub, a baseline event requests a task only for a `backfill`
+trigger. When that first page is empty, the stream starts from 1970.
+
+```json
+{
+  "type": "factory.intake.baseline",
+  "subject": "linear.comments",
+  "data": { "stream": "linear.comments", "position": "2026-11-17T11:00:00.000Z" }
+}
+```
+
+A crash between an event and its stream's marker makes the next poll start from the older marker.
+It finds the same events with the same ids, so herdr-bus drops them, and their task requests are
+published again or dropped.
+
+Limits:
+
+- A view event's `time` is when the intake noticed the change, at most one poll late.
+- An issue that enters and leaves a view between two polls produces no event.
+- A view marker holds every issue of the view and is published whenever one of them changes, so a
+  large, busy view grows the output.
+- A state change past the last 50 entries of an issue's history between two polls is missed.
+
+## Linear calls
+
+The intake reads the API key from the environment variable `LINEAR_API_KEY`, and refuses to start
+without it when the factory has a Linear trigger. It posts each GraphQL query to
+`https://api.linear.app/graphql` with `curl`, which reads the key from its standard input, so the
+key never appears in a process list, an error or a log. A poll makes one query per view and two for
+issues and comments, plus one per extra page of 100. Linear allows 1,500 requests an hour per key.
 
 ## GitHub calls
 
