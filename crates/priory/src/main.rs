@@ -70,6 +70,7 @@ fn main() -> ExitCode {
                printf('%.1f GB free', bytes / 1073741824.0)), created
              FROM waits WHERE fired IS NULL AND withdrawn IS NULL ORDER BY id",
         ),
+        Some("attach") => attach(args.map(|arg| arg.to_string_lossy().into_owned()).collect()),
         Some("desk") => desk(),
         Some("trace") => trace(),
         Some("report") => report(args.map(|arg| arg.to_string_lossy().into_owned()).collect()),
@@ -103,7 +104,7 @@ fn main() -> ExitCode {
 
 fn usage() -> ExitCode {
     eprintln!(
-        "usage: priory check [DIR]\n       priory draw [DIR] WORKFLOW\n       priory intake [DIR] [--once]\n       priory daemon [DIR] [--once]\n       priory request [DIR] --workflow <name> --key <key> [--band <band>] [--lane <lane>] [--repo <owner/name>] [--hold <reason> [CONDITION]] <text>\n       priory inbox\n       priory tasks [--lane <lane>]\n       priory runs\n       priory outbox\n       priory asks\n       priory waits\n       priory actions\n       priory desk\n       priory trace\n       priory report [DIR] --workflow <name> [--since <instant-or-duration>] [--cost] [--by lane]\n       priory move TASK [--band <band>] [--top | --before TASK | --after TASK]\n       priory resume TASK\n       priory cancel TASK\n       priory revive TASK [--step STEP]\n       priory hold TASK --reason TEXT [--until TIME | --after TASK | --merge PR [--if-closed release|drop|ask] | --blockers]\n       priory release TASK\n       priory memory [acquire --gb N [--timeout D] -- COMMAND...]\n       priory answer ASK OPTION-OR-TEXT --revision N\n       priory mcp --session ID\n       priory hook EVENT"
+        "usage: priory check [DIR]\n       priory draw [DIR] WORKFLOW\n       priory intake [DIR] [--once]\n       priory daemon [DIR] [--once]\n       priory request [DIR] --workflow <name> --key <key> [--band <band>] [--lane <lane>] [--repo <owner/name>] [--hold <reason> [CONDITION]] <text>\n       priory inbox\n       priory tasks [--lane <lane>]\n       priory runs\n       priory outbox\n       priory asks\n       priory waits\n       priory actions\n       priory attach (TASK | --run RUN) [--read-only] [--print]\n       priory desk\n       priory trace\n       priory report [DIR] --workflow <name> [--since <instant-or-duration>] [--cost] [--by lane]\n       priory move TASK [--band <band>] [--top | --before TASK | --after TASK]\n       priory resume TASK\n       priory cancel TASK\n       priory revive TASK [--step STEP]\n       priory hold TASK --reason TEXT [--until TIME | --after TASK | --merge PR [--if-closed release|drop|ask] | --blockers]\n       priory release TASK\n       priory memory [acquire --gb N [--timeout D] -- COMMAND...]\n       priory answer ASK OPTION-OR-TEXT --revision N\n       priory mcp --session ID\n       priory hook EVENT"
     );
     ExitCode::from(2)
 }
@@ -157,6 +158,62 @@ fn serve(
             ExitCode::FAILURE
         }
     }
+}
+
+/// Attaches this terminal to the tmux session of a task's live run, or of one run, or prints the
+/// command that would. tmux keeps owning the session.
+fn attach(args: Vec<String>) -> ExitCode {
+    let (mut target, mut print, mut read_only) = (None, false, false);
+    let mut args = args.into_iter();
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--print" => print = true,
+            "--read-only" => read_only = true,
+            "--run" if target.is_none() => match args.next().map(|run| run.parse()) {
+                Some(Ok(run)) => target = Some(state::Attach::Run(run)),
+                _ => return usage(),
+            },
+            _ if target.is_none() => match arg.parse() {
+                Ok(task) => target = Some(state::Attach::Task(task)),
+                Err(_) => return usage(),
+            },
+            _ => return usage(),
+        }
+    }
+    let Some(target) = target else {
+        return usage();
+    };
+    let command = match state::open()
+        .and_then(|db| state::live_run(&db, &target))
+        .and_then(|run| {
+            runtime::attach(&run.tmux, &run.session, read_only).ok_or_else(|| {
+                format!(
+                    "tmux session {} on this tmux server runs no live pane of run {}'s agent; \
+                     run attach with the daemon's TMUX and TMUX_TMPDIR",
+                    run.tmux, run.id
+                )
+            })
+        }) {
+        Ok(command) => command,
+        Err(error) => return exit("attach", Err(error)),
+    };
+    if print {
+        let quoted: Vec<_> = command.iter().map(|word| shell_word(word)).collect();
+        println!("{}", quoted.join(" "));
+        return ExitCode::SUCCESS;
+    }
+    use std::os::unix::process::CommandExt;
+    let error = Command::new(&command[0]).args(&command[1..]).exec();
+    exit("attach", Err(format!("{}: {error}", command[0])))
+}
+
+/// `word` as one shell word, in single quotes unless every character is plainly safe.
+fn shell_word(word: &str) -> String {
+    let safe = |c: char| c.is_ascii_alphanumeric() || "-_./:@%+,".contains(c);
+    if !word.is_empty() && word.chars().all(safe) {
+        return word.to_owned();
+    }
+    format!("'{}'", word.replace('\'', r"'\''"))
 }
 
 /// A stalled queue's banner, what waits on a person, then every worktree under `PRIORY_HOME` that

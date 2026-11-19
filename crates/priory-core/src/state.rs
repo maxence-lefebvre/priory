@@ -741,6 +741,67 @@ fn owners(tx: &Transaction, resources: &[String]) -> rusqlite::Result<Vec<Task>>
     .collect()
 }
 
+/// What `priory attach` names: a task, which stands for its live run, or one run.
+pub enum Attach {
+    Task(i64),
+    Run(i64),
+}
+
+/// A live run's id, tmux session and the harness session its pane is tagged with.
+pub struct Attached {
+    pub id: i64,
+    pub tmux: String,
+    pub session: String,
+}
+
+/// The live run `target` names, or why it has none.
+pub fn live_run(db: &Connection, target: &Attach) -> Result<Attached, String> {
+    let at = |error: rusqlite::Error| error.to_string();
+    let live = |row: &rusqlite::Row| {
+        Ok(Attached {
+            id: row.get(0)?,
+            tmux: row.get(1)?,
+            session: row.get(2)?,
+        })
+    };
+    match *target {
+        Attach::Run(run) => {
+            let found = db
+                .query_row(
+                    "SELECT id, tmux, session, ended_as FROM runs WHERE id = ?1",
+                    [run],
+                    |row| Ok((live(row)?, row.get::<_, Option<String>>(3)?)),
+                )
+                .optional()
+                .map_err(at)?;
+            match found {
+                None => Err(format!("no run {run}")),
+                Some((_, Some(end))) => Err(format!("run {run} ended as {end}")),
+                Some((live, None)) => Ok(live),
+            }
+        }
+        Attach::Task(task) => {
+            let state: Option<String> = db
+                .query_row("SELECT state FROM tasks WHERE id = ?1", [task], |row| {
+                    row.get(0)
+                })
+                .optional()
+                .map_err(at)?;
+            let Some(state) = state else {
+                return Err(format!("no task {task}"));
+            };
+            db.query_row(
+                "SELECT id, tmux, session FROM runs WHERE task = ?1 AND ended IS NULL",
+                [task],
+                live,
+            )
+            .optional()
+            .map_err(at)?
+            .ok_or_else(|| format!("task {task} is {state}, with no live run"))
+        }
+    }
+}
+
 /// The rows of `query`, each column as text and `-` for null, tab-separated after `header`.
 pub fn print(
     db: &Connection,

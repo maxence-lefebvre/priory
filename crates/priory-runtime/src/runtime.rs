@@ -703,6 +703,35 @@ fn shown(target: &str) -> Vec<String> {
     lines[lines.len().saturating_sub(30)..].to_vec()
 }
 
+/// The command that attaches a tmux client to the session `name`, through the socket of the server
+/// that runs it, or none unless a live pane there runs the harness session `session`. A
+/// `read_only` client cannot type and leaves the window's size alone.
+pub fn attach(name: &str, session: &str, read_only: bool) -> Option<Vec<String>> {
+    let panes = run(tmux().args([
+        "list-panes",
+        "-s",
+        "-t",
+        &format!("={name}:"),
+        "-F",
+        "#{pane_dead} #{@priory} #{socket_path}",
+    ]))
+    .ok()?;
+    let socket = panes.lines().find_map(|line| {
+        let mut fields = line.splitn(3, ' ');
+        let (dead, tag, socket) = (fields.next()?, fields.next()?, fields.next()?);
+        (dead == "0" && tag == session).then_some(socket)
+    })?;
+    let read_only = read_only.then_some("-r");
+    Some(
+        ["tmux", "-S", socket, "attach-session"]
+            .into_iter()
+            .chain(read_only)
+            .chain(["-t", &format!("={name}")])
+            .map(str::to_owned)
+            .collect(),
+    )
+}
+
 /// Kills the tmux session `name`, if it still exists.
 pub fn kill(name: &str) {
     let _ = run(tmux().args(["kill-session", "-t", &format!("={name}")]));

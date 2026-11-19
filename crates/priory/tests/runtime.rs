@@ -7853,3 +7853,105 @@ fn a_batch_the_endpoint_rejects_as_malformed_is_skipped_rather_than_retried() {
         "{log}"
     );
 }
+
+/// The socket path of the test's tmux server, as tmux names it.
+fn socket(setup: &Setup) -> String {
+    let out = setup.tmux(&["display-message", "-p", "#{socket_path}"]);
+    String::from_utf8(out.stdout).unwrap().trim().to_owned()
+}
+
+#[test]
+fn attach_print_names_the_live_runs_tmux_socket_and_session_for_a_task_or_a_run() {
+    let mut setup = Setup::new("attach-print");
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 1);
+
+    let by_task = setup.priory(&["attach", "1", "--print"]);
+    let by_run = setup.priory(&["attach", "--run", "1", "--print"]);
+
+    for printed in [by_task, by_run] {
+        assert!(printed.status.success(), "{printed:?}");
+        assert_eq!(
+            String::from_utf8(printed.stdout).unwrap(),
+            format!("tmux -S {} attach-session -t '=priory-1'\n", socket(&setup))
+        );
+    }
+}
+
+#[test]
+fn attach_read_only_adds_tmuxs_read_only_flag() {
+    let mut setup = Setup::new("attach-read-only");
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 1);
+
+    let printed = setup.priory(&["attach", "1", "--read-only", "--print"]);
+
+    assert!(printed.status.success(), "{printed:?}");
+    assert_eq!(
+        String::from_utf8(printed.stdout).unwrap(),
+        format!(
+            "tmux -S {} attach-session -r -t '=priory-1'\n",
+            socket(&setup)
+        )
+    );
+}
+
+#[test]
+fn attach_refuses_an_ended_run_a_task_with_no_live_run_and_an_unknown_id() {
+    let mut setup = Setup::new("attach-ended");
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 1);
+    assert!(setup.priory(&["cancel", "1"]).status.success());
+
+    for (args, error) in [
+        (&["attach", "1"][..], "task 1 is dropped, with no live run"),
+        (
+            &["attach", "--run", "1", "--print"],
+            "run 1 ended as cancelled",
+        ),
+        (&["attach", "9", "--print"], "no task 9"),
+        (&["attach", "--run", "9"], "no run 9"),
+    ] {
+        let refused = setup.priory(args);
+
+        assert_eq!(refused.status.code(), Some(1), "{args:?}: {refused:?}");
+        assert_eq!(
+            String::from_utf8_lossy(&refused.stderr),
+            format!("priory attach: {error}\n")
+        );
+    }
+}
+
+#[test]
+fn attach_refuses_a_same_named_session_on_another_tmux_server_that_runs_no_priory_agent() {
+    let mut setup = Setup::new("attach-other-server");
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 1);
+    let other = setup.dir.join("other-tmux");
+    fs::create_dir_all(&other).unwrap();
+    let started = setup
+        .command("tmux")
+        .env("TMUX_TMPDIR", &other)
+        .args(["new-session", "-d", "-s", "priory-1"])
+        .status()
+        .unwrap();
+    assert!(started.success());
+
+    let refused = setup
+        .command(env!("CARGO_BIN_EXE_priory"))
+        .env("TMUX_TMPDIR", &other)
+        .args(["attach", "1", "--print"])
+        .output()
+        .unwrap();
+
+    assert_eq!(refused.status.code(), Some(1), "{refused:?}");
+    assert_eq!(
+        String::from_utf8_lossy(&refused.stderr),
+        "priory attach: tmux session priory-1 on this tmux server runs no live pane of run 1's agent; \
+         run attach with the daemon's TMUX and TMUX_TMPDIR\n"
+    );
+}
