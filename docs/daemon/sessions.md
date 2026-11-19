@@ -33,6 +33,32 @@ Known limits:
   session before admitting the next task, but a process that survived the kill could still report
   for the run that resumed its session.
 
+## Attaching to a run
+
+`priory attach TASK` attaches your terminal to the tmux session of the task's live run, so you see
+the agent's screen. `priory attach --run RUN` names one run instead. It reads the state file, asks
+tmux for the socket of the server that runs the session, then runs
+`tmux -S <socket> attach-session -t '=priory-<task id>'` in your terminal. Detach with tmux's
+detach key, `C-b d` by default. tmux keeps owning the session, so the agent goes on after you
+detach.
+
+- `--read-only` adds tmux's `-r`: you watch without typing into the agent, and your terminal's size
+  leaves the agent's window alone.
+- `--print` prints the attach command instead of running it, so a view host can run it in a pane,
+  such as `hc run -- <that command>` in a Herdr pane.
+
+A task with no live run, a run that ended, or an unknown id exits with 1 and names the state, such
+as `priory attach: task 1 is dropped, with no live run` or `run 3 ended as cancelled`.
+
+The daemon learns a run's state from hooks and tool calls, never from tmux clients, so attaching and
+detaching change no run's idle flag, turn or prompt. A client that can type can still type into the
+agent, as a person at the pane would: the daemon then sees that turn's hooks like any other.
+
+Known limits:
+
+- tmux refuses to attach from inside another tmux client unless you unset `TMUX` first.
+- An attach without `--read-only` resizes the agent's window to your terminal.
+
 ## Trusting a clone
 
 Claude asks whether to trust a folder on its first run there, before any hook fires. Priory never

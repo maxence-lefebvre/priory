@@ -741,6 +741,50 @@ fn owners(tx: &Transaction, resources: &[String]) -> rusqlite::Result<Vec<Task>>
     .collect()
 }
 
+/// What `priory attach` names: a task, which stands for its live run, or one run.
+pub enum Attach {
+    Task(i64),
+    Run(i64),
+}
+
+/// The tmux session of the live run `target` names, or why it has none.
+pub fn live_tmux(db: &Connection, target: &Attach) -> Result<String, String> {
+    let at = |error: rusqlite::Error| error.to_string();
+    match *target {
+        Attach::Run(run) => {
+            let found: Option<(String, Option<String>)> = db
+                .query_row(
+                    "SELECT tmux, ended_as FROM runs WHERE id = ?1",
+                    [run],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .optional()
+                .map_err(at)?;
+            match found {
+                None => Err(format!("no run {run}")),
+                Some((_, Some(end))) => Err(format!("run {run} ended as {end}")),
+                Some((tmux, None)) => Ok(tmux),
+            }
+        }
+        Attach::Task(task) => {
+            let found: Option<(String, Option<String>)> = db
+                .query_row(
+                    "SELECT state, (SELECT tmux FROM runs WHERE task = tasks.id AND ended IS NULL)
+                     FROM tasks WHERE id = ?1",
+                    [task],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .optional()
+                .map_err(at)?;
+            match found {
+                None => Err(format!("no task {task}")),
+                Some((state, None)) => Err(format!("task {task} is {state}, with no live run")),
+                Some((_, Some(tmux))) => Ok(tmux),
+            }
+        }
+    }
+}
+
 /// The rows of `query`, each column as text and `-` for null, tab-separated after `header`.
 pub fn print(
     db: &Connection,

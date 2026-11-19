@@ -703,6 +703,26 @@ fn shown(target: &str) -> Vec<String> {
     lines[lines.len().saturating_sub(30)..].to_vec()
 }
 
+/// The command that attaches a tmux client to the session `name`, through the socket of the server
+/// that runs it. A `read_only` client cannot type and leaves the window's size alone.
+pub fn attach(name: &str, read_only: bool) -> Result<Vec<String>, String> {
+    let socket = run(tmux().args([
+        "display-message",
+        "-p",
+        "-t",
+        &format!("={name}:"),
+        "#{socket_path}",
+    ]))
+    .map_err(|_| format!("tmux session {name} is gone"))?;
+    let read_only = read_only.then_some("-r");
+    Ok(["tmux", "-S", socket.trim(), "attach-session"]
+        .into_iter()
+        .chain(read_only)
+        .chain(["-t", &format!("={name}")])
+        .map(str::to_owned)
+        .collect())
+}
+
 /// Kills the tmux session `name`, if it still exists.
 pub fn kill(name: &str) {
     let _ = run(tmux().args(["kill-session", "-t", &format!("={name}")]));
