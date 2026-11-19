@@ -262,9 +262,50 @@ Known limits:
   so the room errs on the side of starting fewer runs. A run that reports its own use would end the
   double count.
 - An agent that grows past its declared `memory` can still crowd the machine. The memory gate
-  covers the builds an agent wraps in it, and R4.10's slice addresses the rest in M1.
+  covers the builds an agent wraps in it, and the agents slice, below, slows the rest down.
 - Load is not declared per agent, so when load leaves no room, no task fits anyway.
 - The measurements need Linux's `/proc`.
+
+### Agents slice
+
+On a host with a systemd user manager, every run starts in its own scope inside one user slice,
+`priory-agents.slice`. The run's tmux pane runs `systemd-run --user --scope --quiet --collect
+--slice=priory-agents.slice -- <agent>`. A scope execs the agent in place, so the pane's process is
+still the agent. Health and `priory runs` find it as before, and everything the agent starts, such as
+builds and tests, stays in its scope.
+
+When the daemon starts, it caps the slice from the runner's `agents` share, 90 % by default:
+
+```sh
+systemctl --user set-property --runtime priory-agents.slice CPUWeight=20 CPUQuota=<cpu share × CPUs × 100>% MemoryHigh=<memory share>%
+```
+
+- `CPUWeight=20`: the user's own apps keep the default weight of 100, so agents yield the CPU to
+  them when both want it.
+- `CPUQuota` caps the agents together at their share of the CPUs, even on an idle machine.
+- `MemoryHigh` is the memory share of `MemTotal`. Past it, the kernel reclaims the agents' memory and
+  throttles them, so they slow down. Priory sets no `MemoryMax`, so the slice never kills them.
+
+`--runtime` keeps the limits under `$XDG_RUNTIME_DIR/systemd/user.control/`. They need no
+`daemon-reload`, which a drop-in under `~/.config/systemd/user/` would, and they vanish at reboot,
+so each daemon start writes the current `agents` share again. A runner file change takes effect at
+the next daemon start. Priory touches no unit but its own slice. `systemctl --user revert
+priory-agents.slice` removes the limits.
+
+The daemon detects systemd once, by that call. When it fails, as on a host with no systemd user
+manager, the daemon logs `priory daemon: no systemd user manager, so runs start outside
+priory-agents.slice and only the room check caps them: <error>`, and starts runs as before.
+
+`PRIORY_SLICE` names another slice, so that two Priory daemons on one user manager, such as a test
+daemon beside a real one, cap their agents apart.
+
+Known limits:
+
+- Only Linux with systemd and cgroup v2 gets the slice. The room check is the only cap elsewhere.
+- A run started before a daemon restart keeps its scope, and the restart writes the slice's limits
+  again, so the running agents get the new share too.
+- A user manager that stops after the daemon started fails each new run's `systemd-run`. Its pane
+  exits and health blocks the task as an unexpected exit.
 
 ### Memory gate
 
