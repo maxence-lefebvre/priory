@@ -151,11 +151,14 @@ pub fn run(
             pull.split(['#', '@']).next()
         });
         let polled: BTreeSet<&str> = repos.iter().copied().chain(waited).collect();
-        match fetch(&polled, &cursors) {
-            // A publish error ends the intake: its restart recovers the source it left behind.
-            Ok(polled) => publish_all(&bus, &triggers, polled, &mut cursors, &mut published)?,
-            Err(error) if once => return Err(error),
-            Err(error) => eprintln!("{error}"),
+        let (found, failed) = fetch(&polled, &cursors);
+        // A publish error ends the intake: its restart recovers the source it left behind.
+        publish_all(&bus, &triggers, found, &mut cursors, &mut published)?;
+        for error in failed {
+            if once {
+                return Err(error);
+            }
+            eprintln!("{error}");
         }
         if let Some(linear) = &mut linear {
             match linear.fetch() {
@@ -267,13 +270,18 @@ struct Polled {
     top: Option<u64>,
 }
 
-/// Fetches every repo first, so that a failing `gh` publishes nothing.
-fn fetch(repos: &BTreeSet<&str>, cursors: &Cursors) -> Result<Vec<Polled>, String> {
+/// Fetches every repo, and the error of each that fails: a failing `gh` publishes nothing for its
+/// repo, and the others still publish.
+fn fetch(repos: &BTreeSet<&str>, cursors: &Cursors) -> (Vec<Polled>, Vec<String>) {
     let mut polled = Vec::new();
+    let mut failed = Vec::new();
     for repo in repos {
-        polled.extend(issues::fetch_repo(repo, cursors)?);
+        match issues::fetch_repo(repo, cursors) {
+            Ok(found) => polled.extend(found),
+            Err(error) => failed.push(error),
+        }
     }
-    Ok(polled)
+    (polled, failed)
 }
 
 fn publish_all(

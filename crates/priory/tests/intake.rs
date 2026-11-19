@@ -320,6 +320,43 @@ fn a_failing_gh_exits_non_zero_and_publishes_nothing() {
 }
 
 #[test]
+fn a_failing_repository_still_lets_the_others_publish() {
+    let setup = Setup::new("gh-one-fails", &[]);
+    write(
+        &setup.dir.join("factory/triggers/other.toml"),
+        &TRIGGER.replace("owner/repo", "other/repo"),
+    );
+    let events = setup.dir.join("other-events.json");
+    write(
+        &events,
+        &json!([labeled(100, 41, "agent")])
+            .to_string()
+            .replace("owner/repo", "other/repo"),
+    );
+    Setup::fake_gh(
+        &setup.dir,
+        &format!(
+            "#!/bin/sh\ncase \"$*\" in\n  *owner/repo*) echo 'HTTP 404: Not Found' >&2; exit 1 ;;\n  *other/repo/issues/events*) cat '{}' ;;\n  *) echo '[]' ;;\nesac\n",
+            events.display()
+        ),
+    );
+
+    let output = setup.intake();
+
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(
+        String::from_utf8_lossy(&output.stderr),
+        format!("priory intake: gh api {EVENTS_PATH} failed: HTTP 404: Not Found\n")
+    );
+    let subjects: Vec<_> = setup
+        .published()
+        .into_iter()
+        .map(|stored| stored.message.subject.unwrap_or_default())
+        .collect();
+    assert_eq!(subjects, ["other/repo#41"]);
+}
+
+#[test]
 fn a_backfill_trigger_requests_tasks_for_the_first_poll() {
     let setup = Setup::new(
         "opened",
