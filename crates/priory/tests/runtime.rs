@@ -479,6 +479,200 @@ fn an_agent_in_auto_mode_gets_a_run_in_auto_mode_and_its_rules_join_priorys_own(
     assert!(settings["hooks"]["PermissionRequest"].is_array());
 }
 
+const CODEX: &str = "+++\ndescription = \"Reviews one change.\"\nharness = \"codex\"\nmodel = \"gpt-6-astra\"\neffort = \"low\"\n+++\nYou review one change.\n";
+
+/// The `-c` overrides the fake `codex` got at its latest launch, merged into one table.
+fn codex_config(setup: &Setup) -> serde_json::Value {
+    serde_json::from_str(&fs::read_to_string(setup.dir.join("fake/codex-config.json")).unwrap())
+        .unwrap()
+}
+
+fn codex_args(setup: &Setup) -> Vec<String> {
+    fs::read_to_string(setup.dir.join("fake/codex-args.log"))
+        .unwrap()
+        .lines()
+        .map(str::to_owned)
+        .collect()
+}
+
+#[test]
+fn a_codex_agent_runs_codex_with_priorys_hooks_mcp_server_and_a_sandbox_that_asks() {
+    let mut setup = Setup::new("codex-start");
+    fs::write(setup.dir.join("factory/agents/implementer/agent.md"), CODEX).unwrap();
+    setup.publish(&requested(42));
+
+    setup.start();
+
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") == 1);
+    let args = codex_args(&setup);
+    assert_ne!(args.first().map(String::as_str), Some("resume"), "{args:?}");
+    assert!(
+        !args.iter().any(|arg| arg.contains("bypass")),
+        "Priory never skips Codex's hook trust: {args:?}"
+    );
+    let config = codex_config(&setup);
+    let exe = Path::new(env!("CARGO_BIN_EXE_priory"));
+    assert_eq!(
+        config["mcp_servers"]["priory"],
+        json!({
+            "command": exe,
+            "args": ["mcp", "--session", tmux_tag(&setup)],
+            "env": { "PRIORY_HOME": setup.dir.join("home") },
+            "default_tools_approval_mode": "approve",
+        })
+    );
+    for (key, value) in [
+        ("model", "gpt-6-astra"),
+        ("model_reasoning_effort", "low"),
+        ("developer_instructions", "You review one change."),
+        ("sandbox_mode", "read-only"),
+        ("approval_policy", "on-request"),
+        ("approvals_reviewer", "user"),
+    ] {
+        assert_eq!(config[key], value, "{key} in {config}");
+    }
+    for event in [
+        "SessionStart",
+        "UserPromptSubmit",
+        "Stop",
+        "PermissionRequest",
+        "PreToolUse",
+    ] {
+        assert!(config["hooks"][event].is_array(), "{event} in {config}");
+    }
+    let hooks = config["hooks"].to_string();
+    assert!(
+        !hooks.contains(&tmux_tag(&setup)),
+        "a person trusts the hooks once, so no run's session is in them: {hooks}"
+    );
+    assert_eq!(setup.rows("tasks")[0][4], "running");
+}
+
+#[test]
+fn a_codex_run_with_no_session_start_names_the_codex_command_whose_hooks_to_trust() {
+    let mut setup = Setup::new("codex-untrusted");
+    fs::write(setup.dir.join("factory/agents/implementer/agent.md"), CODEX).unwrap();
+    setup.publish(&requested(42));
+    setup.hold("silent");
+    setup.start();
+    setup.until("runs", |rows| rows.len() == 1);
+
+    let tasks = setup.within(75, "tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == "blocked")
+    });
+
+    let clone = setup.dir.join("home/repos/owner/repo");
+    let reason = &tasks[0][7];
+    let prefix = format!(
+        "codex showed no SessionStart within 60s; trust the clone and Priory's hooks once: cd {} && codex -c ",
+        clone.display()
+    );
+    assert!(reason.starts_with(&prefix), "{reason}");
+    assert!(
+        reason.ends_with(", accept the folder, type /hooks and trust Priory's hooks, then exit"),
+        "{reason}"
+    );
+    for event in [
+        "SessionStart",
+        "UserPromptSubmit",
+        "Stop",
+        "PreToolUse",
+        "PermissionRequest",
+    ] {
+        assert!(
+            reason.contains(&format!(" -c 'hooks.{event}=")),
+            "{event} in {reason}"
+        );
+    }
+}
+
+/// The `@priory` tag of task 1's pane: the id Priory gave its run, which its tools carry too.
+fn tmux_tag(setup: &Setup) -> String {
+    let out = setup.tmux(&["list-panes", "-s", "-t", "=priory-1:", "-F", "#{@priory}"]);
+    String::from_utf8(out.stdout).unwrap().trim().to_owned()
+}
+
+#[test]
+fn a_codex_run_stores_the_thread_codex_chose_and_an_answer_resumes_it() {
+    let mut setup = Setup::with_workflow("codex-resume", STEPS);
+    fs::write(setup.dir.join("factory/agents/implementer/agent.md"), CODEX).unwrap();
+    setup.calls(&[ask()]);
+    setup.publish(&requested(42));
+    setup.start();
+    let runs = setup.until("runs", |rows| {
+        rows.first().is_some_and(|row| row[7] == "asleep")
+    });
+    let thread = fs::read_to_string(setup.dir.join("fake/thread")).unwrap();
+    assert_eq!(
+        runs[0][4], thread,
+        "priory runs shows the thread Codex chose"
+    );
+    setup.gone("priory-1");
+
+    let answered = setup.priory(&["answer", "1", "sqlite", "--revision", "1"]);
+
+    assert!(answered.status.success(), "{answered:?}");
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") == 2);
+    let args = codex_args(&setup);
+    assert_eq!(args[..2], ["resume", thread.as_str()], "{args:?}");
+    let runs = setup.rows("runs");
+    assert_eq!([&runs[1][2], &runs[1][4]], ["plan", &thread]);
+    assert!(
+        setup.typed()[1].starts_with("sqlite\n"),
+        "{:?}",
+        setup.typed()
+    );
+}
+
+#[test]
+fn a_codex_run_carried_into_the_next_step_keeps_its_thread() {
+    let mut setup = Setup::with_workflow("codex-carry", STEPS);
+    fs::write(setup.dir.join("factory/agents/implementer/agent.md"), CODEX).unwrap();
+    setup.calls(&[result("ready")]);
+    setup.publish(&requested(42));
+
+    setup.start();
+
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") == 2);
+    let thread = fs::read_to_string(setup.dir.join("fake/thread")).unwrap();
+    let runs = setup.rows("runs");
+    assert_eq!([&runs[0][2], &runs[0][4]], ["plan", &thread]);
+    assert_eq!([&runs[1][2], &runs[1][4]], ["implement", &thread]);
+}
+
+#[test]
+fn a_workflow_with_a_claude_step_then_a_codex_step_runs_to_done() {
+    let mut setup = Setup::with_workflow("mixed", TWO_AGENTS);
+    fs::write(setup.dir.join("factory/agents/reviewer/agent.md"), CODEX).unwrap();
+    setup.calls(&[result("passed"), result("approved")]);
+    setup.publish(&requested(42));
+
+    setup.start();
+
+    let tasks = setup.until("tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == "done")
+    });
+    assert_eq!(tasks[0][3], "review");
+    let runs = setup.rows("runs");
+    assert_eq!(runs.len(), 2, "{runs:?}");
+    assert_eq!([&runs[0][2], &runs[0][7]], ["implement", "moved"]);
+    assert_eq!([&runs[1][2], &runs[1][7]], ["review", "done"]);
+    let thread = fs::read_to_string(setup.dir.join("fake/thread")).unwrap();
+    assert_eq!(runs[1][4], thread);
+    assert_ne!(runs[0][4], thread);
+    assert_eq!(
+        codex_config(&setup)["developer_instructions"],
+        "You review one change."
+    );
+    let typed = setup.typed();
+    assert_eq!(
+        typed[1],
+        format!("{}\n", prompted("Review the change.", "approved, changes"))
+    );
+    let replies = setup.replies();
+    assert!(replies.iter().all(|r| !reply(r).1), "{replies:?}");
+}
+
 #[test]
 fn a_run_starts_without_the_variables_of_the_claude_session_that_started_the_daemon() {
     let mut setup = Setup::new("nested-env");
@@ -695,6 +889,107 @@ fn a_run_whose_tmux_session_dies_ends_exited_and_blocks_its_task() {
         tasks[0][7],
         "run 1 exited: claude no longer runs in tmux session priory-1"
     );
+}
+
+#[test]
+fn a_derived_lane_is_derived_again_when_the_first_run_gives_the_task_a_branch() {
+    let mut setup = Setup::new("lane-branch");
+    fs::write(
+        setup.dir.join("factory/lanes.toml"),
+        "fallback = \"{team}/misc\"\n[[rules]]\nbranch = \"priory/*\"\nlane = \"FND/desktop\"\n",
+    )
+    .unwrap();
+    setup.publish(&requested(42));
+    assert!(
+        setup
+            .priory(&[
+                "daemon",
+                setup.dir.join("factory").to_str().unwrap(),
+                "--once"
+            ])
+            .status
+            .success()
+    );
+    assert_eq!(setup.rows("tasks")[0][6], "none/misc");
+
+    setup.start();
+
+    setup.until("tasks", |rows| {
+        rows[0][4] == "running" && rows[0][6] == "FND/desktop"
+    });
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") == 1);
+    assert!(
+        setup
+            .tmux(&["kill-session", "-t", "priory-1"])
+            .status
+            .success()
+    );
+    setup.until("tasks", |rows| rows[0][4] == "blocked");
+    let desk = setup.priory(&["desk"]);
+    let desk = String::from_utf8(desk.stdout).unwrap();
+    let mut lines = desk.lines();
+    assert_eq!(lines.next(), Some("since\tkind\tid\ttask\tlane\twhat"));
+    let cells: Vec<_> = lines.next().unwrap().split('\t').collect();
+    assert_eq!(cells[1..5], ["blocked", "1", "1", "FND/desktop"]);
+}
+
+#[test]
+fn a_derived_lane_stays_when_the_task_runs_again_after_lanes_toml_changed() {
+    let mut setup = Setup::new("lane-once");
+    let lanes = setup.dir.join("factory/lanes.toml");
+    fs::write(
+        &lanes,
+        "[[rules]]\nbranch = \"priory/*\"\nlane = \"FND/desktop\"\n",
+    )
+    .unwrap();
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") == 1);
+    assert_eq!(setup.rows("tasks")[0][6], "FND/desktop");
+    assert!(
+        setup
+            .tmux(&["kill-session", "-t", "priory-1"])
+            .status
+            .success()
+    );
+    setup.until("tasks", |rows| rows[0][4] == "blocked");
+    fs::write(
+        &lanes,
+        "[[rules]]\nbranch = \"priory/*\"\nlane = \"OPS/other\"\n",
+    )
+    .unwrap();
+    setup.crash();
+    setup.start();
+
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !setup.priory(&["resume", "1"]).status.success() {
+        assert!(
+            Instant::now() < deadline,
+            "the daemon never took the resume"
+        );
+        std::thread::sleep(Duration::from_millis(100));
+    }
+
+    setup.until("runs", |rows| rows.len() == 2);
+    assert_eq!(setup.rows("tasks")[0][6], "FND/desktop");
+}
+
+#[test]
+fn a_lane_the_request_set_stays_when_the_first_run_gives_the_task_a_branch() {
+    let mut setup = Setup::new("lane-kept");
+    fs::write(
+        setup.dir.join("factory/lanes.toml"),
+        "[[rules]]\nbranch = \"priory/*\"\nlane = \"FND/desktop\"\n",
+    )
+    .unwrap();
+    let mut request = requested(42);
+    request.data["lane"] = json!("OPS/chores");
+    setup.publish(&request);
+
+    setup.start();
+
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") == 1);
+    assert_eq!(setup.rows("tasks")[0][6], "OPS/chores");
 }
 
 #[test]
@@ -977,7 +1272,11 @@ fn a_person_order_inside_a_band_beats_age() {
     let queued = |rows: &[Vec<String>]| -> Vec<String> {
         rows.iter()
             .filter(|row| row[1] == "queue")
-            .map(|row| row[1..].join(" "))
+            .map(|row| {
+                [&row[1], &row[2], &row[3], &row[5]]
+                    .map(String::as_str)
+                    .join(" ")
+            })
             .collect()
     };
     // The reasons land on the daemon's next tick, after the run starts.
@@ -1698,14 +1997,14 @@ fn the_desk_lists_an_uncertain_prompt_a_blocked_task_and_an_open_ask_oldest_firs
         ]
     );
     assert_eq!(
-        desk[0][4],
+        desk[0][5],
         prompted("Plan the change.", "hopeless, ready, unsure").replace('\n', "\\n")
     );
     assert_eq!(
-        desk[1][4],
+        desk[1][5],
         "run 1 exited: claude no longer runs in tmux session priory-1"
     );
-    assert_eq!(desk[2][4], r#"Which database? ["sqlite","postgres"]"#);
+    assert_eq!(desk[2][5], r#"Which database? ["sqlite","postgres"]"#);
     assert!(
         desk.windows(2).all(|pair| pair[0][0] < pair[1][0]),
         "{desk:?}"
@@ -3254,7 +3553,7 @@ impl Setup {
         self.rows("desk")
             .into_iter()
             .find(|row| row[1] == "worktree" && row[2] == wanted)
-            .map(|row| row[4].clone())
+            .map(|row| row[5].clone())
     }
 
     /// Merges task 1, the control, starts the daemon, and waits until its sweep removed task 1.
@@ -3343,7 +3642,7 @@ fn a_sweep_keeps_a_worktree_the_task_does_not_record() {
 
     let desk = setup.rows("desk");
     assert_eq!(desk[0][2], other.display().to_string());
-    assert_eq!(desk[0][4], "not recorded as the worktree of task 1");
+    assert_eq!(desk[0][5], "not recorded as the worktree of task 1");
 }
 
 #[test]
@@ -3988,7 +4287,7 @@ fn a_held_task_never_starts_until_a_person_releases_it() {
     assert!(setup.rows("runs").is_empty());
     let desk = setup.rows("desk");
     let held: Vec<_> = desk.iter().map(|row| &row[1..]).collect();
-    assert_eq!(held, [["held", "1", "1", reason]]);
+    assert_eq!(held, [["held", "1", "1", "none/misc", reason]]);
 
     assert_eq!(person(&setup, "release", &["1"]), "task 1 is queued\n");
     setup.until("tasks", |rows| rows[0][4] == "running");
@@ -4136,7 +4435,8 @@ fn a_pull_request_closed_unmerged_drops_or_asks_as_its_hold_says() {
         &[&asks[0][0], "release", "--revision", "1"],
     );
 
-    assert_eq!(held_as(&setup, "2"), ["queued", "-"]);
+    // The next tick gives the released task its reason to wait for room.
+    assert_eq!(held_as(&setup, "2")[0], "queued");
 }
 
 /// A Linear event about ENG-7 whose open blockers are `blockers`.
@@ -4179,4 +4479,39 @@ fn a_blockers_hold_releases_the_task_when_its_issue_has_no_open_blocker_left() {
         "priory hold: task 2 comes from no Linear issue, so Priory cannot see its blockers\n"
     );
     setup.until("tasks", |rows| rows[0][4] == "running");
+}
+
+#[test]
+fn a_report_by_lane_counts_each_lane_apart() {
+    let mut setup = Setup::with_workflow("report-lane", TWO_AGENTS);
+    setup.calls(&[
+        result("passed"),
+        result("changes"),
+        result("passed"),
+        result("approved"),
+    ]);
+    let in_lane = |issue, lane: &str| {
+        let mut request = requested(issue);
+        request.data["lane"] = json!(lane);
+        request
+    };
+    setup.publish(&in_lane(42, "3D/mobile"));
+    setup.start();
+    setup.until("tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == "done")
+    });
+    setup.publish(&in_lane(43, "FND/desktop"));
+    setup.until("runs", |rows| rows.iter().any(|row| row[1] == "2"));
+
+    let report = setup.report(&["--workflow", "implement", "--by", "lane"]);
+
+    assert_eq!(
+        report,
+        [
+            ["lane", "step", "outcome", "count", "reached", "rate"],
+            ["3D/mobile", "implement", "passed", "2", "2", "100.0%"],
+            ["3D/mobile", "review", "approved", "1", "2", "50.0%"],
+            ["3D/mobile", "review", "changes", "1", "2", "50.0%"],
+        ]
+    );
 }

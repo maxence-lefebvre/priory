@@ -488,6 +488,8 @@ with `backfill = true`. Only this message creates a task.
 | `key`      | string         | Which events are the same work: `github:owner/name#42`, the issue or pull request number, as GitHub numbers both from one sequence per repository; `linear:ENG-7` for a Linear issue |
 | `band`     | string or null | The trigger's `band`, or null when it sets none              |
 | `lane`     | string or null | The trigger's `lane`, or null when `lanes.toml` derives it   |
+| `team`     | string, absent or null | The source issue's team, when the source has one: a Linear issue does, a GitHub issue does not |
+| `project`  | string, absent or null | The source issue's project, under the same condition |
 | `trigger`  | string         | The trigger's name: its file name without the extension      |
 | `source`   | UUID string    | The `id` of the source event's message, on the same output   |
 | `hold`     | object         | Optional: files the task held. The trigger's `hold`, or `priory request --hold` |

@@ -3,13 +3,14 @@ use crate::route::{self, Decision};
 use crate::trace::Trace;
 use herdr_bus::Message;
 use priory_factory::factory::{Factory, Loaded, Session, Workflow};
+use priory_factory::lanes::{Lanes, Subject};
 use priory_runtime::room::Room;
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 use std::collections::BTreeMap;
 use std::io::Write;
 use std::time::Duration;
 
-const VERSION: i64 = 13;
+const VERSION: i64 = 15;
 
 const SCHEMA: &str = "
 CREATE TABLE tasks (
@@ -215,6 +216,18 @@ PRAGMA user_version = 12;
 ";
 
 const SCHEMA_13: &str = "
+ALTER TABLE tasks ADD COLUMN team TEXT;
+ALTER TABLE tasks ADD COLUMN project TEXT;
+ALTER TABLE tasks ADD COLUMN lane_derived INTEGER NOT NULL DEFAULT 0;
+PRAGMA user_version = 13;
+";
+
+const SCHEMA_14: &str = "
+ALTER TABLE runs ADD COLUMN thread TEXT;
+PRAGMA user_version = 14;
+";
+
+const SCHEMA_15: &str = "
 CREATE TABLE holds (
   id          INTEGER PRIMARY KEY AUTOINCREMENT,
   task        INTEGER NOT NULL REFERENCES tasks (id),
@@ -231,13 +244,13 @@ CREATE TABLE holds (
   released_as TEXT
 );
 CREATE UNIQUE INDEX one_open_hold_per_task ON holds (task) WHERE released IS NULL;
-PRAGMA user_version = 13;
+PRAGMA user_version = 15;
 ";
 
 /// Each schema change in order: a file at version `n` applies those from index `n` on.
 const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA, SCHEMA_2, SCHEMA_3, SCHEMA_4, SCHEMA_5, SCHEMA_6, SCHEMA_7, SCHEMA_8, SCHEMA_9,
-    SCHEMA_10, SCHEMA_11, SCHEMA_12, SCHEMA_13,
+    SCHEMA_10, SCHEMA_11, SCHEMA_12, SCHEMA_13, SCHEMA_14, SCHEMA_15,
 ];
 
 /// The order the queue starts tasks in: band, then a person's order, then age. A band the factory
@@ -319,14 +332,18 @@ pub(crate) fn handle(
     let (task, outcome) = match route::route(message, owner.as_ref(), factory)? {
         Decision::Create(new) => {
             tx.execute(
-                "INSERT INTO tasks (key, workflow, step, state, band, lane, trigger, source, entered)
-                 VALUES (?1, ?2, ?3, 'queued', ?4, ?5, ?6, ?7, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))",
+                "INSERT INTO tasks
+                   (key, workflow, step, state, band, lane, team, project, lane_derived, trigger, source, entered)
+                 VALUES (?1, ?2, ?3, 'queued', ?4, ?5, ?6, ?7, ?8, ?9, ?10, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))",
                 params![
                     new.key,
                     new.workflow,
                     new.step,
                     new.band,
                     new.lane,
+                    new.team,
+                    new.project,
+                    new.lane_derived,
                     new.trigger,
                     new.source
                 ],
@@ -461,11 +478,16 @@ pub(crate) fn owner(tx: &Transaction, resources: &[String]) -> rusqlite::Result<
 }
 
 /// The rows of `query`, each column as text and `-` for null, tab-separated after `header`.
-pub fn print(db: &Connection, header: &str, query: &str) -> rusqlite::Result<()> {
+pub fn print(
+    db: &Connection,
+    header: &str,
+    query: &str,
+    params: impl rusqlite::Params,
+) -> rusqlite::Result<()> {
     emit(header);
     let mut statement = db.prepare(query)?;
     let columns = statement.column_count();
-    let mut rows = statement.query([])?;
+    let mut rows = statement.query(params)?;
     while let Some(row) = rows.next()? {
         let cells = (0..columns)
             .map(|i| {
@@ -686,6 +708,8 @@ pub(crate) struct NewRun<'a> {
     pub ending: &'a str,
     /// The session is the agent's shared one, which other tasks' runs resume too.
     pub shared: bool,
+    /// Derives the lane of a task again, once, now that its branch is known.
+    pub lanes: &'a Lanes,
 }
 
 /// The agent's shared session, once a run of it reached `SessionStart`, which every task resumes.
@@ -707,10 +731,23 @@ pub(crate) fn resumable(
     agent: &str,
 ) -> rusqlite::Result<Option<String>> {
     db.query_row(
-        // A session the agent once shared stays shared, so two tasks cannot both resume it.
+        // A session the agent once shared stays shared, so two tasks cannot both resume it, even
+        // after a harness change gave the agent another shared session.
         "SELECT session FROM runs WHERE task = ?1 AND agent = ?2 AND ready = 1
-         AND session NOT IN (SELECT session FROM shared_sessions) ORDER BY id DESC LIMIT 1",
+         AND session NOT IN (SELECT session FROM shared_sessions)
+         AND session NOT IN (SELECT session FROM runs GROUP BY session HAVING count(DISTINCT task) > 1)
+         ORDER BY id DESC LIMIT 1",
         params![task, agent],
+        |row| row.get(0),
+    )
+    .optional()
+}
+
+/// The harness's own id for `session`, when it differs from Priory's, as Codex's thread id does.
+pub(crate) fn thread(db: &Connection, session: &str) -> rusqlite::Result<Option<String>> {
+    db.query_row(
+        "SELECT thread FROM runs WHERE session = ?1 AND thread IS NOT NULL ORDER BY id DESC LIMIT 1",
+        [session],
         |row| row.get(0),
     )
     .optional()
@@ -739,6 +776,24 @@ pub(crate) fn start(db: &mut Connection, run: &NewRun) -> rusqlite::Result<i64> 
         "UPDATE waits SET run = ?2 WHERE task = ?1 AND fired IS NULL AND NOT daemon",
         params![run.task, id],
     )?;
+    let (key, team, project, derived): (String, Option<String>, Option<String>, bool) = tx
+        .query_row(
+            "SELECT key, team, project, lane_derived FROM tasks WHERE id = ?1",
+            [run.task],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )?;
+    if derived {
+        let lane = run.lanes.lane(&Subject {
+            key: &key,
+            team: team.as_deref(),
+            project: project.as_deref(),
+            branch: Some(run.branch),
+        });
+        tx.execute(
+            "UPDATE tasks SET lane = ?2, lane_derived = 0 WHERE id = ?1",
+            params![run.task, lane],
+        )?;
+    }
     tx.execute(
         "INSERT OR IGNORE INTO owns (task, resource) VALUES (?1, ?2)",
         params![run.task, route::branch(run.repo, run.branch)],
@@ -850,6 +905,7 @@ pub(crate) struct LiveRun {
     pub id: i64,
     pub task: i64,
     pub step: String,
+    pub agent: String,
     pub workflow: String,
     pub tmux: String,
     pub session: String,
@@ -868,7 +924,7 @@ pub(crate) fn live(db: &Connection) -> rusqlite::Result<Vec<LiveRun>> {
     let mut statement = db.prepare(&format!(
         "SELECT runs.id, runs.task, runs.step, tasks.workflow, runs.tmux, runs.session, tasks.worktree,
          NOT runs.ready AND runs.started <= strftime('%Y-%m-%dT%H:%M:%SZ', 'now', '-{READY_WITHIN}'),
-         unixepoch('now') - unixepoch(runs.turn), runs.prompted
+         unixepoch('now') - unixepoch(runs.turn), runs.prompted, coalesce(runs.agent, '')
          FROM runs JOIN tasks ON tasks.id = runs.task WHERE runs.ended IS NULL ORDER BY runs.id"
     ))?;
     statement
@@ -884,6 +940,7 @@ pub(crate) fn live(db: &Connection) -> rusqlite::Result<Vec<LiveRun>> {
                 late: row.get(7)?,
                 turn: row.get(8)?,
                 prompted: row.get(9)?,
+                agent: row.get(10)?,
             })
         })?
         .collect()
@@ -901,6 +958,9 @@ pub struct Signal {
     /// The session transcript Claude names in every hook.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub transcript: Option<String>,
+    /// The harness's own session id, when it chose one apart from `session`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thread: Option<String>,
 }
 
 /// Applies a hook signal: the run is idle after `SessionStart` or `Stop`, and busy after
@@ -926,8 +986,9 @@ pub(crate) fn signal(
     match signal.event.as_str() {
         "SessionStart" => {
             tx.execute(
-                "UPDATE runs SET idle = 1, ready = 1, turn = NULL WHERE id = ?1",
-                [run],
+                "UPDATE runs SET idle = 1, ready = 1, turn = NULL, thread = coalesce(?2, thread)
+                 WHERE id = ?1",
+                params![run, signal.thread],
             )?;
             crate::trace::begin(&tx, trace, run, signal.transcript.as_deref())?;
         }

@@ -39,18 +39,18 @@ fn main() -> ExitCode {
             "seq\ttype\tsubject\ttask\toutcome",
             "SELECT seq, type, subject, task, outcome FROM inbox ORDER BY seq",
         ),
-        Some("tasks") => list(
-            "id\tkey\tworkflow\tstep\tstate\tband\tlane\treason\tposition",
-            &format!(
-                "{} SELECT id, key, workflow, step, state, band, lane, reason, queue.place
-                 FROM tasks LEFT JOIN queue USING (id) ORDER BY {}",
-                queue(),
-                state::START_ORDER
-            ),
-        ),
+        Some("tasks") => {
+            let args: Vec<_> = args.map(|arg| arg.to_string_lossy().into_owned()).collect();
+            match &args[..] {
+                [] => tasks(None),
+                [flag, lane] if flag == "--lane" => tasks(Some(lane)),
+                _ => usage(),
+            }
+        }
         Some("runs") => list(
             "id\ttask\tstep\ttmux\tsession\tstarted\tended\tend",
-            "SELECT id, task, step, tmux, session, started, ended, ended_as FROM runs ORDER BY id",
+            "SELECT id, task, step, tmux, coalesce(thread, session), started, ended, ended_as FROM runs
+             ORDER BY id",
         ),
         Some("outbox") => list(
             "id\ttask\trun\tstate\ttext",
@@ -98,7 +98,7 @@ fn main() -> ExitCode {
 
 fn usage() -> ExitCode {
     eprintln!(
-        "usage: priory check [DIR]\n       priory draw [DIR] WORKFLOW\n       priory intake [DIR] [--once]\n       priory daemon [DIR] [--once]\n       priory request [DIR] --workflow <name> --key <key> [--band <band>] [--lane <lane>] [--repo <owner/name>] <text>\n       priory inbox\n       priory tasks\n       priory runs\n       priory outbox\n       priory asks\n       priory waits\n       priory actions\n       priory desk\n       priory trace\n       priory report [DIR] --workflow <name> [--since <instant-or-duration>] [--cost]\n       priory move TASK [--band <band>] [--top | --before TASK | --after TASK]\n       priory resume TASK\n       priory cancel TASK\n       priory hold TASK --reason TEXT [--until TIME | --after TASK | --merge PR [--if-closed release|drop|ask] | --blockers]\n       priory release TASK\n       priory answer ASK OPTION-OR-TEXT --revision N\n       priory mcp --session ID\n       priory hook EVENT"
+        "usage: priory check [DIR]\n       priory draw [DIR] WORKFLOW\n       priory intake [DIR] [--once]\n       priory daemon [DIR] [--once]\n       priory request [DIR] --workflow <name> --key <key> [--band <band>] [--lane <lane>] [--repo <owner/name>] [--hold <reason> [CONDITION]] <text>\n       priory inbox\n       priory tasks [--lane <lane>]\n       priory runs\n       priory outbox\n       priory asks\n       priory waits\n       priory actions\n       priory desk\n       priory trace\n       priory report [DIR] --workflow <name> [--since <instant-or-duration>] [--cost] [--by lane]\n       priory move TASK [--band <band>] [--top | --before TASK | --after TASK]\n       priory resume TASK\n       priory cancel TASK\n       priory hold TASK --reason TEXT [--until TIME | --after TASK | --merge PR [--if-closed release|drop|ask] | --blockers]\n       priory release TASK\n       priory answer ASK OPTION-OR-TEXT --revision N\n       priory mcp --session ID\n       priory hook EVENT"
     );
     ExitCode::from(2)
 }
@@ -140,8 +140,9 @@ fn desk() -> ExitCode {
     let printed = state::open().and_then(|db| {
         state::print(
             &db,
-            "since\tkind\tid\ttask\twhat",
+            "since\tkind\tid\ttask\tlane\twhat",
             &format!("{} {DESK}", queue()),
+            [],
         )
         .and_then(|()| sweep::print_stays(&db, &runtime::home()))
         .map_err(|error| error.to_string())
@@ -165,12 +166,14 @@ fn report(args: Vec<String>) -> ExitCode {
     let mut workflow = None;
     let mut since = report::SINCE.to_owned();
     let mut cost = false;
+    let mut by_lane = false;
     let mut dirs = Vec::new();
     let mut args = args.into_iter();
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--workflow" => workflow = args.next(),
             "--cost" => cost = true,
+            "--by" if args.next().as_deref() == Some("lane") => by_lane = true,
             "--since" => match args.next() {
                 Some(window) => since = window,
                 None => return usage(),
@@ -179,11 +182,15 @@ fn report(args: Vec<String>) -> ExitCode {
             _ => dirs.push(arg),
         }
     }
+    if cost && by_lane {
+        return usage();
+    }
     let (Some(workflow), [] | [_]) = (workflow, &dirs[..]) else {
         return usage();
     };
     if !cost {
-        let printed = state::open().and_then(|db| report::outcomes(&db, &workflow, &since));
+        let printed =
+            state::open().and_then(|db| report::outcomes(&db, &workflow, &since, by_lane));
         return exit("report", printed);
     }
     let dir = dirs
@@ -198,25 +205,25 @@ fn report(args: Vec<String>) -> ExitCode {
 }
 
 /// Asks, blocked tasks and uncertain prompts oldest first, then the queue in start order.
-const DESK: &str = "SELECT since, kind, id, task, what FROM (
+const DESK: &str = "SELECT since, kind, id, task, lane, what FROM (
                SELECT 0 AS part, asks.created AS since, 'ask' AS kind, asks.id AS id,
-                 asks.task AS task,
+                 asks.task AS task, tasks.lane AS lane,
                  replace(asks.question, char(10), '\\n') || ' ' || asks.options AS what
                FROM asks JOIN tasks ON tasks.id = asks.task
                WHERE asks.answer IS NULL AND tasks.state NOT IN ('done', 'failed', 'dropped')
                UNION ALL
-               SELECT 0, changed, 'blocked', id, id, reason FROM tasks WHERE state = 'blocked'
+               SELECT 0, changed, 'blocked', id, id, lane, reason FROM tasks WHERE state = 'blocked'
                UNION ALL
-               SELECT 0, outbox.attempted, 'prompt', outbox.id, outbox.task,
+               SELECT 0, outbox.attempted, 'prompt', outbox.id, outbox.task, tasks.lane,
                  replace(outbox.text, char(10), '\\n')
                FROM outbox JOIN tasks ON tasks.id = outbox.task
                WHERE outbox.state = 'uncertain' AND tasks.state NOT IN ('done', 'failed', 'dropped')
                UNION ALL
-               SELECT 0, holds.created, 'held', holds.id, holds.task, tasks.reason
+               SELECT 0, holds.created, 'held', holds.id, holds.task, tasks.lane, tasks.reason
                FROM holds JOIN tasks ON tasks.id = holds.task
                WHERE holds.released IS NULL AND tasks.state = 'held'
                UNION ALL
-               SELECT 1, tasks.changed, 'queue', queue.place, tasks.id,
+               SELECT 1, tasks.changed, 'queue', queue.place, tasks.id, tasks.lane,
                  coalesce(tasks.band, '-') || coalesce(': ' || tasks.reason, '')
                FROM tasks JOIN queue USING (id)
              ) ORDER BY part, CASE WHEN part = 0 THEN since END, kind, id";
@@ -230,9 +237,27 @@ fn queue() -> String {
     )
 }
 
+fn tasks(lane: Option<&String>) -> ExitCode {
+    let printed = state::open().and_then(|db| {
+        state::print(
+            &db,
+            "id\tkey\tworkflow\tstep\tstate\tband\tlane\treason\tposition",
+            &format!(
+                "{} SELECT id, key, workflow, step, state, band, lane, reason, queue.place
+                 FROM tasks LEFT JOIN queue USING (id) WHERE ?1 IS NULL OR lane = ?1 ORDER BY {}",
+                queue(),
+                state::START_ORDER
+            ),
+            [lane],
+        )
+        .map_err(|error| error.to_string())
+    });
+    exit("tasks", printed)
+}
+
 fn list(header: &str, query: &str) -> ExitCode {
     let printed = state::open()
-        .and_then(|db| state::print(&db, header, query).map_err(|error| error.to_string()));
+        .and_then(|db| state::print(&db, header, query, []).map_err(|error| error.to_string()));
     match printed {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
@@ -436,8 +461,8 @@ fn count(n: usize, noun: &str) -> String {
     }
 }
 
-/// Reports a Claude Code hook to the daemon: `event`, with the session and prompt from the hook's
-/// JSON on stdin.
+/// Reports a harness hook to the daemon: `event`, with the session and prompt from the hook's JSON
+/// on stdin. A run's pane sets `PRIORY_SESSION`; a stdin session apart from it is the harness's own.
 fn hook(event: &str) -> ExitCode {
     let input: serde_json::Value = match serde_json::from_reader(std::io::stdin()) {
         Ok(input) => input,
@@ -450,12 +475,20 @@ fn hook(event: &str) -> ExitCode {
         eprintln!("priory hook: stdin has no session_id");
         return ExitCode::FAILURE;
     };
+    let priory = std::env::var("PRIORY_SESSION")
+        .ok()
+        .filter(|id| !id.is_empty());
+    let thread = priory
+        .as_ref()
+        .filter(|id| *id != session)
+        .map(|_| session.to_owned());
     let signal = state::Signal {
         event: event.to_owned(),
-        session: session.to_owned(),
+        session: priory.unwrap_or_else(|| session.to_owned()),
         prompt: input["prompt"].as_str().map(str::to_owned),
         message: input["message"].as_str().map(str::to_owned),
         transcript: input["transcript_path"].as_str().map(str::to_owned),
+        thread,
     };
     let line = serde_json::to_string(&signal).expect("signal serializes");
     match runtime::send(&runtime::home(), &line) {

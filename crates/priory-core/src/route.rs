@@ -1,6 +1,7 @@
 use crate::state::Task;
 use herdr_bus::Message;
 use priory_factory::factory::Factory;
+use priory_factory::lanes::Subject;
 use serde::Deserialize;
 
 const TASK_REQUESTED: &str = "factory.task.requested";
@@ -21,6 +22,10 @@ pub(crate) struct NewTask {
     pub key: String,
     pub band: Option<String>,
     pub lane: Option<String>,
+    pub team: Option<String>,
+    pub project: Option<String>,
+    #[serde(skip)]
+    pub lane_derived: bool,
     pub trigger: String,
     pub source: String,
     #[serde(default)]
@@ -80,6 +85,7 @@ pub(crate) fn tick(message: &Message) -> bool {
 
 /// Routes `message`, given the active task that owns its key, if any. A task request for a
 /// workflow the factory lacks is an error, so that it waits unacked until the workflow is back.
+/// A request with no lane gets the one `lanes.toml` derives; no branch exists yet to match.
 /// A new task's band is its request's, else its trigger's, else its workflow's, else the last one.
 pub(crate) fn route(
     message: &Message,
@@ -111,6 +117,15 @@ pub(crate) fn route(
         .or_else(|| trigger.and_then(|trigger| trigger.value.band.clone()))
         .or_else(|| workflow.value.band.clone())
         .or_else(|| bands.last().map(|band| (*band).to_owned()));
+    if task.lane.is_none() {
+        task.lane = Some(factory.lanes().lane(&Subject {
+            key: &task.key,
+            team: task.team.as_deref(),
+            project: task.project.as_deref(),
+            branch: None,
+        }));
+        task.lane_derived = true;
+    }
     Ok(Decision::Create(Box::new(task)))
 }
 
