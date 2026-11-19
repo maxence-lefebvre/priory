@@ -1231,3 +1231,18 @@ fn a_duration_until_ends_at_midnight() {
         .collect();
     assert_eq!(fired, ["2026-11-20T23:00:00Z"]);
 }
+
+#[test]
+fn a_trigger_lane_goes_into_its_task_request() {
+    let setup = Setup::baseline("trigger-lane");
+    write(
+        &setup.dir.join("factory/triggers/agent-label.toml"),
+        &format!("{TRIGGER}lane = \"3D/mobile\"\n"),
+    );
+    setup.answer(&[(EVENTS_PATH, json!([labeled(101, 42, "agent")]))]);
+
+    succeeded(&setup.intake());
+
+    let published = setup.published();
+    assert_eq!(published[2].message.data["lane"], "3D/mobile");
+}

@@ -209,7 +209,6 @@ const DESK: &str = "SELECT * FROM (
                WHERE outbox.state = 'uncertain' AND tasks.state NOT IN ('done', 'failed', 'dropped')
              ) ORDER BY 1, 2, 3";
 
-/// Every task, or those in `lane`.
 fn tasks(lane: Option<&String>) -> ExitCode {
     let printed = state::open().and_then(|db| {
         state::print(

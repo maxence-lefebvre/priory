@@ -627,7 +627,7 @@ pub(crate) struct NewRun<'a> {
     pub ending: &'a str,
     /// The session is the agent's shared one, which other tasks' runs resume too.
     pub shared: bool,
-    /// Re-derives the lane of a task whose lane was derived, now that its branch is known.
+    /// Derives the lane of a task again, once, now that its branch is known.
     pub lanes: Option<&'a Lanes>,
 }
 
@@ -682,25 +682,25 @@ pub(crate) fn start(db: &mut Connection, run: &NewRun) -> rusqlite::Result<i64> 
         "UPDATE waits SET run = ?2 WHERE task = ?1 AND fired IS NULL AND NOT daemon",
         params![run.task, id],
     )?;
-    if let Some(lanes) = run.lanes {
-        let (key, team, project, derived): (String, Option<String>, Option<String>, bool) = tx
-            .query_row(
-                "SELECT key, team, project, lane_derived FROM tasks WHERE id = ?1",
-                [run.task],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
-            )?;
-        if derived {
-            let lane = lanes.lane(&Subject {
+    let (key, team, project, derived): (String, Option<String>, Option<String>, bool) = tx
+        .query_row(
+            "SELECT key, team, project, lane_derived FROM tasks WHERE id = ?1",
+            [run.task],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )?;
+    if derived {
+        let lane = run.lanes.and_then(|lanes| {
+            lanes.lane(&Subject {
                 key: &key,
                 team: team.as_deref(),
                 project: project.as_deref(),
                 branch: Some(run.branch),
-            });
-            tx.execute(
-                "UPDATE tasks SET lane = ?2 WHERE id = ?1",
-                params![run.task, lane],
-            )?;
-        }
+            })
+        });
+        tx.execute(
+            "UPDATE tasks SET lane = coalesce(?2, lane), lane_derived = 0 WHERE id = ?1",
+            params![run.task, lane],
+        )?;
     }
     tx.execute(
         "INSERT OR IGNORE INTO owns (task, resource) VALUES (?1, ?2)",

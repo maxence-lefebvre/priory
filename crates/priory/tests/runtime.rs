@@ -736,6 +736,47 @@ fn a_derived_lane_is_derived_again_when_the_first_run_gives_the_task_a_branch() 
 }
 
 #[test]
+fn a_derived_lane_stays_when_the_task_runs_again_after_lanes_toml_changed() {
+    let mut setup = Setup::new("lane-once");
+    let lanes = setup.dir.join("factory/lanes.toml");
+    fs::write(
+        &lanes,
+        "[[rules]]\nbranch = \"priory/*\"\nlane = \"FND/desktop\"\n",
+    )
+    .unwrap();
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") == 1);
+    assert_eq!(setup.rows("tasks")[0][6], "FND/desktop");
+    assert!(
+        setup
+            .tmux(&["kill-session", "-t", "priory-1"])
+            .status
+            .success()
+    );
+    setup.until("tasks", |rows| rows[0][4] == "blocked");
+    fs::write(
+        &lanes,
+        "[[rules]]\nbranch = \"priory/*\"\nlane = \"OPS/other\"\n",
+    )
+    .unwrap();
+    setup.crash();
+    setup.start();
+
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !setup.priory(&["resume", "1"]).status.success() {
+        assert!(
+            Instant::now() < deadline,
+            "the daemon never took the resume"
+        );
+        std::thread::sleep(Duration::from_millis(100));
+    }
+
+    setup.until("runs", |rows| rows.len() == 2);
+    assert_eq!(setup.rows("tasks")[0][6], "FND/desktop");
+}
+
+#[test]
 fn a_lane_the_request_set_stays_when_the_first_run_gives_the_task_a_branch() {
     let mut setup = Setup::new("lane-kept");
     fs::write(

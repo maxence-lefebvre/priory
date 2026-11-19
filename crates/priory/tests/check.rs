@@ -962,3 +962,17 @@ fn lanes_in_yaml_are_read_too() {
         "lanes.yaml:2: lane `mobile` is not `<team>/<theme>`\n"
     );
 }
+
+#[test]
+fn a_lane_with_a_newline_fails_check() {
+    let lanes = "fallback = \"OPS/chores\\nforged\"\n";
+
+    let outcome = check(&factory("lanes-newline", &with("lanes.toml", lanes)));
+
+    assert_eq!(outcome.code, 1);
+    assert!(
+        outcome.stderr.contains("is not `<team>/<theme>`"),
+        "{}",
+        outcome.stderr
+    );
+}

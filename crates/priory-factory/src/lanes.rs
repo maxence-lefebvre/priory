@@ -67,7 +67,6 @@ impl Rule {
     }
 }
 
-/// Whether `text` fits `pattern`, whose `*` matches any run of characters.
 fn glob(pattern: &str, text: &str) -> bool {
     let mut parts = pattern.split('*');
     let first = parts.next().unwrap_or_default();
@@ -91,9 +90,10 @@ fn glob(pattern: &str, text: &str) -> bool {
 pub fn well_formed(lane: &str) -> bool {
     let lane = lane.replace("{team}", "team");
     lane.split_once('/').is_some_and(|(team, theme)| {
-        [team, theme]
-            .iter()
-            .all(|part| !part.is_empty() && !part.contains(['/', ' ', '\t']))
+        [team, theme].iter().all(|part| {
+            !part.is_empty()
+                && !part.contains(|c: char| c == '/' || c.is_whitespace() || c.is_control())
+        })
     })
 }
 
