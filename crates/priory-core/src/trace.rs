@@ -210,6 +210,50 @@ pub(crate) fn handled(tx: &Transaction, trace: &Trace, handled: &Handled) -> rus
     append(tx, trace, "factory.handler.called", &time, data)
 }
 
+/// Appends a `factory.task.repaired` record for the repair of `task` after `run` failed.
+pub(crate) fn repaired(
+    tx: &Transaction,
+    trace: &Trace,
+    task: i64,
+    run: i64,
+    repair: [&str; 3],
+) -> rusqlite::Result<()> {
+    let (workflow, step, key, generation, time): (String, String, String, i64, String) = tx
+        .query_row(
+            "SELECT workflow, step, key, generation, strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+             FROM tasks WHERE id = ?1",
+            [task],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                ))
+            },
+        )?;
+    let [cause, action, outcome] = repair;
+    let mut data = json!({
+        "factory": trace.factory.name,
+        "factory_revision": trace.revision,
+        "workflow": workflow,
+        "task": task.to_string(),
+        "key": key,
+        "run": run.to_string(),
+        "generation": generation,
+        "step": step,
+        "machine": trace.machine,
+        "cause": cause,
+        "action": action,
+        "outcome": outcome,
+    });
+    if let Value::Object(fields) = &mut data {
+        fields.retain(|_, value| !value.is_null());
+    }
+    append(tx, trace, "factory.task.repaired", &time, data)
+}
+
 /// Appends one CloudEvents record of `kind` to the trace.
 fn append(
     tx: &Transaction,

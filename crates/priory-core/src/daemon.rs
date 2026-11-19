@@ -2,7 +2,7 @@ use crate::memory::{self, Gate};
 use crate::room::Share;
 use crate::route;
 use crate::state::{self, Admission, NewRun, Signal};
-use crate::tools::{self, Act, Answer, Call, Done};
+use crate::tools::{self, Act, Answer, Call, Done, Repair};
 use crate::trace::Trace;
 use crate::{handler, stall, sweep};
 use herdr_bus::{Bus, Start};
@@ -334,6 +334,16 @@ fn tend(db: &mut Connection, trace: &Trace, share: &Share, home: &Path) -> Resul
                 run.tmux
             );
             state::block(db, trace, run.task, "exited", &reason)?;
+            // A harness that died before SessionStart would die the same way again: a person looks.
+            if !run.ready {
+                continue;
+            }
+            let repair = if tools::spent(db, run.id)? {
+                None
+            } else {
+                Some(diagnose(db, factory, share, home, &run.agent)?)
+            };
+            tools::fail(db, trace, run.task, run.id, &reason, repair.as_ref())?;
         } else if let Some((ended_as, reason)) = verdict(&run, factory) {
             // Committed first, so a crash before the kill leaves an ended run, not a lost one.
             state::block(db, trace, run.task, ended_as, &reason)?;
@@ -363,6 +373,50 @@ fn tend(db: &mut Connection, trace: &Trace, share: &Share, home: &Path) -> Resul
         }
     }
     Ok(())
+}
+
+/// Classifies why a run's agent exited; the admission's room check holds a memory restart.
+fn diagnose(
+    db: &Connection,
+    factory: &Factory,
+    share: &Share,
+    home: &Path,
+    agent: &str,
+) -> Result<Repair, Error> {
+    let need = crate::room::need(factory.agents.get(agent).map(|agent| &agent.value));
+    let short = |db: &Connection| -> Result<Result<Option<crate::room::Short>, String>, Error> {
+        let promised = state::promised(db, factory)?;
+        Ok(room::measure(home).map(|room| crate::room::wait(&room, share, promised, need)))
+    };
+    let missing = |short: &crate::room::Short| {
+        short
+            .reason
+            .trim_start_matches("waits for room: ")
+            .to_owned()
+    };
+    match short(db)? {
+        Ok(Some(found)) if found.resource == "memory" => Ok(Repair {
+            cause: format!("out of memory ({})", missing(&found)),
+            action: "wait for room",
+            gone: true,
+        }),
+        Ok(Some(found)) if found.resource == "disk" => {
+            sweep::run(db, home)?;
+            // An unreadable room confirms nothing.
+            let gone =
+                short(db)?.is_ok_and(|after| after.is_none_or(|after| after.resource != "disk"));
+            Ok(Repair {
+                cause: format!("disk full ({})", missing(&found)),
+                action: "sweep",
+                gone,
+            })
+        }
+        _ => Ok(Repair {
+            cause: "the harness crashed".to_owned(),
+            action: "restart",
+            gone: true,
+        }),
+    }
 }
 
 /// Why a live run must end: no `SessionStart`, a permission prompt, or a turn past its step's timeout.

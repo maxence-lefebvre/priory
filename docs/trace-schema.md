@@ -60,6 +60,43 @@ such as a revert, arrives as a second record that points at the first. Each reco
 | `duration_ms`      | yes      | Wall time from start to end                                           |
 | `tokens`           | no       | For `model` steps: `input`, `output`, `cache_read`, `cache_write`, summed over the step's turns |
 
+## `factory.task.repaired`
+
+A factory's attempt to repair a task whose agent failed. It shares `factory`, `factory_revision`,
+`workflow`, `task`, `key`, `generation`, `step` and `machine` with `factory.step.ended`, and `run`
+names the run that failed.
+
+```json
+{
+  "specversion": "1.0",
+  "id": "0196f1d4-0000-7000-8000-000000000004",
+  "source": "factory://example/xps13",
+  "type": "factory.task.repaired",
+  "time": "2026-11-19T10:04:12Z",
+  "datacontenttype": "application/json",
+  "data": {
+    "factory": "example",
+    "factory_revision": "999daf0",
+    "workflow": "implement",
+    "task": "0196f1b0-0000-7000-8000-000000000001",
+    "key": "github:example/app#42",
+    "run": "0196f1b0-0000-7000-8000-000000000002",
+    "generation": 1,
+    "step": "plan",
+    "machine": "xps13",
+    "cause": "disk full (10.0 GB of disk free, keeps 20.0 GB free)",
+    "action": "sweep",
+    "outcome": "failed"
+  }
+}
+```
+
+| Field     | Required | Meaning                                                                   |
+| --------- | -------- | ------------------------------------------------------------------------- |
+| `cause`   | yes      | Why the run failed, as the factory classified it                          |
+| `action`  | yes      | What the factory did about the cause, such as `sweep` or `wait for room`  |
+| `outcome` | yes      | `ready` when the task waits to start its agent again, `failed` when it stays failed |
+
 ## `factory.step.labeled`
 
 A judgement that arrives after the step, such as a rejected approval, red CI after a merge, or a
