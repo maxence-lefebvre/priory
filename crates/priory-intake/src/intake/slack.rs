@@ -64,7 +64,11 @@ impl<'a> Slack<'a> {
             else {
                 continue;
             };
-            replies.extend(self.replies(channel, thread, watch.since)?);
+            // A deleted thread or a channel the bot left fails only its own wait's poll.
+            match self.replies(channel, thread, watch.since) {
+                Ok(found) => replies.extend(found),
+                Err(error) => eprintln!("{error}"),
+            }
         }
         for (channel, events, top) in polled {
             for event in &events {

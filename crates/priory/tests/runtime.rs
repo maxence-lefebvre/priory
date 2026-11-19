@@ -5376,3 +5376,55 @@ fn a_run_waits_for_room_while_a_grant_holds_memory() {
     assert!(a.wait_with_output().unwrap().status.success());
     setup.until("tasks", |rows| rows[0][4] == "running");
 }
+
+#[test]
+fn a_task_that_waited_on_a_linear_issue_is_done_on_its_result_without_a_pull_request() {
+    let mut setup = Setup::new("linear-done");
+    setup.calls(&[
+        wait(json!({ "type": "linear_comment", "issue": "ENG-7" })),
+        result("passed"),
+    ]);
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("runs", |rows| {
+        rows.first().is_some_and(|row| row[7] == "asleep")
+    });
+
+    setup.publish(&linear_event(
+        "linear.comment.created",
+        "ENG-7",
+        json!({ "body": "Go ahead." }),
+    ));
+
+    setup.until("tasks", |rows| rows[0][4] == "done");
+}
+
+#[test]
+fn a_linear_comment_no_task_owned_before_the_wait_wakes_the_task_at_once() {
+    let mut setup = Setup::new("linear-already");
+    setup.calls(&[wait(json!({ "type": "linear_comment", "issue": "ENG-7" }))]);
+    setup.hold("hold-call");
+    setup.publish(&requested(42));
+    setup.start();
+    setup.written("fake/submitted");
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") == 1);
+    // The comment lands after the agent's prompt, while no task owns ENG-7 yet.
+    setup.publish(&linear_event(
+        "linear.comment.created",
+        "ENG-7",
+        json!({ "body": "Already answered." }),
+    ));
+    setup.until("inbox", |rows| rows.len() == 2 && rows[1][4] == "ignored");
+
+    setup.release("hold-call");
+
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 2);
+    let (text, error) = reply(&setup.replies()[0]);
+    assert!(!error, "{text}");
+    assert!(text.starts_with("wait 1 already holds"), "{text}");
+    assert!(
+        setup.typed()[1].starts_with("linear.comment.created ENG-7 {"),
+        "{:?}",
+        setup.typed()
+    );
+}

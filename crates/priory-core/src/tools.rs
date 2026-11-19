@@ -333,6 +333,18 @@ fn wait(
                      (SELECT started FROM runs WHERE id = ?2)), NULL))",
                 params![run.task, run.id, kind, resource, head, state],
             )?;
+            // No task owned the resource before: its events since the last prompt were ignored.
+            tx.execute(
+                "UPDATE inbox SET task = ?1, outcome = 'kept'
+                 WHERE outcome = 'ignored' AND task IS NULL
+                 AND julianday(time) >= julianday((SELECT since FROM waits WHERE id = ?2))
+                 AND ?3 = CASE
+                   WHEN type LIKE 'linear.%' THEN 'linear:' || json_extract(data, '$.issue')
+                   WHEN type LIKE 'slack.%' THEN 'slack:' || json_extract(data, '$.channel') || ':'
+                     || coalesce(json_extract(data, '$.thread_ts'), json_extract(data, '$.ts'))
+                 END",
+                params![run.task, tx.last_insert_rowid(), resource],
+            )?;
         }
         "time" => {
             let until = on["until"].as_str().unwrap_or_default();
@@ -851,7 +863,8 @@ fn pull_request(tx: &Transaction, task: i64) -> rusqlite::Result<Option<String>>
            SELECT pull_request AS resource, 3 AS rank, id AS at FROM actions
              WHERE task = ?1 AND pull_request IS NOT NULL
            UNION ALL
-           SELECT resource, 2, id FROM waits WHERE task = ?1 AND resource IS NOT NULL
+           SELECT resource, 2, id FROM waits
+             WHERE task = ?1 AND kind IN ('pull_request', 'checks', 'review')
            UNION ALL
            SELECT 'github:' || json_extract(inbox.data, '$.repo') || '#' || json_extract(inbox.data, '$.pull_request'), 1, inbox.seq
              FROM inbox JOIN tasks ON tasks.id = inbox.task
