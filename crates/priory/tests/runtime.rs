@@ -503,7 +503,8 @@ fn a_codex_agent_runs_codex_with_priorys_hooks_mcp_server_and_a_sandbox_that_ask
 
     setup.start();
 
-    setup.until("outbox", |rows| with(rows, 3, "confirmed") == 1);
+    // A nudge may follow the silent first turn before the poll sees it alone.
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 1);
     let args = codex_args(&setup);
     assert_ne!(args.first().map(String::as_str), Some("resume"), "{args:?}");
     assert!(
@@ -4336,7 +4337,7 @@ fn an_answer_to_the_ask_of_an_earlier_generation_is_refused() {
     });
     assert!(setup.priory(&["cancel", "1"]).status.success());
     assert!(setup.priory(&["revive", "1"]).status.success());
-    setup.until("outbox", |rows| with(rows, 3, "confirmed") == 2);
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 2);
 
     let answered = setup.priory(&["answer", "1", "sqlite", "--revision", "1"]);
 
@@ -4452,7 +4453,7 @@ fn a_failed_task_offers_revive_on_the_desk_and_revives_at_a_chosen_step_in_its_r
     let revived = setup.priory(&["revive", "1", "--step", "plan"]);
 
     assert!(revived.status.success(), "{revived:?}");
-    setup.until("outbox", |rows| with(rows, 3, "confirmed") == 3);
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 3);
     assert_eq!(
         setup.typed()[2],
         "A person revived this task as generation 2 after it was failed: the repair found no cause. The asks and waits of its earlier generation are withdrawn. Check the worktree, then continue.\nPlan the change.\nEnd this step by calling the result tool of the priory MCP server with one of these outcomes: hopeless, ready, unsure.\n"
