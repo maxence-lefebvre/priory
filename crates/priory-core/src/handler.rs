@@ -14,7 +14,7 @@ pub(crate) const MODEL: &str = "haiku";
 /// Why a run cannot take a nudge: its earlier prompt may still sit in its input.
 const BLOCKED: &str = "EXISTS (SELECT 1 FROM outbox JOIN runs AS typed ON typed.id = outbox.run
   WHERE outbox.task = runs.task AND outbox.state IN ('attempted', 'uncertain')
-  AND (typed.ended IS NULL OR typed.ended_as = 'moved'))";
+  AND typed.ended IS NULL)";
 
 /// A live run that might be stalled: it reached `SessionStart`, shows no permission prompt, and
 /// sleeps on no open ask or wait.
@@ -104,7 +104,7 @@ pub(crate) fn prompt(
         Ok(rows.into_iter().rev().collect::<Vec<_>>().join("\n\n"))
     };
     let prompts = latest(
-        "SELECT text FROM outbox WHERE task = ?1 AND state != 'queued' ORDER BY id DESC LIMIT 3",
+        "SELECT text FROM outbox WHERE task = ?1 AND state NOT IN ('queued', 'withdrawn') ORDER BY id DESC LIMIT 3",
     )?;
     let records = latest(
         "SELECT json_extract(event, '$.data') FROM trace

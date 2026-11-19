@@ -10,7 +10,7 @@ use std::collections::BTreeMap;
 use std::io::Write;
 use std::time::Duration;
 
-const VERSION: i64 = 23;
+const VERSION: i64 = 24;
 
 const SCHEMA: &str = "
 CREATE TABLE tasks (
@@ -376,18 +376,37 @@ CREATE TABLE handlers (
 PRAGMA user_version = 22;
 ";
 
+// A run carried into the next step now takes over its predecessor's unconfirmed prompt.
 const SCHEMA_23: &str = "
+UPDATE outbox SET run = (
+  SELECT heir.id FROM runs AS heir JOIN runs AS typed ON typed.id = outbox.run
+  WHERE heir.task = typed.task AND heir.ended IS NULL AND heir.tmux = typed.tmux
+  AND heir.session = typed.session AND NOT EXISTS (
+    SELECT 1 FROM runs AS mid WHERE mid.task = typed.task
+    AND mid.id > typed.id AND mid.id < heir.id AND mid.ended_as IS NOT 'moved'))
+WHERE state IN ('attempted', 'uncertain')
+AND (SELECT ended_as FROM runs WHERE id = outbox.run) = 'moved'
+AND EXISTS (
+  SELECT 1 FROM runs AS heir JOIN runs AS typed ON typed.id = outbox.run
+  WHERE heir.task = typed.task AND heir.ended IS NULL AND heir.tmux = typed.tmux
+  AND heir.session = typed.session AND NOT EXISTS (
+    SELECT 1 FROM runs AS mid WHERE mid.task = typed.task
+    AND mid.id > typed.id AND mid.id < heir.id AND mid.ended_as IS NOT 'moved'));
+PRAGMA user_version = 23;
+";
+
+const SCHEMA_24: &str = "
 ALTER TABLE tasks ADD COLUMN repo TEXT;
 UPDATE tasks SET repo = (SELECT json_extract(inbox.data, '$.repo') FROM inbox
   WHERE inbox.id = tasks.source AND inbox.type = 'priory.task.requested.cli')
   WHERE trigger = 'cli';
-PRAGMA user_version = 23;
+PRAGMA user_version = 24;
 ";
 /// Each schema change in order: a file at version `n` applies those from index `n` on.
 const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA, SCHEMA_2, SCHEMA_3, SCHEMA_4, SCHEMA_5, SCHEMA_6, SCHEMA_7, SCHEMA_8, SCHEMA_9,
     SCHEMA_10, SCHEMA_11, SCHEMA_12, SCHEMA_13, SCHEMA_14, SCHEMA_15, SCHEMA_16, SCHEMA_17,
-    SCHEMA_18, SCHEMA_19, SCHEMA_20, SCHEMA_21, SCHEMA_22, SCHEMA_23,
+    SCHEMA_18, SCHEMA_19, SCHEMA_20, SCHEMA_21, SCHEMA_22, SCHEMA_23, SCHEMA_24,
 ];
 
 /// The order the queue starts tasks in: band, then a person's order, then age. A band the factory
@@ -1084,7 +1103,7 @@ pub(crate) fn block(
         // A run that never reached SessionStart never took the prompt it was launched with.
         tx.execute(
             "UPDATE outbox SET state = 'queued', run = NULL, attempted = NULL
-             WHERE run = ?1 AND state = 'attempted' AND (SELECT NOT ready FROM runs WHERE id = ?1)",
+             WHERE run = ?1 AND state IN ('attempted', 'uncertain') AND (SELECT NOT ready FROM runs WHERE id = ?1)",
             [run],
         )?;
     }
@@ -1162,6 +1181,9 @@ pub struct Signal {
     /// The harness's own session id, when it chose one apart from `session`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub thread: Option<String>,
+    /// Why `SessionStart` fired, such as `startup` or `compact`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
 }
 
 /// Applies a hook signal: the run is idle after `SessionStart` or `Stop`, and busy after
@@ -1189,6 +1211,8 @@ pub(crate) fn signal(
     )?;
     let mut kill = None;
     match signal.event.as_str() {
+        // A compaction fires it mid-turn, in the same conversation and transcript.
+        "SessionStart" if signal.source.as_deref() == Some("compact") => {}
         "SessionStart" => {
             tx.execute(
                 "UPDATE runs SET idle = 1, ready = 1, turn = NULL, nudgeable = 0, thread = coalesce(?2, thread)
@@ -1210,7 +1234,7 @@ pub(crate) fn signal(
             )?;
             let attempted = tx
                 .query_row(
-                    "SELECT id, text, nudge FROM outbox WHERE run = ?1 AND state = 'attempted'",
+                    "SELECT id, text, nudge FROM outbox WHERE run = ?1 AND state IN ('attempted', 'uncertain')",
                     [run],
                     |row| {
                         Ok((
@@ -1265,7 +1289,8 @@ fn pasted(prompt: &str) -> &str {
 
 /// Marks the oldest queued prompt of an idle live run `attempted` and the run busy, in one
 /// transaction, before anything is typed. A task with an attempted or uncertain prompt gets none
-/// while the process it went to may still hold its text: its run is live or moved on.
+/// while the process it went to may still hold its text: its run is live, as a run carried into the
+/// next step takes over the prompts of the run it continues.
 pub(crate) fn attempt(db: &mut Connection) -> rusqlite::Result<Option<(String, String, String)>> {
     let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
     let next = tx
@@ -1275,7 +1300,7 @@ pub(crate) fn attempt(db: &mut Connection) -> rusqlite::Result<Option<(String, S
              WHERE runs.ended IS NULL AND runs.idle = 1 AND NOT EXISTS (
                SELECT 1 FROM outbox AS open JOIN runs AS typed ON typed.id = open.run
                WHERE open.task = runs.task AND open.state IN ('attempted', 'uncertain')
-               AND (typed.ended IS NULL OR typed.ended_as = 'moved'))
+               AND typed.ended IS NULL)
              ORDER BY outbox.id LIMIT 1",
             [],
             |row| {
