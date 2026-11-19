@@ -10,7 +10,7 @@ use std::collections::BTreeMap;
 use std::io::Write;
 use std::time::Duration;
 
-const VERSION: i64 = 18;
+const VERSION: i64 = 19;
 
 const SCHEMA: &str = "
 CREATE TABLE tasks (
@@ -261,7 +261,22 @@ PRAGMA user_version = 17;
 ";
 
 const SCHEMA_18: &str = "
-CREATE TABLE waits_18 (
+CREATE TABLE grants (
+  id      INTEGER PRIMARY KEY AUTOINCREMENT,
+  bytes   INTEGER NOT NULL,
+  pid     INTEGER NOT NULL,
+  started INTEGER NOT NULL,
+  task    INTEGER REFERENCES tasks (id),
+  command TEXT NOT NULL,
+  state   TEXT NOT NULL DEFAULT 'waiting' CHECK (state IN ('waiting', 'held')),
+  created TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+  granted TEXT
+);
+PRAGMA user_version = 18;
+";
+
+const SCHEMA_19: &str = "
+CREATE TABLE waits_19 (
   id        INTEGER PRIMARY KEY AUTOINCREMENT,
   task      INTEGER NOT NULL REFERENCES tasks (id),
   run       INTEGER NOT NULL REFERENCES runs (id),
@@ -279,20 +294,20 @@ CREATE TABLE waits_18 (
   state     TEXT,
   since     TEXT
 );
-INSERT INTO waits_18 (id, task, run, kind, resource, until, target, head_sha, created, fired, inbox,
+INSERT INTO waits_19 (id, task, run, kind, resource, until, target, head_sha, created, fired, inbox,
   daemon, withdrawn)
   SELECT id, task, run, kind, resource, until, target, head_sha, created, fired, inbox, daemon,
   withdrawn FROM waits;
 DROP TABLE waits;
-ALTER TABLE waits_18 RENAME TO waits;
-PRAGMA user_version = 18;
+ALTER TABLE waits_19 RENAME TO waits;
+PRAGMA user_version = 19;
 ";
 
 /// Each schema change in order: a file at version `n` applies those from index `n` on.
 const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA, SCHEMA_2, SCHEMA_3, SCHEMA_4, SCHEMA_5, SCHEMA_6, SCHEMA_7, SCHEMA_8, SCHEMA_9,
     SCHEMA_10, SCHEMA_11, SCHEMA_12, SCHEMA_13, SCHEMA_14, SCHEMA_15, SCHEMA_16, SCHEMA_17,
-    SCHEMA_18,
+    SCHEMA_18, SCHEMA_19,
 ];
 
 /// The order the queue starts tasks in: band, then a person's order, then age. A band the factory
@@ -677,13 +692,18 @@ fn serving(db: &Connection, agent: &str) -> rusqlite::Result<Option<i64>> {
     .optional()
 }
 
-/// The memory declared by the agents of live runs. No run reports its own use yet, so each one
-/// keeps its whole declaration until it ends.
-fn promised(db: &Connection, factory: &Factory) -> rusqlite::Result<u64> {
+/// The memory declared by the agents of live runs, plus every held memory grant. No run reports its
+/// own use yet, so each one keeps its whole declaration until it ends.
+pub(crate) fn promised(db: &Connection, factory: &Factory) -> rusqlite::Result<u64> {
+    let held: i64 = db.query_row(
+        "SELECT coalesce(sum(bytes), 0) FROM grants WHERE state = 'held'",
+        [],
+        |row| row.get(0),
+    )?;
     let mut statement = db.prepare("SELECT agent FROM runs WHERE ended IS NULL")?;
     // A run recorded before schema 5 has no agent.
     let mut agents = statement.query_map([], |row| row.get::<_, Option<String>>(0))?;
-    agents.try_fold(0, |sum: u64, agent| {
+    agents.try_fold(held as u64, |sum: u64, agent| {
         let agent = agent?.and_then(|name| factory.agents.get(&name));
         Ok(sum.saturating_add(room::need(agent.map(|agent| &agent.value))))
     })

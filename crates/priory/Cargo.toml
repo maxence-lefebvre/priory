@@ -6,6 +6,7 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+jiff.workspace = true
 priory-core.workspace = true
 priory-factory.workspace = true
 priory-intake.workspace = true

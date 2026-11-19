@@ -2242,6 +2242,14 @@ fn the_mcp_server_lists_the_result_ask_and_wait_tools() {
 
     assert_eq!(replies.len(), 2, "{replies:?}");
     assert_eq!(replies[0]["result"]["protocolVersion"], "2025-06-18");
+    let instructions = replies[0]["result"]["instructions"].as_str().unwrap();
+    assert!(
+        instructions.contains(&format!(
+            "{} memory acquire --gb N -- <command>",
+            env!("CARGO_BIN_EXE_priory")
+        )),
+        "{instructions}"
+    );
     let names: Vec<_> = replies[1]["result"]["tools"]
         .as_array()
         .unwrap()
@@ -5135,4 +5143,236 @@ fn a_linear_wait_makes_an_intake_without_linear_triggers_poll_linear_for_its_iss
         "{typed:?}"
     );
     assert!(!typed[1].contains("elsewhere"), "{typed:?}");
+}
+
+/// Waits until the daemon answers on its socket.
+fn listening(setup: &Setup) {
+    let deadline = Instant::now() + Duration::from_secs(15);
+    while !setup.dir.join("home/priory.sock").exists() {
+        assert!(Instant::now() < deadline, "the daemon never listened");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+/// Starts `priory memory acquire --gb <gb> -- sh -c <script>` in the test's `fake` directory.
+fn acquire(setup: &Setup, gb: &str, script: &str) -> Child {
+    setup
+        .command(env!("CARGO_BIN_EXE_priory"))
+        .args(["memory", "acquire", "--gb", gb, "--", "sh", "-c", script])
+        .current_dir(setup.dir.join("fake"))
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap()
+}
+
+#[test]
+fn a_gated_command_runs_and_its_exit_code_passes_through() {
+    let mut setup = Setup::new("gate-exit");
+    setup.start();
+    listening(&setup);
+
+    let done = acquire(&setup, "8", "echo built; exit 7")
+        .wait_with_output()
+        .unwrap();
+
+    assert_eq!(
+        done.status.code(),
+        Some(7),
+        "stderr: {}",
+        String::from_utf8_lossy(&done.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&done.stdout), "built\n");
+    assert!(setup.rows("memory").is_empty());
+}
+
+/// A command that logs its start, runs while the file `hold-<name>` exists, then logs its end.
+fn held(name: &str) -> String {
+    format!(
+        "echo start-{name} >> order; while [ -e hold-{name} ]; do sleep 0.05; done; echo end-{name} >> order"
+    )
+}
+
+fn order(setup: &Setup) -> Vec<String> {
+    fs::read_to_string(setup.dir.join("fake/order"))
+        .unwrap_or_default()
+        .lines()
+        .map(str::to_owned)
+        .collect()
+}
+
+#[test]
+fn acquires_that_do_not_fit_together_run_one_after_the_other_in_fifo_order() {
+    let mut setup = Setup::new("gate-fifo");
+    setup.start();
+    listening(&setup);
+    setup.hold("hold-a");
+    setup.hold("hold-b");
+
+    let a = acquire(&setup, "40", &held("a"));
+    setup.until("memory", |rows| rows.len() == 1 && rows[0][2] == "held");
+    let b = acquire(&setup, "40", &held("b"));
+    setup.until("memory", |rows| rows.len() == 2);
+    // 10 GB fits beside a, but waits behind b.
+    let c = acquire(&setup, "10", &held("c"));
+    setup.until("memory", |rows| rows.len() == 3);
+    std::thread::sleep(Duration::from_millis(1000));
+
+    let rows: Vec<_> = setup
+        .rows("memory")
+        .into_iter()
+        .map(|row| [row[2].clone(), row[3].clone(), row[4].clone()])
+        .collect();
+    assert_eq!(
+        rows,
+        [
+            [
+                "held".to_owned(),
+                "40.0".to_owned(),
+                format!("sh -c {}", held("a"))
+            ],
+            [
+                "waiting".to_owned(),
+                "40.0".to_owned(),
+                format!("sh -c {}", held("b"))
+            ],
+            [
+                "waiting".to_owned(),
+                "10.0".to_owned(),
+                format!("sh -c {}", held("c"))
+            ],
+        ]
+    );
+    assert_eq!(order(&setup), ["start-a"]);
+    let desk: Vec<_> = setup
+        .rows("desk")
+        .into_iter()
+        .filter(|row| row[1] == "memory")
+        .map(|row| [row[3].clone(), row[5].clone()])
+        .collect();
+    assert_eq!(
+        desk,
+        [
+            [
+                "-".to_owned(),
+                format!("waits for 40.0 GB: sh -c {}", held("b"))
+            ],
+            [
+                "-".to_owned(),
+                format!("waits for 10.0 GB: sh -c {}", held("c"))
+            ],
+        ]
+    );
+    setup.release("hold-a");
+    assert!(a.wait_with_output().unwrap().status.success());
+    setup.until("memory", |rows| rows.iter().all(|row| row[2] == "held"));
+    setup.release("hold-b");
+    assert!(b.wait_with_output().unwrap().status.success());
+    assert!(c.wait_with_output().unwrap().status.success());
+    let order = order(&setup);
+    let at = |line: &str| order.iter().position(|logged| logged == line).unwrap();
+    assert_eq!(&order[..2], ["start-a", "end-a"]);
+    assert!(at("start-b") > at("end-a") && at("start-c") > at("end-a"));
+    assert!(setup.rows("memory").is_empty());
+}
+
+#[test]
+fn a_grant_is_released_when_its_command_fails_or_is_killed_or_its_holder_dies() {
+    let mut setup = Setup::new("gate-release");
+    setup.start();
+    listening(&setup);
+
+    let failed = acquire(&setup, "40", "exit 1").wait_with_output().unwrap();
+    assert_eq!(failed.status.code(), Some(1));
+    assert!(setup.rows("memory").is_empty());
+    let killed = acquire(&setup, "40", "kill -9 $$")
+        .wait_with_output()
+        .unwrap();
+    assert_eq!(killed.status.code(), Some(137));
+    assert!(setup.rows("memory").is_empty());
+
+    setup.hold("hold-orphan");
+    let mut holder = acquire(&setup, "40", &held("orphan"));
+    setup.written("fake/order");
+    holder.kill().unwrap();
+    holder.wait().unwrap();
+    // The orphaned command still runs, so its grant still holds.
+    std::thread::sleep(Duration::from_millis(1500));
+    assert_eq!(setup.rows("memory")[0][2], "held");
+    setup.release("hold-orphan");
+    setup.until("memory", |rows| rows.is_empty());
+    let next = acquire(&setup, "40", "exit 0").wait_with_output().unwrap();
+
+    assert!(
+        next.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&next.stderr)
+    );
+    assert!(setup.rows("memory").is_empty());
+}
+
+#[test]
+fn without_a_daemon_the_command_fails_fast_and_never_runs() {
+    let setup = Setup::new("gate-no-daemon");
+
+    let done = acquire(&setup, "1", "echo ran > ran")
+        .wait_with_output()
+        .unwrap();
+
+    assert_eq!(done.status.code(), Some(125));
+    let stderr = String::from_utf8_lossy(&done.stderr);
+    assert!(
+        stderr.contains("no priory daemon listens") && stderr.contains("the command did not run"),
+        "{stderr}"
+    );
+    assert!(!setup.dir.join("fake/ran").exists());
+}
+
+#[test]
+fn an_acquire_that_waits_past_its_timeout_gives_up_and_leaves_no_grant() {
+    let mut setup = Setup::new("gate-timeout");
+    setup.start();
+    listening(&setup);
+    setup.hold("hold-a");
+    let a = acquire(&setup, "40", &held("a"));
+    setup.until("memory", |rows| rows.len() == 1 && rows[0][2] == "held");
+
+    let late = setup
+        .command(env!("CARGO_BIN_EXE_priory"))
+        .args([
+            "memory",
+            "acquire",
+            "--gb",
+            "40",
+            "--timeout",
+            "1s",
+            "--",
+            "true",
+        ])
+        .output()
+        .unwrap();
+    setup.release("hold-a");
+
+    assert_eq!(late.status.code(), Some(125));
+    assert!(a.wait_with_output().unwrap().status.success());
+    assert!(setup.rows("memory").is_empty());
+}
+
+#[test]
+fn a_run_waits_for_room_while_a_grant_holds_memory() {
+    let mut setup = Setup::new("gate-run");
+    setup.start();
+    listening(&setup);
+    setup.hold("hold-a");
+    let a = acquire(&setup, "50", &held("a"));
+    setup.until("memory", |rows| rows.len() == 1 && rows[0][2] == "held");
+
+    setup.publish(&requested(42));
+
+    let reason = "waits for room: 10.0 GB of memory free, needs 4.0 GB and keeps 6.4 GB free";
+    setup.until("tasks", |rows| rows.len() == 1 && rows[0][7] == reason);
+    assert!(setup.rows("runs").is_empty());
+    setup.release("hold-a");
+    assert!(a.wait_with_output().unwrap().status.success());
+    setup.until("tasks", |rows| rows[0][4] == "running");
 }

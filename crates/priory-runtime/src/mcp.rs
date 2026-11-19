@@ -5,6 +5,15 @@ use std::io::{BufRead, Write};
 // shortcut: hand-written JSON-RPC over stdio for initialize, ping, tools/list and tools/call; switch to rmcp if Priory needs more of MCP.
 const VERSIONS: [&str; 4] = ["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"];
 
+/// What every agent learns on connecting: how to run a heavy command behind the memory gate.
+fn instructions() -> String {
+    let exe = std::env::current_exe().unwrap_or_else(|_| "priory".into());
+    format!(
+        "Wrap each heavy command, such as a build or a test suite, in `{} memory acquire --gb N -- <command>`, with N its peak memory in GB, so it waits for room instead of running the machine out of memory.",
+        exe.display()
+    )
+}
+
 /// Serves Priory's agent tools over MCP on stdin and stdout, for the run whose harness session is
 /// `session`. Each tool call goes to the daemon, which applies it and replies.
 pub fn serve(session: &str) -> Result<(), String> {
@@ -43,6 +52,7 @@ fn respond(session: &str, line: &str) -> Option<Value> {
                 "protocolVersion": version,
                 "capabilities": { "tools": {} },
                 "serverInfo": { "name": "priory", "version": env!("CARGO_PKG_VERSION") },
+                "instructions": instructions(),
             })
         }
         "ping" => json!({}),
