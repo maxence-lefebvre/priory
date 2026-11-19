@@ -348,23 +348,37 @@ cd "$PRIORY_HOME/repos/<owner>/<name>" && claude   # accept the dialog, then /ex
 
 A run that sends no `SessionStart` within 60 seconds of its start ends as `exited`. The daemon kills
 its tmux session and blocks its task with the reason `claude showed no SessionStart within 60s;
-trust the clone once: cd <clone path> && claude, accept, exit`. Its queued prompts stay queued, so
-the task's next run types them. A Codex run blocks with the Codex instruction under Codex.
+trust the clone once: cd <clone path> && claude, accept, exit`, then `. Its pane ended with: ` and
+the last 5 non-empty lines of its pane, joined by ` | `, so a person sees the dialog or warning
+that stopped it. The daemon log gets the last 30. Its queued prompts stay queued, and a prompt it
+was launched with goes back to the queue, so the task's next run gets them. A Codex run blocks
+with the Codex instruction under Codex.
 
 ### Codex
 
-A run of a `harness = "codex"` agent starts `codex`, or `codex resume <thread>`, in the same tmux
+A run of a `harness = "codex"` agent starts `codex --no-daemon`, or `codex resume <thread>
+--no-daemon`, in the same tmux
 session, worktree and outbox as a Claude run. Codex chooses its own session id, its thread, so
 Priory keeps a UUID of its own as the run's session: the pane's `@priory` tag, the hooks and the
 tools carry it. The pane sets `PRIORY_SESSION` to it, and the thread arrives on `SessionStart`
 stdin. Every setting goes in as a `-c key=value` override, so Priory writes no
-Codex file.
+Codex file. `--no-daemon` keeps the run off the background server that a person's other Codex
+sessions share, with its environment and its cached hook trust.
+
+Codex 0.170 fires `SessionStart` with the first turn, not at startup, so a Codex run cannot wait
+for it before its first prompt. The daemon marks the task's oldest queued prompt `attempted` by the
+run and passes it as Codex's last argument, after `--`. tmux refuses a command over about 16 KiB,
+so the prompt goes through a file under `$PRIORY_HOME/prompts`, which a `sh` wrapper reads, removes
+and appends. `UserPromptSubmit` confirms it as it does a paste. Every later prompt, such as an answer or a nudge, is pasted. A Claude run still gets its
+first prompt pasted after `SessionStart`, which Claude fires at startup, so its paste and its
+confirmation stay as they are.
 
 | Priory duty | Claude Code | Codex |
 | ----------- | ----------- | ----- |
 | The `priory` MCP server | `--mcp-config` | `-c mcp_servers.priory={command, args, env}`, with `default_tools_approval_mode = "approve"` in place of Claude's `mcp__priory` allow rule |
 | Session id (R5.5) | `--session-id <UUID>` Priory chooses | the thread from the `SessionStart` hook's `session_id`, stored on the run; `priory runs` shows it |
 | Resume | `--resume <session>` | `codex resume <thread>` |
+| First prompt | pasted after `SessionStart` | the last argument, `-- <prompt>` |
 | Idle signal for the outbox (R5.4) | `SessionStart`, `UserPromptSubmit`, `Stop` hooks in `--settings` | the same three hooks, as `-c hooks.<Event>`; Codex hooks take Claude's stdin and output shapes |
 | Stop signal for health (R7.1) | `Stop` hook, and the pane for an exit | the same |
 | A prompt shown anyway | `Notification` hook with `permission_prompt` | no equivalent: Codex has no notification hook for an approval prompt. A prompt that shows despite the deny hook stalls the turn until its step `timeout` blocks the task |
@@ -392,14 +406,22 @@ the same in every run, since the run's session reaches them as `PRIORY_SESSION`,
 them once, with the clone. A Codex run that sends no `SessionStart` within 60 seconds blocks its
 task with `codex showed no SessionStart within 60s; trust the clone and Priory's hooks once: cd
 <clone path> && codex -c 'hooks.SessionStart=...' ..., accept the folder, type /hooks and trust
-Priory's hooks, then exit`. The command carries Priory's hooks exactly as runs get them.
+Priory's hooks, then exit`, then the pane's last lines as under Trusting a clone. The command
+carries Priory's hooks exactly as runs get them. A hook nobody trusted shows Codex's `Hooks need
+review` dialog, which those lines show.
+
+The hooks and the MCP server name Priory by `PRIORY_EXE` when it is set, else by the absolute path
+Priory was invoked by, else by its resolved binary. Codex keys hook trust on the command, so that
+path must survive upgrades: under Nix, run Priory by its profile link, such as
+`~/.nix-profile/bin/priory`, or set `PRIORY_EXE` to it, rather than a store path that changes on
+every deploy. Changing that path changes the hooks, so a person trusts them again.
 
 Known limits:
 
-- No test runs a real Codex. Whether `/hooks` lists and keeps trust for `-c` hooks, whether
-  `SessionStart` fires before the first prompt, and whether `auto_review` runs before the deny hook
-  are read from Codex's documentation, not checked.
-- A new `priory` binary path changes the hooks' hash, so a person trusts them again after moving it.
+- No test runs a real Codex. Whether `/hooks` lists and keeps trust for `-c` hooks and whether
+  `auto_review` runs before the deny hook are read from Codex's documentation, not checked. That
+  `SessionStart` comes with the first turn was seen with Codex 0.170.
+- Priory invoked by a bare name, as from `PATH`, names its resolved binary; set `PRIORY_EXE` then.
 - An agent whose harness changes during a task starts a new session, since neither harness resumes
   the other's.
 - Codex keeps its transcripts under `~/.codex/sessions`, by thread. The traces slice reads token use
@@ -499,7 +521,11 @@ and last one `worktree` row for every worktree the sweep keeps. `priory asks` st
 
 `priory resume <task>` makes a blocked task `ready`. It queues the prompt `A person resumed this
 task after: <reason>. Check the worktree, then continue.` ahead of the task's other queued prompts,
-so its next run resumes the session of the step's agent with it. `priory cancel <task>` drops an
+so its next run resumes the session of the step's agent with it. When the task's latest run never
+reached `SessionStart`, or it has none, the reason is about the launch, not the agent's work, so the
+prompt is only `A person resumed this task. Check the worktree, then continue.` A resume line that
+no run took yet is replaced, not repeated, and the line that ends the step is added only when no
+queued prompt carries it already. `priory cancel <task>` drops an
 active task with the reason `cancelled from the desk`, ends its live run as `cancelled` and kills
 its tmux session. Both go to the daemon over `priory.sock`, as `priory answer` does, and are refused
 for a task in any other state. An answer to an ask of a done, failed or dropped task is refused too.

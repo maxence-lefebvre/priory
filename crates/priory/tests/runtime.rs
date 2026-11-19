@@ -159,10 +159,15 @@ impl Setup {
     }
 
     fn start(&mut self) {
+        self.start_as(Path::new(env!("CARGO_BIN_EXE_priory")));
+    }
+
+    /// Starts the daemon through the path `exe`, as a person or a service invokes it.
+    fn start_as(&mut self, exe: &Path) {
         let factory = self.dir.join("factory");
         let log = fs::File::create(self.dir.join("daemon.log")).unwrap();
         self.daemon = Some(
-            self.command(env!("CARGO_BIN_EXE_priory"))
+            self.command(exe.to_str().unwrap())
                 .args(["daemon", factory.to_str().unwrap()])
                 .env("CLAUDECODE", "1")
                 .env("CLAUDE_CODE_ENTRYPOINT", "cli")
@@ -551,11 +556,42 @@ fn a_codex_agent_runs_codex_with_priorys_hooks_mcp_server_and_a_sandbox_that_ask
 }
 
 #[test]
+fn a_codex_run_starts_on_its_own_with_the_steps_prompt_as_its_last_argument() {
+    // Longer than the 16 KiB tmux takes in one command.
+    let long = "context ".repeat(2500);
+    let workflow = WORKFLOW.replace(
+        "prompt = \"Implement the issue.\"",
+        &format!("prompt = '''\n- Read \"the issue\" and Max's notes.\n  Then implement it; $HOME stays literal.\n{long}\n'''"),
+    );
+    let mut setup = Setup::with_workflow("codex-prompt", &workflow);
+    fs::write(setup.dir.join("factory/agents/implementer/agent.md"), CODEX).unwrap();
+    setup.publish(&requested(42));
+
+    setup.start();
+
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 1);
+    let prompt = format!(
+        "- Read \"the issue\" and Max's notes.\n  Then implement it; $HOME stays literal.\n{long}\n\nEnd this step by calling the result tool of the priory MCP server with one of these outcomes: failed, passed."
+    );
+    let args = codex_args(&setup);
+    assert!(args.contains(&"--no-daemon".to_owned()), "{args:?}");
+    assert_eq!(
+        fs::read_to_string(setup.dir.join("fake/codex-prompt")).unwrap(),
+        prompt
+    );
+    assert_eq!(setup.typed()[0], format!("{prompt}\n"));
+}
+
+#[test]
 fn a_codex_run_with_no_session_start_names_the_codex_command_whose_hooks_to_trust() {
     let mut setup = Setup::new("codex-untrusted");
     fs::write(setup.dir.join("factory/agents/implementer/agent.md"), CODEX).unwrap();
     setup.publish(&requested(42));
-    setup.hold("silent");
+    fs::write(
+        setup.dir.join("fake/silent"),
+        "  Hooks need review\n\n  3 hooks are new or changed\n  › 1. Review hooks\n",
+    )
+    .unwrap();
     setup.start();
     setup.until("runs", |rows| rows.len() == 1);
 
@@ -571,8 +607,18 @@ fn a_codex_run_with_no_session_start_names_the_codex_command_whose_hooks_to_trus
     );
     assert!(reason.starts_with(&prefix), "{reason}");
     assert!(
-        reason.ends_with(", accept the folder, type /hooks and trust Priory's hooks, then exit"),
+        reason.ends_with(
+            ", accept the folder, type /hooks and trust Priory's hooks, then exit. Its pane ended with: Hooks need review | 3 hooks are new or changed | › 1. Review hooks"
+        ),
         "{reason}"
+    );
+    let log = fs::read_to_string(setup.dir.join("daemon.log")).unwrap();
+    assert!(log.contains("  3 hooks are new or changed\n"), "{log}");
+    let outbox = setup.rows("outbox");
+    assert_eq!(
+        [outbox.len(), with(&outbox, 3, "queued")],
+        [1, 1],
+        "the next run gets the prompt this one never saw: {outbox:?}"
     );
     for event in [
         "SessionStart",
@@ -586,6 +632,27 @@ fn a_codex_run_with_no_session_start_names_the_codex_command_whose_hooks_to_trus
             "{event} in {reason}"
         );
     }
+}
+
+#[test]
+fn a_codex_run_names_priory_by_the_path_it_was_invoked_by_so_an_upgrade_keeps_hook_trust() {
+    let mut setup = Setup::new("codex-stable-exe");
+    fs::write(setup.dir.join("factory/agents/implementer/agent.md"), CODEX).unwrap();
+    let profile = setup.dir.join("profile/bin/priory");
+    fs::create_dir_all(profile.parent().unwrap()).unwrap();
+    std::os::unix::fs::symlink(env!("CARGO_BIN_EXE_priory"), &profile).unwrap();
+    setup.publish(&requested(42));
+
+    setup.start_as(&profile);
+
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 1);
+    let config = codex_config(&setup);
+    let hook = &config["hooks"]["SessionStart"][0]["hooks"][0]["command"];
+    assert_eq!(
+        hook.as_str().unwrap(),
+        format!("'{}' hook SessionStart", profile.display())
+    );
+    assert_eq!(config["mcp_servers"]["priory"]["command"], json!(profile));
 }
 
 /// The `@priory` tag of task 1's pane: the id Priory gave its run, which its tools carry too.
@@ -617,6 +684,12 @@ fn a_codex_run_stores_the_thread_codex_chose_and_an_answer_resumes_it() {
     setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 2);
     let args = codex_args(&setup);
     assert_eq!(args[..2], ["resume", thread.as_str()], "{args:?}");
+    assert!(args.contains(&"--no-daemon".to_owned()), "{args:?}");
+    assert!(
+        fs::read_to_string(setup.dir.join("fake/codex-prompt"))
+            .unwrap()
+            .starts_with("sqlite\n")
+    );
     let runs = setup.rows("runs");
     assert_eq!([&runs[1][2], &runs[1][4]], ["plan", &thread]);
     assert!(
@@ -2087,6 +2160,48 @@ fn resume_restarts_a_blocked_task_in_its_session_and_cancel_drops_it_and_ends_it
     assert_eq!(setup.rows("runs")[1][7], "cancelled");
     setup.gone("priory-1");
     assert!(setup.rows("desk").is_empty());
+}
+
+#[test]
+fn resuming_a_task_whose_runs_never_started_queues_one_resume_line_and_one_ending() {
+    let typed = resume_three_failed_launches(Setup::new("resume-unstarted"));
+    assert_eq!(
+        typed,
+        "A person resumed this task. Check the worktree, then continue.\nImplement the issue.\nEnd this step by calling the result tool of the priory MCP server with one of these outcomes: failed, passed.\n"
+    );
+}
+
+#[test]
+fn resuming_a_shared_agents_task_whose_runs_never_started_queues_one_resume_line() {
+    let typed = resume_three_failed_launches(shared("resume-shared"));
+    assert_eq!(
+        typed.matches("A person resumed this task").count(),
+        1,
+        "{typed}"
+    );
+}
+
+/// The first prompt a run takes after three launches that died and a fourth resume.
+fn resume_three_failed_launches(mut setup: Setup) -> String {
+    setup.publish(&requested(42));
+    setup.hold("die");
+    setup.start();
+    let blocked = |rows: &[Vec<String>]| rows.first().is_some_and(|row| row[4] == "blocked");
+    setup.until("tasks", blocked);
+    for _ in 0..2 {
+        assert!(setup.priory(&["resume", "1"]).status.success());
+        setup.until("runs", |rows| {
+            rows.len() >= 2 && rows.iter().all(|row| row[6] != "-")
+        });
+        setup.until("tasks", blocked);
+    }
+    setup.release("die");
+
+    let resumed = setup.priory(&["resume", "1"]);
+
+    assert!(resumed.status.success(), "{resumed:?}");
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 1);
+    setup.typed().remove(0)
 }
 
 const INTERRUPTED: &str = "Priory restarted and found tmux session priory-2 gone, as after a reboot, so this run was interrupted. Check the worktree, then continue.\nEnd this step by calling the result tool of the priory MCP server with one of these outcomes: hopeless, ready, unsure.\n";
