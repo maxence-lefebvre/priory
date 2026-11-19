@@ -77,6 +77,11 @@ pub fn set(
     text: &str,
     counter: Option<&Counter>,
 ) -> Result<String, String> {
+    write_tldr(db, task, checked(text, counter)?)
+}
+
+/// `text` trimmed, or why it cannot be a TL;DR: empty, or over the limit, with its count.
+fn checked<'a>(text: &'a str, counter: Option<&Counter>) -> Result<&'a str, String> {
     let text = text.trim();
     if text.is_empty() {
         return Err("a TL;DR needs text".to_owned());
@@ -87,6 +92,10 @@ pub fn set(
             "the TL;DR has {count} {unit}, over the limit of {limit}: shorten it"
         ));
     }
+    Ok(text)
+}
+
+fn write_tldr(db: &Connection, task: i64, text: &str) -> Result<String, String> {
     let changed = db
         .execute(
             "UPDATE tasks SET tldr = ?2 WHERE id = ?1",
@@ -356,12 +365,13 @@ pub fn tool(
     let at = |error: rusqlite::Error| error.to_string();
     Some(crate::state::open().and_then(|mut db| {
         if tool == "tldr" {
-            let (text, counter) = (text("text")?, counter(&db, home));
-            // The run must still be live when the TL;DR lands, as for the daemon's own tools.
+            let text = text("text")?;
+            // Count before the write lock; the run must still be live when the TL;DR lands.
+            let text = checked(&text, counter(&db, home).as_ref())?;
             let tx = db
                 .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
                 .map_err(at)?;
-            let done = set(&tx, live(&tx)?, &text, counter.as_ref())?;
+            let done = write_tldr(&tx, live(&tx)?, text)?;
             tx.commit().map_err(at)?;
             return Ok(done);
         }

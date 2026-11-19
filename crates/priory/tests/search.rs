@@ -54,6 +54,8 @@ impl Setup {
             .unwrap()
             .declare(&Output::new("factory.intake"))
             .unwrap();
+        // A new state file switches to WAL on first open, which does not wait for a concurrent opener.
+        succeeded(&setup.priory(&["tasks"]));
         setup
     }
 
