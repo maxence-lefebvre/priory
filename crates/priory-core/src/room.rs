@@ -53,9 +53,17 @@ pub(crate) fn need(agent: Option<&Agent>) -> Need {
     }
 }
 
-/// Whether a run needing `need` fits in this machine's share of memory once nothing else runs.
+/// Whether a run needing `need` fits in this machine's share of memory and its disk above the floor
+/// once nothing else runs.
 pub(crate) fn fits_ever(room: &Room, share: &Share, need: Need) -> bool {
     need.memory as f64 <= room.memory_total as f64 * share.memory
+        && (need.disk as f64) < room.disk_total as f64 - disk_floor(room)
+}
+
+/// The free disk the room keeps: 10 % of the disk, at most 20 GB.
+fn disk_floor(room: &Room) -> f64 {
+    // `agents` has no disk part, and R4.10's slice caps only CPU and memory.
+    (room.disk_total as f64 * (1.0 - SHARE)).min(DISK)
 }
 
 /// The resource a run waits for, how much of it is missing, and the task's reason.
@@ -84,8 +92,7 @@ pub(crate) fn wait(room: &Room, share: &Share, promised: Need, need: Need) -> Op
             ),
         });
     }
-    // `agents` has no disk part, and R4.10's slice caps only CPU and memory.
-    let keep = (room.disk_total as f64 * (1.0 - SHARE)).min(DISK);
+    let keep = disk_floor(room);
     let free = room.disk_free.saturating_sub(promised.disk) as f64;
     if free - need_disk as f64 <= keep {
         let needs = match need_disk {

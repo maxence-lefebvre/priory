@@ -78,7 +78,7 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
             tools::lost(&mut db, &trace, &run.session, &run.tmux)?;
         }
     }
-    stall::orphaned(&db)?;
+    stall::orphaned(&db)?.into_iter().for_each(script::kill);
     let mut scripts = Vec::new();
     let every = factory.sweep().every.unwrap_or(SWEEP);
     let mut swept: Option<Instant> = None;
@@ -138,7 +138,10 @@ fn sweep_scripts(
         let log = home.join("sweeps").join(format!("{id}.log"));
         let timeout = script.timeout.unwrap_or(SCRIPT_TIMEOUT);
         match script::spawn(&script.run, home, &log, timeout) {
-            Ok(child) => running.push((id, child)),
+            Ok(child) => {
+                stall::spawned(db, id, child.pid())?;
+                running.push((id, child));
+            }
             Err(error) => stall::ended(db, id, &format!("cannot start: {error}"), "")?,
         }
     }
@@ -484,10 +487,10 @@ fn start(
 
 /// The repository a task of `trigger` works in; a sweeper's is the `[sweep]` repository.
 fn repo_of<'f>(factory: &'f Factory, trigger: &str) -> Option<&'f str> {
-    match factory.triggers.get(trigger) {
-        Some(found) => found.value.repo.as_deref(),
-        None => (trigger == stall::TRIGGER).then(|| factory.sweep().repo()),
+    if trigger == stall::TRIGGER {
+        return Some(factory.sweep().repo());
     }
+    factory.triggers.get(trigger)?.value.repo.as_deref()
 }
 
 /// The harness that runs `agent`; Claude Code for an agent the factory lost.

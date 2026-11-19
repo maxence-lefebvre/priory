@@ -1,4 +1,5 @@
 use std::fs::{self, File};
+use std::io::{Read, Seek, SeekFrom};
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -38,9 +39,20 @@ pub fn spawn(run: &str, home: &Path, log: &Path, timeout: Duration) -> Result<Sc
     })
 }
 
+/// Kills the process group `pid` leads, with every child it left.
+pub fn kill(pid: u32) {
+    let _ = Command::new("kill")
+        .args(["-KILL", "--", &format!("-{pid}")])
+        .status();
+}
+
 impl Script {
-    /// Its status and the tail of its output once it ended, killing it with its children past its
-    /// timeout; `None` while it runs.
+    pub fn pid(&self) -> u32 {
+        self.child.id()
+    }
+
+    /// Its status and the tail of its output once it ended, killing its children, or killing it
+    /// with them past its timeout; `None` while it runs.
     pub fn poll(&mut self) -> Option<(String, String)> {
         let status = match self.child.try_wait() {
             Ok(Some(status)) => status.code().map_or_else(
@@ -49,16 +61,28 @@ impl Script {
             ),
             Ok(None) if self.started.elapsed() < self.timeout => return None,
             Ok(None) => {
-                let group = format!("-{}", self.child.id());
-                let _ = Command::new("kill").args(["-KILL", "--", &group]).status();
+                kill(self.child.id());
+                let _ = self.child.kill();
                 let _ = self.child.wait();
                 format!("timed out after {}s", self.timeout.as_secs())
             }
             Err(error) => format!("cannot wait for it: {error}"),
         };
-        let output = fs::read(&self.log).unwrap_or_default();
+        // A script runs once; children it left in the background end with it.
+        kill(self.child.id());
+        let tail = tail(&self.log);
         let _ = fs::remove_file(&self.log);
-        let tail = String::from_utf8_lossy(&output[output.len().saturating_sub(KEPT)..]);
-        Some((status, tail.trim().to_owned()))
+        Some((status, tail))
     }
+}
+
+/// The last `KEPT` bytes of `log`, read without loading the rest.
+fn tail(log: &Path) -> String {
+    let mut kept = Vec::new();
+    if let Ok(mut file) = File::open(log) {
+        let length = file.metadata().map_or(0, |metadata| metadata.len());
+        let _ = file.seek(SeekFrom::Start(length.saturating_sub(KEPT as u64)));
+        let _ = file.take(KEPT as u64).read_to_end(&mut kept);
+    }
+    String::from_utf8_lossy(&kept).trim().to_owned()
 }

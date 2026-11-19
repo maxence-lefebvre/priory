@@ -143,8 +143,30 @@ pub fn open_pull_request(
         .ok_or_else(|| format!("gh pr create printed {url:?}, not a pull request URL"))
 }
 
-/// Opens an issue on `repo` and returns its number.
+/// Opens an issue on `repo` and returns its number. An open issue with the same title, which a
+/// crash after its creation left, is reused.
 pub fn open_issue(repo: &str, title: &str, body: &str) -> Result<u64, String> {
+    let open = run(Command::new("gh").args([
+        "issue",
+        "list",
+        "-R",
+        repo,
+        "--state",
+        "open",
+        "--search",
+        &format!("{title} in:title"),
+        "--json",
+        "number,title",
+    ]))?;
+    let open: Vec<serde_json::Value> = serde_json::from_str(&open)
+        .map_err(|error| format!("gh issue list printed {open:?}: {error}"))?;
+    if let Some(number) = open
+        .iter()
+        .find(|issue| issue["title"] == title)
+        .and_then(|issue| issue["number"].as_u64())
+    {
+        return Ok(number);
+    }
     let url = run(Command::new("gh").args([
         "issue", "create", "-R", repo, "--title", title, "--body", body,
     ]))?;

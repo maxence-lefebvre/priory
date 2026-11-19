@@ -1333,8 +1333,10 @@ fn a_sweeper_that_cleaned_opens_an_issue_on_the_sweep_repository_once_a_person_a
     let answered = setup.priory(&["answer", "1", "open", "--revision", "1"]);
     assert!(answered.status.success(), "{answered:?}");
     setup.until("tasks", |rows| rows[0][4] == "done");
+    let gh = setup.gh();
+    assert_eq!(gh[0][..3], ["issue", "list", "-R"]);
     assert_eq!(
-        setup.gh(),
+        gh[1..],
         [[
             "issue",
             "create",
@@ -1376,6 +1378,27 @@ fn two_agents_declaring_disk_cannot_both_start_when_only_one_fits() {
             setup.banner().unwrap()[14..34].to_owned()
         ))
     );
+}
+
+#[test]
+fn a_head_that_declares_more_disk_than_the_runner_has_holds_back_no_one() {
+    let mut setup = Setup::new("disk-never-fits");
+    with_review(&setup, "4GB");
+    // The disk is 1000 GB, so 2000 GB never fits.
+    fs::write(
+        setup.dir.join("factory/agents/implementer/agent.md"),
+        AGENT.replace("effort", "disk = \"2000GB\"\neffort"),
+    )
+    .unwrap();
+    setup.disk(500);
+    setup.publish(&requested_in(42, Some("now")));
+    setup.publish(&review_requested(43));
+
+    setup.start();
+
+    let tasks = setup.until("tasks", |rows| rows.len() == 2 && rows[1][4] == "running");
+    assert_eq!(tasks[0][4], "queued");
+    assert_eq!(setup.banner(), None);
 }
 
 #[test]

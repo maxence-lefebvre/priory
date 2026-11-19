@@ -1093,6 +1093,15 @@ fn a_sweep_table_passes_and_a_bad_one_names_its_line() {
         bad_agent.stderr,
         "factory.toml:3: the sweeper agent `sweeper` does not exist\n"
     );
+    let repo = good.replace("owner/priory", "priory");
+    let bad_repo = check(&factory("sweep-repo", &with("factory.toml", &repo)));
+    assert_eq!(
+        (bad_repo.code, bad_repo.stderr.as_str()),
+        (
+            1,
+            "factory.toml:3: `[sweep] repo` needs to be `owner/name`\n"
+        )
+    );
 }
 
 #[test]

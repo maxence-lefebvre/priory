@@ -32,6 +32,13 @@ pub fn check(factory: &Factory) -> Vec<Problem> {
                 format!("the sweeper agent `{agent}` does not exist"),
             ));
         }
+        if !owner_name(settings.value.sweep.repo()) {
+            problems.push(problem(
+                settings,
+                settings.lines.field("sweep"),
+                "`[sweep] repo` needs to be `owner/name`".into(),
+            ));
+        }
     }
     for trigger in factory.triggers.values() {
         check_band(
@@ -206,15 +213,14 @@ fn check_schedule(trigger: &Loaded<Trigger>, problems: &mut Vec<Problem>) {
     }
 }
 
-fn check_repo(trigger: &Loaded<Trigger>, source: &str, problems: &mut Vec<Problem>) {
-    let repo = trigger
-        .value
-        .repo
-        .as_deref()
-        .and_then(|repo| repo.split_once('/'));
-    if !repo
+/// Whether `repo` reads `owner/name`.
+fn owner_name(repo: &str) -> bool {
+    repo.split_once('/')
         .is_some_and(|(owner, name)| !owner.is_empty() && !name.is_empty() && !name.contains('/'))
-    {
+}
+
+fn check_repo(trigger: &Loaded<Trigger>, source: &str, problems: &mut Vec<Problem>) {
+    if !trigger.value.repo.as_deref().is_some_and(owner_name) {
         problems.push(problem(
             trigger,
             trigger

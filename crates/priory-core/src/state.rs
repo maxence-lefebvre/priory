@@ -280,7 +280,8 @@ CREATE TABLE sweeps (
   started TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
   ended   TEXT,
   status  TEXT,
-  output  TEXT
+  output  TEXT,
+  pid     INTEGER
 );
 PRAGMA user_version = 18;
 ";

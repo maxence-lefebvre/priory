@@ -4,8 +4,8 @@ use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use std::path::Path;
 use std::time::Duration;
 
-/// The trigger a sweeper task names: the daemon starts it, not an event source.
-pub const TRIGGER: &str = "sweep";
+/// The trigger a sweeper task names. No trigger file has a `/` in its name, so none collides.
+pub const TRIGGER: &str = "priory/sweep";
 /// The key of every sweeper task, so at most one is active.
 const KEY: &str = "priory:sweep";
 
@@ -64,6 +64,15 @@ pub(crate) fn started(db: &Connection, stall: i64, script: &str) -> rusqlite::Re
     Ok(db.last_insert_rowid())
 }
 
+/// Records the process group of a running script, so a restarted daemon can kill it.
+pub(crate) fn spawned(db: &Connection, sweep: i64, pid: u32) -> rusqlite::Result<()> {
+    db.execute(
+        "UPDATE sweeps SET pid = ?2 WHERE id = ?1",
+        params![sweep, pid],
+    )?;
+    Ok(())
+}
+
 /// Records how a script ended. Once every script of its stall ended, the stall is swept.
 pub(crate) fn ended(
     db: &Connection,
@@ -90,20 +99,25 @@ pub(crate) fn swept(db: &Connection) -> rusqlite::Result<()> {
     Ok(())
 }
 
-/// Ends the scripts a stopped daemon left running: no one waits for them any more.
-pub(crate) fn orphaned(db: &Connection) -> rusqlite::Result<()> {
-    db.execute(
+/// Ends the scripts a stopped daemon left running, since no one bounds them any more, and returns
+/// their process groups to kill.
+pub(crate) fn orphaned(db: &Connection) -> rusqlite::Result<Vec<u32>> {
+    let mut statement = db.prepare(
         "UPDATE sweeps SET ended = strftime('%Y-%m-%dT%H:%M:%SZ', 'now'),
-           status = 'lost when the daemon stopped', output = ''
-         WHERE ended IS NULL",
-        [],
+           status = 'killed when the daemon restarted', output = ''
+         WHERE ended IS NULL RETURNING pid",
     )?;
-    swept(db)
+    let pids = statement
+        .query_map([], |row| row.get::<_, Option<u32>>(0))?
+        .filter_map(Result::transpose)
+        .collect::<rusqlite::Result<_>>()?;
+    swept(db)?;
+    Ok(pids)
 }
 
 /// Starts a sweeper task at `start` of the `sweep` workflow once the open stall has outlasted its
-/// scripts by `after`, unless the stall has one. An active sweeper of an earlier stall serves it too.
-/// Its source event carries the stall and each script's output, so its first prompt names them.
+/// scripts by `after`, unless the stall has one. While a sweeper of an earlier stall is active, the
+/// stall waits for it to end, then gets its own. Its source event carries the stall and each script's output, so its first prompt names them.
 pub(crate) fn call_sweeper(
     db: &mut Connection,
     after: Duration,
@@ -123,47 +137,44 @@ pub(crate) fn call_sweeper(
     let Some(stall) = due else {
         return Ok(());
     };
-    let active: Option<i64> = tx
+    let active = tx
         .query_row(
-            "SELECT id FROM tasks WHERE key = ?1 AND state NOT IN ('done', 'failed', 'dropped')",
+            "SELECT 1 FROM tasks WHERE key = ?1 AND state NOT IN ('done', 'failed', 'dropped')",
             [KEY],
-            |row| row.get(0),
+            |_| Ok(()),
         )
         .optional()?;
-    let sweeper = match active {
-        Some(task) => task,
-        None => {
-            let source = uuid::Uuid::new_v4().to_string();
-            tx.execute(
-                "INSERT INTO tasks
-                   (key, workflow, step, state, band, lane, lane_derived, trigger, source, entered)
-                 VALUES (?1, ?2, ?3, 'queued', ?4, 'priory/sweep', 0, ?5, ?6,
-                   strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))",
-                params![KEY, SWEEP, start, band, TRIGGER, source],
-            )?;
-            let task = tx.last_insert_rowid();
-            tx.execute(
-                "INSERT INTO owns (task, resource) VALUES (?1, ?2)",
-                params![task, KEY],
-            )?;
-            tx.execute(
-                "INSERT INTO inbox (id, type, time, data, links, task, outcome)
-                 SELECT ?2, 'priory.queue.stalled', strftime('%Y-%m-%dT%H:%M:%SZ', 'now'),
-                   json_object('resource', resource, 'missing', missing, 'since', since,
-                     'task', task, 'home', ?4, 'scripts', json((
-                       SELECT json_group_array(json_object('script', script, 'status', status,
-                         'output', output))
-                       FROM (SELECT * FROM sweeps WHERE stall = ?1 ORDER BY id)))),
-                   '[]', ?3, 'created'
-                 FROM stalls WHERE id = ?1",
-                params![stall, source, task, home.to_string_lossy()],
-            )?;
-            task
-        }
-    };
+    if active.is_some() {
+        return Ok(());
+    }
+    let source = uuid::Uuid::new_v4().to_string();
+    tx.execute(
+        "INSERT INTO tasks
+           (key, workflow, step, state, band, lane, lane_derived, trigger, source, entered)
+         VALUES (?1, ?2, ?3, 'queued', ?4, 'priory/sweep', 0, ?5, ?6,
+           strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))",
+        params![KEY, SWEEP, start, band, TRIGGER, source],
+    )?;
+    let task = tx.last_insert_rowid();
+    tx.execute(
+        "INSERT INTO owns (task, resource) VALUES (?1, ?2)",
+        params![task, KEY],
+    )?;
+    tx.execute(
+        "INSERT INTO inbox (id, type, time, data, links, task, outcome)
+         SELECT ?2, 'priory.queue.stalled', strftime('%Y-%m-%dT%H:%M:%SZ', 'now'),
+           json_object('resource', resource, 'missing', missing, 'since', since,
+             'task', task, 'home', ?4, 'scripts', json((
+               SELECT json_group_array(json_object('script', script, 'status', status,
+                 'output', output))
+               FROM (SELECT * FROM sweeps WHERE stall = ?1 ORDER BY id)))),
+           '[]', ?3, 'created'
+         FROM stalls WHERE id = ?1",
+        params![stall, source, task, home.to_string_lossy()],
+    )?;
     tx.execute(
         "UPDATE stalls SET sweeper = ?2 WHERE id = ?1",
-        params![stall, sweeper],
+        params![stall, task],
     )?;
     tx.commit()
 }
