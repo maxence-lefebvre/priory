@@ -13,13 +13,13 @@ Every message is a herdr-bus `Message`, shaped like a CloudEvent:
 | `data`    | object        | The fields below, by type                                  |
 | `links`   | array         | GitHub and Linear events carry one `{ "label": "issue" or "pull_request", "url": ... }`, with the event's `url` |
 
-herdr-bus drops a message whose `(output, id)` is already on the output. A consumer can still see a
-message twice, after its own crash before its ack, so it deduplicates by `id`.
+herdr-bus drops a message whose `(output, id)` is already on the output. After its own crash before
+an ack, a consumer can still get a duplicate, so it deduplicates by `id`.
 
 ## Message ids
 
-Ids are UUIDv5 in the namespace `UUIDv5(NAMESPACE_URL, "https://github.com/maxence-lefebvre/priory/intake")`,
-of these names:
+Ids are UUIDv5 in namespace `UUIDv5(NAMESPACE_URL, "https://github.com/maxence-lefebvre/priory/intake")`,
+from these names:
 
 | Message                  | Name                                         |
 | ------------------------ | -------------------------------------------- |
