@@ -1,5 +1,6 @@
 pub mod daemon;
 mod hold;
+pub mod memory;
 pub mod report;
 mod room;
 mod route;

@@ -1,3 +1,4 @@
+use crate::memory::{self, Gate};
 use crate::room::Share;
 use crate::route;
 use crate::state::{self, Admission, NewRun, Signal};
@@ -78,7 +79,16 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
             tools::lost(&mut db, &trace, &run.session, &run.tmux)?;
         }
     }
-    stall::orphaned(&db)?.into_iter().for_each(script::kill);
+    // No one bounds a script a stopped daemon started; one whose pid another process reused is gone.
+    for (id, group) in stall::orphans(&db)? {
+        if let Some((pid, _)) =
+            group.filter(|(pid, started)| memory::started(*pid) == Some(*started))
+        {
+            script::kill(pid);
+        }
+        let output = script::collect(&log_of(&home, id));
+        stall::ended(&db, id, "interrupted by a daemon restart", &output)?;
+    }
     let mut scripts = Vec::new();
     let every = factory.sweep().every.unwrap_or(SWEEP);
     let mut swept: Option<Instant> = None;
@@ -135,11 +145,11 @@ fn sweep_scripts(
         .filter(|script| script.when.name() == resource)
     {
         let id = stall::started(db, stall, &script.run)?;
-        let log = home.join("sweeps").join(format!("{id}.log"));
+        let log = log_of(home, id);
         let timeout = script.timeout.unwrap_or(SCRIPT_TIMEOUT);
         match script::spawn(&script.run, home, &log, timeout) {
             Ok(child) => {
-                stall::spawned(db, id, child.pid())?;
+                stall::spawned(db, id, child.pid(), memory::started(child.pid()))?;
                 running.push((id, child));
             }
             Err(error) => stall::ended(db, id, &format!("cannot start: {error}"), "")?,
@@ -147,6 +157,11 @@ fn sweep_scripts(
     }
     stall::swept(db)?;
     Ok(resource == "disk")
+}
+
+/// Where sweep script `id` writes its output.
+fn log_of(home: &Path, id: i64) -> std::path::PathBuf {
+    home.join("sweeps").join(format!("{id}.log"))
 }
 
 /// Applies a line from the socket and replies to its sender. A run its line ended is killed after
@@ -158,7 +173,8 @@ fn apply(db: &mut Connection, line: Line, trace: &Trace) -> Result<(), Error> {
     Ok(())
 }
 
-/// What arrives on the socket: a hook's signal, a run's tool call, or a person's answer or desk action.
+/// What arrives on the socket: a hook's signal, a run's tool call, a person's answer or desk action,
+/// or a memory gate message.
 #[derive(serde::Deserialize)]
 #[serde(untagged)]
 enum Input {
@@ -166,6 +182,7 @@ enum Input {
     Call(Call),
     Answer(Answer),
     Act(Act),
+    Gate(Gate),
 }
 
 /// Applies one line and returns its reply, with a tmux session to kill. A signal's reply is `ok`;
@@ -186,6 +203,12 @@ fn take(db: &mut Connection, line: &str, trace: &Trace) -> Result<(String, Optio
         Ok(Input::Act(act)) => {
             let (reply, kill) = tools::act(db, &act, trace.factory)?;
             Ok((replied(reply), kill))
+        }
+        Ok(Input::Gate(gate)) => {
+            let share = Share::of(trace.factory, trace.machine.as_deref());
+            let room = || room::measure(&runtime::home());
+            let reply = memory::gate(db, &gate, trace.factory, &share, room)?;
+            Ok((replied(reply), None))
         }
         Err(error) => {
             eprintln!("priory daemon: dropped line {line:?}: {error}");
@@ -219,6 +242,7 @@ fn tend(db: &mut Connection, trace: &Trace, share: &Share, home: &Path) -> Resul
         }
     }
     state::due(db)?;
+    memory::reclaim(db)?;
     perform(db, trace)?;
     loop {
         // Measured again after each start, since its clone and worktree take disk.
@@ -378,7 +402,13 @@ fn open_issue(db: &Connection, factory: &Factory, due: &state::Due) -> Result<Do
                 Some(evidence) => format!("{summary}\n\n{evidence}"),
                 None => summary.clone(),
             };
-            runtime::open_issue(repo, title, &body)
+            let source: String = db.query_row(
+                "SELECT source FROM tasks WHERE id = ?1",
+                [due.task],
+                |row| row.get(0),
+            )?;
+            let mark = format!("Filed by Priory for event {source}.");
+            runtime::open_issue(repo, title, &body, &mark)
         }
     };
     Ok(match opened {

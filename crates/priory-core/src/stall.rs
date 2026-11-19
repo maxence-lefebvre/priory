@@ -64,11 +64,17 @@ pub(crate) fn started(db: &Connection, stall: i64, script: &str) -> rusqlite::Re
     Ok(db.last_insert_rowid())
 }
 
-/// Records the process group of a running script, so a restarted daemon can kill it.
-pub(crate) fn spawned(db: &Connection, sweep: i64, pid: u32) -> rusqlite::Result<()> {
+/// Records the process group of a running script and its start time, so a restarted daemon kills it
+/// and never a process that reused its pid.
+pub(crate) fn spawned(
+    db: &Connection,
+    sweep: i64,
+    pid: u32,
+    started: Option<i64>,
+) -> rusqlite::Result<()> {
     db.execute(
-        "UPDATE sweeps SET pid = ?2 WHERE id = ?1",
-        params![sweep, pid],
+        "UPDATE sweeps SET pid = ?2, pid_started = ?3 WHERE id = ?1",
+        params![sweep, pid, started],
     )?;
     Ok(())
 }
@@ -99,20 +105,20 @@ pub(crate) fn swept(db: &Connection) -> rusqlite::Result<()> {
     Ok(())
 }
 
-/// Ends the scripts a stopped daemon left running, since no one bounds them any more, and returns
-/// their process groups to kill.
-pub(crate) fn orphaned(db: &Connection) -> rusqlite::Result<Vec<u32>> {
-    let mut statement = db.prepare(
-        "UPDATE sweeps SET ended = strftime('%Y-%m-%dT%H:%M:%SZ', 'now'),
-           status = 'killed when the daemon restarted', output = ''
-         WHERE ended IS NULL RETURNING pid",
-    )?;
-    let pids = statement
-        .query_map([], |row| row.get::<_, Option<u32>>(0))?
-        .filter_map(Result::transpose)
-        .collect::<rusqlite::Result<_>>()?;
-    swept(db)?;
-    Ok(pids)
+/// A script's process group and its start time, which tells it from a process that reused its pid.
+pub(crate) type Group = (u32, i64);
+
+/// The scripts a stopped daemon left running, each with its process group and that group's start
+/// time when both were recorded.
+pub(crate) fn orphans(db: &Connection) -> rusqlite::Result<Vec<(i64, Option<Group>)>> {
+    let mut statement =
+        db.prepare("SELECT id, pid, pid_started FROM sweeps WHERE ended IS NULL")?;
+    statement
+        .query_map([], |row| {
+            let pid: Option<u32> = row.get(1)?;
+            Ok((row.get(0)?, pid.zip(row.get(2)?)))
+        })?
+        .collect()
 }
 
 /// Starts a sweeper task at `start` of the `sweep` workflow once the open stall has outlasted its

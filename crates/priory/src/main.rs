@@ -1,9 +1,12 @@
+use priory_core::memory::Gate;
 use priory_core::{daemon, report, stall, state, sweep, tools};
 use priory_factory::{factory, rules};
 use priory_intake::{intake, request};
 use priory_runtime::{mcp, runtime};
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
-use std::process::ExitCode;
+use std::process::{Command, ExitCode};
+use std::time::{Duration, Instant};
 
 fn main() -> ExitCode {
     let mut args = std::env::args_os().skip(1);
@@ -81,6 +84,7 @@ fn main() -> ExitCode {
             "SELECT id, task, step, action, status, pull_request, commit_sha,
              replace(error, char(10), '\\n') FROM actions ORDER BY id",
         ),
+        Some("memory") => memory(args.collect()),
         Some("answer") => answer(args.map(|arg| arg.to_string_lossy().into_owned()).collect()),
         Some("mcp") => match (args.next(), args.next(), args.next()) {
             (Some(flag), Some(session), None) if flag == "--session" => {
@@ -98,7 +102,7 @@ fn main() -> ExitCode {
 
 fn usage() -> ExitCode {
     eprintln!(
-        "usage: priory check [DIR]\n       priory draw [DIR] WORKFLOW\n       priory intake [DIR] [--once]\n       priory daemon [DIR] [--once]\n       priory request [DIR] --workflow <name> --key <key> [--band <band>] [--lane <lane>] [--repo <owner/name>] [--hold <reason> [CONDITION]] <text>\n       priory inbox\n       priory tasks [--lane <lane>]\n       priory runs\n       priory outbox\n       priory asks\n       priory waits\n       priory actions\n       priory desk\n       priory trace\n       priory report [DIR] --workflow <name> [--since <instant-or-duration>] [--cost] [--by lane]\n       priory move TASK [--band <band>] [--top | --before TASK | --after TASK]\n       priory resume TASK\n       priory cancel TASK\n       priory revive TASK [--step STEP]\n       priory hold TASK --reason TEXT [--until TIME | --after TASK | --merge PR [--if-closed release|drop|ask] | --blockers]\n       priory release TASK\n       priory answer ASK OPTION-OR-TEXT --revision N\n       priory mcp --session ID\n       priory hook EVENT"
+        "usage: priory check [DIR]\n       priory draw [DIR] WORKFLOW\n       priory intake [DIR] [--once]\n       priory daemon [DIR] [--once]\n       priory request [DIR] --workflow <name> --key <key> [--band <band>] [--lane <lane>] [--repo <owner/name>] [--hold <reason> [CONDITION]] <text>\n       priory inbox\n       priory tasks [--lane <lane>]\n       priory runs\n       priory outbox\n       priory asks\n       priory waits\n       priory actions\n       priory desk\n       priory trace\n       priory report [DIR] --workflow <name> [--since <instant-or-duration>] [--cost] [--by lane]\n       priory move TASK [--band <band>] [--top | --before TASK | --after TASK]\n       priory resume TASK\n       priory cancel TASK\n       priory revive TASK [--step STEP]\n       priory hold TASK --reason TEXT [--until TIME | --after TASK | --merge PR [--if-closed release|drop|ask] | --blockers]\n       priory release TASK\n       priory memory [acquire --gb N [--timeout D] -- COMMAND...]\n       priory answer ASK OPTION-OR-TEXT --revision N\n       priory mcp --session ID\n       priory hook EVENT"
     );
     ExitCode::from(2)
 }
@@ -240,6 +244,11 @@ const DESK: &str = "SELECT since, kind, id, task, lane, what,
                FROM sweeps JOIN stalls ON stalls.id = sweeps.stall JOIN tasks ON tasks.id = stalls.task
                WHERE stalls.ended IS NULL
                UNION ALL
+               SELECT 0, grants.created, 'memory', grants.id, grants.task, tasks.lane,
+                 'waits for ' || printf('%.1f', grants.bytes / 1073741824.0) || ' GB: '
+                 || replace(grants.command, char(10), '\\n')
+               FROM grants LEFT JOIN tasks ON tasks.id = grants.task WHERE grants.state = 'waiting'
+               UNION ALL
                SELECT 1, tasks.changed, 'queue', queue.place, tasks.id, tasks.lane,
                  coalesce(tasks.band, '-') || coalesce(': ' || tasks.reason, '')
                FROM tasks JOIN queue USING (id)
@@ -308,6 +317,134 @@ fn exit(verb: &str, done: Result<(), String>) -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+/// `priory memory` lists the memory grants, held and waiting.
+fn memory(args: Vec<OsString>) -> ExitCode {
+    match args.split_first() {
+        None => list(
+            "id\ttask\tstate\tgb\tcommand\tage",
+            "SELECT id, task, state, printf('%.1f', bytes / 1073741824.0),
+             replace(command, char(10), '\\n'),
+             (strftime('%s', 'now') - strftime('%s', coalesce(granted, created))) || 's'
+             FROM grants ORDER BY id",
+        ),
+        Some((verb, args)) if verb == "acquire" => acquire(args),
+        Some(_) => usage(),
+    }
+}
+
+/// The exit code of `priory memory acquire` when the gate itself fails, as `env` and `timeout` use.
+const GATE_FAILED: u8 = 125;
+
+/// Runs a command once the daemon grants it `--gb` GB of memory, and releases the grant when it
+/// exits. Exits with the command's code.
+fn acquire(args: &[OsString]) -> ExitCode {
+    let Some(split) = args.iter().position(|arg| arg == "--") else {
+        return usage();
+    };
+    let (mut gb, mut timeout) = (None, None);
+    for pair in args[..split].chunks(2) {
+        match pair {
+            [flag, value] if flag == "--gb" => {
+                let Some(value) = value
+                    .to_str()
+                    .and_then(|value| value.parse::<f64>().ok())
+                    .filter(|gb| *gb > 0.0 && gb.is_finite())
+                else {
+                    return usage();
+                };
+                gb = Some(value);
+            }
+            [flag, value] if flag == "--timeout" => {
+                let Some(value) = value
+                    .to_str()
+                    .and_then(|value| value.parse::<jiff::SignedDuration>().ok())
+                    .and_then(|value| Duration::try_from(value).ok())
+                else {
+                    return usage();
+                };
+                timeout = Some(value);
+            }
+            _ => return usage(),
+        }
+    }
+    let command = &args[split + 1..];
+    let (Some(gb), Some((program, rest))) = (gb, command.split_first()) else {
+        return usage();
+    };
+    let failed = |error: String| {
+        eprintln!("priory memory: {error}; the command did not run");
+        ExitCode::from(GATE_FAILED)
+    };
+    let acquired = gate(&Gate::Acquire {
+        bytes: (gb * f64::from(1u32 << 30)) as u64,
+        pid: std::process::id(),
+        session: std::env::var("PRIORY_SESSION").ok(),
+        command: command.join(" ".as_ref()).to_string_lossy().into_owned(),
+    });
+    let mut reply = match acquired {
+        Ok(reply) => reply,
+        Err(error) => return failed(error),
+    };
+    let (id, _) = reply.split_once(' ').unwrap_or_default();
+    let grant: i64 = id.parse().expect("the daemon replies with the grant id");
+    let deadline = timeout.map(|timeout| Instant::now() + timeout);
+    let mut said = String::new();
+    while !reply.ends_with(" held") {
+        if said != reply {
+            eprintln!("priory memory: grant {reply} for {gb} GB");
+            said = reply.clone();
+        }
+        if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+            let _ = gate(&Gate::Release { grant });
+            let waited = timeout.unwrap_or_default();
+            return failed(format!("grant {grant} still waits after {waited:?}"));
+        }
+        std::thread::sleep(Duration::from_millis(250));
+        reply = match gate(&Gate::Poll { grant }) {
+            Ok(reply) => reply,
+            Err(error) => return failed(error),
+        };
+    }
+    let status = Command::new(program)
+        .args(rest)
+        .spawn()
+        .and_then(|mut child| {
+            // The command holds the grant from here, so it keeps its memory if this process dies.
+            let _ = gate(&Gate::Run {
+                grant,
+                pid: child.id(),
+            });
+            child.wait()
+        });
+    if let Err(error) = gate(&Gate::Release { grant }) {
+        eprintln!(
+            "priory memory: grant {grant} stays until the daemon sees this process end: {error}"
+        );
+    }
+    match status {
+        Ok(status) => {
+            use std::os::unix::process::ExitStatusExt;
+            let code = status
+                .code()
+                .or_else(|| status.signal().map(|signal| 128 + signal));
+            ExitCode::from(code.unwrap_or(1) as u8)
+        }
+        Err(error) => {
+            eprintln!("priory memory: {}: {error}", program.to_string_lossy());
+            ExitCode::from(127)
+        }
+    }
+}
+
+/// Sends `gate` to the daemon and returns its reply.
+fn gate(gate: &Gate) -> Result<String, String> {
+    let line = serde_json::to_string(gate).expect("a gate message serializes");
+    runtime::call(&runtime::home(), &line).and_then(|reply| {
+        serde_json::from_str::<Result<String, String>>(&reply)
+            .map_err(|error| format!("unreadable reply {reply:?}: {error}"))?
+    })
 }
 
 /// Sends `priory answer ASK TEXT --revision N` to the daemon, which applies it.

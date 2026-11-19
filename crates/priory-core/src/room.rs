@@ -56,8 +56,23 @@ pub(crate) fn need(agent: Option<&Agent>) -> Need {
 /// Whether a run needing `need` fits in this machine's share of memory and its disk above the floor
 /// once nothing else runs.
 pub(crate) fn fits_ever(room: &Room, share: &Share, need: Need) -> bool {
-    need.memory as f64 <= room.memory_total as f64 * share.memory
+    need.memory as f64 <= ceiling(room, share)
         && (need.disk as f64) < room.disk_total as f64 - disk_floor(room)
+}
+
+/// The memory this machine's agents may take together, in bytes.
+pub(crate) fn ceiling(room: &Room, share: &Share) -> f64 {
+    room.memory_total as f64 * share.memory
+}
+
+/// Whether `need` bytes fit beside `promised` ones and still keep the memory this machine's share
+/// leaves free.
+pub(crate) fn fits(room: &Room, share: &Share, promised: u64, need: u64) -> bool {
+    room.memory_free.saturating_sub(promised) as f64 >= need as f64 + keep(room, share)
+}
+
+fn keep(room: &Room, share: &Share) -> f64 {
+    room.memory_total as f64 * (1.0 - share.memory)
 }
 
 /// The free disk the room keeps: 10 % of the disk, at most 20 GB.
@@ -77,23 +92,22 @@ pub(crate) struct Short {
 /// that started but have not reported yet.
 pub(crate) fn wait(room: &Room, share: &Share, promised: Need, need: Need) -> Option<Short> {
     let free = room.memory_free.saturating_sub(promised.memory);
-    let need_disk = need.disk;
-    let need = need.memory;
-    let keep = room.memory_total as f64 * (1.0 - share.memory);
-    if (free as f64) < need as f64 + keep {
+    let keep = keep(room, share);
+    if !fits(room, share, promised.memory, need.memory) {
         return Some(Short {
             resource: "memory",
-            missing: format!("{:.1} GB", (need as f64 + keep - free as f64) / GB),
+            missing: format!("{:.1} GB", (need.memory as f64 + keep - free as f64) / GB),
             reason: format!(
                 "waits for room: {:.1} GB of memory free, needs {:.1} GB and keeps {:.1} GB free",
                 free as f64 / GB,
-                need as f64 / GB,
+                need.memory as f64 / GB,
                 keep / GB
             ),
         });
     }
     let keep = disk_floor(room);
     let free = room.disk_free.saturating_sub(promised.disk) as f64;
+    let need_disk = need.disk;
     if free - need_disk as f64 <= keep {
         let needs = match need_disk {
             0 => String::new(),

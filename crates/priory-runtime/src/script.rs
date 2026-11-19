@@ -70,19 +70,18 @@ impl Script {
         };
         // A script runs once; children it left in the background end with it.
         kill(self.child.id());
-        let tail = tail(&self.log);
-        let _ = fs::remove_file(&self.log);
-        Some((status, tail))
+        Some((status, collect(&self.log)))
     }
 }
 
-/// The last `KEPT` bytes of `log`, read without loading the rest.
-fn tail(log: &Path) -> String {
+/// The last `KEPT` bytes of `log`, read without loading the rest, then removes it.
+pub fn collect(log: &Path) -> String {
     let mut kept = Vec::new();
     if let Ok(mut file) = File::open(log) {
         let length = file.metadata().map_or(0, |metadata| metadata.len());
         let _ = file.seek(SeekFrom::Start(length.saturating_sub(KEPT as u64)));
         let _ = file.take(KEPT as u64).read_to_end(&mut kept);
     }
+    let _ = fs::remove_file(log);
     String::from_utf8_lossy(&kept).trim().to_owned()
 }
