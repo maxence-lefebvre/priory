@@ -1,3 +1,4 @@
+use crate::memory::{self, Gate};
 use crate::room::Share;
 use crate::route;
 use crate::state::{self, Admission, NewRun, Signal};
@@ -101,7 +102,8 @@ fn apply(db: &mut Connection, line: Line, trace: &Trace) -> Result<(), Error> {
     Ok(())
 }
 
-/// What arrives on the socket: a hook's signal, a run's tool call, or a person's answer or desk action.
+/// What arrives on the socket: a hook's signal, a run's tool call, a person's answer or desk action,
+/// or a memory gate message.
 #[derive(serde::Deserialize)]
 #[serde(untagged)]
 enum Input {
@@ -109,6 +111,7 @@ enum Input {
     Call(Call),
     Answer(Answer),
     Act(Act),
+    Gate(Gate),
 }
 
 /// Applies one line and returns its reply, with a tmux session to kill. A signal's reply is `ok`;
@@ -129,6 +132,12 @@ fn take(db: &mut Connection, line: &str, trace: &Trace) -> Result<(String, Optio
         Ok(Input::Act(act)) => {
             let (reply, kill) = tools::act(db, &act, trace.factory)?;
             Ok((replied(reply), kill))
+        }
+        Ok(Input::Gate(gate)) => {
+            let share = Share::of(trace.factory, trace.machine.as_deref());
+            let room = || room::measure(&runtime::home());
+            let reply = memory::gate(db, &gate, trace.factory, &share, room)?;
+            Ok((replied(reply), None))
         }
         Err(error) => {
             eprintln!("priory daemon: dropped line {line:?}: {error}");
@@ -162,6 +171,7 @@ fn tend(db: &mut Connection, trace: &Trace, share: &Share, home: &Path) -> Resul
         }
     }
     state::due(db)?;
+    memory::reclaim(db)?;
     perform(db, trace)?;
     loop {
         // Measured again after each start, since its clone and worktree take disk.
