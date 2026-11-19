@@ -329,6 +329,23 @@ Each signal also carries the `transcript_path` of Claude's hook JSON, which Trac
 `UserPromptSubmit` also stamps the start of the run's turn, and `SessionStart` and `Stop` clear it.
 The daemon never reads the terminal screen to decide that an agent is idle.
 
+### Nudge
+
+A turn that ends with no `wait`, `ask` or `result` gets one nudge. The `Stop` signal finds the run
+with no result, open ask or open wait, and queues a prompt that names the three tools, then the
+step's ending line from `tasks.ending`. The next tick types it like any other prompt.
+
+Priory tells its own turns from a person's by the prompt it confirmed. `UserPromptSubmit` marks the
+turn nudgeable only when the submitted text matches the prompt Priory attempted and that prompt is
+not itself a nudge. A turn a person typed into the pane matches nothing, so it is never nudged.
+A successful `wait`, `ask` or `result` call, `SessionStart` and `Stop` clear it, so a turn whose ask was answered or whose wait fired before `Stop` is not nudged.
+
+So a nudge starts at most one turn, and a silent turn after it is not nudged again. The run is then
+left to the health check, like any run that sends no exit. A prompt already queued when the turn
+ends follows the nudge in the same prompt. The nudge is an outbox prompt rather than
+the hook's `decision: block`: the daemon already confirms, retries and survives a restart for
+outbox prompts, and the hook has no reply channel beyond `ok`.
+
 ## Health
 
 Each second, the daemon gives every live run one of these verdicts, in this order:
@@ -766,21 +783,11 @@ running; end one with `tmux kill-session -t =priory-<task id>` when you mean to.
 ## Listings
 
 `priory inbox` prints each entry, oldest first: seq, type, subject, task and outcome.
-<<<<<<< HEAD
 `priory tasks` prints each task in start order: id, key, workflow, step, state, band, lane, reason
 and position, the task's place in the queue from 1 when it is `queued` or `ready`.
 `priory tasks --lane L` prints only the tasks in lane `L`.
-`priory runs` prints each run: id, task, step, tmux session, harness session, started, ended and
-how it ended. `priory outbox` prints each prompt: id, task, run, state and text, with newlines
-||||||| parent of 5f198ef (Run an agent under Codex with harness = "codex")
-`priory tasks` prints each task: id, key, workflow, step, state, band, lane and reason.
-`priory runs` prints each run: id, task, step, tmux session, harness session, started, ended and
-how it ended. `priory outbox` prints each prompt: id, task, run, state and text, with newlines
-=======
-`priory tasks` prints each task: id, key, workflow, step, state, band, lane and reason.
 `priory runs` prints each run: id, task, step, tmux session, harness session (a Codex run's
 thread), started, ended and how it ended. `priory outbox` prints each prompt: id, task, run, state and text, with newlines
->>>>>>> 5f198ef (Run an agent under Codex with harness = "codex")
 shown as `\n`. `priory asks` and `priory waits` are described under Tools, `priory actions` under Code steps,
 and `priory desk` under Desk. They read `PRIORY_DB` and print `-` for an empty cell, tab-separated after a header
 line.

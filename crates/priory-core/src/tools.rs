@@ -133,6 +133,7 @@ pub(crate) fn call(
         tool => Err(format!("unknown tool {tool}")),
     };
     if stored.is_ok() {
+        tx.execute("UPDATE runs SET nudgeable = 0 WHERE id = ?1", [run.id])?;
         tx.commit()?;
     }
     Ok(stored)
@@ -661,7 +662,33 @@ pub(crate) fn stop(
     let Some(run) = run(tx, session)? else {
         return Ok(None);
     };
-    Ok(settle(tx, &run, trace)?.flatten())
+    if let Some(kill) = settle(tx, &run, trace)? {
+        return Ok(kill);
+    }
+    nudge(tx, run.id, run.task)?;
+    Ok(None)
+}
+
+const NUDGE: &str = "Your turn ended without calling wait, ask or result of the priory MCP server. Call one of them: result to end the step, ask to put a question to a person, or wait to sleep until an event.";
+
+/// Queues one nudge, ahead of any queued event, after a silent turn that Priory typed.
+fn nudge(tx: &Transaction, run: i64, task: i64) -> rusqlite::Result<()> {
+    let (nudgeable, ending): (bool, Option<String>) = tx.query_row(
+        "SELECT runs.nudgeable, tasks.ending FROM runs JOIN tasks ON tasks.id = runs.task
+         WHERE runs.id = ?1",
+        [run],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )?;
+    if !nudgeable {
+        return Ok(());
+    }
+    let text = match ending {
+        Some(ending) => format!("{NUDGE}\n{ending}"),
+        None => NUDGE.to_owned(),
+    };
+    let id = queue_first(tx, task, &text)?;
+    tx.execute("UPDATE outbox SET nudge = 1 WHERE id = ?1", [id])
+        .map(drop)
 }
 
 /// Settles the live run of `session`, whose agent process is gone, as its `Stop` would have, when a
