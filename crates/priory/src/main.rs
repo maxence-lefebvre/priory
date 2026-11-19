@@ -66,7 +66,8 @@ fn main() -> ExitCode {
         ),
         Some("waits") => list(
             "id\ttask\trun\tkind\ton\tcreated",
-            "SELECT id, task, run, kind, coalesce(resource, until, 'task ' || target), created
+            "SELECT id, task, run, kind, coalesce(resource, until, 'task ' || target,
+               printf('%.1f GB free', bytes / 1073741824.0)), created
              FROM waits WHERE fired IS NULL AND withdrawn IS NULL ORDER BY id",
         ),
         Some("desk") => desk(),
@@ -268,6 +269,11 @@ const DESK: &str = "SELECT since, kind, id, task, lane, what,
                  || replace(grants.command, char(10), '\\n')
                FROM grants LEFT JOIN tasks ON tasks.id = grants.task WHERE grants.state = 'waiting'
                UNION ALL
+               SELECT 0, retired, 'retired', id, id, lane,
+                 'its worktree was removed to free disk; it resurrects from ' || branch
+                   || ' when its wait fires'
+               FROM tasks WHERE state = 'asleep' AND retired IS NOT NULL
+               UNION ALL
                SELECT 1, tasks.changed, 'queue', queue.place, tasks.id, tasks.lane,
                  coalesce(tasks.band, '-') || coalesce(': ' || tasks.reason, '')
                FROM tasks JOIN queue USING (id)
@@ -286,9 +292,10 @@ fn tasks(lane: Option<&String>) -> ExitCode {
     let printed = state::open().and_then(|db| {
         state::print(
             &db,
-            "id\tkey\tworkflow\tstep\tstate\tband\tlane\treason\tposition\tgeneration",
+            "id\tkey\tworkflow\tstep\tstate\tband\tlane\treason\tposition\tgeneration\tretired",
             &format!(
-                "{} SELECT id, key, workflow, step, state, band, lane, reason, queue.place, generation
+                "{} SELECT id, key, workflow, step, state, band, lane, reason, queue.place, generation,
+                   retired
                  FROM tasks LEFT JOIN queue USING (id) WHERE ?1 IS NULL OR lane = ?1 ORDER BY {}",
                 queue(),
                 state::START_ORDER

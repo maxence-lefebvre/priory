@@ -186,14 +186,6 @@ impl Setup {
         }
     }
 
-    /// Waits until the daemon answers on its socket, which it does only once its start settled
-    /// every run it found.
-    fn serving(&self) {
-        let reply = self.priory(&["resume", "999"]);
-        let stderr = String::from_utf8_lossy(&reply.stderr);
-        assert!(stderr.contains("there is no task 999"), "{stderr}");
-    }
-
     /// The rows `priory <verb>` prints, each split on tabs, after its header.
     fn rows(&self, verb: &str) -> Vec<Vec<String>> {
         let output = self.priory(&[verb]);
@@ -1002,7 +994,7 @@ fn a_signal_sent_while_the_daemon_is_down_is_applied_when_it_comes_back() {
 }
 
 #[test]
-fn a_run_whose_tmux_session_dies_ends_exited_and_blocks_its_task() {
+fn a_run_whose_tmux_session_dies_ends_exited_and_its_repair_restarts_the_agent() {
     let mut setup = Setup::new("exited");
     setup.publish(&requested(42));
     setup.start();
@@ -1015,16 +1007,10 @@ fn a_run_whose_tmux_session_dies_ends_exited_and_blocks_its_task() {
             .success()
     );
 
-    let runs = setup.until("runs", |rows| {
-        rows.first().is_some_and(|row| row[7] == "exited")
-    });
+    let runs = setup.until("runs", |rows| rows.len() == 2);
+    assert_eq!([&runs[0][7], &runs[1][7]], ["exited", "-"]);
     assert_ne!(runs[0][6], "-");
-    let tasks = setup.rows("tasks");
-    assert_eq!(tasks[0][4], "blocked");
-    assert_eq!(
-        tasks[0][7],
-        "run 1 exited: claude no longer runs in tmux session priory-1"
-    );
+    setup.until("tasks", |rows| rows[0][4] == "running");
 }
 
 #[test]
@@ -1053,14 +1039,20 @@ fn a_derived_lane_is_derived_again_when_the_first_run_gives_the_task_a_branch() 
     setup.until("tasks", |rows| {
         rows[0][4] == "running" && rows[0][6] == "FND/desktop"
     });
-    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 1);
-    assert!(
-        setup
-            .tmux(&["kill-session", "-t", "priory-1"])
-            .status
-            .success()
-    );
-    setup.until("tasks", |rows| rows[0][4] == "blocked");
+    // The second exit follows a repair with no progress, so the task fails onto the desk.
+    for typed in ["Implement the issue.", "Priory repaired this task"] {
+        setup.until("outbox", |rows| {
+            rows.iter()
+                .any(|row| row[3] == "confirmed" && row[4].starts_with(typed))
+        });
+        assert!(
+            setup
+                .tmux(&["kill-session", "-t", "priory-1"])
+                .status
+                .success()
+        );
+    }
+    setup.until("tasks", |rows| rows[0][4] == "failed");
     let desk = setup.priory(&["desk"]);
     let desk = String::from_utf8(desk.stdout).unwrap();
     let mut lines = desk.lines();
@@ -1069,7 +1061,7 @@ fn a_derived_lane_is_derived_again_when_the_first_run_gives_the_task_a_branch() 
         Some("since\tkind\tid\ttask\tlane\twhat\tgeneration")
     );
     let cells: Vec<_> = lines.next().unwrap().split('\t').collect();
-    assert_eq!(cells[1..5], ["blocked", "1", "1", "FND/desktop"]);
+    assert_eq!(cells[1..5], ["failed", "1", "1", "FND/desktop"]);
 }
 
 #[test]
@@ -1085,13 +1077,6 @@ fn a_derived_lane_stays_when_the_task_runs_again_after_lanes_toml_changed() {
     setup.start();
     setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 1);
     assert_eq!(setup.rows("tasks")[0][6], "FND/desktop");
-    assert!(
-        setup
-            .tmux(&["kill-session", "-t", "priory-1"])
-            .status
-            .success()
-    );
-    setup.until("tasks", |rows| rows[0][4] == "blocked");
     fs::write(
         &lanes,
         "[[rules]]\nbranch = \"priory/*\"\nlane = \"OPS/other\"\n",
@@ -1100,14 +1085,12 @@ fn a_derived_lane_stays_when_the_task_runs_again_after_lanes_toml_changed() {
     setup.crash();
     setup.start();
 
-    let deadline = Instant::now() + Duration::from_secs(10);
-    while !setup.priory(&["resume", "1"]).status.success() {
-        assert!(
-            Instant::now() < deadline,
-            "the daemon never took the resume"
-        );
-        std::thread::sleep(Duration::from_millis(100));
-    }
+    assert!(
+        setup
+            .tmux(&["kill-session", "-t", "priory-1"])
+            .status
+            .success()
+    );
 
     setup.until("runs", |rows| rows.len() == 2);
     assert_eq!(setup.rows("tasks")[0][6], "FND/desktop");
@@ -1132,24 +1115,120 @@ fn a_lane_the_request_set_stays_when_the_first_run_gives_the_task_a_branch() {
 }
 
 #[test]
-fn a_run_whose_agent_exits_mid_turn_ends_exited_and_blocks_its_task() {
+fn a_crash_on_a_full_disk_the_sweep_cannot_free_fails_without_a_restart() {
+    let mut setup = Setup::new("repair-disk");
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 1);
+    setup.disk(10);
+
+    assert!(
+        setup
+            .tmux(&["kill-session", "-t", "priory-1"])
+            .status
+            .success()
+    );
+
+    let tasks = setup.until("tasks", |rows| rows[0][4] == "failed");
+    let cause = "disk full (10.0 GB of disk free, keeps 20.0 GB free)";
+    assert_eq!(
+        tasks[0][7],
+        format!(
+            "run 1 exited: claude no longer runs in tmux session priory-1. Cause: {cause}. Action: sweep. The cause persists, so Priory did not restart the agent."
+        )
+    );
+    assert_eq!(
+        repairs(&setup),
+        [[cause, "sweep", "failed"].map(str::to_owned)]
+    );
+    setup.disk(100);
+    std::thread::sleep(Duration::from_millis(1100));
+    assert_eq!(setup.rows("runs").len(), 1);
+    let desk = setup.rows("desk");
+    assert_eq!([&desk[0][1], &desk[0][3]], ["failed", "1"]);
+}
+
+#[test]
+fn a_crash_after_its_repair_leaves_the_task_failed_until_a_revive() {
     let mut setup = Setup::new("crash");
     setup.hold("crash");
     setup.publish(&requested(42));
 
     setup.start();
 
-    let runs = setup.until("runs", |rows| {
-        rows.first().is_some_and(|row| row[7] == "exited")
+    let tasks = setup.until("tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == "failed")
     });
-    assert_ne!(runs[0][6], "-");
-    let tasks = setup.rows("tasks");
-    assert_eq!(tasks[0][4], "blocked");
     assert_eq!(
         tasks[0][7],
-        "run 1 exited: claude no longer runs in tmux session priory-1"
+        "run 2 exited: claude no longer runs in tmux session priory-1; it failed again after its repair, so Priory did not restart the agent"
+    );
+    let runs = setup.rows("runs");
+    assert_eq!([&runs[0][7], &runs[1][7]], ["exited", "exited"]);
+    assert!(setup.typed()[1].starts_with(
+        "Priory repaired this task after: run 1 exited: claude no longer runs in tmux session priory-1. Cause: the harness crashed. Action: restart."
+    ));
+    assert_eq!(
+        repairs(&setup),
+        [["the harness crashed", "restart", "ready"].map(str::to_owned)]
     );
     setup.gone("priory-1");
+    setup.release("crash");
+
+    let revived = setup.priory(&["revive", "1"]);
+
+    assert!(revived.status.success(), "{revived:?}");
+    setup.until("runs", |rows| rows.len() == 3);
+    setup.until("tasks", |rows| rows[0][4] == "running");
+}
+
+/// The `factory.task.repaired` records' cause, action and outcome, oldest first.
+fn repairs(setup: &Setup) -> Vec<[String; 3]> {
+    let output = setup.priory(&["trace"]);
+    String::from_utf8(output.stdout)
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+        .filter(|event| event["type"] == "factory.task.repaired")
+        .map(|event| {
+            ["cause", "action", "outcome"]
+                .map(|field| event["data"][field].as_str().unwrap().to_owned())
+        })
+        .collect()
+}
+
+#[test]
+fn a_crash_out_of_memory_restarts_the_agent_once_room_is_back_with_the_cause_in_its_prompt() {
+    let mut setup = Setup::new("repair-memory");
+    setup.hold("hold-submit");
+    setup.publish(&requested(42));
+    setup.start();
+    setup.written("fake/pending");
+    setup.memory(1);
+    setup.hold("crash");
+
+    setup.release("hold-submit");
+
+    let tasks = setup.until("tasks", |rows| {
+        rows[0][4] == "ready" && rows[0][7].starts_with("waits for room: 1.0 GB of memory free")
+    });
+    assert_eq!(setup.rows("runs")[0][7], "exited");
+    assert_eq!(setup.rows("runs").len(), 1, "{tasks:?}");
+    let cause = "out of memory (1.0 GB of memory free, needs 4.0 GB and keeps 6.4 GB free)";
+    assert_eq!(
+        repairs(&setup),
+        [[cause, "wait for room", "ready"].map(str::to_owned)]
+    );
+    setup.release("crash");
+    setup.memory(60);
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 2);
+    assert_eq!(
+        setup.typed()[1],
+        format!(
+            "Priory repaired this task after: run 1 exited: claude no longer runs in tmux session priory-1. Cause: {cause}. Action: wait for room. Check the worktree, then continue.\nEnd this step by calling the result tool of the priory MCP server with one of these outcomes: failed, passed.\n"
+        )
+    );
+    assert_eq!(setup.rows("tasks")[0][4], "running");
 }
 
 #[test]
@@ -2333,7 +2412,12 @@ fn a_run_that_shows_a_permission_prompt_ends_and_blocks_its_task() {
 #[test]
 fn the_desk_lists_an_uncertain_prompt_a_blocked_task_and_an_open_ask_oldest_first() {
     let mut setup = Setup::with_workflow("desk", STEPS);
-    setup.calls(&[serde_json::Value::Null, ask()]);
+    setup.calls(&[
+        json!({ "name": "Bash", "arguments": { "command": "rm -rf /" } }),
+        ask(),
+    ]);
+    setup.hold("undecided");
+    setup.hold("hold-stop");
     setup.hold("hold-submit");
     setup.publish(&requested(42));
     setup.start();
@@ -2342,22 +2426,15 @@ fn the_desk_lists_an_uncertain_prompt_a_blocked_task_and_an_open_ask_oldest_firs
     setup.crash();
     setup.start();
     setup.until("outbox", |rows| with(rows, 3, "uncertain") == 1);
-    setup.serving();
-    setup.release("hold-submit");
-    setup.calls_left(1);
-    // The desk orders by times in whole seconds, so the block must land a second after the prompt.
     std::thread::sleep(Duration::from_millis(1100));
-    setup.hold("hold-submit");
+    setup.release("hold-submit");
 
-    assert!(
-        setup
-            .tmux(&["kill-session", "-t", "priory-1"])
-            .status
-            .success()
-    );
     setup.until("tasks", |rows| {
         rows.first().is_some_and(|row| row[4] == "blocked")
     });
+    std::thread::sleep(Duration::from_millis(1100));
+    setup.hold("hold-submit");
+    setup.release("hold-stop");
     setup.publish(&requested(43));
     std::thread::sleep(Duration::from_millis(1100));
     setup.release("hold-submit");
@@ -2386,7 +2463,7 @@ fn the_desk_lists_an_uncertain_prompt_a_blocked_task_and_an_open_ask_oldest_firs
     );
     assert_eq!(
         desk[1][5],
-        "run 1 exited: claude no longer runs in tmux session priory-1"
+        "run 1 stopped on a permission prompt: Claude needs your permission to use Bash"
     );
     assert_eq!(desk[2][5], r#"Which database? ["sqlite","postgres"]"#);
     assert!(
@@ -2398,16 +2475,13 @@ fn the_desk_lists_an_uncertain_prompt_a_blocked_task_and_an_open_ask_oldest_firs
 #[test]
 fn resume_restarts_a_blocked_task_in_its_session_and_cancel_drops_it_and_ends_its_run() {
     let mut setup = Setup::new("resume");
+    setup.hold("undecided");
+    setup.hold("hold-stop");
+    setup.calls(&[json!({ "name": "Bash", "arguments": { "command": "rm -rf /" } })]);
     setup.publish(&requested(42));
     setup.start();
-    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 2);
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 1);
     let session = setup.rows("runs")[0][4].clone();
-    assert!(
-        setup
-            .tmux(&["kill-session", "-t", "priory-1"])
-            .status
-            .success()
-    );
     setup.until("tasks", |rows| {
         rows.first().is_some_and(|row| row[4] == "blocked")
     });
@@ -2415,15 +2489,15 @@ fn resume_restarts_a_blocked_task_in_its_session_and_cancel_drops_it_and_ends_it
     let resumed = setup.priory(&["resume", "1"]);
 
     assert!(resumed.status.success(), "{resumed:?}");
-    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 3);
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 2);
     let runs = setup.rows("runs");
     assert_eq!([&runs[1][4], &runs[1][7]], [&session, "-"]);
     let args = fs::read_to_string(setup.dir.join("fake/args.log")).unwrap();
     assert!(args.contains(&format!("--resume\n{session}\n")), "{args}");
     assert!(args.contains("--permission-mode\nmanual\n"), "{args}");
     assert_eq!(
-        setup.typed()[2],
-        "A person resumed this task after: run 1 exited: claude no longer runs in tmux session priory-1. Check the worktree, then continue.\nEnd this step by calling the result tool of the priory MCP server with one of these outcomes: failed, passed.\n"
+        setup.typed()[1],
+        "A person resumed this task after: run 1 stopped on a permission prompt: Claude needs your permission to use Bash. Check the worktree, then continue.\nEnd this step by calling the result tool of the priory MCP server with one of these outcomes: failed, passed.\n"
     );
     let again = setup.priory(&["resume", "1"]);
     assert!(!again.status.success());
@@ -2561,6 +2635,9 @@ fn an_answer_to_the_ask_of_a_cancelled_task_is_refused() {
 #[test]
 fn a_resumed_task_gets_its_prompts_although_its_exited_run_left_an_uncertain_one() {
     let mut setup = Setup::new("resume-uncertain");
+    setup.hold("undecided");
+    setup.hold("hold-stop");
+    setup.calls(&[json!({ "name": "Bash", "arguments": { "command": "rm -rf /" } })]);
     setup.hold("hold-submit");
     setup.publish(&requested(42));
     setup.start();
@@ -2569,14 +2646,7 @@ fn a_resumed_task_gets_its_prompts_although_its_exited_run_left_an_uncertain_one
     setup.crash();
     setup.start();
     setup.until("outbox", |rows| with(rows, 3, "uncertain") == 1);
-    setup.serving();
     setup.release("hold-submit");
-    assert!(
-        setup
-            .tmux(&["kill-session", "-t", "priory-1"])
-            .status
-            .success()
-    );
     setup.until("tasks", |rows| {
         rows.first().is_some_and(|row| row[4] == "blocked")
     });
@@ -2806,7 +2876,7 @@ fn an_unknown_condition_is_refused_and_nothing_is_stored() {
     assert!(error, "{text}");
     assert_eq!(
         text,
-        "unknown condition \"moon\": wait on pull_request, checks, review, time, task, linear_comment, linear_state or slack_reply"
+        "unknown condition \"moon\": wait on pull_request, checks, review, time, task, linear_comment, linear_state, slack_reply or disk"
     );
     std::thread::sleep(Duration::from_millis(1500));
     assert!(setup.rows("waits").is_empty());
@@ -5771,6 +5841,77 @@ fn a_run_waits_for_room_while_a_grant_holds_memory() {
     setup.until("tasks", |rows| rows[0][4] == "running");
 }
 
+/// Task 1 sleeps on pull request 7 with a commit on its branch, then the disk runs short while task
+/// 2 waits for room, so the disk stall sweeps.
+fn asleep_when_disk_runs_short(name: &str, spoil: impl FnOnce(&Setup)) -> (Setup, String) {
+    let setup = asleep_on(name, on_pull_7("pull_request"));
+    let commit = setup.commit(1, "widget.txt");
+    spoil(&setup);
+    setup.disk(10);
+    setup.publish(&requested(43));
+    setup.until_banner(|banner| banner.is_some());
+    (setup, commit)
+}
+
+#[test]
+fn a_clean_asleep_task_retires_when_disk_runs_short_and_resurrects_with_its_worktree_and_session() {
+    let (setup, commit) = asleep_when_disk_runs_short("retire", |setup| {
+        setup.calls(&[result("passed")]);
+    });
+    let session = setup.rows("runs")[0][4].clone();
+
+    setup.removed(1);
+
+    let tasks = setup.until("tasks", |rows| rows[0][10] != "-");
+    assert_eq!(tasks[0][4], "asleep");
+    assert!(setup.branches().contains("priory/1"));
+    let retired: Vec<_> = setup
+        .rows("desk")
+        .into_iter()
+        .filter(|row| row[1] == "retired")
+        .map(|row| [row[2].clone(), row[5].clone()])
+        .collect();
+    assert_eq!(
+        retired,
+        [[
+            "1".to_owned(),
+            "its worktree was removed to free disk; it resurrects from priory/1 when its wait fires"
+                .to_owned()
+        ]]
+    );
+
+    setup.disk(100);
+    setup.until("tasks", |rows| rows[1][4] == "done");
+    setup.publish(&closed());
+
+    setup.until("outbox", |rows| {
+        rows.iter()
+            .any(|row| row[2] == "3" && row[3] == "confirmed")
+    });
+    assert_eq!(setup.rows("tasks")[0][10], "-");
+    let head = setup.git(&setup.worktree(1), &["rev-parse", "HEAD"]);
+    assert_eq!(head.trim(), commit);
+    let runs = setup.rows("runs");
+    assert_eq!([&runs[2][1], &runs[2][4]], ["1", &session]);
+    let args = fs::read_to_string(setup.dir.join("fake/args.log")).unwrap();
+    assert!(args.contains(&format!("--resume\n{session}\n")), "{args}");
+}
+
+#[test]
+fn a_dirty_asleep_task_never_retires_and_says_why() {
+    let (setup, _) = asleep_when_disk_runs_short("retire-dirty", |setup| {
+        fs::write(setup.worktree(1).join("notes.txt"), "x\n").unwrap();
+    });
+
+    let tasks = setup.until("tasks", |rows| rows[0][7] != "-");
+
+    assert_eq!(
+        [&tasks[0][4], &tasks[0][7], &tasks[0][10]],
+        ["asleep", "cannot retire: untracked files", "-"]
+    );
+    assert!(setup.worktree(1).join("notes.txt").exists());
+}
+
 #[test]
 fn a_task_that_waited_on_a_linear_issue_is_done_on_its_result_without_a_pull_request() {
     let mut setup = Setup::new("linear-done");
@@ -5821,4 +5962,73 @@ fn a_linear_comment_no_task_owned_before_the_wait_wakes_the_task_at_once() {
         "{:?}",
         setup.typed()
     );
+}
+
+#[test]
+fn a_free_disk_wait_fires_when_room_comes_back() {
+    let mut setup = Setup::new("disk-wait");
+    setup.disk(30);
+    setup.calls(&[wait(json!({ "type": "disk", "gb": 50 }))]);
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("runs", |rows| {
+        rows.first().is_some_and(|row| row[7] == "asleep")
+    });
+    assert_eq!(setup.rows("waits")[0][3..5], ["disk", "50.0 GB free"]);
+    stays_asleep(&setup);
+
+    setup.disk(60);
+
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 2);
+    assert_eq!(
+        setup.typed()[1],
+        "wait 1 fired: 60.0 GB of disk free\nEnd this step by calling the result tool of the priory MCP server with one of these outcomes: failed, passed.\n"
+    );
+}
+
+#[test]
+fn a_revive_into_a_code_step_recreates_a_swept_worktree() {
+    let mut setup = Setup::with_workflow("revive-code-step", AUTONOMOUS);
+    let mut failed = passed_with_evidence();
+    failed["arguments"]["outcome"] = json!("failed");
+    setup.calls(&[failed]);
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == "dropped")
+    });
+    setup.gone("priory-1");
+    let commit = setup.commit(1, "widget.txt");
+    setup.git(
+        &setup.clone(),
+        &["worktree", "remove", setup.worktree(1).to_str().unwrap()],
+    );
+
+    let revived = setup.priory(&["revive", "1", "--step", "open-pr"]);
+
+    assert!(revived.status.success(), "{revived:?}");
+    let actions = setup.until("actions", |rows| rows.len() == 1);
+    assert_eq!(actions[0][4..7], ["opened", "github:owner/repo#7", &commit]);
+    assert_eq!(setup.pushed("priory/1"), commit);
+}
+
+#[test]
+fn an_approval_answered_while_retired_opens_the_pull_request_once_disk_allows() {
+    let mut setup = asked_to_open("retire-approval", OPEN_PR);
+    let commit = setup.commit(1, "widget.txt");
+    setup.crash();
+    setup.disk(10);
+    setup.start();
+    setup.removed(1);
+
+    let answered = setup.priory(&["answer", "1", "open", "--revision", "1"]);
+
+    assert!(answered.status.success(), "{answered:?}");
+    setup.until("tasks", |rows| {
+        rows[0][4] == "ready" && rows[0][7] == "waits for room to add back its worktree"
+    });
+    assert!(setup.rows("actions").is_empty());
+    setup.disk(100);
+    let actions = setup.until("actions", |rows| rows.len() == 1);
+    assert_eq!(actions[0][4..7], ["opened", "github:owner/repo#7", &commit]);
 }

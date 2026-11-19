@@ -67,8 +67,9 @@ Waits. A message kept for a task in any other state waits for the task's next ru
 - `worktrees/<owner>/<name>/<task id>`: one worktree per task, on branch `priory/<task id>`, from
   the remote's default branch. The task's `worktree` names it only when Priory created it. A start
   reuses an existing worktree only when it belongs to Priory's clone and is on that branch. When
-  the folder is gone but the branch is not, as for a revived task the sweep cleaned up, the start
-  adds the worktree back on that branch.
+  the folder is gone but the branch is not, as for a revived task the sweep cleaned up or a retired
+  task, the start adds the worktree back on that branch. A code step does the same before its
+  action runs.
 - `priory.sock`: the socket hooks report to. `signals.spool`: the signals sent while no daemon
   listened, which the next daemon applies first.
 - `daemon.lock`: one daemon per home. A second one waits up to 5 seconds for the lock, then refuses to start.
@@ -484,14 +485,76 @@ Each second, the daemon gives every live run one of these verdicts, in this orde
 
 | Verdict | Detected by | Run ends | Task | Reason |
 | ------- | ----------- | -------- | ---- | ------ |
-| Unexpected exit | the tagged pane is gone, or dead under `remain-on-exit`, and no result, ask or wait ended the turn | `exited` | `blocked` | `run <id> exited: claude no longer runs in tmux session <name>` |
+| Unexpected exit | the tagged pane is gone, or dead under `remain-on-exit`, and no result, ask or wait ended the turn | `exited` | `failed`, then repaired: see Repair | `run <id> exited: claude no longer runs in tmux session <name>` |
 | No `SessionStart` | 60 seconds with no `SessionStart`, as under Trusting a clone | `exited` | `blocked` | `claude showed no SessionStart within 60s; ...` |
 | Permission prompt | a `PermissionPrompt` signal | `permission` | `blocked` | `run <id> stopped on a permission prompt: <message>` |
 | Timeout | a turn older than its step's `timeout` | `timeout` | `blocked` | `run <id> timed out: its turn ran past <n>s` |
 
-Every verdict blocks the task rather than failing it: a person reads the reason on the desk and
-either resumes the task or cancels it. The daemon commits the verdict, then kills the run's tmux
-session, so a crash in between leaves an ended run, which the next start cleans up.
+A verdict blocks the task when a person must act: the trust dialog, a permission the agent lacks,
+or a turn that may be legitimately long. A person reads the reason on the desk and either resumes
+the task or cancels it. An unexpected exit fails the task instead, since the daemon can often tell
+why the agent died and act on it, as under Repair. An exit before the run's `SessionStart` still
+blocks the task: a harness that never came up dies the same way when restarted. The daemon commits
+the verdict, then kills the run's tmux session, so a crash in between leaves an ended run, which the
+next start cleans up.
+
+### Failed or blocked
+
+These ends make a task `failed`:
+
+- An unexpected exit after the run's `SessionStart`, whatever its cause. Its repair decides whether
+  it stays failed.
+- A second unexpected exit of the run its repair restarted, before that run stored a result, ask or
+  wait.
+
+Everything else that stops a task needs a person and makes it `blocked`: no `SessionStart`, an exit
+before `SessionStart`, a permission prompt, a timeout, a run lost twice, a code step's action that
+is not built, a step with no known agent, a trigger with no repo, and a git or tmux error at the
+start of a run. `open-pr`'s own failure is not an end: it is the `failed` outcome, which the
+workflow routes like any other.
+
+### Repair
+
+When an unexpected exit fails a task, the daemon makes one repair attempt. It classifies the cause
+from the room, measured as for admission, after the run's promise is released:
+
+| Cause | Found when | Action | Restarts when |
+| ----- | ---------- | ------ | ------------- |
+| `out of memory (<room>)` | the room has no memory for the agent | `wait for room` | the room check admits the run again |
+| `disk full (<room>)` | the room has no disk | `sweep`: a sweep runs at once, and the room is measured again | the disk is no longer short |
+| `the harness crashed` | the room has space | `restart` | at once |
+
+A cause that is gone, or that the room check will confirm gone before the run starts, makes the task
+`ready` with the prompt `Priory repaired this task after: <reason>. Cause: <cause>. Action:
+<action>. Check the worktree, then continue.` ahead of its other prompts. The next run resumes the
+session of the step's agent, as a resume does. A disk still short after the sweep leaves the task
+`failed` with the reason `<reason>. Cause: <cause>. Action: sweep. The cause persists, so Priory
+did not restart the agent.`
+
+A task gets one repair per run: when the run a repair restarted exits too, before it stored a result,
+ask or wait, the task stays `failed` with `<reason>; it failed again after its repair, so Priory did
+not restart the agent`. Once a run stores a result, ask or wait, a later exit gets a repair again,
+and so does the first exit after a revive. `priory revive` restarts a failed task either way.
+
+Each repair appends a `factory.task.repaired` record to the trace, with its cause, action and
+outcome, `ready` or `failed`, as [the trace schema](trace-schema.md) defines it.
+
+Known limits:
+
+- The cause is read after the agent died, when its own memory is already free. An agent the kernel
+  killed for memory often reads as `the harness crashed`, and still restarts once.
+- A harness that crashes for a reason the room cannot see, such as a bad binary after its first
+  turn, gets one restart before it stays failed.
+- Waiting for room has no deadline: a task waits as any task in the queue does.
+- The daemon ends the run, then repairs in a second transaction, since the sweep runs outside any
+  transaction. A daemon that stops in between leaves the task `blocked` with the exit's reason, as
+  before repair existed.
+- `ready` means the task waits to start its agent, not that the agent started: a cancel or a room
+  that never frees can still stop it.
+- A sweeper task never waits for room, so its memory repair starts it at once.
+- A repair's run lost with its tmux server is replaced by a run that gets a repair of its own.
+- A room that cannot be measured confirms no freed disk, but a crash with an unreadable room reads
+  as `the harness crashed`, and the admission then waits until the room reads again.
 
 A run whose agent is gone after its result, ask or wait ended the turn is not an unexpected exit.
 It settles as its `Stop` would have, as under Moving on, except that a next model step always gets
@@ -525,6 +588,7 @@ task's generation.
 | `memory` | the memory grant | `waits for <N> GB: <command>` | it was requested |
 | `queue` | the task's place in the queue | its band, then its reason when it has one | the task last changed state |
 | `sweep` | the script's run | its command, then `running`, or its status and output, for the open stall | it started |
+| `retired` | the task | `its worktree was removed to free disk; it resurrects from <branch> when its wait fires` | it retired |
 | `worktree` | the worktree's path | why it stays: see Sweep | `-` |
 
 The lane column is the task's lane, and `-` for a `worktree` row.
@@ -566,9 +630,8 @@ The task keeps its id, key, branch, worktree and sessions. Its next run resumes 
 step's agent, like a resume. The agent keeps what it learned in the earlier generation, and the
 revive prompt tells it that the asks and waits it remembers are gone. A new session would lose that
 context, and the worktree already holds the earlier generation's work. When the sweep removed the
-worktree, the next run adds it back from the branch, as under Priory home. A code step starts no
-run, so a revive straight into one, such as `open-pr`, finds no worktree and blocks the task;
-revive it at a model step instead.
+worktree, the next run adds it back from the branch, as under Priory home. A revive straight into a
+code step, such as `open-pr`, adds it back before the action runs.
 
 A withdrawn ask or wait stays in the state file but counts as closed. An answer to a withdrawn ask
 is refused with `ask <id> was withdrawn when task <task> was revived as generation <n>`. An event
@@ -576,8 +639,7 @@ for a withdrawn wait fires nothing: the task keeps it, as it keeps any event tha
 and the next run reads it. `priory asks`, `priory waits` and the desk leave withdrawn ones out. A
 new run never takes over a withdrawn ask or wait.
 
-Nothing fails a task yet: repair (R7.5) will. Until then a revive applies to dropped tasks, and the
-desk's `failed` rows stay empty.
+A failed task is one its repair could not restart, as under Repair.
 
 ## Sweep
 
@@ -606,6 +668,38 @@ keeps the worktree, as `cannot check: <error>`.
 with its reason: `no task <id>`, `task <id> still <state>`, `not a worktree of <clone>`,
 `not recorded as the worktree of task <id>`, `not on branch priory/<id>`, `uncommitted changes`, `untracked files`, `a process runs in it`,
 `unpushed commits` or `not merged`. It reads the refs of the last fetch.
+
+### Retiring asleep tasks
+
+After each sweep, when free disk is at or under the room's disk floor (see Room), the daemon retires
+asleep tasks, the longest asleep first, until the floor is met again. Retiring runs
+`git worktree remove` without force: the worktree goes, and the branch `priory/<id>` and the task's
+sessions stay. A task retires only when its worktree is Priory's, on its branch, has nothing
+uncommitted or untracked, and no process runs in it. The daemon marks the task before it removes the worktree, so a
+crash in between leaves a mark on a folder that still exists, which the next sweep checks again.
+
+Its commits need not be pushed: the branch stays in Priory's clone, on the same disk, and no sweep
+deletes the branch of an active task. Requiring a push would keep most asleep tasks, since an agent
+pushes only at `open-pr`, and pushing is an irreversible step Priory does not take on its own.
+
+A retired task stays `asleep`, with its `retired` time set. It keeps every wait, ask and event, so
+routing, holds and waits treat it as any asleep task, and R4.1's states stay as they are. When its
+wait fires or its ask is answered, it becomes `ready`, as R3.2 says. Its next run adds the worktree
+back from the branch, at the same path, so `claude --resume` finds the session it stored for that
+folder. Starting the run, or a code step's action, clears `retired`. An answer that approves a step
+while the task is retired reads the branch's commit from Priory's clone.
+
+A code step skips the room check, except when it must add a worktree back: while free disk is at or
+under the floor, the task stays `ready` with the reason `waits for room to add back its worktree`,
+or `waits for room: <error>` when the disk cannot be measured,
+and the code steps behind it wait too.
+
+A task that cannot retire gets the reason `cannot retire: <why>`, with the same reasons as the
+sweep's, such as `untracked files`. The daemon sets it, and logs it, only when it changes, so it is
+reported once. A wake clears it.
+
+Retiring runs only at a sweep: when the daemon starts, when a disk stall starts, and every `[sweep]
+every`. A disk that runs short with nothing waiting for room waits for the next sweep.
 
 ### Sweep scripts and the sweeper
 
@@ -787,6 +881,7 @@ prompts.
 | `linear_comment` | `issue`, such as `ENG-7` | `linear.comment.created` on that issue                               |
 | `linear_state` | `issue`, `state`, such as `Done` | `linear.issue.state_changed` on that issue, with `to` equal to `state` |
 | `slack_reply`  | `channel`, `thread_ts`  | `slack.thread.replied` in that thread, which the intake never publishes for its own bot |
+| `disk`         | `gb`, a number above 0  | the daemon's loop, once the room's disk reading shows `gb` GB free (a GB is 1024³ bytes) |
 
 ```json
 { "on": { "type": "linear_state", "issue": "ENG-7", "state": "Done" } }
@@ -819,10 +914,12 @@ pull request never fires a checks wait.
 When the wait is stored, the daemon looks at the events the task kept since the agent's last prompt:
 those not typed yet, and on which no wait fired. The first one that satisfies the wait fires it at
 once, and the time and task conditions are checked at once too. The run then does not sleep: the
-event is typed after its `Stop`.
+event is typed after its `Stop`. A disk wait is checked at the next tick: each tick measures the
+disk with the room's reading, `df` on `PRIORY_HOME`, only while a disk wait is open.
 
 A wait that fires queues one prompt ahead of the task's other queued prompts: the event's line, or
-for time and task, `wait <id> fired: <until> passed` or `wait <id> fired: task <id> is <state>`, then
+for time, task and disk, `wait <id> fired: <until> passed`, `wait <id> fired: task <id> is <state>`
+or `wait <id> fired: <N> GB of disk free`, then
 a line for each event the task kept while it slept. An asleep task becomes `ready`, and its next run
 resumes the session of its step's agent with that prompt. An event that does not satisfy the wait so
 stays kept until the wake.
@@ -830,7 +927,8 @@ stays kept until the wake.
 A check event also carries `failing`: how many of the completed check runs on the head commit had a
 conclusion other than `success`, `neutral` or `skipped` in the same poll.
 
-`priory waits` prints each open wait: id, task, run, kind, what it waits on and when it was stored.
+`priory waits` prints each open wait: id, task, run, kind, what it waits on, such as `50.0 GB free`
+for a disk wait, and when it was stored.
 
 ### Done and checks
 
@@ -908,7 +1006,8 @@ Each time a step ends, the daemon appends one `factory.step.ended` record, as
 [the trace schema](trace-schema.md) defines it, in the transaction that moves the task on. A model
 step ends with its run's result, a human step with its answer, and a code step with its action's
 status, which is the record's `outcome`. A run that ends any other way, such as blocked, lost or
-cancelled, ends no step and appends no record.
+cancelled, ends no step and appends no record. A repair appends a `factory.task.repaired` record
+instead, as under Repair. `priory report` reads only `factory.step.ended` records.
 
 The records live in the `trace` table of the state file, one CloudEvents JSON object per row. R9.3
 keeps the task state in Priory's own SQLite file and the event log in herdr-bus's. A record written
@@ -1037,7 +1136,8 @@ running; end one with `tmux kill-session -t =priory-<task id>` when you mean to.
 
 `priory inbox` prints each entry, oldest first: seq, type, subject, task and outcome.
 `priory tasks` prints each task in start order: id, key, workflow, step, state, band, lane, reason,
-position, the task's place in the queue from 1 when it is `queued` or `ready`, and generation.
+position, the task's place in the queue from 1 when it is `queued` or `ready`, generation, and when
+it retired, for a retired task (see Retiring asleep tasks).
 `priory tasks --lane L` prints only the tasks in lane `L`.
 `priory runs` prints each run: id, task, step, tmux session, harness session (a Codex run's
 thread), started, ended and how it ended. `priory outbox` prints each prompt: id, task, run, state and text, with newlines

@@ -247,7 +247,7 @@ fn open_wait(tx: &Transaction, run: i64) -> rusqlite::Result<Option<i64>> {
 }
 
 const CONDITIONS: &str =
-    "pull_request, checks, review, time, task, linear_comment, linear_state or slack_reply";
+    "pull_request, checks, review, time, task, linear_comment, linear_state, slack_reply or disk";
 
 /// What a resource wait names: its resource, and the head or the state it wants.
 type Named = (String, Option<String>, Option<String>);
@@ -371,6 +371,17 @@ fn wait(
             tx.execute(
                 "INSERT INTO waits (task, run, kind, target) VALUES (?1, ?2, 'task', ?3)",
                 params![run.task, run.id, target],
+            )?;
+        }
+        "disk" => {
+            let Some(gb) = on["gb"].as_f64().filter(|gb| gb.is_finite() && *gb > 0.0) else {
+                return Ok(Err(
+                    "a disk wait needs gb, the free disk in GB to wait for".into()
+                ));
+            };
+            tx.execute(
+                "INSERT INTO waits (task, run, kind, bytes) VALUES (?1, ?2, 'disk', ?3)",
+                params![run.task, run.id, (gb * GB) as i64],
             )?;
         }
         other => {
@@ -633,6 +644,27 @@ pub(crate) fn due(tx: &Transaction) -> rusqlite::Result<()> {
     }
     for (id, task, text) in &fired {
         fire(tx, *id, *task, text, None)?;
+    }
+    Ok(())
+}
+
+const GB: f64 = (1u64 << 30) as f64;
+
+/// Fires every open disk wait that `free` bytes of free disk satisfy.
+pub(crate) fn disk_due(tx: &Transaction, free: u64) -> rusqlite::Result<()> {
+    let fired = tx
+        .prepare(
+            "SELECT waits.id, waits.task FROM waits JOIN tasks ON tasks.id = waits.task
+             WHERE waits.fired IS NULL AND waits.withdrawn IS NULL AND waits.kind = 'disk'
+             AND tasks.state IN ('running', 'asleep') AND waits.bytes <= ?1 ORDER BY waits.id",
+        )?
+        .query_map([free as i64], |row| {
+            Ok((row.get::<_, i64>(0)?, row.get(1)?))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    let text = format!("{:.1} GB of disk free", free as f64 / GB);
+    for (id, task) in fired {
+        fire(tx, id, task, &format!("wait {id} fired: {text}"), None)?;
     }
     Ok(())
 }
@@ -1380,6 +1412,78 @@ pub(crate) fn lost(
         );
         wake(&tx, run.task, &text)?;
         set(&tx, run.task, "ready", None, None)?;
+    }
+    tx.commit()
+}
+
+/// What a repair found about a failed run, what it did, and whether the agent may start again.
+pub(crate) struct Repair {
+    pub cause: String,
+    pub action: &'static str,
+    pub gone: bool,
+}
+
+/// Whether `run` followed a repair of this generation and stored no result, ask or wait.
+pub(crate) fn spent(db: &Connection, run: i64) -> rusqlite::Result<bool> {
+    db.query_row(
+        "SELECT EXISTS (SELECT 1 FROM trace WHERE type = 'factory.task.repaired'
+           AND json_extract(event, '$.data.outcome') = 'ready'
+           AND json_extract(event, '$.data.generation') = (SELECT generation FROM tasks
+             WHERE id = (SELECT task FROM runs WHERE id = ?1))
+           AND json_extract(event, '$.data.run') = (SELECT CAST(max(id) AS TEXT) FROM runs
+             WHERE task = (SELECT task FROM runs WHERE id = ?1) AND id < ?1))
+         AND NOT EXISTS (SELECT 1 FROM results WHERE run = ?1)
+         AND NOT EXISTS (SELECT 1 FROM asks WHERE run = ?1)
+         AND NOT EXISTS (SELECT 1 FROM waits WHERE run = ?1)",
+        [run],
+        |row| row.get(0),
+    )
+}
+
+/// Fails the blocked task of `run`, then makes it ready with the cause in its prompt when `repair` allows.
+pub(crate) fn fail(
+    db: &mut Connection,
+    trace: &Trace,
+    task: i64,
+    run: i64,
+    reason: &str,
+    repair: Option<&Repair>,
+) -> rusqlite::Result<()> {
+    let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let blocked: bool = tx.query_row(
+        "SELECT state = 'blocked' FROM tasks WHERE id = ?1",
+        [task],
+        |row| row.get(0),
+    )?;
+    if !blocked {
+        return Ok(());
+    }
+    let Some(repair) = repair else {
+        let reason = format!(
+            "{reason}; it failed again after its repair, so Priory did not restart the agent"
+        );
+        set(&tx, task, "failed", None, Some(&reason))?;
+        return tx.commit();
+    };
+    let outcome = if repair.gone { "ready" } else { "failed" };
+    trace::repaired(
+        &tx,
+        trace,
+        task,
+        run,
+        [&repair.cause, repair.action, outcome],
+    )?;
+    let found = format!("Cause: {}. Action: {}.", repair.cause, repair.action);
+    if repair.gone {
+        let text = format!(
+            "Priory repaired this task after: {reason}. {found} Check the worktree, then continue."
+        );
+        wake(&tx, task, &text)?;
+        set(&tx, task, "ready", None, None)?;
+    } else {
+        let reason =
+            format!("{reason}. {found} The cause persists, so Priory did not restart the agent.");
+        set(&tx, task, "failed", None, Some(&reason))?;
     }
     tx.commit()
 }
