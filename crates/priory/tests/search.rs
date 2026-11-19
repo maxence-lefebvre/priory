@@ -18,8 +18,7 @@ next = { passed = "done", failed = "stop" }
 
 const AGENT: &str = "+++\ndescription = \"Implements one task.\"\nharness = \"claude-code\"\n+++\n";
 
-const SUMMARIZER: &str =
-    "+++\ndescription = \"Summarizes requests.\"\nharness = \"claude-code\"\nmodel = \"haiku\"\n+++\n";
+const SUMMARIZER: &str = "+++\ndescription = \"Summarizes requests.\"\nharness = \"claude-code\"\nmodel = \"haiku\"\n+++\n";
 
 /// A factory, a bus file, a Priory state file and home, and the fake `claude`, under the test's own
 /// directory. Its tasks come from held CLI requests, so no run starts. Dropping it kills the daemon.
@@ -234,7 +233,10 @@ fn a_tldr_over_the_word_limit_is_refused_with_its_count() {
 
     assert!(!refused.status.success());
     let error = String::from_utf8_lossy(&refused.stderr);
-    assert!(error.contains("181 words") && error.contains("180"), "{error}");
+    assert!(
+        error.contains("181 words") && error.contains("180"),
+        "{error}"
+    );
     assert!(setup.search(&["word"]).is_empty());
     succeeded(&setup.tldr("1", &vec!["word"; 180].join(" ")));
     assert_eq!(setup.search(&["word"]), ["1"]);
@@ -245,8 +247,15 @@ const SUMMARIZED: &str = "name = \"demo\"\n[search]\ntldr = \"summarizer\"\n";
 #[test]
 fn a_new_task_gets_its_tldr_from_the_summarizer_agent_and_its_cost_is_reported() {
     let mut setup = Setup::with("summarized", SUMMARIZED);
-    setup.write("fake/handler", "Speeds up the nightly build by caching crates.\n");
-    setup.request("build", "The nightly build takes an hour. Make it faster.", &[]);
+    setup.write(
+        "fake/handler",
+        "Speeds up the nightly build by caching crates.\n",
+    );
+    setup.request(
+        "build",
+        "The nightly build takes an hour. Make it faster.",
+        &[],
+    );
 
     setup.start();
 
@@ -255,17 +264,28 @@ fn a_new_task_gets_its_tldr_from_the_summarizer_agent_and_its_cost_is_reported()
             == Some("Speeds up the nightly build by caching crates.")
     });
     let asked = fs::read_to_string(setup.dir.join("fake/handler.log")).unwrap();
-    assert!(asked.contains("The nightly build takes an hour. Make it faster."), "{asked}");
+    assert!(
+        asked.contains("The nightly build takes an hour. Make it faster."),
+        "{asked}"
+    );
     let args = fs::read_to_string(setup.dir.join("fake/handler-args.log")).unwrap();
     assert!(args.contains("haiku"), "{args}");
-    until("the summarizer's record", || !setup.records("factory.summarizer.called").is_empty());
+    until("the summarizer's record", || {
+        !setup.records("factory.summarizer.called").is_empty()
+    });
     let data = &setup.records("factory.summarizer.called")[0]["data"];
     assert_eq!([&data["task"], &data["model"]], ["1", "claude-fake-haiku"]);
     setup.write(
         "factory/prices.toml",
         "[claude-fake-haiku]\ninput = 1.0\noutput = 5.0\ncache_read = 0.1\ncache_write = 1.25\n",
     );
-    let report = setup.priory(&["report", &setup.factory(), "--workflow", "implement", "--cost"]);
+    let report = setup.priory(&[
+        "report",
+        &setup.factory(),
+        "--workflow",
+        "implement",
+        "--cost",
+    ]);
     let report = String::from_utf8(report.stdout).unwrap();
     assert!(
         report.contains("1\tsummarizer\tclaude-fake-haiku\t300\t20\t0\t40\t$0.000450"),
@@ -281,7 +301,9 @@ fn a_failing_summarizer_leaves_the_requests_title_and_opening_text() {
 
     setup.start();
 
-    until("the summarizer's record", || !setup.records("factory.summarizer.called").is_empty());
+    until("the summarizer's record", || {
+        !setup.records("factory.summarizer.called").is_empty()
+    });
     let found = setup.found(&["nightly"]);
     assert_eq!(found.len(), 1, "{}", setup.log());
     assert_eq!(found[0][4], "The nightly build takes an hour.");
@@ -290,7 +312,11 @@ fn a_failing_summarizer_leaves_the_requests_title_and_opening_text() {
 #[test]
 fn a_request_that_carries_a_tldr_skips_the_summarizer() {
     let mut setup = Setup::with("request-tldr", SUMMARIZED);
-    setup.request("build", "The nightly build takes an hour.", &["--tldr", "Cache crates in CI."]);
+    setup.request(
+        "build",
+        "The nightly build takes an hour.",
+        &["--tldr", "Cache crates in CI."],
+    );
     setup.request("docs", "Tidy the docs.", &[]);
 
     setup.start();
@@ -302,4 +328,134 @@ fn a_request_that_carries_a_tldr_skips_the_summarizer() {
     let asked = fs::read_to_string(setup.dir.join("fake/handler.log")).unwrap();
     assert!(!asked.contains("nightly"), "{asked}");
     assert_eq!(setup.found(&["crates"])[0][4], "Cache crates in CI.");
+}
+
+/// A fake embedder: one dimension per topic, cats, builds and gates, set when the text names it.
+const EMBEDDER: &str = r#"#!/bin/sh
+text=$(tr 'A-Z' 'a-z')
+printf '%s\n' "$text" >> "$0.log"
+has() { if printf '%s' "$text" | grep -Eq "$1"; then echo 1; else echo 0; fi; }
+printf '[%s, %s, %s, 0.01]\n' "$(has 'cat|kitten|feline')" "$(has 'build|compile|cach')" "$(has 'gate|check')"
+"#;
+
+impl Setup {
+    /// A setup whose factory embeds with the fake embedder at `fake/<name>`.
+    fn embedding(test: &str, name: &str) -> Self {
+        let setup = Self::new(test);
+        setup.embed_with(name, EMBEDDER);
+        setup
+    }
+
+    /// Writes the embedder script `fake/<name>` and makes the factory use it.
+    fn embed_with(&self, name: &str, script: &str) {
+        let path = self.dir.join("fake").join(name);
+        self.write(&format!("fake/{name}"), script);
+        fs::set_permissions(&path, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+        self.write(
+            "factory/factory.toml",
+            &format!(
+                "name = \"demo\"\n[search]\nembeddings = true\ncommand = \"{}\"\n",
+                path.display()
+            ),
+        );
+    }
+
+    /// The texts the fake embedder `fake/<name>` read, one per line.
+    fn embedded(&self, name: &str) -> String {
+        fs::read_to_string(self.dir.join(format!("fake/{name}.log"))).unwrap_or_default()
+    }
+
+    fn stop(&mut self) {
+        if let Some(mut daemon) = self.daemon.take() {
+            daemon.kill().unwrap();
+            daemon.wait().unwrap();
+        }
+    }
+}
+
+#[test]
+fn a_query_that_shares_no_word_with_a_task_finds_it_by_its_vector() {
+    let mut setup = Setup::embedding("vector", "embed");
+    setup.request(
+        "kitten",
+        "Feed the kitten.",
+        &["--tldr", "Feed the kitten twice a day."],
+    );
+    setup.request(
+        "build",
+        "Speed up CI.",
+        &["--tldr", "Speed up the compile step."],
+    );
+
+    setup.start();
+
+    until("the vector match", || setup.search(&["feline"]) == ["1"]);
+}
+
+#[test]
+fn a_task_matched_by_keyword_and_vector_ranks_above_one_matched_either_way() {
+    let mut setup = Setup::embedding("merged", "embed");
+    setup.request("both", "Feed the kitten.", &["--tldr", "Feed the kitten."]);
+    setup.request("vector", "Groom the pets.", &["--tldr", "Brush the cat."]);
+    setup.request(
+        "keyword",
+        "Do it before the kitten wakes.",
+        &["--tldr", "Speed up the compile step."],
+    );
+
+    setup.start();
+
+    until("all three tasks", || setup.search(&["kitten"]).len() == 3);
+    assert_eq!(setup.search(&["kitten"])[0], "1");
+}
+
+#[test]
+fn changing_the_embedder_command_embeds_every_task_again() {
+    let mut setup = Setup::embedding("re-embed", "embed");
+    setup.request(
+        "kitten",
+        "Feed the kitten.",
+        &["--tldr", "Feed the kitten twice a day."],
+    );
+    setup.start();
+    until("the first embedding", || setup.search(&["feline"]) == ["1"]);
+    setup.stop();
+
+    setup.embed_with("other", EMBEDDER);
+    setup.start();
+
+    until("the second embedder's pass", || {
+        setup
+            .embedded("other")
+            .contains("feed the kitten twice a day.")
+    });
+    assert_eq!(setup.search(&["feline"]), ["1"]);
+}
+
+#[test]
+fn a_failing_embedder_leaves_keyword_search_and_search_says_why() {
+    let mut setup = Setup::embedding("embed-fails", "embed");
+    setup.embed_with("broken", "#!/bin/sh\necho 'no GPU here' >&2\nexit 3\n");
+    setup.request(
+        "kitten",
+        "Feed the kitten.",
+        &["--tldr", "Feed the kitten twice a day."],
+    );
+
+    setup.start();
+
+    until("the daemon's log", || setup.log().contains("no GPU here"));
+    let output = setup.priory(&["search", "kitten"]);
+    let why = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        why.contains("embeddings are unavailable") && why.contains("no GPU here"),
+        "{why}"
+    );
+    assert_eq!(setup.search(&["kitten"]), ["1"]);
+    assert_eq!(
+        setup.log().matches("no GPU here").count(),
+        1,
+        "{}",
+        setup.log()
+    );
 }

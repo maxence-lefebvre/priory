@@ -74,6 +74,36 @@ pub fn output_within(command: &mut Command) -> std::io::Result<Option<Output>> {
     Ok(None)
 }
 
+/// Runs `command` with `input` on its stdin, as [`output_within`] does, killing it after `timeout`.
+pub fn fed_within(
+    command: &mut Command,
+    input: &str,
+    timeout: Duration,
+) -> std::io::Result<Option<Output>> {
+    let mut child = command
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .process_group(0)
+        .spawn()?;
+    let group = child.id();
+    let mut stdin = child.stdin.take().expect("stdin is piped");
+    let input = input.to_owned();
+    let (sender, receiver) = mpsc::channel();
+    std::thread::spawn(move || {
+        // A command that exits without reading its input closes the pipe; its output still counts.
+        let _ = stdin.write_all(input.as_bytes());
+        drop(stdin);
+        sender.send(child.wait_with_output())
+    });
+    if let Ok(output) = receiver.recv_timeout(timeout) {
+        return output.map(Some);
+    }
+    crate::script::kill(group);
+    let _ = receiver.recv();
+    Ok(None)
+}
+
 /// Runs `command` and returns its stdout, or an error naming it with its stderr.
 pub(crate) fn run(command: &mut Command) -> Result<String, String> {
     let output = output_within(command)

@@ -24,7 +24,9 @@ pub(crate) fn due(db: &Connection, room: usize) -> rusqlite::Result<Vec<(i64, St
          ORDER BY task LIMIT ?1",
     )?;
     statement
-        .query_map([room as i64], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?
+        .query_map([room as i64], |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+        })?
         .collect()
 }
 
@@ -91,9 +93,13 @@ pub(crate) fn answered(
     id: i64,
     output: Option<&str>,
     status: &str,
+    tokens: &mut dyn FnMut(&str) -> Option<(usize, usize)>,
 ) -> rusqlite::Result<()> {
     let (parsed, usage) = handler::parse(output);
-    let text = parsed["result"].as_str().map(search::cut).unwrap_or_default();
+    let text = parsed["result"]
+        .as_str()
+        .map(|text| search::fit(text, tokens))
+        .unwrap_or_default();
     let status = match (handler::succeeded(&parsed, status), text.is_empty()) {
         (true, false) => "written".to_owned(),
         (true, true) => "the summarizer gave no text".to_owned(),

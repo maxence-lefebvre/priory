@@ -4,7 +4,7 @@ use crate::route;
 use crate::state::{self, Admission, NewRun, Signal};
 use crate::tools::{self, Act, Answer, Call, Done, Repair};
 use crate::trace::Trace;
-use crate::{handler, stall, summary, sweep};
+use crate::{embed, handler, search, stall, summary, sweep};
 use herdr_bus::{Bus, Start};
 use priory_factory::factory::{self, Factory, Harness, PermissionMode, Session};
 use priory_intake::intake::OUTPUT;
@@ -16,6 +16,7 @@ use std::cell::OnceCell;
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::mpsc::RecvTimeoutError;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 const CONSUMER: &str = "priory";
@@ -64,12 +65,20 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
     tools::backfill_endings(&mut db, &factory.workflows)?;
     let bus = Bus::open_default()?;
     state::bands(&mut db, &factory.bands())?;
+    let embedder = factory.search().embedder().map(|spec| embed::name(&spec));
+    search::configure(&db, embedder.as_deref())?;
     if once {
         drain(&bus, &mut db, factory)?;
         return Ok(());
     }
     let home = runtime::home();
     let listening = runtime::listen(&home)?;
+    let embedders = Arc::new(Mutex::new(embed::Lazy::new(&home)));
+    if let Some(name) = embedder.clone() {
+        let embedders = Arc::clone(&embedders);
+        std::thread::spawn(move || embed_all(&name, &embedders));
+    }
+    let tokens = |text: &str| embed::tokens_shared(&embedders, embedder.as_deref()?, text);
     let trace = Trace {
         factory,
         revision: runtime::revision(&factory.dir),
@@ -94,7 +103,8 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
         runtime::kill(&tmux);
     }
     runtime::replay(&home, |line| {
-        let (_, kill) = take(&mut db, line, &trace).map_err(|error| error.to_string())?;
+        let (_, kill) =
+            take(&mut db, line, &trace, &embedders).map_err(|error| error.to_string())?;
         kill.inspect(|tmux| runtime::kill(tmux));
         Ok(())
     })?;
@@ -141,7 +151,8 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
             script::kill(pid);
         }
         let output = runtime::answer(&summaries, id);
-        summary::answered(&mut db, &trace, id, output.as_deref(), handler::INTERRUPTED)?;
+        let status = handler::INTERRUPTED;
+        summary::answered(&mut db, &trace, id, output.as_deref(), status, &mut &tokens)?;
         runtime::forget(&summaries, id);
     }
     let mut summarizing = Vec::new();
@@ -152,11 +163,11 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
     loop {
         drain(&bus, &mut db, factory)?;
         while let Ok(line) = listening.lines.try_recv() {
-            apply(&mut db, line, &trace)?;
+            apply(&mut db, line, &trace, &embedders)?;
         }
         tend(&mut db, &trace, &share, &home, &scope)?;
         handle_stalls(&mut db, &trace, &home, &mut stalls)?;
-        summarize(&mut db, &trace, &summaries, &mut summarizing)?;
+        summarize(&mut db, &trace, &summaries, &mut summarizing, &mut &tokens)?;
         if sweep_scripts(&db, factory, &home, &mut scripts)? {
             swept = None;
         }
@@ -173,10 +184,50 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
             sweep::retire(&db, &home, short)?;
         }
         match listening.lines.recv_timeout(EVERY) {
-            Ok(line) => apply(&mut db, line, &trace)?,
+            Ok(line) => apply(&mut db, line, &trace, &embedders)?,
             Err(RecvTimeoutError::Timeout) => {}
             Err(RecvTimeoutError::Disconnected) => return Err("the signal socket closed".into()),
         }
+    }
+}
+
+/// How long the embedding thread waits between looks for TL;DRs to embed.
+const EMBED_EVERY: Duration = Duration::from_secs(1);
+
+/// How long the embedding thread waits after its embedder failed.
+const EMBED_RETRY: Duration = Duration::from_secs(60);
+
+/// Embeds, in the background, each task whose vector by the embedder `name` is missing or stale.
+/// A failure is logged once, recorded for `priory search`, and retried later.
+fn embed_all(name: &str, embedders: &Mutex<embed::Lazy>) {
+    let db = match state::open() {
+        Ok(db) => db,
+        Err(error) => return eprintln!("priory daemon: embeddings are unavailable: {error}"),
+    };
+    loop {
+        let pass = (|| -> Result<(), String> {
+            let stale = search::stale(&db, name).map_err(|error| error.to_string())?;
+            for (task, text) in stale {
+                let vector = embed::embed_shared(embedders, name, &text, true)?;
+                search::store(&db, task, name, &text, &vector)
+                    .map_err(|error| error.to_string())?;
+            }
+            Ok(())
+        })();
+        let wait = match &pass {
+            Ok(()) => EMBED_EVERY,
+            Err(_) => EMBED_RETRY,
+        };
+        match search::failed(&db, name, pass.as_ref().err().map(String::as_str)) {
+            Ok(true) => {
+                if let Err(error) = &pass {
+                    eprintln!("priory daemon: embeddings are unavailable: {error}");
+                }
+            }
+            Ok(false) => {}
+            Err(error) => eprintln!("priory daemon: cannot record the embedder's state: {error}"),
+        }
+        std::thread::sleep(wait);
     }
 }
 
@@ -187,6 +238,7 @@ fn summarize(
     trace: &Trace,
     dir: &Path,
     calls: &mut Vec<(i64, Script)>,
+    tokens: &mut dyn FnMut(&str) -> Option<(usize, usize)>,
 ) -> Result<(), Error> {
     for (id, mut script) in std::mem::take(calls) {
         let Some((status, log)) = script.poll() else {
@@ -199,7 +251,7 @@ fn summarize(
             format!("{status}: {log}")
         };
         let output = runtime::answer(dir, id);
-        summary::answered(db, trace, id, output.as_deref(), &status)?;
+        summary::answered(db, trace, id, output.as_deref(), &status, tokens)?;
         runtime::forget(dir, id);
     }
     let Some(model) = summary::model(trace.factory) else {
@@ -218,7 +270,7 @@ fn summarize(
             }
             Err(error) => {
                 let status = format!("cannot start: {error}");
-                summary::answered(db, trace, id, None, &status)?;
+                summary::answered(db, trace, id, None, &status, tokens)?;
                 runtime::forget(dir, id);
             }
         }
@@ -371,8 +423,13 @@ fn log_of(home: &Path, id: i64) -> std::path::PathBuf {
 
 /// Applies a line from the socket and replies to its sender. A run its line ended is killed after
 /// the reply, so the hook that sent it is not killed first.
-fn apply(db: &mut Connection, line: Line, trace: &Trace) -> Result<(), Error> {
-    let (reply, kill) = take(db, &line.text, trace)?;
+fn apply(
+    db: &mut Connection,
+    line: Line,
+    trace: &Trace,
+    embedders: &Mutex<embed::Lazy>,
+) -> Result<(), Error> {
+    let (reply, kill) = take(db, &line.text, trace, embedders)?;
     let _ = line.applied.send(reply);
     kill.inspect(|tmux| runtime::kill(tmux));
     Ok(())
@@ -393,13 +450,21 @@ enum Input {
 /// Applies one line and returns its reply, with a tmux session to kill. A signal's reply is `ok`;
 /// a call's or an answer's is the JSON of its `Result`. A line that is none of them is reported
 /// and dropped.
-fn take(db: &mut Connection, line: &str, trace: &Trace) -> Result<(String, Option<String>), Error> {
+fn take(
+    db: &mut Connection,
+    line: &str,
+    trace: &Trace,
+    embedders: &Mutex<embed::Lazy>,
+) -> Result<(String, Option<String>), Error> {
     let replied = |result: Result<String, String>| {
         serde_json::to_string(&result).expect("a result serializes")
     };
     match serde_json::from_str::<Input>(line) {
         Ok(Input::Signal(signal)) => Ok(("ok".to_owned(), state::signal(db, &signal, trace)?)),
-        Ok(Input::Call(call)) => Ok((replied(tools::call(db, &call, trace.factory)?), None)),
+        Ok(Input::Call(call)) => Ok((
+            replied(tools::call(db, &call, trace.factory, embedders)?),
+            None,
+        )),
         Ok(Input::Answer(answer)) => Ok((
             replied(tools::answer(db, &answer, trace, &|worktree, branch| {
                 runtime::kept_head(&runtime::home(), worktree, branch)

@@ -3412,7 +3412,10 @@ fn the_mcp_server_lists_its_tools() {
         .iter()
         .map(|tool| tool["name"].as_str().unwrap())
         .collect();
-    assert_eq!(names, ["result", "ask", "wait", "compact", "tldr", "search"]);
+    assert_eq!(
+        names,
+        ["result", "ask", "wait", "compact", "tldr", "search"]
+    );
     let on = &replies[1]["result"]["tools"][2]["inputSchema"]["properties"]["on"];
     assert_eq!(
         on["properties"]["type"]["enum"],
@@ -7424,7 +7427,8 @@ fn a_factory_without_a_handler_never_calls_one() {
 }
 
 #[test]
-fn the_tldr_tool_refuses_a_tldr_over_the_limit_with_its_count_then_stores_one_the_search_tool_finds() {
+fn the_tldr_tool_refuses_a_tldr_over_the_limit_with_its_count_then_stores_one_the_search_tool_finds()
+ {
     let mut setup = Setup::new("tldr-tool");
     let long = vec!["gate"; 181].join(" ");
     setup.calls(&[
@@ -7442,7 +7446,10 @@ fn the_tldr_tool_refuses_a_tldr_over_the_limit_with_its_count_then_stores_one_th
         std::thread::sleep(Duration::from_millis(50));
     }
     let (refused, error) = reply(&setup.replies()[0]);
-    assert!(error && refused.contains("181 words") && refused.contains("180"), "{refused}");
+    assert!(
+        error && refused.contains("181 words") && refused.contains("180"),
+        "{refused}"
+    );
     let (stored, error) = reply(&setup.replies()[1]);
     assert!(!error, "{stored}");
     let session = setup.rows("runs")[0][4].clone();
@@ -7454,5 +7461,9 @@ fn the_tldr_tool_refuses_a_tldr_over_the_limit_with_its_count_then_stores_one_th
     assert!(!error, "{found}");
     let rows: Vec<&str> = found.lines().skip(1).collect();
     assert_eq!(rows.len(), 1, "{found}");
-    assert!(rows[0].starts_with("1\t") && rows[0].ends_with("Rework the done gate so it ends on a close."), "{found}");
+    assert!(
+        rows[0].starts_with("1\t")
+            && rows[0].ends_with("Rework the done gate so it ends on a close."),
+        "{found}"
+    );
 }

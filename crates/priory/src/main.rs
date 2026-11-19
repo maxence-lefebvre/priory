@@ -1,5 +1,5 @@
 use priory_core::memory::Gate;
-use priory_core::{daemon, report, search, stall, state, sweep, tools};
+use priory_core::{daemon, embed, report, search, stall, state, sweep, tools};
 use priory_factory::{factory, rules};
 use priory_intake::{intake, request};
 use priory_runtime::{mcp, runtime};
@@ -506,8 +506,12 @@ fn tldr(task: &str, text: &str) -> ExitCode {
     let Ok(task) = task.parse() else {
         return usage();
     };
+    let embedders = embed::Shared::new(embed::Lazy::new(&runtime::home()));
     let set = state::open()
-        .and_then(|db| search::set(&db, task, text))
+        .and_then(|db| {
+            let tokens = search::tokens(&db, &embedders, text);
+            search::set(&db, task, text, tokens)
+        })
         .map(|done| println!("{done}"));
     exit("tldr", set)
 }
@@ -534,9 +538,16 @@ fn search(args: Vec<String>) -> ExitCode {
     let Some(query) = query else {
         return usage();
     };
+    let embedders = embed::Shared::new(embed::Lazy::new(&runtime::home()));
+    let mut embed = |name: &str, text: &str| embed::embed_shared(&embedders, name, text, true);
     let printed = state::open()
-        .and_then(|db| search::search(&db, &query, &states, limit))
-        .map(|table| print!("{table}"));
+        .and_then(|db| search::search(&db, &query, &states, limit, &mut embed))
+        .map(|found| {
+            if let Some(why) = found.unavailable {
+                eprintln!("priory search: embeddings are unavailable, so this matched keywords only: {why}");
+            }
+            print!("{}", found.table);
+        });
     exit("search", printed)
 }
 
