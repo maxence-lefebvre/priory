@@ -1,4 +1,5 @@
 use crate::memory::{self, Gate};
+use crate::otlp;
 use crate::room::Share;
 use crate::route;
 use crate::state::{self, Admission, NewRun, Signal};
@@ -33,6 +34,8 @@ const TIMEOUT: Duration = Duration::from_secs(3 * 3600);
 const STALLED: Duration = Duration::from_secs(600);
 /// How long a handler call may take.
 const HANDLER_TIMEOUT: Duration = Duration::from_secs(120);
+/// How long the exporter waits after a failed send before it tries again.
+const EXPORT_RETRY: Duration = Duration::from_secs(5);
 
 /// What the daemon watches for stalls: each live run's last screen and when it changed, and the
 /// handler calls in flight.
@@ -48,6 +51,13 @@ struct Handling {
     run: i64,
     script: Script,
     started: Instant,
+}
+
+/// The OTLP exporter's send in flight, with the last record it carries, and when it may send again.
+struct Export {
+    endpoint: String,
+    sending: Option<(std::process::Child, i64)>,
+    after: Instant,
 }
 
 type Error = Box<dyn std::error::Error>;
@@ -162,6 +172,11 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
     }
     let mut summarizing = Vec::new();
     let mut stalls = Stalls::default();
+    let mut export = factory.otlp().map(|endpoint| Export {
+        endpoint: endpoint.trim_end_matches('/').to_owned(),
+        sending: None,
+        after: Instant::now(),
+    });
     let mut scripts = Vec::new();
     let every = factory.sweep().every.unwrap_or(SWEEP);
     let mut swept: Option<Instant> = None;
@@ -173,6 +188,9 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
         tend(&mut db, &trace, &share, &home, &scope)?;
         handle_stalls(&mut db, &trace, &home, &mut stalls)?;
         summarize(&mut db, &trace, &summaries, &mut summarizing, counter)?;
+        if let Some(export) = &mut export {
+            send_spans(&db, &trace, &home, export)?;
+        }
         if sweep_scripts(&db, factory, &home, &mut scripts)? {
             swept = None;
         }
@@ -377,6 +395,78 @@ fn handle_stalls(
                 handler::answered(db, trace, id, None, &status, false)?;
                 runtime::forget(&dir, id);
             }
+        }
+    }
+    Ok(())
+}
+
+/// Sends the trace records past the endpoint's cursor as OTLP spans, one request at a time. The
+/// cursor moves only once `curl` reports success, so a failed send is retried after `EXPORT_RETRY`.
+fn send_spans(
+    db: &Connection,
+    trace: &Trace,
+    home: &Path,
+    export: &mut Export,
+) -> Result<(), Error> {
+    if let Some((mut child, seq)) = export.sending.take() {
+        let status = match child.try_wait() {
+            Ok(None) => {
+                export.sending = Some((child, seq));
+                return Ok(());
+            }
+            Ok(Some(status)) => status,
+            Err(error) => {
+                eprintln!("priory daemon: sending spans: {error}");
+                export.after = Instant::now() + EXPORT_RETRY;
+                return Ok(());
+            }
+        };
+        let read = |pipe: Option<&mut dyn std::io::Read>| {
+            let mut text = String::new();
+            pipe.map(|pipe| pipe.read_to_string(&mut text));
+            text.trim().to_owned()
+        };
+        let code = read(child.stdout.as_mut().map(|pipe| pipe as _));
+        let stderr = read(child.stderr.as_mut().map(|pipe| pipe as _));
+        let endpoint = &export.endpoint;
+        // OTLP/HTTP: a 4xx other than 408 and 429 means the request will never be accepted.
+        let rejected = code.starts_with('4') && code != "408" && code != "429";
+        if status.success() && code.starts_with('2') {
+            otlp::sent(db, endpoint, seq)?;
+        } else if status.success() && rejected {
+            eprintln!(
+                "priory daemon: {endpoint} rejected spans with HTTP {code}, so they are skipped"
+            );
+            otlp::sent(db, endpoint, seq)?;
+        } else {
+            let detail = if status.success() {
+                format!("HTTP {code}")
+            } else {
+                status.to_string()
+            };
+            eprintln!("priory daemon: sending spans to {endpoint} failed ({detail}): {stderr}");
+            export.after = Instant::now() + EXPORT_RETRY;
+        }
+    }
+    if Instant::now() < export.after {
+        return Ok(());
+    }
+    let Some((seq, request)) = otlp::pending(db, &export.endpoint, trace)? else {
+        return Ok(());
+    };
+    let Some(request) = request else {
+        otlp::sent(db, &export.endpoint, seq)?;
+        return Ok(());
+    };
+    let body = home.join("otlp.json");
+    let url = format!("{}/v1/traces", export.endpoint);
+    let started =
+        std::fs::write(&body, request.to_string()).and_then(|()| runtime::post_json(&url, &body));
+    match started {
+        Ok(child) => export.sending = Some((child, seq)),
+        Err(error) => {
+            eprintln!("priory daemon: cannot send spans to {url}: {error}");
+            export.after = Instant::now() + EXPORT_RETRY;
         }
     }
     Ok(())
@@ -863,6 +953,17 @@ fn start(
         Harness::ClaudeCode => None,
     };
     let agent = &agent.value;
+    let env: Vec<String> = factory
+        .otlp()
+        .map(|_| {
+            let ids = format!("priory.task.id={},priory.run.id={run}", admission.task);
+            match std::env::var("OTEL_RESOURCE_ATTRIBUTES") {
+                Ok(own) if !own.is_empty() => format!("OTEL_RESOURCE_ATTRIBUTES={own},{ids}"),
+                _ => format!("OTEL_RESOURCE_ATTRIBUTES={ids}"),
+            }
+        })
+        .into_iter()
+        .collect();
     let permissions = serde_json::to_value(&agent.permissions).expect("permissions serialize");
     Ok(runtime::launch(
         harness,
@@ -882,6 +983,7 @@ fn start(
                 .default_mode
                 .map_or("manual", PermissionMode::as_str),
             scope,
+            env: &env,
         },
     ))
 }

@@ -30,7 +30,6 @@ pub(crate) fn due(db: &Connection, room: usize) -> rusqlite::Result<Vec<(i64, St
         .collect()
 }
 
-/// Records that `task` gets no summary, with why.
 pub(crate) fn skipped(db: &Connection, task: i64, why: &str) -> rusqlite::Result<()> {
     db.execute(
         "INSERT INTO summaries (task, answered, status)
@@ -40,7 +39,6 @@ pub(crate) fn skipped(db: &Connection, task: i64, why: &str) -> rusqlite::Result
     .map(drop)
 }
 
-/// Records a summarizer call on `task` and returns its id.
 pub(crate) fn called(db: &Connection, task: i64) -> rusqlite::Result<i64> {
     db.query_row(
         "INSERT INTO summaries (task) VALUES (?1) RETURNING id",
@@ -49,7 +47,6 @@ pub(crate) fn called(db: &Connection, task: i64) -> rusqlite::Result<i64> {
     )
 }
 
-/// Records the process group of summarizer call `id` and its start time.
 pub(crate) fn spawned(
     db: &Connection,
     id: i64,

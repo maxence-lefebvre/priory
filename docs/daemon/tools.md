@@ -22,7 +22,8 @@ nothing.
   the compact follows their answer or event. Compacting is described under Compact in Outbox.
 - `tldr(text)` replaces the task's TL;DR, for when the work drifted from the request. `search(query,
   states?, limit?)` finds tasks. Neither ends the turn, and either can come after a result, an ask or
-  a wait. See [search.md](search.md).
+  a wait. `priory mcp` answers both itself from the state file, without the daemon. See
+  [search.md](search.md).
 
 A run holds at most one of a result, an open ask and an open wait. Any later call is refused.
 

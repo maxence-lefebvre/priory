@@ -26,6 +26,6 @@ empty name, `:memory:` or a `file:` URI, which SQLite may not keep on disk.
 - [tools.md](tools.md): the MCP tools, moving between steps, code steps and approvals.
 - [waits.md](waits.md): asks and answers, wait conditions, and the checks gate before `done`.
 - [outbox.md](outbox.md): prompt states and how the daemon types a prompt.
-- [trace.md](trace.md): trace records, token counts and `priory report`.
+- [trace.md](trace.md): trace records, token counts, `priory report` and the OpenTelemetry export.
 - [search.md](search.md): TL;DRs, the summarizer, `priory search`, and the optional embeddings.
 - [services.md](services.md): running Priory as systemd user services, and the listing commands.

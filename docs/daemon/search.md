@@ -19,8 +19,10 @@ can set it:
 Every writer goes through one limit. With the in-process `model` on, Priory counts tokens with the
 model's tokenizer, and the limit is the input the model was trained on (256 tokens for
 all-MiniLM-L6-v2). Otherwise the limit is 180 words. The tool and the CLI refuse a longer TL;DR
-with its count and the limit. A summarizer answer is cut at the limit. A request's `tldr` is cut at
-180 words, since the daemon routes requests without the model.
+with its count and the limit. A summarizer answer and a request's `tldr` are cut, word by word, to
+fit. The tokenizer is a small file apart from the model's weights: the daemon downloads it when it
+starts, and counting never waits for the model. Until it is downloaded, or when it cannot load,
+TL;DRs count words, and the daemon logs why once.
 
 ## The summarizer
 
@@ -57,6 +59,10 @@ prints `task`, `key`, `state`, `step` and the TL;DR, best match first, 10 rows u
 says otherwise. `--state` keeps tasks in the states it names. The `search(query, states?, limit?)`
 tool returns the same table.
 
+The agent's own `priory mcp` process answers the `tldr` and `search` tools from the state file, as
+the CLI does, instead of sending them to the daemon. A slow embedder command or a model loading
+then holds up that agent's call alone, never the daemon.
+
 ## Embeddings
 
 Embeddings are opt-in:
@@ -76,12 +82,14 @@ may take 30 seconds. `priory check` refuses a `[search]` table that names both `
 With embeddings on, a daemon thread embeds each task's TL;DR, or its fallback, and stores the
 vector with the embedder's name and the text it read. It looks for new or changed texts every
 second. Changing `model` or `command` makes every stored vector stale, so the thread embeds every
-task again once. Meanwhile, search matches the tasks it has not reached by keyword alone.
+task again once. A search compares only vectors of the current embedder and of the task's current
+text, so a task whose TL;DR changed matches by keyword alone until the thread reaches it.
 
 A search embeds the query with the same embedder and compares it with each stored vector one by
 one in Rust, with cosine similarity. A task matches by vector at 0.3 or more. The keyword and the
 vector rankings then merge by reciprocal rank fusion: a task scores `1 / (60 + rank)` in each
-ranking it is in, so a task matched both ways comes first.
+ranking it is in, so a match from both rankings adds both scores. Each ranking hands the fusion
+its best 200 tasks, or `--limit` of them when that is larger.
 
 A missing model, a failing command or a download failure never blocks a task. The daemon logs it
 once, records why, and tries again a minute later. Until then `priory search` matches by keyword,
@@ -93,7 +101,8 @@ first line.
 `model` runs in process with [candle](https://github.com/huggingface/candle) and the Hugging Face
 `tokenizers` crate, both pure Rust, on the CPU. Priory downloads the model's `config.json`,
 `tokenizer.json`, `sentence_bert_config.json` and `model.safetensors` with `curl` at first use, into
-`PRIORY_HOME/models`, and loads them from there afterwards. Nothing is fetched at build time, so a
+`PRIORY_HOME/models`, and loads them from there afterwards. Only the daemon downloads, each file into
+a temporary file of its own that it renames when complete. Nothing is fetched at build time, so a
 Nix build without network works. It pools the token vectors by their mean and normalizes the result,
 as sentence-transformers does. Runtimes such as `ort` (ONNX Runtime) download a native library at
 build time, which a Nix sandbox refuses.
@@ -101,10 +110,10 @@ build time, which a Nix sandbox refuses.
 The runtime sits behind the `model` cargo feature, off by default: `cargo build --release
 --features model`. On a 12-core machine it adds about 25 seconds to a clean release build (2 minutes
 2 seconds to 2 minutes 27 seconds of wall time, and 3.2 times the CPU time), and it grows the binary
-from 9.9 MB to 18.3 MB. all-MiniLM-L6-v2 takes 88 MB on disk and about 43 ms per TL;DR on that CPU.
-A priory built without the feature reports embeddings unavailable for `model`, and works with
+from 9.9 MB to 18.3 MB. all-MiniLM-L6-v2 takes 88 MB on disk and 30 to 45 ms per TL;DR on that
+CPU. A priory built without the feature reports embeddings unavailable for `model`, and works with
 `command`.
 
-The daemon's background thread loads the model. The `search` and `tldr` tools never wait for it:
-while it loads, or embeds a TL;DR at that moment, `search` matches by keyword and says so, and
-`tldr` counts words. `priory search` and `priory tldr` load their own copy, about 0.2 seconds.
+`priory search` and the `search` tool load their own copy of the model for each query, about 0.15
+seconds with its files on disk. Before the daemon has downloaded them, they match by keyword and say
+that the model is not downloaded yet.

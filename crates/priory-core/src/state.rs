@@ -10,7 +10,7 @@ use std::collections::BTreeMap;
 use std::io::Write;
 use std::time::Duration;
 
-const VERSION: i64 = 27;
+const VERSION: i64 = 28;
 
 const SCHEMA: &str = "
 CREATE TABLE tasks (
@@ -415,8 +415,17 @@ ALTER TABLE outbox ADD COLUMN compact INTEGER NOT NULL DEFAULT 0;
 PRAGMA user_version = 26;
 ";
 
-// Search: the TL;DR, its keyword index, summarizer calls and embeddings.
+// How far each OTLP endpoint has received the trace, by the last `trace.seq` it accepted.
 const SCHEMA_27: &str = "
+CREATE TABLE IF NOT EXISTS exports (
+  endpoint TEXT PRIMARY KEY,
+  seq      INTEGER NOT NULL
+);
+PRAGMA user_version = 27;
+";
+
+// Search: the TL;DR, its keyword index, summarizer calls and embeddings.
+const SCHEMA_28: &str = "
 ALTER TABLE tasks ADD COLUMN tldr TEXT;
 CREATE VIEW task_text AS SELECT tasks.id AS task,
   coalesce(json_extract(inbox.data, '$.title'), '') AS title,
@@ -461,14 +470,14 @@ CREATE TABLE vectors (
   text     TEXT NOT NULL,
   vector   BLOB NOT NULL
 );
-PRAGMA user_version = 27;
+PRAGMA user_version = 28;
 ";
 /// Each schema change in order: a file at version `n` applies those from index `n` on.
 const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA, SCHEMA_2, SCHEMA_3, SCHEMA_4, SCHEMA_5, SCHEMA_6, SCHEMA_7, SCHEMA_8, SCHEMA_9,
     SCHEMA_10, SCHEMA_11, SCHEMA_12, SCHEMA_13, SCHEMA_14, SCHEMA_15, SCHEMA_16, SCHEMA_17,
     SCHEMA_18, SCHEMA_19, SCHEMA_20, SCHEMA_21, SCHEMA_22, SCHEMA_23, SCHEMA_24, SCHEMA_25,
-    SCHEMA_26, SCHEMA_27,
+    SCHEMA_26, SCHEMA_27, SCHEMA_28,
 ];
 
 /// The order the queue starts tasks in: band, then a person's order, then age. A band the factory

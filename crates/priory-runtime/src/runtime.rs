@@ -99,6 +99,38 @@ pub fn fed_within(
     Ok(None)
 }
 
+/// Starts `curl` POSTing the JSON in `body` to `url`, without waiting for it. It prints the HTTP
+/// status on stdout. `curl` gives up after the command timeout, and `--disable` skips a `.curlrc`.
+pub fn post_json(url: &str, body: &Path) -> std::io::Result<std::process::Child> {
+    Command::new("curl")
+        .args([
+            "--disable",
+            "--silent",
+            "--show-error",
+            "--output",
+            "/dev/null",
+        ])
+        .args([
+            "--write-out",
+            "%{http_code}",
+            "--connect-timeout",
+            "10",
+            "--max-time",
+        ])
+        .arg(command_timeout().as_secs().max(1).to_string())
+        .args([
+            "--header",
+            "Content-Type: application/json",
+            "--data-binary",
+        ])
+        .arg(format!("@{}", body.display()))
+        .arg(url)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+}
+
 /// Runs `command` and returns its stdout, or an error naming it with its stderr.
 pub(crate) fn run(command: &mut Command) -> Result<String, String> {
     fed(command, None)
@@ -323,6 +355,8 @@ pub struct Launch<'a> {
     pub permission_mode: &'a str,
     /// The command that starts the run in its own systemd scope, or none on a host without systemd.
     pub scope: &'a [String],
+    /// Variables the run gets on top of the daemon's own, each `NAME=value`.
+    pub env: &'a [String],
 }
 
 /// A coding agent CLI that Priory runs in tmux, with hooks and tools that report to the daemon.
@@ -490,6 +524,7 @@ pub fn launch(harness: &dyn Harness, launch: &Launch) -> Result<(), String> {
         .arg(format!("PRIORY_HOME={}", launch.home.display()))
         .arg("-e")
         .arg(format!("PRIORY_SESSION={}", launch.session))
+        .args(launch.env.iter().flat_map(|variable| ["-e", variable]))
         .arg("--");
     if let Some(prompt) = launch.prompt {
         // tmux refuses a command over about 16 KiB, so the prompt reaches the harness through a file.
