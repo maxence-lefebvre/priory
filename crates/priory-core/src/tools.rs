@@ -324,12 +324,13 @@ fn wait(
                 "INSERT OR IGNORE INTO owns (task, resource) VALUES (?1, ?2)",
                 params![run.task, resource],
             )?;
-            // The agent's last prompt: an event at or after it counts, one before it does not.
+            // A Linear or Slack event reaches the task only once it waits, so the agent's last
+            // prompt bounds it: an event at or after it counts, one before it does not.
             tx.execute(
                 "INSERT INTO waits (task, run, kind, resource, head_sha, state, since)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, coalesce(
-                   (SELECT max(confirmed) FROM outbox WHERE task = ?1),
-                   (SELECT started FROM runs WHERE id = ?2)))",
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, iif(?3 IN ('linear_comment', 'linear_state', 'slack_reply'),
+                   coalesce((SELECT max(confirmed) FROM outbox WHERE task = ?1),
+                     (SELECT started FROM runs WHERE id = ?2)), NULL))",
                 params![run.task, run.id, kind, resource, head, state],
             )?;
         }
