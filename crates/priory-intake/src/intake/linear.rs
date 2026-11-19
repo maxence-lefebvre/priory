@@ -20,7 +20,7 @@ const COMMENTS: &str = "linear.comments";
 const FIRST: u64 = 50;
 
 const ISSUE: &str = "fragment issue on Issue { id identifier title url createdAt updatedAt \
-    team { key } state { name } labels { nodes { name } } creator { displayName } }";
+    team { key } project { name } state { name } labels { nodes { name } } creator { displayName } }";
 /// The issues that block an issue, kept small: Linear multiplies a query's cost by page sizes.
 const BLOCKING: &str = "inverseRelations(first: 20) { nodes { type issue { identifier state { type } } } \
     pageInfo { hasNextPage } }";
@@ -513,6 +513,7 @@ fn fields(issue: &Value) -> Value {
         "title": issue["title"],
         "url": issue["url"],
         "team": issue["team"]["key"],
+        "project": issue["project"]["name"],
         "state": issue["state"]["name"],
         "labels": labels,
     })
