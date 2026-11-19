@@ -535,8 +535,10 @@ fn perform(db: &mut Connection, trace: &Trace, home: &Path) -> Result<(), Error>
         .value
         .step(&due.step)
         .expect("actionable checked the step");
-    // The sweep or a retirement removed the worktree; its branch still holds the work.
+    // The sweep or a retirement removed the worktree; its branch still holds the work. Only
+    // `open-pr` pushes from it, so no other action waits for disk to add it back.
     if let Some(repo) = repo_of(factory, &due.trigger)
+        && step.action.as_deref() == Some("open-pr")
         && due
             .worktree
             .as_deref()
@@ -562,7 +564,11 @@ fn perform(db: &mut Connection, trace: &Trace, home: &Path) -> Result<(), Error>
         }
         db.execute("UPDATE tasks SET retired = NULL WHERE id = ?1", [due.task])?;
     }
-    let head = head(due.worktree.as_deref(), due.branch.as_deref());
+    let head = due
+        .worktree
+        .as_deref()
+        .zip(due.branch.as_deref())
+        .and_then(|(worktree, branch)| runtime::kept_head(home, Path::new(worktree), branch));
     if !tools::approved(db, due.task, step, head.as_deref())? {
         return Ok(());
     }
@@ -582,11 +588,6 @@ fn perform(db: &mut Connection, trace: &Trace, home: &Path) -> Result<(), Error>
         done,
         trace,
     )?)
-}
-
-/// The commit of the task's branch, which an approval covers.
-fn head(worktree: Option<&str>, branch: Option<&str>) -> Option<String> {
-    runtime::head(Path::new(worktree?), branch?)
 }
 
 /// Pushes `commit` to the task's branch and opens its pull request, titled and described by its

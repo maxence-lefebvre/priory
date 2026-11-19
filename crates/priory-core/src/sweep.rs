@@ -86,7 +86,6 @@ pub fn run(db: &Connection, home: &Path) -> rusqlite::Result<()> {
 
 /// Retires asleep tasks, longest asleep first, while `short` says the disk is short: removes each
 /// clean worktree and keeps its branch and sessions. A task that cannot retire gets the reason once.
-/// A sweeper never retires: its next action would wait for the disk it reports.
 pub(crate) fn retire(
     db: &Connection,
     home: &Path,
@@ -98,10 +97,9 @@ pub(crate) fn retire(
     let asleep = db
         .prepare(
             "SELECT id, worktree FROM tasks
-             WHERE state = 'asleep' AND worktree IS NOT NULL AND trigger IS NOT ?1
-             ORDER BY changed, id",
+             WHERE state = 'asleep' AND worktree IS NOT NULL ORDER BY changed, id",
         )?
-        .query_map([crate::stall::TRIGGER], |row| {
+        .query_map([], |row| {
             Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
