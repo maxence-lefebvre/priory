@@ -431,12 +431,16 @@ fn recover(marker: &Value, events: &[Message]) -> Value {
         .iter()
         .filter(|event| Some(event.time) == newest)
         .collect();
+    let position = text(&marker["position"]).parse::<Timestamp>().ok();
+    // Still at the old instant: the events the old marker lists stay handled.
+    let mut seen: Vec<Value> = marker["seen"]
+        .as_array()
+        .filter(|_| newest == position)
+        .cloned()
+        .unwrap_or_default();
+    seen.extend(at.iter().map(|event| json!(event.id.to_string())));
     marker["position"] = at[0].data["time"].clone();
-    marker["seen"] = json!(
-        at.iter()
-            .map(|event| event.id.to_string())
-            .collect::<Vec<_>>()
-    );
+    marker["seen"] = json!(seen);
     marker
 }
 

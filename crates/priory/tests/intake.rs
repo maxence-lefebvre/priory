@@ -1781,3 +1781,54 @@ fn a_graphql_error_is_reported_without_the_key() {
     assert!(stderr.contains("Invalid token"), "{stderr}");
     assert!(!stderr.contains(KEY), "{stderr}");
 }
+
+#[test]
+fn a_restart_after_a_crash_at_the_same_instant_keeps_the_events_already_handled() {
+    let at = "2026-11-17T11:00:00.000Z";
+    let setup = Setup::linear("linear-crash-instant", &[("commented", COMMENT_TRIGGER)]);
+    setup.answer_linear(&Linear {
+        comments: vec![linear_comment("comment-a", 7, at)],
+        ..Linear::default()
+    });
+    succeeded(&setup.intake());
+    let both = Linear {
+        comments: vec![
+            linear_comment("comment-a", 7, at),
+            linear_comment("comment-b", 7, at),
+        ],
+        ..Linear::default()
+    };
+    setup.answer_linear(&both);
+    let crashed = Setup::linear(
+        "linear-crash-instant-replay",
+        &[("commented", COMMENT_TRIGGER)],
+    );
+    crashed.answer_linear(&Linear {
+        comments: vec![linear_comment("comment-a", 7, at)],
+        ..Linear::default()
+    });
+    succeeded(&crashed.intake());
+    succeeded(&setup.intake());
+    let b = setup.published()[1].message.clone();
+    assert_eq!(b.data["linear_id"], "comment-b");
+    seed(&crashed, &b);
+    crashed.answer_linear(&both);
+
+    succeeded(&crashed.intake());
+
+    let requests: Vec<_> = crashed
+        .published()
+        .into_iter()
+        .filter(|stored| stored.message.kind == "factory.task.requested")
+        .map(|stored| stored.message.subject.unwrap_or_default())
+        .collect();
+    assert_eq!(requests, ["linear:ENG-7"]);
+    assert_eq!(
+        crashed
+            .published()
+            .iter()
+            .filter(|stored| stored.message.data["linear_id"] == "comment-a")
+            .count(),
+        1
+    );
+}
