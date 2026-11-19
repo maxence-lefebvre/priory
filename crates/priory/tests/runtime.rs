@@ -426,6 +426,7 @@ fn a_queued_task_at_a_model_step_gets_a_worktree_a_tmux_session_and_a_run() {
         ["--model", "haiku"],
         ["--effort", "low"],
         ["--append-system-prompt", "You implement one issue."],
+        ["--permission-mode", "manual"],
     ] {
         assert!(args.windows(2).any(|w| w == pair), "{pair:?} in {args:?}");
     }

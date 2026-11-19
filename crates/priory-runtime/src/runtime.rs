@@ -178,6 +178,8 @@ pub fn launch(launch: &Launch) -> Result<(), String> {
     if !launch.body.is_empty() {
         command.args(["--append-system-prompt", launch.body]);
     }
+    // The user's own mode, such as auto, would decide prompts that Priory's hook must deny (R7.2).
+    command.args(["--permission-mode", "manual"]);
     command.arg("--settings").arg(settings(&exe));
     command.arg("--mcp-config").arg(mcp_config(&exe, launch));
     command.args([";", "set-option", "-p", "@priory", launch.session]);

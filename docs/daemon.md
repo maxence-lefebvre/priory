@@ -78,6 +78,8 @@ The daemon creates the worktree, records the run and the task as `running`, then
   `session = "shared"` keeps one session across tasks instead, as described under Shared sessions.
 - `--model` and `--effort`: the agent's, when it sets them.
 - `--append-system-prompt`: the agent body, the Markdown after its frontmatter.
+- `--permission-mode manual`: so a permission request reaches Priory's deny hook, described under
+  Health, whatever mode the user's own settings choose, such as `auto`.
 - `--settings`: hooks that run `priory hook SessionStart`, `UserPromptSubmit` and `Stop`, a
   permission for the `priory` MCP server's tools, a `PreToolUse` hook that denies
   `AskUserQuestion` and tells the agent to call `ask` instead, and the permission hooks described
