@@ -769,12 +769,21 @@ fn unresume(tx: &Transaction, task: i64) -> rusqlite::Result<()> {
             |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)),
         )
         .optional()?;
-    let Some((id, text)) = queued.filter(|(_, text)| text.starts_with(RESUMED)) else {
+    let Some((id, text)) = queued else {
         return Ok(());
     };
-    let Some((_, rest)) = text.split_once(&format!("{CONTINUE}\n")) else {
+    // A shared session's task intro may come first.
+    let Some(start) = (text.starts_with(RESUMED))
+        .then_some(0)
+        .or_else(|| text.find(&format!("\n{RESUMED}")).map(|at| at + 1))
+    else {
         return Ok(());
     };
+    let end = format!("{CONTINUE}\n");
+    let Some(length) = text[start..].find(&end) else {
+        return Ok(());
+    };
+    let rest = format!("{}{}", &text[..start], &text[start + length + end.len()..]);
     tx.execute(
         "UPDATE outbox SET text = ?2 WHERE id = ?1",
         params![id, rest],

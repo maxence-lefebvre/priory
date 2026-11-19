@@ -317,8 +317,9 @@ sessions share, with its environment and its cached hook trust.
 
 Codex 0.170 fires `SessionStart` with the first turn, not at startup, so a Codex run cannot wait
 for it before its first prompt. The daemon marks the task's oldest queued prompt `attempted` by the
-run and passes it as Codex's last argument, after `--`. `UserPromptSubmit` confirms it as it does a
-paste. Every later prompt, such as an answer or a nudge, is pasted. A Claude run still gets its
+run and passes it as Codex's last argument, after `--`. tmux refuses a command over about 16 KiB,
+so the prompt goes through a file under `$PRIORY_HOME/prompts`, which a `sh` wrapper reads, removes
+and appends. `UserPromptSubmit` confirms it as it does a paste. Every later prompt, such as an answer or a nudge, is pasted. A Claude run still gets its
 first prompt pasted after `SessionStart`, which Claude fires at startup, so its paste and its
 confirmation stay as they are.
 

@@ -190,7 +190,7 @@ pub struct Launch<'a> {
     pub model: Option<&'a str>,
     pub effort: Option<&'a str>,
     pub body: &'a str,
-    /// The run's first prompt, for a harness that takes it as an argument rather than a paste.
+    /// The run's first prompt, passed as the harness's last argument after `--` rather than pasted.
     pub prompt: Option<&'a str>,
     /// The agent's Claude Code `permissions` settings, merged into Priory's own.
     pub permissions: serde_json::Value,
@@ -292,10 +292,6 @@ impl Harness for Codex {
         }
         // A shared server would lend the run another session's environment and hook trust.
         args.push("--no-daemon".to_owned());
-        // Codex 0.170 fires SessionStart with the first turn, so a paste after it would never come.
-        if let Some(prompt) = launch.prompt {
-            args.extend(["--".to_owned(), prompt.to_owned()]);
-        }
         Ok(args)
     }
 
@@ -365,10 +361,29 @@ pub fn launch(harness: &dyn Harness, launch: &Launch) -> Result<(), String> {
         .arg(format!("PRIORY_HOME={}", launch.home.display()))
         .arg("-e")
         .arg(format!("PRIORY_SESSION={}", launch.session))
-        .args(["--", "env"])
+        .arg("--");
+    if let Some(prompt) = launch.prompt {
+        // tmux refuses a command over about 16 KiB, so the prompt reaches the harness through a file.
+        let file = launch.home.join("prompts").join(launch.session);
+        fs::create_dir_all(file.parent().expect("the file has a parent"))
+            .and_then(|()| fs::write(&file, prompt))
+            .map_err(|error| format!("{}: {error}", file.display()))?;
+        command
+            .args([
+                "sh",
+                "-c",
+                r#"p=$(cat "$0"; printf x); rm -f "$0"; exec "$@" "${p%x}""#,
+            ])
+            .arg(&file);
+    }
+    command
+        .arg("env")
         .args(NESTED.iter().flat_map(|name| ["-u", name]))
         .arg(harness.program())
         .args(harness.args(&exe, launch)?);
+    if launch.prompt.is_some() {
+        command.arg("--");
+    }
     command.args([";", "set-option", "-p", "@priory", launch.session]);
     run(&mut command).map(drop)
 }

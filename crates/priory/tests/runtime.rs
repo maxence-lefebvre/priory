@@ -556,9 +556,11 @@ fn a_codex_agent_runs_codex_with_priorys_hooks_mcp_server_and_a_sandbox_that_ask
 
 #[test]
 fn a_codex_run_starts_on_its_own_with_the_steps_prompt_as_its_last_argument() {
+    // Longer than the 16 KiB tmux takes in one command.
+    let long = "context ".repeat(2500);
     let workflow = WORKFLOW.replace(
         "prompt = \"Implement the issue.\"",
-        "prompt = '''\n- Read \"the issue\" and Max's notes.\n  Then implement it; $HOME stays literal.'''",
+        &format!("prompt = '''\n- Read \"the issue\" and Max's notes.\n  Then implement it; $HOME stays literal.\n{long}\n'''"),
     );
     let mut setup = Setup::with_workflow("codex-prompt", &workflow);
     fs::write(setup.dir.join("factory/agents/implementer/agent.md"), CODEX).unwrap();
@@ -567,7 +569,9 @@ fn a_codex_run_starts_on_its_own_with_the_steps_prompt_as_its_last_argument() {
     setup.start();
 
     setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 1);
-    let prompt = "- Read \"the issue\" and Max's notes.\n  Then implement it; $HOME stays literal.\nEnd this step by calling the result tool of the priory MCP server with one of these outcomes: failed, passed.";
+    let prompt = format!(
+        "- Read \"the issue\" and Max's notes.\n  Then implement it; $HOME stays literal.\n{long}\n\nEnd this step by calling the result tool of the priory MCP server with one of these outcomes: failed, passed."
+    );
     let args = codex_args(&setup);
     assert!(args.contains(&"--no-daemon".to_owned()), "{args:?}");
     assert_eq!(
@@ -2159,7 +2163,25 @@ fn resume_restarts_a_blocked_task_in_its_session_and_cancel_drops_it_and_ends_it
 
 #[test]
 fn resuming_a_task_whose_runs_never_started_queues_one_resume_line_and_one_ending() {
-    let mut setup = Setup::new("resume-unstarted");
+    let typed = resume_three_failed_launches(Setup::new("resume-unstarted"));
+    assert_eq!(
+        typed,
+        "A person resumed this task. Check the worktree, then continue.\nImplement the issue.\nEnd this step by calling the result tool of the priory MCP server with one of these outcomes: failed, passed.\n"
+    );
+}
+
+#[test]
+fn resuming_a_shared_agents_task_whose_runs_never_started_queues_one_resume_line() {
+    let typed = resume_three_failed_launches(shared("resume-shared"));
+    assert_eq!(
+        typed.matches("A person resumed this task").count(),
+        1,
+        "{typed}"
+    );
+}
+
+/// The first prompt a run takes after three launches that died and a fourth resume.
+fn resume_three_failed_launches(mut setup: Setup) -> String {
     setup.publish(&requested(42));
     setup.hold("die");
     setup.start();
@@ -2178,10 +2200,7 @@ fn resuming_a_task_whose_runs_never_started_queues_one_resume_line_and_one_endin
 
     assert!(resumed.status.success(), "{resumed:?}");
     setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 1);
-    assert_eq!(
-        setup.typed()[0],
-        "A person resumed this task. Check the worktree, then continue.\nImplement the issue.\nEnd this step by calling the result tool of the priory MCP server with one of these outcomes: failed, passed.\n"
-    );
+    setup.typed().remove(0)
 }
 
 const INTERRUPTED: &str = "Priory restarted and found tmux session priory-2 gone, as after a reboot, so this run was interrupted. Check the worktree, then continue.\nEnd this step by calling the result tool of the priory MCP server with one of these outcomes: hopeless, ready, unsure.\n";
