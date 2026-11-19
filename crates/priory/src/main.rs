@@ -87,11 +87,8 @@ fn main() -> ExitCode {
             }
             _ => usage(),
         },
-        Some("hook") => match (args.next(), args.next(), args.next(), args.next()) {
-            (Some(event), None, ..) => hook(&event.to_string_lossy(), None),
-            (Some(event), Some(flag), Some(session), None) if flag == "--session" => {
-                hook(&event.to_string_lossy(), Some(&session.to_string_lossy()))
-            }
+        Some("hook") => match (args.next(), args.next()) {
+            (Some(event), None) => hook(&event.to_string_lossy()),
             _ => usage(),
         },
         _ => usage(),
@@ -100,7 +97,7 @@ fn main() -> ExitCode {
 
 fn usage() -> ExitCode {
     eprintln!(
-        "usage: priory check [DIR]\n       priory draw [DIR] WORKFLOW\n       priory intake [DIR] [--once]\n       priory daemon [DIR] [--once]\n       priory request [DIR] --workflow <name> --key <key> [--band <band>] [--lane <lane>] [--repo <owner/name>] <text>\n       priory inbox\n       priory tasks\n       priory runs\n       priory outbox\n       priory asks\n       priory waits\n       priory actions\n       priory desk\n       priory trace\n       priory report [DIR] --workflow <name> [--since <instant-or-duration>] [--cost]\n       priory move TASK [--band <band>] [--top | --before TASK | --after TASK]\n       priory resume TASK\n       priory cancel TASK\n       priory answer ASK OPTION-OR-TEXT --revision N\n       priory mcp --session ID\n       priory hook EVENT [--session ID]"
+        "usage: priory check [DIR]\n       priory draw [DIR] WORKFLOW\n       priory intake [DIR] [--once]\n       priory daemon [DIR] [--once]\n       priory request [DIR] --workflow <name> --key <key> [--band <band>] [--lane <lane>] [--repo <owner/name>] <text>\n       priory inbox\n       priory tasks\n       priory runs\n       priory outbox\n       priory asks\n       priory waits\n       priory actions\n       priory desk\n       priory trace\n       priory report [DIR] --workflow <name> [--since <instant-or-duration>] [--cost]\n       priory move TASK [--band <band>] [--top | --before TASK | --after TASK]\n       priory resume TASK\n       priory cancel TASK\n       priory answer ASK OPTION-OR-TEXT --revision N\n       priory mcp --session ID\n       priory hook EVENT"
     );
     ExitCode::from(2)
 }
@@ -399,8 +396,8 @@ fn count(n: usize, noun: &str) -> String {
 }
 
 /// Reports a harness hook to the daemon: `event`, with the session and prompt from the hook's JSON
-/// on stdin. With `priory_session`, the stdin session is the harness's own id for that session.
-fn hook(event: &str, priory_session: Option<&str>) -> ExitCode {
+/// on stdin. A run's pane sets `PRIORY_SESSION`; a stdin session apart from it is the harness's own.
+fn hook(event: &str) -> ExitCode {
     let input: serde_json::Value = match serde_json::from_reader(std::io::stdin()) {
         Ok(input) => input,
         Err(error) => {
@@ -412,13 +409,20 @@ fn hook(event: &str, priory_session: Option<&str>) -> ExitCode {
         eprintln!("priory hook: stdin has no session_id");
         return ExitCode::FAILURE;
     };
+    let priory = std::env::var("PRIORY_SESSION")
+        .ok()
+        .filter(|id| !id.is_empty());
+    let thread = priory
+        .as_ref()
+        .filter(|id| *id != session)
+        .map(|_| session.to_owned());
     let signal = state::Signal {
         event: event.to_owned(),
-        session: priory_session.unwrap_or(session).to_owned(),
+        session: priory.unwrap_or_else(|| session.to_owned()),
         prompt: input["prompt"].as_str().map(str::to_owned),
         message: input["message"].as_str().map(str::to_owned),
         transcript: input["transcript_path"].as_str().map(str::to_owned),
-        thread: priory_session.map(|_| session.to_owned()),
+        thread,
     };
     let line = serde_json::to_string(&signal).expect("signal serializes");
     match runtime::send(&runtime::home(), &line) {

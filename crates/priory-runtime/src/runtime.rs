@@ -179,6 +179,8 @@ pub trait Harness {
     fn program(&self) -> &'static str;
     /// The program's arguments for `launch`, whose hooks and MCP server run `exe`.
     fn args(&self, exe: &Path, launch: &Launch) -> Result<Vec<String>, String>;
+    /// What a person does once, in `clone`, before the harness runs Priory's hooks there.
+    fn trust(&self, exe: &Path, clone: &str) -> String;
 }
 
 pub struct ClaudeCode;
@@ -211,6 +213,10 @@ impl Harness for ClaudeCode {
         args.extend(["--mcp-config".to_owned(), mcp_config(exe, launch)]);
         Ok(args)
     }
+
+    fn trust(&self, _exe: &Path, clone: &str) -> String {
+        format!("trust the clone once: cd {clone} && claude, accept, exit")
+    }
 }
 
 pub struct Codex;
@@ -220,25 +226,7 @@ impl Harness for Codex {
         "codex"
     }
 
-    /// Codex chooses its own thread id, so each hook names Priory's session in its command line.
     fn args(&self, exe: &Path, launch: &Launch) -> Result<Vec<String>, String> {
-        let quoted = quote(exe);
-        let hook = |event: &str| {
-            json!([{ "hooks": [{
-                "type": "command",
-                "command": format!("{quoted} hook {event} --session {}", launch.session),
-            }] }])
-        };
-        let respond = |matcher: Option<&str>, output: &str| {
-            let mut group = json!({ "hooks": [{
-                "type": "command",
-                "command": format!("printf '%s' '{output}'"),
-            }] });
-            if let Some(matcher) = matcher {
-                group["matcher"] = matcher.into();
-            }
-            json!([group])
-        };
         // Without these, the user's own config, such as an auto reviewer, would decide the prompts (R7.2).
         let (sandbox, approval, reviewer) = match launch.permission_mode {
             "acceptEdits" => ("workspace-write", "on-request", "user"),
@@ -259,15 +247,8 @@ impl Harness for Codex {
                     "default_tools_approval_mode": "approve",
                 }),
             ),
-            ("hooks.SessionStart", hook("SessionStart")),
-            ("hooks.UserPromptSubmit", hook("UserPromptSubmit")),
-            ("hooks.Stop", hook("Stop")),
-            (
-                "hooks.PreToolUse",
-                respond(Some("^request_user_input$"), ASK_INSTEAD),
-            ),
-            ("hooks.PermissionRequest", respond(None, DENY)),
         ];
+        config.extend(codex_hooks(exe));
         if let Some(model) = launch.model {
             config.push(("model", json!(model)));
         }
@@ -281,14 +262,54 @@ impl Harness for Codex {
             Some(thread) => vec!["resume".to_owned(), thread.to_owned()],
             None => Vec::new(),
         };
-        // Priory wrote these hooks; Codex otherwise skips hooks no person trusted in its /hooks review.
-        args.push("--dangerously-bypass-hook-trust".to_owned());
         for (key, value) in config {
-            let value = toml::Value::try_from(value).map_err(|error| error.to_string())?;
-            args.extend(["-c".to_owned(), format!("{key}={value}")]);
+            args.extend(["-c".to_owned(), override_of(key, value)?]);
         }
         Ok(args)
     }
+
+    /// Codex runs only hooks a person trusted in its `/hooks` review, by their hash, so Priory's
+    /// hooks never change between runs and this command shows the same ones.
+    fn trust(&self, exe: &Path, clone: &str) -> String {
+        let overrides: String = codex_hooks(exe)
+            .into_iter()
+            .filter_map(|(key, value)| override_of(key, value).ok())
+            .map(|over| format!(" -c '{}'", over.replace('\'', r"'\''")))
+            .collect();
+        format!(
+            "trust the clone and Priory's hooks once: cd {clone} && codex{overrides}, accept the folder, type /hooks and trust Priory's hooks, then exit"
+        )
+    }
+}
+
+/// Codex's `-c key=value`, with the value as TOML.
+fn override_of(key: &str, value: serde_json::Value) -> Result<String, String> {
+    let value = toml::Value::try_from(value).map_err(|error| error.to_string())?;
+    Ok(format!("{key}={value}"))
+}
+
+/// The same hooks for every run: the run's session reaches them as `PRIORY_SESSION`.
+fn codex_hooks(exe: &Path) -> Vec<(&'static str, serde_json::Value)> {
+    let quoted = quote(exe);
+    let hook = |command: String, matcher: Option<&str>| {
+        let mut group = json!({ "hooks": [{ "type": "command", "command": command }] });
+        if let Some(matcher) = matcher {
+            group["matcher"] = matcher.into();
+        }
+        json!([group])
+    };
+    let signal = |event: &str| hook(format!("{quoted} hook {event}"), None);
+    let respond = |output: &str| format!("printf '%s' '{output}'");
+    vec![
+        ("hooks.SessionStart", signal("SessionStart")),
+        ("hooks.UserPromptSubmit", signal("UserPromptSubmit")),
+        ("hooks.Stop", signal("Stop")),
+        (
+            "hooks.PreToolUse",
+            hook(respond(ASK_INSTEAD), Some("^request_user_input$")),
+        ),
+        ("hooks.PermissionRequest", hook(respond(DENY), None)),
+    ]
 }
 
 /// Starts the harness in a detached tmux session, with hooks that report to this daemon. The same
@@ -311,6 +332,8 @@ pub fn launch(harness: &dyn Harness, launch: &Launch) -> Result<(), String> {
         .arg(launch.dir)
         .arg("-e")
         .arg(format!("PRIORY_HOME={}", launch.home.display()))
+        .arg("-e")
+        .arg(format!("PRIORY_SESSION={}", launch.session))
         .args(["--", "env"])
         .args(NESTED.iter().flat_map(|name| ["-u", name]))
         .arg(harness.program())

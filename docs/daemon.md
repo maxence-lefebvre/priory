@@ -251,15 +251,15 @@ cd "$PRIORY_HOME/repos/<owner>/<name>" && claude   # accept the dialog, then /ex
 A run that sends no `SessionStart` within 60 seconds of its start ends as `exited`. The daemon kills
 its tmux session and blocks its task with the reason `claude showed no SessionStart within 60s;
 trust the clone once: cd <clone path> && claude, accept, exit`. Its queued prompts stay queued, so
-the task's next run types them. A Codex run names `codex` in the same reason.
+the task's next run types them. A Codex run blocks with the Codex instruction under Codex.
 
 ### Codex
 
 A run of a `harness = "codex"` agent starts `codex`, or `codex resume <thread>`, in the same tmux
 session, worktree and outbox as a Claude run. Codex chooses its own session id, its thread, so
 Priory keeps a UUID of its own as the run's session: the pane's `@priory` tag, the hooks and the
-tools carry it. Each hook runs `priory hook <event> --session <that UUID>`, and the thread arrives
-on `SessionStart` stdin. Every setting goes in as a `-c key=value` override, so Priory writes no
+tools carry it. The pane sets `PRIORY_SESSION` to it, and the thread arrives on `SessionStart`
+stdin. Every setting goes in as a `-c key=value` override, so Priory writes no
 Codex file.
 
 | Priory duty | Claude Code | Codex |
@@ -288,17 +288,20 @@ config that routes approvals to Codex's reviewer does not decide a `manual` run'
 no plan permission mode, and any `allow` or `deny` rule, since Codex has no per-tool rules to put
 them in.
 
-Codex skips a hook that no person trusted in its `/hooks` review. Priory wrote these hooks, so it
-starts Codex with `--dangerously-bypass-hook-trust`. That flag also runs the user's own untrusted
-hooks, such as those in `~/.codex/hooks.json`, in Priory's runs. Codex asks whether to trust a
-folder as Claude does, and Priory never answers it: trust the clone once with
-`cd <clone path> && codex`.
+Codex runs only the hooks a person trusted in its `/hooks` review, by their hash, and asks whether
+to trust a folder as Claude does. Priory answers neither and never skips the review. Its hooks are
+the same in every run, since the run's session reaches them as `PRIORY_SESSION`, so a person trusts
+them once, with the clone. A Codex run that sends no `SessionStart` within 60 seconds blocks its
+task with `codex showed no SessionStart within 60s; trust the clone and Priory's hooks once: cd
+<clone path> && codex -c 'hooks.SessionStart=...' ..., accept the folder, type /hooks and trust
+Priory's hooks, then exit`. The command carries Priory's hooks exactly as runs get them.
 
 Known limits:
 
-- No test runs a real Codex. Whether `-c` hooks need the trust bypass, whether `SessionStart` fires
-  before the first prompt, and whether `auto_review` runs before the deny hook are read from
-  Codex's documentation, not checked.
+- No test runs a real Codex. Whether `/hooks` lists and keeps trust for `-c` hooks, whether
+  `SessionStart` fires before the first prompt, and whether `auto_review` runs before the deny hook
+  are read from Codex's documentation, not checked.
+- A new `priory` binary path changes the hooks' hash, so a person trusts them again after moving it.
 - An agent whose harness changes during a task starts a new session, since neither harness resumes
   the other's.
 - Codex keeps its transcripts under `~/.codex/sessions`, by thread. The traces slice reads token use
@@ -308,10 +311,10 @@ Known limits:
 
 `priory hook <event>` reads Claude's hook JSON on stdin and sends one JSON line to the daemon over
 `priory.sock`: `{"event": "Stop", "session": "<id>", "prompt": "<text>"}`. `prompt` comes only with
-`UserPromptSubmit`. `priory hook <event> --session <id>` sends `<id>` as the session instead, and
-the stdin `session_id` as `thread`, which `SessionStart` stores, as under Codex. The daemon answers
-`ok` once the signal is committed, and the hook waits up to
-10 seconds for it. When no daemon takes the line, it goes to `signals.spool` instead. The next
+`UserPromptSubmit`. Every run's pane sets `PRIORY_SESSION` to the run's session. When the stdin
+`session_id` differs from it, as in a Codex run, the hook sends `PRIORY_SESSION` as the session and
+the stdin id as `thread`, which `SessionStart` stores. The daemon answers `ok` once the signal is
+committed, and the hook waits up to 10 seconds for it. When no daemon takes the line, it goes to `signals.spool` instead. The next
 daemon applies the spool before it removes it.
 
 - `SessionStart`: the harness is up and its input is ready, so the run is idle.

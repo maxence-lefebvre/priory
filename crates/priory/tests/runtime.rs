@@ -507,9 +507,8 @@ fn a_codex_agent_runs_codex_with_priorys_hooks_mcp_server_and_a_sandbox_that_ask
     let args = codex_args(&setup);
     assert_ne!(args.first().map(String::as_str), Some("resume"), "{args:?}");
     assert!(
-        args.iter()
-            .any(|arg| arg == "--dangerously-bypass-hook-trust"),
-        "{args:?}"
+        !args.iter().any(|arg| arg.contains("bypass")),
+        "Priory never skips Codex's hook trust: {args:?}"
     );
     let config = codex_config(&setup);
     let exe = Path::new(env!("CARGO_BIN_EXE_priory"));
@@ -541,7 +540,50 @@ fn a_codex_agent_runs_codex_with_priorys_hooks_mcp_server_and_a_sandbox_that_ask
     ] {
         assert!(config["hooks"][event].is_array(), "{event} in {config}");
     }
+    let hooks = config["hooks"].to_string();
+    assert!(
+        !hooks.contains(&tmux_tag(&setup)),
+        "a person trusts the hooks once, so no run's session is in them: {hooks}"
+    );
     assert_eq!(setup.rows("tasks")[0][4], "running");
+}
+
+#[test]
+fn a_codex_run_with_no_session_start_names_the_codex_command_whose_hooks_to_trust() {
+    let mut setup = Setup::new("codex-untrusted");
+    fs::write(setup.dir.join("factory/agents/implementer/agent.md"), CODEX).unwrap();
+    setup.publish(&requested(42));
+    setup.hold("silent");
+    setup.start();
+    setup.until("runs", |rows| rows.len() == 1);
+
+    let tasks = setup.within(75, "tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == "blocked")
+    });
+
+    let clone = setup.dir.join("home/repos/owner/repo");
+    let reason = &tasks[0][7];
+    let prefix = format!(
+        "codex showed no SessionStart within 60s; trust the clone and Priory's hooks once: cd {} && codex -c ",
+        clone.display()
+    );
+    assert!(reason.starts_with(&prefix), "{reason}");
+    assert!(
+        reason.ends_with(", accept the folder, type /hooks and trust Priory's hooks, then exit"),
+        "{reason}"
+    );
+    for event in [
+        "SessionStart",
+        "UserPromptSubmit",
+        "Stop",
+        "PreToolUse",
+        "PermissionRequest",
+    ] {
+        assert!(
+            reason.contains(&format!(" -c 'hooks.{event}=")),
+            "{event} in {reason}"
+        );
+    }
 }
 
 /// The `@priory` tag of task 1's pane: the id Priory gave its run, which its tools carry too.
