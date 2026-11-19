@@ -304,7 +304,7 @@ prompt that shows anyway, when the deny hook failed, ends the run on the next ti
 
 ## Desk
 
-`priory desk` prints what waits on a person, oldest first: since, kind, id, task and what.
+`priory desk` prints what waits on a person, oldest first: since, kind, id, task, lane and what.
 
 | Kind | Id | What | Since |
 | ---- | -- | ---- | ----- |
@@ -313,6 +313,8 @@ prompt that shows anyway, when the deny hook failed, ends the run on the next ti
 | `prompt` | the outbox prompt | its text, for an `uncertain` prompt | it was attempted |
 | `queue` | the task's place in the queue | its band, then its reason when it has one | the task last changed state |
 | `worktree` | the worktree's path | why it stays: see Sweep | `-` |
+
+The lane column is the task's lane, and `-` for a `worktree` row.
 
 It lists only asks and prompts of active tasks. After them come the `queue` rows, in start order,
 and last one `worktree` row for every worktree the sweep keeps. `priory asks` still prints every open ask.
@@ -620,7 +622,7 @@ Known limits:
 
 ### Reports
 
-`priory report [DIR] --workflow <name> [--since <window>]` prints, for each step of the workflow,
+`priory report [DIR] --workflow <name> [--since <window>] [--by lane]` prints, for each step of the workflow,
 each outcome with its count, the records that reached the step and its rate:
 
 ```
@@ -632,6 +634,8 @@ review	changes	1	2	50.0%
 A visit reaches its step when it ends there, or while an active task is still at it, so the
 outcome rates of a step with tasks in progress add up to less than 100 %.
 `--since` takes an RFC 3339 instant or a duration such as `7 days`, the default, back from now.
+`--by lane` counts each lane apart, by the lane its task has now, and adds a leading `lane` column. It
+does not combine with `--cost`.
 
 `--cost` prints each task's tokens and cost instead, per step, then in total. The prices come from
 `prices.toml` in the factory folder `DIR`, which defaults to the current folder. Each table is a model,
@@ -705,6 +709,7 @@ running; end one with `tmux kill-session -t =priory-<task id>` when you mean to.
 `priory inbox` prints each entry, oldest first: seq, type, subject, task and outcome.
 `priory tasks` prints each task in start order: id, key, workflow, step, state, band, lane, reason
 and position, the task's place in the queue from 1 when it is `queued` or `ready`.
+`priory tasks --lane L` prints only the tasks in lane `L`.
 `priory runs` prints each run: id, task, step, tmux session, harness session, started, ended and
 how it ended. `priory outbox` prints each prompt: id, task, run, state and text, with newlines
 shown as `\n`. `priory asks` and `priory waits` are described under Tools, `priory actions` under Code steps,

@@ -23,38 +23,55 @@ fn start(db: &Connection, since: &str) -> Result<String, String> {
 
 /// Prints each step's outcome counts for `workflow` since `since`. Each rate's denominator is the
 /// visits that reached the step: those that ended it, and active tasks still at it.
-pub fn outcomes(db: &Connection, workflow: &str, since: &str) -> Result<(), String> {
+/// With `by_lane`, each lane is counted apart, by the lane its task has now.
+pub fn outcomes(db: &Connection, workflow: &str, since: &str, by_lane: bool) -> Result<(), String> {
     let start = start(db, since)?;
+    let lane = |table: &str| {
+        if by_lane {
+            format!("coalesce({table}.lane, '-')")
+        } else {
+            "''".to_owned()
+        }
+    };
     let mut statement = db
-        .prepare(
+        .prepare(&format!(
             "WITH ended AS (
-               SELECT json_extract(event, '$.data.step') AS step,
-                 json_extract(event, '$.data.outcome') AS outcome
-               FROM trace WHERE type = 'factory.step.ended'
-               AND json_extract(event, '$.data.workflow') = ?1 AND time >= ?2)
-             SELECT step, outcome, count(*), (SELECT count(*) FROM ended AS reached
-               WHERE reached.step = ended.step) + (SELECT count(*) FROM tasks
-               WHERE tasks.workflow = ?1 AND tasks.step = ended.step AND tasks.entered >= ?2
-               AND tasks.state NOT IN ('done', 'failed', 'dropped'))
-             FROM ended GROUP BY step, outcome ORDER BY step, outcome",
-        )
+               SELECT json_extract(trace.event, '$.data.step') AS step,
+                 json_extract(trace.event, '$.data.outcome') AS outcome, {lane} AS lane
+               FROM trace LEFT JOIN tasks
+                 ON tasks.id = CAST(json_extract(trace.event, '$.data.task') AS INTEGER)
+               WHERE trace.type = 'factory.step.ended'
+               AND json_extract(trace.event, '$.data.workflow') = ?1 AND trace.time >= ?2)
+             SELECT lane, step, outcome, count(*), (SELECT count(*) FROM ended AS reached
+               WHERE reached.step = ended.step AND reached.lane = ended.lane)
+               + (SELECT count(*) FROM tasks AS active
+               WHERE active.workflow = ?1 AND active.step = ended.step AND active.entered >= ?2
+               AND {active} = ended.lane
+               AND active.state NOT IN ('done', 'failed', 'dropped'))
+             FROM ended GROUP BY lane, step, outcome ORDER BY lane, step, outcome",
+            lane = lane("tasks"),
+            active = lane("active"),
+        ))
         .map_err(|error| error.to_string())?;
     let rows = statement
         .query_map([workflow, &start], |row| {
             Ok((
                 row.get::<_, String>(0)?,
                 row.get::<_, String>(1)?,
-                row.get::<_, i64>(2)?,
+                row.get::<_, String>(2)?,
                 row.get::<_, i64>(3)?,
+                row.get::<_, i64>(4)?,
             ))
         })
         .and_then(Iterator::collect::<rusqlite::Result<Vec<_>>>)
         .map_err(|error| error.to_string())?;
-    crate::state::emit("step\toutcome\tcount\treached\trate");
-    for (step, outcome, count, reached) in rows {
+    let lane_column = if by_lane { "lane\t" } else { "" };
+    crate::state::emit(&format!("{lane_column}step\toutcome\tcount\treached\trate"));
+    for (lane, step, outcome, count, reached) in rows {
         let rate = 100.0 * count as f64 / reached as f64;
+        let lane = if by_lane { format!("{lane}\t") } else { lane };
         crate::state::emit(&format!(
-            "{step}\t{outcome}\t{count}\t{reached}\t{rate:.1}%"
+            "{lane}{step}\t{outcome}\t{count}\t{reached}\t{rate:.1}%"
         ));
     }
     Ok(())
