@@ -1,4 +1,5 @@
 use crate::factory::{Decider, Effect, Factory, Loaded, Problem, Step, Trigger, Until, Workflow};
+use crate::lanes::{self, Lanes};
 use std::collections::{BTreeMap, BTreeSet};
 
 const ENDS: [&str; 2] = ["done", "stop"];
@@ -11,6 +12,18 @@ pub fn check(factory: &Factory) -> Vec<Problem> {
                 trigger,
                 trigger.lines.field("workflow"),
                 format!("workflow `{}` does not exist", trigger.value.workflow),
+            ));
+        }
+        if let Some(lane) = trigger
+            .value
+            .lane
+            .as_deref()
+            .filter(|lane| !lanes::well_formed(lane))
+        {
+            problems.push(problem(
+                trigger,
+                trigger.lines.field("lane"),
+                not_a_lane(lane),
             ));
         }
         if trigger.value.source == "github" {
@@ -46,7 +59,42 @@ pub fn check(factory: &Factory) -> Vec<Problem> {
     for workflow in factory.workflows.values() {
         check_workflow(factory, workflow, &mut problems);
     }
+    if let Some(lanes) = &factory.lanes {
+        check_lanes(lanes, &mut problems);
+    }
     problems
+}
+
+fn not_a_lane(lane: &str) -> String {
+    format!("lane `{lane}` is not `<team>/<theme>`")
+}
+
+fn check_lanes(lanes: &Loaded<Lanes>, problems: &mut Vec<Problem>) {
+    if let Some(fallback) = lanes
+        .value
+        .fallback
+        .as_deref()
+        .filter(|lane| !lanes::well_formed(lane))
+    {
+        problems.push(problem(
+            lanes,
+            lanes.lines.field("fallback"),
+            not_a_lane(fallback),
+        ));
+    }
+    for (index, rule) in lanes.value.rules.iter().enumerate() {
+        let at = lanes.lines.step(index);
+        if rule.is_bare() {
+            problems.push(problem(
+                lanes,
+                at,
+                "a rule needs `key`, `team`, `project` or `branch`".into(),
+            ));
+        }
+        if !lanes::well_formed(&rule.lane) {
+            problems.push(problem(lanes, at, not_a_lane(&rule.lane)));
+        }
+    }
 }
 
 /// A schedule's run works in `repo`, as a GitHub trigger's does.

@@ -874,3 +874,91 @@ fn a_negative_or_infinite_price_names_its_file_and_line() {
         );
     }
 }
+
+const LANES: &str = r#"fallback = "{team}/misc"
+
+[[rules]]
+key = "3D-600"
+lane = "3D/mobile"
+
+[[rules]]
+branch = "*desktop*"
+lane = "FND/desktop"
+"#;
+
+#[test]
+fn a_factory_with_lanes_passes() {
+    let outcome = check(&factory("lanes-ok", &with("lanes.toml", LANES)));
+
+    assert_eq!((outcome.code, outcome.stderr.as_str()), (0, ""));
+}
+
+#[test]
+fn a_lane_that_is_not_team_slash_theme_fails_with_its_line() {
+    let lanes = LANES.replace("\"3D/mobile\"", "\"mobile\"");
+
+    let outcome = check(&factory("lanes-bad", &with("lanes.toml", &lanes)));
+
+    assert_eq!(outcome.code, 1);
+    assert_eq!(
+        outcome.stderr,
+        "lanes.toml:3: lane `mobile` is not `<team>/<theme>`\n"
+    );
+}
+
+#[test]
+fn a_malformed_fallback_and_trigger_lane_fail_with_their_lines() {
+    let trigger = format!("{TRIGGER}lane = \"mobile\"\n");
+    let mut files = with("lanes.toml", "fallback = \"misc\"\n");
+    files.retain(|(path, _)| *path != "triggers/agent-label.toml");
+    files.push(("triggers/agent-label.toml", &trigger));
+
+    let outcome = check(&factory("lanes-fallback", &files));
+
+    assert_eq!(outcome.code, 1);
+    assert_eq!(
+        outcome.stderr,
+        "triggers/agent-label.toml:8: lane `mobile` is not `<team>/<theme>`\n\
+         lanes.toml:1: lane `misc` is not `<team>/<theme>`\n"
+    );
+}
+
+#[test]
+fn a_lane_rule_with_an_unknown_field_fails_with_its_line() {
+    let lanes = LANES.replace("branch =", "owner =");
+
+    let outcome = check(&factory("lanes-field", &with("lanes.toml", &lanes)));
+
+    assert_eq!(outcome.code, 1);
+    assert!(
+        outcome.stderr.starts_with("lanes.toml:8:")
+            && outcome.stderr.contains("unknown field `owner`"),
+        "{}",
+        outcome.stderr
+    );
+}
+
+#[test]
+fn a_lane_rule_that_matches_on_nothing_fails_with_its_line() {
+    let lanes = "[[rules]]\nlane = \"3D/mobile\"\n";
+
+    let outcome = check(&factory("lanes-bare", &with("lanes.toml", lanes)));
+
+    assert_eq!(outcome.code, 1);
+    assert_eq!(
+        outcome.stderr,
+        "lanes.toml:1: a rule needs `key`, `team`, `project` or `branch`\n"
+    );
+}
+
+#[test]
+fn lanes_in_yaml_are_read_too() {
+    let lanes = "rules:\n  - key: 3D-600\n    lane: mobile\n";
+
+    let outcome = check(&factory("lanes-yaml", &with("lanes.yaml", lanes)));
+
+    assert_eq!(
+        outcome.stderr,
+        "lanes.yaml:2: lane `mobile` is not `<team>/<theme>`\n"
+    );
+}
