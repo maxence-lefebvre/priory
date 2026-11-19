@@ -2907,6 +2907,24 @@ fn the_mcp_server_lists_the_result_ask_and_wait_tools() {
         .map(|tool| tool["name"].as_str().unwrap())
         .collect();
     assert_eq!(names, ["result", "ask", "wait"]);
+    let on = &replies[1]["result"]["tools"][2]["inputSchema"]["properties"]["on"];
+    assert_eq!(
+        on["properties"]["type"]["enum"],
+        json!([
+            "pull_request",
+            "checks",
+            "review",
+            "time",
+            "task",
+            "linear_comment",
+            "linear_state",
+            "slack_reply",
+            "disk"
+        ])
+    );
+    for field in ["issue", "state", "channel", "thread_ts"] {
+        assert!(on["properties"][field].is_object(), "{field} in {on}");
+    }
 }
 
 #[test]
