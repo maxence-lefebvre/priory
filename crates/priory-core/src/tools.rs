@@ -395,7 +395,8 @@ pub(crate) fn event(tx: &Transaction, task: i64, seq: i64) -> rusqlite::Result<b
         .query_row(
             "SELECT waits.id, waits.kind, waits.resource, waits.head_sha, waits.daemon FROM waits
              JOIN tasks ON tasks.id = waits.task
-             WHERE waits.task = ?1 AND waits.fired IS NULL AND tasks.state IN ('running', 'asleep')",
+             WHERE waits.task = ?1 AND waits.fired IS NULL AND waits.withdrawn IS NULL
+             AND tasks.state IN ('running', 'asleep')",
             [task],
             |row| {
                 Ok((
@@ -546,7 +547,7 @@ pub(crate) fn due(tx: &Transaction) -> rusqlite::Result<()> {
         let mut statement = tx.prepare(
             "SELECT waits.id, waits.task, waits.until, waits.target, target.state FROM waits
              JOIN tasks ON tasks.id = waits.task LEFT JOIN tasks AS target ON target.id = waits.target
-             WHERE waits.fired IS NULL AND tasks.state IN ('running', 'asleep')
+             WHERE waits.fired IS NULL AND waits.withdrawn IS NULL AND tasks.state IN ('running', 'asleep')
              AND ((waits.kind = 'time' AND waits.until <= strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
                OR (waits.kind = 'task' AND target.state IN ('done', 'failed', 'dropped')))
              ORDER BY waits.id",
@@ -962,7 +963,7 @@ pub(crate) fn answer(
     let ask = tx
         .query_row(
             "SELECT asks.task, asks.kind, asks.step, asks.revision, asks.options, asks.answer,
-             tasks.workflow, tasks.state
+             tasks.workflow, tasks.state, asks.withdrawn
              FROM asks JOIN tasks ON tasks.id = asks.task WHERE asks.id = ?1",
             [answer.ask],
             |row| {
@@ -975,13 +976,21 @@ pub(crate) fn answer(
                     row.get::<_, Option<String>>(5)?,
                     row.get::<_, String>(6)?,
                     row.get::<_, String>(7)?,
+                    row.get::<_, Option<i64>>(8)?,
                 ))
             },
         )
         .optional()?;
-    let Some((task, kind, at, revision, options, answered, workflow, state)) = ask else {
+    let Some((task, kind, at, revision, options, answered, workflow, state, withdrawn)) = ask
+    else {
         return Ok(Err(format!("there is no ask {}", answer.ask)));
     };
+    if let Some(generation) = withdrawn {
+        return Ok(Err(format!(
+            "ask {} was withdrawn when task {task} was revived as generation {generation}",
+            answer.ask
+        )));
+    }
     if ["done", "failed", "dropped"].contains(&state.as_str()) {
         return Ok(Err(format!("task {task} is {state}")));
     }
@@ -1039,19 +1048,23 @@ pub(crate) fn answer(
     Ok(Ok(format!("ask {} answered", answer.ask)))
 }
 
-/// A person's desk action on a task, as `priory resume` or `priory cancel` sends it on the socket.
+/// A person's desk action on a task, as `priory resume`, `cancel` or `revive` sends it on the socket.
 #[derive(serde::Serialize, serde::Deserialize)]
 pub struct Act {
     pub act: String,
     pub task: i64,
+    /// The step `revive` restarts at, instead of the one the task ended on.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub step: Option<String>,
 }
 
 /// Applies a desk action. `resume` makes a blocked task `ready`, with a prompt that says why it
-/// stopped. `cancel` drops an active task and ends its live run. Returns the reply and a tmux
-/// session to kill.
+/// stopped. `cancel` drops an active task and ends its live run. `revive` restarts a failed or
+/// dropped task as its next generation. Returns the reply and a tmux session to kill.
 pub(crate) fn act(
     db: &mut Connection,
     act: &Act,
+    workflows: &Workflows,
 ) -> rusqlite::Result<(Result<String, String>, Option<String>)> {
     let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
     let Some((state, reason)) = tx
@@ -1106,8 +1119,86 @@ pub(crate) fn act(
             tx.commit()?;
             Ok((Ok(format!("task {} dropped", act.task)), tmux))
         }
+        "revive" => {
+            let revived = revive(&tx, act, workflows)?;
+            if revived.is_ok() {
+                tx.commit()?;
+            }
+            Ok((revived, None))
+        }
         other => Ok((Err(format!("unknown action {other}")), None)),
     }
+}
+
+/// Moves a failed or dropped task back into its step, or `act.step`, as its next generation, and
+/// withdraws the open asks and waits of the earlier ones so that no late answer or event reaches it.
+fn revive(
+    tx: &Transaction,
+    act: &Act,
+    workflows: &Workflows,
+) -> rusqlite::Result<Result<String, String>> {
+    let (key, workflow, at, state, reason, generation) = tx.query_row(
+        "SELECT key, workflow, step, state, reason, generation FROM tasks WHERE id = ?1",
+        [act.task],
+        |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, Option<String>>(4)?,
+                row.get::<_, i64>(5)?,
+            ))
+        },
+    )?;
+    if !["failed", "dropped"].contains(&state.as_str()) {
+        return Ok(Err(format!(
+            "task {} is {state}, not failed or dropped",
+            act.task
+        )));
+    }
+    let target = act.step.as_deref().unwrap_or(&at);
+    let Some(entered) = step(workflows, &workflow, target) else {
+        return Ok(Err(format!("step {target} is not in workflow {workflow}")));
+    };
+    let active = tx
+        .query_row(
+            "SELECT id FROM tasks WHERE key = ?1 AND state NOT IN ('done', 'failed', 'dropped')",
+            [&key],
+            |row| row.get::<_, i64>(0),
+        )
+        .optional()?;
+    if let Some(active) = active {
+        return Ok(Err(format!("task {active} is already active on key {key}")));
+    }
+    let generation = generation + 1;
+    tx.execute(
+        "UPDATE asks SET withdrawn = ?2 WHERE task = ?1 AND answer IS NULL AND withdrawn IS NULL",
+        [act.task, generation],
+    )?;
+    tx.execute(
+        "UPDATE waits SET withdrawn = ?2 WHERE task = ?1 AND fired IS NULL AND withdrawn IS NULL",
+        [act.task, generation],
+    )?;
+    tx.execute(
+        "UPDATE tasks SET generation = ?2 WHERE id = ?1",
+        [act.task, generation],
+    )?;
+    enter(tx, act.task, &workflow, target, None, "", workflows)?;
+    if entered.decides == Decider::Model {
+        let after = reason.map_or(state.clone(), |reason| format!("{state}: {reason}"));
+        let text = format!(
+            "A person revived this task as generation {generation} after it was {after}. The asks and waits of its earlier generation are withdrawn. Check the worktree, then continue."
+        );
+        queue_first(tx, act.task, &text)?;
+    }
+    let now: String = tx.query_row("SELECT state FROM tasks WHERE id = ?1", [act.task], |row| {
+        row.get(0)
+    })?;
+    Ok(Ok(format!(
+        "task {} is {now} at {target}, generation {generation}",
+        act.task
+    )))
 }
 
 /// Ends the live run of `session`, whose tmux session was gone when the daemon started, as `lost`.
@@ -1234,7 +1325,8 @@ pub(crate) fn approved(
         commit.as_deref().unwrap_or("-"),
     );
     tx.execute(
-        "UPDATE asks SET revision = revision + 1, answer = NULL, answered = NULL,
+        // Asked again, an ask that a revive withdrew belongs to the current generation.
+        "UPDATE asks SET revision = revision + 1, answer = NULL, answered = NULL, withdrawn = NULL,
          question = question || ?2 WHERE id = ?1",
         params![ask, moved],
     )?;
