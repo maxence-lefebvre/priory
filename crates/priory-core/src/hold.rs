@@ -148,17 +148,20 @@ fn condition(
                 )));
             }
         };
-        let trigger: String =
-            tx.query_row("SELECT trigger FROM tasks WHERE id = ?1", [task], |row| {
-                row.get(0)
-            })?;
-        let repo = factory
-            .triggers
-            .get(&trigger)
-            .and_then(|trigger| trigger.value.repo.as_deref());
+        let (trigger, repo): (String, Option<String>) = tx.query_row(
+            "SELECT trigger, repo FROM tasks WHERE id = ?1",
+            [task],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        let repo = repo.as_deref().or_else(|| {
+            factory
+                .triggers
+                .get(&trigger)
+                .and_then(|trigger| trigger.value.repo.as_deref())
+        });
         let Some(resource) = pull_request(merge, repo) else {
             return Ok(Err(format!(
-                "merge takes owner/name#number, or a number in the repository of trigger {trigger}, not {merge:?}"
+                "merge takes owner/name#number, or a number in the task's repository, not {merge:?}"
             )));
         };
         return Ok(Ok(Condition {

@@ -494,6 +494,66 @@ fn a_queued_task_at_a_model_step_gets_a_worktree_a_tmux_session_and_a_run() {
 }
 
 #[test]
+fn a_cli_request_starts_its_run_in_the_repository_it_names() {
+    let mut setup = Setup::new("cli-repo");
+    let factory = setup.dir.join("factory");
+    let requested = setup.priory(&[
+        "request",
+        factory.to_str().unwrap(),
+        "--workflow",
+        "implement",
+        "--key",
+        "fix-it",
+        "--repo",
+        "owner/repo",
+        "Fix it.",
+    ]);
+    assert!(
+        requested.status.success(),
+        "{}",
+        String::from_utf8_lossy(&requested.stderr)
+    );
+
+    setup.start();
+
+    setup.until("tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == "running")
+    });
+    assert!(
+        setup
+            .dir
+            .join("home/worktrees/owner/repo/1/README.md")
+            .is_file()
+    );
+}
+
+#[test]
+fn a_linear_task_starts_its_run_in_its_triggers_repository() {
+    let mut setup = Setup::new("linear-repo");
+    fs::write(
+        setup.dir.join("factory/triggers/linear.toml"),
+        "source = \"linear\"\nrepo = \"owner/repo\"\non = \"issue.created\"\nworkflow = \"implement\"\n",
+    )
+    .unwrap();
+    let mut request = requested(42);
+    request.data["key"] = json!("linear:ENG-7");
+    request.data["trigger"] = json!("linear");
+    setup.publish(&request);
+
+    setup.start();
+
+    setup.until("tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == "running")
+    });
+    assert!(
+        setup
+            .dir
+            .join("home/worktrees/owner/repo/1/README.md")
+            .is_file()
+    );
+}
+
+#[test]
 fn an_agent_in_auto_mode_gets_a_run_in_auto_mode_and_its_rules_join_priorys_own() {
     let mut setup = Setup::new("permissions");
     let agent = AGENT.replacen(
