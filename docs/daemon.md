@@ -297,7 +297,8 @@ manager, the daemon logs `priory daemon: no systemd user manager, so runs start 
 priory-agents.slice and only the room check caps them: <error>`, and starts runs as before.
 
 `PRIORY_SLICE` names another slice, so that two Priory daemons on one user manager, such as a test
-daemon beside a real one, cap their agents apart.
+daemon beside a real one, cap their agents apart. A dash in a slice name means nesting, so systemd
+creates `priory.slice` as the parent of `priory-agents.slice`, with no limits of its own.
 
 Known limits:
 
