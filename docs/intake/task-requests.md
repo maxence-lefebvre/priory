@@ -1,11 +1,12 @@
 # `factory.task.requested`
 
-One message per source event and trigger that matches it, the triggers its source lists in
-`triggers`. `priory request` publishes one with `trigger` `cli` for its own source event. A trigger matches when its `repo` is the event's repository, its `on` names the event's
-type (`pull_request.opened` names `github.pull_request.opened`), and its `filter`, if any, names the
-event's `label`. A trigger can start from `issues.labeled`, `issues.opened`, `pull_request.labeled`
-or `pull_request.opened`. A baseline event matches only a trigger
-with `backfill = true`. Only this message creates a task.
+One message per source event and matching trigger, from the triggers its source lists in
+`triggers`. `priory request` publishes one with `trigger` `cli` for its own source event. A trigger
+matches when its `repo` is the event's repository, its `on` names the event's type
+(`pull_request.opened` names `github.pull_request.opened`), and its `filter`, if any, names the
+event's `label`. Triggers can start from `issues.labeled`, `issues.opened`, `pull_request.labeled`
+or `pull_request.opened`. A baseline event matches only a `backfill = true` trigger. Only this
+message creates a task.
 
 | Field      | Type           | Meaning                                                      |
 | ---------- | -------------- | ------------------------------------------------------------ |
@@ -25,8 +26,8 @@ with `backfill = true`. Only this message creates a task.
 duration such as `2 hours`; `after`, another task's id; `merge`, a pull request as `owner/name#42`
 or `42` in the task's repository, with `if_closed` set to `release`, `drop` or `ask`, the
 default; or `blockers: true`. A trigger sets it as a table, such as
-`hold = { reason = "triage first", blockers = true }`. A condition the daemon cannot use, such as
-`blockers` on a GitHub issue, leaves the task held for a person, with the error in its reason.
+`hold = { reason = "triage first", blockers = true }`. A condition the daemon cannot use, such as `blockers` on
+a GitHub issue, leaves the task held for a person, with the error in its reason.
 
 The intake publishes a task request after its source event, so a consumer has already seen the
 source when it reads the request.

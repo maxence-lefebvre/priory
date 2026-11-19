@@ -10,12 +10,12 @@ Each second, the daemon gives every live run one of these verdicts, in this orde
 | Timeout | a turn older than its step's `timeout` | `timeout` | `blocked` | `run <id> timed out: its turn ran past <n>s` |
 
 A verdict blocks the task when a person must act: the trust dialog, a permission the agent lacks,
-or a turn that may be legitimately long. A person reads the reason on the desk and either resumes
-the task or cancels it. An unexpected exit fails the task instead, since the daemon can often tell
-why the agent died and act on it, as under Repair. An exit before the run's `SessionStart` still
-blocks the task: a harness that never came up dies the same way when restarted. The daemon commits
-the verdict, then kills the run's tmux session, so a crash in between leaves an ended run, which the
-next start cleans up.
+or a turn that may be legitimately long. A person reads the reason on the desk, then resumes or
+cancels the task. An unexpected exit fails the task instead, since the daemon can often tell why
+the agent died and act on it (see Repair). An exit before `SessionStart` still blocks the task,
+because a harness that never came up dies the same way when restarted. The daemon commits the
+verdict, then kills the tmux session. A crash in between leaves an ended run, which the next start
+cleans up.
 
 ## Failed or blocked
 
@@ -29,7 +29,7 @@ These ends make a task `failed`:
 Everything else that stops a task needs a person and makes it `blocked`: no `SessionStart`, an exit
 before `SessionStart`, a permission prompt, a timeout, a run lost twice, a code step's action that
 is not built, a step with no known agent, a task with no repo, and a git or tmux error at the
-start of a run. `open-pr`'s own failure is not an end: it is the `failed` outcome, which the
+start of a run. `open-pr`'s own failure is not an end. It is the `failed` outcome, which the
 workflow routes like any other.
 
 ## Repair
@@ -46,49 +46,50 @@ from the room, measured as for admission, after the run's promise is released:
 A cause that is gone, or that the room check will confirm gone before the run starts, makes the task
 `ready` with the prompt `Priory repaired this task after: <reason>. Cause: <cause>. Action:
 <action>. Check the worktree, then continue.` ahead of its other prompts. The next run resumes the
-session of the step's agent, as a resume does. A disk still short after the sweep leaves the task
-`failed` with the reason `<reason>. Cause: <cause>. Action: sweep. The cause persists, so Priory
-did not restart the agent.`
+step's agent session, as a resume does. A disk still short after the sweep leaves the task `failed`
+with the reason `<reason>. Cause: <cause>. Action: sweep. The cause persists, so Priory did not
+restart the agent.`
 
-A task gets one repair per run: when the run a repair restarted exits too, before it stored a result,
-ask or wait, the task stays `failed` with `<reason>; it failed again after its repair, so Priory did
-not restart the agent`. Once a run stores a result, ask or wait, a later exit gets a repair again,
-and so does the first exit after a revive. `priory revive` restarts a failed task either way.
+A task gets one repair per run. When the run a repair restarted exits too, before it stored a
+result, ask or wait, the task stays `failed` with `<reason>; it failed again after its repair, so
+Priory did not restart the agent`. Once a run stores a result, ask or wait, a later exit gets a
+repair again, and so does the first exit after a revive. `priory revive` restarts a failed task
+either way.
 
 Each repair appends a `factory.task.repaired` record to the trace, with its cause, action and
 outcome, `ready` or `failed`, as [the trace schema](../trace-schema.md) defines it.
 
 Known limits:
 
-- The cause is read after the agent died, when its own memory is already free. An agent the kernel
-  killed for memory often reads as `the harness crashed`, and still restarts once.
+- The cause is read after the agent died, when its memory is already free. An agent the kernel
+  killed for memory often reads as `the harness crashed` and still restarts once.
 - A harness that crashes for a reason the room cannot see, such as a bad binary after its first
   turn, gets one restart before it stays failed.
-- Waiting for room has no deadline: a task waits as any task in the queue does.
+- Waiting for room has no deadline. A task waits as any queued task does.
 - The daemon ends the run, then repairs in a second transaction, since the sweep runs outside any
   transaction. A daemon that stops in between leaves the task `blocked` with the exit's reason, as
   before repair existed.
-- `ready` means the task waits to start its agent, not that the agent started: a cancel or a room
+- `ready` means the task waits to start its agent, not that the agent started. A cancel or a room
   that never frees can still stop it.
 - A sweeper task never waits for room, so its memory repair starts it at once.
 - A repair's run lost with its tmux server is replaced by a run that gets a repair of its own.
-- A room that cannot be measured confirms no freed disk, but a crash with an unreadable room reads
-  as `the harness crashed`, and the admission then waits until the room reads again.
+- A room that cannot be measured confirms no freed disk. A crash with an unreadable room reads as
+  `the harness crashed`, and admission then waits until the room reads again.
 
 A run whose agent is gone after its result, ask or wait ended the turn is not an unexpected exit.
-It settles as its `Stop` would have, as under Moving on, except that a next model step always gets
-a new run, since no process carries on.
+It settles as its `Stop` would, as under Moving on, but a next model step always gets a new run,
+since no process carries on.
 
 A model step's `timeout` is a duration such as `90s`, `15m` or `2h`, and defaults to `3h`. A run
 whose agent exits after a wait already fired, or after its ask was answered, but before its `Stop`,
-counts as an unexpected exit; `priory resume` recovers it. It
-bounds one turn, from `UserPromptSubmit` to `Stop`, not the step.
+counts as an unexpected exit; `priory resume` recovers it. The timeout bounds one turn, from
+`UserPromptSubmit` to `Stop`, not the step.
 
 Priory never approves a permission prompt. Each run's settings carry a `PermissionRequest` hook
 that denies every request and tells the agent: `Priory runs this session unattended and never
 approves a permission prompt, so it denied this one. Go on without it. If the task cannot go on
 without it, call the ask or result tool of the priory MCP server.` What the agent does next is its
-own: the desk hears of it only through that ask, or a verdict if the run then stalls. A
+own. The desk hears of it only through that ask, or a verdict if the run then stalls. A
 `Notification` hook with the matcher `permission_prompt` runs `priory hook PermissionPrompt`, so a
 prompt that shows anyway, when the deny hook failed, ends the run on the next tick.
 
@@ -96,22 +97,22 @@ prompt that shows anyway, when the deny hook failed, ends the run on the next ti
 
 A live run is stalled when it sent no hook event and its pane did not change for 10 minutes, or for
 the `stalled` duration of `factory.toml`. Each tick, the daemon reads the screen of every live run
-that reached `SessionStart`, shows no permission prompt and has no open ask or wait. A run asleep on
-a wait or an ask never counts, and neither does a run whose spinner or output still moves.
+that reached `SessionStart`, shows no permission prompt and has no open ask or wait. Runs asleep on
+a wait or an ask never count, nor do runs whose spinner or output still moves.
 
-The handler is opt-in: `handler` in `factory.toml` names the agent whose model it uses, which needs
+The handler is opt-in. `handler` in `factory.toml` names the agent whose model it uses, which needs
 `harness = "claude-code"`. Without it, no handler runs, as no sweeper runs without `[sweep] agent`.
-On a stall, the daemon calls the handler: one headless `claude -p --output-format json` call, in
-`PRIORY_HOME/handlers`, with no settings or MCP servers of the user's and no session kept. The model
-is the agent's, or `haiku` when the agent sets none.
+On a stall, the daemon makes one headless `claude -p --output-format json` call in
+`PRIORY_HOME/handlers`, with no settings or MCP servers of the user's and no session kept. The model is the agent's,
+or `haiku` when the agent sets none.
 
 ```toml
 handler = "handler"   # an agent with harness = "claude-code"; no handler runs when unset
 stalled = "10m"
 ```
 
-The handler reads the step's prompt, the last three prompts the task received, the task's last three
-trace records and the last 30 lines of the screen. It answers one of:
+The handler reads the step's prompt, the last three prompts the task received, the task's last three trace records and
+the last 30 screen lines. It answers one of:
 
 - `nudge` with a text. Priory queues `Priory's handler read your screen after this run stalled:
   <text>` ahead of the task's other prompts and marks the run idle, since the handler read on its
@@ -122,29 +123,29 @@ trace records and the last 30 lines of the screen. It answers one of:
   the worktree, then continue.` The next run resumes the same session in the same worktree.
 - `leave` with a reason, which Priory records and acts on no further.
 
-The handler call runs in the background, in its own process group, so the daemon keeps ticking. It
-is killed after 2 minutes. Only a call that exits 0 with a successful result may act. A call that
-fails, times out or answers no known action counts as `leave`, with the error as its reason, and
+The call runs in the background, in its own process group, so the daemon keeps ticking. It is
+killed after 2 minutes. Only a call that exits 0 with a successful result may act. Any other outcome
+(a failure, a timeout or an unknown action) counts as `leave`, with the error as its reason, and
 keeps the tokens it reported.
 
 Before it applies an answer, the daemon reads the screen again. It records the answer with
 `(not applied: the run moved on)` when, since the call, the run ended, sent a hook event, changed its
 pane, stored a result, ask or wait, or was typed a prompt. A run whose earlier prompt is still
-`attempted` or `uncertain` cannot take a nudge: the handler's prompt says so, and a nudge it still
+`attempted` or `uncertain` cannot take a nudge. The handler's prompt says so, and a nudge it still
 answers is recorded with `(not applied: an earlier prompt still waits for its confirmation)`.
 
-A run gets one handler call per stall: a stall ends with the next hook event or pane change. Each
-call stores the screen it read, so a restarted daemon does not call again on that screen until a
-hook event arrives or the pane shows something else. A run gets at most 3 calls, after which the step's `timeout` and the other
-verdicts above still apply. The handler never answers an ask or a permission prompt: the runs that
-show one are not read, and its prompt tells it to answer `leave` on a question or a menu. Priory
-cannot check the text of a nudge.
+A run gets one handler call per stall. A stall ends at the next hook event or pane change. Each call
+stores the screen it read, so a restarted daemon does not call again on that screen until a hook
+event arrives or the pane shows something else. A run gets at most 3 calls, after which the step's
+`timeout` and the other verdicts above still apply. The handler never answers an ask or a permission
+prompt. Such runs are not read, and its prompt tells it to answer `leave` on a question or a menu.
+Priory cannot check the text of a nudge.
 
-Each answered call appends a `factory.handler.called` record to the trace, with the action, its text,
-the model, the tokens and Claude's own `cost_usd`. A daemon that stops while a call runs kills that
-call's process group when it starts again, after checking its start time in `/proc`. It then records
-the call's answer, if the call wrote one, as not applied, or `leave` with `the handler call failed:
-interrupted by a daemon restart`. The call still counts.
+Each answered call appends a `factory.handler.called` record to the trace, with the action, its text, the model,
+the tokens and Claude's own `cost_usd`. A daemon that stops mid-call kills that call's process group
+when it starts again, after checking its start time in `/proc`. It then records the call's answer, if
+the call wrote one, as not applied, or `leave` with `the handler call failed: interrupted by a daemon
+restart`. The call still counts.
 
 Known limits:
 

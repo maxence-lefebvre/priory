@@ -2,12 +2,12 @@
 
 `priory request [DIR] --workflow <name> --key <key> [--band <band>] [--lane <lane>] [--repo <owner/name>] [--hold <reason> [--until <time> | --after <task> | --merge <pr> [--if-closed release|drop|ask] | --blockers]] [--] <text>`
 publishes this source event, then one `factory.task.requested` for it. `--hold` files the task held,
-with the condition that follows it, as `hold` below says. It loads the factory as
-`priory check` does and refuses an unknown workflow, publishing nothing. `DIR` defaults to `.`. A flag value cannot start with `--`; put `--` before text that does.
+with the condition that follows it (see `hold` below). It loads the factory as `priory check` does
+and refuses an unknown workflow, publishing nothing. `DIR` defaults to `.`. A flag value cannot start with `--`; put `--` before text that does.
 
-The type has no `github.` prefix because no GitHub event produced it, and ends in `.cli` because a
+The type has no `github.` prefix because no GitHub event produced it. It ends in `.cli` because a
 later source, such as Linear, adds its own `priory.task.requested.<source>`. It is a request, not a
-fact about a repository, so it names the person and the text, not a GitHub id.
+repository fact, so it names the person and text, not a GitHub id.
 
 | Field    | Type           | Meaning                                                    |
 | -------- | -------------- | ---------------------------------------------------------- |
@@ -16,10 +16,10 @@ fact about a repository, so it names the person and the text, not a GitHub id.
 | `time`   | RFC 3339       | When the command ran                                       |
 | `repo`   | string or null | `--repo`, or null                                          |
 
-The message's `subject` is the task key, `cli:<key>`, and its `time` equals `data.time`. The task
-request that follows has `trigger` `cli`, `source` set to this message's `id`, `band`, `lane` and
-`repo` from the flags (null when absent), and the same key. No trigger file is involved, so a task
-started without `--repo` blocks with `task <id> names no repo`.
+The message's `subject` is the task key, `cli:<key>`, and its `time` equals `data.time`. The following
+task request has `trigger` `cli`, `source` set to this message's `id`, `band`, `lane` and `repo`
+from the flags (null when absent), and the same key. No trigger file is involved, so a task
+requested without `--repo` blocks with `task <id> names no repo`.
 
 ```json
 {
@@ -56,6 +56,6 @@ started without `--repo` blocks with `task <id> names no repo`.
 }
 ```
 
-Running the same command again, with the same key and text, adds nothing: the ids come from those
+Running the same command again, with the same key and text, adds nothing. The ids come from those
 two values (see Message ids), so herdr-bus drops both messages. Another text under the same key is
 a new request for the same task.
