@@ -146,6 +146,16 @@ pub(crate) fn spawned(
     .map(drop)
 }
 
+/// Forgets the screen the last handler call on `run` read, once the run showed another: a stall that
+/// comes back to that screen later is a new one.
+pub(crate) fn redrawn(db: &Connection, run: i64) -> rusqlite::Result<()> {
+    db.execute(
+        "UPDATE handlers SET screen = '' WHERE id = (SELECT max(id) FROM handlers WHERE run = ?1)",
+        [run],
+    )
+    .map(drop)
+}
+
 /// The handler calls a stopped daemon left unanswered, with their process group and its start time.
 pub(crate) fn orphans(db: &Connection) -> rusqlite::Result<Vec<(i64, Option<Group>)>> {
     let mut statement =
@@ -175,8 +185,11 @@ struct Answer {
     cost_usd: Option<f64>,
 }
 
-/// Reads the call's output. Only a call that exited 0 with a successful result may act; any other
-/// becomes `leave`, keeping its usage.
+/// The status of a call a stopped daemon left: its output, if any, is read but never applied.
+pub(crate) const INTERRUPTED: &str = "interrupted by a daemon restart";
+
+/// Reads the call's output. Only a call that exited 0, or was interrupted after it wrote, with a
+/// successful result counts; any other becomes `leave`, keeping its usage.
 fn read(output: Option<&str>, status: &str) -> Answer {
     let parsed: Value = output
         .and_then(|output| serde_json::from_str(output).ok())
@@ -191,15 +204,19 @@ fn read(output: Option<&str>, status: &str) -> Answer {
         })
     });
     let result = parsed["result"].as_str().unwrap_or_default();
-    let succeeded = status == "exit 0" && parsed["is_error"] == false;
+    let succeeded = matches!(status, "exit 0" | INTERRUPTED)
+        && parsed["is_error"] == false
+        && parsed["subtype"] == "success";
     // A model may wrap its JSON in prose or a code fence.
     let chosen = result
         .find('{')
         .zip(result.rfind('}'))
         .and_then(|(start, end)| serde_json::from_str::<Choice>(result.get(start..=end)?).ok())
-        .filter(|choice| match choice {
-            Choice::Nudge { text } => !text.trim().is_empty(),
-            Choice::Restart { .. } | Choice::Leave { .. } => true,
+        .filter(|choice| {
+            let (Choice::Nudge { text }
+            | Choice::Restart { why: text }
+            | Choice::Leave { why: text }) = choice;
+            !text.trim().is_empty()
         });
     let choice = match chosen {
         Some(choice) if succeeded => choice,

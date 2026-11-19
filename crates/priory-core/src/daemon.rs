@@ -121,7 +121,7 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
             script::kill(pid);
         }
         let output = runtime::answer(&handlers, id);
-        let status = "interrupted by a daemon restart";
+        let status = handler::INTERRUPTED;
         handler::answered(&mut db, &trace, id, output.as_deref(), status, true)?;
         runtime::forget(&handlers, id);
     }
@@ -180,8 +180,16 @@ fn handle_stalls(
             .screens
             .entry(run.run)
             .or_insert_with(|| (screen.clone(), Instant::now()));
+        let joined = screen.join("\n");
         if seen.0 != screen {
             *seen = (screen, Instant::now());
+        }
+        if run
+            .left
+            .as_deref()
+            .is_some_and(|left| !left.is_empty() && left != joined)
+        {
+            handler::redrawn(db, run.run)?;
         }
     }
     for mut call in std::mem::take(&mut stalls.calls) {
@@ -214,7 +222,7 @@ fn handle_stalls(
             continue;
         };
         let stalled_for = run.silent.min(changed.elapsed().as_secs() as i64);
-        // One call per stall: none since it began, and none on this screen with no hook event since.
+        // One call per stall, also across a daemon restart: `left` is the screen the last call read.
         let due = stalled_for >= stalled
             && run.calls < handler::CALLS
             && run.handled.is_none_or(|handled| handled > stalled_for)

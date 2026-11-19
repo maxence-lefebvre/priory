@@ -615,7 +615,7 @@ answers is recorded with `(not applied: an earlier prompt still waits for its co
 
 A run gets one handler call per stall: a stall ends with the next hook event or pane change. Each
 call stores the screen it read, so a restarted daemon does not call again on that screen until a
-hook event arrives. A run gets at most 3 calls, after which the step's `timeout` and the other
+hook event arrives or the pane shows something else. A run gets at most 3 calls, after which the step's `timeout` and the other
 verdicts above still apply. The handler never answers an ask or a permission prompt: the runs that
 show one are not read, and its prompt tells it to answer `leave` on a question or a menu. Priory
 cannot check the text of a nudge.
