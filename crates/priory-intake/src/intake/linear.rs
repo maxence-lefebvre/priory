@@ -54,10 +54,21 @@ impl<'a> Linear<'a> {
             .collect();
         streams.insert(ISSUES.into(), None);
         streams.insert(COMMENTS.into(), None);
-        let newest = resume(bus, &mut streams).map_err(|error| error.to_string())?;
-        // A crash may have stopped between an event and its task requests.
-        for event in newest.iter().filter(|event| event.data["baseline"] != true) {
-            dispatch(bus, &triggers, event)?;
+        let interrupted = resume(bus, &mut streams).map_err(|error| error.to_string())?;
+        for (stream, events) in interrupted {
+            // A stream still in its baseline polls its first page again.
+            let Some(Some(marker)) = streams.get_mut(&stream) else {
+                continue;
+            };
+            let newest = events
+                .last()
+                .expect("an interrupted poll published an event");
+            // A crash may have stopped between an event and its task requests.
+            if newest.data["baseline"] != true {
+                dispatch(bus, &triggers, newest)?;
+            }
+            *marker = recover(marker, &events);
+            publish(bus, &marker_message(&stream, marker))?;
         }
         Ok(Linear {
             key,
@@ -93,6 +104,7 @@ impl<'a> Linear<'a> {
                 .and_then(|marker| marker["seen"].as_array())
                 .cloned()
                 .unwrap_or_default();
+            let current = current.as_ref() != Some(&marker);
             for event in events {
                 // Read again at the stream's position, and handled by an earlier poll.
                 if seen.contains(&json!(event.id.to_string())) {
@@ -101,18 +113,9 @@ impl<'a> Linear<'a> {
                 publish(bus, &event)?;
                 dispatch(bus, &self.triggers, &event)?;
             }
-            let current = self.streams.get_mut(&stream).expect("a polled stream");
-            if current.as_ref() != Some(&marker) {
-                let position = &marker["position"];
-                let position = position
-                    .as_str()
-                    .map_or(position.to_string(), str::to_owned);
-                let name = format!("{BASELINE}:{stream}:{position}:{}", marker["seen"]);
-                let message = Message::new(BASELINE, marker.clone())
-                    .id(id(&name))
-                    .subject(&stream);
-                publish(bus, &message)?;
-                *current = Some(marker);
+            if current {
+                publish(bus, &marker_message(&stream, &marker))?;
+                self.streams.insert(stream, Some(marker));
             }
         }
         Ok(())
@@ -386,6 +389,57 @@ fn polled(
     }
 }
 
+fn marker_message(stream: &str, marker: &Value) -> Message {
+    let position = &marker["position"];
+    let position = position
+        .as_str()
+        .map_or(position.to_string(), str::to_owned);
+    let name = format!("{BASELINE}:{stream}:{position}:{}", marker["seen"]);
+    Message::new(BASELINE, marker.clone())
+        .id(id(&name))
+        .subject(stream)
+}
+
+/// The marker a poll stopped by a crash would have published: `events` are what it published,
+/// oldest first. Polling on from it never rebuilds those events, nor reuses their view position.
+fn recover(marker: &Value, events: &[Message]) -> Value {
+    let mut marker = marker.clone();
+    if let Some(before) = marker["members"].as_array() {
+        let mut members: BTreeMap<String, Value> = before
+            .iter()
+            .map(|member| (text(&member["linear_id"]).to_string(), member.clone()))
+            .collect();
+        for event in events {
+            let mut member = event.data.clone();
+            let fields = member.as_object_mut().expect("an object");
+            for field in ["view", "time", "baseline", "triggers"] {
+                fields.remove(field);
+            }
+            let id = text(&member["linear_id"]).to_string();
+            if event.kind == ENTERED {
+                members.insert(id, member);
+            } else {
+                members.remove(&id);
+            }
+        }
+        marker["position"] = json!(marker["position"].as_u64().unwrap_or_default() + 1);
+        marker["members"] = json!(members.into_values().collect::<Vec<_>>());
+        return marker;
+    }
+    let newest = events.iter().map(|event| event.time).max();
+    let at: Vec<&Message> = events
+        .iter()
+        .filter(|event| Some(event.time) == newest)
+        .collect();
+    marker["position"] = at[0].data["time"].clone();
+    marker["seen"] = json!(
+        at.iter()
+            .map(|event| event.id.to_string())
+            .collect::<Vec<_>>()
+    );
+    marker
+}
+
 fn text(value: &Value) -> &str {
     value.as_str().unwrap_or_default()
 }
@@ -413,13 +467,13 @@ fn fields(issue: &Value) -> Value {
     })
 }
 
-/// Fills each stream with its newest marker, read back newest first, and returns the newest event
-/// of each stream published after that marker.
+/// Fills each stream with its newest marker, read back newest first, and returns the events of
+/// each stream published after that marker, oldest first: those of a poll a crash stopped.
 fn resume(
     bus: &Bus,
     streams: &mut BTreeMap<String, Option<Value>>,
-) -> herdr_bus::Result<Vec<Message>> {
-    let mut newest: BTreeMap<String, Message> = BTreeMap::new();
+) -> herdr_bus::Result<BTreeMap<String, Vec<Message>>> {
+    let mut after: BTreeMap<String, Vec<Message>> = BTreeMap::new();
     let mut before = None;
     // shortcut: reads back to each stream's newest marker, once per start; a stored cursor would
     // make this constant once the output is large.
@@ -449,11 +503,11 @@ fn resume(
             if message.kind == BASELINE {
                 *marker = Some(message.data.clone());
             } else {
-                newest.entry(stream).or_insert_with(|| message.clone());
+                after.entry(stream).or_default().insert(0, message.clone());
             }
         }
     }
-    Ok(newest.into_values().collect())
+    Ok(after)
 }
 
 /// One query to Linear's GraphQL API. The key goes to `curl` on its standard input, so that it
@@ -515,7 +569,7 @@ fn graphql(key: &str, query: &str, variables: &Value) -> Result<Value, String> {
             .collect();
         return Err(format!(
             "Linear {operation} failed: {}",
-            messages.join("; ")
+            messages.join("; ").replace(key, "<LINEAR_API_KEY>")
         ));
     }
     Ok(answer["data"].clone())

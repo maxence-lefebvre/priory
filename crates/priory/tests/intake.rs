@@ -1664,6 +1664,10 @@ fn a_restart_requests_the_task_a_crash_left_out_for_a_view() {
     let crashed = Setup::linear("linear-crash-replay", &[("agent-ready", VIEW_TRIGGER)]);
     succeeded(&crashed.intake());
     seed(&crashed, &entered);
+    crashed.answer_linear(&Linear {
+        view: vec![linear_issue(7)],
+        ..Linear::default()
+    });
 
     succeeded(&crashed.intake());
 
@@ -1689,4 +1693,91 @@ fn a_failing_linear_query_reports_the_error_without_the_key() {
     assert!(stderr.contains("curl: (22) 401"), "{stderr}");
     assert!(!stderr.contains(KEY), "{stderr}");
     assert!(setup.published().is_empty());
+}
+
+#[test]
+fn an_issue_that_left_a_view_during_a_crash_publishes_issue_left_and_can_enter_again() {
+    let setup = Setup::linear("linear-crash-left", &[("agent-ready", VIEW_TRIGGER)]);
+    succeeded(&setup.intake());
+    setup.answer_linear(&Linear {
+        view: vec![linear_issue(7)],
+        ..Linear::default()
+    });
+    succeeded(&setup.intake());
+    let entered = setup.published()[0].message.clone();
+    let crashed = Setup::linear("linear-crash-left-replay", &[("agent-ready", VIEW_TRIGGER)]);
+    succeeded(&crashed.intake());
+    seed(&crashed, &entered);
+    succeeded(&crashed.intake());
+    crashed.answer_linear(&Linear {
+        view: vec![linear_issue(7)],
+        ..Linear::default()
+    });
+
+    succeeded(&crashed.intake());
+
+    assert_eq!(
+        kinds(&crashed.published()),
+        [
+            "linear.issue.entered",
+            "factory.task.requested",
+            "linear.issue.left",
+            "linear.issue.entered",
+            "factory.task.requested"
+        ]
+    );
+}
+
+#[test]
+fn a_trigger_added_after_a_crash_gets_no_task_for_an_event_already_published() {
+    let setup = Setup::linear("linear-crash-trigger", &[("commented", COMMENT_TRIGGER)]);
+    succeeded(&setup.intake());
+    let comment = linear_comment("comment-1", 7, "2026-11-17T11:00:00.000Z");
+    setup.answer_linear(&Linear {
+        comments: vec![comment.clone()],
+        ..Linear::default()
+    });
+    succeeded(&setup.intake());
+    let published = setup.published()[0].message.clone();
+    let crashed = Setup::linear(
+        "linear-crash-trigger-replay",
+        &[("commented", COMMENT_TRIGGER)],
+    );
+    succeeded(&crashed.intake());
+    seed(&crashed, &published);
+    write(
+        &crashed.dir.join("factory/triggers/also.toml"),
+        COMMENT_TRIGGER,
+    );
+    crashed.answer_linear(&Linear {
+        comments: vec![comment],
+        ..Linear::default()
+    });
+
+    succeeded(&crashed.intake());
+
+    let requests: Vec<_> = crashed
+        .published()
+        .into_iter()
+        .filter(|stored| stored.message.kind == "factory.task.requested")
+        .map(|stored| stored.message.data["trigger"].clone())
+        .collect();
+    assert_eq!(requests, [json!("commented")]);
+}
+
+#[test]
+fn a_graphql_error_is_reported_without_the_key() {
+    let setup = Setup::linear("linear-graphql-error", &[("agent-ready", VIEW_TRIGGER)]);
+    let answer = json!({ "errors": [{ "message": format!("Invalid token {KEY}") }] });
+    write(
+        &setup.dir.join("linear-customView.json"),
+        &answer.to_string(),
+    );
+
+    let output = setup.intake();
+
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("Invalid token"), "{stderr}");
+    assert!(!stderr.contains(KEY), "{stderr}");
 }

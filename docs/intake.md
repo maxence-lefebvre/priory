@@ -595,17 +595,19 @@ trigger. When that first page is empty, the stream starts from 1970.
 A poll reads again the events at its stream's position, because two events can share a millisecond.
 It skips those the marker lists in `seen`, so a baseline event read again never requests a task.
 
-A crash between an event and its stream's marker makes the next poll start from the older marker.
-It finds the same events with the same ids, so herdr-bus drops them, and their task requests are
-published again or dropped. On start, the intake also publishes again the task requests of each
-stream's newest event after its marker, from that event's `triggers`, as the GitHub source does.
+A crash between an event and its stream's marker leaves events after the newest marker. On start,
+the intake rebuilds the marker that poll would have published from those events, and publishes it.
+It also publishes again the task requests of the newest of them, from its `triggers`, as the GitHub
+source does, and herdr-bus drops the repeats. Polling then goes on from the rebuilt marker, so it
+never publishes those events again with other triggers, and a view reports an issue that left
+during the crash.
 
 Limits:
 
 - A view event's `time` is when the intake noticed the change, at most one poll late.
-- An issue that enters and leaves a view between two polls produces no event. The same holds
-  across a crash: an issue that entered just before the crash and left before the restart gets its
-  task request, but no `linear.issue.left`.
+- An issue that enters and leaves a view between two polls produces no event.
+- As for GitHub, start-up recovery never dispatches a baseline event, so a crash between a baseline
+  event and the task request of a `backfill` trigger loses that request.
 - A task's key names the issue identifier. Moving the issue to another team changes its
   identifier, so later events of that issue no longer reach the task.
 - A view marker holds every issue of the view and is published whenever one of them changes, so a
