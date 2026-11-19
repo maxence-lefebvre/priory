@@ -33,7 +33,7 @@ pub struct Settings {
     pub bands: Option<Vec<String>>,
     #[serde(default)]
     pub sweep: Sweep,
-    /// The agent whose harness and model read a stalled run's screen; Claude Code with `haiku` when unset.
+    /// The agent whose model reads a stalled run's screen; no handler runs without one.
     pub handler: Option<String>,
     /// How long a run goes without a hook event or a change on its pane before it counts as stalled.
     #[serde(default, deserialize_with = "duration")]

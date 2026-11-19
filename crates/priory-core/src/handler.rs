@@ -8,7 +8,7 @@ use serde_json::Value;
 /// The most handler calls one run gets.
 pub(crate) const CALLS: i64 = 3;
 
-/// The model of a handler agent that names none, and of the built-in handler.
+/// The model of a handler agent that names none.
 pub(crate) const MODEL: &str = "haiku";
 
 /// Why a run cannot take a nudge: its earlier prompt may still sit in its input.
@@ -58,15 +58,12 @@ pub(crate) fn quiet(db: &Connection) -> rusqlite::Result<Vec<Quiet>> {
         .collect()
 }
 
-/// The model the handler calls: the `handler` agent's, else `haiku`.
-pub(crate) fn model(factory: &Factory) -> &str {
-    factory
-        .settings
-        .as_ref()
-        .and_then(|settings| settings.value.handler.as_ref())
-        .and_then(|name| factory.agents.get(name))
-        .and_then(|agent| agent.value.model.as_deref())
-        .unwrap_or(MODEL)
+/// The model the handler calls: the `handler` agent's, else `haiku`. A factory with no `handler`
+/// calls none.
+pub(crate) fn model(factory: &Factory) -> Option<&str> {
+    let name = factory.settings.as_ref()?.value.handler.as_ref()?;
+    let agent = factory.agents.get(name)?;
+    Some(agent.value.model.as_deref().unwrap_or(MODEL))
 }
 
 const ASK: &str = r#"You are Priory's handler. Priory runs coding agents unattended in tmux. The agent below seems stalled: its run sent no hook event and its screen did not change for a while. Read its screen and answer with one JSON object and nothing else, one of:
@@ -315,7 +312,8 @@ pub(crate) fn answered(
             model: answer
                 .model
                 .as_deref()
-                .unwrap_or_else(|| model(trace.factory)),
+                .or_else(|| model(trace.factory))
+                .unwrap_or(MODEL),
             tokens: answer.tokens,
             cost_usd: answer.cost_usd,
         },

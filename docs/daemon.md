@@ -630,13 +630,14 @@ the `stalled` duration of `factory.toml`. Each tick, the daemon reads the screen
 that reached `SessionStart`, shows no permission prompt and has no open ask or wait. A run asleep on
 a wait or an ask never counts, and neither does a run whose spinner or output still moves.
 
+The handler is opt-in: `handler` in `factory.toml` names the agent whose model it uses, which needs
+`harness = "claude-code"`. Without it, no handler runs, as no sweeper runs without `[sweep] agent`.
 On a stall, the daemon calls the handler: one headless `claude -p --output-format json` call, in
-`PRIORY_HOME/handlers`, with no settings or MCP servers of the user's and no session kept. `handler`
-in `factory.toml` names the agent whose model it uses, which needs `harness = "claude-code"`. Without
-one, or when that agent sets no model, the model is `haiku`.
+`PRIORY_HOME/handlers`, with no settings or MCP servers of the user's and no session kept. The model
+is the agent's, or `haiku` when the agent sets none.
 
 ```toml
-handler = "handler"   # an agent with harness = "claude-code"; Claude's haiku when unset
+handler = "handler"   # an agent with harness = "claude-code"; no handler runs when unset
 stalled = "10m"
 ```
 

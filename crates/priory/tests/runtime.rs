@@ -6084,12 +6084,13 @@ fn a_linear_comment_no_task_owned_before_the_wait_wakes_the_task_at_once() {
     );
 }
 
-/// A factory whose runs count as stalled after 2 seconds without a hook event or a pane change.
+/// A factory whose runs count as stalled after 2 seconds without a hook event or a pane change, and
+/// whose handler is the implementer agent, on `haiku`.
 fn stalls(name: &str, workflow: &str) -> Setup {
     let setup = Setup::with_workflow(name, workflow);
     fs::write(
         setup.dir.join("factory/factory.toml"),
-        "name = \"demo\"\nstalled = \"2s\"\n",
+        "name = \"demo\"\nhandler = \"implementer\"\nstalled = \"2s\"\n",
     )
     .unwrap();
     setup
@@ -6348,4 +6349,22 @@ fn a_handler_call_that_fails_never_acts_but_its_cost_is_traced() {
     assert_eq!(data["tokens"]["input"], 300);
     std::thread::sleep(Duration::from_secs(1));
     assert_eq!(setup.rows("runs").len(), 1);
+}
+
+#[test]
+fn a_factory_without_a_handler_never_calls_one() {
+    let mut setup = Setup::new("handler-unset");
+    fs::write(
+        setup.dir.join("factory/factory.toml"),
+        "name = \"demo\"\nstalled = \"2s\"\n",
+    )
+    .unwrap();
+    setup.publish(&requested(42));
+
+    setup.start();
+
+    setup.within(20, "outbox", |rows| with(rows, 3, "confirmed") == 2);
+    std::thread::sleep(Duration::from_secs(5));
+    assert!(setup.handled().is_empty(), "{:?}", setup.handled());
+    assert!(setup.handler_records().is_empty());
 }

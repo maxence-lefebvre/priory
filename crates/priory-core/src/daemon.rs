@@ -175,6 +175,9 @@ fn handle_stalls(
     stalls: &mut Stalls,
 ) -> Result<(), Error> {
     let factory = trace.factory;
+    let Some(model) = handler::model(factory) else {
+        return Ok(());
+    };
     let dir = home.join("handlers");
     // Screens first, so an answer is checked against what the run shows now.
     let quiet = handler::quiet(db)?;
@@ -241,7 +244,7 @@ fn handle_stalls(
         let screen = screen.clone();
         let id = handler::called(db, run.run, &screen)?;
         let prompt = handler::prompt(db, factory, run.run, stalled_for, &screen)?;
-        match runtime::ask_handler(&dir, id, handler::model(factory), &prompt, HANDLER_TIMEOUT) {
+        match runtime::ask_handler(&dir, id, model, &prompt, HANDLER_TIMEOUT) {
             Ok(script) => {
                 handler::spawned(db, id, script.pid(), memory::started(script.pid()))?;
                 stalls.calls.push(Handling {
