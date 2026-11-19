@@ -3,13 +3,14 @@ use crate::route::{self, Decision};
 use crate::trace::Trace;
 use herdr_bus::Message;
 use priory_factory::factory::{Factory, Loaded, Session, Workflow};
+use priory_factory::lanes::{Lanes, Subject};
 use priory_runtime::room::Room;
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 use std::collections::BTreeMap;
 use std::io::Write;
 use std::time::Duration;
 
-const VERSION: i64 = 11;
+const VERSION: i64 = 12;
 
 const SCHEMA: &str = "
 CREATE TABLE tasks (
@@ -205,10 +206,17 @@ ALTER TABLE runs ADD COLUMN read INTEGER NOT NULL DEFAULT 0;
 PRAGMA user_version = 11;
 ";
 
+const SCHEMA_12: &str = "
+ALTER TABLE tasks ADD COLUMN team TEXT;
+ALTER TABLE tasks ADD COLUMN project TEXT;
+ALTER TABLE tasks ADD COLUMN lane_derived INTEGER NOT NULL DEFAULT 0;
+PRAGMA user_version = 12;
+";
+
 /// Each schema change in order: a file at version `n` applies those from index `n` on.
 const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA, SCHEMA_2, SCHEMA_3, SCHEMA_4, SCHEMA_5, SCHEMA_6, SCHEMA_7, SCHEMA_8, SCHEMA_9,
-    SCHEMA_10, SCHEMA_11,
+    SCHEMA_10, SCHEMA_11, SCHEMA_12,
 ];
 
 const NOW: &str = "strftime('%Y-%m-%dT%H:%M:%SZ', 'now')";
@@ -267,7 +275,7 @@ pub fn open() -> Result<Connection, String> {
 pub(crate) fn handle(
     db: &mut Connection,
     message: &Message,
-    workflows: &BTreeMap<String, Loaded<Workflow>>,
+    factory: &Factory,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
     let seen = tx
@@ -281,17 +289,21 @@ pub(crate) fn handle(
         return Ok(());
     }
     let owner = owner(&tx, &route::resources(message))?;
-    let (task, outcome) = match route::route(message, owner.as_ref(), workflows)? {
+    let (task, outcome) = match route::route(message, owner.as_ref(), factory)? {
         Decision::Create(new) => {
             tx.execute(
-                "INSERT INTO tasks (key, workflow, step, state, band, lane, trigger, source, entered)
-                 VALUES (?1, ?2, ?3, 'queued', ?4, ?5, ?6, ?7, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))",
+                "INSERT INTO tasks
+                   (key, workflow, step, state, band, lane, team, project, lane_derived, trigger, source, entered)
+                 VALUES (?1, ?2, ?3, 'queued', ?4, ?5, ?6, ?7, ?8, ?9, ?10, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))",
                 params![
                     new.key,
                     new.workflow,
                     new.step,
                     new.band,
                     new.lane,
+                    new.team,
+                    new.project,
+                    new.lane_derived,
                     new.trigger,
                     new.source
                 ],
@@ -314,7 +326,8 @@ pub(crate) fn handle(
                 )
                 .optional()?;
             let wakes = asleep_at.is_some_and(|(workflow, step)| {
-                workflows
+                factory
+                    .workflows
                     .get(&workflow)
                     .and_then(|workflow| workflow.value.step(&step))
                     .is_some_and(|step| step.decides == priory_factory::factory::Decider::Model)
@@ -609,6 +622,8 @@ pub(crate) struct NewRun<'a> {
     pub ending: &'a str,
     /// The session is the agent's shared one, which other tasks' runs resume too.
     pub shared: bool,
+    /// Re-derives the lane of a task whose lane was derived, now that its branch is known.
+    pub lanes: Option<&'a Lanes>,
 }
 
 /// The agent's shared session, once a run of it reached `SessionStart`, which every task resumes.
@@ -662,6 +677,26 @@ pub(crate) fn start(db: &mut Connection, run: &NewRun) -> rusqlite::Result<i64> 
         "UPDATE waits SET run = ?2 WHERE task = ?1 AND fired IS NULL AND NOT daemon",
         params![run.task, id],
     )?;
+    if let Some(lanes) = run.lanes {
+        let (key, team, project, derived): (String, Option<String>, Option<String>, bool) = tx
+            .query_row(
+                "SELECT key, team, project, lane_derived FROM tasks WHERE id = ?1",
+                [run.task],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )?;
+        if derived {
+            let lane = lanes.lane(&Subject {
+                key: &key,
+                team: team.as_deref(),
+                project: project.as_deref(),
+                branch: Some(run.branch),
+            });
+            tx.execute(
+                "UPDATE tasks SET lane = ?2 WHERE id = ?1",
+                params![run.task, lane],
+            )?;
+        }
+    }
     tx.execute(
         "INSERT OR IGNORE INTO owns (task, resource) VALUES (?1, ?2)",
         params![run.task, route::branch(run.repo, run.branch)],

@@ -355,6 +355,7 @@ fn start(
             prompt: admission.fresh.then_some(prompt.as_str()),
             ending: &tools::ending(step),
             shared,
+            lanes: factory.lanes.as_ref().map(|lanes| &lanes.value),
         },
     )?;
     let agent = &agent.value;
@@ -388,7 +389,7 @@ fn drain(bus: &Bus, db: &mut Connection, factory: &Factory) -> Result<(), Error>
             return Ok(());
         }
         for delivery in deliveries {
-            state::handle(db, &delivery.message, &factory.workflows)?;
+            state::handle(db, &delivery.message, factory)?;
             bus.ack(delivery.connection, delivery.seq)?;
         }
     }
