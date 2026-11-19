@@ -36,15 +36,30 @@ pub(crate) fn need(agent: Option<&Agent>) -> u64 {
 
 /// Whether a run needing `need` bytes fits in this machine's share once nothing else runs.
 pub(crate) fn fits_ever(room: &Room, share: &Share, need: u64) -> bool {
-    need as f64 <= room.memory_total as f64 * share.memory
+    need as f64 <= ceiling(room, share)
+}
+
+/// The memory this machine's agents may take together, in bytes.
+pub(crate) fn ceiling(room: &Room, share: &Share) -> f64 {
+    room.memory_total as f64 * share.memory
+}
+
+/// Whether `need` bytes fit beside `promised` ones and still keep the memory this machine's share
+/// leaves free.
+pub(crate) fn fits(room: &Room, share: &Share, promised: u64, need: u64) -> bool {
+    room.memory_free.saturating_sub(promised) as f64 >= need as f64 + keep(room, share)
+}
+
+fn keep(room: &Room, share: &Share) -> f64 {
+    room.memory_total as f64 * (1.0 - share.memory)
 }
 
 /// Why a run needing `need` bytes does not fit in `room`, where `promised` bytes are already
 /// promised to runs that started but have not reported yet.
 pub(crate) fn wait(room: &Room, share: &Share, promised: u64, need: u64) -> Option<String> {
     let free = room.memory_free.saturating_sub(promised);
-    let keep = room.memory_total as f64 * (1.0 - share.memory);
-    if (free as f64) < need as f64 + keep {
+    let keep = keep(room, share);
+    if !fits(room, share, promised, need) {
         return Some(format!(
             "waits for room: {:.1} GB of memory free, needs {:.1} GB and keeps {:.1} GB free",
             free as f64 / GB,

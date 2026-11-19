@@ -367,6 +367,7 @@ name = "priory"
 version = "0.0.0"
 dependencies = [
  "herdr-bus",
+ "jiff",
  "priory-core",
  "priory-factory",
  "priory-intake",
