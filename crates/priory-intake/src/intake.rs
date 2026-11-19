@@ -103,7 +103,14 @@ pub fn run(
     let mut slack = (!slack_triggers.is_empty())
         .then(|| slack::Slack::start(&bus, slack_triggers.clone()))
         .transpose()?;
-    let (newest, mut cursors) = newest(&bus, &repos).map_err(|error| error.to_string())?;
+    // The loop reports a failing read of the waits; here it only costs those repos their cursors.
+    let waiting = watched().unwrap_or_default();
+    let resumed: BTreeSet<&str> = repos
+        .iter()
+        .copied()
+        .chain(waiting.iter().filter_map(pull_request_repo))
+        .collect();
+    let (newest, mut cursors) = newest(&bus, &resumed).map_err(|error| error.to_string())?;
     for (stream, source) in newest {
         // A crash may have stopped between this source and its task requests.
         if source.data["baseline"] != true {
@@ -146,10 +153,7 @@ pub fn run(
             }
         }
         schedule::fire(&bus, &schedules, now()?)?;
-        let waited = watching.iter().filter_map(|watch| {
-            let pull = watch.resource.strip_prefix("github:")?;
-            pull.split(['#', '@']).next()
-        });
+        let waited = watching.iter().filter_map(pull_request_repo);
         let polled: BTreeSet<&str> = repos.iter().copied().chain(waited).collect();
         let (found, failed) = fetch(&polled, &cursors);
         // A publish error ends the intake: its restart recovers the source it left behind.
@@ -179,6 +183,12 @@ pub fn run(
         }
         std::thread::sleep(EVERY);
     }
+}
+
+/// The repository of a pull request wait, `owner/name` from `github:owner/name#42`.
+fn pull_request_repo(watch: &Watch) -> Option<&str> {
+    let pull = watch.resource.strip_prefix("github:")?;
+    pull.split(['#', '@']).next()
 }
 
 /// The time, or `PRIORY_NOW` when set, so a test can stand at any time.

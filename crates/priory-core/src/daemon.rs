@@ -769,7 +769,11 @@ fn start(
 
 /// The repository a task works in: its own, else its trigger's for a task stored before tasks
 /// had one; a sweeper's is the `[sweep]` repository.
-fn repo_of<'f>(factory: &'f Factory, trigger: &str, repo: Option<&'f str>) -> Option<&'f str> {
+pub(crate) fn repo_of<'f>(
+    factory: &'f Factory,
+    trigger: &str,
+    repo: Option<&'f str>,
+) -> Option<&'f str> {
     if trigger == stall::TRIGGER {
         return Some(factory.sweep().repo());
     }

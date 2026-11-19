@@ -528,6 +528,43 @@ fn a_cli_request_starts_its_run_in_the_repository_it_names() {
 }
 
 #[test]
+fn a_cli_task_stored_before_tasks_kept_a_repository_starts_in_its_requests_repository() {
+    let mut setup = Setup::new("cli-repo-upgrade");
+    let factory = setup.dir.join("factory");
+    let requested = setup.priory(&[
+        "request",
+        factory.to_str().unwrap(),
+        "--workflow",
+        "implement",
+        "--key",
+        "fix-it",
+        "--repo",
+        "owner/repo",
+        "--hold",
+        "later",
+        "Fix it.",
+    ]);
+    assert!(requested.status.success());
+    setup.start();
+    setup.until("tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == "held")
+    });
+    setup.crash();
+    // The state file as version 22 left it: tasks without a repository.
+    let db = rusqlite::Connection::open(setup.dir.join("priory.db")).unwrap();
+    db.execute_batch("ALTER TABLE tasks DROP COLUMN repo; PRAGMA user_version = 22;")
+        .unwrap();
+    drop(db);
+    let _ = fs::remove_file(setup.dir.join("home/priory.sock"));
+
+    setup.start();
+    listening(&setup);
+    person(&setup, "release", &["1"]);
+
+    setup.until("tasks", |rows| rows[0][4] == "running");
+}
+
+#[test]
 fn a_linear_task_starts_its_run_in_its_triggers_repository() {
     let mut setup = Setup::new("linear-repo");
     fs::write(
@@ -5686,6 +5723,16 @@ impl Setup {
     }
 
     fn intake_with(&self, env: &[(&str, &str)]) {
+        let output = self.poll(env);
+        assert!(
+            output.status.success(),
+            "intake: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    /// One poll of `priory intake`, which may fail.
+    fn poll(&self, env: &[(&str, &str)]) -> Exit {
         let factory = self.dir.join("intake-factory");
         for (path, content) in [
             ("factory.toml", "name = \"demo\""),
@@ -5701,8 +5748,7 @@ impl Setup {
                 .chain(std::env::split_paths(&std::env::var_os("PATH").unwrap())),
         )
         .unwrap();
-        let output = self
-            .command(env!("CARGO_BIN_EXE_priory"))
+        self.command(env!("CARGO_BIN_EXE_priory"))
             .args(["intake", "--once"])
             .arg(&factory)
             .env("PATH", path)
@@ -5710,12 +5756,7 @@ impl Setup {
             .env("LINEAR_API_KEY", "lin_api_secret_test_key")
             .envs(env.iter().copied())
             .output()
-            .unwrap();
-        assert!(
-            output.status.success(),
-            "intake: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
+            .unwrap()
     }
 }
 
@@ -5759,6 +5800,30 @@ fn a_reply_posted_before_the_wait_wakes_the_task_and_the_bots_own_reply_never_do
     assert!(stdin.contains(SLACK_TOKEN));
     let args = fs::read_to_string(setup.dir.join("curl-args")).unwrap();
     assert!(!args.contains(SLACK_TOKEN), "{args}");
+}
+
+#[test]
+fn a_failing_slack_channel_still_lets_a_watched_thread_publish_its_reply() {
+    let setup = asleep_on(
+        "slack-channel-fails",
+        json!({ "type": "slack_reply", "channel": "C0123", "thread_ts": THREAD }),
+    );
+    let trigger = setup.dir.join("intake-factory/triggers/left.toml");
+    fs::create_dir_all(trigger.parent().unwrap()).unwrap();
+    fs::write(
+        trigger,
+        "source = \"slack\"\nchannel = \"C0999\"\non = \"message.posted\"\nworkflow = \"implement\"\n",
+    )
+    .unwrap();
+    let stored: herdr_bus::Timestamp = setup.rows("waits")[0][5].parse().unwrap();
+    // The fake answers no `conversations.history`, so the trigger's channel fails.
+    setup.answer_slack(&[slack_message(&ts(stored), "U0PERSON")]);
+
+    let output = setup.poll(&[]);
+
+    assert_eq!(output.status.code(), Some(1));
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 2);
+    assert!(setup.typed()[1].starts_with(&format!("slack.thread.replied C0123:{THREAD} {{")));
 }
 
 #[test]
@@ -5916,6 +5981,48 @@ fn a_pull_request_wait_makes_an_intake_without_github_triggers_poll_its_reposito
         calls.contains("api repos/owner/repo/issues/events"),
         "{calls}"
     );
+}
+
+#[test]
+fn a_restarted_intake_resumes_a_wait_only_repository_where_it_stopped() {
+    let setup = asleep_on("review-resume", on_pull_7("review"));
+    let bin = setup.dir.join("bin");
+    fs::create_dir_all(&bin).unwrap();
+    let events = setup.dir.join("events.json");
+    fs::write(&events, "[]").unwrap();
+    fs::write(
+        bin.join("gh"),
+        format!(
+            "#!/bin/sh\ncase \"$*\" in\n  *issues/events*) cat '{}' ;;\n  *) echo '[]' ;;\nesac\n",
+            events.display()
+        ),
+    )
+    .unwrap();
+    fs::set_permissions(bin.join("gh"), fs::Permissions::from_mode(0o755)).unwrap();
+    setup.intake();
+    let event = json!([{
+        "id": 100, "event": "labeled", "created_at": "2026-11-19T10:00:00Z",
+        "actor": { "login": "max" }, "label": { "name": "bug" },
+        "issue": { "id": 9041, "number": 41, "title": "Fix it", "html_url": "https://github.com/owner/repo/issues/41",
+                   "user": { "login": "max" }, "created_at": "2026-11-19T09:00:00Z" }
+    }]);
+    fs::write(&events, event.to_string()).unwrap();
+
+    setup.intake();
+
+    let labeled: Vec<_> = setup
+        .bus()
+        .messages(&herdr_bus::MessageQuery {
+            output: Some(OUTPUT.into()),
+            limit: 100,
+            ..herdr_bus::MessageQuery::default()
+        })
+        .unwrap()
+        .into_iter()
+        .filter(|stored| stored.message.kind == "github.issues.labeled")
+        .map(|stored| stored.message.data["baseline"].clone())
+        .collect();
+    assert_eq!(labeled, [json!(false)]);
 }
 
 /// Waits until the daemon answers on its socket.

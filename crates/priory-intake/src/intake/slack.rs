@@ -21,6 +21,9 @@ pub(super) struct Slack<'a> {
     bot: String,
     triggers: Vec<(&'a str, &'a Trigger)>,
     channels: BTreeMap<String, Option<String>>,
+    /// Which watched thread the next poll reads first, modulo their count. It starts at the
+    /// minute, so that successive `--once` runs rotate too.
+    turn: i64,
 }
 
 impl<'a> Slack<'a> {
@@ -45,6 +48,7 @@ impl<'a> Slack<'a> {
             token,
             triggers,
             channels,
+            turn: super::now()?.as_second().div_euclid(60),
         })
     }
 
@@ -68,9 +72,9 @@ impl<'a> Slack<'a> {
                 Some((channel, thread, watch.since))
             })
             .collect();
-        // Slack lets a new app read one thread a minute: each minute starts at the next thread.
-        let minute = super::now()?.as_second().div_euclid(60);
-        let start = minute.rem_euclid(threads.len().max(1) as i64) as usize;
+        // Slack lets a new app read one thread a minute: each poll starts at the next thread.
+        let start = self.turn.rem_euclid(threads.len().max(1) as i64) as usize;
+        self.turn += 1;
         let mut replies = Vec::new();
         for (channel, thread, since) in threads[start..].iter().chain(&threads[..start]) {
             // A deleted thread or a channel the bot left fails only its own wait's poll.

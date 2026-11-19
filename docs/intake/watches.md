@@ -7,7 +7,8 @@ and the time of its agent's last prompt.
 
 - For a pull request, the intake polls its repository as it polls a trigger's (see
   `github-polling.md`). A repository that no trigger names starts with a baseline, whose reviews and
-  checks still reach the wait.
+  checks still reach the wait. A restart resumes it from where it stopped, as long as a wait still
+  names it.
 
 - For each Slack thread, the intake reads `conversations.replies` from that time on, every poll,
   until the wait fires or is withdrawn. herdr-bus drops the replies it already holds.

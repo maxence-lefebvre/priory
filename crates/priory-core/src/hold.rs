@@ -153,12 +153,7 @@ fn condition(
             [task],
             |row| Ok((row.get(0)?, row.get(1)?)),
         )?;
-        let repo = repo.as_deref().or_else(|| {
-            factory
-                .triggers
-                .get(&trigger)
-                .and_then(|trigger| trigger.value.repo.as_deref())
-        });
+        let repo = crate::daemon::repo_of(factory, &trigger, repo.as_deref());
         let Some(resource) = pull_request(merge, repo) else {
             return Ok(Err(format!(
                 "merge takes owner/name#number, or a number in the task's repository, not {merge:?}"

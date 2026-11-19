@@ -17,7 +17,7 @@ with `backfill = true`. Only this message creates a task.
 | `project`  | string, absent or null | The Linear issue's project name, or null when it has none. Absent when the source is not a Linear event |
 | `trigger`  | string         | The trigger's name: its file name without the extension      |
 | `source`   | UUID string    | The `id` of the source event's message, on the same output   |
-| `repo`     | string         | Optional: the repository the task works in, `owner/name`. `priory request --repo` sets it; without it the daemon uses the trigger's `repo` |
+| `repo`     | string, absent or null | The repository the task works in, `owner/name`. `priory request --repo` sets it; without it the daemon uses the trigger's `repo` |
 | `hold`     | object         | Optional: files the task held. The trigger's `hold`, or `priory request --hold` |
 
 `hold` holds the new task before it can start, as `priory hold` does (see Holds in

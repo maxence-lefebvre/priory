@@ -65,6 +65,7 @@ own bot. Each poll then makes one `conversations.history` call per trigger chann
 `channels:history` scope, and `groups:history` for a private channel, and must be a member of the
 channel. Slack limits these two methods per app: an app outside the Slack Marketplace created after
 May 2025 gets one call a minute and 15 messages per call, so it can watch one channel or thread per
-minute at most. Each minute's poll starts at the next watched thread, so a rate limit delays every
-thread in turn rather than starving the later ones. A channel that fails publishes nothing and fails
+minute at most. Each poll starts at the next watched thread, so a rate limit delays every thread in
+turn rather than starving the later ones. A new intake starts at the thread the current minute
+picks, so successive `--once` runs rotate too. A channel that fails publishes nothing and fails
 the poll only after the other channels and the watched threads are published.

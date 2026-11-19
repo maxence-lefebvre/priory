@@ -378,6 +378,9 @@ PRAGMA user_version = 22;
 
 const SCHEMA_23: &str = "
 ALTER TABLE tasks ADD COLUMN repo TEXT;
+UPDATE tasks SET repo = (SELECT json_extract(inbox.data, '$.repo') FROM inbox
+  WHERE inbox.id = tasks.source AND inbox.type = 'priory.task.requested.cli')
+  WHERE trigger = 'cli';
 PRAGMA user_version = 23;
 ";
 /// Each schema change in order: a file at version `n` applies those from index `n` on.
