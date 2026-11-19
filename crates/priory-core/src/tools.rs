@@ -839,7 +839,7 @@ fn enter(
     };
     match step.decides {
         Decider::Model => {
-            queue_first(tx, task, step.prompt.as_deref().unwrap_or_default())?;
+            queue_first(tx, task, &step_prompt(step))?;
             // An irreversible step starts a new run, whose start checks its approval.
             let carry = |run: &&Run| run.agent == step.agent && step.effect != Effect::Irreversible;
             let Some(run) = from.filter(carry) else {
@@ -1163,12 +1163,23 @@ pub(crate) fn approved(
          question = question || ?2 WHERE id = ?1",
         params![ask, moved],
     )?;
-    if let Some(prompt) = at.prompt.as_deref() {
-        unqueue(&tx, task, prompt)?;
-    }
+    unqueue(&tx, task, &step_prompt(at))?;
     set(&tx, task, "asleep", Some(&approving), None)?;
     tx.commit()?;
     Ok(false)
+}
+
+/// What a model step's run reads first: the step's prompt, then how to end the step.
+pub(crate) fn step_prompt(step: &Step) -> String {
+    let outcomes: Vec<_> = step.next.keys().map(String::as_str).collect();
+    let end = format!(
+        "End this step by calling the result tool of the priory MCP server with one of these outcomes: {}.",
+        outcomes.join(", ")
+    );
+    match step.prompt.as_deref() {
+        Some(prompt) if !prompt.is_empty() => format!("{prompt}\n{end}"),
+        _ => end,
+    }
 }
 
 /// Takes `prompt`, which entering a step queued first, out of the task's queued prompt, keeping the
