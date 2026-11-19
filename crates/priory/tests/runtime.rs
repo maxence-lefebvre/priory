@@ -6064,7 +6064,8 @@ fn a_restart_answer_ends_the_stalled_run_and_resumes_its_session_in_a_new_run() 
     let runs = setup.within(20, "runs", |rows| rows.len() == 2);
     assert_eq!(runs[0][7], "restarted");
     assert_eq!(runs[1][4], runs[0][4]);
-    setup.until("outbox", |rows| with(rows, 3, "confirmed") == 3);
+    // The new run's silent turn earns a Stop nudge, which may already be confirmed too.
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 3);
     assert!(has(&launched(&setup), ["--resume", &runs[0][4]]));
     let typed = setup.typed();
     assert!(
