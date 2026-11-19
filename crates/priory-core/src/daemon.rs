@@ -3,7 +3,7 @@ use crate::room::Share;
 use crate::route;
 use crate::state::{self, Admission, NewRun, Signal};
 use crate::sweep;
-use crate::tools::{self, Act, Answer, Call, Done};
+use crate::tools::{self, Act, Answer, Call, Done, Repair};
 use crate::trace::Trace;
 use herdr_bus::{Bus, Start};
 use priory_factory::factory::{Factory, Harness, PermissionMode, Session};
@@ -164,6 +164,12 @@ fn tend(db: &mut Connection, trace: &Trace, share: &Share, home: &Path) -> Resul
                 run.tmux
             );
             state::block(db, trace, run.task, "exited", &reason)?;
+            let repair = if tools::spent(db, run.id)? {
+                None
+            } else {
+                Some(diagnose(db, factory, share, home, &run.agent)?)
+            };
+            tools::fail(db, trace, run.task, run.id, &reason, repair.as_ref())?;
         } else if let Some((ended_as, reason)) = verdict(&run, factory) {
             // Committed first, so a crash before the kill leaves an ended run, not a lost one.
             state::block(db, trace, run.task, ended_as, &reason)?;
@@ -193,6 +199,44 @@ fn tend(db: &mut Connection, trace: &Trace, share: &Share, home: &Path) -> Resul
         }
     }
     Ok(())
+}
+
+/// Classifies why the agent of a run exited, and acts on the cause: a sweep frees disk, and the room
+/// check holds the restart until memory is back.
+fn diagnose(
+    db: &Connection,
+    factory: &Factory,
+    share: &Share,
+    home: &Path,
+    agent: &str,
+) -> Result<Repair, Error> {
+    let need = crate::room::need(factory.agents.get(agent).map(|agent| &agent.value));
+    let promised = state::promised(db, factory)?;
+    let measured = room::measure(home).ok();
+    let memory = measured
+        .as_ref()
+        .and_then(|room| crate::room::memory_short(room, share, promised, need));
+    if let Some(short) = memory {
+        return Ok(Repair {
+            cause: format!("out of memory ({short})"),
+            action: "wait for room",
+            gone: true,
+        });
+    }
+    let Some(short) = measured.as_ref().and_then(crate::room::disk_short) else {
+        return Ok(Repair {
+            cause: "the harness crashed".to_owned(),
+            action: "restart",
+            gone: true,
+        });
+    };
+    sweep::run(db, home)?;
+    let gone = room::measure(home).is_ok_and(|room| crate::room::disk_short(&room).is_none());
+    Ok(Repair {
+        cause: format!("disk full ({short})"),
+        action: "sweep",
+        gone,
+    })
 }
 
 /// Why a live run must end: no `SessionStart`, a permission prompt, or a turn past its step's timeout.

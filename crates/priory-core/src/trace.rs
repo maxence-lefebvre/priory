@@ -155,6 +155,60 @@ pub(crate) fn ended(
     if let Value::Object(fields) = &mut data {
         fields.retain(|_, value| !value.is_null());
     }
+    append(tx, trace, "factory.step.ended", &ended.time, data)
+}
+
+/// Appends a `factory.task.repaired` record for the repair of `task` after `run` failed.
+pub(crate) fn repaired(
+    tx: &Transaction,
+    trace: &Trace,
+    task: i64,
+    run: i64,
+    repair: [&str; 3],
+) -> rusqlite::Result<()> {
+    let (workflow, step, key, generation, time): (String, String, String, i64, String) = tx
+        .query_row(
+            "SELECT workflow, step, key, generation, strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+             FROM tasks WHERE id = ?1",
+            [task],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                ))
+            },
+        )?;
+    let [cause, action, outcome] = repair;
+    let mut data = json!({
+        "factory": trace.factory.name,
+        "factory_revision": trace.revision,
+        "workflow": workflow,
+        "task": task.to_string(),
+        "key": key,
+        "run": run.to_string(),
+        "generation": generation,
+        "step": step,
+        "machine": trace.machine,
+        "cause": cause,
+        "action": action,
+        "outcome": outcome,
+    });
+    if let Value::Object(fields) = &mut data {
+        fields.retain(|_, value| !value.is_null());
+    }
+    append(tx, trace, "factory.task.repaired", &time, data)
+}
+
+fn append(
+    tx: &Transaction,
+    trace: &Trace,
+    kind: &str,
+    time: &str,
+    data: Value,
+) -> rusqlite::Result<()> {
     let id = uuid::Uuid::new_v4().to_string();
     let source = match &trace.machine {
         Some(machine) => format!("factory://{}/{machine}", trace.factory.name),
@@ -164,14 +218,14 @@ pub(crate) fn ended(
         "specversion": "1.0",
         "id": id,
         "source": source,
-        "type": "factory.step.ended",
-        "time": ended.time,
+        "type": kind,
+        "time": time,
         "datacontenttype": "application/json",
         "data": data,
     });
     tx.execute(
-        "INSERT INTO trace (id, type, time, event) VALUES (?1, 'factory.step.ended', ?2, ?3)",
-        params![id, ended.time, event.to_string()],
+        "INSERT INTO trace (id, type, time, event) VALUES (?1, ?2, ?3, ?4)",
+        params![id, kind, time, event.to_string()],
     )?;
     Ok(())
 }
