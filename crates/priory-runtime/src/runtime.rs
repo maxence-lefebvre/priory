@@ -92,6 +92,14 @@ pub fn head(worktree: &Path, branch: &str) -> Option<String> {
         .map(|head| head.trim().to_owned())
 }
 
+/// The last commit that changed the files under `dir`, or `None` outside git or before any commit.
+pub fn revision(dir: &Path) -> Option<String> {
+    run(git(dir).args(["log", "-1", "--format=%H", "--", "."]))
+        .ok()
+        .map(|commit| commit.trim().to_owned())
+        .filter(|commit| !commit.is_empty())
+}
+
 /// Pushes `commit` from `worktree` to `branch` on its `origin`, then reuses the pull request open
 /// from that branch on `repo`, or opens one against the remote's default branch. Returns its number.
 pub fn open_pull_request(

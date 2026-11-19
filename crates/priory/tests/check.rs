@@ -853,3 +853,24 @@ fn a_github_trigger_without_on_names_its_source_line() {
         outcome.stderr
     );
 }
+
+#[test]
+fn a_negative_or_infinite_price_names_its_file_and_line() {
+    for (name, rate) in [("negative-price", "-1.0"), ("infinite-price", "inf")] {
+        let prices = format!(
+            "[\"claude-opus-5-5\"]\ninput = 5.0\noutput = {rate}\ncache_read = 0.5\ncache_write = 6.25\n"
+        );
+
+        let outcome = check(&factory(name, &with("prices.toml", &prices)));
+
+        assert_eq!(outcome.code, 1, "{name}");
+        assert!(
+            outcome.stderr.starts_with("prices.toml:3:")
+                && outcome
+                    .stderr
+                    .contains("dollars per million tokens, zero or more"),
+            "{}",
+            outcome.stderr
+        );
+    }
+}

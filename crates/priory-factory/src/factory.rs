@@ -103,7 +103,7 @@ fn refuse_bypass<'de, D: Deserializer<'de>>(
     PermissionMode::deserialize(mode.into_deserializer()).map(Some)
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Harness {
     ClaudeCode,
@@ -307,7 +307,7 @@ impl Decider {
     }
 }
 
-#[derive(Debug, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
 pub enum Effect {
     None,
@@ -372,6 +372,30 @@ fn percent<'de, D: serde::Deserializer<'de>>(input: D) -> Result<Option<f64>, D:
         })
 }
 
+/// Dollars per million tokens of each kind, for one model.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Price {
+    #[serde(deserialize_with = "dollars")]
+    pub input: f64,
+    #[serde(deserialize_with = "dollars")]
+    pub output: f64,
+    #[serde(deserialize_with = "dollars")]
+    pub cache_read: f64,
+    #[serde(deserialize_with = "dollars")]
+    pub cache_write: f64,
+}
+
+fn dollars<'de, D: Deserializer<'de>>(deserializer: D) -> Result<f64, D::Error> {
+    let rate = f64::deserialize(deserializer)?;
+    if rate.is_finite() && rate >= 0.0 {
+        return Ok(rate);
+    }
+    Err(D::Error::custom(format!(
+        "{rate} is not a price: give dollars per million tokens, zero or more"
+    )))
+}
+
 pub struct Loaded<T> {
     pub file: PathBuf,
     pub value: T,
@@ -380,14 +404,22 @@ pub struct Loaded<T> {
 
 #[derive(Default)]
 pub struct Factory {
+    /// The folder the factory was loaded from.
+    pub dir: PathBuf,
+    pub name: String,
     pub agents: BTreeMap<String, Loaded<Agent>>,
     pub triggers: BTreeMap<String, Loaded<Trigger>>,
     pub workflows: BTreeMap<String, Loaded<Workflow>>,
     pub runners: BTreeMap<String, Loaded<Runner>>,
+    /// `prices.toml`: each model's price.
+    pub prices: BTreeMap<String, Price>,
 }
 
 pub fn load(dir: &Path) -> (Factory, Vec<Problem>) {
-    let mut factory = Factory::default();
+    let mut factory = Factory {
+        dir: dir.to_path_buf(),
+        ..Factory::default()
+    };
     let mut problems = Vec::new();
     let mut found = Loader {
         dir,
@@ -403,6 +435,9 @@ pub fn load(dir: &Path) -> (Factory, Vec<Problem>) {
         {
             found.define(&mut settings, "factory".into(), &file, value, lines);
         }
+    }
+    if let Some(settings) = settings.get("factory") {
+        factory.name.clone_from(&settings.value.name);
     }
     if settings.is_empty() && found.problems.is_empty() {
         found.problems.push(Problem {
@@ -440,6 +475,14 @@ pub fn load(dir: &Path) -> (Factory, Vec<Problem>) {
         if let Some((value, lines)) = found.parse::<Runner>(&file) {
             found.define(&mut factory.runners, stem(&file), &file, value, lines);
         }
+    }
+    if let Some(file) = ["prices.toml", "prices.yaml", "prices.yml"]
+        .map(|name| dir.join(name))
+        .into_iter()
+        .find(|file| file.is_file())
+        && let Some((prices, _)) = found.parse(&file)
+    {
+        factory.prices = prices;
     }
     (factory, problems)
 }

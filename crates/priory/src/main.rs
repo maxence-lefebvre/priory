@@ -1,4 +1,4 @@
-use priory_core::{daemon, state, sweep, tools};
+use priory_core::{daemon, report, state, sweep, tools};
 use priory_factory::{factory, rules};
 use priory_intake::{intake, request};
 use priory_runtime::{mcp, runtime};
@@ -62,6 +62,8 @@ fn main() -> ExitCode {
              FROM waits WHERE fired IS NULL ORDER BY id",
         ),
         Some("desk") => desk(),
+        Some("trace") => trace(),
+        Some("report") => report(args.map(|arg| arg.to_string_lossy().into_owned()).collect()),
         Some(verb @ ("resume" | "cancel")) => act(
             verb,
             args.map(|arg| arg.to_string_lossy().into_owned()).collect(),
@@ -88,7 +90,7 @@ fn main() -> ExitCode {
 
 fn usage() -> ExitCode {
     eprintln!(
-        "usage: priory check [DIR]\n       priory draw [DIR] WORKFLOW\n       priory intake [DIR] [--once]\n       priory daemon [DIR] [--once]\n       priory request [DIR] --workflow <name> --key <key> [--band <band>] [--lane <lane>] [--repo <owner/name>] <text>\n       priory inbox\n       priory tasks\n       priory runs\n       priory outbox\n       priory asks\n       priory waits\n       priory actions\n       priory desk\n       priory resume TASK\n       priory cancel TASK\n       priory answer ASK OPTION-OR-TEXT --revision N\n       priory mcp --session ID\n       priory hook EVENT"
+        "usage: priory check [DIR]\n       priory draw [DIR] WORKFLOW\n       priory intake [DIR] [--once]\n       priory daemon [DIR] [--once]\n       priory request [DIR] --workflow <name> --key <key> [--band <band>] [--lane <lane>] [--repo <owner/name>] <text>\n       priory inbox\n       priory tasks\n       priory runs\n       priory outbox\n       priory asks\n       priory waits\n       priory actions\n       priory desk\n       priory trace\n       priory report [DIR] --workflow <name> [--since <instant-or-duration>] [--cost]\n       priory resume TASK\n       priory cancel TASK\n       priory answer ASK OPTION-OR-TEXT --revision N\n       priory mcp --session ID\n       priory hook EVENT"
     );
     ExitCode::from(2)
 }
@@ -133,6 +135,54 @@ fn desk() -> ExitCode {
             .map_err(|error| error.to_string())
     });
     exit("desk", printed)
+}
+
+/// Every trace record, oldest first, one CloudEvents JSON object per line.
+fn trace() -> ExitCode {
+    let printed = state::open().and_then(|db| {
+        let events = state::events(&db).map_err(|error| error.to_string())?;
+        events.iter().for_each(|event| state::emit(event));
+        Ok(())
+    });
+    exit("trace", printed)
+}
+
+/// Prints `priory report [DIR] --workflow <name> [--since <window>] [--cost]`. Only `--cost` reads
+/// the factory, for its prices.
+fn report(args: Vec<String>) -> ExitCode {
+    let mut workflow = None;
+    let mut since = report::SINCE.to_owned();
+    let mut cost = false;
+    let mut dirs = Vec::new();
+    let mut args = args.into_iter();
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--workflow" => workflow = args.next(),
+            "--cost" => cost = true,
+            "--since" => match args.next() {
+                Some(window) => since = window,
+                None => return usage(),
+            },
+            _ if arg.starts_with("--") => return usage(),
+            _ => dirs.push(arg),
+        }
+    }
+    let (Some(workflow), [] | [_]) = (workflow, &dirs[..]) else {
+        return usage();
+    };
+    if !cost {
+        let printed = state::open().and_then(|db| report::outcomes(&db, &workflow, &since));
+        return exit("report", printed);
+    }
+    let dir = dirs
+        .first()
+        .map_or_else(|| PathBuf::from("."), PathBuf::from);
+    let Some(factory) = load(&dir) else {
+        return ExitCode::FAILURE;
+    };
+    let printed =
+        state::open().and_then(|db| report::cost(&db, &workflow, &since, &factory.prices));
+    exit("report", printed)
 }
 
 const DESK: &str = "SELECT * FROM (
@@ -297,6 +347,7 @@ fn hook(event: &str) -> ExitCode {
         session: session.to_owned(),
         prompt: input["prompt"].as_str().map(str::to_owned),
         message: input["message"].as_str().map(str::to_owned),
+        transcript: input["transcript_path"].as_str().map(str::to_owned),
     };
     let line = serde_json::to_string(&signal).expect("signal serializes");
     match runtime::send(&runtime::home(), &line) {

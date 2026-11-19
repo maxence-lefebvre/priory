@@ -8,6 +8,10 @@
 # AskUserQuestion, runs the matching PreToolUse hooks, and appends the reply to tools.log. Any other
 # capitalized name is a built-in tool that needs permission: it runs the PermissionRequest hooks, and
 # when none decides, shows the prompt through the permission_prompt Notification hooks.
+# Each turn n, counted across launches in FAKE_DIR/turns, appends to FAKE_DIR/transcript.jsonl, as
+# Claude's session transcript, one assistant message written as two lines, as Claude writes one per
+# content block, using 100+n input, 10+n output, 1000+n cache read and 50+n cache write tokens.
+# FAKE_DIR/no-transcript skips that write.
 set -u
 settings='{}'
 mcp='{}'
@@ -26,8 +30,8 @@ done
 
 hook() {
   jq -r --arg event "$1" '.hooks[$event][]?.hooks[]?.command' <<<"$settings" | while IFS= read -r command; do
-    jq -nc --arg session "$session" --arg event "$1" --arg prompt "${2-}" \
-      '{session_id: $session, hook_event_name: $event} + if $prompt == "" then {} else {prompt: $prompt} end' | sh -c "$command"
+    jq -nc --arg session "$session" --arg event "$1" --arg prompt "${2-}" --arg transcript "$FAKE_DIR/transcript.jsonl" \
+      '{session_id: $session, hook_event_name: $event, transcript_path: $transcript} + if $prompt == "" then {} else {prompt: $prompt} end' | sh -c "$command"
   done
 }
 
@@ -100,6 +104,11 @@ while :; do
   trailer=''
   [ -e "$FAKE_DIR/trailer" ] && trailer=$(cat "$FAKE_DIR/trailer")
   hook UserPromptSubmit $'\n\n<pasted_content id="9d7a">\n'"${prompt%$'\n'}"$'</pasted_content id="9d7a">'"$trailer"
+  turn=$(( $(cat "$FAKE_DIR/turns" 2>/dev/null || echo 0) + 1 ))
+  echo "$turn" > "$FAKE_DIR/turns"
+  message=$(jq -nc --argjson n "$turn" '{type: "assistant", message: {id: "msg_\($n)", model: "claude-fake-5",
+    usage: {input_tokens: (100 + $n), output_tokens: (10 + $n), cache_read_input_tokens: (1000 + $n), cache_creation_input_tokens: (50 + $n)}}}')
+  [ -e "$FAKE_DIR/no-transcript" ] || printf '%s\n%s\n' "$message" "$message" >> "$FAKE_DIR/transcript.jsonl"
   if [ -s "$FAKE_DIR/calls" ]; then
     call=$(head -n 1 "$FAKE_DIR/calls")
     sed -i 1d "$FAKE_DIR/calls"

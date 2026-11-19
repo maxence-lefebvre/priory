@@ -63,7 +63,8 @@ impl Setup {
         }
         fs::create_dir_all(setup.dir.join("fake")).unwrap();
         fs::create_dir_all(setup.dir.join("tmux")).unwrap();
-        fs::create_dir_all(setup.dir.join("proc")).unwrap();
+        fs::create_dir_all(setup.dir.join("proc/sys/kernel")).unwrap();
+        fs::write(setup.dir.join("proc/sys/kernel/hostname"), "runner\n").unwrap();
         setup.memory(60);
         setup.load(0.0);
         setup.origin();
@@ -3371,4 +3372,308 @@ fn a_firing_while_the_task_runs_is_coalesced_and_not_typed() {
     std::thread::sleep(Duration::from_millis(1500));
     assert_eq!(setup.rows("outbox").len(), 1);
     assert_eq!(setup.typed().len(), 1);
+}
+
+impl Setup {
+    /// The records `priory trace` prints, one JSON event per line.
+    fn trace(&self) -> Vec<serde_json::Value> {
+        let output = self.priory(&["trace"]);
+        assert!(output.status.success(), "{output:?}");
+        String::from_utf8(output.stdout)
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect()
+    }
+}
+
+#[test]
+fn each_step_that_ends_appends_one_step_ended_record_with_its_outcome_and_decider() {
+    let setup = asked_to_open("trace", OPEN_PR);
+    setup.commit(1, "widget.txt");
+
+    let answered = setup.priory(&["answer", "1", "open", "--revision", "1"]);
+
+    assert!(answered.status.success(), "{answered:?}");
+    setup.until("actions", |rows| rows.len() == 1);
+    let records = setup.trace();
+    let steps: Vec<_> = records
+        .iter()
+        .map(|record| {
+            let data = &record["data"];
+            [
+                &data["step"],
+                &data["decider"],
+                &data["effect"],
+                &data["outcome"],
+            ]
+            .map(|field| field.as_str().unwrap().to_owned())
+        })
+        .collect();
+    assert_eq!(
+        steps,
+        [
+            ["implement", "model", "reversible", "passed"],
+            ["approve-pr", "human", "none", "open"],
+            ["open-pr", "code", "irreversible", "opened"],
+        ]
+    );
+    let model = &records[0];
+    assert_eq!(model["specversion"], "1.0");
+    assert_eq!(model["type"], "factory.step.ended");
+    assert_eq!(model["datacontenttype"], "application/json");
+    assert_eq!(model["source"], "factory://demo/runner");
+    assert!(uuid::Uuid::parse_str(model["id"].as_str().unwrap()).is_ok());
+    assert_ne!(model["id"], records[1]["id"]);
+    let data = &model["data"];
+    for (field, value) in [
+        ("factory", json!("demo")),
+        ("workflow", json!("implement")),
+        ("task", json!("1")),
+        ("key", json!("github:owner/repo#42")),
+        ("run", json!("1")),
+        ("generation", json!(1)),
+        ("machine", json!("runner")),
+        ("harness", json!("claude-code")),
+    ] {
+        assert_eq!(data[field], value, "{field} in {data}");
+    }
+    assert!(data["duration_ms"].is_u64(), "{data}");
+    assert!(data["started"].is_string(), "{data}");
+    for absent in ["lane", "factory_revision"] {
+        assert!(data.get(absent).is_none(), "{absent} in {data}");
+    }
+    for later in &records[1..] {
+        let data = &later["data"];
+        for absent in ["run", "harness", "model", "tokens"] {
+            assert!(data.get(absent).is_none(), "{absent} in {data}");
+        }
+    }
+}
+
+#[test]
+fn a_model_step_record_sums_the_tokens_of_its_turns_from_the_session_transcript() {
+    let mut setup = Setup::with_workflow("trace-tokens", STEPS);
+    setup.calls(&[ask(), result("ready"), result("passed")]);
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("asks", |rows| rows.len() == 1);
+    setup.gone("priory-1");
+
+    // The answer resumes the session, whose transcript already holds the first turn.
+    let answered = setup.priory(&["answer", "1", "sqlite", "--revision", "1"]);
+
+    assert!(answered.status.success(), "{answered:?}");
+    setup.until("tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == "done")
+    });
+    let records = setup.trace();
+    let tokens: Vec<_> = records
+        .iter()
+        .map(|record| {
+            let data = &record["data"];
+            (
+                data["step"].clone(),
+                data["model"].clone(),
+                data["tokens"].clone(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        tokens,
+        [
+            (
+                json!("plan"),
+                json!("claude-fake-5"),
+                json!({ "input": 203, "output": 23, "cache_read": 2003, "cache_write": 103 })
+            ),
+            (
+                json!("implement"),
+                json!("claude-fake-5"),
+                json!({ "input": 103, "output": 13, "cache_read": 1003, "cache_write": 53 })
+            ),
+        ]
+    );
+}
+
+impl Setup {
+    /// The rows `priory report` prints for the test's factory, each split on tabs, header included.
+    fn report(&self, args: &[&str]) -> Vec<Vec<String>> {
+        let factory = self.dir.join("factory");
+        let mut all = vec!["report", factory.to_str().unwrap()];
+        all.extend(args);
+        let output = self.priory(&all);
+        assert!(output.status.success(), "{output:?}");
+        String::from_utf8(output.stdout)
+            .unwrap()
+            .lines()
+            .map(|line| line.split('\t').map(str::to_owned).collect())
+            .collect()
+    }
+}
+
+/// Runs task 1 through implement, review asking for changes, implement again and an approving review.
+fn reviewed_twice(name: &str) -> Setup {
+    let mut setup = Setup::with_workflow(name, TWO_AGENTS);
+    setup.calls(&[
+        result("passed"),
+        result("changes"),
+        result("passed"),
+        result("approved"),
+    ]);
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == "done")
+    });
+    setup
+}
+
+#[test]
+fn a_report_counts_each_steps_outcomes_with_the_runs_that_reached_the_step() {
+    let setup = reviewed_twice("report");
+    // A second task reaches implement and is still there.
+    setup.publish(&requested(43));
+    setup.until("runs", |rows| rows.iter().any(|row| row[1] == "2"));
+
+    let report = setup.report(&["--workflow", "implement", "--since", "1 hour"]);
+
+    assert_eq!(
+        report,
+        [
+            ["step", "outcome", "count", "reached", "rate"],
+            ["implement", "passed", "2", "3", "66.7%"],
+            ["review", "approved", "1", "2", "50.0%"],
+            ["review", "changes", "1", "2", "50.0%"],
+        ]
+    );
+    let later = setup.report(&["--workflow", "implement", "--since", "2999-01-01T00:00:00Z"]);
+    assert_eq!(later, [["step", "outcome", "count", "reached", "rate"]]);
+}
+
+#[test]
+fn a_cost_report_prices_each_task_and_step_by_the_factory_price_table_and_names_a_missing_price() {
+    let mut setup = Setup::with_workflow("report-cost", STEPS);
+    setup.calls(&[result("ready"), result("passed")]);
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == "done")
+    });
+    let prices = setup.dir.join("factory/prices.toml");
+    let header = [
+        "task",
+        "step",
+        "model",
+        "input",
+        "output",
+        "cache_read",
+        "cache_write",
+        "cost",
+    ];
+
+    fs::write(
+        &prices,
+        "[other-model]\ninput = 1.0\noutput = 1.0\ncache_read = 1.0\ncache_write = 1.0\n",
+    )
+    .unwrap();
+    let missing = setup.report(&["--workflow", "implement", "--cost"]);
+
+    let price = "price missing for claude-fake-5";
+    assert_eq!(
+        missing,
+        [
+            &header[..],
+            &[
+                "1",
+                "plan",
+                "claude-fake-5",
+                "101",
+                "11",
+                "1001",
+                "51",
+                price
+            ],
+            &[
+                "1",
+                "implement",
+                "claude-fake-5",
+                "102",
+                "12",
+                "1002",
+                "52",
+                price
+            ],
+            &["1", "total", "-", "203", "23", "2003", "103", price],
+        ]
+    );
+
+    // Dollars per million tokens of each kind.
+    fs::write(
+        &prices,
+        "[claude-fake-5]\ninput = 3.0\noutput = 15.0\ncache_read = 0.3\ncache_write = 3.75\n",
+    )
+    .unwrap();
+    let priced = setup.report(&["--workflow", "implement", "--cost"]);
+
+    assert_eq!(
+        priced,
+        [
+            &header[..],
+            &[
+                "1",
+                "plan",
+                "claude-fake-5",
+                "101",
+                "11",
+                "1001",
+                "51",
+                "$0.000960"
+            ],
+            &[
+                "1",
+                "implement",
+                "claude-fake-5",
+                "102",
+                "12",
+                "1002",
+                "52",
+                "$0.000982"
+            ],
+            &["1", "total", "-", "203", "23", "2003", "103", "$0.001941"],
+        ]
+    );
+}
+
+#[test]
+fn a_cost_report_keeps_a_model_step_whose_tokens_are_unknown_and_marks_its_total() {
+    let mut setup = Setup::with_workflow("report-unknown", STEPS);
+    setup.hold("no-transcript");
+    setup.calls(&[result("ready"), result("passed")]);
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == "done")
+    });
+
+    let report = setup.report(&["--workflow", "implement", "--cost"]);
+
+    let unknown = "tokens unknown";
+    assert_eq!(
+        report[1..],
+        [
+            ["1", "plan", "haiku", "-", "-", "-", "-", unknown],
+            ["1", "implement", "haiku", "-", "-", "-", "-", unknown],
+            [
+                "1",
+                "total",
+                "-",
+                "0",
+                "0",
+                "0",
+                "0",
+                "tokens unknown for plan, implement"
+            ],
+        ]
+    );
 }

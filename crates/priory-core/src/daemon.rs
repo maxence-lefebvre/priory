@@ -3,11 +3,12 @@ use crate::route;
 use crate::state::{self, Admission, NewRun, Signal};
 use crate::sweep;
 use crate::tools::{self, Act, Answer, Call, Done};
+use crate::trace::Trace;
 use herdr_bus::{Bus, Start};
 use priory_factory::factory::{Factory, PermissionMode, Session};
 use priory_intake::intake::OUTPUT;
-use priory_runtime::room;
 use priory_runtime::runtime::{self, Launch, Line};
+use priory_runtime::{room, transcript};
 use rusqlite::Connection;
 use std::cell::OnceCell;
 use std::path::Path;
@@ -40,7 +41,13 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
     }
     let home = runtime::home();
     let listening = runtime::listen(&home)?;
-    let share = Share::of(factory, room::hostname().as_deref());
+    let trace = Trace {
+        factory,
+        revision: runtime::revision(&factory.dir),
+        machine: room::hostname(),
+        usage: transcript::usage,
+    };
+    let share = Share::of(factory, trace.machine.as_deref());
     state::uncertain(&db)?;
     // A crash between ending a run and killing its session leaves its agent running.
     let ended = state::ended_sessions(&db)?;
@@ -51,7 +58,7 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
         runtime::kill(&tmux);
     }
     runtime::replay(&home, |line| {
-        let (_, kill) = take(&mut db, line, factory).map_err(|error| error.to_string())?;
+        let (_, kill) = take(&mut db, line, &trace).map_err(|error| error.to_string())?;
         kill.inspect(|tmux| runtime::kill(tmux));
         Ok(())
     })?;
@@ -61,23 +68,23 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
             continue;
         }
         runtime::kill(&run.tmux);
-        if !tools::gone(&mut db, &run.session, &factory.workflows)? {
-            tools::lost(&mut db, &run.session, &run.tmux)?;
+        if !tools::gone(&mut db, &run.session, &trace)? {
+            tools::lost(&mut db, &trace, &run.session, &run.tmux)?;
         }
     }
     let mut swept: Option<Instant> = None;
     loop {
         drain(&bus, &mut db, factory)?;
         while let Ok(line) = listening.lines.try_recv() {
-            apply(&mut db, line, factory)?;
+            apply(&mut db, line, &trace)?;
         }
-        tend(&mut db, factory, &share, &home)?;
+        tend(&mut db, &trace, &share, &home)?;
         if swept.is_none_or(|at| at.elapsed() >= SWEEP) {
             swept = Some(Instant::now());
             sweep::run(&db, &home)?;
         }
         match listening.lines.recv_timeout(EVERY) {
-            Ok(line) => apply(&mut db, line, factory)?,
+            Ok(line) => apply(&mut db, line, &trace)?,
             Err(RecvTimeoutError::Timeout) => {}
             Err(RecvTimeoutError::Disconnected) => return Err("the signal socket closed".into()),
         }
@@ -86,8 +93,8 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
 
 /// Applies a line from the socket and replies to its sender. A run its line ended is killed after
 /// the reply, so the hook that sent it is not killed first.
-fn apply(db: &mut Connection, line: Line, factory: &Factory) -> Result<(), Error> {
-    let (reply, kill) = take(db, &line.text, factory)?;
+fn apply(db: &mut Connection, line: Line, trace: &Trace) -> Result<(), Error> {
+    let (reply, kill) = take(db, &line.text, trace)?;
     let _ = line.applied.send(reply);
     kill.inspect(|tmux| runtime::kill(tmux));
     Ok(())
@@ -106,20 +113,16 @@ enum Input {
 /// Applies one line and returns its reply, with a tmux session to kill. A signal's reply is `ok`;
 /// a call's or an answer's is the JSON of its `Result`. A line that is none of them is reported
 /// and dropped.
-fn take(
-    db: &mut Connection,
-    line: &str,
-    factory: &Factory,
-) -> Result<(String, Option<String>), Error> {
-    let workflows = &factory.workflows;
+fn take(db: &mut Connection, line: &str, trace: &Trace) -> Result<(String, Option<String>), Error> {
+    let workflows = &trace.factory.workflows;
     let replied = |result: Result<String, String>| {
         serde_json::to_string(&result).expect("a result serializes")
     };
     match serde_json::from_str::<Input>(line) {
-        Ok(Input::Signal(signal)) => Ok(("ok".to_owned(), state::signal(db, &signal, workflows)?)),
+        Ok(Input::Signal(signal)) => Ok(("ok".to_owned(), state::signal(db, &signal, trace)?)),
         Ok(Input::Call(call)) => Ok((replied(tools::call(db, &call, workflows)?), None)),
         Ok(Input::Answer(answer)) => Ok((
-            replied(tools::answer(db, &answer, workflows, &runtime::head)?),
+            replied(tools::answer(db, &answer, trace, &runtime::head)?),
             None,
         )),
         Ok(Input::Act(act)) => {
@@ -135,27 +138,28 @@ fn take(
 
 /// Ends runs that exited, timed out or wait on a prompt, fires due waits, starts every run that
 /// fits in the room, and types prompts.
-fn tend(db: &mut Connection, factory: &Factory, share: &Share, home: &Path) -> Result<(), Error> {
+fn tend(db: &mut Connection, trace: &Trace, share: &Share, home: &Path) -> Result<(), Error> {
+    let factory = trace.factory;
     for run in state::live(db)? {
         if runtime::pane(&run.tmux, &run.session).is_none() {
             // A dead pane that remain-on-exit keeps holds the session open.
             runtime::kill(&run.tmux);
-            if tools::gone(db, &run.session, &factory.workflows)? {
+            if tools::gone(db, &run.session, trace)? {
                 continue;
             }
             let reason = format!(
                 "run {} exited: claude no longer runs in tmux session {}",
                 run.id, run.tmux
             );
-            state::block(db, run.task, "exited", &reason)?;
+            state::block(db, trace, run.task, "exited", &reason)?;
         } else if let Some((ended_as, reason)) = verdict(&run, factory) {
             // Committed first, so a crash before the kill leaves an ended run, not a lost one.
-            state::block(db, run.task, ended_as, &reason)?;
+            state::block(db, trace, run.task, ended_as, &reason)?;
             runtime::kill(&run.tmux);
         }
     }
     state::due(db)?;
-    perform(db, factory)?;
+    perform(db, trace)?;
     loop {
         // Measured again after each start, since its clone and worktree take disk.
         let measured = OnceCell::new();
@@ -164,7 +168,7 @@ fn tend(db: &mut Connection, factory: &Factory, share: &Share, home: &Path) -> R
             break;
         };
         if let Err(reason) = start(db, factory, home, &admission)? {
-            state::block(db, admission.task, "failed", &reason)?;
+            state::block(db, trace, admission.task, "failed", &reason)?;
         }
     }
     while let Some((tmux, session, text)) = state::attempt(db)? {
@@ -212,7 +216,8 @@ fn verdict(run: &state::LiveRun, factory: &Factory) -> Option<(&'static str, Str
 
 /// Runs the action of the oldest task at a code step, once an irreversible step's approval holds.
 /// An action that is not built yet blocks the task.
-fn perform(db: &mut Connection, factory: &Factory) -> Result<(), Error> {
+fn perform(db: &mut Connection, trace: &Trace) -> Result<(), Error> {
+    let factory = trace.factory;
     let Some(due) = state::actionable(db, &factory.workflows)? else {
         return Ok(());
     };
@@ -228,7 +233,7 @@ fn perform(db: &mut Connection, factory: &Factory) -> Result<(), Error> {
         "open-pr" => open_pr(db, factory, &due, head.as_deref())?,
         other => {
             let reason = format!("action {other} is not built yet");
-            return Ok(state::block(db, due.task, "blocked", &reason)?);
+            return Ok(state::block(db, trace, due.task, "blocked", &reason)?);
         }
     };
     Ok(tools::performed(
@@ -237,7 +242,7 @@ fn perform(db: &mut Connection, factory: &Factory) -> Result<(), Error> {
         &due.workflow,
         step,
         done,
-        &factory.workflows,
+        trace,
     )?)
 }
 

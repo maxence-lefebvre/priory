@@ -1,5 +1,6 @@
 use crate::room::{self, Share};
 use crate::route::{self, Decision};
+use crate::trace::Trace;
 use herdr_bus::Message;
 use priory_factory::factory::{Factory, Loaded, Session, Workflow};
 use priory_runtime::room::Room;
@@ -8,7 +9,7 @@ use std::collections::BTreeMap;
 use std::io::Write;
 use std::time::Duration;
 
-const VERSION: i64 = 10;
+const VERSION: i64 = 11;
 
 const SCHEMA: &str = "
 CREATE TABLE tasks (
@@ -187,10 +188,27 @@ ALTER TABLE tasks ADD COLUMN ending TEXT;
 PRAGMA user_version = 10;
 ";
 
+const SCHEMA_11: &str = "
+CREATE TABLE trace (
+  seq   INTEGER PRIMARY KEY AUTOINCREMENT,
+  id    TEXT NOT NULL UNIQUE,
+  type  TEXT NOT NULL,
+  time  TEXT NOT NULL,
+  event TEXT NOT NULL
+);
+ALTER TABLE tasks ADD COLUMN entered TEXT;
+UPDATE tasks SET entered = changed;
+ALTER TABLE tasks ADD COLUMN tokens TEXT;
+ALTER TABLE tasks ADD COLUMN model TEXT;
+ALTER TABLE runs ADD COLUMN transcript TEXT;
+ALTER TABLE runs ADD COLUMN read INTEGER NOT NULL DEFAULT 0;
+PRAGMA user_version = 11;
+";
+
 /// Each schema change in order: a file at version `n` applies those from index `n` on.
 const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA, SCHEMA_2, SCHEMA_3, SCHEMA_4, SCHEMA_5, SCHEMA_6, SCHEMA_7, SCHEMA_8, SCHEMA_9,
-    SCHEMA_10,
+    SCHEMA_10, SCHEMA_11,
 ];
 
 const NOW: &str = "strftime('%Y-%m-%dT%H:%M:%SZ', 'now')";
@@ -266,8 +284,8 @@ pub(crate) fn handle(
     let (task, outcome) = match route::route(message, owner.as_ref(), workflows)? {
         Decision::Create(new) => {
             tx.execute(
-                "INSERT INTO tasks (key, workflow, step, state, band, lane, trigger, source)
-                 VALUES (?1, ?2, ?3, 'queued', ?4, ?5, ?6, ?7)",
+                "INSERT INTO tasks (key, workflow, step, state, band, lane, trigger, source, entered)
+                 VALUES (?1, ?2, ?3, 'queued', ?4, ?5, ?6, ?7, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))",
                 params![
                     new.key,
                     new.workflow,
@@ -414,6 +432,12 @@ pub fn emit(line: &str) {
     }
     eprintln!("priory: stdout: {error}");
     std::process::exit(1);
+}
+
+/// Every trace record, oldest first, as CloudEvents JSON.
+pub fn events(db: &Connection) -> rusqlite::Result<Vec<String>> {
+    let mut statement = db.prepare("SELECT event FROM trace ORDER BY seq")?;
+    statement.query_map([], |row| row.get(0))?.collect()
 }
 
 /// One event as an agent reads it: type, subject and data on one line.
@@ -713,14 +737,27 @@ fn share(tx: &Transaction, run: &NewRun) -> rusqlite::Result<()> {
     Ok(())
 }
 
-/// Blocks `task` with `reason`, ending its live run first as `ended_as`, if it has one.
+/// Blocks `task` with `reason`, ending its live run first as `ended_as`, if it has one, after reading
+/// its transcript.
 pub(crate) fn block(
     db: &mut Connection,
+    trace: &Trace,
     task: i64,
     ended_as: &str,
     reason: &str,
 ) -> rusqlite::Result<()> {
     let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let live = tx
+        .query_row(
+            "SELECT id FROM runs WHERE task = ?1 AND ended IS NULL",
+            [task],
+            |row| row.get::<_, i64>(0),
+        )
+        .optional()?;
+    if let Some(run) = live {
+        // The step goes on after a resume, so the turn cut short still counts toward it.
+        crate::trace::account(&tx, trace, run, None)?;
+    }
     tx.execute(
         &format!("UPDATE runs SET ended = {NOW}, ended_as = ?2 WHERE task = ?1 AND ended IS NULL"),
         params![task, ended_as],
@@ -784,6 +821,9 @@ pub struct Signal {
     pub prompt: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub message: Option<String>,
+    /// The session transcript Claude names in every hook.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transcript: Option<String>,
 }
 
 /// Applies a hook signal: the run is idle after `SessionStart` or `Stop`, and busy after
@@ -792,7 +832,7 @@ pub struct Signal {
 pub(crate) fn signal(
     db: &mut Connection,
     signal: &Signal,
-    workflows: &BTreeMap<String, Loaded<Workflow>>,
+    trace: &Trace,
 ) -> rusqlite::Result<Option<String>> {
     let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
     let Some(run) = tx
@@ -812,10 +852,12 @@ pub(crate) fn signal(
                 "UPDATE runs SET idle = 1, ready = 1, turn = NULL WHERE id = ?1",
                 [run],
             )?;
+            crate::trace::begin(&tx, trace, run, signal.transcript.as_deref())?;
         }
         "Stop" => {
             tx.execute("UPDATE runs SET idle = 1, turn = NULL WHERE id = ?1", [run])?;
-            kill = crate::tools::stop(&tx, &signal.session, workflows)?;
+            crate::trace::account(&tx, trace, run, signal.transcript.as_deref())?;
+            kill = crate::tools::stop(&tx, &signal.session, trace)?;
         }
         "UserPromptSubmit" => {
             tx.execute(
