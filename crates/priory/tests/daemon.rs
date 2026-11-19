@@ -37,6 +37,10 @@ struct Setup {
 
 impl Setup {
     fn new(name: &str) -> Self {
+        Self::with_lanes(name, None)
+    }
+
+    fn with_lanes(name: &str, lanes: Option<&str>) -> Self {
         let dir = Path::new(env!("CARGO_TARGET_TMPDIR"))
             .join("daemon")
             .join(name);
@@ -47,7 +51,10 @@ impl Setup {
             ("factory/workflows/implement.toml", WORKFLOW),
             ("factory/triggers/agent-label.toml", TRIGGER),
         ];
-        for (path, content) in files {
+        for (path, content) in files
+            .into_iter()
+            .chain(lanes.map(|lanes| ("factory/lanes.toml", lanes)))
+        {
             let file = dir.join(path);
             fs::create_dir_all(file.parent().unwrap()).unwrap();
             fs::write(file, content).unwrap();
@@ -153,7 +160,7 @@ fn a_task_request_creates_one_queued_task_at_its_workflow_start() {
             "implement",
             "queued",
             "today",
-            "-",
+            "none/misc",
             "-",
             "1",
             "1"
@@ -378,4 +385,122 @@ fn a_pull_request_event_is_kept_on_the_task_that_owns_its_key() {
             route("1", "kept")
         ]
     );
+}
+
+const LANES: &str = r#"fallback = "{team}/misc"
+
+[[rules]]
+key = "github:owner/repo#7"
+lane = "3D/mobile"
+
+[[rules]]
+key = "github:owner/repo#7"
+lane = "FND/later"
+
+[[rules]]
+project = "Viewer"
+lane = "3D/viewer"
+
+[[rules]]
+branch = "*desktop*"
+lane = "FND/desktop"
+"#;
+
+/// The lane of the one task that `request` creates, once `lanes.toml` holds `LANES`.
+fn lane_of(name: &str, lanes: Option<&str>, issue: u64, extra: serde_json::Value) -> String {
+    let setup = Setup::with_lanes(name, lanes);
+    let source = labeled(issue);
+    let mut request = requested(&source, issue);
+    request
+        .data
+        .as_object_mut()
+        .unwrap()
+        .extend(extra.as_object().unwrap().clone());
+    setup.publish(&source);
+    setup.publish(&request);
+    succeeded(&setup.daemon());
+    setup.rows("tasks")[0][6].clone()
+}
+
+#[test]
+fn a_trigger_lane_wins_over_a_matching_rule() {
+    let lane = lane_of(
+        "lane-trigger",
+        Some(LANES),
+        7,
+        json!({ "lane": "OPS/chores" }),
+    );
+
+    assert_eq!(lane, "OPS/chores");
+}
+
+#[test]
+fn a_key_rule_gives_the_task_its_lane() {
+    assert_eq!(lane_of("lane-key", Some(LANES), 7, json!({})), "3D/mobile");
+}
+
+#[test]
+fn the_first_matching_rule_wins_over_a_later_one() {
+    let lane = lane_of("lane-first", Some(LANES), 7, json!({ "project": "Viewer" }));
+
+    assert_eq!(lane, "3D/mobile");
+}
+
+#[test]
+fn a_project_rule_matches_the_project_the_source_event_carries() {
+    let lane = lane_of(
+        "lane-project",
+        Some(LANES),
+        8,
+        json!({ "project": "Viewer" }),
+    );
+
+    assert_eq!(lane, "3D/viewer");
+}
+
+#[test]
+fn the_fallback_fills_team_from_the_event_and_says_none_without_one() {
+    let with = lane_of("lane-team", Some(LANES), 8, json!({ "team": "FND" }));
+    let without = lane_of("lane-none", Some(LANES), 8, json!({}));
+
+    assert_eq!((with.as_str(), without.as_str()), ("FND/misc", "none/misc"));
+}
+
+#[test]
+fn a_task_falls_back_to_team_slash_misc_without_a_lanes_file_or_a_fallback() {
+    let absent = lane_of("lane-absent", None, 7, json!({ "team": "FND" }));
+    let unmatched = lane_of(
+        "lane-unmatched",
+        Some("[[rules]]\nkey = \"x\"\nlane = \"A/b\"\n"),
+        7,
+        json!({}),
+    );
+
+    assert_eq!(
+        (absent.as_str(), unmatched.as_str()),
+        ("FND/misc", "none/misc")
+    );
+}
+
+#[test]
+fn tasks_filtered_by_lane_lists_only_that_lane() {
+    let setup = Setup::with_lanes("lane-filter", Some(LANES));
+    for issue in [7, 8] {
+        let source = labeled(issue);
+        setup.publish(&source);
+        setup.publish(&requested(&source, issue));
+    }
+    succeeded(&setup.daemon());
+
+    let output = setup.priory(&["tasks", "--lane", "3D/mobile"]);
+
+    succeeded(&output);
+    let text = String::from_utf8(output.stdout).unwrap();
+    let keys: Vec<_> = text
+        .lines()
+        .skip(1)
+        .map(|line| line.split('\t').nth(1).unwrap())
+        .collect();
+    assert_eq!(keys, ["github:owner/repo#7"]);
+    assert!(!setup.priory(&["tasks", "--lane"]).status.success());
 }
