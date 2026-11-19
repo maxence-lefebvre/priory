@@ -458,7 +458,7 @@ pub(crate) fn handle(
     }
     let resources = route::resources(message);
     let owner = if route::requests(message) {
-        keyed(&tx, &resources)?
+        keyed(&tx, resources.first())?
     } else {
         owner(&tx, &resources)?
     };
@@ -627,13 +627,12 @@ pub(crate) fn disk_due(
     tx.commit()
 }
 
-/// The active task whose own key is one of `keys`: owning a key as a resource is not enough.
-fn keyed(tx: &Transaction, keys: &[String]) -> rusqlite::Result<Option<Task>> {
-    let keys = serde_json::to_string(keys).expect("keys serialize");
+/// The active task whose own key is `key`: owning the key as a resource is not enough.
+fn keyed(tx: &Transaction, key: Option<&String>) -> rusqlite::Result<Option<Task>> {
     tx.query_row(
-        "SELECT id FROM tasks WHERE key IN (SELECT value FROM json_each(?1))
+        "SELECT id FROM tasks WHERE key = ?1
          AND state NOT IN ('done', 'failed', 'dropped') ORDER BY id LIMIT 1",
-        [keys],
+        [key],
         |row| Ok(Task { id: row.get(0)? }),
     )
     .optional()

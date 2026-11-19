@@ -126,6 +126,18 @@ pub(crate) fn call(
     if let Some(wait) = open_wait(&tx, run.id)? {
         return Ok(Err(format!("run {} already waits on wait {wait}", run.id)));
     }
+    // 0 is no generation: the run moves on from the asks and waits of earlier runs. A refused
+    // call rolls this back.
+    tx.execute(
+        "UPDATE asks SET withdrawn = 0 WHERE task = ?1 AND run IS NOT NULL AND run != ?2
+         AND answer IS NULL AND withdrawn IS NULL",
+        params![run.task, run.id],
+    )?;
+    tx.execute(
+        "UPDATE waits SET withdrawn = 0 WHERE task = ?1 AND run != ?2 AND fired IS NULL
+         AND withdrawn IS NULL AND NOT daemon",
+        params![run.task, run.id],
+    )?;
     let stored = match call.tool.as_str() {
         "result" => result(&tx, &run, &call.arguments, workflows)?,
         "ask" => ask(&tx, &run, &call.arguments)?,
@@ -134,17 +146,6 @@ pub(crate) fn call(
     };
     if stored.is_ok() {
         tx.execute("UPDATE runs SET nudgeable = 0 WHERE id = ?1", [run.id])?;
-        // 0 is no generation: the run moved on from the asks and waits of earlier runs.
-        tx.execute(
-            "UPDATE asks SET withdrawn = 0 WHERE task = ?1 AND run IS NOT NULL AND run != ?2
-             AND answer IS NULL AND withdrawn IS NULL",
-            params![run.task, run.id],
-        )?;
-        tx.execute(
-            "UPDATE waits SET withdrawn = 0 WHERE task = ?1 AND run != ?2 AND fired IS NULL
-             AND withdrawn IS NULL AND NOT daemon",
-            params![run.task, run.id],
-        )?;
         tx.commit()?;
     }
     Ok(stored)

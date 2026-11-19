@@ -4601,6 +4601,30 @@ fn a_woken_run_can_wait_on_something_else_and_so_withdraws_the_ask_it_took_over(
 }
 
 #[test]
+fn a_woken_run_that_waits_on_another_condition_is_caught_up_on_the_events_of_its_turn() {
+    let mut setup = support_day("tick-rewait");
+    setup.calls(&[wait(on_pull_7("review")), wait(on_pull_7("pull_request"))]);
+    setup.publish(&tick("2026-11-19T08:00:00Z"));
+    setup.start();
+    setup.until("tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == "asleep")
+    });
+    setup.gone("priory-1");
+    setup.hold("hold-call");
+    setup.publish(&tick("2026-11-19T09:00:00Z"));
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 2);
+    setup.publish(&closed());
+    setup.until("inbox", |rows| rows.len() == 3);
+
+    setup.release("hold-call");
+
+    setup.until("runs", |_| setup.replies().len() == 2);
+    let (text, error) = reply(&setup.replies()[1]);
+    assert!(!error, "{text}");
+    assert!(text.starts_with("wait 2 already holds"), "{text}");
+}
+
+#[test]
 fn an_event_that_satisfies_the_wait_of_a_woken_task_waiting_for_room_fires_it() {
     let mut setup = support_day("tick-wait");
     setup.calls(&[wait(on_pull_7("pull_request")), result("failed")]);
