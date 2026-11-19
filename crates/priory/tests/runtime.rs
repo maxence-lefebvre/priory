@@ -2,6 +2,7 @@ use herdr_bus::{Bus, Message, Output};
 use serde_json::json;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
+use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output as Exit};
 use std::time::{Duration, Instant};
@@ -154,7 +155,30 @@ impl Setup {
         self.command("tmux").args(args).output().unwrap()
     }
 
+    /// Kills every process this test started, the tmux server among them, then the server's socket.
+    /// A child the daemon left in its own process group can start a server after any `kill-server`,
+    /// so the processes are found by the `FAKE_DIR` they inherit.
     fn kill_tmux(&self) {
+        let mut marker = format!("FAKE_DIR={}", self.dir.join("fake").display()).into_bytes();
+        marker.push(0);
+        loop {
+            let found: Vec<String> = fs::read_dir("/proc")
+                .unwrap()
+                .filter_map(|entry| entry.ok()?.file_name().into_string().ok())
+                .filter(|pid| pid.bytes().all(|byte| byte.is_ascii_digit()))
+                .filter(|pid| {
+                    fs::read(format!("/proc/{pid}/environ")).is_ok_and(|environ| {
+                        environ
+                            .split_inclusive(|byte| *byte == 0)
+                            .any(|variable| variable == marker)
+                    })
+                })
+                .collect();
+            if found.is_empty() {
+                break;
+            }
+            let _ = Command::new("kill").arg("-9").args(&found).output();
+        }
         let _ = self.tmux(&["kill-server"]);
     }
 
@@ -1602,6 +1626,30 @@ fn two_admissions_in_one_tick_count_each_others_declared_memory() {
     setup.until("tasks", |rows| {
         rows[0][4] == "done" && rows[1][4] == "running"
     });
+}
+
+#[test]
+fn teardown_kills_a_tmux_server_that_a_late_child_starts() {
+    let setup = Setup::new("teardown-late-tmux");
+    // As a daemon's child in its own process group, still starting a session when the test ends.
+    let mut late = setup
+        .command("sh")
+        .args(["-c", "sleep 0.5; tmux new-session -d sleep 100"])
+        .process_group(0)
+        .spawn()
+        .unwrap();
+    let mut listed = setup.command("tmux");
+    listed.arg("list-sessions");
+    let mut killed = setup.command("tmux");
+    killed.arg("kill-server");
+
+    drop(setup);
+    late.wait().unwrap();
+    std::thread::sleep(Duration::from_millis(1000));
+
+    let listed = listed.output().unwrap();
+    let _ = killed.output();
+    assert!(!listed.status.success(), "a tmux server outlived its test");
 }
 
 #[test]
