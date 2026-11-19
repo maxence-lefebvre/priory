@@ -196,6 +196,8 @@ pub struct Launch<'a> {
     pub permissions: serde_json::Value,
     /// The agent's `defaultMode`, or `manual`.
     pub permission_mode: &'a str,
+    /// The systemd user slice the run starts in, in its own scope, or none on a host without systemd.
+    pub slice: Option<&'a str>,
 }
 
 /// A coding agent CLI that Priory runs in tmux, with hooks and tools that report to the daemon.
@@ -375,6 +377,13 @@ pub fn launch(harness: &dyn Harness, launch: &Launch) -> Result<(), String> {
                 r#"p=$(cat "$0"; printf x); rm -f "$0"; exec "$@" "${p%x}""#,
             ])
             .arg(&file);
+    }
+    if let Some(slice) = launch.slice {
+        // A scope execs the agent in place, so the pane's process is still the agent's.
+        command
+            .args(["systemd-run", "--user", "--scope", "--quiet", "--collect"])
+            .arg(format!("--slice={slice}"))
+            .arg("--");
     }
     command
         .arg("env")

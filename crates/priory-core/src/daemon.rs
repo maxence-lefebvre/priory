@@ -9,7 +9,7 @@ use herdr_bus::{Bus, Start};
 use priory_factory::factory::{Factory, Harness, PermissionMode, Session};
 use priory_intake::intake::OUTPUT;
 use priory_runtime::runtime::{self, Launch, Line};
-use priory_runtime::{room, transcript};
+use priory_runtime::{room, slice, transcript};
 use rusqlite::Connection;
 use std::cell::OnceCell;
 use std::path::Path;
@@ -50,6 +50,16 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
         usage: transcript::usage,
     };
     let share = Share::of(factory, trace.machine.as_deref());
+    let slice = slice::name();
+    let slice = match slice::confine(&slice, share.cpu, share.memory) {
+        Ok(()) => Some(slice.as_str()),
+        Err(error) => {
+            eprintln!(
+                "priory daemon: no systemd user manager, so runs start outside {slice} and only the room check caps them: {error}"
+            );
+            None
+        }
+    };
     state::uncertain(&db)?;
     // A crash between ending a run and killing its session leaves its agent running.
     let ended = state::ended_sessions(&db)?;
@@ -80,7 +90,7 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
         while let Ok(line) = listening.lines.try_recv() {
             apply(&mut db, line, &trace)?;
         }
-        tend(&mut db, &trace, &share, &home)?;
+        tend(&mut db, &trace, &share, &home, slice)?;
         if swept.is_none_or(|at| at.elapsed() >= SWEEP) {
             swept = Some(Instant::now());
             sweep::run(&db, &home)?;
@@ -148,7 +158,13 @@ fn take(db: &mut Connection, line: &str, trace: &Trace) -> Result<(String, Optio
 
 /// Ends runs that exited, timed out or wait on a prompt, fires due waits, starts every run that
 /// fits in the room, and types prompts.
-fn tend(db: &mut Connection, trace: &Trace, share: &Share, home: &Path) -> Result<(), Error> {
+fn tend(
+    db: &mut Connection,
+    trace: &Trace,
+    share: &Share,
+    home: &Path,
+    slice: Option<&str>,
+) -> Result<(), Error> {
     let factory = trace.factory;
     for run in state::live(db)? {
         if runtime::pane(&run.tmux, &run.session).is_none() {
@@ -180,7 +196,7 @@ fn tend(db: &mut Connection, trace: &Trace, share: &Share, home: &Path) -> Resul
         let Some(admission) = state::admissible(db, factory, share, room)? else {
             break;
         };
-        if let Err(reason) = start(db, factory, home, &admission)? {
+        if let Err(reason) = start(db, factory, home, slice, &admission)? {
             state::block(db, trace, admission.task, "failed", &reason)?;
         }
     }
@@ -334,6 +350,7 @@ fn start(
     db: &mut Connection,
     factory: &Factory,
     home: &Path,
+    slice: Option<&str>,
     admission: &Admission,
 ) -> Result<Result<(), String>, Error> {
     let step = factory.workflows[&admission.workflow]
@@ -422,6 +439,7 @@ fn start(
                 .permissions
                 .default_mode
                 .map_or("manual", PermissionMode::as_str),
+            slice,
         },
     ))
 }
