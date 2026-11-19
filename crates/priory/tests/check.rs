@@ -818,3 +818,38 @@ fn only_a_schedule_trigger_has_schedule_fields() {
         )
     );
 }
+
+#[test]
+fn a_schedule_repeats_at_most_once_a_minute() {
+    let outcome = schedule(
+        "schedule-every-seconds",
+        &SCHEDULE.replace("every = \"1h\"", "every = \"30s\""),
+    );
+
+    assert_eq!(
+        (outcome.code, outcome.stderr.as_str()),
+        (
+            1,
+            "triggers/support-day.toml:5: `every` is shorter than the intake's 1-minute poll\n"
+        )
+    );
+}
+
+#[test]
+fn a_github_trigger_without_on_names_its_source_line() {
+    let trigger = TRIGGER.replace("on = \"issues.labeled\"\n", "");
+
+    let outcome = check(&factory(
+        "github-no-on",
+        &with("triggers/agent-label.toml", &trigger),
+    ));
+
+    assert_eq!(outcome.code, 1);
+    assert!(
+        outcome
+            .stderr
+            .starts_with("triggers/agent-label.toml:2: a GitHub trigger handles"),
+        "{}",
+        outcome.stderr
+    );
+}

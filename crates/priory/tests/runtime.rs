@@ -3274,7 +3274,11 @@ workflow = "implement"
 "#;
 
 fn support_day(name: &str) -> Setup {
-    let setup = Setup::new(name);
+    support_day_with(name, WORKFLOW)
+}
+
+fn support_day_with(name: &str, workflow: &str) -> Setup {
+    let setup = Setup::with_workflow(name, workflow);
     fs::write(
         setup.dir.join("factory/triggers/support-day.toml"),
         SUPPORT_DAY,
@@ -3325,6 +3329,30 @@ fn a_fixed_key_firing_wakes_an_asleep_task_and_its_ask_stays_open() {
     );
     assert_eq!(setup.rows("tasks").len(), 1);
     assert_eq!(setup.rows("asks").len(), 1);
+
+    // The tick's run sleeps again on the ask it inherits, so the next tick wakes it again.
+    setup.until("tasks", |rows| rows[0][4] == "asleep");
+    setup.publish(&tick("2026-11-19T10:00:00Z"));
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") == 3);
+    assert_eq!(setup.rows("asks").len(), 1);
+}
+
+#[test]
+fn a_firing_at_a_human_step_is_coalesced() {
+    let mut setup = support_day_with("tick-human", STEPS);
+    setup.calls(&[result("unsure")]);
+    setup.publish(&tick("2026-11-19T08:00:00Z"));
+    setup.start();
+    setup.until("tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == "asleep")
+    });
+
+    setup.publish(&tick("2026-11-19T09:00:00Z"));
+
+    setup.until("inbox", |rows| rows.len() == 2);
+    assert_eq!(setup.rows("inbox")[1][4], "coalesced");
+    let tasks = setup.rows("tasks");
+    assert_eq!([&tasks[0][3], &tasks[0][4]], ["approve", "asleep"]);
 }
 
 #[test]

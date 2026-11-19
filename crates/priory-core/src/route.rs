@@ -64,8 +64,7 @@ pub(crate) fn branch(repo: &str, branch: &str) -> String {
     format!("github:{repo}@{branch}")
 }
 
-/// Whether `message` is a schedule's firing, which wakes the asleep task that owns its key and is
-/// coalesced into a task in any other state.
+/// Whether `message` is a schedule's firing, which wakes or is coalesced into the task it finds.
 pub(crate) fn tick(message: &Message) -> bool {
     message.kind == TASK_REQUESTED && message.data.get("scheduled").is_some()
 }

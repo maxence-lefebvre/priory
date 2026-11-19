@@ -1214,3 +1214,20 @@ fn a_schedule_waits_for_its_time_and_its_days() {
         "schedule:standup@2026-11-20T08:00:00Z"
     );
 }
+
+#[test]
+fn a_duration_until_ends_at_midnight() {
+    let setup = scheduled("schedule-midnight");
+    let late = "source = \"schedule\"\nrepo = \"owner/repo\"\nat = \"23:00\"\ndays = [\"fri\"]\nevery = \"1h\"\nuntil = \"2h\"\ntimezone = \"UTC\"\nworkflow = \"implement\"\n";
+    write(&setup.dir.join("factory/triggers/standup.toml"), late);
+
+    // Friday 23:30, then Saturday 00:30.
+    succeeded(&setup.intake_at("2026-11-20T23:30:00Z"));
+    succeeded(&setup.intake_at("2026-11-21T00:30:00Z"));
+
+    let fired: Vec<_> = tasks(&setup)
+        .into_iter()
+        .map(|task| task.data["scheduled"].clone())
+        .collect();
+    assert_eq!(fired, ["2026-11-20T23:00:00Z"]);
+}

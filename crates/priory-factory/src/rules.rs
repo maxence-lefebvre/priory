@@ -61,6 +61,13 @@ fn check_schedule(trigger: &Loaded<Trigger>, problems: &mut Vec<Problem>) {
         ));
         return;
     };
+    if value.every.is_some_and(|every| every.as_secs() < 60) {
+        problems.push(problem(
+            trigger,
+            trigger.lines.field("every"),
+            "`every` is shorter than the intake's 1-minute poll".into(),
+        ));
+    }
     if matches!(value.until, Some(Until::At(until)) if until < at) {
         problems.push(problem(
             trigger,
@@ -102,7 +109,7 @@ fn check_github(trigger: &Loaded<Trigger>, problems: &mut Vec<Problem>) {
     if !ON.contains(&value.on.as_str()) {
         problems.push(problem(
             trigger,
-            trigger.lines.field("on"),
+            trigger.lines.field("on").or(trigger.lines.field("source")),
             format!(
                 "a GitHub trigger handles `issues.labeled`, `issues.opened`, `pull_request.labeled` or `pull_request.opened`, not `{}`",
                 value.on

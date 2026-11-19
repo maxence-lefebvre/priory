@@ -8,8 +8,7 @@ use serde_json::json;
 
 pub(super) const FIRED: &str = "schedule.fired";
 
-/// Publishes the latest firing of each schedule at or before `now`. Its id names the firing, so
-/// herdr-bus drops a firing already published, and a restart fires only the latest missed one.
+/// Publishes each schedule's latest firing, under an id that names it so herdr-bus drops a repeat.
 pub(super) fn fire(bus: &Bus, triggers: &[(&str, &Trigger)], now: Timestamp) -> Result<(), String> {
     for (name, trigger) in triggers {
         let Some(slot) = latest(trigger, now) else {
@@ -53,10 +52,11 @@ fn latest(trigger: &Trigger, now: Timestamp) -> Option<Timestamp> {
         })
         .find_map(|day| {
             let first = instant(day, at)?;
+            let midnight = instant(day, Time::MAX)?;
             let end = match trigger.until {
                 Some(Until::At(until)) => instant(day, until)?,
-                Some(Until::After(after)) => first.checked_add(after).ok()?,
-                None => instant(day, Time::MAX)?,
+                Some(Until::After(after)) => first.checked_add(after).ok()?.min(midnight),
+                None => midnight,
             };
             let last = end.min(now);
             if last < first {

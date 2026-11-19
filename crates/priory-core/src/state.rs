@@ -286,15 +286,22 @@ pub(crate) fn handle(
             (Some(id), "created")
         }
         Decision::Keep(id) if route::tick(message) => {
-            let asleep = tx
+            // A human step or a daemon's checks gate has no agent turn for a tick to wake.
+            let asleep_at: Option<(String, String)> = tx
                 .query_row(
-                    "SELECT 1 FROM tasks WHERE id = ?1 AND state = 'asleep'",
+                    "SELECT workflow, step FROM tasks WHERE id = ?1 AND state = 'asleep'
+                     AND NOT EXISTS (SELECT 1 FROM waits WHERE task = ?1 AND fired IS NULL AND daemon)",
                     [id],
-                    |_| Ok(()),
+                    |row| Ok((row.get(0)?, row.get(1)?)),
                 )
-                .optional()?
-                .is_some();
-            (Some(id), if asleep { "woke" } else { "coalesced" })
+                .optional()?;
+            let wakes = asleep_at.is_some_and(|(workflow, step)| {
+                workflows
+                    .get(&workflow)
+                    .and_then(|workflow| workflow.value.step(&step))
+                    .is_some_and(|step| step.decides == priory_factory::factory::Decider::Model)
+            });
+            (Some(id), if wakes { "woke" } else { "coalesced" })
         }
         Decision::Keep(id) => (Some(id), "kept"),
         Decision::Ignore => (None, "ignored"),
@@ -621,6 +628,15 @@ pub(crate) fn start(db: &mut Connection, run: &NewRun) -> rusqlite::Result<i64> 
         "UPDATE tasks SET state = 'running', branch = ?2, worktree = ?3, reason = NULL, ending = ?4
          WHERE id = ?1",
         params![run.task, run.branch, run.worktree, run.ending],
+    )?;
+    // A schedule's tick wakes a task with its ask or wait still open: this run sleeps on them again.
+    tx.execute(
+        "UPDATE asks SET run = ?2 WHERE task = ?1 AND run IS NOT NULL AND answer IS NULL",
+        params![run.task, id],
+    )?;
+    tx.execute(
+        "UPDATE waits SET run = ?2 WHERE task = ?1 AND fired IS NULL AND NOT daemon",
+        params![run.task, id],
     )?;
     tx.execute(
         "INSERT OR IGNORE INTO owns (task, resource) VALUES (?1, ?2)",
