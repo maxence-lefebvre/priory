@@ -161,7 +161,8 @@ fn a_task_request_creates_one_queued_task_at_its_workflow_start() {
             "queued",
             "today",
             "none/misc",
-            "-"
+            "-",
+            "1"
         ])]
     );
     assert_eq!(

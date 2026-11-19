@@ -29,7 +29,12 @@ impl fmt::Display for Problem {
 #[serde(deny_unknown_fields)]
 pub struct Settings {
     pub name: String,
+    /// The bands, highest first, when they are not the default ones.
+    pub bands: Option<Vec<String>>,
 }
+
+/// The bands a factory has when `factory.toml` names none, highest first.
+pub const BANDS: [&str; 4] = ["blocker", "now", "today", "later"];
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
@@ -216,6 +221,8 @@ fn time_zone<'de, D: Deserializer<'de>>(input: D) -> Result<Option<jiff::tz::Tim
 #[serde(deny_unknown_fields)]
 pub struct Workflow {
     pub start: String,
+    /// The band of its tasks when neither their request nor their trigger sets one.
+    pub band: Option<String>,
     pub steps: Vec<Step>,
 }
 
@@ -415,6 +422,7 @@ pub struct Factory {
     /// `prices.toml`: each model's price.
     pub prices: BTreeMap<String, Price>,
     pub lanes: Option<Loaded<Lanes>>,
+    pub settings: Option<Loaded<Settings>>,
 }
 
 impl Factory {
@@ -425,6 +433,17 @@ impl Factory {
             rules: Vec::new(),
         };
         self.lanes.as_ref().map_or(&BUILT_IN, |lanes| &lanes.value)
+    }
+
+    pub fn bands(&self) -> Vec<&str> {
+        match self
+            .settings
+            .as_ref()
+            .and_then(|settings| settings.value.bands.as_ref())
+        {
+            Some(bands) => bands.iter().map(String::as_str).collect(),
+            None => BANDS.to_vec(),
+        }
     }
 }
 
@@ -472,6 +491,7 @@ pub fn load(dir: &Path) -> (Factory, Vec<Problem>) {
     }
     factory.lanes = lanes.remove("lanes");
 
+    factory.settings = settings.remove("factory");
     for path in found
         .entries("agents")
         .into_iter()

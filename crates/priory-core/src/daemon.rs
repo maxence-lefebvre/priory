@@ -35,6 +35,7 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
     let mut db = state::open()?;
     tools::backfill_endings(&mut db, &factory.workflows)?;
     let bus = Bus::open_default()?;
+    state::bands(&mut db, &factory.bands())?;
     if once {
         drain(&bus, &mut db, factory)?;
         return Ok(());

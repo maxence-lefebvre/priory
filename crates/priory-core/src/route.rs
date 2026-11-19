@@ -31,7 +31,8 @@ pub(crate) struct NewTask {
 }
 
 /// The resources a message names, which a task may own: a task request's key, a CLI request's
-/// subject, or for a GitHub event its issue or pull request and its pull request's head branch.
+/// subject, a Linear event's issue, or for a GitHub event its issue or pull request and its pull
+/// request's head branch.
 pub(crate) fn resources(message: &Message) -> Vec<String> {
     let data = &message.data;
     if message.kind == TASK_REQUESTED {
@@ -43,6 +44,13 @@ pub(crate) fn resources(message: &Message) -> Vec<String> {
     }
     if message.kind == priory_intake::request::REQUESTED {
         return message.subject.clone().into_iter().collect();
+    }
+    if message.kind.starts_with("linear.") {
+        let issue = data["issue"].as_str();
+        return issue
+            .map(|issue| format!("linear:{issue}"))
+            .into_iter()
+            .collect();
     }
     let Some(repo) = data["repo"]
         .as_str()
@@ -76,6 +84,7 @@ pub(crate) fn tick(message: &Message) -> bool {
 /// Routes `message`, given the active task that owns its key, if any. A task request for a
 /// workflow the factory lacks is an error, so that it waits unacked until the workflow is back.
 /// A request with no lane gets the one `lanes.toml` derives; no branch exists yet to match.
+/// A new task's band is its request's, else its trigger's, else its workflow's, else the last one.
 pub(crate) fn route(
     message: &Message,
     owner: Option<&Task>,
@@ -97,6 +106,15 @@ pub(crate) fn route(
         ));
     };
     task.step.clone_from(&workflow.value.start);
+    let trigger = factory.triggers.get(&task.trigger);
+    let bands = factory.bands();
+    // A message published before a band was renamed can carry a band the factory lacks.
+    task.band = task
+        .band
+        .filter(|band| bands.contains(&band.as_str()))
+        .or_else(|| trigger.and_then(|trigger| trigger.value.band.clone()))
+        .or_else(|| workflow.value.band.clone())
+        .or_else(|| bands.last().map(|band| (*band).to_owned()));
     if task.lane.is_none() {
         task.lane = Some(factory.lanes().lane(&Subject {
             key: &task.key,

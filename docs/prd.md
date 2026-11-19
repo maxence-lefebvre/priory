@@ -144,10 +144,10 @@ of two repositories stays two tasks.
 
 ```toml
 source = "linear.view"
-view = "agent-ready"         # a saved Linear view
+view = "6b3c2f9a1d4e"        # a saved Linear view: its id, or the slug id ending its URL
 on = "issue.entered"         # an issue entered the view
 workflow = "implement"
-key = "issue.id"
+key = "issue.identifier"     # the task key is linear:ENG-7
 band = "today"
 lane = "3D/mobile"           # optional: otherwise lanes.toml derives it
 ```

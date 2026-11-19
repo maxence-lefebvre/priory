@@ -10,7 +10,7 @@ use std::collections::BTreeMap;
 use std::io::Write;
 use std::time::Duration;
 
-const VERSION: i64 = 12;
+const VERSION: i64 = 13;
 
 const SCHEMA: &str = "
 CREATE TABLE tasks (
@@ -207,17 +207,31 @@ PRAGMA user_version = 11;
 ";
 
 const SCHEMA_12: &str = "
+ALTER TABLE tasks ADD COLUMN position INTEGER;
+CREATE TABLE bands (
+  name TEXT PRIMARY KEY,
+  rank INTEGER NOT NULL
+);
+PRAGMA user_version = 12;
+";
+
+const SCHEMA_13: &str = "
 ALTER TABLE tasks ADD COLUMN team TEXT;
 ALTER TABLE tasks ADD COLUMN project TEXT;
 ALTER TABLE tasks ADD COLUMN lane_derived INTEGER NOT NULL DEFAULT 0;
-PRAGMA user_version = 12;
+PRAGMA user_version = 13;
 ";
 
 /// Each schema change in order: a file at version `n` applies those from index `n` on.
 const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA, SCHEMA_2, SCHEMA_3, SCHEMA_4, SCHEMA_5, SCHEMA_6, SCHEMA_7, SCHEMA_8, SCHEMA_9,
-    SCHEMA_10, SCHEMA_11, SCHEMA_12,
+    SCHEMA_10, SCHEMA_11, SCHEMA_12, SCHEMA_13,
 ];
+
+/// The order the queue starts tasks in: band, then a person's order, then age. A band the factory
+/// no longer has comes after the last one.
+pub const START_ORDER: &str = "coalesce((SELECT rank FROM bands WHERE bands.name = tasks.band),
+  (SELECT count(*) FROM bands)), tasks.position IS NULL, tasks.position, tasks.id";
 
 const NOW: &str = "strftime('%Y-%m-%dT%H:%M:%SZ', 'now')";
 
@@ -394,6 +408,24 @@ pub(crate) fn handle(
     Ok(tx.commit()?)
 }
 
+/// Records the factory's bands, highest first, so listings and moves read them without the factory.
+pub(crate) fn bands(db: &mut Connection, bands: &[&str]) -> rusqlite::Result<()> {
+    let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    tx.execute("DELETE FROM bands", [])?;
+    for (rank, band) in bands.iter().enumerate() {
+        tx.execute(
+            "INSERT INTO bands (name, rank) VALUES (?1, ?2)",
+            params![band, rank as i64],
+        )?;
+    }
+    // Tasks from before bands have none: the last band is what a request without one gets.
+    tx.execute(
+        "UPDATE tasks SET band = ?1 WHERE band IS NULL",
+        [bands.last()],
+    )?;
+    tx.commit()
+}
+
 /// Fires every time wait whose instant passed and task wait whose task ended.
 pub(crate) fn due(db: &mut Connection) -> rusqlite::Result<()> {
     let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -473,17 +505,18 @@ pub(crate) struct Admission {
     pub fresh: bool,
 }
 
-/// The oldest queued or ready task at a model step that fits in the runner's room. Each older one
-/// that does not fit gets the reason it waits.
+/// The first queued or ready task at a model step, in start order, that fits in the runner's room.
+/// Each one before it gets the reason it waits.
 pub(crate) fn admissible<'r>(
     db: &Connection,
     factory: &Factory,
     share: &Share,
     room: impl Fn() -> &'r Result<Room, String>,
 ) -> rusqlite::Result<Option<Admission>> {
-    let mut statement = db.prepare(
-        "SELECT id, workflow, step, trigger, state = 'queued' FROM tasks WHERE state IN ('queued', 'ready') ORDER BY id",
-    )?;
+    let mut statement = db.prepare(&format!(
+        "SELECT id, workflow, step, trigger, state = 'queued' FROM tasks
+             WHERE state IN ('queued', 'ready') ORDER BY {START_ORDER}"
+    ))?;
     let queued = statement
         .query_map([], |row| {
             Ok(Admission {
@@ -496,6 +529,8 @@ pub(crate) fn admissible<'r>(
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     let promised = promised(db, factory)?;
+    // The first task that waits for room: no task behind it starts, so it is never starved.
+    let mut head = None;
     for admission in queued {
         let Some(step) = factory
             .workflows
@@ -516,13 +551,28 @@ pub(crate) fn admissible<'r>(
                 }),
             _ => None,
         };
-        let waits = busy.or_else(|| match room() {
-            Ok(measured) => {
+        let waits = match (busy, head) {
+            (Some(reason), _) => Some(reason),
+            (None, Some(head)) => Some(format!("waits behind task {head}, which waits for room")),
+            (None, None) => {
                 let need = room::need(agent.map(|(_, agent)| agent));
-                room::wait(measured, share, promised, need)
+                let (reason, holds) = match room() {
+                    Ok(measured) => (
+                        room::wait(measured, share, promised, need),
+                        room::fits_ever(measured, share, need),
+                    ),
+                    Err(error) => (
+                        Some(format!("waits for room: cannot measure it: {error}")),
+                        true,
+                    ),
+                };
+                // A task that can never fit would hold the queue forever.
+                if reason.is_some() && holds {
+                    head = Some(admission.task);
+                }
+                reason
             }
-            Err(error) => Some(format!("waits for room: cannot measure it: {error}")),
-        });
+        };
         let Some(reason) = waits else {
             return Ok(Some(admission));
         };
@@ -1007,4 +1057,115 @@ pub(crate) fn uncertain(db: &Connection) -> rusqlite::Result<usize> {
         "UPDATE outbox SET state = 'uncertain' WHERE state = 'attempted'",
         [],
     )
+}
+
+/// Where `priory move` puts a task in its band's person order.
+pub enum Place {
+    Top,
+    Before(i64),
+    After(i64),
+}
+
+/// Moves the active `task` to `band`, at `place` in that band's person order. Without a band it
+/// stays in its own, or joins the band of the task it goes before or after. Without a place it
+/// goes after the tasks a person ordered, by age.
+pub fn move_task(
+    db: &mut Connection,
+    task: i64,
+    band: Option<&str>,
+    place: Option<Place>,
+) -> Result<(), String> {
+    let tx = db
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(|error| error.to_string())?;
+    moved(&tx, task, band, place)?;
+    tx.commit().map_err(|error| error.to_string())
+}
+
+fn moved(
+    tx: &Transaction,
+    task: i64,
+    band: Option<&str>,
+    place: Option<Place>,
+) -> Result<(), String> {
+    let error = |error: rusqlite::Error| error.to_string();
+    let band_of = |id: i64| -> Result<String, String> {
+        tx.query_row(
+            "SELECT coalesce(band, '') FROM tasks WHERE id = ?1
+             AND state NOT IN ('done', 'failed', 'dropped')",
+            [id],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(error)?
+        .ok_or_else(|| format!("task {id} is not active"))
+    };
+    let own = band_of(task)?;
+    if let Some(band) = band {
+        let bands: Vec<String> = tx
+            .prepare("SELECT name FROM bands ORDER BY rank")
+            .and_then(|mut statement| statement.query_map([], |row| row.get(0))?.collect())
+            .map_err(error)?;
+        if !bands.iter().any(|known| known == band) {
+            return Err(format!("band `{band}` is not one of {}", bands.join(", ")));
+        }
+    }
+    let other = match place {
+        Some(Place::Before(other) | Place::After(other)) if other == task => {
+            return Err(format!("task {task} cannot move next to itself"));
+        }
+        Some(Place::Before(other) | Place::After(other)) => Some((other, band_of(other)?)),
+        _ => None,
+    };
+    let target = match (band, &other) {
+        (Some(band), Some((other, theirs))) if band != theirs => {
+            return Err(format!("task {other} is in band `{theirs}`, not `{band}`"));
+        }
+        (Some(band), _) => band.to_owned(),
+        (None, Some((_, theirs))) => theirs.clone(),
+        (None, None) => own,
+    };
+    let Some(place) = place else {
+        tx.execute(
+            "UPDATE tasks SET band = ?2, position = NULL WHERE id = ?1",
+            params![task, target],
+        )
+        .map_err(error)?;
+        return Ok(());
+    };
+    let mut order: Vec<i64> = tx
+        .prepare(&format!(
+            "SELECT id FROM tasks WHERE coalesce(band, '') = ?1 AND id != ?2
+             AND state NOT IN ('done', 'failed', 'dropped') ORDER BY {START_ORDER}"
+        ))
+        .and_then(|mut statement| {
+            statement
+                .query_map(params![target, task], |row| row.get(0))?
+                .collect()
+        })
+        .map_err(error)?;
+    let at = match place {
+        Place::Top => 0,
+        Place::Before(other) | Place::After(other) => {
+            let at = order
+                .iter()
+                .position(|id| *id == other)
+                .expect("other is active in the band");
+            at + usize::from(matches!(place, Place::After(_)))
+        }
+    };
+    order.insert(at, task);
+    tx.execute(
+        "UPDATE tasks SET band = ?2 WHERE id = ?1",
+        params![task, target],
+    )
+    .map_err(error)?;
+    for (position, id) in order.iter().enumerate() {
+        tx.execute(
+            "UPDATE tasks SET position = ?2 WHERE id = ?1",
+            params![id, position as i64 + 1],
+        )
+        .map_err(error)?;
+    }
+    Ok(())
 }
