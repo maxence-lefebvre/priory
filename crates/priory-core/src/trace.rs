@@ -215,6 +215,44 @@ pub(crate) fn handled(tx: &Transaction, trace: &Trace, handled: &Handled) -> rus
     append(tx, trace, "factory.handler.called", &time, data)
 }
 
+/// Appends a `factory.summarizer.called` record for the summarizer call that wrote, or failed to
+/// write, `task`'s TL;DR.
+pub(crate) fn summarized(
+    tx: &Transaction,
+    trace: &Trace,
+    task: i64,
+    status: &str,
+    model: &str,
+    usage: crate::handler::Usage,
+) -> rusqlite::Result<()> {
+    let (workflow, step, key, generation, time): (String, String, String, i64, String) = tx
+        .query_row(
+            "SELECT workflow, step, key, generation, strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+             FROM tasks WHERE id = ?1",
+            [task],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
+        )?;
+    let mut data = json!({
+        "factory": trace.factory.name,
+        "factory_revision": trace.revision,
+        "workflow": workflow,
+        "task": task.to_string(),
+        "key": key,
+        "generation": generation,
+        "step": step,
+        "status": status,
+        "harness": "claude-code",
+        "model": usage.model.as_deref().unwrap_or(model),
+        "machine": trace.machine,
+        "tokens": usage.tokens,
+        "cost_usd": usage.cost_usd,
+    });
+    if let Value::Object(fields) = &mut data {
+        fields.retain(|_, value| !value.is_null());
+    }
+    append(tx, trace, "factory.summarizer.called", &time, data)
+}
+
 /// Appends a `factory.task.repaired` record for the repair of `task` after `run` failed.
 pub(crate) fn repaired(
     tx: &Transaction,

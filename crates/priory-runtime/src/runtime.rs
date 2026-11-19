@@ -553,7 +553,7 @@ fn settings(exe: &Path, permissions: &serde_json::Value) -> String {
 
 /// Starts a headless `claude -p` call of `model` on `prompt`, in `dir`, with no settings or MCP
 /// servers of the user's, so it cannot be granted a tool that needs permission. Its JSON answer goes to `<id>.json` in `dir`, which [`answer`] reads.
-pub fn ask_handler(
+pub fn ask_claude(
     dir: &Path,
     id: i64,
     model: &str,

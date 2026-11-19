@@ -7,6 +7,7 @@ mod room;
 mod route;
 pub mod search;
 pub mod stall;
+mod summary;
 pub mod state;
 pub mod sweep;
 pub mod tools;

@@ -4,7 +4,7 @@ use crate::route;
 use crate::state::{self, Admission, NewRun, Signal};
 use crate::tools::{self, Act, Answer, Call, Done, Repair};
 use crate::trace::Trace;
-use crate::{handler, stall, sweep};
+use crate::{handler, stall, summary, sweep};
 use herdr_bus::{Bus, Start};
 use priory_factory::factory::{self, Factory, Harness, PermissionMode, Session};
 use priory_intake::intake::OUTPUT;
@@ -133,6 +133,18 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
         handler::answered(&mut db, &trace, id, output.as_deref(), status, true)?;
         runtime::forget(&handlers, id);
     }
+    let summaries = home.join("summaries");
+    for (id, group) in summary::orphans(&db)? {
+        if let Some((pid, _)) =
+            group.filter(|(pid, started)| memory::started(*pid) == Some(*started))
+        {
+            script::kill(pid);
+        }
+        let output = runtime::answer(&summaries, id);
+        summary::answered(&mut db, &trace, id, output.as_deref(), handler::INTERRUPTED)?;
+        runtime::forget(&summaries, id);
+    }
+    let mut summarizing = Vec::new();
     let mut stalls = Stalls::default();
     let mut scripts = Vec::new();
     let every = factory.sweep().every.unwrap_or(SWEEP);
@@ -144,6 +156,7 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
         }
         tend(&mut db, &trace, &share, &home, &scope)?;
         handle_stalls(&mut db, &trace, &home, &mut stalls)?;
+        summarize(&mut db, &trace, &summaries, &mut summarizing)?;
         if sweep_scripts(&db, factory, &home, &mut scripts)? {
             swept = None;
         }
@@ -165,6 +178,52 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
             Err(RecvTimeoutError::Disconnected) => return Err("the signal socket closed".into()),
         }
     }
+}
+
+/// Records the summarizer calls that ended, then calls the summarizer on the tasks that have no
+/// TL;DR yet, at most `summary::CALLS` at once. A factory with no summarizer marks them skipped.
+fn summarize(
+    db: &mut Connection,
+    trace: &Trace,
+    dir: &Path,
+    calls: &mut Vec<(i64, Script)>,
+) -> Result<(), Error> {
+    for (id, mut script) in std::mem::take(calls) {
+        let Some((status, log)) = script.poll() else {
+            calls.push((id, script));
+            continue;
+        };
+        let status = if status == "exit 0" || log.is_empty() {
+            status
+        } else {
+            format!("{status}: {log}")
+        };
+        let output = runtime::answer(dir, id);
+        summary::answered(db, trace, id, output.as_deref(), &status)?;
+        runtime::forget(dir, id);
+    }
+    let Some(model) = summary::model(trace.factory) else {
+        for (task, ..) in summary::due(db, usize::MAX >> 1)? {
+            summary::skipped(db, task, "no summarizer")?;
+        }
+        return Ok(());
+    };
+    for (task, title, request) in summary::due(db, summary::CALLS.saturating_sub(calls.len()))? {
+        let id = summary::called(db, task)?;
+        let prompt = summary::prompt(&title, &request);
+        match runtime::ask_claude(dir, id, model, &prompt, HANDLER_TIMEOUT) {
+            Ok(script) => {
+                summary::spawned(db, id, script.pid(), memory::started(script.pid()))?;
+                calls.push((id, script));
+            }
+            Err(error) => {
+                let status = format!("cannot start: {error}");
+                summary::answered(db, trace, id, None, &status)?;
+                runtime::forget(dir, id);
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Applies the answers of the handler calls that ended, then calls the handler on each run stalled
@@ -245,7 +304,7 @@ fn handle_stalls(
         let screen = screen.clone();
         let id = handler::called(db, run.run, &screen)?;
         let prompt = handler::prompt(db, factory, run.run, stalled_for, &screen)?;
-        match runtime::ask_handler(&dir, id, model, &prompt, HANDLER_TIMEOUT) {
+        match runtime::ask_claude(&dir, id, model, &prompt, HANDLER_TIMEOUT) {
             Ok(script) => {
                 handler::spawned(db, id, script.pid(), memory::started(script.pid()))?;
                 stalls.calls.push(Handling {
