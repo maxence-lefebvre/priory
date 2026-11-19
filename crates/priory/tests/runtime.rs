@@ -3562,6 +3562,25 @@ fn a_task_request_for_a_key_another_task_owns_as_a_resource_creates_its_task() {
 }
 
 #[test]
+fn an_event_on_a_key_goes_to_its_task_and_still_fires_another_owners_wait() {
+    let setup = asleep_on("request-owned-event", on_pull_7("review"));
+    setup.calls(&[wait(on_pull_7("checks"))]);
+    setup.publish(&requested(7));
+    setup.until("runs", |rows| rows.len() == 2 && rows[1][7] == "asleep");
+    setup.calls(&[wait(on_pull_7("pull_request"))]);
+
+    setup.publish(&reviewed());
+
+    let inbox = setup.until("inbox", |rows| rows.len() == 3);
+    assert_eq!(inbox[2][3..5], ["2", "kept"]);
+    let waits = setup.until("waits", |rows| {
+        rows.iter().any(|row| row[3] == "pull_request")
+    });
+    let tasks: Vec<_> = waits.iter().map(|row| &row[1..4]).collect();
+    assert_eq!(tasks, [["2", "2", "checks"], ["1", "3", "pull_request"]]);
+}
+
+#[test]
 fn an_event_that_does_not_match_the_wait_stays_kept_and_reaches_the_next_run() {
     let setup = asleep_on("unmatched", on_pull_7("pull_request"));
 
@@ -4341,6 +4360,30 @@ fn a_gh_call_past_the_command_timeout_is_killed_and_its_action_fails() {
     let actions = setup.until("actions", |rows| rows.len() == 1);
     assert_eq!(actions[0][4], "failed");
     assert!(actions[0][7].ends_with("timed out after 1s"), "{actions:?}");
+}
+
+#[test]
+fn a_tmux_load_buffer_past_the_command_timeout_is_killed_and_the_daemon_goes_on() {
+    let mut setup = Setup::new("load-buffer-hangs");
+    fs::write(
+        setup.dir.join("factory/factory.toml"),
+        "name = \"demo\"\ncommand_timeout = \"1s\"\n",
+    )
+    .unwrap();
+    setup.hold("tmux-hang");
+    setup.publish(&requested(42));
+
+    setup.start();
+
+    let deadline = Instant::now() + Duration::from_secs(15);
+    loop {
+        let log = fs::read_to_string(setup.dir.join("daemon.log")).unwrap_or_default();
+        if log.contains("load-buffer") && log.contains("timed out after 1s") {
+            break;
+        }
+        assert!(Instant::now() < deadline, "daemon log: {log}");
+        std::thread::sleep(Duration::from_millis(100));
+    }
 }
 
 #[test]
@@ -6516,16 +6559,7 @@ fn a_linear_wait_makes_an_intake_without_linear_triggers_poll_linear_for_its_iss
 #[test]
 fn a_pull_request_wait_makes_an_intake_without_github_triggers_poll_its_repository() {
     let setup = asleep_on("review-intake", on_pull_7("review"));
-    let bin = setup.dir.join("bin");
-    fs::create_dir_all(&bin).unwrap();
-    let gh = bin.join("gh");
-    let log = setup.dir.join("gh-args");
-    fs::write(
-        &gh,
-        format!("#!/bin/sh\necho \"$*\" >> '{}'\necho '[]'\n", log.display()),
-    )
-    .unwrap();
-    fs::set_permissions(&gh, fs::Permissions::from_mode(0o755)).unwrap();
+    let log = fake_gh(&setup);
 
     setup.intake();
 
@@ -6534,6 +6568,39 @@ fn a_pull_request_wait_makes_an_intake_without_github_triggers_poll_its_reposito
         calls.contains("api repos/owner/repo/issues/events"),
         "{calls}"
     );
+}
+
+#[test]
+fn a_merge_hold_makes_the_intake_poll_its_pull_requests_repository() {
+    let setup = queued_without_room("hold-merge-intake");
+    person(
+        &setup,
+        "hold",
+        &["1", "--reason", "needs it", "--merge", "other/repo#7"],
+    );
+    let log = fake_gh(&setup);
+
+    setup.intake();
+
+    let calls = fs::read_to_string(&log).unwrap_or_default();
+    assert!(
+        calls.contains("api repos/other/repo/issues/events"),
+        "{calls}"
+    );
+}
+
+/// Installs a `gh` that answers `[]` and logs its arguments to the returned file.
+fn fake_gh(setup: &Setup) -> std::path::PathBuf {
+    let bin = setup.dir.join("bin");
+    fs::create_dir_all(&bin).unwrap();
+    let log = setup.dir.join("gh-args");
+    fs::write(
+        bin.join("gh"),
+        format!("#!/bin/sh\necho \"$*\" >> '{}'\necho '[]'\n", log.display()),
+    )
+    .unwrap();
+    fs::set_permissions(bin.join("gh"), fs::Permissions::from_mode(0o755)).unwrap();
+    log
 }
 
 #[test]

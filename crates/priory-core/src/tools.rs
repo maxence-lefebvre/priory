@@ -324,8 +324,17 @@ fn wait(
                 Ok(named) => named,
                 Err(error) => return Ok(Err(error)),
             };
+            let owns = tx
+                .query_row(
+                    "SELECT 1 FROM owns WHERE task = ?1 AND resource = ?2",
+                    params![run.task, resource],
+                    |_| Ok(()),
+                )
+                .optional()?
+                .is_some();
             if let Some(other) = crate::state::owner(tx, std::slice::from_ref(&resource))?
                 && other.id != run.task
+                && !owns
             {
                 return Ok(Err(format!(
                     "{resource} belongs to task {}, not this one",

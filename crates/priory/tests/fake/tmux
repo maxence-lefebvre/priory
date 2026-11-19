@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# Runs the real tmux, found on PATH after this directory. FAKE_DIR/tmux-hang makes `load-buffer` hang
+# in a helper that ignores TERM and keeps stdout open.
+if [ "$1" = load-buffer ] && [ -e "$FAKE_DIR/tmux-hang" ]; then (trap '' TERM; sleep 60) & sleep 60; fi
+exec "$(PATH=${PATH#*:} command -v tmux)" "$@"
