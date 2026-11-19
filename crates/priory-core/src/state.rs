@@ -10,7 +10,7 @@ use std::collections::BTreeMap;
 use std::io::Write;
 use std::time::Duration;
 
-const VERSION: i64 = 25;
+const VERSION: i64 = 26;
 
 const SCHEMA: &str = "
 CREATE TABLE tasks (
@@ -408,11 +408,18 @@ const SCHEMA_25: &str = "
 UPDATE tasks SET entered = coalesce(changed, strftime('%Y-%m-%dT%H:%M:%SZ', 'now')) WHERE entered IS NULL;
 PRAGMA user_version = 25;
 ";
+
+// A `/compact` the compact tool queued, which the next compaction confirms.
+const SCHEMA_26: &str = "
+ALTER TABLE outbox ADD COLUMN compact INTEGER NOT NULL DEFAULT 0;
+PRAGMA user_version = 26;
+";
 /// Each schema change in order: a file at version `n` applies those from index `n` on.
 const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA, SCHEMA_2, SCHEMA_3, SCHEMA_4, SCHEMA_5, SCHEMA_6, SCHEMA_7, SCHEMA_8, SCHEMA_9,
     SCHEMA_10, SCHEMA_11, SCHEMA_12, SCHEMA_13, SCHEMA_14, SCHEMA_15, SCHEMA_16, SCHEMA_17,
     SCHEMA_18, SCHEMA_19, SCHEMA_20, SCHEMA_21, SCHEMA_22, SCHEMA_23, SCHEMA_24, SCHEMA_25,
+    SCHEMA_26,
 ];
 
 /// The order the queue starts tasks in: band, then a person's order, then age. A band the factory
@@ -1086,7 +1093,7 @@ fn share(tx: &Transaction, run: &NewRun) -> rusqlite::Result<()> {
     );
     let prepended = tx.execute(
         "UPDATE outbox SET text = ?2 || char(10) || text WHERE id =
-         (SELECT min(id) FROM outbox WHERE task = ?1 AND state = 'queued')",
+         (SELECT min(id) FROM outbox WHERE task = ?1 AND state = 'queued' AND compact = 0)",
         params![run.task, intro],
     )?;
     if prepended == 0 {
@@ -1229,8 +1236,12 @@ pub(crate) fn signal(
     )?;
     let mut kill = None;
     match signal.event.as_str() {
-        // A compaction fires it mid-turn, in the same conversation and transcript.
-        "SessionStart" if signal.source.as_deref() == Some("compact") => {}
+        // Claude also fires it for its own compaction mid-turn; Codex 0.170 only with the next turn.
+        "SessionStart" | "PostCompact"
+            if signal.event == "PostCompact" || signal.source.as_deref() == Some("compact") =>
+        {
+            crate::tools::compacted(&tx, run)?;
+        }
         "SessionStart" => {
             tx.execute(
                 "UPDATE runs SET idle = 1, ready = 1, turn = NULL, nudgeable = 0, thread = coalesce(?2, thread)
@@ -1252,7 +1263,8 @@ pub(crate) fn signal(
             )?;
             let attempted = tx
                 .query_row(
-                    "SELECT id, text, nudge FROM outbox WHERE run = ?1 AND state IN ('attempted', 'uncertain')",
+                    "SELECT id, text, nudge FROM outbox WHERE run = ?1 AND state IN ('attempted', 'uncertain')
+                     AND compact = 0",
                     [run],
                     |row| {
                         Ok((
@@ -1341,7 +1353,15 @@ pub(crate) fn attempt(db: &mut Connection) -> rusqlite::Result<Option<(String, S
         ),
         params![outbox, run],
     )?;
-    tx.execute("UPDATE runs SET idle = 0 WHERE id = ?1", [run])?;
+    // No UserPromptSubmit may stamp a compaction's turn, so its step timeout starts here.
+    tx.execute(
+        &format!(
+            "UPDATE runs SET idle = 0,
+             turn = CASE WHEN (SELECT compact FROM outbox WHERE id = ?2) THEN {NOW} ELSE turn END
+             WHERE id = ?1"
+        ),
+        [run, outbox],
+    )?;
     tx.commit()?;
     Ok(Some((tmux, session, text)))
 }
@@ -1353,7 +1373,7 @@ pub(crate) fn claim(db: &mut Connection, run: i64) -> rusqlite::Result<Option<St
         &format!(
             "UPDATE outbox SET state = 'attempted', run = ?1, attempted = {NOW} WHERE id =
              (SELECT min(outbox.id) FROM outbox JOIN runs ON runs.task = outbox.task
-              WHERE runs.id = ?1 AND outbox.state = 'queued')
+              WHERE runs.id = ?1 AND outbox.state = 'queued' AND outbox.compact = 0)
              RETURNING text"
         ),
         [run],

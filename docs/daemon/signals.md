@@ -10,7 +10,10 @@ committed; the hook waits up to 10 seconds. If no daemon takes the line, it goes
 spool and removes it. So a spooled `UserPromptSubmit` no longer confirms the prompt it submitted.
 
 - `SessionStart`: the harness is up and its input is ready, so the run is idle. One whose `source`
-  is `compact` changes nothing: Claude fires it when it compacts the conversation, mid-turn.
+  is `compact` ends a `/compact` Priory typed (see Compact in Outbox), and otherwise changes nothing:
+  Claude also fires it when it compacts the conversation on its own, mid-turn.
+- `PostCompact`: Codex's end of a `/compact`. Codex 0.170 fires `SessionStart` with `source:
+  compact` only with the next turn, so only Codex runs register this hook.
 - `UserPromptSubmit`: the run is busy. Its attempted prompt is confirmed if the submitted text has
   the same words, once the `pasted_content` tag Claude wraps a pasted prompt in is removed.
 - `Stop`: the turn ended, so the run is idle.

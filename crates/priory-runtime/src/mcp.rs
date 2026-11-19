@@ -144,5 +144,15 @@ fn tools() -> Value {
                 "required": ["on"],
             },
         },
+        {
+            "name": "compact",
+            "description": "Compact this conversation when its context runs long, then end your turn. Priory types /compact once you are idle, then a prompt that names your task and step so you carry on.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "focus": text("What the summary must keep, such as the current plan and open failures. Codex ignores it."),
+                },
+            },
+        },
     ])
 }

@@ -30,3 +30,19 @@ A `UserPromptSubmit` with the same words, even one the daemon reads after a rest
 `uncertain` prompt of its run. Otherwise the prompt stays `uncertain` on the desk. The schema upgrade
 that brought this rule hands an unconfirmed prompt on a `moved` run to the live run that carries on
 its process, when no run ended any other way in between.
+
+## Compact
+
+The daemon types a queued `/compact` like any other prompt, once the run is idle, so an answer or a
+nudge queued before it goes first. It is always typed alone. A prompt that a move, an answer or a
+nudge queues after it still goes ahead of it, as above, but never takes it in. A new
+run's first prompt is never a `/compact`: the task intro and Codex's launch argument skip it.
+
+Typing it marks the run busy and starts its turn, so the step's `timeout` covers the compaction. The
+compaction ends with Claude's `SessionStart` with `source: compact`, or Codex's `PostCompact`. Either
+confirms the `/compact`, marks the run idle and queues a prompt ahead of the others: `Priory
+compacted this conversation, as you asked. You are on task <id>, at step <step>. Carry on with the
+step.`, then the step's ending line. That prompt starts a new turn, so the timeout restarts. For
+Claude, the compaction keeps the transcript and Priory's read offset in it, so the next `Stop`
+counts tokens from where the last one stopped. Priory reads no Codex tokens yet (see Codex).
+A compaction Priory did not type, as Claude's automatic one mid-turn, changes nothing.
