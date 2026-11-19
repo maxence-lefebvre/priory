@@ -85,11 +85,15 @@ pub fn fed_within(
             (Some(mut stdin), Some(input)) => stdin.write_all(&input),
             _ => Ok(()),
         };
-        sender.send(
-            child
-                .wait_with_output()
-                .and_then(|output| written.map(|()| output)),
-        )
+        // A command that failed before reading its input explains itself better than the pipe.
+        sender.send(child.wait_with_output().and_then(|output| match written {
+            Err(error)
+                if error.kind() == std::io::ErrorKind::BrokenPipe && !output.status.success() =>
+            {
+                Ok(output)
+            }
+            written => written.map(|()| output),
+        }))
     });
     if let Ok(output) = receiver.recv_timeout(timeout) {
         return output.map(Some);
@@ -715,6 +719,35 @@ fn shown(target: &str) -> Vec<String> {
         .map(str::to_owned)
         .collect();
     lines[lines.len().saturating_sub(30)..].to_vec()
+}
+
+/// The command that attaches a tmux client to the session `name`, through the socket of the server
+/// that runs it, or none unless a live pane there runs the harness session `session`. A
+/// `read_only` client cannot type and leaves the window's size alone.
+pub fn attach(name: &str, session: &str, read_only: bool) -> Option<Vec<String>> {
+    let panes = run(tmux().args([
+        "list-panes",
+        "-s",
+        "-t",
+        &format!("={name}:"),
+        "-F",
+        "#{pane_dead} #{@priory} #{socket_path}",
+    ]))
+    .ok()?;
+    let socket = panes.lines().find_map(|line| {
+        let mut fields = line.splitn(3, ' ');
+        let (dead, tag, socket) = (fields.next()?, fields.next()?, fields.next()?);
+        (dead == "0" && tag == session).then_some(socket)
+    })?;
+    let read_only = read_only.then_some("-r");
+    Some(
+        ["tmux", "-S", socket, "attach-session"]
+            .into_iter()
+            .chain(read_only)
+            .chain(["-t", &format!("={name}")])
+            .map(str::to_owned)
+            .collect(),
+    )
 }
 
 /// Kills the tmux session `name`, if it still exists.

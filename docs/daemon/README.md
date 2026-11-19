@@ -17,7 +17,8 @@ empty name, `:memory:` or a `file:` URI, which SQLite may not keep on disk.
 - [room.md](room.md): when the machine has room to admit a run, and queue stalls.
 - [agents-slice.md](agents-slice.md): the systemd slice that caps every agent's CPU and memory.
 - [memory-gate.md](memory-gate.md): `priory memory acquire`, which queues heavy commands for memory.
-- [sessions.md](sessions.md): shared agent sessions, and trusting a clone for Claude.
+- [sessions.md](sessions.md): shared agent sessions, attaching to a run's terminal, and trusting a
+  clone for Claude.
 - [codex.md](codex.md): how a Codex run differs from a Claude run.
 - [signals.md](signals.md): the hook signals a run sends, and the nudge after a silent turn.
 - [health.md](health.md): run verdicts, failed or blocked tasks, repair, and the stall handler.
