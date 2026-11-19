@@ -63,15 +63,16 @@ pub(crate) fn output() -> Output {
         ])
 }
 
-/// A resource an open wait names, `linear:<issue>` or `slack:<channel>:<thread ts>`, and the time
-/// of its agent's last prompt: the intake publishes what happens to it from then on.
+/// A resource an open wait names, `linear:<issue>`, `slack:<channel>:<thread ts>` or
+/// `github:<owner/name>#<number>`, and the time of its agent's last prompt: the intake publishes
+/// what happens to it from then on.
 pub struct Watch {
     pub resource: String,
     pub since: Timestamp,
 }
 
 /// Polls the sources until stopped, or once. `watched` reads the open waits on each poll, so that
-/// the intake polls the Slack threads they name and Linear when they name an issue.
+/// the intake polls the Slack threads, Linear issues and pull request repositories they name.
 pub fn run(
     factory: &Factory,
     once: bool,
@@ -86,9 +87,11 @@ pub fn run(
             .collect()
     };
     let (triggers, schedules) = (from("github"), from("schedule"));
-    let repos: BTreeSet<&str> = triggers
-        .iter()
-        .filter_map(|(_, trigger)| trigger.repo.as_deref())
+    // Any trigger's task can open a pull request whose checks and reviews its waits need.
+    let repos: BTreeSet<&str> = factory
+        .triggers
+        .values()
+        .filter_map(|trigger| trigger.value.repo.as_deref())
         .collect();
     let linear_triggers = [from("linear"), from("linear.view")].concat();
     let slack_triggers = from("slack");
@@ -143,7 +146,12 @@ pub fn run(
             }
         }
         schedule::fire(&bus, &schedules, now()?)?;
-        match fetch(&repos, &cursors) {
+        let waited = watching.iter().filter_map(|watch| {
+            let pull = watch.resource.strip_prefix("github:")?;
+            pull.split(['#', '@']).next()
+        });
+        let polled: BTreeSet<&str> = repos.iter().copied().chain(waited).collect();
+        match fetch(&polled, &cursors) {
             // A publish error ends the intake: its restart recovers the source it left behind.
             Ok(polled) => publish_all(&bus, &triggers, polled, &mut cursors, &mut published)?,
             Err(error) if once => return Err(error),

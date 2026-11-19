@@ -1096,6 +1096,32 @@ fn tasks(setup: &Setup) -> Vec<Message> {
 }
 
 #[test]
+fn a_schedule_triggers_repository_is_polled_without_a_github_trigger() {
+    let setup = Setup::new(
+        "schedule-repo",
+        &[(
+            "repos/other/repo/issues/events",
+            json!([labeled(100, 41, "bug")]),
+        )],
+    );
+    fs::remove_file(setup.dir.join("factory/triggers/agent-label.toml")).unwrap();
+    write(
+        &setup.dir.join("factory/triggers/standup.toml"),
+        &SCHEDULE.replace("owner/repo", "other/repo"),
+    );
+
+    succeeded(&setup.intake_at("2026-11-19T07:00:00Z"));
+
+    let repos: Vec<_> = setup
+        .output()
+        .into_iter()
+        .filter(|stored| stored.message.kind == "factory.intake.baseline")
+        .map(|stored| stored.message.data["repo"].clone())
+        .collect();
+    assert!(repos.contains(&json!("other/repo")), "{repos:?}");
+}
+
+#[test]
 fn a_due_schedule_requests_one_task() {
     let setup = scheduled("schedule-due");
 

@@ -5790,6 +5790,29 @@ fn a_linear_wait_makes_an_intake_without_linear_triggers_poll_linear_for_its_iss
     assert!(!typed[1].contains("elsewhere"), "{typed:?}");
 }
 
+#[test]
+fn a_pull_request_wait_makes_an_intake_without_github_triggers_poll_its_repository() {
+    let setup = asleep_on("review-intake", on_pull_7("review"));
+    let bin = setup.dir.join("bin");
+    fs::create_dir_all(&bin).unwrap();
+    let gh = bin.join("gh");
+    let log = setup.dir.join("gh-args");
+    fs::write(
+        &gh,
+        format!("#!/bin/sh\necho \"$*\" >> '{}'\necho '[]'\n", log.display()),
+    )
+    .unwrap();
+    fs::set_permissions(&gh, fs::Permissions::from_mode(0o755)).unwrap();
+
+    setup.intake();
+
+    let calls = fs::read_to_string(&log).unwrap_or_default();
+    assert!(
+        calls.contains("api repos/owner/repo/issues/events"),
+        "{calls}"
+    );
+}
+
 /// Waits until the daemon answers on its socket.
 fn listening(setup: &Setup) {
     let deadline = Instant::now() + Duration::from_secs(15);
