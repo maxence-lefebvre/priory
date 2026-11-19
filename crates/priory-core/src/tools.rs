@@ -215,8 +215,7 @@ fn result(
     )))
 }
 
-/// Queues `/compact` for the outbox to type once the run is idle. Codex's `/compact` takes no focus;
-/// a typed one needs no check, since an agent mid-compaction calls no tool.
+/// A typed compact needs no check, since an agent mid-compaction calls no tool.
 fn compact_queued(tx: &Transaction, task: i64) -> rusqlite::Result<bool> {
     tx.query_row(
         "SELECT EXISTS (SELECT 1 FROM outbox WHERE task = ?1 AND compact = 1 AND state = 'queued')",
@@ -225,6 +224,7 @@ fn compact_queued(tx: &Transaction, task: i64) -> rusqlite::Result<bool> {
     )
 }
 
+/// Queues `/compact` for the outbox to type once the run is idle. Codex's `/compact` takes no focus.
 fn compact(
     tx: &Transaction,
     run: &Run,
