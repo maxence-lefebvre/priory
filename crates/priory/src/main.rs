@@ -184,9 +184,16 @@ fn attach(args: Vec<String>) -> ExitCode {
         return usage();
     };
     let command = match state::open()
-        .and_then(|db| state::live_tmux(&db, &target))
-        .and_then(|tmux| runtime::attach(&tmux, read_only))
-    {
+        .and_then(|db| state::live_run(&db, &target))
+        .and_then(|run| {
+            runtime::attach(&run.tmux, &run.session, read_only).ok_or_else(|| {
+                format!(
+                    "tmux session {} on this tmux server runs no live pane of run {}'s agent; \
+                     run attach with the daemon's TMUX and TMUX_TMPDIR",
+                    run.tmux, run.id
+                )
+            })
+        }) {
         Ok(command) => command,
         Err(error) => return exit("attach", Err(error)),
     };

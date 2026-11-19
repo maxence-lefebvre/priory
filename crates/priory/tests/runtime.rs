@@ -7924,3 +7924,34 @@ fn attach_refuses_an_ended_run_a_task_with_no_live_run_and_an_unknown_id() {
         );
     }
 }
+
+#[test]
+fn attach_refuses_a_same_named_session_on_another_tmux_server_that_runs_no_priory_agent() {
+    let mut setup = Setup::new("attach-other-server");
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 1);
+    let other = setup.dir.join("other-tmux");
+    fs::create_dir_all(&other).unwrap();
+    let started = setup
+        .command("tmux")
+        .env("TMUX_TMPDIR", &other)
+        .args(["new-session", "-d", "-s", "priory-1"])
+        .status()
+        .unwrap();
+    assert!(started.success());
+
+    let refused = setup
+        .command(env!("CARGO_BIN_EXE_priory"))
+        .env("TMUX_TMPDIR", &other)
+        .args(["attach", "1", "--print"])
+        .output()
+        .unwrap();
+
+    assert_eq!(refused.status.code(), Some(1), "{refused:?}");
+    assert_eq!(
+        String::from_utf8_lossy(&refused.stderr),
+        "priory attach: tmux session priory-1 on this tmux server runs no live pane of run 1's agent; \
+         run attach with the daemon's TMUX and TMUX_TMPDIR\n"
+    );
+}
