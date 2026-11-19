@@ -157,6 +157,28 @@ fn an_unknown_workflow_exits_non_zero_and_publishes_nothing() {
 }
 
 #[test]
+fn an_unknown_band_exits_non_zero_and_publishes_nothing() {
+    let setup = Setup::new("unknown-band");
+
+    let output = setup.request(&[
+        "--workflow",
+        "implement",
+        "--key",
+        "docs-1",
+        "--band",
+        "someday",
+        "Fix the docs",
+    ]);
+
+    assert!(!output.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&output.stderr),
+        "priory request: band `someday` is not one of blocker, now, today, later\n"
+    );
+    assert!(setup.published().is_empty());
+}
+
+#[test]
 fn the_daemon_turns_a_request_into_one_queued_task() {
     let setup = Setup::new("daemon");
     succeeded(&setup.request(&[
@@ -180,9 +202,10 @@ fn the_daemon_turns_a_request_into_one_queued_task() {
             "implement",
             "implement",
             "queued",
-            "-",
+            "later",
             "docs",
             "-",
+            "1",
             "1"
         ]]
     );

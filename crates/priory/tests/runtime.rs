@@ -373,13 +373,17 @@ fn labeled(issue: u64) -> Message {
 }
 
 fn requested(issue: u64) -> Message {
+    requested_in(issue, None)
+}
+
+fn requested_in(issue: u64, band: Option<&str>) -> Message {
     let key = format!("github:owner/repo#{issue}");
     Message::new(
         "factory.task.requested",
         json!({
             "workflow": "implement",
             "key": key,
-            "band": null,
+            "band": band,
             "lane": null,
             "trigger": "agent-label",
             "source": "source"
@@ -837,6 +841,266 @@ fn high_load_or_low_disk_holds_admission() {
     assert!(setup.rows("runs").is_empty());
     setup.disk(100);
     setup.until("tasks", |rows| rows[0][4] == "running");
+}
+
+#[test]
+fn a_higher_band_starts_first_however_young_and_tasks_lists_the_queue_in_start_order() {
+    let mut setup = Setup::new("band-order");
+    // Room for one run: the second waits.
+    setup.memory(12);
+    setup.publish(&requested_in(42, Some("later")));
+    setup.publish(&requested_in(43, None));
+    setup.publish(&requested_in(44, Some("now")));
+
+    setup.start();
+
+    let tasks = setup.until("tasks", |rows| with(rows, 4, "running") == 1);
+    let order: Vec<_> = tasks
+        .iter()
+        .map(|row| [&row[0], &row[4], &row[5], &row[8]])
+        .collect();
+    assert_eq!(
+        order,
+        [
+            ["3", "running", "now", "-"],
+            ["1", "queued", "later", "1"],
+            ["2", "queued", "later", "2"],
+        ]
+    );
+}
+
+/// The rows of `priory tasks` as id, state, band and place in the queue, in the order it lists them.
+fn queue(setup: &Setup) -> Vec<[String; 4]> {
+    setup
+        .rows("tasks")
+        .into_iter()
+        .map(|row| {
+            [
+                row[0].clone(),
+                row[4].clone(),
+                row[5].clone(),
+                row[8].clone(),
+            ]
+        })
+        .collect()
+}
+
+fn moved(setup: &Setup, args: &[&str]) {
+    let output = setup.priory(&[&["move"], args].concat());
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+/// Routes what is pending without starting runs, so a test can order the tasks first.
+fn route(setup: &Setup) {
+    let factory = setup.dir.join("factory");
+    let output = setup.priory(&["daemon", factory.to_str().unwrap(), "--once"]);
+    assert!(output.status.success(), "{output:?}");
+}
+
+#[test]
+fn a_band_comes_from_the_request_then_the_trigger_then_the_workflow() {
+    let setup = Setup::new("band-source");
+    let trigger = format!("{TRIGGER}band = \"today\"\n");
+    fs::write(setup.dir.join("factory/triggers/agent-label.toml"), trigger).unwrap();
+    let workflow = WORKFLOW.replacen("\n", "\nband = \"now\"\n", 1);
+    fs::write(setup.dir.join("factory/workflows/implement.toml"), workflow).unwrap();
+    let from_cli = |issue: u64, band: Option<&str>| {
+        let mut message = requested_in(issue, band);
+        message.data["trigger"] = json!("cli");
+        message
+    };
+    setup.publish(&requested_in(42, Some("blocker")));
+    setup.publish(&requested(43));
+    setup.publish(&from_cli(44, None));
+    // A band the factory lacks, as a message published before a rename carries.
+    setup.publish(&from_cli(45, Some("todday")));
+
+    route(&setup);
+
+    let bands: Vec<_> = queue(&setup)
+        .into_iter()
+        .map(|[id, _, band, _]| format!("{id} {band}"))
+        .collect();
+    assert_eq!(bands, ["1 blocker", "3 now", "4 now", "2 today"]);
+}
+
+#[test]
+fn a_task_from_before_bands_gets_the_last_band_and_keeps_its_age() {
+    let setup = Setup::new("band-upgrade");
+    setup.publish(&requested(42));
+    route(&setup);
+    let db = rusqlite::Connection::open(setup.dir.join("priory.db")).unwrap();
+    db.execute("UPDATE tasks SET band = NULL", []).unwrap();
+    setup.publish(&requested(43));
+
+    route(&setup);
+
+    let bands: Vec<_> = queue(&setup)
+        .into_iter()
+        .map(|[id, _, band, place]| format!("{id} {band} {place}"))
+        .collect();
+    assert_eq!(bands, ["1 later 1", "2 later 2"]);
+}
+
+#[test]
+fn a_person_order_inside_a_band_beats_age() {
+    let mut setup = Setup::new("person-order");
+    setup.memory(12);
+    for issue in [42, 43, 44] {
+        setup.publish(&requested(issue));
+    }
+    route(&setup);
+
+    moved(&setup, &["3", "--top"]);
+    moved(&setup, &["2", "--before", "1"]);
+    setup.start();
+
+    setup.until("tasks", |rows| with(rows, 4, "running") == 1);
+    assert_eq!(
+        queue(&setup),
+        [
+            ["3", "running", "later", "-"],
+            ["2", "queued", "later", "1"],
+            ["1", "queued", "later", "2"],
+        ]
+        .map(|row| row.map(str::to_owned))
+    );
+    let waits = "later: waits for room: 8.0 GB of memory free, needs 4.0 GB and keeps 6.4 GB free";
+    let expected = [
+        format!("queue 1 2 {waits}"),
+        "queue 2 1 later: waits behind task 2, which waits for room".to_owned(),
+    ];
+    let queued = |rows: &[Vec<String>]| -> Vec<String> {
+        rows.iter()
+            .filter(|row| row[1] == "queue")
+            .map(|row| row[1..].join(" "))
+            .collect()
+    };
+    // The reasons land on the daemon's next tick, after the run starts.
+    setup.until("desk", |rows| queued(rows) == expected);
+}
+
+#[test]
+fn moving_a_task_to_a_higher_band_makes_it_start_next() {
+    let mut setup = Setup::new("move-band");
+    setup.memory(12);
+    setup.hold("hold-stop");
+    setup.calls(&[result("passed")]);
+    setup.publish(&requested(42));
+    setup.publish(&requested(43));
+    setup.publish(&requested(44));
+    setup.start();
+    setup.until("tasks", |rows| {
+        rows.len() == 3 && with(rows, 4, "running") == 1
+    });
+
+    moved(&setup, &["3", "--band", "today"]);
+    moved(&setup, &["2", "--after", "3"]);
+    setup.release("hold-stop");
+
+    setup.until("tasks", |rows| {
+        with(rows, 4, "done") == 1 && with(rows, 4, "running") == 1
+    });
+    assert_eq!(
+        queue(&setup),
+        [
+            ["3", "running", "today", "-"],
+            ["2", "queued", "today", "1"],
+            ["1", "done", "later", "-"],
+        ]
+        .map(|row| row.map(str::to_owned))
+    );
+}
+
+#[test]
+fn a_renamed_band_set_orders_the_queue_and_moves() {
+    let mut setup = Setup::new("renamed-bands");
+    let settings = "name = \"demo\"\nbands = [\"urgent\", \"normal\"]\n";
+    fs::write(setup.dir.join("factory/factory.toml"), settings).unwrap();
+    setup.memory(12);
+    setup.publish(&requested(42));
+    setup.publish(&requested_in(43, Some("urgent")));
+    setup.publish(&requested(44));
+    route(&setup);
+
+    let refused = setup.priory(&["move", "1", "--band", "later"]);
+    moved(&setup, &["3", "--band", "urgent"]);
+    setup.start();
+
+    assert_eq!(
+        String::from_utf8_lossy(&refused.stderr),
+        "priory move: band `later` is not one of urgent, normal\n"
+    );
+    setup.until("tasks", |rows| with(rows, 4, "running") == 1);
+    assert_eq!(
+        queue(&setup),
+        [
+            ["2", "running", "urgent", "-"],
+            ["3", "queued", "urgent", "1"],
+            ["1", "queued", "normal", "2"],
+        ]
+        .map(|row| row.map(str::to_owned))
+    );
+}
+
+/// A `review` workflow whose one step runs the reviewer, which declares the default 4 GB.
+fn with_review(setup: &Setup, implementer_memory: &str) {
+    let review = WORKFLOW.replace("agent = \"implementer\"", "agent = \"reviewer\"");
+    fs::write(setup.dir.join("factory/workflows/review.toml"), review).unwrap();
+    let agent = AGENT.replacen(
+        "+++\n",
+        &format!("+++\nmemory = \"{implementer_memory}\"\n"),
+        1,
+    );
+    fs::write(setup.dir.join("factory/agents/implementer/agent.md"), agent).unwrap();
+}
+
+fn review_requested(issue: u64) -> Message {
+    let mut message = requested(issue);
+    message.data["workflow"] = json!("review");
+    message
+}
+
+#[test]
+fn a_smaller_task_waits_behind_the_head_of_the_queue_that_has_no_room() {
+    let mut setup = Setup::new("head-of-line");
+    with_review(&setup, "6GB");
+    // 11 GB free keeps 6.4: room for the reviewer's 4 GB, not the implementer's 6.
+    setup.memory(11);
+    setup.publish(&requested_in(42, Some("now")));
+    setup.publish(&review_requested(43));
+
+    setup.start();
+
+    let waits = "waits for room: 11.0 GB of memory free, needs 6.0 GB and keeps 6.4 GB free";
+    let behind = "waits behind task 1, which waits for room";
+    setup.until("tasks", |rows| {
+        rows.len() == 2 && rows[0][7] == waits && rows[1][7] == behind
+    });
+    std::thread::sleep(Duration::from_millis(1500));
+    assert!(setup.rows("runs").is_empty());
+    setup.memory(13);
+    setup.until("tasks", |rows| rows[0][4] == "running");
+    setup.memory(20);
+    setup.until("tasks", |rows| rows[1][4] == "running");
+}
+
+#[test]
+fn a_head_that_can_never_fit_holds_back_no_one() {
+    let mut setup = Setup::new("never-fits");
+    // The runner's 90 % share of 64 GB is 57.6 GB.
+    with_review(&setup, "60GB");
+    setup.publish(&requested_in(42, Some("now")));
+    setup.publish(&review_requested(43));
+
+    setup.start();
+
+    let tasks = setup.until("tasks", |rows| rows.len() == 2 && rows[1][4] == "running");
+    assert_eq!(tasks[0][4], "queued");
 }
 
 #[test]
@@ -3700,7 +3964,7 @@ fn a_dropped_task_revives_at_its_step_in_its_session_as_generation_2() {
         "task 1 is ready at plan, generation 2\n"
     );
     let tasks = setup.until("tasks", |rows| rows[0][3] == "implement");
-    assert_eq!([&tasks[0][4], &tasks[0][8]], ["running", "2"]);
+    assert_eq!([&tasks[0][4], &tasks[0][9]], ["running", "2"]);
     assert_eq!(setup.rows("runs")[1][4], session);
     let args = fs::read_to_string(setup.dir.join("fake/args.log")).unwrap();
     assert!(args.contains(&format!("--resume\n{session}\n")), "{args}");
@@ -3790,7 +4054,7 @@ fn a_revive_on_a_key_that_another_task_holds_is_refused() {
         "priory revive: task 2 is already active on key github:owner/repo#42\n"
     );
     let tasks = setup.rows("tasks");
-    assert_eq!([&tasks[0][4], &tasks[0][8]], ["dropped", "1"]);
+    assert_eq!([&tasks[0][4], &tasks[0][9]], ["dropped", "1"]);
 }
 
 #[test]
@@ -3847,7 +4111,7 @@ fn a_failed_task_offers_revive_on_the_desk_and_revives_at_a_chosen_step_in_its_r
     );
     let tasks = setup.rows("tasks");
     assert_eq!(
-        [&tasks[0][3], &tasks[0][4], &tasks[0][8]],
+        [&tasks[0][3], &tasks[0][4], &tasks[0][9]],
         ["plan", "running", "2"]
     );
     let head = git(&worktree).args(["rev-parse", "HEAD"]).output().unwrap();
