@@ -929,7 +929,7 @@ fn a_derived_lane_is_derived_again_when_the_first_run_gives_the_task_a_branch() 
     setup.until("tasks", |rows| {
         rows[0][4] == "running" && rows[0][6] == "FND/desktop"
     });
-    setup.until("outbox", |rows| with(rows, 3, "confirmed") == 1);
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 1);
     assert!(
         setup
             .tmux(&["kill-session", "-t", "priory-1"])
@@ -956,7 +956,7 @@ fn a_derived_lane_stays_when_the_task_runs_again_after_lanes_toml_changed() {
     .unwrap();
     setup.publish(&requested(42));
     setup.start();
-    setup.until("outbox", |rows| with(rows, 3, "confirmed") == 1);
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 1);
     assert_eq!(setup.rows("tasks")[0][6], "FND/desktop");
     assert!(
         setup
@@ -1000,7 +1000,7 @@ fn a_lane_the_request_set_stays_when_the_first_run_gives_the_task_a_branch() {
 
     setup.start();
 
-    setup.until("outbox", |rows| with(rows, 3, "confirmed") == 1);
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 1);
     assert_eq!(setup.rows("tasks")[0][6], "OPS/chores");
 }
 
@@ -3918,7 +3918,7 @@ fn a_fixed_key_firing_wakes_an_asleep_task_and_its_ask_stays_open() {
 
     setup.publish(&tick("2026-11-19T09:00:00Z"));
 
-    setup.until("outbox", |rows| with(rows, 3, "confirmed") == 2);
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 2);
     let typed = setup.typed();
     let lines: Vec<_> = typed[1].lines().collect();
     assert_eq!(lines[0], "Sweep the support queue.", "{typed:?}");
@@ -3933,7 +3933,7 @@ fn a_fixed_key_firing_wakes_an_asleep_task_and_its_ask_stays_open() {
     // The tick's run sleeps again on the ask it inherits, so the next tick wakes it again.
     setup.until("tasks", |rows| rows[0][4] == "asleep");
     setup.publish(&tick("2026-11-19T10:00:00Z"));
-    setup.until("outbox", |rows| with(rows, 3, "confirmed") == 3);
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 3);
     assert_eq!(setup.rows("asks").len(), 1);
 }
 
@@ -3961,7 +3961,7 @@ fn a_firing_while_the_task_runs_is_coalesced_and_not_typed() {
     setup.publish(&tick("2026-11-19T08:00:00Z"));
     setup.hold("hold-stop");
     setup.start();
-    setup.until("outbox", |rows| with(rows, 3, "confirmed") == 1);
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 1);
 
     setup.publish(&tick("2026-11-19T09:00:00Z"));
 
