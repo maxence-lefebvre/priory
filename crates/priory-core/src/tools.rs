@@ -246,7 +246,59 @@ fn open_wait(tx: &Transaction, run: i64) -> rusqlite::Result<Option<i64>> {
     .optional()
 }
 
-const CONDITIONS: &str = "pull_request, checks, review, time or task";
+const CONDITIONS: &str =
+    "pull_request, checks, review, time, task, linear_comment, linear_state or slack_reply";
+
+/// What a resource wait names: its resource, and the head or the state it wants.
+type Named = (String, Option<String>, Option<String>);
+
+/// The resource `on` names for a resource wait of `kind`, with its head or state.
+fn named(kind: &str, on: &Value) -> Result<Named, String> {
+    let text = |field: &str| on[field].as_str().filter(|value| !value.is_empty());
+    match kind {
+        "pull_request" | "checks" | "review" => {
+            let (Some(repo), Some(number)) = (text("repo"), on["pull_request"].as_u64()) else {
+                return Err(format!(
+                    "a {kind} wait needs repo, as owner/name, and pull_request, a number"
+                ));
+            };
+            let head = match &on["head_sha"] {
+                Value::Null => None,
+                Value::String(head) if kind == "checks" => match full_sha(head) {
+                    Ok(head) => Some(head),
+                    Err(error) => return Err(error),
+                },
+                _ => return Err("head_sha must be a commit, on a checks wait only".into()),
+            };
+            Ok((route::pull_request(repo, number), head, None))
+        }
+        "linear_comment" | "linear_state" => {
+            let state = text("state").filter(|_| kind == "linear_state");
+            match (text("issue"), state) {
+                (Some(issue), None) if kind == "linear_comment" => {
+                    Ok((format!("linear:{issue}"), None, None))
+                }
+                (Some(issue), Some(state)) => {
+                    Ok((format!("linear:{issue}"), None, Some(state.to_owned())))
+                }
+                _ if kind == "linear_comment" => {
+                    Err("a linear_comment wait needs issue, such as ENG-7".into())
+                }
+                _ => Err(
+                    "a linear_state wait needs issue, such as ENG-7, and state, such as Done"
+                        .into(),
+                ),
+            }
+        }
+        _ => match (text("channel"), text("thread_ts")) {
+            (Some(channel), Some(thread)) => Ok((format!("slack:{channel}:{thread}"), None, None)),
+            _ => Err(
+                "a slack_reply wait needs channel, such as C0123, and thread_ts, the ts of the thread's first message"
+                    .into(),
+            ),
+        },
+    }
+}
 
 /// Stores the wait and fires it at once if an event since the agent's last prompt satisfies it.
 fn wait(
@@ -257,14 +309,12 @@ fn wait(
     let on = &arguments["on"];
     let kind = on["type"].as_str().unwrap_or_default();
     match kind {
-        "pull_request" | "checks" | "review" => {
-            let (Some(repo), Some(number)) = (on["repo"].as_str(), on["pull_request"].as_u64())
-            else {
-                return Ok(Err(format!(
-                    "a {kind} wait needs repo, as owner/name, and pull_request, a number"
-                )));
+        "pull_request" | "checks" | "review" | "linear_comment" | "linear_state"
+        | "slack_reply" => {
+            let (resource, head, state) = match named(kind, on) {
+                Ok(named) => named,
+                Err(error) => return Ok(Err(error)),
             };
-            let resource = route::pull_request(repo, number);
             if let Some(other) = crate::state::owner(tx, std::slice::from_ref(&resource))?
                 && other.id != run.task
             {
@@ -277,21 +327,13 @@ fn wait(
                 "INSERT OR IGNORE INTO owns (task, resource) VALUES (?1, ?2)",
                 params![run.task, resource],
             )?;
-            let head = match &on["head_sha"] {
-                Value::Null => None,
-                Value::String(head) if kind == "checks" => match full_sha(head) {
-                    Ok(head) => Some(head),
-                    Err(error) => return Ok(Err(error)),
-                },
-                _ => {
-                    return Ok(Err(
-                        "head_sha must be a commit, on a checks wait only".into()
-                    ));
-                }
-            };
+            // The agent's last prompt: an event at or after it counts, one before it does not.
             tx.execute(
-                "INSERT INTO waits (task, run, kind, resource, head_sha) VALUES (?1, ?2, ?3, ?4, ?5)",
-                params![run.task, run.id, kind, resource, head],
+                "INSERT INTO waits (task, run, kind, resource, head_sha, state, since)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, coalesce(
+                   (SELECT max(confirmed) FROM outbox WHERE task = ?1),
+                   (SELECT started FROM runs WHERE id = ?2)))",
+                params![run.task, run.id, kind, resource, head, state],
             )?;
         }
         "time" => {
@@ -400,7 +442,8 @@ fn catch_up(tx: &Transaction, task: i64) -> rusqlite::Result<bool> {
 pub(crate) fn event(tx: &Transaction, task: i64, seq: i64) -> rusqlite::Result<bool> {
     let open = tx
         .query_row(
-            "SELECT waits.id, waits.kind, waits.resource, waits.head_sha, waits.daemon FROM waits
+            "SELECT waits.id, waits.kind, waits.resource, waits.head_sha, waits.state,
+               waits.since, waits.daemon FROM waits
              JOIN tasks ON tasks.id = waits.task
              WHERE waits.task = ?1 AND waits.fired IS NULL AND waits.withdrawn IS NULL
              AND tasks.state IN ('running', 'asleep')",
@@ -411,25 +454,30 @@ pub(crate) fn event(tx: &Transaction, task: i64, seq: i64) -> rusqlite::Result<b
                     row.get::<_, String>(1)?,
                     row.get::<_, Option<String>>(2)?,
                     row.get::<_, Option<String>>(3)?,
-                    row.get::<_, bool>(4)?,
+                    row.get::<_, Option<String>>(4)?,
+                    row.get::<_, Option<String>>(5)?,
+                    row.get::<_, bool>(6)?,
                 ))
             },
         )
         .optional()?;
-    let Some((wait, kind, Some(resource), head, daemon)) = open else {
+    let Some((wait, kind, Some(resource), head, state, since, daemon)) = open else {
         return Ok(false);
     };
     if daemon {
         return judge(tx, wait);
     }
-    let (kind_of_event, subject, data): (String, Option<String>, String) = tx.query_row(
-        "SELECT type, subject, data FROM inbox WHERE seq = ?1",
-        [seq],
-        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-    )?;
+    let (kind_of_event, subject, data, after): (String, Option<String>, String, bool) = tx
+        .query_row(
+            "SELECT type, subject, data, coalesce(julianday(time) >= julianday(?2), 1)
+             FROM inbox WHERE seq = ?1",
+            params![seq, since],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )?;
     let line = crate::state::line(&kind_of_event, subject.as_deref(), &data);
     let data: Value = serde_json::from_str(&data).expect("inbox data is JSON");
-    if !route::satisfies(&kind, &resource, head.as_deref(), &kind_of_event, &data) {
+    let wanted = head.as_deref().or(state.as_deref());
+    if !after || !route::satisfies(&kind, &resource, wanted, &kind_of_event, &data) {
         return Ok(false);
     }
     fire(tx, wait, task, &line, Some(seq))?;

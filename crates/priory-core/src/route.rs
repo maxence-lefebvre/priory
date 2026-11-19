@@ -33,8 +33,8 @@ pub(crate) struct NewTask {
 }
 
 /// The resources a message names, which a task may own: a task request's key, a CLI request's
-/// subject, a Linear event's issue, or for a GitHub event its issue or pull request and its pull
-/// request's head branch.
+/// subject, a Linear event's issue, a Slack event's thread, or for a GitHub event its issue or pull
+/// request and its pull request's head branch.
 pub(crate) fn resources(message: &Message) -> Vec<String> {
     let data = &message.data;
     if message.kind == TASK_REQUESTED {
@@ -53,6 +53,15 @@ pub(crate) fn resources(message: &Message) -> Vec<String> {
             .map(|issue| format!("linear:{issue}"))
             .into_iter()
             .collect();
+    }
+    if message.kind.starts_with("slack.") {
+        let (Some(channel), Some(thread)) = (
+            data["channel"].as_str(),
+            data.get("thread_ts").unwrap_or(&data["ts"]).as_str(),
+        ) else {
+            return Vec::new();
+        };
+        return vec![format!("slack:{channel}:{thread}")];
     }
     let Some(repo) = data["repo"]
         .as_str()
@@ -129,26 +138,49 @@ pub(crate) fn route(
     Ok(Decision::Create(Box::new(task)))
 }
 
-/// Whether an event satisfies a pull request wait. A checks wait needs no check run still pending.
+/// Whether an event satisfies a resource wait. `wanted` is a checks wait's head, which needs no
+/// check run still pending, or a Linear state wait's state.
 pub(crate) fn satisfies(
     wait: &str,
     resource: &str,
-    head: Option<&str>,
+    wanted: Option<&str>,
     kind: &str,
     data: &serde_json::Value,
 ) -> bool {
-    let wanted = match wait {
-        "pull_request" => "github.pull_request.closed",
-        "review" => "github.pull_request_review.submitted",
-        "checks" => "github.check_run.completed",
+    let text = |field: &str| data[field].as_str().unwrap_or_default();
+    let (expected, names) = match wait {
+        "pull_request" | "review" | "checks" => (
+            match wait {
+                "pull_request" => "github.pull_request.closed",
+                "review" => "github.pull_request_review.submitted",
+                _ => "github.check_run.completed",
+            },
+            data["repo"]
+                .as_str()
+                .zip(data["pull_request"].as_u64())
+                .is_some_and(|(repo, number)| pull_request(repo, number) == resource),
+        ),
+        "linear_comment" | "linear_state" => (
+            if wait == "linear_comment" {
+                "linear.comment.created"
+            } else {
+                "linear.issue.state_changed"
+            },
+            format!("linear:{}", text("issue")) == resource,
+        ),
+        "slack_reply" => (
+            "slack.thread.replied",
+            format!("slack:{}:{}", text("channel"), text("thread_ts")) == resource,
+        ),
         _ => return false,
     };
-    let names = data["repo"]
-        .as_str()
-        .zip(data["pull_request"].as_u64())
-        .is_some_and(|(repo, number)| pull_request(repo, number) == resource);
-    let checked = wait != "checks"
-        || (data["pending"].as_u64() == Some(0)
-            && head.is_none_or(|head| data["head_sha"].as_str() == Some(head)));
-    kind == wanted && names && checked
+    let checked = match wait {
+        "checks" => {
+            data["pending"].as_u64() == Some(0)
+                && wanted.is_none_or(|head| data["head_sha"].as_str() == Some(head))
+        }
+        "linear_state" => wanted == Some(text("to")),
+        _ => true,
+    };
+    kind == expected && names && checked
 }

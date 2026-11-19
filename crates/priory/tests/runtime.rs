@@ -4843,3 +4843,126 @@ fn a_turn_a_person_typed_into_the_pane_gets_no_nudge() {
     assert_eq!(setup.typed().len(), 3, "{:?}", setup.typed());
     assert_eq!(setup.rows("outbox").len(), 2);
 }
+
+fn linear_event(kind: &str, issue: &str, extra: serde_json::Value) -> Message {
+    let mut data = json!({
+        "issue": issue,
+        "linear_id": format!("{issue}-{kind}"),
+        "title": "Fix the thing",
+        "url": format!("https://linear.app/acme/issue/{issue}"),
+        "team": "ENG",
+        "project": null,
+        "state": "In Progress",
+        "labels": [],
+        "time": herdr_bus::Timestamp::now().to_string(),
+        "baseline": false,
+        "triggers": [],
+    });
+    data.as_object_mut()
+        .unwrap()
+        .extend(extra.as_object().unwrap().clone());
+    Message::new(kind, data).subject(issue)
+}
+
+#[test]
+fn a_linear_comment_wait_fires_on_a_comment_on_its_issue_and_not_another() {
+    let setup = asleep_on(
+        "linear-comment",
+        json!({ "type": "linear_comment", "issue": "ENG-7" }),
+    );
+    assert_eq!(
+        setup.rows("waits")[0][3..5],
+        ["linear_comment", "linear:ENG-7"]
+    );
+
+    setup.publish(&linear_event(
+        "linear.comment.created",
+        "ENG-8",
+        json!({ "body": "elsewhere" }),
+    ));
+    stays_asleep(&setup);
+    setup.publish(&linear_event(
+        "linear.comment.created",
+        "ENG-7",
+        json!({ "body": "Please cover the empty case." }),
+    ));
+
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 2);
+    let typed = setup.typed();
+    assert!(
+        typed[1].starts_with("linear.comment.created ENG-7 {")
+            && typed[1].contains("Please cover the empty case."),
+        "{typed:?}"
+    );
+    assert_eq!(setup.rows("tasks")[0][4], "running");
+}
+
+#[test]
+fn a_linear_state_wait_fires_when_its_issue_moves_to_its_state_and_not_otherwise() {
+    let setup = asleep_on(
+        "linear-state",
+        json!({ "type": "linear_state", "issue": "ENG-7", "state": "Done" }),
+    );
+    let moved = |issue: &str, to: &str| {
+        linear_event(
+            "linear.issue.state_changed",
+            issue,
+            json!({ "linear_id": format!("{issue}-{to}"), "from": "In Progress", "to": to }),
+        )
+    };
+
+    setup.publish(&moved("ENG-8", "Done"));
+    setup.publish(&moved("ENG-7", "In Review"));
+    stays_asleep(&setup);
+    setup.publish(&moved("ENG-7", "Done"));
+
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 2);
+    let typed = setup.typed();
+    let lines: Vec<_> = typed[1].lines().collect();
+    assert!(
+        lines[0].starts_with("linear.issue.state_changed ENG-7 {")
+            && lines[0].contains(r#""to":"Done""#),
+        "{typed:?}"
+    );
+    assert!(lines[1].contains(r#""to":"In Review""#), "{typed:?}");
+}
+
+const THREAD: &str = "1763500000.000100";
+
+/// A reply in `thread` of channel C0123, posted at `time`.
+fn replied(thread: &str, ts: &str, time: herdr_bus::Timestamp) -> Message {
+    Message::new(
+        "slack.thread.replied",
+        json!({ "channel": "C0123", "thread_ts": thread, "ts": ts, "user": "U0PERSON",
+                "text": format!("reply {ts}"), "time": time.to_string() }),
+    )
+    .subject(format!("C0123:{thread}"))
+    .time(time)
+}
+
+#[test]
+fn a_slack_reply_wait_fires_on_a_new_reply_in_its_thread_only() {
+    let setup = asleep_on(
+        "slack-reply",
+        json!({ "type": "slack_reply", "channel": "C0123", "thread_ts": THREAD }),
+    );
+    assert_eq!(
+        setup.rows("waits")[0][3..5],
+        ["slack_reply", format!("slack:C0123:{THREAD}").as_str()]
+    );
+    let now = herdr_bus::Timestamp::now();
+    let hour_ago = now.checked_sub(Duration::from_secs(3600)).unwrap();
+
+    setup.publish(&replied("1763500000.000200", "1763500001.000001", now));
+    setup.publish(&replied(THREAD, "1763500001.000002", hour_ago));
+    stays_asleep(&setup);
+    setup.publish(&replied(THREAD, "1763500001.000003", now));
+
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 2);
+    let typed = setup.typed();
+    assert!(
+        typed[1].starts_with(&format!("slack.thread.replied C0123:{THREAD} {{"))
+            && typed[1].contains("reply 1763500001.000003"),
+        "{typed:?}"
+    );
+}

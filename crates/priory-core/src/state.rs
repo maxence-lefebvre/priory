@@ -10,7 +10,7 @@ use std::collections::BTreeMap;
 use std::io::Write;
 use std::time::Duration;
 
-const VERSION: i64 = 17;
+const VERSION: i64 = 18;
 
 const SCHEMA: &str = "
 CREATE TABLE tasks (
@@ -260,10 +260,39 @@ CREATE UNIQUE INDEX one_open_hold_per_task ON holds (task) WHERE released IS NUL
 PRAGMA user_version = 17;
 ";
 
+const SCHEMA_18: &str = "
+CREATE TABLE waits_18 (
+  id        INTEGER PRIMARY KEY AUTOINCREMENT,
+  task      INTEGER NOT NULL REFERENCES tasks (id),
+  run       INTEGER NOT NULL REFERENCES runs (id),
+  kind      TEXT NOT NULL CHECK (kind IN ('pull_request', 'checks', 'review', 'time', 'task',
+              'linear_comment', 'linear_state', 'slack_reply')),
+  resource  TEXT,
+  until     TEXT,
+  target    INTEGER REFERENCES tasks (id),
+  head_sha  TEXT,
+  created   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+  fired     TEXT,
+  inbox     INTEGER REFERENCES inbox (seq),
+  daemon    INTEGER NOT NULL DEFAULT 0,
+  withdrawn INTEGER,
+  state     TEXT,
+  since     TEXT
+);
+INSERT INTO waits_18 (id, task, run, kind, resource, until, target, head_sha, created, fired, inbox,
+  daemon, withdrawn)
+  SELECT id, task, run, kind, resource, until, target, head_sha, created, fired, inbox, daemon,
+  withdrawn FROM waits;
+DROP TABLE waits;
+ALTER TABLE waits_18 RENAME TO waits;
+PRAGMA user_version = 18;
+";
+
 /// Each schema change in order: a file at version `n` applies those from index `n` on.
 const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA, SCHEMA_2, SCHEMA_3, SCHEMA_4, SCHEMA_5, SCHEMA_6, SCHEMA_7, SCHEMA_8, SCHEMA_9,
     SCHEMA_10, SCHEMA_11, SCHEMA_12, SCHEMA_13, SCHEMA_14, SCHEMA_15, SCHEMA_16, SCHEMA_17,
+    SCHEMA_18,
 ];
 
 /// The order the queue starts tasks in: band, then a person's order, then age. A band the factory
