@@ -569,8 +569,7 @@ pub(crate) fn due(tx: &Transaction) -> rusqlite::Result<()> {
     Ok(())
 }
 
-/// Queues `text`, then the event `seq` unless `text` is its line or another prompt carries it, then
-/// the kept events no prompt carries, as the task's next prompt.
+/// Fires `wait` and wakes its task with `text`.
 fn fire(
     tx: &Transaction,
     wait: i64,
@@ -582,6 +581,17 @@ fn fire(
         &format!("UPDATE waits SET fired = {NOW}, inbox = ?2 WHERE id = ?1"),
         params![wait, seq],
     )?;
+    wake(tx, task, text, seq)
+}
+
+/// Queues `text`, then the event `seq` unless `text` is its line or another prompt carries it, then
+/// the kept events no prompt carries, as the task's next prompt, and makes an asleep task ready.
+pub(crate) fn wake(
+    tx: &Transaction,
+    task: i64,
+    text: &str,
+    seq: Option<i64>,
+) -> rusqlite::Result<()> {
     let mut carried = Vec::new();
     let mut text = text.to_owned();
     if let Some(seq) = seq {

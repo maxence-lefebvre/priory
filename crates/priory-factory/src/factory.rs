@@ -123,6 +123,7 @@ pub enum Session {
 pub struct Trigger {
     pub source: String,
     pub repo: Option<String>,
+    #[serde(default)]
     pub on: String,
     pub view: Option<String>,
     pub filter: Option<BTreeMap<String, String>>,
@@ -131,6 +132,83 @@ pub struct Trigger {
     pub band: Option<String>,
     pub lane: Option<String>,
     pub backfill: Option<bool>,
+    /// The local time of day a schedule fires, `HH:MM`.
+    #[serde(default, deserialize_with = "time_of_day")]
+    pub at: Option<jiff::civil::Time>,
+    /// The weekdays a schedule fires on; every day when unset.
+    #[serde(default, deserialize_with = "weekdays")]
+    pub days: Option<Vec<jiff::civil::Weekday>>,
+    /// How often a schedule fires again after `at`, the same day; once a day when unset.
+    #[serde(default, deserialize_with = "duration")]
+    pub every: Option<Duration>,
+    /// When a schedule's day of firings ends; the end of the day when unset.
+    #[serde(default, deserialize_with = "until")]
+    pub until: Option<Until>,
+    /// The zone `at` is read in; the machine's own when unset.
+    #[serde(default, deserialize_with = "time_zone")]
+    pub timezone: Option<jiff::tz::TimeZone>,
+    /// What a schedule's firing tells the task it wakes.
+    pub prompt: Option<String>,
+}
+
+/// The end of a schedule's day of firings: a time of day, or a duration after `at`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Until {
+    At(jiff::civil::Time),
+    After(Duration),
+}
+
+fn until<'de, D: Deserializer<'de>>(input: D) -> Result<Option<Until>, D::Error> {
+    let text = String::deserialize(input)?;
+    if let Ok(at) = jiff::civil::Time::strptime("%H:%M", &text) {
+        return Ok(Some(Until::At(at)));
+    }
+    duration(text.clone().into_deserializer())
+        .map(|after| after.map(Until::After))
+        .map_err(|_: D::Error| {
+            D::Error::custom(format!(
+                "{text:?} is not a time of day such as \"18:00\" or a duration such as 8h"
+            ))
+        })
+}
+
+fn time_of_day<'de, D: Deserializer<'de>>(input: D) -> Result<Option<jiff::civil::Time>, D::Error> {
+    let text = String::deserialize(input)?;
+    jiff::civil::Time::strptime("%H:%M", &text)
+        .map(Some)
+        .map_err(|_| D::Error::custom(format!("{text:?} is not a time of day such as \"09:00\"")))
+}
+
+fn weekdays<'de, D: Deserializer<'de>>(
+    input: D,
+) -> Result<Option<Vec<jiff::civil::Weekday>>, D::Error> {
+    use jiff::civil::Weekday::*;
+    const NAMES: [&str; 7] = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"];
+    let names = Vec::<String>::deserialize(input)?;
+    if names.is_empty() {
+        return Err(D::Error::custom("`days` is empty, so it never fires"));
+    }
+    names
+        .iter()
+        .map(|name| match NAMES.iter().position(|day| day == name) {
+            Some(index) => Ok([
+                Monday, Tuesday, Wednesday, Thursday, Friday, Saturday, Sunday,
+            ][index]),
+            None => Err(D::Error::custom(format!(
+                "{name:?} is not a day: use mon, tue, wed, thu, fri, sat or sun"
+            ))),
+        })
+        .collect::<Result<_, _>>()
+        .map(Some)
+}
+
+fn time_zone<'de, D: Deserializer<'de>>(input: D) -> Result<Option<jiff::tz::TimeZone>, D::Error> {
+    let text = String::deserialize(input)?;
+    jiff::tz::TimeZone::get(&text).map(Some).map_err(|_| {
+        D::Error::custom(format!(
+            "{text:?} is not a time zone such as \"Europe/Paris\""
+        ))
+    })
 }
 
 #[derive(Debug, Deserialize)]

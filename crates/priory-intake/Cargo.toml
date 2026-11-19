@@ -7,6 +7,7 @@ repository.workspace = true
 
 [dependencies]
 herdr-bus.workspace = true
+jiff.workspace = true
 priory-factory.workspace = true
 serde.workspace = true
 serde_json.workspace = true

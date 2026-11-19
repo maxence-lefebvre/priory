@@ -3261,3 +3261,86 @@ fn a_listing_exits_quietly_when_its_reader_closes_the_pipe() {
     assert!(output.status.success(), "{output:?}");
     assert!(output.stderr.is_empty(), "{output:?}");
 }
+
+const SUPPORT_DAY: &str = r#"
+source = "schedule"
+repo = "owner/repo"
+at = "09:00"
+every = "1h"
+until = "18:00"
+key = "support-day"
+prompt = "Sweep the support queue."
+workflow = "implement"
+"#;
+
+fn support_day(name: &str) -> Setup {
+    let setup = Setup::new(name);
+    fs::write(
+        setup.dir.join("factory/triggers/support-day.toml"),
+        SUPPORT_DAY,
+    )
+    .unwrap();
+    setup
+}
+
+/// A firing of the `support-day` schedule, whose fixed key names the same task every time.
+fn tick(scheduled: &str) -> Message {
+    let key = "schedule:support-day";
+    Message::new(
+        "factory.task.requested",
+        json!({
+            "workflow": "implement",
+            "key": key,
+            "band": null,
+            "lane": null,
+            "trigger": "support-day",
+            "source": format!("source-{scheduled}"),
+            "scheduled": scheduled,
+            "prompt": "Sweep the support queue."
+        }),
+    )
+    .subject(key)
+}
+
+#[test]
+fn a_fixed_key_firing_wakes_an_asleep_task_and_its_ask_stays_open() {
+    let mut setup = support_day("tick-wakes");
+    setup.calls(&[ask()]);
+    setup.publish(&tick("2026-11-19T08:00:00Z"));
+    setup.start();
+    setup.until("tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == "asleep")
+    });
+
+    setup.publish(&tick("2026-11-19T09:00:00Z"));
+
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") == 2);
+    let typed = setup.typed();
+    let lines: Vec<_> = typed[1].lines().collect();
+    assert_eq!(lines[0], "Sweep the support queue.", "{typed:?}");
+    assert!(
+        lines[1].starts_with("factory.task.requested schedule:support-day {")
+            && lines[1].contains(r#""scheduled":"2026-11-19T09:00:00Z""#),
+        "{typed:?}"
+    );
+    assert_eq!(setup.rows("tasks").len(), 1);
+    assert_eq!(setup.rows("asks").len(), 1);
+}
+
+#[test]
+fn a_firing_while_the_task_runs_is_coalesced_and_not_typed() {
+    let mut setup = support_day("tick-coalesced");
+    setup.publish(&tick("2026-11-19T08:00:00Z"));
+    setup.hold("hold-stop");
+    setup.start();
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") == 1);
+
+    setup.publish(&tick("2026-11-19T09:00:00Z"));
+
+    setup.until("inbox", |rows| rows.len() == 2);
+    assert_eq!(setup.rows("inbox")[1][4], "coalesced");
+    setup.release("hold-stop");
+    std::thread::sleep(Duration::from_millis(1500));
+    assert_eq!(setup.rows("outbox").len(), 1);
+    assert_eq!(setup.typed().len(), 1);
+}

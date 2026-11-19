@@ -3,6 +3,7 @@ use priory_factory::factory::{Factory, Trigger};
 mod gh;
 mod issues;
 mod pulls;
+mod schedule;
 
 use serde_json::json;
 use std::collections::{BTreeMap, BTreeSet, HashSet};
@@ -46,18 +47,22 @@ pub(crate) fn output() -> Output {
             CHECKED,
             CHECK_RUNS,
             crate::request::REQUESTED,
+            schedule::FIRED,
             TASK_REQUESTED,
             BASELINE,
         ])
 }
 
 pub fn run(factory: &Factory, once: bool) -> Result<(), String> {
-    let triggers: Vec<(&str, &Trigger)> = factory
-        .triggers
-        .iter()
-        .filter(|(_, trigger)| trigger.value.source == "github")
-        .map(|(name, trigger)| (name.as_str(), &trigger.value))
-        .collect();
+    let from = |source: &str| -> Vec<(&str, &Trigger)> {
+        factory
+            .triggers
+            .iter()
+            .filter(|(_, trigger)| trigger.value.source == source)
+            .map(|(name, trigger)| (name.as_str(), &trigger.value))
+            .collect()
+    };
+    let (triggers, schedules) = (from("github"), from("schedule"));
     let repos: BTreeSet<&str> = triggers
         .iter()
         .filter_map(|(_, trigger)| trigger.repo.as_deref())
@@ -78,6 +83,7 @@ pub fn run(factory: &Factory, once: bool) -> Result<(), String> {
     // pull requests if a long-running intake ever needs it.
     let mut published = HashSet::new();
     loop {
+        schedule::fire(&bus, &schedules, now()?)?;
         match fetch(&repos, &cursors) {
             // A publish error ends the intake: its restart recovers the source it left behind.
             Ok(polled) => publish_all(&bus, &triggers, polled, &mut cursors, &mut published)?,
@@ -88,6 +94,16 @@ pub fn run(factory: &Factory, once: bool) -> Result<(), String> {
             return Ok(());
         }
         std::thread::sleep(EVERY);
+    }
+}
+
+/// The time, or `PRIORY_NOW` when set, so a test can stand at any time.
+fn now() -> Result<Timestamp, String> {
+    match std::env::var("PRIORY_NOW") {
+        Ok(now) => now
+            .parse()
+            .map_err(|error| format!("PRIORY_NOW `{now}`: {error}")),
+        Err(_) => Ok(Timestamp::now()),
     }
 }
 
@@ -224,7 +240,13 @@ fn dispatch(bus: &Bus, triggers: &[(&str, &Trigger)], source: &Message) -> Resul
     let named = source.data["triggers"].as_array().into_iter().flatten();
     for name in named.filter_map(|name| name.as_str()) {
         if let Some((name, trigger)) = triggers.iter().find(|(other, _)| *other == name) {
-            publish(bus, &task_requested(name, trigger, source))?;
+            let data = &source.data;
+            let number = data.get("issue").unwrap_or(&data["pull_request"]);
+            let key = format!(
+                "github:{}#{number}",
+                data["repo"].as_str().unwrap_or_default()
+            );
+            publish(bus, &task_requested(name, trigger, source, key))?;
         }
     }
     Ok(())
@@ -291,13 +313,7 @@ impl Observed {
     }
 }
 
-fn task_requested(name: &str, trigger: &Trigger, source: &Message) -> Message {
-    let data = &source.data;
-    let number = data.get("issue").unwrap_or(&data["pull_request"]);
-    let key = format!(
-        "github:{}#{number}",
-        data["repo"].as_str().unwrap_or_default()
-    );
+fn task_requested(name: &str, trigger: &Trigger, source: &Message, key: String) -> Message {
     let data = json!({
         "workflow": trigger.workflow,
         "key": key,

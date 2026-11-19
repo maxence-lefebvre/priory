@@ -716,3 +716,105 @@ fn a_step_timeout_too_large_to_count_is_refused() {
         bad.stderr
     );
 }
+
+const SCHEDULE: &str = r#"source = "schedule"
+repo = "owner/repo"
+at = "09:00"
+days = ["mon", "tue", "wed", "thu", "fri"]
+every = "1h"
+until = "18:00"
+timezone = "Europe/Paris"
+key = "support-day"
+prompt = "Sweep the support queue."
+workflow = "implement"
+"#;
+
+fn schedule(name: &str, trigger: &str) -> Outcome {
+    let mut files = valid();
+    files.push(("triggers/support-day.toml", trigger));
+    check(&factory(name, &files))
+}
+
+#[test]
+fn a_schedule_trigger_passes() {
+    let outcome = schedule("schedule-valid", SCHEDULE);
+
+    assert_eq!((outcome.code, outcome.stderr.as_str()), (0, ""));
+}
+
+#[test]
+fn a_bad_schedule_field_names_its_line() {
+    let cases = [
+        (
+            "at = \"09:00\"",
+            "at = \"9am\"",
+            "triggers/support-day.toml:3:6: \"9am\" is not a time of day such as \"09:00\"\n",
+        ),
+        (
+            "\"fri\"]",
+            "\"fry\"]",
+            "triggers/support-day.toml:4:8: \"fry\" is not a day: use mon, tue, wed, thu, fri, sat or sun\n",
+        ),
+        (
+            "every = \"1h\"",
+            "every = \"hourly\"",
+            "triggers/support-day.toml:5:9: \"hourly\" is not a duration such as 90s, 15m or 2h\n",
+        ),
+        (
+            "until = \"18:00\"",
+            "until = \"evening\"",
+            "triggers/support-day.toml:6:9: \"evening\" is not a time of day such as \"18:00\" or a duration such as 8h\n",
+        ),
+        (
+            "Europe/Paris",
+            "Europe/Atlantis",
+            "triggers/support-day.toml:7:12: \"Europe/Atlantis\" is not a time zone such as \"Europe/Paris\"\n",
+        ),
+        (
+            "until = \"18:00\"",
+            "until = \"08:00\"",
+            "triggers/support-day.toml:6: `until` is before `at`, so it never fires\n",
+        ),
+        (
+            "at = \"09:00\"\n",
+            "",
+            "triggers/support-day.toml:1: a schedule trigger needs `at = \"HH:MM\"`\n",
+        ),
+        (
+            "repo = \"owner/repo\"\n",
+            "",
+            "triggers/support-day.toml:1: a schedule trigger needs `repo = \"owner/name\"`\n",
+        ),
+    ];
+    for (index, (from, to, error)) in cases.into_iter().enumerate() {
+        let outcome = schedule(
+            &format!("schedule-bad-{index}"),
+            &SCHEDULE.replace(from, to),
+        );
+
+        assert_eq!(
+            (outcome.code, outcome.stderr.as_str()),
+            (1, error),
+            "{to:?}"
+        );
+    }
+}
+
+#[test]
+fn only_a_schedule_trigger_has_schedule_fields() {
+    let trigger = format!("{TRIGGER}at = \"09:00\"\nprompt = \"Sweep.\"\n");
+
+    let outcome = check(&factory(
+        "schedule-fields-on-github",
+        &with("triggers/agent-label.toml", &trigger),
+    ));
+
+    assert_eq!(
+        (outcome.code, outcome.stderr.as_str()),
+        (
+            1,
+            "triggers/agent-label.toml:8: only a schedule trigger has `at`\n\
+             triggers/agent-label.toml:9: only a schedule trigger has `prompt`\n"
+        )
+    );
+}

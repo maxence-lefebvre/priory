@@ -285,6 +285,17 @@ pub(crate) fn handle(
             )?;
             (Some(id), "created")
         }
+        Decision::Keep(id) if route::tick(message) => {
+            let asleep = tx
+                .query_row(
+                    "SELECT 1 FROM tasks WHERE id = ?1 AND state = 'asleep'",
+                    [id],
+                    |_| Ok(()),
+                )
+                .optional()?
+                .is_some();
+            (Some(id), if asleep { "woke" } else { "coalesced" })
+        }
         Decision::Keep(id) => (Some(id), "kept"),
         Decision::Ignore => (None, "ignored"),
     };
@@ -328,8 +339,19 @@ pub(crate) fn handle(
             outbox
         ],
     )?;
-    if let Some(task) = task.filter(|_| outcome == "kept") {
-        crate::tools::event(&tx, task, tx.last_insert_rowid())?;
+    let seq = tx.last_insert_rowid();
+    match (task, outcome) {
+        (Some(task), "kept") => drop(crate::tools::event(&tx, task, seq)?),
+        (Some(task), "woke") => {
+            let line = line(
+                &message.kind,
+                message.subject.as_deref(),
+                &message.data.to_string(),
+            );
+            let text = message.data["prompt"].as_str().unwrap_or(&line);
+            crate::tools::wake(&tx, task, text, Some(seq))?;
+        }
+        _ => {}
     }
     Ok(tx.commit()?)
 }
