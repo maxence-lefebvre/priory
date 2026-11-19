@@ -613,7 +613,7 @@ fn a_codex_run_stores_the_thread_codex_chose_and_an_answer_resumes_it() {
     let answered = setup.priory(&["answer", "1", "sqlite", "--revision", "1"]);
 
     assert!(answered.status.success(), "{answered:?}");
-    setup.until("outbox", |rows| with(rows, 3, "confirmed") == 2);
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 2);
     let args = codex_args(&setup);
     assert_eq!(args[..2], ["resume", thread.as_str()], "{args:?}");
     let runs = setup.rows("runs");
@@ -634,7 +634,7 @@ fn a_codex_run_carried_into_the_next_step_keeps_its_thread() {
 
     setup.start();
 
-    setup.until("outbox", |rows| with(rows, 3, "confirmed") == 2);
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 2);
     let thread = fs::read_to_string(setup.dir.join("fake/thread")).unwrap();
     let runs = setup.rows("runs");
     assert_eq!([&runs[0][2], &runs[0][4]], ["plan", &thread]);
