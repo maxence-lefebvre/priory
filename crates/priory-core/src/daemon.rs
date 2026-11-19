@@ -59,6 +59,7 @@ pub fn run(factory: &Factory, once: bool) -> Result<(), String> {
 }
 
 fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
+    runtime::bound_commands(factory.command_timeout());
     let mut db = state::open()?;
     tools::backfill_endings(&mut db, &factory.workflows)?;
     let bus = Bus::open_default()?;
@@ -405,6 +406,7 @@ fn tend(
         }
     }
     state::due(db)?;
+    tools::enter_queued(db, &factory.workflows)?;
     state::disk_due(db, || room::measure(home).ok().map(|room| room.disk_free))?;
     memory::reclaim(db)?;
     perform(db, trace, home)?;

@@ -99,30 +99,23 @@ pub(crate) fn tick(message: &Message) -> bool {
 }
 
 /// Routes `message`, given the active task that owns its key, if any. A task request for a
-/// workflow the factory lacks is an error, so that it waits unacked until the workflow is back.
+/// workflow the factory lacks creates its task with no step, which waits until the workflow is back.
 /// A request with no lane gets the one `lanes.toml` derives; no branch exists yet to match.
 /// A new task's band is its request's, else its trigger's, else its workflow's, else the last one.
-pub(crate) fn route(
-    message: &Message,
-    owner: Option<&Task>,
-    factory: &Factory,
-) -> Result<Decision, String> {
+pub(crate) fn route(message: &Message, owner: Option<&Task>, factory: &Factory) -> Decision {
     if let Some(task) = owner {
-        return Ok(Decision::Keep(task.id));
+        return Decision::Keep(task.id);
     }
     if message.kind != TASK_REQUESTED {
-        return Ok(Decision::Ignore);
+        return Decision::Ignore;
     }
     let Ok(mut task) = NewTask::deserialize(&message.data) else {
-        return Ok(Decision::Ignore);
+        return Decision::Ignore;
     };
-    let Some(workflow) = factory.workflows.get(&task.workflow) else {
-        return Err(format!(
-            "task request {} names workflow {:?}, which the factory lacks",
-            message.id, task.workflow
-        ));
-    };
-    task.step.clone_from(&workflow.value.start);
+    let workflow = factory.workflows.get(&task.workflow);
+    if let Some(workflow) = workflow {
+        task.step.clone_from(&workflow.value.start);
+    }
     let trigger = factory.triggers.get(&task.trigger);
     task.repo = task
         .repo
@@ -133,7 +126,7 @@ pub(crate) fn route(
         .band
         .filter(|band| bands.contains(&band.as_str()))
         .or_else(|| trigger.and_then(|trigger| trigger.value.band.clone()))
-        .or_else(|| workflow.value.band.clone())
+        .or_else(|| workflow.and_then(|workflow| workflow.value.band.clone()))
         .or_else(|| bands.last().map(|band| (*band).to_owned()));
     if task.lane.is_none() {
         task.lane = Some(factory.lanes().lane(&Subject {
@@ -144,7 +137,7 @@ pub(crate) fn route(
         }));
         task.lane_derived = true;
     }
-    Ok(Decision::Create(Box::new(task)))
+    Decision::Create(Box::new(task))
 }
 
 /// Whether an event satisfies a resource wait. `wanted` is a checks wait's head, which needs no

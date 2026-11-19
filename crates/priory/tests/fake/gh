@@ -1,13 +1,15 @@
 #!/usr/bin/env bash
 # A stand-in for the GitHub CLI's pull request and issue commands. Appends each call's arguments, as a JSON
 # array, to FAKE_DIR/gh.log. FAKE_DIR/open-pr holds the number `pr list` reports as open, and
-# FAKE_DIR/gh-fail makes `pr create` fail. FAKE_DIR/issues holds what `issue list` prints.
+# FAKE_DIR/gh-fail makes `pr create` fail and FAKE_DIR/gh-hang makes it hang. FAKE_DIR/issues holds what `issue list` prints.
 set -u
 jq -nc '$ARGS.positional' --args -- "$@" >> "$FAKE_DIR/gh.log"
 case "$1 $2" in
   "pr list")
     if [ -e "$FAKE_DIR/open-pr" ]; then echo "[{\"number\":$(cat "$FAKE_DIR/open-pr")}]"; else echo '[]'; fi ;;
   "pr create")
+    # A helper that ignores TERM and keeps stdout open, as a stuck credential helper can.
+    if [ -e "$FAKE_DIR/gh-hang" ]; then (trap '' TERM; sleep 60) & sleep 60; fi
     if [ -e "$FAKE_DIR/gh-fail" ]; then echo 'pull request create failed: GraphQL: denied' >&2; exit 1; fi
     echo 'https://github.com/owner/repo/pull/7' ;;
   "issue list")

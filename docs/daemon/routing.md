@@ -29,9 +29,10 @@ from its branch gets that pull request's events, with no trigger.
 | `factory.task.requested`, malformed       | `ignored` | none                                         |
 | Any other                                 | `ignored` | none                                         |
 
-A task request for a workflow the factory lacks stops the daemon with an error before its ack.
-It waits on the bus until the workflow is back. A malformed request is ignored instead, so it
-cannot block the output.
+A task request for a workflow the factory lacks still creates its task, `queued` with no step, so
+the daemon keeps serving. Each tick gives it the reason `waits for workflow <name>, which the
+factory lacks`. Once a daemon starts with that workflow, the task moves to the workflow's start. A
+malformed request is ignored.
 
 A source event comes before its task request, so it is recorded as `ignored`. The task keeps its
 id in `source`.

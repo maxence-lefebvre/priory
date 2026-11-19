@@ -1,8 +1,10 @@
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
+use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::{Command, Output, Stdio};
+use std::sync::OnceLock;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::time::{Duration, Instant};
 
@@ -37,12 +39,51 @@ pub fn exe() -> Result<PathBuf, String> {
     std::env::current_exe().map_err(|error| error.to_string())
 }
 
+static COMMAND_TIMEOUT: OnceLock<Duration> = OnceLock::new();
+
+/// Sets how long one git, gh or tmux command may run, once per process; 5 minutes when unset.
+pub fn bound_commands(timeout: Duration) {
+    let _ = COMMAND_TIMEOUT.set(timeout);
+}
+
+pub fn command_timeout() -> Duration {
+    COMMAND_TIMEOUT
+        .get()
+        .copied()
+        .unwrap_or(Duration::from_secs(300))
+}
+
+/// Runs `command` in its own process group and returns its output, or `None` when it ran past the
+/// command timeout. Then it kills the whole group, so a hung fetch cannot stop the daemon's one
+/// thread, and no child that ignores TERM keeps the output pipe open.
+pub fn output_within(command: &mut Command) -> std::io::Result<Option<Output>> {
+    let child = command
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .process_group(0)
+        .spawn()?;
+    let group = child.id();
+    let (sender, receiver) = mpsc::channel();
+    std::thread::spawn(move || sender.send(child.wait_with_output()));
+    if let Ok(output) = receiver.recv_timeout(command_timeout()) {
+        return output.map(Some);
+    }
+    crate::script::kill(group);
+    let _ = receiver.recv();
+    Ok(None)
+}
+
 /// Runs `command` and returns its stdout, or an error naming it with its stderr.
 pub(crate) fn run(command: &mut Command) -> Result<String, String> {
-    let output = command
-        .stdin(Stdio::null())
-        .output()
-        .map_err(|error| format!("{command:?}: {error}"))?;
+    let output = output_within(command)
+        .map_err(|error| format!("{command:?}: {error}"))?
+        .ok_or_else(|| {
+            format!(
+                "{command:?}: timed out after {}s",
+                command_timeout().as_secs()
+            )
+        })?;
     if !output.status.success() {
         return Err(format!(
             "{command:?}: {}",
@@ -94,6 +135,8 @@ pub fn worktree(home: &Path, repo: &str, task: i64) -> Result<(PathBuf, String),
     }
     // A revived task whose worktree the sweep removed carries on from the branch it left.
     if head(&clone, &branch).is_some() {
+        // A worktree folder a person deleted stays registered, and git refuses to add it again.
+        run(git(&clone).args(["worktree", "prune"]))?;
         run(git(&clone)
             .args(["worktree", "add", "--quiet"])
             .arg(&path)
