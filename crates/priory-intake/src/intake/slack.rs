@@ -49,11 +49,16 @@ impl<'a> Slack<'a> {
     }
 
     /// Publishes the new messages of each trigger channel and the replies in each watched thread.
-    /// A message published again keeps its id, so the bus drops it.
+    /// A message published again keeps its id, so the bus drops it. A failing channel publishes
+    /// nothing and fails the poll once the rest is published.
     pub(super) fn poll(&mut self, bus: &Bus, watched: &[Watch]) -> Result<(), String> {
         let mut polled = Vec::new();
+        let mut failed = Vec::new();
         for (channel, cursor) in &self.channels {
-            polled.push(self.channel(channel, cursor.as_deref())?);
+            match self.channel(channel, cursor.as_deref()) {
+                Ok(found) => polled.push(found),
+                Err(error) => failed.push(error),
+            }
         }
         let mut replies = Vec::new();
         for watch in watched {
@@ -85,7 +90,10 @@ impl<'a> Slack<'a> {
         for reply in &replies {
             publish(bus, reply)?;
         }
-        Ok(())
+        if failed.is_empty() {
+            return Ok(());
+        }
+        Err(failed.join("\n"))
     }
 
     /// The messages of `channel` after `cursor`, oldest first, and the newest `ts` seen.

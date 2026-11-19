@@ -2143,6 +2143,32 @@ fn slack_message(ts: &str, user: &str, text: &str) -> serde_json::Value {
 }
 
 #[test]
+fn a_failing_slack_channel_still_lets_the_others_publish() {
+    let left = SLACK_TRIGGER.replace("C0123", "C0999");
+    let setup = Setup::linear(
+        "slack-one-fails",
+        &[("deploys", SLACK_TRIGGER), ("left", &left)],
+    );
+    setup.answer_slack(&[slack_message("1763500000.000100", "U0PERSON", "deploy")]);
+    let curl = setup.dir.join("bin/curl");
+    let script = fs::read_to_string(&curl).unwrap().replace(
+        "case \"$*\" in\n",
+        "case \"$*\" in\n  *channel=C0999*) echo '{\"ok\":false,\"error\":\"not_in_channel\"}' ;;\n",
+    );
+    write(&curl, &script);
+
+    let output = setup.slack_intake();
+
+    assert_eq!(output.status.code(), Some(1));
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("not_in_channel"),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(kinds(&setup.published()), ["slack.message.posted"]);
+}
+
+#[test]
 fn a_slack_trigger_requests_one_task_per_matching_message_and_drops_a_duplicate() {
     let setup = Setup::linear("slack-trigger", &[("deploys", SLACK_TRIGGER)]);
     setup.answer_slack(&[slack_message(
