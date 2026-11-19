@@ -93,10 +93,10 @@ pub fn print_stays(db: &Connection, home: &Path) -> rusqlite::Result<()> {
                 .name
                 .parse::<i64>()
                 .map_or("-".to_owned(), |id| id.to_string());
-            println!(
+            crate::state::emit(&format!(
                 "-\tworktree\t{}\t{task}\t{reason}",
                 entry.found.path.display()
-            );
+            ));
         }
     }
     Ok(())

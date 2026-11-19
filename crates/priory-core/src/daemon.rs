@@ -347,6 +347,7 @@ fn start(
             branch: &branch,
             worktree: &worktree.to_string_lossy(),
             prompt: admission.fresh.then_some(prompt.as_str()),
+            ending: &tools::ending(step),
             shared,
         },
     )?;

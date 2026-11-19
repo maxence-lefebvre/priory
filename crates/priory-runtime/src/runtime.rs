@@ -129,6 +129,24 @@ fn tmux() -> Command {
     Command::new("tmux")
 }
 
+/// The variables a Claude Code session sets for its children. A run that inherited them would
+/// think it is nested in that session. Settings the user chose, such as `CLAUDE_CODE_USE_BEDROCK`
+/// or `CLAUDE_CODE_PLUGIN_DIRS`, stay.
+const NESTED: [&str; 12] = [
+    "CLAUDECODE",
+    "CLAUDE_CODE_ENTRYPOINT",
+    "CLAUDE_CODE_EXECPATH",
+    "CLAUDE_CODE_SESSION_ID",
+    "CLAUDE_CODE_CHILD_SESSION",
+    "CLAUDE_CODE_SESSION_ATTENDED",
+    "CLAUDE_CODE_CHILD_NOTES_DIR",
+    "CLAUDE_CODE_MESSAGING_SOCKET",
+    "CLAUDE_CODE_MESSAGING_TOKEN",
+    "CLAUDE_CODE_BRIDGE_SESSION_ID",
+    "CLAUDE_PID",
+    "CLAUDE_EFFORT",
+];
+
 /// What `claude` needs to start a run.
 pub struct Launch<'a> {
     pub tmux: &'a str,
@@ -166,7 +184,9 @@ pub fn launch(launch: &Launch) -> Result<(), String> {
         .arg(launch.dir)
         .arg("-e")
         .arg(format!("PRIORY_HOME={}", launch.home.display()))
-        .args(["--", "claude"])
+        .args(["--", "env"])
+        .args(NESTED.iter().flat_map(|name| ["-u", name]))
+        .arg("claude")
         .arg(if launch.resume {
             "--resume"
         } else {

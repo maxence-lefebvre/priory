@@ -5,9 +5,10 @@ use priory_factory::factory::{Factory, Loaded, Session, Workflow};
 use priory_runtime::room::Room;
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 use std::collections::BTreeMap;
+use std::io::Write;
 use std::time::Duration;
 
-const VERSION: i64 = 9;
+const VERSION: i64 = 10;
 
 const SCHEMA: &str = "
 CREATE TABLE tasks (
@@ -182,8 +183,14 @@ PRAGMA user_version = 9;
 ";
 
 /// Each schema change in order: a file at version `n` applies those from index `n` on.
+const SCHEMA_10: &str = "
+ALTER TABLE tasks ADD COLUMN ending TEXT;
+PRAGMA user_version = 10;
+";
+
 const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA, SCHEMA_2, SCHEMA_3, SCHEMA_4, SCHEMA_5, SCHEMA_6, SCHEMA_7, SCHEMA_8, SCHEMA_9,
+    SCHEMA_10,
 ];
 
 const NOW: &str = "strftime('%Y-%m-%dT%H:%M:%SZ', 'now')";
@@ -349,7 +356,7 @@ pub(crate) fn owner(tx: &Transaction, resources: &[String]) -> rusqlite::Result<
 
 /// The rows of `query`, each column as text and `-` for null, tab-separated after `header`.
 pub fn print(db: &Connection, header: &str, query: &str) -> rusqlite::Result<()> {
-    println!("{header}");
+    emit(header);
     let mut statement = db.prepare(query)?;
     let columns = statement.column_count();
     let mut rows = statement.query([])?;
@@ -363,9 +370,16 @@ pub fn print(db: &Connection, header: &str, query: &str) -> rusqlite::Result<()>
                 })
             })
             .collect::<rusqlite::Result<Vec<_>>>()?;
-        println!("{}", cells.join("\t"));
+        emit(&cells.join("\t"));
     }
     Ok(())
+}
+
+/// Prints `line`. A reader that closed the pipe, as `head` does, ends the listing without a message.
+pub fn emit(line: &str) {
+    if writeln!(std::io::stdout(), "{line}").is_err() {
+        std::process::exit(0);
+    }
 }
 
 /// One event as an agent reads it: type, subject and data on one line.
@@ -533,6 +547,8 @@ pub(crate) struct NewRun<'a> {
     pub worktree: &'a str,
     /// The step's prompt, for a fresh task. A ready task has its prompt queued.
     pub prompt: Option<&'a str>,
+    /// How the step ends, which every prompt that wakes the task repeats.
+    pub ending: &'a str,
     /// The session is the agent's shared one, which other tasks' runs resume too.
     pub shared: bool,
 }
@@ -575,8 +591,9 @@ pub(crate) fn start(db: &mut Connection, run: &NewRun) -> rusqlite::Result<i64> 
     )?;
     let id = tx.last_insert_rowid();
     tx.execute(
-        "UPDATE tasks SET state = 'running', branch = ?2, worktree = ?3, reason = NULL WHERE id = ?1",
-        params![run.task, run.branch, run.worktree],
+        "UPDATE tasks SET state = 'running', branch = ?2, worktree = ?3, reason = NULL, ending = ?4
+         WHERE id = ?1",
+        params![run.task, run.branch, run.worktree, run.ending],
     )?;
     tx.execute(
         "INSERT OR IGNORE INTO owns (task, resource) VALUES (?1, ?2)",

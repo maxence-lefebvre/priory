@@ -625,7 +625,7 @@ fn fire(
             ));
         }
     }
-    let id = queue_first(tx, task, &text)?;
+    let id = wake(tx, task, &text)?;
     for seq in carried {
         tx.execute("UPDATE inbox SET outbox = ?1 WHERE seq = ?2", [id, seq])?;
     }
@@ -714,6 +714,18 @@ fn settle(
     end(tx, run.id, "asleep")?;
     set(tx, run.task, "asleep", None, None)?;
     Ok(Some(Some(run.tmux.clone())))
+}
+
+/// Queues `text` as a wake prompt: `text`, then how to end the step the task is in, if it is a model step.
+fn wake(tx: &Transaction, task: i64, text: &str) -> rusqlite::Result<i64> {
+    let ending: Option<String> =
+        tx.query_row("SELECT ending FROM tasks WHERE id = ?1", [task], |row| {
+            row.get(0)
+        })?;
+    match ending {
+        Some(ending) => queue_first(tx, task, &format!("{text}\n{ending}")),
+        None => queue_first(tx, task, text),
+    }
 }
 
 /// Queues `text` as the task's next prompt, ahead of the prompts already queued, which it carries
@@ -855,6 +867,11 @@ fn enter(
         set(tx, task, "blocked", None, Some(&reason))?;
         return finish("blocked");
     };
+    let ending = (step.decides == Decider::Model).then(|| ending(step));
+    tx.execute(
+        "UPDATE tasks SET ending = ?2 WHERE id = ?1",
+        params![task, ending],
+    )?;
     match step.decides {
         Decider::Model => {
             queue_first(tx, task, &step_prompt(step))?;
@@ -978,7 +995,7 @@ pub(crate) fn answer(
         approve(&tx, task, answer, &approved, head)?;
         enter(&tx, task, &workflow, &target, None, "", workflows)?;
     } else {
-        queue_first(&tx, task, &answer.text)?;
+        wake(&tx, task, &answer.text)?;
         // An answer that beats the run's Stop leaves it running: the answer is its next prompt.
         if state == "asleep" {
             set(&tx, task, "ready", None, None)?;
@@ -1019,7 +1036,7 @@ pub(crate) fn act(
                 "A person resumed this task after: {}. Check the worktree, then continue.",
                 reason.as_deref().unwrap_or("no reason")
             );
-            queue_first(&tx, act.task, &text)?;
+            wake(&tx, act.task, &text)?;
             set(&tx, act.task, "ready", None, None)?;
             tx.commit()?;
             Ok((Ok(format!("task {} is ready", act.task)), None))
@@ -1092,7 +1109,7 @@ pub(crate) fn lost(db: &mut Connection, session: &str, tmux: &str) -> rusqlite::
         let text = format!(
             "Priory restarted and found tmux session {tmux} gone, as after a reboot, so this run was interrupted. Check the worktree, then continue."
         );
-        queue_first(&tx, run.task, &text)?;
+        wake(&tx, run.task, &text)?;
         set(&tx, run.task, "ready", None, None)?;
     }
     tx.commit()
@@ -1187,13 +1204,18 @@ pub(crate) fn approved(
     Ok(false)
 }
 
-/// What a model step's run reads first: the step's prompt, then how to end the step.
-pub(crate) fn step_prompt(step: &Step) -> String {
+/// The line that tells a model step's agent how to end the step.
+pub(crate) fn ending(step: &Step) -> String {
     let outcomes: Vec<_> = step.next.keys().map(String::as_str).collect();
-    let end = format!(
+    format!(
         "End this step by calling the result tool of the priory MCP server with one of these outcomes: {}.",
         outcomes.join(", ")
-    );
+    )
+}
+
+/// What a model step's run reads first: the step's prompt, then how to end the step.
+pub(crate) fn step_prompt(step: &Step) -> String {
+    let end = ending(step);
     match step.prompt.as_deref() {
         Some(prompt) if !prompt.is_empty() => format!("{prompt}\n{end}"),
         _ => end,
