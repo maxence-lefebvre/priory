@@ -70,10 +70,12 @@ fn main() -> ExitCode {
         Some("trace") => trace(),
         Some("report") => report(args.map(|arg| arg.to_string_lossy().into_owned()).collect()),
         Some("move") => move_task(args.map(|arg| arg.to_string_lossy().into_owned()).collect()),
-        Some(verb @ ("resume" | "cancel")) => act(
+        Some(verb @ ("resume" | "cancel" | "release")) => act(
             verb,
             args.map(|arg| arg.to_string_lossy().into_owned()).collect(),
+            None,
         ),
+        Some("hold") => hold(args.map(|arg| arg.to_string_lossy().into_owned()).collect()),
         Some("actions") => list(
             "id\ttask\tstep\taction\tstatus\tpull_request\tcommit\terror",
             "SELECT id, task, step, action, status, pull_request, commit_sha,
@@ -96,7 +98,7 @@ fn main() -> ExitCode {
 
 fn usage() -> ExitCode {
     eprintln!(
-        "usage: priory check [DIR]\n       priory draw [DIR] WORKFLOW\n       priory intake [DIR] [--once]\n       priory daemon [DIR] [--once]\n       priory request [DIR] --workflow <name> --key <key> [--band <band>] [--lane <lane>] [--repo <owner/name>] <text>\n       priory inbox\n       priory tasks\n       priory runs\n       priory outbox\n       priory asks\n       priory waits\n       priory actions\n       priory desk\n       priory trace\n       priory report [DIR] --workflow <name> [--since <instant-or-duration>] [--cost]\n       priory move TASK [--band <band>] [--top | --before TASK | --after TASK]\n       priory resume TASK\n       priory cancel TASK\n       priory answer ASK OPTION-OR-TEXT --revision N\n       priory mcp --session ID\n       priory hook EVENT"
+        "usage: priory check [DIR]\n       priory draw [DIR] WORKFLOW\n       priory intake [DIR] [--once]\n       priory daemon [DIR] [--once]\n       priory request [DIR] --workflow <name> --key <key> [--band <band>] [--lane <lane>] [--repo <owner/name>] <text>\n       priory inbox\n       priory tasks\n       priory runs\n       priory outbox\n       priory asks\n       priory waits\n       priory actions\n       priory desk\n       priory trace\n       priory report [DIR] --workflow <name> [--since <instant-or-duration>] [--cost]\n       priory move TASK [--band <band>] [--top | --before TASK | --after TASK]\n       priory resume TASK\n       priory cancel TASK\n       priory hold TASK --reason TEXT [--until TIME | --after TASK | --merge PR [--if-closed release|drop|ask] | --blockers]\n       priory release TASK\n       priory answer ASK OPTION-OR-TEXT --revision N\n       priory mcp --session ID\n       priory hook EVENT"
     );
     ExitCode::from(2)
 }
@@ -209,6 +211,10 @@ const DESK: &str = "SELECT since, kind, id, task, what FROM (
                  replace(outbox.text, char(10), '\\n')
                FROM outbox JOIN tasks ON tasks.id = outbox.task
                WHERE outbox.state = 'uncertain' AND tasks.state NOT IN ('done', 'failed', 'dropped')
+               UNION ALL
+               SELECT 0, holds.created, 'held', holds.id, holds.task, tasks.reason
+               FROM holds JOIN tasks ON tasks.id = holds.task
+               WHERE holds.released IS NULL AND tasks.state = 'held'
                UNION ALL
                SELECT 1, tasks.changed, 'queue', queue.place, tasks.id,
                  coalesce(tasks.band, '-') || coalesce(': ' || tasks.reason, '')
@@ -324,8 +330,43 @@ fn move_task(args: Vec<String>) -> ExitCode {
     exit("move", moved)
 }
 
-/// Sends `priory resume TASK` or `priory cancel TASK` to the daemon, which applies it.
-fn act(act: &str, args: Vec<String>) -> ExitCode {
+/// Sends `priory hold TASK --reason TEXT [CONDITION]` to the daemon, which applies it.
+fn hold(args: Vec<String>) -> ExitCode {
+    let mut args = args.into_iter();
+    let Some(task) = args.next() else {
+        return usage();
+    };
+    let mut hold = factory::Hold::default();
+    let mut reason = None;
+    while let Some(flag) = args.next() {
+        if flag == "--blockers" {
+            hold.blockers = true;
+            continue;
+        }
+        let Some(value) = args.next() else {
+            return usage();
+        };
+        match flag.as_str() {
+            "--reason" => reason = Some(value),
+            "--until" => hold.until = Some(value),
+            "--after" => match value.parse() {
+                Ok(other) => hold.after = Some(other),
+                Err(_) => return usage(),
+            },
+            "--merge" => hold.merge = Some(value),
+            "--if-closed" => hold.if_closed = Some(value),
+            _ => return usage(),
+        }
+    }
+    let Some(reason) = reason else {
+        return usage();
+    };
+    hold.reason = reason;
+    act("hold", vec![task], Some(hold))
+}
+
+/// Sends `priory resume`, `cancel`, `release` or `hold` for one task to the daemon, which applies it.
+fn act(act: &str, args: Vec<String>, hold: Option<factory::Hold>) -> ExitCode {
     let [task] = &args[..] else {
         return usage();
     };
@@ -335,6 +376,7 @@ fn act(act: &str, args: Vec<String>) -> ExitCode {
     let line = serde_json::to_string(&tools::Act {
         act: act.to_owned(),
         task,
+        hold,
     })
     .expect("an action serializes");
     send(act, &line)

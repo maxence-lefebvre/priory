@@ -357,10 +357,16 @@ the other two). Both take `backfill`. Their `key`, when set, is `issue.identifie
 | `linear.issue.created`       | issue created                                                    |
 | `linear.issue.state_changed` | entry of an issue's history that moves it from one state to another |
 | `linear.comment.created`     | comment on an issue                                              |
+| `linear.issue.blockers`      | issue that another issue blocks, each time the blocker changes   |
 
 The intake polls issues and comments whenever the factory has a Linear trigger, whatever the
 triggers start on, so that a task receives the comments and state changes of its issue (R3). The
 daemon routes a Linear event to the active task whose key is `linear:<issue>`.
+
+Linear does not update an issue when one of its blockers closes, so the issues stream publishes
+`linear.issue.blockers` for it instead. For each updated issue, it reads the issues that issue blocks,
+and publishes one event per blocked issue, with the blocked issue's fields and open blockers. A
+`priory hold --blockers` reads them, as `docs/daemon.md` describes under Holds.
 
 | Field       | Type             | Meaning                                                         |
 | ----------- | ---------------- | --------------------------------------------------------------- |
@@ -371,6 +377,8 @@ daemon routes a Linear event to the active task whose key is `linear:<issue>`.
 | `team`      | string           | The issue's team key                                            |
 | `state`     | string           | The issue's state when the intake saw the event                 |
 | `labels`    | array of strings | The issue's labels when the intake saw the event                |
+| `blockers`  | array of strings | The identifiers of the issues that block it and are neither completed nor canceled, from its first 50 relations |
+| `blocker`   | string           | The issue whose change published the event. `blockers` only     |
 | `view`      | string           | The view, as the trigger names it. View events only             |
 | `from`, `to`| string           | The states the issue moved from and to. `state_changed` only     |
 | `body`      | string           | The comment, in Markdown. `comment.created` only                |
@@ -393,6 +401,7 @@ daemon routes a Linear event to the active task whose key is `linear:<issue>`.
     "team": "ENG",
     "state": "In Progress",
     "labels": ["agent"],
+    "blockers": [],
     "body": "Please also cover the empty case.",
     "actor": "max",
     "time": "2026-11-17T11:00:00.000Z",
@@ -405,8 +414,9 @@ daemon routes a Linear event to the active task whose key is `linear:<issue>`.
 
 ## `priory.task.requested.cli`
 
-`priory request [DIR] --workflow <name> --key <key> [--band <band>] [--lane <lane>] [--repo <owner/name>] [--] <text>`
-publishes this source event, then one `factory.task.requested` for it. It loads the factory as
+`priory request [DIR] --workflow <name> --key <key> [--band <band>] [--lane <lane>] [--repo <owner/name>] [--hold <reason> [--until <time> | --after <task> | --merge <pr> [--if-closed release|drop|ask] | --blockers]] [--] <text>`
+publishes this source event, then one `factory.task.requested` for it. `--hold` files the task held,
+with the condition that follows it, as `hold` below says. It loads the factory as
 `priory check` does and refuses an unknown workflow, publishing nothing. `DIR` defaults to `.`. A flag value cannot start with `--`; put `--` before text that does.
 
 The type has no `github.` prefix because no GitHub event produced it, and ends in `.cli` because a
@@ -480,6 +490,15 @@ with `backfill = true`. Only this message creates a task.
 | `lane`     | string or null | The trigger's `lane`, or null when `lanes.toml` derives it   |
 | `trigger`  | string         | The trigger's name: its file name without the extension      |
 | `source`   | UUID string    | The `id` of the source event's message, on the same output   |
+| `hold`     | object         | Optional: files the task held. The trigger's `hold`, or `priory request --hold` |
+
+`hold` holds the new task before it can start, as `priory hold` does (see Holds in
+`docs/daemon.md`). It has a `reason` and at most one condition: `until`, an RFC 3339 instant or a
+duration such as `2 hours`; `after`, another task's id; `merge`, a pull request as `owner/name#42`
+or `42` in the trigger's repository, with `if_closed` set to `release`, `drop` or `ask`, the
+default; or `blockers: true`. A trigger sets it as a table, such as
+`hold = { reason = "triage first", blockers = true }`. A condition the daemon cannot use, such as
+`blockers` on a GitHub issue, leaves the task held for a person, with the error in its reason.
 
 The intake publishes a task request after its source event, so a consumer has already seen the
 source when it reads the request.
@@ -524,6 +543,7 @@ of these names:
 | `linear.issue.created`   | `linear:issue:{issue id}:created`          |
 | `linear.issue.state_changed` | `linear:history:{history id}`          |
 | `linear.comment.created` | `linear:comment:{comment id}`              |
+| `linear.issue.blockers`  | `linear:blockers:{blocked issue id}:{blocker issue id}:{blocker updatedAt}` |
 
 ## Baseline
 
@@ -572,7 +592,7 @@ poll from the newest one. A missing marker means the stream is still in its base
 | Stream             | Reads                                                   | Position                     |
 | ------------------ | ------------------------------------------------------- | ---------------------------- |
 | `linear.view:<view>` | every issue of the view                               | a count of membership changes; the marker also holds `members`, the fields of each issue in the view |
-| `linear.issues`    | issues updated at or after the position, archived ones included, with their last 50 history entries | the latest `updatedAt` seen; the marker also holds `seen`, the ids of the events at that instant |
+| `linear.issues`    | issues updated at or after the position, archived ones included, with their last 50 history entries and the issues they block | the latest `updatedAt` seen; the marker also holds `seen`, the ids of the events at that instant |
 | `linear.comments`  | comments created at or after the position               | the latest `createdAt` seen, and `seen` as above |
 
 The first poll of a view publishes each of its issues as `linear.issue.entered` with `baseline:
@@ -613,6 +633,9 @@ Limits:
 - A view marker holds every issue of the view and is published whenever one of them changes, so a
   large, busy view grows the output.
 - A state change past the last 50 entries of an issue's history between two polls is missed.
+- `blockers` reads 50 relations of an issue, and `linear.issue.blockers` reads 50 relations of its
+  blocker. A blocker that loses its relation, rather than closing, publishes a new event only if
+  Linear updates the blocker's `updatedAt` for it.
 
 ## Linear calls
 

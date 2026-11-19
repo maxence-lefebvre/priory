@@ -9,7 +9,7 @@ use std::collections::BTreeMap;
 use std::io::Write;
 use std::time::Duration;
 
-const VERSION: i64 = 12;
+const VERSION: i64 = 13;
 
 const SCHEMA: &str = "
 CREATE TABLE tasks (
@@ -214,10 +214,30 @@ CREATE TABLE bands (
 PRAGMA user_version = 12;
 ";
 
+const SCHEMA_13: &str = "
+CREATE TABLE holds (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  task        INTEGER NOT NULL REFERENCES tasks (id),
+  reason      TEXT NOT NULL,
+  kind        TEXT NOT NULL CHECK (kind IN ('person', 'time', 'task', 'merge', 'blockers')),
+  until       TEXT,
+  target      INTEGER REFERENCES tasks (id),
+  resource    TEXT,
+  if_closed   TEXT CHECK (if_closed IN ('release', 'drop', 'ask')),
+  resume      TEXT NOT NULL CHECK (resume IN ('queued', 'ready')),
+  ask         INTEGER REFERENCES asks (id),
+  created     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+  released    TEXT,
+  released_as TEXT
+);
+CREATE UNIQUE INDEX one_open_hold_per_task ON holds (task) WHERE released IS NULL;
+PRAGMA user_version = 13;
+";
+
 /// Each schema change in order: a file at version `n` applies those from index `n` on.
 const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA, SCHEMA_2, SCHEMA_3, SCHEMA_4, SCHEMA_5, SCHEMA_6, SCHEMA_7, SCHEMA_8, SCHEMA_9,
-    SCHEMA_10, SCHEMA_11, SCHEMA_12,
+    SCHEMA_10, SCHEMA_11, SCHEMA_12, SCHEMA_13,
 ];
 
 /// The order the queue starts tasks in: band, then a person's order, then age. A band the factory
@@ -294,7 +314,8 @@ pub(crate) fn handle(
     if seen.is_some() {
         return Ok(());
     }
-    let owner = owner(&tx, &route::resources(message))?;
+    let resources = route::resources(message);
+    let owner = owner(&tx, &resources)?;
     let (task, outcome) = match route::route(message, owner.as_ref(), factory)? {
         Decision::Create(new) => {
             tx.execute(
@@ -315,6 +336,9 @@ pub(crate) fn handle(
                 "INSERT INTO owns (task, resource) VALUES (?1, ?2)",
                 params![id, new.key],
             )?;
+            if let Some(hold) = &new.hold {
+                crate::hold::filed(&tx, id, hold, factory)?;
+            }
             (Some(id), "created")
         }
         Decision::Keep(id) if route::tick(message) => {
@@ -380,6 +404,7 @@ pub(crate) fn handle(
         ],
     )?;
     let seq = tx.last_insert_rowid();
+    crate::hold::event(&tx, &resources)?;
     match (task, outcome) {
         (Some(task), "kept") => drop(crate::tools::event(&tx, task, seq)?),
         (Some(task), "woke") => {
@@ -418,6 +443,7 @@ pub(crate) fn bands(db: &mut Connection, bands: &[&str]) -> rusqlite::Result<()>
 pub(crate) fn due(db: &mut Connection) -> rusqlite::Result<()> {
     let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
     crate::tools::due(&tx)?;
+    crate::hold::due(&tx)?;
     tx.commit()
 }
 

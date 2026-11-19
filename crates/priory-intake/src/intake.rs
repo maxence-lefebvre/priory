@@ -336,7 +336,7 @@ impl Observed {
 }
 
 fn task_requested(name: &str, trigger: &Trigger, source: &Message, key: String) -> Message {
-    let data = json!({
+    let mut data = json!({
         "workflow": trigger.workflow,
         "key": key,
         "band": trigger.band,
@@ -344,6 +344,9 @@ fn task_requested(name: &str, trigger: &Trigger, source: &Message, key: String) 
         "trigger": name,
         "source": source.id.to_string(),
     });
+    if let Some(hold) = &trigger.hold {
+        data["hold"] = json!(hold);
+    }
     Message::new(TASK_REQUESTED, data)
         .id(id(&format!("{TASK_REQUESTED}:{name}:{}", source.id)))
         .subject(key)

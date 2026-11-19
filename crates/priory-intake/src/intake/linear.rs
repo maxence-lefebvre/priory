@@ -13,13 +13,15 @@ pub(super) const LEFT: &str = "linear.issue.left";
 pub(super) const CREATED: &str = "linear.issue.created";
 pub(super) const STATE_CHANGED: &str = "linear.issue.state_changed";
 pub(super) const COMMENTED: &str = "linear.comment.created";
+pub(super) const BLOCKERS: &str = "linear.issue.blockers";
 const ISSUES: &str = "linear.issues";
 const COMMENTS: &str = "linear.comments";
 /// How many issues or comments a stream's first poll reads.
 const FIRST: u64 = 50;
 
 const ISSUE: &str = "fragment issue on Issue { id identifier title url createdAt updatedAt \
-    team { key } state { name } labels { nodes { name } } creator { displayName } }";
+    team { key } state { name } labels { nodes { name } } creator { displayName } \
+    inverseRelations(first: 50) { nodes { type issue { identifier state { type } } } } }";
 const PAGE: &str = "pageInfo { hasNextPage endCursor }";
 
 /// The Linear streams the triggers need, and where each stands: its last marker's data, or none
@@ -191,7 +193,8 @@ impl<'a> Linear<'a> {
              issues(filter: $filter, first: $first, after: $after, orderBy: updatedAt, \
              includeArchived: true) {{ nodes {{ \
              ...issue history(first: 50, orderBy: createdAt) {{ nodes {{ id createdAt \
-             fromState {{ name }} toState {{ name }} actor {{ displayName }} }} }} }} {PAGE} }} }} {ISSUE}"
+             fromState {{ name }} toState {{ name }} actor {{ displayName }} }} }} \
+             relations(first: 50) {{ nodes {{ type relatedIssue {{ ...issue }} }} }} }} {PAGE} }} }} {ISSUE}"
         );
         let issues = self.nodes(&query, page(since, "updatedAt"), "/issues", since.is_some())?;
         let mut events = Vec::new();
@@ -217,6 +220,21 @@ impl<'a> Linear<'a> {
                 data["time"] = change["createdAt"].clone();
                 let name = format!("linear:history:{}", text(&change["id"]));
                 events.push(self.message(STATE_CHANGED, &name, data, since.is_none())?);
+            }
+            // A blocker that closes changes the issues it blocks, which Linear does not update.
+            let blocked = issue["relations"]["nodes"].as_array().into_iter().flatten();
+            for relation in blocked.filter(|relation| relation["type"] == "blocks") {
+                let blocked = &relation["relatedIssue"];
+                let mut data = fields(blocked);
+                data["blocker"] = issue["identifier"].clone();
+                data["time"] = issue["updatedAt"].clone();
+                let name = format!(
+                    "linear:blockers:{}:{}:{}",
+                    text(&blocked["id"]),
+                    text(&issue["id"]),
+                    text(&issue["updatedAt"])
+                );
+                events.push(self.message(BLOCKERS, &name, data, since.is_none())?);
             }
         }
         Ok(polled(ISSUES, events, &issues, "updatedAt", since))
@@ -460,6 +478,19 @@ fn fields(issue: &Value) -> Value {
         .flatten()
         .map(|label| &label["name"])
         .collect();
+    let blockers: Vec<&Value> = issue["inverseRelations"]["nodes"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|relation| {
+            relation["type"] == "blocks"
+                && !matches!(
+                    relation["issue"]["state"]["type"].as_str(),
+                    Some("completed" | "canceled")
+                )
+        })
+        .map(|relation| &relation["issue"]["identifier"])
+        .collect();
     json!({
         "issue": issue["identifier"],
         "linear_id": issue["id"],
@@ -468,6 +499,7 @@ fn fields(issue: &Value) -> Value {
         "team": issue["team"]["key"],
         "state": issue["state"]["name"],
         "labels": labels,
+        "blockers": blockers,
     })
 }
 
@@ -497,7 +529,7 @@ fn resume(
             let stream = match message.kind.as_str() {
                 BASELINE => text(&message.data["stream"]).to_string(),
                 ENTERED | LEFT => view_stream(text(&message.data["view"])),
-                CREATED | STATE_CHANGED => ISSUES.to_string(),
+                CREATED | STATE_CHANGED | BLOCKERS => ISSUES.to_string(),
                 COMMENTED => COMMENTS.to_string(),
                 _ => continue,
             };

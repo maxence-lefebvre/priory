@@ -1,4 +1,5 @@
 pub mod daemon;
+mod hold;
 pub mod report;
 mod room;
 mod route;

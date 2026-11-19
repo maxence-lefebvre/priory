@@ -295,24 +295,9 @@ fn wait(
         }
         "time" => {
             let until = on["until"].as_str().unwrap_or_default();
-            let instant = until.parse::<herdr_bus::Timestamp>().ok();
-            // The `+` refuses the SQLite modifiers that are not durations, such as `start of day`.
-            let at: Option<String> = match instant {
-                Some(instant) => tx.query_row(
-                    "SELECT strftime('%Y-%m-%dT%H:%M:%fZ', ?1)",
-                    [instant.to_string()],
-                    |row| row.get(0),
-                )?,
-                None => tx.query_row(
-                    "SELECT strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '+' || ?1)",
-                    [until],
-                    |row| row.get(0),
-                )?,
-            };
-            let Some(at) = at else {
-                return Ok(Err(format!(
-                    "until {until:?} is neither an RFC 3339 instant nor a duration such as 30 seconds, 5 minutes or 2 hours"
-                )));
+            let at = match instant(tx, until)? {
+                Ok(at) => at,
+                Err(error) => return Ok(Err(error)),
             };
             tx.execute(
                 "INSERT INTO waits (task, run, kind, until) VALUES (?1, ?2, 'time', ?3)",
@@ -361,6 +346,28 @@ fn wait(
     Ok(Ok(format!(
         "wait {id} stored: end your turn now; Priory wakes you with the event that satisfies it"
     )))
+}
+
+/// The instant `until` names: an RFC 3339 instant, or a duration from now such as `2 hours`.
+pub(crate) fn instant(tx: &Transaction, until: &str) -> rusqlite::Result<Result<String, String>> {
+    let at: Option<String> = match until.parse::<herdr_bus::Timestamp>() {
+        Ok(instant) => tx.query_row(
+            "SELECT strftime('%Y-%m-%dT%H:%M:%fZ', ?1)",
+            [instant.to_string()],
+            |row| row.get(0),
+        )?,
+        // The `+` refuses the SQLite modifiers that are not durations, such as `start of day`.
+        Err(_) => tx.query_row(
+            "SELECT strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '+' || ?1)",
+            [until],
+            |row| row.get(0),
+        )?,
+    };
+    Ok(at.ok_or_else(|| {
+        format!(
+            "until {until:?} is neither an RFC 3339 instant nor a duration such as 30 seconds, 5 minutes or 2 hours"
+        )
+    }))
 }
 
 /// Fires the task's open wait on the first event since the agent's last prompt that satisfies it:
@@ -971,7 +978,8 @@ pub(crate) fn answer(
         )));
     }
     let options: Vec<String> = serde_json::from_str(&options).expect("options are stored as JSON");
-    if kind == "step" && !options.contains(&answer.text) {
+    let hold = crate::hold::of_ask(&tx, answer.ask)?;
+    if (kind == "step" || hold.is_some()) && !options.contains(&answer.text) {
         return Ok(Err(format!(
             "ask {} takes one of: {}",
             answer.ask,
@@ -982,7 +990,9 @@ pub(crate) fn answer(
         &format!("UPDATE asks SET answer = ?2, answered = {NOW} WHERE id = ?1"),
         params![answer.ask, answer.text],
     )?;
-    if kind == "step" {
+    if let Some(hold) = hold {
+        crate::hold::answered(&tx, hold, &answer.text)?;
+    } else if kind == "step" {
         let target = step(workflows, &workflow, &at)
             .and_then(|step| step.next.get(&answer.text))
             .cloned()
@@ -1012,21 +1022,36 @@ pub(crate) fn answer(
     Ok(Ok(format!("ask {} answered", answer.ask)))
 }
 
-/// A person's desk action on a task, as `priory resume` or `priory cancel` sends it on the socket.
+/// A person's desk action on a task, as `priory resume`, `cancel`, `hold` or `release` sends it on
+/// the socket.
 #[derive(serde::Serialize, serde::Deserialize)]
 pub struct Act {
     pub act: String,
     pub task: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hold: Option<priory_factory::factory::Hold>,
 }
 
 /// Applies a desk action. `resume` makes a blocked task `ready`, with a prompt that says why it
-/// stopped. `cancel` drops an active task and ends its live run. Returns the reply and a tmux
-/// session to kill.
+/// stopped. `cancel` drops an active task and ends its live run. `hold` and `release` hold a queued
+/// or ready task and let it go. Returns the reply and a tmux session to kill.
 pub(crate) fn act(
     db: &mut Connection,
     act: &Act,
+    factory: &priory_factory::factory::Factory,
 ) -> rusqlite::Result<(Result<String, String>, Option<String>)> {
     let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let held = match (act.act.as_str(), &act.hold) {
+        ("hold", Some(hold)) => Some(crate::hold::hold(&tx, act.task, hold, factory)?),
+        ("release", _) => Some(crate::hold::release_task(&tx, act.task)?),
+        _ => None,
+    };
+    if let Some(reply) = held {
+        if reply.is_ok() {
+            tx.commit()?;
+        }
+        return Ok((reply, None));
+    }
     let Some((state, reason)) = tx
         .query_row(
             "SELECT state, reason FROM tasks WHERE id = ?1",
@@ -1066,6 +1091,12 @@ pub(crate) fn act(
             tx.execute(
                 &format!(
                     "UPDATE runs SET ended = {NOW}, ended_as = 'cancelled' WHERE task = ?1 AND ended IS NULL"
+                ),
+                [act.task],
+            )?;
+            tx.execute(
+                &format!(
+                    "UPDATE holds SET released = {NOW}, released_as = 'cancelled' WHERE task = ?1 AND released IS NULL"
                 ),
                 [act.task],
             )?;

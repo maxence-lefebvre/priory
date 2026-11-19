@@ -8,7 +8,7 @@ const TASK_REQUESTED: &str = "factory.task.requested";
 /// What the daemon does with one inbox entry.
 #[derive(Debug, PartialEq)]
 pub(crate) enum Decision {
-    Create(NewTask),
+    Create(Box<NewTask>),
     Keep(i64),
     Ignore,
 }
@@ -23,6 +23,8 @@ pub(crate) struct NewTask {
     pub lane: Option<String>,
     pub trigger: String,
     pub source: String,
+    #[serde(default)]
+    pub hold: Option<priory_factory::factory::Hold>,
 }
 
 /// The resources a message names, which a task may own: a task request's key, a CLI request's
@@ -109,7 +111,7 @@ pub(crate) fn route(
         .or_else(|| trigger.and_then(|trigger| trigger.value.band.clone()))
         .or_else(|| workflow.value.band.clone())
         .or_else(|| bands.last().map(|band| (*band).to_owned()));
-    Ok(Decision::Create(task))
+    Ok(Decision::Create(Box::new(task)))
 }
 
 /// Whether an event satisfies a pull request wait. A checks wait needs no check run still pending.

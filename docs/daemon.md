@@ -149,6 +149,51 @@ numbers every active task of the band in its current order, so tasks that arrive
 `priory move` writes the state file directly: it needs no daemon, and the daemon reads the new order
 on its next tick.
 
+### Holds
+
+`priory hold <task> --reason <text>` holds a `queued` or `ready` task, so it never starts until
+its hold is released. It refuses a task in any other state: a running task already has a process,
+which a hold would have to kill mid-turn, and an asleep task waits on its own ask or wait, whose wake
+would race the hold. Hold such a task once it is back in the queue. `priory release <task>` lets a
+held task go, back to the state it was held from. Both go to the daemon over `priory.sock`, as
+`priory resume` does, so a hold and a run start never race.
+
+A hold takes at most one condition, which releases it without a person:
+
+| Flag | Released when |
+| ---- | ------------- |
+| none | a person runs `priory release` |
+| `--until <time>` | the time passes: an RFC 3339 instant, or a duration such as `2 hours` from the hold, as for a time wait |
+| `--after <task>` | the other task is done, failed or dropped |
+| `--merge <pr>` | the pull request merges: `owner/name#42`, or `42` in the repository of the task's trigger |
+| `--blockers` | the task's Linear issue has no open blocker left |
+
+`--merge` takes `--if-closed release|drop|ask` for a pull request closed without a merge: `release`
+lets the task go, `drop` drops it with the reason `<pr> closed without a merge`, and `ask`, the
+default, puts an ask on the desk with the options `release` and `drop` while the task stays held.
+`priory answer` takes either. A merge after the ask releases the task and answers the ask.
+
+`--blockers` reads the `blockers` field of Linear events (see `docs/intake.md`). It is refused for
+a task whose source event carries none, such as a GitHub issue or a CLI request. The hold is released
+by the newest event about the issue whose `blockers` is empty: an event on the issue itself, or a
+`linear.issue.blockers` that a closed blocker published.
+
+The daemon judges a hold when it is stored, then a time or task hold on each tick and a merge or
+blockers hold on each message that names its pull request or issue, whatever the message's route.
+A condition that already holds, such as a pull request merged before the hold, releases the task at
+once. A task request with `hold` (see `docs/intake.md`) creates its task held the same way.
+
+A held task has the reason `held: <reason>, <condition>`, which `priory tasks` and the desk show,
+such as `held: needs the schema, until github:owner/repo#7 merges, and asks if it closes unmerged`.
+Events for a held task are kept for its first run, as for a queued one, and a schedule's tick for it is
+coalesced. `priory cancel` drops a held task and ends its hold.
+
+Known limits:
+
+- A pull request closed, then reopened and merged later, is judged on its newest close only. With
+  `drop` or `ask`, the first close already acted.
+- A hold names one condition; holding until two of them takes a person.
+
 ### Room
 
 The daemon admits a run only when the machine has room for it, measured live:
@@ -311,10 +356,11 @@ prompt that shows anyway, when the deny hook failed, ends the run on the next ti
 | `ask` | the ask | its question, then its options | it was asked |
 | `blocked` | the task | its reason | the task last changed state |
 | `prompt` | the outbox prompt | its text, for an `uncertain` prompt | it was attempted |
+| `held` | the hold | the task's reason: why it is held, and until what | it was held |
 | `queue` | the task's place in the queue | its band, then its reason when it has one | the task last changed state |
 | `worktree` | the worktree's path | why it stays: see Sweep | `-` |
 
-It lists only asks and prompts of active tasks. After them come the `queue` rows, in start order,
+It lists only asks and prompts of active tasks, and holds of held tasks. After them come the `queue` rows, in start order,
 and last one `worktree` row for every worktree the sweep keeps. `priory asks` still prints every open ask.
 
 `priory resume <task>` makes a blocked task `ready`. It queues the prompt `A person resumed this
