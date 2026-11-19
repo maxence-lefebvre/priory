@@ -452,16 +452,15 @@ fn an_agent_in_auto_mode_gets_a_run_in_auto_mode_and_its_rules_join_priorys_own(
     setup.start();
 
     setup.until("outbox", |rows| with(rows, 3, "confirmed") == 1);
-    let args = fs::read_to_string(setup.dir.join("fake/args.log")).unwrap();
-    let args: Vec<_> = args.lines().collect();
-    let modes: Vec<_> = args
-        .windows(2)
-        .filter(|w| w[0] == "--permission-mode")
-        .map(|w| w[1])
-        .collect();
-    assert_eq!(modes, ["auto"], "{args:?}");
-    let settings = fs::read_to_string(setup.dir.join("fake/settings.json")).unwrap();
-    let settings: serde_json::Value = serde_json::from_str(&settings).unwrap();
+    let args = launched(&setup);
+    let after = |flag: &str| -> Vec<String> {
+        args.windows(2)
+            .filter(|w| w[0] == flag)
+            .map(|w| w[1].clone())
+            .collect()
+    };
+    assert_eq!(after("--permission-mode"), ["auto"]);
+    let settings: serde_json::Value = serde_json::from_str(&after("--settings")[0]).unwrap();
     assert_eq!(
         settings["permissions"],
         json!({
@@ -1428,6 +1427,7 @@ fn resume_restarts_a_blocked_task_in_its_session_and_cancel_drops_it_and_ends_it
     assert_eq!([&runs[1][4], &runs[1][7]], [&session, "-"]);
     let args = fs::read_to_string(setup.dir.join("fake/args.log")).unwrap();
     assert!(args.contains(&format!("--resume\n{session}\n")), "{args}");
+    assert!(args.contains("--permission-mode\nmanual\n"), "{args}");
     assert_eq!(
         setup.typed()[1],
         "A person resumed this task after: run 1 exited: claude no longer runs in tmux session priory-1. Check the worktree, then continue.\n"
