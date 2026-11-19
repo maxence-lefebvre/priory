@@ -121,8 +121,9 @@ run had attempted stays `uncertain` and is never typed again.
 
 ### Queue
 
-The queue holds the `queued` and `ready` tasks. It starts them in band order, then in the order a
-person set inside the band, then oldest first.
+The queue holds the `queued` and `ready` tasks at a model step. It starts their runs in band order,
+then in the order a person set inside the band, then oldest first. Code steps still run oldest first,
+as described under Code steps.
 
 The bands default to `blocker`, `now`, `today` and `later`, highest first. `factory.toml` can name
 its own, highest first:
@@ -133,16 +134,18 @@ bands = ["urgent", "normal", "someday"]
 ```
 
 A new task's band is its request's `band`, else its trigger's, else its workflow's `band`, else the
-last band. `priory check` refuses a trigger or workflow that names a band the factory lacks, with
+last band. A request band the factory lacks, from a message published before a rename, counts as no
+band. `priory check` refuses a trigger or workflow that names a band the factory lacks, with
 its line, and `priory request --band` refuses one too. The daemon records the bands in the state
 file when it starts, so the listings and `priory move` read them without the factory. A task whose
-band a later `factory.toml` dropped comes after the last band.
+band a later `factory.toml` dropped comes after the last band. A task from before bands existed gets
+the last band when the daemon starts.
 
 `priory move <task> --band <band>` puts an active task in another band, after the tasks a person
 ordered there. `priory move <task> --top`, `--before <other>` or `--after <other>` sets its place in
 the person's order of its band, or of the other task's band, which it joins. `--band` combines with
-`--top`, or with `--before` and `--after` when it names the other task's band. A move numbers every
-active task of the band in its current order, so tasks that arrive later go after them, oldest first.
+`--top`, or with `--before` and `--after` when it names the other task's band. A move that sets a place
+numbers every active task of the band in its current order, so tasks that arrive later go after them, oldest first.
 `priory move` writes the state file directly: it needs no daemon, and the daemon reads the new order
 on its next tick.
 

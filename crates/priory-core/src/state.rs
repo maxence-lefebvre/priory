@@ -406,6 +406,11 @@ pub(crate) fn bands(db: &mut Connection, bands: &[&str]) -> rusqlite::Result<()>
             params![band, rank as i64],
         )?;
     }
+    // Tasks from before bands have none: the last band is what a request without one gets.
+    tx.execute(
+        "UPDATE tasks SET band = ?1 WHERE band IS NULL",
+        [bands.last()],
+    )?;
     tx.commit()
 }
 

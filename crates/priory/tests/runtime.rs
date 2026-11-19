@@ -902,6 +902,51 @@ fn route(setup: &Setup) {
 }
 
 #[test]
+fn a_band_comes_from_the_request_then_the_trigger_then_the_workflow() {
+    let setup = Setup::new("band-source");
+    let trigger = format!("{TRIGGER}band = \"today\"\n");
+    fs::write(setup.dir.join("factory/triggers/agent-label.toml"), trigger).unwrap();
+    let workflow = WORKFLOW.replacen("\n", "\nband = \"now\"\n", 1);
+    fs::write(setup.dir.join("factory/workflows/implement.toml"), workflow).unwrap();
+    let from_cli = |issue: u64, band: Option<&str>| {
+        let mut message = requested_in(issue, band);
+        message.data["trigger"] = json!("cli");
+        message
+    };
+    setup.publish(&requested_in(42, Some("blocker")));
+    setup.publish(&requested(43));
+    setup.publish(&from_cli(44, None));
+    // A band the factory lacks, as a message published before a rename carries.
+    setup.publish(&from_cli(45, Some("todday")));
+
+    route(&setup);
+
+    let bands: Vec<_> = queue(&setup)
+        .into_iter()
+        .map(|[id, _, band, _]| format!("{id} {band}"))
+        .collect();
+    assert_eq!(bands, ["1 blocker", "3 now", "4 now", "2 today"]);
+}
+
+#[test]
+fn a_task_from_before_bands_gets_the_last_band_and_keeps_its_age() {
+    let setup = Setup::new("band-upgrade");
+    setup.publish(&requested(42));
+    route(&setup);
+    let db = rusqlite::Connection::open(setup.dir.join("priory.db")).unwrap();
+    db.execute("UPDATE tasks SET band = NULL", []).unwrap();
+    setup.publish(&requested(43));
+
+    route(&setup);
+
+    let bands: Vec<_> = queue(&setup)
+        .into_iter()
+        .map(|[id, _, band, place]| format!("{id} {band} {place}"))
+        .collect();
+    assert_eq!(bands, ["1 later 1", "2 later 2"]);
+}
+
+#[test]
 fn a_person_order_inside_a_band_beats_age() {
     let mut setup = Setup::new("person-order");
     setup.memory(12);
@@ -925,19 +970,18 @@ fn a_person_order_inside_a_band_beats_age() {
         .map(|row| row.map(str::to_owned))
     );
     let waits = "later: waits for room: 8.0 GB of memory free, needs 4.0 GB and keeps 6.4 GB free";
-    let desk: Vec<_> = setup
-        .until("desk", |rows| with(rows, 1, "queue") == 2)
-        .into_iter()
-        .filter(|row| row[1] == "queue")
-        .map(|row| row[1..].join(" "))
-        .collect();
-    assert_eq!(
-        desk,
-        [
-            format!("queue 1 2 {waits}"),
-            "queue 2 1 later: waits behind task 2, which waits for room".to_owned(),
-        ]
-    );
+    let expected = [
+        format!("queue 1 2 {waits}"),
+        "queue 2 1 later: waits behind task 2, which waits for room".to_owned(),
+    ];
+    let queued = |rows: &[Vec<String>]| -> Vec<String> {
+        rows.iter()
+            .filter(|row| row[1] == "queue")
+            .map(|row| row[1..].join(" "))
+            .collect()
+    };
+    // The reasons land on the daemon's next tick, after the run starts.
+    setup.until("desk", |rows| queued(rows) == expected);
 }
 
 #[test]
@@ -1033,8 +1077,10 @@ fn a_smaller_task_waits_behind_the_head_of_the_queue_that_has_no_room() {
     setup.start();
 
     let waits = "waits for room: 11.0 GB of memory free, needs 6.0 GB and keeps 6.4 GB free";
-    let tasks = setup.until("tasks", |rows| rows.len() == 2 && rows[0][7] == waits);
-    assert_eq!(tasks[1][7], "waits behind task 1, which waits for room");
+    let behind = "waits behind task 1, which waits for room";
+    setup.until("tasks", |rows| {
+        rows.len() == 2 && rows[0][7] == waits && rows[1][7] == behind
+    });
     std::thread::sleep(Duration::from_millis(1500));
     assert!(setup.rows("runs").is_empty());
     setup.memory(13);

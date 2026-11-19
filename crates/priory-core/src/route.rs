@@ -101,11 +101,14 @@ pub(crate) fn route(
     };
     task.step.clone_from(&workflow.value.start);
     let trigger = factory.triggers.get(&task.trigger);
+    let bands = factory.bands();
+    // A message published before a band was renamed can carry a band the factory lacks.
     task.band = task
         .band
+        .filter(|band| bands.contains(&band.as_str()))
         .or_else(|| trigger.and_then(|trigger| trigger.value.band.clone()))
         .or_else(|| workflow.value.band.clone())
-        .or_else(|| factory.bands().last().map(|band| (*band).to_owned()));
+        .or_else(|| bands.last().map(|band| (*band).to_owned()));
     Ok(Decision::Create(task))
 }
 

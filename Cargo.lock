@@ -371,6 +371,7 @@ dependencies = [
  "priory-factory",
  "priory-intake",
  "priory-runtime",
+ "rusqlite",
  "serde_json",
  "uuid",
 ]
