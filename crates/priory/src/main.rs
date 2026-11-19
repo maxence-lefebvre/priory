@@ -66,7 +66,8 @@ fn main() -> ExitCode {
         ),
         Some("waits") => list(
             "id\ttask\trun\tkind\ton\tcreated",
-            "SELECT id, task, run, kind, coalesce(resource, until, 'task ' || target), created
+            "SELECT id, task, run, kind, coalesce(resource, until, 'task ' || target,
+               printf('%.1f GB free', bytes / 1073741824.0)), created
              FROM waits WHERE fired IS NULL AND withdrawn IS NULL ORDER BY id",
         ),
         Some("desk") => desk(),

@@ -2788,7 +2788,7 @@ fn an_unknown_condition_is_refused_and_nothing_is_stored() {
     assert!(error, "{text}");
     assert_eq!(
         text,
-        "unknown condition \"moon\": wait on pull_request, checks, review, time, task, linear_comment, linear_state or slack_reply"
+        "unknown condition \"moon\": wait on pull_request, checks, review, time, task, linear_comment, linear_state, slack_reply or disk"
     );
     std::thread::sleep(Duration::from_millis(1500));
     assert!(setup.rows("waits").is_empty());
@@ -5879,4 +5879,52 @@ fn a_linear_comment_no_task_owned_before_the_wait_wakes_the_task_at_once() {
         "{:?}",
         setup.typed()
     );
+}
+
+#[test]
+fn a_free_disk_wait_fires_when_room_comes_back() {
+    let mut setup = Setup::new("disk-wait");
+    setup.disk(30);
+    setup.calls(&[wait(json!({ "type": "disk", "gb": 50 }))]);
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("runs", |rows| {
+        rows.first().is_some_and(|row| row[7] == "asleep")
+    });
+    assert_eq!(setup.rows("waits")[0][3..5], ["disk", "50.0 GB free"]);
+    stays_asleep(&setup);
+
+    setup.disk(60);
+
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 2);
+    assert_eq!(
+        setup.typed()[1],
+        "wait 1 fired: 60.0 GB of disk free\nEnd this step by calling the result tool of the priory MCP server with one of these outcomes: failed, passed.\n"
+    );
+}
+
+#[test]
+fn a_revive_into_a_code_step_recreates_a_swept_worktree() {
+    let mut setup = Setup::with_workflow("revive-code-step", AUTONOMOUS);
+    let mut failed = passed_with_evidence();
+    failed["arguments"]["outcome"] = json!("failed");
+    setup.calls(&[failed]);
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == "dropped")
+    });
+    setup.gone("priory-1");
+    let commit = setup.commit(1, "widget.txt");
+    setup.git(
+        &setup.clone(),
+        &["worktree", "remove", setup.worktree(1).to_str().unwrap()],
+    );
+
+    let revived = setup.priory(&["revive", "1", "--step", "open-pr"]);
+
+    assert!(revived.status.success(), "{revived:?}");
+    let actions = setup.until("actions", |rows| rows.len() == 1);
+    assert_eq!(actions[0][4..7], ["opened", "github:owner/repo#7", &commit]);
+    assert_eq!(setup.pushed("priory/1"), commit);
 }

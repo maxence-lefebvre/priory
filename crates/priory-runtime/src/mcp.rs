@@ -124,14 +124,15 @@ fn tools() -> Value {
                 "properties": {
                     "on": {
                         "type": "object",
-                        "description": "The condition: {type: pull_request|checks|review, repo, pull_request} for a pull request that closes, whose checks all complete, or that gets a review; {type: time, until} for an RFC 3339 instant or a duration such as 30 seconds, 5 minutes or 2 hours; {type: task, task} for another task that ends.",
+                        "description": "The condition: {type: pull_request|checks|review, repo, pull_request} for a pull request that closes, whose checks all complete, or that gets a review; {type: time, until} for an RFC 3339 instant or a duration such as 30 seconds, 5 minutes or 2 hours; {type: task, task} for another task that ends; {type: disk, gb} for the machine to have gb GB of disk free.",
                         "properties": {
-                            "type": { "type": "string", "enum": ["pull_request", "checks", "review", "time", "task"] },
+                            "type": { "type": "string", "enum": ["pull_request", "checks", "review", "time", "task", "disk"] },
                             "repo": text("owner/name, for a pull request condition."),
                             "pull_request": { "type": "integer", "description": "The pull request number." },
                             "head_sha": text("For checks: the commit whose checks you wait for. Without it, any head of the pull request."),
                             "until": text("For time: an RFC 3339 instant, or a duration such as 30 seconds."),
                             "task": { "type": "integer", "description": "For task: the id of the task to wait for." },
+                            "gb": { "type": "number", "description": "For disk: the free disk to wait for, in GB." },
                         },
                         "required": ["type"],
                     },

@@ -588,6 +588,26 @@ pub fn watched(db: &Connection) -> rusqlite::Result<Vec<(String, String)>> {
     .collect()
 }
 
+/// Fires the disk waits the free disk that `free` measures satisfies; measures only while one is open.
+pub(crate) fn disk_due(
+    db: &mut Connection,
+    free: impl FnOnce() -> Option<u64>,
+) -> rusqlite::Result<()> {
+    let open = db
+        .query_row(
+            "SELECT 1 FROM waits WHERE kind = 'disk' AND fired IS NULL AND withdrawn IS NULL",
+            [],
+            |_| Ok(()),
+        )
+        .optional()?;
+    let Some(free) = open.and_then(|()| free()) else {
+        return Ok(());
+    };
+    let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    crate::tools::disk_due(&tx, free)?;
+    tx.commit()
+}
+
 /// The oldest active task that owns any of `resources`.
 pub(crate) fn owner(tx: &Transaction, resources: &[String]) -> rusqlite::Result<Option<Task>> {
     let resources = serde_json::to_string(resources).expect("resources serialize");

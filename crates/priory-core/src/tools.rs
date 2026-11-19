@@ -247,7 +247,7 @@ fn open_wait(tx: &Transaction, run: i64) -> rusqlite::Result<Option<i64>> {
 }
 
 const CONDITIONS: &str =
-    "pull_request, checks, review, time, task, linear_comment, linear_state or slack_reply";
+    "pull_request, checks, review, time, task, linear_comment, linear_state, slack_reply or disk";
 
 /// What a resource wait names: its resource, and the head or the state it wants.
 type Named = (String, Option<String>, Option<String>);
@@ -371,6 +371,15 @@ fn wait(
             tx.execute(
                 "INSERT INTO waits (task, run, kind, target) VALUES (?1, ?2, 'task', ?3)",
                 params![run.task, run.id, target],
+            )?;
+        }
+        "disk" => {
+            let Some(gb) = on["gb"].as_f64().filter(|gb| gb.is_finite() && *gb > 0.0) else {
+                return Ok(Err("a disk wait needs gb, the free disk in GB to wait for".into()));
+            };
+            tx.execute(
+                "INSERT INTO waits (task, run, kind, bytes) VALUES (?1, ?2, 'disk', ?3)",
+                params![run.task, run.id, (gb * GB) as i64],
             )?;
         }
         other => {
@@ -633,6 +642,25 @@ pub(crate) fn due(tx: &Transaction) -> rusqlite::Result<()> {
     }
     for (id, task, text) in &fired {
         fire(tx, *id, *task, text, None)?;
+    }
+    Ok(())
+}
+
+const GB: f64 = (1u64 << 30) as f64;
+
+/// Fires every open disk wait that `free` bytes of free disk satisfy.
+pub(crate) fn disk_due(tx: &Transaction, free: u64) -> rusqlite::Result<()> {
+    let fired = tx
+        .prepare(
+            "SELECT waits.id, waits.task FROM waits JOIN tasks ON tasks.id = waits.task
+             WHERE waits.fired IS NULL AND waits.withdrawn IS NULL AND waits.kind = 'disk'
+             AND tasks.state IN ('running', 'asleep') AND waits.bytes <= ?1 ORDER BY waits.id",
+        )?
+        .query_map([free as i64], |row| Ok((row.get::<_, i64>(0)?, row.get(1)?)))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    let text = format!("{:.1} GB of disk free", free as f64 / GB);
+    for (id, task) in fired {
+        fire(tx, id, task, &format!("wait {id} fired: {text}"), None)?;
     }
     Ok(())
 }
