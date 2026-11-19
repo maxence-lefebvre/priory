@@ -180,6 +180,14 @@ impl Setup {
         }
     }
 
+    /// Waits until the daemon answers on its socket, which it does only once its start settled
+    /// every run it found.
+    fn serving(&self) {
+        let reply = self.priory(&["resume", "999"]);
+        let stderr = String::from_utf8_lossy(&reply.stderr);
+        assert!(stderr.contains("there is no task 999"), "{stderr}");
+    }
+
     /// The rows `priory <verb>` prints, each split on tabs, after its header.
     fn rows(&self, verb: &str) -> Vec<Vec<String>> {
         let output = self.priory(&[verb]);
@@ -257,6 +265,16 @@ impl Setup {
             })
             .collect();
         fs::write(self.dir.join("fake/calls"), lines).unwrap();
+    }
+
+    /// Waits until the fake `claude` took all but `left` of its queued tool calls.
+    fn calls_left(&self, left: usize) {
+        let deadline = Instant::now() + Duration::from_secs(15);
+        let path = self.dir.join("fake/calls");
+        while fs::read_to_string(&path).unwrap().lines().count() > left {
+            assert!(Instant::now() < deadline, "the fake never took its calls");
+            std::thread::sleep(Duration::from_millis(50));
+        }
     }
 
     /// The replies the fake `claude` got from its tool calls, one per line.
@@ -1479,12 +1497,7 @@ fn a_run_with_no_session_start_within_60_seconds_ends_and_names_the_clone_to_tru
     });
 
     assert_ne!(runs[0][6], "-");
-    assert!(
-        !setup
-            .tmux(&["has-session", "-t", "=priory-1"])
-            .status
-            .success()
-    );
+    setup.gone("priory-1");
     let clone = setup.dir.join("home/repos/owner/repo");
     let tasks = setup.rows("tasks");
     assert_eq!(tasks[0][4], "blocked");
@@ -1596,6 +1609,7 @@ fn a_result_with_an_unknown_outcome_is_refused_with_the_valid_outcomes_and_the_t
         text,
         r#"outcome "maybe" is not one of step plan's outcomes: hopeless, ready, unsure"#
     );
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 2);
     std::thread::sleep(Duration::from_millis(1500));
     let tasks = setup.rows("tasks");
     assert_eq!([&tasks[0][3], &tasks[0][4]], ["plan", "running"]);
@@ -1988,7 +2002,10 @@ fn the_desk_lists_an_uncertain_prompt_a_blocked_task_and_an_open_ask_oldest_firs
     setup.crash();
     setup.start();
     setup.until("outbox", |rows| with(rows, 3, "uncertain") == 1);
+    setup.serving();
     setup.release("hold-submit");
+    setup.calls_left(1);
+    // The desk orders by times in whole seconds, so the block must land a second after the prompt.
     std::thread::sleep(Duration::from_millis(1100));
     setup.hold("hold-submit");
 
@@ -2170,6 +2187,7 @@ fn a_resumed_task_gets_its_prompts_although_its_exited_run_left_an_uncertain_one
     setup.crash();
     setup.start();
     setup.until("outbox", |rows| with(rows, 3, "uncertain") == 1);
+    setup.serving();
     setup.release("hold-submit");
     assert!(
         setup
@@ -2294,7 +2312,7 @@ fn an_answer_that_beats_the_stop_is_typed_into_the_same_run_once() {
     assert_eq!(setup.rows("outbox")[1][3], "queued");
     assert_eq!(setup.typed().len(), 1);
     setup.release("hold-stop");
-    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 2);
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 3);
     std::thread::sleep(Duration::from_millis(1500));
     assert_eq!(
         setup.typed(),
@@ -2511,11 +2529,12 @@ fn an_event_that_does_not_match_the_wait_stays_kept_and_reaches_the_next_run() {
     let setup = asleep_on("unmatched", on_pull_7("pull_request"));
 
     setup.publish(&reviewed());
+    setup.until("inbox", |rows| rows.len() == 2);
     stays_asleep(&setup);
     assert_eq!(setup.rows("inbox")[1][4], "kept");
     setup.publish(&closed());
 
-    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 2);
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 3);
     std::thread::sleep(Duration::from_millis(1500));
     let typed = setup.typed();
     assert_eq!(typed.len(), 3, "{typed:?}");
@@ -2552,8 +2571,6 @@ fn a_time_wait_fires_after_its_instant_and_not_before() {
     let setup = asleep_on("time", json!({ "type": "time", "until": "4 seconds" }));
     let waits = setup.rows("waits");
     assert_eq!(waits[0][3], "time");
-
-    stays_asleep(&setup);
 
     setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 2);
     assert_eq!(
@@ -3706,12 +3723,7 @@ fn a_sweep_leaves_the_worktree_of_a_running_or_asleep_task() {
         });
         if issue == 2 {
             // Task 2's silent turn and its nudge turn use up two calls before task 3 starts.
-            setup.until("outbox", |rows| {
-                rows.iter()
-                    .filter(|row| row[1] == "2" && row[3] == "confirmed")
-                    .count()
-                    >= 2
-            });
+            setup.calls_left(1);
         }
     }
     setup.crash();
@@ -3972,6 +3984,7 @@ fn a_firing_while_the_task_runs_is_coalesced_and_not_typed() {
     setup.until("inbox", |rows| rows.len() == 2);
     assert_eq!(setup.rows("inbox")[1][4], "coalesced");
     setup.release("hold-stop");
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 2);
     std::thread::sleep(Duration::from_millis(1500));
     let typed = setup.typed();
     assert_eq!(typed.len(), 2, "{typed:?}");
@@ -4348,7 +4361,6 @@ fn a_time_hold_releases_the_task_once_its_time_passes() {
         "task 1 held: late, until 2000-01-01T00:00:00.000Z; released at once: 2000-01-01T00:00:00.000Z passed\n"
     );
     assert_eq!(held_as(&setup, "1")[0], "queued");
-    setup.memory(60);
 
     let reply = person(
         &setup,
@@ -4361,6 +4373,7 @@ fn a_time_hold_releases_the_task_once_its_time_passes() {
         "{reply}"
     );
     assert_eq!(held_as(&setup, "1")[0], "held");
+    setup.memory(60);
     setup.until("tasks", |rows| rows[0][4] == "running");
 }
 

@@ -90,10 +90,11 @@ printf '\e[?2004h'
 [ -e "$FAKE_DIR/silent" ] || hook SessionStart
 while :; do
   prompt=''
-  while IFS= read -r line; do
+  # A pane killed mid-read must exit here, not log an empty prompt and take the next queued call.
+  while IFS= read -r line || exit 0; do
     prompt+="$line"$'\n'
     [[ $line == *$'\e[201~'* ]] && break
-  done || exit 0
+  done
   prompt=${prompt//$'\e[200~'/}
   prompt=${prompt//$'\e[201~'/}
   printf '%s' "$prompt" > "$FAKE_DIR/pending"
