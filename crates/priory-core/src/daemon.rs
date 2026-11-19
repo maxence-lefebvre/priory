@@ -112,6 +112,8 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
         if swept.is_none_or(|at| at.elapsed() >= every) {
             swept = Some(Instant::now());
             sweep::run(&db, &home)?;
+            let short = || room::measure(&home).is_ok_and(|room| crate::room::short_of_disk(&room));
+            sweep::retire(&db, &home, short)?;
         }
         match listening.lines.recv_timeout(EVERY) {
             Ok(line) => apply(&mut db, line, &trace)?,

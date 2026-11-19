@@ -5464,3 +5464,74 @@ fn a_run_waits_for_room_while_a_grant_holds_memory() {
     assert!(a.wait_with_output().unwrap().status.success());
     setup.until("tasks", |rows| rows[0][4] == "running");
 }
+
+/// Task 1 sleeps on pull request 7 with a commit on its branch, then the disk runs short while task
+/// 2 waits for room, so the disk stall sweeps.
+fn asleep_when_disk_runs_short(name: &str, spoil: impl FnOnce(&Setup)) -> (Setup, String) {
+    let setup = asleep_on(name, on_pull_7("pull_request"));
+    let commit = setup.commit(1, "widget.txt");
+    spoil(&setup);
+    setup.disk(10);
+    setup.publish(&requested(43));
+    setup.until_banner(|banner| banner.is_some());
+    (setup, commit)
+}
+
+#[test]
+fn a_clean_asleep_task_retires_when_disk_runs_short_and_resurrects_with_its_worktree_and_session() {
+    let (setup, commit) = asleep_when_disk_runs_short("retire", |setup| {
+        setup.calls(&[result("passed")]);
+    });
+    let session = setup.rows("runs")[0][4].clone();
+
+    setup.removed(1);
+
+    let tasks = setup.until("tasks", |rows| rows[0][10] != "-");
+    assert_eq!(tasks[0][4], "asleep");
+    assert!(setup.branches().contains("priory/1"));
+    let retired: Vec<_> = setup
+        .rows("desk")
+        .into_iter()
+        .filter(|row| row[1] == "retired")
+        .map(|row| [row[2].clone(), row[5].clone()])
+        .collect();
+    assert_eq!(
+        retired,
+        [[
+            "1".to_owned(),
+            "its worktree was removed to free disk; it resurrects from priory/1 when its wait fires"
+                .to_owned()
+        ]]
+    );
+
+    setup.disk(100);
+    setup.until("tasks", |rows| rows[1][4] == "done");
+    setup.publish(&closed());
+
+    setup.until("outbox", |rows| {
+        rows.iter()
+            .any(|row| row[2] == "3" && row[3] == "confirmed")
+    });
+    assert_eq!(setup.rows("tasks")[0][10], "-");
+    let head = setup.git(&setup.worktree(1), &["rev-parse", "HEAD"]);
+    assert_eq!(head.trim(), commit);
+    let runs = setup.rows("runs");
+    assert_eq!([&runs[2][1], &runs[2][4]], ["1", &session]);
+    let args = fs::read_to_string(setup.dir.join("fake/args.log")).unwrap();
+    assert!(args.contains(&format!("--resume\n{session}\n")), "{args}");
+}
+
+#[test]
+fn a_dirty_asleep_task_never_retires_and_says_why() {
+    let (setup, _) = asleep_when_disk_runs_short("retire-dirty", |setup| {
+        fs::write(setup.worktree(1).join("notes.txt"), "x\n").unwrap();
+    });
+
+    let tasks = setup.until("tasks", |rows| rows[0][7] != "-");
+
+    assert_eq!(
+        [&tasks[0][4], &tasks[0][7], &tasks[0][10]],
+        ["asleep", "cannot retire: untracked files", "-"]
+    );
+    assert!(setup.worktree(1).join("notes.txt").exists());
+}

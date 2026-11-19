@@ -70,6 +70,43 @@ fn blocked(
     found: &Found,
     merged_head: Option<&str>,
 ) -> Result<Option<String>, String> {
+    if let Some(reason) = unsettled(home, found)? {
+        return Ok(Some(reason));
+    }
+    let path = &found.path;
+    let tip = run(git(path).args(["rev-parse", "HEAD"]))?;
+    let tip = tip.trim();
+    let merged = run(git(path).args(["merge-base", "--is-ancestor", tip, "origin/HEAD"])).is_ok();
+    if merged || merged_head == Some(tip) {
+        return Ok(None);
+    }
+    let unpushed = run(git(path).args(["rev-list", "-n1", tip, "--not", "--remotes"]))?;
+    Ok(Some(
+        if unpushed.is_empty() {
+            "not merged"
+        } else {
+            "unpushed commits"
+        }
+        .to_owned(),
+    ))
+}
+
+/// Why the worktree of an asleep task must stay, or `None` when it can retire. Retiring keeps the
+/// branch in the clone, so its commits need not be pushed.
+pub fn retire_blocker(home: &Path, found: &Found) -> Option<String> {
+    unsettled(home, found).unwrap_or_else(|error| Some(format!("cannot check: {error}")))
+}
+
+/// Removes the worktree and keeps its branch. Git refuses when anything is uncommitted or untracked.
+pub fn retire(home: &Path, found: &Found) -> Result<(), String> {
+    run(git(&found.clone(home))
+        .args(["worktree", "remove"])
+        .arg(&found.path))
+    .map(drop)
+}
+
+/// Why removing the worktree would lose a file or a process's folder: everything else is on its branch.
+fn unsettled(home: &Path, found: &Found) -> Result<Option<String>, String> {
     let clone = found.clone(home);
     let path = &found.path;
     let ours =
@@ -96,21 +133,7 @@ fn blocked(
     if occupied(path) {
         return Ok(Some("a process runs in it".to_owned()));
     }
-    let tip = run(git(path).args(["rev-parse", "HEAD"]))?;
-    let tip = tip.trim();
-    let merged = run(git(path).args(["merge-base", "--is-ancestor", tip, "origin/HEAD"])).is_ok();
-    if merged || merged_head == Some(tip) {
-        return Ok(None);
-    }
-    let unpushed = run(git(path).args(["rev-list", "-n1", tip, "--not", "--remotes"]))?;
-    Ok(Some(
-        if unpushed.is_empty() {
-            "not merged"
-        } else {
-            "unpushed commits"
-        }
-        .to_owned(),
-    ))
+    Ok(None)
 }
 
 /// Whether a process has its working directory inside `path`.

@@ -84,6 +84,52 @@ pub fn run(db: &Connection, home: &Path) -> rusqlite::Result<()> {
     Ok(())
 }
 
+/// Retires asleep tasks, longest asleep first, while `short` says the disk is short: removes each
+/// clean worktree and keeps its branch and sessions. A task that cannot retire gets the reason once.
+pub(crate) fn retire(db: &Connection, home: &Path, mut short: impl FnMut() -> bool) -> rusqlite::Result<()> {
+    if !short() {
+        return Ok(());
+    }
+    let asleep = db
+        .prepare(
+            "SELECT id, worktree FROM tasks
+             WHERE state = 'asleep' AND retired IS NULL AND worktree IS NOT NULL ORDER BY changed, id",
+        )?
+        .query_map([], |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    let found = worktrees::found(home);
+    for (task, worktree) in asleep {
+        let Some(found) = found
+            .iter()
+            .find(|found| found.path.to_str() == Some(&worktree) && found.name == task.to_string())
+        else {
+            continue;
+        };
+        let stays = worktrees::retire_blocker(home, found)
+            .or_else(|| worktrees::retire(home, found).err());
+        let Some(stays) = stays else {
+            db.execute(
+                "UPDATE tasks SET retired = strftime('%Y-%m-%dT%H:%M:%SZ', 'now'), reason = NULL
+                 WHERE id = ?1",
+                [task],
+            )?;
+            if short() {
+                continue;
+            }
+            return Ok(());
+        };
+        let reason = format!("cannot retire: {stays}");
+        let reported = db.execute(
+            "UPDATE tasks SET reason = ?2 WHERE id = ?1 AND reason IS NOT ?2",
+            rusqlite::params![task, reason],
+        )?;
+        if reported > 0 {
+            eprintln!("priory daemon: task {task} {reason}");
+        }
+    }
+    Ok(())
+}
+
 /// Prints a `worktree` row of the desk for every worktree that stays, with the reason.
 pub fn print_stays(db: &Connection, home: &Path) -> rusqlite::Result<()> {
     for entry in assess(db, home)? {

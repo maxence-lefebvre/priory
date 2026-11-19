@@ -75,6 +75,11 @@ fn keep(room: &Room, share: &Share) -> f64 {
     room.memory_total as f64 * (1.0 - share.memory)
 }
 
+/// Whether free disk is down to the floor the room keeps.
+pub(crate) fn short_of_disk(room: &Room) -> bool {
+    room.disk_free as f64 <= disk_floor(room)
+}
+
 /// The free disk the room keeps: 10 % of the disk, at most 20 GB.
 fn disk_floor(room: &Room) -> f64 {
     // `agents` has no disk part, and R4.10's slice caps only CPU and memory.
