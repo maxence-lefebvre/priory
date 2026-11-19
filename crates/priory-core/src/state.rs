@@ -770,10 +770,11 @@ pub(crate) fn signal(
                 )
                 .optional()?;
             if let Some((id, text)) = attempted
-                && signal
-                    .prompt
-                    .as_deref()
-                    .is_some_and(|prompt| words(prompt).contains(&words(&text)))
+                && signal.prompt.as_deref().is_some_and(|prompt| {
+                    pasted(prompt)
+                        .split_whitespace()
+                        .eq(text.split_whitespace())
+                })
             {
                 tx.execute(
                     &format!(
@@ -795,13 +796,15 @@ pub(crate) fn signal(
     Ok(kill)
 }
 
-/// The words of `text`, each between spaces, so a containment check matches whole words only.
-/// Claude may wrap a pasted prompt, such as in a `pasted_content` tag, before its hook sees it.
-fn words(text: &str) -> String {
-    format!(
-        " {} ",
-        text.split_whitespace().collect::<Vec<_>>().join(" ")
-    )
+/// The prompt inside the `pasted_content` tag that Claude Code 2.1.328 wraps a paste in, before its
+/// hook sees it; `prompt` itself when it has no such tag.
+fn pasted(prompt: &str) -> &str {
+    prompt
+        .trim()
+        .strip_prefix("<pasted_content")
+        .and_then(|rest| rest.split_once('>'))
+        .and_then(|(_, body)| body.rsplit_once("</pasted_content"))
+        .map_or(prompt, |(body, _)| body)
 }
 
 /// Marks the oldest queued prompt of an idle live run `attempted` and the run busy, in one
