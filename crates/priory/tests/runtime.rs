@@ -63,7 +63,8 @@ impl Setup {
         }
         fs::create_dir_all(setup.dir.join("fake")).unwrap();
         fs::create_dir_all(setup.dir.join("tmux")).unwrap();
-        fs::create_dir_all(setup.dir.join("proc")).unwrap();
+        fs::create_dir_all(setup.dir.join("proc/sys/kernel")).unwrap();
+        fs::write(setup.dir.join("proc/sys/kernel/hostname"), "runner\n").unwrap();
         setup.memory(60);
         setup.load(0.0);
         setup.origin();
@@ -3371,4 +3372,124 @@ fn a_firing_while_the_task_runs_is_coalesced_and_not_typed() {
     std::thread::sleep(Duration::from_millis(1500));
     assert_eq!(setup.rows("outbox").len(), 1);
     assert_eq!(setup.typed().len(), 1);
+}
+
+impl Setup {
+    /// The records `priory trace` prints, one JSON event per line.
+    fn trace(&self) -> Vec<serde_json::Value> {
+        let output = self.priory(&["trace"]);
+        assert!(output.status.success(), "{output:?}");
+        String::from_utf8(output.stdout)
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect()
+    }
+}
+
+#[test]
+fn each_step_that_ends_appends_one_step_ended_record_with_its_outcome_and_decider() {
+    let setup = asked_to_open("trace", OPEN_PR);
+    setup.commit(1, "widget.txt");
+
+    let answered = setup.priory(&["answer", "1", "open", "--revision", "1"]);
+
+    assert!(answered.status.success(), "{answered:?}");
+    setup.until("actions", |rows| rows.len() == 1);
+    let records = setup.trace();
+    let steps: Vec<_> = records
+        .iter()
+        .map(|record| {
+            let data = &record["data"];
+            [
+                &data["step"],
+                &data["decider"],
+                &data["effect"],
+                &data["outcome"],
+            ]
+            .map(|field| field.as_str().unwrap().to_owned())
+        })
+        .collect();
+    assert_eq!(
+        steps,
+        [
+            ["implement", "model", "reversible", "passed"],
+            ["approve-pr", "human", "none", "open"],
+            ["open-pr", "code", "irreversible", "opened"],
+        ]
+    );
+    let model = &records[0];
+    assert_eq!(model["specversion"], "1.0");
+    assert_eq!(model["type"], "factory.step.ended");
+    assert_eq!(model["datacontenttype"], "application/json");
+    assert_eq!(model["source"], "factory://demo/runner");
+    assert!(uuid::Uuid::parse_str(model["id"].as_str().unwrap()).is_ok());
+    assert_ne!(model["id"], records[1]["id"]);
+    let data = &model["data"];
+    for (field, value) in [
+        ("factory", json!("demo")),
+        ("workflow", json!("implement")),
+        ("task", json!("1")),
+        ("key", json!("github:owner/repo#42")),
+        ("run", json!("1")),
+        ("generation", json!(1)),
+        ("machine", json!("runner")),
+        ("harness", json!("claude-code")),
+    ] {
+        assert_eq!(data[field], value, "{field} in {data}");
+    }
+    assert!(data["duration_ms"].is_u64(), "{data}");
+    assert!(data["started"].is_string(), "{data}");
+    for absent in ["lane", "factory_revision"] {
+        assert!(data.get(absent).is_none(), "{absent} in {data}");
+    }
+    for later in &records[1..] {
+        let data = &later["data"];
+        for absent in ["run", "harness", "model", "tokens"] {
+            assert!(data.get(absent).is_none(), "{absent} in {data}");
+        }
+    }
+}
+
+#[test]
+fn a_model_step_record_sums_the_tokens_of_its_turns_from_the_session_transcript() {
+    let mut setup = Setup::with_workflow("trace-tokens", STEPS);
+    setup.calls(&[ask(), result("ready"), result("passed")]);
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("asks", |rows| rows.len() == 1);
+    setup.gone("priory-1");
+
+    // The answer resumes the session, whose transcript already holds the first turn.
+    let answered = setup.priory(&["answer", "1", "sqlite", "--revision", "1"]);
+
+    assert!(answered.status.success(), "{answered:?}");
+    setup.until("tasks", |rows| rows[0][4] == "done");
+    let records = setup.trace();
+    let tokens: Vec<_> = records
+        .iter()
+        .map(|record| {
+            let data = &record["data"];
+            (
+                data["step"].clone(),
+                data["model"].clone(),
+                data["tokens"].clone(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        tokens,
+        [
+            (
+                json!("plan"),
+                json!("claude-fake-5"),
+                json!({ "input": 203, "output": 23, "cache_read": 2003, "cache_write": 103 })
+            ),
+            (
+                json!("implement"),
+                json!("claude-fake-5"),
+                json!({ "input": 103, "output": 13, "cache_read": 1003, "cache_write": 53 })
+            ),
+        ]
+    );
 }

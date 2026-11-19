@@ -1,0 +1,181 @@
+use priory_factory::factory::{Decider, Factory};
+use priory_runtime::transcript::Usage;
+use rusqlite::{OptionalExtension, Transaction, params};
+use serde_json::{Value, json};
+use std::path::Path;
+
+/// What every step record names besides the step: the factory, its revision and the machine. With
+/// `usage`, which reads a harness transcript from a byte offset.
+pub struct Trace<'a> {
+    pub factory: &'a Factory,
+    pub revision: Option<String>,
+    pub machine: Option<String>,
+    pub usage: fn(&Path, u64) -> Usage,
+}
+
+/// Records the run's transcript at its `SessionStart`. What it holds already belongs to earlier runs
+/// of the session, so the run's turns start at its end.
+pub(crate) fn begin(
+    tx: &Transaction,
+    trace: &Trace,
+    run: i64,
+    transcript: Option<&str>,
+) -> rusqlite::Result<()> {
+    let Some(transcript) = transcript else {
+        return Ok(());
+    };
+    let end = (trace.usage)(Path::new(transcript), 0).end;
+    tx.execute(
+        "UPDATE runs SET transcript = ?2, read = ?3 WHERE id = ?1",
+        params![run, transcript, end as i64],
+    )?;
+    Ok(())
+}
+
+/// Adds the tokens of the run's turns since its last read to its task's current step.
+pub(crate) fn account(
+    tx: &Transaction,
+    trace: &Trace,
+    run: i64,
+    transcript: Option<&str>,
+) -> rusqlite::Result<()> {
+    let known = tx
+        .query_row(
+            "SELECT coalesce(transcript, ?2), read FROM runs WHERE id = ?1",
+            params![run, transcript],
+            |row| Ok((row.get::<_, Option<String>>(0)?, row.get::<_, i64>(1)?)),
+        )
+        .optional()?;
+    let Some((Some(transcript), read)) = known else {
+        return Ok(());
+    };
+    let usage = (trace.usage)(Path::new(&transcript), read as u64);
+    tx.execute(
+        "UPDATE runs SET transcript = ?2, read = ?3 WHERE id = ?1",
+        params![run, transcript, usage.end as i64],
+    )?;
+    if usage.messages == 0 {
+        return Ok(());
+    }
+    tx.execute(
+        "UPDATE tasks SET model = coalesce(?2, model), tokens = json_object(
+           'input', coalesce(json_extract(tokens, '$.input'), 0) + ?3,
+           'output', coalesce(json_extract(tokens, '$.output'), 0) + ?4,
+           'cache_read', coalesce(json_extract(tokens, '$.cache_read'), 0) + ?5,
+           'cache_write', coalesce(json_extract(tokens, '$.cache_write'), 0) + ?6)
+         WHERE id = (SELECT task FROM runs WHERE id = ?1)",
+        params![
+            run,
+            usage.model,
+            usage.input as i64,
+            usage.output as i64,
+            usage.cache_read as i64,
+            usage.cache_write as i64
+        ],
+    )?;
+    Ok(())
+}
+
+/// Appends a `factory.step.ended` record, as `docs/trace-schema.md` defines it, for the step `task`
+/// is at, which `outcome` ends. `run` is the run whose result ended a model step. A field Priory
+/// does not know stays absent.
+pub(crate) fn ended(
+    tx: &Transaction,
+    trace: &Trace,
+    task: i64,
+    outcome: &str,
+    run: Option<i64>,
+) -> rusqlite::Result<()> {
+    let ended = tx.query_row(
+        "SELECT workflow, step, key, lane, entered, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
+         CAST(round((julianday('now') - julianday(entered)) * 86400000) AS INTEGER), tokens, model
+         FROM tasks WHERE id = ?1",
+        [task],
+        |row| {
+            Ok(Ended {
+                workflow: row.get(0)?,
+                step: row.get(1)?,
+                key: row.get(2)?,
+                lane: row.get(3)?,
+                started: row.get(4)?,
+                time: row.get(5)?,
+                duration: row.get(6)?,
+                tokens: row.get(7)?,
+                model: row.get(8)?,
+            })
+        },
+    )?;
+    let Some(step) = trace
+        .factory
+        .workflows
+        .get(&ended.workflow)
+        .and_then(|flow| flow.value.step(&ended.step))
+    else {
+        return Ok(());
+    };
+    let mut data = json!({
+        "factory": trace.factory.name,
+        "factory_revision": trace.revision,
+        "workflow": ended.workflow,
+        "task": task.to_string(),
+        "key": ended.key,
+        "lane": ended.lane,
+        "run": run.map(|run| run.to_string()),
+        "generation": 1,
+        "step": ended.step,
+        "decider": step.decides.name(),
+        "effect": step.effect,
+        "outcome": outcome,
+        "machine": trace.machine,
+        "started": ended.started,
+        "duration_ms": ended.duration.max(0),
+    });
+    let agent = step
+        .agent
+        .as_ref()
+        .and_then(|name| trace.factory.agents.get(name))
+        .filter(|_| step.decides == Decider::Model);
+    if let Some(agent) = agent {
+        data["harness"] = json!(agent.value.harness);
+        data["model"] = json!(ended.model.or_else(|| agent.value.model.clone()));
+        data["tokens"] = ended
+            .tokens
+            .and_then(|tokens| serde_json::from_str(&tokens).ok())
+            .unwrap_or(Value::Null);
+    }
+    if let Value::Object(fields) = &mut data {
+        fields.retain(|_, value| !value.is_null());
+    }
+    let id = uuid::Uuid::new_v4().to_string();
+    let source = match &trace.machine {
+        Some(machine) => format!("factory://{}/{machine}", trace.factory.name),
+        None => format!("factory://{}", trace.factory.name),
+    };
+    let event = json!({
+        "specversion": "1.0",
+        "id": id,
+        "source": source,
+        "type": "factory.step.ended",
+        "time": ended.time,
+        "datacontenttype": "application/json",
+        "data": data,
+    });
+    tx.execute(
+        "INSERT INTO trace (id, type, time, event) VALUES (?1, 'factory.step.ended', ?2, ?3)",
+        params![id, ended.time, event.to_string()],
+    )?;
+    Ok(())
+}
+
+/// The task's step as it ends, read in one query.
+struct Ended {
+    workflow: String,
+    step: String,
+    key: String,
+    lane: Option<String>,
+    started: String,
+    time: String,
+    duration: i64,
+    tokens: Option<String>,
+    model: Option<String>,
+}

@@ -103,7 +103,7 @@ fn refuse_bypass<'de, D: Deserializer<'de>>(
     PermissionMode::deserialize(mode.into_deserializer()).map(Some)
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Harness {
     ClaudeCode,
@@ -307,7 +307,7 @@ impl Decider {
     }
 }
 
-#[derive(Debug, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
 pub enum Effect {
     None,
@@ -380,6 +380,9 @@ pub struct Loaded<T> {
 
 #[derive(Default)]
 pub struct Factory {
+    /// The folder the factory was loaded from.
+    pub dir: PathBuf,
+    pub name: String,
     pub agents: BTreeMap<String, Loaded<Agent>>,
     pub triggers: BTreeMap<String, Loaded<Trigger>>,
     pub workflows: BTreeMap<String, Loaded<Workflow>>,
@@ -387,7 +390,10 @@ pub struct Factory {
 }
 
 pub fn load(dir: &Path) -> (Factory, Vec<Problem>) {
-    let mut factory = Factory::default();
+    let mut factory = Factory {
+        dir: dir.to_path_buf(),
+        ..Factory::default()
+    };
     let mut problems = Vec::new();
     let mut found = Loader {
         dir,
@@ -403,6 +409,9 @@ pub fn load(dir: &Path) -> (Factory, Vec<Problem>) {
         {
             found.define(&mut settings, "factory".into(), &file, value, lines);
         }
+    }
+    if let Some(settings) = settings.get("factory") {
+        factory.name.clone_from(&settings.value.name);
     }
     if settings.is_empty() && found.problems.is_empty() {
         found.problems.push(Problem {

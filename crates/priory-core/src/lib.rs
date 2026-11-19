@@ -4,3 +4,4 @@ mod route;
 pub mod state;
 pub mod sweep;
 pub mod tools;
+pub mod trace;

@@ -1,4 +1,5 @@
 use crate::route;
+use crate::trace::{self, Trace};
 use priory_factory::factory::{Decider, Effect, Loaded, Step, Workflow};
 use priory_intake::intake::{CHECK_RUNS, CHECKED, PASSING};
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
@@ -655,39 +656,33 @@ fn set_ready(tx: &Transaction, task: i64) -> rusqlite::Result<()> {
 pub(crate) fn stop(
     tx: &Transaction,
     session: &str,
-    workflows: &Workflows,
+    trace: &Trace,
 ) -> rusqlite::Result<Option<String>> {
     let Some(run) = run(tx, session)? else {
         return Ok(None);
     };
-    Ok(settle(tx, &run, workflows)?.flatten())
+    Ok(settle(tx, &run, trace)?.flatten())
 }
 
 /// Settles the live run of `session`, whose agent process is gone, as its `Stop` would have, when a
 /// result, ask or wait ended its turn. Says whether one did; otherwise nothing changes.
-pub(crate) fn gone(
-    db: &mut Connection,
-    session: &str,
-    workflows: &Workflows,
-) -> rusqlite::Result<bool> {
+pub(crate) fn gone(db: &mut Connection, session: &str, trace: &Trace) -> rusqlite::Result<bool> {
     let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
     let Some(mut run) = run(&tx, session)? else {
         return Ok(false);
     };
     // No process carries on, so even a next step of the same agent needs a new run.
     run.agent = None;
-    let settled = settle(&tx, &run, workflows)?.is_some();
+    trace::account(&tx, trace, run.id, None)?;
+    let settled = settle(&tx, &run, trace)?.is_some();
     tx.commit()?;
     Ok(settled)
 }
 
 /// Moves the run's task by its result, or puts it to sleep on its open ask or wait. `None` when
 /// none of them ended the turn; otherwise the tmux session to kill, if any.
-fn settle(
-    tx: &Transaction,
-    run: &Run,
-    workflows: &Workflows,
-) -> rusqlite::Result<Option<Option<String>>> {
+fn settle(tx: &Transaction, run: &Run, trace: &Trace) -> rusqlite::Result<Option<Option<String>>> {
+    let workflows = &trace.factory.workflows;
     let outcome = tx
         .query_row(
             "SELECT outcome, summary FROM results WHERE run = ?1",
@@ -700,6 +695,7 @@ fn settle(
             .and_then(|step| step.next.get(&outcome))
             .cloned()
             .unwrap_or_else(|| format!("{}?{outcome}", run.step));
+        trace::ended(tx, trace, run.task, &outcome, Some(run.id))?;
         return enter(
             tx,
             run.task,
@@ -807,7 +803,9 @@ fn set(
     reason: Option<&str>,
 ) -> rusqlite::Result<()> {
     tx.execute(
-        "UPDATE tasks SET state = ?2, step = coalesce(?3, step), reason = ?4 WHERE id = ?1",
+        "UPDATE tasks SET state = ?2, step = coalesce(?3, step), reason = ?4,
+         entered = iif(?3 IS NULL, entered, strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+         tokens = iif(?3 IS NULL, tokens, NULL), model = iif(?3 IS NULL, model, NULL) WHERE id = ?1",
         params![task, state, step, reason],
     )
     .map(drop)
@@ -890,9 +888,9 @@ fn enter(
             };
             end(tx, run.id, "moved")?;
             tx.execute(
-                "INSERT INTO runs (task, step, agent, tmux, session, idle, ready)
-                 VALUES (?1, ?2, ?3, ?4, ?5, 1, 1)",
-                params![task, target, run.agent, run.tmux, run.session],
+                "INSERT INTO runs (task, step, agent, tmux, session, idle, ready, transcript, read)
+                 SELECT ?1, ?2, ?3, ?4, ?5, 1, 1, transcript, read FROM runs WHERE id = ?6",
+                params![task, target, run.agent, run.tmux, run.session, run.id],
             )?;
             set(tx, task, "running", Some(target), None)?;
             Ok(None)
@@ -929,9 +927,10 @@ fn enter(
 pub(crate) fn answer(
     db: &mut Connection,
     answer: &Answer,
-    workflows: &Workflows,
+    trace: &Trace,
     head: &dyn Fn(&Path, &str) -> Option<String>,
 ) -> rusqlite::Result<Result<String, String>> {
+    let workflows = &trace.factory.workflows;
     let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
     let ask = tx
         .query_row(
@@ -1000,6 +999,7 @@ pub(crate) fn answer(
             })
             .collect();
         approve(&tx, task, answer, &approved, head)?;
+        trace::ended(&tx, trace, task, &answer.text, None)?;
         enter(&tx, task, &workflow, &target, None, "", workflows)?;
     } else {
         wake(&tx, task, &answer.text)?;
@@ -1304,7 +1304,7 @@ pub(crate) fn performed(
     workflow: &str,
     at: &Step,
     mut done: Done,
-    workflows: &Workflows,
+    trace: &Trace,
 ) -> rusqlite::Result<()> {
     let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
     if let Some(resource) = done.pull_request.take() {
@@ -1345,6 +1345,15 @@ pub(crate) fn performed(
         .cloned()
         .unwrap_or_else(|| format!("{}?{}", at.id, done.status));
     let context = done.error.as_deref().unwrap_or_default();
-    enter(&tx, task, workflow, &target, None, context, workflows)?;
+    trace::ended(&tx, trace, task, done.status, None)?;
+    enter(
+        &tx,
+        task,
+        workflow,
+        &target,
+        None,
+        context,
+        &trace.factory.workflows,
+    )?;
     tx.commit()
 }

@@ -62,6 +62,7 @@ fn main() -> ExitCode {
              FROM waits WHERE fired IS NULL ORDER BY id",
         ),
         Some("desk") => desk(),
+        Some("trace") => trace(),
         Some(verb @ ("resume" | "cancel")) => act(
             verb,
             args.map(|arg| arg.to_string_lossy().into_owned()).collect(),
@@ -88,7 +89,7 @@ fn main() -> ExitCode {
 
 fn usage() -> ExitCode {
     eprintln!(
-        "usage: priory check [DIR]\n       priory draw [DIR] WORKFLOW\n       priory intake [DIR] [--once]\n       priory daemon [DIR] [--once]\n       priory request [DIR] --workflow <name> --key <key> [--band <band>] [--lane <lane>] [--repo <owner/name>] <text>\n       priory inbox\n       priory tasks\n       priory runs\n       priory outbox\n       priory asks\n       priory waits\n       priory actions\n       priory desk\n       priory resume TASK\n       priory cancel TASK\n       priory answer ASK OPTION-OR-TEXT --revision N\n       priory mcp --session ID\n       priory hook EVENT"
+        "usage: priory check [DIR]\n       priory draw [DIR] WORKFLOW\n       priory intake [DIR] [--once]\n       priory daemon [DIR] [--once]\n       priory request [DIR] --workflow <name> --key <key> [--band <band>] [--lane <lane>] [--repo <owner/name>] <text>\n       priory inbox\n       priory tasks\n       priory runs\n       priory outbox\n       priory asks\n       priory waits\n       priory actions\n       priory desk\n       priory trace\n       priory resume TASK\n       priory cancel TASK\n       priory answer ASK OPTION-OR-TEXT --revision N\n       priory mcp --session ID\n       priory hook EVENT"
     );
     ExitCode::from(2)
 }
@@ -133,6 +134,16 @@ fn desk() -> ExitCode {
             .map_err(|error| error.to_string())
     });
     exit("desk", printed)
+}
+
+/// Every trace record, oldest first, one CloudEvents JSON object per line.
+fn trace() -> ExitCode {
+    let printed = state::open().and_then(|db| {
+        let events = state::events(&db).map_err(|error| error.to_string())?;
+        events.iter().for_each(|event| println!("{event}"));
+        Ok(())
+    });
+    exit("trace", printed)
 }
 
 const DESK: &str = "SELECT * FROM (
@@ -297,6 +308,7 @@ fn hook(event: &str) -> ExitCode {
         session: session.to_owned(),
         prompt: input["prompt"].as_str().map(str::to_owned),
         message: input["message"].as_str().map(str::to_owned),
+        transcript: input["transcript_path"].as_str().map(str::to_owned),
     };
     let line = serde_json::to_string(&signal).expect("signal serializes");
     match runtime::send(&runtime::home(), &line) {
