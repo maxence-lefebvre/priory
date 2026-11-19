@@ -101,6 +101,29 @@ pub(crate) fn call(
     let Some(run) = run(&tx, &call.session)? else {
         return Ok(Err(format!("no live run has session {}", call.session)));
     };
+    // A TL;DR or a search neither ends the turn nor counts as the run's answer.
+    match call.tool.as_str() {
+        "tldr" => {
+            let stored = text(&call.arguments, "text")
+                .and_then(|text| crate::search::set(&tx, run.task, &text));
+            if stored.is_ok() {
+                tx.commit()?;
+            }
+            return Ok(stored);
+        }
+        "search" => {
+            let limit = call.arguments["limit"].as_u64().map_or(crate::search::LIMIT, |n| n as usize);
+            let states: Vec<String> = call.arguments["states"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|state| state.as_str().map(str::to_owned))
+                .collect();
+            return Ok(text(&call.arguments, "query")
+                .and_then(|query| crate::search::search(&tx, &query, &states, limit)));
+        }
+        _ => {}
+    }
     if let Some(outcome) = tx
         .query_row(
             "SELECT outcome FROM results WHERE run = ?1",

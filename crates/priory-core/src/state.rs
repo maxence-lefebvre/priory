@@ -10,7 +10,7 @@ use std::collections::BTreeMap;
 use std::io::Write;
 use std::time::Duration;
 
-const VERSION: i64 = 26;
+const VERSION: i64 = 27;
 
 const SCHEMA: &str = "
 CREATE TABLE tasks (
@@ -414,12 +414,61 @@ const SCHEMA_26: &str = "
 ALTER TABLE outbox ADD COLUMN compact INTEGER NOT NULL DEFAULT 0;
 PRAGMA user_version = 26;
 ";
+
+// Search: the TL;DR, its keyword index, summarizer calls and embeddings.
+const SCHEMA_27: &str = "
+ALTER TABLE tasks ADD COLUMN tldr TEXT;
+CREATE VIEW task_text AS SELECT tasks.id AS task,
+  coalesce(json_extract(inbox.data, '$.title'), '') AS title,
+  coalesce(json_extract(inbox.data, '$.text'), json_extract(inbox.data, '$.body'),
+    json_extract(inbox.data, '$.description'), json_extract(inbox.data, '$.prompt'), '') AS request,
+  coalesce(tasks.tldr, '') AS tldr,
+  coalesce((SELECT group_concat(summary || ' ' || coalesce(evidence, ''), ' ') FROM results
+    WHERE results.task = tasks.id), '') AS results
+  FROM tasks LEFT JOIN inbox ON inbox.id = tasks.source;
+CREATE VIRTUAL TABLE search USING fts5 (title, request, tldr, results, tokenize = 'porter unicode61');
+INSERT INTO search (rowid, title, request, tldr, results) SELECT * FROM task_text;
+CREATE TRIGGER search_task_created AFTER INSERT ON tasks BEGIN
+  INSERT INTO search (rowid, title, request, tldr, results) SELECT * FROM task_text WHERE task = NEW.id;
+END;
+CREATE TRIGGER search_tldr_changed AFTER UPDATE OF tldr ON tasks BEGIN
+  DELETE FROM search WHERE rowid = NEW.id;
+  INSERT INTO search (rowid, title, request, tldr, results) SELECT * FROM task_text WHERE task = NEW.id;
+END;
+CREATE TRIGGER search_result_stored AFTER INSERT ON results BEGIN
+  DELETE FROM search WHERE rowid = NEW.task;
+  INSERT INTO search (rowid, title, request, tldr, results) SELECT * FROM task_text WHERE task = NEW.task;
+END;
+CREATE TABLE summaries (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  task        INTEGER NOT NULL REFERENCES tasks (id),
+  called      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+  pid         INTEGER,
+  pid_started INTEGER,
+  answered    TEXT,
+  status      TEXT
+);
+INSERT INTO summaries (task, answered, status)
+  SELECT id, strftime('%Y-%m-%dT%H:%M:%SZ', 'now'), 'created before search' FROM tasks;
+CREATE TABLE embedder (
+  id    INTEGER PRIMARY KEY CHECK (id = 1),
+  name  TEXT NOT NULL,
+  error TEXT
+);
+CREATE TABLE vectors (
+  task     INTEGER PRIMARY KEY REFERENCES tasks (id),
+  embedder TEXT NOT NULL,
+  text     TEXT NOT NULL,
+  vector   BLOB NOT NULL
+);
+PRAGMA user_version = 27;
+";
 /// Each schema change in order: a file at version `n` applies those from index `n` on.
 const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA, SCHEMA_2, SCHEMA_3, SCHEMA_4, SCHEMA_5, SCHEMA_6, SCHEMA_7, SCHEMA_8, SCHEMA_9,
     SCHEMA_10, SCHEMA_11, SCHEMA_12, SCHEMA_13, SCHEMA_14, SCHEMA_15, SCHEMA_16, SCHEMA_17,
     SCHEMA_18, SCHEMA_19, SCHEMA_20, SCHEMA_21, SCHEMA_22, SCHEMA_23, SCHEMA_24, SCHEMA_25,
-    SCHEMA_26,
+    SCHEMA_26, SCHEMA_27,
 ];
 
 /// The order the queue starts tasks in: band, then a person's order, then age. A band the factory
@@ -506,8 +555,8 @@ pub(crate) fn handle(
         Decision::Create(new) => {
             tx.execute(
                 "INSERT INTO tasks
-                   (key, workflow, step, state, band, lane, team, project, lane_derived, trigger, source, repo, entered)
-                 VALUES (?1, ?2, ?3, 'queued', ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))",
+                   (key, workflow, step, state, band, lane, team, project, lane_derived, trigger, source, repo, entered, tldr)
+                 VALUES (?1, ?2, ?3, 'queued', ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), ?12)",
                 params![
                     new.key,
                     new.workflow,
@@ -519,7 +568,12 @@ pub(crate) fn handle(
                     new.lane_derived,
                     new.trigger,
                     new.source,
-                    new.repo
+                    new.repo,
+                    new.tldr
+                        .as_deref()
+                        .map(str::trim)
+                        .filter(|tldr| !tldr.is_empty())
+                        .map(crate::search::cut)
                 ],
             )?;
             let id = tx.last_insert_rowid();

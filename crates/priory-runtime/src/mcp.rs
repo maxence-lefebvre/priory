@@ -154,5 +154,29 @@ fn tools() -> Value {
                 },
             },
         },
+        {
+            "name": "tldr",
+            "description": "Replace your task's TL;DR, the short summary search reads, when your work drifted from the request. It does not end your turn.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "text": text("What the task is about now, in a few sentences of at most 180 words."),
+                },
+                "required": ["text"],
+            },
+        },
+        {
+            "name": "search",
+            "description": "Find tasks by what they are about, such as other tasks that touch the code you change, or one that already did your work. Prints task, key, state, step and TL;DR, best match first. It does not end your turn.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "query": text("What to look for, in words."),
+                    "states": { "type": "array", "items": { "type": "string" }, "description": "Only tasks in these states, such as running or done." },
+                    "limit": { "type": "integer", "description": "The most tasks to return; 10 when unset." },
+                },
+                "required": ["query"],
+            },
+        },
     ])
 }

@@ -14,11 +14,13 @@ pub struct Request {
     lane: Option<String>,
     repo: Option<String>,
     hold: Option<Hold>,
+    tldr: Option<String>,
     text: String,
 }
 
 pub fn parse(args: Vec<String>) -> Option<(PathBuf, Request)> {
     let (mut workflow, mut key, mut band, mut lane, mut repo) = (None, None, None, None, None);
+    let mut tldr = None;
     let (mut reason, mut until, mut after, mut merge, mut if_closed) =
         (None, None, None, None, None);
     let mut blockers = false;
@@ -35,6 +37,7 @@ pub fn parse(args: Vec<String>) -> Option<(PathBuf, Request)> {
             "--band" => &mut band,
             "--lane" => &mut lane,
             "--repo" => &mut repo,
+            "--tldr" => &mut tldr,
             "--hold" => &mut reason,
             "--until" => &mut until,
             "--after" => &mut after,
@@ -78,6 +81,7 @@ pub fn parse(args: Vec<String>) -> Option<(PathBuf, Request)> {
         lane,
         repo,
         hold,
+        tldr,
         text,
     };
     Some((dir, request))
@@ -119,6 +123,9 @@ pub fn run(factory: &Factory, request: &Request) -> Result<(), String> {
     });
     if let Some(hold) = &request.hold {
         data["hold"] = json!(hold);
+    }
+    if let Some(tldr) = &request.tldr {
+        data["tldr"] = json!(tldr);
     }
     let task = Message::new(TASK_REQUESTED, data)
         .id(intake::id(&format!(

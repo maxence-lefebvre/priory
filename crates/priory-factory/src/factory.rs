@@ -41,6 +41,45 @@ pub struct Settings {
     /// How long one git, gh or tmux command may run before Priory kills it.
     #[serde(default, deserialize_with = "duration")]
     pub command_timeout: Option<Duration>,
+    #[serde(default)]
+    pub search: Search,
+}
+
+/// How tasks are found: who writes their TL;DR, and whether search compares embeddings too.
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Search {
+    /// The agent whose model writes a new task's TL;DR; no summarizer runs without one.
+    pub tldr: Option<String>,
+    #[serde(default)]
+    pub embeddings: bool,
+    /// The embedding model Priory runs in process, a Hugging Face repository.
+    pub model: Option<String>,
+    /// A command that reads text on stdin and prints a JSON array of floats, instead of `model`.
+    pub command: Option<String>,
+}
+
+/// The embedding model when `[search]` names neither a model nor a command.
+pub const MODEL: &str = "sentence-transformers/all-MiniLM-L6-v2";
+
+/// What embeds a TL;DR.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Embedder {
+    Model(String),
+    Command(String),
+}
+
+impl Search {
+    /// The embedder, when embeddings are on.
+    pub fn embedder(&self) -> Option<Embedder> {
+        if !self.embeddings {
+            return None;
+        }
+        Some(match (&self.command, &self.model) {
+            (Some(command), _) => Embedder::Command(command.clone()),
+            (None, model) => Embedder::Model(model.as_deref().unwrap_or(MODEL).to_owned()),
+        })
+    }
 }
 
 /// How the daemon frees room: the built-in worktree sweep, the person's scripts, and the sweeper
@@ -581,6 +620,19 @@ impl Factory {
         self.settings
             .as_ref()
             .map_or(&BUILT_IN, |settings| &settings.value.sweep)
+    }
+
+    /// The factory's `[search]` table, or keyword search with no summarizer.
+    pub fn search(&self) -> &Search {
+        static BUILT_IN: Search = Search {
+            tldr: None,
+            embeddings: false,
+            model: None,
+            command: None,
+        };
+        self.settings
+            .as_ref()
+            .map_or(&BUILT_IN, |settings| &settings.value.search)
     }
 
     /// How long one git, gh or tmux command may run; 5 minutes when unset.
