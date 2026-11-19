@@ -1,21 +1,20 @@
 # Codex
 
 A run of a `harness = "codex"` agent starts `codex --no-daemon`, or `codex resume <thread>
---no-daemon`, in the same tmux
-session, worktree and outbox as a Claude run. Codex chooses its own session id, its thread, so
-Priory keeps a UUID of its own as the run's session: the pane's `@priory` tag, the hooks and the
-tools carry it. The pane sets `PRIORY_SESSION` to it, and the thread arrives on `SessionStart`
-stdin. Every setting goes in as a `-c key=value` override, so Priory writes no
-Codex file. `--no-daemon` keeps the run off the background server that a person's other Codex
-sessions share, with its environment and its cached hook trust.
+--no-daemon`, in the same tmux session, worktree and outbox as a Claude run. Codex chooses its own
+session id, its thread, so Priory keeps its own UUID as the run's session. The pane's `@priory`
+tag, the hooks and the tools carry that UUID. The pane sets `PRIORY_SESSION` to it, and the thread
+arrives on `SessionStart` stdin. Every setting goes in as a `-c key=value` override, so Priory writes
+no Codex file. `--no-daemon` keeps the run off the background server that a person's other Codex
+sessions share, with its environment and cached hook trust.
 
 Codex 0.170 fires `SessionStart` with the first turn, not at startup, so a Codex run cannot wait
 for it before its first prompt. The daemon marks the task's oldest queued prompt `attempted` by the
-run and passes it as Codex's last argument, after `--`. tmux refuses a command over about 16 KiB,
-so the prompt goes through a file under `$PRIORY_HOME/prompts`, which a `sh` wrapper reads, removes
-and appends. `UserPromptSubmit` confirms it as it does a paste. Every later prompt, such as an answer or a nudge, is pasted. A Claude run still gets its
-first prompt pasted after `SessionStart`, which Claude fires at startup, so its paste and its
-confirmation stay as they are.
+run and passes it as Codex's last argument, after `--`. tmux refuses a command over about 16 KiB, so
+the prompt goes through a file under `$PRIORY_HOME/prompts`, which a `sh` wrapper reads, removes and
+appends. `UserPromptSubmit` confirms it as it does a paste. Every later prompt, such as an answer or
+a nudge, is pasted. A Claude run still pastes its first prompt after `SessionStart`, which Claude
+fires at startup, so its paste and confirmation stay as they are.
 
 | Priory duty | Claude Code | Codex |
 | ----------- | ----------- | ----- |
@@ -40,33 +39,31 @@ config that routes approvals to Codex's reviewer does not decide a `manual` run'
 | `auto` | `workspace-write` | `on-request` | `auto_review`: Codex's reviewer decides, as Claude's auto mode does |
 | `dontAsk` | `read-only` | `never` | `user` |
 
-`priory check` refuses what cannot map, with its line: `defaultMode = "plan"`, since Codex's CLI has
-no plan permission mode, and any `allow` or `deny` rule, since Codex has no per-tool rules to put
-them in.
+`priory check` refuses what cannot map, with its line: `defaultMode = "plan"` (Codex's CLI has no
+plan permission mode) and any `allow` or `deny` rule (Codex has no per-tool rules).
 
-Codex runs only the hooks a person trusted in its `/hooks` review, by their hash, and asks whether
-to trust a folder as Claude does. Priory answers neither and never skips the review. Its hooks are
-the same in every run, since the run's session reaches them as `PRIORY_SESSION`, so a person trusts
-them once, with the clone. A Codex run that sends no `SessionStart` within 60 seconds blocks its
-task with `codex showed no SessionStart within 60s; trust the clone and Priory's hooks once: cd
+Codex runs only the hooks a person trusted in its `/hooks` review, by hash, and asks whether to
+trust a folder, as Claude does. Priory answers neither and never skips the review. Hooks are
+identical in every run, since each run's session reaches them as `PRIORY_SESSION`, so a person
+trusts them once, with the clone. A Codex run that sends no `SessionStart` within 60 seconds blocks
+its task with `codex showed no SessionStart within 60s; trust the clone and Priory's hooks once: cd
 <clone path> && codex -c 'hooks.SessionStart=...' ..., accept the folder, type /hooks and trust
 Priory's hooks, then exit`, then the pane's last lines as under Trusting a clone. The command
 carries Priory's hooks exactly as runs get them. A hook nobody trusted shows Codex's `Hooks need
 review` dialog, which those lines show.
 
-The hooks and the MCP server name Priory by `PRIORY_EXE` when it is set, else by the absolute path
-Priory was invoked by, else by its resolved binary. Codex keys hook trust on the command, so that
-path must survive upgrades: under Nix, run Priory by its profile link, such as
-`~/.nix-profile/bin/priory`, or set `PRIORY_EXE` to it, rather than a store path that changes on
-every deploy. Changing that path changes the hooks, so a person trusts them again.
+The hooks and the MCP server name Priory by `PRIORY_EXE` if set, else by the absolute path it was
+invoked by, else by its resolved binary. Codex keys hook trust on that command, so the path must
+survive upgrades. Under Nix, use the profile link, such as `~/.nix-profile/bin/priory`, or set
+`PRIORY_EXE` to it, not a store path that changes on every deploy. A changed path changes the hooks, so a person trusts them again.
 
 Known limits:
 
-- No test runs a real Codex. Whether `/hooks` lists and keeps trust for `-c` hooks and whether
-  `auto_review` runs before the deny hook are read from Codex's documentation, not checked. That
+- No test runs a real Codex. Whether `/hooks` lists and keeps trust for `-c` hooks, and whether
+  `auto_review` runs before the deny hook, come from Codex's documentation, unchecked. That
   `SessionStart` comes with the first turn was seen with Codex 0.170.
 - Priory invoked by a bare name, as from `PATH`, names its resolved binary; set `PRIORY_EXE` then.
-- An agent whose harness changes during a task starts a new session, since neither harness resumes
-  the other's.
+- An agent whose harness changes mid-task starts a new session, since neither harness resumes the
+  other's.
 - Codex keeps its transcripts under `~/.codex/sessions`, by thread. The traces slice reads token use
   from there; Priory reads nothing from them yet.
