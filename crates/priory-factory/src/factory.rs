@@ -232,6 +232,8 @@ pub struct Trigger {
     #[serde(default)]
     pub on: String,
     pub view: Option<String>,
+    /// The Slack channel id a `slack` trigger reads, such as `C0123`.
+    pub channel: Option<String>,
     pub filter: Option<BTreeMap<String, String>>,
     pub workflow: String,
     pub key: Option<String>,

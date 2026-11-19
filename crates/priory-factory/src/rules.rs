@@ -69,12 +69,20 @@ pub fn check(factory: &Factory) -> Vec<Problem> {
         match trigger.value.source.as_str() {
             "github" => check_github(trigger, &mut problems),
             "linear" | "linear.view" => check_linear(trigger, &mut problems),
+            "slack" => check_slack(trigger, &mut problems),
             _ if trigger.value.backfill.is_some() => problems.push(problem(
                 trigger,
                 trigger.lines.field("backfill"),
-                "only a GitHub or Linear trigger has `backfill`".into(),
+                "only a GitHub, Linear or Slack trigger has `backfill`".into(),
             )),
             _ => {}
+        }
+        if trigger.value.source != "slack" && trigger.value.channel.is_some() {
+            problems.push(problem(
+                trigger,
+                trigger.lines.field("channel"),
+                "only a Slack trigger names a `channel`".into(),
+            ));
         }
         if trigger.value.source == "schedule" {
             check_schedule(trigger, &mut problems);
@@ -333,6 +341,42 @@ fn check_linear(trigger: &Loaded<Trigger>, problems: &mut Vec<Problem>) {
             "key",
             "a Linear trigger's `key` is `issue.identifier`".into(),
         );
+    }
+}
+
+fn check_slack(trigger: &Loaded<Trigger>, problems: &mut Vec<Problem>) {
+    let value = &trigger.value;
+    let mut report = |field: &str, message: String| {
+        let line = trigger.lines.field(field).or(trigger.lines.field("source"));
+        problems.push(problem(trigger, line, message));
+    };
+    if value.on != "message.posted" {
+        report(
+            "on",
+            format!(
+                "a Slack trigger handles `message.posted`, not `{}`",
+                value.on
+            ),
+        );
+    }
+    if value.channel.as_deref().is_none_or(str::is_empty) {
+        report(
+            "channel",
+            "a Slack trigger needs `channel = \"<channel id>\"`".into(),
+        );
+    }
+    if value
+        .filter
+        .as_ref()
+        .is_some_and(|filter| filter.keys().any(|key| key != "text"))
+    {
+        report("filter", "a Slack trigger filters on `text` only".into());
+    }
+    if value.repo.is_some() || value.view.is_some() {
+        report("source", "a Slack trigger names no `repo` or `view`".into());
+    }
+    if value.key.as_deref().is_some_and(|key| key != "message.ts") {
+        report("key", "a Slack trigger's `key` is `message.ts`".into());
     }
 }
 

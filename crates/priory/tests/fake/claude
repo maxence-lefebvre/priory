@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # A stand-in for Claude Code: runs the --settings hooks as Claude would and logs every prompt typed into it.
-# FAKE_DIR holds args.log, pid, typed.log, pending (a paste arrived), the hold files hold-submit and hold-stop,
+# FAKE_DIR holds args.log, pid, typed.log, pending (a paste arrived), submitted (a prompt was submitted),
+# the hold files hold-submit, hold-call (after the submit, before the turn's tool call) and hold-stop,
 # silent (show its content and never report a hook, as when Claude waits on its trust dialog), and
 # die (show its content and exit before any hook, as a harness that fails to start), and
 # crash (exit before the turn's Stop, leaving a dead pane as a tmux with remain-on-exit does).
@@ -139,6 +140,8 @@ while :; do
   message=$(jq -nc --argjson n "$turn" '{type: "assistant", message: {id: "msg_\($n)", model: "claude-fake-5",
     usage: {input_tokens: (100 + $n), output_tokens: (10 + $n), cache_read_input_tokens: (1000 + $n), cache_creation_input_tokens: (50 + $n)}}}')
   [ -e "$FAKE_DIR/no-transcript" ] || printf '%s\n%s\n' "$message" "$message" >> "$FAKE_DIR/transcript.jsonl"
+  printf '%s' "$turn" > "$FAKE_DIR/submitted"
+  wait_while hold-call
   if [ -s "$FAKE_DIR/calls" ]; then
     call=$(head -n 1 "$FAKE_DIR/calls")
     sed -i 1d "$FAKE_DIR/calls"

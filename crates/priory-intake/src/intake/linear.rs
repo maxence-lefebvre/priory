@@ -49,7 +49,7 @@ impl<'a> Linear<'a> {
             .ok()
             .filter(|key| !key.is_empty())
             .ok_or_else(|| {
-                format!("{KEY} is not set: the Linear triggers need a Linear API key")
+                format!("{KEY} is not set: the Linear triggers and waits need a Linear API key")
             })?;
         let mut streams: BTreeMap<String, Option<Value>> = triggers
             .iter()
