@@ -20,6 +20,9 @@ nothing.
   compact, so a second call is refused, and so is `result` until it is typed: a result could move
   the task to another agent's conversation first. `ask` and `wait` resume the same conversation, so
   the compact follows their answer or event. Compacting is described under Compact in Outbox.
+- `tldr(text)` replaces the task's TL;DR, for when the work drifted from the request. `search(query,
+  states?, limit?)` finds tasks. Neither ends the turn, and either can come after a result, an ask or
+  a wait. See [search.md](search.md).
 
 A run holds at most one of a result, an open ask and an open wait. Any later call is refused.
 

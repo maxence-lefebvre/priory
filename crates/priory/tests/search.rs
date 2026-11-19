@@ -98,6 +98,8 @@ impl Setup {
             key,
             "--hold",
             "searched only",
+            "--repo",
+            "owner/repo",
         ];
         args.extend(extra);
         args.push(text);

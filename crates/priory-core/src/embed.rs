@@ -12,7 +12,7 @@ const TIMEOUT: Duration = Duration::from_secs(30);
 pub enum Embedder {
     Command(String),
     #[cfg(feature = "model")]
-    Model(crate::model::Model),
+    Model(Box<crate::model::Model>),
 }
 
 /// The name a vector is stored with, which changes when the factory names another model or command.
@@ -36,7 +36,8 @@ pub fn open(name: &str, home: &Path) -> Result<Embedder, String> {
 
 #[cfg(feature = "model")]
 fn model_at(model: &str, home: &Path) -> Result<Embedder, String> {
-    crate::model::Model::load(model, &home.join("models")).map(Embedder::Model)
+    crate::model::Model::load(model, &home.join("models"))
+        .map(|model| Embedder::Model(Box::new(model)))
 }
 
 #[cfg(not(feature = "model"))]
@@ -140,7 +141,8 @@ pub fn tokens_shared(shared: &Shared, name: &str, text: &str) -> Option<(usize, 
 
 /// Runs the embedder `command` with `text` on its stdin and reads the JSON array it prints.
 fn run(command: &str, text: &str) -> Result<Vec<f32>, String> {
-    let output = runtime::fed_within(Command::new("sh").args(["-c", command]), text, TIMEOUT)
+    let input = Some(text.as_bytes().to_vec());
+    let output = runtime::fed_within(Command::new("sh").args(["-c", command]), input, TIMEOUT)
         .map_err(|error| format!("`{command}`: {error}"))?
         .ok_or_else(|| format!("`{command}` timed out after {}s", TIMEOUT.as_secs()))?;
     if !output.status.success() {

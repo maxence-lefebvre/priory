@@ -1194,3 +1194,29 @@ fn a_handler_agent_passes_and_an_unknown_or_codex_one_names_its_line() {
         )
     );
 }
+
+#[test]
+fn a_search_table_names_a_known_summarizer_and_one_embedder() {
+    let good = "name = \"demo\"\n[search]\ntldr = \"implementer\"\nembeddings = true\n";
+    let ok = check(&factory("search-ok", &with("factory.toml", good)));
+    let unknown = good.replace("\"implementer\"", "\"summarizer\"");
+    let bad_agent = check(&factory("search-agent", &with("factory.toml", &unknown)));
+    let both = format!("{good}model = \"m\"\ncommand = \"c\"\n");
+    let two_embedders = check(&factory("search-both", &with("factory.toml", &both)));
+
+    assert_eq!((ok.code, ok.stderr.as_str()), (0, ""));
+    assert_eq!(
+        (bad_agent.code, bad_agent.stderr.as_str()),
+        (
+            1,
+            "factory.toml:2: the summarizer agent `summarizer` does not exist\n"
+        )
+    );
+    assert_eq!(
+        (two_embedders.code, two_embedders.stderr.as_str()),
+        (
+            1,
+            "factory.toml:2: [search] names both a model and a command: keep one\n"
+        )
+    );
+}

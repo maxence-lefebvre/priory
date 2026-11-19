@@ -34,6 +34,11 @@ key = "issue.number"
 
 const OUTPUT: &str = "factory.intake";
 
+/// Takes a state file back before schema 27, which added search.
+const UNDO_SEARCH: &str = "DROP TRIGGER search_task_created; DROP TRIGGER search_tldr_changed;
+  DROP TRIGGER search_result_stored; DROP VIEW task_text; DROP TABLE search; DROP TABLE summaries;
+  DROP TABLE embedder; DROP TABLE vectors; ALTER TABLE tasks DROP COLUMN tldr;";
+
 /// A factory, bus, state, Priory home, tmux server, origin repository and fake `claude`, all under
 /// the test's own directory. Dropping it kills the daemon and the tmux server.
 struct Setup {
@@ -578,6 +583,7 @@ fn a_cli_task_stored_before_tasks_kept_a_repository_starts_in_its_requests_repos
     setup.crash();
     // The state file as version 23 left it: tasks without a repository.
     let db = rusqlite::Connection::open(setup.dir.join("priory.db")).unwrap();
+    db.execute_batch(UNDO_SEARCH).unwrap();
     db.execute_batch("ALTER TABLE tasks DROP COLUMN repo; ALTER TABLE outbox DROP COLUMN compact; PRAGMA user_version = 23;")
         .unwrap();
     drop(db);
@@ -2558,6 +2564,7 @@ fn a_task_queued_before_schema_11_ends_its_first_step_once_upgraded() {
     route(&setup);
     // Schema 10 inserted a queued task with no `changed`, which migration 11 copied into `entered`.
     let db = rusqlite::Connection::open(setup.dir.join("priory.db")).unwrap();
+    db.execute_batch(UNDO_SEARCH).unwrap();
     db.execute_batch(
         "UPDATE tasks SET entered = NULL; ALTER TABLE outbox DROP COLUMN compact;
          PRAGMA user_version = 24;",
@@ -3304,6 +3311,7 @@ fn an_upgrade_hands_the_unconfirmed_prompt_of_a_moved_run_to_the_live_run_that_c
     setup.crash();
     // The state as the version before this fix left it.
     let db = rusqlite::Connection::open(setup.dir.join("priory.db")).unwrap();
+    db.execute_batch(UNDO_SEARCH).unwrap();
     db.execute_batch(
         "UPDATE outbox SET run = 1 WHERE id = 1; ALTER TABLE tasks DROP COLUMN repo; ALTER TABLE outbox DROP COLUMN compact;
          PRAGMA user_version = 22;",

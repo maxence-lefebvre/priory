@@ -88,7 +88,14 @@ fn fetch(repo: &str, dir: &Path, file: &str) -> Result<PathBuf, Error> {
     let partial = dir.join(format!("{file}.partial"));
     let url = format!("https://huggingface.co/{repo}/resolve/main/{file}");
     let output = Command::new("curl")
-        .args(["--fail", "--silent", "--show-error", "--location", "--retry", "2"])
+        .args([
+            "--fail",
+            "--silent",
+            "--show-error",
+            "--location",
+            "--retry",
+            "2",
+        ])
         .arg("--output")
         .arg(&partial)
         .arg(&url)

@@ -57,11 +57,15 @@ pub fn command_timeout() -> Duration {
 /// command timeout. Then it kills the whole group, so a hung fetch cannot stop the daemon's one
 /// thread, and no child that ignores TERM keeps the output pipe open.
 pub fn output_within(command: &mut Command) -> std::io::Result<Option<Output>> {
-    fed_within(command, None)
+    fed_within(command, None, command_timeout())
 }
 
-/// As `output_within`, with `input` written to the command's stdin within the same deadline.
-fn fed_within(command: &mut Command, input: Option<Vec<u8>>) -> std::io::Result<Option<Output>> {
+/// As `output_within`, with `input` written to the command's stdin, and `timeout` as its deadline.
+pub fn fed_within(
+    command: &mut Command,
+    input: Option<Vec<u8>>,
+    timeout: Duration,
+) -> std::io::Result<Option<Output>> {
     let stdin = if input.is_some() {
         Stdio::piped()
     } else {
@@ -87,36 +91,6 @@ fn fed_within(command: &mut Command, input: Option<Vec<u8>>) -> std::io::Result<
                 .and_then(|output| written.map(|()| output)),
         )
     });
-    if let Ok(output) = receiver.recv_timeout(command_timeout()) {
-        return output.map(Some);
-    }
-    crate::script::kill(group);
-    let _ = receiver.recv();
-    Ok(None)
-}
-
-/// Runs `command` with `input` on its stdin, as [`output_within`] does, killing it after `timeout`.
-pub fn fed_within(
-    command: &mut Command,
-    input: &str,
-    timeout: Duration,
-) -> std::io::Result<Option<Output>> {
-    let mut child = command
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .process_group(0)
-        .spawn()?;
-    let group = child.id();
-    let mut stdin = child.stdin.take().expect("stdin is piped");
-    let input = input.to_owned();
-    let (sender, receiver) = mpsc::channel();
-    std::thread::spawn(move || {
-        // A command that exits without reading its input closes the pipe; its output still counts.
-        let _ = stdin.write_all(input.as_bytes());
-        drop(stdin);
-        sender.send(child.wait_with_output())
-    });
     if let Ok(output) = receiver.recv_timeout(timeout) {
         return output.map(Some);
     }
@@ -132,7 +106,7 @@ pub(crate) fn run(command: &mut Command) -> Result<String, String> {
 
 /// As `run`, with `input` on the command's stdin.
 fn fed(command: &mut Command, input: Option<Vec<u8>>) -> Result<String, String> {
-    let output = fed_within(command, input)
+    let output = fed_within(command, input, command_timeout())
         .map_err(|error| format!("{command:?}: {error}"))?
         .ok_or_else(|| {
             format!(

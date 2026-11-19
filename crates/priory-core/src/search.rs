@@ -198,6 +198,9 @@ pub struct Found {
     pub unavailable: Option<String>,
 }
 
+/// Embeds a text with the embedder a name stands for.
+pub type Embed<'a> = dyn FnMut(&str, &str) -> Result<Vec<f32>, String> + 'a;
+
 /// The tasks matching `query`, best first, in `states` when it names any, as a table with a header.
 /// With embeddings on, `embed` turns the query into a vector, and the keyword and vector rankings
 /// merge by reciprocal rank fusion. Tasks the embedder has not reached match by keyword alone.
@@ -206,7 +209,7 @@ pub fn search(
     query: &str,
     states: &[String],
     limit: usize,
-    embed: &mut dyn FnMut(&str, &str) -> Result<Vec<f32>, String>,
+    embed: &mut Embed,
 ) -> Result<Found, String> {
     let states = serde_json::to_string(states).expect("states serialize");
     let keyword = match any_word(query) {
