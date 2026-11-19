@@ -19,10 +19,12 @@ The lane column is the task's lane, or `-` for a `worktree` row.
 
 It lists only asks and prompts of active tasks, holds of held tasks and waiting memory grants. Then the `queue` rows in start order, then one `worktree` row per worktree the sweep keeps. `priory asks` still prints every open ask.
 
-`priory resume <task>` makes a blocked task `ready`. It queues the prompt `A person resumed this
-task after: <reason>. Check the worktree, then continue.` ahead of its other queued prompts, so its
-next run resumes the step agent's session with it. If its latest run never reached `SessionStart`, or
-it has none, the reason concerns the launch, not the agent's work, so the prompt is only
+`priory resume <task>` makes a blocked task `ready`. A task that has no run and no queued prompt,
+as when its first clone failed, becomes `queued` instead, so its next run gets the step's prompt as
+a new task does, and the reply is `task <id> is queued`. Otherwise it queues the prompt `A person
+resumed this task after: <reason>. Check the worktree, then continue.` ahead of its other queued
+prompts, so its next run resumes the step agent's session with it. If its latest run never reached
+`SessionStart`, or it has none, the reason concerns the launch, not the agent's work, so the prompt is only
 `A person resumed this task. Check the worktree, then continue.` A resume line that no run took yet is
 replaced, not repeated. The line that ends the step is added only when no queued prompt carries it
 already. `priory cancel <task>` drops an active task with the reason `cancelled from the desk`, ends its
@@ -36,7 +38,8 @@ failed or dropped task is refused too.
 task starts at generation 1. The revive goes to the daemon over `priory.sock` and, in one
 transaction:
 
-1. Withdraws every open ask and wait of the task, recording the new generation on each.
+1. Withdraws every open ask and wait of the task, recording the new generation on each, and marks
+   its queued prompts `withdrawn`.
 2. Raises the task's generation by one.
 3. Enters the step it ended on, or `<step>`, as a move into it would (see Moving on): a model step
    makes the task `ready` with its prompt queued, a human step asks again, and a code step makes it

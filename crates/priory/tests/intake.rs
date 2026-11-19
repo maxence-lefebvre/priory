@@ -335,7 +335,11 @@ fn a_gh_call_past_the_command_timeout_is_killed_and_the_poll_fails() {
 
     let output = setup.intake();
 
-    assert!(started.elapsed() < std::time::Duration::from_secs(30));
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(30),
+        "took {:?}: {output:?}",
+        started.elapsed()
+    );
     assert_eq!(
         String::from_utf8_lossy(&output.stderr),
         format!("priory intake: gh api {EVENTS_PATH} timed out after 1s\n")

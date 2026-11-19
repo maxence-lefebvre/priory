@@ -8,6 +8,7 @@ Every prompt the daemon types goes through the outbox. A prompt moves through th
 | `attempted` | Recorded, with the run marked busy, in the transaction before typing             |
 | `confirmed` | Its `UserPromptSubmit` arrived                                                   |
 | `uncertain` | Attempted before a daemon stop, never confirmed. Priory never types it again     |
+| `withdrawn` | Queued when a person revived the task. Its new generation never gets it          |
 
 A model step's prompt is the step's `prompt`, then the line `End this step by calling the result
 tool of the priory MCP server with one of these outcomes: <the keys of next>.` A run's first prompt
@@ -21,6 +22,11 @@ buffer from stdin and pastes it as one bracketed paste, so newlines do not submi
 the text stay literal. Then it presses Enter.
 
 A task with an attempted or uncertain prompt gets no further prompt while its text may still sit in
-the agent's input. That holds while the run it went to is live, or has moved on into another run.
-Once that run ended any other way, its process is gone, and the task's next run gets its prompts.
-The prompt itself stays `uncertain` on the desk.
+the agent's input. That holds while the run it went to is live. A run carried into the next step
+takes over that prompt, since its process carries on. Once the run holding the prompt ended any
+other way, its process is gone, and the task's next run gets its prompts.
+
+A `UserPromptSubmit` with the same words, even one the daemon reads after a restart, confirms an
+`uncertain` prompt of its run. Otherwise the prompt stays `uncertain` on the desk. The schema upgrade
+that brought this rule hands an unconfirmed prompt on a `moved` run to the live run that carries on
+its process, when no run ended any other way in between.

@@ -881,6 +881,23 @@ fn an_event_kept_while_the_run_is_running_is_typed_after_the_next_stop() {
 }
 
 #[test]
+fn a_compaction_mid_turn_leaves_the_turn_busy_so_no_prompt_is_typed_into_it() {
+    let mut setup = Setup::new("compact");
+    setup.publish(&requested(42));
+    setup.hold("compact");
+    setup.hold("hold-stop");
+    setup.start();
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 1);
+
+    setup.publish(&labeled(42));
+
+    setup.until("outbox", |rows| rows.len() == 2);
+    std::thread::sleep(Duration::from_millis(1500));
+    assert_eq!(setup.rows("outbox")[1][3], "queued");
+    assert_eq!(setup.typed().len(), 1);
+}
+
+#[test]
 fn a_restarted_daemon_reattaches_to_its_run_and_types_nothing_twice() {
     let mut setup = Setup::new("restart");
     setup.publish(&requested(42));
@@ -962,10 +979,12 @@ fn a_submitted_prompt_with_text_after_its_pasted_content_tag_is_not_confirmed() 
 }
 
 #[test]
-fn a_prompt_attempted_but_not_confirmed_before_a_crash_becomes_uncertain_and_is_not_typed_again() {
+fn a_prompt_attempted_before_a_crash_becomes_uncertain_is_not_typed_again_and_its_late_submit_confirms_it()
+ {
     let mut setup = Setup::new("uncertain");
     setup.publish(&requested(42));
     setup.hold("hold-submit");
+    setup.hold("hold-stop");
     setup.start();
     setup.until("outbox", |rows| with(rows, 3, "attempted") == 1);
     setup.written("fake/pending");
@@ -975,10 +994,27 @@ fn a_prompt_attempted_but_not_confirmed_before_a_crash_becomes_uncertain_and_is_
 
     setup.until("outbox", |rows| with(rows, 3, "uncertain") == 1);
     setup.release("hold-submit");
-    setup.written("fake/typed.log");
-    std::thread::sleep(Duration::from_millis(1500));
+    setup.until("outbox", |rows| rows[0][3] == "confirmed");
     assert_eq!(setup.typed().len(), 1);
-    assert_eq!(setup.rows("outbox")[0][3], "uncertain");
+}
+
+#[test]
+fn a_prompt_submitted_while_the_daemon_is_down_is_confirmed_when_it_comes_back() {
+    let mut setup = Setup::new("uncertain-spooled");
+    setup.publish(&requested(42));
+    setup.hold("hold-submit");
+    setup.hold("hold-stop");
+    setup.start();
+    setup.until("outbox", |rows| with(rows, 3, "attempted") == 1);
+    setup.written("fake/pending");
+
+    setup.crash();
+    setup.release("hold-submit");
+    setup.written("home/signals.spool");
+    setup.start();
+
+    setup.until("outbox", |rows| rows[0][3] == "confirmed");
+    assert_eq!(setup.typed().len(), 1);
 }
 
 #[test]
@@ -2202,7 +2238,7 @@ fn a_task_queued_before_schema_11_ends_its_first_step_once_upgraded() {
     route(&setup);
     // Schema 10 inserted a queued task with no `changed`, which migration 11 copied into `entered`.
     let db = rusqlite::Connection::open(setup.dir.join("priory.db")).unwrap();
-    db.execute_batch("UPDATE tasks SET entered = NULL; PRAGMA user_version = 22;")
+    db.execute_batch("UPDATE tasks SET entered = NULL; PRAGMA user_version = 23;")
         .unwrap();
 
     setup.start();
@@ -2627,11 +2663,14 @@ fn the_desk_lists_an_uncertain_prompt_a_blocked_task_and_an_open_ask_oldest_firs
     setup.start();
     setup.until("outbox", |rows| with(rows, 3, "uncertain") == 1);
     std::thread::sleep(Duration::from_millis(1100));
+    // The agent submits other text, so the prompt stays uncertain.
+    fs::write(setup.dir.join("fake/trailer"), " Wait.").unwrap();
     setup.release("hold-submit");
 
     setup.until("tasks", |rows| {
         rows.first().is_some_and(|row| row[4] == "blocked")
     });
+    fs::remove_file(setup.dir.join("fake/trailer")).unwrap();
     std::thread::sleep(Duration::from_millis(1100));
     setup.hold("hold-submit");
     setup.release("hold-stop");
@@ -2863,10 +2902,13 @@ fn a_resumed_task_gets_its_prompts_although_its_exited_run_left_an_uncertain_one
     setup.crash();
     setup.start();
     setup.until("outbox", |rows| with(rows, 3, "uncertain") == 1);
+    // The agent submits other text, so the prompt stays uncertain.
+    fs::write(setup.dir.join("fake/trailer"), " Wait.").unwrap();
     setup.release("hold-submit");
     setup.until("tasks", |rows| {
         rows.first().is_some_and(|row| row[4] == "blocked")
     });
+    fs::remove_file(setup.dir.join("fake/trailer")).unwrap();
 
     assert!(setup.priory(&["resume", "1"]).status.success());
 
@@ -2881,6 +2923,158 @@ fn a_resumed_task_gets_its_prompts_although_its_exited_run_left_an_uncertain_one
             .iter()
             .any(|prompt| prompt.starts_with("A person resumed"))
     );
+}
+
+#[test]
+fn a_run_moved_into_another_agents_step_with_an_unconfirmed_prompt_does_not_hold_back_the_next_run()
+{
+    let workflow = STEPS.replace(
+        "agent = \"implementer\"\nprompt = \"Implement the plan.\"",
+        "agent = \"reviewer\"\nprompt = \"Implement the plan.\"",
+    );
+    let mut setup = Setup::with_workflow("moved-unconfirmed", &workflow);
+    // The agent submits other text, so its first prompt stays attempted.
+    fs::write(setup.dir.join("fake/trailer"), " Wait.").unwrap();
+    setup.calls(&[result("ready")]);
+    setup.hold("hold-call");
+    setup.publish(&requested(42));
+    setup.start();
+    setup.written("fake/submitted");
+    fs::remove_file(setup.dir.join("fake/trailer")).unwrap();
+    setup.release("hold-call");
+
+    let outbox = setup.until("outbox", |rows| {
+        rows.iter()
+            .any(|row| row[3] == "confirmed" && row[4].starts_with("Implement the plan."))
+    });
+
+    assert_eq!(outbox[0][3], "attempted");
+    assert_eq!(setup.rows("runs")[0][7], "moved");
+}
+
+#[test]
+fn a_run_carried_into_the_next_step_gets_no_prompt_while_its_process_may_hold_an_unconfirmed_one() {
+    let mut setup = Setup::with_workflow("carried-unconfirmed", STEPS);
+    // The agent submits other text, so its first prompt stays attempted.
+    fs::write(setup.dir.join("fake/trailer"), " Wait.").unwrap();
+    setup.calls(&[result("ready")]);
+    setup.publish(&requested(42));
+    setup.start();
+
+    let runs = setup.until("runs", |rows| rows.len() == 2);
+    std::thread::sleep(Duration::from_millis(1500));
+
+    assert_eq!(runs[0][7], "moved");
+    assert_eq!(setup.typed().len(), 1);
+    assert_eq!(setup.rows("outbox")[1][3], "queued");
+}
+
+#[test]
+fn an_upgrade_hands_the_unconfirmed_prompt_of_a_moved_run_to_the_live_run_that_carries_its_process()
+{
+    let mut setup = Setup::with_workflow("carried-upgrade", STEPS);
+    fs::write(setup.dir.join("fake/trailer"), " Wait.").unwrap();
+    setup.calls(&[result("ready")]);
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("runs", |rows| rows.len() == 2);
+    setup.crash();
+    // The state as the version before this fix left it.
+    let db = rusqlite::Connection::open(setup.dir.join("priory.db")).unwrap();
+    db.execute_batch("UPDATE outbox SET run = 1 WHERE id = 1; PRAGMA user_version = 22;")
+        .unwrap();
+
+    setup.start();
+
+    std::thread::sleep(Duration::from_millis(1500));
+    assert_eq!(setup.typed().len(), 1);
+    assert_eq!(setup.rows("outbox")[1][3], "queued");
+}
+
+#[test]
+fn a_task_blocked_before_its_first_run_gets_its_step_prompt_when_resumed() {
+    let mut setup = Setup::new("blocked-unstarted");
+    let origin = setup.dir.join("origin/owner/repo.git");
+    let away = setup.dir.join("origin/away.git");
+    fs::rename(&origin, &away).unwrap();
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == "blocked")
+    });
+    fs::rename(&away, &origin).unwrap();
+
+    assert!(setup.priory(&["resume", "1"]).status.success());
+
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 1);
+    let first = &setup.typed()[0];
+    assert!(first.starts_with("Implement the issue.\n"), "{first}");
+}
+
+#[test]
+fn a_codex_run_lost_before_its_session_start_hands_its_first_prompt_to_the_next_run() {
+    let mut setup = Setup::new("codex-lost-unstarted");
+    fs::write(setup.dir.join("factory/agents/implementer/agent.md"), CODEX).unwrap();
+    setup.hold("silent");
+    setup.publish(&requested(42));
+    setup.start();
+    setup.written("fake/pid");
+    setup.reboot();
+    setup.release("silent");
+
+    setup.start();
+
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 1);
+    let prompt = fs::read_to_string(setup.dir.join("fake/codex-prompt")).unwrap();
+    assert!(prompt.starts_with("Priory restarted"), "{prompt}");
+    assert!(prompt.contains("\nImplement the issue.\n"), "{prompt}");
+}
+
+#[test]
+fn a_revived_task_gets_none_of_the_prompts_its_earlier_generation_left_queued() {
+    let mut setup = Setup::new("revive-queued");
+    setup.publish(&requested(42));
+    setup.hold("hold-stop");
+    setup.start();
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 1);
+    setup.publish(&labeled(42));
+    setup.until("outbox", |rows| rows.len() == 2);
+    assert!(setup.priory(&["cancel", "1"]).status.success());
+
+    assert!(setup.priory(&["revive", "1"]).status.success());
+
+    setup.until("outbox", |rows| {
+        rows.iter()
+            .any(|row| row[3] == "confirmed" && row[4].starts_with("A person revived"))
+    });
+    let revived = setup.typed().pop().unwrap();
+    assert!(revived.contains("\nImplement the issue.\n"), "{revived}");
+    assert!(!revived.contains("github.issues.labeled"), "{revived}");
+}
+
+#[test]
+fn a_codex_run_that_exits_before_its_session_start_after_a_daemon_restart_keeps_its_first_prompt() {
+    let mut setup = Setup::new("codex-exit-unstarted");
+    fs::write(setup.dir.join("factory/agents/implementer/agent.md"), CODEX).unwrap();
+    setup.hold("silent");
+    setup.publish(&requested(42));
+    setup.start();
+    setup.written("fake/pid");
+    setup.crash();
+    setup.start();
+    setup.until("outbox", |rows| with(rows, 3, "uncertain") == 1);
+    let pid = fs::read_to_string(setup.dir.join("fake/pid")).unwrap();
+    // The restarted daemon checks the panes it found before this one exits.
+    std::thread::sleep(Duration::from_millis(1500));
+    let _ = Command::new("kill").args(["-9", pid.trim()]).status();
+    setup.until("tasks", |rows| rows[0][4] == "blocked");
+    setup.release("silent");
+
+    assert!(setup.priory(&["resume", "1"]).status.success());
+
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 1);
+    let prompt = fs::read_to_string(setup.dir.join("fake/codex-prompt")).unwrap();
+    assert!(prompt.contains("Implement the issue.\n"), "{prompt}");
 }
 
 #[test]

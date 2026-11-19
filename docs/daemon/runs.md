@@ -52,7 +52,9 @@ found tmux session <name> gone, as after a reboot, so this run was interrupted. 
 then continue.` The next run resumes the session in the same worktree. This happens once. If the
 task's previous run was lost too and this run stored no ask or wait, the task blocks with
 `run <id> was lost again before it made progress: tmux session <name> is gone`. A prompt the lost
-run had attempted stays `uncertain` and is never typed again.
+run had attempted stays `uncertain` and is never typed again, unless the run never reached
+`SessionStart`: then it never took the prompt, as a Codex run takes its first one at launch, so the
+prompt is queued again after the one that says the run was lost.
 
 ## Queue
 
