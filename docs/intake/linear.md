@@ -119,7 +119,7 @@ Limits:
 - An issue that enters and leaves a view between two polls produces no event.
 - As for GitHub, start-up recovery never dispatches a baseline event, so a crash between a baseline
   event and the task request of a `backfill` trigger loses that request.
-- A task's key is the issue identifier. Moving the issue to another team changes it, so later events
+- A task's key names the issue identifier. Moving the issue to another team changes its identifier, so later events
   of that issue no longer reach the task.
 - A view marker holds every issue of the view and is published whenever one of them changes, so a
   large, busy view grows the output.

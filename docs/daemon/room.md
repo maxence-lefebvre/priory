@@ -37,9 +37,9 @@ GB of disk free, keeps 20.0 GB free` or `waits for room: load 7.50 on 8 CPUs, ke
 The first task waiting for room holds back every task behind it in the queue, even a smaller one
 that fits. Each gets the reason `waits behind task <id>, which waits for room`. A higher band only
 starts earlier. It never skips the room check, and a large task never starves behind smaller ones
-that keep taking its room. The cost is idle room while it waits. A task that can never fit holds
-back no one. That covers a task whose agent declares more memory than the runner's share of the
-machine, or more disk than the disk holds above its floor. Nor does a task waiting for a shared
+that keep taking its room. The cost is idle room while it waits. A task
+whose agent declares more memory than the runner's share of the
+machine, or more disk than the disk holds above its floor, can never fit, so it holds back no one. Nor does a task waiting for a shared
 agent (see Shared sessions).
 
 While the head of the queue waits for room, the queue is stalled. The daemon records the stall in

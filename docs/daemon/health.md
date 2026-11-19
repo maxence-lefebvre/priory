@@ -103,7 +103,7 @@ a wait or an ask never count, nor do runs whose spinner or output still moves.
 The handler is opt-in. `handler` in `factory.toml` names the agent whose model it uses, which needs
 `harness = "claude-code"`. Without it, no handler runs, as no sweeper runs without `[sweep] agent`.
 On a stall, the daemon makes one headless `claude -p --output-format json` call in
-`PRIORY_HOME/handlers`, with no user settings, MCP servers or kept session. The model is the agent's,
+`PRIORY_HOME/handlers`, with no settings or MCP servers of the user's and no session kept. The model is the agent's,
 or `haiku` when the agent sets none.
 
 ```toml
@@ -111,7 +111,7 @@ handler = "handler"   # an agent with harness = "claude-code"; no handler runs w
 stalled = "10m"
 ```
 
-The handler reads the step's prompt, the task's last three prompts, its last three trace records and
+The handler reads the step's prompt, the last three prompts the task received, the task's last three trace records and
 the last 30 screen lines. It answers one of:
 
 - `nudge` with a text. Priory queues `Priory's handler read your screen after this run stalled:
@@ -141,7 +141,7 @@ event arrives or the pane shows something else. A run gets at most 3 calls, afte
 prompt. Such runs are not read, and its prompt tells it to answer `leave` on a question or a menu.
 Priory cannot check the text of a nudge.
 
-Each answered call appends a `factory.handler.called` record with the action, its text, the model,
+Each answered call appends a `factory.handler.called` record to the trace, with the action, its text, the model,
 the tokens and Claude's own `cost_usd`. A daemon that stops mid-call kills that call's process group
 when it starts again, after checking its start time in `/proc`. It then records the call's answer, if
 the call wrote one, as not applied, or `leave` with `the handler call failed: interrupted by a daemon

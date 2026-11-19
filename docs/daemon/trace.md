@@ -26,7 +26,7 @@ A row commits with the move. An exporter can publish rows later to the bus or Op
 | `started` | when the task entered the step, so it includes the time the task waited for a run |
 | `harness`, `model`, `tokens` | for a model step: the agent's harness, the model the transcript names, else the agent's |
 
-A model step's `tokens` come from the session transcript at `transcript_path`. A run records the file
+A model step's `tokens` come from Claude's session transcript, the file that `transcript_path` names. A run records the file
 and its length at `SessionStart`, since a resumed session's file already holds earlier runs' turns.
 At each `Stop`, the daemon reads the lines added since and adds each assistant message's usage to the
 task's current step. Claude writes a message once per content block, each line with its usage, so a
