@@ -97,9 +97,11 @@ pub(crate) fn retire(
     let asleep = db
         .prepare(
             "SELECT id, worktree FROM tasks
-             WHERE state = 'asleep' AND retired IS NULL AND worktree IS NOT NULL ORDER BY changed, id",
+             WHERE state = 'asleep' AND worktree IS NOT NULL ORDER BY changed, id",
         )?
-        .query_map([], |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)))?
+        .query_map([], |row| {
+            Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+        })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     let found = worktrees::found(home);
     for (task, worktree) in asleep {

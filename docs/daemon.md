@@ -614,7 +614,8 @@ After each sweep, when free disk is at or under the room's disk floor (see Room)
 asleep tasks, the longest asleep first, until the floor is met again. Retiring runs
 `git worktree remove` without force: the worktree goes, and the branch `priory/<id>` and the task's
 sessions stay. A task retires only when its worktree is Priory's, on its branch, has nothing
-uncommitted or untracked, and no process runs in it.
+uncommitted or untracked, and no process runs in it. The daemon marks the task before it removes the worktree, so a
+crash in between leaves a mark on a folder that still exists, which the next sweep checks again.
 
 Its commits need not be pushed: the branch stays in Priory's clone, on the same disk, and no sweep
 deletes the branch of an active task. Requiring a push would keep most asleep tasks, since an agent
@@ -629,6 +630,7 @@ while the task is retired reads the branch's commit from Priory's clone.
 
 A code step skips the room check, except when it must add a worktree back: while free disk is at or
 under the floor, the task stays `ready` with the reason `waits for room to add back its worktree`,
+or `waits for room: <error>` when the disk cannot be measured,
 and the code steps behind it wait too.
 
 A task that cannot retire gets the reason `cannot retire: <why>`, with the same reasons as the

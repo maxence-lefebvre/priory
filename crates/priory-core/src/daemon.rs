@@ -342,10 +342,17 @@ fn perform(db: &mut Connection, trace: &Trace, home: &Path) -> Result<(), Error>
             .is_some_and(|worktree| !Path::new(worktree).exists())
     {
         // A resurrected task goes through the room check, which a code step otherwise skips.
-        if room::measure(home).is_ok_and(|room| crate::room::short_of_disk(&room)) {
+        let waits = match room::measure(home) {
+            Err(error) => Some(format!("waits for room: {error}")),
+            Ok(room) if crate::room::short_of_disk(&room) => {
+                Some("waits for room to add back its worktree".to_owned())
+            }
+            Ok(_) => None,
+        };
+        if let Some(reason) = waits {
             db.execute(
                 "UPDATE tasks SET reason = ?2 WHERE id = ?1 AND reason IS NOT ?2",
-                rusqlite::params![due.task, "waits for room to add back its worktree"],
+                rusqlite::params![due.task, reason],
             )?;
             return Ok(());
         }
