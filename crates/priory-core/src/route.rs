@@ -87,6 +87,11 @@ pub(crate) fn branch(repo: &str, branch: &str) -> String {
     format!("github:{repo}@{branch}")
 }
 
+/// Whether `message` requests a task.
+pub(crate) fn requests(message: &Message) -> bool {
+    message.kind == TASK_REQUESTED
+}
+
 /// Whether `message` is a schedule's firing, which wakes or is coalesced into the task it finds.
 pub(crate) fn tick(message: &Message) -> bool {
     message.kind == TASK_REQUESTED && message.data.get("scheduled").is_some()

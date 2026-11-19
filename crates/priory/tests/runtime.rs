@@ -1057,7 +1057,7 @@ fn a_derived_lane_is_derived_again_when_the_first_run_gives_the_task_a_branch() 
                 .success()
         );
     }
-    setup.until("tasks", |rows| rows[0][4] == "failed");
+    setup.until("tasks", |rows| rows[0][4] == "dropped");
     let desk = setup.priory(&["desk"]);
     let desk = String::from_utf8(desk.stdout).unwrap();
     let mut lines = desk.lines();
@@ -1134,7 +1134,7 @@ fn a_crash_on_a_full_disk_the_sweep_cannot_free_fails_without_a_restart() {
             .success()
     );
 
-    let tasks = setup.until("tasks", |rows| rows[0][4] == "failed");
+    let tasks = setup.until("tasks", |rows| rows[0][4] == "dropped");
     let cause = "disk full (10.0 GB of disk free, keeps 20.0 GB free)";
     assert_eq!(
         tasks[0][7],
@@ -3106,6 +3106,17 @@ fn a_review_or_a_close_wakes_a_task_waiting_on_it() {
 }
 
 #[test]
+fn a_task_request_for_a_key_another_task_owns_as_a_resource_creates_its_task() {
+    let setup = asleep_on("request-owned", on_pull_7("review"));
+
+    setup.publish(&requested(7));
+
+    let tasks = setup.until("tasks", |rows| rows.len() == 2);
+    assert_eq!(tasks[1][1], "github:owner/repo#7");
+    assert_eq!(setup.rows("inbox")[1][4], "created");
+}
+
+#[test]
 fn an_event_that_does_not_match_the_wait_stays_kept_and_reaches_the_next_run() {
     let setup = asleep_on("unmatched", on_pull_7("pull_request"));
 
@@ -3312,6 +3323,39 @@ fn green_checks_at_the_result_commit_mark_the_task_done_and_start_no_run() {
     assert_eq!(setup.rows("runs").len(), 2);
     assert_eq!(setup.typed().len(), 2, "{:?}", setup.typed());
     assert!(setup.rows("waits").is_empty());
+}
+
+#[test]
+fn a_merge_with_a_check_still_running_marks_the_task_done() {
+    let setup = gated("gate-merged");
+    setup.publish(&check(1, 1));
+    stays_asleep_after(&setup, 2);
+
+    setup.publish(&closed());
+
+    setup.until("tasks", |rows| rows[0][4] == "done");
+    assert_eq!(setup.rows("runs").len(), 2);
+}
+
+#[test]
+fn a_close_without_a_merge_with_a_check_still_running_wakes_the_agent() {
+    let setup = gated("gate-closed");
+    setup.publish(&check(1, 1));
+    stays_asleep_after(&setup, 2);
+
+    setup.publish(&on_pull(
+        "github.pull_request.closed",
+        json!({ "merged": false, "github_id": 400 }),
+    ));
+
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 3);
+    let typed = setup.typed();
+    assert!(
+        typed[2].starts_with(
+            "wait 2 fired: github:owner/repo#7 closed without a merge\ngithub.pull_request.closed owner/repo#7 {"
+        ),
+        "{typed:?}"
+    );
 }
 
 fn check_runs(runs: u64) -> Message {
@@ -4535,6 +4579,49 @@ fn a_fixed_key_firing_wakes_an_asleep_task_and_its_ask_stays_open() {
 }
 
 #[test]
+fn a_woken_run_can_wait_on_something_else_and_so_withdraws_the_ask_it_took_over() {
+    let mut setup = support_day("tick-wait-instead");
+    setup.calls(&[ask(), wait(json!({ "type": "time", "until": "1 hour" }))]);
+    setup.publish(&tick("2026-11-19T08:00:00Z"));
+    setup.start();
+    setup.until("tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == "asleep")
+    });
+
+    setup.publish(&tick("2026-11-19T09:00:00Z"));
+
+    setup.until("waits", |rows| rows.len() == 1);
+    setup.until("tasks", |rows| rows[0][4] == "asleep");
+    assert!(setup.rows("asks").is_empty());
+    let answer = setup.priory(&["answer", "1", "sqlite", "--revision", "1"]);
+    assert_eq!(
+        String::from_utf8_lossy(&answer.stderr),
+        "priory answer: ask 1 was withdrawn when a later run of task 1 called another tool\n"
+    );
+}
+
+#[test]
+fn an_event_that_satisfies_the_wait_of_a_woken_task_waiting_for_room_fires_it() {
+    let mut setup = support_day("tick-wait");
+    setup.calls(&[wait(on_pull_7("pull_request")), result("failed")]);
+    setup.publish(&tick("2026-11-19T08:00:00Z"));
+    setup.start();
+    setup.until("tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == "asleep")
+    });
+    setup.gone("priory-1");
+    setup.memory(0);
+    setup.publish(&tick("2026-11-19T09:00:00Z"));
+    setup.until("tasks", |rows| rows[0][4] == "ready");
+
+    setup.publish(&closed());
+
+    setup.until("waits", |rows| rows.is_empty());
+    setup.memory(60);
+    setup.until("tasks", |rows| rows[0][4] == "dropped");
+}
+
+#[test]
 fn a_firing_at_a_human_step_is_coalesced() {
     let mut setup = support_day_with("tick-human", STEPS);
     setup.calls(&[result("unsure")]);
@@ -5119,6 +5206,53 @@ fn a_blockers_hold_releases_the_task_when_its_issue_has_no_open_blocker_left() {
     setup.until("tasks", |rows| rows[0][4] == "running");
 }
 
+#[test]
+fn a_blockers_hold_stays_when_the_newest_blockers_are_unknown() {
+    let mut setup = Setup::new("hold-blockers-unknown");
+    setup.memory(0);
+    let source = linear_7("linear.issue.blockers", &[]);
+    let mut request = requested(42);
+    request.data["key"] = json!("linear:ENG-7");
+    request.data["source"] = json!(source.id.to_string());
+    setup.publish(&source);
+    let mut unknown = linear_7("linear.issue.blockers", &[]);
+    unknown.data["blockers"] = json!(null);
+    setup.publish(&unknown);
+    setup.publish(&request);
+    setup.start();
+    setup.until("tasks", |rows| rows.len() == 1);
+
+    let reply = person(&setup, "hold", &["1", "--reason", "blocked", "--blockers"]);
+
+    assert_eq!(
+        reply,
+        "task 1 held: blocked, until linear:ENG-7 has no open blocker\n"
+    );
+    assert_eq!(held_as(&setup, "1")[0], "held");
+}
+
+#[test]
+fn a_close_that_does_not_say_whether_it_merged_asks_rather_than_drops() {
+    let setup = queued_without_room("hold-merged-unknown");
+    person(
+        &setup,
+        "hold",
+        &["1", "--reason", "a", "--merge", "7", "--if-closed", "drop"],
+    );
+
+    setup.publish(&on_pull(
+        "github.pull_request.closed",
+        json!({ "merged": null, "github_id": 400, "head_branch": "feature" }),
+    ));
+
+    let asks = setup.until("asks", |rows| rows.len() == 1);
+    assert_eq!(
+        asks[0][3],
+        "Pull request github:owner/repo#7 closed, and GitHub no longer says whether it merged, and task 1 was held until it merged: a. Release the task, or drop it?"
+    );
+    assert_eq!(held_as(&setup, "1")[0], "held");
+}
+
 const REVIVED: &str = "A person revived this task as generation 2 after it was dropped. The asks and waits of its earlier generation are withdrawn. Check the worktree, then continue.\nPlan the change.\nEnd this step by calling the result tool of the priory MCP server with one of these outcomes: hopeless, ready, unsure.\n";
 
 #[test]
@@ -5239,6 +5373,30 @@ fn a_revive_on_a_key_that_another_task_holds_is_refused() {
     );
     let tasks = setup.rows("tasks");
     assert_eq!([&tasks[0][4], &tasks[0][9]], ["dropped", "1"]);
+}
+
+#[test]
+fn a_revive_while_another_task_owns_one_of_its_resources_is_refused() {
+    let mut setup = Setup::new("revive-resource");
+    let on = on_pull_7("review");
+    setup.calls(&[wait(on.clone()), result("failed"), wait(on)]);
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == "asleep")
+    });
+    setup.publish(&reviewed());
+    setup.until("tasks", |rows| rows[0][4] == "dropped");
+    setup.publish(&requested(43));
+    setup.until("waits", |rows| rows.len() == 1);
+
+    let revived = setup.priory(&["revive", "1"]);
+
+    assert!(!revived.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&revived.stderr),
+        "priory revive: task 2 is already active on github:owner/repo#7\n"
+    );
 }
 
 #[test]

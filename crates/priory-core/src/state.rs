@@ -457,7 +457,11 @@ pub(crate) fn handle(
         return Ok(());
     }
     let resources = route::resources(message);
-    let owner = owner(&tx, &resources)?;
+    let owner = if route::requests(message) {
+        keyed(&tx, &resources)?
+    } else {
+        owner(&tx, &resources)?
+    };
     let (task, outcome) = match route::route(message, owner.as_ref(), factory)? {
         Decision::Create(new) => {
             tx.execute(
@@ -621,6 +625,18 @@ pub(crate) fn disk_due(
     let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
     crate::tools::disk_due(&tx, free)?;
     tx.commit()
+}
+
+/// The active task whose own key is one of `keys`: owning a key as a resource is not enough.
+fn keyed(tx: &Transaction, keys: &[String]) -> rusqlite::Result<Option<Task>> {
+    let keys = serde_json::to_string(keys).expect("keys serialize");
+    tx.query_row(
+        "SELECT id FROM tasks WHERE key IN (SELECT value FROM json_each(?1))
+         AND state NOT IN ('done', 'failed', 'dropped') ORDER BY id LIMIT 1",
+        [keys],
+        |row| Ok(Task { id: row.get(0)? }),
+    )
+    .optional()
 }
 
 /// The oldest active task that owns any of `resources`.
@@ -942,15 +958,6 @@ pub(crate) fn start(db: &mut Connection, run: &NewRun) -> rusqlite::Result<i64> 
            retired = NULL
          WHERE id = ?1",
         params![run.task, run.branch, run.worktree, run.ending],
-    )?;
-    // A schedule's tick wakes a task with its ask or wait still open: this run sleeps on them again.
-    tx.execute(
-        "UPDATE asks SET run = ?2 WHERE task = ?1 AND run IS NOT NULL AND answer IS NULL AND withdrawn IS NULL",
-        params![run.task, id],
-    )?;
-    tx.execute(
-        "UPDATE waits SET run = ?2 WHERE task = ?1 AND fired IS NULL AND withdrawn IS NULL AND NOT daemon",
-        params![run.task, id],
     )?;
     let (key, team, project, derived): (String, Option<String>, Option<String>, bool) = tx
         .query_row(
