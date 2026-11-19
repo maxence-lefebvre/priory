@@ -94,7 +94,7 @@ fn main() -> ExitCode {
 
 fn usage() -> ExitCode {
     eprintln!(
-        "usage: priory check [DIR]\n       priory draw [DIR] WORKFLOW\n       priory intake [DIR] [--once]\n       priory daemon [DIR] [--once]\n       priory request [DIR] --workflow <name> --key <key> [--band <band>] [--lane <lane>] [--repo <owner/name>] <text>\n       priory inbox\n       priory tasks [--lane <lane>]\n       priory runs\n       priory outbox\n       priory asks\n       priory waits\n       priory actions\n       priory desk\n       priory trace\n       priory report [DIR] --workflow <name> [--since <instant-or-duration>] [--cost]\n       priory resume TASK\n       priory cancel TASK\n       priory answer ASK OPTION-OR-TEXT --revision N\n       priory mcp --session ID\n       priory hook EVENT"
+        "usage: priory check [DIR]\n       priory draw [DIR] WORKFLOW\n       priory intake [DIR] [--once]\n       priory daemon [DIR] [--once]\n       priory request [DIR] --workflow <name> --key <key> [--band <band>] [--lane <lane>] [--repo <owner/name>] <text>\n       priory inbox\n       priory tasks [--lane <lane>]\n       priory runs\n       priory outbox\n       priory asks\n       priory waits\n       priory actions\n       priory desk\n       priory trace\n       priory report [DIR] --workflow <name> [--since <instant-or-duration>] [--cost] [--by lane]\n       priory resume TASK\n       priory cancel TASK\n       priory answer ASK OPTION-OR-TEXT --revision N\n       priory mcp --session ID\n       priory hook EVENT"
     );
     ExitCode::from(2)
 }
@@ -157,12 +157,14 @@ fn report(args: Vec<String>) -> ExitCode {
     let mut workflow = None;
     let mut since = report::SINCE.to_owned();
     let mut cost = false;
+    let mut by_lane = false;
     let mut dirs = Vec::new();
     let mut args = args.into_iter();
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--workflow" => workflow = args.next(),
             "--cost" => cost = true,
+            "--by" if args.next().as_deref() == Some("lane") => by_lane = true,
             "--since" => match args.next() {
                 Some(window) => since = window,
                 None => return usage(),
@@ -171,11 +173,15 @@ fn report(args: Vec<String>) -> ExitCode {
             _ => dirs.push(arg),
         }
     }
+    if cost && by_lane {
+        return usage();
+    }
     let (Some(workflow), [] | [_]) = (workflow, &dirs[..]) else {
         return usage();
     };
     if !cost {
-        let printed = state::open().and_then(|db| report::outcomes(&db, &workflow, &since));
+        let printed =
+            state::open().and_then(|db| report::outcomes(&db, &workflow, &since, by_lane));
         return exit("report", printed);
     }
     let dir = dirs

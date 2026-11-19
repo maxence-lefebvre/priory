@@ -3737,3 +3737,38 @@ fn a_cost_report_keeps_a_model_step_whose_tokens_are_unknown_and_marks_its_total
         ]
     );
 }
+
+#[test]
+fn a_report_by_lane_counts_each_lane_apart() {
+    let mut setup = Setup::with_workflow("report-lane", TWO_AGENTS);
+    setup.calls(&[
+        result("passed"),
+        result("changes"),
+        result("passed"),
+        result("approved"),
+    ]);
+    let in_lane = |issue, lane: &str| {
+        let mut request = requested(issue);
+        request.data["lane"] = json!(lane);
+        request
+    };
+    setup.publish(&in_lane(42, "3D/mobile"));
+    setup.start();
+    setup.until("tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == "done")
+    });
+    setup.publish(&in_lane(43, "FND/desktop"));
+    setup.until("runs", |rows| rows.iter().any(|row| row[1] == "2"));
+
+    let report = setup.report(&["--workflow", "implement", "--by", "lane"]);
+
+    assert_eq!(
+        report,
+        [
+            ["lane", "step", "outcome", "count", "reached", "rate"],
+            ["3D/mobile", "implement", "passed", "2", "2", "100.0%"],
+            ["3D/mobile", "review", "approved", "1", "2", "50.0%"],
+            ["3D/mobile", "review", "changes", "1", "2", "50.0%"],
+        ]
+    );
+}

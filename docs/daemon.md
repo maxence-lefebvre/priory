@@ -582,7 +582,7 @@ Known limits:
 
 ### Reports
 
-`priory report [DIR] --workflow <name> [--since <window>]` prints, for each step of the workflow,
+`priory report [DIR] --workflow <name> [--since <window>] [--by lane]` prints, for each step of the workflow,
 each outcome with its count, the records that reached the step and its rate:
 
 ```
@@ -594,6 +594,8 @@ review	changes	1	2	50.0%
 A visit reaches its step when it ends there, or while an active task is still at it, so the
 outcome rates of a step with tasks in progress add up to less than 100 %.
 `--since` takes an RFC 3339 instant or a duration such as `7 days`, the default, back from now.
+`--by lane` counts each lane apart, by the lane its task has now, and adds a leading `lane` column. It
+does not combine with `--cost`.
 
 `--cost` prints each task's tokens and cost instead, per step, then in total. The prices come from
 `prices.toml` in the factory folder `DIR`, which defaults to the current folder. Each table is a model,
