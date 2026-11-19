@@ -17,8 +17,9 @@ fact about a repository, so it names the person and the text, not a GitHub id.
 | `repo`   | string or null | `--repo`, or null                                          |
 
 The message's `subject` is the task key, `cli:<key>`, and its `time` equals `data.time`. The task
-request that follows has `trigger` `cli`, `source` set to this message's `id`, `band` and `lane`
-from the flags (null when absent), and the same key. No trigger file is involved.
+request that follows has `trigger` `cli`, `source` set to this message's `id`, `band`, `lane` and
+`repo` from the flags (null when absent), and the same key. No trigger file is involved, so a task
+started without `--repo` blocks with `task <id> names no repo`.
 
 ```json
 {
@@ -48,7 +49,8 @@ from the flags (null when absent), and the same key. No trigger file is involved
     "band": "today",
     "lane": null,
     "trigger": "cli",
-    "source": "b770d2d3-3057-5e09-bfca-a0bb555bafc8"
+    "source": "b770d2d3-3057-5e09-bfca-a0bb555bafc8",
+    "repo": "owner/repo"
   },
   "links": []
 }

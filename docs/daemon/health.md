@@ -28,7 +28,7 @@ These ends make a task `failed`:
 
 Everything else that stops a task needs a person and makes it `blocked`: no `SessionStart`, an exit
 before `SessionStart`, a permission prompt, a timeout, a run lost twice, a code step's action that
-is not built, a step with no known agent, a trigger with no repo, and a git or tmux error at the
+is not built, a step with no known agent, a task with no repo, and a git or tmux error at the
 start of a run. `open-pr`'s own failure is not an end: it is the `failed` outcome, which the
 workflow routes like any other.
 

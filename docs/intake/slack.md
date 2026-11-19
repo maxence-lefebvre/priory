@@ -4,8 +4,9 @@
 
 A trigger with `source = "slack"` names a `channel` by its id, such as `C0123`, and starts on
 `message.posted`. It may filter on `text`: the trigger matches a message whose text contains it,
-ignoring case. It takes `backfill`, and its `key`, when set, is `message.ts`. Each task it requests
-has the key `slack:<channel>:<ts>`.
+ignoring case. It takes `backfill`, and its `key`, when set, is `message.ts`. It may name the `repo`,
+`owner/name`, that its tasks work in; without one, its tasks block before their first run. Each task
+it requests has the key `slack:<channel>:<ts>`.
 
 | Type                   | One message per                                                     |
 | ---------------------- | ------------------------------------------------------------------- |
@@ -64,4 +65,6 @@ own bot. Each poll then makes one `conversations.history` call per trigger chann
 `channels:history` scope, and `groups:history` for a private channel, and must be a member of the
 channel. Slack limits these two methods per app: an app outside the Slack Marketplace created after
 May 2025 gets one call a minute and 15 messages per call, so it can watch one channel or thread per
-minute at most.
+minute at most. Each minute's poll starts at the next watched thread, so a rate limit delays every
+thread in turn rather than starving the later ones. A channel that fails publishes nothing and fails
+the poll only after the other channels and the watched threads are published.

@@ -60,9 +60,10 @@ have no such point: each poll reads the current reviews and checks again and pub
 the output yet. The intake remembers the ids it published, and herdr-bus drops the rest, so after a
 restart the first poll offers every current review and check again. A poll publishes reviews and
 checks before the issue streams, so a crash after a pull request's `closed` event cannot skip the
-reviews and checks that only that event made the poll read. Without `--once`, a failing `gh` is
-logged and retried on the next poll, while a failing publish ends the intake, so that its restart
-recovers what it left out.
+reviews and checks that only that event made the poll read. A failing `gh` publishes nothing for
+its repository; the other repositories still publish. Without `--once` the error is logged and
+retried on the next poll, and with `--once` the intake exits non-zero after publishing the rest. A
+failing publish ends the intake, so that its restart recovers what it left out.
 
 Limits:
 
