@@ -99,6 +99,15 @@ fn step_spans(row: &Row) -> Vec<Value> {
     let start = started * 1_000_000;
     let end = start + data["duration_ms"].as_i64().unwrap_or(0) * 1_000_000;
     let tokens = &data["tokens"];
+    // GenAI conventions count cached input in input_tokens, and break it out separately.
+    let input = tokens["input"].as_i64().map(|input| {
+        json!(
+            input
+                + tokens["cache_read"].as_i64().unwrap_or(0)
+                + tokens["cache_write"].as_i64().unwrap_or(0)
+        )
+    });
+    let input = input.unwrap_or(Value::Null);
     let step_attributes = [
         ("priory.task.id", &data["task"]),
         ("priory.run.id", &data["run"]),
@@ -112,7 +121,7 @@ fn step_spans(row: &Row) -> Vec<Value> {
         ("priory.effect", &data["effect"]),
         ("priory.harness", &data["harness"]),
         ("gen_ai.request.model", &data["model"]),
-        ("gen_ai.usage.input_tokens", &tokens["input"]),
+        ("gen_ai.usage.input_tokens", &input),
         ("gen_ai.usage.output_tokens", &tokens["output"]),
         (
             "gen_ai.usage.cache_read.input_tokens",

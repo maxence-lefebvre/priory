@@ -65,19 +65,22 @@ task id, run id or record id, so sending a record again gives the same ids.
 | `priory.task.id`, `priory.run.id`, `priory.step`, `priory.lane` | both | the record's `task`, `run`, `step` and `lane` |
 | `priory.outcome`, `priory.workflow`, `priory.key`, `priory.generation`, `priory.decider`, `priory.effect`, `priory.harness` | step | the record's fields of the same name |
 | `gen_ai.request.model` | both | the record's `model` |
-| `gen_ai.usage.input_tokens`, `gen_ai.usage.output_tokens`, `gen_ai.usage.cache_read.input_tokens`, `gen_ai.usage.cache_creation.input_tokens` | step | the record's `tokens` |
+| `gen_ai.usage.input_tokens` | step | the record's `input`, `cache_read` and `cache_write` tokens together |
+| `gen_ai.usage.output_tokens`, `gen_ai.usage.cache_read.input_tokens`, `gen_ai.usage.cache_creation.input_tokens` | step | the record's `output`, `cache_read` and `cache_write` tokens |
 | `gen_ai.operation.name`, `gen_ai.agent.name` | run | `invoke_agent` and the run's agent |
 
 The resource carries `service.name = priory`, `priory.factory` and `host.name`, the machine.
 
 Each tick, the daemon sends up to 200 records past the endpoint's cursor in one request, through
 `curl`, and moves on without waiting for it. `curl` gives up after `command_timeout`. The cursor, in
-the state file's `exports` table, moves once `curl` succeeds, so a daemon restart resends nothing it
-saw succeed. A failed send is logged and tried again 5 seconds later. A new endpoint starts from the
-first record.
+the state file's `exports` table, moves once the endpoint answers with a 2xx status, so a daemon
+restart resends nothing it saw accepted. Any other answer, or no answer, is logged and the batch is
+tried again 5 seconds later, except a 4xx other than 408 and 429: OTLP says such a request will never
+be accepted, so the daemon logs it and skips the batch. A new endpoint starts from the first record.
 
-Each run's harness gets `OTEL_RESOURCE_ATTRIBUTES` with `priory.task.id` and `priory.run.id`, after
-the daemon's own value when it has one. A harness that exports its own telemetry, such as Claude
+Each harness process gets `OTEL_RESOURCE_ATTRIBUTES` with `priory.task.id` and `priory.run.id`,
+after the daemon's own value when it has one. A process lives as long as its first run's agent keeps
+the task, so a run carried into the next step keeps the run id of the run that started it. A harness that exports its own telemetry, such as Claude
 Code with `CLAUDE_CODE_ENABLE_TELEMETRY`, then tags it with the same ids in the same backend. Priory
 sets nothing else of the harness's telemetry.
 
@@ -88,6 +91,7 @@ Known limits:
 - `factory.task.repaired` and `factory.handler.called` records are not exported, and a run that ends
   no step, such as a blocked or lost one, has no span.
 - A task has no span of its own, so its runs are the trace's top spans.
+- A partial success, a 2xx whose body names rejected spans, counts as accepted.
 
 ## Reports
 

@@ -7684,9 +7684,15 @@ fn a_finished_task_sends_one_trace_with_a_span_per_run_and_a_span_per_step_under
         assert_eq!(attribute(attributes, "priory.outcome"), data["outcome"]);
         assert_eq!(attribute(attributes, "priory.lane"), "none/misc");
         assert_eq!(attribute(attributes, "gen_ai.request.model"), data["model"]);
+        let tokens = &data["tokens"];
+        let input = ["input", "cache_read", "cache_write"]
+            .map(|kind| tokens[kind].as_i64().unwrap())
+            .iter()
+            .sum::<i64>();
+        assert_eq!(attribute(attributes, "gen_ai.usage.input_tokens"), input);
         assert_eq!(
-            attribute(attributes, "gen_ai.usage.input_tokens"),
-            data["tokens"]["input"]
+            attribute(attributes, "gen_ai.usage.cache_read.input_tokens"),
+            tokens["cache_read"]
         );
         assert_eq!(
             attribute(attributes, "gen_ai.usage.output_tokens"),
@@ -7821,4 +7827,27 @@ fn a_failed_send_is_retried_and_its_spans_arrive_once() {
     assert!(log.contains("curl: (7)"), "{log}");
     std::thread::sleep(Duration::from_secs(2));
     assert_eq!(spans(&setup.posts()).len(), 4);
+}
+
+#[test]
+fn a_batch_the_endpoint_rejects_as_malformed_is_skipped_rather_than_retried() {
+    let mut setup = Setup::with_workflow("otlp-rejected", STEPS);
+    setup.telemetry("http://127.0.0.1:4318");
+    fs::write(setup.dir.join("fake/curl-status"), "400").unwrap();
+    setup.calls(&[result("ready"), result("passed")]);
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == "done")
+    });
+    std::thread::sleep(Duration::from_secs(7));
+
+    let calls = fs::read_to_string(setup.dir.join("fake/curl.log")).unwrap();
+    assert_eq!(calls.lines().count(), setup.posts().len() + 1, "{calls}");
+    let log = fs::read_to_string(setup.dir.join("daemon.log")).unwrap();
+    assert_eq!(
+        log.matches("rejected spans with HTTP 400").count(),
+        1,
+        "{log}"
+    );
 }

@@ -95,12 +95,24 @@ fn fed_within(command: &mut Command, input: Option<Vec<u8>>) -> std::io::Result<
     Ok(None)
 }
 
-/// Starts `curl` POSTing the JSON in `body` to `url`, without waiting for it. `curl` gives up after
-/// the command timeout, so polling the child never waits longer. `--disable` skips a `.curlrc`.
+/// Starts `curl` POSTing the JSON in `body` to `url`, without waiting for it. It prints the HTTP
+/// status on stdout. `curl` gives up after the command timeout, and `--disable` skips a `.curlrc`.
 pub fn post_json(url: &str, body: &Path) -> std::io::Result<std::process::Child> {
     Command::new("curl")
-        .args(["--disable", "--silent", "--show-error", "--fail"])
-        .args(["--connect-timeout", "10", "--max-time"])
+        .args([
+            "--disable",
+            "--silent",
+            "--show-error",
+            "--output",
+            "/dev/null",
+        ])
+        .args([
+            "--write-out",
+            "%{http_code}",
+            "--connect-timeout",
+            "10",
+            "--max-time",
+        ])
         .arg(command_timeout().as_secs().max(1).to_string())
         .args([
             "--header",
@@ -110,7 +122,7 @@ pub fn post_json(url: &str, body: &Path) -> std::io::Result<std::process::Child>
         .arg(format!("@{}", body.display()))
         .arg(url)
         .stdin(Stdio::null())
-        .stdout(Stdio::null())
+        .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
 }

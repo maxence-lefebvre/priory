@@ -145,7 +145,7 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
     }
     let mut stalls = Stalls::default();
     let mut export = factory.otlp().map(|endpoint| Export {
-        endpoint: endpoint.to_owned(),
+        endpoint: endpoint.trim_end_matches('/').to_owned(),
         sending: None,
         after: Instant::now(),
     });
@@ -292,22 +292,42 @@ fn send_spans(
     export: &mut Export,
 ) -> Result<(), Error> {
     if let Some((mut child, seq)) = export.sending.take() {
-        let Some(status) = child.try_wait()? else {
-            export.sending = Some((child, seq));
-            return Ok(());
-        };
-        if status.success() {
-            otlp::sent(db, &export.endpoint, seq)?;
-        } else {
-            let mut stderr = String::new();
-            if let Some(mut pipe) = child.stderr.take() {
-                let _ = std::io::Read::read_to_string(&mut pipe, &mut stderr);
+        let status = match child.try_wait() {
+            Ok(None) => {
+                export.sending = Some((child, seq));
+                return Ok(());
             }
+            Ok(Some(status)) => status,
+            Err(error) => {
+                eprintln!("priory daemon: sending spans: {error}");
+                export.after = Instant::now() + EXPORT_RETRY;
+                return Ok(());
+            }
+        };
+        let read = |pipe: Option<&mut dyn std::io::Read>| {
+            let mut text = String::new();
+            pipe.map(|pipe| pipe.read_to_string(&mut text));
+            text.trim().to_owned()
+        };
+        let code = read(child.stdout.as_mut().map(|pipe| pipe as _));
+        let stderr = read(child.stderr.as_mut().map(|pipe| pipe as _));
+        let endpoint = &export.endpoint;
+        // OTLP/HTTP: a 4xx other than 408 and 429 means the request will never be accepted.
+        let rejected = code.starts_with('4') && code != "408" && code != "429";
+        if status.success() && code.starts_with('2') {
+            otlp::sent(db, endpoint, seq)?;
+        } else if status.success() && rejected {
             eprintln!(
-                "priory daemon: sending spans to {} failed ({status}): {}",
-                export.endpoint,
-                stderr.trim()
+                "priory daemon: {endpoint} rejected spans with HTTP {code}, so they are skipped"
             );
+            otlp::sent(db, endpoint, seq)?;
+        } else {
+            let detail = if status.success() {
+                format!("HTTP {code}")
+            } else {
+                status.to_string()
+            };
+            eprintln!("priory daemon: sending spans to {endpoint} failed ({detail}): {stderr}");
             export.after = Instant::now() + EXPORT_RETRY;
         }
     }
@@ -322,12 +342,13 @@ fn send_spans(
         return Ok(());
     };
     let body = home.join("otlp.json");
-    std::fs::write(&body, request.to_string())?;
-    let url = format!("{}/v1/traces", export.endpoint.trim_end_matches('/'));
-    match runtime::post_json(&url, &body) {
+    let url = format!("{}/v1/traces", export.endpoint);
+    let started =
+        std::fs::write(&body, request.to_string()).and_then(|()| runtime::post_json(&url, &body));
+    match started {
         Ok(child) => export.sending = Some((child, seq)),
         Err(error) => {
-            eprintln!("priory daemon: cannot start curl to send spans: {error}");
+            eprintln!("priory daemon: cannot send spans to {url}: {error}");
             export.after = Instant::now() + EXPORT_RETRY;
         }
     }
