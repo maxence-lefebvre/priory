@@ -2,8 +2,6 @@ use crate::factory::{Decider, Effect, Step, Workflow};
 use std::collections::BTreeSet;
 use std::fmt::Write;
 
-/// A Mermaid flowchart of `workflow`: shape by decider, a mark on irreversible steps, outcomes on
-/// the edges and dotted approval edges.
 pub fn mermaid(workflow: &Workflow) -> String {
     let node = |id: &str| match workflow.steps.iter().position(|step| step.id == id) {
         Some(index) => format!("n{index}"),
@@ -24,9 +22,15 @@ pub fn mermaid(workflow: &Workflow) -> String {
     for terminal in terminals {
         let _ = writeln!(out, "    {terminal}(({terminal}))");
     }
+    let _ = writeln!(out, "    start((start)) --> {}", node(&workflow.start));
     for (index, step) in workflow.steps.iter().enumerate() {
         for (outcome, target) in &step.next {
-            let _ = writeln!(out, "    n{index} -->|{}| {}", label(outcome), node(target));
+            let _ = writeln!(
+                out,
+                "    n{index} -->|\"{}\"| {}",
+                label(outcome),
+                node(target)
+            );
         }
         for approved in &step.approves {
             let _ = writeln!(out, "    n{index} -.->|approves| {}", node(approved));
@@ -53,7 +57,9 @@ fn declaration(index: usize, step: &Step) -> String {
     format!("n{index}{shape}{class}")
 }
 
-/// Mermaid reads a bare `"` or `|` inside a label as syntax.
+/// Mermaid reads `#name;` as an entity and a bare `"` or `|` as syntax.
 fn label(text: &str) -> String {
-    text.replace('"', "#quot;").replace('|', "#124;")
+    text.replace('#', "#35;")
+        .replace('"', "#quot;")
+        .replace('|', "#124;")
 }

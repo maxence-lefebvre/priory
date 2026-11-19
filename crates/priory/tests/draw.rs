@@ -70,18 +70,19 @@ const EXPECTED: &str = r#"flowchart TD
     n4["open-pr<br/>code, irreversible ⚠"]:::irreversible
     done((done))
     stop((stop))
-    n0 -->|green| n2
-    n0 -->|red| n1
-    n0 -->|yellow| n2
-    n1 -->|approved| n2
-    n1 -->|rejected| stop
-    n2 -->|failed| stop
-    n2 -->|passed| n3
-    n3 -->|open| n4
-    n3 -->|stop| stop
+    start((start)) --> n0
+    n0 -->|"green"| n2
+    n0 -->|"red"| n1
+    n0 -->|"yellow"| n2
+    n1 -->|"approved"| n2
+    n1 -->|"rejected"| stop
+    n2 -->|"failed"| stop
+    n2 -->|"passed"| n3
+    n3 -->|"open"| n4
+    n3 -->|"stop"| stop
     n3 -.->|approves| n4
-    n4 -->|failed| stop
-    n4 -->|opened| done
+    n4 -->|"failed"| stop
+    n4 -->|"opened"| done
 "#;
 
 fn factory(name: &str, workflow: &str) -> PathBuf {
@@ -133,10 +134,43 @@ fn the_example_workflow_renders_as_a_flowchart() {
 }
 
 #[test]
-fn an_approval_shows_as_a_dotted_edge() {
-    let outcome = draw(&factory("approval", IMPLEMENT), "implement");
+fn the_start_step_gets_an_entry_arrow_wherever_it_is_declared() {
+    let cycle = r#"start = "second"
 
-    assert!(outcome.stdout.contains("n3 -.->|approves| n4"));
+[[steps]]
+id = "first"
+decides = "model"
+agent = "implementer"
+prompt = "Go."
+effect = "reversible"
+next = { again = "second", passed = "done" }
+
+[[steps]]
+id = "second"
+decides = "model"
+agent = "implementer"
+prompt = "Go."
+effect = "reversible"
+next = { again = "first" }
+"#;
+    let outcome = draw(&factory("start", cycle), "implement");
+
+    assert!(outcome.stdout.contains("start((start)) --> n1\n"));
+}
+
+#[test]
+fn an_outcome_with_syntax_characters_is_quoted_and_literal() {
+    let odd = IMPLEMENT
+        .replace("approved = ", r#""approved (#1 \"ok\")" = "#)
+        .replace(r#""approved","#, r#""approved (#1 \"ok\")","#);
+    let outcome = draw(&factory("odd", &odd), "implement");
+
+    assert_eq!(outcome.code, 0);
+    assert!(
+        outcome
+            .stdout
+            .contains("n1 -->|\"approved (#35;1 #quot;ok#quot;)\"| n2\n")
+    );
 }
 
 #[test]

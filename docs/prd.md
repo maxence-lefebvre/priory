@@ -255,6 +255,7 @@ next = { opened = "done", failed = "stop" }
 | `irreversible` effect | a red border and a `⚠` after the effect                   |
 | Outcome               | an arrow from the step to its target, labelled            |
 | `done` and `stop`     | circles                                                   |
+| `start`               | a circle with an arrow to the workflow's `start` step     |
 | `approves`            | a dotted arrow, labelled `approves`, to the approved step |
 
 Steps get the ids `n0`, `n1` and so on, in file order, so any step id is safe. The example above
@@ -270,18 +271,19 @@ flowchart TD
     n4["open-pr<br/>code, irreversible ⚠"]:::irreversible
     done((done))
     stop((stop))
-    n0 -->|green| n2
-    n0 -->|red| n1
-    n0 -->|yellow| n2
-    n1 -->|approved| n2
-    n1 -->|rejected| stop
-    n2 -->|failed| stop
-    n2 -->|passed| n3
-    n3 -->|open| n4
-    n3 -->|stop| stop
+    start((start)) --> n0
+    n0 -->|"green"| n2
+    n0 -->|"red"| n1
+    n0 -->|"yellow"| n2
+    n1 -->|"approved"| n2
+    n1 -->|"rejected"| stop
+    n2 -->|"failed"| stop
+    n2 -->|"passed"| n3
+    n3 -->|"open"| n4
+    n3 -->|"stop"| stop
     n3 -.->|approves| n4
-    n4 -->|failed| stop
-    n4 -->|opened| done
+    n4 -->|"failed"| stop
+    n4 -->|"opened"| done
 ```
 
 ### Approval of irreversible steps
