@@ -1,7 +1,7 @@
 use crate::route;
 use crate::trace::{self, Trace};
 use priory_factory::factory::{Decider, Effect, Loaded, Step, Workflow};
-use priory_intake::intake::{CHECK_RUNS, CHECKED, PASSING};
+use priory_intake::intake::{CHECK_RUNS, CHECKED, PASSING, PR_CLOSED as CLOSED};
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -126,6 +126,18 @@ pub(crate) fn call(
     if let Some(wait) = open_wait(&tx, run.id)? {
         return Ok(Err(format!("run {} already waits on wait {wait}", run.id)));
     }
+    // 0 is no generation: the run moves on from the asks and waits of earlier runs. A refused
+    // call rolls this back.
+    tx.execute(
+        "UPDATE asks SET withdrawn = 0 WHERE task = ?1 AND run IS NOT NULL AND run != ?2
+         AND answer IS NULL AND withdrawn IS NULL",
+        params![run.task, run.id],
+    )?;
+    tx.execute(
+        "UPDATE waits SET withdrawn = 0 WHERE task = ?1 AND run != ?2 AND fired IS NULL
+         AND withdrawn IS NULL AND NOT daemon",
+        params![run.task, run.id],
+    )?;
     let stored = match call.tool.as_str() {
         "result" => result(&tx, &run, &call.arguments, workflows)?,
         "ask" => ask(&tx, &run, &call.arguments)?,
@@ -467,7 +479,7 @@ pub(crate) fn event(tx: &Transaction, task: i64, seq: i64) -> rusqlite::Result<b
                waits.since, waits.daemon FROM waits
              JOIN tasks ON tasks.id = waits.task
              WHERE waits.task = ?1 AND waits.fired IS NULL AND waits.withdrawn IS NULL
-             AND tasks.state IN ('running', 'asleep')",
+             AND tasks.state NOT IN ('done', 'failed', 'dropped')",
             [task],
             |row| {
                 Ok((
@@ -540,9 +552,9 @@ fn judge(tx: &Transaction, wait: i64) -> rusqlite::Result<bool> {
             "SELECT seq, type, data FROM inbox
              WHERE outcome IN ('kept', 'ignored')
              AND 'github:' || json_extract(data, '$.repo') || '#' || json_extract(data, '$.pull_request') = ?1
-             AND json_extract(data, '$.head_sha') IS NOT NULL ORDER BY seq DESC",
+             AND (json_extract(data, '$.head_sha') IS NOT NULL OR type = ?2) ORDER BY seq DESC",
         )?;
-        let mut rows = statement.query(params![resource])?;
+        let mut rows = statement.query(params![resource, CLOSED])?;
         while let Some(row) = rows.next()? {
             let data: Value =
                 serde_json::from_str(&row.get::<_, String>(2)?).expect("inbox data is JSON");
@@ -557,6 +569,19 @@ fn judge(tx: &Transaction, wait: i64) -> rusqlite::Result<bool> {
     let Some(newest) = seen.first() else {
         return Ok(false);
     };
+    if newest.kind == CLOSED {
+        if newest.data["merged"] == true {
+            return done(tx, wait, task, newest.seq);
+        }
+        let reason = match newest.data["merged"] {
+            Value::Bool(false) => format!("wait {wait} fired: {resource} closed without a merge"),
+            _ => format!(
+                "wait {wait} fired: {resource} closed, and GitHub no longer says whether it merged"
+            ),
+        };
+        fire(tx, wait, task, &reason, Some(newest.seq))?;
+        return Ok(true);
+    }
     if newest.head != commit {
         // A head seen before the result may be one the agent's commit replaced since.
         if newest.seq <= mark.unwrap_or_default() {
@@ -608,9 +633,14 @@ fn judge(tx: &Transaction, wait: i64) -> rusqlite::Result<bool> {
     if !green {
         return Ok(false);
     }
+    done(tx, wait, task, check.seq)
+}
+
+/// Fires the daemon's checks wait `wait` on the event `seq` and marks its task done.
+fn done(tx: &Transaction, wait: i64, task: i64, seq: i64) -> rusqlite::Result<bool> {
     tx.execute(
         &format!("UPDATE waits SET fired = {NOW}, inbox = ?2 WHERE id = ?1"),
-        params![wait, check.seq],
+        params![wait, seq],
     )?;
     set(tx, task, "done", None, None)?;
     Ok(true)
@@ -623,7 +653,7 @@ pub(crate) fn due(tx: &Transaction) -> rusqlite::Result<()> {
         let mut statement = tx.prepare(
             "SELECT waits.id, waits.task, waits.until, waits.target, target.state FROM waits
              JOIN tasks ON tasks.id = waits.task LEFT JOIN tasks AS target ON target.id = waits.target
-             WHERE waits.fired IS NULL AND waits.withdrawn IS NULL AND tasks.state IN ('running', 'asleep')
+             WHERE waits.fired IS NULL AND waits.withdrawn IS NULL AND tasks.state NOT IN ('done', 'failed', 'dropped')
              AND ((waits.kind = 'time' AND waits.until <= strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
                OR (waits.kind = 'task' AND target.state IN ('done', 'failed', 'dropped')))
              ORDER BY waits.id",
@@ -656,7 +686,7 @@ pub(crate) fn disk_due(tx: &Transaction, free: u64) -> rusqlite::Result<()> {
         .prepare(
             "SELECT waits.id, waits.task FROM waits JOIN tasks ON tasks.id = waits.task
              WHERE waits.fired IS NULL AND waits.withdrawn IS NULL AND waits.kind = 'disk'
-             AND tasks.state IN ('running', 'asleep') AND waits.bytes <= ?1 ORDER BY waits.id",
+             AND tasks.state NOT IN ('done', 'failed', 'dropped') AND waits.bytes <= ?1 ORDER BY waits.id",
         )?
         .query_map([free as i64], |row| {
             Ok((row.get::<_, i64>(0)?, row.get(1)?))
@@ -832,6 +862,15 @@ fn settle(tx: &Transaction, run: &Run, trace: &Trace) -> rusqlite::Result<Option
         )
         .map(Some);
     }
+    // A schedule's tick wakes a task with its ask or wait still open: this run sleeps on them again.
+    tx.execute(
+        "UPDATE asks SET run = ?2 WHERE task = ?1 AND run IS NOT NULL AND answer IS NULL AND withdrawn IS NULL",
+        params![run.task, run.id],
+    )?;
+    tx.execute(
+        "UPDATE waits SET run = ?2 WHERE task = ?1 AND fired IS NULL AND withdrawn IS NULL AND NOT daemon",
+        params![run.task, run.id],
+    )?;
     let asked = tx
         .query_row(
             "SELECT 1 FROM asks WHERE run = ?1 AND answer IS NULL",
@@ -1129,6 +1168,12 @@ pub(crate) fn answer(
     else {
         return Ok(Err(format!("there is no ask {}", answer.ask)));
     };
+    if withdrawn == Some(0) {
+        return Ok(Err(format!(
+            "ask {} was withdrawn when a later run of task {task} called another tool",
+            answer.ask
+        )));
+    }
     if let Some(generation) = withdrawn {
         return Ok(Err(format!(
             "ask {} was withdrawn when task {task} was revived as generation {generation}",
@@ -1357,6 +1402,21 @@ fn revive(
         .optional()?;
     if let Some(active) = active {
         return Ok(Err(format!("task {active} is already active on key {key}")));
+    }
+    let shared = tx
+        .query_row(
+            "SELECT owns.resource, tasks.id FROM owns JOIN owns AS mine ON mine.resource = owns.resource
+             JOIN tasks ON tasks.id = owns.task
+             WHERE mine.task = ?1 AND owns.task != ?1 AND tasks.state NOT IN ('done', 'failed', 'dropped')
+             ORDER BY tasks.id LIMIT 1",
+            [act.task],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)),
+        )
+        .optional()?;
+    if let Some((resource, active)) = shared {
+        return Ok(Err(format!(
+            "task {active} is already active on {resource}"
+        )));
     }
     let generation = generation + 1;
     tx.execute(

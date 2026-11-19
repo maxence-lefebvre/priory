@@ -50,7 +50,9 @@ transaction:
 
 It replies `task <id> is <state> at <step>, generation <n>`. It refuses a task in any other state, a
 step the task's workflow lacks, and a task whose key another active task holds, naming that task. A
-factory holds at most one active task per key.
+factory holds at most one active task per key. It also refuses a task that owns a resource, such as
+a pull request, that another active task owns too, naming that task and the resource: the revived
+task would take that resource's events from the other task.
 
 The task keeps its id, key, branch, worktree and sessions. Its next run resumes the step's agent
 session, like a resume. The agent keeps what it learned in the earlier generation, and the revive
@@ -60,7 +62,8 @@ next run adds it back from the branch (see Priory home). A revive straight into 
 `open-pr`, adds it back before the action runs.
 
 A withdrawn ask or wait stays in the state file but counts as closed. An answer to one is refused with
-`ask <id> was withdrawn when task <task> was revived as generation <n>`. An event for a withdrawn wait
+`ask <id> was withdrawn when task <task> was revived as generation <n>`, or with `ask <id> was
+withdrawn when a later run of task <task> called another tool` (see Routing). An event for a withdrawn wait
 fires nothing, and the task keeps it like any event that matches no wait, for the next run to read.
 `priory asks`, `priory waits` and the desk leave withdrawn ones out. A new run never takes over a
 withdrawn ask or wait.

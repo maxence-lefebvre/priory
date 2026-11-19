@@ -312,9 +312,11 @@ fn judge(tx: &Transaction, id: i64) -> rusqlite::Result<()> {
     if kind == "blockers" {
         let unblocked = tx
             .query_row(
-                "SELECT json_array_length(data, '$.blockers') = 0 FROM inbox
+                // A null snapshot is unknown, and hides the older ones behind it.
+                "SELECT json_type(data, '$.blockers') = 'array'
+                   AND json_array_length(data, '$.blockers') = 0 FROM inbox
                  WHERE 'linear:' || json_extract(data, '$.issue') = ?1
-                 AND json_type(data, '$.blockers') = 'array' ORDER BY seq DESC LIMIT 1",
+                 AND json_type(data, '$.blockers') IS NOT NULL ORDER BY seq DESC LIMIT 1",
                 [&resource],
                 |row| row.get::<_, bool>(0),
             )
@@ -335,17 +337,18 @@ fn judge(tx: &Transaction, id: i64) -> rusqlite::Result<()> {
         )
         .optional()?;
     let unmerged = format!("{resource} closed without a merge");
-    match (
-        merged.map(|merged| merged == Some(true)),
-        if_closed.as_deref(),
-    ) {
+    match (merged, if_closed.as_deref()) {
         (None, _) => Ok(()),
-        (Some(true), _) => release(tx, id, &format!("{resource} merged")),
-        (Some(false), Some("release")) => release(tx, id, &unmerged),
-        (Some(false), Some("drop")) => drop_task(tx, id, task, &unmerged),
-        (Some(false), _) if ask.is_none() => {
+        (Some(Some(true)), _) => release(tx, id, &format!("{resource} merged")),
+        (Some(Some(false)), Some("release")) => release(tx, id, &unmerged),
+        (Some(Some(false)), Some("drop")) => drop_task(tx, id, task, &unmerged),
+        (Some(merged), _) if ask.is_none() => {
+            let closed = match merged {
+                Some(_) => unmerged,
+                None => format!("{resource} closed, and GitHub no longer says whether it merged"),
+            };
             let question = format!(
-                "Pull request {unmerged}, and task {task} was held until it merged: {reason}. Release the task, or drop it?"
+                "Pull request {closed}, and task {task} was held until it merged: {reason}. Release the task, or drop it?"
             );
             tx.execute(
                 "INSERT INTO asks (task, step, kind, question, options)
