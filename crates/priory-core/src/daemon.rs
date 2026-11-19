@@ -112,6 +112,8 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
         if swept.is_none_or(|at| at.elapsed() >= every) {
             swept = Some(Instant::now());
             sweep::run(&db, &home)?;
+            let short = || room::measure(&home).is_ok_and(|room| crate::room::short_of_disk(&room));
+            sweep::retire(&db, &home, short)?;
         }
         match listening.lines.recv_timeout(EVERY) {
             Ok(line) => apply(&mut db, line, &trace)?,
@@ -199,7 +201,9 @@ fn take(db: &mut Connection, line: &str, trace: &Trace) -> Result<(String, Optio
         Ok(Input::Signal(signal)) => Ok(("ok".to_owned(), state::signal(db, &signal, trace)?)),
         Ok(Input::Call(call)) => Ok((replied(tools::call(db, &call, workflows)?), None)),
         Ok(Input::Answer(answer)) => Ok((
-            replied(tools::answer(db, &answer, trace, &runtime::head)?),
+            replied(tools::answer(db, &answer, trace, &|worktree, branch| {
+                runtime::kept_head(&runtime::home(), worktree, branch)
+            })?),
             None,
         )),
         Ok(Input::Act(act)) => {
@@ -254,8 +258,9 @@ fn tend(db: &mut Connection, trace: &Trace, share: &Share, home: &Path) -> Resul
         }
     }
     state::due(db)?;
+    state::disk_due(db, || room::measure(home).ok().map(|room| room.disk_free))?;
     memory::reclaim(db)?;
-    perform(db, trace)?;
+    perform(db, trace, home)?;
     loop {
         // Measured again after each start, since its clone and worktree take disk.
         let measured = OnceCell::new();
@@ -374,7 +379,7 @@ fn verdict(run: &state::LiveRun, factory: &Factory) -> Option<(&'static str, Str
 
 /// Runs the action of the oldest task at a code step, once an irreversible step's approval holds.
 /// An action that is not built yet blocks the task.
-fn perform(db: &mut Connection, trace: &Trace) -> Result<(), Error> {
+fn perform(db: &mut Connection, trace: &Trace, home: &Path) -> Result<(), Error> {
     let factory = trace.factory;
     let Some(due) = state::actionable(db, &factory.workflows)? else {
         return Ok(());
@@ -383,6 +388,33 @@ fn perform(db: &mut Connection, trace: &Trace) -> Result<(), Error> {
         .value
         .step(&due.step)
         .expect("actionable checked the step");
+    // The sweep or a retirement removed the worktree; its branch still holds the work.
+    if let Some(repo) = repo_of(factory, &due.trigger)
+        && due
+            .worktree
+            .as_deref()
+            .is_some_and(|worktree| !Path::new(worktree).exists())
+    {
+        // A resurrected task goes through the room check, which a code step otherwise skips.
+        let waits = match room::measure(home) {
+            Err(error) => Some(format!("waits for room: {error}")),
+            Ok(room) if crate::room::short_of_disk(&room) => {
+                Some("waits for room to add back its worktree".to_owned())
+            }
+            Ok(_) => None,
+        };
+        if let Some(reason) = waits {
+            db.execute(
+                "UPDATE tasks SET reason = ?2 WHERE id = ?1 AND reason IS NOT ?2",
+                rusqlite::params![due.task, reason],
+            )?;
+            return Ok(());
+        }
+        if let Err(reason) = runtime::worktree(home, repo, due.task) {
+            return Ok(state::block(db, trace, due.task, "blocked", &reason)?);
+        }
+        db.execute("UPDATE tasks SET retired = NULL WHERE id = ?1", [due.task])?;
+    }
     let head = head(due.worktree.as_deref(), due.branch.as_deref());
     if !tools::approved(db, due.task, step, head.as_deref())? {
         return Ok(());

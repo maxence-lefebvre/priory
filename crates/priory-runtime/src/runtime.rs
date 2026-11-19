@@ -109,6 +109,19 @@ pub fn worktree(home: &Path, repo: &str, task: i64) -> Result<(PathBuf, String),
     Ok((path, branch))
 }
 
+/// The commit `branch` points to, read from Priory's clone under `home` when `worktree` is gone, as
+/// after a retirement or a sweep.
+pub fn kept_head(home: &Path, worktree: &Path, branch: &str) -> Option<String> {
+    if worktree.exists() {
+        return head(worktree, branch);
+    }
+    let repo = worktree
+        .parent()?
+        .strip_prefix(home.join("worktrees"))
+        .ok()?;
+    head(&home.join("repos").join(repo), branch)
+}
+
 /// The commit `branch` points to in the repository of `worktree`.
 pub fn head(worktree: &Path, branch: &str) -> Option<String> {
     let commit = format!("refs/heads/{branch}^{{commit}}");
