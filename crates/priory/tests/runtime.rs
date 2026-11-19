@@ -1803,17 +1803,53 @@ fn a_run_starts_in_its_own_scope_inside_the_agents_slice_capped_at_90_percent() 
     setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 1);
     assert_eq!(
         fake_log(&setup, "systemd-run.log"),
-        ["--user --scope --quiet --collect --slice=priory-agents.slice"]
+        ["--user --scope --quiet --collect --expand-environment=no --slice=priory-agents.slice"]
     );
     let cpus = std::thread::available_parallelism().unwrap().get();
+    // CPU weights split the CPU between siblings, so the weight goes on the top-level slice.
     assert_eq!(
         fake_log(&setup, "systemctl.log"),
-        [format!(
-            "--user set-property --runtime priory-agents.slice CPUWeight=20 CPUQuota={}% MemoryHigh=90%",
-            cpus * 90
-        )]
+        [
+            "--user set-property --runtime priory.slice CPUWeight=20".to_owned(),
+            format!(
+                "--user set-property --runtime priory-agents.slice CPUQuota={}% MemoryHigh=90%",
+                cpus * 90
+            )
+        ]
     );
     assert_eq!(setup.rows("runs")[0][7], "-");
+}
+
+#[test]
+fn agent_text_reaches_the_agent_as_written_through_a_scope_that_would_expand_it() {
+    let mut setup = Setup::new("slice-literal");
+    let agent = AGENT.replace("You implement one issue.", "Keep ${HOME} as written.");
+    fs::write(setup.dir.join("factory/agents/implementer/agent.md"), agent).unwrap();
+    setup.publish(&requested(42));
+
+    setup.start();
+
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 1);
+    let args = fs::read_to_string(setup.dir.join("fake/args.log")).unwrap();
+    assert!(
+        args.lines().any(|line| line == "Keep ${HOME} as written."),
+        "{args}"
+    );
+}
+
+#[test]
+fn a_systemd_older_than_254_starts_runs_without_the_expand_environment_option() {
+    let mut setup = Setup::new("slice-old");
+    fs::write(setup.dir.join("fake/systemd-version"), "252\n").unwrap();
+    setup.publish(&requested(42));
+
+    setup.start();
+
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 1);
+    assert_eq!(
+        fake_log(&setup, "systemd-run.log"),
+        ["--user --scope --quiet --collect --slice=priory-agents.slice"]
+    );
 }
 
 #[test]
@@ -1832,15 +1868,18 @@ fn the_agents_slice_takes_its_name_from_priory_slice_and_its_caps_from_the_runne
     setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 1);
     assert_eq!(
         fake_log(&setup, "systemd-run.log"),
-        ["--user --scope --quiet --collect --slice=scratch.slice"]
+        ["--user --scope --quiet --collect --expand-environment=no --slice=scratch.slice"]
     );
     let cpus = std::thread::available_parallelism().unwrap().get();
     assert_eq!(
         fake_log(&setup, "systemctl.log"),
-        [format!(
-            "--user set-property --runtime scratch.slice CPUWeight=20 CPUQuota={}% MemoryHigh=60%",
-            cpus * 50
-        )]
+        [
+            "--user set-property --runtime scratch.slice CPUWeight=20".to_owned(),
+            format!(
+                "--user set-property --runtime scratch.slice CPUQuota={}% MemoryHigh=60%",
+                cpus * 50
+            )
+        ]
     );
 }
 

@@ -56,15 +56,12 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
     };
     let share = Share::of(factory, trace.machine.as_deref());
     let slice = slice::name();
-    let slice = match slice::confine(&slice, share.cpu, share.memory) {
-        Ok(()) => Some(slice.as_str()),
-        Err(error) => {
-            eprintln!(
-                "priory daemon: no systemd user manager, so runs start outside {slice} and only the room check caps them: {error}"
-            );
-            None
-        }
-    };
+    let scope = slice::scope(&slice, share.cpu, share.memory).unwrap_or_else(|error| {
+        eprintln!(
+            "priory daemon: no systemd user manager, so runs start outside {slice} and only the room check caps them: {error}"
+        );
+        Vec::new()
+    });
     state::uncertain(&db)?;
     // A crash between ending a run and killing its session leaves its agent running.
     let ended = state::ended_sessions(&db)?;
@@ -109,7 +106,7 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
         while let Ok(line) = listening.lines.try_recv() {
             apply(&mut db, line, &trace)?;
         }
-        tend(&mut db, &trace, &share, &home, slice)?;
+        tend(&mut db, &trace, &share, &home, &scope)?;
         if sweep_scripts(&db, factory, &home, &mut scripts)? {
             swept = None;
         }
@@ -236,7 +233,7 @@ fn tend(
     trace: &Trace,
     share: &Share,
     home: &Path,
-    slice: Option<&str>,
+    scope: &[String],
 ) -> Result<(), Error> {
     let factory = trace.factory;
     for run in state::live(db)? {
@@ -269,7 +266,7 @@ fn tend(
         let Some(admission) = state::admissible(db, factory, share, room)? else {
             break;
         };
-        if let Err(reason) = start(db, factory, home, slice, &admission)? {
+        if let Err(reason) = start(db, factory, home, scope, &admission)? {
             state::block(db, trace, admission.task, "failed", &reason)?;
         }
     }
@@ -463,7 +460,7 @@ fn start(
     db: &mut Connection,
     factory: &Factory,
     home: &Path,
-    slice: Option<&str>,
+    scope: &[String],
     admission: &Admission,
 ) -> Result<Result<(), String>, Error> {
     let step = factory.workflows[&admission.workflow]
@@ -548,7 +545,7 @@ fn start(
                 .permissions
                 .default_mode
                 .map_or("manual", PermissionMode::as_str),
-            slice,
+            scope,
         },
     ))
 }

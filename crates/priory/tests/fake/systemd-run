@@ -1,13 +1,40 @@
 #!/usr/bin/env bash
 # A stand-in for `systemd-run --scope`: appends its options, one call per line, to
 # FAKE_DIR/systemd-run.log, then runs the command after `--` in its place, as a scope does.
+# FAKE_DIR/systemd-version holds its version, 258 by default. Before 254 it refuses
+# --expand-environment; from 258 it expands ${NAME} in the command unless --expand-environment=no.
 # FAKE_DIR/no-systemd makes it fail as on a host with no systemd user manager.
+version=$(cat "$FAKE_DIR/systemd-version" 2>/dev/null || echo 258)
 if [ -e "$FAKE_DIR/no-systemd" ]; then
   echo 'Failed to connect to bus: No medium found' >&2
   exit 1
 fi
+if [ "${1-}" = --version ]; then
+  echo "systemd $version (fake)"
+  exit 0
+fi
+expand=yes
 options=()
-while [ $# -gt 0 ] && [ "$1" != -- ]; do options+=("$1"); shift; done
+while [ $# -gt 0 ] && [ "$1" != -- ]; do
+  case "$1" in
+    --expand-environment=*)
+      if [ "$version" -lt 254 ]; then echo "systemd-run: unrecognized option '$1'" >&2; exit 1; fi
+      expand=${1#*=} ;;
+  esac
+  options+=("$1")
+  shift
+done
 shift
 echo "${options[*]}" >> "$FAKE_DIR/systemd-run.log"
+if [ "$version" -ge 258 ] && [ "$expand" = yes ]; then
+  expanded=()
+  for arg in "$@"; do
+    while [[ $arg =~ \$\{([A-Za-z_][A-Za-z0-9_]*)\} ]]; do
+      name=${BASH_REMATCH[1]}
+      arg=${arg//"\${$name}"/${!name-}}
+    done
+    expanded+=("$arg")
+  done
+  set -- "${expanded[@]}"
+fi
 exec "$@"
