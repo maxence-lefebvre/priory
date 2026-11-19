@@ -19,6 +19,12 @@ pub enum Gate {
     Poll {
         grant: i64,
     },
+    /// Hands a held grant to the command's process `pid`, so it holds while the command runs even
+    /// when `acquire` dies.
+    Run {
+        grant: i64,
+        pid: u32,
+    },
     Release {
         grant: i64,
     },
@@ -30,12 +36,22 @@ pub(crate) fn gate(
     gate: &Gate,
     factory: &Factory,
     share: &Share,
-    room: Result<Room, String>,
+    room: impl FnOnce() -> Result<Room, String>,
 ) -> rusqlite::Result<Result<String, String>> {
     let grant = match gate {
         Gate::Release { grant } => {
             db.execute("DELETE FROM grants WHERE id = ?1", [grant])?;
             return Ok(Ok(format!("{grant} released")));
+        }
+        Gate::Run { grant, pid } => {
+            let Some(started) = started(*pid) else {
+                return Ok(Err(format!("process {pid} is not running")));
+            };
+            db.execute(
+                "UPDATE grants SET pid = ?2, started = ?3 WHERE id = ?1",
+                params![grant, pid, started],
+            )?;
+            return Ok(Ok(format!("{grant} held")));
         }
         Gate::Poll { grant } => *grant,
         Gate::Acquire {
@@ -44,23 +60,41 @@ pub(crate) fn gate(
             session,
             command,
         } => {
-            if let Ok(room) = &room
-                && !room::fits_ever(room, share, *bytes)
-            {
+            let Some(started) = started(*pid) else {
+                return Ok(Err(format!("process {pid} is not running")));
+            };
+            let room = match room() {
+                Ok(room) => room,
+                Err(error) => return Ok(Err(format!("cannot measure room: {error}"))),
+            };
+            if !room::fits_ever(&room, share, *bytes) {
                 return Ok(Err(format!(
                     "{:.1} GB never fits: this runner's agents may take {:.1} GB",
                     *bytes as f64 / GB,
-                    room::ceiling(room, share) / GB
+                    room::ceiling(&room, share) / GB
                 )));
             }
             db.execute(
-                "INSERT INTO grants (bytes, pid, task, command)
-                 VALUES (?1, ?2, (SELECT task FROM runs WHERE session = ?3 AND ended IS NULL), ?4)",
-                params![*bytes as i64, pid, session, command],
+                "INSERT INTO grants (bytes, pid, started, task, command)
+                 VALUES (?1, ?2, ?3, (SELECT task FROM runs WHERE session = ?4 AND ended IS NULL),
+                   ?5)",
+                params![*bytes as i64, pid, started, session, command],
             )?;
-            db.last_insert_rowid()
+            let grant = db.last_insert_rowid();
+            return reply(db, grant, factory, share, Ok(room));
         }
     };
+    reply(db, grant, factory, share, room())
+}
+
+/// Grants what fits, then replies with `grant`'s state. An unmeasured room grants nothing.
+fn reply(
+    db: &Connection,
+    grant: i64,
+    factory: &Factory,
+    share: &Share,
+    room: Result<Room, String>,
+) -> rusqlite::Result<Result<String, String>> {
     reclaim(db)?;
     if let Ok(room) = &room {
         admit(db, factory, share, room)?;
@@ -80,20 +114,36 @@ pub(crate) fn gate(
 
 const GB: f64 = (1u64 << 30) as f64;
 
-/// Removes the grants whose holder process is gone, so a killed `acquire` frees its memory.
+/// Removes the grants whose holder process is gone, so a killed holder frees its memory.
 pub(crate) fn reclaim(db: &Connection) -> rusqlite::Result<()> {
-    let mut statement = db.prepare("SELECT id, pid FROM grants")?;
+    let mut statement = db.prepare("SELECT id, pid, started FROM grants")?;
     let grants = statement
-        .query_map([], |row| Ok((row.get::<_, i64>(0)?, row.get::<_, u32>(1)?)))?
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, u32>(1)?,
+                row.get::<_, i64>(2)?,
+            ))
+        })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
-    // shortcut: a reused pid keeps a dead holder's grant; store the start time if that bites.
-    for (id, _) in grants
+    // A pid the kernel reused has another start time.
+    for (id, ..) in grants
         .into_iter()
-        .filter(|(_, pid)| !Path::new("/proc").join(pid.to_string()).exists())
+        .filter(|(_, pid, at)| started(*pid) != Some(*at))
     {
         db.execute("DELETE FROM grants WHERE id = ?1", [id])?;
     }
     Ok(())
+}
+
+/// When the live, unreaped process `pid` started, in clock ticks since boot, from `/proc/<pid>/stat`.
+fn started(pid: u32) -> Option<i64> {
+    let stat =
+        std::fs::read_to_string(Path::new("/proc").join(pid.to_string()).join("stat")).ok()?;
+    // The command name, in parentheses, may hold spaces; the fields after it are state, ppid, ...
+    let fields: Vec<&str> = stat.rsplit_once(')')?.1.split_whitespace().collect();
+    (fields.first() != Some(&"Z")).then_some(())?;
+    fields.get(19)?.parse().ok()
 }
 
 /// Grants waiting grants oldest first while each fits beside the live runs and held grants. The

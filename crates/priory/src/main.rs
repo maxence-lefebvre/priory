@@ -3,6 +3,7 @@ use priory_core::{daemon, report, state, sweep, tools};
 use priory_factory::{factory, rules};
 use priory_intake::{intake, request};
 use priory_runtime::{mcp, runtime};
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
 use std::time::{Duration, Instant};
@@ -83,7 +84,7 @@ fn main() -> ExitCode {
             "SELECT id, task, step, action, status, pull_request, commit_sha,
              replace(error, char(10), '\\n') FROM actions ORDER BY id",
         ),
-        Some("memory") => memory(args.map(|arg| arg.to_string_lossy().into_owned()).collect()),
+        Some("memory") => memory(args.collect()),
         Some("answer") => answer(args.map(|arg| arg.to_string_lossy().into_owned()).collect()),
         Some("mcp") => match (args.next(), args.next(), args.next()) {
             (Some(flag), Some(session), None) if flag == "--session" => {
@@ -308,7 +309,7 @@ fn exit(verb: &str, done: Result<(), String>) -> ExitCode {
 }
 
 /// `priory memory` lists the memory grants, held and waiting.
-fn memory(args: Vec<String>) -> ExitCode {
+fn memory(args: Vec<OsString>) -> ExitCode {
     match args.split_first() {
         None => list(
             "id\ttask\tstate\tgb\tcommand\tage",
@@ -327,7 +328,7 @@ const GATE_FAILED: u8 = 125;
 
 /// Runs a command once the daemon grants it `--gb` GB of memory, and releases the grant when it
 /// exits. Exits with the command's code.
-fn acquire(args: &[String]) -> ExitCode {
+fn acquire(args: &[OsString]) -> ExitCode {
     let Some(split) = args.iter().position(|arg| arg == "--") else {
         return usage();
     };
@@ -336,8 +337,8 @@ fn acquire(args: &[String]) -> ExitCode {
         match pair {
             [flag, value] if flag == "--gb" => {
                 let Some(value) = value
-                    .parse::<f64>()
-                    .ok()
+                    .to_str()
+                    .and_then(|value| value.parse::<f64>().ok())
                     .filter(|gb| *gb > 0.0 && gb.is_finite())
                 else {
                     return usage();
@@ -346,8 +347,8 @@ fn acquire(args: &[String]) -> ExitCode {
             }
             [flag, value] if flag == "--timeout" => {
                 let Some(value) = value
-                    .parse::<jiff::SignedDuration>()
-                    .ok()
+                    .to_str()
+                    .and_then(|value| value.parse::<jiff::SignedDuration>().ok())
                     .and_then(|value| Duration::try_from(value).ok())
                 else {
                     return usage();
@@ -357,7 +358,8 @@ fn acquire(args: &[String]) -> ExitCode {
             _ => return usage(),
         }
     }
-    let (Some(gb), Some((program, rest))) = (gb, args[split + 1..].split_first()) else {
+    let command = &args[split + 1..];
+    let (Some(gb), Some((program, rest))) = (gb, command.split_first()) else {
         return usage();
     };
     let failed = |error: String| {
@@ -368,7 +370,7 @@ fn acquire(args: &[String]) -> ExitCode {
         bytes: (gb * f64::from(1u32 << 30)) as u64,
         pid: std::process::id(),
         session: std::env::var("PRIORY_SESSION").ok(),
-        command: args[split + 1..].join(" "),
+        command: command.join(" ".as_ref()).to_string_lossy().into_owned(),
     });
     let mut reply = match acquired {
         Ok(reply) => reply,
@@ -394,7 +396,17 @@ fn acquire(args: &[String]) -> ExitCode {
             Err(error) => return failed(error),
         };
     }
-    let status = Command::new(program).args(rest).status();
+    let status = Command::new(program)
+        .args(rest)
+        .spawn()
+        .and_then(|mut child| {
+            // The command holds the grant from here, so it keeps its memory if this process dies.
+            let _ = gate(&Gate::Run {
+                grant,
+                pid: child.id(),
+            });
+            child.wait()
+        });
     if let Err(error) = gate(&Gate::Release { grant }) {
         eprintln!(
             "priory memory: grant {grant} stays until the daemon sees this process end: {error}"
@@ -409,7 +421,7 @@ fn acquire(args: &[String]) -> ExitCode {
             ExitCode::from(code.unwrap_or(1) as u8)
         }
         Err(error) => {
-            eprintln!("priory memory: {program}: {error}");
+            eprintln!("priory memory: {}: {error}", program.to_string_lossy());
             ExitCode::from(127)
         }
     }

@@ -269,15 +269,18 @@ as `90s`, `15m` or `2h`.
    that does not fit holds back every grant behind it, even a smaller one that fits, so a large
    build is never starved.
 3. The command polls the daemon every 250 ms. Once its grant is held, it runs the command with its
-   own working directory, environment and terminal.
+   own working directory, environment and terminal, and hands the grant to the command's process.
 4. When the command exits, however it exits, the grant is released. `acquire` exits with the
    command's code, or 128 plus the signal that killed it.
 
-The daemon removes a grant whose `acquire` process is gone, on each tick and on each gate message.
-So a killed `acquire` frees its memory within a second, without a release.
+The daemon removes a grant whose holder is gone, on each tick and on each gate message. The holder
+is the `acquire` process while the grant waits, then the command's process. The daemon knows a
+holder by its pid and its start time in `/proc/<pid>/stat`, so a zombie or a reused pid counts as
+gone. So a killed `acquire` that waits frees its place within a second. A killed `acquire` whose
+command still runs keeps its grant until that command ends.
 
-`acquire` exits 125 and never runs the command when no daemon listens, when the daemon refuses the
-grant, or when the grant still waits after `--timeout`. A grant of more than the runner's share of
+`acquire` exits 125 and never runs the command when no daemon listens, when the daemon cannot
+measure the room or refuses the grant, or when the grant still waits after `--timeout`. A grant of more than the runner's share of
 the machine can never fit, so the daemon refuses it at once, as
 `9.0 GB never fits: this runner's agents may take 7.2 GB`. A command that cannot start exits 127.
 
@@ -294,8 +297,9 @@ Known limits:
   twice, as a run's own use does under Room. The gate errs on the side of waiting.
 - Runs and grants queue apart: a run that fits starts even while a grant waits, and can take the
   room the grant waits for.
-- The daemon checks a holder by its pid under `/proc`. A pid the kernel reuses before the next tick
-  keeps a dead holder's grant until that process ends too.
+- The command's process holds the grant, not the processes it leaves behind: a daemonized child
+  of a build runs on without a grant.
+- A grant that arrives in the last poll before `--timeout` still runs its command, up to 250 ms late.
 - A daemon that stops while a command waits fails that command with 125. A held grant survives a
   daemon restart in the state database.
 

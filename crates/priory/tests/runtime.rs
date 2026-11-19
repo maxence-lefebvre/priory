@@ -5000,11 +5000,15 @@ fn a_grant_is_released_when_its_command_fails_or_is_killed_or_its_holder_dies() 
 
     setup.hold("hold-orphan");
     let mut holder = acquire(&setup, "40", &held("orphan"));
-    setup.until("memory", |rows| rows.len() == 1 && rows[0][2] == "held");
+    setup.written("fake/order");
     holder.kill().unwrap();
     holder.wait().unwrap();
-    let next = acquire(&setup, "40", "exit 0").wait_with_output().unwrap();
+    // The orphaned command still runs, so its grant still holds.
+    std::thread::sleep(Duration::from_millis(1500));
+    assert_eq!(setup.rows("memory")[0][2], "held");
     setup.release("hold-orphan");
+    setup.until("memory", |rows| rows.is_empty());
+    let next = acquire(&setup, "40", "exit 0").wait_with_output().unwrap();
 
     assert!(
         next.status.success(),

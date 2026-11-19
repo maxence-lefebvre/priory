@@ -265,6 +265,7 @@ CREATE TABLE grants (
   id      INTEGER PRIMARY KEY AUTOINCREMENT,
   bytes   INTEGER NOT NULL,
   pid     INTEGER NOT NULL,
+  started INTEGER NOT NULL,
   task    INTEGER REFERENCES tasks (id),
   command TEXT NOT NULL,
   state   TEXT NOT NULL DEFAULT 'waiting' CHECK (state IN ('waiting', 'held')),

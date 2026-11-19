@@ -135,7 +135,7 @@ fn take(db: &mut Connection, line: &str, trace: &Trace) -> Result<(String, Optio
         }
         Ok(Input::Gate(gate)) => {
             let share = Share::of(trace.factory, trace.machine.as_deref());
-            let room = room::measure(&runtime::home());
+            let room = || room::measure(&runtime::home());
             let reply = memory::gate(db, &gate, trace.factory, &share, room)?;
             Ok((replied(reply), None))
         }
