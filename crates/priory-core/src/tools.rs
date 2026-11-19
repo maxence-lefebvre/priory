@@ -581,12 +581,12 @@ fn fire(
         &format!("UPDATE waits SET fired = {NOW}, inbox = ?2 WHERE id = ?1"),
         params![wait, seq],
     )?;
-    wake(tx, task, text, seq)
+    wake_on(tx, task, text, seq)
 }
 
 /// Queues `text`, then the event `seq` unless `text` is its line or another prompt carries it, then
 /// the kept events no prompt carries, as the task's next prompt, and makes an asleep task ready.
-pub(crate) fn wake(
+pub(crate) fn wake_on(
     tx: &Transaction,
     task: i64,
     text: &str,

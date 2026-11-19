@@ -356,7 +356,7 @@ pub(crate) fn handle(
                 &message.data.to_string(),
             );
             let text = message.data["prompt"].as_str().unwrap_or(&line);
-            crate::tools::wake(&tx, task, text, Some(seq))?;
+            crate::tools::wake_on(&tx, task, text, Some(seq))?;
         }
         _ => {}
     }
