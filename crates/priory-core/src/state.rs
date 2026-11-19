@@ -10,7 +10,7 @@ use std::collections::BTreeMap;
 use std::io::Write;
 use std::time::Duration;
 
-const VERSION: i64 = 15;
+const VERSION: i64 = 16;
 
 const SCHEMA: &str = "
 CREATE TABLE tasks (
@@ -228,6 +228,12 @@ PRAGMA user_version = 14;
 ";
 
 const SCHEMA_15: &str = "
+ALTER TABLE outbox ADD COLUMN nudge INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE runs ADD COLUMN nudgeable INTEGER NOT NULL DEFAULT 0;
+PRAGMA user_version = 15;
+";
+
+const SCHEMA_16: &str = "
 CREATE TABLE holds (
   id          INTEGER PRIMARY KEY AUTOINCREMENT,
   task        INTEGER NOT NULL REFERENCES tasks (id),
@@ -244,13 +250,13 @@ CREATE TABLE holds (
   released_as TEXT
 );
 CREATE UNIQUE INDEX one_open_hold_per_task ON holds (task) WHERE released IS NULL;
-PRAGMA user_version = 15;
+PRAGMA user_version = 16;
 ";
 
 /// Each schema change in order: a file at version `n` applies those from index `n` on.
 const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA, SCHEMA_2, SCHEMA_3, SCHEMA_4, SCHEMA_5, SCHEMA_6, SCHEMA_7, SCHEMA_8, SCHEMA_9,
-    SCHEMA_10, SCHEMA_11, SCHEMA_12, SCHEMA_13, SCHEMA_14, SCHEMA_15,
+    SCHEMA_10, SCHEMA_11, SCHEMA_12, SCHEMA_13, SCHEMA_14, SCHEMA_15, SCHEMA_16,
 ];
 
 /// The order the queue starts tasks in: band, then a person's order, then age. A band the factory
@@ -986,7 +992,7 @@ pub(crate) fn signal(
     match signal.event.as_str() {
         "SessionStart" => {
             tx.execute(
-                "UPDATE runs SET idle = 1, ready = 1, turn = NULL, thread = coalesce(?2, thread)
+                "UPDATE runs SET idle = 1, ready = 1, turn = NULL, nudgeable = 0, thread = coalesce(?2, thread)
                  WHERE id = ?1",
                 params![run, signal.thread],
             )?;
@@ -996,20 +1002,27 @@ pub(crate) fn signal(
             tx.execute("UPDATE runs SET idle = 1, turn = NULL WHERE id = ?1", [run])?;
             crate::trace::account(&tx, trace, run, signal.transcript.as_deref())?;
             kill = crate::tools::stop(&tx, &signal.session, trace)?;
+            tx.execute("UPDATE runs SET nudgeable = 0 WHERE id = ?1", [run])?;
         }
         "UserPromptSubmit" => {
             tx.execute(
-                &format!("UPDATE runs SET idle = 0, turn = {NOW} WHERE id = ?1"),
+                &format!("UPDATE runs SET idle = 0, turn = {NOW}, nudgeable = 0 WHERE id = ?1"),
                 [run],
             )?;
             let attempted = tx
                 .query_row(
-                    "SELECT id, text FROM outbox WHERE run = ?1 AND state = 'attempted'",
+                    "SELECT id, text, nudge FROM outbox WHERE run = ?1 AND state = 'attempted'",
                     [run],
-                    |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)),
+                    |row| {
+                        Ok((
+                            row.get::<_, i64>(0)?,
+                            row.get::<_, String>(1)?,
+                            row.get::<_, bool>(2)?,
+                        ))
+                    },
                 )
                 .optional()?;
-            if let Some((id, text)) = attempted
+            if let Some((id, text, nudge)) = attempted
                 && signal.prompt.as_deref().is_some_and(|prompt| {
                     pasted(prompt)
                         .split_whitespace()
@@ -1021,6 +1034,10 @@ pub(crate) fn signal(
                         "UPDATE outbox SET state = 'confirmed', confirmed = {NOW} WHERE id = ?1"
                     ),
                     [id],
+                )?;
+                tx.execute(
+                    "UPDATE runs SET nudgeable = ?2 WHERE id = ?1",
+                    params![run, !nudge],
                 )?;
             }
         }
