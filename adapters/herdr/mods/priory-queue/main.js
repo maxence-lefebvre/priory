@@ -224,7 +224,10 @@ export default class PrioryQueue extends View {
   /** @param {import("gpui-kit").KeyEvent} event @param {import("gpui-kit").Context} cx */
   key(event, cx) {
     if (event.key === "escape") {
-      if (this.adding.open) this.adding.hide(cx);
+      if (this.adding.open) {
+        this.adding.hide(cx);
+        this.focus.focus();
+      }
       else if (this.popover) this.popover = null;
       else this.opened = false;
       return cx.notify();

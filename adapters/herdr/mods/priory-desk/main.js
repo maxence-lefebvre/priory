@@ -211,9 +211,16 @@ export default class PrioryDesk extends View {
 
   /** @param {import("gpui-kit").KeyEvent} event @param {import("gpui-kit").Context} cx @param {Model} model */
   key(event, cx, model) {
-    if (event.keystroke === "escape" && this.adding.open) return this.adding.hide(cx);
+    if (event.keystroke === "escape" && this.adding.open) {
+      this.adding.hide(cx);
+      this.focus.focus();
+      return cx.stop_propagation();
+    }
     if (this.adding.typing) return;
-    if (event.keystroke === "n") return this.adding.show(cx);
+    if (event.keystroke === "n") {
+      this.adding.show(cx);
+      return cx.stop_propagation();
+    }
     const rows = this.rows(model);
     const index = rows.findIndex((row) => row.id === this.selected);
     const row = rows[index];

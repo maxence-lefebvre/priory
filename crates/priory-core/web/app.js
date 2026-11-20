@@ -822,7 +822,7 @@ function addedTask() {
       <span class="l1"><span class="mono">${task.key}</span><span>${[task.workflow, task.step !== task.workflow && task.step].filter(Boolean).join(", ")}</span><span class="age">${task.state}</span></span>
       <span class="l2">${task.brief?.request || task.brief?.title || (id === null ? "No task took this key yet. It shows on the Desk once one does." : "")}</span>
       <span class="l3">${[task.band, task.lane].filter(Boolean).join(", ")}</span></div>
-    <div class="acts"><button class="btn secondary" data-action="add-another">Add another</button><button class="btn primary" data-action="add-close">Close</button></div></div>`;
+    <div class="acts"><button class="btn secondary" data-action="add-another">Add another</button><button class="btn primary" data-action="add-done">Close</button></div></div>`;
 }
 
 const ADD_LINES = {
@@ -872,11 +872,15 @@ async function submitAdd() {
     keepDraft();
     return renderAdd();
   }
+  // Stored as unsure first: a reload while it sends must not offer it as unsent.
+  localStorage.setItem(DRAFT_KEY, JSON.stringify({ draft, phase: "unsure" }));
   state.add.phase = "sending";
   renderAdd();
   const reply = await post("/api/request", body).catch(() => ({ status: 0, body: {} }));
   const outcome = addOutcome(reply.status, reply.body);
   if (outcome.state === "signed-out") {
+    state.add.phase = "empty";
+    keepDraft();
     closeAdd();
     return signOut("The daemon refused this token. Paste the current one.");
   }
@@ -891,6 +895,7 @@ async function submitAdd() {
   Object.assign(state.add, { phase: outcome.state, error: outcome.error || null });
   if (outcome.state !== "added") keepDraft();
   renderAdd();
+  if (outcome.state === "added") addSheet().querySelector(".added .btn.primary")?.focus();
 }
 
 function discardAdd() {
@@ -1154,7 +1159,7 @@ document.addEventListener("click", (event) => {
   const action = target.dataset.action;
   if (action === "retry") return refresh();
   if (action === "add-open") return openAdd();
-  if (action === "add-close") return closeAdd();
+  if (action === "add-close" || action === "add-done") return closeAdd();
   if (action === "add-discard") return discardAdd();
   if (action === "add-another") {
     Object.assign(state.add, { phase: "empty", task: null });

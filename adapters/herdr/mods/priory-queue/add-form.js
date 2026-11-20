@@ -54,14 +54,16 @@ export class AddForm {
   submit(cx) {
     if (!this.status().ready) return;
     const text = this.input.value().trim();
+    const picked = { ...this.picked };
     this.sending = true;
     this.error = null;
     cx.notify();
     cx.spawn(async (cx) => {
       try {
-        const key = await (await this.client()).add(text, this.picked);
-        this.input.set_value("");
-        this.picked = {};
+        const key = await (await this.client()).add(text, picked);
+        // What the person typed or picked while it sent stays for the next add.
+        if (this.input.value().trim() === text) this.input.set_value("");
+        if (JSON.stringify(this.picked) === JSON.stringify(picked)) this.picked = {};
         this.key = key;
         this.added(key, cx);
       } catch (error) {
