@@ -9,41 +9,86 @@ what data each panel needs, and how another front end would write its own adapte
 
 ## Where it lives
 
-The adapter will live in `adapters/herdr/` at the repository root:
+The adapter lives in `adapters/herdr/` at the repository root, outside the Cargo workspace:
 
+- `adapters/herdr/lib/priory.js`: the module every mod uses to read and act. It is the only code
+  that runs `priory`.
+- `adapters/herdr/mods/priory-tabs/`: the Priory bar. It sits left of Herdr's own tab bar, opens or
+  focuses the Desk and Bonjour tabs, shows or hides the Asks and Queue panels, and attaches to a
+  task's terminal.
 - `adapters/herdr/mods/priory-desk/`, `priory-asks/`, `priory-queue/` and `priory-bonjour/`: one
-  Herdr mod per panel, each a `mod.json` and a `main.js`.
-- `adapters/herdr/layouts/priory.json`: a Herdr layout that places the panels. Desk and Bonjour
-  open as tabs in the center stack. Asks and Queue share the side panel stack, 420 px wide by
-  default, between 280 and 900.
+  Herdr mod per panel, each a `mod.json`, a `main.js` and its copy of `priory.js`. They are still
+  to come.
+- `adapters/herdr/layouts/priory.json`: Herdr's default layout with the Priory bar in the top bar,
+  and Asks and Queue in the side panel stack, 420 px wide by default, between 280 and 900. Desk and
+  Bonjour open as tabs in the center, from the Priory bar.
+- `adapters/herdr/install`: links the mods and the layout into Herdr's folder. See
+  [Installing](#installing).
+- `adapters/herdr/test/`: `node --test` tests for the module and the install script, run against a
+  fake `priory`. CI runs them with `node --test adapters/herdr/test/*.test.js`.
 - `adapters/herdr/tokens.js`: Priory's theme tokens, generated from
-  [`design/tokens/`](../../design/tokens/), with each `light-dark()` pair resolved per mode.
-
-- `adapters/herdr/deliver`: the factory's `[asks] deliver` command. It ships today; see
+  [`design/tokens/`](../../design/tokens/), with each `light-dark()` pair resolved per mode. It is
+  still to come.
+- `adapters/herdr/deliver`: the factory's `[asks] deliver` command; see
   [Delivering answers](#delivering-answers).
 
-Installing the adapter links the mods into Herdr's mods folder (`~/.config/herdr-app/mods/`) and
-the layout into its layouts folder. The adapter depends on no Priory crate, and no crate depends on
-it.
+Herdr loads a mod's imports only from the mod's own folder, and it resolves symbolic links before it
+checks. So each mod keeps a copy of `lib/priory.js` as its own `priory.js`, and a test fails when a
+copy differs from the library. After you change the library, copy it into every mod.
+
+The adapter depends on no Priory crate, and no crate depends on it. It needs Node.js only for its
+tests.
+
+## Installing
+
+`adapters/herdr/install` links each folder in `adapters/herdr/mods/` into Herdr's mods folder and
+`layouts/priory.json` into its layouts folder. Herdr's folder is `$HERDR_APP_HOME`, or
+`~/.config/herdr-app`. The links point into your checkout, so a `git pull` updates the mods, and
+Herdr reloads them when their files change.
+
+- `install --dry-run` prints each link it would make and changes nothing.
+- A link that already points into this adapter stays as it is.
+- Any other file or link at a target stops the script before it links anything. Move that file away
+  and run it again.
+
+The layout names the four panel mods. Until they are installed, their blocks stay empty.
+
+Herdr writes `gpui-kit.d.ts` and `jsconfig.json` into each mod folder it loads. Through the links,
+they land in your checkout, and Git ignores them.
 
 ## How it reads and acts
 
 A panel reads the factory through Priory and acts through Priory's own verbs. It never opens the
 state database and never writes a file in the factory.
 
-- **Reading.** Until `serve` exists, a mod runs the CLI with Herdr's `exec` and parses its JSON:
-  `priory desk --json`, `priory asks --json`, `priory tasks --json` and `priory report show --json`. It
-  polls every few seconds and keeps the last good answer, with its age, when a call fails. Once
-  `serve` exists, a mod subscribes to its event stream instead and stops polling.
-- **Acting.** Every button runs a CLI verb: `priory answer ASK OPTION --revision N`,
-  `priory resume`, `priory revive`, `priory cancel`, `priory hold`, `priory release`,
-  `priory move`, `priory request` and `priory snooze`. An answer always carries the revision the
-  person read, so a changed question refuses it (R6.3).
-- **Themes.** A mod draws with Priory's tokens, not Herdr's theme, so a theme looks the same in
-  Herdr and in the browser. The adapter picks the light or dark value from Herdr's appearance.
-
-Today `priory desk`, `asks` and `tasks` print text for people. The JSON output and `serve` are
-core work the adapter waits on; the list of gaps is at the end of this page.
+- **Which Priory.** A mod runs the program that the `priory` object of Herdr's `settings.json`
+  names, on the Herdr machine it names: `{"priory": {"binary": "priory-oss", "machine": "xps13",
+  "factory": "/home/me/factory"}}`. Every field is optional. `binary` defaults to `priory-oss`,
+  found on the `PATH`. `machine` defaults to the machine Herdr runs on. `factory` is the folder
+  that `queue` and `schedules` read for up next. The program must find its state file, so set
+  `PRIORY_DB` in the environment, or name a wrapper script that sets it.
+- **Reading.** A mod runs the CLI with Herdr's `exec` and parses its JSON: `priory desk --json`,
+  `asks --all --json`, `tasks --json`, `queue --json`, `schedules --json` and
+  `report show --json`. Each answer carries the state's `revision`. Then the mod runs
+  `priory wait --since REVISION`, which returns as soon as the state changes, or after 25 s, and
+  reads again. It keeps the last good answer, with its age, when a call fails. Once `serve` exists,
+  a mod may subscribe to its event stream instead.
+- **Acting.** Every button runs a CLI verb: `answer --expected N -- ASK TEXT`,
+  `dismiss --expected N ASK`, `snooze`, `say`, `report pick PICK OPTION --expected N`, `seen`,
+  `hold`, `release` and `move`. An answer always carries the revision the person read, so a
+  changed question refuses it (R6.3).
+- **Safety.** `priory.js` passes every value as its own argument, never through a shell, and never
+  reads text output except `attach --print`. A mod draws agent text as plain text.
+- **Attaching.** A panel asks the Priory bar to attach with
+  `setShared("priory.attach", { task, at: Date.now() })`. The bar runs
+  `priory attach TASK --print` and opens a terminal tab that runs the printed command, which starts
+  a tmux client on the task's live run (R5.6). tmux stays the owner. When the task has no live run,
+  the bar shows Priory's error instead. The tab opens in the focused space, so attach from a space
+  on Priory's machine.
+- **Themes.** A panel draws with Priory's tokens, not Herdr's theme, so a theme looks the same in
+  Herdr and in the browser. The adapter picks the light or dark value from Herdr's appearance. The
+  Priory bar is part of Herdr's top bar, so it draws with Herdr's theme, as the tab bar beside it
+  does.
 
 ## Delivering answers
 
