@@ -122,7 +122,12 @@ fn asks_query() -> String {
       FROM deliveries WHERE deliveries.ask = asks.id ORDER BY id DESC LIMIT 1) AS delivery,
      (SELECT json_object('status', status, 'revision', revision, 'error', error, 'stdout', stdout,
         'stderr', stderr)
-      FROM actions WHERE actions.ask = asks.id ORDER BY id DESC LIMIT 1) AS ran, {}
+      FROM actions WHERE actions.ask = asks.id ORDER BY id DESC LIMIT 1) AS ran,
+     CASE asks.kind
+       WHEN 'step' THEN EXISTS (SELECT 1 FROM irreversible_asks AS gate
+         WHERE gate.workflow = tasks.workflow AND gate.step = asks.step)
+       WHEN 'agent' THEN coalesce(json_array_length(asks.command, '$.runs') > 0, 0)
+       ELSE 0 END AS irreversible, tasks.grade, {}
    FROM asks LEFT JOIN tasks ON tasks.id = asks.task
    LEFT JOIN snoozes ON snoozes.kind = 'ask' AND snoozes.item = asks.id
    WHERE (?1 IS NULL OR asks.task = ?1) AND (?2 IS NULL OR asks.id = ?2)
@@ -213,10 +218,21 @@ fn parse_json(task: &mut Value) {
     }
 }
 
-/// Every ask with its state and its task's band, oldest first, or the asks of tasks in one of
-/// `bands`, beside the factory's bands highest first.
-pub fn asks(db: &Connection, bands: &[&str]) -> rusqlite::Result<Value> {
-    let asks = asks_in(db, bands, None)?;
+/// An ask's risk values in the order the Risk facet shows them; `none` picks an ask with no risk.
+pub const RISKS: [&str; 5] = ["irreversible", "red", "yellow", "green", "none"];
+
+/// Refuses `risk` with `RISKS` when it is not one of them.
+pub fn check_risk(risk: &str) -> Result<(), String> {
+    if RISKS.contains(&risk) {
+        return Ok(());
+    }
+    Err(format!("risk `{risk}` is not one of {}", RISKS.join(", ")))
+}
+
+/// Every ask with its state, its task's band and its risk, oldest first, or the asks of tasks in
+/// one of `bands` with one of `risks`, beside the factory's bands highest first.
+pub fn asks(db: &Connection, bands: &[&str], risks: &[&str]) -> rusqlite::Result<Value> {
+    let asks = asks_in(db, bands, risks, None)?;
     Ok(json!({ "asks": asks, "bands": state::band_names(db)? }))
 }
 
@@ -226,32 +242,63 @@ pub fn asks(db: &Connection, bands: &[&str]) -> rusqlite::Result<Value> {
 pub fn recent_asks(
     db: &Connection,
     bands: &[&str],
+    risks: &[&str],
     since: Option<&str>,
 ) -> rusqlite::Result<Value> {
-    let (answered, withdrawn): (i64, i64) = db.query_row(
-        "SELECT count(*) FILTER (WHERE asks.withdrawn IS NULL),
-           count(*) FILTER (WHERE asks.withdrawn IS NOT NULL)
-         FROM asks LEFT JOIN tasks ON tasks.id = asks.task
-         WHERE (asks.answer IS NOT NULL OR asks.withdrawn IS NOT NULL)
-           AND coalesce(asks.answered, asks.created) < ?1
-           AND (?2 = '[]' OR tasks.band IN (SELECT value FROM json_each(?2)))",
-        params![since, json!(bands).to_string()],
-        |row| Ok((row.get(0)?, row.get(1)?)),
-    )?;
+    let (answered, withdrawn) = if risks.is_empty() {
+        db.query_row(
+            "SELECT count(*) FILTER (WHERE asks.withdrawn IS NULL),
+               count(*) FILTER (WHERE asks.withdrawn IS NOT NULL)
+             FROM asks LEFT JOIN tasks ON tasks.id = asks.task
+             WHERE (asks.answer IS NOT NULL OR asks.withdrawn IS NOT NULL)
+               AND coalesce(asks.answered, asks.created) < ?1
+               AND (?2 = '[]' OR tasks.band IN (SELECT value FROM json_each(?2)))",
+            params![since, json!(bands).to_string()],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?
+    } else {
+        // An ask's risk is computed per row, so the older asks of a risk are counted from the rows.
+        let all = asks_in(db, bands, risks, None)?;
+        let older = |state: &str| {
+            all.as_array()
+                .into_iter()
+                .flatten()
+                .filter(|ask| {
+                    let closed = ask["answered_at"].as_str().or(ask["since"].as_str());
+                    ask["state"] == state && since.is_some_and(|since| closed < Some(since))
+                })
+                .count() as i64
+        };
+        (older("answered"), older("withdrawn"))
+    };
     Ok(json!({
-        "asks": asks_in(db, bands, since)?,
+        "asks": asks_in(db, bands, risks, since)?,
         "bands": state::band_names(db)?,
         "older": { "answered": answered, "withdrawn": withdrawn },
     }))
 }
 
-fn asks_in(db: &Connection, bands: &[&str], since: Option<&str>) -> rusqlite::Result<Value> {
+fn asks_in(
+    db: &Connection,
+    bands: &[&str],
+    risks: &[&str],
+    since: Option<&str>,
+) -> rusqlite::Result<Value> {
     let mut asks = asks_of(db, None, None, since)?;
     if let (Some(asks), false) = (asks.as_array_mut(), bands.is_empty()) {
         asks.retain(|ask| {
             ask["band"]
                 .as_str()
                 .is_some_and(|band| bands.contains(&band))
+        });
+    }
+    if let (Some(asks), false) = (asks.as_array_mut(), risks.is_empty()) {
+        asks.retain(|ask| {
+            let risk = ask["risk"].as_array().expect("every ask carries its risk");
+            risk.iter()
+                .filter_map(Value::as_str)
+                .chain(risk.is_empty().then_some("none"))
+                .any(|value| risks.contains(&value))
         });
     }
     Ok(asks)
@@ -290,6 +337,17 @@ fn asks_of(
             ask["command"] = command;
         }
         parse_back_early(ask);
+        let object = ask.as_object_mut().expect("rows are objects");
+        let irreversible = object
+            .remove("irreversible")
+            .and_then(|value| value.as_i64())
+            == Some(1);
+        let risk: Vec<Value> = irreversible
+            .then(|| json!("irreversible"))
+            .into_iter()
+            .chain(object.remove("grade").filter(Value::is_string))
+            .collect();
+        object.insert("risk".to_owned(), risk.into());
     }
     Ok(asks)
 }

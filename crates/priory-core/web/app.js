@@ -203,11 +203,8 @@ function deskModel() {
   return { open, stopped, reports, other, asleep: desk.counts.asleep, banner: desk.banner, running: queue.running, queue: queue.waiting, tasks, upNext: queue.up_next, needs: items.length };
 }
 const openAsks = () => deskModel().open;
-// The open asks the list shows, so previous, next and the ask after an answer stay in its band.
-const listedAsks = () => {
-  const band = new URLSearchParams(listSearch()).get("band");
-  return band ? openAsks().filter((ask) => bandOf(ask) === band) : openAsks();
-};
+// The open asks the list shows, so previous, next and the ask after an answer stay in its facets.
+const listedAsks = () => faceted(openAsks(), facetPicks());
 
 // Rows
 function askRow(ask, current) {
@@ -376,34 +373,45 @@ function askTableRow(ask, selected) {
     <td class="recw">${answered ? ask.answer : ask.state === "withdrawn" ? ask.withdrawn_why || "" : snoozed(ask, Date.now()) ? snoozedUntil(ask) : ask.recommendation || ""}</td><td class="r">${when}</td></tr>`;
 }
 
-// An ask with no band, such as an outside ask, shows under `none`.
-const bandOf = (ask) => ask.band ?? "none";
+// Each facet's key, label, an ask's values and the order the picker offers them. An ask with no
+// band, such as an outside ask, shows under `none`, and so does an ask with no risk.
+const FACETS = [
+  ["band", "Band", (ask) => [ask.band ?? "none"], () => [...(state.data.bands || []), "none"]],
+  ["risk", "Risk", (ask) => (ask.risk?.length ? ask.risk : ["none"]), () => ["irreversible", "red", "yellow", "green", "none"]],
+];
+const facetPicks = () => {
+  const search = new URLSearchParams(listSearch());
+  return new Map(FACETS.map(([key]) => [key, search.get(key)]).filter(([, value]) => value));
+};
+const faceted = (asks, picks) => asks.filter((ask) => FACETS.every(([key, , values]) => !picks.has(key) || values(ask).includes(picks.get(key))));
+const facetQuery = (picks) => [...picks].map(([key, value]) => `&${key}=${encodeURIComponent(value)}`).join("");
 
-function bandFacet(view, band) {
-  if (band) return html`<a class="facet" aria-current="true" href="/asks?view=${view}" aria-label="Band: ${band}. Clear">${band}${icon("x", "s13")}</a>`;
-  const order = [...(state.data.bands || []), "none"];
+function facet(view, picks, [key, label, values, order]) {
+  const others = new Map([...picks].filter(([other]) => other !== key));
+  const picked = picks.get(key);
+  if (picked) return html`<a class="facet" aria-current="true" href="/asks?view=${view}${facetQuery(others)}" aria-label="${label}: ${picked}. Clear">${picked}${icon("x", "s13")}</a>`;
   const counts = new Map();
-  for (const ask of state.data.asks) counts.set(bandOf(ask), (counts.get(bandOf(ask)) || 0) + 1);
-  const values = [...counts].sort(([a], [b]) => order.indexOf(a) - order.indexOf(b));
-  return html`<details class="facet"><summary aria-label="Filter by band">Band${icon("chevron-down", "s13")}</summary>
-    <div class="pick">${values.map(([name, count]) => html`<a href="/asks?view=${view}&band=${encodeURIComponent(name)}">${name}<span class="num">${count}</span></a>`)}</div></details>`;
+  for (const ask of state.data.asks) for (const value of values(ask)) counts.set(value, (counts.get(value) || 0) + 1);
+  const offered = [...counts].sort(([a], [b]) => order().indexOf(a) - order().indexOf(b));
+  return html`<details class="facet"><summary aria-label="Filter by ${key}">${label}${icon("chevron-down", "s13")}</summary>
+    <div class="pick">${offered.map(([name, count]) => html`<a href="/asks?view=${view}${facetQuery(others)}&${key}=${encodeURIComponent(name)}">${name}<span class="num">${count}</span></a>`)}</div></details>`;
 }
 
 function asksBody(wide) {
-  const band = new URLSearchParams(listSearch()).get("band");
-  const asks = band ? state.data.asks.filter((ask) => bandOf(ask) === band) : state.data.asks;
+  const picks = facetPicks();
+  const asks = faceted(state.data.asks, picks);
   const current = askView();
   const { open, snoozed: asleep, answered, withdrawn } = askGroups(asks, Date.now());
-  // shortcut: older counts are not per band, so a band facet counts the loaded rows only; split `older` by band if that misleads.
+  // shortcut: older counts are not per facet, so a facet counts the loaded rows only; split `older` by facet if that misleads.
   const pending = state.data.older.asks;
-  const left = band ? { answered: 0, withdrawn: 0 } : pending;
+  const left = picks.size ? { answered: 0, withdrawn: 0 } : pending;
   const total = { open: open.length, answered: answered.length + left.answered, all: asks.length + left.answered + left.withdrawn };
   const views = savedViews([
     ["open", "Open", total.open, current === "open"],
     ["answered", "Answered", total.answered, current === "answered"],
     ["all", "All", total.all, current === "all"],
-  ], "/asks", band ? `&band=${encodeURIComponent(band)}` : "");
-  const facets = html`<div class="facets" aria-label="Facets">${bandFacet(current, band)}</div>`;
+  ], "/asks", facetQuery(picks));
+  const facets = html`<div class="facets" aria-label="Facets">${FACETS.map((spec) => facet(current, picks, spec))}</div>`;
   const selected = selectedAsk();
   const section = (title, list, note, count = list.length) => {
     if (!count) return "";

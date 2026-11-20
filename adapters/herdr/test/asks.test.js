@@ -7,7 +7,8 @@ process.env.TZ = "UTC";
 
 // Captured from `priory asks --all --json` on a scratch factory, its asks seeded by SQL as
 // crates/priory/tests/serve.rs seeds them. asks-revised.json is the same state after ask 1 moved
-// to revision 3 and ask 2, snoozed, to revision 2.
+// to revision 3 and ask 2, snoozed, to revision 2. Each ask's `risk` is the one the CLI lists with
+// task 2 graded red and task 3 green.
 const fixture = (name) => JSON.parse(readFileSync(new URL(`./fixtures/${name}`, import.meta.url), "utf8"));
 const { asks } = fixture("asks.json");
 const now = Date.parse("2026-11-20T20:50:00Z");
@@ -78,6 +79,7 @@ test("facets narrow every view and offer each lane and task with its count", () 
   assert.deepEqual(byLane.facets, {
     lane: [["none/misc", 4]],
     band: [["now", 1], ["later", 1], ["blocker", 2], ["none", 1]],
+    risk: [["irreversible", 1], ["red", 1], ["green", 2], ["none", 1]],
     task: [["cli:PRI-docs-1", 1], ["cli:PRI-docs-2", 1], ["cli:PRI-docs-3", 2], ["REL-7", 1]],
   });
 });
@@ -88,6 +90,13 @@ test("the band facet narrows by the task's band, offers bands in the factory's o
   assert.deepEqual(asksList(asks, { view: "all", now, bands, facets: { band: "now" } }).sections.map(ids), [[1]]);
   assert.deepEqual(asksList(asks, { view: "all", now, bands, facets: { band: "none" } }).sections.map(ids), [["review-7"]]);
   assert.deepEqual(asksList(asks, { view: "all", now, bands, facets: { band: "blocker" } }).views.map((view) => view.count), [0, 0, 1, 2]);
+});
+
+test("the risk facet narrows by any of an ask's risks, offers them irreversible, red, yellow, green, none, and puts an ask with none under none", () => {
+  assert.deepEqual(asksList(asks, { view: "all", now }).facets.risk, [["irreversible", 1], ["red", 1], ["green", 2], ["none", 1]]);
+  assert.deepEqual(asksList(asks, { view: "all", now, facets: { risk: "irreversible" } }).sections.map(ids), [[1]]);
+  assert.deepEqual(asksList(asks, { view: "all", now, facets: { risk: "green" } }).sections.map(ids), [[3], [4]]);
+  assert.deepEqual(asksList(asks, { view: "all", now, facets: { risk: "none" } }).sections.map(ids), [["review-7"]]);
 });
 
 test("an open command ask's detail puts the decision first, then Why, History and the command word by word", () => {
