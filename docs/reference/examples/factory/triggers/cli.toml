@@ -1,0 +1,4 @@
+#:schema https://raw.githubusercontent.com/maxence-lefebvre/priory/main/docs/schemas/config/trigger.json
+source = "cli"                 # read by priory request
+repo = "owner/name"            # the repository when a request names none
+workflow = "implement"

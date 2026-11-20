@@ -1,0 +1,10 @@
+#:schema https://raw.githubusercontent.com/maxence-lefebvre/priory/main/docs/schemas/config/trigger.json
+source = "github"
+repo = "owner/name"            # the repository the intake polls
+on = "issues.labeled"          # or issues.opened, pull_request.labeled, pull_request.opened
+filter = { label = "agent" }   # *.labeled only
+workflow = "implement"
+key = "issue.number"           # pull_request.number for a pull_request event
+band = "today"
+lane = "core/intake"           # otherwise lanes.toml derives it
+backfill = false               # true: the first poll's events start tasks too

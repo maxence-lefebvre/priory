@@ -10,5 +10,6 @@ herdr-bus.workspace = true
 jiff.workspace = true
 priory-factory.workspace = true
 priory-runtime.workspace = true
+schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true

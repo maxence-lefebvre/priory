@@ -1,0 +1,8 @@
+#:schema https://raw.githubusercontent.com/maxence-lefebvre/priory/main/docs/schemas/config/trigger.json
+source = "linear.view"
+view = "6b3c2f9a1d4e"          # a saved view: its id, or the slug id ending its URL
+on = "issue.entered"           # or issue.left
+repo = "owner/name"            # where its tasks work; without it they block
+workflow = "implement"
+key = "issue.identifier"       # the task key is linear:ENG-7
+band = "now"

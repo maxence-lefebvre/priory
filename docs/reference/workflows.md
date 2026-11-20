@@ -1,0 +1,121 @@
+# Workflows
+
+A workflow is the typed steps a task goes through. Each file `workflows/<name>.toml`, `.yaml` or
+`.yml` defines one workflow, named after the file. A trigger or `priory request` names the
+workflow its tasks start.
+
+A task starts at `start` and follows `next` from step to step. Reaching `done` ends it as done,
+and reaching `stop` ends it as dropped. The [PRD](../prd.md#workflows) explains deciders, effects
+and the approval rule. `priory draw` prints a workflow as a diagram.
+
+Schema: [`config/workflow.json`](../schemas/config/workflow.json).
+
+## Top-level keys
+
+| Key | Type | Required | Default | Meaning | Example |
+| --- | ---- | -------- | ------- | ------- | ------- |
+| `start` | string | yes | | The id of the first step | `"plan"` |
+| `band` | string | no | the last band | The band of its tasks when neither their request nor their trigger sets one | `"today"` |
+| `steps` | array of tables | yes | | The steps, in any order | see below |
+
+## Step keys
+
+| Key | Type | Required | Default | Meaning | Example |
+| --- | ---- | -------- | ------- | ------- | ------- |
+| `id` | string | yes | | The step's id, unique in the workflow. `done` and `stop` are reserved | `"implement"` |
+| `decides` | `code`, `model` or `human` | yes | | Who decides the outcome: a built-in action, an agent's run or a person | `"model"` |
+| `effect` | `none`, `read`, `reversible` or `irreversible` | yes | | What the step may change | `"reversible"` |
+| `agent` | string | model steps | | The agent that runs the step, by folder name under `agents/` | `"implementer"` |
+| `prompt` | string | model steps | | What the step tells its agent | `"Implement the plan."` |
+| `timeout` | duration | no | none | How long one turn of a model step may run before Priory ends it | `"30m"` |
+| `options` | array of strings | human steps | `[]` | The answers a person picks from | `["open", "stop"]` |
+| `approves` | array of strings | no | `[]` | Human steps only: the irreversible steps this answer approves | `["open-pr"]` |
+| `action` | string | code steps | | The built-in action: `open-pr` or `open-issue` | `"open-pr"` |
+| `next` | table of strings | yes | | Each outcome and where it leads: a step id, `done` or `stop` | `{ passed = "done", failed = "stop" }` |
+| `autonomous` | string | no | | Why an irreversible step may run without a person's approval | `"it only labels issues"` |
+
+The outcomes of a step come from:
+
+| `decides` | Its outcome is |
+| --------- | -------------- |
+| `model` | the `outcome` field of the run's `result` |
+| `human` | the option the person picks; every option needs a `next` |
+| `code` | the action's status, such as `opened` or `failed` |
+
+## Example
+
+<!-- example: factory/workflows/implement.toml -->
+```toml
+#:schema https://raw.githubusercontent.com/maxence-lefebvre/priory/main/docs/schemas/config/workflow.json
+start = "plan"
+band = "today"                 # when neither the request nor the trigger sets one
+
+[[steps]]
+id = "plan"
+decides = "model"              # an agent's run decides the outcome
+agent = "implementer"
+prompt = "Plan the change. Grade it red, yellow or green."
+effect = "reversible"
+timeout = "30m"                # one turn may run this long
+next = { red = "approve-plan", yellow = "implement", green = "implement" }
+
+[[steps]]
+id = "approve-plan"
+decides = "human"              # a person picks one of the options
+effect = "none"
+options = ["approved", "rejected"]
+next = { approved = "implement", rejected = "stop" }
+
+[[steps]]
+id = "implement"
+decides = "model"
+agent = "implementer"
+prompt = "Implement the plan and run the tests."
+effect = "reversible"
+next = { passed = "approve-pr", failed = "stop" }
+
+[[steps]]
+id = "approve-pr"
+decides = "human"
+effect = "none"
+approves = ["open-pr"]         # the irreversible step this answer approves
+options = ["open", "stop"]
+next = { open = "open-pr", stop = "stop" }
+
+[[steps]]
+id = "open-pr"
+decides = "code"               # a built-in action decides the outcome
+action = "open-pr"
+effect = "irreversible"
+next = { opened = "done", failed = "stop" }
+```
+
+When `factory.toml` sets `[sweep] agent` and no `workflows/sweep.toml` exists, the factory also gets
+the built-in `sweep` workflow. See [sweep.md](../daemon/sweep.md).
+
+## Errors from `priory check`
+
+Errors about one step start with `` step `<id>`: `` and point at the step's line.
+
+| Message | Cause |
+| ------- | ----- |
+| `` unknown field `<key>`, expected one of ... `` | A key the tables above do not list |
+| `` unknown variant `<value>`, expected one of ... `` | A `decides` or `effect` value not listed above |
+| `` step id `<id>` is reserved for the end of a workflow `` | A step is named `done` or `stop` |
+| `` step `<id>` is defined twice `` | Two steps share an id |
+| `` start `<id>` is not a step `` | `start` names no step |
+| `` only a model step has an `agent` `` | `agent` on a human or code step. `prompt`, `options`, `approves` and `action` get the same error on the wrong kind of step |
+| `` agent `<name>` does not exist `` | A model step names no agent under `agents/` |
+| `` a model step needs an `agent` `` | A model step without `agent` |
+| `` a model step needs a `prompt` `` | A model step without `prompt` |
+| `` option `<option>` has no `next` `` | A human step's option leads nowhere |
+| `` `next` has outcome `<outcome>`, which is not an option `` | A human step's `next` names an answer it does not offer |
+| `` a code step needs an `action` `` | A code step without `action` |
+| `` `next` is empty `` | A step with no outcome |
+| `` outcome `<outcome>` leads to `<target>`, which is not a step, `done` or `stop` `` | A `next` target that does not exist |
+| `no path from start reaches it` | No chain of `next` from `start` reaches the step |
+| `` approves `<id>`, which is not an irreversible step `` | `approves` names a missing or reversible step |
+| `` `autonomous` needs a reason `` | `autonomous` is empty |
+| `irreversible, and a path from start reaches it with no human step that approves it` | An irreversible step without `autonomous` and without an approving human step on every path |
+| `` band `<band>` is not one of <bands> `` | `band` is not a band of the factory |
+| `"<text>" is not a duration such as 90s, 15m or 2h` | A bad `timeout` |

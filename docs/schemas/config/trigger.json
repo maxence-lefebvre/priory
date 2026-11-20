@@ -1,0 +1,190 @@
+{
+  "$id": "https://raw.githubusercontent.com/maxence-lefebvre/priory/main/docs/schemas/config/trigger.json",
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "additionalProperties": false,
+  "definitions": {
+    "Hold": {
+      "additionalProperties": false,
+      "description": "Why a task is held, and at most one condition that releases it. With none, a person does.",
+      "properties": {
+        "after": {
+          "description": "Another task's id: the hold lasts until it ends.",
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "blockers": {
+          "description": "Until the task's Linear issue has no open blocker.",
+          "type": "boolean"
+        },
+        "if_closed": {
+          "description": "What a pull request closed without a merge does: `release`, `drop` or `ask`, the default.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "merge": {
+          "description": "A pull request, `owner/name#42` or `42` in the task's repository: until it merges.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "reason": {
+          "description": "Why the task waits, shown to a person.",
+          "type": "string"
+        },
+        "until": {
+          "description": "An RFC 3339 instant, or a duration such as `2 hours` after the hold.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "reason"
+      ],
+      "type": "object"
+    }
+  },
+  "description": "`triggers/<name>.toml` or `.yaml`: an event source, its filter and the workflow its events\nstart. The file name is the trigger's name.",
+  "properties": {
+    "at": {
+      "default": null,
+      "description": "The local time of day a schedule fires, `HH:MM`.",
+      "pattern": "^([01]?[0-9]|2[0-3]):[0-5][0-9]$",
+      "type": "string"
+    },
+    "backfill": {
+      "description": "Whether the events of the first poll start tasks too.",
+      "type": [
+        "boolean",
+        "null"
+      ]
+    },
+    "band": {
+      "description": "The band of its tasks.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "channel": {
+      "description": "The Slack channel id a `slack` trigger reads, such as `C0123`.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "days": {
+      "description": "The weekdays a schedule fires on; every day when unset.",
+      "items": {
+        "enum": [
+          "mon",
+          "tue",
+          "wed",
+          "thu",
+          "fri",
+          "sat",
+          "sun"
+        ]
+      },
+      "minItems": 1,
+      "type": "array"
+    },
+    "every": {
+      "default": null,
+      "description": "How often a schedule fires again after `at`, the same day; once a day when unset.",
+      "pattern": "^0*[1-9][0-9]*[smh]$",
+      "type": "string"
+    },
+    "filter": {
+      "additionalProperties": {
+        "type": "string"
+      },
+      "description": "Values an event must have: `label` for GitHub; `team`, `label`, `state` for Linear; `text`\nfor Slack.",
+      "type": [
+        "object",
+        "null"
+      ]
+    },
+    "hold": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/Hold"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Files each task held, so it waits for a person or a condition before it starts."
+    },
+    "key": {
+      "description": "Which events are the same work, such as `issue.number`; for a schedule, a fixed key.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "lane": {
+      "description": "The lane of its tasks, `<team>/<theme>`; `lanes.toml` derives it when unset.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "on": {
+      "default": "",
+      "description": "The event that starts a task, such as `issues.labeled`; depends on `source`.",
+      "type": "string"
+    },
+    "prompt": {
+      "description": "What a schedule's firing tells the task it wakes.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "repo": {
+      "description": "The repository the trigger's tasks work in, `owner/name`; the polled one for `github`.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "source": {
+      "description": "`github`, `linear`, `linear.view`, `slack` or `schedule`.",
+      "type": "string"
+    },
+    "timezone": {
+      "description": "The IANA zone `at` is read in, such as `Europe/Paris`; the machine's own when unset.",
+      "type": "string"
+    },
+    "until": {
+      "description": "When a schedule's day of firings ends; the end of the day when unset.",
+      "pattern": "^(([01]?[0-9]|2[0-3]):[0-5][0-9]|0*[1-9][0-9]*[smh])$",
+      "type": "string"
+    },
+    "view": {
+      "description": "The saved Linear view a `linear.view` trigger reads: its id, or the slug id ending its URL.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "workflow": {
+      "description": "The workflow a matching event starts, by file name.",
+      "type": "string"
+    }
+  },
+  "required": [
+    "source",
+    "workflow"
+  ],
+  "title": "trigger",
+  "type": "object"
+}

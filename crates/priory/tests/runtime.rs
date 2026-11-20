@@ -1,3 +1,5 @@
+mod conform;
+
 use herdr_bus::{Bus, Message, Output};
 use serde_json::json;
 use std::fs;
@@ -6720,6 +6722,7 @@ fn a_rate_limited_poll_starts_with_a_different_thread_each_minute() {
         .unwrap()
         .into_iter()
         .filter(|stored| stored.message.kind == "slack.thread.replied")
+        .inspect(|stored| conform::conforms(&serde_json::to_value(&stored.message).unwrap()))
         .map(|stored| {
             stored.message.data["thread_ts"]
                 .as_str()

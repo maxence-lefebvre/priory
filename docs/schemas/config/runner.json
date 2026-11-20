@@ -1,0 +1,76 @@
+{
+  "$id": "https://raw.githubusercontent.com/maxence-lefebvre/priory/main/docs/schemas/config/runner.json",
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "additionalProperties": false,
+  "definitions": {
+    "Os": {
+      "enum": [
+        "linux",
+        "macos",
+        "windows"
+      ],
+      "type": "string"
+    },
+    "Platform": {
+      "additionalProperties": false,
+      "description": "The machine's operating system and CPU architecture.",
+      "properties": {
+        "arch": {
+          "description": "The CPU architecture, such as `x86_64` or `aarch64`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "os": {
+          "$ref": "#/definitions/Os"
+        }
+      },
+      "required": [
+        "os"
+      ],
+      "type": "object"
+    },
+    "Share": {
+      "additionalProperties": false,
+      "description": "Shares such as `60%`, above 0 and at most 100%.",
+      "properties": {
+        "cpu": {
+          "default": null,
+          "description": "The fraction of the machine's CPUs the runner's agents may load together.",
+          "pattern": "^(?=[^%]*[1-9])(0*100(\\.0*)?|0*[0-9]{1,2}(\\.[0-9]*)?|\\.[0-9]+)%$",
+          "type": "string"
+        },
+        "memory": {
+          "default": null,
+          "description": "The fraction of the machine's memory the runner's agents may take together.",
+          "pattern": "^(?=[^%]*[1-9])(0*100(\\.0*)?|0*[0-9]{1,2}(\\.[0-9]*)?|\\.[0-9]+)%$",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    }
+  },
+  "description": "`runners/<tailscale-hostname>.toml` or `.yaml`: a machine that runs agents. Capacity is\nmeasured live, so the file holds the platform and the share its agents may take.",
+  "properties": {
+    "agents": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/Share"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "The share of the machine its agents may take together; 90% of each when unset."
+    },
+    "platform": {
+      "$ref": "#/definitions/Platform"
+    }
+  },
+  "required": [
+    "platform"
+  ],
+  "title": "runner",
+  "type": "object"
+}

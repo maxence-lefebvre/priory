@@ -1,0 +1,21 @@
+{
+  "id": "c8b9b416-5501-5046-ae18-57dfbfde2166",
+  "type": "github.pull_request_review.submitted",
+  "subject": "acme/widgets#43",
+  "time": "2026-11-17T16:40:03Z",
+  "data": {
+    "repo": "acme/widgets",
+    "pull_request": 43,
+    "url": "https://github.com/acme/widgets/pull/43#pullrequestreview-2561579718",
+    "head_branch": "fix-empty-export",
+    "head_sha": "4b2ee8eb670ba9f77d54d59ab97ced618f024fb9",
+    "base_branch": "main",
+    "state": "approved",
+    "actor": "octocat",
+    "time": "2026-11-17T16:40:03Z",
+    "github_id": 2561579718,
+    "baseline": false,
+    "triggers": []
+  },
+  "links": [{ "label": "pull_request", "url": "https://github.com/acme/widgets/pull/43#pullrequestreview-2561579718" }]
+}

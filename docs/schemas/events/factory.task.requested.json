@@ -1,0 +1,214 @@
+{
+  "$id": "https://raw.githubusercontent.com/maxence-lefebvre/priory/main/docs/schemas/events/factory.task.requested.json",
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "additionalProperties": false,
+  "definitions": {
+    "Hold": {
+      "additionalProperties": false,
+      "description": "Why a task is held, and at most one condition that releases it. With none, a person does.",
+      "properties": {
+        "after": {
+          "description": "Another task's id: the hold lasts until it ends.",
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "blockers": {
+          "description": "Until the task's Linear issue has no open blocker.",
+          "type": "boolean"
+        },
+        "if_closed": {
+          "description": "What a pull request closed without a merge does: `release`, `drop` or `ask`, the default.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "merge": {
+          "description": "A pull request, `owner/name#42` or `42` in the task's repository: until it merges.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "reason": {
+          "description": "Why the task waits, shown to a person.",
+          "type": "string"
+        },
+        "until": {
+          "description": "An RFC 3339 instant, or a duration such as `2 hours` after the hold.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "reason"
+      ],
+      "type": "object"
+    },
+    "Link": {
+      "additionalProperties": false,
+      "description": "A link for people.",
+      "properties": {
+        "label": {
+          "description": "`issue` or `pull_request`.",
+          "type": "string"
+        },
+        "url": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "label",
+        "url"
+      ],
+      "type": "object"
+    },
+    "TaskRequested": {
+      "additionalProperties": false,
+      "description": "A request for a task. Only this message creates a task.",
+      "properties": {
+        "band": {
+          "description": "The trigger's or the request's band.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "hold": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/Hold"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Files the task held: the trigger's `hold`, or `priory request --hold`."
+        },
+        "key": {
+          "description": "Which events are the same work, such as `github:owner/name#42` or `linear:ENG-7`.",
+          "type": "string"
+        },
+        "lane": {
+          "description": "The trigger's or the request's lane; null when `lanes.toml` derives it.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "project": {
+          "description": "The Linear issue's project name, or null without one. Linear sources only.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "prompt": {
+          "description": "The trigger's `prompt`, or null without one. Schedule sources only.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "repo": {
+          "description": "The repository the task works in, from `priory request --repo`. CLI requests only.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "scheduled": {
+          "description": "When the firing was due. Schedule sources only.",
+          "format": "date-time",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "source": {
+          "description": "The `id` of the source event's message.",
+          "format": "uuid",
+          "type": "string"
+        },
+        "team": {
+          "description": "The Linear issue's team key. Linear sources only.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "tldr": {
+          "description": "The task's TL;DR, from `priory request --tldr`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "trigger": {
+          "description": "The trigger's name, or `cli`.",
+          "type": "string"
+        },
+        "workflow": {
+          "description": "The workflow the task starts.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "workflow",
+        "key",
+        "band",
+        "lane",
+        "trigger",
+        "source"
+      ],
+      "type": "object"
+    }
+  },
+  "description": "A request for a task. Only this message creates a task.",
+  "properties": {
+    "data": {
+      "$ref": "#/definitions/TaskRequested"
+    },
+    "id": {
+      "description": "A UUIDv5 of the message's name, so a retried publish keeps its id.",
+      "format": "uuid",
+      "type": "string"
+    },
+    "links": {
+      "description": "GitHub and Linear events carry one link to the event's page.",
+      "items": {
+        "$ref": "#/definitions/Link"
+      },
+      "type": "array"
+    },
+    "subject": {
+      "description": "A short line for listings, such as `owner/name#42`.",
+      "type": "string"
+    },
+    "time": {
+      "description": "When the event happened, RFC 3339.",
+      "format": "date-time",
+      "type": "string"
+    },
+    "type": {
+      "const": "factory.task.requested",
+      "description": "The message type, such as `github.issues.labeled`.",
+      "type": "string"
+    }
+  },
+  "required": [
+    "id",
+    "type",
+    "subject",
+    "time",
+    "data",
+    "links"
+  ],
+  "title": "factory.task.requested",
+  "type": "object"
+}

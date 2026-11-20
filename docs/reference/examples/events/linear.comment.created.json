@@ -1,0 +1,22 @@
+{
+  "id": "f0352bb3-8810-574d-940d-8d6c29e73f60",
+  "type": "linear.comment.created",
+  "subject": "ENG-7",
+  "time": "2026-11-17T13:20:00.000Z",
+  "data": {
+    "issue": "ENG-7",
+    "linear_id": "6f1c1c9e-2b7a-4d39-9a43-2d6a3e1b8f10",
+    "title": "Export fails on an empty project",
+    "url": "https://linear.app/acme/issue/ENG-7/export-fails-on-an-empty-project#comment-6f1c1c9e",
+    "team": "ENG",
+    "project": "Desktop",
+    "state": "In Progress",
+    "labels": ["agent", "bug"],
+    "body": "Please also cover the empty case.",
+    "actor": "Ada Lovelace",
+    "time": "2026-11-17T13:20:00.000Z",
+    "baseline": false,
+    "triggers": []
+  },
+  "links": [{ "label": "issue", "url": "https://linear.app/acme/issue/ENG-7/export-fails-on-an-empty-project#comment-6f1c1c9e" }]
+}

@@ -1,0 +1,23 @@
+#:schema https://raw.githubusercontent.com/maxence-lefebvre/priory/main/docs/schemas/config/factory.json
+name = "example"
+bands = ["blocker", "now", "today", "later"]   # the default bands, highest first
+handler = "reviewer"                           # reads a stalled run's screen; claude-code only
+stalled = "10m"                                # no hook event and no pane change for this long
+command_timeout = "5m"                         # the limit on one git, gh or tmux command
+
+[sweep]
+every = "10m"                                  # the built-in worktree sweep
+after = "30m"                                  # how long the queue stays stalled before the sweeper
+agent = "implementer"                          # the sweeper agent
+repo = "owner/name"                            # where the sweeper files its issue
+scripts = [
+  { run = "rm -rf \"$PRIORY_HOME/cache\"", when = "disk", timeout = "5m" },
+]
+
+[search]
+tldr = "reviewer"                              # writes each new task's TL;DR; claude-code only
+embeddings = true
+model = "sentence-transformers/all-MiniLM-L6-v2"
+
+[telemetry]
+otlp = "http://127.0.0.1:4318"                 # spans go to its /v1/traces

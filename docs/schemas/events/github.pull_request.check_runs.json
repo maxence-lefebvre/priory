@@ -1,0 +1,149 @@
+{
+  "$id": "https://raw.githubusercontent.com/maxence-lefebvre/priory/main/docs/schemas/events/github.pull_request.check_runs.json",
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "additionalProperties": false,
+  "definitions": {
+    "CheckRuns": {
+      "additionalProperties": false,
+      "description": "A snapshot of a pull request head's check runs: the first time a poll finds any, or none past\nthe 5-minute grace period.",
+      "properties": {
+        "base_branch": {
+          "description": "The branch the pull request merges into.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "baseline": {
+          "description": "True when the event came from the first poll of its stream.",
+          "type": "boolean"
+        },
+        "head_branch": {
+          "description": "The head branch; null when GitHub no longer returns the pull request.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "head_sha": {
+          "description": "The head commit; for a check, the commit it ran on.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "pull_request": {
+          "description": "The pull request number.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "repo": {
+          "description": "`owner/name`.",
+          "type": "string"
+        },
+        "runs": {
+          "description": "How many check runs the head had at the poll.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "time": {
+          "description": "When the event happened, RFC 3339.",
+          "format": "date-time",
+          "type": "string"
+        },
+        "triggers": {
+          "description": "The triggers the event matched, so the triggers it requests tasks for; may be empty.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "updated_at": {
+          "description": "When GitHub last updated the pull request, before the poll.",
+          "format": "date-time",
+          "type": "string"
+        },
+        "url": {
+          "description": "The pull request's page; the review's for a review, the check run's for a check.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "repo",
+        "pull_request",
+        "url",
+        "head_branch",
+        "head_sha",
+        "base_branch",
+        "runs",
+        "updated_at",
+        "time",
+        "baseline",
+        "triggers"
+      ],
+      "type": "object"
+    },
+    "Link": {
+      "additionalProperties": false,
+      "description": "A link for people.",
+      "properties": {
+        "label": {
+          "description": "`issue` or `pull_request`.",
+          "type": "string"
+        },
+        "url": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "label",
+        "url"
+      ],
+      "type": "object"
+    }
+  },
+  "description": "A snapshot of a pull request head's check runs: the first time a poll finds any, or none past\nthe 5-minute grace period.",
+  "properties": {
+    "data": {
+      "$ref": "#/definitions/CheckRuns"
+    },
+    "id": {
+      "description": "A UUIDv5 of the message's name, so a retried publish keeps its id.",
+      "format": "uuid",
+      "type": "string"
+    },
+    "links": {
+      "description": "GitHub and Linear events carry one link to the event's page.",
+      "items": {
+        "$ref": "#/definitions/Link"
+      },
+      "type": "array"
+    },
+    "subject": {
+      "description": "A short line for listings, such as `owner/name#42`.",
+      "type": "string"
+    },
+    "time": {
+      "description": "When the event happened, RFC 3339.",
+      "format": "date-time",
+      "type": "string"
+    },
+    "type": {
+      "const": "github.pull_request.check_runs",
+      "description": "The message type, such as `github.issues.labeled`.",
+      "type": "string"
+    }
+  },
+  "required": [
+    "id",
+    "type",
+    "subject",
+    "time",
+    "data",
+    "links"
+  ],
+  "title": "github.pull_request.check_runs",
+  "type": "object"
+}

@@ -1,96 +1,96 @@
 # Linear
 
-## Linear events
+The intake turns Linear activity into events: issues entering or leaving a saved view, issues
+created, state changes, comments, and blockers that change.
 
-A `source = "linear.view"` trigger names a saved view by its id or by the slug id ending its URL. It
-starts on `issue.entered` or `issue.left`. A `source = "linear"` trigger starts on `issue.created`,
-`issue.state_changed` or `comment.created`. It may filter on `team` (a team key), `label` (one label
-of the issue) and `state` (the state an issue moved to, or the issue's state for the other two).
-Both take `backfill`. Their `key`, when set, is `issue.identifier`. Either may name the `repo`,
-`owner/name`, that its tasks work in. Without one, its tasks block before their first run.
+## What it watches
 
-| Type                         | One message per                                                  |
-| ---------------------------- | ---------------------------------------------------------------- |
-| `linear.issue.entered`       | issue found in a view that was not in it at the previous poll     |
-| `linear.issue.left`          | issue gone from a view that was in it at the previous poll        |
-| `linear.issue.created`       | issue created                                                    |
-| `linear.issue.state_changed` | entry of an issue's history that moves it from one state to another |
-| `linear.comment.created`     | comment on an issue                                              |
-| `linear.issue.blockers`      | issue that another issue blocks, each time the blocker changes   |
+| Stream | Reads | Started by |
+| ------ | ----- | ---------- |
+| `linear.view:<view>` | every issue of the view | a `linear.view` trigger naming the view |
+| `linear.issues` | issues updated since the position, archived ones included, with their last 50 history entries and the issues they block | any Linear trigger, or an open wait on a Linear issue |
+| `linear.comments` | comments created since the position | the same as `linear.issues` |
 
-The intake polls issues and comments whenever the factory has a Linear trigger, whatever the triggers start
-on, so a task gets its issue's comments and state changes (R3). The daemon routes a Linear event to
-the active task whose key is `linear:<issue>`.
+The issues and comments streams cover the whole workspace, whatever the triggers start on. So a
+task gets its issue's comments and state changes even when its trigger only watches a view. An open
+wait on a Linear issue starts them too (see [watches.md](watches.md)).
 
-Linear does not update an issue when a blocker closes. So the issues stream publishes
-`linear.issue.blockers` instead. For each updated issue, a second query by id reads the issues it
-blocks, and the stream publishes one event per blocked issue, with that issue's fields and open
-blockers. `linear.issue.created` and `linear.issue.state_changed` carry `blockers` too. View and
-comment events do not, though a leaving view event can carry the issue's fields from an earlier
-poll. `priory hold --blockers` reads them (see Holds in `docs/daemon/runs.md`).
+## Trigger
 
-| Field       | Type             | Meaning                                                         |
-| ----------- | ---------------- | --------------------------------------------------------------- |
-| `issue`     | string           | The issue identifier, such as `ENG-7`                           |
-| `linear_id` | string           | Linear's id of what the event is about: the issue for a view event or `created`, the history entry for `state_changed`, the comment for `comment.created` |
-| `title`     | string           | The issue title when the intake saw the event                   |
-| `url`       | string           | The issue's page, or the comment's for `comment.created`        |
-| `team`      | string           | The issue's team key                                            |
-| `project`   | string or null   | The issue's project name; null when the issue has no project    |
-| `state`     | string           | The issue's state when the intake saw the event                 |
-| `labels`    | array of strings | The issue's labels when the intake saw the event                |
-| `blockers`  | array of strings or null | The identifiers of the issues that block it and are neither completed nor canceled. Null when the issue has more than 20 relations, since one past the first page could block it. `created`, `state_changed` and `blockers` only |
-| `blocker`   | string           | The issue whose change published the event. `blockers` only     |
-| `view`      | string           | The view, as the trigger names it. View events only             |
-| `from`, `to`| string           | The states the issue moved from and to. `state_changed` only     |
-| `body`      | string           | The comment, in Markdown. `comment.created` only                |
-| `actor`     | string or null   | Linear display name: who created the issue, moved it or commented. Absent on view events |
-| `time`      | RFC 3339         | When the issue was created, moved or commented; for a view event, when the intake polled |
-| `baseline`  | boolean          | True when the event came from the first poll of its stream (see Baseline) |
-| `triggers`  | array of strings | As for GitHub events                                            |
+Two sources start tasks from Linear. Their keys are in [triggers.md](../reference/triggers.md#linear).
 
-```json
-{
-  "id": "f0352bb3-8810-574d-940d-8d6c29e73f60",
-  "type": "linear.comment.created",
-  "subject": "ENG-7",
-  "time": "2026-11-17T11:00:00Z",
-  "data": {
-    "issue": "ENG-7",
-    "linear_id": "6f1c1c9e-2b7a-4d39-9a43-2d6a3e1b8f10",
-    "title": "Fix the thing",
-    "url": "https://linear.app/acme/issue/ENG-7/fix-the-thing#comment-6f1c1c9e",
-    "team": "ENG",
-    "project": "Desktop",
-    "state": "In Progress",
-    "labels": ["agent"],
-    "body": "Please also cover the empty case.",
-    "actor": "max",
-    "time": "2026-11-17T11:00:00.000Z",
-    "baseline": false,
-    "triggers": []
-  },
-  "links": [{ "label": "issue", "url": "https://linear.app/acme/issue/ENG-7/fix-the-thing#comment-6f1c1c9e" }]
-}
+| `source` | `on` | `filter` |
+| -------- | ---- | -------- |
+| `linear.view` | `issue.entered`, `issue.left` | none: the view filters |
+| `linear` | `issue.created`, `issue.state_changed`, `comment.created` | `team`, `label`, `state` |
+
+`state` matches the state an issue moved to, or the issue's state for the other two events. Both
+sources take `backfill` and an optional `repo`, the repository their tasks work in. Without a
+`repo`, the tasks block before their first run.
+
+```toml
+source = "linear.view"
+view = "6b3c2f9a1d4e"          # a saved view: its id, or the slug id ending its URL
+on = "issue.entered"
+repo = "owner/name"
+workflow = "implement"
+key = "issue.identifier"
 ```
 
-## Linear streams
+## Events
 
-Linear has one stream per view a trigger names, `linear.view:<view>`, and two workspace streams,
-`linear.issues` and `linear.comments`. Unlike a GitHub stream, each one publishes a
-`factory.intake.baseline` message after every poll that moves it, and the next poll starts from the
-newest one. A missing marker means the stream is still in its baseline.
+Their fields and examples are in [events.md](../reference/events.md#linear).
 
-| Stream             | Reads                                                   | Position                     |
-| ------------------ | ------------------------------------------------------- | ---------------------------- |
-| `linear.view:<view>` | every issue of the view                               | a count of membership changes; the marker also holds `members`, the fields of each issue in the view |
-| `linear.issues`    | issues updated at or after the position, archived ones included, with their last 50 history entries and the issues they block | the latest `updatedAt` seen; the marker also holds `seen`, the ids of the events at that instant |
-| `linear.comments`  | comments created at or after the position               | the latest `createdAt` seen, and `seen` as above |
+| Type | One message per |
+| ---- | --------------- |
+| `linear.issue.entered` | issue found in a view that was not in it at the previous poll |
+| `linear.issue.left` | issue gone from a view that was in it at the previous poll |
+| `linear.issue.created` | issue created |
+| `linear.issue.state_changed` | history entry that moves an issue from one state to another |
+| `linear.comment.created` | comment on an issue |
+| `linear.issue.blockers` | issue that another issue blocks, each time the blocker changes |
 
-The first poll of a view publishes each issue as `linear.issue.entered` with `baseline: true`. The
-first poll of the other two reads their 50 most recent nodes and publishes them with
-`baseline: true`. As for GitHub, only a `backfill` trigger requests a task from a baseline event.
-An empty first page starts the stream from 1970.
+The daemon routes a Linear event to the active task whose key is `linear:<issue>`.
+
+### Blockers
+
+Linear does not update an issue when its blocker closes. So for each updated issue, a second query
+reads the issues it blocks, and the issues stream publishes one `linear.issue.blockers` per blocked
+issue, with that issue's fields and open blockers.
+
+| Event | Carries `blockers` |
+| ----- | ------------------ |
+| `linear.issue.created`, `linear.issue.state_changed`, `linear.issue.blockers` | yes |
+| `linear.comment.created`, view events | no |
+
+A leaving view event can carry the issue's fields from an earlier poll. `priory hold --blockers`
+reads `blockers` (see Holds in [runs.md](../daemon/runs.md)).
+
+## Keys and ids
+
+A trigger's `key`, when set, is `issue.identifier`, so the task key is `linear:ENG-7`.
+
+Each message id is a UUIDv5 of a name (see [envelope.md](envelope.md)):
+
+| Type | Name |
+| ---- | ---- |
+| `linear.issue.entered`, `linear.issue.left` | `linear.view:{view}:{position}:{issue id}:{type}`, with the view stream's new position |
+| `linear.issue.created` | `linear:issue:{issue id}:created` |
+| `linear.issue.state_changed` | `linear:history:{history id}` |
+| `linear.comment.created` | `linear:comment:{comment id}` |
+| `linear.issue.blockers` | `linear:blockers:{blocked issue id}:{blocker issue id}:{blocker updatedAt}` |
+
+## Positions and baselines
+
+Unlike a GitHub stream, each Linear stream publishes a `factory.intake.baseline` marker after every
+poll that moves it. The next poll starts from the newest marker. A missing marker means the stream
+is still in its baseline.
+
+| Stream | Position | The marker also holds |
+| ------ | -------- | --------------------- |
+| `linear.view:<view>` | a count of membership changes | `members`, the fields of each issue in the view |
+| `linear.issues` | the latest `updatedAt` seen | `seen`, the ids of the events at that instant |
+| `linear.comments` | the latest `createdAt` seen | `seen`, as above |
 
 ```json
 {
@@ -104,24 +104,51 @@ An empty first page starts the stream from 1970.
 }
 ```
 
+The first poll is the baseline:
+
+- A view publishes each of its issues as `linear.issue.entered` with `baseline: true`.
+- The issues and comments streams read their 50 most recent nodes and publish them with
+  `baseline: true`. An empty first page starts the stream from 1970.
+- As for GitHub, only a `backfill` trigger requests a task from a baseline event.
+
 A poll reads the events at its stream's position again, since two events can share a millisecond.
 It skips those the marker lists in `seen`, so a repeated baseline event never requests a task.
 
-A crash between an event and its stream's marker leaves events after the newest marker. On start,
-the intake rebuilds and publishes the marker that poll would have published, from those events. It
-also republishes the task requests of the newest of them, from its `triggers`, as the GitHub source
-does, and herdr-bus drops the repeats. Polling resumes from the rebuilt marker, so it never
-publishes those events again with other triggers. A view then reports an issue that left during the
-crash.
+### After a crash
 
-Limits:
+A crash between an event and its stream's marker leaves events after the newest marker. On start,
+the intake:
+
+1. Rebuilds the marker that poll would have published, from those events, and publishes it.
+2. Republishes the task requests of the newest of them, from its `triggers`. herdr-bus drops the
+   repeats.
+3. Resumes polling from the rebuilt marker, so it never publishes those events again with other
+   triggers.
+
+A view then reports an issue that left during the crash.
+
+## Calls and cost
+
+| What | Value |
+| ---- | ----- |
+| Key | `LINEAR_API_KEY`. The intake refuses to start without it when the factory has a Linear trigger |
+| Endpoint | `https://api.linear.app/graphql`, through `curl` |
+| Timeout | 60 seconds per request; the next poll retries it |
+| Queries per poll | one per view, two for issues and comments, one per extra page of 100, and one per 50 issues that the updated issues block |
+| Rate limit | Linear allows 1,500 requests an hour per key |
+
+`curl` reads the key from standard input, so it stays out of process lists. `--disable` makes curl
+ignore `~/.curlrc`, so no trace option can log the key. The intake also replaces the key in any
+error it prints.
+
+## Limits
 
 - A view event's `time` is when the intake noticed the change, at most one poll late.
 - An issue that enters and leaves a view between two polls produces no event.
-- As for GitHub, start-up recovery never dispatches a baseline event, so a crash between a baseline
-  event and the task request of a `backfill` trigger loses that request.
-- A task's key names the issue identifier. Moving the issue to another team changes its identifier, so later events
-  of that issue no longer reach the task.
+- Start-up recovery never dispatches a baseline event. A crash between a baseline event and the
+  task request of a `backfill` trigger loses that request.
+- A task's key names the issue identifier. Moving the issue to another team changes its identifier,
+  so later events of that issue no longer reach the task.
 - A view marker holds every issue of the view and is published whenever one of them changes, so a
   large, busy view grows the output.
 - A state change past the last 50 history entries of an issue between two polls is missed.
@@ -130,14 +157,3 @@ Limits:
 - A removed blocking relation, unlike a closed blocker, publishes no event about the issue it
   blocked, since the blocker no longer names it. A hold on its blockers stays until another event
   about the issue says it has none, or a person releases it.
-
-## Linear calls
-
-The intake reads the API key from the `LINEAR_API_KEY` environment variable. It refuses to start
-without it when the factory has a Linear trigger. It posts each GraphQL query to
-`https://api.linear.app/graphql` with `curl`, which reads the key from standard input, so the key
-stays out of process lists. `--disable` makes curl ignore `~/.curlrc`, so no trace option can log
-the key. The intake also replaces the key in any error it prints. A request times out after 60
-seconds, and the next poll retries it. A poll makes one query per view, two for issues and comments,
-one per extra page of 100, and one per 50 issues that the updated issues block. Linear allows 1,500
-requests an hour per key.

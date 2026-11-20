@@ -1,3 +1,5 @@
+mod conform;
+
 use herdr_bus::{Bus, MessageQuery, Stored};
 use serde_json::json;
 use std::fs;
@@ -70,6 +72,9 @@ impl Setup {
         };
         let mut messages = bus.messages(&query).unwrap_or_default();
         messages.reverse();
+        for stored in &messages {
+            conform::conforms(&serde_json::to_value(&stored.message).unwrap());
+        }
         messages
     }
 

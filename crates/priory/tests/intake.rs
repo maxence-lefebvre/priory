@@ -1,3 +1,5 @@
+mod conform;
+
 use herdr_bus::{Bus, Message, MessageQuery, Stored};
 use serde_json::json;
 use std::fs;
@@ -115,7 +117,7 @@ impl Setup {
         messages
     }
 
-    /// Everything on `factory.intake`, oldest first.
+    /// Everything on `factory.intake`, oldest first, each checked against its schema.
     fn output(&self) -> Vec<Stored> {
         let bus = Bus::open(&self.dir.join("bus.db")).unwrap();
         let mut messages = bus
@@ -126,6 +128,9 @@ impl Setup {
             })
             .unwrap();
         messages.reverse();
+        for stored in &messages {
+            conform::conforms(&serde_json::to_value(&stored.message).unwrap());
+        }
         messages
     }
 }
@@ -466,17 +471,7 @@ fn a_restart_requests_the_tasks_a_crash_left_out() {
     let setup = Setup::new("recover", &[]);
     succeeded(&setup.intake());
     let bus = Bus::open(&setup.dir.join("bus.db")).unwrap();
-    let source = Message::new(
-        "github.issues.labeled",
-        json!({
-            "repo": "owner/repo",
-            "issue": 42,
-            "label": "agent",
-            "github_id": 101,
-            "baseline": false,
-            "triggers": ["agent-label"]
-        }),
-    );
+    let source = labeled_source(101, false, json!(["agent-label"]));
     bus.publish("factory.intake", &source).unwrap();
 
     succeeded(&setup.intake());
@@ -534,17 +529,29 @@ fn seed(setup: &Setup, source: &Message) {
 }
 
 fn baseline_source(github_id: u64, triggers: serde_json::Value) -> Message {
+    labeled_source(github_id, true, triggers)
+}
+
+/// A `github.issues.labeled` event of issue 42, as the intake publishes it.
+fn labeled_source(github_id: u64, baseline: bool, triggers: serde_json::Value) -> Message {
+    let url = "https://github.com/owner/repo/issues/42";
     Message::new(
         "github.issues.labeled",
         json!({
             "repo": "owner/repo",
             "issue": 42,
+            "title": "Issue 42",
+            "url": url,
             "label": "agent",
+            "actor": "someone",
+            "time": "2026-11-17T10:00:00Z",
             "github_id": github_id,
-            "baseline": true,
+            "baseline": baseline,
             "triggers": triggers
         }),
     )
+    .subject("owner/repo#42")
+    .link("issue", url)
 }
 
 #[test]
@@ -920,17 +927,27 @@ fn a_check_counts_the_runs_past_the_first_page_as_pending() {
 fn a_restart_requests_the_task_a_crash_left_out_for_a_pull_request() {
     let setup = Setup::new("pr-recover", &[]);
     succeeded(&setup.intake());
+    let url = "https://github.com/owner/repo/pull/43";
     let source = Message::new(
         "github.pull_request.labeled",
         json!({
             "repo": "owner/repo",
             "pull_request": 43,
+            "title": "Pull request 43",
+            "url": url,
+            "head_branch": "feature",
+            "head_sha": "abc123",
+            "base_branch": "main",
             "label": "agent",
+            "actor": "someone",
+            "time": "2026-11-17T10:00:00Z",
             "github_id": 101,
             "baseline": false,
             "triggers": ["agent-label"]
         }),
-    );
+    )
+    .subject("owner/repo#43")
+    .link("pull_request", url);
     seed(&setup, &source);
 
     succeeded(&setup.intake());

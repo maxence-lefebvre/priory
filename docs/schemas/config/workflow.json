@@ -1,0 +1,132 @@
+{
+  "$id": "https://raw.githubusercontent.com/maxence-lefebvre/priory/main/docs/schemas/config/workflow.json",
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "additionalProperties": false,
+  "definitions": {
+    "Decider": {
+      "description": "Who decides a step's outcome: a `code` action, a `model` run or a `human`.",
+      "enum": [
+        "code",
+        "model",
+        "human"
+      ],
+      "type": "string"
+    },
+    "Effect": {
+      "description": "What a step may change: `none`, `read`, `reversible` or `irreversible`.",
+      "enum": [
+        "none",
+        "read",
+        "reversible",
+        "irreversible"
+      ],
+      "type": "string"
+    },
+    "Step": {
+      "additionalProperties": false,
+      "description": "One step: who decides its outcome, what it may change, and where each outcome leads.",
+      "properties": {
+        "action": {
+          "description": "The built-in action a code step runs, such as `open-pr`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "agent": {
+          "description": "The agent that runs a model step.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "approves": {
+          "default": [],
+          "description": "The irreversible steps a human step approves.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "autonomous": {
+          "description": "Why an irreversible step may run without a person's approval.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "decides": {
+          "$ref": "#/definitions/Decider"
+        },
+        "effect": {
+          "$ref": "#/definitions/Effect"
+        },
+        "id": {
+          "description": "The step's id, unique in the workflow; `done` and `stop` are reserved.",
+          "type": "string"
+        },
+        "next": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "Each outcome and the step it leads to, or `done` or `stop`.",
+          "type": "object"
+        },
+        "options": {
+          "default": [],
+          "description": "The answers a person picks from at a human step.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "prompt": {
+          "description": "What a model step tells its agent.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "timeout": {
+          "default": null,
+          "description": "How long one turn of a model step may run before Priory ends it.",
+          "pattern": "^0*[1-9][0-9]*[smh]$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "decides",
+        "effect",
+        "next"
+      ],
+      "type": "object"
+    }
+  },
+  "description": "`workflows/<name>.toml` or `.yaml`: the typed steps a task goes through. The file name is the\nworkflow's name.",
+  "properties": {
+    "band": {
+      "description": "The band of its tasks when neither their request nor their trigger sets one.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "start": {
+      "description": "The id of the first step.",
+      "type": "string"
+    },
+    "steps": {
+      "items": {
+        "$ref": "#/definitions/Step"
+      },
+      "type": "array"
+    }
+  },
+  "required": [
+    "start",
+    "steps"
+  ],
+  "title": "workflow",
+  "type": "object"
+}

@@ -1,0 +1,21 @@
+{
+  "id": "d7f22ece-2872-5e71-876d-87f5807dda0b",
+  "type": "github.pull_request.opened",
+  "subject": "acme/widgets#43",
+  "time": "2026-11-17T16:05:00Z",
+  "data": {
+    "repo": "acme/widgets",
+    "pull_request": 43,
+    "url": "https://github.com/acme/widgets/pull/43",
+    "head_branch": "fix-empty-export",
+    "head_sha": "4b2ee8eb670ba9f77d54d59ab97ced618f024fb9",
+    "base_branch": "main",
+    "title": "Handle an empty project in export",
+    "actor": "priory-bot",
+    "time": "2026-11-17T16:05:00Z",
+    "github_id": 3651302871,
+    "baseline": false,
+    "triggers": []
+  },
+  "links": [{ "label": "pull_request", "url": "https://github.com/acme/widgets/pull/43" }]
+}

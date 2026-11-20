@@ -1,0 +1,22 @@
+{
+  "id": "9fbb2b2f-7964-56df-887a-48a01dbdd601",
+  "type": "linear.issue.created",
+  "subject": "ENG-7",
+  "time": "2026-11-17T10:58:21.904Z",
+  "data": {
+    "issue": "ENG-7",
+    "linear_id": "9f2c4b1e-7d3a-4c55-8e21-0b6f3a9d1c47",
+    "title": "Export fails on an empty project",
+    "url": "https://linear.app/acme/issue/ENG-7/export-fails-on-an-empty-project",
+    "team": "ENG",
+    "project": "Desktop",
+    "state": "Todo",
+    "labels": ["agent", "bug"],
+    "actor": "Ada Lovelace",
+    "blockers": [],
+    "time": "2026-11-17T10:58:21.904Z",
+    "baseline": false,
+    "triggers": ["triage"]
+  },
+  "links": [{ "label": "issue", "url": "https://linear.app/acme/issue/ENG-7/export-fails-on-an-empty-project" }]
+}

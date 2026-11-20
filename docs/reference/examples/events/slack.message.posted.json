@@ -1,0 +1,16 @@
+{
+  "id": "7d892a3e-a083-5b61-836d-d1c7dfd5f1d5",
+  "type": "slack.message.posted",
+  "subject": "C0123:1795036000.000100",
+  "time": "2026-11-18T21:06:40.000100Z",
+  "data": {
+    "channel": "C0123",
+    "ts": "1795036000.000100",
+    "user": "U0PERSON",
+    "text": "@priory the export is broken again",
+    "time": "2026-11-18T21:06:40.000100Z",
+    "baseline": false,
+    "triggers": ["support-channel"]
+  },
+  "links": []
+}

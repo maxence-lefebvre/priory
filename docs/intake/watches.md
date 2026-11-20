@@ -1,42 +1,49 @@
-# Which threads and issues the intake watches
+# Watches
 
 Triggers tell the intake which repositories, Linear views and Slack channels to poll. An agent's
 wait can name something no trigger covers, such as a Slack thread where it asked a question. This
 page explains how the intake learns about those waits and polls for them.
 
-## Where the list comes from
+## What it watches
 
-On every poll, the intake reads the state file that `PRIORY_DB` names. It collects:
+On every poll, the intake reads the state file that `PRIORY_DB` names and collects:
 
-- every open wait of the kinds `linear_comment`, `linear_state`, `slack_reply`, `pull_request`,
-  `checks` and `review` (see [waits.md](../daemon/waits.md));
-- every open `--merge` hold (see Holds in [runs.md](../daemon/runs.md)).
+| From | Kinds |
+| ---- | ----- |
+| open waits | `linear_comment`, `linear_state`, `slack_reply`, `pull_request`, `checks` and `review` (see [waits.md](../daemon/waits.md)) |
+| open holds | `--merge` (see Holds in [runs.md](../daemon/runs.md)) |
 
 It skips the waits and holds of a task that is `done`, `failed` or `dropped`. Without `PRIORY_DB`,
 the intake watches none of them.
 
-Each wait gives a resource, such as `slack:C0123:1763500000.000100`, and the time of its agent's
-last prompt. Each hold gives its pull request and the time the hold was set. The intake uses that
-time as the point to read from.
+Each wait gives a resource and the time of its agent's last prompt. Each hold gives its pull request
+and the time the hold was set. The intake reads from that time on.
+
+| Resource | Example | Polled as |
+| -------- | ------- | --------- |
+| `github:<owner/name>#<number>` | `github:owner/name#42` | its repository |
+| `linear:<issue>` | `linear:ENG-7` | the Linear issues and comments streams |
+| `slack:<channel>:<thread ts>` | `slack:C0123:1763500000.000100` | that thread |
 
 A missing key, such as an unset `SLACK_BOT_TOKEN`, fails only that source's poll. So a wait cannot
 stop GitHub polling.
 
 ## Pull requests
 
-For a pull request that a task waits on or is held for, the intake polls its repository the same
-way it polls a trigger's repository (see [github-polling.md](github-polling.md)).
+The intake polls the repository of a pull request that a task waits on or is held for, the same way
+it polls a trigger's repository (see [github-polling.md](github-polling.md)).
 
-A repository that no trigger names starts with a baseline. The reviews and checks of that baseline
-still reach the wait. After a restart, the intake resumes the repository from where it stopped, as
-long as a wait or hold still names it.
+- A repository that no trigger names starts with a baseline. The reviews and checks of that baseline
+  still reach the wait.
+- After a restart, the intake resumes the repository from where it stopped, as long as a wait or
+  hold still names it.
 
 ## Slack threads
 
-For each Slack thread, the intake reads `conversations.replies` from the wait's time on, every
-poll, until the wait fires or is withdrawn. herdr-bus drops the replies it already holds.
+For each Slack thread, the intake reads `conversations.replies` from the wait's time on, every poll,
+until the wait fires or is withdrawn. herdr-bus drops the replies it already holds.
 
-For example, an agent posts a question in a thread, then calls:
+For example, an agent posts a question in a thread, then waits on:
 
 ```json
 { "on": { "type": "slack_reply", "channel": "C0123", "thread_ts": "1763500000.000100" } }

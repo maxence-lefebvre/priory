@@ -1,29 +1,61 @@
-# `schedule.fired`
+# Schedules
 
-A trigger with `source = "schedule"` fires at `at`, a local time of day, in `timezone` (an IANA
-name; the machine's zone when unset), on the weekdays in `days` (every day when unset). With
-`every`, it repeats at that interval after `at` on the same day, up to `until` inclusive. `until` is
-a time of day such as `"18:00"` or a duration after `at` such as `"9h"`. It defaults to the end of
-the day, and a duration stops there too. `every` is at least `1m`, the intake's poll.
+A schedule trigger fires at a time of day, on chosen weekdays, and can repeat until an end. Each
+firing publishes a `schedule.fired` event and one task request. No network is involved.
 
-Each poll publishes, per schedule trigger, its latest firing at or before now: this source event,
-then one `factory.task.requested`. The firing's time names both messages' ids, so a second poll in
-the same slot publishes nothing new. After missed slots, a restart publishes only the latest, once.
+## Trigger
 
-| Field       | Type     | Meaning                              |
-| ----------- | -------- | ------------------------------------ |
-| `trigger`   | string   | The trigger's name                   |
-| `scheduled` | RFC 3339 | When the firing was due, in UTC       |
+Its keys are in [triggers.md](../reference/triggers.md#schedule).
 
-Its task request adds two fields to those below: `scheduled`, the same time, and `prompt`, the
-trigger's `prompt` or null. Its `key` is `schedule:<key>` when the trigger sets a fixed `key`, so
-every firing names the same work. Otherwise it is `schedule:<trigger>@<scheduled>`, so each firing
-is its own task. The daemon routes a firing to a task already owning a fixed key by that task's
-state (see `docs/daemon/routing.md`).
+| Key | Meaning |
+| --- | ------- |
+| `at` | The local time of day it fires, `HH:MM` |
+| `timezone` | The IANA zone `at` is read in; the machine's zone when unset |
+| `days` | The weekdays it fires on; every day when unset |
+| `every` | Repeat at this interval after `at`, the same day. At least `1m`, the intake's poll |
+| `until` | The last firing of the day, inclusive: a time of day such as `"18:00"`, or a duration after `at` such as `"9h"`. The end of the day when unset, and a duration stops there too |
+| `key` | A fixed key, so every firing names the same task |
+| `prompt` | What a firing tells the asleep task it wakes |
+
+```toml
+source = "schedule"
+repo = "owner/name"
+at = "09:00"
+days = ["mon", "tue", "wed", "thu", "fri"]
+every = "1h"
+until = "18:00"
+timezone = "Europe/Paris"
+key = "support-day"
+prompt = "Sweep the support queue."
+workflow = "support"
+```
+
+## When it fires
+
+Each poll publishes, per schedule trigger, its latest firing at or before now: the
+`schedule.fired` event, then one `factory.task.requested`. After missed slots, a restart publishes
+only the latest, once.
+
+| The trigger has | The task request's key | So |
+| --------------- | ---------------------- | -- |
+| a fixed `key` | `schedule:<key>` | every firing names the same work |
+| no `key` | `schedule:<trigger>@<scheduled>` | each firing is its own task |
+
+The daemon routes a firing to a task that already owns a fixed key by that task's state. It wakes a
+task asleep at a model step with the trigger's `prompt`, and coalesces the firing in any other
+state, so firings never stack (see [routing.md](../daemon/routing.md)).
+
+## Events
+
+The fields and examples are in [events.md](../reference/events.md#schedulefired).
+
+| Message | Data |
+| ------- | ---- |
+| `schedule.fired` | `trigger` and `scheduled`, when the firing was due, in UTC |
+| `factory.task.requested` | the usual fields, plus `scheduled` and `prompt`, the trigger's `prompt` or null |
 
 ```json
 {
-  "id": "5b0e9c8c-6c0a-5b8e-9a4d-2f7f3c1e8a10",
   "type": "factory.task.requested",
   "subject": "schedule:support-day",
   "time": "2026-11-19T09:00:00Z",
@@ -36,16 +68,26 @@ state (see `docs/daemon/routing.md`).
     "source": "0f4a6d1e-3c1b-5d55-8a8e-6d2b0c9e7f21",
     "scheduled": "2026-11-19T09:00:00Z",
     "prompt": "Sweep the support queue."
-  },
-  "links": []
+  }
 }
 ```
 
-Limits:
+## Keys and ids
+
+| What | Value |
+| ---- | ----- |
+| `schedule.fired` subject | `schedule:<trigger>@<scheduled>` |
+| `schedule.fired` id | the UUIDv5 of `schedule.fired:{trigger}@{scheduled}` |
+| Task request id | the UUIDv5 of `factory.task.requested:{trigger}:{source}` |
+
+The firing's time names both ids, so a second poll in the same slot publishes nothing new.
+
+## Limits
 
 - A new schedule trigger fires its latest past slot on its first poll, as a missed firing would.
-- Only the latest slot fires, so a poll delayed past two slots (such as by a slow `gh`) skips the
-  older one. The last slot of a day fires even when its poll comes after `until`.
+- Only the latest slot fires. A poll delayed past two slots, such as by a slow `gh`, skips the
+  older one.
+- The last slot of a day fires even when its poll comes after `until`.
 - Changing `at`, `every` or `until` names new slots, so the latest can fire at once.
-- `every` counts real time from `at`, so a daylight saving change that day shifts later firings by
-  the hour it adds or removes.
+- `every` counts real time from `at`. A daylight saving change that day shifts later firings by the
+  hour it adds or removes.

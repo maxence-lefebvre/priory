@@ -1,0 +1,42 @@
+#:schema https://raw.githubusercontent.com/maxence-lefebvre/priory/main/docs/schemas/config/workflow.json
+start = "plan"
+band = "today"                 # when neither the request nor the trigger sets one
+
+[[steps]]
+id = "plan"
+decides = "model"              # an agent's run decides the outcome
+agent = "implementer"
+prompt = "Plan the change. Grade it red, yellow or green."
+effect = "reversible"
+timeout = "30m"                # one turn may run this long
+next = { red = "approve-plan", yellow = "implement", green = "implement" }
+
+[[steps]]
+id = "approve-plan"
+decides = "human"              # a person picks one of the options
+effect = "none"
+options = ["approved", "rejected"]
+next = { approved = "implement", rejected = "stop" }
+
+[[steps]]
+id = "implement"
+decides = "model"
+agent = "implementer"
+prompt = "Implement the plan and run the tests."
+effect = "reversible"
+next = { passed = "approve-pr", failed = "stop" }
+
+[[steps]]
+id = "approve-pr"
+decides = "human"
+effect = "none"
+approves = ["open-pr"]         # the irreversible step this answer approves
+options = ["open", "stop"]
+next = { open = "open-pr", stop = "stop" }
+
+[[steps]]
+id = "open-pr"
+decides = "code"               # a built-in action decides the outcome
+action = "open-pr"
+effect = "irreversible"
+next = { opened = "done", failed = "stop" }

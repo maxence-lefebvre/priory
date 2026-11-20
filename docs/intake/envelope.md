@@ -1,42 +1,64 @@
 # Envelope and message ids
 
+Every message on `factory.intake` is a herdr-bus `Message`, shaped like a CloudEvent. This page
+describes the envelope every type shares and how message ids are made. The `data` of each type is in
+[events.md](../reference/events.md), and its JSON Schema in [`docs/schemas/events/`](../schemas/events/).
+
 ## The envelope
 
-Every message is a herdr-bus `Message`, shaped like a CloudEvent:
+| Field | Type | Meaning |
+| ----- | ---- | ------- |
+| `id` | UUID string | A UUIDv5, stable across retries. See [Message ids](#message-ids) |
+| `type` | string | The message type, such as `github.issues.labeled` |
+| `subject` | string | A short line for listings. See the table below |
+| `time` | RFC 3339 | When the event happened. See the table below |
+| `data` | object | The fields of the type |
+| `links` | array | GitHub and Linear events carry one `{ "label": "issue" or "pull_request", "url": ... }`, with the event's `url`. Others carry none |
 
-| Field     | Type          | Meaning                                                    |
-| --------- | ------------- | ---------------------------------------------------------- |
-| `id`      | UUID string   | A UUIDv5, stable across retries (see Message ids)          |
-| `type`    | string        | A GitHub, Linear or Slack type below, `priory.task.requested.cli`, `schedule.fired`, `factory.task.requested` or `factory.intake.baseline` |
-| `subject` | string        | `owner/name#42` for a GitHub event, the issue identifier such as `ENG-7` for a Linear event, `<channel>:<ts>` for a Slack event (the thread's `ts` for a reply), the task key for a CLI request or a task request, `schedule:<trigger>@<time>` for a firing, `owner/name <stream>` or the Linear stream for a baseline marker |
-| `time`    | RFC 3339      | When the GitHub or Linear event happened; for a firing, its scheduled time; for a view event or a baseline marker, when it was published |
-| `data`    | object        | The fields below, by type                                  |
-| `links`   | array         | GitHub and Linear events carry one `{ "label": "issue" or "pull_request", "url": ... }`, with the event's `url` |
+| Message | `subject` | `time` |
+| ------- | --------- | ------ |
+| GitHub event | `owner/name#42` | when it happened |
+| Linear event | the issue identifier, such as `ENG-7` | when it happened; for a view event, when it was published |
+| Slack event | `<channel>:<ts>`; the thread's `ts` for a reply | the instant `ts` names |
+| `priory.task.requested.cli` | the task key | when the command ran |
+| `factory.task.requested` | the task key | the source event's `time` |
+| `schedule.fired` | `schedule:<trigger>@<time>` | its scheduled time |
+| `factory.intake.baseline` | `owner/name <stream>`, or the Linear or Slack stream | when it was published |
+
+```json
+{
+  "id": "98c30eca-6e69-591d-b9ab-d4731abf371a",
+  "type": "github.issues.labeled",
+  "subject": "acme/widgets#42",
+  "time": "2026-11-17T15:18:55Z",
+  "data": { "repo": "acme/widgets", "issue": 42, "...": "..." },
+  "links": [{ "label": "issue", "url": "https://github.com/acme/widgets/issues/42" }]
+}
+```
+
+## Duplicates
 
 herdr-bus drops a message whose `(output, id)` is already on the output. After its own crash before
 an ack, a consumer can still get a duplicate, so it deduplicates by `id`.
 
 ## Message ids
 
-Ids are UUIDv5 in namespace `UUIDv5(NAMESPACE_URL, "https://github.com/maxence-lefebvre/priory/intake")`,
-from these names:
+Each id is a UUIDv5 of a name, in the namespace:
 
-| Message                  | Name                                         |
-| ------------------------ | -------------------------------------------- |
-| `github.issues.labeled`  | `github:{repo}:issues/events:{github_id}`    |
-| `github.issues.opened`   | `github:{repo}:issues:{github_id}:opened`    |
-| `github.pull_request.labeled`, `github.pull_request.closed` | `github:{repo}:issues/events:{github_id}` |
-| `github.pull_request.opened` | `github:{repo}:issues:{github_id}:opened` |
-| `github.pull_request_review.submitted` | `github:{repo}:pulls/reviews:{github_id}` |
-| `github.check_run.completed` | `github:{repo}:check-runs:{github_id}:pulls/{pull_request}`, since one check run can sit on the head of two pull requests |
-| `github.pull_request.check_runs` | `github:{repo}:pulls/{pull_request}:check-runs:{head_sha}:{some or none}` |
-| `priory.task.requested.cli` | `priory.task.requested.cli:{len}:{key}:{text}`, with the `cli:` key and `len` its byte length, so a `:` in the key or text cannot make two requests collide |
-| `schedule.fired`         | `schedule.fired:{trigger}@{scheduled}`       |
-| `factory.task.requested` | `factory.task.requested:{trigger}:{source}`  |
-| `factory.intake.baseline` | `factory.intake.baseline:{repo}:{stream}`, or `factory.intake.baseline:{stream}:{position}` for a Linear stream or a Slack channel |
-| `linear.issue.entered`, `linear.issue.left` | `linear.view:{view}:{position}:{issue id}:{type}`, with the view stream's new position |
-| `linear.issue.created`   | `linear:issue:{issue id}:created`          |
-| `linear.issue.state_changed` | `linear:history:{history id}`          |
-| `linear.comment.created` | `linear:comment:{comment id}`              |
-| `linear.issue.blockers`  | `linear:blockers:{blocked issue id}:{blocker issue id}:{blocker updatedAt}` |
-| `slack.message.posted`, `slack.thread.replied` | `slack:{channel}:{ts}` |
+```text
+UUIDv5(NAMESPACE_URL, "https://github.com/maxence-lefebvre/priory/intake")
+```
+
+A retried publish makes the same name, so it keeps its id. Each source page lists its names under
+"Keys and ids":
+
+| Messages | Names on |
+| -------- | -------- |
+| GitHub issue events | [github-issues.md](github-issues.md#keys-and-ids) |
+| GitHub pull request, review and check events | [pull-requests.md](pull-requests.md#keys-and-ids) |
+| Linear events | [linear.md](linear.md#keys-and-ids) |
+| Slack events | [slack.md](slack.md#keys-and-ids) |
+| `schedule.fired` | [schedule.md](schedule.md#keys-and-ids) |
+| `priory.task.requested.cli` | [cli.md](cli.md#keys-and-ids) |
+| `factory.task.requested` | [task-requests.md](task-requests.md#keys-and-ids) |
+| `factory.intake.baseline` | `factory.intake.baseline:{repo}:{stream}` for a GitHub stream. `factory.intake.baseline:{stream}:{position}:{seen}` for a Linear stream, with `seen` as JSON, `null` for a view. `factory.intake.baseline:{stream}:{position}` for a Slack channel |

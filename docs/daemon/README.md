@@ -51,6 +51,8 @@ For a task that a labelled issue starts, on a workflow whose first step is a mod
 
 ## Which file to read
 
+The keys of `factory.toml`, workflows and agents are in [docs/reference/](../reference/README.md).
+
 - [routing.md](routing.md): how one message is recorded, acked and routed to a task.
 - [home.md](home.md): what `PRIORY_HOME` holds: clones, worktrees, the socket and the lock.
 - [runs.md](runs.md): how a run starts its harness, and the queue, bands and holds.

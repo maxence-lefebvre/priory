@@ -1,0 +1,15 @@
+{
+  "id": "ef68a451-bc80-5a71-820f-2fb320bb3a8d",
+  "type": "factory.task.requested",
+  "subject": "github:acme/widgets#42",
+  "time": "2026-11-17T15:18:55Z",
+  "data": {
+    "workflow": "implement",
+    "key": "github:acme/widgets#42",
+    "band": "today",
+    "lane": "core/intake",
+    "trigger": "agent-label",
+    "source": "98c30eca-6e69-591d-b9ab-d4731abf371a"
+  },
+  "links": []
+}

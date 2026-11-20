@@ -1,0 +1,22 @@
+{
+  "id": "8af78739-0e9c-52bd-8978-36d9b69cba29",
+  "type": "github.pull_request.closed",
+  "subject": "acme/widgets#43",
+  "time": "2026-11-17T17:36:14Z",
+  "data": {
+    "repo": "acme/widgets",
+    "pull_request": 43,
+    "url": "https://github.com/acme/widgets/pull/43",
+    "head_branch": "fix-empty-export",
+    "head_sha": "4b2ee8eb670ba9f77d54d59ab97ced618f024fb9",
+    "base_branch": "main",
+    "title": "Handle an empty project in export",
+    "merged": true,
+    "actor": "octocat",
+    "time": "2026-11-17T17:36:14Z",
+    "github_id": 36429719781,
+    "baseline": false,
+    "triggers": []
+  },
+  "links": [{ "label": "pull_request", "url": "https://github.com/acme/widgets/pull/43" }]
+}

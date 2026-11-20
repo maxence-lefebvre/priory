@@ -1,0 +1,13 @@
+{
+  "id": "b770d2d3-3057-5e09-bfca-a0bb555bafc8",
+  "type": "priory.task.requested.cli",
+  "subject": "cli:docs-1",
+  "time": "2026-11-17T18:00:00Z",
+  "data": {
+    "text": "Fix the docs",
+    "person": "max",
+    "time": "2026-11-17T18:00:00Z",
+    "repo": "acme/widgets"
+  },
+  "links": []
+}

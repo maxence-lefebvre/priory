@@ -1,0 +1,164 @@
+{
+  "$id": "https://raw.githubusercontent.com/maxence-lefebvre/priory/main/docs/schemas/events/github.pull_request.closed.json",
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "additionalProperties": false,
+  "definitions": {
+    "Link": {
+      "additionalProperties": false,
+      "description": "A link for people.",
+      "properties": {
+        "label": {
+          "description": "`issue` or `pull_request`.",
+          "type": "string"
+        },
+        "url": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "label",
+        "url"
+      ],
+      "type": "object"
+    },
+    "PullRequestClosed": {
+      "additionalProperties": false,
+      "description": "A pull request closed, merged or not. No trigger starts a task from it.",
+      "properties": {
+        "actor": {
+          "description": "The GitHub login who closed it.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "base_branch": {
+          "description": "The branch the pull request merges into.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "baseline": {
+          "description": "True when the event came from the first poll of its stream.",
+          "type": "boolean"
+        },
+        "github_id": {
+          "description": "GitHub's issue event id.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "head_branch": {
+          "description": "The head branch; null when GitHub no longer returns the pull request.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "head_sha": {
+          "description": "The head commit; for a check, the commit it ran on.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "merged": {
+          "description": "Whether this close merged it: the pull request is merged and this is its last close.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "pull_request": {
+          "description": "The pull request number.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "repo": {
+          "description": "`owner/name`.",
+          "type": "string"
+        },
+        "time": {
+          "description": "When the event happened, RFC 3339.",
+          "format": "date-time",
+          "type": "string"
+        },
+        "title": {
+          "description": "The pull request title when the intake polled.",
+          "type": "string"
+        },
+        "triggers": {
+          "description": "The triggers the event matched, so the triggers it requests tasks for; may be empty.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "url": {
+          "description": "The pull request's page; the review's for a review, the check run's for a check.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "repo",
+        "pull_request",
+        "url",
+        "head_branch",
+        "head_sha",
+        "base_branch",
+        "title",
+        "merged",
+        "actor",
+        "github_id",
+        "time",
+        "baseline",
+        "triggers"
+      ],
+      "type": "object"
+    }
+  },
+  "description": "A pull request closed, merged or not. No trigger starts a task from it.",
+  "properties": {
+    "data": {
+      "$ref": "#/definitions/PullRequestClosed"
+    },
+    "id": {
+      "description": "A UUIDv5 of the message's name, so a retried publish keeps its id.",
+      "format": "uuid",
+      "type": "string"
+    },
+    "links": {
+      "description": "GitHub and Linear events carry one link to the event's page.",
+      "items": {
+        "$ref": "#/definitions/Link"
+      },
+      "type": "array"
+    },
+    "subject": {
+      "description": "A short line for listings, such as `owner/name#42`.",
+      "type": "string"
+    },
+    "time": {
+      "description": "When the event happened, RFC 3339.",
+      "format": "date-time",
+      "type": "string"
+    },
+    "type": {
+      "const": "github.pull_request.closed",
+      "description": "The message type, such as `github.issues.labeled`.",
+      "type": "string"
+    }
+  },
+  "required": [
+    "id",
+    "type",
+    "subject",
+    "time",
+    "data",
+    "links"
+  ],
+  "title": "github.pull_request.closed",
+  "type": "object"
+}

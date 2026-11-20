@@ -1,0 +1,17 @@
+{
+  "id": "5f232f58-c5ec-5a26-b515-eaa03352c6ff",
+  "type": "slack.thread.replied",
+  "subject": "C0123:1795036000.000100",
+  "time": "2026-11-18T21:06:41.000200Z",
+  "data": {
+    "channel": "C0123",
+    "thread_ts": "1795036000.000100",
+    "ts": "1795036001.000200",
+    "user": "U0PERSON",
+    "text": "Looks good, ship it.",
+    "time": "2026-11-18T21:06:41.000200Z",
+    "baseline": false,
+    "triggers": []
+  },
+  "links": []
+}

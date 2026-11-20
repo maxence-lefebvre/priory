@@ -1,0 +1,11 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/maxence-lefebvre/priory/main/docs/schemas/config/trigger.json
+source: linear
+on: issue.created              # or issue.state_changed, comment.created
+filter:                        # every key must match
+  team: ENG                    # the issue's team key
+  label: bug                   # one of the issue's labels
+repo: owner/name
+workflow: implement
+key: issue.identifier
+hold:                          # file each task held until a person releases it
+  reason: triage first
