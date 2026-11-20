@@ -323,8 +323,8 @@ Every list panel (desk, asks, tasks, runs, inbox) is the same explorer over one 
    me", "Running", "Asleep" or "All". On a phone the row fits the width; a view that does not fit
    moves to the view's menu, and the row never scrolls sideways.
 2. **Facet chips**: one chip per facet the panel offers (lane, step, runner, age, task, command),
-   `--chip` tall like the views, with `--radius-sm` and a `--control-line` edge. Tapping one opens a picker sheet
-   with values and counts. A set chip takes `--action-soft` and `--action-text`, shows its value
+   `--chip` tall like the views, with `--radius-sm` and a `--control-line` edge. Tapping one
+   opens a picker sheet with values and counts. A set chip takes `--action-soft` and `--action-text`, shows its value
    and an `x` that clears it. A last "Filter" ghost chip adds a facet. On a phone the facet row
    sits behind the top bar's filter button, except in the asks list.
 3. **Query bar**, optional: hidden by default. Search on a phone, or the "Query" button on wide
