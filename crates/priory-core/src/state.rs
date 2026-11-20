@@ -10,7 +10,7 @@ use std::collections::BTreeMap;
 use std::io::Write;
 use std::time::Duration;
 
-const VERSION: i64 = 34;
+const VERSION: i64 = 35;
 
 const SCHEMA: &str = "
 CREATE TABLE tasks (
@@ -584,13 +584,45 @@ CREATE TABLE reports (
 PRAGMA user_version = 34;
 ";
 
+/// Three triggers per table that bump the revision in the same transaction as each row change.
+macro_rules! bumps {
+    ($($table:literal),*) => {
+        concat!($(
+            "CREATE TRIGGER IF NOT EXISTS revision_", $table, "_insert AFTER INSERT ON ", $table,
+            " BEGIN UPDATE revision SET value = value + 1; END;\n",
+            "CREATE TRIGGER IF NOT EXISTS revision_", $table, "_update AFTER UPDATE ON ", $table,
+            " BEGIN UPDATE revision SET value = value + 1; END;\n",
+            "CREATE TRIGGER IF NOT EXISTS revision_", $table, "_delete AFTER DELETE ON ", $table,
+            " BEGIN UPDATE revision SET value = value + 1; END;\n",
+        )*)
+    };
+}
+
+// The state's revision: every committed change to a table a listing reads bumps it, so a reader
+// can wait for a change. A migration that rebuilds one of these tables recreates its triggers.
+// It is idempotent, so a file set back to an older version, as the upgrade tests do, migrates again.
+const SCHEMA_35: &str = concat!(
+    "CREATE TABLE IF NOT EXISTS revision (
+  id    INTEGER PRIMARY KEY CHECK (id = 1),
+  value INTEGER NOT NULL
+);
+INSERT OR IGNORE INTO revision VALUES (1, 0);
+",
+    bumps!(
+        "tasks", "asks", "runs", "waits", "holds", "inbox", "outbox", "results", "actions",
+        "snoozes", "sweeps", "stalls", "grants", "pause", "bands", "reports"
+    ),
+    "PRAGMA user_version = 35;
+"
+);
+
 /// Each schema change in order: a file at version `n` applies those from index `n` on.
 const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA, SCHEMA_2, SCHEMA_3, SCHEMA_4, SCHEMA_5, SCHEMA_6, SCHEMA_7, SCHEMA_8, SCHEMA_9,
     SCHEMA_10, SCHEMA_11, SCHEMA_12, SCHEMA_13, SCHEMA_14, SCHEMA_15, SCHEMA_16, SCHEMA_17,
     SCHEMA_18, SCHEMA_19, SCHEMA_20, SCHEMA_21, SCHEMA_22, SCHEMA_23, SCHEMA_24, SCHEMA_25,
     SCHEMA_26, SCHEMA_27, SCHEMA_28, SCHEMA_29, SCHEMA_30, SCHEMA_31, SCHEMA_32, SCHEMA_33,
-    SCHEMA_34,
+    SCHEMA_34, SCHEMA_35,
 ];
 
 /// The order the queue starts tasks in: band, then a person's order, then age. A band the factory
@@ -1050,6 +1082,23 @@ pub fn print(
         emit(&cells.join("\t"));
     }
     Ok(())
+}
+
+/// The state's revision, which every committed change to what a listing shows bumps.
+pub fn revision(db: &Connection) -> rusqlite::Result<i64> {
+    db.query_row("SELECT value FROM revision", [], |row| row.get(0))
+}
+
+/// The revision once it differs from `since`, or the same one after `timeout`.
+pub fn wait(db: &Connection, since: i64, timeout: Duration) -> rusqlite::Result<i64> {
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        let revision = revision(db)?;
+        if revision != since || std::time::Instant::now() >= deadline {
+            return Ok(revision);
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
 }
 
 /// Prints `line`. A reader that closed the pipe, as `head` does, ends the listing without a message.

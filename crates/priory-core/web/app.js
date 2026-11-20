@@ -119,12 +119,14 @@ async function refresh() {
   try {
     // The server reads the views once, when it starts.
     const views = state.data?.views || (await api("/api/views"));
-    const [desk, asks, queue, tasks] = await Promise.all(["/api/desk", "/api/asks", "/api/queue", "/api/tasks"].map(api));
+    const [desk, asksList, queue, tasksList] = await Promise.all(["/api/desk", "/api/asks", "/api/queue", "/api/tasks"].map(api));
+    const [asks, tasks] = [asksList.asks, tasksList.tasks];
+    state.revision = Math.max(desk.revision, asksList.revision, queue.revision, tasksList.revision);
     const snapshot = JSON.stringify([desk, asks, queue, tasks]);
     state.updated = Date.now();
     state.failed = null;
     // Ages read in minutes, so an unchanged state needs a new paint once a minute at most.
-    if (snapshot === state.snapshot && !failed && Date.now() - state.rendered < 60000) return;
+    if (state.data && snapshot === state.snapshot && !failed && Date.now() - state.rendered < 60000) return;
     const before = state.data ? new Set(state.data.asks.filter((ask) => ask.state === "open").map((ask) => ask.id)) : null;
     state.data = { views, desk, asks, queue, tasks };
     state.snapshot = snapshot;
@@ -144,7 +146,7 @@ function announce(before) {
 
 function signOut(reason) {
   localStorage.removeItem("priory.token");
-  Object.assign(state, { token: null, data: null, signInError: reason });
+  Object.assign(state, { token: null, data: null, snapshot: null, revision: undefined, signInError: reason });
   render();
 }
 
@@ -220,8 +222,11 @@ function runRow(run) {
 
 // Desk
 const DESK_VIEWS = ["needs", "running", "queue", "asleep", "all"];
+// While an ask is open, the list keeps the view it was opened from.
+const listSearch = () => (selectedAsk() ? new URL(state.listUrl, location.origin).search : location.search);
+
 function deskView() {
-  const name = new URLSearchParams(location.search).get("view");
+  const name = new URLSearchParams(listSearch()).get("view");
   return DESK_VIEWS.includes(name) ? name : "needs";
 }
 
@@ -310,16 +315,16 @@ function capsule(model) {
 // Asks list
 const ASK_VIEWS = ["open", "answered", "all"];
 function askView() {
-  const name = new URLSearchParams(location.search).get("view");
+  const name = new URLSearchParams(listSearch()).get("view");
   return ASK_VIEWS.includes(name) ? name : "open";
 }
 
 function askTableRow(ask, selected) {
   const answered = ask.state === "answered";
-  const age = answered && ask.answered_at ? timeTag(ask.answered_at, today(ask.answered_at) ? clock(ask.answered_at) : null) : timeTag(ask.since);
+  const when = answered && ask.answered_at ? timeTag(ask.answered_at, today(ask.answered_at) ? clock(ask.answered_at) : age(ask.answered_at)) : timeTag(ask.since);
   return html`<tr data-href="/asks/${ask.id}" aria-current="${String(ask.id) === selected ? "true" : "false"}">
     <td>${stateWord(ask.state === "open" ? "ask" : ask.state)}</td><td class="mono">${ask.key}</td><td>${ask.step}</td><td class="q"><span>${ask.title || ask.question}</span></td>
-    <td class="recw">${answered ? ask.answer : ask.state === "withdrawn" ? ask.withdrawn_why || "" : ask.recommendation || ""}</td><td class="r">${age}</td></tr>`;
+    <td class="recw">${answered ? ask.answer : ask.state === "withdrawn" ? ask.withdrawn_why || "" : ask.recommendation || ""}</td><td class="r">${when}</td></tr>`;
 }
 
 function asksBody(wide) {
@@ -533,7 +538,7 @@ function tree(node, list) {
     const panel = leaves(child)[0];
     return html`<a href="${panel === "desk" ? "/" : `/${panel}`}" aria-current="${child === shown ? "page" : "false"}">${icon(PANELS[panel][1], "s20")}${PANELS[panel][0]}</a>`;
   });
-  return html`<div><nav class="tabbar" aria-label="Tabs">${strip}</nav>${tree(shown, list)}</div>`;
+  return html`<div class="tree-tabs"><nav class="tabbar" aria-label="Tabs">${strip}</nav>${tree(shown, list)}</div>`;
 }
 
 function signIn() {
@@ -553,9 +558,12 @@ function loading() {
 }
 
 const routeKey = () => location.pathname + location.search;
-const focusKey = (element) => element && element !== document.body
-  ? element.id ? `#${CSS.escape(element.id)}` : element.getAttribute("href") ? `[href="${CSS.escape(element.getAttribute("href"))}"]` : null
-  : null;
+const FOCUS_ATTRIBUTES = ["id", "href", "data-pick-mode", "data-theme-pick", "data-action"];
+function focusKey(element) {
+  if (!element || element === document.body) return null;
+  const name = FOCUS_ATTRIBUTES.find((attribute) => element.hasAttribute(attribute));
+  return name ? `[${name}="${CSS.escape(element.getAttribute(name))}"]` : null;
+}
 
 function render() {
   const app = document.getElementById("app");
@@ -570,7 +578,7 @@ function render() {
   const scrolls = state.scrolls.get(state.renderedKey) || [];
   app.querySelectorAll(".scroll").forEach((element, i) => { element.scrollTop = scrolls[i] || 0; });
   if (typed && app.querySelector("#token")) app.querySelector("#token").value = typed;
-  if (focused) app.querySelector(focused)?.focus({ preventScroll: true });
+  if (focused) [...app.querySelectorAll(focused)].find((element) => !element.closest("[inert]"))?.focus({ preventScroll: true });
   for (const row of app.querySelectorAll("tr[data-href]")) row.addEventListener("click", () => go(row.dataset.href));
   watchSections(app);
 }
@@ -603,7 +611,8 @@ function page() {
   }
   if (!wide) return html`${staleStrip()}${top}<div class="medium">${listPanel(list, false)}${drawer(false)}</div>${nav("bar")}`;
   const layoutNode = view().layout;
-  const main = layoutNode.tabs ? listPanel(list, true) : tree(layoutNode, list);
+  const plain = layoutNode.tabs?.every((child) => child.panel);
+  const main = plain ? listPanel(list, true) : tree(layoutNode, list);
   return html`${staleStrip()}${top}<div class="wide">${nav("rail")}${main}${drawer(true)}</div>`;
 }
 
@@ -681,12 +690,30 @@ document.addEventListener("keydown", (event) => {
   } else if (event.key === "Enter" && at >= 0 && document.activeElement === document.body) {
     go(hrefOf(rows[at]));
   } else if (event.key === "Escape" && selectedAsk()) {
-    go(state.list === "asks" ? "/asks" : "/");
+    go(state.listUrl);
   }
 });
 
 addEventListener("popstate", render);
 for (const query of ["(min-width: 600px)", "(min-width: 1024px)"]) matchMedia(query).addEventListener("change", render);
 document.addEventListener("visibilitychange", () => { if (!document.hidden && state.token) refresh(); });
-setInterval(() => { if (!document.hidden && state.token) refresh(); }, 15000);
+// Waits on the state's revision; the server answers once it moves, or after 25 s.
+async function follow() {
+  for (;;) {
+    if (!state.token || state.revision === undefined || document.hidden) {
+      await new Promise((resolve) => setTimeout(resolve, 1000));
+      continue;
+    }
+    try {
+      const { revision } = await api(`/api/events?since=${state.revision}`);
+      if (revision !== state.revision) await refresh();
+    } catch {
+      await refresh();
+      await new Promise((resolve) => setTimeout(resolve, 5000));
+    }
+  }
+}
+// Ages read in minutes, so repaint them once a minute even when nothing changes.
+setInterval(() => { if (!document.hidden && state.token) refresh(); }, 60000);
+follow();
 refresh();

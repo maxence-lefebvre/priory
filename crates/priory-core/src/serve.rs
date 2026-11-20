@@ -11,10 +11,16 @@ use rusqlite::Connection;
 use std::net::{SocketAddr, TcpListener};
 use std::path::Path;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::thread::JoinHandle;
+use std::time::Duration;
 
 const GITHUB: &str = "/hooks/github";
 const INDEX: &[u8] = include_bytes!("../web/index.html");
+/// How long `/api/events` holds a request without a change, at most and by default.
+const WAIT: u64 = 25;
+/// Requests `/api/events` holds at once: half the workers, so listings always find a free one.
+const WAITERS: usize = http::WORKERS / 2;
 
 macro_rules! file {
     ($path:literal, $kind:expr, $source:literal) => {
@@ -132,9 +138,11 @@ pub fn start(factory: &Factory, listen: SocketAddr) -> Result<Vec<JoinHandle<()>
     let views =
         serde_json::json!({ "factory": factory.name, "views": factory.views() }).to_string();
     let hooks: &[&str] = if github.is_some() { &[GITHUB] } else { &[] };
+    let waiters = Arc::new(AtomicUsize::new(0));
     let public = |path: &str| !path.starts_with("/api") && !path.starts_with("/hooks");
     let workers = http::serve(listener, token, hooks, public, move || {
         let db = state::read_only();
+        let waiters = Arc::clone(&waiters);
         let home = runtime::home();
         let views = views.clone();
         let github = github.clone().map(|github| {
@@ -149,7 +157,15 @@ pub fn start(factory: &Factory, listen: SocketAddr) -> Result<Vec<JoinHandle<()>
             {
                 github.receive(bus, request)
             }
-            _ => route(&db, &home, &views, web, request.method, request.path),
+            _ => route(
+                &db,
+                &home,
+                &views,
+                web,
+                &waiters,
+                request.method,
+                request.path,
+            ),
         }
     })
     .map_err(|error| format!("start the server threads: {error}"))?;
@@ -170,13 +186,14 @@ fn route(
     home: &Path,
     views: &str,
     web: bool,
+    waiters: &AtomicUsize,
     method: &str,
     path: &str,
 ) -> Reply {
     if method != "GET" {
         return Reply::error(405, "only GET is served");
     }
-    let path = path.split_once('?').map_or(path, |(path, _)| path);
+    let (path, query) = path.split_once('?').unwrap_or((path, ""));
     if web && !path.starts_with("/api") && !path.starts_with("/hooks") {
         return web_file(path);
     }
@@ -188,18 +205,23 @@ fn route(
         Err(error) => return Reply::error(500, error),
     };
     let read = match path {
-        "/api/desk" => listing::desk(db, home, false).map(Some),
-        "/api/inbox" => listing::inbox(db, 0).map(Some),
-        "/api/asks" => listing::asks(db).map(Some),
-        "/api/tasks" => listing::tasks(db, None, None).map(Some),
-        "/api/queue" => listing::queue(db).map(Some),
-        "/api/reports/latest" => sections::show(db, None),
+        "/api/events" => return events(db, query, waiters),
+        "/api/desk" => listing::revised(db, "desk", |db| listing::desk(db, home, false).map(Some)),
+        "/api/inbox" => listing::revised(db, "inbox", |db| listing::inbox(db, 0).map(Some)),
+        "/api/asks" => listing::revised(db, "asks", |db| listing::asks(db).map(Some)),
+        "/api/tasks" => {
+            listing::revised(db, "tasks", |db| listing::tasks(db, None, None).map(Some))
+        }
+        "/api/queue" => listing::revised(db, "queue", |db| listing::queue(db).map(Some)),
+        "/api/reports/latest" => listing::revised(db, "report", |db| sections::show(db, None)),
         _ => match (
             path.strip_prefix("/api/tasks/").map(str::parse),
             path.strip_prefix("/api/reports/").map(str::parse),
         ) {
-            (Some(Ok(id)), _) => listing::task(db, id),
-            (_, Some(Ok(task))) => sections::show(db, Some(task)),
+            (Some(Ok(id)), _) => listing::revised(db, "task", |db| listing::task(db, id)),
+            (_, Some(Ok(task))) => {
+                listing::revised(db, "report", |db| sections::show(db, Some(task)))
+            }
             _ => return Reply::error(404, "no such path"),
         },
     };
@@ -230,4 +252,43 @@ fn web_file(path: &str) -> Reply {
         headers: WEB_HEADERS,
         body: body.to_vec(),
     }
+}
+
+/// `/api/events?since=REV[&timeout=SECONDS]`: the revision once it differs from `since`, or the
+/// same one after the timeout. Refuses a request that would wait past `WAITERS` held at once with
+/// `503`.
+fn events(db: &Connection, query: &str, waiters: &AtomicUsize) -> Reply {
+    let (mut since, mut timeout) = (None, Some(WAIT));
+    for pair in query.split('&').filter(|pair| !pair.is_empty()) {
+        match pair.split_once('=') {
+            Some(("since", value)) => since = value.parse::<i64>().ok(),
+            Some(("timeout", value)) => {
+                timeout = value.parse().ok().filter(|seconds| *seconds <= WAIT)
+            }
+            _ => return Reply::error(400, "events takes since=REV and timeout=SECONDS"),
+        }
+    }
+    let (Some(since), Some(timeout)) = (since, timeout) else {
+        return Reply::error(
+            400,
+            "events needs since=REV, and timeout=SECONDS of at most 25",
+        );
+    };
+    let answer = |revision: rusqlite::Result<i64>| match revision {
+        Ok(revision) => Reply::json(200, serde_json::json!({ "revision": revision }).to_string()),
+        Err(error) => Reply::error(500, &error.to_string()),
+    };
+    match state::revision(db) {
+        Ok(revision) if revision == since && timeout > 0 => {}
+        ready => return answer(ready),
+    }
+    let held = waiters.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |held| {
+        (held < WAITERS).then_some(held + 1)
+    });
+    if held.is_err() {
+        return Reply::error(503, "too many requests wait on events: retry in a second");
+    }
+    let waited = state::wait(db, since, Duration::from_secs(timeout));
+    waiters.fetch_sub(1, Ordering::SeqCst);
+    answer(waited)
 }

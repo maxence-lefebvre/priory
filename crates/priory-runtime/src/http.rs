@@ -15,7 +15,7 @@ const TIMEOUT: Duration = Duration::from_secs(5);
 /// The largest body a hook path reads; a longer one gets 413 before any of it is read.
 const BODY: usize = 1024 * 1024;
 /// The connections served at once; others wait in the listen backlog.
-const WORKERS: usize = 8;
+pub const WORKERS: usize = 8;
 
 pub struct Reply {
     pub status: u16,
@@ -125,11 +125,13 @@ fn answer(
         411 => "Length Required",
         413 => "Content Too Large",
         431 => "Request Header Fields Too Large",
+        503 => "Service Unavailable",
         _ => "Internal Server Error",
     };
     let extra = match reply.status {
         401 => "WWW-Authenticate: Bearer\r\n",
         405 => "Allow: GET\r\n",
+        503 => "Retry-After: 1\r\n",
         _ => "",
     };
     write!(
