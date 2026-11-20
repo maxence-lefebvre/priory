@@ -1014,8 +1014,11 @@ fn the_web_view_serves_every_file_with_its_type_and_a_strict_policy_without_the_
         .flat_map(|dir| fs::read_dir(root.join(dir)).unwrap())
         .map(|entry| entry.unwrap().path())
         .filter(|path| {
+            let name = path.file_name().unwrap().to_str().unwrap();
+            // The web view's Node tests and their package.json are not served.
             path.extension()
-                .is_some_and(|ext| ext != "txt" && ext != "md")
+                .is_some_and(|ext| ext != "txt" && ext != "md" && ext != "json")
+                && !name.ends_with(".test.js")
         })
         .map(|path| {
             let name = path.file_name().unwrap().to_str().unwrap();

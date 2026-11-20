@@ -11,7 +11,8 @@ transaction. A listing that is an object has a `revision` field. A listing that 
 `{"revision": N, "<name>": [...]}`, where `<name>` is `inbox`, `asks` or `tasks`.
 
 `/api/asks` and `/api/tasks` leave out the rows that closed over a week ago, and add `older`, the
-number they left out. `?all=1` returns every row, as the CLI does, with `older` at 0.
+number they left out: see [Asks](#asks) and [Tasks](#tasks). `?all=1` returns every row, as the CLI
+does, with every count in `older` at 0. Their rows match the CLI's JSON only with `?all=1`.
 
 | Endpoint | CLI | Returns |
 | -------- | --- | ------- |

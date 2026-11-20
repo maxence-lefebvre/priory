@@ -86,6 +86,7 @@ const state = {
   data: null,
   // The listings to read in full, once the person scrolls to their older rows.
   all: { asks: false, tasks: false },
+  refreshes: 0,
   updated: null,
   failed: null,
   signInError: null,
@@ -110,8 +111,9 @@ function age(iso) {
   const minutes = Math.max(0, Math.round((Date.now() - Date.parse(iso)) / 60000));
   if (minutes < 60) return `${minutes} min`;
   if (minutes < 1440) return `${Math.floor(minutes / 60)} h`;
-  return new Date(iso).toLocaleString("en", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", hour12: false });
+  return date(iso);
 }
+const date = (iso) => new Date(iso).toLocaleString("en", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", hour12: false });
 const clock = (iso) => new Date(iso).toLocaleTimeString("en", { hour: "2-digit", minute: "2-digit", hour12: false });
 const timeTag = (iso, text = age(iso)) => html`<time datetime="${iso}" title="${iso ? new Date(iso).toString() : ""}">${text}</time>`;
 const today = (iso) => new Date(iso).toDateString() === new Date().toDateString();
@@ -127,11 +129,17 @@ async function api(path) {
 async function refresh() {
   if (!state.token) return render();
   const failed = state.failed;
+  const call = ++state.refreshes;
+  // Older rows load again when the person scrolls back to them.
+  const history = { asks: Boolean(selectedAsk()) || (current() === "asks" && askView() !== "open"), tasks: current() === "desk" && deskView() === "all" };
+  for (const listing of ["asks", "tasks"]) state.all[listing] &&= history[listing];
   try {
     // The server reads the views once, when it starts.
     const views = state.data?.views || (await api("/api/views"));
     const full = (listing) => (state.all[listing] ? `/api/${listing}?all=1` : `/api/${listing}`);
     const [desk, asksList, queue, tasksList] = await Promise.all(["/api/desk", full("asks"), "/api/queue", full("tasks")].map(api));
+    // A later call, such as the one that loads older rows, supersedes this one.
+    if (call !== state.refreshes) return true;
     const [asks, tasks] = [asksList.asks, tasksList.tasks];
     const older = { asks: asksList.older, tasks: tasksList.older };
     // The listings are read one after another; the oldest revision makes the next wait catch what they missed.
@@ -163,7 +171,7 @@ function announce(before) {
 
 function signOut(reason) {
   localStorage.removeItem("priory.token");
-  Object.assign(state, { token: null, data: null, snapshot: null, revision: undefined, signInError: reason });
+  Object.assign(state, { token: null, data: null, snapshot: null, revision: undefined, signInError: reason, all: { asks: false, tasks: false } });
   render();
 }
 
@@ -216,11 +224,11 @@ function askRow(ask, current) {
     <span class="chev">${icon("chevron-right", "s15")}</span></a>`;
 }
 
-const snoozedUntil = (ask) => `Snoozed until ${today(ask.snoozed_until) ? clock(ask.snoozed_until) : age(ask.snoozed_until)}`;
+const snoozedUntil = (ask) => `Snoozed until ${today(ask.snoozed_until) ? clock(ask.snoozed_until) : date(ask.snoozed_until)}`;
 
 // The last row of a list that left out older rows; scrolling to it loads them.
 function olderRow(listing, count, wide) {
-  if (!count || state.all[listing]) return "";
+  if (!count) return "";
   const text = `Loading older ${listing}…`;
   return wide ? html`<tr class="grp" data-older="${listing}"><td colspan="6">${text}</td></tr>` : html`<p class="empty" data-older="${listing}">${text}</p>`;
 }
@@ -306,7 +314,7 @@ function deskBody(wide) {
   return { model, views, banner, rows };
 }
 
-const olderTasks = () => (state.all.tasks ? 0 : state.data.older.tasks);
+const olderTasks = () => state.data.older.tasks;
 const listOrEmpty =(rows, empty) => (rows.length ? rows : html`<p class="empty">${empty}</p>`);
 
 function needsMe(model, wide) {
@@ -367,7 +375,7 @@ function asksBody(wide) {
   const { asks, older } = state.data;
   const current = askView();
   const { open, snoozed: asleep, answered, withdrawn } = askGroups(asks, Date.now());
-  const left = state.all.asks ? { answered: 0, withdrawn: 0 } : older.asks;
+  const left = older.asks;
   const total = { open: open.length, answered: answered.length + left.answered, all: asks.length + left.answered + left.withdrawn };
   const views = savedViews([
     ["open", "Open", total.open, current === "open"],
@@ -386,8 +394,8 @@ function asksBody(wide) {
     current !== "answered" ? section("Open", open, `${open.length}, oldest first`) : "",
     current === "all" ? section("Snoozed", asleep, asleep.length) : "",
     current !== "open" ? section("Answered today", answeredToday, answeredToday.length) : "",
-    current !== "open" ? section("Answered earlier", answeredEarlier, answeredEarlier.length + left.answered) : "",
-    current === "all" ? section("Withdrawn", withdrawn, withdrawn.length + left.withdrawn) : "",
+    current !== "open" ? section("Answered earlier", answeredEarlier, answeredEarlier.length + left.answered, answeredEarlier.length + left.answered) : "",
+    current === "all" ? section("Withdrawn", withdrawn, withdrawn.length + left.withdrawn, withdrawn.length + left.withdrawn) : "",
     current === "open" ? "" : olderRow("asks", current === "all" ? left.answered + left.withdrawn : left.answered, wide),
   ];
   const empty = { open: "No open asks. Agents ask here when they need you.", answered: "No answered asks yet. An ask moves here once someone answers it.", all: "No asks yet. Agents ask here when they need you." }[current];
@@ -404,7 +412,7 @@ const selectedAsk = () => {
 function askDetail(id, wide) {
   const ask = state.data.asks.find((candidate) => String(candidate.id) === id);
   const { answered, withdrawn } = state.data.older.asks;
-  if (!ask && !state.all.asks && answered + withdrawn) {
+  if (!ask && answered + withdrawn) {
     loadOlder("asks");
     return html`<p class="empty">Loading ask ${id}…</p>`;
   }

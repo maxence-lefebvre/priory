@@ -95,9 +95,10 @@ The server holds at most 4 such requests at once, half its 8 workers, so waiting
 workers to the other requests. A fifth request that would wait gets `503` with `Retry-After: 1`; one
 whose answer is ready gets it at once.
 
-The revision changes with what is stored, not with the clock or the disk. Three things change a
+The revision changes with what is stored, not with the clock or the disk. Four things change a
 listing without a new revision: a snoozed item comes back at its `snoozed_until`, an ended task
-leaves the queue's `ended` list after a day, and a desk item for a worktree follows the disk. A view
+leaves the queue's `ended` list after a day, a closed ask or task leaves the default `/api/asks` or
+`/api/tasks` after 7 days, and a desk item for a worktree follows the disk. A view
 that shows them re-reads at those times as well.
 
 The wait answers at once when the revision differs from `REV`, lower included, so a client that
