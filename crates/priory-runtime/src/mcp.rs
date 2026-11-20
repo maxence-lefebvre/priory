@@ -175,6 +175,16 @@ fn tools() -> Value {
             },
         },
         {
+            "name": "subscribe",
+            "description": "Own a pull request, Linear issue or Slack thread until it closes, your task retires, or you unsubscribe. Its events reach you: as a prompt while you run, a wake while you sleep, and a reopen once your task is done. Takes the same condition object as wait. Refused while another active task owns it. It does not end your turn.",
+            "inputSchema": { "type": "object", "properties": { "on": condition.clone() }, "required": ["on"] },
+        },
+        {
+            "name": "unsubscribe",
+            "description": "End a subscription made with subscribe, so its events stop reaching you. It does not end your turn.",
+            "inputSchema": { "type": "object", "properties": { "on": condition.clone() }, "required": ["on"] },
+        },
+        {
             "name": "compact",
             "description": "Compact this conversation when its context runs long, then end your turn. Priory types /compact once you are idle, then a prompt that names your task and step so you carry on.",
             "inputSchema": {

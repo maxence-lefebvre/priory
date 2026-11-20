@@ -6,7 +6,9 @@ use crate::snooze::{self, Snooze};
 use crate::state::{self, Admission, NewRun, Signal};
 use crate::tools::{self, Act, Answer, Call, Dismiss, Done, Repair};
 use crate::trace::Trace;
-use crate::{deliver, embed, handler, hold, progress, search, sections, stall, summary, sweep};
+use crate::{
+    deliver, embed, handler, hold, progress, search, sections, stall, subscribe, summary, sweep,
+};
 use herdr_bus::{Bus, Start};
 use priory_factory::factory::{self, Factory, Harness, PermissionMode, Session};
 use priory_intake::intake::OUTPUT;
@@ -684,6 +686,9 @@ fn take(db: &mut Connection, line: &str, trace: &Trace) -> Result<(String, Optio
         Ok(Input::Signal(signal)) => Ok(("ok".to_owned(), state::signal(db, &signal, trace)?)),
         Ok(Input::Call(call)) if call.tool == "progress" => {
             Ok((replied(progress::tool(db, &call, trace)?), None))
+        }
+        Ok(Input::Call(call)) if matches!(call.tool.as_str(), "subscribe" | "unsubscribe") => {
+            Ok((replied(subscribe::tool(db, &call)?), None))
         }
         Ok(Input::Call(call)) => Ok((replied(tools::call(db, &call, trace.factory)?), None)),
         Ok(Input::Answer(answer)) => Ok((

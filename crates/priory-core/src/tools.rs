@@ -593,6 +593,20 @@ fn named(kind: &str, on: &Value) -> Result<Named, String> {
     }
 }
 
+/// The resource a `subscribe` or `unsubscribe` condition names: a pull request, a Linear issue or
+/// a Slack thread.
+pub(crate) fn resource(on: &Value) -> Result<String, String> {
+    match on["type"].as_str().unwrap_or_default() {
+        kind @ ("pull_request" | "checks" | "review" | "linear_comment" | "slack_reply") => {
+            named(kind, on).map(|(resource, ..)| resource)
+        }
+        "linear_state" => named("linear_comment", on).map(|(resource, ..)| resource),
+        kind => Err(format!(
+            "cannot subscribe to {kind:?}: subscribe to pull_request, checks, review, linear_comment, linear_state or slack_reply"
+        )),
+    }
+}
+
 /// Stores a wait on each condition of `on` or `any`, and fires the first that already holds: an
 /// event since the agent's last prompt, a passed time or an ended task. The daemon reads the
 /// current states it can afterwards, outside this call (see `readable`).

@@ -4,13 +4,14 @@ use crate::trace::Trace;
 use herdr_bus::Message;
 use priory_factory::factory::{Factory, Loaded, Session, Workflow};
 use priory_factory::lanes::{Lanes, Subject};
+use priory_intake::intake::PR_CLOSED as CLOSED;
 use priory_runtime::room::Room;
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 use std::collections::BTreeMap;
 use std::io::Write;
 use std::time::Duration;
 
-const VERSION: i64 = 43;
+const VERSION: i64 = 44;
 
 const SCHEMA: &str = "
 CREATE TABLE tasks (
@@ -766,6 +767,22 @@ CREATE TABLE IF NOT EXISTS ask_refusals (
 "
 );
 
+// The resources a task subscribes to, beside its ownership in `owns`: polled and woken on until
+// the resource closes, the task retires or unsubscribes.
+const SCHEMA_44: &str = concat!(
+    "CREATE TABLE IF NOT EXISTS subscriptions (
+  task     INTEGER NOT NULL REFERENCES tasks (id),
+  resource TEXT NOT NULL,
+  created  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+  PRIMARY KEY (task, resource)
+);
+CREATE INDEX IF NOT EXISTS subscriptions_by_resource ON subscriptions (resource);
+",
+    bumps!("subscriptions"),
+    "PRAGMA user_version = 44;
+"
+);
+
 /// Each schema change in order: a file at version `n` applies those from index `n` on.
 const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA, SCHEMA_2, SCHEMA_3, SCHEMA_4, SCHEMA_5, SCHEMA_6, SCHEMA_7, SCHEMA_8, SCHEMA_9,
@@ -773,7 +790,7 @@ const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA_18, SCHEMA_19, SCHEMA_20, SCHEMA_21, SCHEMA_22, SCHEMA_23, SCHEMA_24, SCHEMA_25,
     SCHEMA_26, SCHEMA_27, SCHEMA_28, SCHEMA_29, SCHEMA_30, SCHEMA_31, SCHEMA_32, SCHEMA_33,
     SCHEMA_34, SCHEMA_35, SCHEMA_36, SCHEMA_37, SCHEMA_38, SCHEMA_39, SCHEMA_40, SCHEMA_41,
-    SCHEMA_42, SCHEMA_43,
+    SCHEMA_42, SCHEMA_43, SCHEMA_44,
 ];
 
 /// The order the queue starts tasks in: band, then a person's order, then age. A band the factory
@@ -960,25 +977,14 @@ pub(crate) fn handle(
             }
             (Some(id), "created")
         }
-        Decision::Keep(id) if route::tick(message, factory) => {
-            // A human step or a daemon's checks gate has no agent turn for a tick to wake.
-            let asleep_at: Option<(String, String)> = tx
-                .query_row(
-                    "SELECT workflow, step FROM tasks WHERE id = ?1 AND state = 'asleep'
-                     AND NOT EXISTS (SELECT 1 FROM waits WHERE task = ?1 AND fired IS NULL AND withdrawn IS NULL AND daemon)",
-                    [id],
-                    |row| Ok((row.get(0)?, row.get(1)?)),
-                )
-                .optional()?;
-            let wakes = asleep_at.is_some_and(|(workflow, step)| {
-                factory
-                    .workflows
-                    .get(&workflow)
-                    .and_then(|workflow| workflow.value.step(&step))
-                    .is_some_and(|step| step.decides == priory_factory::factory::Decider::Model)
-            });
-            (Some(id), if wakes { "woke" } else { "coalesced" })
-        }
+        Decision::Keep(id) if route::tick(message, factory) => (
+            Some(id),
+            if wakes(&tx, id, factory)? {
+                "woke"
+            } else {
+                "coalesced"
+            },
+        ),
         Decision::Keep(id) => (Some(id), "kept"),
         Decision::Ignore => (None, "ignored"),
     };
@@ -1031,8 +1037,27 @@ pub(crate) fn handle(
     for other in owners.iter().filter(|other| Some(other.id) != task) {
         crate::tools::event(&tx, other.id, seq)?;
     }
+    if message.kind == CLOSED {
+        tx.execute(
+            "DELETE FROM subscriptions WHERE resource = ?1",
+            [resources.first()],
+        )?;
+    }
     match (task, outcome) {
-        (Some(task), "kept") => drop(crate::tools::event(&tx, task, seq)?),
+        (Some(task), "kept") => {
+            if !crate::tools::event(&tx, task, seq)?
+                && subscribes(&tx, task, &resources)?
+                && wakes(&tx, task, factory)?
+            {
+                let line = line(
+                    &message.kind,
+                    message.subject.as_deref(),
+                    &message.data.to_string(),
+                );
+                tx.execute("UPDATE inbox SET outcome = 'woke' WHERE seq = ?1", [seq])?;
+                crate::tools::wake_on(&tx, task, &line, Some(seq))?;
+            }
+        }
         (Some(task), "woke") => {
             let line = line(
                 &message.kind,
@@ -1052,6 +1077,37 @@ pub(crate) fn handle(
     }
     tx.commit()?;
     Ok(None)
+}
+
+/// Whether `task` sleeps where an event can wake it: asleep at a model step, with no daemon's
+/// checks gate, since a human step or a gate has no agent turn to wake.
+fn wakes(tx: &Transaction, task: i64, factory: &Factory) -> rusqlite::Result<bool> {
+    let asleep_at: Option<(String, String)> = tx
+        .query_row(
+            "SELECT workflow, step FROM tasks WHERE id = ?1 AND state = 'asleep'
+             AND NOT EXISTS (SELECT 1 FROM waits WHERE task = ?1 AND fired IS NULL AND withdrawn IS NULL AND daemon)",
+            [task],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()?;
+    Ok(asleep_at.is_some_and(|(workflow, step)| {
+        factory
+            .workflows
+            .get(&workflow)
+            .and_then(|workflow| workflow.value.step(&step))
+            .is_some_and(|step| step.decides == priory_factory::factory::Decider::Model)
+    }))
+}
+
+/// Whether `task` subscribes to any of `resources`.
+fn subscribes(tx: &Transaction, task: i64, resources: &[String]) -> rusqlite::Result<bool> {
+    let resources = serde_json::to_string(resources).expect("resources serialize");
+    tx.query_row(
+        "SELECT EXISTS (SELECT 1 FROM subscriptions WHERE task = ?1
+           AND resource IN (SELECT value FROM json_each(?2)))",
+        params![task, resources],
+        |row| row.get(0),
+    )
 }
 
 /// The factory's bands, highest first, as the daemon last recorded them.
