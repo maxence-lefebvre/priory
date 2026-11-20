@@ -76,18 +76,23 @@ priory add [DIR] [--workflow <name>] [--band <band>] [--lane <lane>] [--repo <ow
 A GitHub URL counts when it names an issue or pull request, such as
 `https://github.com/owner/name/issues/42`. A Linear URL counts when it names an issue, such as
 `https://linear.app/acme/issue/ENG-7/title`. An issue key joins the task that already has it, if
-one is active.
+one is active. That task hears the text as [`priory say`](../daemon/tools.md) sends it: an asleep
+task at a model step wakes, and a running one reads it after its turn. A task whose agent has not
+started yet, or that waits at a human step, reads it in its next prompt.
 
 The date is today's in the machine's time zone, and `n` is the first number no other `priory add`
 took that day. Two adds that run at once get different keys: the key alone names the source event,
 and the first one published owns it. A `priory request --key` or a report pick under the same
 `cli:` key is not counted, so avoid keys of that form there.
 
-It refuses what `priory request` refuses, and, with neither `--workflow` nor `[request]`:
+It refuses what `priory request` refuses, and also:
 
 | Refused | Message |
 | ------- | ------- |
-| No workflow | `the request names no workflow; pass --workflow, or set workflow in factory.toml's [request] table` |
+| Neither `--workflow` nor `[request]` | `the request names no workflow; pass --workflow, or set workflow in factory.toml's [request] table` |
+| The same text again for the same linked issue | `<key> already got this exact request, so nothing was added; reword the text to send it again` |
+
+The second refusal holds after the task ended too: the bus keeps the first request's id.
 
 ## Events
 

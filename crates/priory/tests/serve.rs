@@ -2723,7 +2723,10 @@ fn an_answer_through_the_endpoint_wakes_the_task_as_priory_answer_does() {
             |row| row.get(0),
         )
         .unwrap();
-    assert!(prompt.starts_with("left"), "{prompt}");
+    assert!(
+        prompt.starts_with("Answer to ask 1 (revision 2): left"),
+        "{prompt}"
+    );
 }
 
 #[test]
@@ -3029,6 +3032,53 @@ fn a_request_through_the_endpoint_queues_the_task_priory_add_does_and_answers_it
     assert_eq!(bad, 422, "{refusal}");
     assert!(refusal.contains("owner/name"), "{refusal}");
     assert_eq!((wrong, foreign), (401, 403));
+    assert_eq!(
+        json_of(&setup, "tasks")["tasks"].as_array().unwrap().len(),
+        1
+    );
+}
+
+#[test]
+fn a_repeated_add_of_the_same_linked_text_is_refused_with_the_task_it_reached() {
+    let mut setup = Setup::new("web-request-again", DEFAULTS);
+    // No run starts, so the daemon answers each request at once.
+    succeeded(&setup.priory(&["pause"]));
+    let address = setup.start(&["daemon", &setup.factory()]);
+    let text = r#"{"text": "Review https://github.com/cli/cli/pull/42"}"#;
+    let (first, _) = post(&address, "/api/request", "", text);
+
+    let (status, body) = post(&address, "/api/request", "", text);
+    let cli = setup.priory(&[
+        "add",
+        &setup.factory(),
+        "Review https://github.com/cli/cli/pull/42",
+    ]);
+
+    assert_eq!((first, status), (200, 409), "{body}");
+    let body: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(
+        [&body["key"], &body["id"]],
+        [&json!("github:cli/cli#42"), &json!(1)]
+    );
+    assert!(
+        body["error"].as_str().unwrap().contains("already"),
+        "{body}"
+    );
+    assert_eq!(cli.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&cli.stderr);
+    assert!(
+        stderr.starts_with("priory add: github:cli/cli#42 already got this exact request"),
+        "{stderr}"
+    );
+    succeeded(&setup.priory(&["cancel", "1"]));
+    let (ended, body) = post(&address, "/api/request", "", text);
+    assert_eq!(ended, 409, "{body}");
+    let body: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(
+        [body.get("key"), body.get("id")],
+        [Some(&json!("github:cli/cli#42")), Some(&Value::Null)],
+        "{body}"
+    );
     assert_eq!(
         json_of(&setup, "tasks")["tasks"].as_array().unwrap().len(),
         1

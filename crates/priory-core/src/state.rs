@@ -1001,6 +1001,9 @@ pub(crate) fn handle(
                 "coalesced"
             },
         ),
+        Decision::Keep(id) if message.kind == priory_intake::request::REQUESTED => {
+            (Some(id), "said")
+        }
         Decision::Keep(id) => (Some(id), "kept"),
         Decision::Ignore => (None, "ignored"),
     };
@@ -1072,6 +1075,19 @@ pub(crate) fn handle(
             );
             let text = message.data["prompt"].as_str().unwrap_or(&line);
             crate::tools::wake_on(&tx, task, text, Some(seq))?;
+        }
+        (Some(task), "said") => {
+            let state: String =
+                tx.query_row("SELECT state FROM tasks WHERE id = ?1", [task], |row| {
+                    row.get(0)
+                })?;
+            let text = message.data["text"].as_str().unwrap_or_default();
+            let text = format!("{}{text}", crate::tools::SAYS);
+            // An agent that cannot hear it yet reads the request with its next prompt instead.
+            if crate::tools::say(&tx, task, &text, &state, &factory.workflows)?.is_err() {
+                tx.execute("UPDATE inbox SET outcome = 'kept' WHERE seq = ?1", [seq])?;
+                crate::tools::event(&tx, task, seq)?;
+            }
         }
         (Some(task), "reopened") => crate::tools::reopen(&tx, trace, task, seq)?,
         (Some(task), "withdrew") => {

@@ -73,8 +73,9 @@ them as `revisions` and `refused`.
 ## Say
 
 `priory say TASK TEXT` sends TEXT to the agent of a task at a model step. It goes to the daemon over
-`priory.sock` and queues TEXT through the outbox, as an answer does: TEXT, then the line that ends
-the step, when no queued prompt carries it already. It goes ahead of the task's other queued
+`priory.sock` and queues `A person says: TEXT` through the outbox, as an answer does, then the line
+that ends the step, when no queued prompt carries it already. The fixed words come first so that a
+TEXT starting with `/` never runs as a slash command. It goes ahead of the task's other queued
 prompts.
 
 - A running task's agent gets TEXT once its run is idle. When the agent ends that turn with an ask

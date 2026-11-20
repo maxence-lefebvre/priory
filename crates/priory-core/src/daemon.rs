@@ -616,22 +616,32 @@ struct AddLine {
 }
 
 /// Publishes `add` as `priory add` does, then takes it in at once, so the reply names the task:
-/// `{"key": ..., "id": ...}`, with no id when no task took the key.
+/// `{"key": ..., "id": ...}`, with no id when no active task has the key. A repeated text adds
+/// `error`, which says nothing was added.
 fn add(
     db: &mut Connection,
     add: &priory_intake::request::Add,
     trace: &Trace,
     counter: Option<&embed::Counter>,
 ) -> Result<Result<String, String>, Error> {
-    let key = match priory_intake::request::add(trace.factory, add) {
-        Ok(key) => key,
-        Err(refused) => return Ok(Err(refused)),
+    use priory_intake::request::Refused;
+    let (key, error) = match priory_intake::request::add(trace.factory, add) {
+        Ok(key) => (key, None),
+        Err(Refused::Invalid(refused)) => return Ok(Err(refused)),
+        Err(Refused::Repeated(key)) => {
+            let error = Refused::Repeated(key.clone()).to_string();
+            (key, Some(error))
+        }
     };
     drain(&Bus::open_default()?, db, trace, counter)?;
     let tx = db.transaction()?;
     let id = state::owner(&tx, std::slice::from_ref(&key))?.map(|task| task.id);
     drop(tx);
-    Ok(Ok(serde_json::json!({ "key": key, "id": id }).to_string()))
+    let mut reply = serde_json::json!({ "key": key, "id": id });
+    if let Some(error) = error {
+        reply["error"] = serde_json::json!(error);
+    }
+    Ok(Ok(reply.to_string()))
 }
 
 /// The reads of wait conditions' current states that run on threads of their own, so a slow
