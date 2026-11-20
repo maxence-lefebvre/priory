@@ -1,8 +1,11 @@
+mod tmux_dir;
+
 use herdr_bus::{Bus, Output};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output as Exit};
 use std::time::{Duration, Instant};
+use tmux_dir::TmuxDir;
 
 const WORKFLOW: &str = r#"
 start = "implement"
@@ -21,10 +24,12 @@ const AGENT: &str = "+++\ndescription = \"Implements one task.\"\nharness = \"cl
 const SUMMARIZER: &str = "+++\ndescription = \"Summarizes requests.\"\nharness = \"claude-code\"\nmodel = \"haiku\"\n+++\n";
 
 /// A factory, a bus file, a Priory state file and home, and the fake `claude`, under the test's own
-/// directory. Its tasks come from held CLI requests, so no run starts. Dropping it kills the daemon.
+/// directory. Its tasks come from held CLI requests, so no run starts. Dropping it kills the daemon
+/// and any tmux server.
 struct Setup {
     dir: PathBuf,
     daemon: Option<Child>,
+    tmux: TmuxDir,
 }
 
 impl Setup {
@@ -38,7 +43,11 @@ impl Setup {
             .join("search")
             .join(name);
         let _ = fs::remove_dir_all(&dir);
-        let setup = Setup { dir, daemon: None };
+        let setup = Setup {
+            tmux: TmuxDir::new(&dir),
+            dir,
+            daemon: None,
+        };
         let files = [
             ("factory/factory.toml", settings),
             ("factory/agents/implementer/agent.md", AGENT),
@@ -49,7 +58,6 @@ impl Setup {
             setup.write(path, content);
         }
         fs::create_dir_all(setup.dir.join("fake")).unwrap();
-        fs::create_dir_all(setup.dir.join("tmux")).unwrap();
         Bus::open(&setup.dir.join("bus.db"))
             .unwrap()
             .declare(&Output::new("factory.intake"))
@@ -79,7 +87,7 @@ impl Setup {
             .args(args)
             .env_remove("TMUX")
             .env("PATH", path)
-            .env("TMUX_TMPDIR", self.dir.join("tmux"))
+            .env("TMUX_TMPDIR", self.tmux.path())
             .env("HERDR_BUS_DB", self.dir.join("bus.db"))
             .env("PRIORY_DB", self.dir.join("priory.db"))
             .env("PRIORY_HOME", self.dir.join("home"))
@@ -125,7 +133,7 @@ impl Setup {
                 .args(["daemon", &self.factory()])
                 .env_remove("TMUX")
                 .env("PATH", path)
-                .env("TMUX_TMPDIR", self.dir.join("tmux"))
+                .env("TMUX_TMPDIR", self.tmux.path())
                 .env("HERDR_BUS_DB", self.dir.join("bus.db"))
                 .env("PRIORY_DB", self.dir.join("priory.db"))
                 .env("PRIORY_HOME", self.dir.join("home"))
