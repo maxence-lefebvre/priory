@@ -1343,3 +1343,21 @@ fn a_view_with_an_empty_container_names_its_file_and_line() {
         "views/default.toml:4:3: a row, column or tabs needs at least one child\n"
     );
 }
+
+#[test]
+fn a_request_table_passes_and_an_unknown_workflow_or_band_is_refused() {
+    let good = "name = \"demo\"\n\n[request]\nworkflow = \"implement\"\nband = \"today\"\n";
+    let ok = check(&factory("request-ok", &with("factory.toml", good)));
+    let unknown = good
+        .replace("\"implement\"", "\"groom\"")
+        .replace("\"today\"", "\"someday\"");
+    let bad = check(&factory("request-unknown", &with("factory.toml", &unknown)));
+
+    assert_eq!((ok.code, ok.stderr.as_str()), (0, ""));
+    assert_eq!(bad.code, 1);
+    assert_eq!(
+        bad.stderr,
+        "factory.toml:3: `[request] workflow` `groom` does not exist\n\
+         factory.toml:3: `[request] band` `someday` is not one of blocker, now, today, later\n"
+    );
+}

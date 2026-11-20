@@ -317,12 +317,15 @@ enum Write<'a> {
     Answer(&'a str),
     Dismiss(&'a str),
     Snooze,
+    Add,
 }
 
 impl<'a> Write<'a> {
     fn of(path: &'a str) -> Option<Self> {
-        if path == "/api/snooze" {
-            return Some(Write::Snooze);
+        match path {
+            "/api/snooze" => return Some(Write::Snooze),
+            "/api/request" => return Some(Write::Add),
+            _ => {}
         }
         match path.strip_prefix("/api/asks/")?.split_once('/')? {
             (ask, "answer") => Some(Write::Answer(ask)),
@@ -402,6 +405,7 @@ fn write(db: &Result<Connection, String>, home: &Path, request: &Request) -> Rep
         }
     };
     match serde_json::from_str::<Result<String, String>>(&reply) {
+        Ok(Ok(added)) if matches!(write, Write::Add) => Reply::json(200, added),
         Ok(Ok(done)) => Reply::json(200, serde_json::json!({ "ok": done }).to_string()),
         Ok(Err(refused)) => refusal(db, ask, &refused),
         Err(error) => Reply::error(500, &format!("unreadable reply {reply:?}: {error}")),
@@ -459,6 +463,10 @@ fn write_line(
                 until,
             };
             Ok((line(&snooze), None))
+        }
+        Write::Add => {
+            let add: priory_intake::request::Add = serde_json::from_slice(body).map_err(bad)?;
+            Ok((line(&serde_json::json!({ "add": add })), None))
         }
     }
 }

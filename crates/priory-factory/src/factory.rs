@@ -55,6 +55,17 @@ pub struct Settings {
     pub webhooks: Option<Webhooks>,
     #[serde(default)]
     pub asks: Asks,
+    pub request: Option<RequestDefaults>,
+}
+
+/// What `priory add` and `POST /api/request` use when a request names no workflow or band.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct RequestDefaults {
+    /// The workflow a request starts when it names none.
+    pub workflow: String,
+    /// The band of a request that names none.
+    pub band: Option<String>,
 }
 
 /// What happens to the answer of an ask: where an agent's ask can run a command, and how an
@@ -990,6 +1001,11 @@ impl Factory {
     pub fn otlp(&self) -> Option<&str> {
         let telemetry = self.settings.as_ref()?.value.telemetry.as_ref()?;
         Some(telemetry.otlp.as_str())
+    }
+
+    /// The defaults of `priory add`; none makes it need `--workflow`.
+    pub fn request(&self) -> Option<&RequestDefaults> {
+        self.settings.as_ref()?.value.request.as_ref()
     }
 
     /// The HTTP server's settings; none listens nowhere.
