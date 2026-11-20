@@ -3072,7 +3072,11 @@ fn a_repeated_add_of_the_same_linked_text_is_refused_with_the_task_it_reached() 
     let (ended, body) = post(&address, "/api/request", "", text);
     assert_eq!(ended, 409, "{body}");
     let body: Value = serde_json::from_str(&body).unwrap();
-    assert_eq!(body["id"], Value::Null, "{body}");
+    assert_eq!(
+        [body.get("key"), body.get("id")],
+        [Some(&json!("github:cli/cli#42")), Some(&Value::Null)],
+        "{body}"
+    );
     assert_eq!(
         json_of(&setup, "tasks")["tasks"].as_array().unwrap().len(),
         1
