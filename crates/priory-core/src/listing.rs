@@ -108,7 +108,7 @@ const DESK: &str = "SELECT 0 AS part, asks.created AS since, 'ask' AS kind,
 fn asks_query() -> String {
     format!(
         "SELECT coalesce(asks.name, asks.id) AS id, asks.task,
-     coalesce(tasks.key, asks.key) AS key, asks.step, tasks.lane, asks.run,
+     coalesce(tasks.key, asks.key) AS key, asks.step, tasks.lane, tasks.band, asks.run,
      CASE WHEN asks.withdrawn IS NOT NULL THEN 'withdrawn'
        WHEN asks.answer IS NOT NULL THEN 'answered' ELSE 'open' END AS state,
      CASE asks.withdrawn WHEN -1 THEN 'dismissed' WHEN -2 THEN 'a wait of its run fired first'
@@ -194,9 +194,18 @@ fn parse_json(task: &mut Value) {
     }
 }
 
-/// Every ask with its state, oldest first.
-pub fn asks(db: &Connection) -> rusqlite::Result<Value> {
-    asks_of(db, None, None)
+/// Every ask with its state and its task's band, oldest first, or the asks of tasks in one of
+/// `bands`, beside the factory's bands highest first.
+pub fn asks(db: &Connection, bands: &[&str]) -> rusqlite::Result<Value> {
+    let mut asks = asks_of(db, None, None)?;
+    if let (Some(asks), false) = (asks.as_array_mut(), bands.is_empty()) {
+        asks.retain(|ask| {
+            ask["band"]
+                .as_str()
+                .is_some_and(|band| bands.contains(&band))
+        });
+    }
+    Ok(json!({ "asks": asks, "bands": state::band_names(db)? }))
 }
 
 /// Ask `id` as `asks` lists it, if there is one.

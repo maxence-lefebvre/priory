@@ -49,7 +49,8 @@
       "title": null,
       "tradeoff": "Merging now ships the exporter today. A second review may still ask for changes.",
       "what_waits": "PRI-64 rebases on this merge.",
-      "withdrawn_why": null
+      "withdrawn_why": null,
+      "band": "now"
     },
     {
       "answer": null,
@@ -83,7 +84,8 @@
       "title": null,
       "tradeoff": null,
       "what_waits": null,
-      "withdrawn_why": null
+      "withdrawn_why": null,
+      "band": "later"
     },
     {
       "answer": "Per revision",
@@ -117,7 +119,8 @@
       "title": null,
       "tradeoff": null,
       "what_waits": null,
-      "withdrawn_why": null
+      "withdrawn_why": null,
+      "band": "blocker"
     },
     {
       "answer": null,
@@ -151,7 +154,8 @@
       "title": null,
       "tradeoff": null,
       "what_waits": null,
-      "withdrawn_why": "revived as generation 2"
+      "withdrawn_why": "revived as generation 2",
+      "band": "blocker"
     },
     {
       "answer": null,
@@ -185,8 +189,15 @@
       "title": null,
       "tradeoff": null,
       "what_waits": null,
-      "withdrawn_why": null
+      "withdrawn_why": null,
+      "band": null
     }
   ],
-  "revision": 31
+  "revision": 31,
+  "bands": [
+    "blocker",
+    "now",
+    "today",
+    "later"
+  ]
 }

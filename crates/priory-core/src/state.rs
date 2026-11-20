@@ -1046,6 +1046,22 @@ pub(crate) fn handle(
     Ok(None)
 }
 
+/// The factory's bands, highest first, as the daemon last recorded them.
+pub fn band_names(db: &Connection) -> rusqlite::Result<Vec<String>> {
+    db.prepare("SELECT name FROM bands ORDER BY rank")?
+        .query_map([], |row| row.get(0))?
+        .collect()
+}
+
+/// Refuses `band` with the factory's list when the factory has no band of that name.
+pub fn check_band(db: &Connection, band: &str) -> Result<(), String> {
+    let bands = band_names(db).map_err(|error| error.to_string())?;
+    if bands.iter().any(|known| known == band) {
+        return Ok(());
+    }
+    Err(format!("band `{band}` is not one of {}", bands.join(", ")))
+}
+
 /// Records the factory's bands, highest first, so listings and moves read them without the factory.
 pub(crate) fn bands(db: &mut Connection, bands: &[&str]) -> rusqlite::Result<()> {
     let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -2122,13 +2138,7 @@ fn moved(
     };
     let own = band_of(task)?;
     if let Some(band) = band {
-        let bands: Vec<String> = tx
-            .prepare("SELECT name FROM bands ORDER BY rank")
-            .and_then(|mut statement| statement.query_map([], |row| row.get(0))?.collect())
-            .map_err(error)?;
-        if !bands.iter().any(|known| known == band) {
-            return Err(format!("band `{band}` is not one of {}", bands.join(", ")));
-        }
+        check_band(tx, band)?;
     }
     let other = match place {
         Some(Place::Before(other) | Place::After(other)) if other == task => {

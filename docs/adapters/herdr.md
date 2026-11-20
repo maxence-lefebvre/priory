@@ -19,8 +19,8 @@ The adapter lives in `adapters/herdr/` at the repository root, outside the Cargo
 - `adapters/herdr/mods/priory-desk/`: the Desk panel. See [The Desk panel](#the-desk-panel).
 - `adapters/herdr/mods/priory-asks/`: the Asks panel. See [The Asks panel](#the-asks-panel).
 - `adapters/herdr/mods/priory-queue/`: the Queue panel. See [The Queue panel](#the-queue-panel).
-- `adapters/herdr/mods/priory-bonjour/`: the Bonjour panel, a `mod.json`, a `main.js` and its copy
-  of `priory.js`. It is still to come.
+- `adapters/herdr/mods/priory-bonjour/`: the Bonjour panel. See
+  [The Bonjour panel](#the-bonjour-panel).
 - `adapters/herdr/layouts/priory.json`: Herdr's default layout with the Priory bar in the top bar,
   and Asks and Queue in the side panel stack, 420 px wide by default, between 280 and 900. Desk and
   Bonjour open as tabs in the center, from the Priory bar.
@@ -56,7 +56,8 @@ Herdr reloads them when their files change.
 - Any other file or link at a target stops the script before it links anything. Move that file away
   and run it again.
 
-The layout names the four panel mods. Until they are installed, their blocks stay empty.
+The layout names the Asks and Queue panel mods, and the Priory bar opens the Desk and Bonjour
+mods. Until a mod is installed, its block or tab stays empty.
 
 Herdr writes `gpui-kit.d.ts` and `jsconfig.json` into each mod folder it loads. Through the links,
 they land in your checkout, and Git ignores them.
@@ -76,7 +77,9 @@ state database and never writes a file in the factory.
   `PRIORY_DB` in the environment, or name a wrapper script that sets it.
 - **Reading.** A mod runs the CLI with Herdr's `exec` and parses its JSON: `priory desk --all --json`,
   `asks --all --json`, `tasks --json`, `queue --json`, `schedules --json` and
-  `report show --json`. Each answer carries the state's `revision`. Then the mod runs
+  `report show --json`. Each answer carries the state's `revision`. `report show --json` wraps the
+  report as `{"revision": STATE, "report": {...}}`: the outer `revision` is the state's, and the
+  report's own `revision` is the one `report pick --expected` takes. Then the mod runs
   `priory wait --since REVISION`, which returns as soon as the state changes, or after 25 s, and
   reads again. It keeps the last good answer, with its age, when a call fails. Once `serve` exists,
   a mod may subscribe to its event stream instead.
@@ -176,7 +179,9 @@ DESIGN.md's "Herdr adapter" section holds its visual rules; this section says ho
   again. When a call fails, it keeps the last list and shows "Reconnecting to priory" with the age
   of its last update, and the options stay disabled until it reconnects.
 - **List.** The saved views are Open, Snoozed, Answered and All, each with its count. The facet
-  chips Command, Lane and Task narrow every view. A row shows its tile, task key, step, age,
+  chips Command, Lane, Band and Task narrow every view. Band lists the bands in the factory's
+  order from the listing's `bands`, and puts an ask with no band, such as an outside ask, under
+  `none`. A row shows its tile, task key, step, age,
   question, and what it recommends, its answer or why it was withdrawn.
 - **Width.** Below 720 px the selected row opens under itself: the decide part, the section chips
   and Why. A section chip opens that section with the answer bar under it, since gpui-kit has no
@@ -249,6 +254,50 @@ works.
 The design shows each task's title, but `priory queue --json` carries none, so a row shows its key
 and step. "Request a task" in the header and the opened row's History are left out: the panel would
 need `priory request`'s form and each task's events.
+
+## The Bonjour panel
+
+`mods/priory-bonjour/` is the Bonjour panel, the morning dossier. The Priory bar opens it as a tab
+in the center stack. It replaces Fleet's `fleet-bonjour`. DESIGN.md's "Herdr adapter" section holds
+its visual rules; this section says how it works.
+
+- **Files.** `view.js` turns `priory report show --json` into the toolbar, the greeting, sections,
+  rows and picks, with no drawing and no IO. `main.js` draws them with gpui-kit and runs
+  `priory report pick`. The node tests in `test/bonjour.test.js` check `view.js` against JSON
+  captured from a real `priory report show --json`.
+- **Reading.** The panel reads the report written last, then waits with `priory wait` on the
+  state's revision and reads again. When no task has written a report yet, it says so and waits for
+  one. When a call fails, it keeps the last report and shows "Reconnecting to priory" with the age
+  of its last update, and the picks stay disabled until it reconnects.
+- **Sections.** The greeting, then the report's sections in the report's order. The panel knows no
+  section by name. A section shows its `count`, or its number of rows when the report gives no
+  count. A row shows its state tile, or a page icon when it has no `state`, then its key, text and
+  meta, and its owner or time on the right. A time today shows its clock, an earlier one its date.
+- **Toolbar.** The report's date, "n of m agreed" with a bar, and Next pick, which selects the next
+  pick to agree and scrolls to it.
+- **Views.** All sections, and Picks, which keeps only the rows with a pick to agree. From 1024 px
+  the views and the sections sit in a 200 px list on the left; below, they are chips under the
+  toolbar. A section in that list scrolls to it.
+- **Picking.** An open pick is a segmented control of its options, with a `check` on the
+  recommended one and "Recommends Take" beside it. A press waits out a 4 s Undo, since the first
+  choice stands, then runs `priory report pick PICK OPTION --expected REVISION` with the report's
+  revision the person read. While one pick is in flight, the panel starts no other. When the report
+  stops offering the pick during the Undo, because another task wrote a report or someone picked
+  first, the panel cancels the pick and says so.
+- **Refused picks.** When `report pick` fails, the panel reads the report again and says why on the
+  row: someone already picked, the report changed to another revision, the report no longer holds
+  the pick, or the CLI's error. When the row has left the view, the reason shows in a strip under
+  the toolbar instead. A pick that Priory took stays sent even when the read after it fails. A read
+  older than the one shown is dropped, so a slow read never rolls the report back.
+- **Agreed picks.** A chosen pick folds to one line: its key, the choice and, once the workflow
+  applied it, its `applied` text, else "Waiting for the workflow to apply it."
+- **Keys.** `J` and `K` move between rows, `N` goes to the next pick, `1` to `9` press an option of
+  the selected pick, and `Esc` undoes a pick still waiting out its Undo.
+- **Agent text.** Every row's text, meta, owner and the greeting draw as plain text.
+
+The board's older and newer arrows, search and Change are left out. Priory keeps only the latest
+report of each task, so there is no older report to open. A pick's first choice stands, so Change
+has no verb to run. Comments on rows stay hidden until Priory stores them.
 
 ## Data each panel needs
 
@@ -373,7 +422,9 @@ The panels need these from Priory's core. Each is a separate slice.
 4. A stored last visit per person, for Since you looked: done, `priory seen`.
 5. The next firing time of each schedule, for Up next: done, `queue`'s `up_next`.
 6. Report sections and picks: done, see [reports.md](../daemon/reports.md). Comments on rows are
-   still to come.
+   still to come. For the Bonjour panel's older and newer arrows, Priory would need to keep earlier
+   reports and list them by date. For Change, `report pick` would need to replace a choice that
+   the workflow has not applied yet.
 7. Ask fields for what waits and what the agent does next: `ask` stores them as `what_waits` and
    `next_action`, with a `title` and a Markdown `text`. The Asks panel shows them.
 8. A task's brief, plan, pull request summary and runs from the CLI, for the Asks panel's Brief,

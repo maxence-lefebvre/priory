@@ -28,7 +28,7 @@ export function priory({ exec, binary = "priory-oss", on = null, factory = null 
     tasks: () => read("tasks"),
     queue: () => read("queue", ...inFactory),
     schedules: () => read("schedules", ...inFactory),
-    report: (/** @type {Id} */ task) => read("report", "show", ...(task == null ? [] : [String(task)])),
+    report: (/** @type {Id | null} */ task = null) => read("report", "show", ...(task == null ? [] : [String(task)])),
     // priory wait gives up after 25 s with the same revision; Herdr's exec would stop it at 30 s.
     wait: async (/** @type {number} */ since) => Number(await call(["wait", "--since", String(since)], 60_000)),
     // `run` confirms an answer that runs the ask's command, as the person's second press does.
