@@ -86,6 +86,11 @@ const state = {
   failed: null,
   signInError: null,
   list: "desk",
+  listUrl: "/",
+  snapshot: null,
+  rendered: 0,
+  scrolls: new Map(),
+  observers: [],
 };
 
 // Times: relative under 24 h, then a date (DESIGN.md, Copy).
@@ -110,14 +115,19 @@ async function api(path) {
 
 async function refresh() {
   if (!state.token) return render();
+  const failed = state.failed;
   try {
-    const [views, desk, asks, queue, tasks] = await Promise.all(
-      ["/api/views", "/api/desk", "/api/asks", "/api/queue", "/api/tasks"].map(api),
-    );
-    const before = state.data ? new Set(state.data.asks.filter((ask) => ask.state === "open").map((ask) => ask.id)) : null;
-    state.data = { views, desk, asks, queue, tasks };
+    // The server reads the views once, when it starts.
+    const views = state.data?.views || (await api("/api/views"));
+    const [desk, asks, queue, tasks] = await Promise.all(["/api/desk", "/api/asks", "/api/queue", "/api/tasks"].map(api));
+    const snapshot = JSON.stringify([desk, asks, queue, tasks]);
     state.updated = Date.now();
     state.failed = null;
+    // Ages read in minutes, so an unchanged state needs a new paint once a minute at most.
+    if (snapshot === state.snapshot && !failed && Date.now() - state.rendered < 60000) return;
+    const before = state.data ? new Set(state.data.asks.filter((ask) => ask.state === "open").map((ask) => ask.id)) : null;
+    state.data = { views, desk, asks, queue, tasks };
+    state.snapshot = snapshot;
     announce(before);
   } catch (error) {
     if (error.status === 401) return signOut("The daemon refused this token. Paste the current one.");
@@ -163,7 +173,7 @@ function deskModel() {
   const stopped = items.filter((item) => ["blocked", "failed", "prompt"].includes(item.kind));
   const reports = items.filter((item) => item.kind === "report");
   const other = items.filter((item) => !["ask", "blocked", "failed", "prompt", "report"].includes(item.kind));
-  return { open, stopped, reports, other, asleep: desk.counts.asleep, banner: desk.banner, running: queue.running, tasks, upNext: queue.up_next, needs: items.length };
+  return { open, stopped, reports, other, asleep: desk.counts.asleep, banner: desk.banner, running: queue.running, queue: queue.waiting, tasks, upNext: queue.up_next, needs: items.length };
 }
 const openAsks = () => deskModel().open;
 
@@ -188,10 +198,9 @@ function askRow(ask, current) {
 
 function itemRow(item) {
   const kind = item.kind === "prompt" ? "prompt" : ["blocked", "failed"].includes(item.kind) ? item.kind : item.kind === "held" ? "held" : "queued";
-  const word = ["blocked", "failed", "held"].includes(item.kind) ? item.kind : item.kind;
   return html`<div class="row">
     ${tile(kind)}
-    <span class="l1"><span class="mono">${item.key || ""}</span><span>${item.step || ""}</span><span>${word}</span><span class="age">${timeTag(item.since)}</span></span>
+    <span class="l1"><span class="mono">${item.key || ""}</span><span>${item.step || ""}</span><span>${item.kind}</span><span class="age">${timeTag(item.since)}</span></span>
     <span class="l2 r t-${role(kind)}">${item.what}</span></div>`;
 }
 
@@ -210,7 +219,7 @@ function runRow(run) {
 }
 
 // Desk
-const DESK_VIEWS = ["needs", "running", "asleep", "all"];
+const DESK_VIEWS = ["needs", "running", "queue", "asleep", "all"];
 function deskView() {
   const name = new URLSearchParams(location.search).get("view");
   return DESK_VIEWS.includes(name) ? name : "needs";
@@ -243,12 +252,14 @@ function deskBody(wide) {
   const views = savedViews([
     ["needs", "Needs me", model.needs, current === "needs"],
     ["running", "Running", model.running.length, current === "running"],
+    ...(wide ? [["queue", "Queue", model.queue.length, current === "queue"]] : []),
     ["asleep", "Asleep", model.asleep, current === "asleep"],
     ["all", "All", wide ? model.tasks.length : null, current === "all"],
   ], "/");
   const banner = model.banner ? html`<div class="banner" role="status">${icon("hard-drive", "s20")}<span>${model.banner}</span></div>` : "";
   let rows;
   if (current === "running") rows = model.running.length ? model.running.map(runRow) : html`<p class="empty">No run is live. Runs show here while an agent works.</p>`;
+  else if (current === "queue") rows = listOrEmpty(model.queue.map(taskRow), html`The queue is empty. A task waits here for its turn; see <code>priory queue</code>.`);
   else if (current === "asleep") rows = listOrEmpty(model.tasks.filter((task) => task.state === "asleep").map(taskRow), "No task is asleep. A task sleeps here while it waits on an event.");
   else if (current === "all") rows = listOrEmpty(model.tasks.map(taskRow), html`No tasks yet. Start one with <code>priory request</code>.`);
   else rows = needsMe(model, wide);
@@ -280,7 +291,7 @@ function deskTable(model, selected) {
     <td class="recw">${ask.recommendation || ""}</td><td class="r">${timeTag(ask.since)}</td></tr>`;
   const itemLine = (item) => html`<tr>
     <td>${stateWord(item.kind === "prompt" ? "prompt" : item.kind)}</td><td class="mono">${item.key || ""}</td><td>${item.step || ""}</td>
-    <td class="q t-${role(item.kind)}"><span>${item.what}</span></td><td class="recw">${item.kind === "failed" ? "Revive" : item.kind === "blocked" ? "Resume" : ""}</td><td class="r">${timeTag(item.since)}</td></tr>`;
+    <td class="q full t-${role(item.kind)}"><span>${item.what}</span></td><td class="recw">${item.kind === "failed" ? "Revive" : item.kind === "blocked" ? "Resume" : ""}</td><td class="r">${timeTag(item.since)}</td></tr>`;
   const group = (title, count) => html`<tr class="grp"><td colspan="6">${title}<span>${count}</span></td></tr>`;
   return html`<table class="tbl">
     <thead><tr><th>State</th><th>Task</th><th>Step</th><th>Waits on you</th><th>Recommends</th><th class="r">Age</th></tr></thead>
@@ -303,7 +314,15 @@ function askView() {
   return ASK_VIEWS.includes(name) ? name : "open";
 }
 
-function asksBody() {
+function askTableRow(ask, selected) {
+  const answered = ask.state === "answered";
+  const age = answered && ask.answered_at ? timeTag(ask.answered_at, today(ask.answered_at) ? clock(ask.answered_at) : null) : timeTag(ask.since);
+  return html`<tr data-href="/asks/${ask.id}" aria-current="${String(ask.id) === selected ? "true" : "false"}">
+    <td>${stateWord(ask.state === "open" ? "ask" : ask.state)}</td><td class="mono">${ask.key}</td><td>${ask.step}</td><td class="q"><span>${ask.title || ask.question}</span></td>
+    <td class="recw">${answered ? ask.answer : ask.state === "withdrawn" ? ask.withdrawn_why || "" : ask.recommendation || ""}</td><td class="r">${age}</td></tr>`;
+}
+
+function asksBody(wide) {
   const asks = state.data.asks;
   const current = askView();
   const open = asks.filter((ask) => ask.state === "open");
@@ -315,7 +334,11 @@ function asksBody() {
     ["all", "All", asks.length, current === "all"],
   ], "/asks");
   const selected = selectedAsk();
-  const section = (title, list, note) => (list.length ? html`<div class="sec">${title}<span>${note}</span></div>${list.map((ask) => askRow(ask, String(ask.id) === selected))}` : "");
+  const section = (title, list, note) => {
+    if (!list.length) return "";
+    if (wide) return html`<tr class="grp"><td colspan="6">${title}<span>${note}</span></td></tr>${list.map((ask) => askTableRow(ask, selected))}`;
+    return html`<div class="sec">${title}<span>${note}</span></div>${list.map((ask) => askRow(ask, String(ask.id) === selected))}`;
+  };
   const answeredToday = answered.filter((ask) => ask.answered_at && today(ask.answered_at));
   const answeredEarlier = answered.filter((ask) => !answeredToday.includes(ask));
   const sections = [
@@ -326,7 +349,8 @@ function asksBody() {
   ];
   const empty = { open: "No open asks. Agents ask here when they need you.", answered: "No answered asks yet. An ask moves here once someone answers it.", all: "No asks yet. Agents ask here when they need you." }[current];
   const shown = { open: open.length, answered: answered.length, all: asks.length }[current];
-  return { views, rows: shown ? sections : html`<p class="empty">${empty}</p>`, open };
+  const rows = wide ? html`<table class="tbl"><thead><tr><th>State</th><th>Task</th><th>Step</th><th>Question</th><th>${current === "open" ? "Recommends" : "Answer"}</th><th class="r">Age</th></tr></thead><tbody>${sections}</tbody></table>` : sections;
+  return { views, rows: shown ? rows : html`<p class="empty">${empty}</p>`, open };
 }
 
 // Ask detail
@@ -340,7 +364,7 @@ function askDetail(id, wide) {
   if (!ask) return html`<p class="empty">No ask ${id} here. It may belong to another factory. Check <code>priory asks --all</code>.</p>`;
   const open = openAsks();
   const at = open.findIndex((candidate) => String(candidate.id) === id);
-  const back = state.list === "asks" ? ["/asks", "Asks"] : ["/", "Desk"];
+  const back = [state.listUrl, state.list === "asks" ? "Asks" : "Desk"];
   const nav = (to, label, name) => (to
     ? html`<a class="iconbtn" href="/asks/${to.id}" aria-label="${label}">${icon(name, "s20")}</a>`
     : html`<span class="iconbtn" aria-disabled="true" aria-label="${label}">${icon(name, "s20")}</span>`);
@@ -478,7 +502,7 @@ function listPanel(panel, wide) {
       ${views}${banner}<div class="scroll">${rows}</div>${wide ? keyHints() : ""}</div>`;
   }
   if (panel === "asks") {
-    const { views, rows } = asksBody();
+    const { views, rows } = asksBody(wide);
     return html`<div class="list" role="region" aria-label="Asks"><div class="lhead"><h1>Asks</h1></div>${views}<div class="scroll">${rows}</div>${wide ? keyHints() : ""}</div>`;
   }
   return html`<div class="list" role="region" aria-label="${PANELS[panel][0]}"><div class="lhead"><h1>${PANELS[panel][0]}</h1></div>${laterPanel(panel)}</div>`;
@@ -494,17 +518,22 @@ function drawer(wide) {
 
 function current() {
   const [first] = route();
-  if (!first) return "desk";
+  if (!first || first === "index.html") return "desk";
   if (first === "settings") return "settings";
   return first;
 }
 
 // The view file's tree, for a layout that is not a plain set of tabs.
-function tree(node) {
+function tree(node, list) {
   if (node.panel) return listPanel(node.panel, true);
   const [kind, children] = Object.entries(node)[0];
-  if (kind === "tabs") return listPanel(leaves(node)[0], true);
-  return html`<div class="tree ${kind}">${children.map(tree)}</div>`;
+  if (kind !== "tabs") return html`<div class="tree tree-${kind}">${children.map((child) => tree(child, list))}</div>`;
+  const shown = children.find((child) => leaves(child).includes(list)) || children[0];
+  const strip = children.map((child) => {
+    const panel = leaves(child)[0];
+    return html`<a href="${panel === "desk" ? "/" : `/${panel}`}" aria-current="${child === shown ? "page" : "false"}">${icon(PANELS[panel][1], "s20")}${PANELS[panel][0]}</a>`;
+  });
+  return html`<div><nav class="tabbar" aria-label="Tabs">${strip}</nav>${tree(shown, list)}</div>`;
 }
 
 function signIn() {
@@ -523,11 +552,25 @@ function loading() {
     : "";
 }
 
+const routeKey = () => location.pathname + location.search;
+const focusKey = (element) => element && element !== document.body
+  ? element.id ? `#${CSS.escape(element.id)}` : element.getAttribute("href") ? `[href="${CSS.escape(element.getAttribute("href"))}"]` : null
+  : null;
+
 function render() {
   const app = document.getElementById("app");
-  const scrolls = [...app.querySelectorAll(".scroll")].map((element) => element.scrollTop);
+  if (state.renderedKey) state.scrolls.set(state.renderedKey, [...app.querySelectorAll(".scroll")].map((element) => element.scrollTop));
+  const focused = focusKey(document.activeElement);
+  const typed = app.querySelector("#token")?.value;
+  state.observers.forEach((observer) => observer.disconnect());
+  state.observers = [];
   app.innerHTML = page().text;
+  state.renderedKey = routeKey();
+  state.rendered = Date.now();
+  const scrolls = state.scrolls.get(state.renderedKey) || [];
   app.querySelectorAll(".scroll").forEach((element, i) => { element.scrollTop = scrolls[i] || 0; });
+  if (typed && app.querySelector("#token")) app.querySelector("#token").value = typed;
+  if (focused) app.querySelector(focused)?.focus({ preventScroll: true });
   for (const row of app.querySelectorAll("tr[data-href]")) row.addEventListener("click", () => go(row.dataset.href));
   watchSections(app);
 }
@@ -537,7 +580,7 @@ function page() {
   if (!state.data) return loading();
   const size = layout();
   const here = current();
-  if (["desk", "asks"].includes(here) && !selectedAsk()) state.list = here;
+  if (["desk", "asks"].includes(here) && !selectedAsk()) Object.assign(state, { list: here, listUrl: routeKey() });
   if (size === "compact") {
     let body;
     if (selectedAsk()) body = askDetail(selectedAsk(), false);
@@ -546,21 +589,27 @@ function page() {
     else if (here === "more") body = morePage();
     else if (here === "settings") body = html`<div class="top"><a class="back" href="/more">${icon("chevron-left", "s22")}More</a></div>${appearance()}`;
     else if (PANELS[here]) body = html`<div class="top"><h1>${PANELS[here][0]}</h1></div>${laterPanel(here)}`;
-    else body = html`<p class="empty">No such page. Go back to the <a class="ghost" href="/">Desk</a>.</p>`;
+    else body = notFound();
     const tab = selectedAsk() ? null : here === "settings" ? "more" : here;
     return html`${staleStrip()}${body}${tab ? tabs(tab, "bar") : ""}`;
   }
-  const list = selectedAsk() ? state.list : PANELS[here] ? here : here === "more" ? "desk" : here;
-  const layoutNode = view().layout;
+  const list = selectedAsk() ? state.list : here;
   const top = html`<header class="wtop"><span class="fac">${state.data.views.factory}</span>${connection()}</header>`;
-  if (size === "medium") {
-    const main = here === "settings" ? appearance() : listPanel(list, false);
-    return html`${staleStrip()}${top}<div class="medium">${main}${here === "settings" ? "" : drawer(false)}</div>${tabs(list, "bar")}`;
+  const wide = size === "wide";
+  const utility = here === "settings" ? appearance() : here === "more" ? morePage() : PANELS[list] ? null : notFound();
+  const nav = (kind) => tabs(here === "settings" && wide ? "settings" : here === "settings" ? "more" : list, kind);
+  if (utility) {
+    return html`${staleStrip()}${top}<div class="${size} no-drawer">${wide ? nav("rail") : ""}<div class="list">${utility}</div></div>${wide ? "" : nav("bar")}`;
   }
-  if (!layoutNode.tabs) return html`${staleStrip()}${top}<div class="wide">${tabs(list, "rail")}${tree(layoutNode)}${drawer(true)}</div>`;
-  const main = here === "settings" ? html`<div class="list">${appearance()}</div>` : listPanel(list, true);
-  return html`${staleStrip()}${top}<div class="wide ${here === "settings" ? "no-drawer" : ""}">${tabs(here === "settings" ? "settings" : list, "rail")}${main}${here === "settings" ? "" : drawer(true)}</div>`;
+  if (!wide) return html`${staleStrip()}${top}<div class="medium">${listPanel(list, false)}${drawer(false)}</div>${nav("bar")}`;
+  const layoutNode = view().layout;
+  const main = layoutNode.tabs ? listPanel(list, true) : tree(layoutNode, list);
+  return html`${staleStrip()}${top}<div class="wide">${nav("rail")}${main}${drawer(true)}</div>`;
 }
+
+const notFound = () => html`<p class="empty">No such page. Go back to the <a class="ghost" href="/">Desk</a>.</p>`;
+
+const track = (observer) => (state.observers.push(observer), observer);
 
 // The section chips mark the section in view.
 function watchSections(app) {
@@ -568,16 +617,16 @@ function watchSections(app) {
     const chips = [...scroller.querySelectorAll(".jump a")];
     const sections = [...scroller.querySelectorAll(".sect")];
     const visible = new Set();
-    const observer = new IntersectionObserver((entries) => {
+    const observer = track(new IntersectionObserver((entries) => {
       for (const entry of entries) visible[entry.isIntersecting ? "add" : "delete"](entry.target);
       const first = sections.find((section) => visible.has(section));
       if (first) chips.forEach((chip) => chip.setAttribute("aria-current", String(chip.hash === `#${first.id}`)));
-    }, { root: scroller, rootMargin: "-48px 0px -40% 0px" });
+    }, { root: scroller, rootMargin: "-48px 0px -40% 0px" }));
     sections.forEach((section) => observer.observe(section));
     const options = scroller.querySelector(".opts");
     const bar = app.querySelector(".abar");
     if (!options || !bar) continue;
-    new IntersectionObserver(([entry]) => { bar.hidden = entry.isIntersecting; }, { root: scroller }).observe(options);
+    track(new IntersectionObserver(([entry]) => { bar.hidden = entry.isIntersecting; }, { root: scroller })).observe(options);
   }
 }
 
@@ -638,6 +687,6 @@ document.addEventListener("keydown", (event) => {
 
 addEventListener("popstate", render);
 for (const query of ["(min-width: 600px)", "(min-width: 1024px)"]) matchMedia(query).addEventListener("change", render);
-document.addEventListener("visibilitychange", () => { if (!document.hidden) refresh(); });
-setInterval(() => { if (!document.hidden) refresh(); }, 15000);
+document.addEventListener("visibilitychange", () => { if (!document.hidden && state.token) refresh(); });
+setInterval(() => { if (!document.hidden && state.token) refresh(); }, 15000);
 refresh();

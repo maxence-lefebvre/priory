@@ -540,7 +540,7 @@ Settings, then Appearance. It holds:
 2. **Mode**: a segmented control, System, Light and Dark, `--control` (44 px) tall on
    `--raised`. The selected segment sits on `--surface`.
 3. **Theme**: one card per theme, in the order Indigo, Ink, Parchment, Abbey. Each card
-   shows the desk in that theme, light and dark side by side at one fifth scale, the theme's
+   shows the desk in that theme, light and dark side by side at two fifths scale, the theme's
    name in the display role, one sentence about it, and a radio. The selected card has a 2 px
    `--action` edge and a filled radio.
 4. A note in `--text-3`: "A theme changes color and type only. Every screen keeps the same

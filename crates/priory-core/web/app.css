@@ -172,7 +172,8 @@ input { font: 400 16px/20px var(--font-ui); color: var(--text); background: var(
 
 /* Wide frame */
 .wtop { height: var(--top-bar); flex: none; display: flex; align-items: center; gap: 14px; padding: 0 16px; border-bottom: 1px solid var(--line); }
-.wide { flex: 1; min-height: 0; display: grid; grid-template-columns: var(--rail) minmax(0, 1fr) var(--drawer); }
+/* Below 1280 px the drawer gives up width so the list keeps room for its questions. */
+.wide { flex: 1; min-height: 0; display: grid; grid-template-columns: var(--rail) minmax(0, 1fr) min(var(--drawer), 50vw); }
 .medium { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(320px, 400px) minmax(0, 1fr); }
 .rail { border-right: 1px solid var(--line); display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 10px 0; background: var(--bar); }
 .rail a { width: 60px; height: 54px; border-radius: var(--radius-md); display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px; font: 600 var(--type-tab) var(--font-ui); color: var(--text-3); position: relative; }
@@ -212,8 +213,9 @@ input { font: 400 16px/20px var(--font-ui); color: var(--text); background: var(
 .drawer .opt { flex: 1 1 0; min-width: 140px; min-height: 52px; font-size: 15px; padding: 6px 12px; }
 .drawer .empty { margin: auto; text-align: center; }
 .tree { flex: 1; min-height: 0; display: flex; gap: 1px; background: var(--line); }
-.tree.column { flex-direction: column; }
 .tree > * { flex: 1; min-width: 0; min-height: 0; background: var(--bg); display: flex; flex-direction: column; }
+.tree-row { flex-direction: row; } .tree-column { flex-direction: column; }
+.tree > div > :last-child { flex: 1; min-height: 0; }
 .tree .tabbar { height: auto; border-top: 0; border-bottom: 1px solid var(--line); padding: 6px; flex: none; }
 
 /* Sign-in */
@@ -261,3 +263,21 @@ input { font: 400 16px/20px var(--font-ui); color: var(--text); background: var(
 .cmd { background: var(--raised); border-radius: var(--radius-md); padding: 10px 12px; display: grid; gap: 4px; min-width: 0; }
 .cmd .mono { color: var(--text); font-weight: 500; overflow-wrap: anywhere; }
 .cmd small { font: 400 var(--type-caption) var(--font-ui); color: var(--text-2); }
+.list { container-type: inline-size; }
+@container (max-width: 560px) {
+  .tbl th:nth-child(3), .tbl td:nth-child(3), .tbl th:nth-child(5), .tbl td:nth-child(5) { width: 0; padding: 0; font-size: 0; visibility: hidden; }
+  .tbl th:nth-child(1) { width: 32px; font-size: 0; }
+  .tbl td:nth-child(1) .sti { font-size: 0; gap: 0; }
+}
+.tbl td.q.full span { display: block; overflow: visible; }
+.opt[aria-disabled="true"]:not(.rec-opt), .abar .btn.secondary[aria-disabled="true"] { color: var(--text-3); }
+.medium.no-drawer, .compact.no-drawer { display: flex; flex-direction: column; }
+@media (pointer: coarse) {
+  .views a, .jump a { position: relative; }
+  .views a::after, .jump a::after { content: ""; position: absolute; inset: -5px 0; }
+  .views a::after { inset-block: calc((var(--chip) - var(--control)) / 2); }
+  .jump a::after { inset-block: -7px; }
+  .ahead .iconbtn { width: var(--control); }
+}
+.drawer { container-type: inline-size; }
+@container (max-width: 600px) { .drawer .opts { flex-direction: column; } }

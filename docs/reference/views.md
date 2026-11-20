@@ -64,6 +64,7 @@ row = [
 | ------- | ----- |
 | `` unknown variant `kanban`, expected one of `desk`, ... `` | A panel name Priory does not ship |
 | `` unknown variant `grid`, expected one of `row`, `column`, `tabs`, `panel` `` | A node key other than the four |
+| `a row, column or tabs needs at least one child` | An empty `row`, `column` or `tabs` |
 | `` `default` is also defined in views/default.toml `` | `default.toml` and `default.yaml` both exist |
 
 `priory serve` and the daemon read the views when they start. Restart them after a change.

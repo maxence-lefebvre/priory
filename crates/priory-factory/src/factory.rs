@@ -757,10 +757,32 @@ pub struct View {
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum Node {
-    Row(Vec<Node>),
-    Column(Vec<Node>),
-    Tabs(Vec<Node>),
+    Row(
+        #[serde(deserialize_with = "children")]
+        #[schemars(length(min = 1))]
+        Vec<Node>,
+    ),
+    Column(
+        #[serde(deserialize_with = "children")]
+        #[schemars(length(min = 1))]
+        Vec<Node>,
+    ),
+    Tabs(
+        #[serde(deserialize_with = "children")]
+        #[schemars(length(min = 1))]
+        Vec<Node>,
+    ),
     Panel(Panel),
+}
+
+fn children<'de, D: Deserializer<'de>>(input: D) -> Result<Vec<Node>, D::Error> {
+    let nodes = Vec::<Node>::deserialize(input)?;
+    if nodes.is_empty() {
+        return Err(D::Error::custom(
+            "a row, column or tabs needs at least one child",
+        ));
+    }
+    Ok(nodes)
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, JsonSchema)]
