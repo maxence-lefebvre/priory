@@ -256,3 +256,8 @@ input { font: 400 16px/20px var(--font-ui); color: var(--text); background: var(
 #app > * { order: 2; }
 #app > .top, #app > .wtop, #app > .ahead { order: 0; }
 #app > .stale { order: 1; }
+.rec .then { display: flex; gap: 6px; color: var(--text-2); }
+.rec .then .ico { margin-top: 2px; color: var(--text-3); }
+.cmd { background: var(--raised); border-radius: var(--radius-md); padding: 10px 12px; display: grid; gap: 4px; min-width: 0; }
+.cmd .mono { color: var(--text); font-weight: 500; overflow-wrap: anywhere; }
+.cmd small { font: 400 var(--type-caption) var(--font-ui); color: var(--text-2); }

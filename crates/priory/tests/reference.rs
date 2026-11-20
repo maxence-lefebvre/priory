@@ -124,6 +124,7 @@ fn every_example_config_matches_its_schema() {
             "triggers" => "trigger",
             "workflows" => "workflow",
             "runners" => "runner",
+            "views" => "view",
             other => panic!("no schema for {other}"),
         };
         let value: serde_json::Value = match file.rsplit_once('.').unwrap().1 {

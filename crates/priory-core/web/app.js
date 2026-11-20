@@ -35,6 +35,8 @@ const ICONS = {
   scale: '<path d="m16 16 3-8 3 8c-.87.65-1.92 1-3 1s-2.13-.35-3-1Z"/><path d="m2 16 3-8 3 8c-.87.65-1.92 1-3 1s-2.13-.35-3-1Z"/><path d="M7 21h10"/><path d="M12 3v18"/><path d="M3 7h2c2 0 5-1 7-2 2 1 5 2 7 2h2"/>',
   history: '<path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M12 7v5l4 2"/>',
   "message-text": '<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/><path d="M13 8H7"/><path d="M17 12H7"/>',
+  hourglass: '<path d="M5 22h14"/><path d="M5 2h14"/><path d="M17 22v-4.172a2 2 0 0 0-.586-1.414L12 12l-4.414 4.414A2 2 0 0 0 7 17.828V22"/><path d="M7 2v4.172a2 2 0 0 0 .586 1.414L12 12l4.414-4.414A2 2 0 0 0 17 6.172V2"/>',
+  "corner-down-right": '<polyline points="15 10 20 15 15 20"/><path d="M4 4v7a4 4 0 0 0 4 4h12"/>',
   lock: '<rect width="18" height="11" x="3" y="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/>',
   "unplug": '<path d="m19 5 3-3"/><path d="m2 22 3-3"/><path d="M6.3 20.3a2.4 2.4 0 0 0 3.4 0L12 18l-6-6-2.3 2.3a2.4 2.4 0 0 0 0 3.4Z"/><path d="M7.5 13.5 10 11"/><path d="M10.5 16.5 13 14"/><path d="m12 6 6 6 2.3-2.3a2.4 2.4 0 0 0 0-3.4l-2.6-2.6a2.4 2.4 0 0 0-3.4 0Z"/>',
 };
@@ -171,15 +173,15 @@ function askRow(ask, current) {
   const line3 = ask.state === "answered"
     ? html`<span>Answered <b>${ask.answer}</b></span>`
     : ask.state === "withdrawn"
-      ? html`<span>Withdrawn</span>`
+      ? html`<span>Withdrawn${ask.withdrawn_why ? `: ${ask.withdrawn_why}` : ""}</span>`
       : ask.recommendation ? html`<span>Recommends <b>${ask.recommendation}</b></span>` : html`<span>${options.length} options</span>`;
   const when = ask.state === "answered" && ask.answered_at
     ? timeTag(ask.answered_at, today(ask.answered_at) ? clock(ask.answered_at) : age(ask.answered_at))
     : timeTag(ask.since);
   return html`<a class="row ${ask.state !== "open" ? "past" : ""}" href="/asks/${ask.id}" aria-current="${current ? "true" : "false"}">
     ${tile(ask.state === "open" ? "ask" : ask.state)}
-    <span class="l1"><span class="mono">${ask.key}</span><span>${ask.step}</span><span class="age">${when}</span></span>
-    <span class="l2">${ask.question}</span>
+    <span class="l1"><span class="mono">${ask.key}</span><span>${ask.step}</span>${ask.command ? html`<span class="tag">Command</span>` : ""}<span class="age">${when}</span></span>
+    <span class="l2">${ask.title || ask.question}</span>
     <span class="l3">${line3}</span>
     <span class="chev">${icon("chevron-right", "s15")}</span></a>`;
 }
@@ -262,7 +264,7 @@ function needsMe(model, wide) {
   if (wide) {
     sections.push(deskTable(model, selected));
   } else {
-    if (model.open.length) sections.push(html`<div class="sec">Asks<span>oldest first</span></div>${model.open.map((ask) => askRow(ask, ask.id === selected))}`);
+    if (model.open.length) sections.push(html`<div class="sec">Asks<span>oldest first</span></div>${model.open.map((ask) => askRow(ask, String(ask.id) === selected))}`);
     if (model.stopped.length) sections.push(html`<div class="sec">Stopped<span>${model.stopped.length}</span></div>${model.stopped.map(itemRow)}`);
     if (model.other.length) sections.push(html`<div class="sec">Also waiting<span>${model.other.length}</span></div>${model.other.map(itemRow)}`);
   }
@@ -273,8 +275,8 @@ function needsMe(model, wide) {
 }
 
 function deskTable(model, selected) {
-  const askLine = (ask) => html`<tr data-href="/asks/${ask.id}" aria-current="${ask.id === selected ? "true" : "false"}">
-    <td>${stateWord("ask")}</td><td class="mono">${ask.key}</td><td>${ask.step}</td><td class="q"><span>${ask.question}</span></td>
+  const askLine = (ask) => html`<tr data-href="/asks/${ask.id}" aria-current="${String(ask.id) === selected ? "true" : "false"}">
+    <td>${stateWord("ask")}</td><td class="mono">${ask.key}</td><td>${ask.step}</td><td class="q"><span>${ask.title || ask.question}</span></td>
     <td class="recw">${ask.recommendation || ""}</td><td class="r">${timeTag(ask.since)}</td></tr>`;
   const itemLine = (item) => html`<tr>
     <td>${stateWord(item.kind === "prompt" ? "prompt" : item.kind)}</td><td class="mono">${item.key || ""}</td><td>${item.step || ""}</td>
@@ -313,7 +315,7 @@ function asksBody() {
     ["all", "All", asks.length, current === "all"],
   ], "/asks");
   const selected = selectedAsk();
-  const section = (title, list, note) => (list.length ? html`<div class="sec">${title}<span>${note}</span></div>${list.map((ask) => askRow(ask, ask.id === selected))}` : "");
+  const section = (title, list, note) => (list.length ? html`<div class="sec">${title}<span>${note}</span></div>${list.map((ask) => askRow(ask, String(ask.id) === selected))}` : "");
   const answeredToday = answered.filter((ask) => ask.answered_at && today(ask.answered_at));
   const answeredEarlier = answered.filter((ask) => !answeredToday.includes(ask));
   const sections = [
@@ -330,14 +332,14 @@ function asksBody() {
 // Ask detail
 const selectedAsk = () => {
   const [first, id] = route();
-  return first === "asks" && id ? Number(id) : null;
+  return first === "asks" && id ? decodeURIComponent(id) : null;
 };
 
 function askDetail(id, wide) {
-  const ask = state.data.asks.find((candidate) => candidate.id === id);
+  const ask = state.data.asks.find((candidate) => String(candidate.id) === id);
   if (!ask) return html`<p class="empty">No ask ${id} here. It may belong to another factory. Check <code>priory asks --all</code>.</p>`;
   const open = openAsks();
-  const at = open.findIndex((candidate) => candidate.id === id);
+  const at = open.findIndex((candidate) => String(candidate.id) === id);
   const back = state.list === "asks" ? ["/asks", "Asks"] : ["/", "Desk"];
   const nav = (to, label, name) => (to
     ? html`<a class="iconbtn" href="/asks/${to.id}" aria-label="${label}">${icon(name, "s20")}</a>`
@@ -355,21 +357,25 @@ function askDetail(id, wide) {
   });
   const decided = ask.state !== "open"
     ? html`<div class="rec">${ask.state === "answered" ? html`<span><b>Answered: ${ask.answer}.</b> ${ask.answered_at ? age(ask.answered_at) + " ago" : ""}</span>` : html`<span><b>Withdrawn.</b></span>`}</div>`
-    : html`${ask.recommendation ? html`<div class="rec"><span><b>Recommended: ${ask.recommendation}.</b></span></div>` : ""}
+    : html`${ask.recommendation ? html`<div class="rec"><span><b>Recommended: ${ask.recommendation}.</b></span>
+        ${ask.next_action ? html`<span class="then">${icon("corner-down-right", "s15")}<span>${ask.next_action}</span></span>` : ""}</div>` : ""}
       <div class="opts" role="group" aria-label="Options">${optionButtons}</div>
       <p class="note" id="answer-later">${icon("lock", "s15")}<span>Answering from the web view comes next. Meanwhile run <code>priory answer ${ask.id} OPTION --revision ${ask.revision}</code>.</span></p>
       <span class="ghost write" aria-disabled="true">${icon("pencil", "s15")}Write an answer</span>`;
   const top = html`<div class="ask">
-    <a class="ctx" href="/tasks/${ask.task}">${wide ? "" : tile("ask", "sm")}<span class="mono">${ask.key}</span><span>${ask.step}</span><span>${ask.lane || ""}</span>${wide ? "" : html`<span>${timeTag(ask.since)}</span><span>revision ${ask.revision}</span>`}</a>
-    <h2 class="question">${ask.question}</h2>${decided}</div>`;
-  const sections = [["why", "Why"], ["history", "History"]];
+    <a class="ctx" href="${ask.task ? `/tasks/${ask.task}` : "/asks"}">${wide ? "" : tile("ask", "sm")}<span class="mono">${ask.key}</span><span>${ask.step}</span><span>${ask.lane || ""}</span>${ask.command ? html`<span class="tag">Command</span>` : ""}${wide ? "" : html`<span>${timeTag(ask.since)}</span><span>revision ${ask.revision}</span>`}</a>
+    <h2 class="question">${ask.question || ask.title}</h2>${decided}</div>`;
+  const sections = [["why", "Why"], ["history", "History"], ...(ask.command ? [["command", "Command"]] : [])];
   const jump = html`<nav class="jump" aria-label="Sections">${sections.map(([key, label], i) => html`<a href="#${key}" aria-current="${i === 0 ? "true" : "false"}">${label}</a>`)}</nav>`;
   const why = html`<section class="sect" id="why"><div class="sh">${icon("message-text", "s15")}What the agent asks<span class="meta">${ask.run ? html`run <span class="mono">${ask.run}</span>` : ""}</span></div>
-    <p class="text">${ask.question}</p>
-    ${ask.tradeoff ? html`<p class="fact">${icon("scale", "s15")}<span><b>Trade-off.</b> ${ask.tradeoff}</span></p>` : ""}</section>`;
+    <p class="text">${ask.text || ask.question}</p>
+    ${ask.tradeoff ? html`<p class="fact">${icon("scale", "s15")}<span><b>Trade-off.</b> ${ask.tradeoff}</span></p>` : ""}
+    ${ask.what_waits ? html`<p class="fact">${icon("hourglass", "s15")}<span><b>What waits.</b> ${ask.what_waits}</span></p>` : ""}</section>`;
+  const command = ask.command ? html`<section class="sect" id="command"><div class="sh">${icon("terminal", "s15")}Command the asker attached</div>
+    <div class="cmd"><span class="mono">$ ${ask.command}</span><small>Bound to revision ${ask.revision}. Priory stores this command and runs nothing yet.</small></div></section>` : "";
   const historyItems = [html`<li>${tile("ask", "sm")}<span>Asked revision <b>${ask.revision}</b></span>${timeTag(ask.since, clock(ask.since))}</li>`];
   if (ask.state === "answered") historyItems.unshift(html`<li>${tile("answered", "sm")}<span>Answered <b>${ask.answer}</b></span>${ask.answered_at ? timeTag(ask.answered_at, clock(ask.answered_at)) : ""}</li>`);
-  if (ask.state === "withdrawn") historyItems.unshift(html`<li>${tile("withdrawn", "sm")}<span>Withdrawn</span><span></span></li>`);
+  if (ask.state === "withdrawn") historyItems.unshift(html`<li>${tile("withdrawn", "sm")}<span>Withdrawn${ask.withdrawn_why ? `: ${ask.withdrawn_why}` : ""}</span><span></span></li>`);
   const history = html`<section class="sect" id="history"><div class="sh">${icon("history", "s15")}Answer history</div><ol class="hist">${historyItems}</ol></section>`;
   const recommended = options.find((option) => option === ask.recommendation) || options[0];
   const bar = !wide && ask.state === "open" && options.length
@@ -377,8 +383,8 @@ function askDetail(id, wide) {
       <span class="btn primary" aria-disabled="true"><span>${recommended}</span><small>${recommended === ask.recommendation ? "Recommended" : "First option"}</small></span>
       <p class="note">${icon("lock", "s15")}<span>Answering comes next. Use <code>priory answer</code> meanwhile.</span></p></div>`
     : "";
-  if (wide) return html`<div class="pinned">${header}${top}</div><div class="scroll" data-sections>${jump}${why}${history}</div>`;
-  return html`${header}<div class="scroll" data-sections>${top}${jump}${why}${history}</div>${bar}`;
+  if (wide) return html`<div class="pinned">${header}${top}</div><div class="scroll" data-sections>${jump}${why}${history}${command}</div>`;
+  return html`${header}<div class="scroll" data-sections>${top}${jump}${why}${history}${command}</div>${bar}`;
 }
 
 // Frame pieces

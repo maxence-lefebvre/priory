@@ -1,0 +1,7 @@
+#:schema https://raw.githubusercontent.com/maxence-lefebvre/priory/main/docs/schemas/config/view.json
+# The desk beside a column of the queue over the runs, replacing the default view.
+[layout]
+row = [
+  { panel = "desk" },
+  { column = [{ panel = "queue" }, { panel = "runs" }] },
+]

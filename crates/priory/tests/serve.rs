@@ -660,7 +660,10 @@ fn the_web_view_serves_every_file_with_its_type_and_a_strict_policy_without_the_
         .iter()
         .flat_map(|dir| fs::read_dir(root.join(dir)).unwrap())
         .map(|entry| entry.unwrap().path())
-        .filter(|path| path.extension().is_some_and(|ext| ext != "txt" && ext != "md"))
+        .filter(|path| {
+            path.extension()
+                .is_some_and(|ext| ext != "txt" && ext != "md")
+        })
         .map(|path| {
             let name = path.file_name().unwrap().to_str().unwrap();
             match path.extension().unwrap().to_str().unwrap() {
@@ -695,7 +698,11 @@ fn the_web_view_serves_every_file_with_its_type_and_a_strict_policy_without_the_
         };
         assert_eq!(status, 200, "{path}: {}", String::from_utf8_lossy(&body));
         assert_eq!(header(&head, "content-type"), Some(expected), "{path}");
-        assert_eq!(header(&head, "x-content-type-options"), Some("nosniff"), "{path}");
+        assert_eq!(
+            header(&head, "x-content-type-options"),
+            Some("nosniff"),
+            "{path}"
+        );
         assert!(!body.is_empty(), "{path}");
     }
 
@@ -710,6 +717,8 @@ fn the_web_view_serves_every_file_with_its_type_and_a_strict_policy_without_the_
              frame-ancestors 'none'"
         )
     );
+    assert_eq!(fetch(&address, "/asks/cache.ship").2, index);
     assert_eq!(fetch(&address, "/nothing.js").0, 404);
+    assert_eq!(fetch(&address, "/fonts/nothing.woff2").0, 404);
     assert_eq!(fetch(&address, "/api/views").0, 401);
 }

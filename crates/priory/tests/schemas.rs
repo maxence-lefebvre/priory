@@ -1,4 +1,4 @@
-use priory_factory::factory::{Agent, Runner, Settings, Trigger, Workflow};
+use priory_factory::factory::{Agent, Runner, Settings, Trigger, View, Workflow};
 use priory_intake::events::*;
 use schemars::JsonSchema;
 use schemars::generate::SchemaSettings;
@@ -43,6 +43,7 @@ fn generated() -> Vec<(String, Value)> {
         config::<Agent>("agent"),
         config::<Trigger>("trigger"),
         config::<Runner>("runner"),
+        config::<View>("view"),
         event::<IssueLabeled>("github.issues.labeled"),
         event::<IssueOpened>("github.issues.opened"),
         event::<PullRequestOpened>("github.pull_request.opened"),

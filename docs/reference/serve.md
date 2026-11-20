@@ -3,8 +3,8 @@
 The HTTP server's endpoints and the JSON they return. [serve.md](../daemon/serve.md) explains where
 the server runs, its token and its limits.
 
-Every endpoint takes `GET` and needs `Authorization: Bearer <token>`. Each listing returns the same
-JSON as the CLI command with `--json`.
+Every endpoint takes `GET`. Each one under `/api` needs `Authorization: Bearer <token>`; the web
+view's files do not. Each listing returns the same JSON as the CLI command with `--json`.
 
 | Endpoint | CLI | Returns |
 | -------- | --- | ------- |
@@ -14,7 +14,8 @@ JSON as the CLI command with `--json`.
 | `/api/tasks` | `priory tasks --json` | an array of [tasks](#tasks) |
 | `/api/tasks/{id}` | | one [task in detail](#task-in-detail) |
 | `/api/queue` | `priory queue --json` | an object: [Queue](#queue) |
-| `/`, `/index.html` | | the web view, with `web = true` |
+| `/api/views` | | an object: [Views](#views) |
+| any other path | | the web view, with `web = true`: see [Web view files](#web-view-files) |
 
 Times are RFC 3339 strings in UTC. A field with no value is `null`. Agent text, such as a question
 or a reason, is untrusted: render it as text.
@@ -25,8 +26,8 @@ or a reason, is untrusted: render it as text.
 | ---- | ---- |
 | `200` | The endpoint answered |
 | `400` | The request does not parse |
-| `401` | The token is missing or wrong |
-| `404` | No such path, or no such task |
+| `401` | The token is missing or wrong, on a path under `/api` |
+| `404` | No such path, task or web view file |
 | `405` | A method other than `GET`, on any path |
 | `408` | The request head took over 5 seconds |
 | `413` | The request has a body |
@@ -129,3 +130,32 @@ The fields of [Tasks](#tasks), plus `repo` and `branch`, and these arrays, oldes
 | `waiting` | A queued or ready task in start order, then each held task by when it was held: `position` and `band_position` (its place in the queue and in its band, null for a held task), `id`, `key`, `workflow`, `step`, `state`, `band`, `lane`, `reason`, `since`, and for a held task its hold: `hold` (`person`, `time`, `task`, `merge` or `blockers`), `hold_until`, `hold_target`, `hold_resource` |
 | `running` | A live run: `run`, `task`, `key`, `step`, `agent`, `started` |
 | `ended` | A task done, failed or dropped in the last day, latest first: `id`, `key`, `workflow`, `step`, `state`, `reason`, `ended` |
+
+## Views
+
+| Field | Type | Meaning |
+| ----- | ---- | ------- |
+| `factory` | string | The factory's name |
+| `views` | object | Each view by name: the views Priory ships, each replaced by the factory's view of the same name, then the factory's other views. Each is the file's tree as JSON, such as `{ "layout": { "tabs": [{ "panel": "desk" }] } }`. See [views.md](views.md) |
+
+The server reads the views when it starts.
+
+## Web view files
+
+With `web = true`, the server sends these without the token:
+
+| Path | Type |
+| ---- | ---- |
+| `/boot.js`, `/app.js` | `text/javascript; charset=utf-8` |
+| `/app.css`, `/tokens/structure.css`, `/tokens/themes.css` | `text/css; charset=utf-8` |
+| `/fonts/<file>.woff2` | `font/woff2` |
+| `/favicon.ico`, `/favicon.svg`, `/apple-touch-icon.png` | the image's type |
+| any other path, such as `/` or `/asks/42` | the page, `text/html; charset=utf-8` |
+
+An unknown file under `/fonts/` or `/tokens/`, or at the top level with a `.` in its name, such as
+`/nothing.js`, gets `404`.
+
+Every file carries `Content-Security-Policy: default-src 'none'; script-src 'self'; style-src
+'self'; font-src 'self'; img-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'none';
+frame-ancestors 'none'`, `X-Content-Type-Options: nosniff` and `Referrer-Policy: no-referrer`. The
+page loads nothing from another host.
