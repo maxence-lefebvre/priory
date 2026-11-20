@@ -10,7 +10,7 @@ use std::collections::BTreeMap;
 use std::io::Write;
 use std::time::Duration;
 
-const VERSION: i64 = 38;
+const VERSION: i64 = 41;
 
 const SCHEMA: &str = "
 CREATE TABLE tasks (
@@ -658,13 +658,65 @@ const SCHEMA_38: &str = concat!(
 "
 );
 
+// A `run` action is stored before its command starts, with its process group, and `ended` once it
+// ends, so a restarted daemon finds the unended ones; it keeps the tail of the command's output.
+const SCHEMA_39: &str = "ALTER TABLE actions ADD COLUMN stdout TEXT;
+ALTER TABLE actions ADD COLUMN stderr TEXT;
+ALTER TABLE actions ADD COLUMN pid INTEGER;
+ALTER TABLE actions ADD COLUMN pid_started INTEGER;
+ALTER TABLE actions ADD COLUMN ended TEXT;
+PRAGMA user_version = 39;
+";
+
+// A hold takes several conditions, one row each, and an issue condition. Each row is met on its
+// own; the hold's rows are released together once all of them are met.
+const SCHEMA_40: &str = concat!(
+    "CREATE TABLE holds_40 (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  task        INTEGER NOT NULL REFERENCES tasks (id),
+  reason      TEXT NOT NULL,
+  kind        TEXT NOT NULL CHECK (kind IN ('person', 'time', 'task', 'merge', 'blockers', 'issue')),
+  until       TEXT,
+  target      INTEGER REFERENCES tasks (id),
+  resource    TEXT,
+  if_closed   TEXT CHECK (if_closed IN ('release', 'drop', 'ask')),
+  resume      TEXT NOT NULL CHECK (resume IN ('queued', 'ready')),
+  ask         INTEGER REFERENCES asks (id),
+  created     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+  met         TEXT,
+  met_as      TEXT,
+  released    TEXT,
+  released_as TEXT
+);
+INSERT INTO holds_40 (id, task, reason, kind, until, target, resource, if_closed, resume, ask,
+  created, met, met_as, released, released_as)
+  SELECT id, task, reason, kind, until, target, resource, if_closed, resume, ask, created,
+  released, released_as, released, released_as FROM holds;
+DROP TABLE holds;
+ALTER TABLE holds_40 RENAME TO holds;
+CREATE INDEX open_holds ON holds (task) WHERE released IS NULL;
+",
+    bumps!("holds"),
+    "PRAGMA user_version = 40;
+"
+);
+
+// An answer that runs its ask's command stores it as an `answer` action, with the ask, the revision
+// it answered, the command it ran and the task's generation, before the command starts.
+const SCHEMA_41: &str = "ALTER TABLE actions ADD COLUMN ask INTEGER REFERENCES asks (id);
+ALTER TABLE actions ADD COLUMN revision INTEGER;
+ALTER TABLE actions ADD COLUMN command TEXT;
+ALTER TABLE actions ADD COLUMN generation INTEGER;
+PRAGMA user_version = 41;
+";
+
 /// Each schema change in order: a file at version `n` applies those from index `n` on.
 const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA, SCHEMA_2, SCHEMA_3, SCHEMA_4, SCHEMA_5, SCHEMA_6, SCHEMA_7, SCHEMA_8, SCHEMA_9,
     SCHEMA_10, SCHEMA_11, SCHEMA_12, SCHEMA_13, SCHEMA_14, SCHEMA_15, SCHEMA_16, SCHEMA_17,
     SCHEMA_18, SCHEMA_19, SCHEMA_20, SCHEMA_21, SCHEMA_22, SCHEMA_23, SCHEMA_24, SCHEMA_25,
     SCHEMA_26, SCHEMA_27, SCHEMA_28, SCHEMA_29, SCHEMA_30, SCHEMA_31, SCHEMA_32, SCHEMA_33,
-    SCHEMA_34, SCHEMA_35, SCHEMA_36, SCHEMA_37, SCHEMA_38,
+    SCHEMA_34, SCHEMA_35, SCHEMA_36, SCHEMA_37, SCHEMA_38, SCHEMA_39, SCHEMA_40, SCHEMA_41,
 ];
 
 /// The order the queue starts tasks in: band, then a person's order, then age. A band the factory
@@ -767,6 +819,17 @@ pub fn read_only() -> Result<Connection, String> {
         ));
     }
     Ok(db)
+}
+
+/// The desk line of a Linear view whose filter changed.
+fn refiltered(data: &serde_json::Value) -> String {
+    let count = |field: &str| data[field].as_array().map_or(0, Vec::len);
+    format!(
+        "view {} changed its filter: {} issues entered and {} left, with no task requested",
+        data["view"].as_str().unwrap_or_default(),
+        count("entered"),
+        count("left")
+    )
 }
 
 /// Records `message` in the inbox and applies its route, in one transaction. A message
@@ -897,6 +960,9 @@ pub(crate) fn handle(
         ],
     )?;
     let seq = tx.last_insert_rowid();
+    if message.kind == "linear.view.changed" {
+        crate::post::report(&tx, "linear", &refiltered(&message.data))?;
+    }
     crate::hold::event(&tx, &resources)?;
     // The keyed task keeps the event; another task that shares the resource hears it through its wait.
     for other in owners.iter().filter(|other| Some(other.id) != task) {
@@ -951,7 +1017,7 @@ pub(crate) fn due(db: &mut Connection) -> rusqlite::Result<()> {
 }
 
 /// The resource and the agent's last prompt of each open wait that the intake polls for, then the
-/// pull request and creation time of each open merge hold.
+/// pull request or Linear issue and creation time of each unmet merge or issue condition of a hold.
 pub fn watched(db: &Connection) -> rusqlite::Result<Vec<(String, String)>> {
     db.prepare(
         "SELECT resource, since FROM (
@@ -963,7 +1029,7 @@ pub fn watched(db: &Connection) -> rusqlite::Result<Vec<(String, String)>> {
            UNION ALL
            SELECT 1, holds.id, holds.resource, holds.created FROM holds
            JOIN tasks ON tasks.id = holds.task AND tasks.state NOT IN ('done', 'failed', 'dropped')
-           WHERE holds.kind = 'merge' AND holds.released IS NULL
+           WHERE holds.kind IN ('merge', 'issue') AND holds.released IS NULL AND holds.met IS NULL
          ) ORDER BY source, id",
     )?
     .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
@@ -1398,6 +1464,81 @@ pub(crate) fn actionable(
         }
     }
     Ok(None)
+}
+
+/// Records the process group of `run` action `id` and its start time, so a restarted daemon kills
+/// it and never a process that reused its pid.
+pub(crate) fn command_spawned(
+    db: &Connection,
+    id: i64,
+    pid: u32,
+    started: Option<i64>,
+) -> rusqlite::Result<()> {
+    db.execute(
+        "UPDATE actions SET pid = ?2, pid_started = ?3 WHERE id = ?1",
+        params![id, pid, started],
+    )?;
+    Ok(())
+}
+
+/// Whether action `id`'s command is still wanted. A `run` action is its task's current attempt: the
+/// task runs the action's step, and no later action exists, as one a cancel and revive would start.
+/// An answer's command belongs to the task's generation it was answered in, while the task is active,
+/// whatever the task does meanwhile.
+pub(crate) const CURRENT_COMMAND: &str = "SELECT CASE actions.action
+     WHEN 'answer' THEN tasks.generation IS actions.generation
+       AND tasks.state NOT IN ('done', 'failed', 'dropped')
+     ELSE tasks.state = 'running'
+       AND tasks.step = actions.step
+       AND actions.id = (SELECT max(id) FROM actions AS later WHERE later.task = actions.task) END
+   FROM actions JOIN tasks ON tasks.id = actions.task WHERE actions.id = ?1";
+
+pub(crate) fn command_wanted(db: &Connection, id: i64) -> rusqlite::Result<bool> {
+    db.query_row(CURRENT_COMMAND, [id], |row| row.get(0))
+}
+
+/// The answers whose command waits to start: stored, never spawned, so never run.
+pub(crate) fn unstarted_answers(db: &Connection) -> rusqlite::Result<Vec<(i64, i64, String)>> {
+    let mut statement = db.prepare(
+        "SELECT id, task, command FROM actions
+         WHERE action = 'answer' AND ended IS NULL AND pid IS NULL ORDER BY id",
+    )?;
+    statement
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?
+        .collect()
+}
+
+/// The answer commands a stopped daemon left running, each with its process group and that
+/// group's start time when recorded.
+pub(crate) fn orphan_answers(
+    db: &Connection,
+) -> rusqlite::Result<Vec<(i64, Option<crate::stall::Group>)>> {
+    let mut statement = db.prepare(
+        "SELECT id, pid, pid_started FROM actions
+         WHERE action = 'answer' AND ended IS NULL AND pid IS NOT NULL",
+    )?;
+    statement
+        .query_map([], |row| {
+            let pid: Option<u32> = row.get(1)?;
+            Ok((row.get(0)?, pid.zip(row.get(2)?)))
+        })?
+        .collect()
+}
+
+/// The `run` actions a stopped daemon left running, each with its process group and that group's
+/// start time when both were recorded.
+pub(crate) fn orphan_commands(
+    db: &Connection,
+) -> rusqlite::Result<Vec<(i64, Option<crate::stall::Group>)>> {
+    let mut statement = db.prepare(
+        "SELECT id, pid, pid_started FROM actions WHERE action = 'run' AND ended IS NULL",
+    )?;
+    statement
+        .query_map([], |row| {
+            let pid: Option<u32> = row.get(1)?;
+            Ok((row.get(0)?, pid.zip(row.get(2)?)))
+        })?
+        .collect()
 }
 
 /// The summary and evidence of the task's latest result.

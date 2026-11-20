@@ -101,9 +101,10 @@ fn main() -> ExitCode {
         },
         Some("hold") => hold(args.map(|arg| arg.to_string_lossy().into_owned()).collect()),
         Some("actions") => list(
-            "id\ttask\tstep\taction\tstatus\tpull_request\tcommit\terror",
+            "id\ttask\tstep\taction\tstatus\tpull_request\tcommit\terror\tstdout\tstderr",
             "SELECT id, task, step, action, status, pull_request, commit_sha,
-             replace(error, char(10), '\\n') FROM actions ORDER BY id",
+             replace(error, char(10), '\\n'), replace(stdout, char(10), '\\n'),
+             replace(stderr, char(10), '\\n') FROM actions ORDER BY id",
         ),
         Some("tldr") => match (args.next(), args.next(), args.next()) {
             (Some(task), Some(text), None) => tldr(&task.to_string_lossy(), &text.to_string_lossy()),
@@ -144,7 +145,7 @@ fn main() -> ExitCode {
 
 fn usage() -> ExitCode {
     eprintln!(
-        "usage: priory check [DIR]\n       priory draw [DIR] WORKFLOW\n       priory intake [DIR] [--once]\n       priory daemon [DIR] [--once]\n       priory request [DIR] --workflow <name> --key <key> [--band <band>] [--lane <lane>] [--repo <owner/name>] [--hold <reason> [CONDITION]] <text>\n       priory serve [DIR] [--listen ADDR]\n       priory inbox [--since SEQ] [--json]\n       priory inbox read SEQ\n       priory post SOURCE LINE\n       priory tasks [--lane <lane>] [--grade red|yellow|green] [--json]\n       priory queue [DIR] [--json]\n       priory schedules [DIR] [--json]\n       priory runs\n       priory outbox\n       priory asks [--all] [--json]\n       priory waits\n       priory actions\n       priory attach (TASK | --run RUN) [--read-only] [--print]\n       priory desk [--all] [--json] [--person NAME]\n       priory seen [--person NAME] [--at TIME]\n       priory wait --since REV [--timeout D]\n       priory snooze (ask | blocked | failed | prompt) ID (--for DURATION | --until TIME | --clear)\n       priory trace\n       priory report put TASK FILE|-\n       priory report show [TASK] [--json]\n       priory report pick PICK OPTION --expected REVISION\n       priory report [DIR] --workflow <name> [--since <instant-or-duration>] [--cost] [--by lane]\n       priory move TASK [--band <band>] [--top | --before TASK | --after TASK]\n       priory resume TASK\n       priory say TASK TEXT\n       priory pause [REASON]\n       priory unpause\n       priory cancel TASK\n       priory revive TASK [--step STEP]\n       priory hold TASK --reason TEXT [--until TIME | --after TASK | --merge PR [--if-closed release|drop|ask] | --blockers]\n       priory release TASK\n       priory tldr TASK TEXT\n       priory progress TASK JSON\n       priory search QUERY [--state STATE[,STATE...]] [--limit N]\n       priory memory [(acquire | lease) [--gb N] [--timeout D] -- COMMAND...]\n       priory answer [--revision N | --expected N] [--] ASK OPTION-OR-TEXT\n       priory ask ID JSON\n       priory dismiss [--expected N] ASK\n       priory mcp --session ID\n       priory hook EVENT"
+        "usage: priory check [DIR]\n       priory draw [DIR] WORKFLOW\n       priory intake [DIR] [--once]\n       priory daemon [DIR] [--once]\n       priory request [DIR] --workflow <name> --key <key> [--band <band>] [--lane <lane>] [--repo <owner/name>] [--hold <reason> [CONDITION]...] <text>\n       priory serve [DIR] [--listen ADDR]\n       priory inbox [--since SEQ] [--json]\n       priory inbox read SEQ\n       priory post SOURCE LINE\n       priory tasks [--lane <lane>] [--grade red|yellow|green] [--json]\n       priory queue [DIR] [--json]\n       priory schedules [DIR] [--json]\n       priory runs\n       priory outbox\n       priory asks [--all] [--json]\n       priory waits\n       priory actions\n       priory attach (TASK | --run RUN) [--read-only] [--print]\n       priory desk [--all] [--json] [--person NAME]\n       priory seen [--person NAME] [--at TIME]\n       priory wait --since REV [--timeout D]\n       priory snooze (ask | blocked | failed | prompt) ID (--for DURATION | --until TIME | --clear)\n       priory trace\n       priory report put TASK FILE|-\n       priory report show [TASK] [--json]\n       priory report pick PICK OPTION --expected REVISION\n       priory report [DIR] --workflow <name> [--since <instant-or-duration>] [--cost] [--by lane]\n       priory move TASK [--band <band>] [--top | --before TASK | --after TASK]\n       priory resume TASK\n       priory say TASK TEXT\n       priory pause [REASON]\n       priory unpause\n       priory cancel TASK\n       priory revive TASK [--step STEP]\n       priory hold TASK --reason TEXT [--until TIME] [--after TASK-OR-ISSUE]... [--merge PR]... [--if-closed release|drop|ask] [--blockers]\n       priory release TASK\n       priory tldr TASK TEXT\n       priory progress TASK JSON\n       priory search QUERY [--state STATE[,STATE...]] [--limit N]\n       priory memory [(acquire | lease) [--gb N] [--timeout D] -- COMMAND...]\n       priory answer [--revision N | --expected N] [--run] [--] ASK OPTION-OR-TEXT\n       priory ask ID JSON\n       priory dismiss [--expected N] ASK\n       priory mcp --session ID\n       priory hook EVENT"
     );
     ExitCode::from(2)
 }
@@ -433,36 +434,21 @@ fn snooze(args: Vec<String>) -> ExitCode {
         return usage();
     };
     let until = match rest {
-        [flag] if flag == "--clear" => None,
-        [flag, span] if flag == "--for" => {
-            let Ok(span) = span.parse::<jiff::Span>() else {
-                return usage();
-            };
-            match jiff::Zoned::now().checked_add(span) {
-                Ok(at) => Some(at.timestamp()),
-                Err(error) => return exit("snooze", Err(error.to_string())),
-            }
-        }
-        [flag, time] if flag == "--until" => match time.parse::<jiff::Timestamp>() {
-            Ok(at) => Some(at),
-            Err(error) => return exit("snooze", Err(format!("{time}: {error}"))),
-        },
+        [flag] if flag == "--clear" => snooze::until(None, None),
+        [flag, span] if flag == "--for" => snooze::until(Some(span), None),
+        [flag, time] if flag == "--until" => snooze::until(None, Some(time)),
         _ => return usage(),
     };
-    // Rounded up, so the item never comes back before the time asked for.
-    let second = jiff::TimestampRound::new()
-        .smallest(jiff::Unit::Second)
-        .mode(jiff::RoundMode::Ceil);
-    let until = match until.map(|at| at.round(second)).transpose() {
+    let until = match until {
         Ok(until) => until,
-        Err(error) => return exit("snooze", Err(error.to_string())),
+        Err(error) => return exit("snooze", Err(error)),
     };
     let line = serde_json::to_string(&snooze::Snooze {
         snooze: snooze::Item {
             kind: kind.clone(),
             id,
         },
-        until: until.map(|at| at.strftime("%Y-%m-%dT%H:%M:%SZ").to_string()),
+        until,
     })
     .expect("a snooze serializes");
     send("snooze", &line)
@@ -959,8 +945,16 @@ fn gate(gate: &Gate) -> Result<String, String> {
     })
 }
 
-/// Sends `priory answer ASK TEXT --revision N` to the daemon, which applies it.
-fn answer(args: Vec<String>) -> ExitCode {
+/// Sends `priory answer ASK TEXT --revision N [--run]` to the daemon, which applies it. `--run`
+/// confirms an answer that runs the ask's command.
+fn answer(mut args: Vec<String>) -> ExitCode {
+    let run = args
+        .iter()
+        .take_while(|arg| *arg != "--")
+        .position(|arg| arg == "--run");
+    if let Some(at) = run {
+        args.remove(at);
+    }
     let Some((Some(revision), rest)) = revised(args) else {
         return usage();
     };
@@ -975,6 +969,7 @@ fn answer(args: Vec<String>) -> ExitCode {
         ask,
         revision,
         text: text.clone(),
+        run: run.is_some(),
     })
     .expect("an answer serializes");
     send("answer", &line)
@@ -1184,12 +1179,15 @@ fn hold(args: Vec<String>) -> ExitCode {
         };
         match flag.as_str() {
             "--reason" => reason = Some(value),
-            "--until" => hold.until = Some(value),
+            "--until" if hold.until.is_none() => hold.until = Some(value),
             "--after" => match value.parse() {
-                Ok(other) => hold.after = Some(other),
-                Err(_) => return usage(),
+                Ok(other) => hold.after.push(other),
+                Err(error) => {
+                    eprintln!("priory hold: {error}");
+                    return ExitCode::FAILURE;
+                }
             },
-            "--merge" => hold.merge = Some(value),
+            "--merge" => hold.merge.push(value),
             "--if-closed" => hold.if_closed = Some(value),
             _ => return usage(),
         }

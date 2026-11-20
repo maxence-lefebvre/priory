@@ -10,6 +10,12 @@ use serde_json::{Map, Value, json};
 use std::path::Path;
 
 /// Each queued or ready task's place in the start order, overall and in its band, from 1.
+/// The conditions of a task's open hold as a JSON array, null when it has none.
+const CONDITIONS: &str = "(SELECT json_group_array(json_object('kind', kind, 'until', until,
+     'task', target, 'resource', resource, 'met', met, 'met_as', met_as))
+   FROM (SELECT * FROM holds WHERE holds.task = tasks.id AND holds.released IS NULL ORDER BY id)
+   HAVING count(*) > 0) AS conditions";
+
 fn places() -> String {
     format!(
         "WITH queue AS (SELECT id, row_number() OVER (ORDER BY {order}) AS place,
@@ -61,9 +67,19 @@ const DESK: &str = "SELECT 0 AS part, asks.created AS since, 'ask' AS kind,
                FROM outbox JOIN tasks ON tasks.id = outbox.task
                WHERE outbox.state = 'uncertain' AND tasks.state NOT IN ('done', 'failed', 'dropped')
                UNION ALL
+               SELECT 0, actions.ended, 'command', actions.id, actions.task, tasks.lane,
+                 'Priory stopped while answer ' || json_quote(asks.answer) || ' to ask ' || asks.id
+                   || ' ran ' || json_extract(actions.command, '$.argv') || ' in '
+                   || json_extract(actions.command, '$.dir') || ': check the target'
+               FROM actions JOIN asks ON asks.id = actions.ask JOIN tasks ON tasks.id = actions.task
+               WHERE actions.action = 'answer' AND actions.status = 'uncertain'
+                 AND tasks.state NOT IN ('done', 'failed', 'dropped')
+               UNION ALL
                SELECT 0, holds.created, 'held', holds.id, holds.task, tasks.lane, tasks.reason
                FROM holds JOIN tasks ON tasks.id = holds.task
-               WHERE holds.released IS NULL AND tasks.state = 'held'
+               WHERE holds.released IS NULL AND tasks.state = 'held' AND holds.id = (
+                 SELECT min(id) FROM holds AS hold WHERE hold.task = holds.task
+                 AND hold.released IS NULL)
                UNION ALL
                SELECT 0, sweeps.started, 'sweep', sweeps.id, stalls.task, tasks.lane,
                  sweeps.script || ': ' || coalesce(sweeps.status
@@ -103,9 +119,13 @@ fn asks_query() -> String {
      asks.what_waits, asks.next_action, asks.command, asks.coordinator, asks.run_id, asks.session,
      (SELECT json_object('state', state, 'revision', revision, 'tries', tries, 'error', error,
         'since', coalesce(ended, created))
-      FROM deliveries WHERE deliveries.ask = asks.id ORDER BY id DESC LIMIT 1) AS delivery, {}
+      FROM deliveries WHERE deliveries.ask = asks.id ORDER BY id DESC LIMIT 1) AS delivery,
+     (SELECT json_object('status', status, 'revision', revision, 'error', error, 'stdout', stdout,
+        'stderr', stderr)
+      FROM actions WHERE actions.ask = asks.id ORDER BY id DESC LIMIT 1) AS ran, {}
    FROM asks LEFT JOIN tasks ON tasks.id = asks.task
-   LEFT JOIN snoozes ON snoozes.kind = 'ask' AND snoozes.item = asks.id WHERE ?1 IS NULL OR asks.task = ?1 ORDER BY asks.id",
+   LEFT JOIN snoozes ON snoozes.kind = 'ask' AND snoozes.item = asks.id
+   WHERE (?1 IS NULL OR asks.task = ?1) AND (?2 IS NULL OR asks.id = ?2) ORDER BY asks.id",
         snooze::FIELDS
     )
 }
@@ -144,7 +164,7 @@ pub fn inbox(db: &Connection, since: i64) -> rusqlite::Result<Value> {
 pub fn tasks(db: &Connection, lane: Option<&str>, grade: Option<&str>) -> rusqlite::Result<Value> {
     let query = format!(
         "{} SELECT id, key, workflow, step, state, band, lane, reason, queue.place AS position,
-           generation, retired, tldr, changed AS since, grade, grade_reason, progress
+           generation, retired, tldr, changed AS since, grade, grade_reason, progress, {CONDITIONS}
          FROM tasks LEFT JOIN queue USING (id)
          WHERE (?1 IS NULL OR lane = ?1) AND (?2 IS NULL OR grade = ?2) ORDER BY {}",
         places(),
@@ -155,30 +175,50 @@ pub fn tasks(db: &Connection, lane: Option<&str>, grade: Option<&str>) -> rusqli
         .as_array_mut()
         .expect("rows are an array")
         .iter_mut()
-        .for_each(parse_progress);
+        .for_each(parse_json);
     Ok(tasks)
 }
 
-/// `progress` as the object it is stored as.
-fn parse_progress(task: &mut Value) {
-    if let Some(progress) = task["progress"].as_str() {
-        task["progress"] = serde_json::from_str(progress).unwrap_or(Value::Null);
+/// `progress` and `conditions` as the JSON they are stored or read as.
+fn parse_json(task: &mut Value) {
+    for field in ["progress", "conditions"] {
+        if let Some(text) = task[field].as_str() {
+            task[field] = serde_json::from_str(text).unwrap_or(Value::Null);
+        }
     }
 }
 
 /// Every ask with its state, oldest first.
 pub fn asks(db: &Connection) -> rusqlite::Result<Value> {
-    asks_of(db, None)
+    asks_of(db, None, None)
 }
 
-fn asks_of(db: &Connection, task: Option<i64>) -> rusqlite::Result<Value> {
-    let mut asks = rows(db, &asks_query(), [task])?;
+/// Ask `id` as `asks` lists it, if there is one.
+pub fn ask(db: &Connection, id: i64) -> rusqlite::Result<Option<Value>> {
+    let asks = asks_of(db, None, Some(id))?;
+    Ok(asks.as_array().and_then(|asks| asks.first()).cloned())
+}
+
+fn asks_of(db: &Connection, task: Option<i64>, id: Option<i64>) -> rusqlite::Result<Value> {
+    let mut asks = rows(db, &asks_query(), [task, id])?;
     for ask in asks.as_array_mut().into_iter().flatten() {
         if let Some(options) = ask["options"].as_str() {
             ask["options"] = serde_json::from_str(options).unwrap_or(Value::Null);
         }
         if let Some(delivery) = ask["delivery"].as_str() {
             ask["delivery"] = serde_json::from_str(delivery).unwrap_or(Value::Null);
+        }
+        if let Some(ran) = ask["ran"].as_str() {
+            ask["ran"] = serde_json::from_str(ran).unwrap_or(Value::Null);
+        }
+        // An agent's command is an object; an outside ask's stays the string it sent.
+        let agents = ask["task"].is_i64();
+        if let Some(Ok(command)) = ask["command"]
+            .as_str()
+            .filter(|_| agents)
+            .map(serde_json::from_str)
+        {
+            ask["command"] = command;
         }
         parse_back_early(ask);
     }
@@ -194,20 +234,25 @@ pub fn queue(
 ) -> rusqlite::Result<Value> {
     let waiting = format!(
         "{} SELECT position, band_position, id, key, workflow, step, state, band, lane, reason, since,
-           hold, hold_until, hold_target, hold_resource FROM (
+           conditions FROM (
            SELECT 0 AS part, queue.place AS position, queue.band_place AS band_position, id, key,
-             workflow, step, state, band, lane, reason, changed AS since, NULL AS hold,
-             NULL AS hold_until, NULL AS hold_target, NULL AS hold_resource, queue.place AS sort
+             workflow, step, state, band, lane, reason, changed AS since, NULL AS conditions,
+             queue.place AS sort
            FROM tasks JOIN queue USING (id)
            UNION ALL
            SELECT 1, NULL, NULL, tasks.id, key, workflow, step, state, band, lane, tasks.reason,
-             changed, holds.kind, holds.until, holds.target, holds.resource, holds.id
-           FROM tasks JOIN holds ON holds.task = tasks.id AND holds.released IS NULL
-           WHERE tasks.state = 'held'
+             changed, {CONDITIONS},
+             (SELECT min(id) FROM holds WHERE holds.task = tasks.id AND holds.released IS NULL)
+           FROM tasks WHERE tasks.state = 'held'
          ) ORDER BY part, sort",
         places()
     );
-    let waiting = rows(db, &waiting, [])?;
+    let mut waiting = rows(db, &waiting, [])?;
+    waiting
+        .as_array_mut()
+        .expect("rows are an array")
+        .iter_mut()
+        .for_each(parse_json);
     Ok(json!({
         "up_next": up_next(db, &waiting, schedules, now)?,
         "waiting": waiting,
@@ -261,10 +306,18 @@ fn up_next(
             ));
             continue;
         }
-        let until = row["hold_until"]
-            .as_str()
-            .and_then(|until| until.parse().ok());
-        if let (Some("time"), Some(until)) = (row["hold"].as_str(), until) {
+        // A held task comes up once its time passes, when time is all it still waits for.
+        let unmet: Vec<&Value> = row["conditions"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|condition| condition["met"].is_null())
+            .collect();
+        let times: Option<Vec<Timestamp>> = unmet
+            .iter()
+            .map(|condition| condition["until"].as_str()?.parse().ok())
+            .collect();
+        if let Some(until) = times.and_then(|times| times.into_iter().max()) {
             let at = Timestamp::max(until, now);
             let why = format!("held until {until}");
             next.push((at, entry(at.to_string(), "held", row, &Value::Null, why)));
@@ -432,7 +485,7 @@ pub fn task(db: &Connection, id: i64) -> rusqlite::Result<Option<Value>> {
         &format!(
             "{} SELECT id, key, workflow, step, state, band, lane, reason, queue.place AS position,
                generation, retired, tldr, changed AS since, repo, branch, grade, grade_reason,
-               progress
+               progress, {CONDITIONS}
              FROM tasks LEFT JOIN queue USING (id) WHERE id = ?1",
             places()
         ),
@@ -449,7 +502,8 @@ pub fn task(db: &Connection, id: i64) -> rusqlite::Result<Option<Value>> {
         ),
         (
             "steps",
-            "SELECT id, step, action, status, pull_request, commit_sha, error, created
+            "SELECT id, step, action, status, pull_request, commit_sha, error, stdout, stderr,
+               created
              FROM actions WHERE task = ?1 ORDER BY id",
         ),
         (
@@ -466,8 +520,8 @@ pub fn task(db: &Connection, id: i64) -> rusqlite::Result<Option<Value>> {
     for (name, query) in lists {
         task[name] = rows(db, query, [id])?;
     }
-    task["asks"] = asks_of(db, Some(id))?;
-    parse_progress(&mut task);
+    task["asks"] = asks_of(db, Some(id), None)?;
+    parse_json(&mut task);
     Ok(Some(task))
 }
 

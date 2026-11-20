@@ -40,9 +40,15 @@ const OUTPUT: &str = "factory.intake";
 
 /// Takes a state file back before schema 28, which added search, 29, which added grades, 30,
 /// which added snoozes, 31, which added read reports, 32, which added the pause, 34, which added
-/// reports of sections, and 36, which added deliveries.
-const UNDO_SINCE_SEARCH: &str = "ALTER TABLE tasks DROP COLUMN progress;
-  DROP TABLE deliveries; DROP TABLE reports; DROP TABLE pause;
+/// reports of sections, 36, which added deliveries, 37, which added progress, 39, which added run
+/// actions, and 40, which added answer actions. Schema 38's visits table is created only if
+/// missing, so it stays.
+const UNDO_SINCE_SEARCH: &str = "ALTER TABLE actions DROP COLUMN ask;
+  ALTER TABLE actions DROP COLUMN revision; ALTER TABLE actions DROP COLUMN command; ALTER TABLE actions DROP COLUMN generation;
+  ALTER TABLE actions DROP COLUMN stdout;
+  ALTER TABLE actions DROP COLUMN stderr; ALTER TABLE actions DROP COLUMN pid;
+  ALTER TABLE actions DROP COLUMN pid_started; ALTER TABLE actions DROP COLUMN ended;
+  ALTER TABLE tasks DROP COLUMN progress; DROP TABLE deliveries; DROP TABLE reports; DROP TABLE pause;
   ALTER TABLE outbox DROP COLUMN wakes;
   DROP TRIGGER snooze_ends_on_a_new_revision;
   DROP TRIGGER snooze_ends_on_a_task_state_change; DROP TABLE snoozes;
@@ -3184,7 +3190,7 @@ fn an_agent_ask_stores_and_lists_its_title_text_what_waits_next_action_and_comma
         "tradeoff": "postgres scales, sqlite needs no server",
         "whatWaits": "the cache PR",
         "nextAction": "wire the store",
-        "command": "cargo test",
+        "command": { "argv": ["cargo", "test"], "runs": ["sqlite"] },
     } })]);
     setup.publish(&requested(42));
 
@@ -3193,8 +3199,14 @@ fn an_agent_ask_stores_and_lists_its_title_text_what_waits_next_action_and_comma
     setup.until("tasks", |rows| {
         rows.first().is_some_and(|row| row[4] == "asleep")
     });
+    let mut asks = setup.rows("asks");
+    let command: serde_json::Value = serde_json::from_str(&asks[0][11]).unwrap();
+    assert_eq!(command["argv"], json!(["cargo", "test"]));
+    assert_eq!(command["target"], "worktree");
+    assert_eq!(command["runs"], json!(["sqlite"]));
+    asks[0][11] = "stored".to_owned();
     assert_eq!(
-        setup.rows("asks"),
+        asks,
         [[
             "1",
             "1",
@@ -3207,13 +3219,353 @@ fn an_agent_ask_stores_and_lists_its_title_text_what_waits_next_action_and_comma
             r"The cache needs a store.\n\nPick one.",
             "the cache PR",
             "wire the store",
-            "cargo test",
+            "stored",
             "-",
             "github:owner/repo#42",
             "-",
             "-",
         ]]
     );
+}
+
+/// A script in the factory's `ops` target that logs its folder and arguments, prints on both
+/// streams and exits 3.
+const GO: &str = "#!/bin/sh\nprintf '%s|' \"$PWD\" \"$@\" >> runs.log\necho >> runs.log\necho deployed\necho warned >&2\nexit 3\n";
+
+/// An ask whose recommended option runs `command`.
+fn command_ask(command: serde_json::Value) -> serde_json::Value {
+    json!({ "name": "ask", "arguments": {
+        "question": "Deploy the cache?",
+        "options": ["deploy", "wait"],
+        "recommendation": "deploy",
+        "tradeoff": "Deploying now ships the fix, waiting keeps the release calm.",
+        "command": command,
+    } })
+}
+
+/// A task asleep on a command ask, in a factory whose `ops` target holds the `go` script.
+fn asleep_on_a_command_ask(name: &str, command: serde_json::Value) -> Setup {
+    let mut setup = Setup::with_workflow(name, STEPS);
+    fs::write(
+        setup.dir.join("factory/factory.toml"),
+        "name = \"demo\"\n\n[asks.targets]\nops = \"ops\"\n",
+    )
+    .unwrap();
+    let go = setup.dir.join("factory/ops/go");
+    fs::create_dir_all(go.parent().unwrap()).unwrap();
+    fs::write(&go, GO).unwrap();
+    fs::set_permissions(&go, fs::Permissions::from_mode(0o755)).unwrap();
+    setup.calls(&[command_ask(command)]);
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == "asleep")
+    });
+    setup
+}
+
+fn go_in_ops() -> serde_json::Value {
+    json!({ "argv": ["./go", "two words", "$HOME"], "target": "ops" })
+}
+
+#[test]
+fn answering_a_command_asks_running_option_with_run_runs_its_argv_once_and_wakes_the_task_with_its_exit_and_output()
+ {
+    let setup = asleep_on_a_command_ask("command-runs", go_in_ops());
+    let ops = setup.dir.join("factory/ops");
+
+    let answered = setup.priory(&["answer", "--run", "1", "deploy", "--revision", "1"]);
+
+    assert!(answered.status.success(), "{answered:?}");
+    assert_eq!(
+        String::from_utf8_lossy(&answered.stdout),
+        format!(
+            "ask 1 answered: running [\"./go\",\"two words\",\"$HOME\"] in {}\n",
+            ops.display()
+        )
+    );
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 2);
+    assert_eq!(
+        setup.typed()[1],
+        format!(
+            "Ask 1 was answered \"deploy\" at revision 1, which ran [\"./go\",\"two words\",\"$HOME\"] in {}: exit 3.\nstdout:\ndeployed\nstderr:\nwarned\nEnd this step by calling the result tool of the priory MCP server with one of these outcomes: hopeless, ready, unsure.\n",
+            ops.display()
+        )
+    );
+    assert_eq!(
+        fs::read_to_string(ops.join("runs.log")).unwrap(),
+        format!("{}|two words|$HOME|\n", ops.display())
+    );
+}
+
+#[test]
+fn a_second_answer_or_a_daemon_restart_never_runs_an_answers_command_again() {
+    let mut setup = asleep_on_a_command_ask("command-once", go_in_ops());
+    let runs = setup.dir.join("factory/ops/runs.log");
+    setup.priory(&["answer", "--run", "1", "deploy", "--revision", "1"]);
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 2);
+
+    let again = setup.priory(&["answer", "--run", "1", "deploy", "--revision", "1"]);
+    setup.crash();
+    setup.start();
+    // The restarted daemon replies only once it passed its start, where it reaps old commands.
+    let after = once_listening(
+        &setup,
+        &["answer", "--run", "1", "deploy", "--revision", "1"],
+    );
+
+    assert!(!again.status.success(), "{again:?}");
+    assert!(!after.status.success(), "{after:?}");
+    assert_eq!(
+        String::from_utf8_lossy(&after.stderr),
+        "priory answer: ask 1 is already answered: deploy\n"
+    );
+    assert_eq!(fs::read_to_string(runs).unwrap().lines().count(), 1);
+    let actions = setup.rows("actions");
+    assert_eq!(actions.len(), 1);
+    assert_eq!(actions[0][3..5], ["answer", "failed"]);
+}
+
+#[test]
+fn a_daemon_killed_while_an_answers_command_runs_leaves_it_uncertain_wakes_the_task_and_shows_it_on_the_desk()
+ {
+    let command =
+        json!({ "argv": ["sh", "-c", "echo $$ > pid; echo started; sleep 60"], "target": "ops" });
+    let mut setup = asleep_on_a_command_ask("command-uncertain", command);
+    let ops = setup.dir.join("factory/ops");
+    setup.priory(&["answer", "--run", "1", "deploy", "--revision", "1"]);
+    setup.written("factory/ops/pid");
+    let pid = fs::read_to_string(ops.join("pid")).unwrap();
+
+    setup.crash();
+    setup.start();
+
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 2);
+    assert_eq!(
+        setup.typed()[1],
+        format!(
+            "Ask 1 was answered \"deploy\" at revision 1, which ran [\"sh\",\"-c\",\"echo $$ > pid; echo started; sleep 60\"] in {}, and Priory stopped while it ran, so whether it finished is uncertain. Check the target before you act on it.\nstdout:\nstarted\nstderr:\n\nEnd this step by calling the result tool of the priory MCP server with one of these outcomes: hopeless, ready, unsure.\n",
+            ops.display()
+        )
+    );
+    assert!(!alive(pid.trim()), "the interrupted command still runs");
+    assert_eq!(setup.rows("actions")[0][3..5], ["answer", "uncertain"]);
+    let desk = desk(&setup, &[]);
+    let item = desk.iter().find(|item| item[1] == "command").unwrap();
+    assert_eq!(
+        item[5],
+        format!(
+            "Priory stopped while answer \"deploy\" to ask 1 ran [\"sh\",\"-c\",\"echo $$ > pid; echo started; sleep 60\"] in {}: check the target",
+            ops.display()
+        )
+    );
+}
+
+/// A task whose run asked a command ask and holds its Stop, as an agent still ending its turn.
+fn ending_its_turn_on_a_command_ask(name: &str, command: serde_json::Value) -> Setup {
+    let mut setup = Setup::with_workflow(name, STEPS);
+    fs::write(
+        setup.dir.join("factory/factory.toml"),
+        "name = \"demo\"\n\n[asks.targets]\nops = \"ops\"\n",
+    )
+    .unwrap();
+    fs::create_dir_all(setup.dir.join("factory/ops")).unwrap();
+    setup.calls(&[command_ask(command)]);
+    setup.hold("hold-stop");
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("asks", |rows| rows.len() == 1);
+    setup
+}
+
+#[test]
+fn a_wait_after_an_answer_that_beats_the_stop_is_refused_and_the_command_wakes_the_task() {
+    let command = json!({ "argv": ["sh", "-c", "sleep 2; echo shipped"], "target": "ops" });
+    let setup = ending_its_turn_on_a_command_ask("command-before-stop", command);
+    let answered = setup.priory(&["answer", "--run", "1", "deploy", "--revision", "1"]);
+    let session = setup.rows("runs")[0][4].clone();
+    let wait =
+        json!({ "name": "wait", "arguments": { "on": { "type": "time", "until": "1 hour" } } });
+
+    let replies = setup.mcp(
+        &session,
+        &[json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": wait})],
+    );
+    setup.release("hold-stop");
+
+    assert!(answered.status.success(), "{answered:?}");
+    let (text, error) = reply(&replies[0]);
+    assert!(error, "{text}");
+    assert_eq!(
+        text,
+        "an answer or event for this run is queued: end your turn to read it"
+    );
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 2);
+    let typed = setup.typed();
+    assert!(
+        typed[1].starts_with("Ask 1 was answered \"deploy\" at revision 1, which ran [\"sh\",\"-c\",\"sleep 2; echo shipped\"] in "),
+        "{typed:?}"
+    );
+    assert!(
+        typed[1].contains(": exit 0.\nstdout:\nshipped\n"),
+        "{typed:?}"
+    );
+    assert_eq!(setup.rows("actions")[0][3..5], ["answer", "done"]);
+}
+
+#[test]
+fn a_reboot_while_an_answers_command_runs_before_the_stop_wakes_the_task_with_the_uncertain_outcome()
+ {
+    let command = json!({ "argv": ["sh", "-c", "echo $$ > pid; sleep 60"], "target": "ops" });
+    let mut setup = ending_its_turn_on_a_command_ask("command-reboot", command);
+    setup.priory(&["answer", "--run", "1", "deploy", "--revision", "1"]);
+    setup.written("factory/ops/pid");
+
+    setup.reboot();
+    setup.start();
+
+    let outbox = setup.until("outbox", |rows| {
+        rows.iter()
+            .any(|row| row[4].contains("whether it finished is uncertain"))
+    });
+    assert!(
+        outbox
+            .iter()
+            .any(|row| row[4].starts_with("Ask 1 was answered \"deploy\" at revision 1")),
+        "{outbox:?}"
+    );
+    assert_eq!(setup.rows("actions")[0][3..5], ["answer", "uncertain"]);
+}
+
+#[test]
+fn an_answer_to_a_stale_revision_of_a_command_ask_is_refused_and_runs_nothing() {
+    let setup = asleep_on_a_command_ask("command-stale", go_in_ops());
+
+    let stale = setup.priory(&["answer", "--run", "1", "deploy", "--revision", "2"]);
+
+    assert!(!stale.status.success(), "{stale:?}");
+    assert_eq!(
+        String::from_utf8_lossy(&stale.stderr),
+        "priory answer: ask 1 is at revision 1, not 2\n"
+    );
+    assert_eq!(setup.rows("actions"), Vec::<Vec<String>>::new());
+    assert!(!setup.dir.join("factory/ops/runs.log").exists());
+    assert_eq!(setup.rows("tasks")[0][4], "asleep");
+}
+
+#[test]
+fn an_answer_that_runs_a_command_is_refused_without_run_and_shows_the_command_target_and_revision()
+{
+    let setup = asleep_on_a_command_ask("command-confirm", json!({ "argv": ["pwd"] }));
+
+    let unconfirmed = setup.priory(&["answer", "1", "deploy", "--revision", "1"]);
+
+    assert!(!unconfirmed.status.success(), "{unconfirmed:?}");
+    let refusal = String::from_utf8_lossy(&unconfirmed.stderr).into_owned();
+    let worktree = refusal
+        .strip_prefix("priory answer: ask 1 runs [\"pwd\"] in ")
+        .and_then(|rest| rest.strip_suffix(" (target worktree), bound to revision 1, when answered \"deploy\": answer again with --run to run it\n"))
+        .unwrap_or_else(|| panic!("{refusal}"));
+    assert!(
+        Path::new(worktree).starts_with(setup.dir.join("home")),
+        "{worktree}"
+    );
+    assert_eq!(setup.rows("asks").len(), 1, "the ask stays open");
+
+    let confirmed = setup.priory(&["answer", "--run", "1", "deploy", "--revision", "1"]);
+
+    assert!(confirmed.status.success(), "{confirmed:?}");
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 2);
+    assert!(
+        setup.typed()[1].contains(&format!(": exit 0.\nstdout:\n{worktree}\nstderr:\n\n")),
+        "{:?}",
+        setup.typed()
+    );
+}
+
+#[test]
+fn the_ask_tool_refuses_a_command_outside_the_allowed_targets_or_not_an_argv() {
+    let mut setup = Setup::with_workflow("command-refused", STEPS);
+    let elsewhere = json!({ "argv": ["./go"], "target": "/etc" });
+    setup.calls(&[json!([
+        command_ask(elsewhere),
+        command_ask(json!("cargo test")),
+        command_ask(json!({ "argv": ["./go"], "runs": ["ship"] })),
+        ask(),
+    ])]);
+    setup.publish(&requested(42));
+
+    setup.start();
+
+    setup.until("tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == "asleep")
+    });
+    let replies = setup.replies();
+    let refused: Vec<_> = replies[..3]
+        .iter()
+        .map(|reply| reply["result"]["content"][0]["text"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        refused,
+        [
+            "command target \"/etc\" is not allowed: use worktree or a name in [asks.targets]: ",
+            "command must be an object with argv, and optionally target and runs: invalid type: string \"cargo test\", expected struct Asked",
+            "command runs \"ship\", which is not one of the options",
+        ]
+    );
+    let asks = setup.rows("asks");
+    assert_eq!(asks.len(), 1);
+    assert_eq!(asks[0][3], "Which database?");
+}
+
+#[test]
+fn an_option_outside_a_commands_runs_answers_without_running_it() {
+    let setup = asleep_on_a_command_ask("command-other-option", go_in_ops());
+
+    let answered = setup.priory(&["answer", "1", "wait", "--revision", "1"]);
+
+    assert!(answered.status.success(), "{answered:?}");
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 2);
+    assert!(
+        setup.typed()[1].starts_with("wait\n"),
+        "{:?}",
+        setup.typed()
+    );
+    assert_eq!(setup.rows("actions"), Vec::<Vec<String>>::new());
+    assert!(!setup.dir.join("factory/ops/runs.log").exists());
+}
+
+#[test]
+fn an_outside_asks_command_is_stored_and_never_runs() {
+    let mut setup = Setup::new("command-outside");
+    setup.start();
+    listening(&setup);
+    let mut fields: serde_json::Value =
+        serde_json::from_str(&fleet_ask(&["ship", "wait"])).unwrap();
+    // An outside command is a string, even one that reads as an agent's command object.
+    let looks_runnable = r#"{"argv": ["touch", "shipped"], "runs": ["ship"]}"#;
+    fields["command"] = json!(looks_runnable);
+    setup.priory(&["ask", "cache.ship", &fields.to_string()]);
+
+    let answered = setup.priory(&[
+        "answer",
+        "--run",
+        "--expected",
+        "1",
+        "--",
+        "cache.ship",
+        "ship",
+    ]);
+
+    assert!(answered.status.success(), "{answered:?}");
+    assert_eq!(
+        String::from_utf8_lossy(&answered.stdout),
+        "ask cache.ship answered; its command does not run: Priory runs only the commands of its own runs' asks\n"
+    );
+    assert_eq!(setup.rows("actions"), Vec::<Vec<String>>::new());
+    let asks: serde_json::Value =
+        serde_json::from_slice(&setup.priory(&["asks", "--all", "--json"]).stdout).unwrap();
+    assert_eq!(asks["asks"][0]["command"], looks_runnable);
 }
 
 fn fleet_ask(options: &[&str]) -> String {
@@ -4487,7 +4839,12 @@ fn a_state_file_whose_asks_an_approval_names_upgrades_to_outside_asks() {
     // The state file as version 32 left it: every ask belongs to a task.
     let db = rusqlite::Connection::open(setup.dir.join("priory.db")).unwrap();
     db.execute_batch(
-        "ALTER TABLE tasks DROP COLUMN progress;
+        "ALTER TABLE actions DROP COLUMN ask; ALTER TABLE actions DROP COLUMN revision;
+         ALTER TABLE actions DROP COLUMN command; ALTER TABLE actions DROP COLUMN generation;
+         ALTER TABLE actions DROP COLUMN stdout; ALTER TABLE actions DROP COLUMN stderr;
+         ALTER TABLE actions DROP COLUMN pid; ALTER TABLE actions DROP COLUMN pid_started;
+         ALTER TABLE actions DROP COLUMN ended;
+         ALTER TABLE tasks DROP COLUMN progress;
          DROP TABLE deliveries;
          DROP TABLE reports;
          PRAGMA legacy_alter_table = ON;
@@ -5537,6 +5894,8 @@ fn an_approved_open_pr_pushes_the_branch_opens_a_pull_request_and_the_task_owns_
             "opened",
             "github:owner/repo#7",
             &commit,
+            "-",
+            "-",
             "-"
         ]
     );
@@ -5603,6 +5962,138 @@ fn a_gh_call_past_the_command_timeout_is_killed_and_its_action_fails() {
     let actions = setup.until("actions", |rows| rows.len() == 1);
     assert_eq!(actions[0][4], "failed");
     assert!(actions[0][7].ends_with("timed out after 1s"), "{actions:?}");
+}
+
+/// A workflow whose one step runs `command` and routes `found`, `running`, `ok` and `failed`.
+fn run_step(command: &str, timeout: &str) -> String {
+    format!(
+        r#"
+start = "poll"
+
+[[steps]]
+id = "poll"
+decides = "code"
+action = "run"
+run = {command:?}
+effect = "reversible"
+{timeout}
+next = {{ found = "done", running = "done", ok = "stop", failed = "stop" }}
+"#
+    )
+}
+
+/// Starts task 1 on a run step of `command` and returns once its action ended.
+fn ran(name: &str, command: &str, timeout: &str) -> (Setup, Vec<Vec<String>>) {
+    let mut setup = Setup::with_workflow(name, &run_step(command, timeout));
+    setup.publish(&requested(42));
+    setup.start();
+    let actions = setup.until("actions", |rows| rows.len() == 1 && rows[0][4] != "running");
+    (setup, actions)
+}
+
+#[test]
+fn a_run_step_whose_last_line_names_an_outcome_routes_there() {
+    let (setup, actions) = ran(
+        "run-found",
+        "echo checking; echo \"task $PRIORY_TASK\" >&2; echo found",
+        "",
+    );
+
+    assert_eq!(actions[0][1..5], ["1", "poll", "run", "found"]);
+    assert_eq!(actions[0][8..], ["checking\\nfound", "task 1"]);
+    assert_eq!(setup.rows("tasks")[0][4], "done");
+}
+
+#[test]
+fn a_run_step_routes_ok_on_exit_0_and_failed_on_another_exit() {
+    let (_quiet, quiet) = ran("run-ok", "echo nothing new", "");
+    let (setup, broken) = ran("run-failed", "echo found; exit 3", "");
+
+    assert_eq!(quiet[0][4..8], ["ok", "-", "-", "-"]);
+    // A named last line routes even on a failing exit, which the error keeps.
+    assert_eq!(broken[0][4..9], ["found", "-", "-", "exit 3", "found"]);
+    let (_crashed, crashed) = ran("run-crashed", "echo oops >&2; exit 1", "");
+    assert_eq!(
+        crashed[0][4..10],
+        ["failed", "-", "-", "exit 1", "", "oops"]
+    );
+    assert_eq!(setup.rows("tasks")[0][4], "done");
+}
+
+#[test]
+fn a_run_step_past_its_timeout_is_killed_with_its_children_and_fails() {
+    let (setup, actions) = ran(
+        "run-timeout",
+        "sleep 60 & echo $! > child; echo found; wait",
+        "timeout = \"1s\"",
+    );
+
+    assert_eq!(actions[0][4], "failed");
+    assert_eq!(actions[0][7], "timed out after 1s");
+    let child = fs::read_to_string(setup.dir.join("factory/child")).unwrap();
+    assert!(!alive(child.trim()), "the backgrounded sleep still runs");
+    assert_eq!(setup.rows("tasks")[0][4], "dropped");
+}
+
+#[test]
+fn a_restart_while_a_run_step_runs_kills_it_and_fails_it_without_running_it_again() {
+    let mut setup = Setup::with_workflow(
+        "run-restart",
+        &run_step(
+            "echo started >> starts; echo $$ > pid; sleep 60; echo found",
+            "",
+        ),
+    );
+    setup.publish(&requested(42));
+    setup.start();
+    setup.written("factory/pid");
+    let pid = fs::read_to_string(setup.dir.join("factory/pid")).unwrap();
+
+    setup.crash();
+    setup.start();
+
+    let actions = setup.until("actions", |rows| rows[0][4] != "running");
+    assert_eq!(actions.len(), 1);
+    assert_eq!(
+        actions[0][4..8],
+        ["failed", "-", "-", "interrupted by a daemon restart"]
+    );
+    assert!(!alive(pid.trim()), "the interrupted command still runs");
+    let starts = fs::read_to_string(setup.dir.join("factory/starts")).unwrap();
+    assert_eq!(starts, "started\n");
+    assert_eq!(setup.rows("tasks")[0][4], "dropped");
+}
+
+#[test]
+fn an_outcome_named_running_is_an_ended_action_a_restart_leaves_alone() {
+    let mut setup = Setup::with_workflow("run-named-running", &run_step("echo running", ""));
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == "done")
+    });
+    let actions = setup.rows("actions");
+
+    setup.crash();
+    setup.start();
+    // A second task's action ends after the restarted daemon reaped its predecessor's commands.
+    setup.publish(&requested(43));
+    setup.until("tasks", |rows| rows.len() == 2 && rows[1][4] == "done");
+
+    assert_eq!(actions[0][4], "running");
+    assert_eq!(setup.rows("actions")[0], actions[0]);
+}
+
+/// Whether process `pid` is alive, not a zombie.
+fn alive(pid: &str) -> bool {
+    fs::read_to_string(format!("/proc/{pid}/stat")).is_ok_and(|stat| {
+        !stat
+            .rsplit_once(')')
+            .unwrap()
+            .1
+            .trim_start()
+            .starts_with('Z')
+    })
 }
 
 #[test]
@@ -6915,6 +7406,158 @@ fn a_task_hold_releases_the_task_when_the_other_task_ends() {
 }
 
 #[test]
+fn a_hold_on_two_tasks_releases_only_after_both_end() {
+    let setup = queued_without_room("hold-all-tasks");
+    setup.publish(&requested(43));
+    setup.publish(&requested(44));
+    setup.until("tasks", |rows| rows.len() == 3);
+
+    let reply = person(
+        &setup,
+        "hold",
+        &[
+            "3",
+            "--reason",
+            "same files",
+            "--after",
+            "1",
+            "--after",
+            "2",
+        ],
+    );
+    let desk = setup.rows("desk");
+    person(&setup, "cancel", &["1"]);
+    std::thread::sleep(Duration::from_millis(1100));
+    assert_eq!(held_as(&setup, "3")[0], "held");
+    person(&setup, "cancel", &["2"]);
+
+    assert_eq!(with(&desk, 1, "held"), 1, "{desk:?}");
+
+    assert_eq!(
+        reply,
+        "task 3 held: same files, until task 1 ends and until task 2 ends\n"
+    );
+    setup.until("tasks", |rows| rows[2][4] == "queued");
+}
+
+#[test]
+fn a_hold_on_a_merge_and_a_linear_issue_releases_once_both_are_met_in_either_order() {
+    let setup = queued_without_room("hold-merge-issue");
+    setup.publish(&requested(43));
+    setup.until("tasks", |rows| rows.len() == 2);
+    let reply = person(
+        &setup,
+        "hold",
+        &["1", "--reason", "a", "--merge", "7", "--after", "ENG-7"],
+    );
+    person(
+        &setup,
+        "hold",
+        &["2", "--reason", "b", "--after", "eng-8", "--merge", "7"],
+    );
+
+    setup.publish(&moved_to_done("ENG-8"));
+    std::thread::sleep(Duration::from_millis(1100));
+    assert_eq!(held_as(&setup, "2")[0], "held");
+    setup.publish(&closed_7(true, 400));
+    setup.until("tasks", |rows| rows[1][4] == "queued");
+    assert_eq!(held_as(&setup, "1")[0], "held");
+    setup.publish(&moved_to_done("ENG-7"));
+
+    assert_eq!(
+        reply,
+        "task 1 held: a, until ENG-7 is Done or Canceled and until github:owner/repo#7 merges, and asks if it closes unmerged\n"
+    );
+    setup.until("tasks", |rows| rows[0][4] == "queued");
+}
+
+#[test]
+fn a_hold_after_a_linear_issue_already_done_releases_the_task_at_once() {
+    let mut setup = Setup::new("hold-issue-done");
+    setup.memory(0);
+    fs::write(
+        setup.dir.join("fake/linear"),
+        json!({ "data": { "issue": { "state": { "name": "Done" } } } }).to_string(),
+    )
+    .unwrap();
+    setup.publish(&requested(42));
+    setup.start_with(
+        Path::new(env!("CARGO_BIN_EXE_priory")),
+        &[("LINEAR_API_KEY", "lin_api_test")],
+    );
+    setup.until("tasks", |rows| rows.len() == 1);
+
+    person(&setup, "hold", &["1", "--reason", "a", "--after", "ENG-7"]);
+
+    setup.until("tasks", |rows| rows[0][4] == "queued");
+}
+
+#[test]
+fn a_hold_after_an_issue_reopened_since_it_was_done_stays_held() {
+    let setup = queued_without_room("hold-issue-reopened");
+    setup.publish(&moved_to_done("ENG-7"));
+    setup.publish(&linear_event(
+        "linear.issue.blockers",
+        "ENG-7",
+        json!({ "blockers": [] }),
+    ));
+    setup.until("inbox", |rows| rows.len() == 3);
+
+    person(&setup, "hold", &["1", "--reason", "a", "--after", "ENG-7"]);
+    std::thread::sleep(Duration::from_millis(1100));
+
+    assert_eq!(held_as(&setup, "1")[0], "held");
+}
+
+#[test]
+fn dropping_a_task_through_one_merge_ask_closes_its_other_merge_ask() {
+    let setup = queued_without_room("hold-two-asks");
+    person(
+        &setup,
+        "hold",
+        &["1", "--reason", "a", "--merge", "7", "--merge", "8"],
+    );
+    setup.publish(&closed_7(false, 400));
+    let mut closed_8 = closed_7(false, 401);
+    closed_8.data["pull_request"] = json!(8);
+    setup.publish(&closed_8);
+    let asks = setup.until("asks", |rows| rows.len() == 2);
+
+    person(&setup, "answer", &[&asks[0][0], "drop", "--revision", "1"]);
+
+    assert_eq!(held_as(&setup, "1")[0], "dropped");
+    assert_eq!(setup.rows("asks"), Vec::<Vec<String>>::new());
+}
+
+#[test]
+fn cancelling_a_held_task_closes_its_merge_asks() {
+    let setup = queued_without_room("hold-cancel-asks");
+    person(&setup, "hold", &["1", "--reason", "a", "--merge", "7"]);
+    setup.publish(&closed_7(false, 400));
+    setup.until("asks", |rows| rows.len() == 1);
+
+    person(&setup, "cancel", &["1"]);
+
+    assert_eq!(setup.rows("asks"), Vec::<Vec<String>>::new());
+}
+
+#[test]
+fn a_task_request_whose_hold_names_null_conditions_files_its_task_held() {
+    let mut setup = Setup::new("hold-null");
+    setup.memory(0);
+    let mut request = requested(42);
+    request.data["hold"] = json!({ "reason": "a", "after": null, "merge": null });
+    setup.publish(&request);
+    setup.start();
+
+    setup.until("tasks", |rows| rows.len() == 1);
+    assert_eq!(
+        held_as(&setup, "1"),
+        ["held", "held: a, until a person releases it"]
+    );
+}
+
+#[test]
 fn a_running_task_cannot_be_held() {
     let mut setup = Setup::new("hold-running");
     setup.publish(&requested(42));
@@ -8132,6 +8775,19 @@ fn a_restarted_intake_resumes_a_wait_only_repository_where_it_stopped() {
 }
 
 /// Waits until the daemon answers on its socket.
+/// Runs `priory <args>` until a daemon replies to it, past the socket a crashed one left.
+fn once_listening(setup: &Setup, args: &[&str]) -> Exit {
+    let deadline = Instant::now() + Duration::from_secs(15);
+    loop {
+        let exit = setup.priory(args);
+        if !String::from_utf8_lossy(&exit.stderr).contains("no priory daemon listens") {
+            return exit;
+        }
+        assert!(Instant::now() < deadline, "the daemon never listened");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
 fn listening(setup: &Setup) {
     let deadline = Instant::now() + Duration::from_secs(15);
     while !setup.dir.join("home/priory.sock").exists() {

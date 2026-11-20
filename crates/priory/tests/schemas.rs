@@ -57,6 +57,7 @@ fn generated() -> Vec<(String, Value)> {
         event::<ReviewRequestRemoved>("github.pull_request.review_request_removed"),
         event::<ViewChanged>("linear.issue.entered"),
         event::<ViewChanged>("linear.issue.left"),
+        event::<ViewFilterChanged>("linear.view.changed"),
         event::<LinearIssueCreated>("linear.issue.created"),
         event::<LinearStateChanged>("linear.issue.state_changed"),
         event::<LinearBlockers>("linear.issue.blockers"),

@@ -90,11 +90,13 @@ for the endpoint. With this table, the server takes GitHub deliveries at `POST /
 
 ## `[asks]`
 
-See [asks.md](../daemon/asks.md) for when the daemon runs the command and how it retries.
+See [asks.md](../daemon/asks.md) for when the daemon runs the `deliver` command and how it retries,
+and [tools.md](../daemon/tools.md#commands-an-answer-runs) for the commands an answer runs.
 
 | Key | Type | Required | Default | Meaning | Example |
 | --- | ---- | -------- | ------- | ------- | ------- |
 | `deliver` | string | no | none: an answer is only stored | The command that delivers an outside ask's answer or dismissal to the session that asked, relative to the factory folder | `"adapters/herdr/deliver"` |
+| `targets` | table of strings | no | none: only `worktree` | The folders, by name, where an answer can run an agent's ask command besides the task's worktree, relative to the factory folder or absolute | `{ ops = "../ops" }` |
 
 ## Example
 
@@ -134,6 +136,7 @@ secret_env = "PRIORY_GITHUB_WEBHOOK_SECRET"    # the variable holding the webhoo
 
 [asks]
 deliver = "bin/deliver"                        # delivers outside answers, from the factory folder
+targets = { ops = "../ops" }                   # where an answer can run an ask's command
 ```
 
 ## Errors from `priory check`

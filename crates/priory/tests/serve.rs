@@ -527,6 +527,27 @@ fn a_task_endpoint_returns_its_runs_steps_asks_waits_results_and_tldr() {
 }
 
 #[test]
+fn a_task_endpoint_shows_the_output_its_run_step_kept() {
+    let mut setup = Setup::new("task-run-step", SERVE);
+    setup.seed();
+    let db = rusqlite::Connection::open(setup.dir.join("priory.db")).unwrap();
+    db.execute(
+        "INSERT INTO actions (task, step, action, status, error, stdout, stderr)
+         VALUES (1, 'poll', 'run', 'failed', 'exit 2', 'checking', 'no network')",
+        [],
+    )
+    .unwrap();
+    let address = setup.start(&["serve", &setup.factory()]);
+
+    let step = &api(&address, "/api/tasks/1")["steps"][0];
+
+    assert_eq!(step["action"], "run");
+    assert_eq!(step["error"], "exit 2");
+    assert_eq!(step["stdout"], "checking");
+    assert_eq!(step["stderr"], "no network");
+}
+
+#[test]
 fn progress_stores_the_four_fields_that_the_task_endpoint_and_the_tasks_listing_show() {
     let mut setup = Setup::new("progress", SERVE);
     setup.seed();
@@ -744,17 +765,25 @@ fn serve_reads_the_state_without_creating_it() {
 }
 
 #[test]
-fn the_queue_lists_held_tasks_with_their_hold_after_the_waiting_ones() {
+fn the_queue_and_tasks_list_each_condition_of_a_hold_and_whether_it_is_met() {
     let mut setup = Setup::new("held", SERVE);
     setup.seed();
     let db = rusqlite::Connection::open(setup.dir.join("priory.db")).unwrap();
     db.execute_batch(
-        "UPDATE tasks SET state = 'held', reason = 'until tomorrow' WHERE id = 1;
-         INSERT INTO holds (task, reason, kind, until, resume)
-         VALUES (1, 'until tomorrow', 'time', '2099-01-01T09:00:00Z', 'queued');",
+        "UPDATE tasks SET state = 'held', reason = 'held: b, until tomorrow and until task 2 ends'
+           WHERE id = 1;
+         INSERT INTO holds (task, reason, kind, until, target, resume, met, met_as) VALUES
+           (1, 'b', 'time', '2099-01-01T09:00:00Z', NULL, 'queued', NULL, NULL),
+           (1, 'b', 'task', NULL, 2, 'queued', '2026-11-20T10:00:00Z', 'task 2 is done');",
     )
     .unwrap();
     let address = setup.start(&["serve", &setup.factory()]);
+    let conditions = json!([
+        { "kind": "time", "until": "2099-01-01T09:00:00Z", "task": null, "resource": null,
+          "met": null, "met_as": null },
+        { "kind": "task", "until": null, "task": 2, "resource": null,
+          "met": "2026-11-20T10:00:00Z", "met_as": "task 2 is done" },
+    ]);
 
     let waiting = &api(&address, "/api/queue")["waiting"];
 
@@ -767,10 +796,16 @@ fn the_queue_lists_held_tasks_with_their_hold_after_the_waiting_ones() {
         ],
         [&json!(2), &json!(1), &json!(1), &Value::Null]
     );
-    assert_eq!(
-        [&waiting[1]["hold"], &waiting[1]["hold_until"]],
-        [&json!("time"), &json!("2099-01-01T09:00:00Z")]
-    );
+    assert_eq!(waiting[1]["conditions"], conditions);
+    assert_eq!(waiting[0]["conditions"], Value::Null);
+    assert_eq!(api(&address, "/api/tasks/1")["conditions"], conditions);
+    let tasks = json_of(&setup, "tasks");
+    let held = tasks["tasks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|task| task["id"] == 1);
+    assert_eq!(held.unwrap()["conditions"], conditions);
     assert_eq!(api(&address, "/api/tasks/2")["position"], 1);
 }
 
@@ -1920,5 +1955,282 @@ fn up_next_lists_each_firing_of_a_keyless_schedule_and_none_of_a_held_one() {
             "2026-11-17T14:00:00Z",
             "2026-11-17T15:00:00Z"
         ]
+    );
+}
+
+/// Posts `body` as JSON with the token and `extra` header lines, and returns the status and body.
+fn post(address: &str, path: &str, extra: &str, body: &str) -> (u16, String) {
+    raw(
+        address,
+        &format!(
+            "POST {path} HTTP/1.1\r\nHost: {address}\r\nAuthorization: Bearer {TOKEN}\r\n\
+             Content-Type: application/json\r\n{extra}Content-Length: {}\r\n\r\n{body}",
+            body.len()
+        ),
+    )
+}
+
+impl Setup {
+    /// `seed`, with task 1 asleep on its open ask, as an agent's ask leaves it.
+    fn asleep_on_ask(&self) {
+        self.seed();
+        self.db()
+            .execute("UPDATE tasks SET state = 'asleep' WHERE id = 1", [])
+            .unwrap();
+    }
+
+    fn db(&self) -> rusqlite::Connection {
+        rusqlite::Connection::open(self.dir.join("priory.db")).unwrap()
+    }
+
+    /// Ask 1 as `priory asks --json` lists it.
+    fn ask(&self) -> Value {
+        json_of(self, "asks")["asks"][0].clone()
+    }
+}
+
+#[test]
+fn an_answer_through_the_endpoint_wakes_the_task_as_priory_answer_does() {
+    let mut setup = Setup::new("web-answer", SERVE);
+    setup.asleep_on_ask();
+    let address = setup.start(&["daemon", &setup.factory()]);
+
+    let (status, body) = post(
+        &address,
+        "/api/asks/1/answer",
+        "",
+        r#"{"option": "left", "revision": 2}"#,
+    );
+
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(
+        serde_json::from_str::<Value>(&body).unwrap(),
+        json!({ "ok": "ask 1 answered" })
+    );
+    let ask = setup.ask();
+    assert_eq!([&ask["state"], &ask["answer"]], ["answered", "left"]);
+    let prompt: String = setup
+        .db()
+        .query_row(
+            "SELECT text FROM outbox WHERE task = 1 ORDER BY id DESC LIMIT 1",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(prompt.starts_with("left"), "{prompt}");
+}
+
+#[test]
+fn an_answer_that_runs_a_command_needs_run_true_and_the_ask_then_shows_what_it_ran() {
+    let mut setup = Setup::new("web-command", SERVE);
+    setup.asleep_on_ask();
+    let command = json!({
+        "argv": ["sh", "-c", "echo ran >> ran.log; echo shipped"],
+        "target": "worktree",
+        "dir": setup.dir,
+        "runs": ["left"],
+    });
+    setup
+        .db()
+        .execute(
+            "UPDATE asks SET command = ?1 WHERE id = 1",
+            [command.to_string()],
+        )
+        .unwrap();
+    let address = setup.start(&["daemon", &setup.factory()]);
+    let answer = |body: &str| post(&address, "/api/asks/1/answer", "", body);
+
+    let (unconfirmed, refusal) = answer(r#"{"option": "left", "revision": 2}"#);
+    let (status, body) = answer(r#"{"option": "left", "revision": 2, "run": true}"#);
+
+    assert_eq!(unconfirmed, 422, "{refusal}");
+    let shown = r#"["sh","-c","echo ran >> ran.log; echo shipped"]"#;
+    let dir = setup.dir.display();
+    assert_eq!(
+        serde_json::from_str::<Value>(&refusal).unwrap()["error"],
+        format!(
+            "ask 1 runs {shown} in {dir} (target worktree), bound to revision 2, when answered \"left\": answer again with --run to run it"
+        )
+    );
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(
+        serde_json::from_str::<Value>(&body).unwrap()["ok"],
+        format!("ask 1 answered: running {shown} in {dir}")
+    );
+    let deadline = std::time::Instant::now() + Duration::from_secs(15);
+    while setup.ask()["ran"]["status"] == "running" {
+        assert!(std::time::Instant::now() < deadline, "{}", setup.ask());
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let ask = setup.ask();
+    assert_eq!(
+        ask["command"]["argv"][2],
+        "echo ran >> ran.log; echo shipped"
+    );
+    assert_eq!(
+        ask["ran"],
+        json!({ "status": "done", "revision": 2, "error": null, "stdout": "shipped", "stderr": "" })
+    );
+    assert_eq!(
+        fs::read_to_string(setup.dir.join("ran.log")).unwrap(),
+        "ran\n"
+    );
+}
+
+#[test]
+fn a_stale_revision_gets_409_with_the_current_ask_and_changes_nothing() {
+    let mut setup = Setup::new("web-stale", SERVE);
+    setup.asleep_on_ask();
+    let address = setup.start(&["daemon", &setup.factory()]);
+    let before = setup.ask();
+
+    let (status, body) = post(
+        &address,
+        "/api/asks/1/answer",
+        "",
+        r#"{"option": "left", "revision": 1}"#,
+    );
+
+    assert_eq!(status, 409, "{body}");
+    let body: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(body["error"], "ask 1 is at revision 2, not 1");
+    assert_eq!(body["ask"], before);
+    assert_eq!(setup.ask(), before);
+}
+
+#[test]
+fn a_wrong_token_gets_401_and_a_foreign_origin_403_and_neither_changes_anything() {
+    let mut setup = Setup::new("web-refused", SERVE);
+    setup.asleep_on_ask();
+    let address = setup.start(&["daemon", &setup.factory()]);
+    let before = setup.ask();
+    let body = r#"{"option": "left", "revision": 2}"#;
+
+    let wrong = raw(
+        &address,
+        &format!(
+            "POST /api/asks/1/answer HTTP/1.1\r\nHost: {address}\r\nAuthorization: Bearer nope\r\n\
+             Content-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
+            body.len()
+        ),
+    );
+    let foreign = post(
+        &address,
+        "/api/asks/1/answer",
+        "Origin: http://evil.example\r\n",
+        body,
+    );
+    let null = post(&address, "/api/asks/1/dismiss", "Origin: null\r\n", body);
+
+    assert_eq!(wrong.0, 401, "{}", wrong.1);
+    assert_eq!(foreign.0, 403, "{}", foreign.1);
+    assert_eq!(null.0, 403, "{}", null.1);
+    assert_eq!(setup.ask(), before);
+    let own = post(
+        &address,
+        "/api/asks/1/answer",
+        &format!("Origin: http://{address}\r\n"),
+        body,
+    );
+    assert_eq!(own.0, 200, "{}", own.1);
+}
+
+#[test]
+fn serve_without_a_daemon_gets_503_on_writes_and_200_on_reads() {
+    let mut setup = Setup::new("web-no-daemon", SERVE);
+    setup.asleep_on_ask();
+    let address = setup.start(&["serve", &setup.factory()]);
+
+    let (status, body) = post(
+        &address,
+        "/api/asks/1/answer",
+        "",
+        r#"{"option": "left", "revision": 2}"#,
+    );
+
+    assert_eq!(status, 503, "{body}");
+    assert!(body.contains("Start `priory daemon`"), "{body}");
+    assert_eq!(get(&address, "/api/asks", Some(TOKEN)).0, 200);
+    assert_eq!(setup.ask()["state"], "open");
+}
+
+#[test]
+fn a_write_body_over_16_kib_gets_413_and_one_not_json_415() {
+    let mut setup = Setup::new("web-limits", SERVE);
+    setup.asleep_on_ask();
+    let address = setup.start(&["daemon", &setup.factory()]);
+    let long = format!(r#"{{"text": "{}", "revision": 2}}"#, "a".repeat(16 * 1024));
+
+    let (status, body) = post(&address, "/api/asks/1/answer", "", &long);
+    let form = raw(
+        &address,
+        &format!(
+            "POST /api/asks/1/answer HTTP/1.1\r\nHost: {address}\r\nAuthorization: Bearer {TOKEN}\r\n\
+             Content-Type: application/x-www-form-urlencoded\r\nContent-Length: 6\r\n\r\noption"
+        ),
+    );
+
+    assert_eq!(status, 413, "{body}");
+    assert_eq!(form.0, 415, "{}", form.1);
+    assert_eq!(setup.ask()["state"], "open");
+}
+
+#[test]
+fn dismiss_and_snooze_through_their_endpoints_do_what_their_cli_verbs_do() {
+    let mut setup = Setup::new("web-dismiss", SERVE);
+    setup.asleep_on_ask();
+    let address = setup.start(&["daemon", &setup.factory()]);
+
+    let snoozed = post(
+        &address,
+        "/api/snooze",
+        "",
+        r#"{"kind": "ask", "id": 1, "for": "1h"}"#,
+    );
+    assert_eq!(snoozed.0, 200, "{}", snoozed.1);
+    assert!(setup.ask()["snoozed_until"].is_string());
+    let cleared = post(
+        &address,
+        "/api/snooze",
+        "",
+        r#"{"kind": "ask", "id": 1, "clear": true}"#,
+    );
+    assert_eq!(cleared.0, 200, "{}", cleared.1);
+    assert!(setup.ask()["snoozed_until"].is_null());
+    let both = post(
+        &address,
+        "/api/snooze",
+        "",
+        r#"{"kind": "ask", "id": 1, "for": "1h", "clear": true}"#,
+    );
+    assert_eq!(both.0, 400, "{}", both.1);
+    let unknown = post(
+        &address,
+        "/api/snooze",
+        "",
+        r#"{"kind": "run", "id": 1, "for": "1h"}"#,
+    );
+    assert_eq!(unknown.0, 422, "{}", unknown.1);
+
+    let dismissed = post(&address, "/api/asks/1/dismiss", "", r#"{"revision": 2}"#);
+
+    assert_eq!(dismissed.0, 200, "{}", dismissed.1);
+    let ask = setup.ask();
+    assert_eq!(
+        [&ask["state"], &ask["withdrawn_why"]],
+        ["withdrawn", "dismissed"]
+    );
+    let again = post(&address, "/api/asks/1/dismiss", "", r#"{"revision": 2}"#);
+    assert_eq!(again.0, 409, "{}", again.1);
+    assert_eq!(get(&address, "/api/asks/1/answer", Some(TOKEN)).0, 405);
+    assert_eq!(
+        post(
+            &address,
+            "/api/asks/9/answer",
+            "",
+            r#"{"text": "x", "revision": 1}"#
+        )
+        .0,
+        404
     );
 }

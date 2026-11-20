@@ -1,5 +1,5 @@
-//! A small HTTP/1.1 server: bearer token for reads, a bounded body for hook paths that authenticate
-//! themselves, one request per connection.
+//! A small HTTP/1.1 server: bearer token for reads and writes, a bounded body for writes and for
+//! hook paths that authenticate themselves, one request per connection.
 
 use std::io::{self, Read, Write};
 use std::net::{Shutdown, TcpListener, TcpStream};
@@ -14,6 +14,8 @@ const HEADERS: usize = 32;
 const TIMEOUT: Duration = Duration::from_secs(5);
 /// The largest body a hook path reads; a longer one gets 413 before any of it is read.
 const BODY: usize = 1024 * 1024;
+/// The largest body a `POST` with the token reads.
+const WRITE: usize = 16 * 1024;
 /// The connections served at once; others wait in the listen backlog.
 pub const WORKERS: usize = 8;
 
@@ -45,7 +47,7 @@ pub struct Request<'a> {
     /// The path, query included.
     pub path: &'a str,
     headers: &'a [httparse::Header<'a>],
-    /// Empty except on a hook path.
+    /// Empty except on a `POST`.
     pub body: &'a [u8],
 }
 
@@ -62,7 +64,7 @@ impl Request<'_> {
 /// Serves `listener` on a fixed pool of threads. Each thread calls `make` once for its own
 /// handler, which gets each request that carries `token`, and each `POST` to one of `hooks` with
 /// its body and no token: the handler authenticates those itself. A request to a `public` path
-/// needs no token either.
+/// needs no token either. A `POST` from a page of another origin gets 403.
 pub fn serve<M, H>(
     listener: TcpListener,
     token: String,
@@ -119,18 +121,23 @@ fn answer(
         202 => "Accepted",
         400 => "Bad Request",
         401 => "Unauthorized",
+        403 => "Forbidden",
         404 => "Not Found",
         405 => "Method Not Allowed",
         408 => "Request Timeout",
+        409 => "Conflict",
         411 => "Length Required",
         413 => "Content Too Large",
+        415 => "Unsupported Media Type",
+        422 => "Unprocessable Content",
         431 => "Request Header Fields Too Large",
         503 => "Service Unavailable",
+        504 => "Gateway Timeout",
         _ => "Internal Server Error",
     };
     let extra = match reply.status {
         401 => "WWW-Authenticate: Bearer\r\n",
-        405 => "Allow: GET\r\n",
+        405 if reply.headers.is_empty() => "Allow: GET\r\n",
         503 => "Retry-After: 1\r\n",
         _ => "",
     };
@@ -204,12 +211,13 @@ fn read_some(
 }
 
 /// The body `Content-Length` announces, `start` being its first bytes, read before `deadline`.
-/// A body over `BODY` is refused before any more of it is read.
+/// A body over `limit` is refused before any more of it is read.
 fn read_body(
     stream: &mut TcpStream,
     deadline: Instant,
     request: &Request,
     start: &[u8],
+    limit: usize,
 ) -> Result<Vec<u8>, Reply> {
     let length = "send the body with a Content-Length";
     if request.header("transfer-encoding").is_some() {
@@ -227,8 +235,12 @@ fn read_body(
         .header("content-length")
         .and_then(|value| std::str::from_utf8(value).ok()?.parse::<usize>().ok())
         .ok_or_else(|| Reply::error(411, length))?;
-    if announced > BODY {
-        return Err(Reply::error(413, "the body is over 1 MiB"));
+    if announced > limit {
+        let size = match limit {
+            BODY => "1 MiB".to_owned(),
+            _ => format!("{} KiB", limit / 1024),
+        };
+        return Err(Reply::error(413, &format!("the body is over {size}")));
     }
     if start.len() > announced {
         return Err(Reply::error(
@@ -268,8 +280,11 @@ fn respond(
         body: &[],
     };
     let bare = path.split_once('?').map_or(path, |(path, _)| path);
+    if method == "POST" && !same_origin(&request) {
+        return Reply::error(403, "a page of another origin cannot post here");
+    }
     if method == "POST" && gate.hooks.contains(&bare) {
-        return match read_body(stream, deadline, &request, &read[end..]) {
+        return match read_body(stream, deadline, &request, &read[end..], BODY) {
             Ok(body) => handle(&Request {
                 body: &body,
                 ..request
@@ -285,6 +300,15 @@ fn respond(
     if !(gate.public)(bare) && !bearer.is_some_and(|sent| same(sent, gate.token.as_bytes())) {
         return Reply::error(401, "send the token as `Authorization: Bearer <token>`");
     }
+    if method == "POST" {
+        return match read_body(stream, deadline, &request, &read[end..], WRITE) {
+            Ok(body) => handle(&Request {
+                body: &body,
+                ..request
+            }),
+            Err(reply) => reply,
+        };
+    }
     let body = request.headers.iter().any(|header| {
         header.name.eq_ignore_ascii_case("transfer-encoding")
             || (header.name.eq_ignore_ascii_case("content-length") && header.value != b"0")
@@ -293,6 +317,20 @@ fn respond(
         return Reply::error(413, "requests carry no body");
     }
     handle(&request)
+}
+
+/// Whether the request has no `Origin`, as from curl or a webhook, or one whose host and port are
+/// the `Host` it was sent to. The scheme is not compared, so a TLS proxy that keeps `Host` passes.
+fn same_origin(request: &Request) -> bool {
+    let Some(origin) = request.header("origin") else {
+        return true;
+    };
+    let authority = origin
+        .strip_prefix(b"http://")
+        .or_else(|| origin.strip_prefix(b"https://"));
+    authority
+        .zip(request.header("host"))
+        .is_some_and(|(authority, host)| authority.eq_ignore_ascii_case(host))
 }
 
 /// Whether `sent` equals `token`, in a time that depends only on `token`'s length.

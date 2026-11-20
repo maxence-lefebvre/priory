@@ -11,13 +11,13 @@ On every poll, the intake reads the state file that `PRIORY_DB` names and collec
 | From | Kinds |
 | ---- | ----- |
 | open waits | `linear_comment`, `linear_state`, `slack_reply`, `pull_request`, `checks` and `review` (see [waits.md](../daemon/waits.md)) |
-| open holds | `--merge` (see Holds in [runs.md](../daemon/runs.md)) |
+| open holds | unmet `--merge` and `--after <issue>` conditions (see Holds in [runs.md](../daemon/runs.md)) |
 
 It skips the waits and holds of a task that is `done`, `failed` or `dropped`. Without `PRIORY_DB`,
 the intake watches none of them.
 
-Each wait gives a resource and the time of its agent's last prompt. Each hold gives its pull request
-and the time the hold was set. The intake reads from that time on.
+Each wait gives a resource and the time of its agent's last prompt. Each hold condition gives its
+pull request or issue and the time the hold was set. The intake reads from that time on.
 
 | Resource | Example | Polled as |
 | -------- | ------- | --------- |

@@ -78,10 +78,70 @@ turn and sleeps with no process. The person's answer arrives as its next prompt 
 | `text`       | The ask's body, in Markdown                                          |
 | `whatWaits`  | What waits on the answer                                             |
 | `nextAction` | What the agent does once it has the answer                           |
-| `command`    | A command for the answer to run. Priory stores it but runs nothing yet (R6.8) |
+| `command`    | An object: a command that an answer runs (see Commands an answer runs) |
 
 `priory asks` and `priory asks --json` show them, the JSON as `title`, `text`, `what_waits`,
 `next_action` and `command`.
+
+#### Commands an answer runs
+
+An ask's `command` runs once when a person answers with one of its options. For example:
+
+```json
+"command": { "argv": ["scripts/deploy", "--env", "staging"], "target": "ops", "runs": ["deploy"] }
+```
+
+| Field    | Type             | Meaning |
+| -------- | ---------------- | ------- |
+| `argv`   | array of strings | The program and its arguments. Priory execs them as they are, never through a shell |
+| `target` | string           | Where it runs: `worktree`, the task's worktree, or a name in the factory's [`[asks.targets]`](../reference/factory.md#asks). Default `worktree` |
+| `runs`   | array of strings | The options whose answer runs it. Default: the recommended option, the one equal to `recommendation` |
+
+The tool refuses a `command` that is not such an object, a target the factory does not name, a
+`worktree` target for a task with no worktree, and a `runs` entry that is not an option. Without
+`runs`, it refuses a recommendation that is not an option. It stores the target as an absolute
+folder, so a later factory change never moves the command. An `argv[0]` with a slash runs from that
+folder; a bare name is looked up in `PATH`.
+
+An answer with an option in `runs` must confirm that it runs the command: `priory answer --run`, or
+`"run": true` over HTTP. Without it, the answer is refused with the command, its folder, its target
+and the revision it is bound to. An answer with another option, or free text, answers as usual and
+runs nothing.
+
+The answer is bound to the revision it read, as any answer is, and the command stored with that
+revision is the one that runs. The first answer stands, so a second answer never runs it again.
+
+In the transaction that stores the answer, the daemon stores the command as an `answer` action,
+with the ask, the revision, the command and the task's generation, and keeps the task `running`, so
+the sweep leaves its worktree alone. The daemon starts it at its next tick, as the `run` action
+starts its command (see The `run` action), bounded by `command_timeout`, with the same environment.
+A worktree target that a retirement removed is added back first, once there is room. When it ends, the action is `done` on exit 0 and
+`failed` otherwise, with the last 2000 bytes of stdout and stderr. The task then wakes with this
+prompt, followed by the two tails:
+
+```text
+Ask 7 was answered "deploy" at revision 1, which ran ["scripts/deploy","--env","staging"] in /srv/ops: exit 0.
+```
+
+The command belongs to the generation it was answered in. A cancel or a revive kills it, or keeps
+it from starting, and the task is not woken. An answer that beats the run's Stop does not end the
+turn's process early: `ask` and `wait` are refused until the command ends, and the Stop ends the
+run while the task stays `running`. The task wakes when the command ends.
+
+A daemon restart never runs the command again. The restarted daemon kills a command its
+predecessor left running and ends its action `uncertain`. The task wakes with `... and Priory
+stopped while it ran, so whether it finished is uncertain. Check the target before you act on it.`
+The desk shows a `command` item while the task is active. A command whose process the stopped
+daemon never recorded never started, so the next tick starts it.
+
+`priory actions` lists each answer's action. `priory asks --json` and `/api/asks` show it on the
+ask as `ran`: its `status`, `revision`, `error`, `stdout` and `stderr`.
+
+Known limits:
+
+- A daemon that stops after recording the process but before releasing it ends the action
+  `uncertain`, although the command never started.
+- The command runs on the daemon's machine only.
 
 ### Asks from outside Priory
 
@@ -103,7 +163,8 @@ Without `session` in the JSON, `priory ask` stores the session that ran it: the 
 `HC_TERMINAL_ID`, then a space and the Claude session in `CLAUDE_CODE_SESSION_ID` when it is set.
 Outside an hc terminal, `session` stays empty.
 
-`priory answer` stores the answer to an outside ask, under the same revision rule as any ask. When
+`priory answer` stores the answer to an outside ask, under the same revision rule as any ask. An
+outside ask's `command` is a string that Priory stores and never runs; the answer says so. When
 the factory names a `deliver` command, the daemon then delivers the answer or the dismissal to
 `session`, as [asks.md](asks.md) describes.
 
@@ -208,9 +269,10 @@ sweep removes it.
 A code step runs its `action` in the daemon, with no agent and no run. Each loop, the daemon takes
 the oldest `queued` or `ready` task at a code step and runs its action outside any transaction. One
 transaction then records the action run and moves the task by `next[status]` (see the table under
-Moving on). An action that is not built yet blocks the task with `action <name> is not built yet`.
+Moving on). A `run` action records itself first and runs in the background (see The `run` action).
+An action that is not built yet blocks the task with `action <name> is not built yet`.
 
-`open-pr` is the one built-in action:
+The built-in actions are `open-pr`, `open-issue` and `run`. `open-pr`:
 
 1. It pushes the commit of the task's branch, the one its approval covers, to that branch on the
    clone's `origin`.
@@ -227,6 +289,52 @@ Done and checks pins the commit that `open-pr` pushed.
 If the daemon stops after `gh pr create` and before recording it, the action runs again at its next
 start, once the approval still holds. The push repeats and the open pull request is reused. If
 someone closed that pull request meanwhile, a second one opens.
+
+`open-issue` opens an issue the same way; [sweep.md](sweep.md) describes it.
+
+### The `run` action
+
+A `run` action runs the step's `run` command with `sh -c`, so a script can decide a step without an
+agent. It runs in the task's worktree when it has one, else in the factory folder. Its environment
+adds:
+
+| Variable         | Value                                    |
+| ---------------- | ---------------------------------------- |
+| `PRIORY_TASK`    | the task's id                            |
+| `PRIORY_HOME`    | Priory home, as an absolute path         |
+| `PRIORY_DB`      | the state file, as an absolute path      |
+| `PRIORY_FACTORY` | the factory folder, as an absolute path  |
+
+The daemon stores the action as `running`, and the task as `running`, before the command starts.
+The shell then waits until the daemon has recorded its process group, and exits without running
+the command if the daemon dies first. The command runs in its own process group while the daemon
+carries on with other tasks, with stdin closed.
+
+Its outcome is the last line of its stdout, ignoring trailing blank lines and surrounding spaces,
+when the step's `next` names it and the command exited. Otherwise it is `ok` on exit 0 and `failed`
+on any other exit, a signal or a kill. A command past the step's `timeout`, or the factory's
+`command_timeout` when the step sets none, is killed with its process group and ends `failed`
+whatever it printed. Children it leaves in the background are killed when it ends. A non-zero exit
+or a kill is the action's error, such as `exit 3` or `timed out after 120s`.
+
+A task whose worktree the sweep removed gets it back before the command starts, as for `open-pr`. A
+command that cannot start, such as in a missing folder, ends `failed` with `cannot start: <error>`.
+
+The action keeps the last 2000 bytes of stdout and of stderr, which `priory actions` and the task's
+`steps` in `GET /api/tasks/<id>` show. A cancelled task's command is killed, and the task stays
+dropped. Only the task's latest action moves it, so a command killed by a cancel never moves the
+task that a revive started again.
+
+A daemon restart never runs a command twice. The restarted daemon kills the command its predecessor
+left running, after checking its process group's start time in `/proc`, and ends the action
+`failed` with the error `interrupted by a daemon restart`. The task then follows `next.failed`. So
+a restart reads as a failure even when the command had finished just before it.
+
+Known limits:
+
+- A restarted daemon cannot kill background children of a command whose shell already exited. It
+  cannot tell that group from a process that reused the shell's pid.
+- `priory queue` lists a task whose command runs in neither `waiting` nor `running`.
 
 ### Approvals
 
@@ -247,5 +355,5 @@ A branch with no commit to compare also blocks the task. `priory check` refuses 
 that a path reaches with no approving human step. So the `none` row needs a factory changed while
 the task ran.
 
-`priory actions` prints each action run: id, task, step, action, status, pull request, pushed commit
-and error.
+`priory actions` prints each action run: id, task, step, action, status, pull request, pushed commit,
+error, stdout and stderr. A `run` action's status is `running` until its command ends.

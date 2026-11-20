@@ -17,6 +17,32 @@ pub struct Snooze {
     pub until: Option<String>,
 }
 
+/// The `until` of a snooze `span` from now, such as `1h`, or at the time `at`, as RFC 3339 UTC
+/// rounded up to the second, so the item never comes back before the time asked for. With
+/// neither, `None`: the snooze clears.
+pub fn until(span: Option<&str>, at: Option<&str>) -> Result<Option<String>, String> {
+    let at = match (span, at) {
+        (Some(span), _) => {
+            let span = span
+                .parse::<jiff::Span>()
+                .map_err(|error| format!("{span}: {error}"))?;
+            jiff::Zoned::now()
+                .checked_add(span)
+                .map_err(|error| error.to_string())?
+                .timestamp()
+        }
+        (None, Some(at)) => at
+            .parse::<jiff::Timestamp>()
+            .map_err(|error| format!("{at}: {error}"))?,
+        (None, None) => return Ok(None),
+    };
+    let second = jiff::TimestampRound::new()
+        .smallest(jiff::Unit::Second)
+        .mode(jiff::RoundMode::Ceil);
+    let at = at.round(second).map_err(|error| error.to_string())?;
+    Ok(Some(at.strftime("%Y-%m-%dT%H:%M:%SZ").to_string()))
+}
+
 /// The snooze fields of an item, from a left joined row of `snoozes`: `snoozed_until` while it is
 /// snoozed, `snoozed_at` once a person snoozed it, and `back_early` as JSON text once a change
 /// ended the snooze before its time.

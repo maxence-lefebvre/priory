@@ -6,7 +6,7 @@ use crate::snooze::{self, Snooze};
 use crate::state::{self, Admission, NewRun, Signal};
 use crate::tools::{self, Act, Answer, Call, Dismiss, Done, Repair};
 use crate::trace::Trace;
-use crate::{deliver, embed, handler, progress, search, sections, stall, summary, sweep};
+use crate::{deliver, embed, handler, hold, progress, search, sections, stall, summary, sweep};
 use herdr_bus::{Bus, Start};
 use priory_factory::factory::{self, Factory, Harness, PermissionMode, Session};
 use priory_intake::intake::OUTPUT;
@@ -143,6 +143,28 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
         let output = script::collect(&log_of(&home, id));
         stall::ended(&db, id, "interrupted by a daemon restart", &output)?;
     }
+    // A `run` command neither runs twice nor runs on unbounded: it ends `failed`, and its task moves on.
+    for (id, group) in state::orphan_commands(&db)? {
+        if let Some((pid, _)) =
+            group.filter(|(pid, started)| memory::started(*pid) == Some(*started))
+        {
+            script::kill(pid);
+        }
+        let (out, err) = outputs_of(&home, id);
+        let (stdout, stderr) = (script::collect(&out), script::collect(&err));
+        tools::ran(&mut db, &trace, id, handler::INTERRUPTED, &stdout, &stderr)?;
+    }
+    // An answer's command never runs twice: one a stopped daemon left running ends `uncertain`.
+    for (id, group) in state::orphan_answers(&db)? {
+        if let Some((pid, _)) =
+            group.filter(|(pid, started)| memory::started(*pid) == Some(*started))
+        {
+            script::kill(pid);
+        }
+        let (out, err) = outputs_of(&home, id);
+        let (stdout, stderr) = (script::collect(&out), script::collect(&err));
+        tools::ran(&mut db, &trace, id, tools::UNCERTAIN, &stdout, &stderr)?;
+    }
     // A crash between ending its last script and marking it swept leaves a stall unswept.
     stall::swept(&db)?;
     // A handler call a stopped daemon started still counts, and its answer is recorded but not applied.
@@ -179,6 +201,7 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
         after: Instant::now(),
     });
     let mut scripts = Vec::new();
+    let mut commands = Vec::new();
     let mut deliveries = deliver::adopt(&db)?;
     let mut reads = Reads::default();
     let every = factory.sweep().every.unwrap_or(SWEEP);
@@ -188,7 +211,9 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
         while let Ok(line) = listening.lines.try_recv() {
             apply(&mut db, line, &trace)?;
         }
-        tend(&mut db, &trace, &share, &home, &scope)?;
+        start_answers(&mut db, &trace, &home, &mut commands)?;
+        commands = run_commands(&mut db, &trace, &home, commands)?;
+        tend(&mut db, &trace, &share, &home, &scope, &mut commands)?;
         handle_stalls(&mut db, &trace, &home, &mut stalls)?;
         let counter = counting.get(&home);
         summarize(&mut db, &trace, &summaries, &mut summarizing, counter)?;
@@ -574,22 +599,43 @@ enum Input {
 /// Linear or GitHub read never holds the daemon's loop or a lock on the state file.
 #[derive(Default)]
 struct Reads {
-    started: std::collections::HashSet<i64>,
-    done: Vec<std::thread::JoinHandle<(i64, Option<Read>)>>,
+    started: std::collections::HashMap<(Reader, i64), Instant>,
+    done: Vec<std::thread::JoinHandle<(Reader, i64, Option<Read>)>>,
+}
+
+/// How often the daemon reads the state of a hold's unmet Linear issue again, as the intake polls.
+const HOLD_READ_EVERY: Duration = Duration::from_secs(60);
+
+/// Whose condition a read is for: a wait's or a hold's.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+enum Reader {
+    Wait,
+    Hold,
 }
 
 /// A wait condition's current state, or why it could not be read.
 type Read = Result<String, String>;
 
-/// Starts a read for each open wait the daemon can read and has not read yet, and fires the waits
-/// whose finished read shows their condition already holds.
+/// Starts a read for each open wait the daemon has not read yet, and for each unmet issue
+/// condition of a hold once a minute, since the Linear stream misses a close before its position.
+/// Fires the waits and meets the conditions whose finished read shows they already hold.
 fn read_states(db: &mut Connection, reads: &mut Reads) -> Result<(), Error> {
-    for (wait, kind, resource) in tools::readable(db)? {
-        if !reads.started.insert(wait) {
+    let holds = hold::readable(db)?.into_iter();
+    let readable = tools::readable(db)?
+        .into_iter()
+        .map(|(wait, kind, resource)| (Reader::Wait, wait, kind, resource))
+        .chain(holds.map(|(id, resource)| (Reader::Hold, id, "linear_state".to_owned(), resource)));
+    for (reader, id, kind, resource) in readable {
+        let due = match reads.started.get(&(reader, id)) {
+            None => true,
+            Some(at) => reader == Reader::Hold && at.elapsed() >= HOLD_READ_EVERY,
+        };
+        if !due {
             continue;
         }
+        reads.started.insert((reader, id), Instant::now());
         reads.done.push(std::thread::spawn(move || {
-            (wait, current_state(&kind, &resource))
+            (reader, id, current_state(&kind, &resource))
         }));
     }
     let (finished, running) = std::mem::take(&mut reads.done)
@@ -598,11 +644,15 @@ fn read_states(db: &mut Connection, reads: &mut Reads) -> Result<(), Error> {
     reads.done = running;
     for read in finished {
         match read.join().expect("a state read does not panic") {
-            (wait, Some(Ok(state))) => tools::read(db, wait, &state)?,
-            (wait, Some(Err(error))) => {
-                eprintln!("priory daemon: cannot read the current state of wait {wait}: {error}")
+            (Reader::Wait, wait, Some(Ok(state))) => tools::read(db, wait, &state)?,
+            (Reader::Hold, id, Some(Ok(state))) => hold::read(db, id, &state)?,
+            (Reader::Wait, id, Some(Err(error))) => {
+                eprintln!("priory daemon: cannot read the current state of wait {id}: {error}")
             }
-            (_, None) => {}
+            (Reader::Hold, id, Some(Err(error))) => eprintln!(
+                "priory daemon: cannot read the current state of hold condition {id}: {error}"
+            ),
+            (_, _, None) => {}
         }
     }
     Ok(())
@@ -672,6 +722,7 @@ fn tend(
     share: &Share,
     home: &Path,
     scope: &[String],
+    commands: &mut Vec<(i64, Script)>,
 ) -> Result<(), Error> {
     let factory = trace.factory;
     for run in state::live(db)? {
@@ -708,7 +759,7 @@ fn tend(
     tools::enter_queued(db, &factory.workflows)?;
     state::disk_due(db, || room::measure(home).ok().map(|room| room.disk_free))?;
     memory::reclaim(db)?;
-    perform(db, trace, home)?;
+    perform(db, trace, home, commands)?;
     loop {
         // Measured again after each start, since its clone and worktree take disk.
         let measured = OnceCell::new();
@@ -827,7 +878,12 @@ fn verdict(run: &state::LiveRun, factory: &Factory) -> Option<(&'static str, Str
 
 /// Runs the action of the oldest task at a code step, once an irreversible step's approval holds.
 /// An action that is not built yet blocks the task.
-fn perform(db: &mut Connection, trace: &Trace, home: &Path) -> Result<(), Error> {
+fn perform(
+    db: &mut Connection,
+    trace: &Trace,
+    home: &Path,
+    commands: &mut Vec<(i64, Script)>,
+) -> Result<(), Error> {
     let factory = trace.factory;
     let Some(due) = state::actionable(db, &factory.workflows)? else {
         return Ok(());
@@ -837,33 +893,21 @@ fn perform(db: &mut Connection, trace: &Trace, home: &Path) -> Result<(), Error>
         .step(&due.step)
         .expect("actionable checked the step");
     // The sweep or a retirement removed the worktree; its branch still holds the work. Only
-    // `open-pr` pushes from it, so no other action waits for disk to add it back.
+    // `open-pr` pushes from it and `run` works in it, so no other action waits for disk to add it back.
     if let Some(repo) = repo_of(factory, &due.trigger, due.repo.as_deref())
-        && step.action.as_deref() == Some("open-pr")
+        && matches!(step.action.as_deref(), Some("open-pr" | "run"))
         && due
             .worktree
             .as_deref()
             .is_some_and(|worktree| !Path::new(worktree).exists())
     {
-        // A resurrected task goes through the room check, which a code step otherwise skips.
-        let waits = match room::measure(home) {
-            Err(error) => Some(format!("waits for room: {error}")),
-            Ok(room) if crate::room::short_of_disk(&room) => {
-                Some("waits for room to add back its worktree".to_owned())
+        match restore_worktree(db, home, repo, due.task)? {
+            Restored::Ready => {}
+            Restored::Waits => return Ok(()),
+            Restored::Failed(reason) => {
+                return Ok(state::block(db, trace, due.task, "blocked", &reason)?);
             }
-            Ok(_) => None,
-        };
-        if let Some(reason) = waits {
-            db.execute(
-                "UPDATE tasks SET reason = ?2 WHERE id = ?1 AND reason IS NOT ?2",
-                rusqlite::params![due.task, reason],
-            )?;
-            return Ok(());
         }
-        if let Err(reason) = runtime::worktree(home, repo, due.task) {
-            return Ok(state::block(db, trace, due.task, "blocked", &reason)?);
-        }
-        db.execute("UPDATE tasks SET retired = NULL WHERE id = ?1", [due.task])?;
     }
     let head = due
         .worktree
@@ -876,6 +920,7 @@ fn perform(db: &mut Connection, trace: &Trace, home: &Path) -> Result<(), Error>
     let done = match step.action.as_deref().unwrap_or_default() {
         "open-pr" => open_pr(db, factory, &due, head.as_deref())?,
         "open-issue" => open_issue(db, factory, &due)?,
+        "run" => return start_command(db, trace, home, &due, step, commands),
         other => {
             let reason = format!("action {other} is not built yet");
             return Ok(state::block(db, trace, due.task, "blocked", &reason)?);
@@ -889,6 +934,180 @@ fn perform(db: &mut Connection, trace: &Trace, home: &Path) -> Result<(), Error>
         done,
         trace,
     )?)
+}
+
+/// Where a removed worktree stands once `restore_worktree` looked at it.
+enum Restored {
+    Ready,
+    Waits,
+    Failed(String),
+}
+
+/// Adds back the worktree of `task`, which the sweep or a retirement removed, from its branch once
+/// there is disk room; a task waiting for room says so in its reason.
+fn restore_worktree(
+    db: &Connection,
+    home: &Path,
+    repo: &str,
+    task: i64,
+) -> Result<Restored, Error> {
+    // A resurrected task goes through the room check, which a code step otherwise skips.
+    let waits = match room::measure(home) {
+        Err(error) => Some(format!("waits for room: {error}")),
+        Ok(room) if crate::room::short_of_disk(&room) => {
+            Some("waits for room to add back its worktree".to_owned())
+        }
+        Ok(_) => None,
+    };
+    if let Some(reason) = waits {
+        db.execute(
+            "UPDATE tasks SET reason = ?2 WHERE id = ?1 AND reason IS NOT ?2",
+            rusqlite::params![task, reason],
+        )?;
+        return Ok(Restored::Waits);
+    }
+    if let Err(reason) = runtime::worktree(home, repo, task) {
+        return Ok(Restored::Failed(reason));
+    }
+    db.execute("UPDATE tasks SET retired = NULL WHERE id = ?1", [task])?;
+    Ok(Restored::Ready)
+}
+
+/// Stores the task's `run` action, then starts its command with `sh -c` in the task's worktree, or
+/// the factory folder when it has none, bounded by the step's `timeout` or `command_timeout`.
+fn start_command(
+    db: &mut Connection,
+    trace: &Trace,
+    home: &Path,
+    due: &state::Due,
+    step: &factory::Step,
+    commands: &mut Vec<(i64, Script)>,
+) -> Result<(), Error> {
+    let factory = trace.factory;
+    let id = tools::launched(db, due.task, step)?;
+    let folder = std::path::absolute(&factory.dir)?;
+    let dir = due.worktree.as_deref().map(Path::new).unwrap_or(&folder);
+    let env = command_env(home, factory, due.task)?;
+    let env: Vec<_> = env
+        .iter()
+        .map(|(name, value)| (*name, value.as_os_str()))
+        .collect();
+    let run = step.run.as_deref().unwrap_or_default();
+    let (out, err) = outputs_of(home, id);
+    let timeout = step.timeout.unwrap_or(factory.command_timeout());
+    match script::spawn_held(&["sh", "-c", run, "sh"], &env, dir, &out, &err, timeout) {
+        Ok(mut child) => {
+            state::command_spawned(db, id, child.pid(), memory::started(child.pid()))?;
+            child.release();
+            commands.push((id, child));
+        }
+        Err(error) => tools::ran(db, trace, id, &format!("cannot start: {error}"), "", "")?,
+    }
+    Ok(())
+}
+
+/// The environment a `run` action's or an answer's command gets: the task, Priory home, the state
+/// file and the factory folder, each absolute.
+fn command_env(
+    home: &Path,
+    factory: &Factory,
+    task: i64,
+) -> Result<[(&'static str, std::ffi::OsString); 4], Error> {
+    let state_file = std::path::absolute(std::env::var_os("PRIORY_DB").unwrap_or_default())?;
+    Ok([
+        ("PRIORY_TASK", task.to_string().into()),
+        ("PRIORY_HOME", std::path::absolute(home)?.into()),
+        ("PRIORY_DB", state_file.into()),
+        ("PRIORY_FACTORY", std::path::absolute(&factory.dir)?.into()),
+    ])
+}
+
+/// Starts the command of each answer stored to run it, in the folder it was asked with, bounded by
+/// `command_timeout`. Its argv is exec'd, never parsed by a shell.
+fn start_answers(
+    db: &mut Connection,
+    trace: &Trace,
+    home: &Path,
+    commands: &mut Vec<(i64, Script)>,
+) -> Result<(), Error> {
+    for (id, task, stored) in state::unstarted_answers(db)? {
+        let ran: crate::command::Command =
+            serde_json::from_str(&stored).expect("a stored command parses");
+        // A cancel or a revive between the answer and this tick leaves it unwanted: it never starts.
+        if !state::command_wanted(db, id)? {
+            tools::ran(db, trace, id, "not started: the task moved on", "", "")?;
+            continue;
+        }
+        if ran.target == crate::command::WORKTREE && !ran.dir.exists() {
+            let (trigger, repo): (String, Option<String>) = db.query_row(
+                "SELECT trigger, repo FROM tasks WHERE id = ?1",
+                [task],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )?;
+            let restored = match repo_of(trace.factory, &trigger, repo.as_deref()) {
+                Some(repo) => restore_worktree(db, home, repo, task)?,
+                None => Restored::Failed(format!("task {task} names no repo")),
+            };
+            match restored {
+                Restored::Ready => {}
+                Restored::Waits => continue,
+                Restored::Failed(reason) => {
+                    tools::ran(db, trace, id, &format!("cannot start: {reason}"), "", "")?;
+                    continue;
+                }
+            }
+        }
+        let env = command_env(home, trace.factory, task)?;
+        let env: Vec<_> = env
+            .iter()
+            .map(|(name, value)| (*name, value.as_os_str()))
+            .collect();
+        let program = ran.program();
+        let argv: Vec<&str> = std::iter::once(program.as_str())
+            .chain(ran.argv[1..].iter().map(String::as_str))
+            .collect();
+        let (out, err) = outputs_of(home, id);
+        let timeout = trace.factory.command_timeout();
+        match script::spawn_held(&argv, &env, &ran.dir, &out, &err, timeout) {
+            Ok(mut child) => {
+                state::command_spawned(db, id, child.pid(), memory::started(child.pid()))?;
+                child.release();
+                commands.push((id, child));
+            }
+            Err(error) => tools::ran(db, trace, id, &format!("cannot start: {error}"), "", "")?,
+        }
+    }
+    Ok(())
+}
+
+/// Where `run` action `id` writes its stdout and its stderr.
+fn outputs_of(home: &Path, id: i64) -> (std::path::PathBuf, std::path::PathBuf) {
+    let dir = home.join("actions");
+    (dir.join(format!("{id}.out")), dir.join(format!("{id}.err")))
+}
+
+/// Records each `run` command that ended and moves its task. A command whose task left its step, as
+/// a cancel does, is killed. Returns the commands still running.
+fn run_commands(
+    db: &mut Connection,
+    trace: &Trace,
+    home: &Path,
+    commands: Vec<(i64, Script)>,
+) -> Result<Vec<(i64, Script)>, Error> {
+    let mut still = Vec::new();
+    for (id, mut command) in commands {
+        if !state::command_wanted(db, id)? {
+            script::kill(command.pid());
+        }
+        match command.poll() {
+            Some((status, stdout)) => {
+                let stderr = script::collect(&outputs_of(home, id).1);
+                tools::ran(db, trace, id, &status, &stdout, &stderr)?;
+            }
+            None => still.push((id, command)),
+        }
+    }
+    Ok(still)
 }
 
 /// Pushes `commit` to the task's branch and opens its pull request, titled and described by its

@@ -513,6 +513,35 @@ fn every_step_needs_a_next() {
 }
 
 #[test]
+fn a_run_action_needs_a_command_and_only_a_run_action_has_one() {
+    let bare = workflow_with("run-bare", "action = \"open-pr\"", "action = \"run\"");
+    let foreign = workflow_with(
+        "run-foreign",
+        "action = \"open-pr\"",
+        "action = \"open-pr\"\nrun = \"true\"",
+    );
+    let model = workflow_with(
+        "run-model",
+        "agent = \"implementer\"",
+        "agent = \"implementer\"\nrun = \"true\"",
+    );
+
+    assert_eq!(bare.code, 1);
+    assert_eq!(
+        bare.stderr,
+        "workflows/implement.toml:20: step `open-pr`: a `run` action needs a `run` command\n"
+    );
+    assert_eq!(
+        foreign.stderr,
+        "workflows/implement.toml:20: step `open-pr`: only a `run` action has a `run` command\n"
+    );
+    assert_eq!(
+        model.stderr,
+        "workflows/implement.toml:4: step `implement`: only a code step has a `run` command\n"
+    );
+}
+
+#[test]
 fn a_step_holds_only_its_deciders_fields() {
     let outcome = workflow_with(
         "foreign-field",
@@ -1006,7 +1035,7 @@ fn a_lane_with_a_newline_fails_check() {
 fn a_linear_trigger_uses_a_supported_event_filter_and_key() {
     let view = "source = \"linear.view\"\nview = \"6b3c2f9a1d4e\"\non = \"issue.entered\"\nworkflow = \"implement\"\nkey = \"issue.identifier\"\nbackfill = true\n";
     let issues = "source = \"linear\"\non = \"comment.created\"\nfilter = { team = \"ENG\", label = \"agent\" }\nworkflow = \"implement\"\n";
-    let wrong = "source = \"linear\"\non = \"issue.entered\"\nfilter = { project = \"x\" }\nworkflow = \"implement\"\nkey = \"issue.id\"\n";
+    let wrong = "source = \"linear\"\non = \"issue.entered\"\nfilter = { priority = \"x\" }\nworkflow = \"implement\"\nkey = \"issue.id\"\n";
     let mut files = with("triggers/agent-label.toml", view);
     files.push(("triggers/comments.toml", issues));
     files.push(("triggers/wrong.toml", wrong));
@@ -1017,7 +1046,7 @@ fn a_linear_trigger_uses_a_supported_event_filter_and_key() {
     assert_eq!(
         outcome.stderr,
         "triggers/wrong.toml:2: a `linear` trigger handles `issue.created`, `issue.state_changed`, `comment.created`, not `issue.entered`\n\
-         triggers/wrong.toml:3: a `linear` trigger filters on `team`, `label` or `state`\n\
+         triggers/wrong.toml:3: a `linear` trigger filters on `team`, `project`, `label` or `state`\n\
          triggers/wrong.toml:5: a Linear trigger's `key` is `issue.identifier`\n"
     );
 }

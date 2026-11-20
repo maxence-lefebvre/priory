@@ -427,6 +427,9 @@ for a decision. Every ask has its own URL, such as `/asks/42`.
    its key `1` to `9`.
 6. **Write an answer**: a ghost button that expands into a 16 px text field with a "Send"
    button. Free text is always possible.
+7. **Dismiss** and the [snooze](#snooze) buttons: ghost buttons on the same line as "Write an
+   answer". Dismiss closes the ask with no answer and sends at once, with no undo bar, as
+   `priory dismiss` does. Snooze shows only on an ask that belongs to a task.
 
 **Read** (below, in the order a doubt follows): a row of section chips (Why, Brief, Plan, PR,
 Trace, History, and Command in the drawer) jumps to each part and marks the one in view.
@@ -476,12 +479,14 @@ Ask states:
 | taken     | "Already answered 2 min ago: Merge." Shown when another answer came first.                |
 | withdrawn | Muted: "Withdrawn: the task was revived." No buttons.                                     |
 | offline   | Options stay visible but disabled, with "Reconnect to answer".                            |
+| unsent    | A `--warn-text` line says why the answer did not go, such as "no priory daemon runs beside this server". The draft stays in the text field. |
 
 A **command ask** (R6.8) binds one option to a command. Its answer runs the command, so:
 
 - The option says so before any tap: "Recommended. Runs a command", or "Runs a command".
-- The Command section and the answer sheet show the command in a mono block on `--raised`: the
-  exact command line, its target, the revision it is bound to, and "Runs at most once."
+- The Command section and the answer sheet show the command in a mono block on `--raised`: each
+  word of its argv in its own boxed chip, so a space, a quote or an empty word shows as it is, its
+  target folder, the revision it is bound to, and "Runs at most once."
 - It has no undo bar. The first tap arms the option: it turns solid `--emph` with a 3 px
   `--action` ring, reads "Tap again to run" over the option's name and "Cancels in 4 s", and a
   ring counts the 4 s down. The other options dim. The second tap sends. In the drawer, the

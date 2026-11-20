@@ -3,8 +3,9 @@
 The HTTP server's endpoints and the JSON they return. [serve.md](../daemon/serve.md) explains where
 the server runs, its token and its limits.
 
-Every endpoint but `POST /hooks/github` takes `GET`. Each one under `/api` needs
-`Authorization: Bearer <token>`; the web view's files do not. Each listing returns the same JSON as
+Every endpoint takes `GET`, except the three [writes](#writes) and `POST /hooks/github`, which take
+`POST`. Each one under `/api` needs `Authorization: Bearer <token>`; the web view's files do not.
+Each listing returns the same JSON as
 the CLI command with `--json`, with the state's `revision`, an integer, read in the same
 transaction. A listing that is an object has a `revision` field. A listing that is a list comes as
 `{"revision": N, "<name>": [...]}`, where `<name>` is `inbox`, `asks` or `tasks`.
@@ -21,6 +22,9 @@ transaction. A listing that is an object has a `revision` field. A listing that 
 | `/api/reports/latest` | `priory report show --json` | the [report](#report) written last |
 | `/api/reports/{task}` | `priory report show TASK --json` | the task's [report](#report) |
 | `/api/events?since=REV` | `priory wait --since REV` | `{"revision": N}` once it differs from `REV`. See [below](#apievents) |
+| `POST /api/asks/{id}/answer` | `priory answer ID TEXT --revision N` | `{"ok": "<what the CLI prints>"}`. See [Writes](#writes) |
+| `POST /api/asks/{id}/dismiss` | `priory dismiss --expected N ID` | as above |
+| `POST /api/snooze` | `priory snooze KIND ID (--for D \| --until T \| --clear)` | as above |
 | `POST /hooks/github` | | `202` for a signed GitHub delivery, with `[webhooks.github]`. See [below](#post-hooksgithub) |
 | any other path | | the web view, with `web = true`: see [Web view files](#web-view-files) |
 
@@ -33,16 +37,21 @@ or a reason, is untrusted: render it as text.
 | ---- | ---- |
 | `200` | The endpoint answered |
 | `202` | A signed webhook delivery was taken: published, or dropped on purpose |
-| `400` | The request does not parse; `/api/events` lacks `since` or has a parameter out of range; `/api/desk` has a parameter other than `person`, or a broken escape; for a webhook, it sends two `Content-Length`, or its payload lacks a field its event needs |
+| `400` | The request does not parse; `/api/events` lacks `since` or has a parameter out of range; `/api/desk` has a parameter other than `person`, or a broken escape; a write's body is not the shape [below](#writes); for a webhook, it sends two `Content-Length`, or its payload lacks a field its event needs |
 | `401` | The token is missing or wrong on a path under `/api`; for a webhook, the signature is |
-| `404` | No such path, task, report or web view file |
-| `405` | A method other than `GET`, on any path |
+| `403` | A `POST` carries an `Origin` whose host and port differ from its `Host`, such as a page on another site |
+| `404` | No such path, task, report, ask or web view file |
+| `405` | `POST` on a path that reads, or `GET` on a write. The `Allow` header names the method |
 | `408` | The request took over 5 seconds |
-| `411` | A webhook delivery has no `Content-Length`, or uses `Transfer-Encoding` |
-| `413` | The request has a body; for a webhook, a body over 1 MiB |
+| `409` | A write names an ask whose revision moved or that closed. The body adds the ask as `/api/asks` lists it |
+| `411` | A `POST` has no `Content-Length`, or uses `Transfer-Encoding` |
+| `413` | A `GET` has a body; a write's body is over 16 KiB; a webhook's is over 1 MiB |
+| `415` | A write's `Content-Type` is not `application/json` |
+| `422` | The daemon refused a write for another reason, such as an option a step does not take |
 | `431` | The request head is over 8 KiB or 32 headers |
 | `500` | The state could not be read, or a delivery could not be published |
-| `503` | 4 requests already wait on `/api/events` and this one would wait too. It comes with `Retry-After: 1` |
+| `503` | 4 requests already wait on `/api/events` and this one would wait too; or a write found no daemon on its socket, as under `priory serve` alone. It comes with `Retry-After: 1` |
+| `504` | A write reached the daemon, which did not reply within 10 seconds. It may have applied it |
 
 An error's body is `{"error": "<why>"}`.
 
@@ -59,6 +68,34 @@ revision.
 The reply is `200` with `{"revision": N}`: at once when `N` differs from `since`, else after the
 first change, or after `timeout` with `N` equal to `since`. `priory wait --since REV [--timeout D]`
 prints `N` the same way, and waits 25 seconds by default. `D` is a duration such as `90s` or `2m`.
+
+## Writes
+
+Each write sends the daemon the same line as its CLI verb, and the daemon applies it.
+[serve.md](../daemon/serve.md#writes) explains why. Each needs the token, `Content-Type:
+application/json` and a JSON body of at most 16 KiB with exactly the fields below.
+
+| Endpoint | Body |
+| -------- | ---- |
+| `POST /api/asks/{id}/answer` | `revision`, an integer, and one of `option` or `text`, a string. Both become the answer: a step's ask takes only one of its options. `run`, a boolean, default `false`: `true` confirms an answer that runs the ask's command, as `priory answer --run` does. Without it, that answer gets `422` |
+| `POST /api/asks/{id}/dismiss` | `revision`, an integer |
+| `POST /api/snooze` | `kind` (`ask`, `blocked`, `failed` or `prompt`) and `id`, an integer, then one of: `for`, a duration such as `1h`; `until`, an RFC 3339 time; or `"clear": true` |
+
+`{id}` is the ask's `id` as `/api/asks` lists it: its number, or an outside ask's name. `revision` is
+the ask's `revision` the client showed.
+
+```sh
+curl -X POST http://127.0.0.1:7340/api/asks/42/answer -H "Authorization: Bearer $PRIORY_TOKEN" \
+  -H 'Content-Type: application/json' -d '{"option": "merge", "revision": 3}'
+```
+
+| Reply | When |
+| ----- | ---- |
+| `200` `{"ok": "ask 42 answered"}` | The daemon applied it |
+| `409` `{"error", "ask"}` | The ask's revision is no longer the one sent, or it was answered, dismissed or withdrawn. `ask` is its current state |
+| `404`, `422` `{"error"}` | The ask is gone, or the daemon refused for another reason. `error` is the CLI's sentence |
+| `503` `{"error"}` | No daemon listens on the socket, so nothing was sent. Reads keep working |
+| `504` `{"error"}` | The daemon took the line but did not reply within 10 seconds. It may have applied it: read the state before you retry |
 
 ## `POST /hooks/github`
 
@@ -130,7 +167,8 @@ Every ask, oldest first.
 | `recommendation`, `tradeoff` | string or null | What the agent recommends, and the trade-off |
 | `title`, `text` | string or null | The ask's title and its Markdown body |
 | `what_waits`, `next_action` | string or null | What waits on the answer, and what the agent does next |
-| `command` | string or null | A command the asker attached. Priory stores it and runs nothing |
+| `command` | object, string or null | An agent's command: `argv`, `target`, `dir`, the absolute folder it runs in, and `runs`, the options that run it. See [tools.md](../daemon/tools.md#commands-an-answer-runs). An outside ask's command is the string it sent, which never runs |
+| `ran` | object or null | The command its answer ran: `status` (`running`, `done`, `failed` or `uncertain`), `revision`, `error`, `stdout` and `stderr`. Null when no answer ran it |
 | `coordinator`, `run_id`, `session` | string or null | Who asked from outside Priory: its coordinator, its run id and its session |
 | `answer`, `answered_at` | string or null | The answer and when it came |
 | `delivery` | object or null | The latest delivery of an outside ask's answer or dismissal to its session: `state` (`queued`, `running`, `delivered` or `failed`), `revision`, `tries`, `error` and `since`. Null when nothing was delivered. See [asks.md](../daemon/asks.md) |
@@ -155,8 +193,9 @@ An `ask`, `blocked`, `failed` or `prompt` desk item, and every ask, carry these 
 
 Every task in start order: `id`, `key`, `workflow`, `step`, `state`, `band`, `lane`, `reason`,
 `position` (its place in the queue from 1, or null), `generation`, `retired`, `tldr`, `since`
-(when the task last changed state), `grade` (`red`, `yellow`, `green` or null), `grade_reason` and
-`progress`. See Grades in [tools.md](../daemon/tools.md#grades).
+(when the task last changed state), `grade` (`red`, `yellow`, `green` or null), `grade_reason`,
+`progress` and `conditions`, a held task's [conditions](#conditions) or null. See Grades in
+[tools.md](../daemon/tools.md#grades).
 
 `progress` is null until the task's agent or a person publishes one. Then it is an object with any
 of `goal`, `acceptanceCriteria` (each `{ "id", "description", "required" }`), `latestChange` and
@@ -179,7 +218,7 @@ The fields of [Tasks](#tasks), plus `repo` and `branch`, and these arrays, oldes
 | Field | Each entry |
 | ----- | ---------- |
 | `up_next` | One of the next three runs, soonest first: `at`, `kind`, `task`, `key`, `trigger` and `why`. See [Up next](#up-next) |
-| `waiting` | A queued or ready task in start order, then each held task by when it was held: `position` and `band_position` (its place in the queue and in its band, null for a held task), `id`, `key`, `workflow`, `step`, `state`, `band`, `lane`, `reason`, `since`, and for a held task its hold: `hold` (`person`, `time`, `task`, `merge` or `blockers`), `hold_until`, `hold_target`, `hold_resource` |
+| `waiting` | A queued or ready task in start order, then each held task by when it was held: `position` and `band_position` (its place in the queue and in its band, null for a held task), `id`, `key`, `workflow`, `step`, `state`, `band`, `lane`, `reason`, `since`, and `conditions` (see [Conditions](#conditions)), null for a task that is not held |
 | `running` | A live run: `run`, `task`, `key`, `step`, `agent`, `started` |
 | `ended` | A task done, failed or dropped in the last day, latest first: `id`, `key`, `workflow`, `step`, `state`, `reason`, `ended` |
 
@@ -191,7 +230,7 @@ of the factory in `DIR`, and `priory queue --json` lists no schedule firings.
 | `kind` | `at` | `why` |
 | ------ | ---- | ----- |
 | `queued` | Now: it starts once there is room | `first in the queue`, `a band above it`, or `queue position <n>` |
-| `held` | The end of its time hold | `held until <time>` |
+| `held` | The end of its time hold, once time is all it still waits for | `held until <time>` |
 | `scheduled` | The trigger's [next firing](../intake/schedule.md#next-firing) | `schedule <trigger> fires` |
 
 `task` and `key` name the task, and are null for a firing that starts a new task. `trigger` names
@@ -202,8 +241,22 @@ the schedule trigger of a `scheduled` entry, and is null otherwise.
 - A schedule with a fixed `key` lists only its next firing. Its later firings coalesce into that
   task.
 - A firing for a live task that is not asleep coalesces into it, so up next leaves it out.
-- Up next leaves out a schedule with a `hold`, and held tasks without a time hold. They wait for
-  their release, so they have no start time.
+- Up next leaves out a schedule with a `hold`, and held tasks that wait for more than time. They
+  wait for their release, so they have no start time.
+
+### Conditions
+
+A held task lists each condition of its hold, in the order it was given, under `conditions`.
+`priory tasks --json` and `/api/tasks/{id}` carry the same field.
+
+| Field | Meaning |
+| ----- | ------- |
+| `kind` | `person`, `time`, `task`, `issue`, `merge` or `blockers` |
+| `until` | A time condition's instant |
+| `task` | A task condition's other task |
+| `resource` | `linear:<issue>` for an issue or blockers condition, `github:<owner/name>#<number>` for a merge |
+| `met` | When the condition was met, or null |
+| `met_as` | How it was met, such as `task 9 is done` or `ENG-7 is Done`, or null |
 
 
 ## Views

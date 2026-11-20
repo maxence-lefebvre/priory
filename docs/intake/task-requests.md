@@ -95,20 +95,21 @@ source event's id.
 ## `hold`
 
 `hold` holds the new task before it can start, as `priory hold` does (see Holds in
-[runs.md](../daemon/runs.md)). It has a `reason` and at most one condition. Its keys are in
-[triggers.md](../reference/triggers.md#hold).
+[runs.md](../daemon/runs.md)). It has a `reason` and conditions, which release the task once all
+of them are met. Its keys are in [triggers.md](../reference/triggers.md#hold).
 
-| Condition | Releases the task when |
-| --------- | ---------------------- |
+| Condition | Met when |
+| --------- | -------- |
 | `until` | an RFC 3339 instant, or a duration such as `2 hours`, passes |
-| `after` | another task, named by its id, is done, failed or dropped |
-| `merge` | a pull request, `owner/name#42` or `42` in the task's repository, merges. `if_closed` says what a close without a merge does: `release`, `drop` or `ask`, the default |
+| `after` | another task, named by its id, is done, failed or dropped; or a Linear issue, such as `"ENG-7"`, is Done or Canceled. One value or a list |
+| `merge` | a pull request, `owner/name#42` or `42` in the task's repository, merges. One value or a list. `if_closed` says what a close without a merge does: `release`, `drop` or `ask`, the default |
 | `blockers = true` | the task's Linear issue has no open blocker left |
 
 A trigger sets it as a table:
 
 ```toml
 hold = { reason = "triage first", blockers = true }
+hold = { reason = "after the schema", after = ["ENG-7", "ENG-9"], merge = "owner/name#42" }
 ```
 
 A condition the daemon cannot use, such as `blockers` on a GitHub issue, leaves the task held for a

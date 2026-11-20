@@ -298,6 +298,8 @@ pub struct LinearIssue {
     pub team: String,
     /// The issue's project name; null without one.
     pub project: Option<String>,
+    /// Linear's id of the issue's project; null without one.
+    pub project_id: Option<String>,
     /// The issue's state name.
     pub state: String,
     /// The issue's label names.
@@ -312,6 +314,21 @@ pub struct ViewChanged {
     pub issue: LinearIssue,
     /// The view, as the trigger names it.
     pub view: String,
+    #[serde(flatten)]
+    pub source: Source,
+}
+
+/// A saved Linear view whose filter changed since the previous poll. The issues the change brought
+/// in or took out publish no `linear.issue.entered` or `linear.issue.left` and request no task.
+#[derive(JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ViewFilterChanged {
+    /// The view, as the trigger names it.
+    pub view: String,
+    /// The identifiers of the issues now in the view that were not in it at the previous poll.
+    pub entered: Vec<String>,
+    /// The identifiers of the issues in the view at the previous poll that are not in it now.
+    pub left: Vec<String>,
     #[serde(flatten)]
     pub source: Source,
 }
@@ -498,6 +515,9 @@ pub struct Baseline {
     /// The ids of the events at the position's instant. Linear issue and comment streams only.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub seen: Option<Vec<String>>,
+    /// The view's filter, as Linear reported it at the poll. Linear view streams only.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub filter: Option<serde_json::Value>,
 }
 
 /// The members of a set stream.

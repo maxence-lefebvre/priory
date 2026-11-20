@@ -143,7 +143,17 @@ fn tools() -> Value {
                     "text": text("The ask's body in Markdown, one idea per paragraph."),
                     "whatWaits": text("What waits on the answer."),
                     "nextAction": text("What you do once you have the answer."),
-                    "command": text("A command for the answer to run. Priory stores it but does not run it yet."),
+                    "command": {
+                        "type": "object",
+                        "description": "A command the person's answer runs once, after they confirm it. Priory execs argv without a shell.",
+                        "properties": {
+                            "argv": { "type": "array", "items": { "type": "string" }, "minItems": 1, "description": "The program and its arguments." },
+                            "target": text("Where it runs: worktree, the default, or a name in the factory's [asks.targets]."),
+                            "runs": { "type": "array", "items": { "type": "string" }, "description": "The options whose answer runs it. Default: the recommended option." },
+                        },
+                        "required": ["argv"],
+                        "additionalProperties": false,
+                    },
                 },
                 "required": ["question", "options", "recommendation", "tradeoff"],
             },
