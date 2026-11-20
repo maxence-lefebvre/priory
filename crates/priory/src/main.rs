@@ -497,7 +497,7 @@ fn serve_http(args: Vec<String>) -> ExitCode {
             Err("factory.toml has no [serve] table, so nothing listens".to_owned()),
         );
     };
-    match serve::start(config, listen.unwrap_or(config.listen)) {
+    match serve::start(&factory, config, listen.unwrap_or(config.listen)) {
         Ok(workers) => {
             for worker in workers {
                 let _ = worker.join();

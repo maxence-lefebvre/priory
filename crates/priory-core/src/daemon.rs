@@ -89,7 +89,7 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
     }
     let listening = runtime::listen(&home)?;
     if let Some(config) = factory.serve() {
-        crate::serve::start(config, config.listen)?;
+        crate::serve::start(factory, config, config.listen)?;
     }
     if let Some(name) = embedder.clone() {
         let home = home.clone();

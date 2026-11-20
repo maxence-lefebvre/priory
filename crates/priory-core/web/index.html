@@ -1,5 +1,20 @@
 <!doctype html>
-<html lang="en">
-<head><meta charset="utf-8"><title>Priory</title></head>
-<body><p>The web view is not built yet. The JSON API is under <code>/api</code>.</p></body>
+<html lang="en" data-theme="indigo" data-mode="system">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Priory</title>
+<link rel="icon" href="/favicon.ico" sizes="48x48">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<link rel="stylesheet" href="/tokens/structure.css">
+<link rel="stylesheet" href="/tokens/themes.css">
+<link rel="stylesheet" href="/app.css">
+<script src="/boot.js"></script>
+<script type="module" src="/app.js"></script>
+</head>
+<body>
+<div id="app"></div>
+<div id="announce" class="visually-hidden" aria-live="polite"></div>
+</body>
 </html>

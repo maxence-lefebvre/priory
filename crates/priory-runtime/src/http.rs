@@ -17,6 +17,8 @@ const WORKERS: usize = 8;
 pub struct Reply {
     pub status: u16,
     pub kind: &'static str,
+    /// Further header lines, each ending in `\r\n`.
+    pub headers: &'static str,
     pub body: Vec<u8>,
 }
 
@@ -25,6 +27,7 @@ impl Reply {
         Reply {
             status,
             kind: "application/json",
+            headers: "",
             body: body.into_bytes(),
         }
     }
@@ -35,8 +38,14 @@ impl Reply {
 }
 
 /// Serves `listener` on a fixed pool of threads. Each thread calls `make` once for its own
-/// handler, which gets the method and path of each request that carries `token`.
-pub fn serve<M, H>(listener: TcpListener, token: String, make: M) -> io::Result<Vec<JoinHandle<()>>>
+/// handler, which gets the method and path of each request that carries `token` or whose path is
+/// `public`.
+pub fn serve<M, H>(
+    listener: TcpListener,
+    token: String,
+    public: fn(&str) -> bool,
+    make: M,
+) -> io::Result<Vec<JoinHandle<()>>>
 where
     M: Fn() -> H + Send + Sync + 'static,
     H: FnMut(&str, &str) -> Reply,
@@ -51,7 +60,7 @@ where
                     let (listener, token, make) = &*shared;
                     let mut handle = make();
                     for stream in listener.incoming().flatten() {
-                        let _ = answer(stream, token, &mut handle);
+                        let _ = answer(stream, token, public, &mut handle);
                     }
                 })
         })
@@ -61,11 +70,12 @@ where
 fn answer(
     mut stream: TcpStream,
     token: &str,
+    public: fn(&str) -> bool,
     handle: &mut impl FnMut(&str, &str) -> Reply,
 ) -> io::Result<()> {
     stream.set_write_timeout(Some(TIMEOUT))?;
     let reply = match read_head(&mut stream) {
-        Ok(head) => respond(&head, token, handle),
+        Ok(head) => respond(&head, token, public, handle),
         Err(reply) => reply,
     };
     let reason = match reply.status {
@@ -87,10 +97,11 @@ fn answer(
     write!(
         stream,
         "HTTP/1.1 {} {reason}\r\nContent-Type: {}\r\nContent-Length: {}\r\nCache-Control: no-store\r\n\
-         {extra}Connection: close\r\n\r\n",
+         {extra}{}Connection: close\r\n\r\n",
         reply.status,
         reply.kind,
-        reply.body.len()
+        reply.body.len(),
+        reply.headers
     )?;
     stream.write_all(&reply.body)?;
     stream.shutdown(Shutdown::Write)?;
@@ -140,7 +151,12 @@ fn read_head(stream: &mut TcpStream) -> Result<Vec<u8>, Reply> {
     }
 }
 
-fn respond(head: &[u8], token: &str, handle: &mut impl FnMut(&str, &str) -> Reply) -> Reply {
+fn respond(
+    head: &[u8],
+    token: &str,
+    public: fn(&str) -> bool,
+    handle: &mut impl FnMut(&str, &str) -> Reply,
+) -> Reply {
     let mut headers = [httparse::EMPTY_HEADER; HEADERS];
     let mut request = httparse::Request::new(&mut headers);
     if request.parse(head).is_err() {
@@ -157,7 +173,8 @@ fn respond(head: &[u8], token: &str, handle: &mut impl FnMut(&str, &str) -> Repl
         .and_then(|value| value.get(..7).zip(value.get(7..)))
         .filter(|(scheme, _)| scheme.eq_ignore_ascii_case(b"bearer "))
         .map(|(_, sent)| sent);
-    if !bearer.is_some_and(|sent| same(sent, token.as_bytes())) {
+    let open = request.path.is_some_and(public);
+    if !open && !bearer.is_some_and(|sent| same(sent, token.as_bytes())) {
         return Reply::error(401, "send the token as `Authorization: Bearer <token>`");
     }
     let body = request.headers.iter().any(|header| {
