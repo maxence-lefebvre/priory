@@ -38,13 +38,11 @@ async function connect() {
   const on = config.machine ?? null;
   let binary = config.binary ?? "~/.local/bin/priory-oss";
   // exec expands no `~`, and only the machine that runs priory knows its home.
-  if (binary.startsWith("~/")) {
-    const found = on ? await exec("printenv", ["HOME"], { on }) : { code: 0, stdout: herdrHome() };
-    const home = found.code === 0 ? found.stdout.trim() : "";
-    if (!home.startsWith("/")) throw new Error(`No home folder on ${on ?? "this machine"}`);
-    binary = home + binary.slice(1);
-  }
-  return { machine: on, client: priory({ exec, binary, on, factory: config.factory ?? null }) };
+  const found = on ? await exec("printenv", ["HOME"], { on }) : { code: 0, stdout: herdrHome() };
+  const home = found.code === 0 ? found.stdout.trim() : "";
+  if (!home.startsWith("/")) throw new Error(`No home folder on ${on ?? "this machine"}`);
+  if (binary.startsWith("~/")) binary = home + binary.slice(1);
+  return { machine: on, home, client: priory({ exec, binary, on, factory: config.factory ?? null }) };
 }
 
 export default class PrioryTabs extends View {
@@ -61,10 +59,10 @@ export default class PrioryTabs extends View {
     try {
       // Connects on first use, and again after a failure, so a machine that comes back works.
       this.priory ??= connect().catch((error) => { this.priory = null; throw error; });
-      const { machine, client } = await this.priory;
+      const { machine, home, client } = await this.priory;
       if (!space || space.machine !== machine) throw new Error(`Open a space on ${machine ?? "this machine"}, where Priory runs, then attach again.`);
       const command = await client.attach(task);
-      run("tab.new", { space: space.id, folder: space.folder || undefined, name: `Task ${task}`, argv: ["sh", "-c", command] });
+      run("tab.new", { space: space.id, folder: space.folder || home, name: `Task ${task}`, argv: ["sh", "-c", command] });
     } catch (error) {
       notify({ title: `Can't attach to task ${task}`, body: error instanceof Error ? error.message : String(error), level: "error" });
     }
