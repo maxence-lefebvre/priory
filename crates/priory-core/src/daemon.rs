@@ -2,6 +2,7 @@ use crate::memory::{self, Gate};
 use crate::otlp;
 use crate::room::Share;
 use crate::route;
+use crate::snooze::{self, Snooze};
 use crate::state::{self, Admission, NewRun, Signal};
 use crate::tools::{self, Act, Answer, Call, Done, Repair};
 use crate::trace::Trace;
@@ -549,8 +550,8 @@ fn apply(db: &mut Connection, line: Line, trace: &Trace) -> Result<(), Error> {
     Ok(())
 }
 
-/// What arrives on the socket: a hook's signal, a run's tool call, a person's answer or desk action,
-/// or a memory gate message.
+/// What arrives on the socket: a hook's signal, a run's tool call, a person's answer, desk action
+/// or snooze, or a memory gate message.
 #[derive(serde::Deserialize)]
 #[serde(untagged)]
 enum Input {
@@ -558,6 +559,7 @@ enum Input {
     Call(Call),
     Answer(Answer),
     Act(Act),
+    Snooze(Snooze),
     Gate(Gate),
 }
 
@@ -581,6 +583,7 @@ fn take(db: &mut Connection, line: &str, trace: &Trace) -> Result<(String, Optio
             let (reply, kill) = tools::act(db, &act, trace.factory)?;
             Ok((replied(reply), kill))
         }
+        Ok(Input::Snooze(snooze)) => Ok((replied(snooze::snooze(db, &snooze, trace)?), None)),
         Ok(Input::Gate(gate)) => {
             let share = Share::of(trace.factory, trace.machine.as_deref());
             let room = || room::measure(&runtime::home());

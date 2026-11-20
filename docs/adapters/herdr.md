@@ -53,15 +53,15 @@ Asks and Desk items (blocked tasks, failed tasks, uncertain prompts) share these
 
 - `id`, `kind` (`ask`, `blocked`, `failed`, `prompt`), `task` (id and key), `step`, `lane`,
   `since`.
-- *`snoozed_until`*: when the item comes back on its own, or null.
-- *`snoozed_at`*: when a person snoozed it. A meaningful change after this time brings the item
+- `snoozed_until`: when the item comes back on its own, or null.
+- `snoozed_at`: when a person snoozed it. A meaningful change after this time brings the item
   back early.
-- *`back_early`*: null, or `{ "at": TIME, "reason": "new revision" }`. Reasons are
+- `back_early`: null, or `{ "at": TIME, "reason": "new revision" }`. Reasons are
   `new revision`, `task state changed` and `new failure`.
 
 A snoozed item leaves the Needs me count, the Open count and the Desk badge. The agent keeps
-waiting: snoozing changes what a person sees, never what the daemon does. *`priory snooze ITEM
---for 1h`*, *`--until TIME`* and *`--clear`* set and clear it.
+waiting: snoozing changes what a person sees, never what the daemon does. `priory snooze KIND ID
+--for 1h`, `--until TIME` and `--clear` set and clear it.
 
 ### Desk
 

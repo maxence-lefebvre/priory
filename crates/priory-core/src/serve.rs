@@ -60,7 +60,7 @@ fn route(
         Err(error) => return Reply::error(500, error),
     };
     let read = match path {
-        "/api/desk" => listing::desk(db, home).map(Some),
+        "/api/desk" => listing::desk(db, home, false).map(Some),
         "/api/inbox" => listing::inbox(db).map(Some),
         "/api/asks" => listing::asks(db).map(Some),
         "/api/tasks" => listing::tasks(db, None, None).map(Some),
