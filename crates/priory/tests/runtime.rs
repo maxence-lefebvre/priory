@@ -2551,9 +2551,17 @@ fn a_step_ending_green_with_a_reason_sets_the_task_grade_and_reason() {
         "outcome": "green", "summary": "Plan: add a flag", "reason": "one file,\tcovered by tests"
     } })]);
     setup.publish(&requested(42));
+    setup.hold("hold-stop");
 
     setup.start();
 
+    setup.written("fake/tools.log");
+    assert_eq!(
+        grade(&setup.rows("tasks")),
+        ["-", "-"],
+        "graded before the step ended"
+    );
+    setup.release("hold-stop");
     let tasks = setup.until("tasks", |rows| {
         rows.first().is_some_and(|task| task[3] == "regrade")
     });
