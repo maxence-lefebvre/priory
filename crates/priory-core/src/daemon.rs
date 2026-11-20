@@ -180,6 +180,7 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
     });
     let mut scripts = Vec::new();
     let mut deliveries = deliver::adopt(&db)?;
+    let mut reads = Reads::default();
     let every = factory.sweep().every.unwrap_or(SWEEP);
     let mut swept: Option<Instant> = None;
     loop {
@@ -195,6 +196,7 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
             send_spans(&db, &trace, &home, export)?;
         }
         deliver::tick(&db, factory, &home, &mut deliveries)?;
+        read_states(&mut db, &mut reads)?;
         if sweep_scripts(&db, factory, &home, &mut scripts)? {
             swept = None;
         }
@@ -565,6 +567,56 @@ enum Input {
     Snooze(Snooze),
     Choice(sections::Choice),
     Gate(Gate),
+}
+
+/// The reads of wait conditions' current states that run on threads of their own, so a slow
+/// Linear or GitHub read never holds the daemon's loop or a lock on the state file.
+#[derive(Default)]
+struct Reads {
+    started: std::collections::HashSet<i64>,
+    done: Vec<std::thread::JoinHandle<(i64, Option<Read>)>>,
+}
+
+/// A wait condition's current state, or why it could not be read.
+type Read = Result<String, String>;
+
+/// Starts a read for each open wait the daemon can read and has not read yet, and fires the waits
+/// whose finished read shows their condition already holds.
+fn read_states(db: &mut Connection, reads: &mut Reads) -> Result<(), Error> {
+    for (wait, kind, resource) in tools::readable(db)? {
+        if !reads.started.insert(wait) {
+            continue;
+        }
+        reads.done.push(std::thread::spawn(move || {
+            (wait, current_state(&kind, &resource))
+        }));
+    }
+    let (finished, running) = std::mem::take(&mut reads.done)
+        .into_iter()
+        .partition::<Vec<_>, _>(|read| read.is_finished());
+    reads.done = running;
+    for read in finished {
+        match read.join().expect("a state read does not panic") {
+            (wait, Some(Ok(state))) => tools::read(db, wait, &state)?,
+            (wait, Some(Err(error))) => {
+                eprintln!("priory daemon: cannot read the current state of wait {wait}: {error}")
+            }
+            (_, None) => {}
+        }
+    }
+    Ok(())
+}
+
+/// The current state of a wait's resource outside Priory: a Linear issue's state, when the daemon
+/// has a Linear key, or a pull request's state on GitHub.
+fn current_state(kind: &str, resource: &str) -> Option<Read> {
+    match kind {
+        "linear_state" => priory_intake::intake::linear_state(resource.strip_prefix("linear:")?),
+        _ => {
+            let (repo, number) = resource.strip_prefix("github:")?.rsplit_once('#')?;
+            Some(runtime::pull_request_state(repo, number.parse().ok()?))
+        }
+    }
 }
 
 /// Applies one line and returns its reply, with a tmux session to kill. A signal's reply is `ok`;

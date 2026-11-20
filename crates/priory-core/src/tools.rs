@@ -126,18 +126,29 @@ pub(crate) fn call(
             run.id
         )));
     }
-    if let Some(ask) = tx
+    // An ask and a wait may sit side by side: the first answer or event wins.
+    let open_ask = tx
         .query_row(
             "SELECT id FROM asks WHERE run = ?1 AND answer IS NULL AND withdrawn IS NULL",
             [run.id],
             |row| row.get::<_, i64>(0),
         )
-        .optional()?
-    {
-        return Ok(Err(format!("run {} already waits on ask {ask}", run.id)));
-    }
-    if let Some(wait) = open_wait(&tx, run.id)? {
-        return Ok(Err(format!("run {} already waits on wait {wait}", run.id)));
+        .optional()?;
+    let open_wait = open_wait(&tx, run.id)?;
+    let refused = match (call.tool.as_str(), open_ask, open_wait) {
+        ("ask", Some(ask), _) | ("result" | "compact", Some(ask), _) => {
+            Some(format!("run {} already waits on ask {ask}", run.id))
+        }
+        ("wait", _, Some(wait)) | ("result" | "compact", _, Some(wait)) => {
+            Some(format!("run {} already waits on wait {wait}", run.id))
+        }
+        ("ask" | "wait", ..) if woken(&tx, &run)? => {
+            Some("an answer or event for this run is queued: end your turn to read it".to_owned())
+        }
+        _ => None,
+    };
+    if let Some(refused) = refused {
+        return Ok(Err(refused));
     }
     // 0 is no generation: the run moves on from the asks and waits of earlier runs. A refused
     // call rolls this back.
@@ -468,9 +479,21 @@ pub fn ask_named(db: &Connection, name: &str) -> Result<i64, String> {
     .ok_or_else(|| format!("there is no ask {name}"))
 }
 
+/// Whether an answer, dismissal or fired wait of `run` waits in a queued prompt: a new ask or wait
+/// would put the task to sleep over it.
+fn woken(tx: &Transaction, run: &Run) -> rusqlite::Result<bool> {
+    tx.query_row(
+        "SELECT (EXISTS (SELECT 1 FROM waits WHERE run = ?1 AND fired IS NOT NULL)
+           OR EXISTS (SELECT 1 FROM asks WHERE run = ?1 AND (answer IS NOT NULL OR withdrawn = ?3)))
+         AND EXISTS (SELECT 1 FROM outbox WHERE task = ?2 AND state = 'queued')",
+        params![run.id, run.task, DISMISSED],
+        |row| row.get(0),
+    )
+}
+
 fn open_wait(tx: &Transaction, run: i64) -> rusqlite::Result<Option<i64>> {
     tx.query_row(
-        "SELECT id FROM waits WHERE run = ?1 AND fired IS NULL",
+        "SELECT id FROM waits WHERE run = ?1 AND fired IS NULL AND withdrawn IS NULL",
         [run],
         |row| row.get(0),
     )
@@ -528,13 +551,118 @@ fn named(kind: &str, on: &Value) -> Result<Named, String> {
     }
 }
 
-/// Stores the wait and fires it at once if an event since the agent's last prompt satisfies it.
+/// Stores a wait on each condition of `on` or `any`, and fires the first that already holds: an
+/// event since the agent's last prompt, a passed time or an ended task. The daemon reads the
+/// current states it can afterwards, outside this call (see `readable`).
 fn wait(
     tx: &Transaction,
     run: &Run,
     arguments: &Value,
 ) -> rusqlite::Result<Result<String, String>> {
-    let on = &arguments["on"];
+    let conditions = match conditions(arguments) {
+        Ok(conditions) => conditions,
+        Err(error) => return Ok(Err(error)),
+    };
+    let mut ids = Vec::new();
+    for on in conditions {
+        match condition(tx, run, on)? {
+            Ok(id) => ids.push(id.to_string()),
+            Err(error) => return Ok(Err(error)),
+        }
+    }
+    let ids = ids.join(", ");
+    let caught = catch_up(tx, run.task)?;
+    if !caught {
+        due(tx)?;
+    }
+    let fired = tx
+        .query_row(
+            &format!("SELECT id FROM waits WHERE id IN ({ids}) AND fired IS NOT NULL"),
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .optional()?;
+    let reply = match fired {
+        Some(id) if caught => format!(
+            "wait {id} already holds: end your turn; the event that satisfies it is your next prompt"
+        ),
+        Some(id) => format!("wait {id} already holds: end your turn; your next prompt says so"),
+        None if !ids.contains(',') => format!(
+            "wait {ids} stored: end your turn now; Priory wakes you with the event that satisfies it"
+        ),
+        None => format!(
+            "waits {ids} stored: end your turn now; Priory wakes you with the first event that satisfies one of them"
+        ),
+    };
+    Ok(Ok(reply))
+}
+
+/// The conditions of a wait call: `on`, one condition, or `any`, a list of them.
+fn conditions(arguments: &Value) -> Result<&[Value], String> {
+    match (&arguments["on"], &arguments["any"]) {
+        (on, Value::Null) => Ok(std::slice::from_ref(on)),
+        (Value::Null, Value::Array(any)) if !any.is_empty() => Ok(any),
+        _ => Err(
+            "wait takes either on, one condition, or any, a non-empty list of conditions".into(),
+        ),
+    }
+}
+
+/// The open waits whose current state the daemon can read: a Linear state, as `linear:<issue>`,
+/// and a pull request, as `github:<owner/name>#<number>`. Each comes with its id and kind.
+pub(crate) fn readable(db: &Connection) -> rusqlite::Result<Vec<(i64, String, String)>> {
+    db.prepare(
+        "SELECT waits.id, waits.kind, waits.resource FROM waits JOIN tasks ON tasks.id = waits.task
+         WHERE waits.fired IS NULL AND waits.withdrawn IS NULL AND NOT waits.daemon
+         AND waits.kind IN ('linear_state', 'pull_request')
+         AND tasks.state NOT IN ('done', 'failed', 'dropped') ORDER BY waits.id",
+    )?
+    .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?
+    .collect()
+}
+
+/// Fires the wait `wait` if `current`, the state the daemon read for its condition, already
+/// satisfies it: a Linear issue in the wanted state, or a pull request merged or closed. A wait
+/// that fired or was withdrawn meanwhile stays as it is.
+pub(crate) fn read(db: &mut Connection, wait: i64, current: &str) -> rusqlite::Result<()> {
+    let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let found = tx
+        .query_row(
+            "SELECT waits.task, waits.kind, waits.resource, waits.state FROM waits
+             JOIN tasks ON tasks.id = waits.task
+             WHERE waits.id = ?1 AND tasks.state NOT IN ('done', 'failed', 'dropped')",
+            [wait],
+            |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, Option<String>>(3)?,
+                ))
+            },
+        )
+        .optional()?;
+    let Some((task, kind, resource, state)) = found else {
+        return Ok(());
+    };
+    let line = match kind.as_str() {
+        "linear_state" if state.as_deref() == Some(current) => {
+            format!(
+                "{} is already {current}",
+                resource.trim_start_matches("linear:")
+            )
+        }
+        "pull_request" if current != "OPEN" => {
+            format!("{resource} is already {}", current.to_lowercase())
+        }
+        _ => return Ok(()),
+    };
+    fire(&tx, wait, task, &format!("wait {wait} fired: {line}"), None)?;
+    tx.commit()
+}
+
+/// Stores a wait on the one condition `on` and returns its id.
+fn condition(tx: &Transaction, run: &Run, on: &Value) -> rusqlite::Result<Result<i64, String>> {
     let kind = on["type"].as_str().unwrap_or_default();
     match kind {
         "pull_request" | "checks" | "review" | "linear_comment" | "linear_state"
@@ -559,6 +687,7 @@ fn wait(
                      (SELECT started FROM runs WHERE id = ?2)), NULL))",
                 params![run.task, run.id, kind, resource, head, state],
             )?;
+            let id = tx.last_insert_rowid();
             // No task owned the resource before: its events since the last prompt were ignored.
             tx.execute(
                 "UPDATE inbox SET task = ?1, outcome = 'kept'
@@ -569,8 +698,9 @@ fn wait(
                    WHEN type LIKE 'slack.%' THEN 'slack:' || json_extract(data, '$.channel') || ':'
                      || coalesce(json_extract(data, '$.thread_ts'), json_extract(data, '$.ts'))
                  END",
-                params![run.task, tx.last_insert_rowid(), resource],
+                params![run.task, id, resource],
             )?;
+            return Ok(Ok(id));
         }
         "time" => {
             let until = on["until"].as_str().unwrap_or_default();
@@ -616,26 +746,7 @@ fn wait(
             )));
         }
     }
-    let id = tx.last_insert_rowid();
-    if catch_up(tx, run.task)? {
-        return Ok(Ok(format!(
-            "wait {id} already holds: end your turn; the event that satisfies it is your next prompt"
-        )));
-    }
-    due(tx)?;
-    let fired = tx.query_row(
-        "SELECT fired IS NOT NULL FROM waits WHERE id = ?1",
-        [id],
-        |row| row.get::<_, bool>(0),
-    )?;
-    if fired {
-        return Ok(Ok(format!(
-            "wait {id} already holds: end your turn; your next prompt says so"
-        )));
-    }
-    Ok(Ok(format!(
-        "wait {id} stored: end your turn now; Priory wakes you with the event that satisfies it"
-    )))
+    Ok(Ok(tx.last_insert_rowid()))
 }
 
 /// The instant `until` names: an RFC 3339 instant, or a duration from now such as `2 hours`.
@@ -689,39 +800,45 @@ fn catch_up(tx: &Transaction, task: i64) -> rusqlite::Result<bool> {
     Ok(false)
 }
 
-/// Fires the task's open wait if the inbox entry `seq` satisfies it, and says whether it did.
+/// Fires the first of the task's open waits that the inbox entry `seq` satisfies, and says whether
+/// one did.
 pub(crate) fn event(tx: &Transaction, task: i64, seq: i64) -> rusqlite::Result<bool> {
     let open = tx
-        .query_row(
+        .prepare(
             "SELECT waits.id, waits.kind, waits.resource, waits.head_sha, waits.state,
                waits.since, waits.daemon FROM waits
              JOIN tasks ON tasks.id = waits.task
              WHERE waits.task = ?1 AND waits.fired IS NULL AND waits.withdrawn IS NULL
-             AND tasks.state NOT IN ('done', 'failed', 'dropped')",
-            [task],
-            |row| {
-                Ok((
-                    row.get::<_, i64>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, Option<String>>(2)?,
-                    row.get::<_, Option<String>>(3)?,
-                    row.get::<_, Option<String>>(4)?,
-                    row.get::<_, Option<String>>(5)?,
-                    row.get::<_, bool>(6)?,
-                ))
-            },
-        )
-        .optional()?;
-    let Some((wait, kind, Some(resource), head, state, since, daemon)) = open else {
-        return Ok(false);
-    };
-    if daemon {
-        return judge(tx, wait);
-    }
-    let (kind_of_event, subject, data, after, kept): (String, Option<String>, String, bool, bool) =
-        tx.query_row(
+             AND tasks.state NOT IN ('done', 'failed', 'dropped') ORDER BY waits.id",
+        )?
+        .query_map([task], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, Option<String>>(2)?,
+                row.get::<_, Option<String>>(3)?,
+                row.get::<_, Option<String>>(4)?,
+                row.get::<_, Option<String>>(5)?,
+                row.get::<_, bool>(6)?,
+            ))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    for (wait, kind, resource, head, state, since, daemon) in open {
+        let Some(resource) = resource else {
+            continue;
+        };
+        if daemon {
+            return judge(tx, wait);
+        }
+        let (kind_of_event, subject, data, after, kept): (
+            String,
+            Option<String>,
+            String,
+            bool,
+            bool,
+        ) = tx.query_row(
             "SELECT type, subject, data, coalesce(julianday(time) >= julianday(?2), 1), task IS ?3
-             FROM inbox WHERE seq = ?1",
+                 FROM inbox WHERE seq = ?1",
             params![seq, since, task],
             |row| {
                 Ok((
@@ -733,23 +850,22 @@ pub(crate) fn event(tx: &Transaction, task: i64, seq: i64) -> rusqlite::Result<b
                 ))
             },
         )?;
-    let line = crate::state::line(&kind_of_event, subject.as_deref(), &data);
-    let data: Value = serde_json::from_str(&data).expect("inbox data is JSON");
-    let wanted = head.as_deref().or(state.as_deref());
-    if !after || !route::satisfies(&kind, &resource, wanted, &kind_of_event, &data) {
-        return Ok(false);
-    }
-    if !kept {
-        // Another task kept the event and its prompt: this one gets the line in a prompt of its own.
-        tx.execute(
-            &format!("UPDATE waits SET fired = {NOW}, inbox = ?2 WHERE id = ?1"),
-            params![wait, seq],
-        )?;
-        wake_on(tx, task, &line, None)?;
+        let line = crate::state::line(&kind_of_event, subject.as_deref(), &data);
+        let data: Value = serde_json::from_str(&data).expect("inbox data is JSON");
+        let wanted = head.as_deref().or(state.as_deref());
+        if !after || !route::satisfies(&kind, &resource, wanted, &kind_of_event, &data) {
+            continue;
+        }
+        if !kept {
+            // Another task kept the event and its prompt: this one gets the line in a prompt of its own.
+            mark_fired(tx, wait, Some(seq))?;
+            wake_on(tx, task, &line, None)?;
+            return Ok(true);
+        }
+        fire(tx, wait, task, &line, Some(seq))?;
         return Ok(true);
     }
-    fire(tx, wait, task, &line, Some(seq))?;
-    Ok(true)
+    Ok(false)
 }
 
 /// An event the task kept on the pull request of a daemon's checks wait.
@@ -873,10 +989,7 @@ fn judge(tx: &Transaction, wait: i64) -> rusqlite::Result<bool> {
 
 /// Fires the daemon's checks wait `wait` on the event `seq` and marks its task done.
 fn done(tx: &Transaction, wait: i64, task: i64, seq: i64) -> rusqlite::Result<bool> {
-    tx.execute(
-        &format!("UPDATE waits SET fired = {NOW}, inbox = ?2 WHERE id = ?1"),
-        params![wait, seq],
-    )?;
+    mark_fired(tx, wait, Some(seq))?;
     set(tx, task, "done", None, None)?;
     Ok(true)
 }
@@ -992,11 +1105,48 @@ fn fire(
     text: &str,
     seq: Option<i64>,
 ) -> rusqlite::Result<()> {
-    tx.execute(
-        &format!("UPDATE waits SET fired = {NOW}, inbox = ?2 WHERE id = ?1"),
+    if mark_fired(tx, wait, seq)? {
+        wake_on(tx, task, text, seq)?;
+    }
+    Ok(())
+}
+
+/// `withdrawn` for the other conditions and the ask of a run when one of them came first.
+const BEATEN: i64 = -2;
+
+/// Marks `wait` fired on the event `seq`, unless it fired or was withdrawn already, and withdraws
+/// the other open waits and the open ask of its run. Says whether it fired now.
+fn mark_fired(tx: &Transaction, wait: i64, seq: Option<i64>) -> rusqlite::Result<bool> {
+    let fired = tx.execute(
+        &format!(
+            "UPDATE waits SET fired = {NOW}, inbox = ?2 WHERE id = ?1 AND fired IS NULL AND withdrawn IS NULL"
+        ),
         params![wait, seq],
     )?;
-    wake_on(tx, task, text, seq)
+    if fired == 0 {
+        return Ok(false);
+    }
+    tx.execute(
+        "UPDATE waits SET withdrawn = ?2 WHERE id != ?1 AND fired IS NULL AND withdrawn IS NULL
+         AND NOT daemon AND run = (SELECT run FROM waits WHERE id = ?1 AND NOT daemon)",
+        params![wait, BEATEN],
+    )?;
+    tx.execute(
+        "UPDATE asks SET withdrawn = ?2 WHERE answer IS NULL AND withdrawn IS NULL
+         AND run = (SELECT run FROM waits WHERE id = ?1 AND NOT daemon)",
+        params![wait, BEATEN],
+    )?;
+    Ok(true)
+}
+
+/// Withdraws the open waits of the run that stored the ask `ask`, now that a person settled it.
+fn withdraw_waits(tx: &Transaction, ask: i64) -> rusqlite::Result<()> {
+    tx.execute(
+        "UPDATE waits SET withdrawn = ?2 WHERE fired IS NULL AND withdrawn IS NULL AND NOT daemon
+         AND run = (SELECT run FROM asks WHERE id = ?1)",
+        params![ask, BEATEN],
+    )
+    .map(drop)
 }
 
 /// Queues `text`, then the event `seq` unless `text` is its line or another prompt carries it, then
@@ -1525,6 +1675,7 @@ pub(crate) fn answer(
         trace::ended(&tx, trace, task, &answer.text, None)?;
         enter(&tx, task, &workflow, &target, None, "", workflows)?;
     } else {
+        withdraw_waits(&tx, answer.ask)?;
         wake(&tx, task, &answer.text)?;
         // An answer that beats the run's Stop leaves it running: the answer is its next prompt.
         if state == "asleep" {
@@ -1584,6 +1735,9 @@ fn open_ask(
     let (label, task) = (&ask.label, ask.task.unwrap_or_default());
     let refused = match withdrawn {
         Some(DISMISSED) => Some(format!("ask {label} was dismissed")),
+        Some(BEATEN) => Some(format!(
+            "ask {label} was withdrawn when a wait of its run fired first"
+        )),
         Some(0) => Some(format!(
             "ask {label} was withdrawn when a later run of task {task} called another tool"
         )),
@@ -1638,6 +1792,7 @@ pub(crate) fn dismiss(
         "UPDATE asks SET withdrawn = ?2 WHERE id = ?1",
         params![dismiss.dismiss, DISMISSED],
     )?;
+    withdraw_waits(&tx, dismiss.dismiss)?;
     crate::deliver::queue(&tx, dismiss.dismiss, None, factory)?;
     if let Some(task) = ask.task {
         wake(

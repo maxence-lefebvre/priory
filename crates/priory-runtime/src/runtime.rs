@@ -280,6 +280,15 @@ pub fn open_pull_request(
         .ok_or_else(|| format!("gh pr create printed {url:?}, not a pull request URL"))
 }
 
+/// The state of pull request `number` on `repo`: OPEN, CLOSED or MERGED.
+pub fn pull_request_state(repo: &str, number: u64) -> Result<String, String> {
+    let number = number.to_string();
+    run(Command::new("gh").args([
+        "pr", "view", &number, "-R", repo, "--json", "state", "--jq", ".state",
+    ]))
+    .map(|state| state.trim().to_owned())
+}
+
 /// Opens an issue on `repo` and returns its number. `mark`, a unique line the body ends with, finds
 /// the issue that an earlier attempt opened before a crash, in any state, so none opens twice.
 pub fn open_issue(repo: &str, title: &str, body: &str, mark: &str) -> Result<u64, String> {
