@@ -96,6 +96,8 @@ waiting: snoozing changes what a person sees, never what the daemon does. `prior
 - The room banner: what is short, by how much, since when, and the waiting task. `priory desk`
   prints it today.
 - Counts: asleep tasks, reports waiting for review, snoozed items.
+- Each task's `progress` from `priory tasks --json`: its goal, acceptance criteria, latest change
+  and next action, as its agent last published them.
 - *Since you looked*: the events since the person's last visit, each with task, what happened and
   when. This needs a stored last visit per person.
 

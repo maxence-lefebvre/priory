@@ -482,6 +482,87 @@ fn a_task_endpoint_returns_its_runs_steps_asks_waits_results_and_tldr() {
 }
 
 #[test]
+fn progress_stores_the_four_fields_that_the_task_endpoint_and_the_tasks_listing_show() {
+    let mut setup = Setup::new("progress", SERVE);
+    setup.seed();
+    let address = setup.start(&["daemon", &setup.factory()]);
+    let progress = json!({
+        "goal": "Fix the docs",
+        "acceptanceCriteria": [
+            { "id": "PF1", "description": "cargo test passes", "required": true },
+            { "id": "PF2", "description": "a screenshot", "required": false }
+        ],
+        "latestChange": "Rewrote the intro",
+        "nextAction": "Open the PR"
+    });
+
+    succeeded(&setup.priory(&["progress", "1", &progress.to_string()]));
+
+    assert_eq!(api(&address, "/api/tasks/1")["progress"], progress);
+    assert_eq!(
+        api(&address, "/api/tasks")["tasks"][0]["progress"],
+        progress
+    );
+    assert_eq!(json_of(&setup, "tasks")["tasks"][0]["progress"], progress);
+}
+
+#[test]
+fn a_second_progress_call_with_one_field_keeps_the_others_and_the_trace_records_each_change() {
+    let mut setup = Setup::new("progress-merge", SERVE);
+    setup.seed();
+    let address = setup.start(&["daemon", &setup.factory()]);
+    let first = json!({
+        "goal": "Fix the docs",
+        "acceptanceCriteria": [{ "id": "PF1", "description": "tests pass", "required": true }],
+        "latestChange": "Rewrote the intro",
+        "nextAction": "Open the PR"
+    });
+    succeeded(&setup.priory(&["progress", "1", &first.to_string()]));
+
+    succeeded(&setup.priory(&["progress", "1", r#"{"nextAction": "Wait for CI"}"#]));
+
+    let mut merged = first.clone();
+    merged["nextAction"] = json!("Wait for CI");
+    assert_eq!(api(&address, "/api/tasks/1")["progress"], merged);
+    let trace = String::from_utf8(setup.priory(&["trace"]).stdout).unwrap();
+    let recorded: Vec<Value> = trace
+        .lines()
+        .map(|line| serde_json::from_str::<Value>(line).unwrap())
+        .filter(|event| event["type"] == "factory.task.progressed")
+        .map(|event| {
+            assert_eq!(event["data"]["task"], "1");
+            event["data"]["progress"].clone()
+        })
+        .collect();
+    assert_eq!(recorded, [first, merged]);
+}
+
+#[test]
+fn progress_refuses_a_bad_acceptance_criteria_shape_and_stores_nothing() {
+    let mut setup = Setup::new("progress-shape", SERVE);
+    setup.seed();
+    let address = setup.start(&["daemon", &setup.factory()]);
+
+    let refused = setup.priory(&[
+        "progress",
+        "1",
+        r#"{"goal": "Fix the docs", "acceptanceCriteria": [{"id": "PF1", "description": "tests pass"}]}"#,
+    ]);
+
+    assert!(!refused.status.success(), "{refused:?}");
+    let error = String::from_utf8_lossy(&refused.stderr);
+    assert!(error.contains("missing field `required`"), "{error}");
+    for positional in [
+        r#"{"acceptanceCriteria": [["PF1", "tests pass", true]]}"#,
+        r#"["Fix the docs"]"#,
+    ] {
+        let refused = setup.priory(&["progress", "1", positional]);
+        assert!(!refused.status.success(), "{positional}: {refused:?}");
+    }
+    assert_eq!(api(&address, "/api/tasks/1")["progress"], Value::Null);
+}
+
+#[test]
 fn unknown_paths_404_other_methods_405_and_oversize_heads_431() {
     let mut setup = Setup::new("limits", SERVE);
     let address = setup.start(&["serve", &setup.factory()]);

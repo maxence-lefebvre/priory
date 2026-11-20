@@ -9,6 +9,7 @@ pub mod memory;
 mod model;
 mod otlp;
 pub mod post;
+pub mod progress;
 pub mod report;
 mod room;
 mod route;

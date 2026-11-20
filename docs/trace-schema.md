@@ -132,6 +132,42 @@ A person snoozed a desk item of a task, or cleared its snooze. Both share `facto
 | `item`  | yes      | The desk item: `kind` is `ask`, `blocked`, `failed` or `prompt`, and `id` its id |
 | `until` | no       | When the item comes back by itself; only on `factory.task.snoozed`   |
 
+## `factory.task.progressed`
+
+A task's progress changed, through the `progress` tool or `priory progress`. It shares `factory`,
+`factory_revision`, `workflow`, `task`, `key`, `generation`, `step` and `machine` with
+`factory.step.ended`.
+
+```json
+{
+  "specversion": "1.0",
+  "id": "0196f1d6-0000-7000-8000-000000000006",
+  "source": "factory://example/xps13",
+  "type": "factory.task.progressed",
+  "time": "2026-11-20T17:10:42Z",
+  "datacontenttype": "application/json",
+  "data": {
+    "factory": "example",
+    "factory_revision": "999daf0",
+    "workflow": "implement",
+    "task": "0196f1b0-0000-7000-8000-000000000001",
+    "key": "github:example/app#42",
+    "generation": 1,
+    "step": "implement",
+    "machine": "xps13",
+    "progress": {
+      "goal": "Fix the docs",
+      "acceptanceCriteria": [{ "id": "AC1", "description": "cargo test passes", "required": true }],
+      "nextAction": "Open the pull request"
+    }
+  }
+}
+```
+
+| Field      | Required | Meaning                                                            |
+| ---------- | -------- | ------------------------------------------------------------------ |
+| `progress` | yes      | The task's whole progress after the change, as `/api/tasks` shows it |
+
 ## `factory.step.labeled`
 
 A judgement that arrives after the step, such as a rejected approval, red CI after a merge, or a
