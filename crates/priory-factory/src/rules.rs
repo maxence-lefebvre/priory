@@ -74,6 +74,14 @@ pub fn check(factory: &Factory) -> Vec<Problem> {
                 "`[webhooks]` needs a `[serve]` table to listen on".to_owned(),
             ));
         }
+        for refused in settings
+            .value
+            .links
+            .iter()
+            .filter_map(|link| link.check().err())
+        {
+            problems.push(problem(settings, settings.lines.field("links"), refused));
+        }
         if !owner_name(settings.value.sweep.repo()) {
             problems.push(problem(
                 settings,

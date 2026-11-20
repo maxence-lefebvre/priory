@@ -1343,3 +1343,41 @@ fn a_view_with_an_empty_container_names_its_file_and_line() {
         "views/default.toml:4:3: a row, column or tabs needs at least one child\n"
     );
 }
+
+#[test]
+fn check_refuses_a_bad_link_regex_a_missing_group_and_a_non_https_template() {
+    let settings = r#"name = "demo"
+
+[links]
+'\b([A-Z]{2,5}-\d+)\b' = "https://linear.app/acme/issue/$1"
+'(unclosed' = "https://example.com/$1"
+'\bPR-(\d+)\b' = "https://example.com/$1/$2"
+'\bdoc-(\d+)\b' = "http://example.com/$1"
+"#;
+
+    let outcome = check(&factory("bad-links", &with("factory.toml", settings)));
+
+    assert_eq!(outcome.code, 1);
+    assert!(
+        outcome
+            .stderr
+            .contains("factory.toml:3: `[links]` `(unclosed` is not a regex:"),
+        "{}",
+        outcome.stderr
+    );
+    assert!(
+        outcome.stderr.contains(
+            "factory.toml:3: `[links]` `\\bPR-(\\d+)\\b` names group $2, but the regex has 1 group\n"
+        ),
+        "{}",
+        outcome.stderr
+    );
+    assert!(
+        outcome.stderr.contains(
+            "factory.toml:3: `[links]` `\\bdoc-(\\d+)\\b` links to `http://example.com/$1`: a link starts with `https://`\n"
+        ),
+        "{}",
+        outcome.stderr
+    );
+    assert!(!outcome.stderr.contains("linear.app"), "{}", outcome.stderr);
+}

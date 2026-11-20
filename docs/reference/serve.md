@@ -23,6 +23,7 @@ does, with every count in `older` at 0. Their rows match the CLI's JSON only wit
 | `/api/tasks/{id}` | | one [task in detail](#task-in-detail) |
 | `/api/queue` | `priory queue --json` | an object: [Queue](#queue) |
 | `/api/views` | | an object: [Views](#views) |
+| `/api/links` | `priory links --json` | an object: [Links](#links) |
 | `/api/reports/latest` | `priory report show --json` | the [report](#report) written last |
 | `/api/reports/{task}` | `priory report show TASK --json` | the task's [report](#report) |
 | `/api/events?since=REV` | `priory wait --since REV` | `{"revision": N}` once it differs from `REV`. See [below](#apievents) |
@@ -169,7 +170,7 @@ an object: `answered` and `withdrawn`, the number of each left out, within `band
 | Field | Type | Meaning |
 | ----- | ---- | ------- |
 | `id` | integer or string | The ask: its number, or the id an outside ask was given |
-| `task`, `key`, `step`, `lane`, `band` | | The task, its key, the ask's step, and the task's lane and band. An outside ask has no task, so its `lane` and `band` are null, and its `key` is the one it sent |
+| `task`, `key`, `step`, `lane`, `band`, `repo` | | The task, its key, the ask's step, and the task's lane, band and repository. An outside ask has no task, so its `lane`, `band` and `repo` are null, and its `key` is the one it sent |
 | `run` | integer or null | The run that asked |
 | `state` | string | `open`, `answered` or `withdrawn` |
 | `withdrawn_why` | string or null | Why a withdrawn ask closed: `dismissed`, `a later run called another tool` or `revived as generation <n>` |
@@ -282,13 +283,26 @@ A held task lists each condition of its hold, in the order it was given, under `
 
 The server reads the views when it starts.
 
+## Links
+
+| Field | Type | Meaning |
+| ----- | ---- | ------- |
+| `links` | array of objects | The factory's [autolinks](factory.md#links), in the order a view applies them: each `pattern`, a regex, and `url`, its URL template with `$1`-style groups and `{repo}` |
+
+```json
+{ "links": [{ "pattern": "\\B#(\\d+)\\b", "url": "https://github.com/{repo}/issues/$1" }] }
+```
+
+The server reads the links when it starts. `priory links [DIR]` without `--json` prints them as
+`pattern` and `url` columns.
+
 ## Web view files
 
 With `web = true`, the server sends these without the token:
 
 | Path | Type |
 | ---- | ---- |
-| `/boot.js`, `/app.js`, `/asks.js` | `text/javascript; charset=utf-8` |
+| `/boot.js`, `/app.js`, `/asks.js`, `/links.js` | `text/javascript; charset=utf-8` |
 | `/app.css`, `/tokens/structure.css`, `/tokens/themes.css` | `text/css; charset=utf-8` |
 | `/fonts/<file>.woff2` | `font/woff2` |
 | `/favicon.ico`, `/favicon.svg`, `/apple-touch-icon.png` | the image's type |
