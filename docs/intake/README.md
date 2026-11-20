@@ -1,18 +1,40 @@
 # Intake messages
 
-`priory intake [DIR] [--once]` polls GitHub for the repositories that the factory's triggers name,
-whatever their source, and those of open pull request waits,
-Linear when the factory has a Linear trigger or an open wait names a Linear issue, and Slack when
-the factory has a Slack trigger or an open wait names a Slack thread (see Slack events). It publishes on the herdr-bus output `factory.intake`. This page is the contract for every consumer of
-that output: the Priory daemon, and another factory such as herdr-bowtie.
+The intake is the process that finds new work. It polls GitHub, Linear and Slack, fires schedules,
+and publishes what it finds as messages. The Priory daemon reads those messages and turns them into
+tasks.
 
-The intake checks the factory first, as `priory check` does, and refuses to start while it has
-problems. `--once` polls once and exits. Without it, the intake polls every 60 seconds. It reads
-GitHub through `gh api` and `gh api graphql`, as the user `gh` is logged in as, and Linear through
-`curl` (see Linear calls). Each `gh api` call runs in its own process group: past 5 minutes, or
-`command_timeout` in `factory.toml`, it is killed and the poll fails with `timed out after <n>s`,
-so a hung call cannot hold schedules, Linear and Slack forever. Each poll also fires the factory's schedule triggers that are due (see
-`schedule.fired`).
+```sh
+priory intake [DIR] [--once]
+```
+
+`DIR` is the factory folder, `.` by default. The intake checks the factory first, as `priory check`
+does, and refuses to start while it has problems. Without `--once`, it polls every 60 seconds.
+With `--once`, it polls once and exits.
+
+## What it polls
+
+| Source | Polled when | Read through |
+| ------ | ----------- | ------------ |
+| GitHub | a trigger names the repository, whatever the trigger's source, or an open wait or `--merge` hold names a pull request in it | `gh api` and `gh api graphql`, as the user `gh` is logged in as |
+| Linear | the factory has a Linear trigger, or an open wait names a Linear issue | `curl` (see Linear calls in [linear.md](linear.md)) |
+| Slack | the factory has a Slack trigger, or an open wait names a Slack thread | `curl` (see Slack calls in [slack.md](slack.md)) |
+| Schedules | on every poll, for each schedule trigger that is due | no network (see [schedule.md](schedule.md)) |
+
+[watches.md](watches.md) explains how open waits add to what the intake polls.
+
+Each `gh api` call runs in its own process group. Past 5 minutes, or past `command_timeout` in
+`factory.toml`, the call is killed and the poll fails with `timed out after <n>s`. So a hung call
+cannot hold up schedules, Linear and Slack forever.
+
+## Where messages go
+
+The intake publishes on the output `factory.intake` of [herdr-bus](https://github.com/flupke/herdr-bus),
+a message log in one SQLite file that `HERDR_BUS_DB` names. Several consumers can read one output,
+each at its own position.
+
+These pages are the contract for every consumer of that output: the Priory daemon, and another
+factory such as herdr-bowtie.
 
 ## Which file to read
 

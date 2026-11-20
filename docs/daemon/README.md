@@ -1,13 +1,53 @@
 # The daemon
 
-`priory daemon [DIR] [--once]` reads the herdr-bus output `factory.intake` as the consumer `priory`,
-records each message in the inbox and routes it to a task. It checks the factory first, as
-`priory check` does, and refuses to start while it has problems. `--once` routes what is pending
-and exits; it starts no runs, since no daemon would stay to hear their hooks. Without it, the
-daemon looks for new messages every second and runs agents, as described under Runs.
+The daemon turns the intake's messages into tasks and carries each task through its workflow. It
+starts agents in tmux, types their prompts, hears their hooks and tool calls, and moves each task
+from step to step.
 
-State is one SQLite file, named by `PRIORY_DB`. The daemon refuses to start without it, or with an
-empty name, `:memory:` or a `file:` URI, which SQLite may not keep on disk.
+```sh
+priory daemon [DIR] [--once]
+```
+
+`DIR` is the factory folder, `.` by default. The daemon checks the factory first, as `priory check`
+does, and refuses to start while it has problems.
+
+It reads the herdr-bus output `factory.intake` as the consumer `priory`. It records each message in
+the inbox and routes it to a task (see [routing.md](routing.md)). Without `--once`, the daemon looks
+for new messages every second and runs agents, as [runs.md](runs.md) describes.
+
+`--once` routes what is pending and exits. It starts no runs, since no daemon would stay to hear
+their hooks.
+
+## State
+
+The daemon keeps its state in one SQLite file, which `PRIORY_DB` names. It holds the inbox, tasks,
+runs, prompts, asks, waits, results and trace records. The listing commands, such as `priory tasks`,
+read the same file.
+
+The daemon refuses to start without `PRIORY_DB`. It also refuses an empty name, `:memory:` or a
+`file:` URI, because SQLite may not keep those on disk.
+
+Clones, worktrees and the daemon's socket live in a separate folder, Priory home (see
+[home.md](home.md)).
+
+## A task's life
+
+For a task that a labelled issue starts, on a workflow whose first step is a model step:
+
+1. The intake publishes the issue event and a task request. The daemon creates the task, `queued`
+   at the workflow's start step ([routing.md](routing.md)).
+2. When the machine has room ([room.md](room.md)), the daemon adds a worktree and starts the step's
+   agent in tmux. The task is `running` ([runs.md](runs.md)).
+3. The daemon types the step's prompt through the outbox ([outbox.md](outbox.md)). Hooks tell it
+   when the agent is idle or busy ([signals.md](signals.md)).
+4. The agent ends its turn with a tool: `result`, `ask` or `wait` ([tools.md](tools.md)). A result
+   moves the task to the next step. An ask or a wait puts the task to sleep with no process, until
+   an answer or an event wakes it ([waits.md](waits.md)).
+5. Every second, the daemon checks each live run's health. A crash, a timeout or a permission
+   prompt fails or blocks the task, and the desk shows it ([health.md](health.md),
+   [desk.md](desk.md)).
+6. At `done`, a task with a pull request waits for the pull request's checks before it is done
+   ([waits.md](waits.md)). Later, the sweep removes its worktree ([sweep.md](sweep.md)).
 
 ## Which file to read
 
