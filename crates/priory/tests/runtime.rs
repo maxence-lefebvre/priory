@@ -40,10 +40,12 @@ const OUTPUT: &str = "factory.intake";
 
 /// Takes a state file back before schema 28, which added search, 29, which added grades, 30,
 /// which added snoozes, 31, which added read reports, 32, which added the pause, 34, which added
-/// reports of sections, 36, which added deliveries, and 37, which added run actions.
+/// reports of sections, 36, which added deliveries, 37, which added progress, and 38, which added
+/// run actions.
 const UNDO_SINCE_SEARCH: &str = "ALTER TABLE actions DROP COLUMN stdout;
   ALTER TABLE actions DROP COLUMN stderr; ALTER TABLE actions DROP COLUMN pid;
-  ALTER TABLE actions DROP COLUMN pid_started; DROP TABLE deliveries; DROP TABLE reports; DROP TABLE pause;
+  ALTER TABLE actions DROP COLUMN pid_started; ALTER TABLE tasks DROP COLUMN progress;
+  DROP TABLE deliveries; DROP TABLE reports; DROP TABLE pause;
   ALTER TABLE outbox DROP COLUMN wakes;
   DROP TRIGGER snooze_ends_on_a_new_revision;
   DROP TRIGGER snooze_ends_on_a_task_state_change; DROP TABLE snoozes;
@@ -4425,7 +4427,7 @@ fn the_mcp_server_lists_its_tools() {
     assert_eq!(
         names,
         [
-            "result", "ask", "wait", "compact", "tldr", "report", "search"
+            "result", "ask", "wait", "compact", "tldr", "report", "search", "progress"
         ]
     );
     let on = &replies[1]["result"]["tools"][2]["inputSchema"]["properties"]["on"];
@@ -4488,7 +4490,8 @@ fn a_state_file_whose_asks_an_approval_names_upgrades_to_outside_asks() {
     // The state file as version 32 left it: every ask belongs to a task.
     let db = rusqlite::Connection::open(setup.dir.join("priory.db")).unwrap();
     db.execute_batch(
-        "DROP TABLE deliveries;
+        "ALTER TABLE tasks DROP COLUMN progress;
+         DROP TABLE deliveries;
          DROP TABLE reports;
          PRAGMA legacy_alter_table = ON;
          CREATE TABLE asks_32 (
@@ -9011,6 +9014,32 @@ fn the_tldr_tool_refuses_a_tldr_over_the_limit_with_its_count_then_stores_one_th
     );
 }
 
+#[test]
+fn the_progress_tool_stores_the_four_fields_on_the_agents_task() {
+    let mut setup = Setup::new("progress-tool");
+    let progress = json!({
+        "goal": "Rework the done gate",
+        "acceptanceCriteria": [{ "id": "AC1", "description": "a close ends it", "required": true }],
+        "latestChange": "Moved the gate to the close event",
+        "nextAction": "Run the tests"
+    });
+    setup.calls(&[json!({ "name": "progress", "arguments": progress })]);
+    setup.publish(&requested(42));
+
+    setup.start();
+
+    setup.calls_left(0);
+    let deadline = Instant::now() + Duration::from_secs(15);
+    while setup.replies().is_empty() {
+        assert!(Instant::now() < deadline, "no reply");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let (stored, error) = reply(&setup.replies()[0]);
+    assert!(!error, "{stored}");
+    let tasks: serde_json::Value =
+        serde_json::from_slice(&setup.priory(&["tasks", "--json"]).stdout).unwrap();
+    assert_eq!(tasks["tasks"][0]["progress"], progress);
+}
 impl Setup {
     /// Turns the OTLP exporter on in `factory.toml`, sending to `endpoint`.
     fn telemetry(&self, endpoint: &str) {

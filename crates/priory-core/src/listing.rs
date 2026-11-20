@@ -144,13 +144,26 @@ pub fn inbox(db: &Connection, since: i64) -> rusqlite::Result<Value> {
 pub fn tasks(db: &Connection, lane: Option<&str>, grade: Option<&str>) -> rusqlite::Result<Value> {
     let query = format!(
         "{} SELECT id, key, workflow, step, state, band, lane, reason, queue.place AS position,
-           generation, retired, tldr, changed AS since, grade, grade_reason
+           generation, retired, tldr, changed AS since, grade, grade_reason, progress
          FROM tasks LEFT JOIN queue USING (id)
          WHERE (?1 IS NULL OR lane = ?1) AND (?2 IS NULL OR grade = ?2) ORDER BY {}",
         places(),
         state::START_ORDER
     );
-    rows(db, &query, [lane, grade])
+    let mut tasks = rows(db, &query, [lane, grade])?;
+    tasks
+        .as_array_mut()
+        .expect("rows are an array")
+        .iter_mut()
+        .for_each(parse_progress);
+    Ok(tasks)
+}
+
+/// `progress` as the object it is stored as.
+fn parse_progress(task: &mut Value) {
+    if let Some(progress) = task["progress"].as_str() {
+        task["progress"] = serde_json::from_str(progress).unwrap_or(Value::Null);
+    }
 }
 
 /// Every ask with its state, oldest first.
@@ -387,7 +400,8 @@ pub fn task(db: &Connection, id: i64) -> rusqlite::Result<Option<Value>> {
         db,
         &format!(
             "{} SELECT id, key, workflow, step, state, band, lane, reason, queue.place AS position,
-               generation, retired, tldr, changed AS since, repo, branch, grade, grade_reason
+               generation, retired, tldr, changed AS since, repo, branch, grade, grade_reason,
+               progress
              FROM tasks LEFT JOIN queue USING (id) WHERE id = ?1",
             places()
         ),
@@ -423,6 +437,7 @@ pub fn task(db: &Connection, id: i64) -> rusqlite::Result<Option<Value>> {
         task[name] = rows(db, query, [id])?;
     }
     task["asks"] = asks_of(db, Some(id))?;
+    parse_progress(&mut task);
     Ok(Some(task))
 }
 
