@@ -185,10 +185,11 @@ DESIGN.md's "Herdr adapter" section holds its visual rules; this section says ho
   `priory task ID --json`. When a call fails, it keeps the last list and shows "Reconnecting to priory" with the age
   of its last update, and the options stay disabled until it reconnects.
 - **List.** The saved views are Open, Snoozed, Answered and All, each with its count. The facet
-  chips Command, Lane, Band and Task narrow every view. Band lists the bands in the factory's
+  chips Command, Lane, Band, Risk and Task narrow every view. Band lists the bands in the factory's
   order from the listing's `bands`, and puts an ask with no band, such as an outside ask, under
-  `none`. A row shows its tile, task key, step, age,
-  question, and what it recommends, its answer or why it was withdrawn.
+  `none`. Risk lists `irreversible`, `red`, `yellow`, `green`, then `none` for an ask whose `risk`
+  is empty, and counts an ask under each risk it carries. A row shows its tile, task key, step,
+  age, question, and what it recommends, its answer or why it was withdrawn.
 - **Width.** Below 720 px the selected row opens under itself: the decide part, the section chips
   and Why. A section chip opens that section with the answer bar under it, since gpui-kit has no
   sticky positioning. From 720 px the list and the detail sit side by side. The decide part stays
