@@ -31,7 +31,9 @@ export function priory({ exec, binary = "priory-oss", on = null, factory = null 
     report: (/** @type {Id} */ task) => read("report", "show", ...(task == null ? [] : [String(task)])),
     // priory wait gives up after 25 s with the same revision; Herdr's exec would stop it at 30 s.
     wait: async (/** @type {number} */ since) => Number(await call(["wait", "--since", String(since)], 60_000)),
-    answer: (/** @type {Id} */ ask, /** @type {string} */ text, /** @type {number} */ revision) => call(["answer", "--expected", String(revision), "--", String(ask), text]),
+    // `run` confirms an answer that runs the ask's command, as the person's second press does.
+    answer: (/** @type {Id} */ ask, /** @type {string} */ text, /** @type {number} */ revision, { run = false } = {}) =>
+      call(["answer", "--expected", String(revision), ...(run ? ["--run"] : []), "--", String(ask), text]),
     dismiss: (/** @type {Id} */ ask, /** @type {number} */ revision) => call(["dismiss", "--expected", String(revision), String(ask)]),
     snooze: (/** @type {string} */ kind, /** @type {Id} */ id, /** @type {{ for?: string, until?: string } | null} */ when) => call(["snooze", kind, String(id), ...(
       when?.for ? ["--for", when.for] : when?.until ? ["--until", when.until] : ["--clear"])]),
