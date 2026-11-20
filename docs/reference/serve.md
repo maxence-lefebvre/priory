@@ -48,8 +48,8 @@ Each item:
 
 | Field | Type | Meaning |
 | ----- | ---- | ------- |
-| `kind` | string | `ask`, `blocked`, `failed`, `prompt`, `held`, `sweep`, `memory`, `retired`, `queue` or `worktree`. See [desk.md](../daemon/desk.md) |
-| `id` | integer or string | The ask, task, prompt, hold, sweep, grant or queue place; a worktree's path |
+| `kind` | string | `ask`, `blocked`, `failed`, `prompt`, `held`, `sweep`, `memory`, `report`, `retired`, `queue` or `worktree`. See [desk.md](../daemon/desk.md) |
+| `id` | integer or string | The ask, task, prompt, hold, sweep, grant, report's inbox sequence number or queue place; a worktree's path |
 | `task` | integer or null | The task |
 | `key` | string or null | The task's key |
 | `step` | string or null | The task's step |
@@ -61,7 +61,9 @@ Each item:
 
 ## Inbox
 
-Each message, oldest first: `seq`, `type`, `subject`, `task`, `outcome` and `time`.
+Each message and report, oldest first: `seq`, `type`, `subject`, `task`, `outcome`, `time`, `line`
+and `read`. A report has the type `priory.report`, its source as `subject`, the outcome `report`, its
+line as `line`, and, once read, when it was read as `read`. Both are null on a message.
 
 ## Asks
 

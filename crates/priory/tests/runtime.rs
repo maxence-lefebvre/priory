@@ -36,11 +36,11 @@ key = "issue.number"
 
 const OUTPUT: &str = "factory.intake";
 
-/// Takes a state file back before schema 28, which added search, 29, which added grades, and 30,
-/// which added snoozes.
+/// Takes a state file back before schema 28, which added search, 29, which added grades, 30,
+/// which added snoozes, and 31, which added read reports.
 const UNDO_SINCE_SEARCH: &str = "DROP TRIGGER snooze_ends_on_a_new_revision;
   DROP TRIGGER snooze_ends_on_a_task_state_change; DROP TABLE snoozes;
-  ALTER TABLE results DROP COLUMN reason; ALTER TABLE tasks DROP COLUMN grade;
+  ALTER TABLE inbox DROP COLUMN read; ALTER TABLE results DROP COLUMN reason; ALTER TABLE tasks DROP COLUMN grade;
   ALTER TABLE tasks DROP COLUMN grade_reason;
   DROP TRIGGER search_task_created; DROP TRIGGER search_tldr_changed; DROP TRIGGER search_result_stored;
   DROP VIEW task_text; DROP TABLE search; DROP TABLE summaries;
@@ -4058,22 +4058,22 @@ fn a_state_file_whose_asks_an_approval_names_upgrades_to_outside_asks() {
         rows.first().is_some_and(|row| row[4] == "asleep")
     });
     setup.crash();
-    // The state file as version 30 left it: every ask belongs to a task.
+    // The state file as version 31 left it: every ask belongs to a task.
     let db = rusqlite::Connection::open(setup.dir.join("priory.db")).unwrap();
     db.execute_batch(
         "PRAGMA legacy_alter_table = ON;
-         CREATE TABLE asks_30 (
+         CREATE TABLE asks_31 (
            id INTEGER PRIMARY KEY AUTOINCREMENT, task INTEGER NOT NULL REFERENCES tasks (id),
            run INTEGER REFERENCES runs (id), step TEXT NOT NULL,
            kind TEXT NOT NULL CHECK (kind IN ('step', 'agent')), revision INTEGER NOT NULL DEFAULT 1,
            question TEXT NOT NULL, options TEXT NOT NULL, recommendation TEXT, tradeoff TEXT,
            answer TEXT, answered TEXT, created TEXT NOT NULL, withdrawn INTEGER);
-         INSERT INTO asks_30 SELECT id, task, run, step, kind, revision, question, options,
+         INSERT INTO asks_31 SELECT id, task, run, step, kind, revision, question, options,
            recommendation, tradeoff, answer, answered, created, withdrawn FROM asks;
          DROP TABLE asks;
-         ALTER TABLE asks_30 RENAME TO asks;
+         ALTER TABLE asks_31 RENAME TO asks;
          INSERT INTO approvals (task, step, ask, revision) VALUES (1, 'plan', 1, 1);
-         PRAGMA user_version = 30;",
+         PRAGMA user_version = 31;",
     )
     .unwrap();
     drop(db);
@@ -4218,7 +4218,7 @@ fn a_pull_request_event_naming_the_task_branch_reaches_the_task() {
 
     let inbox = setup.until("inbox", |rows| rows.len() == 2);
     assert_eq!(
-        inbox[1][1..],
+        inbox[1][1..5],
         ["github.pull_request.opened", "owner/repo#7", "1", "kept"]
     );
 }
