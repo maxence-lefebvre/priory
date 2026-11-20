@@ -177,7 +177,7 @@ refuses the same bands.
 | `answer`, `answered_at` | string or null | The answer and when it came |
 | `delivery` | object or null | The latest delivery of an outside ask's answer or dismissal to its session: `state` (`queued`, `running`, `delivered` or `failed`), `revision`, `tries`, `error` and `since`. Null when nothing was delivered. See [asks.md](../daemon/asks.md) |
 | `since` | string | When the agent asked |
-| `revisions` | array | Every revision of the question, oldest first: `revision`, `question`, `options`, `recommendation`, `text` and `at`, when it was asked. An ask stored before Priory kept revisions lists only its current one, dated when the ask was first asked |
+| `revisions` | array | Every revision of the question, oldest first: `revision`, `question`, `options`, `recommendation`, `text`, `at`, when it was asked, and `answer` and `answered_at`, the answer that revision took, or null. An ask stored before Priory kept revisions lists only its current one, dated when the ask was first asked |
 | `refused` | array | Every answer the daemon refused, oldest first: `revision`, the one the answer was sent for, `answer`, `by` (`cli` or `serve`), `why`, the CLI's error, and `at` |
 | `snoozed_until`, `snoozed_at`, `back_early` | | The ask's [snooze](#snooze) |
 
@@ -225,7 +225,7 @@ And these objects:
 | ----- | ---- | ------- |
 | `brief` | object | `title` and `request`, the request's title and text, each null when it has none, and `result`, the latest result of a step named `groom`, or null |
 | `plan` | object or null | The latest result of a step named `plan`. A result has `run`, `step`, `outcome`, `summary`, `evidence`, `commit_sha` and `created`. When it is null, `progress` holds the plan the agent published |
-| `pull_request` | object or null | The latest pull request the task owns that has stored GitHub events: `repo`, `number`, `title`, `url`, `branch`, `base`, `head_sha`, `state` (`open`, `closed` or `merged`), `review` (the latest review's state, or null) and `checks`, the latest conclusion of each check run on the head: `name`, `conclusion` and `at` |
+| `pull_request` | object or null | The latest pull request the task owns that has stored GitHub events: `repo`, `number`, `title`, `url`, `branch`, `base`, `head_sha`, `state` (`open`, `closed` or `merged`; a reopened pull request stays `closed`, since the intake publishes no reopen event), `review` (the latest review's state, or null) and `checks`, the latest conclusion of each check run on the head: `name`, `conclusion` and `at` |
 
 ## Queue
 

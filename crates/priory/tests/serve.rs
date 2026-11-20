@@ -701,6 +701,12 @@ fn a_task_endpoint_shows_its_brief_plan_pull_request_and_each_runs_tokens() {
         (3, "github.check_run.completed", pr("test", "success")),
         (4, "github.check_run.completed", pr("lint", "success")),
         (5, "github.pull_request_review.submitted", pr("", "")),
+        // A check run on the commit before the head, completing late.
+        (6, "github.check_run.completed", {
+            let mut late = pr("test", "failure");
+            late["head_sha"] = json!("old");
+            late
+        }),
     ] {
         db.execute(
             "INSERT INTO inbox (id, type, subject, time, data, links, outcome)
@@ -728,6 +734,7 @@ fn a_task_endpoint_shows_its_brief_plan_pull_request_and_each_runs_tokens() {
     assert_eq!(pull["repo"], "owner/repo");
     assert_eq!(pull["title"], "Fix the docs");
     assert_eq!(pull["state"], "open");
+    assert_eq!(pull["head_sha"], "abc");
     assert_eq!(pull["review"], "approved");
     assert_eq!(
         pull["checks"],
@@ -2450,7 +2457,7 @@ fn an_answer_that_runs_a_command_needs_run_true_and_the_ask_then_shows_what_it_r
 }
 
 #[test]
-fn a_stale_revision_gets_409_with_the_current_ask_and_changes_nothing() {
+fn a_stale_revision_gets_409_with_the_current_ask_and_changes_only_its_refused_answers() {
     let mut setup = Setup::new("web-stale", SERVE);
     setup.asleep_on_ask();
     let address = setup.start(&["daemon", &setup.factory()]);
@@ -2466,8 +2473,14 @@ fn a_stale_revision_gets_409_with_the_current_ask_and_changes_nothing() {
     assert_eq!(status, 409, "{body}");
     let body: Value = serde_json::from_str(&body).unwrap();
     assert_eq!(body["error"], "ask 1 is at revision 2, not 1");
-    assert_eq!(body["ask"], before);
-    assert_eq!(setup.ask(), before);
+    let mut after = setup.ask();
+    assert_eq!(body["ask"], after);
+    let refused = after["refused"].take();
+    assert_eq!(refused[0]["answer"], "left");
+    assert_eq!(refused[0]["by"], "serve");
+    assert_eq!(refused.as_array().unwrap().len(), 1);
+    after["refused"] = before["refused"].clone();
+    assert_eq!(after, before);
 }
 
 #[test]

@@ -718,9 +718,9 @@ const SCHEMA_42: &str = "CREATE TABLE dispatches (
 PRAGMA user_version = 42;
 ";
 
-// Every revision of an ask as it was asked, and every answer the daemon refused. A trigger records
-// each revision, so no writer of `asks` can skip it. An ask stored before keeps only its current
-// revision, dated when the ask was first asked.
+// Every revision of an ask as it was asked and answered, and every answer the daemon refused.
+// Triggers record each revision and its answer, so no writer of `asks` can skip one. An ask stored
+// before keeps only its current revision, dated when the ask was first asked.
 const SCHEMA_43: &str = concat!(
     "CREATE TABLE IF NOT EXISTS ask_revisions (
   ask            INTEGER NOT NULL REFERENCES asks (id),
@@ -730,10 +730,13 @@ const SCHEMA_43: &str = concat!(
   recommendation TEXT,
   text           TEXT,
   created        TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+  answer         TEXT,
+  answered       TEXT,
   PRIMARY KEY (ask, revision)
 );
-INSERT OR IGNORE INTO ask_revisions (ask, revision, question, options, recommendation, text, created)
-  SELECT id, revision, question, options, recommendation, text, created FROM asks;
+INSERT OR IGNORE INTO ask_revisions (ask, revision, question, options, recommendation, text, created,
+  answer, answered)
+  SELECT id, revision, question, options, recommendation, text, created, answer, answered FROM asks;
 CREATE TRIGGER IF NOT EXISTS ask_revision_asked AFTER INSERT ON asks BEGIN
   INSERT INTO ask_revisions (ask, revision, question, options, recommendation, text)
   VALUES (NEW.id, NEW.revision, NEW.question, NEW.options, NEW.recommendation, NEW.text);
@@ -742,6 +745,11 @@ CREATE TRIGGER IF NOT EXISTS ask_revision_revised AFTER UPDATE OF revision ON as
   WHEN NEW.revision IS NOT OLD.revision BEGIN
   INSERT OR REPLACE INTO ask_revisions (ask, revision, question, options, recommendation, text)
   VALUES (NEW.id, NEW.revision, NEW.question, NEW.options, NEW.recommendation, NEW.text);
+END;
+CREATE TRIGGER IF NOT EXISTS ask_revision_answered AFTER UPDATE OF answer ON asks
+  WHEN NEW.answer IS NOT NULL AND NEW.answer IS NOT OLD.answer BEGIN
+  UPDATE ask_revisions SET answer = NEW.answer, answered = NEW.answered
+  WHERE ask = NEW.id AND revision = NEW.revision;
 END;
 CREATE TABLE IF NOT EXISTS ask_refusals (
   id       INTEGER PRIMARY KEY AUTOINCREMENT,

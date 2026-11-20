@@ -22,7 +22,7 @@
             "recommendation": "Merge",
             "refused": [
                 {
-                    "answer": "Wait",
+                    "answer": "Close",
                     "at": "2026-11-20T10:06:00Z",
                     "by": "cli",
                     "revision": 1,
@@ -32,6 +32,8 @@
             "revision": 2,
             "revisions": [
                 {
+                    "answer": "Wait",
+                    "answered_at": "2026-11-20T09:55:00Z",
                     "at": "2026-11-20T09:50:00Z",
                     "options": [
                         "Merge",
@@ -43,6 +45,8 @@
                     "text": "Checks are running."
                 },
                 {
+                    "answer": "Merge",
+                    "answered_at": "2026-11-20T10:07:00Z",
                     "at": "2026-11-20T10:05:00Z",
                     "options": [
                         "Merge",
@@ -80,6 +84,7 @@
             "created": "2026-11-20T08:20:00Z",
             "evidence": null,
             "outcome": "yellow",
+            "reason": null,
             "run": 1,
             "step": "groom",
             "summary": "## Goal\nExport the board as CSV.\n\n## Scope\nOne CSV per board."
@@ -98,6 +103,7 @@
         "created": "2026-11-20T08:40:00Z",
         "evidence": null,
         "outcome": "planned",
+        "reason": null,
         "run": 2,
         "step": "plan",
         "summary": "- [x] Write the exporter\n- [ ] Merge #212"
@@ -152,7 +158,7 @@
         }
     ],
     "retired": null,
-    "revision": 17,
+    "revision": 16,
     "runs": [
         {
             "agent": null,

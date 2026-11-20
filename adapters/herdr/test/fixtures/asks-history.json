@@ -22,7 +22,7 @@
             "recommendation": "Merge",
             "refused": [
                 {
-                    "answer": "Wait",
+                    "answer": "Close",
                     "at": "2026-11-20T10:06:00Z",
                     "by": "cli",
                     "revision": 1,
@@ -32,6 +32,8 @@
             "revision": 2,
             "revisions": [
                 {
+                    "answer": "Wait",
+                    "answered_at": "2026-11-20T09:55:00Z",
                     "at": "2026-11-20T09:50:00Z",
                     "options": [
                         "Merge",
@@ -43,6 +45,8 @@
                     "text": "Checks are running."
                 },
                 {
+                    "answer": "Merge",
+                    "answered_at": "2026-11-20T10:07:00Z",
                     "at": "2026-11-20T10:05:00Z",
                     "options": [
                         "Merge",
@@ -72,5 +76,5 @@
         }
     ],
     "bands": [],
-    "revision": 17
+    "revision": 16
 }

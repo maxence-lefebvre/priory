@@ -124,7 +124,8 @@ fn asks_query() -> String {
         'stderr', stderr)
       FROM actions WHERE actions.ask = asks.id ORDER BY id DESC LIMIT 1) AS ran,
      (SELECT json_group_array(json_object('revision', revision, 'question', question,
-        'options', json(options), 'recommendation', recommendation, 'text', text, 'at', created))
+        'options', json(options), 'recommendation', recommendation, 'text', text, 'at', created,
+        'answer', answer, 'answered_at', answered))
       FROM (SELECT * FROM ask_revisions WHERE ask = asks.id ORDER BY revision)) AS revisions,
      (SELECT json_group_array(json_object('revision', revision, 'answer', answer, 'by', by,
         'why', why, 'at', created))
@@ -553,12 +554,20 @@ pub fn task(db: &Connection, id: i64) -> rusqlite::Result<Option<Value>> {
         [id],
     )?)
     .unwrap_or_else(|| json!({ "title": null, "request": null }));
+    let latest = |step: &str| {
+        task["results"]
+            .as_array()
+            .and_then(|results| results.iter().rev().find(|result| result["step"] == step))
+            .cloned()
+            .unwrap_or(Value::Null)
+    };
+    let (brief, plan) = (latest(BRIEF_STEP), latest(PLAN_STEP));
     task["brief"] = json!({
         "title": request["title"],
         "request": request["request"],
-        "result": latest_result(db, id, BRIEF_STEP)?,
+        "result": brief,
     });
-    task["plan"] = latest_result(db, id, PLAN_STEP)?.unwrap_or(Value::Null);
+    task["plan"] = plan;
     task["pull_request"] = pull_request(db, id)?.unwrap_or(Value::Null);
     parse_json(&mut task);
     Ok(Some(task))
@@ -568,19 +577,9 @@ pub fn task(db: &Connection, id: i64) -> rusqlite::Result<Option<Value>> {
 const BRIEF_STEP: &str = "groom";
 const PLAN_STEP: &str = "plan";
 
-/// The latest result of `step` on task `id`.
-fn latest_result(db: &Connection, id: i64, step: &str) -> rusqlite::Result<Option<Value>> {
-    let found = rows(
-        db,
-        "SELECT run, step, outcome, summary, evidence, commit_sha, created FROM results
-         WHERE task = ?1 AND step = ?2 ORDER BY run DESC LIMIT 1",
-        params![id, step],
-    )?;
-    Ok(found.as_array().and_then(|rows| rows.first()).cloned())
-}
-
 /// The latest pull request task `id` owns, as its stored GitHub events tell it: its title, state,
-/// latest review and the latest conclusion of each check run on its latest head.
+/// latest review and the latest conclusion of each check run on its latest head. The head comes
+/// from the pull request's own events, since a check run on an older commit can complete later.
 fn pull_request(db: &Connection, id: i64) -> rusqlite::Result<Option<Value>> {
     let found = rows(
         db,
@@ -592,7 +591,8 @@ fn pull_request(db: &Connection, id: i64) -> rusqlite::Result<Option<Value>> {
          events AS (SELECT inbox.seq, inbox.type, inbox.time, inbox.data FROM inbox JOIN pr
            ON inbox.subject = pr.subject
            WHERE inbox.type LIKE 'github.pull_request%' OR inbox.type LIKE 'github.check_run%'),
-         head AS (SELECT data FROM events ORDER BY seq DESC LIMIT 1)
+         head AS (SELECT data FROM events
+           ORDER BY type LIKE 'github.pull_request%' DESC, seq DESC LIMIT 1)
          SELECT json_extract(head.data, '$.repo') AS repo,
            json_extract(head.data, '$.pull_request') AS number,
            (SELECT json_extract(data, '$.title') FROM events

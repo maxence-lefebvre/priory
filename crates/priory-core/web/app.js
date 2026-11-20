@@ -472,11 +472,13 @@ function askDetail(id, wide) {
       ${commandBlock(ask, `Runs on ${ask.command.runs.join(", ")}. ${bound} Runs at most once.`)}</section>`;
   // Every revision and refused answer, newest first; an ask listed before Priory kept them shows its current revision.
   const dated = [
-    ...(ask.revisions || [{ revision: ask.revision, at: ask.since }]).map((revision) => [revision.at, html`<li>${tile("ask", "sm")}<span>Asked revision <b>${revision.revision}</b>${revision.question ? `: ${revision.question}` : ""}</span>${timeTag(revision.at, clock(revision.at))}</li>`]),
+    ...(ask.revisions || [{ revision: ask.revision, at: ask.since, answer: ask.answer, answered_at: ask.answered_at }]).flatMap((revision) => [
+      [revision.at, html`<li>${tile("ask", "sm")}<span>Asked revision <b>${revision.revision}</b>${revision.question ? `: ${revision.question}` : ""}</span>${timeTag(revision.at, clock(revision.at))}</li>`],
+      ...(revision.answer == null ? [] : [[revision.answered_at || revision.at, html`<li>${tile("answered", "sm")}<span>Answered <b>${revision.answer}</b></span>${timeTag(revision.answered_at, clock(revision.answered_at || revision.at))}</li>`]]),
+    ]),
     ...(ask.refused || []).map((refusal) => [refusal.at, html`<li>${tile("refused", "sm")}<span class="t-warn"><b>Refused:</b> ${refusal.answer}, sent for revision ${refusal.revision} from ${refusal.by}: ${refusal.why}</span>${timeTag(refusal.at, clock(refusal.at))}</li>`]),
   ].sort(([a], [b]) => b.localeCompare(a));
   const historyItems = dated.map(([, item]) => item);
-  if (ask.state === "answered") historyItems.unshift(html`<li>${tile("answered", "sm")}<span>Answered <b>${ask.answer}</b></span>${ask.answered_at ? timeTag(ask.answered_at, clock(ask.answered_at)) : ""}</li>`);
   if (ask.state === "withdrawn") historyItems.unshift(html`<li>${tile("withdrawn", "sm")}<span>Withdrawn${ask.withdrawn_why ? `: ${ask.withdrawn_why}` : ""}</span><span></span></li>`);
   const history = html`<section class="sect" id="history"><div class="sh">${icon("history", "s15")}Answer history</div><ol class="hist">${historyItems}</ol></section>`;
   const recommended = options.find((option) => option === ask.recommendation) || options[0];

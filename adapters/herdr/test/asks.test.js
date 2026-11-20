@@ -177,14 +177,15 @@ test("snooze until tomorrow names 09:00 local time on the next day", () => {
 });
 
 // Captured from this branch's `priory asks --all --json` and `priory task 1 --json` on a scratch
-// state seeded by SQL: an ask revised once, a stale answer refused, then answered; the task has a
+// state seeded by SQL: an ask answered, revised, a stale answer refused, then answered; the task has a
 // groom and a plan result, a pull request with two checks, and three runs.
 test("History lists every revision and refused answer of the ask, newest first", () => {
   const [ask] = fixture("asks-history.json").asks;
   assert.deepEqual(askDetail(ask, { now, armed: null }).history, [
     { tile: "answered", text: "Answered Merge", time: "10:07" },
-    { tile: "refused", text: "Refused: Wait, sent for revision 1 from cli: ask 1 is at revision 2, not 1", time: "10:06" },
+    { tile: "refused", text: "Refused: Close, sent for revision 1 from cli: ask 1 is at revision 2, not 1", time: "10:06" },
     { tile: "ask", text: "Asked revision 2: Merge #212 into main? Checks are green.", time: "10:05" },
+    { tile: "answered", text: "Answered Wait", time: "09:55" },
     { tile: "ask", text: "Asked revision 1: Merge #212 into main?", time: "09:50" },
   ]);
 });

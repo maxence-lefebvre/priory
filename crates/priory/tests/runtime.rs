@@ -3807,6 +3807,25 @@ fn a_revised_ask_lists_each_revision_oldest_first() {
 }
 
 #[test]
+fn an_answered_revision_keeps_its_answer_after_the_ask_is_revised() {
+    let mut setup = Setup::new("ask-revision-answer");
+    setup.start();
+    listening(&setup);
+    setup.priory(&["ask", "cache.ship", &fleet_ask(&["ship", "wait"])]);
+    setup.priory(&["answer", "--expected", "1", "--", "cache.ship", "wait"]);
+    setup.priory(&["ask", "cache.ship", &fleet_ask(&["ship", "drop"])]);
+
+    let asks: serde_json::Value =
+        serde_json::from_slice(&setup.priory(&["asks", "--all", "--json"]).stdout).unwrap();
+
+    let ask = &asks["asks"][0];
+    assert_eq!(ask["answer"], serde_json::Value::Null);
+    assert_eq!(ask["revisions"][0]["answer"], "wait");
+    assert!(ask["revisions"][0]["answered_at"].is_string(), "{ask}");
+    assert_eq!(ask["revisions"][1]["answer"], serde_json::Value::Null);
+}
+
+#[test]
 fn a_stale_answer_is_listed_under_refused_with_the_revision_it_answered() {
     let mut setup = Setup::new("ask-refused");
     setup.start();

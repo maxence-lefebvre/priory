@@ -122,19 +122,21 @@ export function press(ask, index, armed, now) {
   return { arm: { id: ask.id, revision: ask.revision, option: index, at: now } };
 }
 
-/** Every revision, refused answer and the outcome of the ask, newest first. @param {any} ask */
+/** Every revision with its answer, every refused answer, and a withdrawal, newest first. @param {any} ask */
 function history(ask) {
-  const outcome = ask.state === "answered" ? [{ tile: "answered", text: `Answered ${ask.answer}`, at: ask.answered_at ?? "" }]
-    : ask.state === "withdrawn" ? [{ tile: "withdrawn", text: `Withdrawn${ask.withdrawn_why ? `: ${ask.withdrawn_why}` : ""}`, at: "" }] : [];
   // An ask listed before Priory kept its revisions shows only its current one.
-  const asked = (ask.revisions ?? [{ revision: ask.revision, at: ask.since }]).map((/** @type {any} */ revision) => ({
-    tile: "ask", text: `Asked revision ${revision.revision}${revision.question ? `: ${revision.question}` : ""}`, at: revision.at,
-  }));
-  const refused = (ask.refused ?? []).map((/** @type {any} */ refusal) => ({
-    tile: "refused", text: `Refused: ${refusal.answer}, sent for revision ${refusal.revision} from ${refusal.by}: ${refusal.why}`, at: refusal.at,
-  }));
-  const dated = [...refused, ...asked].sort((a, b) => b.at.localeCompare(a.at));
-  return [...outcome, ...dated].map(({ tile, text, at }) => ({ tile, text, time: at ? clock(at) : "" }));
+  const revisions = ask.revisions ?? [{ revision: ask.revision, at: ask.since, answer: ask.answer, answered_at: ask.answered_at }];
+  const dated = [
+    ...revisions.flatMap((/** @type {any} */ revision) => [
+      { tile: "ask", text: `Asked revision ${revision.revision}${revision.question ? `: ${revision.question}` : ""}`, at: revision.at },
+      ...(revision.answer == null ? [] : [{ tile: "answered", text: `Answered ${revision.answer}`, at: revision.answered_at ?? revision.at }]),
+    ]),
+    ...(ask.refused ?? []).map((/** @type {any} */ refusal) => ({
+      tile: "refused", text: `Refused: ${refusal.answer}, sent for revision ${refusal.revision} from ${refusal.by}: ${refusal.why}`, at: refusal.at,
+    })),
+  ].sort((a, b) => b.at.localeCompare(a.at));
+  const withdrawn = ask.state === "withdrawn" ? [{ tile: "withdrawn", text: `Withdrawn${ask.withdrawn_why ? `: ${ask.withdrawn_why}` : ""}`, at: "" }] : [];
+  return [...withdrawn, ...dated].map(({ tile, text, at }) => ({ tile, text, time: at ? clock(at) : "" }));
 }
 
 const minutes = (/** @type {string} */ from, /** @type {string} */ to) => Math.round((Date.parse(to) - Date.parse(from)) / 60_000);
