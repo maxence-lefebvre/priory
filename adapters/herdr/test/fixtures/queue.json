@@ -1,0 +1,171 @@
+{
+  "ended": [
+    {
+      "ended": "2026-11-20T21:20:34Z",
+      "id": 10,
+      "key": "cli:PRI-61",
+      "reason": "checks failed twice",
+      "state": "failed",
+      "step": "implement",
+      "workflow": "implement"
+    },
+    {
+      "ended": "2026-11-20T21:20:34Z",
+      "id": 9,
+      "key": "cli:PRI-60",
+      "reason": "merged #210",
+      "state": "done",
+      "step": "implement",
+      "workflow": "implement"
+    }
+  ],
+  "revision": 50,
+  "running": [
+    {
+      "agent": null,
+      "key": "cli:PRI-66",
+      "run": 1,
+      "started": "2026-11-20T21:02:34Z",
+      "step": "implement",
+      "task": 1
+    },
+    {
+      "agent": null,
+      "key": "cli:PRI-67",
+      "run": 2,
+      "started": "2026-11-20T21:14:34Z",
+      "step": "implement",
+      "task": 2
+    }
+  ],
+  "up_next": [
+    {
+      "at": "2026-11-20T21:20:34.539785971Z",
+      "key": "cli:PRI-72",
+      "kind": "queued",
+      "task": 3,
+      "trigger": null,
+      "why": "first in the queue"
+    },
+    {
+      "at": "2026-11-20T21:20:34.539785971Z",
+      "key": "cli:PRI-73",
+      "kind": "queued",
+      "task": 4,
+      "trigger": null,
+      "why": "a band above it"
+    },
+    {
+      "at": "2026-11-20T21:20:34.539785971Z",
+      "key": "cli:PRI-74",
+      "kind": "queued",
+      "task": 5,
+      "trigger": null,
+      "why": "queue position 3"
+    }
+  ],
+  "waiting": [
+    {
+      "band": "blocker",
+      "band_position": 1,
+      "conditions": null,
+      "id": 3,
+      "key": "cli:PRI-72",
+      "lane": "none/misc",
+      "position": 1,
+      "reason": null,
+      "since": null,
+      "state": "queued",
+      "step": "implement",
+      "workflow": "implement"
+    },
+    {
+      "band": "now",
+      "band_position": 1,
+      "conditions": null,
+      "id": 4,
+      "key": "cli:PRI-73",
+      "lane": "none/misc",
+      "position": 2,
+      "reason": null,
+      "since": null,
+      "state": "queued",
+      "step": "implement",
+      "workflow": "implement"
+    },
+    {
+      "band": "now",
+      "band_position": 2,
+      "conditions": null,
+      "id": 5,
+      "key": "cli:PRI-74",
+      "lane": "none/misc",
+      "position": 3,
+      "reason": null,
+      "since": null,
+      "state": "queued",
+      "step": "implement",
+      "workflow": "implement"
+    },
+    {
+      "band": "today",
+      "band_position": 1,
+      "conditions": null,
+      "id": 6,
+      "key": "cli:PRI-75",
+      "lane": "none/misc",
+      "position": 4,
+      "reason": null,
+      "since": null,
+      "state": "queued",
+      "step": "implement",
+      "workflow": "implement"
+    },
+    {
+      "band": "later",
+      "band_position": null,
+      "conditions": [
+        {
+          "kind": "task",
+          "met": null,
+          "met_as": null,
+          "resource": null,
+          "task": 3,
+          "until": null
+        }
+      ],
+      "id": 7,
+      "key": "cli:PRI-80",
+      "lane": "none/misc",
+      "position": null,
+      "reason": "held: waits for #212, until task 3 ends",
+      "since": "2026-11-20T21:20:34Z",
+      "state": "held",
+      "step": "implement",
+      "workflow": "implement"
+    },
+    {
+      "band": "today",
+      "band_position": null,
+      "conditions": [
+        {
+          "kind": "time",
+          "met": null,
+          "met_as": null,
+          "resource": null,
+          "task": null,
+          "until": "2026-11-21T08:30:00.000Z"
+        }
+      ],
+      "id": 8,
+      "key": "cli:PRI-81",
+      "lane": "none/misc",
+      "position": null,
+      "reason": "held: after the freeze, until 2026-11-21T08:30:00.000Z",
+      "since": "2026-11-20T21:20:34Z",
+      "state": "held",
+      "step": "implement",
+      "workflow": "implement"
+    }
+  ]
+}
