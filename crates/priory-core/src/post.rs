@@ -1,6 +1,6 @@
 //! Report lines that scripts and automations post to the inbox for a person to read.
 
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 
 /// The inbox type of a posted report.
 pub const REPORT: &str = "priory.report";
@@ -51,9 +51,15 @@ pub(crate) fn report(db: &Connection, source: &str, line: &str) -> Result<(), St
 
 /// Records a poll of intake `source` at `at`. A new error posts one report; the next good poll, or
 /// another error, marks it read.
-pub fn polled(db: &Connection, source: &str, error: Option<&str>, at: &str) -> Result<(), String> {
+pub fn polled(
+    db: &mut Connection,
+    source: &str,
+    error: Option<&str>,
+    at: &str,
+) -> Result<(), String> {
+    // Immediate, so a busy daemon makes it wait: a read that then writes cannot wait in WAL mode.
     let tx = db
-        .unchecked_transaction()
+        .transaction_with_behavior(TransactionBehavior::Immediate)
         .map_err(|error| error.to_string())?;
     let (before, report): (Option<String>, Option<i64>) = tx
         .query_row(

@@ -191,10 +191,10 @@ fn health(outcomes: &intake::Outcomes, at: jiff::Timestamp) -> Result<(), String
     if std::env::var_os("PRIORY_DB").is_none() {
         return Ok(());
     }
-    let db = state::open()?;
+    let mut db = state::open()?;
     let at = at.strftime("%Y-%m-%dT%H:%M:%SZ").to_string();
     for (source, error) in outcomes {
-        post::polled(&db, source, error.as_deref(), &at)
+        post::polled(&mut db, source, error.as_deref(), &at)
             .map_err(|error| format!("record the {source} poll: {error}"))?;
     }
     Ok(())
