@@ -98,6 +98,40 @@ names the run that failed.
 | `action`  | yes      | What the factory did about the cause, such as `sweep` or `wait for room`  |
 | `outcome` | yes      | `ready` when the task waits to start its agent again, `failed` when it stays failed |
 
+## `factory.task.snoozed` and `factory.task.unsnoozed`
+
+A person snoozed a desk item of a task, or cleared its snooze. Both share `factory`,
+`factory_revision`, `workflow`, `task`, `key`, `generation`, `step` and `machine` with
+`factory.step.ended`.
+
+```json
+{
+  "specversion": "1.0",
+  "id": "0196f1d6-0000-7000-8000-000000000005",
+  "source": "factory://example/xps13",
+  "type": "factory.task.snoozed",
+  "time": "2026-11-20T17:02:11Z",
+  "datacontenttype": "application/json",
+  "data": {
+    "factory": "example",
+    "factory_revision": "999daf0",
+    "workflow": "implement",
+    "task": "0196f1b0-0000-7000-8000-000000000001",
+    "key": "github:example/app#42",
+    "generation": 1,
+    "step": "approve-pr",
+    "machine": "xps13",
+    "item": { "kind": "ask", "id": "7" },
+    "until": "2026-11-23T08:00:00Z"
+  }
+}
+```
+
+| Field   | Required | Meaning                                                              |
+| ------- | -------- | -------------------------------------------------------------------- |
+| `item`  | yes      | The desk item: `kind` is `ask`, `blocked`, `failed` or `prompt`, and `id` its id |
+| `until` | no       | When the item comes back by itself; only on `factory.task.snoozed`   |
+
 ## `factory.step.labeled`
 
 A judgement that arrives after the step, such as a rejected approval, red CI after a merge, or a

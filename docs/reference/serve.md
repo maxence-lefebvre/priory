@@ -41,7 +41,8 @@ An error's body is `{"error": "<why>"}`.
 | ----- | ---- | ------- |
 | `banner` | string or null | The stall banner while the queue is stalled |
 | `counts.asleep` | integer | Tasks asleep on a wait |
-| `items` | array | What waits on a person, then the queue, then worktrees that stay |
+| `counts.snoozed` | integer | Items snoozed now, which `items` leaves out |
+| `items` | array | What waits on a person, then the queue, then worktrees that stay. `priory desk --all --json` keeps the snoozed items |
 
 Each item:
 
@@ -56,6 +57,7 @@ Each item:
 | `since` | string or null | When the item started waiting |
 | `what` | string | What the item is about |
 | `generation` | integer or null | The task's generation |
+| `snoozed_until`, `snoozed_at`, `back_early` | | The item's [snooze](#snooze) |
 
 ## Inbox
 
@@ -77,8 +79,21 @@ Every ask, oldest first.
 | `recommendation`, `tradeoff` | string or null | What the agent recommends, and the trade-off |
 | `answer`, `answered_at` | string or null | The answer and when it came |
 | `since` | string | When the agent asked |
+| `snoozed_until`, `snoozed_at`, `back_early` | | The ask's [snooze](#snooze) |
 
-`priory asks` without `--json` prints only the open asks.
+`priory asks` without `--json` prints only the open asks that are not snoozed, and `--all` adds the
+snoozed ones.
+
+## Snooze
+
+An `ask`, `blocked`, `failed` or `prompt` desk item, and every ask, carry these fields. See
+[desk.md](../daemon/desk.md#snooze).
+
+| Field | Type | Meaning |
+| ----- | ---- | ------- |
+| `snoozed_until` | string or null | When the item comes back by itself, while it is snoozed |
+| `snoozed_at` | string or null | When a person last snoozed it |
+| `back_early` | object or null | `{ "at", "reason" }` once a change brought it back before its time. `reason` is `new revision`, `task state changed` or `new failure` |
 
 ## Tasks
 

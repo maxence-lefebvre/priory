@@ -1,6 +1,6 @@
 //! The state the listing commands and the HTTP server show, one JSON payload per listing.
 
-use crate::{stall, state, sweep};
+use crate::{snooze, stall, state, sweep};
 use rusqlite::types::ValueRef;
 use rusqlite::{Connection, Params};
 use serde_json::{Map, Value, json};
@@ -16,11 +16,24 @@ fn places() -> String {
     )
 }
 
-/// Asks, blocked tasks and uncertain prompts oldest first, then the queue in start order.
-const DESK: &str = "SELECT since, kind, id, task, (SELECT key FROM tasks WHERE tasks.id = task) AS key,
-               (SELECT step FROM tasks WHERE tasks.id = task) AS step, lane, what,
-               (SELECT generation FROM tasks WHERE tasks.id = task) AS generation FROM (
-               SELECT 0 AS part, asks.created AS since, 'ask' AS kind, asks.id AS id,
+/// Asks, blocked tasks and uncertain prompts oldest first, then the queue in start order, each with
+/// its snooze.
+fn desk_items() -> String {
+    format!(
+        "{} SELECT desk.since, desk.kind, desk.id, desk.task,
+           (SELECT key FROM tasks WHERE tasks.id = desk.task) AS key,
+           (SELECT step FROM tasks WHERE tasks.id = desk.task) AS step, desk.lane, desk.what,
+           (SELECT generation FROM tasks WHERE tasks.id = desk.task) AS generation, {}
+         FROM ({DESK}) AS desk
+         LEFT JOIN snoozes ON snoozes.item = desk.id AND snoozes.kind =
+           CASE WHEN desk.kind IN ('blocked', 'failed') THEN 'task' ELSE desk.kind END
+         ORDER BY desk.part, CASE WHEN desk.part = 0 THEN desk.since END, desk.kind, desk.id",
+        places(),
+        snooze::FIELDS
+    )
+}
+
+const DESK: &str = "SELECT 0 AS part, asks.created AS since, 'ask' AS kind, asks.id AS id,
                  asks.task AS task, tasks.lane AS lane, asks.question || ' ' || asks.options AS what
                FROM asks JOIN tasks ON tasks.id = asks.task
                WHERE asks.answer IS NULL AND asks.withdrawn IS NULL
@@ -58,15 +71,20 @@ const DESK: &str = "SELECT since, kind, id, task, (SELECT key FROM tasks WHERE t
                UNION ALL
                SELECT 1, tasks.changed, 'queue', queue.place, tasks.id, tasks.lane,
                  coalesce(tasks.band, '-') || coalesce(': ' || tasks.reason, '')
-               FROM tasks JOIN queue USING (id)
-             ) ORDER BY part, CASE WHEN part = 0 THEN since END, kind, id";
+               FROM tasks JOIN queue USING (id)";
 
-const ASKS: &str = "SELECT asks.id, asks.task, tasks.key, asks.step, tasks.lane, asks.run,
+fn asks_query() -> String {
+    format!(
+        "SELECT asks.id, asks.task, tasks.key, asks.step, tasks.lane, asks.run,
      CASE WHEN asks.withdrawn IS NOT NULL THEN 'withdrawn'
        WHEN asks.answer IS NOT NULL THEN 'answered' ELSE 'open' END AS state,
      asks.revision, asks.question, asks.options, asks.recommendation, asks.tradeoff, asks.answer,
-     asks.answered AS answered_at, asks.created AS since
-   FROM asks JOIN tasks ON tasks.id = asks.task WHERE ?1 IS NULL OR asks.task = ?1 ORDER BY asks.id";
+     asks.answered AS answered_at, asks.created AS since, {}
+   FROM asks JOIN tasks ON tasks.id = asks.task
+   LEFT JOIN snoozes ON snoozes.kind = 'ask' AND snoozes.item = asks.id WHERE ?1 IS NULL OR asks.task = ?1 ORDER BY asks.id",
+        snooze::FIELDS
+    )
+}
 
 /// Every inbox message, oldest first.
 pub fn inbox(db: &Connection) -> rusqlite::Result<Value> {
@@ -96,11 +114,12 @@ pub fn asks(db: &Connection) -> rusqlite::Result<Value> {
 }
 
 fn asks_of(db: &Connection, task: Option<i64>) -> rusqlite::Result<Value> {
-    let mut asks = rows(db, ASKS, [task])?;
+    let mut asks = rows(db, &asks_query(), [task])?;
     for ask in asks.as_array_mut().into_iter().flatten() {
         if let Some(options) = ask["options"].as_str() {
             ask["options"] = serde_json::from_str(options).unwrap_or(Value::Null);
         }
+        parse_back_early(ask);
     }
     Ok(asks)
 }
@@ -143,16 +162,30 @@ pub fn queue(db: &Connection) -> rusqlite::Result<Value> {
     }))
 }
 
-/// A stalled queue's banner, the asleep count, what waits on a person, the queue, then every
-/// worktree under `home` that stays and why.
-pub fn desk(db: &Connection, home: &Path) -> rusqlite::Result<Value> {
+/// `back_early` as the object it is stored as.
+fn parse_back_early(item: &mut Value) {
+    if let Some(back) = item["back_early"].as_str() {
+        item["back_early"] = serde_json::from_str(back).unwrap_or(Value::Null);
+    }
+}
+
+/// A stalled queue's banner, the asleep and snoozed counts, what waits on a person, the queue, then
+/// every worktree under `home` that stays and why. The snoozed items show only with `all`.
+pub fn desk(db: &Connection, home: &Path, all: bool) -> rusqlite::Result<Value> {
     let _snapshot = db.unchecked_transaction()?;
-    let mut items = rows(db, &format!("{} {DESK}", places()), [])?;
+    let mut items = rows(db, &desk_items(), [])?;
     let list = items.as_array_mut().expect("rows are an array");
+    list.iter_mut().for_each(parse_back_early);
+    let snoozed = list
+        .iter()
+        .filter(|item| !item["snoozed_until"].is_null())
+        .count();
+    list.retain(|item| all || item["snoozed_until"].is_null());
     for (path, task, reason) in sweep::stays(db, home)? {
         list.push(json!({
             "since": null, "kind": "worktree", "id": path, "task": task, "key": null,
             "step": null, "lane": null, "what": reason, "generation": null,
+            "snoozed_until": null, "snoozed_at": null, "back_early": null,
         }));
     }
     let asleep: i64 = db.query_row(
@@ -162,7 +195,7 @@ pub fn desk(db: &Connection, home: &Path) -> rusqlite::Result<Value> {
     )?;
     Ok(json!({
         "banner": stall::banner(db)?,
-        "counts": { "asleep": asleep },
+        "counts": { "asleep": asleep, "snoozed": snoozed },
         "items": items,
     }))
 }
