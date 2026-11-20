@@ -1,0 +1,14 @@
+{
+  "links": [
+    { "pattern": "\\b([A-Z]{2,5}-\\d+)\\b", "url": "https://linear.app/acme/issue/$1" },
+    { "pattern": "\\B#(\\d+)\\b", "url": "https://github.com/{repo}/issues/$1" },
+    { "pattern": "\\bdoc-(\\d+)\\b", "url": "http://example.com/$1" },
+    { "pattern": "(unclosed", "url": "https://example.com/$1" }
+  ],
+  "texts": [
+    ["Fix ENG-7 before #12 lands, then PR #3 and doc-4.", "acme/app"],
+    ["<b title=\"#5\">it's ENG-8</b>", "acme/app"],
+    ["#9 has no repository but ENG-9 links", null],
+    ["", "acme/app"]
+  ]
+}

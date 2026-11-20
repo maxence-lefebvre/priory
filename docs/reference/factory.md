@@ -20,6 +20,7 @@ Schema: [`config/factory.json`](../schemas/config/factory.json).
 | `serve` | table | no | nothing listens | The HTTP server over the factory's state. See [`[serve]`](#serve) | |
 | `webhooks` | table | no | no webhook is taken | The signed webhooks the server takes. Needs `[serve]`. See [`[webhooks.github]`](#webhooksgithub) | |
 | `asks` | table | no | answers are only stored | What happens to the answer of an ask from outside Priory. See [`[asks]`](#asks) | |
+| `links` | table of strings | no | the built-in `#n` link | Autolinks, each a regex and a URL template. See [`[links]`](#links) | |
 | `request` | table | no | `priory add` needs `--workflow` | The defaults of `priory add` and `POST /api/request`. See [`[request]`](#request) | |
 
 A duration is a whole number followed by `s`, `m` or `h`, such as `"90s"`, `"15m"` or `"2h"`.
@@ -99,6 +100,34 @@ and [tools.md](../daemon/tools.md#commands-an-answer-runs) for the commands an a
 | `deliver` | string | no | none: an answer is only stored | The command that delivers an outside ask's answer or dismissal to the session that asked, relative to the factory folder | `"adapters/herdr/deliver"` |
 | `targets` | table of strings | no | none: only `worktree` | The folders, by name, where an answer can run an agent's ask command besides the task's worktree, relative to the factory folder or absolute | `{ ops = "../ops" }` |
 
+## `[links]`
+
+Autolinks turn keys in text into links when the web view shows it. Each key is a regex, in the
+[regex crate's syntax](https://docs.rs/regex/latest/regex/#syntax). Each value is a URL template:
+`$1` is what the regex's first group matched, `$0` the whole match, and `{repo}` the task's
+repository, `owner/name`. They go in the path or query, never in the host. Priory percent-encodes each group's text before it goes in the URL. The
+text Priory stores never changes.
+
+```toml
+[links]
+'\b([A-Z]{2,5}-\d+)\b' = "https://linear.app/acme/issue/$1"
+'\B#(\d+)\b' = "https://github.com/acme/app/issues/$1"
+```
+
+| Rule | Detail |
+| ---- | ------ |
+| Built-in link | `'\B#(\d+)\b' = "https://github.com/{repo}/issues/$1"`: `#42` links to issue or pull request 42 in the task's repository. Text with no repository, such as an outside ask's, gets no link from it |
+| Replacing a built-in link | An entry with the built-in link's exact regex replaces it |
+| Order | The factory's entries in file order, then each built-in link no entry replaced. Where two regexes match, the match that starts first wins, then the rule listed first |
+| Linear | No source names a Linear workspace, so Linear keys get no built-in link. Add an entry like the first one above |
+| Where links show | The web view's ask: its question and its text. `priory links --json` and `GET /api/links` list the rules, so other views, such as the [Herdr adapter](../adapters/herdr.md), apply the same ones. CLI text output stays plain |
+
+The web view runs each regex as a JavaScript regex with the `u` flag. A regex that JavaScript
+refuses, such as one with an inline flag like `(?i)`, links nothing there; `priory check` does not
+catch that. `\d`, `\w` and `\b` match only ASCII in JavaScript and any script in Rust, so write
+`[0-9]` or `[A-Za-z]` when it matters. The regex runs in the reader's browser, so keep it simple:
+a regex with nested repeats, such as `(a+)+`, can stall the page on long text.
+
 ## `[request]`
 
 What `priory add` and `POST /api/request` use when a request names no workflow or band. See
@@ -172,6 +201,10 @@ band = "today"                                 # its band without --band
 | `` `[sweep] repo` needs to be `owner/name` `` | `[sweep] repo` is not a GitHub `owner/name`, such as a path or a name of `..` |
 | `` `[serve] listen` <address> is beyond this machine: set `public = true` to serve it `` | `listen` is not a loopback address and `public` is not set |
 | `` `[webhooks]` needs a `[serve]` table to listen on `` | `[webhooks]` is set without `[serve]` |
+| `` `[links]` `<regex>` is not a regex: <reason> `` | A `[links]` key the regex crate refuses |
+| `` `[links]` `<regex>` names group $<n>, but the regex has <m> groups `` | A template names a group past the regex's last one |
+| `` `[links]` `<regex>` links to `<url>`: a link starts with `https://` `` | A template that is not an `https://` URL |
+| `` `[links]` `<regex>` links to `<url>`: a link's host is fixed, with no group or `{repo}` in it `` | A template whose host is empty or holds anything but letters, digits, `.`, `-` and a `:port`, such as `$1` or `{repo}`, so the linked text could pick the site |
 | `` `[request] workflow` `<name>` does not exist `` | `[request] workflow` names no file under `workflows/` |
 | `` `[request] band` `<band>` is not one of <bands> `` | `[request] band` names a band the factory lacks |
 | `invalid socket address syntax` | `listen` is not an IP address and port, such as `127.0.0.1:7340` |

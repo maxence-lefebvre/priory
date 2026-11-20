@@ -76,7 +76,7 @@ state database and never writes a file in the factory.
   that `queue` and `schedules` read for up next. The program must find its state file, so set
   `PRIORY_DB` in the environment, or name a wrapper script that sets it.
 - **Reading.** A mod runs the CLI with Herdr's `exec` and parses its JSON: `priory desk --all --json`,
-  `asks --all --json`, `tasks --json`, `queue --json`, `schedules --json` and
+  `asks --all --json`, `tasks --json`, `queue --json`, `schedules --json`, `links --json` and
   `report show --json`. Each answer carries the state's `revision`. `report show --json` wraps the
   report as `{"revision": STATE, "report": {...}}`: the outer `revision` is the state's, and the
   report's own `revision` is the one `report pick --expected` takes. Then the mod runs
@@ -90,6 +90,10 @@ state database and never writes a file in the factory.
   changed question refuses it (R6.3).
 - **Safety.** `priory.js` passes every value as its own argument, never through a shell, and never
   reads text output except `attach --print`. A mod draws agent text as plain text.
+- **Autolinks.** `autolink(text, links, repo)` in `priory.js` splits text into spans, each
+  `{ text }` or `{ text, url }`, with the rules `links()` reads from `priory links --json`. It
+  returns the same spans as the web view, and links only to `https:` URLs. No panel draws links
+  yet.
 - **Attaching.** A panel asks the Priory bar to attach with
   `setShared("priory.attach", { task, at: Date.now() })`. The bar runs
   `priory attach TASK --print` and opens a terminal tab that runs the printed command, which starts

@@ -255,6 +255,14 @@
         "null"
       ]
     },
+    "links": {
+      "additionalProperties": {
+        "type": "string"
+      },
+      "default": {},
+      "description": "Autolinks, in order: each key a regex, each value an `https://` URL template whose `$1`\nnames the regex's first group. An entry with a built-in link's regex replaces it.",
+      "type": "object"
+    },
     "name": {
       "description": "The factory's name.",
       "type": "string"
