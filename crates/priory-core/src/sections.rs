@@ -537,17 +537,11 @@ pub(crate) fn comment(
                     None => format!("commented on row {row}"),
                     Some(root) => format!("replied in thread {root} on row {row}"),
                 };
-                let say = crate::tools::Act {
-                    act: "say".to_owned(),
-                    task,
-                    step: None,
-                    hold: None,
-                    text: Some(format!(
-                        "The person {wrote} in your report (reply with `priory report reply {thread} TEXT`): {text}"
-                    )),
-                    expected: None,
-                };
-                if let Err(error) = crate::tools::say(&tx, &say, &state, &factory.workflows)? {
+                let line = format!(
+                    "The person {wrote} in your report (reply with `priory report reply {thread} TEXT`): {text}"
+                );
+                if let Err(error) = crate::tools::say(&tx, task, &line, &state, &factory.workflows)?
+                {
                     return Ok(Err(format!("row {row}: {error}")));
                 }
             }
