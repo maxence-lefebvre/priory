@@ -82,7 +82,11 @@ A webhook and a poll that see one change publish it once:
   within 60 seconds, a close at the same second. A pull request opens once.
 
 That look goes back over `factory.intake`, newest first, for at most 7 days and 5,000 messages. The
-poll looks only when it has such an event to publish.
+poll looks only when it has such an event to publish. A lock file next to the herdr-bus database,
+`<db>.changes.lock`, keeps the two writers from looking and publishing at the same time.
+
+A delivery whose event is over 7 days old publishes nothing. GitHub redelivers for 3 days, so only a
+replay is that old, and the look would no longer reach the poll's report of it.
 
 ## Reaching the server
 
@@ -98,7 +102,10 @@ Point the webhook at `<url>/hooks/github`, with content type `application/json` 
 
 - A label removed and re-added within 60 seconds, whose second delivery is lost, is dropped as a
   duplicate of the first.
-- A webhook and a poll that publish the same change within the same few milliseconds can both
-  publish it.
+- On a factory that publishes over 5,000 messages in 7 days, the look can stop before it reaches
+  the other writer's report, and a late redelivery of a labeled, closed or opened change can
+  publish it again.
+- If the server stops between a delivery's event and its task requests before the intake's first
+  poll, those task requests are lost. GitHub shows the delivery as failed; redeliver it.
 - Check runs and check run snapshots come only from polling.
 - A repository that only an open wait names, not a trigger, gets its events from polling only.

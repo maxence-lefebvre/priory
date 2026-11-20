@@ -331,7 +331,8 @@ fn publish_all(
     cursors: &mut Cursors,
     published: &mut HashSet<Uuid>,
 ) -> Result<(), String> {
-    let mut delivered = None;
+    // Taken at the first event a webhook may also report, and held so none publishes meanwhile.
+    let mut delivered: Option<(std::fs::File, Vec<Message>)> = None;
     for Polled {
         stream,
         events,
@@ -345,9 +346,9 @@ fn publish_all(
                 continue;
             }
             if CHANGES.contains(&source.kind.as_str()) {
-                let delivered = match &mut delivered {
+                let (_, delivered) = match &mut delivered {
                     Some(delivered) => delivered,
-                    None => delivered.insert(recent(bus)?),
+                    None => delivered.insert((claim()?, recent(bus)?)),
                 };
                 // A crash may have stopped the webhook between its event and its task requests.
                 if let Some(other) = delivered.iter().find(|other| same_change(other, &source)) {
@@ -371,6 +372,18 @@ fn publish_all(
 /// The types whose webhook id cannot be the poll's, since the payload lacks GitHub's issue event
 /// id or issue id: each writer compares the change itself with the other's reports.
 const CHANGES: [&str; 4] = [LABELED, PR_LABELED, PR_CLOSED, PR_OPENED];
+
+/// An exclusive lock between the intake and webhook deliveries, held from a change match to the
+/// publish it allows, and released when dropped.
+fn claim() -> Result<std::fs::File, String> {
+    let path = Bus::default_path()
+        .map_err(|error| error.to_string())?
+        .with_extension("changes.lock");
+    let lock = std::fs::File::create(&path)
+        .and_then(|file| file.lock().map(|()| file))
+        .map_err(|error| format!("lock {}: {error}", path.display()))?;
+    Ok(lock)
+}
 
 /// Whether the output already holds the other writer's report of `message`'s change.
 fn reported(bus: &Bus, message: &Message) -> Result<bool, String> {

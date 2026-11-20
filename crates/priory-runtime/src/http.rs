@@ -196,6 +196,14 @@ fn read_body(
     if request.header("transfer-encoding").is_some() {
         return Err(Reply::error(411, length));
     }
+    let lengths = request
+        .headers
+        .iter()
+        .filter(|header| header.name.eq_ignore_ascii_case("content-length"))
+        .count();
+    if lengths > 1 {
+        return Err(Reply::error(400, "send one Content-Length"));
+    }
     let announced = request
         .header("content-length")
         .and_then(|value| std::str::from_utf8(value).ok()?.parse::<usize>().ok())

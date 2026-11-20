@@ -1,8 +1,8 @@
 use super::{
-    LABELED, OPENED, Observed, PR_CLOSED, PR_LABELED, PR_OPENED, REVIEWED, dispatch, output,
-    publish, reported,
+    LABELED, LOOKBACK_SECONDS, OPENED, Observed, PR_CLOSED, PR_LABELED, PR_OPENED, REVIEWED, claim,
+    dispatch, now, output, publish, reported,
 };
-use herdr_bus::Bus;
+use herdr_bus::{Bus, Timestamp};
 use hmac::{Hmac, KeyInit, Mac};
 use priory_factory::factory::{Factory, Trigger};
 use priory_runtime::http::{Reply, Request};
@@ -14,6 +14,7 @@ use std::collections::BTreeSet;
 /// them, then published on `factory.intake` as the polling intake publishes the same events.
 pub struct Github {
     secret: String,
+    /// The `github` triggers, which a delivery can match.
     triggers: Vec<(String, Trigger)>,
     /// The repositories some trigger names, which polling reads too.
     repos: BTreeSet<String>,
@@ -27,11 +28,13 @@ impl Github {
         let triggers = factory
             .triggers
             .iter()
+            .filter(|(_, trigger)| trigger.value.source == "github")
             .map(|(name, trigger)| (name.clone(), trigger.value.clone()))
-            .collect::<Vec<_>>();
-        let repos = triggers
-            .iter()
-            .filter_map(|(_, trigger)| trigger.repo.clone())
+            .collect();
+        let repos = factory
+            .triggers
+            .values()
+            .filter_map(|trigger| trigger.value.repo.clone())
             .collect();
         Ok(Github {
             secret,
@@ -73,11 +76,15 @@ impl Github {
         let triggers: Vec<(&str, &Trigger)> = self
             .triggers
             .iter()
-            .filter(|(_, trigger)| trigger.source == "github")
             .map(|(name, trigger)| (name.as_str(), trigger))
             .collect();
         let published = observed.message(&triggers).and_then(|mut message| {
+            // GitHub redelivers for 3 days; an older body is a replay the change match may miss.
+            if message.time.as_second() < now()?.as_second() - LOOKBACK_SECONDS {
+                return Ok(false);
+            }
             message.data["delivery"] = json!(delivery);
+            let _claim = claim()?;
             if reported(bus, &message)? {
                 return Ok(false);
             }
@@ -124,7 +131,7 @@ impl Github {
         }
         let action = payload["action"].as_str().unwrap_or_default();
         // The delivery GUID is not signed, so the id comes from the signed body.
-        let signed = format!("github:webhook:{event}:{}", hex(&Sha256::digest(body)));
+        let signed = || format!("github:webhook:{event}:{}", hex(&Sha256::digest(body)));
         let issue = &payload["issue"];
         let pull = &payload["pull_request"];
         let sender = &payload["sender"]["login"];
@@ -160,7 +167,7 @@ impl Github {
             ("issues", "labeled") => {
                 let mut data = on_issue(&issue["updated_at"], sender, &Value::Null);
                 data["label"] = payload["label"]["name"].clone();
-                (LABELED, signed, data)
+                (LABELED, signed(), data)
             }
             ("pull_request", "opened" | "labeled" | "closed") => {
                 let (kind, time, actor) = match action {
@@ -176,7 +183,7 @@ impl Github {
                     PR_CLOSED => data["merged"] = pull["merged"].clone(),
                     _ => {}
                 }
-                (kind, signed, data)
+                (kind, signed(), data)
             }
             ("pull_request_review", "submitted") => {
                 let review = &payload["review"];
@@ -198,8 +205,20 @@ impl Github {
             .unwrap_or(&data["pull_request"])
             .as_u64()
             .ok_or("the payload names no issue or pull request number")?;
+        let text = |field: &str| data[field].as_str().is_some_and(|value| !value.is_empty());
+        let fields: &[&str] = if kind == REVIEWED {
+            &["url", "state"]
+        } else {
+            &["url", "title"]
+        };
+        if let Some(field) = fields.iter().find(|field| !text(field)) {
+            return Err(format!("the payload lacks the event's `{field}`"));
+        }
+        if matches!(kind, OPENED | REVIEWED) && !data["github_id"].is_u64() {
+            return Err("the payload lacks the event's id".to_owned());
+        }
         let time = data["time"].as_str().unwrap_or_default();
-        if time.parse::<herdr_bus::Timestamp>().is_err() {
+        if time.parse::<Timestamp>().is_err() {
             return Err(format!("the payload's event time `{time}` is not RFC 3339"));
         }
         let label = data["label"].as_str().map(str::to_owned);

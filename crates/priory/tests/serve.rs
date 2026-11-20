@@ -94,7 +94,8 @@ impl Setup {
             .env("PRIORY_HOME", self.dir.join("home"))
             .env("FAKE_DIR", self.dir.join("fake"))
             .env("TEST_TOKEN", TOKEN)
-            .env("TEST_SECRET", &self.secret);
+            .env("TEST_SECRET", &self.secret)
+            .env("PRIORY_NOW", "2026-11-17T12:00:00Z");
         command
     }
 
@@ -1121,4 +1122,53 @@ fn a_poll_requests_the_task_a_crash_left_out_of_a_webhook() {
     assert_eq!(setup.kinds(), expected);
     let request = setup.published().pop().unwrap();
     assert_eq!(request.data["source"], source.id.to_string());
+}
+
+#[test]
+fn malformed_or_stale_signed_deliveries_publish_nothing() {
+    let mut setup = Setup::hooks("hook-malformed");
+    let address = setup.start(&["serve", &setup.factory()]);
+    let signed = |body: &str| sign(&setup.secret, body.as_bytes());
+
+    let not_json = "{not json";
+    let (status, _) = deliver(
+        &address,
+        "issues",
+        "d-1",
+        Some(&sign("wrong", not_json.as_bytes())),
+        not_json,
+    );
+    assert_eq!(
+        status, 401,
+        "the signature is checked before the body is parsed"
+    );
+
+    let mut stale: Value = serde_json::from_str(&issue_labeled("agent")).unwrap();
+    stale["issue"]["updated_at"] = json!("2026-11-09T10:00:00Z");
+    let stale = stale.to_string();
+    let (status, reply) = deliver(&address, "issues", "d-2", Some(&signed(&stale)), &stale);
+    assert_eq!((status, reply.as_str()), (202, r#"{"outcome":"dropped"}"#));
+
+    let mut no_id: Value = serde_json::from_str(&issue_labeled("agent")).unwrap();
+    no_id["action"] = json!("opened");
+    no_id["issue"].as_object_mut().unwrap().remove("id");
+    let no_id = no_id.to_string();
+    let (status, reply) = deliver(&address, "issues", "d-3", Some(&signed(&no_id)), &no_id);
+    assert_eq!(
+        (status, reply.as_str()),
+        (400, r#"{"error":"the payload lacks the event's id"}"#)
+    );
+
+    let body = issue_labeled("agent");
+    let (status, _) = raw(
+        &address,
+        &format!(
+            "POST /hooks/github HTTP/1.1\r\nHost: {address}\r\nX-GitHub-Event: issues\r\nX-GitHub-Delivery: d-4\r\n\
+             X-Hub-Signature-256: {}\r\nContent-Length: {}\r\nContent-Length: 1048577\r\n\r\n{body}",
+            signed(&body),
+            body.len()
+        ),
+    );
+    assert_eq!(status, 400);
+    assert!(setup.published().is_empty());
 }

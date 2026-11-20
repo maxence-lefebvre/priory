@@ -26,7 +26,7 @@ or a reason, is untrusted: render it as text.
 | ---- | ---- |
 | `200` | The endpoint answered |
 | `202` | A signed webhook delivery was taken: published, or dropped on purpose |
-| `400` | The request does not parse |
+| `400` | The request does not parse; for a webhook, it sends two `Content-Length`, or its payload lacks a field its event needs |
 | `401` | The token is missing or wrong; for a webhook, the signature is |
 | `404` | No such path, or no such task |
 | `405` | A method other than `GET`, on any path |
