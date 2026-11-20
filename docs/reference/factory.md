@@ -154,7 +154,7 @@ targets = { ops = "../ops" }                   # where an answer can run an ask'
 | `` the summarizer agent `<name>` does not exist `` | `[search] tldr` names no agent |
 | `` the summarizer agent `<name>` needs harness = "claude-code" `` | `[search] tldr` names a Codex agent |
 | `[search] names both a model and a command: keep one` | `[search]` sets `model` and `command` |
-| `` `[sweep] repo` needs to be `owner/name` `` | `[sweep] repo` is not `owner/name` |
+| `` `[sweep] repo` needs to be `owner/name` `` | `[sweep] repo` is not a GitHub `owner/name`, such as a path or a name of `..` |
 | `` `[serve] listen` <address> is beyond this machine: set `public = true` to serve it `` | `listen` is not a loopback address and `public` is not set |
 | `` `[webhooks]` needs a `[serve]` table to listen on `` | `[webhooks]` is set without `[serve]` |
 | `invalid socket address syntax` | `listen` is not an IP address and port, such as `127.0.0.1:7340` |

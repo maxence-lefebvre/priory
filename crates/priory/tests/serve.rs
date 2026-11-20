@@ -657,6 +657,20 @@ fn unknown_paths_404_other_methods_405_and_oversize_heads_431() {
 }
 
 #[test]
+fn a_target_without_its_leading_slash_gets_400_and_leaves_every_worker_serving() {
+    let mut setup = Setup::new("target", SERVE);
+    let address = setup.start(&["serve", &setup.factory()]);
+
+    for target in ["é", "x", "é", "x", "é", "x", "é", "x", "é"] {
+        let head = format!("GET {target} HTTP/1.1\r\nHost: {address}\r\n\r\n");
+        assert_eq!(raw(&address, &head).0, 400, "{target}");
+    }
+
+    assert_eq!(get(&address, "/api/tasks", Some(TOKEN)).0, 200);
+    assert_eq!(get(&address, "/app.css", None).0, 200);
+}
+
+#[test]
 fn web_false_serves_only_the_api() {
     let mut setup = Setup::new("web", &format!("{SERVE}web = false\n"));
     let address = setup.start(&["serve", &setup.factory()]);
@@ -680,6 +694,25 @@ fn a_silent_client_is_dropped_after_the_read_timeout() {
 
     assert!(response.starts_with("HTTP/1.1 408"), "{response}");
     assert!(started.elapsed() < Duration::from_secs(20));
+}
+
+#[test]
+fn eight_silent_clients_delay_a_request_by_about_a_second_not_the_whole_read_timeout() {
+    let mut setup = Setup::new("silent-eight", SERVE);
+    let address = setup.start(&["serve", &setup.factory()]);
+    let _silent: Vec<_> = (0..8)
+        .map(|_| TcpStream::connect(&address).unwrap())
+        .collect();
+    std::thread::sleep(Duration::from_millis(100));
+    let started = Instant::now();
+
+    assert_eq!(get(&address, "/app.css", None).0, 200);
+
+    assert!(
+        started.elapsed() < Duration::from_secs(3),
+        "{:?}",
+        started.elapsed()
+    );
 }
 
 #[test]

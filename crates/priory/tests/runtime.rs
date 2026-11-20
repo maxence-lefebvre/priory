@@ -567,6 +567,29 @@ fn a_cli_request_starts_its_run_in_the_repository_it_names() {
 }
 
 #[test]
+fn a_task_whose_repo_leaves_priorys_home_fails_and_deletes_nothing() {
+    let mut setup = Setup::new("repo-escape");
+    let victim = setup.dir.join("victim");
+    fs::create_dir_all(victim.with_extension("partial")).unwrap();
+    fs::write(victim.with_extension("partial").join("keep"), "keep").unwrap();
+    let mut message = requested(42);
+    message.data["repo"] = json!(victim);
+    setup.publish(&message);
+
+    setup.start();
+
+    let tasks = setup.until("tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == "blocked")
+    });
+    assert!(victim.with_extension("partial").join("keep").is_file());
+    assert!(
+        tasks[0][7].contains("is not a GitHub owner/name"),
+        "{tasks:?}"
+    );
+    assert!(!victim.exists());
+}
+
+#[test]
 fn a_cli_task_stored_before_tasks_kept_a_repository_starts_in_its_requests_repository() {
     let mut setup = Setup::new("cli-repo-upgrade");
     let factory = setup.dir.join("factory");
@@ -7519,6 +7542,18 @@ fn a_held_task_never_starts_until_a_person_releases_it() {
 
     assert_eq!(person(&setup, "release", &["1"]), "task 1 is queued\n");
     setup.until("tasks", |rows| rows[0][4] == "running");
+}
+
+#[test]
+fn a_silent_client_on_the_daemons_socket_does_not_stop_a_persons_command() {
+    let setup = queued_without_room("socket-silent");
+    listening(&setup);
+    let _silent =
+        std::os::unix::net::UnixStream::connect(setup.dir.join("home/priory.sock")).unwrap();
+
+    let reply = person(&setup, "hold", &["1", "--reason", "later"]);
+
+    assert!(reply.starts_with("task 1 held"), "{reply}");
 }
 
 #[test]

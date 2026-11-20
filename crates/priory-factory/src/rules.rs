@@ -308,10 +308,8 @@ fn check_review_request(trigger: &Loaded<Trigger>, problems: &mut Vec<Problem>) 
     }
 }
 
-/// Whether `repo` reads `owner/name`.
 fn owner_name(repo: &str) -> bool {
-    repo.split_once('/')
-        .is_some_and(|(owner, name)| !owner.is_empty() && !name.is_empty() && !name.contains('/'))
+    priory_runtime::runtime::check_repo(repo).is_ok()
 }
 
 fn check_repo(trigger: &Loaded<Trigger>, source: &str, problems: &mut Vec<Problem>) {

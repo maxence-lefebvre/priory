@@ -165,10 +165,30 @@ pub(crate) fn git(dir: &Path) -> Command {
     command
 }
 
+/// Refuses `repo` unless it is a GitHub `owner/name`: an owner of letters, digits and `-`, a name of
+/// letters, digits, `-`, `_` and `.`, neither starting with `-`, and a name other than `.` or `..`.
+/// Priory joins it onto folders under its home, so anything else could leave that home.
+pub fn check_repo(repo: &str) -> Result<(), String> {
+    let part = |part: &str, allowed: fn(char) -> bool| {
+        !part.is_empty() && !part.starts_with('-') && part.chars().all(allowed)
+    };
+    let valid = repo.split_once('/').is_some_and(|(owner, name)| {
+        part(owner, |c| c.is_ascii_alphanumeric() || c == '-')
+            && part(name, |c| c.is_ascii_alphanumeric() || "-_.".contains(c))
+            && name != "."
+            && name != ".."
+    });
+    if !valid {
+        return Err(format!("repo {repo:?} is not a GitHub owner/name"));
+    }
+    Ok(())
+}
+
 /// The task's worktree on `priory/<task>`, from the default branch of Priory's own clone of `repo`
 /// (`owner/name`). The clone has no checkout: a person trusts it once in Claude, and its worktrees
 /// inherit that trust. A worktree of that clone left on that branch by an interrupted start is reused.
 pub fn worktree(home: &Path, repo: &str, task: i64) -> Result<(PathBuf, String), String> {
+    check_repo(repo)?;
     let clone = home.join("repos").join(repo);
     let branch = format!("priory/{task}");
     let path = home.join("worktrees").join(repo).join(task.to_string());
@@ -826,7 +846,11 @@ pub fn listen(home: &Path) -> Result<Listening, String> {
     std::thread::spawn(move || {
         for mut stream in listener.incoming().flatten() {
             let mut text = String::new();
-            if BufReader::new(&stream).read_line(&mut text).is_err() {
+            // One connection at a time: a client that sends no line must not hold every other one.
+            let read = stream
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .and_then(|()| BufReader::new(&stream).read_line(&mut text));
+            if read.is_err() {
                 continue;
             }
             let (applied, done) = mpsc::channel();

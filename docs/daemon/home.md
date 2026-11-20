@@ -52,7 +52,8 @@ still lists it.
 ### Socket, spool and lock
 
 Hooks report to `priory.sock` (see [signals.md](signals.md)). The MCP tools and commands such as
-`priory answer` use it too.
+`priory answer` use it too. The daemon reads one connection at a time, and drops one that sends no
+full line within 2 seconds, so a silent client cannot stop the others.
 
 `signals.spool` holds the signals sent while no daemon listened. The next daemon applies them first.
 

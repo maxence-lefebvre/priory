@@ -197,7 +197,7 @@
       ]
     },
     "repo": {
-      "description": "The repository the trigger's tasks work in, `owner/name`; the polled one for `github`.",
+      "description": "The repository the trigger's tasks work in, a GitHub `owner/name` with no `.` or `..` name;\nthe polled one for `github`.",
       "type": [
         "string",
         "null"

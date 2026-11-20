@@ -12,6 +12,8 @@ const HEAD: usize = 8 * 1024;
 const HEADERS: usize = 32;
 /// How long a client may take to send its whole request, and to read the reply.
 const TIMEOUT: Duration = Duration::from_secs(5);
+/// How long a client may take to send the first byte of its head, so silent ones free a worker soon.
+const FIRST_BYTE: Duration = Duration::from_secs(1);
 /// The largest body a hook path reads; a longer one gets 413 before any of it is read.
 const BODY: usize = 1024 * 1024;
 /// The largest body a `POST` with the token reads.
@@ -113,7 +115,11 @@ fn answer(
     stream.set_write_timeout(Some(TIMEOUT))?;
     let deadline = Instant::now() + TIMEOUT;
     let reply = match read_head(&mut stream, deadline) {
-        Ok((read, end)) => respond(&mut stream, deadline, &read, end, gate, handle),
+        // A handler bug answers 500 instead of ending the worker, so none can drain the pool.
+        Ok((read, end)) => std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            respond(&mut stream, deadline, &read, end, gate, handle)
+        }))
+        .unwrap_or_else(|_| Reply::error(500, "the request failed inside Priory")),
         Err(reply) => reply,
     };
     let reason = match reply.status {
@@ -163,8 +169,10 @@ fn answer(
 fn read_head(stream: &mut TcpStream, deadline: Instant) -> Result<(Vec<u8>, usize), Reply> {
     let mut head = vec![0; HEAD];
     let mut len = 0;
+    let first = deadline.min(Instant::now() + FIRST_BYTE);
     loop {
-        len += read_some(stream, &mut head[len..], deadline, "head")?;
+        let by = if len == 0 { first } else { deadline };
+        len += read_some(stream, &mut head[len..], by, "head")?;
         let mut headers = [httparse::EMPTY_HEADER; HEADERS];
         match httparse::Request::new(&mut headers).parse(&head[..len]) {
             Ok(httparse::Status::Complete(end)) => {
@@ -273,6 +281,9 @@ fn respond(
     let (Some(method), Some(path)) = (parsed.method, parsed.path) else {
         return Reply::error(400, "the request line is incomplete");
     };
+    if !path.starts_with('/') {
+        return Reply::error(400, "the request target is not a path that starts with /");
+    }
     let request = Request {
         method,
         path,
@@ -340,4 +351,42 @@ fn same(sent: &[u8], token: &[u8]) -> bool {
         differ |= usize::from(sent.get(i).copied().unwrap_or(0) ^ byte);
     }
     differ == 0
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn status(address: std::net::SocketAddr, path: &str) -> String {
+        let mut stream = TcpStream::connect(address).unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(10)))
+            .unwrap();
+        write!(
+            stream,
+            "GET {path} HTTP/1.1\r\nAuthorization: Bearer t\r\n\r\n"
+        )
+        .unwrap();
+        let mut response = String::new();
+        stream.read_to_string(&mut response).unwrap();
+        response.get(9..12).unwrap_or("none").to_owned()
+    }
+
+    #[test]
+    fn a_handler_that_panics_answers_500_and_its_worker_keeps_serving() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let handler = || {
+            |request: &Request| {
+                assert_ne!(request.path, "/panic", "a handler bug");
+                Reply::json(200, "{}".to_owned())
+            }
+        };
+        serve(listener, "t".to_owned(), &[], |_| false, handler).unwrap();
+
+        for _ in 0..=WORKERS {
+            assert_eq!(status(address, "/panic"), "500");
+        }
+        assert_eq!(status(address, "/fine"), "200");
+    }
 }

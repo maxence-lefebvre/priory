@@ -129,6 +129,9 @@ pub fn run(factory: &Factory, request: &Request) -> Result<(), String> {
                 .to_owned(),
         );
     }
+    if let Some(repo) = &request.repo {
+        priory_runtime::runtime::check_repo(repo)?;
+    }
     let key = format!("cli:{}", request.key);
     let person = std::env::var("USER").ok();
     let time = Timestamp::now();

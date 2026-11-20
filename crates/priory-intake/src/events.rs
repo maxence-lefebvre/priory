@@ -505,7 +505,7 @@ pub struct CliRequested {
     /// When the command ran, RFC 3339.
     #[schemars(extend("format" = "date-time"))]
     pub time: String,
-    /// `--repo`, `owner/name`.
+    /// `--repo`, a GitHub `owner/name`: `priory request` refuses any other shape.
     pub repo: Option<String>,
 }
 
@@ -533,7 +533,8 @@ pub struct TaskRequested {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub project: Option<Option<String>>,
     /// The repository the task works in: `priory request --repo` for a CLI request, the pull
-    /// request's for a review request. Those sources only.
+    /// request's for a review request. Those sources only. A task whose `repo` is not a GitHub
+    /// `owner/name` blocks before its first run.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub repo: Option<Option<String>>,
     /// Files the task held: the trigger's `hold`, or `priory request --hold`.

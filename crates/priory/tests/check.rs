@@ -662,6 +662,26 @@ fn a_github_trigger_names_its_repo() {
 }
 
 #[test]
+fn a_trigger_repo_that_could_leave_priorys_home_is_refused() {
+    for repo in ["owner/..", "/tmp/x", "-x/y", "owner/a b"] {
+        let outcome = check(&factory(
+            "github-repo-escape",
+            &with(
+                "triggers/agent-label.toml",
+                &TRIGGER.replace("owner/repo", repo),
+            ),
+        ));
+
+        assert_eq!(outcome.code, 1, "{repo}");
+        assert_eq!(
+            outcome.stderr,
+            "triggers/agent-label.toml:3: a GitHub trigger needs `repo = \"owner/name\"`\n",
+            "{repo}"
+        );
+    }
+}
+
+#[test]
 fn a_github_trigger_uses_a_supported_event_and_filter() {
     let trigger = TRIGGER
         .replace("issues.labeled", "issues.opened")
