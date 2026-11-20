@@ -63,3 +63,8 @@ started, ended and how it ended. `priory outbox` prints each prompt: id, task, r
 with newlines shown as `\n`. `priory asks` and `priory waits` are described under Tools, `priory memory`
 under Memory gate, `priory actions` under Code steps, and `priory desk` under Desk. They read
 `PRIORY_DB` and print `-` for an empty cell, tab-separated after a header line.
+
+`priory queue` prints the waiting tasks in start order, then the held ones: position, position in
+the band, id, key, workflow, step, state, band, lane and reason. `priory desk`, `inbox`, `asks`, `tasks` and `queue`
+take `--json` and then print the JSON that `serve` returns for the same listing, on one line. See
+[serve.md](../reference/serve.md) for its fields.

@@ -17,14 +17,14 @@ pub struct Snooze {
     pub until: Option<String>,
 }
 
-/// True for a row of `snoozes`, left joined, whose item stays off the desk now.
-pub const SNOOZED: &str = "coalesce(snoozes.back IS NULL
-  AND snoozes.until > strftime('%Y-%m-%dT%H:%M:%SZ', 'now'), 0)";
-
-/// The `snoozed` column of a row of `snoozes`, left joined.
-pub const SHOWN: &str = "CASE
-  WHEN snoozes.back IS NOT NULL THEN 'back early ' || snoozes.back || ': ' || snoozes.back_reason
-  WHEN snoozes.until > strftime('%Y-%m-%dT%H:%M:%SZ', 'now') THEN 'until ' || snoozes.until END";
+/// The snooze fields of an item, from a left joined row of `snoozes`: `snoozed_until` while it is
+/// snoozed, `snoozed_at` once a person snoozed it, and `back_early` as JSON text once a change
+/// ended the snooze before its time.
+pub const FIELDS: &str = "CASE WHEN snoozes.back IS NULL
+    AND snoozes.until > strftime('%Y-%m-%dT%H:%M:%SZ', 'now') THEN snoozes.until END AS snoozed_until,
+  snoozes.snoozed AS snoozed_at,
+  CASE WHEN snoozes.back IS NOT NULL
+    THEN json_object('at', snoozes.back, 'reason', snoozes.back_reason) END AS back_early";
 
 /// The task of each kind of item while the desk lists it.
 fn listed(kind: &str) -> Option<&'static str> {

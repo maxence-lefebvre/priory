@@ -1384,7 +1384,7 @@ fn a_derived_lane_is_derived_again_when_the_first_run_gives_the_task_a_branch() 
     let mut lines = desk.lines();
     assert_eq!(
         lines.next(),
-        Some("since\tkind\tid\ttask\tlane\twhat\tgeneration\tsnoozed")
+        Some("since\tkind\tid\ttask\tlane\twhat\tgeneration\tsnoozed_until\tback_early")
     );
     let cells: Vec<_> = lines.next().unwrap().split('\t').collect();
     assert_eq!(cells[1..5], ["failed", "1", "1", "FND/desktop"]);
@@ -2676,6 +2676,7 @@ fn a_human_step_asks_ends_the_run_and_sleeps_until_an_answer_resumes_the_session
             "1",
             "approve: unsure it",
             r#"["approved","rejected"]"#,
+            "-",
             "-"
         ]]
     );
@@ -2852,6 +2853,7 @@ fn an_agent_ask_sleeps_the_task_and_the_answer_wakes_it_as_its_prompt() {
             "1",
             "Which database?",
             r#"["sqlite","postgres"]"#,
+            "-",
             "-"
         ]]
     );
@@ -2901,7 +2903,22 @@ fn a_snoozed_ask_leaves_the_desk_and_asks_until_its_time_while_the_task_stays_as
     assert_eq!(setup.rows("asks"), Vec::<Vec<String>>::new());
     let all = desk(&setup, &["--all"]);
     assert_eq!([&all[0][1], &all[0][2]], ["ask", "1"]);
-    assert!(all[0][7].starts_with("until "), "{all:?}");
+    assert_ne!(all[0][7], "-", "{all:?}");
+    let json: serde_json::Value =
+        serde_json::from_slice(&setup.priory(&["desk", "--json"]).stdout).unwrap();
+    assert_eq!(json["counts"]["snoozed"], 1);
+    assert!(
+        json["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|item| item["kind"] != "ask")
+    );
+    let json: serde_json::Value =
+        serde_json::from_slice(&setup.priory(&["asks", "--json"]).stdout).unwrap();
+    assert_eq!(json[0]["snoozed_until"].as_str(), Some(all[0][7].as_str()));
+    assert!(json[0]["snoozed_at"].is_string(), "{json}");
+    assert!(json[0]["back_early"].is_null(), "{json}");
     assert_eq!(setup.listed(&["asks", "--all"]).len(), 1);
     let tasks = setup.rows("tasks");
     assert_eq!([&tasks[0][3], &tasks[0][4]], ["plan", "asleep"]);
@@ -3236,7 +3253,8 @@ fn a_snoozed_blocked_task_that_blocks_again_comes_back_early_with_a_new_failure(
     setup.until("tasks", |rows| rows[0][4] == "blocked");
     let back = desk(&setup, &[]);
     assert_eq!([&back[0][1], &back[0][2]], ["blocked", "1"]);
-    assert!(back[0][7].ends_with(": new failure"), "{back:?}");
+    assert_eq!(back[0][7], "-");
+    assert!(back[0][8].contains(r#""reason":"new failure""#), "{back:?}");
 }
 
 #[test]
@@ -4884,8 +4902,11 @@ fn a_new_revision_of_a_snoozed_ask_brings_it_back_early() {
 
     let asks = setup.until("asks", |rows| rows.len() == 1);
     assert_eq!(asks[0][2], "2");
-    assert!(asks[0][5].starts_with("back early "), "{asks:?}");
-    assert!(asks[0][5].ends_with(": new revision"), "{asks:?}");
+    assert_eq!(asks[0][5], "-");
+    let json: serde_json::Value =
+        serde_json::from_slice(&setup.priory(&["asks", "--json"]).stdout).unwrap();
+    assert_eq!(json[0]["back_early"]["reason"], "new revision", "{json}");
+    assert!(json[0]["snoozed_until"].is_null(), "{json}");
 }
 
 #[test]
@@ -5954,7 +5975,10 @@ fn a_held_task_never_starts_until_a_person_releases_it() {
     assert!(setup.rows("runs").is_empty());
     let desk = setup.rows("desk");
     let held: Vec<_> = desk.iter().map(|row| &row[1..]).collect();
-    assert_eq!(held, [["held", "1", "1", "none/misc", reason, "1", "-"]]);
+    assert_eq!(
+        held,
+        [["held", "1", "1", "none/misc", reason, "1", "-", "-"]]
+    );
 
     assert_eq!(person(&setup, "release", &["1"]), "task 1 is queued\n");
     setup.until("tasks", |rows| rows[0][4] == "running");
@@ -6092,6 +6116,7 @@ fn a_pull_request_closed_unmerged_drops_or_asks_as_its_hold_says() {
             "1",
             "Pull request github:owner/repo#7 closed without a merge, and task 2 was held until it merged: b. Release the task, or drop it?",
             r#"["release","drop"]"#,
+            "-",
             "-"
         ]
     );

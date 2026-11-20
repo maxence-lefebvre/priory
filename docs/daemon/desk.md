@@ -94,9 +94,10 @@ with the clock. It comes back early when something meaningful changes:
 The latest change gives the reason. A task state change does not bring an ask back: answering it,
 or withdrawing it, already takes it off the desk.
 
-The desk and `priory asks` end each row with a `snoozed` column: `until <time>` while the item is
-snoozed, `back early <time>: <reason>` once a change brought it back, and `-` otherwise. The
-snoozed rows show only with `--all`.
+The desk and `priory asks` end each row with the item's `snoozed_until` time while it is snoozed,
+and its `back_early` once a change brought it back, as `{"at":"<time>","reason":"<reason>"}`. The
+snoozed rows show only with `--all`. With `--json`, the desk's `counts.snoozed` says how many it
+leaves out (see the [serve reference](../reference/serve.md#snooze)).
 
 The trace records each snooze as `factory.task.snoozed` and each `--clear` as
 `factory.task.unsnoozed` (see the [trace schema](../trace-schema.md)). The end of a snooze, by

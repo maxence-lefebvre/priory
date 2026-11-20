@@ -2,6 +2,7 @@ pub mod daemon;
 pub mod embed;
 mod handler;
 mod hold;
+pub mod listing;
 pub mod memory;
 #[cfg(feature = "model")]
 mod model;
@@ -10,6 +11,7 @@ pub mod report;
 mod room;
 mod route;
 pub mod search;
+pub mod serve;
 pub mod snooze;
 pub mod stall;
 pub mod state;
