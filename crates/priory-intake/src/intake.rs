@@ -5,7 +5,7 @@ mod issues;
 mod linear;
 mod pulls;
 mod reviews;
-mod schedule;
+pub mod schedule;
 mod slack;
 mod webhook;
 
@@ -219,7 +219,7 @@ fn pull_request_repo(watch: &Watch) -> Option<&str> {
 }
 
 /// The time, or `PRIORY_NOW` when set, so a test can stand at any time.
-fn now() -> Result<Timestamp, String> {
+pub fn now() -> Result<Timestamp, String> {
     match std::env::var("PRIORY_NOW") {
         Ok(now) => now
             .parse()

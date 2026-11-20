@@ -3,8 +3,8 @@
 
 use crate::{listing, sections, state};
 use herdr_bus::Bus;
-use priory_factory::factory::Factory;
-use priory_intake::intake::Github;
+use priory_factory::factory::{Factory, Trigger};
+use priory_intake::intake::{self, Github};
 use priory_runtime::http::{self, Reply, Request};
 use priory_runtime::runtime;
 use rusqlite::Connection;
@@ -44,12 +44,14 @@ pub fn start(factory: &Factory, listen: SocketAddr) -> Result<Vec<JoinHandle<()>
         .local_addr()
         .map_err(|error| format!("listen on {listen}: {error}"))?;
     let web = config.web;
+    let schedules = Arc::new(listing::schedule_triggers(factory));
     let hooks: &[&str] = if github.is_some() { &[GITHUB] } else { &[] };
     let waiters = Arc::new(AtomicUsize::new(0));
     let workers = http::serve(listener, token, hooks, move || {
         let db = state::read_only();
         let waiters = Arc::clone(&waiters);
         let home = runtime::home();
+        let schedules = schedules.clone();
         let github = github.clone().map(|github| {
             (
                 github,
@@ -62,7 +64,15 @@ pub fn start(factory: &Factory, listen: SocketAddr) -> Result<Vec<JoinHandle<()>
             {
                 github.receive(bus, request)
             }
-            _ => route(&db, &home, web, &waiters, request.method, request.path),
+            _ => route(
+                &db,
+                &home,
+                &schedules,
+                web,
+                &waiters,
+                request.method,
+                request.path,
+            ),
         }
     })
     .map_err(|error| format!("start the server threads: {error}"))?;
@@ -81,6 +91,7 @@ fn env(name: &str, what: &str) -> Result<String, String> {
 fn route(
     db: &Result<Connection, String>,
     home: &Path,
+    schedules: &[(String, Trigger)],
     web: bool,
     waiters: &AtomicUsize,
     method: &str,
@@ -109,7 +120,12 @@ fn route(
         "/api/tasks" => {
             listing::revised(db, "tasks", |db| listing::tasks(db, None, None).map(Some))
         }
-        "/api/queue" => listing::revised(db, "queue", |db| listing::queue(db).map(Some)),
+        "/api/queue" => match intake::now() {
+            Ok(now) => listing::revised(db, "queue", |db| {
+                listing::queue(db, schedules, now).map(Some)
+            }),
+            Err(error) => return Reply::error(500, &error),
+        },
         "/api/reports/latest" => listing::revised(db, "report", |db| sections::show(db, None)),
         _ => match (
             path.strip_prefix("/api/tasks/").map(str::parse),
