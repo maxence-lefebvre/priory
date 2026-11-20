@@ -40,6 +40,12 @@ CI runs the same three commands on every push to `main` and every pull request.
 - When you write generic logic yourself, name the crate you rejected and why in your reply.
 - Propose a new dependency with its license and last release, and wait for approval before you add it.
 
+## UI
+
+- Start any web view work from a Claude Design artifact, made with the Artifact tool and reviewed by a person before you write code.
+- Follow `DESIGN.md` for tokens, components, states, touch and copy. Change it in the same pull request when the UI needs something it lacks.
+- Load the `frontend-design` skill in `.claude/skills/` before you design a new panel, component or artifact. Where it and `DESIGN.md` differ, `DESIGN.md` wins.
+
 ## Writing
 
 - Write docs, commits and PR bodies in plain English: short sentences, active voice, no em dashes.
