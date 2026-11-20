@@ -121,12 +121,13 @@ async function refresh() {
     const views = state.data?.views || (await api("/api/views"));
     const [desk, asksList, queue, tasksList] = await Promise.all(["/api/desk", "/api/asks", "/api/queue", "/api/tasks"].map(api));
     const [asks, tasks] = [asksList.asks, tasksList.tasks];
-    state.revision = Math.max(desk.revision, asksList.revision, queue.revision, tasksList.revision);
+    // The listings are read one after another; the oldest revision makes the next wait catch what they missed.
+    state.revision = Math.min(desk.revision, asksList.revision, queue.revision, tasksList.revision);
     const snapshot = JSON.stringify([desk, asks, queue, tasks]);
     state.updated = Date.now();
     state.failed = null;
     // Ages read in minutes, so an unchanged state needs a new paint once a minute at most.
-    if (state.data && snapshot === state.snapshot && !failed && Date.now() - state.rendered < 60000) return;
+    if (state.data && snapshot === state.snapshot && !failed && Date.now() - state.rendered < 60000) return true;
     const before = state.data ? new Set(state.data.asks.filter((ask) => ask.state === "open").map((ask) => ask.id)) : null;
     state.data = { views, desk, asks, queue, tasks };
     state.snapshot = snapshot;
@@ -134,8 +135,11 @@ async function refresh() {
   } catch (error) {
     if (error.status === 401) return signOut("The daemon refused this token. Paste the current one.");
     state.failed = error instanceof TypeError ? "the connection dropped" : error.message;
+    render();
+    return false;
   }
   render();
+  return true;
 }
 
 function announce(before) {
@@ -381,7 +385,7 @@ function askDetail(id, wide) {
   const options = ask.options || [];
   const optionButtons = options.map((option, i) => {
     const recommended = option === ask.recommendation;
-    return html`<button class="opt ${recommended ? "rec-opt" : ""}" aria-disabled="true" aria-describedby="answer-later">
+    return html`<button class="opt ${recommended ? "rec-opt" : ""}" data-option="${i}" aria-disabled="true" aria-describedby="answer-later">
       <span>${option}${recommended ? html`<small>Recommended</small>` : ""}</span>${wide ? html`<kbd>${i + 1}</kbd>` : ""}</button>`;
   });
   const decided = ask.state !== "open"
@@ -558,7 +562,7 @@ function loading() {
 }
 
 const routeKey = () => location.pathname + location.search;
-const FOCUS_ATTRIBUTES = ["id", "href", "data-pick-mode", "data-theme-pick", "data-action"];
+const FOCUS_ATTRIBUTES = ["id", "href", "data-option", "data-pick-mode", "data-theme-pick", "data-action"];
 function focusKey(element) {
   if (!element || element === document.body) return null;
   const name = FOCUS_ATTRIBUTES.find((attribute) => element.hasAttribute(attribute));
@@ -704,13 +708,15 @@ async function follow() {
       await new Promise((resolve) => setTimeout(resolve, 1000));
       continue;
     }
+    let ok;
     try {
       const { revision } = await api(`/api/events?since=${state.revision}`);
-      if (revision !== state.revision) await refresh();
+      ok = revision === state.revision || (await refresh());
     } catch {
       await refresh();
-      await new Promise((resolve) => setTimeout(resolve, 5000));
+      ok = false;
     }
+    if (!ok) await new Promise((resolve) => setTimeout(resolve, 5000));
   }
 }
 // Ages read in minutes, so repaint them once a minute even when nothing changes.
