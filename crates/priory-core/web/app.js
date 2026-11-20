@@ -61,6 +61,7 @@ const STATES = {
   running: ["live", null], asleep: ["muted", "moon"], blocked: ["warn", "hand"], done: ["ok", "check"],
   failed: ["danger", "circle-x"], dropped: ["muted", "minus"], lost: ["warn", "unplug"],
   ask: ["wait", "ask"], answered: ["muted", "check"], withdrawn: ["muted", "minus"], prompt: ["warn", "hand"],
+  refused: ["warn", "x"], moved: ["muted", "check"],
 };
 const role = (state) => (STATES[state] || ["muted", "circle-help"])[0];
 function tile(state, size = "") {
@@ -137,6 +138,7 @@ async function refresh() {
     if (state.data && snapshot === state.snapshot && !failed && Date.now() - state.rendered < 60000) return true;
     const before = state.data ? new Set(state.data.asks.filter((ask) => ask.state === "open").map((ask) => ask.id)) : null;
     state.data = { views, desk, asks, bands: asksList.bands, queue, tasks };
+    state.task = null;
     state.snapshot = snapshot;
     announce(before);
   } catch (error) {
@@ -456,7 +458,8 @@ function askDetail(id, wide) {
   const top = html`<div class="ask">
     <a class="ctx" href="${ask.task ? `/tasks/${ask.task}` : "/asks"}">${wide ? "" : tile("ask", "sm")}<span class="mono">${ask.key}</span><span>${ask.step}</span><span>${ask.lane || ""}</span>${ask.command ? html`<span class="tag">Command</span>` : ""}${wide ? "" : html`<span>${timeTag(ask.since)}</span><span>revision ${ask.revision}</span>`}</a>
     <h2 class="question">${ask.question || ask.title}</h2>${decided}</div>`;
-  const sections = [["why", "Why"], ["history", "History"], ...(ask.command ? [["command", "Command"]] : [])];
+  const read = taskSections(taskOf(ask));
+  const sections = [["why", "Why"], ...read.map(([key, label]) => [key, label]), ["history", "History"], ...(ask.command ? [["command", "Command"]] : [])];
   const jump = html`<nav class="jump" aria-label="Sections">${sections.map(([key, label], i) => html`<a href="#${key}" aria-current="${i === 0 ? "true" : "false"}">${label}</a>`)}</nav>`;
   const why = html`<section class="sect" id="why"><div class="sh">${icon("message-text", "s15")}What the agent asks<span class="meta">${ask.run ? html`run <span class="mono">${ask.run}</span>` : ""}</span></div>
     <p class="text">${ask.text || ask.question}</p>
@@ -467,7 +470,12 @@ function askDetail(id, wide) {
       <div class="cmd"><span class="mono">$ ${ask.command}</span><small>Priory stores this command and never runs it: the ask came from outside Priory.</small></div></section>`
     : html`<section class="sect" id="command"><div class="sh">${icon("terminal", "s15")}Command an answer runs</div>
       ${commandBlock(ask, `Runs on ${ask.command.runs.join(", ")}. ${bound} Runs at most once.`)}</section>`;
-  const historyItems = [html`<li>${tile("ask", "sm")}<span>Asked revision <b>${ask.revision}</b></span>${timeTag(ask.since, clock(ask.since))}</li>`];
+  // Every revision and refused answer, newest first; an ask listed before Priory kept them shows its current revision.
+  const dated = [
+    ...(ask.revisions || [{ revision: ask.revision, at: ask.since }]).map((revision) => [revision.at, html`<li>${tile("ask", "sm")}<span>Asked revision <b>${revision.revision}</b>${revision.question ? `: ${revision.question}` : ""}</span>${timeTag(revision.at, clock(revision.at))}</li>`]),
+    ...(ask.refused || []).map((refusal) => [refusal.at, html`<li>${tile("refused", "sm")}<span class="t-warn"><b>Refused:</b> ${refusal.answer}, sent for revision ${refusal.revision} from ${refusal.by}: ${refusal.why}</span>${timeTag(refusal.at, clock(refusal.at))}</li>`]),
+  ].sort(([a], [b]) => b.localeCompare(a));
+  const historyItems = dated.map(([, item]) => item);
   if (ask.state === "answered") historyItems.unshift(html`<li>${tile("answered", "sm")}<span>Answered <b>${ask.answer}</b></span>${ask.answered_at ? timeTag(ask.answered_at, clock(ask.answered_at)) : ""}</li>`);
   if (ask.state === "withdrawn") historyItems.unshift(html`<li>${tile("withdrawn", "sm")}<span>Withdrawn${ask.withdrawn_why ? `: ${ask.withdrawn_why}` : ""}</span><span></span></li>`);
   const history = html`<section class="sect" id="history"><div class="sh">${icon("history", "s15")}Answer history</div><ol class="hist">${historyItems}</ol></section>`;
@@ -483,8 +491,53 @@ function askDetail(id, wide) {
         : html`<span>${recommended}</span><small>${[recommended === ask.recommendation ? "Recommended" : "First option", runsCommand(ask, recommended) && "Runs a command"].filter(Boolean).join(". ")}</small>`}</button>
       ${locked ? html`<p class="note">${icon("unplug", "s15")}<span>Reconnect to answer.</span></p>` : ""}</div>`
     : "";
-  if (wide) return html`<div class="pinned">${header}${top}${sending}</div><div class="scroll" data-sections>${jump}${why}${history}${command}</div>`;
-  return html`${header}<div class="scroll" data-sections>${top}${jump}${why}${history}${command}</div>${bar}${sending}`;
+  const reading = read.map(([, , section]) => section);
+  if (wide) return html`<div class="pinned">${header}${top}${sending}</div><div class="scroll" data-sections>${jump}${why}${reading}${history}${command}</div>`;
+  return html`${header}<div class="scroll" data-sections>${top}${jump}${why}${reading}${history}${command}</div>${bar}${sending}`;
+}
+
+// The ask's task as /api/tasks/{id} serves it, read once per ask and again after each refresh.
+function taskOf(ask) {
+  if (!ask.task) return null;
+  if (state.task?.id === ask.task) return state.task.body;
+  state.task = { id: ask.task, body: null };
+  api(`/api/tasks/${ask.task}`).then((body) => {
+    if (state.task?.id !== ask.task) return;
+    state.task.body = body;
+    render();
+  }, () => {});
+  return null;
+}
+
+// Brief, Plan, PR and Trace, each left out when the task lacks it. Agent text shows as plain text.
+function taskSections(task) {
+  if (!task) return [];
+  const sections = [];
+  const sect = (key, ico, title, meta, body) => html`<section class="sect" id="${key}"><div class="sh">${icon(ico, "s15")}${title}<span class="meta">${meta}</span></div>${body}</section>`;
+  const { request, result } = task.brief || {};
+  if (request || result) {
+    sections.push(["brief", "Brief", sect("brief", "file-text", "Brief", result ? `${result.step}, run ${result.run}` : "",
+      html`${request ? html`<p class="meta">The request</p><p class="text">${request}</p>` : ""}${result ? html`<p class="text">${result.summary}</p>` : ""}`)]);
+  }
+  const progress = task.progress;
+  const plan = task.plan ? [`${task.plan.step}, run ${task.plan.run}`, task.plan.summary]
+    : progress ? ["progress", [progress.goal && `Goal: ${progress.goal}`, ...(progress.acceptanceCriteria || []).map((c) => `- ${c.id}: ${c.description}`),
+      progress.latestChange && `Latest change: ${progress.latestChange}`, progress.nextAction && `Next: ${progress.nextAction}`].filter(Boolean).join("\n")] : null;
+  if (plan) sections.push(["plan", "Plan", sect("plan", "check", "Plan", plan[0], html`<p class="text">${plan[1]}</p>`)]);
+  const pr = task.pull_request;
+  if (pr) {
+    sections.push(["pr", "PR", sect("pr", "workflow", `#${pr.number} ${pr.title || ""}`, pr.review || "",
+      html`<p class="meta">${pr.branch} into ${pr.base}, head <span class="mono">${String(pr.head_sha).slice(0, 7)}</span>, ${pr.state}</p>
+      <ol class="hist">${pr.checks.map((check) => html`<li>${tile(check.conclusion === "success" ? "done" : "failed", "sm")}<span>${check.name}</span><span>${check.conclusion}</span></li>`)}</ol>`)]);
+  }
+  if (task.runs?.length) {
+    sections.push(["trace", "Trace", sect("trace", "runs", "Trace", "", html`<ol class="hist">${task.runs.map((run) => {
+      const tokens = run.tokens ? Object.values(run.tokens).reduce((sum, count) => sum + (Number(count) || 0), 0) : null;
+      const minutes = Math.round(((run.ended ? Date.parse(run.ended) : Date.now()) - Date.parse(run.started)) / 60000);
+      return html`<li>${tile(run.ended ? run.end || "moved" : "running", "sm")}<span><b>${run.step}</b>, run <span class="mono">${run.id}</span>, ${minutes} min${run.outcome ? `, ${run.outcome}` : ""}${tokens === null ? "" : `, ${tokens} tokens`}</span>${timeTag(run.started, clock(run.started))}</li>`;
+    })}</ol>`)]);
+  }
+  return sections;
 }
 
 // An agent's command runs on the options in its `runs`; an outside ask's string command never runs.

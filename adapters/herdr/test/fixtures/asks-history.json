@@ -4,6 +4,7 @@
             "answer": "Merge",
             "answered_at": "2026-11-20T10:07:00Z",
             "back_early": null,
+            "band": null,
             "command": null,
             "coordinator": null,
             "delivery": null,
@@ -70,5 +71,6 @@
             "withdrawn_why": null
         }
     ],
+    "bands": [],
     "revision": 17
 }

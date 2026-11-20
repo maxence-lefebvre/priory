@@ -64,7 +64,9 @@ replaced, not repeated. The line that ends the step is added only when no queued
 already. `priory cancel <task>` drops an active task with the reason `cancelled from the desk`, ends its
 live run as `cancelled` and kills its tmux session. Both go to the daemon over `priory.sock`, as
 `priory answer` does, and are refused for a task in any other state. An answer to an ask of a done,
-failed or dropped task is refused too.
+failed or dropped task is refused too. The daemon stores each refused answer with the revision it was
+sent for, where it came from and why, and every revision of each ask: `priory asks --json` lists
+them as `revisions` and `refused`.
 
 ## Say
 
