@@ -1056,6 +1056,17 @@ fn settle(tx: &Transaction, run: &Run, trace: &Trace) -> rusqlite::Result<Option
     if asked.is_none() && open_wait(tx, run.id)?.is_none() {
         return Ok(None);
     }
+    // A person's `say` that beat the Stop is the run's next prompt, as an answer would be.
+    let said = tx
+        .query_row(
+            "SELECT 1 FROM outbox WHERE task = ?1 AND state = 'queued' AND wakes",
+            [run.task],
+            |_| Ok(()),
+        )
+        .optional()?;
+    if said.is_some() {
+        return Ok(None);
+    }
     end(tx, run.id, "asleep")?;
     set(tx, run.task, "asleep", None, None)?;
     Ok(Some(Some(run.tmux.clone())))
@@ -1132,7 +1143,8 @@ fn queue_first(tx: &Transaction, task: i64, text: &str) -> rusqlite::Result<i64>
         }
     }
     tx.execute(
-        "INSERT INTO outbox (task, text) VALUES (?1, ?2)",
+        "INSERT INTO outbox (task, text, wakes) VALUES (?1, ?2, (SELECT coalesce(max(wakes), 0)
+           FROM outbox WHERE task = ?1 AND state = 'queued' AND compact = 0))",
         params![task, merged],
     )?;
     let id = tx.last_insert_rowid();
@@ -1590,18 +1602,21 @@ fn say(
             "task {task} is at step {at}, which no agent runs"
         )));
     }
-    // A task no run took yet starts with its step's prompt, which a queued text would displace.
-    let started: bool = tx.query_row(
-        "SELECT EXISTS (SELECT 1 FROM runs WHERE task = ?1)",
+    // A task with no run and no queued prompt still has its step's prompt to build at its first
+    // run, which a queued text would skip.
+    let unstarted: bool = tx.query_row(
+        "SELECT NOT EXISTS (SELECT 1 FROM runs WHERE task = ?1)
+         AND NOT EXISTS (SELECT 1 FROM outbox WHERE task = ?1 AND state = 'queued')",
         [task],
         |row| row.get(0),
     )?;
-    if !started {
+    if unstarted {
         return Ok(Err(format!(
             "task {task} has no run yet: say it once its agent started"
         )));
     }
-    wake(tx, task, text)?;
+    let prompt = wake(tx, task, text)?;
+    tx.execute("UPDATE outbox SET wakes = 1 WHERE id = ?1", [prompt])?;
     if state == "asleep" {
         set(tx, task, "ready", None, None)?;
     }

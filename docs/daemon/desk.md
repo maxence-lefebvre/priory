@@ -39,22 +39,27 @@ failed or dropped task is refused too.
 the step, when no queued prompt carries it already. It goes ahead of the task's other queued
 prompts.
 
-- A running task's agent gets TEXT once its run is idle.
+- A running task's agent gets TEXT once its run is idle. When the agent ends that turn with an ask
+  or a wait, its run stays live for TEXT instead of going to sleep, as for an answer that beats the
+  `Stop`. The ask or wait stays open.
 - An asleep task becomes `ready`, and its next run resumes the agent's session with TEXT as its
   first prompt. Its open asks and waits stay open, so the agent sleeps on them again unless it
   ends them.
-- A `ready` or `blocked` task's next run gets TEXT.
+- A `ready` or `blocked` task's next run gets TEXT, ahead of the step's prompt when no run took the
+  task yet.
 
 It replies `task <id> will hear it`. It refuses a `done`, `failed` or `dropped` task, a task at a
-human or code step, and a task that no run took yet, since its first run starts with the step's
-prompt.
+human or code step, and a task that has neither a run nor a queued prompt, such as a `queued` one,
+since its first run builds the step's prompt then.
 
 ## Pause
 
-`priory pause [REASON]` stops admissions: no `queued` task starts a run until `priory unpause`.
-Everything else goes on. Live runs keep working, and an answer, a wait's event, `say`, `resume` and
-`revive` still wake their tasks, whose new runs start as usual. A queued task waits with the reason
-`waits: priory is paused: <reason>`, which `priory tasks` shows.
+`priory pause [REASON]` stops admissions: no `queued` task starts a run or its first code step
+until `priory unpause`. Everything else goes on. Live runs keep working, and an answer, a wait's
+event, `say`, `resume` and `revive` still wake their tasks, whose new runs start as usual. A resume
+that makes a task `queued`, because no run ever took its step's prompt, leaves it waiting too. A
+queued task at a model step waits with the reason `waits: priory is paused: <reason>`, which
+`priory tasks` shows.
 
 The pause lives in the state file, so it survives a daemon restart, and `pause` and `unpause` work
 while the daemon is stopped. A second `pause` keeps the first one's start and takes the new reason.

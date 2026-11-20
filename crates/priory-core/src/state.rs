@@ -509,13 +509,15 @@ END;
 PRAGMA user_version = 30;
 ";
 
-// A person's pause: while its one row exists, no queued task starts a run.
+// A person's pause: while its one row exists, no queued task starts a run. A prompt that `say`
+// queued keeps its run from sleeping, so it is never stranded behind an ask or a wait.
 const SCHEMA_31: &str = "
 CREATE TABLE pause (
   id     INTEGER PRIMARY KEY CHECK (id = 1),
   reason TEXT,
   since  TEXT NOT NULL
 );
+ALTER TABLE outbox ADD COLUMN wakes INTEGER NOT NULL DEFAULT 0;
 PRAGMA user_version = 31;
 ";
 /// Each schema change in order: a file at version `n` applies those from index `n` on.
@@ -1184,7 +1186,8 @@ pub(crate) fn actionable(
 ) -> rusqlite::Result<Option<Due>> {
     let mut statement = db.prepare(
         "SELECT id, workflow, step, trigger, branch, worktree, repo FROM tasks
-         WHERE state IN ('queued', 'ready') ORDER BY id",
+         WHERE state = 'ready' OR state = 'queued' AND NOT EXISTS (SELECT 1 FROM pause)
+         ORDER BY id",
     )?;
     let tasks = statement.query_map([], |row| {
         Ok(Due {

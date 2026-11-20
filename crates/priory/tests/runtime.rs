@@ -3165,6 +3165,56 @@ fn say_types_its_text_into_an_idle_run() {
 }
 
 #[test]
+fn say_before_the_stop_of_a_turn_that_asked_is_typed_into_the_same_run() {
+    let mut setup = Setup::with_workflow("say-before-stop", STEPS);
+    setup.hold("hold-stop");
+    setup.calls(&[ask()]);
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("asks", |rows| rows.len() == 1);
+
+    let said = setup.priory(&["say", "1", "Pick sqlite and go on."]);
+
+    assert!(said.status.success(), "{said:?}");
+    setup.release("hold-stop");
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 2);
+    assert!(
+        setup.typed()[1].starts_with("Pick sqlite and go on.\n"),
+        "{:?}",
+        setup.typed()
+    );
+    assert_eq!(setup.rows("runs").len(), 1);
+}
+
+#[test]
+fn say_to_a_ready_task_no_run_took_yet_comes_before_its_step_prompt() {
+    let workflow = STEPS
+        .replace("start = \"plan\"", "start = \"approve\"")
+        .replace("approved = \"implement\"", "approved = \"plan\"");
+    let mut setup = Setup::with_workflow("say-ready", &workflow);
+    setup.publish(&requested(42));
+    setup.memory(0);
+    setup.start();
+    setup.until("asks", |rows| rows.len() == 1);
+    assert!(
+        setup
+            .priory(&["answer", "1", "approved", "--revision", "1"])
+            .status
+            .success()
+    );
+    setup.until("tasks", |rows| rows[0][4] == "ready");
+
+    let said = setup.priory(&["say", "1", "Keep it small."]);
+
+    assert!(said.status.success(), "{said:?}");
+    setup.memory(60);
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 1);
+    let typed = setup.typed();
+    assert!(typed[0].starts_with("Keep it small.\n"), "{typed:?}");
+    assert!(typed[0].contains("\nPlan the change.\n"), "{typed:?}");
+}
+
+#[test]
 fn say_wakes_an_asleep_task_with_its_text_in_its_session() {
     let mut setup = Setup::with_workflow("say-asleep", STEPS);
     setup.calls(&[ask()]);
@@ -5224,6 +5274,24 @@ action = "merge-pr"
 effect = "reversible"
 next = { merged = "done" }
 "#;
+
+#[test]
+fn pause_holds_a_new_task_whose_workflow_starts_at_a_code_step() {
+    let workflow = UNKNOWN_ACTION
+        .replace("start = \"implement\"", "start = \"merge\"")
+        .replace("merged = \"done\"", "merged = \"implement\"");
+    let mut setup = Setup::with_workflow("pause-code", &workflow);
+    assert!(setup.priory(&["pause"]).status.success());
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("tasks", |rows| rows.len() == 1);
+    std::thread::sleep(Duration::from_millis(1500));
+    assert_eq!(setup.rows("tasks")[0][4], "queued");
+
+    assert!(setup.priory(&["unpause"]).status.success());
+
+    setup.until("tasks", |rows| rows[0][4] == "blocked");
+}
 
 #[test]
 fn an_action_that_is_not_built_blocks_the_task_with_its_name() {

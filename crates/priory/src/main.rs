@@ -813,15 +813,16 @@ fn hold(args: Vec<String>) -> ExitCode {
 /// Sends `priory resume`, `cancel`, `revive TASK [--step STEP]`, `release`, `say TASK TEXT` or `hold` for one task to
 /// the daemon, which applies it.
 fn act(act: &str, mut args: Vec<String>, hold: Option<factory::Hold>) -> ExitCode {
-    let step = match args.iter().position(|arg| arg == "--step") {
-        Some(flag) if act == "revive" && flag + 1 < args.len() => args.drain(flag..flag + 2).nth(1),
-        Some(_) => return usage(),
-        None => None,
-    };
+    // Taken first, so a text such as `--step` stays text.
     let text = match act {
         "say" if args.len() == 2 => args.pop(),
         "say" => return usage(),
         _ => None,
+    };
+    let step = match args.iter().position(|arg| arg == "--step") {
+        Some(flag) if act == "revive" && flag + 1 < args.len() => args.drain(flag..flag + 2).nth(1),
+        Some(_) => return usage(),
+        None => None,
     };
     let [task] = &args[..] else {
         return usage();
