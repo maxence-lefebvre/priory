@@ -20,6 +20,7 @@ Schema: [`config/factory.json`](../schemas/config/factory.json).
 | `serve` | table | no | nothing listens | The HTTP server over the factory's state. See [`[serve]`](#serve) | |
 | `webhooks` | table | no | no webhook is taken | The signed webhooks the server takes. Needs `[serve]`. See [`[webhooks.github]`](#webhooksgithub) | |
 | `asks` | table | no | answers are only stored | What happens to the answer of an ask from outside Priory. See [`[asks]`](#asks) | |
+| `request` | table | no | `priory add` needs `--workflow` | The defaults of `priory add` and `POST /api/request`. See [`[request]`](#request) | |
 
 A duration is a whole number followed by `s`, `m` or `h`, such as `"90s"`, `"15m"` or `"2h"`.
 
@@ -98,6 +99,16 @@ and [tools.md](../daemon/tools.md#commands-an-answer-runs) for the commands an a
 | `deliver` | string | no | none: an answer is only stored | The command that delivers an outside ask's answer or dismissal to the session that asked, relative to the factory folder | `"adapters/herdr/deliver"` |
 | `targets` | table of strings | no | none: only `worktree` | The folders, by name, where an answer can run an agent's ask command besides the task's worktree, relative to the factory folder or absolute | `{ ops = "../ops" }` |
 
+## `[request]`
+
+What `priory add` and `POST /api/request` use when a request names no workflow or band. See
+[cli.md](../intake/cli.md#priory-add).
+
+| Key | Type | Required | Default | Meaning | Example |
+| --- | ---- | -------- | ------- | ------- | ------- |
+| `workflow` | string | yes | | The workflow a request starts when it names none, by file name | `"groom"` |
+| `band` | string | no | none, as `priory request` without `--band` | The band of a request that names none | `"today"` |
+
 ## Example
 
 <!-- example: factory/factory.toml -->
@@ -137,6 +148,10 @@ secret_env = "PRIORY_GITHUB_WEBHOOK_SECRET"    # the variable holding the webhoo
 [asks]
 deliver = "bin/deliver"                        # delivers outside answers, from the factory folder
 targets = { ops = "../ops" }                   # where an answer can run an ask's command
+
+[request]
+workflow = "implement"                         # what priory add starts without --workflow
+band = "today"                                 # its band without --band
 ```
 
 ## Errors from `priory check`
@@ -157,6 +172,8 @@ targets = { ops = "../ops" }                   # where an answer can run an ask'
 | `` `[sweep] repo` needs to be `owner/name` `` | `[sweep] repo` is not a GitHub `owner/name`, such as a path or a name of `..` |
 | `` `[serve] listen` <address> is beyond this machine: set `public = true` to serve it `` | `listen` is not a loopback address and `public` is not set |
 | `` `[webhooks]` needs a `[serve]` table to listen on `` | `[webhooks]` is set without `[serve]` |
+| `` `[request] workflow` `<name>` does not exist `` | `[request] workflow` names no file under `workflows/` |
+| `` `[request] band` `<band>` is not one of <bands> `` | `[request] band` names a band the factory lacks |
 | `invalid socket address syntax` | `listen` is not an IP address and port, such as `127.0.0.1:7340` |
 
 Each line starts with the file and line, such as `factory.toml:3:1:`. A file that does not parse

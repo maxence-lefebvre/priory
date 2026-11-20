@@ -47,7 +47,8 @@ Milestone M2 adds a web view that works on a phone. These are its design boards 
 ## Get started
 
 - [GETTING_STARTED.md](GETTING_STARTED.md): build Priory, write a first factory, run it, and the
-  day to day commands and concepts.
+  day to day commands and concepts. Once the factory has a `[request]` table,
+  `priory add "Fix the typo in the README"` queues a first task.
 - [CONTRIBUTING.md](CONTRIBUTING.md): how to change Priory, the checks to run, and how pull
   requests work.
 
