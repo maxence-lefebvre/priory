@@ -30,8 +30,21 @@ default. A grant above the runner's share of the machine can never fit, so the d
 once, as
 `9.0 GB never fits: this runner's agents may take 7.2 GB`. A command that cannot start exits 127.
 
+`priory memory lease [--gb N] [--timeout D] -- <command>` runs a server or stack that stays up,
+such as a dev server, with N GB reserved for as long as it runs. It takes the same flags, waits in
+the same queue and exits with the same codes as `acquire`. Use it instead of `acquire` for a
+command that outlives one job.
+
+A lease differs from `acquire` in who holds the grant. The `lease` process keeps it for the
+command's whole life, so killing the lease, even with `SIGKILL`, frees its memory within a second.
+The command runs in its own process group, beside a small guard that stops that group with
+`SIGTERM` once the lease process ends. A server therefore never runs without its reservation, and
+`kill <lease pid>` ends both.
+
 `priory memory` prints each grant in request order: id, task, state (`held` or `waiting`), GB,
-command and age. A held grant's age counts from its grant, a waiting one's from its request.
+command, age and pid. A held grant's age counts from its grant, a waiting one's from its request.
+The pid is the grant's holder: the `acquire` process while the grant waits, then the command; the
+`lease` process for a lease.
 `priory desk` shows each waiting grant as a `memory` row.
 
 The MCP server's instructions teach every agent the gate. They ask it to wrap each heavy command in
@@ -46,5 +59,7 @@ Known limits:
 - The command's process holds the grant, not the processes it leaves behind. A daemonized child of
   a build runs on without a grant.
 - A grant that arrives in the last poll before `--timeout` still runs its command, up to 250 ms late.
+- A leased command runs outside the terminal's foreground group, so it stops if it reads the
+  terminal. Ctrl-C reaches the lease, which ends the command through its guard.
 - A daemon that stops while a command waits fails that command with 125. A held grant survives a
   daemon restart in the state database.
