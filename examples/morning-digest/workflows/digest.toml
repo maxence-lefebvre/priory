@@ -1,0 +1,13 @@
+#:schema https://raw.githubusercontent.com/maxence-lefebvre/priory/main/docs/schemas/config/workflow.json
+start = "digest"
+band = "later"
+
+# It only adds report lines to your own desk, which you mark read.
+[[steps]]
+id = "digest"
+decides = "model"
+agent = "digest"
+prompt = "Write this morning's digest: the open asks, the stuck tasks and yesterday's merges. Post each line with priory post digest."
+effect = "reversible"
+timeout = "15m"
+next = { posted = "done", failed = "stop" }

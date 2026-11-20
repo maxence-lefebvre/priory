@@ -1,0 +1,28 @@
+#:schema https://raw.githubusercontent.com/maxence-lefebvre/priory/main/docs/schemas/config/workflow.json
+start = "triage"
+
+# Labels can be taken off again, so labelling is reversible.
+[[steps]]
+id = "triage"
+decides = "model"
+agent = "triager"
+prompt = "Label this issue. If it lacks something a person needs to act on it, draft a comment that asks for it and put the draft in your result. Do not post it."
+effect = "reversible"
+next = { complete = "done", missing = "approve-comment" }
+
+[[steps]]
+id = "approve-comment"
+decides = "human"
+effect = "none"
+approves = ["post-comment"]
+options = ["post", "skip"]
+next = { post = "post-comment", skip = "done" }
+
+# A posted comment notifies everyone who watches the issue.
+[[steps]]
+id = "post-comment"
+decides = "model"
+agent = "triager"
+prompt = "Post the comment you drafted, as approved, with gh issue comment."
+effect = "irreversible"
+next = { posted = "done", failed = "stop" }

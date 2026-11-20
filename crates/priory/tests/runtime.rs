@@ -8969,6 +8969,122 @@ fn a_review_task_finishes_without_owning_its_pull_request() {
     assert_eq!([&tasks[0][4], &tasks[0][7]], ["done", "-"]);
 }
 
+impl Setup {
+    /// A setup whose factory is the starter `examples/<starter>`, as a person copies it.
+    fn starter(name: &str, starter: &str) -> Setup {
+        let setup = Setup::new(name);
+        let factory = setup.dir.join("factory");
+        fs::remove_dir_all(&factory).unwrap();
+        let examples = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples");
+        let copied = Command::new("cp")
+            .arg("-r")
+            .arg(examples.join(starter))
+            .arg(&factory)
+            .status()
+            .unwrap();
+        assert!(copied.success());
+        setup
+    }
+}
+
+/// A task request for `workflow`, as the intake publishes it for `trigger`.
+fn starter_request(workflow: &str, trigger: &str, key: &str) -> Message {
+    Message::new(
+        "factory.task.requested",
+        json!({
+            "workflow": workflow,
+            "key": key,
+            "band": null,
+            "lane": null,
+            "trigger": trigger,
+            "source": "source",
+            "repo": "owner/repo"
+        }),
+    )
+    .subject(key)
+}
+
+#[test]
+fn the_review_starter_writes_its_pending_review_then_asks_the_person_to_submit_it() {
+    let mut setup = Setup::starter("starter-review", "review");
+    setup.calls(&[result("written")]);
+    let key = "github:owner/repo:pulls/7:review:your-login";
+    setup.publish(&starter_request("review", "review-requests", key));
+
+    setup.start();
+
+    let tasks = setup.until("tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == "asleep")
+    });
+    assert_eq!(tasks[0][3], "submit");
+    assert_eq!(setup.rows("runs")[0][2], "review");
+    let asks = setup.rows("asks");
+    assert_eq!(asks.len(), 1, "{asks:?}");
+    assert!(asks[0][3].starts_with("submit"), "{asks:?}");
+}
+
+/// A groom task whose groom step ends `grade`, and whose later turns take `then`.
+fn groomed(name: &str, grade: &str, then: &[serde_json::Value]) -> Setup {
+    let mut setup = Setup::starter(name, "groom");
+    let groom = json!({ "name": "result", "arguments": {
+        "outcome": grade, "summary": "Brief: fix the typo", "reason": "one line in the README"
+    } });
+    setup.calls(&[&[groom], then].concat());
+    setup.publish(&starter_request(
+        "groom",
+        "groom-label",
+        "github:owner/repo#42",
+    ));
+    setup.start();
+    setup
+}
+
+#[test]
+fn a_green_groom_goes_straight_to_implement() {
+    let setup = groomed("starter-groom-green", "green", &[]);
+
+    let tasks = setup.until("tasks", |rows| {
+        rows.first().is_some_and(|row| row[3] == "implement-green")
+    });
+
+    assert_eq!(grade(&tasks), ["green", "one line in the README"]);
+    assert!(setup.rows("asks").is_empty());
+}
+
+#[test]
+fn a_yellow_groom_is_reviewed_on_codex_then_described_before_its_pull_request_opens() {
+    let then = [result("passed"), result("clean"), result("described")];
+    let setup = groomed("starter-groom-yellow", "yellow", &then);
+
+    setup.until("actions", |rows| !rows.is_empty());
+
+    let steps: Vec<_> = setup
+        .rows("runs")
+        .into_iter()
+        .map(|run| run[2].clone())
+        .collect();
+    assert_eq!(steps, ["groom", "implement", "review", "describe"]);
+    assert!(
+        setup.dir.join("fake/codex-args.log").exists(),
+        "review ran on codex"
+    );
+    assert_eq!(setup.rows("actions")[0][2], "open-pr");
+}
+
+#[test]
+fn a_red_groom_stops_at_approve_plan() {
+    let setup = groomed("starter-groom-red", "red", &[]);
+
+    let tasks = setup.until("tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == "asleep")
+    });
+
+    assert_eq!(tasks[0][3], "approve-plan");
+    assert_eq!(grade(&tasks), ["red", "one line in the README"]);
+    let asks = setup.rows("asks");
+    assert!(asks[0][3].starts_with("approve-plan"), "{asks:?}");
+}
+
 const PICK: &str = "2026-11-20_sentry_fnd-2409";
 
 /// A report with one section and one pick, as the bonjour workflow writes it.
