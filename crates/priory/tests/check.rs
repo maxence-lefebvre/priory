@@ -682,6 +682,18 @@ fn a_trigger_repo_that_could_leave_priorys_home_is_refused() {
 }
 
 #[test]
+fn a_cli_trigger_repo_that_could_leave_priorys_home_is_refused() {
+    let cli = "source = \"cli\"\nrepo = \"/tmp/victim\"\nworkflow = \"implement\"\n";
+    let outcome = check(&factory("cli-repo-escape", &with("triggers/cli.toml", cli)));
+
+    assert_eq!(outcome.code, 1);
+    assert_eq!(
+        outcome.stderr,
+        "triggers/cli.toml:2: a trigger's `repo` is `owner/name`\n"
+    );
+}
+
+#[test]
 fn a_github_trigger_uses_a_supported_event_and_filter() {
     let trigger = TRIGGER
         .replace("issues.labeled", "issues.opened")

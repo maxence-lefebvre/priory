@@ -590,6 +590,22 @@ fn a_task_whose_repo_leaves_priorys_home_fails_and_deletes_nothing() {
 }
 
 #[test]
+fn a_first_clone_leaves_the_clone_of_a_repository_named_like_its_partial_folder() {
+    let mut setup = Setup::new("partial-neighbour");
+    let neighbour = setup.dir.join("home/repos/owner/repo.partial");
+    fs::create_dir_all(&neighbour).unwrap();
+    fs::write(neighbour.join("keep"), "keep").unwrap();
+    setup.publish(&requested(42));
+
+    setup.start();
+
+    setup.until("tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == "running")
+    });
+    assert!(neighbour.join("keep").is_file());
+}
+
+#[test]
 fn a_cli_task_stored_before_tasks_kept_a_repository_starts_in_its_requests_repository() {
     let mut setup = Setup::new("cli-repo-upgrade");
     let factory = setup.dir.join("factory");
@@ -7550,6 +7566,23 @@ fn a_silent_client_on_the_daemons_socket_does_not_stop_a_persons_command() {
     listening(&setup);
     let _silent =
         std::os::unix::net::UnixStream::connect(setup.dir.join("home/priory.sock")).unwrap();
+
+    let reply = person(&setup, "hold", &["1", "--reason", "later"]);
+
+    assert!(reply.starts_with("task 1 held"), "{reply}");
+}
+
+#[test]
+fn a_client_that_trickles_a_line_on_the_daemons_socket_does_not_stop_a_persons_command() {
+    let setup = queued_without_room("socket-trickle");
+    listening(&setup);
+    let mut trickle =
+        std::os::unix::net::UnixStream::connect(setup.dir.join("home/priory.sock")).unwrap();
+    std::thread::spawn(move || {
+        while std::io::Write::write_all(&mut trickle, b"x").is_ok() {
+            std::thread::sleep(Duration::from_millis(500));
+        }
+    });
 
     let reply = person(&setup, "hold", &["1", "--reason", "later"]);
 

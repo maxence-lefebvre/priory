@@ -716,6 +716,26 @@ fn eight_silent_clients_delay_a_request_by_about_a_second_not_the_whole_read_tim
 }
 
 #[test]
+fn a_head_whose_first_byte_comes_at_once_has_the_whole_read_timeout_to_finish() {
+    let mut setup = Setup::new("slow-head", SERVE);
+    let address = setup.start(&["serve", &setup.factory()]);
+    let mut stream = TcpStream::connect(&address).unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
+
+    stream.write_all(b"G").unwrap();
+    std::thread::sleep(Duration::from_secs(2));
+    stream
+        .write_all(format!("ET /app.css HTTP/1.1\r\nHost: {address}\r\n\r\n").as_bytes())
+        .unwrap();
+
+    let mut response = String::new();
+    stream.read_to_string(&mut response).unwrap();
+    assert!(response.starts_with("HTTP/1.1 200"), "{response}");
+}
+
+#[test]
 fn the_daemon_serves_its_state_when_the_factory_has_a_serve_table() {
     let mut setup = Setup::new("daemon", SERVE);
     setup.seed();

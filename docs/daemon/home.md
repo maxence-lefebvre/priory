@@ -16,6 +16,7 @@ $PRIORY_HOME/
   priory.sock                  the socket that hooks, tools and commands talk to
   signals.spool                signals sent while no daemon listened
   repos/owner/name/            Priory's clone of owner/name, with no checkout
+  partial/owner/name/          a clone in progress, renamed into repos/ once complete
   worktrees/owner/name/3/      the worktree of task 3, on branch priory/3
   prompts/                     Codex first prompts (see codex.md)
   handlers/                    where stall handler calls run (see health.md)

@@ -119,6 +119,20 @@ pub fn check(factory: &Factory) -> Vec<Problem> {
             )),
             _ => {}
         }
+        let checked = ["github", "linear", "linear.view", "slack", "schedule"];
+        if !checked.contains(&trigger.value.source.as_str())
+            && trigger
+                .value
+                .repo
+                .as_deref()
+                .is_some_and(|repo| !owner_name(repo))
+        {
+            problems.push(problem(
+                trigger,
+                trigger.lines.field("repo"),
+                "a trigger's `repo` is `owner/name`".into(),
+            ));
+        }
         if trigger.value.source != "slack" && trigger.value.channel.is_some() {
             problems.push(problem(
                 trigger,
