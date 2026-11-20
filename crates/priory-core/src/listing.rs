@@ -16,6 +16,11 @@ const CONDITIONS: &str = "(SELECT json_group_array(json_object('kind', kind, 'un
    FROM (SELECT * FROM holds WHERE holds.task = tasks.id AND holds.released IS NULL ORDER BY id)
    HAVING count(*) > 0) AS conditions";
 
+/// A task's title: its TL;DR when set, else the first line of its request, cut to 120 characters.
+const TITLE: &str = "(SELECT substr(coalesce(nullif(task_text.tldr, ''),
+     substr(task_text.request, 1, instr(task_text.request || char(10), char(10)) - 1)), 1, 120)
+   FROM task_text WHERE task_text.task = tasks.id) AS title";
+
 fn places() -> String {
     format!(
         "WITH queue AS (SELECT id, row_number() OVER (ORDER BY {order}) AS place,
@@ -234,22 +239,22 @@ fn asks_of(db: &Connection, task: Option<i64>, id: Option<i64>) -> rusqlite::Res
     Ok(asks)
 }
 
-/// The waiting tasks in start order, then the held ones with their hold, the live runs, and the
-/// tasks that ended in the last day, and up next: the next three runs, with `schedules`' firings.
+/// The factory's bands highest first, the waiting tasks in start order, then the held ones with
+/// their hold, the live runs, and the tasks that ended in the last day, each with its title, and up next: the next three runs, with `schedules`' firings.
 pub fn queue(
     db: &Connection,
     schedules: &[(String, Trigger)],
     now: Timestamp,
 ) -> rusqlite::Result<Value> {
     let waiting = format!(
-        "{} SELECT position, band_position, id, key, workflow, step, state, band, lane, reason, since,
-           conditions FROM (
+        "{} SELECT position, band_position, id, key, title, workflow, step, state, band, lane, reason,
+           since, conditions FROM (
            SELECT 0 AS part, queue.place AS position, queue.band_place AS band_position, id, key,
-             workflow, step, state, band, lane, reason, changed AS since, NULL AS conditions,
+             {TITLE}, workflow, step, state, band, lane, reason, changed AS since, NULL AS conditions,
              queue.place AS sort
            FROM tasks JOIN queue USING (id)
            UNION ALL
-           SELECT 1, NULL, NULL, tasks.id, key, workflow, step, state, band, lane, tasks.reason,
+           SELECT 1, NULL, NULL, tasks.id, key, {TITLE}, workflow, step, state, band, lane, tasks.reason,
              changed, {CONDITIONS},
              (SELECT min(id) FROM holds WHERE holds.task = tasks.id AND holds.released IS NULL)
            FROM tasks WHERE tasks.state = 'held'
@@ -263,20 +268,27 @@ pub fn queue(
         .iter_mut()
         .for_each(parse_json);
     Ok(json!({
+        "bands": state::band_names(db)?,
         "up_next": up_next(db, &waiting, schedules, now)?,
         "waiting": waiting,
         "running": rows(
             db,
-            "SELECT runs.id AS run, runs.task, tasks.key, runs.step, runs.agent, runs.started
-             FROM runs JOIN tasks ON tasks.id = runs.task WHERE runs.ended IS NULL ORDER BY runs.id",
+            &format!(
+                "SELECT runs.id AS run, runs.task, tasks.key, {TITLE}, runs.step, runs.agent,
+                   runs.started
+                 FROM runs JOIN tasks ON tasks.id = runs.task WHERE runs.ended IS NULL
+                 ORDER BY runs.id"
+            ),
             [],
         )?,
         "ended": rows(
             db,
-            "SELECT id, key, workflow, step, state, reason, changed AS ended FROM tasks
-             WHERE state IN ('done', 'failed', 'dropped')
-               AND changed >= strftime('%Y-%m-%dT%H:%M:%SZ', 'now', '-1 day')
-             ORDER BY changed DESC, id DESC",
+            &format!(
+                "SELECT id, key, {TITLE}, workflow, step, state, reason, changed AS ended FROM tasks
+                 WHERE state IN ('done', 'failed', 'dropped')
+                   AND changed >= strftime('%Y-%m-%dT%H:%M:%SZ', 'now', '-1 day')
+                 ORDER BY changed DESC, id DESC"
+            ),
             [],
         )?,
     }))
@@ -300,7 +312,7 @@ fn up_next(
     schedules: &[(String, Trigger)],
     now: Timestamp,
 ) -> rusqlite::Result<Value> {
-    let entry = |at: String, kind, row: &Value, trigger: &Value, why: String| json!({ "at": at, "kind": kind, "task": row["id"], "key": row["key"], "trigger": trigger, "why": why });
+    let entry = |at: String, kind, row: &Value, trigger: &Value, why: String| json!({ "at": at, "kind": kind, "task": row["id"], "key": row["key"], "title": row["title"], "trigger": trigger, "why": why });
     let mut next: Vec<(Timestamp, Value)> = Vec::new();
     for row in waiting.as_array().into_iter().flatten() {
         if let Some(position) = row["position"].as_i64() {

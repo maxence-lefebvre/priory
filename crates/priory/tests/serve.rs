@@ -1024,6 +1024,19 @@ fn each_queue_row_carries_its_tasks_tldr_or_else_the_first_line_of_its_request()
 }
 
 #[test]
+fn the_queue_lists_the_factorys_bands_in_order_even_an_empty_one() {
+    let settings = SERVE.replacen("\n", "\nbands = [\"urgent\", \"normal\", \"someday\"]\n", 1);
+    let mut setup = Setup::new("queue-bands", &settings);
+    setup.seed();
+    let address = setup.start(&["serve", &setup.factory()]);
+
+    let queue = api(&address, "/api/queue");
+
+    assert_eq!(queue["bands"], json!(["urgent", "normal", "someday"]));
+    assert_eq!(json_of(&setup, "queue")["bands"], queue["bands"]);
+}
+
+#[test]
 fn the_views_endpoint_returns_the_default_view_priory_ships() {
     let mut setup = Setup::new("views", SERVE);
     let address = setup.start(&["serve", &setup.factory()]);
@@ -2211,15 +2224,15 @@ fn up_next_lists_the_next_three_runs_queued_held_or_scheduled_in_time_order() {
         json!([
             {
                 "at": "2026-11-17T12:00:00Z", "kind": "queued", "task": 1, "key": "cli:docs-1",
-                "trigger": null, "why": "first in the queue",
+                "title": "Fix the docs", "trigger": null, "why": "first in the queue",
             },
             {
                 "at": "2026-11-17T20:00:00Z", "kind": "held", "task": 2, "key": "cli:docs-2",
-                "trigger": null, "why": "held until 2026-11-17T20:00:00Z",
+                "title": "Fix the", "trigger": null, "why": "held until 2026-11-17T20:00:00Z",
             },
             {
                 "at": "2026-11-17T23:00:00Z", "kind": "scheduled", "task": null, "key": null,
-                "trigger": "nightly", "why": "schedule nightly fires",
+                "title": null, "trigger": "nightly", "why": "schedule nightly fires",
             },
         ])
     );

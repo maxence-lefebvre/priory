@@ -2247,6 +2247,54 @@ fn a_renamed_band_set_orders_the_queue_and_moves() {
     );
 }
 
+/// The state revision once the daemon has left it unchanged for over a tick.
+fn settled(setup: &Setup) -> i64 {
+    let mut read = revision(setup);
+    loop {
+        std::thread::sleep(Duration::from_millis(1100));
+        let again = revision(setup);
+        if again == read {
+            return read;
+        }
+        read = again;
+    }
+}
+
+/// The state revision `priory queue --json` carries.
+fn revision(setup: &Setup) -> i64 {
+    let queue: serde_json::Value =
+        serde_json::from_slice(&setup.priory(&["queue", "--json"]).stdout).unwrap();
+    queue["revision"].as_i64().unwrap()
+}
+
+#[test]
+fn a_move_on_a_stale_revision_is_refused_and_moves_nothing() {
+    let setup = Setup::new("move-expected");
+    setup.publish(&requested(42));
+    setup.publish(&requested(43));
+    route(&setup);
+    let read = revision(&setup);
+    let before = queue(&setup);
+    succeeded_as(&setup, &["tldr", "1", "Changed since the read"]);
+    let current = revision(&setup);
+
+    let stale = setup.priory(&["move", "2", "--top", "--expected", &read.to_string()]);
+
+    assert!(!stale.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&stale.stderr),
+        format!("priory move: the state is at revision {current}, not {read}\n")
+    );
+    assert_eq!(queue(&setup), before);
+    moved(&setup, &["2", "--top", "--expected", &current.to_string()]);
+    assert_eq!(queue(&setup)[0][0], "2");
+}
+
+fn succeeded_as(setup: &Setup, args: &[&str]) {
+    let output = setup.priory(args);
+    assert!(output.status.success(), "{output:?}");
+}
+
 /// A `review` workflow whose one step runs the reviewer, which declares the default 4 GB.
 fn with_review(setup: &Setup, implementer_memory: &str) {
     let review = WORKFLOW.replace("agent = \"implementer\"", "agent = \"reviewer\"");
@@ -7595,6 +7643,45 @@ fn a_held_task_never_starts_until_a_person_releases_it() {
 }
 
 #[test]
+fn a_stalled_queue_keeps_the_state_revision_still() {
+    let setup = queued_without_room("stall-revision");
+    setup.until_banner(|banner| banner.is_some());
+    let read = revision(&setup);
+
+    std::thread::sleep(Duration::from_millis(2100));
+
+    assert_eq!(revision(&setup), read);
+}
+
+#[test]
+fn hold_release_and_cancel_on_a_stale_revision_are_refused_and_change_nothing() {
+    let setup = queued_without_room("act-expected");
+    let steps = [
+        (&["hold", "1", "--reason", "later"][..], "queued", "held"),
+        (&["release", "1"][..], "held", "queued"),
+        (&["cancel", "1"][..], "queued", "dropped"),
+    ];
+    for (args, before, after) in steps {
+        let current = settled(&setup);
+        let stale = current - 1;
+
+        let refused = setup.priory(&[args, &["--expected", &stale.to_string()]].concat());
+
+        assert!(!refused.status.success(), "{args:?}");
+        assert_eq!(
+            String::from_utf8_lossy(&refused.stderr),
+            format!(
+                "priory {}: the state is at revision {current}, not {stale}\n",
+                args[0]
+            )
+        );
+        assert_eq!(held_as(&setup, "1")[0], before, "{args:?}");
+        person(&setup, args[0], &[&args[1..], &["--expected", &current.to_string()]].concat());
+        assert_eq!(held_as(&setup, "1")[0], after, "{args:?}");
+    }
+}
+
+#[test]
 fn a_silent_client_on_the_daemons_socket_does_not_stop_a_persons_command() {
     let setup = queued_without_room("socket-silent");
     listening(&setup);
@@ -11010,3 +11097,4 @@ fn a_pick_on_a_task_at_a_step_no_agent_runs_is_refused_and_records_nothing() {
         serde_json::Value::Null
     );
 }
+

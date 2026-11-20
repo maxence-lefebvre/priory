@@ -109,12 +109,12 @@ test("acts through priory's verbs with argv only", async () => {
   await client.resume(4);
   await client.revive(5);
   await client.hold(7, { reason: "waits for review" });
-  await client.hold(7, { reason: "night", until: "2026-11-21T08:00:00Z" });
-  await client.release(7);
+  await client.hold(7, { reason: "night", until: "2026-11-21T08:00:00Z" }, 11);
+  await client.release(7, 12);
   await client.move(7, { band: "now", top: true });
-  await client.move(7, { before: 8 });
+  await client.move(7, { before: 8 }, 13);
   await client.move(7, { after: 9 });
-  await client.cancel(7);
+  await client.cancel(7, 14);
   await client.pause("the disk is low");
   await client.pause();
   await client.unpause();
@@ -130,12 +130,12 @@ test("acts through priory's verbs with argv only", async () => {
     ["resume", "4"],
     ["revive", "5"],
     ["hold", "7", "--reason", "waits for review"],
-    ["hold", "7", "--reason", "night", "--until", "2026-11-21T08:00:00Z"],
-    ["release", "7"],
+    ["hold", "7", "--reason", "night", "--until", "2026-11-21T08:00:00Z", "--expected", "11"],
+    ["release", "7", "--expected", "12"],
     ["move", "7", "--band", "now", "--top"],
-    ["move", "7", "--before", "8"],
+    ["move", "7", "--before", "8", "--expected", "13"],
     ["move", "7", "--after", "9"],
-    ["cancel", "7"],
+    ["cancel", "7", "--expected", "14"],
     ["pause", "the disk is low"],
     ["pause"],
     ["unpause"],

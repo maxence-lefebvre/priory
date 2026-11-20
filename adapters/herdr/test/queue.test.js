@@ -8,7 +8,8 @@ process.env.TZ = "UTC";
 // Captured from `priory queue DIR --json` on a scratch factory: ten tasks requested with
 // `priory request --band` and `--hold`, one `daemon --once`, then two tasks marked running with a
 // live run and two ended, by SQL. queue-quiet.json is the same state after three queued tasks were
-// dropped, so up next reaches the held task and the schedule.
+// dropped, so up next reaches the held task and the schedule. Each row's `title` and the
+// queue's `bands` were added by hand once the queue carried them.
 const fixture = (name) => JSON.parse(readFileSync(new URL(`./fixtures/${name}`, import.meta.url), "utf8"));
 const queue = fixture("queue.json");
 const now = Date.parse("2026-11-20T21:20:40Z");
@@ -54,8 +55,8 @@ test("the task a stall names waits for room, and for a person while starts are p
 test("a running row shows its run's step and age", () => {
   const [running] = queueList(queue, { view: "next", now }).sections;
   assert.deepEqual(running.rows, [
-    { id: 1, tile: "running", key: "cli:PRI-66", step: "implement", run: 1, age: "18 min" },
-    { id: 2, tile: "running", key: "cli:PRI-67", step: "implement", run: 2, age: "6 min" },
+    { id: 1, tile: "running", key: "cli:PRI-66", title: "Retry the flaky upload test", step: "implement", run: 1, age: "18 min" },
+    { id: 2, tile: "running", key: "cli:PRI-67", title: "Speed up the asks listing", step: "implement", run: 2, age: "6 min" },
   ]);
 });
 
@@ -86,8 +87,8 @@ test("Held lists each hold's reason and each of its conditions, met or not", () 
 test("Last day lists the ended tasks latest first, and All shows every section", () => {
   const [ended] = queueList(queue, { view: "ended", now }).sections;
   assert.deepEqual(ended.rows, [
-    { id: 10, tile: "failed", key: "cli:PRI-61", step: "implement", age: "0 min", why: { text: "checks failed twice", tone: "muted" } },
-    { id: 9, tile: "done", key: "cli:PRI-60", step: "implement", age: "0 min", why: { text: "merged #210", tone: "muted" } },
+    { id: 10, tile: "failed", key: "cli:PRI-61", title: "Pin the Actions versions", step: "implement", age: "0 min", why: { text: "checks failed twice", tone: "muted" } },
+    { id: 9, tile: "done", key: "cli:PRI-60", title: "Bump the Rust toolchain", step: "implement", age: "0 min", why: { text: "merged #210", tone: "muted" } },
   ]);
   assert.deepEqual(queueList(queue, { view: "all", now }).sections.map((section) => section.title),
     ["Running", "Blocker", "Now", "Today", "Held", "Last day"]);
@@ -95,9 +96,9 @@ test("Last day lists the ended tasks latest first, and All shows every section",
 
 test("Up next says when each of the next three runs starts, and why", () => {
   assert.deepEqual(upNext(fixture("queue-quiet.json"), now), [
-    { task: 3, when: "now", sub: "on room", label: "cli:PRI-72", why: "First in the queue. It starts once there is room." },
-    { task: 8, when: "08:30", sub: "Sat", label: "cli:PRI-81", why: "Its hold ends." },
-    { task: null, when: "08:30", sub: "Nov 27", label: "bonjour, schedule", why: "The schedule starts a task." },
+    { task: 3, when: "now", sub: "on room", label: "cli:PRI-72", title: "Free the disk before the nightly build", why: "First in the queue. It starts once there is room." },
+    { task: 8, when: "08:30", sub: "Sat", label: "cli:PRI-81", title: "Rotate the webhook secret", why: "Its hold ends." },
+    { task: null, when: "08:30", sub: "Nov 27", label: "bonjour, schedule", title: null, why: "The schedule starts a task." },
   ]);
   assert.deepEqual(upNext(queue, now).map((next) => next.why), [
     "First in the queue. It starts once there is room.",
@@ -128,12 +129,28 @@ test("reordering moves a task before or after its neighbour in the band, never o
   assert.equal(reorder(queue, 4, { onto: 4 }), null);
 });
 
-test("Move offers the top of the task's band and each other band", () => {
-  assert.deepEqual(moveTargets(queue, 5), [
+test("Move offers the top of the task's band and each other band of the factory, even an empty one", () => {
+  const banded = { ...queue, bands: ["blocker", "now", "today", "later", "someday"] };
+  assert.deepEqual(moveTargets(banded, 5), [
     { label: "To the top of Now", move: { top: true } },
     { label: "To Blocker", move: { band: "blocker" } },
     { label: "To Today", move: { band: "today" } },
     { label: "To Later", move: { band: "later" } },
+    { label: "To Someday", move: { band: "someday" } },
   ]);
-  assert.deepEqual(moveTargets(queue, 3).map((target) => target.label), ["To Now", "To Today", "To Later"]);
+  assert.deepEqual(moveTargets(banded, 3).map((target) => target.label), ["To Now", "To Today", "To Later", "To Someday"]);
+});
+
+test("each row and up next shows its task's title", () => {
+  const list = queueList(queue, { view: "all", now });
+  assert.deepEqual(list.sections.map((section) => section.rows.map((row) => [row.id, row.title])), [
+    [[1, "Retry the flaky upload test"], [2, "Speed up the asks listing"]],
+    [[3, "Free the disk before the nightly build"]],
+    [[4, "Add a title to each queue row"], [5, "List the factory's bands in the queue"]],
+    [[6, "Guard queue verbs with the revision"]],
+    [[7, "Ship the release notes"], [8, "Rotate the webhook secret"]],
+    [[10, "Pin the Actions versions"], [9, "Bump the Rust toolchain"]],
+  ]);
+  assert.deepEqual(upNext(queue, now).map((next) => next.title),
+    ["Free the disk before the nightly build", "Add a title to each queue row", "List the factory's bands in the queue"]);
 });
