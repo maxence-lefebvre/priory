@@ -63,7 +63,7 @@ fn route(
         "/api/desk" => listing::desk(db, home).map(Some),
         "/api/inbox" => listing::inbox(db).map(Some),
         "/api/asks" => listing::asks(db).map(Some),
-        "/api/tasks" => listing::tasks(db, None).map(Some),
+        "/api/tasks" => listing::tasks(db, None, None).map(Some),
         "/api/queue" => listing::queue(db).map(Some),
         _ => match path.strip_prefix("/api/tasks/").map(str::parse) {
             Some(Ok(id)) => listing::task(db, id),

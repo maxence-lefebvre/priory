@@ -99,7 +99,7 @@ fn main() -> ExitCode {
 
 fn usage() -> ExitCode {
     eprintln!(
-        "usage: priory check [DIR]\n       priory draw [DIR] WORKFLOW\n       priory intake [DIR] [--once]\n       priory daemon [DIR] [--once]\n       priory request [DIR] --workflow <name> --key <key> [--band <band>] [--lane <lane>] [--repo <owner/name>] [--hold <reason> [CONDITION]] <text>\n       priory serve [DIR] [--listen ADDR]\n       priory inbox [--json]\n       priory tasks [--lane <lane>] [--json]\n       priory queue [--json]\n       priory runs\n       priory outbox\n       priory asks [--json]\n       priory waits\n       priory actions\n       priory attach (TASK | --run RUN) [--read-only] [--print]\n       priory desk [--json]\n       priory trace\n       priory report [DIR] --workflow <name> [--since <instant-or-duration>] [--cost] [--by lane]\n       priory move TASK [--band <band>] [--top | --before TASK | --after TASK]\n       priory resume TASK\n       priory cancel TASK\n       priory revive TASK [--step STEP]\n       priory hold TASK --reason TEXT [--until TIME | --after TASK | --merge PR [--if-closed release|drop|ask] | --blockers]\n       priory release TASK\n       priory tldr TASK TEXT\n       priory search QUERY [--state STATE[,STATE...]] [--limit N]\n       priory memory [acquire --gb N [--timeout D] -- COMMAND...]\n       priory answer ASK OPTION-OR-TEXT --revision N\n       priory mcp --session ID\n       priory hook EVENT"
+        "usage: priory check [DIR]\n       priory draw [DIR] WORKFLOW\n       priory intake [DIR] [--once]\n       priory daemon [DIR] [--once]\n       priory request [DIR] --workflow <name> --key <key> [--band <band>] [--lane <lane>] [--repo <owner/name>] [--hold <reason> [CONDITION]] <text>\n       priory serve [DIR] [--listen ADDR]\n       priory inbox [--json]\n       priory tasks [--lane <lane>] [--grade red|yellow|green] [--json]\n       priory queue [--json]\n       priory runs\n       priory outbox\n       priory asks [--json]\n       priory waits\n       priory actions\n       priory attach (TASK | --run RUN) [--read-only] [--print]\n       priory desk [--json]\n       priory trace\n       priory report [DIR] --workflow <name> [--since <instant-or-duration>] [--cost] [--by lane]\n       priory move TASK [--band <band>] [--top | --before TASK | --after TASK]\n       priory resume TASK\n       priory cancel TASK\n       priory revive TASK [--step STEP]\n       priory hold TASK --reason TEXT [--until TIME | --after TASK | --merge PR [--if-closed release|drop|ask] | --blockers]\n       priory release TASK\n       priory tldr TASK TEXT\n       priory search QUERY [--state STATE[,STATE...]] [--limit N]\n       priory memory [acquire --gb N [--timeout D] -- COMMAND...]\n       priory answer ASK OPTION-OR-TEXT --revision N\n       priory mcp --session ID\n       priory hook EVENT"
     );
     ExitCode::from(2)
 }
@@ -272,16 +272,27 @@ fn listed(verb: &str, mut args: Vec<String>) -> ExitCode {
         .iter()
         .position(|arg| arg == "--json")
         .map(|at| args.remove(at));
-    let lane = match (verb, &args[..]) {
-        (_, []) => None,
-        ("tasks", [flag, lane]) if flag == "--lane" => Some(lane.as_str()),
-        _ => return usage(),
-    };
+    let (mut lane, mut grade) = (None, None);
+    for pair in args.chunks(2) {
+        match (verb, pair) {
+            ("tasks", [flag, value]) if flag == "--lane" && lane.is_none() => {
+                lane = Some(value.as_str())
+            }
+            ("tasks", [flag, value])
+                if flag == "--grade"
+                    && grade.is_none()
+                    && tools::GRADES.contains(&value.as_str()) =>
+            {
+                grade = Some(value.as_str())
+            }
+            _ => return usage(),
+        }
+    }
     let home = runtime::home();
     let shown = state::open().and_then(|db| {
         let value = match verb {
             "inbox" => listing::inbox(&db),
-            "tasks" => listing::tasks(&db, lane),
+            "tasks" => listing::tasks(&db, lane, grade),
             "asks" => listing::asks(&db),
             "desk" => listing::desk(&db, &home),
             _ => listing::queue(&db),
@@ -306,6 +317,8 @@ fn listed(verb: &str, mut args: Vec<String>) -> ExitCode {
                     "position",
                     "generation",
                     "retired",
+                    "grade",
+                    "grade_reason",
                 ],
                 &value,
             ),

@@ -106,6 +106,7 @@ fn tools() -> Value {
                     "summary": text("What you did and why, in a few sentences."),
                     "evidence": text("How you checked it: commands, exits, links."),
                     "commit": text("The full SHA of the commit the result is about, if any, as git rev-parse HEAD prints it."),
+                    "reason": text("For a red, yellow or green outcome: why, in one line. Defaults to the summary's first line."),
                 },
                 "required": ["outcome", "summary"],
             },

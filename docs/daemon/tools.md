@@ -18,7 +18,7 @@ nothing.
 Three tools end a turn: `result`, `ask` and `wait`. A run holds at most one of a result, an open
 ask and an open wait. Any later call of the three is refused.
 
-### `result(outcome, summary, evidence?, commit?)`
+### `result(outcome, summary, evidence?, commit?, reason?)`
 
 `result` stores the run's result and ends the step. Nothing can change or delete a stored result.
 
@@ -41,6 +41,17 @@ capitals is stored in lower case.
 
 The `open-pr` action titles its pull request with the first line of `summary` (see Code steps
 below).
+
+#### Grades
+
+A model step whose outcome is `red`, `yellow` or `green` grades the task. When the step ends, the
+task takes the outcome as its grade and one line as its grade reason: the first line of `reason`,
+or of `summary` when the result has no `reason`. A later grading step overwrites both. Every grade
+stays in the step's result and in its `factory.step.ended` record, which carries a `grade` field
+(see [trace-schema.md](../trace-schema.md)).
+
+`priory tasks` prints the grade and its reason in the `grade` and `grade_reason` columns, and
+`priory tasks --grade green` lists only the green tasks.
 
 ### `ask(question, options, recommendation, tradeoff)`
 

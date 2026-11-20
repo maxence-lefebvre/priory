@@ -83,8 +83,9 @@ Every ask, oldest first.
 ## Tasks
 
 Every task in start order: `id`, `key`, `workflow`, `step`, `state`, `band`, `lane`, `reason`,
-`position` (its place in the queue from 1, or null), `generation`, `retired`, `tldr` and `since`
-(when the task last changed state).
+`position` (its place in the queue from 1, or null), `generation`, `retired`, `tldr`, `since`
+(when the task last changed state), `grade` (`red`, `yellow`, `green` or null) and `grade_reason`.
+See Grades in [tools.md](../daemon/tools.md#grades).
 
 ## Task in detail
 
@@ -96,7 +97,7 @@ The fields of [Tasks](#tasks), plus `repo` and `branch`, and these arrays, oldes
 | `steps` | A code step's action: `id`, `step`, `action`, `status`, `pull_request`, `commit_sha`, `error`, `created` |
 | `asks` | An ask, as in [Asks](#asks) |
 | `waits` | `id`, `run`, `kind`, `resource`, `until`, `target`, `created`, `fired`, `withdrawn` |
-| `results` | `run`, `step`, `outcome`, `summary`, `evidence`, `commit_sha`, `created` |
+| `results` | `run`, `step`, `outcome`, `summary`, `evidence`, `commit_sha`, `reason`, `created` |
 
 ## Queue
 
