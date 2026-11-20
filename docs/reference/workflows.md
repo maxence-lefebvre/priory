@@ -16,6 +16,7 @@ Schema: [`config/workflow.json`](../schemas/config/workflow.json).
 | --- | ---- | -------- | ------- | ------- | ------- |
 | `start` | string | yes | | The id of the first step | `"plan"` |
 | `band` | string | no | the last band | The band of its tasks when neither their request nor their trigger sets one | `"today"` |
+| `reopen` | string | no | the step that opened the pull request | The model step a done task goes back to when its open pull request gets feedback (see [routing.md](../daemon/routing.md#feedback-reopens-a-done-task)) | `"implement"` |
 | `steps` | array of tables | yes | | The steps, in any order | see below |
 
 ## Step keys
@@ -144,4 +145,5 @@ Errors about one step start with `` step `<id>`: `` and point at the step's line
 | `` `autonomous` needs a reason `` | `autonomous` is empty |
 | `irreversible, and a path from start reaches it with no human step that approves it` | An irreversible step without `autonomous` and without an approving human step on every path |
 | `` band `<band>` is not one of <bands> `` | `band` is not a band of the factory |
+| `` reopen `<id>` is not a model step `` | `reopen` names a missing step, or a human or code step |
 | `"<text>" is not a duration such as 90s, 15m or 2h` | A bad `timeout` |

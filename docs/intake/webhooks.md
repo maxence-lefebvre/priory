@@ -30,8 +30,8 @@ echo "PRIORY_GITHUB_WEBHOOK_SECRET=$(openssl rand -hex 32)" >> ~/.config/priory/
 ```
 
 GitHub caps a payload at 25 MB. The events Priory maps carry at most a 65,536-character body and
-the repository's fields, well under 1 MiB. Subscribe the webhook to only Issues, Pull requests and
-Pull request reviews: a `push` delivery can exceed the limit, and Priory does not map it.
+the repository's fields, well under 1 MiB. Subscribe the webhook to only Issues, Issue comments, Pull
+requests, Pull request reviews and Pull request review comments: a `push` delivery can exceed the limit, and Priory does not map it.
 
 ## What a delivery publishes
 
@@ -44,6 +44,8 @@ routing treat it the same. It requests a task for each trigger it matches, as a 
 | `issues` `labeled` | `github.issues.labeled` |
 | `pull_request` `opened`, `labeled`, `closed` | `github.pull_request.opened`, `.labeled`, `.closed` |
 | `pull_request_review` `submitted` | `github.pull_request_review.submitted` |
+| `issue_comment` `created`, on a pull request | `github.pull_request.comment` |
+| `pull_request_review_comment` `created` | `github.pull_request_review_comment` |
 | anything else, `check_run` included | nothing; `202` |
 
 A delivery for a repository that no trigger names publishes nothing, so a webhook never widens what
@@ -59,7 +61,8 @@ A webhook message differs from the poll's in two fields:
   the issue event id and the issue id that the poll reads.
 
 Its `time` is the payload's: `updated_at` for a label, `closed_at` for a close, `created_at` for an
-opening and `submitted_at` for a review.
+opening or a comment, and `submitted_at` for a review. A bot's comment publishes nothing. An
+`issue_comment` names no branch, so its head and base fields are null.
 
 ## Duplicates
 
@@ -68,7 +71,7 @@ Each message id is a UUIDv5, so herdr-bus drops a message whose id is already on
 
 | Messages | Id name |
 | -------- | ------- |
-| `github.issues.opened`, `github.pull_request_review.submitted` | The poll's name. See [github-issues.md](github-issues.md#keys-and-ids) and [pull-requests.md](pull-requests.md#keys-and-ids) |
+| `github.issues.opened`, `github.pull_request_review.submitted`, `github.pull_request.comment`, `github.pull_request_review_comment` | The poll's name. See [github-issues.md](github-issues.md#keys-and-ids) and [pull-requests.md](pull-requests.md#keys-and-ids) |
 | `github.issues.labeled`, `github.pull_request.opened`, `.labeled`, `.closed` | `github:webhook:{event}:{sha256 of the body}` |
 
 So GitHub's redelivery of a delivery, or a replay of its signed body under a forged GUID, makes the
@@ -76,7 +79,7 @@ same id and publishes nothing.
 
 A webhook and a poll that see one change publish it once:
 
-- Opened issues and reviews share the poll's id, so herdr-bus drops the second.
+- Opened issues, reviews and comments share the poll's id, so herdr-bus drops the second.
 - The other types cannot share it. Before it publishes one, each writer looks for the other
   writer's report of the same change: same type, issue or pull request, and label. A label must be
   within 60 seconds, a close at the same second. A pull request opens once.

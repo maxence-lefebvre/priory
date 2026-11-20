@@ -5098,7 +5098,7 @@ fn a_run_waiting_on_checks_sleeps_and_only_the_last_check_wakes_it() {
 fn reviewed() -> Message {
     on_pull(
         "github.pull_request_review.submitted",
-        json!({ "state": "approved", "github_id": 300 }),
+        json!({ "state": "approved", "actor": "ana", "github_id": 300 }),
     )
 }
 
@@ -5110,22 +5110,39 @@ fn closed() -> Message {
 }
 
 #[test]
-fn a_review_or_a_close_wakes_a_task_waiting_on_it() {
-    for (kind, event, line) in [
+fn a_review_a_comment_or_a_close_wakes_a_task_waiting_on_it() {
+    for (at, case) in [
         (
             "review",
             reviewed(),
-            "github.pull_request_review.submitted owner/repo#7 {",
+            "wait 1 fired: ana reviewed github:owner/repo#7: approved\ngithub.pull_request_review.submitted owner/repo#7 {",
         ),
         (
             "pull_request",
             closed(),
             "github.pull_request.closed owner/repo#7 {",
         ),
-    ] {
-        let setup = asleep_on(&format!("wake-{kind}"), on_pull_7(kind));
+        (
+            "review",
+            thread_comment(),
+            "wait 1 fired: ana commented on src/lib.rs:12 of github:owner/repo#7: Rename this. https://github.com/owner/repo/pull/7#discussion_r802\n",
+        ),
+        (
+            "pull_request",
+            on_pull(
+                "github.pull_request.comment",
+                json!({ "actor": "ana", "body": "Split this?", "url": "u", "github_id": 701 }),
+            ),
+            "wait 1 fired: ana commented on github:owner/repo#7: Split this? u\n",
+        ),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let (kind, event, line) = case;
+        let setup = asleep_on(&format!("wake-{at}"), on_pull_7(kind));
 
-        setup.publish(&event);
+        setup.publish(&event.time(herdr_bus::Timestamp::now()));
 
         setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 2);
         let typed = setup.typed();
@@ -5184,7 +5201,7 @@ fn an_event_on_a_key_goes_to_its_task_and_still_fires_another_owners_wait() {
 fn an_event_that_does_not_match_the_wait_stays_kept_and_reaches_the_next_run() {
     let setup = asleep_on("unmatched", on_pull_7("pull_request"));
 
-    setup.publish(&reviewed());
+    setup.publish(&check(1, 0));
     setup.until("inbox", |rows| rows.len() == 2);
     stays_asleep(&setup);
     assert_eq!(setup.rows("inbox")[1][4], "kept");
@@ -5200,7 +5217,7 @@ fn an_event_that_does_not_match_the_wait_stays_kept_and_reaches_the_next_run() {
         "{typed:?}"
     );
     assert!(
-        lines[1].starts_with("github.pull_request_review.submitted owner/repo#7 {"),
+        lines[1].starts_with("github.check_run.completed owner/repo#7 {"),
         "{typed:?}"
     );
 }
@@ -5420,6 +5437,120 @@ fn a_close_without_a_merge_with_a_check_still_running_wakes_the_agent() {
         ),
         "{typed:?}"
     );
+}
+
+fn thread_comment() -> Message {
+    on_pull(
+        "github.pull_request_review_comment",
+        json!({
+            "actor": "ana",
+            "body": "Rename this.\nIt reads better.",
+            "path": "src/lib.rs",
+            "line": 12,
+            "thread": 801,
+            "url": "https://github.com/owner/repo/pull/7#discussion_r802",
+            "github_id": 802
+        }),
+    )
+}
+
+#[test]
+fn a_thread_comment_from_someone_else_wakes_the_agent_asleep_on_the_done_gate() {
+    let setup = gated("gate-comment");
+
+    setup.publish(&thread_comment());
+
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 3);
+    let typed = setup.typed();
+    let lines: Vec<_> = typed[2].lines().collect();
+    assert_eq!(
+        lines[0],
+        "wait 2 fired: ana commented on src/lib.rs:12 of github:owner/repo#7: Rename this. https://github.com/owner/repo/pull/7#discussion_r802",
+        "{typed:?}"
+    );
+    assert!(lines[1].starts_with("github.pull_request_review_comment owner/repo#7 {"));
+}
+
+#[test]
+fn a_comment_written_before_the_done_gate_wakes_nothing_and_a_later_one_wakes_the_agent() {
+    let setup = gated("gate-own-comment");
+    // The agent's own comment, posted in the turn that reached done, reaches the intake later.
+    let written = herdr_bus::Timestamp::now().as_second() - 60;
+    let own = thread_comment().time(herdr_bus::Timestamp::from_second(written).unwrap());
+
+    let mut other = thread_comment();
+    other.data["actor"] = json!("max");
+    other.data["github_id"] = json!(803);
+
+    setup.publish(&own);
+    setup.until("inbox", |rows| rows.len() == 3);
+    stays_asleep_after(&setup, 2);
+    setup.publish(&other);
+
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 3);
+    let typed = setup.typed();
+    assert!(
+        typed[2].starts_with("wait 2 fired: max commented"),
+        "{typed:?}"
+    );
+}
+
+/// A comment from ana on pull request 7, written now.
+fn commented() -> Message {
+    on_pull(
+        "github.pull_request.comment",
+        json!({ "actor": "ana", "body": "One more thing.", "url": "u", "github_id": 701 }),
+    )
+    .time(herdr_bus::Timestamp::now())
+}
+
+#[test]
+fn a_done_task_whose_open_pull_request_gets_a_comment_reopens_and_resumes_its_session() {
+    let setup = gated("reopen");
+    setup.publish(&check(1, 0));
+    setup.until("tasks", |rows| rows[0][4] == "done");
+    // The comment comes after the task was done, to the second.
+    std::thread::sleep(Duration::from_millis(1100));
+
+    setup.publish(&commented());
+
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 3);
+    let typed = setup.typed();
+    assert!(
+        typed[2].starts_with(
+            "Feedback reopened this done task as generation 2: ana commented on github:owner/repo#7: One more thing. u\ngithub.pull_request.comment owner/repo#7 {"
+        ),
+        "{typed:?}"
+    );
+    let runs = setup.rows("runs");
+    assert_eq!(
+        runs[2][4], runs[0][4],
+        "the reopened run resumes the session"
+    );
+    let reopened: Vec<_> = setup
+        .trace()
+        .into_iter()
+        .filter(|record| record["type"] == "factory.task.reopened")
+        .collect();
+    assert_eq!(reopened.len(), 1);
+    assert_eq!(reopened[0]["data"]["generation"], 2);
+    assert_eq!(reopened[0]["data"]["step"], "implement");
+    assert_eq!(reopened[0]["data"]["pull_request"], "github:owner/repo#7");
+}
+
+#[test]
+fn a_comment_on_the_merged_pull_request_of_a_done_task_reopens_nothing() {
+    let setup = gated("reopen-merged");
+    setup.publish(&closed());
+    setup.until("tasks", |rows| rows[0][4] == "done");
+    std::thread::sleep(Duration::from_millis(1100));
+
+    setup.publish(&commented());
+
+    setup.until("inbox", |rows| rows.len() == 4);
+    std::thread::sleep(Duration::from_millis(1500));
+    assert_eq!(setup.rows("tasks")[0][4], "done");
+    assert_eq!(setup.rows("runs").len(), 2);
 }
 
 fn check_runs(runs: u64) -> Message {
@@ -6273,6 +6404,44 @@ fn an_autonomous_irreversible_step_runs_without_an_ask() {
         ["open-pr", "open-pr", "opened", "github:owner/repo#7"]
     );
     assert!(setup.rows("asks").is_empty());
+}
+
+#[test]
+fn a_done_task_reopens_at_the_model_step_whose_result_opened_its_pull_request() {
+    let mut setup = Setup::with_workflow("reopen-opened", AUTONOMOUS);
+    setup.calls(&[passed_with_evidence()]);
+    setup.publish(&requested(42));
+    setup.start();
+    let actions = setup.until("actions", |rows| rows.len() == 1);
+    let mut green = check(1, 0);
+    green.data["head_sha"] = json!(actions[0][6]);
+    setup.until("tasks", |rows| rows[0][4] == "asleep");
+    setup.publish(&green);
+    setup.until("tasks", |rows| rows[0][4] == "done");
+    std::thread::sleep(Duration::from_millis(1100));
+
+    setup.publish(&commented());
+
+    let tasks = setup.until("tasks", |rows| rows[0][4] != "done");
+    assert_eq!(tasks[0][3], "implement", "{tasks:?}");
+    assert_eq!(setup.rows("actions").len(), 1, "open-pr does not run again");
+}
+
+#[test]
+fn a_comment_on_a_closed_pull_request_reopens_nothing_before_its_close_arrives() {
+    let setup = gated("reopen-closed");
+    setup.publish(&check(1, 0));
+    setup.until("tasks", |rows| rows[0][4] == "done");
+    std::thread::sleep(Duration::from_millis(1100));
+    let mut late = commented();
+    late.data["open"] = json!(false);
+
+    setup.publish(&late);
+
+    setup.until("inbox", |rows| rows.len() == 4);
+    std::thread::sleep(Duration::from_millis(1500));
+    assert_eq!(setup.rows("tasks")[0][4], "done");
+    assert_eq!(setup.rows("runs").len(), 2);
 }
 
 const UNKNOWN_ACTION: &str = r#"
@@ -9016,6 +9185,144 @@ fn an_acquire_that_waits_past_its_timeout_gives_up_and_leaves_no_grant() {
     setup.release("hold-a");
 
     assert_eq!(late.status.code(), Some(125));
+    assert!(a.wait_with_output().unwrap().status.success());
+    assert!(setup.rows("memory").is_empty());
+}
+
+/// Starts `priory memory lease --gb <gb> -- sh -c <script>` in the test's `fake` directory.
+fn lease(setup: &Setup, gb: &str, script: &str) -> Child {
+    setup
+        .command(env!("CARGO_BIN_EXE_priory"))
+        .args(["memory", "lease", "--gb", gb, "--", "sh", "-c", script])
+        .current_dir(setup.dir.join("fake"))
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap()
+}
+
+#[test]
+fn a_lease_holds_its_grant_while_its_command_runs_and_releases_it_when_the_command_exits() {
+    let mut setup = Setup::new("lease-exit");
+    setup.start();
+    listening(&setup);
+    setup.hold("hold-a");
+
+    let server = lease(&setup, "40", &held("a"));
+
+    let rows = setup.until("memory", |rows| rows.len() == 1 && rows[0][2] == "held");
+    assert_eq!(
+        [&rows[0][3], &rows[0][4], &rows[0][6]],
+        [
+            "40.0",
+            &format!("sh -c {}", held("a")),
+            &server.id().to_string()
+        ]
+    );
+    let late = setup
+        .command(env!("CARGO_BIN_EXE_priory"))
+        .args([
+            "memory",
+            "acquire",
+            "--gb",
+            "40",
+            "--timeout",
+            "1s",
+            "--",
+            "true",
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(late.status.code(), Some(125));
+    setup.release("hold-a");
+    let done = server.wait_with_output().unwrap();
+    assert!(
+        done.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&done.stderr)
+    );
+    assert!(setup.rows("memory").is_empty());
+}
+
+#[test]
+fn terminating_a_lease_stops_its_command_and_releases_its_grant() {
+    let mut setup = Setup::new("lease-kill");
+    setup.start();
+    listening(&setup);
+    setup.hold("hold-a");
+    let mut server = lease(&setup, "40", &format!("echo $$ > pid; {}", held("a")));
+    setup.until("memory", |rows| rows.len() == 1 && rows[0][2] == "held");
+    setup.written("fake/order");
+    let pid = fs::read_to_string(setup.dir.join("fake/pid")).unwrap();
+
+    let terminated = Command::new("kill")
+        .args(["-TERM", &server.id().to_string()])
+        .status()
+        .unwrap();
+    assert!(terminated.success());
+    // Not wait_with_output: a command that outlives its lease would hold the pipes open.
+    server.wait().unwrap();
+
+    setup.until("memory", |rows| rows.is_empty());
+    // The command waits on hold-a, so only a stop ends it while the file stays.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while Path::new(&format!("/proc/{}", pid.trim())).exists() {
+        assert!(Instant::now() < deadline, "the leased command still runs");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert_eq!(order(&setup), ["start-a"]);
+}
+
+#[test]
+fn a_lease_stops_what_its_command_leaves_behind() {
+    let mut setup = Setup::new("lease-leftover");
+    setup.start();
+    listening(&setup);
+
+    let done = lease(&setup, "1", "sleep 30 & echo $! > pid")
+        .wait()
+        .unwrap();
+
+    assert!(done.success());
+    let pid = fs::read_to_string(setup.dir.join("fake/pid")).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while Path::new(&format!("/proc/{}", pid.trim())).exists() {
+        assert!(Instant::now() < deadline, "the leftover process still runs");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(setup.rows("memory").is_empty());
+}
+
+#[test]
+fn a_lease_without_room_within_its_timeout_exits_125_and_never_runs_its_command() {
+    let mut setup = Setup::new("lease-timeout");
+    setup.start();
+    listening(&setup);
+    setup.hold("hold-a");
+    let a = acquire(&setup, "40", &held("a"));
+    setup.until("memory", |rows| rows.len() == 1 && rows[0][2] == "held");
+
+    let late = setup
+        .command(env!("CARGO_BIN_EXE_priory"))
+        .args([
+            "memory",
+            "lease",
+            "--gb",
+            "40",
+            "--timeout",
+            "1s",
+            "--",
+            "sh",
+            "-c",
+            "echo ran > ran",
+        ])
+        .current_dir(setup.dir.join("fake"))
+        .output()
+        .unwrap();
+    setup.release("hold-a");
+
+    assert_eq!(late.status.code(), Some(125));
+    assert!(!setup.dir.join("fake/ran").exists());
     assert!(a.wait_with_output().unwrap().status.success());
     assert!(setup.rows("memory").is_empty());
 }

@@ -1,6 +1,7 @@
+use super::pulls::{comment, thread_comment};
 use super::{
-    LABELED, LOOKBACK_SECONDS, OPENED, Observed, PR_CLOSED, PR_LABELED, PR_OPENED, REVIEWED, claim,
-    dispatch, now, output, publish, reported,
+    COMMENTED, LABELED, LOOKBACK_SECONDS, OPENED, Observed, PR_CLOSED, PR_LABELED, PR_OPENED,
+    REVIEWED, THREAD_COMMENTED, claim, dispatch, now, output, publish, reported,
 };
 use herdr_bus::{Bus, Timestamp};
 use hmac::{Hmac, KeyInit, Mac};
@@ -195,8 +196,12 @@ impl Github {
                 let state = review["state"].as_str().unwrap_or_default();
                 data["state"] = json!(state.to_lowercase());
                 data["github_id"] = review["id"].clone();
+                data["open"] = json!(pull["state"] == "open");
                 let name = format!("github:{repo}:pulls/reviews:{}", review["id"]);
                 (REVIEWED, name, data)
+            }
+            ("issue_comment" | "pull_request_review_comment", "created") => {
+                return Ok(feedback(event, repo, payload));
             }
             _ => return Ok(None),
         };
@@ -232,6 +237,49 @@ impl Github {
             data,
         }))
     }
+}
+
+/// A comment on a pull request, as the poll publishes it: none for a bot's, or for an issue's.
+fn feedback(event: &str, repo: &str, payload: &Value) -> Option<Observed> {
+    let found = &payload["comment"];
+    if found["user"]["type"] == "Bot" || !found["id"].is_u64() || !found["body"].is_string() {
+        return None;
+    }
+    let pull = &payload["pull_request"];
+    if event == "pull_request_review_comment" {
+        let branches = json!({
+            "head_branch": pull["head"]["ref"],
+            "head_sha": pull["head"]["sha"],
+            "base_branch": pull["base"]["ref"],
+            "open": pull["state"] == "open",
+        });
+        let number = pull["number"].as_u64()?;
+        return Some(comment(
+            THREAD_COMMENTED,
+            repo,
+            number,
+            &branches,
+            thread_comment(found)?,
+        ));
+    }
+    let issue = &payload["issue"];
+    issue.get("pull_request")?;
+    let data = json!({
+        "url": found["html_url"],
+        "actor": found["user"]["login"],
+        "body": found["body"],
+        "time": found["created_at"],
+        "github_id": found["id"],
+    });
+    // The issue in the payload names no branch: routing finds the task by its pull request.
+    let branches = json!({ "open": issue["state"] == "open" });
+    Some(comment(
+        COMMENTED,
+        repo,
+        issue["number"].as_u64()?,
+        &branches,
+        data,
+    ))
 }
 
 fn accepted(outcome: &str) -> Reply {

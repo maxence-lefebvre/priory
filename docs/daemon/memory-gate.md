@@ -30,8 +30,22 @@ default. A grant above the runner's share of the machine can never fit, so the d
 once, as
 `9.0 GB never fits: this runner's agents may take 7.2 GB`. A command that cannot start exits 127.
 
+`priory memory lease [--gb N] [--timeout D] -- <command>` runs a server or stack that stays up,
+such as a dev server, with N GB reserved for as long as it runs. It takes the same flags, waits in
+the same queue and exits with the same codes as `acquire`. Use it instead of `acquire` for a
+command that outlives one job.
+
+A lease differs from `acquire` in who holds the grant. The `lease` process keeps it for the
+command's whole life, so killing the lease, even with `SIGKILL`, frees its memory within a second.
+The command runs with no input, in the process group of a small guard. Once the lease process ends,
+however it ends, the guard sends that group `SIGTERM`, then `SIGKILL` 5 seconds later. So
+`kill <lease pid>` ends the server too, and a command that exits leaves no process of its group
+behind.
+
 `priory memory` prints each grant in request order: id, task, state (`held` or `waiting`), GB,
-command and age. A held grant's age counts from its grant, a waiting one's from its request.
+command, age and pid. A held grant's age counts from its grant, a waiting one's from its request.
+The pid is the grant's holder: the `acquire` process while the grant waits, then the command; the
+`lease` process for a lease.
 `priory desk` shows each waiting grant as a `memory` row.
 
 The MCP server's instructions teach every agent the gate. They ask it to wrap each heavy command in
@@ -46,5 +60,9 @@ Known limits:
 - The command's process holds the grant, not the processes it leaves behind. A daemonized child of
   a build runs on without a grant.
 - A grant that arrives in the last poll before `--timeout` still runs its command, up to 250 ms late.
+- A lease's memory frees as soon as the lease ends, while its command may still take up to 5
+  seconds to stop.
+- A leased command runs outside the terminal's foreground group with no input. Ctrl-C reaches the
+  lease, whose guard then sends the command `SIGTERM`, not `SIGINT`.
 - A daemon that stops while a command waits fails that command with 125. A held grant survives a
   daemon restart in the state database.

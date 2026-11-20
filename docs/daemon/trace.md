@@ -4,7 +4,8 @@ The daemon appends one `factory.step.ended` record per step end, in the transact
 task on, as [the trace schema](../trace-schema.md) defines it. A model step ends with its run's
 result, a human step with its answer, a code step with its action's status (the record's
 `outcome`). A run that ends otherwise, such as blocked, lost or cancelled, ends no step and appends
-no record. A repair appends `factory.task.repaired` instead (see Repair). `priory report` reads only
+no record. A repair appends `factory.task.repaired` instead (see Repair), and a reopen appends
+`factory.task.reopened` (see [routing.md](routing.md#feedback-reopens-a-done-task)). `priory report` reads only
 `factory.step.ended`.
 
 Records live in the `trace` table of the state file, one CloudEvents JSON object per row. R9.3 keeps

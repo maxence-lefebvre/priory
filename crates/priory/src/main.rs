@@ -145,7 +145,7 @@ fn main() -> ExitCode {
 
 fn usage() -> ExitCode {
     eprintln!(
-        "usage: priory check [DIR]\n       priory draw [DIR] WORKFLOW\n       priory intake [DIR] [--once]\n       priory daemon [DIR] [--once]\n       priory request [DIR] --workflow <name> --key <key> [--band <band>] [--lane <lane>] [--repo <owner/name>] [--hold <reason> [CONDITION]...] <text>\n       priory serve [DIR] [--listen ADDR]\n       priory inbox [--since SEQ] [--json]\n       priory inbox read SEQ\n       priory post SOURCE LINE\n       priory tasks [--lane <lane>] [--grade red|yellow|green] [--json]\n       priory queue [DIR] [--json]\n       priory schedules [DIR] [--json]\n       priory runs\n       priory outbox\n       priory asks [--all] [--json]\n       priory waits\n       priory actions\n       priory attach (TASK | --run RUN) [--read-only] [--print]\n       priory desk [--all] [--json] [--person NAME]\n       priory seen [--person NAME] [--at TIME]\n       priory wait --since REV [--timeout D]\n       priory snooze (ask | blocked | failed | prompt) ID (--for DURATION | --until TIME | --clear)\n       priory trace\n       priory report put TASK FILE|-\n       priory report show [TASK] [--json]\n       priory report pick PICK OPTION --expected REVISION\n       priory report [DIR] --workflow <name> [--since <instant-or-duration>] [--cost] [--by lane]\n       priory move TASK [--band <band>] [--top | --before TASK | --after TASK]\n       priory resume TASK\n       priory say TASK TEXT\n       priory pause [REASON]\n       priory unpause\n       priory cancel TASK\n       priory revive TASK [--step STEP]\n       priory hold TASK --reason TEXT [--until TIME] [--after TASK-OR-ISSUE]... [--merge PR]... [--if-closed release|drop|ask] [--blockers]\n       priory release TASK\n       priory tldr TASK TEXT\n       priory progress TASK JSON\n       priory search QUERY [--state STATE[,STATE...]] [--limit N]\n       priory memory [acquire [--gb N] [--timeout D] -- COMMAND...]\n       priory answer [--revision N | --expected N] [--run] [--] ASK OPTION-OR-TEXT\n       priory ask ID JSON\n       priory dismiss [--expected N] ASK\n       priory mcp --session ID\n       priory hook EVENT"
+        "usage: priory check [DIR]\n       priory draw [DIR] WORKFLOW\n       priory intake [DIR] [--once]\n       priory daemon [DIR] [--once]\n       priory request [DIR] --workflow <name> --key <key> [--band <band>] [--lane <lane>] [--repo <owner/name>] [--hold <reason> [CONDITION]...] <text>\n       priory serve [DIR] [--listen ADDR]\n       priory inbox [--since SEQ] [--json]\n       priory inbox read SEQ\n       priory post SOURCE LINE\n       priory tasks [--lane <lane>] [--grade red|yellow|green] [--json]\n       priory queue [DIR] [--json]\n       priory schedules [DIR] [--json]\n       priory runs\n       priory outbox\n       priory asks [--all] [--json]\n       priory waits\n       priory actions\n       priory attach (TASK | --run RUN) [--read-only] [--print]\n       priory desk [--all] [--json] [--person NAME]\n       priory seen [--person NAME] [--at TIME]\n       priory wait --since REV [--timeout D]\n       priory snooze (ask | blocked | failed | prompt) ID (--for DURATION | --until TIME | --clear)\n       priory trace\n       priory report put TASK FILE|-\n       priory report show [TASK] [--json]\n       priory report pick PICK OPTION --expected REVISION\n       priory report [DIR] --workflow <name> [--since <instant-or-duration>] [--cost] [--by lane]\n       priory move TASK [--band <band>] [--top | --before TASK | --after TASK]\n       priory resume TASK\n       priory say TASK TEXT\n       priory pause [REASON]\n       priory unpause\n       priory cancel TASK\n       priory revive TASK [--step STEP]\n       priory hold TASK --reason TEXT [--until TIME] [--after TASK-OR-ISSUE]... [--merge PR]... [--if-closed release|drop|ask] [--blockers]\n       priory release TASK\n       priory tldr TASK TEXT\n       priory progress TASK JSON\n       priory search QUERY [--state STATE[,STATE...]] [--limit N]\n       priory memory [(acquire | lease) [--gb N] [--timeout D] -- COMMAND...]\n       priory answer [--revision N | --expected N] [--run] [--] ASK OPTION-OR-TEXT\n       priory ask ID JSON\n       priory dismiss [--expected N] ASK\n       priory mcp --session ID\n       priory hook EVENT"
     );
     ExitCode::from(2)
 }
@@ -793,13 +793,14 @@ fn exit(verb: &str, done: Result<(), String>) -> ExitCode {
 fn memory(args: Vec<OsString>) -> ExitCode {
     match args.split_first() {
         None => list(
-            "id\ttask\tstate\tgb\tcommand\tage",
+            "id\ttask\tstate\tgb\tcommand\tage\tpid",
             "SELECT id, task, state, printf('%.1f', bytes / 1073741824.0),
              replace(command, char(10), '\\n'),
-             (strftime('%s', 'now') - strftime('%s', coalesce(granted, created))) || 's'
+             (strftime('%s', 'now') - strftime('%s', coalesce(granted, created))) || 's', pid
              FROM grants ORDER BY id",
         ),
-        Some((verb, args)) if verb == "acquire" => acquire(args),
+        Some((verb, args)) if verb == "acquire" => acquire(args, false),
+        Some((verb, args)) if verb == "lease" => acquire(args, true),
         Some(_) => usage(),
     }
 }
@@ -812,8 +813,8 @@ const GATE_TIMEOUT: Duration = Duration::from_secs(60 * 60);
 const GATE_GB: f64 = 10.0;
 
 /// Runs a command once the daemon grants it `--gb` GB of memory, and releases the grant when it
-/// exits. Exits with the command's code.
-fn acquire(args: &[OsString]) -> ExitCode {
+/// exits. Exits with the command's code. A `lease` keeps the grant and stops the command when it dies.
+fn acquire(args: &[OsString], lease: bool) -> ExitCode {
     let Some(split) = args.iter().position(|arg| arg == "--") else {
         return usage();
     };
@@ -882,17 +883,21 @@ fn acquire(args: &[OsString]) -> ExitCode {
             Err(error) => return failed(error),
         };
     }
-    let status = Command::new(program)
-        .args(rest)
-        .spawn()
-        .and_then(|mut child| {
-            // The command holds the grant from here, so it keeps its memory if this process dies.
-            let _ = gate(&Gate::Run {
-                grant,
-                pid: child.id(),
-            });
-            child.wait()
-        });
+    let status = if lease {
+        leased(program, rest)
+    } else {
+        Command::new(program)
+            .args(rest)
+            .spawn()
+            .and_then(|mut child| {
+                // The command holds the grant from here, so it keeps its memory if this process dies.
+                let _ = gate(&Gate::Run {
+                    grant,
+                    pid: child.id(),
+                });
+                child.wait()
+            })
+    };
     if let Err(error) = gate(&Gate::Release { grant }) {
         eprintln!(
             "priory memory: grant {grant} stays until the daemon sees this process end: {error}"
@@ -911,6 +916,33 @@ fn acquire(args: &[OsString]) -> ExitCode {
             ExitCode::from(127)
         }
     }
+}
+
+/// Runs a leased command in the process group of a guard that stops the group once its pipe from
+/// this process closes, however this process ends.
+fn leased(program: &OsString, rest: &[OsString]) -> std::io::Result<std::process::ExitStatus> {
+    use std::os::unix::process::CommandExt;
+    use std::process::Stdio;
+    let guard = Command::new("sh")
+        .args([
+            "-c",
+            "trap '' TERM; read _; kill -TERM -$$; sleep 5; kill -KILL -$$",
+        ])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .process_group(0)
+        .spawn()
+        .map_err(|error| std::io::Error::other(format!("its guard did not start: {error}")))?;
+    let status = Command::new(program)
+        .args(rest)
+        .stdin(Stdio::null())
+        .process_group(guard.id() as i32)
+        .spawn()
+        .and_then(|mut child| child.wait());
+    // Dropping the guard closes its pipe, so it also stops what the command left behind.
+    drop(guard);
+    status
 }
 
 /// Sends `gate` to the daemon and returns its reply.
