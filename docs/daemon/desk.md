@@ -68,8 +68,10 @@ A tick that polls no Linear or Slack source records only `github`.
   since <time>: waits on GitHub, Linear and Slack cannot fire`. A factory whose intake never ran
   shows no banner.
 
-The banner is `intake` in `priory desk --json` and `/api/desk`. A poll writes no revision, so a
-client that waits on `/api/events` sees the stopped banner at its next read.
+The banner is `intake` in `priory desk --json` and `/api/desk`. A source that starts failing, or
+recovers, moves the state's revision, so a client that waits on `/api/events` redraws the banner at
+once. A repeated poll with the same outcome moves nothing. The stopped banner comes from time
+passing, which no revision records, so a client sees it at its next read.
 
 ## Resume
 

@@ -780,8 +780,8 @@ const SCHEMA_44: &str = concat!(
 "
 );
 
-// Each intake source's last poll and, while it fails, its error and the report that tells it.
-// No revision triggers: a poll writes every minute, and only the reports it posts change a listing.
+// Each intake source's last poll and, while it fails, its error and the report that tells it. A
+// poll writes `polled` every minute, so only a new source or a changed error bumps the revision.
 const SCHEMA_45: &str = "CREATE TABLE IF NOT EXISTS intake_sources (
   source        TEXT PRIMARY KEY,
   polled        TEXT NOT NULL,
@@ -789,6 +789,12 @@ const SCHEMA_45: &str = "CREATE TABLE IF NOT EXISTS intake_sources (
   failing_since TEXT,
   report        INTEGER
 );
+CREATE TRIGGER IF NOT EXISTS revision_intake_sources_insert AFTER INSERT ON intake_sources
+  BEGIN UPDATE revision SET value = value + 1; END;
+CREATE TRIGGER IF NOT EXISTS revision_intake_sources_error AFTER UPDATE OF error ON intake_sources
+  WHEN NEW.error IS NOT OLD.error BEGIN UPDATE revision SET value = value + 1; END;
+CREATE TRIGGER IF NOT EXISTS revision_intake_sources_delete AFTER DELETE ON intake_sources
+  BEGIN UPDATE revision SET value = value + 1; END;
 PRAGMA user_version = 45;
 ";
 

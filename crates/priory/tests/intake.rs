@@ -377,6 +377,27 @@ fn a_failing_poll_reports_once_and_shows_a_banner_until_a_good_poll_clears_both(
 }
 
 #[test]
+fn a_failed_poll_and_its_recovery_move_the_revision_and_a_repeated_good_poll_does_not() {
+    let setup = Setup::new("intake-revision", &[]);
+    succeeded(&setup.intake());
+    let revision = || setup.desk()["revision"].as_i64().unwrap();
+    let polled = revision();
+
+    succeeded(&setup.intake());
+    let repeated = revision();
+    Setup::fake_gh(&setup.dir, "#!/bin/sh\necho 'HTTP 502' >&2\nexit 1\n");
+    setup.intake();
+    let failed = revision();
+    setup.answer(&[]);
+    succeeded(&setup.intake());
+    let recovered = revision();
+
+    assert_eq!(repeated, polled);
+    assert!(failed > repeated, "{failed} after {repeated}");
+    assert!(recovered > failed, "{recovered} after {failed}");
+}
+
+#[test]
 fn an_intake_that_has_not_polled_for_five_minutes_shows_a_banner() {
     let setup = Setup::new("intake-stopped", &[]);
 
