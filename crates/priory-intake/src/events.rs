@@ -187,7 +187,62 @@ pub struct ReviewSubmitted {
     pub state: String,
     /// The GitHub login who reviewed.
     pub actor: Option<String>,
+    /// Whether the pull request was open when the intake read it; a done task reopens only
+    /// for feedback on an open one.
+    pub open: bool,
     /// GitHub's review id.
+    pub github_id: u64,
+    /// The `X-GitHub-Delivery` of the webhook delivery that reported it; absent when a poll did.
+    /// GitHub does not sign it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub delivery: Option<String>,
+    #[serde(flatten)]
+    pub source: Source,
+}
+
+/// A comment on a pull request's conversation; bots' comments are skipped.
+#[derive(JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PullRequestComment {
+    #[serde(flatten)]
+    pub pull: PullRequest,
+    /// The GitHub login who commented; null for a deleted user.
+    pub actor: Option<String>,
+    /// Whether the pull request was open when the intake read it; a done task reopens only
+    /// for feedback on an open one.
+    pub open: bool,
+    /// The comment's Markdown, as written.
+    pub body: String,
+    /// GitHub's comment id.
+    pub github_id: u64,
+    /// The `X-GitHub-Delivery` of the webhook delivery that reported it; absent when a poll did.
+    /// GitHub does not sign it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub delivery: Option<String>,
+    #[serde(flatten)]
+    pub source: Source,
+}
+
+/// A comment in a review thread on a pull request's diff; bots' comments are skipped.
+#[derive(JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ReviewThreadComment {
+    #[serde(flatten)]
+    pub pull: PullRequest,
+    /// The GitHub login who commented; null for a deleted user.
+    pub actor: Option<String>,
+    /// Whether the pull request was open when the intake read it; a done task reopens only
+    /// for feedback on an open one.
+    pub open: bool,
+    /// The comment's Markdown, as written.
+    pub body: String,
+    /// The file the thread is on.
+    pub path: String,
+    /// The line of the diff's new side the comment is on; null once the line is outdated.
+    pub line: Option<u64>,
+    /// The thread: the id of its first comment.
+    pub thread: u64,
+    /// GitHub's comment id.
     pub github_id: u64,
     /// The `X-GitHub-Delivery` of the webhook delivery that reported it; absent when a poll did.
     /// GitHub does not sign it.

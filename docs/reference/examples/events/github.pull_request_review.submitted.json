@@ -12,6 +12,7 @@
     "base_branch": "main",
     "state": "approved",
     "actor": "octocat",
+    "open": true,
     "time": "2026-11-17T16:40:03Z",
     "github_id": 2561579718,
     "baseline": false,

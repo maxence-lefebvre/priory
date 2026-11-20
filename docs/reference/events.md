@@ -12,6 +12,8 @@ Each type has a JSON Schema in [`docs/schemas/events/`](../schemas/events/), nam
 - GitHub: [`github.issues.labeled`](#githubissueslabeled), [`github.issues.opened`](#githubissuesopened),
   [`github.pull_request.opened`](#githubpull_requestopened), [`github.pull_request.labeled`](#githubpull_requestlabeled),
   [`github.pull_request.closed`](#githubpull_requestclosed), [`github.pull_request_review.submitted`](#githubpull_request_reviewsubmitted),
+  [`github.pull_request.comment`](#githubpull_requestcomment),
+  [`github.pull_request_review_comment`](#githubpull_request_review_comment),
   [`github.check_run.completed`](#githubcheck_runcompleted), [`github.pull_request.check_runs`](#githubpull_requestcheck_runs),
   [`github.pull_request.review_requested`](#githubpull_requestreview_requested),
   [`github.pull_request.review_request_removed`](#githubpull_requestreview_request_removed)
@@ -264,6 +266,7 @@ The pull request fields, and:
 | ----- | ---- | ------- |
 | `state` | string | `approved`, `changes_requested`, `commented` or `dismissed`, at poll time |
 | `actor` | string or null | Who reviewed |
+| `open` | boolean | Whether the pull request was open when the intake read it. A done task reopens only for feedback on an open one |
 | `github_id` | integer | GitHub's review id |
 
 <!-- example: events/github.pull_request_review.submitted.json -->
@@ -282,12 +285,103 @@ The pull request fields, and:
     "base_branch": "main",
     "state": "approved",
     "actor": "octocat",
+    "open": true,
     "time": "2026-11-17T16:40:03Z",
     "github_id": 2561579718,
     "baseline": false,
     "triggers": []
   },
   "links": [{ "label": "pull_request", "url": "https://github.com/acme/widgets/pull/43#pullrequestreview-2561579718" }]
+}
+```
+
+### `github.pull_request.comment`
+
+One message per comment on a pull request's conversation, from a person; bots' comments are
+skipped. Subject: `owner/name#43`.
+Schema: [`github.pull_request.comment.json`](../schemas/events/github.pull_request.comment.json).
+
+The pull request fields, and:
+
+| Field | Type | Meaning |
+| ----- | ---- | ------- |
+| `actor` | string or null | Who commented; null for a deleted user |
+| `open` | boolean | Whether the pull request was open when the intake read it. A done task reopens only for feedback on an open one |
+| `body` | string | The comment's Markdown, as written |
+| `github_id` | integer | GitHub's comment id |
+
+A webhook's message has null head and base fields: its payload names no branch.
+
+<!-- example: events/github.pull_request.comment.json -->
+```json
+{
+  "id": "266825f5-96a3-544d-bad7-0355d348cf9a",
+  "type": "github.pull_request.comment",
+  "subject": "acme/widgets#43",
+  "time": "2026-11-17T16:45:10Z",
+  "data": {
+    "repo": "acme/widgets",
+    "pull_request": 43,
+    "url": "https://github.com/acme/widgets/pull/43#issuecomment-2561579801",
+    "head_branch": "fix-empty-export",
+    "head_sha": "4b2ee8eb670ba9f77d54d59ab97ced618f024fb9",
+    "base_branch": "main",
+    "actor": "octocat",
+    "open": true,
+    "body": "Can you split the export fix from the rename?",
+    "time": "2026-11-17T16:45:10Z",
+    "github_id": 2561579801,
+    "baseline": false,
+    "triggers": []
+  },
+  "links": [{ "label": "pull_request", "url": "https://github.com/acme/widgets/pull/43#issuecomment-2561579801" }]
+}
+```
+
+### `github.pull_request_review_comment`
+
+One message per comment in a review thread on a pull request's diff, from a person; bots'
+comments are skipped. Subject: `owner/name#43`.
+Schema: [`github.pull_request_review_comment.json`](../schemas/events/github.pull_request_review_comment.json).
+
+The pull request fields, and:
+
+| Field | Type | Meaning |
+| ----- | ---- | ------- |
+| `actor` | string or null | Who commented; null for a deleted user |
+| `open` | boolean | Whether the pull request was open when the intake read it. A done task reopens only for feedback on an open one |
+| `body` | string | The comment's Markdown, as written |
+| `path` | string | The file the thread is on |
+| `line` | integer or null | The line of the diff's new side; null once the line is outdated |
+| `thread` | integer | The thread: the id of its first comment |
+| `github_id` | integer | GitHub's comment id |
+
+<!-- example: events/github.pull_request_review_comment.json -->
+```json
+{
+  "id": "6bc673bd-853a-5fac-aab6-f0d3fb641952",
+  "type": "github.pull_request_review_comment",
+  "subject": "acme/widgets#43",
+  "time": "2026-11-17T16:47:30Z",
+  "data": {
+    "repo": "acme/widgets",
+    "pull_request": 43,
+    "url": "https://github.com/acme/widgets/pull/43#discussion_r1890000002",
+    "head_branch": "fix-empty-export",
+    "head_sha": "4b2ee8eb670ba9f77d54d59ab97ced618f024fb9",
+    "base_branch": "main",
+    "actor": "octocat",
+    "open": true,
+    "body": "This returns early on an empty sheet. Keep the header row?",
+    "path": "src/export.rs",
+    "line": 42,
+    "thread": 1890000001,
+    "time": "2026-11-17T16:47:30Z",
+    "github_id": 1890000002,
+    "baseline": false,
+    "triggers": []
+  },
+  "links": [{ "label": "pull_request", "url": "https://github.com/acme/widgets/pull/43#discussion_r1890000002" }]
 }
 ```
 

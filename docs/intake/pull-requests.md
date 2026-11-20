@@ -1,6 +1,6 @@
 # Pull requests
 
-The intake publishes six pull request events. Each names the pull request and its branches, so a
+The intake publishes eight pull request events. Each names the pull request and its branches, so a
 consumer can route it to the task that owns the pull request or branch.
 
 ## What it watches
@@ -9,7 +9,8 @@ consumer can route it to the task that owns the pull request or branch.
 | ----- | --------- | ------ |
 | opened | the repository's `issues` list | `github.issues.opened` |
 | label added, closed | the repository's `issues/events` | `github.issues.labeled` |
-| reviews | a GraphQL query of every open pull request, and every pull request a new event above names | `github.pull_request_review.submitted` |
+| reviews and comments | a GraphQL query of every open pull request, and every pull request a new event above names | `github.pull_request_review.submitted` |
+| review thread comments | the repository's `pulls/comments`, newest 100, kept for the pull requests the query read | `github.pull_request_review.submitted` |
 | check runs and snapshots | the same query, on each pull request's head commit | `github.check_run.completed` |
 
 An open wait or a `--merge` hold on a pull request adds its repository to the polled ones (see
@@ -25,7 +26,7 @@ A `github` trigger can start a task from two pull request events. Its keys are i
 | `pull_request.labeled` | `label`, optional | `pull_request.number` |
 | `pull_request.opened` | none | `pull_request.number` |
 
-No trigger starts a task from a close, a review or a check. Their `triggers` is always empty.
+No trigger starts a task from a close, a review, a comment or a check. Their `triggers` is always empty.
 
 ## Events
 
@@ -37,6 +38,8 @@ Their fields and examples are in [events.md](../reference/events.md#github).
 | `github.pull_request.labeled` | label added to a pull request |
 | `github.pull_request.closed` | pull request closed, merged or not |
 | `github.pull_request_review.submitted` | review submitted; pending reviews are skipped |
+| `github.pull_request.comment` | comment on the conversation; bots' comments are skipped |
+| `github.pull_request_review_comment` | comment in a review thread; bots' comments are skipped |
 | `github.check_run.completed` | completed check run on a pull request's head commit, per pull request |
 | `github.pull_request.check_runs` | head whose check runs first appeared, or that has none past the grace period |
 
@@ -82,6 +85,8 @@ Each message id is the UUIDv5 of a name:
 | `github.pull_request.opened` | `github:{repo}:issues:{github_id}:opened` |
 | `github.pull_request.labeled`, `github.pull_request.closed` | `github:{repo}:issues/events:{github_id}` |
 | `github.pull_request_review.submitted` | `github:{repo}:pulls/reviews:{github_id}` |
+| `github.pull_request.comment` | `github:{repo}:issues/comments:{github_id}` |
+| `github.pull_request_review_comment` | `github:{repo}:pulls/comments:{github_id}` |
 | `github.check_run.completed` | `github:{repo}:check-runs:{github_id}:pulls/{pull_request}`, since one check run can sit on the head of two pull requests |
 | `github.pull_request.check_runs` | `github:{repo}:pulls/{pull_request}:check-runs:{head_sha}:{some or none}` |
 
@@ -92,4 +97,9 @@ Each message id is the UUIDv5 of a name:
 - Reviews and checks are read for open pull requests and for any pull request a new issue event
   names, such as its `closed` event. A check that completes after its pull request closed and a
   poll passed is missed.
-- The query reads the last 50 reviews and the first 100 checks of the head commit per pull request.
+- The query reads the last 50 reviews, the last 50 comments and the first 100 checks of the head
+  commit per pull request.
+- A poll reads the repository's newest 100 review thread comments. More than 100 between two polls
+  loses the oldest, unless a webhook delivered them.
+- A comment's author is a bot when GitHub types the account `Bot`. A person or an agent that
+  comments through a personal access token is not one.
