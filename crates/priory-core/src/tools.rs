@@ -1,3 +1,4 @@
+use crate::command;
 use crate::route;
 use crate::trace::{self, Trace};
 use priory_factory::factory::{Decider, Effect, Factory, Harness, Loaded, Step, Workflow};
@@ -26,6 +27,9 @@ pub struct Answer {
     pub ask: i64,
     pub text: String,
     pub revision: i64,
+    /// The person confirmed that this answer runs the ask's command.
+    #[serde(default)]
+    pub run: bool,
 }
 
 /// A live run with its task's workflow.
@@ -71,15 +75,13 @@ fn text(arguments: &Value, name: &str) -> Result<String, String> {
         .ok_or_else(|| format!("{name} must be a string"))
 }
 
-/// The fields that describe an ask beyond its question: title, text, what waits, next action and
-/// command.
-fn described(arguments: &Value) -> Result<[Option<String>; 5], String> {
+/// The fields that describe an ask beyond its question: title, text, what waits and next action.
+fn described(arguments: &Value) -> Result<[Option<String>; 4], String> {
     Ok([
         optional(arguments, "title")?,
         optional(arguments, "text")?,
         optional(arguments, "whatWaits")?,
         optional(arguments, "nextAction")?,
-        optional(arguments, "command")?,
     ])
 }
 
@@ -169,7 +171,7 @@ pub(crate) fn call(
                 .to_owned(),
         ),
         "result" => result(&tx, &run, &call.arguments, workflows)?,
-        "ask" => ask(&tx, &run, &call.arguments)?,
+        "ask" => ask(&tx, &run, &call.arguments, factory)?,
         "wait" => wait(&tx, &run, &call.arguments)?,
         "compact" => compact(&tx, &run, &call.arguments, factory)?,
         tool => Err(format!("unknown tool {tool}")),
@@ -319,7 +321,17 @@ pub(crate) fn compacted(tx: &Transaction, run: i64) -> rusqlite::Result<()> {
     .map(drop)
 }
 
-fn ask(tx: &Transaction, run: &Run, arguments: &Value) -> rusqlite::Result<Result<String, String>> {
+fn ask(
+    tx: &Transaction,
+    run: &Run,
+    arguments: &Value,
+    factory: &Factory,
+) -> rusqlite::Result<Result<String, String>> {
+    let worktree: Option<String> = tx.query_row(
+        "SELECT worktree FROM tasks WHERE id = ?1",
+        [run.task],
+        |row| row.get(0),
+    )?;
     let fields = (|| {
         let options = arguments["options"]
             .as_array()
@@ -330,19 +342,29 @@ fn ask(tx: &Transaction, run: &Run, arguments: &Value) -> rusqlite::Result<Resul
                     .collect::<Option<Vec<_>>>()
             })
             .ok_or("options must be an array of strings")?;
+        let recommendation = text(arguments, "recommendation")?;
+        let command = match &arguments["command"] {
+            Value::Null => None,
+            command => {
+                let worktree = worktree.as_deref();
+                let parsed = command::parse(command, &options, &recommendation, worktree, factory)?;
+                Some(serde_json::to_string(&parsed).expect("a command serializes"))
+            }
+        };
         Ok::<_, String>((
             text(arguments, "question")?,
             serde_json::to_string(&options).expect("options serialize"),
-            text(arguments, "recommendation")?,
+            recommendation,
             text(arguments, "tradeoff")?,
             described(arguments)?,
+            command,
         ))
     })();
-    let (question, options, recommendation, tradeoff, described) = match fields {
+    let (question, options, recommendation, tradeoff, described, command) = match fields {
         Ok(fields) => fields,
         Err(error) => return Ok(Err(error)),
     };
-    let [title, body, what_waits, next_action, command] = described;
+    let [title, body, what_waits, next_action] = described;
     tx.execute(
         "INSERT INTO asks (task, run, step, kind, question, options, recommendation, tradeoff,
            title, text, what_waits, next_action, command)
@@ -485,7 +507,8 @@ fn woken(tx: &Transaction, run: &Run) -> rusqlite::Result<bool> {
     tx.query_row(
         "SELECT (EXISTS (SELECT 1 FROM waits WHERE run = ?1 AND fired IS NOT NULL)
            OR EXISTS (SELECT 1 FROM asks WHERE run = ?1 AND (answer IS NOT NULL OR withdrawn = ?3)))
-         AND EXISTS (SELECT 1 FROM outbox WHERE task = ?2 AND state = 'queued')",
+         AND EXISTS (SELECT 1 FROM outbox WHERE task = ?2 AND state = 'queued')
+         OR EXISTS (SELECT 1 FROM actions WHERE task = ?2 AND action = 'answer' AND ended IS NULL)",
         params![run.id, run.task, DISMISSED],
         |row| row.get(0),
     )
@@ -1327,6 +1350,19 @@ fn settle(tx: &Transaction, run: &Run, trace: &Trace) -> rusqlite::Result<Option
         "UPDATE waits SET run = ?2 WHERE task = ?1 AND fired IS NULL AND withdrawn IS NULL AND NOT daemon",
         params![run.task, run.id],
     )?;
+    // An answer whose command still runs wakes the task with its outcome; until then the task stays
+    // `running`, so the sweep leaves its worktree alone.
+    let commanded = tx
+        .query_row(
+            "SELECT 1 FROM actions WHERE task = ?1 AND action = 'answer' AND ended IS NULL",
+            [run.task],
+            |_| Ok(()),
+        )
+        .optional()?;
+    if commanded.is_some() {
+        end(tx, run.id, "asleep")?;
+        return Ok(Some(Some(run.tmux.clone())));
+    }
     let asked = tx
         .query_row(
             "SELECT 1 FROM asks WHERE run = ?1 AND answer IS NULL AND withdrawn IS NULL",
@@ -1632,16 +1668,34 @@ pub(crate) fn answer(
         options,
         workflow,
         state,
+        command,
     } = match open_ask(&tx, answer.ask, Some(answer.revision))? {
         Ok(ask) => ask,
         Err(error) => return Ok(Err(error)),
     };
+    let runs = command
+        .as_deref()
+        .filter(|_| kind == "agent")
+        .and_then(|command| serde_json::from_str::<command::Command>(command).ok())
+        .filter(|command| command.runs.contains(&answer.text));
     let options: Vec<String> = serde_json::from_str(&options).expect("options are stored as JSON");
     let hold = crate::hold::of_ask(&tx, answer.ask)?;
     if (kind == "step" || hold.is_some()) && !options.contains(&answer.text) {
         return Ok(Err(format!(
             "ask {label} takes one of: {}",
             options.join(", ")
+        )));
+    }
+    if let Some(runs) = &runs
+        && !answer.run
+    {
+        return Ok(Err(format!(
+            "ask {label} runs {} in {} (target {}), bound to revision {}, when answered {:?}: answer again with --run to run it",
+            runs.shown(),
+            runs.dir.display(),
+            runs.target,
+            answer.revision,
+            answer.text
         )));
     }
     tx.execute(
@@ -1651,8 +1705,39 @@ pub(crate) fn answer(
     let Some(task) = task else {
         crate::deliver::queue(&tx, answer.ask, Some(&answer.text), trace.factory)?;
         tx.commit()?;
+        if command.is_some() {
+            return Ok(Ok(format!(
+                "ask {label} answered; its command does not run: Priory runs only the commands of its own runs' asks"
+            )));
+        }
         return Ok(Ok(format!("ask {label} answered")));
     };
+    if let Some(runs) = runs {
+        withdraw_waits(&tx, answer.ask)?;
+        tx.execute(
+            "INSERT INTO actions (task, step, action, status, ask, revision, command, generation)
+             VALUES (?1, ?2, 'answer', 'running', ?3, ?4, ?5,
+               (SELECT generation FROM tasks WHERE id = ?1))",
+            params![
+                task,
+                at,
+                answer.ask,
+                answer.revision,
+                serde_json::to_string(&runs).expect("a command serializes")
+            ],
+        )?;
+        // A running task keeps the sweep from removing the worktree the command runs in.
+        tx.execute(
+            "UPDATE tasks SET state = 'running' WHERE id = ?1 AND state = 'asleep'",
+            [task],
+        )?;
+        tx.commit()?;
+        return Ok(Ok(format!(
+            "ask {label} answered: running {} in {}",
+            runs.shown(),
+            runs.dir.display()
+        )));
+    }
     if let Some(hold) = hold {
         crate::hold::answered(&tx, hold, &answer.text)?;
     } else if kind == "step" {
@@ -1696,6 +1781,7 @@ struct OpenAsk {
     options: String,
     workflow: String,
     state: String,
+    command: Option<String>,
 }
 
 /// The ask `id` if a person can still answer or dismiss it at `revision`, else why not.
@@ -1708,7 +1794,7 @@ fn open_ask(
         .query_row(
             "SELECT coalesce(asks.name, CAST(asks.id AS TEXT)), asks.task, asks.kind, coalesce(asks.step, ''),
                asks.revision, asks.options, asks.answer, coalesce(tasks.workflow, ''),
-               coalesce(tasks.state, ''), asks.withdrawn
+               coalesce(tasks.state, ''), asks.withdrawn, asks.command
              FROM asks LEFT JOIN tasks ON tasks.id = asks.task WHERE asks.id = ?1",
             [id],
             |row| {
@@ -1721,6 +1807,7 @@ fn open_ask(
                         options: row.get(5)?,
                         workflow: row.get(7)?,
                         state: row.get(8)?,
+                        command: row.get(10)?,
                     },
                     row.get::<_, i64>(4)?,
                     row.get::<_, Option<String>>(6)?,
@@ -2447,6 +2534,13 @@ pub(crate) fn ran(
 ) -> rusqlite::Result<()> {
     let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
     let still: bool = tx.query_row(crate::state::CURRENT_COMMAND, [id], |row| row.get(0))?;
+    let kind: String = tx.query_row("SELECT action FROM actions WHERE id = ?1", [id], |row| {
+        row.get(0)
+    })?;
+    if kind == "answer" {
+        answer_ran(&tx, id, still, status, stdout, stderr)?;
+        return tx.commit();
+    }
     let (task, workflow, at): (i64, String, String) = tx.query_row(
         "SELECT task, workflow, actions.step
          FROM actions JOIN tasks ON tasks.id = actions.task WHERE actions.id = ?1",
@@ -2486,6 +2580,73 @@ pub(crate) fn ran(
         )?;
     }
     tx.commit()
+}
+
+/// The status of an answer's command that a daemon restart interrupted.
+pub(crate) const UNCERTAIN: &str = "uncertain";
+
+/// Records how the command of answer action `id` ended, `done` on exit 0, and wakes its task with
+/// the exit and the tail of its output, unless the task moved on, as a cancel does.
+fn answer_ran(
+    tx: &Transaction,
+    id: i64,
+    still: bool,
+    status: &str,
+    stdout: &str,
+    stderr: &str,
+) -> rusqlite::Result<()> {
+    let (task, ask, revision, answer, ran): (i64, i64, i64, String, String) = tx.query_row(
+        "SELECT actions.task, actions.ask, actions.revision, asks.answer, actions.command
+         FROM actions JOIN asks ON asks.id = actions.ask WHERE actions.id = ?1",
+        [id],
+        |row| {
+            Ok((
+                row.get(0)?,
+                row.get(1)?,
+                row.get(2)?,
+                row.get(3)?,
+                row.get(4)?,
+            ))
+        },
+    )?;
+    let ran: command::Command = serde_json::from_str(&ran).expect("a stored command parses");
+    let (outcome, error, how) = match status {
+        "exit 0" => ("done", None, ": exit 0.".to_owned()),
+        UNCERTAIN => (
+            UNCERTAIN,
+            Some("Priory stopped while it ran"),
+            ", and Priory stopped while it ran, so whether it finished is uncertain. Check the target before you act on it."
+                .to_owned(),
+        ),
+        status => ("failed", Some(status), format!(": {status}.")),
+    };
+    tx.execute(
+        &format!(
+            "UPDATE actions SET status = ?2, error = ?3, stdout = ?4, stderr = ?5, ended = {NOW}
+             WHERE id = ?1"
+        ),
+        params![id, outcome, error, stdout, stderr],
+    )?;
+    if !still {
+        return Ok(());
+    }
+    let answer = serde_json::to_string(&answer).expect("an answer serializes");
+    wake(
+        tx,
+        task,
+        &format!(
+            "Ask {ask} was answered {answer} at revision {revision}, which ran {} in {}{how}\nstdout:\n{stdout}\nstderr:\n{stderr}",
+            ran.shown(),
+            ran.dir.display()
+        ),
+    )?;
+    tx.execute(
+        "UPDATE tasks SET state = 'ready', reason = NULL WHERE id = ?1
+         AND state IN ('running', 'asleep')
+         AND NOT EXISTS (SELECT 1 FROM runs WHERE task = ?1 AND ended IS NULL)",
+        [task],
+    )
+    .map(drop)
 }
 
 /// Records the run of the code step `at`'s action, makes the task own the pull request it opened,

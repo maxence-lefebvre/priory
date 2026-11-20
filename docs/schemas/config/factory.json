@@ -5,7 +5,7 @@
   "definitions": {
     "Asks": {
       "additionalProperties": false,
-      "description": "What happens to the answer of an ask from a session Priory did not start.",
+      "description": "What happens to the answer of an ask: where an agent's ask can run a command, and how an\noutside ask's answer reaches the session that asked.",
       "properties": {
         "deliver": {
           "description": "The command that delivers an answer to the session that asked, relative to the factory\nfolder. It gets the ask's id, revision, session, `answered` or `dismissed`, and the answer\nas its arguments. Without it, the answer is only stored.",
@@ -13,6 +13,14 @@
             "string",
             "null"
           ]
+        },
+        "targets": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "default": {},
+          "description": "The folders, besides the task's worktree, where an answer can run an ask's command, by\nname. A relative folder is under the factory folder.",
+          "type": "object"
         }
       },
       "type": "object"
