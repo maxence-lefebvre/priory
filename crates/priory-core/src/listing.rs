@@ -421,7 +421,6 @@ pub fn queue(
     }))
 }
 
-<<<<<<< HEAD
 /// The asleep tasks, longest asleep first, each with its open waits: what each waits on, as
 /// `priory waits` shows it, and since when.
 fn asleep(db: &Connection) -> rusqlite::Result<Value> {
@@ -446,14 +445,11 @@ fn asleep(db: &Connection) -> rusqlite::Result<Value> {
     Ok(asleep)
 }
 
-||||||| 218f760
-=======
 /// The factory's links, as `serve` and `priory links --json` show them.
 pub fn links(factory: &Factory) -> Value {
     json!({ "links": factory.links() })
 }
 
->>>>>>> origin/main
 /// The factory's schedule triggers by name.
 pub fn schedule_triggers(factory: &Factory) -> Vec<(String, Trigger)> {
     factory
