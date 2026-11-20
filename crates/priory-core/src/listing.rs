@@ -113,7 +113,8 @@ fn asks_query() -> String {
         'since', coalesce(ended, created))
       FROM deliveries WHERE deliveries.ask = asks.id ORDER BY id DESC LIMIT 1) AS delivery, {}
    FROM asks LEFT JOIN tasks ON tasks.id = asks.task
-   LEFT JOIN snoozes ON snoozes.kind = 'ask' AND snoozes.item = asks.id WHERE ?1 IS NULL OR asks.task = ?1 ORDER BY asks.id",
+   LEFT JOIN snoozes ON snoozes.kind = 'ask' AND snoozes.item = asks.id
+   WHERE (?1 IS NULL OR asks.task = ?1) AND (?2 IS NULL OR asks.id = ?2) ORDER BY asks.id",
         snooze::FIELDS
     )
 }
@@ -178,11 +179,17 @@ fn parse_json(task: &mut Value) {
 
 /// Every ask with its state, oldest first.
 pub fn asks(db: &Connection) -> rusqlite::Result<Value> {
-    asks_of(db, None)
+    asks_of(db, None, None)
 }
 
-fn asks_of(db: &Connection, task: Option<i64>) -> rusqlite::Result<Value> {
-    let mut asks = rows(db, &asks_query(), [task])?;
+/// Ask `id` as `asks` lists it, if there is one.
+pub fn ask(db: &Connection, id: i64) -> rusqlite::Result<Option<Value>> {
+    let asks = asks_of(db, None, Some(id))?;
+    Ok(asks.as_array().and_then(|asks| asks.first()).cloned())
+}
+
+fn asks_of(db: &Connection, task: Option<i64>, id: Option<i64>) -> rusqlite::Result<Value> {
+    let mut asks = rows(db, &asks_query(), [task, id])?;
     for ask in asks.as_array_mut().into_iter().flatten() {
         if let Some(options) = ask["options"].as_str() {
             ask["options"] = serde_json::from_str(options).unwrap_or(Value::Null);
@@ -490,7 +497,7 @@ pub fn task(db: &Connection, id: i64) -> rusqlite::Result<Option<Value>> {
     for (name, query) in lists {
         task[name] = rows(db, query, [id])?;
     }
-    task["asks"] = asks_of(db, Some(id))?;
+    task["asks"] = asks_of(db, Some(id), None)?;
     parse_json(&mut task);
     Ok(Some(task))
 }
