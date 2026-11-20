@@ -1482,7 +1482,6 @@ fn a_report_whose_pick_another_tasks_report_has_is_refused() {
 }
 
 impl Setup {
-    /// Writes the schedule trigger `name`.
     fn schedule(&self, name: &str, trigger: &str) {
         fs::create_dir_all(self.dir.join("factory/triggers")).unwrap();
         fs::write(
@@ -1492,7 +1491,6 @@ impl Setup {
         .unwrap();
     }
 
-    /// The JSON `priory <args>` prints at `now`.
     fn json_at(&self, now: &str, args: &[&str]) -> Value {
         let output = self
             .command()
@@ -1621,4 +1619,35 @@ fn up_next_lists_the_next_three_runs_queued_held_or_scheduled_in_time_order() {
         ])
     );
     assert_eq!(api(&address, "/api/queue"), queue);
+}
+
+#[test]
+fn up_next_lists_each_firing_of_a_keyless_schedule_and_none_of_a_held_one() {
+    let setup = Setup::new("up-next-firings", SERVE);
+    setup.schedule(
+        "hourly",
+        "source = \"schedule\"\nrepo = \"owner/repo\"\nat = \"13:00\"\nevery = \"1h\"\ntimezone = \"UTC\"\nworkflow = \"implement\"\n",
+    );
+    setup.schedule(
+        "held",
+        "source = \"schedule\"\nrepo = \"owner/repo\"\nat = \"12:30\"\ntimezone = \"UTC\"\nworkflow = \"implement\"\nhold = { reason = \"a person starts it\" }\n",
+    );
+    let factory = setup.factory();
+
+    let queue = setup.json_at("2026-11-17T12:00:00Z", &["queue", &factory, "--json"]);
+
+    let at: Vec<&Value> = queue["up_next"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|entry| &entry["at"])
+        .collect();
+    assert_eq!(
+        at,
+        [
+            "2026-11-17T13:00:00Z",
+            "2026-11-17T14:00:00Z",
+            "2026-11-17T15:00:00Z"
+        ]
+    );
 }

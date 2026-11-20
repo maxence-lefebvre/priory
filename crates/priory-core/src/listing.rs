@@ -242,27 +242,28 @@ fn up_next(
             next.push((at, entry(at.to_string(), "held", row, &Value::Null, why)));
         }
     }
-    for schedule in self::schedules(db, schedules, now)?
-        .as_array()
-        .into_iter()
-        .flatten()
-    {
-        let Some(at) = schedule["next"].as_str().and_then(|at| at.parse().ok()) else {
-            continue;
-        };
-        // A firing for a live task that is not asleep coalesces into it, so it starts no run.
-        if !schedule["task"].is_null() && schedule["task_state"] != "asleep" {
+    for firing in firings(db, schedules, now)? {
+        // A held task waits for its release, and a live task that is not asleep coalesces the
+        // firing, so neither starts a run then.
+        if firing.trigger.hold.is_some()
+            || firing
+                .task
+                .as_ref()
+                .is_some_and(|(_, state)| state != "asleep")
+        {
             continue;
         }
-        let row = json!({ "id": schedule["task"], "key": schedule["key"] });
-        let why = format!(
-            "schedule {} fires",
-            schedule["trigger"].as_str().unwrap_or_default()
-        );
-        next.push((
-            at,
-            entry(at.to_string(), "scheduled", &row, &schedule["trigger"], why),
-        ));
+        // Each firing of a keyless schedule is its own task; a fixed key's later ones coalesce.
+        let count = if firing.key.is_none() { 3 } else { 1 };
+        let row = json!({ "id": firing.task.map(|(id, _)| id), "key": firing.key });
+        let slots = std::iter::successors(firing.next, |at| schedule::next(firing.trigger, *at));
+        for at in slots.take(count) {
+            let why = format!("schedule {} fires", firing.name);
+            next.push((
+                at,
+                entry(at.to_string(), "scheduled", &row, &json!(firing.name), why),
+            ));
+        }
     }
     next.sort_by_key(|(at, _)| *at);
     Ok(next.into_iter().take(3).map(|(_, entry)| entry).collect())
@@ -275,32 +276,56 @@ pub fn schedules(
     schedules: &[(String, Trigger)],
     now: Timestamp,
 ) -> rusqlite::Result<Value> {
+    let listed = firings(db, schedules, now)?.into_iter().map(|firing| {
+        let (task, task_state) = firing.task.unzip();
+        json!({
+            "trigger": firing.name,
+            "workflow": firing.trigger.workflow,
+            "next": firing.next.map(|next| next.to_string()),
+            "key": firing.key,
+            "task": task,
+            "task_state": task_state,
+        })
+    });
+    Ok(listed.collect())
+}
+
+struct Firing<'a> {
+    name: &'a str,
+    trigger: &'a Trigger,
+    next: Option<Timestamp>,
+    key: Option<String>,
+    /// The live task the fixed key names, and its state.
+    task: Option<(i64, String)>,
+}
+
+fn firings<'a>(
+    db: &Connection,
+    schedules: &'a [(String, Trigger)],
+    now: Timestamp,
+) -> rusqlite::Result<Vec<Firing<'a>>> {
     let mut live = db.prepare(
         "SELECT id, state FROM tasks WHERE key = ?1 AND state NOT IN ('done', 'failed', 'dropped')
          ORDER BY id DESC LIMIT 1",
     )?;
-    let mut listed = Vec::new();
+    let mut firings = Vec::new();
     for (name, trigger) in schedules {
         let key = trigger.key.as_ref().map(|key| format!("schedule:{key}"));
-        let (task, task_state) = match &key {
+        let task = match &key {
             Some(key) => live
-                .query_row([key], |row| {
-                    Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
-                })
-                .optional()?
-                .unzip(),
-            None => (None, None),
+                .query_row([key], |row| Ok((row.get(0)?, row.get(1)?)))
+                .optional()?,
+            None => None,
         };
-        listed.push(json!({
-            "trigger": name,
-            "workflow": trigger.workflow,
-            "next": schedule::next(trigger, now).map(|next| next.to_string()),
-            "key": key,
-            "task": task,
-            "task_state": task_state,
-        }));
+        firings.push(Firing {
+            name,
+            trigger,
+            next: schedule::next(trigger, now),
+            key,
+            task,
+        });
     }
-    Ok(Value::Array(listed))
+    Ok(firings)
 }
 
 /// `back_early` as the object it is stored as.

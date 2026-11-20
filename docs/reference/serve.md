@@ -184,9 +184,15 @@ of the factory in `DIR`, and `priory queue --json` lists no schedule firings.
 | `scheduled` | The trigger's [next firing](../intake/schedule.md#next-firing) | `schedule <trigger> fires` |
 
 `task` and `key` name the task, and are null for a firing that starts a new task. `trigger` names
-the schedule trigger of a `scheduled` entry, and is null otherwise. A firing for a task that is not
-asleep coalesces into it, so up next leaves it out. Held tasks without a time hold have no start
-time and are left out too.
+the schedule trigger of a `scheduled` entry, and is null otherwise.
+
+- A schedule without a fixed `key` starts a task at each firing, so up next can list several of
+  its firings.
+- A schedule with a fixed `key` lists only its next firing. Its later firings coalesce into that
+  task.
+- A firing for a live task that is not asleep coalesces into it, so up next leaves it out.
+- Up next leaves out a schedule with a `hold`, and held tasks without a time hold. They wait for
+  their release, so they have no start time.
 
 ## Report
 

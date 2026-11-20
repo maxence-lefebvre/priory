@@ -463,13 +463,22 @@ fn listed(verb: &str, mut args: Vec<String>) -> ExitCode {
         .map(|at| args.remove(at))
         .is_some();
     // Without the factory folder, the queue knows no schedules, so up next lists none.
-    let mut schedules = Vec::new();
-    if let ("queue", [dir]) = (verb, &args[..]) {
-        let Some(factory) = load(Path::new(dir)) else {
-            return ExitCode::FAILURE;
+    let (mut schedules, mut now) = (Vec::new(), jiff::Timestamp::now());
+    if verb == "queue" {
+        now = match intake::now() {
+            Ok(now) => now,
+            Err(error) => return exit(verb, Err(error)),
         };
-        schedules = listing::schedule_triggers(&factory);
-        args.clear();
+        if let [dir] = &args[..] {
+            if dir.starts_with("--") {
+                return usage();
+            }
+            let Some(factory) = load(Path::new(dir)) else {
+                return ExitCode::FAILURE;
+            };
+            schedules = listing::schedule_triggers(&factory);
+            args.clear();
+        }
     }
     let (mut lane, mut grade, mut since) = (None, None, None);
     for pair in args.chunks(2) {
@@ -494,8 +503,7 @@ fn listed(verb: &str, mut args: Vec<String>) -> ExitCode {
         }
     }
     let home = runtime::home();
-    let shown = intake::now().and_then(|now| {
-        let db = state::open()?;
+    let shown = state::open().and_then(|db| {
         let value = listing::revised(&db, verb, |db| {
             match verb {
                 "inbox" => listing::inbox(db, since.unwrap_or(0)),
