@@ -87,6 +87,9 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
         return Ok(());
     }
     let listening = runtime::listen(&home)?;
+    if let Some(config) = factory.serve() {
+        crate::serve::start(config, config.listen)?;
+    }
     if let Some(name) = embedder.clone() {
         let home = home.clone();
         std::thread::spawn(move || embed_all(&name, embed::Lazy::new(&home, true)));

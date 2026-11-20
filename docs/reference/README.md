@@ -10,6 +10,7 @@ config page gives a field table, a complete example and the errors `priory check
 | [agents.md](agents.md) | `agents/<name>/agent.md`: harness, model, session and permissions |
 | [triggers.md](triggers.md) | `triggers/<name>.toml`: one section per source, and `hold` |
 | [runners.md](runners.md) | `runners/<hostname>.toml`: platform and share of the machine |
+| [serve.md](serve.md) | `priory serve` and the JSON of its endpoints and of the listings' `--json` |
 | [events.md](events.md) | Every message type on `factory.intake`, with an example payload |
 
 The examples are files of a complete factory in [`examples/factory/`](examples/factory/), and the
