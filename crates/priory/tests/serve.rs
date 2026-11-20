@@ -1354,6 +1354,57 @@ fn the_queue_and_tasks_list_each_condition_of_a_hold_and_whether_it_is_met() {
 }
 
 #[test]
+fn the_queue_lists_each_asleep_task_with_what_it_waits_on_and_since_when() {
+    let mut setup = Setup::new("queue-asleep", SERVE);
+    setup.seed();
+    let db = rusqlite::Connection::open(setup.dir.join("priory.db")).unwrap();
+    db.execute_batch(
+        "UPDATE tasks SET state = 'asleep' WHERE id = 1;
+         UPDATE tasks SET changed = '2026-11-17T10:00:00Z' WHERE id = 1;
+         INSERT INTO runs (task, step, tmux, session, ended, ended_as)
+           VALUES (1, 'implement', 'priory-1', 's1', '2026-11-17T10:00:00Z', 'asleep');
+         INSERT INTO waits (task, run, kind, resource, until, created) VALUES
+           (1, (SELECT max(id) FROM runs WHERE task = 1), 'review', 'github:owner/repo#7', NULL,
+            '2026-11-17T10:00:00Z'),
+           (1, (SELECT max(id) FROM runs WHERE task = 1), 'time', NULL, '2026-11-18T09:00:00Z',
+            '2026-11-17T10:01:00Z');",
+    )
+    .unwrap();
+    let address = setup.start(&["serve", &setup.factory()]);
+
+    let asleep = api(&address, "/api/queue")["asleep"].clone();
+
+    assert_eq!(asleep, json_of(&setup, "queue")["asleep"]);
+    assert_eq!(asleep.as_array().unwrap().len(), 1, "{asleep}");
+    let task = &asleep[0];
+    assert_eq!(
+        [&task["id"], &task["key"], &task["title"], &task["since"]],
+        [
+            &json!(1),
+            &json!("cli:docs-1"),
+            &json!("Fix the docs"),
+            &json!("2026-11-17T10:00:00Z")
+        ]
+    );
+    assert_eq!(
+        task["waits"],
+        json!([
+            { "kind": "review", "on": "github:owner/repo#7", "since": "2026-11-17T10:00:00Z" },
+            { "kind": "time", "on": "2026-11-18T09:00:00Z", "since": "2026-11-17T10:01:00Z" },
+        ])
+    );
+    let text = setup.priory(&["queue"]);
+    succeeded(&text);
+    let text = String::from_utf8(text.stdout).unwrap();
+    assert!(
+        text.ends_with(
+            "\nasleep\tkey\tsince\twaits on\n1\tcli:docs-1\t2026-11-17T10:00:00Z\treview github:owner/repo#7 since 2026-11-17T10:00:00Z; time 2026-11-18T09:00:00Z since 2026-11-17T10:01:00Z\n"
+        ),
+        "{text}"
+    );
+}
+
+#[test]
 fn each_queue_row_carries_its_tasks_tldr_or_else_the_first_line_of_its_request() {
     let mut setup = Setup::new("queue-titles", SERVE);
     setup.seed();
@@ -2948,6 +2999,79 @@ fn dismiss_and_snooze_through_their_endpoints_do_what_their_cli_verbs_do() {
         .0,
         404
     );
+}
+
+#[test]
+fn resume_say_cancel_and_revive_through_their_endpoints_do_what_their_cli_verbs_do() {
+    let mut setup = Setup::new("web-act", SERVE);
+    setup.seed();
+    succeeded(&setup.priory(&["pause"]));
+    setup
+        .db()
+        .execute_batch(
+            "UPDATE tasks SET state = 'blocked', reason = 'needs a key' WHERE id = 1;
+             UPDATE tasks SET state = 'asleep' WHERE id = 2;
+             INSERT INTO runs (task, step, tmux, session, ended, ended_as)
+               VALUES (2, 'implement', 'priory-2', 's2', '2026-11-17T10:00:00Z', 'asleep');",
+        )
+        .unwrap();
+    let address = setup.start(&["daemon", &setup.factory()]);
+    let state = |task: usize| {
+        json_of(&setup, "tasks")["tasks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|row| row["id"] == task)
+            .unwrap()["state"]
+            .clone()
+    };
+    let revision = || json_of(&setup, "tasks")["revision"].as_i64().unwrap();
+
+    let resumed = post(&address, "/api/tasks/1/resume", "", "{}");
+    assert_eq!(resumed.0, 200, "{}", resumed.1);
+    assert_eq!(
+        serde_json::from_str::<Value>(&resumed.1).unwrap(),
+        json!({ "ok": "task 1 is queued" })
+    );
+    let said = post(
+        &address,
+        "/api/tasks/2/say",
+        "",
+        r#"{"text": "also fix the link"}"#,
+    );
+    assert_eq!(said.0, 200, "{}", said.1);
+    let stale = post(&address, "/api/tasks/2/cancel", "", r#"{"revision": 1}"#);
+    assert_eq!(stale.0, 409, "{}", stale.1);
+    assert_ne!(state(2), "dropped");
+    // The daemon may move the state between the read and the cancel, as it may for any client.
+    let cancel = || {
+        let body = format!(r#"{{"revision": {}}}"#, revision());
+        post(&address, "/api/tasks/2/cancel", "", &body)
+    };
+    let cancelled = (0..20)
+        .map(|_| cancel())
+        .find(|(status, _)| *status != 409)
+        .unwrap();
+    assert_eq!(cancelled.0, 200, "{}", cancelled.1);
+    assert_eq!(state(2), "dropped");
+    let revived = post(
+        &address,
+        "/api/tasks/2/revive",
+        "",
+        r#"{"step": "implement"}"#,
+    );
+    assert_eq!(revived.0, 200, "{}", revived.1);
+    assert_ne!(state(2), "dropped");
+    let foreign = post(
+        &address,
+        "/api/tasks/2/cancel",
+        "Origin: http://evil.example\r\n",
+        "{}",
+    );
+    assert_eq!(foreign.0, 403, "{}", foreign.1);
+    assert_eq!(get(&address, "/api/tasks/2/cancel", Some(TOKEN)).0, 405);
+    assert_eq!(post(&address, "/api/tasks/9/resume", "", "{}").0, 404);
+    assert_eq!(post(&address, "/api/tasks/2/say", "", "{}").0, 400);
 }
 
 #[test]
