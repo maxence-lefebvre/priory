@@ -3172,6 +3172,7 @@ fn a_dismissed_agent_ask_wakes_its_task_with_one_line_and_a_stale_dismiss_is_ref
 fn an_outside_ask_takes_an_answer_or_a_dismiss_only_at_its_current_revision() {
     let mut setup = Setup::new("outside-answer");
     setup.start();
+    listening(&setup);
     for options in [["ship", "wait"], ["ship", "drop"]] {
         setup.priory(&["ask", "cache.ship", &fleet_ask(&options)]);
         setup.priory(&["ask", "cache.notes", &fleet_ask(&options)]);

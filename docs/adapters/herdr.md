@@ -159,5 +159,5 @@ The panels need these from Priory's core. Each is a separate slice.
 4. A stored last visit per person, for Since you looked.
 5. The next firing time of each schedule, for Up next.
 6. Report sections and picks: the shape above, written by a workflow, and `priory report pick`.
-7. Ask fields for what waits and what the agent does next. `ask` records only the question,
-   options, recommendation and trade-off today.
+7. Ask fields for what waits and what the agent does next: `ask` stores them as `what_waits` and
+   `next_action`, with a `title` and a Markdown `text`. The Asks panel does not show them yet.
