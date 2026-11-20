@@ -1,0 +1,7 @@
+#:schema https://raw.githubusercontent.com/maxence-lefebvre/priory/main/docs/schemas/config/trigger.json
+source = "github"
+repo = "owner/repo"
+on = "issues.opened"
+workflow = "triage"
+key = "issue.number"
+band = "today"

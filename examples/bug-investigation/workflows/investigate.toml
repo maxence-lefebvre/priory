@@ -1,0 +1,34 @@
+#:schema https://raw.githubusercontent.com/maxence-lefebvre/priory/main/docs/schemas/config/workflow.json
+start = "investigate"
+band = "today"
+
+[[steps]]
+id = "investigate"
+decides = "model"
+agent = "investigator"
+prompt = "Reproduce the bug and find its root cause. Put the steps, their output and the cause in your result."
+effect = "reversible"
+next = { found = "fix", "not-reproduced" = "stop" }
+
+[[steps]]
+id = "fix"
+decides = "model"
+agent = "investigator"
+prompt = "Fix the root cause you found, add a test that fails without the fix, and commit. Your result's first line becomes the pull request title."
+effect = "reversible"
+next = { passed = "approve-pr", failed = "stop" }
+
+[[steps]]
+id = "approve-pr"
+decides = "human"
+effect = "none"
+approves = ["open-pr"]
+options = ["open", "stop"]
+next = { open = "open-pr", stop = "stop" }
+
+[[steps]]
+id = "open-pr"
+decides = "code"
+action = "open-pr"
+effect = "irreversible"
+next = { opened = "done", failed = "stop" }
