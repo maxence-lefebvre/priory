@@ -56,6 +56,90 @@ pub struct Settings {
     #[serde(default)]
     pub asks: Asks,
     pub request: Option<RequestDefaults>,
+    /// Autolinks, in order: each key a regex, each value an `https://` URL template whose `$1`
+    /// names the regex's first group. An entry with a built-in link's regex replaces it.
+    #[serde(default, deserialize_with = "links")]
+    #[schemars(with = "BTreeMap<String, String>", extend("default" = {}))]
+    pub links: Vec<Link>,
+}
+
+/// Text that `pattern` matches links to `url`, its `$1`-style groups filled in and `{repo}` the
+/// task's repository.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct Link {
+    pub pattern: String,
+    pub url: String,
+}
+
+/// The built-in links: `#42` to the issue or pull request 42 in the task's repository.
+const LINKS: &[(&str, &str)] = &[(r"\B#(\d+)\b", "https://github.com/{repo}/issues/$1")];
+
+impl Link {
+    /// Refuses a pattern that is not a regex, a URL that is not `https:`, and a group the regex
+    /// lacks.
+    pub fn check(&self) -> Result<(), String> {
+        let Link { pattern, url } = self;
+        let regex = regex::Regex::new(pattern).map_err(|error| {
+            let error = error.to_string();
+            let reason = error.lines().last().unwrap_or_default();
+            format!("`[links]` `{pattern}` is not a regex: {reason}")
+        })?;
+        if !url.starts_with("https://") {
+            return Err(format!(
+                "`[links]` `{pattern}` links to `{url}`: a link starts with `https://`"
+            ));
+        }
+        let rest = &url["https://".len()..];
+        let host = &rest[..rest.find(['/', '?', '#']).unwrap_or(rest.len())];
+        // A group in the host would let the linked text pick the site.
+        let plain = |c: char| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | ':');
+        if host.is_empty() || !host.chars().all(plain) {
+            return Err(format!(
+                "`[links]` `{pattern}` links to `{url}`: a link's host is fixed, with no group or `{{repo}}` in it"
+            ));
+        }
+        let groups = regex.captures_len() - 1;
+        let missing = url
+            .split('$')
+            .skip(1)
+            .map(|after| {
+                &after[..after
+                    .find(|c: char| !c.is_ascii_digit())
+                    .unwrap_or(after.len())]
+            })
+            .find(|digits| {
+                !digits.is_empty() && digits.parse::<usize>().map_or(true, |group| group > groups)
+            });
+        match missing {
+            Some(group) => Err(format!(
+                "`[links]` `{pattern}` names group ${group}, but the regex has {groups} group{}",
+                if groups == 1 { "" } else { "s" }
+            )),
+            None => Ok(()),
+        }
+    }
+}
+
+/// A table in file order, which a map would lose.
+fn links<'de, D: Deserializer<'de>>(input: D) -> Result<Vec<Link>, D::Error> {
+    struct Ordered;
+    impl<'de> serde::de::Visitor<'de> for Ordered {
+        type Value = Vec<Link>;
+        fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+            formatter.write_str("a table of regexes and URL templates")
+        }
+        fn visit_map<A: serde::de::MapAccess<'de>>(
+            self,
+            mut map: A,
+        ) -> Result<Vec<Link>, A::Error> {
+            let mut links = Vec::new();
+            while let Some((pattern, url)) = map.next_entry()? {
+                links.push(Link { pattern, url });
+            }
+            Ok(links)
+        }
+    }
+    input.deserialize_map(Ordered)
 }
 
 /// What `priory add` and `POST /api/request` use when a request names no workflow or band.
@@ -1049,6 +1133,22 @@ impl Factory {
             .flat_map(|settings| settings.value.asks.targets.keys())
             .map(String::as_str)
             .collect()
+    }
+
+    /// The factory's links in file order, then each built-in link no entry replaces.
+    pub fn links(&self) -> Vec<Link> {
+        let own = self
+            .settings
+            .as_ref()
+            .map_or(&[][..], |settings| &settings.value.links[..]);
+        let built_in = LINKS
+            .iter()
+            .filter(|(pattern, _)| !own.iter().any(|link| link.pattern == *pattern))
+            .map(|(pattern, url)| Link {
+                pattern: (*pattern).to_owned(),
+                url: (*url).to_owned(),
+            });
+        own.iter().cloned().chain(built_in).collect()
     }
 
     /// The GitHub webhook's settings; none takes no GitHub webhook.
