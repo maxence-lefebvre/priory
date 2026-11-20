@@ -95,6 +95,25 @@ fn asks_query() -> String {
     )
 }
 
+/// What `read` returns, read in one snapshot with the revision it read. An object gains
+/// `revision`; an array, or an object with a `revision` of its own, such as a report, becomes
+/// `{"revision": N, "<name>": ...}`.
+pub fn revised(
+    db: &Connection,
+    name: &str,
+    read: impl FnOnce(&Connection) -> rusqlite::Result<Option<Value>>,
+) -> rusqlite::Result<Option<Value>> {
+    let _snapshot = db.unchecked_transaction()?;
+    let revision = state::revision(db)?;
+    Ok(read(db)?.map(|value| match value {
+        Value::Object(mut object) if !object.contains_key("revision") => {
+            object.insert("revision".to_owned(), revision.into());
+            Value::Object(object)
+        }
+        value => json!({ "revision": revision, name: value }),
+    }))
+}
+
 /// Every inbox message and report after sequence number `since`, oldest first.
 pub fn inbox(db: &Connection, since: i64) -> rusqlite::Result<Value> {
     rows(
@@ -153,7 +172,6 @@ pub fn queue(db: &Connection) -> rusqlite::Result<Value> {
          ) ORDER BY part, sort",
         places()
     );
-    let _snapshot = db.unchecked_transaction()?;
     Ok(json!({
         "waiting": rows(db, &waiting, [])?,
         "running": rows(
@@ -183,7 +201,6 @@ fn parse_back_early(item: &mut Value) {
 /// The pause's line, a stalled queue's banner, the asleep and snoozed counts, what waits on a person, the queue, then
 /// every worktree under `home` that stays and why. The snoozed items show only with `all`.
 pub fn desk(db: &Connection, home: &Path, all: bool) -> rusqlite::Result<Value> {
-    let _snapshot = db.unchecked_transaction()?;
     let mut items = rows(db, &desk_items(), [])?;
     let list = items.as_array_mut().expect("rows are an array");
     list.iter_mut().for_each(parse_back_early);
@@ -214,7 +231,6 @@ pub fn desk(db: &Connection, home: &Path, all: bool) -> rusqlite::Result<Value> 
 
 /// One task with its runs, code steps, asks, waits and results; none when it does not exist.
 pub fn task(db: &Connection, id: i64) -> rusqlite::Result<Option<Value>> {
-    let _snapshot = db.unchecked_transaction()?;
     let found = rows(
         db,
         &format!(

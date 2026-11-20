@@ -2587,7 +2587,10 @@ fn a_step_ending_green_with_a_reason_sets_the_task_grade_and_reason() {
     let listed: serde_json::Value =
         serde_json::from_slice(&setup.priory(&["tasks", "--json"]).stdout).unwrap();
     assert_eq!(
-        [&listed[0]["grade"], &listed[0]["grade_reason"]],
+        [
+            &listed["tasks"][0]["grade"],
+            &listed["tasks"][0]["grade_reason"]
+        ],
         [&json!("green"), &json!("one file, covered by tests")]
     );
 }
@@ -3101,6 +3104,7 @@ fn a_snoozed_ask_leaves_the_desk_and_asks_until_its_time_while_the_task_stays_as
     assert_eq!(json["counts"]["snoozed"], 1);
     let json: serde_json::Value =
         serde_json::from_slice(&setup.priory(&["asks", "--json"]).stdout).unwrap();
+    let json = &json["asks"];
     assert_eq!(json[0]["snoozed_until"].as_str(), Some(all[0][7].as_str()));
     assert!(json[0]["snoozed_at"].is_string(), "{json}");
     assert!(json[0]["back_early"].is_null(), "{json}");
@@ -5512,6 +5516,7 @@ fn a_new_revision_of_a_snoozed_ask_brings_it_back_early() {
     assert_eq!(asks[0][5], "-");
     let json: serde_json::Value =
         serde_json::from_slice(&setup.priory(&["asks", "--json"]).stdout).unwrap();
+    let json = &json["asks"];
     assert_eq!(json[0]["back_early"]["reason"], "new revision", "{json}");
     assert!(json[0]["snoozed_until"].is_null(), "{json}");
 }
@@ -9130,7 +9135,8 @@ fn asleep_on_a_report(name: &str, report: &serde_json::Value) -> Setup {
 fn shown(setup: &Setup) -> serde_json::Value {
     let output = setup.priory(&["report", "show", "--json"]);
     assert!(output.status.success(), "{output:?}");
-    serde_json::from_slice(&output.stdout).unwrap()
+    let shown: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    shown["report"].clone()
 }
 
 #[test]
