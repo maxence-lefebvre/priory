@@ -3781,9 +3781,7 @@ fn an_outside_ask_takes_an_answer_or_a_dismiss_only_at_its_current_revision() {
 
 #[test]
 fn an_outside_ask_named_only_dots_or_with_a_slash_is_refused() {
-    let mut setup = Setup::new("outside-names");
-    setup.start();
-    listening(&setup);
+    let setup = Setup::new("outside-names");
 
     let refused: Vec<_> = [".", "..", "...", "a/b"]
         .into_iter()

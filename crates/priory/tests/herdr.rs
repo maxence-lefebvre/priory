@@ -149,4 +149,16 @@ fn deliver_resumes_the_asking_session_when_its_terminal_runs_another_claude_sess
         calls[1].contains(&"herdr.space=work".to_owned()),
         "{calls:?}"
     );
+
+    fs::remove_file(dir.join("home/.claude/sessions/4242.json")).unwrap();
+    let (code, calls) = deliver(&dir, &format!("cache-worker {session}"));
+
+    assert_eq!(code, Some(0));
+    assert_eq!(
+        calls
+            .iter()
+            .map(|call| call[0].as_str())
+            .collect::<Vec<_>>(),
+        ["get", "run"]
+    );
 }
