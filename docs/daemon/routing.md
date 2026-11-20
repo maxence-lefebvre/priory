@@ -31,6 +31,7 @@ A task gets its resources at these moments:
 | Its first run starts | its branch | `github:owner/name@priory/3` |
 | A wait of its names a pull request | that pull request | `github:owner/name#57` |
 | A wait of its names a Linear issue or a Slack thread | that issue or thread | `linear:ENG-7`, `slack:C0123:1763500000.000100` |
+| It subscribes, with the `subscribe` tool or `priory subscribe` | that resource, until `unsubscribe` | `github:owner/name#57` |
 
 GitHub numbers issues and pull requests from one sequence per repository, so
 `github:owner/name#42` names either an issue or a pull request.
@@ -87,6 +88,7 @@ Each inbox entry gets one of these outcomes:
 | A schedule's or review request's `factory.task.requested`, with a task in another active state owning its key | `coalesced` | that task, unchanged |
 | A review, comment or review thread comment, with no active task owning a resource it names, and a done task it reopens | `reopened` | that task, now `ready` at its reopen step |
 | `github.pull_request.review_request_removed` with `reviewed: false`, with an active task whose key is its review key | `withdrew` | that task, now `dropped`, its live run ended |
+| Any other, with an active task asleep at a model step subscribing to a resource it names, that fires no wait | `woke` | that task, now `ready` (see [tools.md](tools.md#subscribeon-and-unsubscribeon)) |
 | Any other, with an active task owning a resource it names | `kept` | that task                   |
 | `factory.task.requested`, no active task  | `created` | a new task, `queued` at its workflow's start |
 | `factory.task.requested`, malformed       | `ignored` | none                                         |

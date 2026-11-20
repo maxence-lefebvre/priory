@@ -4990,7 +4990,16 @@ fn the_mcp_server_lists_its_tools() {
     assert_eq!(
         names,
         [
-            "result", "ask", "wait", "compact", "tldr", "report", "search", "progress"
+            "result",
+            "ask",
+            "wait",
+            "subscribe",
+            "unsubscribe",
+            "compact",
+            "tldr",
+            "report",
+            "search",
+            "progress"
         ]
     );
     let on = &replies[1]["result"]["tools"][2]["inputSchema"]["properties"]["on"];

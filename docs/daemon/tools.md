@@ -191,6 +191,52 @@ Or until the pull request closes or a Linear blocker is Done, whichever comes fi
 
 [waits.md](waits.md) lists every condition.
 
+### `subscribe(on)` and `unsubscribe(on)`
+
+`subscribe` makes the task own a pull request, a Linear issue or a Slack thread until the resource
+closes, the task retires (fails or is dropped), or `unsubscribe`. It takes one condition object, as
+`wait` does, and reads only the fields that name the resource:
+
+| `on.type` | Resource |
+| --------- | -------- |
+| `pull_request`, `checks` or `review` | `github:{repo}#{pull_request}`. An issue number names the issue |
+| `linear_comment` or `linear_state` | `linear:{issue}` |
+| `slack_reply` | `slack:{channel}:{thread_ts}` |
+
+Neither tool ends the turn, and either can come after a result, an ask or a wait. Unlike a wait, a
+subscription does not end when one event arrives. Its events reach the task by its state:
+
+| Task | An event on the resource |
+| ---- | ------------------------ |
+| `running` | is queued as a prompt, read after the current turn |
+| `asleep` at a model step, with no checks gate | wakes it, unless it fires an open wait first. The inbox records `woke` |
+| `done` | reopens it, when it is feedback on a pull request (see [routing.md](routing.md#feedback-reopens-a-done-task)) |
+
+For example, to hear every review of an upstream pull request while the task works on:
+
+```json
+{ "on": { "type": "pull_request", "repo": "owner/name", "pull_request": 57 } }
+```
+
+`subscribe` is refused while another active task owns the resource: `github:owner/name#57 belongs
+to task 3, not this one`. A done task does not block it: its subscription ends and the active
+task's starts. A `github.pull_request.closed` event ends every subscription to its pull request.
+Linear issues and Slack threads stay subscribed until `unsubscribe` or the task retires.
+
+`unsubscribe` ends the subscription, and the task stops owning the resource, unless it is the task's
+key or an open wait of the task names it. Unsubscribing from a resource the task does not subscribe
+to is refused.
+
+`priory subscribe TASK RESOURCE` and `priory unsubscribe TASK RESOURCE` do the same for any task,
+writing the state file directly. They take the resource string, and exit 2 on one they cannot read:
+
+```sh
+priory subscribe 7 github:owner/name#57
+priory unsubscribe 7 linear:ENG-7
+```
+
+`priory task ID --json` and `/api/tasks/ID` list the live subscriptions as `subscriptions`.
+
 ### `compact(focus?)`
 
 `compact` queues `/compact <focus>` in the outbox and tells the agent to end its turn. An agent
