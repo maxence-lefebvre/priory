@@ -91,7 +91,7 @@ workspace. The intake reads the key from `LINEAR_API_KEY`. See [linear.md](../in
 | Key | Type | Required | Default | Meaning | Example |
 | --- | ---- | -------- | ------- | ------- | ------- |
 | `on` | string | yes | | `issue.created`, `issue.state_changed` or `comment.created` | `"issue.created"` |
-| `filter` | table | no | | `team` (a team key), `label` (one of the issue's labels) and `state` (the state it moved to, or its state). Every key must match | `{ team = "ENG" }` |
+| `filter` | table | no | | `team` (a team key), `project` (the project's name or id), `label` (one of the issue's labels) and `state` (the state it moved to, or its state). Every key must match | `{ project = "Mobile" }` |
 | `key` | string | no | the identifier | `issue.identifier`. The task key is `linear:ENG-7` | `"issue.identifier"` |
 | `backfill` | boolean | no | `false` | Whether the first poll's events start tasks too | `true` |
 
@@ -102,6 +102,7 @@ source: linear
 on: issue.created              # or issue.state_changed, comment.created
 filter:                        # every key must match
   team: ENG                    # the issue's team key
+  project: Desktop             # the project's name or id
   label: bug                   # one of the issue's labels
 repo: owner/name
 workflow: implement
@@ -243,7 +244,7 @@ Set at most one condition. With none, a person releases the task.
 | `` a GitHub trigger's `key` is `issue.number` `` | Another `key`. `pull_request.number` for a pull request event |
 | `` a `linear.view` trigger, and only it, names a `view` `` | `view` missing on `linear.view`, or set on `linear` |
 | `` a `linear` trigger handles `issue.created`, `issue.state_changed`, `comment.created`, not `<on>` `` | A bad `on`. `linear.view` lists `issue.entered`, `issue.left` |
-| `` a `linear` trigger filters on `team`, `label` or `state` `` | Another `filter` key |
+| `` a `linear` trigger filters on `team`, `project`, `label` or `state` `` | Another `filter` key |
 | `` a `linear.view` trigger takes no `filter`: its view filters `` | A `filter` on a view trigger |
 | `` a Linear trigger's `repo` is `owner/name` `` | A malformed `repo`. Slack gets the same with `a Slack trigger's` |
 | `` a Linear trigger's `key` is `issue.identifier` `` | Another `key` |

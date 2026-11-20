@@ -10,6 +10,7 @@
     "url": "https://linear.app/acme/issue/ENG-7/export-fails-on-an-empty-project",
     "team": "ENG",
     "project": "Desktop",
+    "project_id": "c1d5e0a2-3b4f-4e8a-9a61-7f20d4b8e913",
     "state": "In Progress",
     "labels": ["agent", "bug"],
     "view": "6b3c2f9a1d4e",

@@ -29,6 +29,12 @@ pub fn post(db: &Connection, source: &str, line: &str) -> Result<i64, String> {
     if line.contains(['\n', '\r']) {
         return Err("the line must be one line".into());
     }
+    report(db, source, line)?;
+    Ok(db.last_insert_rowid())
+}
+
+/// Stores one report line from `source`, which may be one of Priory's own sources.
+pub(crate) fn report(db: &Connection, source: &str, line: &str) -> Result<(), String> {
     let line: String = line.chars().take(LINE_MAX).collect();
     db.execute(
         "INSERT INTO inbox (id, type, subject, time, data, links, outcome)
@@ -37,7 +43,7 @@ pub fn post(db: &Connection, source: &str, line: &str) -> Result<i64, String> {
         params![REPORT, source, line],
     )
     .map_err(|error| error.to_string())?;
-    Ok(db.last_insert_rowid())
+    Ok(())
 }
 
 /// Marks report `seq` read, so it leaves the desk. Marking it again keeps the first time.
