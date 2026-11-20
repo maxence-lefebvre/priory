@@ -3374,7 +3374,11 @@ fn delivered(setup: &Setup) -> Vec<Vec<String>> {
 }
 
 /// Polls `priory asks --json` until the delivery of ask `name` satisfies `done`, and returns it.
-fn delivery(setup: &Setup, name: &str, done: impl Fn(&serde_json::Value) -> bool) -> serde_json::Value {
+fn delivery(
+    setup: &Setup,
+    name: &str,
+    done: impl Fn(&serde_json::Value) -> bool,
+) -> serde_json::Value {
     let deadline = Instant::now() + Duration::from_secs(30);
     loop {
         let output = setup.priory(&["asks", "--json"]);
@@ -3429,11 +3433,17 @@ fn a_failing_deliver_command_is_retried_with_a_backoff_then_its_failure_shows_on
 
     setup.priory(&["answer", "--expected", "1", "--", "cache.ship", "ship"]);
 
-    let failed = delivery(&setup, "cache.ship", |delivery| delivery["state"] == "failed");
+    let failed = delivery(&setup, "cache.ship", |delivery| {
+        delivery["state"] == "failed"
+    });
     assert_eq!(failed["tries"], 5);
     assert_eq!(failed["error"], "exit 3: hc is down");
     assert_eq!(delivered(&setup).len(), 5);
-    assert!(started.elapsed() >= Duration::from_secs(15), "{:?}", started.elapsed());
+    assert!(
+        started.elapsed() >= Duration::from_secs(15),
+        "{:?}",
+        started.elapsed()
+    );
     let desk = setup.rows("desk");
     let item = desk.iter().find(|item| item[1] == "delivery").unwrap();
     assert_eq!(
@@ -3455,7 +3465,9 @@ fn a_daemon_restarted_while_a_delivery_runs_waits_for_that_command_and_delivers_
     listening(&setup);
     setup.priory(&["ask", "cache.ship", &fleet_ask(&["ship", "wait"])]);
     setup.priory(&["answer", "--expected", "1", "--", "cache.ship", "ship"]);
-    delivery(&setup, "cache.ship", |delivery| delivery["state"] == "running");
+    delivery(&setup, "cache.ship", |delivery| {
+        delivery["state"] == "running"
+    });
     setup.written("fake/deliver.log");
 
     setup.crash();
@@ -3481,7 +3493,10 @@ fn without_a_deliver_command_an_outside_answer_is_only_stored() {
 
     let output = setup.priory(&["asks", "--json"]);
     let asks: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!([&asks[0]["state"], &asks[0]["answer"]], ["answered", "ship"]);
+    assert_eq!(
+        [&asks[0]["state"], &asks[0]["answer"]],
+        ["answered", "ship"]
+    );
     assert_eq!(asks[0].get("delivery"), Some(&serde_json::Value::Null));
 }
 
@@ -3497,7 +3512,9 @@ fn an_answer_with_shell_metacharacters_reaches_the_deliver_command_unchanged() {
 
     setup.priory(&["answer", "--expected", "1", "--", "cache.ship", answer]);
 
-    delivery(&setup, "cache.ship", |delivery| delivery["state"] == "delivered");
+    delivery(&setup, "cache.ship", |delivery| {
+        delivery["state"] == "delivered"
+    });
     assert_eq!(
         delivered(&setup),
         [["cache.ship", "1", session, "answered", answer]]
@@ -3515,7 +3532,9 @@ fn a_dismissed_outside_ask_is_delivered_as_dismissed_with_no_answer() {
     let dismissed = setup.priory(&["dismiss", "cache.ship"]);
 
     assert!(dismissed.status.success(), "{dismissed:?}");
-    delivery(&setup, "cache.ship", |delivery| delivery["state"] == "delivered");
+    delivery(&setup, "cache.ship", |delivery| {
+        delivery["state"] == "delivered"
+    });
     assert_eq!(
         delivered(&setup),
         [["cache.ship", "1", "cache-worker", "dismissed", ""]]

@@ -96,7 +96,13 @@ pub(crate) fn tick(
              ORDER BY deliveries.id",
         )?
         .query_map([], |row| {
-            Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?))
+            Ok((
+                row.get(0)?,
+                row.get(1)?,
+                row.get(2)?,
+                row.get(3)?,
+                row.get(4)?,
+            ))
         })?
         .collect::<rusqlite::Result<_>>()?;
     for (id, name, revision, session, answer) in due {
@@ -113,7 +119,11 @@ pub(crate) fn tick(
                 name.as_str(),
                 &revision.to_string(),
                 &session,
-                if answer.is_some() { "answered" } else { "dismissed" },
+                if answer.is_some() {
+                    "answered"
+                } else {
+                    "dismissed"
+                },
                 answer.as_deref().unwrap_or_default(),
             ]);
         match script::spawn_command(command, &factory.dir, &file(home, id, "log"), TIMEOUT) {
@@ -147,15 +157,25 @@ fn adopted_status(home: &Path, id: i64) -> (String, String) {
 }
 
 /// Why a delivery whose command left no exit code failed without another try.
-const INTERRUPTED: &str = "a daemon restart interrupted its command, which may have reached the session";
+const INTERRUPTED: &str =
+    "a daemon restart interrupted its command, which may have reached the session";
 
 /// Records how delivery `id`'s command ended, from its status and output. A failed try is tried
 /// again 1, 2, then 4 and 8 seconds later; the last one fails the delivery. An interrupted one
 /// fails at once, since another try could deliver the answer twice.
-fn settle(db: &Connection, home: &Path, id: i64, status: &str, output: &str) -> rusqlite::Result<()> {
+fn settle(
+    db: &Connection,
+    home: &Path,
+    id: i64,
+    status: &str,
+    output: &str,
+) -> rusqlite::Result<()> {
     let _ = std::fs::remove_file(file(home, id, "status"));
     if status == INTERRUPTED {
-        db.execute("UPDATE deliveries SET tries = max(tries, ?2) WHERE id = ?1", params![id, TRIES])?;
+        db.execute(
+            "UPDATE deliveries SET tries = max(tries, ?2) WHERE id = ?1",
+            params![id, TRIES],
+        )?;
     }
     if status == "exit 0" {
         db.execute(

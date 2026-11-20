@@ -10,9 +10,8 @@ fn deliver(dir: &Path, session: &str) -> (Option<i32>, Vec<Vec<String>>) {
     let log = dir.join("fake/hc.log");
     let _ = fs::remove_file(&log);
     let path = std::env::join_paths(
-        std::iter::once(dir.join("fake")).chain(std::env::split_paths(
-            &std::env::var_os("PATH").unwrap(),
-        )),
+        std::iter::once(dir.join("fake"))
+            .chain(std::env::split_paths(&std::env::var_os("PATH").unwrap())),
     )
     .unwrap();
     let status = Command::new(script)
@@ -31,7 +30,9 @@ fn deliver(dir: &Path, session: &str) -> (Option<i32>, Vec<Vec<String>>) {
 }
 
 fn setup(name: &str) -> PathBuf {
-    let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join("herdr").join(name);
+    let dir = Path::new(env!("CARGO_TARGET_TMPDIR"))
+        .join("herdr")
+        .join(name);
     let _ = fs::remove_dir_all(&dir);
     fs::create_dir_all(dir.join("fake")).unwrap();
     let hc = dir.join("fake/hc");
@@ -89,8 +90,19 @@ fn deliver_types_into_a_live_claude_terminal_else_resumes_its_session_in_a_new_t
     assert_eq!(
         gone.1[1],
         [
-            "run", "--bg", "--keep", "--no-parent", "--cwd", "/work/cache", "--label",
-            "herdr.tab=ask-cache.ship", "--", "claude", "--resume", session, message,
+            "run",
+            "--bg",
+            "--keep",
+            "--no-parent",
+            "--cwd",
+            "/work/cache",
+            "--label",
+            "herdr.tab=ask-cache.ship",
+            "--",
+            "claude",
+            "--resume",
+            session,
+            message,
         ]
     );
     assert_eq!(without_claude.0, Some(1));

@@ -903,7 +903,9 @@ fn ask(name: &str, fields: &str) -> ExitCode {
 /// The hc terminal that runs `priory ask`, then the Claude session in it when there is one, so the
 /// answer can reach it, or resume it once the terminal closed.
 fn asking_session() -> Option<String> {
-    let terminal = std::env::var("HC_TERMINAL_ID").ok().filter(|id| !id.is_empty())?;
+    let terminal = std::env::var("HC_TERMINAL_ID")
+        .ok()
+        .filter(|id| !id.is_empty())?;
     Some(match std::env::var("CLAUDE_CODE_SESSION_ID") {
         Ok(claude) if !claude.is_empty() => format!("{terminal} {claude}"),
         _ => terminal,

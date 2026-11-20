@@ -583,7 +583,9 @@ fn take(db: &mut Connection, line: &str, trace: &Trace) -> Result<(String, Optio
             })?),
             None,
         )),
-        Ok(Input::Dismiss(dismiss)) => Ok((replied(tools::dismiss(db, &dismiss, trace.factory)?), None)),
+        Ok(Input::Dismiss(dismiss)) => {
+            Ok((replied(tools::dismiss(db, &dismiss, trace.factory)?), None))
+        }
         Ok(Input::Act(act)) => {
             let (reply, kill) = tools::act(db, &act, trace.factory)?;
             Ok((replied(reply), kill))

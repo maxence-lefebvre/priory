@@ -19,6 +19,9 @@ The adapter will live in `adapters/herdr/` at the repository root:
 - `adapters/herdr/tokens.js`: Priory's theme tokens, generated from
   [`design/tokens/`](../../design/tokens/), with each `light-dark()` pair resolved per mode.
 
+- `adapters/herdr/deliver`: the factory's `[asks] deliver` command. It ships today; see
+  [Delivering answers](#delivering-answers).
+
 Installing the adapter links the mods into Herdr's mods folder (`~/.config/herdr-app/mods/`) and
 the layout into its layouts folder. The adapter depends on no Priory crate, and no crate depends on
 it.
@@ -41,6 +44,29 @@ state database and never writes a file in the factory.
 
 Today `priory desk`, `asks` and `tasks` print text for people. The JSON output and `serve` are
 core work the adapter waits on; the list of gaps is at the end of this page.
+
+## Delivering answers
+
+`adapters/herdr/deliver` brings an outside ask's answer to the Claude session that asked, as
+[asks.md](../daemon/asks.md) describes. A factory names it with
+`[asks] deliver = "adapters/herdr/deliver"`, from a factory folder that holds the adapter. It needs
+Python 3 and `hc`, and no other package.
+
+It reads the ask's `session` as an hc terminal, optionally followed by a space and the Claude
+session id. `priory ask` run in an hc terminal stores both. Then:
+
+1. `hc get TERMINAL`: when the terminal is live and runs `claude`, `hc send` types
+   `A person answered ask <ID> (revision <N>): <answer>` into it, or
+   `A person dismissed ask <ID> without an answer. Continue your task.`
+2. Otherwise it finds the Claude session's transcript under `~/.claude/projects/` and reads the
+   folder it ran in. It starts `claude --resume <session> <text>` there with
+   `hc run --bg --keep --no-parent`, in a new tab named `ask-<ID>`, in the old terminal's
+   `herdr.space` when hc still knows it.
+3. With no Claude session id or no transcript, it exits 1, and the delivery is tried again, then
+   fails on the desk.
+
+A kept terminal whose `claude` exited runs a shell, so the script never types into it: the shell
+would run the answer as a command.
 
 ## Data each panel needs
 

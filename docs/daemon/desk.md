@@ -5,6 +5,7 @@
 | Kind | Id | What | Since |
 | ---- | -- | ---- | ----- |
 | `ask` | the ask | its question, then its options | it was asked |
+| `delivery` | the outside ask | `the answer did not reach <session> after <N> tries: <error>`, until the ask is asked again (see [asks.md](asks.md)) | its last try ended |
 | `blocked` | the task | its reason | the task last changed state |
 | `failed` | the task | its reason, then `revive: priory revive <task>` | the task last changed state |
 | `prompt` | the outbox prompt | its text, for an `uncertain` prompt | it was attempted |
