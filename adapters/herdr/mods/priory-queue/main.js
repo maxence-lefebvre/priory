@@ -51,7 +51,9 @@ async function connect() {
   if (!home.startsWith("/")) throw new Error(`No home folder on ${on ?? "this machine"}`);
   if (binary.startsWith("~/")) binary = home + binary.slice(1);
   const client = priory({ exec, binary, on, factory: config.factory ?? null });
-  return { theme: config.theme ?? "indigo", client, links: (await client.links()).links };
+  // Links are optional: without a factory priory can read, the panel shows its text unlinked.
+  const links = await client.links().then((read) => read.links, () => []);
+  return { theme: config.theme ?? "indigo", client, links };
 }
 
 /** Text with its autolinks; plain text stays a plain child. @param {string} id @param {{ text: string, url?: string }[]} spans */
@@ -508,6 +510,8 @@ export default class PrioryQueue extends View {
         .child(h_flex().flex_wrap().gap(6).items_center().text_size(TYPE.caption[0]).text_color(t["text-3"])
           .child(this.tile(row.tile, t)).child(div().font_family(this.font.mono).text_color(t["text-2"]).child(row.key)).child(row.step).child(row.tile))
         .child(div().whitespace_normal().font_family(this.font.display).font_weight(700).text_size(TYPE.title[0]).line_height(TYPE.title[1]).child(row.title ? linked(`title-${row.id}`, row.titleSpans) : row.key)))
+      // The compact row truncates its title in a button, so the opened detail repeats a title that links.
+      .when(!wide && row.titleSpans?.some((span) => span.url), (el) => el.child(div().whitespace_normal().child(linked(`title-${row.id}`, row.titleSpans))))
       .when(Boolean(row.why) && wide, (el) => el.child(v_flex().p(12).gap(6).rounded(RADIUS.md).border(1).border_color(row.why.tone === "warn" ? t["warn-text"] : t.line)
         .child(div().whitespace_normal().child(row.why.text))
         .children((row.conditions ?? []).map((/** @type {{ text: string, met: boolean }} */ item) => this.condition(item, t)))))

@@ -56,7 +56,9 @@ async function connect() {
   if (!home.startsWith("/")) throw new Error(`no home folder on ${on ?? "this machine"}`);
   if (binary.startsWith("~/")) binary = home + binary.slice(1);
   const client = priory({ exec, binary, on, factory: config.factory ?? null });
-  return { theme: config.theme ?? "indigo", client, links: (await client.links()).links };
+  // Links are optional: without a factory priory can read, the panel shows its text unlinked.
+  const links = await client.links().then((read) => read.links, () => []);
+  return { theme: config.theme ?? "indigo", client, links };
 }
 
 /** @param {unknown} error */

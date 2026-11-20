@@ -119,15 +119,8 @@ text Priory stores never changes.
 | Built-in link | `'\B#(\d+)\b' = "https://github.com/{repo}/issues/$1"`: `#42` links to issue or pull request 42 in the task's repository. Text with no repository, such as an outside ask's, gets no link from it |
 | Replacing a built-in link | An entry with the built-in link's exact regex replaces it |
 | Order | The factory's entries in file order, then each built-in link no entry replaced. Where two regexes match, the match that starts first wins, then the rule listed first |
-| Linear | No source names a Linear workspace, so Linear keys get no built-in link. Add one line with your workspace's URL, shown below |
-| Where links show | The web view's ask (its question and its text), its desk rows, reports included, and its task rows. The [Herdr adapter](../adapters/herdr.md)'s panels link the same text. `priory links --json` and `GET /api/links` list the rules. CLI text output stays plain |
-
-To link Linear keys such as `ENG-123`, put your workspace's name in place of `acme`:
-
-```toml
-[links]
-'\b([A-Z]{2,5}-\d+)\b' = "https://linear.app/acme/issue/$1"
-```
+| Linear | No source names a Linear workspace, so Linear keys get no built-in link. Add the first line of the example above, with your workspace's name in place of `acme`. It links keys such as `ENG-123` |
+| Where links show | The web view's ask (its question and its text), its task page (its title, reason, brief and plan), its desk rows, reports included, and its task rows. The [Herdr adapter](../adapters/herdr.md)'s panels link the same text. `priory links --json` and `GET /api/links` list the rules. CLI text output stays plain |
 
 The web view runs each regex as a JavaScript regex with the `u` flag. A regex that JavaScript
 refuses, such as one with an inline flag like `(?i)`, links nothing there; `priory check` does not

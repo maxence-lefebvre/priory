@@ -28,4 +28,7 @@ test("the Add line says what to type, that it sends, why priory refused, or the 
 test("without the factory's workflows, an older priory's queue, the Add chips offer each workflow the tasks carry", () => {
   const tasks = [{ workflow: "review", lane: null }, { workflow: "implement", lane: null }];
   assert.deepEqual(addChoices(fixture("queue.json"), tasks).workflow, ["implement", "review"]);
+  // The Queue panel reads no `priory tasks`, so the queue's own tasks offer theirs.
+  const queue = { ...fixture("queue.json"), waiting: [...fixture("queue.json").waiting, { workflow: "fix", lane: null }] };
+  assert.deepEqual(addChoices(queue, []).workflow, ["fix", "implement"]);
 });

@@ -1488,6 +1488,10 @@ fn the_queue_lists_the_factorys_workflows_so_a_view_can_offer_them() {
 
     assert_eq!(queue["workflows"], json!(["implement", "review"]));
     assert_eq!(json_of(&setup, "queue")["workflows"], queue["workflows"]);
+    let output = setup.priory(&["queue", "--json"]);
+    succeeded(&output);
+    let without_factory: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(without_factory["workflows"], json!([]));
 }
 
 #[test]

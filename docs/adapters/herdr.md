@@ -96,7 +96,8 @@ state database and never writes a file in the factory.
   `{ text }` or `{ text, url }`, with the rules `links()` reads from `priory links --json`. It
   returns the same spans as the web view, and links only to `https:` URLs. `spansHtml(spans)`
   escapes them into the HTML Herdr's `TextView.html` draws; Herdr opens a link with the system's
-  browser. A panel reads the rules once, when it connects. See [Links](#links).
+  browser. A panel reads the rules once, when it connects. When `priory links` fails, such as with
+  no factory to read, the panel draws its text unlinked. See [Links](#links).
 - **Attaching.** A panel asks the Priory bar to attach with
   `setShared("priory.attach", { task, at: Date.now() })`. The bar runs
   `priory attach TASK --print` and opens a terminal tab that runs the printed command, which starts

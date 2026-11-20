@@ -9,8 +9,9 @@ const values = (rows, field) => [...new Set(rows.map((row) => row[field]).filter
  * @param {any} queue `priory queue --json` @param {any[]} tasks `priory tasks --json`'s tasks
  */
 export function addChoices(queue, tasks) {
-  const workflow = queue.workflows?.length ? queue.workflows : values(tasks, "workflow");
-  return { workflow, band: queue.bands ?? [], lane: values([...queue.waiting, ...tasks], "lane") };
+  const listed = [...queue.waiting, ...tasks];
+  const workflow = queue.workflows?.length ? queue.workflows : values(listed, "workflow");
+  return { workflow, band: queue.bands ?? [], lane: values(listed, "lane") };
 }
 
 /**
