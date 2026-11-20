@@ -647,7 +647,7 @@ const SCHEMA_37: &str = concat!(
   seen   TEXT NOT NULL
 );
 ",
-    bumps!("visits"),
+    bumps!("visits", "trace"),
     "PRAGMA user_version = 37;
 "
 );

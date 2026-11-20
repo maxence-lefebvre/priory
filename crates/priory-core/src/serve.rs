@@ -217,11 +217,11 @@ fn route(
         "/api/desk" => {
             let person = match query.split_once('=') {
                 None if query.is_empty() => listing::ME.to_owned(),
-                Some(("person", name)) => match decode(name) {
+                Some(("person", name)) if !name.contains('&') => match decode(name) {
                     Some(name) => name,
                     None => return Reply::error(400, "person is not percent-encoded UTF-8"),
                 },
-                _ => return Reply::error(400, "desk takes person=NAME"),
+                _ => return Reply::error(400, "desk takes one parameter: person=NAME"),
             };
             listing::revised(db, "desk", |db| {
                 listing::desk(db, home, false, &person).map(Some)

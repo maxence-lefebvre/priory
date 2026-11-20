@@ -465,6 +465,7 @@ fn each_endpoint_returns_what_the_cli_shows_and_its_json() {
 fn the_desk_endpoint_lists_since_you_looked_for_a_person_as_the_cli_does() {
     let mut setup = Setup::new("looked", SERVE);
     setup.seed();
+    let before = json_of(&setup, "desk")["revision"].clone();
     let db = rusqlite::Connection::open(setup.dir.join("priory.db")).unwrap();
     db.execute(
         "INSERT INTO trace (id, type, time, event) VALUES ('e1', 'factory.step.ended',
@@ -473,6 +474,7 @@ fn the_desk_endpoint_lists_since_you_looked_for_a_person_as_the_cli_does() {
         [],
     )
     .unwrap();
+    assert_ne!(json_of(&setup, "desk")["revision"], before);
     succeeded(&setup.priory(&["seen", "--person", "Ana Li", "--at", "2998-01-01T00:00:00Z"]));
     let address = setup.start(&["serve", &setup.factory()]);
 
@@ -497,6 +499,8 @@ fn the_desk_endpoint_lists_since_you_looked_for_a_person_as_the_cli_does() {
         "/api/desk?person=%zz",
         "/api/desk?person=%2",
         "/api/desk?who=me",
+        "/api/desk?person=Ana%20Li&who=me",
+        "/api/desk?person=a&person=b",
     ] {
         assert_eq!(get(&address, path, Some(TOKEN)).0, 400, "{path}");
     }

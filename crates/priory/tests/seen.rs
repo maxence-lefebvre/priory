@@ -78,11 +78,26 @@ fn without_a_visit_since_you_looked_lists_the_latest_50_events_newest_first() {
 fn after_seen_since_you_looked_lists_only_later_events() {
     let setup = Setup::new("later");
     setup.post("before");
-    setup.stdout(&["seen"]);
     next_second();
+    setup.stdout(&["seen"]);
     setup.post("after");
 
     assert_eq!(setup.looked(&[]), ["systemd: after"]);
+}
+
+#[test]
+fn an_event_in_the_second_of_the_visit_still_shows() {
+    let setup = Setup::new("boundary");
+    let now = jiff::Timestamp::now();
+    let at = format!("{}.999Z", now.strftime("%Y-%m-%dT%H:%M:%S"));
+    setup.stdout(&["seen", "--at", &at]);
+    setup.post("same second");
+
+    assert!(
+        setup
+            .looked(&[])
+            .contains(&"systemd: same second".to_owned())
+    );
 }
 
 #[test]
@@ -93,6 +108,7 @@ fn two_persons_keep_separate_visits() {
     let middle = jiff::Timestamp::now().to_string();
     next_second();
     setup.post("new");
+    next_second();
     setup.stdout(&["seen", "--person", "Ana Li"]);
     setup.stdout(&["seen", "--person", "bob", "--at", &middle]);
 

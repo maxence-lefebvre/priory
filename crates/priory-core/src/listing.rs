@@ -369,7 +369,7 @@ fn since_you_looked(db: &Connection, person: &str) -> rusqlite::Result<Value> {
            FROM inbox)
          SELECT time, task, (SELECT key FROM tasks WHERE tasks.id = events.task) AS key, what
          FROM events
-         WHERE julianday(time) > coalesce((SELECT julianday(seen) FROM visits WHERE person = ?1), 0)
+         WHERE julianday(time) >= coalesce((SELECT julianday(seen) FROM visits WHERE person = ?1), 0)
          ORDER BY julianday(time) DESC, source DESC, seq DESC LIMIT 50",
         params![person, post::REPORT],
     )
