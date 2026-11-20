@@ -17,6 +17,7 @@ Schema: [`config/factory.json`](../schemas/config/factory.json).
 | `sweep` | table | no | the built-in worktree sweep alone | How the daemon frees room. See [`[sweep]`](#sweep) | |
 | `search` | table | no | keyword search, no summarizer | How tasks are found. See [`[search]`](#search) | |
 | `telemetry` | table | no | no export | Where trace records go. See [`[telemetry]`](#telemetry) | |
+| `serve` | table | no | nothing listens | The HTTP server over the factory's state. See [`[serve]`](#serve) | |
 
 A duration is a whole number followed by `s`, `m` or `h`, such as `"90s"`, `"15m"` or `"2h"`.
 
@@ -59,6 +60,21 @@ See [trace.md](../daemon/trace.md).
 | --- | ---- | -------- | ------- | ------- | ------- |
 | `otlp` | string | yes | | The OTLP/HTTP base URL. Spans go to its `/v1/traces` | `"http://127.0.0.1:4318"` |
 
+## `[serve]`
+
+See [serve.md](../daemon/serve.md) for what the server does, and [serve.md](serve.md) for its
+endpoints. With no `[serve]` table, nothing listens.
+
+| Key | Type | Required | Default | Meaning | Example |
+| --- | ---- | -------- | ------- | ------- | ------- |
+| `listen` | string | no | `"127.0.0.1:7340"` | The IP address and port to listen on. A host name is refused | `"127.0.0.1:8080"` |
+| `token_env` | string | no | `"PRIORY_TOKEN"` | The environment variable that holds the token clients send. Never the token itself | `"PRIORY_WEB_TOKEN"` |
+| `web` | boolean | no | `true` | Serve the web view's files as well as `/api`. `false` serves only `/api` | `false` |
+| `public` | boolean | no | `false` | Allow a `listen` address beyond this machine | `true` |
+
+`public = true` exposes the factory's state to the network the address reaches. Whether a machine
+may do that is the factory owner's choice, per machine. The server speaks plain HTTP, with no TLS.
+
 ## Example
 
 <!-- example: factory/factory.toml -->
@@ -86,6 +102,11 @@ model = "sentence-transformers/all-MiniLM-L6-v2"
 
 [telemetry]
 otlp = "http://127.0.0.1:4318"                 # spans go to its /v1/traces
+
+[serve]
+listen = "127.0.0.1:7340"                      # loopback only, unless public = true
+token_env = "PRIORY_TOKEN"                     # the variable holding the token
+web = true                                     # false serves only /api
 ```
 
 ## Errors from `priory check`
@@ -104,6 +125,8 @@ otlp = "http://127.0.0.1:4318"                 # spans go to its /v1/traces
 | `` the summarizer agent `<name>` needs harness = "claude-code" `` | `[search] tldr` names a Codex agent |
 | `[search] names both a model and a command: keep one` | `[search]` sets `model` and `command` |
 | `` `[sweep] repo` needs to be `owner/name` `` | `[sweep] repo` is not `owner/name` |
+| `` `[serve] listen` <address> is beyond this machine: set `public = true` to serve it `` | `listen` is not a loopback address and `public` is not set |
+| `invalid socket address syntax` | `listen` is not an IP address and port, such as `127.0.0.1:7340` |
 
 Each line starts with the file and line, such as `factory.toml:3:1:`. A file that does not parse
 reports only its parse error, so fix those first.

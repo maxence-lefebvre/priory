@@ -2566,6 +2566,12 @@ fn a_step_ending_green_with_a_reason_sets_the_task_grade_and_reason() {
         rows.first().is_some_and(|task| task[3] == "regrade")
     });
     assert_eq!(grade(&tasks), ["green", "one file, covered by tests"]);
+    let listed: serde_json::Value =
+        serde_json::from_slice(&setup.priory(&["tasks", "--json"]).stdout).unwrap();
+    assert_eq!(
+        [&listed[0]["grade"], &listed[0]["grade_reason"]],
+        [&json!("green"), &json!("one file, covered by tests")]
+    );
 }
 
 #[test]

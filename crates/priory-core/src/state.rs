@@ -501,13 +501,7 @@ pub(crate) struct Task {
 
 /// Opens the state file `PRIORY_DB`, creating its schema on first use.
 pub fn open() -> Result<Connection, String> {
-    let path = std::env::var_os("PRIORY_DB")
-        // SQLite keeps nothing on disk for "", ":memory:" or a URI such as "file::memory:".
-        .filter(|path| {
-            let name = path.to_string_lossy();
-            !name.is_empty() && name != ":memory:" && !name.starts_with("file:")
-        })
-        .ok_or("PRIORY_DB is not set to a file: name the state file")?;
+    let path = path()?;
     let at = |error: rusqlite::Error| format!("{}: {error}", path.display());
     let mut db = Connection::open(&path).map_err(at)?;
     db.busy_timeout(Duration::from_secs(5)).map_err(at)?;
@@ -541,6 +535,37 @@ pub fn open() -> Result<Connection, String> {
     };
     tx.execute_batch(&pending.concat()).map_err(at)?;
     tx.commit().map_err(at)?;
+    Ok(db)
+}
+
+fn path() -> Result<std::path::PathBuf, String> {
+    std::env::var_os("PRIORY_DB")
+        // SQLite keeps nothing on disk for "", ":memory:" or a URI such as "file::memory:".
+        .filter(|path| {
+            let name = path.to_string_lossy();
+            !name.is_empty() && name != ":memory:" && !name.starts_with("file:")
+        })
+        .map(Into::into)
+        .ok_or_else(|| "PRIORY_DB is not set to a file: name the state file".to_owned())
+}
+
+/// Opens `PRIORY_DB` for reading only. It refuses a file whose schema this priory does not use,
+/// such as one no `open` has created yet.
+pub fn read_only() -> Result<Connection, String> {
+    let path = path()?;
+    let at = |error: rusqlite::Error| format!("{}: {error}", path.display());
+    let db = Connection::open_with_flags(&path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+        .map_err(at)?;
+    db.busy_timeout(Duration::from_secs(5)).map_err(at)?;
+    let version: i64 = db
+        .pragma_query_value(None, "user_version", |row| row.get(0))
+        .map_err(at)?;
+    if version != VERSION {
+        return Err(format!(
+            "{}: state schema {version}, but this priory reads {VERSION}: start `priory daemon` once to create or migrate it",
+            path.display()
+        ));
+    }
     Ok(db)
 }
 

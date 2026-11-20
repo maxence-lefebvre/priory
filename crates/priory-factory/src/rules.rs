@@ -59,6 +59,14 @@ pub fn check(factory: &Factory) -> Vec<Problem> {
                 "[search] names both a model and a command: keep one".to_owned(),
             ));
         }
+        if let Some(Err(message)) = settings
+            .value
+            .serve
+            .as_ref()
+            .map(|serve| serve.allows(serve.listen))
+        {
+            problems.push(problem(settings, settings.lines.field("serve"), message));
+        }
         if !owner_name(settings.value.sweep.repo()) {
             problems.push(problem(
                 settings,
