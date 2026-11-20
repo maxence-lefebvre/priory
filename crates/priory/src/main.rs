@@ -90,6 +90,7 @@ fn main() -> ExitCode {
             }
             _ => usage(),
         },
+        Some("seen") => seen(args.map(|arg| arg.to_string_lossy().into_owned()).collect()),
         Some("unpause") => match args.next() {
             None => {
                 let unpaused = state::open()
@@ -137,7 +138,7 @@ fn main() -> ExitCode {
 
 fn usage() -> ExitCode {
     eprintln!(
-        "usage: priory check [DIR]\n       priory draw [DIR] WORKFLOW\n       priory intake [DIR] [--once]\n       priory daemon [DIR] [--once]\n       priory request [DIR] --workflow <name> --key <key> [--band <band>] [--lane <lane>] [--repo <owner/name>] [--hold <reason> [CONDITION]] <text>\n       priory serve [DIR] [--listen ADDR]\n       priory inbox [--since SEQ] [--json]\n       priory inbox read SEQ\n       priory post SOURCE LINE\n       priory tasks [--lane <lane>] [--grade red|yellow|green] [--json]\n       priory queue [DIR] [--json]\n       priory schedules [DIR] [--json]\n       priory runs\n       priory outbox\n       priory asks [--all] [--json]\n       priory waits\n       priory actions\n       priory attach (TASK | --run RUN) [--read-only] [--print]\n       priory desk [--all] [--json]\n       priory wait --since REV [--timeout D]\n       priory snooze (ask | blocked | failed | prompt) ID (--for DURATION | --until TIME | --clear)\n       priory trace\n       priory report put TASK FILE|-\n       priory report show [TASK] [--json]\n       priory report pick PICK OPTION --expected REVISION\n       priory report [DIR] --workflow <name> [--since <instant-or-duration>] [--cost] [--by lane]\n       priory move TASK [--band <band>] [--top | --before TASK | --after TASK]\n       priory resume TASK\n       priory say TASK TEXT\n       priory pause [REASON]\n       priory unpause\n       priory cancel TASK\n       priory revive TASK [--step STEP]\n       priory hold TASK --reason TEXT [--until TIME | --after TASK | --merge PR [--if-closed release|drop|ask] | --blockers]\n       priory release TASK\n       priory tldr TASK TEXT\n       priory search QUERY [--state STATE[,STATE...]] [--limit N]\n       priory memory [acquire [--gb N] [--timeout D] -- COMMAND...]\n       priory answer [--revision N | --expected N] [--] ASK OPTION-OR-TEXT\n       priory ask ID JSON\n       priory dismiss [--expected N] ASK\n       priory mcp --session ID\n       priory hook EVENT"
+        "usage: priory check [DIR]\n       priory draw [DIR] WORKFLOW\n       priory intake [DIR] [--once]\n       priory daemon [DIR] [--once]\n       priory request [DIR] --workflow <name> --key <key> [--band <band>] [--lane <lane>] [--repo <owner/name>] [--hold <reason> [CONDITION]] <text>\n       priory serve [DIR] [--listen ADDR]\n       priory inbox [--since SEQ] [--json]\n       priory inbox read SEQ\n       priory post SOURCE LINE\n       priory tasks [--lane <lane>] [--grade red|yellow|green] [--json]\n       priory queue [DIR] [--json]\n       priory schedules [DIR] [--json]\n       priory runs\n       priory outbox\n       priory asks [--all] [--json]\n       priory waits\n       priory actions\n       priory attach (TASK | --run RUN) [--read-only] [--print]\n       priory desk [--all] [--json] [--person NAME]\n       priory seen [--person NAME] [--at TIME]\n       priory wait --since REV [--timeout D]\n       priory snooze (ask | blocked | failed | prompt) ID (--for DURATION | --until TIME | --clear)\n       priory trace\n       priory report put TASK FILE|-\n       priory report show [TASK] [--json]\n       priory report pick PICK OPTION --expected REVISION\n       priory report [DIR] --workflow <name> [--since <instant-or-duration>] [--cost] [--by lane]\n       priory move TASK [--band <band>] [--top | --before TASK | --after TASK]\n       priory resume TASK\n       priory say TASK TEXT\n       priory pause [REASON]\n       priory unpause\n       priory cancel TASK\n       priory revive TASK [--step STEP]\n       priory hold TASK --reason TEXT [--until TIME | --after TASK | --merge PR [--if-closed release|drop|ask] | --blockers]\n       priory release TASK\n       priory tldr TASK TEXT\n       priory search QUERY [--state STATE[,STATE...]] [--limit N]\n       priory memory [acquire [--gb N] [--timeout D] -- COMMAND...]\n       priory answer [--revision N | --expected N] [--] ASK OPTION-OR-TEXT\n       priory ask ID JSON\n       priory dismiss [--expected N] ASK\n       priory mcp --session ID\n       priory hook EVENT"
     );
     ExitCode::from(2)
 }
@@ -393,6 +394,27 @@ fn report_show(args: &[String]) -> ExitCode {
     exit("report show", shown)
 }
 
+/// `priory seen [--person NAME] [--at TIME]` records a visit to the desk, now by default.
+fn seen(args: Vec<String>) -> ExitCode {
+    let (mut person, mut at) = (None, None);
+    for pair in args.chunks(2) {
+        match pair {
+            [flag, value] if flag == "--person" && person.is_none() => person = Some(value),
+            [flag, value] if flag == "--at" && at.is_none() => match value.parse() {
+                Ok(time) => at = Some(time),
+                Err(error) => return exit("seen", Err(format!("{value}: {error}"))),
+            },
+            _ => return usage(),
+        }
+    }
+    let at: jiff::Timestamp = at.unwrap_or_else(jiff::Timestamp::now);
+    let person = person.map_or(listing::ME, String::as_str);
+    let done = state::open().and_then(|db| {
+        state::seen(&db, person, &at.to_string()).map_err(|error| error.to_string())
+    });
+    exit("seen", done.map(|text| println!("{text}")))
+}
+
 /// Sends `priory snooze KIND ID (--for DURATION | --until TIME | --clear)` to the daemon, with the
 /// time in UTC to the second.
 fn snooze(args: Vec<String>) -> ExitCode {
@@ -480,9 +502,12 @@ fn listed(verb: &str, mut args: Vec<String>) -> ExitCode {
             args.clear();
         }
     }
-    let (mut lane, mut grade, mut since) = (None, None, None);
+    let (mut lane, mut grade, mut since, mut person) = (None, None, None, None);
     for pair in args.chunks(2) {
         match (verb, pair) {
+            ("desk", [flag, value]) if flag == "--person" && person.is_none() => {
+                person = Some(value.as_str())
+            }
             ("inbox", [flag, value]) if flag == "--since" && since.is_none() => {
                 let Ok(value) = value.parse() else {
                     return usage();
@@ -509,7 +534,7 @@ fn listed(verb: &str, mut args: Vec<String>) -> ExitCode {
                 "inbox" => listing::inbox(db, since.unwrap_or(0)),
                 "tasks" => listing::tasks(db, lane, grade),
                 "asks" => listing::asks(db),
-                "desk" => listing::desk(db, &home, all),
+                "desk" => listing::desk(db, &home, all, person.unwrap_or(listing::ME)),
                 _ => listing::queue(db, &schedules, now),
             }
             .map(Some)

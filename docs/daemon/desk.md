@@ -172,3 +172,21 @@ leaves out (see the [serve reference](../reference/serve.md#snooze)).
 The trace records each snooze as `factory.task.snoozed` and each `--clear` as
 `factory.task.unsnoozed` (see the [trace schema](../trace-schema.md)). The end of a snooze, by
 time or by a change, records nothing.
+
+## Since you looked
+
+`priory seen` records a person's visit to the desk, now by default. `--at TIME` records an RFC 3339
+time instead, such as `2026-11-23T09:00:00+01:00`. `--person NAME` names the person, `me` by
+default. A name is free text: Priory has no accounts. Each person keeps one visit, and a later
+`seen` replaces it. It writes the state file, so it works while the daemon is stopped.
+
+`priory desk --json` carries the visit as `last_visit` and the events after it as
+`since_you_looked`, newest first, at most 50. `--person NAME` reads that person's visit. Without a
+visit, `since_you_looked` lists the latest 50 events. An event is a trace record or an inbox entry:
+each step that ended, repair, snooze or label, and each message and report the inbox took. Each has
+its `time`, its `task` and the task's `key`, and `what`: the record's type, step and outcome, the
+message's type, subject and outcome, or a report's `<source>: <line>`. `priory desk` without
+`--json` prints neither.
+
+Reading the desk records no visit, so a client calls `priory seen` once the person has read the
+events.
