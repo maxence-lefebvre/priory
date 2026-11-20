@@ -3168,6 +3168,21 @@ fn the_comment_endpoints_do_what_their_cli_verbs_do() {
         "{}",
         stale.1
     );
+    for (path, body) in [
+        ("/api/reports/resolve", r#"{"comment": 1, "text": "Fixed"}"#),
+        ("/api/reports/reply", r#"{"comment": 1}"#),
+        (
+            "/api/reports/comment",
+            r#"{"row": "fnd-2409", "revision": 5}"#,
+        ),
+        (
+            "/api/reports/comment",
+            r#"{"comment": 1, "text": "Hi", "revision": 5}"#,
+        ),
+    ] {
+        let (status, reply) = post(&address, path, "", body);
+        assert_eq!(status, 400, "{path} {body}: {reply}");
+    }
     let thread =
         api(&address, "/api/reports/latest")["report"]["sections"][0]["rows"][0]["comments"][0]
             .clone();

@@ -148,7 +148,7 @@ export default class PrioryBonjour extends View {
   accept(read) {
     if (read && this.data && read.revision < this.data.revision) return;
     if (read?.report.task !== this.data?.report.task) {
-      this.selected = null;
+      this.selectRow(null);
       this.notices.clear();
     }
     this.data = read;
@@ -182,14 +182,18 @@ export default class PrioryBonjour extends View {
   /** @param {Dossier} model @param {string | null} id @param {import("gpui-kit").Context} cx */
   select(model, id, cx) {
     this.focus.focus();
-    // A comment belongs to the row it was typed for.
+    this.selectRow(id);
+    if (id) this.reveal(model, id);
+    cx.notify();
+  }
+
+  /** Selects a row; a comment belongs to the row it was typed for, so another row clears the field. @param {string | null} id */
+  selectRow(id) {
     if (id !== this.selected) {
       this.replyTo = null;
       this.draft.set_value("");
     }
     this.selected = id;
-    if (id) this.reveal(model, id);
-    cx.notify();
   }
 
   /** @param {Dossier} model @param {number} step @param {import("gpui-kit").Context} cx */
@@ -204,7 +208,7 @@ export default class PrioryBonjour extends View {
   /** @param {Dossier} model @param {Row} row @param {string} option @param {import("gpui-kit").Context} cx */
   choose(model, row, option, cx) {
     if (this.pending || this.error || row.pick?.state !== "open") return;
-    this.selected = row.id;
+    this.selectRow(row.id);
     this.notices.delete(row.id);
     this.flash = null;
     /** @type {Pending} */
@@ -270,6 +274,8 @@ export default class PrioryBonjour extends View {
     if (!model || !row?.target || !text) return;
     const [target, replyTo, revision] = [row.target, this.replyTo, model.revision];
     this.remark(row, (client) => (replyTo == null ? client.comment(target, text, revision) : client.reply(replyTo, text)), cx, () => {
+      // The person may have moved on or typed more while it was in flight.
+      if (this.selected !== row.id || this.draft.value().trim() !== text) return;
       this.draft.set_value("");
       this.replyTo = null;
     });
@@ -290,10 +296,17 @@ export default class PrioryBonjour extends View {
       try {
         if (!client) throw new Error("priory is not reachable");
         await call(client);
-        sent();
-        this.accept(await client.report());
       } catch (error) {
         this.notices.set(row.id, `Not sent: ${message(error)}.`);
+        this.posting = false;
+        return cx.notify();
+      }
+      sent();
+      // Priory took it; a failed read here leaves the read loop to show it.
+      try {
+        this.accept(await client.report());
+      } catch {
+        this.flash = "Sent. The report shows it once priory answers again.";
       }
       this.posting = false;
       cx.notify();
@@ -487,13 +500,16 @@ export default class PrioryBonjour extends View {
     const pick = /** @type {NonNullable<Row["pick"]>} */ (row.pick);
     const selected = row.id === this.selected;
     const notice = this.notices.get(row.id);
+    // A pick card selects nothing on a press, so a row with an id offers Comment to reach the field.
+    const commentable = !selected && row.target != null;
     if (pick.state !== "open") {
       return v_flex().w_full().px(S["space-3"]).py(6).gap(S["space-1"]).rounded(S["radius-md"]).border(1).border_color(t.line).bg(selected ? t["action-soft"] : t.bg)
         .child(h_flex().min_h(S["control-fine"] - 4).gap(S["space-2"]).items_center()
           .child(svg(ICON("check")).size(14).flex_none().text_color(t["ok-text"]))
           .child(div().flex_none().max_w("40%").truncate().font_family(row.key ? this.font.mono : this.font.ui).text_size(S["type-small"][0]).text_color(t["text-2"]).child(row.key ?? row.text))
           .child(div().flex_none().font_weight(600).child(pick.chosen ?? ""))
-          .child(div().flex_1().min_w_0().truncate().text_size(S["type-caption"][0]).text_color(t["text-3"]).child(pick.note ?? "")))
+          .child(div().flex_1().min_w_0().truncate().text_size(S["type-caption"][0]).text_color(t["text-3"]).child(pick.note ?? ""))
+          .when(commentable, (el) => el.child(this.secondary(`comment-${row.id}`, "Comment", (cx) => this.select(model, row.id, cx), t))))
         .when(Boolean(notice), (el) => el.child(this.notice(notice, t)));
     }
     const pending = this.pending?.row === row.id ? this.pending : null;
@@ -522,6 +538,7 @@ export default class PrioryBonjour extends View {
               .child(option.label);
           })))
         .when(Boolean(pick.note) && !pending, (el) => el.child(div().text_size(S["type-caption"][0]).text_color(t["text-3"]).child(pick.note ?? "")))
+        .when(commentable && !pending, (el) => el.child(this.secondary(`comment-${row.id}`, "Comment", (cx) => this.select(model, row.id, cx), t)))
         .when(Boolean(pending), (el) => el.child(h_flex().flex_1().gap(S["space-2"]).items_center().justify_end().text_size(S["type-small"][0])
           .child(div().child(pending?.timer ? `Picking ${pending.option}` : `Sending ${pending?.option}…`))
           .when(Boolean(pending?.timer), (el) => el.child(this.secondary("undo", "Undo", (cx) => this.undo(cx), t))))));

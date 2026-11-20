@@ -854,7 +854,8 @@ The morning dossier. It opens as a tab in the center stack.
   one caption line, then its text in `--type-small`; replies follow in the same card. Reply and
   Resolve close the card. A resolved thread folds to one `--text-3` caption line, a `check` in
   `--ok-text`, "Resolved: " and its text, with Reopen.
-- The selected row, when it has an id, ends with the comment field and a Comment button. Reply
+- The selected row, when it has an id, ends with the comment field and a Comment button. A pick
+  card, which a press does not select, shows a Comment button that selects it. Reply
   turns the button into Reply, with "Replying in thread 3" above the field and Cancel beside it.
   A refused comment says why under the row in `--warn-text`. While the field has focus it keeps
   every letter; Escape returns to the panel.

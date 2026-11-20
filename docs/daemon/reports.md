@@ -145,7 +145,8 @@ reopen wake nothing either.
 ]
 ```
 
-`author` is `agent` for the report's own agent and `person` for anyone else. Threads stay with
+`author` is `agent` for the report's own agent and `person` for anyone else. Rows that share an id,
+in two sections, share their threads. Threads stay with
 their row id across report writes: a write that drops the row hides its threads, and a write that
 brings the row back shows them again.
 

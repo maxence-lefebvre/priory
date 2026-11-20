@@ -272,8 +272,8 @@ fn threads(db: &Connection, mut report: Value) -> rusqlite::Result<Value> {
     }
     let sections = report["sections"].as_array_mut().into_iter().flatten();
     for row in sections.flat_map(|section| section["rows"].as_array_mut().into_iter().flatten()) {
-        if let Some(threads) = row["id"].as_str().and_then(|id| by_row.remove(id)) {
-            row["comments"] = threads.into();
+        if let Some(threads) = row["id"].as_str().and_then(|id| by_row.get(id)) {
+            row["comments"] = threads.clone().into();
         }
     }
     Ok(report)

@@ -92,7 +92,7 @@ application/json` and a JSON body of at most 16 KiB with exactly the fields belo
 | `POST /api/asks/{id}/dismiss` | `revision`, an integer |
 | `POST /api/snooze` | `kind` (`ask`, `blocked`, `failed` or `prompt`) and `id`, an integer, then one of: `for`, a duration such as `1h`; `until`, an RFC 3339 time; or `"clear": true` |
 | `POST /api/request` | `text`, a string, then optionally `workflow`, `band`, `lane` and `repo`, strings. What it leaves unset comes from `[request]` and the URLs in `text`, as for [`priory add`](../intake/cli.md#priory-add) |
-| `POST /api/reports/comment` | `row`, the row's id, `text`, a string, and `revision`, the report's revision the client showed |
+| `POST /api/reports/comment` | `row`, the row's id, `text`, a string, and `revision`, the report's revision the client showed. A comment verb takes `text` only with `comment` and `reply`, and `revision` only with `comment` |
 | `POST /api/reports/reply` | `comment`, an integer, and `text`, a string |
 | `POST /api/reports/resolve`, `POST /api/reports/reopen` | `comment`, an integer |
 

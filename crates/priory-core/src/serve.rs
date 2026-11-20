@@ -514,6 +514,13 @@ fn write_line(
             if new != body.revision.is_some() {
                 return Err(Reply::error(400, "send revision with a new comment only"));
             }
+            let writes = matches!(remark, sections::Remark::Comment | sections::Remark::Reply);
+            if writes != body.text.is_some() {
+                return Err(Reply::error(
+                    400,
+                    "send text with a comment or a reply only",
+                ));
+            }
             let comment = sections::Comment {
                 comment: *remark,
                 on,

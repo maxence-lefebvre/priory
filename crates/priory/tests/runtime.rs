@@ -11475,3 +11475,18 @@ fn a_comment_at_a_stale_revision_is_refused_and_stores_nothing() {
     assert_eq!(shown["sections"][0]["rows"][0]["comments"], json!([]));
     assert_eq!(setup.rows("tasks")[0][4], "asleep");
 }
+
+#[test]
+fn rows_that_share_an_id_in_two_sections_share_their_threads() {
+    let mut report = bonjour(serde_json::Value::Null);
+    report["sections"][1]["rows"] = json!([{ "id": "fnd-2409", "text": "Moved to review" }]);
+    let setup = asleep_on_a_report("report-shared-row", &report);
+
+    let commented = setup.priory(&["report", "comment", "fnd-2409", "--expected", "1", "Why?"]);
+
+    assert!(commented.status.success(), "{commented:?}");
+    let shown = shown(&setup);
+    let first = &shown["sections"][0]["rows"][0]["comments"];
+    assert_eq!(first[0]["text"], "Why?");
+    assert_eq!(&shown["sections"][1]["rows"][0]["comments"], first);
+}
