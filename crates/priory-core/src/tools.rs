@@ -1660,8 +1660,8 @@ pub(crate) fn answer(
         &format!("UPDATE asks SET answer = ?2, answered = {NOW} WHERE id = ?1"),
         params![answer.ask, answer.text],
     )?;
-    // Delivery to the session of an outside ask is not built yet: the answer is only stored.
     let Some(task) = task else {
+        crate::deliver::queue(&tx, answer.ask, Some(&answer.text), trace.factory)?;
         tx.commit()?;
         return Ok(Ok(format!("ask {label} answered")));
     };
@@ -1787,6 +1787,7 @@ pub struct Dismiss {
 pub(crate) fn dismiss(
     db: &mut Connection,
     dismiss: &Dismiss,
+    factory: &priory_factory::factory::Factory,
 ) -> rusqlite::Result<Result<String, String>> {
     let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
     let ask = match open_ask(&tx, dismiss.dismiss, dismiss.revision)? {
@@ -1804,6 +1805,7 @@ pub(crate) fn dismiss(
         params![dismiss.dismiss, DISMISSED],
     )?;
     withdraw_waits(&tx, dismiss.dismiss)?;
+    crate::deliver::queue(&tx, dismiss.dismiss, None, factory)?;
     if let Some(task) = ask.task {
         wake(
             &tx,

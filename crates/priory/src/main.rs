@@ -922,6 +922,12 @@ fn ask_id(ask: &str) -> Result<i64, String> {
 fn ask(name: &str, fields: &str) -> ExitCode {
     let stored = serde_json::from_str(fields)
         .map_err(|error| format!("ask fields must be a JSON object: {error}"))
+        .map(|mut fields: serde_json::Value| {
+            if let (Some(fields), Some(session)) = (fields.as_object_mut(), asking_session()) {
+                fields.entry("session").or_insert(session.into());
+            }
+            fields
+        })
         .and_then(|fields| {
             let mut db = state::open()?;
             tools::ask_outside(&mut db, name, &fields).map_err(|error| error.to_string())?
@@ -933,6 +939,18 @@ fn ask(name: &str, fields: &str) -> ExitCode {
             println!("{name}");
         });
     exit("ask", stored)
+}
+
+/// The hc terminal that runs `priory ask`, then the Claude session in it when there is one, so the
+/// answer can reach it, or resume it once the terminal closed.
+fn asking_session() -> Option<String> {
+    let terminal = std::env::var("HC_TERMINAL_ID")
+        .ok()
+        .filter(|id| !id.is_empty())?;
+    Some(match std::env::var("CLAUDE_CODE_SESSION_ID") {
+        Ok(claude) if !claude.is_empty() => format!("{terminal} {claude}"),
+        _ => terminal,
+    })
 }
 
 /// Sets a task's TL;DR by hand.
