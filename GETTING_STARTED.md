@@ -204,6 +204,7 @@ When someone labels issue 42 of `owner/name` with `agent`, this happens:
 | `priory dismiss [--expected N] ASK` | Closes an ask with no answer |
 | `priory snooze KIND ID --for 2h`, `--until TIME`, `--clear` | Hides a desk item until then, or brings it back |
 | `priory tasks [--lane LANE] [--grade GRADE]` | Lists tasks in start order, with their grade |
+| `priory task TASK --json` | Prints one task with its brief, plan, pull request, runs and asks |
 | `priory attach TASK [--read-only]` | Attaches your terminal to a task's agent |
 | `priory resume TASK` | Resumes a blocked task |
 | `priory say TASK TEXT` | Sends a task's agent a message, waking it if it sleeps |

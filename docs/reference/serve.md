@@ -20,7 +20,7 @@ does, with every count in `older` at 0. Their rows match the CLI's JSON only wit
 | `/api/inbox` | `priory inbox --json` | `inbox`: an array of [inbox messages](#inbox) |
 | `/api/asks?band=BAND&all=1` | `priory asks --json --band BAND` | an object: `asks`, an array of [asks](#asks), `bands` and `older` |
 | `/api/tasks?all=1` | `priory tasks --json` | `tasks`: an array of [tasks](#tasks), and `older` |
-| `/api/tasks/{id}` | | one [task in detail](#task-in-detail) |
+| `/api/tasks/{id}` | `priory task ID --json` | one [task in detail](#task-in-detail) |
 | `/api/queue` | `priory queue --json` | an object: [Queue](#queue) |
 | `/api/views` | | an object: [Views](#views) |
 | `/api/reports/latest` | `priory report show --json` | the [report](#report) written last |
@@ -188,6 +188,8 @@ an object: `answered` and `withdrawn`, the number of each left out, within `band
 | `answer`, `answered_at` | string or null | The answer and when it came |
 | `delivery` | object or null | The latest delivery of an outside ask's answer or dismissal to its session: `state` (`queued`, `running`, `delivered` or `failed`), `revision`, `tries`, `error` and `since`. Null when nothing was delivered. See [asks.md](../daemon/asks.md) |
 | `since` | string | When the agent asked |
+| `revisions` | array | Every revision of the question, oldest first: `revision`, `question`, `options`, `recommendation`, `text`, `at`, when it was asked, and `answer` and `answered_at`, the answer that revision took, or null. An ask stored before Priory kept revisions lists only its current one, dated when the ask was first asked |
+| `refused` | array | Every answer the daemon refused, oldest first: `revision`, the one the answer was sent for, `answer`, `by` (`cli` or `serve`), `why`, the CLI's error, and `at` |
 | `snoozed_until`, `snoozed_at`, `back_early` | | The ask's [snooze](#snooze) |
 
 `priory asks` without `--json` prints only the open asks that are not snoozed, and `--all` adds the
@@ -224,11 +226,19 @@ The fields of [Tasks](#tasks), plus `repo` and `branch`, and these arrays, oldes
 
 | Field | Each entry |
 | ----- | ---------- |
-| `runs` | `id`, `step`, `agent`, `tmux`, `session`, `started`, `ended`, `end` |
+| `runs` | `id`, `step`, `agent`, `tmux`, `session`, `started`, `ended`, `end`, `outcome` (its result's, or null), `tokens` (the tokens its step used, as the `factory.step.ended` trace record holds them, or null) |
 | `steps` | A code step's action: `id`, `step`, `action`, `status`, `pull_request`, `commit_sha`, `error`, `created` |
 | `asks` | An ask, as in [Asks](#asks) |
 | `waits` | `id`, `run`, `kind`, `resource`, `until`, `target`, `created`, `fired`, `withdrawn` |
 | `results` | `run`, `step`, `outcome`, `summary`, `evidence`, `commit_sha`, `reason`, `created` |
+
+And these objects:
+
+| Field | Type | Meaning |
+| ----- | ---- | ------- |
+| `brief` | object | `title` and `request`, the request's title and text, each null when it has none, and `result`, the latest result of a step named `groom`, or null |
+| `plan` | object or null | The latest result of a step named `plan`. A result has `run`, `step`, `outcome`, `summary`, `evidence`, `commit_sha` and `created`. When it is null, `progress` holds the plan the agent published |
+| `pull_request` | object or null | The latest pull request the task owns that has stored GitHub events: `repo`, `number`, `title`, `url`, `branch`, `base`, `head_sha`, `state` (`open`, `closed` or `merged`; a reopened pull request stays `closed`, since the intake publishes no reopen event), `review` (the latest review's state, or null) and `checks`, the latest conclusion of each check run on the head: `name`, `conclusion` and `at` |
 
 ## Queue
 
