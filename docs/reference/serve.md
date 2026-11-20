@@ -37,19 +37,19 @@ or a reason, is untrusted: render it as text.
 | ---- | ---- |
 | `200` | The endpoint answered |
 | `202` | A signed webhook delivery was taken: published, or dropped on purpose |
-| `400` | The request does not parse; `/api/events` lacks `since` or has a parameter out of range; `/api/desk` has a parameter other than `person`, or a broken escape; `/api/asks` has a parameter other than `band`, or a band the factory does not have; a write's body is not the shape [below](#writes); for a webhook, it sends two `Content-Length`, or its payload lacks a field its event needs |
+| `400` | The request does not parse, or its target does not start with `/`; `/api/events` lacks `since` or has a parameter out of range; `/api/desk` has a parameter other than `person`, or a broken escape; `/api/asks` has a parameter other than `band`, or a band the factory does not have; a write's body is not the shape [below](#writes); for a webhook, it sends two `Content-Length`, or its payload lacks a field its event needs |
 | `401` | The token is missing or wrong on a path under `/api`; for a webhook, the signature is |
 | `403` | A `POST` carries an `Origin` whose host and port differ from its `Host`, such as a page on another site |
 | `404` | No such path, task, report, ask or web view file |
 | `405` | `POST` on a path that reads, or `GET` on a write. The `Allow` header names the method |
-| `408` | The request took over 5 seconds |
+| `408` | The request sent no byte within 1 second, or took over 5 seconds in all |
 | `409` | A write names an ask whose revision moved or that closed. The body adds the ask as `/api/asks` lists it |
 | `411` | A `POST` has no `Content-Length`, or uses `Transfer-Encoding` |
 | `413` | A `GET` has a body; a write's body is over 16 KiB; a webhook's is over 1 MiB |
 | `415` | A write's `Content-Type` is not `application/json` |
 | `422` | The daemon refused a write for another reason, such as an option a step does not take |
 | `431` | The request head is over 8 KiB or 32 headers |
-| `500` | The state could not be read, or a delivery could not be published |
+| `500` | The state could not be read, a delivery could not be published, or Priory failed while answering. The server keeps serving |
 | `503` | 4 requests already wait on `/api/events` and this one would wait too; or a write found no daemon on its socket, as under `priory serve` alone. It comes with `Retry-After: 1` |
 | `504` | A write reached the daemon, which did not reply within 10 seconds. It may have applied it |
 

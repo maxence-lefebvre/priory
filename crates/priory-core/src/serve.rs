@@ -493,7 +493,10 @@ fn web_file(path: &str) -> Reply {
         Some((_, kind, body)) => (*kind, *body),
         None if path.starts_with("/fonts/")
             || path.starts_with("/tokens/")
-            || (!path[1..].contains('/') && path.contains('.') && path != "/index.html") =>
+            || (path
+                .strip_prefix('/')
+                .is_some_and(|name| !name.contains('/') && name.contains('.'))
+                && path != "/index.html") =>
         {
             return Reply::error(404, "no such file");
         }

@@ -2752,6 +2752,21 @@ fn a_new_review_request_publishes_the_event_and_creates_its_task() {
 }
 
 #[test]
+fn a_review_request_whose_repository_is_not_owner_slash_name_is_dropped() {
+    let setup = Setup::reviews("review-bad-repo", &[]);
+    setup.requested(&[("acme/..", 8), ("acme/app", 7)]);
+
+    succeeded(&setup.intake());
+
+    let subjects: Vec<_> = setup
+        .published()
+        .iter()
+        .map(|stored| stored.message.subject.clone().unwrap_or_default())
+        .collect();
+    assert_eq!(subjects, ["acme/app#7", REVIEW_KEY]);
+}
+
+#[test]
 fn a_removed_review_request_publishes_the_event_and_withdraws_its_task() {
     let setup = Setup::reviews("review-removed", &[]);
     setup.requested(&[("acme/app", 7)]);

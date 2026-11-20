@@ -105,6 +105,7 @@ kept a revision from a replaced state file does not hang.
 | ----- | ----- | ------- |
 | Request head: request line and headers | 8 KiB, 32 headers | `431` |
 | Request body | none on a `GET`; 16 KiB on a write; 1 MiB on `POST /hooks/github` | `413` |
+| Time to send the first byte of the request | 1 second | `408` |
 | Time to send the whole request, head and body | 5 seconds | `408` |
 | Connections served at once | 8 | Others wait in the listen backlog |
 | `/api/events` requests held at once | 4 | `503` |

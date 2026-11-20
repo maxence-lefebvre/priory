@@ -88,7 +88,7 @@ source event's id.
 | ----- | ---- |
 | `workflow`, `band`, `lane` | the trigger; `band` and `lane` are null when it sets none |
 | `team`, `project` | the Linear issue, for a Linear source only |
-| `repo` | `priory request --repo`, or a review request's pull request; otherwise the daemon uses the trigger's `repo` |
+| `repo` | `priory request --repo`, or a review request's pull request; otherwise the daemon uses the trigger's `repo`. A GitHub `owner/name`: the intake drops a review request whose repository is not, and a task whose `repo` is not blocks before its first run |
 | `hold` | the trigger's `hold`, or `priory request --hold` |
 | `tldr` | `priory request --tldr`. The summarizer then skips the task (see [search.md](../daemon/search.md)) |
 

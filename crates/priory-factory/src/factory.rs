@@ -200,7 +200,7 @@ pub struct Sweep {
     pub after: Option<Duration>,
     /// The agent of the built-in `sweep` workflow; no sweeper starts without one.
     pub agent: Option<String>,
-    /// The repository the sweeper works in and files its issue on, `owner/name`.
+    /// The repository the sweeper works in and files its issue on, a GitHub `owner/name`.
     pub repo: Option<String>,
 }
 
@@ -404,7 +404,8 @@ pub enum Session {
 pub struct Trigger {
     /// `github`, `linear`, `linear.view`, `slack` or `schedule`.
     pub source: String,
-    /// The repository the trigger's tasks work in, `owner/name`; the polled one for `github`.
+    /// The repository the trigger's tasks work in, a GitHub `owner/name` with no `.` or `..` name;
+    /// the polled one for `github`.
     pub repo: Option<String>,
     /// The event that starts a task, such as `issues.labeled`; depends on `source`.
     #[serde(default)]

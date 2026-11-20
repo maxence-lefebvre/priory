@@ -40,8 +40,11 @@ It loads the factory as `priory check` does, and publishes nothing when it refus
 | An unknown workflow | `` unknown workflow `<name>` `` |
 | A band the factory lacks | `` band `<band>` is not one of <bands> `` |
 | No `--repo`, and no `repo` in `triggers/cli.toml` | `the request names no repo; pass --repo owner/name, or set repo in triggers/cli.toml` |
+| A `--repo` that is not a GitHub `owner/name` | `repo "<repo>" is not a GitHub owner/name` |
 
-A run needs a repository, hence the last rule. `triggers/cli.toml` is described in
+A run needs a repository, hence the last two rules. Priory clones it under its home, so a `repo`
+holds only GitHub's characters: an owner of letters, digits and `-`, a name of letters, digits, `-`,
+`_` and `.`. Neither part starts with `-`, and the name is not `.` or `..`. `triggers/cli.toml` is described in
 [triggers.md](../reference/triggers.md#task-requests-triggersclitoml-and-hold).
 
 ## Events

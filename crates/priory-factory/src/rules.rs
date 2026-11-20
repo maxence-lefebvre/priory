@@ -119,6 +119,20 @@ pub fn check(factory: &Factory) -> Vec<Problem> {
             )),
             _ => {}
         }
+        let checked = ["github", "linear", "linear.view", "slack", "schedule"];
+        if !checked.contains(&trigger.value.source.as_str())
+            && trigger
+                .value
+                .repo
+                .as_deref()
+                .is_some_and(|repo| !owner_name(repo))
+        {
+            problems.push(problem(
+                trigger,
+                trigger.lines.field("repo"),
+                "a trigger's `repo` is `owner/name`".into(),
+            ));
+        }
         if trigger.value.source != "slack" && trigger.value.channel.is_some() {
             problems.push(problem(
                 trigger,
@@ -308,10 +322,8 @@ fn check_review_request(trigger: &Loaded<Trigger>, problems: &mut Vec<Problem>) 
     }
 }
 
-/// Whether `repo` reads `owner/name`.
 fn owner_name(repo: &str) -> bool {
-    repo.split_once('/')
-        .is_some_and(|(owner, name)| !owner.is_empty() && !name.is_empty() && !name.contains('/'))
+    priory_runtime::runtime::check_repo(repo).is_ok()
 }
 
 fn check_repo(trigger: &Loaded<Trigger>, source: &str, problems: &mut Vec<Problem>) {

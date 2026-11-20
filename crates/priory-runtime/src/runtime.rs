@@ -1,5 +1,5 @@
 use std::fs::{self, File, OpenOptions};
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
@@ -165,19 +165,42 @@ pub(crate) fn git(dir: &Path) -> Command {
     command
 }
 
+/// Refuses `repo` unless it is a GitHub `owner/name`: an owner of letters, digits and `-`, a name of
+/// letters, digits, `-`, `_` and `.`, neither starting with `-`, and a name other than `.` or `..`.
+/// Priory joins it onto folders under its home, so anything else could leave that home.
+pub fn check_repo(repo: &str) -> Result<(), String> {
+    let part = |part: &str, allowed: fn(char) -> bool| {
+        !part.is_empty() && !part.starts_with('-') && part.chars().all(allowed)
+    };
+    let valid = repo.split_once('/').is_some_and(|(owner, name)| {
+        part(owner, |c| c.is_ascii_alphanumeric() || c == '-')
+            && part(name, |c| c.is_ascii_alphanumeric() || "-_.".contains(c))
+            && name != "."
+            && name != ".."
+    });
+    if !valid {
+        return Err(format!("repo {repo:?} is not a GitHub owner/name"));
+    }
+    Ok(())
+}
+
 /// The task's worktree on `priory/<task>`, from the default branch of Priory's own clone of `repo`
 /// (`owner/name`). The clone has no checkout: a person trusts it once in Claude, and its worktrees
 /// inherit that trust. A worktree of that clone left on that branch by an interrupted start is reused.
 pub fn worktree(home: &Path, repo: &str, task: i64) -> Result<(PathBuf, String), String> {
+    check_repo(repo)?;
     let clone = home.join("repos").join(repo);
     let branch = format!("priory/{task}");
     let path = home.join("worktrees").join(repo).join(task.to_string());
     if !clone.exists() {
         // A clone interrupted before the rename leaves only the partial directory, which is replaced.
-        let partial = PathBuf::from(format!("{}.partial", clone.display()));
+        // It lives apart from `repos`, where `<name>.partial` can be another repository's clone.
+        let partial = home.join("partial").join(repo);
         let _ = fs::remove_dir_all(&partial);
-        fs::create_dir_all(clone.parent().expect("clone has a parent"))
-            .map_err(|error| error.to_string())?;
+        for dir in [&partial, &clone] {
+            fs::create_dir_all(dir.parent().expect("a clone has a parent"))
+                .map_err(|error| error.to_string())?;
+        }
         run(Command::new("git")
             .args(["clone", "--quiet", "--no-checkout"])
             .arg(format!("https://github.com/{repo}.git"))
@@ -825,10 +848,10 @@ pub fn listen(home: &Path) -> Result<Listening, String> {
     let (sender, lines) = mpsc::channel();
     std::thread::spawn(move || {
         for mut stream in listener.incoming().flatten() {
-            let mut text = String::new();
-            if BufReader::new(&stream).read_line(&mut text).is_err() {
+            // One connection at a time: a client that sends no line must not hold every other one.
+            let Some(text) = line_within(&stream, Duration::from_secs(2)) else {
                 continue;
-            }
+            };
             let (applied, done) = mpsc::channel();
             if sender.send(Line { text, applied }).is_err() {
                 return;
@@ -839,6 +862,27 @@ pub fn listen(home: &Path) -> Result<Listening, String> {
         }
     });
     Ok(Listening { _lock: lock, lines })
+}
+
+/// The first line `stream` sends, newline included, if it ends or the stream does within `limit`.
+fn line_within(mut stream: &UnixStream, limit: Duration) -> Option<String> {
+    let deadline = Instant::now() + limit;
+    let mut line = Vec::new();
+    let mut chunk = [0; 4096];
+    while !line.contains(&b'\n') {
+        let left = deadline.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            return None;
+        }
+        stream.set_read_timeout(Some(left)).ok()?;
+        match stream.read(&mut chunk).ok()? {
+            0 => break,
+            read => line.extend_from_slice(&chunk[..read]),
+        }
+    }
+    let end = line.iter().position(|&byte| byte == b'\n');
+    line.truncate(end.map_or(line.len(), |end| end + 1));
+    String::from_utf8(line).ok()
 }
 
 /// The signals spooled while no daemon listened. `apply` runs on each before the spool is removed.
