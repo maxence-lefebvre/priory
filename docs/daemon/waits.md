@@ -25,7 +25,8 @@ prompts.
 
 ## Waits
 
-`wait(on)` names one condition in `on.type`. Each condition fires the wait on:
+`wait(on)` names one condition in `on.type`. `wait(any)` names a list of them, and the task wakes
+on the first that fires. Each condition fires the wait on:
 
 | `type`         | Fields                  | Fires on                                                                |
 | -------------- | ----------------------- | ----------------------------------------------------------------------- |
@@ -42,7 +43,31 @@ prompts.
 ```json
 { "on": { "type": "linear_state", "issue": "ENG-7", "state": "Done" } }
 { "on": { "type": "slack_reply", "channel": "C0123", "thread_ts": "1763500000.000100" } }
+{ "any": [
+  { "type": "pull_request", "repo": "owner/name", "pull_request": 57 },
+  { "type": "linear_state", "issue": "ENG-7", "state": "Done" },
+  { "type": "linear_state", "issue": "ENG-7", "state": "Canceled" }
+] }
 ```
+
+A wait on `any` stores one wait per condition, each with its own id, and replies
+`waits <id>, <id> stored`. A condition that is refused refuses the whole call, and nothing is
+stored. When one of them fires, the daemon withdraws the others, so a later event on their
+resources wakes nothing. The task still owns those resources, so their events still reach it, as
+any event on a resource it owns does.
+
+### An ask beside a wait
+
+An agent can call `ask` and `wait` in the same turn, in either order. The task sleeps until the
+answer or a condition comes, and the first one wins:
+
+- An answer or a dismiss withdraws the run's open waits.
+- A wait that fires withdraws the run's open ask. A later `priory answer` is refused with
+  `ask <id> was withdrawn when a wait of its run fired first`, and `priory asks --all` shows the
+  ask as withdrawn for that reason.
+
+While an answer or a fired wait of the run sits in a queued prompt, a new `ask` or `wait` is
+refused: the agent ends its turn and reads it first.
 
 A Linear or Slack condition makes the task own `linear:<issue>` or `slack:<channel>:<thread_ts>`, as
 a pull request condition does, and is refused when another active task owns it. It stores the time
@@ -69,7 +94,18 @@ fires a checks wait.
 
 When the wait is stored, the daemon checks the events the task kept since the agent's last prompt:
 those not typed yet and on which no wait fired. The first one that satisfies the wait fires it at
-once, and the time and task conditions are checked at once too. The run then does not sleep: the
+once, and the time and task conditions are checked at once too. The daemon also reads the current
+state of two conditions, before it stores anything, so a slow read holds no lock on the state file:
+
+| Condition | Read | Fires at once when | Line |
+| --------- | ---- | ------------------ | ---- |
+| `linear_state` | the issue's state, through the intake's Linear GraphQL transport (`curl`, 10 second connect and 60 second total timeout), only when the daemon has `LINEAR_API_KEY` | the state equals `state` | `wait <id> fired: <issue> is already <state>` |
+| `pull_request` | `gh pr view <number> -R <repo> --json state`, under the factory's command timeout | the pull request is merged or closed | `wait <id> fired: <pull request> is already merged`, or `closed` |
+
+So a wait on a Linear blocker that is already Done wakes the task at once. A read that fails stores
+the wait anyway, and the reply adds `Priory could not read the current state of <issue or repo>:
+<error>`. The other conditions are events, such as a comment or a review, with no current state to
+read. The run then does not sleep: the
 event is typed after its `Stop`. A disk wait is checked at the next tick. Each tick measures the disk
 with the room's reading, `df` on `PRIORY_HOME`, only while a disk wait is open.
 

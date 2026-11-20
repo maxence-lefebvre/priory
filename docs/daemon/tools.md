@@ -15,8 +15,10 @@ nothing.
 
 ## The tools
 
-Three tools end a turn: `result`, `ask` and `wait`. A run holds at most one of a result, an open
-ask and an open wait. Any later call of the three is refused.
+Three tools end a turn: `result`, `ask` and `wait`. A run holds a result, or an open ask, an open
+wait or both. A `result` after an open ask or wait is refused, as is a second `ask` or a second
+`wait`. An ask and a wait side by side wake the task on the first answer or event (see An ask
+beside a wait in [waits.md](waits.md)).
 
 ### `result(outcome, summary, evidence?, commit?, reason?)`
 
@@ -105,14 +107,24 @@ Outside an hc terminal, `session` stays empty.
 the factory names a `deliver` command, the daemon then delivers the answer or the dismissal to
 `session`, as [asks.md](asks.md) describes.
 
-### `wait(on)`
+### `wait(on?, any?)`
 
-`wait` stores a wait on one condition, then the agent ends its turn and sleeps with no process.
-The event that satisfies the condition arrives as its next prompt. For example, to sleep until a
+`wait` stores a wait on one condition, `on`, or on a list of them, `any`. A call takes one of the
+two. The agent then ends its turn and sleeps with no process. The event that satisfies a condition
+arrives as its next prompt, and the other conditions are withdrawn. For example, to sleep until a
 pull request's checks finish:
 
 ```json
 { "on": { "type": "checks", "repo": "owner/name", "pull_request": 57 } }
+```
+
+Or until the pull request closes or a Linear blocker is Done, whichever comes first:
+
+```json
+{ "any": [
+  { "type": "pull_request", "repo": "owner/name", "pull_request": 57 },
+  { "type": "linear_state", "issue": "ENG-7", "state": "Done" }
+] }
 ```
 
 [waits.md](waits.md) lists every condition.
