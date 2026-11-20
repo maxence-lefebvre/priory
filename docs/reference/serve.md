@@ -11,7 +11,7 @@ transaction. A listing that is an object has a `revision` field. A listing that 
 
 | Endpoint | CLI | Returns |
 | -------- | --- | ------- |
-| `/api/desk` | `priory desk --json` | an object: [Desk](#desk) |
+| `/api/desk?person=NAME` | `priory desk --json --person NAME` | an object: [Desk](#desk) |
 | `/api/inbox` | `priory inbox --json` | `inbox`: an array of [inbox messages](#inbox) |
 | `/api/asks` | `priory asks --json` | `asks`: an array of [asks](#asks) |
 | `/api/tasks` | `priory tasks --json` | `tasks`: an array of [tasks](#tasks) |
@@ -33,7 +33,7 @@ or a reason, is untrusted: render it as text.
 | ---- | ---- |
 | `200` | The endpoint answered |
 | `202` | A signed webhook delivery was taken: published, or dropped on purpose |
-| `400` | The request does not parse; `/api/events` lacks `since` or has a parameter out of range; for a webhook, it sends two `Content-Length`, or its payload lacks a field its event needs |
+| `400` | The request does not parse; `/api/events` lacks `since` or has a parameter out of range; `/api/desk` has a parameter other than `person`, or a broken escape; for a webhook, it sends two `Content-Length`, or its payload lacks a field its event needs |
 | `401` | The token is missing or wrong on a path under `/api`; for a webhook, the signature is |
 | `404` | No such path, task, report or web view file |
 | `405` | A method other than `GET`, on any path |
@@ -86,6 +86,11 @@ gets `400`.
 | `counts.asleep` | integer | Tasks asleep on a wait |
 | `counts.snoozed` | integer | Items snoozed now, which `items` leaves out |
 | `items` | array | What waits on a person, then the queue, then worktrees that stay. `priory desk --all --json` keeps the snoozed items |
+| `last_visit` | string or null | The person's last visit, which `priory seen` records |
+| `since_you_looked` | array | The events from the second of `last_visit` on, newest first, at most 50: each with `time`, `task`, `key` and `what`. See [desk.md](../daemon/desk.md#since-you-looked) |
+
+`/api/desk?person=NAME` reads the visit of `NAME`, percent-encoded, as `priory desk --json --person
+NAME` does. Without it, the person is `me`. Any other parameter, or a broken escape, gets `400`.
 
 Each item:
 
