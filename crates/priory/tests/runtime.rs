@@ -9044,11 +9044,24 @@ fn a_lease_holds_its_grant_while_its_command_runs_and_releases_it_when_the_comma
     let rows = setup.until("memory", |rows| rows.len() == 1 && rows[0][2] == "held");
     assert_eq!(
         [&rows[0][3], &rows[0][4], &rows[0][6]],
-        ["40.0", &format!("sh -c {}", held("a")), &server.id().to_string()]
+        [
+            "40.0",
+            &format!("sh -c {}", held("a")),
+            &server.id().to_string()
+        ]
     );
     let late = setup
         .command(env!("CARGO_BIN_EXE_priory"))
-        .args(["memory", "acquire", "--gb", "40", "--timeout", "1s", "--", "true"])
+        .args([
+            "memory",
+            "acquire",
+            "--gb",
+            "40",
+            "--timeout",
+            "1s",
+            "--",
+            "true",
+        ])
         .output()
         .unwrap();
     assert_eq!(late.status.code(), Some(125));
@@ -9092,6 +9105,26 @@ fn terminating_a_lease_stops_its_command_and_releases_its_grant() {
 }
 
 #[test]
+fn a_lease_stops_what_its_command_leaves_behind() {
+    let mut setup = Setup::new("lease-leftover");
+    setup.start();
+    listening(&setup);
+
+    let done = lease(&setup, "1", "sleep 30 & echo $! > pid")
+        .wait()
+        .unwrap();
+
+    assert!(done.success());
+    let pid = fs::read_to_string(setup.dir.join("fake/pid")).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while Path::new(&format!("/proc/{}", pid.trim())).exists() {
+        assert!(Instant::now() < deadline, "the leftover process still runs");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(setup.rows("memory").is_empty());
+}
+
+#[test]
 fn a_lease_without_room_within_its_timeout_exits_125_and_never_runs_its_command() {
     let mut setup = Setup::new("lease-timeout");
     setup.start();
@@ -9103,7 +9136,16 @@ fn a_lease_without_room_within_its_timeout_exits_125_and_never_runs_its_command(
     let late = setup
         .command(env!("CARGO_BIN_EXE_priory"))
         .args([
-            "memory", "lease", "--gb", "40", "--timeout", "1s", "--", "sh", "-c", "echo ran > ran",
+            "memory",
+            "lease",
+            "--gb",
+            "40",
+            "--timeout",
+            "1s",
+            "--",
+            "sh",
+            "-c",
+            "echo ran > ran",
         ])
         .current_dir(setup.dir.join("fake"))
         .output()

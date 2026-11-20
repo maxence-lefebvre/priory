@@ -813,8 +813,7 @@ const GATE_TIMEOUT: Duration = Duration::from_secs(60 * 60);
 const GATE_GB: f64 = 10.0;
 
 /// Runs a command once the daemon grants it `--gb` GB of memory, and releases the grant when it
-/// exits. Exits with the command's code. A `lease` keeps the grant itself and stops the command
-/// when it dies, so a server or stack lives no longer than the lease.
+/// exits. Exits with the command's code. A `lease` keeps the grant and stops the command when it dies.
 fn acquire(args: &[OsString], lease: bool) -> ExitCode {
     let Some(split) = args.iter().position(|arg| arg == "--") else {
         return usage();
@@ -887,14 +886,17 @@ fn acquire(args: &[OsString], lease: bool) -> ExitCode {
     let status = if lease {
         leased(program, rest)
     } else {
-        Command::new(program).args(rest).spawn().and_then(|mut child| {
-            // The command holds the grant from here, so it keeps its memory if this process dies.
-            let _ = gate(&Gate::Run {
-                grant,
-                pid: child.id(),
-            });
-            child.wait()
-        })
+        Command::new(program)
+            .args(rest)
+            .spawn()
+            .and_then(|mut child| {
+                // The command holds the grant from here, so it keeps its memory if this process dies.
+                let _ = gate(&Gate::Run {
+                    grant,
+                    pid: child.id(),
+                });
+                child.wait()
+            })
     };
     if let Err(error) = gate(&Gate::Release { grant }) {
         eprintln!(
@@ -916,23 +918,30 @@ fn acquire(args: &[OsString], lease: bool) -> ExitCode {
     }
 }
 
-/// Runs a leased command in its own process group, beside a guard that stops the group once this
-/// process ends, however it ends: the guard reads end of file when the kernel closes its pipe.
+/// Runs a leased command in the process group of a guard that stops the group once its pipe from
+/// this process closes, however this process ends.
 fn leased(program: &OsString, rest: &[OsString]) -> std::io::Result<std::process::ExitStatus> {
     use std::os::unix::process::CommandExt;
-    let mut child = Command::new(program).args(rest).process_group(0).spawn()?;
+    use std::process::Stdio;
     let guard = Command::new("sh")
-        .args(["-c", "read _; kill -TERM -\"$0\"", &child.id().to_string()])
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::null())
+        .args([
+            "-c",
+            "trap '' TERM; read _; kill -TERM -$$; sleep 5; kill -KILL -$$",
+        ])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
         .process_group(0)
-        .spawn();
-    let status = child.wait();
-    // Killed before its pipe closes, so it never signals a group whose id the kernel reused.
-    if let Ok(mut guard) = guard {
-        let _ = guard.kill();
-        let _ = guard.wait();
-    }
+        .spawn()
+        .map_err(|error| std::io::Error::other(format!("its guard did not start: {error}")))?;
+    let status = Command::new(program)
+        .args(rest)
+        .stdin(Stdio::null())
+        .process_group(guard.id() as i32)
+        .spawn()
+        .and_then(|mut child| child.wait());
+    // Dropping the guard closes its pipe, so it also stops what the command left behind.
+    drop(guard);
     status
 }
 
