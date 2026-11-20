@@ -146,7 +146,7 @@ fn main() -> ExitCode {
 
 fn usage() -> ExitCode {
     eprintln!(
-        "usage: priory check [DIR] [--explain [--json]]\n       priory draw [DIR] WORKFLOW\n       priory intake [DIR] [--once]\n       priory daemon [DIR] [--once]\n       priory request [DIR] --workflow <name> --key <key> [--band <band>] [--lane <lane>] [--repo <owner/name>] [--hold <reason> [CONDITION]...] <text>\n       priory serve [DIR] [--listen ADDR]\n       priory inbox [--since SEQ] [--json]\n       priory inbox read SEQ\n       priory post SOURCE LINE\n       priory tasks [--lane <lane>] [--grade red|yellow|green] [--json]\n       priory queue [DIR] [--json]\n       priory schedules [DIR] [--json]\n       priory runs\n       priory outbox\n       priory asks [--all] [--band <band>[,<band>...]]... [--json]\n       priory waits\n       priory actions\n       priory attach (TASK | --run RUN) [--read-only] [--print]\n       priory desk [--all] [--json] [--person NAME]\n       priory seen [--person NAME] [--at TIME]\n       priory wait --since REV [--timeout D]\n       priory snooze (ask | blocked | failed | prompt) ID (--for DURATION | --until TIME | --clear)\n       priory trace\n       priory report put TASK FILE|-\n       priory report show [TASK] [--json]\n       priory report pick PICK OPTION --expected REVISION\n       priory report [DIR] --workflow <name> [--since <instant-or-duration>] [--cost] [--by lane]\n       priory move TASK [--band <band>] [--top | --before TASK | --after TASK]\n       priory resume TASK\n       priory say TASK TEXT\n       priory pause [REASON]\n       priory unpause\n       priory cancel TASK\n       priory revive TASK [--step STEP]\n       priory hold TASK --reason TEXT [--until TIME] [--after TASK-OR-ISSUE]... [--merge PR]... [--if-closed release|drop|ask] [--blockers]\n       priory release TASK\n       priory task TASK --json\n       priory tldr TASK TEXT\n       priory progress TASK JSON\n       priory search QUERY [--state STATE[,STATE...]] [--limit N]\n       priory memory [(acquire | lease) [--gb N] [--timeout D] -- COMMAND...]\n       priory answer [--revision N | --expected N] [--run] [--] ASK OPTION-OR-TEXT\n       priory ask ID JSON\n       priory dismiss [--expected N] ASK\n       priory mcp --session ID\n       priory hook EVENT"
+        "usage: priory check [DIR] [--explain [--json]]\n       priory draw [DIR] WORKFLOW\n       priory intake [DIR] [--once]\n       priory daemon [DIR] [--once]\n       priory request [DIR] --workflow <name> --key <key> [--band <band>] [--lane <lane>] [--repo <owner/name>] [--hold <reason> [CONDITION]...] <text>\n       priory serve [DIR] [--listen ADDR]\n       priory inbox [--since SEQ] [--json]\n       priory inbox read SEQ\n       priory post SOURCE LINE\n       priory tasks [--lane <lane>] [--grade red|yellow|green] [--json]\n       priory queue [DIR] [--json]\n       priory schedules [DIR] [--json]\n       priory runs\n       priory outbox\n       priory asks [--all] [--band <band>[,<band>...]]... [--json]\n       priory waits\n       priory actions\n       priory attach (TASK | --run RUN) [--read-only] [--print]\n       priory desk [--all] [--json] [--person NAME]\n       priory seen [--person NAME] [--at TIME]\n       priory wait --since REV [--timeout D]\n       priory snooze (ask | blocked | failed | prompt) ID (--for DURATION | --until TIME | --clear)\n       priory trace\n       priory report put TASK FILE|-\n       priory report show [TASK] [--json]\n       priory report pick PICK OPTION --expected REVISION\n       priory report [DIR] --workflow <name> [--since <instant-or-duration>] [--cost] [--by lane]\n       priory move TASK [--band <band>] [--top | --before TASK | --after TASK] [--expected REVISION]\n       priory resume TASK\n       priory say TASK TEXT\n       priory pause [REASON]\n       priory unpause\n       priory cancel TASK [--expected REVISION]\n       priory revive TASK [--step STEP]\n       priory hold TASK --reason TEXT [--until TIME] [--after TASK-OR-ISSUE]... [--merge PR]... [--if-closed release|drop|ask] [--blockers] [--expected REVISION]\n       priory release TASK [--expected REVISION]\n       priory task TASK --json\n       priory tldr TASK TEXT\n       priory progress TASK JSON\n       priory search QUERY [--state STATE[,STATE...]] [--limit N]\n       priory memory [(acquire | lease) [--gb N] [--timeout D] -- COMMAND...]\n       priory answer [--revision N | --expected N] [--run] [--] ASK OPTION-OR-TEXT\n       priory ask ID JSON\n       priory dismiss [--expected N] ASK\n       priory mcp --session ID\n       priory hook EVENT"
     );
     ExitCode::from(2)
 }
@@ -1026,6 +1026,16 @@ fn revised(args: Vec<String>) -> Option<(Option<i64>, Vec<String>)> {
     Some((revision, rest))
 }
 
+/// Takes `--expected N` out of a task verb's arguments, which carry no free text.
+fn expected(mut args: Vec<String>) -> Option<(Option<i64>, Vec<String>)> {
+    let Some(at) = args.iter().position(|arg| arg == "--expected") else {
+        return Some((None, args));
+    };
+    let revision = args.get(at + 1)?.parse().ok()?;
+    args.drain(at..at + 2);
+    Some((Some(revision), args))
+}
+
 /// An ask's number, or the number of the outside ask that `priory ask` named so.
 fn ask_id(ask: &str) -> Result<i64, String> {
     // `priory ask` refuses an all-digit ID, so only one is a number.
@@ -1157,6 +1167,9 @@ fn search(args: Vec<String>) -> ExitCode {
 
 /// Sets a task's band and its place in the band's person order.
 fn move_task(args: Vec<String>) -> ExitCode {
+    let Some((expected, args)) = expected(args) else {
+        return usage();
+    };
     let mut args = args.into_iter();
     let Some(Ok(task)) = args.next().map(|task| task.parse()) else {
         return usage();
@@ -1191,8 +1204,8 @@ fn move_task(args: Vec<String>) -> ExitCode {
     if band.is_none() && place.is_none() {
         return usage();
     }
-    let moved =
-        state::open().and_then(|mut db| state::move_task(&mut db, task, band.as_deref(), place));
+    let moved = state::open()
+        .and_then(|mut db| state::move_task(&mut db, task, band.as_deref(), place, expected));
     exit("move", moved)
 }
 
@@ -1203,7 +1216,7 @@ fn hold(args: Vec<String>) -> ExitCode {
         return usage();
     };
     let mut hold = factory::Hold::default();
-    let mut reason = None;
+    let (mut reason, mut task) = (None, vec![task]);
     while let Some(flag) = args.next() {
         if flag == "--blockers" {
             hold.blockers = true;
@@ -1224,6 +1237,7 @@ fn hold(args: Vec<String>) -> ExitCode {
             },
             "--merge" => hold.merge.push(value),
             "--if-closed" => hold.if_closed = Some(value),
+            "--expected" if task.len() == 1 => task.extend([flag, value]),
             _ => return usage(),
         }
     }
@@ -1231,7 +1245,7 @@ fn hold(args: Vec<String>) -> ExitCode {
         return usage();
     };
     hold.reason = reason;
-    act("hold", vec![task], Some(hold))
+    act("hold", task, Some(hold))
 }
 
 /// Sends `priory resume`, `cancel`, `revive TASK [--step STEP]`, `release`, `say TASK TEXT` or `hold` for one task to
@@ -1242,6 +1256,13 @@ fn act(act: &str, mut args: Vec<String>, hold: Option<factory::Hold>) -> ExitCod
         "say" if args.len() == 2 => args.pop(),
         "say" => return usage(),
         _ => None,
+    };
+    let (expected, mut args) = match act {
+        "hold" | "release" | "cancel" => match expected(args) {
+            Some(split) => split,
+            None => return usage(),
+        },
+        _ => (None, args),
     };
     let step = match args.iter().position(|arg| arg == "--step") {
         Some(flag) if act == "revive" && flag + 1 < args.len() => args.drain(flag..flag + 2).nth(1),
@@ -1260,6 +1281,7 @@ fn act(act: &str, mut args: Vec<String>, hold: Option<factory::Hold>) -> ExitCod
         step,
         hold,
         text,
+        expected,
     })
     .expect("an action serializes");
     send(act, &line)

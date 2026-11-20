@@ -19,16 +19,17 @@ pub(crate) fn record(db: &Connection, stall: Option<(i64, &Short)>) -> rusqlite:
         return Ok(());
     };
     db.execute(ended, [short.resource])?;
-    let updated = db.execute(
-        "UPDATE stalls SET task = ?1, missing = ?2 WHERE ended IS NULL",
+    // Writing only a change keeps the state revision still while the queue stays stalled.
+    db.execute(
+        "UPDATE stalls SET task = ?1, missing = ?2
+         WHERE ended IS NULL AND (task IS NOT ?1 OR missing IS NOT ?2)",
         params![task, short.missing],
     )?;
-    if updated == 0 {
-        db.execute(
-            "INSERT INTO stalls (resource, missing, task) VALUES (?1, ?2, ?3)",
-            params![short.resource, short.missing, task],
-        )?;
-    }
+    db.execute(
+        "INSERT INTO stalls (resource, missing, task) SELECT ?1, ?2, ?3
+         WHERE NOT EXISTS (SELECT 1 FROM stalls WHERE ended IS NULL)",
+        params![short.resource, short.missing, task],
+    )?;
     Ok(())
 }
 

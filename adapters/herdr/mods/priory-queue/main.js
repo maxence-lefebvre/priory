@@ -60,6 +60,8 @@ export default class PrioryQueue extends View {
     this.priory = null;
     /** @type {any} `priory queue --json` */
     this.data = null;
+    /** @type {number | null} the revision of the read the last frame drew */
+    this.drawn = null;
     /** @type {import("./view.js").Room} */
     this.room = {};
     /** @type {string | null} */
@@ -165,12 +167,14 @@ export default class PrioryQueue extends View {
   }
 
   /**
-   * Runs one verb, then reads the queue again. A verb that fails says why on its task.
-   * @param {number | null} task @param {string} label @param {(client: ReturnType<typeof priory>) => Promise<unknown>} verb @param {import("gpui-kit").Context} cx
+   * Runs one verb on the revision the panel drew, then reads the queue again. A verb that fails, or
+   * that priory refuses because the state moved on, says why on its task.
+   * @param {number | null} task @param {string} label @param {(client: ReturnType<typeof priory>, revision: number | null) => Promise<unknown>} verb @param {import("gpui-kit").Context} cx
    */
   act(task, label, verb, cx) {
     this.popover = null;
     if (this.acting || this.error) return cx.notify();
+    const revision = this.drawn;
     this.acting = true;
     this.settles = Infinity;
     this.notice = null;
@@ -178,7 +182,7 @@ export default class PrioryQueue extends View {
     cx.spawn(async (cx) => {
       try {
         if (!this.priory) throw new Error("priory is not reachable");
-        await verb(this.priory.client);
+        await verb(this.priory.client, revision);
       } catch (error) {
         this.notice = { task, text: `${label} did not go: ${message(error)}.` };
       }
@@ -196,7 +200,7 @@ export default class PrioryQueue extends View {
   /** @param {number} task @param {number | { onto: number }} to @param {import("gpui-kit").Context} cx */
   reorder(task, to, cx) {
     const place = this.data && reorder(this.data, task, to);
-    if (place) this.act(task, "Move", (client) => client.move(task, place), cx);
+    if (place) this.act(task, "Move", (client, revision) => client.move(task, place, revision), cx);
   }
 
   /** @param {import("gpui-kit").Context} cx */
@@ -205,7 +209,7 @@ export default class PrioryQueue extends View {
     const task = this.selected;
     if (!reason || task === null) return;
     this.reason.set_value("");
-    this.act(task, "Hold", (client) => client.hold(task, { reason }), cx);
+    this.act(task, "Hold", (client, revision) => client.hold(task, { reason }, revision), cx);
   }
 
   /** @param {import("gpui-kit").KeyEvent} event @param {import("gpui-kit").Context} cx */
@@ -241,6 +245,8 @@ export default class PrioryQueue extends View {
 
   /** @param {import("gpui-kit").Context} cx */
   render(cx) {
+    // Each action sends the revision of the read on screen, so priory refuses it once the queue changed.
+    this.drawn = this.data?.revision ?? null;
     const theme = this.priory?.theme ?? "indigo";
     const t = /** @type {Palette} */ (palette(theme, cx.theme().appearance));
     this.font = FONTS[/** @type {keyof typeof FONTS} */ (theme)] ?? FONTS.indigo;
@@ -396,7 +402,7 @@ export default class PrioryQueue extends View {
         .child(div().font_weight(600).child("Up next")).child(div().text_color(t["text-3"]).child("the next 3 runs")))
       .children(upNext(this.data, now).map((next, index) => Button.new(`next-${index}`).px(8).py(6).flex().gap(10).items_start().rounded(RADIUS.sm)
         .hover((s) => s.bg(t.raised)).focus((s) => s.bg(t.raised)).disabled(!listed(next.task))
-        .accessibility_label(`${next.when} ${next.sub}: ${next.label}. ${next.why}`)
+        .accessibility_label(`${next.when} ${next.sub}: ${next.label}${next.title ? `, ${next.title}` : ""}. ${next.why}`)
         .on_click((_event, cx) => {
           if (!listed(next.task)) return;
           if (!this.rows().some((row) => row.id === next.task)) {
@@ -412,6 +418,7 @@ export default class PrioryQueue extends View {
           .child(div().text_size(TYPE.caption[0]).text_color(t["text-3"]).child(next.sub)))
         .child(v_flex().flex_1().min_w_0()
           .child(div().truncate().font_family(this.font.mono).text_size(TYPE.small[0]).child(next.label))
+          .when(Boolean(next.title), (el) => el.child(div().truncate().font_weight(600).text_size(TYPE.small[0]).child(next.title ?? "")))
           .child(div().whitespace_normal().text_size(TYPE.caption[0]).text_color(t["text-2"]).child(next.why)))));
   }
 
@@ -427,7 +434,7 @@ export default class PrioryQueue extends View {
       }))
       .child(Button.new(`row-${row.id}`).flex_1().min_w_0().min_h(PANE.row).px(8).py(8).flex().items_start().gap(10).rounded(RADIUS.md)
         .selected(selected).hover((s) => s.bg(selected ? t["action-soft"] : t.raised)).focus((s) => s.border(2).border_color(t["action-text"]))
-        .accessibility_label(`${row.tile} ${row.key}: ${row.why?.text ?? row.step}`)
+        .accessibility_label(`${row.tile} ${row.key}${row.title ? `, ${row.title}` : ""}: ${row.why?.text ?? row.step}`)
         .on_click((_event, cx) => this.select(row.id, cx))
         .child(this.tile(row.tile, t))
         .child(v_flex().flex_1().min_w_0().gap(2)
@@ -438,6 +445,7 @@ export default class PrioryQueue extends View {
             .child(div().text_color(row.tile === "running" ? t["action-text"] : t["text-3"]).child(row.tile))
             .child(div().flex_1())
             .when(Boolean(row.age), (el) => el.child(div().whitespace_nowrap().child(row.age))))
+          .when(Boolean(row.title), (el) => el.child(div().truncate().font_weight(600).text_size(TYPE.body[0]).line_height(TYPE.body[1]).child(row.title ?? "")))
           .when(Boolean(row.why), (el) => el.child(div().whitespace_normal().text_size(TYPE.small[0]).line_height(TYPE.small[1]).text_color(this.tone(row.why.tone, t)).child(row.why.text)))
           .when(Boolean(row.conditions?.length), (el) => el.children(row.conditions.map((/** @type {{ text: string, met: boolean }} */ item) => this.condition(item, t))))))
       .child(reorderable
@@ -473,7 +481,7 @@ export default class PrioryQueue extends View {
       .when(wide, (el) => el
         .child(h_flex().flex_wrap().gap(6).items_center().text_size(TYPE.caption[0]).text_color(t["text-3"])
           .child(this.tile(row.tile, t)).child(div().font_family(this.font.mono).text_color(t["text-2"]).child(row.key)).child(row.step).child(row.tile))
-        .child(div().whitespace_normal().font_family(this.font.display).font_weight(700).text_size(TYPE.title[0]).line_height(TYPE.title[1]).child(row.key)))
+        .child(div().whitespace_normal().font_family(this.font.display).font_weight(700).text_size(TYPE.title[0]).line_height(TYPE.title[1]).child(row.title ?? row.key)))
       .when(Boolean(row.why) && wide, (el) => el.child(v_flex().p(12).gap(6).rounded(RADIUS.md).border(1).border_color(row.why.tone === "warn" ? t["warn-text"] : t.line)
         .child(div().whitespace_normal().child(row.why.text))
         .children((row.conditions ?? []).map((/** @type {{ text: string, met: boolean }} */ item) => this.condition(item, t)))))
@@ -509,12 +517,12 @@ export default class PrioryQueue extends View {
     const targets = this.data ? moveTargets(this.data, task) : [];
     return h_flex().gap(6).flex_wrap().items_center()
       .when(targets.length > 0, (el) => el.child(popover("move", "arrow-up-to-line", "Move…", this.menu(t, targets.map(({ label, move }) =>
-        [label, "", (cx) => this.act(task, "Move", (client) => client.move(task, move), cx)])))))
+        [label, "", (cx) => this.act(task, "Move", (client, revision) => client.move(task, move, revision), cx)])))))
       .when(waiting, (el) => el.child(popover("hold", "pause", "Hold…", v_flex().w(260).p(10).gap(8).rounded(RADIUS.md).bg(t.surface).border(1).border_color(t["control-line"])
         .child(div().text_size(TYPE.small[0]).font_weight(600).child(`Hold ${row.key} until a person releases it`))
         .child(div().h(PANE.control).px(8).rounded(RADIUS.sm).border(1).border_color(t["control-line"]).child(Input.new(this.reason).h_full().w_full().text_size(TYPE.small[0]).text_color(t.text)))
         .child(button("hold-confirm", "", "Hold", (cx) => this.hold(cx))))))
-      .when(row.tile === "held", (el) => el.child(button("release", "play", "Release", (cx) => this.act(task, "Release", (client) => client.release(task), cx))))
+      .when(row.tile === "held", (el) => el.child(button("release", "play", "Release", (cx) => this.act(task, "Release", (client, revision) => client.release(task, revision), cx))))
       .when(row.tile === "running", (el) => el.child(button("attach", "terminal", "Attach", (cx) => {
         setShared("priory.attach", { task, at: Date.now() });
         cx.notify();
@@ -523,6 +531,6 @@ export default class PrioryQueue extends View {
         .child(div().whitespace_normal().text_size(TYPE.small[0]).child(`Cancel ${row.key}? Its run stops and the task ends as dropped.`))
         .child(Button.new(`cancel-confirm-${task}`).h(PANE.control).px(12).flex().items_center().rounded(RADIUS.card).bg(t["tile-danger"]).text_color(t["on-tile"])
           .font_weight(600).focus((s) => s.border(2).border_color(t["action-text"]))
-          .on_click((_event, cx) => this.act(task, "Cancel", (client) => client.cancel(task), cx)).child(`Cancel ${row.key}`)))));
+          .on_click((_event, cx) => this.act(task, "Cancel", (client, revision) => client.cancel(task, revision), cx)).child(`Cancel ${row.key}`)))));
   }
 }

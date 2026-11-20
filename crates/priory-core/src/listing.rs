@@ -16,6 +16,11 @@ const CONDITIONS: &str = "(SELECT json_group_array(json_object('kind', kind, 'un
    FROM (SELECT * FROM holds WHERE holds.task = tasks.id AND holds.released IS NULL ORDER BY id)
    HAVING count(*) > 0) AS conditions";
 
+/// A task's title: its TL;DR when set, else the first line of its request, cut to 120 characters.
+const TITLE: &str = "(SELECT substr(coalesce(nullif(task_text.tldr, ''),
+     substr(task_text.request, 1, instr(task_text.request || char(10), char(10)) - 1)), 1, 120)
+   FROM task_text WHERE task_text.task = tasks.id) AS title";
+
 fn places() -> String {
     format!(
         "WITH queue AS (SELECT id, row_number() OVER (ORDER BY {order}) AS place,
@@ -300,22 +305,22 @@ fn asks_of(
     Ok(asks)
 }
 
-/// The waiting tasks in start order, then the held ones with their hold, the live runs, and the
-/// tasks that ended in the last day, and up next: the next three runs, with `schedules`' firings.
+/// The factory's bands highest first, the waiting tasks in start order, then the held ones with
+/// their hold, the live runs, and the tasks that ended in the last day, each with its title, and up next: the next three runs, with `schedules`' firings.
 pub fn queue(
     db: &Connection,
     schedules: &[(String, Trigger)],
     now: Timestamp,
 ) -> rusqlite::Result<Value> {
     let waiting = format!(
-        "{} SELECT position, band_position, id, key, workflow, step, state, band, lane, reason, since,
-           conditions FROM (
+        "{} SELECT position, band_position, id, key, title, workflow, step, state, band, lane, reason,
+           since, conditions FROM (
            SELECT 0 AS part, queue.place AS position, queue.band_place AS band_position, id, key,
-             workflow, step, state, band, lane, reason, changed AS since, NULL AS conditions,
+             {TITLE}, workflow, step, state, band, lane, reason, changed AS since, NULL AS conditions,
              queue.place AS sort
            FROM tasks JOIN queue USING (id)
            UNION ALL
-           SELECT 1, NULL, NULL, tasks.id, key, workflow, step, state, band, lane, tasks.reason,
+           SELECT 1, NULL, NULL, tasks.id, key, {TITLE}, workflow, step, state, band, lane, tasks.reason,
              changed, {CONDITIONS},
              (SELECT min(id) FROM holds WHERE holds.task = tasks.id AND holds.released IS NULL)
            FROM tasks WHERE tasks.state = 'held'
@@ -329,20 +334,27 @@ pub fn queue(
         .iter_mut()
         .for_each(parse_json);
     Ok(json!({
+        "bands": state::band_names(db)?,
         "up_next": up_next(db, &waiting, schedules, now)?,
         "waiting": waiting,
         "running": rows(
             db,
-            "SELECT runs.id AS run, runs.task, tasks.key, runs.step, runs.agent, runs.started
-             FROM runs JOIN tasks ON tasks.id = runs.task WHERE runs.ended IS NULL ORDER BY runs.id",
+            &format!(
+                "SELECT runs.id AS run, runs.task, tasks.key, {TITLE}, runs.step, runs.agent,
+                   runs.started
+                 FROM runs JOIN tasks ON tasks.id = runs.task WHERE runs.ended IS NULL
+                 ORDER BY runs.id"
+            ),
             [],
         )?,
         "ended": rows(
             db,
-            "SELECT id, key, workflow, step, state, reason, changed AS ended FROM tasks
-             WHERE state IN ('done', 'failed', 'dropped')
-               AND changed >= strftime('%Y-%m-%dT%H:%M:%SZ', 'now', '-1 day')
-             ORDER BY changed DESC, id DESC",
+            &format!(
+                "SELECT id, key, {TITLE}, workflow, step, state, reason, changed AS ended FROM tasks
+                 WHERE state IN ('done', 'failed', 'dropped')
+                   AND changed >= strftime('%Y-%m-%dT%H:%M:%SZ', 'now', '-1 day')
+                 ORDER BY changed DESC, id DESC"
+            ),
             [],
         )?,
     }))
@@ -366,7 +378,7 @@ fn up_next(
     schedules: &[(String, Trigger)],
     now: Timestamp,
 ) -> rusqlite::Result<Value> {
-    let entry = |at: String, kind, row: &Value, trigger: &Value, why: String| json!({ "at": at, "kind": kind, "task": row["id"], "key": row["key"], "trigger": trigger, "why": why });
+    let entry = |at: String, kind, row: &Value, trigger: &Value, why: String| json!({ "at": at, "kind": kind, "task": row["id"], "key": row["key"], "title": row["title"], "trigger": trigger, "why": why });
     let mut next: Vec<(Timestamp, Value)> = Vec::new();
     for row in waiting.as_array().into_iter().flatten() {
         if let Some(position) = row["position"].as_i64() {
@@ -411,7 +423,9 @@ fn up_next(
         }
         // Each firing of a keyless schedule is its own task; a fixed key's later ones coalesce.
         let count = if firing.key.is_none() { 3 } else { 1 };
-        let row = json!({ "id": firing.task.map(|(id, _)| id), "key": firing.key });
+        let row = json!({
+            "id": firing.task.map(|(id, _)| id), "key": firing.key, "title": firing.title,
+        });
         let slots = std::iter::successors(firing.next, |at| schedule::next(firing.trigger, *at));
         for at in slots.take(count) {
             let why = format!("schedule {} fires", firing.name);
@@ -453,6 +467,8 @@ struct Firing<'a> {
     key: Option<String>,
     /// The live task the fixed key names, and its state.
     task: Option<(i64, String)>,
+    /// That task's title.
+    title: Option<String>,
 }
 
 fn firings<'a>(
@@ -460,18 +476,21 @@ fn firings<'a>(
     schedules: &'a [(String, Trigger)],
     now: Timestamp,
 ) -> rusqlite::Result<Vec<Firing<'a>>> {
-    let mut live = db.prepare(
-        "SELECT id, state FROM tasks WHERE key = ?1 AND state NOT IN ('done', 'failed', 'dropped')
-         ORDER BY id DESC LIMIT 1",
-    )?;
+    let mut live = db.prepare(&format!(
+        "SELECT id, state, {TITLE} FROM tasks
+         WHERE key = ?1 AND state NOT IN ('done', 'failed', 'dropped') ORDER BY id DESC LIMIT 1"
+    ))?;
     let mut firings = Vec::new();
     for (name, trigger) in schedules {
         let key = trigger.key.as_ref().map(|key| format!("schedule:{key}"));
-        let task = match &key {
+        let (task, title) = match &key {
             Some(key) => live
-                .query_row([key], |row| Ok((row.get(0)?, row.get(1)?)))
-                .optional()?,
-            None => None,
+                .query_row([key], |row| {
+                    Ok((Some((row.get(0)?, row.get(1)?)), row.get(2)?))
+                })
+                .optional()?
+                .unwrap_or_default(),
+            None => (None, None),
         };
         firings.push(Firing {
             name,
@@ -479,6 +498,7 @@ fn firings<'a>(
             next: schedule::next(trigger, now),
             key,
             task,
+            title,
         });
     }
     Ok(firings)
