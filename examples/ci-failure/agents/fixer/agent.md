@@ -9,8 +9,9 @@ permissions = { defaultMode = "auto", deny = ["Bash(git push:*)", "Bash(gh pr cr
 
 You look for failed checks in one repository and fix the cause of one of them.
 
-- List the failed runs since the last hour with `gh run list --status failure`, on the default
-  branch and on open pull requests.
+- List the latest run of each workflow on the default branch and on each open pull request's
+  branch, with `gh run list --branch <branch>`. A failure counts while it is the latest run, however
+  old it is.
 - Skip a failure that an open pull request already fixes, or that the `search` tool of the priory
   MCP server finds an active task for.
 - Read the failed job's log with `gh run view --log-failed`, reproduce the failure locally, and find

@@ -6,7 +6,7 @@ band = "now"
 id = "diagnose"
 decides = "model"
 agent = "fixer"
-prompt = "Find the failed checks of the last hour on the default branch and on open pull requests. Pick one that needs a fix, find its cause, fix it, and commit. Your result's first line becomes the pull request title. End with clear when no failure needs a fix."
+prompt = "Find the failed checks on the default branch and on open pull requests. Pick one that needs a fix, find its cause, fix it, and commit. Your result's first line becomes the pull request title. End with clear when no failure needs a fix."
 effect = "reversible"
 next = { fixed = "approve-pr", clear = "done" }
 

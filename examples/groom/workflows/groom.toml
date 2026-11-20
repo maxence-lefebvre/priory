@@ -28,8 +28,8 @@ next = { passed = "review", failed = "stop" }
 [[steps]]
 id = "review"
 decides = "model"
-agent = "reviewer"
-prompt = "Review the committed change against its brief."
+agent = "implementer"
+prompt = "Review your committed change against the brief, as a reviewer would: bugs, missing tests, changes outside its scope. End with fix and each finding, or with clean and a result for the pull request: its title on the first line, then what changed and how you tested it."
 effect = "reversible"
 next = { clean = "open-pr", fix = "implement" }
 

@@ -17,9 +17,12 @@ set for the intake and the daemon. Replace `owner/repo` in `triggers/groom-label
 
 ## Gates
 
-- Every grade ends on your review of the pull request. Nothing here merges.
-- `open-pr` is `autonomous`: it opens the pull request without an ask, because the pull request
-  is the gate.
+- Every grade ends on a pull request for you to review. Nothing here merges, so a change lands only
+  when a person merges it.
+- `open-pr` is `autonomous`: it opens the pull request without an ask. The task ends as done once
+  the pull request's checks pass, before anyone reviews it.
+- The review pass runs in the implementer's own conversation, so it knows the brief. It is a second
+  look, not an independent reviewer.
 - `approve-plan` holds a red task until you answer `approved` or `rejected`.
 
 ## Run it

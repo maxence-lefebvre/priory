@@ -5,7 +5,12 @@ and on open pull requests of `owner/repo`. It finds the cause of one, fixes it, 
 it opens the fix pull request.
 
 No trigger fires on a failed check yet, so a schedule starts each look. A look that finds nothing to
-fix ends as done.
+fix ends as done. A failure counts while it is the latest run of its workflow on its branch, so one
+from Friday evening is still found on Monday.
+
+`open-pr` always targets the default branch. So the agent fixes a pull request's failure only when
+the default branch has the same cause, and leaves a failure that the pull request's own change
+causes to its author.
 
 ## What it needs
 

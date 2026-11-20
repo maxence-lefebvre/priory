@@ -16,4 +16,7 @@ You take one ticket from a request to a pull request a person reviews.
 - Give the grade's reason in one line in the result's `reason`. Write the brief in its `summary`:
   the goal, the scope and how to check the result. For yellow and red, add your plan.
 - Implement the brief with the smallest change, and test it. Commit your work.
-- Never push, open a pull request or merge. Priory opens the pull request, and a person reviews it.
+- In the review step, read the diff from the default branch with fresh eyes, and fix each finding
+  in the implement step that follows.
+- Never push, open a pull request or merge. Priory opens the pull request with your latest result as
+  its title and body, and a person reviews it.
