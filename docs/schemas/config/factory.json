@@ -3,6 +3,20 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "additionalProperties": false,
   "definitions": {
+    "Asks": {
+      "additionalProperties": false,
+      "description": "What happens to the answer of an ask from a session Priory did not start.",
+      "properties": {
+        "deliver": {
+          "description": "The command that delivers an answer to the session that asked, relative to the factory\nfolder. It gets the ask's id, revision, session, `answered` or `dismissed`, and the answer\nas its arguments. Without it, the answer is only stored.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
     "GithubWebhook": {
       "additionalProperties": false,
       "description": "GitHub webhooks, at `POST /hooks/github`.",
@@ -186,6 +200,9 @@
   },
   "description": "`factory.toml` or `factory.yaml`: the factory's name and the daemon's settings.",
   "properties": {
+    "asks": {
+      "$ref": "#/definitions/Asks"
+    },
     "bands": {
       "description": "The bands, highest first, when they are not the default ones.",
       "items": {

@@ -18,19 +18,31 @@ pub struct Script {
 
 /// Starts `run` with `sh -c` in `home`, writing its output to `log`.
 pub fn spawn(run: &str, home: &Path, log: &Path, timeout: Duration) -> Result<Script, String> {
+    let mut command = Command::new("sh");
+    command.args(["-c", run]);
+    spawn_command(command, home, log, timeout)
+}
+
+/// Starts `command` in `dir` in its own process group, writing its output to `log`.
+pub fn spawn_command(
+    mut command: Command,
+    dir: &Path,
+    log: &Path,
+    timeout: Duration,
+) -> Result<Script, String> {
     let at = |error: std::io::Error| format!("{}: {error}", log.display());
-    fs::create_dir_all(log.parent().unwrap_or(home)).map_err(at)?;
+    fs::create_dir_all(log.parent().unwrap_or(dir)).map_err(at)?;
     let out = File::create(log).map_err(at)?;
     let err = out.try_clone().map_err(at)?;
-    let child = Command::new("sh")
-        .args(["-c", run])
-        .current_dir(home)
+    let program = command.get_program().to_string_lossy().into_owned();
+    let child = command
+        .current_dir(dir)
         .stdin(Stdio::null())
         .stdout(out)
         .stderr(err)
         .process_group(0)
         .spawn()
-        .map_err(|error| format!("sh: {error}"))?;
+        .map_err(|error| format!("{program}: {error}"))?;
     Ok(Script {
         child,
         log: log.to_path_buf(),
