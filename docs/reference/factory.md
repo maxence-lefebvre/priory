@@ -204,7 +204,7 @@ band = "today"                                 # its band without --band
 | `` `[links]` `<regex>` is not a regex: <reason> `` | A `[links]` key the regex crate refuses |
 | `` `[links]` `<regex>` names group $<n>, but the regex has <m> groups `` | A template names a group past the regex's last one |
 | `` `[links]` `<regex>` links to `<url>`: a link starts with `https://` `` | A template that is not an `https://` URL |
-| `` `[links]` `<regex>` links to `<url>`: a link's host is fixed, with no group or `{repo}` in it `` | A template whose host is empty, or holds `$1` or `{repo}`, so the linked text could pick the site |
+| `` `[links]` `<regex>` links to `<url>`: a link's host is fixed, with no group or `{repo}` in it `` | A template whose host is empty or holds anything but letters, digits, `.`, `-` and a `:port`, such as `$1` or `{repo}`, so the linked text could pick the site |
 | `` `[request] workflow` `<name>` does not exist `` | `[request] workflow` names no file under `workflows/` |
 | `` `[request] band` `<band>` is not one of <bands> `` | `[request] band` names a band the factory lacks |
 | `invalid socket address syntax` | `listen` is not an IP address and port, such as `127.0.0.1:7340` |

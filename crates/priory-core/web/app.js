@@ -1024,12 +1024,13 @@ document.addEventListener("click", (event) => {
     localStorage.setItem("priory.theme", root.dataset.theme);
     return render();
   }
-  if (target.tagName === "A" && target.origin === location.origin && !target.hash && !event.metaKey && !event.ctrlKey) {
+  const modified = event.metaKey || event.ctrlKey || event.shiftKey || event.altKey;
+  if (target.tagName === "A" && target.origin === location.origin && !target.hash && !target.target && !modified) {
     event.preventDefault();
     go(target.pathname + target.search);
   }
   const inPage = target.origin === location.origin && target.pathname === location.pathname && target.search === location.search;
-  if (target.tagName === "A" && inPage && target.hash && !target.target && !event.metaKey && !event.ctrlKey) {
+  if (target.tagName === "A" && inPage && target.hash && !target.target && !modified) {
     event.preventDefault();
     document.querySelector(target.hash)?.scrollIntoView({ behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth" });
   }

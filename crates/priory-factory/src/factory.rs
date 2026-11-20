@@ -92,7 +92,8 @@ impl Link {
         let rest = &url["https://".len()..];
         let host = &rest[..rest.find(['/', '?', '#']).unwrap_or(rest.len())];
         // A group in the host would let the linked text pick the site.
-        if host.is_empty() || host.contains('$') || host.contains("{repo}") {
+        let plain = |c: char| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | ':');
+        if host.is_empty() || !host.chars().all(plain) {
             return Err(format!(
                 "`[links]` `{pattern}` links to `{url}`: a link's host is fixed, with no group or `{{repo}}` in it"
             ));

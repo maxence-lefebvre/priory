@@ -1356,6 +1356,7 @@ fn check_refuses_a_bad_link_regex_a_missing_group_and_a_non_https_template() {
 '\bbig-(\d+)\b' = "https://example.com/$18446744073709551616"
 '\bgo:(\S+)' = "https://$1/"
 '\brepo:(\S+)' = "https://{repo}.example.com/$1"
+'\bslash:(\S+)' = 'https://\/$1/'
 "#;
 
     let outcome = check(&factory("bad-links", &with("factory.toml", settings)));
@@ -1392,6 +1393,7 @@ fn check_refuses_a_bad_link_regex_a_missing_group_and_a_non_https_template() {
     for (regex, url) in [
         ("\\bgo:(\\S+)", "https://$1/"),
         ("\\brepo:(\\S+)", "https://{repo}.example.com/$1"),
+        ("\\bslash:(\\S+)", "https://\\/$1/"),
     ] {
         let message = format!(
             "factory.toml:3: `[links]` `{regex}` links to `{url}`: a link's host is fixed, with no group or `{{repo}}` in it\n"
