@@ -1996,6 +1996,9 @@ pub struct Act {
     /// What `say` tells the task's agent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub text: Option<String>,
+    /// The state revision a person's `hold`, `release` or `cancel` was made on.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected: Option<i64>,
 }
 
 /// Applies a desk action. `resume` makes a blocked task `ready`, with a prompt that says why it
@@ -2008,6 +2011,9 @@ pub(crate) fn act(
     factory: &priory_factory::factory::Factory,
 ) -> rusqlite::Result<(Result<String, String>, Option<String>)> {
     let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    if let Err(stale) = crate::state::expect_revision(&tx, act.expected) {
+        return Ok((Err(stale), None));
+    }
     let held = match (act.act.as_str(), &act.hold) {
         ("hold", Some(hold)) => Some(crate::hold::hold(&tx, act.task, hold, factory)?),
         ("release", _) => Some(crate::hold::release_task(&tx, act.task)?),
