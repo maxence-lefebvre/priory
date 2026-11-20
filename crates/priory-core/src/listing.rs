@@ -1,8 +1,11 @@
 //! The state the listing commands and the HTTP server show, one JSON payload per listing.
 
 use crate::{post, snooze, stall, state, sweep};
+use jiff::Timestamp;
+use priory_factory::factory::{Factory, Trigger};
+use priory_intake::intake::schedule;
 use rusqlite::types::ValueRef;
-use rusqlite::{Connection, Params, params};
+use rusqlite::{Connection, OptionalExtension, Params, params};
 use serde_json::{Map, Value, json};
 use std::path::Path;
 
@@ -169,8 +172,12 @@ fn asks_of(db: &Connection, task: Option<i64>) -> rusqlite::Result<Value> {
 }
 
 /// The waiting tasks in start order, then the held ones with their hold, the live runs, and the
-/// tasks that ended in the last day.
-pub fn queue(db: &Connection) -> rusqlite::Result<Value> {
+/// tasks that ended in the last day, and up next: the next three runs, with `schedules`' firings.
+pub fn queue(
+    db: &Connection,
+    schedules: &[(String, Trigger)],
+    now: Timestamp,
+) -> rusqlite::Result<Value> {
     let waiting = format!(
         "{} SELECT position, band_position, id, key, workflow, step, state, band, lane, reason, since,
            hold, hold_until, hold_target, hold_resource FROM (
@@ -186,8 +193,10 @@ pub fn queue(db: &Connection) -> rusqlite::Result<Value> {
          ) ORDER BY part, sort",
         places()
     );
+    let waiting = rows(db, &waiting, [])?;
     Ok(json!({
-        "waiting": rows(db, &waiting, [])?,
+        "up_next": up_next(db, &waiting, schedules, now)?,
+        "waiting": waiting,
         "running": rows(
             db,
             "SELECT runs.id AS run, runs.task, tasks.key, runs.step, runs.agent, runs.started
@@ -203,6 +212,134 @@ pub fn queue(db: &Connection) -> rusqlite::Result<Value> {
             [],
         )?,
     }))
+}
+
+/// The factory's schedule triggers by name.
+pub fn schedule_triggers(factory: &Factory) -> Vec<(String, Trigger)> {
+    factory
+        .triggers
+        .iter()
+        .filter(|(_, trigger)| trigger.value.source == "schedule")
+        .map(|(name, trigger)| (name.clone(), trigger.value.clone()))
+        .collect()
+}
+
+/// The next three runs, soonest first: queued tasks now in start order, tasks held until a time,
+/// and schedule firings that start or wake a task.
+fn up_next(
+    db: &Connection,
+    waiting: &Value,
+    schedules: &[(String, Trigger)],
+    now: Timestamp,
+) -> rusqlite::Result<Value> {
+    let entry = |at: String, kind, row: &Value, trigger: &Value, why: String| json!({ "at": at, "kind": kind, "task": row["id"], "key": row["key"], "trigger": trigger, "why": why });
+    let mut next: Vec<(Timestamp, Value)> = Vec::new();
+    for row in waiting.as_array().into_iter().flatten() {
+        if let Some(position) = row["position"].as_i64() {
+            let why = match (position, row["band_position"].as_i64()) {
+                (1, _) => "first in the queue".to_owned(),
+                (_, Some(1)) => "a band above it".to_owned(),
+                _ => format!("queue position {position}"),
+            };
+            next.push((
+                now,
+                entry(now.to_string(), "queued", row, &Value::Null, why),
+            ));
+            continue;
+        }
+        let until = row["hold_until"]
+            .as_str()
+            .and_then(|until| until.parse().ok());
+        if let (Some("time"), Some(until)) = (row["hold"].as_str(), until) {
+            let at = Timestamp::max(until, now);
+            let why = format!("held until {until}");
+            next.push((at, entry(at.to_string(), "held", row, &Value::Null, why)));
+        }
+    }
+    for firing in firings(db, schedules, now)? {
+        // A held task waits for its release, and a live task that is not asleep coalesces the
+        // firing, so neither starts a run then.
+        if firing.trigger.hold.is_some()
+            || firing
+                .task
+                .as_ref()
+                .is_some_and(|(_, state)| state != "asleep")
+        {
+            continue;
+        }
+        // Each firing of a keyless schedule is its own task; a fixed key's later ones coalesce.
+        let count = if firing.key.is_none() { 3 } else { 1 };
+        let row = json!({ "id": firing.task.map(|(id, _)| id), "key": firing.key });
+        let slots = std::iter::successors(firing.next, |at| schedule::next(firing.trigger, *at));
+        for at in slots.take(count) {
+            let why = format!("schedule {} fires", firing.name);
+            next.push((
+                at,
+                entry(at.to_string(), "scheduled", &row, &json!(firing.name), why),
+            ));
+        }
+    }
+    next.sort_by_key(|(at, _)| *at);
+    Ok(next.into_iter().take(3).map(|(_, entry)| entry).collect())
+}
+
+/// Each schedule trigger by name with its next firing after `now`, its fixed key, and the live task
+/// that key names, which a firing wakes or coalesces into.
+pub fn schedules(
+    db: &Connection,
+    schedules: &[(String, Trigger)],
+    now: Timestamp,
+) -> rusqlite::Result<Value> {
+    let listed = firings(db, schedules, now)?.into_iter().map(|firing| {
+        let (task, task_state) = firing.task.unzip();
+        json!({
+            "trigger": firing.name,
+            "workflow": firing.trigger.workflow,
+            "next": firing.next.map(|next| next.to_string()),
+            "key": firing.key,
+            "task": task,
+            "task_state": task_state,
+        })
+    });
+    Ok(listed.collect())
+}
+
+struct Firing<'a> {
+    name: &'a str,
+    trigger: &'a Trigger,
+    next: Option<Timestamp>,
+    key: Option<String>,
+    /// The live task the fixed key names, and its state.
+    task: Option<(i64, String)>,
+}
+
+fn firings<'a>(
+    db: &Connection,
+    schedules: &'a [(String, Trigger)],
+    now: Timestamp,
+) -> rusqlite::Result<Vec<Firing<'a>>> {
+    let mut live = db.prepare(
+        "SELECT id, state FROM tasks WHERE key = ?1 AND state NOT IN ('done', 'failed', 'dropped')
+         ORDER BY id DESC LIMIT 1",
+    )?;
+    let mut firings = Vec::new();
+    for (name, trigger) in schedules {
+        let key = trigger.key.as_ref().map(|key| format!("schedule:{key}"));
+        let task = match &key {
+            Some(key) => live
+                .query_row([key], |row| Ok((row.get(0)?, row.get(1)?)))
+                .optional()?,
+            None => None,
+        };
+        firings.push(Firing {
+            name,
+            trigger,
+            next: schedule::next(trigger, now),
+            key,
+            task,
+        });
+    }
+    Ok(firings)
 }
 
 /// `back_early` as the object it is stored as.
