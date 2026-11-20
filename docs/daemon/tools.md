@@ -97,6 +97,13 @@ Compacting is described under Compact in [outbox.md](outbox.md).
 Neither ends the turn, and either can come after a result, an ask or a wait. `priory mcp` answers
 both itself from the state file, without the daemon. See [search.md](search.md).
 
+### `report(date, since, greeting, sections)`
+
+`report` stores the task's report: ordered sections of rows, some with a pick. It replaces the
+task's report and keeps the choices already made. It does not end the turn. `priory mcp` answers it
+itself from the state file, without the daemon. A pick arrives as the next prompt. See
+[reports.md](reports.md).
+
 ## Moving on
 
 When the run's turn ends, its `Stop` moves the task by its result to `next[outcome]`:

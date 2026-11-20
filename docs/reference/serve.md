@@ -14,6 +14,8 @@ JSON as the CLI command with `--json`.
 | `/api/tasks` | `priory tasks --json` | an array of [tasks](#tasks) |
 | `/api/tasks/{id}` | | one [task in detail](#task-in-detail) |
 | `/api/queue` | `priory queue --json` | an object: [Queue](#queue) |
+| `/api/reports/latest` | `priory report show --json` | the [report](#report) written last |
+| `/api/reports/{task}` | `priory report show TASK --json` | the task's [report](#report) |
 | `/`, `/index.html` | | the web view, with `web = true` |
 
 Times are RFC 3339 strings in UTC. A field with no value is `null`. Agent text, such as a question
@@ -26,7 +28,7 @@ or a reason, is untrusted: render it as text.
 | `200` | The endpoint answered |
 | `400` | The request does not parse |
 | `401` | The token is missing or wrong |
-| `404` | No such path, or no such task |
+| `404` | No such path, no such task, or no such report |
 | `405` | A method other than `GET`, on any path |
 | `408` | The request head took over 5 seconds |
 | `413` | The request has a body |
@@ -123,3 +125,15 @@ The fields of [Tasks](#tasks), plus `repo` and `branch`, and these arrays, oldes
 | `waiting` | A queued or ready task in start order, then each held task by when it was held: `position` and `band_position` (its place in the queue and in its band, null for a held task), `id`, `key`, `workflow`, `step`, `state`, `band`, `lane`, `reason`, `since`, and for a held task its hold: `hold` (`person`, `time`, `task`, `merge` or `blockers`), `hold_until`, `hold_target`, `hold_resource` |
 | `running` | A live run: `run`, `task`, `key`, `step`, `agent`, `started` |
 | `ended` | A task done, failed or dropped in the last day, latest first: `id`, `key`, `workflow`, `step`, `state`, `reason`, `ended` |
+
+## Report
+
+The report a workflow wrote, in the shape of `docs/schemas/report.json`, with two more fields. See
+[reports.md](../daemon/reports.md).
+
+| Field | Type | Meaning |
+| ----- | ---- | ------- |
+| `task` | integer | The task that wrote it |
+| `revision` | integer | Raised by each write and each pick; `priory report pick --expected` takes it |
+| `date`, `since`, `greeting` | string | As written |
+| `sections` | array | In the order written |

@@ -3807,7 +3807,9 @@ fn the_mcp_server_lists_its_tools() {
         .collect();
     assert_eq!(
         names,
-        ["result", "ask", "wait", "compact", "tldr", "search"]
+        [
+            "result", "ask", "wait", "compact", "tldr", "report", "search"
+        ]
     );
     let on = &replies[1]["result"]["tools"][2]["inputSchema"]["properties"]["on"];
     assert_eq!(

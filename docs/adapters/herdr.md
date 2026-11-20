@@ -29,7 +29,7 @@ A panel reads the factory through Priory and acts through Priory's own verbs. It
 state database and never writes a file in the factory.
 
 - **Reading.** Until `serve` exists, a mod runs the CLI with Herdr's `exec` and parses its JSON:
-  `priory desk --json`, `priory asks --json`, `priory tasks --json` and `priory report --json`. It
+  `priory desk --json`, `priory asks --json`, `priory tasks --json` and `priory report show --json`. It
   polls every few seconds and keeps the last good answer, with its age, when a call fails. Once
   `serve` exists, a mod subscribes to its event stream instead and stops polling.
 - **Acting.** Every button runs a CLI verb: `priory answer ASK OPTION --revision N`,
@@ -132,8 +132,9 @@ name: it draws the sections in the order the report gives them.
 - A section has a `title`, an optional `count` and `rows`. A row has a `text`, and optionally a
   `key`, `meta`, a task `state` for its tile, an `owner` ("on Max"), a time, a `pick` and
   `comments`.
-- A pick records the person's choice with *`priory report pick ID OPTION --expected REVISION`*.
-  The workflow applies it and fills `applied`.
+- A pick records the person's choice with `priory report pick ID OPTION --expected REVISION`.
+  The workflow applies it and fills `applied`. [reports.md](../daemon/reports.md) holds the rules,
+  and `docs/schemas/report.json` the schema.
 - Max's Rayon factory lists Reading, Slack notes, Sentry and Backlog, then To agree, Blocked and
   Moved.
 
@@ -158,6 +159,7 @@ The panels need these from Priory's core. Each is a separate slice.
 3. Snooze: the fields above, `priory snooze`, and the counts that leave snoozed items out.
 4. A stored last visit per person, for Since you looked.
 5. The next firing time of each schedule, for Up next.
-6. Report sections and picks: the shape above, written by a workflow, and `priory report pick`.
+6. Report sections and picks: done, see [reports.md](../daemon/reports.md). Comments on rows are
+   still to come.
 7. Ask fields for what waits and what the agent does next. `ask` records only the question,
    options, recommendation and trade-off today.
