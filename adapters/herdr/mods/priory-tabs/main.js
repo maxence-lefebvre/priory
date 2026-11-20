@@ -1,6 +1,6 @@
 import { View } from "gpui-kit";
 import { h_flex, Button } from "gpui-base";
-import { appHome, exec, focused, layout, notify, panes, readTextFile, run, settings, shared, theme as herdrTheme, window } from "herdr";
+import { appHome, exec, focused, home as herdrHome, layout, notify, panes, readTextFile, run, settings, shared, spaces, theme as herdrTheme, window } from "herdr";
 import { priory } from "./priory.js";
 
 const theme = /** @type {() => Record<string, import("gpui-kit").Color>} */ (herdrTheme);
@@ -35,22 +35,31 @@ async function connect() {
   } catch {
     config = {};
   }
-  return priory({ exec, binary: config.binary, on: config.machine ?? null, factory: config.factory ?? null });
+  const on = config.machine ?? null;
+  let binary = config.binary ?? "~/.local/bin/priory-oss";
+  // exec expands no `~`, and only the machine that runs priory knows its home.
+  if (binary.startsWith("~/")) {
+    const home = on ? (await exec("printenv", ["HOME"], { on })).stdout.trim() : herdrHome();
+    binary = home + binary.slice(1);
+  }
+  return { machine: on, client: priory({ exec, binary, on, factory: config.factory ?? null }) };
 }
 
 export default class PrioryTabs extends View {
   init() {
-    this.client = connect();
+    this.priory = connect();
     // A request left in shared state by an earlier session must not attach on start.
     this.attached = /** @type {{ at?: number } | null} */ (shared("priory.attach"))?.at ?? 0;
   }
 
   // Another Priory mod asks for a task's terminal with setShared("priory.attach", { task, at: Date.now() }).
-  /** @param {number} task */
-  async attach(task) {
+  /** @param {number} task @param {import("herdr").SpaceInfo | undefined} space the space shown when asked */
+  async attach(task, space) {
     try {
-      const command = await (await this.client).attach(task);
-      run("terminal.open", { argv: ["sh", "-c", command], name: `Task ${task}` });
+      const { machine, client } = await this.priory;
+      if (!space || space.machine !== machine) throw new Error(`Open a space on ${machine ?? "this machine"}, where Priory runs, then attach again.`);
+      const command = await client.attach(task);
+      run("tab.new", { space: space.id, name: `Task ${task}`, argv: ["sh", "-c", command] });
     } catch (error) {
       notify({ title: `Can't attach to task ${task}`, body: error instanceof Error ? error.message : String(error), level: "error" });
     }
@@ -62,7 +71,8 @@ export default class PrioryTabs extends View {
     const request = /** @type {{ task?: number, at?: number } | null} */ (shared("priory.attach"));
     if (request?.task != null && (request.at ?? 0) > this.attached) {
       this.attached = request.at;
-      cx.spawn(async () => this.attach(request.task));
+      const space = (spaces() ?? []).find((candidate) => candidate.active);
+      cx.spawn(async () => this.attach(request.task, space));
     }
     const root = /** @type {{ traffic_lights?: number[] }} */ (layout()), w = window();
     const sidebar = find(root, "sidebar"), panel = find(root, "panel"), body = find(root, "panel-body");

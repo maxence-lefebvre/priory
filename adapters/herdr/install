@@ -21,6 +21,13 @@ for mod in "$adapter"/mods/*/; do
 done
 sources+=("$adapter/layouts/priory.json") targets+=("$app/layouts/priory.json")
 
+for folder in "$app" "$app/mods" "$app/layouts"; do
+  if [[ -e "$folder" && ! -d "$folder" ]]; then
+    echo "install: ${folder#"$app"/} is not a folder; move it away first" >&2
+    exit 1
+  fi
+done
+
 for i in "${!targets[@]}"; do
   target="${targets[$i]}"
   if [[ -e "$target" || -L "$target" ]] && [[ "$(readlink "$target")" != "${sources[$i]}" ]]; then

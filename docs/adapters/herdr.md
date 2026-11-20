@@ -62,9 +62,10 @@ A panel reads the factory through Priory and acts through Priory's own verbs. It
 state database and never writes a file in the factory.
 
 - **Which Priory.** A mod runs the program that the `priory` object of Herdr's `settings.json`
-  names, on the Herdr machine it names: `{"priory": {"binary": "priory-oss", "machine": "xps13",
-  "factory": "/home/me/factory"}}`. Every field is optional. `binary` defaults to `priory-oss`,
-  found on the `PATH`. `machine` defaults to the machine Herdr runs on. `factory` is the folder
+  names, on the Herdr machine it names: `{"priory": {"binary": "~/.local/bin/priory-oss",
+  "machine": "xps13", "factory": "/home/me/factory"}}`. Every field is optional. `binary` defaults
+  to `~/.local/bin/priory-oss`, and a leading `~` means the home folder on Priory's machine. A name
+  without a slash is looked up on the `PATH`. `machine` defaults to the machine Herdr runs on. `factory` is the folder
   that `queue` and `schedules` read for up next. The program must find its state file, so set
   `PRIORY_DB` in the environment, or name a wrapper script that sets it.
 - **Reading.** A mod runs the CLI with Herdr's `exec` and parses its JSON: `priory desk --json`,
@@ -83,8 +84,9 @@ state database and never writes a file in the factory.
   `setShared("priory.attach", { task, at: Date.now() })`. The bar runs
   `priory attach TASK --print` and opens a terminal tab that runs the printed command, which starts
   a tmux client on the task's live run (R5.6). tmux stays the owner. When the task has no live run,
-  the bar shows Priory's error instead. The tab opens in the focused space, so attach from a space
-  on Priory's machine.
+  the bar shows Priory's error instead. The tab opens in the space shown when the panel asked. When
+  that space is on another machine than Priory, the bar refuses and asks for a space on Priory's
+  machine.
 - **Themes.** A panel draws with Priory's tokens, not Herdr's theme, so a theme looks the same in
   Herdr and in the browser. The adapter picks the light or dark value from Herdr's appearance. The
   Priory bar is part of Herdr's top bar, so it draws with Herdr's theme, as the tab bar beside it

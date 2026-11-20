@@ -138,7 +138,8 @@ test("runs priory on the machine the settings name", async () => {
 test("every mod carries the library unchanged", () => {
   const herdr = new URL("..", import.meta.url).pathname;
   const library = readFileSync(join(herdr, "lib/priory.js"), "utf8");
-  for (const mod of readdirSync(join(herdr, "mods"))) {
+  const mods = readdirSync(join(herdr, "mods"), { withFileTypes: true }).filter((entry) => entry.isDirectory());
+  for (const { name: mod } of mods) {
     assert.equal(readFileSync(join(herdr, "mods", mod, "priory.js"), "utf8"), library,
       `cp adapters/herdr/lib/priory.js adapters/herdr/mods/${mod}/priory.js`);
   }

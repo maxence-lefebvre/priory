@@ -7,7 +7,7 @@ import { join } from "node:path";
 
 const HERDR = new URL("..", import.meta.url).pathname.replace(/\/$/, "");
 const INSTALL = join(HERDR, "install");
-const MODS = readdirSync(join(HERDR, "mods"));
+const MODS = readdirSync(join(HERDR, "mods"), { withFileTypes: true }).filter((entry) => entry.isDirectory()).map((entry) => entry.name);
 
 function install(home, ...args) {
   const env = { ...process.env, HOME: home };
@@ -49,4 +49,15 @@ test("refuses to replace anything that is not its own link, and links nothing", 
   assert.equal(run.status, 1);
   assert.match(run.stderr, /layouts\/priory\.json is not a link to this adapter; move it away first/);
   assert.equal(existsSync(join(app, "mods")), false);
+});
+
+test("refuses a Herdr folder whose layouts folder is a file, and links nothing", () => {
+  const home = scratch();
+  const app = join(home, ".config/herdr-app");
+  mkdirSync(app, { recursive: true });
+  writeFileSync(join(app, "layouts"), "");
+  const run = install(home, "--dry-run");
+  assert.equal(run.status, 1);
+  assert.match(run.stderr, /layouts is not a folder; move it away first/);
+  assert.equal(run.stdout, "");
 });
