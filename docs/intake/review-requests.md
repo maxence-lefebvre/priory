@@ -114,6 +114,9 @@ marker. The next poll tries again. With `--once`, the intake exits non-zero.
 
 ## Limits
 
+- A crash in the first poll, before its marker, makes the next start poll the baseline again, as a
+  Linear view does. With `backfill = true`, a request removed during that crash then never
+  publishes its removal, so its task stays active.
 - One page of 100 requests per reviewer. Past that, every poll fails rather than read a partial set.
 - A pull request the `gh` user can no longer read leaves the search, and GitHub answers its reviews
   query with `Could not resolve`. The intake then publishes it with `reviewed: false`, so its task
