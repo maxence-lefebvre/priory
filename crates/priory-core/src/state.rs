@@ -10,7 +10,7 @@ use std::collections::BTreeMap;
 use std::io::Write;
 use std::time::Duration;
 
-const VERSION: i64 = 38;
+const VERSION: i64 = 39;
 
 const SCHEMA: &str = "
 CREATE TABLE tasks (
@@ -646,14 +646,26 @@ ALTER TABLE tasks ADD COLUMN progress TEXT;
 PRAGMA user_version = 37;
 ";
 
+// Each person's last visit to the desk, which its Since you looked counts from.
+const SCHEMA_38: &str = concat!(
+    "CREATE TABLE IF NOT EXISTS visits (
+  person TEXT PRIMARY KEY,
+  seen   TEXT NOT NULL
+);
+",
+    bumps!("visits", "trace"),
+    "PRAGMA user_version = 38;
+"
+);
+
 // A `run` action is stored before its command starts, with its process group, and `ended` once it
 // ends, so a restarted daemon finds the unended ones; it keeps the tail of the command's output.
-const SCHEMA_38: &str = "ALTER TABLE actions ADD COLUMN stdout TEXT;
+const SCHEMA_39: &str = "ALTER TABLE actions ADD COLUMN stdout TEXT;
 ALTER TABLE actions ADD COLUMN stderr TEXT;
 ALTER TABLE actions ADD COLUMN pid INTEGER;
 ALTER TABLE actions ADD COLUMN pid_started INTEGER;
 ALTER TABLE actions ADD COLUMN ended TEXT;
-PRAGMA user_version = 38;
+PRAGMA user_version = 39;
 ";
 
 /// Each schema change in order: a file at version `n` applies those from index `n` on.
@@ -662,7 +674,7 @@ const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA_10, SCHEMA_11, SCHEMA_12, SCHEMA_13, SCHEMA_14, SCHEMA_15, SCHEMA_16, SCHEMA_17,
     SCHEMA_18, SCHEMA_19, SCHEMA_20, SCHEMA_21, SCHEMA_22, SCHEMA_23, SCHEMA_24, SCHEMA_25,
     SCHEMA_26, SCHEMA_27, SCHEMA_28, SCHEMA_29, SCHEMA_30, SCHEMA_31, SCHEMA_32, SCHEMA_33,
-    SCHEMA_34, SCHEMA_35, SCHEMA_36, SCHEMA_37, SCHEMA_38,
+    SCHEMA_34, SCHEMA_35, SCHEMA_36, SCHEMA_37, SCHEMA_38, SCHEMA_39,
 ];
 
 /// The order the queue starts tasks in: band, then a person's order, then age. A band the factory
@@ -1294,6 +1306,16 @@ fn paused(db: &Connection) -> rusqlite::Result<Option<String>> {
         |row| row.get(0),
     )
     .optional()
+}
+
+/// Records that `person` looked at the desk at `at`, so its Since you looked starts there.
+pub fn seen(db: &Connection, person: &str, at: &str) -> rusqlite::Result<String> {
+    db.execute(
+        "INSERT INTO visits (person, seen) VALUES (?1, ?2)
+         ON CONFLICT (person) DO UPDATE SET seen = ?2",
+        [person, at],
+    )?;
+    Ok(format!("{person} looked at {at}"))
 }
 
 /// The desk's line while admissions are paused: `paused since <since>[: <reason>]`.

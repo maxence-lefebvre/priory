@@ -363,9 +363,36 @@ fn parse_back_early(item: &mut Value) {
     }
 }
 
+/// The person a desk is for when no one is named.
+pub const ME: &str = "me";
+
+/// The trace records and inbox entries after `person`'s last visit, newest first, at most 50.
+fn since_you_looked(db: &Connection, person: &str) -> rusqlite::Result<Value> {
+    rows(
+        db,
+        "WITH events AS (
+           SELECT time, CAST(json_extract(event, '$.data.task') AS INTEGER) AS task,
+             type || coalesce(' ' || json_extract(event, '$.data.step'), '')
+               || coalesce(': ' || json_extract(event, '$.data.outcome'), '') AS what,
+             0 AS source, seq
+           FROM trace
+           UNION ALL
+           SELECT time, task, CASE type WHEN ?2 THEN subject || ': ' || json_extract(data, '$.line')
+               ELSE type || coalesce(' ' || subject, '') || coalesce(': ' || outcome, '') END,
+             1, seq
+           FROM inbox)
+         SELECT time, task, (SELECT key FROM tasks WHERE tasks.id = events.task) AS key, what
+         FROM events
+         WHERE julianday(time) >= coalesce((SELECT julianday(seen) FROM visits WHERE person = ?1), 0)
+         ORDER BY julianday(time) DESC, source DESC, seq DESC LIMIT 50",
+        params![person, post::REPORT],
+    )
+}
+
 /// The pause's line, a stalled queue's banner, the asleep and snoozed counts, what waits on a person, the queue, then
-/// every worktree under `home` that stays and why. The snoozed items show only with `all`.
-pub fn desk(db: &Connection, home: &Path, all: bool) -> rusqlite::Result<Value> {
+/// every worktree under `home` that stays and why. The snoozed items show only with `all`. Then
+/// `person`'s last visit and what happened since.
+pub fn desk(db: &Connection, home: &Path, all: bool, person: &str) -> rusqlite::Result<Value> {
     let mut items = rows(db, &desk_items(), [])?;
     let list = items.as_array_mut().expect("rows are an array");
     list.iter_mut().for_each(parse_back_early);
@@ -391,6 +418,10 @@ pub fn desk(db: &Connection, home: &Path, all: bool) -> rusqlite::Result<Value> 
         "banner": stall::banner(db)?,
         "counts": { "asleep": asleep, "snoozed": snoozed },
         "items": items,
+        "last_visit": db
+            .query_row("SELECT seen FROM visits WHERE person = ?1", [person], |row| row.get::<_, String>(0))
+            .optional()?,
+        "since_you_looked": since_you_looked(db, person)?,
     }))
 }
 

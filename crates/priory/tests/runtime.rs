@@ -40,8 +40,8 @@ const OUTPUT: &str = "factory.intake";
 
 /// Takes a state file back before schema 28, which added search, 29, which added grades, 30,
 /// which added snoozes, 31, which added read reports, 32, which added the pause, 34, which added
-/// reports of sections, 36, which added deliveries, 37, which added progress, and 38, which added
-/// run actions.
+/// reports of sections, 36, which added deliveries, 37, which added progress, and 39, which added
+/// run actions. Schema 38's visits table is created only if missing, so it stays.
 const UNDO_SINCE_SEARCH: &str = "ALTER TABLE actions DROP COLUMN stdout;
   ALTER TABLE actions DROP COLUMN stderr; ALTER TABLE actions DROP COLUMN pid;
   ALTER TABLE actions DROP COLUMN pid_started; ALTER TABLE actions DROP COLUMN ended;

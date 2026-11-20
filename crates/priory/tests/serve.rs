@@ -462,6 +462,51 @@ fn each_endpoint_returns_what_the_cli_shows_and_its_json() {
 }
 
 #[test]
+fn the_desk_endpoint_lists_since_you_looked_for_a_person_as_the_cli_does() {
+    let mut setup = Setup::new("looked", SERVE);
+    setup.seed();
+    let before = json_of(&setup, "desk")["revision"].clone();
+    let db = rusqlite::Connection::open(setup.dir.join("priory.db")).unwrap();
+    db.execute(
+        "INSERT INTO trace (id, type, time, event) VALUES ('e1', 'factory.step.ended',
+           '2999-01-01T00:00:00.000Z',
+           '{\"data\":{\"task\":\"1\",\"step\":\"implement\",\"outcome\":\"passed\"}}')",
+        [],
+    )
+    .unwrap();
+    assert_ne!(json_of(&setup, "desk")["revision"], before);
+    succeeded(&setup.priory(&["seen", "--person", "Ana Li", "--at", "2998-01-01T00:00:00Z"]));
+    let address = setup.start(&["serve", &setup.factory()]);
+
+    let mine = api(&address, "/api/desk");
+    let ana = api(&address, "/api/desk?person=Ana%20Li");
+
+    assert_eq!(mine, json_of(&setup, "desk"));
+    assert!(mine["since_you_looked"].as_array().unwrap().len() > 1);
+    let cli: Value = serde_json::from_slice(
+        &setup
+            .priory(&["desk", "--json", "--person", "Ana Li"])
+            .stdout,
+    )
+    .unwrap();
+    assert_eq!(ana, cli);
+    assert_eq!(
+        ana["since_you_looked"],
+        json!([{ "time": "2999-01-01T00:00:00.000Z", "task": 1, "key": "cli:docs-1",
+                 "what": "factory.step.ended implement: passed" }])
+    );
+    for path in [
+        "/api/desk?person=%zz",
+        "/api/desk?person=%2",
+        "/api/desk?who=me",
+        "/api/desk?person=Ana%20Li&who=me",
+        "/api/desk?person=a&person=b",
+    ] {
+        assert_eq!(get(&address, path, Some(TOKEN)).0, 400, "{path}");
+    }
+}
+
+#[test]
 fn a_task_endpoint_returns_its_runs_steps_asks_waits_results_and_tldr() {
     let mut setup = Setup::new("task", SERVE);
     setup.seed();
