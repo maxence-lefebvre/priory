@@ -698,7 +698,7 @@ fn a_pull_request_trigger_rejects_other_events_and_keys() {
     assert_eq!(outcome.code, 1);
     assert_eq!(
         outcome.stderr,
-        "triggers/agent-label.toml:3: a GitHub trigger handles `issues.labeled`, `issues.opened`, `pull_request.labeled` or `pull_request.opened`, not `pull_request.closed`\n\
+        "triggers/agent-label.toml:3: a GitHub trigger handles `issues.labeled`, `issues.opened`, `pull_request.labeled`, `pull_request.opened` or `pull_request.review_requested`, not `pull_request.closed`\n\
          triggers/keyed.toml:7: a GitHub trigger's `key` is `pull_request.number`\n"
     );
 }
@@ -1062,6 +1062,27 @@ fn a_slack_trigger_names_its_channel_and_filters_on_text_only() {
          triggers/wrong.toml:1: a Slack trigger needs `channel = \"<channel id>\"`\n\
          triggers/wrong.toml:3: a Slack trigger filters on `text` only\n\
          triggers/wrong.toml:5: a Slack trigger's `key` is `message.ts`\n"
+    );
+}
+
+#[test]
+fn a_review_request_trigger_names_a_reviewer_and_no_repository() {
+    let good = "source = \"github\"\non = \"pull_request.review_requested\"\nreviewer = \"octo-cat\"\nworkflow = \"implement\"\n";
+    let wrong = "source = \"github\"\non = \"pull_request.review_requested\"\nreviewer = \"max:x\"\nrepo = \"owner/name\"\nworkflow = \"implement\"\nkey = \"pull_request.number\"\n";
+    let stray = "source = \"github\"\nrepo = \"owner/name\"\non = \"issues.opened\"\nreviewer = \"max\"\nworkflow = \"implement\"\n";
+    let mut files = with("triggers/agent-label.toml", good);
+    files.push(("triggers/wrong.toml", wrong));
+    files.push(("triggers/stray.toml", stray));
+
+    let outcome = check(&factory("review-triggers", &files));
+
+    assert_eq!(outcome.code, 1);
+    assert_eq!(
+        outcome.stderr,
+        "triggers/stray.toml:4: only a GitHub `pull_request.review_requested` trigger names a `reviewer`\n\
+         triggers/wrong.toml:3: a `pull_request.review_requested` trigger needs `reviewer = \"<GitHub login>\"`\n\
+         triggers/wrong.toml:4: a `pull_request.review_requested` trigger takes no `repo`: its tasks work in the pull request's repository, keyed by it and the reviewer\n\
+         triggers/wrong.toml:6: a `pull_request.review_requested` trigger takes no `key`: its tasks work in the pull request's repository, keyed by it and the reviewer\n"
     );
 }
 

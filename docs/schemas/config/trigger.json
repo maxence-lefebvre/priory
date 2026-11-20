@@ -156,6 +156,13 @@
         "null"
       ]
     },
+    "reviewer": {
+      "description": "The GitHub login whose review requests a `pull_request.review_requested` trigger polls.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
     "source": {
       "description": "`github`, `linear`, `linear.view`, `slack` or `schedule`.",
       "type": "string"
