@@ -1,0 +1,227 @@
+{
+  "banner": "stalled since 2026-11-20T11:02:00Z: short of disk by 4.1 GB; task 7 waits for room",
+  "counts": {
+    "asleep": 4,
+    "snoozed": 2
+  },
+  "items": [
+    {
+      "back_early": null,
+      "generation": null,
+      "id": 11,
+      "key": null,
+      "kind": "report",
+      "lane": null,
+      "since": "2026-11-20T10:00:00Z",
+      "snoozed_at": null,
+      "snoozed_until": null,
+      "step": null,
+      "task": null,
+      "what": "ci: 1 report to read: merges this week"
+    },
+    {
+      "back_early": null,
+      "generation": 1,
+      "id": 5,
+      "key": "cli:PRI-70",
+      "kind": "failed",
+      "lane": "none/misc",
+      "since": "2026-11-20T10:20:00Z",
+      "snoozed_at": "2026-11-20T10:25:00Z",
+      "snoozed_until": "2099-11-21T09:00:00Z",
+      "step": "triage",
+      "task": 5,
+      "what": "exited with code 137; revive: priory revive 5"
+    },
+    {
+      "back_early": null,
+      "generation": 1,
+      "id": 3,
+      "key": "cli:PRI-63",
+      "kind": "ask",
+      "lane": "none/misc",
+      "since": "2026-11-20T10:40:00Z",
+      "snoozed_at": "2026-11-20T11:05:00Z",
+      "snoozed_until": "2099-11-21T12:05:00Z",
+      "step": "implement",
+      "task": 3,
+      "what": "Rename the flag to --expected? [\"Rename\",\"Keep\"]"
+    },
+    {
+      "back_early": null,
+      "generation": 1,
+      "id": 1,
+      "key": "cli:PRI-61",
+      "kind": "ask",
+      "lane": "none/misc",
+      "since": "2026-11-20T11:18:00Z",
+      "snoozed_at": null,
+      "snoozed_until": null,
+      "step": "approve",
+      "task": 1,
+      "what": "Merge #212 into main? Checks are green at a1f3c9e. [\"merge\",\"wait\"]"
+    },
+    {
+      "back_early": null,
+      "generation": 1,
+      "id": 4,
+      "key": "cli:PRI-55",
+      "kind": "blocked",
+      "lane": "none/misc",
+      "since": "2026-11-20T11:29:00Z",
+      "snoozed_at": null,
+      "snoozed_until": null,
+      "step": "triage",
+      "task": 4,
+      "what": "Permission prompt denied: write to ~/.ssh/config, outside the worktree."
+    },
+    {
+      "back_early": null,
+      "generation": null,
+      "id": 4,
+      "key": null,
+      "kind": "ask",
+      "lane": null,
+      "since": "2026-11-20T11:40:00Z",
+      "snoozed_at": null,
+      "snoozed_until": null,
+      "step": null,
+      "task": null,
+      "what": "Ship the <b>release</b> notes? [\"Ship\",\"Hold\"]"
+    },
+    {
+      "back_early": {
+        "at": "2026-11-20T11:14:00Z",
+        "reason": "new revision"
+      },
+      "generation": 1,
+      "id": 2,
+      "key": "cli:PRI-62",
+      "kind": "ask",
+      "lane": "none/misc",
+      "since": "2026-11-20T11:54:00Z",
+      "snoozed_at": "2026-11-20T11:00:00Z",
+      "snoozed_until": null,
+      "step": "implement",
+      "task": 2,
+      "what": "Use the backoff crate for retries, or keep the 20-line loop? [\"Use backoff\",\"Keep the loop\"]"
+    },
+    {
+      "back_early": null,
+      "generation": 1,
+      "id": 1,
+      "key": "cli:PRI-80",
+      "kind": "held",
+      "lane": "none/misc",
+      "since": "2026-11-20T20:51:01Z",
+      "snoozed_at": null,
+      "snoozed_until": null,
+      "step": "triage",
+      "task": 8,
+      "what": "held: waits for the release on Monday"
+    },
+    {
+      "back_early": null,
+      "generation": 1,
+      "id": 1,
+      "key": "cli:PRI-72",
+      "kind": "queue",
+      "lane": "none/misc",
+      "since": "2026-11-20T11:02:00Z",
+      "snoozed_at": null,
+      "snoozed_until": null,
+      "step": "triage",
+      "task": 7,
+      "what": "now"
+    }
+  ],
+  "last_visit": "2026-11-20T09:12:00Z",
+  "paused": null,
+  "revision": 69,
+  "since_you_looked": [
+    {
+      "key": "cli:PRI-66",
+      "task": 6,
+      "time": "2026-11-20T11:02:00Z",
+      "what": "factory.run.started triage"
+    },
+    {
+      "key": "cli:PRI-63",
+      "task": 3,
+      "time": "2026-11-20T10:41:00Z",
+      "what": "factory.step.ended approve: merged #210"
+    },
+    {
+      "key": "cli:PRI-70",
+      "task": 5,
+      "time": "2026-11-20T10:20:00Z",
+      "what": "factory.step.ended triage: failed"
+    },
+    {
+      "key": null,
+      "task": null,
+      "time": "2026-11-20T10:00:00Z",
+      "what": "ci: 1 report to read: merges this week"
+    },
+    {
+      "key": "cli:PRI-70",
+      "task": 5,
+      "time": "2026-11-20T10:00:00Z",
+      "what": "factory.task.requested cli:PRI-70: created"
+    },
+    {
+      "key": null,
+      "task": null,
+      "time": "2026-11-20T10:00:00Z",
+      "what": "priory.task.requested.cli cli:PRI-70: ignored"
+    },
+    {
+      "key": "cli:PRI-55",
+      "task": 4,
+      "time": "2026-11-20T10:00:00Z",
+      "what": "factory.task.requested cli:PRI-55: created"
+    },
+    {
+      "key": null,
+      "task": null,
+      "time": "2026-11-20T10:00:00Z",
+      "what": "priory.task.requested.cli cli:PRI-55: ignored"
+    },
+    {
+      "key": "cli:PRI-63",
+      "task": 3,
+      "time": "2026-11-20T10:00:00Z",
+      "what": "factory.task.requested cli:PRI-63: created"
+    },
+    {
+      "key": null,
+      "task": null,
+      "time": "2026-11-20T10:00:00Z",
+      "what": "priory.task.requested.cli cli:PRI-63: ignored"
+    },
+    {
+      "key": "cli:PRI-62",
+      "task": 2,
+      "time": "2026-11-20T10:00:00Z",
+      "what": "factory.task.requested cli:PRI-62: created"
+    },
+    {
+      "key": null,
+      "task": null,
+      "time": "2026-11-20T10:00:00Z",
+      "what": "priory.task.requested.cli cli:PRI-62: ignored"
+    },
+    {
+      "key": "cli:PRI-61",
+      "task": 1,
+      "time": "2026-11-20T10:00:00Z",
+      "what": "factory.task.requested cli:PRI-61: created"
+    },
+    {
+      "key": null,
+      "task": null,
+      "time": "2026-11-20T10:00:00Z",
+      "what": "priory.task.requested.cli cli:PRI-61: ignored"
+    }
+  ]
+}
