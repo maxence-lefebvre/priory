@@ -1,31 +1,90 @@
 # Tools
 
-`priory mcp --session <id>` is a stdio MCP server. It answers `initialize`, `ping`, `tools/list`
-and `tools/call`. It sends each tool call to the daemon over `priory.sock` as
+An agent talks to Priory through MCP tools. Every run gets one MCP server, `priory`, which serves
+them. With these tools, an agent ends a step, asks a person a question, or sleeps until an event.
+
+## The MCP server
+
+The run's settings start the server as `priory mcp --session <id>`, a stdio MCP server. It answers
+`initialize`, `ping`, `tools/list` and `tools/call`.
+
+The server sends each tool call to the daemon over `priory.sock` as
 `{"tool": ..., "session": ..., "arguments": ...}`. The daemon applies the call in one transaction
 and replies with the tool's text or error. With no daemon listening, the call fails and stores
 nothing.
 
-- `result(outcome, summary, evidence?, commit?)` stores the run's result. Nothing can change or
-  delete it. The outcome must be a key of the step's `next`, or the error lists the valid outcomes.
-  An outcome that leads to `done` needs `commit` when the task owns a pull request (see Done and
-  checks). `commit`, like a checks wait's `head_sha`, must be a full SHA, because GitHub names pull
-  request heads by theirs. An abbreviated SHA is refused. A SHA in capitals is stored in lower case.
-- `ask(question, options, recommendation, tradeoff)` stores an ask at revision 1.
+## The tools
 
-- `wait(on)` stores a wait (see Waits).
-- `compact(focus?)` queues `/compact <focus>` in the outbox and tells the agent to end its turn. An
-  agent cannot type `/compact` itself, since only typed input reaches its harness. A Codex run gets a
-  bare `/compact`, because Codex's `/compact` takes no argument. A task holds at most one queued
-  compact, so a second call is refused, and so is `result` until it is typed: a result could move
-  the task to another agent's conversation first. `ask` and `wait` resume the same conversation, so
-  the compact follows their answer or event. Compacting is described under Compact in Outbox.
-- `tldr(text)` replaces the task's TL;DR, for when the work drifted from the request. `search(query,
-  states?, limit?)` finds tasks. Neither ends the turn, and either can come after a result, an ask or
-  a wait. `priory mcp` answers both itself from the state file, without the daemon. See
-  [search.md](search.md).
+Three tools end a turn: `result`, `ask` and `wait`. A run holds at most one of a result, an open
+ask and an open wait. Any later call of the three is refused.
 
-A run holds at most one of a result, an open ask and an open wait. Any later call is refused.
+### `result(outcome, summary, evidence?, commit?)`
+
+`result` stores the run's result and ends the step. Nothing can change or delete a stored result.
+
+The outcome must be a key of the step's `next`, or the error lists the valid outcomes. For a step
+with `next = { passed = "approve-pr", failed = "stop" }`, a call looks like this:
+
+```json
+{
+  "outcome": "passed",
+  "summary": "Fix the typo in the README\n\nThe install section said `cargo biuld`.",
+  "evidence": "cargo test passed: 112 tests.",
+  "commit": "3f9c2a7e5b1d4c6f8a0e2b4d6f8a1c3e5b7d9f0a"
+}
+```
+
+An outcome that leads to `done` needs `commit` when the task owns a pull request (see Done and
+checks in [waits.md](waits.md)). `commit`, like a checks wait's `head_sha`, must be a full SHA,
+because GitHub names pull request heads by their full SHA. An abbreviated SHA is refused. A SHA in
+capitals is stored in lower case.
+
+The `open-pr` action titles its pull request with the first line of `summary` (see Code steps
+below).
+
+### `ask(question, options, recommendation, tradeoff)`
+
+`ask` puts a question on the desk and stores it as an ask at revision 1. The agent then ends its
+turn and sleeps with no process. The person's answer arrives as its next prompt (see
+[waits.md](waits.md)). For example:
+
+```json
+{
+  "question": "The issue asks for a new flag, but `--format` already covers it. Which do you want?",
+  "options": ["add the flag", "document --format"],
+  "recommendation": "document --format",
+  "tradeoff": "A new flag is easier to find, but adds a second way to do the same thing."
+}
+```
+
+### `wait(on)`
+
+`wait` stores a wait on one condition, then the agent ends its turn and sleeps with no process.
+The event that satisfies the condition arrives as its next prompt. For example, to sleep until a
+pull request's checks finish:
+
+```json
+{ "on": { "type": "checks", "repo": "owner/name", "pull_request": 57 } }
+```
+
+[waits.md](waits.md) lists every condition.
+
+### `compact(focus?)`
+
+`compact` queues `/compact <focus>` in the outbox and tells the agent to end its turn. An agent
+cannot type `/compact` itself, since only typed input reaches its harness. A Codex run gets a bare
+`/compact`, because Codex's `/compact` takes no argument.
+
+A task holds at most one queued compact, so a second call is refused. `result` is refused too until
+the compact is typed, because a result could move the task to another agent's conversation first.
+`ask` and `wait` resume the same conversation, so the compact follows their answer or event.
+Compacting is described under Compact in [outbox.md](outbox.md).
+
+### `tldr(text)` and `search(query, states?, limit?)`
+
+`tldr` replaces the task's TL;DR, for when the work drifted from the request. `search` finds tasks.
+Neither ends the turn, and either can come after a result, an ask or a wait. `priory mcp` answers
+both itself from the state file, without the daemon. See [search.md](search.md).
 
 ## Moving on
 

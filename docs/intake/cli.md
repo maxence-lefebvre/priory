@@ -1,9 +1,29 @@
 # `priory.task.requested.cli`
 
-`priory request [DIR] --workflow <name> --key <key> [--band <band>] [--lane <lane>] [--repo <owner/name>] [--hold <reason> [--until <time> | --after <task> | --merge <pr> [--if-closed release|drop|ask] | --blockers]] [--] <text>`
-publishes this source event, then one `factory.task.requested` for it. `--hold` files the task held,
-with the condition that follows it (see `hold` below). It loads the factory as `priory check` does
-and refuses an unknown workflow, publishing nothing. `DIR` defaults to `.`. A flag value cannot start with `--`; put `--` before text that does.
+`priory request` asks for a task by hand, without a trigger. For example:
+
+```sh
+priory request ./factory --workflow implement --key docs-1 --repo owner/repo "Fix the docs"
+```
+
+The full form is:
+
+```
+priory request [DIR] --workflow <name> --key <key> [--band <band>] [--lane <lane>] [--repo <owner/name>] [--tldr <text>] [--hold <reason> [--until <time> | --after <task> | --merge <pr> [--if-closed release|drop|ask] | --blockers]] [--] <text>
+```
+
+It publishes this source event, then one `factory.task.requested` for it (see
+[task-requests.md](task-requests.md)).
+
+- `DIR` is the factory folder. It defaults to `.`.
+- `--hold` files the task held, with the condition that follows it (see `hold` in
+  [task-requests.md](task-requests.md)).
+- `--tldr` sets the task's TL;DR, so the summarizer skips it (see
+  [search.md](../daemon/search.md)).
+- A flag value cannot start with `--`. Put `--` before text that does.
+
+It loads the factory as `priory check` does. It refuses an unknown workflow or band, and publishes
+nothing then.
 
 The type has no `github.` prefix because no GitHub event produced it. It ends in `.cli` because a
 later source, such as Linear, adds its own `priory.task.requested.<source>`. It is a request, not a
