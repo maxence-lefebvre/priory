@@ -899,7 +899,7 @@ pub(crate) fn event(tx: &Transaction, task: i64, seq: i64) -> rusqlite::Result<b
         let said = feedback(&resource, &kind_of_event, &data)
             .filter(|_| later || kind_of_event == REVIEWED);
         if daemon {
-            let Some(said) = said else {
+            let Some(said) = said.filter(|_| !settles(&kind_of_event, &data)) else {
                 return judge(tx, wait);
             };
             fire(
@@ -914,8 +914,10 @@ pub(crate) fn event(tx: &Transaction, task: i64, seq: i64) -> rusqlite::Result<b
         let wanted = head.as_deref().or(state.as_deref());
         let woken = match &said {
             Some(_) => ["pull_request", "review"].contains(&kind.as_str()),
+            // A comment or reply written before the wait, such as the agent's own question, wakes nothing.
             None => {
                 !FEEDBACK.contains(&kind_of_event.as_str())
+                    && (later || !["linear_comment", "slack_reply"].contains(&kind.as_str()))
                     && route::satisfies(&kind, &resource, wanted, &kind_of_event, &data)
             }
         };
@@ -939,6 +941,11 @@ pub(crate) fn event(tx: &Transaction, task: i64, seq: i64) -> rusqlite::Result<b
 
 /// The events of a person's feedback on a pull request.
 const FEEDBACK: [&str; 3] = [REVIEWED, COMMENTED, THREAD_COMMENTED];
+
+/// Whether `data` is a review that asks the agent for nothing: an approval or a dismissal.
+fn settles(kind: &str, data: &Value) -> bool {
+    kind == REVIEWED && matches!(data["state"].as_str(), Some("approved" | "dismissed"))
+}
 
 /// Who said what and where, when `data` is feedback on the pull request `resource`.
 fn feedback(resource: &str, kind: &str, data: &Value) -> Option<String> {
@@ -1848,7 +1855,14 @@ fn apply_answer(
         enter(&tx, task, &workflow, &target, None, "", workflows)?;
     } else {
         withdraw_waits(&tx, answer.ask)?;
-        wake(&tx, task, &answer.text)?;
+        wake(
+            &tx,
+            task,
+            &format!(
+                "Answer to ask {label} (revision {}): {}",
+                answer.revision, answer.text
+            ),
+        )?;
         // An answer that beats the run's Stop leaves it running: the answer is its next prompt.
         if state == "asleep" {
             set(&tx, task, "ready", None, None)?;
@@ -2070,7 +2084,12 @@ pub(crate) fn act(
             None,
         )),
         "say" => {
-            let said = say(&tx, act, &state, &factory.workflows)?;
+            let Some(text) = act.text.as_deref().filter(|text| !text.trim().is_empty()) else {
+                return Ok((Err("say needs a text".to_owned()), None));
+            };
+            // A fixed first line keeps a text starting with `/` from running as a slash command.
+            let text = format!("{SAYS}{text}");
+            let said = say(&tx, act.task, &text, &state, &factory.workflows)?;
             if said.is_ok() {
                 tx.commit()?;
             }
@@ -2126,18 +2145,18 @@ pub(crate) fn cancel(
     Ok(tmux)
 }
 
-/// Queues a person's text as the next prompt of the agent at the task's model step, as an answer
+/// The first words of a person's `say` text in the agent's prompt.
+pub(crate) const SAYS: &str = "A person says: ";
+
+/// Queues `text` as the next prompt of the agent at the task's model step, as an answer
 /// is: typed once its run is idle, or waking an asleep task into a new run that resumes the session.
 pub(crate) fn say(
     tx: &Transaction,
-    act: &Act,
+    task: i64,
+    text: &str,
     state: &str,
     workflows: &Workflows,
 ) -> rusqlite::Result<Result<String, String>> {
-    let task = act.task;
-    let Some(text) = act.text.as_deref().filter(|text| !text.trim().is_empty()) else {
-        return Ok(Err("say needs a text".to_owned()));
-    };
     if ["done", "failed", "dropped"].contains(&state) {
         return Ok(Err(format!("task {task} is {state}")));
     }
@@ -2281,7 +2300,10 @@ pub(crate) fn reopenable(
         return Ok(None);
     };
     // A pull request the intake read as closed may reopen nothing before its close arrives.
-    if !FEEDBACK.contains(&message.kind.as_str()) || data["open"] == false {
+    if !FEEDBACK.contains(&message.kind.as_str())
+        || settles(&message.kind, data)
+        || data["open"] == false
+    {
         return Ok(None);
     }
     tx.query_row(
