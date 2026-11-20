@@ -143,9 +143,9 @@ pub(crate) fn call(
         ("wait", _, Some(wait)) | ("result" | "compact", _, Some(wait)) => {
             Some(format!("run {} already waits on wait {wait}", run.id))
         }
-        ("ask" | "wait", ..) if woken(&tx, &run)? => Some(
-            "an answer or event for this run is queued: end your turn to read it".to_owned(),
-        ),
+        ("ask" | "wait", ..) if woken(&tx, &run)? => {
+            Some("an answer or event for this run is queued: end your turn to read it".to_owned())
+        }
         _ => None,
     };
     if let Some(refused) = refused {
@@ -576,7 +576,10 @@ fn wait(
         due(tx)?;
     }
     for ((id, on), current) in ids.iter().zip(&conditions).zip(now) {
-        if let Some(line) = current.as_ref().and_then(|current| holds(on, current.as_deref().ok()?)) {
+        if let Some(line) = current
+            .as_ref()
+            .and_then(|current| holds(on, current.as_deref().ok()?))
+        {
             fire(tx, *id, run.task, &format!("wait {id} fired: {line}"), None)?;
         }
     }
@@ -584,7 +587,10 @@ fn wait(
         .query_row(
             &format!(
                 "SELECT id FROM waits WHERE id IN ({}) AND fired IS NOT NULL",
-                ids.iter().map(i64::to_string).collect::<Vec<_>>().join(", ")
+                ids.iter()
+                    .map(i64::to_string)
+                    .collect::<Vec<_>>()
+                    .join(", ")
             ),
             [],
             |row| row.get::<_, i64>(0),
@@ -606,7 +612,9 @@ fn wait(
             true => "the event that satisfies it is your next prompt",
             false => "your next prompt says so",
         };
-        return Ok(Ok(format!("wait {id} already holds: end your turn; {next}")));
+        return Ok(Ok(format!(
+            "wait {id} already holds: end your turn; {next}"
+        )));
     }
     let stored = match ids.as_slice() {
         [id] => format!(
@@ -614,7 +622,10 @@ fn wait(
         ),
         _ => format!(
             "waits {} stored: end your turn now; Priory wakes you with the first event that satisfies one of them",
-            ids.iter().map(i64::to_string).collect::<Vec<_>>().join(", ")
+            ids.iter()
+                .map(i64::to_string)
+                .collect::<Vec<_>>()
+                .join(", ")
         ),
     };
     Ok(Ok(format!("{stored}{unread}")))
@@ -625,7 +636,9 @@ fn conditions(arguments: &Value) -> Result<Vec<Value>, String> {
     match (&arguments["on"], &arguments["any"]) {
         (on, Value::Null) => Ok(vec![on.clone()]),
         (Value::Null, Value::Array(any)) if !any.is_empty() => Ok(any.clone()),
-        _ => Err("wait takes either on, one condition, or any, a non-empty list of conditions".into()),
+        _ => Err(
+            "wait takes either on, one condition, or any, a non-empty list of conditions".into(),
+        ),
     }
 }
 
@@ -829,21 +842,26 @@ pub(crate) fn event(tx: &Transaction, task: i64, seq: i64) -> rusqlite::Result<b
         if daemon {
             return judge(tx, wait);
         }
-        let (kind_of_event, subject, data, after, kept): (String, Option<String>, String, bool, bool) =
-            tx.query_row(
-                "SELECT type, subject, data, coalesce(julianday(time) >= julianday(?2), 1), task IS ?3
+        let (kind_of_event, subject, data, after, kept): (
+            String,
+            Option<String>,
+            String,
+            bool,
+            bool,
+        ) = tx.query_row(
+            "SELECT type, subject, data, coalesce(julianday(time) >= julianday(?2), 1), task IS ?3
                  FROM inbox WHERE seq = ?1",
-                params![seq, since, task],
-                |row| {
-                    Ok((
-                        row.get(0)?,
-                        row.get(1)?,
-                        row.get(2)?,
-                        row.get(3)?,
-                        row.get(4)?,
-                    ))
-                },
-            )?;
+            params![seq, since, task],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                ))
+            },
+        )?;
         let line = crate::state::line(&kind_of_event, subject.as_deref(), &data);
         let data: Value = serde_json::from_str(&data).expect("inbox data is JSON");
         let wanted = head.as_deref().or(state.as_deref());

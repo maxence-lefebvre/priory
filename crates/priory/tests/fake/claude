@@ -8,7 +8,7 @@
 # A prompt after `--` is the first turn. FAKE_LAZY_START fires SessionStart with the first turn, as
 # Codex 0.170 does, rather than at startup.
 # Each turn pops the first line of FAKE_DIR/calls, if any: a tools/call params object such as
-# {"name":"result","arguments":{...}}. It calls that tool through the --mcp-config server, or, for
+# {"name":"result","arguments":{...}}, or a JSON array of them to call in turn. It calls that tool through the --mcp-config server, or, for
 # AskUserQuestion, runs the matching PreToolUse hooks, and appends the reply to tools.log. Any other
 # capitalized name is a built-in tool that needs permission: it runs the PermissionRequest hooks, and
 # when none decides, shows the prompt through the permission_prompt Notification hooks.
@@ -177,7 +177,11 @@ while :; do
   if [ -s "$FAKE_DIR/calls" ]; then
     call=$(head -n 1 "$FAKE_DIR/calls")
     sed -i 1d "$FAKE_DIR/calls"
-    [ -n "$call" ] && tool "$call"
+    if [[ $call == \[* ]]; then
+      while IFS= read -r one; do tool "$one"; done < <(jq -c '.[]' <<<"$call")
+    elif [ -n "$call" ]; then
+      tool "$call"
+    fi
   fi
   if [ -e "$FAKE_DIR/crash" ]; then
     tmux set-option -p remain-on-exit on

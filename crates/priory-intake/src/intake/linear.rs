@@ -585,21 +585,18 @@ fn resume(
     Ok(after)
 }
 
-/// The name of the state Linear issue `issue`, such as ENG-7, is in now.
-pub fn state(issue: &str) -> Result<String, String> {
-    let key = std::env::var(KEY)
-        .ok()
-        .filter(|key| !key.is_empty())
-        .ok_or_else(|| format!("{KEY} is not set"))?;
-    let data = graphql(
-        &key,
-        "query State($id: String!) { issue(id: $id) { state { name } } }",
-        &json!({ "id": issue }),
-    )?;
-    data.pointer("/issue/state/name")
-        .and_then(Value::as_str)
-        .map(str::to_owned)
-        .ok_or_else(|| format!("Linear answered no state for {issue}"))
+/// The name of the state Linear issue `issue`, such as ENG-7, is in now; none without a key.
+pub fn state(issue: &str) -> Option<Result<String, String>> {
+    let key = std::env::var(KEY).ok().filter(|key| !key.is_empty())?;
+    let query = "query State($id: String!) { issue(id: $id) { state { name } } }";
+    Some(
+        graphql(&key, query, &json!({ "id": issue })).and_then(|data| {
+            data.pointer("/issue/state/name")
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+                .ok_or_else(|| format!("Linear answered no state for {issue}"))
+        }),
+    )
 }
 
 /// One query to Linear's GraphQL API. The key goes to `curl` on its standard input, so that it

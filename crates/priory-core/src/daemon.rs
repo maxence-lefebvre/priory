@@ -566,10 +566,11 @@ enum Input {
 }
 
 /// The current state of a wait condition outside Priory, read before the call's transaction so a
-/// slow read holds no lock: a Linear issue's state, or a pull request's state on GitHub.
+/// slow read holds no lock: a Linear issue's state, when the daemon has a Linear key, or a pull
+/// request's state on GitHub.
 fn current_state(on: &serde_json::Value) -> Option<Result<String, String>> {
     match on["type"].as_str()? {
-        "linear_state" => Some(priory_intake::intake::linear_state(on["issue"].as_str()?)),
+        "linear_state" => priory_intake::intake::linear_state(on["issue"].as_str()?),
         "pull_request" => Some(runtime::pull_request_state(
             on["repo"].as_str()?,
             on["pull_request"].as_u64()?,
