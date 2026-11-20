@@ -78,10 +78,66 @@ turn and sleeps with no process. The person's answer arrives as its next prompt 
 | `text`       | The ask's body, in Markdown                                          |
 | `whatWaits`  | What waits on the answer                                             |
 | `nextAction` | What the agent does once it has the answer                           |
-| `command`    | A command for the answer to run. Priory stores it but runs nothing yet (R6.8) |
+| `command`    | An object: a command that an answer runs (see Commands an answer runs) |
 
 `priory asks` and `priory asks --json` show them, the JSON as `title`, `text`, `what_waits`,
 `next_action` and `command`.
+
+#### Commands an answer runs
+
+An ask's `command` runs once when a person answers with one of its options. For example:
+
+```json
+"command": { "argv": ["scripts/deploy", "--env", "staging"], "target": "ops", "runs": ["deploy"] }
+```
+
+| Field    | Type             | Meaning |
+| -------- | ---------------- | ------- |
+| `argv`   | array of strings | The program and its arguments. Priory execs them as they are, never through a shell |
+| `target` | string           | Where it runs: `worktree`, the task's worktree, or a name in the factory's [`[asks.targets]`](../reference/factory.md#asks). Default `worktree` |
+| `runs`   | array of strings | The options whose answer runs it. Default: the recommended option, the one equal to `recommendation` |
+
+The tool refuses a `command` that is not such an object, a target the factory does not name, a
+`worktree` target for a task with no worktree, and a `runs` entry that is not an option. Without
+`runs`, it refuses a recommendation that is not an option. It stores the target as an absolute
+folder, so a later factory change never moves the command. An `argv[0]` with a slash runs from that
+folder; a bare name is looked up in `PATH`.
+
+An answer with an option in `runs` must confirm that it runs the command: `priory answer --run`, or
+`"run": true` over HTTP. Without it, the answer is refused with the command, its folder, its target
+and the revision it is bound to. An answer with another option, or free text, answers as usual and
+runs nothing.
+
+The answer is bound to the revision it read, as any answer is, and the command stored with that
+revision is the one that runs. The first answer stands, so a second answer never runs it again.
+
+In the transaction that stores the answer, the daemon stores the command as an `answer` action,
+with the ask, the revision and the command, and keeps the task `running`. The daemon starts it at
+its next tick, as the `run` action starts its command (see The `run` action), bounded by
+`command_timeout`, with the same environment. When it ends, the action is `done` on exit 0 and
+`failed` otherwise, with the last 2000 bytes of stdout and stderr. The task then wakes with this
+prompt, followed by the two tails:
+
+```text
+Ask 7 was answered "deploy" at revision 1, which ran ["scripts/deploy","--env","staging"] in /srv/ops: exit 0.
+```
+
+A cancelled task's command is killed, and the task is not woken.
+
+A daemon restart never runs the command again. The restarted daemon kills a command its
+predecessor left running and ends its action `uncertain`. The task wakes with `... and Priory
+stopped while it ran, so whether it finished is uncertain. Check the target before you act on it.`
+The desk shows a `command` item while the task is active. A command whose process the stopped
+daemon never recorded never started, so the next tick starts it.
+
+`priory actions` lists each answer's action. `priory asks --json` and `/api/asks` show it on the
+ask as `ran`: its `status`, `revision`, `error`, `stdout` and `stderr`.
+
+Known limits:
+
+- A daemon that stops after recording the process but before releasing it ends the action
+  `uncertain`, although the command never started.
+- The command runs on the daemon's machine only.
 
 ### Asks from outside Priory
 
@@ -103,7 +159,8 @@ Without `session` in the JSON, `priory ask` stores the session that ran it: the 
 `HC_TERMINAL_ID`, then a space and the Claude session in `CLAUDE_CODE_SESSION_ID` when it is set.
 Outside an hc terminal, `session` stays empty.
 
-`priory answer` stores the answer to an outside ask, under the same revision rule as any ask. When
+`priory answer` stores the answer to an outside ask, under the same revision rule as any ask. An
+outside ask's `command` is a string that Priory stores and never runs; the answer says so. When
 the factory names a `deliver` command, the daemon then delivers the answer or the dismissal to
 `session`, as [asks.md](asks.md) describes.
 

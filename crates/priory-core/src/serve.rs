@@ -292,6 +292,8 @@ struct AnswerBody {
     option: Option<String>,
     text: Option<String>,
     revision: i64,
+    #[serde(default)]
+    run: bool,
 }
 
 #[derive(serde::Deserialize)]
@@ -380,6 +382,7 @@ fn write_line(
                 ask,
                 revision,
                 text,
+                run: body.run,
             };
             Ok((line(&answer), Some((ask, revision))))
         }

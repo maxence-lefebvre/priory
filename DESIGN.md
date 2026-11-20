@@ -481,14 +481,12 @@ Ask states:
 | offline   | Options stay visible but disabled, with "Reconnect to answer".                            |
 | unsent    | A `--warn-text` line says why the answer did not go, such as "no priory daemon runs beside this server". The draft stays in the text field. |
 
-Until command answers ship (R6.8), a command ask keeps its options, its answer bar and "Write an
-answer" disabled, with a `lock` note that names the `priory answer` command to run instead.
-
 A **command ask** (R6.8) binds one option to a command. Its answer runs the command, so:
 
 - The option says so before any tap: "Recommended. Runs a command", or "Runs a command".
-- The Command section and the answer sheet show the command in a mono block on `--raised`: the
-  exact command line, its target, the revision it is bound to, and "Runs at most once."
+- The Command section and the answer sheet show the command in a mono block on `--raised`: each
+  word of its argv in its own boxed chip, so a space, a quote or an empty word shows as it is, its
+  target folder, the revision it is bound to, and "Runs at most once."
 - It has no undo bar. The first tap arms the option: it turns solid `--emph` with a 3 px
   `--action` ring, reads "Tap again to run" over the option's name and "Cancels in 4 s", and a
   ring counts the 4 s down. The other options dim. The second tap sends. In the drawer, the

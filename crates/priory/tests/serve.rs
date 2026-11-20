@@ -2007,6 +2007,63 @@ fn an_answer_through_the_endpoint_wakes_the_task_as_priory_answer_does() {
 }
 
 #[test]
+fn an_answer_that_runs_a_command_needs_run_true_and_the_ask_then_shows_what_it_ran() {
+    let mut setup = Setup::new("web-command", SERVE);
+    setup.asleep_on_ask();
+    let command = json!({
+        "argv": ["sh", "-c", "echo ran >> ran.log; echo shipped"],
+        "target": "worktree",
+        "dir": setup.dir,
+        "runs": ["left"],
+    });
+    setup
+        .db()
+        .execute(
+            "UPDATE asks SET command = ?1 WHERE id = 1",
+            [command.to_string()],
+        )
+        .unwrap();
+    let address = setup.start(&["daemon", &setup.factory()]);
+    let answer = |body: &str| post(&address, "/api/asks/1/answer", "", body);
+
+    let (unconfirmed, refusal) = answer(r#"{"option": "left", "revision": 2}"#);
+    let (status, body) = answer(r#"{"option": "left", "revision": 2, "run": true}"#);
+
+    assert_eq!(unconfirmed, 422, "{refusal}");
+    let shown = r#"["sh","-c","echo ran >> ran.log; echo shipped"]"#;
+    let dir = setup.dir.display();
+    assert_eq!(
+        serde_json::from_str::<Value>(&refusal).unwrap()["error"],
+        format!(
+            "ask 1 runs {shown} in {dir} (target worktree), bound to revision 2, when answered \"left\": answer again with --run to run it"
+        )
+    );
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(
+        serde_json::from_str::<Value>(&body).unwrap()["ok"],
+        format!("ask 1 answered: running {shown} in {dir}")
+    );
+    let deadline = std::time::Instant::now() + Duration::from_secs(15);
+    while setup.ask()["ran"]["status"] == "running" {
+        assert!(std::time::Instant::now() < deadline, "{}", setup.ask());
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let ask = setup.ask();
+    assert_eq!(
+        ask["command"]["argv"][2],
+        "echo ran >> ran.log; echo shipped"
+    );
+    assert_eq!(
+        ask["ran"],
+        json!({ "status": "done", "revision": 2, "error": null, "stdout": "shipped", "stderr": "" })
+    );
+    assert_eq!(
+        fs::read_to_string(setup.dir.join("ran.log")).unwrap(),
+        "ran\n"
+    );
+}
+
+#[test]
 fn a_stale_revision_gets_409_with_the_current_ask_and_changes_nothing() {
     let mut setup = Setup::new("web-stale", SERVE);
     setup.asleep_on_ask();

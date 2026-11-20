@@ -154,6 +154,17 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
         let (stdout, stderr) = (script::collect(&out), script::collect(&err));
         tools::ran(&mut db, &trace, id, handler::INTERRUPTED, &stdout, &stderr)?;
     }
+    // An answer's command never runs twice: one a stopped daemon left running ends `uncertain`.
+    for (id, group) in state::orphan_answers(&db)? {
+        if let Some((pid, _)) =
+            group.filter(|(pid, started)| memory::started(*pid) == Some(*started))
+        {
+            script::kill(pid);
+        }
+        let (out, err) = outputs_of(&home, id);
+        let (stdout, stderr) = (script::collect(&out), script::collect(&err));
+        tools::ran(&mut db, &trace, id, tools::UNCERTAIN, &stdout, &stderr)?;
+    }
     // A crash between ending its last script and marking it swept leaves a stall unswept.
     stall::swept(&db)?;
     // A handler call a stopped daemon started still counts, and its answer is recorded but not applied.
@@ -200,6 +211,7 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
         while let Ok(line) = listening.lines.try_recv() {
             apply(&mut db, line, &trace)?;
         }
+        start_answers(&mut db, &trace, &home, &mut commands)?;
         commands = run_commands(&mut db, &trace, &home, commands)?;
         tend(&mut db, &trace, &share, &home, &scope, &mut commands)?;
         handle_stalls(&mut db, &trace, &home, &mut stalls)?;
@@ -925,25 +937,71 @@ fn start_command(
     let id = tools::launched(db, due.task, step)?;
     let folder = std::path::absolute(&factory.dir)?;
     let dir = due.worktree.as_deref().map(Path::new).unwrap_or(&folder);
-    let state_file = std::path::absolute(std::env::var_os("PRIORY_DB").unwrap_or_default())?;
-    let task = due.task.to_string();
-    let home_dir = std::path::absolute(home)?;
-    let env = [
-        ("PRIORY_TASK", task.as_ref()),
-        ("PRIORY_HOME", home_dir.as_os_str()),
-        ("PRIORY_DB", state_file.as_os_str()),
-        ("PRIORY_FACTORY", folder.as_os_str()),
-    ];
+    let env = command_env(home, factory, due.task)?;
+    let env: Vec<_> = env
+        .iter()
+        .map(|(name, value)| (*name, value.as_os_str()))
+        .collect();
     let run = step.run.as_deref().unwrap_or_default();
     let (out, err) = outputs_of(home, id);
     let timeout = step.timeout.unwrap_or(factory.command_timeout());
-    match script::spawn_held(run, &env, dir, &out, &err, timeout) {
+    match script::spawn_held(&["sh", "-c", run, "sh"], &env, dir, &out, &err, timeout) {
         Ok(mut child) => {
             state::command_spawned(db, id, child.pid(), memory::started(child.pid()))?;
             child.release();
             commands.push((id, child));
         }
         Err(error) => tools::ran(db, trace, id, &format!("cannot start: {error}"), "", "")?,
+    }
+    Ok(())
+}
+
+/// The environment a `run` action's or an answer's command gets: the task, Priory home, the state
+/// file and the factory folder, each absolute.
+fn command_env(
+    home: &Path,
+    factory: &Factory,
+    task: i64,
+) -> Result<[(&'static str, std::ffi::OsString); 4], Error> {
+    let state_file = std::path::absolute(std::env::var_os("PRIORY_DB").unwrap_or_default())?;
+    Ok([
+        ("PRIORY_TASK", task.to_string().into()),
+        ("PRIORY_HOME", std::path::absolute(home)?.into()),
+        ("PRIORY_DB", state_file.into()),
+        ("PRIORY_FACTORY", std::path::absolute(&factory.dir)?.into()),
+    ])
+}
+
+/// Starts the command of each answer stored to run it, in the folder it was asked with, bounded by
+/// `command_timeout`. Its argv is exec'd, never parsed by a shell.
+fn start_answers(
+    db: &mut Connection,
+    trace: &Trace,
+    home: &Path,
+    commands: &mut Vec<(i64, Script)>,
+) -> Result<(), Error> {
+    for (id, task, stored) in state::unstarted_answers(db)? {
+        let ran: crate::command::Command =
+            serde_json::from_str(&stored).expect("a stored command parses");
+        let env = command_env(home, trace.factory, task)?;
+        let env: Vec<_> = env
+            .iter()
+            .map(|(name, value)| (*name, value.as_os_str()))
+            .collect();
+        let program = ran.program();
+        let argv: Vec<&str> = std::iter::once(program.as_str())
+            .chain(ran.argv[1..].iter().map(String::as_str))
+            .collect();
+        let (out, err) = outputs_of(home, id);
+        let timeout = trace.factory.command_timeout();
+        match script::spawn_held(&argv, &env, &ran.dir, &out, &err, timeout) {
+            Ok(mut child) => {
+                state::command_spawned(db, id, child.pid(), memory::started(child.pid()))?;
+                child.release();
+                commands.push((id, child));
+            }
+            Err(error) => tools::ran(db, trace, id, &format!("cannot start: {error}"), "", "")?,
+        }
     }
     Ok(())
 }
