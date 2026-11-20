@@ -97,8 +97,13 @@ does not know is ignored, with `priory ask: ignored unknown field <name>` on std
 under the same ID replaces every field. If any field changed, the ask gets a new revision and is
 open again, even after an answer or a dismiss. The same fields change nothing.
 
-`priory answer` stores the answer to an outside ask, under the same revision rule as any ask.
-Nothing delivers it to the asking session yet: Priory stores `session` for that.
+Without `session` in the JSON, `priory ask` stores the session that ran it: the hc terminal in
+`HC_TERMINAL_ID`, then a space and the Claude session in `CLAUDE_CODE_SESSION_ID` when it is set.
+Outside an hc terminal, `session` stays empty.
+
+`priory answer` stores the answer to an outside ask, under the same revision rule as any ask. When
+the factory names a `deliver` command, the daemon then delivers the answer or the dismissal to
+`session`, as [asks.md](asks.md) describes.
 
 ### `wait(on)`
 

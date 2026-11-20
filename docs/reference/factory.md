@@ -19,6 +19,7 @@ Schema: [`config/factory.json`](../schemas/config/factory.json).
 | `telemetry` | table | no | no export | Where trace records go. See [`[telemetry]`](#telemetry) | |
 | `serve` | table | no | nothing listens | The HTTP server over the factory's state. See [`[serve]`](#serve) | |
 | `webhooks` | table | no | no webhook is taken | The signed webhooks the server takes. Needs `[serve]`. See [`[webhooks.github]`](#webhooksgithub) | |
+| `asks` | table | no | answers are only stored | What happens to the answer of an ask from outside Priory. See [`[asks]`](#asks) | |
 
 A duration is a whole number followed by `s`, `m` or `h`, such as `"90s"`, `"15m"` or `"2h"`.
 
@@ -87,6 +88,14 @@ for the endpoint. With this table, the server takes GitHub deliveries at `POST /
 
 `priory serve` and `priory daemon` refuse to start while that variable is unset or empty.
 
+## `[asks]`
+
+See [asks.md](../daemon/asks.md) for when the daemon runs the command and how it retries.
+
+| Key | Type | Required | Default | Meaning | Example |
+| --- | ---- | -------- | ------- | ------- | ------- |
+| `deliver` | string | no | none: an answer is only stored | The command that delivers an outside ask's answer or dismissal to the session that asked, relative to the factory folder | `"adapters/herdr/deliver"` |
+
 ## Example
 
 <!-- example: factory/factory.toml -->
@@ -122,6 +131,9 @@ web = true                                     # false serves only /api
 
 [webhooks.github]
 secret_env = "PRIORY_GITHUB_WEBHOOK_SECRET"    # the variable holding the webhook's secret
+
+[asks]
+deliver = "bin/deliver"                        # delivers outside answers, from the factory folder
 ```
 
 ## Errors from `priory check`

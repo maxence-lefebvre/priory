@@ -90,7 +90,7 @@ Each item:
 
 | Field | Type | Meaning |
 | ----- | ---- | ------- |
-| `kind` | string | `ask`, `blocked`, `failed`, `prompt`, `held`, `sweep`, `memory`, `report`, `retired`, `queue` or `worktree`. See [desk.md](../daemon/desk.md) |
+| `kind` | string | `ask`, `delivery`, `blocked`, `failed`, `prompt`, `held`, `sweep`, `memory`, `report`, `retired`, `queue` or `worktree`. See [desk.md](../daemon/desk.md) |
 | `id` | integer or string | The ask, task, prompt, hold, sweep, grant, report's inbox sequence number or queue place; a worktree's path |
 | `task` | integer or null | The task |
 | `key` | string or null | The task's key |
@@ -127,6 +127,7 @@ Every ask, oldest first.
 | `command` | string or null | A command the asker attached. Priory stores it and runs nothing |
 | `coordinator`, `run_id`, `session` | string or null | Who asked from outside Priory: its coordinator, its run id and its session |
 | `answer`, `answered_at` | string or null | The answer and when it came |
+| `delivery` | object or null | The latest delivery of an outside ask's answer or dismissal to its session: `state` (`queued`, `running`, `delivered` or `failed`), `revision`, `tries`, `error` and `since`. Null when nothing was delivered. See [asks.md](../daemon/asks.md) |
 | `since` | string | When the agent asked |
 | `snoozed_until`, `snoozed_at`, `back_early` | | The ask's [snooze](#snooze) |
 

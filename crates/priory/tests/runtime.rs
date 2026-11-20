@@ -39,9 +39,10 @@ key = "issue.number"
 const OUTPUT: &str = "factory.intake";
 
 /// Takes a state file back before schema 28, which added search, 29, which added grades, 30,
-/// which added snoozes, 31, which added read reports, 32, which added the pause, and 34, which
-/// added reports of sections.
-const UNDO_SINCE_SEARCH: &str = "DROP TABLE reports; DROP TABLE pause; ALTER TABLE outbox DROP COLUMN wakes;
+/// which added snoozes, 31, which added read reports, 32, which added the pause, 34, which added
+/// reports of sections, and 36, which added deliveries.
+const UNDO_SINCE_SEARCH: &str = "DROP TABLE deliveries; DROP TABLE reports; DROP TABLE pause;
+  ALTER TABLE outbox DROP COLUMN wakes;
   DROP TRIGGER snooze_ends_on_a_new_revision;
   DROP TRIGGER snooze_ends_on_a_task_state_change; DROP TABLE snoozes;
   ALTER TABLE inbox DROP COLUMN read; ALTER TABLE results DROP COLUMN reason; ALTER TABLE tasks DROP COLUMN grade;
@@ -3353,6 +3354,249 @@ fn an_outside_ask_takes_an_answer_or_a_dismiss_only_at_its_current_revision() {
     assert!(setup.rows("asks").is_empty());
 }
 
+/// A fake `deliver` command that records its arguments, then runs `then`: each call ends with
+/// `\x1e`, each argument with `\0`.
+fn delivering(name: &str, then: &str) -> Setup {
+    let setup = Setup::new(name);
+    fs::write(
+        setup.dir.join("factory/factory.toml"),
+        "name = \"demo\"\n\n[asks]\ndeliver = \"bin/deliver\"\n",
+    )
+    .unwrap();
+    let deliver = setup.dir.join("factory/bin/deliver");
+    fs::create_dir_all(deliver.parent().unwrap()).unwrap();
+    fs::write(
+        &deliver,
+        format!(
+            "#!/bin/sh\nfor arg in \"$@\"; do printf '%s\\0' \"$arg\"; done >> \"$FAKE_DIR/deliver.log\"\nprintf '\\036' >> \"$FAKE_DIR/deliver.log\"\n{then}\n"
+        ),
+    )
+    .unwrap();
+    fs::set_permissions(&deliver, fs::Permissions::from_mode(0o755)).unwrap();
+    setup
+}
+
+/// The arguments of each call of the fake `deliver`, in order.
+fn delivered(setup: &Setup) -> Vec<Vec<String>> {
+    fs::read_to_string(setup.dir.join("fake/deliver.log"))
+        .unwrap_or_default()
+        .split_terminator('\x1e')
+        .map(|call| call.split_terminator('\0').map(str::to_owned).collect())
+        .collect()
+}
+
+/// Polls `priory asks --json` until the delivery of ask `name` satisfies `done`, and returns it.
+fn delivery(
+    setup: &Setup,
+    name: &str,
+    done: impl Fn(&serde_json::Value) -> bool,
+) -> serde_json::Value {
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        let output = setup.priory(&["asks", "--json"]);
+        let asks: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        let found = asks["asks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|ask| ask["id"] == name)
+            .map(|ask| ask["delivery"].clone())
+            .unwrap_or_default();
+        if done(&found) {
+            return found;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "timed out on the delivery of {name}: {found}\ndaemon: {}",
+            fs::read_to_string(setup.dir.join("daemon.log")).unwrap_or_default()
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+#[test]
+fn an_answered_outside_ask_runs_the_deliver_command_once_with_its_name_revision_session_and_answer()
+{
+    let mut setup = delivering("deliver-once", "exit 0");
+    setup.start();
+    listening(&setup);
+    setup.priory(&["ask", "cache.ship", &fleet_ask(&["ship", "wait"])]);
+
+    let answered = setup.priory(&["answer", "--expected", "1", "--", "cache.ship", "ship"]);
+
+    assert!(answered.status.success(), "{answered:?}");
+    let done = delivery(&setup, "cache.ship", |delivery| {
+        delivery["state"] == "delivered"
+    });
+    assert_eq!(done["tries"], 1);
+    assert_eq!(
+        delivered(&setup),
+        [["cache.ship", "1", "cache-worker", "answered", "ship"]]
+    );
+}
+
+#[test]
+fn a_failing_deliver_command_is_retried_with_a_backoff_then_its_failure_shows_on_the_desk() {
+    let mut setup = delivering("deliver-fails", "echo 'hc is down' >&2; exit 3");
+    setup.start();
+    listening(&setup);
+    setup.priory(&["ask", "cache.ship", &fleet_ask(&["ship", "wait"])]);
+    let started = Instant::now();
+
+    setup.priory(&["answer", "--expected", "1", "--", "cache.ship", "ship"]);
+
+    let failed = delivery(&setup, "cache.ship", |delivery| {
+        delivery["state"] == "failed"
+    });
+    assert_eq!(failed["tries"], 5);
+    assert_eq!(failed["error"], "exit 3: hc is down");
+    assert_eq!(delivered(&setup).len(), 5);
+    assert!(
+        started.elapsed() >= Duration::from_secs(15),
+        "{:?}",
+        started.elapsed()
+    );
+    let desk = setup.rows("desk");
+    let item = desk.iter().find(|item| item[1] == "delivery").unwrap();
+    assert_eq!(
+        [&item[2], &item[5]],
+        [
+            "cache.ship",
+            "the answer did not reach cache-worker after 5 tries: exit 3: hc is down"
+        ]
+    );
+}
+
+#[test]
+fn a_daemon_restarted_while_a_delivery_runs_waits_for_that_command_and_delivers_once() {
+    let mut setup = delivering(
+        "deliver-restart",
+        "while [ ! -e \"$FAKE_DIR/go\" ]; do sleep 0.05; done",
+    );
+    setup.start();
+    listening(&setup);
+    setup.priory(&["ask", "cache.ship", &fleet_ask(&["ship", "wait"])]);
+    setup.priory(&["answer", "--expected", "1", "--", "cache.ship", "ship"]);
+    delivery(&setup, "cache.ship", |delivery| {
+        delivery["state"] == "running"
+    });
+    setup.written("fake/deliver.log");
+
+    setup.crash();
+    setup.start();
+    listening(&setup);
+    fs::write(setup.dir.join("fake/go"), "").unwrap();
+
+    let done = delivery(&setup, "cache.ship", |delivery| {
+        delivery["state"] == "delivered"
+    });
+    assert_eq!(done["tries"], 1);
+    assert_eq!(delivered(&setup).len(), 1);
+}
+
+#[test]
+fn a_retried_delivery_goes_to_the_session_that_asked_even_after_the_ask_changed() {
+    let mut setup = delivering(
+        "deliver-session",
+        "[ -e \"$FAKE_DIR/failed\" ] || { touch \"$FAKE_DIR/failed\"; exit 3; }",
+    );
+    setup.start();
+    listening(&setup);
+    setup.priory(&["ask", "cache.ship", &fleet_ask(&["ship", "wait"])]);
+    setup.priory(&["answer", "--expected", "1", "--", "cache.ship", "ship"]);
+    setup.written("fake/deliver.log");
+
+    let moved = fleet_ask(&["ship", "wait"]).replace("cache-worker", "other-worker");
+    setup.priory(&["ask", "cache.ship", &moved]);
+
+    delivery(&setup, "cache.ship", |delivery| {
+        delivery["state"] == "delivered"
+    });
+    let sessions: Vec<String> = delivered(&setup)
+        .into_iter()
+        .map(|call| call[2].clone())
+        .collect();
+    assert_eq!(sessions, ["cache-worker", "cache-worker"]);
+}
+
+#[test]
+fn without_a_deliver_command_an_outside_answer_is_only_stored() {
+    let mut setup = Setup::new("deliver-none");
+    setup.start();
+    listening(&setup);
+    setup.priory(&["ask", "cache.ship", &fleet_ask(&["ship", "wait"])]);
+
+    setup.priory(&["answer", "--expected", "1", "--", "cache.ship", "ship"]);
+
+    let output = setup.priory(&["asks", "--json"]);
+    let asks: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let ask = &asks["asks"][0];
+    assert_eq!([&ask["state"], &ask["answer"]], ["answered", "ship"]);
+    assert_eq!(ask.get("delivery"), Some(&serde_json::Value::Null));
+}
+
+#[test]
+fn an_answer_with_shell_metacharacters_reaches_the_deliver_command_unchanged() {
+    let mut setup = delivering("deliver-quoting", "exit 0");
+    setup.start();
+    listening(&setup);
+    let session = "worker'; touch \"$FAKE_DIR/pwned\" #";
+    let ask = fleet_ask(&[]).replace("cache-worker", &session.replace('"', "\\\""));
+    setup.priory(&["ask", "cache.ship", &ask]);
+    let answer = "ship it; $(touch pwned) `id` \"quoted\" 'single' $HOME *\nand a second line\\";
+
+    setup.priory(&["answer", "--expected", "1", "--", "cache.ship", answer]);
+
+    delivery(&setup, "cache.ship", |delivery| {
+        delivery["state"] == "delivered"
+    });
+    assert_eq!(
+        delivered(&setup),
+        [["cache.ship", "1", session, "answered", answer]]
+    );
+    assert!(!setup.dir.join("fake/pwned").exists());
+}
+
+#[test]
+fn a_dismissed_outside_ask_is_delivered_as_dismissed_with_no_answer() {
+    let mut setup = delivering("deliver-dismiss", "exit 0");
+    setup.start();
+    listening(&setup);
+    setup.priory(&["ask", "cache.ship", &fleet_ask(&["ship", "wait"])]);
+
+    let dismissed = setup.priory(&["dismiss", "cache.ship"]);
+
+    assert!(dismissed.status.success(), "{dismissed:?}");
+    delivery(&setup, "cache.ship", |delivery| {
+        delivery["state"] == "delivered"
+    });
+    assert_eq!(
+        delivered(&setup),
+        [["cache.ship", "1", "cache-worker", "dismissed", ""]]
+    );
+}
+
+#[test]
+fn an_outside_ask_without_a_session_records_the_hc_terminal_and_claude_session_that_asked() {
+    let setup = Setup::new("ask-session");
+    let ask = |json: &str| {
+        setup
+            .command(env!("CARGO_BIN_EXE_priory"))
+            .args(["ask", "cache.ship", json])
+            .env("HC_TERMINAL_ID", "t9")
+            .env("CLAUDE_CODE_SESSION_ID", "8f3c2a10")
+            .output()
+            .unwrap()
+    };
+
+    let asked = ask(r#"{"title": "Ship?"}"#);
+    assert!(asked.status.success(), "{asked:?}");
+    assert_eq!(setup.rows("asks")[0][15], "t9 8f3c2a10");
+
+    ask(r#"{"title": "Ship?", "session": "cache-worker"}"#);
+    assert_eq!(setup.rows("asks")[0][15], "cache-worker");
+}
+
 #[test]
 fn say_types_its_text_into_an_idle_run() {
     let mut setup = Setup::new("say-idle");
@@ -4242,7 +4486,8 @@ fn a_state_file_whose_asks_an_approval_names_upgrades_to_outside_asks() {
     // The state file as version 32 left it: every ask belongs to a task.
     let db = rusqlite::Connection::open(setup.dir.join("priory.db")).unwrap();
     db.execute_batch(
-        "DROP TABLE reports;
+        "DROP TABLE deliveries;
+         DROP TABLE reports;
          PRAGMA legacy_alter_table = ON;
          CREATE TABLE asks_32 (
            id INTEGER PRIMARY KEY AUTOINCREMENT, task INTEGER NOT NULL REFERENCES tasks (id),

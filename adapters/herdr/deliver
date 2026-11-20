@@ -1,0 +1,76 @@
+#!/usr/bin/env python3
+"""Delivers an outside ask's answer to the Claude session that asked, through hc.
+
+Priory runs it as `deliver ASK REVISION SESSION (answered|dismissed) ANSWER`. SESSION is the hc
+terminal that asked, optionally followed by a space and its Claude session id. The answer is typed
+into that terminal while it runs claude; otherwise `claude --resume` starts in a new hc tab with
+the answer as its prompt. Exit 0 means hc took the text.
+"""
+
+import glob
+import json
+import os
+import subprocess
+import sys
+
+
+def hc(*args):
+    return subprocess.run(["hc", *args], capture_output=True, text=True)
+
+
+def transcript_cwd(claude):
+    """The folder the Claude session ran in, from the first transcript line that names it."""
+    pattern = os.path.join(os.path.expanduser("~/.claude/projects"), "*", glob.escape(claude) + ".jsonl")
+    for path in glob.glob(pattern):
+        with open(path, encoding="utf-8") as transcript:
+            for line in transcript:
+                try:
+                    cwd = json.loads(line).get("cwd")
+                except (ValueError, AttributeError):
+                    continue
+                if cwd:
+                    return cwd
+    return None
+
+
+def main(ask, revision, session, state, answer):
+    if state == "dismissed":
+        message = f"A person dismissed ask {ask} without an answer. Continue your task."
+    else:
+        message = f"A person answered ask {ask} (revision {revision}): {answer}"
+    terminal, _, claude = session.partition(" ")
+    found = hc("get", terminal, "--json")
+    live = {}
+    if found.returncode == 0:
+        try:
+            live = json.loads(found.stdout)
+        except ValueError:
+            live = {}
+    # A kept terminal whose claude exited runs a shell, which would run the text as a command.
+    if live.get("state") == "live" and (live.get("foreground") or {}).get("name") == "claude":
+        sent = hc("send", terminal, message)
+        sys.stderr.write(sent.stderr)
+        return sent.returncode
+    if not claude:
+        print(f"{terminal} runs no claude, and the ask names no Claude session to resume", file=sys.stderr)
+        return 1
+    cwd = transcript_cwd(claude)
+    if cwd is None:
+        print(f"no Claude transcript for session {claude}", file=sys.stderr)
+        return 1
+    labels = []
+    space = (live.get("labels") or {}).get("herdr.space")
+    if space:
+        labels += ["--label", f"herdr.space={space}"]
+    labels += ["--label", f"herdr.tab=ask-{ask}"]
+    started = hc("run", "--bg", "--keep", "--no-parent", "--cwd", cwd, *labels,
+                 "--", "claude", "--resume", claude, message)
+    sys.stderr.write(started.stderr)
+    return started.returncode
+
+
+if __name__ == "__main__":
+    if len(sys.argv) != 6:
+        print("usage: deliver ASK REVISION SESSION (answered|dismissed) ANSWER", file=sys.stderr)
+        sys.exit(2)
+    sys.exit(main(*sys.argv[1:]))
