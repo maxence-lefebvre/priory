@@ -477,7 +477,7 @@ PRAGMA user_version = 28;
 const SCHEMA_29: &str = "
 ALTER TABLE results ADD COLUMN reason TEXT;
 ALTER TABLE tasks ADD COLUMN grade TEXT;
-ALTER TABLE tasks ADD COLUMN graded TEXT;
+ALTER TABLE tasks ADD COLUMN grade_reason TEXT;
 PRAGMA user_version = 29;
 ";
 /// Each schema change in order: a file at version `n` applies those from index `n` on.

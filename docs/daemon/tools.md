@@ -50,7 +50,7 @@ or of `summary` when the result has no `reason`. A later grading step overwrites
 stays in the step's result and in its `factory.step.ended` record, which carries a `grade` field
 (see [trace-schema.md](../trace-schema.md)).
 
-`priory tasks` prints the grade and its reason in the `grade` and `graded` columns, and
+`priory tasks` prints the grade and its reason in the `grade` and `grade_reason` columns, and
 `priory tasks --grade green` lists only the green tasks.
 
 ### `ask(question, options, recommendation, tradeoff)`

@@ -1012,7 +1012,7 @@ fn settle(tx: &Transaction, run: &Run, trace: &Trace) -> rusqlite::Result<Option
         if GRADES.contains(&outcome.as_str()) {
             let reason = reason.as_deref().unwrap_or(&summary);
             tx.execute(
-                "UPDATE tasks SET grade = ?2, graded = ?3 WHERE id = ?1",
+                "UPDATE tasks SET grade = ?2, grade_reason = ?3 WHERE id = ?1",
                 // A tab would split the reason across `priory tasks` columns.
                 params![
                     run.task,

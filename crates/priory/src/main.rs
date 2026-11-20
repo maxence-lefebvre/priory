@@ -368,10 +368,10 @@ fn tasks(lane: Option<&String>, grade: Option<&String>) -> ExitCode {
     let printed = state::open().and_then(|db| {
         state::print(
             &db,
-            "id\tkey\tworkflow\tstep\tstate\tband\tlane\treason\tposition\tgeneration\tretired\tgrade\tgraded",
+            "id\tkey\tworkflow\tstep\tstate\tband\tlane\treason\tposition\tgeneration\tretired\tgrade\tgrade_reason",
             &format!(
                 "{} SELECT id, key, workflow, step, state, band, lane, reason, queue.place, generation,
-                   retired, grade, graded
+                   retired, grade, grade_reason
                  FROM tasks LEFT JOIN queue USING (id)
                  WHERE (?1 IS NULL OR lane = ?1) AND (?2 IS NULL OR grade = ?2) ORDER BY {}",
                 queue(),

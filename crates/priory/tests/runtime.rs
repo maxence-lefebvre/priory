@@ -38,7 +38,7 @@ const OUTPUT: &str = "factory.intake";
 
 /// Takes a state file back before schema 28, which added search, and 29, which added grades.
 const UNDO_SEARCH: &str = "ALTER TABLE results DROP COLUMN reason; ALTER TABLE tasks DROP COLUMN grade;
-  ALTER TABLE tasks DROP COLUMN graded; DROP TRIGGER search_task_created; DROP TRIGGER search_tldr_changed;
+  ALTER TABLE tasks DROP COLUMN grade_reason; DROP TRIGGER search_task_created; DROP TRIGGER search_tldr_changed;
   DROP TRIGGER search_result_stored; DROP VIEW task_text; DROP TABLE search; DROP TABLE summaries;
   DROP TABLE embedder; DROP TABLE vectors; ALTER TABLE tasks DROP COLUMN tldr;";
 
@@ -2539,7 +2539,7 @@ effect = "reversible"
 next = { passed = "done", failed = "stop" }
 "#;
 
-/// The `grade` and `graded` columns of `priory tasks` for its first task.
+/// The `grade` and `grade_reason` columns of `priory tasks` for its first task.
 fn grade(tasks: &[Vec<String>]) -> [&str; 2] {
     [&tasks[0][11], &tasks[0][12]]
 }
