@@ -27,10 +27,11 @@ start until a `priory daemon` of the same version has opened it once.
 
 ## The token
 
-Every request but a webhook delivery needs `Authorization: Bearer <token>`. The token is the value
-of the environment variable that `token_env` names, `PRIORY_TOKEN` by default. When that variable
-is unset or empty, `priory serve` and `priory daemon` refuse to start: the server never runs open.
-Any other request gets `401`. The server compares the token in a time that does not depend on how much of it matches,
+Every request under `/api` needs `Authorization: Bearer <token>`; a webhook delivery and the web
+view's files do not. The token is the value of the environment variable that `token_env` names,
+`PRIORY_TOKEN` by default. When that variable is unset or empty, `priory serve` and `priory daemon`
+refuse to start: the server never runs open. An `/api` request without the token gets `401`. The
+server compares the token in a time that does not depend on how much of it matches,
 and never logs it.
 
 Generate a token once and keep it in the services' environment file, not in the factory:
@@ -92,5 +93,9 @@ explains them.
 
 ## The web view
 
-With `web = true`, `/` and `/index.html` serve the web view. Until the web view is built, that is a
-placeholder page. With `web = false`, they get `404` and only `/api` answers.
+With `web = true`, every `GET` outside `/api` and `/hooks` serves the web view: its page, scripts, styles, fonts
+and icons, all built into the binary. They carry no state, so they need no token. The page asks
+for the token once, keeps it in the browser's local storage, and sends it on every `/api` request;
+a `401` brings the sign-in back. A strict Content-Security-Policy lets the page load only its own
+files, and the page shows agent text as text. The view's layout comes from the factory's
+[views](../reference/views.md). With `web = false`, every path outside `/api` gets `404`.

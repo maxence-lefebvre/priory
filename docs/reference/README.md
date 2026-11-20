@@ -10,6 +10,7 @@ config page gives a field table, a complete example and the errors `priory check
 | [agents.md](agents.md) | `agents/<name>/agent.md`: harness, model, session and permissions |
 | [triggers.md](triggers.md) | `triggers/<name>.toml`: one section per source, and `hold` |
 | [runners.md](runners.md) | `runners/<hostname>.toml`: platform and share of the machine |
+| [views.md](views.md) | `views/<name>.toml`: the web view's layouts |
 | [serve.md](serve.md) | `priory serve` and the JSON of its endpoints and of the listings' `--json` |
 | [events.md](events.md) | Every message type on `factory.intake`, with an example payload |
 
@@ -51,6 +52,7 @@ or the Red Hat YAML extension:
 | `workflows/*.toml` | `config/workflow.json` |
 | `triggers/*.toml` | `config/trigger.json` |
 | `runners/*.toml` | `config/runner.json` |
+| `views/*.toml` | `config/view.json` |
 | `agents/*/agent.md` | `config/agent.json`, for tools that read frontmatter; editors do not |
 
 A schema checks each file alone. Rules across files, such as a trigger naming a workflow that
