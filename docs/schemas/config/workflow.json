@@ -3,6 +3,16 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "additionalProperties": false,
   "definitions": {
+    "By": {
+      "description": "Who decides that a task follows an edge: `code`, a `model`, a `human`, or nobody while it is\n`asleep` on a wait.",
+      "enum": [
+        "code",
+        "model",
+        "human",
+        "asleep"
+      ],
+      "type": "string"
+    },
     "Decider": {
       "description": "Who decides a step's outcome: a `code` action, a `model` run or a `human`.",
       "enum": [
@@ -54,6 +64,14 @@
             "string",
             "null"
           ]
+        },
+        "by": {
+          "additionalProperties": {
+            "$ref": "#/definitions/By"
+          },
+          "default": {},
+          "description": "Who decides an outcome's edge, where it differs from the step's decider.",
+          "type": "object"
         },
         "decides": {
           "$ref": "#/definitions/Decider"
