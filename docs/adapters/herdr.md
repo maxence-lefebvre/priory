@@ -66,7 +66,8 @@ session id. `priory ask` run in an hc terminal stores both. Then:
    fails on the desk.
 
 A kept terminal whose `claude` exited runs a shell, so the script never types into it: the shell
-would run the answer as a command.
+would run the answer as a command. The check and the send are two `hc` calls, so a `claude` that
+exits between them can still receive the text in its shell.
 
 ## Data each panel needs
 

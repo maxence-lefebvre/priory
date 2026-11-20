@@ -7,7 +7,7 @@ use priory_runtime::script::{self, Script};
 use rusqlite::{Connection, params};
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// How long one delivery may run: `hc send` alone waits up to a minute for a person's draft.
 const TIMEOUT: Duration = Duration::from_secs(180);
@@ -26,7 +26,8 @@ pub(crate) fn queue(
         return Ok(());
     }
     db.execute(
-        "INSERT INTO deliveries (ask, revision, answer) SELECT id, revision, ?2 FROM asks
+        "INSERT INTO deliveries (ask, revision, session, answer)
+         SELECT id, revision, session, ?2 FROM asks
          WHERE id = ?1 AND kind = 'outside' AND session IS NOT NULL",
         params![ask, answer],
     )?;
@@ -37,26 +38,33 @@ pub(crate) fn queue(
 /// while it runs still learns how it ended. The arguments never pass through the shell's parser.
 const WRAP: &str = r#""$@"; status=$?; echo "$status" > "$0"; exit "$status""#;
 
-/// A delivery whose command runs: the daemon's own child, or one a stopped daemon started.
+/// A delivery whose command runs: the daemon's own child, or one a stopped daemon started, which
+/// is killed at `deadline`.
 pub(crate) struct Delivering {
     id: i64,
     pid: u32,
     started: Option<i64>,
     script: Option<Script>,
+    deadline: Instant,
 }
 
 /// The deliveries a stopped daemon left running, for [`tick`] to settle once their command ends.
 pub(crate) fn adopt(db: &Connection) -> rusqlite::Result<Vec<Delivering>> {
-    db.prepare("SELECT id, pid, pid_started FROM deliveries WHERE state = 'running'")?
-        .query_map([], |row| {
-            Ok(Delivering {
-                id: row.get(0)?,
-                pid: row.get::<_, Option<u32>>(1)?.unwrap_or_default(),
-                started: row.get(2)?,
-                script: None,
-            })
-        })?
-        .collect()
+    db.prepare(
+        "SELECT id, pid, pid_started,
+           max(0, ?1 - (unixepoch('now') - coalesce(unixepoch(attempted), 0)))
+         FROM deliveries WHERE state = 'running'",
+    )?
+    .query_map([TIMEOUT.as_secs() as i64], |row| {
+        Ok(Delivering {
+            id: row.get(0)?,
+            pid: row.get::<_, Option<u32>>(1)?.unwrap_or_default(),
+            started: row.get(2)?,
+            script: None,
+            deadline: Instant::now() + Duration::from_secs(row.get::<_, u32>(3)?.into()),
+        })
+    })?
+    .collect()
 }
 
 /// Settles the deliveries whose command ended, then starts the due ones.
@@ -74,7 +82,11 @@ pub(crate) fn tick(
             None if delivering.started.is_some()
                 && memory::started(delivering.pid) == delivering.started =>
             {
-                None
+                (Instant::now() >= delivering.deadline).then(|| {
+                    script::kill(delivering.pid);
+                    let output = script::collect(&file(home, delivering.id, "log"));
+                    (format!("timed out after {}s", TIMEOUT.as_secs()), output)
+                })
             }
             None => Some(adopted_status(home, delivering.id)),
         };
@@ -89,7 +101,8 @@ pub(crate) fn tick(
     };
     let due: Vec<(i64, String, i64, String, Option<String>)> = db
         .prepare(
-            "SELECT deliveries.id, asks.name, deliveries.revision, asks.session, deliveries.answer
+            "SELECT deliveries.id, asks.name, deliveries.revision, deliveries.session,
+               deliveries.answer
              FROM deliveries JOIN asks ON asks.id = deliveries.ask
              WHERE deliveries.state = 'queued'
                AND deliveries.due <= strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
@@ -107,7 +120,8 @@ pub(crate) fn tick(
         .collect::<rusqlite::Result<_>>()?;
     for (id, name, revision, session, answer) in due {
         db.execute(
-            "UPDATE deliveries SET state = 'running', tries = tries + 1 WHERE id = ?1",
+            "UPDATE deliveries SET state = 'running', tries = tries + 1,
+               attempted = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') WHERE id = ?1",
             [id],
         )?;
         let mut command = Command::new("sh");
@@ -138,6 +152,7 @@ pub(crate) fn tick(
                     pid,
                     started,
                     script: Some(script),
+                    deadline: Instant::now() + TIMEOUT,
                 });
             }
             Err(error) => settle(db, home, id, &format!("cannot start: {error}"), "")?,
@@ -170,7 +185,13 @@ fn settle(
     status: &str,
     output: &str,
 ) -> rusqlite::Result<()> {
+    record(db, id, status, output)?;
+    // Only once the state is stored, so a crash before it still finds the exit code.
     let _ = std::fs::remove_file(file(home, id, "status"));
+    Ok(())
+}
+
+fn record(db: &Connection, id: i64, status: &str, output: &str) -> rusqlite::Result<()> {
     if status == INTERRUPTED {
         db.execute(
             "UPDATE deliveries SET tries = max(tries, ?2) WHERE id = ?1",

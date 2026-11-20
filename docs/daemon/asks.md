@@ -46,14 +46,22 @@ the asker asks the same ID again.
 
 ## Daemon restarts
 
-The daemon records each command's process before it runs, and the command writes its exit code to
-a file in `PRIORY_HOME/deliveries/`. A daemon that starts while a command from before its restart
-still runs waits for that command and reads its exit code. So a restart never runs a delivery
-twice. A command that left no exit code, such as one a reboot killed, may have reached the session,
-so its delivery fails at once instead of trying again.
+The daemon records each command's process as it starts it, and a small `sh` wrapper writes the
+command's exit code to a file in `PRIORY_HOME/deliveries/`. A daemon that starts while a command
+from before its restart still runs waits for that command, up to the same 3 minutes from its start,
+and then reads its exit code. So a restart never runs a try twice. A command that left no exit
+code, such as one a reboot killed, may have reached the session, so its delivery fails at once
+instead of trying again.
+
+A delivery keeps the session the ask had when it was answered. Asking again with another session
+does not move an answer already stored.
 
 Known limits:
 
+- A daemon that stops between marking a try `running` and recording its process fails that
+  delivery on restart, even when its command never started or delivered.
+- A command that delivers, then exits with another code or runs past its timeout, is tried again.
+  Exit 0 is the only proof of delivery that Priory reads.
 - An answer to an old revision is still delivered, with that revision, after the ask changed.
 - No verb retries a failed delivery or clears it from the desk.
 - `priory check` does not check that the `deliver` file exists. A missing one fails each try.

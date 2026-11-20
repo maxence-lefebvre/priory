@@ -3483,6 +3483,26 @@ fn a_daemon_restarted_while_a_delivery_runs_waits_for_that_command_and_delivers_
 }
 
 #[test]
+fn a_retried_delivery_goes_to_the_session_that_asked_even_after_the_ask_changed() {
+    let mut setup = delivering(
+        "deliver-session",
+        "[ -e \"$FAKE_DIR/failed\" ] || { touch \"$FAKE_DIR/failed\"; exit 3; }",
+    );
+    setup.start();
+    listening(&setup);
+    setup.priory(&["ask", "cache.ship", &fleet_ask(&["ship", "wait"])]);
+    setup.priory(&["answer", "--expected", "1", "--", "cache.ship", "ship"]);
+    setup.written("fake/deliver.log");
+
+    let moved = fleet_ask(&["ship", "wait"]).replace("cache-worker", "other-worker");
+    setup.priory(&["ask", "cache.ship", &moved]);
+
+    delivery(&setup, "cache.ship", |delivery| delivery["state"] == "delivered");
+    let sessions: Vec<String> = delivered(&setup).into_iter().map(|call| call[2].clone()).collect();
+    assert_eq!(sessions, ["cache-worker", "cache-worker"]);
+}
+
+#[test]
 fn without_a_deliver_command_an_outside_answer_is_only_stored() {
     let mut setup = Setup::new("deliver-none");
     setup.start();
