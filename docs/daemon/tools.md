@@ -245,21 +245,35 @@ adds:
 | `PRIORY_FACTORY` | the factory folder, as an absolute path  |
 
 The daemon stores the action as `running`, and the task as `running`, before the command starts.
-The command runs in its own process group while the daemon carries on with other tasks. Its outcome
-is the last line of its stdout when the step's `next` names it, else `ok` on exit 0 and `failed`
-otherwise. A command past the step's `timeout`, or the factory's `command_timeout` when the step
-sets none, is killed with its process group and ends `failed`. Children it leaves in the background
-are killed when it ends. A non-zero exit or a kill is the action's error, such as `exit 3` or
-`timed out after 120s`.
+The shell then waits until the daemon has recorded its process group, and exits without running
+the command if the daemon dies first. The command runs in its own process group while the daemon
+carries on with other tasks, with stdin closed.
+
+Its outcome is the last line of its stdout, ignoring trailing blank lines and surrounding spaces,
+when the step's `next` names it and the command exited. Otherwise it is `ok` on exit 0 and `failed`
+on any other exit, a signal or a kill. A command past the step's `timeout`, or the factory's
+`command_timeout` when the step sets none, is killed with its process group and ends `failed`
+whatever it printed. Children it leaves in the background are killed when it ends. A non-zero exit
+or a kill is the action's error, such as `exit 3` or `timed out after 120s`.
+
+A task whose worktree the sweep removed gets it back before the command starts, as for `open-pr`. A
+command that cannot start, such as in a missing folder, ends `failed` with `cannot start: <error>`.
 
 The action keeps the last 2000 bytes of stdout and of stderr, which `priory actions` and the task's
 `steps` in `GET /api/tasks/<id>` show. A cancelled task's command is killed, and the task stays
-dropped.
+dropped. Only the task's latest action moves it, so a command killed by a cancel never moves the
+task that a revive started again.
 
 A daemon restart never runs a command twice. The restarted daemon kills the command its predecessor
 left running, after checking its process group's start time in `/proc`, and ends the action
-`failed` with the error `interrupted by a daemon restart`. The task then follows `next.failed`. A
-crash between storing the action and recording its process group leaves that command unbounded.
+`failed` with the error `interrupted by a daemon restart`. The task then follows `next.failed`. So
+a restart reads as a failure even when the command had finished just before it.
+
+Known limits:
+
+- A restarted daemon cannot kill background children of a command whose shell already exited. It
+  cannot tell that group from a process that reused the shell's pid.
+- `priory queue` lists a task whose command runs in neither `waiting` nor `running`.
 
 ### Approvals
 

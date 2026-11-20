@@ -44,8 +44,8 @@ const OUTPUT: &str = "factory.intake";
 /// run actions.
 const UNDO_SINCE_SEARCH: &str = "ALTER TABLE actions DROP COLUMN stdout;
   ALTER TABLE actions DROP COLUMN stderr; ALTER TABLE actions DROP COLUMN pid;
-  ALTER TABLE actions DROP COLUMN pid_started; ALTER TABLE tasks DROP COLUMN progress;
-  DROP TABLE deliveries; DROP TABLE reports; DROP TABLE pause;
+  ALTER TABLE actions DROP COLUMN pid_started; ALTER TABLE actions DROP COLUMN ended;
+  ALTER TABLE tasks DROP COLUMN progress; DROP TABLE deliveries; DROP TABLE reports; DROP TABLE pause;
   ALTER TABLE outbox DROP COLUMN wakes;
   DROP TRIGGER snooze_ends_on_a_new_revision;
   DROP TRIGGER snooze_ends_on_a_task_state_change; DROP TABLE snoozes;
@@ -4490,7 +4490,10 @@ fn a_state_file_whose_asks_an_approval_names_upgrades_to_outside_asks() {
     // The state file as version 32 left it: every ask belongs to a task.
     let db = rusqlite::Connection::open(setup.dir.join("priory.db")).unwrap();
     db.execute_batch(
-        "ALTER TABLE tasks DROP COLUMN progress;
+        "ALTER TABLE actions DROP COLUMN stdout; ALTER TABLE actions DROP COLUMN stderr;
+         ALTER TABLE actions DROP COLUMN pid; ALTER TABLE actions DROP COLUMN pid_started;
+         ALTER TABLE actions DROP COLUMN ended;
+         ALTER TABLE tasks DROP COLUMN progress;
          DROP TABLE deliveries;
          DROP TABLE reports;
          PRAGMA legacy_alter_table = ON;
@@ -5540,6 +5543,8 @@ fn an_approved_open_pr_pushes_the_branch_opens_a_pull_request_and_the_task_owns_
             "opened",
             "github:owner/repo#7",
             &commit,
+            "-",
+            "-",
             "-"
         ]
     );

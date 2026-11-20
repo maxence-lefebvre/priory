@@ -646,12 +646,13 @@ ALTER TABLE tasks ADD COLUMN progress TEXT;
 PRAGMA user_version = 37;
 ";
 
-// A `run` action is stored as `running` before its command starts, with its process group, so a
-// restarted daemon finds it; it keeps the tail of the command's output.
+// A `run` action is stored before its command starts, with its process group, and `ended` once it
+// ends, so a restarted daemon finds the unended ones; it keeps the tail of the command's output.
 const SCHEMA_38: &str = "ALTER TABLE actions ADD COLUMN stdout TEXT;
 ALTER TABLE actions ADD COLUMN stderr TEXT;
 ALTER TABLE actions ADD COLUMN pid INTEGER;
 ALTER TABLE actions ADD COLUMN pid_started INTEGER;
+ALTER TABLE actions ADD COLUMN ended TEXT;
 PRAGMA user_version = 38;
 ";
 
@@ -1402,14 +1403,15 @@ pub(crate) fn command_spawned(
     Ok(())
 }
 
-/// Whether the task of `run` action `id` still runs its step.
+/// Whether `run` action `id` is still its task's current attempt: the task runs the action's step,
+/// and no later action exists, as one a cancel and revive would start.
+pub(crate) const CURRENT_COMMAND: &str = "SELECT tasks.state = 'running'
+     AND tasks.step = actions.step
+     AND actions.id = (SELECT max(id) FROM actions AS later WHERE later.task = actions.task)
+   FROM actions JOIN tasks ON tasks.id = actions.task WHERE actions.id = ?1";
+
 pub(crate) fn command_wanted(db: &Connection, id: i64) -> rusqlite::Result<bool> {
-    db.query_row(
-        "SELECT state = 'running' AND tasks.step = actions.step
-         FROM actions JOIN tasks ON tasks.id = actions.task WHERE actions.id = ?1",
-        [id],
-        |row| row.get(0),
-    )
+    db.query_row(CURRENT_COMMAND, [id], |row| row.get(0))
 }
 
 /// The `run` actions a stopped daemon left running, each with its process group and that group's
@@ -1417,8 +1419,9 @@ pub(crate) fn command_wanted(db: &Connection, id: i64) -> rusqlite::Result<bool>
 pub(crate) fn orphan_commands(
     db: &Connection,
 ) -> rusqlite::Result<Vec<(i64, Option<crate::stall::Group>)>> {
-    let mut statement =
-        db.prepare("SELECT id, pid, pid_started FROM actions WHERE status = 'running'")?;
+    let mut statement = db.prepare(
+        "SELECT id, pid, pid_started FROM actions WHERE action = 'run' AND ended IS NULL",
+    )?;
     statement
         .query_map([], |row| {
             let pid: Option<u32> = row.get(1)?;

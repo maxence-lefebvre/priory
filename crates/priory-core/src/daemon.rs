@@ -856,9 +856,9 @@ fn perform(
         .step(&due.step)
         .expect("actionable checked the step");
     // The sweep or a retirement removed the worktree; its branch still holds the work. Only
-    // `open-pr` pushes from it, so no other action waits for disk to add it back.
+    // `open-pr` pushes from it and `run` works in it, so no other action waits for disk to add it back.
     if let Some(repo) = repo_of(factory, &due.trigger, due.repo.as_deref())
-        && step.action.as_deref() == Some("open-pr")
+        && matches!(step.action.as_deref(), Some("open-pr" | "run"))
         && due
             .worktree
             .as_deref()
@@ -924,25 +924,23 @@ fn start_command(
     let factory = trace.factory;
     let id = tools::launched(db, due.task, step)?;
     let folder = std::path::absolute(&factory.dir)?;
-    let dir = due
-        .worktree
-        .as_deref()
-        .map(Path::new)
-        .filter(|worktree| worktree.is_dir())
-        .unwrap_or(&folder);
+    let dir = due.worktree.as_deref().map(Path::new).unwrap_or(&folder);
     let state_file = std::path::absolute(std::env::var_os("PRIORY_DB").unwrap_or_default())?;
-    let mut command = std::process::Command::new("sh");
-    command
-        .args(["-c", step.run.as_deref().unwrap_or_default()])
-        .env("PRIORY_TASK", due.task.to_string())
-        .env("PRIORY_HOME", std::path::absolute(home)?)
-        .env("PRIORY_DB", state_file)
-        .env("PRIORY_FACTORY", &folder);
+    let task = due.task.to_string();
+    let home_dir = std::path::absolute(home)?;
+    let env = [
+        ("PRIORY_TASK", task.as_ref()),
+        ("PRIORY_HOME", home_dir.as_os_str()),
+        ("PRIORY_DB", state_file.as_os_str()),
+        ("PRIORY_FACTORY", folder.as_os_str()),
+    ];
+    let run = step.run.as_deref().unwrap_or_default();
     let (out, err) = outputs_of(home, id);
     let timeout = step.timeout.unwrap_or(factory.command_timeout());
-    match script::spawn_split(command, dir, &out, Some(&err), timeout) {
-        Ok(child) => {
+    match script::spawn_held(run, &env, dir, &out, &err, timeout) {
+        Ok(mut child) => {
             state::command_spawned(db, id, child.pid(), memory::started(child.pid()))?;
+            child.release();
             commands.push((id, child));
         }
         Err(error) => tools::ran(db, trace, id, &format!("cannot start: {error}"), "", "")?,

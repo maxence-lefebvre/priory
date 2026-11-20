@@ -30,16 +30,39 @@ pub fn spawn_command(
     log: &Path,
     timeout: Duration,
 ) -> Result<Script, String> {
-    spawn_split(command, dir, log, None, timeout)
+    start(command, dir, log, None, Stdio::null(), timeout)
 }
 
-/// Starts `command` as `spawn_command` does, its stderr going to `errors` when given; `poll` then
-/// returns the tail of stdout alone.
-pub fn spawn_split(
+/// Starts `run` with `sh -c` and `env` in `dir`, in its own process group, its stdout going to
+/// `log` and its stderr to `errors`. `run` waits for `release`, and never runs if the caller dies
+/// first, so the caller can record the process group before anything runs. `poll` returns the
+/// tail of stdout alone.
+pub fn spawn_held(
+    run: &str,
+    env: &[(&str, &std::ffi::OsStr)],
+    dir: &Path,
+    log: &Path,
+    errors: &Path,
+    timeout: Duration,
+) -> Result<Script, String> {
+    let mut command = Command::new("sh");
+    command
+        .args([
+            "-c",
+            "read -r _ && exec sh -c \"$1\" sh </dev/null",
+            "sh",
+            run,
+        ])
+        .envs(env.iter().copied());
+    start(command, dir, log, Some(errors), Stdio::piped(), timeout)
+}
+
+fn start(
     mut command: Command,
     dir: &Path,
     log: &Path,
     errors: Option<&Path>,
+    stdin: Stdio,
     timeout: Duration,
 ) -> Result<Script, String> {
     let at = |error: std::io::Error| format!("{}: {error}", log.display());
@@ -52,7 +75,7 @@ pub fn spawn_split(
     let program = command.get_program().to_string_lossy().into_owned();
     let child = command
         .current_dir(dir)
-        .stdin(Stdio::null())
+        .stdin(stdin)
         .stdout(out)
         .stderr(err)
         .process_group(0)
@@ -76,6 +99,13 @@ pub fn kill(pid: u32) {
 impl Script {
     pub fn pid(&self) -> u32 {
         self.child.id()
+    }
+
+    /// Lets a script from `spawn_held` run its command.
+    pub fn release(&mut self) {
+        if let Some(mut stdin) = self.child.stdin.take() {
+            let _ = std::io::Write::write_all(&mut stdin, b"\n");
+        }
     }
 
     /// Its status and the tail of its output once it ended, killing its children, or killing it
