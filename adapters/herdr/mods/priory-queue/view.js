@@ -101,7 +101,7 @@ export function queueList(queue, { view, now, room = {}, facets = {} }) {
   const ended = section("ended", "Last day", done, (task) => ({
     id: task.id, tile: task.state, key: task.key, step: task.step, age: age(task.ended, now), why: { text: task.reason ?? task.state, tone: "muted" },
   }));
-  const sections = { next: [running, ...bands], held: [holds], ended: [ended], all: [running, ...bands, holds, ended] }[view] ?? [];
+  const sections = { next: [running, ...bands, holds, ended], held: [holds], ended: [ended], all: [running, ...bands, holds, ended] }[view] ?? [];
   const paused = room.paused ? pausedSince(room.paused) : null;
   return {
     waiting: all.length,

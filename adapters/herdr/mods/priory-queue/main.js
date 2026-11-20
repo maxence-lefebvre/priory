@@ -25,6 +25,8 @@ const TILES = {
   dropped: ["tile-muted", "minus"],
 };
 const WAITING = ["queued", "ready"];
+/** @type {Record<string, number>} */
+const SHIFTED = { "shift-j": 1, J: 1, "shift-k": -1, K: -1 };
 
 /** @typedef {Record<string, import("gpui-kit").Color>} Palette */
 /** @typedef {[string, string, (cx: import("gpui-kit").Context) => void, string?]} MenuItem a label, a key hint, an action and an icon */
@@ -79,6 +81,10 @@ export default class PrioryQueue extends View {
     this.notice = null;
     /** @type {number | null} the task whose grip is held */
     this.drag = null;
+    /** Counts reads, so a slower, older read never replaces a newer one. */
+    this.reads = 0;
+    /** Whether Last day is unfolded under Next. */
+    this.lastDay = false;
     this.reason = InputState.new({ placeholder: "Why hold it?" });
     this.reason.on("change", (_event, cx) => cx.notify());
     this.reason.on("submit", (_event, cx) => this.hold(cx));
@@ -110,14 +116,17 @@ export default class PrioryQueue extends View {
 
   async read() {
     if (!this.priory) throw new Error("priory is not reachable");
+    const read = ++this.reads;
     // The desk carries whether starts are paused and what the queue is short of.
     const [queue, desk] = await Promise.all([this.priory.client.queue(), this.priory.client.desk()]);
+    if (read !== this.reads) return;
     this.data = queue;
     this.room = { paused: desk.paused, banner: desk.banner };
     this.updated = Date.now();
     if (!this.rows().some((row) => row.id === this.selected)) {
       this.selected = this.rows()[0]?.id ?? null;
       this.opened = false;
+      this.popover = null;
     }
   }
 
@@ -203,8 +212,10 @@ export default class PrioryQueue extends View {
     // The hold reason field keeps its letters, and Ctrl, Alt and Cmd chords are Herdr's.
     if (this.popover || event.modifiers?.control || event.modifiers?.platform || event.modifiers?.alt) return;
     const row = this.selectedRow();
-    if (event.modifiers?.shift && (event.key === "j" || event.key === "k")) {
-      if (row && !event.is_held) this.reorder(row.id, event.key === "j" ? 1 : -1, cx);
+    // Shift J and K arrive as the keystroke "shift-j" or as the key "J", as Fleet's queue sees them.
+    const shifted = SHIFTED[event.keystroke] ?? SHIFTED[event.key];
+    if (shifted) {
+      if (row && !event.is_held) this.reorder(row.id, shifted, cx);
       return;
     }
     if (event.key === "j" || event.key === "down" || event.key === "k" || event.key === "up") {
@@ -216,7 +227,7 @@ export default class PrioryQueue extends View {
       this.opened = false;
       return cx.notify();
     }
-    if (event.key === "enter" && row) {
+    if (event.key === "enter" && row && !event.is_held) {
       this.opened = !this.opened;
       cx.notify();
     }
@@ -233,11 +244,9 @@ export default class PrioryQueue extends View {
     const wide = this.width >= PANE.split;
     return v_flex().id("priory-queue").size_full().min_h_0().bg(t.bg).text_color(t.text).font_family(this.font.ui).text_size(TYPE.body[0])
       .track_focus(this.focus).on_key_down((event, cx) => this.key(event, cx))
-      .on_mouse_up("left", (_event, cx) => {
-        if (this.drag === null) return;
-        this.drag = null;
-        cx.notify();
-      })
+      .on_mouse_up("left", (_event, cx) => this.endDrag(cx))
+      // A release outside the pane never reaches it, so leaving the pane ends the drag without a move.
+      .on_hover((hovered, cx) => { if (!hovered) this.endDrag(cx); })
       .on_size_change(({ width }, cx) => {
         if (Math.abs(width - this.width) < 1) return;
         this.width = width;
@@ -252,6 +261,13 @@ export default class PrioryQueue extends View {
         .child(this.listPane(list, t, now, false).w(Math.min(400, this.width * 0.45)).flex_none().border_r(1).border_color(t.line))
         .child(row ? v_flex().id("queue-detail").flex_1().min_w_0().min_h_0().overflow_y_scrollbar().p(16).gap(12).child(this.detail(row, t, true)) : div().flex_1())
         : this.listPane(list, t, now, true).flex_1());
+  }
+
+  /** @param {import("gpui-kit").Context} cx */
+  endDrag(cx) {
+    if (this.drag === null) return;
+    this.drag = null;
+    cx.notify();
   }
 
   /** @param {number} now */
@@ -338,9 +354,8 @@ export default class PrioryQueue extends View {
       .when(this.view === "next" && this.data.up_next.length > 0, (el) => el.child(this.upNext(t, now)))
       .when(!list.sections.length, (el) => el.child(div().p(16).text_color(t["text-2"]).child(empty)))
       .children(list.sections.map((section) => v_flex()
-        .child(h_flex().px(16).pt(14).pb(6).gap(6).text_size(TYPE.caption[0]).font_weight(600).text_color(t["text-2"])
-          .child(section.title).child(div().font_weight(400).text_color(t["text-3"]).child(section.note)))
-        .children(section.rows.map((/** @type {Row} */ row) => {
+        .child(this.sectionHead(section, t))
+        .children((this.folded(section.id) ? [] : section.rows).map((/** @type {Row} */ row) => {
           const selected = row.id === this.selected;
           return v_flex().px(8)
             .child(this.row(row, selected, t))
@@ -348,19 +363,42 @@ export default class PrioryQueue extends View {
         }))));
   }
 
+  /** Last day starts folded under Next. @param {string} id */
+  folded(id) {
+    return id === "ended" && this.view === "next" && !this.lastDay;
+  }
+
+  /** @param {{ id: string, title: string, note: string }} section @param {Palette} t */
+  sectionHead(section, t) {
+    const head = h_flex().px(16).pt(14).pb(6).gap(6).items_center().text_size(TYPE.caption[0]).font_weight(600).text_color(t["text-2"])
+      .child(section.title).child(div().font_weight(400).text_color(t["text-3"]).child(section.note));
+    if (section.id !== "ended" || this.view !== "next") return head;
+    return Button.new("fold-ended").w_full().focus((s) => s.bg(t.raised)).selected(this.lastDay)
+      .accessibility_label(this.lastDay ? "Fold Last day" : "Unfold Last day")
+      .on_click((_event, cx) => { this.lastDay = !this.lastDay; cx.notify(); })
+      .child(head.child(svg(ICON(this.lastDay ? "chevron-down" : "chevron-right")).size(12).text_color(t["text-3"])));
+  }
+
   /** The next three runs, queued or scheduled, each opening its task. @param {Palette} t @param {number} now */
   upNext(t, now) {
+    // A schedule that wakes an asleep task names a task the queue does not list.
+    const all = queueList(this.data, { view: "all", now }).sections.flatMap((section) => section.rows);
+    const listed = (/** @type {number | null} */ task) => all.some((row) => row.id === task);
     return v_flex().mx(16).mt(12).p(4).rounded(RADIUS.md).border(1).border_color(t.line).bg(t.surface)
       .child(h_flex().px(8).py(4).gap(6).items_center().text_size(TYPE.caption[0])
         .child(svg(ICON("calendar-clock")).size(14).text_color(t["text-2"]))
         .child(div().font_weight(600).child("Up next")).child(div().text_color(t["text-3"]).child("the next 3 runs")))
       .children(upNext(this.data, now).map((next, index) => Button.new(`next-${index}`).px(8).py(6).flex().gap(10).items_start().rounded(RADIUS.sm)
-        .hover((s) => s.bg(t.raised)).focus((s) => s.bg(t.raised)).disabled(next.task === null)
+        .hover((s) => s.bg(t.raised)).focus((s) => s.bg(t.raised)).disabled(!listed(next.task))
         .accessibility_label(`${next.when} ${next.sub}: ${next.label}. ${next.why}`)
         .on_click((_event, cx) => {
-          if (next.task === null) return;
-          if (!this.rows().some((row) => row.id === next.task)) this.view = "all";
+          if (!listed(next.task)) return;
+          if (!this.rows().some((row) => row.id === next.task)) {
+            this.view = "all";
+            this.facets = {};
+          }
           this.selected = null;
+          this.lastDay = true;
           this.select(next.task, cx);
         })
         .child(v_flex().w(48).flex_none()

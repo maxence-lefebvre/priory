@@ -14,7 +14,7 @@ const queue = fixture("queue.json");
 const now = Date.parse("2026-11-20T21:20:40Z");
 const ids = (section) => section.rows.map((row) => row.id);
 
-test("Next lists the running runs, then each band in start order, beside every view's count", () => {
+test("Next lists the running runs, each band in start order, Held and Last day, beside every view's count", () => {
   const list = queueList(queue, { view: "next", now });
   assert.equal(list.waiting, 4);
   assert.deepEqual(list.views, [
@@ -28,11 +28,13 @@ test("Next lists the running runs, then each band in start order, beside every v
     ["Blocker", "1", [3]],
     ["Now", "2", [4, 5]],
     ["Today", "1", [6]],
+    ["Held", "2", [7, 8]],
+    ["Last day", "2", [10, 9]],
   ]);
 });
 
 test("each waiting row shows its place in its band and why it has not started", () => {
-  const rows = queueList(queue, { view: "next", now }).sections.slice(1).flatMap((section) => section.rows);
+  const rows = queueList(queue, { view: "next", now }).sections.slice(1, 4).flatMap((section) => section.rows);
   assert.deepEqual(rows.map((row) => [row.position, row.key, row.step, row.tile, row.why]), [
     [1, "cli:PRI-72", "implement", "queued", { text: "Starts when the runner has room.", tone: "muted" }],
     [1, "cli:PRI-73", "implement", "queued", { text: "Starts after cli:PRI-72, the band above.", tone: "muted" }],
@@ -112,7 +114,7 @@ test("a lane or band facet narrows the waiting and held tasks, and offers each v
     lane: [["none/misc", 6]],
     band: [["blocker", 1], ["now", 2], ["today", 2], ["later", 1]],
   });
-  assert.deepEqual(queueList(queue, { view: "next", now, facets: { lane: "none/misc" } }).sections.map((section) => section.title), ["Blocker", "Now", "Today"]);
+  assert.deepEqual(queueList(queue, { view: "next", now, facets: { lane: "none/misc" } }).sections.map((section) => section.title), ["Blocker", "Now", "Today", "Held"]);
 });
 
 test("reordering moves a task before or after its neighbour in the band, never out of it", () => {

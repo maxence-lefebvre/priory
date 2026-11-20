@@ -177,15 +177,17 @@ works.
   `priory desk --json` for whether starts are paused and what the queue is short of. Then it waits
   with `priory wait` and reads again. When a call fails, it keeps the last read and shows
   "Reconnecting to priory" with the age of its last update, and the actions stay disabled.
-- **List.** The saved views are Next, Held, Last day and All, each with its count. Next shows Up next,
-  Running, then each band in start order. The Lane and Band chips narrow the waiting and held tasks.
+- **List.** The saved views are Next, Held and Last day, each with its count, and All. Next shows Up
+  next, Running, each band in start order, Held, and Last day folded. All shows the same sections
+  without Up next, and Last day open. The Lane and Band chips narrow the waiting and held tasks.
   Running runs and ended tasks carry no lane or band, so a chip hides them.
 - **Why it waits.** Every waiting row shows its place in its band and why it has not started: starts
   are paused, it waits for room while the queue is stalled on it, it starts when the runner has room,
   or it starts after the task before it. A held row shows its hold's reason and each condition, met
   or not.
 - **Up next.** The next three runs, queued, held or scheduled, each with when and why. A line opens
-  its task.
+  its task when the queue lists it. A schedule that starts a new task, or wakes an asleep one, names
+  no row, so its line does not open.
 - **Width.** Below 720 px the selected row opens under itself. From 720 px the list and the opened
   row sit side by side, and the row adds how the order works.
 - **Acting.** An opened waiting row offers Move…, Hold… and Cancel…. Move… runs `priory move`, to
@@ -194,9 +196,11 @@ works.
   Cancel…. Cancel… asks once more, then runs `priory cancel`. The header's menu runs `priory pause`
   or `priory unpause`. When a verb fails, the panel says why on the task.
 - **Reordering.** The grip in each waiting row's trailing lane drags the task onto another row of
-  its band. `Shift J` and `Shift K` move the selected task down or up one place. Both run
+  its band, and leaving the pane ends the drag without a move. `Shift J` and `Shift K` move the
+  selected task down or up one place. Both run
   `priory move TASK --before OTHER` or `--after OTHER`, and never leave the band.
-- **Keys.** `J` and `K` move the selection, `Enter` opens or closes the row and `Esc` closes.
+- **Keys.** `J` and `K` move the selection. Below 720 px, `Enter` opens or closes the row and `Esc`
+  closes it. `Esc` also closes an open menu.
 - **Agent text.** Reasons, hold reasons and keys draw as plain text.
 
 The design shows each task's title, but `priory queue --json` carries none, so a row shows its key
