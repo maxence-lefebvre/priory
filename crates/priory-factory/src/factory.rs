@@ -549,6 +549,9 @@ pub struct Workflow {
     pub start: String,
     /// The band of its tasks when neither their request nor their trigger sets one.
     pub band: Option<String>,
+    /// The model step a done task goes back to when its open pull request gets feedback; by
+    /// default, the step that opened the pull request.
+    pub reopen: Option<String>,
     pub steps: Vec<Step>,
 }
 

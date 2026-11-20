@@ -1022,6 +1022,107 @@ fn reviews_publish_before_the_close_that_ends_their_polling() {
     );
 }
 
+const REVIEW_COMMENTS: &str =
+    "repos/owner/repo/pulls/comments?sort=created&direction=desc&per_page=100";
+
+/// A review thread comment as `pulls/comments` lists it, by `login` of GitHub user `type`.
+fn review_comment(id: u64, reply_to: Option<u64>, login: &str, kind: &str) -> serde_json::Value {
+    json!({
+        "id": id,
+        "body": "Rename this.\nIt reads better.",
+        "html_url": format!("https://github.com/owner/repo/pull/43#discussion_r{id}"),
+        "created_at": "2026-11-17T12:10:00Z",
+        "path": "src/lib.rs",
+        "line": 12,
+        "in_reply_to_id": reply_to,
+        "pull_request_url": "https://api.github.com/repos/owner/repo/pulls/43",
+        "user": { "login": login, "type": kind }
+    })
+}
+
+#[test]
+fn a_comment_and_a_thread_comment_on_a_watched_pull_request_publish_once_and_bots_none() {
+    let setup = Setup::baseline("pr-comments");
+    let mut open = pull(43, false, json!([]), json!([]));
+    open["comments"] = json!({ "nodes": [
+        {
+            "databaseId": 701,
+            "body": "Can you split this?",
+            "url": "https://github.com/owner/repo/pull/43#issuecomment-701",
+            "createdAt": "2026-11-17T12:00:00Z",
+            "author": { "login": "ana", "__typename": "User" }
+        },
+        {
+            "databaseId": 702,
+            "body": "Coverage: 80%",
+            "url": "https://github.com/owner/repo/pull/43#issuecomment-702",
+            "createdAt": "2026-11-17T12:01:00Z",
+            "author": { "login": "codecov", "__typename": "Bot" }
+        }
+    ] });
+    setup.answer(&[
+        (OPEN_PULLS, open_pulls(&[open])),
+        (
+            REVIEW_COMMENTS,
+            json!([
+                review_comment(803, None, "github-actions[bot]", "Bot"),
+                review_comment(802, Some(801), "ana", "User"),
+                // Pull request 44 is neither open nor named by an event.
+                json!({ "pull_request_url": "https://api.github.com/repos/owner/repo/pulls/44" }),
+            ]),
+        ),
+    ]);
+
+    succeeded(&setup.intake());
+    succeeded(&setup.intake());
+
+    let published = setup.published();
+    assert_eq!(
+        kinds(&published[1..]),
+        [
+            "github.pull_request.comment",
+            "github.pull_request_review_comment"
+        ]
+    );
+    assert_eq!(
+        published[1].message.data,
+        json!({
+            "repo": "owner/repo",
+            "pull_request": 43,
+            "url": "https://github.com/owner/repo/pull/43#issuecomment-701",
+            "head_branch": "feature",
+            "head_sha": "abc123",
+            "base_branch": "main",
+            "actor": "ana",
+            "body": "Can you split this?",
+            "time": "2026-11-17T12:00:00Z",
+            "github_id": 701,
+            "baseline": false,
+            "triggers": []
+        })
+    );
+    assert_eq!(
+        published[2].message.data,
+        json!({
+            "repo": "owner/repo",
+            "pull_request": 43,
+            "url": "https://github.com/owner/repo/pull/43#discussion_r802",
+            "head_branch": "feature",
+            "head_sha": "abc123",
+            "base_branch": "main",
+            "actor": "ana",
+            "body": "Rename this.\nIt reads better.",
+            "path": "src/lib.rs",
+            "line": 12,
+            "thread": 801,
+            "time": "2026-11-17T12:10:00Z",
+            "github_id": 802,
+            "baseline": false,
+            "triggers": []
+        })
+    );
+}
+
 /// An RFC 3339 time `seconds` ago.
 fn ago(seconds: i64) -> serde_json::Value {
     let now = herdr_bus::Timestamp::now().as_second();

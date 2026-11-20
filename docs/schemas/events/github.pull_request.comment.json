@@ -1,0 +1,163 @@
+{
+  "$id": "https://raw.githubusercontent.com/maxence-lefebvre/priory/main/docs/schemas/events/github.pull_request.comment.json",
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "additionalProperties": false,
+  "definitions": {
+    "Link": {
+      "additionalProperties": false,
+      "description": "A link for people.",
+      "properties": {
+        "label": {
+          "description": "`issue` or `pull_request`.",
+          "type": "string"
+        },
+        "url": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "label",
+        "url"
+      ],
+      "type": "object"
+    },
+    "PullRequestComment": {
+      "additionalProperties": false,
+      "description": "A comment on a pull request's conversation; bots' comments are skipped.",
+      "properties": {
+        "actor": {
+          "description": "The GitHub login who commented; null for a deleted user.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "base_branch": {
+          "description": "The branch the pull request merges into.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "baseline": {
+          "description": "True when the event came from the first poll of its stream.",
+          "type": "boolean"
+        },
+        "body": {
+          "description": "The comment's Markdown, as written.",
+          "type": "string"
+        },
+        "delivery": {
+          "description": "The `X-GitHub-Delivery` of the webhook delivery that reported it; absent when a poll did.\nGitHub does not sign it.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "github_id": {
+          "description": "GitHub's comment id.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "head_branch": {
+          "description": "The head branch; null when GitHub no longer returns the pull request.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "head_sha": {
+          "description": "The head commit; for a check, the commit it ran on.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "pull_request": {
+          "description": "The pull request number.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "repo": {
+          "description": "`owner/name`.",
+          "type": "string"
+        },
+        "time": {
+          "description": "When the event happened, RFC 3339.",
+          "format": "date-time",
+          "type": "string"
+        },
+        "triggers": {
+          "description": "The triggers the event matched, so the triggers it requests tasks for; may be empty.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "url": {
+          "description": "The pull request's page; the review's for a review, the check run's for a check.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "repo",
+        "pull_request",
+        "url",
+        "head_branch",
+        "head_sha",
+        "base_branch",
+        "actor",
+        "body",
+        "github_id",
+        "time",
+        "baseline",
+        "triggers"
+      ],
+      "type": "object"
+    }
+  },
+  "description": "A comment on a pull request's conversation; bots' comments are skipped.",
+  "properties": {
+    "data": {
+      "$ref": "#/definitions/PullRequestComment"
+    },
+    "id": {
+      "description": "A UUIDv5 of the message's name, so a retried publish keeps its id.",
+      "format": "uuid",
+      "type": "string"
+    },
+    "links": {
+      "description": "GitHub and Linear events carry one link to the event's page.",
+      "items": {
+        "$ref": "#/definitions/Link"
+      },
+      "type": "array"
+    },
+    "subject": {
+      "description": "A short line for listings, such as `owner/name#42`.",
+      "type": "string"
+    },
+    "time": {
+      "description": "When the event happened, RFC 3339.",
+      "format": "date-time",
+      "type": "string"
+    },
+    "type": {
+      "const": "github.pull_request.comment",
+      "description": "The message type, such as `github.issues.labeled`.",
+      "type": "string"
+    }
+  },
+  "required": [
+    "id",
+    "type",
+    "subject",
+    "time",
+    "data",
+    "links"
+  ],
+  "title": "github.pull_request.comment",
+  "type": "object"
+}

@@ -1,0 +1,21 @@
+{
+  "id": "266825f5-96a3-544d-bad7-0355d348cf9a",
+  "type": "github.pull_request.comment",
+  "subject": "acme/widgets#43",
+  "time": "2026-11-17T16:45:10Z",
+  "data": {
+    "repo": "acme/widgets",
+    "pull_request": 43,
+    "url": "https://github.com/acme/widgets/pull/43#issuecomment-2561579801",
+    "head_branch": "fix-empty-export",
+    "head_sha": "4b2ee8eb670ba9f77d54d59ab97ced618f024fb9",
+    "base_branch": "main",
+    "actor": "octocat",
+    "body": "Can you split the export fix from the rename?",
+    "time": "2026-11-17T16:45:10Z",
+    "github_id": 2561579801,
+    "baseline": false,
+    "triggers": []
+  },
+  "links": [{ "label": "pull_request", "url": "https://github.com/acme/widgets/pull/43#issuecomment-2561579801" }]
+}

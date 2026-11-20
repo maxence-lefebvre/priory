@@ -1,7 +1,9 @@
 use crate::route;
 use crate::trace::{self, Trace};
 use priory_factory::factory::{Decider, Effect, Factory, Harness, Loaded, Step, Workflow};
-use priory_intake::intake::{CHECK_RUNS, CHECKED, PASSING, PR_CLOSED as CLOSED};
+use priory_intake::intake::{
+    CHECK_RUNS, CHECKED, COMMENTED, PASSING, PR_CLOSED as CLOSED, REVIEWED, THREAD_COMMENTED,
+};
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -806,7 +808,7 @@ pub(crate) fn event(tx: &Transaction, task: i64, seq: i64) -> rusqlite::Result<b
     let open = tx
         .prepare(
             "SELECT waits.id, waits.kind, waits.resource, waits.head_sha, waits.state,
-               waits.since, waits.daemon FROM waits
+               waits.since, waits.daemon, waits.created FROM waits
              JOIN tasks ON tasks.id = waits.task
              WHERE waits.task = ?1 AND waits.fired IS NULL AND waits.withdrawn IS NULL
              AND tasks.state NOT IN ('done', 'failed', 'dropped') ORDER BY waits.id",
@@ -820,26 +822,26 @@ pub(crate) fn event(tx: &Transaction, task: i64, seq: i64) -> rusqlite::Result<b
                 row.get::<_, Option<String>>(4)?,
                 row.get::<_, Option<String>>(5)?,
                 row.get::<_, bool>(6)?,
+                row.get::<_, String>(7)?,
             ))
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
-    for (wait, kind, resource, head, state, since, daemon) in open {
+    for (wait, kind, resource, head, state, since, daemon, created) in open {
         let Some(resource) = resource else {
             continue;
         };
-        if daemon {
-            return judge(tx, wait);
-        }
-        let (kind_of_event, subject, data, after, kept): (
+        let (kind_of_event, subject, data, after, kept, later): (
             String,
             Option<String>,
             String,
             bool,
             bool,
+            bool,
         ) = tx.query_row(
-            "SELECT type, subject, data, coalesce(julianday(time) >= julianday(?2), 1), task IS ?3
+            "SELECT type, subject, data, coalesce(julianday(time) >= julianday(?2), 1), task IS ?3,
+               julianday(time) >= julianday(?4)
                  FROM inbox WHERE seq = ?1",
-            params![seq, since, task],
+            params![seq, since, task, created],
             |row| {
                 Ok((
                     row.get(0)?,
@@ -847,14 +849,41 @@ pub(crate) fn event(tx: &Transaction, task: i64, seq: i64) -> rusqlite::Result<b
                     row.get(2)?,
                     row.get(3)?,
                     row.get(4)?,
+                    row.get(5)?,
                 ))
             },
         )?;
-        let line = crate::state::line(&kind_of_event, subject.as_deref(), &data);
+        let mut line = crate::state::line(&kind_of_event, subject.as_deref(), &data);
         let data: Value = serde_json::from_str(&data).expect("inbox data is JSON");
+        // A comment written before the wait, such as the agent's own, wakes nothing.
+        let said = feedback(&resource, &kind_of_event, &data)
+            .filter(|_| later || kind_of_event == REVIEWED);
+        if daemon {
+            let Some(said) = said else {
+                return judge(tx, wait);
+            };
+            fire(
+                tx,
+                wait,
+                task,
+                &format!("wait {wait} fired: {said}"),
+                Some(seq),
+            )?;
+            return Ok(true);
+        }
         let wanted = head.as_deref().or(state.as_deref());
-        if !after || !route::satisfies(&kind, &resource, wanted, &kind_of_event, &data) {
+        let woken = match &said {
+            Some(_) => ["pull_request", "review"].contains(&kind.as_str()),
+            None => {
+                !FEEDBACK.contains(&kind_of_event.as_str())
+                    && route::satisfies(&kind, &resource, wanted, &kind_of_event, &data)
+            }
+        };
+        if !after || !woken {
             continue;
+        }
+        if let Some(said) = said {
+            line = format!("wait {wait} fired: {said}");
         }
         if !kept {
             // Another task kept the event and its prompt: this one gets the line in a prompt of its own.
@@ -866,6 +895,36 @@ pub(crate) fn event(tx: &Transaction, task: i64, seq: i64) -> rusqlite::Result<b
         return Ok(true);
     }
     Ok(false)
+}
+
+/// The events of a person's feedback on a pull request.
+const FEEDBACK: [&str; 3] = [REVIEWED, COMMENTED, THREAD_COMMENTED];
+
+/// Who said what and where, when `data` is feedback on the pull request `resource`.
+fn feedback(resource: &str, kind: &str, data: &Value) -> Option<String> {
+    let on = route::pull_request(data["repo"].as_str()?, data["pull_request"].as_u64()?);
+    if on != resource || !FEEDBACK.contains(&kind) {
+        return None;
+    }
+    let who = data["actor"].as_str().unwrap_or("a deleted user");
+    let url = data["url"].as_str().unwrap_or_default();
+    let body = data["body"].as_str().unwrap_or_default();
+    let first = body.lines().next().unwrap_or_default();
+    let said = match kind {
+        REVIEWED => {
+            let state = data["state"].as_str().unwrap_or("submitted");
+            format!("{who} reviewed {resource}: {state}")
+        }
+        COMMENTED => format!("{who} commented on {resource}: {first}"),
+        _ => {
+            let path = data["path"].as_str().unwrap_or_default();
+            let at = data["line"]
+                .as_u64()
+                .map_or(String::new(), |line| format!(":{line}"));
+            format!("{who} commented on {path}{at} of {resource}: {first}")
+        }
+    };
+    Some(format!("{said} {url}").trim_end().to_owned())
 }
 
 /// An event the task kept on the pull request of a daemon's checks wait.
@@ -2079,6 +2138,100 @@ fn revive(
         "task {} is {now} at {target}, generation {generation}",
         act.task
     )))
+}
+
+/// The done task that feedback in `message` reopens: the newest that owns its pull request, done
+/// before the feedback was written, with no close of that pull request in the inbox and no active
+/// task on its key.
+pub(crate) fn reopenable(
+    tx: &Transaction,
+    message: &herdr_bus::Message,
+) -> rusqlite::Result<Option<i64>> {
+    let data = &message.data;
+    let (Some(repo), Some(number)) = (data["repo"].as_str(), data["pull_request"].as_u64()) else {
+        return Ok(None);
+    };
+    if !FEEDBACK.contains(&message.kind.as_str()) {
+        return Ok(None);
+    }
+    tx.query_row(
+        "SELECT tasks.id FROM owns JOIN tasks ON tasks.id = owns.task
+         WHERE owns.resource = ?1 AND tasks.state = 'done'
+         AND julianday(?2) >= julianday(tasks.changed)
+         AND NOT EXISTS (SELECT 1 FROM inbox WHERE type = ?3
+           AND 'github:' || json_extract(data, '$.repo') || '#' || json_extract(data, '$.pull_request') = ?1)
+         AND NOT EXISTS (SELECT 1 FROM tasks AS other WHERE other.key = tasks.key
+           AND other.state NOT IN ('done', 'failed', 'dropped'))
+         ORDER BY tasks.id DESC LIMIT 1",
+        params![
+            route::pull_request(repo, number),
+            message.time.to_string(),
+            CLOSED
+        ],
+        |row| row.get(0),
+    )
+    .optional()
+}
+
+/// Moves the done `task` back, as its next generation, to its workflow's `reopen` step, else the
+/// step that opened its pull request, else its last step, with the feedback of the inbox entry
+/// `seq` as its prompt.
+pub(crate) fn reopen(tx: &Transaction, trace: &Trace, task: i64, seq: i64) -> rusqlite::Result<()> {
+    let workflows = &trace.factory.workflows;
+    let (workflow, at, generation, kind, data): (String, String, i64, String, String) = tx
+        .query_row(
+            "SELECT tasks.workflow, tasks.step, tasks.generation, inbox.type, inbox.data
+             FROM tasks, inbox WHERE tasks.id = ?1 AND inbox.seq = ?2",
+            params![task, seq],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                ))
+            },
+        )?;
+    let data: Value = serde_json::from_str(&data).expect("inbox data is JSON");
+    let resource = route::pull_request(
+        data["repo"].as_str().unwrap_or_default(),
+        data["pull_request"].as_u64().unwrap_or_default(),
+    );
+    let opened: Option<String> = tx
+        .query_row(
+            "SELECT step FROM actions WHERE task = ?1 AND pull_request = ?2 AND status = 'opened'
+             ORDER BY id DESC LIMIT 1",
+            params![task, resource],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let named = workflows
+        .get(&workflow)
+        .and_then(|flow| flow.value.reopen.clone());
+    let target = named.or(opened).unwrap_or(at);
+    let generation = generation + 1;
+    tx.execute(
+        "UPDATE asks SET withdrawn = ?2 WHERE task = ?1 AND answer IS NULL AND withdrawn IS NULL",
+        [task, generation],
+    )?;
+    tx.execute(
+        "UPDATE waits SET withdrawn = ?2 WHERE task = ?1 AND fired IS NULL AND withdrawn IS NULL",
+        [task, generation],
+    )?;
+    tx.execute(
+        "UPDATE outbox SET state = 'withdrawn' WHERE task = ?1 AND state = 'queued'",
+        [task],
+    )?;
+    tx.execute(
+        "UPDATE tasks SET generation = ?2 WHERE id = ?1",
+        [task, generation],
+    )?;
+    enter(tx, task, &workflow, &target, None, "", workflows)?;
+    let said = feedback(&resource, &kind, &data).unwrap_or_default();
+    let text = format!("Feedback reopened this done task as generation {generation}: {said}");
+    wake_on(tx, task, &text, Some(seq))?;
+    trace::reopened(tx, trace, task, &resource)
 }
 
 /// Ends the live run of `session`, whose tmux session was gone when the daemon started, as `lost`.
