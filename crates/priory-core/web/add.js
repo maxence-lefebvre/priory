@@ -7,12 +7,11 @@ export function addBody({ text, ...chips }) {
   return { text: trimmed, ...Object.fromEntries(Object.entries(chips).filter(([, value]) => value)) };
 }
 
-/** What a reply means for the draft; status 0 is a send that got no reply at all. */
+/** What a reply means for the draft. Status 0 is a send that got no reply: it may have arrived. */
 export function addOutcome(status, body) {
   if (status === 200) return { state: "added", key: body.key, id: body.id };
-  if (status === 0) return { state: "offline" };
   if (status === 401) return { state: "signed-out" };
-  if (status === 504) return { state: "unsure" };
+  if (status === 0 || status === 504) return { state: "unsure" };
   if (status === 503) return { state: "refused", error: "no priory daemon runs beside this server. Start priory daemon, then add again" };
   return { state: "refused", error: body.error || `the server answered ${status}` };
 }

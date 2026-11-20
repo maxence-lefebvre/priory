@@ -343,7 +343,7 @@ textarea { font: 400 16px/22px var(--font-ui); color: var(--text); background: v
 .sheet .warnline .ico { margin-top: 2px; }
 .chips { display: flex; flex-wrap: wrap; gap: var(--space-2); }
 .chip { position: relative; height: var(--chip); padding: 0 8px 0 10px; display: inline-flex; align-items: center; gap: 6px; border-radius: var(--radius-sm); background: var(--surface); box-shadow: inset 0 0 0 1px var(--control-line); font: 400 14px/1 var(--font-ui); color: var(--text-3); }
-.chip select { appearance: none; border: 0; background: none; font: 500 14px/1 var(--font-ui); color: var(--text); max-width: 22ch; text-overflow: ellipsis; cursor: pointer; }
+.chip select { field-sizing: content; appearance: none; border: 0; background: none; font: 500 14px/1 var(--font-ui); color: var(--text); max-width: 22ch; text-overflow: ellipsis; cursor: pointer; }
 .chip select:focus-visible { outline: 0; }
 .chip:has(select:focus-visible) { outline: 2px solid var(--action-text); outline-offset: 2px; }
 .chip .ico { color: var(--text-3); pointer-events: none; }
@@ -351,6 +351,7 @@ textarea { font: 400 16px/22px var(--font-ui); color: var(--text); background: v
 .sheet .btn[aria-disabled="true"] { color: var(--text-3); background: var(--raised); cursor: default; }
 .sheet .added { display: grid; gap: 12px; }
 .sheet .added .line { font: 400 var(--type-small) var(--font-ui); color: var(--text-2); }
+.sheet .added .l1 .mono { white-space: nowrap; }
 .sheet .added .row { padding: 11px 12px; border: 1px solid var(--line); border-radius: var(--radius-md); grid-template-columns: var(--tile) minmax(0, 1fr); }
 @media (min-width: 600px) {
   .sheet { margin: 12vh auto auto; width: min(560px, calc(100% - 32px)); padding: 12px 20px 20px; border-radius: var(--radius-card); }

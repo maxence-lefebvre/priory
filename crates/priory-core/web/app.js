@@ -317,7 +317,7 @@ function deskBody(wide) {
   if (current === "running") rows = model.running.length ? model.running.map(runRow) : html`<p class="empty">No run is live. Runs show here while an agent works.</p>`;
   else if (current === "queue") rows = listOrEmpty(model.queue.map(taskRow), html`The queue is empty. A task waits here for its turn; see <code>priory queue</code>.`);
   else if (current === "asleep") rows = listOrEmpty(model.tasks.filter((task) => task.state === "asleep").map(taskRow), "No task is asleep. A task sleeps here while it waits on an event.");
-  else if (current === "all") rows = model.tasks.length || olderTasks() ? [...model.tasks.map(taskRow), olderRow("tasks", olderTasks(), false)] : listOrEmpty([], html`No tasks yet. Start one with <code>priory request</code>.`);
+  else if (current === "all") rows = model.tasks.length || olderTasks() ? [...model.tasks.map(taskRow), olderRow("tasks", olderTasks(), false)] : listOrEmpty([], html`No tasks yet. Add one with the + button, or run <code>priory add</code>.`);
   else rows = needsMe(model, wide);
   return { model, views, banner, rows };
 }
@@ -815,7 +815,7 @@ function addedTask() {
   return html`<div class="added" role="status">
     <p class="line">Added. The task waits in the queue for its turn.</p>
     <div class="row">${tile(task.state)}
-      <span class="l1"><span class="mono">${task.key}</span><span>${task.workflow || ""} ${task.step || ""}</span><span>${task.state}</span></span>
+      <span class="l1"><span class="mono">${task.key}</span><span>${[task.workflow, task.step !== task.workflow && task.step].filter(Boolean).join(", ")}</span><span class="age">${task.state}</span></span>
       <span class="l2">${task.brief?.request || task.brief?.title || (id === null ? "No task took this key yet. It shows on the Desk once one does." : "")}</span>
       <span class="l3">${[task.band, task.lane].filter(Boolean).join(", ")}</span></div>
     <div class="acts"><button class="btn secondary" data-action="add-another">Add another</button><button class="btn primary" data-action="add-close">Close</button></div></div>`;
@@ -823,7 +823,7 @@ function addedTask() {
 
 const ADD_LINES = {
   offline: "Offline. The draft stays on this device, and nothing is sent until you confirm it after you reconnect.",
-  unsure: "The connection dropped while sending, so Priory may have queued it. Check the Desk's All view before you send it again.",
+  unsure: "The connection dropped while sending, so Priory may have queued it. The draft stays until you send it again or discard it.",
 };
 
 function renderAdd() {
@@ -835,13 +835,15 @@ function renderAdd() {
   const status = phase === "refused"
     ? html`<p class="field-error" id="add-status">${icon("circle-x", "s15")}Could not add: ${error}.</p>`
     : back
-      ? html`<p class="warnline" id="add-status">${icon("unplug", "s15")}<span>Reconnected. This draft has not been sent${phase === "unsure" ? " or may have been" : ""}. Send it now?</span></p>`
+      ? html`<p class="warnline" id="add-status">${icon("unplug", "s15")}<span>${phase === "unsure"
+        ? "Reconnected. Priory may have queued this before the drop: check the Desk's All view, then send it if it is missing."
+        : "Reconnected. This draft has not been sent. Send it now?"}</span></p>`
       : ADD_LINES[phase] ? html`<p class="warnline" id="add-status">${icon("unplug", "s15")}<span>${ADD_LINES[phase]}</span></p>` : "";
   const empty = !draft.text.trim();
   const label = sending ? "Adding…" : back ? "Send" : state.failed ? "Keep draft" : "Add";
   const body = phase === "added" ? addedTask() : html`<form data-action="add" ${sending ? raw('aria-busy="true"') : ""}>
     <label class="sr" for="add-text">What should the factory do?</label>
-    <input id="add-text" name="text" autocomplete="off" enterkeyhint="send" placeholder="What should the factory do? A GitHub or Linear link sets the repo." value="${draft.text}" ${sending ? raw("readonly") : ""} ${status ? raw('aria-describedby="add-status"') : ""}>
+    <input id="add-text" name="text" autocomplete="off" enterkeyhint="send" placeholder="What should the factory do?" value="${draft.text}" ${sending ? raw("readonly") : ""} ${status ? raw('aria-describedby="add-status"') : ""}>
     ${status}
     <div class="chips">${chip("workflow", "Workflow", draft.workflow, defaults?.workflows || [], defaults?.workflow ? `default (${defaults.workflow})` : "pick one")}
       ${chip("band", "Band", draft.band, defaults?.bands || state.data?.bands || [], "default")}

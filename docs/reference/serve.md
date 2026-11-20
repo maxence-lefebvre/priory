@@ -23,6 +23,7 @@ does, with every count in `older` at 0. Their rows match the CLI's JSON only wit
 | `/api/tasks/{id}` | `priory task ID --json` | one [task in detail](#task-in-detail) |
 | `/api/queue` | `priory queue --json` | an object: [Queue](#queue) |
 | `/api/views` | | an object: [Views](#views) |
+| `/api/request` | | what the web view's Add prefills: `workflow` and `band`, the [`[request]`](factory.md#request) defaults, each `null` when unset; `workflows`, the factory's workflow names; and `bands`, its bands in order |
 | `/api/reports/latest` | `priory report show --json` | the [report](#report) written last |
 | `/api/reports/{task}` | `priory report show TASK --json` | the task's [report](#report) |
 | `/api/events?since=REV` | `priory wait --since REV` | `{"revision": N}` once it differs from `REV`. See [below](#apievents) |
