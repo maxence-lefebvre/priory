@@ -365,6 +365,9 @@ factory, such as herdr-bowtie, can read the same output as another consumer.
   its wait does not match and while its ask stays open, and is coalesced when it is in any other
   state, so firings never stack. A recurring wake is a schedule trigger, not an agent's own loop. M1
 - R2.6 Accept signed webhooks and check the signature before any trigger sees the payload. M2
+- R2.7 Trigger when someone asks a person directly for a pull request review, in any repository.
+  A removed request that the person did not answer with a review withdraws the task, and a
+  re-request wakes it. Team requests come later. M1
 
 ### R3. Inbox
 

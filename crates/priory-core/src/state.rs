@@ -570,13 +570,13 @@ pub fn read_only() -> Result<Connection, String> {
 }
 
 /// Records `message` in the inbox and applies its route, in one transaction. A message
-/// already in the inbox changes nothing.
+/// already in the inbox changes nothing. Returns the tmux session of a run it ended, to kill.
 pub(crate) fn handle(
     db: &mut Connection,
     message: &Message,
     factory: &Factory,
     counter: Option<&crate::embed::Counter>,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<Option<String>, Box<dyn std::error::Error>> {
     let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
     let seen = tx
         .query_row(
@@ -586,16 +586,20 @@ pub(crate) fn handle(
         )
         .optional()?;
     if seen.is_some() {
-        return Ok(());
+        return Ok(None);
     }
     let resources = route::resources(message);
-    let (keyed, owners) = if route::requests(message) {
-        (keyed(&tx, resources.first())?, Vec::new())
-    } else {
-        (None, owners(&tx, &resources)?)
+    // A review event goes to its review task first, even when an older task is keyed by its PR.
+    let (keyed, owners) = match (route::requests(message), route::review(message)) {
+        (true, _) => (keyed(&tx, resources.first())?, Vec::new()),
+        (false, Some(review)) => (keyed(&tx, Some(&review))?, owners(&tx, &resources)?),
+        (false, None) => (None, owners(&tx, &resources)?),
     };
     let owner = keyed.as_ref().or(owners.first());
     let (task, outcome) = match route::route(message, owner, factory) {
+        _ if keyed.is_some() && route::withdraws(message) => {
+            (keyed.as_ref().map(|task| task.id), "withdrew")
+        }
         Decision::Create(new) => {
             tx.execute(
                 "INSERT INTO tasks
@@ -630,7 +634,7 @@ pub(crate) fn handle(
             }
             (Some(id), "created")
         }
-        Decision::Keep(id) if route::tick(message) => {
+        Decision::Keep(id) if route::tick(message, factory) => {
             // A human step or a daemon's checks gate has no agent turn for a tick to wake.
             let asleep_at: Option<(String, String)> = tx
                 .query_row(
@@ -709,9 +713,15 @@ pub(crate) fn handle(
             let text = message.data["prompt"].as_str().unwrap_or(&line);
             crate::tools::wake_on(&tx, task, text, Some(seq))?;
         }
+        (Some(task), "withdrew") => {
+            let tmux = crate::tools::cancel(&tx, task, "review request removed")?;
+            tx.commit()?;
+            return Ok(tmux);
+        }
         _ => {}
     }
-    Ok(tx.commit()?)
+    tx.commit()?;
+    Ok(None)
 }
 
 /// Records the factory's bands, highest first, so listings and moves read them without the factory.

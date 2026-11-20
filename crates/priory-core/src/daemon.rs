@@ -1056,8 +1056,9 @@ fn drain(
             return Ok(());
         }
         for delivery in deliveries {
-            state::handle(db, &delivery.message, factory, counter)?;
+            let ended = state::handle(db, &delivery.message, factory, counter)?;
             bus.ack(delivery.connection, delivery.seq)?;
+            ended.inspect(|tmux| runtime::kill(tmux));
         }
     }
 }

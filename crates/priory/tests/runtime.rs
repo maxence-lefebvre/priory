@@ -8183,3 +8183,120 @@ fn attach_refuses_a_same_named_session_on_another_tmux_server_that_runs_no_prior
          run attach with the daemon's TMUX and TMUX_TMPDIR\n"
     );
 }
+
+const REVIEW_TRIGGER: &str = r#"
+source = "github"
+on = "pull_request.review_requested"
+reviewer = "max"
+workflow = "implement"
+"#;
+
+const REVIEW_KEY: &str = "github:owner/repo:pulls/7:review:max";
+
+fn reviews(name: &str) -> Setup {
+    let setup = Setup::new(name);
+    fs::write(
+        setup.dir.join("factory/triggers/review.toml"),
+        REVIEW_TRIGGER,
+    )
+    .unwrap();
+    setup
+}
+
+/// A review request event for pull request 7, as the intake publishes it at the `round`th poll.
+fn review_event(kind: &str, round: u32) -> Message {
+    Message::new(
+        kind,
+        json!({
+            "repo": "owner/repo",
+            "pull_request": 7,
+            "title": "Tidy the parser",
+            "url": "https://github.com/owner/repo/pull/7",
+            "author": "alice",
+            "since": "2026-11-20T09:00:00Z",
+            "reviewer": "max",
+            "reviewed": false,
+            "time": format!("2026-11-20T10:0{round}:00Z"),
+            "baseline": false,
+            "triggers": ["review"]
+        }),
+    )
+    .subject("owner/repo#7")
+}
+
+/// A review request event and the intake's task request for it.
+fn review_request(round: u32) -> [Message; 2] {
+    let source = review_event("github.pull_request.review_requested", round);
+    let request = Message::new(
+        "factory.task.requested",
+        json!({
+            "workflow": "implement",
+            "key": REVIEW_KEY,
+            "band": null,
+            "lane": null,
+            "trigger": "review",
+            "source": source.id.to_string(),
+            "repo": "owner/repo"
+        }),
+    )
+    .subject(REVIEW_KEY);
+    [source, request]
+}
+
+impl Setup {
+    fn publish_all(&self, messages: &[Message]) {
+        messages.iter().for_each(|message| self.publish(message));
+    }
+}
+
+#[test]
+fn a_review_re_request_wakes_its_asleep_task() {
+    let mut setup = reviews("review-wakes");
+    setup.calls(&[ask()]);
+    setup.publish_all(&review_request(1));
+    setup.start();
+    setup.until("tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == "asleep")
+    });
+
+    setup.publish_all(&review_request(2));
+
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 2);
+    let inbox = setup.rows("inbox");
+    assert_eq!([&inbox[2][4], &inbox[3][4]], ["kept", "woke"]);
+    assert_eq!(setup.rows("tasks").len(), 1);
+}
+
+#[test]
+fn a_removed_review_request_drops_its_running_task_and_ends_its_run() {
+    let mut setup = reviews("review-withdrawn");
+    setup.hold("hold-stop");
+    setup.publish_all(&review_request(1));
+    setup.start();
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 1);
+
+    setup.publish(&review_event(
+        "github.pull_request.review_request_removed",
+        2,
+    ));
+
+    let tasks = setup.until("tasks", |rows| rows[0][4] == "dropped");
+    assert_eq!(tasks[0][7], "review request removed");
+    assert_eq!(setup.rows("runs")[0][7], "cancelled");
+    setup.gone("priory-1");
+}
+
+#[test]
+fn a_review_task_finishes_without_owning_its_pull_request() {
+    let mut setup = reviews("review-done");
+    setup.calls(&[result("passed")]);
+    setup.publish_all(&review_request(1));
+    setup.start();
+
+    let tasks = setup.until("tasks", |rows| {
+        rows.first()
+            .is_some_and(|row| row[4] != "queued" && row[4] != "running")
+    });
+
+    assert_eq!([&tasks[0][4], &tasks[0][7]], ["done", "-"]);
+}

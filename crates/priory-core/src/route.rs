@@ -2,9 +2,11 @@ use crate::state::Task;
 use herdr_bus::Message;
 use priory_factory::factory::Factory;
 use priory_factory::lanes::Subject;
+use priory_intake::intake::review_key;
 use serde::Deserialize;
 
 const TASK_REQUESTED: &str = "factory.task.requested";
+const REVIEW_REQUEST_REMOVED: &str = "github.pull_request.review_request_removed";
 
 /// What the daemon does with one inbox entry.
 #[derive(Debug, PartialEq)]
@@ -78,7 +80,26 @@ pub(crate) fn resources(message: &Message) -> Vec<String> {
         .map(|number| pull_request(repo, number))
         .into_iter()
         .chain(head.map(|head| branch(repo, head)))
+        .chain(review(message))
         .collect()
+}
+
+/// The key of the review task a review request event is about.
+pub(crate) fn review(message: &Message) -> Option<String> {
+    let data = &message.data;
+    let reviewer = data["reviewer"].as_str().filter(|_| {
+        message
+            .kind
+            .starts_with("github.pull_request.review_request")
+    })?;
+    let number = data["pull_request"].as_u64()?;
+    Some(review_key(data["repo"].as_str()?, number, reviewer))
+}
+
+/// Whether `message` withdraws its review task: a removed request the reviewer did not answer
+/// with a review.
+pub(crate) fn withdraws(message: &Message) -> bool {
+    message.kind == REVIEW_REQUEST_REMOVED && message.data["reviewed"] == false
 }
 
 /// An issue or pull request, as a resource: GitHub numbers both from one sequence per repository.
@@ -95,9 +116,18 @@ pub(crate) fn requests(message: &Message) -> bool {
     message.kind == TASK_REQUESTED
 }
 
-/// Whether `message` is a schedule's firing, which wakes or is coalesced into the task it finds.
-pub(crate) fn tick(message: &Message) -> bool {
-    message.kind == TASK_REQUESTED && message.data.get("scheduled").is_some()
+/// Whether `message` is a schedule's firing or a review re-request, which wakes or is coalesced
+/// into the task it finds.
+pub(crate) fn tick(message: &Message, factory: &Factory) -> bool {
+    let data = &message.data;
+    let review = || {
+        let trigger = data["trigger"].as_str().unwrap_or_default();
+        factory
+            .triggers
+            .get(trigger)
+            .is_some_and(|trigger| trigger.value.reviewer.is_some())
+    };
+    message.kind == TASK_REQUESTED && (data.get("scheduled").is_some() || review())
 }
 
 /// Routes `message`, given the active task that owns its key, if any. A task request for a

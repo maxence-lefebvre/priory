@@ -371,6 +371,8 @@ pub struct Trigger {
     /// The event that starts a task, such as `issues.labeled`; depends on `source`.
     #[serde(default)]
     pub on: String,
+    /// The GitHub login whose review requests a `pull_request.review_requested` trigger polls.
+    pub reviewer: Option<String>,
     /// The saved Linear view a `linear.view` trigger reads: its id, or the slug id ending its URL.
     pub view: Option<String>,
     /// The Slack channel id a `slack` trigger reads, such as `C0123`.
