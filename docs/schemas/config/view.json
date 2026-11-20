@@ -1,0 +1,97 @@
+{
+  "$id": "https://raw.githubusercontent.com/maxence-lefebvre/priory/main/docs/schemas/config/view.json",
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "additionalProperties": false,
+  "definitions": {
+    "Node": {
+      "description": "A row or column splits its space between its children; tabs show one child at a time.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "row": {
+              "items": {
+                "$ref": "#/definitions/Node"
+              },
+              "minItems": 1,
+              "type": "array"
+            }
+          },
+          "required": [
+            "row"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "column": {
+              "items": {
+                "$ref": "#/definitions/Node"
+              },
+              "minItems": 1,
+              "type": "array"
+            }
+          },
+          "required": [
+            "column"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "tabs": {
+              "items": {
+                "$ref": "#/definitions/Node"
+              },
+              "minItems": 1,
+              "type": "array"
+            }
+          },
+          "required": [
+            "tabs"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "panel": {
+              "$ref": "#/definitions/Panel"
+            }
+          },
+          "required": [
+            "panel"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "Panel": {
+      "enum": [
+        "desk",
+        "asks",
+        "inbox",
+        "queue",
+        "tasks",
+        "runs",
+        "terminal",
+        "workflow",
+        "reports"
+      ],
+      "type": "string"
+    }
+  },
+  "description": "`views/<name>.toml` or `.yaml`: a layout of the web view, a tree whose leaves are panels.",
+  "properties": {
+    "layout": {
+      "$ref": "#/definitions/Node"
+    }
+  },
+  "required": [
+    "layout"
+  ],
+  "title": "view",
+  "type": "object"
+}

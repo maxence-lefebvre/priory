@@ -152,8 +152,8 @@ The view sets two attributes on `<html>`:
 - **Fonts:** all seven families are under the SIL Open Font License 1.1. Ship their `woff2` files
   with the daemon and serve them from the view. Never load fonts from a CDN: the view must work on
   a factory with no internet. Load a theme's families only when that theme is active or shown
-  in an Appearance preview. The `woff2` files land with the first web view code, not with this
-  file; until then the design boards load the families from Google Fonts.
+  in an Appearance preview. The `woff2` files and their licenses are in
+  [`design/fonts/`](design/fonts/README.md).
 
 ### Theme tokens
 
@@ -362,9 +362,13 @@ The desk is the "Needs me" view. It lists, top to bottom:
 4. **Asks**: the open asks, oldest first, as ask rows.
 5. **Stopped**: blocked tasks, uncertain prompts (R5.4) and failed tasks, each with its reason in
    the role's text color. On wide screens the Recommends column names the action: Resume or
-   Revive.
-6. **Asleep**: one row, "9 tasks asleep on waits", that opens the tasks panel filtered to asleep.
-7. Reports waiting for review, when there are any.
+   Revive. Then **Also waiting**: the desk's other items (held tasks, sweeps, memory waits,
+   retired tasks and worktrees that stay), each with the daemon's sentence.
+6. **Up next**: a strip with the next 3 runs, queued or scheduled, as in the Herdr Queue panel.
+   Each line shows when, the task and why, and opens the task. With none, the strip says "Nothing
+   is queued or scheduled to run next."
+7. **Asleep**: one row, "9 tasks asleep on waits", that opens the tasks panel filtered to asleep.
+8. Reports waiting for review, when there are any.
 
 On a phone, the **Answer capsule** floats above the tab bar: a full-width `--action` button,
 `--capsule` (54 px) tall, `--capsule-gap` above the tab bar, with `--radius-full` and
@@ -536,7 +540,7 @@ Settings, then Appearance. It holds:
 2. **Mode**: a segmented control, System, Light and Dark, `--control` (44 px) tall on
    `--raised`. The selected segment sits on `--surface`.
 3. **Theme**: one card per theme, in the order Indigo, Ink, Parchment, Abbey. Each card
-   shows the desk in that theme, light and dark side by side at one fifth scale, the theme's
+   shows the desk in that theme, light and dark side by side at two fifths scale, the theme's
    name in the display role, one sentence about it, and a radio. The selected card has a 2 px
    `--action` edge and a filled radio.
 4. A note in `--text-3`: "A theme changes color and type only. Every screen keeps the same

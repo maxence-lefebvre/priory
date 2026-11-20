@@ -648,6 +648,151 @@ fn the_queue_lists_held_tasks_with_their_hold_after_the_waiting_ones() {
     assert_eq!(api(&address, "/api/tasks/2")["position"], 1);
 }
 
+#[test]
+fn the_views_endpoint_returns_the_default_view_priory_ships() {
+    let mut setup = Setup::new("views", SERVE);
+    let address = setup.start(&["serve", &setup.factory()]);
+
+    let views = api(&address, "/api/views");
+
+    assert_eq!(views["factory"], "demo");
+    assert_eq!(
+        views["views"],
+        json!({
+            "default": {
+                "layout": {
+                    "tabs": [
+                        { "panel": "desk" },
+                        { "panel": "asks" },
+                        { "panel": "tasks" },
+                        { "panel": "runs" },
+                        { "panel": "inbox" },
+                        { "panel": "reports" }
+                    ]
+                }
+            }
+        })
+    );
+}
+
+#[test]
+fn a_factory_view_replaces_the_shipped_view_of_its_name() {
+    let mut setup = Setup::new("view-override", SERVE);
+    let views = setup.dir.join("factory/views");
+    fs::create_dir_all(&views).unwrap();
+    let row = "[layout]\nrow = [{ panel = \"desk\" }, { column = [{ panel = \"queue\" }, { panel = \"runs\" }] }]\n";
+    fs::write(views.join("default.toml"), row).unwrap();
+    fs::write(views.join("night.yaml"), "layout:\n  panel: terminal\n").unwrap();
+    let address = setup.start(&["serve", &setup.factory()]);
+
+    let views = api(&address, "/api/views");
+
+    assert_eq!(
+        views["views"],
+        json!({
+            "default": {
+                "layout": {
+                    "row": [
+                        { "panel": "desk" },
+                        { "column": [{ "panel": "queue" }, { "panel": "runs" }] }
+                    ]
+                }
+            },
+            "night": { "layout": { "panel": "terminal" } }
+        })
+    );
+}
+
+/// Sends a GET without the token and returns the status, the headers in lowercase and the body.
+fn fetch(address: &str, path: &str) -> (u16, String, Vec<u8>) {
+    let mut stream = TcpStream::connect(address).unwrap();
+    let head = format!("GET {path} HTTP/1.1\r\nHost: {address}\r\nConnection: close\r\n\r\n");
+    stream.write_all(head.as_bytes()).unwrap();
+    let mut response = Vec::new();
+    stream.read_to_end(&mut response).unwrap();
+    let end = response.windows(4).position(|w| w == b"\r\n\r\n").unwrap();
+    let head = String::from_utf8_lossy(&response[..end]).to_lowercase();
+    let status = head[9..12].parse().unwrap();
+    (status, head, response[end + 4..].to_vec())
+}
+
+fn header<'a>(head: &'a str, name: &str) -> Option<&'a str> {
+    head.lines()
+        .find_map(|line| line.strip_prefix(&format!("{name}: ")))
+}
+
+#[test]
+fn the_web_view_serves_every_file_with_its_type_and_a_strict_policy_without_the_token() {
+    let mut setup = Setup::new("web-files", SERVE);
+    let address = setup.start(&["serve", &setup.factory()]);
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let mut files: Vec<String> = ["crates/priory-core/web", "design/fonts"]
+        .iter()
+        .flat_map(|dir| fs::read_dir(root.join(dir)).unwrap())
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| {
+            path.extension()
+                .is_some_and(|ext| ext != "txt" && ext != "md")
+        })
+        .map(|path| {
+            let name = path.file_name().unwrap().to_str().unwrap();
+            match path.extension().unwrap().to_str().unwrap() {
+                "woff2" => format!("/fonts/{name}"),
+                _ => format!("/{name}"),
+            }
+        })
+        .collect();
+    files.extend(
+        [
+            "/tokens/structure.css",
+            "/tokens/themes.css",
+            "/favicon.ico",
+            "/favicon.svg",
+            "/apple-touch-icon.png",
+        ]
+        .map(str::to_owned),
+    );
+    assert!(files.len() > 12, "{files:?}");
+
+    for path in files {
+        let (status, head, body) = fetch(&address, &path);
+        let expected = match path.rsplit('.').next().unwrap() {
+            "html" => "text/html; charset=utf-8",
+            "js" => "text/javascript; charset=utf-8",
+            "css" => "text/css; charset=utf-8",
+            "woff2" => "font/woff2",
+            "ico" => "image/x-icon",
+            "svg" => "image/svg+xml",
+            "png" => "image/png",
+            other => panic!("no type expected for .{other}"),
+        };
+        assert_eq!(status, 200, "{path}: {}", String::from_utf8_lossy(&body));
+        assert_eq!(header(&head, "content-type"), Some(expected), "{path}");
+        assert_eq!(
+            header(&head, "x-content-type-options"),
+            Some("nosniff"),
+            "{path}"
+        );
+        assert!(!body.is_empty(), "{path}");
+    }
+
+    let (status, head, index) = fetch(&address, "/asks/42");
+    assert_eq!(status, 200);
+    assert_eq!(index, fetch(&address, "/").2);
+    assert_eq!(
+        header(&head, "content-security-policy"),
+        Some(
+            "default-src 'none'; script-src 'self'; style-src 'self'; font-src 'self'; \
+             img-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'none'; \
+             frame-ancestors 'none'"
+        )
+    );
+    assert_eq!(fetch(&address, "/asks/cache.ship").2, index);
+    assert_eq!(fetch(&address, "/nothing.js").0, 404);
+    assert_eq!(fetch(&address, "/fonts/nothing.woff2").0, 404);
+    assert_eq!(fetch(&address, "/api/views").0, 401);
+}
+
 const TRIGGER: &str = r#"
 source = "github"
 repo = "owner/repo"
