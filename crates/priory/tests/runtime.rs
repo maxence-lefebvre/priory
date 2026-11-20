@@ -4230,7 +4230,8 @@ fn a_state_file_whose_asks_an_approval_names_upgrades_to_outside_asks() {
     // The state file as version 32 left it: every ask belongs to a task.
     let db = rusqlite::Connection::open(setup.dir.join("priory.db")).unwrap();
     db.execute_batch(
-        "PRAGMA legacy_alter_table = ON;
+        "DROP TABLE reports;
+         PRAGMA legacy_alter_table = ON;
          CREATE TABLE asks_32 (
            id INTEGER PRIMARY KEY AUTOINCREMENT, task INTEGER NOT NULL REFERENCES tasks (id),
            run INTEGER REFERENCES runs (id), step TEXT NOT NULL,
