@@ -67,6 +67,13 @@ pub fn check(factory: &Factory) -> Vec<Problem> {
         {
             problems.push(problem(settings, settings.lines.field("serve"), message));
         }
+        if settings.value.webhooks.is_some() && settings.value.serve.is_none() {
+            problems.push(problem(
+                settings,
+                settings.lines.field("webhooks"),
+                "`[webhooks]` needs a `[serve]` table to listen on".to_owned(),
+            ));
+        }
         if !owner_name(settings.value.sweep.repo()) {
             problems.push(problem(
                 settings,

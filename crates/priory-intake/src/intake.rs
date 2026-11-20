@@ -6,6 +6,9 @@ mod linear;
 mod pulls;
 mod schedule;
 mod slack;
+mod webhook;
+
+pub use webhook::Github;
 
 use serde_json::json;
 use std::collections::{BTreeMap, BTreeSet, HashSet};
@@ -27,6 +30,9 @@ const STREAMS: [&str; 4] = [LABELED, OPENED, REVIEWED, CHECKED];
 pub(crate) const TASK_REQUESTED: &str = "factory.task.requested";
 const BASELINE: &str = "factory.intake.baseline";
 const EVERY: Duration = Duration::from_secs(60);
+/// How far back a writer looks for the other writer's report of the same change.
+const LOOKBACK_SECONDS: i64 = 7 * 24 * 60 * 60;
+const LOOKBACK_MESSAGES: usize = 5000;
 
 /// A repo and the source message type polled for it.
 type Stream = (String, &'static str);
@@ -227,6 +233,10 @@ fn newest(
         before = Some(oldest.seq);
         for stored in &page {
             let data = &stored.message.data;
+            // Polling owns its streams' positions; a delivery can arrive out of order.
+            if data.get("delivery").is_some() {
+                continue;
+            }
             let Some(repo) = data["repo"].as_str().filter(|repo| repos.contains(repo)) else {
                 continue;
             };
@@ -302,6 +312,7 @@ fn publish_all(
     cursors: &mut Cursors,
     published: &mut HashSet<Uuid>,
 ) -> Result<(), String> {
+    let mut delivered = None;
     for Polled {
         stream,
         events,
@@ -314,6 +325,17 @@ fn publish_all(
             if !published.insert(source.id) {
                 continue;
             }
+            if CHANGES.contains(&source.kind.as_str()) {
+                let delivered = match &mut delivered {
+                    Some(delivered) => delivered,
+                    None => delivered.insert(recent(bus)?),
+                };
+                // A crash may have stopped the webhook between its event and its task requests.
+                if let Some(other) = delivered.iter().find(|other| same_change(other, &source)) {
+                    dispatch(bus, triggers, other)?;
+                    continue;
+                }
+            }
             publish(bus, &source)?;
             dispatch(bus, triggers, &source)?;
         }
@@ -325,6 +347,70 @@ fn publish_all(
         cursors.insert(stream, top);
     }
     Ok(())
+}
+
+/// The types whose webhook id cannot be the poll's, since the payload lacks GitHub's issue event
+/// id or issue id: each writer compares the change itself with the other's reports.
+const CHANGES: [&str; 4] = [LABELED, PR_LABELED, PR_CLOSED, PR_OPENED];
+
+/// Whether the output already holds the other writer's report of `message`'s change.
+fn reported(bus: &Bus, message: &Message) -> Result<bool, String> {
+    if !CHANGES.contains(&message.kind.as_str()) {
+        return Ok(false);
+    }
+    Ok(recent(bus)?.iter().any(|other| same_change(other, message)))
+}
+
+/// The source events of `CHANGES` types on the output, newest first, back 7 days and at most
+/// `LOOKBACK_MESSAGES` messages.
+fn recent(bus: &Bus) -> Result<Vec<Message>, String> {
+    let since = Timestamp::now().as_second() - LOOKBACK_SECONDS;
+    let mut found = Vec::new();
+    let mut before = None;
+    let mut read = 0;
+    while read < LOOKBACK_MESSAGES {
+        let page = bus
+            .messages(&MessageQuery {
+                output: Some(OUTPUT.into()),
+                before,
+                limit: 500,
+                ..MessageQuery::default()
+            })
+            .map_err(|error| format!("read {OUTPUT}: {error}"))?;
+        let Some(oldest) = page.last() else {
+            break;
+        };
+        before = Some(oldest.seq);
+        read += page.len();
+        let old = oldest.published.as_second() < since;
+        found.extend(
+            page.into_iter()
+                .filter(|stored| stored.published.as_second() >= since)
+                .map(|stored| stored.message)
+                .filter(|message| CHANGES.contains(&message.kind.as_str())),
+        );
+        if old {
+            break;
+        }
+    }
+    Ok(found)
+}
+
+/// Whether one writer's `a` and the other's `b` report the same change: same type, issue or pull
+/// request and label, and for a label within 60 seconds, for a close at the same second. A pull
+/// request opens once.
+fn same_change(a: &Message, b: &Message) -> bool {
+    let webhook = |message: &Message| message.data.get("delivery").is_some();
+    let apart = (a.time.as_second() - b.time.as_second()).abs();
+    webhook(a) != webhook(b)
+        && a.kind == b.kind
+        && a.subject == b.subject
+        && a.data["label"] == b.data["label"]
+        && match a.kind.as_str() {
+            PR_CLOSED => apart == 0,
+            PR_OPENED => true,
+            _ => apart <= 60,
+        }
 }
 
 /// Marks the end of a stream's baseline, even when its first page held no event.

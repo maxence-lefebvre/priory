@@ -46,6 +46,9 @@ A field typed "or null" is always present. A field marked optional may be absent
 The pull request types share these fields. Head and base fields are null when GitHub no longer
 returns the pull request.
 
+Every type but the check run ones also carries `delivery`, a string, when a webhook delivery
+published it: its `X-GitHub-Delivery`. See [webhooks.md](../intake/webhooks.md).
+
 | Field | Type | Meaning |
 | ----- | ---- | ------- |
 | `repo` | string | `owner/name` |
@@ -68,7 +71,7 @@ Schema: [`github.issues.labeled.json`](../schemas/events/github.issues.labeled.j
 | `url` | string | The issue's page |
 | `label` | string or null | The label added |
 | `actor` | string or null | Who added it; null for a deleted user |
-| `github_id` | integer | GitHub's issue event id |
+| `github_id` | integer or null | GitHub's issue event id; null from a webhook |
 
 <!-- example: events/github.issues.labeled.json -->
 ```json
@@ -140,7 +143,7 @@ The pull request fields, and:
 | ----- | ---- | ------- |
 | `title` | string | The title when the intake polled |
 | `actor` | string or null | Who opened it |
-| `github_id` | integer | GitHub's issue id of the pull request |
+| `github_id` | integer or null | GitHub's issue id of the pull request; null from a webhook |
 
 <!-- example: events/github.pull_request.opened.json -->
 ```json
@@ -179,7 +182,7 @@ The pull request fields, and:
 | `title` | string | The title when the intake polled |
 | `label` | string or null | The label added |
 | `actor` | string or null | Who added it |
-| `github_id` | integer | GitHub's issue event id |
+| `github_id` | integer or null | GitHub's issue event id; null from a webhook |
 
 <!-- example: events/github.pull_request.labeled.json -->
 ```json
@@ -219,7 +222,7 @@ The pull request fields, and:
 | `title` | string | The title when the intake polled |
 | `merged` | boolean or null | Whether this close merged it: it is merged and this is its last close the poll read |
 | `actor` | string or null | Who closed it |
-| `github_id` | integer | GitHub's issue event id |
+| `github_id` | integer or null | GitHub's issue event id; null from a webhook |
 
 <!-- example: events/github.pull_request.closed.json -->
 ```json

@@ -18,6 +18,7 @@ Schema: [`config/factory.json`](../schemas/config/factory.json).
 | `search` | table | no | keyword search, no summarizer | How tasks are found. See [`[search]`](#search) | |
 | `telemetry` | table | no | no export | Where trace records go. See [`[telemetry]`](#telemetry) | |
 | `serve` | table | no | nothing listens | The HTTP server over the factory's state. See [`[serve]`](#serve) | |
+| `webhooks` | table | no | no webhook is taken | The signed webhooks the server takes. Needs `[serve]`. See [`[webhooks.github]`](#webhooksgithub) | |
 
 A duration is a whole number followed by `s`, `m` or `h`, such as `"90s"`, `"15m"` or `"2h"`.
 
@@ -75,6 +76,17 @@ endpoints. With no `[serve]` table, nothing listens.
 `public = true` exposes the factory's state to the network the address reaches. Whether a machine
 may do that is the factory owner's choice, per machine. The server speaks plain HTTP, with no TLS.
 
+## `[webhooks.github]`
+
+See [webhooks.md](../intake/webhooks.md) for what a delivery publishes, and [serve.md](serve.md#post-hooksgithub)
+for the endpoint. With this table, the server takes GitHub deliveries at `POST /hooks/github`.
+
+| Key | Type | Required | Default | Meaning | Example |
+| --- | ---- | -------- | ------- | ------- | ------- |
+| `secret_env` | string | no | `"PRIORY_GITHUB_WEBHOOK_SECRET"` | The environment variable that holds the webhook's secret. Never the secret itself | `"GITHUB_WEBHOOK_SECRET"` |
+
+`priory serve` and `priory daemon` refuse to start while that variable is unset or empty.
+
 ## Example
 
 <!-- example: factory/factory.toml -->
@@ -107,6 +119,9 @@ otlp = "http://127.0.0.1:4318"                 # spans go to its /v1/traces
 listen = "127.0.0.1:7340"                      # loopback only, unless public = true
 token_env = "PRIORY_TOKEN"                     # the variable holding the token
 web = true                                     # false serves only /api
+
+[webhooks.github]
+secret_env = "PRIORY_GITHUB_WEBHOOK_SECRET"    # the variable holding the webhook's secret
 ```
 
 ## Errors from `priory check`
@@ -126,6 +141,7 @@ web = true                                     # false serves only /api
 | `[search] names both a model and a command: keep one` | `[search]` sets `model` and `command` |
 | `` `[sweep] repo` needs to be `owner/name` `` | `[sweep] repo` is not `owner/name` |
 | `` `[serve] listen` <address> is beyond this machine: set `public = true` to serve it `` | `listen` is not a loopback address and `public` is not set |
+| `` `[webhooks]` needs a `[serve]` table to listen on `` | `[webhooks]` is set without `[serve]` |
 | `invalid socket address syntax` | `listen` is not an IP address and port, such as `127.0.0.1:7340` |
 
 Each line starts with the file and line, such as `factory.toml:3:1:`. A file that does not parse

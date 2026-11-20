@@ -18,9 +18,11 @@ model = ["priory-core/model"]
 
 [dev-dependencies]
 herdr-bus.workspace = true
+hmac.workspace = true
 jsonschema = { version = "=0.60.2", default-features = false }
 rusqlite.workspace = true
 schemars.workspace = true
 serde-saphyr.workspace = true
+sha2.workspace = true
 toml.workspace = true
 uuid.workspace = true
