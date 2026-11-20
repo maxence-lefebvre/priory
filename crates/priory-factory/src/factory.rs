@@ -668,6 +668,9 @@ pub struct Step {
     pub approves: Vec<String>,
     /// Each outcome and the step it leads to, or `done` or `stop`.
     pub next: BTreeMap<String, String>,
+    /// Who decides an outcome's edge, where it differs from the step's decider.
+    #[serde(default)]
+    pub by: BTreeMap<String, By>,
     /// Why an irreversible step may run without a person's approval.
     pub autonomous: Option<String>,
     /// How long one turn of a model step, or a `run` action's command, may run before Priory ends
@@ -728,6 +731,28 @@ impl Decider {
             Decider::Model => "model",
             Decider::Human => "human",
         }
+    }
+}
+
+/// Who decides that a task follows an edge: `code`, a `model`, a `human`, or nobody while it is
+/// `asleep` on a wait.
+#[derive(Debug, Deserialize, Serialize, Clone, Copy, PartialEq, Eq, JsonSchema)]
+#[serde(rename_all = "kebab-case")]
+pub enum By {
+    Code,
+    Model,
+    Human,
+    Asleep,
+}
+
+impl Step {
+    /// Who decides the edge of `outcome`: its `by`, else the step's decider.
+    pub fn by(&self, outcome: &str) -> By {
+        self.by.get(outcome).copied().unwrap_or(match self.decides {
+            Decider::Code => By::Code,
+            Decider::Model => By::Model,
+            Decider::Human => By::Human,
+        })
     }
 }
 

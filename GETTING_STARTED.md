@@ -100,7 +100,11 @@ priory draw example implement
 
 `priory check` prints `ok: 1 agent, 1 trigger, 1 workflow, 0 runners`. When a file has a
 problem, it prints the file, the line and what is wrong, and exits 1. `priory draw` prints this
-workflow as a Mermaid flowchart, with each step's decider and effect.
+workflow as a Mermaid flowchart, with each step's decider and effect, and each arrow colored by
+who decides it.
+
+`priory check --explain example` lists the irreversible step `open-pr` and the human step
+`approve-pr` that approves it. See [workflows.md](docs/reference/workflows.md#irreversible-steps-and-their-gates).
 
 ## 4. Pick a starter
 
