@@ -148,7 +148,8 @@ Known limits:
 `priory ask ID JSON` stores an ask from a session that Priory did not start, such as a person's
 Claude session. It takes the JSON of Fleet's `priory ask`: the fields of the `ask` tool, all
 optional except `question` or `title`, and `coordinator`, `key`, `runId` and `session`. It prints
-`ID`. An ID is 1 to 100 letters, digits, `.`, `_` or `-`, and not only digits.
+`ID`. An ID is 1 to 100 letters, digits, `.`, `_` or `-`, and neither only digits
+nor only dots, so it stays one segment of a web view link.
 
 ```sh
 priory ask cache.ship '{"title": "Ship the cache today?", "options": ["ship", "wait"], "session": "cache-worker"}'
