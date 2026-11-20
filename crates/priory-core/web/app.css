@@ -117,6 +117,7 @@ a.facet[aria-current="true"] { background: var(--action-soft); color: var(--acti
 .row .l2.r { font-size: 14px; }
 .row .l3 { grid-column: 2; display: flex; gap: 12px; align-items: center; font: 400 var(--type-caption) var(--font-ui); color: var(--text-3); min-width: 0; white-space: nowrap; overflow: hidden; }
 .row .l3 b { font-weight: 600; color: var(--text-2); overflow: hidden; text-overflow: ellipsis; }
+.row .l3 .ico { margin-right: 4px; vertical-align: -3px; }
 .row .chev { grid-column: 3; grid-row: 1 / 4; align-self: center; color: var(--text-3); }
 .row.one { grid-template-columns: var(--tile) 1fr auto 14px; align-items: center; }
 .row.one .tile, .row.one .chev { grid-row: auto; grid-column: auto; margin: 0; }

@@ -40,6 +40,7 @@ const WOFF2: &str = "font/woff2";
 const WEB: &[(&str, &str, &[u8])] = &[
     file!("/boot.js", JS, "crates/priory-core/web/boot.js"),
     file!("/app.js", JS, "crates/priory-core/web/app.js"),
+    file!("/asks.js", JS, "crates/priory-core/web/asks.js"),
     file!("/app.css", CSS, "crates/priory-core/web/app.css"),
     file!("/tokens/structure.css", CSS, "design/tokens/structure.css"),
     file!("/tokens/themes.css", CSS, "design/tokens/themes.css"),
@@ -236,27 +237,40 @@ fn route(
         }
         "/api/inbox" => listing::revised(db, "inbox", |db| listing::inbox(db, 0).map(Some)),
         "/api/asks" => {
-            let mut bands = Vec::new();
+            let (mut bands, mut all) = (Vec::new(), false);
             for pair in query.split('&').filter(|pair| !pair.is_empty()) {
-                let Some(("band", value)) = pair.split_once('=') else {
-                    return Reply::error(400, "asks takes one parameter: band=BAND[,BAND...]");
-                };
-                let Some(value) = decode(value) else {
-                    return Reply::error(400, "band is not percent-encoded UTF-8");
-                };
-                bands.extend(value.split(',').map(str::to_owned));
+                match pair.split_once('=') {
+                    Some(("all", "1")) => all = true,
+                    Some(("band", value)) => match decode(value) {
+                        Some(value) => bands.extend(value.split(',').map(str::to_owned)),
+                        None => return Reply::error(400, "band is not percent-encoded UTF-8"),
+                    },
+                    _ => {
+                        return Reply::error(400, "asks takes band=BAND[,BAND...] and all=1");
+                    }
+                }
             }
             for band in &bands {
                 if let Err(refusal) = state::check_band(db, band) {
                     return Reply::error(400, &refusal);
                 }
             }
+            let since = match week_ago() {
+                _ if all => None,
+                Ok(since) => since,
+                Err(reply) => return reply,
+            };
             let bands: Vec<&str> = bands.iter().map(String::as_str).collect();
-            listing::revised(db, "asks", |db| listing::asks(db, &bands).map(Some))
+            listing::revised(db, "asks", |db| {
+                listing::recent_asks(db, &bands, since.as_deref()).map(Some)
+            })
         }
-        "/api/tasks" => {
-            listing::revised(db, "tasks", |db| listing::tasks(db, None, None).map(Some))
-        }
+        "/api/tasks" => match since(query) {
+            Ok(since) => listing::revised(db, "tasks", |db| {
+                listing::recent_tasks(db, since.as_deref()).map(Some)
+            }),
+            Err(reply) => return reply,
+        },
         "/api/queue" => match intake::now() {
             Ok(now) => listing::revised(db, "queue", |db| {
                 listing::queue(db, &served.schedules, now).map(Some)
@@ -471,6 +485,24 @@ fn refusal(db: &Connection, ask: Option<(i64, i64)>, refused: &str) -> Reply {
         Ok(Some(_)) => Reply::error(422, refused),
         Err(error) => Reply::error(500, &error.to_string()),
     }
+}
+
+/// The time from which `/api/tasks` keeps ended tasks: a week ago, or none for `all=1`.
+fn since(query: &str) -> Result<Option<String>, Reply> {
+    match query {
+        "all=1" => Ok(None),
+        "" => week_ago(),
+        _ => Err(Reply::error(400, "tasks takes one parameter: all=1")),
+    }
+}
+
+/// The time a week ago, from which a listing keeps closed rows.
+fn week_ago() -> Result<Option<String>, Reply> {
+    let now = intake::now().map_err(|error| Reply::error(500, &error))?;
+    let week = now
+        .checked_sub(jiff::SignedDuration::from_hours(7 * 24))
+        .map_err(|error| Reply::error(500, &error.to_string()))?;
+    Ok(Some(week.strftime("%Y-%m-%dT%H:%M:%SZ").to_string()))
 }
 
 /// A query value with its `%XX` escapes and `+` decoded; none when an escape or the UTF-8 is broken.

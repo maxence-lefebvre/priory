@@ -31,7 +31,7 @@ Before you call a change done, run these from the repository root and fix every 
 cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
-node --test adapters/herdr/test/*.test.js
+node --test adapters/herdr/test/*.test.js crates/priory-core/web/*.test.js
 ```
 
 CI runs the same four commands on every push to `main` and every pull request.
