@@ -44,11 +44,21 @@ fn main() -> ExitCode {
         ),
         Some("tasks") => {
             let args: Vec<_> = args.map(|arg| arg.to_string_lossy().into_owned()).collect();
-            match &args[..] {
-                [] => tasks(None),
-                [flag, lane] if flag == "--lane" => tasks(Some(lane)),
-                _ => usage(),
+            let (mut lane, mut grade) = (None, None);
+            for pair in args.chunks(2) {
+                match pair {
+                    [flag, value] if flag == "--lane" && lane.is_none() => lane = Some(value),
+                    [flag, value]
+                        if flag == "--grade"
+                            && grade.is_none()
+                            && tools::GRADES.contains(&value.as_str()) =>
+                    {
+                        grade = Some(value)
+                    }
+                    _ => return usage(),
+                }
             }
+            tasks(lane, grade)
         }
         Some("runs") => list(
             "id\ttask\tstep\ttmux\tsession\tstarted\tended\tend",
@@ -113,7 +123,7 @@ fn main() -> ExitCode {
 
 fn usage() -> ExitCode {
     eprintln!(
-        "usage: priory check [DIR]\n       priory draw [DIR] WORKFLOW\n       priory intake [DIR] [--once]\n       priory daemon [DIR] [--once]\n       priory request [DIR] --workflow <name> --key <key> [--band <band>] [--lane <lane>] [--repo <owner/name>] [--hold <reason> [CONDITION]] <text>\n       priory inbox\n       priory tasks [--lane <lane>]\n       priory runs\n       priory outbox\n       priory asks\n       priory waits\n       priory actions\n       priory attach (TASK | --run RUN) [--read-only] [--print]\n       priory desk\n       priory trace\n       priory report [DIR] --workflow <name> [--since <instant-or-duration>] [--cost] [--by lane]\n       priory move TASK [--band <band>] [--top | --before TASK | --after TASK]\n       priory resume TASK\n       priory cancel TASK\n       priory revive TASK [--step STEP]\n       priory hold TASK --reason TEXT [--until TIME | --after TASK | --merge PR [--if-closed release|drop|ask] | --blockers]\n       priory release TASK\n       priory tldr TASK TEXT\n       priory search QUERY [--state STATE[,STATE...]] [--limit N]\n       priory memory [acquire --gb N [--timeout D] -- COMMAND...]\n       priory answer ASK OPTION-OR-TEXT --revision N\n       priory mcp --session ID\n       priory hook EVENT"
+        "usage: priory check [DIR]\n       priory draw [DIR] WORKFLOW\n       priory intake [DIR] [--once]\n       priory daemon [DIR] [--once]\n       priory request [DIR] --workflow <name> --key <key> [--band <band>] [--lane <lane>] [--repo <owner/name>] [--hold <reason> [CONDITION]] <text>\n       priory inbox\n       priory tasks [--lane <lane>] [--grade red|yellow|green]\n       priory runs\n       priory outbox\n       priory asks\n       priory waits\n       priory actions\n       priory attach (TASK | --run RUN) [--read-only] [--print]\n       priory desk\n       priory trace\n       priory report [DIR] --workflow <name> [--since <instant-or-duration>] [--cost] [--by lane]\n       priory move TASK [--band <band>] [--top | --before TASK | --after TASK]\n       priory resume TASK\n       priory cancel TASK\n       priory revive TASK [--step STEP]\n       priory hold TASK --reason TEXT [--until TIME | --after TASK | --merge PR [--if-closed release|drop|ask] | --blockers]\n       priory release TASK\n       priory tldr TASK TEXT\n       priory search QUERY [--state STATE[,STATE...]] [--limit N]\n       priory memory [acquire --gb N [--timeout D] -- COMMAND...]\n       priory answer ASK OPTION-OR-TEXT --revision N\n       priory mcp --session ID\n       priory hook EVENT"
     );
     ExitCode::from(2)
 }
@@ -354,19 +364,20 @@ fn queue() -> String {
     )
 }
 
-fn tasks(lane: Option<&String>) -> ExitCode {
+fn tasks(lane: Option<&String>, grade: Option<&String>) -> ExitCode {
     let printed = state::open().and_then(|db| {
         state::print(
             &db,
-            "id\tkey\tworkflow\tstep\tstate\tband\tlane\treason\tposition\tgeneration\tretired",
+            "id\tkey\tworkflow\tstep\tstate\tband\tlane\treason\tposition\tgeneration\tretired\tgrade\tgraded",
             &format!(
                 "{} SELECT id, key, workflow, step, state, band, lane, reason, queue.place, generation,
-                   retired
-                 FROM tasks LEFT JOIN queue USING (id) WHERE ?1 IS NULL OR lane = ?1 ORDER BY {}",
+                   retired, grade, graded
+                 FROM tasks LEFT JOIN queue USING (id)
+                 WHERE (?1 IS NULL OR lane = ?1) AND (?2 IS NULL OR grade = ?2) ORDER BY {}",
                 queue(),
                 state::START_ORDER
             ),
-            [lane],
+            [lane, grade],
         )
         .map_err(|error| error.to_string())
     });
