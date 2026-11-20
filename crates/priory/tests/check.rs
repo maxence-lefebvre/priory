@@ -1345,6 +1345,65 @@ fn a_view_with_an_empty_container_names_its_file_and_line() {
 }
 
 #[test]
+fn check_refuses_a_bad_link_regex_a_missing_group_and_a_non_https_template() {
+    let settings = r#"name = "demo"
+
+[links]
+'\b([A-Z]{2,5}-\d+)\b' = "https://linear.app/acme/issue/$1"
+'(unclosed' = "https://example.com/$1"
+'\bPR-(\d+)\b' = "https://example.com/$1/$2"
+'\bdoc-(\d+)\b' = "http://example.com/$1"
+'\bbig-(\d+)\b' = "https://example.com/$18446744073709551616"
+'\bgo:(\S+)' = "https://$1/"
+'\brepo:(\S+)' = "https://{repo}.example.com/$1"
+'\bslash:(\S+)' = 'https://\/$1/'
+"#;
+
+    let outcome = check(&factory("bad-links", &with("factory.toml", settings)));
+
+    assert_eq!(outcome.code, 1);
+    assert!(
+        outcome
+            .stderr
+            .contains("factory.toml:3: `[links]` `(unclosed` is not a regex:"),
+        "{}",
+        outcome.stderr
+    );
+    assert!(
+        outcome.stderr.contains(
+            "factory.toml:3: `[links]` `\\bPR-(\\d+)\\b` names group $2, but the regex has 1 group\n"
+        ),
+        "{}",
+        outcome.stderr
+    );
+    assert!(
+        outcome.stderr.contains(
+            "factory.toml:3: `[links]` `\\bdoc-(\\d+)\\b` links to `http://example.com/$1`: a link starts with `https://`\n"
+        ),
+        "{}",
+        outcome.stderr
+    );
+    assert!(
+        outcome.stderr.contains(
+            "factory.toml:3: `[links]` `\\bbig-(\\d+)\\b` names group $18446744073709551616, but the regex has 1 group\n"
+        ),
+        "{}",
+        outcome.stderr
+    );
+    for (regex, url) in [
+        ("\\bgo:(\\S+)", "https://$1/"),
+        ("\\brepo:(\\S+)", "https://{repo}.example.com/$1"),
+        ("\\bslash:(\\S+)", "https://\\/$1/"),
+    ] {
+        let message = format!(
+            "factory.toml:3: `[links]` `{regex}` links to `{url}`: a link's host is fixed, with no group or `{{repo}}` in it\n"
+        );
+        assert!(outcome.stderr.contains(&message), "{}", outcome.stderr);
+    }
+    assert!(!outcome.stderr.contains("linear.app"), "{}", outcome.stderr);
+}
+
+#[test]
 fn a_request_table_passes_and_an_unknown_workflow_or_band_is_refused() {
     let good = "name = \"demo\"\n\n[request]\nworkflow = \"implement\"\nband = \"today\"\n";
     let ok = check(&factory("request-ok", &with("factory.toml", good)));

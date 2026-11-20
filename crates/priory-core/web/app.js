@@ -1,6 +1,7 @@
 // Priory's web view (DESIGN.md): the frame, the Desk and the Asks, with answering through the CLI's verbs.
 // Agent text is untrusted: every value goes through `html`, which escapes it.
 import { askGroups, snoozed } from "./asks.js";
+import { linked } from "./links.js";
 
 const ICONS = {
   check: '<path d="M20 6 9 17l-5-5"/>',
@@ -55,6 +56,8 @@ const piece = (value) => {
 function html(strings, ...values) {
   return raw(strings.reduce((out, text, i) => out + text + (i < values.length ? piece(values[i]) : ""), ""));
 }
+// Agent text with the factory's autolinks; `linked` escapes it.
+const autolinked = (text, repo) => raw(linked(text ?? "", state.data?.links || [], repo ?? null));
 const icon = (name, size = "") => raw(`<svg class="ico ${size}" viewBox="0 0 24 24" aria-hidden="true">${ICONS[name]}</svg>`);
 
 // Task and run states: role and icon (DESIGN.md, State tile).
@@ -137,6 +140,7 @@ async function refresh() {
   try {
     // The server reads the views once, when it starts.
     const views = state.data?.views || (await api("/api/views"));
+    const links = state.data?.links || (await api("/api/links")).links;
     const full = (listing) => (state.all[listing] ? `/api/${listing}?all=1` : `/api/${listing}`);
     const [desk, asksList, queue, tasksList] = await Promise.all(["/api/desk", full("asks"), "/api/queue", full("tasks")].map(api));
     // A later call, such as the one that loads older rows, supersedes this one.
@@ -151,7 +155,7 @@ async function refresh() {
     // Ages read in minutes, so an unchanged state needs a new paint once a minute at most.
     if (state.data && snapshot === state.snapshot && !failed && Date.now() - state.rendered < 60000) return true;
     const before = state.data ? new Set(state.data.asks.filter((ask) => ask.state === "open").map((ask) => ask.id)) : null;
-    state.data = { views, desk, asks, bands: asksList.bands, queue, tasks, older };
+    state.data = { views, links, desk, asks, bands: asksList.bands, queue, tasks, older };
     state.task = null;
     state.snapshot = snapshot;
     announce(before);
@@ -499,12 +503,12 @@ function askDetail(id, wide) {
       <div class="opts" role="group" aria-label="Options">${optionButtons}</div>${lockedNote}${more}`;
   const top = html`<div class="ask">
     <a class="ctx" href="${ask.task ? `/tasks/${ask.task}` : "/asks"}">${wide ? "" : tile("ask", "sm")}<span class="mono">${ask.key}</span><span>${ask.step}</span><span>${ask.lane || ""}</span>${ask.command ? html`<span class="tag">Command</span>` : ""}${wide ? "" : html`<span>${timeTag(ask.since)}</span><span>revision ${ask.revision}</span>`}</a>
-    <h2 class="question">${ask.question || ask.title}</h2>${decided}</div>`;
+    <h2 class="question">${autolinked(ask.question || ask.title, ask.repo)}</h2>${decided}</div>`;
   const read = taskSections(taskOf(ask));
   const sections = [["why", "Why"], ...read.map(([key, label]) => [key, label]), ["history", "History"], ...(ask.command ? [["command", "Command"]] : [])];
   const jump = html`<nav class="jump" aria-label="Sections">${sections.map(([key, label], i) => html`<a href="#${key}" aria-current="${i === 0 ? "true" : "false"}">${label}</a>`)}</nav>`;
   const why = html`<section class="sect" id="why"><div class="sh">${icon("message-text", "s15")}What the agent asks<span class="meta">${ask.run ? html`run <span class="mono">${ask.run}</span>` : ""}</span></div>
-    <p class="text">${ask.text || ask.question}</p>
+    <p class="text">${autolinked(ask.text || ask.question, ask.repo)}</p>
     ${ask.tradeoff ? html`<p class="fact">${icon("scale", "s15")}<span><b>Trade-off.</b> ${ask.tradeoff}</span></p>` : ""}
     ${ask.what_waits ? html`<p class="fact">${icon("hourglass", "s15")}<span><b>What waits.</b> ${ask.what_waits}</span></p>` : ""}</section>`;
   const command = !ask.command ? "" : typeof ask.command === "string"
@@ -1029,11 +1033,13 @@ document.addEventListener("click", (event) => {
     localStorage.setItem("priory.theme", root.dataset.theme);
     return render();
   }
-  if (target.tagName === "A" && target.origin === location.origin && !target.hash && !event.metaKey && !event.ctrlKey) {
+  const modified = event.metaKey || event.ctrlKey || event.shiftKey || event.altKey;
+  if (target.tagName === "A" && target.origin === location.origin && !target.hash && !target.target && !modified) {
     event.preventDefault();
     go(target.pathname + target.search);
   }
-  if (target.tagName === "A" && target.hash) {
+  const inPage = target.origin === location.origin && target.pathname === location.pathname && target.search === location.search;
+  if (target.tagName === "A" && inPage && target.hash && !target.target && !modified) {
     event.preventDefault();
     document.querySelector(target.hash)?.scrollIntoView({ behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth" });
   }

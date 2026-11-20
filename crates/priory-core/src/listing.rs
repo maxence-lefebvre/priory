@@ -113,7 +113,7 @@ const DESK: &str = "SELECT 0 AS part, asks.created AS since, 'ask' AS kind,
 fn asks_query() -> String {
     format!(
         "SELECT coalesce(asks.name, asks.id) AS id, asks.task,
-     coalesce(tasks.key, asks.key) AS key, asks.step, tasks.lane, tasks.band, asks.run,
+     coalesce(tasks.key, asks.key) AS key, asks.step, tasks.lane, tasks.band, tasks.repo, asks.run,
      CASE WHEN asks.withdrawn IS NOT NULL THEN 'withdrawn'
        WHEN asks.answer IS NOT NULL THEN 'answered' ELSE 'open' END AS state,
      CASE asks.withdrawn WHEN -1 THEN 'dismissed' WHEN -2 THEN 'a wait of its run fired first'
@@ -421,6 +421,7 @@ pub fn queue(
     }))
 }
 
+<<<<<<< HEAD
 /// The asleep tasks, longest asleep first, each with its open waits: what each waits on, as
 /// `priory waits` shows it, and since when.
 fn asleep(db: &Connection) -> rusqlite::Result<Value> {
@@ -445,6 +446,14 @@ fn asleep(db: &Connection) -> rusqlite::Result<Value> {
     Ok(asleep)
 }
 
+||||||| 218f760
+=======
+/// The factory's links, as `serve` and `priory links --json` show them.
+pub fn links(factory: &Factory) -> Value {
+    json!({ "links": factory.links() })
+}
+
+>>>>>>> origin/main
 /// The factory's schedule triggers by name.
 pub fn schedule_triggers(factory: &Factory) -> Vec<(String, Trigger)> {
     factory
