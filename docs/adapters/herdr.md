@@ -18,10 +18,9 @@ The adapter lives in `adapters/herdr/` at the repository root, outside the Cargo
   task's terminal.
 - `adapters/herdr/mods/priory-desk/`: the Desk panel. See [The Desk panel](#the-desk-panel).
 - `adapters/herdr/mods/priory-asks/`: the Asks panel. See [The Asks panel](#the-asks-panel).
+- `adapters/herdr/mods/priory-queue/`: the Queue panel. See [The Queue panel](#the-queue-panel).
 - `adapters/herdr/mods/priory-bonjour/`: the Bonjour panel. See
   [The Bonjour panel](#the-bonjour-panel).
-- `adapters/herdr/mods/priory-queue/`: the Queue panel, a `mod.json`, a `main.js` and its copy of
-  `priory.js`. It is still to come.
 - `adapters/herdr/layouts/priory.json`: Herdr's default layout with the Priory bar in the top bar,
   and Asks and Queue in the side panel stack, 420 px wide by default, between 280 and 900. Desk and
   Bonjour open as tabs in the center, from the Priory bar.
@@ -86,7 +85,7 @@ state database and never writes a file in the factory.
   a mod may subscribe to its event stream instead.
 - **Acting.** Every button runs a CLI verb: `answer --expected N [--run] -- ASK TEXT`,
   `dismiss --expected N ASK`, `snooze`, `say`, `report pick PICK OPTION --expected N`, `seen`,
-  `resume`, `revive`, `hold`, `release` and `move`. An answer always carries the revision the person read, so a
+  `resume`, `revive`, `hold`, `release`, `move`, `cancel`, `pause` and `unpause`. An answer always carries the revision the person read, so a
   changed question refuses it (R6.3).
 - **Safety.** `priory.js` passes every value as its own argument, never through a shell, and never
   reads text output except `attach --print`. A mod draws agent text as plain text.
@@ -210,6 +209,50 @@ task's brief, plan, pull request or runs, so the Brief, Plan, PR and Trace secti
 with their chips, as DESIGN.md does for any section a task lacks. History shows the ask's current
 revision and its answer, since Priory keeps no earlier revisions or refused answers.
 
+## The Queue panel
+
+`mods/priory-queue/` is the Queue panel, in the side panel stack under Asks. It replaces Fleet's
+`fleet-queue`. DESIGN.md's "Herdr adapter" section holds its visual rules; this section says how it
+works.
+
+- **Files.** `view.js` turns `priory queue DIR --json` into saved views, sections, rows, Up next,
+  reorder places and Move targets, with no drawing and no IO. `main.js` draws them with gpui-kit and
+  runs the verbs. The node tests in `test/queue.test.js` check `view.js` against JSON captured from a
+  real `priory queue DIR --json`.
+- **Reading.** The panel reads `priory queue DIR --json`, with the factory that settings name, and
+  `priory desk --json` for whether starts are paused and what the queue is short of. Then it waits
+  with `priory wait` and reads again. When a call fails, it keeps the last read and shows
+  "Reconnecting to priory" with the age of its last update, and the actions stay disabled.
+- **List.** The saved views are Next, Held and Last day, each with its count, and All. Next shows Up
+  next, Running, each band in start order, Held, and Last day folded. All shows the same sections
+  without Up next, and Last day open. The Lane and Band chips narrow the waiting and held tasks.
+  Running runs and ended tasks carry no lane or band, so a chip hides them.
+- **Why it waits.** Every waiting row shows its place in its band and why it has not started: starts
+  are paused, it waits for room while the queue is stalled on it, it starts when the runner has room,
+  or it starts after the task before it. A held row shows its hold's reason and each condition, met
+  or not.
+- **Up next.** The next three runs, queued, held or scheduled, each with when and why. A line opens
+  its task when the queue lists it. A schedule that starts a new task, or wakes an asleep one, names
+  no row, so its line does not open.
+- **Width.** Below 720 px the selected row opens under itself. From 720 px the list and the opened
+  row sit side by side, and the row adds how the order works.
+- **Acting.** An opened waiting row offers Move…, Hold… and Cancel…. Move… runs `priory move`, to
+  the top of the band or into another band the queue shows. Hold… asks for a reason and runs
+  `priory hold TASK --reason`. A held row offers Release and Cancel…, and a running row Attach and
+  Cancel…. Cancel… asks once more, then runs `priory cancel`. The header's menu runs `priory pause`
+  or `priory unpause`. When a verb fails, the panel says why on the task.
+- **Reordering.** The grip in each waiting row's trailing lane drags the task onto another row of
+  its band, and leaving the pane ends the drag without a move. `Shift J` and `Shift K` move the
+  selected task down or up one place. Both run
+  `priory move TASK --before OTHER` or `--after OTHER`, and never leave the band.
+- **Keys.** `J` and `K` move the selection. Below 720 px, `Enter` opens or closes the row and `Esc`
+  closes it. `Esc` also closes an open menu.
+- **Agent text.** Reasons, hold reasons and keys draw as plain text.
+
+The design shows each task's title, but `priory queue --json` carries none, so a row shows its key
+and step. "Request a task" in the header and the opened row's History are left out: the panel would
+need `priory request`'s form and each task's events.
+
 ## The Bonjour panel
 
 `mods/priory-bonjour/` is the Bonjour panel, the morning dossier. The Priory bar opens it as a tab
@@ -304,6 +347,8 @@ waiting: snoozing changes what a person sees, never what the daemon does. `prior
 - The tasks ended in the last day.
 - Up next: the next three runs, queued or scheduled, each with when it should start and why, from
   `queue`'s `up_next`.
+- *A title for each task*, as the request or the issue gave it.
+- *The factory's bands*, so Move… can offer a band that holds no task now.
 
 ### Bonjour
 
@@ -384,3 +429,7 @@ The panels need these from Priory's core. Each is a separate slice.
    Plan, PR and Trace sections. `/api/tasks/{id}` serves the runs but has no CLI twin, and nothing
    serves the brief, the plan or the pull request summary yet.
 9. An ask's earlier revisions and refused answers, for its History section.
+10. A title for each task in `priory queue --json`, for the Queue panel's rows.
+11. The factory's bands in `priory queue DIR --json`, so Move… can offer an empty band.
+12. `--expected REVISION` on `move`, `hold`, `release` and `cancel`, so a reorder or hold made on a
+    stale read is refused as an answer is. Today the Queue panel sends them without the revision.

@@ -44,6 +44,10 @@ export function priory({ exec, binary = "priory-oss", on = null, factory = null 
     revive: (/** @type {Id} */ task) => call(["revive", String(task)]),
     hold: (/** @type {Id} */ task, /** @type {{ reason: string, until?: string }} */ { reason, until }) => call(["hold", String(task), "--reason", reason, ...(until ? ["--until", until] : [])]),
     release: (/** @type {Id} */ task) => call(["release", String(task)]),
+    cancel: (/** @type {Id} */ task) => call(["cancel", String(task)]),
+    // Pausing stops new runs from starting; the live ones go on.
+    pause: (/** @type {string} */ reason = "") => call(["pause", ...(reason ? [reason] : [])]),
+    unpause: () => call(["unpause"]),
     move: (/** @type {Id} */ task, /** @type {{ band?: string, top?: boolean, before?: Id, after?: Id }} */ { band, top, before, after }) => call(["move", String(task),
       ...(band ? ["--band", band] : []),
       ...(top ? ["--top"] : before != null ? ["--before", String(before)] : after != null ? ["--after", String(after)] : [])]),
