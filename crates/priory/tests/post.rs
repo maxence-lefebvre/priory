@@ -3,6 +3,20 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
+const WORKFLOW: &str = r#"
+start = "implement"
+
+[[steps]]
+id = "implement"
+decides = "model"
+agent = "implementer"
+prompt = "Implement the issue."
+effect = "reversible"
+next = { passed = "done", failed = "stop" }
+"#;
+
+const AGENT: &str = "+++\ndescription = \"Implements one task.\"\nharness = \"claude-code\"\n+++\n";
+
 struct Setup {
     dir: PathBuf,
 }
@@ -21,6 +35,7 @@ impl Setup {
         Command::new(env!("CARGO_BIN_EXE_priory"))
             .args(args)
             .env("PRIORY_DB", self.dir.join("priory.db"))
+            .env("HERDR_BUS_DB", self.dir.join("bus.db"))
             .env("PRIORY_HOME", self.dir.join("home"))
             .output()
             .unwrap()
@@ -138,4 +153,48 @@ fn a_read_report_leaves_the_desk() {
     assert!(inbox[0]["read"].is_string());
     assert_eq!(inbox[1]["read"], Value::Null);
     assert!(!setup.priory(&["inbox", "read", "9"]).status.success());
+}
+
+#[test]
+fn the_daemon_routes_no_report_and_only_a_report_can_be_read() {
+    let setup = Setup::new("unrouted");
+    let files = [
+        ("factory/factory.toml", "name = \"demo\""),
+        ("factory/agents/implementer/agent.md", AGENT),
+        ("factory/workflows/implement.toml", WORKFLOW),
+    ];
+    for (path, content) in files {
+        let file = setup.dir.join(path);
+        fs::create_dir_all(file.parent().unwrap()).unwrap();
+        fs::write(file, content).unwrap();
+    }
+    let factory = setup.dir.join("factory");
+    let factory = factory.to_str().unwrap();
+    setup.post("systemd", "backup.service failed");
+    setup.stdout(&[
+        "request",
+        factory,
+        "--repo",
+        "owner/repo",
+        "--workflow",
+        "implement",
+        "--key",
+        "k",
+        "Fix it",
+    ]);
+
+    setup.stdout(&["daemon", factory, "--once"]);
+
+    let inbox = setup.json(&["inbox", "--json"]);
+    assert_eq!(inbox[0]["task"], Value::Null);
+    assert_eq!(inbox[0]["outcome"], "report");
+    assert_eq!(
+        setup.json(&["tasks", "--json"]).as_array().unwrap().len(),
+        1
+    );
+    let refused = setup.priory(&["inbox", "read", "2"]);
+    assert_eq!(
+        String::from_utf8_lossy(&refused.stderr).trim(),
+        "priory inbox read: 2 is not a report"
+    );
 }

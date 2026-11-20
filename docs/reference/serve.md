@@ -47,8 +47,8 @@ Each item:
 
 | Field | Type | Meaning |
 | ----- | ---- | ------- |
-| `kind` | string | `ask`, `blocked`, `failed`, `prompt`, `held`, `sweep`, `memory`, `retired`, `queue` or `worktree`. See [desk.md](../daemon/desk.md) |
-| `id` | integer or string | The ask, task, prompt, hold, sweep, grant or queue place; a worktree's path |
+| `kind` | string | `ask`, `blocked`, `failed`, `prompt`, `held`, `sweep`, `memory`, `report`, `retired`, `queue` or `worktree`. See [desk.md](../daemon/desk.md) |
+| `id` | integer or string | The ask, task, prompt, hold, sweep, grant, report's inbox sequence number or queue place; a worktree's path |
 | `task` | integer or null | The task |
 | `key` | string or null | The task's key |
 | `step` | string or null | The task's step |
