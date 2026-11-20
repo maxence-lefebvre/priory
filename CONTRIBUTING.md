@@ -7,15 +7,8 @@ change behaviour or name a concept, and use the terms of its Concepts table.
 
 ## Verify
 
-Before you call a change done, run these from the repository root and fix every failure:
-
-```sh
-cargo fmt --all --check
-cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace
-```
-
-CI runs the same three commands on every push to `main` and every pull request.
+Before you call a change done, run the three checks in the [Verify section of
+AGENTS.md](AGENTS.md#verify) and fix every failure. CI runs the same checks on every pull request.
 
 ## Code
 
@@ -27,8 +20,7 @@ CI runs the same three commands on every push to `main` and every pull request.
 - Before you write generic logic (parsing, validation, graphs, retries, CLI, time), search
   crates.io for a maintained crate that does it, and use it when it fits.
 - When you write generic logic yourself, name the crate you rejected and why in the pull request.
-- Propose a new dependency with its license and last release, and wait for approval before you
-  add it.
+- Before you add a dependency, follow the rule in [AGENTS.md](AGENTS.md#rules): propose it first.
 
 ## UI
 

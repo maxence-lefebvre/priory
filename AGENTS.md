@@ -20,12 +20,25 @@ Read it before you change behaviour or name a concept, and use its Concepts tabl
 - `GETTING_STARTED.md`: build, first factory, first run, day to day commands and concepts.
 - `CONTRIBUTING.md`: the development, test and pull request rules.
 
+## Verify
+
+Before you call a change done, run these from the repository root and fix every failure:
+
+```sh
+cargo fmt --all --check
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace
+```
+
+CI runs the same three commands on every push to `main` and every pull request.
+
 ## Rules
 
-`CONTRIBUTING.md` holds the development, test and pull request rules. Read the section before the
+- Propose a new dependency with its license and last release, and wait for approval before you add it.
+
+`CONTRIBUTING.md` holds the other development and pull request rules. Read the section before the
 work it covers:
 
-- Before you call a change done, run the three checks in its Verify section and fix every failure.
 - Before you change code, read its Code section. Name a crate you rejected, and why, in your reply.
 - Before you change the web view, read its UI section and `DESIGN.md`.
 - Before you write a doc, commit or pull request body, read its Writing and Pull requests sections.
