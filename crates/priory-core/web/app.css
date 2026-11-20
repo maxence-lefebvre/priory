@@ -169,6 +169,19 @@ input { font: 400 16px/20px var(--font-ui); color: var(--text); background: var(
 .abar .btn.primary { flex-direction: column; align-items: flex-start; justify-content: center; gap: 2px; font-size: 17px; overflow: hidden; }
 .abar .btn.primary small { font: 500 12px/14px var(--font-ui); }
 .abar .note { grid-column: 1 / -1; }
+.opt .ico { flex: none; }
+.opt.rec-opt[aria-disabled="true"]:not(.chosen) { opacity: 0.45; }
+.opts:has(.chosen) .opt:not(.chosen) { opacity: 0.45; }
+.more { display: flex; flex-wrap: wrap; gap: 0 4px; margin-left: -12px; }
+.more .write { margin-left: 0; }
+.writeform { flex: 1 0 100%; display: grid; gap: 8px; padding-left: 12px; }
+.writeform .btn { justify-self: end; }
+textarea { font: 400 16px/22px var(--font-ui); color: var(--text); background: var(--surface); border: 1px solid var(--control-line); border-radius: var(--radius-md); padding: 10px 12px; width: 100%; resize: vertical; }
+.sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+.warnline { color: var(--warn-text); font: 600 var(--type-small) var(--font-ui); }
+.sending { flex: none; display: flex; align-items: center; gap: 12px; background: var(--bar); border-top: 1px solid var(--line); padding: 8px var(--gutter) calc(8px + env(safe-area-inset-bottom)); min-height: var(--answer-bar); font: 400 var(--type-small) var(--font-ui); }
+.sending .btn { margin-left: auto; }
+.pinned .sending { border: 0; padding: 8px 0; min-height: 0; }
 
 /* Wide frame */
 .wtop { height: var(--top-bar); flex: none; display: flex; align-items: center; gap: 14px; padding: 0 16px; border-bottom: 1px solid var(--line); }
