@@ -323,7 +323,7 @@ Every list panel (desk, asks, tasks, runs, inbox) is the same explorer over one 
    me", "Running", "Asleep" or "All". On a phone the row fits the width; a view that does not fit
    moves to the view's menu, and the row never scrolls sideways.
 2. **Facet chips**: one chip per facet the panel offers (lane, step, runner, age, task, command),
-   30 px tall with `--radius-sm` and a `--control-line` edge. Tapping one opens a picker sheet
+   `--chip` tall like the views, with `--radius-sm` and a `--control-line` edge. Tapping one opens a picker sheet
    with values and counts. A set chip takes `--action-soft` and `--action-text`, shows its value
    and an `x` that clears it. A last "Filter" ghost chip adds a facet. On a phone the facet row
    sits behind the top bar's filter button, except in the asks list.
@@ -373,10 +373,19 @@ request number). The whole row is the touch target.
 
 ### Asks list
 
-The Asks tab lists every ask. Saved views: Open, Answered and All, each with a count; withdrawn
-asks sit in All. Facet chips: Command, Lane and Task, shown on a phone too. Sections: "Open",
-oldest first, as ask rows; then "Answered today", newest first, whose line 3 reads "Answered"
-and the answer, then who answered.
+The Asks tab lists every ask. Saved views: Open, Answered and All, each with a count. Facet
+chips: Command, Lane and Task, shown on a phone too. Each view shows these sections, in order,
+and leaves out an empty one:
+
+| Section          | Open | Answered | All | Order        | Line 3                                       |
+| ---------------- | ---- | -------- | --- | ------------ | -------------------------------------------- |
+| Open             | yes  |          | yes | oldest first | "Recommends" and the recommended option      |
+| Answered today   |      | yes      | yes | newest first | "Answered", the answer, then who answered    |
+| Answered earlier |      | yes      | yes | newest first | as above, with a date instead of a time      |
+| Withdrawn        |      |          | yes | newest first | "Withdrawn" and why, such as "task revived"  |
+
+Answered and withdrawn rows take the muted tiles from the state tile section. A long section
+loads more rows as the person scrolls; its header keeps the total.
 
 ### Ask detail
 
@@ -429,7 +438,10 @@ A section the task lacks, such as a plan, is left out with its chip.
   option, the command block for a command ask, and a close button. Tapping the scrim closes it.
 
 In the drawer, the decide part stays pinned at the top and the reading part scrolls under it.
-`[` and `]` move between sections.
+The pinned part takes at most 50 % of the drawer's height and scrolls on its own past that. In
+it, the question clamps at 3 lines and the recommendation at 4, each with a "More" ghost button
+that expands it. Options sit in one row while each label fits on two lines, and wrap to a column
+otherwise. `[` and `]` move between sections.
 
 - After an answer, the next ask slides in and the position updates.
 - Previous, next and a horizontal swipe move without answering. Nothing answers except a tap on
@@ -457,6 +469,9 @@ A **command ask** (R6.8) binds one option to a command. Its answer runs the comm
   `--action` ring, reads "Tap again to run" over the option's name and "Cancels in 4 s", and a
   ring counts the 4 s down. The other options dim. The second tap sends. In the drawer, the
   option's key pressed twice does the same.
+- While armed, the command block sits right under the armed option, in the options and in the
+  sheet, or right above the answer bar when armed there: the command line, its target and
+  "Bound to revision 2". The person sees exactly what the second tap runs without scrolling.
 - After sending it shows the outcome: `running`, `done`, `failed` with the error, or `uncertain`
   in `--warn-text`: "Priory stopped while this ran. Check the target before you act on it."
 
