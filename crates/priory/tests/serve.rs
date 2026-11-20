@@ -380,11 +380,10 @@ fn each_endpoint_returns_what_the_cli_shows_and_its_json() {
     let address = setup.start(&["serve", &setup.factory()]);
 
     for verb in ["desk", "inbox", "asks", "tasks", "queue"] {
-        assert_eq!(
-            api(&address, &format!("/api/{verb}")),
-            json_of(&setup, verb),
-            "{verb}"
-        );
+        let mut served = api(&address, &format!("/api/{verb}"));
+        // The asks and tasks endpoints add the count of rows they left out.
+        served.as_object_mut().unwrap().remove("older");
+        assert_eq!(served, json_of(&setup, verb), "{verb}");
     }
     let tasks = api(&address, "/api/tasks");
     assert_eq!(
@@ -556,7 +555,10 @@ fn the_asks_endpoint_filters_by_band_as_the_cli_does_and_an_outside_ask_has_none
     let cli = setup.priory(&["asks", "--band", "now", "--json"]);
     succeeded(&cli);
     let cli: Value = serde_json::from_slice(&cli.stdout).unwrap();
-    assert_eq!(api(&address, "/api/asks?band=now"), cli);
+    let mut served = api(&address, "/api/asks?band=now&all=1");
+    assert_eq!(served["older"], json!({ "answered": 0, "withdrawn": 0 }));
+    served.as_object_mut().unwrap().remove("older");
+    assert_eq!(served, cli);
     assert_eq!(
         api(&address, "/api/asks?band=now%2Clater"),
         api(&address, "/api/asks?band=now&band=later")
@@ -615,6 +617,73 @@ fn the_desk_endpoint_lists_since_you_looked_for_a_person_as_the_cli_does() {
     ] {
         assert_eq!(get(&address, path, Some(TOKEN)).0, 400, "{path}");
     }
+}
+
+#[test]
+fn the_asks_endpoint_leaves_out_asks_closed_over_a_week_ago_unless_asked_for_all() {
+    let mut setup = Setup::new("asks-week", SERVE);
+    setup.seed();
+    let db = rusqlite::Connection::open(setup.dir.join("priory.db")).unwrap();
+    db.execute_batch(
+        "INSERT INTO asks (task, step, kind, question, options, answer, answered, created)
+           VALUES (1, 'implement', 'agent', 'Old?', '[]', 'yes', '2026-11-01T09:00:00Z',
+             '2026-11-01T08:00:00Z'),
+           (1, 'implement', 'agent', 'Recent?', '[]', 'no', '2026-11-15T09:00:00Z',
+             '2026-11-01T08:00:00Z');
+         INSERT INTO asks (task, step, kind, question, options, withdrawn, created)
+           VALUES (1, 'implement', 'agent', 'Gone?', '[]', -1, '2026-11-02T08:00:00Z');",
+    )
+    .unwrap();
+    let address = setup.start(&["serve", &setup.factory()]);
+    let ids = |asks: &Value| {
+        asks["asks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|ask| ask["id"].as_i64().unwrap())
+            .collect::<Vec<_>>()
+    };
+
+    let recent = api(&address, "/api/asks");
+    let all = api(&address, "/api/asks?all=1");
+
+    assert_eq!(ids(&recent), [1, 3]);
+    assert_eq!(recent["older"], json!({ "answered": 1, "withdrawn": 1 }));
+    assert_eq!(ids(&all), [1, 2, 3, 4]);
+    assert_eq!(all["older"], json!({ "answered": 0, "withdrawn": 0 }));
+    assert_eq!(all["asks"], json_of(&setup, "asks")["asks"]);
+    assert_eq!(get(&address, "/api/asks?all=yes", Some(TOKEN)).0, 400);
+}
+
+#[test]
+fn the_tasks_endpoint_leaves_out_tasks_ended_over_a_week_ago_unless_asked_for_all() {
+    let mut setup = Setup::new("tasks-week", SERVE);
+    setup.seed();
+    let db = rusqlite::Connection::open(setup.dir.join("priory.db")).unwrap();
+    db.execute_batch(
+        "UPDATE tasks SET state = 'done' WHERE id = 1;
+         UPDATE tasks SET changed = '2026-11-01T09:00:00Z' WHERE id = 1;",
+    )
+    .unwrap();
+    let address = setup.start(&["serve", &setup.factory()]);
+    let ids = |tasks: &Value| {
+        tasks["tasks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|task| task["id"].as_i64().unwrap())
+            .collect::<Vec<_>>()
+    };
+
+    let recent = api(&address, "/api/tasks");
+    let all = api(&address, "/api/tasks?all=1");
+
+    assert_eq!(ids(&recent), [2]);
+    assert_eq!(recent["older"], 1);
+    assert_eq!(ids(&all), [1, 2]);
+    assert_eq!(all["older"], 0);
+    assert_eq!(all["tasks"], json_of(&setup, "tasks")["tasks"]);
+    assert_eq!(get(&address, "/api/tasks?lane=x", Some(TOKEN)).0, 400);
 }
 
 #[test]
@@ -983,7 +1052,10 @@ fn the_daemon_serves_its_state_when_the_factory_has_a_serve_table() {
 
     let address = setup.start(&["daemon", &setup.factory()]);
 
-    assert_eq!(api(&address, "/api/tasks"), json_of(&setup, "tasks"));
+    assert_eq!(
+        api(&address, "/api/tasks")["tasks"],
+        json_of(&setup, "tasks")["tasks"]
+    );
 }
 
 #[test]
@@ -1186,8 +1258,11 @@ fn the_web_view_serves_every_file_with_its_type_and_a_strict_policy_without_the_
         .flat_map(|dir| fs::read_dir(root.join(dir)).unwrap())
         .map(|entry| entry.unwrap().path())
         .filter(|path| {
+            let name = path.file_name().unwrap().to_str().unwrap();
+            // The web view's Node tests and their package.json are not served.
             path.extension()
-                .is_some_and(|ext| ext != "txt" && ext != "md")
+                .is_some_and(|ext| ext != "txt" && ext != "md" && ext != "json")
+                && !name.ends_with(".test.js")
         })
         .map(|path| {
             let name = path.file_name().unwrap().to_str().unwrap();
