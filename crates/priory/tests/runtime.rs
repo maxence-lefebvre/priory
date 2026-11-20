@@ -1665,18 +1665,24 @@ fn teardown_kills_a_tmux_server_that_a_late_child_starts() {
 
 #[test]
 fn a_test_that_panics_after_its_run_starts_leaves_no_tmux_server() {
-    let mut socket = None;
+    let mut server = None;
     let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let mut setup = Setup::new("teardown-after-panic");
         setup.publish(&requested(42));
         setup.start();
         setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 1);
-        socket = Some(self::socket(&setup));
+        let pid = setup.tmux(&["display-message", "-p", "#{pid}"]);
+        let pid = String::from_utf8(pid.stdout).unwrap().trim().to_owned();
+        server = Some((socket(&setup), pid));
         panic!("the test fails while its agent runs");
     }));
 
     assert!(caught.is_err());
-    let socket = socket.expect("the run never got a tmux session");
+    let (socket, pid) = server.expect("the run never got a tmux session");
+    assert!(
+        !Path::new(&format!("/proc/{pid}")).exists(),
+        "tmux server {pid} outlived its test"
+    );
     let listed = Command::new("tmux")
         .args(["-S", &socket, "list-sessions"])
         .output()

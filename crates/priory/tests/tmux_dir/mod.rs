@@ -38,8 +38,10 @@ impl TmuxDir {
         marker.push(0);
         // Bounded, so a process that will not die cannot hang the suite in `Drop`.
         for _ in 0..100 {
-            let found: Vec<String> = fs::read_dir("/proc")
-                .unwrap()
+            let Ok(processes) = fs::read_dir("/proc") else {
+                break;
+            };
+            let found: Vec<String> = processes
                 .filter_map(|entry| entry.ok()?.file_name().into_string().ok())
                 .filter(|pid| pid.bytes().all(|byte| byte.is_ascii_digit()))
                 .filter(|pid| {
