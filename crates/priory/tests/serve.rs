@@ -765,17 +765,25 @@ fn serve_reads_the_state_without_creating_it() {
 }
 
 #[test]
-fn the_queue_lists_held_tasks_with_their_hold_after_the_waiting_ones() {
+fn the_queue_and_tasks_list_each_condition_of_a_hold_and_whether_it_is_met() {
     let mut setup = Setup::new("held", SERVE);
     setup.seed();
     let db = rusqlite::Connection::open(setup.dir.join("priory.db")).unwrap();
     db.execute_batch(
-        "UPDATE tasks SET state = 'held', reason = 'until tomorrow' WHERE id = 1;
-         INSERT INTO holds (task, reason, kind, until, resume)
-         VALUES (1, 'until tomorrow', 'time', '2099-01-01T09:00:00Z', 'queued');",
+        "UPDATE tasks SET state = 'held', reason = 'held: b, until tomorrow and until task 2 ends'
+           WHERE id = 1;
+         INSERT INTO holds (task, reason, kind, until, target, resume, met, met_as) VALUES
+           (1, 'b', 'time', '2099-01-01T09:00:00Z', NULL, 'queued', NULL, NULL),
+           (1, 'b', 'task', NULL, 2, 'queued', '2026-11-20T10:00:00Z', 'task 2 is done');",
     )
     .unwrap();
     let address = setup.start(&["serve", &setup.factory()]);
+    let conditions = json!([
+        { "kind": "time", "until": "2099-01-01T09:00:00Z", "task": null, "resource": null,
+          "met": null, "met_as": null },
+        { "kind": "task", "until": null, "task": 2, "resource": null,
+          "met": "2026-11-20T10:00:00Z", "met_as": "task 2 is done" },
+    ]);
 
     let waiting = &api(&address, "/api/queue")["waiting"];
 
@@ -788,10 +796,16 @@ fn the_queue_lists_held_tasks_with_their_hold_after_the_waiting_ones() {
         ],
         [&json!(2), &json!(1), &json!(1), &Value::Null]
     );
-    assert_eq!(
-        [&waiting[1]["hold"], &waiting[1]["hold_until"]],
-        [&json!("time"), &json!("2099-01-01T09:00:00Z")]
-    );
+    assert_eq!(waiting[1]["conditions"], conditions);
+    assert_eq!(waiting[0]["conditions"], Value::Null);
+    assert_eq!(api(&address, "/api/tasks/1")["conditions"], conditions);
+    let tasks = json_of(&setup, "tasks");
+    let held = tasks["tasks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|task| task["id"] == 1);
+    assert_eq!(held.unwrap()["conditions"], conditions);
     assert_eq!(api(&address, "/api/tasks/2")["position"], 1);
 }
 

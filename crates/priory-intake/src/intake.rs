@@ -62,6 +62,7 @@ pub(crate) fn output() -> Output {
             schedule::FIRED,
             linear::ENTERED,
             linear::LEFT,
+            linear::VIEW_CHANGED,
             linear::CREATED,
             linear::STATE_CHANGED,
             linear::BLOCKERS,

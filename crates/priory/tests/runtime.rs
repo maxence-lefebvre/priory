@@ -7325,6 +7325,158 @@ fn a_task_hold_releases_the_task_when_the_other_task_ends() {
 }
 
 #[test]
+fn a_hold_on_two_tasks_releases_only_after_both_end() {
+    let setup = queued_without_room("hold-all-tasks");
+    setup.publish(&requested(43));
+    setup.publish(&requested(44));
+    setup.until("tasks", |rows| rows.len() == 3);
+
+    let reply = person(
+        &setup,
+        "hold",
+        &[
+            "3",
+            "--reason",
+            "same files",
+            "--after",
+            "1",
+            "--after",
+            "2",
+        ],
+    );
+    let desk = setup.rows("desk");
+    person(&setup, "cancel", &["1"]);
+    std::thread::sleep(Duration::from_millis(1100));
+    assert_eq!(held_as(&setup, "3")[0], "held");
+    person(&setup, "cancel", &["2"]);
+
+    assert_eq!(with(&desk, 1, "held"), 1, "{desk:?}");
+
+    assert_eq!(
+        reply,
+        "task 3 held: same files, until task 1 ends and until task 2 ends\n"
+    );
+    setup.until("tasks", |rows| rows[2][4] == "queued");
+}
+
+#[test]
+fn a_hold_on_a_merge_and_a_linear_issue_releases_once_both_are_met_in_either_order() {
+    let setup = queued_without_room("hold-merge-issue");
+    setup.publish(&requested(43));
+    setup.until("tasks", |rows| rows.len() == 2);
+    let reply = person(
+        &setup,
+        "hold",
+        &["1", "--reason", "a", "--merge", "7", "--after", "ENG-7"],
+    );
+    person(
+        &setup,
+        "hold",
+        &["2", "--reason", "b", "--after", "eng-8", "--merge", "7"],
+    );
+
+    setup.publish(&moved_to_done("ENG-8"));
+    std::thread::sleep(Duration::from_millis(1100));
+    assert_eq!(held_as(&setup, "2")[0], "held");
+    setup.publish(&closed_7(true, 400));
+    setup.until("tasks", |rows| rows[1][4] == "queued");
+    assert_eq!(held_as(&setup, "1")[0], "held");
+    setup.publish(&moved_to_done("ENG-7"));
+
+    assert_eq!(
+        reply,
+        "task 1 held: a, until ENG-7 is Done or Canceled and until github:owner/repo#7 merges, and asks if it closes unmerged\n"
+    );
+    setup.until("tasks", |rows| rows[0][4] == "queued");
+}
+
+#[test]
+fn a_hold_after_a_linear_issue_already_done_releases_the_task_at_once() {
+    let mut setup = Setup::new("hold-issue-done");
+    setup.memory(0);
+    fs::write(
+        setup.dir.join("fake/linear"),
+        json!({ "data": { "issue": { "state": { "name": "Done" } } } }).to_string(),
+    )
+    .unwrap();
+    setup.publish(&requested(42));
+    setup.start_with(
+        Path::new(env!("CARGO_BIN_EXE_priory")),
+        &[("LINEAR_API_KEY", "lin_api_test")],
+    );
+    setup.until("tasks", |rows| rows.len() == 1);
+
+    person(&setup, "hold", &["1", "--reason", "a", "--after", "ENG-7"]);
+
+    setup.until("tasks", |rows| rows[0][4] == "queued");
+}
+
+#[test]
+fn a_hold_after_an_issue_reopened_since_it_was_done_stays_held() {
+    let setup = queued_without_room("hold-issue-reopened");
+    setup.publish(&moved_to_done("ENG-7"));
+    setup.publish(&linear_event(
+        "linear.issue.blockers",
+        "ENG-7",
+        json!({ "blockers": [] }),
+    ));
+    setup.until("inbox", |rows| rows.len() == 3);
+
+    person(&setup, "hold", &["1", "--reason", "a", "--after", "ENG-7"]);
+    std::thread::sleep(Duration::from_millis(1100));
+
+    assert_eq!(held_as(&setup, "1")[0], "held");
+}
+
+#[test]
+fn dropping_a_task_through_one_merge_ask_closes_its_other_merge_ask() {
+    let setup = queued_without_room("hold-two-asks");
+    person(
+        &setup,
+        "hold",
+        &["1", "--reason", "a", "--merge", "7", "--merge", "8"],
+    );
+    setup.publish(&closed_7(false, 400));
+    let mut closed_8 = closed_7(false, 401);
+    closed_8.data["pull_request"] = json!(8);
+    setup.publish(&closed_8);
+    let asks = setup.until("asks", |rows| rows.len() == 2);
+
+    person(&setup, "answer", &[&asks[0][0], "drop", "--revision", "1"]);
+
+    assert_eq!(held_as(&setup, "1")[0], "dropped");
+    assert_eq!(setup.rows("asks"), Vec::<Vec<String>>::new());
+}
+
+#[test]
+fn cancelling_a_held_task_closes_its_merge_asks() {
+    let setup = queued_without_room("hold-cancel-asks");
+    person(&setup, "hold", &["1", "--reason", "a", "--merge", "7"]);
+    setup.publish(&closed_7(false, 400));
+    setup.until("asks", |rows| rows.len() == 1);
+
+    person(&setup, "cancel", &["1"]);
+
+    assert_eq!(setup.rows("asks"), Vec::<Vec<String>>::new());
+}
+
+#[test]
+fn a_task_request_whose_hold_names_null_conditions_files_its_task_held() {
+    let mut setup = Setup::new("hold-null");
+    setup.memory(0);
+    let mut request = requested(42);
+    request.data["hold"] = json!({ "reason": "a", "after": null, "merge": null });
+    setup.publish(&request);
+    setup.start();
+
+    setup.until("tasks", |rows| rows.len() == 1);
+    assert_eq!(
+        held_as(&setup, "1"),
+        ["held", "held: a, until a person releases it"]
+    );
+}
+
+#[test]
 fn a_running_task_cannot_be_held() {
     let mut setup = Setup::new("hold-running");
     setup.publish(&requested(42));

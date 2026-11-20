@@ -1375,6 +1375,8 @@ struct Linear {
     comments: Vec<serde_json::Value>,
     /// The issues that the updated issues block, as the `Blocked` query reads them by id.
     blocked: Vec<serde_json::Value>,
+    /// The view's filter, as Linear reports it.
+    filter: serde_json::Value,
 }
 
 impl Setup {
@@ -1397,8 +1399,10 @@ impl Setup {
     fn answer_linear(&self, linear: &Linear) {
         let page = |name: &str, field: &str, nodes: &[serde_json::Value]| {
             let answer = match field {
-                "customView" => json!({ "data": { "customView": { "issues": {
-                    "nodes": nodes, "pageInfo": { "hasNextPage": false, "endCursor": null } } } } }),
+                "customView" => {
+                    json!({ "data": { "customView": { "filterData": linear.filter, "issues": {
+                    "nodes": nodes, "pageInfo": { "hasNextPage": false, "endCursor": null } } } } })
+                }
                 field => json!({ "data": { field: {
                     "nodes": nodes, "pageInfo": { "hasNextPage": false, "endCursor": null } } } }),
             };
@@ -1482,6 +1486,7 @@ fn an_issue_entering_a_view_publishes_the_event_and_one_task_request() {
             "url": "https://linear.app/acme/issue/ENG-7/fix-the-thing",
             "team": "ENG",
             "project": null,
+            "project_id": null,
             "state": "Todo",
             "labels": ["agent"],
             "baseline": false,
@@ -1662,6 +1667,7 @@ fn a_comment_on_a_tasks_issue_reaches_its_task_in_the_inbox() {
             "url": "https://linear.app/acme/issue/ENG-7/fix-the-thing#comment-comment-1",
             "team": "ENG",
             "project": null,
+            "project_id": null,
             "state": "Todo",
             "labels": ["agent"],
             "body": "Please also cover the empty case.",
@@ -1750,6 +1756,7 @@ fn a_state_change_that_matches_a_filter_requests_a_task_once() {
             "url": "https://linear.app/acme/issue/ENG-7/fix-the-thing",
             "team": "ENG",
             "project": null,
+            "project_id": null,
             "state": "In Progress",
             "labels": ["agent"],
             "blockers": [],
@@ -1763,6 +1770,230 @@ fn a_state_change_that_matches_a_filter_requests_a_task_once() {
     );
     assert_eq!(task.data["key"], "linear:ENG-7");
     assert_eq!(published[3].message.data["triggers"], json!([]));
+}
+
+fn view_with(filter: serde_json::Value, issues: &[u64]) -> Linear {
+    Linear {
+        view: issues.iter().map(|number| linear_issue(*number)).collect(),
+        filter,
+        ..Linear::default()
+    }
+}
+
+#[test]
+fn a_view_whose_filter_changed_publishes_one_changed_event_and_no_entered_or_left() {
+    let setup = Setup::linear("linear-refiltered", &[("agent-ready", VIEW_TRIGGER)]);
+    let todo = json!({ "state": { "name": { "eq": "Todo" } } });
+    setup.answer_linear(&view_with(todo.clone(), &[7]));
+    succeeded(&setup.intake());
+    let started = json!({ "state": { "name": { "eq": "In Progress" } } });
+    setup.answer_linear(&view_with(started, &[8, 9]));
+
+    succeeded(&setup.intake());
+
+    let published = setup.published();
+    assert_eq!(
+        kinds(&published),
+        ["linear.issue.entered", "linear.view.changed"]
+    );
+    let changed = &published[1].message;
+    assert_eq!(changed.subject.as_deref(), Some("6b3c2f9a1d4e"));
+    assert_eq!(
+        timeless(changed),
+        json!({
+            "view": "6b3c2f9a1d4e",
+            "entered": ["ENG-8", "ENG-9"],
+            "left": ["ENG-7"],
+            "baseline": false,
+            "triggers": []
+        })
+    );
+    setup.inbox();
+    let desk = Command::new(env!("CARGO_BIN_EXE_priory"))
+        .arg("desk")
+        .env("PRIORY_DB", setup.dir.join("priory.db"))
+        .output()
+        .unwrap();
+    succeeded(&desk);
+    let desk = String::from_utf8(desk.stdout).unwrap();
+    let reports = desk
+        .matches(
+            "linear: view 6b3c2f9a1d4e changed its filter: 2 issues entered and 1 left, with no task requested",
+        )
+        .count();
+    assert_eq!(reports, 1, "{desk}");
+}
+
+#[test]
+fn a_view_with_the_same_filter_still_publishes_entered_and_left() {
+    let setup = Setup::linear("linear-same-filter", &[("agent-ready", VIEW_TRIGGER)]);
+    let todo = json!({ "state": { "name": { "eq": "Todo" } } });
+    setup.answer_linear(&view_with(todo.clone(), &[7]));
+    succeeded(&setup.intake());
+    setup.answer_linear(&view_with(todo, &[8]));
+
+    succeeded(&setup.intake());
+
+    assert_eq!(
+        kinds(&setup.published()),
+        [
+            "linear.issue.entered",
+            "linear.issue.entered",
+            "factory.task.requested",
+            "linear.issue.left"
+        ]
+    );
+}
+
+#[test]
+fn a_view_whose_filter_changes_between_pages_fails_the_poll_and_publishes_nothing() {
+    let setup = Setup::linear("linear-filter-pages", &[("agent-ready", VIEW_TRIGGER)]);
+    setup.answer_linear(&view_with(json!({ "state": "Todo" }), &[7]));
+    succeeded(&setup.intake());
+    let page = |filter: &str, issue: u64, next: bool| {
+        let answer = json!({ "data": { "customView": { "filterData": { "state": filter }, "issues": {
+            "nodes": [linear_issue(issue)],
+            "pageInfo": { "hasNextPage": next, "endCursor": "page-2" } } } } });
+        let file = setup.dir.join(format!("linear-view-{issue}.json"));
+        write(&file, &answer.to_string());
+        file.display().to_string()
+    };
+    let script = format!(
+        "#!/bin/sh\ncase \"$*\" in\n  *'query View'*'page-2'*) cat '{second}' ;;\n  \
+         *'query View'*) cat '{first}' ;;\n  *'query Comments'*) cat '{comments}' ;;\n  \
+         *) cat '{issues}' ;;\nesac\n",
+        first = page("Todo", 7, true),
+        second = page("In Progress", 8, false),
+        comments = setup.dir.join("linear-comments.json").display(),
+        issues = setup.dir.join("linear-issues.json").display(),
+    );
+    write(&setup.dir.join("bin/curl"), &script);
+
+    let output = setup.intake();
+
+    assert_eq!(output.status.code(), Some(1));
+    assert!(
+        String::from_utf8_lossy(&output.stderr)
+            .contains("Linear view 6b3c2f9a1d4e: its filter changed while the intake read it"),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(kinds(&setup.published()), ["linear.issue.entered"]);
+}
+
+/// A view marker written before the intake kept filters: no `filter`, and members without
+/// `project_id`.
+fn legacy_view_marker(setup: &Setup, members: serde_json::Value) {
+    let marker = json!({ "stream": "linear.view:6b3c2f9a1d4e", "position": 1, "members": members });
+    // The id the intake gives this marker, as docs/intake/envelope.md names it.
+    let namespace = uuid::Uuid::new_v5(
+        &uuid::Uuid::NAMESPACE_URL,
+        b"https://github.com/maxence-lefebvre/priory/intake",
+    );
+    let name = "factory.intake.baseline:linear.view:6b3c2f9a1d4e:1:null";
+    seed(
+        setup,
+        &Message::new("factory.intake.baseline", marker)
+            .id(uuid::Uuid::new_v5(&namespace, name.as_bytes()))
+            .subject("linear.view:6b3c2f9a1d4e"),
+    );
+}
+
+#[test]
+fn a_view_with_a_legacy_marker_records_its_filter_at_the_first_poll() {
+    let setup = Setup::linear("linear-legacy-filter", &[("agent-ready", VIEW_TRIGGER)]);
+    legacy_view_marker(&setup, json!([]));
+    setup.answer_linear(&view_with(json!({ "state": "Todo" }), &[]));
+    succeeded(&setup.intake());
+    setup.answer_linear(&view_with(json!({ "state": "In Progress" }), &[8]));
+
+    succeeded(&setup.intake());
+
+    assert_eq!(kinds(&setup.published()), ["linear.view.changed"]);
+}
+
+#[test]
+fn an_issue_leaving_a_view_with_a_legacy_marker_carries_project_id() {
+    let setup = Setup::linear("linear-legacy-left", &[("agent-ready", VIEW_TRIGGER)]);
+    let mut member = json!({
+        "issue": "ENG-7", "linear_id": "issue-7", "title": "Fix the thing",
+        "url": "https://linear.app/acme/issue/ENG-7/fix-the-thing", "team": "ENG",
+        "project": null, "state": "Todo", "labels": ["agent"]
+    });
+    legacy_view_marker(&setup, json!([member.clone()]));
+    setup.answer_linear(&view_with(json!({ "state": "Todo" }), &[]));
+
+    succeeded(&setup.intake());
+
+    let bus = Bus::open(&setup.dir.join("bus.db")).unwrap();
+    let left = bus
+        .messages(&MessageQuery {
+            output: Some("factory.intake".into()),
+            limit: 10,
+            ..MessageQuery::default()
+        })
+        .unwrap()
+        .into_iter()
+        .find(|stored| stored.message.kind == "linear.issue.left")
+        .unwrap();
+    member["project_id"] = json!(null);
+    member["view"] = json!("6b3c2f9a1d4e");
+    member["baseline"] = json!(false);
+    member["triggers"] = json!([]);
+    assert_eq!(timeless(&left.message), member);
+}
+
+fn created_in(number: u64, id: &str, name: &str) -> serde_json::Value {
+    let mut issue = linear_issue(number);
+    issue["createdAt"] = json!("2026-11-17T11:00:00.000Z");
+    issue["updatedAt"] = json!("2026-11-17T11:00:00.000Z");
+    issue["project"] = json!({ "id": id, "name": name });
+    issue
+}
+
+#[test]
+fn a_project_filter_keeps_only_that_projects_issues() {
+    let by_name = "source = \"linear\"\non = \"issue.created\"\nfilter = { project = \"Mobile\" }\nworkflow = \"implement\"\n";
+    let by_id = "source = \"linear\"\non = \"issue.created\"\nfilter = { project = \"project-mobile\" }\nworkflow = \"implement\"\n";
+    let setup = Setup::linear(
+        "linear-project-filter",
+        &[("by-name", by_name), ("by-id", by_id)],
+    );
+    setup.answer_linear(&Linear {
+        issues: vec![linear_issue(1)],
+        ..Linear::default()
+    });
+    succeeded(&setup.intake());
+    setup.answer_linear(&Linear {
+        issues: vec![
+            created_in(7, "project-mobile", "Mobile"),
+            created_in(8, "project-web", "Web"),
+        ],
+        ..Linear::default()
+    });
+
+    succeeded(&setup.intake());
+
+    let created: Vec<(String, serde_json::Value)> = setup
+        .published()
+        .into_iter()
+        .filter(|stored| stored.message.kind == "linear.issue.created")
+        .map(|stored| {
+            let data = stored.message.data;
+            (
+                data["issue"].as_str().unwrap().to_owned(),
+                data["triggers"].clone(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        created,
+        [
+            ("ENG-1".to_owned(), json!([])),
+            ("ENG-7".to_owned(), json!(["by-id", "by-name"])),
+            ("ENG-8".to_owned(), json!([])),
+        ]
+    );
 }
 
 const COMMENT_TRIGGER: &str = r#"
@@ -2042,6 +2273,7 @@ fn a_blocker_that_changes_publishes_the_open_blockers_of_the_issue_it_blocks() {
             "url": "https://linear.app/acme/issue/ENG-7/fix-the-thing",
             "team": "ENG",
             "project": null,
+            "project_id": null,
             "state": "Todo",
             "labels": ["agent"],
             "blockers": ["ENG-4"],
@@ -2096,7 +2328,7 @@ fn a_linear_task_request_carries_its_issues_team_and_project() {
     assert_eq!(task.data["team"], "ENG");
     assert_eq!(task.data["project"], "Desktop");
     let queries = fs::read_to_string(setup.dir.join("curl-args")).unwrap();
-    assert!(queries.contains("project { name }"), "{queries}");
+    assert!(queries.contains("project { id name }"), "{queries}");
 }
 
 #[test]

@@ -3,17 +3,32 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "additionalProperties": false,
   "definitions": {
+    "After": {
+      "anyOf": [
+        {
+          "format": "int64",
+          "type": "integer"
+        },
+        {
+          "type": "string"
+        }
+      ],
+      "description": "What a hold's `after` waits for: another task to end, or a Linear issue to close."
+    },
     "Hold": {
       "additionalProperties": false,
-      "description": "Why a task is held, and at most one condition that releases it. With none, a person does.",
+      "description": "Why a task is held, and the conditions that release it once all of them hold. With none, a\nperson does.",
       "properties": {
         "after": {
-          "description": "Another task's id: the hold lasts until it ends.",
-          "format": "int64",
-          "type": [
-            "integer",
-            "null"
-          ]
+          "anyOf": [
+            {
+              "$ref": "#/definitions/OneOrMany_After"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Other tasks' ids, or Linear issues such as `ENG-7`: until each task ends and each issue is\nDone or Canceled. One value or a list."
         },
         "blockers": {
           "description": "Until the task's Linear issue has no open blocker.",
@@ -27,11 +42,15 @@
           ]
         },
         "merge": {
-          "description": "A pull request, `owner/name#42` or `42` in the task's repository: until it merges.",
-          "type": [
-            "string",
-            "null"
-          ]
+          "anyOf": [
+            {
+              "$ref": "#/definitions/OneOrMany_string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Pull requests, `owner/name#42` or `42` in the task's repository: until each merges. One\nvalue or a list."
         },
         "reason": {
           "description": "Why the task waits, shown to a person.",
@@ -49,6 +68,34 @@
         "reason"
       ],
       "type": "object"
+    },
+    "OneOrMany_After": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/After"
+        },
+        {
+          "items": {
+            "$ref": "#/definitions/After"
+          },
+          "type": "array"
+        }
+      ],
+      "description": "One value, or a list of them; null reads as none, as the single values it replaced did."
+    },
+    "OneOrMany_string": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      ],
+      "description": "One value, or a list of them; null reads as none, as the single values it replaced did."
     }
   },
   "description": "`triggers/<name>.toml` or `.yaml`: an event source, its filter and the workflow its events\nstart. The file name is the trigger's name.",
@@ -106,7 +153,7 @@
       "additionalProperties": {
         "type": "string"
       },
-      "description": "Values an event must have: `label` for GitHub; `team`, `label`, `state` for Linear; `text`\nfor Slack.",
+      "description": "Values an event must have: `label` for GitHub; `team`, `project` (its name or id), `label`,\n`state` for Linear; `text` for Slack.",
       "type": [
         "object",
         "null"
