@@ -1,3 +1,5 @@
+mod conform;
+
 use herdr_bus::{Bus, Output as BusOutput};
 use serde_json::{Value, json};
 use std::fs;
@@ -26,11 +28,15 @@ const SERVE: &str =
 
 const TOKEN: &str = "s3cret-token";
 
+const HOOKS: &str = "name = \"demo\"\n\n[serve]\nlisten = \"127.0.0.1:0\"\ntoken_env = \"TEST_TOKEN\"\n\n[webhooks.github]\nsecret_env = \"TEST_SECRET\"\n";
+
 /// A factory, a bus, a state file and Priory home under the test's own directory. Dropping it kills
 /// the server it started and the tmux server of its daemon.
 struct Setup {
     dir: PathBuf,
     server: Option<Child>,
+    /// The GitHub webhook secret, generated for this test.
+    secret: String,
 }
 
 impl Setup {
@@ -51,7 +57,11 @@ impl Setup {
         }
         fs::create_dir_all(dir.join("tmux")).unwrap();
         fs::create_dir_all(dir.join("fake")).unwrap();
-        let setup = Setup { dir, server: None };
+        let setup = Setup {
+            dir,
+            server: None,
+            secret: uuid::Uuid::new_v4().to_string(),
+        };
         setup
             .bus()
             .declare(&BusOutput::new("factory.intake"))
@@ -83,7 +93,9 @@ impl Setup {
             .env("PRIORY_DB", self.dir.join("priory.db"))
             .env("PRIORY_HOME", self.dir.join("home"))
             .env("FAKE_DIR", self.dir.join("fake"))
-            .env("TEST_TOKEN", TOKEN);
+            .env("TEST_TOKEN", TOKEN)
+            .env("TEST_SECRET", &self.secret)
+            .env("PRIORY_NOW", "2026-11-17T12:00:00Z");
         command
     }
 
@@ -165,6 +177,21 @@ fn succeeded(output: &Output) {
     );
 }
 
+/// Runs `command`, killed if it still runs after `limit`, so a server that starts fails the test.
+fn within(mut command: Command, limit: Duration) -> Output {
+    let mut child = command
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let deadline = Instant::now() + limit;
+    while child.try_wait().unwrap().is_none() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let _ = child.kill();
+    child.wait_with_output().unwrap()
+}
+
 /// Sends `head` as a whole request head and returns the status code and body.
 fn raw(address: &str, head: &str) -> (u16, String) {
     let mut stream = TcpStream::connect(address).unwrap();
@@ -242,6 +269,22 @@ fn check_refuses_a_listen_address_beyond_loopback_without_public() {
 }
 
 #[test]
+fn check_refuses_webhooks_without_a_serve_table() {
+    let setup = Setup::new(
+        "webhooks-no-serve",
+        "name = \"demo\"\n\n[webhooks.github]\nsecret_env = \"TEST_SECRET\"\n",
+    );
+
+    let output = setup.priory(&["check", &setup.factory()]);
+
+    assert!(!output.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&output.stderr),
+        "factory.toml:3: `[webhooks]` needs a `[serve]` table to listen on\n"
+    );
+}
+
+#[test]
 fn serve_refuses_a_listen_flag_beyond_loopback_without_public() {
     let setup = Setup::new("flag", SERVE);
 
@@ -272,6 +315,31 @@ fn serve_refuses_to_start_without_its_token() {
             String::from_utf8_lossy(&output.stderr),
             "priory serve: TEST_TOKEN is unset or empty: set it to the token clients send\n"
         );
+    }
+}
+
+#[test]
+fn serve_and_the_daemon_refuse_to_start_without_the_webhook_secret() {
+    let setup = Setup::new("secret", HOOKS);
+
+    for verb in ["serve", "daemon"] {
+        for value in [None, Some("")] {
+            let mut command = setup.command();
+            command.args([verb, &setup.factory()]);
+            match value {
+                None => command.env_remove("TEST_SECRET"),
+                Some(value) => command.env("TEST_SECRET", value),
+            };
+            let output = within(command, Duration::from_secs(10));
+
+            assert!(!output.status.success());
+            assert_eq!(
+                String::from_utf8_lossy(&output.stderr),
+                format!(
+                    "priory {verb}: TEST_SECRET is unset or empty: set it to the GitHub webhook's secret\n"
+                )
+            );
+        }
     }
 }
 
@@ -576,6 +644,533 @@ fn the_queue_lists_held_tasks_with_their_hold_after_the_waiting_ones() {
         [&json!("time"), &json!("2099-01-01T09:00:00Z")]
     );
     assert_eq!(api(&address, "/api/tasks/2")["position"], 1);
+}
+
+const TRIGGER: &str = r#"
+source = "github"
+repo = "owner/repo"
+on = "issues.labeled"
+filter = { label = "agent" }
+workflow = "implement"
+key = "issue.number"
+band = "today"
+"#;
+
+/// A GitHub `issues` delivery: issue 42 of `owner/repo` labeled `label`.
+fn issue_labeled(label: &str) -> String {
+    json!({
+        "action": "labeled",
+        "issue": {
+            "id": 9042,
+            "number": 42,
+            "title": "Fix the thing",
+            "html_url": "https://github.com/owner/repo/issues/42",
+            "user": { "login": "max" },
+            "created_at": "2026-11-17T09:00:00Z",
+            "updated_at": "2026-11-17T10:00:00Z"
+        },
+        "label": { "id": 1, "name": label, "color": "ededed" },
+        "repository": { "id": 1, "full_name": "owner/repo" },
+        "sender": { "login": "max" }
+    })
+    .to_string()
+}
+
+/// `sha256=` and the hex HMAC-SHA256 of `body` under `secret`, as GitHub signs a delivery.
+fn sign(secret: &str, body: &[u8]) -> String {
+    use hmac::{KeyInit, Mac};
+    let mut mac = hmac::Hmac::<sha2::Sha256>::new_from_slice(secret.as_bytes()).unwrap();
+    mac.update(body);
+    let hex: String = mac
+        .finalize()
+        .into_bytes()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    format!("sha256={hex}")
+}
+
+/// POSTs `body` to `/hooks/github` as GitHub would, with `signature` when given.
+fn deliver(
+    address: &str,
+    event: &str,
+    delivery: &str,
+    signature: Option<&str>,
+    body: &str,
+) -> (u16, String) {
+    let signature = signature.map_or(String::new(), |signature| {
+        format!("X-Hub-Signature-256: {signature}\r\n")
+    });
+    raw(
+        address,
+        &format!(
+            "POST /hooks/github HTTP/1.1\r\nHost: {address}\r\nUser-Agent: GitHub-Hookshot/044aadd\r\n\
+             Content-Type: application/json\r\nX-GitHub-Event: {event}\r\nX-GitHub-Delivery: {delivery}\r\n\
+             {signature}Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        ),
+    )
+}
+
+impl Setup {
+    /// A factory with `[serve]`, the GitHub webhook and a trigger on `agent` labels.
+    fn hooks(name: &str) -> Self {
+        let setup = Setup::new(name, HOOKS);
+        fs::create_dir_all(setup.dir.join("factory/triggers")).unwrap();
+        fs::write(setup.dir.join("factory/triggers/agent-label.toml"), TRIGGER).unwrap();
+        setup
+    }
+
+    /// Everything on `factory.intake`, oldest first, each checked against its schema.
+    fn published(&self) -> Vec<herdr_bus::Message> {
+        let mut messages = self
+            .bus()
+            .messages(&herdr_bus::MessageQuery {
+                output: Some("factory.intake".into()),
+                limit: 1000,
+                ..herdr_bus::MessageQuery::default()
+            })
+            .unwrap();
+        messages.reverse();
+        for stored in &messages {
+            conform::conforms(&serde_json::to_value(&stored.message).unwrap());
+        }
+        messages.into_iter().map(|stored| stored.message).collect()
+    }
+}
+
+#[test]
+fn a_signed_issues_labeled_delivery_creates_the_task_a_poll_would() {
+    let mut setup = Setup::hooks("hook-labeled");
+    let address = setup.start(&["serve", &setup.factory()]);
+    let body = issue_labeled("agent");
+
+    let (status, reply) = deliver(
+        &address,
+        "issues",
+        "72d3162e-cc78-11e3-81ab-4c9367dc0958",
+        Some(&sign(&setup.secret, body.as_bytes())),
+        &body,
+    );
+
+    assert_eq!(status, 202, "{reply}");
+    let published = setup.published();
+    let kinds: Vec<_> = published.iter().map(|m| m.kind.as_str()).collect();
+    assert_eq!(kinds, ["github.issues.labeled", "factory.task.requested"]);
+    assert_eq!(published[0].subject.as_deref(), Some("owner/repo#42"));
+    assert_eq!(
+        published[0].data,
+        json!({
+            "repo": "owner/repo",
+            "issue": 42,
+            "title": "Fix the thing",
+            "url": "https://github.com/owner/repo/issues/42",
+            "label": "agent",
+            "actor": "max",
+            "time": "2026-11-17T10:00:00Z",
+            "github_id": null,
+            "delivery": "72d3162e-cc78-11e3-81ab-4c9367dc0958",
+            "baseline": false,
+            "triggers": ["agent-label"]
+        })
+    );
+    succeeded(&setup.priory(&["daemon", &setup.factory(), "--once"]));
+    let tasks = json_of(&setup, "tasks");
+    assert_eq!(tasks.as_array().unwrap().len(), 1);
+    assert_eq!(tasks[0]["key"], "github:owner/repo#42");
+    assert_eq!(tasks[0]["workflow"], "implement");
+    assert_eq!(tasks[0]["band"], "today");
+}
+
+#[test]
+fn a_wrong_missing_or_other_body_signature_gets_401_and_publishes_nothing() {
+    let mut setup = Setup::hooks("hook-unsigned");
+    let address = setup.start(&["serve", &setup.factory()]);
+    let body = issue_labeled("agent");
+    let other = issue_labeled("bug");
+    let signatures = [
+        Some(sign("not-the-secret", body.as_bytes())),
+        None,
+        Some(sign(&setup.secret, other.as_bytes())),
+        Some("sha256=zz".to_owned()),
+        Some(sign(&setup.secret, body.as_bytes()).replace("sha256=", "sha1=")),
+    ];
+
+    for signature in &signatures {
+        let (status, reply) = deliver(&address, "issues", "d-1", signature.as_deref(), &body);
+
+        assert_eq!(status, 401, "{signature:?}");
+        assert_eq!(
+            reply,
+            r#"{"error":"X-Hub-Signature-256 is missing or does not match the body"}"#
+        );
+    }
+    assert!(setup.published().is_empty());
+}
+
+#[test]
+fn a_body_over_1_mib_gets_413_before_it_is_read() {
+    let mut setup = Setup::hooks("hook-oversize");
+    let address = setup.start(&["serve", &setup.factory()]);
+    let length = 1024 * 1024 + 1;
+
+    // Only the head goes out: the reply must come without the body.
+    let (status, reply) = raw(
+        &address,
+        &format!(
+            "POST /hooks/github HTTP/1.1\r\nHost: {address}\r\nX-GitHub-Event: issues\r\n\
+             X-GitHub-Delivery: d-1\r\nX-Hub-Signature-256: sha256=00\r\nContent-Length: {length}\r\n\r\n"
+        ),
+    );
+
+    assert_eq!(status, 413);
+    assert_eq!(reply, r#"{"error":"the body is over 1 MiB"}"#);
+    let (status, _) = raw(
+        &address,
+        &format!(
+            "POST /hooks/github HTTP/1.1\r\nHost: {address}\r\nTransfer-Encoding: chunked\r\n\r\n0\r\n\r\n"
+        ),
+    );
+    assert_eq!(status, 411);
+    assert!(setup.published().is_empty());
+}
+
+#[test]
+fn a_replayed_delivery_publishes_nothing_even_under_a_new_delivery_id() {
+    let mut setup = Setup::hooks("hook-replay");
+    let address = setup.start(&["serve", &setup.factory()]);
+    let body = issue_labeled("agent");
+    let signature = sign(&setup.secret, body.as_bytes());
+    let (status, _) = deliver(&address, "issues", "d-1", Some(&signature), &body);
+    assert_eq!(status, 202);
+    let first = setup.published();
+
+    for delivery in ["d-1", "d-forged"] {
+        let (status, reply) = deliver(&address, "issues", delivery, Some(&signature), &body);
+
+        assert_eq!(status, 202, "{reply}");
+    }
+    assert_eq!(setup.published(), first);
+}
+
+const EVENTS_PATH: &str = "repos/owner/repo/issues/events?per_page=100&page=1";
+
+/// GitHub's issue event `id`: issue 42 labeled `agent` at the time `issue_labeled` reports.
+fn polled_label(id: u64, number: u64, label: &str) -> Value {
+    json!({
+        "id": id,
+        "event": "labeled",
+        "created_at": "2026-11-17T10:00:00Z",
+        "actor": { "login": "max" },
+        "label": { "name": label, "color": "ededed" },
+        "issue": {
+            "id": 9000 + number,
+            "number": number,
+            "title": "Fix the thing",
+            "html_url": format!("https://github.com/owner/repo/issues/{number}"),
+            "user": { "login": "max" },
+            "created_at": "2026-11-17T09:00:00Z"
+        }
+    })
+}
+
+impl Setup {
+    /// Runs `priory intake --once` with `gh api <path>` answering `events` for the issue events
+    /// and `[]` for anything else.
+    fn poll(&self, events: Value) {
+        let answer = self.dir.join("events.json");
+        fs::write(&answer, events.to_string()).unwrap();
+        let gh = self.dir.join("bin/gh");
+        fs::create_dir_all(gh.parent().unwrap()).unwrap();
+        fs::write(
+            &gh,
+            format!(
+                "#!/bin/sh\ncase \"$*\" in\n  \"api {EVENTS_PATH}\"*) cat '{}' ;;\n  *) echo '[]' ;;\nesac\n",
+                answer.display()
+            ),
+        )
+        .unwrap();
+        fs::set_permissions(&gh, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+        let path = format!(
+            "{}:{}",
+            gh.parent().unwrap().display(),
+            std::env::var("PATH").unwrap()
+        );
+        let mut command = self.command();
+        command
+            .args(["intake", "--once", &self.factory()])
+            .env("PATH", path);
+        succeeded(&command.output().unwrap());
+    }
+
+    fn kinds(&self) -> Vec<String> {
+        self.published().into_iter().map(|m| m.kind).collect()
+    }
+}
+
+#[test]
+fn a_webhook_then_a_poll_of_the_same_label_create_one_task() {
+    let mut setup = Setup::hooks("hook-then-poll");
+    setup.poll(json!([polled_label(100, 41, "bug")]));
+    let mut expected = setup.kinds();
+    let address = setup.start(&["serve", &setup.factory()]);
+    let body = issue_labeled("agent");
+    let signature = sign(&setup.secret, body.as_bytes());
+    assert_eq!(
+        deliver(&address, "issues", "d-1", Some(&signature), &body).0,
+        202
+    );
+    expected.extend([
+        "github.issues.labeled".into(),
+        "factory.task.requested".into(),
+    ]);
+
+    setup.poll(json!([
+        polled_label(101, 42, "agent"),
+        polled_label(100, 41, "bug")
+    ]));
+
+    assert_eq!(setup.kinds(), expected);
+    succeeded(&setup.priory(&["daemon", &setup.factory(), "--once"]));
+    assert_eq!(json_of(&setup, "tasks").as_array().unwrap().len(), 1);
+}
+
+#[test]
+fn a_poll_then_a_webhook_of_the_same_label_create_one_task() {
+    let mut setup = Setup::hooks("poll-then-hook");
+    setup.poll(json!([polled_label(100, 41, "bug")]));
+    setup.poll(json!([
+        polled_label(101, 42, "agent"),
+        polled_label(100, 41, "bug")
+    ]));
+    let before = setup.published();
+    let address = setup.start(&["serve", &setup.factory()]);
+    let body = issue_labeled("agent");
+    let signature = sign(&setup.secret, body.as_bytes());
+
+    let (status, reply) = deliver(&address, "issues", "d-1", Some(&signature), &body);
+
+    assert_eq!(status, 202);
+    assert_eq!(reply, r#"{"outcome":"dropped"}"#);
+    assert_eq!(setup.published(), before);
+}
+
+#[test]
+fn unknown_events_check_runs_and_other_repositories_get_202_and_publish_nothing() {
+    let mut setup = Setup::hooks("hook-dropped");
+    let address = setup.start(&["serve", &setup.factory()]);
+    let mut other_repo: Value = serde_json::from_str(&issue_labeled("agent")).unwrap();
+    other_repo["repository"]["full_name"] = json!("someone/else");
+    let mut unlabeled: Value = serde_json::from_str(&issue_labeled("agent")).unwrap();
+    unlabeled["action"] = json!("unlabeled");
+    let check_run = json!({
+        "action": "completed",
+        "check_run": { "id": 7, "name": "test", "conclusion": "success", "pull_requests": [] },
+        "repository": { "full_name": "owner/repo" }
+    });
+    let ping = json!({ "zen": "Keep it logically awesome.", "hook_id": 1 });
+    let deliveries = [
+        ("ping", ping),
+        ("check_run", check_run),
+        ("issues", unlabeled),
+        ("issues", other_repo),
+    ];
+
+    for (event, body) in deliveries {
+        let body = body.to_string();
+        let signature = sign(&setup.secret, body.as_bytes());
+        let (status, reply) = deliver(&address, event, "d-1", Some(&signature), &body);
+
+        assert_eq!(status, 202, "{event}: {reply}");
+        assert_eq!(reply, r#"{"outcome":"dropped"}"#, "{event}");
+    }
+    assert!(setup.published().is_empty());
+}
+
+/// A GitHub `pull_request` payload's pull request 43 of `owner/repo`.
+fn pull() -> Value {
+    json!({
+        "id": 555,
+        "number": 43,
+        "title": "Add the thing",
+        "html_url": "https://github.com/owner/repo/pull/43",
+        "user": { "login": "max" },
+        "created_at": "2026-11-17T09:00:00Z",
+        "updated_at": "2026-11-17T10:00:00Z",
+        "closed_at": "2026-11-17T11:00:00Z",
+        "merged": true,
+        "head": { "ref": "priory/3", "sha": "abc123" },
+        "base": { "ref": "main" }
+    })
+}
+
+#[test]
+fn issue_pull_request_and_review_deliveries_publish_their_poll_types() {
+    let mut setup = Setup::hooks("hook-types");
+    let address = setup.start(&["serve", &setup.factory()]);
+    let repository = json!({ "full_name": "owner/repo" });
+    let sender = json!({ "login": "ana" });
+    let mut opened: Value = serde_json::from_str(&issue_labeled("agent")).unwrap();
+    opened["action"] = json!("opened");
+    let deliveries = [
+        ("issues", opened),
+        (
+            "pull_request",
+            json!({ "action": "opened", "pull_request": pull(), "repository": repository, "sender": sender }),
+        ),
+        (
+            "pull_request",
+            json!({ "action": "labeled", "label": { "name": "agent" }, "pull_request": pull(), "repository": repository, "sender": sender }),
+        ),
+        (
+            "pull_request",
+            json!({ "action": "closed", "pull_request": pull(), "repository": repository, "sender": sender }),
+        ),
+        (
+            "pull_request_review",
+            json!({
+                "action": "submitted",
+                "review": {
+                    "id": 2561579718u64,
+                    "state": "approved",
+                    "html_url": "https://github.com/owner/repo/pull/43#pullrequestreview-2561579718",
+                    "user": { "login": "ana" },
+                    "submitted_at": "2026-11-17T10:30:00Z"
+                },
+                "pull_request": pull(),
+                "repository": repository,
+                "sender": sender
+            }),
+        ),
+    ];
+
+    for (event, body) in deliveries {
+        let body = body.to_string();
+        let signature = sign(&setup.secret, body.as_bytes());
+        let (status, reply) = deliver(&address, event, "d-2", Some(&signature), &body);
+        assert_eq!(status, 202, "{event}: {reply}");
+    }
+
+    let published = setup.published();
+    assert_eq!(
+        setup.kinds(),
+        [
+            "github.issues.opened",
+            "github.pull_request.opened",
+            "github.pull_request.labeled",
+            "github.pull_request.closed",
+            "github.pull_request_review.submitted"
+        ]
+    );
+    assert_eq!(published[3].data["merged"], true);
+    assert_eq!(published[3].time.to_string(), "2026-11-17T11:00:00Z");
+    let review = &published[4];
+    assert_eq!(review.subject.as_deref(), Some("owner/repo#43"));
+    assert_eq!(
+        review.data,
+        json!({
+            "repo": "owner/repo",
+            "pull_request": 43,
+            "url": "https://github.com/owner/repo/pull/43#pullrequestreview-2561579718",
+            "head_branch": "priory/3",
+            "head_sha": "abc123",
+            "base_branch": "main",
+            "state": "approved",
+            "actor": "ana",
+            "time": "2026-11-17T10:30:00Z",
+            "github_id": 2561579718u64,
+            "delivery": "d-2",
+            "baseline": false,
+            "triggers": []
+        })
+    );
+}
+
+#[test]
+fn a_poll_requests_the_task_a_crash_left_out_of_a_webhook() {
+    let setup = Setup::hooks("hook-crash");
+    setup.poll(json!([polled_label(100, 41, "bug")]));
+    // A delivery published its event, then the server died before the task request.
+    let source = herdr_bus::Message::new(
+        "github.issues.labeled",
+        json!({
+            "repo": "owner/repo",
+            "issue": 42,
+            "title": "Fix the thing",
+            "url": "https://github.com/owner/repo/issues/42",
+            "label": "agent",
+            "actor": "max",
+            "time": "2026-11-17T10:00:00Z",
+            "github_id": null,
+            "delivery": "d-1",
+            "baseline": false,
+            "triggers": ["agent-label"]
+        }),
+    )
+    .subject("owner/repo#42")
+    .time("2026-11-17T10:00:00Z".parse().unwrap())
+    .link("issue", "https://github.com/owner/repo/issues/42");
+    setup.bus().publish("factory.intake", &source).unwrap();
+    let mut expected = setup.kinds();
+
+    setup.poll(json!([
+        polled_label(101, 42, "agent"),
+        polled_label(100, 41, "bug")
+    ]));
+
+    expected.push("factory.task.requested".into());
+    assert_eq!(setup.kinds(), expected);
+    let request = setup.published().pop().unwrap();
+    assert_eq!(request.data["source"], source.id.to_string());
+}
+
+#[test]
+fn malformed_or_stale_signed_deliveries_publish_nothing() {
+    let mut setup = Setup::hooks("hook-malformed");
+    let address = setup.start(&["serve", &setup.factory()]);
+    let signed = |body: &str| sign(&setup.secret, body.as_bytes());
+
+    let not_json = "{not json";
+    let (status, _) = deliver(
+        &address,
+        "issues",
+        "d-1",
+        Some(&sign("wrong", not_json.as_bytes())),
+        not_json,
+    );
+    assert_eq!(
+        status, 401,
+        "the signature is checked before the body is parsed"
+    );
+
+    let mut stale: Value = serde_json::from_str(&issue_labeled("agent")).unwrap();
+    stale["issue"]["updated_at"] = json!("2026-11-09T10:00:00Z");
+    let stale = stale.to_string();
+    let (status, reply) = deliver(&address, "issues", "d-2", Some(&signed(&stale)), &stale);
+    assert_eq!((status, reply.as_str()), (202, r#"{"outcome":"dropped"}"#));
+
+    let mut no_id: Value = serde_json::from_str(&issue_labeled("agent")).unwrap();
+    no_id["action"] = json!("opened");
+    no_id["issue"].as_object_mut().unwrap().remove("id");
+    let no_id = no_id.to_string();
+    let (status, reply) = deliver(&address, "issues", "d-3", Some(&signed(&no_id)), &no_id);
+    assert_eq!(
+        (status, reply.as_str()),
+        (400, r#"{"error":"the payload lacks the event's id"}"#)
+    );
+
+    let body = issue_labeled("agent");
+    let (status, _) = raw(
+        &address,
+        &format!(
+            "POST /hooks/github HTTP/1.1\r\nHost: {address}\r\nX-GitHub-Event: issues\r\nX-GitHub-Delivery: d-4\r\n\
+             X-Hub-Signature-256: {}\r\nContent-Length: {}\r\nContent-Length: 1048577\r\n\r\n{body}",
+            signed(&body),
+            body.len()
+        ),
+    );
+    assert_eq!(status, 400);
+    assert!(setup.published().is_empty());
 }
 
 /// A report with its sections out of alphabetical order, so a read in any other order shows.

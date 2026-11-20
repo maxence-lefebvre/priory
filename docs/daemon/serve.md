@@ -27,10 +27,10 @@ start until a `priory daemon` of the same version has opened it once.
 
 ## The token
 
-Every request needs `Authorization: Bearer <token>`. The token is the value of the environment
-variable that `token_env` names, `PRIORY_TOKEN` by default. When that variable is unset or empty,
-`priory serve` and `priory daemon` refuse to start: the server never runs open. Any other request
-gets `401`. The server compares the token in a time that does not depend on how much of it matches,
+Every request but a webhook delivery needs `Authorization: Bearer <token>`. The token is the value
+of the environment variable that `token_env` names, `PRIORY_TOKEN` by default. When that variable
+is unset or empty, `priory serve` and `priory daemon` refuse to start: the server never runs open.
+Any other request gets `401`. The server compares the token in a time that does not depend on how much of it matches,
 and never logs it.
 
 Generate a token once and keep it in the services' environment file, not in the factory:
@@ -51,11 +51,17 @@ a TLS proxy before it leaves the machine.
 | Limit | Value | Past it |
 | ----- | ----- | ------- |
 | Request head: request line and headers | 8 KiB, 32 headers | `431` |
-| Request body | none allowed | `413` |
-| Time to send the whole request head | 5 seconds | `408` |
+| Request body | none allowed, except 1 MiB on `POST /hooks/github` | `413` |
+| Time to send the whole request, head and body | 5 seconds | `408` |
 | Connections served at once | 8 | Others wait in the listen backlog |
 
 Each connection carries one request and closes after the reply.
+
+## Webhooks
+
+With [`[webhooks.github]`](../reference/factory.md#webhooksgithub), the server also takes signed
+GitHub deliveries at `POST /hooks/github`, with no token. [webhooks.md](../intake/webhooks.md)
+explains them.
 
 ## The web view
 
