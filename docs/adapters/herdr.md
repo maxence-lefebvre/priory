@@ -236,11 +236,14 @@ its visual rules; this section says how it works.
 - **Picking.** An open pick is a segmented control of its options, with a `check` on the
   recommended one and "Recommends Take" beside it. A press waits out a 4 s Undo, since the first
   choice stands, then runs `priory report pick PICK OPTION --expected REVISION` with the report's
-  revision the person read. While one pick is in flight, the panel starts no other.
+  revision the person read. While one pick is in flight, the panel starts no other. When the report
+  stops offering the pick during the Undo, because another task wrote a report or someone picked
+  first, the panel cancels the pick and says so.
 - **Refused picks.** When `report pick` fails, the panel reads the report again and says why on the
   row: someone already picked, the report changed to another revision, the report no longer holds
   the pick, or the CLI's error. When the row has left the view, the reason shows in a strip under
-  the toolbar instead.
+  the toolbar instead. A pick that Priory took stays sent even when the read after it fails. A read
+  older than the one shown is dropped, so a slow read never rolls the report back.
 - **Agreed picks.** A chosen pick folds to one line: its key, the choice and, once the workflow
   applied it, its `applied` text, else "Waiting for the workflow to apply it."
 - **Keys.** `J` and `K` move between rows, `N` goes to the next pick, `1` to `9` press an option of
