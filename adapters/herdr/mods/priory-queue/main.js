@@ -83,6 +83,8 @@ export default class PrioryQueue extends View {
     this.drag = null;
     /** Counts reads, so a slower, older read never replaces a newer one. */
     this.reads = 0;
+    /** The first read that shows the last action's result; the actions stay disabled until it lands. */
+    this.settles = 0;
     /** Whether Last day is unfolded under Next. */
     this.lastDay = false;
     this.reason = InputState.new({ placeholder: "Why hold it?" });
@@ -120,6 +122,7 @@ export default class PrioryQueue extends View {
     // The desk carries whether starts are paused and what the queue is short of.
     const [queue, desk] = await Promise.all([this.priory.client.queue(), this.priory.client.desk()]);
     if (read !== this.reads) return;
+    if (read >= this.settles) this.acting = false;
     this.data = queue;
     this.room = { paused: desk.paused, banner: desk.banner };
     this.updated = Date.now();
@@ -136,7 +139,7 @@ export default class PrioryQueue extends View {
 
   /** @returns {Row[]} */
   rows() {
-    return this.list().sections.flatMap((section) => section.rows);
+    return this.list().sections.filter((section) => !this.folded(section.id)).flatMap((section) => section.rows);
   }
 
   selectedRow() {
@@ -168,6 +171,7 @@ export default class PrioryQueue extends View {
     this.popover = null;
     if (this.acting || this.error) return cx.notify();
     this.acting = true;
+    this.settles = Infinity;
     this.notice = null;
     cx.notify();
     cx.spawn(async (cx) => {
@@ -177,12 +181,13 @@ export default class PrioryQueue extends View {
       } catch (error) {
         this.notice = { task, text: `${label} did not go: ${message(error)}.` };
       }
+      this.settles = this.reads + 1;
       try {
         await this.read();
       } catch (error) {
         this.error = message(error);
+        this.acting = false;
       }
-      this.acting = false;
       cx.notify();
     });
   }
@@ -491,7 +496,12 @@ export default class PrioryQueue extends View {
     /** @param {string} id @param {string} icon @param {string} label @param {any} content */
     const popover = (id, icon, label, content) => Popover.new(`${id}-menu-${row.id}`).anchor("top_left").open(this.popover === id && !off)
       .trigger(button(id, icon, label, () => {}))
-      .on_open_change((/** @type {boolean} */ next, /** @type {import("gpui-kit").Context} */ cx) => { this.popover = next ? id : null; cx.notify(); })
+      .on_open_change((/** @type {boolean} */ next, /** @type {import("gpui-kit").Context} */ cx) => {
+        // A hold reason belongs to the task it was typed for.
+        if (next && id === "hold") this.reason.set_value("");
+        this.popover = next ? id : null;
+        cx.notify();
+      })
       .content(content);
     const task = row.id;
     const waiting = WAITING.includes(row.tile);
