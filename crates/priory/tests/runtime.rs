@@ -2548,7 +2548,7 @@ fn grade(tasks: &[Vec<String>]) -> [&str; 2] {
 fn a_step_ending_green_with_a_reason_sets_the_task_grade_and_reason() {
     let mut setup = Setup::with_workflow("grade-green", GRADED);
     setup.calls(&[json!({ "name": "result", "arguments": {
-        "outcome": "green", "summary": "Plan: add a flag", "reason": "one file, covered by tests"
+        "outcome": "green", "summary": "Plan: add a flag", "reason": "one file,\tcovered by tests"
     } })]);
     setup.publish(&requested(42));
 
@@ -2602,6 +2602,7 @@ fn a_second_grading_step_overwrites_the_grade_and_the_trace_keeps_both() {
 #[test]
 fn a_step_ending_with_another_outcome_leaves_the_grade() {
     let mut setup = Setup::with_workflow("grade-kept", GRADED);
+    setup.telemetry("http://127.0.0.1:4318");
     setup.calls(&[
         json!({ "name": "result", "arguments": {
             "outcome": "yellow", "summary": "Plan", "reason": "two crates"
@@ -2617,6 +2618,15 @@ fn a_step_ending_with_another_outcome_leaves_the_grade() {
         rows.first().is_some_and(|task| task[4] == "done")
     });
     assert_eq!(grade(&tasks), ["green", "green it"]);
+    let spans = setup.until_spans(6);
+    let exported = |step: &str| {
+        let span = spans.iter().find(|span| span["name"] == step).unwrap();
+        attribute(&span["attributes"], "priory.grade")
+    };
+    assert_eq!(
+        [exported("plan"), exported("regrade"), exported("implement")],
+        [json!("yellow"), json!("green"), json!(null)]
+    );
 }
 
 #[test]

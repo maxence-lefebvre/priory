@@ -1013,7 +1013,12 @@ fn settle(tx: &Transaction, run: &Run, trace: &Trace) -> rusqlite::Result<Option
             let reason = reason.as_deref().unwrap_or(&summary);
             tx.execute(
                 "UPDATE tasks SET grade = ?2, graded = ?3 WHERE id = ?1",
-                params![run.task, outcome, reason.lines().next().unwrap_or_default()],
+                // A tab would split the reason across `priory tasks` columns.
+                params![
+                    run.task,
+                    outcome,
+                    reason.lines().next().unwrap_or_default().replace('\t', " ")
+                ],
             )?;
         }
         let target = step(workflows, &run.workflow, &run.step)
