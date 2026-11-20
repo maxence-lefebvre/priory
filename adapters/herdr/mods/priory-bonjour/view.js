@@ -1,6 +1,8 @@
 // The Bonjour panel's view model: `priory report show --json` in, sections, rows and picks out.
 // No drawing, no IO. It knows no section by name.
 
+import { autolink } from "./priory.js";
+
 const sameDay = (/** @type {number} */ at, /** @type {number} */ now) => new Date(at).toDateString() === new Date(now).toDateString();
 const clock = (/** @type {number} */ at) => new Date(at).toLocaleTimeString("en", { hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
 const date = (/** @type {number} */ at) => new Date(at).toLocaleString("en", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
@@ -43,14 +45,19 @@ function choice(pick) {
   };
 }
 
-/** @param {any} section @param {any} row @param {number} index @param {number} now */
-function row(section, row, index, now) {
+/**
+ * @param {any} section @param {any} row @param {number} index @param {number} now
+ * @param {{ pattern: string, url: string }[]} links
+ */
+function row(section, row, index, now, links) {
   return {
     // A row without an id goes by its place: a number, which no row id (a string) equals.
     id: JSON.stringify([section.id, row.id ?? index]),
     tile: row.state ?? null,
     key: row.key ?? null,
     text: row.text,
+    // A report names no repository, so only the factory's own links apply.
+    textSpans: autolink(row.text ?? "", links, null),
     meta: row.meta ?? null,
     owner: row.owner ?? null,
     time: when(row.time, now),
@@ -60,9 +67,10 @@ function row(section, row, index, now) {
 
 /**
  * @param {{ revision: number, report: any }} read
- * @param {{ now: number, view?: string }} options `view` is "all", the default, or "picks"
+ * @param {{ now: number, view?: string, links?: { pattern: string, url: string }[] }} options `view` is "all",
+ *   the default, or "picks"; `links` as `priory links` lists them
  */
-export function dossier(read, { now, view = "all" }) {
+export function dossier(read, { now, view = "all", links = [] }) {
   const { report } = read;
   const picks = report.sections.flatMap((/** @type {any} */ section) => section.rows).map((/** @type {any} */ row) => row.pick).filter(Boolean);
   const agreed = picks.filter((/** @type {any} */ pick) => pick.chosen != null).length;
@@ -75,7 +83,7 @@ export function dossier(read, { now, view = "all" }) {
     id: section.id,
     title: section.title,
     count: section.count ?? section.rows.length,
-    rows: section.rows.map((/** @type {any} */ candidate, /** @type {number} */ index) => row(section, candidate, index, now))
+    rows: section.rows.map((/** @type {any} */ candidate, /** @type {number} */ index) => row(section, candidate, index, now, links))
       .filter((/** @type {Row} */ candidate) => view !== "picks" || candidate.pick?.state === "open"),
   }));
   return {

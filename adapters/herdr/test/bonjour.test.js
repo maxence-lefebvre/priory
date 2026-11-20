@@ -26,7 +26,7 @@ test("draws the report's sections in its own order, each with its count or its n
 
 test("a row shows its tile, key, text, meta, owner and time, and agent text stays as written", () => {
   const sections = dossier(read, { now }).sections;
-  const rows = (id) => sections.find((section) => section.id === id).rows.map(({ pick, ...row }) => row);
+  const rows = (id) => sections.find((section) => section.id === id).rows.map(({ pick, textSpans, ...row }) => row);
   assert.deepEqual(rows("slack"), [{
     id: '["slack",0]', tile: null, key: null, owner: null, time: null, meta: null,
     text: "Yesterday: merged the MCP v2 plan review, answered 4 Priory asks.\nToday: agree the picks and land #212. <b>not html</b>",
@@ -128,4 +128,13 @@ test("a refused pick says why, from the report as Priory shows it after the refu
   assert.equal(refusal(sent, read, "priory report pick: no priory daemon listens on /run/priory.sock"),
     "Not sent: priory report pick: no priory daemon listens on /run/priory.sock.");
   assert.equal(refusal(sent, null, "priory report show: no task has a report"), "Not sent: priory report show: no task has a report.");
+});
+
+test("a report row's text turns the factory's keys into link spans", () => {
+  const { links } = fixture("links.json");
+  const rows = dossier(read, { now, links }).sections.flatMap((section) => section.rows);
+  assert.deepEqual(rows.find((row) => row.key === "PRI-69").textSpans, [{ text: "Held until #212 merges" }]);
+  const linked = { ...read, report: { ...read.report, sections: [{ id: "s", title: "S", count: null, rows: [{ text: "Triage ENG-7 today" }] }] } };
+  assert.deepEqual(dossier(linked, { now, links }).sections[0].rows[0].textSpans,
+    [{ text: "Triage " }, { text: "ENG-7", url: "https://linear.app/acme/issue/ENG-7" }, { text: " today" }]);
 });

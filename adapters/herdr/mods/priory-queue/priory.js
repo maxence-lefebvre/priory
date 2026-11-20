@@ -109,3 +109,17 @@ export function autolink(text, links, repo) {
   if (at < text.length) spans.push({ text: text.slice(at) });
   return spans;
 }
+
+const ENTITIES = /** @type {Record<string, string>} */ ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" });
+const escapeHtml = (/** @type {string} */ text) => text.replace(/[&<>"']/g, (c) => ENTITIES[c]);
+
+/**
+ * `autolink` spans as HTML for Herdr's `TextView.html`, which opens a link with the system's browser.
+ * @param {{ text: string, url?: string }[]} spans
+ */
+export const spansHtml = (spans) => spans
+  .map(({ text, url }) => {
+    const html = escapeHtml(text).replaceAll("\n", "<br>");
+    return url ? `<a href="${escapeHtml(url)}">${html}</a>` : html;
+  })
+  .join("");

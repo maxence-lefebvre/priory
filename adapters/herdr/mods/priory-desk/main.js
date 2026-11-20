@@ -1,7 +1,7 @@
 import { View, div, svg } from "gpui-kit";
-import { v_flex, h_flex, Button } from "gpui-base";
+import { v_flex, h_flex, Button, TextView } from "gpui-base";
 import { appHome, checking, exec, home as herdrHome, nextCommand, readTextFile, run, setShared, settings } from "herdr";
-import { priory } from "./priory.js";
+import { priory, spansHtml } from "./priory.js";
 import { addChoices } from "./add.js";
 import { AddForm } from "./add-form.js";
 import { deskModel, mergeSince, tomorrowAt } from "./view.js";
@@ -32,6 +32,8 @@ const TILES = /** @type {Record<string, [string, string | null, string]>} */ ({
 });
 const RESTART = /** @type {Record<string, string>} */ ({ blocked: "Resume", prompt: "Resume", failed: "Revive" });
 const HOUR = { for: "1h" };
+/** Text with its autolinks; plain text stays a plain child. @param {string} id @param {{ text: string, url?: string }[]} spans */
+const linked = (id, spans) => (spans.some((span) => span.url) ? TextView.html(id, spansHtml(spans)) : spans.map((span) => span.text).join(""));
 const MUTED_TILE = /** @type {[string, string, string]} */ (["tile-muted", "circle-dashed", "text-2"]);
 
 /** @typedef {ReturnType<typeof deskModel>} Model */
@@ -53,7 +55,8 @@ async function connect() {
   const home = found.code === 0 ? found.stdout.trim() : "";
   if (!home.startsWith("/")) throw new Error(`no home folder on ${on ?? "this machine"}`);
   if (binary.startsWith("~/")) binary = home + binary.slice(1);
-  return { theme: config.theme ?? "indigo", client: priory({ exec, binary, on, factory: config.factory ?? null }) };
+  const client = priory({ exec, binary, on, factory: config.factory ?? null });
+  return { theme: config.theme ?? "indigo", client, links: (await client.links()).links };
 }
 
 /** @param {unknown} error */
@@ -64,6 +67,8 @@ export default class PrioryDesk extends View {
   init(_props, cx) {
     /** @type {{ desk: any, asks: any, tasks: any, queue: any } | null} */
     this.data = null;
+    /** @type {{ pattern: string, url: string }[]} */
+    this.links = [];
     /** @type {any[]} */
     this.since = [];
     /** @type {string | null} */
@@ -114,8 +119,9 @@ export default class PrioryDesk extends View {
       try {
         // Connects on first use, and again after a failure, so a machine that comes back works.
         this.client ??= connect().catch((error) => { this.client = null; throw error; });
-        const { theme, client } = await this.client;
+        const { theme, client, links } = await this.client;
         this.theme = theme;
+        this.links = links;
         if (since != null) await client.wait(since);
         if (chain !== this.chain) return;
         this.reading = true;
@@ -272,7 +278,7 @@ export default class PrioryDesk extends View {
           .children([0, 1, 2].map((i) => div().id(`skeleton-${i}`).h(S["pane-row"]).rounded(S["radius-md"]).bg(t.raised)))));
     }
     const data = { ...this.data, desk: { ...this.data.desk, since_you_looked: this.since, last_visit: this.sinceFrom } };
-    const model = deskModel(data, { now: Date.now() });
+    const model = deskModel(data, { now: Date.now(), links: this.links });
     const rows = this.rows(model);
     const added = this.addedKey && rows.find((row) => row.key === this.addedKey);
     if (added) [this.selected, this.addedKey] = [added.id, null];
@@ -326,7 +332,7 @@ export default class PrioryDesk extends View {
         .child(div().text_color(t["text-2"]).child(next.step ?? ""))
         .child(div().flex_1())
         .child(div().text_color(t["text-3"]).child(`waits ${next.age}`)))
-      .child(div().whitespace_normal().font_family(ui.fonts.display).text_size(S["type-pane-question"][0]).line_height(S["type-pane-question"][1] / S["type-pane-question"][0]).font_weight(650).child(next.question))
+      .child(div().whitespace_normal().font_family(ui.fonts.display).text_size(S["type-pane-question"][0]).line_height(S["type-pane-question"][1] / S["type-pane-question"][0]).font_weight(650).child(linked("next-question", next.questionSpans)))
       .when(Boolean(next.recommendation || next.tradeoff), (el) => el.child(div().whitespace_normal().text_size(S["type-small"][0]).text_color(t["text-2"])
         .child(next.recommendation ? `Recommends ${next.recommendation}. ${next.tradeoff ?? ""}` : String(next.tradeoff))))
       .when(Boolean(next.progress?.nextAction), (el) => el.child(div().whitespace_normal().text_size(S["type-caption"][0]).text_color(t["text-3"])
@@ -383,7 +389,7 @@ export default class PrioryDesk extends View {
         .child(div().w(96).flex_none().truncate().child(ui.mono(row.key ?? "")))
         .child(div().w(80).flex_none().truncate().text_size(S["type-caption"][0]).text_color(t["text-2"]).child(row.step ?? ""))
         .child(v_flex().flex_1().min_w_0().gap(2)
-          .child(div().whitespace_normal().text_size(S["type-small"][0]).text_color(row.kind === "ask" ? t.text : reasonColor).child(row.text ?? ""))
+          .child(div().whitespace_normal().text_size(S["type-small"][0]).text_color(row.kind === "ask" ? t.text : reasonColor).child(linked(`text-${row.id}`, row.textSpans)))
           .when(Boolean(note), (el) => el.child(note)))
         .child(div().w(104).flex_none().truncate().text_size(S["type-caption"][0]).text_color(t["text-2"]).child(row.recommends ?? ""))
         .child(div().w(48).flex_none().text_right().text_size(S["type-caption"][0]).text_color(t["text-3"]).child(row.count != null ? String(row.count) : row.age ?? ""))
@@ -397,7 +403,7 @@ export default class PrioryDesk extends View {
             .child(div().flex_1())
             .child(div().flex_none().text_color(t["text-3"]).child(row.count != null ? String(row.count) : row.age ?? "")))
           .child(div().whitespace_normal().max_h(2 * S["type-body"][1]).overflow_hidden().text_size(S["type-body"][0])
-            .text_color(row.kind === "ask" ? t.text : reasonColor).child(row.text ?? ""))
+            .text_color(row.kind === "ask" ? t.text : reasonColor).child(linked(`text-${row.id}`, row.textSpans)))
           .when(Boolean(meta), (el) => el.child(div().text_size(S["type-caption"][0]).text_color(t["text-3"]).child(String(meta))))
           .when(Boolean(note), (el) => el.child(note)));
     return v_flex().id(`row-${row.id}`).px(S["space-2"]).py(S["space-2"]).gap(S["space-2"]).min_h(S["pane-row"]).rounded(S["radius-md"])

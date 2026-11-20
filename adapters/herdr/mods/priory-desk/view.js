@@ -1,5 +1,7 @@
 // The Desk panel's view model: Priory's listings in, the count, sections and rows out. No drawing, no IO.
 
+import { autolink } from "./priory.js";
+
 const STOPPED = ["blocked", "failed", "prompt", "delivery"];
 const SNOOZABLE = ["ask", "blocked", "failed", "prompt"];
 const RECOMMENDS = /** @type {Record<string, string>} */ ({ blocked: "Resume", prompt: "Resume", failed: "Revive" });
@@ -34,11 +36,11 @@ function progressLines(progress) {
 
 /**
  * The Desk at `now`: the count, the next thing, the room banner, the saved views and each view's
- * sections. Agent text passes through as text; the drawing never parses it.
+ * sections. Agent text passes through as text, and as `autolink` spans where the web view links it.
  * @param {{ desk: any, asks: any, tasks: any, queue: any }} data
- * @param {{ now: number }} options
+ * @param {{ now: number, links?: { pattern: string, url: string }[] }} options `links` as `priory links` lists them
  */
-export function deskModel({ desk, asks: asksListing, tasks: tasksListing, queue }, { now }) {
+export function deskModel({ desk, asks: asksListing, tasks: tasksListing, queue }, { now, links = [] }) {
   /** @type {Map<unknown, any>} */
   const askById = new Map(asksListing.asks.map((/** @type {any} */ ask) => [ask.id, ask]));
   /** @type {any[]} */
@@ -50,6 +52,7 @@ export function deskModel({ desk, asks: asksListing, tasks: tasksListing, queue 
     const ask = item.kind === "ask" ? askById.get(item.id) : null;
     const task = taskById.get(item.task);
     const back = item.back_early;
+    const text = ask ? ask.title || ask.question : ["blocked", "failed"].includes(item.kind) && task?.reason ? task.reason : item.what;
     return {
       id: `${item.kind}:${item.id}`,
       kind: item.kind,
@@ -58,7 +61,8 @@ export function deskModel({ desk, asks: asksListing, tasks: tasksListing, queue 
       step: item.step,
       age: item.since ? age(item.since, now) : null,
       // The desk's `what` for a failed task ends with its revive command; the task's reason does not.
-      text: ask ? ask.title || ask.question : ["blocked", "failed"].includes(item.kind) && task?.reason ? task.reason : item.what,
+      text,
+      textSpans: autolink(text, links, ask?.repo ?? null),
       recommends: ask ? ask.recommendation ?? null : RECOMMENDS[item.kind] ?? null,
       note: isSnoozed(item) ? `Snoozed until ${when(item.snoozed_until, now)}`
         : back ? `Back early: ${back.reason}${back.reason === "new revision" && ask ? ` ${ask.revision}` : ""}` : null,
@@ -71,13 +75,16 @@ export function deskModel({ desk, asks: asksListing, tasks: tasksListing, queue 
   }
 
   /** @param {any} task */
-  const taskRow = (task) => ({
+  const taskRow = (task) => {
+    const text = task.tldr || task.reason || task.progress?.latestChange || task.workflow;
+    return {
     id: `task:${task.id}`,
     kind: task.state,
     key: task.key,
     step: task.step,
     age: task.since ? age(task.since, now) : null,
-    text: task.tldr || task.reason || task.progress?.latestChange || task.workflow,
+    text,
+    textSpans: autolink(text, links, task.repo ?? null),
     recommends: /** @type {string | null} */ (null),
     note: /** @type {string | null} */ (null),
     snooze: /** @type {{ kind: string, id: number | string } | null} */ (null),
@@ -85,7 +92,8 @@ export function deskModel({ desk, asks: asksListing, tasks: tasksListing, queue 
     task: task.id,
     revision: /** @type {number | null} */ (null),
     progress: progressLines(task.progress),
-  });
+    };
+  };
 
   /** @type {any[]} */
   const items = desk.items;
@@ -125,7 +133,7 @@ export function deskModel({ desk, asks: asksListing, tasks: tasksListing, queue 
 
   return {
     count: { number: asks.length, label: asks.length === 1 ? "ask needs you" : "asks need you", line },
-    next: asks.length ? nextThing(asks[0], askById.get(asks[0].id), taskById.get(asks[0].task), now) : null,
+    next: asks.length ? nextThing(asks[0], askById.get(asks[0].id), taskById.get(asks[0].task), now, links) : null,
     empty: asks.length || stopped.length ? null : "No open asks. Agents ask here when they need you.",
     views: [
       { id: "needs", label: "Needs me", count: asks.length + stopped.length },
@@ -150,9 +158,13 @@ export function deskModel({ desk, asks: asksListing, tasks: tasksListing, queue 
   };
 }
 
-/** @param {any} item a desk ask item @param {any} ask the same ask in `priory asks` @param {any} task @param {number} now */
-function nextThing(item, ask, task, now) {
+/**
+ * @param {any} item a desk ask item @param {any} ask the same ask in `priory asks` @param {any} task @param {number} now
+ * @param {{ pattern: string, url: string }[]} links
+ */
+function nextThing(item, ask, task, now, links) {
   const progress = task?.progress;
+  const question = ask?.title || ask?.question || item.what;
   return {
     ask: item.id,
     revision: ask?.revision ?? null,
@@ -160,7 +172,8 @@ function nextThing(item, ask, task, now) {
     key: item.key ?? ask?.key ?? null,
     step: item.step,
     age: age(item.since, now),
-    question: ask?.title || ask?.question || item.what,
+    question,
+    questionSpans: autolink(question, links, ask?.repo ?? null),
     recommendation: ask?.recommendation ?? null,
     tradeoff: ask?.tradeoff ?? null,
     progress: progress ? { latestChange: progress.latestChange ?? null, nextAction: progress.nextAction ?? null } : null,

@@ -112,6 +112,7 @@ test("an open command ask's detail puts the decision first, then Why, History an
   assert.deepEqual(detail.chips, [["why", "Why"], ["history", "History"], ["command", "Command"]]);
   assert.deepEqual(detail.why, {
     text: "I read the diff of #212 and ran `gh pr checks 212`: fmt, clippy and test are green.\n<b>not html</b>",
+    textSpans: [{ text: "I read the diff of #212 and ran `gh pr checks 212`: fmt, clippy and test are green.\n<b>not html</b>" }],
     run: null,
     tradeoff: "Merging now ships the exporter today. A second review may still ask for changes.",
     whatWaits: "PRI-64 rebases on this merge.",
@@ -241,4 +242,13 @@ test("History keeps entries of the same second newest first", () => {
   assert.deepEqual(askDetail(same, { now, armed: null }).history.map((item) => item.text), [
     "Answered Merge", "Asked revision 2: Merge #212 into main? Checks are green.", "Answered Wait", "Asked revision 1: Merge #212 into main?",
   ]);
+});
+
+test("an ask's question in its detail, and its text under Why, turn the factory's keys into link spans", () => {
+  const { links } = fixture("links.json");
+  const ask = { ...asks[0], repo: "acme/app", text: "Fixes ENG-7." };
+  const pr = [{ text: "Merge " }, { text: "#212", url: "https://github.com/acme/app/issues/212" }, { text: " into main? Checks are green at a1f3c9e." }];
+  const detail = askDetail(ask, { now, armed: null, links });
+  assert.deepEqual(detail.questionSpans, pr);
+  assert.deepEqual(detail.why.textSpans, [{ text: "Fixes " }, { text: "ENG-7", url: "https://linear.app/acme/issue/ENG-7" }, { text: "." }]);
 });

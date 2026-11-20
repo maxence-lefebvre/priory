@@ -251,14 +251,14 @@ function itemRow(item) {
   return html`<div class="row">
     ${tile(kind)}
     <span class="l1"><span class="mono">${item.key || ""}</span><span>${item.step || ""}</span><span>${item.kind}</span><span class="age">${timeTag(item.since)}</span></span>
-    <span class="l2 r t-${role(kind)}">${item.what}</span></div>`;
+    <span class="l2 r t-${role(kind)}">${autolinked(item.what, null)}</span></div>`;
 }
 
 function taskRow(task) {
   return html`<div class="row">
     ${tile(task.state)}
     <span class="l1"><span class="mono">${task.key}</span><span>${task.workflow} ${task.step}</span><span>${task.state}</span><span class="age">${timeTag(task.since)}</span></span>
-    <span class="l2 r ${task.reason ? `t-${role(task.state)}` : ""}">${task.reason || task.tldr || task.lane || ""}</span></div>`;
+    <span class="l2 r ${task.reason ? `t-${role(task.state)}` : ""}">${autolinked(task.reason || task.tldr || task.lane || "", task.repo)}</span></div>`;
 }
 
 function runRow(run) {

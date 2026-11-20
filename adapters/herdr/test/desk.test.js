@@ -28,6 +28,7 @@ test("the next thing is the oldest open ask, with its recommendation and its tas
     step: "approve",
     age: "42 min",
     question: "Merge #212 into main? Checks are green at a1f3c9e.",
+    questionSpans: [{ text: "Merge #212 into main? Checks are green at a1f3c9e." }],
     recommendation: "merge",
     tradeoff: "The diff stays inside priory-core and the docs.",
     progress: { latestChange: "Checks are green at a1f3c9e", nextAction: "Squash-merge #212 once a person says Merge" },
@@ -121,4 +122,16 @@ test("a prompt or delivery row keeps the desk's own text; blocked and failed sho
 
 test("tomorrow at 09:00 is local time, for priory snooze --until", () => {
   assert.equal(tomorrowAt(9, Date.parse("2026-11-20T23:30:00Z")), "2026-11-21T09:00:00.000Z");
+});
+
+test("an ask's question and a task's title turn the factory's keys into link spans", () => {
+  const { links } = fixture("links");
+  const asks = { asks: data.asks.asks.map((ask) => (ask.id === 1 ? { ...ask, repo: "acme/app" } : ask)) };
+  const tasks = { tasks: data.tasks.tasks.map((task) => (task.key === "cli:PRI-66" ? { ...task, tldr: "Retry ENG-7 with backoff" } : task)) };
+  const model = deskModel({ ...data, asks, tasks }, { now, links });
+  const pr = [{ text: "Merge " }, { text: "#212", url: "https://github.com/acme/app/issues/212" }, { text: " into main? Checks are green at a1f3c9e." }];
+  assert.deepEqual(model.next.questionSpans, pr);
+  assert.deepEqual(model.sections("needs")[0].rows[0].textSpans, pr);
+  assert.deepEqual(model.sections("running")[0].rows[0].textSpans,
+    [{ text: "Retry " }, { text: "ENG-7", url: "https://linear.app/acme/issue/ENG-7" }, { text: " with backoff" }]);
 });

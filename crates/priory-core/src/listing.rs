@@ -365,11 +365,12 @@ fn asks_of(
     Ok(asks)
 }
 
-/// The factory's bands highest first, the waiting tasks in start order, then the held ones with
+/// The factory's bands highest first, its workflow names, the waiting tasks in start order, then the held ones with
 /// their hold, the live runs, and the tasks that ended in the last day, each with its title, and up next: the next three runs, with `schedules`' firings.
 pub fn queue(
     db: &Connection,
     schedules: &[(String, Trigger)],
+    workflows: &[String],
     now: Timestamp,
 ) -> rusqlite::Result<Value> {
     let waiting = format!(
@@ -395,6 +396,7 @@ pub fn queue(
         .for_each(parse_json);
     Ok(json!({
         "bands": state::band_names(db)?,
+        "workflows": workflows,
         "up_next": up_next(db, &waiting, schedules, now)?,
         "waiting": waiting,
         "running": rows(

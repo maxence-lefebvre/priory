@@ -1,7 +1,7 @@
 import { View, div, svg } from "gpui-kit";
-import { h_flex, v_flex, Button, ScrollHandle } from "gpui-base";
+import { h_flex, v_flex, Button, ScrollHandle, TextView } from "gpui-base";
 import { appHome, exec, home as herdrHome, readTextFile } from "herdr";
-import { priory } from "./priory.js";
+import { priory, spansHtml } from "./priory.js";
 import { FONTS, palette, STRUCTURE as S } from "./tokens.js";
 import { dossier, nextPick, refusal } from "./view.js";
 
@@ -50,8 +50,12 @@ async function connect() {
   const home = found.code === 0 ? found.stdout.trim() : "";
   if (!home.startsWith("/")) throw new Error(`No home folder on ${on ?? "this machine"}`);
   if (binary.startsWith("~/")) binary = home + binary.slice(1);
-  return { theme: config.theme ?? "indigo", client: priory({ exec, binary, on, factory: config.factory ?? null }) };
+  const client = priory({ exec, binary, on, factory: config.factory ?? null });
+  return { theme: config.theme ?? "indigo", client, links: (await client.links()).links };
 }
+
+/** Text with its autolinks; plain text stays a plain child. @param {string} id @param {{ text: string, url?: string }[]} spans */
+const linked = (id, spans) => (spans.some((span) => span.url) ? TextView.html(id, spansHtml(spans)) : spans.map((span) => span.text).join(""));
 
 const message = (/** @type {unknown} */ error) => (error instanceof Error ? error.message : String(error));
 
@@ -77,6 +81,8 @@ export default class PrioryBonjour extends View {
     this.priory = null;
     /** @type {Read | null} */
     this.data = null;
+    /** @type {{ pattern: string, url: string }[]} */
+    this.links = [];
     /** Whether Priory answered that no task has written a report yet. */
     this.empty = false;
     /** @type {string | null} */
@@ -109,6 +115,7 @@ export default class PrioryBonjour extends View {
       for (;;) {
         try {
           this.priory ??= await connect();
+          this.links = this.priory.links;
           try {
             this.accept(await this.priory.client.report());
             since = this.data?.revision ?? since;
@@ -156,7 +163,7 @@ export default class PrioryBonjour extends View {
 
   /** @param {number} [now] */
   model(now = Date.now()) {
-    return this.data ? dossier(this.data, { now, view: this.view }) : null;
+    return this.data ? dossier(this.data, { now, view: this.view, links: this.links }) : null;
   }
 
   /** @param {Dossier} model */
@@ -405,7 +412,7 @@ export default class PrioryBonjour extends View {
         .child(h_flex().gap(S["space-2"]).items_start()
           .child(v_flex().flex_1().min_w_0().gap(2)
             .when(Boolean(row.key), (el) => el.child(div().font_family(this.font.mono).text_size(S["type-caption"][0]).text_color(t["text-2"]).child(row.key ?? "")))
-            .child(div().whitespace_normal().line_height(LINE(S["type-body"])).font_weight(500).child(row.text)))
+            .child(div().whitespace_normal().line_height(LINE(S["type-body"])).font_weight(500).child(linked(`text-${row.id}`, row.textSpans))))
           .when(Boolean(row.owner || row.time), (el) => el.child(this.side(row, t))))
         .when(Boolean(row.meta), (el) => el.child(div().whitespace_normal().text_size(S["type-caption"][0]).text_color(t["text-3"]).child(row.meta ?? ""))));
   }
@@ -444,7 +451,7 @@ export default class PrioryBonjour extends View {
         .when(Boolean(row.tile), (el) => el.child(this.tile(/** @type {string} */ (row.tile), t)))
         .child(div().flex_1().min_w_0().truncate().font_family(this.font.mono).text_size(S["type-caption"][0]).text_color(t["text-2"]).child(row.key ?? ""))
         .when(Boolean(row.owner || row.time), (el) => el.child(this.side(row, t)))))
-      .child(div().whitespace_normal().line_height(LINE(S["type-body"])).font_weight(600).child(row.text))
+      .child(div().whitespace_normal().line_height(LINE(S["type-body"])).font_weight(600).child(linked(`text-${row.id}`, row.textSpans)))
       .when(Boolean(row.meta), (el) => el.child(div().whitespace_normal().text_size(S["type-caption"][0]).text_color(t["text-3"]).child(row.meta ?? "")))
       .when(Boolean(notice), (el) => el.child(this.notice(notice, t)))
       .child(h_flex().gap(S["space-2"]).items_center().flex_wrap()

@@ -4,7 +4,7 @@ import { execFile } from "node:child_process";
 import { existsSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { autolink, priory } from "../lib/priory.js";
+import { autolink, priory, spansHtml } from "../lib/priory.js";
 
 const FAKE = new URL("./fake-priory", import.meta.url).pathname;
 
@@ -215,4 +215,11 @@ test("autolink returns the spans the web view links", async () => {
     { text: "#3", url: "https://github.com/acme/app/issues/3" },
     { text: " and doc-4." },
   ]);
+});
+
+test("spansHtml escapes the text and the URL, keeps line breaks and links only the spans with a URL", () => {
+  assert.equal(
+    spansHtml([{ text: "<b>it's</b> " }, { text: "ENG-8", url: "https://x.test/?a=1&b=\"2\"" }, { text: "\nnext" }]),
+    '&lt;b&gt;it&#39;s&lt;/b&gt; <a href="https://x.test/?a=1&amp;b=&quot;2&quot;">ENG-8</a><br>next',
+  );
 });

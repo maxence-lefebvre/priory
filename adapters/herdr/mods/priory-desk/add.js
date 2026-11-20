@@ -4,11 +4,13 @@
 const values = (rows, field) => [...new Set(rows.map((row) => row[field]).filter((value) => value != null))].sort();
 
 /**
- * The chips' choices: the factory's bands in its order, and each workflow and lane a task carries.
+ * The chips' choices: the factory's workflows and bands, and each lane a task carries. A queue
+ * read without the factory folder lists no workflows, so the chips offer those the tasks carry.
  * @param {any} queue `priory queue --json` @param {any[]} tasks `priory tasks --json`'s tasks
  */
 export function addChoices(queue, tasks) {
-  return { workflow: values(tasks, "workflow"), band: queue.bands ?? [], lane: values([...queue.waiting, ...tasks], "lane") };
+  const workflow = queue.workflows?.length ? queue.workflows : values(tasks, "workflow");
+  return { workflow, band: queue.bands ?? [], lane: values([...queue.waiting, ...tasks], "lane") };
 }
 
 /**
