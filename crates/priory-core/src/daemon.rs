@@ -75,6 +75,9 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
     tools::backfill_endings(&mut db, &factory.workflows)?;
     let bus = Bus::open_default()?;
     state::bands(&mut db, &factory.bands())?;
+    for error in sections::dispatch(&db, factory, None)? {
+        eprintln!("priory daemon: {error}");
+    }
     let embedder = factory.search().embedder().map(|spec| embed::name(&spec));
     search::configure(&db, embedder.as_deref())?;
     let home = runtime::home();
@@ -876,18 +879,31 @@ fn verdict(run: &state::LiveRun, factory: &Factory) -> Option<(&'static str, Str
     })
 }
 
-/// Runs the action of the oldest task at a code step, once an irreversible step's approval holds.
-/// An action that is not built yet blocks the task.
+/// Runs the action of the oldest task at a code step that does not wait for disk, once an
+/// irreversible step's approval holds. An action that is not built yet blocks the task.
 fn perform(
     db: &mut Connection,
     trace: &Trace,
     home: &Path,
     commands: &mut Vec<(i64, Script)>,
 ) -> Result<(), Error> {
+    for due in state::actionable(db, &trace.factory.workflows)? {
+        if !act(db, trace, home, commands, &due)? {
+            break;
+        }
+    }
+    Ok(())
+}
+
+/// Runs `due`'s action, or returns true when it waits for disk to add its worktree back.
+fn act(
+    db: &mut Connection,
+    trace: &Trace,
+    home: &Path,
+    commands: &mut Vec<(i64, Script)>,
+    due: &state::Due,
+) -> Result<bool, Error> {
     let factory = trace.factory;
-    let Some(due) = state::actionable(db, &factory.workflows)? else {
-        return Ok(());
-    };
     let step = factory.workflows[&due.workflow]
         .value
         .step(&due.step)
@@ -903,9 +919,10 @@ fn perform(
     {
         match restore_worktree(db, home, repo, due.task)? {
             Restored::Ready => {}
-            Restored::Waits => return Ok(()),
+            Restored::Waits => return Ok(true),
             Restored::Failed(reason) => {
-                return Ok(state::block(db, trace, due.task, "blocked", &reason)?);
+                state::block(db, trace, due.task, "blocked", &reason)?;
+                return Ok(false);
             }
         }
     }
@@ -915,25 +932,23 @@ fn perform(
         .zip(due.branch.as_deref())
         .and_then(|(worktree, branch)| runtime::kept_head(home, Path::new(worktree), branch));
     if !tools::approved(db, due.task, step, head.as_deref())? {
-        return Ok(());
+        return Ok(false);
     }
     let done = match step.action.as_deref().unwrap_or_default() {
-        "open-pr" => open_pr(db, factory, &due, head.as_deref())?,
-        "open-issue" => open_issue(db, factory, &due)?,
-        "run" => return start_command(db, trace, home, &due, step, commands),
+        "open-pr" => open_pr(db, factory, due, head.as_deref())?,
+        "open-issue" => open_issue(db, factory, due)?,
+        "run" => {
+            start_command(db, trace, home, due, step, commands)?;
+            return Ok(false);
+        }
         other => {
             let reason = format!("action {other} is not built yet");
-            return Ok(state::block(db, trace, due.task, "blocked", &reason)?);
+            state::block(db, trace, due.task, "blocked", &reason)?;
+            return Ok(false);
         }
     };
-    Ok(tools::performed(
-        db,
-        due.task,
-        &due.workflow,
-        step,
-        done,
-        trace,
-    )?)
+    tools::performed(db, due.task, &due.workflow, step, done, trace)?;
+    Ok(false)
 }
 
 /// Where a removed worktree stands once `restore_worktree` looked at it.

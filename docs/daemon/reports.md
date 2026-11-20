@@ -112,5 +112,11 @@ A pick's `requests` maps an option to a task request, with the fields of `priory
 ```
 
 `workflow`, `key` and `text` are required; `band`, `lane`, `repo`, `tldr` and `hold` are optional.
-Picking that option publishes the request, as `priory request` does, and sets `applied` to
-`requested task cli:<key>`. It wakes no task.
+Picking that option records the choice, sets `applied` to `requested task cli:<key>` and keeps the
+request as a pending dispatch, all in one transaction. The daemon then publishes the request, as
+`priory request` does, and wakes no task. Its ids hold the pick's id, so a later pick of the same
+key and text requests another task, and publishing one pick twice adds nothing.
+
+When the publish fails, the pick stays recorded and `priory report pick` exits with the error. The
+daemon publishes every pending dispatch again when it starts, so a crash after the choice never
+loses its task, and a crash before it never requests one.
