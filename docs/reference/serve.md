@@ -4,18 +4,22 @@ The HTTP server's endpoints and the JSON they return. [serve.md](../daemon/serve
 the server runs, its token and its limits.
 
 Every endpoint but `POST /hooks/github` takes `GET` and needs `Authorization: Bearer <token>`. Each
-listing returns the same JSON as the CLI command with `--json`.
+listing returns the same JSON as the CLI command with `--json`, with the state's `revision`, an
+integer, read in the same transaction. A listing that is an object has a `revision` field. A
+listing that is a list comes as `{"revision": N, "<name>": [...]}`, where `<name>` is `inbox`,
+`asks` or `tasks`.
 
 | Endpoint | CLI | Returns |
 | -------- | --- | ------- |
 | `/api/desk` | `priory desk --json` | an object: [Desk](#desk) |
-| `/api/inbox` | `priory inbox --json` | an array of [inbox messages](#inbox) |
-| `/api/asks` | `priory asks --json` | an array of [asks](#asks) |
-| `/api/tasks` | `priory tasks --json` | an array of [tasks](#tasks) |
+| `/api/inbox` | `priory inbox --json` | `inbox`: an array of [inbox messages](#inbox) |
+| `/api/asks` | `priory asks --json` | `asks`: an array of [asks](#asks) |
+| `/api/tasks` | `priory tasks --json` | `tasks`: an array of [tasks](#tasks) |
 | `/api/tasks/{id}` | | one [task in detail](#task-in-detail) |
 | `/api/queue` | `priory queue --json` | an object: [Queue](#queue) |
 | `/api/reports/latest` | `priory report show --json` | the [report](#report) written last |
 | `/api/reports/{task}` | `priory report show TASK --json` | the task's [report](#report) |
+| `/api/events?since=REV` | `priory wait --since REV` | `{"revision": N}` once it differs from `REV`. See [below](#apievents) |
 | `/`, `/index.html` | | the web view, with `web = true` |
 | `POST /hooks/github` | | `202` for a signed GitHub delivery, with `[webhooks.github]`. See [below](#post-hooksgithub) |
 
@@ -28,7 +32,7 @@ or a reason, is untrusted: render it as text.
 | ---- | ---- |
 | `200` | The endpoint answered |
 | `202` | A signed webhook delivery was taken: published, or dropped on purpose |
-| `400` | The request does not parse; for a webhook, it sends two `Content-Length`, or its payload lacks a field its event needs |
+| `400` | The request does not parse; `/api/events` lacks `since` or has a parameter out of range; for a webhook, it sends two `Content-Length`, or its payload lacks a field its event needs |
 | `401` | The token is missing or wrong; for a webhook, the signature is |
 | `404` | No such path, no such task, or no such report |
 | `405` | A method other than `GET`, on any path |
@@ -37,8 +41,23 @@ or a reason, is untrusted: render it as text.
 | `413` | The request has a body; for a webhook, a body over 1 MiB |
 | `431` | The request head is over 8 KiB or 32 headers |
 | `500` | The state could not be read, or a delivery could not be published |
+| `503` | 4 requests already wait on `/api/events` and this one would wait too. It comes with `Retry-After: 1` |
 
 An error's body is `{"error": "<why>"}`.
+
+## `/api/events`
+
+Waits for the state to change. [serve.md](../daemon/serve.md#waiting-for-a-change) explains the
+revision.
+
+| Parameter | Meaning |
+| --------- | ------- |
+| `since` | Required. The revision the client last read |
+| `timeout` | Seconds to hold the request without a change, from 0 to 25. 25 by default |
+
+The reply is `200` with `{"revision": N}`: at once when `N` differs from `since`, else after the
+first change, or after `timeout` with `N` equal to `since`. `priory wait --since REV [--timeout D]`
+prints `N` the same way, and waits 25 seconds by default. `D` is a duration such as `90s` or `2m`.
 
 ## `POST /hooks/github`
 
