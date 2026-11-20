@@ -1141,16 +1141,16 @@ fn subscription(verb: &str, task: &str, resource: &str) -> ExitCode {
     let Ok(task) = task.parse() else {
         return usage();
     };
-    if !subscribe::known(resource) {
+    let Some(resource) = subscribe::resource(resource) else {
         eprintln!(
             "priory {verb}: `{resource}` is not a resource: name github:owner/name#7, linear:ENG-7 or slack:C0123:1763500000.000100"
         );
         return ExitCode::from(2);
-    }
+    };
     let done = state::open().and_then(|mut db| {
         let done = match verb {
-            "subscribe" => subscribe::subscribe(&mut db, task, resource),
-            _ => subscribe::unsubscribe(&mut db, task, resource),
+            "subscribe" => subscribe::subscribe(&mut db, task, &resource),
+            _ => subscribe::unsubscribe(&mut db, task, &resource),
         };
         done.map_err(|error| error.to_string())?
             .map(|text| println!("{text}"))

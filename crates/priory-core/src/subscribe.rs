@@ -25,10 +25,6 @@ pub fn subscribe(
         return Ok(Err(refused));
     }
     tx.execute(
-        "INSERT OR IGNORE INTO owns (task, resource) VALUES (?1, ?2)",
-        params![task, resource],
-    )?;
-    tx.execute(
         "INSERT OR IGNORE INTO subscriptions (task, resource) VALUES (?1, ?2)",
         params![task, resource],
     )?;
@@ -43,8 +39,8 @@ pub fn subscribe(
     Ok(Ok(format!("task {task} subscribes to {resource}")))
 }
 
-/// Ends `task`'s subscription to `resource`, and its ownership unless the resource is its key or
-/// an open wait of it names the resource.
+/// Ends `task`'s subscription to `resource`. What it owns otherwise, such as its key, a pull
+/// request it opened or one it waited on, it still owns.
 pub fn unsubscribe(
     db: &mut Connection,
     task: i64,
@@ -58,13 +54,6 @@ pub fn unsubscribe(
     if ended == 0 {
         return Ok(Err(format!("task {task} does not subscribe to {resource}")));
     }
-    tx.execute(
-        "DELETE FROM owns WHERE task = ?1 AND resource = ?2
-         AND resource IS NOT (SELECT key FROM tasks WHERE id = ?1)
-         AND NOT EXISTS (SELECT 1 FROM waits WHERE task = ?1 AND resource = ?2
-           AND fired IS NULL AND withdrawn IS NULL)",
-        params![task, resource],
-    )?;
     tx.commit()?;
     Ok(Ok(format!("task {task} unsubscribed from {resource}")))
 }
@@ -92,19 +81,22 @@ pub(crate) fn tool(db: &mut Connection, call: &Call) -> rusqlite::Result<Result<
     }
 }
 
-/// Whether `resource`, as `priory subscribe` takes it, names a pull request or issue, a Linear
-/// issue or a Slack thread.
-pub fn known(resource: &str) -> bool {
-    let github = resource
-        .strip_prefix("github:")
-        .and_then(|pull| pull.rsplit_once('#'))
-        .is_some_and(|(repo, number)| repo.contains('/') && number.parse::<u64>().is_ok());
-    let linear = resource
-        .strip_prefix("linear:")
-        .is_some_and(|issue| !issue.is_empty());
-    let slack = resource
-        .strip_prefix("slack:")
-        .and_then(|thread| thread.split_once(':'))
-        .is_some_and(|(channel, ts)| !channel.is_empty() && !ts.is_empty());
-    github || linear || slack
+/// `resource`, as `priory subscribe` takes it, in the form events name it: a pull request or
+/// issue, a Linear issue or a Slack thread. `None` for anything else.
+pub fn resource(resource: &str) -> Option<String> {
+    if let Some(pull) = resource.strip_prefix("github:") {
+        let (repo, number) = pull.rsplit_once('#')?;
+        let number = number.parse().ok()?;
+        return repo
+            .contains('/')
+            .then(|| crate::route::pull_request(repo, number));
+    }
+    let named = match resource.split_once(':')? {
+        ("linear", issue) => !issue.is_empty(),
+        ("slack", thread) => thread
+            .split_once(':')
+            .is_some_and(|(channel, ts)| !channel.is_empty() && !ts.is_empty()),
+        _ => false,
+    };
+    named.then(|| resource.to_owned())
 }

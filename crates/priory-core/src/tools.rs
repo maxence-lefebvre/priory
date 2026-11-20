@@ -2229,9 +2229,9 @@ fn revive(
     }
     let shared = tx
         .query_row(
-            "SELECT owns.resource, tasks.id FROM owns JOIN owns AS mine ON mine.resource = owns.resource
-             JOIN tasks ON tasks.id = owns.task
-             WHERE mine.task = ?1 AND owns.task != ?1 AND tasks.state NOT IN ('done', 'failed', 'dropped')
+            "SELECT owned.resource, tasks.id FROM owned JOIN owned AS mine ON mine.resource = owned.resource
+             JOIN tasks ON tasks.id = owned.task
+             WHERE mine.task = ?1 AND owned.task != ?1 AND tasks.state NOT IN ('done', 'failed', 'dropped')
              ORDER BY tasks.id LIMIT 1",
             [act.task],
             |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)),
@@ -2299,8 +2299,8 @@ pub(crate) fn reopenable(
         return Ok(None);
     }
     tx.query_row(
-        "SELECT tasks.id FROM owns JOIN tasks ON tasks.id = owns.task
-         WHERE owns.resource = ?1 AND tasks.state = 'done'
+        "SELECT tasks.id FROM owned JOIN tasks ON tasks.id = owned.task
+         WHERE owned.resource = ?1 AND tasks.state = 'done'
          AND julianday(?2) >= julianday(tasks.changed)
          AND NOT EXISTS (SELECT 1 FROM inbox WHERE type = ?3
            AND 'github:' || json_extract(data, '$.repo') || '#' || json_extract(data, '$.pull_request') = ?1)

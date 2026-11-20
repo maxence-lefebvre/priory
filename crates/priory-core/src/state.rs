@@ -782,7 +782,7 @@ const SCHEMA_44: &str = concat!(
 );
 
 // The resources a task subscribes to, beside its ownership in `owns`: polled and woken on until
-// the resource closes, the task retires or unsubscribes.
+// the resource closes, the task retires or unsubscribes. `owned` is what a task owns either way.
 const SCHEMA_45: &str = concat!(
     "CREATE TABLE IF NOT EXISTS subscriptions (
   task     INTEGER NOT NULL REFERENCES tasks (id),
@@ -791,6 +791,8 @@ const SCHEMA_45: &str = concat!(
   PRIMARY KEY (task, resource)
 );
 CREATE INDEX IF NOT EXISTS subscriptions_by_resource ON subscriptions (resource);
+CREATE VIEW IF NOT EXISTS owned AS
+  SELECT task, resource FROM owns UNION SELECT task, resource FROM subscriptions;
 ",
     bumps!("subscriptions"),
     "PRAGMA user_version = 45;
@@ -1047,29 +1049,19 @@ pub(crate) fn handle(
         crate::post::report(&tx, "linear", &refiltered(&message.data))?;
     }
     crate::hold::event(&tx, &resources)?;
-    // The keyed task keeps the event; another task that shares the resource hears it through its wait.
+    // The keyed task keeps the event; another task that shares the resource hears it through its
+    // wait or its subscription.
     for other in owners.iter().filter(|other| Some(other.id) != task) {
-        crate::tools::event(&tx, other.id, seq)?;
-    }
-    if message.kind == CLOSED {
-        tx.execute(
-            "DELETE FROM subscriptions WHERE resource = ?1",
-            [resources.first()],
-        )?;
+        if !crate::tools::event(&tx, other.id, seq)? {
+            delivered(&tx, other.id, message, &resources, None, factory)?;
+        }
     }
     match (task, outcome) {
         (Some(task), "kept") => {
             if !crate::tools::event(&tx, task, seq)?
-                && subscribes(&tx, task, &resources)?
-                && wakes(&tx, task, factory)?
+                && delivered(&tx, task, message, &resources, Some(seq), factory)?
             {
-                let line = line(
-                    &message.kind,
-                    message.subject.as_deref(),
-                    &message.data.to_string(),
-                );
                 tx.execute("UPDATE inbox SET outcome = 'woke' WHERE seq = ?1", [seq])?;
-                crate::tools::wake_on(&tx, task, &line, Some(seq))?;
             }
         }
         (Some(task), "woke") => {
@@ -1088,6 +1080,13 @@ pub(crate) fn handle(
             return Ok(tmux);
         }
         _ => {}
+    }
+    // After the delivery above, so the close reaches its subscribers.
+    if message.kind == CLOSED {
+        tx.execute(
+            "DELETE FROM subscriptions WHERE resource = ?1",
+            [resources.first()],
+        )?;
     }
     tx.commit()?;
     Ok(None)
@@ -1111,6 +1110,39 @@ fn wakes(tx: &Transaction, task: i64, factory: &Factory) -> rusqlite::Result<boo
             .and_then(|workflow| workflow.value.step(&step))
             .is_some_and(|step| step.decides == priory_factory::factory::Decider::Model)
     }))
+}
+
+/// Delivers `message` to `task` when it subscribes to a resource of `resources` and no wait took
+/// it: a wake while it sleeps where an event can wake it, else a queued prompt while it runs. `kept`
+/// is the inbox entry when `task` kept the message, whose own prompt is already queued. Returns
+/// whether it woke the task.
+fn delivered(
+    tx: &Transaction,
+    task: i64,
+    message: &Message,
+    resources: &[String],
+    kept: Option<i64>,
+    factory: &Factory,
+) -> rusqlite::Result<bool> {
+    if !subscribes(tx, task, resources)? {
+        return Ok(false);
+    }
+    let line = line(
+        &message.kind,
+        message.subject.as_deref(),
+        &message.data.to_string(),
+    );
+    if wakes(tx, task, factory)? {
+        crate::tools::wake_on(tx, task, &line, kept)?;
+        return Ok(true);
+    }
+    if kept.is_none() {
+        tx.execute(
+            "INSERT INTO outbox (task, text) SELECT id, ?2 FROM tasks WHERE id = ?1 AND state = 'running'",
+            params![task, line],
+        )?;
+    }
+    Ok(false)
 }
 
 /// Whether `task` subscribes to any of `resources`.
@@ -1251,7 +1283,7 @@ pub(crate) fn taken(
 ) -> rusqlite::Result<Option<String>> {
     let owns = tx
         .query_row(
-            "SELECT 1 FROM owns WHERE task = ?1 AND resource = ?2",
+            "SELECT 1 FROM owned WHERE task = ?1 AND resource = ?2",
             params![task, resource],
             |_| Ok(()),
         )
@@ -1268,8 +1300,8 @@ fn owners(tx: &Transaction, resources: &[String]) -> rusqlite::Result<Vec<Task>>
     let resources = serde_json::to_string(resources).expect("resources serialize");
     tx.prepare(
         "SELECT DISTINCT tasks.id, tasks.key IN (SELECT value FROM json_each(?1)) AS keyed
-         FROM owns JOIN tasks ON tasks.id = owns.task
-         WHERE owns.resource IN (SELECT value FROM json_each(?1))
+         FROM owned JOIN tasks ON tasks.id = owned.task
+         WHERE owned.resource IN (SELECT value FROM json_each(?1))
          AND tasks.state NOT IN ('done', 'failed', 'dropped') ORDER BY keyed DESC, tasks.id",
     )?
     .query_map([resources], |row| Ok(Task { id: row.get(0)? }))?

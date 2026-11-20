@@ -223,12 +223,17 @@ to task 3, not this one`. A done task does not block it: its subscription ends a
 task's starts. A `github.pull_request.closed` event ends every subscription to its pull request.
 Linear issues and Slack threads stay subscribed until `unsubscribe` or the task retires.
 
-`unsubscribe` ends the subscription, and the task stops owning the resource, unless it is the task's
-key or an open wait of the task names it. Unsubscribing from a resource the task does not subscribe
-to is refused.
+When another task takes an event on the resource, such as the task keyed by that pull request, the
+subscriber still gets it: a prompt of its own while it runs, or a wake while it sleeps. A close
+reaches the subscribers before it ends their subscriptions.
+
+`unsubscribe` ends the subscription. What the task owns otherwise, such as its key, a pull request
+its `open-pr` opened or one it waited on, it still owns. Unsubscribing from a resource the task does
+not subscribe to is refused.
 
 `priory subscribe TASK RESOURCE` and `priory unsubscribe TASK RESOURCE` do the same for any task,
-writing the state file directly. They take the resource string, and exit 2 on one they cannot read:
+writing the state file directly. They take the resource string, such as `github:owner/name#57`,
+and exit 2 on one they cannot read:
 
 ```sh
 priory subscribe 7 github:owner/name#57

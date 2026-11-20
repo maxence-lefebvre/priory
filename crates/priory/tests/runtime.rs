@@ -11373,7 +11373,7 @@ fn a_done_tasks_subscription_yields_to_an_active_task() {
     setup.publish(&requested(43));
     setup.until("tasks", |rows| rows.len() == 2);
 
-    let output = setup.priory(&["subscribe", "2", "github:owner/repo#7"]);
+    let output = setup.priory(&["subscribe", "2", "github:owner/repo#07"]);
 
     assert!(output.status.success(), "{output:?}");
     assert_eq!(task_json(&setup, "1")["subscriptions"], json!([]));
@@ -11381,16 +11381,45 @@ fn a_done_tasks_subscription_yields_to_an_active_task() {
         task_json(&setup, "2")["subscriptions"][0]["resource"],
         "github:owner/repo#7"
     );
+    let output = setup.priory(&["unsubscribe", "2", "github:owner/repo#7"]);
+    assert!(output.status.success(), "{output:?}");
+    std::thread::sleep(Duration::from_millis(1100));
+    setup.publish(&off_branch(commented()));
+    let inbox = setup.until("inbox", |rows| rows.len() == 3);
+    assert_eq!(inbox[2][4], "ignored", "the yielded task reopens no more");
 }
 
 #[test]
-fn a_closed_pull_request_ends_its_subscriptions() {
+fn a_closed_pull_request_wakes_its_subscriber_and_ends_its_subscriptions() {
     let setup = subscribed("subscribe-closed");
 
-    setup.publish(&closed());
+    setup.publish(&off_branch(closed()));
 
-    setup.until("inbox", |rows| rows.len() == 2);
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 2);
+    assert!(
+        setup.typed()[1].starts_with("github.pull_request.closed owner/repo#7 {"),
+        "{:?}",
+        setup.typed()
+    );
     assert_eq!(task_json(&setup, "1")["subscriptions"], json!([]));
+}
+
+#[test]
+fn a_subscriber_hears_events_that_the_task_keyed_by_the_pull_request_takes() {
+    let setup = subscribed("subscribe-secondary");
+    setup.publish(&requested(7));
+    setup.until("tasks", |rows| rows.len() == 2);
+
+    setup.publish(&off_branch(commented()));
+
+    let inbox = setup.until("inbox", |rows| rows.len() == 3);
+    assert_eq!(inbox[2][3..5], ["2", "kept"]);
+    setup.until("outbox", |rows| {
+        rows.iter()
+            .filter(|row| row[1] == "1" && row[3] == "confirmed")
+            .count()
+            >= 2
+    });
 }
 
 #[test]
