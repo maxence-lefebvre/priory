@@ -3,6 +3,18 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "additionalProperties": false,
   "definitions": {
+    "GithubWebhook": {
+      "additionalProperties": false,
+      "description": "GitHub webhooks, at `POST /hooks/github`.",
+      "properties": {
+        "secret_env": {
+          "default": "PRIORY_GITHUB_WEBHOOK_SECRET",
+          "description": "The environment variable that holds the webhook's secret, never the secret itself.",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
     "Resource": {
       "description": "A resource the room check measures.",
       "enum": [
@@ -153,6 +165,23 @@
         "otlp"
       ],
       "type": "object"
+    },
+    "Webhooks": {
+      "additionalProperties": false,
+      "description": "The signed webhooks the HTTP server accepts, by source.",
+      "properties": {
+        "github": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/GithubWebhook"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "type": "object"
     }
   },
   "description": "`factory.toml` or `factory.yaml`: the factory's name and the daemon's settings.",
@@ -210,6 +239,16 @@
       "anyOf": [
         {
           "$ref": "#/definitions/Telemetry"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "webhooks": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/Webhooks"
         },
         {
           "type": "null"

@@ -1,14 +1,19 @@
-//! The HTTP server over the state: `/api` as JSON and, with `web`, the web view's files.
+//! The HTTP server over the state: `/api` as JSON, with `web` the web view's files, and with a
+//! GitHub webhook its signed deliveries.
 
 use crate::{listing, state};
-use priory_factory::factory::{Factory, Serve};
-use priory_runtime::http::{self, Reply};
+use herdr_bus::Bus;
+use priory_factory::factory::Factory;
+use priory_intake::intake::Github;
+use priory_runtime::http::{self, Reply, Request};
 use priory_runtime::runtime;
 use rusqlite::Connection;
 use std::net::{SocketAddr, TcpListener};
 use std::path::Path;
+use std::sync::Arc;
 use std::thread::JoinHandle;
 
+const GITHUB: &str = "/hooks/github";
 const INDEX: &[u8] = include_bytes!("../web/index.html");
 
 macro_rules! file {
@@ -104,17 +109,19 @@ const WEB_HEADERS: &str = "Content-Security-Policy: default-src 'none'; script-s
 
 /// Listens on `listen` and serves the state from a pool of threads, each with its own read-only
 /// connection. Refuses to start without the token or a state file it can read.
-pub fn start(
-    factory: &Factory,
-    config: &Serve,
-    listen: SocketAddr,
-) -> Result<Vec<JoinHandle<()>>, String> {
+pub fn start(factory: &Factory, listen: SocketAddr) -> Result<Vec<JoinHandle<()>>, String> {
+    let config = factory
+        .serve()
+        .ok_or("factory.toml has no [serve] table, so nothing listens")?;
     config.allows(listen)?;
-    let name = &config.token_env;
-    let token = std::env::var(name)
-        .ok()
-        .filter(|token| !token.is_empty())
-        .ok_or_else(|| format!("{name} is unset or empty: set it to the token clients send"))?;
+    let token = env(&config.token_env, "the token clients send")?;
+    let github = factory
+        .github_webhook()
+        .map(|hook| env(&hook.secret_env, "the GitHub webhook's secret"))
+        .transpose()?
+        .map(|secret| Github::new(secret, factory))
+        .transpose()?
+        .map(Arc::new);
     drop(state::read_only()?);
     let listener =
         TcpListener::bind(listen).map_err(|error| format!("listen on {listen}: {error}"))?;
@@ -124,16 +131,38 @@ pub fn start(
     let web = config.web;
     let views =
         serde_json::json!({ "factory": factory.name, "views": factory.views() }).to_string();
-    let public = |path: &str| !path.starts_with("/api");
-    let workers = http::serve(listener, token, public, move || {
+    let hooks: &[&str] = if github.is_some() { &[GITHUB] } else { &[] };
+    let public = |path: &str| !path.starts_with("/api") && !path.starts_with("/hooks");
+    let workers = http::serve(listener, token, hooks, public, move || {
         let db = state::read_only();
         let home = runtime::home();
         let views = views.clone();
-        move |method: &str, path: &str| route(&db, &home, &views, web, method, path)
+        let github = github.clone().map(|github| {
+            (
+                github,
+                Bus::open_default().map_err(|error| error.to_string()),
+            )
+        });
+        move |request: &Request| match &github {
+            Some((github, bus))
+                if request.method == "POST" && request.path.split('?').next() == Some(GITHUB) =>
+            {
+                github.receive(bus, request)
+            }
+            _ => route(&db, &home, &views, web, request.method, request.path),
+        }
     })
     .map_err(|error| format!("start the server threads: {error}"))?;
     eprintln!("priory: serving on http://{bound}");
     Ok(workers)
+}
+
+/// The value of the environment variable `name`, refused when unset or empty.
+fn env(name: &str, what: &str) -> Result<String, String> {
+    std::env::var(name)
+        .ok()
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| format!("{name} is unset or empty: set it to {what}"))
 }
 
 fn route(
@@ -148,7 +177,7 @@ fn route(
         return Reply::error(405, "only GET is served");
     }
     let path = path.split_once('?').map_or(path, |(path, _)| path);
-    if web && !path.starts_with("/api") {
+    if web && !path.starts_with("/api") && !path.starts_with("/hooks") {
         return web_file(path);
     }
     if path == "/api/views" {

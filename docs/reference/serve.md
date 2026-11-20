@@ -3,8 +3,9 @@
 The HTTP server's endpoints and the JSON they return. [serve.md](../daemon/serve.md) explains where
 the server runs, its token and its limits.
 
-Every endpoint takes `GET`. Each one under `/api` needs `Authorization: Bearer <token>`; the web
-view's files do not. Each listing returns the same JSON as the CLI command with `--json`.
+Every endpoint but `POST /hooks/github` takes `GET`. Each one under `/api` needs
+`Authorization: Bearer <token>`; the web view's files do not. Each listing returns the same JSON as
+the CLI command with `--json`.
 
 | Endpoint | CLI | Returns |
 | -------- | --- | ------- |
@@ -15,6 +16,7 @@ view's files do not. Each listing returns the same JSON as the CLI command with 
 | `/api/tasks/{id}` | | one [task in detail](#task-in-detail) |
 | `/api/queue` | `priory queue --json` | an object: [Queue](#queue) |
 | `/api/views` | | an object: [Views](#views) |
+| `POST /hooks/github` | | `202` for a signed GitHub delivery, with `[webhooks.github]`. See [below](#post-hooksgithub) |
 | any other path | | the web view, with `web = true`: see [Web view files](#web-view-files) |
 
 Times are RFC 3339 strings in UTC. A field with no value is `null`. Agent text, such as a question
@@ -25,16 +27,35 @@ or a reason, is untrusted: render it as text.
 | Code | When |
 | ---- | ---- |
 | `200` | The endpoint answered |
-| `400` | The request does not parse |
-| `401` | The token is missing or wrong, on a path under `/api` |
+| `202` | A signed webhook delivery was taken: published, or dropped on purpose |
+| `400` | The request does not parse; for a webhook, it sends two `Content-Length`, or its payload lacks a field its event needs |
+| `401` | The token is missing or wrong on a path under `/api`; for a webhook, the signature is |
 | `404` | No such path, task or web view file |
 | `405` | A method other than `GET`, on any path |
-| `408` | The request head took over 5 seconds |
-| `413` | The request has a body |
+| `408` | The request took over 5 seconds |
+| `411` | A webhook delivery has no `Content-Length`, or uses `Transfer-Encoding` |
+| `413` | The request has a body; for a webhook, a body over 1 MiB |
 | `431` | The request head is over 8 KiB or 32 headers |
-| `500` | The state could not be read |
+| `500` | The state could not be read, or a delivery could not be published |
 
 An error's body is `{"error": "<why>"}`.
+
+## `POST /hooks/github`
+
+Served only with [`[webhooks.github]`](factory.md#webhooksgithub). It takes no token: the
+signature is its authentication. [webhooks.md](../intake/webhooks.md) explains what a delivery
+publishes.
+
+| Header | Meaning |
+| ------ | ------- |
+| `X-Hub-Signature-256` | `sha256=` and the hex HMAC-SHA256 of the raw body under the secret. Missing or wrong: `401`, and the body is never parsed |
+| `X-GitHub-Event` | The event, such as `issues`. Missing: `400` |
+| `X-GitHub-Delivery` | The delivery's GUID, copied into `delivery`. Missing: `400` |
+| `Content-Length` | Required, at most 1 MiB. Over it: `413` before the body is read |
+
+The reply is `202` with `{"outcome": "published"}`, or `{"outcome": "dropped"}` for a delivery
+Priory does not take or already holds. A body that is not JSON, or lacks a field its event needs,
+gets `400`.
 
 ## Desk
 
@@ -150,7 +171,7 @@ With `web = true`, the server sends these without the token:
 | `/app.css`, `/tokens/structure.css`, `/tokens/themes.css` | `text/css; charset=utf-8` |
 | `/fonts/<file>.woff2` | `font/woff2` |
 | `/favicon.ico`, `/favicon.svg`, `/apple-touch-icon.png` | the image's type |
-| any other path, such as `/` or `/asks/42` | the page, `text/html; charset=utf-8` |
+| any other path outside `/hooks`, such as `/` or `/asks/42` | the page, `text/html; charset=utf-8` |
 
 An unknown file under `/fonts/` or `/tokens/`, or at the top level with a `.` in its name, such as
 `/nothing.js`, gets `404`.

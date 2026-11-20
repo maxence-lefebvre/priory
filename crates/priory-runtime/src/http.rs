@@ -1,4 +1,5 @@
-//! A small HTTP/1.1 server for read-only requests: bearer token, one request per connection.
+//! A small HTTP/1.1 server: bearer token for reads, a bounded body for hook paths that authenticate
+//! themselves, one request per connection.
 
 use std::io::{self, Read, Write};
 use std::net::{Shutdown, TcpListener, TcpStream};
@@ -9,8 +10,10 @@ use std::time::{Duration, Instant};
 /// The largest request head read; a longer one gets 431.
 const HEAD: usize = 8 * 1024;
 const HEADERS: usize = 32;
-/// How long a client may take to send its whole head, and to read the reply.
+/// How long a client may take to send its whole request, and to read the reply.
 const TIMEOUT: Duration = Duration::from_secs(5);
+/// The largest body a hook path reads; a longer one gets 413 before any of it is read.
+const BODY: usize = 1024 * 1024;
 /// The connections served at once; others wait in the listen backlog.
 const WORKERS: usize = 8;
 
@@ -37,54 +40,89 @@ impl Reply {
     }
 }
 
+pub struct Request<'a> {
+    pub method: &'a str,
+    /// The path, query included.
+    pub path: &'a str,
+    headers: &'a [httparse::Header<'a>],
+    /// Empty except on a hook path.
+    pub body: &'a [u8],
+}
+
+impl Request<'_> {
+    /// The value of the first header called `name`, in any case.
+    pub fn header(&self, name: &str) -> Option<&[u8]> {
+        self.headers
+            .iter()
+            .find(|header| header.name.eq_ignore_ascii_case(name))
+            .map(|header| header.value)
+    }
+}
+
 /// Serves `listener` on a fixed pool of threads. Each thread calls `make` once for its own
-/// handler, which gets the method and path of each request that carries `token` or whose path is
-/// `public`.
+/// handler, which gets each request that carries `token`, and each `POST` to one of `hooks` with
+/// its body and no token: the handler authenticates those itself. A request to a `public` path
+/// needs no token either.
 pub fn serve<M, H>(
     listener: TcpListener,
     token: String,
+    hooks: &'static [&'static str],
     public: fn(&str) -> bool,
     make: M,
 ) -> io::Result<Vec<JoinHandle<()>>>
 where
     M: Fn() -> H + Send + Sync + 'static,
-    H: FnMut(&str, &str) -> Reply,
+    H: FnMut(&Request) -> Reply,
 {
-    let shared = Arc::new((listener, token, make));
+    let gate = Gate {
+        token,
+        hooks,
+        public,
+    };
+    let shared = Arc::new((listener, gate, make));
     (0..WORKERS)
         .map(|_| {
             let shared = Arc::clone(&shared);
             std::thread::Builder::new()
                 .name("priory-http".to_owned())
                 .spawn(move || {
-                    let (listener, token, make) = &*shared;
+                    let (listener, gate, make) = &*shared;
                     let mut handle = make();
                     for stream in listener.incoming().flatten() {
-                        let _ = answer(stream, token, public, &mut handle);
+                        let _ = answer(stream, gate, &mut handle);
                     }
                 })
         })
         .collect()
 }
 
+/// What lets a request through: the token, or a hook or public path.
+struct Gate {
+    token: String,
+    hooks: &'static [&'static str],
+    public: fn(&str) -> bool,
+}
+
 fn answer(
     mut stream: TcpStream,
-    token: &str,
-    public: fn(&str) -> bool,
-    handle: &mut impl FnMut(&str, &str) -> Reply,
+    gate: &Gate,
+    handle: &mut impl FnMut(&Request) -> Reply,
 ) -> io::Result<()> {
     stream.set_write_timeout(Some(TIMEOUT))?;
-    let reply = match read_head(&mut stream) {
-        Ok(head) => respond(&head, token, public, handle),
+    let deadline = Instant::now() + TIMEOUT;
+    let reply = match read_head(&mut stream, deadline) {
+        Ok((read, end)) => respond(&mut stream, deadline, &read, end, gate, handle),
         Err(reply) => reply,
     };
     let reason = match reply.status {
         200 => "OK",
+        202 => "Accepted",
         400 => "Bad Request",
         401 => "Unauthorized",
         404 => "Not Found",
         405 => "Method Not Allowed",
         408 => "Request Timeout",
+        411 => "Length Required",
         413 => "Content Too Large",
         431 => "Request Header Fields Too Large",
         _ => "Internal Server Error",
@@ -111,36 +149,18 @@ fn answer(
     Ok(())
 }
 
-/// The request head, up to its blank line, or the reply that refuses it.
-fn read_head(stream: &mut TcpStream) -> Result<Vec<u8>, Reply> {
+/// What was read up to the end of the request head, and where the head ends, or the reply that
+/// refuses it. Bytes past the head are the start of the body.
+fn read_head(stream: &mut TcpStream, deadline: Instant) -> Result<(Vec<u8>, usize), Reply> {
     let mut head = vec![0; HEAD];
     let mut len = 0;
-    let deadline = Instant::now() + TIMEOUT;
-    let late = || Reply::error(408, "the request head took too long");
     loop {
-        let left = deadline.saturating_duration_since(Instant::now());
-        if left.is_zero() || stream.set_read_timeout(Some(left)).is_err() {
-            return Err(late());
-        }
-        let read = match stream.read(&mut head[len..]) {
-            Ok(0) => return Err(Reply::error(400, "the request ended before its head")),
-            Ok(read) => read,
-            Err(error)
-                if matches!(
-                    error.kind(),
-                    io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
-                ) =>
-            {
-                return Err(late());
-            }
-            Err(_) => return Err(Reply::error(400, "the request could not be read")),
-        };
-        len += read;
+        len += read_some(stream, &mut head[len..], deadline, "head")?;
         let mut headers = [httparse::EMPTY_HEADER; HEADERS];
         match httparse::Request::new(&mut headers).parse(&head[..len]) {
             Ok(httparse::Status::Complete(end)) => {
-                head.truncate(end);
-                return Ok(head);
+                head.truncate(len);
+                return Ok((head, end));
             }
             Ok(httparse::Status::Partial) if len == HEAD => {}
             Ok(httparse::Status::Partial) => continue,
@@ -151,30 +171,116 @@ fn read_head(stream: &mut TcpStream) -> Result<Vec<u8>, Reply> {
     }
 }
 
+/// Reads at least one byte into `into` before `deadline`, or the reply that refuses the request.
+fn read_some(
+    stream: &mut TcpStream,
+    into: &mut [u8],
+    deadline: Instant,
+    part: &str,
+) -> Result<usize, Reply> {
+    let late = || Reply::error(408, &format!("the request {part} took too long"));
+    let left = deadline.saturating_duration_since(Instant::now());
+    if left.is_zero() || stream.set_read_timeout(Some(left)).is_err() {
+        return Err(late());
+    }
+    match stream.read(into) {
+        Ok(0) => Err(Reply::error(
+            400,
+            &format!("the request ended before its {part}"),
+        )),
+        Ok(read) => Ok(read),
+        Err(error)
+            if matches!(
+                error.kind(),
+                io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+            ) =>
+        {
+            Err(late())
+        }
+        Err(_) => Err(Reply::error(400, "the request could not be read")),
+    }
+}
+
+/// The body `Content-Length` announces, `start` being its first bytes, read before `deadline`.
+/// A body over `BODY` is refused before any more of it is read.
+fn read_body(
+    stream: &mut TcpStream,
+    deadline: Instant,
+    request: &Request,
+    start: &[u8],
+) -> Result<Vec<u8>, Reply> {
+    let length = "send the body with a Content-Length";
+    if request.header("transfer-encoding").is_some() {
+        return Err(Reply::error(411, length));
+    }
+    let lengths = request
+        .headers
+        .iter()
+        .filter(|header| header.name.eq_ignore_ascii_case("content-length"))
+        .count();
+    if lengths > 1 {
+        return Err(Reply::error(400, "send one Content-Length"));
+    }
+    let announced = request
+        .header("content-length")
+        .and_then(|value| std::str::from_utf8(value).ok()?.parse::<usize>().ok())
+        .ok_or_else(|| Reply::error(411, length))?;
+    if announced > BODY {
+        return Err(Reply::error(413, "the body is over 1 MiB"));
+    }
+    if start.len() > announced {
+        return Err(Reply::error(
+            400,
+            "the request is longer than its Content-Length",
+        ));
+    }
+    let mut body = start.to_vec();
+    body.resize(announced, 0);
+    let mut len = start.len();
+    while len < announced {
+        len += read_some(stream, &mut body[len..], deadline, "body")?;
+    }
+    Ok(body)
+}
+
 fn respond(
-    head: &[u8],
-    token: &str,
-    public: fn(&str) -> bool,
-    handle: &mut impl FnMut(&str, &str) -> Reply,
+    stream: &mut TcpStream,
+    deadline: Instant,
+    read: &[u8],
+    end: usize,
+    gate: &Gate,
+    handle: &mut impl FnMut(&Request) -> Reply,
 ) -> Reply {
     let mut headers = [httparse::EMPTY_HEADER; HEADERS];
-    let mut request = httparse::Request::new(&mut headers);
-    if request.parse(head).is_err() {
+    let mut parsed = httparse::Request::new(&mut headers);
+    if parsed.parse(&read[..end]).is_err() {
         return Reply::error(400, "the request head does not parse");
     }
-    let header = |name: &str| {
-        request
-            .headers
-            .iter()
-            .find(|header| header.name.eq_ignore_ascii_case(name))
-            .map(|header| header.value)
+    let (Some(method), Some(path)) = (parsed.method, parsed.path) else {
+        return Reply::error(400, "the request line is incomplete");
     };
+    let request = Request {
+        method,
+        path,
+        headers: parsed.headers,
+        body: &[],
+    };
+    let bare = path.split_once('?').map_or(path, |(path, _)| path);
+    if method == "POST" && gate.hooks.contains(&bare) {
+        return match read_body(stream, deadline, &request, &read[end..]) {
+            Ok(body) => handle(&Request {
+                body: &body,
+                ..request
+            }),
+            Err(reply) => reply,
+        };
+    }
+    let header = |name: &str| request.header(name);
     let bearer = header("authorization")
         .and_then(|value| value.get(..7).zip(value.get(7..)))
         .filter(|(scheme, _)| scheme.eq_ignore_ascii_case(b"bearer "))
         .map(|(_, sent)| sent);
-    let open = request.path.is_some_and(public);
-    if !open && !bearer.is_some_and(|sent| same(sent, token.as_bytes())) {
+    if !(gate.public)(bare) && !bearer.is_some_and(|sent| same(sent, gate.token.as_bytes())) {
         return Reply::error(401, "send the token as `Authorization: Bearer <token>`");
     }
     let body = request.headers.iter().any(|header| {
@@ -184,10 +290,7 @@ fn respond(
     if body {
         return Reply::error(413, "requests carry no body");
     }
-    let (Some(method), Some(path)) = (request.method, request.path) else {
-        return Reply::error(400, "the request line is incomplete");
-    };
-    handle(method, path)
+    handle(&request)
 }
 
 /// Whether `sent` equals `token`, in a time that depends only on `token`'s length.

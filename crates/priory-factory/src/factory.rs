@@ -52,6 +52,7 @@ pub struct Settings {
     pub search: Search,
     pub telemetry: Option<Telemetry>,
     pub serve: Option<Serve>,
+    pub webhooks: Option<Webhooks>,
 }
 
 /// The HTTP server over the factory's state, in the daemon and in `priory serve`.
@@ -95,6 +96,26 @@ impl Serve {
             "`[serve] listen` {listen} is beyond this machine: set `public = true` to serve it"
         ))
     }
+}
+
+/// The signed webhooks the HTTP server accepts, by source.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct Webhooks {
+    pub github: Option<GithubWebhook>,
+}
+
+/// GitHub webhooks, at `POST /hooks/github`.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct GithubWebhook {
+    /// The environment variable that holds the webhook's secret, never the secret itself.
+    #[serde(default = "secret_env")]
+    pub secret_env: String,
+}
+
+fn secret_env() -> String {
+    "PRIORY_GITHUB_WEBHOOK_SECRET".to_owned()
 }
 
 /// Where the daemon exports its trace records as OpenTelemetry spans.
@@ -360,7 +381,7 @@ pub enum Session {
 
 /// `triggers/<name>.toml` or `.yaml`: an event source, its filter and the workflow its events
 /// start. The file name is the trigger's name.
-#[derive(Debug, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 #[schemars(title = "trigger")]
 pub struct Trigger {
@@ -851,6 +872,17 @@ impl Factory {
             views.insert(name.clone(), loaded.value.clone());
         }
         views
+    }
+
+    /// The GitHub webhook's settings; none takes no GitHub webhook.
+    pub fn github_webhook(&self) -> Option<&GithubWebhook> {
+        self.settings
+            .as_ref()?
+            .value
+            .webhooks
+            .as_ref()?
+            .github
+            .as_ref()
     }
 
     pub fn bands(&self) -> Vec<&str> {
