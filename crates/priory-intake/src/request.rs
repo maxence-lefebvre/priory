@@ -158,15 +158,42 @@ pub fn parse_add(args: Vec<String>) -> Option<(PathBuf, Add)> {
     Some((dir, add))
 }
 
+/// Why `add` published nothing.
+#[derive(Debug)]
+pub enum Refused {
+    /// The request does not hold, for the reason given.
+    Invalid(String),
+    /// The same text already went to the task key given, so the bus dropped it.
+    Repeated(String),
+}
+
+impl From<String> for Refused {
+    fn from(reason: String) -> Self {
+        Refused::Invalid(reason)
+    }
+}
+
+impl std::fmt::Display for Refused {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Refused::Invalid(reason) => f.write_str(reason),
+            Refused::Repeated(key) => write!(
+                f,
+                "{key} already got this exact request, so nothing was added; reword the text to send it again"
+            ),
+        }
+    }
+}
+
 /// Publishes `add` as a request, with the factory's defaults for what it leaves unset, under the
 /// next free key of the day, `cli:<YYYY-MM-DD>-<n>`, and returns that key.
-pub fn add(factory: &Factory, add: &Add) -> Result<String, String> {
+pub fn add(factory: &Factory, add: &Add) -> Result<String, Refused> {
     let defaults = factory.request();
     let workflow = add
         .workflow
         .clone()
         .or_else(|| defaults.map(|defaults| defaults.workflow.clone()))
-        .ok_or("the request names no workflow; pass --workflow, or set workflow in factory.toml's [request] table")?;
+        .ok_or_else(|| "the request names no workflow; pass --workflow, or set workflow in factory.toml's [request] table".to_owned())?;
     let (keys, repos) = linked(factory, &add.text);
     let repo = match &repos[..] {
         [first, rest @ ..] if rest.iter().all(|repo| repo == first) => Some(first.clone()),
@@ -193,10 +220,14 @@ pub fn add(factory: &Factory, add: &Add) -> Result<String, String> {
             key,
             &format!("{REQUESTED}:{}:{key}:{}", key.len(), add.text),
         );
-        let task = task(&request, key, &source);
-        for message in [source, task] {
-            publish(&bus, &message)?;
+        let seq = bus
+            .publish(OUTPUT, &source)
+            .map_err(|error| format!("publish on {OUTPUT}: {error}"))?;
+        let stored = bus.message(seq).map_err(|error| error.to_string())?;
+        if stored.message.data != source.data {
+            return Err(Refused::Repeated(key.clone()));
         }
+        publish(&bus, &task(&request, key, &source))?;
         return Ok(key.clone());
     }
     let today = intake::now()?.to_zoned(jiff::tz::TimeZone::system()).date();

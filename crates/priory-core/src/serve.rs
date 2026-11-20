@@ -405,6 +405,10 @@ fn write(db: &Result<Connection, String>, home: &Path, request: &Request) -> Rep
         }
     };
     match serde_json::from_str::<Result<String, String>>(&reply) {
+        // A repeated text names the task it reached, with the reason nothing was added.
+        Ok(Ok(added)) if matches!(write, Write::Add) && added.contains(r#""error":"#) => {
+            Reply::json(409, added)
+        }
         Ok(Ok(added)) if matches!(write, Write::Add) => Reply::json(200, added),
         Ok(Ok(done)) => Reply::json(200, serde_json::json!({ "ok": done }).to_string()),
         Ok(Err(refused)) => refusal(db, ask, &refused),

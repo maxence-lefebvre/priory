@@ -533,6 +533,39 @@ fn a_queued_task_at_a_model_step_gets_a_worktree_a_tmux_session_and_a_run() {
 }
 
 #[test]
+fn an_add_linking_the_key_of_an_asleep_task_wakes_it_with_the_text_as_say_does() {
+    let mut setup = Setup::with_workflow("add-asleep", STEPS);
+    setup.calls(&[ask()]);
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == "asleep")
+    });
+    let session = setup.rows("runs")[0][4].clone();
+    let factory = setup.dir.join("factory");
+
+    let added = setup.priory(&[
+        "add",
+        factory.to_str().unwrap(),
+        "--workflow",
+        "implement",
+        "/also cover https://github.com/owner/repo/issues/42 on Windows",
+    ]);
+
+    assert!(added.status.success(), "{added:?}");
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 2);
+    assert!(
+        setup.typed()[1].starts_with(
+            "A person says: /also cover https://github.com/owner/repo/issues/42 on Windows\n"
+        ),
+        "{:?}",
+        setup.typed()
+    );
+    assert_eq!(setup.rows("runs")[1][4], session);
+    assert_eq!(setup.rows("tasks").len(), 1);
+}
+
+#[test]
 fn a_cli_request_starts_its_run_in_the_repository_it_names() {
     let mut setup = Setup::new("cli-repo");
     let factory = setup.dir.join("factory");
