@@ -1,9 +1,9 @@
 # Memory gate
 
-`priory memory acquire --gb N [--timeout D] -- <command>` runs a heavy command, such as a build or
-a test suite, only when the machine has room for it. Builds from several agents then queue instead
-of exhausting memory. N is a GB count, such as `8` or `1.5`. D is a duration such as `90s`, `15m`
-or `2h`.
+`priory memory acquire [--gb N] [--timeout D] -- <command>` runs a heavy command, such as a build
+or a test suite, only when the machine has room for it. Builds from several agents then queue
+instead of exhausting memory. N is a GB count, such as `8` or `1.5`, and 10 by default. D is a
+duration such as `90s`, `15m` or `2h`.
 
 1. The command asks the daemon over `priory.sock` for a grant of N GB. It sends its pid and, inside
    a run, the run's `PRIORY_SESSION`, which names the grant's task.

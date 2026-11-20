@@ -10,7 +10,7 @@ use std::collections::BTreeMap;
 use std::io::Write;
 use std::time::Duration;
 
-const VERSION: i64 = 32;
+const VERSION: i64 = 33;
 
 const SCHEMA: &str = "
 CREATE TABLE tasks (
@@ -515,11 +515,23 @@ ALTER TABLE inbox ADD COLUMN read TEXT;
 PRAGMA user_version = 31;
 ";
 
+// A person's pause: while its one row exists, no queued task starts a run. A prompt that `say`
+// queued keeps its run from sleeping, so it is never stranded behind an ask or a wait.
+const SCHEMA_32: &str = "
+CREATE TABLE pause (
+  id     INTEGER PRIMARY KEY CHECK (id = 1),
+  reason TEXT,
+  since  TEXT NOT NULL
+);
+ALTER TABLE outbox ADD COLUMN wakes INTEGER NOT NULL DEFAULT 0;
+PRAGMA user_version = 32;
+";
+
 // An outside ask belongs to no task: the rebuild lets `task` and `step` be NULL. `open` runs it
 // with foreign keys off, so the approvals and holds that name an ask keep pointing at `asks`. The
 // legacy rename skips checking the snooze trigger on `tasks`, which names `asks` while it is gone.
-const SCHEMA_32: &str = "
-CREATE TABLE asks_32 (
+const SCHEMA_33: &str = "
+CREATE TABLE asks_33 (
   id             INTEGER PRIMARY KEY AUTOINCREMENT,
   task           INTEGER REFERENCES tasks (id),
   run            INTEGER REFERENCES runs (id),
@@ -546,27 +558,27 @@ CREATE TABLE asks_32 (
   session        TEXT,
   CHECK ((kind = 'outside') = (task IS NULL))
 );
-INSERT INTO asks_32 (id, task, run, step, kind, revision, question, options, recommendation,
+INSERT INTO asks_33 (id, task, run, step, kind, revision, question, options, recommendation,
   tradeoff, answer, answered, created, withdrawn)
   SELECT id, task, run, step, kind, revision, question, options, recommendation, tradeoff, answer,
   answered, created, withdrawn FROM asks;
 DROP TABLE asks;
 PRAGMA legacy_alter_table = ON;
-ALTER TABLE asks_32 RENAME TO asks;
+ALTER TABLE asks_33 RENAME TO asks;
 PRAGMA legacy_alter_table = OFF;
 CREATE TRIGGER snooze_ends_on_a_new_revision AFTER UPDATE OF revision ON asks
   WHEN NEW.revision IS NOT OLD.revision BEGIN
   UPDATE snoozes SET back = strftime('%Y-%m-%dT%H:%M:%SZ', 'now'), back_reason = 'new revision'
   WHERE kind = 'ask' AND item = NEW.id AND until > strftime('%Y-%m-%dT%H:%M:%SZ', 'now');
 END;
-PRAGMA user_version = 32;
+PRAGMA user_version = 33;
 ";
 /// Each schema change in order: a file at version `n` applies those from index `n` on.
 const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA, SCHEMA_2, SCHEMA_3, SCHEMA_4, SCHEMA_5, SCHEMA_6, SCHEMA_7, SCHEMA_8, SCHEMA_9,
     SCHEMA_10, SCHEMA_11, SCHEMA_12, SCHEMA_13, SCHEMA_14, SCHEMA_15, SCHEMA_16, SCHEMA_17,
     SCHEMA_18, SCHEMA_19, SCHEMA_20, SCHEMA_21, SCHEMA_22, SCHEMA_23, SCHEMA_24, SCHEMA_25,
-    SCHEMA_26, SCHEMA_27, SCHEMA_28, SCHEMA_29, SCHEMA_30, SCHEMA_31, SCHEMA_32,
+    SCHEMA_26, SCHEMA_27, SCHEMA_28, SCHEMA_29, SCHEMA_30, SCHEMA_31, SCHEMA_32, SCHEMA_33,
 ];
 
 /// The order the queue starts tasks in: band, then a person's order, then age. A band the factory
@@ -1087,6 +1099,7 @@ pub(crate) fn admissible<'r>(
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     let promised = promised(db, factory, None)?;
+    let paused = paused(db)?;
     // The first task that waits for room: no task behind it starts, so it is never starved.
     let mut head = None;
     let mut stall = None;
@@ -1110,6 +1123,8 @@ pub(crate) fn admissible<'r>(
                 }),
             _ => None,
         };
+        // A pause holds only new tasks: a woken, resumed or revived one is `ready` and goes on.
+        let busy = busy.or_else(|| paused.clone().filter(|_| admission.fresh));
         let waits = match (busy, head) {
             (Some(reason), _) => Some(reason),
             // The sweeper frees the room the queue waits for, so it never waits for room itself.
@@ -1147,6 +1162,47 @@ pub(crate) fn admissible<'r>(
     }
     crate::stall::record(db, stall.as_ref().map(|(task, short)| (*task, short)))?;
     Ok(None)
+}
+
+/// Pauses admissions with `reason`: no queued task starts until `unpause`. A second pause keeps
+/// the first one's start and takes the new reason.
+pub fn pause(db: &Connection, reason: Option<&str>) -> rusqlite::Result<String> {
+    db.execute(
+        &format!(
+            "INSERT INTO pause (id, reason, since) VALUES (1, ?1, {NOW})
+             ON CONFLICT (id) DO UPDATE SET reason = ?1"
+        ),
+        [reason],
+    )?;
+    Ok("priory is paused: no queued task starts until `priory unpause`".to_owned())
+}
+
+/// Ends the pause, so queued tasks start again.
+pub fn unpause(db: &Connection) -> rusqlite::Result<String> {
+    Ok(match db.execute("DELETE FROM pause", [])? {
+        0 => "priory was not paused".to_owned(),
+        _ => "priory is unpaused".to_owned(),
+    })
+}
+
+/// Why a queued task waits while admissions are paused: `waits: priory is paused[: <reason>]`.
+fn paused(db: &Connection) -> rusqlite::Result<Option<String>> {
+    db.query_row(
+        "SELECT 'waits: priory is paused' || coalesce(': ' || reason, '') FROM pause",
+        [],
+        |row| row.get(0),
+    )
+    .optional()
+}
+
+/// The desk's line while admissions are paused: `paused since <since>[: <reason>]`.
+pub fn pause_banner(db: &Connection) -> rusqlite::Result<Option<String>> {
+    db.query_row(
+        "SELECT 'paused since ' || since || coalesce(': ' || reason, '') FROM pause",
+        [],
+        |row| row.get(0),
+    )
+    .optional()
 }
 
 /// The task whose live run holds `agent`'s shared session, which runs one turn at a time.
@@ -1204,7 +1260,8 @@ pub(crate) fn actionable(
 ) -> rusqlite::Result<Option<Due>> {
     let mut statement = db.prepare(
         "SELECT id, workflow, step, trigger, branch, worktree, repo FROM tasks
-         WHERE state IN ('queued', 'ready') ORDER BY id",
+         WHERE state = 'ready' OR state = 'queued' AND NOT EXISTS (SELECT 1 FROM pause)
+         ORDER BY id",
     )?;
     let tasks = statement.query_map([], |row| {
         Ok(Due {

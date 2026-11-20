@@ -171,6 +171,8 @@ When someone labels issue 42 of `owner/name` with `agent`, this happens:
 | `priory tasks [--lane LANE] [--grade GRADE]` | Lists tasks in start order, with their grade |
 | `priory attach TASK [--read-only]` | Attaches your terminal to a task's agent |
 | `priory resume TASK` | Resumes a blocked task |
+| `priory say TASK TEXT` | Sends a task's agent a message, waking it if it sleeps |
+| `priory pause [REASON]`, `priory unpause` | Stops new tasks from starting, then lets them start again |
 | `priory cancel TASK` | Drops an active task and ends its run |
 | `priory revive TASK [--step STEP]` | Restarts a failed or dropped task |
 | `priory hold TASK --reason TEXT`, `priory release TASK` | Holds a task back, then lets it go |
