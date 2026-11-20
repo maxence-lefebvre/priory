@@ -32,6 +32,9 @@ pub struct Answer {
     /// The person confirmed that this answer runs the ask's command.
     #[serde(default)]
     pub run: bool,
+    /// Where the answer came from: `cli` or `serve`.
+    #[serde(default)]
+    pub by: String,
 }
 
 /// A live run with its task's workflow.
@@ -1713,11 +1716,29 @@ fn enter(
     }
 }
 
+/// Applies a person's answer, or records why it was refused on the ask it names.
+pub(crate) fn answer(
+    db: &mut Connection,
+    answer: &Answer,
+    trace: &Trace,
+    head: &dyn Fn(&Path, &str) -> Option<String>,
+) -> rusqlite::Result<Result<String, String>> {
+    let applied = apply_answer(db, answer, trace, head)?;
+    if let Err(why) = &applied {
+        db.execute(
+            "INSERT INTO ask_refusals (ask, revision, answer, by, why)
+             SELECT id, ?2, ?3, ?4, ?5 FROM asks WHERE id = ?1",
+            params![answer.ask, answer.revision, answer.text, answer.by, why],
+        )?;
+    }
+    Ok(applied)
+}
+
 /// Applies a person's answer. The first answer to an ask's current revision stands. A step's ask
 /// moves the task by the chosen option; an agent's ask queues the answer as its next prompt.
 /// An answer toward a step the asked step `approves` records an approval at the task's commit, which
 /// `head` reads from its worktree.
-pub(crate) fn answer(
+fn apply_answer(
     db: &mut Connection,
     answer: &Answer,
     trace: &Trace,
