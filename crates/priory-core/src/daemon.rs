@@ -143,6 +143,17 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
         let output = script::collect(&log_of(&home, id));
         stall::ended(&db, id, "interrupted by a daemon restart", &output)?;
     }
+    // A `run` command neither runs twice nor runs on unbounded: it ends `failed`, and its task moves on.
+    for (id, group) in state::orphan_commands(&db)? {
+        if let Some((pid, _)) =
+            group.filter(|(pid, started)| memory::started(*pid) == Some(*started))
+        {
+            script::kill(pid);
+        }
+        let (out, err) = outputs_of(&home, id);
+        let (stdout, stderr) = (script::collect(&out), script::collect(&err));
+        tools::ran(&mut db, &trace, id, handler::INTERRUPTED, &stdout, &stderr)?;
+    }
     // A crash between ending its last script and marking it swept leaves a stall unswept.
     stall::swept(&db)?;
     // A handler call a stopped daemon started still counts, and its answer is recorded but not applied.
@@ -179,6 +190,7 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
         after: Instant::now(),
     });
     let mut scripts = Vec::new();
+    let mut commands = Vec::new();
     let mut deliveries = deliver::adopt(&db)?;
     let every = factory.sweep().every.unwrap_or(SWEEP);
     let mut swept: Option<Instant> = None;
@@ -187,7 +199,8 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
         while let Ok(line) = listening.lines.try_recv() {
             apply(&mut db, line, &trace)?;
         }
-        tend(&mut db, &trace, &share, &home, &scope)?;
+        commands = run_commands(&mut db, &trace, &home, commands)?;
+        tend(&mut db, &trace, &share, &home, &scope, &mut commands)?;
         handle_stalls(&mut db, &trace, &home, &mut stalls)?;
         let counter = counting.get(&home);
         summarize(&mut db, &trace, &summaries, &mut summarizing, counter)?;
@@ -615,6 +628,7 @@ fn tend(
     share: &Share,
     home: &Path,
     scope: &[String],
+    commands: &mut Vec<(i64, Script)>,
 ) -> Result<(), Error> {
     let factory = trace.factory;
     for run in state::live(db)? {
@@ -651,7 +665,7 @@ fn tend(
     tools::enter_queued(db, &factory.workflows)?;
     state::disk_due(db, || room::measure(home).ok().map(|room| room.disk_free))?;
     memory::reclaim(db)?;
-    perform(db, trace, home)?;
+    perform(db, trace, home, commands)?;
     loop {
         // Measured again after each start, since its clone and worktree take disk.
         let measured = OnceCell::new();
@@ -770,7 +784,12 @@ fn verdict(run: &state::LiveRun, factory: &Factory) -> Option<(&'static str, Str
 
 /// Runs the action of the oldest task at a code step, once an irreversible step's approval holds.
 /// An action that is not built yet blocks the task.
-fn perform(db: &mut Connection, trace: &Trace, home: &Path) -> Result<(), Error> {
+fn perform(
+    db: &mut Connection,
+    trace: &Trace,
+    home: &Path,
+    commands: &mut Vec<(i64, Script)>,
+) -> Result<(), Error> {
     let factory = trace.factory;
     let Some(due) = state::actionable(db, &factory.workflows)? else {
         return Ok(());
@@ -819,6 +838,7 @@ fn perform(db: &mut Connection, trace: &Trace, home: &Path) -> Result<(), Error>
     let done = match step.action.as_deref().unwrap_or_default() {
         "open-pr" => open_pr(db, factory, &due, head.as_deref())?,
         "open-issue" => open_issue(db, factory, &due)?,
+        "run" => return start_command(db, trace, home, &due, step, commands),
         other => {
             let reason = format!("action {other} is not built yet");
             return Ok(state::block(db, trace, due.task, "blocked", &reason)?);
@@ -832,6 +852,75 @@ fn perform(db: &mut Connection, trace: &Trace, home: &Path) -> Result<(), Error>
         done,
         trace,
     )?)
+}
+
+/// Stores the task's `run` action, then starts its command with `sh -c` in the task's worktree, or
+/// the factory folder when it has none, bounded by the step's `timeout` or `command_timeout`.
+fn start_command(
+    db: &mut Connection,
+    trace: &Trace,
+    home: &Path,
+    due: &state::Due,
+    step: &factory::Step,
+    commands: &mut Vec<(i64, Script)>,
+) -> Result<(), Error> {
+    let factory = trace.factory;
+    let id = tools::launched(db, due.task, step)?;
+    let folder = std::path::absolute(&factory.dir)?;
+    let dir = due
+        .worktree
+        .as_deref()
+        .map(Path::new)
+        .filter(|worktree| worktree.is_dir())
+        .unwrap_or(&folder);
+    let state_file = std::path::absolute(std::env::var_os("PRIORY_DB").unwrap_or_default())?;
+    let mut command = std::process::Command::new("sh");
+    command
+        .args(["-c", step.run.as_deref().unwrap_or_default()])
+        .env("PRIORY_TASK", due.task.to_string())
+        .env("PRIORY_HOME", std::path::absolute(home)?)
+        .env("PRIORY_DB", state_file)
+        .env("PRIORY_FACTORY", &folder);
+    let (out, err) = outputs_of(home, id);
+    let timeout = step.timeout.unwrap_or(factory.command_timeout());
+    match script::spawn_split(command, dir, &out, Some(&err), timeout) {
+        Ok(child) => {
+            state::command_spawned(db, id, child.pid(), memory::started(child.pid()))?;
+            commands.push((id, child));
+        }
+        Err(error) => tools::ran(db, trace, id, &format!("cannot start: {error}"), "", "")?,
+    }
+    Ok(())
+}
+
+/// Where `run` action `id` writes its stdout and its stderr.
+fn outputs_of(home: &Path, id: i64) -> (std::path::PathBuf, std::path::PathBuf) {
+    let dir = home.join("actions");
+    (dir.join(format!("{id}.out")), dir.join(format!("{id}.err")))
+}
+
+/// Records each `run` command that ended and moves its task. A command whose task left its step, as
+/// a cancel does, is killed. Returns the commands still running.
+fn run_commands(
+    db: &mut Connection,
+    trace: &Trace,
+    home: &Path,
+    commands: Vec<(i64, Script)>,
+) -> Result<Vec<(i64, Script)>, Error> {
+    let mut still = Vec::new();
+    for (id, mut command) in commands {
+        if !state::command_wanted(db, id)? {
+            script::kill(command.pid());
+        }
+        match command.poll() {
+            Some((status, stdout)) => {
+                let stderr = script::collect(&outputs_of(home, id).1);
+                tools::ran(db, trace, id, &status, &stdout, &stderr)?;
+            }
+            None => still.push((id, command)),
+        }
+    }
+    Ok(still)
 }
 
 /// Pushes `commit` to the task's branch and opens its pull request, titled and described by its

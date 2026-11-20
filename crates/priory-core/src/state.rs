@@ -10,7 +10,7 @@ use std::collections::BTreeMap;
 use std::io::Write;
 use std::time::Duration;
 
-const VERSION: i64 = 36;
+const VERSION: i64 = 37;
 
 const SCHEMA: &str = "
 CREATE TABLE tasks (
@@ -640,13 +640,22 @@ const SCHEMA_36: &str = concat!(
 "
 );
 
+// A `run` action is stored as `running` before its command starts, with its process group, so a
+// restarted daemon finds it; it keeps the tail of the command's output.
+const SCHEMA_37: &str = "ALTER TABLE actions ADD COLUMN stdout TEXT;
+ALTER TABLE actions ADD COLUMN stderr TEXT;
+ALTER TABLE actions ADD COLUMN pid INTEGER;
+ALTER TABLE actions ADD COLUMN pid_started INTEGER;
+PRAGMA user_version = 37;
+";
+
 /// Each schema change in order: a file at version `n` applies those from index `n` on.
 const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA, SCHEMA_2, SCHEMA_3, SCHEMA_4, SCHEMA_5, SCHEMA_6, SCHEMA_7, SCHEMA_8, SCHEMA_9,
     SCHEMA_10, SCHEMA_11, SCHEMA_12, SCHEMA_13, SCHEMA_14, SCHEMA_15, SCHEMA_16, SCHEMA_17,
     SCHEMA_18, SCHEMA_19, SCHEMA_20, SCHEMA_21, SCHEMA_22, SCHEMA_23, SCHEMA_24, SCHEMA_25,
     SCHEMA_26, SCHEMA_27, SCHEMA_28, SCHEMA_29, SCHEMA_30, SCHEMA_31, SCHEMA_32, SCHEMA_33,
-    SCHEMA_34, SCHEMA_35, SCHEMA_36,
+    SCHEMA_34, SCHEMA_35, SCHEMA_36, SCHEMA_37,
 ];
 
 /// The order the queue starts tasks in: band, then a person's order, then age. A band the factory
@@ -1370,6 +1379,46 @@ pub(crate) fn actionable(
         }
     }
     Ok(None)
+}
+
+/// Records the process group of `run` action `id` and its start time, so a restarted daemon kills
+/// it and never a process that reused its pid.
+pub(crate) fn command_spawned(
+    db: &Connection,
+    id: i64,
+    pid: u32,
+    started: Option<i64>,
+) -> rusqlite::Result<()> {
+    db.execute(
+        "UPDATE actions SET pid = ?2, pid_started = ?3 WHERE id = ?1",
+        params![id, pid, started],
+    )?;
+    Ok(())
+}
+
+/// Whether the task of `run` action `id` still runs its step.
+pub(crate) fn command_wanted(db: &Connection, id: i64) -> rusqlite::Result<bool> {
+    db.query_row(
+        "SELECT state = 'running' AND tasks.step = actions.step
+         FROM actions JOIN tasks ON tasks.id = actions.task WHERE actions.id = ?1",
+        [id],
+        |row| row.get(0),
+    )
+}
+
+/// The `run` actions a stopped daemon left running, each with its process group and that group's
+/// start time when both were recorded.
+pub(crate) fn orphan_commands(
+    db: &Connection,
+) -> rusqlite::Result<Vec<(i64, Option<(u32, i64)>)>> {
+    let mut statement =
+        db.prepare("SELECT id, pid, pid_started FROM actions WHERE status = 'running'")?;
+    statement
+        .query_map([], |row| {
+            let pid: Option<u32> = row.get(1)?;
+            Ok((row.get(0)?, pid.zip(row.get(2)?)))
+        })?
+        .collect()
 }
 
 /// The summary and evidence of the task's latest result.

@@ -2262,6 +2262,64 @@ pub(crate) struct Done {
     pub error: Option<String>,
 }
 
+/// Stores the `run` action of the code step `at` as `running` before its command starts, and the
+/// task as `running` with it. Returns the action's id.
+pub(crate) fn launched(db: &mut Connection, task: i64, at: &Step) -> rusqlite::Result<i64> {
+    let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    tx.execute(
+        "INSERT INTO actions (task, step, action, status, result, inbox)
+         VALUES (?1, ?2, 'run', 'running',
+           (SELECT max(run) FROM results WHERE task = ?1), (SELECT max(seq) FROM inbox))",
+        params![task, at.id],
+    )?;
+    let id = tx.last_insert_rowid();
+    set(&tx, task, "running", None, None)?;
+    tx.commit()?;
+    Ok(id)
+}
+
+/// Records how the command of `run` action `id` ended and moves its task by the outcome: the last
+/// line of stdout when `next` names it and the command exited, else `ok` on exit 0 and `failed`
+/// otherwise. A task no longer running that step, as after a cancel, stays where it is.
+pub(crate) fn ran(
+    db: &mut Connection,
+    trace: &Trace,
+    id: i64,
+    status: &str,
+    stdout: &str,
+    stderr: &str,
+) -> rusqlite::Result<()> {
+    let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let (task, workflow, at, still): (i64, String, String, bool) = tx.query_row(
+        "SELECT task, workflow, actions.step, state = 'running' AND tasks.step = actions.step
+         FROM actions JOIN tasks ON tasks.id = actions.task WHERE actions.id = ?1",
+        [id],
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+    )?;
+    let next = step(&trace.factory.workflows, &workflow, &at).map(|step| &step.next);
+    let exit = status.strip_prefix("exit ");
+    let named = stdout
+        .lines()
+        .last()
+        .map(str::trim)
+        .filter(|line| exit.is_some() && next.is_some_and(|next| next.contains_key(*line)));
+    let outcome = named.unwrap_or(if exit == Some("0") { "ok" } else { "failed" });
+    let error = (exit != Some("0")).then_some(status);
+    tx.execute(
+        "UPDATE actions SET status = ?2, error = ?3, stdout = ?4, stderr = ?5 WHERE id = ?1",
+        params![id, outcome, error, stdout, stderr],
+    )?;
+    if still {
+        let target = next
+            .and_then(|next| next.get(outcome).cloned())
+            .unwrap_or_else(|| format!("{at}?{outcome}"));
+        trace::ended(&tx, trace, task, outcome, None)?;
+        let workflows = &trace.factory.workflows;
+        enter(&tx, task, &workflow, &target, None, error.unwrap_or_default(), workflows)?;
+    }
+    tx.commit()
+}
+
 /// Records the run of the code step `at`'s action, makes the task own the pull request it opened,
 /// and moves the task by `next[status]`.
 pub(crate) fn performed(

@@ -40,8 +40,10 @@ const OUTPUT: &str = "factory.intake";
 
 /// Takes a state file back before schema 28, which added search, 29, which added grades, 30,
 /// which added snoozes, 31, which added read reports, 32, which added the pause, 34, which added
-/// reports of sections, and 36, which added deliveries.
-const UNDO_SINCE_SEARCH: &str = "DROP TABLE deliveries; DROP TABLE reports; DROP TABLE pause;
+/// reports of sections, 36, which added deliveries, and 37, which added run actions.
+const UNDO_SINCE_SEARCH: &str = "ALTER TABLE actions DROP COLUMN stdout;
+  ALTER TABLE actions DROP COLUMN stderr; ALTER TABLE actions DROP COLUMN pid;
+  ALTER TABLE actions DROP COLUMN pid_started; DROP TABLE deliveries; DROP TABLE reports; DROP TABLE pause;
   ALTER TABLE outbox DROP COLUMN wakes;
   DROP TRIGGER snooze_ends_on_a_new_revision;
   DROP TRIGGER snooze_ends_on_a_task_state_change; DROP TABLE snoozes;
@@ -5601,6 +5603,105 @@ fn a_gh_call_past_the_command_timeout_is_killed_and_its_action_fails() {
     let actions = setup.until("actions", |rows| rows.len() == 1);
     assert_eq!(actions[0][4], "failed");
     assert!(actions[0][7].ends_with("timed out after 1s"), "{actions:?}");
+}
+
+/// A workflow whose one step runs `command` and routes `found`, `ok` and `failed`.
+fn run_step(command: &str, timeout: &str) -> String {
+    format!(
+        r#"
+start = "poll"
+
+[[steps]]
+id = "poll"
+decides = "code"
+action = "run"
+run = {command:?}
+effect = "reversible"
+{timeout}
+next = {{ found = "done", ok = "stop", failed = "stop" }}
+"#
+    )
+}
+
+/// Starts task 1 on a run step of `command` and returns once its action ended.
+fn ran(name: &str, command: &str, timeout: &str) -> (Setup, Vec<Vec<String>>) {
+    let mut setup = Setup::with_workflow(name, &run_step(command, timeout));
+    setup.publish(&requested(42));
+    setup.start();
+    let actions = setup.until("actions", |rows| {
+        rows.len() == 1 && rows[0][4] != "running"
+    });
+    (setup, actions)
+}
+
+#[test]
+fn a_run_step_whose_last_line_names_an_outcome_routes_there() {
+    let (setup, actions) = ran(
+        "run-found",
+        "echo checking; echo \"task $PRIORY_TASK\" >&2; echo found",
+        "",
+    );
+
+    assert_eq!(actions[0][1..5], ["1", "poll", "run", "found"]);
+    assert_eq!(actions[0][8..], ["checking\\nfound", "task 1"]);
+    assert_eq!(setup.rows("tasks")[0][4], "done");
+}
+
+#[test]
+fn a_run_step_routes_ok_on_exit_0_and_failed_on_another_exit() {
+    let (_quiet, quiet) = ran("run-ok", "echo nothing new", "");
+    let (setup, broken) = ran("run-failed", "echo found; exit 3", "");
+
+    assert_eq!(quiet[0][4..8], ["ok", "-", "-", "-"]);
+    // A named last line routes even on a failing exit, which the error keeps.
+    assert_eq!(broken[0][4..9], ["found", "-", "-", "exit 3", "found"]);
+    let (_crashed, crashed) = ran("run-crashed", "echo oops >&2; exit 1", "");
+    assert_eq!(crashed[0][4..10], ["failed", "-", "-", "exit 1", "", "oops"]);
+    assert_eq!(setup.rows("tasks")[0][4], "done");
+}
+
+#[test]
+fn a_run_step_past_its_timeout_is_killed_with_its_children_and_fails() {
+    let (setup, actions) = ran(
+        "run-timeout",
+        "sleep 60 & echo $! > child; echo found; wait",
+        "timeout = \"1s\"",
+    );
+
+    assert_eq!(actions[0][4], "failed");
+    assert_eq!(actions[0][7], "timed out after 1s");
+    let child = fs::read_to_string(setup.dir.join("factory/child")).unwrap();
+    assert!(!alive(child.trim()), "the backgrounded sleep still runs");
+    assert_eq!(setup.rows("tasks")[0][4], "dropped");
+}
+
+#[test]
+fn a_restart_while_a_run_step_runs_kills_it_and_fails_it_without_running_it_again() {
+    let mut setup = Setup::with_workflow(
+        "run-restart",
+        &run_step("echo started >> starts; echo $$ > pid; sleep 60; echo found", ""),
+    );
+    setup.publish(&requested(42));
+    setup.start();
+    setup.written("factory/pid");
+    let pid = fs::read_to_string(setup.dir.join("factory/pid")).unwrap();
+
+    setup.crash();
+    setup.start();
+
+    let actions = setup.until("actions", |rows| rows[0][4] != "running");
+    assert_eq!(actions.len(), 1);
+    assert_eq!(actions[0][4..8], ["failed", "-", "-", "interrupted by a daemon restart"]);
+    assert!(!alive(pid.trim()), "the interrupted command still runs");
+    let starts = fs::read_to_string(setup.dir.join("factory/starts")).unwrap();
+    assert_eq!(starts, "started\n");
+    assert_eq!(setup.rows("tasks")[0][4], "dropped");
+}
+
+/// Whether process `pid` is alive, not a zombie.
+fn alive(pid: &str) -> bool {
+    fs::read_to_string(format!("/proc/{pid}/stat"))
+        .is_ok_and(|stat| stat.rsplit_once(')').unwrap().1.trim_start().chars().next() != Some('Z'))
 }
 
 #[test]

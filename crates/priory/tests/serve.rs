@@ -482,6 +482,27 @@ fn a_task_endpoint_returns_its_runs_steps_asks_waits_results_and_tldr() {
 }
 
 #[test]
+fn a_task_endpoint_shows_the_output_its_run_step_kept() {
+    let mut setup = Setup::new("task-run-step", SERVE);
+    setup.seed();
+    let db = rusqlite::Connection::open(setup.dir.join("priory.db")).unwrap();
+    db.execute(
+        "INSERT INTO actions (task, step, action, status, error, stdout, stderr)
+         VALUES (1, 'poll', 'run', 'failed', 'exit 2', 'checking', 'no network')",
+        [],
+    )
+    .unwrap();
+    let address = setup.start(&["serve", &setup.factory()]);
+
+    let step = &api(&address, "/api/tasks/1")["steps"][0];
+
+    assert_eq!(step["action"], "run");
+    assert_eq!(step["error"], "exit 2");
+    assert_eq!(step["stdout"], "checking");
+    assert_eq!(step["stderr"], "no network");
+}
+
+#[test]
 fn unknown_paths_404_other_methods_405_and_oversize_heads_431() {
     let mut setup = Setup::new("limits", SERVE);
     let address = setup.start(&["serve", &setup.factory()]);

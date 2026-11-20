@@ -25,15 +25,30 @@ pub fn spawn(run: &str, home: &Path, log: &Path, timeout: Duration) -> Result<Sc
 
 /// Starts `command` in `dir` in its own process group, writing its output to `log`.
 pub fn spawn_command(
+    command: Command,
+    dir: &Path,
+    log: &Path,
+    timeout: Duration,
+) -> Result<Script, String> {
+    spawn_split(command, dir, log, None, timeout)
+}
+
+/// Starts `command` as `spawn_command` does, its stderr going to `errors` when given; `poll` then
+/// returns the tail of stdout alone.
+pub fn spawn_split(
     mut command: Command,
     dir: &Path,
     log: &Path,
+    errors: Option<&Path>,
     timeout: Duration,
 ) -> Result<Script, String> {
     let at = |error: std::io::Error| format!("{}: {error}", log.display());
     fs::create_dir_all(log.parent().unwrap_or(dir)).map_err(at)?;
     let out = File::create(log).map_err(at)?;
-    let err = out.try_clone().map_err(at)?;
+    let err = match errors {
+        Some(errors) => File::create(errors).map_err(at)?,
+        None => out.try_clone().map_err(at)?,
+    };
     let program = command.get_program().to_string_lossy().into_owned();
     let child = command
         .current_dir(dir)
