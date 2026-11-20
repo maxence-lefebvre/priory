@@ -36,7 +36,7 @@ Milestone M2 adds a web view that works on a phone. These are its design boards 
 
 ![The desk on a 1440 px screen in the Indigo theme, dark mode: a rail of views, the list of asks and stopped tasks with what each recommends, and a drawer on the right with the ask's question, recommendation, options with keys 1 to 3, and the agent's reasoning.](docs/images/web-view-desktop.png)
 
-![Two phone screens in the Matins theme, dark mode. The asks list shows open and answered asks with facet chips. The answer sheet shows the Merge option armed with "Tap again to run", the exact command it will run and its target, over a dimmed backdrop.](docs/images/web-view-matins.png)
+![Two phone screens in the Parchment theme, light mode. The asks list shows open and answered asks with facet chips. The answer sheet shows the Merge option armed with "Tap again to run", the exact command it will run and its target, over a dimmed backdrop.](docs/images/web-view-parchment.png)
 
 ## Get started
 

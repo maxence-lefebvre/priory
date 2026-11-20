@@ -39,6 +39,16 @@
   --drawer: 640px;           /* the ask or task drawer on wide screens */
   --measure: 68ch;           /* the longest line of Markdown */
 
+  /* Herdr panes (DESIGN.md, "Herdr adapter"): a fine pointer, so desktop density */
+  --pane-narrow: 420px;      /* the side-pane width every panel works at */
+  --pane-split: 720px;       /* from this width a panel shows its list and detail side by side */
+  --pane-head: 44px;         /* the panel header */
+  --pane-chip: 28px;         /* saved views and facet chips in a pane */
+  --pane-row: 52px;          /* the shortest list row in a pane */
+  --pane-tile: 24px;         /* the state tile in a pane row */
+  --pane-option: 40px;       /* an ask option button in a pane */
+  --pane-bar: 52px;          /* the sticky answer bar in a pane */
+
   /* Type scale: size / line height. The family comes from the theme's font roles. */
   --type-count: 64px/0.85;    /* the desk's ask count on a phone, display role */
   --type-count-wide: 44px/1;  /* the ask count in the wide list header, display role */
@@ -57,6 +67,8 @@
   --type-mono: 12.5px/19px;   /* keys, ids, shas, terminal on wide screens, mono role */
   --type-mono-compact: 12px/16px; /* the terminal on compact screens, mono role */
   --type-tab: 11px/14px;      /* tab bar labels, UI role */
+  --type-pane-question: 18px/24px; /* an ask's question in a Herdr pane, display role */
+  --type-pane-count: 40px/1;  /* the desk count in a Herdr pane, display role */
 
   /* Elevation: hairlines separate; a shadow means the element floats. */
   --shadow-float: 0 6px 20px rgba(0, 0, 0, 0.18); /* Answer capsule */
