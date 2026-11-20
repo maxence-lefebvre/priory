@@ -38,7 +38,7 @@ const OUTPUT: &str = "factory.intake";
 
 /// Takes a state file back before schema 28, which added search, 29, which added grades, 30,
 /// which added snoozes, 31, which added read reports, 32, which added the pause, 34, which added
-/// reports of sections, and 35, which added deliveries.
+/// reports of sections, and 36, which added deliveries.
 const UNDO_SINCE_SEARCH: &str = "DROP TABLE deliveries; DROP TABLE reports; DROP TABLE pause;
   ALTER TABLE outbox DROP COLUMN wakes;
   DROP TRIGGER snooze_ends_on_a_new_revision;
@@ -2580,7 +2580,10 @@ fn a_step_ending_green_with_a_reason_sets_the_task_grade_and_reason() {
     let listed: serde_json::Value =
         serde_json::from_slice(&setup.priory(&["tasks", "--json"]).stdout).unwrap();
     assert_eq!(
-        [&listed[0]["grade"], &listed[0]["grade_reason"]],
+        [
+            &listed["tasks"][0]["grade"],
+            &listed["tasks"][0]["grade_reason"]
+        ],
         [&json!("green"), &json!("one file, covered by tests")]
     );
 }
@@ -3094,6 +3097,7 @@ fn a_snoozed_ask_leaves_the_desk_and_asks_until_its_time_while_the_task_stays_as
     assert_eq!(json["counts"]["snoozed"], 1);
     let json: serde_json::Value =
         serde_json::from_slice(&setup.priory(&["asks", "--json"]).stdout).unwrap();
+    let json = &json["asks"];
     assert_eq!(json[0]["snoozed_until"].as_str(), Some(all[0][7].as_str()));
     assert!(json[0]["snoozed_at"].is_string(), "{json}");
     assert!(json[0]["back_early"].is_null(), "{json}");
@@ -3383,7 +3387,7 @@ fn delivery(
     loop {
         let output = setup.priory(&["asks", "--json"]);
         let asks: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-        let found = asks
+        let found = asks["asks"]
             .as_array()
             .unwrap()
             .iter()
@@ -3518,11 +3522,9 @@ fn without_a_deliver_command_an_outside_answer_is_only_stored() {
 
     let output = setup.priory(&["asks", "--json"]);
     let asks: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(
-        [&asks[0]["state"], &asks[0]["answer"]],
-        ["answered", "ship"]
-    );
-    assert_eq!(asks[0].get("delivery"), Some(&serde_json::Value::Null));
+    let ask = &asks["asks"][0];
+    assert_eq!([&ask["state"], &ask["answer"]], ["answered", "ship"]);
+    assert_eq!(ask.get("delivery"), Some(&serde_json::Value::Null));
 }
 
 #[test]
@@ -5751,6 +5753,7 @@ fn a_new_revision_of_a_snoozed_ask_brings_it_back_early() {
     assert_eq!(asks[0][5], "-");
     let json: serde_json::Value =
         serde_json::from_slice(&setup.priory(&["asks", "--json"]).stdout).unwrap();
+    let json = &json["asks"];
     assert_eq!(json[0]["back_early"]["reason"], "new revision", "{json}");
     assert!(json[0]["snoozed_until"].is_null(), "{json}");
 }
@@ -9370,7 +9373,8 @@ fn asleep_on_a_report(name: &str, report: &serde_json::Value) -> Setup {
 fn shown(setup: &Setup) -> serde_json::Value {
     let output = setup.priory(&["report", "show", "--json"]);
     assert!(output.status.success(), "{output:?}");
-    serde_json::from_slice(&output.stdout).unwrap()
+    let shown: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    shown["report"].clone()
 }
 
 #[test]

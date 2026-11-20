@@ -112,7 +112,10 @@ fn a_daemon_source_is_refused() {
         String::from_utf8_lossy(&refused.stderr).trim(),
         "priory post: only priory itself posts as github"
     );
-    assert_eq!(setup.json(&["inbox", "--json"]), Value::Array(vec![]));
+    assert_eq!(
+        setup.json(&["inbox", "--json"])["inbox"],
+        Value::Array(vec![])
+    );
 }
 
 #[test]
@@ -122,7 +125,7 @@ fn inbox_since_prints_only_newer_entries() {
         setup.post("systemd", line);
     }
 
-    let since = setup.json(&["inbox", "--since", "1", "--json"]);
+    let since = &setup.json(&["inbox", "--since", "1", "--json"])["inbox"];
 
     let seqs: Vec<_> = since
         .as_array()
@@ -149,7 +152,7 @@ fn a_read_report_leaves_the_desk() {
         reports(&setup.json(&["desk", "--json"])),
         ["systemd: sync.service failed"]
     );
-    let inbox = setup.json(&["inbox", "--json"]);
+    let inbox = &setup.json(&["inbox", "--json"])["inbox"];
     assert!(inbox[0]["read"].is_string());
     assert_eq!(inbox[1]["read"], Value::Null);
     assert!(!setup.priory(&["inbox", "read", "9"]).status.success());
@@ -185,11 +188,14 @@ fn the_daemon_routes_no_report_and_only_a_report_can_be_read() {
 
     setup.stdout(&["daemon", factory, "--once"]);
 
-    let inbox = setup.json(&["inbox", "--json"]);
+    let inbox = &setup.json(&["inbox", "--json"])["inbox"];
     assert_eq!(inbox[0]["task"], Value::Null);
     assert_eq!(inbox[0]["outcome"], "report");
     assert_eq!(
-        setup.json(&["tasks", "--json"]).as_array().unwrap().len(),
+        setup.json(&["tasks", "--json"])["tasks"]
+            .as_array()
+            .unwrap()
+            .len(),
         1
     );
     let refused = setup.priory(&["inbox", "read", "2"]);
