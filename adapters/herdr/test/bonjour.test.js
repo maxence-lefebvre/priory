@@ -28,22 +28,23 @@ test("a row shows its tile, key, text, meta, owner and time, and agent text stay
   const sections = dossier(read, { now }).sections;
   const rows = (id) => sections.find((section) => section.id === id).rows.map(({ pick, ...row }) => row);
   assert.deepEqual(rows("slack"), [{
-    id: "slack/0", tile: null, key: null, owner: null, time: null, meta: null,
+    id: '["slack",0]', tile: null, key: null, owner: null, time: null, meta: null,
     text: "Yesterday: merged the MCP v2 plan review, answered 4 Priory asks.\nToday: agree the picks and land #212. <b>not html</b>",
   }]);
   assert.deepEqual(rows("blocked"), [
-    { id: "blocked/0", tile: "blocked", key: "PRI-55", text: "Permission prompt denied", meta: "resume or edit the agent", owner: "on Max", time: null },
-    { id: "blocked/1", tile: "held", key: "PRI-69", text: "Held until #212 merges", meta: "then it releases", owner: "on #212", time: null },
+    { id: '["blocked",0]', tile: "blocked", key: "PRI-55", text: "Permission prompt denied", meta: "resume or edit the agent", owner: "on Max", time: null },
+    { id: '["blocked",1]', tile: "held", key: "PRI-69", text: "Held until #212 merges", meta: "then it releases", owner: "on #212", time: null },
   ]);
   // A time today shows its clock, an earlier one its date.
-  assert.deepEqual(rows("moved").map((row) => [row.id, row.tile, row.time]), [["moved/0", "done", "Nov 19, 18:42"], ["moved/1", "dropped", "06:05"]]);
-  // Row ids are unique only in their section, so the section names them.
-  assert.deepEqual(rows("sentry").map((row) => row.id), ["sentry/fnd-2409", "sentry/fnd-2413"]);
+  assert.deepEqual(rows("moved").map((row) => [row.id, row.tile, row.time]), [['["moved",0]', "done", "Nov 19, 18:42"], ['["moved",1]', "dropped", "06:05"]]);
+  // Row ids are unique only in their section, so the section names them; a row without one goes by its
+  // place, which no row's own id can equal.
+  assert.deepEqual(rows("sentry").map((row) => row.id), ['["sentry","fnd-2409"]', '["sentry","fnd-2413"]']);
 });
 
 test("an open pick offers its options with the recommended one marked, and a chosen pick folds to its choice", () => {
   const picks = Object.fromEntries(dossier(read, { now }).sections.flatMap((section) => section.rows).filter((row) => row.pick).map((row) => [row.id, row.pick]));
-  assert.deepEqual(picks["sentry/fnd-2413"], {
+  assert.deepEqual(picks['["sentry","fnd-2413"]'], {
     id: "2026-11-20_sentry_fnd-2413",
     state: "open",
     options: [
@@ -54,11 +55,11 @@ test("an open pick offers its options with the recommended one marked, and a cho
     note: "Recommends Later",
     chosen: null,
   });
-  assert.equal(picks["agree/1"].note, null);
-  assert.deepEqual(picks["agree/0"], {
+  assert.equal(picks['["agree",1]'].note, null);
+  assert.deepEqual(picks['["agree",0]'], {
     id: "2026-11-20_agree_priory-schedules", state: "agreed", options: [], chosen: "Take", note: "Waiting for the workflow to apply it.",
   });
-  assert.deepEqual(picks["sentry/fnd-2409"], {
+  assert.deepEqual(picks['["sentry","fnd-2409"]'], {
     id: "2026-11-20_sentry_fnd-2409", state: "applied", options: [], chosen: "Take", note: "requested task cli:FND-2409",
   });
   assert.equal(Object.keys(picks).length, 4);
@@ -90,20 +91,26 @@ test("the Picks view keeps only the rows with a pick to agree, in their sections
   assert.deepEqual(all.views, [{ id: "all", label: "All sections", count: null }, { id: "picks", label: "Picks", count: 2 }]);
   const picks = dossier(read, { now, view: "picks" });
   assert.deepEqual(picks.sections.map((section) => [section.title, section.rows.map((row) => row.id)]), [
-    ["Sentry", ["sentry/fnd-2413"]],
-    ["To agree", ["agree/1"]],
+    ["Sentry", ['["sentry","fnd-2413"]']],
+    ["To agree", ['["agree",1]']],
   ]);
   assert.deepEqual(picks.views, all.views);
 });
 
+test("a row's own id never takes the place of a row without one", () => {
+  // Hand-built: a valid report whose second row is named "1" and whose third row has no id.
+  const clash = { revision: 1, report: { ...read.report, sections: [{ id: "s", title: "S", rows: [{ text: "a" }, { id: "1", text: "b" }, { text: "c" }] }] } };
+  assert.deepEqual(dossier(clash, { now }).sections[0].rows.map((row) => row.id), ['["s",0]', '["s","1"]', '["s",2]']);
+});
+
 test("Next pick goes to the next pick to agree after the selected row, and wraps", () => {
   const view = dossier(read, { now });
-  assert.equal(nextPick(view, null), "sentry/fnd-2413");
-  assert.equal(nextPick(view, "sentry/fnd-2413"), "agree/1");
-  assert.equal(nextPick(view, "agree/1"), "sentry/fnd-2413");
+  assert.equal(nextPick(view, null), '["sentry","fnd-2413"]');
+  assert.equal(nextPick(view, '["sentry","fnd-2413"]'), '["agree",1]');
+  assert.equal(nextPick(view, '["agree",1]'), '["sentry","fnd-2413"]');
   // From a row without a pick to agree, the next one below it.
-  assert.equal(nextPick(view, "agree/0"), "agree/1");
-  assert.equal(nextPick(view, "moved/1"), "sentry/fnd-2413");
+  assert.equal(nextPick(view, '["agree",0]'), '["agree",1]');
+  assert.equal(nextPick(view, '["moved",1]'), '["sentry","fnd-2413"]');
   const done = fixture("report-revised.json");
   done.report.sections[3].rows[1].pick.chosen = "Skip";
   assert.equal(nextPick(dossier(done, { now }), null), null);

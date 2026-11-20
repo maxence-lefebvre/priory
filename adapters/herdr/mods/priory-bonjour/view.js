@@ -46,7 +46,8 @@ function choice(pick) {
 /** @param {any} section @param {any} row @param {number} index @param {number} now */
 function row(section, row, index, now) {
   return {
-    id: `${section.id}/${row.id ?? index}`,
+    // A row without an id goes by its place: a number, which no row id (a string) equals.
+    id: JSON.stringify([section.id, row.id ?? index]),
     tile: row.state ?? null,
     key: row.key ?? null,
     text: row.text,
