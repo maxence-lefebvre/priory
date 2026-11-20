@@ -133,11 +133,20 @@ impl<'a> Linear<'a> {
             "query View($view: String!, $after: String) {{ customView(id: $view) {{ \
              filterData issues(first: 100, after: $after) {{ nodes {{ ...issue }} {PAGE} }} }} }} {ISSUE}"
         );
-        let (first, issues) =
-            self.pages(&query, json!({ "view": view }), "/customView/issues", true)?;
-        let filter = first["customView"]["filterData"].clone();
-        let members: BTreeMap<String, Value> = issues
+        let path = "/customView/issues";
+        let pages = self.pages(&query, json!({ "view": view }), path, true)?;
+        let filter = pages[0]["customView"]["filterData"].clone();
+        if pages
             .iter()
+            .any(|page| page["customView"]["filterData"] != filter)
+        {
+            return Err(format!(
+                "Linear view {view}: its filter changed while the intake read it"
+            ));
+        }
+        let members: BTreeMap<String, Value> = pages
+            .iter()
+            .flat_map(|page| connection_nodes(page, path))
             .map(|issue| {
                 (
                     issue["id"].as_str().unwrap_or_default().to_string(),
@@ -150,10 +159,12 @@ impl<'a> Linear<'a> {
             .into_iter()
             .flatten()
             .map(|member| {
-                (
-                    member["linear_id"].as_str().unwrap_or_default().to_string(),
-                    member.clone(),
-                )
+                let mut member = member.clone();
+                // A member stored before events carried `project_id`.
+                if member.get("project_id").is_none() {
+                    member["project_id"] = Value::Null;
+                }
+                (text(&member["linear_id"]).to_string(), member)
             })
             .collect();
         let baseline = marker.is_none();
@@ -190,7 +201,8 @@ impl<'a> Linear<'a> {
                 })
                 .collect::<Result<_, _>>()?
         };
-        let changed = baseline || refiltered || members != before;
+        let unfiltered = marker.is_some_and(|marker| marker.get("filter").is_none());
+        let changed = baseline || refiltered || unfiltered || members != before;
         Ok(Polled {
             stream: stream.into(),
             events,
@@ -380,36 +392,32 @@ impl<'a> Linear<'a> {
         path: &str,
         all: bool,
     ) -> Result<Vec<Value>, String> {
-        Ok(self.pages(query, variables, path, all)?.1)
+        let pages = self.pages(query, variables, path, all)?;
+        Ok(pages
+            .iter()
+            .flat_map(|page| connection_nodes(page, path))
+            .cloned()
+            .collect())
     }
 
-    /// The first page's data, and the nodes of the connection at `path`, every page or only the
-    /// first.
+    /// The data of each page of the connection at `path`, every page or only the first.
     fn pages(
         &self,
         query: &str,
         mut variables: Value,
         path: &str,
         all: bool,
-    ) -> Result<(Value, Vec<Value>), String> {
-        let mut first = None;
-        let mut nodes = Vec::new();
+    ) -> Result<Vec<Value>, String> {
+        let mut pages = Vec::new();
         loop {
             let data = graphql(&self.key, query, &variables)?;
-            let connection = data
+            let next = data
                 .pointer(path)
-                .ok_or_else(|| format!("Linear answered no {path}"))?;
-            nodes.extend(
-                connection["nodes"]
-                    .as_array()
-                    .into_iter()
-                    .flatten()
-                    .cloned(),
-            );
-            let next = connection["pageInfo"].clone();
-            let first = first.get_or_insert(data);
+                .ok_or_else(|| format!("Linear answered no {path}"))?["pageInfo"]
+                .clone();
+            pages.push(data);
             if !all || next["hasNextPage"] != true {
-                return Ok((first.clone(), nodes));
+                return Ok(pages);
             }
             variables["after"] = next["endCursor"].clone();
         }
@@ -550,6 +558,14 @@ fn recover(marker: &Value, events: &[Message]) -> Value {
     marker["position"] = at[0].data["time"].clone();
     marker["seen"] = json!(seen);
     marker
+}
+
+/// The nodes of the connection at `path` in one page's data.
+fn connection_nodes<'a>(page: &'a Value, path: &str) -> impl Iterator<Item = &'a Value> {
+    page.pointer(path)
+        .and_then(|connection| connection["nodes"].as_array())
+        .into_iter()
+        .flatten()
 }
 
 fn text(value: &Value) -> &str {

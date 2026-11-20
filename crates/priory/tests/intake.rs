@@ -1816,12 +1816,12 @@ fn a_view_whose_filter_changed_publishes_one_changed_event_and_no_entered_or_lef
         .unwrap();
     succeeded(&desk);
     let desk = String::from_utf8(desk.stdout).unwrap();
-    assert!(
-        desk.contains(
-            "linear: view 6b3c2f9a1d4e changed its filter: 2 issues entered and 1 left, with no task requested"
-        ),
-        "{desk}"
-    );
+    let reports = desk
+        .matches(
+            "linear: view 6b3c2f9a1d4e changed its filter: 2 issues entered and 1 left, with no task requested",
+        )
+        .count();
+    assert_eq!(reports, 1, "{desk}");
 }
 
 #[test]
@@ -1843,6 +1843,104 @@ fn a_view_with_the_same_filter_still_publishes_entered_and_left() {
             "linear.issue.left"
         ]
     );
+}
+
+#[test]
+fn a_view_whose_filter_changes_between_pages_fails_the_poll_and_publishes_nothing() {
+    let setup = Setup::linear("linear-filter-pages", &[("agent-ready", VIEW_TRIGGER)]);
+    setup.answer_linear(&view_with(json!({ "state": "Todo" }), &[7]));
+    succeeded(&setup.intake());
+    let page = |filter: &str, issue: u64, next: bool| {
+        let answer = json!({ "data": { "customView": { "filterData": { "state": filter }, "issues": {
+            "nodes": [linear_issue(issue)],
+            "pageInfo": { "hasNextPage": next, "endCursor": "page-2" } } } } });
+        let file = setup.dir.join(format!("linear-view-{issue}.json"));
+        write(&file, &answer.to_string());
+        file.display().to_string()
+    };
+    let script = format!(
+        "#!/bin/sh\ncase \"$*\" in\n  *'query View'*'page-2'*) cat '{second}' ;;\n  \
+         *'query View'*) cat '{first}' ;;\n  *'query Comments'*) cat '{comments}' ;;\n  \
+         *) cat '{issues}' ;;\nesac\n",
+        first = page("Todo", 7, true),
+        second = page("In Progress", 8, false),
+        comments = setup.dir.join("linear-comments.json").display(),
+        issues = setup.dir.join("linear-issues.json").display(),
+    );
+    write(&setup.dir.join("bin/curl"), &script);
+
+    let output = setup.intake();
+
+    assert_eq!(output.status.code(), Some(1));
+    assert!(
+        String::from_utf8_lossy(&output.stderr)
+            .contains("Linear view 6b3c2f9a1d4e: its filter changed while the intake read it"),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(kinds(&setup.published()), ["linear.issue.entered"]);
+}
+
+/// A view marker written before the intake kept filters: no `filter`, and members without
+/// `project_id`.
+fn legacy_view_marker(setup: &Setup, members: serde_json::Value) {
+    let marker = json!({ "stream": "linear.view:6b3c2f9a1d4e", "position": 1, "members": members });
+    // The id the intake gives this marker, as docs/intake/envelope.md names it.
+    let namespace = uuid::Uuid::new_v5(
+        &uuid::Uuid::NAMESPACE_URL,
+        b"https://github.com/maxence-lefebvre/priory/intake",
+    );
+    let name = "factory.intake.baseline:linear.view:6b3c2f9a1d4e:1:null";
+    seed(
+        setup,
+        &Message::new("factory.intake.baseline", marker)
+            .id(uuid::Uuid::new_v5(&namespace, name.as_bytes()))
+            .subject("linear.view:6b3c2f9a1d4e"),
+    );
+}
+
+#[test]
+fn a_view_with_a_legacy_marker_records_its_filter_at_the_first_poll() {
+    let setup = Setup::linear("linear-legacy-filter", &[("agent-ready", VIEW_TRIGGER)]);
+    legacy_view_marker(&setup, json!([]));
+    setup.answer_linear(&view_with(json!({ "state": "Todo" }), &[]));
+    succeeded(&setup.intake());
+    setup.answer_linear(&view_with(json!({ "state": "In Progress" }), &[8]));
+
+    succeeded(&setup.intake());
+
+    assert_eq!(kinds(&setup.published()), ["linear.view.changed"]);
+}
+
+#[test]
+fn an_issue_leaving_a_view_with_a_legacy_marker_carries_project_id() {
+    let setup = Setup::linear("linear-legacy-left", &[("agent-ready", VIEW_TRIGGER)]);
+    let mut member = json!({
+        "issue": "ENG-7", "linear_id": "issue-7", "title": "Fix the thing",
+        "url": "https://linear.app/acme/issue/ENG-7/fix-the-thing", "team": "ENG",
+        "project": null, "state": "Todo", "labels": ["agent"]
+    });
+    legacy_view_marker(&setup, json!([member.clone()]));
+    setup.answer_linear(&view_with(json!({ "state": "Todo" }), &[]));
+
+    succeeded(&setup.intake());
+
+    let bus = Bus::open(&setup.dir.join("bus.db")).unwrap();
+    let left = bus
+        .messages(&MessageQuery {
+            output: Some("factory.intake".into()),
+            limit: 10,
+            ..MessageQuery::default()
+        })
+        .unwrap()
+        .into_iter()
+        .find(|stored| stored.message.kind == "linear.issue.left")
+        .unwrap();
+    member["project_id"] = json!(null);
+    member["view"] = json!("6b3c2f9a1d4e");
+    member["baseline"] = json!(false);
+    member["triggers"] = json!([]);
+    assert_eq!(timeless(&left.message), member);
 }
 
 fn created_in(number: u64, id: &str, name: &str) -> serde_json::Value {

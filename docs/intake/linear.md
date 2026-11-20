@@ -68,6 +68,9 @@ re-baselines the view:
 
 An issue that entered the view by changing during the same poll gets no task either.
 
+A filter that changes while the intake reads the view's pages fails the poll, which publishes
+nothing. The next poll reads the view again.
+
 ### Blockers
 
 Linear does not update an issue when its blocker closes. So for each updated issue, a second query
@@ -162,6 +165,8 @@ error it prints.
 
 - A view event's `time` is when the intake noticed the change, at most one poll late.
 - An issue that enters and leaves a view between two polls produces no event.
+- A crash between a `linear.view.changed` and its marker re-baselines the view again on restart.
+  An issue that entered the view meanwhile gets no task.
 - A marker published before the intake kept filters has none. The first poll after an upgrade
   records the filter and treats the view as unchanged.
 - Start-up recovery never dispatches a baseline event. A crash between a baseline event and the
