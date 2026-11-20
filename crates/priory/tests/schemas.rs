@@ -51,6 +51,8 @@ fn generated() -> Vec<(String, Value)> {
         event::<PullRequestLabeled>("github.pull_request.labeled"),
         event::<PullRequestClosed>("github.pull_request.closed"),
         event::<ReviewSubmitted>("github.pull_request_review.submitted"),
+        event::<PullRequestComment>("github.pull_request.comment"),
+        event::<ReviewThreadComment>("github.pull_request_review_comment"),
         event::<CheckRunCompleted>("github.check_run.completed"),
         event::<CheckRuns>("github.pull_request.check_runs"),
         event::<ReviewRequested>("github.pull_request.review_requested"),

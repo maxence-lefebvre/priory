@@ -70,6 +70,10 @@
             "null"
           ]
         },
+        "open": {
+          "description": "Whether the pull request was open when the intake read it; a done task reopens only\nfor feedback on an open one.",
+          "type": "boolean"
+        },
         "pull_request": {
           "description": "The pull request number.",
           "format": "uint64",
@@ -110,6 +114,7 @@
         "base_branch",
         "state",
         "actor",
+        "open",
         "github_id",
         "time",
         "baseline",
