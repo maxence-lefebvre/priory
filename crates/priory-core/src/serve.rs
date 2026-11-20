@@ -41,6 +41,7 @@ const WEB: &[(&str, &str, &[u8])] = &[
     file!("/boot.js", JS, "crates/priory-core/web/boot.js"),
     file!("/app.js", JS, "crates/priory-core/web/app.js"),
     file!("/asks.js", JS, "crates/priory-core/web/asks.js"),
+    file!("/add.js", JS, "crates/priory-core/web/add.js"),
     file!("/links.js", JS, "crates/priory-core/web/links.js"),
     file!("/app.css", CSS, "crates/priory-core/web/app.css"),
     file!("/tokens/structure.css", CSS, "design/tokens/structure.css"),
@@ -141,6 +142,13 @@ pub fn start(factory: &Factory, listen: SocketAddr) -> Result<Vec<JoinHandle<()>
         views: serde_json::json!({ "factory": factory.name, "views": factory.views() }).to_string(),
         links: listing::links(factory).to_string(),
         schedules: listing::schedule_triggers(factory),
+        request: serde_json::json!({
+            "workflow": factory.request().map(|defaults| &defaults.workflow),
+            "band": factory.request().and_then(|defaults| defaults.band.as_ref()),
+            "workflows": factory.workflows.keys().collect::<Vec<_>>(),
+            "bands": factory.bands(),
+        })
+        .to_string(),
     });
     let hooks: &[&str] = if github.is_some() { &[GITHUB] } else { &[] };
     let waiters = Arc::new(AtomicUsize::new(0));
@@ -192,6 +200,8 @@ struct Served {
     views: String,
     links: String,
     schedules: Vec<(String, Trigger)>,
+    /// `GET /api/request`: what the Add control prefills and offers.
+    request: String,
 }
 
 fn route(
@@ -207,6 +217,9 @@ fn route(
         return Reply::error(405, "only GET is served");
     }
     let (path, query) = path.split_once('?').unwrap_or((path, ""));
+    if path == "/api/request" {
+        return Reply::json(200, served.request.clone());
+    }
     if Write::of(path).is_some() {
         return Reply {
             headers: "Allow: POST\r\n",

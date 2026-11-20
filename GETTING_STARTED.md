@@ -170,7 +170,8 @@ priory tasks
 `priory add` prints the task's key, such as `cli:2026-11-20-1`. `priory tasks` lists task 1 with
 that key, at the step `implement`, in the state `queued`. A GitHub issue URL in the text sets the
 repository and the key, so `--repo` is not needed then. `priory request` takes every field as a
-flag, for a key of your own: see [docs/intake/cli.md](docs/intake/cli.md). Use a repository of yours in place of `owner/name` for a real run. When a queued task
+flag, for a key of your own: see [docs/intake/cli.md](docs/intake/cli.md). In the web view, `N`, or the
+`+` button, opens the same Add: one field, with workflow, band and lane chips set to the defaults. Use a repository of yours in place of `owner/name` for a real run. When a queued task
 starts is in [docs/daemon/room.md](docs/daemon/room.md).
 
 To keep both processes running, install them as systemd user services. See

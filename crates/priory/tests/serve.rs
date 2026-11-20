@@ -3044,3 +3044,23 @@ fn a_request_without_a_daemon_gets_503() {
 
     assert_eq!(status, 503, "{body}");
 }
+
+#[test]
+fn the_request_endpoint_reads_the_defaults_and_choices_the_add_control_offers() {
+    let mut setup = Setup::new("web-request-defaults", DEFAULTS);
+    let address = setup.start(&["serve", &setup.factory()]);
+    let mut bare = Setup::new("web-request-no-defaults", SERVE);
+    let bare_address = bare.start(&["serve", &bare.factory()]);
+
+    assert_eq!(
+        api(&address, "/api/request"),
+        json!({
+            "workflow": "implement",
+            "band": "today",
+            "workflows": ["implement"],
+            "bands": ["blocker", "now", "today", "later"],
+        })
+    );
+    assert_eq!(api(&bare_address, "/api/request")["workflow"], Value::Null);
+    assert_eq!(get(&address, "/api/request", None).0, 401);
+}
