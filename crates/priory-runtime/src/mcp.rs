@@ -150,7 +150,7 @@ fn tools() -> Value {
         },
         {
             "name": "wait",
-            "description": "Sleep until a condition holds, then end your turn. Give one condition in on, or a list in any to wake on the first that holds. Priory stops this process and resumes the session with the event that satisfies the condition as your next prompt. A Linear state or pull request that already holds wakes you at once. You may also call ask in the same turn: the first answer or event wins and withdraws the other. Waiting on a pull request makes its events yours.",
+            "description": "Sleep until a condition holds, then end your turn. Give one condition in on, or a list in any to wake on the first that holds. Priory stops this process and resumes the session with the event that satisfies the condition as your next prompt. A Linear state or pull request that already holds wakes you too. You may also call ask in the same turn: the first answer or event wins and withdraws the other. Waiting on a pull request makes its events yours.",
             "inputSchema": {
                 "type": "object",
                 "properties": {

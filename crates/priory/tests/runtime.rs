@@ -7570,6 +7570,7 @@ fn a_wait_on_a_merge_or_a_linear_state_wakes_on_the_first_and_withdraws_the_othe
 
     setup.publish(&closed());
     setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 2);
+    assert_eq!(setup.rows("waits"), Vec::<Vec<String>>::new());
     setup.publish(&moved_to_done("ENG-7"));
     std::thread::sleep(Duration::from_millis(1500));
 
@@ -7579,11 +7580,6 @@ fn a_wait_on_a_merge_or_a_linear_state_wakes_on_the_first_and_withdraws_the_othe
         "{typed:?}"
     );
     assert_eq!(setup.rows("waits"), Vec::<Vec<String>>::new());
-    let outbox = setup.rows("outbox");
-    assert!(
-        outbox.iter().all(|row| !row[4].contains("wait 2 fired")),
-        "{outbox:?}"
-    );
 }
 
 #[test]
@@ -7607,7 +7603,7 @@ fn a_linear_state_wait_on_an_issue_already_in_that_state_wakes_the_task_at_once(
     assert_eq!(
         (text.as_str(), error),
         (
-            "wait 1 already holds: end your turn; your next prompt says so",
+            "wait 1 stored: end your turn now; Priory wakes you with the event that satisfies it",
             false
         )
     );
@@ -7616,7 +7612,6 @@ fn a_linear_state_wait_on_an_issue_already_in_that_state_wakes_the_task_at_once(
         "{:?}",
         setup.typed()
     );
-    assert_eq!(setup.rows("runs").len(), 1);
 }
 
 #[test]
@@ -7680,7 +7675,10 @@ fn an_event_beside_an_ask_wakes_the_task_and_a_late_answer_is_refused() {
 #[test]
 fn a_pull_request_wait_on_one_already_merged_wakes_the_task_at_once() {
     let mut setup = Setup::new("pull-already");
-    setup.calls(&[wait(on_pull_7("pull_request"))]);
+    setup.calls(&[wait_any(&[
+        json!({ "type": "time", "until": "2 hours" }),
+        on_pull_7("pull_request"),
+    ])]);
     fs::write(setup.dir.join("fake/pr-state"), "MERGED\n").unwrap();
     setup.publish(&requested(42));
 
@@ -7688,7 +7686,29 @@ fn a_pull_request_wait_on_one_already_merged_wakes_the_task_at_once() {
 
     setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 2);
     assert!(
-        setup.typed()[1].starts_with("wait 1 fired: github:owner/repo#7 is already merged\n"),
+        setup.typed()[1].starts_with("wait 2 fired: github:owner/repo#7 is already merged\n"),
+        "{:?}",
+        setup.typed()
+    );
+    assert_eq!(setup.rows("waits"), Vec::<Vec<String>>::new());
+}
+
+#[test]
+fn an_answer_before_the_stop_of_a_run_beside_a_wait_keeps_the_run_going() {
+    let mut setup = Setup::new("answer-before-stop");
+    setup.calls(&[json!([ask(), wait(on_pull_7("pull_request"))])]);
+    setup.hold("hold-stop");
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("waits", |rows| rows.len() == 1);
+
+    let answered = setup.priory(&["answer", "1", "sqlite", "--revision", "1"]);
+    assert!(answered.status.success(), "{answered:?}");
+    setup.release("hold-stop");
+
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 2);
+    assert!(
+        setup.typed()[1].starts_with("sqlite\n"),
         "{:?}",
         setup.typed()
     );

@@ -107,7 +107,6 @@ pub(crate) fn call(
     db: &mut Connection,
     call: &Call,
     factory: &Factory,
-    now: &[Option<Result<String, String>>],
 ) -> rusqlite::Result<Result<String, String>> {
     let workflows = &factory.workflows;
     let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -171,7 +170,7 @@ pub(crate) fn call(
         ),
         "result" => result(&tx, &run, &call.arguments, workflows)?,
         "ask" => ask(&tx, &run, &call.arguments)?,
-        "wait" => wait(&tx, &run, &call.arguments, now)?,
+        "wait" => wait(&tx, &run, &call.arguments)?,
         "compact" => compact(&tx, &run, &call.arguments, factory)?,
         tool => Err(format!("unknown tool {tool}")),
     };
@@ -494,7 +493,7 @@ fn woken(tx: &Transaction, run: &Run) -> rusqlite::Result<bool> {
 
 fn open_wait(tx: &Transaction, run: i64) -> rusqlite::Result<Option<i64>> {
     tx.query_row(
-        "SELECT id FROM waits WHERE run = ?1 AND fired IS NULL",
+        "SELECT id FROM waits WHERE run = ?1 AND fired IS NULL AND withdrawn IS NULL",
         [run],
         |row| row.get(0),
     )
@@ -553,124 +552,113 @@ fn named(kind: &str, on: &Value) -> Result<Named, String> {
 }
 
 /// Stores a wait on each condition of `on` or `any`, and fires the first that already holds: an
-/// event since the agent's last prompt, a passed time, an ended task or a current state `now` reads.
+/// event since the agent's last prompt, a passed time or an ended task. The daemon reads the
+/// current states it can afterwards, outside this call (see `readable`).
 fn wait(
     tx: &Transaction,
     run: &Run,
     arguments: &Value,
-    now: &[Option<Result<String, String>>],
 ) -> rusqlite::Result<Result<String, String>> {
     let conditions = match conditions(arguments) {
         Ok(conditions) => conditions,
         Err(error) => return Ok(Err(error)),
     };
     let mut ids = Vec::new();
-    for on in &conditions {
+    for on in conditions {
         match condition(tx, run, on)? {
-            Ok(id) => ids.push(id),
+            Ok(id) => ids.push(id.to_string()),
             Err(error) => return Ok(Err(error)),
         }
     }
+    let ids = ids.join(", ");
     let caught = catch_up(tx, run.task)?;
     if !caught {
         due(tx)?;
     }
-    for ((id, on), current) in ids.iter().zip(&conditions).zip(now) {
-        if let Some(line) = current
-            .as_ref()
-            .and_then(|current| holds(on, current.as_deref().ok()?))
-        {
-            fire(tx, *id, run.task, &format!("wait {id} fired: {line}"), None)?;
-        }
-    }
     let fired = tx
         .query_row(
-            &format!(
-                "SELECT id FROM waits WHERE id IN ({}) AND fired IS NOT NULL",
-                ids.iter()
-                    .map(i64::to_string)
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            ),
+            &format!("SELECT id FROM waits WHERE id IN ({ids}) AND fired IS NOT NULL"),
             [],
             |row| row.get::<_, i64>(0),
         )
         .optional()?;
-    let unread: String = conditions
-        .iter()
-        .zip(now)
-        .filter_map(|(on, current)| match current {
-            Some(Err(error)) if fired.is_none() => Some(format!(
-                "\nPriory could not read the current state of {}: {error}",
-                on["issue"].as_str().or(on["repo"].as_str()).unwrap_or("-")
-            )),
-            _ => None,
-        })
-        .collect();
-    if let Some(id) = fired {
-        let next = match caught {
-            true => "the event that satisfies it is your next prompt",
-            false => "your next prompt says so",
-        };
-        return Ok(Ok(format!(
-            "wait {id} already holds: end your turn; {next}"
-        )));
-    }
-    let stored = match ids.as_slice() {
-        [id] => format!(
-            "wait {id} stored: end your turn now; Priory wakes you with the event that satisfies it"
+    let reply = match fired {
+        Some(id) if caught => format!(
+            "wait {id} already holds: end your turn; the event that satisfies it is your next prompt"
         ),
-        _ => format!(
-            "waits {} stored: end your turn now; Priory wakes you with the first event that satisfies one of them",
-            ids.iter()
-                .map(i64::to_string)
-                .collect::<Vec<_>>()
-                .join(", ")
+        Some(id) => format!("wait {id} already holds: end your turn; your next prompt says so"),
+        None if !ids.contains(',') => format!(
+            "wait {ids} stored: end your turn now; Priory wakes you with the event that satisfies it"
+        ),
+        None => format!(
+            "waits {ids} stored: end your turn now; Priory wakes you with the first event that satisfies one of them"
         ),
     };
-    Ok(Ok(format!("{stored}{unread}")))
+    Ok(Ok(reply))
 }
 
 /// The conditions of a wait call: `on`, one condition, or `any`, a list of them.
-fn conditions(arguments: &Value) -> Result<Vec<Value>, String> {
+fn conditions(arguments: &Value) -> Result<&[Value], String> {
     match (&arguments["on"], &arguments["any"]) {
-        (on, Value::Null) => Ok(vec![on.clone()]),
-        (Value::Null, Value::Array(any)) if !any.is_empty() => Ok(any.clone()),
+        (on, Value::Null) => Ok(std::slice::from_ref(on)),
+        (Value::Null, Value::Array(any)) if !any.is_empty() => Ok(any),
         _ => Err(
             "wait takes either on, one condition, or any, a non-empty list of conditions".into(),
         ),
     }
 }
 
-/// The current states a wait call's conditions need, in their order: a Linear issue's state for a
-/// linear_state condition and a pull request's state for a pull_request condition, else none.
-pub(crate) fn current_states(
-    call: &Call,
-    read: &dyn Fn(&Value) -> Option<Result<String, String>>,
-) -> Vec<Option<Result<String, String>>> {
-    if call.tool != "wait" {
-        return Vec::new();
-    }
-    conditions(&call.arguments)
-        .unwrap_or_default()
-        .iter()
-        .map(read)
-        .collect()
+/// The open waits whose current state the daemon can read: a Linear state, as `linear:<issue>`,
+/// and a pull request, as `github:<owner/name>#<number>`. Each comes with its id and kind.
+pub(crate) fn readable(db: &Connection) -> rusqlite::Result<Vec<(i64, String, String)>> {
+    db.prepare(
+        "SELECT waits.id, waits.kind, waits.resource FROM waits JOIN tasks ON tasks.id = waits.task
+         WHERE waits.fired IS NULL AND waits.withdrawn IS NULL AND NOT waits.daemon
+         AND waits.kind IN ('linear_state', 'pull_request')
+         AND tasks.state NOT IN ('done', 'failed', 'dropped') ORDER BY waits.id",
+    )?
+    .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?
+    .collect()
 }
 
-/// What the condition `on` reads in `current`, its current state, if that already satisfies it.
-fn holds(on: &Value, current: &str) -> Option<String> {
-    match on["type"].as_str()? {
-        "linear_state" if on["state"].as_str() == Some(current) => {
-            Some(format!("{} is already {current}", on["issue"].as_str()?))
+/// Fires the wait `wait` if `current`, the state the daemon read for its condition, already
+/// satisfies it: a Linear issue in the wanted state, or a pull request merged or closed. A wait
+/// that fired or was withdrawn meanwhile stays as it is.
+pub(crate) fn read(db: &mut Connection, wait: i64, current: &str) -> rusqlite::Result<()> {
+    let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let found = tx
+        .query_row(
+            "SELECT waits.task, waits.kind, waits.resource, waits.state FROM waits
+             JOIN tasks ON tasks.id = waits.task
+             WHERE waits.id = ?1 AND tasks.state NOT IN ('done', 'failed', 'dropped')",
+            [wait],
+            |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, Option<String>>(3)?,
+                ))
+            },
+        )
+        .optional()?;
+    let Some((task, kind, resource, state)) = found else {
+        return Ok(());
+    };
+    let line = match kind.as_str() {
+        "linear_state" if state.as_deref() == Some(current) => {
+            format!(
+                "{} is already {current}",
+                resource.trim_start_matches("linear:")
+            )
         }
-        "pull_request" if current != "OPEN" => Some(format!(
-            "{} is already {}",
-            route::pull_request(on["repo"].as_str()?, on["pull_request"].as_u64()?),
-            current.to_lowercase()
-        )),
-        _ => None,
-    }
+        "pull_request" if current != "OPEN" => {
+            format!("{resource} is already {}", current.to_lowercase())
+        }
+        _ => return Ok(()),
+    };
+    fire(&tx, wait, task, &format!("wait {wait} fired: {line}"), None)?;
+    tx.commit()
 }
 
 /// Stores a wait on the one condition `on` and returns its id.

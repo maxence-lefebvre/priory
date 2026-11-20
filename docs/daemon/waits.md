@@ -53,8 +53,8 @@ on the first that fires. Each condition fires the wait on:
 A wait on `any` stores one wait per condition, each with its own id, and replies
 `waits <id>, <id> stored`. A condition that is refused refuses the whole call, and nothing is
 stored. When one of them fires, the daemon withdraws the others, so a later event on their
-resources wakes nothing. The task still owns those resources, so their events still reach it, as
-any event on a resource it owns does.
+resources fires no wait. The task still owns those resources, so a later event on one still reaches
+the agent as a line of a prompt, as any event on a resource it owns does.
 
 ### An ask beside a wait
 
@@ -95,17 +95,19 @@ fires a checks wait.
 When the wait is stored, the daemon checks the events the task kept since the agent's last prompt:
 those not typed yet and on which no wait fired. The first one that satisfies the wait fires it at
 once, and the time and task conditions are checked at once too. The daemon also reads the current
-state of two conditions, before it stores anything, so a slow read holds no lock on the state file:
+state of two conditions. Each read runs on a thread of its own once the wait is stored, so a slow
+read never holds the daemon's loop or the tool call:
 
-| Condition | Read | Fires at once when | Line |
-| --------- | ---- | ------------------ | ---- |
+| Condition | Read | Fires when | Line |
+| --------- | ---- | ---------- | ---- |
 | `linear_state` | the issue's state, through the intake's Linear GraphQL transport (`curl`, 10 second connect and 60 second total timeout), only when the daemon has `LINEAR_API_KEY` | the state equals `state` | `wait <id> fired: <issue> is already <state>` |
 | `pull_request` | `gh pr view <number> -R <repo> --json state`, under the factory's command timeout | the pull request is merged or closed | `wait <id> fired: <pull request> is already merged`, or `closed` |
 
-So a wait on a Linear blocker that is already Done wakes the task at once. A read that fails stores
-the wait anyway, and the reply adds `Priory could not read the current state of <issue or repo>:
-<error>`. The other conditions are events, such as a comment or a review, with no current state to
-read. The run then does not sleep: the
+So a wait on a Linear blocker that is already Done wakes the task within a second or two of the
+call, and a person's answer or another condition that came first still wins. A read that fails
+leaves the wait open and logs `cannot read the current state of wait <id>` on the daemon's stderr.
+The daemon reads each open wait once per start, so a restart reads them again. The other conditions
+are events, such as a comment or a review, with no current state to read. The run then does not sleep: the
 event is typed after its `Stop`. A disk wait is checked at the next tick. Each tick measures the disk
 with the room's reading, `df` on `PRIORY_HOME`, only while a disk wait is open.
 
