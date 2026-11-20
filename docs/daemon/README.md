@@ -64,8 +64,8 @@ The keys of `factory.toml`, workflows and agents are in [docs/reference/](../ref
 - [codex.md](codex.md): how a Codex run differs from a Claude run.
 - [signals.md](signals.md): the hook signals a run sends, and the nudge after a silent turn.
 - [health.md](health.md): run verdicts, failed or blocked tasks, repair, and the stall handler.
-- [desk.md](desk.md): `priory desk`, reports and `priory post`, resume, cancel, revive, snooze, say and
-  pause.
+- [desk.md](desk.md): `priory desk`, reports and `priory post`, resume, cancel, revive, snooze, say,
+  pause, and `priory seen` for Since you looked.
 - [sweep.md](sweep.md): worktree removal, retiring asleep tasks, sweep scripts and the sweeper.
 - [tools.md](tools.md): the MCP tools, moving between steps, code steps and approvals.
 - [waits.md](waits.md): asks and answers, wait conditions, and the checks gate before `done`.

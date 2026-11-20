@@ -10,7 +10,7 @@ use std::collections::BTreeMap;
 use std::io::Write;
 use std::time::Duration;
 
-const VERSION: i64 = 38;
+const VERSION: i64 = 39;
 
 const SCHEMA: &str = "
 CREATE TABLE tasks (
@@ -646,10 +646,22 @@ ALTER TABLE tasks ADD COLUMN progress TEXT;
 PRAGMA user_version = 37;
 ";
 
+// Each person's last visit to the desk, which its Since you looked counts from.
+const SCHEMA_38: &str = concat!(
+    "CREATE TABLE IF NOT EXISTS visits (
+  person TEXT PRIMARY KEY,
+  seen   TEXT NOT NULL
+);
+",
+    bumps!("visits", "trace"),
+    "PRAGMA user_version = 38;
+"
+);
+
 // A hold takes several conditions, one row each, and an issue condition. Each row is met on its
 // own; the hold's rows are released together once all of them are met.
-const SCHEMA_38: &str = concat!(
-    "CREATE TABLE holds_38 (
+const SCHEMA_39: &str = concat!(
+    "CREATE TABLE holds_39 (
   id          INTEGER PRIMARY KEY AUTOINCREMENT,
   task        INTEGER NOT NULL REFERENCES tasks (id),
   reason      TEXT NOT NULL,
@@ -666,16 +678,16 @@ const SCHEMA_38: &str = concat!(
   released    TEXT,
   released_as TEXT
 );
-INSERT INTO holds_38 (id, task, reason, kind, until, target, resource, if_closed, resume, ask,
+INSERT INTO holds_39 (id, task, reason, kind, until, target, resource, if_closed, resume, ask,
   created, met, met_as, released, released_as)
   SELECT id, task, reason, kind, until, target, resource, if_closed, resume, ask, created,
   released, released_as, released, released_as FROM holds;
 DROP TABLE holds;
-ALTER TABLE holds_38 RENAME TO holds;
+ALTER TABLE holds_39 RENAME TO holds;
 CREATE INDEX open_holds ON holds (task) WHERE released IS NULL;
 ",
     bumps!("holds"),
-    "PRAGMA user_version = 38;
+    "PRAGMA user_version = 39;
 "
 );
 
@@ -685,7 +697,7 @@ const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA_10, SCHEMA_11, SCHEMA_12, SCHEMA_13, SCHEMA_14, SCHEMA_15, SCHEMA_16, SCHEMA_17,
     SCHEMA_18, SCHEMA_19, SCHEMA_20, SCHEMA_21, SCHEMA_22, SCHEMA_23, SCHEMA_24, SCHEMA_25,
     SCHEMA_26, SCHEMA_27, SCHEMA_28, SCHEMA_29, SCHEMA_30, SCHEMA_31, SCHEMA_32, SCHEMA_33,
-    SCHEMA_34, SCHEMA_35, SCHEMA_36, SCHEMA_37, SCHEMA_38,
+    SCHEMA_34, SCHEMA_35, SCHEMA_36, SCHEMA_37, SCHEMA_38, SCHEMA_39,
 ];
 
 /// The order the queue starts tasks in: band, then a person's order, then age. A band the factory
@@ -1317,6 +1329,16 @@ fn paused(db: &Connection) -> rusqlite::Result<Option<String>> {
         |row| row.get(0),
     )
     .optional()
+}
+
+/// Records that `person` looked at the desk at `at`, so its Since you looked starts there.
+pub fn seen(db: &Connection, person: &str, at: &str) -> rusqlite::Result<String> {
+    db.execute(
+        "INSERT INTO visits (person, seen) VALUES (?1, ?2)
+         ON CONFLICT (person) DO UPDATE SET seen = ?2",
+        [person, at],
+    )?;
+    Ok(format!("{person} looked at {at}"))
 }
 
 /// The desk's line while admissions are paused: `paused since <since>[: <reason>]`.
