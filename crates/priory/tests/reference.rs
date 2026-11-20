@@ -43,6 +43,32 @@ fn the_example_factory_passes_check() {
     );
 }
 
+#[test]
+fn every_starter_factory_passes_check() {
+    let starters = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples");
+    let mut checked = 0;
+    for entry in fs::read_dir(&starters).unwrap() {
+        let starter = entry.unwrap().path();
+        if !starter.is_dir() {
+            continue;
+        }
+        let output = Command::new(env!("CARGO_BIN_EXE_priory"))
+            .arg("check")
+            .arg(&starter)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}: {}{}",
+            starter.display(),
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        checked += 1;
+    }
+    assert!(checked > 0, "no starter under {}", starters.display());
+}
+
 /// Values whose shape a config schema checks with a pattern, valid or not to the loader.
 #[test]
 fn the_config_schemas_accept_the_values_the_loader_accepts() {
