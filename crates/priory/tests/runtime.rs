@@ -9020,6 +9020,144 @@ fn an_acquire_that_waits_past_its_timeout_gives_up_and_leaves_no_grant() {
     assert!(setup.rows("memory").is_empty());
 }
 
+/// Starts `priory memory lease --gb <gb> -- sh -c <script>` in the test's `fake` directory.
+fn lease(setup: &Setup, gb: &str, script: &str) -> Child {
+    setup
+        .command(env!("CARGO_BIN_EXE_priory"))
+        .args(["memory", "lease", "--gb", gb, "--", "sh", "-c", script])
+        .current_dir(setup.dir.join("fake"))
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap()
+}
+
+#[test]
+fn a_lease_holds_its_grant_while_its_command_runs_and_releases_it_when_the_command_exits() {
+    let mut setup = Setup::new("lease-exit");
+    setup.start();
+    listening(&setup);
+    setup.hold("hold-a");
+
+    let server = lease(&setup, "40", &held("a"));
+
+    let rows = setup.until("memory", |rows| rows.len() == 1 && rows[0][2] == "held");
+    assert_eq!(
+        [&rows[0][3], &rows[0][4], &rows[0][6]],
+        [
+            "40.0",
+            &format!("sh -c {}", held("a")),
+            &server.id().to_string()
+        ]
+    );
+    let late = setup
+        .command(env!("CARGO_BIN_EXE_priory"))
+        .args([
+            "memory",
+            "acquire",
+            "--gb",
+            "40",
+            "--timeout",
+            "1s",
+            "--",
+            "true",
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(late.status.code(), Some(125));
+    setup.release("hold-a");
+    let done = server.wait_with_output().unwrap();
+    assert!(
+        done.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&done.stderr)
+    );
+    assert!(setup.rows("memory").is_empty());
+}
+
+#[test]
+fn terminating_a_lease_stops_its_command_and_releases_its_grant() {
+    let mut setup = Setup::new("lease-kill");
+    setup.start();
+    listening(&setup);
+    setup.hold("hold-a");
+    let mut server = lease(&setup, "40", &format!("echo $$ > pid; {}", held("a")));
+    setup.until("memory", |rows| rows.len() == 1 && rows[0][2] == "held");
+    setup.written("fake/order");
+    let pid = fs::read_to_string(setup.dir.join("fake/pid")).unwrap();
+
+    let terminated = Command::new("kill")
+        .args(["-TERM", &server.id().to_string()])
+        .status()
+        .unwrap();
+    assert!(terminated.success());
+    // Not wait_with_output: a command that outlives its lease would hold the pipes open.
+    server.wait().unwrap();
+
+    setup.until("memory", |rows| rows.is_empty());
+    // The command waits on hold-a, so only a stop ends it while the file stays.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while Path::new(&format!("/proc/{}", pid.trim())).exists() {
+        assert!(Instant::now() < deadline, "the leased command still runs");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert_eq!(order(&setup), ["start-a"]);
+}
+
+#[test]
+fn a_lease_stops_what_its_command_leaves_behind() {
+    let mut setup = Setup::new("lease-leftover");
+    setup.start();
+    listening(&setup);
+
+    let done = lease(&setup, "1", "sleep 30 & echo $! > pid")
+        .wait()
+        .unwrap();
+
+    assert!(done.success());
+    let pid = fs::read_to_string(setup.dir.join("fake/pid")).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while Path::new(&format!("/proc/{}", pid.trim())).exists() {
+        assert!(Instant::now() < deadline, "the leftover process still runs");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(setup.rows("memory").is_empty());
+}
+
+#[test]
+fn a_lease_without_room_within_its_timeout_exits_125_and_never_runs_its_command() {
+    let mut setup = Setup::new("lease-timeout");
+    setup.start();
+    listening(&setup);
+    setup.hold("hold-a");
+    let a = acquire(&setup, "40", &held("a"));
+    setup.until("memory", |rows| rows.len() == 1 && rows[0][2] == "held");
+
+    let late = setup
+        .command(env!("CARGO_BIN_EXE_priory"))
+        .args([
+            "memory",
+            "lease",
+            "--gb",
+            "40",
+            "--timeout",
+            "1s",
+            "--",
+            "sh",
+            "-c",
+            "echo ran > ran",
+        ])
+        .current_dir(setup.dir.join("fake"))
+        .output()
+        .unwrap();
+    setup.release("hold-a");
+
+    assert_eq!(late.status.code(), Some(125));
+    assert!(!setup.dir.join("fake/ran").exists());
+    assert!(a.wait_with_output().unwrap().status.success());
+    assert!(setup.rows("memory").is_empty());
+}
+
 #[test]
 fn a_run_waits_for_room_while_a_grant_holds_memory() {
     let mut setup = Setup::new("gate-run");
