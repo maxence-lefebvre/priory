@@ -130,11 +130,12 @@ newest event about the issue that carries `blockers` decides: an empty list rele
 null one, which Linear's paging left unknown, does not. That event is a creation or state change of
 the issue, or a `linear.issue.blockers` that one of its blockers published when it changed.
 
-`--after <issue>` reads the `to` of `linear.issue.state_changed` events about the issue. The intake
-polls Linear for the issue while the condition is unmet (see `docs/intake/watches.md`). When the
-daemon has `LINEAR_API_KEY`, it also reads the issue's current state through the intake's Linear
-transport once, off its loop, so an issue already Done or Canceled meets the condition within a
-tick or two.
+`--after <issue>` reads the newest Linear event about the issue: the `to` of a
+`linear.issue.state_changed`, else the `state` of another issue event. The intake polls Linear for
+the issue while the condition is unmet (see `docs/intake/watches.md`). When the daemon has
+`LINEAR_API_KEY`, it also reads the issue's current state through the intake's Linear transport,
+off its loop, when the hold is stored and then once a minute. So an issue already Done or Canceled
+meets the condition within a tick or two, and a failed read is tried again.
 
 The daemon judges each condition when the hold is stored. Then it judges time and task conditions
 on each tick, and merge, blockers and issue conditions on each message that names their pull request

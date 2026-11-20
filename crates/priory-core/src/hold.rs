@@ -405,9 +405,12 @@ fn judge(tx: &Transaction, id: i64) -> rusqlite::Result<()> {
     if kind == "issue" {
         let state = tx
             .query_row(
-                "SELECT json_extract(data, '$.to') FROM inbox
-                 WHERE type = 'linear.issue.state_changed'
-                 AND 'linear:' || json_extract(data, '$.issue') = ?1 ORDER BY seq DESC LIMIT 1",
+                // A state change's `to`, else the state another issue event saw at its poll. A
+                // leaving view event can carry an earlier poll's fields.
+                "SELECT coalesce(json_extract(data, '$.to'), json_extract(data, '$.state')) AS state
+                 FROM inbox WHERE type LIKE 'linear.issue.%' AND type != 'linear.issue.left'
+                 AND 'linear:' || json_extract(data, '$.issue') = ?1 AND state IS NOT NULL
+                 ORDER BY seq DESC LIMIT 1",
                 [&resource],
                 |row| row.get::<_, String>(0),
             )
@@ -429,7 +432,7 @@ fn judge(tx: &Transaction, id: i64) -> rusqlite::Result<()> {
         (None, _) => Ok(()),
         (Some(Some(true)), _) => meet(tx, id, &format!("{resource} merged")),
         (Some(Some(false)), Some("release")) => meet(tx, id, &unmerged),
-        (Some(Some(false)), Some("drop")) => drop_task(tx, id, task, &unmerged),
+        (Some(Some(false)), Some("drop")) => drop_task(tx, task, &unmerged),
         (Some(merged), _) if ask.is_none() => {
             let closed = match merged {
                 Some(_) => unmerged,
@@ -493,14 +496,23 @@ pub(crate) fn read(db: &mut Connection, id: i64, current: &str) -> rusqlite::Res
     tx.commit()
 }
 
-/// Ends the hold of condition `id` by dropping its task, with `why` as the task's reason.
-fn drop_task(tx: &Transaction, id: i64, task: i64, why: &str) -> rusqlite::Result<()> {
+/// Ends the open hold of `task` by dropping it, with `why` as its reason, and closes the hold's
+/// open asks.
+fn drop_task(tx: &Transaction, task: i64, why: &str) -> rusqlite::Result<()> {
+    tx.execute(
+        &format!(
+            "UPDATE asks SET answer = 'drop', answered = {NOW}
+             WHERE id IN (SELECT ask FROM holds WHERE task = ?1 AND released IS NULL)
+             AND answer IS NULL AND withdrawn IS NULL"
+        ),
+        [task],
+    )?;
     tx.execute(
         &format!(
             "UPDATE holds SET released = {NOW}, released_as = 'dropped'
-             WHERE task = (SELECT task FROM holds WHERE id = ?1) AND released IS NULL"
+             WHERE task = ?1 AND released IS NULL"
         ),
-        [id],
+        [task],
     )?;
     tx.execute(
         "UPDATE tasks SET state = 'dropped', reason = ?2 WHERE id = ?1",
@@ -529,7 +541,6 @@ pub(crate) fn answered(tx: &Transaction, id: i64, answer: &str) -> rusqlite::Res
     })?;
     drop_task(
         tx,
-        id,
         task,
         "dropped by a person after its pull request closed",
     )

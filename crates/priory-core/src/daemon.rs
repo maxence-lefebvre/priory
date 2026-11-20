@@ -587,9 +587,12 @@ enum Input {
 /// Linear or GitHub read never holds the daemon's loop or a lock on the state file.
 #[derive(Default)]
 struct Reads {
-    started: std::collections::HashSet<(Reader, i64)>,
+    started: std::collections::HashMap<(Reader, i64), Instant>,
     done: Vec<std::thread::JoinHandle<(Reader, i64, Option<Read>)>>,
 }
+
+/// How often the daemon reads the state of a hold's unmet Linear issue again, as the intake polls.
+const HOLD_READ_EVERY: Duration = Duration::from_secs(60);
 
 /// Whose condition a read is for: a wait's or a hold's.
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
@@ -601,8 +604,9 @@ enum Reader {
 /// A wait condition's current state, or why it could not be read.
 type Read = Result<String, String>;
 
-/// Starts a read for each open wait or hold condition the daemon can read and has not read yet,
-/// and fires the waits and meets the conditions whose finished read shows they already hold.
+/// Starts a read for each open wait the daemon has not read yet, and for each unmet issue
+/// condition of a hold once a minute, since the Linear stream misses a close before its position.
+/// Fires the waits and meets the conditions whose finished read shows they already hold.
 fn read_states(db: &mut Connection, reads: &mut Reads) -> Result<(), Error> {
     let holds = hold::readable(db)?.into_iter();
     let readable = tools::readable(db)?
@@ -610,9 +614,14 @@ fn read_states(db: &mut Connection, reads: &mut Reads) -> Result<(), Error> {
         .map(|(wait, kind, resource)| (Reader::Wait, wait, kind, resource))
         .chain(holds.map(|(id, resource)| (Reader::Hold, id, "linear_state".to_owned(), resource)));
     for (reader, id, kind, resource) in readable {
-        if !reads.started.insert((reader, id)) {
+        let due = match reads.started.get(&(reader, id)) {
+            None => true,
+            Some(at) => reader == Reader::Hold && at.elapsed() >= HOLD_READ_EVERY,
+        };
+        if !due {
             continue;
         }
+        reads.started.insert((reader, id), Instant::now());
         reads.done.push(std::thread::spawn(move || {
             (reader, id, current_state(&kind, &resource))
         }));

@@ -473,7 +473,7 @@ pub struct Hold {
         skip_serializing_if = "Vec::is_empty",
         deserialize_with = "one_or_many"
     )]
-    #[schemars(with = "OneOrMany<After>")]
+    #[schemars(with = "Option<OneOrMany<After>>")]
     pub after: Vec<After>,
     /// Pull requests, `owner/name#42` or `42` in the task's repository: until each merges. One
     /// value or a list.
@@ -482,7 +482,7 @@ pub struct Hold {
         skip_serializing_if = "Vec::is_empty",
         deserialize_with = "one_or_many"
     )]
-    #[schemars(with = "OneOrMany<String>")]
+    #[schemars(with = "Option<OneOrMany<String>>")]
     pub merge: Vec<String>,
     /// What a pull request closed without a merge does: `release`, `drop` or `ask`, the default.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -526,7 +526,7 @@ impl std::str::FromStr for After {
     }
 }
 
-/// One value, or a list of them.
+/// One value, or a list of them; null reads as none, as the single values it replaced did.
 #[derive(Deserialize, JsonSchema)]
 #[serde(untagged)]
 #[schemars(rename = "OneOrMany_{T}")]
@@ -540,9 +540,10 @@ where
     D: serde::Deserializer<'de>,
     T: Deserialize<'de>,
 {
-    Ok(match OneOrMany::deserialize(deserializer)? {
-        OneOrMany::One(one) => vec![one],
-        OneOrMany::Many(many) => many,
+    Ok(match Option::<OneOrMany<T>>::deserialize(deserializer)? {
+        None => vec![],
+        Some(OneOrMany::One(one)) => vec![one],
+        Some(OneOrMany::Many(many)) => many,
     })
 }
 

@@ -20,9 +20,12 @@
       "description": "Why a task is held, and the conditions that release it once all of them hold. With none, a\nperson does.",
       "properties": {
         "after": {
-          "allOf": [
+          "anyOf": [
             {
               "$ref": "#/definitions/OneOrMany_After"
+            },
+            {
+              "type": "null"
             }
           ],
           "description": "Other tasks' ids, or Linear issues such as `ENG-7`: until each task ends and each issue is\nDone or Canceled. One value or a list."
@@ -39,9 +42,12 @@
           ]
         },
         "merge": {
-          "allOf": [
+          "anyOf": [
             {
               "$ref": "#/definitions/OneOrMany_string"
+            },
+            {
+              "type": "null"
             }
           ],
           "description": "Pull requests, `owner/name#42` or `42` in the task's repository: until each merges. One\nvalue or a list."
@@ -93,7 +99,7 @@
           "type": "array"
         }
       ],
-      "description": "One value, or a list of them."
+      "description": "One value, or a list of them; null reads as none, as the single values it replaced did."
     },
     "OneOrMany_string": {
       "anyOf": [
@@ -107,7 +113,7 @@
           "type": "array"
         }
       ],
-      "description": "One value, or a list of them."
+      "description": "One value, or a list of them; null reads as none, as the single values it replaced did."
     },
     "TaskRequested": {
       "additionalProperties": false,
