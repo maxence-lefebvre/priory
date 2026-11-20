@@ -7271,6 +7271,63 @@ fn a_linear_state_wait_fires_when_its_issue_moves_to_its_state_and_not_otherwise
     assert!(lines[1].contains(r#""to":"In Review""#), "{typed:?}");
 }
 
+fn wait_any(conditions: &[serde_json::Value]) -> serde_json::Value {
+    json!({ "name": "wait", "arguments": { "any": conditions } })
+}
+
+fn linear_done(issue: &str) -> serde_json::Value {
+    json!({ "type": "linear_state", "issue": issue, "state": "Done" })
+}
+
+fn moved_to_done(issue: &str) -> Message {
+    linear_event(
+        "linear.issue.state_changed",
+        issue,
+        json!({ "linear_id": format!("{issue}-Done"), "from": "In Progress", "to": "Done" }),
+    )
+}
+
+#[test]
+fn a_wait_on_a_merge_or_a_linear_state_wakes_on_the_first_and_withdraws_the_other() {
+    let mut setup = Setup::new("any-of");
+    setup.calls(&[wait_any(&[on_pull_7("pull_request"), linear_done("ENG-7")])]);
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("runs", |rows| {
+        rows.first().is_some_and(|row| row[7] == "asleep")
+    });
+    setup.gone("priory-1");
+    let (text, error) = reply(&setup.replies()[0]);
+    assert!(!error, "{text}");
+    assert_eq!(
+        text,
+        "waits 1, 2 stored: end your turn now; Priory wakes you with the first event that satisfies one of them"
+    );
+    let open = setup.rows("waits");
+    assert_eq!(
+        [&open[0][3], &open[0][4], &open[1][3], &open[1][4]],
+        ["pull_request", "github:owner/repo#7", "linear_state", "linear:ENG-7"]
+    );
+    fs::write(setup.dir.join("fake/hold-call"), "").unwrap();
+
+    setup.publish(&closed());
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 2);
+    setup.publish(&moved_to_done("ENG-7"));
+    std::thread::sleep(Duration::from_millis(1500));
+
+    let typed = setup.typed();
+    assert!(
+        typed[1].starts_with("github.pull_request.closed owner/repo#7 {"),
+        "{typed:?}"
+    );
+    assert_eq!(setup.rows("waits"), Vec::<Vec<String>>::new());
+    let outbox = setup.rows("outbox");
+    assert!(
+        outbox.iter().all(|row| !row[4].contains("wait 2 fired")),
+        "{outbox:?}"
+    );
+}
+
 const THREAD: &str = "1763500000.000100";
 
 /// A reply in `thread` of channel C0123, posted at `time`.

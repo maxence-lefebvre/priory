@@ -9,6 +9,7 @@ mod schedule;
 mod slack;
 mod webhook;
 
+pub use linear::state as linear_state;
 pub use webhook::Github;
 
 use serde_json::json;

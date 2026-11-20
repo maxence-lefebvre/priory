@@ -84,7 +84,8 @@ fn asks_query() -> String {
      coalesce(tasks.key, asks.key) AS key, asks.step, tasks.lane, asks.run,
      CASE WHEN asks.withdrawn IS NOT NULL THEN 'withdrawn'
        WHEN asks.answer IS NOT NULL THEN 'answered' ELSE 'open' END AS state,
-     CASE asks.withdrawn WHEN -1 THEN 'dismissed' WHEN 0 THEN 'a later run called another tool'
+     CASE asks.withdrawn WHEN -1 THEN 'dismissed' WHEN -2 THEN 'a wait of its run fired first'
+       WHEN 0 THEN 'a later run called another tool'
        ELSE 'revived as generation ' || asks.withdrawn END AS withdrawn_why,
      asks.revision, asks.question, asks.options, asks.recommendation, asks.tradeoff, asks.answer,
      asks.answered AS answered_at, asks.created AS since, asks.title, asks.text,

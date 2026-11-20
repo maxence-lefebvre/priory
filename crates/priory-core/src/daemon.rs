@@ -565,6 +565,19 @@ enum Input {
     Gate(Gate),
 }
 
+/// The current state of a wait condition outside Priory, read before the call's transaction so a
+/// slow read holds no lock: a Linear issue's state, or a pull request's state on GitHub.
+fn current_state(on: &serde_json::Value) -> Option<Result<String, String>> {
+    match on["type"].as_str()? {
+        "linear_state" => Some(priory_intake::intake::linear_state(on["issue"].as_str()?)),
+        "pull_request" => Some(runtime::pull_request_state(
+            on["repo"].as_str()?,
+            on["pull_request"].as_u64()?,
+        )),
+        _ => None,
+    }
+}
+
 /// Applies one line and returns its reply, with a tmux session to kill. A signal's reply is `ok`;
 /// a call's or an answer's is the JSON of its `Result`. A line that is none of them is reported
 /// and dropped.
@@ -574,7 +587,10 @@ fn take(db: &mut Connection, line: &str, trace: &Trace) -> Result<(String, Optio
     };
     match serde_json::from_str::<Input>(line) {
         Ok(Input::Signal(signal)) => Ok(("ok".to_owned(), state::signal(db, &signal, trace)?)),
-        Ok(Input::Call(call)) => Ok((replied(tools::call(db, &call, trace.factory)?), None)),
+        Ok(Input::Call(call)) => {
+            let now = tools::current_states(&call, &current_state);
+            Ok((replied(tools::call(db, &call, trace.factory, &now)?), None))
+        }
         Ok(Input::Answer(answer)) => Ok((
             replied(tools::answer(db, &answer, trace, &|worktree, branch| {
                 runtime::kept_head(&runtime::home(), worktree, branch)
