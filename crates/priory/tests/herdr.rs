@@ -29,6 +29,17 @@ fn deliver(dir: &Path, session: &str) -> (Option<i32>, Vec<Vec<String>>) {
     (status.code(), calls)
 }
 
+/// Writes the file Claude keeps for its process `pid`, naming the session it runs.
+fn claude_runs(dir: &Path, pid: u32, session: &str) {
+    let sessions = dir.join("home/.claude/sessions");
+    fs::create_dir_all(&sessions).unwrap();
+    fs::write(
+        sessions.join(format!("{pid}.json")),
+        format!(r#"{{"pid": {pid}, "sessionId": "{session}"}}"#),
+    )
+    .unwrap();
+}
+
 fn setup(name: &str) -> PathBuf {
     let dir = Path::new(env!("CARGO_TARGET_TMPDIR"))
         .join("herdr")
@@ -53,9 +64,10 @@ fn deliver_types_into_a_live_claude_terminal_else_resumes_its_session_in_a_new_t
     let session = "8f3c2a10-0000-4000-8000-000000000001";
     fs::write(
         dir.join("fake/get.json"),
-        r#"{"state": "live", "foreground": {"name": "claude"}, "labels": {"herdr.space": "work"}}"#,
+        r#"{"state": "live", "foreground": {"name": "claude", "pid": 4242}, "labels": {"herdr.space": "work"}}"#,
     )
     .unwrap();
+    claude_runs(&dir, 4242, session);
     let message = "A person answered ask cache.ship (revision 2): ship";
 
     let live = deliver(&dir, &format!("cache-worker {session}"));
@@ -107,4 +119,34 @@ fn deliver_types_into_a_live_claude_terminal_else_resumes_its_session_in_a_new_t
     );
     assert_eq!(without_claude.0, Some(1));
     assert_eq!(without_claude.1.len(), 1);
+}
+
+#[test]
+fn deliver_resumes_the_asking_session_when_its_terminal_runs_another_claude_session() {
+    let dir = setup("deliver-other");
+    let session = "8f3c2a10-0000-4000-8000-000000000001";
+    fs::write(
+        dir.join("fake/get.json"),
+        r#"{"state": "live", "foreground": {"name": "claude", "pid": 4242}, "labels": {"herdr.space": "work"}}"#,
+    )
+    .unwrap();
+    claude_runs(&dir, 4242, "8f3c2a10-0000-4000-8000-000000000002");
+    let project = dir.join("home/.claude/projects/-work-cache");
+    fs::create_dir_all(&project).unwrap();
+    fs::write(
+        project.join(format!("{session}.jsonl")),
+        "{\"type\":\"user\",\"cwd\":\"/work/cache\"}\n",
+    )
+    .unwrap();
+
+    let (code, calls) = deliver(&dir, &format!("cache-worker {session}"));
+
+    assert_eq!(code, Some(0));
+    assert!(calls.iter().all(|call| call[0] != "send"), "{calls:?}");
+    assert_eq!(calls[1][0], "run");
+    assert_eq!(calls[1][1..].iter().rev().nth(1).unwrap(), session);
+    assert!(
+        calls[1].contains(&"herdr.space=work".to_owned()),
+        "{calls:?}"
+    );
 }

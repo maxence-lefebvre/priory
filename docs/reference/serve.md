@@ -133,7 +133,7 @@ Each item:
 
 | Field | Type | Meaning |
 | ----- | ---- | ------- |
-| `kind` | string | `ask`, `delivery`, `blocked`, `failed`, `prompt`, `held`, `sweep`, `memory`, `report`, `retired`, `queue` or `worktree`. See [desk.md](../daemon/desk.md) |
+| `kind` | string | `ask`, `delivery`, `blocked`, `failed`, `prompt`, `command`, `held`, `sweep`, `memory`, `report`, `retired`, `queue` or `worktree`. See [desk.md](../daemon/desk.md) |
 | `id` | integer or string | The ask, task, prompt, hold, sweep, grant, report's inbox sequence number or queue place; a worktree's path |
 | `task` | integer or null | The task |
 | `key` | string or null | The task's key |
@@ -180,8 +180,8 @@ snoozed ones.
 
 ## Snooze
 
-An `ask`, `blocked`, `failed` or `prompt` desk item, and every ask, carry these fields. See
-[desk.md](../daemon/desk.md#snooze).
+An `ask`, `blocked`, `failed` or `prompt` desk item, and every ask, carry these fields. Only an ask
+of a task can be snoozed: an outside ask's fields stay null. See [desk.md](../daemon/desk.md#snooze).
 
 | Field | Type | Meaning |
 | ----- | ---- | ------- |

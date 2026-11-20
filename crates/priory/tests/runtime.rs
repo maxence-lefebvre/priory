@@ -3779,6 +3779,31 @@ fn an_outside_ask_takes_an_answer_or_a_dismiss_only_at_its_current_revision() {
     assert!(setup.rows("asks").is_empty());
 }
 
+#[test]
+fn an_outside_ask_named_only_dots_or_with_a_slash_is_refused() {
+    let mut setup = Setup::new("outside-names");
+    setup.start();
+    listening(&setup);
+
+    let refused: Vec<_> = [".", "..", "...", "a/b"]
+        .into_iter()
+        .map(|name| setup.priory(&["ask", name, &fleet_ask(&["ship"])]))
+        .collect();
+    let dotted = setup.priory(&["ask", ".cache.", &fleet_ask(&["ship"])]);
+
+    for asked in &refused {
+        assert!(!asked.status.success(), "{asked:?}");
+        assert!(
+            String::from_utf8_lossy(&asked.stderr).contains("not an ask id"),
+            "{asked:?}"
+        );
+    }
+    assert!(dotted.status.success(), "{dotted:?}");
+    let asks: serde_json::Value =
+        serde_json::from_slice(&setup.priory(&["asks", "--all", "--json"]).stdout).unwrap();
+    assert_eq!(asks["asks"].as_array().unwrap().len(), 1, "{asks}");
+}
+
 /// A fake `deliver` command that records its arguments, then runs `then`: each call ends with
 /// `\x1e`, each argument with `\0`.
 fn delivering(name: &str, then: &str) -> Setup {

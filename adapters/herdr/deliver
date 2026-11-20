@@ -3,8 +3,9 @@
 
 Priory runs it as `deliver ASK REVISION SESSION (answered|dismissed) ANSWER`. SESSION is the hc
 terminal that asked, optionally followed by a space and its Claude session id. The answer is typed
-into that terminal while it runs claude; otherwise `claude --resume` starts in a new hc tab with
-the answer as its prompt. Exit 0 means hc took the text.
+into that terminal while it runs claude in that session, as `~/.claude/sessions/PID.json` names it;
+otherwise `claude --resume` starts in a new hc tab with the answer as its prompt. Exit 0 means hc
+took the text.
 """
 
 import glob
@@ -33,6 +34,16 @@ def transcript_cwd(claude):
     return None
 
 
+def running_session(pid):
+    """The Claude session id that process `pid` runs, from the file Claude keeps for it."""
+    path = os.path.join(os.path.expanduser("~/.claude/sessions"), f"{pid}.json")
+    try:
+        with open(path, encoding="utf-8") as running:
+            return json.load(running).get("sessionId")
+    except (OSError, ValueError, AttributeError):
+        return None
+
+
 def main(ask, revision, session, state, answer):
     if state == "dismissed":
         message = f"A person dismissed ask {ask} without an answer. Continue your task."
@@ -46,8 +57,10 @@ def main(ask, revision, session, state, answer):
             live = json.loads(found.stdout)
         except ValueError:
             live = {}
+    foreground = live.get("foreground") or {}
     # A kept terminal whose claude exited runs a shell, which would run the text as a command.
-    if live.get("state") == "live" and (live.get("foreground") or {}).get("name") == "claude":
+    if (live.get("state") == "live" and foreground.get("name") == "claude"
+            and (not claude or running_session(foreground.get("pid")) == claude)):
         sent = hc("send", terminal, message)
         sys.stderr.write(sent.stderr)
         return sent.returncode

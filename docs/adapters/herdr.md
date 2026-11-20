@@ -75,8 +75,9 @@ state database and never writes a file in the factory.
   `asks --all --json`, `tasks --json`, `queue --json`, `schedules --json` and
   `report show --json`. Each answer carries the state's `revision`. Then the mod runs
   `priory wait --since REVISION`, which returns as soon as the state changes, or after 25 s, and
-  reads again. It keeps the last good answer, with its age, when a call fails. Once `serve` exists,
-  a mod may subscribe to its event stream instead.
+  reads again. It keeps the last good answer, with its age, when a call fails. `priory serve`
+  answers the same JSON over HTTP, and its `/api/events` waits for a change as `priory wait` does:
+  see [serve.md](../reference/serve.md).
 - **Acting.** Every button runs a CLI verb: `answer --expected N [--run] -- ASK TEXT`,
   `dismiss --expected N ASK`, `snooze`, `say`, `report pick PICK OPTION --expected N`, `seen`,
   `hold`, `release` and `move`. An answer always carries the revision the person read, so a
@@ -105,9 +106,12 @@ Python 3 and `hc`, and no other package.
 It reads the ask's `session` as an hc terminal, optionally followed by a space and the Claude
 session id. `priory ask` run in an hc terminal stores both. Then:
 
-1. `hc get TERMINAL`: when the terminal is live and runs `claude`, `hc send` types
+1. `hc get TERMINAL`: when the terminal is live and runs `claude`, and that `claude` runs the
+   ask's Claude session, `hc send` types
    `A person answered ask <ID> (revision <N>): <answer>` into it, or
-   `A person dismissed ask <ID> without an answer. Continue your task.`
+   `A person dismissed ask <ID> without an answer. Continue your task.` The script reads the
+   session a `claude` runs from `~/.claude/sessions/<PID>.json`, where `<PID>` is the terminal's
+   foreground process. An ask that names no Claude session skips this check.
 2. Otherwise it finds the Claude session's transcript under `~/.claude/projects/` and reads the
    folder it ran in. It starts `claude --resume <session> <text>` there with
    `hc run --bg --keep --no-parent`, in a new tab named `ask-<ID>`, in the old terminal's
@@ -116,7 +120,8 @@ session id. `priory ask` run in an hc terminal stores both. Then:
    fails on the desk.
 
 A kept terminal whose `claude` exited runs a shell, so the script never types into it: the shell
-would run the answer as a command. The check and the send are two `hc` calls, so a `claude` that
+would run the answer as a command. Nor does it type into a `claude` that runs another session,
+such as a new conversation started in the same kept terminal. The check and the send are two `hc` calls, so a `claude` that
 exits between them can still receive the text in its shell.
 
 ## The Asks panel
@@ -191,8 +196,8 @@ waiting: snoozing changes what a person sees, never what the daemon does. `prior
 - Counts: asleep tasks, reports waiting for review, snoozed items.
 - Each task's `progress` from `priory tasks --json`: its goal, acceptance criteria, latest change
   and next action, as its agent last published them.
-- *Since you looked*: the events since the person's last visit, each with task, what happened and
-  when. This needs a stored last visit per person.
+- Since you looked: the events since the person's last visit, each with task, what happened and
+  when. `priory seen` stores the visit.
 
 ### Asks
 
@@ -200,9 +205,9 @@ waiting: snoozing changes what a person sees, never what the daemon does. `prior
   `options`, `recommendation`, `tradeoff`, and for a command ask the command line, its target and
   the revision it is bound to (R6.8).
 - An answered ask adds `answer`, `answered_by` and `answered_at`; a withdrawn one adds why.
-- The detail adds the agent's text and the run that asked, *what waits* and *what the agent does
-  next*, the brief and plan paths, the pull request summary, the task's runs for the trace, and
-  the ask's revisions and refused answers for its history.
+- The detail adds the agent's text and the run that asked, what waits and what the agent does
+  next, *the brief and plan paths*, *the pull request summary*, the task's runs for the trace, and
+  *the ask's revisions and refused answers* for its history.
 
 ### Queue
 
@@ -210,8 +215,7 @@ waiting: snoozing changes what a person sees, never what the daemon does. `prior
   and why it has not started: no room, a band above it, or its hold and the hold's condition.
 - The running runs, with run id, step and start time.
 - The tasks ended in the last day.
-- *Up next*: the next three runs, queued or scheduled, each with when it should start and why.
-  Schedules need their next firing time.
+- Up next: the next three runs, queued or scheduled, each with when it should start and why.
 
 ### Bonjour
 
@@ -274,18 +278,24 @@ Another front end, such as Orca, gets Priory the same way:
 
 ## Core gaps
 
-The panels need these from Priory's core. Each is a separate slice.
+The panels still need these from Priory's core. Each is a separate slice.
 
-1. `--json` on `priory desk`, `asks`, `tasks` and `report`, with the fields above.
-2. `serve`: the same data over HTTP with an event stream (R8.5).
-3. Snooze: the fields above, `priory snooze`, and the counts that leave snoozed items out.
-4. A stored last visit per person, for Since you looked.
-5. The next firing time of each schedule, for Up next.
-6. Report sections and picks: done, see [reports.md](../daemon/reports.md). Comments on rows are
-   still to come.
-7. Ask fields for what waits and what the agent does next: `ask` stores them as `what_waits` and
-   `next_action`, with a `title` and a Markdown `text`. The Asks panel shows them.
-8. A task's brief, plan, pull request summary and runs from the CLI, for the Asks panel's Brief,
+1. Comments on report rows. Report sections and picks exist.
+2. A task's brief, plan, pull request summary and runs from the CLI, for the Asks panel's Brief,
    Plan, PR and Trace sections. `/api/tasks/{id}` serves the runs but has no CLI twin, and nothing
    serves the brief, the plan or the pull request summary yet.
-9. An ask's earlier revisions and refused answers, for its History section.
+3. An ask's earlier revisions and refused answers, for its History section.
+
+The core already serves the rest of the fields above:
+
+- JSON: `priory desk`, `asks`, `tasks`, `queue`, `schedules` and `report show` take `--json`.
+  [serve.md](../reference/serve.md) lists each field.
+- HTTP: `priory serve` serves the same JSON, and `/api/events` waits for a change (R8.5).
+- Snooze: `priory snooze` and the snooze fields; see [desk.md](../daemon/desk.md#snooze).
+- Since you looked: `priory seen` stores a visit; see
+  [desk.md](../daemon/desk.md#since-you-looked).
+- Up next: each schedule's [next firing](../intake/schedule.md#next-firing), in `priory queue
+  --json`.
+- Reports and picks: [reports.md](../daemon/reports.md).
+- Ask fields: `what_waits`, `next_action`, `title` and a Markdown `text`, in
+  [tools.md](../daemon/tools.md).
