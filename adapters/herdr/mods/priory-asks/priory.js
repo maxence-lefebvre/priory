@@ -23,7 +23,7 @@ export function priory({ exec, binary = "priory-oss", on = null, factory = null 
   const inFactory = factory ? [factory] : [];
 
   return {
-    desk: () => read("desk"),
+    desk: ({ all = false } = {}) => read("desk", ...(all ? ["--all"] : [])),
     asks: () => read("asks", "--all"),
     tasks: () => read("tasks"),
     queue: () => read("queue", ...inFactory),
@@ -39,7 +39,9 @@ export function priory({ exec, binary = "priory-oss", on = null, factory = null 
       when?.for ? ["--for", when.for] : when?.until ? ["--until", when.until] : ["--clear"])]),
     say: (/** @type {Id} */ task, /** @type {string} */ text) => call(["say", String(task), text]),
     pick: (/** @type {string} */ pick, /** @type {string} */ option, /** @type {number} */ revision) => call(["report", "pick", pick, option, "--expected", String(revision)]),
-    seen: () => call(["seen"]),
+    seen: ({ at = /** @type {string | null} */ (null) } = {}) => call(["seen", ...(at ? ["--at", at] : [])]),
+    resume: (/** @type {Id} */ task) => call(["resume", String(task)]),
+    revive: (/** @type {Id} */ task) => call(["revive", String(task)]),
     hold: (/** @type {Id} */ task, /** @type {{ reason: string, until?: string }} */ { reason, until }) => call(["hold", String(task), "--reason", reason, ...(until ? ["--until", until] : [])]),
     release: (/** @type {Id} */ task) => call(["release", String(task)]),
     move: (/** @type {Id} */ task, /** @type {{ band?: string, top?: boolean, before?: Id, after?: Id }} */ { band, top, before, after }) => call(["move", String(task),

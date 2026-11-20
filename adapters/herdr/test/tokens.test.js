@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { FONTS, THEMES, palette } from "../lib/tokens.js";
+import { FONTS, STRUCTURE, THEMES, palette } from "../lib/tokens.js";
 
 // Each theme block of themes.css, as { theme: { token: [light, dark] } }.
 function parse(css) {
@@ -30,4 +30,13 @@ test("each theme's font roles are its first family in themes.css", () => {
     roles[name] = Object.fromEntries([...body.matchAll(/--font-([a-z]+): "([^"]+)"/g)].map(([, role, family]) => [role, family]));
   }
   assert.deepEqual(FONTS, roles, "update FONTS in adapters/herdr/lib/tokens.js from design/tokens/themes.css");
+});
+
+test("the structure tokens a pane draws with are design/tokens/structure.css", () => {
+  const css = readFileSync(new URL("../../../design/tokens/structure.css", import.meta.url), "utf8");
+  for (const [token, value] of Object.entries(STRUCTURE)) {
+    const declared = css.match(new RegExp(`--${token}:\\s*([^;]+);`))?.[1];
+    const expected = Array.isArray(value) ? `${value[0]}px/${value[1] === 1 ? "1" : `${value[1]}px`}` : `${value}px`;
+    assert.equal(declared, expected, `--${token} in adapters/herdr/lib/tokens.js`);
+  }
 });

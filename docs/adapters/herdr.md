@@ -16,9 +16,10 @@ The adapter lives in `adapters/herdr/` at the repository root, outside the Cargo
 - `adapters/herdr/mods/priory-tabs/`: the Priory bar. It sits left of Herdr's own tab bar, opens or
   focuses the Desk and Bonjour tabs, shows or hides the Asks and Queue panels, and attaches to a
   task's terminal.
+- `adapters/herdr/mods/priory-desk/`: the Desk panel. See [The Desk panel](#the-desk-panel).
 - `adapters/herdr/mods/priory-asks/`: the Asks panel. See [The Asks panel](#the-asks-panel).
-- `adapters/herdr/mods/priory-desk/`, `priory-queue/` and `priory-bonjour/`: one Herdr mod per
-  panel, each a `mod.json`, a `main.js` and its copy of `priory.js`. They are still to come.
+- `adapters/herdr/mods/priory-queue/` and `priory-bonjour/`: one Herdr mod per panel, each a
+  `mod.json`, a `main.js` and its copy of `priory.js`. They are still to come.
 - `adapters/herdr/layouts/priory.json`: Herdr's default layout with the Priory bar in the top bar,
   and Asks and Queue in the side panel stack, 420 px wide by default, between 280 and 900. Desk and
   Bonjour open as tabs in the center, from the Priory bar.
@@ -28,8 +29,9 @@ The adapter lives in `adapters/herdr/` at the repository root, outside the Cargo
   fake `priory`. CI runs them with `node --test adapters/herdr/test/*.test.js`.
 - `adapters/herdr/lib/tokens.js`: Priory's theme colors and font roles from
   [`design/tokens/themes.css`](../../design/tokens/themes.css), every theme, each `light-dark()`
-  pair kept as a light and a dark value. `palette(theme, mode)` picks one per mode. A test fails
-  when the file and `themes.css` differ.
+  pair kept as a light and a dark value, and the structure tokens a pane draws with from
+  [`design/tokens/structure.css`](../../design/tokens/structure.css). `palette(theme, mode)` picks
+  one color per mode. A test fails when the file and `design/tokens/` differ.
 - `adapters/herdr/deliver`: the factory's `[asks] deliver` command; see
   [Delivering answers](#delivering-answers).
 
@@ -65,13 +67,13 @@ state database and never writes a file in the factory.
 
 - **Which Priory.** A mod runs the program that the `priory` object of Herdr's `settings.json`
   names, on the Herdr machine it names: `{"priory": {"binary": "~/.local/bin/priory-oss",
-  "machine": "xps13", "factory": "/home/me/factory"}}`. Every field is optional. `binary` defaults
+  "machine": "xps13", "factory": "/home/me/factory", "theme": "indigo"}}`. Every field is optional.
+  `theme` is `indigo`, `ink`, `parchment` or `abbey`, and defaults to `indigo`. `binary` defaults
   to `~/.local/bin/priory-oss`, and a leading `~` means the home folder on Priory's machine. A name
   without a slash is looked up on the `PATH`. `machine` defaults to the machine Herdr runs on. `factory` is the folder
   that `queue` and `schedules` read for up next. The program must find its state file, so set
-  `PRIORY_DB` in the environment, or name a wrapper script that sets it. `theme` names the
-  Priory theme a panel draws with: `indigo` (the default), `ink`, `parchment` or `abbey`.
-- **Reading.** A mod runs the CLI with Herdr's `exec` and parses its JSON: `priory desk --json`,
+  `PRIORY_DB` in the environment, or name a wrapper script that sets it.
+- **Reading.** A mod runs the CLI with Herdr's `exec` and parses its JSON: `priory desk --all --json`,
   `asks --all --json`, `tasks --json`, `queue --json`, `schedules --json` and
   `report show --json`. Each answer carries the state's `revision`. Then the mod runs
   `priory wait --since REVISION`, which returns as soon as the state changes, or after 25 s, and
@@ -79,7 +81,7 @@ state database and never writes a file in the factory.
   a mod may subscribe to its event stream instead.
 - **Acting.** Every button runs a CLI verb: `answer --expected N [--run] -- ASK TEXT`,
   `dismiss --expected N ASK`, `snooze`, `say`, `report pick PICK OPTION --expected N`, `seen`,
-  `hold`, `release` and `move`. An answer always carries the revision the person read, so a
+  `resume`, `revive`, `hold`, `release` and `move`. An answer always carries the revision the person read, so a
   changed question refuses it (R6.3).
 - **Safety.** `priory.js` passes every value as its own argument, never through a shell, and never
   reads text output except `attach --print`. A mod draws agent text as plain text.
@@ -94,6 +96,47 @@ state database and never writes a file in the factory.
   Herdr and in the browser. The adapter picks the light or dark value from Herdr's appearance. The
   Priory bar is part of Herdr's top bar, so it draws with Herdr's theme, as the tab bar beside it
   does.
+
+## The Desk panel
+
+`priory-desk` opens as a tab in the center stack, from the Priory bar. It follows DESIGN.md's
+Herdr Desk: the count, the next thing, the room banner, the saved views, then the rows.
+
+- **What it reads.** `desk --all --json`, `asks --all --json`, `tasks --json` and
+  `queue FACTORY --json`, read together, then again after each `priory wait`, even one that ends
+  with the same revision: a snooze ends by the clock, which no revision records. `--all` keeps the
+  snoozed items for the Snoozed view; the panel leaves them out of everything else.
+- **The count** counts the open asks that are not snoozed, then the oldest wait, the stopped items
+  (`blocked`, `failed`, `prompt` and `delivery`) and `counts.snoozed`.
+- **The next thing** is the oldest open ask that is not snoozed, with its recommendation and
+  trade-off from `priory asks`, and its task's `progress.nextAction`.
+- **Saved views.** Needs me lists Asks, Stopped, then Later: the asleep count and the desk's other
+  items, without `queue` rows. Running, Asleep and All tasks list `priory tasks`. Snoozed lists the
+  snoozed desk items with when each comes back.
+- **A selected row** opens in place under the row. It shows its task's published progress and its
+  actions.
+- **Up next** shows `queue`'s `up_next`, under the list below 1024 px and in the left column from
+  1024 px. **Since you looked** shows from 1024 px.
+- **Since you looked** keeps the events the panel opened on, and adds each newer event to the top.
+  The first time the panel draws the list, from 1024 px, it runs `priory seen --at` once, with
+  the time it started its first read. A panel that stays narrower records no visit. `herdr-app check` runs no
+  `priory` command at all.
+- **Acting.** Snooze 1 h, Snooze until tomorrow 09:00 and Unsnooze run `priory snooze KIND ID`
+  with `--for 1h`, `--until` or `--clear`. Resume runs `priory resume TASK` for a blocked task or an
+  uncertain prompt, and Revive runs `priory revive TASK` for a failed one.
+  Attach asks the Priory bar with `priory.attach`. Answer… opens the ask in the Asks panel: it sets
+  `setShared("priory.asks.open", { ask, at: Date.now() })` and shows the side panel on Asks.
+- **Keys.** `J` and `K` move the selection, `Enter` opens the selected ask in Asks or the Asleep
+  view from the asleep row, `S`
+  snoozes the selected row for 1 h, or unsnoozes a snoozed one, and `R` resumes or revives it. The
+  mod is focusable, so `pane.go` moves the keyboard onto it.
+- **Width.** Below 1024 px, one column. From 1024 px, a 440 px column beside the list and the key
+  hint bar. The list becomes the wide table with Recommends once it has 720 px of its own. The
+  panel measures its own width, as gpui-kit has no container queries.
+
+The panel draws agent text as plain text and never parses it. Its view model, `view.js`, is pure:
+the listings in, the count and rows out. `adapters/herdr/test/desk.test.js` runs it against JSON
+captured from the CLI.
 
 ## Delivering answers
 
@@ -193,8 +236,8 @@ waiting: snoozing changes what a person sees, never what the daemon does. `prior
 - Counts: asleep tasks, reports waiting for review, snoozed items.
 - Each task's `progress` from `priory tasks --json`: its goal, acceptance criteria, latest change
   and next action, as its agent last published them.
-- *Since you looked*: the events since the person's last visit, each with task, what happened and
-  when. This needs a stored last visit per person.
+- Since you looked: the events since the person's last visit, each with task, what happened and
+  when, from `last_visit` and `since_you_looked`.
 
 ### Asks
 
@@ -212,8 +255,8 @@ waiting: snoozing changes what a person sees, never what the daemon does. `prior
   and why it has not started: no room, a band above it, or its hold and the hold's condition.
 - The running runs, with run id, step and start time.
 - The tasks ended in the last day.
-- *Up next*: the next three runs, queued or scheduled, each with when it should start and why.
-  Schedules need their next firing time.
+- Up next: the next three runs, queued or scheduled, each with when it should start and why, from
+  `queue`'s `up_next`.
 
 ### Bonjour
 
@@ -278,11 +321,12 @@ Another front end, such as Orca, gets Priory the same way:
 
 The panels need these from Priory's core. Each is a separate slice.
 
-1. `--json` on `priory desk`, `asks`, `tasks` and `report`, with the fields above.
-2. `serve`: the same data over HTTP with an event stream (R8.5).
-3. Snooze: the fields above, `priory snooze`, and the counts that leave snoozed items out.
-4. A stored last visit per person, for Since you looked.
-5. The next firing time of each schedule, for Up next.
+1. `--json` on `priory desk`, `asks`, `tasks` and `report`, with the fields above: done.
+2. `serve`: the same data over HTTP with an event stream (R8.5): done, see the
+   [serve reference](../reference/serve.md).
+3. Snooze: the fields above, `priory snooze`, and the counts that leave snoozed items out: done.
+4. A stored last visit per person, for Since you looked: done, `priory seen`.
+5. The next firing time of each schedule, for Up next: done, `queue`'s `up_next`.
 6. Report sections and picks: done, see [reports.md](../daemon/reports.md). Comments on rows are
    still to come.
 7. Ask fields for what waits and what the agent does next: `ask` stores them as `what_waits` and
