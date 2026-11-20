@@ -1,4 +1,4 @@
-// The Bonjour panel's view model: `priory report show --json` in, sections, rows and picks out.
+// The Bonjour panel's view model: `priory report show --json` in, sections, rows, picks and threads out.
 // No drawing, no IO. It knows no section by name.
 
 import { autolink } from "./priory.js";
@@ -62,8 +62,18 @@ function row(section, row, index, now, links) {
     owner: row.owner ?? null,
     time: when(row.time, now),
     pick: row.pick ? choice(row.pick) : null,
+    // The row's own id, which a comment names; a row without one takes no comments.
+    target: row.id ?? null,
+    threads: (row.comments ?? []).map((/** @type {any} */ thread) => ({
+      ...comment(thread, now),
+      resolved: thread.resolved,
+      replies: thread.replies.map((/** @type {any} */ reply) => comment(reply, now)),
+    })),
   };
 }
+
+/** @param {any} entry @param {number} now */
+const comment = (entry, now) => ({ id: entry.id, author: entry.author, when: when(entry.created, now), text: entry.text });
 
 /**
  * @param {{ revision: number, report: any }} read

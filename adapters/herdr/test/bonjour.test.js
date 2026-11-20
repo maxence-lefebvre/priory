@@ -26,7 +26,7 @@ test("draws the report's sections in its own order, each with its count or its n
 
 test("a row shows its tile, key, text, meta, owner and time, and agent text stays as written", () => {
   const sections = dossier(read, { now }).sections;
-  const rows = (id) => sections.find((section) => section.id === id).rows.map(({ pick, textSpans, ...row }) => row);
+  const rows = (id) => sections.find((section) => section.id === id).rows.map(({ pick, target, threads, textSpans, ...row }) => row);
   assert.deepEqual(rows("slack"), [{
     id: '["slack",0]', tile: null, key: null, owner: null, time: null, meta: null,
     text: "Yesterday: merged the MCP v2 plan review, answered 4 Priory asks.\nToday: agree the picks and land #212. <b>not html</b>",
@@ -137,4 +137,23 @@ test("a report row's text turns the factory's keys into link spans", () => {
   const linked = { ...read, report: { ...read.report, sections: [{ id: "s", title: "S", count: null, rows: [{ text: "Triage ENG-7 today" }] }] } };
   assert.deepEqual(dossier(linked, { now, links }).sections[0].rows[0].textSpans,
     [{ text: "Triage " }, { text: "ENG-7", url: "https://linear.app/acme/issue/ENG-7" }, { text: " today" }]);
+});
+
+test("a row shows its comment threads, oldest first, with their replies and state", () => {
+  // Hand-built from the threads `priory report show --json` prints after a comment, an agent's reply and a resolve.
+  const commented = structuredClone(read);
+  commented.report.sections[2].rows[1].comments = [
+    { id: 1, author: "person", text: "Check the release branch first", created: "2026-11-20T08:05:00Z", resolved: false,
+      replies: [{ id: 2, author: "agent", text: "It is clean <b>there</b>", created: "2026-11-19T21:00:00Z" }] },
+    { id: 3, author: "person", text: "Done", created: "2026-11-20T08:20:00Z", resolved: true, replies: [] },
+  ];
+  const row = dossier(commented, { now }).sections[2].rows[1];
+  assert.equal(row.target, "fnd-2413");
+  assert.deepEqual(row.threads, [
+    { id: 1, author: "person", when: "08:05", text: "Check the release branch first", resolved: false,
+      replies: [{ id: 2, author: "agent", when: "Nov 19, 21:00", text: "It is clean <b>there</b>" }] },
+    { id: 3, author: "person", when: "08:20", text: "Done", resolved: true, replies: [] },
+  ]);
+  // A row without an id takes no comments.
+  assert.deepEqual([dossier(read, { now }).sections[1].rows[0].target, dossier(read, { now }).sections[1].rows[0].threads], [null, []]);
 });

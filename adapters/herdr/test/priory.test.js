@@ -106,6 +106,10 @@ test("acts through priory's verbs with argv only", async () => {
   await client.snooze("ask", 12, null);
   await client.say(7, "--step `rm -rf ~`");
   await client.pick("2026-11-20_sentry_fnd-2409", "Take", 9);
+  await client.comment("fnd-2409", "--force it", 9);
+  await client.reply(3, "Why?");
+  await client.resolve(3);
+  await client.reopen(3);
   await client.seen();
   await client.seen({ at: "2026-11-20T12:00:00Z" });
   await client.resume(4);
@@ -127,6 +131,10 @@ test("acts through priory's verbs with argv only", async () => {
     ["snooze", "ask", "12", "--clear"],
     ["say", "7", "--step `rm -rf ~`"],
     ["report", "pick", "2026-11-20_sentry_fnd-2409", "Take", "--expected", "9"],
+    ["report", "comment", "fnd-2409", "--expected", "9", "--force it"],
+    ["report", "reply", "3", "Why?"],
+    ["report", "resolve", "3"],
+    ["report", "reopen", "3"],
     ["seen"],
     ["seen", "--at", "2026-11-20T12:00:00Z"],
     ["resume", "4"],

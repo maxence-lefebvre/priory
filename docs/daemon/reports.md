@@ -64,7 +64,7 @@ Priory refuses a report when:
 - another task's report holds one of its pick ids, so a pick id names one report;
 - a pick keeps a choice that its new options drop;
 - a pick has no options, or its `recommended` or a `requests` key is not one of its options;
-- a row's `comments` is not empty. Comments on rows come in a later version.
+- a row's `comments` is not empty: Priory fills it with the row's threads ([below](#comment-on-a-row)).
 
 ## Read a report
 
@@ -99,6 +99,56 @@ The person picked Take on 2026-11-20_sentry_fnd-2409 in your report: apply it, t
 ```
 
 The workflow applies the choice and writes the report again with `applied` set.
+
+## Comment on a row
+
+A person comments on a row to direct the report's agent, as Fleet's `bonjour comment` and
+`bonjour handle` do. A comment starts a thread; replies follow in it.
+
+```sh
+priory report comment ROW --expected REVISION TEXT
+priory report reply COMMENT TEXT
+priory report resolve COMMENT
+priory report reopen COMMENT
+```
+
+`ROW` is the row's `id`: a row without one takes no comments. The daemon finds the report written
+last that has a row with that id. `COMMENT` is a comment's number, a thread's or a reply's: each
+verb acts on its thread. Each verb raises the report's revision. The daemon refuses:
+
+- a comment when the report is at another revision than `REVISION`, as a stale pick is refused;
+- a reply in a resolved thread: reopen it first;
+- a comment or a reply that `priory say` would refuse, as a pick is refused.
+
+A comment or a reply wakes the report's task with one line, as `priory say` does, unless the
+report's own agent wrote it. The daemon knows its agent by `PRIORY_SESSION`, which a run's pane
+sets, when it names a live run of that task. The line:
+
+```text
+The person commented on row fnd-2409 in your report (reply with `priory report reply 1 TEXT`): Check the release branch first
+```
+
+The agent replies with `priory report reply` from its pane, which wakes nothing. Resolve and
+reopen wake nothing either.
+
+`priory report show --json` lists each row's threads in `comments`, oldest first:
+
+```json
+"comments": [
+  {
+    "id": 1, "author": "person", "text": "Check the release branch first",
+    "created": "2026-11-20T08:05:00Z", "resolved": false,
+    "replies": [
+      { "id": 2, "author": "agent", "text": "It is clean", "created": "2026-11-20T08:07:00Z" }
+    ]
+  }
+]
+```
+
+`author` is `agent` for the report's own agent and `person` for anyone else. Rows that share an id,
+in two sections, share their threads. Threads stay with
+their row id across report writes: a write that drops the row hides its threads, and a write that
+brings the row back shows them again.
 
 ## Request a task from a pick
 

@@ -11,7 +11,7 @@ use std::collections::BTreeMap;
 use std::io::Write;
 use std::time::Duration;
 
-const VERSION: i64 = 45;
+const VERSION: i64 = 46;
 
 const SCHEMA: &str = "
 CREATE TABLE tasks (
@@ -798,6 +798,20 @@ CREATE TRIGGER IF NOT EXISTS revision_intake_sources_delete AFTER DELETE ON inta
 PRAGMA user_version = 45;
 ";
 
+// Comments on a report's rows, by the row's id, each a thread or a reply in one.
+const SCHEMA_46: &str = "CREATE TABLE IF NOT EXISTS row_comments (
+  id       INTEGER PRIMARY KEY AUTOINCREMENT,
+  task     INTEGER NOT NULL REFERENCES tasks (id),
+  row      TEXT NOT NULL,
+  reply_to INTEGER REFERENCES row_comments (id),
+  author   TEXT NOT NULL,
+  text     TEXT NOT NULL,
+  created  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+  resolved INTEGER NOT NULL DEFAULT 0
+);
+PRAGMA user_version = 46;
+";
+
 /// Each schema change in order: a file at version `n` applies those from index `n` on.
 const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA, SCHEMA_2, SCHEMA_3, SCHEMA_4, SCHEMA_5, SCHEMA_6, SCHEMA_7, SCHEMA_8, SCHEMA_9,
@@ -805,7 +819,7 @@ const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA_18, SCHEMA_19, SCHEMA_20, SCHEMA_21, SCHEMA_22, SCHEMA_23, SCHEMA_24, SCHEMA_25,
     SCHEMA_26, SCHEMA_27, SCHEMA_28, SCHEMA_29, SCHEMA_30, SCHEMA_31, SCHEMA_32, SCHEMA_33,
     SCHEMA_34, SCHEMA_35, SCHEMA_36, SCHEMA_37, SCHEMA_38, SCHEMA_39, SCHEMA_40, SCHEMA_41,
-    SCHEMA_42, SCHEMA_43, SCHEMA_44, SCHEMA_45,
+    SCHEMA_42, SCHEMA_43, SCHEMA_44, SCHEMA_45, SCHEMA_46,
 ];
 
 /// The order the queue starts tasks in: band, then a person's order, then age. A band the factory

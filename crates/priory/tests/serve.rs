@@ -3259,3 +3259,85 @@ fn the_request_endpoint_reads_the_defaults_and_choices_the_add_control_offers() 
     assert_eq!(api(&bare_address, "/api/request")["workflow"], Value::Null);
     assert_eq!(get(&address, "/api/request", None).0, 401);
 }
+
+#[test]
+fn the_comment_endpoints_do_what_their_cli_verbs_do() {
+    let mut setup = Setup::new("web-comments", SERVE);
+    setup.asleep_on_ask();
+    setup
+        .db()
+        .execute(
+            "INSERT INTO runs (task, step, tmux, session, ended) VALUES (1, 'implement', 'gone', 'gone', '2026-11-20T08:00:00Z')",
+            [],
+        )
+        .unwrap();
+    succeeded(&setup.put("1", &report()));
+    let address = setup.start(&["daemon", &setup.factory()]);
+    let ok = |path: &str, body: &str| {
+        let (status, reply) = post(&address, path, "", body);
+        assert_eq!(status, 200, "{reply}");
+        serde_json::from_str::<Value>(&reply).unwrap()["ok"].clone()
+    };
+
+    assert_eq!(
+        ok(
+            "/api/reports/comment",
+            r#"{"row": "fnd-2409", "text": "Why?", "revision": 1}"#
+        ),
+        "comment 1 on row fnd-2409 at revision 2"
+    );
+    assert_eq!(
+        ok(
+            "/api/reports/reply",
+            r#"{"comment": 1, "text": "And when?"}"#
+        ),
+        "reply 2 in thread 1 at revision 3"
+    );
+    assert_eq!(
+        ok("/api/reports/resolve", r#"{"comment": 1}"#),
+        "thread 1 is resolved at revision 4"
+    );
+    assert_eq!(
+        ok("/api/reports/reopen", r#"{"comment": 1}"#),
+        "thread 1 is open at revision 5"
+    );
+    let stale = post(
+        &address,
+        "/api/reports/comment",
+        "",
+        r#"{"row": "fnd-2409", "text": "Late", "revision": 1}"#,
+    );
+    assert_eq!(stale.0, 422, "{}", stale.1);
+    assert!(
+        stale.1.contains("task 1's report is at revision 5, not 1"),
+        "{}",
+        stale.1
+    );
+    for (path, body) in [
+        ("/api/reports/resolve", r#"{"comment": 1, "text": "Fixed"}"#),
+        ("/api/reports/reply", r#"{"comment": 1}"#),
+        (
+            "/api/reports/comment",
+            r#"{"row": "fnd-2409", "revision": 5}"#,
+        ),
+        (
+            "/api/reports/comment",
+            r#"{"comment": 1, "text": "Hi", "revision": 5}"#,
+        ),
+    ] {
+        let (status, reply) = post(&address, path, "", body);
+        assert_eq!(status, 400, "{path} {body}: {reply}");
+    }
+    let thread =
+        api(&address, "/api/reports/latest")["report"]["sections"][0]["rows"][0]["comments"][0]
+            .clone();
+    assert_eq!(
+        [&thread["text"], &thread["author"], &thread["resolved"]],
+        [&json!("Why?"), &json!("person"), &json!(false)]
+    );
+    assert_eq!(thread["replies"][0]["text"], "And when?");
+    assert_eq!(
+        api(&address, "/api/reports/latest")["report"],
+        setup.shown(&[])["report"]
+    );
+}
