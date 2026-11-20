@@ -31,6 +31,8 @@ export function priory({ exec, binary = "priory-oss", on = null, factory = null 
     task: (/** @type {Id} */ id) => read("task", String(id)),
     queue: () => read("queue", ...inFactory),
     schedules: () => read("schedules", ...inFactory),
+    // The rules `autolink` applies, as `GET /api/links` serves them.
+    links: () => read("links", ...inFactory),
     report: (/** @type {Id | null} */ task = null) => read("report", "show", ...(task == null ? [] : [String(task)])),
     // priory wait gives up after 25 s with the same revision; Herdr's exec would stop it at 30 s.
     wait: async (/** @type {number} */ since) => Number(await call(["wait", "--since", String(since)], 60_000)),
@@ -63,4 +65,47 @@ export function priory({ exec, binary = "priory-oss", on = null, factory = null 
     // The shell command line that attaches a tmux client to the task's live run, quoted by priory.
     attach: async (/** @type {Id} */ task) => (await call(["attach", String(task), "--print"])).trim(),
   };
+}
+
+// The web view's autolinks, in crates/priory-core/web/links.js; a test keeps the two the same.
+/**
+ * Splits `text` into spans, each `{ text }` or `{ text, url }`. At each point the earliest match
+ * wins, and the first rule on a tie. A rule whose URL is not `https:`, whose regex this engine
+ * refuses, or that needs `{repo}` when `repo` is null, links nothing.
+ * @param {string} text @param {{ pattern: string, url: string }[]} links @param {string | null} repo
+ * @returns {{ text: string, url?: string }[]}
+ */
+export function autolink(text, links, repo) {
+  const rules = links.flatMap(({ pattern, url }) => {
+    if (!url.startsWith("https://") || (url.includes("{repo}") && !repo)) return [];
+    try {
+      return [{ regex: new RegExp(pattern, "gu"), url }];
+    } catch {
+      return [];
+    }
+  });
+  const spans = [];
+  let at = 0;
+  for (;;) {
+    let best = null;
+    for (const rule of rules) {
+      rule.regex.lastIndex = at;
+      let match = rule.regex.exec(text);
+      while (match && !match[0] && match.index < text.length) {
+        rule.regex.lastIndex = match.index + (text.codePointAt(match.index) > 0xffff ? 2 : 1);
+        match = rule.regex.exec(text);
+      }
+      if (match?.[0] && (!best || match.index < best.match.index)) best = { rule, match };
+    }
+    if (!best) break;
+    const { rule, match } = best;
+    if (match.index > at) spans.push({ text: text.slice(at, match.index) });
+    const url = rule.url
+      .replaceAll("{repo}", () => String(repo).split("/").map(encodeURIComponent).join("/"))
+      .replace(/\$(\d+)/g, (_, group) => encodeURIComponent(match[Number(group)] ?? ""));
+    spans.push({ text: match[0], url });
+    at = match.index + match[0].length;
+  }
+  if (at < text.length) spans.push({ text: text.slice(at) });
+  return spans;
 }

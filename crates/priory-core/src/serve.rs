@@ -42,6 +42,7 @@ const WEB: &[(&str, &str, &[u8])] = &[
     file!("/app.js", JS, "crates/priory-core/web/app.js"),
     file!("/asks.js", JS, "crates/priory-core/web/asks.js"),
     file!("/add.js", JS, "crates/priory-core/web/add.js"),
+    file!("/links.js", JS, "crates/priory-core/web/links.js"),
     file!("/app.css", CSS, "crates/priory-core/web/app.css"),
     file!("/tokens/structure.css", CSS, "design/tokens/structure.css"),
     file!("/tokens/themes.css", CSS, "design/tokens/themes.css"),
@@ -139,6 +140,7 @@ pub fn start(factory: &Factory, listen: SocketAddr) -> Result<Vec<JoinHandle<()>
     let web = config.web;
     let served = Arc::new(Served {
         views: serde_json::json!({ "factory": factory.name, "views": factory.views() }).to_string(),
+        links: listing::links(factory).to_string(),
         schedules: listing::schedule_triggers(factory),
         request: serde_json::json!({
             "workflow": factory.request().map(|defaults| &defaults.workflow),
@@ -196,6 +198,7 @@ fn env(name: &str, what: &str) -> Result<String, String> {
 /// What every server thread reads from the factory, once, when the server starts.
 struct Served {
     views: String,
+    links: String,
     schedules: Vec<(String, Trigger)>,
     /// `GET /api/request`: what the Add control prefills and offers.
     request: String,
@@ -226,8 +229,10 @@ fn route(
     if web && !path.starts_with("/api") && !path.starts_with("/hooks") {
         return web_file(path);
     }
-    if path == "/api/views" {
-        return Reply::json(200, served.views.clone());
+    match path {
+        "/api/views" => return Reply::json(200, served.views.clone()),
+        "/api/links" => return Reply::json(200, served.links.clone()),
+        _ => {}
     }
     let db = match db {
         Ok(db) => db,

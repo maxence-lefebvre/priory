@@ -2947,6 +2947,37 @@ fn dismiss_and_snooze_through_their_endpoints_do_what_their_cli_verbs_do() {
     );
 }
 
+#[test]
+fn the_links_endpoint_lists_the_factorys_links_in_file_order_then_the_built_in_ones_it_keeps() {
+    let plain = Setup::new("links-built-in", SERVE);
+    let built_in = plain.priory(&["links", &plain.factory(), "--json"]);
+    succeeded(&built_in);
+    let github = json!({ "pattern": r"\B#(\d+)\b", "url": "https://github.com/{repo}/issues/$1" });
+    assert_eq!(
+        serde_json::from_slice::<Value>(&built_in.stdout).unwrap(),
+        json!({ "links": [github] })
+    );
+
+    let settings = format!(
+        "{SERVE}\n[links]\n'\\b([A-Z]{{2,5}}-\\d+)\\b' = \"https://linear.app/acme/issue/$1\"\n'\\B#(\\d+)\\b' = \"https://github.com/acme/app/issues/$1\"\n"
+    );
+    let mut setup = Setup::new("links", &settings);
+    let address = setup.start(&["serve", &setup.factory()]);
+
+    let links = api(&address, "/api/links");
+
+    assert_eq!(
+        links,
+        json!({ "links": [
+            { "pattern": r"\b([A-Z]{2,5}-\d+)\b", "url": "https://linear.app/acme/issue/$1" },
+            { "pattern": r"\B#(\d+)\b", "url": "https://github.com/acme/app/issues/$1" },
+        ] })
+    );
+    let cli = setup.priory(&["links", &setup.factory(), "--json"]);
+    succeeded(&cli);
+    assert_eq!(serde_json::from_slice::<Value>(&cli.stdout).unwrap(), links);
+}
+
 const DEFAULTS: &str = "name = \"demo\"\n\n[serve]\nlisten = \"127.0.0.1:0\"\ntoken_env = \"TEST_TOKEN\"\n\n[request]\nworkflow = \"implement\"\nband = \"today\"\n";
 
 #[test]

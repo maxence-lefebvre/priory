@@ -4,7 +4,7 @@ import { execFile } from "node:child_process";
 import { existsSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { priory } from "../lib/priory.js";
+import { autolink, priory } from "../lib/priory.js";
 
 const FAKE = new URL("./fake-priory", import.meta.url).pathname;
 
@@ -188,4 +188,31 @@ test("every mod carries the library unchanged", () => {
       assert.equal(readFileSync(copy, "utf8"), library, `cp adapters/herdr/lib/${file} adapters/herdr/mods/${mod}/${file}`);
     }
   }
+});
+
+test("reads the factory's links, in the folder it names", async () => {
+  const links = { links: [{ pattern: "\\B#(\\d+)\\b", url: "https://github.com/{repo}/issues/$1" }] };
+  const run = fake({ links });
+  const client = priory({ exec, binary: FAKE, factory: "/srv/factory" });
+
+  assert.deepEqual(await client.links(), links);
+  assert.deepEqual(run.argv(), [["links", "/srv/factory", "--json"]]);
+});
+
+test("autolink returns the spans the web view links", async () => {
+  const { autolink: web } = await import("../../../crates/priory-core/web/links.js");
+  const { links, texts } = JSON.parse(readFileSync(new URL("./fixtures/links.json", import.meta.url), "utf8"));
+
+  for (const [text, repo] of texts) {
+    assert.deepEqual(autolink(text, links, repo), web(text, links, repo), text);
+  }
+  assert.deepEqual(autolink(texts[0][0], links, "acme/app"), [
+    { text: "Fix " },
+    { text: "ENG-7", url: "https://linear.app/acme/issue/ENG-7" },
+    { text: " before " },
+    { text: "#12", url: "https://github.com/acme/app/issues/12" },
+    { text: " lands, then PR " },
+    { text: "#3", url: "https://github.com/acme/app/issues/3" },
+    { text: " and doc-4." },
+  ]);
 });
