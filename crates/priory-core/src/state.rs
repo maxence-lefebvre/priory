@@ -10,7 +10,7 @@ use std::collections::BTreeMap;
 use std::io::Write;
 use std::time::Duration;
 
-const VERSION: i64 = 41;
+const VERSION: i64 = 42;
 
 const SCHEMA: &str = "
 CREATE TABLE tasks (
@@ -710,6 +710,14 @@ ALTER TABLE actions ADD COLUMN generation INTEGER;
 PRAGMA user_version = 41;
 ";
 
+// A report pick's request, stored with the choice and deleted once it is published.
+const SCHEMA_42: &str = "CREATE TABLE dispatches (
+  pick TEXT PRIMARY KEY,
+  request TEXT NOT NULL
+);
+PRAGMA user_version = 42;
+";
+
 /// Each schema change in order: a file at version `n` applies those from index `n` on.
 const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA, SCHEMA_2, SCHEMA_3, SCHEMA_4, SCHEMA_5, SCHEMA_6, SCHEMA_7, SCHEMA_8, SCHEMA_9,
@@ -717,6 +725,7 @@ const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA_18, SCHEMA_19, SCHEMA_20, SCHEMA_21, SCHEMA_22, SCHEMA_23, SCHEMA_24, SCHEMA_25,
     SCHEMA_26, SCHEMA_27, SCHEMA_28, SCHEMA_29, SCHEMA_30, SCHEMA_31, SCHEMA_32, SCHEMA_33,
     SCHEMA_34, SCHEMA_35, SCHEMA_36, SCHEMA_37, SCHEMA_38, SCHEMA_39, SCHEMA_40, SCHEMA_41,
+    SCHEMA_42,
 ];
 
 /// The order the queue starts tasks in: band, then a person's order, then age. A band the factory
@@ -1432,11 +1441,11 @@ pub(crate) struct Due {
     pub worktree: Option<String>,
 }
 
-/// The oldest queued or ready task at a code step.
+/// The queued or ready tasks at a code step, oldest first.
 pub(crate) fn actionable(
     db: &Connection,
     workflows: &BTreeMap<String, Loaded<Workflow>>,
-) -> rusqlite::Result<Option<Due>> {
+) -> rusqlite::Result<Vec<Due>> {
     let mut statement = db.prepare(
         "SELECT id, workflow, step, trigger, branch, worktree, repo FROM tasks
          WHERE state = 'ready' OR state = 'queued' AND NOT EXISTS (SELECT 1 FROM pause)
@@ -1453,17 +1462,18 @@ pub(crate) fn actionable(
             repo: row.get(6)?,
         })
     })?;
-    for due in tasks {
-        let due = due?;
+    let mut due = Vec::new();
+    for task in tasks {
+        let task = task?;
         let code = workflows
-            .get(&due.workflow)
-            .and_then(|workflow| workflow.value.step(&due.step))
+            .get(&task.workflow)
+            .and_then(|workflow| workflow.value.step(&task.step))
             .is_some_and(|step| step.decides == priory_factory::factory::Decider::Code);
         if code {
-            return Ok(Some(due));
+            due.push(task);
         }
     }
-    Ok(None)
+    Ok(due)
 }
 
 /// Records the process group of `run` action `id` and its start time, so a restarted daemon kills

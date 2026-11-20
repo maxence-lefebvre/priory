@@ -41,7 +41,7 @@ const OUTPUT: &str = "factory.intake";
 /// Takes a state file back before schema 28, which added search, 29, which added grades, 30,
 /// which added snoozes, 31, which added read reports, 32, which added the pause, 34, which added
 /// reports of sections, 36, which added deliveries, 37, which added progress, 39, which added run
-/// actions, and 40, which added answer actions. Schema 38's visits table is created only if
+/// actions, 40, which added answer actions, and 42, which added dispatches. Schema 38's visits table is created only if
 /// missing, so it stays.
 const UNDO_SINCE_SEARCH: &str = "ALTER TABLE actions DROP COLUMN ask;
   ALTER TABLE actions DROP COLUMN revision; ALTER TABLE actions DROP COLUMN command; ALTER TABLE actions DROP COLUMN generation;
@@ -56,7 +56,7 @@ const UNDO_SINCE_SEARCH: &str = "ALTER TABLE actions DROP COLUMN ask;
   ALTER TABLE tasks DROP COLUMN grade_reason;
   DROP TRIGGER search_task_created; DROP TRIGGER search_tldr_changed; DROP TRIGGER search_result_stored;
   DROP VIEW task_text; DROP TABLE search; DROP TABLE summaries;
-  DROP TABLE embedder; DROP TABLE vectors; ALTER TABLE tasks DROP COLUMN tldr;";
+  DROP TABLE embedder; DROP TABLE vectors; ALTER TABLE tasks DROP COLUMN tldr; DROP TABLE dispatches;";
 
 /// A factory, bus, state, Priory home, origin repository and fake `claude`, all under the test's
 /// own directory, and a tmux server in its own short directory. Dropping it kills the daemon and
@@ -3414,6 +3414,35 @@ fn a_wait_after_an_answer_that_beats_the_stop_is_refused_and_the_command_wakes_t
 }
 
 #[test]
+fn a_result_while_an_answers_command_runs_is_refused_and_the_command_wakes_the_task_at_its_step() {
+    let command = json!({ "argv": ["sh", "-c", "sleep 2; echo shipped"], "target": "ops" });
+    let setup = ending_its_turn_on_a_command_ask("command-then-result", command);
+    let answered = setup.priory(&["answer", "--run", "1", "deploy", "--revision", "1"]);
+    let session = setup.rows("runs")[0][4].clone();
+
+    let replies = setup.mcp(
+        &session,
+        &[json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": result("unsure")})],
+    );
+    setup.release("hold-stop");
+
+    assert!(answered.status.success(), "{answered:?}");
+    let (text, error) = reply(&replies[0]);
+    assert!(error, "{text}");
+    assert_eq!(
+        text,
+        "an answer's command for this task runs: end your turn, and its end wakes the task"
+    );
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 2);
+    assert!(
+        setup.typed()[1].contains(": exit 0.\nstdout:\nshipped\n"),
+        "{:?}",
+        setup.typed()
+    );
+    assert_eq!(setup.rows("tasks")[0][3], "plan");
+}
+
+#[test]
 fn a_reboot_while_an_answers_command_runs_before_the_stop_wakes_the_task_with_the_uncertain_outcome()
  {
     let command = json!({ "argv": ["sh", "-c", "echo $$ > pid; sleep 60"], "target": "ops" });
@@ -4847,6 +4876,7 @@ fn a_state_file_whose_asks_an_approval_names_upgrades_to_outside_asks() {
          ALTER TABLE tasks DROP COLUMN progress;
          DROP TABLE deliveries;
          DROP TABLE reports;
+         DROP TABLE dispatches;
          PRAGMA legacy_alter_table = ON;
          CREATE TABLE asks_32 (
            id INTEGER PRIMARY KEY AUTOINCREMENT, task INTEGER NOT NULL REFERENCES tasks (id),
@@ -9591,6 +9621,48 @@ fn a_revive_into_a_code_step_recreates_a_swept_worktree() {
 }
 
 #[test]
+fn a_code_step_that_waits_for_disk_lets_a_younger_code_step_act() {
+    let mut setup = Setup::with_workflow("disk-wait-skipped", AUTONOMOUS);
+    let mut failed = passed_with_evidence();
+    failed["arguments"]["outcome"] = json!("failed");
+    setup.calls(&[failed.clone(), failed]);
+    setup.publish(&requested(42));
+    setup.publish(&requested(43));
+    setup.start();
+    setup.until("tasks", |rows| {
+        rows.len() == 2 && rows.iter().all(|row| row[4] == "dropped")
+    });
+    setup.gone("priory-1");
+    setup.gone("priory-2");
+    setup.commit(1, "widget.txt");
+    let younger = setup.commit(2, "gadget.txt");
+    setup.git(
+        &setup.clone(),
+        &["worktree", "remove", setup.worktree(1).to_str().unwrap()],
+    );
+    setup.disk(10);
+
+    for task in ["1", "2"] {
+        let revived = setup.priory(&["revive", task, "--step", "open-pr"]);
+        assert!(revived.status.success(), "{revived:?}");
+    }
+
+    let actions = setup.until("actions", |rows| rows.len() == 1);
+    assert_eq!(actions[0][4], "opened");
+    assert_eq!(setup.pushed("priory/2"), younger);
+    let tasks = setup.rows("tasks");
+    assert_eq!(
+        tasks[0][4..8],
+        [
+            "ready",
+            "later",
+            "none/misc",
+            "waits for room to add back its worktree"
+        ]
+    );
+}
+
+#[test]
 fn an_approval_answered_while_retired_opens_the_pull_request_once_disk_allows() {
     let mut setup = asked_to_open("retire-approval", OPEN_PR);
     let commit = setup.commit(1, "widget.txt");
@@ -10465,6 +10537,120 @@ fn a_pick_option_that_requests_a_task_creates_it_and_fills_applied() {
     let tasks = setup.until("tasks", |rows| rows.len() == 2);
     assert_eq!(tasks[1][1], "cli:fnd-2409");
     assert_eq!(tasks[0][4], "asleep");
+    let pick = &shown(&setup)["sections"][0]["rows"][0]["pick"];
+    assert_eq!(
+        [&pick["chosen"], &pick["applied"]],
+        ["Take", "requested task cli:fnd-2409"]
+    );
+}
+
+/// A pick that requests a task, both under `PICK` and under a second pick id in another section.
+fn twice_requested() -> serde_json::Value {
+    let mut report = bonjour(json!({ "Take": {
+        "workflow": "implement", "key": "fnd-2409", "text": "Fix the DWARF pause", "repo": "owner/repo"
+    } }));
+    let mut again = report["sections"][0]["rows"][0].clone();
+    again["id"] = json!("fnd-2409-again");
+    again["pick"]["id"] = json!(AGAIN);
+    report["sections"][1]["rows"] = json!([again]);
+    report
+}
+
+const AGAIN: &str = "2026-11-21_sentry_fnd-2409";
+
+#[test]
+fn a_second_pick_that_repeats_an_earlier_request_creates_another_task() {
+    let setup = asleep_on_a_report("report-repeat", &twice_requested());
+    let first = setup.priory(&["report", "pick", PICK, "Take", "--expected", "1"]);
+    assert!(first.status.success(), "{first:?}");
+    setup.until("tasks", |rows| rows.len() == 2);
+    assert!(setup.priory(&["cancel", "2"]).status.success());
+    setup.until("tasks", |rows| rows[1][4] == "dropped");
+
+    let again = setup.priory(&["report", "pick", AGAIN, "Take", "--expected", "2"]);
+
+    assert!(again.status.success(), "{again:?}");
+    let tasks = setup.until("tasks", |rows| rows.len() == 3);
+    assert_eq!(tasks[2][1], "cli:fnd-2409");
+}
+
+/// `priory args`, run again until a daemon listens on the socket.
+fn until_listening(setup: &Setup, args: &[&str]) -> Exit {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let output = setup.priory(args);
+        let refused = String::from_utf8_lossy(&output.stderr).contains("no priory daemon listens");
+        if !refused || Instant::now() > deadline {
+            return output;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+/// The subjects of the task requests on the bus, oldest first.
+fn requested_tasks(setup: &Setup) -> Vec<String> {
+    let mut stored = setup
+        .bus()
+        .messages(&herdr_bus::MessageQuery {
+            output: Some(OUTPUT.into()),
+            limit: 100,
+            ..herdr_bus::MessageQuery::default()
+        })
+        .unwrap();
+    stored.reverse();
+    stored
+        .into_iter()
+        .filter(|stored| stored.message.kind == "factory.task.requested")
+        .filter_map(|stored| stored.message.subject)
+        .collect()
+}
+
+#[test]
+fn a_pick_whose_choice_fails_to_commit_requests_no_task_so_another_option_stays_true() {
+    let requests = json!({ "Take": {
+        "workflow": "implement", "key": "fnd-2409", "text": "Fix the DWARF pause", "repo": "owner/repo"
+    } });
+    let mut setup = asleep_on_a_report("report-uncommitted", &bonjour(requests));
+    let db = rusqlite::Connection::open(setup.dir.join("priory.db")).unwrap();
+    db.execute_batch(
+        "CREATE TRIGGER lost BEFORE UPDATE ON reports BEGIN SELECT RAISE(ABORT, 'disk gone'); END",
+    )
+    .unwrap();
+
+    let take = setup.priory(&["report", "pick", PICK, "Take", "--expected", "1"]);
+    db.execute_batch("DROP TRIGGER lost").unwrap();
+    setup.crash();
+    setup.start();
+    let later = until_listening(
+        &setup,
+        &["report", "pick", PICK, "Later", "--expected", "1"],
+    );
+
+    assert!(!take.status.success(), "{take:?}");
+    assert!(later.status.success(), "{later:?}");
+    assert_eq!(requested_tasks(&setup), ["github:owner/repo#42"]);
+}
+
+#[test]
+fn a_chosen_pick_whose_request_the_bus_refused_publishes_it_when_the_daemon_starts_again() {
+    let requests = json!({ "Take": {
+        "workflow": "implement", "key": "fnd-2409", "text": "Fix the DWARF pause", "repo": "owner/repo"
+    } });
+    let mut setup = asleep_on_a_report("report-unpublished", &bonjour(requests));
+    let bus = rusqlite::Connection::open(setup.dir.join("bus.db")).unwrap();
+    bus.execute_batch(
+        "CREATE TRIGGER full BEFORE INSERT ON messages BEGIN SELECT RAISE(ABORT, 'bus full'); END",
+    )
+    .unwrap();
+
+    let take = setup.priory(&["report", "pick", PICK, "Take", "--expected", "1"]);
+    bus.execute_batch("DROP TRIGGER full").unwrap();
+    setup.crash();
+    setup.start();
+
+    assert!(!take.status.success(), "{take:?}");
+    let tasks = setup.until("tasks", |rows| rows.len() == 2);
+    assert_eq!(tasks[1][1], "cli:fnd-2409");
     let pick = &shown(&setup)["sections"][0]["rows"][0]["pick"];
     assert_eq!(
         [&pick["chosen"], &pick["applied"]],

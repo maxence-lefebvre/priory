@@ -52,7 +52,8 @@ retired.
 A code step skips the room check, except `open-pr` on a retired task: it pushes from the worktree,
 so it must add it back. Other actions, such as `open-issue`, run without it. While free disk is at or
 under the floor, the task stays `ready` with the reason `waits for room to add back its worktree`,
-or `waits for room: <error>` when the disk cannot be measured, and so do the code steps behind it.
+or `waits for room: <error>` when the disk cannot be measured. The daemon goes on to the next task
+at a code step, so the code steps behind it still run.
 
 A task that cannot retire gets the reason `cannot retire: <why>`, with the same reasons as the sweep,
 such as `untracked files`. The daemon sets and logs it only when it changes, so it is reported once.

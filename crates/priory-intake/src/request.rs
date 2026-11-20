@@ -111,7 +111,8 @@ impl Request {
     }
 }
 
-pub fn run(factory: &Factory, request: &Request) -> Result<(), String> {
+/// Why `factory` refuses `request`, if it does.
+pub fn check(factory: &Factory, request: &Request) -> Result<(), String> {
     if !factory.workflows.contains_key(&request.workflow) {
         return Err(format!("unknown workflow `{}`", request.workflow));
     }
@@ -129,6 +130,13 @@ pub fn run(factory: &Factory, request: &Request) -> Result<(), String> {
                 .to_owned(),
         );
     }
+    Ok(())
+}
+
+/// Publishes `request`. A `nonce`, such as a report pick's id, makes its ids differ from those of
+/// the same request without it or with another nonce.
+pub fn run(factory: &Factory, request: &Request, nonce: Option<&str>) -> Result<(), String> {
+    check(factory, request)?;
     let key = format!("cli:{}", request.key);
     let person = std::env::var("USER").ok();
     let time = Timestamp::now();
@@ -138,12 +146,17 @@ pub fn run(factory: &Factory, request: &Request) -> Result<(), String> {
         "time": time.to_string(),
         "repo": request.repo,
     });
-    let source = Message::new(REQUESTED, data)
-        .id(intake::id(&format!(
-            "{REQUESTED}:{}:{key}:{}",
+    let name = match nonce {
+        None => format!("{REQUESTED}:{}:{key}:{}", key.len(), request.text),
+        Some(nonce) => format!(
+            "{REQUESTED}:pick:{}:{nonce}:{}:{key}:{}",
+            nonce.len(),
             key.len(),
             request.text
-        )))
+        ),
+    };
+    let source = Message::new(REQUESTED, data)
+        .id(intake::id(&name))
         .subject(&key)
         .time(time);
     let mut data = json!({

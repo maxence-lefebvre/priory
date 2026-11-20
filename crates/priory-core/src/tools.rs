@@ -147,6 +147,11 @@ pub(crate) fn call(
         ("ask" | "wait", ..) if woken(&tx, &run)? => {
             Some("an answer or event for this run is queued: end your turn to read it".to_owned())
         }
+        // Its end would wake the task at whatever step the result moved it to.
+        ("result", ..) if commanding(&tx, run.task)? => Some(
+            "an answer's command for this task runs: end your turn, and its end wakes the task"
+                .to_owned(),
+        ),
         _ => None,
     };
     if let Some(refused) = refused {
@@ -510,6 +515,14 @@ fn woken(tx: &Transaction, run: &Run) -> rusqlite::Result<bool> {
          AND EXISTS (SELECT 1 FROM outbox WHERE task = ?2 AND state = 'queued')
          OR EXISTS (SELECT 1 FROM actions WHERE task = ?2 AND action = 'answer' AND ended IS NULL)",
         params![run.id, run.task, DISMISSED],
+        |row| row.get(0),
+    )
+}
+
+fn commanding(tx: &Transaction, task: i64) -> rusqlite::Result<bool> {
+    tx.query_row(
+        "SELECT EXISTS (SELECT 1 FROM actions WHERE task = ?1 AND action = 'answer' AND ended IS NULL)",
+        [task],
         |row| row.get(0),
     )
 }

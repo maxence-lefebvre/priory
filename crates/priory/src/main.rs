@@ -770,7 +770,7 @@ fn request(args: Vec<String>) -> ExitCode {
     let Some(factory) = load(&dir) else {
         return ExitCode::FAILURE;
     };
-    match request::run(&factory, &request) {
+    match request::run(&factory, &request, None) {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
             eprintln!("priory request: {error}");
