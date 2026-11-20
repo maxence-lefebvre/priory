@@ -312,12 +312,13 @@ fn route(
 }
 
 /// A path that writes, each the twin of a CLI verb. An ask is named by its number or, for an
-/// outside ask, its name.
+/// outside ask, its name. `Act` is a desk action on a task: `resume`, `revive`, `cancel` or `say`.
 enum Write<'a> {
     Answer(&'a str),
     Dismiss(&'a str),
     Snooze,
     Add,
+    Act(&'a str, &'a str),
 }
 
 impl<'a> Write<'a> {
@@ -326,6 +327,13 @@ impl<'a> Write<'a> {
             "/api/snooze" => return Some(Write::Snooze),
             "/api/request" => return Some(Write::Add),
             _ => {}
+        }
+        if let Some((task, act)) = path
+            .strip_prefix("/api/tasks/")
+            .and_then(|rest| rest.split_once('/'))
+            .filter(|(_, act)| ["resume", "revive", "cancel", "say"].contains(act))
+        {
+            return Some(Write::Act(task, act));
         }
         match path.strip_prefix("/api/asks/")?.split_once('/')? {
             (ask, "answer") => Some(Write::Answer(ask)),
@@ -349,6 +357,16 @@ struct AnswerBody {
 #[serde(deny_unknown_fields)]
 struct DismissBody {
     revision: i64,
+}
+
+/// What a desk action takes: `say` its text, `revive` an optional step and `cancel` the optional
+/// revision it was made on, as the CLI's `--step` and `--expected`.
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ActBody {
+    text: Option<String>,
+    step: Option<String>,
+    revision: Option<i64>,
 }
 
 #[derive(serde::Deserialize)]
@@ -382,7 +400,7 @@ fn write(db: &Result<Connection, String>, home: &Path, request: &Request) -> Rep
         Ok(db) => db,
         Err(error) => return Reply::error(500, error),
     };
-    let (line, ask) = match write_line(db, &write, request.body) {
+    let (line, ask, expected) = match write_line(db, &write, request.body) {
         Ok(line) => line,
         Err(reply) => return reply,
     };
@@ -407,17 +425,21 @@ fn write(db: &Result<Connection, String>, home: &Path, request: &Request) -> Rep
     match serde_json::from_str::<Result<String, String>>(&reply) {
         Ok(Ok(added)) if matches!(write, Write::Add) => Reply::json(200, added),
         Ok(Ok(done)) => Reply::json(200, serde_json::json!({ "ok": done }).to_string()),
-        Ok(Err(refused)) => refusal(db, ask, &refused),
+        Ok(Err(refused)) => match expected.map(|expected| (expected, state::revision(db))) {
+            Some((expected, Ok(at))) if at != expected => Reply::error(409, &refused),
+            _ => refusal(db, ask, &refused),
+        },
         Err(error) => Reply::error(500, &format!("unreadable reply {reply:?}: {error}")),
     }
 }
 
-/// The socket line of `write` and, for an ask, its number and the revision the body sent.
+/// The socket line of `write`; for an ask, its number and the revision the body sent; for a desk
+/// action, the state revision it was made on.
 fn write_line(
     db: &Connection,
     write: &Write,
     body: &[u8],
-) -> Result<(String, Option<(i64, i64)>), Reply> {
+) -> Result<(String, Option<(i64, i64)>, Option<i64>), Reply> {
     let bad = |error: serde_json::Error| Reply::error(400, &error.to_string());
     match write {
         Write::Answer(ask) => {
@@ -435,7 +457,7 @@ fn write_line(
                 run: body.run,
                 by: "serve".to_owned(),
             };
-            Ok((line(&answer), Some((ask, revision))))
+            Ok((line(&answer), Some((ask, revision)), None))
         }
         Write::Dismiss(ask) => {
             let body: DismissBody = serde_json::from_slice(body).map_err(bad)?;
@@ -444,7 +466,7 @@ fn write_line(
                 dismiss: ask,
                 revision: Some(body.revision),
             };
-            Ok((line(&dismiss), Some((ask, body.revision))))
+            Ok((line(&dismiss), Some((ask, body.revision)), None))
         }
         Write::Snooze => {
             let body: SnoozeBody = serde_json::from_slice(body).map_err(bad)?;
@@ -462,11 +484,41 @@ fn write_line(
                 },
                 until,
             };
-            Ok((line(&snooze), None))
+            Ok((line(&snooze), None, None))
         }
         Write::Add => {
             let add: priory_intake::request::Add = serde_json::from_slice(body).map_err(bad)?;
-            Ok((line(&serde_json::json!({ "add": add })), None))
+            Ok((line(&serde_json::json!({ "add": add })), None, None))
+        }
+        Write::Act(task, act) => {
+            let body: ActBody = serde_json::from_slice(body).map_err(bad)?;
+            let takes = match *act {
+                "say" => body.text.is_some() && body.step.is_none() && body.revision.is_none(),
+                "revive" => body.text.is_none() && body.revision.is_none(),
+                "cancel" => body.text.is_none() && body.step.is_none(),
+                _ => body.text.is_none() && body.step.is_none() && body.revision.is_none(),
+            };
+            if !takes {
+                let fields = match *act {
+                    "say" => "text",
+                    "revive" => "an optional step",
+                    "cancel" => "an optional revision",
+                    _ => "no field",
+                };
+                return Err(Reply::error(400, &format!("{act} takes {fields}")));
+            }
+            let task = task
+                .parse()
+                .map_err(|_| Reply::error(404, &format!("there is no task {task}")))?;
+            let act = tools::Act {
+                act: (*act).to_owned(),
+                task,
+                step: body.step,
+                hold: None,
+                text: body.text,
+                expected: body.revision,
+            };
+            Ok((line(&act), None, act.expected))
         }
     }
 }

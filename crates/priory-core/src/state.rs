@@ -11,7 +11,7 @@ use std::collections::BTreeMap;
 use std::io::Write;
 use std::time::Duration;
 
-const VERSION: i64 = 44;
+const VERSION: i64 = 45;
 
 const SCHEMA: &str = "
 CREATE TABLE tasks (
@@ -780,6 +780,18 @@ const SCHEMA_44: &str = concat!(
 "
 );
 
+// Each intake source's last poll and, while it fails, its error and the report that tells it.
+// No revision triggers: a poll writes every minute, and only the reports it posts change a listing.
+const SCHEMA_45: &str = "CREATE TABLE IF NOT EXISTS intake_sources (
+  source        TEXT PRIMARY KEY,
+  polled        TEXT NOT NULL,
+  error         TEXT,
+  failing_since TEXT,
+  report        INTEGER
+);
+PRAGMA user_version = 45;
+";
+
 /// Each schema change in order: a file at version `n` applies those from index `n` on.
 const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA, SCHEMA_2, SCHEMA_3, SCHEMA_4, SCHEMA_5, SCHEMA_6, SCHEMA_7, SCHEMA_8, SCHEMA_9,
@@ -787,7 +799,7 @@ const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA_18, SCHEMA_19, SCHEMA_20, SCHEMA_21, SCHEMA_22, SCHEMA_23, SCHEMA_24, SCHEMA_25,
     SCHEMA_26, SCHEMA_27, SCHEMA_28, SCHEMA_29, SCHEMA_30, SCHEMA_31, SCHEMA_32, SCHEMA_33,
     SCHEMA_34, SCHEMA_35, SCHEMA_36, SCHEMA_37, SCHEMA_38, SCHEMA_39, SCHEMA_40, SCHEMA_41,
-    SCHEMA_42, SCHEMA_43, SCHEMA_44,
+    SCHEMA_42, SCHEMA_43, SCHEMA_44, SCHEMA_45,
 ];
 
 /// The order the queue starts tasks in: band, then a person's order, then age. A band the factory

@@ -324,6 +324,70 @@ fn a_failing_gh_exits_non_zero_and_publishes_nothing() {
     assert!(setup.published().is_empty());
 }
 
+impl Setup {
+    /// `priory desk --json` on the intake's state file.
+    fn desk(&self) -> serde_json::Value {
+        let output = Command::new(env!("CARGO_BIN_EXE_priory"))
+            .args(["desk", "--json"])
+            .env("PRIORY_DB", self.dir.join("priory.db"))
+            .env("PRIORY_HOME", self.dir.join("home"))
+            .output()
+            .unwrap();
+        succeeded(&output);
+        serde_json::from_slice(&output.stdout).unwrap()
+    }
+}
+
+/// The `what` of each report item on `desk`.
+fn reports(desk: &serde_json::Value) -> Vec<String> {
+    desk["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|item| item["kind"] == "report")
+        .map(|item| item["what"].as_str().unwrap().to_owned())
+        .collect()
+}
+
+#[test]
+fn a_failing_poll_reports_once_and_shows_a_banner_until_a_good_poll_clears_both() {
+    let setup = Setup::new("gh-fails-desk", &[]);
+    Setup::fake_gh(
+        &setup.dir,
+        "#!/bin/sh\necho 'HTTP 401: Bad credentials' >&2\nexit 1\n",
+    );
+    let error = format!("gh api {EVENTS_PATH} failed: HTTP 401: Bad credentials");
+
+    setup.intake();
+    setup.intake();
+
+    let desk = setup.desk();
+    assert_eq!(reports(&desk), [format!("intake: github: {error}")]);
+    let banner = desk["intake"].as_str().unwrap();
+    assert!(
+        banner.starts_with("the intake fails to poll github since ")
+            && banner.ends_with(&format!(": {error}")),
+        "{banner}"
+    );
+    setup.answer(&[]);
+    succeeded(&setup.intake());
+    let desk = setup.desk();
+    assert_eq!(desk["intake"], serde_json::Value::Null);
+    assert!(reports(&desk).is_empty(), "{desk}");
+}
+
+#[test]
+fn an_intake_that_has_not_polled_for_five_minutes_shows_a_banner() {
+    let setup = Setup::new("intake-stopped", &[]);
+
+    succeeded(&setup.intake_at("2026-01-01T00:00:00Z"));
+
+    assert_eq!(
+        setup.desk()["intake"],
+        "the intake has not polled since 2026-01-01T00:00:00Z: waits on GitHub, Linear and Slack cannot fire"
+    );
+}
+
 #[test]
 fn a_gh_call_past_the_command_timeout_is_killed_and_the_poll_fails() {
     let setup = Setup::new("gh-hangs", &[]);

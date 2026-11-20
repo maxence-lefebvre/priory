@@ -397,6 +397,7 @@ pub fn queue(
         "bands": state::band_names(db)?,
         "up_next": up_next(db, &waiting, schedules, now)?,
         "waiting": waiting,
+        "asleep": asleep(db)?,
         "running": rows(
             db,
             &format!(
@@ -418,6 +419,30 @@ pub fn queue(
             [],
         )?,
     }))
+}
+
+/// The asleep tasks, longest asleep first, each with its open waits: what each waits on, as
+/// `priory waits` shows it, and since when.
+fn asleep(db: &Connection) -> rusqlite::Result<Value> {
+    let mut asleep = rows(
+        db,
+        &format!(
+            "SELECT id, key, {TITLE}, workflow, step, band, lane, changed AS since, retired,
+               (SELECT json_group_array(json_object('kind', kind, 'on', coalesce(resource, until,
+                  'task ' || target, printf('%.1f GB free', bytes / 1073741824.0)),
+                  'since', created))
+                FROM (SELECT * FROM waits WHERE waits.task = tasks.id AND fired IS NULL
+                  AND withdrawn IS NULL ORDER BY id)) AS waits
+             FROM tasks WHERE state = 'asleep' ORDER BY changed, id"
+        ),
+        [],
+    )?;
+    for task in asleep.as_array_mut().into_iter().flatten() {
+        if let Some(waits) = task["waits"].as_str() {
+            task["waits"] = serde_json::from_str(waits).unwrap_or(Value::Null);
+        }
+    }
+    Ok(asleep)
 }
 
 /// The factory's schedule triggers by name.
@@ -597,7 +622,7 @@ fn since_you_looked(db: &Connection, person: &str) -> rusqlite::Result<Value> {
     )
 }
 
-/// The pause's line, a stalled queue's banner, the asleep and snoozed counts, what waits on a person, the queue, then
+/// The pause's line, a stalled queue's banner, the intake's banner, the asleep and snoozed counts, what waits on a person, the queue, then
 /// every worktree under `home` that stays and why. The snoozed items show only with `all`. Then
 /// `person`'s last visit and what happened since.
 pub fn desk(db: &Connection, home: &Path, all: bool, person: &str) -> rusqlite::Result<Value> {
@@ -624,6 +649,7 @@ pub fn desk(db: &Connection, home: &Path, all: bool, person: &str) -> rusqlite::
     Ok(json!({
         "paused": state::pause_banner(db)?,
         "banner": stall::banner(db)?,
+        "intake": post::intake_banner(db)?,
         "counts": { "asleep": asleep, "snoozed": snoozed },
         "items": items,
         "last_visit": db

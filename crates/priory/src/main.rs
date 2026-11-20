@@ -31,7 +31,7 @@ fn main() -> ExitCode {
                 _ => return usage(),
             };
             let run = if verb == "intake" {
-                |factory: &factory::Factory, once| intake::run(factory, once, watched)
+                |factory: &factory::Factory, once| intake::run(factory, once, watched, health)
             } else {
                 daemon::run
             };
@@ -183,6 +183,20 @@ fn watched() -> Result<Vec<intake::Watch>, String> {
             Ok(intake::Watch { resource, since })
         })
         .collect()
+}
+
+/// Records each intake source's poll in the state, when the intake has one.
+fn health(outcomes: &intake::Outcomes, at: jiff::Timestamp) -> Result<(), String> {
+    if std::env::var_os("PRIORY_DB").is_none() {
+        return Ok(());
+    }
+    let db = state::open()?;
+    let at = at.strftime("%Y-%m-%dT%H:%M:%SZ").to_string();
+    for (source, error) in outcomes {
+        post::polled(&db, source, error.as_deref(), &at)
+            .map_err(|error| format!("record the {source} poll: {error}"))?;
+    }
+    Ok(())
 }
 
 fn serve(
@@ -607,6 +621,9 @@ fn listed(verb: &str, mut args: Vec<String>) -> ExitCode {
                 }
                 if let Some(banner) = value["banner"].as_str() {
                     state::emit(banner);
+                }
+                if let Some(intake) = value["intake"].as_str() {
+                    state::emit(intake);
                 }
                 listing::print(
                     &[
