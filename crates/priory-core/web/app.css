@@ -297,12 +297,13 @@ textarea { font: 400 16px/22px var(--font-ui); color: var(--text); background: v
 .opt[aria-disabled="true"]:not(.rec-opt), .abar .btn.secondary[aria-disabled="true"] { color: var(--text-3); }
 .medium.no-drawer, .compact.no-drawer { display: flex; flex-direction: column; }
 @media (pointer: coarse) {
-  .views a, .jump a { position: relative; }
-  .views a::after, .jump a::after {
+  .views a, .jump a, .facet > summary, a.facet { position: relative; }
+  .views a::after, .jump a::after, .facet > summary::after, a.facet::after {
     content: ""; position: absolute;
     inset: calc(50% - var(--control) / 2) min(0px, calc(50% - var(--control) / 2));
   }
   .ahead .iconbtn { width: var(--control); }
+  .facet .pick a { min-height: var(--control); }
 }
 .drawer { container-type: inline-size; }
 @container (max-width: 600px) { .drawer .opts { flex-direction: column; } }

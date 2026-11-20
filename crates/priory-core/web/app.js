@@ -189,6 +189,11 @@ function deskModel() {
   return { open, stopped, reports, other, asleep: desk.counts.asleep, banner: desk.banner, running: queue.running, queue: queue.waiting, tasks, upNext: queue.up_next, needs: items.length };
 }
 const openAsks = () => deskModel().open;
+// The open asks the list shows, so previous, next and the ask after an answer stay in its band.
+const listedAsks = () => {
+  const band = new URLSearchParams(listSearch()).get("band");
+  return band ? openAsks().filter((ask) => bandOf(ask) === band) : openAsks();
+};
 
 // Rows
 function askRow(ask, current) {
@@ -401,7 +406,7 @@ const selectedAsk = () => {
 function askDetail(id, wide) {
   const ask = state.data.asks.find((candidate) => String(candidate.id) === id);
   if (!ask) return html`<p class="empty">No ask ${id} here. It may belong to another factory. Check <code>priory asks --all</code>.</p>`;
-  const open = openAsks();
+  const open = listedAsks();
   const at = open.findIndex((candidate) => String(candidate.id) === id);
   const back = [state.listUrl, state.list === "asks" ? "Asks" : "Desk"];
   const nav = (to, label, name) => (to
@@ -613,10 +618,10 @@ async function write(ask, path, body, draft) {
 
 // After an answer, the next open ask opens, or the list once none is left.
 async function next(ask) {
-  const before = openAsks().map((candidate) => candidate.id);
+  const before = listedAsks().map((candidate) => candidate.id);
   await refresh();
   if (selectedAsk() !== String(ask.id)) return;
-  const left = openAsks().filter((candidate) => candidate.id !== ask.id);
+  const left = listedAsks().filter((candidate) => candidate.id !== ask.id);
   const following = left.find((candidate) => before.indexOf(candidate.id) > before.indexOf(ask.id)) || left[0];
   go(following ? `/asks/${encodeURIComponent(following.id)}` : state.listUrl);
 }
