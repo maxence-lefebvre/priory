@@ -62,8 +62,12 @@ pub struct IssueLabeled {
     pub label: Option<String>,
     /// The GitHub login who added the label; null for a deleted user.
     pub actor: Option<String>,
-    /// GitHub's issue event id.
-    pub github_id: u64,
+    /// GitHub's issue event id; null from a webhook, whose payload lacks it.
+    pub github_id: Option<u64>,
+    /// The `X-GitHub-Delivery` of the webhook delivery that reported it; absent when a poll did.
+    /// GitHub does not sign it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub delivery: Option<String>,
     #[serde(flatten)]
     pub source: Source,
 }
@@ -84,6 +88,10 @@ pub struct IssueOpened {
     pub actor: Option<String>,
     /// GitHub's issue id.
     pub github_id: u64,
+    /// The `X-GitHub-Delivery` of the webhook delivery that reported it; absent when a poll did.
+    /// GitHub does not sign it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub delivery: Option<String>,
     #[serde(flatten)]
     pub source: Source,
 }
@@ -115,8 +123,12 @@ pub struct PullRequestOpened {
     pub title: String,
     /// The GitHub login who opened it.
     pub actor: Option<String>,
-    /// GitHub's issue id of the pull request.
-    pub github_id: u64,
+    /// GitHub's issue id of the pull request; null from a webhook, whose payload lacks it.
+    pub github_id: Option<u64>,
+    /// The `X-GitHub-Delivery` of the webhook delivery that reported it; absent when a poll did.
+    /// GitHub does not sign it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub delivery: Option<String>,
     #[serde(flatten)]
     pub source: Source,
 }
@@ -133,8 +145,12 @@ pub struct PullRequestLabeled {
     pub label: Option<String>,
     /// The GitHub login who added the label.
     pub actor: Option<String>,
-    /// GitHub's issue event id.
-    pub github_id: u64,
+    /// GitHub's issue event id; null from a webhook, whose payload lacks it.
+    pub github_id: Option<u64>,
+    /// The `X-GitHub-Delivery` of the webhook delivery that reported it; absent when a poll did.
+    /// GitHub does not sign it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub delivery: Option<String>,
     #[serde(flatten)]
     pub source: Source,
 }
@@ -151,8 +167,12 @@ pub struct PullRequestClosed {
     pub merged: Option<bool>,
     /// The GitHub login who closed it.
     pub actor: Option<String>,
-    /// GitHub's issue event id.
-    pub github_id: u64,
+    /// GitHub's issue event id; null from a webhook, whose payload lacks it.
+    pub github_id: Option<u64>,
+    /// The `X-GitHub-Delivery` of the webhook delivery that reported it; absent when a poll did.
+    /// GitHub does not sign it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub delivery: Option<String>,
     #[serde(flatten)]
     pub source: Source,
 }
@@ -169,6 +189,10 @@ pub struct ReviewSubmitted {
     pub actor: Option<String>,
     /// GitHub's review id.
     pub github_id: u64,
+    /// The `X-GitHub-Delivery` of the webhook delivery that reported it; absent when a poll did.
+    /// GitHub does not sign it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub delivery: Option<String>,
     #[serde(flatten)]
     pub source: Source,
 }

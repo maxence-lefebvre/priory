@@ -43,11 +43,21 @@
           "description": "True when the event came from the first poll of its stream.",
           "type": "boolean"
         },
+        "delivery": {
+          "description": "The `X-GitHub-Delivery` of the webhook delivery that reported it; absent when a poll did.\nGitHub does not sign it.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "github_id": {
-          "description": "GitHub's issue event id.",
+          "description": "GitHub's issue event id; null from a webhook, whose payload lacks it.",
           "format": "uint64",
           "minimum": 0,
-          "type": "integer"
+          "type": [
+            "integer",
+            "null"
+          ]
         },
         "head_branch": {
           "description": "The head branch; null when GitHub no longer returns the pull request.",
