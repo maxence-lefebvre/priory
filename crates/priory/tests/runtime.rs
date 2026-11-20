@@ -5628,9 +5628,7 @@ fn ran(name: &str, command: &str, timeout: &str) -> (Setup, Vec<Vec<String>>) {
     let mut setup = Setup::with_workflow(name, &run_step(command, timeout));
     setup.publish(&requested(42));
     setup.start();
-    let actions = setup.until("actions", |rows| {
-        rows.len() == 1 && rows[0][4] != "running"
-    });
+    let actions = setup.until("actions", |rows| rows.len() == 1 && rows[0][4] != "running");
     (setup, actions)
 }
 
@@ -5656,7 +5654,10 @@ fn a_run_step_routes_ok_on_exit_0_and_failed_on_another_exit() {
     // A named last line routes even on a failing exit, which the error keeps.
     assert_eq!(broken[0][4..9], ["found", "-", "-", "exit 3", "found"]);
     let (_crashed, crashed) = ran("run-crashed", "echo oops >&2; exit 1", "");
-    assert_eq!(crashed[0][4..10], ["failed", "-", "-", "exit 1", "", "oops"]);
+    assert_eq!(
+        crashed[0][4..10],
+        ["failed", "-", "-", "exit 1", "", "oops"]
+    );
     assert_eq!(setup.rows("tasks")[0][4], "done");
 }
 
@@ -5679,7 +5680,10 @@ fn a_run_step_past_its_timeout_is_killed_with_its_children_and_fails() {
 fn a_restart_while_a_run_step_runs_kills_it_and_fails_it_without_running_it_again() {
     let mut setup = Setup::with_workflow(
         "run-restart",
-        &run_step("echo started >> starts; echo $$ > pid; sleep 60; echo found", ""),
+        &run_step(
+            "echo started >> starts; echo $$ > pid; sleep 60; echo found",
+            "",
+        ),
     );
     setup.publish(&requested(42));
     setup.start();
@@ -5691,7 +5695,10 @@ fn a_restart_while_a_run_step_runs_kills_it_and_fails_it_without_running_it_agai
 
     let actions = setup.until("actions", |rows| rows[0][4] != "running");
     assert_eq!(actions.len(), 1);
-    assert_eq!(actions[0][4..8], ["failed", "-", "-", "interrupted by a daemon restart"]);
+    assert_eq!(
+        actions[0][4..8],
+        ["failed", "-", "-", "interrupted by a daemon restart"]
+    );
     assert!(!alive(pid.trim()), "the interrupted command still runs");
     let starts = fs::read_to_string(setup.dir.join("factory/starts")).unwrap();
     assert_eq!(starts, "started\n");
@@ -5700,8 +5707,14 @@ fn a_restart_while_a_run_step_runs_kills_it_and_fails_it_without_running_it_agai
 
 /// Whether process `pid` is alive, not a zombie.
 fn alive(pid: &str) -> bool {
-    fs::read_to_string(format!("/proc/{pid}/stat"))
-        .is_ok_and(|stat| stat.rsplit_once(')').unwrap().1.trim_start().chars().next() != Some('Z'))
+    fs::read_to_string(format!("/proc/{pid}/stat")).is_ok_and(|stat| {
+        !stat
+            .rsplit_once(')')
+            .unwrap()
+            .1
+            .trim_start()
+            .starts_with('Z')
+    })
 }
 
 #[test]

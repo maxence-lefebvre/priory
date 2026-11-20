@@ -1410,7 +1410,7 @@ pub(crate) fn command_wanted(db: &Connection, id: i64) -> rusqlite::Result<bool>
 /// start time when both were recorded.
 pub(crate) fn orphan_commands(
     db: &Connection,
-) -> rusqlite::Result<Vec<(i64, Option<(u32, i64)>)>> {
+) -> rusqlite::Result<Vec<(i64, Option<crate::stall::Group>)>> {
     let mut statement =
         db.prepare("SELECT id, pid, pid_started FROM actions WHERE status = 'running'")?;
     statement

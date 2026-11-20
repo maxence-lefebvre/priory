@@ -2470,7 +2470,15 @@ pub(crate) fn ran(
             .unwrap_or_else(|| format!("{at}?{outcome}"));
         trace::ended(&tx, trace, task, outcome, None)?;
         let workflows = &trace.factory.workflows;
-        enter(&tx, task, &workflow, &target, None, error.unwrap_or_default(), workflows)?;
+        enter(
+            &tx,
+            task,
+            &workflow,
+            &target,
+            None,
+            error.unwrap_or_default(),
+            workflows,
+        )?;
     }
     tx.commit()
 }
