@@ -16,6 +16,7 @@ $PRIORY_HOME/
   priory.sock                  the socket that hooks, tools and commands talk to
   signals.spool                signals sent while no daemon listened
   repos/owner/name/            Priory's clone of owner/name, with no checkout
+  partial/owner/name/          a clone in progress, renamed into repos/ once complete
   worktrees/owner/name/3/      the worktree of task 3, on branch priory/3
   prompts/                     Codex first prompts (see codex.md)
   handlers/                    where stall handler calls run (see health.md)
@@ -52,7 +53,8 @@ still lists it.
 ### Socket, spool and lock
 
 Hooks report to `priory.sock` (see [signals.md](signals.md)). The MCP tools and commands such as
-`priory answer` use it too.
+`priory answer` use it too. The daemon reads one connection at a time, and drops one that sends no
+full line within 2 seconds, so a silent client cannot stop the others.
 
 `signals.spool` holds the signals sent while no daemon listened. The next daemon applies them first.
 

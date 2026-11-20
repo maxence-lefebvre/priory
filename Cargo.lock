@@ -1426,6 +1426,7 @@ name = "priory-factory"
 version = "0.0.0"
 dependencies = [
  "jiff",
+ "priory-runtime",
  "schemars",
  "serde",
  "serde-saphyr",

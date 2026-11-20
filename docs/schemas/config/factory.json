@@ -158,7 +158,7 @@
           "type": "string"
         },
         "repo": {
-          "description": "The repository the sweeper works in and files its issue on, `owner/name`.",
+          "description": "The repository the sweeper works in and files its issue on, a GitHub `owner/name`.",
           "type": [
             "string",
             "null"
