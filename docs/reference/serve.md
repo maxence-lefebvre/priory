@@ -51,6 +51,7 @@ or a reason, is untrusted: render it as text.
 | `431` | The request head is over 8 KiB or 32 headers |
 | `500` | The state could not be read, or a delivery could not be published |
 | `503` | 4 requests already wait on `/api/events` and this one would wait too; or a write found no daemon on its socket, as under `priory serve` alone. It comes with `Retry-After: 1` |
+| `504` | A write reached the daemon, which did not reply within 10 seconds. It may have applied it |
 
 An error's body is `{"error": "<why>"}`.
 
@@ -93,7 +94,8 @@ curl -X POST http://127.0.0.1:7340/api/asks/42/answer -H "Authorization: Bearer 
 | `200` `{"ok": "ask 42 answered"}` | The daemon applied it |
 | `409` `{"error", "ask"}` | The ask's revision is no longer the one sent, or it was answered, dismissed or withdrawn. `ask` is its current state |
 | `404`, `422` `{"error"}` | The ask is gone, or the daemon refused for another reason. `error` is the CLI's sentence |
-| `503` `{"error"}` | No daemon listens on the socket. Reads keep working |
+| `503` `{"error"}` | No daemon listens on the socket, so nothing was sent. Reads keep working |
+| `504` `{"error"}` | The daemon took the line but did not reply within 10 seconds. It may have applied it: read the state before you retry |
 
 ## `POST /hooks/github`
 

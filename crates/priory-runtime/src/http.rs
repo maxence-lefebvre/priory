@@ -132,6 +132,7 @@ fn answer(
         422 => "Unprocessable Content",
         431 => "Request Header Fields Too Large",
         503 => "Service Unavailable",
+        504 => "Gateway Timeout",
         _ => "Internal Server Error",
     };
     let extra = match reply.status {

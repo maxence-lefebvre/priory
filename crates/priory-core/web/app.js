@@ -91,7 +91,7 @@ const state = {
   rendered: 0,
   scrolls: new Map(),
   observers: [],
-  // The answer waiting out its Undo: { id, text, written, timer }.
+  // The answer waiting out its Undo, then in flight: { id, text, timer, sending }.
   pending: null,
   drafts: new Map(),
   notices: new Map(),
@@ -443,7 +443,7 @@ function askDetail(id, wide) {
   const history = html`<section class="sect" id="history"><div class="sh">${icon("history", "s15")}Answer history</div><ol class="hist">${historyItems}</ol></section>`;
   const recommended = options.find((option) => option === ask.recommendation) || options[0];
   const sending = pending
-    ? html`<div class="sending" role="status"><span>Sending <b>"${pending.text}"</b></span><button class="btn secondary" data-action="undo">Undo</button></div>`
+    ? html`<div class="sending" role="status"><span>Sending <b>"${pending.text}"</b></span>${pending.sending ? "" : html`<button class="btn secondary" data-action="undo">Undo</button>`}</div>`
     : "";
   const bar = !wide && !pending && ask.state === "open" && options.length
     ? html`<div class="abar" hidden><button class="btn secondary" data-action="options">${icon("chevron-up", "s15")}${options.length} options</button>
@@ -468,24 +468,28 @@ async function post(path, body) {
   return { status: response.status, body: await response.json().catch(() => ({})) };
 }
 
-// Nothing leaves the page until the Undo time passes.
+// Nothing leaves the page until the Undo time passes; then Undo goes, since the daemon may apply it.
 function answer(ask, text, written) {
   if (state.pending) return;
   state.notices.delete(ask.id);
-  const timer = setTimeout(() => send(ask, text, written), UNDO_MS);
-  state.pending = { id: ask.id, text, written, timer };
+  const pending = { id: ask.id, text, sending: false };
+  pending.timer = setTimeout(() => send(ask, pending, written), UNDO_MS);
+  state.pending = pending;
   render();
 }
 
 function undo() {
-  clearTimeout(state.pending?.timer);
+  if (!state.pending || state.pending.sending) return;
+  clearTimeout(state.pending.timer);
   state.pending = null;
   render();
 }
 
-async function send(ask, text, written) {
-  const body = { [written ? "text" : "option"]: text, revision: ask.revision };
-  const sent = await write(ask, `/api/asks/${encodeURIComponent(ask.id)}/answer`, body, text);
+async function send(ask, pending, written) {
+  pending.sending = true;
+  render();
+  const body = { [written ? "text" : "option"]: pending.text, revision: ask.revision };
+  const sent = await write(ask, `/api/asks/${encodeURIComponent(ask.id)}/answer`, body, pending.text);
   state.pending = null;
   if (sent) return next(ask);
   render();
@@ -524,6 +528,9 @@ async function write(ask, path, body, draft) {
         : `Withdrawn: ${fresh.withdrawn_why}.`);
   } else if (status === 503) {
     state.notices.set(ask.id, "Could not send: no priory daemon runs beside this server. Start priory daemon, then send again.");
+  } else if (status === 504 || status === 0) {
+    state.notices.set(ask.id, "The daemon may have applied this but did not confirm it. Check the ask's state before you send again.");
+    refresh();
   } else {
     state.notices.set(ask.id, `Could not send: ${answered.error || `the server answered ${status}`}.`);
   }
@@ -534,6 +541,7 @@ async function write(ask, path, body, draft) {
 async function next(ask) {
   const before = openAsks().map((candidate) => candidate.id);
   await refresh();
+  if (selectedAsk() !== String(ask.id)) return;
   const left = openAsks().filter((candidate) => candidate.id !== ask.id);
   const following = left.find((candidate) => before.indexOf(candidate.id) > before.indexOf(ask.id)) || left[0];
   go(following ? `/asks/${encodeURIComponent(following.id)}` : state.listUrl);
@@ -727,6 +735,11 @@ function focusKey(element) {
 
 function render() {
   const app = document.getElementById("app");
+  // Leaving the ask, or signing out, cancels an answer that has not left yet.
+  if (state.pending && !state.pending.sending && (!state.token || selectedAsk() !== String(state.pending.id))) {
+    clearTimeout(state.pending.timer);
+    state.pending = null;
+  }
   if (state.renderedKey) state.scrolls.set(state.renderedKey, [...app.querySelectorAll(".scroll")].map((element) => element.scrollTop));
   const focused = focusKey(document.activeElement);
   const typed = app.querySelector("#token")?.value;

@@ -337,10 +337,19 @@ fn write(db: &Result<Connection, String>, home: &Path, request: &Request) -> Rep
     };
     let reply = match runtime::call(home, &line) {
         Ok(reply) => reply,
-        Err(error) => {
+        // Only a refused connection proves the line never reached the daemon.
+        Err(error) if error.starts_with(runtime::NO_DAEMON) => {
             return Reply::error(
                 503,
                 &format!("{error}. Start `priory daemon` to write; reads still work"),
+            );
+        }
+        Err(error) => {
+            return Reply::error(
+                504,
+                &format!(
+                    "{error}. The daemon may have applied it: read the state before you retry"
+                ),
             );
         }
     };
