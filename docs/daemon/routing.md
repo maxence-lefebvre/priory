@@ -86,6 +86,7 @@ Each inbox entry gets one of these outcomes:
 | A schedule's or review request's `factory.task.requested`, with a task asleep at a model step owning its key | `woke` | that task, now `ready` |
 | A schedule's or review request's `factory.task.requested`, with a task in another active state owning its key | `coalesced` | that task, unchanged |
 | A review, comment or review thread comment, with no active task owning a resource it names, and a done task it reopens | `reopened` | that task, now `ready` at its reopen step |
+| `priory.task.requested.cli`, with an active task owning its key, at a model step whose agent started | `said` | that task, which hears the text as `priory say` sends it |
 | `github.pull_request.review_request_removed` with `reviewed: false`, with an active task whose key is its review key | `withdrew` | that task, now `dropped`, its live run ended |
 | Any other, with an active task owning a resource it names | `kept` | that task                   |
 | `factory.task.requested`, no active task  | `created` | a new task, `queued` at its workflow's start |
@@ -137,7 +138,8 @@ checks gate. So firings never stack up.
 ## Feedback reopens a done task
 
 Feedback is a `github.pull_request_review.submitted`, `github.pull_request.comment` or
-`github.pull_request_review_comment` event. When no active task owns a resource it names, it
+`github.pull_request_review_comment` event. A review whose `state` is `approved` or `dismissed`
+asks for nothing, so it is not feedback here. When no active task owns a resource it names, it
 reopens the newest done task that:
 
 - owns its pull request, through `open-pr` or a wait;
