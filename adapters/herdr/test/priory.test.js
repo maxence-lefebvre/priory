@@ -41,6 +41,12 @@ test("reads the desk as JSON", async () => {
   assert.deepEqual(run.argv(), [["desk", "--json"]]);
 });
 
+test("reads the desk with its snoozed items", async () => {
+  const run = fake({ desk: { revision: 7, items: [] } });
+  await priory({ exec, binary: FAKE }).desk({ all: true });
+  assert.deepEqual(run.argv(), [["desk", "--all", "--json"]]);
+});
+
 test("a failed call rejects with priory's last error line", async () => {
   fake();
   const client = priory({ exec, binary: FAKE });
@@ -99,6 +105,9 @@ test("acts through priory's verbs with argv only", async () => {
   await client.say(7, "--step `rm -rf ~`");
   await client.pick("2026-11-20_sentry_fnd-2409", "Take", 9);
   await client.seen();
+  await client.seen({ at: "2026-11-20T12:00:00Z" });
+  await client.resume(4);
+  await client.revive(5);
   await client.hold(7, { reason: "waits for review" });
   await client.hold(7, { reason: "night", until: "2026-11-21T08:00:00Z" });
   await client.release(7);
@@ -117,6 +126,9 @@ test("acts through priory's verbs with argv only", async () => {
     ["say", "7", "--step `rm -rf ~`"],
     ["report", "pick", "2026-11-20_sentry_fnd-2409", "Take", "--expected", "9"],
     ["seen"],
+    ["seen", "--at", "2026-11-20T12:00:00Z"],
+    ["resume", "4"],
+    ["revive", "5"],
     ["hold", "7", "--reason", "waits for review"],
     ["hold", "7", "--reason", "night", "--until", "2026-11-21T08:00:00Z"],
     ["release", "7"],

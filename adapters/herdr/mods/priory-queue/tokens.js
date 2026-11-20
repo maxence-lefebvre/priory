@@ -169,3 +169,12 @@ export function palette(theme, mode) {
   const tokens = THEMES[/** @type {keyof typeof THEMES} */ (theme)] ?? THEMES.indigo;
   return Object.fromEntries(Object.entries(tokens).map(([token, pair]) => [token, pair[mode === "dark" ? 1 : 0]]));
 }
+
+// The structure tokens of design/tokens/structure.css a pane draws with, in px; a type token is [size, line].
+export const STRUCTURE = {
+  "space-1": 4, "space-2": 8, "space-3": 12, "space-4": 16, "space-5": 24,
+  "radius-sm": 5, "radius-tile": 8, "radius-md": 12, "radius-card": 14, "radius-full": 999,
+  "control-fine": 32, "pane-narrow": 420, "pane-split": 720, "pane-head": 44, "pane-chip": 28, "pane-row": 52, "pane-tile": 24,
+  "type-pane-count": [40, 1], "type-hero": [20, 24], "type-pane-question": [18, 24], "type-body": [15, 20],
+  "type-small": [14, 20], "type-caption": [13, 18], "type-mono": [12.5, 19],
+};
