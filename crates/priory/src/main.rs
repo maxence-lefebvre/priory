@@ -68,11 +68,29 @@ fn main() -> ExitCode {
         Some("trace") => trace(),
         Some("report") => report(args.map(|arg| arg.to_string_lossy().into_owned()).collect()),
         Some("move") => move_task(args.map(|arg| arg.to_string_lossy().into_owned()).collect()),
-        Some(verb @ ("resume" | "cancel" | "revive" | "release")) => act(
+        Some(verb @ ("resume" | "cancel" | "revive" | "release" | "say")) => act(
             verb,
             args.map(|arg| arg.to_string_lossy().into_owned()).collect(),
             None,
         ),
+        Some("pause") => match (args.next(), args.next()) {
+            (reason, None) => {
+                let reason = reason.map(|reason| reason.to_string_lossy().into_owned());
+                let paused = state::open().and_then(|db| {
+                    state::pause(&db, reason.as_deref()).map_err(|error| error.to_string())
+                });
+                exit("pause", paused.map(|text| println!("{text}")))
+            }
+            _ => usage(),
+        },
+        Some("unpause") => match args.next() {
+            None => {
+                let unpaused = state::open()
+                    .and_then(|db| state::unpause(&db).map_err(|error| error.to_string()));
+                exit("unpause", unpaused.map(|text| println!("{text}")))
+            }
+            Some(_) => usage(),
+        },
         Some("hold") => hold(args.map(|arg| arg.to_string_lossy().into_owned()).collect()),
         Some("actions") => list(
             "id\ttask\tstep\taction\tstatus\tpull_request\tcommit\terror",
@@ -86,6 +104,11 @@ fn main() -> ExitCode {
         Some("search") => search(args.map(|arg| arg.to_string_lossy().into_owned()).collect()),
         Some("memory") => memory(args.collect()),
         Some("answer") => answer(args.map(|arg| arg.to_string_lossy().into_owned()).collect()),
+        Some("dismiss") => dismiss(args.map(|arg| arg.to_string_lossy().into_owned()).collect()),
+        Some("ask") => match (args.next(), args.next(), args.next()) {
+            (Some(name), Some(fields), None) => ask(&name.to_string_lossy(), &fields.to_string_lossy()),
+            _ => usage(),
+        },
         Some("mcp") => match (args.next(), args.next(), args.next()) {
             (Some(flag), Some(session), None) if flag == "--session" => {
                 let session = session.to_string_lossy();
@@ -106,7 +129,7 @@ fn main() -> ExitCode {
 
 fn usage() -> ExitCode {
     eprintln!(
-        "usage: priory check [DIR]\n       priory draw [DIR] WORKFLOW\n       priory intake [DIR] [--once]\n       priory daemon [DIR] [--once]\n       priory request [DIR] --workflow <name> --key <key> [--band <band>] [--lane <lane>] [--repo <owner/name>] [--hold <reason> [CONDITION]] <text>\n       priory serve [DIR] [--listen ADDR]\n       priory inbox [--since SEQ] [--json]\n       priory inbox read SEQ\n       priory post SOURCE LINE\n       priory tasks [--lane <lane>] [--grade red|yellow|green] [--json]\n       priory queue [--json]\n       priory runs\n       priory outbox\n       priory asks [--all] [--json]\n       priory waits\n       priory actions\n       priory attach (TASK | --run RUN) [--read-only] [--print]\n       priory desk [--all] [--json]\n       priory snooze (ask | blocked | failed | prompt) ID (--for DURATION | --until TIME | --clear)\n       priory trace\n       priory report [DIR] --workflow <name> [--since <instant-or-duration>] [--cost] [--by lane]\n       priory move TASK [--band <band>] [--top | --before TASK | --after TASK]\n       priory resume TASK\n       priory cancel TASK\n       priory revive TASK [--step STEP]\n       priory hold TASK --reason TEXT [--until TIME | --after TASK | --merge PR [--if-closed release|drop|ask] | --blockers]\n       priory release TASK\n       priory tldr TASK TEXT\n       priory search QUERY [--state STATE[,STATE...]] [--limit N]\n       priory memory [acquire --gb N [--timeout D] -- COMMAND...]\n       priory answer ASK OPTION-OR-TEXT --revision N\n       priory mcp --session ID\n       priory hook EVENT"
+        "usage: priory check [DIR]\n       priory draw [DIR] WORKFLOW\n       priory intake [DIR] [--once]\n       priory daemon [DIR] [--once]\n       priory request [DIR] --workflow <name> --key <key> [--band <band>] [--lane <lane>] [--repo <owner/name>] [--hold <reason> [CONDITION]] <text>\n       priory serve [DIR] [--listen ADDR]\n       priory inbox [--since SEQ] [--json]\n       priory inbox read SEQ\n       priory post SOURCE LINE\n       priory tasks [--lane <lane>] [--grade red|yellow|green] [--json]\n       priory queue [--json]\n       priory runs\n       priory outbox\n       priory asks [--all] [--json]\n       priory waits\n       priory actions\n       priory attach (TASK | --run RUN) [--read-only] [--print]\n       priory desk [--all] [--json]\n       priory snooze (ask | blocked | failed | prompt) ID (--for DURATION | --until TIME | --clear)\n       priory trace\n       priory report [DIR] --workflow <name> [--since <instant-or-duration>] [--cost] [--by lane]\n       priory move TASK [--band <band>] [--top | --before TASK | --after TASK]\n       priory resume TASK\n       priory say TASK TEXT\n       priory pause [REASON]\n       priory unpause\n       priory cancel TASK\n       priory revive TASK [--step STEP]\n       priory hold TASK --reason TEXT [--until TIME | --after TASK | --merge PR [--if-closed release|drop|ask] | --blockers]\n       priory release TASK\n       priory tldr TASK TEXT\n       priory search QUERY [--state STATE[,STATE...]] [--limit N]\n       priory memory [acquire [--gb N] [--timeout D] -- COMMAND...]\n       priory answer [--revision N | --expected N] [--] ASK OPTION-OR-TEXT\n       priory ask ID JSON\n       priory dismiss [--expected N] ASK\n       priory mcp --session ID\n       priory hook EVENT"
     );
     ExitCode::from(2)
 }
@@ -417,11 +440,23 @@ fn listed(verb: &str, mut args: Vec<String>) -> ExitCode {
                         "options",
                         "snoozed_until",
                         "back_early",
+                        "title",
+                        "text",
+                        "what_waits",
+                        "next_action",
+                        "command",
+                        "coordinator",
+                        "key",
+                        "run_id",
+                        "session",
                     ],
                     &serde_json::Value::Array(open),
                 );
             }
             "desk" => {
+                if let Some(paused) = value["paused"].as_str() {
+                    state::emit(paused);
+                }
                 if let Some(banner) = value["banner"].as_str() {
                     state::emit(banner);
                 }
@@ -565,6 +600,8 @@ fn memory(args: Vec<OsString>) -> ExitCode {
 const GATE_FAILED: u8 = 125;
 /// How long a grant waits without `--timeout`: two runs' grants can wait on each other's promises.
 const GATE_TIMEOUT: Duration = Duration::from_secs(60 * 60);
+/// The GB a grant asks for without `--gb`, as Fleet's gate did and agents' instructions assume.
+const GATE_GB: f64 = 10.0;
 
 /// Runs a command once the daemon grants it `--gb` GB of memory, and releases the grant when it
 /// exits. Exits with the command's code.
@@ -599,7 +636,8 @@ fn acquire(args: &[OsString]) -> ExitCode {
         }
     }
     let command = &args[split + 1..];
-    let (Some(gb), Some((program, rest))) = (gb, command.split_first()) else {
+    let gb = gb.unwrap_or(GATE_GB);
+    let Some((program, rest)) = command.split_first() else {
         return usage();
     };
     let failed = |error: String| {
@@ -677,16 +715,16 @@ fn gate(gate: &Gate) -> Result<String, String> {
 }
 
 /// Sends `priory answer ASK TEXT --revision N` to the daemon, which applies it.
-fn answer(mut args: Vec<String>) -> ExitCode {
-    let Some(flag) = args.iter().position(|arg| arg == "--revision") else {
+fn answer(args: Vec<String>) -> ExitCode {
+    let Some((Some(revision), rest)) = revised(args) else {
         return usage();
     };
-    let revision = args.drain(flag..(flag + 2).min(args.len())).nth(1);
-    let (Some(revision), [ask, text]) = (revision.and_then(|n| n.parse().ok()), &args[..]) else {
+    let [ask, text] = &rest[..] else {
         return usage();
     };
-    let Ok(ask) = ask.parse() else {
-        return usage();
+    let ask = match ask_id(ask) {
+        Ok(ask) => ask,
+        Err(error) => return exit("answer", Err(error)),
     };
     let line = serde_json::to_string(&tools::Answer {
         ask,
@@ -695,6 +733,72 @@ fn answer(mut args: Vec<String>) -> ExitCode {
     })
     .expect("an answer serializes");
     send("answer", &line)
+}
+
+/// Sends `priory dismiss [--expected N] ASK` to the daemon, which closes the ask unanswered.
+fn dismiss(args: Vec<String>) -> ExitCode {
+    let Some((revision, rest)) = revised(args) else {
+        return usage();
+    };
+    let [ask] = &rest[..] else {
+        return usage();
+    };
+    let dismiss = match ask_id(ask) {
+        Ok(dismiss) => dismiss,
+        Err(error) => return exit("dismiss", Err(error)),
+    };
+    let line =
+        serde_json::to_string(&tools::Dismiss { dismiss, revision }).expect("a dismiss serializes");
+    send("dismiss", &line)
+}
+
+/// Splits `[--revision N | --expected N] [--] ARGS` into the revision and the other arguments.
+fn revised(args: Vec<String>) -> Option<(Option<i64>, Vec<String>)> {
+    let (mut revision, mut rest, mut args) = (None, Vec::new(), args.into_iter());
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--" => {
+                rest.extend(args);
+                break;
+            }
+            "--revision" | "--expected" if revision.is_none() => {
+                revision = Some(args.next()?.parse().ok()?);
+            }
+            _ => rest.push(arg),
+        }
+    }
+    Some((revision, rest))
+}
+
+/// An ask's number, or the number of the outside ask that `priory ask` named so.
+fn ask_id(ask: &str) -> Result<i64, String> {
+    // `priory ask` refuses an all-digit ID, so only one is a number.
+    if let Some(id) = ask
+        .bytes()
+        .all(|byte| byte.is_ascii_digit())
+        .then(|| ask.parse().ok())
+        .flatten()
+    {
+        return Ok(id);
+    }
+    tools::ask_named(&state::open()?, ask)
+}
+
+/// Stores or revises an ask from a session Priory did not start, from Fleet's JSON shape.
+fn ask(name: &str, fields: &str) -> ExitCode {
+    let stored = serde_json::from_str(fields)
+        .map_err(|error| format!("ask fields must be a JSON object: {error}"))
+        .and_then(|fields| {
+            let mut db = state::open()?;
+            tools::ask_outside(&mut db, name, &fields).map_err(|error| error.to_string())?
+        })
+        .map(|ignored| {
+            for field in ignored {
+                eprintln!("priory ask: ignored unknown field {field}");
+            }
+            println!("{name}");
+        });
+    exit("ask", stored)
 }
 
 /// Sets a task's TL;DR by hand.
@@ -821,9 +925,15 @@ fn hold(args: Vec<String>) -> ExitCode {
     act("hold", vec![task], Some(hold))
 }
 
-/// Sends `priory resume`, `cancel`, `revive TASK [--step STEP]`, `release` or `hold` for one task to
+/// Sends `priory resume`, `cancel`, `revive TASK [--step STEP]`, `release`, `say TASK TEXT` or `hold` for one task to
 /// the daemon, which applies it.
 fn act(act: &str, mut args: Vec<String>, hold: Option<factory::Hold>) -> ExitCode {
+    // Taken first, so a text such as `--step` stays text.
+    let text = match act {
+        "say" if args.len() == 2 => args.pop(),
+        "say" => return usage(),
+        _ => None,
+    };
     let step = match args.iter().position(|arg| arg == "--step") {
         Some(flag) if act == "revive" && flag + 1 < args.len() => args.drain(flag..flag + 2).nth(1),
         Some(_) => return usage(),
@@ -840,6 +950,7 @@ fn act(act: &str, mut args: Vec<String>, hold: Option<factory::Hold>) -> ExitCod
         task,
         step,
         hold,
+        text,
     })
     .expect("an action serializes");
     send(act, &line)

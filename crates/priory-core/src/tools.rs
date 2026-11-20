@@ -71,6 +71,18 @@ fn text(arguments: &Value, name: &str) -> Result<String, String> {
         .ok_or_else(|| format!("{name} must be a string"))
 }
 
+/// The fields that describe an ask beyond its question: title, text, what waits, next action and
+/// command.
+fn described(arguments: &Value) -> Result<[Option<String>; 5], String> {
+    Ok([
+        optional(arguments, "title")?,
+        optional(arguments, "text")?,
+        optional(arguments, "whatWaits")?,
+        optional(arguments, "nextAction")?,
+        optional(arguments, "command")?,
+    ])
+}
+
 /// `commit` in lower case, as GitHub names a pull request head; an abbreviated SHA could never
 /// match one.
 fn full_sha(commit: &str) -> Result<String, String> {
@@ -116,7 +128,7 @@ pub(crate) fn call(
     }
     if let Some(ask) = tx
         .query_row(
-            "SELECT id FROM asks WHERE run = ?1 AND answer IS NULL",
+            "SELECT id FROM asks WHERE run = ?1 AND answer IS NULL AND withdrawn IS NULL",
             [run.id],
             |row| row.get::<_, i64>(0),
         )
@@ -312,15 +324,18 @@ fn ask(tx: &Transaction, run: &Run, arguments: &Value) -> rusqlite::Result<Resul
             serde_json::to_string(&options).expect("options serialize"),
             text(arguments, "recommendation")?,
             text(arguments, "tradeoff")?,
+            described(arguments)?,
         ))
     })();
-    let (question, options, recommendation, tradeoff) = match fields {
+    let (question, options, recommendation, tradeoff, described) = match fields {
         Ok(fields) => fields,
         Err(error) => return Ok(Err(error)),
     };
+    let [title, body, what_waits, next_action, command] = described;
     tx.execute(
-        "INSERT INTO asks (task, run, step, kind, question, options, recommendation, tradeoff)
-         VALUES (?1, ?2, ?3, 'agent', ?4, ?5, ?6, ?7)",
+        "INSERT INTO asks (task, run, step, kind, question, options, recommendation, tradeoff,
+           title, text, what_waits, next_action, command)
+         VALUES (?1, ?2, ?3, 'agent', ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
         params![
             run.task,
             run.id,
@@ -328,13 +343,129 @@ fn ask(tx: &Transaction, run: &Run, arguments: &Value) -> rusqlite::Result<Resul
             question,
             options,
             recommendation,
-            tradeoff
+            tradeoff,
+            title,
+            body,
+            what_waits,
+            next_action,
+            command
         ],
     )?;
     Ok(Ok(format!(
         "ask {} stored: end your turn now; the answer arrives as your next prompt",
         tx.last_insert_rowid()
     )))
+}
+
+/// The fields `priory ask` stores, as Fleet's `priory ask` names them.
+const OUTSIDE_FIELDS: [&str; 13] = [
+    "question",
+    "options",
+    "recommendation",
+    "tradeoff",
+    "title",
+    "text",
+    "whatWaits",
+    "nextAction",
+    "command",
+    "coordinator",
+    "key",
+    "runId",
+    "session",
+];
+
+/// Stores an ask from a session Priory did not start, under `name`, and returns the fields it
+/// ignored. Asking again with other fields replaces them all and starts a new revision, which
+/// reopens an answered or dismissed ask; the same fields change nothing.
+pub fn ask_outside(
+    db: &mut Connection,
+    name: &str,
+    arguments: &Value,
+) -> rusqlite::Result<Result<Vec<String>, String>> {
+    let named = (1..=100).contains(&name.len())
+        && name
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || b"._-".contains(&byte))
+        && !name.bytes().all(|byte| byte.is_ascii_digit());
+    if !named {
+        return Ok(Err(format!(
+            "not an ask id: {name:?}; use 1 to 100 letters, digits, '.', '_' or '-', not only digits"
+        )));
+    }
+    let Some(fields) = arguments.as_object() else {
+        return Ok(Err("ask fields must be a JSON object".to_owned()));
+    };
+    let parsed = (|| {
+        let options = match &arguments["options"] {
+            Value::Null => Vec::new(),
+            options => options
+                .as_array()
+                .and_then(|options| {
+                    options
+                        .iter()
+                        .map(Value::as_str)
+                        .collect::<Option<Vec<_>>>()
+                })
+                .ok_or("options must be an array of strings")?,
+        };
+        let mut texts = Vec::new();
+        for field in OUTSIDE_FIELDS.iter().skip(2) {
+            texts.push(optional(arguments, field)?);
+        }
+        // A Fleet-shaped ask names its question `title`.
+        let question = optional(arguments, "question")?
+            .or(optional(arguments, "title")?)
+            .ok_or("question or title must be a string")?;
+        Ok::<_, String>((
+            question,
+            serde_json::to_string(&options).expect("options serialize"),
+            texts,
+        ))
+    })();
+    let (question, options, texts) = match parsed {
+        Ok(parsed) => parsed,
+        Err(error) => return Ok(Err(error)),
+    };
+    let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    tx.execute(
+        "INSERT INTO asks (kind, name, question, options, recommendation, tradeoff, title, text,
+           what_waits, next_action, command, coordinator, key, run_id, session)
+         VALUES ('outside', ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
+         ON CONFLICT (name) DO UPDATE SET revision = revision + 1, answer = NULL, answered = NULL,
+           withdrawn = NULL, question = excluded.question, options = excluded.options,
+           recommendation = excluded.recommendation, tradeoff = excluded.tradeoff,
+           title = excluded.title, text = excluded.text, what_waits = excluded.what_waits,
+           next_action = excluded.next_action, command = excluded.command,
+           coordinator = excluded.coordinator, key = excluded.key, run_id = excluded.run_id,
+           session = excluded.session
+         WHERE (question, options, recommendation, tradeoff, title, text, what_waits, next_action,
+           command, coordinator, key, run_id, session)
+           IS NOT (excluded.question, excluded.options, excluded.recommendation,
+           excluded.tradeoff, excluded.title, excluded.text, excluded.what_waits,
+           excluded.next_action, excluded.command, excluded.coordinator, excluded.key,
+           excluded.run_id, excluded.session)",
+        rusqlite::params_from_iter(
+            [Some(name.to_owned()), Some(question), Some(options)]
+                .into_iter()
+                .chain(texts),
+        ),
+    )?;
+    tx.commit()?;
+    Ok(Ok(fields
+        .keys()
+        .filter(|field| !OUTSIDE_FIELDS.contains(&field.as_str()))
+        .cloned()
+        .collect()))
+}
+
+/// The number of the outside ask stored under `name`.
+pub fn ask_named(db: &Connection, name: &str) -> Result<i64, String> {
+    db.query_row("SELECT id FROM asks WHERE name = ?1", [name], |row| {
+        row.get(0)
+    })
+    .optional()
+    .map_err(|error| error.to_string())?
+    .ok_or_else(|| format!("there is no ask {name}"))
 }
 
 fn open_wait(tx: &Transaction, run: i64) -> rusqlite::Result<Option<i64>> {
@@ -1048,12 +1179,23 @@ fn settle(tx: &Transaction, run: &Run, trace: &Trace) -> rusqlite::Result<Option
     )?;
     let asked = tx
         .query_row(
-            "SELECT 1 FROM asks WHERE run = ?1 AND answer IS NULL",
+            "SELECT 1 FROM asks WHERE run = ?1 AND answer IS NULL AND withdrawn IS NULL",
             [run.id],
             |_| Ok(()),
         )
         .optional()?;
     if asked.is_none() && open_wait(tx, run.id)?.is_none() {
+        return Ok(None);
+    }
+    // A person's `say` that beat the Stop is the run's next prompt, as an answer would be.
+    let said = tx
+        .query_row(
+            "SELECT 1 FROM outbox WHERE task = ?1 AND state = 'queued' AND wakes",
+            [run.task],
+            |_| Ok(()),
+        )
+        .optional()?;
+    if said.is_some() {
         return Ok(None);
     }
     end(tx, run.id, "asleep")?;
@@ -1132,7 +1274,8 @@ fn queue_first(tx: &Transaction, task: i64, text: &str) -> rusqlite::Result<i64>
         }
     }
     tx.execute(
-        "INSERT INTO outbox (task, text) VALUES (?1, ?2)",
+        "INSERT INTO outbox (task, text, wakes) VALUES (?1, ?2, (SELECT coalesce(max(wakes), 0)
+           FROM outbox WHERE task = ?1 AND state = 'queued' AND compact = 0))",
         params![task, merged],
     )?;
     let id = tx.last_insert_rowid();
@@ -1331,64 +1474,23 @@ pub(crate) fn answer(
 ) -> rusqlite::Result<Result<String, String>> {
     let workflows = &trace.factory.workflows;
     let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
-    let ask = tx
-        .query_row(
-            "SELECT asks.task, asks.kind, asks.step, asks.revision, asks.options, asks.answer,
-             tasks.workflow, tasks.state, asks.withdrawn
-             FROM asks JOIN tasks ON tasks.id = asks.task WHERE asks.id = ?1",
-            [answer.ask],
-            |row| {
-                Ok((
-                    row.get::<_, i64>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, String>(2)?,
-                    row.get::<_, i64>(3)?,
-                    row.get::<_, String>(4)?,
-                    row.get::<_, Option<String>>(5)?,
-                    row.get::<_, String>(6)?,
-                    row.get::<_, String>(7)?,
-                    row.get::<_, Option<i64>>(8)?,
-                ))
-            },
-        )
-        .optional()?;
-    let Some((task, kind, at, revision, options, answered, workflow, state, withdrawn)) = ask
-    else {
-        return Ok(Err(format!("there is no ask {}", answer.ask)));
+    let OpenAsk {
+        label,
+        task,
+        kind,
+        step: at,
+        options,
+        workflow,
+        state,
+    } = match open_ask(&tx, answer.ask, Some(answer.revision))? {
+        Ok(ask) => ask,
+        Err(error) => return Ok(Err(error)),
     };
-    if withdrawn == Some(0) {
-        return Ok(Err(format!(
-            "ask {} was withdrawn when a later run of task {task} called another tool",
-            answer.ask
-        )));
-    }
-    if let Some(generation) = withdrawn {
-        return Ok(Err(format!(
-            "ask {} was withdrawn when task {task} was revived as generation {generation}",
-            answer.ask
-        )));
-    }
-    if ["done", "failed", "dropped"].contains(&state.as_str()) {
-        return Ok(Err(format!("task {task} is {state}")));
-    }
-    if let Some(answered) = answered {
-        return Ok(Err(format!(
-            "ask {} is already answered: {answered}",
-            answer.ask
-        )));
-    }
-    if answer.revision != revision {
-        return Ok(Err(format!(
-            "ask {} is at revision {revision}, not {}",
-            answer.ask, answer.revision
-        )));
-    }
     let options: Vec<String> = serde_json::from_str(&options).expect("options are stored as JSON");
     let hold = crate::hold::of_ask(&tx, answer.ask)?;
     if (kind == "step" || hold.is_some()) && !options.contains(&answer.text) {
         return Ok(Err(format!(
-            "ask {} takes one of: {}",
-            answer.ask,
+            "ask {label} takes one of: {}",
             options.join(", ")
         )));
     }
@@ -1396,6 +1498,11 @@ pub(crate) fn answer(
         &format!("UPDATE asks SET answer = ?2, answered = {NOW} WHERE id = ?1"),
         params![answer.ask, answer.text],
     )?;
+    // Delivery to the session of an outside ask is not built yet: the answer is only stored.
+    let Some(task) = task else {
+        tx.commit()?;
+        return Ok(Ok(format!("ask {label} answered")));
+    };
     if let Some(hold) = hold {
         crate::hold::answered(&tx, hold, &answer.text)?;
     } else if kind == "step" {
@@ -1425,7 +1532,123 @@ pub(crate) fn answer(
         }
     }
     tx.commit()?;
-    Ok(Ok(format!("ask {} answered", answer.ask)))
+    Ok(Ok(format!("ask {label} answered")))
+}
+
+/// An open ask, as `open_ask` finds it. An outside ask has no task, and an empty step, workflow
+/// and state.
+struct OpenAsk {
+    label: String,
+    task: Option<i64>,
+    kind: String,
+    step: String,
+    options: String,
+    workflow: String,
+    state: String,
+}
+
+/// The ask `id` if a person can still answer or dismiss it at `revision`, else why not.
+fn open_ask(
+    tx: &Transaction,
+    id: i64,
+    revision: Option<i64>,
+) -> rusqlite::Result<Result<OpenAsk, String>> {
+    let found = tx
+        .query_row(
+            "SELECT coalesce(asks.name, CAST(asks.id AS TEXT)), asks.task, asks.kind, coalesce(asks.step, ''),
+               asks.revision, asks.options, asks.answer, coalesce(tasks.workflow, ''),
+               coalesce(tasks.state, ''), asks.withdrawn
+             FROM asks LEFT JOIN tasks ON tasks.id = asks.task WHERE asks.id = ?1",
+            [id],
+            |row| {
+                Ok((
+                    OpenAsk {
+                        label: row.get(0)?,
+                        task: row.get(1)?,
+                        kind: row.get(2)?,
+                        step: row.get(3)?,
+                        options: row.get(5)?,
+                        workflow: row.get(7)?,
+                        state: row.get(8)?,
+                    },
+                    row.get::<_, i64>(4)?,
+                    row.get::<_, Option<String>>(6)?,
+                    row.get::<_, Option<i64>>(9)?,
+                ))
+            },
+        )
+        .optional()?;
+    let Some((ask, at, answered, withdrawn)) = found else {
+        return Ok(Err(format!("there is no ask {id}")));
+    };
+    let (label, task) = (&ask.label, ask.task.unwrap_or_default());
+    let refused = match withdrawn {
+        Some(DISMISSED) => Some(format!("ask {label} was dismissed")),
+        Some(0) => Some(format!(
+            "ask {label} was withdrawn when a later run of task {task} called another tool"
+        )),
+        Some(generation) => Some(format!(
+            "ask {label} was withdrawn when task {task} was revived as generation {generation}"
+        )),
+        None if ["done", "failed", "dropped"].contains(&ask.state.as_str()) => {
+            Some(format!("task {task} is {}", ask.state))
+        }
+        None => answered.map(|answered| format!("ask {label} is already answered: {answered}")),
+    };
+    if let Some(refused) = refused {
+        return Ok(Err(refused));
+    }
+    if let Some(revision) = revision.filter(|revision| *revision != at) {
+        return Ok(Err(format!(
+            "ask {label} is at revision {at}, not {revision}"
+        )));
+    }
+    Ok(Ok(ask))
+}
+
+/// `asks.withdrawn` for an ask a person dismissed. 0 and a generation are the other reasons.
+const DISMISSED: i64 = -1;
+
+/// A person's `priory dismiss`: it closes an open ask with no answer, at `revision` if given.
+#[derive(serde::Serialize, serde::Deserialize)]
+pub struct Dismiss {
+    pub dismiss: i64,
+    pub revision: Option<i64>,
+}
+
+/// Closes an ask with no answer. An agent's asleep task wakes with a line that says so; a step's
+/// ask, which only its options move on, is refused.
+pub(crate) fn dismiss(
+    db: &mut Connection,
+    dismiss: &Dismiss,
+) -> rusqlite::Result<Result<String, String>> {
+    let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let ask = match open_ask(&tx, dismiss.dismiss, dismiss.revision)? {
+        Ok(ask) => ask,
+        Err(error) => return Ok(Err(error)),
+    };
+    let label = &ask.label;
+    if ask.kind == "step" || crate::hold::of_ask(&tx, dismiss.dismiss)?.is_some() {
+        return Ok(Err(format!(
+            "ask {label} moves its task on by its options: answer it instead"
+        )));
+    }
+    tx.execute(
+        "UPDATE asks SET withdrawn = ?2 WHERE id = ?1",
+        params![dismiss.dismiss, DISMISSED],
+    )?;
+    if let Some(task) = ask.task {
+        wake(
+            &tx,
+            task,
+            &format!("A person dismissed ask {label} without an answer. Continue your task."),
+        )?;
+        if ask.state == "asleep" {
+            set(&tx, task, "ready", None, None)?;
+        }
+    }
+    tx.commit()?;
+    Ok(Ok(format!("ask {label} dismissed")))
 }
 
 /// A person's desk action on a task, as `priory resume`, `cancel`, `revive`, `hold` or `release`
@@ -1439,6 +1662,9 @@ pub struct Act {
     pub step: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hold: Option<priory_factory::factory::Hold>,
+    /// What `say` tells the task's agent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
 }
 
 /// Applies a desk action. `resume` makes a blocked task `ready`, with a prompt that says why it
@@ -1506,6 +1732,13 @@ pub(crate) fn act(
             Err(format!("task {} is {state}, not blocked", act.task)),
             None,
         )),
+        "say" => {
+            let said = say(&tx, act, &state, &factory.workflows)?;
+            if said.is_ok() {
+                tx.commit()?;
+            }
+            Ok((said, None))
+        }
         "cancel" if ["done", "failed", "dropped"].contains(&state.as_str()) => {
             Ok((Err(format!("task {} is already {state}", act.task)), None))
         }
@@ -1553,6 +1786,52 @@ pub(crate) fn cancel(
     )?;
     set(tx, task, "dropped", None, Some(reason))?;
     Ok(tmux)
+}
+
+/// Queues a person's text as the next prompt of the agent at the task's model step, as an answer
+/// is: typed once its run is idle, or waking an asleep task into a new run that resumes the session.
+fn say(
+    tx: &Transaction,
+    act: &Act,
+    state: &str,
+    workflows: &Workflows,
+) -> rusqlite::Result<Result<String, String>> {
+    let task = act.task;
+    let Some(text) = act.text.as_deref().filter(|text| !text.trim().is_empty()) else {
+        return Ok(Err("say needs a text".to_owned()));
+    };
+    if ["done", "failed", "dropped"].contains(&state) {
+        return Ok(Err(format!("task {task} is {state}")));
+    }
+    let (workflow, at): (String, String) = tx.query_row(
+        "SELECT workflow, step FROM tasks WHERE id = ?1",
+        [task],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )?;
+    if step(workflows, &workflow, &at).is_none_or(|step| step.decides != Decider::Model) {
+        return Ok(Err(format!(
+            "task {task} is at step {at}, which no agent runs"
+        )));
+    }
+    // A task with no run and no queued prompt still has its step's prompt to build at its first
+    // run, which a queued text would skip.
+    let unstarted: bool = tx.query_row(
+        "SELECT NOT EXISTS (SELECT 1 FROM runs WHERE task = ?1)
+         AND NOT EXISTS (SELECT 1 FROM outbox WHERE task = ?1 AND state = 'queued')",
+        [task],
+        |row| row.get(0),
+    )?;
+    if unstarted {
+        return Ok(Err(format!(
+            "task {task} has no run yet: say it once its agent started"
+        )));
+    }
+    let prompt = wake(tx, task, text)?;
+    tx.execute("UPDATE outbox SET wakes = 1 WHERE id = ?1", [prompt])?;
+    if state == "asleep" {
+        set(tx, task, "ready", None, None)?;
+    }
+    Ok(Ok(format!("task {task} will hear it")))
 }
 
 /// Moves a failed or dropped task back into its step, or `act.step`, as its next generation, and

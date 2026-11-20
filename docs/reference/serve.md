@@ -39,6 +39,7 @@ An error's body is `{"error": "<why>"}`.
 
 | Field | Type | Meaning |
 | ----- | ---- | ------- |
+| `paused` | string or null | `paused since <time>: <reason>` while admissions are paused |
 | `banner` | string or null | The stall banner while the queue is stalled |
 | `counts.asleep` | integer | Tasks asleep on a wait |
 | `counts.snoozed` | integer | Items snoozed now, which `items` leaves out |
@@ -71,14 +72,19 @@ Every ask, oldest first.
 
 | Field | Type | Meaning |
 | ----- | ---- | ------- |
-| `id` | integer | The ask |
-| `task`, `key`, `step`, `lane` | | The task, its key, the ask's step and the task's lane |
+| `id` | integer or string | The ask: its number, or the id an outside ask was given |
+| `task`, `key`, `step`, `lane` | | The task, its key, the ask's step and the task's lane. An outside ask has no task, and its `key` is the one it sent |
 | `run` | integer or null | The run that asked |
 | `state` | string | `open`, `answered` or `withdrawn` |
-| `revision` | integer | The question's revision. `priory answer` needs it |
+| `withdrawn_why` | string or null | Why a withdrawn ask closed: `dismissed`, `a later run called another tool` or `revived as generation <n>` |
+| `revision` | integer | The question's revision. `priory answer` and `priory dismiss` take it |
 | `question` | string | The question |
 | `options` | array of strings | The options |
 | `recommendation`, `tradeoff` | string or null | What the agent recommends, and the trade-off |
+| `title`, `text` | string or null | The ask's title and its Markdown body |
+| `what_waits`, `next_action` | string or null | What waits on the answer, and what the agent does next |
+| `command` | string or null | A command the asker attached. Priory stores it and runs nothing |
+| `coordinator`, `run_id`, `session` | string or null | Who asked from outside Priory: its coordinator, its run id and its session |
 | `answer`, `answered_at` | string or null | The answer and when it came |
 | `since` | string | When the agent asked |
 | `snoozed_until`, `snoozed_at`, `back_early` | | The ask's [snooze](#snooze) |
