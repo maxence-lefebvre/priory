@@ -2,6 +2,8 @@ import { View, div, svg } from "gpui-kit";
 import { h_flex, v_flex, Button, Input, InputState, Popover } from "gpui-base";
 import { appHome, exec, home as herdrHome, readTextFile, setShared } from "herdr";
 import { priory } from "./priory.js";
+import { addChoices } from "./add.js";
+import { AddForm } from "./add-form.js";
 import { FONTS, palette } from "./tokens.js";
 import { moveTargets, queueList, reorder, upNext } from "./view.js";
 
@@ -92,6 +94,11 @@ export default class PrioryQueue extends View {
     this.reason = InputState.new({ placeholder: "Why hold it?" });
     this.reason.on("change", (_event, cx) => cx.notify());
     this.reason.on("submit", (_event, cx) => this.hold(cx));
+    /** @type {string | null} the key `priory add` returned, opened once a read lists it */
+    this.addedKey = null;
+    this.adding = new AddForm(async () => (this.priory ??= await connect()).client, (key) => {
+      [this.view, this.facets, this.addedKey] = ["next", {}, key];
+    });
     this.focus = cx.focus_handle();
     this.font = FONTS.indigo;
     this.refresh(cx);
@@ -128,6 +135,8 @@ export default class PrioryQueue extends View {
     this.data = queue;
     this.room = { paused: desk.paused, banner: desk.banner };
     this.updated = Date.now();
+    const added = this.addedKey && this.rows().find((row) => row.key === this.addedKey);
+    if (added) [this.selected, this.opened, this.popover, this.addedKey] = [added.id, true, null, null];
     if (!this.rows().some((row) => row.id === this.selected)) {
       this.selected = this.rows()[0]?.id ?? null;
       this.opened = false;
@@ -215,12 +224,17 @@ export default class PrioryQueue extends View {
   /** @param {import("gpui-kit").KeyEvent} event @param {import("gpui-kit").Context} cx */
   key(event, cx) {
     if (event.key === "escape") {
-      if (this.popover) this.popover = null;
+      if (this.adding.open) {
+        this.adding.hide(cx);
+        this.focus.focus();
+      }
+      else if (this.popover) this.popover = null;
       else this.opened = false;
       return cx.notify();
     }
     // The hold reason field keeps its letters, and Ctrl, Alt and Cmd chords are Herdr's.
-    if (this.popover || event.modifiers?.control || event.modifiers?.platform || event.modifiers?.alt) return;
+    if (this.popover || this.adding.typing || event.modifiers?.control || event.modifiers?.platform || event.modifiers?.alt) return;
+    if (event.key === "n") return this.adding.show(cx);
     const row = this.selectedRow();
     // Shift J and K arrive as the keystroke "shift-j" or as the key "J", as Fleet's queue sees them.
     const shifted = SHIFTED[event.keystroke] ?? SHIFTED[event.key];
@@ -268,6 +282,7 @@ export default class PrioryQueue extends View {
       .when(Boolean(this.error), (el) => el.child(this.strip(`Reconnecting to priory: ${this.error}.${this.age(now)}`, t)))
       .when(Boolean(list.paused), (el) => el.child(this.strip(list.paused ?? "", t)))
       .when(Boolean(this.notice) && !this.rows().some((candidate) => candidate.id === this.notice?.task), (el) => el.child(this.strip(this.notice?.text ?? "", t)))
+      .when(this.adding.open, (el) => el.child(div().flex_none().px(16).pt(8).child(this.adding.render(t, "mods/priory-queue/icons", addChoices(this.data ?? { waiting: [] }, [])))))
       .child(this.filters(list, t))
       .child(wide ? h_flex().flex_1().min_h_0()
         .child(this.listPane(list, t, now, false).w(Math.min(400, this.width * 0.45)).flex_none().border_r(1).border_color(t.line))
@@ -304,6 +319,10 @@ export default class PrioryQueue extends View {
     return h_flex().flex_none().h(PANE.head).px(16).gap(8).items_center().border_b(1).border_color(t.line)
       .child(div().font_family(this.font.display).font_weight(700).text_size(16).child("Queue"))
       .child(div().flex_1().text_size(TYPE.small[0]).text_color(t["text-3"]).child(`${list.waiting} waiting`))
+      .child(Button.new("add-open").h(PANE.control).px(8).gap(4).flex().flex_none().items_center().rounded(RADIUS.sm)
+        .bg(t.bg).hover((s) => s.bg(t.raised)).focus((s) => s.bg(t.raised)).text_size(TYPE.small[0]).text_color(t.text)
+        .accessibility_label("Add a task, N").on_click((_event, cx) => this.adding.show(cx))
+        .child(svg(ICON("plus")).size(16).text_color(t["text-2"])).child("Add"))
       .child(Popover.new("queue-more-menu").trigger(trigger).anchor("top_right").open(open)
         .on_open_change((/** @type {boolean} */ next, /** @type {import("gpui-kit").Context} */ cx) => { this.popover = next ? "more" : null; cx.notify(); })
         .content(this.menu(t, [paused
