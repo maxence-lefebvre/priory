@@ -24,7 +24,19 @@ impl<'a> Reviews<'a> {
             .filter_map(|(_, trigger)| trigger.reviewer.as_deref())
             .map(|reviewer| (format!("{STREAM}{reviewer}"), None))
             .collect();
-        resume(bus, &mut streams).map_err(|error| error.to_string())?;
+        let interrupted = resume(bus, &mut streams).map_err(|error| error.to_string())?;
+        for (stream, events) in interrupted {
+            // A stream still in its baseline polls its first page again.
+            let Some(Some(marker)) = streams.get_mut(&stream) else {
+                continue;
+            };
+            // A crash may have stopped between an event and its task requests.
+            for event in events.iter().filter(|event| event.data["baseline"] != true) {
+                dispatch(bus, &triggers, event)?;
+            }
+            *marker = recover(marker, &events);
+            publish(bus, &marker_message(&stream, marker))?;
+        }
         Ok(Reviews { triggers, streams })
     }
 
@@ -47,11 +59,7 @@ impl<'a> Reviews<'a> {
                 publish(bus, &event)?;
                 dispatch(bus, &self.triggers, &event)?;
             }
-            let name = format!("{BASELINE}:{stream}:{}", marker["position"]);
-            let message = Message::new(BASELINE, marker.clone())
-                .id(id(&name))
-                .subject(&stream);
-            publish(bus, &message)?;
+            publish(bus, &marker_message(&stream, &marker))?;
             self.streams.insert(stream, Some(marker));
         }
         Ok(failed)
@@ -231,8 +239,48 @@ fn reviewed(member: &Value, reviewer: &str) -> Result<bool, String> {
         .any(|submitted| since.is_none_or(|since| submitted >= since)))
 }
 
-/// Fills each stream with its newest marker, read back newest first.
-fn resume(bus: &Bus, streams: &mut BTreeMap<String, Option<Value>>) -> herdr_bus::Result<()> {
+fn marker_message(stream: &str, marker: &Value) -> Message {
+    let name = format!("{BASELINE}:{stream}:{}", marker["position"]);
+    Message::new(BASELINE, marker.clone())
+        .id(id(&name))
+        .subject(stream)
+}
+
+/// The marker a poll stopped by a crash would have published: `events` are what it published,
+/// oldest first. Polling on from it never rebuilds those events, nor reuses their ids.
+fn recover(marker: &Value, events: &[Message]) -> Value {
+    let mut members: BTreeMap<String, Value> = marker["members"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|member| (member_key(member), member.clone()))
+        .collect();
+    for event in events {
+        let mut member = event.data.clone();
+        let fields = member.as_object_mut().expect("an object");
+        for field in ["reviewer", "reviewed", "time", "baseline", "triggers"] {
+            fields.remove(field);
+        }
+        if event.kind == REQUESTED {
+            members.insert(member_key(&member), member);
+        } else {
+            members.remove(&member_key(&member));
+        }
+    }
+    json!({
+        "stream": marker["stream"],
+        "position": marker["position"].as_u64().unwrap_or_default() + 1,
+        "members": members.into_values().collect::<Vec<_>>(),
+    })
+}
+
+/// Fills each stream with its newest marker, read back newest first, and returns the events of
+/// each stream published after that marker, oldest first: those of a poll a crash stopped.
+fn resume(
+    bus: &Bus,
+    streams: &mut BTreeMap<String, Option<Value>>,
+) -> herdr_bus::Result<BTreeMap<String, Vec<Message>>> {
+    let mut after: BTreeMap<String, Vec<Message>> = BTreeMap::new();
     let mut before = None;
     // shortcut: reads back to each stream's newest marker, once per start, as Linear's do.
     while streams.values().any(Option::is_none) {
@@ -246,12 +294,26 @@ fn resume(bus: &Bus, streams: &mut BTreeMap<String, Option<Value>>) -> herdr_bus
             break;
         };
         before = Some(oldest.seq);
-        for stored in page.iter().filter(|stored| stored.message.kind == BASELINE) {
-            let stream = stored.message.data["stream"].as_str().unwrap_or_default();
-            if let Some(marker @ None) = streams.get_mut(stream) {
-                *marker = Some(stored.message.data.clone());
+        for stored in &page {
+            let message = &stored.message;
+            let reviewer = message.data["reviewer"].as_str().unwrap_or_default();
+            let stream = match message.kind.as_str() {
+                BASELINE => message.data["stream"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_owned(),
+                REQUESTED | REMOVED => format!("{STREAM}{reviewer}"),
+                _ => continue,
+            };
+            let Some(marker @ None) = streams.get_mut(&stream) else {
+                continue;
+            };
+            if message.kind == BASELINE {
+                *marker = Some(message.data.clone());
+            } else {
+                after.entry(stream).or_default().insert(0, message.clone());
             }
         }
     }
-    Ok(())
+    Ok(after)
 }

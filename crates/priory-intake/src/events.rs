@@ -252,8 +252,8 @@ pub struct ReviewRequestRemoved {
     pub pull: RequestedPull,
     /// The GitHub login asked for the review, as the trigger names it.
     pub reviewer: String,
-    /// Whether the reviewer submitted a review since `since`, which is why GitHub dropped the
-    /// request. False when someone removed it or the pull request closed.
+    /// Whether the reviewer submitted a review since `since`. False means the request ended some
+    /// other way: someone removed it, or the pull request closed.
     pub reviewed: bool,
     #[serde(flatten)]
     pub source: Source,

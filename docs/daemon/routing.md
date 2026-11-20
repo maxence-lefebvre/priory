@@ -42,7 +42,7 @@ A message names resources too:
 | `factory.task.requested` | its `key` |
 | `priory.task.requested.cli` | its subject, such as `cli:docs-1` |
 | A GitHub event | its issue or pull request, `github:{repo}#{n}`, and for a pull request event its head branch, `github:{repo}@{head_branch}` |
-| A review request event | also its review task's key, `github:{repo}:pulls/{n}:review:{reviewer}` |
+| A review request event | also its review task's key, `github:{repo}:pulls/{n}:review:{reviewer}`. The active task with that key takes it before any other owner |
 | A Linear event | its issue, `linear:{issue}` |
 | A Slack event | its thread, `slack:{channel}:{thread_ts}`, or `slack:{channel}:{ts}` for a message outside a thread |
 

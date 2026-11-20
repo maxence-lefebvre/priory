@@ -555,19 +555,18 @@ pub(crate) fn handle(
     if seen.is_some() {
         return Ok(None);
     }
-    let withdrawn = match route::withdraws(message) {
-        Some(key) => keyed(&tx, Some(&key))?,
-        None => None,
-    };
     let resources = route::resources(message);
-    let (keyed, owners) = if route::requests(message) {
-        (keyed(&tx, resources.first())?, Vec::new())
-    } else {
-        (None, owners(&tx, &resources)?)
+    // A review event goes to its review task first, even when an older task is keyed by its PR.
+    let (keyed, owners) = match (route::requests(message), route::review(message)) {
+        (true, _) => (keyed(&tx, resources.first())?, Vec::new()),
+        (false, Some(review)) => (keyed(&tx, Some(&review))?, owners(&tx, &resources)?),
+        (false, None) => (None, owners(&tx, &resources)?),
     };
     let owner = keyed.as_ref().or(owners.first());
     let (task, outcome) = match route::route(message, owner, factory) {
-        _ if withdrawn.is_some() => (withdrawn.as_ref().map(|task| task.id), "withdrew"),
+        _ if keyed.is_some() && route::withdraws(message) => {
+            (keyed.as_ref().map(|task| task.id), "withdrew")
+        }
         Decision::Create(new) => {
             tx.execute(
                 "INSERT INTO tasks

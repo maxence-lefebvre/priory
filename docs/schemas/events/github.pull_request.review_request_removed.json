@@ -47,7 +47,7 @@
           "type": "string"
         },
         "reviewed": {
-          "description": "Whether the reviewer submitted a review since `since`, which is why GitHub dropped the\nrequest. False when someone removed it or the pull request closed.",
+          "description": "Whether the reviewer submitted a review since `since`. False means the request ended some\nother way: someone removed it, or the pull request closed.",
           "type": "boolean"
         },
         "reviewer": {

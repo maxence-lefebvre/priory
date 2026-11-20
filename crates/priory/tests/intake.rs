@@ -2349,7 +2349,7 @@ impl Setup {
 }
 
 #[test]
-fn a_first_review_request_poll_is_a_baseline_that_publishes_nothing() {
+fn a_first_review_request_poll_is_a_baseline_that_requests_no_task() {
     let setup = Setup::reviews("review-baseline", &[("acme/app", 7)]);
 
     let published = setup.published();
@@ -2506,4 +2506,48 @@ fn a_review_request_on_a_pull_request_gone_from_github_is_removed_unreviewed() {
     let removed = setup.published().pop().unwrap().message;
     assert_eq!(removed.kind, "github.pull_request.review_request_removed");
     assert_eq!(removed.data["reviewed"], false);
+}
+
+#[test]
+fn a_review_request_a_crash_left_without_its_marker_still_leaves_and_asks_again() {
+    let setup = Setup::reviews("review-crash", &[]);
+    // The crash stopped after the event of pull request 7, before its task request and marker.
+    seed(
+        &setup,
+        &Message::new(
+            "github.pull_request.review_requested",
+            json!({
+                "repo": "acme/app",
+                "pull_request": 7,
+                "title": "Tidy the parser",
+                "url": "https://github.com/acme/app/pull/7",
+                "author": "alice",
+                "since": "2026-11-20T09:00:00Z",
+                "reviewer": "max",
+                "time": "2026-11-20T09:00:00Z",
+                "baseline": false,
+                "triggers": ["review"]
+            }),
+        )
+        .subject("acme/app#7"),
+    );
+    setup.requested(&[]);
+
+    succeeded(&setup.intake());
+    setup.requested(&[("acme/app", 7)]);
+    succeeded(&setup.intake());
+
+    let published = setup.published();
+    assert_eq!(
+        kinds(&published),
+        [
+            "github.pull_request.review_requested",
+            "factory.task.requested",
+            "github.pull_request.review_request_removed",
+            "github.pull_request.review_requested",
+            "factory.task.requested",
+        ]
+    );
+    assert_eq!(published[1].message.data["key"], REVIEW_KEY);
+    assert_eq!(published[2].message.data["since"], "2026-11-20T09:00:00Z");
 }

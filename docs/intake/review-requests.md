@@ -44,7 +44,8 @@ view does (see [linear.md](linear.md#events)):
 A pull request leaves the search for three reasons: the reviewer reviewed it, someone removed the
 request, or it closed. For each one that left, the intake reads the reviewer's last 20 reviews of it.
 `reviewed` is true when one was submitted at or after `since`, the time the intake first found the
-request. A pending review has no submission time, so it does not count.
+request. A pending review has no submission time, so it does not count. When a review and a
+removal or a close fall between two polls, the event says `reviewed: true`.
 
 ## Tasks
 
@@ -86,6 +87,13 @@ After each poll that changes the set, the stream publishes a `factory.intake.bas
 `position` counts the changes. On start, the intake reads the output back to each stream's newest
 marker.
 
+A crash can stop a poll between its events and its marker. On start, the intake then:
+
+1. Rebuilds the marker that poll would have published, from those events, and publishes it.
+2. Republishes their task requests. herdr-bus drops the repeats.
+3. Polls on from the rebuilt marker. A request that changed during the crash publishes that change
+   with new ids, so a re-request is never dropped as a repeat.
+
 | Message | Id name |
 | ------- | ------- |
 | `review_requested`, `review_request_removed` | `github.review_requests:{login}:{position}:{owner/name}#{n}:{type}`, with the stream's new position |
@@ -107,9 +115,6 @@ marker. The next poll tries again. With `--once`, the intake exits non-zero.
 ## Limits
 
 - One page of 100 requests per reviewer. Past that, every poll fails rather than read a partial set.
-- A crash between a poll's events and its marker makes the next start compute that change again,
-  with the same ids, which herdr-bus drops. A request that changes again during the crash is
-  compared with the old marker.
 - A pull request the `gh` user can no longer read leaves the search, and GitHub answers its reviews
   query with `Could not resolve`. The intake then publishes it with `reviewed: false`, so its task
   is dropped.

@@ -420,7 +420,7 @@ The fields of `github.pull_request.review_requested`, and:
 
 | Field | Type | Meaning |
 | ----- | ---- | ------- |
-| `reviewed` | boolean | Whether the reviewer submitted a review since `since`. False when someone removed the request or the pull request closed |
+| `reviewed` | boolean | Whether the reviewer submitted a review since `since`. False means the request ended some other way: someone removed it, or the pull request closed |
 
 <!-- example: events/github.pull_request.review_request_removed.json -->
 ```json

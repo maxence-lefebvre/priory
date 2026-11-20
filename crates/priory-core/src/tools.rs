@@ -1132,7 +1132,8 @@ fn queue_first(tx: &Transaction, task: i64, text: &str) -> rusqlite::Result<i64>
 }
 
 /// The pull request the task owns: the latest one its actions opened, else the one its latest wait
-/// named, else the latest one opened from its branch, else its key when a pull request event created it.
+/// named, else the latest one opened from its branch, else its key when a pull request event created
+/// it. A review request's task reviews the pull request and does not own it.
 fn pull_request(tx: &Transaction, task: i64) -> rusqlite::Result<Option<String>> {
     tx.query_row(
         "SELECT resource FROM (
@@ -1150,6 +1151,7 @@ fn pull_request(tx: &Transaction, task: i64) -> rusqlite::Result<Option<String>>
            UNION ALL
            SELECT tasks.key, 0, 0 FROM tasks JOIN inbox ON inbox.id = tasks.source
              WHERE tasks.id = ?1 AND inbox.type LIKE 'github.pull_request.%'
+             AND inbox.type NOT LIKE 'github.pull_request.review_request%'
          ) ORDER BY rank DESC, at DESC LIMIT 1",
         [task],
         |row| row.get(0),

@@ -76,31 +76,30 @@ pub(crate) fn resources(message: &Message) -> Vec<String> {
     };
     let number = data.get("issue").unwrap_or(&data["pull_request"]).as_u64();
     let head = data["head_branch"].as_str();
-    let review = data["reviewer"]
-        .as_str()
-        .zip(number)
-        .map(|(reviewer, number)| review_key(repo, number, reviewer));
     number
         .map(|number| pull_request(repo, number))
         .into_iter()
         .chain(head.map(|head| branch(repo, head)))
-        .chain(review)
+        .chain(review(message))
         .collect()
 }
 
-/// The key of the review task a removed review request withdraws: one the reviewer did not
-/// answer with a review, so someone took it back or the pull request closed.
-pub(crate) fn withdraws(message: &Message) -> Option<String> {
+/// The key of the review task a review request event is about.
+pub(crate) fn review(message: &Message) -> Option<String> {
     let data = &message.data;
-    if message.kind != REVIEW_REQUEST_REMOVED || data["reviewed"] != false {
-        return None;
-    }
+    let reviewer = data["reviewer"].as_str().filter(|_| {
+        message
+            .kind
+            .starts_with("github.pull_request.review_request")
+    })?;
     let number = data["pull_request"].as_u64()?;
-    Some(review_key(
-        data["repo"].as_str()?,
-        number,
-        data["reviewer"].as_str()?,
-    ))
+    Some(review_key(data["repo"].as_str()?, number, reviewer))
+}
+
+/// Whether `message` withdraws its review task: a removed request the reviewer did not answer
+/// with a review.
+pub(crate) fn withdraws(message: &Message) -> bool {
+    message.kind == REVIEW_REQUEST_REMOVED && message.data["reviewed"] == false
 }
 
 /// An issue or pull request, as a resource: GitHub numbers both from one sequence per repository.
