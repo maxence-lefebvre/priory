@@ -77,7 +77,7 @@ application/json` and a JSON body of at most 16 KiB with exactly the fields belo
 
 | Endpoint | Body |
 | -------- | ---- |
-| `POST /api/asks/{id}/answer` | `revision`, an integer, and one of `option` or `text`, a string. Both become the answer: a step's ask takes only one of its options |
+| `POST /api/asks/{id}/answer` | `revision`, an integer, and one of `option` or `text`, a string. Both become the answer: a step's ask takes only one of its options. `run`, a boolean, default `false`: `true` confirms an answer that runs the ask's command, as `priory answer --run` does. Without it, that answer gets `422` |
 | `POST /api/asks/{id}/dismiss` | `revision`, an integer |
 | `POST /api/snooze` | `kind` (`ask`, `blocked`, `failed` or `prompt`) and `id`, an integer, then one of: `for`, a duration such as `1h`; `until`, an RFC 3339 time; or `"clear": true` |
 
@@ -167,7 +167,8 @@ Every ask, oldest first.
 | `recommendation`, `tradeoff` | string or null | What the agent recommends, and the trade-off |
 | `title`, `text` | string or null | The ask's title and its Markdown body |
 | `what_waits`, `next_action` | string or null | What waits on the answer, and what the agent does next |
-| `command` | string or null | A command the asker attached. Priory stores it and runs nothing |
+| `command` | object, string or null | An agent's command: `argv`, `target`, `dir`, the absolute folder it runs in, and `runs`, the options that run it. See [tools.md](../daemon/tools.md#commands-an-answer-runs). An outside ask's command is the string it sent, which never runs |
+| `ran` | object or null | The command its answer ran: `status` (`running`, `done`, `failed` or `uncertain`), `revision`, `error`, `stdout` and `stderr`. Null when no answer ran it |
 | `coordinator`, `run_id`, `session` | string or null | Who asked from outside Priory: its coordinator, its run id and its session |
 | `answer`, `answered_at` | string or null | The answer and when it came |
 | `delivery` | object or null | The latest delivery of an outside ask's answer or dismissal to its session: `state` (`queued`, `running`, `delivered` or `failed`), `revision`, `tries`, `error` and `since`. Null when nothing was delivered. See [asks.md](../daemon/asks.md) |

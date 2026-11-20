@@ -57,10 +57,15 @@ pub struct Settings {
     pub asks: Asks,
 }
 
-/// What happens to the answer of an ask from a session Priory did not start.
+/// What happens to the answer of an ask: where an agent's ask can run a command, and how an
+/// outside ask's answer reaches the session that asked.
 #[derive(Debug, Default, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Asks {
+    /// The folders, besides the task's worktree, where an answer can run an ask's command, by
+    /// name. A relative folder is under the factory folder.
+    #[serde(default)]
+    pub targets: BTreeMap<String, PathBuf>,
     /// The command that delivers an answer to the session that asked, relative to the factory
     /// folder. It gets the ask's id, revision, session, `answered` or `dismissed`, and the answer
     /// as its arguments. Without it, the answer is only stored.
@@ -987,6 +992,21 @@ impl Factory {
     pub fn deliver(&self) -> Option<PathBuf> {
         let deliver = self.settings.as_ref()?.value.asks.deliver.as_ref()?;
         Some(self.dir.join(deliver))
+    }
+
+    /// The folder of the ask command target `name`, under the factory folder when relative.
+    pub fn target(&self, name: &str) -> Option<PathBuf> {
+        let folder = self.settings.as_ref()?.value.asks.targets.get(name)?;
+        Some(self.dir.join(folder))
+    }
+
+    /// The names of the ask command targets besides `worktree`.
+    pub fn targets(&self) -> Vec<&str> {
+        self.settings
+            .iter()
+            .flat_map(|settings| settings.value.asks.targets.keys())
+            .map(String::as_str)
+            .collect()
     }
 
     /// The GitHub webhook's settings; none takes no GitHub webhook.
