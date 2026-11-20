@@ -153,7 +153,7 @@
       "additionalProperties": {
         "type": "string"
       },
-      "description": "Values an event must have: `label` for GitHub; `team`, `label`, `state` for Linear; `text`\nfor Slack.",
+      "description": "Values an event must have: `label` for GitHub; `team`, `project` (its name or id), `label`,\n`state` for Linear; `text` for Slack.",
       "type": [
         "object",
         "null"

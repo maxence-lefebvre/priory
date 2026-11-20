@@ -3,6 +3,7 @@ source: linear
 on: issue.created              # or issue.state_changed, comment.created
 filter:                        # every key must match
   team: ENG                    # the issue's team key
+  project: Desktop             # the project's name or id
   label: bug                   # one of the issue's labels
 repo: owner/name
 workflow: implement

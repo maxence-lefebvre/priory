@@ -7,6 +7,9 @@
       "additionalProperties": false,
       "description": "Where a stream stands after a poll that moved it; a missing marker means the stream is still\nin its baseline.",
       "properties": {
+        "filter": {
+          "description": "The view's filter, as Linear reported it at the poll. Linear view streams only."
+        },
         "members": {
           "anyOf": [
             {
@@ -74,6 +77,13 @@
             "null"
           ]
         },
+        "project_id": {
+          "description": "Linear's id of the issue's project; null without one.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "state": {
           "description": "The issue's state name.",
           "type": "string"
@@ -98,6 +108,7 @@
         "url",
         "team",
         "project",
+        "project_id",
         "state",
         "labels"
       ],

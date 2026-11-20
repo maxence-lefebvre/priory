@@ -1,0 +1,116 @@
+{
+  "$id": "https://raw.githubusercontent.com/maxence-lefebvre/priory/main/docs/schemas/events/linear.view.changed.json",
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "additionalProperties": false,
+  "definitions": {
+    "Link": {
+      "additionalProperties": false,
+      "description": "A link for people.",
+      "properties": {
+        "label": {
+          "description": "`issue` or `pull_request`.",
+          "type": "string"
+        },
+        "url": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "label",
+        "url"
+      ],
+      "type": "object"
+    },
+    "ViewFilterChanged": {
+      "additionalProperties": false,
+      "description": "A saved Linear view whose filter changed since the previous poll. The issues the change brought\nin or took out publish no `linear.issue.entered` or `linear.issue.left` and request no task.",
+      "properties": {
+        "baseline": {
+          "description": "True when the event came from the first poll of its stream.",
+          "type": "boolean"
+        },
+        "entered": {
+          "description": "The identifiers of the issues now in the view that were not in it at the previous poll.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "left": {
+          "description": "The identifiers of the issues in the view at the previous poll that are not in it now.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "time": {
+          "description": "When the event happened, RFC 3339.",
+          "format": "date-time",
+          "type": "string"
+        },
+        "triggers": {
+          "description": "The triggers the event matched, so the triggers it requests tasks for; may be empty.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "view": {
+          "description": "The view, as the trigger names it.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "view",
+        "entered",
+        "left",
+        "time",
+        "baseline",
+        "triggers"
+      ],
+      "type": "object"
+    }
+  },
+  "description": "A saved Linear view whose filter changed since the previous poll. The issues the change brought\nin or took out publish no `linear.issue.entered` or `linear.issue.left` and request no task.",
+  "properties": {
+    "data": {
+      "$ref": "#/definitions/ViewFilterChanged"
+    },
+    "id": {
+      "description": "A UUIDv5 of the message's name, so a retried publish keeps its id.",
+      "format": "uuid",
+      "type": "string"
+    },
+    "links": {
+      "description": "GitHub and Linear events carry one link to the event's page.",
+      "items": {
+        "$ref": "#/definitions/Link"
+      },
+      "type": "array"
+    },
+    "subject": {
+      "description": "A short line for listings, such as `owner/name#42`.",
+      "type": "string"
+    },
+    "time": {
+      "description": "When the event happened, RFC 3339.",
+      "format": "date-time",
+      "type": "string"
+    },
+    "type": {
+      "const": "linear.view.changed",
+      "description": "The message type, such as `github.issues.labeled`.",
+      "type": "string"
+    }
+  },
+  "required": [
+    "id",
+    "type",
+    "subject",
+    "time",
+    "data",
+    "links"
+  ],
+  "title": "linear.view.changed",
+  "type": "object"
+}

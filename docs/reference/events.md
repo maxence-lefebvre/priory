@@ -16,6 +16,7 @@ Each type has a JSON Schema in [`docs/schemas/events/`](../schemas/events/), nam
   [`github.pull_request.review_requested`](#githubpull_requestreview_requested),
   [`github.pull_request.review_request_removed`](#githubpull_requestreview_request_removed)
 - Linear: [`linear.issue.entered`](#linearissueentered), [`linear.issue.left`](#linearissueleft),
+  [`linear.view.changed`](#linearviewchanged),
   [`linear.issue.created`](#linearissuecreated), [`linear.issue.state_changed`](#linearissuestate_changed),
   [`linear.issue.blockers`](#linearissueblockers), [`linear.comment.created`](#linearcommentcreated)
 - Slack: [`slack.message.posted`](#slackmessageposted), [`slack.thread.replied`](#slackthreadreplied)
@@ -462,6 +463,7 @@ identifier, such as `ENG-7`.
 | `url` | string | The issue's page, or the comment's for a comment |
 | `team` | string | The team key |
 | `project` | string or null | The project name; null without one |
+| `project_id` | string or null | Linear's id of the project; null without one |
 | `state` | string | The state name |
 | `labels` | array of strings | The label names |
 
@@ -489,6 +491,7 @@ The issue fields, and `view` (string), the view as the trigger names it.
     "url": "https://linear.app/acme/issue/ENG-7/export-fails-on-an-empty-project",
     "team": "ENG",
     "project": "Desktop",
+    "project_id": "c1d5e0a2-3b4f-4e8a-9a61-7f20d4b8e913",
     "state": "Todo",
     "labels": ["agent", "bug"],
     "view": "6b3c2f9a1d4e",
@@ -522,6 +525,7 @@ The issue fields, and `view` (string).
     "url": "https://linear.app/acme/issue/ENG-7/export-fails-on-an-empty-project",
     "team": "ENG",
     "project": "Desktop",
+    "project_id": "c1d5e0a2-3b4f-4e8a-9a61-7f20d4b8e913",
     "state": "In Progress",
     "labels": ["agent", "bug"],
     "view": "6b3c2f9a1d4e",
@@ -533,6 +537,38 @@ The issue fields, and `view` (string).
 }
 ```
 
+
+### `linear.view.changed`
+
+One message per poll that finds a view's filter changed since the previous poll. The issues the
+change brought in or took out publish no `linear.issue.entered` or `linear.issue.left` and request
+no task. Subject: the view. It carries no issue fields and no link.
+Schema: [`linear.view.changed.json`](../schemas/events/linear.view.changed.json).
+
+| Field | Type | Meaning |
+| ----- | ---- | ------- |
+| `view` | string | The view, as the trigger names it |
+| `entered` | array of strings | The identifiers of the issues now in the view that were not in it at the previous poll |
+| `left` | array of strings | The identifiers of the issues in the view at the previous poll that are not in it now |
+
+<!-- example: events/linear.view.changed.json -->
+```json
+{
+  "id": "5d0e8c3a-6f1b-5a7e-9c24-31b8f0e6d2a9",
+  "type": "linear.view.changed",
+  "subject": "6b3c2f9a1d4e",
+  "time": "2026-11-17T13:05:12.340Z",
+  "data": {
+    "view": "6b3c2f9a1d4e",
+    "entered": ["ENG-12", "ENG-15"],
+    "left": ["ENG-7"],
+    "time": "2026-11-17T13:05:12.340Z",
+    "baseline": false,
+    "triggers": []
+  },
+  "links": []
+}
+```
 ### `linear.issue.created`
 
 One message per issue created.
@@ -557,6 +593,7 @@ Schema: [`linear.issue.created.json`](../schemas/events/linear.issue.created.jso
     "url": "https://linear.app/acme/issue/ENG-7/export-fails-on-an-empty-project",
     "team": "ENG",
     "project": "Desktop",
+    "project_id": "c1d5e0a2-3b4f-4e8a-9a61-7f20d4b8e913",
     "state": "Todo",
     "labels": ["agent", "bug"],
     "actor": "Ada Lovelace",
@@ -596,6 +633,7 @@ Schema: [`linear.issue.state_changed.json`](../schemas/events/linear.issue.state
     "url": "https://linear.app/acme/issue/ENG-7/export-fails-on-an-empty-project",
     "team": "ENG",
     "project": "Desktop",
+    "project_id": "c1d5e0a2-3b4f-4e8a-9a61-7f20d4b8e913",
     "state": "In Progress",
     "labels": ["agent", "bug"],
     "from": "Todo",
@@ -635,6 +673,7 @@ Schema: [`linear.issue.blockers.json`](../schemas/events/linear.issue.blockers.j
     "url": "https://linear.app/acme/issue/ENG-7/export-fails-on-an-empty-project",
     "team": "ENG",
     "project": "Desktop",
+    "project_id": "c1d5e0a2-3b4f-4e8a-9a61-7f20d4b8e913",
     "state": "In Progress",
     "labels": ["agent", "bug"],
     "blockers": [],
@@ -671,6 +710,7 @@ Schema: [`linear.comment.created.json`](../schemas/events/linear.comment.created
     "url": "https://linear.app/acme/issue/ENG-7/export-fails-on-an-empty-project#comment-6f1c1c9e",
     "team": "ENG",
     "project": "Desktop",
+    "project_id": "c1d5e0a2-3b4f-4e8a-9a61-7f20d4b8e913",
     "state": "In Progress",
     "labels": ["agent", "bug"],
     "body": "Please also cover the empty case.",

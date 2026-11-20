@@ -22,9 +22,10 @@ Two sources start tasks from Linear. Their keys are in [triggers.md](../referenc
 | `source` | `on` | `filter` |
 | -------- | ---- | -------- |
 | `linear.view` | `issue.entered`, `issue.left` | none: the view filters |
-| `linear` | `issue.created`, `issue.state_changed`, `comment.created` | `team`, `label`, `state` |
+| `linear` | `issue.created`, `issue.state_changed`, `comment.created` | `team`, `project`, `label`, `state` |
 
-`state` matches the state an issue moved to, or the issue's state for the other two events. Both
+`project` matches the project's name or its id. `state` matches the state an issue moved to, or the
+issue's state for the other two events. Both
 sources take `backfill` and an optional `repo`, the repository their tasks work in. Without a
 `repo`, the tasks block before their first run.
 
@@ -45,12 +46,30 @@ Their fields and examples are in [events.md](../reference/events.md#linear).
 | ---- | --------------- |
 | `linear.issue.entered` | issue found in a view that was not in it at the previous poll |
 | `linear.issue.left` | issue gone from a view that was in it at the previous poll |
+| `linear.view.changed` | poll that finds a view's filter changed since the previous poll |
 | `linear.issue.created` | issue created |
 | `linear.issue.state_changed` | history entry that moves an issue from one state to another |
 | `linear.comment.created` | comment on an issue |
 | `linear.issue.blockers` | issue that another issue blocks, each time the blocker changes |
 
 The daemon routes a Linear event to the active task whose key is `linear:<issue>`.
+
+### Filter changes
+
+A view's members change when its issues change, and when a person edits its filter. Each view
+marker keeps the filter Linear reported. When a poll finds a different filter, the intake
+re-baselines the view:
+
+- It publishes no `linear.issue.entered` or `linear.issue.left`, so the change requests no task.
+- It publishes one `linear.view.changed`, which lists the identifiers of the issues that entered
+  and left.
+- The daemon posts a report on the desk as `linear`, such as `view 6b3c2f9a1d4e changed its filter:
+  2 issues entered and 1 left, with no task requested` (see [desk.md](../daemon/desk.md#reports)).
+
+An issue that entered the view by changing during the same poll gets no task either.
+
+A filter that changes while the intake reads the view's pages fails the poll, which publishes
+nothing. The next poll reads the view again.
 
 ### Blockers
 
@@ -75,6 +94,7 @@ Each message id is a UUIDv5 of a name (see [envelope.md](envelope.md)):
 | Type | Name |
 | ---- | ---- |
 | `linear.issue.entered`, `linear.issue.left` | `linear.view:{view}:{position}:{issue id}:{type}`, with the view stream's new position |
+| `linear.view.changed` | `linear.view:{view}:{position}:changed`, with the view stream's new position |
 | `linear.issue.created` | `linear:issue:{issue id}:created` |
 | `linear.issue.state_changed` | `linear:history:{history id}` |
 | `linear.comment.created` | `linear:comment:{comment id}` |
@@ -88,7 +108,7 @@ is still in its baseline.
 
 | Stream | Position | The marker also holds |
 | ------ | -------- | --------------------- |
-| `linear.view:<view>` | a count of membership changes | `members`, the fields of each issue in the view |
+| `linear.view:<view>` | a count of membership changes | `members`, the fields of each issue in the view, and `filter`, the view's filter |
 | `linear.issues` | the latest `updatedAt` seen | `seen`, the ids of the events at that instant |
 | `linear.comments` | the latest `createdAt` seen | `seen`, as above |
 
@@ -145,6 +165,10 @@ error it prints.
 
 - A view event's `time` is when the intake noticed the change, at most one poll late.
 - An issue that enters and leaves a view between two polls produces no event.
+- A crash between a `linear.view.changed` and its marker re-baselines the view again on restart.
+  An issue that entered the view meanwhile gets no task.
+- A marker published before the intake kept filters has none. The first poll after an upgrade
+  records the filter and treats the view as unchanged.
 - Start-up recovery never dispatches a baseline event. A crash between a baseline event and the
   task request of a `backfill` trigger loses that request.
 - A task's key names the issue identifier. Moving the issue to another team changes its identifier,

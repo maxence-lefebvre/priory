@@ -381,7 +381,7 @@ fn check_linear(trigger: &Loaded<Trigger>, problems: &mut Vec<Problem>) {
     } else {
         (
             &["issue.created", "issue.state_changed", "comment.created"],
-            &["team", "label", "state"],
+            &["team", "project", "label", "state"],
         )
     };
     let mut report = |field: &str, message: String| {
@@ -415,7 +415,7 @@ fn check_linear(trigger: &Loaded<Trigger>, problems: &mut Vec<Problem>) {
         let message = if view {
             "a `linear.view` trigger takes no `filter`: its view filters".to_string()
         } else {
-            "a `linear` trigger filters on `team`, `label` or `state`".to_string()
+            "a `linear` trigger filters on `team`, `project`, `label` or `state`".to_string()
         };
         report("filter", message);
     }
