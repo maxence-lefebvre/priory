@@ -119,6 +119,14 @@ pub(crate) fn tick(
         })?
         .collect::<rusqlite::Result<_>>()?;
     for (id, name, revision, session, answer) in due {
+        // An earlier try's exit code would pass for this one's after a restart.
+        match std::fs::remove_file(file(home, id, "status")) {
+            Err(error) if error.kind() != std::io::ErrorKind::NotFound => {
+                eprintln!("priory daemon: delivery {id} waits: {error}");
+                continue;
+            }
+            _ => {}
+        }
         db.execute(
             "UPDATE deliveries SET state = 'running', tries = tries + 1,
                attempted = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') WHERE id = ?1",

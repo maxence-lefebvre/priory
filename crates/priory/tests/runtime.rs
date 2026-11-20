@@ -3497,8 +3497,13 @@ fn a_retried_delivery_goes_to_the_session_that_asked_even_after_the_ask_changed(
     let moved = fleet_ask(&["ship", "wait"]).replace("cache-worker", "other-worker");
     setup.priory(&["ask", "cache.ship", &moved]);
 
-    delivery(&setup, "cache.ship", |delivery| delivery["state"] == "delivered");
-    let sessions: Vec<String> = delivered(&setup).into_iter().map(|call| call[2].clone()).collect();
+    delivery(&setup, "cache.ship", |delivery| {
+        delivery["state"] == "delivered"
+    });
+    let sessions: Vec<String> = delivered(&setup)
+        .into_iter()
+        .map(|call| call[2].clone())
+        .collect();
     assert_eq!(sessions, ["cache-worker", "cache-worker"]);
 }
 
