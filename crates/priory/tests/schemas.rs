@@ -43,6 +43,7 @@ fn generated() -> Vec<(String, Value)> {
         config::<Agent>("agent"),
         config::<Trigger>("trigger"),
         config::<Runner>("runner"),
+        schema::<priory_core::sections::Report>(SchemaSettings::draft07(), "report.json"),
         event::<IssueLabeled>("github.issues.labeled"),
         event::<IssueOpened>("github.issues.opened"),
         event::<PullRequestOpened>("github.pull_request.opened"),

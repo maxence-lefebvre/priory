@@ -1,0 +1,304 @@
+{
+  "$id": "https://raw.githubusercontent.com/maxence-lefebvre/priory/main/docs/schemas/report.json",
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "additionalProperties": false,
+  "definitions": {
+    "Hold": {
+      "additionalProperties": false,
+      "description": "Why a task is held, and at most one condition that releases it. With none, a person does.",
+      "properties": {
+        "after": {
+          "description": "Another task's id: the hold lasts until it ends.",
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "blockers": {
+          "description": "Until the task's Linear issue has no open blocker.",
+          "type": "boolean"
+        },
+        "if_closed": {
+          "description": "What a pull request closed without a merge does: `release`, `drop` or `ask`, the default.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "merge": {
+          "description": "A pull request, `owner/name#42` or `42` in the task's repository: until it merges.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "reason": {
+          "description": "Why the task waits, shown to a person.",
+          "type": "string"
+        },
+        "until": {
+          "description": "An RFC 3339 instant, or a duration such as `2 hours` after the hold.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "reason"
+      ],
+      "type": "object"
+    },
+    "Pick": {
+      "additionalProperties": false,
+      "description": "A choice a person makes with `priory report pick`.",
+      "properties": {
+        "applied": {
+          "default": null,
+          "description": "What the workflow did with the choice.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "chosen": {
+          "default": null,
+          "description": "The person's choice. Only `priory report pick` sets it: a write keeps the stored one.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "id": {
+          "description": "Unique in the report, such as 2026-11-20_sentry_fnd-2409.",
+          "type": "string"
+        },
+        "options": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "recommended": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "requests": {
+          "additionalProperties": {
+            "$ref": "#/definitions/Request"
+          },
+          "description": "Options that request a task instead of waking the report's task, by option.",
+          "type": "object"
+        }
+      },
+      "required": [
+        "id",
+        "options"
+      ],
+      "type": "object"
+    },
+    "Request": {
+      "additionalProperties": false,
+      "description": "A task request: `priory request`'s flags, or a report pick option's request.",
+      "properties": {
+        "band": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "hold": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/Hold"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "key": {
+          "description": "The task's key, which Priory prefixes with `cli:`.",
+          "type": "string"
+        },
+        "lane": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "repo": {
+          "description": "`owner/name`; `triggers/cli.toml`'s `repo` when unset.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "text": {
+          "description": "What the task is about.",
+          "type": "string"
+        },
+        "tldr": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "workflow": {
+          "description": "The workflow the task starts.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "workflow",
+        "key",
+        "text"
+      ],
+      "type": "object"
+    },
+    "Row": {
+      "additionalProperties": false,
+      "properties": {
+        "comments": {
+          "default": [],
+          "description": "Always empty: comments on rows come in a later version.",
+          "items": true,
+          "maxItems": 0,
+          "type": "array"
+        },
+        "id": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "key": {
+          "default": null,
+          "description": "An issue or pull request key, such as FND-2409.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "meta": {
+          "default": null,
+          "description": "A second line, such as 41 events since 18:00.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "owner": {
+          "default": null,
+          "description": "Who the row waits on, such as \"on Max\".",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "pick": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/Pick"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "state": {
+          "default": null,
+          "description": "A task state for the row's tile.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "text": {
+          "type": "string"
+        },
+        "time": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "text"
+      ],
+      "type": "object"
+    },
+    "Section": {
+      "additionalProperties": false,
+      "properties": {
+        "count": {
+          "default": null,
+          "description": "The number a front end shows beside the title, when it is not the number of rows.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "id": {
+          "description": "Unique in the report.",
+          "type": "string"
+        },
+        "rows": {
+          "items": {
+            "$ref": "#/definitions/Row"
+          },
+          "type": "array"
+        },
+        "title": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "title",
+        "rows"
+      ],
+      "type": "object"
+    }
+  },
+  "description": "A report a workflow writes for its task: ordered sections of rows. The latest one per task is\nkept, with a revision that each write and each pick raises.",
+  "properties": {
+    "date": {
+      "description": "The day the report is for, such as 2026-11-20.",
+      "type": "string"
+    },
+    "greeting": {
+      "description": "The line the report opens with.",
+      "type": "string"
+    },
+    "sections": {
+      "description": "The sections, in the order a front end draws them.",
+      "items": {
+        "$ref": "#/definitions/Section"
+      },
+      "type": "array"
+    },
+    "since": {
+      "description": "The RFC 3339 instant the report covers changes from.",
+      "type": "string"
+    }
+  },
+  "required": [
+    "date",
+    "since",
+    "greeting",
+    "sections"
+  ],
+  "title": "Report",
+  "type": "object"
+}
