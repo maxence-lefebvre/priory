@@ -26,7 +26,7 @@ The adapter lives in `adapters/herdr/` at the repository root, outside the Cargo
   [Installing](#installing).
 - `adapters/herdr/test/`: `node --test` tests for the module and the install script, run against a
   fake `priory`. CI runs them with `node --test adapters/herdr/test/*.test.js`.
-- `adapters/herdr/lib/tokens.js`: Priory's theme colors from
+- `adapters/herdr/lib/tokens.js`: Priory's theme colors and font roles from
   [`design/tokens/themes.css`](../../design/tokens/themes.css), every theme, each `light-dark()`
   pair kept as a light and a dark value. `palette(theme, mode)` picks one per mode. A test fails
   when the file and `themes.css` differ.

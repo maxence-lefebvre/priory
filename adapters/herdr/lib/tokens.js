@@ -156,6 +156,14 @@ export const THEMES = {
   },
 };
 
+// Each theme's font roles, by their first family.
+export const FONTS = {
+  indigo: { display: "Mona Sans", ui: "Mona Sans", mono: "JetBrains Mono" },
+  ink: { display: "Mona Sans", ui: "Mona Sans", mono: "JetBrains Mono" },
+  parchment: { display: "EB Garamond", ui: "IBM Plex Sans", mono: "IBM Plex Mono" },
+  abbey: { display: "Alegreya", ui: "Alegreya Sans", mono: "IBM Plex Mono" },
+};
+
 /** The colors of `theme` (Indigo when unknown) for a "light" or "dark" appearance. @param {string} theme @param {"light" | "dark"} mode */
 export function palette(theme, mode) {
   const tokens = THEMES[/** @type {keyof typeof THEMES} */ (theme)] ?? THEMES.indigo;

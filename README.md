@@ -70,6 +70,8 @@ Priory is in early development. The milestones come from [docs/prd.md](docs/prd.
 - [docs/daemon/](docs/daemon/README.md): how the daemon runs tasks, one file per topic.
 - [docs/intake/](docs/intake/README.md): the messages the intake publishes, one file per source.
 - [docs/trace-schema.md](docs/trace-schema.md): the format of trace records.
+- [docs/adapters/herdr.md](docs/adapters/herdr.md): the Herdr adapter, Priory's panels as Herdr
+  mods, starting with the Asks panel.
 - [DESIGN.md](DESIGN.md): the design system of the web view.
 
 ## License
