@@ -1,4 +1,9 @@
-# Priory
+<h1>
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="design/logo/lockup-dark.svg">
+    <img src="design/logo/lockup.svg" alt="Priory" height="40">
+  </picture>
+</h1>
 
 Priory runs coding agents, such as Claude Code and Codex, on machines you own. It turns events
 into tasks: a labelled GitHub issue, a Linear issue that enters a view, a Slack message, a schedule

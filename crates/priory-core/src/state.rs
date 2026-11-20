@@ -10,7 +10,7 @@ use std::collections::BTreeMap;
 use std::io::Write;
 use std::time::Duration;
 
-const VERSION: i64 = 31;
+const VERSION: i64 = 32;
 
 const SCHEMA: &str = "
 CREATE TABLE tasks (
@@ -509,23 +509,29 @@ END;
 PRAGMA user_version = 30;
 ";
 
+// When a person read a posted report; a read report leaves the desk.
+const SCHEMA_31: &str = "
+ALTER TABLE inbox ADD COLUMN read TEXT;
+PRAGMA user_version = 31;
+";
+
 // A person's pause: while its one row exists, no queued task starts a run. A prompt that `say`
 // queued keeps its run from sleeping, so it is never stranded behind an ask or a wait.
-const SCHEMA_31: &str = "
+const SCHEMA_32: &str = "
 CREATE TABLE pause (
   id     INTEGER PRIMARY KEY CHECK (id = 1),
   reason TEXT,
   since  TEXT NOT NULL
 );
 ALTER TABLE outbox ADD COLUMN wakes INTEGER NOT NULL DEFAULT 0;
-PRAGMA user_version = 31;
+PRAGMA user_version = 32;
 ";
 /// Each schema change in order: a file at version `n` applies those from index `n` on.
 const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA, SCHEMA_2, SCHEMA_3, SCHEMA_4, SCHEMA_5, SCHEMA_6, SCHEMA_7, SCHEMA_8, SCHEMA_9,
     SCHEMA_10, SCHEMA_11, SCHEMA_12, SCHEMA_13, SCHEMA_14, SCHEMA_15, SCHEMA_16, SCHEMA_17,
     SCHEMA_18, SCHEMA_19, SCHEMA_20, SCHEMA_21, SCHEMA_22, SCHEMA_23, SCHEMA_24, SCHEMA_25,
-    SCHEMA_26, SCHEMA_27, SCHEMA_28, SCHEMA_29, SCHEMA_30, SCHEMA_31,
+    SCHEMA_26, SCHEMA_27, SCHEMA_28, SCHEMA_29, SCHEMA_30, SCHEMA_31, SCHEMA_32,
 ];
 
 /// The order the queue starts tasks in: band, then a person's order, then age. A band the factory

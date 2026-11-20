@@ -298,7 +298,7 @@ fn a_second_request_for_a_key_is_kept_on_its_task() {
         .collect();
 
     assert_eq!(outcomes.len(), 4);
-    assert_eq!(outcomes[2][3..], ["1", "kept"]);
+    assert_eq!(outcomes[2][3..5], ["1", "kept"]);
     assert_eq!(setup.tasks().len(), 1);
 }
 
