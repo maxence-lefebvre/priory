@@ -50,6 +50,7 @@ fn main() -> ExitCode {
         Some(verb @ ("inbox" | "tasks" | "asks" | "desk" | "queue")) => {
             listed(verb, args.map(|arg| arg.to_string_lossy().into_owned()).collect())
         }
+        Some("wait") => wait(args.map(|arg| arg.to_string_lossy().into_owned()).collect()),
         Some("schedules") => {
             schedules(args.map(|arg| arg.to_string_lossy().into_owned()).collect())
         }
@@ -136,7 +137,7 @@ fn main() -> ExitCode {
 
 fn usage() -> ExitCode {
     eprintln!(
-        "usage: priory check [DIR]\n       priory draw [DIR] WORKFLOW\n       priory intake [DIR] [--once]\n       priory daemon [DIR] [--once]\n       priory request [DIR] --workflow <name> --key <key> [--band <band>] [--lane <lane>] [--repo <owner/name>] [--hold <reason> [CONDITION]] <text>\n       priory serve [DIR] [--listen ADDR]\n       priory inbox [--since SEQ] [--json]\n       priory inbox read SEQ\n       priory post SOURCE LINE\n       priory tasks [--lane <lane>] [--grade red|yellow|green] [--json]\n       priory queue [DIR] [--json]\n       priory schedules [DIR] [--json]\n       priory runs\n       priory outbox\n       priory asks [--all] [--json]\n       priory waits\n       priory actions\n       priory attach (TASK | --run RUN) [--read-only] [--print]\n       priory desk [--all] [--json]\n       priory snooze (ask | blocked | failed | prompt) ID (--for DURATION | --until TIME | --clear)\n       priory trace\n       priory report put TASK FILE|-\n       priory report show [TASK] [--json]\n       priory report pick PICK OPTION --expected REVISION\n       priory report [DIR] --workflow <name> [--since <instant-or-duration>] [--cost] [--by lane]\n       priory move TASK [--band <band>] [--top | --before TASK | --after TASK]\n       priory resume TASK\n       priory say TASK TEXT\n       priory pause [REASON]\n       priory unpause\n       priory cancel TASK\n       priory revive TASK [--step STEP]\n       priory hold TASK --reason TEXT [--until TIME | --after TASK | --merge PR [--if-closed release|drop|ask] | --blockers]\n       priory release TASK\n       priory tldr TASK TEXT\n       priory search QUERY [--state STATE[,STATE...]] [--limit N]\n       priory memory [acquire [--gb N] [--timeout D] -- COMMAND...]\n       priory answer [--revision N | --expected N] [--] ASK OPTION-OR-TEXT\n       priory ask ID JSON\n       priory dismiss [--expected N] ASK\n       priory mcp --session ID\n       priory hook EVENT"
+        "usage: priory check [DIR]\n       priory draw [DIR] WORKFLOW\n       priory intake [DIR] [--once]\n       priory daemon [DIR] [--once]\n       priory request [DIR] --workflow <name> --key <key> [--band <band>] [--lane <lane>] [--repo <owner/name>] [--hold <reason> [CONDITION]] <text>\n       priory serve [DIR] [--listen ADDR]\n       priory inbox [--since SEQ] [--json]\n       priory inbox read SEQ\n       priory post SOURCE LINE\n       priory tasks [--lane <lane>] [--grade red|yellow|green] [--json]\n       priory queue [DIR] [--json]\n       priory schedules [DIR] [--json]\n       priory runs\n       priory outbox\n       priory asks [--all] [--json]\n       priory waits\n       priory actions\n       priory attach (TASK | --run RUN) [--read-only] [--print]\n       priory desk [--all] [--json]\n       priory wait --since REV [--timeout D]\n       priory snooze (ask | blocked | failed | prompt) ID (--for DURATION | --until TIME | --clear)\n       priory trace\n       priory report put TASK FILE|-\n       priory report show [TASK] [--json]\n       priory report pick PICK OPTION --expected REVISION\n       priory report [DIR] --workflow <name> [--since <instant-or-duration>] [--cost] [--by lane]\n       priory move TASK [--band <band>] [--top | --before TASK | --after TASK]\n       priory resume TASK\n       priory say TASK TEXT\n       priory pause [REASON]\n       priory unpause\n       priory cancel TASK\n       priory revive TASK [--step STEP]\n       priory hold TASK --reason TEXT [--until TIME | --after TASK | --merge PR [--if-closed release|drop|ask] | --blockers]\n       priory release TASK\n       priory tldr TASK TEXT\n       priory search QUERY [--state STATE[,STATE...]] [--limit N]\n       priory memory [acquire [--gb N] [--timeout D] -- COMMAND...]\n       priory answer [--revision N | --expected N] [--] ASK OPTION-OR-TEXT\n       priory ask ID JSON\n       priory dismiss [--expected N] ASK\n       priory mcp --session ID\n       priory hook EVENT"
     );
     ExitCode::from(2)
 }
@@ -358,7 +359,7 @@ fn report_show(args: &[String]) -> ExitCode {
         _ => return usage(),
     };
     let shown = state::open().and_then(|db| {
-        let report = sections::show(&db, task)
+        let report = listing::revised(&db, "report", |db| sections::show(db, task))
             .map_err(|error| error.to_string())?
             .ok_or_else(|| match task {
                 Some(task) => format!("task {task} has no report"),
@@ -368,6 +369,7 @@ fn report_show(args: &[String]) -> ExitCode {
             state::emit(&report.to_string());
             return Ok(());
         }
+        let report = &report["report"];
         state::emit(&format!(
             "task {} revision {} {}: {}",
             report["task"], report["revision"], report["date"], report["greeting"]
@@ -494,23 +496,25 @@ fn listed(verb: &str, mut args: Vec<String>) -> ExitCode {
     let home = runtime::home();
     let shown = intake::now().and_then(|now| {
         let db = state::open()?;
-        let value = match verb {
-            "inbox" => listing::inbox(&db, since.unwrap_or(0)),
-            "tasks" => listing::tasks(&db, lane, grade),
-            "asks" => listing::asks(&db),
-            "desk" => listing::desk(&db, &home, all),
-            _ => listing::queue(&db, &schedules, now),
-        }
-        .map_err(|error| error.to_string())?;
+        let value = listing::revised(&db, verb, |db| {
+            match verb {
+                "inbox" => listing::inbox(db, since.unwrap_or(0)),
+                "tasks" => listing::tasks(db, lane, grade),
+                "asks" => listing::asks(db),
+                "desk" => listing::desk(db, &home, all),
+                _ => listing::queue(db, &schedules, now),
+            }
+            .map(Some)
+        })
+        .map_err(|error| error.to_string())?
+        .expect("a listing always reads");
         if json.is_some() {
             state::emit(&value.to_string());
             return Ok(());
         }
+        let rows = &value[verb];
         match verb {
-            "inbox" => listing::print(
-                &["seq", "type", "subject", "task", "outcome", "line"],
-                &value,
-            ),
+            "inbox" => listing::print(&["seq", "type", "subject", "task", "outcome", "line"], rows),
             "tasks" => listing::print(
                 &[
                     "id",
@@ -527,10 +531,10 @@ fn listed(verb: &str, mut args: Vec<String>) -> ExitCode {
                     "grade",
                     "grade_reason",
                 ],
-                &value,
+                rows,
             ),
             "asks" => {
-                let open = value
+                let open = rows
                     .as_array()
                     .into_iter()
                     .flatten()
@@ -619,14 +623,58 @@ fn schedules(mut args: Vec<String>) -> ExitCode {
     let shown = intake::now().and_then(|now| {
         let db = state::open()?;
         let schedules = listing::schedule_triggers(&factory);
-        let value = listing::schedules(&db, &schedules, now).map_err(|error| error.to_string())?;
+        let value = listing::revised(&db, "schedules", |db| {
+            listing::schedules(db, &schedules, now).map(Some)
+        })
+        .map_err(|error| error.to_string())?
+        .expect("a listing always reads");
         match json {
             Some(_) => state::emit(&value.to_string()),
-            None => listing::print(&["trigger", "next", "key", "task", "workflow"], &value),
+            None => listing::print(
+                &["trigger", "next", "key", "task", "workflow"],
+                &value["schedules"],
+            ),
         }
         Ok(())
     });
     exit("schedules", shown)
+}
+
+/// How long `priory wait` waits without `--timeout`, as long as `serve`'s `/api/events`.
+const WAIT_TIMEOUT: Duration = Duration::from_secs(25);
+
+/// Prints the state's revision once it differs from `--since`, or the same one after the timeout:
+/// `priory wait --since REV [--timeout D]`.
+fn wait(args: Vec<String>) -> ExitCode {
+    let (mut since, mut timeout) = (None, WAIT_TIMEOUT);
+    for pair in args.chunks(2) {
+        match pair {
+            [flag, value] if flag == "--since" && since.is_none() => match value.parse::<i64>() {
+                Ok(value) => since = Some(value),
+                Err(_) => return usage(),
+            },
+            [flag, value] if flag == "--timeout" => {
+                let Some(value) = value
+                    .parse::<jiff::SignedDuration>()
+                    .ok()
+                    .and_then(|value| Duration::try_from(value).ok())
+                else {
+                    return usage();
+                };
+                timeout = value;
+            }
+            _ => return usage(),
+        }
+    }
+    let Some(since) = since else {
+        return usage();
+    };
+    let waited = state::open().and_then(|db| {
+        state::wait(&db, since, timeout)
+            .map(|revision| state::emit(&revision.to_string()))
+            .map_err(|error| error.to_string())
+    });
+    exit("wait", waited)
 }
 
 /// Stores one report line on the inbox and prints its sequence number: `priory post SOURCE LINE`.

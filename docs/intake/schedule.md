@@ -48,7 +48,8 @@ state, so firings never stack (see [routing.md](../daemon/routing.md)).
 ## Next firing
 
 `priory schedules [DIR] [--json]` lists each schedule trigger of the factory in `DIR`, `.` by
-default, with its next firing after now.
+default, with its next firing after now. `--json` prints `{"revision": N, "schedules": [...]}`,
+with these fields in each entry:
 
 | Field | Type | Meaning |
 | ----- | ---- | ------- |
