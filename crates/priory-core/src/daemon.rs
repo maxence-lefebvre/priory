@@ -590,7 +590,7 @@ fn apply(
 }
 
 /// What arrives on the socket: a hook's signal, a run's tool call, a person's answer, desk action
-/// or snooze, a pick on a report, a task's progress, a memory gate message, or a quick request.
+/// or snooze, a pick or a comment on a report, a task's progress, a memory gate message, or a quick request.
 #[derive(serde::Deserialize)]
 #[serde(untagged)]
 enum Input {
@@ -602,6 +602,7 @@ enum Input {
     Act(Act),
     Snooze(Snooze),
     Choice(sections::Choice),
+    Comment(sections::Comment),
     Progress(progress::Put),
     Gate(Gate),
 }
@@ -743,6 +744,10 @@ fn take(
         Ok(Input::Choice(choice)) => {
             Ok((replied(sections::pick(db, &choice, trace.factory)?), None))
         }
+        Ok(Input::Comment(comment)) => Ok((
+            replied(sections::comment(db, &comment, trace.factory)?),
+            None,
+        )),
         Ok(Input::Progress(put)) => Ok((replied(progress::put(db, &put, trace)?), None)),
         Ok(Input::Gate(gate)) => {
             let share = Share::of(trace.factory, trace.machine.as_deref());

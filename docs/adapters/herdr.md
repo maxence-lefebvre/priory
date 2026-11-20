@@ -86,7 +86,8 @@ state database and never writes a file in the factory.
   answers the same JSON over HTTP, and its `/api/events` waits for a change as `priory wait` does:
   see [serve.md](../reference/serve.md).
 - **Acting.** Every button runs a CLI verb: `answer --expected N [--run] -- ASK TEXT`,
-  `dismiss --expected N ASK`, `snooze`, `say`, `report pick PICK OPTION --expected N`, `seen`,
+  `dismiss --expected N ASK`, `snooze`, `say`, `report pick PICK OPTION --expected N`,
+  `report comment ROW --expected N TEXT`, `report reply|resolve|reopen COMMENT`, `seen`,
   `resume`, `revive`, `hold`, `release`, `move`, `cancel`, `pause`, `unpause` and
   `add FACTORY [--workflow W] [--band B] [--lane L] -- TEXT`. An answer always carries the revision the person read, so a
   changed question refuses it (R6.3).
@@ -294,8 +295,8 @@ in the center stack. It replaces Fleet's `fleet-bonjour`. DESIGN.md's "Herdr ada
 its visual rules; this section says how it works.
 
 - **Files.** `view.js` turns `priory report show --json` into the toolbar, the greeting, sections,
-  rows and picks, with no drawing and no IO. `main.js` draws them with gpui-kit and runs
-  `priory report pick`. The node tests in `test/bonjour.test.js` check `view.js` against JSON
+  rows, picks and threads, with no drawing and no IO. `main.js` draws them with gpui-kit and runs
+  `priory report pick` and the comment verbs. The node tests in `test/bonjour.test.js` check `view.js` against JSON
   captured from a real `priory report show --json`.
 - **Reading.** The panel reads the report written last, then waits with `priory wait` on the
   state's revision and reads again. When no task has written a report yet, it says so and waits for
@@ -323,6 +324,11 @@ its visual rules; this section says how it works.
   older than the one shown is dropped, so a slow read never rolls the report back.
 - **Agreed picks.** A chosen pick folds to one line: its key, the choice and, once the workflow
   applied it, its `applied` text, else "Waiting for the workflow to apply it."
+- **Threads.** A row's threads sit under it. An open thread shows each comment's author, time and
+  text, with Reply and Resolve; a resolved one folds to one line with Reopen. The selected row, when
+  it has an id, ends with a comment field: Comment runs `priory report comment ROW --expected
+  REVISION TEXT` with the report's revision the person read, and Reply runs `priory report reply`.
+  A refused comment says why under the row and keeps the text in the field.
 - **Keys.** `J` and `K` move between rows, `N` goes to the next pick, `1` to `9` press an option of
   the selected pick, and `Esc` undoes a pick still waiting out its Undo.
 - **Agent text.** Every row's text, meta, owner and the greeting draw as plain text.
@@ -428,6 +434,10 @@ name: it draws the sections in the order the report gives them.
 - A pick records the person's choice with `priory report pick ID OPTION --expected REVISION`.
   The workflow applies it and fills `applied`. [reports.md](../daemon/reports.md) holds the rules,
   and `docs/schemas/report.json` the schema.
+- A row with an `id` takes comments: `priory report comment ROW --expected REVISION TEXT`, then
+  `reply`, `resolve` and `reopen` by comment number. Its `comments` lists its threads, each with
+  its replies, and a comment wakes the report's agent. See
+  [reports.md](../daemon/reports.md#comment-on-a-row).
 - Max's Rayon factory lists Reading, Slack notes, Sentry and Backlog, then To agree, Blocked and
   Moved.
 
@@ -447,9 +457,8 @@ Another front end, such as Orca, gets Priory the same way:
 
 The panels still need these from Priory's core. Each is a separate slice.
 
-1. Comments on report rows. Report sections and picks exist.
-2. Earlier reports listed by date, for the Bonjour panel's older and newer arrows.
-3. A `report pick` that replaces a choice the workflow has not applied yet, for Change.
+1. Earlier reports listed by date, for the Bonjour panel's older and newer arrows.
+2. A `report pick` that replaces a choice the workflow has not applied yet, for Change.
 
 The core already serves the rest of the fields above:
 
@@ -463,7 +472,7 @@ The core already serves the rest of the fields above:
   --json`.
 - Queue: each row's `title`, the factory's `bands`, and `--expected` on `move`, `hold`, `release`
   and `cancel`; see [serve.md](../reference/serve.md#queue) and [runs.md](../daemon/runs.md#queue).
-- Reports and picks: [reports.md](../daemon/reports.md).
+- Reports, picks and comments on rows: [reports.md](../daemon/reports.md).
 - Ask fields: `what_waits`, `next_action`, `title` and a Markdown `text`, in
   [tools.md](../daemon/tools.md).
 - Ask history: each ask's `revisions` and `refused` answers, in `priory asks --json`.

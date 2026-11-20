@@ -849,6 +849,15 @@ The morning dossier. It opens as a tab in the center stack.
   `--action-text` until a person chooses. An agreed pick folds to one line with Change.
 - From 1024 px a 200 px list of the sections, with counts and "Picks", sits on the left. Below,
   the same list becomes section chips under the toolbar.
+- **Threads** sit under their row, indented to the row's text, oldest first. An open thread is a
+  `--surface` card: each comment's author in `--text-2` weight 600 and its time in `--text-3`, on
+  one caption line, then its text in `--type-small`; replies follow in the same card. Reply and
+  Resolve close the card. A resolved thread folds to one `--text-3` caption line, a `check` in
+  `--ok-text`, "Resolved: " and its text, with Reopen.
+- The selected row, when it has an id, ends with the comment field and a Comment button. Reply
+  turns the button into Reply, with "Replying in thread 3" above the field and Cancel beside it.
+  A refused comment says why under the row in `--warn-text`. While the field has focus it keeps
+  every letter; Escape returns to the panel.
 
 ### Open questions
 

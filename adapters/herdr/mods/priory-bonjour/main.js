@@ -1,5 +1,5 @@
 import { View, div, svg } from "gpui-kit";
-import { h_flex, v_flex, Button, ScrollHandle } from "gpui-base";
+import { h_flex, v_flex, Button, Input, InputState, ScrollHandle } from "gpui-base";
 import { appHome, exec, home as herdrHome, readTextFile } from "herdr";
 import { priory } from "./priory.js";
 import { FONTS, palette, STRUCTURE as S } from "./tokens.js";
@@ -93,6 +93,15 @@ export default class PrioryBonjour extends View {
     this.notices = new Map();
     /** @type {string | null} a pick's outcome when its row has left the view */
     this.flash = null;
+    /** @type {number | null} the thread the comment field replies in; null starts a thread */
+    this.replyTo = null;
+    this.posting = false;
+    this.typing = false;
+    this.draft = InputState.new({ placeholder: "Comment on this row" });
+    this.draft.on("change", (_event, cx) => cx.notify());
+    this.draft.on("submit", (_event, cx) => this.post(cx));
+    this.draft.on("focus", (_event, cx) => { this.typing = true; cx.notify(); });
+    this.draft.on("blur", (_event, cx) => { this.typing = false; cx.notify(); });
     this.focus = cx.focus_handle();
     /** @type {Fonts} */
     this.font = FONTS.indigo;
@@ -173,6 +182,11 @@ export default class PrioryBonjour extends View {
   /** @param {Dossier} model @param {string | null} id @param {import("gpui-kit").Context} cx */
   select(model, id, cx) {
     this.focus.focus();
+    // A comment belongs to the row it was typed for.
+    if (id !== this.selected) {
+      this.replyTo = null;
+      this.draft.set_value("");
+    }
     this.selected = id;
     if (id) this.reveal(model, id);
     cx.notify();
@@ -247,8 +261,52 @@ export default class PrioryBonjour extends View {
     });
   }
 
+  /** Sends the comment field as a new thread on the selected row, or as a reply in `replyTo`. */
+  /** @param {import("gpui-kit").Context} cx */
+  post(cx) {
+    const model = this.model();
+    const row = model && this.rows(model).find((candidate) => candidate.id === this.selected);
+    const text = this.draft.value().trim();
+    if (!model || !row?.target || !text) return;
+    const [target, replyTo, revision] = [row.target, this.replyTo, model.revision];
+    this.remark(row, (client) => (replyTo == null ? client.comment(target, text, revision) : client.reply(replyTo, text)), cx, () => {
+      this.draft.set_value("");
+      this.replyTo = null;
+    });
+  }
+
+  /**
+   * Sends one comment verb, then reads the report again; a refusal says why under the row.
+   * @param {Row} row @param {(client: ReturnType<typeof priory>) => Promise<string>} call
+   * @param {import("gpui-kit").Context} cx @param {() => void} [sent]
+   */
+  remark(row, call, cx, sent = () => {}) {
+    if (this.posting) return;
+    this.posting = true;
+    this.notices.delete(row.id);
+    cx.notify();
+    cx.spawn(async (cx) => {
+      const client = this.priory?.client;
+      try {
+        if (!client) throw new Error("priory is not reachable");
+        await call(client);
+        sent();
+        this.accept(await client.report());
+      } catch (error) {
+        this.notices.set(row.id, `Not sent: ${message(error)}.`);
+      }
+      this.posting = false;
+      cx.notify();
+    });
+  }
+
   /** @param {import("gpui-kit").KeyEvent} event @param {import("gpui-kit").Context} cx */
   key(event, cx) {
+    // The comment field keeps its letters; Escape leaves it.
+    if (this.typing) {
+      if (event.key === "escape") this.focus.focus();
+      return;
+    }
     if (event.key === "escape") return this.undo(cx);
     // A held key repeats only movement, so holding 1 never picks twice.
     if (event.is_held && !["j", "k", "up", "down"].includes(event.key)) return;
@@ -381,7 +439,8 @@ export default class PrioryBonjour extends View {
             .child(item[1].title).child(div().font_weight(400).text_color(t["text-3"]).child(String(item[1].count)));
         }
         const row = item[1];
-        return div().max_w(DOCUMENT).child(row.pick ? this.pick(model, row, t) : this.line(model, row, t));
+        return v_flex().max_w(DOCUMENT).child(row.pick ? this.pick(model, row, t) : this.line(model, row, t))
+          .when(row.threads.length > 0 || (row.id === this.selected && row.target != null), (el) => el.child(this.threads(model, row, t)));
       }));
   }
 
@@ -466,6 +525,42 @@ export default class PrioryBonjour extends View {
         .when(Boolean(pending), (el) => el.child(h_flex().flex_1().gap(S["space-2"]).items_center().justify_end().text_size(S["type-small"][0])
           .child(div().child(pending?.timer ? `Picking ${pending.option}` : `Sending ${pending?.option}…`))
           .when(Boolean(pending?.timer), (el) => el.child(this.secondary("undo", "Undo", (cx) => this.undo(cx), t))))));
+  }
+
+  /** A row's threads under it, a resolved one folded to one line, then the comment field on the selected row. */
+  /** @param {Dossier} model @param {Row} row @param {Palette} t */
+  threads(model, row, t) {
+    const selected = row.id === this.selected && row.target != null;
+    const notice = row.pick ? undefined : this.notices.get(row.id);
+    return v_flex().pl(S["pane-tile"] + 10 + S["space-2"]).pt(S["space-1"]).pb(S["space-2"]).gap(S["space-2"])
+      .children(row.threads.map((thread) => {
+        if (thread.resolved) {
+          return h_flex().gap(S["space-2"]).items_center().text_size(S["type-caption"][0]).text_color(t["text-3"])
+            .child(svg(ICON("check")).size(13).flex_none().text_color(t["ok-text"]))
+            .child(div().flex_1().min_w_0().truncate().child(`Resolved: ${thread.text}`))
+            .child(this.secondary(`reopen-${thread.id}`, "Reopen", (cx) => this.remark(row, (client) => client.reopen(thread.id), cx), t));
+        }
+        return v_flex().p(S["space-2"]).gap(S["space-2"]).rounded(S["radius-md"]).bg(t.surface)
+          .children([thread, ...thread.replies].map((comment) => v_flex().gap(2)
+            .child(h_flex().gap(S["space-2"]).text_size(S["type-caption"][0])
+              .child(div().font_weight(600).text_color(t["text-2"]).child(comment.author))
+              .child(div().text_color(t["text-3"]).child(comment.when ?? "")))
+            .child(div().whitespace_normal().text_size(S["type-small"][0]).child(comment.text))))
+          .child(h_flex().gap(S["space-2"])
+            .child(this.secondary(`reply-${thread.id}`, "Reply", (cx) => {
+              this.select(model, row.id, cx);
+              this.replyTo = thread.id;
+            }, t))
+            .child(this.secondary(`resolve-${thread.id}`, "Resolve", (cx) => this.remark(row, (client) => client.resolve(thread.id), cx), t)));
+      }))
+      .when(Boolean(notice), (el) => el.child(this.notice(notice, t)))
+      .when(selected, (el) => el.child(v_flex().gap(S["space-1"])
+        .when(this.replyTo != null, (el) => el.child(div().text_size(S["type-caption"][0]).text_color(t["text-3"]).child(`Replying in thread ${this.replyTo}`)))
+        .child(h_flex().gap(S["space-2"]).items_center()
+          .child(div().flex_1().min_w_0().h(S["control-fine"]).px(8).rounded(S["radius-sm"]).border(1).border_color(t["control-line"])
+            .child(Input.new(this.draft).h_full().w_full().text_size(S["type-small"][0]).text_color(t.text)))
+          .child(this.secondary("comment-send", this.replyTo == null ? "Comment" : "Reply", (cx) => this.post(cx), t))
+          .when(this.replyTo != null, (el) => el.child(this.secondary("comment-cancel", "Cancel", (cx) => { this.replyTo = null; cx.notify(); }, t))))));
   }
 
   /** @param {string} id @param {string} label @param {(cx: import("gpui-kit").Context) => void} action @param {Palette} t */

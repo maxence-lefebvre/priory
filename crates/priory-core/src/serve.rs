@@ -336,6 +336,7 @@ enum Write<'a> {
     Dismiss(&'a str),
     Snooze,
     Add,
+    Comment(sections::Remark),
 }
 
 impl<'a> Write<'a> {
@@ -343,6 +344,10 @@ impl<'a> Write<'a> {
         match path {
             "/api/snooze" => return Some(Write::Snooze),
             "/api/request" => return Some(Write::Add),
+            "/api/reports/comment" => return Some(Write::Comment(sections::Remark::Comment)),
+            "/api/reports/reply" => return Some(Write::Comment(sections::Remark::Reply)),
+            "/api/reports/resolve" => return Some(Write::Comment(sections::Remark::Resolve)),
+            "/api/reports/reopen" => return Some(Write::Comment(sections::Remark::Reopen)),
             _ => {}
         }
         match path.strip_prefix("/api/asks/")?.split_once('/')? {
@@ -379,6 +384,16 @@ struct SnoozeBody {
     until: Option<String>,
     #[serde(default)]
     clear: bool,
+}
+
+/// A comment endpoint's body: `row` for a new thread, else `comment`; `revision` as `--expected`.
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CommentBody {
+    row: Option<String>,
+    comment: Option<i64>,
+    text: Option<String>,
+    revision: Option<i64>,
 }
 
 /// Sends a write to the daemon on its socket, as the CLI verb does; this thread never writes the
@@ -481,6 +496,27 @@ fn write_line(
                 until,
             };
             Ok((line(&snooze), None))
+        }
+        Write::Comment(remark) => {
+            let body: CommentBody = serde_json::from_slice(body).map_err(bad)?;
+            let new = *remark == sections::Remark::Comment;
+            let on = match (new, body.row, body.comment) {
+                (true, Some(row), None) => row,
+                (false, None, Some(comment)) => comment.to_string(),
+                (true, ..) => return Err(Reply::error(400, "send the row, not a comment")),
+                (false, ..) => return Err(Reply::error(400, "send the comment, not a row")),
+            };
+            if new != body.revision.is_some() {
+                return Err(Reply::error(400, "send revision with a new comment only"));
+            }
+            let comment = sections::Comment {
+                comment: *remark,
+                on,
+                text: body.text,
+                expected: body.revision,
+                session: None,
+            };
+            Ok((line(&comment), None))
         }
         Write::Add => {
             let add: priory_intake::request::Add = serde_json::from_slice(body).map_err(bad)?;
