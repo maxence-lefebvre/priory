@@ -1,0 +1,6 @@
+#:schema https://raw.githubusercontent.com/maxence-lefebvre/priory/main/docs/schemas/config/trigger.json
+source = "schedule"
+repo = "owner/repo"            # the repository whose merges the digest lists
+at = "08:30"
+days = ["mon", "tue", "wed", "thu", "fri"]
+workflow = "digest"
