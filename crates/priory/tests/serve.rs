@@ -3114,3 +3114,126 @@ fn the_request_endpoint_reads_the_defaults_and_choices_the_add_control_offers() 
     assert_eq!(api(&bare_address, "/api/request")["workflow"], Value::Null);
     assert_eq!(get(&address, "/api/request", None).0, 401);
 }
+
+/// A browser's `PushSubscription.toJSON()` for a fresh key pair, at `endpoint`.
+fn subscription(endpoint: &str) -> (Value, p256::SecretKey) {
+    use base64ct::{Base64UrlUnpadded, Encoding};
+    use p256::elliptic_curve::Generate;
+    let key = p256::SecretKey::generate();
+    let public = key.public_key().to_sec1_bytes();
+    let auth: [u8; 16] = *uuid::Uuid::new_v4().as_bytes();
+    let json = json!({
+        "endpoint": endpoint,
+        "expirationTime": null,
+        "keys": {
+            "p256dh": Base64UrlUnpadded::encode_string(&public),
+            "auth": Base64UrlUnpadded::encode_string(&auth),
+        },
+    });
+    (json, key)
+}
+
+#[test]
+fn the_push_key_endpoint_serves_the_public_key_once_a_daemon_made_the_pair() {
+    let mut setup = Setup::new("push-key", SERVE);
+    let alone = setup.start(&["serve", &setup.factory()]);
+    let before = get(&alone, "/api/push/key", Some(TOKEN));
+    let mut server = setup.server.take().unwrap();
+    server.kill().unwrap();
+    server.wait().unwrap();
+
+    let address = setup.start(&["daemon", &setup.factory()]);
+    let (status, body) = get(&address, "/api/push/key", Some(TOKEN));
+
+    assert_eq!(before.0, 503, "{}", before.1);
+    assert_eq!(get(&address, "/api/push/key", None).0, 401);
+    assert_eq!(status, 200, "{body}");
+    let reply: Value = serde_json::from_str(&body).unwrap();
+    let key = reply["key"].as_str().unwrap();
+    use base64ct::{Base64UrlUnpadded, Encoding};
+    let point = Base64UrlUnpadded::decode_vec(key).unwrap();
+    assert!(p256::PublicKey::from_sec1_bytes(&point).is_ok(), "{key}");
+    assert_eq!(reply.as_object().unwrap().len(), 1, "{body}");
+    let private = setup.dir.join("home/push/vapid.key");
+    use std::os::unix::fs::PermissionsExt;
+    let mode = fs::metadata(&private).unwrap().permissions().mode() & 0o777;
+    assert_eq!(mode, 0o600);
+    let secret = fs::read_to_string(&private).unwrap();
+    assert!(!body.contains(secret.trim()));
+}
+
+#[test]
+fn subscribe_and_unsubscribe_store_and_drop_a_subscription_behind_the_token_and_origin() {
+    let mut setup = Setup::new("push-subscribe", SERVE);
+    let address = setup.start(&["daemon", &setup.factory()]);
+    let (browser, _) = subscription("https://push.example.com/send/abc");
+    let body = browser.to_string();
+    let stored = |setup: &Setup| -> Vec<String> {
+        let db = setup.db();
+        let mut rows = db
+            .prepare("SELECT endpoint FROM push_subscriptions")
+            .unwrap();
+        rows.query_map([], |row| row.get(0))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect()
+    };
+
+    let wrong = raw(
+        &address,
+        &format!(
+            "POST /api/push/subscribe HTTP/1.1\r\nHost: {address}\r\nAuthorization: Bearer nope\r\n\
+             Content-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
+            body.len()
+        ),
+    );
+    let foreign = post(
+        &address,
+        "/api/push/subscribe",
+        "Origin: http://evil.example\r\n",
+        &body,
+    );
+    let long = post(
+        &address,
+        "/api/push/subscribe",
+        "",
+        &json!({ "endpoint": "a".repeat(16 * 1024) }).to_string(),
+    );
+    let extra = post(
+        &address,
+        "/api/push/subscribe",
+        "",
+        &json!({ "endpoint": "https://push.example.com/x", "keys": browser["keys"], "brief": "x" })
+            .to_string(),
+    );
+    let (plain, _) = subscription("http://push.example.com/send/abc");
+    let (local, _) = subscription("https://127.0.0.1/send/abc");
+    let insecure = post(&address, "/api/push/subscribe", "", &plain.to_string());
+    let loopback = post(&address, "/api/push/subscribe", "", &local.to_string());
+
+    assert_eq!(wrong.0, 401, "{}", wrong.1);
+    assert_eq!(foreign.0, 403, "{}", foreign.1);
+    assert_eq!(long.0, 413, "{}", long.1);
+    assert_eq!(extra.0, 400, "{}", extra.1);
+    assert_eq!(insecure.0, 422, "{}", insecure.1);
+    assert_eq!(loopback.0, 422, "{}", loopback.1);
+    assert!(stored(&setup).is_empty());
+
+    let own = post(
+        &address,
+        "/api/push/subscribe",
+        &format!("Origin: http://{address}\r\n"),
+        &body,
+    );
+    assert_eq!(own.0, 200, "{}", own.1);
+    assert_eq!(stored(&setup), ["https://push.example.com/send/abc"]);
+
+    let gone = post(
+        &address,
+        "/api/push/unsubscribe",
+        "",
+        &json!({ "endpoint": "https://push.example.com/send/abc" }).to_string(),
+    );
+    assert_eq!(gone.0, 200, "{}", gone.1);
+    assert!(stored(&setup).is_empty());
+}

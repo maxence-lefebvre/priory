@@ -4,13 +4,18 @@
 # connect. With FAKE_DIR/curl-status, it removes that file and prints its HTTP status as
 # `--write-out` does. Otherwise it appends {url, body} to FAKE_DIR/otlp.jsonl, reading the body from
 # `--data-binary @file`, and prints 200. A call to Linear's API reads its config from stdin and
-# prints FAKE_DIR/linear.
+# prints FAKE_DIR/linear. A Web Push call, which sends its headers as `--header @file`, appends
+# {url, args, headers, body} to FAKE_DIR/push.jsonl, the body in base64, and prints the status in
+# FAKE_DIR/push-status, 201 without it.
 set -u
 url=''
 body=''
+headers=''
+args="$*"
 while [ $# -gt 0 ]; do
   case "$1" in
     --data-binary) body=${2#@}; shift 2 ;;
+    --header) case "$2" in @*) headers=${2#@} ;; esac; shift 2 ;;
     http://*|https://*) url=$1; shift ;;
     *) shift ;;
   esac
@@ -19,6 +24,13 @@ echo "$url" >> "$FAKE_DIR/curl.log"
 if [ "$url" = https://api.linear.app/graphql ]; then
   cat > /dev/null
   cat "$FAKE_DIR/linear"
+  exit 0
+fi
+if [ -n "$headers" ]; then
+  jq -nc --arg url "$url" --arg args "$args" --rawfile headers "$headers" \
+    --arg body "$(base64 -w0 "$body")" '{url: $url, args: $args, headers: $headers, body: $body}' \
+    >> "$FAKE_DIR/push.jsonl"
+  cat "$FAKE_DIR/push-status" 2>/dev/null || printf 201
   exit 0
 fi
 if [ -e "$FAKE_DIR/curl-fail" ]; then

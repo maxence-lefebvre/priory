@@ -17,6 +17,10 @@ serde_json.workspace = true
 model = ["priory-core/model"]
 
 [dev-dependencies]
+aes-gcm.workspace = true
+base64ct.workspace = true
+hkdf.workspace = true
+p256.workspace = true
 herdr-bus.workspace = true
 hmac.workspace = true
 jsonschema = { version = "=0.60.2", default-features = false }

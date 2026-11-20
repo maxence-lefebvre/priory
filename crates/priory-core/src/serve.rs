@@ -1,7 +1,7 @@
 //! The HTTP server over the state: `/api` as JSON, with `web` the web view's files, and with a
 //! GitHub webhook its signed deliveries.
 
-use crate::{listing, sections, snooze, state, tools};
+use crate::{listing, push, sections, snooze, state, tools};
 use herdr_bus::Bus;
 use priory_factory::factory::{Factory, Trigger};
 use priory_intake::intake::{self, Github};
@@ -220,6 +220,12 @@ fn route(
     if path == "/api/request" {
         return Reply::json(200, served.request.clone());
     }
+    if path == "/api/push/key" {
+        return match push::public_key(home) {
+            Some(key) => Reply::json(200, serde_json::json!({ "key": key }).to_string()),
+            None => Reply::error(503, "no key yet: start `priory daemon` once to make it"),
+        };
+    }
     if Write::of(path).is_some() {
         return Reply {
             headers: "Allow: POST\r\n",
@@ -336,6 +342,8 @@ enum Write<'a> {
     Dismiss(&'a str),
     Snooze,
     Add,
+    Subscribe,
+    Unsubscribe,
 }
 
 impl<'a> Write<'a> {
@@ -343,6 +351,8 @@ impl<'a> Write<'a> {
         match path {
             "/api/snooze" => return Some(Write::Snooze),
             "/api/request" => return Some(Write::Add),
+            "/api/push/subscribe" => return Some(Write::Subscribe),
+            "/api/push/unsubscribe" => return Some(Write::Unsubscribe),
             _ => {}
         }
         match path.strip_prefix("/api/asks/")?.split_once('/')? {
@@ -379,6 +389,12 @@ struct SnoozeBody {
     until: Option<String>,
     #[serde(default)]
     clear: bool,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Unsubscribe {
+    endpoint: String,
 }
 
 /// Sends a write to the daemon on its socket, as the CLI verb does; this thread never writes the
@@ -490,6 +506,18 @@ fn write_line(
         Write::Add => {
             let add: priory_intake::request::Add = serde_json::from_slice(body).map_err(bad)?;
             Ok((line(&serde_json::json!({ "add": add })), None))
+        }
+        Write::Subscribe => {
+            let subscription: push::Subscription = serde_json::from_slice(body).map_err(bad)?;
+            let change = push::Change::Subscribe(subscription);
+            Ok((line(&push::Line { push: change }), None))
+        }
+        Write::Unsubscribe => {
+            let gone: Unsubscribe = serde_json::from_slice(body).map_err(bad)?;
+            let change = push::Change::Unsubscribe {
+                endpoint: gone.endpoint,
+            };
+            Ok((line(&push::Line { push: change }), None))
         }
     }
 }
