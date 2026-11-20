@@ -78,7 +78,7 @@ state database and never writes a file in the factory.
   a mod may subscribe to its event stream instead.
 - **Acting.** Every button runs a CLI verb: `answer --expected N -- ASK TEXT`,
   `dismiss --expected N ASK`, `snooze`, `say`, `report pick PICK OPTION --expected N`, `seen`,
-  `hold`, `release` and `move`. An answer always carries the revision the person read, so a
+  `resume`, `revive`, `hold`, `release` and `move`. An answer always carries the revision the person read, so a
   changed question refuses it (R6.3).
 - **Safety.** `priory.js` passes every value as its own argument, never through a shell, and never
   reads text output except `attach --print`. A mod draws agent text as plain text.
@@ -100,7 +100,8 @@ state database and never writes a file in the factory.
 Herdr Desk: the count, the next thing, the room banner, the saved views, then the rows.
 
 - **What it reads.** `desk --all --json`, `asks --all --json`, `tasks --json` and
-  `queue FACTORY --json`, read together, then again after each `priory wait`. `--all` keeps the
+  `queue FACTORY --json`, read together, then again after each `priory wait`, even one that ends
+  with the same revision: a snooze ends by the clock, which no revision records. `--all` keeps the
   snoozed items for the Snoozed view; the panel leaves them out of everything else.
 - **The count** counts the open asks that are not snoozed, then the oldest wait, the stopped items
   (`blocked`, `failed`, `prompt` and `delivery`) and `counts.snoozed`.
@@ -114,15 +115,20 @@ Herdr Desk: the count, the next thing, the room banner, the saved views, then th
 - **Up next** shows `queue`'s `up_next`, under the list below 1024 px and in the left column from
   1024 px. **Since you looked** shows from 1024 px.
 - **Since you looked** keeps the events the panel opened on. Once they are on screen, the panel
-  runs `priory seen` once, and adds each newer event to the top. `herdr-app check` runs no
+  runs `priory seen --at` once, with the time it started that first read, and adds each newer
+  event to the top. `herdr-app check` runs no
   `priory` command at all.
-- **Acting.** Snooze 1 h and Unsnooze run `priory snooze KIND ID --for 1h` or `--clear`.
+- **Acting.** Snooze 1 h, Snooze until tomorrow 09:00 and Unsnooze run `priory snooze KIND ID`
+  with `--for 1h`, `--until` or `--clear`. Resume runs `priory resume TASK` for a blocked task or an
+  uncertain prompt, and Revive runs `priory revive TASK` for a failed one.
   Attach asks the Priory bar with `priory.attach`. Answer… opens the ask in the Asks panel: it sets
   `setShared("priory.asks.open", { ask, at: Date.now() })` and shows the side panel on Asks.
-- **Keys.** `J` and `K` move the selection, `Enter` opens the selected ask in Asks, and `S`
-  snoozes the selected row for 1 h, or unsnoozes a snoozed one.
-- **Width.** Below 1024 px, one column; from 1024 px, a 440 px column beside the wide table and
-  the key hint bar. The panel measures its own width, as gpui-kit has no container queries.
+- **Keys.** `J` and `K` move the selection, `Enter` opens the selected ask in Asks, `S`
+  snoozes the selected row for 1 h, or unsnoozes a snoozed one, and `R` resumes or revives it. The
+  mod is focusable, so `pane.go` moves the keyboard onto it.
+- **Width.** Below 1024 px, one column. From 1024 px, a 440 px column beside the list and the key
+  hint bar. The list becomes the wide table with Recommends once it has 720 px of its own. The
+  panel measures its own width, as gpui-kit has no container queries.
 
 The panel draws agent text as plain text and never parses it. Its view model, `view.js`, is pure:
 the listings in, the count and rows out. `adapters/herdr/test/desk.test.js` runs it against JSON
@@ -272,9 +278,7 @@ The panels need these from Priory's core. Each is a separate slice.
 3. Snooze: the fields above, `priory snooze`, and the counts that leave snoozed items out: done.
 4. A stored last visit per person, for Since you looked: done, `priory seen`.
 5. The next firing time of each schedule, for Up next: done, `queue`'s `up_next`.
-6. Resume and revive from the Desk: `lib/priory.js` has no `resume` or `revive` yet, so the Desk
-   shows Resume and Revive as recommendations without a button or the `R` key.
-7. Report sections and picks: done, see [reports.md](../daemon/reports.md). Comments on rows are
+6. Report sections and picks: done, see [reports.md](../daemon/reports.md). Comments on rows are
    still to come.
-8. Ask fields for what waits and what the agent does next: `ask` stores them as `what_waits` and
+7. Ask fields for what waits and what the agent does next: `ask` stores them as `what_waits` and
    `next_action`, with a `title` and a Markdown `text`. The Asks panel does not show them yet.

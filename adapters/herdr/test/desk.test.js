@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
-import { deskModel, mergeSince } from "../mods/priory-desk/view.js";
+import { deskModel, mergeSince, tomorrowAt } from "../mods/priory-desk/view.js";
 
 process.env.TZ = "UTC";
 
@@ -134,4 +134,20 @@ test("Since you looked keeps the events the panel opened on after its own priory
   assert.equal(kept.length, opened.length + 1);
   assert.deepEqual(kept[0], later[0]);
   assert.deepEqual(mergeSince(kept, later), kept);
+});
+
+test("a prompt or delivery row keeps the desk's own text; blocked and failed show the task's reason", () => {
+  const items = [
+    { kind: "prompt", id: 9, task: 4, key: "cli:PRI-55", step: "triage", lane: null, since: "2026-11-20T11:00:00Z", what: "Allow write to ~/.ssh/config?", generation: 1, snoozed_until: null, snoozed_at: null, back_early: null },
+    { kind: "delivery", id: 4, task: null, key: null, step: null, lane: null, since: "2026-11-20T11:00:00Z", what: "the answer did not reach t3wc after 3 tries: gone", generation: null, snoozed_until: null, snoozed_at: null, back_early: null },
+  ];
+  const model = deskModel({ ...data, desk: { ...data.desk, items } }, { now });
+  assert.deepEqual(model.sections("needs")[0].rows.map((row) => [row.kind, row.text, row.snooze]), [
+    ["prompt", "Allow write to ~/.ssh/config?", { kind: "prompt", id: 9 }],
+    ["delivery", "the answer did not reach t3wc after 3 tries: gone", null],
+  ]);
+});
+
+test("tomorrow at 09:00 is local time, for priory snooze --until", () => {
+  assert.equal(tomorrowAt(9, Date.parse("2026-11-20T23:30:00Z")), "2026-11-21T09:00:00.000Z");
 });

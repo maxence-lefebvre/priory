@@ -1,8 +1,8 @@
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex, Button } from "gpui-base";
-import { appHome, checking, exec, home as herdrHome, readTextFile, run, setShared, settings } from "herdr";
+import { appHome, checking, exec, home as herdrHome, nextCommand, readTextFile, run, setShared, settings } from "herdr";
 import { priory } from "./priory.js";
-import { deskModel, mergeSince } from "./view.js";
+import { deskModel, mergeSince, tomorrowAt } from "./view.js";
 import { palette, STRUCTURE as S } from "./tokens.js";
 
 // DESIGN.md, Herdr adapter, Desk: from 1024 px the count column sits beside the wide table.
@@ -29,9 +29,11 @@ const TILES = /** @type {Record<string, [string, string | null, string]>} */ ({
   report: ["tile-ok", "check", "text-2"],
   dropped: ["tile-muted", "minus", "text-2"],
 });
+const RESTART = /** @type {Record<string, string>} */ ({ blocked: "Resume", prompt: "Resume", failed: "Revive" });
+const HOUR = { for: "1h" };
 const MUTED_TILE = /** @type {[string, string, string]} */ (["tile-muted", "circle-dashed", "text-2"]);
 
-/** @typedef {ReturnType<typeof deskModel>} Model @typedef {Model["views"][number]} SavedView */
+/** @typedef {ReturnType<typeof deskModel>} Model */
 /** @typedef {ReturnType<Model["sections"]>[number]["rows"][number] & { count?: number }} Row */
 
 // settings.json's "priory" object: { binary, machine, factory, theme }, each optional, as the Priory bar reads it.
@@ -80,36 +82,44 @@ export default class PrioryDesk extends View {
     this.focus = cx.focus_handle();
     // herdr-app check runs init for real: no priory call, and above all no `priory seen`.
     if (checking()) return;
+    // With "focusable" in mod.json, pane.go moves onto the panel and sends "focus".
+    cx.spawn(async (cx) => {
+      for (;;) {
+        if ((await nextCommand()) === "focus") this.focus.focus();
+        cx.notify();
+      }
+    });
     cx.timer.after(SKELETON_MS, (cx) => { this.slow = true; cx.notify(); });
     this.load(cx, null);
   }
 
-  /** Reads every listing, then waits for the next revision and reads again. @param {import("gpui-kit").Context} cx @param {number | null} since */
+  // A snooze ends by the clock, which no revision records, so every `priory wait` ends in a read.
+  /** Reads every listing, then waits and reads again. @param {import("gpui-kit").Context} cx @param {number | null} since */
   load(cx, since) {
     cx.spawn(async (cx) => {
-      let revision = since;
       try {
         // Connects on first use, and again after a failure, so a machine that comes back works.
         this.client ??= connect().catch((error) => { this.client = null; throw error; });
         const client = await this.client;
-        if (since != null) revision = await client.wait(since);
-        if (revision !== since || !this.data) {
-          const [desk, asks, tasks, queue] = await Promise.all([client.desk({ all: true }), client.asks(), client.tasks(), client.queue()]);
-          const first = !this.data;
-          this.since = mergeSince(this.since, desk.since_you_looked);
-          if (first) this.sinceFrom = desk.last_visit;
-          this.data = { desk, asks, tasks, queue };
-          revision = desk.revision;
-          // The person has the panel open: record the visit once its events are on screen.
-          if (first) await client.seen().catch((error) => { this.actionError = `Could not record your visit: ${message(error)}`; });
-        }
+        if (since != null) await client.wait(since);
+        const first = !this.data;
+        // Taken before the read, so an event between the read and `priory seen` still shows next time.
+        const opened = new Date().toISOString().replace(/\.\d+Z$/, "Z");
+        const [desk, asks, tasks, queue] = await Promise.all([client.desk({ all: true }), client.asks(), client.tasks(), client.queue()]);
+        this.since = mergeSince(this.since, desk.since_you_looked);
+        if (first) this.sinceFrom = desk.last_visit;
+        this.data = { desk, asks, tasks, queue };
         this.error = null;
         cx.notify();
-        this.load(cx, revision);
+        if (first) {
+          await client.seen({ at: opened }).catch((error) => { this.actionError = `Could not record your visit: ${message(error)}`; });
+          cx.notify();
+        }
+        this.load(cx, desk.revision);
       } catch (error) {
         this.error = message(error);
         cx.notify();
-        this.retry = cx.timer.after(RETRY_MS, (cx) => this.load(cx, revision));
+        this.retry = cx.timer.after(RETRY_MS, (cx) => this.load(cx, null));
       }
     });
   }
@@ -132,9 +142,17 @@ export default class PrioryDesk extends View {
     });
   }
 
-  /** @param {import("gpui-kit").Context} cx @param {{ kind: string, id: number | string }} item @param {boolean} snooze */
-  snooze(cx, item, snooze) {
-    this.act(cx, snooze ? "snooze" : "unsnooze", (client) => client.snooze(item.kind, item.id, snooze ? { for: "1h" } : null));
+  /** @param {import("gpui-kit").Context} cx @param {{ kind: string, id: number | string }} item @param {{ for?: string, until?: string } | null} when null unsnoozes */
+  snooze(cx, item, when) {
+    this.act(cx, when ? "snooze" : "unsnooze", (client) => client.snooze(item.kind, item.id, when));
+  }
+
+  // Resume for a blocked task or an uncertain prompt, Revive for a failed one: the row's recommendation.
+  /** @param {import("gpui-kit").Context} cx @param {Row} row */
+  restart(cx, row) {
+    if (row.task == null || !RESTART[row.kind]) return;
+    const task = row.task;
+    this.act(cx, RESTART[row.kind].toLowerCase(), (client) => (row.kind === "failed" ? client.revive(task) : client.resume(task)));
   }
 
   // The Asks panel is the one place to answer: open the ask there.
@@ -166,7 +184,9 @@ export default class PrioryDesk extends View {
     } else if (event.keystroke === "enter" && row?.kind === "ask" && row.snooze && !row.snoozed) {
       this.answer(row.snooze.id);
     } else if (event.keystroke === "s" && row?.snooze) {
-      this.snooze(cx, row.snooze, !row.snoozed);
+      this.snooze(cx, row.snooze, row.snoozed ? null : HOUR);
+    } else if (event.keystroke === "r" && row && RESTART[row.kind]) {
+      this.restart(cx, row);
     } else {
       return;
     }
@@ -204,14 +224,16 @@ export default class PrioryDesk extends View {
     const rows = this.rows(model);
     if (!rows.some((row) => row.id === this.selected)) this.selected = rows[0]?.id ?? null;
     const wide = this.width >= WIDE;
+    // The wide table needs --pane-split beside the column, or its question column has no room.
+    const table = wide && this.width - COLUMN >= S["pane-split"];
     const summary = v_flex().gap(S["space-3"]).flex_none()
       .child(this.count(ui, model))
-      .when(Boolean(model.next), (el) => el.child(this.next(ui, model, wide, cx)))
+      .when(Boolean(model.next), (el) => el.child(this.next(ui, model, wide)))
       .children(model.banners.map((text, i) => ui.banner(`banner-${i}`, text)))
       .when(Boolean(this.actionError), (el) => el.child(div().text_size(S["type-small"][0]).text_color(t["danger-text"]).child(String(this.actionError))));
     const list = v_flex().gap(S["space-3"]).min_w_0()
-      .child(this.views(ui, model, cx))
-      .children(model.sections(this.view).map((section) => this.section(ui, section, wide, cx)))
+      .child(this.views(ui, model))
+      .children(model.sections(this.view).map((section) => this.section(ui, section, table)))
       .when(Boolean(model.empty) && this.view === "needs", (el) => el.child(ui.note(String(model.empty))))
       .when(!wide, (el) => el.child(this.upNext(ui, model)));
     const body = wide
@@ -220,7 +242,7 @@ export default class PrioryDesk extends View {
           .child(summary).child(this.upNext(ui, model)).child(this.sinceYouLooked(ui, model)))
         .child(v_flex().flex_1().min_w_0().min_h_0()
           .child(v_flex().id("desk-table").flex_1().min_h_0().overflow_y_scrollbar().p(S["space-4"]).child(list))
-          .child(ui.hints([["J", "K", "move"], ["Enter", "answer"], ["S", "snooze 1 h"]])))
+          .child(ui.hints([["J", "K", "move"], ["Enter", "answer"], ["S", "snooze 1 h"], ["R", "resume or revive"]])))
       : v_flex().id("desk-scroll").flex_1().min_h_0().overflow_y_scrollbar().p(S["space-4"]).gap(S["space-4"]).child(summary).child(list);
     return root.on_key_down((/** @type {import("gpui-kit").KeyEvent} */ event, /** @type {import("gpui-kit").Context} */ cx) => this.key(event, cx, model))
       .when(Boolean(failed), (el) => el.child(failed)).child(body);
@@ -236,8 +258,8 @@ export default class PrioryDesk extends View {
         .when(Boolean(model.count.line), (el) => el.child(div().text_size(S["type-caption"][0]).text_color(t["text-3"]).child(model.count.line))));
   }
 
-  /** @param {Ui} ui @param {Model} model @param {boolean} wide @param {import("gpui-kit").Context} cx */
-  next(ui, model, wide, cx) {
+  /** @param {Ui} ui @param {Model} model @param {boolean} wide */
+  next(ui, model, wide) {
     const { t } = ui;
     const next = /** @type {NonNullable<Model["next"]>} */ (model.next);
     return v_flex().id("next-thing").p(S["space-4"]).gap(S["space-2"]).rounded(S["radius-card"]).bg(t.surface).border(1).border_color(t.line)
@@ -256,13 +278,13 @@ export default class PrioryDesk extends View {
       .child(h_flex().gap(S["space-2"]).flex_wrap().items_center()
         .child(ui.button("next-answer", "Answer…", () => this.answer(next.ask), { primary: true }))
         .when(next.task != null, (el) => el.child(ui.button("next-attach", "Attach", () => this.attach(/** @type {number} */ (next.task)))))
-        .child(ui.button("next-snooze", "Snooze 1 h", (_e, cx) => this.snooze(cx, { kind: "ask", id: next.ask }, true), { icon: "clock", disabled: this.busy }))
+        .child(ui.button("next-snooze", "Snooze 1 h", (_e, cx) => this.snooze(cx, { kind: "ask", id: next.ask }, HOUR), { icon: "clock", disabled: this.busy }))
         .when(wide, (el) => el.child(div().flex_1()).child(ui.hints([["Enter", "answer"], ["S", "snooze"]], true))))
-      .on_click(() => { this.selected = `ask:${next.ask}`; this.focus.focus(); cx.notify(); });
+      .on_click((/** @type {unknown} */ _e, /** @type {import("gpui-kit").Context} */ cx) => { this.selected = `ask:${next.ask}`; this.focus.focus(); cx.notify(); });
   }
 
-  /** @param {Ui} ui @param {Model} model @param {import("gpui-kit").Context} _cx */
-  views(ui, model, _cx) {
+  /** @param {Ui} ui @param {Model} model */
+  views(ui, model) {
     const { t } = ui;
     return h_flex().gap(S["space-1"]).flex_wrap().children(model.views.map((view) => {
       const on = view.id === this.view;
@@ -275,18 +297,18 @@ export default class PrioryDesk extends View {
     }));
   }
 
-  /** @param {Ui} ui @param {{ title: string, note: string | null, rows: Row[] }} section @param {boolean} wide @param {import("gpui-kit").Context} cx */
-  section(ui, section, wide, cx) {
+  /** @param {Ui} ui @param {{ title: string, note: string | null, rows: Row[] }} section @param {boolean} table */
+  section(ui, section, table) {
     const { t } = ui;
     return v_flex().gap(S["space-1"])
       .child(h_flex().gap(S["space-2"]).text_size(S["type-caption"][0])
         .child(div().font_weight(600).child(section.title))
         .when(Boolean(section.note), (el) => el.child(div().text_color(t["text-3"]).child(String(section.note)))))
-      .children(section.rows.map((row) => this.row(ui, row, wide, cx)));
+      .children(section.rows.map((row) => this.row(ui, row, table)));
   }
 
-  /** @param {Ui} ui @param {Row} row @param {boolean} wide @param {import("gpui-kit").Context} cx */
-  row(ui, row, wide, cx) {
+  /** @param {Ui} ui @param {Row} row @param {boolean} table */
+  row(ui, row, table) {
     const { t } = ui;
     const selected = row.id === this.selected;
     const reasonColor = t[(TILES[row.kind] ?? MUTED_TILE)[2]];
@@ -296,17 +318,17 @@ export default class PrioryDesk extends View {
       ? h_flex().gap(S["space-1"]).items_center().text_size(S["type-caption"][0]).text_color(snoozed ? t["text-3"] : t["action-text"])
         .child(svg(`${ICONS}/${snoozed ? "clock" : "rotate-ccw"}.svg`).size(13).flex_none().text_color(snoozed ? t["text-3"] : t["action-text"])).child(row.note)
       : null;
-    const head = wide
-      ? h_flex().gap(S["space-3"]).items_start().min_h(S["pane-row"] - 2 * S["space-2"])
-        .child(h_flex().w(96).flex_none().gap(S["space-1"]).items_center().text_size(S["type-caption"][0]).text_color(reasonColor)
+    const head = table
+      ? h_flex().gap(S["space-2"]).items_start().min_h(S["pane-row"] - 2 * S["space-2"])
+        .child(h_flex().w(88).flex_none().gap(S["space-1"]).items_center().text_size(S["type-caption"][0]).text_color(reasonColor)
           .child(ui.icon(row.kind, 15)).child(row.kind))
-        .child(div().w(104).flex_none().truncate().child(ui.mono(row.key ?? "")))
-        .child(div().w(96).flex_none().truncate().text_size(S["type-caption"][0]).text_color(t["text-2"]).child(row.step ?? ""))
+        .child(div().w(96).flex_none().truncate().child(ui.mono(row.key ?? "")))
+        .child(div().w(80).flex_none().truncate().text_size(S["type-caption"][0]).text_color(t["text-2"]).child(row.step ?? ""))
         .child(v_flex().flex_1().min_w_0().gap(2)
           .child(div().whitespace_normal().text_size(S["type-small"][0]).text_color(row.kind === "ask" ? t.text : reasonColor).child(row.text ?? ""))
           .when(Boolean(note), (el) => el.child(note)))
-        .child(div().w(120).flex_none().truncate().text_size(S["type-caption"][0]).text_color(t["text-2"]).child(row.recommends ?? ""))
-        .child(div().w(56).flex_none().text_right().text_size(S["type-caption"][0]).text_color(t["text-3"]).child(row.count != null ? String(row.count) : row.age ?? ""))
+        .child(div().w(104).flex_none().truncate().text_size(S["type-caption"][0]).text_color(t["text-2"]).child(row.recommends ?? ""))
+        .child(div().w(48).flex_none().text_right().text_size(S["type-caption"][0]).text_color(t["text-3"]).child(row.count != null ? String(row.count) : row.age ?? ""))
       : h_flex().gap(S["space-3"]).items_start()
         .child(ui.tile(row.id, row.kind, S["pane-tile"]))
         .child(v_flex().flex_1().min_w_0().gap(2)
@@ -325,19 +347,25 @@ export default class PrioryDesk extends View {
       .bg(selected ? t["action-soft"] : t.bg).hover((s) => s.bg(selected ? t["action-soft"] : t.surface))
       .on_click((/** @type {unknown} */ _e, /** @type {import("gpui-kit").Context} */ cx) => { this.selected = row.id; this.focus.focus(); cx.notify(); })
       .child(head)
-      .when(selected, (el) => el.child(this.detail(ui, row, snoozed, cx)));
+      .when(selected, (el) => el.child(this.detail(ui, row)));
   }
 
-  // Below --pane-split, and in the wide table, a selected row opens its detail in place, under the row.
-  /** @param {Ui} ui @param {Row} row @param {boolean} snoozed @param {import("gpui-kit").Context} _cx */
-  detail(ui, row, snoozed, _cx) {
+  // A selected row opens its detail in place, under the row, in the narrow list and the wide table.
+  /** @param {Ui} ui @param {Row} row */
+  detail(ui, row) {
     const { t } = ui;
-    const ask = row.kind === "ask" ? row.snooze?.id ?? null : null;
+    const item = row.snooze;
+    const ask = row.kind === "ask" && item ? item.id : null;
+    const restart = RESTART[row.kind];
     const actions = h_flex().gap(S["space-2"]).flex_wrap()
-      .when(ask != null && !snoozed, (el) => el.child(ui.button(`answer-${row.id}`, "Answer…", () => this.answer(String(ask)), { primary: true })))
+      .when(ask != null && !row.snoozed, (el) => el.child(ui.button(`answer-${row.id}`, "Answer…", () => this.answer(/** @type {number | string} */ (ask)), { primary: true })))
+      .when(Boolean(restart) && row.task != null, (el) => el.child(ui.button(`restart-${row.id}`, restart, (_e, cx) => this.restart(cx, row), { disabled: this.busy })))
       .when(row.task != null, (el) => el.child(ui.button(`attach-${row.id}`, "Attach", () => this.attach(/** @type {number} */ (row.task)))))
-      .when(Boolean(row.snooze), (el) => el.child(ui.button(`snooze-${row.id}`, snoozed ? "Unsnooze" : "Snooze 1 h",
-        (_e, cx) => this.snooze(cx, /** @type {{ kind: string, id: number }} */ (row.snooze), !snoozed), { icon: "clock", disabled: this.busy })));
+      .when(Boolean(item), (el) => el
+        .child(ui.button(`snooze-${row.id}`, row.snoozed ? "Unsnooze" : "Snooze 1 h",
+          (_e, cx) => this.snooze(cx, /** @type {NonNullable<Row["snooze"]>} */ (item), row.snoozed ? null : HOUR), { icon: "clock", disabled: this.busy }))
+        .child(ui.button(`tomorrow-${row.id}`, "Snooze until tomorrow 09:00",
+          (_e, cx) => this.snooze(cx, /** @type {NonNullable<Row["snooze"]>} */ (item), { until: tomorrowAt(9, Date.now()) }), { icon: "moon", disabled: this.busy })));
     return v_flex().gap(S["space-2"]).pl(S["pane-tile"] + S["space-3"])
       .children((row.progress ?? []).map((/** @type {string} */ line, /** @type {number} */ i) => div().id(`progress-${row.id}-${i}`).whitespace_normal().text_size(S["type-caption"][0]).text_color(t["text-2"]).child(String(line))))
       .child(actions);

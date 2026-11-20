@@ -57,7 +57,8 @@ export function deskModel({ desk, asks: asksListing, tasks: tasksListing, queue 
       key: item.key ?? ask?.key ?? null,
       step: item.step,
       age: item.since ? age(item.since, now) : null,
-      text: ask ? ask.title || ask.question : STOPPED.includes(item.kind) && task?.reason ? task.reason : item.what,
+      // The desk's `what` for a failed task ends with its revive command; the task's reason does not.
+      text: ask ? ask.title || ask.question : ["blocked", "failed"].includes(item.kind) && task?.reason ? task.reason : item.what,
       recommends: ask ? ask.recommendation ?? null : RECOMMENDS[item.kind] ?? null,
       note: isSnoozed(item) ? `Snoozed until ${when(item.snoozed_until, now)}`
         : back ? `Back early: ${back.reason}${back.reason === "new revision" && ask ? ` ${ask.revision}` : ""}` : null,
@@ -175,4 +176,12 @@ export function mergeSince(kept, fresh) {
   const id = (/** @type {any} */ event) => `${event.time}|${event.task}|${event.what}`;
   const known = new Set(kept.map(id));
   return [...fresh.filter((event) => !known.has(id(event))), ...kept];
+}
+
+/** `hour`:00 local time tomorrow, for `priory snooze --until`. @param {number} hour @param {number} now */
+export function tomorrowAt(hour, now) {
+  const at = new Date(now);
+  at.setDate(at.getDate() + 1);
+  at.setHours(hour, 0, 0, 0);
+  return at.toISOString();
 }
