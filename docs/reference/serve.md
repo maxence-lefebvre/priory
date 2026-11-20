@@ -192,8 +192,9 @@ An `ask`, `blocked`, `failed` or `prompt` desk item, and every ask, carry these 
 
 Every task in start order: `id`, `key`, `workflow`, `step`, `state`, `band`, `lane`, `reason`,
 `position` (its place in the queue from 1, or null), `generation`, `retired`, `tldr`, `since`
-(when the task last changed state), `grade` (`red`, `yellow`, `green` or null), `grade_reason` and
-`progress`. See Grades in [tools.md](../daemon/tools.md#grades).
+(when the task last changed state), `grade` (`red`, `yellow`, `green` or null), `grade_reason`,
+`progress` and `conditions`, a held task's [conditions](#conditions) or null. See Grades in
+[tools.md](../daemon/tools.md#grades).
 
 `progress` is null until the task's agent or a person publishes one. Then it is an object with any
 of `goal`, `acceptanceCriteria` (each `{ "id", "description", "required" }`), `latestChange` and
@@ -216,7 +217,7 @@ The fields of [Tasks](#tasks), plus `repo` and `branch`, and these arrays, oldes
 | Field | Each entry |
 | ----- | ---------- |
 | `up_next` | One of the next three runs, soonest first: `at`, `kind`, `task`, `key`, `trigger` and `why`. See [Up next](#up-next) |
-| `waiting` | A queued or ready task in start order, then each held task by when it was held: `position` and `band_position` (its place in the queue and in its band, null for a held task), `id`, `key`, `workflow`, `step`, `state`, `band`, `lane`, `reason`, `since`, and for a held task its hold: `hold` (`person`, `time`, `task`, `merge` or `blockers`), `hold_until`, `hold_target`, `hold_resource` |
+| `waiting` | A queued or ready task in start order, then each held task by when it was held: `position` and `band_position` (its place in the queue and in its band, null for a held task), `id`, `key`, `workflow`, `step`, `state`, `band`, `lane`, `reason`, `since`, and `conditions` (see [Conditions](#conditions)), null for a task that is not held |
 | `running` | A live run: `run`, `task`, `key`, `step`, `agent`, `started` |
 | `ended` | A task done, failed or dropped in the last day, latest first: `id`, `key`, `workflow`, `step`, `state`, `reason`, `ended` |
 
@@ -228,7 +229,7 @@ of the factory in `DIR`, and `priory queue --json` lists no schedule firings.
 | `kind` | `at` | `why` |
 | ------ | ---- | ----- |
 | `queued` | Now: it starts once there is room | `first in the queue`, `a band above it`, or `queue position <n>` |
-| `held` | The end of its time hold | `held until <time>` |
+| `held` | The end of its time hold, once time is all it still waits for | `held until <time>` |
 | `scheduled` | The trigger's [next firing](../intake/schedule.md#next-firing) | `schedule <trigger> fires` |
 
 `task` and `key` name the task, and are null for a firing that starts a new task. `trigger` names
@@ -239,8 +240,22 @@ the schedule trigger of a `scheduled` entry, and is null otherwise.
 - A schedule with a fixed `key` lists only its next firing. Its later firings coalesce into that
   task.
 - A firing for a live task that is not asleep coalesces into it, so up next leaves it out.
-- Up next leaves out a schedule with a `hold`, and held tasks without a time hold. They wait for
-  their release, so they have no start time.
+- Up next leaves out a schedule with a `hold`, and held tasks that wait for more than time. They
+  wait for their release, so they have no start time.
+
+### Conditions
+
+A held task lists each condition of its hold, in the order it was given, under `conditions`.
+`priory tasks --json` and `/api/tasks/{id}` carry the same field.
+
+| Field | Meaning |
+| ----- | ------- |
+| `kind` | `person`, `time`, `task`, `issue`, `merge` or `blockers` |
+| `until` | A time condition's instant |
+| `task` | A task condition's other task |
+| `resource` | `linear:<issue>` for an issue or blockers condition, `github:<owner/name>#<number>` for a merge |
+| `met` | When the condition was met, or null |
+| `met_as` | How it was met, such as `task 9 is done` or `ENG-7 is Done`, or null |
 
 
 ## Views

@@ -6,7 +6,7 @@ use crate::snooze::{self, Snooze};
 use crate::state::{self, Admission, NewRun, Signal};
 use crate::tools::{self, Act, Answer, Call, Dismiss, Done, Repair};
 use crate::trace::Trace;
-use crate::{deliver, embed, handler, progress, search, sections, stall, summary, sweep};
+use crate::{deliver, embed, handler, hold, progress, search, sections, stall, summary, sweep};
 use herdr_bus::{Bus, Start};
 use priory_factory::factory::{self, Factory, Harness, PermissionMode, Session};
 use priory_intake::intake::OUTPUT;
@@ -587,22 +587,43 @@ enum Input {
 /// Linear or GitHub read never holds the daemon's loop or a lock on the state file.
 #[derive(Default)]
 struct Reads {
-    started: std::collections::HashSet<i64>,
-    done: Vec<std::thread::JoinHandle<(i64, Option<Read>)>>,
+    started: std::collections::HashMap<(Reader, i64), Instant>,
+    done: Vec<std::thread::JoinHandle<(Reader, i64, Option<Read>)>>,
+}
+
+/// How often the daemon reads the state of a hold's unmet Linear issue again, as the intake polls.
+const HOLD_READ_EVERY: Duration = Duration::from_secs(60);
+
+/// Whose condition a read is for: a wait's or a hold's.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+enum Reader {
+    Wait,
+    Hold,
 }
 
 /// A wait condition's current state, or why it could not be read.
 type Read = Result<String, String>;
 
-/// Starts a read for each open wait the daemon can read and has not read yet, and fires the waits
-/// whose finished read shows their condition already holds.
+/// Starts a read for each open wait the daemon has not read yet, and for each unmet issue
+/// condition of a hold once a minute, since the Linear stream misses a close before its position.
+/// Fires the waits and meets the conditions whose finished read shows they already hold.
 fn read_states(db: &mut Connection, reads: &mut Reads) -> Result<(), Error> {
-    for (wait, kind, resource) in tools::readable(db)? {
-        if !reads.started.insert(wait) {
+    let holds = hold::readable(db)?.into_iter();
+    let readable = tools::readable(db)?
+        .into_iter()
+        .map(|(wait, kind, resource)| (Reader::Wait, wait, kind, resource))
+        .chain(holds.map(|(id, resource)| (Reader::Hold, id, "linear_state".to_owned(), resource)));
+    for (reader, id, kind, resource) in readable {
+        let due = match reads.started.get(&(reader, id)) {
+            None => true,
+            Some(at) => reader == Reader::Hold && at.elapsed() >= HOLD_READ_EVERY,
+        };
+        if !due {
             continue;
         }
+        reads.started.insert((reader, id), Instant::now());
         reads.done.push(std::thread::spawn(move || {
-            (wait, current_state(&kind, &resource))
+            (reader, id, current_state(&kind, &resource))
         }));
     }
     let (finished, running) = std::mem::take(&mut reads.done)
@@ -611,11 +632,15 @@ fn read_states(db: &mut Connection, reads: &mut Reads) -> Result<(), Error> {
     reads.done = running;
     for read in finished {
         match read.join().expect("a state read does not panic") {
-            (wait, Some(Ok(state))) => tools::read(db, wait, &state)?,
-            (wait, Some(Err(error))) => {
-                eprintln!("priory daemon: cannot read the current state of wait {wait}: {error}")
+            (Reader::Wait, wait, Some(Ok(state))) => tools::read(db, wait, &state)?,
+            (Reader::Hold, id, Some(Ok(state))) => hold::read(db, id, &state)?,
+            (Reader::Wait, id, Some(Err(error))) => {
+                eprintln!("priory daemon: cannot read the current state of wait {id}: {error}")
             }
-            (_, None) => {}
+            (Reader::Hold, id, Some(Err(error))) => eprintln!(
+                "priory daemon: cannot read the current state of hold condition {id}: {error}"
+            ),
+            (_, _, None) => {}
         }
     }
     Ok(())

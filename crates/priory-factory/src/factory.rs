@@ -456,7 +456,8 @@ pub struct Trigger {
     pub hold: Option<Hold>,
 }
 
-/// Why a task is held, and at most one condition that releases it. With none, a person does.
+/// Why a task is held, and the conditions that release it once all of them hold. With none, a
+/// person does.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Hold {
@@ -465,18 +466,85 @@ pub struct Hold {
     /// An RFC 3339 instant, or a duration such as `2 hours` after the hold.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub until: Option<String>,
-    /// Another task's id: the hold lasts until it ends.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub after: Option<i64>,
-    /// A pull request, `owner/name#42` or `42` in the task's repository: until it merges.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub merge: Option<String>,
+    /// Other tasks' ids, or Linear issues such as `ENG-7`: until each task ends and each issue is
+    /// Done or Canceled. One value or a list.
+    #[serde(
+        default,
+        skip_serializing_if = "Vec::is_empty",
+        deserialize_with = "one_or_many"
+    )]
+    #[schemars(with = "Option<OneOrMany<After>>")]
+    pub after: Vec<After>,
+    /// Pull requests, `owner/name#42` or `42` in the task's repository: until each merges. One
+    /// value or a list.
+    #[serde(
+        default,
+        skip_serializing_if = "Vec::is_empty",
+        deserialize_with = "one_or_many"
+    )]
+    #[schemars(with = "Option<OneOrMany<String>>")]
+    pub merge: Vec<String>,
     /// What a pull request closed without a merge does: `release`, `drop` or `ask`, the default.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub if_closed: Option<String>,
     /// Until the task's Linear issue has no open blocker.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub blockers: bool,
+}
+
+/// What a hold's `after` waits for: another task to end, or a Linear issue to close.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(untagged)]
+pub enum After {
+    Task(i64),
+    Issue(String),
+}
+
+impl std::str::FromStr for After {
+    type Err = String;
+
+    /// A task id such as `12`, or a Linear issue key such as `ENG-7`.
+    fn from_str(text: &str) -> Result<Self, String> {
+        if let Ok(task) = text.parse() {
+            return Ok(Self::Task(task));
+        }
+        let issue = text
+            .split_once('-')
+            .filter(|(team, number)| {
+                team.starts_with(|c: char| c.is_ascii_alphabetic())
+                    && team.chars().all(|c| c.is_ascii_alphanumeric())
+                    && !number.is_empty()
+                    && number.chars().all(|c| c.is_ascii_digit())
+            })
+            .is_some();
+        if !issue {
+            return Err(format!(
+                "after takes a task id or a Linear issue such as ENG-7, not {text:?}"
+            ));
+        }
+        Ok(Self::Issue(text.to_ascii_uppercase()))
+    }
+}
+
+/// One value, or a list of them; null reads as none, as the single values it replaced did.
+#[derive(Deserialize, JsonSchema)]
+#[serde(untagged)]
+#[schemars(rename = "OneOrMany_{T}")]
+enum OneOrMany<T> {
+    One(T),
+    Many(Vec<T>),
+}
+
+fn one_or_many<'de, D, T>(deserializer: D) -> Result<Vec<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    Ok(match Option::<OneOrMany<T>>::deserialize(deserializer)? {
+        None => vec![],
+        Some(OneOrMany::One(one)) => vec![one],
+        Some(OneOrMany::Many(many)) => many,
+    })
 }
 
 /// The end of a schedule's day of firings: a time of day, or a duration after `at`.
