@@ -410,8 +410,8 @@ pub struct Trigger {
     pub view: Option<String>,
     /// The Slack channel id a `slack` trigger reads, such as `C0123`.
     pub channel: Option<String>,
-    /// Values an event must have: `label` for GitHub; `team`, `label`, `state` for Linear; `text`
-    /// for Slack.
+    /// Values an event must have: `label` for GitHub; `team`, `project` (its name or id), `label`,
+    /// `state` for Linear; `text` for Slack.
     pub filter: Option<BTreeMap<String, String>>,
     /// The workflow a matching event starts, by file name.
     pub workflow: String,

@@ -1,0 +1,15 @@
+{
+  "id": "5d0e8c3a-6f1b-5a7e-9c24-31b8f0e6d2a9",
+  "type": "linear.view.changed",
+  "subject": "6b3c2f9a1d4e",
+  "time": "2026-11-17T13:05:12.340Z",
+  "data": {
+    "view": "6b3c2f9a1d4e",
+    "entered": ["ENG-12", "ENG-15"],
+    "left": ["ENG-7"],
+    "time": "2026-11-17T13:05:12.340Z",
+    "baseline": false,
+    "triggers": []
+  },
+  "links": []
+}

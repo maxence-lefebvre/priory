@@ -10,6 +10,7 @@ pub(super) const KEY: &str = "LINEAR_API_KEY";
 const ENDPOINT: &str = "https://api.linear.app/graphql";
 pub(super) const ENTERED: &str = "linear.issue.entered";
 pub(super) const LEFT: &str = "linear.issue.left";
+pub(super) const VIEW_CHANGED: &str = "linear.view.changed";
 pub(super) const CREATED: &str = "linear.issue.created";
 pub(super) const STATE_CHANGED: &str = "linear.issue.state_changed";
 pub(super) const COMMENTED: &str = "linear.comment.created";
@@ -20,7 +21,7 @@ const COMMENTS: &str = "linear.comments";
 const FIRST: u64 = 50;
 
 const ISSUE: &str = "fragment issue on Issue { id identifier title url createdAt updatedAt \
-    team { key } project { name } state { name } labels { nodes { name } } creator { displayName } }";
+    team { key } project { id name } state { name } labels { nodes { name } } creator { displayName } }";
 /// The issues that block an issue, kept small: Linear multiplies a query's cost by page sizes.
 const BLOCKING: &str = "inverseRelations(first: 20) { nodes { type issue { identifier state { type } } } \
     pageInfo { hasNextPage } }";
@@ -130,9 +131,11 @@ impl<'a> Linear<'a> {
         let view = stream.trim_start_matches("linear.view:");
         let query = format!(
             "query View($view: String!, $after: String) {{ customView(id: $view) {{ \
-             issues(first: 100, after: $after) {{ nodes {{ ...issue }} {PAGE} }} }} }} {ISSUE}"
+             filterData issues(first: 100, after: $after) {{ nodes {{ ...issue }} {PAGE} }} }} }} {ISSUE}"
         );
-        let issues = self.nodes(&query, json!({ "view": view }), "/customView/issues", true)?;
+        let (first, issues) =
+            self.pages(&query, json!({ "view": view }), "/customView/issues", true)?;
+        let filter = first["customView"]["filterData"].clone();
         let members: BTreeMap<String, Value> = issues
             .iter()
             .map(|issue| {
@@ -157,25 +160,37 @@ impl<'a> Linear<'a> {
         let version = marker.map_or(0, |marker| {
             marker["position"].as_u64().unwrap_or_default() + 1
         });
-        let entered = members
+        let entered: Vec<&Value> = members
             .iter()
             .filter(|(id, _)| !before.contains_key(*id))
-            .map(|(_, member)| (ENTERED, member));
-        let left = before
+            .map(|(_, member)| member)
+            .collect();
+        let left: Vec<&Value> = before
             .iter()
             .filter(|(id, _)| !members.contains_key(*id))
-            .map(|(_, member)| (LEFT, member));
-        let events = entered
-            .chain(left)
-            .map(|(kind, member)| {
-                let mut data = member.clone();
-                data["view"] = json!(view);
-                data["time"] = json!(now.to_string());
-                let name = format!("{stream}:{version}:{}:{kind}", text(&member["linear_id"]));
-                self.message(kind, &name, data, baseline)
-            })
-            .collect::<Result<_, _>>()?;
-        let changed = baseline || members != before;
+            .map(|(_, member)| member)
+            .collect();
+        // A marker from before the intake kept filters has none to compare.
+        let refiltered = marker
+            .and_then(|marker| marker.get("filter"))
+            .is_some_and(|before| *before != filter);
+        let events = if refiltered {
+            vec![view_changed(stream, version, now, &entered, &left)]
+        } else {
+            let entered = entered.into_iter().map(|member| (ENTERED, member));
+            let left = left.into_iter().map(|member| (LEFT, member));
+            entered
+                .chain(left)
+                .map(|(kind, member)| {
+                    let mut data = member.clone();
+                    data["view"] = json!(view);
+                    data["time"] = json!(now.to_string());
+                    let name = format!("{stream}:{version}:{}:{kind}", text(&member["linear_id"]));
+                    self.message(kind, &name, data, baseline)
+                })
+                .collect::<Result<_, _>>()?
+        };
+        let changed = baseline || refiltered || members != before;
         Ok(Polled {
             stream: stream.into(),
             events,
@@ -183,6 +198,7 @@ impl<'a> Linear<'a> {
                 "stream": stream,
                 "position": if changed { version } else { version - 1 },
                 "members": members.into_values().collect::<Vec<_>>(),
+                "filter": filter,
             }),
         })
     }
@@ -333,6 +349,7 @@ impl<'a> Linear<'a> {
                 .flatten()
                 .all(|(field, value)| match field.as_str() {
                     "team" => data["team"] == *value,
+                    "project" => data["project"] == *value || data["project_id"] == *value,
                     "state" => *state == *value,
                     "label" => data["labels"]
                         .as_array()
@@ -359,10 +376,23 @@ impl<'a> Linear<'a> {
     fn nodes(
         &self,
         query: &str,
-        mut variables: Value,
+        variables: Value,
         path: &str,
         all: bool,
     ) -> Result<Vec<Value>, String> {
+        Ok(self.pages(query, variables, path, all)?.1)
+    }
+
+    /// The first page's data, and the nodes of the connection at `path`, every page or only the
+    /// first.
+    fn pages(
+        &self,
+        query: &str,
+        mut variables: Value,
+        path: &str,
+        all: bool,
+    ) -> Result<(Value, Vec<Value>), String> {
+        let mut first = None;
         let mut nodes = Vec::new();
         loop {
             let data = graphql(&self.key, query, &variables)?;
@@ -376,9 +406,10 @@ impl<'a> Linear<'a> {
                     .flatten()
                     .cloned(),
             );
-            let next = &connection["pageInfo"];
+            let next = connection["pageInfo"].clone();
+            let first = first.get_or_insert(data);
             if !all || next["hasNextPage"] != true {
-                return Ok(nodes);
+                return Ok((first.clone(), nodes));
             }
             variables["after"] = next["endCursor"].clone();
         }
@@ -434,6 +465,36 @@ fn polled(
         events,
         marker: json!({ "stream": stream, "position": latest, "seen": seen }),
     }
+}
+
+/// A view whose filter changed: the issues the change brought in and took out, which request no
+/// task and publish no `issue.entered` or `issue.left`.
+fn view_changed(
+    stream: &str,
+    version: u64,
+    now: Timestamp,
+    entered: &[&Value],
+    left: &[&Value],
+) -> Message {
+    let view = stream.trim_start_matches("linear.view:");
+    let issues = |members: &[&Value]| -> Vec<Value> {
+        members
+            .iter()
+            .map(|member| member["issue"].clone())
+            .collect()
+    };
+    let data = json!({
+        "view": view,
+        "entered": issues(entered),
+        "left": issues(left),
+        "time": now.to_string(),
+        "baseline": false,
+        "triggers": [],
+    });
+    Message::new(VIEW_CHANGED, data)
+        .id(id(&format!("{stream}:{version}:changed")))
+        .subject(view)
+        .time(now)
 }
 
 fn marker_message(stream: &str, marker: &Value) -> Message {
@@ -514,6 +575,7 @@ fn fields(issue: &Value) -> Value {
         "url": issue["url"],
         "team": issue["team"]["key"],
         "project": issue["project"]["name"],
+        "project_id": issue["project"]["id"],
         "state": issue["state"]["name"],
         "labels": labels,
     })

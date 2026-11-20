@@ -1006,7 +1006,7 @@ fn a_lane_with_a_newline_fails_check() {
 fn a_linear_trigger_uses_a_supported_event_filter_and_key() {
     let view = "source = \"linear.view\"\nview = \"6b3c2f9a1d4e\"\non = \"issue.entered\"\nworkflow = \"implement\"\nkey = \"issue.identifier\"\nbackfill = true\n";
     let issues = "source = \"linear\"\non = \"comment.created\"\nfilter = { team = \"ENG\", label = \"agent\" }\nworkflow = \"implement\"\n";
-    let wrong = "source = \"linear\"\non = \"issue.entered\"\nfilter = { project = \"x\" }\nworkflow = \"implement\"\nkey = \"issue.id\"\n";
+    let wrong = "source = \"linear\"\non = \"issue.entered\"\nfilter = { priority = \"x\" }\nworkflow = \"implement\"\nkey = \"issue.id\"\n";
     let mut files = with("triggers/agent-label.toml", view);
     files.push(("triggers/comments.toml", issues));
     files.push(("triggers/wrong.toml", wrong));
@@ -1017,7 +1017,7 @@ fn a_linear_trigger_uses_a_supported_event_filter_and_key() {
     assert_eq!(
         outcome.stderr,
         "triggers/wrong.toml:2: a `linear` trigger handles `issue.created`, `issue.state_changed`, `comment.created`, not `issue.entered`\n\
-         triggers/wrong.toml:3: a `linear` trigger filters on `team`, `label` or `state`\n\
+         triggers/wrong.toml:3: a `linear` trigger filters on `team`, `project`, `label` or `state`\n\
          triggers/wrong.toml:5: a Linear trigger's `key` is `issue.identifier`\n"
     );
 }

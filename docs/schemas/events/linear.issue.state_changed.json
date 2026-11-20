@@ -54,6 +54,13 @@
             "null"
           ]
         },
+        "project_id": {
+          "description": "Linear's id of the issue's project; null without one.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "state": {
           "description": "The issue's state name.",
           "type": "string"
@@ -94,6 +101,7 @@
         "url",
         "team",
         "project",
+        "project_id",
         "state",
         "labels",
         "from",

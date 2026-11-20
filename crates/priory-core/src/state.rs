@@ -757,6 +757,17 @@ pub fn read_only() -> Result<Connection, String> {
     Ok(db)
 }
 
+/// The desk line of a Linear view whose filter changed.
+fn refiltered(data: &serde_json::Value) -> String {
+    let count = |field: &str| data[field].as_array().map_or(0, Vec::len);
+    format!(
+        "view {} changed its filter: {} issues entered and {} left, with no task requested",
+        data["view"].as_str().unwrap_or_default(),
+        count("entered"),
+        count("left")
+    )
+}
+
 /// Records `message` in the inbox and applies its route, in one transaction. A message
 /// already in the inbox changes nothing. Returns the tmux session of a run it ended, to kill.
 pub(crate) fn handle(
@@ -885,6 +896,9 @@ pub(crate) fn handle(
         ],
     )?;
     let seq = tx.last_insert_rowid();
+    if message.kind == "linear.view.changed" {
+        crate::post::report(&tx, "linear", &refiltered(&message.data))?;
+    }
     crate::hold::event(&tx, &resources)?;
     // The keyed task keeps the event; another task that shares the resource hears it through its wait.
     for other in owners.iter().filter(|other| Some(other.id) != task) {
