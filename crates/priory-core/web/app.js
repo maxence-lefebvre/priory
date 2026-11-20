@@ -369,7 +369,7 @@ function deskTable(model, selected) {
     <td class="recw">${ask.recommendation || ""}</td><td class="r">${timeTag(ask.since)}</td></tr>`;
   const itemLine = (item) => html`<tr>
     <td>${stateWord(item.kind === "prompt" ? "prompt" : item.kind)}</td><td class="mono">${["blocked", "failed"].includes(item.kind) ? html`<a href="/tasks/${item.task}">${item.key || ""}</a>` : item.key || ""}</td><td>${item.step || ""}</td>
-    <td class="q full t-${role(item.kind)}"><span>${item.what}</span></td><td class="recw">${["blocked", "failed"].includes(item.kind) ? taskActs(item.task, item.kind, true) : ""}</td><td class="r">${timeTag(item.since)}</td></tr>`;
+    <td class="q full t-${role(item.kind)}"><span>${item.what}</span></td><td class="recw">${["blocked", "failed"].includes(item.kind) ? taskActs(item.task, item.kind) : ""}</td><td class="r">${timeTag(item.since)}</td></tr>`;
   const group = (title, count) => html`<tr class="grp"><td colspan="6">${title}<span>${count}</span></td></tr>`;
   return html`<table class="tbl">
     <thead><tr><th>State</th><th>Task</th><th>Step</th><th>Waits on you</th><th>Recommends</th><th class="r">Age</th></tr></thead>
@@ -591,16 +591,16 @@ const ARMS = ["revive", "cancel"];
 const ENDED = ["done", "failed", "dropped"];
 const actsOf = (taskState) => (taskState === "blocked" ? ["resume", "cancel"] : ["failed", "dropped"].includes(taskState) ? ["revive"] : taskState === "done" ? [] : ["cancel"]);
 
-// The action buttons of a task in `taskState`, and its last action's note; `bare` leaves the note out.
-function taskActs(task, taskState, bare = false) {
+// The action buttons of a task in `taskState`, and its last action's note.
+function taskActs(task, taskState) {
   const busy = state.taskBusy !== null || Boolean(state.failed);
   const buttons = actsOf(taskState).map((act) => {
     const armed = state.taskArmed?.task === task && state.taskArmed.act === act;
     const label = armed ? html`<span><small>Tap again to ${act}</small>${ACTS[act]}</span><span class="drain" aria-hidden="true"></span>` : ACTS[act];
-    return html`<button class="btn secondary act ${armed ? "armed" : ""}" data-action="task-act" data-task="${task}" data-act="${act}" aria-disabled="${busy ? "true" : "false"}">${label}</button>`;
+    return html`<button id="act-${task}-${act}" class="btn secondary act ${armed ? "armed" : ""}" data-action="task-act" data-task="${task}" data-act="${act}" aria-disabled="${busy ? "true" : "false"}">${label}</button>`;
   });
   const notice = state.taskNotices.get(task);
-  return html`<span class="acts">${buttons}</span>${!bare && notice ? html`<p class="note acts-note" role="status">${notice}</p>` : ""}`;
+  return html`<span class="acts">${buttons}</span>${notice ? html`<p class="note acts-note" role="status">${notice}</p>` : ""}`;
 }
 
 function disarmTask() {
@@ -635,12 +635,15 @@ async function taskWrite(task, act, body) {
   state.taskBusy = null;
   const { status, body: answered } = reply;
   if (status === 401) return signOut("The daemon refused this token. Paste the current one.");
-  if (status === 200 && act === "say") state.sayDrafts.delete(task);
+  // Text typed while the say was in flight stays as the next draft.
+  if (status === 200 && act === "say" && (state.sayDrafts.get(task) || "").trim() === body.text) state.sayDrafts.delete(task);
   state.taskNotices.set(task, status === 200 ? `${DONE_AS[act]}: ${answered.ok}.`
     : status === 409 ? "The state changed since this page loaded. Read the task again, then tap again."
       : status === 503 ? "Could not send: no priory daemon runs beside this server. Start priory daemon, then send again."
         : status === 504 || status === 0 ? "The daemon may have applied this but did not confirm it. Check the task's state before you send again."
           : `Could not ${act}: ${answered.error || `the server answered ${status}`}.`);
+  // A refused action changes no listing, so the refresh may not paint: the note shows now.
+  render();
   refresh();
 }
 

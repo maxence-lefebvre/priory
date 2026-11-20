@@ -1393,6 +1393,15 @@ fn the_queue_lists_each_asleep_task_with_what_it_waits_on_and_since_when() {
             { "kind": "time", "on": "2026-11-18T09:00:00Z", "since": "2026-11-17T10:01:00Z" },
         ])
     );
+    let text = setup.priory(&["queue"]);
+    succeeded(&text);
+    let text = String::from_utf8(text.stdout).unwrap();
+    assert!(
+        text.ends_with(
+            "\nasleep\tkey\tsince\twaits on\n1\tcli:docs-1\t2026-11-17T10:00:00Z\treview github:owner/repo#7 since 2026-11-17T10:00:00Z; time 2026-11-18T09:00:00Z since 2026-11-17T10:01:00Z\n"
+        ),
+        "{text}"
+    );
 }
 
 #[test]
@@ -3031,8 +3040,15 @@ fn resume_say_cancel_and_revive_through_their_endpoints_do_what_their_cli_verbs_
     let stale = post(&address, "/api/tasks/2/cancel", "", r#"{"revision": 1}"#);
     assert_eq!(stale.0, 409, "{}", stale.1);
     assert_ne!(state(2), "dropped");
-    let body = format!(r#"{{"revision": {}}}"#, revision());
-    let cancelled = post(&address, "/api/tasks/2/cancel", "", &body);
+    // The daemon may move the state between the read and the cancel, as it may for any client.
+    let cancel = || {
+        let body = format!(r#"{{"revision": {}}}"#, revision());
+        post(&address, "/api/tasks/2/cancel", "", &body)
+    };
+    let cancelled = (0..20)
+        .map(|_| cancel())
+        .find(|(status, _)| *status != 409)
+        .unwrap();
     assert_eq!(cancelled.0, 200, "{}", cancelled.1);
     assert_eq!(state(2), "dropped");
     let revived = post(
@@ -3051,7 +3067,7 @@ fn resume_say_cancel_and_revive_through_their_endpoints_do_what_their_cli_verbs_
     );
     assert_eq!(foreign.0, 403, "{}", foreign.1);
     assert_eq!(get(&address, "/api/tasks/2/cancel", Some(TOKEN)).0, 405);
-    assert_eq!(post(&address, "/api/tasks/9/resume", "", "{}").0, 422);
+    assert_eq!(post(&address, "/api/tasks/9/resume", "", "{}").0, 404);
     assert_eq!(post(&address, "/api/tasks/2/say", "", "{}").0, 400);
 }
 

@@ -1754,6 +1754,15 @@ fn a_linear_trigger_without_the_key_fails_and_publishes_nothing() {
         "priory intake: LINEAR_API_KEY is not set: the Linear triggers and waits need a Linear API key\n"
     );
     assert!(setup.output().is_empty());
+    let banner = setup.desk()["intake"].clone();
+    assert!(
+        banner.as_str().is_some_and(|banner| banner
+            .starts_with("the intake fails to poll linear since ")
+            && banner.ends_with(
+                ": LINEAR_API_KEY is not set: the Linear triggers and waits need a Linear API key"
+            )),
+        "{banner}"
+    );
 }
 
 #[test]

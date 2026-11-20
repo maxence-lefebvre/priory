@@ -111,7 +111,7 @@ curl -X POST http://127.0.0.1:7340/api/asks/42/answer -H "Authorization: Bearer 
 | `200` `{"key": "cli:2026-11-20-1", "id": 7}` | For `/api/request`: the daemon published the request and task `id` holds `key`. `id` is `null` when no task took the key |
 | `409` `{"error", "ask"}` | The ask's revision is no longer the one sent, or it was answered, dismissed or withdrawn. `ask` is its current state |
 | `409` `{"error"}` | A cancel's `revision` is no longer the state's |
-| `404`, `422` `{"error"}` | The ask is gone, or the daemon refused for another reason, such as a resume of a task that is not blocked or a say to a task with no run yet. `error` is the CLI's sentence |
+| `404`, `422` `{"error"}` | The ask or task is gone, or the daemon refused for another reason, such as a resume of a task that is not blocked or a say to a task with no run yet. `error` is the CLI's sentence |
 | `503` `{"error"}` | No daemon listens on the socket, so nothing was sent. Reads keep working |
 | `504` `{"error"}` | The daemon took the line but did not reply within 10 seconds. It may have applied it: read the state before you retry |
 

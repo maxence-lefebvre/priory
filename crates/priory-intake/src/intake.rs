@@ -124,15 +124,26 @@ pub fn run(
         .collect();
     let bus = Bus::open_default().map_err(|error| error.to_string())?;
     bus.declare(&output()).map_err(|error| error.to_string())?;
+    // A source the triggers need that cannot start, such as one without its key, ends the intake;
+    // recording it first lets the desk say why while systemd restarts it.
+    let started = |source: &str, error: String| {
+        if let Err(unrecorded) = now().and_then(|at| health(&[(source, Some(error.clone()))], at)) {
+            eprintln!("{unrecorded}");
+        }
+        error
+    };
     let mut linear = (!linear_triggers.is_empty())
         .then(|| linear::Linear::start(&bus, linear_triggers.clone()))
-        .transpose()?;
+        .transpose()
+        .map_err(|error| started("linear", error))?;
     let mut reviews = (!review_triggers.is_empty())
         .then(|| reviews::Reviews::start(&bus, review_triggers))
-        .transpose()?;
+        .transpose()
+        .map_err(|error| started("github", error))?;
     let mut slack = (!slack_triggers.is_empty())
         .then(|| slack::Slack::start(&bus, slack_triggers.clone()))
-        .transpose()?;
+        .transpose()
+        .map_err(|error| started("slack", error))?;
     // The loop reports a failing read of the waits; here it only costs those repos their cursors.
     let waiting = watched().unwrap_or_default();
     let resumed: BTreeSet<&str> = repos

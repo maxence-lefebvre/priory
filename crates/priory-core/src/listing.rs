@@ -221,9 +221,9 @@ fn tasks_since(
     Ok(tasks)
 }
 
-/// `progress` and `conditions` as the JSON they are stored or read as.
+/// `progress`, `conditions` and `waits` as the JSON they are stored or read as.
 fn parse_json(task: &mut Value) {
-    for field in ["progress", "conditions"] {
+    for field in ["progress", "conditions", "waits"] {
         if let Some(text) = task[field].as_str() {
             task[field] = serde_json::from_str(text).unwrap_or(Value::Null);
         }
@@ -437,11 +437,11 @@ fn asleep(db: &Connection) -> rusqlite::Result<Value> {
         ),
         [],
     )?;
-    for task in asleep.as_array_mut().into_iter().flatten() {
-        if let Some(waits) = task["waits"].as_str() {
-            task["waits"] = serde_json::from_str(waits).unwrap_or(Value::Null);
-        }
-    }
+    asleep
+        .as_array_mut()
+        .expect("rows are an array")
+        .iter_mut()
+        .for_each(parse_json);
     Ok(asleep)
 }
 

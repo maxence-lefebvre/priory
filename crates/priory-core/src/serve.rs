@@ -7,7 +7,7 @@ use priory_factory::factory::{Factory, Trigger};
 use priory_intake::intake::{self, Github};
 use priory_runtime::http::{self, Reply, Request};
 use priory_runtime::runtime;
-use rusqlite::Connection;
+use rusqlite::{Connection, OptionalExtension};
 use std::net::{SocketAddr, TcpListener};
 use std::path::Path;
 use std::sync::Arc;
@@ -439,8 +439,8 @@ fn write(db: &Result<Connection, String>, home: &Path, request: &Request) -> Rep
 enum Sent {
     /// The ask and the ask's revision the body sent.
     Ask(i64, i64),
-    /// The state's revision a desk action was made on.
-    State(i64),
+    /// The task of a desk action, and the state's revision it was made on, if any.
+    Task(i64, Option<i64>),
     Nothing,
 }
 
@@ -524,8 +524,7 @@ fn write_line(db: &Connection, write: &Write, body: &[u8]) -> Result<(String, Se
                 text: body.text,
                 expected: body.revision,
             };
-            let sent = act.expected.map_or(Sent::Nothing, Sent::State);
-            Ok((line(&act), sent))
+            Ok((line(&act), Sent::Task(act.task, act.expected)))
         }
     }
 }
@@ -545,14 +544,22 @@ fn ask_id(db: &Connection, ask: &str) -> Result<i64, Reply> {
 }
 
 /// The reply to a write the daemon refused. For an ask: `404` once it is gone, `409` with the ask
-/// when its revision moved or it closed. For a desk action made on a revision: `409` once the state
-/// moved past it. `422` otherwise, such as an option a step does not take.
+/// when its revision moved or it closed. For a desk action: `404` without the task, `409` once the
+/// state moved past the revision it was made on. `422` otherwise, such as an option a step does not
+/// take.
 fn refusal(db: &Connection, sent: Sent, refused: &str) -> Reply {
     let (id, sent) = match sent {
         Sent::Ask(id, sent) => (id, sent),
-        Sent::State(expected) => {
-            return match state::revision(db) {
-                Ok(at) if at != expected => Reply::error(409, refused),
+        Sent::Task(task, expected) => {
+            let found = db
+                .query_row("SELECT 1 FROM tasks WHERE id = ?1", [task], |_| Ok(()))
+                .optional()
+                .and_then(|found| Ok((found, state::revision(db)?)));
+            return match found {
+                Ok((None, _)) => Reply::error(404, refused),
+                Ok((_, at)) if expected.is_some_and(|expected| expected != at) => {
+                    Reply::error(409, refused)
+                }
                 Ok(_) => Reply::error(422, refused),
                 Err(error) => Reply::error(500, &error.to_string()),
             };
