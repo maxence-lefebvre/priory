@@ -49,7 +49,7 @@ Client Secret, and sends the lowercase hex digest in `Sentry-Hook-Signature`. Th
 the `Sentry-Hook-Resource` header, not the body, so the mapper reads both. `Request-ID` is unique
 per request. `Sentry-Hook-Timestamp` is sent, but the docs do not say the signature covers it, so
 do not rely on it against replays. Sentry expects a response within 1 second, so the route must
-reply `202` before it does any work, as the GitHub route does.
+verify, map and publish, then reply `202`, as the GitHub route does, within that second.
 
 **Task key.** `sentry:<issue id>`, from `data.issue.id`. Later `assigned` and `resolved` actions
 then reach the task that the first one started.
@@ -94,9 +94,9 @@ secret stays private. The docs say a webhook may be saved without a secret, so P
 a delivery when it has no secret configured. `X-Honeycomb-Webhook-Delivery-ID` stays the same
 across retries, which suits the message id.
 
-**Task key.** `honeycomb:<trigger id>`. The payload is a template the owner writes, with variables
-such as `.ID`, `.Name`, `.Description` and `.URL`. The slice must therefore ship a documented
-template and fail loudly when a payload lacks `.ID`.
+**Task key.** `honeycomb:<trigger id>`. A webhook with no payload template sends Honeycomb's standard payload. Its field names are not on
+the pages read here, so the slice should ship a documented custom template that uses the variables
+`.ID`, `.Name`, `.Description` and `.URL`, and fail loudly when a payload lacks the id.
 
 **Credential.** `HONEYCOMB_WEBHOOK_SECRET`, the Shared Secret of the recipient.
 
@@ -153,8 +153,8 @@ workspace id.
 **Already covered.** The server, the envelope, duplicates, triggers and routing.
 
 **New.** The route with a `HEAD` reply, the SHA-1 check, the mapper, the workspace filter, the
-trigger source `intercom`, and the schemas. Reading the conversation body would add an API call and
-a token, so leave it to a later slice.
+trigger source `intercom`, and the schemas. The v2.15 payload carries `body` and `subject` for conversations, so the first slice needs no API
+call. Fetching the full history would, so leave it to a later slice.
 
 **Sources.**
 [Webhook topics and signature](https://developers.intercom.com/docs/references/webhooks/webhook-models.md),
@@ -173,7 +173,8 @@ select `ALARM` after `OK`.
 - Push, preferred. An EventBridge rule on that pattern targets an API destination, which is an HTTPS
   endpoint that EventBridge invokes with the event. The route would be `POST /hooks/cloudwatch`.
   CloudWatch states that it guarantees delivery of alarm state change events to EventBridge.
-- Poll. `DescribeAlarmHistory` returns up to 100 records per call, newest first, and allows 20
+- Poll. `DescribeAlarmHistory` returns up to 100 records per call, newest first with `ScanBy`
+  `TimestampDescending`, and allows 20
   requests a second per account and region. The intake would use the newest record time as its
   stream position, as the Linear streams do. It needs AWS credentials on every machine that runs
   the intake.
@@ -196,16 +197,18 @@ Poll: the standard AWS credential chain, which Priory should never read into its
   `us-east-1`.
 - Free tier: the pricing page lists 10 alarm metrics for standard-resolution alarms that name their
   metrics directly.
-- The docs disagree on the delivery guarantee: the CloudWatch page says guaranteed, while a search
-  of the EventBridge reference found "best effort" for monitoring events. Treat a lost event as
-  possible and keep polling as the recovery path.
+- The CloudWatch page says it guarantees delivery of alarm state change events to EventBridge. It
+  says nothing about the leg from EventBridge to the endpoint, which fails if Priory is down, so
+  polling stays useful as the recovery path.
 
 **Already covered.** The server, the envelope, duplicates through a UUIDv5 of the EventBridge event `id`,
 triggers and routing, and the polling loop with baselines.
 
 **New.** The route and its check, the mapper, an owner guide for the rule and connection, the
 trigger source `cloudwatch` with a `state` filter, and the schemas. The poll option adds AWS
-credentials handling that no other source has.
+credentials handling that no other source has, and a rule so that a polled alarm record and an
+EventBridge event for one change publish once, as [webhooks.md](../intake/webhooks.md#duplicates)
+does for GitHub: their ids differ.
 
 **Sources.**
 [Alarm events and EventBridge](https://docs.aws.amazon.com/AmazonCloudWatch/latest/monitoring/cloudwatch-and-eventbridge.html),
@@ -223,10 +226,11 @@ can act on, and a Figma comment is that.
 **Trigger on.** A comment on a file: `figma.file.comment_created`, from the event `FILE_COMMENT`.
 Figma's docs suggest it for creating tasks in Asana or Jira. Others are `FILE_VERSION_UPDATE`
 (a named version), `LIBRARY_PUBLISH` and `DEV_MODE_STATUS_UPDATE`. Skip `FILE_UPDATE`, which fires
-on every edit.
+within 30 minutes of editing inactivity in a file: too coarse and too frequent for tasks.
 
-**Poll or webhook.** Webhook, through the v2 webhooks API. One webhook has one event type, so a
-factory needs one webhook per event type. The route would be `POST /hooks/figma`.
+**Poll or webhook.** Webhook, through the v2 webhooks API. The events page lists each event with its own `event_type`, and subscribing to `FILE_UPDATE`
+also includes `FILE_DELETE`, so check which events one webhook receives before assuming one webhook
+per type. The route would be `POST /hooks/figma`.
 
 **Signature.** None. Each payload repeats the `passcode` that the owner chose when creating the
 webhook, in the JSON body. The check is a constant-time comparison of that field, after the body
@@ -253,14 +257,14 @@ per comment is the alternative, from `comment_id`.
 
 **Already covered.** The server, the envelope, duplicates, triggers and routing.
 
-**New.** The route and the `PING` case, the passcode check, the mapper, a note on one webhook per
-event type, the trigger source `figma`, and the schemas.
+**New.** The route and the `PING` case, the passcode check, the mapper, a note on which events each
+webhook receives, the trigger source `figma`, and the schemas.
 
 **Sources.**
 [Webhooks](https://developers.figma.com/docs/rest-api/webhooks),
 [Webhook events](https://developers.figma.com/docs/rest-api/webhooks-events),
 [Rate limits](https://developers.figma.com/docs/rest-api/rate-limits),
-[Forum report](https://forum.figma.com/report-a-problem-6/rest-v2-team-webhook-file-comment-silently-stops-delivering-after-1-to-4h-status-stays-active-no-failed-attempts-logged-55036).
+[Forum report, seen in a search result only](https://forum.figma.com/report-a-problem-6/rest-v2-team-webhook-file-comment-silently-stops-delivering-after-1-to-4h-status-stays-active-no-failed-attempts-logged-55036).
 
 ## Suggested order
 
@@ -270,7 +274,7 @@ event type, the trigger source `figma`, and the schemas.
 | 2 | Honeycomb | S | Reuses the route pattern. Only the check (a shared header) and a payload template are new |
 | 3 | Intercom | M | One more check (HMAC-SHA1), a `HEAD` reply and a workspace filter |
 | 4 | CloudWatch | M | Needs an owner guide for EventBridge, and polling would add AWS credentials |
-| 5 | Figma | M | Weak passcode check, one webhook per event type, and an unconfirmed delivery bug |
+| 5 | Figma | M | Weak passcode check, and an unconfirmed delivery bug |
 
 Sizes: S is about one pull request and a day. M is one pull request plus an owner guide or a
 second mode.
