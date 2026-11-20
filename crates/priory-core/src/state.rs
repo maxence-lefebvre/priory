@@ -10,7 +10,7 @@ use std::collections::BTreeMap;
 use std::io::Write;
 use std::time::Duration;
 
-const VERSION: i64 = 37;
+const VERSION: i64 = 38;
 
 const SCHEMA: &str = "
 CREATE TABLE tasks (
@@ -640,15 +640,21 @@ const SCHEMA_36: &str = concat!(
 "
 );
 
+// A task's progress as its agent last published it: a JSON object, merged field by field.
+const SCHEMA_37: &str = "
+ALTER TABLE tasks ADD COLUMN progress TEXT;
+PRAGMA user_version = 37;
+";
+
 // Each person's last visit to the desk, which its Since you looked counts from.
-const SCHEMA_37: &str = concat!(
+const SCHEMA_38: &str = concat!(
     "CREATE TABLE IF NOT EXISTS visits (
   person TEXT PRIMARY KEY,
   seen   TEXT NOT NULL
 );
 ",
     bumps!("visits", "trace"),
-    "PRAGMA user_version = 37;
+    "PRAGMA user_version = 38;
 "
 );
 
@@ -658,7 +664,7 @@ const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA_10, SCHEMA_11, SCHEMA_12, SCHEMA_13, SCHEMA_14, SCHEMA_15, SCHEMA_16, SCHEMA_17,
     SCHEMA_18, SCHEMA_19, SCHEMA_20, SCHEMA_21, SCHEMA_22, SCHEMA_23, SCHEMA_24, SCHEMA_25,
     SCHEMA_26, SCHEMA_27, SCHEMA_28, SCHEMA_29, SCHEMA_30, SCHEMA_31, SCHEMA_32, SCHEMA_33,
-    SCHEMA_34, SCHEMA_35, SCHEMA_36, SCHEMA_37,
+    SCHEMA_34, SCHEMA_35, SCHEMA_36, SCHEMA_37, SCHEMA_38,
 ];
 
 /// The order the queue starts tasks in: band, then a person's order, then age. A band the factory
