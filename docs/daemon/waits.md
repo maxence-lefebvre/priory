@@ -17,8 +17,10 @@ ask are refused, since only one of their options moves the task on.
 
 - A step's ask moves the task by `next[option]`, as in the table. A model step makes the task
   `ready` with that step's prompt queued.
-- An agent's ask queues the answer as the task's next prompt. An asleep task becomes `ready`. A
-  task whose run has not stopped yet stays `running`, and the answer is typed after its `Stop`.
+- An agent's ask queues the answer as the task's next prompt, after fixed words such as
+  `Answer to ask 12 (revision 2): `, so an answer starting with `/` never runs as a slash command.
+  An asleep task becomes `ready`. A task whose run has not stopped yet stays `running`, and the
+  answer is typed after its `Stop`.
 
 A `ready` task's next run resumes the session of the current step's agent and types its queued
 prompts.
@@ -61,7 +63,8 @@ the agent as a line of a prompt, as any event on a resource it owns does.
 Feedback is a review, a comment or a review thread comment on the pull request:
 `github.pull_request_review.submitted`, `github.pull_request.comment` or
 `github.pull_request_review_comment`. It fires a `pull_request` or `review` wait, and the checks
-gate before `done`, with one line that names who said what and where:
+gate before `done`, with one line that names who said what and where. A review whose `state` is
+`approved` or `dismissed` does not fire the checks gate, since it asks the agent for nothing:
 
 ```text
 wait 3 fired: ana reviewed github:owner/name#57: changes_requested https://github.com/owner/name/pull/57#pullrequestreview-301
@@ -91,11 +94,13 @@ refused: the agent ends its turn and reads it first.
 
 A Linear or Slack condition makes the task own `linear:<issue>` or `slack:<channel>:<thread_ts>`, as
 a pull request condition does, and is refused when another active task owns it. It stores the time
-of the agent's last prompt. Only an event whose `time` is at or after that time, to the second, fires
-it. The wait also takes the events on its resource from then on that the daemon ignored because no
-task owned it, so one can fire it at once. The intake watches the issue or thread from then on, as
-`docs/intake/watches.md` describes, so a reply posted after the prompt and before the wait fires it
-at the next poll.
+of the agent's last prompt. The wait also takes the events on its resource from then on that the
+daemon ignored because no task owned it. A `linear_state` event at or after that time, to the
+second, fires the wait. A `linear_comment` or `slack_reply` event fires it only when its `time` is
+at or after the wait was stored, as a pull request comment does. So the agent's own question,
+posted in the turn that stored the wait, neither fires it nor withdraws the ask beside it. A person's
+reply posted in that same turn fires nothing either: the agent reads it in its next prompt. The
+intake watches the issue or thread from then on, as `docs/intake/watches.md` describes.
 
 `until` is an RFC 3339 instant, or a duration such as `30 seconds`, `5 minutes` or `2 hours`: an
 SQLite date modifier that Priory adds to the time of the call. An unknown type or missing field is
