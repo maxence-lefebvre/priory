@@ -3415,7 +3415,10 @@ fn a_wait_after_an_answer_that_beats_the_stop_is_refused_and_the_command_wakes_t
 
 #[test]
 fn a_result_while_an_answers_command_runs_is_refused_and_the_command_wakes_the_task_at_its_step() {
-    let command = json!({ "argv": ["sh", "-c", "sleep 2; echo shipped"], "target": "ops" });
+    let command = json!({
+        "argv": ["sh", "-c", "while [ ! -e go ]; do sleep 0.05; done; echo shipped"],
+        "target": "ops",
+    });
     let setup = ending_its_turn_on_a_command_ask("command-then-result", command);
     let answered = setup.priory(&["answer", "--run", "1", "deploy", "--revision", "1"]);
     let session = setup.rows("runs")[0][4].clone();
@@ -3425,6 +3428,7 @@ fn a_result_while_an_answers_command_runs_is_refused_and_the_command_wakes_the_t
         &[json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": result("unsure")})],
     );
     setup.release("hold-stop");
+    fs::write(setup.dir.join("factory/ops/go"), "").unwrap();
 
     assert!(answered.status.success(), "{answered:?}");
     let (text, error) = reply(&replies[0]);
@@ -10825,6 +10829,38 @@ fn a_chosen_pick_whose_request_the_bus_refused_publishes_it_when_the_daemon_star
         [&pick["chosen"], &pick["applied"]],
         ["Take", "requested task cli:fnd-2409"]
     );
+}
+
+#[test]
+fn a_dispatch_published_before_a_crash_is_published_again_under_the_same_ids() {
+    let requests = json!({ "Take": {
+        "workflow": "implement", "key": "fnd-2409", "text": "Fix the DWARF pause", "repo": "owner/repo"
+    } });
+    let mut setup = asleep_on_a_report("report-republished", &bonjour(requests));
+    let db = rusqlite::Connection::open(setup.dir.join("priory.db")).unwrap();
+    db.execute_batch(
+        "CREATE TRIGGER kept BEFORE DELETE ON dispatches BEGIN SELECT RAISE(ABORT, 'disk gone'); END",
+    )
+    .unwrap();
+
+    let take = setup.priory(&["report", "pick", PICK, "Take", "--expected", "1"]);
+    db.execute_batch("DROP TRIGGER kept").unwrap();
+    setup.crash();
+    setup.start();
+
+    assert!(!take.status.success(), "{take:?}");
+    setup.until("tasks", |rows| rows.len() == 2);
+    // A later pick replies only once the restarted daemon passed its start, where it republished.
+    let later = until_listening(
+        &setup,
+        &["report", "pick", PICK, "Later", "--expected", "2"],
+    );
+    assert!(!later.status.success(), "{later:?}");
+    assert_eq!(
+        requested_tasks(&setup),
+        ["github:owner/repo#42", "cli:fnd-2409"]
+    );
+    assert_eq!(setup.rows("tasks").len(), 2);
 }
 
 #[test]

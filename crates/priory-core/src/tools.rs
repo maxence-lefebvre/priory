@@ -1424,14 +1424,7 @@ fn settle(tx: &Transaction, run: &Run, trace: &Trace) -> rusqlite::Result<Option
     )?;
     // An answer whose command still runs wakes the task with its outcome; until then the task stays
     // `running`, so the sweep leaves its worktree alone.
-    let commanded = tx
-        .query_row(
-            "SELECT 1 FROM actions WHERE task = ?1 AND action = 'answer' AND ended IS NULL",
-            [run.task],
-            |_| Ok(()),
-        )
-        .optional()?;
-    if commanded.is_some() {
+    if commanding(tx, run.task)? {
         end(tx, run.id, "asleep")?;
         return Ok(Some(Some(run.tmux.clone())));
     }
