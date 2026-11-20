@@ -247,10 +247,12 @@ works.
 - **Width.** Below 720 px the selected row opens under itself. From 720 px the list and the opened
   row sit side by side, and the row adds how the order works.
 - **Acting.** An opened waiting row offers Move…, Hold… and Cancel…. Move… runs `priory move`, to
-  the top of the band or into another band the queue shows. Hold… asks for a reason and runs
+  the top of the band or into any other band of the factory, even an empty one. Hold… asks for a reason and runs
   `priory hold TASK --reason`. A held row offers Release and Cancel…, and a running row Attach and
   Cancel…. Cancel… asks once more, then runs `priory cancel`. The header's menu runs `priory pause`
-  or `priory unpause`. When a verb fails, the panel says why on the task.
+  or `priory unpause`. Move, Hold, Release and Cancel send `--expected` with the revision of the
+  read the panel drew, so priory refuses them once the queue changed. When a verb fails or is
+  refused, the panel says why on the task.
 - **Reordering.** The grip in each waiting row's trailing lane drags the task onto another row of
   its band, and leaving the pane ends the drag without a move. `Shift J` and `Shift K` move the
   selected task down or up one place. Both run
@@ -259,8 +261,7 @@ works.
   closes it. `Esc` also closes an open menu.
 - **Agent text.** Reasons, hold reasons and keys draw as plain text.
 
-The design shows each task's title, but `priory queue --json` carries none, so a row shows its key
-and step. "Request a task" in the header and the opened row's History are left out: the panel would
+Each row shows its task's title under its key and step. "Request a task" in the header and the opened row's History are left out: the panel would
 need `priory request`'s form and each task's events.
 
 ## The Bonjour panel
@@ -357,8 +358,8 @@ waiting: snoozing changes what a person sees, never what the daemon does. `prior
 - The tasks ended in the last day.
 - Up next: the next three runs, queued or scheduled, each with when it should start and why, from
   `queue`'s `up_next`.
-- *A title for each task*, as the request or the issue gave it.
-- *The factory's bands*, so Move… can offer a band that holds no task now.
+- A title for each task: its TL;DR, else the first line of its request.
+- The factory's bands, so Move… can offer a band that holds no task now.
 
 ### Bonjour
 
@@ -426,10 +427,6 @@ The panels still need these from Priory's core. Each is a separate slice.
 1. Comments on report rows. Report sections and picks exist.
 2. Earlier reports listed by date, for the Bonjour panel's older and newer arrows.
 3. A `report pick` that replaces a choice the workflow has not applied yet, for Change.
-4. A title for each task in `priory queue --json`, for the Queue panel's rows.
-5. The factory's bands in `priory queue DIR --json`, so Move… can offer an empty band.
-6. `--expected REVISION` on `move`, `hold`, `release` and `cancel`, so a reorder or hold made on a
-   stale read is refused as an answer is. Today the Queue panel sends them without the revision.
 
 The core already serves the rest of the fields above:
 
@@ -441,6 +438,8 @@ The core already serves the rest of the fields above:
   [desk.md](../daemon/desk.md#since-you-looked).
 - Up next: each schedule's [next firing](../intake/schedule.md#next-firing), in `priory queue
   --json`.
+- Queue: each row's `title`, the factory's `bands`, and `--expected` on `move`, `hold`, `release`
+  and `cancel`; see [serve.md](../reference/serve.md#queue) and [runs.md](../daemon/runs.md#queue).
 - Reports and picks: [reports.md](../daemon/reports.md).
 - Ask fields: `what_waits`, `next_action`, `title` and a Markdown `text`, in
   [tools.md](../daemon/tools.md).

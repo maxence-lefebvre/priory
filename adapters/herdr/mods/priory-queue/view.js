@@ -79,13 +79,14 @@ export function queueList(queue, { view, now, room = {}, facets = {} }) {
     id: task.id,
     tile: task.state,
     key: task.key,
+    title: task.title,
     step: task.step,
     position: task.band_position,
     why: why(task, all[all.indexOf(task) - 1], room),
   });
   const bands = [...new Set(waiting.map((/** @type {any} */ task) => task.band))].map((band) =>
     section(`band-${band}`, title(band), waiting.filter((/** @type {any} */ task) => task.band === band), waitingRow));
-  const running = section("running", "Running", runs, (run) => ({ id: run.task, tile: "running", key: run.key, step: run.step, run: run.run, age: age(run.started, now) }));
+  const running = section("running", "Running", runs, (run) => ({ id: run.task, tile: "running", key: run.key, title: run.title, step: run.step, run: run.run, age: age(run.started, now) }));
   /** @type {Map<number, string>} */
   const keys = new Map([...queue.waiting, ...queue.ended].map((task) => [task.id, task.key]));
   for (const run of queue.running) keys.set(run.task, run.key);
@@ -93,13 +94,14 @@ export function queueList(queue, { view, now, room = {}, facets = {} }) {
     id: task.id,
     tile: "held",
     key: task.key,
+    title: task.title,
     step: task.step,
     band: title(task.band),
     why: { text: title(task.reason ?? "held"), tone: "held" },
     conditions: (task.conditions ?? []).map((/** @type {any} */ item) => condition(item, keys, now)),
   }));
   const ended = section("ended", "Last day", done, (task) => ({
-    id: task.id, tile: task.state, key: task.key, step: task.step, age: age(task.ended, now), why: { text: task.reason ?? task.state, tone: "muted" },
+    id: task.id, tile: task.state, key: task.key, title: task.title, step: task.step, age: age(task.ended, now), why: { text: task.reason ?? task.state, tone: "muted" },
   }));
   const sections = { next: [running, ...bands, holds, ended], held: [holds], ended: [ended], all: [running, ...bands, holds, ended] }[view] ?? [];
   const paused = room.paused ? pausedSince(room.paused) : null;
@@ -143,10 +145,10 @@ function queuedWhy(why) {
  */
 export function upNext(queue, now) {
   return queue.up_next.map((/** @type {any} */ next) => {
-    if (next.kind === "queued") return { task: next.task, when: "now", sub: "on room", label: next.key, why: queuedWhy(next.why) };
+    if (next.kind === "queued") return { task: next.task, when: "now", sub: "on room", label: next.key, title: next.title, why: queuedWhy(next.why) };
     const label = next.kind === "scheduled" && next.task == null ? `${next.trigger}, schedule` : next.key;
     const why = next.kind === "held" ? "Its hold ends." : next.task == null ? "The schedule starts a task." : "The schedule wakes it.";
-    return { task: next.task, when: clock(next.at), sub: day(next.at, now), label, why };
+    return { task: next.task, when: clock(next.at), sub: day(next.at, now), label, title: next.title, why };
   });
 }
 
@@ -169,11 +171,11 @@ export function reorder(queue, id, to) {
   return at < from ? { before: band[at] } : { after: band[at] };
 }
 
-/** What Move… offers: the top of the task's band, then each other band the queue shows. @param {any} queue @param {number} id */
+/** What Move… offers: the top of the task's band, then each other band of the factory. @param {any} queue @param {number} id */
 export function moveTargets(queue, id) {
   const task = queue.waiting.find((/** @type {any} */ candidate) => candidate.id === id);
   if (!task) return [];
   const top = task.state !== "held" && task.band_position !== 1 ? [{ label: `To the top of ${title(task.band)}`, move: { top: true } }] : [];
-  const bands = counted(queue.waiting, "band").map(([band]) => band).filter((band) => band !== task.band);
+  const bands = queue.bands.filter((/** @type {string} */ band) => band !== task.band);
   return [...top, ...bands.map((band) => ({ label: `To ${title(band)}`, move: { band } }))];
 }

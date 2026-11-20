@@ -209,10 +209,10 @@ When someone labels issue 42 of `owner/name` with `agent`, this happens:
 | `priory resume TASK` | Resumes a blocked task |
 | `priory say TASK TEXT` | Sends a task's agent a message, waking it if it sleeps |
 | `priory pause [REASON]`, `priory unpause` | Stops new tasks from starting, then lets them start again |
-| `priory cancel TASK` | Drops an active task and ends its run |
+| `priory cancel TASK [--expected N]` | Drops an active task and ends its run |
 | `priory revive TASK [--step STEP]` | Restarts a failed or dropped task |
-| `priory hold TASK --reason TEXT`, `priory release TASK` | Holds a task back, then lets it go |
-| `priory move TASK --band BAND` | Moves a task to another priority band |
+| `priory hold TASK --reason TEXT`, `priory release TASK` | Holds a task back, then lets it go. Both take `--expected N` |
+| `priory move TASK --band BAND [--expected N]` | Moves a task to another priority band. `--expected N` refuses the move once the state's revision differs from `N` |
 | `priory search QUERY` | Finds tasks by what they are about |
 | `priory report DIR --workflow NAME [--cost]` | Prints outcome rates, or tokens and cost, per step |
 

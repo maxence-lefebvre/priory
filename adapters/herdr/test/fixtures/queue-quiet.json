@@ -1,9 +1,16 @@
 {
+  "bands": [
+    "blocker",
+    "now",
+    "today",
+    "later"
+  ],
   "ended": [
     {
       "ended": "2026-11-20T21:20:34Z",
       "id": 10,
       "key": "cli:PRI-61",
+      "title": "Pin the Actions versions",
       "reason": "checks failed twice",
       "state": "failed",
       "step": "implement",
@@ -13,6 +20,7 @@
       "ended": "2026-11-20T21:20:34Z",
       "id": 9,
       "key": "cli:PRI-60",
+      "title": "Bump the Rust toolchain",
       "reason": "merged #210",
       "state": "done",
       "step": "implement",
@@ -22,6 +30,7 @@
       "ended": "2026-11-20T21:20:34Z",
       "id": 6,
       "key": "cli:PRI-75",
+      "title": "Guard queue verbs with the revision",
       "reason": "superseded",
       "state": "dropped",
       "step": "implement",
@@ -31,6 +40,7 @@
       "ended": "2026-11-20T21:20:34Z",
       "id": 5,
       "key": "cli:PRI-74",
+      "title": "List the factory's bands in the queue",
       "reason": "superseded",
       "state": "dropped",
       "step": "implement",
@@ -40,6 +50,7 @@
       "ended": "2026-11-20T21:20:34Z",
       "id": 4,
       "key": "cli:PRI-73",
+      "title": "Add a title to each queue row",
       "reason": "superseded",
       "state": "dropped",
       "step": "implement",
@@ -51,6 +62,7 @@
     {
       "agent": null,
       "key": "cli:PRI-66",
+      "title": "Retry the flaky upload test",
       "run": 1,
       "started": "2026-11-20T21:02:34Z",
       "step": "implement",
@@ -59,6 +71,7 @@
     {
       "agent": null,
       "key": "cli:PRI-67",
+      "title": "Speed up the asks listing",
       "run": 2,
       "started": "2026-11-20T21:14:34Z",
       "step": "implement",
@@ -69,6 +82,7 @@
     {
       "at": "2026-11-20T21:20:34.569204446Z",
       "key": "cli:PRI-72",
+      "title": "Free the disk before the nightly build",
       "kind": "queued",
       "task": 3,
       "trigger": null,
@@ -77,6 +91,7 @@
     {
       "at": "2026-11-21T08:30:00Z",
       "key": "cli:PRI-81",
+      "title": "Rotate the webhook secret",
       "kind": "held",
       "task": 8,
       "trigger": null,
@@ -85,6 +100,7 @@
     {
       "at": "2026-11-27T08:30:00Z",
       "key": "schedule:bonjour",
+      "title": null,
       "kind": "scheduled",
       "task": null,
       "trigger": "bonjour",
@@ -98,6 +114,7 @@
       "conditions": null,
       "id": 3,
       "key": "cli:PRI-72",
+      "title": "Free the disk before the nightly build",
       "lane": "none/misc",
       "position": 1,
       "reason": null,
@@ -121,6 +138,7 @@
       ],
       "id": 7,
       "key": "cli:PRI-80",
+      "title": "Ship the release notes",
       "lane": "none/misc",
       "position": null,
       "reason": "held: waits for #212, until task 3 ends",
@@ -144,6 +162,7 @@
       ],
       "id": 8,
       "key": "cli:PRI-81",
+      "title": "Rotate the webhook secret",
       "lane": "none/misc",
       "position": null,
       "reason": "held: after the freeze, until 2026-11-21T08:30:00.000Z",

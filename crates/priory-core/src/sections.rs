@@ -339,6 +339,7 @@ pub(crate) fn pick(
                     "The person picked {} on {} in your report: apply it, then write the report again with the pick's applied filled.",
                     choice.option, pick.id
                 )),
+                expected: None,
             };
             if let Err(error) = crate::tools::say(&tx, &say, &state, &factory.workflows)? {
                 return Ok(Err(format!("pick {}: {error}", pick.id)));
