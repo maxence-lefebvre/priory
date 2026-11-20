@@ -102,8 +102,7 @@ export default class PrioryQueue extends View {
       for (;;) {
         try {
           this.priory ??= await connect();
-          await this.read();
-          this.error = null;
+          if (await this.read()) this.error = null;
           cx.notify();
           await this.priory.client.wait(this.data.revision);
         } catch (error) {
@@ -116,12 +115,13 @@ export default class PrioryQueue extends View {
     });
   }
 
+  /** Reads the queue and the room; false when a newer read started meanwhile and this one was dropped. */
   async read() {
     if (!this.priory) throw new Error("priory is not reachable");
     const read = ++this.reads;
     // The desk carries whether starts are paused and what the queue is short of.
     const [queue, desk] = await Promise.all([this.priory.client.queue(), this.priory.client.desk()]);
-    if (read !== this.reads) return;
+    if (read !== this.reads) return false;
     if (read >= this.settles) this.acting = false;
     this.data = queue;
     this.room = { paused: desk.paused, banner: desk.banner };
@@ -131,6 +131,7 @@ export default class PrioryQueue extends View {
       this.opened = false;
       this.popover = null;
     }
+    return true;
   }
 
   list(now = Date.now()) {
@@ -185,8 +186,8 @@ export default class PrioryQueue extends View {
       try {
         await this.read();
       } catch (error) {
+        // The actions stay disabled until the refresh loop applies a read taken after the action.
         this.error = message(error);
-        this.acting = false;
       }
       cx.notify();
     });
