@@ -7625,6 +7625,197 @@ fn a_linear_state_wait_fires_when_its_issue_moves_to_its_state_and_not_otherwise
     assert!(lines[1].contains(r#""to":"In Review""#), "{typed:?}");
 }
 
+fn wait_any(conditions: &[serde_json::Value]) -> serde_json::Value {
+    json!({ "name": "wait", "arguments": { "any": conditions } })
+}
+
+fn linear_done(issue: &str) -> serde_json::Value {
+    json!({ "type": "linear_state", "issue": issue, "state": "Done" })
+}
+
+fn moved_to_done(issue: &str) -> Message {
+    linear_event(
+        "linear.issue.state_changed",
+        issue,
+        json!({ "linear_id": format!("{issue}-Done"), "from": "In Progress", "to": "Done" }),
+    )
+}
+
+#[test]
+fn a_wait_on_a_merge_or_a_linear_state_wakes_on_the_first_and_withdraws_the_other() {
+    let mut setup = Setup::new("any-of");
+    setup.calls(&[wait_any(&[on_pull_7("pull_request"), linear_done("ENG-7")])]);
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("runs", |rows| {
+        rows.first().is_some_and(|row| row[7] == "asleep")
+    });
+    setup.gone("priory-1");
+    let (text, error) = reply(&setup.replies()[0]);
+    assert!(!error, "{text}");
+    assert_eq!(
+        text,
+        "waits 1, 2 stored: end your turn now; Priory wakes you with the first event that satisfies one of them"
+    );
+    let open = setup.rows("waits");
+    assert_eq!(
+        [&open[0][3], &open[0][4], &open[1][3], &open[1][4]],
+        [
+            "pull_request",
+            "github:owner/repo#7",
+            "linear_state",
+            "linear:ENG-7"
+        ]
+    );
+    fs::write(setup.dir.join("fake/hold-call"), "").unwrap();
+
+    setup.publish(&closed());
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 2);
+    assert_eq!(setup.rows("waits"), Vec::<Vec<String>>::new());
+    setup.publish(&moved_to_done("ENG-7"));
+    std::thread::sleep(Duration::from_millis(1500));
+
+    let typed = setup.typed();
+    assert!(
+        typed[1].starts_with("github.pull_request.closed owner/repo#7 {"),
+        "{typed:?}"
+    );
+    assert_eq!(setup.rows("waits"), Vec::<Vec<String>>::new());
+}
+
+#[test]
+fn a_linear_state_wait_on_an_issue_already_in_that_state_wakes_the_task_at_once() {
+    let mut setup = Setup::new("linear-state-already");
+    setup.calls(&[wait(linear_done("ENG-7"))]);
+    fs::write(
+        setup.dir.join("fake/linear"),
+        json!({ "data": { "issue": { "state": { "name": "Done" } } } }).to_string(),
+    )
+    .unwrap();
+    setup.publish(&requested(42));
+
+    setup.start_with(
+        Path::new(env!("CARGO_BIN_EXE_priory")),
+        &[("LINEAR_API_KEY", "lin_api_test")],
+    );
+
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 2);
+    let (text, error) = reply(&setup.replies()[0]);
+    assert_eq!(
+        (text.as_str(), error),
+        (
+            "wait 1 stored: end your turn now; Priory wakes you with the event that satisfies it",
+            false
+        )
+    );
+    assert!(
+        setup.typed()[1].starts_with("wait 1 fired: ENG-7 is already Done\n"),
+        "{:?}",
+        setup.typed()
+    );
+}
+
+#[test]
+fn an_answer_beside_a_wait_wakes_the_task_and_withdraws_the_wait() {
+    let mut setup = Setup::new("ask-and-wait");
+    setup.calls(&[json!([ask(), wait(on_pull_7("pull_request"))])]);
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("runs", |rows| {
+        rows.first().is_some_and(|row| row[7] == "asleep")
+    });
+    let replies = setup.replies();
+    assert!(
+        replies.iter().all(|reply| !self::reply(reply).1),
+        "{replies:?}"
+    );
+    assert_eq!(setup.rows("waits").len(), 1);
+    fs::write(setup.dir.join("fake/hold-call"), "").unwrap();
+
+    let answered = setup.priory(&["answer", "1", "sqlite", "--revision", "1"]);
+
+    assert!(answered.status.success(), "{answered:?}");
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 2);
+    assert!(
+        setup.typed()[1].starts_with("sqlite\n"),
+        "{:?}",
+        setup.typed()
+    );
+    assert_eq!(setup.rows("waits"), Vec::<Vec<String>>::new());
+    setup.publish(&closed());
+    std::thread::sleep(Duration::from_millis(1500));
+    assert_eq!(setup.rows("waits"), Vec::<Vec<String>>::new());
+    assert_eq!(setup.typed().len(), 2, "{:?}", setup.typed());
+}
+
+#[test]
+fn an_event_beside_an_ask_wakes_the_task_and_a_late_answer_is_refused() {
+    let mut setup = Setup::new("wait-and-ask");
+    setup.calls(&[json!([wait(on_pull_7("pull_request")), ask()])]);
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("runs", |rows| {
+        rows.first().is_some_and(|row| row[7] == "asleep")
+    });
+    fs::write(setup.dir.join("fake/hold-call"), "").unwrap();
+
+    setup.publish(&closed());
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 2);
+    let answered = setup.priory(&["answer", "1", "sqlite", "--revision", "1"]);
+
+    assert!(!answered.status.success(), "{answered:?}");
+    assert!(
+        String::from_utf8_lossy(&answered.stderr)
+            .contains("ask 1 was withdrawn when a wait of its run fired first"),
+        "{answered:?}"
+    );
+    assert_eq!(setup.rows("asks"), Vec::<Vec<String>>::new());
+    assert_eq!(setup.typed().len(), 2, "{:?}", setup.typed());
+}
+
+#[test]
+fn a_pull_request_wait_on_one_already_merged_wakes_the_task_at_once() {
+    let mut setup = Setup::new("pull-already");
+    setup.calls(&[wait_any(&[
+        json!({ "type": "time", "until": "2 hours" }),
+        on_pull_7("pull_request"),
+    ])]);
+    fs::write(setup.dir.join("fake/pr-state"), "MERGED\n").unwrap();
+    setup.publish(&requested(42));
+
+    setup.start();
+
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 2);
+    assert!(
+        setup.typed()[1].starts_with("wait 2 fired: github:owner/repo#7 is already merged\n"),
+        "{:?}",
+        setup.typed()
+    );
+    assert_eq!(setup.rows("waits"), Vec::<Vec<String>>::new());
+}
+
+#[test]
+fn an_answer_before_the_stop_of_a_run_beside_a_wait_keeps_the_run_going() {
+    let mut setup = Setup::new("answer-before-stop");
+    setup.calls(&[json!([ask(), wait(on_pull_7("pull_request"))])]);
+    setup.hold("hold-stop");
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("waits", |rows| rows.len() == 1);
+
+    let answered = setup.priory(&["answer", "1", "sqlite", "--revision", "1"]);
+    assert!(answered.status.success(), "{answered:?}");
+    setup.release("hold-stop");
+
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 2);
+    assert!(
+        setup.typed()[1].starts_with("sqlite\n"),
+        "{:?}",
+        setup.typed()
+    );
+    assert_eq!(setup.rows("runs").len(), 1);
+}
+
 const THREAD: &str = "1763500000.000100";
 
 /// A reply in `thread` of channel C0123, posted at `time`.

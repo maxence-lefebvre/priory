@@ -95,6 +95,24 @@ fn call(session: &str, params: &Value, local: &Local) -> Value {
 
 fn tools() -> Value {
     let text = |description: &str| json!({ "type": "string", "description": description });
+    let condition = json!({
+        "type": "object",
+        "description": "A condition: {type: pull_request|checks|review, repo, pull_request} for a pull request that closes, whose checks all complete, or that gets a review; {type: time, until} for an RFC 3339 instant or a duration such as 30 seconds, 5 minutes or 2 hours; {type: task, task} for another task that ends; {type: linear_comment, issue} for a comment on a Linear issue; {type: linear_state, issue, state} for a Linear issue that moves to a state; {type: slack_reply, channel, thread_ts} for a reply in a Slack thread; {type: disk, gb} for the machine to have gb GB of disk free.",
+        "properties": {
+            "type": { "type": "string", "enum": ["pull_request", "checks", "review", "time", "task", "linear_comment", "linear_state", "slack_reply", "disk"] },
+            "repo": text("owner/name, for a pull request condition."),
+            "pull_request": { "type": "integer", "description": "The pull request number." },
+            "head_sha": text("For checks: the commit whose checks you wait for. Without it, any head of the pull request."),
+            "until": text("For time: an RFC 3339 instant, or a duration such as 30 seconds."),
+            "task": { "type": "integer", "description": "For task: the id of the task to wait for." },
+            "issue": text("For linear_comment and linear_state: the issue identifier, such as ENG-7."),
+            "state": text("For linear_state: the state to wait for, such as Done."),
+            "channel": text("For slack_reply: the channel id, such as C0123."),
+            "thread_ts": text("For slack_reply: the ts of the thread's first message."),
+            "gb": { "type": "number", "description": "For disk: the free disk to wait for, in GB." },
+        },
+        "required": ["type"],
+    });
     json!([
         {
             "name": "result",
@@ -113,7 +131,7 @@ fn tools() -> Value {
         },
         {
             "name": "ask",
-            "description": "Ask a person a question, then end your turn. Priory puts you to sleep; the answer arrives as your next prompt.",
+            "description": "Ask a person a question, then end your turn. Priory puts you to sleep; the answer arrives as your next prompt. You may also call wait in the same turn: the first answer or event wins and withdraws the other.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -132,30 +150,18 @@ fn tools() -> Value {
         },
         {
             "name": "wait",
-            "description": "Sleep until one condition holds, then end your turn. Priory stops this process and resumes the session with the event that satisfies the condition as your next prompt. Waiting on a pull request makes its events yours.",
+            "description": "Sleep until a condition holds, then end your turn. Give one condition in on, or a list in any to wake on the first that holds. Priory stops this process and resumes the session with the event that satisfies the condition as your next prompt. A Linear state or pull request that already holds wakes you too. You may also call ask in the same turn: the first answer or event wins and withdraws the other. Waiting on a pull request makes its events yours.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "on": {
-                        "type": "object",
-                        "description": "The condition: {type: pull_request|checks|review, repo, pull_request} for a pull request that closes, whose checks all complete, or that gets a review; {type: time, until} for an RFC 3339 instant or a duration such as 30 seconds, 5 minutes or 2 hours; {type: task, task} for another task that ends; {type: linear_comment, issue} for a comment on a Linear issue; {type: linear_state, issue, state} for a Linear issue that moves to a state; {type: slack_reply, channel, thread_ts} for a reply in a Slack thread; {type: disk, gb} for the machine to have gb GB of disk free.",
-                        "properties": {
-                            "type": { "type": "string", "enum": ["pull_request", "checks", "review", "time", "task", "linear_comment", "linear_state", "slack_reply", "disk"] },
-                            "repo": text("owner/name, for a pull request condition."),
-                            "pull_request": { "type": "integer", "description": "The pull request number." },
-                            "head_sha": text("For checks: the commit whose checks you wait for. Without it, any head of the pull request."),
-                            "until": text("For time: an RFC 3339 instant, or a duration such as 30 seconds."),
-                            "task": { "type": "integer", "description": "For task: the id of the task to wait for." },
-                            "issue": text("For linear_comment and linear_state: the issue identifier, such as ENG-7."),
-                            "state": text("For linear_state: the state to wait for, such as Done."),
-                            "channel": text("For slack_reply: the channel id, such as C0123."),
-                            "thread_ts": text("For slack_reply: the ts of the thread's first message."),
-                            "gb": { "type": "number", "description": "For disk: the free disk to wait for, in GB." },
-                        },
-                        "required": ["type"],
+                    "on": condition,
+                    "any": {
+                        "type": "array",
+                        "items": condition,
+                        "minItems": 1,
+                        "description": "Instead of on: a list of conditions. You wake on the first that holds, and the others are withdrawn.",
                     },
                 },
-                "required": ["on"],
             },
         },
         {
