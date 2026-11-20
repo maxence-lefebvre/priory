@@ -2,10 +2,18 @@
 
 ## Asks and answers
 
-`priory asks` prints each open ask: id, task, revision, question and options.
-`priory answer <ask> <option-or-text> --revision <n>` sends the answer to the daemon. The first
-answer to the ask's revision stands. Refused: an answer to another revision, a second answer, or,
-for a step's ask, a text that is not one of its options.
+`priory asks` prints each open ask: id, task, revision, question, options, then the fields of
+[`ask`](tools.md#the-tools) and of an outside ask.
+`priory answer <ask> <option-or-text> --revision <n>` sends the answer to the daemon. `--expected`
+is the same flag, and `--` ends the flags, as in `priory answer --expected 2 -- cache.ship ship`.
+The first answer to the ask's revision stands. Refused: an answer to another revision, a second
+answer, or, for a step's ask, a text that is not one of its options.
+
+`priory dismiss [--expected <n>] <ask>` closes an open ask with no answer. With `--expected`, a
+changed question refuses it, as it refuses an answer. A dismissed ask is withdrawn: an answer to
+it is refused with `ask <id> was dismissed`. An agent's ask wakes its task with one prompt:
+`A person dismissed ask <id> without an answer. Continue your task.` A step's ask and a hold's
+ask are refused, since only one of their options moves the task on.
 
 - A step's ask moves the task by `next[option]`, as in the table. A model step makes the task
   `ready` with that step's prompt queued.
