@@ -1180,10 +1180,8 @@ fn move_task(args: Vec<String>) -> ExitCode {
     if band.is_none() && place.is_none() {
         return usage();
     }
-    let moved =
-        state::open().and_then(|mut db| {
-        state::move_task(&mut db, task, band.as_deref(), place, expected)
-    });
+    let moved = state::open()
+        .and_then(|mut db| state::move_task(&mut db, task, band.as_deref(), place, expected));
     exit("move", moved)
 }
 

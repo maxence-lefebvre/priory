@@ -7699,7 +7699,11 @@ fn hold_release_and_cancel_on_a_stale_revision_are_refused_and_change_nothing() 
             )
         );
         assert_eq!(held_as(&setup, "1")[0], before, "{args:?}");
-        person(&setup, args[0], &[&args[1..], &["--expected", &current.to_string()]].concat());
+        person(
+            &setup,
+            args[0],
+            &[&args[1..], &["--expected", &current.to_string()]].concat(),
+        );
         assert_eq!(held_as(&setup, "1")[0], after, "{args:?}");
     }
 }
@@ -11120,4 +11124,3 @@ fn a_pick_on_a_task_at_a_step_no_agent_runs_is_refused_and_records_nothing() {
         serde_json::Value::Null
     );
 }
-

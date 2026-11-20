@@ -1012,13 +1012,19 @@ fn each_queue_row_carries_its_tasks_tldr_or_else_the_first_line_of_its_request()
     };
     assert_eq!(
         titles("waiting", "id"),
-        [(json!(1), json!("Docs fixed")), (json!(2), json!("Fix the"))]
+        [
+            (json!(1), json!("Docs fixed")),
+            (json!(2), json!("Fix the"))
+        ]
     );
     assert_eq!(titles("running", "task"), [(json!(1), json!("Docs fixed"))]);
     assert_eq!(titles("ended", "id"), [(json!(3), json!("x".repeat(120)))]);
     assert_eq!(
         titles("up_next", "task"),
-        [(json!(1), json!("Docs fixed")), (json!(2), json!("Fix the"))]
+        [
+            (json!(1), json!("Docs fixed")),
+            (json!(2), json!("Fix the"))
+        ]
     );
     assert_eq!(json_of(&setup, "queue"), queue);
 }

@@ -221,10 +221,14 @@ The fields of [Tasks](#tasks), plus `repo` and `branch`, and these arrays, oldes
 
 | Field | Each entry |
 | ----- | ---------- |
-| `up_next` | One of the next three runs, soonest first: `at`, `kind`, `task`, `key`, `trigger` and `why`. See [Up next](#up-next) |
-| `waiting` | A queued or ready task in start order, then each held task by when it was held: `position` and `band_position` (its place in the queue and in its band, null for a held task), `id`, `key`, `workflow`, `step`, `state`, `band`, `lane`, `reason`, `since`, and `conditions` (see [Conditions](#conditions)), null for a task that is not held |
-| `running` | A live run: `run`, `task`, `key`, `step`, `agent`, `started` |
-| `ended` | A task done, failed or dropped in the last day, latest first: `id`, `key`, `workflow`, `step`, `state`, `reason`, `ended` |
+| `bands` | The name of one of the factory's bands, highest first, as the daemon last recorded them. A band that holds no task is listed too |
+| `up_next` | One of the next three runs, soonest first: `at`, `kind`, `task`, `key`, `title`, `trigger` and `why`. See [Up next](#up-next) |
+| `waiting` | A queued or ready task in start order, then each held task by when it was held: `position` and `band_position` (its place in the queue and in its band, null for a held task), `id`, `key`, `title`, `workflow`, `step`, `state`, `band`, `lane`, `reason`, `since`, and `conditions` (see [Conditions](#conditions)), null for a task that is not held |
+| `running` | A live run: `run`, `task`, `key`, `title`, `step`, `agent`, `started` |
+| `ended` | A task done, failed or dropped in the last day, latest first: `id`, `key`, `title`, `workflow`, `step`, `state`, `reason`, `ended` |
+
+A row's `title` is its task's TL;DR when one is set, else the first line of its request text, cut
+to 120 characters. It is null for a schedule firing that starts a new task.
 
 ### Up next
 

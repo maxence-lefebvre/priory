@@ -63,7 +63,8 @@ prompts, so its next run resumes the step agent's session with it. If its latest
 `A person resumed this task. Check the worktree, then continue.` A resume line that no run took yet is
 replaced, not repeated. The line that ends the step is added only when no queued prompt carries it
 already. `priory cancel <task>` drops an active task with the reason `cancelled from the desk`, ends its
-live run as `cancelled` and kills its tmux session. Both go to the daemon over `priory.sock`, as
+live run as `cancelled` and kills its tmux session. With `--expected REVISION`, a cancel on a stale
+read is refused, as [runs.md](runs.md#queue) says. Both go to the daemon over `priory.sock`, as
 `priory answer` does, and are refused for a task in any other state. An answer to an ask of a done,
 failed or dropped task is refused too.
 
