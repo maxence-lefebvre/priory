@@ -365,7 +365,7 @@ fn each_endpoint_returns_what_the_cli_shows_and_its_json() {
     let asks = String::from_utf8(setup.priory(&["asks"]).stdout).unwrap();
     assert_eq!(
         asks,
-        "id\ttask\trevision\tquestion\toptions\ttitle\ttext\twhat_waits\tnext_action\tcommand\tcoordinator\tkey\trun_id\tsession\n1\t1\t2\tWhich way?\\nPick one.\t[\"left\",\"right\"]\t-\t-\t-\t-\t-\t-\tcli:docs-1\t-\t-\n"
+        "id\ttask\trevision\tquestion\toptions\tsnoozed_until\tback_early\ttitle\ttext\twhat_waits\tnext_action\tcommand\tcoordinator\tkey\trun_id\tsession\n1\t1\t2\tWhich way?\\nPick one.\t[\"left\",\"right\"]\t-\t-\t-\t-\t-\t-\t-\t-\tcli:docs-1\t-\t-\n"
     );
     let queue = api(&address, "/api/queue");
     let waiting = &queue["waiting"];
@@ -379,7 +379,10 @@ fn each_endpoint_returns_what_the_cli_shows_and_its_json() {
         [&json!(1), &json!(1), &json!(2), &json!(2)]
     );
     assert_eq!(queue["running"], json!([]));
-    assert_eq!(api(&address, "/api/desk")["counts"], json!({ "asleep": 0 }));
+    assert_eq!(
+        api(&address, "/api/desk")["counts"],
+        json!({ "asleep": 0, "snoozed": 0 })
+    );
     let desk = api(&address, "/api/desk");
     assert_eq!(desk["banner"], Value::Null);
     assert_eq!(desk["items"][0]["kind"], "ask");

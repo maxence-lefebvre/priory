@@ -10,7 +10,7 @@ use std::collections::BTreeMap;
 use std::io::Write;
 use std::time::Duration;
 
-const VERSION: i64 = 30;
+const VERSION: i64 = 31;
 
 const SCHEMA: &str = "
 CREATE TABLE tasks (
@@ -481,11 +481,39 @@ ALTER TABLE tasks ADD COLUMN grade_reason TEXT;
 PRAGMA user_version = 29;
 ";
 
-// An outside ask belongs to no task: the rebuild lets `task` and `step` be NULL. The deferred
-// foreign keys let `DROP TABLE` leave the approvals and holds that name an ask until the rename.
 const SCHEMA_30: &str = "
-PRAGMA defer_foreign_keys = ON;
-CREATE TABLE asks_30 (
+CREATE TABLE snoozes (
+  kind        TEXT NOT NULL CHECK (kind IN ('ask', 'task', 'prompt')),
+  item        INTEGER NOT NULL,
+  task        INTEGER NOT NULL REFERENCES tasks (id),
+  snoozed     TEXT NOT NULL,
+  until       TEXT NOT NULL,
+  back        TEXT,
+  back_reason TEXT,
+  PRIMARY KEY (kind, item)
+);
+CREATE TRIGGER snooze_ends_on_a_new_revision AFTER UPDATE OF revision ON asks
+  WHEN NEW.revision IS NOT OLD.revision BEGIN
+  UPDATE snoozes SET back = strftime('%Y-%m-%dT%H:%M:%SZ', 'now'), back_reason = 'new revision'
+  WHERE kind = 'ask' AND item = NEW.id AND until > strftime('%Y-%m-%dT%H:%M:%SZ', 'now');
+END;
+CREATE TRIGGER snooze_ends_on_a_task_state_change AFTER UPDATE OF state ON tasks
+  WHEN NEW.state IS NOT OLD.state BEGIN
+  UPDATE snoozes SET back = strftime('%Y-%m-%dT%H:%M:%SZ', 'now'),
+    back_reason = CASE WHEN NEW.state IN ('blocked', 'failed') THEN 'new failure'
+      ELSE 'task state changed' END
+  WHERE task = NEW.id AND until > strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
+    AND (kind != 'ask' OR back IS NULL AND item IN (SELECT id FROM asks WHERE task = NEW.id
+      AND answer IS NULL AND withdrawn IS NULL));
+END;
+PRAGMA user_version = 30;
+";
+
+// An outside ask belongs to no task: the rebuild lets `task` and `step` be NULL. `open` runs it
+// with foreign keys off, so the approvals and holds that name an ask keep pointing at `asks`. The
+// legacy rename skips checking the snooze trigger on `tasks`, which names `asks` while it is gone.
+const SCHEMA_31: &str = "
+CREATE TABLE asks_31 (
   id             INTEGER PRIMARY KEY AUTOINCREMENT,
   task           INTEGER REFERENCES tasks (id),
   run            INTEGER REFERENCES runs (id),
@@ -512,20 +540,27 @@ CREATE TABLE asks_30 (
   session        TEXT,
   CHECK ((kind = 'outside') = (task IS NULL))
 );
-INSERT INTO asks_30 (id, task, run, step, kind, revision, question, options, recommendation,
+INSERT INTO asks_31 (id, task, run, step, kind, revision, question, options, recommendation,
   tradeoff, answer, answered, created, withdrawn)
   SELECT id, task, run, step, kind, revision, question, options, recommendation, tradeoff, answer,
   answered, created, withdrawn FROM asks;
 DROP TABLE asks;
-ALTER TABLE asks_30 RENAME TO asks;
-PRAGMA user_version = 30;
+PRAGMA legacy_alter_table = ON;
+ALTER TABLE asks_31 RENAME TO asks;
+PRAGMA legacy_alter_table = OFF;
+CREATE TRIGGER snooze_ends_on_a_new_revision AFTER UPDATE OF revision ON asks
+  WHEN NEW.revision IS NOT OLD.revision BEGIN
+  UPDATE snoozes SET back = strftime('%Y-%m-%dT%H:%M:%SZ', 'now'), back_reason = 'new revision'
+  WHERE kind = 'ask' AND item = NEW.id AND until > strftime('%Y-%m-%dT%H:%M:%SZ', 'now');
+END;
+PRAGMA user_version = 31;
 ";
 /// Each schema change in order: a file at version `n` applies those from index `n` on.
 const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA, SCHEMA_2, SCHEMA_3, SCHEMA_4, SCHEMA_5, SCHEMA_6, SCHEMA_7, SCHEMA_8, SCHEMA_9,
     SCHEMA_10, SCHEMA_11, SCHEMA_12, SCHEMA_13, SCHEMA_14, SCHEMA_15, SCHEMA_16, SCHEMA_17,
     SCHEMA_18, SCHEMA_19, SCHEMA_20, SCHEMA_21, SCHEMA_22, SCHEMA_23, SCHEMA_24, SCHEMA_25,
-    SCHEMA_26, SCHEMA_27, SCHEMA_28, SCHEMA_29, SCHEMA_30,
+    SCHEMA_26, SCHEMA_27, SCHEMA_28, SCHEMA_29, SCHEMA_30, SCHEMA_31,
 ];
 
 /// The order the queue starts tasks in: band, then a person's order, then age. A band the factory
@@ -552,13 +587,26 @@ pub fn open() -> Result<Connection, String> {
     if mode != "wal" {
         db.pragma_update(None, "journal_mode", "WAL").map_err(at)?;
     }
-    db.pragma_update(None, "foreign_keys", true).map_err(at)?;
     let version = |db: &Connection| -> rusqlite::Result<i64> {
         db.pragma_query_value(None, "user_version", |row| row.get(0))
     };
     if version(&db).map_err(at)? == VERSION {
+        db.pragma_update(None, "foreign_keys", true).map_err(at)?;
         return Ok(db);
     }
+    // A table rebuild needs foreign keys off, or its rename rewrites the references to it.
+    db.pragma_update(None, "foreign_keys", false).map_err(at)?;
+    migrate(&mut db).map_err(|error| format!("{}: {error}", path.display()))?;
+    db.pragma_update(None, "foreign_keys", true).map_err(at)?;
+    Ok(db)
+}
+
+/// Applies the migrations the file lacks in one transaction, which a broken reference rolls back.
+fn migrate(db: &mut Connection) -> Result<(), String> {
+    let at = |error: rusqlite::Error| error.to_string();
+    let version = |db: &Connection| -> rusqlite::Result<i64> {
+        db.pragma_query_value(None, "user_version", |row| row.get(0))
+    };
     // Immediate, so two processes opening a new file do not both create its schema.
     let tx = db
         .transaction_with_behavior(TransactionBehavior::Immediate)
@@ -569,13 +617,21 @@ pub fn open() -> Result<Connection, String> {
         .and_then(|done| MIGRATIONS.get(done..))
     else {
         return Err(format!(
-            "{}: state schema {version} is newer than this priory knows ({VERSION})",
-            path.display()
+            "state schema {version} is newer than this priory knows ({VERSION})"
         ));
     };
     tx.execute_batch(&pending.concat()).map_err(at)?;
-    tx.commit().map_err(at)?;
-    Ok(db)
+    let broken: i64 = tx
+        .query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |row| {
+            row.get(0)
+        })
+        .map_err(at)?;
+    if broken > 0 {
+        return Err(format!(
+            "the migration to schema {VERSION} left {broken} broken references"
+        ));
+    }
+    tx.commit().map_err(at)
 }
 
 fn path() -> Result<std::path::PathBuf, String> {

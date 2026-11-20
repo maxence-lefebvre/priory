@@ -72,7 +72,7 @@ turn and sleeps with no process. The person's answer arrives as its next prompt 
 
 | Field        | Meaning                                                              |
 | ------------ | -------------------------------------------------------------------- |
-| `title`      | The question in one line. The daemon takes it for `question` when that is absent |
+| `title`      | The question in one line                                             |
 | `text`       | The ask's body, in Markdown                                          |
 | `whatWaits`  | What waits on the answer                                             |
 | `nextAction` | What the agent does once it has the answer                           |

@@ -71,26 +71,17 @@ fn text(arguments: &Value, name: &str) -> Result<String, String> {
         .ok_or_else(|| format!("{name} must be a string"))
 }
 
-/// An ask's question: its `question`, else its `title`, as a Fleet-shaped ask names it.
-fn question(arguments: &Value) -> Result<String, String> {
-    optional(arguments, "question")?
-        .or(optional(arguments, "title")?)
-        .ok_or_else(|| "question or title must be a string".to_owned())
-}
-
-/// The fields that describe an ask beyond its question, in `ASK_FIELDS` order.
+/// The fields that describe an ask beyond its question: title, text, what waits, next action and
+/// command.
 fn described(arguments: &Value) -> Result<[Option<String>; 5], String> {
-    let [title, text, what_waits, next_action, command] = ASK_FIELDS;
     Ok([
-        optional(arguments, title)?,
-        optional(arguments, text)?,
-        optional(arguments, what_waits)?,
-        optional(arguments, next_action)?,
-        optional(arguments, command)?,
+        optional(arguments, "title")?,
+        optional(arguments, "text")?,
+        optional(arguments, "whatWaits")?,
+        optional(arguments, "nextAction")?,
+        optional(arguments, "command")?,
     ])
 }
-
-const ASK_FIELDS: [&str; 5] = ["title", "text", "whatWaits", "nextAction", "command"];
 
 /// `commit` in lower case, as GitHub names a pull request head; an abbreviated SHA could never
 /// match one.
@@ -137,7 +128,7 @@ pub(crate) fn call(
     }
     if let Some(ask) = tx
         .query_row(
-            "SELECT id FROM asks WHERE run = ?1 AND answer IS NULL",
+            "SELECT id FROM asks WHERE run = ?1 AND answer IS NULL AND withdrawn IS NULL",
             [run.id],
             |row| row.get::<_, i64>(0),
         )
@@ -329,7 +320,7 @@ fn ask(tx: &Transaction, run: &Run, arguments: &Value) -> rusqlite::Result<Resul
             })
             .ok_or("options must be an array of strings")?;
         Ok::<_, String>((
-            question(arguments)?,
+            text(arguments, "question")?,
             serde_json::to_string(&options).expect("options serialize"),
             text(arguments, "recommendation")?,
             text(arguments, "tradeoff")?,
@@ -421,8 +412,12 @@ pub fn ask_outside(
         for field in OUTSIDE_FIELDS.iter().skip(2) {
             texts.push(optional(arguments, field)?);
         }
+        // A Fleet-shaped ask names its question `title`.
+        let question = optional(arguments, "question")?
+            .or(optional(arguments, "title")?)
+            .ok_or("question or title must be a string")?;
         Ok::<_, String>((
-            question(arguments)?,
+            question,
             serde_json::to_string(&options).expect("options serialize"),
             texts,
         ))
@@ -1184,7 +1179,7 @@ fn settle(tx: &Transaction, run: &Run, trace: &Trace) -> rusqlite::Result<Option
     )?;
     let asked = tx
         .query_row(
-            "SELECT 1 FROM asks WHERE run = ?1 AND answer IS NULL",
+            "SELECT 1 FROM asks WHERE run = ?1 AND answer IS NULL AND withdrawn IS NULL",
             [run.id],
             |_| Ok(()),
         )

@@ -36,10 +36,14 @@ key = "issue.number"
 
 const OUTPUT: &str = "factory.intake";
 
-/// Takes a state file back before schema 28, which added search, and 29, which added grades.
-const UNDO_SEARCH: &str = "ALTER TABLE results DROP COLUMN reason; ALTER TABLE tasks DROP COLUMN grade;
-  ALTER TABLE tasks DROP COLUMN grade_reason; DROP TRIGGER search_task_created; DROP TRIGGER search_tldr_changed;
-  DROP TRIGGER search_result_stored; DROP VIEW task_text; DROP TABLE search; DROP TABLE summaries;
+/// Takes a state file back before schema 28, which added search, 29, which added grades, and 30,
+/// which added snoozes.
+const UNDO_SINCE_SEARCH: &str = "DROP TRIGGER snooze_ends_on_a_new_revision;
+  DROP TRIGGER snooze_ends_on_a_task_state_change; DROP TABLE snoozes;
+  ALTER TABLE results DROP COLUMN reason; ALTER TABLE tasks DROP COLUMN grade;
+  ALTER TABLE tasks DROP COLUMN grade_reason;
+  DROP TRIGGER search_task_created; DROP TRIGGER search_tldr_changed; DROP TRIGGER search_result_stored;
+  DROP VIEW task_text; DROP TABLE search; DROP TABLE summaries;
   DROP TABLE embedder; DROP TABLE vectors; ALTER TABLE tasks DROP COLUMN tldr;";
 
 /// A factory, bus, state, Priory home, tmux server, origin repository and fake `claude`, all under
@@ -228,7 +232,11 @@ impl Setup {
 
     /// The rows `priory <verb>` prints, each split on tabs, after its header.
     fn rows(&self, verb: &str) -> Vec<Vec<String>> {
-        let output = self.priory(&[verb]);
+        self.listed(&[verb])
+    }
+
+    fn listed(&self, args: &[&str]) -> Vec<Vec<String>> {
+        let output = self.priory(args);
         assert!(
             output.status.success(),
             "stderr: {}",
@@ -596,7 +604,7 @@ fn a_cli_task_stored_before_tasks_kept_a_repository_starts_in_its_requests_repos
     setup.crash();
     // The state file as version 23 left it: tasks without a repository.
     let db = rusqlite::Connection::open(setup.dir.join("priory.db")).unwrap();
-    db.execute_batch(UNDO_SEARCH).unwrap();
+    db.execute_batch(UNDO_SINCE_SEARCH).unwrap();
     db.execute_batch("ALTER TABLE tasks DROP COLUMN repo; ALTER TABLE outbox DROP COLUMN compact; PRAGMA user_version = 23;")
         .unwrap();
     drop(db);
@@ -1380,7 +1388,7 @@ fn a_derived_lane_is_derived_again_when_the_first_run_gives_the_task_a_branch() 
     let mut lines = desk.lines();
     assert_eq!(
         lines.next(),
-        Some("since\tkind\tid\ttask\tlane\twhat\tgeneration")
+        Some("since\tkind\tid\ttask\tlane\twhat\tgeneration\tsnoozed_until\tback_early")
     );
     let cells: Vec<_> = lines.next().unwrap().split('\t').collect();
     assert_eq!(cells[1..5], ["failed", "1", "1", "FND/desktop"]);
@@ -2739,7 +2747,7 @@ fn a_task_queued_before_schema_11_ends_its_first_step_once_upgraded() {
     route(&setup);
     // Schema 10 inserted a queued task with no `changed`, which migration 11 copied into `entered`.
     let db = rusqlite::Connection::open(setup.dir.join("priory.db")).unwrap();
-    db.execute_batch(UNDO_SEARCH).unwrap();
+    db.execute_batch(UNDO_SINCE_SEARCH).unwrap();
     db.execute_batch(
         "UPDATE tasks SET entered = NULL; ALTER TABLE outbox DROP COLUMN compact;
          PRAGMA user_version = 24;",
@@ -2824,13 +2832,15 @@ fn a_human_step_asks_ends_the_run_and_sleeps_until_an_answer_resumes_the_session
     setup.gone("priory-1");
     let asks = setup.rows("asks");
     assert_eq!(
-        [&asks[0][..5]],
+        [&asks[0][..7]],
         [[
             "1",
             "1",
             "1",
             "approve: unsure it",
-            r#"["approved","rejected"]"#
+            r#"["approved","rejected"]"#,
+            "-",
+            "-"
         ]]
     );
 
@@ -3012,6 +3022,8 @@ fn an_agent_ask_sleeps_the_task_and_the_answer_wakes_it_as_its_prompt() {
             "-",
             "-",
             "-",
+            "-",
+            "-",
             "github:owner/repo#42",
             "-",
             "-"
@@ -3030,10 +3042,125 @@ fn an_agent_ask_sleeps_the_task_and_the_answer_wakes_it_as_its_prompt() {
     assert_eq!([&tasks[0][3], &tasks[0][4]], ["plan", "running"]);
 }
 
+/// The desk's rows that wait on a person, without the worktrees the sweep keeps.
+fn desk(setup: &Setup, args: &[&str]) -> Vec<Vec<String>> {
+    let mut args = args.to_vec();
+    args.insert(0, "desk");
+    setup
+        .listed(&args)
+        .into_iter()
+        .filter(|row| row[1] != "worktree")
+        .collect()
+}
+
+fn asleep_on_an_ask(name: &str) -> Setup {
+    let mut setup = Setup::with_workflow(name, STEPS);
+    setup.calls(&[ask()]);
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == "asleep")
+    });
+    setup
+}
+
+#[test]
+fn a_snoozed_ask_leaves_the_desk_and_asks_until_its_time_while_the_task_stays_asleep() {
+    let setup = asleep_on_an_ask("snooze");
+
+    let snoozed = setup.priory(&["snooze", "ask", "1", "--for", "3s"]);
+
+    assert!(snoozed.status.success(), "{snoozed:?}");
+    assert_eq!(desk(&setup, &[]), Vec::<Vec<String>>::new());
+    assert_eq!(setup.rows("asks"), Vec::<Vec<String>>::new());
+    let all = desk(&setup, &["--all"]);
+    assert_eq!([&all[0][1], &all[0][2]], ["ask", "1"]);
+    assert_ne!(all[0][7], "-", "{all:?}");
+    let json: serde_json::Value =
+        serde_json::from_slice(&setup.priory(&["desk", "--json"]).stdout).unwrap();
+    assert_eq!(json["counts"]["snoozed"], 1);
+    assert!(
+        json["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|item| item["kind"] != "ask")
+    );
+    let json: serde_json::Value =
+        serde_json::from_slice(&setup.priory(&["desk", "--all", "--json"]).stdout).unwrap();
+    assert_eq!(json["counts"]["snoozed"], 1);
+    let json: serde_json::Value =
+        serde_json::from_slice(&setup.priory(&["asks", "--json"]).stdout).unwrap();
+    assert_eq!(json[0]["snoozed_until"].as_str(), Some(all[0][7].as_str()));
+    assert!(json[0]["snoozed_at"].is_string(), "{json}");
+    assert!(json[0]["back_early"].is_null(), "{json}");
+    assert_eq!(setup.listed(&["asks", "--all"]).len(), 1);
+    let tasks = setup.rows("tasks");
+    assert_eq!([&tasks[0][3], &tasks[0][4]], ["plan", "asleep"]);
+
+    std::thread::sleep(Duration::from_secs(4));
+
+    let back = desk(&setup, &[]);
+    assert_eq!([&back[0][1], &back[0][2], &back[0][7]], ["ask", "1", "-"]);
+    assert_eq!(setup.rows("asks").len(), 1);
+}
+
+#[test]
+fn clearing_a_snooze_brings_the_ask_back_and_the_trace_records_both() {
+    let setup = asleep_on_an_ask("snooze-clear");
+    let snoozed = setup.priory(&["snooze", "ask", "1", "--until", "2099-01-01T00:00:00+01:00"]);
+    assert_eq!(
+        String::from_utf8_lossy(&snoozed.stdout),
+        "ask 1 is snoozed until 2098-12-31T23:00:00Z\n"
+    );
+
+    let cleared = setup.priory(&["snooze", "ask", "1", "--clear"]);
+
+    assert_eq!(
+        String::from_utf8_lossy(&cleared.stdout),
+        "ask 1 is back on the desk\n"
+    );
+    assert_eq!(setup.rows("asks")[0][5], "-");
+    let events: Vec<serde_json::Value> = String::from_utf8(setup.priory(&["trace"]).stdout)
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .filter(|event: &serde_json::Value| event["type"].as_str().unwrap().contains("snooze"))
+        .collect();
+    let kinds: Vec<_> = events.iter().map(|event| &event["type"]).collect();
+    assert_eq!(kinds, ["factory.task.snoozed", "factory.task.unsnoozed"]);
+    assert_eq!(events[0]["data"]["task"], "1");
+    assert_eq!(
+        events[0]["data"]["item"],
+        json!({ "kind": "ask", "id": "1" })
+    );
+    assert_eq!(events[0]["data"]["until"], "2098-12-31T23:00:00Z");
+    let again = setup.priory(&["snooze", "ask", "1", "--clear"]);
+    assert_eq!(
+        String::from_utf8_lossy(&again.stderr),
+        "priory snooze: ask 1 is not snoozed\n"
+    );
+}
+
+#[test]
+fn a_snooze_until_a_past_time_is_refused() {
+    let setup = asleep_on_an_ask("snooze-past");
+
+    let past = setup.priory(&["snooze", "ask", "1", "--until", "2020-01-01T00:00:00Z"]);
+
+    assert!(!past.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&past.stderr),
+        "priory snooze: 2020-01-01T00:00:00Z is not in the future\n"
+    );
+    assert_eq!(setup.rows("asks")[0][5], "-");
+}
+
 #[test]
 fn an_agent_ask_stores_and_lists_its_title_text_what_waits_next_action_and_command() {
     let mut setup = Setup::with_workflow("ask-fields", STEPS);
     setup.calls(&[json!({ "name": "ask", "arguments": {
+        "question": "Which database?",
         "title": "Which database?",
         "text": "The cache needs a store.\n\nPick one.",
         "options": ["sqlite", "postgres"],
@@ -3058,6 +3185,8 @@ fn an_agent_ask_stores_and_lists_its_title_text_what_waits_next_action_and_comma
             "1",
             "Which database?",
             r#"["sqlite","postgres"]"#,
+            "-",
+            "-",
             "Which database?",
             r"The cache needs a store.\n\nPick one.",
             "the cache PR",
@@ -3108,6 +3237,8 @@ fn an_outside_ask_takes_fleets_json_shows_on_the_desk_and_a_changed_one_is_a_new
             revision,
             "Ship the cache today?",
             options,
+            "-",
+            "-",
             "Ship the cache today?",
             r"The cache is ready.\n\nThe docs are not.",
             "the cache PR",
@@ -3182,7 +3313,13 @@ fn an_outside_ask_takes_an_answer_or_a_dismiss_only_at_its_current_revision() {
     let answered = setup.priory(&["answer", "--expected", "2", "--", "cache.ship", "ship"]);
     let stale_dismiss = setup.priory(&["dismiss", "--expected", "1", "cache.notes"]);
     let dismissed = setup.priory(&["dismiss", "cache.notes"]);
+    setup.priory(&["ask", "-1", &fleet_ask(&["ship"])]);
+    let negative = setup.priory(&["dismiss", "--", "-1"]);
 
+    assert_eq!(
+        String::from_utf8_lossy(&negative.stdout),
+        "ask -1 dismissed\n"
+    );
     assert_eq!(
         String::from_utf8_lossy(&stale.stderr),
         "priory answer: ask cache.ship is at revision 2, not 1\n"
@@ -3451,6 +3588,34 @@ fn resume_restarts_a_blocked_task_in_its_session_and_cancel_drops_it_and_ends_it
 }
 
 #[test]
+fn a_snoozed_blocked_task_that_blocks_again_comes_back_early_with_a_new_failure() {
+    let mut setup = Setup::new("snooze-blocked");
+    setup.hold("undecided");
+    setup.hold("hold-stop");
+    let prompt = json!({ "name": "Bash", "arguments": { "command": "rm -rf /" } });
+    setup.calls(&[prompt.clone(), prompt]);
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == "blocked")
+    });
+    let snoozed = setup.priory(&["snooze", "blocked", "1", "--for", "1d"]);
+    assert!(snoozed.status.success(), "{snoozed:?}");
+    assert!(desk(&setup, &[]).is_empty());
+    assert_eq!(setup.rows("tasks")[0][4], "blocked");
+
+    let resumed = setup.priory(&["resume", "1"]);
+
+    assert!(resumed.status.success(), "{resumed:?}");
+    setup.until("runs", |rows| rows.len() == 2);
+    setup.until("tasks", |rows| rows[0][4] == "blocked");
+    let back = desk(&setup, &[]);
+    assert_eq!([&back[0][1], &back[0][2]], ["blocked", "1"]);
+    assert_eq!(back[0][7], "-");
+    assert!(back[0][8].contains(r#""reason":"new failure""#), "{back:?}");
+}
+
+#[test]
 fn resuming_a_task_whose_runs_never_started_queues_one_resume_line_and_one_ending() {
     let typed = resume_three_failed_launches(Setup::new("resume-unstarted"));
     assert_eq!(
@@ -3673,7 +3838,7 @@ fn an_upgrade_hands_the_unconfirmed_prompt_of_a_moved_run_to_the_live_run_that_c
     setup.crash();
     // The state as the version before this fix left it.
     let db = rusqlite::Connection::open(setup.dir.join("priory.db")).unwrap();
-    db.execute_batch(UNDO_SEARCH).unwrap();
+    db.execute_batch(UNDO_SINCE_SEARCH).unwrap();
     db.execute_batch(
         "UPDATE outbox SET run = 1 WHERE id = 1; ALTER TABLE tasks DROP COLUMN repo; ALTER TABLE outbox DROP COLUMN compact;
          PRAGMA user_version = 22;",
@@ -3881,6 +4046,77 @@ fn an_event_kept_during_a_step_reaches_the_agent_after_the_next_step_prompt() {
     );
     let inbox = setup.rows("inbox");
     assert_eq!(inbox.len(), 2);
+}
+
+#[test]
+fn a_state_file_whose_asks_an_approval_names_upgrades_to_outside_asks() {
+    let mut setup = Setup::with_workflow("asks-upgrade", STEPS);
+    setup.calls(&[ask()]);
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == "asleep")
+    });
+    setup.crash();
+    // The state file as version 30 left it: every ask belongs to a task.
+    let db = rusqlite::Connection::open(setup.dir.join("priory.db")).unwrap();
+    db.execute_batch(
+        "PRAGMA legacy_alter_table = ON;
+         CREATE TABLE asks_30 (
+           id INTEGER PRIMARY KEY AUTOINCREMENT, task INTEGER NOT NULL REFERENCES tasks (id),
+           run INTEGER REFERENCES runs (id), step TEXT NOT NULL,
+           kind TEXT NOT NULL CHECK (kind IN ('step', 'agent')), revision INTEGER NOT NULL DEFAULT 1,
+           question TEXT NOT NULL, options TEXT NOT NULL, recommendation TEXT, tradeoff TEXT,
+           answer TEXT, answered TEXT, created TEXT NOT NULL, withdrawn INTEGER);
+         INSERT INTO asks_30 SELECT id, task, run, step, kind, revision, question, options,
+           recommendation, tradeoff, answer, answered, created, withdrawn FROM asks;
+         DROP TABLE asks;
+         ALTER TABLE asks_30 RENAME TO asks;
+         INSERT INTO approvals (task, step, ask, revision) VALUES (1, 'plan', 1, 1);
+         PRAGMA user_version = 30;",
+    )
+    .unwrap();
+    drop(db);
+
+    let asks = setup.rows("asks");
+
+    assert_eq!(asks.len(), 1, "{asks:?}");
+    let db = rusqlite::Connection::open(setup.dir.join("priory.db")).unwrap();
+    let approvals: String = db
+        .query_row(
+            "SELECT sql FROM sqlite_master WHERE name = 'approvals'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(approvals.contains("REFERENCES asks (id)"), "{approvals}");
+}
+
+#[test]
+fn a_dismiss_that_beats_the_stop_is_typed_into_the_same_run() {
+    let mut setup = Setup::with_workflow("early-dismiss", STEPS);
+    setup.calls(&[ask()]);
+    setup.hold("hold-stop");
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("asks", |rows| rows.len() == 1);
+
+    let dismissed = setup.priory(&["dismiss", "1"]);
+
+    assert!(dismissed.status.success(), "{dismissed:?}");
+    setup.release("hold-stop");
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 2);
+    assert_eq!(
+        setup.typed()[1],
+        format!(
+            "{}\n",
+            prompted(
+                "A person dismissed ask 1 without an answer. Continue your task.",
+                "hopeless, ready, unsure"
+            )
+        )
+    );
+    assert_eq!(setup.rows("runs").len(), 1);
 }
 
 #[test]
@@ -5076,6 +5312,33 @@ next = { opened = "done", failed = "stop" }
 "#;
 
 #[test]
+fn a_new_revision_of_a_snoozed_ask_brings_it_back_early() {
+    let setup = asked_to_open("snooze-revision", APPROVE_THEN_POLISH);
+    let snoozed = setup.priory(&["snooze", "ask", "1", "--for", "1d"]);
+    assert!(snoozed.status.success(), "{snoozed:?}");
+    assert!(setup.rows("asks").is_empty());
+    setup.calls(&[passed_with_evidence()]);
+    setup.hold("hold-stop");
+    let answered = setup.priory(&["answer", "1", "open", "--revision", "1"]);
+    assert!(answered.status.success(), "{answered:?}");
+    setup.written("fake/tools.log");
+    while setup.replies().len() < 2 {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    setup.commit(1, "polish.txt");
+
+    setup.release("hold-stop");
+
+    let asks = setup.until("asks", |rows| rows.len() == 1);
+    assert_eq!(asks[0][2], "2");
+    assert_eq!(asks[0][5], "-");
+    let json: serde_json::Value =
+        serde_json::from_slice(&setup.priory(&["asks", "--json"]).stdout).unwrap();
+    assert_eq!(json[0]["back_early"]["reason"], "new revision", "{json}");
+    assert!(json[0]["snoozed_until"].is_null(), "{json}");
+}
+
+#[test]
 fn an_autonomous_irreversible_step_runs_without_an_ask() {
     let mut setup = Setup::with_workflow("open-pr-autonomous", AUTONOMOUS);
     setup.calls(&[passed_with_evidence()]);
@@ -6141,7 +6404,10 @@ fn a_held_task_never_starts_until_a_person_releases_it() {
     assert!(setup.rows("runs").is_empty());
     let desk = setup.rows("desk");
     let held: Vec<_> = desk.iter().map(|row| &row[1..]).collect();
-    assert_eq!(held, [["held", "1", "1", "none/misc", reason, "1"]]);
+    assert_eq!(
+        held,
+        [["held", "1", "1", "none/misc", reason, "1", "-", "-"]]
+    );
 
     assert_eq!(person(&setup, "release", &["1"]), "task 1 is queued\n");
     setup.until("tasks", |rows| rows[0][4] == "running");
@@ -6273,12 +6539,14 @@ fn a_pull_request_closed_unmerged_drops_or_asks_as_its_hold_says() {
     );
     let asks = setup.until("asks", |rows| rows.len() == 1);
     assert_eq!(
-        asks[0][1..5],
+        asks[0][1..7],
         [
             "2",
             "1",
             "Pull request github:owner/repo#7 closed without a merge, and task 2 was held until it merged: b. Release the task, or drop it?",
-            r#"["release","drop"]"#
+            r#"["release","drop"]"#,
+            "-",
+            "-"
         ]
     );
     assert_eq!(held_as(&setup, "2")[0], "held");
