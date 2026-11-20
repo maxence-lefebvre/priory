@@ -574,8 +574,7 @@ fn the_asks_endpoint_filters_by_band_as_the_cli_does_and_an_outside_ask_has_none
     assert_eq!(all["asks"][0]["band"], "later");
 }
 
-/// A workflow whose `approve-pr` lets the irreversible `open-pr` run and whose `approve-plan` waits
-/// for `approve-pr`.
+/// Answering `approve-pr` lets `open-pr` run; answering `approve-plan` waits for `approve-pr`.
 const GATED: &str = r#"
 start = "implement"
 
@@ -611,9 +610,7 @@ next = { opened = "done", failed = "stop" }
 "#;
 
 impl Setup {
-    /// Asks 1 to 4 on tasks 1 (red), 2 (green) and 3 (no grade) of the `GATED` workflow: the
-    /// approval of `open-pr`, a plan question, a command ask and a plain agent ask, and the outside
-    /// ask `review-7`.
+    /// Tasks 1 to 3 graded red, green and none; asks 1 to 4 and the outside ask `review-7`.
     fn seed_risks(&self) {
         fs::write(self.dir.join("factory/workflows/implement.toml"), GATED).unwrap();
         let factory = self.factory();

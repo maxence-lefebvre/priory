@@ -720,13 +720,17 @@ PRAGMA user_version = 42;
 ";
 
 // The human steps whose answer lets an irreversible step run, as the daemon last recorded them.
-const SCHEMA_43: &str = "CREATE TABLE IF NOT EXISTS irreversible_asks (
+const SCHEMA_43: &str = concat!(
+    "CREATE TABLE IF NOT EXISTS irreversible_asks (
   workflow TEXT NOT NULL,
   step     TEXT NOT NULL,
   PRIMARY KEY (workflow, step)
 );
-PRAGMA user_version = 43;
-";
+",
+    bumps!("irreversible_asks"),
+    "PRAGMA user_version = 43;
+"
+);
 
 /// Each schema change in order: a file at version `n` applies those from index `n` on.
 const MIGRATIONS: [&str; VERSION as usize] = [

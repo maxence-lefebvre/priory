@@ -406,6 +406,7 @@ function asksBody(wide) {
   const pending = state.data.older.asks;
   const left = picks.size ? { answered: 0, withdrawn: 0 } : pending;
   const total = { open: open.length, answered: answered.length + left.answered, all: asks.length + left.answered + left.withdrawn };
+  const unloaded = { open: 0, answered: pending.answered, all: pending.answered + pending.withdrawn }[current];
   const views = savedViews([
     ["open", "Open", total.open, current === "open"],
     ["answered", "Answered", total.answered, current === "answered"],
@@ -426,11 +427,11 @@ function asksBody(wide) {
     current !== "open" ? section("Answered today", answeredToday, answeredToday.length) : "",
     current !== "open" ? section("Answered earlier", answeredEarlier, answeredEarlier.length + left.answered, answeredEarlier.length + left.answered) : "",
     current === "all" ? section("Withdrawn", withdrawn, withdrawn.length + left.withdrawn, withdrawn.length + left.withdrawn) : "",
-    current === "open" ? "" : olderRow("asks", current === "all" ? pending.answered + pending.withdrawn : pending.answered, wide),
+    olderRow("asks", unloaded, wide),
   ];
   const empty = { open: "No open asks. Agents ask here when they need you.", answered: "No answered asks yet. An ask moves here once someone answers it.", all: "No asks yet. Agents ask here when they need you." }[current];
   const rows = wide ? html`<table class="tbl"><thead><tr><th>State</th><th>Task</th><th>Step</th><th>Question</th><th>${current === "open" ? "Recommends" : "Answer"}</th><th class="r">Age</th></tr></thead><tbody>${sections}</tbody></table>` : sections;
-  return { views: html`${views}${facets}`, rows: total[current] ? rows : html`<p class="empty">${empty}</p>`, open };
+  return { views: html`${views}${facets}`, rows: total[current] || unloaded ? rows : html`<p class="empty">${empty}</p>`, open };
 }
 
 // Ask detail

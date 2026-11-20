@@ -256,7 +256,7 @@ pub fn recent_asks(
             params![since, json!(bands).to_string()],
             |row| Ok((row.get(0)?, row.get(1)?)),
         )?
-    } else {
+    } else if let Some(since) = since {
         // An ask's risk is computed per row, so the older asks of a risk are counted from the rows.
         let all = asks_in(db, bands, risks, None)?;
         let older = |state: &str| {
@@ -265,11 +265,13 @@ pub fn recent_asks(
                 .flatten()
                 .filter(|ask| {
                     let closed = ask["answered_at"].as_str().or(ask["since"].as_str());
-                    ask["state"] == state && since.is_some_and(|since| closed < Some(since))
+                    ask["state"] == state && closed.is_some_and(|closed| closed < since)
                 })
                 .count() as i64
         };
         (older("answered"), older("withdrawn"))
+    } else {
+        (0, 0)
     };
     Ok(json!({
         "asks": asks_in(db, bands, risks, since)?,
