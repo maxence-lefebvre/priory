@@ -2833,7 +2833,7 @@ fn a_human_step_asks_ends_the_run_and_sleeps_until_an_answer_resumes_the_session
     setup.gone("priory-1");
     let asks = setup.rows("asks");
     assert_eq!(
-        asks,
+        [&asks[0][..7]],
         [[
             "1",
             "1",
@@ -3018,6 +3018,15 @@ fn an_agent_ask_sleeps_the_task_and_the_answer_wakes_it_as_its_prompt() {
             "Which database?",
             r#"["sqlite","postgres"]"#,
             "-",
+            "-",
+            "-",
+            "-",
+            "-",
+            "-",
+            "-",
+            "-",
+            "github:owner/repo#42",
+            "-",
             "-"
         ]]
     );
@@ -3146,6 +3155,189 @@ fn a_snooze_until_a_past_time_is_refused() {
         "priory snooze: 2020-01-01T00:00:00Z is not in the future\n"
     );
     assert_eq!(setup.rows("asks")[0][5], "-");
+}
+
+#[test]
+fn an_agent_ask_stores_and_lists_its_title_text_what_waits_next_action_and_command() {
+    let mut setup = Setup::with_workflow("ask-fields", STEPS);
+    setup.calls(&[json!({ "name": "ask", "arguments": {
+        "question": "Which database?",
+        "title": "Which database?",
+        "text": "The cache needs a store.\n\nPick one.",
+        "options": ["sqlite", "postgres"],
+        "recommendation": "sqlite: one file",
+        "tradeoff": "postgres scales, sqlite needs no server",
+        "whatWaits": "the cache PR",
+        "nextAction": "wire the store",
+        "command": "cargo test",
+    } })]);
+    setup.publish(&requested(42));
+
+    setup.start();
+
+    setup.until("tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == "asleep")
+    });
+    assert_eq!(
+        setup.rows("asks"),
+        [[
+            "1",
+            "1",
+            "1",
+            "Which database?",
+            r#"["sqlite","postgres"]"#,
+            "-",
+            "-",
+            "Which database?",
+            r"The cache needs a store.\n\nPick one.",
+            "the cache PR",
+            "wire the store",
+            "cargo test",
+            "-",
+            "github:owner/repo#42",
+            "-",
+            "-",
+        ]]
+    );
+}
+
+fn fleet_ask(options: &[&str]) -> String {
+    json!({
+        "title": "Ship the cache today?",
+        "text": "The cache is ready.\n\nThe docs are not.",
+        "options": options,
+        "recommendation": "ship",
+        "tradeoff": "Docs can follow, but readers will miss the flag.",
+        "whatWaits": "the cache PR",
+        "nextAction": "merge the PR",
+        "coordinator": "cache-lead",
+        "key": "cache",
+        "runId": "run-7",
+        "session": "cache-worker",
+        "colour": "blue",
+    })
+    .to_string()
+}
+
+#[test]
+fn an_outside_ask_takes_fleets_json_shows_on_the_desk_and_a_changed_one_is_a_new_revision() {
+    let setup = Setup::new("outside-ask");
+
+    let asked = setup.priory(&["ask", "cache.ship", &fleet_ask(&["ship", "wait"])]);
+
+    assert!(asked.status.success(), "{asked:?}");
+    assert_eq!(String::from_utf8_lossy(&asked.stdout), "cache.ship\n");
+    assert_eq!(
+        String::from_utf8_lossy(&asked.stderr),
+        "priory ask: ignored unknown field colour\n"
+    );
+    let row = |revision: &'static str, options: &'static str| {
+        vec![
+            "cache.ship",
+            "-",
+            revision,
+            "Ship the cache today?",
+            options,
+            "-",
+            "-",
+            "Ship the cache today?",
+            r"The cache is ready.\n\nThe docs are not.",
+            "the cache PR",
+            "merge the PR",
+            "-",
+            "cache-lead",
+            "cache",
+            "run-7",
+            "cache-worker",
+        ]
+    };
+    assert_eq!(setup.rows("asks"), [row("1", r#"["ship","wait"]"#)]);
+    let desk = setup.rows("desk");
+    assert_eq!(
+        [&desk[0][1], &desk[0][2], &desk[0][3]],
+        ["ask", "cache.ship", "-"]
+    );
+
+    let same = setup.priory(&["ask", "cache.ship", &fleet_ask(&["ship", "wait"])]);
+    let changed = setup.priory(&["ask", "cache.ship", &fleet_ask(&["ship", "drop"])]);
+
+    assert!(same.status.success() && changed.status.success());
+    assert_eq!(setup.rows("asks"), [row("2", r#"["ship","drop"]"#)]);
+}
+
+#[test]
+fn a_dismissed_agent_ask_wakes_its_task_with_one_line_and_a_stale_dismiss_is_refused() {
+    let mut setup = Setup::with_workflow("dismiss", STEPS);
+    setup.calls(&[ask()]);
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == "asleep")
+    });
+
+    let stale = setup.priory(&["dismiss", "--expected", "2", "1"]);
+    let dismissed = setup.priory(&["dismiss", "--expected", "1", "1"]);
+    let answered = setup.priory(&["answer", "--expected", "1", "--", "1", "sqlite"]);
+
+    assert_eq!(
+        String::from_utf8_lossy(&stale.stderr),
+        "priory dismiss: ask 1 is at revision 1, not 2\n"
+    );
+    assert!(dismissed.status.success(), "{dismissed:?}");
+    assert_eq!(
+        String::from_utf8_lossy(&dismissed.stdout),
+        "ask 1 dismissed\n"
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&answered.stderr),
+        "priory answer: ask 1 was dismissed\n"
+    );
+    assert!(setup.rows("asks").is_empty());
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 2);
+    assert_eq!(
+        setup.typed()[1],
+        "A person dismissed ask 1 without an answer. Continue your task.\nEnd this step by calling the result tool of the priory MCP server with one of these outcomes: hopeless, ready, unsure.\n"
+    );
+}
+
+#[test]
+fn an_outside_ask_takes_an_answer_or_a_dismiss_only_at_its_current_revision() {
+    let mut setup = Setup::new("outside-answer");
+    setup.start();
+    listening(&setup);
+    for options in [["ship", "wait"], ["ship", "drop"]] {
+        setup.priory(&["ask", "cache.ship", &fleet_ask(&options)]);
+        setup.priory(&["ask", "cache.notes", &fleet_ask(&options)]);
+    }
+
+    let stale = setup.priory(&["answer", "--expected", "1", "--", "cache.ship", "ship"]);
+    let answered = setup.priory(&["answer", "--expected", "2", "--", "cache.ship", "ship"]);
+    let stale_dismiss = setup.priory(&["dismiss", "--expected", "1", "cache.notes"]);
+    let dismissed = setup.priory(&["dismiss", "cache.notes"]);
+    setup.priory(&["ask", "-1", &fleet_ask(&["ship"])]);
+    let negative = setup.priory(&["dismiss", "--", "-1"]);
+
+    assert_eq!(
+        String::from_utf8_lossy(&negative.stdout),
+        "ask -1 dismissed\n"
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&stale.stderr),
+        "priory answer: ask cache.ship is at revision 2, not 1\n"
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&answered.stdout),
+        "ask cache.ship answered\n"
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&stale_dismiss.stderr),
+        "priory dismiss: ask cache.notes is at revision 2, not 1\n"
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&dismissed.stdout),
+        "ask cache.notes dismissed\n"
+    );
+    assert!(setup.rows("asks").is_empty());
 }
 
 #[test]
@@ -4020,6 +4212,77 @@ fn an_event_kept_during_a_step_reaches_the_agent_after_the_next_step_prompt() {
     );
     let inbox = setup.rows("inbox");
     assert_eq!(inbox.len(), 2);
+}
+
+#[test]
+fn a_state_file_whose_asks_an_approval_names_upgrades_to_outside_asks() {
+    let mut setup = Setup::with_workflow("asks-upgrade", STEPS);
+    setup.calls(&[ask()]);
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == "asleep")
+    });
+    setup.crash();
+    // The state file as version 32 left it: every ask belongs to a task.
+    let db = rusqlite::Connection::open(setup.dir.join("priory.db")).unwrap();
+    db.execute_batch(
+        "PRAGMA legacy_alter_table = ON;
+         CREATE TABLE asks_32 (
+           id INTEGER PRIMARY KEY AUTOINCREMENT, task INTEGER NOT NULL REFERENCES tasks (id),
+           run INTEGER REFERENCES runs (id), step TEXT NOT NULL,
+           kind TEXT NOT NULL CHECK (kind IN ('step', 'agent')), revision INTEGER NOT NULL DEFAULT 1,
+           question TEXT NOT NULL, options TEXT NOT NULL, recommendation TEXT, tradeoff TEXT,
+           answer TEXT, answered TEXT, created TEXT NOT NULL, withdrawn INTEGER);
+         INSERT INTO asks_32 SELECT id, task, run, step, kind, revision, question, options,
+           recommendation, tradeoff, answer, answered, created, withdrawn FROM asks;
+         DROP TABLE asks;
+         ALTER TABLE asks_32 RENAME TO asks;
+         INSERT INTO approvals (task, step, ask, revision) VALUES (1, 'plan', 1, 1);
+         PRAGMA user_version = 32;",
+    )
+    .unwrap();
+    drop(db);
+
+    let asks = setup.rows("asks");
+
+    assert_eq!(asks.len(), 1, "{asks:?}");
+    let db = rusqlite::Connection::open(setup.dir.join("priory.db")).unwrap();
+    let approvals: String = db
+        .query_row(
+            "SELECT sql FROM sqlite_master WHERE name = 'approvals'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(approvals.contains("REFERENCES asks (id)"), "{approvals}");
+}
+
+#[test]
+fn a_dismiss_that_beats_the_stop_is_typed_into_the_same_run() {
+    let mut setup = Setup::with_workflow("early-dismiss", STEPS);
+    setup.calls(&[ask()]);
+    setup.hold("hold-stop");
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("asks", |rows| rows.len() == 1);
+
+    let dismissed = setup.priory(&["dismiss", "1"]);
+
+    assert!(dismissed.status.success(), "{dismissed:?}");
+    setup.release("hold-stop");
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 2);
+    assert_eq!(
+        setup.typed()[1],
+        format!(
+            "{}\n",
+            prompted(
+                "A person dismissed ask 1 without an answer. Continue your task.",
+                "hopeless, ready, unsure"
+            )
+        )
+    );
+    assert_eq!(setup.rows("runs").len(), 1);
 }
 
 #[test]
@@ -6460,7 +6723,7 @@ fn a_pull_request_closed_unmerged_drops_or_asks_as_its_hold_says() {
     );
     let asks = setup.until("asks", |rows| rows.len() == 1);
     assert_eq!(
-        asks[0][1..],
+        asks[0][1..7],
         [
             "2",
             "1",

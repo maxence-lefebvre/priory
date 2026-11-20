@@ -365,7 +365,7 @@ fn each_endpoint_returns_what_the_cli_shows_and_its_json() {
     let asks = String::from_utf8(setup.priory(&["asks"]).stdout).unwrap();
     assert_eq!(
         asks,
-        "id\ttask\trevision\tquestion\toptions\tsnoozed_until\tback_early\n1\t1\t2\tWhich way?\\nPick one.\t[\"left\",\"right\"]\t-\t-\n"
+        "id\ttask\trevision\tquestion\toptions\tsnoozed_until\tback_early\ttitle\ttext\twhat_waits\tnext_action\tcommand\tcoordinator\tkey\trun_id\tsession\n1\t1\t2\tWhich way?\\nPick one.\t[\"left\",\"right\"]\t-\t-\t-\t-\t-\t-\t-\t-\tcli:docs-1\t-\t-\n"
     );
     let queue = api(&address, "/api/queue");
     let waiting = &queue["waiting"];

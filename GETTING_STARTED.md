@@ -190,7 +190,8 @@ When someone labels issue 42 of `owner/name` with `agent`, this happens:
 | Command | What it does |
 | ------- | ------------ |
 | `priory desk` | Lists what waits on you: asks, blocked and failed tasks, held tasks, the queue |
-| `priory answer ASK OPTION --revision N` | Answers an ask |
+| `priory answer ASK OPTION --revision N` | Answers an ask. `--expected N` is the same flag |
+| `priory dismiss [--expected N] ASK` | Closes an ask with no answer |
 | `priory snooze KIND ID --for 2h`, `--until TIME`, `--clear` | Hides a desk item until then, or brings it back |
 | `priory tasks [--lane LANE] [--grade GRADE]` | Lists tasks in start order, with their grade |
 | `priory attach TASK [--read-only]` | Attaches your terminal to a task's agent |

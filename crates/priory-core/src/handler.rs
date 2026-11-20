@@ -40,7 +40,8 @@ pub(crate) fn quiet(db: &Connection) -> rusqlite::Result<Vec<Quiet>> {
          FROM runs LEFT JOIN handlers AS last
            ON last.id = (SELECT max(id) FROM handlers WHERE run = runs.id)
          WHERE runs.ended IS NULL AND runs.ready AND runs.prompted IS NULL
-         AND NOT EXISTS (SELECT 1 FROM asks WHERE asks.run = runs.id AND asks.answer IS NULL)
+         AND NOT EXISTS (SELECT 1 FROM asks WHERE asks.run = runs.id AND asks.answer IS NULL
+           AND asks.withdrawn IS NULL)
          AND NOT EXISTS (SELECT 1 FROM waits WHERE waits.run = runs.id AND waits.fired IS NULL
            AND waits.withdrawn IS NULL)
          ORDER BY runs.id",
