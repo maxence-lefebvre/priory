@@ -2883,6 +2883,10 @@ pub(crate) fn performed(
             "INSERT OR IGNORE INTO owns (task, resource) VALUES (?1, ?2)",
             params![task, resource],
         )?;
+        tx.execute(
+            "INSERT OR IGNORE INTO subscriptions (task, resource) VALUES (?1, ?2)",
+            params![task, resource],
+        )?;
     }
     let target = at
         .next
