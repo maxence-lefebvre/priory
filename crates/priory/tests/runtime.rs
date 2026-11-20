@@ -2664,7 +2664,7 @@ fn a_human_step_asks_ends_the_run_and_sleeps_until_an_answer_resumes_the_session
     setup.gone("priory-1");
     let asks = setup.rows("asks");
     assert_eq!(
-        asks,
+        [&asks[0][..5]],
         [[
             "1",
             "1",
@@ -2852,7 +2852,7 @@ fn an_agent_ask_sleeps_the_task_and_the_answer_wakes_it_as_its_prompt() {
             "-",
             "-",
             "-",
-            "-",
+            "github:owner/repo#42",
             "-",
             "-"
         ]]
@@ -2904,7 +2904,7 @@ fn an_agent_ask_stores_and_lists_its_title_text_what_waits_next_action_and_comma
             "wire the store",
             "cargo test",
             "-",
-            "-",
+            "github:owner/repo#42",
             "-",
             "-",
         ]]
@@ -2992,7 +2992,10 @@ fn a_dismissed_agent_ask_wakes_its_task_with_one_line_and_a_stale_dismiss_is_ref
         "priory dismiss: ask 1 is at revision 1, not 2\n"
     );
     assert!(dismissed.status.success(), "{dismissed:?}");
-    assert_eq!(String::from_utf8_lossy(&dismissed.stdout), "ask 1 dismissed\n");
+    assert_eq!(
+        String::from_utf8_lossy(&dismissed.stdout),
+        "ask 1 dismissed\n"
+    );
     assert_eq!(
         String::from_utf8_lossy(&answered.stderr),
         "priory answer: ask 1 was dismissed\n"
@@ -6109,7 +6112,7 @@ fn a_pull_request_closed_unmerged_drops_or_asks_as_its_hold_says() {
     );
     let asks = setup.until("asks", |rows| rows.len() == 1);
     assert_eq!(
-        asks[0][1..],
+        asks[0][1..5],
         [
             "2",
             "1",

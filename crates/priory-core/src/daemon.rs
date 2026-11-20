@@ -3,7 +3,7 @@ use crate::otlp;
 use crate::room::Share;
 use crate::route;
 use crate::state::{self, Admission, NewRun, Signal};
-use crate::tools::{self, Act, Answer, Call, Done, Repair};
+use crate::tools::{self, Act, Answer, Call, Dismiss, Done, Repair};
 use crate::trace::Trace;
 use crate::{embed, handler, search, stall, summary, sweep};
 use herdr_bus::{Bus, Start};
@@ -87,6 +87,9 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
         return Ok(());
     }
     let listening = runtime::listen(&home)?;
+    if let Some(config) = factory.serve() {
+        crate::serve::start(config, config.listen)?;
+    }
     if let Some(name) = embedder.clone() {
         let home = home.clone();
         std::thread::spawn(move || embed_all(&name, embed::Lazy::new(&home, true)));
@@ -554,6 +557,7 @@ enum Input {
     Signal(Signal),
     Call(Call),
     Answer(Answer),
+    Dismiss(Dismiss),
     Act(Act),
     Gate(Gate),
 }
@@ -574,6 +578,7 @@ fn take(db: &mut Connection, line: &str, trace: &Trace) -> Result<(String, Optio
             })?),
             None,
         )),
+        Ok(Input::Dismiss(dismiss)) => Ok((replied(tools::dismiss(db, &dismiss)?), None)),
         Ok(Input::Act(act)) => {
             let (reply, kill) = tools::act(db, &act, trace.factory)?;
             Ok((replied(reply), kill))

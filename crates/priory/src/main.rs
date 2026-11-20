@@ -1,5 +1,5 @@
 use priory_core::memory::Gate;
-use priory_core::{daemon, embed, report, search, stall, state, sweep, tools};
+use priory_core::{daemon, embed, listing, report, search, serve, state, tools};
 use priory_factory::{factory, rules};
 use priory_intake::{intake, request};
 use priory_runtime::{mcp, runtime};
@@ -38,18 +38,10 @@ fn main() -> ExitCode {
             serve(verb, &dir, run, !once.is_empty())
         }
         Some("request") => request(args.map(|arg| arg.to_string_lossy().into_owned()).collect()),
-        Some("inbox") => list(
-            "seq\ttype\tsubject\ttask\toutcome",
-            "SELECT seq, type, subject, task, outcome FROM inbox ORDER BY seq",
-        ),
-        Some("tasks") => {
-            let args: Vec<_> = args.map(|arg| arg.to_string_lossy().into_owned()).collect();
-            match &args[..] {
-                [] => tasks(None),
-                [flag, lane] if flag == "--lane" => tasks(Some(lane)),
-                _ => usage(),
-            }
+        Some(verb @ ("inbox" | "tasks" | "asks" | "desk" | "queue")) => {
+            listed(verb, args.map(|arg| arg.to_string_lossy().into_owned()).collect())
         }
+        Some("serve") => serve_http(args.map(|arg| arg.to_string_lossy().into_owned()).collect()),
         Some("runs") => list(
             "id\ttask\tstep\ttmux\tsession\tstarted\tended\tend",
             "SELECT id, task, step, tmux, coalesce(thread, session), started, ended, ended_as FROM runs
@@ -59,14 +51,6 @@ fn main() -> ExitCode {
             "id\ttask\trun\tstate\ttext",
             "SELECT id, task, run, state, replace(text, char(10), '\\n') FROM outbox ORDER BY id",
         ),
-        Some("asks") => list(
-            "id\ttask\trevision\tquestion\toptions\ttitle\ttext\twhat waits\tnext action\tcommand\tcoordinator\tkey\trun id\tsession",
-            "SELECT coalesce(name, id), task, revision, replace(question, char(10), '\\n'), options,
-               replace(title, char(10), '\\n'), replace(text, char(10), '\\n'),
-               replace(what_waits, char(10), '\\n'), replace(next_action, char(10), '\\n'),
-               replace(command, char(10), '\\n'), coordinator, key, run_id, session FROM asks
-             WHERE answer IS NULL AND withdrawn IS NULL ORDER BY id",
-        ),
         Some("waits") => list(
             "id\ttask\trun\tkind\ton\tcreated",
             "SELECT id, task, run, kind, coalesce(resource, until, 'task ' || target,
@@ -74,7 +58,6 @@ fn main() -> ExitCode {
              FROM waits WHERE fired IS NULL AND withdrawn IS NULL ORDER BY id",
         ),
         Some("attach") => attach(args.map(|arg| arg.to_string_lossy().into_owned()).collect()),
-        Some("desk") => desk(),
         Some("trace") => trace(),
         Some("report") => report(args.map(|arg| arg.to_string_lossy().into_owned()).collect()),
         Some("move") => move_task(args.map(|arg| arg.to_string_lossy().into_owned()).collect()),
@@ -96,6 +79,7 @@ fn main() -> ExitCode {
         Some("search") => search(args.map(|arg| arg.to_string_lossy().into_owned()).collect()),
         Some("memory") => memory(args.collect()),
         Some("answer") => answer(args.map(|arg| arg.to_string_lossy().into_owned()).collect()),
+        Some("dismiss") => dismiss(args.map(|arg| arg.to_string_lossy().into_owned()).collect()),
         Some("ask") => match (args.next(), args.next(), args.next()) {
             (Some(name), Some(fields), None) => ask(&name.to_string_lossy(), &fields.to_string_lossy()),
             _ => usage(),
@@ -120,7 +104,7 @@ fn main() -> ExitCode {
 
 fn usage() -> ExitCode {
     eprintln!(
-        "usage: priory check [DIR]\n       priory draw [DIR] WORKFLOW\n       priory intake [DIR] [--once]\n       priory daemon [DIR] [--once]\n       priory request [DIR] --workflow <name> --key <key> [--band <band>] [--lane <lane>] [--repo <owner/name>] [--hold <reason> [CONDITION]] <text>\n       priory inbox\n       priory tasks [--lane <lane>]\n       priory runs\n       priory outbox\n       priory asks\n       priory waits\n       priory actions\n       priory attach (TASK | --run RUN) [--read-only] [--print]\n       priory desk\n       priory trace\n       priory report [DIR] --workflow <name> [--since <instant-or-duration>] [--cost] [--by lane]\n       priory move TASK [--band <band>] [--top | --before TASK | --after TASK]\n       priory resume TASK\n       priory cancel TASK\n       priory revive TASK [--step STEP]\n       priory hold TASK --reason TEXT [--until TIME | --after TASK | --merge PR [--if-closed release|drop|ask] | --blockers]\n       priory release TASK\n       priory tldr TASK TEXT\n       priory search QUERY [--state STATE[,STATE...]] [--limit N]\n       priory memory [acquire --gb N [--timeout D] -- COMMAND...]\n       priory answer ASK OPTION-OR-TEXT --revision N\n       priory mcp --session ID\n       priory hook EVENT"
+        "usage: priory check [DIR]\n       priory draw [DIR] WORKFLOW\n       priory intake [DIR] [--once]\n       priory daemon [DIR] [--once]\n       priory request [DIR] --workflow <name> --key <key> [--band <band>] [--lane <lane>] [--repo <owner/name>] [--hold <reason> [CONDITION]] <text>\n       priory serve [DIR] [--listen ADDR]\n       priory inbox [--json]\n       priory tasks [--lane <lane>] [--json]\n       priory queue [--json]\n       priory runs\n       priory outbox\n       priory asks [--json]\n       priory waits\n       priory actions\n       priory attach (TASK | --run RUN) [--read-only] [--print]\n       priory desk [--json]\n       priory trace\n       priory report [DIR] --workflow <name> [--since <instant-or-duration>] [--cost] [--by lane]\n       priory move TASK [--band <band>] [--top | --before TASK | --after TASK]\n       priory resume TASK\n       priory cancel TASK\n       priory revive TASK [--step STEP]\n       priory hold TASK --reason TEXT [--until TIME | --after TASK | --merge PR [--if-closed release|drop|ask] | --blockers]\n       priory release TASK\n       priory tldr TASK TEXT\n       priory search QUERY [--state STATE[,STATE...]] [--limit N]\n       priory memory [acquire --gb N [--timeout D] -- COMMAND...]\n       priory answer [--revision N | --expected N] [--] ASK OPTION-OR-TEXT\n       priory ask ID JSON\n       priory dismiss [--expected N] ASK\n       priory mcp --session ID\n       priory hook EVENT"
     );
     ExitCode::from(2)
 }
@@ -232,25 +216,6 @@ fn shell_word(word: &str) -> String {
     format!("'{}'", word.replace('\'', r"'\''"))
 }
 
-/// A stalled queue's banner, what waits on a person, then every worktree under `PRIORY_HOME` that
-/// stays and why.
-fn desk() -> ExitCode {
-    let printed = state::open().and_then(|db| {
-        stall::banner(&db)
-            .map_err(|error| error.to_string())?
-            .inspect(|banner| state::emit(banner));
-        state::print(
-            &db,
-            "since\tkind\tid\ttask\tlane\twhat\tgeneration",
-            &format!("{} {DESK}", queue()),
-            [],
-        )
-        .and_then(|()| sweep::print_stays(&db, &runtime::home()))
-        .map_err(|error| error.to_string())
-    });
-    exit("desk", printed)
-}
-
 /// Every trace record, oldest first, one CloudEvents JSON object per line.
 fn trace() -> ExitCode {
     let printed = state::open().and_then(|db| {
@@ -305,79 +270,145 @@ fn report(args: Vec<String>) -> ExitCode {
     exit("report", printed)
 }
 
-/// Asks, blocked tasks and uncertain prompts oldest first, then the queue in start order.
-const DESK: &str = "SELECT since, kind, id, task, lane, what,
-               (SELECT generation FROM tasks WHERE tasks.id = task) FROM (
-               SELECT 0 AS part, asks.created AS since, 'ask' AS kind,
-                 coalesce(asks.name, asks.id) AS id, asks.task AS task, tasks.lane AS lane,
-                 replace(asks.question, char(10), '\\n') || ' ' || asks.options AS what
-               FROM asks LEFT JOIN tasks ON tasks.id = asks.task
-               WHERE asks.answer IS NULL AND asks.withdrawn IS NULL
-                 AND coalesce(tasks.state, '') NOT IN ('done', 'failed', 'dropped')
-               UNION ALL
-               SELECT 0, changed, 'blocked', id, id, lane, reason FROM tasks WHERE state = 'blocked'
-               UNION ALL
-               SELECT 0, changed, 'failed', id, id, lane,
-                 coalesce(reason, 'failed') || '; revive: priory revive ' || id
-               FROM tasks WHERE state = 'failed'
-               UNION ALL
-               SELECT 0, outbox.attempted, 'prompt', outbox.id, outbox.task, tasks.lane,
-                 replace(outbox.text, char(10), '\\n')
-               FROM outbox JOIN tasks ON tasks.id = outbox.task
-               WHERE outbox.state = 'uncertain' AND tasks.state NOT IN ('done', 'failed', 'dropped')
-               UNION ALL
-               SELECT 0, holds.created, 'held', holds.id, holds.task, tasks.lane, tasks.reason
-               FROM holds JOIN tasks ON tasks.id = holds.task
-               WHERE holds.released IS NULL AND tasks.state = 'held'
-               UNION ALL
-               SELECT 0, sweeps.started, 'sweep', sweeps.id, stalls.task, tasks.lane,
-                 sweeps.script || ': ' || coalesce(sweeps.status
-                   || coalesce(nullif(': ' || replace(sweeps.output, char(10), '\\n'), ': '), ''),
-                   'running')
-               FROM sweeps JOIN stalls ON stalls.id = sweeps.stall JOIN tasks ON tasks.id = stalls.task
-               WHERE stalls.ended IS NULL
-               UNION ALL
-               SELECT 0, grants.created, 'memory', grants.id, grants.task, tasks.lane,
-                 'waits for ' || printf('%.1f', grants.bytes / 1073741824.0) || ' GB: '
-                 || replace(grants.command, char(10), '\\n')
-               FROM grants LEFT JOIN tasks ON tasks.id = grants.task WHERE grants.state = 'waiting'
-               UNION ALL
-               SELECT 0, retired, 'retired', id, id, lane,
-                 'its worktree was removed to free disk; it resurrects from ' || branch
-                   || ' when its wait fires'
-               FROM tasks WHERE state = 'asleep' AND retired IS NOT NULL
-               UNION ALL
-               SELECT 1, tasks.changed, 'queue', queue.place, tasks.id, tasks.lane,
-                 coalesce(tasks.band, '-') || coalesce(': ' || tasks.reason, '')
-               FROM tasks JOIN queue USING (id)
-             ) ORDER BY part, CASE WHEN part = 0 THEN since END, kind, id";
-
-/// Each queued or ready task's place in the start order, from 1.
-fn queue() -> String {
-    format!(
-        "WITH queue AS (SELECT id, row_number() OVER (ORDER BY {}) AS place
-         FROM tasks WHERE state IN ('queued', 'ready'))",
-        state::START_ORDER
-    )
+/// Prints `priory inbox|tasks|asks|desk|queue`, as a table or, with `--json`, as the JSON that
+/// `serve` returns.
+fn listed(verb: &str, mut args: Vec<String>) -> ExitCode {
+    let json = args
+        .iter()
+        .position(|arg| arg == "--json")
+        .map(|at| args.remove(at));
+    let lane = match (verb, &args[..]) {
+        (_, []) => None,
+        ("tasks", [flag, lane]) if flag == "--lane" => Some(lane.as_str()),
+        _ => return usage(),
+    };
+    let home = runtime::home();
+    let shown = state::open().and_then(|db| {
+        let value = match verb {
+            "inbox" => listing::inbox(&db),
+            "tasks" => listing::tasks(&db, lane),
+            "asks" => listing::asks(&db),
+            "desk" => listing::desk(&db, &home),
+            _ => listing::queue(&db),
+        }
+        .map_err(|error| error.to_string())?;
+        if json.is_some() {
+            state::emit(&value.to_string());
+            return Ok(());
+        }
+        match verb {
+            "inbox" => listing::print(&["seq", "type", "subject", "task", "outcome"], &value),
+            "tasks" => listing::print(
+                &[
+                    "id",
+                    "key",
+                    "workflow",
+                    "step",
+                    "state",
+                    "band",
+                    "lane",
+                    "reason",
+                    "position",
+                    "generation",
+                    "retired",
+                ],
+                &value,
+            ),
+            "asks" => {
+                let open = value
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter(|ask| ask["state"] == "open")
+                    .cloned()
+                    .collect();
+                listing::print(
+                    &[
+                        "id",
+                        "task",
+                        "revision",
+                        "question",
+                        "options",
+                        "title",
+                        "text",
+                        "what_waits",
+                        "next_action",
+                        "command",
+                        "coordinator",
+                        "key",
+                        "run_id",
+                        "session",
+                    ],
+                    &serde_json::Value::Array(open),
+                );
+            }
+            "desk" => {
+                if let Some(banner) = value["banner"].as_str() {
+                    state::emit(banner);
+                }
+                listing::print(
+                    &["since", "kind", "id", "task", "lane", "what", "generation"],
+                    &value["items"],
+                );
+            }
+            _ => listing::print(
+                &[
+                    "position",
+                    "band_position",
+                    "id",
+                    "key",
+                    "workflow",
+                    "step",
+                    "state",
+                    "band",
+                    "lane",
+                    "reason",
+                ],
+                &value["waiting"],
+            ),
+        }
+        Ok(())
+    });
+    exit(verb, shown)
 }
 
-fn tasks(lane: Option<&String>) -> ExitCode {
-    let printed = state::open().and_then(|db| {
-        state::print(
-            &db,
-            "id\tkey\tworkflow\tstep\tstate\tband\tlane\treason\tposition\tgeneration\tretired",
-            &format!(
-                "{} SELECT id, key, workflow, step, state, band, lane, reason, queue.place, generation,
-                   retired
-                 FROM tasks LEFT JOIN queue USING (id) WHERE ?1 IS NULL OR lane = ?1 ORDER BY {}",
-                queue(),
-                state::START_ORDER
-            ),
-            [lane],
-        )
-        .map_err(|error| error.to_string())
-    });
-    exit("tasks", printed)
+/// Serves the state over HTTP until killed: `priory serve [DIR] [--listen ADDR]`.
+fn serve_http(args: Vec<String>) -> ExitCode {
+    let (mut dirs, mut listen) = (Vec::new(), None);
+    let mut args = args.into_iter();
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--listen" => match args.next().map(|addr| addr.parse()) {
+                Some(Ok(addr)) => listen = Some(addr),
+                _ => return usage(),
+            },
+            _ if arg.starts_with("--") => return usage(),
+            _ => dirs.push(arg),
+        }
+    }
+    let dir = match &dirs[..] {
+        [] => PathBuf::from("."),
+        [dir] => PathBuf::from(dir),
+        _ => return usage(),
+    };
+    let Some(factory) = load(&dir) else {
+        return ExitCode::FAILURE;
+    };
+    let Some(config) = factory.serve() else {
+        return exit(
+            "serve",
+            Err("factory.toml has no [serve] table, so nothing listens".to_owned()),
+        );
+    };
+    match serve::start(config, listen.unwrap_or(config.listen)) {
+        Ok(workers) => {
+            for worker in workers {
+                let _ = worker.join();
+            }
+            ExitCode::SUCCESS
+        }
+        Err(error) => exit("serve", Err(error)),
+    }
 }
 
 fn list(header: &str, query: &str) -> ExitCode {
@@ -549,16 +580,16 @@ fn gate(gate: &Gate) -> Result<String, String> {
 }
 
 /// Sends `priory answer ASK TEXT --revision N` to the daemon, which applies it.
-fn answer(mut args: Vec<String>) -> ExitCode {
-    let Some(flag) = args.iter().position(|arg| arg == "--revision") else {
+fn answer(args: Vec<String>) -> ExitCode {
+    let Some((Some(revision), rest)) = revised(args) else {
         return usage();
     };
-    let revision = args.drain(flag..(flag + 2).min(args.len())).nth(1);
-    let (Some(revision), [ask, text]) = (revision.and_then(|n| n.parse().ok()), &args[..]) else {
+    let [ask, text] = &rest[..] else {
         return usage();
     };
-    let Ok(ask) = ask.parse() else {
-        return usage();
+    let ask = match ask_id(ask) {
+        Ok(ask) => ask,
+        Err(error) => return exit("answer", Err(error)),
     };
     let line = serde_json::to_string(&tools::Answer {
         ask,
@@ -567,6 +598,49 @@ fn answer(mut args: Vec<String>) -> ExitCode {
     })
     .expect("an answer serializes");
     send("answer", &line)
+}
+
+/// Sends `priory dismiss [--expected N] ASK` to the daemon, which closes the ask unanswered.
+fn dismiss(args: Vec<String>) -> ExitCode {
+    let Some((revision, rest)) = revised(args) else {
+        return usage();
+    };
+    let [ask] = &rest[..] else {
+        return usage();
+    };
+    let dismiss = match ask_id(ask) {
+        Ok(dismiss) => dismiss,
+        Err(error) => return exit("dismiss", Err(error)),
+    };
+    let line =
+        serde_json::to_string(&tools::Dismiss { dismiss, revision }).expect("a dismiss serializes");
+    send("dismiss", &line)
+}
+
+/// Splits `[--revision N | --expected N] [--] ARGS` into the revision and the other arguments.
+fn revised(args: Vec<String>) -> Option<(Option<i64>, Vec<String>)> {
+    let (mut revision, mut rest, mut args) = (None, Vec::new(), args.into_iter());
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--" => {
+                rest.extend(args);
+                break;
+            }
+            "--revision" | "--expected" if revision.is_none() => {
+                revision = Some(args.next()?.parse().ok()?);
+            }
+            _ => rest.push(arg),
+        }
+    }
+    Some((revision, rest))
+}
+
+/// An ask's number, or the number of the outside ask that `priory ask` named so.
+fn ask_id(ask: &str) -> Result<i64, String> {
+    if let Ok(id) = ask.parse() {
+        return Ok(id);
+    }
+    tools::ask_named(&state::open()?, ask)
 }
 
 /// Stores or revises an ask from a session Priory did not start, from Fleet's JSON shape.

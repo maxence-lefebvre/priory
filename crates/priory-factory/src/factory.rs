@@ -7,6 +7,7 @@ use std::collections::BTreeMap;
 use std::fmt;
 use std::fs;
 use std::io;
+use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -50,6 +51,50 @@ pub struct Settings {
     #[serde(default)]
     pub search: Search,
     pub telemetry: Option<Telemetry>,
+    pub serve: Option<Serve>,
+}
+
+/// The HTTP server over the factory's state, in the daemon and in `priory serve`.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct Serve {
+    /// The address and port to listen on; a loopback address unless `public` is set.
+    #[serde(default = "listen")]
+    #[schemars(with = "String")]
+    pub listen: SocketAddr,
+    /// The environment variable that holds the token clients send, never the token itself.
+    #[serde(default = "token_env")]
+    pub token_env: String,
+    /// Whether to serve the web view's files as well as `/api`.
+    #[serde(default = "web")]
+    pub web: bool,
+    /// Whether `listen` may be an address beyond this machine.
+    #[serde(default)]
+    pub public: bool,
+}
+
+fn listen() -> SocketAddr {
+    SocketAddr::from(([127, 0, 0, 1], 7340))
+}
+
+fn token_env() -> String {
+    "PRIORY_TOKEN".to_owned()
+}
+
+fn web() -> bool {
+    true
+}
+
+impl Serve {
+    /// Refuses `listen` beyond this machine unless the factory says `public = true`.
+    pub fn allows(&self, listen: SocketAddr) -> Result<(), String> {
+        if listen.ip().is_loopback() || self.public {
+            return Ok(());
+        }
+        Err(format!(
+            "`[serve] listen` {listen} is beyond this machine: set `public = true` to serve it"
+        ))
+    }
 }
 
 /// Where the daemon exports its trace records as OpenTelemetry spans.
@@ -747,6 +792,11 @@ impl Factory {
     pub fn otlp(&self) -> Option<&str> {
         let telemetry = self.settings.as_ref()?.value.telemetry.as_ref()?;
         Some(telemetry.otlp.as_str())
+    }
+
+    /// The HTTP server's settings; none listens nowhere.
+    pub fn serve(&self) -> Option<&Serve> {
+        self.settings.as_ref()?.value.serve.as_ref()
     }
 
     pub fn bands(&self) -> Vec<&str> {
