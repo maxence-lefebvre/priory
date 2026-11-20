@@ -30,6 +30,7 @@ does, with every count in `older` at 0. Their rows match the CLI's JSON only wit
 | `POST /api/asks/{id}/answer` | `priory answer ID TEXT --revision N` | `{"ok": "<what the CLI prints>"}`. See [Writes](#writes) |
 | `POST /api/asks/{id}/dismiss` | `priory dismiss --expected N ID` | as above |
 | `POST /api/snooze` | `priory snooze KIND ID (--for D \| --until T \| --clear)` | as above |
+| `POST /api/request` | `priory add TEXT` | `{"key": "<task key>", "id": <task id>}`. See [Writes](#writes) |
 | `POST /hooks/github` | | `202` for a signed GitHub delivery, with `[webhooks.github]`. See [below](#post-hooksgithub) |
 | any other path | | the web view, with `web = true`: see [Web view files](#web-view-files) |
 
@@ -52,7 +53,7 @@ or a reason, is untrusted: render it as text.
 | `411` | A `POST` has no `Content-Length`, or uses `Transfer-Encoding` |
 | `413` | A `GET` has a body; a write's body is over 16 KiB; a webhook's is over 1 MiB |
 | `415` | A write's `Content-Type` is not `application/json` |
-| `422` | The daemon refused a write for another reason, such as an option a step does not take |
+| `422` | The daemon refused a write for another reason, such as an option a step does not take, or a request's unknown workflow or bad `repo`. A request the bus could not take gets `422` too, with the bus's error |
 | `431` | The request head is over 8 KiB or 32 headers |
 | `500` | The state could not be read, a delivery could not be published, or Priory failed while answering. The server keeps serving |
 | `503` | 4 requests already wait on `/api/events` and this one would wait too; or a write found no daemon on its socket, as under `priory serve` alone. It comes with `Retry-After: 1` |
@@ -85,6 +86,7 @@ application/json` and a JSON body of at most 16 KiB with exactly the fields belo
 | `POST /api/asks/{id}/answer` | `revision`, an integer, and one of `option` or `text`, a string. Both become the answer: a step's ask takes only one of its options. `run`, a boolean, default `false`: `true` confirms an answer that runs the ask's command, as `priory answer --run` does. Without it, that answer gets `422` |
 | `POST /api/asks/{id}/dismiss` | `revision`, an integer |
 | `POST /api/snooze` | `kind` (`ask`, `blocked`, `failed` or `prompt`) and `id`, an integer, then one of: `for`, a duration such as `1h`; `until`, an RFC 3339 time; or `"clear": true` |
+| `POST /api/request` | `text`, a string, then optionally `workflow`, `band`, `lane` and `repo`, strings. What it leaves unset comes from `[request]` and the URLs in `text`, as for [`priory add`](../intake/cli.md#priory-add) |
 
 `{id}` is the ask's `id` as `/api/asks` lists it: its number, or an outside ask's name. `revision` is
 the ask's `revision` the client showed.
@@ -97,6 +99,7 @@ curl -X POST http://127.0.0.1:7340/api/asks/42/answer -H "Authorization: Bearer 
 | Reply | When |
 | ----- | ---- |
 | `200` `{"ok": "ask 42 answered"}` | The daemon applied it |
+| `200` `{"key": "cli:2026-11-20-1", "id": 7}` | For `/api/request`: the daemon published the request and task `id` holds `key`. `id` is `null` when no task took the key |
 | `409` `{"error", "ask"}` | The ask's revision is no longer the one sent, or it was answered, dismissed or withdrawn. `ask` is its current state |
 | `404`, `422` `{"error"}` | The ask is gone, or the daemon refused for another reason. `error` is the CLI's sentence |
 | `503` `{"error"}` | No daemon listens on the socket, so nothing was sent. Reads keep working |

@@ -41,3 +41,12 @@ test("an empty match does not hide a later match", () => {
     `abc<a class="autolink" href="https://example.com/123" rel="noopener noreferrer" target="_blank">123</a>`,
   );
 });
+
+test("an empty match before an astral character moves past the whole character", () => {
+  const links = [{ pattern: String.raw`\d*`, url: "https://example.com/$0" }];
+
+  assert.equal(
+    linked("😀123", links, null),
+    `😀<a class="autolink" href="https://example.com/123" rel="noopener noreferrer" target="_blank">123</a>`,
+  );
+});

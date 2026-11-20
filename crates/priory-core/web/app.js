@@ -1028,7 +1028,8 @@ document.addEventListener("click", (event) => {
     event.preventDefault();
     go(target.pathname + target.search);
   }
-  if (target.tagName === "A" && target.origin === location.origin && target.hash) {
+  const inPage = target.origin === location.origin && target.pathname === location.pathname && target.search === location.search;
+  if (target.tagName === "A" && inPage && target.hash && !target.target && !event.metaKey && !event.ctrlKey) {
     event.preventDefault();
     document.querySelector(target.hash)?.scrollIntoView({ behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth" });
   }

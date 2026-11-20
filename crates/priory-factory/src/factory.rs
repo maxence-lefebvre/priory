@@ -55,6 +55,7 @@ pub struct Settings {
     pub webhooks: Option<Webhooks>,
     #[serde(default)]
     pub asks: Asks,
+    pub request: Option<RequestDefaults>,
     /// Autolinks, in order: each key a regex, each value an `https://` URL template whose `$1`
     /// names the regex's first group. An entry with a built-in link's regex replaces it.
     #[serde(default, deserialize_with = "links")]
@@ -86,6 +87,14 @@ impl Link {
         if !url.starts_with("https://") {
             return Err(format!(
                 "`[links]` `{pattern}` links to `{url}`: a link starts with `https://`"
+            ));
+        }
+        let rest = &url["https://".len()..];
+        let host = &rest[..rest.find(['/', '?', '#']).unwrap_or(rest.len())];
+        // A group in the host would let the linked text pick the site.
+        if host.is_empty() || host.contains('$') || host.contains("{repo}") {
+            return Err(format!(
+                "`[links]` `{pattern}` links to `{url}`: a link's host is fixed, with no group or `{{repo}}` in it"
             ));
         }
         let groups = regex.captures_len() - 1;
@@ -130,6 +139,16 @@ fn links<'de, D: Deserializer<'de>>(input: D) -> Result<Vec<Link>, D::Error> {
         }
     }
     input.deserialize_map(Ordered)
+}
+
+/// What `priory add` and `POST /api/request` use when a request names no workflow or band.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct RequestDefaults {
+    /// The workflow a request starts when it names none.
+    pub workflow: String,
+    /// The band of a request that names none.
+    pub band: Option<String>,
 }
 
 /// What happens to the answer of an ask: where an agent's ask can run a command, and how an
@@ -1065,6 +1084,11 @@ impl Factory {
     pub fn otlp(&self) -> Option<&str> {
         let telemetry = self.settings.as_ref()?.value.telemetry.as_ref()?;
         Some(telemetry.otlp.as_str())
+    }
+
+    /// The defaults of `priory add`; none makes it need `--workflow`.
+    pub fn request(&self) -> Option<&RequestDefaults> {
+        self.settings.as_ref()?.value.request.as_ref()
     }
 
     /// The HTTP server's settings; none listens nowhere.

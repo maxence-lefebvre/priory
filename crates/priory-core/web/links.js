@@ -25,7 +25,7 @@ export function autolink(text, links, repo) {
       rule.regex.lastIndex = at;
       let match = rule.regex.exec(text);
       while (match && !match[0] && match.index < text.length) {
-        rule.regex.lastIndex = match.index + 1;
+        rule.regex.lastIndex = match.index + (text.codePointAt(match.index) > 0xffff ? 2 : 1);
         match = rule.regex.exec(text);
       }
       if (match?.[0] && (!best || match.index < best.match.index)) best = { rule, match };

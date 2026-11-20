@@ -21,6 +21,7 @@ Schema: [`config/factory.json`](../schemas/config/factory.json).
 | `webhooks` | table | no | no webhook is taken | The signed webhooks the server takes. Needs `[serve]`. See [`[webhooks.github]`](#webhooksgithub) | |
 | `asks` | table | no | answers are only stored | What happens to the answer of an ask from outside Priory. See [`[asks]`](#asks) | |
 | `links` | table of strings | no | the built-in `#n` link | Autolinks, each a regex and a URL template. See [`[links]`](#links) | |
+| `request` | table | no | `priory add` needs `--workflow` | The defaults of `priory add` and `POST /api/request`. See [`[request]`](#request) | |
 
 A duration is a whole number followed by `s`, `m` or `h`, such as `"90s"`, `"15m"` or `"2h"`.
 
@@ -104,7 +105,7 @@ and [tools.md](../daemon/tools.md#commands-an-answer-runs) for the commands an a
 Autolinks turn keys in text into links when the web view shows it. Each key is a regex, in the
 [regex crate's syntax](https://docs.rs/regex/latest/regex/#syntax). Each value is a URL template:
 `$1` is what the regex's first group matched, `$0` the whole match, and `{repo}` the task's
-repository, `owner/name`. Priory percent-encodes each group's text before it goes in the URL. The
+repository, `owner/name`. They go in the path or query, never in the host. Priory percent-encodes each group's text before it goes in the URL. The
 text Priory stores never changes.
 
 ```toml
@@ -126,6 +127,16 @@ refuses, such as one with an inline flag like `(?i)`, links nothing there; `prio
 catch that. `\d`, `\w` and `\b` match only ASCII in JavaScript and any script in Rust, so write
 `[0-9]` or `[A-Za-z]` when it matters. The regex runs in the reader's browser, so keep it simple:
 a regex with nested repeats, such as `(a+)+`, can stall the page on long text.
+
+## `[request]`
+
+What `priory add` and `POST /api/request` use when a request names no workflow or band. See
+[cli.md](../intake/cli.md#priory-add).
+
+| Key | Type | Required | Default | Meaning | Example |
+| --- | ---- | -------- | ------- | ------- | ------- |
+| `workflow` | string | yes | | The workflow a request starts when it names none, by file name | `"groom"` |
+| `band` | string | no | none, as `priory request` without `--band` | The band of a request that names none | `"today"` |
 
 ## Example
 
@@ -166,6 +177,10 @@ secret_env = "PRIORY_GITHUB_WEBHOOK_SECRET"    # the variable holding the webhoo
 [asks]
 deliver = "bin/deliver"                        # delivers outside answers, from the factory folder
 targets = { ops = "../ops" }                   # where an answer can run an ask's command
+
+[request]
+workflow = "implement"                         # what priory add starts without --workflow
+band = "today"                                 # its band without --band
 ```
 
 ## Errors from `priory check`
@@ -189,6 +204,9 @@ targets = { ops = "../ops" }                   # where an answer can run an ask'
 | `` `[links]` `<regex>` is not a regex: <reason> `` | A `[links]` key the regex crate refuses |
 | `` `[links]` `<regex>` names group $<n>, but the regex has <m> groups `` | A template names a group past the regex's last one |
 | `` `[links]` `<regex>` links to `<url>`: a link starts with `https://` `` | A template that is not an `https://` URL |
+| `` `[links]` `<regex>` links to `<url>`: a link's host is fixed, with no group or `{repo}` in it `` | A template whose host is empty, or holds `$1` or `{repo}`, so the linked text could pick the site |
+| `` `[request] workflow` `<name>` does not exist `` | `[request] workflow` names no file under `workflows/` |
+| `` `[request] band` `<band>` is not one of <bands> `` | `[request] band` names a band the factory lacks |
 | `invalid socket address syntax` | `listen` is not an IP address and port, such as `127.0.0.1:7340` |
 
 Each line starts with the file and line, such as `factory.toml:3:1:`. A file that does not parse

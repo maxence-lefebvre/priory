@@ -1354,6 +1354,8 @@ fn check_refuses_a_bad_link_regex_a_missing_group_and_a_non_https_template() {
 '\bPR-(\d+)\b' = "https://example.com/$1/$2"
 '\bdoc-(\d+)\b' = "http://example.com/$1"
 '\bbig-(\d+)\b' = "https://example.com/$18446744073709551616"
+'\bgo:(\S+)' = "https://$1/"
+'\brepo:(\S+)' = "https://{repo}.example.com/$1"
 "#;
 
     let outcome = check(&factory("bad-links", &with("factory.toml", settings)));
@@ -1387,5 +1389,32 @@ fn check_refuses_a_bad_link_regex_a_missing_group_and_a_non_https_template() {
         "{}",
         outcome.stderr
     );
+    for (regex, url) in [
+        ("\\bgo:(\\S+)", "https://$1/"),
+        ("\\brepo:(\\S+)", "https://{repo}.example.com/$1"),
+    ] {
+        let message = format!(
+            "factory.toml:3: `[links]` `{regex}` links to `{url}`: a link's host is fixed, with no group or `{{repo}}` in it\n"
+        );
+        assert!(outcome.stderr.contains(&message), "{}", outcome.stderr);
+    }
     assert!(!outcome.stderr.contains("linear.app"), "{}", outcome.stderr);
+}
+
+#[test]
+fn a_request_table_passes_and_an_unknown_workflow_or_band_is_refused() {
+    let good = "name = \"demo\"\n\n[request]\nworkflow = \"implement\"\nband = \"today\"\n";
+    let ok = check(&factory("request-ok", &with("factory.toml", good)));
+    let unknown = good
+        .replace("\"implement\"", "\"groom\"")
+        .replace("\"today\"", "\"someday\"");
+    let bad = check(&factory("request-unknown", &with("factory.toml", &unknown)));
+
+    assert_eq!((ok.code, ok.stderr.as_str()), (0, ""));
+    assert_eq!(bad.code, 1);
+    assert_eq!(
+        bad.stderr,
+        "factory.toml:3: `[request] workflow` `groom` does not exist\n\
+         factory.toml:3: `[request] band` `someday` is not one of blocker, now, today, later\n"
+    );
 }
