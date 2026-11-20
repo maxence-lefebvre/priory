@@ -175,6 +175,24 @@ fn tools() -> Value {
             },
         },
         {
+            "name": "report",
+            "description": "Write your task's report for a person: ordered sections of rows, some with a pick. It replaces your task's report and keeps the choices already made. A pick arrives as your next prompt; apply it, then write the report again with its applied filled. It does not end your turn.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "date": text("The day the report is for, such as 2026-11-20."),
+                    "since": text("The RFC 3339 instant the report covers changes from."),
+                    "greeting": text("The line the report opens with."),
+                    "sections": {
+                        "type": "array",
+                        "description": "In order. Each: {id, title, count?, rows}. A row: {text, id?, key?, meta?, state?, owner?, time?, pick?, comments: []}. A pick: {id, options, recommended?, applied?, requests?}, where requests maps an option to a task request {workflow, key, text, band?, lane?, repo?, tldr?, hold?} that Priory starts instead of waking you.",
+                        "items": { "type": "object" },
+                    },
+                },
+                "required": ["date", "since", "greeting", "sections"],
+            },
+        },
+        {
             "name": "search",
             "description": "Find tasks by what they are about, such as other tasks that touch the code you change, or one that already did your work. Prints task, key, state, step and TL;DR, best match first. It does not end your turn.",
             "inputSchema": {

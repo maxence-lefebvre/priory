@@ -8492,3 +8492,118 @@ fn a_review_task_finishes_without_owning_its_pull_request() {
 
     assert_eq!([&tasks[0][4], &tasks[0][7]], ["done", "-"]);
 }
+
+const PICK: &str = "2026-11-20_sentry_fnd-2409";
+
+/// A report with one section and one pick, as the bonjour workflow writes it.
+fn bonjour(requests: serde_json::Value) -> serde_json::Value {
+    let mut report = json!({
+        "date": "2026-11-20",
+        "since": "2026-11-19T18:00:00+01:00",
+        "greeting": "Bonjour, Max",
+        "sections": [
+            { "id": "sentry", "title": "Sentry", "count": 1, "rows": [{
+                "id": "fnd-2409", "key": "FND-2409", "text": "Release build pauses",
+                "meta": null, "state": null, "owner": null, "time": null,
+                "pick": { "id": PICK, "options": ["Take", "Later"], "recommended": "Take",
+                          "chosen": null, "applied": null },
+                "comments": []
+            }] },
+            { "id": "moved", "title": "Moved", "count": null, "rows": [] }
+        ]
+    });
+    if !requests.is_null() {
+        report["sections"][0]["rows"][0]["pick"]["requests"] = requests;
+    }
+    report
+}
+
+/// A task whose agent wrote `report` with the report tool, then slept on a wait.
+fn asleep_on_a_report(name: &str, report: &serde_json::Value) -> Setup {
+    let mut setup = Setup::with_workflow(name, STEPS);
+    setup.calls(&[
+        json!({ "name": "report", "arguments": report }),
+        wait(json!({ "type": "time", "until": "2 hours" })),
+    ]);
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == "asleep")
+    });
+    setup
+}
+
+fn shown(setup: &Setup) -> serde_json::Value {
+    let output = setup.priory(&["report", "show", "--json"]);
+    assert!(output.status.success(), "{output:?}");
+    serde_json::from_slice(&output.stdout).unwrap()
+}
+
+#[test]
+fn a_report_the_report_tool_writes_reads_back_in_order() {
+    let report = bonjour(serde_json::Value::Null);
+    let setup = asleep_on_a_report("report-tool", &report);
+
+    assert_eq!(
+        setup.replies()[0]["result"]["content"][0]["text"],
+        "task 1's report is at revision 1"
+    );
+    let shown = shown(&setup);
+    assert_eq!([&shown["task"], &shown["revision"]], [1, 1]);
+    assert_eq!(shown["sections"], report["sections"]);
+}
+
+#[test]
+fn a_pick_at_the_reports_revision_records_the_choice_and_wakes_the_task_with_one_line() {
+    let setup = asleep_on_a_report("report-pick", &bonjour(serde_json::Value::Null));
+
+    let picked = setup.priory(&["report", "pick", PICK, "Take", "--expected", "1"]);
+
+    assert!(picked.status.success(), "{picked:?}");
+    assert_eq!(
+        String::from_utf8_lossy(&picked.stdout),
+        format!("pick {PICK} is Take at revision 2\n")
+    );
+    let shown = shown(&setup);
+    assert_eq!(shown["revision"], 2);
+    assert_eq!(shown["sections"][0]["rows"][0]["pick"]["chosen"], "Take");
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 3);
+    assert_eq!(
+        setup.typed()[2].lines().next(),
+        Some(format!("The person picked Take on {PICK} in your report: apply it, then write the report again with the pick's applied filled.").as_str())
+    );
+}
+
+#[test]
+fn a_pick_at_a_stale_revision_is_refused_and_changes_nothing() {
+    let setup = asleep_on_a_report("report-stale", &bonjour(serde_json::Value::Null));
+
+    let stale = setup.priory(&["report", "pick", PICK, "Take", "--expected", "7"]);
+
+    assert!(!stale.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&stale.stderr),
+        "priory report pick: task 1's report is at revision 1, not 7\n"
+    );
+    let shown = shown(&setup);
+    assert_eq!(shown["revision"], 1);
+    assert_eq!(shown["sections"][0]["rows"][0]["pick"]["chosen"], serde_json::Value::Null);
+    assert_eq!(setup.rows("tasks")[0][4], "asleep");
+}
+
+#[test]
+fn a_pick_option_that_requests_a_task_creates_it_and_fills_applied() {
+    let requests = json!({ "Take": {
+        "workflow": "implement", "key": "fnd-2409", "text": "Fix the DWARF pause", "repo": "owner/repo"
+    } });
+    let setup = asleep_on_a_report("report-request", &bonjour(requests));
+
+    let picked = setup.priory(&["report", "pick", PICK, "Take", "--expected", "1"]);
+
+    assert!(picked.status.success(), "{picked:?}");
+    let tasks = setup.until("tasks", |rows| rows.len() == 2);
+    assert_eq!(tasks[1][1], "cli:fnd-2409");
+    assert_eq!(tasks[0][4], "asleep");
+    let pick = &shown(&setup)["sections"][0]["rows"][0]["pick"];
+    assert_eq!([&pick["chosen"], &pick["applied"]], ["Take", "requested task cli:fnd-2409"]);
+}

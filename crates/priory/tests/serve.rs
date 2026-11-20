@@ -577,3 +577,151 @@ fn the_queue_lists_held_tasks_with_their_hold_after_the_waiting_ones() {
     );
     assert_eq!(api(&address, "/api/tasks/2")["position"], 1);
 }
+
+/// A report with its sections out of alphabetical order, so a read in any other order shows.
+fn report() -> Value {
+    json!({
+        "date": "2026-11-20",
+        "since": "2026-11-19T18:00:00+01:00",
+        "greeting": "Bonjour, Max",
+        "sections": [
+            {
+                "id": "sentry",
+                "title": "Sentry",
+                "count": 1,
+                "rows": [{
+                    "id": "fnd-2409",
+                    "key": "FND-2409",
+                    "text": "Release build pauses on a DWARF breakpoint",
+                    "meta": "41 events",
+                    "state": null,
+                    "owner": null,
+                    "time": null,
+                    "pick": {
+                        "id": "2026-11-20_sentry_fnd-2409",
+                        "options": ["Take", "Later", "Drop"],
+                        "recommended": "Take",
+                        "chosen": null,
+                        "applied": null
+                    },
+                    "comments": []
+                }]
+            },
+            {
+                "id": "backlog",
+                "title": "Backlog",
+                "count": null,
+                "rows": [
+                    { "id": null, "key": null, "text": "Second", "meta": null, "state": null,
+                      "owner": null, "time": null, "pick": null, "comments": [] },
+                    { "id": null, "key": null, "text": "First", "meta": null, "state": null,
+                      "owner": "on Max", "time": "09:00", "pick": null, "comments": [] }
+                ]
+            }
+        ]
+    })
+}
+
+impl Setup {
+    /// Runs `priory report put TASK -` with `report` on stdin.
+    fn put(&self, task: &str, report: &Value) -> Output {
+        let mut child = self
+            .command()
+            .args(["report", "put", task, "-"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(report.to_string().as_bytes())
+            .unwrap();
+        child.wait_with_output().unwrap()
+    }
+
+    fn shown(&self, args: &[&str]) -> Value {
+        let mut all = vec!["report", "show"];
+        all.extend(args);
+        all.push("--json");
+        let output = self.priory(&all);
+        succeeded(&output);
+        serde_json::from_slice(&output.stdout).unwrap()
+    }
+}
+
+#[test]
+fn a_report_put_from_a_file_reads_back_in_its_order_with_its_task_and_revision() {
+    let setup = Setup::new("report-put", SERVE);
+    setup.seed();
+    let file = setup.dir.join("report.json");
+    fs::write(&file, report().to_string()).unwrap();
+
+    let put = setup.priory(&["report", "put", "1", file.to_str().unwrap()]);
+
+    succeeded(&put);
+    assert_eq!(
+        String::from_utf8_lossy(&put.stdout),
+        "task 1's report is at revision 1\n"
+    );
+    let mut expected = report();
+    expected["task"] = json!(1);
+    expected["revision"] = json!(1);
+    assert_eq!(setup.shown(&[]), expected);
+    assert_eq!(setup.shown(&["1"]), expected);
+}
+
+#[test]
+fn a_report_of_a_bad_shape_is_refused_with_why_and_nothing_stored() {
+    let setup = Setup::new("report-bad", SERVE);
+    setup.seed();
+    let mut untitled = report();
+    untitled["sections"][1]
+        .as_object_mut()
+        .unwrap()
+        .remove("title");
+    let mut stray = report();
+    stray["sections"][0]["rows"][0]["pick"]["recommended"] = json!("Maybe");
+    let mut commented = report();
+    commented["sections"][1]["rows"][0]["comments"] = json!([{ "text": "hi" }]);
+    let cases = [
+        (untitled, "missing field `title`"),
+        (stray, r#"pick "2026-11-20_sentry_fnd-2409": "Maybe" is not one of its options"#),
+        (commented, r#"section "backlog": comments must be empty"#),
+    ];
+
+    for (report, why) in cases {
+        let put = setup.put("1", &report);
+
+        assert!(!put.status.success());
+        let stderr = String::from_utf8_lossy(&put.stderr);
+        assert!(
+            stderr.starts_with("priory report put: the report is refused: ") && stderr.contains(why),
+            "{stderr}"
+        );
+    }
+    let shown = setup.priory(&["report", "show", "--json"]);
+    assert!(!shown.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&shown.stderr),
+        "priory report show: no task has a report\n"
+    );
+}
+
+#[test]
+fn the_report_endpoints_return_what_report_show_json_prints() {
+    let mut setup = Setup::new("report-api", SERVE);
+    setup.seed();
+    succeeded(&setup.put("2", &report()));
+    let mut first = report();
+    first["greeting"] = json!("Earlier");
+    succeeded(&setup.put("1", &first));
+    let address = setup.start(&["serve", &setup.factory()]);
+
+    assert_eq!(api(&address, "/api/reports/latest"), setup.shown(&[]));
+    assert_eq!(api(&address, "/api/reports/latest")["task"], 1);
+    assert_eq!(api(&address, "/api/reports/2"), setup.shown(&["2"]));
+    assert_eq!(get(&address, "/api/reports/3", Some(TOKEN)).0, 404);
+}

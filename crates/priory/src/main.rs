@@ -1,5 +1,6 @@
 use priory_core::memory::Gate;
-use priory_core::{daemon, embed, listing, report, search, serve, snooze, state, tools};
+use priory_core::{daemon, embed, listing, report, search, sections, serve, snooze, state, tools};
+use serde_json::Value;
 use priory_factory::{factory, rules};
 use priory_intake::{intake, request};
 use priory_runtime::{mcp, runtime};
@@ -84,7 +85,8 @@ fn main() -> ExitCode {
             (Some(flag), Some(session), None) if flag == "--session" => {
                 let session = session.to_string_lossy();
                 let local = |tool: &str, arguments: &serde_json::Value| {
-                    search::tool(&session, tool, arguments, &runtime::home())
+                    sections::tool(&session, tool, arguments)
+                        .or_else(|| search::tool(&session, tool, arguments, &runtime::home()))
                 };
                 exit("mcp", mcp::serve(&session, &local))
             }
@@ -225,6 +227,12 @@ fn trace() -> ExitCode {
 /// Prints `priory report [DIR] --workflow <name> [--since <window>] [--cost]`. Only `--cost` reads
 /// the factory, for its prices.
 fn report(args: Vec<String>) -> ExitCode {
+    match args.first().map(String::as_str) {
+        Some("put") => return report_put(&args[1..]),
+        Some("show") => return report_show(&args[1..]),
+        Some("pick") => return report_pick(&args[1..]),
+        _ => {}
+    }
     let mut workflow = None;
     let mut since = report::SINCE.to_owned();
     let mut cost = false;
@@ -264,6 +272,87 @@ fn report(args: Vec<String>) -> ExitCode {
     let printed =
         state::open().and_then(|db| report::cost(&db, &workflow, &since, &factory.prices));
     exit("report", printed)
+}
+
+/// Stores a task's report from a file, or from stdin with `-`: `priory report put TASK FILE|-`.
+fn report_put(args: &[String]) -> ExitCode {
+    let [task, file] = args else {
+        return usage();
+    };
+    let Ok(task) = task.parse() else {
+        return usage();
+    };
+    let text = if file == "-" {
+        std::io::read_to_string(std::io::stdin())
+    } else {
+        std::fs::read_to_string(file)
+    };
+    let put = text
+        .map_err(|error| format!("{file}: {error}"))
+        .and_then(|text| sections::parse(&text))
+        .and_then(|report| state::open().and_then(|mut db| sections::put(&mut db, task, report)))
+        .map(|done| println!("{done}"));
+    exit("report put", put)
+}
+
+/// Sends `priory report pick PICK OPTION --expected REVISION` to the daemon, which applies it.
+fn report_pick(args: &[String]) -> ExitCode {
+    let [pick, option, flag, expected] = args else {
+        return usage();
+    };
+    let (true, Ok(expected)) = (flag == "--expected", expected.parse()) else {
+        return usage();
+    };
+    let line = serde_json::to_string(&sections::Choice {
+        pick: pick.clone(),
+        option: option.clone(),
+        expected,
+    })
+    .expect("a choice serializes");
+    send("report pick", &line)
+}
+
+/// Prints a task's report, or the one written last: `priory report show [TASK] [--json]`.
+fn report_show(args: &[String]) -> ExitCode {
+    let (json, rest): (Vec<_>, Vec<_>) = args.iter().partition(|arg| *arg == "--json");
+    let task = match rest[..] {
+        [] => None,
+        [task] => match task.parse() {
+            Ok(task) => Some(task),
+            Err(_) => return usage(),
+        },
+        _ => return usage(),
+    };
+    let shown = state::open().and_then(|db| {
+        let report = sections::show(&db, task)
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| match task {
+                Some(task) => format!("task {task} has no report"),
+                None => "no task has a report".to_owned(),
+            })?;
+        if !json.is_empty() {
+            state::emit(&report.to_string());
+            return Ok(());
+        }
+        state::emit(&format!(
+            "task {} revision {} {}: {}",
+            report["task"], report["revision"], report["date"], report["greeting"]
+        ));
+        for section in report["sections"].as_array().into_iter().flatten() {
+            state::emit(&format!("{}", section["title"]));
+            for row in section["rows"].as_array().into_iter().flatten() {
+                let pick = &row["pick"];
+                let choice = match &pick["chosen"] {
+                    Value::Null if pick.is_object() => format!("  pick {}: {}", pick["id"], pick["options"]),
+                    Value::Null => String::new(),
+                    chosen => format!("  pick {}: {chosen}", pick["id"]),
+                };
+                state::emit(&format!("  {}{choice}", row["text"]));
+            }
+        }
+        Ok(())
+    });
+    exit("report show", shown)
 }
 
 /// Sends `priory snooze KIND ID (--for DURATION | --until TIME | --clear)` to the daemon, with the
