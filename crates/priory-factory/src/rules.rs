@@ -506,6 +506,17 @@ fn check_workflow(factory: &Factory, workflow: &Loaded<Workflow>, problems: &mut
         ));
         return;
     }
+    if let Some(reopen) = &workflow.value.reopen
+        && steps
+            .get(reopen.as_str())
+            .is_none_or(|step| step.decides != Decider::Model)
+    {
+        problems.push(problem(
+            workflow,
+            workflow.lines.field("reopen"),
+            format!("reopen `{reopen}` is not a model step"),
+        ));
+    }
     let reached = reachable(&steps, start, |_| false);
     for (index, step) in workflow.value.steps.iter().enumerate() {
         let mut report = |message: String| {

@@ -48,7 +48,8 @@ A message names resources too:
 
 ## Finding the task
 
-A task is active in any state except done, failed and dropped. Only active tasks take messages.
+A task is active in any state except done, failed and dropped. Only active tasks take messages,
+except feedback that reopens a done task (see below).
 
 For most messages, the daemon looks for the active tasks that own any resource the message names:
 
@@ -84,6 +85,7 @@ Each inbox entry gets one of these outcomes:
 | ----------------------------------------- | --------- | -------------------------------------------- |
 | A schedule's or review request's `factory.task.requested`, with a task asleep at a model step owning its key | `woke` | that task, now `ready` |
 | A schedule's or review request's `factory.task.requested`, with a task in another active state owning its key | `coalesced` | that task, unchanged |
+| A review, comment or review thread comment, with no active task owning a resource it names, and a done task it reopens | `reopened` | that task, now `ready` at its reopen step |
 | `github.pull_request.review_request_removed` with `reviewed: false`, with an active task whose key is its review key | `withdrew` | that task, now `dropped`, its live run ended |
 | Any other, with an active task owning a resource it names | `kept` | that task                   |
 | `factory.task.requested`, no active task  | `created` | a new task, `queued` at its workflow's start |
@@ -131,3 +133,34 @@ ends its turn:
 When a firing finds the task in any other state, the inbox records it as `coalesced` and nothing is
 typed. That covers a running task, a task asleep at a human step, and a task asleep on the daemon's
 checks gate. So firings never stack up.
+
+## Feedback reopens a done task
+
+Feedback is a `github.pull_request_review.submitted`, `github.pull_request.comment` or
+`github.pull_request_review_comment` event. When no active task owns a resource it names, it
+reopens the newest done task that:
+
+- owns its pull request, through `open-pr` or a wait;
+- became done at or before the feedback's `time`, to the second;
+- has no `github.pull_request.closed` event of that pull request in the inbox, merged or not, and
+  the feedback's `open` is true, so a close the intake publishes after it reopens nothing;
+- shares its key with no active task.
+
+The task goes back, as its next generation, to its workflow's `reopen` step, else the model step
+whose result led to the `open-pr` that opened the pull request, else the step it was done at. As `priory revive` does, the
+reopen withdraws the open asks, waits and queued prompts of the earlier generation. Its first
+prompt is one line, then the event's own line:
+
+```text
+Feedback reopened this done task as generation 2: ana commented on github:owner/name#57: Can you split this? https://github.com/owner/name/pull/57#issuecomment-701
+```
+
+The task is `ready`, so its next run resumes the session of the step's agent. The daemon appends a
+`factory.task.reopened` trace record (see [trace.md](trace.md)).
+
+Limits:
+
+- A pull request closed and reopened on GitHub keeps its close in the inbox, so it reopens nothing.
+- The intake publishes no bot's comment, and only feedback after the task was done reopens it. A
+  person who comments as the same GitHub account Priory acts as reopens it like anyone else.
+

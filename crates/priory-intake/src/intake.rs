@@ -22,7 +22,9 @@ const OPENED: &str = "github.issues.opened";
 const PR_OPENED: &str = "github.pull_request.opened";
 const PR_LABELED: &str = "github.pull_request.labeled";
 pub const PR_CLOSED: &str = "github.pull_request.closed";
-const REVIEWED: &str = "github.pull_request_review.submitted";
+pub const REVIEWED: &str = "github.pull_request_review.submitted";
+pub const COMMENTED: &str = "github.pull_request.comment";
+pub const THREAD_COMMENTED: &str = "github.pull_request_review_comment";
 pub const CHECKED: &str = "github.check_run.completed";
 pub const CHECK_RUNS: &str = "github.pull_request.check_runs";
 /// The check run conclusions that count as green, lowercase as a check event carries them.
@@ -54,6 +56,8 @@ pub(crate) fn output() -> Output {
             PR_LABELED,
             PR_CLOSED,
             REVIEWED,
+            COMMENTED,
+            THREAD_COMMENTED,
             CHECKED,
             CHECK_RUNS,
             reviews::REQUESTED,

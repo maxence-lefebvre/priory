@@ -394,6 +394,46 @@ pub(crate) fn progressed(
     append(tx, trace, "factory.task.progressed", &time, data)
 }
 
+/// Appends a `factory.task.reopened` record for `task`, which feedback on `pull_request` moved back
+/// from done as its next generation.
+pub(crate) fn reopened(
+    tx: &Transaction,
+    trace: &Trace,
+    task: i64,
+    pull_request: &str,
+) -> rusqlite::Result<()> {
+    let (workflow, step, key, generation, time): (String, String, String, i64, String) = tx
+        .query_row(
+            "SELECT workflow, step, key, generation, strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+             FROM tasks WHERE id = ?1",
+            [task],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                ))
+            },
+        )?;
+    let mut data = json!({
+        "factory": trace.factory.name,
+        "factory_revision": trace.revision,
+        "workflow": workflow,
+        "task": task.to_string(),
+        "key": key,
+        "generation": generation,
+        "step": step,
+        "machine": trace.machine,
+        "pull_request": pull_request,
+    });
+    if let Value::Object(fields) = &mut data {
+        fields.retain(|_, value| !value.is_null());
+    }
+    append(tx, trace, "factory.task.reopened", &time, data)
+}
+
 /// Appends one CloudEvents record of `kind` to the trace.
 fn append(
     tx: &Transaction,

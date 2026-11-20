@@ -30,9 +30,9 @@ on the first that fires. Each condition fires the wait on:
 
 | `type`         | Fields                  | Fires on                                                                |
 | -------------- | ----------------------- | ----------------------------------------------------------------------- |
-| `pull_request` | `repo`, `pull_request`  | `github.pull_request.closed` for it, merged or not                      |
+| `pull_request` | `repo`, `pull_request`  | `github.pull_request.closed` for it, merged or not, or feedback on it (see below) |
 | `checks`       | `repo`, `pull_request`, optional `head_sha` | `github.check_run.completed` for it, with `pending` 0, on `head_sha` if given |
-| `review`       | `repo`, `pull_request`  | `github.pull_request_review.submitted` for it                           |
+| `review`       | `repo`, `pull_request`  | `github.pull_request_review.submitted` for it, or a comment on it (see below) |
 | `time`         | `until`                 | the daemon's loop, once `until` has passed                              |
 | `task`         | `task`                  | the daemon's loop, once that task is done, failed or dropped            |
 | `linear_comment` | `issue`, such as `ENG-7` | `linear.comment.created` on that issue                               |
@@ -55,6 +55,26 @@ A wait on `any` stores one wait per condition, each with its own id, and replies
 stored. When one of them fires, the daemon withdraws the others, so a later event on their
 resources fires no wait. The task still owns those resources, so a later event on one still reaches
 the agent as a line of a prompt, as any event on a resource it owns does.
+
+### Feedback on a pull request
+
+Feedback is a review, a comment or a review thread comment on the pull request:
+`github.pull_request_review.submitted`, `github.pull_request.comment` or
+`github.pull_request_review_comment`. It fires a `pull_request` or `review` wait, and the checks
+gate before `done`, with one line that names who said what and where:
+
+```text
+wait 3 fired: ana reviewed github:owner/name#57: changes_requested https://github.com/owner/name/pull/57#pullrequestreview-301
+wait 3 fired: ana commented on github:owner/name#57: Can you split this? https://github.com/owner/name/pull/57#issuecomment-701
+wait 3 fired: ana commented on src/lib.rs:12 of github:owner/name#57: Rename this. https://github.com/owner/name/pull/57#discussion_r802
+```
+
+The line quotes the first line of a comment. The event's own line follows with the whole body.
+
+A comment fires a wait only when its `time` is at or after the wait was stored, to the second. So
+the agent's own comment, posted in the turn that stored the wait, fires nothing. Reviews fire at any
+time, since GitHub keeps an author from approving or rejecting their own pull request. The intake
+publishes no bot's comment (see [pull-requests.md](../intake/pull-requests.md)).
 
 ### An ask beside a wait
 
@@ -136,6 +156,7 @@ wait and at each new event:
 
 | Condition                                                                           | Effect                                 |
 | ----------------------------------------------------------------------------------- | -------------------------------------- |
+| The new event is feedback on the pull request (see [Feedback on a pull request](#feedback-on-a-pull-request)) | wakes the agent with the feedback's line |
 | The newest event is `github.pull_request.closed` with `merged` true                 | marks the task done and starts no run  |
 | The newest event is `github.pull_request.closed` without `merged` true              | wakes the agent: `wait <id> fired: <pull request> closed without a merge`, or `closed, and GitHub no longer says whether it merged` when `merged` is null |
 | Else, the newest event names another head and came after the result              | wakes the agent: `wait <id> fired: the head of <pull request> moved to <sha>, away from your result's commit <commit>` |
@@ -166,3 +187,5 @@ Known limits:
 - An agent's own checks wait does not fire on `github.pull_request.check_runs`. Only the done gate
   takes it.
 - A check event from an intake older than `failing` cannot mark a task done.
+- Feedback after the task is done reopens it instead (see
+  [routing.md](routing.md#feedback-reopens-a-done-task)).

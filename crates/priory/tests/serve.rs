@@ -1186,18 +1186,21 @@ impl Setup {
     /// Runs `priory intake --once` with `gh api <path>` answering `events` for the issue events
     /// and `[]` for anything else.
     fn poll(&self, events: Value) {
-        let answer = self.dir.join("events.json");
-        fs::write(&answer, events.to_string()).unwrap();
+        self.poll_answering(&[(EVENTS_PATH, events)]);
+    }
+
+    /// Polls once with a fake `gh` that answers each `gh api <path>...` from `answers`.
+    fn poll_answering(&self, answers: &[(&str, Value)]) {
+        let mut script = String::from("#!/bin/sh\ncase \"$*\" in\n");
+        for (at, (path, answer)) in answers.iter().enumerate() {
+            let file = self.dir.join(format!("answer-{at}.json"));
+            fs::write(&file, answer.to_string()).unwrap();
+            script.push_str(&format!("  \"api {path}\"*) cat '{}' ;;\n", file.display()));
+        }
+        script.push_str("  *) echo '[]' ;;\nesac\n");
         let gh = self.dir.join("bin/gh");
         fs::create_dir_all(gh.parent().unwrap()).unwrap();
-        fs::write(
-            &gh,
-            format!(
-                "#!/bin/sh\ncase \"$*\" in\n  \"api {EVENTS_PATH}\"*) cat '{}' ;;\n  *) echo '[]' ;;\nesac\n",
-                answer.display()
-            ),
-        )
-        .unwrap();
+        fs::write(&gh, script).unwrap();
         fs::set_permissions(&gh, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
         let path = format!(
             "{}:{}",
@@ -1388,6 +1391,7 @@ fn issue_pull_request_and_review_deliveries_publish_their_poll_types() {
             "base_branch": "main",
             "state": "approved",
             "actor": "ana",
+            "open": false,
             "time": "2026-11-17T10:30:00Z",
             "github_id": 2561579718u64,
             "delivery": "d-2",
@@ -1395,6 +1399,87 @@ fn issue_pull_request_and_review_deliveries_publish_their_poll_types() {
             "triggers": []
         })
     );
+}
+
+#[test]
+fn a_comment_a_poll_published_publishes_nothing_more_from_its_webhook() {
+    let mut setup = Setup::hooks("hook-comments");
+    let address = setup.start(&["serve", &setup.factory()]);
+    let comment = json!({
+        "id": 701,
+        "body": "Can you split this?",
+        "html_url": "https://github.com/owner/repo/pull/43#issuecomment-701",
+        "created_at": "2026-11-17T12:00:00Z",
+        "user": { "login": "ana", "type": "User" }
+    });
+    let thread = json!({
+        "id": 802,
+        "body": "Rename this.",
+        "html_url": "https://github.com/owner/repo/pull/43#discussion_r802",
+        "created_at": "2026-11-17T12:10:00Z",
+        "path": "src/lib.rs",
+        "line": 12,
+        "in_reply_to_id": 801,
+        "pull_request_url": "https://api.github.com/repos/owner/repo/pulls/43",
+        "user": { "login": "ana", "type": "User" }
+    });
+    let open = json!([{ "data": { "repository": { "pullRequests": { "nodes": [{
+        "number": 43,
+        "headRefName": "priory/3",
+        "headRefOid": "abc123",
+        "baseRefName": "main",
+        "merged": false,
+        "state": "OPEN",
+        "updatedAt": "2999-01-01T00:00:00Z",
+        "reviews": { "nodes": [] },
+        "comments": { "nodes": [{
+            "databaseId": 701,
+            "body": "Can you split this?",
+            "url": "https://github.com/owner/repo/pull/43#issuecomment-701",
+            "createdAt": "2026-11-17T12:00:00Z",
+            "author": { "login": "ana", "__typename": "User" }
+        }] },
+        "commits": { "nodes": [] }
+    }] } } } }]);
+    setup.poll_answering(&[
+        ("graphql --paginate", open),
+        (
+            "repos/owner/repo/pulls/comments?sort=created&direction=desc&per_page=100",
+            json!([thread]),
+        ),
+    ]);
+    let polled = setup.published();
+    let repository = json!({ "full_name": "owner/repo" });
+    let mut issue: Value = serde_json::from_str(&issue_labeled("agent")).unwrap();
+    issue["issue"]["number"] = json!(43);
+    issue["issue"]["pull_request"] =
+        json!({ "url": "https://api.github.com/repos/owner/repo/pulls/43" });
+    let deliveries = [
+        (
+            "issue_comment",
+            json!({ "action": "created", "issue": issue["issue"], "comment": comment, "repository": repository }),
+        ),
+        (
+            "pull_request_review_comment",
+            json!({ "action": "created", "pull_request": pull(), "comment": thread, "repository": repository }),
+        ),
+    ];
+
+    for (event, body) in deliveries {
+        let body = body.to_string();
+        let signature = sign(&setup.secret, body.as_bytes());
+        let (status, reply) = deliver(&address, event, "d-9", Some(&signature), &body);
+        assert_eq!(status, 202, "{event}: {reply}");
+        assert_eq!(reply, r#"{"outcome":"published"}"#, "{event}");
+    }
+
+    let kinds: Vec<_> = polled.iter().map(|m| m.kind.as_str()).collect();
+    assert!(kinds.contains(&"github.pull_request.comment"), "{kinds:?}");
+    assert!(
+        kinds.contains(&"github.pull_request_review_comment"),
+        "{kinds:?}"
+    );
+    assert_eq!(setup.published(), polled);
 }
 
 #[test]
