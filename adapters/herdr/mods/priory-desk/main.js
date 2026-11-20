@@ -2,6 +2,8 @@ import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex, Button } from "gpui-base";
 import { appHome, checking, exec, home as herdrHome, nextCommand, readTextFile, run, setShared, settings } from "herdr";
 import { priory } from "./priory.js";
+import { addChoices } from "./add.js";
+import { AddForm } from "./add-form.js";
 import { deskModel, mergeSince, tomorrowAt } from "./view.js";
 import { FONTS, palette, STRUCTURE as S } from "./tokens.js";
 
@@ -84,6 +86,12 @@ export default class PrioryDesk extends View {
     /** @type {string | null} */
     this.opened = null;
     this.seenSent = false;
+    /** @type {string | null} the key `priory add` returned, selected once a read lists it */
+    this.addedKey = null;
+    this.adding = new AddForm(async () => (await (this.client ??= connect())).client, (key) => {
+      this.view = "all";
+      this.addedKey = key;
+    });
     this.focus = cx.focus_handle();
     // herdr-app check runs init for real: no priory call, and above all no `priory seen`.
     if (checking()) return;
@@ -203,6 +211,9 @@ export default class PrioryDesk extends View {
 
   /** @param {import("gpui-kit").KeyEvent} event @param {import("gpui-kit").Context} cx @param {Model} model */
   key(event, cx, model) {
+    if (event.keystroke === "escape" && this.adding.open) return this.adding.hide(cx);
+    if (this.adding.typing) return;
+    if (event.keystroke === "n") return this.adding.show(cx);
     const rows = this.rows(model);
     const index = rows.findIndex((row) => row.id === this.selected);
     const row = rows[index];
@@ -256,6 +267,8 @@ export default class PrioryDesk extends View {
     const data = { ...this.data, desk: { ...this.data.desk, since_you_looked: this.since, last_visit: this.sinceFrom } };
     const model = deskModel(data, { now: Date.now() });
     const rows = this.rows(model);
+    const added = this.addedKey && rows.find((row) => row.key === this.addedKey);
+    if (added) [this.selected, this.addedKey] = [added.id, null];
     if (!rows.some((row) => row.id === this.selected)) this.selected = rows[0]?.id ?? null;
     const wide = this.width >= WIDE;
     if (wide) this.seen(cx);
@@ -263,6 +276,7 @@ export default class PrioryDesk extends View {
     const table = wide && this.width - COLUMN >= S["pane-split"];
     const summary = v_flex().gap(S["space-3"]).flex_none()
       .child(this.count(ui, model))
+      .when(this.adding.open, (el) => el.child(this.adding.render(t, ICONS, addChoices(this.data.queue, this.data.tasks.tasks))))
       .when(Boolean(model.next), (el) => el.child(this.next(ui, model, wide)))
       .children(model.banners.map((text, i) => ui.banner(`banner-${i}`, text)))
       .when(Boolean(this.actionError), (el) => el.child(div().text_size(S["type-small"][0]).text_color(t["danger-text"]).child(String(this.actionError))));
@@ -277,7 +291,7 @@ export default class PrioryDesk extends View {
           .child(summary).child(this.upNext(ui, model)).child(this.sinceYouLooked(ui, model)))
         .child(v_flex().flex_1().min_w_0().min_h_0()
           .child(v_flex().id("desk-table").flex_1().min_h_0().overflow_y_scrollbar().p(S["space-4"]).child(list))
-          .child(ui.hints([["J", "K", "move"], ["Enter", "answer"], ["S", "snooze 1 h"], ["R", "resume or revive"]])))
+          .child(ui.hints([["J", "K", "move"], ["Enter", "answer"], ["S", "snooze 1 h"], ["R", "resume or revive"], ["N", "add"]])))
       : v_flex().id("desk-scroll").flex_1().min_h_0().overflow_y_scrollbar().p(S["space-4"]).gap(S["space-4"]).child(summary).child(list);
     return root.on_key_down((/** @type {import("gpui-kit").KeyEvent} */ event, /** @type {import("gpui-kit").Context} */ cx) => this.key(event, cx, model))
       .when(Boolean(failed), (el) => el.child(failed)).child(body);
@@ -321,7 +335,9 @@ export default class PrioryDesk extends View {
   /** @param {Ui} ui @param {Model} model */
   views(ui, model) {
     const { t } = ui;
-    return h_flex().gap(S["space-1"]).flex_wrap().children(model.views.map((view) => {
+    return h_flex().gap(S["space-1"]).flex_wrap()
+      .child(ui.button("add-open", "Add", (_e, cx) => this.adding.show(cx), { icon: "plus" }))
+      .children(model.views.map((view) => {
       const on = view.id === this.view;
       return Button.new(`view-${view.id}`).selected(on).h(S["pane-chip"]).px(S["space-3"]).gap(S["space-1"]).flex_none().items_center().rounded(S["radius-full"])
         .text_size(S["type-caption"][0]).font_weight(on ? 600 : 500).bg(on ? t["action-soft"] : t.surface).text_color(on ? t.text : t["text-2"])

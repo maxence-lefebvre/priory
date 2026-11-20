@@ -144,6 +144,18 @@ test("acts through priory's verbs with argv only", async () => {
   ]);
 });
 
+test("adds a task in the factory folder, with only the chips the person changed, and returns its key", async () => {
+  const run = fake();
+  writeFileSync(join(run.dir, "add.json"), "cli:2026-11-21-1\n");
+  const client = priory({ exec, binary: FAKE, factory: "/srv/factory" });
+  assert.equal(await client.add("--band now; $(touch pwned)"), "cli:2026-11-21-1");
+  await client.add("Fix the docs", { workflow: "implement", band: "now", lane: "docs/site" });
+  assert.deepEqual(run.argv(), [
+    ["add", "/srv/factory", "--", "--band now; $(touch pwned)"],
+    ["add", "/srv/factory", "--workflow", "implement", "--band", "now", "--lane", "docs/site", "--", "Fix the docs"],
+  ]);
+});
+
 test("prints the attach command without running it", async () => {
   const run = fake();
   writeFileSync(join(run.dir, "attach.json"), "tmux -S /tmp/priory/sock attach -t 'run 4'\n");

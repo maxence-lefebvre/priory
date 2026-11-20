@@ -1,9 +1,11 @@
 // Priory's web view (DESIGN.md): the frame, the Desk and the Asks, with answering through the CLI's verbs.
 // Agent text is untrusted: every value goes through `html`, which escapes it.
 import { askGroups, snoozed } from "./asks.js";
+import { addBody, addOutcome } from "./add.js";
 
 const ICONS = {
   check: '<path d="M20 6 9 17l-5-5"/>',
+  plus: '<path d="M5 12h14"/><path d="M12 5v14"/>',
   minus: '<path d="M5 12h14"/>',
   x: '<path d="M18 6 6 18"/><path d="m6 6 12 12"/>',
   "circle-x": '<circle cx="12" cy="12" r="10"/><path d="m15 9-6 6"/><path d="m9 9 6 6"/>',
@@ -104,6 +106,8 @@ const state = {
   drafts: new Map(),
   notices: new Map(),
   writing: new Set(),
+  // The Add sheet: its draft and chips, the server's defaults, and where the last send got to.
+  add: { phase: "empty", error: null, defaults: null, task: null, draft: { text: "" }, ...JSON.parse(localStorage.getItem("priory.add") || "{}") },
 };
 
 // Times: relative under 24 h, then a date (DESIGN.md, Copy).
@@ -357,10 +361,13 @@ function deskTable(model, selected) {
     </tbody></table>`;
 }
 
+const addButton = (kind) => html`<button class="${kind}" data-action="add-open" aria-label="Add a task" aria-keyshortcuts="N" aria-haspopup="dialog">${icon("plus", "s20")}${kind === "addtop" ? "Add" : ""}</button>`;
+
+// On a phone the Add button sits beside the capsule, or alone where the capsule hides.
 function capsule(model) {
-  if (!model.open.length || deskView() !== "needs") return "";
   const n = model.open.length;
-  return html`<div class="fade"></div><a class="capsule" href="/asks/${model.open[0].id}">${icon("ask", "s20")}Answer ${n} ${n === 1 ? "ask" : "asks"}</a>`;
+  const answer = n && deskView() === "needs" ? html`<a class="capsule" href="/asks/${model.open[0].id}">${icon("ask", "s20")}Answer ${n} ${n === 1 ? "ask" : "asks"}</a>` : "";
+  return html`<div class="fade"></div><div class="dock">${answer}${addButton("fab")}</div>`;
 }
 
 // Asks list
@@ -760,6 +767,125 @@ function act(target) {
   if (action === "snooze" || action === "unsnooze") return snooze(ask, target);
 }
 
+// Add (DESIGN.md, Add): one field and three chips; Enter queues the task through POST /api/request.
+// The draft lives in localStorage until the daemon takes it, so a reload or a dropped connection keeps it.
+const DRAFT_KEY = "priory.add";
+const addSheet = () => document.getElementById("add");
+// Only an unsent draft keeps its phase across a reload, so it still asks before it sends.
+const keepDraft = () => localStorage.setItem(DRAFT_KEY, JSON.stringify({ draft: state.add.draft, phase: ["offline", "unsure"].includes(state.add.phase) ? state.add.phase : "empty" }));
+// Lanes have no list of their own: the chip offers each lane a listed task carries.
+const knownLanes = () => [...new Set([...state.data.tasks, ...state.data.queue.waiting].map((task) => task.lane).filter(Boolean))].sort();
+
+async function openAdd() {
+  if (!state.data || addSheet().open) return;
+  if (state.add.phase === "added") Object.assign(state.add, { phase: "empty", task: null });
+  if (!state.add.defaults) {
+    state.add.defaults = await api("/api/request").catch(() => null);
+    const { draft, defaults } = state.add;
+    if (defaults && draft.workflow === undefined) Object.assign(draft, { workflow: defaults.workflow || "", band: defaults.band || "" });
+  }
+  renderAdd();
+  addSheet().showModal();
+  document.getElementById("add-text")?.focus();
+}
+
+function closeAdd() {
+  addSheet().close();
+}
+
+function chip(name, label, value, values, none) {
+  const options = [...new Set([...values, value].filter(Boolean))];
+  return html`<label class="chip"><span>${label}</span><select name="${name}" data-add-chip="${name}">
+    <option value="" ${value ? "" : raw("selected")}>${none}</option>
+    ${options.map((option) => html`<option ${option === value ? raw("selected") : ""}>${option}</option>`)}</select>${icon("chevron-down", "s13")}</label>`;
+}
+
+function addedTask() {
+  const { key, id, body } = state.add.task;
+  const task = body || { key, state: "queued" };
+  return html`<div class="added" role="status">
+    <p class="line">Added. The task waits in the queue for its turn.</p>
+    <div class="row">${tile(task.state)}
+      <span class="l1"><span class="mono">${task.key}</span><span>${task.workflow || ""} ${task.step || ""}</span><span>${task.state}</span></span>
+      <span class="l2">${task.brief?.request || task.brief?.title || (id === null ? "No task took this key yet. It shows on the Desk once one does." : "")}</span>
+      <span class="l3">${[task.band, task.lane].filter(Boolean).join(", ")}</span></div>
+    <div class="acts"><button class="btn secondary" data-action="add-another">Add another</button><button class="btn primary" data-action="add-close">Close</button></div></div>`;
+}
+
+const ADD_LINES = {
+  offline: "Offline. The draft stays on this device, and nothing is sent until you confirm it after you reconnect.",
+  unsure: "The connection dropped while sending, so Priory may have queued it. Check the Desk's All view before you send it again.",
+};
+
+function renderAdd() {
+  const sheet = addSheet();
+  if (!sheet) return;
+  const { draft, phase, error, defaults } = state.add;
+  const sending = phase === "sending";
+  const back = !state.failed && ["offline", "unsure"].includes(phase);
+  const status = phase === "refused"
+    ? html`<p class="field-error" id="add-status">${icon("circle-x", "s15")}Could not add: ${error}.</p>`
+    : back
+      ? html`<p class="warnline" id="add-status">${icon("unplug", "s15")}<span>Reconnected. This draft has not been sent${phase === "unsure" ? " or may have been" : ""}. Send it now?</span></p>`
+      : ADD_LINES[phase] ? html`<p class="warnline" id="add-status">${icon("unplug", "s15")}<span>${ADD_LINES[phase]}</span></p>` : "";
+  const empty = !draft.text.trim();
+  const label = sending ? "Adding…" : back ? "Send" : state.failed ? "Keep draft" : "Add";
+  const body = phase === "added" ? addedTask() : html`<form data-action="add" ${sending ? raw('aria-busy="true"') : ""}>
+    <label class="sr" for="add-text">What should the factory do?</label>
+    <input id="add-text" name="text" autocomplete="off" enterkeyhint="send" placeholder="What should the factory do? A GitHub or Linear link sets the repo." value="${draft.text}" ${sending ? raw("readonly") : ""} ${status ? raw('aria-describedby="add-status"') : ""}>
+    ${status}
+    <div class="chips">${chip("workflow", "Workflow", draft.workflow, defaults?.workflows || [], defaults?.workflow ? `default (${defaults.workflow})` : "pick one")}
+      ${chip("band", "Band", draft.band, defaults?.bands || state.data?.bands || [], "default")}
+      ${chip("lane", "Lane", draft.lane, state.data ? knownLanes() : [], "routed")}</div>
+    <div class="acts">${phase === "empty" || sending ? "" : html`<button type="button" class="ghost" data-action="add-discard">Discard draft</button>`}<span class="sp"></span>
+      <button class="btn primary" aria-disabled="${empty || sending ? "true" : "false"}">${label}</button></div></form>`;
+  const focused = document.activeElement?.closest?.("#add") ? focusKey(document.activeElement) : null;
+  const caret = document.activeElement?.id === "add-text" ? document.activeElement.selectionStart : undefined;
+  state.add.shownOffline = Boolean(state.failed);
+  sheet.innerHTML = html`<div class="shead"><h2 id="add-title">Add a task</h2><button class="iconbtn" data-action="add-close" aria-label="Close">${icon("x", "s20")}</button></div>${body}`.text;
+  if (focused) sheet.querySelector(focused)?.focus();
+  if (caret !== undefined) sheet.querySelector("#add-text")?.setSelectionRange(caret, caret);
+}
+
+async function submitAdd() {
+  const { draft, phase } = state.add;
+  const body = addBody(draft);
+  if (!body || phase === "sending") return;
+  // Offline, Enter only keeps the draft; it goes once the person confirms it after reconnecting.
+  if (state.failed) {
+    state.add.phase = "offline";
+    keepDraft();
+    return renderAdd();
+  }
+  state.add.phase = "sending";
+  renderAdd();
+  const reply = await post("/api/request", body).catch(() => ({ status: 0, body: {} }));
+  const outcome = addOutcome(reply.status, reply.body);
+  if (outcome.state === "signed-out") {
+    closeAdd();
+    return signOut("The daemon refused this token. Paste the current one.");
+  }
+  if (outcome.state === "added") {
+    const { defaults } = state.add;
+    state.add.draft = { text: "", workflow: defaults?.workflow || "", band: defaults?.band || "", lane: "" };
+    state.add.task = { key: outcome.key, id: outcome.id, body: null };
+    localStorage.removeItem(DRAFT_KEY);
+    if (outcome.id !== null) api(`/api/tasks/${outcome.id}`).then((task) => { if (state.add.task?.id === outcome.id) { state.add.task.body = task; renderAdd(); } }, () => {});
+    refresh();
+  }
+  Object.assign(state.add, { phase: outcome.state, error: outcome.error || null });
+  if (outcome.state !== "added") keepDraft();
+  renderAdd();
+}
+
+function discardAdd() {
+  const { defaults } = state.add;
+  Object.assign(state.add, { phase: "empty", error: null, draft: { text: "", workflow: defaults?.workflow || "", band: defaults?.band || "", lane: "" } });
+  localStorage.removeItem(DRAFT_KEY);
+  renderAdd();
+  document.getElementById("add-text")?.focus();
+}
+
 // Frame pieces
 function connection() {
   const off = Boolean(state.failed);
@@ -857,7 +983,7 @@ function listPanel(panel, wide) {
   return html`<div class="list" role="region" aria-label="${PANELS[panel][0]}"><div class="lhead"><h1>${PANELS[panel][0]}</h1></div>${laterPanel(panel)}</div>`;
 }
 
-const keyHints = () => html`<div class="keys"><span><kbd>J</kbd><kbd>K</kbd>move</span><span><kbd>Enter</kbd>open</span><span><kbd>Esc</kbd>close</span></div>`;
+const keyHints = () => html`<div class="keys"><span><kbd>J</kbd><kbd>K</kbd>move</span><span><kbd>Enter</kbd>open</span><span><kbd>Esc</kbd>close</span><span><kbd>N</kbd>add</span></div>`;
 
 function drawer(wide) {
   const id = selectedAsk();
@@ -902,7 +1028,7 @@ function loading() {
 }
 
 const routeKey = () => location.pathname + location.search;
-const FOCUS_ATTRIBUTES = ["id", "href", "data-option", "data-pick-mode", "data-theme-pick", "data-action"];
+const FOCUS_ATTRIBUTES = ["id", "href", "data-option", "data-pick-mode", "data-theme-pick", "data-add-chip", "data-action"];
 function focusKey(element) {
   if (!element || element === document.body) return null;
   const name = FOCUS_ATTRIBUTES.find((attribute) => element.hasAttribute(attribute));
@@ -936,6 +1062,8 @@ function render() {
   if (caret !== undefined) app.querySelector("#draft")?.setSelectionRange(caret, caret);
   for (const row of app.querySelectorAll("tr[data-href]")) row.addEventListener("click", () => go(row.dataset.href));
   watchSections(app);
+  // The sheet lives outside #app; it redraws when the connection drops or comes back under it.
+  if (addSheet().open && state.add.shownOffline !== Boolean(state.failed)) renderAdd();
 }
 
 function page() {
@@ -957,7 +1085,7 @@ function page() {
     return html`${staleStrip()}${body}${tab ? tabs(tab, "bar") : ""}`;
   }
   const list = selectedAsk() ? state.list : here;
-  const top = html`<header class="wtop"><span class="fac">${state.data.views.factory}</span>${connection()}</header>`;
+  const top = html`<header class="wtop"><span class="fac">${state.data.views.factory}</span>${connection()}<span class="sp"></span>${addButton("addtop")}</header>`;
   const wide = size === "wide";
   const utility = here === "settings" ? appearance() : here === "more" ? morePage() : PANELS[list] ? null : notFound();
   const nav = (kind) => tabs(here === "settings" && wide ? "settings" : here === "settings" ? "more" : list, kind);
@@ -1010,6 +1138,14 @@ document.addEventListener("click", (event) => {
   if (!target) return;
   const action = target.dataset.action;
   if (action === "retry") return refresh();
+  if (action === "add-open") return openAdd();
+  if (action === "add-close") return closeAdd();
+  if (action === "add-discard") return discardAdd();
+  if (action === "add-another") {
+    Object.assign(state.add, { phase: "empty", task: null });
+    renderAdd();
+    return document.getElementById("add-text")?.focus();
+  }
   if (action === "sign-out") { event.preventDefault(); return signOut(null); }
   if (target.dataset.answer !== undefined || ["undo", "options", "write", "dismiss", "snooze", "unsnooze"].includes(action)) return act(target);
   if (action === "mode" || action === "theme") {
@@ -1031,11 +1167,22 @@ document.addEventListener("click", (event) => {
 });
 
 document.addEventListener("input", (event) => {
+  if (event.target.id === "add-text" || event.target.dataset.addChip) {
+    state.add.draft[event.target.dataset.addChip || "text"] = event.target.value;
+    keepDraft();
+    // Only the button's state changes; a full redraw would reset the caret on every letter.
+    addSheet().querySelector("form .btn.primary")?.setAttribute("aria-disabled", String(!state.add.draft.text.trim() || state.add.phase === "sending"));
+    return;
+  }
   const ask = event.target.id === "draft" && askOnScreen();
   if (ask) state.drafts.set(ask.id, event.target.value);
 });
 
 document.addEventListener("submit", (event) => {
+  if (event.target.dataset.action === "add") {
+    event.preventDefault();
+    return submitAdd();
+  }
   if (event.target.dataset.action === "send-text") {
     event.preventDefault();
     const ask = askOnScreen();
@@ -1058,11 +1205,14 @@ document.addEventListener("keydown", (event) => {
     event.preventDefault();
     return event.target.click();
   }
-  if (event.target.closest("input, textarea") || event.metaKey || event.ctrlKey || event.altKey || !state.data) return;
+  if (addSheet().open || event.target.closest("input, textarea, select") || event.metaKey || event.ctrlKey || event.altKey || !state.data) return;
   const rows = [...document.querySelectorAll(".list [href^='/asks/'], .list tr[data-href]")];
   const hrefOf = (row) => row.getAttribute("href") || row.dataset.href;
   const at = rows.findIndex((row) => row.getAttribute("aria-current") === "true");
-  if (selectedAsk() && /^[1-9]$/.test(event.key)) {
+  if (event.key === "n" || event.key === "N") {
+    event.preventDefault();
+    openAdd();
+  } else if (selectedAsk() && /^[1-9]$/.test(event.key)) {
     document.querySelector(`.opt[data-answer="${Number(event.key) - 1}"]`)?.click();
   } else if (event.key === "j" || event.key === "k") {
     const next = rows[Math.min(rows.length - 1, Math.max(0, at + (event.key === "j" ? 1 : -1)))];
@@ -1074,6 +1224,9 @@ document.addEventListener("keydown", (event) => {
   }
 });
 
+// A tap on the scrim, outside the sheet's box, closes it; closing hands focus back to an Add button.
+addSheet().addEventListener("click", (event) => { if (event.target === addSheet()) closeAdd(); });
+addSheet().addEventListener("close", () => document.querySelector("#app [data-action='add-open']")?.focus());
 addEventListener("popstate", render);
 for (const query of ["(min-width: 600px)", "(min-width: 1024px)"]) matchMedia(query).addEventListener("change", render);
 document.addEventListener("visibilitychange", () => { if (!document.hidden && state.token) refresh(); });
