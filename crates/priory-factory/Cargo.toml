@@ -8,6 +8,7 @@ repository.workspace = true
 [dependencies]
 jiff.workspace = true
 priory-runtime.workspace = true
+regex.workspace = true
 schemars.workspace = true
 serde.workspace = true
 serde-saphyr.workspace = true

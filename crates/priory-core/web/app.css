@@ -166,6 +166,7 @@ a.facet[aria-current="true"] { background: var(--action-soft); color: var(--acti
 .sh .ico { color: var(--text-3); }
 .sh .meta { margin-left: auto; font: 400 var(--type-caption) var(--font-ui); color: var(--text-3); display: inline-flex; gap: 8px; align-items: center; white-space: nowrap; }
 .sh .meta .mono { font-size: 12px; color: var(--text-2); }
+a.autolink { color: var(--action-text); text-decoration: underline; text-underline-offset: 2px; cursor: pointer; }
 .text { font: 400 var(--type-read) var(--font-ui); max-width: var(--measure); white-space: pre-wrap; overflow-wrap: anywhere; }
 .fact { display: grid; grid-template-columns: 18px 1fr; gap: 8px; font: 400 var(--type-small) var(--font-ui); color: var(--text-2); }
 .fact .ico { margin-top: 2px; color: var(--text-3); }
