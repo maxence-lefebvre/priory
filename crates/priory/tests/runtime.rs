@@ -9014,11 +9014,13 @@ fn the_review_starter_writes_its_pending_review_then_asks_the_person_to_submit_i
     assert!(asks[0][3].starts_with("submit"), "{asks:?}");
 }
 
-fn groomed(name: &str, grade: &str) -> Setup {
+/// A groom task whose groom step ends `grade`, and whose later turns take `then`.
+fn groomed(name: &str, grade: &str, then: &[serde_json::Value]) -> Setup {
     let mut setup = Setup::starter(name, "groom");
-    setup.calls(&[json!({ "name": "result", "arguments": {
+    let groom = json!({ "name": "result", "arguments": {
         "outcome": grade, "summary": "Brief: fix the typo", "reason": "one line in the README"
-    } })]);
+    } });
+    setup.calls(&[&[groom], then].concat());
     setup.publish(&starter_request(
         "groom",
         "groom-label",
@@ -9030,7 +9032,7 @@ fn groomed(name: &str, grade: &str) -> Setup {
 
 #[test]
 fn a_green_groom_goes_straight_to_implement() {
-    let setup = groomed("starter-groom-green", "green");
+    let setup = groomed("starter-groom-green", "green", &[]);
 
     let tasks = setup.until("tasks", |rows| {
         rows.first().is_some_and(|row| row[3] == "implement-green")
@@ -9041,8 +9043,28 @@ fn a_green_groom_goes_straight_to_implement() {
 }
 
 #[test]
+fn a_yellow_groom_is_reviewed_on_codex_then_described_before_its_pull_request_opens() {
+    let then = [result("passed"), result("clean"), result("described")];
+    let setup = groomed("starter-groom-yellow", "yellow", &then);
+
+    setup.until("actions", |rows| !rows.is_empty());
+
+    let steps: Vec<_> = setup
+        .rows("runs")
+        .into_iter()
+        .map(|run| run[2].clone())
+        .collect();
+    assert_eq!(steps, ["groom", "implement", "review", "describe"]);
+    assert!(
+        setup.dir.join("fake/codex-args.log").exists(),
+        "review ran on codex"
+    );
+    assert_eq!(setup.rows("actions")[0][2], "open-pr");
+}
+
+#[test]
 fn a_red_groom_stops_at_approve_plan() {
-    let setup = groomed("starter-groom-red", "red");
+    let setup = groomed("starter-groom-red", "red", &[]);
 
     let tasks = setup.until("tasks", |rows| {
         rows.first().is_some_and(|row| row[4] == "asleep")

@@ -1,5 +1,5 @@
 +++
-description = "Grooms a ticket into a brief, then implements it."
+description = "Grooms a ticket into a brief, implements it and describes its pull request."
 harness = "claude-code"
 model = "sonnet"
 memory = "6GB"
@@ -15,8 +15,10 @@ You take one ticket from a request to a pull request a person reviews.
   - red: unclear, risky, or it changes data, security or a public interface.
 - Give the grade's reason in one line in the result's `reason`. Write the brief in its `summary`:
   the goal, the scope and how to check the result. For yellow and red, add your plan.
+- Write the same brief and plan to `.priory/brief.md`, and add `.priory/` to the file that
+  `git rev-parse --git-path info/exclude` names, so it is never committed. Another agent reviews
+  your change against that file.
 - Implement the brief with the smallest change, and test it. Commit your work.
-- In the review step, read the diff from the default branch with fresh eyes, and fix each finding
-  in the implement step that follows.
+- When `.priory/review.md` exists, fix each finding in it, then delete the file.
 - Never push, open a pull request or merge. Priory opens the pull request with your latest result as
   its title and body, and a person reviews it.

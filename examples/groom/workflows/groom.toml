@@ -6,7 +6,7 @@ band = "today"
 id = "groom"
 decides = "model"
 agent = "implementer"
-prompt = "Read the ticket and grade it red, yellow or green with a one-line reason. Write the brief, and for red or yellow your plan, in your result."
+prompt = "Read the ticket and grade it red, yellow or green with a one-line reason. Write the brief, and for red or yellow your plan, in your result and in .priory/brief.md."
 effect = "reversible"
 next = { red = "approve-plan", yellow = "implement", green = "implement-green" }
 
@@ -21,17 +21,27 @@ next = { approved = "implement", rejected = "stop" }
 id = "implement"
 decides = "model"
 agent = "implementer"
-prompt = "Implement the brief and its plan, run the tests, and commit."
+prompt = "Implement the brief and its plan, or fix each finding in .priory/review.md when it exists. Run the tests, and commit."
 effect = "reversible"
 next = { passed = "review", failed = "stop" }
 
+# Another agent on another harness, so the review is independent of the implementer's conversation.
 [[steps]]
 id = "review"
 decides = "model"
-agent = "implementer"
-prompt = "Review your committed change against the brief, as a reviewer would: bugs, missing tests, changes outside its scope. End with fix and each finding, or with clean and a result for the pull request: its title on the first line, then what changed and how you tested it."
+agent = "reviewer"
+prompt = "Review the committed change against .priory/brief.md. Write each finding to .priory/review.md and end with fix, or end with clean."
 effect = "reversible"
-next = { clean = "open-pr", fix = "implement" }
+next = { clean = "describe", fix = "implement" }
+
+# open-pr takes the latest result as the pull request's title and body, not the review's verdict.
+[[steps]]
+id = "describe"
+decides = "model"
+agent = "implementer"
+prompt = "Describe the pull request in your result: its title on the first line, then what changed and how you tested it."
+effect = "reversible"
+next = { described = "open-pr" }
 
 [[steps]]
 id = "implement-green"
