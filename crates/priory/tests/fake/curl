@@ -3,7 +3,8 @@
 # per call. With FAKE_DIR/curl-fail, it removes that file and exits 7, as curl does when it cannot
 # connect. With FAKE_DIR/curl-status, it removes that file and prints its HTTP status as
 # `--write-out` does. Otherwise it appends {url, body} to FAKE_DIR/otlp.jsonl, reading the body from
-# `--data-binary @file`, and prints 200.
+# `--data-binary @file`, and prints 200. A call to Linear's API reads its config from stdin and
+# prints FAKE_DIR/linear.
 set -u
 url=''
 body=''
@@ -15,6 +16,11 @@ while [ $# -gt 0 ]; do
   esac
 done
 echo "$url" >> "$FAKE_DIR/curl.log"
+if [ "$url" = https://api.linear.app/graphql ]; then
+  cat > /dev/null
+  cat "$FAKE_DIR/linear"
+  exit 0
+fi
 if [ -e "$FAKE_DIR/curl-fail" ]; then
   rm -f "$FAKE_DIR/curl-fail"
   echo 'curl: (7) Failed to connect to 127.0.0.1 port 4318' >&2
