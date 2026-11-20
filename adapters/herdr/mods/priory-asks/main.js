@@ -52,7 +52,7 @@ export default class PrioryAsks extends View {
     this.updated = 0;
     this.width = 420;
     this.view = "open";
-    /** @type {{ command?: boolean, lane?: string, task?: string }} */
+    /** @type {{ command?: boolean, lane?: string, band?: string, task?: string }} */
     this.facets = {};
     /** @type {string | number | null} */
     this.selected = null;
@@ -74,7 +74,7 @@ export default class PrioryAsks extends View {
     this.writing = new Set();
     /** @type {Map<string | number, string>} */
     this.notices = new Map();
-    /** @type {string | null} which popover is open: "more", "options", "lane" or "task" */
+    /** @type {string | null} which popover is open: "more", "options", "lane", "band" or "task" */
     this.popover = null;
     this.typing = false;
     this.focus = cx.focus_handle();
@@ -109,7 +109,7 @@ export default class PrioryAsks extends View {
   }
 
   list(now = Date.now()) {
-    return asksList(this.data?.asks ?? [], { view: this.view, now, facets: this.facets });
+    return asksList(this.data?.asks ?? [], { view: this.view, now, bands: this.data?.bands, facets: this.facets });
   }
 
   rows() {
@@ -362,7 +362,7 @@ export default class PrioryAsks extends View {
       .when(radius === RADIUS.sm, (el) => el.border(1).border_color(on ? t["action-soft"] : t["control-line"]))
       .hover((s) => s.opacity(0.88)).focus((s) => s.border(2).border_color(t["action-text"]))
       .on_click((_event, cx) => action(cx)).child(label);
-    /** @param {"lane" | "task"} facet @param {string} label */
+    /** @param {"lane" | "band" | "task"} facet @param {string} label */
     const picker = (facet, label) => {
       const value = this.facets[facet];
       const trigger = Button.new(`facet-${facet}`).h(PANE.chip).px(10).flex().flex_none().items_center().gap(4).rounded(RADIUS.sm)
@@ -389,6 +389,7 @@ export default class PrioryAsks extends View {
           this.refilter(cx);
         }, RADIUS.sm))
         .child(picker("lane", "Lane"))
+        .child(picker("band", "Band"))
         .child(picker("task", "Task")));
   }
 
