@@ -18,7 +18,7 @@ after the source event. So a consumer has already seen the source when it reads 
 | Linear | [linear.md](linear.md#trigger) |
 | Slack | [slack.md](slack.md#trigger) |
 | Schedule | [schedule.md](schedule.md#when-it-fires) |
-| `priory request` | always: it publishes one request with `trigger` set to `cli` (see [cli.md](cli.md)) |
+| `priory request`, `priory add` | always: each publishes one request with `trigger` set to `cli` (see [cli.md](cli.md)) |
 
 A GitHub trigger matches an event when all of these hold:
 
@@ -78,6 +78,7 @@ with `"triggers": ["agent-label"]`, then this request:
 | Slack message | `slack:<channel>:<ts>` |
 | Schedule | `schedule:<key>`, or `schedule:<trigger>@<scheduled>` without a fixed key |
 | `priory request` | `cli:<key>` |
+| `priory add` | the issue its text links to, such as `github:owner/name#42` or `linear:ENG-7`, else `cli:<YYYY-MM-DD>-<n>` |
 
 The message id is the UUIDv5 of `factory.task.requested:{trigger}:{source}`, where `source` is the
 source event's id.

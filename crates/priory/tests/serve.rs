@@ -2483,3 +2483,70 @@ fn dismiss_and_snooze_through_their_endpoints_do_what_their_cli_verbs_do() {
         404
     );
 }
+
+const DEFAULTS: &str = "name = \"demo\"\n\n[serve]\nlisten = \"127.0.0.1:0\"\ntoken_env = \"TEST_TOKEN\"\n\n[request]\nworkflow = \"implement\"\nband = \"today\"\n";
+
+#[test]
+fn a_request_through_the_endpoint_queues_the_task_priory_add_does_and_answers_its_key_and_id() {
+    let mut setup = Setup::new("web-request", DEFAULTS);
+    let address = setup.start(&["daemon", &setup.factory()]);
+
+    let (status, body) = post(
+        &address,
+        "/api/request",
+        "",
+        r#"{"text": "Fix https://github.com/cli/cli/issues/42", "lane": "docs/site"}"#,
+    );
+    let (bad, refusal) = post(
+        &address,
+        "/api/request",
+        "",
+        r#"{"text": "Fix the docs", "repo": "../escape"}"#,
+    );
+    let (wrong, _) = raw(
+        &address,
+        &format!(
+            "POST /api/request HTTP/1.1\r\nHost: {address}\r\nAuthorization: Bearer nope\r\n\
+             Content-Type: application/json\r\nContent-Length: 2\r\n\r\n{{}}"
+        ),
+    );
+    let (foreign, _) = post(
+        &address,
+        "/api/request",
+        "Origin: http://evil.example\r\n",
+        r#"{"text": "Fix the docs", "repo": "owner/repo"}"#,
+    );
+
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(
+        serde_json::from_str::<Value>(&body).unwrap(),
+        json!({ "key": "github:cli/cli#42", "id": 1 })
+    );
+    let task = json_of(&setup, "tasks")["tasks"][0].clone();
+    assert_eq!(
+        [
+            &task["key"],
+            &task["workflow"],
+            &task["band"],
+            &task["lane"]
+        ],
+        ["github:cli/cli#42", "implement", "today", "docs/site"]
+    );
+    assert_eq!(bad, 422, "{refusal}");
+    assert!(refusal.contains("owner/name"), "{refusal}");
+    assert_eq!((wrong, foreign), (401, 403));
+    assert_eq!(
+        json_of(&setup, "tasks")["tasks"].as_array().unwrap().len(),
+        1
+    );
+}
+
+#[test]
+fn a_request_without_a_daemon_gets_503() {
+    let mut setup = Setup::new("web-request-no-daemon", DEFAULTS);
+    let address = setup.start(&["serve", &setup.factory()]);
+
+    let (status, body) = post(&address, "/api/request", "", r#"{"text": "Fix the docs"}"#);
+
+    assert_eq!(status, 503, "{body}");
+}

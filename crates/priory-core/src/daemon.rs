@@ -583,10 +583,11 @@ fn apply(db: &mut Connection, line: Line, trace: &Trace) -> Result<(), Error> {
 }
 
 /// What arrives on the socket: a hook's signal, a run's tool call, a person's answer, desk action
-/// or snooze, a pick on a report, a task's progress, or a memory gate message.
+/// or snooze, a pick on a report, a task's progress, a memory gate message, or a quick request.
 #[derive(serde::Deserialize)]
 #[serde(untagged)]
 enum Input {
+    Add(AddLine),
     Signal(Signal),
     Call(Call),
     Answer(Answer),
@@ -596,6 +597,31 @@ enum Input {
     Choice(sections::Choice),
     Progress(progress::Put),
     Gate(Gate),
+}
+
+/// `POST /api/request`'s line: `{"add": {...}}`.
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AddLine {
+    add: priory_intake::request::Add,
+}
+
+/// Publishes `add` as `priory add` does, then takes it in at once, so the reply names the task:
+/// `{"key": ..., "id": ...}`, with no id when no task took the key.
+fn add(
+    db: &mut Connection,
+    add: &priory_intake::request::Add,
+    trace: &Trace,
+) -> Result<Result<String, String>, Error> {
+    let key = match priory_intake::request::add(trace.factory, add) {
+        Ok(key) => key,
+        Err(refused) => return Ok(Err(refused)),
+    };
+    drain(&Bus::open_default()?, db, trace, None)?;
+    let tx = db.transaction()?;
+    let id = state::owner(&tx, std::slice::from_ref(&key))?.map(|task| task.id);
+    drop(tx);
+    Ok(Ok(serde_json::json!({ "key": key, "id": id }).to_string()))
 }
 
 /// The reads of wait conditions' current states that run on threads of their own, so a slow
@@ -681,6 +707,7 @@ fn take(db: &mut Connection, line: &str, trace: &Trace) -> Result<(String, Optio
         serde_json::to_string(&result).expect("a result serializes")
     };
     match serde_json::from_str::<Input>(line) {
+        Ok(Input::Add(line)) => Ok((replied(add(db, &line.add, trace)?), None)),
         Ok(Input::Signal(signal)) => Ok(("ok".to_owned(), state::signal(db, &signal, trace)?)),
         Ok(Input::Call(call)) if call.tool == "progress" => {
             Ok((replied(progress::tool(db, &call, trace)?), None))

@@ -43,11 +43,14 @@ echo "PRIORY_TOKEN=$(openssl rand -hex 32)" >> ~/.config/priory/env
 
 ## Writes
 
-Three endpoints change the state: answer an ask, dismiss one, and snooze a desk item. Each is the
-twin of a CLI verb, `priory answer`, `priory dismiss` and `priory snooze`. It builds the same line
+Four endpoints change the state: answer an ask, dismiss one, snooze a desk item, and add a task.
+Each is the twin of a CLI verb, `priory answer`, `priory dismiss`, `priory snooze` and
+`priory add`. It builds the same line
 the verb builds and sends it to the daemon on its socket, so the daemon applies it in the same
 transaction, with the same checks and the same refusals. The server thread never opens the state
-for writing. [serve.md](../reference/serve.md#writes) lists the bodies and status codes.
+for writing. An add is published on the bus as `priory add` publishes it; the daemon then takes it
+in at once, so the reply names the new task. [serve.md](../reference/serve.md#writes) lists the
+bodies and status codes.
 
 A write carries the revision of the ask the client showed, as `priory answer --revision` does. The
 first answer to that revision stands. When the daemon refuses, the server reads the ask again: a

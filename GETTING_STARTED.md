@@ -28,10 +28,13 @@ A factory is a folder of files. Make an empty working folder outside your clone,
 these four files in an `example/` folder inside it. Together they hold one agent, one workflow
 and one trigger.
 
-`factory.toml` names the factory:
+`factory.toml` names the factory, and the workflow `priory add` starts by default:
 
 ```toml
 name = "example"
+
+[request]
+workflow = "implement"
 ```
 
 `agents/implementer/agent.md` describes who runs. The frontmatter between the `+++` lines sets the
@@ -160,12 +163,14 @@ not stop the run. See [Trusting a clone](docs/daemon/sessions.md#trusting-a-clon
 To start a task by hand, without a trigger:
 
 ```sh
-priory request example --workflow implement --key docs-1 --repo owner/name "Fix the typo in the README"
+priory add example --repo owner/name "Fix the typo in the README"
 priory tasks
 ```
 
-`priory tasks` lists task 1 with the key `cli:docs-1`, at the step `implement`, in the state
-`queued`. Use a repository of yours in place of `owner/name` for a real run. When a queued task
+`priory add` prints the task's key, such as `cli:2026-11-20-1`. `priory tasks` lists task 1 with
+that key, at the step `implement`, in the state `queued`. A GitHub issue URL in the text sets the
+repository and the key, so `--repo` is not needed then. `priory request` takes every field as a
+flag, for a key of your own: see [docs/intake/cli.md](docs/intake/cli.md). Use a repository of yours in place of `owner/name` for a real run. When a queued task
 starts is in [docs/daemon/room.md](docs/daemon/room.md).
 
 To keep both processes running, install them as systemd user services. See

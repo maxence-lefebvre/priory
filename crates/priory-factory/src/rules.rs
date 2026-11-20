@@ -74,6 +74,20 @@ pub fn check(factory: &Factory) -> Vec<Problem> {
                 "`[webhooks]` needs a `[serve]` table to listen on".to_owned(),
             ));
         }
+        if let Some(request) = &settings.value.request {
+            let line = settings.lines.field("request");
+            if !factory.workflows.contains_key(&request.workflow) {
+                let message = format!("`[request] workflow` `{}` does not exist", request.workflow);
+                problems.push(problem(settings, line, message));
+            }
+            if let Some(band) = request.band.as_deref().filter(|band| !bands.contains(band)) {
+                let message = format!(
+                    "`[request] band` `{band}` is not one of {}",
+                    bands.join(", ")
+                );
+                problems.push(problem(settings, line, message));
+            }
+        }
         if !owner_name(settings.value.sweep.repo()) {
             problems.push(problem(
                 settings,

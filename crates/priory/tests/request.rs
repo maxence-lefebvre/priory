@@ -401,3 +401,177 @@ fn a_request_with_a_hold_files_its_task_held() {
         json!({ "reason": "both", "after": [1, "ENG-7"], "merge": ["owner/repo#7"] })
     );
 }
+
+const DEFAULTS: &str = "name = \"demo\"\n\n[request]\nworkflow = \"implement\"\nband = \"today\"\n";
+
+impl Setup {
+    /// A factory whose `factory.toml` is `settings`.
+    fn with(name: &str, settings: &str) -> Self {
+        let setup = Setup::new(name);
+        fs::write(setup.dir.join("factory/factory.toml"), settings).unwrap();
+        setup
+    }
+
+    /// Runs `priory add` on the factory on 2026-11-20 in UTC.
+    fn add(&self, args: &[&str]) -> Output {
+        let factory = self.dir.join("factory");
+        let mut all = vec!["add", factory.to_str().unwrap()];
+        all.extend(args);
+        Command::new(env!("CARGO_BIN_EXE_priory"))
+            .args(all)
+            .env("HERDR_BUS_DB", self.dir.join("bus.db"))
+            .env("PRIORY_DB", self.dir.join("priory.db"))
+            .env("PRIORY_NOW", "2026-11-20T10:00:00Z")
+            .env("TZ", "UTC")
+            .env("USER", "max")
+            .output()
+            .unwrap()
+    }
+
+    fn daemon_once(&self) {
+        let factory = self.dir.join("factory");
+        succeeded(&self.priory(&["daemon", factory.to_str().unwrap(), "--once"]));
+    }
+}
+
+#[test]
+fn add_queues_a_task_on_the_default_workflow_and_band_under_a_generated_key() {
+    let setup = Setup::with("add", DEFAULTS);
+
+    let output = setup.add(&["--repo", "owner/repo", "Fix the docs"]);
+
+    succeeded(&output);
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "cli:2026-11-20-1\n"
+    );
+    setup.daemon_once();
+    let task = &setup.tasks()[0];
+    assert_eq!(
+        task[..6],
+        [
+            "1",
+            "cli:2026-11-20-1",
+            "implement",
+            "implement",
+            "queued",
+            "today"
+        ]
+    );
+    assert_eq!(setup.published()[0].message.data["text"], "Fix the docs");
+}
+
+#[test]
+fn adds_on_the_same_day_get_different_keys_even_when_they_run_at_once() {
+    let setup = Setup::with("add-twice", DEFAULTS);
+
+    let keys: std::collections::BTreeSet<String> = std::thread::scope(|scope| {
+        let adds: Vec<_> = (0..4)
+            .map(|_| scope.spawn(|| setup.add(&["--repo", "owner/repo", "Same text"])))
+            .collect();
+        adds.into_iter()
+            .map(|add| {
+                let output = add.join().unwrap();
+                succeeded(&output);
+                String::from_utf8(output.stdout).unwrap().trim().to_owned()
+            })
+            .collect()
+    });
+
+    let expected: std::collections::BTreeSet<String> =
+        (1..=4).map(|n| format!("cli:2026-11-20-{n}")).collect();
+    assert_eq!(keys, expected);
+    setup.daemon_once();
+    assert_eq!(setup.tasks().len(), 4);
+}
+
+#[test]
+fn a_github_issue_url_in_the_text_sets_the_repo_and_the_key() {
+    let setup = Setup::with("add-github", DEFAULTS);
+
+    let issue = setup.add(&["See https://github.com/cli/cli/issues/42."]);
+    let pull = setup.add(&[
+        "Review (https://github.com/cli/cli/pull/7/files), see https://github.com/cli/cli/pull/7",
+    ]);
+    let two =
+        setup.add(&["https://github.com/cli/cli/issues/1 and https://github.com/cli/cli/issues/2"]);
+
+    let keys: Vec<_> = [issue, pull, two]
+        .iter()
+        .map(|output| {
+            succeeded(output);
+            String::from_utf8_lossy(&output.stdout).trim().to_owned()
+        })
+        .collect();
+    assert_eq!(
+        keys,
+        ["github:cli/cli#42", "github:cli/cli#7", "cli:2026-11-20-1"]
+    );
+    let published = setup.published();
+    let repos: Vec<_> = published
+        .iter()
+        .filter(|stored| stored.message.kind == "factory.task.requested")
+        .map(|stored| &stored.message.data["repo"])
+        .collect();
+    assert_eq!(repos, ["cli/cli", "cli/cli", "cli/cli"]);
+}
+
+#[test]
+fn a_linear_issue_url_sets_the_key_and_its_team_trigger_s_repo() {
+    let setup = Setup::with("add-linear", DEFAULTS);
+    fs::create_dir_all(setup.dir.join("factory/triggers")).unwrap();
+    fs::write(
+        setup.dir.join("factory/triggers/eng.toml"),
+        "source = \"linear\"\nrepo = \"owner/eng\"\non = \"issue.created\"\nfilter = { team = \"ENG\" }\nworkflow = \"implement\"\n",
+    )
+    .unwrap();
+
+    let output = setup.add(&["Do https://linear.app/acme/issue/ENG-7/fix-it"]);
+
+    succeeded(&output);
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "linear:ENG-7\n");
+    assert_eq!(setup.published()[1].message.data["repo"], "owner/eng");
+}
+
+#[test]
+fn flags_override_the_defaults_and_the_url_s_repo() {
+    let setup = Setup::with("add-flags", DEFAULTS);
+    fs::write(setup.dir.join("factory/workflows/groom.toml"), WORKFLOW).unwrap();
+
+    succeeded(&setup.add(&[
+        "--workflow",
+        "groom",
+        "--band",
+        "now",
+        "--lane",
+        "docs/site",
+        "--repo",
+        "owner/other",
+        "See https://github.com/cli/cli/issues/42",
+    ]));
+
+    let task = &setup.published()[1].message.data;
+    assert_eq!(
+        [
+            &task["workflow"],
+            &task["band"],
+            &task["lane"],
+            &task["repo"]
+        ],
+        ["groom", "now", "docs/site", "owner/other"]
+    );
+}
+
+#[test]
+fn add_without_a_request_table_or_workflow_says_what_to_set_and_publishes_nothing() {
+    let setup = Setup::new("add-no-defaults");
+
+    let output = setup.add(&["--repo", "owner/repo", "Fix the docs"]);
+
+    assert!(!output.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&output.stderr),
+        "priory add: the request names no workflow; pass --workflow, or set workflow in factory.toml's [request] table\n"
+    );
+    assert!(setup.published().is_empty());
+}

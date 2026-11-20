@@ -1,4 +1,4 @@
-# `priory request`
+# `priory request` and `priory add`
 
 `priory request` asks for a task by hand, without a trigger. It publishes a
 `priory.task.requested.cli` source event, then one `factory.task.requested` for it (see
@@ -47,6 +47,46 @@ holds only GitHub's characters: an owner of letters, digits and `-`, a name of l
 `_` and `.`. Neither part starts with `-`, and the name is not `.` or `..`. `triggers/cli.toml` is described in
 [triggers.md](../reference/triggers.md#task-requests-triggersclitoml-and-hold).
 
+## `priory add`
+
+`priory add` is the quick form of `priory request`. It takes the workflow and band from the
+factory's [`[request]`](../reference/factory.md#request) table, makes up the key, and prints it.
+`POST /api/request` does the same (see [serve.md](../reference/serve.md#writes)).
+
+```sh
+priory add ./factory "Fix the docs"
+# cli:2026-11-20-1
+priory add ./factory "Review https://github.com/owner/repo/pull/42"
+# github:owner/repo#42
+```
+
+```text
+priory add [DIR] [--workflow <name>] [--band <band>] [--lane <lane>] [--repo <owner/name>] [--] <text>
+```
+
+| Field | From, first that is set |
+| ----- | ----------------------- |
+| workflow | `--workflow`, then `[request] workflow` |
+| band | `--band`, then `[request] band` |
+| lane | `--lane` |
+| repo | `--repo`, then the repository of the GitHub URLs in the text when they all name one, then the Linear trigger of a Linear issue URL's team, then `repo` in `triggers/cli.toml` |
+| key | the issue or pull request when the text links to exactly one, as `github:owner/name#42` or `linear:ENG-7`; else `cli:<YYYY-MM-DD>-<n>` |
+
+A GitHub URL counts when it names an issue or pull request, such as
+`https://github.com/owner/name/issues/42`. A Linear URL counts when it names an issue, such as
+`https://linear.app/acme/issue/ENG-7/title`. An issue key joins the task that already has it, if
+one is active.
+
+The date is today's in the machine's time zone, and `n` is the first number no other `priory add`
+took that day. Two adds that run at once get different keys: the key alone names the source event,
+and the first one published owns it.
+
+It refuses what `priory request` refuses, and, with neither `--workflow` nor `[request]`:
+
+| Refused | Message |
+| ------- | ------- |
+| No workflow | `the request names no workflow; pass --workflow, or set workflow in factory.toml's [request] table` |
+
 ## Events
 
 The fields and examples are in [events.md](../reference/events.md#priorytaskrequestedcli).
@@ -68,6 +108,8 @@ repository fact, so it names the person and text, not a GitHub id.
 | Event `time` | when the command ran, equal to `data.time` |
 | Event id | the UUIDv5 of `priory.task.requested.cli:{len}:{key}:{text}`, with the `cli:` key and `len` its byte length, so a `:` in the key or text cannot make two requests collide |
 | Task request id | the UUIDv5 of `factory.task.requested:cli:{source}` |
+| Event id from `priory add`, generated key | the UUIDv5 of `priory.task.requested.cli:add:{key}` |
+| Event id from `priory add`, issue key | as `priory request`'s, with the issue key in place of `cli:<key>` |
 | Event id from a report pick | the UUIDv5 of `priory.task.requested.cli:pick:{plen}:{pick}:{len}:{key}:{text}`, with `plen` the pick id's byte length (see [reports.md](../daemon/reports.md)) |
 
 Running the same command again, with the same key and text, adds nothing: herdr-bus drops both
