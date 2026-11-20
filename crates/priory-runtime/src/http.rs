@@ -20,6 +20,8 @@ pub const WORKERS: usize = 8;
 pub struct Reply {
     pub status: u16,
     pub kind: &'static str,
+    /// Further header lines, each ending in `\r\n`.
+    pub headers: &'static str,
     pub body: Vec<u8>,
 }
 
@@ -28,6 +30,7 @@ impl Reply {
         Reply {
             status,
             kind: "application/json",
+            headers: "",
             body: body.into_bytes(),
         }
     }
@@ -58,44 +61,57 @@ impl Request<'_> {
 
 /// Serves `listener` on a fixed pool of threads. Each thread calls `make` once for its own
 /// handler, which gets each request that carries `token`, and each `POST` to one of `hooks` with
-/// its body and no token: the handler authenticates those itself.
+/// its body and no token: the handler authenticates those itself. A request to a `public` path
+/// needs no token either.
 pub fn serve<M, H>(
     listener: TcpListener,
     token: String,
     hooks: &'static [&'static str],
+    public: fn(&str) -> bool,
     make: M,
 ) -> io::Result<Vec<JoinHandle<()>>>
 where
     M: Fn() -> H + Send + Sync + 'static,
     H: FnMut(&Request) -> Reply,
 {
-    let shared = Arc::new((listener, token, make));
+    let gate = Gate {
+        token,
+        hooks,
+        public,
+    };
+    let shared = Arc::new((listener, gate, make));
     (0..WORKERS)
         .map(|_| {
             let shared = Arc::clone(&shared);
             std::thread::Builder::new()
                 .name("priory-http".to_owned())
                 .spawn(move || {
-                    let (listener, token, make) = &*shared;
+                    let (listener, gate, make) = &*shared;
                     let mut handle = make();
                     for stream in listener.incoming().flatten() {
-                        let _ = answer(stream, token, hooks, &mut handle);
+                        let _ = answer(stream, gate, &mut handle);
                     }
                 })
         })
         .collect()
 }
 
+/// What lets a request through: the token, or a hook or public path.
+struct Gate {
+    token: String,
+    hooks: &'static [&'static str],
+    public: fn(&str) -> bool,
+}
+
 fn answer(
     mut stream: TcpStream,
-    token: &str,
-    hooks: &[&str],
+    gate: &Gate,
     handle: &mut impl FnMut(&Request) -> Reply,
 ) -> io::Result<()> {
     stream.set_write_timeout(Some(TIMEOUT))?;
     let deadline = Instant::now() + TIMEOUT;
     let reply = match read_head(&mut stream, deadline) {
-        Ok((read, end)) => respond(&mut stream, deadline, &read, end, token, hooks, handle),
+        Ok((read, end)) => respond(&mut stream, deadline, &read, end, gate, handle),
         Err(reply) => reply,
     };
     let reason = match reply.status {
@@ -121,10 +137,11 @@ fn answer(
     write!(
         stream,
         "HTTP/1.1 {} {reason}\r\nContent-Type: {}\r\nContent-Length: {}\r\nCache-Control: no-store\r\n\
-         {extra}Connection: close\r\n\r\n",
+         {extra}{}Connection: close\r\n\r\n",
         reply.status,
         reply.kind,
-        reply.body.len()
+        reply.body.len(),
+        reply.headers
     )?;
     stream.write_all(&reply.body)?;
     stream.shutdown(Shutdown::Write)?;
@@ -233,8 +250,7 @@ fn respond(
     deadline: Instant,
     read: &[u8],
     end: usize,
-    token: &str,
-    hooks: &[&str],
+    gate: &Gate,
     handle: &mut impl FnMut(&Request) -> Reply,
 ) -> Reply {
     let mut headers = [httparse::EMPTY_HEADER; HEADERS];
@@ -252,7 +268,7 @@ fn respond(
         body: &[],
     };
     let bare = path.split_once('?').map_or(path, |(path, _)| path);
-    if method == "POST" && hooks.contains(&bare) {
+    if method == "POST" && gate.hooks.contains(&bare) {
         return match read_body(stream, deadline, &request, &read[end..]) {
             Ok(body) => handle(&Request {
                 body: &body,
@@ -266,7 +282,7 @@ fn respond(
         .and_then(|value| value.get(..7).zip(value.get(7..)))
         .filter(|(scheme, _)| scheme.eq_ignore_ascii_case(b"bearer "))
         .map(|(_, sent)| sent);
-    if !bearer.is_some_and(|sent| same(sent, token.as_bytes())) {
+    if !(gate.public)(bare) && !bearer.is_some_and(|sent| same(sent, gate.token.as_bytes())) {
         return Reply::error(401, "send the token as `Authorization: Bearer <token>`");
     }
     let body = request.headers.iter().any(|header| {
