@@ -164,8 +164,8 @@ session id. `priory ask` run in an hc terminal stores both. Then:
 
 A kept terminal whose `claude` exited runs a shell, so the script never types into it: the shell
 would run the answer as a command. Nor does it type into a `claude` that runs another session,
-such as a new conversation started in the same kept terminal. The check and the send are two `hc` calls, so a `claude` that
-exits between them can still receive the text in its shell.
+such as a new conversation started in the same kept terminal. The check and the send are two
+`hc` calls, so a `claude` that exits between them can still receive the text in its shell.
 
 ## The Asks panel
 
