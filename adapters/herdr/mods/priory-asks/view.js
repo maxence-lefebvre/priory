@@ -134,7 +134,8 @@ function history(ask) {
     ...(ask.refused ?? []).map((/** @type {any} */ refusal) => ({
       tile: "refused", text: `Refused: ${refusal.answer}, sent for revision ${refusal.revision} from ${refusal.by}: ${refusal.why}`, at: refusal.at,
     })),
-  ].sort((a, b) => b.at.localeCompare(a.at));
+  // Built oldest first; reversed, entries of the same second stay newest first through the stable sort.
+  ].reverse().sort((a, b) => b.at.localeCompare(a.at));
   const withdrawn = ask.state === "withdrawn" ? [{ tile: "withdrawn", text: `Withdrawn${ask.withdrawn_why ? `: ${ask.withdrawn_why}` : ""}`, at: "" }] : [];
   return [...withdrawn, ...dated].map(({ tile, text, at }) => ({ tile, text, time: at ? clock(at) : "" }));
 }

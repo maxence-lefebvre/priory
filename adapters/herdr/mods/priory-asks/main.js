@@ -123,9 +123,10 @@ export default class PrioryAsks extends View {
   /** Reads the selected ask's task; a task that cannot be read leaves its sections out. */
   async readTask() {
     const id = this.selectedAsk()?.task;
+    const read = (this.taskReads = (this.taskReads ?? 0) + 1);
     const task = id == null || !this.priory ? null : await this.priory.client.task(id).catch(() => null);
-    // A slower read for an earlier selection must not replace the current one's.
-    if (this.selectedAsk()?.task === id) this.task = task;
+    // Only the latest read lands, so a slower earlier one never replaces it.
+    if (read === this.taskReads) this.task = task;
   }
 
   firstRow() {

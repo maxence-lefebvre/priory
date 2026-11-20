@@ -223,3 +223,13 @@ test("Plan falls back to the task's progress when no plan step ran", () => {
   const detail = askDetail(ask, { now, armed: null, task: { ...fixture("task.json"), plan: null, progress } });
   assert.deepEqual(detail.plan, { text: "Goal: Export the board\n- AC1: a CSV per board\nLatest change: wrote the exporter\nNext: merge", from: "progress" });
 });
+
+test("History keeps entries of the same second newest first", () => {
+  // Hand-built from the captured ask: both revisions and the first answer within one second.
+  const [ask] = fixture("asks-history.json").asks;
+  const at = "2026-11-20T10:00:00Z";
+  const same = { ...ask, refused: [], revisions: ask.revisions.map((revision) => ({ ...revision, at, answered_at: revision.answered_at && at })) };
+  assert.deepEqual(askDetail(same, { now, armed: null }).history.map((item) => item.text), [
+    "Answered Merge", "Asked revision 2: Merge #212 into main? Checks are green.", "Answered Wait", "Asked revision 1: Merge #212 into main?",
+  ]);
+});

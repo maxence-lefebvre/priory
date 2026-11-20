@@ -510,7 +510,8 @@ function askDetail(id, wide) {
       ...(revision.answer == null ? [] : [[revision.answered_at || revision.at, html`<li>${tile("answered", "sm")}<span>Answered <b>${revision.answer}</b></span>${timeTag(revision.answered_at, clock(revision.answered_at || revision.at))}</li>`]]),
     ]),
     ...(ask.refused || []).map((refusal) => [refusal.at, html`<li>${tile("refused", "sm")}<span class="t-warn"><b>Refused:</b> ${refusal.answer}, sent for revision ${refusal.revision} from ${refusal.by}: ${refusal.why}</span>${timeTag(refusal.at, clock(refusal.at))}</li>`]),
-  ].sort(([a], [b]) => b.localeCompare(a));
+  // Built oldest first; reversed, entries of the same second stay newest first through the stable sort.
+  ].reverse().sort(([a], [b]) => b.localeCompare(a));
   const historyItems = dated.map(([, item]) => item);
   if (ask.state === "withdrawn") historyItems.unshift(html`<li>${tile("withdrawn", "sm")}<span>Withdrawn${ask.withdrawn_why ? `: ${ask.withdrawn_why}` : ""}</span><span></span></li>`);
   const history = html`<section class="sect" id="history"><div class="sh">${icon("history", "s15")}Answer history</div><ol class="hist">${historyItems}</ol></section>`;
