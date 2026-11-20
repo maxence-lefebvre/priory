@@ -40,6 +40,14 @@ const DESK: &str = "SELECT 0 AS part, asks.created AS since, 'ask' AS kind,
                WHERE asks.answer IS NULL AND asks.withdrawn IS NULL
                  AND coalesce(tasks.state, '') NOT IN ('done', 'failed', 'dropped')
                UNION ALL
+               SELECT 0, deliveries.ended, 'delivery', asks.name, NULL, NULL,
+                 'the answer did not reach ' || asks.session || ' after ' || deliveries.tries
+                   || ' tries: ' || coalesce(deliveries.error, '')
+               FROM deliveries JOIN asks ON asks.id = deliveries.ask
+               WHERE deliveries.state = 'failed' AND deliveries.revision = asks.revision
+                 AND deliveries.id = (SELECT max(id) FROM deliveries AS later
+                   WHERE later.ask = deliveries.ask)
+               UNION ALL
                SELECT 0, changed, 'blocked', id, id, lane, reason FROM tasks WHERE state = 'blocked'
                UNION ALL
                SELECT 0, changed, 'failed', id, id, lane,
@@ -88,7 +96,10 @@ fn asks_query() -> String {
        ELSE 'revived as generation ' || asks.withdrawn END AS withdrawn_why,
      asks.revision, asks.question, asks.options, asks.recommendation, asks.tradeoff, asks.answer,
      asks.answered AS answered_at, asks.created AS since, asks.title, asks.text,
-     asks.what_waits, asks.next_action, asks.command, asks.coordinator, asks.run_id, asks.session, {}
+     asks.what_waits, asks.next_action, asks.command, asks.coordinator, asks.run_id, asks.session,
+     (SELECT json_object('state', state, 'revision', revision, 'tries', tries, 'error', error,
+        'since', coalesce(ended, created))
+      FROM deliveries WHERE deliveries.ask = asks.id ORDER BY id DESC LIMIT 1) AS delivery, {}
    FROM asks LEFT JOIN tasks ON tasks.id = asks.task
    LEFT JOIN snoozes ON snoozes.kind = 'ask' AND snoozes.item = asks.id WHERE ?1 IS NULL OR asks.task = ?1 ORDER BY asks.id",
         snooze::FIELDS
@@ -148,6 +159,9 @@ fn asks_of(db: &Connection, task: Option<i64>) -> rusqlite::Result<Value> {
     for ask in asks.as_array_mut().into_iter().flatten() {
         if let Some(options) = ask["options"].as_str() {
             ask["options"] = serde_json::from_str(options).unwrap_or(Value::Null);
+        }
+        if let Some(delivery) = ask["delivery"].as_str() {
+            ask["delivery"] = serde_json::from_str(delivery).unwrap_or(Value::Null);
         }
         parse_back_early(ask);
     }

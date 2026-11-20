@@ -29,3 +29,6 @@ web = true                                     # false serves only /api
 
 [webhooks.github]
 secret_env = "PRIORY_GITHUB_WEBHOOK_SECRET"    # the variable holding the webhook's secret
+
+[asks]
+deliver = "bin/deliver"                        # delivers outside answers, from the factory folder
