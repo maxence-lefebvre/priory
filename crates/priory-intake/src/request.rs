@@ -220,14 +220,17 @@ pub fn add(factory: &Factory, add: &Add) -> Result<String, Refused> {
             key,
             &format!("{REQUESTED}:{}:{key}:{}", key.len(), add.text),
         );
+        // Both ids derive from the text, so the bus keeps the first of each. A task request that
+        // takes this call's time is new: an earlier add stopped before it, and this one completes it.
+        publish(&bus, &source)?;
+        let task = task(&request, key, &source);
         let seq = bus
-            .publish(OUTPUT, &source)
+            .publish(OUTPUT, &task)
             .map_err(|error| format!("publish on {OUTPUT}: {error}"))?;
         let stored = bus.message(seq).map_err(|error| error.to_string())?;
-        if stored.message.data != source.data {
+        if stored.message.time != task.time {
             return Err(Refused::Repeated(key.clone()));
         }
-        publish(&bus, &task(&request, key, &source))?;
         return Ok(key.clone());
     }
     let today = intake::now()?.to_zoned(jiff::tz::TimeZone::system()).date();

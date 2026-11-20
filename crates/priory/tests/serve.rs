@@ -3068,6 +3068,11 @@ fn a_repeated_add_of_the_same_linked_text_is_refused_with_the_task_it_reached() 
         stderr.starts_with("priory add: github:cli/cli#42 already got this exact request"),
         "{stderr}"
     );
+    succeeded(&setup.priory(&["cancel", "1"]));
+    let (ended, body) = post(&address, "/api/request", "", text);
+    assert_eq!(ended, 409, "{body}");
+    let body: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(body["id"], Value::Null, "{body}");
     assert_eq!(
         json_of(&setup, "tasks")["tasks"].as_array().unwrap().len(),
         1
