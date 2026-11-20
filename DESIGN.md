@@ -218,6 +218,7 @@ and the rubric red `--count`.
 - **Top bar**, `--top-bar` (52 px), with a hairline under it: the factory name in the display
   role, the connection state as a dot and a word ("live", "reconnecting"), a filter button and a
   search button. A list panel shows its title in the display role instead of the factory name.
+  Add lives beside the Answer capsule instead, in the thumb's reach (see [Add](#add)).
   It stays sticky below the safe-area inset.
 - **Tab bar**, `--tab-bar` (60 px plus the bottom safe area), on `--bar`: Desk, Asks, Tasks,
   Runs, More, each an icon and a label. The active tab is a solid `--emph` pill. The Desk tab
@@ -228,7 +229,7 @@ and the rubric red `--count`.
 ### Frame on a wide screen
 
 - **Top bar**: the factory name and connection state, a command bar in the middle ("Search or run
-  a command", `Ctrl K`), and the runner name on the right.
+  a command", `Ctrl K`), the runner name, and the [Add](#add) button on the right.
 - **Rail**, `--rail` (72 px) on `--bar`: Desk, Asks, Tasks, Runs, Inbox and Reports, each an
   icon over a label, then Settings at the bottom. The active item takes `--action-soft` and
   `--action-text`. The Desk item carries the open-ask badge.
@@ -237,7 +238,7 @@ and the rubric red `--count`.
 - **Drawer**, `--drawer` (640 px) on `--surface`: the selected ask, task or run. It opens beside
   the list and never covers it.
 - **Key hint bar** at the bottom of the list, 40 px: `J` `K` move, `Enter` open, `1` to `9`
-  answer, `W` write, `[` `]` sections, `?` all shortcuts.
+  answer, `W` write, `N` add, `[` `]` sections, `?` all shortcuts.
 
 ## Iconography
 
@@ -384,6 +385,43 @@ selected row.
   above and below, so the capsule never covers the last row when the list is scrolled to the end.
 - The capsule hides when no ask is open. An empty desk shows: "No open asks. Agents ask here when
   they need you."
+- A round [Add](#add) button, `--capsule` wide and tall, sits at the right of the capsule with
+  `--space-2` between them. It stays where the capsule hides. It takes `--surface` with a
+  `--control-line` edge and `--action-text`, so the capsule stays the one primary action.
+
+### Add
+
+Add queues a task by hand, as `priory add` does. It opens a sheet with one text field and three
+chips, and nothing else. `N` opens it on a keyboard, the Add button in the wide top bar opens it
+with a pointer, and the `+` beside the Answer capsule opens it on a phone.
+
+- **The sheet** is a modal `dialog` over `--scrim`: "Add a task" in the display role and a close
+  button, then the field, the chips, and the primary Add button at the bottom right. On a phone it
+  slides up from the bottom edge with `--dur-3`; from 600 px it sits centered, 560 px wide. `Esc`, the
+  close button and a tap on the scrim close it, and focus returns to the Add button.
+- **The field** is 16 px text, "What should the factory do?" as its placeholder, with focus on open.
+  `Enter` queues. A GitHub or Linear link in the text sets the repository and the key.
+- **The chips** read "Workflow implement", "Band today" and "Lane routed": the name in `--text-3`,
+  the value in `--text` at 500, and `chevron-down`. Each opens the platform's own picker. Workflow
+  and Band start on the `[request]` defaults; Lane starts on "routed", which leaves the lane to the
+  factory's lane rules. Workflow lists the factory's workflows, Band its bands in order, and Lane
+  each lane a listed task carries. Chips are `--chip` tall with a `--control` target on a coarse
+  pointer.
+- **Keys and targets.** `N` never fires inside a field or while the sheet is open. Every control is
+  at least `--control` tall on a coarse pointer and `--control-fine` on a fine one.
+
+| State   | What the person sees |
+| ------- | -------------------- |
+| empty   | The field and the chips; Add is disabled (`aria-disabled`, `--text-3` on `--raised`). |
+| sending | The field turns read-only and Add reads "Adding…". |
+| refused | Under the field, in `--danger-text` with `circle-x`: "Could not add: " and the daemon's sentence. The text and chips stay. "Discard draft" appears. |
+| added   | The sheet shows the new task in place: its state tile, key in mono, workflow and state, the request, band and lane, with "Added. The task waits in the queue for its turn." Then "Add another" (secondary) and "Close" (primary). |
+| offline | A `--warn-text` line with `unplug`: "Offline. The draft stays on this device, and nothing is sent until you confirm it after you reconnect." Add reads "Keep draft" and sends nothing. |
+| back    | Once the page reconnects, the line reads "Reconnected. This draft has not been sent. Send it now?" and the button reads "Send". Only that tap sends: the view never resends a draft by itself. |
+| unsure  | A send lost its connection, or the daemon did not confirm it, so it may have queued the task. The line says so and keeps the draft. Once back, it says to check the Desk's All view, then send if the task is missing. |
+
+The draft and its chips stay in the browser's local storage until the daemon takes the task, so a
+reload or a closed tab keeps them.
 
 Rows on the desk are at least `--row-min` (64 px) tall with a hairline above each: a state tile
 on the left, then line 1 (task key in mono, step, tags, and the age on the right in `--text-3`),
@@ -683,7 +721,7 @@ run.
 - Focus ring: 2 px solid `--action-text` with a 2 px offset, on every focusable element, using
   `:focus-visible`.
 - Every control works by keyboard. Desktop shortcuts: `j` and `k` move, `Enter` opens, `1` to
-  `9` pick an option (twice for a command), `w` writes an answer, `[` and `]` move between
+  `9` pick an option (twice for a command), `w` writes an answer, `n` adds a task, `[` and `]` move between
   sections, `Esc` closes, `?` lists shortcuts. Single-key shortcuts never fire inside an input,
   and a setting turns them off.
 - The sheet over `--scrim` is a modal `dialog`: focus moves into it, stays there, and returns to
@@ -737,6 +775,9 @@ the adapter lives, how it reads and acts, and the data each panel needs. The app
   no 3 px leading bar: gpui-kit's design guide forbids leading-edge selection bars.
 - **Navigation.** Herdr owns tabs and panes, so a panel has no tab bar, rail or Answer capsule.
   `Enter` opens the selected row.
+- **Add.** The Desk and Queue panels open [Add](#add) as a card under their header, not as a
+  sheet: the field with Add and close buttons, then a row of chips per value, workflow, band and
+  lane, with a line that says what happened. `N` opens it.
 - **Overlays.** The answer sheet becomes a popover from the answer bar's "3 options". Secondary
   commands sit in a menu, opened by a `more-horizontal` button, and in a context menu. No command
   appears only on hover.

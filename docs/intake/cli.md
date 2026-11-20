@@ -51,7 +51,8 @@ holds only GitHub's characters: an owner of letters, digits and `-`, a name of l
 
 `priory add` is the quick form of `priory request`. It takes the workflow and band from the
 factory's [`[request]`](../reference/factory.md#request) table, makes up the key, and prints it.
-`POST /api/request` does the same (see [serve.md](../reference/serve.md#writes)).
+`POST /api/request` does the same (see [serve.md](../reference/serve.md#writes)), and so do the
+web view's Add control and the Add action of the Herdr Desk and Queue panels.
 
 ```sh
 priory add ./factory "Fix the docs"

@@ -38,7 +38,8 @@ The adapter lives in `adapters/herdr/` at the repository root, outside the Cargo
 
 Herdr loads a mod's imports only from the mod's own folder, and it resolves symbolic links before it
 checks. So each mod keeps a copy of `lib/priory.js` as its own `priory.js`, and a mod that draws
-with Priory's colors keeps a copy of `lib/tokens.js`. A test fails when a copy differs from the
+with Priory's colors keeps a copy of `lib/tokens.js`. The Desk and Queue panels also keep
+`lib/add.js`, the Add action's view model, and `lib/add-form.js`, its form. A test fails when a copy differs from the
 library. After you change a file in `lib/`, copy it into every mod that carries it.
 
 The adapter depends on no Priory crate, and no crate depends on it. It needs Node.js only for its
@@ -86,7 +87,8 @@ state database and never writes a file in the factory.
   see [serve.md](../reference/serve.md).
 - **Acting.** Every button runs a CLI verb: `answer --expected N [--run] -- ASK TEXT`,
   `dismiss --expected N ASK`, `snooze`, `say`, `report pick PICK OPTION --expected N`, `seen`,
-  `resume`, `revive`, `hold`, `release`, `move`, `cancel`, `pause` and `unpause`. An answer always carries the revision the person read, so a
+  `resume`, `revive`, `hold`, `release`, `move`, `cancel`, `pause`, `unpause` and
+  `add FACTORY [--workflow W] [--band B] [--lane L] -- TEXT`. An answer always carries the revision the person read, so a
   changed question refuses it (R6.3).
 - **Safety.** `priory.js` passes every value as its own argument, never through a shell, and never
   reads text output except `attach --print`. A mod draws agent text as plain text.
@@ -135,9 +137,11 @@ Herdr Desk: the count, the next thing, the room and intake banners, the saved vi
   uncertain prompt, and Revive runs `priory revive TASK` for a failed one.
   Attach asks the Priory bar with `priory.attach`. Answer… opens the ask in the Asks panel: it sets
   `setShared("priory.asks.open", { ask, at: Date.now() })` and shows the side panel on Asks.
+  Add, or `N`, opens the [Add form](#the-add-action).
 - **Keys.** `J` and `K` move the selection, `Enter` opens the selected ask in Asks or the Asleep
   view from the asleep row, `S`
-  snoozes the selected row for 1 h, or unsnoozes a snoozed one, and `R` resumes or revives it. The
+  snoozes the selected row for 1 h, or unsnoozes a snoozed one, `R` resumes or revives it, and `N`
+  opens Add. The
   mod is focusable, so `pane.go` moves the keyboard onto it.
 - **Width.** Below 1024 px, one column. From 1024 px, a 440 px column beside the list and the key
   hint bar. The list becomes the wide table with Recommends once it has 720 px of its own. The
@@ -262,12 +266,26 @@ works.
   its band, and leaving the pane ends the drag without a move. `Shift J` and `Shift K` move the
   selected task down or up one place. Both run
   `priory move TASK --before OTHER` or `--after OTHER`, and never leave the band.
-- **Keys.** `J` and `K` move the selection. Below 720 px, `Enter` opens or closes the row and `Esc`
+- **Keys.** `J` and `K` move the selection, and `N` opens Add. Below 720 px, `Enter` opens or closes the row and `Esc`
   closes it. `Esc` also closes an open menu.
 - **Agent text.** Reasons, hold reasons and keys draw as plain text.
 
-Each row shows its task's title under its key and step. "Request a task" in the header and the opened row's History are left out: the panel would
-need `priory request`'s form and each task's events.
+Each row shows its task's title under its key and step. The header's Add, or `N`, opens the
+[Add form](#the-add-action); the new task opens in place once the queue lists it. The opened row's
+History is left out: the panel would need each task's events.
+
+## The Add action
+
+The Desk and Queue panels share one Add form, `lib/add-form.js`, over the view model `lib/add.js`.
+It holds one field, then chips for workflow, band and lane. The band chips are the factory's bands
+from `priory queue --json`. The workflow and lane chips are those the listed tasks carry, so the
+Queue panel, which reads no `priory tasks`, offers no workflow chip. An unpicked chip leaves the
+value to the factory's [`[request]`](../reference/factory.md#request) table, as `priory add` does.
+
+`Enter` runs `priory add FACTORY -- TEXT` with a flag for each picked chip, and the form shows
+"Added KEY." The Desk then selects the task in All tasks, and the Queue opens its row in Next, once
+the next read lists it. When priory refuses, the form says why and keeps the text. `Esc` closes the
+form. The panel's single-key shortcuts stay off while the field has focus.
 
 ## The Bonjour panel
 
