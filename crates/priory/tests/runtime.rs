@@ -1,4 +1,5 @@
 mod conform;
+mod tmux_dir;
 
 use herdr_bus::{Bus, Message, Output};
 use serde_json::json;
@@ -8,6 +9,7 @@ use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output as Exit};
 use std::time::{Duration, Instant};
+use tmux_dir::TmuxDir;
 
 const WORKFLOW: &str = r#"
 start = "implement"
@@ -48,11 +50,13 @@ const UNDO_SINCE_SEARCH: &str = "DROP TABLE reports; DROP TABLE pause; ALTER TAB
   DROP VIEW task_text; DROP TABLE search; DROP TABLE summaries;
   DROP TABLE embedder; DROP TABLE vectors; ALTER TABLE tasks DROP COLUMN tldr;";
 
-/// A factory, bus, state, Priory home, tmux server, origin repository and fake `claude`, all under
-/// the test's own directory. Dropping it kills the daemon and the tmux server.
+/// A factory, bus, state, Priory home, origin repository and fake `claude`, all under the test's
+/// own directory, and a tmux server in its own short directory. Dropping it kills the daemon and
+/// the tmux server.
 struct Setup {
     dir: PathBuf,
     daemon: Option<Child>,
+    tmux: TmuxDir,
 }
 
 impl Setup {
@@ -62,8 +66,12 @@ impl Setup {
 
     fn with_workflow(name: &str, workflow: &str) -> Self {
         let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join("rt").join(name);
-        let setup = Setup { dir, daemon: None };
-        setup.kill_tmux();
+        let tmux = TmuxDir::new(&dir);
+        let setup = Setup {
+            dir,
+            daemon: None,
+            tmux,
+        };
         let _ = fs::remove_dir_all(&setup.dir);
         let files = [
             ("factory/factory.toml", "name = \"demo\""),
@@ -78,7 +86,6 @@ impl Setup {
             fs::write(file, content).unwrap();
         }
         fs::create_dir_all(setup.dir.join("fake")).unwrap();
-        fs::create_dir_all(setup.dir.join("tmux")).unwrap();
         fs::create_dir_all(setup.dir.join("proc/sys/kernel")).unwrap();
         fs::write(setup.dir.join("proc/sys/kernel/hostname"), "runner\n").unwrap();
         setup.memory(60);
@@ -141,7 +148,7 @@ impl Setup {
             .env_remove("TMUX")
             .env_remove("OTEL_RESOURCE_ATTRIBUTES")
             .env("PATH", path)
-            .env("TMUX_TMPDIR", self.dir.join("tmux"))
+            .env("TMUX_TMPDIR", self.tmux.path())
             .env("HERDR_BUS_DB", self.dir.join("bus.db"))
             .env("PRIORY_DB", self.dir.join("priory.db"))
             .env("PRIORY_HOME", self.dir.join("home"))
@@ -168,35 +175,6 @@ impl Setup {
 
     fn tmux(&self, args: &[&str]) -> Exit {
         self.command("tmux").args(args).output().unwrap()
-    }
-
-    /// Kills every process this test started, the tmux server among them, then the server's socket.
-    /// A child the daemon left in its own process group can start a server after any `kill-server`,
-    /// so the processes are found by the `FAKE_DIR` they inherit.
-    fn kill_tmux(&self) {
-        let mut marker = format!("FAKE_DIR={}", self.dir.join("fake").display()).into_bytes();
-        marker.push(0);
-        // Bounded, so a process that will not die cannot hang the suite in `Drop`.
-        for _ in 0..100 {
-            let found: Vec<String> = fs::read_dir("/proc")
-                .unwrap()
-                .filter_map(|entry| entry.ok()?.file_name().into_string().ok())
-                .filter(|pid| pid.bytes().all(|byte| byte.is_ascii_digit()))
-                .filter(|pid| {
-                    fs::read(format!("/proc/{pid}/environ")).is_ok_and(|environ| {
-                        environ
-                            .split_inclusive(|byte| *byte == 0)
-                            .any(|variable| variable == marker)
-                    })
-                })
-                .collect();
-            if found.is_empty() {
-                break;
-            }
-            let _ = Command::new("kill").arg("-9").args(&found).output();
-            std::thread::sleep(Duration::from_millis(20));
-        }
-        let _ = self.tmux(&["kill-server"]);
     }
 
     fn start(&mut self) {
@@ -402,7 +380,7 @@ impl Setup {
         self.crash();
         let pid = fs::read_to_string(self.dir.join("fake/pid")).unwrap();
         let _ = Command::new("kill").args(["-9", pid.trim()]).status();
-        self.kill_tmux();
+        self.tmux.kill();
     }
 
     fn hold(&self, at: &str) {
@@ -451,7 +429,6 @@ fn write_atomic(path: &Path, content: &str) {
 impl Drop for Setup {
     fn drop(&mut self) {
         self.crash();
-        self.kill_tmux();
     }
 }
 
@@ -1684,6 +1661,37 @@ fn teardown_kills_a_tmux_server_that_a_late_child_starts() {
     let listed = listed.output().unwrap();
     let _ = killed.output();
     assert!(!listed.status.success(), "a tmux server outlived its test");
+}
+
+#[test]
+fn a_test_that_panics_after_its_run_starts_leaves_no_tmux_server() {
+    let mut server = None;
+    let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let mut setup = Setup::new("teardown-after-panic");
+        setup.publish(&requested(42));
+        setup.start();
+        setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 1);
+        let pid = setup.tmux(&["display-message", "-p", "#{pid}"]);
+        let pid = String::from_utf8(pid.stdout).unwrap().trim().to_owned();
+        server = Some((socket(&setup), pid));
+        panic!("the test fails while its agent runs");
+    }));
+
+    assert!(caught.is_err());
+    let (socket, pid) = server.expect("the run never got a tmux session");
+    assert!(
+        !Path::new(&format!("/proc/{pid}")).exists(),
+        "tmux server {pid} outlived its test"
+    );
+    let listed = Command::new("tmux")
+        .args(["-S", &socket, "list-sessions"])
+        .output()
+        .unwrap();
+    assert!(!listed.status.success(), "a tmux server outlived its test");
+    assert!(
+        !Path::new(&socket).parent().unwrap().exists(),
+        "the socket directory outlived its test"
+    );
 }
 
 #[test]
@@ -8827,11 +8835,10 @@ fn attach_refuses_a_same_named_session_on_another_tmux_server_that_runs_no_prior
     setup.publish(&requested(42));
     setup.start();
     setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 1);
-    let other = setup.dir.join("other-tmux");
-    fs::create_dir_all(&other).unwrap();
+    let other = TmuxDir::new(&setup.dir.join("other-tmux"));
     let started = setup
         .command("tmux")
-        .env("TMUX_TMPDIR", &other)
+        .env("TMUX_TMPDIR", other.path())
         .args(["new-session", "-d", "-s", "priory-1"])
         .status()
         .unwrap();
@@ -8839,7 +8846,7 @@ fn attach_refuses_a_same_named_session_on_another_tmux_server_that_runs_no_prior
 
     let refused = setup
         .command(env!("CARGO_BIN_EXE_priory"))
-        .env("TMUX_TMPDIR", &other)
+        .env("TMUX_TMPDIR", other.path())
         .args(["attach", "1", "--print"])
         .output()
         .unwrap();
