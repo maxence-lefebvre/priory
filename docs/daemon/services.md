@@ -65,6 +65,10 @@ under Memory gate, `priory actions` under Code steps, and `priory desk` under De
 `PRIORY_DB` and print `-` for an empty cell, tab-separated after a header line.
 
 `priory queue` prints the waiting tasks in start order, then the held ones: position, position in
-the band, id, key, workflow, step, state, band, lane and reason. `priory desk`, `inbox`, `asks`, `tasks` and `queue`
+the band, id, key, workflow, step, state, band, lane and reason. `priory queue DIR` reads the
+factory in `DIR` too, so its up next includes schedule firings. `priory desk`, `inbox`, `asks`, `tasks` and `queue`
 take `--json` and then print the JSON that `serve` returns for the same listing, on one line. See
 [serve.md](../reference/serve.md) for its fields.
+
+`priory schedules [DIR]` prints each schedule trigger: its name, next firing, key, task and
+workflow. See [schedule.md](../intake/schedule.md#next-firing).

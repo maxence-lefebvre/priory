@@ -45,6 +45,24 @@ The daemon routes a firing to a task that already owns a fixed key by that task'
 task asleep at a model step with the trigger's `prompt`, and coalesces the firing in any other
 state, so firings never stack (see [routing.md](../daemon/routing.md)).
 
+## Next firing
+
+`priory schedules [DIR] [--json]` lists each schedule trigger of the factory in `DIR`, `.` by
+default, with its next firing after now. `--json` prints `{"revision": N, "schedules": [...]}`,
+with these fields in each entry:
+
+| Field | Type | Meaning |
+| ----- | ---- | ------- |
+| `trigger` | string | The trigger's name |
+| `workflow` | string | The workflow a firing starts |
+| `next` | string or null | The first slot after now, in UTC. After `until`, the first slot of the next firing day |
+| `key` | string or null | `schedule:<key>` for a fixed `key` |
+| `task` | integer or null | The task not done, failed or dropped that the key names, which the firing wakes or coalesces into |
+| `task_state` | string or null | That task's state. Only an `asleep` task wakes |
+
+The next firing reads the same slots as the intake. The queue's [up next](../reference/serve.md#queue)
+lists the firings that start or wake a task.
+
 ## Events
 
 The fields and examples are in [events.md](../reference/events.md#schedulefired).

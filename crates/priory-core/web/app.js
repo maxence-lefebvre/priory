@@ -249,8 +249,15 @@ function countLine(model) {
 
 function upNext(model) {
   const next = (model.upNext || []).slice(0, 3);
+  const when = (run) => {
+    if (run.kind === "queued") return "now, on room";
+    const at = new Date(run.at);
+    const time = clock(run.at);
+    return today(run.at) ? time : `${time} ${at.toLocaleDateString("en", { weekday: "short" })}`;
+  };
+  const what = (run) => html`<span class="mono">${run.key || run.trigger}</span> ${run.why}`;
   const body = next.length
-    ? html`<ol>${next.map((run) => html`<li><span class="num">${run.when}</span><a href="/tasks/${run.task}"><span class="mono">${run.key}</span> ${run.why}</a></li>`)}</ol>`
+    ? html`<ol>${next.map((run) => html`<li>${timeTag(run.at, when(run))}${run.task ? html`<a href="/tasks/${run.task}">${what(run)}</a>` : html`<span>${what(run)}</span>`}</li>`)}</ol>`
     : html`<p>Nothing is queued or scheduled to run next.</p>`;
   return html`<div class="sec">Up next<span>next 3 runs</span></div><div class="strip">${body}</div>`;
 }
