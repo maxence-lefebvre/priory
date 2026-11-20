@@ -125,7 +125,10 @@ fn asks_query() -> String {
       FROM actions WHERE actions.ask = asks.id ORDER BY id DESC LIMIT 1) AS ran, {}
    FROM asks LEFT JOIN tasks ON tasks.id = asks.task
    LEFT JOIN snoozes ON snoozes.kind = 'ask' AND snoozes.item = asks.id
-   WHERE (?1 IS NULL OR asks.task = ?1) AND (?2 IS NULL OR asks.id = ?2) ORDER BY asks.id",
+   WHERE (?1 IS NULL OR asks.task = ?1) AND (?2 IS NULL OR asks.id = ?2)
+     AND (?3 IS NULL OR (asks.answer IS NULL AND asks.withdrawn IS NULL)
+       OR coalesce(asks.answered, asks.created) >= ?3)
+   ORDER BY asks.id",
         snooze::FIELDS
     )
 }
@@ -162,15 +165,37 @@ pub fn inbox(db: &Connection, since: i64) -> rusqlite::Result<Value> {
 
 /// Every task in start order, or the tasks of one lane, of one grade, or both.
 pub fn tasks(db: &Connection, lane: Option<&str>, grade: Option<&str>) -> rusqlite::Result<Value> {
+    tasks_since(db, lane, grade, None)
+}
+
+/// The tasks still going and those that ended since `since`, or every task without it, in start
+/// order, as `tasks`, with the number of tasks left out as `older`.
+pub fn recent_tasks(db: &Connection, since: Option<&str>) -> rusqlite::Result<Value> {
+    let older: i64 = db.query_row(
+        "SELECT count(*) FROM tasks WHERE state IN ('done', 'failed', 'dropped') AND changed < ?1",
+        [since],
+        |row| row.get(0),
+    )?;
+    Ok(json!({ "tasks": tasks_since(db, None, None, since)?, "older": older }))
+}
+
+fn tasks_since(
+    db: &Connection,
+    lane: Option<&str>,
+    grade: Option<&str>,
+    since: Option<&str>,
+) -> rusqlite::Result<Value> {
     let query = format!(
         "{} SELECT id, key, workflow, step, state, band, lane, reason, queue.place AS position,
            generation, retired, tldr, changed AS since, grade, grade_reason, progress, {CONDITIONS}
          FROM tasks LEFT JOIN queue USING (id)
-         WHERE (?1 IS NULL OR lane = ?1) AND (?2 IS NULL OR grade = ?2) ORDER BY {}",
+         WHERE (?1 IS NULL OR lane = ?1) AND (?2 IS NULL OR grade = ?2)
+           AND (?3 IS NULL OR state NOT IN ('done', 'failed', 'dropped') OR changed >= ?3)
+         ORDER BY {}",
         places(),
         state::START_ORDER
     );
-    let mut tasks = rows(db, &query, [lane, grade])?;
+    let mut tasks = rows(db, &query, [lane, grade, since])?;
     tasks
         .as_array_mut()
         .expect("rows are an array")
@@ -190,17 +215,39 @@ fn parse_json(task: &mut Value) {
 
 /// Every ask with its state, oldest first.
 pub fn asks(db: &Connection) -> rusqlite::Result<Value> {
-    asks_of(db, None, None)
+    asks_of(db, None, None, None)
+}
+
+/// The open asks and those closed since `since`, or every ask without it, oldest first, as `asks`,
+/// with the number of answered and withdrawn asks left out as `older`. A withdrawn ask counts as
+/// closed when it was asked: the state keeps no time for a withdrawal.
+pub fn recent_asks(db: &Connection, since: Option<&str>) -> rusqlite::Result<Value> {
+    let (answered, withdrawn): (i64, i64) = db.query_row(
+        "SELECT count(*) FILTER (WHERE withdrawn IS NULL), count(*) FILTER (WHERE withdrawn IS NOT NULL)
+         FROM asks WHERE (answer IS NOT NULL OR withdrawn IS NOT NULL)
+           AND coalesce(answered, created) < ?1",
+        [since],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )?;
+    Ok(json!({
+        "asks": asks_of(db, None, None, since)?,
+        "older": { "answered": answered, "withdrawn": withdrawn },
+    }))
 }
 
 /// Ask `id` as `asks` lists it, if there is one.
 pub fn ask(db: &Connection, id: i64) -> rusqlite::Result<Option<Value>> {
-    let asks = asks_of(db, None, Some(id))?;
+    let asks = asks_of(db, None, Some(id), None)?;
     Ok(asks.as_array().and_then(|asks| asks.first()).cloned())
 }
 
-fn asks_of(db: &Connection, task: Option<i64>, id: Option<i64>) -> rusqlite::Result<Value> {
-    let mut asks = rows(db, &asks_query(), [task, id])?;
+fn asks_of(
+    db: &Connection,
+    task: Option<i64>,
+    id: Option<i64>,
+    since: Option<&str>,
+) -> rusqlite::Result<Value> {
+    let mut asks = rows(db, &asks_query(), params![task, id, since])?;
     for ask in asks.as_array_mut().into_iter().flatten() {
         if let Some(options) = ask["options"].as_str() {
             ask["options"] = serde_json::from_str(options).unwrap_or(Value::Null);
@@ -520,7 +567,7 @@ pub fn task(db: &Connection, id: i64) -> rusqlite::Result<Option<Value>> {
     for (name, query) in lists {
         task[name] = rows(db, query, [id])?;
     }
-    task["asks"] = asks_of(db, Some(id), None)?;
+    task["asks"] = asks_of(db, Some(id), None, None)?;
     parse_json(&mut task);
     Ok(Some(task))
 }

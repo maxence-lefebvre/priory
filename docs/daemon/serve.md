@@ -87,6 +87,10 @@ A view keeps the revision of its last read and waits for the next one instead of
   revision either way. The view reads its listings again when the revision changed.
 - From the CLI, `priory wait --since REV [--timeout D]` does the same and prints the revision.
 
+Each read costs what the listings hold, so `/api/asks` and `/api/tasks` keep to the open rows and
+those closed in the last 7 days, and say how many they left out. The web view asks for every row
+with `?all=1` only once the person scrolls to the older ones, or opens an older ask by its URL.
+
 The server holds at most 4 such requests at once, half its 8 workers, so waiting clients leave 4
 workers to the other requests. A fifth request that would wait gets `503` with `Retry-After: 1`; one
 whose answer is ready gets it at once.

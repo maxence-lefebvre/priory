@@ -10,12 +10,15 @@ the CLI command with `--json`, with the state's `revision`, an integer, read in 
 transaction. A listing that is an object has a `revision` field. A listing that is a list comes as
 `{"revision": N, "<name>": [...]}`, where `<name>` is `inbox`, `asks` or `tasks`.
 
+`/api/asks` and `/api/tasks` leave out the rows that closed over a week ago, and add `older`, the
+number they left out. `?all=1` returns every row, as the CLI does, with `older` at 0.
+
 | Endpoint | CLI | Returns |
 | -------- | --- | ------- |
 | `/api/desk?person=NAME` | `priory desk --json --person NAME` | an object: [Desk](#desk) |
 | `/api/inbox` | `priory inbox --json` | `inbox`: an array of [inbox messages](#inbox) |
-| `/api/asks` | `priory asks --json` | `asks`: an array of [asks](#asks) |
-| `/api/tasks` | `priory tasks --json` | `tasks`: an array of [tasks](#tasks) |
+| `/api/asks?all=1` | `priory asks --json` | `asks`: an array of [asks](#asks), and `older` |
+| `/api/tasks?all=1` | `priory tasks --json` | `tasks`: an array of [tasks](#tasks), and `older` |
 | `/api/tasks/{id}` | | one [task in detail](#task-in-detail) |
 | `/api/queue` | `priory queue --json` | an object: [Queue](#queue) |
 | `/api/views` | | an object: [Views](#views) |
@@ -37,7 +40,7 @@ or a reason, is untrusted: render it as text.
 | ---- | ---- |
 | `200` | The endpoint answered |
 | `202` | A signed webhook delivery was taken: published, or dropped on purpose |
-| `400` | The request does not parse, or its target does not start with `/`; `/api/events` lacks `since` or has a parameter out of range; `/api/desk` has a parameter other than `person`, or a broken escape; a write's body is not the shape [below](#writes); for a webhook, it sends two `Content-Length`, or its payload lacks a field its event needs |
+| `400` | The request does not parse, or its target does not start with `/`; `/api/events` lacks `since` or has a parameter out of range; `/api/desk` has a parameter other than `person`, or a broken escape; `/api/asks` or `/api/tasks` has a parameter other than `all=1`; a write's body is not the shape [below](#writes); for a webhook, it sends two `Content-Length`, or its payload lacks a field its event needs |
 | `401` | The token is missing or wrong on a path under `/api`; for a webhook, the signature is |
 | `403` | A `POST` carries an `Origin` whose host and port differ from its `Host`, such as a page on another site |
 | `404` | No such path, task, report, ask or web view file |
@@ -152,7 +155,9 @@ line as `line`, and, once read, when it was read as `read`. Both are null on a m
 
 ## Asks
 
-Every ask, oldest first.
+Every ask, oldest first. Without `all=1`, the open asks and the asks answered or asked in the last 7
+days. The state keeps no time for a withdrawal, so a withdrawn ask counts from when it was asked.
+`older` is an object: `answered` and `withdrawn`, the number of each left out.
 
 | Field | Type | Meaning |
 | ----- | ---- | ------- |
@@ -191,8 +196,10 @@ An `ask`, `blocked`, `failed` or `prompt` desk item, and every ask, carry these 
 
 ## Tasks
 
-Every task in start order: `id`, `key`, `workflow`, `step`, `state`, `band`, `lane`, `reason`,
-`position` (its place in the queue from 1, or null), `generation`, `retired`, `tldr`, `since`
+Every task in start order. Without `all=1`, the tasks still going and the tasks that ended (`done`,
+`failed` or `dropped`) in the last 7 days; `older`, an integer, is the number left out. Each task
+has `id`, `key`, `workflow`, `step`, `state`, `band`, `lane`, `reason`, `position` (its place in
+the queue from 1, or null), `generation`, `retired`, `tldr`, `since`
 (when the task last changed state), `grade` (`red`, `yellow`, `green` or null), `grade_reason`,
 `progress` and `conditions`, a held task's [conditions](#conditions) or null. See Grades in
 [tools.md](../daemon/tools.md#grades).
@@ -274,7 +281,7 @@ With `web = true`, the server sends these without the token:
 
 | Path | Type |
 | ---- | ---- |
-| `/boot.js`, `/app.js` | `text/javascript; charset=utf-8` |
+| `/boot.js`, `/app.js`, `/asks.js` | `text/javascript; charset=utf-8` |
 | `/app.css`, `/tokens/structure.css`, `/tokens/themes.css` | `text/css; charset=utf-8` |
 | `/fonts/<file>.woff2` | `font/woff2` |
 | `/favicon.ico`, `/favicon.svg`, `/apple-touch-icon.png` | the image's type |

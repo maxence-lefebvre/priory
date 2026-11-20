@@ -40,6 +40,7 @@ const WOFF2: &str = "font/woff2";
 const WEB: &[(&str, &str, &[u8])] = &[
     file!("/boot.js", JS, "crates/priory-core/web/boot.js"),
     file!("/app.js", JS, "crates/priory-core/web/app.js"),
+    file!("/asks.js", JS, "crates/priory-core/web/asks.js"),
     file!("/app.css", CSS, "crates/priory-core/web/app.css"),
     file!("/tokens/structure.css", CSS, "design/tokens/structure.css"),
     file!("/tokens/themes.css", CSS, "design/tokens/themes.css"),
@@ -235,10 +236,18 @@ fn route(
             })
         }
         "/api/inbox" => listing::revised(db, "inbox", |db| listing::inbox(db, 0).map(Some)),
-        "/api/asks" => listing::revised(db, "asks", |db| listing::asks(db).map(Some)),
-        "/api/tasks" => {
-            listing::revised(db, "tasks", |db| listing::tasks(db, None, None).map(Some))
-        }
+        "/api/asks" => match since(query) {
+            Ok(since) => listing::revised(db, "asks", |db| {
+                listing::recent_asks(db, since.as_deref()).map(Some)
+            }),
+            Err(reply) => return reply,
+        },
+        "/api/tasks" => match since(query) {
+            Ok(since) => listing::revised(db, "tasks", |db| {
+                listing::recent_tasks(db, since.as_deref()).map(Some)
+            }),
+            Err(reply) => return reply,
+        },
         "/api/queue" => match intake::now() {
             Ok(now) => listing::revised(db, "queue", |db| {
                 listing::queue(db, &served.schedules, now).map(Some)
@@ -444,6 +453,21 @@ fn refusal(db: &Connection, ask: Option<(i64, i64)>, refused: &str) -> Reply {
         ),
         Ok(Some(_)) => Reply::error(422, refused),
         Err(error) => Reply::error(500, &error.to_string()),
+    }
+}
+
+/// The time a week ago, from which a listing keeps closed rows, or none for `all=1`: every row.
+fn since(query: &str) -> Result<Option<String>, Reply> {
+    match query {
+        "all=1" => Ok(None),
+        "" => {
+            let now = intake::now().map_err(|error| Reply::error(500, &error))?;
+            let week = now
+                .checked_sub(jiff::SignedDuration::from_hours(7 * 24))
+                .map_err(|error| Reply::error(500, &error.to_string()))?;
+            Ok(Some(week.strftime("%Y-%m-%dT%H:%M:%SZ").to_string()))
+        }
+        _ => Err(Reply::error(400, "this listing takes one parameter: all=1")),
     }
 }
 

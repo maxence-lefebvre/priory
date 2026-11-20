@@ -397,12 +397,16 @@ and leaves out an empty one:
 | Section          | Open | Answered | All | Order        | Line 3                                       |
 | ---------------- | ---- | -------- | --- | ------------ | -------------------------------------------- |
 | Open             | yes  |          | yes | oldest first | "Recommends" and the recommended option      |
+| Snoozed          |      |          | yes | oldest first | the `clock` icon and "Snoozed until 12:05"   |
 | Answered today   |      | yes      | yes | newest first | "Answered", the answer, then who answered    |
 | Answered earlier |      | yes      | yes | newest first | as above, with a date instead of a time      |
 | Withdrawn        |      |          | yes | newest first | "Withdrawn" and why, such as "task revived"  |
 
 Answered and withdrawn rows take the muted tiles from the state tile section. A long section
 loads more rows as the person scrolls; its header keeps the total.
+
+A snoozed ask leaves the Open section and the Open count until its snooze ends. The list reads the
+asks of the last 7 days first; scrolling to the end of Answered or All loads the older ones.
 
 ### Ask detail
 
@@ -804,8 +808,8 @@ The morning dossier. It opens as a tab in the center stack.
 
 - **The same ask three times.** In the full layout the oldest ask shows as the Desk's next thing,
   as the Desk's first row and in the Asks panel. Max will tweak this next week.
-- **Snooze in the web view.** Snooze is drawn for the Herdr panels. The web desk and asks list
-  should take the same views and rows when their slices land.
+- **Snooze in the web view.** Snooze is drawn for the Herdr panels. The web asks list shows
+  snoozed asks as a section of All; a Snoozed saved view may follow when its slice lands.
 
 ## When to change this file
 
