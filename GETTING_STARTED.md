@@ -253,7 +253,8 @@ outcome, `wait` names an event to sleep until, and `ask` puts a question on the 
 asking agent has no process. See [docs/daemon/waits.md](docs/daemon/waits.md).
 
 **Desk.** Everything that waits on a person, in one list: asks, blocked and failed tasks, prompts
-Priory could not confirm, and a banner when the queue is stalled. See
+Priory could not confirm, a banner when the queue is stalled, and one when the intake fails to poll
+or stopped. See
 [docs/daemon/desk.md](docs/daemon/desk.md).
 
 **Queue, bands and room.** Tasks start in band order (`blocker`, `now`, `today`, `later` by

@@ -1,6 +1,6 @@
 # Desk
 
-`priory desk` prints the pause line first while admissions are paused (see Pause), then the stall banner while the queue is stalled (see Room), then what waits on a person, oldest first: since, kind, id, task, lane, what and the task's generation.
+`priory desk` prints the pause line first while admissions are paused (see Pause), then the stall banner while the queue is stalled (see Room), then the intake banner while the intake fails or stopped (see Intake banner), then what waits on a person, oldest first: since, kind, id, task, lane, what and the task's generation.
 
 | Kind | Id | What | Since |
 | ---- | -- | ---- | ----- |
@@ -26,8 +26,8 @@ It lists only asks and prompts of active tasks, holds of held tasks and waiting 
 
 `priory post SOURCE LINE` stores one report line on the inbox for a person to read, and prints its
 sequence number. The daemon routes it to no task. `SOURCE` matches `[a-z0-9-]{1,32}`. The sources
-the intake and the daemon publish under are refused: `cli`, `factory`, `github`, `linear`, `priory`,
-`schedule` and `slack`, so a script cannot pass for an event. `LINE` is one line, cut at 500
+the intake and the daemon publish under are refused: `cli`, `factory`, `github`, `intake`, `linear`,
+`priory`, `schedule` and `slack`, so a script cannot pass for an event. `LINE` is one line, cut at 500
 characters.
 
 `priory inbox` prints reports with the messages, with the line in its `line` column. `priory inbox
@@ -51,6 +51,23 @@ ExecStart=priory post systemd "%i failed"
 ```
 
 Each watched unit adds `OnFailure=priory-notice@%n.service`, so `%i` is the failed unit's name.
+
+## Intake banner
+
+The intake records each poll of each source it polls, `github`, `linear` or `slack`, in the state.
+A tick that polls no Linear or Slack source records only `github`.
+
+- When a source's poll fails, the intake posts one report from `intake`, `<source>: <error>`, as
+  `priory post` stores it. It posts again only when the error's text changes.
+- When that source's next poll succeeds, its report is marked read, so it leaves the desk.
+- `priory desk` prints the banner `the intake fails to poll <source> since <time>: <error>` while a
+  source fails, one per failing source joined by `; `.
+- When no source polled in the last 5 minutes, the banner is instead `the intake has not polled
+  since <time>: waits on GitHub, Linear and Slack cannot fire`. A factory whose intake never ran
+  shows no banner.
+
+The banner is `intake` in `priory desk --json` and `/api/desk`. A poll writes no revision, so a
+client that waits on `/api/events` sees the stopped banner at its next read.
 
 ## Resume
 

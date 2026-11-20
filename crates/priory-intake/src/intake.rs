@@ -199,10 +199,8 @@ pub fn run(
                 Err(error) => failed.entry("linear").or_default().push(error),
             }
         }
-        if let Some(slack) = &mut slack {
-            if let Err(error) = slack.poll(&bus, &watching) {
-                failed.entry("slack").or_default().push(error);
-            }
+        if let Some(Err(error)) = slack.as_mut().map(|slack| slack.poll(&bus, &watching)) {
+            failed.entry("slack").or_default().push(error);
         }
         let sources = [
             ("github", true),

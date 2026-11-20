@@ -405,7 +405,7 @@ fn write(db: &Result<Connection, String>, home: &Path, request: &Request) -> Rep
         Ok(db) => db,
         Err(error) => return Reply::error(500, error),
     };
-    let (line, ask, expected) = match write_line(db, &write, request.body) {
+    let (line, sent) = match write_line(db, &write, request.body) {
         Ok(line) => line,
         Err(reply) => return reply,
     };
@@ -430,21 +430,22 @@ fn write(db: &Result<Connection, String>, home: &Path, request: &Request) -> Rep
     match serde_json::from_str::<Result<String, String>>(&reply) {
         Ok(Ok(added)) if matches!(write, Write::Add) => Reply::json(200, added),
         Ok(Ok(done)) => Reply::json(200, serde_json::json!({ "ok": done }).to_string()),
-        Ok(Err(refused)) => match expected.map(|expected| (expected, state::revision(db))) {
-            Some((expected, Ok(at))) if at != expected => Reply::error(409, &refused),
-            _ => refusal(db, ask, &refused),
-        },
+        Ok(Err(refused)) => refusal(db, sent, &refused),
         Err(error) => Reply::error(500, &format!("unreadable reply {reply:?}: {error}")),
     }
 }
 
-/// The socket line of `write`; for an ask, its number and the revision the body sent; for a desk
-/// action, the state revision it was made on.
-fn write_line(
-    db: &Connection,
-    write: &Write,
-    body: &[u8],
-) -> Result<(String, Option<(i64, i64)>, Option<i64>), Reply> {
+/// The revision a write was made on, which tells a stale write from a refused one.
+enum Sent {
+    /// The ask and the ask's revision the body sent.
+    Ask(i64, i64),
+    /// The state's revision a desk action was made on.
+    State(i64),
+    Nothing,
+}
+
+/// The socket line of `write`, and the revision it was made on.
+fn write_line(db: &Connection, write: &Write, body: &[u8]) -> Result<(String, Sent), Reply> {
     let bad = |error: serde_json::Error| Reply::error(400, &error.to_string());
     match write {
         Write::Answer(ask) => {
@@ -462,7 +463,7 @@ fn write_line(
                 run: body.run,
                 by: "serve".to_owned(),
             };
-            Ok((line(&answer), Some((ask, revision)), None))
+            Ok((line(&answer), Sent::Ask(ask, revision)))
         }
         Write::Dismiss(ask) => {
             let body: DismissBody = serde_json::from_slice(body).map_err(bad)?;
@@ -471,7 +472,7 @@ fn write_line(
                 dismiss: ask,
                 revision: Some(body.revision),
             };
-            Ok((line(&dismiss), Some((ask, body.revision)), None))
+            Ok((line(&dismiss), Sent::Ask(ask, body.revision)))
         }
         Write::Snooze => {
             let body: SnoozeBody = serde_json::from_slice(body).map_err(bad)?;
@@ -489,11 +490,11 @@ fn write_line(
                 },
                 until,
             };
-            Ok((line(&snooze), None, None))
+            Ok((line(&snooze), Sent::Nothing))
         }
         Write::Add => {
             let add: priory_intake::request::Add = serde_json::from_slice(body).map_err(bad)?;
-            Ok((line(&serde_json::json!({ "add": add })), None, None))
+            Ok((line(&serde_json::json!({ "add": add })), Sent::Nothing))
         }
         Write::Act(task, act) => {
             let body: ActBody = serde_json::from_slice(body).map_err(bad)?;
@@ -523,7 +524,8 @@ fn write_line(
                 text: body.text,
                 expected: body.revision,
             };
-            Ok((line(&act), None, act.expected))
+            let sent = act.expected.map_or(Sent::Nothing, Sent::State);
+            Ok((line(&act), sent))
         }
     }
 }
@@ -543,10 +545,19 @@ fn ask_id(db: &Connection, ask: &str) -> Result<i64, Reply> {
 }
 
 /// The reply to a write the daemon refused. For an ask: `404` once it is gone, `409` with the ask
-/// when its revision moved or it closed, `422` otherwise, such as an option a step does not take.
-fn refusal(db: &Connection, ask: Option<(i64, i64)>, refused: &str) -> Reply {
-    let Some((id, sent)) = ask else {
-        return Reply::error(422, refused);
+/// when its revision moved or it closed. For a desk action made on a revision: `409` once the state
+/// moved past it. `422` otherwise, such as an option a step does not take.
+fn refusal(db: &Connection, sent: Sent, refused: &str) -> Reply {
+    let (id, sent) = match sent {
+        Sent::Ask(id, sent) => (id, sent),
+        Sent::State(expected) => {
+            return match state::revision(db) {
+                Ok(at) if at != expected => Reply::error(409, refused),
+                Ok(_) => Reply::error(422, refused),
+                Err(error) => Reply::error(500, &error.to_string()),
+            };
+        }
+        Sent::Nothing => return Reply::error(422, refused),
     };
     match listing::ask(db, id) {
         Ok(None) => Reply::error(404, refused),

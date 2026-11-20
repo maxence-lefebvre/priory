@@ -43,9 +43,10 @@ echo "PRIORY_TOKEN=$(openssl rand -hex 32)" >> ~/.config/priory/env
 
 ## Writes
 
-Four endpoints change the state: answer an ask, dismiss one, snooze a desk item, and add a task.
-Each is the twin of a CLI verb, `priory answer`, `priory dismiss`, `priory snooze` and
-`priory add`. The first three build the same line
+Eight endpoints change the state: answer an ask, dismiss one, snooze a desk item, add a task, and
+resume, revive, cancel or say to a task. Each is the twin of a CLI verb: `priory answer`, `priory
+dismiss`, `priory snooze`, `priory add`, `priory resume`, `priory revive`, `priory cancel` and
+`priory say`. All but the add build the same line
 the verb builds and sends it to the daemon on its socket, so the daemon applies it in the same
 transaction, with the same checks and the same refusals. The server thread never opens the state
 for writing. An add goes to the daemon on its socket too, but the daemon publishes it on the bus as
@@ -56,7 +57,8 @@ bodies and status codes.
 A write carries the revision of the ask the client showed, as `priory answer --revision` does. The
 first answer to that revision stands. When the daemon refuses, the server reads the ask again: a
 revision that moved, or an ask that closed, gets `409` with the ask, so a view can redraw it and
-keep the person's draft.
+keep the person's draft. A cancel may carry the state's revision the client showed, as `priory
+cancel --expected` does: a newer state gets `409`, and nothing is dropped.
 
 `priory serve` without a daemon has no socket to send to: its writes get `503`, and its reads keep
 working.
