@@ -37,8 +37,9 @@ key = "issue.number"
 const OUTPUT: &str = "factory.intake";
 
 /// Takes a state file back before schema 28, which added search, 29, which added grades, 30,
-/// which added snoozes, and 31, which added read reports.
-const UNDO_SINCE_SEARCH: &str = "DROP TRIGGER snooze_ends_on_a_new_revision;
+/// which added snoozes, 31, which added read reports, and 32, which added the pause.
+const UNDO_SINCE_SEARCH: &str = "DROP TABLE pause; ALTER TABLE outbox DROP COLUMN wakes;
+  DROP TRIGGER snooze_ends_on_a_new_revision;
   DROP TRIGGER snooze_ends_on_a_task_state_change; DROP TABLE snoozes;
   ALTER TABLE inbox DROP COLUMN read; ALTER TABLE results DROP COLUMN reason; ALTER TABLE tasks DROP COLUMN grade;
   ALTER TABLE tasks DROP COLUMN grade_reason;
@@ -3148,6 +3149,171 @@ fn a_snooze_until_a_past_time_is_refused() {
 }
 
 #[test]
+fn say_types_its_text_into_an_idle_run() {
+    let mut setup = Setup::new("say-idle");
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 2);
+
+    let said = setup.priory(&["say", "1", "Also fix the typo in the README."]);
+
+    assert!(said.status.success(), "{said:?}");
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 3);
+    assert_eq!(
+        setup.typed()[2],
+        "Also fix the typo in the README.\nEnd this step by calling the result tool of the priory MCP server with one of these outcomes: failed, passed.\n"
+    );
+}
+
+#[test]
+fn say_before_the_stop_of_a_turn_that_asked_is_typed_into_the_same_run() {
+    let mut setup = Setup::with_workflow("say-before-stop", STEPS);
+    setup.hold("hold-stop");
+    setup.calls(&[ask()]);
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("asks", |rows| rows.len() == 1);
+
+    let said = setup.priory(&["say", "1", "Pick sqlite and go on."]);
+
+    assert!(said.status.success(), "{said:?}");
+    setup.release("hold-stop");
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 2);
+    assert!(
+        setup.typed()[1].starts_with("Pick sqlite and go on.\n"),
+        "{:?}",
+        setup.typed()
+    );
+    assert_eq!(setup.rows("runs").len(), 1);
+}
+
+#[test]
+fn say_to_a_ready_task_no_run_took_yet_comes_before_its_step_prompt() {
+    let workflow = STEPS
+        .replace("start = \"plan\"", "start = \"approve\"")
+        .replace("approved = \"implement\"", "approved = \"plan\"");
+    let mut setup = Setup::with_workflow("say-ready", &workflow);
+    setup.publish(&requested(42));
+    setup.memory(0);
+    setup.start();
+    setup.until("asks", |rows| rows.len() == 1);
+    assert!(
+        setup
+            .priory(&["answer", "1", "approved", "--revision", "1"])
+            .status
+            .success()
+    );
+    setup.until("tasks", |rows| rows[0][4] == "ready");
+
+    let said = setup.priory(&["say", "1", "Keep it small."]);
+
+    assert!(said.status.success(), "{said:?}");
+    setup.memory(60);
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 1);
+    let typed = setup.typed();
+    assert!(typed[0].starts_with("Keep it small.\n"), "{typed:?}");
+    assert!(typed[0].contains("\nPlan the change.\n"), "{typed:?}");
+}
+
+#[test]
+fn say_wakes_an_asleep_task_with_its_text_in_its_session() {
+    let mut setup = Setup::with_workflow("say-asleep", STEPS);
+    setup.calls(&[ask()]);
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == "asleep")
+    });
+    let session = setup.rows("runs")[0][4].clone();
+
+    let said = setup.priory(&["say", "1", "Pick sqlite and go on."]);
+
+    assert!(said.status.success(), "{said:?}");
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 2);
+    assert_eq!(
+        setup.typed()[1],
+        "Pick sqlite and go on.\nEnd this step by calling the result tool of the priory MCP server with one of these outcomes: hopeless, ready, unsure.\n"
+    );
+    assert_eq!(setup.rows("runs")[1][4], session);
+}
+
+#[test]
+fn pause_holds_queued_tasks_while_an_answer_still_wakes_its_task() {
+    let mut setup = Setup::with_workflow("pause", STEPS);
+    setup.calls(&[ask()]);
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == "asleep")
+    });
+
+    let paused = setup.priory(&["pause", "draining for the switch"]);
+
+    assert!(paused.status.success(), "{paused:?}");
+    let banner = setup.banner().unwrap();
+    assert!(banner.starts_with("paused since "), "{banner}");
+    assert!(banner.ends_with(": draining for the switch"), "{banner}");
+    setup.publish(&requested(43));
+    setup.until("tasks", |rows| {
+        rows.get(1)
+            .is_some_and(|row| row[7] == "waits: priory is paused: draining for the switch")
+    });
+    assert!(
+        setup
+            .priory(&["answer", "1", "sqlite", "--revision", "1"])
+            .status
+            .success()
+    );
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 2);
+    std::thread::sleep(Duration::from_millis(1500));
+    let tasks = setup.rows("tasks");
+    assert_eq!([&tasks[1][4], &tasks[1][3]], ["queued", "plan"]);
+    assert_eq!(setup.rows("runs").len(), 2, "only task 1 ran again");
+}
+
+#[test]
+fn a_pause_survives_a_daemon_restart_and_unpause_admits_again() {
+    let mut setup = Setup::new("unpause");
+    assert!(setup.priory(&["pause"]).status.success());
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("tasks", |rows| {
+        rows.first()
+            .is_some_and(|row| row[7] == "waits: priory is paused")
+    });
+    setup.crash();
+    setup.start();
+    std::thread::sleep(Duration::from_millis(1500));
+    assert_eq!(setup.rows("tasks")[0][4], "queued");
+    assert!(setup.banner().unwrap().starts_with("paused since "));
+
+    let unpaused = setup.priory(&["unpause"]);
+
+    assert!(unpaused.status.success(), "{unpaused:?}");
+    setup.until("runs", |rows| rows.len() == 1);
+    assert_eq!(setup.banner(), None);
+}
+
+#[test]
+fn say_to_a_done_task_is_refused() {
+    let mut setup = Setup::new("say-done");
+    setup.calls(&[result("passed")]);
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == "done")
+    });
+
+    let said = setup.priory(&["say", "1", "One more thing."]);
+
+    assert!(!said.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&said.stderr),
+        "priory say: task 1 is done\n"
+    );
+}
+
+#[test]
 fn an_answer_to_a_stale_revision_or_a_second_answer_is_refused() {
     let mut setup = Setup::with_workflow("stale", STEPS);
     setup.calls(&[ask()]);
@@ -5109,6 +5275,24 @@ action = "merge-pr"
 effect = "reversible"
 next = { merged = "done" }
 "#;
+
+#[test]
+fn pause_holds_a_new_task_whose_workflow_starts_at_a_code_step() {
+    let workflow = UNKNOWN_ACTION
+        .replace("start = \"implement\"", "start = \"merge\"")
+        .replace("merged = \"done\"", "merged = \"implement\"");
+    let mut setup = Setup::with_workflow("pause-code", &workflow);
+    assert!(setup.priory(&["pause"]).status.success());
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("tasks", |rows| rows.len() == 1);
+    std::thread::sleep(Duration::from_millis(1500));
+    assert_eq!(setup.rows("tasks")[0][4], "queued");
+
+    assert!(setup.priory(&["unpause"]).status.success());
+
+    setup.until("tasks", |rows| rows[0][4] == "blocked");
+}
 
 #[test]
 fn an_action_that_is_not_built_blocks_the_task_with_its_name() {
@@ -7268,6 +7452,26 @@ fn a_gated_command_runs_and_its_exit_code_passes_through() {
     );
     assert_eq!(String::from_utf8_lossy(&done.stdout), "built\n");
     assert!(setup.rows("memory").is_empty());
+}
+
+#[test]
+fn an_acquire_without_gb_reserves_10_gb() {
+    let mut setup = Setup::new("gate-default");
+    setup.start();
+    listening(&setup);
+    setup.hold("hold-a");
+
+    let mut command = setup
+        .command(env!("CARGO_BIN_EXE_priory"))
+        .args(["memory", "acquire", "--", "sh", "-c", &held("a")])
+        .current_dir(setup.dir.join("fake"))
+        .spawn()
+        .unwrap();
+
+    let rows = setup.until("memory", |rows| rows.len() == 1 && rows[0][2] == "held");
+    assert_eq!(rows[0][3], "10.0");
+    setup.release("hold-a");
+    assert!(command.wait().unwrap().success());
 }
 
 /// A command that logs its start, runs while the file `hold-<name>` exists, then logs its end.

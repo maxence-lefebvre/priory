@@ -175,7 +175,7 @@ fn parse_back_early(item: &mut Value) {
     }
 }
 
-/// A stalled queue's banner, the asleep and snoozed counts, what waits on a person, the queue, then
+/// The pause's line, a stalled queue's banner, the asleep and snoozed counts, what waits on a person, the queue, then
 /// every worktree under `home` that stays and why. The snoozed items show only with `all`.
 pub fn desk(db: &Connection, home: &Path, all: bool) -> rusqlite::Result<Value> {
     let _snapshot = db.unchecked_transaction()?;
@@ -200,6 +200,7 @@ pub fn desk(db: &Connection, home: &Path, all: bool) -> rusqlite::Result<Value> 
         |row| row.get(0),
     )?;
     Ok(json!({
+        "paused": state::pause_banner(db)?,
         "banner": stall::banner(db)?,
         "counts": { "asleep": asleep, "snoozed": snoozed },
         "items": items,
