@@ -104,6 +104,11 @@ fn main() -> ExitCode {
         Some("search") => search(args.map(|arg| arg.to_string_lossy().into_owned()).collect()),
         Some("memory") => memory(args.collect()),
         Some("answer") => answer(args.map(|arg| arg.to_string_lossy().into_owned()).collect()),
+        Some("dismiss") => dismiss(args.map(|arg| arg.to_string_lossy().into_owned()).collect()),
+        Some("ask") => match (args.next(), args.next(), args.next()) {
+            (Some(name), Some(fields), None) => ask(&name.to_string_lossy(), &fields.to_string_lossy()),
+            _ => usage(),
+        },
         Some("mcp") => match (args.next(), args.next(), args.next()) {
             (Some(flag), Some(session), None) if flag == "--session" => {
                 let session = session.to_string_lossy();
@@ -124,7 +129,7 @@ fn main() -> ExitCode {
 
 fn usage() -> ExitCode {
     eprintln!(
-        "usage: priory check [DIR]\n       priory draw [DIR] WORKFLOW\n       priory intake [DIR] [--once]\n       priory daemon [DIR] [--once]\n       priory request [DIR] --workflow <name> --key <key> [--band <band>] [--lane <lane>] [--repo <owner/name>] [--hold <reason> [CONDITION]] <text>\n       priory serve [DIR] [--listen ADDR]\n       priory inbox [--since SEQ] [--json]\n       priory inbox read SEQ\n       priory post SOURCE LINE\n       priory tasks [--lane <lane>] [--grade red|yellow|green] [--json]\n       priory queue [--json]\n       priory runs\n       priory outbox\n       priory asks [--all] [--json]\n       priory waits\n       priory actions\n       priory attach (TASK | --run RUN) [--read-only] [--print]\n       priory desk [--all] [--json]\n       priory snooze (ask | blocked | failed | prompt) ID (--for DURATION | --until TIME | --clear)\n       priory trace\n       priory report [DIR] --workflow <name> [--since <instant-or-duration>] [--cost] [--by lane]\n       priory move TASK [--band <band>] [--top | --before TASK | --after TASK]\n       priory resume TASK\n       priory say TASK TEXT\n       priory pause [REASON]\n       priory unpause\n       priory cancel TASK\n       priory revive TASK [--step STEP]\n       priory hold TASK --reason TEXT [--until TIME | --after TASK | --merge PR [--if-closed release|drop|ask] | --blockers]\n       priory release TASK\n       priory tldr TASK TEXT\n       priory search QUERY [--state STATE[,STATE...]] [--limit N]\n       priory memory [acquire [--gb N] [--timeout D] -- COMMAND...]\n       priory answer ASK OPTION-OR-TEXT --revision N\n       priory mcp --session ID\n       priory hook EVENT"
+        "usage: priory check [DIR]\n       priory draw [DIR] WORKFLOW\n       priory intake [DIR] [--once]\n       priory daemon [DIR] [--once]\n       priory request [DIR] --workflow <name> --key <key> [--band <band>] [--lane <lane>] [--repo <owner/name>] [--hold <reason> [CONDITION]] <text>\n       priory serve [DIR] [--listen ADDR]\n       priory inbox [--since SEQ] [--json]\n       priory inbox read SEQ\n       priory post SOURCE LINE\n       priory tasks [--lane <lane>] [--grade red|yellow|green] [--json]\n       priory queue [--json]\n       priory runs\n       priory outbox\n       priory asks [--all] [--json]\n       priory waits\n       priory actions\n       priory attach (TASK | --run RUN) [--read-only] [--print]\n       priory desk [--all] [--json]\n       priory snooze (ask | blocked | failed | prompt) ID (--for DURATION | --until TIME | --clear)\n       priory trace\n       priory report [DIR] --workflow <name> [--since <instant-or-duration>] [--cost] [--by lane]\n       priory move TASK [--band <band>] [--top | --before TASK | --after TASK]\n       priory resume TASK\n       priory say TASK TEXT\n       priory pause [REASON]\n       priory unpause\n       priory cancel TASK\n       priory revive TASK [--step STEP]\n       priory hold TASK --reason TEXT [--until TIME | --after TASK | --merge PR [--if-closed release|drop|ask] | --blockers]\n       priory release TASK\n       priory tldr TASK TEXT\n       priory search QUERY [--state STATE[,STATE...]] [--limit N]\n       priory memory [acquire [--gb N] [--timeout D] -- COMMAND...]\n       priory answer [--revision N | --expected N] [--] ASK OPTION-OR-TEXT\n       priory ask ID JSON\n       priory dismiss [--expected N] ASK\n       priory mcp --session ID\n       priory hook EVENT"
     );
     ExitCode::from(2)
 }
@@ -435,6 +440,15 @@ fn listed(verb: &str, mut args: Vec<String>) -> ExitCode {
                         "options",
                         "snoozed_until",
                         "back_early",
+                        "title",
+                        "text",
+                        "what_waits",
+                        "next_action",
+                        "command",
+                        "coordinator",
+                        "key",
+                        "run_id",
+                        "session",
                     ],
                     &serde_json::Value::Array(open),
                 );
@@ -701,16 +715,16 @@ fn gate(gate: &Gate) -> Result<String, String> {
 }
 
 /// Sends `priory answer ASK TEXT --revision N` to the daemon, which applies it.
-fn answer(mut args: Vec<String>) -> ExitCode {
-    let Some(flag) = args.iter().position(|arg| arg == "--revision") else {
+fn answer(args: Vec<String>) -> ExitCode {
+    let Some((Some(revision), rest)) = revised(args) else {
         return usage();
     };
-    let revision = args.drain(flag..(flag + 2).min(args.len())).nth(1);
-    let (Some(revision), [ask, text]) = (revision.and_then(|n| n.parse().ok()), &args[..]) else {
+    let [ask, text] = &rest[..] else {
         return usage();
     };
-    let Ok(ask) = ask.parse() else {
-        return usage();
+    let ask = match ask_id(ask) {
+        Ok(ask) => ask,
+        Err(error) => return exit("answer", Err(error)),
     };
     let line = serde_json::to_string(&tools::Answer {
         ask,
@@ -719,6 +733,72 @@ fn answer(mut args: Vec<String>) -> ExitCode {
     })
     .expect("an answer serializes");
     send("answer", &line)
+}
+
+/// Sends `priory dismiss [--expected N] ASK` to the daemon, which closes the ask unanswered.
+fn dismiss(args: Vec<String>) -> ExitCode {
+    let Some((revision, rest)) = revised(args) else {
+        return usage();
+    };
+    let [ask] = &rest[..] else {
+        return usage();
+    };
+    let dismiss = match ask_id(ask) {
+        Ok(dismiss) => dismiss,
+        Err(error) => return exit("dismiss", Err(error)),
+    };
+    let line =
+        serde_json::to_string(&tools::Dismiss { dismiss, revision }).expect("a dismiss serializes");
+    send("dismiss", &line)
+}
+
+/// Splits `[--revision N | --expected N] [--] ARGS` into the revision and the other arguments.
+fn revised(args: Vec<String>) -> Option<(Option<i64>, Vec<String>)> {
+    let (mut revision, mut rest, mut args) = (None, Vec::new(), args.into_iter());
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--" => {
+                rest.extend(args);
+                break;
+            }
+            "--revision" | "--expected" if revision.is_none() => {
+                revision = Some(args.next()?.parse().ok()?);
+            }
+            _ => rest.push(arg),
+        }
+    }
+    Some((revision, rest))
+}
+
+/// An ask's number, or the number of the outside ask that `priory ask` named so.
+fn ask_id(ask: &str) -> Result<i64, String> {
+    // `priory ask` refuses an all-digit ID, so only one is a number.
+    if let Some(id) = ask
+        .bytes()
+        .all(|byte| byte.is_ascii_digit())
+        .then(|| ask.parse().ok())
+        .flatten()
+    {
+        return Ok(id);
+    }
+    tools::ask_named(&state::open()?, ask)
+}
+
+/// Stores or revises an ask from a session Priory did not start, from Fleet's JSON shape.
+fn ask(name: &str, fields: &str) -> ExitCode {
+    let stored = serde_json::from_str(fields)
+        .map_err(|error| format!("ask fields must be a JSON object: {error}"))
+        .and_then(|fields| {
+            let mut db = state::open()?;
+            tools::ask_outside(&mut db, name, &fields).map_err(|error| error.to_string())?
+        })
+        .map(|ignored| {
+            for field in ignored {
+                eprintln!("priory ask: ignored unknown field {field}");
+            }
+            println!("{name}");
+        });
+    exit("ask", stored)
 }
 
 /// Sets a task's TL;DR by hand.

@@ -4,7 +4,7 @@ use crate::room::Share;
 use crate::route;
 use crate::snooze::{self, Snooze};
 use crate::state::{self, Admission, NewRun, Signal};
-use crate::tools::{self, Act, Answer, Call, Done, Repair};
+use crate::tools::{self, Act, Answer, Call, Dismiss, Done, Repair};
 use crate::trace::Trace;
 use crate::{embed, handler, search, stall, summary, sweep};
 use herdr_bus::{Bus, Start};
@@ -558,6 +558,7 @@ enum Input {
     Signal(Signal),
     Call(Call),
     Answer(Answer),
+    Dismiss(Dismiss),
     Act(Act),
     Snooze(Snooze),
     Gate(Gate),
@@ -579,6 +580,7 @@ fn take(db: &mut Connection, line: &str, trace: &Trace) -> Result<(String, Optio
             })?),
             None,
         )),
+        Ok(Input::Dismiss(dismiss)) => Ok((replied(tools::dismiss(db, &dismiss)?), None)),
         Ok(Input::Act(act)) => {
             let (reply, kill) = tools::act(db, &act, trace.factory)?;
             Ok((replied(reply), kill))
