@@ -123,7 +123,9 @@ text Priory stores never changes.
 
 The web view runs each regex as a JavaScript regex with the `u` flag. A regex that JavaScript
 refuses, such as one with an inline flag like `(?i)`, links nothing there; `priory check` does not
-catch that.
+catch that. `\d`, `\w` and `\b` match only ASCII in JavaScript and any script in Rust, so write
+`[0-9]` or `[A-Za-z]` when it matters. The regex runs in the reader's browser, so keep it simple:
+a regex with nested repeats, such as `(a+)+`, can stall the page on long text.
 
 ## Example
 

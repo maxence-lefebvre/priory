@@ -89,15 +89,18 @@ impl Link {
             ));
         }
         let groups = regex.captures_len() - 1;
-        let named = url
+        let missing = url
             .split('$')
             .skip(1)
-            .filter_map(|after| {
-                let digits = after.find(|c: char| !c.is_ascii_digit());
-                after[..digits.unwrap_or(after.len())].parse::<usize>().ok()
+            .map(|after| {
+                &after[..after
+                    .find(|c: char| !c.is_ascii_digit())
+                    .unwrap_or(after.len())]
             })
-            .max();
-        match named.filter(|group| *group > groups) {
+            .find(|digits| {
+                !digits.is_empty() && digits.parse::<usize>().map_or(true, |group| group > groups)
+            });
+        match missing {
             Some(group) => Err(format!(
                 "`[links]` `{pattern}` names group ${group}, but the regex has {groups} group{}",
                 if groups == 1 { "" } else { "s" }

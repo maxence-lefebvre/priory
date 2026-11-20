@@ -1028,7 +1028,7 @@ document.addEventListener("click", (event) => {
     event.preventDefault();
     go(target.pathname + target.search);
   }
-  if (target.tagName === "A" && target.hash) {
+  if (target.tagName === "A" && target.origin === location.origin && target.hash) {
     event.preventDefault();
     document.querySelector(target.hash)?.scrollIntoView({ behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth" });
   }

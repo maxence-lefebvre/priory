@@ -1353,6 +1353,7 @@ fn check_refuses_a_bad_link_regex_a_missing_group_and_a_non_https_template() {
 '(unclosed' = "https://example.com/$1"
 '\bPR-(\d+)\b' = "https://example.com/$1/$2"
 '\bdoc-(\d+)\b' = "http://example.com/$1"
+'\bbig-(\d+)\b' = "https://example.com/$18446744073709551616"
 "#;
 
     let outcome = check(&factory("bad-links", &with("factory.toml", settings)));
@@ -1375,6 +1376,13 @@ fn check_refuses_a_bad_link_regex_a_missing_group_and_a_non_https_template() {
     assert!(
         outcome.stderr.contains(
             "factory.toml:3: `[links]` `\\bdoc-(\\d+)\\b` links to `http://example.com/$1`: a link starts with `https://`\n"
+        ),
+        "{}",
+        outcome.stderr
+    );
+    assert!(
+        outcome.stderr.contains(
+            "factory.toml:3: `[links]` `\\bbig-(\\d+)\\b` names group $18446744073709551616, but the regex has 1 group\n"
         ),
         "{}",
         outcome.stderr

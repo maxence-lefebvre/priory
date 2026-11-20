@@ -32,3 +32,12 @@ test("percent-encodes what a group captured", () => {
     `<a class="autolink" href="https://example.com/q?x=a%22b%26c" rel="noopener noreferrer" target="_blank">see:a&#34;b&#38;c</a>`,
   );
 });
+
+test("an empty match does not hide a later match", () => {
+  const links = [{ pattern: String.raw`\d*`, url: "https://example.com/$0" }];
+
+  assert.equal(
+    linked("abc123", links, null),
+    `abc<a class="autolink" href="https://example.com/123" rel="noopener noreferrer" target="_blank">123</a>`,
+  );
+});

@@ -87,8 +87,12 @@ export function autolink(text, links, repo) {
     let best = null;
     for (const rule of rules) {
       rule.regex.lastIndex = at;
-      const match = rule.regex.exec(text);
-      if (match && match[0] && (!best || match.index < best.match.index)) best = { rule, match };
+      let match = rule.regex.exec(text);
+      while (match && !match[0] && match.index < text.length) {
+        rule.regex.lastIndex = match.index + 1;
+        match = rule.regex.exec(text);
+      }
+      if (match?.[0] && (!best || match.index < best.match.index)) best = { rule, match };
     }
     if (!best) break;
     const { rule, match } = best;
