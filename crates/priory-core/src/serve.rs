@@ -563,14 +563,14 @@ fn write_line(db: &Connection, write: &Write, body: &[u8]) -> Result<(String, Se
         Write::Subscribe => {
             let subscription: push::Subscription = serde_json::from_slice(body).map_err(bad)?;
             let change = push::Change::Subscribe(subscription);
-            Ok((line(&push::Line { push: change }), None))
+            Ok((line(&push::Line { push: change }), Sent::Nothing))
         }
         Write::Unsubscribe => {
             let gone: Unsubscribe = serde_json::from_slice(body).map_err(bad)?;
             let change = push::Change::Unsubscribe {
                 endpoint: gone.endpoint,
             };
-            Ok((line(&push::Line { push: change }), None))
+            Ok((line(&push::Line { push: change }), Sent::Nothing))
         }
     }
 }
