@@ -1093,9 +1093,9 @@ pub(crate) fn handle(
     Ok(None)
 }
 
-/// Subscribes the task whose branch is the head of the open pull request `message` names, when it
-/// does not own it yet and no other active task does, so a pull request a worker opened itself is
-/// its own.
+/// Subscribes the task whose branch is the head of the open pull request `message` names, on the
+/// first event of that pull request, when no other active task owns it. So a pull request a worker
+/// opened itself is its own, and a later `unsubscribe` holds.
 fn claim_pull_request(tx: &Transaction, message: &Message) -> rusqlite::Result<()> {
     let data = &message.data;
     let (Some(repo), Some(number), Some(head)) = (
@@ -1115,12 +1115,13 @@ fn claim_pull_request(tx: &Transaction, message: &Message) -> rusqlite::Result<(
          AND NOT EXISTS (SELECT 1 FROM owned JOIN tasks AS other ON other.id = owned.task
            WHERE owned.resource = ?1 AND owned.task != owns.task
            AND other.state NOT IN ('done', 'failed', 'dropped'))
-         AND NOT EXISTS (SELECT 1 FROM inbox WHERE type = ?3
-           AND 'github:' || json_extract(data, '$.repo') || '#' || json_extract(data, '$.pull_request') = ?1)",
+         AND NOT EXISTS (SELECT 1 FROM inbox WHERE json_extract(data, '$.repo') = ?3
+           AND json_extract(data, '$.pull_request') = ?4)",
         params![
             route::pull_request(repo, number),
             route::branch(repo, head),
-            CLOSED
+            repo,
+            number as i64
         ],
     )?;
     Ok(())
@@ -1259,8 +1260,8 @@ pub(crate) fn due(db: &mut Connection) -> rusqlite::Result<()> {
 /// The resource and the agent's last prompt of each open wait that the intake polls for, then the
 /// pull request or Linear issue and creation time of each unmet merge or issue condition of a hold,
 /// then each subscription of a task that has not failed or been dropped, then the branch of each
-/// active task, or of a task done in the last 10 minutes that subscribes to nothing, so the intake
-/// sees a pull request its worker opened itself.
+/// active task, or of a task done in the last 10 minutes whose branch no event named yet, so the
+/// intake sees a pull request its worker opened itself.
 pub fn watched(db: &Connection) -> rusqlite::Result<Vec<(String, String)>> {
     db.prepare(
         "SELECT resource, since FROM (
@@ -1282,7 +1283,8 @@ pub fn watched(db: &Connection) -> rusqlite::Result<Vec<(String, String)>> {
            JOIN tasks ON tasks.id = owns.task
            WHERE owns.resource GLOB 'github:*@*' AND (tasks.state NOT IN ('done', 'failed', 'dropped')
              OR (tasks.state = 'done' AND julianday('now') - julianday(tasks.changed) < 10.0 / 1440
-               AND NOT EXISTS (SELECT 1 FROM subscriptions WHERE subscriptions.task = tasks.id)))
+               AND NOT EXISTS (SELECT 1 FROM inbox WHERE owns.resource = 'github:'
+                 || json_extract(inbox.data, '$.repo') || '@' || json_extract(inbox.data, '$.head_branch'))))
          ) ORDER BY source, id",
     )?
     .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?

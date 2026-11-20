@@ -13,12 +13,13 @@ names a pull request or branch in it (see [watches.md](watches.md)):
 - a subscription of a task that has not failed or been dropped, done tasks included, so feedback
   after done reaches it. `open-pr` and the branch claim subscribe too (see
   [routing.md](../daemon/routing.md#resources-what-a-task-owns));
-- the branch of an active task, or of a task done in the last 10 minutes that subscribes to
-  nothing, so the intake sees a pull request its worker opened with `gh pr create`.
+- the branch of an active task, or of a task done in the last 10 minutes whose branch no event
+  named yet, so the intake sees a pull request its worker opened with `gh pr create`.
 
 A closed or merged pull request ends its subscriptions, so its repository stops being polled once
-nothing else names it. It has four streams,
-each named after a type:
+nothing else names it. An active task's branch still names it until the task is done.
+
+A polled repository has four streams, each named after a type:
 
 | Stream | Reads | Holds | Position |
 | ------ | ----- | ----- | -------- |

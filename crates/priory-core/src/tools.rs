@@ -1579,7 +1579,7 @@ fn pull_request(tx: &Transaction, task: i64) -> rusqlite::Result<Option<String>>
            UNION ALL
            SELECT 'github:' || json_extract(inbox.data, '$.repo') || '#' || json_extract(inbox.data, '$.pull_request'), 1, inbox.seq
              FROM inbox JOIN tasks ON tasks.id = inbox.task
-             WHERE inbox.task = ?1 AND inbox.outcome = 'kept'
+             WHERE inbox.task = ?1 AND inbox.outcome IN ('kept', 'woke')
              AND json_extract(inbox.data, '$.pull_request') IS NOT NULL
              AND json_extract(inbox.data, '$.head_branch') = tasks.branch
            UNION ALL

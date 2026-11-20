@@ -33,11 +33,12 @@ A task gets its resources at these moments:
 | A wait of its names a Linear issue or a Slack thread | that issue or thread | `linear:ENG-7`, `slack:C0123:1763500000.000100` |
 | It subscribes, with the `subscribe` tool or `priory subscribe` | that resource, until `unsubscribe` | `github:owner/name#57` |
 | Its `open-pr` opens a pull request | that pull request, subscribed | `github:owner/name#57` |
-| A GitHub event names an open pull request whose head is its branch | that pull request, subscribed, unless another active task owns it | `github:owner/name#58` |
+| The first GitHub event of an open pull request names its branch as the head | that pull request, subscribed, unless another active task owns it | `github:owner/name#58` |
 
 The last row is the claim. A worker that opens its pull request with `gh pr create` instead of
 `open-pr` still gets its reviews and comments, and its checks gate, once the intake reads an event of
-that pull request. A pull request on another task's branch is that task's, not this one's.
+that pull request. A pull request on another task's branch is that task's, not this one's. Only
+the first event of a pull request claims it, so an `unsubscribe` from it holds.
 
 GitHub numbers issues and pull requests from one sequence per repository, so
 `github:owner/name#42` names either an issue or a pull request.

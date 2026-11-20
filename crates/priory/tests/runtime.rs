@@ -11674,3 +11674,71 @@ fn an_open_wait_on_a_subscribed_pull_request_decides_which_events_wake_the_task(
     setup.until("inbox", |rows| rows.len() == 2);
     stays_asleep_after(&setup, 1);
 }
+
+/// Task 1 for ENG-7, asleep on a time wait, then woken by the claim of pull request 8 on its branch.
+fn claimed(name: &str, then: serde_json::Value) -> Setup {
+    let mut setup = linear_task(name, WORKFLOW);
+    setup.calls(&[wait(json!({ "type": "time", "until": "1 hour" })), then]);
+    setup.start();
+    setup.until("runs", |rows| rows.len() == 1 && rows[0][7] == "asleep");
+    setup.github(&[github_pull(8, "priory/1", &[])]);
+    setup.intake();
+    setup.until("inbox", |rows| {
+        rows.iter()
+            .any(|row| row[1] == "github.pull_request.opened")
+    });
+    setup
+}
+
+#[test]
+fn a_claimed_pull_request_gates_done_on_its_checks() {
+    let setup = claimed(
+        "claim-gate",
+        passed_at("abc0000000000000000000000000000000000000"),
+    );
+
+    let waits = setup.until("waits", |rows| rows.iter().any(|row| row[3] == "checks"));
+
+    let gate = waits.iter().find(|row| row[3] == "checks").unwrap();
+    assert_eq!(gate[4], "github:owner/repo#8");
+    assert_eq!(setup.rows("tasks")[0][4], "asleep");
+}
+
+#[test]
+fn an_unsubscribed_claimed_pull_request_is_not_claimed_again() {
+    let setup = claimed("claim-unsubscribe", serde_json::Value::Null);
+    let output = setup.priory(&["unsubscribe", "1", "github:owner/repo#8"]);
+    assert!(output.status.success(), "{output:?}");
+    let mut comment = commented();
+    comment.data["pull_request"] = json!(8);
+    comment.data["github_id"] = json!(802);
+
+    setup.publish(&comment);
+
+    setup.until("inbox", |rows| {
+        rows.iter()
+            .any(|row| row[1] == "github.pull_request.comment")
+    });
+    assert_eq!(task_json(&setup, "1")["subscriptions"], json!([]));
+}
+
+#[test]
+fn a_done_tasks_branch_stops_being_polled_once_its_pull_request_closed() {
+    let mut setup = linear_task("claim-closed", WORKFLOW);
+    setup.calls(&[result("passed")]);
+    setup.start();
+    setup.until("tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == "done")
+    });
+    setup.publish(&on_pull("github.pull_request.opened", json!({})));
+    setup.publish(&closed());
+    setup.until("inbox", |rows| {
+        rows.iter()
+            .any(|row| row[1] == "github.pull_request.closed")
+    });
+    setup.github(&[]);
+
+    setup.intake();
+
+    assert_eq!(setup.api_calls(), 0);
+}

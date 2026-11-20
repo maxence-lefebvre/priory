@@ -146,8 +146,8 @@ for a disk wait, and when it was stored.
 ## Done and checks
 
 A task owns a pull request when its `open-pr` opened it, when one of its waits named it, when an
-event it kept comes from a pull request on its branch, or when a pull request event created it. An
-opened one comes first, then a waited one, then the latest from its branch. When such a task reaches
+event it kept or that woke it comes from a pull request on its branch, or when a pull request event
+created it. An opened one comes first, then a waited one, then the latest from its branch. When such a task reaches
 `done`, by a result, an answer or an action, it is not done yet. The daemon stores its own checks
 wait on that pull request, pinned to the `commit` of the task's latest result, else to the commit
 that `open-pr` pushed after that result. The task sleeps with no process, at that result's step, so
