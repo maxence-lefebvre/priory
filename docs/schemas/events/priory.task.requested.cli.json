@@ -15,7 +15,7 @@
           ]
         },
         "repo": {
-          "description": "`--repo`, `owner/name`.",
+          "description": "`--repo`, a GitHub `owner/name`: `priory request` refuses any other shape.",
           "type": [
             "string",
             "null"

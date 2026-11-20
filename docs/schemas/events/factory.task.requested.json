@@ -163,7 +163,7 @@
           ]
         },
         "repo": {
-          "description": "The repository the task works in: `priory request --repo` for a CLI request, the pull\nrequest's for a review request. Those sources only.",
+          "description": "The repository the task works in: `priory request --repo` for a CLI request, the pull\nrequest's for a review request. Those sources only. A task whose `repo` is not a GitHub\n`owner/name` blocks before its first run.",
           "type": [
             "string",
             "null"

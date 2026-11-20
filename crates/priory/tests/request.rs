@@ -163,6 +163,28 @@ fn a_request_with_no_repo_exits_non_zero_and_publishes_nothing() {
 }
 
 #[test]
+fn a_repo_that_is_not_owner_slash_name_exits_non_zero_and_publishes_nothing() {
+    let setup = Setup::new("bad-repo");
+
+    for repo in ["/tmp/x", "../x", "owner/../x", "-x/y", "owner/.", "a/b/c"] {
+        let output = setup.request(&[
+            "--workflow",
+            "implement",
+            "--key",
+            "docs-1",
+            "--repo",
+            repo,
+            "Fix the docs",
+        ]);
+
+        assert!(!output.status.success(), "{repo} was accepted");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains("owner/name"), "{repo}: {stderr}");
+    }
+    assert!(setup.published().is_empty());
+}
+
+#[test]
 fn the_same_request_twice_publishes_nothing_new() {
     let setup = Setup::new("twice");
     let args = ["--workflow", "implement", "--key", "docs-1", "Fix the docs"];

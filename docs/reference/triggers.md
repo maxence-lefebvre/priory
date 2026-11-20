@@ -23,7 +23,7 @@ cannot tell which keys a source refuses; `priory check` does.
 | --- | ---- | -------- | ------- | ------- | ------- |
 | `source` | string | yes | | `github`, `linear`, `linear.view`, `slack` or `schedule` | `"github"` |
 | `workflow` | string | yes | | The workflow a matching event starts, by file name | `"implement"` |
-| `repo` | string | per source | | The repository the trigger's tasks work in, `owner/name` | `"owner/name"` |
+| `repo` | string | per source | | The repository the trigger's tasks work in, a GitHub `owner/name`. `priory check` refuses any other shape, such as `..` or a path | `"owner/name"` |
 | `key` | string | no | per source | Which events are the same work. A factory holds at most one active task per key | `"issue.number"` |
 | `band` | string | no | the workflow's `band`, else the last band | The band of its tasks | `"today"` |
 | `lane` | string | no | derived by `lanes.toml` | The lane of its tasks, `<team>/<theme>` | `"core/intake"` |
