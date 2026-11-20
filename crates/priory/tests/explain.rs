@@ -226,3 +226,53 @@ fn a_by_outcome_must_be_in_next() {
         "workflows/draft.toml:3: step `plan`: `by` has outcome `tiny`, which is not in `next`\n"
     );
 }
+
+#[test]
+fn a_human_step_after_the_irreversible_step_is_not_its_gate() {
+    let publish = r#"start = "approve"
+
+[[steps]]
+id = "approve"
+decides = "human"
+effect = "none"
+approves = ["publish"]
+options = ["go"]
+next = { go = "publish" }
+
+[[steps]]
+id = "publish"
+decides = "code"
+action = "open-pr"
+effect = "irreversible"
+next = { opened = "retro" }
+
+[[steps]]
+id = "retro"
+decides = "human"
+effect = "none"
+approves = ["publish"]
+options = ["ok"]
+next = { ok = "done" }
+"#;
+    let outcome = explain(&factory("after", &[("publish", publish)]));
+
+    assert_eq!(outcome.stderr, "");
+    assert!(
+        outcome
+            .stdout
+            .starts_with("workflow\tstep\tgate\npublish\tpublish\tapprove\n")
+    );
+}
+
+#[test]
+fn a_multiline_reason_stays_on_one_row() {
+    let multiline = DRAFT.replace("\"draft PRs only\"", "\"draft\\tPRs\\nonly\"");
+    let outcome = explain(&factory("multiline", &[("draft", &multiline)]));
+
+    assert_eq!(outcome.stderr, "");
+    assert!(
+        outcome
+            .stdout
+            .contains("draft\topen-pr\tautonomous: draft\\tPRs\\nonly\n")
+    );
+}

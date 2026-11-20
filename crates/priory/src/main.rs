@@ -14,7 +14,7 @@ use std::time::{Duration, Instant};
 fn main() -> ExitCode {
     let mut args = std::env::args_os().skip(1);
     match args.next().as_deref().and_then(|verb| verb.to_str()) {
-        Some("check") => check(args.map(|arg| arg.to_string_lossy().into_owned()).collect()),
+        Some("check") => check(args.collect()),
         Some("draw") => {
             let args: Vec<_> = args.collect();
             match &args[..] {
@@ -1255,9 +1255,12 @@ fn send(verb: &str, line: &str) -> ExitCode {
 }
 
 /// `priory check [DIR] [--explain [--json]]`.
-fn check(args: Vec<String>) -> ExitCode {
-    let (flags, dirs): (Vec<_>, Vec<_>) = args.iter().partition(|arg| arg.starts_with("--"));
-    let (explain, json) = match flags.iter().map(|flag| flag.as_str()).collect::<Vec<_>>()[..] {
+fn check(args: Vec<OsString>) -> ExitCode {
+    let (flags, dirs): (Vec<_>, Vec<_>) = args
+        .iter()
+        .partition(|arg| arg.to_str().is_some_and(|arg| arg.starts_with("--")));
+    let flags: Vec<_> = flags.iter().filter_map(|flag| flag.to_str()).collect();
+    let (explain, json) = match flags[..] {
         [] => (false, false),
         ["--explain"] => (true, false),
         ["--explain", "--json"] | ["--json", "--explain"] => (true, true),
@@ -1272,45 +1275,7 @@ fn check(args: Vec<String>) -> ExitCode {
         return ExitCode::FAILURE;
     };
     if explain {
-        let value = explained(&factory);
-        if json {
-            state::emit(&value.to_string());
-            return ExitCode::SUCCESS;
-        }
-        let rows = |key: &str| value[key].as_array().cloned().unwrap_or_default();
-        state::emit("workflow\tstep\tgate");
-        for gate in rows("irreversible") {
-            let approvers: Vec<_> = gate["approved_by"]
-                .as_array()
-                .into_iter()
-                .flatten()
-                .filter_map(Value::as_str)
-                .collect();
-            let shown = match gate["autonomous"].as_str() {
-                Some(reason) => format!("autonomous: {reason}"),
-                None => approvers.join(", "),
-            };
-            state::emit(&format!(
-                "{}\t{}\t{shown}",
-                gate["workflow"].as_str().unwrap_or(""),
-                gate["step"].as_str().unwrap_or("")
-            ));
-        }
-        state::emit("");
-        state::emit("workflow\tpath with no human decision");
-        for path in rows("paths") {
-            let steps: Vec<_> = path["path"]
-                .as_array()
-                .into_iter()
-                .flatten()
-                .filter_map(Value::as_str)
-                .collect();
-            state::emit(&format!(
-                "{}\t{}",
-                path["workflow"].as_str().unwrap_or(""),
-                steps.join(" -> ")
-            ));
-        }
+        print_explanation(&factory, json);
         return ExitCode::SUCCESS;
     }
     println!(
@@ -1323,24 +1288,71 @@ fn check(args: Vec<String>) -> ExitCode {
     ExitCode::SUCCESS
 }
 
-/// Each workflow's irreversible steps with their gates, and its paths to one with no human edge.
-fn explained(factory: &factory::Factory) -> Value {
-    let mut irreversible = Vec::new();
-    let mut paths = Vec::new();
-    for (name, workflow) in &factory.workflows {
-        for gate in explain::gates(&workflow.value) {
-            irreversible.push(serde_json::json!({
-                "workflow": name,
-                "step": gate.step,
-                "approved_by": gate.approved_by,
-                "autonomous": gate.autonomous,
-            }));
-        }
-        for path in explain::unattended_paths(&workflow.value) {
-            paths.push(serde_json::json!({ "workflow": name, "path": path }));
-        }
+/// Prints each workflow's irreversible steps with their gates, and its paths to one with no human
+/// edge, as two tables or as JSON.
+fn print_explanation(factory: &factory::Factory, json: bool) {
+    let gates: Vec<_> = factory
+        .workflows
+        .iter()
+        .flat_map(|(name, workflow)| {
+            explain::gates(&workflow.value)
+                .into_iter()
+                .map(move |gate| (name, gate))
+        })
+        .collect();
+    let paths: Vec<_> = factory
+        .workflows
+        .iter()
+        .flat_map(|(name, workflow)| {
+            explain::unattended_paths(&workflow.value)
+                .into_iter()
+                .map(move |path| (name, path))
+        })
+        .collect();
+    if json {
+        let irreversible: Vec<_> = gates
+            .iter()
+            .map(|(name, gate)| {
+                serde_json::json!({
+                    "workflow": name,
+                    "step": gate.step,
+                    "approved_by": gate.approved_by,
+                    "autonomous": gate.autonomous,
+                })
+            })
+            .collect();
+        let paths: Vec<_> = paths
+            .iter()
+            .map(|(name, path)| serde_json::json!({ "workflow": name, "path": path }))
+            .collect();
+        state::emit(
+            &serde_json::json!({ "irreversible": irreversible, "paths": paths }).to_string(),
+        );
+        return;
     }
-    serde_json::json!({ "irreversible": irreversible, "paths": paths })
+    let cell = |text: &str| {
+        text.replace('\t', "\\t")
+            .replace('\r', "\\r")
+            .replace('\n', "\\n")
+    };
+    state::emit("workflow\tstep\tgate");
+    for (name, gate) in &gates {
+        let shown = match &gate.autonomous {
+            Some(reason) => format!("autonomous: {reason}"),
+            None => gate.approved_by.join(", "),
+        };
+        state::emit(&format!(
+            "{}\t{}\t{}",
+            cell(name),
+            cell(&gate.step),
+            cell(&shown)
+        ));
+    }
+    state::emit("");
+    state::emit("workflow\tpath with no human decision");
+    for (name, path) in &paths {
+        state::emit(&format!("{}\t{}", cell(name), cell(&path.join(" -> "))));
+    }
 }
 
 fn draw(dir: &Path, workflow: &std::ffi::OsStr) -> ExitCode {

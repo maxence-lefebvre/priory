@@ -1,8 +1,8 @@
 use crate::factory::{By, Decider, Effect, Step, Workflow};
 use std::collections::BTreeSet;
 
-/// An irreversible step and what lets it run: the human steps that approve it, or its
-/// `autonomous` reason.
+/// An irreversible step and what lets it run: the human steps that approve it and lead to it, or
+/// its `autonomous` reason.
 #[derive(Debug, PartialEq, Eq)]
 pub struct Gate {
     pub step: String,
@@ -21,7 +21,9 @@ pub fn gates(workflow: &Workflow) -> Vec<Gate> {
                 .steps
                 .iter()
                 .filter(|other| {
-                    other.decides == Decider::Human && other.approves.contains(&step.id)
+                    other.decides == Decider::Human
+                        && other.approves.contains(&step.id)
+                        && workflow.reaches(&other.id, &step.id)
                 })
                 .map(|other| other.id.clone())
                 .collect(),
