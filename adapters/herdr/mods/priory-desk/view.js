@@ -135,7 +135,7 @@ export function deskModel({ desk, asks: asksListing, tasks: tasksListing, queue 
       { id: "all", label: "All tasks", count: tasks.length },
     ],
     sections: (/** @type {string} */ view) => (views[view] ?? views.needs)().filter((section) => section.rows.length),
-    banners: [desk.paused, desk.banner].filter(Boolean),
+    banners: [desk.paused, desk.banner, desk.intake].filter(Boolean),
     since: {
       from: desk.last_visit ? when(desk.last_visit, now) : null,
       rows: desk.since_you_looked.map((/** @type {any} */ event) => ({ key: event.key, task: event.task, what: event.what, time: when(event.time, now) })),

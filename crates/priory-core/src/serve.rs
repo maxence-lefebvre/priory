@@ -7,7 +7,7 @@ use priory_factory::factory::{Factory, Trigger};
 use priory_intake::intake::{self, Github};
 use priory_runtime::http::{self, Reply, Request};
 use priory_runtime::runtime;
-use rusqlite::Connection;
+use rusqlite::{Connection, OptionalExtension};
 use std::net::{SocketAddr, TcpListener};
 use std::path::Path;
 use std::sync::Arc;
@@ -330,12 +330,13 @@ fn route(
 }
 
 /// A path that writes, each the twin of a CLI verb. An ask is named by its number or, for an
-/// outside ask, its name.
+/// outside ask, its name. `Act` is a desk action on a task: `resume`, `revive`, `cancel` or `say`.
 enum Write<'a> {
     Answer(&'a str),
     Dismiss(&'a str),
     Snooze,
     Add,
+    Act(&'a str, &'a str),
 }
 
 impl<'a> Write<'a> {
@@ -344,6 +345,13 @@ impl<'a> Write<'a> {
             "/api/snooze" => return Some(Write::Snooze),
             "/api/request" => return Some(Write::Add),
             _ => {}
+        }
+        if let Some((task, act)) = path
+            .strip_prefix("/api/tasks/")
+            .and_then(|rest| rest.split_once('/'))
+            .filter(|(_, act)| ["resume", "revive", "cancel", "say"].contains(act))
+        {
+            return Some(Write::Act(task, act));
         }
         match path.strip_prefix("/api/asks/")?.split_once('/')? {
             (ask, "answer") => Some(Write::Answer(ask)),
@@ -367,6 +375,16 @@ struct AnswerBody {
 #[serde(deny_unknown_fields)]
 struct DismissBody {
     revision: i64,
+}
+
+/// What a desk action takes: `say` its text, `revive` an optional step and `cancel` the optional
+/// revision it was made on, as the CLI's `--step` and `--expected`.
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ActBody {
+    text: Option<String>,
+    step: Option<String>,
+    revision: Option<i64>,
 }
 
 #[derive(serde::Deserialize)]
@@ -400,7 +418,7 @@ fn write(db: &Result<Connection, String>, home: &Path, request: &Request) -> Rep
         Ok(db) => db,
         Err(error) => return Reply::error(500, error),
     };
-    let (line, ask) = match write_line(db, &write, request.body) {
+    let (line, sent) = match write_line(db, &write, request.body) {
         Ok(line) => line,
         Err(reply) => return reply,
     };
@@ -430,17 +448,22 @@ fn write(db: &Result<Connection, String>, home: &Path, request: &Request) -> Rep
             Reply::json(if repeated { 409 } else { 200 }, added)
         }
         Ok(Ok(done)) => Reply::json(200, serde_json::json!({ "ok": done }).to_string()),
-        Ok(Err(refused)) => refusal(db, ask, &refused),
+        Ok(Err(refused)) => refusal(db, sent, &refused),
         Err(error) => Reply::error(500, &format!("unreadable reply {reply:?}: {error}")),
     }
 }
 
-/// The socket line of `write` and, for an ask, its number and the revision the body sent.
-fn write_line(
-    db: &Connection,
-    write: &Write,
-    body: &[u8],
-) -> Result<(String, Option<(i64, i64)>), Reply> {
+/// The revision a write was made on, which tells a stale write from a refused one.
+enum Sent {
+    /// The ask and the ask's revision the body sent.
+    Ask(i64, i64),
+    /// The task of a desk action, and the state's revision it was made on, if any.
+    Task(i64, Option<i64>),
+    Nothing,
+}
+
+/// The socket line of `write`, and the revision it was made on.
+fn write_line(db: &Connection, write: &Write, body: &[u8]) -> Result<(String, Sent), Reply> {
     let bad = |error: serde_json::Error| Reply::error(400, &error.to_string());
     match write {
         Write::Answer(ask) => {
@@ -458,7 +481,7 @@ fn write_line(
                 run: body.run,
                 by: "serve".to_owned(),
             };
-            Ok((line(&answer), Some((ask, revision))))
+            Ok((line(&answer), Sent::Ask(ask, revision)))
         }
         Write::Dismiss(ask) => {
             let body: DismissBody = serde_json::from_slice(body).map_err(bad)?;
@@ -467,7 +490,7 @@ fn write_line(
                 dismiss: ask,
                 revision: Some(body.revision),
             };
-            Ok((line(&dismiss), Some((ask, body.revision))))
+            Ok((line(&dismiss), Sent::Ask(ask, body.revision)))
         }
         Write::Snooze => {
             let body: SnoozeBody = serde_json::from_slice(body).map_err(bad)?;
@@ -485,11 +508,41 @@ fn write_line(
                 },
                 until,
             };
-            Ok((line(&snooze), None))
+            Ok((line(&snooze), Sent::Nothing))
         }
         Write::Add => {
             let add: priory_intake::request::Add = serde_json::from_slice(body).map_err(bad)?;
-            Ok((line(&serde_json::json!({ "add": add })), None))
+            Ok((line(&serde_json::json!({ "add": add })), Sent::Nothing))
+        }
+        Write::Act(task, act) => {
+            let body: ActBody = serde_json::from_slice(body).map_err(bad)?;
+            let takes = match *act {
+                "say" => body.text.is_some() && body.step.is_none() && body.revision.is_none(),
+                "revive" => body.text.is_none() && body.revision.is_none(),
+                "cancel" => body.text.is_none() && body.step.is_none(),
+                _ => body.text.is_none() && body.step.is_none() && body.revision.is_none(),
+            };
+            if !takes {
+                let fields = match *act {
+                    "say" => "text",
+                    "revive" => "an optional step",
+                    "cancel" => "an optional revision",
+                    _ => "no field",
+                };
+                return Err(Reply::error(400, &format!("{act} takes {fields}")));
+            }
+            let task = task
+                .parse()
+                .map_err(|_| Reply::error(404, &format!("there is no task {task}")))?;
+            let act = tools::Act {
+                act: (*act).to_owned(),
+                task,
+                step: body.step,
+                hold: None,
+                text: body.text,
+                expected: body.revision,
+            };
+            Ok((line(&act), Sent::Task(act.task, act.expected)))
         }
     }
 }
@@ -509,10 +562,27 @@ fn ask_id(db: &Connection, ask: &str) -> Result<i64, Reply> {
 }
 
 /// The reply to a write the daemon refused. For an ask: `404` once it is gone, `409` with the ask
-/// when its revision moved or it closed, `422` otherwise, such as an option a step does not take.
-fn refusal(db: &Connection, ask: Option<(i64, i64)>, refused: &str) -> Reply {
-    let Some((id, sent)) = ask else {
-        return Reply::error(422, refused);
+/// when its revision moved or it closed. For a desk action: `404` without the task, `409` once the
+/// state moved past the revision it was made on. `422` otherwise, such as an option a step does not
+/// take.
+fn refusal(db: &Connection, sent: Sent, refused: &str) -> Reply {
+    let (id, sent) = match sent {
+        Sent::Ask(id, sent) => (id, sent),
+        Sent::Task(task, expected) => {
+            let found = db
+                .query_row("SELECT 1 FROM tasks WHERE id = ?1", [task], |_| Ok(()))
+                .optional()
+                .and_then(|found| Ok((found, state::revision(db)?)));
+            return match found {
+                Ok((None, _)) => Reply::error(404, refused),
+                Ok((_, at)) if expected.is_some_and(|expected| expected != at) => {
+                    Reply::error(409, refused)
+                }
+                Ok(_) => Reply::error(422, refused),
+                Err(error) => Reply::error(500, &error.to_string()),
+            };
+        }
+        Sent::Nothing => return Reply::error(422, refused),
     };
     match listing::ask(db, id) {
         Ok(None) => Reply::error(404, refused),

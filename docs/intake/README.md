@@ -32,6 +32,10 @@ Each `gh api` call runs in its own process group. Past 5 minutes, or past `comma
 `factory.toml`, the call is killed and the poll fails with `timed out after <n>s`. So a hung call
 cannot hold up schedules, Linear and Slack forever.
 
+With `PRIORY_DB` set, the intake records each poll in the state. A source whose poll fails posts
+one `intake` report and shows a banner on the desk, and an intake that has not polled for 5 minutes
+shows one too: see [desk.md](../daemon/desk.md#intake-banner).
+
 ## Where messages go
 
 The intake publishes on the output `factory.intake` of [herdr-bus](https://github.com/flupke/herdr-bus),
