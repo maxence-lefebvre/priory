@@ -22,7 +22,8 @@ another port. Once it listens, it prints `priory: serving on http://ADDR` to std
 `ADDR` names the port the system chose.
 
 Each server thread opens its own read-only connection to `PRIORY_DB`, so a request never waits on
-the daemon's loop.
+the daemon's loop. The server never creates or migrates the state file: `priory serve` refuses to
+start until a `priory daemon` of the same version has opened it once.
 
 ## The token
 
@@ -51,7 +52,7 @@ a TLS proxy before it leaves the machine.
 | ----- | ----- | ------- |
 | Request head: request line and headers | 8 KiB, 32 headers | `431` |
 | Request body | none allowed | `413` |
-| Time to send the request head | 5 seconds | `408` |
+| Time to send the whole request head | 5 seconds | `408` |
 | Connections served at once | 8 | Others wait in the listen backlog |
 
 Each connection carries one request and closes after the reply.

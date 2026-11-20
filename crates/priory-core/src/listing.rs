@@ -104,14 +104,25 @@ fn asks_of(db: &Connection, task: Option<i64>) -> rusqlite::Result<Value> {
     Ok(asks)
 }
 
-/// The waiting tasks in start order, the live runs, and the tasks that ended in the last day.
+/// The waiting tasks in start order, then the held ones with their hold, the live runs, and the
+/// tasks that ended in the last day.
 pub fn queue(db: &Connection) -> rusqlite::Result<Value> {
     let waiting = format!(
-        "{} SELECT queue.place AS position, queue.band_place AS band_position, id, key, workflow,
-           step, state, band, lane, reason, changed AS since
-         FROM tasks JOIN queue USING (id) ORDER BY queue.place",
+        "{} SELECT position, band_position, id, key, workflow, step, state, band, lane, reason, since,
+           hold, hold_until, hold_target, hold_resource FROM (
+           SELECT 0 AS part, queue.place AS position, queue.band_place AS band_position, id, key,
+             workflow, step, state, band, lane, reason, changed AS since, NULL AS hold,
+             NULL AS hold_until, NULL AS hold_target, NULL AS hold_resource, queue.place AS sort
+           FROM tasks JOIN queue USING (id)
+           UNION ALL
+           SELECT 1, NULL, NULL, tasks.id, key, workflow, step, state, band, lane, tasks.reason,
+             changed, holds.kind, holds.until, holds.target, holds.resource, holds.id
+           FROM tasks JOIN holds ON holds.task = tasks.id AND holds.released IS NULL
+           WHERE tasks.state = 'held'
+         ) ORDER BY part, sort",
         places()
     );
+    let _snapshot = db.unchecked_transaction()?;
     Ok(json!({
         "waiting": rows(db, &waiting, [])?,
         "running": rows(
@@ -134,6 +145,7 @@ pub fn queue(db: &Connection) -> rusqlite::Result<Value> {
 /// A stalled queue's banner, the asleep count, what waits on a person, the queue, then every
 /// worktree under `home` that stays and why.
 pub fn desk(db: &Connection, home: &Path) -> rusqlite::Result<Value> {
+    let _snapshot = db.unchecked_transaction()?;
     let mut items = rows(db, &format!("{} {DESK}", places()), [])?;
     let list = items.as_array_mut().expect("rows are an array");
     for (path, task, reason) in sweep::stays(db, home)? {
@@ -156,11 +168,15 @@ pub fn desk(db: &Connection, home: &Path) -> rusqlite::Result<Value> {
 
 /// One task with its runs, code steps, asks, waits and results; none when it does not exist.
 pub fn task(db: &Connection, id: i64) -> rusqlite::Result<Option<Value>> {
+    let _snapshot = db.unchecked_transaction()?;
     let found = rows(
         db,
-        "SELECT id, key, workflow, step, state, band, lane, reason, generation, retired, repo,
-           branch, tldr, changed AS since
-         FROM tasks WHERE id = ?1",
+        &format!(
+            "{} SELECT id, key, workflow, step, state, band, lane, reason, queue.place AS position,
+               generation, retired, tldr, changed AS since, repo, branch
+             FROM tasks LEFT JOIN queue USING (id) WHERE id = ?1",
+            places()
+        ),
         [id],
     )?;
     let Some(mut task) = found.as_array().and_then(|rows| rows.first()).cloned() else {

@@ -541,13 +541,23 @@ fn path() -> Result<std::path::PathBuf, String> {
         .ok_or_else(|| "PRIORY_DB is not set to a file: name the state file".to_owned())
 }
 
-/// Opens `PRIORY_DB` for reading only, after `open` has created its schema.
+/// Opens `PRIORY_DB` for reading only. It refuses a file whose schema this priory does not use,
+/// such as one no `open` has created yet.
 pub fn read_only() -> Result<Connection, String> {
     let path = path()?;
     let at = |error: rusqlite::Error| format!("{}: {error}", path.display());
     let db = Connection::open_with_flags(&path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
         .map_err(at)?;
     db.busy_timeout(Duration::from_secs(5)).map_err(at)?;
+    let version: i64 = db
+        .pragma_query_value(None, "user_version", |row| row.get(0))
+        .map_err(at)?;
+    if version != VERSION {
+        return Err(format!(
+            "{}: state schema {version}, but this priory reads {VERSION}: start `priory daemon` once to create or migrate it",
+            path.display()
+        ));
+    }
     Ok(db)
 }
 

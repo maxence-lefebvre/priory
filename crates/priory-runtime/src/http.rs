@@ -4,12 +4,12 @@ use std::io::{self, Read, Write};
 use std::net::{Shutdown, TcpListener, TcpStream};
 use std::sync::Arc;
 use std::thread::JoinHandle;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// The largest request head read; a longer one gets 431.
 const HEAD: usize = 8 * 1024;
 const HEADERS: usize = 32;
-/// How long a client may take to send its head, and to read the reply.
+/// How long a client may take to send its whole head, and to read the reply.
 const TIMEOUT: Duration = Duration::from_secs(5);
 /// The connections served at once; others wait in the listen backlog.
 const WORKERS: usize = 8;
@@ -63,7 +63,6 @@ fn answer(
     token: &str,
     handle: &mut impl FnMut(&str, &str) -> Reply,
 ) -> io::Result<()> {
-    stream.set_read_timeout(Some(TIMEOUT))?;
     stream.set_write_timeout(Some(TIMEOUT))?;
     let reply = match read_head(&mut stream) {
         Ok(head) => respond(&head, token, handle),
@@ -94,9 +93,10 @@ fn answer(
         reply.body.len()
     )?;
     stream.write_all(&reply.body)?;
-    // Closing with unread input resets the connection, which can drop the reply before the client reads it.
     stream.shutdown(Shutdown::Write)?;
-    io::copy(&mut (&stream).take(64 * 1024), &mut io::sink())?;
+    // Closing with unread input resets the connection, which can drop the reply before the client reads it.
+    stream.set_nonblocking(true)?;
+    let _ = io::copy(&mut (&stream).take(64 * 1024), &mut io::sink());
     Ok(())
 }
 
@@ -104,7 +104,13 @@ fn answer(
 fn read_head(stream: &mut TcpStream) -> Result<Vec<u8>, Reply> {
     let mut head = vec![0; HEAD];
     let mut len = 0;
+    let deadline = Instant::now() + TIMEOUT;
+    let late = || Reply::error(408, "the request head took too long");
     loop {
+        let left = deadline.saturating_duration_since(Instant::now());
+        if left.is_zero() || stream.set_read_timeout(Some(left)).is_err() {
+            return Err(late());
+        }
         let read = match stream.read(&mut head[len..]) {
             Ok(0) => return Err(Reply::error(400, "the request ended before its head")),
             Ok(read) => read,
@@ -114,7 +120,7 @@ fn read_head(stream: &mut TcpStream) -> Result<Vec<u8>, Reply> {
                     io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
                 ) =>
             {
-                return Err(Reply::error(408, "the request head took too long"));
+                return Err(late());
             }
             Err(_) => return Err(Reply::error(400, "the request could not be read")),
         };
@@ -154,8 +160,11 @@ fn respond(head: &[u8], token: &str, handle: &mut impl FnMut(&str, &str) -> Repl
     if !bearer.is_some_and(|sent| same(sent, token.as_bytes())) {
         return Reply::error(401, "send the token as `Authorization: Bearer <token>`");
     }
-    let empty = header("content-length").is_none_or(|length| length == b"0");
-    if !empty || header("transfer-encoding").is_some() {
+    let body = request.headers.iter().any(|header| {
+        header.name.eq_ignore_ascii_case("transfer-encoding")
+            || (header.name.eq_ignore_ascii_case("content-length") && header.value != b"0")
+    });
+    if body {
         return Reply::error(413, "requests carry no body");
     }
     let (Some(method), Some(path)) = (request.method, request.path) else {

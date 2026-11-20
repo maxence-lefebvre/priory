@@ -27,7 +27,7 @@ or a reason, is untrusted: render it as text.
 | `400` | The request does not parse |
 | `401` | The token is missing or wrong |
 | `404` | No such path, or no such task |
-| `405` | A method other than `GET` |
+| `405` | A method other than `GET`, on any path |
 | `408` | The request head took over 5 seconds |
 | `413` | The request has a body |
 | `431` | The request head is over 8 KiB or 32 headers |
@@ -88,7 +88,7 @@ Every task in start order: `id`, `key`, `workflow`, `step`, `state`, `band`, `la
 
 ## Task in detail
 
-The task's fields, plus `repo` and `branch`, and these arrays, oldest first:
+The fields of [Tasks](#tasks), plus `repo` and `branch`, and these arrays, oldest first:
 
 | Field | Each entry |
 | ----- | ---------- |
@@ -102,6 +102,6 @@ The task's fields, plus `repo` and `branch`, and these arrays, oldest first:
 
 | Field | Each entry |
 | ----- | ---------- |
-| `waiting` | A queued or ready task in start order: `position`, `band_position` (its place in its band), `id`, `key`, `workflow`, `step`, `state`, `band`, `lane`, `reason`, `since` |
+| `waiting` | A queued or ready task in start order, then each held task by when it was held: `position` and `band_position` (its place in the queue and in its band, null for a held task), `id`, `key`, `workflow`, `step`, `state`, `band`, `lane`, `reason`, `since`, and for a held task its hold: `hold` (`person`, `time`, `task`, `merge` or `blockers`), `hold_until`, `hold_target`, `hold_resource` |
 | `running` | A live run: `run`, `task`, `key`, `step`, `agent`, `started` |
 | `ended` | A task done, failed or dropped in the last day, latest first: `id`, `key`, `workflow`, `step`, `state`, `reason`, `ended` |

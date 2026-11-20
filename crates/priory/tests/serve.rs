@@ -56,6 +56,7 @@ impl Setup {
             .bus()
             .declare(&BusOutput::new("factory.intake"))
             .unwrap();
+        succeeded(&setup.priory(&["tasks"]));
         setup
     }
 
@@ -421,6 +422,10 @@ fn unknown_paths_404_other_methods_405_and_oversize_heads_431() {
         "GET /api/tasks HTTP/1.1\r\nAuthorization: Bearer {TOKEN}\r\nContent-Length: 5\r\n\r\nhello"
     );
     assert_eq!(raw(&address, &body).0, 413);
+    let twice = format!(
+        "GET /api/tasks HTTP/1.1\r\nAuthorization: Bearer {TOKEN}\r\nContent-Length: 0\r\nContent-Length: 5\r\n\r\nhello"
+    );
+    assert_eq!(raw(&address, &twice).0, 413);
     let huge = format!(
         "GET /api/tasks HTTP/1.1\r\nAuthorization: Bearer {TOKEN}\r\nX-Pad: {}\r\n\r\n",
         "a".repeat(16 * 1024)
@@ -470,13 +475,14 @@ fn the_daemon_serves_its_state_when_the_factory_has_a_serve_table() {
 #[test]
 fn the_daemon_listens_nowhere_without_a_serve_table() {
     let mut setup = Setup::new("quiet", "name = \"demo\"\n");
-    let mut child = setup
+    let child = setup
         .command()
         .args(["daemon", &setup.factory()])
         .stderr(Stdio::null())
         .spawn()
         .unwrap();
     let pid = child.id();
+    setup.server = Some(child);
     let socket = setup.dir.join("home");
     let deadline = Instant::now() + Duration::from_secs(10);
     // The daemon's hook socket under PRIORY_HOME shows it is past its start.
@@ -494,10 +500,77 @@ fn the_daemon_listens_nowhere_without_a_serve_table() {
         std::thread::sleep(Duration::from_millis(50));
     }
 
-    let listens = listening(pid);
+    assert!(!listening(pid));
+}
 
-    let _ = child.kill();
-    let _ = child.wait();
-    setup.server = None;
-    assert!(!listens);
+#[test]
+fn a_client_that_trickles_its_head_is_dropped_after_the_read_timeout() {
+    let mut setup = Setup::new("trickle", SERVE);
+    let address = setup.start(&["serve", &setup.factory()]);
+    let mut stream = TcpStream::connect(&address).unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_secs(30)))
+        .unwrap();
+    let mut writer = stream.try_clone().unwrap();
+    let head = "GET /api/tasks HTTP/1.1\r\nX-Slow: aaaaaaaaaa\r\n\r\n";
+    std::thread::spawn(move || {
+        for byte in head.bytes() {
+            if writer.write_all(&[byte]).is_err() {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(500));
+        }
+    });
+
+    let mut response = String::new();
+    let _ = stream.read_to_string(&mut response);
+
+    assert!(response.starts_with("HTTP/1.1 408"), "{response}");
+}
+
+#[test]
+fn serve_reads_the_state_without_creating_it() {
+    let setup = Setup::new("fresh", SERVE);
+    fs::remove_file(setup.dir.join("priory.db")).unwrap();
+
+    let output = setup.priory(&["serve", &setup.factory()]);
+
+    assert!(!output.status.success());
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("unable to open database file"),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(!setup.dir.join("priory.db").exists());
+}
+
+#[test]
+fn the_queue_lists_held_tasks_with_their_hold_after_the_waiting_ones() {
+    let mut setup = Setup::new("held", SERVE);
+    setup.seed();
+    let db = rusqlite::Connection::open(setup.dir.join("priory.db")).unwrap();
+    db.execute_batch(
+        "UPDATE tasks SET state = 'held', reason = 'until tomorrow' WHERE id = 1;
+         INSERT INTO holds (task, reason, kind, until, resume)
+         VALUES (1, 'until tomorrow', 'time', '2099-01-01T09:00:00Z', 'queued');",
+    )
+    .unwrap();
+    let address = setup.start(&["serve", &setup.factory()]);
+
+    let waiting = &api(&address, "/api/queue")["waiting"];
+
+    assert_eq!(
+        [
+            &waiting[0]["id"],
+            &waiting[0]["position"],
+            &waiting[1]["id"],
+            &waiting[1]["position"]
+        ],
+        [&json!(2), &json!(1), &json!(1), &Value::Null]
+    );
+    assert_eq!(
+        [&waiting[1]["hold"], &waiting[1]["hold_until"]],
+        [&json!("time"), &json!("2099-01-01T09:00:00Z")]
+    );
+    assert_eq!(api(&address, "/api/tasks/2")["position"], 1);
 }
