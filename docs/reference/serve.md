@@ -59,7 +59,9 @@ Each item:
 
 ## Inbox
 
-Each message, oldest first: `seq`, `type`, `subject`, `task`, `outcome` and `time`.
+Each message and report, oldest first: `seq`, `type`, `subject`, `task`, `outcome`, `time`, `line`
+and `read`. A report has the type `priory.report`, its source as `subject`, the outcome `report`, its
+line as `line`, and, once read, when it was read as `read`. Both are null on a message.
 
 ## Asks
 

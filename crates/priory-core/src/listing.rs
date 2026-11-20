@@ -1,8 +1,8 @@
 //! The state the listing commands and the HTTP server show, one JSON payload per listing.
 
-use crate::{stall, state, sweep};
+use crate::{post, stall, state, sweep};
 use rusqlite::types::ValueRef;
-use rusqlite::{Connection, Params};
+use rusqlite::{Connection, Params, params};
 use serde_json::{Map, Value, json};
 use std::path::Path;
 
@@ -56,6 +56,10 @@ const DESK: &str = "SELECT since, kind, id, task, (SELECT key FROM tasks WHERE t
                    || ' when its wait fires'
                FROM tasks WHERE state = 'asleep' AND retired IS NOT NULL
                UNION ALL
+               SELECT 0, time, 'report', seq, NULL, NULL,
+                 subject || ': ' || json_extract(data, '$.line')
+               FROM inbox WHERE type = 'priory.report' AND read IS NULL
+               UNION ALL
                SELECT 1, tasks.changed, 'queue', queue.place, tasks.id, tasks.lane,
                  coalesce(tasks.band, '-') || coalesce(': ' || tasks.reason, '')
                FROM tasks JOIN queue USING (id)
@@ -68,12 +72,14 @@ const ASKS: &str = "SELECT asks.id, asks.task, tasks.key, asks.step, tasks.lane,
      asks.answered AS answered_at, asks.created AS since
    FROM asks JOIN tasks ON tasks.id = asks.task WHERE ?1 IS NULL OR asks.task = ?1 ORDER BY asks.id";
 
-/// Every inbox message, oldest first.
-pub fn inbox(db: &Connection) -> rusqlite::Result<Value> {
+/// Every inbox message and report after sequence number `since`, oldest first.
+pub fn inbox(db: &Connection, since: i64) -> rusqlite::Result<Value> {
     rows(
         db,
-        "SELECT seq, type, subject, task, outcome, time FROM inbox ORDER BY seq",
-        [],
+        "SELECT seq, type, subject, task, outcome, time,
+           CASE type WHEN ?2 THEN json_extract(data, '$.line') END AS line, read
+         FROM inbox WHERE seq > ?1 ORDER BY seq",
+        params![since, post::REPORT],
     )
 }
 
