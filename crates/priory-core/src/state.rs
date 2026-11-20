@@ -1312,6 +1312,18 @@ pub fn revision(db: &Connection) -> rusqlite::Result<i64> {
     db.query_row("SELECT value FROM revision", [], |row| row.get(0))
 }
 
+/// Refuses a person's change made on a read at `expected` once the state moved past it.
+pub fn expect_revision(db: &Connection, expected: Option<i64>) -> Result<(), String> {
+    let Some(expected) = expected else {
+        return Ok(());
+    };
+    let at = revision(db).map_err(|error| error.to_string())?;
+    if at != expected {
+        return Err(format!("the state is at revision {at}, not {expected}"));
+    }
+    Ok(())
+}
+
 /// The revision once it differs from `since`, or the same one after `timeout`.
 pub fn wait(db: &Connection, since: i64, timeout: Duration) -> rusqlite::Result<i64> {
     let deadline = std::time::Instant::now() + timeout;
@@ -2153,10 +2165,12 @@ pub fn move_task(
     task: i64,
     band: Option<&str>,
     place: Option<Place>,
+    expected: Option<i64>,
 ) -> Result<(), String> {
     let tx = db
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .map_err(|error| error.to_string())?;
+    expect_revision(&tx, expected)?;
     moved(&tx, task, band, place)?;
     tx.commit().map_err(|error| error.to_string())
 }

@@ -1354,6 +1354,75 @@ fn the_queue_and_tasks_list_each_condition_of_a_hold_and_whether_it_is_met() {
 }
 
 #[test]
+fn each_queue_row_carries_its_tasks_tldr_or_else_the_first_line_of_its_request() {
+    let mut setup = Setup::new("queue-titles", SERVE);
+    setup.seed();
+    let long = "x".repeat(130);
+    succeeded(&setup.priory(&[
+        "request",
+        &setup.factory(),
+        "--repo",
+        "owner/repo",
+        "--workflow",
+        "implement",
+        "--key",
+        "docs-3",
+        &long,
+    ]));
+    succeeded(&setup.priory(&["daemon", &setup.factory(), "--once"]));
+    succeeded(&setup.priory(&["tldr", "1", "Docs fixed"]));
+    let db = rusqlite::Connection::open(setup.dir.join("priory.db")).unwrap();
+    db.execute_batch(
+        "INSERT INTO runs (task, step, tmux, session) VALUES (1, 'implement', 'priory-1', 's1');
+         UPDATE tasks SET state = 'done', changed = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
+           WHERE id = 3;",
+    )
+    .unwrap();
+    let address = setup.start(&["serve", &setup.factory()]);
+
+    let queue = api(&address, "/api/queue");
+
+    let titles = |list: &str, id: &str| -> Vec<(Value, Value)> {
+        queue[list]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|row| (row[id].clone(), row["title"].clone()))
+            .collect()
+    };
+    assert_eq!(
+        titles("waiting", "id"),
+        [
+            (json!(1), json!("Docs fixed")),
+            (json!(2), json!("Fix the"))
+        ]
+    );
+    assert_eq!(titles("running", "task"), [(json!(1), json!("Docs fixed"))]);
+    assert_eq!(titles("ended", "id"), [(json!(3), json!("x".repeat(120)))]);
+    assert_eq!(
+        titles("up_next", "task"),
+        [
+            (json!(1), json!("Docs fixed")),
+            (json!(2), json!("Fix the"))
+        ]
+    );
+    assert_eq!(json_of(&setup, "queue"), queue);
+}
+
+#[test]
+fn the_queue_lists_the_factorys_bands_in_order_even_an_empty_one() {
+    let settings = SERVE.replacen("\n", "\nbands = [\"urgent\", \"normal\", \"someday\"]\n", 1);
+    let mut setup = Setup::new("queue-bands", &settings);
+    setup.seed();
+    let address = setup.start(&["serve", &setup.factory()]);
+
+    let queue = api(&address, "/api/queue");
+
+    assert_eq!(queue["bands"], json!(["urgent", "normal", "someday"]));
+    assert_eq!(json_of(&setup, "queue")["bands"], queue["bands"]);
+}
+
+#[test]
 fn the_views_endpoint_returns_the_default_view_priory_ships() {
     let mut setup = Setup::new("views", SERVE);
     let address = setup.start(&["serve", &setup.factory()]);
@@ -2500,6 +2569,7 @@ fn a_schedule_past_its_until_fires_next_at_the_start_of_its_next_day_and_names_i
     let args = ["schedules", factory.as_str(), "--json"];
     let during = setup.json_at("2026-11-19T10:30:00Z", &args);
     let after = setup.json_at("2026-11-19T17:30:00Z", &args);
+    let queue = setup.json_at("2026-11-19T17:30:00Z", &["queue", &factory, "--json"]);
 
     assert_eq!(during["schedules"][0]["next"], "2026-11-19T11:00:00Z");
     assert_eq!(
@@ -2512,6 +2582,10 @@ fn a_schedule_past_its_until_fires_next_at_the_start_of_its_next_day_and_names_i
             "task": 2,
             "task_state": "asleep",
         }])
+    );
+    assert_eq!(
+        [&queue["up_next"][1]["task"], &queue["up_next"][1]["title"]],
+        [&json!(2), &json!("Fix the")]
     );
 }
 
@@ -2544,15 +2618,15 @@ fn up_next_lists_the_next_three_runs_queued_held_or_scheduled_in_time_order() {
         json!([
             {
                 "at": "2026-11-17T12:00:00Z", "kind": "queued", "task": 1, "key": "cli:docs-1",
-                "trigger": null, "why": "first in the queue",
+                "title": "Fix the docs", "trigger": null, "why": "first in the queue",
             },
             {
                 "at": "2026-11-17T20:00:00Z", "kind": "held", "task": 2, "key": "cli:docs-2",
-                "trigger": null, "why": "held until 2026-11-17T20:00:00Z",
+                "title": "Fix the", "trigger": null, "why": "held until 2026-11-17T20:00:00Z",
             },
             {
                 "at": "2026-11-17T23:00:00Z", "kind": "scheduled", "task": null, "key": null,
-                "trigger": "nightly", "why": "schedule nightly fires",
+                "title": null, "trigger": "nightly", "why": "schedule nightly fires",
             },
         ])
     );

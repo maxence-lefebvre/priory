@@ -21,6 +21,7 @@ export function priory({ exec, binary = "priory-oss", on = null, factory = null 
   /** @param {string[]} args */
   const read = async (...args) => JSON.parse(await call([...args, "--json"]));
   const inFactory = factory ? [factory] : [];
+  const expected = (/** @type {number | null} */ revision) => (revision == null ? [] : ["--expected", String(revision)]);
 
   return {
     desk: ({ all = false } = {}) => read("desk", ...(all ? ["--all"] : [])),
@@ -44,15 +45,18 @@ export function priory({ exec, binary = "priory-oss", on = null, factory = null 
     seen: ({ at = /** @type {string | null} */ (null) } = {}) => call(["seen", ...(at ? ["--at", at] : [])]),
     resume: (/** @type {Id} */ task) => call(["resume", String(task)]),
     revive: (/** @type {Id} */ task) => call(["revive", String(task)]),
-    hold: (/** @type {Id} */ task, /** @type {{ reason: string, until?: string }} */ { reason, until }) => call(["hold", String(task), "--reason", reason, ...(until ? ["--until", until] : [])]),
-    release: (/** @type {Id} */ task) => call(["release", String(task)]),
-    cancel: (/** @type {Id} */ task) => call(["cancel", String(task)]),
+    // A revision makes priory refuse the change once the state moved past the read it was made on.
+    hold: (/** @type {Id} */ task, /** @type {{ reason: string, until?: string }} */ { reason, until }, /** @type {number | null} */ revision = null) =>
+      call(["hold", String(task), "--reason", reason, ...(until ? ["--until", until] : []), ...expected(revision)]),
+    release: (/** @type {Id} */ task, /** @type {number | null} */ revision = null) => call(["release", String(task), ...expected(revision)]),
+    cancel: (/** @type {Id} */ task, /** @type {number | null} */ revision = null) => call(["cancel", String(task), ...expected(revision)]),
     // Pausing stops new runs from starting; the live ones go on.
     pause: (/** @type {string} */ reason = "") => call(["pause", ...(reason ? [reason] : [])]),
     unpause: () => call(["unpause"]),
-    move: (/** @type {Id} */ task, /** @type {{ band?: string, top?: boolean, before?: Id, after?: Id }} */ { band, top, before, after }) => call(["move", String(task),
+    move: (/** @type {Id} */ task, /** @type {{ band?: string, top?: boolean, before?: Id, after?: Id }} */ { band, top, before, after }, /** @type {number | null} */ revision = null) => call(["move", String(task),
       ...(band ? ["--band", band] : []),
-      ...(top ? ["--top"] : before != null ? ["--before", String(before)] : after != null ? ["--after", String(after)] : [])]),
+      ...(top ? ["--top"] : before != null ? ["--before", String(before)] : after != null ? ["--after", String(after)] : []),
+      ...expected(revision)]),
     // The shell command line that attaches a tmux client to the task's live run, quoted by priory.
     attach: async (/** @type {Id} */ task) => (await call(["attach", String(task), "--print"])).trim(),
   };
