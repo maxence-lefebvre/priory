@@ -57,12 +57,17 @@ pub(crate) fn snooze(
             "an item is an ask, blocked, failed or prompt, not {kind}"
         )));
     };
+    // A task's blocked and failed items share one snooze, so it survives the move between them.
+    let stored = match kind.as_str() {
+        "blocked" | "failed" => "task",
+        kind => kind,
+    };
     let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
     let Some(until) = &snooze.until else {
         let task = tx
             .query_row(
                 "DELETE FROM snoozes WHERE kind = ?1 AND item = ?2 RETURNING task",
-                params![kind, id],
+                params![stored, id],
                 |row| row.get::<_, i64>(0),
             )
             .optional()?;
@@ -96,7 +101,7 @@ pub(crate) fn snooze(
     tx.execute(
         "INSERT OR REPLACE INTO snoozes (kind, item, task, snoozed, until)
          VALUES (?1, ?2, ?3, strftime('%Y-%m-%dT%H:%M:%SZ', 'now'), ?4)",
-        params![kind, id, task, until],
+        params![stored, id, task, until],
     )?;
     trace::snoozed(&tx, trace, task, kind, *id, Some(until))?;
     tx.commit()?;

@@ -25,7 +25,8 @@ fn desk_items() -> String {
            (SELECT step FROM tasks WHERE tasks.id = desk.task) AS step, desk.lane, desk.what,
            (SELECT generation FROM tasks WHERE tasks.id = desk.task) AS generation, {}
          FROM ({DESK}) AS desk
-         LEFT JOIN snoozes ON snoozes.kind = desk.kind AND snoozes.item = desk.id
+         LEFT JOIN snoozes ON snoozes.item = desk.id AND snoozes.kind =
+           CASE WHEN desk.kind IN ('blocked', 'failed') THEN 'task' ELSE desk.kind END
          ORDER BY desk.part, CASE WHEN desk.part = 0 THEN desk.since END, desk.kind, desk.id",
         places(),
         snooze::FIELDS
@@ -175,9 +176,11 @@ pub fn desk(db: &Connection, home: &Path, all: bool) -> rusqlite::Result<Value> 
     let mut items = rows(db, &desk_items(), [])?;
     let list = items.as_array_mut().expect("rows are an array");
     list.iter_mut().for_each(parse_back_early);
-    let before = list.len();
+    let snoozed = list
+        .iter()
+        .filter(|item| !item["snoozed_until"].is_null())
+        .count();
     list.retain(|item| all || item["snoozed_until"].is_null());
-    let snoozed = before - list.len();
     for (path, task, reason) in sweep::stays(db, home)? {
         list.push(json!({
             "since": null, "kind": "worktree", "id": path, "task": task, "key": null,

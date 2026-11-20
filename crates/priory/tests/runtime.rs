@@ -3078,6 +3078,9 @@ fn a_snoozed_ask_leaves_the_desk_and_asks_until_its_time_while_the_task_stays_as
             .all(|item| item["kind"] != "ask")
     );
     let json: serde_json::Value =
+        serde_json::from_slice(&setup.priory(&["desk", "--all", "--json"]).stdout).unwrap();
+    assert_eq!(json["counts"]["snoozed"], 1);
+    let json: serde_json::Value =
         serde_json::from_slice(&setup.priory(&["asks", "--json"]).stdout).unwrap();
     assert_eq!(json[0]["snoozed_until"].as_str(), Some(all[0][7].as_str()));
     assert!(json[0]["snoozed_at"].is_string(), "{json}");

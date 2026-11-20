@@ -483,7 +483,7 @@ PRAGMA user_version = 29;
 
 const SCHEMA_30: &str = "
 CREATE TABLE snoozes (
-  kind        TEXT NOT NULL CHECK (kind IN ('ask', 'blocked', 'failed', 'prompt')),
+  kind        TEXT NOT NULL CHECK (kind IN ('ask', 'task', 'prompt')),
   item        INTEGER NOT NULL,
   task        INTEGER NOT NULL REFERENCES tasks (id),
   snoozed     TEXT NOT NULL,
@@ -502,7 +502,9 @@ CREATE TRIGGER snooze_ends_on_a_task_state_change AFTER UPDATE OF state ON tasks
   UPDATE snoozes SET back = strftime('%Y-%m-%dT%H:%M:%SZ', 'now'),
     back_reason = CASE WHEN NEW.state IN ('blocked', 'failed') THEN 'new failure'
       ELSE 'task state changed' END
-  WHERE kind != 'ask' AND task = NEW.id AND until > strftime('%Y-%m-%dT%H:%M:%SZ', 'now');
+  WHERE task = NEW.id AND until > strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
+    AND (kind != 'ask' OR back IS NULL AND item IN (SELECT id FROM asks WHERE task = NEW.id
+      AND answer IS NULL AND withdrawn IS NULL));
 END;
 PRAGMA user_version = 30;
 ";

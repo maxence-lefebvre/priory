@@ -292,6 +292,14 @@ fn snooze(args: Vec<String>) -> ExitCode {
         },
         _ => return usage(),
     };
+    // Rounded up, so the item never comes back before the time asked for.
+    let second = jiff::TimestampRound::new()
+        .smallest(jiff::Unit::Second)
+        .mode(jiff::RoundMode::Ceil);
+    let until = match until.map(|at| at.round(second)).transpose() {
+        Ok(until) => until,
+        Err(error) => return exit("snooze", Err(error.to_string())),
+    };
     let line = serde_json::to_string(&snooze::Snooze {
         snooze: snooze::Item {
             kind: kind.clone(),

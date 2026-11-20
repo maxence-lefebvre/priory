@@ -88,11 +88,13 @@ with the clock. It comes back early when something meaningful changes:
 | Item | Comes back early when | Reason |
 | ---- | --------------------- | ------ |
 | `ask` | the ask gets a new revision, as when its approval is asked again | `new revision` |
+| `ask` | the task changes state while the ask stays open, as when a schedule wakes it | `task state changed` |
 | `blocked`, `failed`, `prompt` | the task becomes blocked or failed | `new failure` |
 | `blocked`, `failed`, `prompt` | the task changes to any other state | `task state changed` |
 
-The latest change gives the reason. A task state change does not bring an ask back: answering it,
-or withdrawing it, already takes it off the desk.
+For a `blocked`, `failed` or `prompt` item, the latest change gives the reason. For an ask, a new
+revision always does, and a task state change counts only while the ask is open and not yet back.
+A task's `blocked` and `failed` items share one snooze, so a blocked task that fails keeps it.
 
 The desk and `priory asks` end each row with the item's `snoozed_until` time while it is snoozed,
 and its `back_early` once a change brought it back, as `{"at":"<time>","reason":"<reason>"}`. The
