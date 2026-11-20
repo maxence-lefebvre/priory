@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { deskModel, mergeSince, tomorrowAt } from "../mods/priory-desk/view.js";
 
 process.env.TZ = "UTC";
@@ -97,35 +97,6 @@ test("Snoozed lists each snoozed item with when it comes back, and Running shows
   ]);
 });
 
-// gpui-kit has no light-dark(), so each mod carries the theme pairs resolved; this keeps them in step.
-test("every mod's tokens.js matches design/tokens/themes.css", async () => {
-  const css = readFileSync(new URL("../../../design/tokens/themes.css", import.meta.url), "utf8");
-  /** @type {Record<string, Record<string, string[]>>} */
-  const themes = {};
-  for (const [, selector, body] of css.matchAll(/^([^\n{]*\[data-theme="?[a-z]+"?\][^\n{]*)\{([^}]*)\}/gm)) {
-    const name = /** @type {string} */ (selector.match(/data-theme="([a-z]+)"/)?.[1]);
-    themes[name] = Object.fromEntries([...body.matchAll(/--([a-z0-9-]+):\s*light-dark\((.+?),\s*((?:rgb\([^)]*\))|[^)]+)\);/g)]
-      .map(([, token, light, dark]) => [token, [light.trim(), dark.trim()]]));
-  }
-  assert.deepEqual(Object.keys(themes), ["indigo", "ink", "parchment", "abbey"]);
-  const mods = new URL("../mods/", import.meta.url);
-  for (const mod of readdirSync(mods)) {
-    if (!existsSync(new URL(`${mod}/tokens.js`, mods))) continue;
-    const { THEMES } = await import(new URL(`${mod}/tokens.js`, mods).href);
-    assert.deepEqual(THEMES, themes, `${mod}/tokens.js differs from design/tokens/themes.css`);
-  }
-  assert.ok(existsSync(new URL("priory-desk/tokens.js", mods)));
-});
-
-test("the Desk's structure tokens match design/tokens/structure.css", async () => {
-  const css = readFileSync(new URL("../../../design/tokens/structure.css", import.meta.url), "utf8");
-  const { STRUCTURE } = await import("../mods/priory-desk/tokens.js");
-  for (const [token, value] of Object.entries(STRUCTURE)) {
-    const declared = css.match(new RegExp(`--${token}:\\s*([^;]+);`))?.[1];
-    const expected = Array.isArray(value) ? `${value[0]}px/${value[1] === 1 ? "1" : `${value[1]}px`}` : `${value}px`;
-    assert.equal(declared, expected, `--${token}`);
-  }
-});
 
 test("Since you looked keeps the events the panel opened on after its own priory seen", () => {
   const opened = fixture("desk").since_you_looked;

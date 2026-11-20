@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { priory } from "../lib/priory.js";
@@ -67,6 +67,13 @@ test("answers with the revision read and the text as one word", async () => {
   const client = priory({ exec, binary: FAKE });
   await client.answer(12, "-x $(touch pwned); --expected 99", 4);
   assert.deepEqual(run.argv(), [["answer", "--expected", "4", "--", "12", "-x $(touch pwned); --expected 99"]]);
+});
+
+test("confirms an answer that runs the ask's command with --run before the words", async () => {
+  const run = fake();
+  const client = priory({ exec, binary: FAKE });
+  await client.answer("review-7", "Merge", 2, { run: true });
+  assert.deepEqual(run.argv(), [["answer", "--expected", "2", "--run", "--", "review-7", "Merge"]]);
 });
 
 test("reads every listing, with the factory folder where one is needed", async () => {
@@ -147,12 +154,16 @@ test("runs priory on the machine the settings name", async () => {
 
 // Herdr loads a mod's imports only from the mod's own folder, symlinks included, so each mod
 // carries a copy of the library.
+// Every mod carries priory.js; a mod that draws with Priory's colors carries tokens.js too.
 test("every mod carries the library unchanged", () => {
   const herdr = new URL("..", import.meta.url).pathname;
-  const library = readFileSync(join(herdr, "lib/priory.js"), "utf8");
   const mods = readdirSync(join(herdr, "mods"), { withFileTypes: true }).filter((entry) => entry.isDirectory());
-  for (const { name: mod } of mods) {
-    assert.equal(readFileSync(join(herdr, "mods", mod, "priory.js"), "utf8"), library,
-      `cp adapters/herdr/lib/priory.js adapters/herdr/mods/${mod}/priory.js`);
+  for (const file of readdirSync(join(herdr, "lib"))) {
+    const library = readFileSync(join(herdr, "lib", file), "utf8");
+    for (const { name: mod } of mods) {
+      const copy = join(herdr, "mods", mod, file);
+      if (file !== "priory.js" && !existsSync(copy)) continue;
+      assert.equal(readFileSync(copy, "utf8"), library, `cp adapters/herdr/lib/${file} adapters/herdr/mods/${mod}/${file}`);
+    }
   }
 });

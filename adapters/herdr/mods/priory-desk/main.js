@@ -3,14 +3,13 @@ import { v_flex, h_flex, Button } from "gpui-base";
 import { appHome, checking, exec, home as herdrHome, nextCommand, readTextFile, run, setShared, settings } from "herdr";
 import { priory } from "./priory.js";
 import { deskModel, mergeSince, tomorrowAt } from "./view.js";
-import { palette, STRUCTURE as S } from "./tokens.js";
+import { FONTS, palette, STRUCTURE as S } from "./tokens.js";
 
 // DESIGN.md, Herdr adapter, Desk: from 1024 px the count column sits beside the wide table.
 const WIDE = 1024;
 const COLUMN = 440;
 const RETRY_MS = 5000;
 const SKELETON_MS = 300;
-const MONO = "JetBrains Mono";
 const ICONS = "mods/priory-desk/icons";
 const STEPS = /** @type {Record<string, number>} */ ({ j: 1, down: 1, k: -1, up: -1 });
 // Each kind's state tile (DESIGN.md, State tile): its fill token, its icon, and its reason's text color.
@@ -36,9 +35,9 @@ const MUTED_TILE = /** @type {[string, string, string]} */ (["tile-muted", "circ
 /** @typedef {ReturnType<typeof deskModel>} Model */
 /** @typedef {ReturnType<Model["sections"]>[number]["rows"][number] & { count?: number }} Row */
 
-// settings.json's "priory" object: { binary, machine, factory, theme }, each optional, as the Priory bar reads it.
+// settings.json's "priory" object: { binary, machine, factory, theme }, each optional, as the Asks panel reads it.
 async function connect() {
-  /** @type {{ binary?: string, machine?: string, factory?: string }} */
+  /** @type {{ binary?: string, machine?: string, factory?: string, theme?: string }} */
   let config = {};
   try {
     config = JSON.parse(await readTextFile(`${appHome()}/settings.json`) ?? "{}").priory ?? {};
@@ -52,7 +51,7 @@ async function connect() {
   const home = found.code === 0 ? found.stdout.trim() : "";
   if (!home.startsWith("/")) throw new Error(`no home folder on ${on ?? "this machine"}`);
   if (binary.startsWith("~/")) binary = home + binary.slice(1);
-  return priory({ exec, binary, on, factory: config.factory ?? null });
+  return { theme: config.theme ?? "indigo", client: priory({ exec, binary, on, factory: config.factory ?? null }) };
 }
 
 /** @param {unknown} error */
@@ -75,8 +74,9 @@ export default class PrioryDesk extends View {
     this.width = 0;
     this.slow = false;
     this.busy = false;
-    /** @type {Promise<ReturnType<typeof priory>> | null} */
+    /** @type {Promise<{ theme: string, client: ReturnType<typeof priory> }> | null} */
     this.client = null;
+    this.theme = "indigo";
     /** @type {{ cancel(): void } | null} */
     this.retry = null;
     this.focus = cx.focus_handle();
@@ -100,7 +100,8 @@ export default class PrioryDesk extends View {
       try {
         // Connects on first use, and again after a failure, so a machine that comes back works.
         this.client ??= connect().catch((error) => { this.client = null; throw error; });
-        const client = await this.client;
+        const { theme, client } = await this.client;
+        this.theme = theme;
         if (since != null) await client.wait(since);
         const first = !this.data;
         // Taken before the read, so an event between the read and `priory seen` still shows next time.
@@ -132,7 +133,7 @@ export default class PrioryDesk extends View {
     cx.notify();
     cx.spawn(async (cx) => {
       try {
-        await act(await (this.client ??= connect()));
+        await act((await (this.client ??= connect())).client);
       } catch (error) {
         this.client = null;
         this.actionError = `Could not ${verb}: ${message(error)}`;
@@ -197,9 +198,9 @@ export default class PrioryDesk extends View {
   /** @param {import("gpui-kit").Context} cx */
   render(cx) {
     // Every token but --scrim is a hex color.
-    const t = /** @type {Record<string, import("gpui-kit").Color>} */ (palette(String(/** @type {any} */ (settings()).priory?.theme ?? "indigo"), window.appearance()));
-    const ui = new Ui(t);
-    const root = v_flex().id("priory-desk").size_full().min_h_0().bg(t.bg).text_color(t.text).text_size(S["type-body"][0])
+    const t = /** @type {Record<string, import("gpui-kit").Color>} */ (palette(this.theme, window.appearance()));
+    const ui = new Ui(t, FONTS[/** @type {keyof typeof FONTS} */ (this.theme)] ?? FONTS.indigo);
+    const root = v_flex().id("priory-desk").size_full().min_h_0().bg(t.bg).text_color(t.text).font_family(ui.fonts.ui).text_size(S["type-body"][0])
       .track_focus(this.focus)
       .on_size_change((/** @type {{ width: number }} */ size, /** @type {import("gpui-kit").Context} */ cx) => {
         // on_size_change reports zoomed pixels.
@@ -252,9 +253,9 @@ export default class PrioryDesk extends View {
   count(ui, model) {
     const { t } = ui;
     return h_flex().gap(S["space-3"]).items_center()
-      .child(div().flex_none().text_size(S["type-pane-count"][0]).line_height(S["type-pane-count"][1]).font_weight(800).text_color(t.count).child(String(model.count.number)))
+      .child(div().flex_none().font_family(ui.fonts.display).text_size(S["type-pane-count"][0]).line_height(S["type-pane-count"][1]).font_weight(800).text_color(t.count).child(String(model.count.number)))
       .child(v_flex().min_w_0()
-        .child(div().text_size(S["type-hero"][0]).font_weight(650).child(model.count.label))
+        .child(div().font_family(ui.fonts.display).text_size(S["type-hero"][0]).font_weight(650).child(model.count.label))
         .when(Boolean(model.count.line), (el) => el.child(div().text_size(S["type-caption"][0]).text_color(t["text-3"]).child(model.count.line))));
   }
 
@@ -270,7 +271,7 @@ export default class PrioryDesk extends View {
         .child(div().text_color(t["text-2"]).child(next.step ?? ""))
         .child(div().flex_1())
         .child(div().text_color(t["text-3"]).child(`waits ${next.age}`)))
-      .child(div().whitespace_normal().text_size(S["type-pane-question"][0]).line_height(S["type-pane-question"][1] / S["type-pane-question"][0]).font_weight(650).child(next.question))
+      .child(div().whitespace_normal().font_family(ui.fonts.display).text_size(S["type-pane-question"][0]).line_height(S["type-pane-question"][1] / S["type-pane-question"][0]).font_weight(650).child(next.question))
       .when(Boolean(next.recommendation || next.tradeoff), (el) => el.child(div().whitespace_normal().text_size(S["type-small"][0]).text_color(t["text-2"])
         .child(next.recommendation ? `Recommends ${next.recommendation}. ${next.tradeoff ?? ""}` : String(next.tradeoff))))
       .when(Boolean(next.progress?.nextAction), (el) => el.child(div().whitespace_normal().text_size(S["type-caption"][0]).text_color(t["text-3"])
@@ -293,7 +294,7 @@ export default class PrioryDesk extends View {
         .border(1).border_color(on ? t["action-soft"] : t.line)
         .hover((s) => s.bg(t.raised)).focus((s) => s.border_color(t.action))
         .on_click((/** @type {unknown} */ _e, /** @type {import("gpui-kit").Context} */ cx) => { this.view = view.id; this.selected = null; cx.notify(); })
-        .child(view.label).child(div().font_family(MONO).text_color(t["text-3"]).child(String(view.count)));
+        .child(view.label).child(div().font_family(ui.fonts.mono).text_color(t["text-3"]).child(String(view.count)));
     }));
   }
 
@@ -396,15 +397,16 @@ export default class PrioryDesk extends View {
         .border_t(1).border_color(t.line)
         .child(div().flex_none().child(ui.mono(event.key ?? "")))
         .child(div().flex_1().min_w_0().whitespace_normal().text_color(t["text-2"]).child(event.what))
-        .child(div().flex_none().font_family(MONO).text_color(t["text-3"]).child(event.time))));
+        .child(div().flex_none().font_family(ui.fonts.mono).text_color(t["text-3"]).child(event.time))));
   }
 }
 
 // The Desk's small parts, drawn with Priory's tokens resolved for Herdr's appearance.
 class Ui {
-  /** @param {Record<string, import("gpui-kit").Color>} t */
-  constructor(t) {
+  /** @param {Record<string, import("gpui-kit").Color>} t @param {{ display: string, ui: string, mono: string }} fonts */
+  constructor(t, fonts) {
     this.t = t;
+    this.fonts = fonts;
   }
 
   /** @param {string} kind @param {number} size */
@@ -424,7 +426,7 @@ class Ui {
 
   /** @param {string} text */
   mono(text) {
-    return div().font_family(MONO).text_size(S["type-mono"][0]).text_color(this.t["text-2"]).child(text);
+    return div().font_family(this.fonts.mono).text_size(S["type-mono"][0]).text_color(this.t["text-2"]).child(text);
   }
 
   /** @param {string} text */
@@ -446,7 +448,7 @@ class Ui {
     return h_flex().flex_none().gap(S["space-3"]).items_center().text_size(S["type-caption"][0]).text_color(t["text-3"])
       .when(!inline, (el) => el.px(S["space-4"]).py(S["space-2"]).border_t(1).border_color(t.line))
       .children(hints.map((hint) => h_flex().gap(S["space-1"]).items_center()
-        .children(hint.slice(0, -1).map((key) => div().px(S["space-1"]).rounded(S["radius-sm"]).bg(t.raised).font_family(MONO).child(key)))
+        .children(hint.slice(0, -1).map((key) => div().px(S["space-1"]).rounded(S["radius-sm"]).bg(t.raised).font_family(this.fonts.mono).child(key)))
         .child(hint[hint.length - 1])));
   }
 

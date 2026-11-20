@@ -17,8 +17,9 @@ The adapter lives in `adapters/herdr/` at the repository root, outside the Cargo
   focuses the Desk and Bonjour tabs, shows or hides the Asks and Queue panels, and attaches to a
   task's terminal.
 - `adapters/herdr/mods/priory-desk/`: the Desk panel. See [The Desk panel](#the-desk-panel).
-- `adapters/herdr/mods/priory-asks/`, `priory-queue/` and `priory-bonjour/`: one Herdr mod per
-  panel, each a `mod.json`, a `main.js` and its copy of `priory.js`. They are still to come.
+- `adapters/herdr/mods/priory-asks/`: the Asks panel. See [The Asks panel](#the-asks-panel).
+- `adapters/herdr/mods/priory-queue/` and `priory-bonjour/`: one Herdr mod per panel, each a
+  `mod.json`, a `main.js` and its copy of `priory.js`. They are still to come.
 - `adapters/herdr/layouts/priory.json`: Herdr's default layout with the Priory bar in the top bar,
   and Asks and Queue in the side panel stack, 420 px wide by default, between 280 and 900. Desk and
   Bonjour open as tabs in the center, from the Priory bar.
@@ -26,16 +27,18 @@ The adapter lives in `adapters/herdr/` at the repository root, outside the Cargo
   [Installing](#installing).
 - `adapters/herdr/test/`: `node --test` tests for the module and the install script, run against a
   fake `priory`. CI runs them with `node --test adapters/herdr/test/*.test.js`.
-- `mods/<panel>/tokens.js`: Priory's theme colors from
-  [`design/tokens/themes.css`](../../design/tokens/themes.css), each `light-dark()` pair kept as
-  `[light, dark]`, and the structure tokens the panel draws with. A test fails when a mod's copy
-  differs from `design/tokens/`.
+- `adapters/herdr/lib/tokens.js`: Priory's theme colors and font roles from
+  [`design/tokens/themes.css`](../../design/tokens/themes.css), every theme, each `light-dark()`
+  pair kept as a light and a dark value, and the structure tokens a pane draws with from
+  [`design/tokens/structure.css`](../../design/tokens/structure.css). `palette(theme, mode)` picks
+  one color per mode. A test fails when the file and `design/tokens/` differ.
 - `adapters/herdr/deliver`: the factory's `[asks] deliver` command; see
   [Delivering answers](#delivering-answers).
 
 Herdr loads a mod's imports only from the mod's own folder, and it resolves symbolic links before it
-checks. So each mod keeps a copy of `lib/priory.js` as its own `priory.js`, and a test fails when a
-copy differs from the library. After you change the library, copy it into every mod.
+checks. So each mod keeps a copy of `lib/priory.js` as its own `priory.js`, and a mod that draws
+with Priory's colors keeps a copy of `lib/tokens.js`. A test fails when a copy differs from the
+library. After you change a file in `lib/`, copy it into every mod that carries it.
 
 The adapter depends on no Priory crate, and no crate depends on it. It needs Node.js only for its
 tests.
@@ -76,7 +79,7 @@ state database and never writes a file in the factory.
   `priory wait --since REVISION`, which returns as soon as the state changes, or after 25 s, and
   reads again. It keeps the last good answer, with its age, when a call fails. Once `serve` exists,
   a mod may subscribe to its event stream instead.
-- **Acting.** Every button runs a CLI verb: `answer --expected N -- ASK TEXT`,
+- **Acting.** Every button runs a CLI verb: `answer --expected N [--run] -- ASK TEXT`,
   `dismiss --expected N ASK`, `snooze`, `say`, `report pick PICK OPTION --expected N`, `seen`,
   `resume`, `revive`, `hold`, `release` and `move`. An answer always carries the revision the person read, so a
   changed question refuses it (R6.3).
@@ -157,6 +160,49 @@ session id. `priory ask` run in an hc terminal stores both. Then:
 A kept terminal whose `claude` exited runs a shell, so the script never types into it: the shell
 would run the answer as a command. The check and the send are two `hc` calls, so a `claude` that
 exits between them can still receive the text in its shell.
+
+## The Asks panel
+
+`mods/priory-asks/` is the Asks panel, in the side panel stack. It replaces Fleet's `fleet-asks`.
+DESIGN.md's "Herdr adapter" section holds its visual rules; this section says how it works.
+
+- **Files.** `view.js` turns `priory asks --all --json` into saved views, sections, rows and the
+  ask detail, with no drawing and no IO. `main.js` draws them with gpui-kit and runs the verbs.
+  The node tests in `test/asks.test.js` check `view.js` against JSON captured from a real
+  `priory asks --all --json`.
+- **Reading.** The panel reads `priory asks --all --json`, then waits with `priory wait` and reads
+  again. When a call fails, it keeps the last list and shows "Reconnecting to priory" with the age
+  of its last update, and the options stay disabled until it reconnects.
+- **List.** The saved views are Open, Snoozed, Answered and All, each with its count. The facet
+  chips Command, Lane and Task narrow every view. A row shows its tile, task key, step, age,
+  question, and what it recommends, its answer or why it was withdrawn.
+- **Width.** Below 720 px the selected row opens under itself: the decide part, the section chips
+  and Why. A section chip opens that section with the answer bar under it, since gpui-kit has no
+  sticky positioning. From 720 px the list and the detail sit side by side. The decide part stays
+  pinned at the top, and the sections scroll under it.
+- **Answering.** An option answers after a 4 s Undo, with `priory answer --expected N`. An option
+  that runs the ask's command arms on the first press, shows the command word by word under it,
+  and runs on a second press within 4 s, with `--run`. "Write an answer…" sends free text the same
+  way. Dismiss runs `priory dismiss` at once.
+- **Refused answers.** When a verb fails, the panel reads the asks again and says why on the ask:
+  the question changed to another revision, someone else answered, the ask was withdrawn, or the
+  CLI's error. When the ask has left the view, the reason shows in a strip under the header
+  instead. A refused answer goes back into the text field, so the person can send it again. While
+  one answer, snooze or dismissal is in flight, the panel starts no other.
+- **Snooze.** "Snooze 1 h" and the overflow menu's "Snooze until tomorrow 09:00" run
+  `priory snooze ask ID`. They show only on an ask that belongs to a task. "Attach to task" asks the
+  Priory bar to attach, as [Attaching](#how-it-reads-and-acts) describes.
+- **Outside asks.** An ask from outside Priory lists and answers like the others, by its name. Its
+  command is a string that never runs, so its options answer after the Undo.
+- **Keys.** `J` and `K` move, `Enter` opens a section below 720 px, `1` to `9` press an option
+  (twice for a command), `W` writes an answer, `S` snoozes for 1 h, `[` and `]` move between
+  sections and `Esc` closes. Single keys never fire while the text field has the keyboard.
+- **Agent text.** The question, options, text, trade-off and what waits draw as plain text.
+
+The detail shows the sections Why, History and Command. `priory` has no command that prints a
+task's brief, plan, pull request or runs, so the Brief, Plan, PR and Trace sections are left out
+with their chips, as DESIGN.md does for any section a task lacks. History shows the ask's current
+revision and its answer, since Priory keeps no earlier revisions or refused answers.
 
 ## Data each panel needs
 
@@ -281,4 +327,8 @@ The panels need these from Priory's core. Each is a separate slice.
 6. Report sections and picks: done, see [reports.md](../daemon/reports.md). Comments on rows are
    still to come.
 7. Ask fields for what waits and what the agent does next: `ask` stores them as `what_waits` and
-   `next_action`, with a `title` and a Markdown `text`. The Asks panel does not show them yet.
+   `next_action`, with a `title` and a Markdown `text`. The Asks panel shows them.
+8. A task's brief, plan, pull request summary and runs from the CLI, for the Asks panel's Brief,
+   Plan, PR and Trace sections. `/api/tasks/{id}` serves the runs but has no CLI twin, and nothing
+   serves the brief, the plan or the pull request summary yet.
+9. An ask's earlier revisions and refused answers, for its History section.

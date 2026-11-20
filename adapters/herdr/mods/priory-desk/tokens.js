@@ -156,13 +156,21 @@ export const THEMES = {
   },
 };
 
+// Each theme's font roles, by their first family.
+export const FONTS = {
+  indigo: { display: "Mona Sans", ui: "Mona Sans", mono: "JetBrains Mono" },
+  ink: { display: "Mona Sans", ui: "Mona Sans", mono: "JetBrains Mono" },
+  parchment: { display: "EB Garamond", ui: "IBM Plex Sans", mono: "IBM Plex Mono" },
+  abbey: { display: "Alegreya", ui: "Alegreya Sans", mono: "IBM Plex Mono" },
+};
+
 /** The colors of `theme` (Indigo when unknown) for a "light" or "dark" appearance. @param {string} theme @param {"light" | "dark"} mode */
 export function palette(theme, mode) {
   const tokens = THEMES[/** @type {keyof typeof THEMES} */ (theme)] ?? THEMES.indigo;
   return Object.fromEntries(Object.entries(tokens).map(([token, pair]) => [token, pair[mode === "dark" ? 1 : 0]]));
 }
 
-// The structure tokens of design/tokens/structure.css the Desk draws with, in px; a type token is [size, line].
+// The structure tokens of design/tokens/structure.css a pane draws with, in px; a type token is [size, line].
 export const STRUCTURE = {
   "space-1": 4, "space-2": 8, "space-3": 12, "space-4": 16, "space-5": 24,
   "radius-sm": 5, "radius-tile": 8, "radius-md": 12, "radius-card": 14, "radius-full": 999,

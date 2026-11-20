@@ -208,6 +208,10 @@ When someone labels issue 42 of `owner/name` with `agent`, this happens:
 
 Run `priory` with no arguments to print its usage.
 
+If you work in [Herdr](docs/adapters/herdr.md), its Desk panel shows the same desk, and its Asks
+panel lists the same asks and answers them through these verbs. `adapters/herdr/install` links
+them into Herdr.
+
 ## Concepts
 
 **Factory.** The folder of files that defines everything else: `factory.toml`, `agents/`,
