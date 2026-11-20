@@ -135,4 +135,4 @@ and icons, all built into the binary. They carry no state, so they need no token
 for the token once, keeps it in the browser's local storage, and sends it on every `/api` request;
 a `401` brings the sign-in back. A strict Content-Security-Policy lets the page load only its own
 files, and the page shows agent text as text. The view's layout comes from the factory's
-[views](../reference/views.md). With `web = false`, every path outside `/api` gets `404`.
+[views](../reference/views.md). Its Add control reads the defaults from `GET /api/request` and queues the task through `POST /api/request`, as `priory add` does. With `web = false`, every path outside `/api` gets `404`.
