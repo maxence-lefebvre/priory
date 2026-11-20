@@ -702,10 +702,11 @@ CREATE INDEX open_holds ON holds (task) WHERE released IS NULL;
 );
 
 // An answer that runs its ask's command stores it as an `answer` action, with the ask, the revision
-// it answered and the command it ran, before the command starts.
+// it answered, the command it ran and the task's generation, before the command starts.
 const SCHEMA_41: &str = "ALTER TABLE actions ADD COLUMN ask INTEGER REFERENCES asks (id);
 ALTER TABLE actions ADD COLUMN revision INTEGER;
 ALTER TABLE actions ADD COLUMN command TEXT;
+ALTER TABLE actions ADD COLUMN generation INTEGER;
 PRAGMA user_version = 41;
 ";
 
@@ -1480,11 +1481,16 @@ pub(crate) fn command_spawned(
     Ok(())
 }
 
-/// Whether `run` action `id` is still its task's current attempt: the task runs the action's step,
-/// and no later action exists, as one a cancel and revive would start.
-pub(crate) const CURRENT_COMMAND: &str = "SELECT tasks.state = 'running'
-     AND tasks.step = actions.step
-     AND actions.id = (SELECT max(id) FROM actions AS later WHERE later.task = actions.task)
+/// Whether action `id`'s command is still wanted. A `run` action is its task's current attempt: the
+/// task runs the action's step, and no later action exists, as one a cancel and revive would start.
+/// An answer's command belongs to the task's generation it was answered in, while the task is active,
+/// whatever the task does meanwhile.
+pub(crate) const CURRENT_COMMAND: &str = "SELECT CASE actions.action
+     WHEN 'answer' THEN tasks.generation IS actions.generation
+       AND tasks.state NOT IN ('done', 'failed', 'dropped')
+     ELSE tasks.state = 'running'
+       AND tasks.step = actions.step
+       AND actions.id = (SELECT max(id) FROM actions AS later WHERE later.task = actions.task) END
    FROM actions JOIN tasks ON tasks.id = actions.task WHERE actions.id = ?1";
 
 pub(crate) fn command_wanted(db: &Connection, id: i64) -> rusqlite::Result<bool> {

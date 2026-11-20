@@ -507,7 +507,8 @@ fn woken(tx: &Transaction, run: &Run) -> rusqlite::Result<bool> {
     tx.query_row(
         "SELECT (EXISTS (SELECT 1 FROM waits WHERE run = ?1 AND fired IS NOT NULL)
            OR EXISTS (SELECT 1 FROM asks WHERE run = ?1 AND (answer IS NOT NULL OR withdrawn = ?3)))
-         AND EXISTS (SELECT 1 FROM outbox WHERE task = ?2 AND state = 'queued')",
+         AND EXISTS (SELECT 1 FROM outbox WHERE task = ?2 AND state = 'queued')
+         OR EXISTS (SELECT 1 FROM actions WHERE task = ?2 AND action = 'answer' AND ended IS NULL)",
         params![run.id, run.task, DISMISSED],
         |row| row.get(0),
     )
@@ -1349,6 +1350,19 @@ fn settle(tx: &Transaction, run: &Run, trace: &Trace) -> rusqlite::Result<Option
         "UPDATE waits SET run = ?2 WHERE task = ?1 AND fired IS NULL AND withdrawn IS NULL AND NOT daemon",
         params![run.task, run.id],
     )?;
+    // An answer whose command still runs wakes the task with its outcome; until then the task stays
+    // `running`, so the sweep leaves its worktree alone.
+    let commanded = tx
+        .query_row(
+            "SELECT 1 FROM actions WHERE task = ?1 AND action = 'answer' AND ended IS NULL",
+            [run.task],
+            |_| Ok(()),
+        )
+        .optional()?;
+    if commanded.is_some() {
+        end(tx, run.id, "asleep")?;
+        return Ok(Some(Some(run.tmux.clone())));
+    }
     let asked = tx
         .query_row(
             "SELECT 1 FROM asks WHERE run = ?1 AND answer IS NULL AND withdrawn IS NULL",
@@ -1701,8 +1715,9 @@ pub(crate) fn answer(
     if let Some(runs) = runs {
         withdraw_waits(&tx, answer.ask)?;
         tx.execute(
-            "INSERT INTO actions (task, step, action, status, ask, revision, command)
-             VALUES (?1, ?2, 'answer', 'running', ?3, ?4, ?5)",
+            "INSERT INTO actions (task, step, action, status, ask, revision, command, generation)
+             VALUES (?1, ?2, 'answer', 'running', ?3, ?4, ?5,
+               (SELECT generation FROM tasks WHERE id = ?1))",
             params![
                 task,
                 at,
@@ -2626,7 +2641,8 @@ fn answer_ran(
         ),
     )?;
     tx.execute(
-        "UPDATE tasks SET state = 'ready', reason = NULL WHERE id = ?1 AND state = 'running'
+        "UPDATE tasks SET state = 'ready', reason = NULL WHERE id = ?1
+         AND state IN ('running', 'asleep')
          AND NOT EXISTS (SELECT 1 FROM runs WHERE task = ?1 AND ended IS NULL)",
         [task],
     )

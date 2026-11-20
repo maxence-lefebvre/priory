@@ -44,7 +44,7 @@ const OUTPUT: &str = "factory.intake";
 /// actions, and 40, which added answer actions. Schema 38's visits table is created only if
 /// missing, so it stays.
 const UNDO_SINCE_SEARCH: &str = "ALTER TABLE actions DROP COLUMN ask;
-  ALTER TABLE actions DROP COLUMN revision; ALTER TABLE actions DROP COLUMN command;
+  ALTER TABLE actions DROP COLUMN revision; ALTER TABLE actions DROP COLUMN command; ALTER TABLE actions DROP COLUMN generation;
   ALTER TABLE actions DROP COLUMN stdout;
   ALTER TABLE actions DROP COLUMN stderr; ALTER TABLE actions DROP COLUMN pid;
   ALTER TABLE actions DROP COLUMN pid_started; ALTER TABLE actions DROP COLUMN ended;
@@ -3361,6 +3361,82 @@ fn a_daemon_killed_while_an_answers_command_runs_leaves_it_uncertain_wakes_the_t
     );
 }
 
+/// A task whose run asked a command ask and holds its Stop, as an agent still ending its turn.
+fn ending_its_turn_on_a_command_ask(name: &str, command: serde_json::Value) -> Setup {
+    let mut setup = Setup::with_workflow(name, STEPS);
+    fs::write(
+        setup.dir.join("factory/factory.toml"),
+        "name = \"demo\"\n\n[asks.targets]\nops = \"ops\"\n",
+    )
+    .unwrap();
+    fs::create_dir_all(setup.dir.join("factory/ops")).unwrap();
+    setup.calls(&[command_ask(command)]);
+    setup.hold("hold-stop");
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("asks", |rows| rows.len() == 1);
+    setup
+}
+
+#[test]
+fn a_wait_after_an_answer_that_beats_the_stop_is_refused_and_the_command_wakes_the_task() {
+    let command = json!({ "argv": ["sh", "-c", "sleep 2; echo shipped"], "target": "ops" });
+    let setup = ending_its_turn_on_a_command_ask("command-before-stop", command);
+    let answered = setup.priory(&["answer", "--run", "1", "deploy", "--revision", "1"]);
+    let session = setup.rows("runs")[0][4].clone();
+    let wait =
+        json!({ "name": "wait", "arguments": { "on": { "type": "time", "until": "1 hour" } } });
+
+    let replies = setup.mcp(
+        &session,
+        &[json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": wait})],
+    );
+    setup.release("hold-stop");
+
+    assert!(answered.status.success(), "{answered:?}");
+    let (text, error) = reply(&replies[0]);
+    assert!(error, "{text}");
+    assert_eq!(
+        text,
+        "an answer or event for this run is queued: end your turn to read it"
+    );
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 2);
+    let typed = setup.typed();
+    assert!(
+        typed[1].starts_with("Ask 1 was answered \"deploy\" at revision 1, which ran [\"sh\",\"-c\",\"sleep 2; echo shipped\"] in "),
+        "{typed:?}"
+    );
+    assert!(
+        typed[1].contains(": exit 0.\nstdout:\nshipped\n"),
+        "{typed:?}"
+    );
+    assert_eq!(setup.rows("actions")[0][3..5], ["answer", "done"]);
+}
+
+#[test]
+fn a_reboot_while_an_answers_command_runs_before_the_stop_wakes_the_task_with_the_uncertain_outcome()
+ {
+    let command = json!({ "argv": ["sh", "-c", "echo $$ > pid; sleep 60"], "target": "ops" });
+    let mut setup = ending_its_turn_on_a_command_ask("command-reboot", command);
+    setup.priory(&["answer", "--run", "1", "deploy", "--revision", "1"]);
+    setup.written("factory/ops/pid");
+
+    setup.reboot();
+    setup.start();
+
+    let outbox = setup.until("outbox", |rows| {
+        rows.iter()
+            .any(|row| row[4].contains("whether it finished is uncertain"))
+    });
+    assert!(
+        outbox
+            .iter()
+            .any(|row| row[4].starts_with("Ask 1 was answered \"deploy\" at revision 1")),
+        "{outbox:?}"
+    );
+    assert_eq!(setup.rows("actions")[0][3..5], ["answer", "uncertain"]);
+}
+
 #[test]
 fn an_answer_to_a_stale_revision_of_a_command_ask_is_refused_and_runs_nothing() {
     let setup = asleep_on_a_command_ask("command-stale", go_in_ops());
@@ -3466,7 +3542,9 @@ fn an_outside_asks_command_is_stored_and_never_runs() {
     listening(&setup);
     let mut fields: serde_json::Value =
         serde_json::from_str(&fleet_ask(&["ship", "wait"])).unwrap();
-    fields["command"] = json!("touch shipped");
+    // An outside command is a string, even one that reads as an agent's command object.
+    let looks_runnable = r#"{"argv": ["touch", "shipped"], "runs": ["ship"]}"#;
+    fields["command"] = json!(looks_runnable);
     setup.priory(&["ask", "cache.ship", &fields.to_string()]);
 
     let answered = setup.priory(&[
@@ -3485,6 +3563,9 @@ fn an_outside_asks_command_is_stored_and_never_runs() {
         "ask cache.ship answered; its command does not run: Priory runs only the commands of its own runs' asks\n"
     );
     assert_eq!(setup.rows("actions"), Vec::<Vec<String>>::new());
+    let asks: serde_json::Value =
+        serde_json::from_slice(&setup.priory(&["asks", "--all", "--json"]).stdout).unwrap();
+    assert_eq!(asks["asks"][0]["command"], looks_runnable);
 }
 
 fn fleet_ask(options: &[&str]) -> String {
@@ -4759,7 +4840,7 @@ fn a_state_file_whose_asks_an_approval_names_upgrades_to_outside_asks() {
     let db = rusqlite::Connection::open(setup.dir.join("priory.db")).unwrap();
     db.execute_batch(
         "ALTER TABLE actions DROP COLUMN ask; ALTER TABLE actions DROP COLUMN revision;
-         ALTER TABLE actions DROP COLUMN command;
+         ALTER TABLE actions DROP COLUMN command; ALTER TABLE actions DROP COLUMN generation;
          ALTER TABLE actions DROP COLUMN stdout; ALTER TABLE actions DROP COLUMN stderr;
          ALTER TABLE actions DROP COLUMN pid; ALTER TABLE actions DROP COLUMN pid_started;
          ALTER TABLE actions DROP COLUMN ended;

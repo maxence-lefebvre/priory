@@ -112,9 +112,10 @@ The answer is bound to the revision it read, as any answer is, and the command s
 revision is the one that runs. The first answer stands, so a second answer never runs it again.
 
 In the transaction that stores the answer, the daemon stores the command as an `answer` action,
-with the ask, the revision and the command, and keeps the task `running`. The daemon starts it at
-its next tick, as the `run` action starts its command (see The `run` action), bounded by
-`command_timeout`, with the same environment. When it ends, the action is `done` on exit 0 and
+with the ask, the revision, the command and the task's generation, and keeps the task `running`, so
+the sweep leaves its worktree alone. The daemon starts it at its next tick, as the `run` action
+starts its command (see The `run` action), bounded by `command_timeout`, with the same environment.
+A worktree target that a retirement removed is added back first, once there is room. When it ends, the action is `done` on exit 0 and
 `failed` otherwise, with the last 2000 bytes of stdout and stderr. The task then wakes with this
 prompt, followed by the two tails:
 
@@ -122,7 +123,10 @@ prompt, followed by the two tails:
 Ask 7 was answered "deploy" at revision 1, which ran ["scripts/deploy","--env","staging"] in /srv/ops: exit 0.
 ```
 
-A cancelled task's command is killed, and the task is not woken.
+The command belongs to the generation it was answered in. A cancel or a revive kills it, or keeps
+it from starting, and the task is not woken. An answer that beats the run's Stop does not end the
+turn's process early: `ask` and `wait` are refused until the command ends, and the Stop ends the
+run while the task stays `running`. The task wakes when the command ends.
 
 A daemon restart never runs the command again. The restarted daemon kills a command its
 predecessor left running and ends its action `uncertain`. The task wakes with `... and Priory

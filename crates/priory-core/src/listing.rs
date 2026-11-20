@@ -212,8 +212,11 @@ fn asks_of(db: &Connection, task: Option<i64>, id: Option<i64>) -> rusqlite::Res
             ask["ran"] = serde_json::from_str(ran).unwrap_or(Value::Null);
         }
         // An agent's command is an object; an outside ask's stays the string it sent.
-        if let Some(Ok(command @ Value::Object(_))) =
-            ask["command"].as_str().map(serde_json::from_str)
+        let agents = ask["task"].is_i64();
+        if let Some(Ok(command)) = ask["command"]
+            .as_str()
+            .filter(|_| agents)
+            .map(serde_json::from_str)
         {
             ask["command"] = command;
         }

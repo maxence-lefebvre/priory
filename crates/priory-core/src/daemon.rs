@@ -901,25 +901,13 @@ fn perform(
             .as_deref()
             .is_some_and(|worktree| !Path::new(worktree).exists())
     {
-        // A resurrected task goes through the room check, which a code step otherwise skips.
-        let waits = match room::measure(home) {
-            Err(error) => Some(format!("waits for room: {error}")),
-            Ok(room) if crate::room::short_of_disk(&room) => {
-                Some("waits for room to add back its worktree".to_owned())
+        match restore_worktree(db, home, repo, due.task)? {
+            Restored::Ready => {}
+            Restored::Waits => return Ok(()),
+            Restored::Failed(reason) => {
+                return Ok(state::block(db, trace, due.task, "blocked", &reason)?);
             }
-            Ok(_) => None,
-        };
-        if let Some(reason) = waits {
-            db.execute(
-                "UPDATE tasks SET reason = ?2 WHERE id = ?1 AND reason IS NOT ?2",
-                rusqlite::params![due.task, reason],
-            )?;
-            return Ok(());
         }
-        if let Err(reason) = runtime::worktree(home, repo, due.task) {
-            return Ok(state::block(db, trace, due.task, "blocked", &reason)?);
-        }
-        db.execute("UPDATE tasks SET retired = NULL WHERE id = ?1", [due.task])?;
     }
     let head = due
         .worktree
@@ -946,6 +934,43 @@ fn perform(
         done,
         trace,
     )?)
+}
+
+/// Where a removed worktree stands once `restore_worktree` looked at it.
+enum Restored {
+    Ready,
+    Waits,
+    Failed(String),
+}
+
+/// Adds back the worktree of `task`, which the sweep or a retirement removed, from its branch once
+/// there is disk room; a task waiting for room says so in its reason.
+fn restore_worktree(
+    db: &Connection,
+    home: &Path,
+    repo: &str,
+    task: i64,
+) -> Result<Restored, Error> {
+    // A resurrected task goes through the room check, which a code step otherwise skips.
+    let waits = match room::measure(home) {
+        Err(error) => Some(format!("waits for room: {error}")),
+        Ok(room) if crate::room::short_of_disk(&room) => {
+            Some("waits for room to add back its worktree".to_owned())
+        }
+        Ok(_) => None,
+    };
+    if let Some(reason) = waits {
+        db.execute(
+            "UPDATE tasks SET reason = ?2 WHERE id = ?1 AND reason IS NOT ?2",
+            rusqlite::params![task, reason],
+        )?;
+        return Ok(Restored::Waits);
+    }
+    if let Err(reason) = runtime::worktree(home, repo, task) {
+        return Ok(Restored::Failed(reason));
+    }
+    db.execute("UPDATE tasks SET retired = NULL WHERE id = ?1", [task])?;
+    Ok(Restored::Ready)
 }
 
 /// Stores the task's `run` action, then starts its command with `sh -c` in the task's worktree, or
@@ -1008,6 +1033,30 @@ fn start_answers(
     for (id, task, stored) in state::unstarted_answers(db)? {
         let ran: crate::command::Command =
             serde_json::from_str(&stored).expect("a stored command parses");
+        // A cancel or a revive between the answer and this tick leaves it unwanted: it never starts.
+        if !state::command_wanted(db, id)? {
+            tools::ran(db, trace, id, "not started: the task moved on", "", "")?;
+            continue;
+        }
+        if ran.target == crate::command::WORKTREE && !ran.dir.exists() {
+            let (trigger, repo): (String, Option<String>) = db.query_row(
+                "SELECT trigger, repo FROM tasks WHERE id = ?1",
+                [task],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )?;
+            let restored = match repo_of(trace.factory, &trigger, repo.as_deref()) {
+                Some(repo) => restore_worktree(db, home, repo, task)?,
+                None => Restored::Failed(format!("task {task} names no repo")),
+            };
+            match restored {
+                Restored::Ready => {}
+                Restored::Waits => continue,
+                Restored::Failed(reason) => {
+                    tools::ran(db, trace, id, &format!("cannot start: {reason}"), "", "")?;
+                    continue;
+                }
+            }
+        }
         let env = command_env(home, trace.factory, task)?;
         let env: Vec<_> = env
             .iter()
