@@ -8931,8 +8931,15 @@ impl Setup {
         );
     }
 
-    /// One poll of `priory intake`, which may fail.
+    /// One poll of `priory intake`, which may fail. Without a fake `gh` in `bin`, every `gh` call
+    /// prints [], since the branch of an active task makes the intake poll `owner/repo`.
     fn poll(&self, env: &[(&str, &str)]) -> Exit {
+        let gh = self.dir.join("bin/gh");
+        if !gh.exists() {
+            fs::create_dir_all(gh.parent().unwrap()).unwrap();
+            fs::write(&gh, "#!/bin/sh\necho '[]'\n").unwrap();
+            fs::set_permissions(&gh, fs::Permissions::from_mode(0o755)).unwrap();
+        }
         let factory = self.dir.join("intake-factory");
         for (path, content) in [
             ("factory.toml", "name = \"demo\""),
@@ -11588,7 +11595,10 @@ fn a_pull_request_the_worker_opened_on_its_branch_is_claimed_and_its_comments_wa
 
     setup.intake();
 
-    setup.until("inbox", |rows| rows.len() >= 3);
+    setup.until("inbox", |rows| {
+        rows.iter()
+            .any(|row| row[1] == "github.pull_request.opened")
+    });
     assert_eq!(
         task_json(&setup, "1")["subscriptions"][0]["resource"],
         "github:owner/repo#8"
@@ -11647,4 +11657,20 @@ fn a_pull_request_on_another_tasks_branch_is_not_claimed() {
         task_json(&setup, "2")["subscriptions"][0]["resource"],
         "github:owner/repo#7"
     );
+}
+
+#[test]
+fn an_open_wait_on_a_subscribed_pull_request_decides_which_events_wake_the_task() {
+    let mut setup = Setup::new("subscribe-wait");
+    let mut on = on_pull_7("checks");
+    on["head_sha"] = json!("def0000000000000000000000000000000000000");
+    setup.calls(&[json!([subscribe("subscribe"), wait(on)])]);
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("runs", |rows| rows.len() == 1 && rows[0][7] == "asleep");
+
+    setup.publish(&off_branch(check(1, 0)));
+
+    setup.until("inbox", |rows| rows.len() == 2);
+    stays_asleep_after(&setup, 1);
 }
