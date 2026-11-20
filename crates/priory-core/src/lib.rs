@@ -9,9 +9,9 @@ pub mod memory;
 #[cfg(feature = "model")]
 mod model;
 mod otlp;
-mod push;
 pub mod post;
 pub mod progress;
+mod push;
 pub mod report;
 mod room;
 mod route;

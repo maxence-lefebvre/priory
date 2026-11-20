@@ -211,6 +211,7 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
     let mut scripts = Vec::new();
     let mut commands = Vec::new();
     let mut deliveries = deliver::adopt(&db)?;
+    let mut pushing = push::Sending::default();
     let mut reads = Reads::default();
     let every = factory.sweep().every.unwrap_or(SWEEP);
     let mut swept: Option<Instant> = None;
@@ -229,6 +230,7 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
             send_spans(&db, &trace, &home, export)?;
         }
         deliver::tick(&db, factory, &home, &mut deliveries)?;
+        push::tick(&db, &home, &mut pushing)?;
         read_states(&mut db, &mut reads)?;
         if sweep_scripts(&db, factory, &home, &mut scripts)? {
             swept = None;

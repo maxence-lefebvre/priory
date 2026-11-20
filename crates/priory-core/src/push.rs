@@ -5,14 +5,20 @@ use aes_gcm::Aes128Gcm;
 use aes_gcm::aead::{Aead, KeyInit};
 use base64ct::{Base64UrlUnpadded, Encoding};
 use hkdf::Hkdf;
+use p256::ecdsa::signature::Signer;
+use p256::ecdsa::{Signature, SigningKey};
 use p256::elliptic_curve::Generate;
+use p256::elliptic_curve::array::Array;
+use p256::elliptic_curve::consts::U16;
 use p256::{PublicKey, SecretKey};
+use priory_runtime::runtime;
 use rusqlite::{Connection, params};
 use sha2::Sha256;
 use std::fs::{self, DirBuilder, OpenOptions};
-use std::io::Write;
+use std::io::{Read, Write};
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
+use std::process::Child;
 
 /// The subscriptions kept at most; one per browser a person turned notifications on in.
 const SUBSCRIPTIONS: i64 = 20;
@@ -55,8 +61,8 @@ pub(crate) fn keys(home: &Path) -> Result<(), String> {
 /// The private key `keys` made. An error names the file, never its bytes.
 fn private_key(home: &Path) -> Result<SecretKey, String> {
     let private = folder(home).join("vapid.key");
-    let text = fs::read_to_string(&private)
-        .map_err(|error| format!("{}: {error}", private.display()))?;
+    let text =
+        fs::read_to_string(&private).map_err(|error| format!("{}: {error}", private.display()))?;
     Base64UrlUnpadded::decode_vec(text.trim())
         .ok()
         .and_then(|bytes| SecretKey::from_slice(&bytes).ok())
@@ -161,7 +167,11 @@ fn check(subscription: &Subscription) -> Result<(), String> {
 /// service on the internet.
 fn host(endpoint: &str) -> Result<&str, String> {
     let refused = || format!("{endpoint:?} is not an https URL of a push service");
-    if endpoint.len() > 2048 || endpoint.chars().any(|c| c.is_whitespace() || c.is_control()) {
+    if endpoint.len() > 2048
+        || endpoint
+            .chars()
+            .any(|c| c.is_whitespace() || c.is_control())
+    {
         return Err(refused());
     }
     let rest = endpoint.strip_prefix("https://").ok_or_else(refused)?;
@@ -186,6 +196,240 @@ fn host(endpoint: &str) -> Result<&str, String> {
     Ok(&endpoint[..8 + authority.len()])
 }
 
+/// The notification in flight: its row in `push_queue` and one `curl` per subscription.
+#[derive(Default)]
+pub(crate) struct Sending {
+    row: Option<i64>,
+    requests: Vec<Request>,
+}
+
+struct Request {
+    endpoint: String,
+    child: Child,
+    files: [PathBuf; 2],
+}
+
+/// How long a push service keeps a notification for a phone that is off: a day.
+const TTL: u32 = 86_400;
+/// The VAPID `sub` claim: who runs the sender. Apple refuses some `mailto:` forms, so a URL.
+const SUBJECT: &str = "https://github.com/maxence-lefebvre/priory";
+/// The longest title a notification carries, in characters.
+const TITLE: usize = 120;
+
+/// Sends the oldest queued notification to every subscription, one notification at a time, as the
+/// OTLP exporter sends spans. A failed send is logged and dropped: the desk still shows the item.
+/// A subscription the push service calls gone (404 or 410) is removed.
+pub(crate) fn tick(db: &Connection, home: &Path, sending: &mut Sending) -> rusqlite::Result<()> {
+    let mut still = Vec::new();
+    for mut request in sending.requests.drain(..) {
+        let status = match request.child.try_wait() {
+            Ok(None) => {
+                still.push(request);
+                continue;
+            }
+            Ok(Some(status)) => Ok(status),
+            Err(error) => Err(error),
+        };
+        let read = |pipe: Option<&mut dyn Read>| {
+            let mut text = String::new();
+            pipe.map(|pipe| pipe.read_to_string(&mut text));
+            text.trim().to_owned()
+        };
+        let code = read(request.child.stdout.as_mut().map(|pipe| pipe as _));
+        let stderr = read(request.child.stderr.as_mut().map(|pipe| pipe as _));
+        let origin = host(&request.endpoint).unwrap_or_default();
+        match status {
+            Ok(status) if status.success() && code.starts_with('2') => {}
+            Ok(status) if status.success() && (code == "404" || code == "410") => {
+                db.execute(
+                    "DELETE FROM push_subscriptions WHERE endpoint = ?1",
+                    [&request.endpoint],
+                )?;
+                eprintln!("priory daemon: {origin} says a subscription is gone, so it is removed");
+            }
+            Ok(status) if status.success() => {
+                eprintln!("priory daemon: {origin} refused a notification with HTTP {code}");
+            }
+            Ok(status) => {
+                eprintln!(
+                    "priory daemon: sending a notification to {origin} failed ({status}): {stderr}"
+                );
+            }
+            Err(error) => eprintln!("priory daemon: sending a notification to {origin}: {error}"),
+        }
+        for file in &request.files {
+            let _ = fs::remove_file(file);
+        }
+    }
+    sending.requests = still;
+    if !sending.requests.is_empty() {
+        return Ok(());
+    }
+    if let Some(row) = sending.row.take() {
+        db.execute("DELETE FROM push_queue WHERE id = ?1", [row])?;
+    }
+    let Some((row, notice)) = next(db)? else {
+        return Ok(());
+    };
+    sending.row = Some(row);
+    let Some(notice) = notice else {
+        return Ok(());
+    };
+    let key = match private_key(home) {
+        Ok(key) => key,
+        Err(error) => {
+            eprintln!("priory daemon: cannot send notifications: {error}");
+            return Ok(());
+        }
+    };
+    let mut statement = db.prepare("SELECT endpoint, p256dh, auth FROM push_subscriptions")?;
+    let subscriptions = statement.query_map([], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, String>(2)?,
+        ))
+    })?;
+    for (n, subscription) in subscriptions.enumerate() {
+        let (endpoint, p256dh, auth) = subscription?;
+        let files = [
+            folder(home).join(format!("{row}-{n}.headers")),
+            folder(home).join(format!("{row}-{n}.body")),
+        ];
+        match start(&key, &endpoint, &p256dh, &auth, &notice, &files) {
+            Ok(child) => sending.requests.push(Request {
+                endpoint,
+                child,
+                files,
+            }),
+            Err(error) => {
+                let origin = host(&endpoint).unwrap_or_default();
+                eprintln!("priory daemon: cannot send a notification to {origin}: {error}");
+                for file in &files {
+                    let _ = fs::remove_file(file);
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// The oldest queued row and its notification as JSON, `{"title", "url"}` and nothing else. The
+/// notification is `None` once the ask closed, the task left the state that queued it, or a person
+/// snoozed the item: those send nothing.
+fn next(db: &Connection) -> rusqlite::Result<Option<(i64, Option<String>)>> {
+    use rusqlite::OptionalExtension;
+    let snoozed = |kind: &str, item: &str| {
+        format!(
+            "NOT EXISTS (SELECT 1 FROM snoozes WHERE kind = '{kind}' AND item = {item}
+             AND back IS NULL AND until > strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))"
+        )
+    };
+    let queued = db
+        .query_row(
+            "SELECT id, kind, item, state FROM push_queue ORDER BY id LIMIT 1",
+            [],
+            |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, i64>(2)?,
+                    row.get::<_, Option<String>>(3)?,
+                ))
+            },
+        )
+        .optional()?;
+    let Some((row, kind, item, state)) = queued else {
+        return Ok(None);
+    };
+    let notice = if kind == "ask" {
+        db.query_row(
+            &format!(
+                "SELECT coalesce(asks.title, asks.question) FROM asks
+                 LEFT JOIN tasks ON tasks.id = asks.task
+                 WHERE asks.id = ?1 AND asks.answer IS NULL AND asks.withdrawn IS NULL
+                 AND (asks.task IS NULL OR tasks.state NOT IN ('done', 'failed', 'dropped'))
+                 AND {}",
+                snoozed("ask", "asks.id")
+            ),
+            [item],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?
+        .map(|title| (title, format!("/asks/{item}")))
+    } else {
+        db.query_row(
+            &format!(
+                "SELECT 'task ' || key || ' ' || state FROM tasks
+                 WHERE id = ?1 AND state IS ?2 AND {}",
+                snoozed("task", "tasks.id")
+            ),
+            params![item, state],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?
+        .map(|title| (title, format!("/tasks/{item}")))
+    };
+    let notice = notice.map(|(title, url)| {
+        let title: String = title.chars().take(TITLE).collect();
+        serde_json::json!({ "title": title, "url": url }).to_string()
+    });
+    Ok(Some((row, notice)))
+}
+
+/// Writes the request's header and body files, readable by their owner only, and starts `curl`.
+fn start(
+    key: &SecretKey,
+    endpoint: &str,
+    p256dh: &str,
+    auth: &str,
+    notice: &str,
+    files: &[PathBuf; 2],
+) -> Result<Child, String> {
+    let origin = host(endpoint)?;
+    let to = Base64UrlUnpadded::decode_vec(p256dh)
+        .ok()
+        .and_then(|point| PublicKey::from_sec1_bytes(&point).ok())
+        .ok_or("its p256dh is not a P-256 key")?;
+    let auth = Base64UrlUnpadded::decode_vec(auth).map_err(|error| error.to_string())?;
+    let salt: [u8; 16] = Array::<u8, U16>::generate().into();
+    let body = encrypt(&to, &auth, &SecretKey::generate(), &salt, notice.as_bytes())?;
+    let headers = format!(
+        "Authorization: vapid t={}, k={}\nContent-Encoding: aes128gcm\n\
+         Content-Type: application/octet-stream\nTTL: {TTL}\nUrgency: high\n",
+        token(key, origin)?,
+        public_text(&key.public_key()),
+    );
+    for (file, bytes) in files.iter().zip([headers.as_bytes(), &body]) {
+        OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(file)
+            .and_then(|mut out| out.write_all(bytes))
+            .map_err(|error| format!("{}: {error}", file.display()))?;
+    }
+    runtime::post_push(endpoint, &files[0], &files[1]).map_err(|error| error.to_string())
+}
+
+/// The VAPID JWT (RFC 8292) for the push service at `origin`, signed with ES256, for 12 hours.
+fn token(key: &SecretKey, origin: &str) -> Result<String, String> {
+    let exp = jiff::Timestamp::now().as_second() + 12 * 3600;
+    let encode =
+        |json: serde_json::Value| Base64UrlUnpadded::encode_string(json.to_string().as_bytes());
+    let input = format!(
+        "{}.{}",
+        encode(serde_json::json!({ "typ": "JWT", "alg": "ES256" })),
+        encode(serde_json::json!({ "aud": origin, "exp": exp, "sub": SUBJECT })),
+    );
+    let signature: Signature = SigningKey::from(key).sign(input.as_bytes());
+    Ok(format!(
+        "{input}.{}",
+        Base64UrlUnpadded::encode_string(&signature.to_bytes())
+    ))
+}
+
 /// The body RFC 8291 sends: the aes128gcm header, with `from`'s public key, then `message`
 /// encrypted for the subscription's key `to` and its `auth` secret.
 fn encrypt(
@@ -208,7 +452,14 @@ fn encrypt(
         .map_err(|_| "the push message could not be encrypted".to_owned())?;
     let size = u32::try_from(RECORD).expect("the record size fits");
     let length = u8::try_from(from.len()).expect("a SEC1 key is under 256 bytes");
-    Ok([salt.as_slice(), &size.to_be_bytes(), &[length], &from, &sealed].concat())
+    Ok([
+        salt.as_slice(),
+        &size.to_be_bytes(),
+        &[length],
+        &from,
+        &sealed,
+    ]
+    .concat())
 }
 
 /// The record size the aes128gcm header names; a push message fits in one record.

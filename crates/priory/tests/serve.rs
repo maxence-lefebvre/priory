@@ -151,7 +151,8 @@ impl Setup {
                 "priory {args:?} exited before it listened: {said}"
             );
             if let Some(address) = line.trim().strip_prefix("priory: serving on http://") {
-                std::thread::spawn(move || std::io::copy(&mut stderr, &mut std::io::sink()));
+                let mut log = fs::File::create(self.dir.join("server.log")).unwrap();
+                std::thread::spawn(move || std::io::copy(&mut stderr, &mut log));
                 return address.to_owned();
             }
             said.push_str(&line);
@@ -3360,4 +3361,201 @@ fn subscribe_and_unsubscribe_store_and_drop_a_subscription_behind_the_token_and_
     );
     assert_eq!(gone.0, 200, "{}", gone.1);
     assert!(stored(&setup).is_empty());
+}
+
+/// The plaintext of an RFC 8291 `body` sent to the subscription whose private key is `key`.
+fn decrypt(body: &[u8], key: &p256::SecretKey, auth: &[u8]) -> Vec<u8> {
+    use aes_gcm::aead::{Aead, KeyInit};
+    let expand = |salt: &[u8], secret: &[u8], info: &[u8], out: &mut [u8]| {
+        hkdf::Hkdf::<sha2::Sha256>::new(Some(salt), secret)
+            .expand(info, out)
+            .unwrap();
+    };
+    let (salt, rest) = body.split_at(16);
+    let length = usize::from(rest[4]);
+    let (from, sealed) = rest[5..].split_at(length);
+    let server = p256::PublicKey::from_sec1_bytes(from).unwrap();
+    let shared = p256::ecdh::diffie_hellman(key.to_nonzero_scalar(), server.as_affine());
+    let to = key.public_key().to_sec1_bytes();
+    let info = [b"WebPush: info\0".as_slice(), &to, from].concat();
+    let mut ikm = [0; 32];
+    expand(auth, shared.raw_secret_bytes(), &info, &mut ikm);
+    let (mut cek, mut nonce) = ([0; 16], [0; 12]);
+    expand(salt, &ikm, b"Content-Encoding: aes128gcm\0", &mut cek);
+    expand(salt, &ikm, b"Content-Encoding: nonce\0", &mut nonce);
+    let mut plain = aes_gcm::Aes128Gcm::new(&cek.into())
+        .decrypt(&nonce.into(), sealed)
+        .unwrap();
+    assert_eq!(
+        plain.pop(),
+        Some(2),
+        "one record, ending in the last-record delimiter"
+    );
+    plain
+}
+
+impl Setup {
+    /// Subscribes a browser at `endpoint` through the API, and returns its private key and auth.
+    fn subscribe(&self, address: &str, endpoint: &str) -> (p256::SecretKey, Vec<u8>) {
+        use base64ct::{Base64UrlUnpadded, Encoding};
+        let (browser, key) = subscription(endpoint);
+        let (status, body) = post(address, "/api/push/subscribe", "", &browser.to_string());
+        assert_eq!(status, 200, "{body}");
+        let auth = Base64UrlUnpadded::decode_vec(browser["keys"]["auth"].as_str().unwrap());
+        (key, auth.unwrap())
+    }
+
+    /// The Web Push requests the fake `curl` received, oldest first.
+    fn pushes(&self) -> Vec<Value> {
+        fs::read_to_string(self.dir.join("fake/push.jsonl"))
+            .unwrap_or_default()
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect()
+    }
+
+    /// Waits until the fake `curl` received `count` pushes, and returns them.
+    fn until_pushes(&self, count: usize) -> Vec<Value> {
+        let deadline = Instant::now() + Duration::from_secs(15);
+        loop {
+            let pushes = self.pushes();
+            if pushes.len() >= count {
+                return pushes;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "{} pushes: {pushes:?}\n{}",
+                pushes.len(),
+                fs::read_to_string(self.dir.join("server.log")).unwrap_or_default()
+            );
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+
+    /// Adds an open ask to task 1, with a brief and a command that must never reach a phone.
+    fn ask_more(&self, db: &rusqlite::Connection, title: &str) -> i64 {
+        db.execute(
+            "INSERT INTO asks (task, step, kind, question, options, title, text, command)
+             VALUES (1, 'implement', 'agent', 'Merge it?', '[\"yes\",\"no\"]', ?1,
+                     'the brief: private plan', 'rm -rf /tmp/x')",
+            [title],
+        )
+        .unwrap();
+        db.last_insert_rowid()
+    }
+}
+
+fn base64(text: &Value) -> Vec<u8> {
+    use base64ct::{Base64, Encoding};
+    Base64::decode_vec(text.as_str().unwrap()).unwrap()
+}
+
+#[test]
+fn a_new_ask_pushes_one_notification_per_subscription_with_only_its_title_and_url() {
+    let mut setup = Setup::new("push-ask", SERVE);
+    setup.seed();
+    let address = setup.start(&["daemon", &setup.factory()]);
+    let phone = setup.subscribe(&address, "https://push.example.com/phone");
+    let laptop = setup.subscribe(&address, "https://fcm.example.com/laptop");
+
+    let ask = setup.ask_more(&setup.db(), "Merge the docs fix?");
+
+    let pushes = setup.until_pushes(2);
+    std::thread::sleep(Duration::from_millis(1500));
+    assert_eq!(setup.pushes().len(), 2, "{pushes:?}");
+    let mut urls: Vec<&str> = pushes
+        .iter()
+        .map(|push| push["url"].as_str().unwrap())
+        .collect();
+    urls.sort();
+    assert_eq!(
+        urls,
+        [
+            "https://fcm.example.com/laptop",
+            "https://push.example.com/phone"
+        ]
+    );
+    for push in &pushes {
+        let (key, auth) = if push["url"] == "https://push.example.com/phone" {
+            &phone
+        } else {
+            &laptop
+        };
+        let plain = decrypt(&base64(&push["body"]), key, auth);
+        let payload: Value = serde_json::from_slice(&plain).unwrap();
+        assert_eq!(
+            payload,
+            json!({ "title": "Merge the docs fix?", "url": format!("/asks/{ask}") })
+        );
+        let headers = push["headers"].as_str().unwrap();
+        assert!(headers.contains("Content-Encoding: aes128gcm"), "{headers}");
+        assert!(headers.contains("Authorization: vapid t="), "{headers}");
+        assert!(
+            push["args"].as_str().unwrap().contains("--proto =https"),
+            "{push}"
+        );
+    }
+    let secret = fs::read_to_string(setup.dir.join("home/push/vapid.key")).unwrap();
+    let secret = secret.trim();
+    assert!(!secret.is_empty());
+    for file in ["fake/push.jsonl", "fake/curl.log", "server.log"] {
+        let text = fs::read_to_string(setup.dir.join(file)).unwrap_or_default();
+        assert!(!text.contains(secret), "{file} holds the private key");
+    }
+    assert!(
+        !get(&address, "/api/push/key", Some(TOKEN))
+            .1
+            .contains(secret)
+    );
+}
+
+#[test]
+fn a_snoozed_ask_pushes_nothing() {
+    let mut setup = Setup::new("push-snoozed", SERVE);
+    setup.seed();
+    let address = setup.start(&["daemon", &setup.factory()]);
+    setup.subscribe(&address, "https://push.example.com/phone");
+
+    let mut db = setup.db();
+    let tx = db.transaction().unwrap();
+    let snoozed = setup.ask_more(&tx, "Snoozed one");
+    tx.execute(
+        "INSERT INTO snoozes (kind, item, task, snoozed, until)
+         VALUES ('ask', ?1, 1, '2026-11-17T12:00:00Z', '2999-01-01T00:00:00Z')",
+        [snoozed],
+    )
+    .unwrap();
+    tx.commit().unwrap();
+    setup.ask_more(&db, "Awake one");
+
+    let pushes = setup.until_pushes(1);
+    std::thread::sleep(Duration::from_millis(1500));
+    assert_eq!(setup.pushes().len(), 1, "{pushes:?}");
+}
+
+#[test]
+fn a_subscription_the_push_service_calls_gone_is_removed() {
+    let mut setup = Setup::new("push-gone", SERVE);
+    setup.seed();
+    let address = setup.start(&["daemon", &setup.factory()]);
+    setup.subscribe(&address, "https://push.example.com/phone");
+    fs::write(setup.dir.join("fake/push-status"), "410").unwrap();
+
+    setup.ask_more(&setup.db(), "Anyone there?");
+
+    setup.until_pushes(1);
+    let deadline = Instant::now() + Duration::from_secs(15);
+    loop {
+        let left: i64 = setup
+            .db()
+            .query_row("SELECT count(*) FROM push_subscriptions", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        if left == 0 {
+            break;
+        }
+        assert!(Instant::now() < deadline, "the gone subscription stayed");
+        std::thread::sleep(Duration::from_millis(50));
+    }
 }

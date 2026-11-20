@@ -798,7 +798,6 @@ CREATE TRIGGER IF NOT EXISTS revision_intake_sources_delete AFTER DELETE ON inta
 PRAGMA user_version = 45;
 ";
 
-
 // The browsers that get Web Push notifications, and the notifications the daemon has yet to send.
 // Triggers queue a new ask and a task that turns blocked or failed, only while a browser subscribes.
 const SCHEMA_46: &str = "CREATE TABLE IF NOT EXISTS push_subscriptions (
