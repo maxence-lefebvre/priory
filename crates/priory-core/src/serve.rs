@@ -1,7 +1,7 @@
 //! The HTTP server over the state: `/api` as JSON, with `web` the web view's files, and with a
 //! GitHub webhook its signed deliveries.
 
-use crate::{listing, state};
+use crate::{listing, sections, state};
 use herdr_bus::Bus;
 use priory_factory::factory::Factory;
 use priory_intake::intake::Github;
@@ -193,13 +193,19 @@ fn route(
         "/api/asks" => listing::asks(db).map(Some),
         "/api/tasks" => listing::tasks(db, None, None).map(Some),
         "/api/queue" => listing::queue(db).map(Some),
-        _ => match path.strip_prefix("/api/tasks/").map(str::parse) {
-            Some(Ok(id)) => listing::task(db, id),
+        "/api/reports/latest" => sections::show(db, None),
+        _ => match (
+            path.strip_prefix("/api/tasks/").map(str::parse),
+            path.strip_prefix("/api/reports/").map(str::parse),
+        ) {
+            (Some(Ok(id)), _) => listing::task(db, id),
+            (_, Some(Ok(task))) => sections::show(db, Some(task)),
             _ => return Reply::error(404, "no such path"),
         },
     };
     match read {
         Ok(Some(body)) => Reply::json(200, body.to_string()),
+        Ok(None) if path.starts_with("/api/reports/") => Reply::error(404, "no such report"),
         Ok(None) => Reply::error(404, "no such task"),
         Err(error) => Reply::error(500, &error.to_string()),
     }

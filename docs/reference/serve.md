@@ -16,6 +16,8 @@ the CLI command with `--json`.
 | `/api/tasks/{id}` | | one [task in detail](#task-in-detail) |
 | `/api/queue` | `priory queue --json` | an object: [Queue](#queue) |
 | `/api/views` | | an object: [Views](#views) |
+| `/api/reports/latest` | `priory report show --json` | the [report](#report) written last |
+| `/api/reports/{task}` | `priory report show TASK --json` | the task's [report](#report) |
 | `POST /hooks/github` | | `202` for a signed GitHub delivery, with `[webhooks.github]`. See [below](#post-hooksgithub) |
 | any other path | | the web view, with `web = true`: see [Web view files](#web-view-files) |
 
@@ -30,7 +32,7 @@ or a reason, is untrusted: render it as text.
 | `202` | A signed webhook delivery was taken: published, or dropped on purpose |
 | `400` | The request does not parse; for a webhook, it sends two `Content-Length`, or its payload lacks a field its event needs |
 | `401` | The token is missing or wrong on a path under `/api`; for a webhook, the signature is |
-| `404` | No such path, task or web view file |
+| `404` | No such path, task, report or web view file |
 | `405` | A method other than `GET`, on any path |
 | `408` | The request took over 5 seconds |
 | `411` | A webhook delivery has no `Content-Length`, or uses `Transfer-Encoding` |
@@ -180,3 +182,15 @@ Every file carries `Content-Security-Policy: default-src 'none'; script-src 'sel
 'self'; font-src 'self'; img-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'none';
 frame-ancestors 'none'`, `X-Content-Type-Options: nosniff` and `Referrer-Policy: no-referrer`. The
 page loads nothing from another host.
+
+## Report
+
+The report a workflow wrote, in the shape of `docs/schemas/report.json`, with two more fields. See
+[reports.md](../daemon/reports.md).
+
+| Field | Type | Meaning |
+| ----- | ---- | ------- |
+| `task` | integer | The task that wrote it |
+| `revision` | integer | Raised by each write and each pick; `priory report pick --expected` takes it |
+| `date`, `since`, `greeting` | string | As written |
+| `sections` | array | In the order written |
