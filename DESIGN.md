@@ -239,6 +239,20 @@ and the rubric red `--count`.
 - **Key hint bar** at the bottom of the list, 40 px: `J` `K` move, `Enter` open, `1` to `9`
   answer, `W` write, `[` `]` sections, `?` all shortcuts.
 
+## Iconography
+
+- **The mark** is a closed book with a P cut out of its cover and its ribbon hanging out, the
+  ribbon marking the page where a person is needed. It is provisional. [`design/logo/`](design/logo/) holds the files and their
+  rules: clear space, minimum sizes and colors.
+- **Where the mark appears:** the favicon, the PWA and home screen icons, the README header and
+  the Priory row of the Herdr sidebar. The view's top bar keeps the factory name in the display
+  role and shows no mark.
+- **Flat or two-tone:** below 24 px, and in Ink, the mark is flat in the row's text color. At
+  16 px it drops the P. From
+  24 px, the book takes `--text` and the ribbon `--action`.
+- **Interface icons** come from [Lucide](https://lucide.dev) (ISC license), inlined as SVG. The
+  mark never stands for a panel, a state or an action.
+
 ## Components
 
 Every component below lists its states. Build no state that is not listed without adding it here
