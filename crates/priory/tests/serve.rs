@@ -3041,6 +3041,8 @@ fn a_request_through_the_endpoint_queues_the_task_priory_add_does_and_answers_it
 #[test]
 fn a_repeated_add_of_the_same_linked_text_is_refused_with_the_task_it_reached() {
     let mut setup = Setup::new("web-request-again", DEFAULTS);
+    // No run starts, so the daemon answers each request at once.
+    succeeded(&setup.priory(&["pause"]));
     let address = setup.start(&["daemon", &setup.factory()]);
     let text = r#"{"text": "Review https://github.com/cli/cli/pull/42"}"#;
     let (first, _) = post(&address, "/api/request", "", text);
