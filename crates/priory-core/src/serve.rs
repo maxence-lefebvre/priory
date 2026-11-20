@@ -221,7 +221,19 @@ fn route(
     };
     let read = match path {
         "/api/events" => return events(db, query, waiters),
-        "/api/desk" => listing::revised(db, "desk", |db| listing::desk(db, home, false).map(Some)),
+        "/api/desk" => {
+            let person = match query.split_once('=') {
+                None if query.is_empty() => listing::ME.to_owned(),
+                Some(("person", name)) if !name.contains('&') => match decode(name) {
+                    Some(name) => name,
+                    None => return Reply::error(400, "person is not percent-encoded UTF-8"),
+                },
+                _ => return Reply::error(400, "desk takes one parameter: person=NAME"),
+            };
+            listing::revised(db, "desk", |db| {
+                listing::desk(db, home, false, &person).map(Some)
+            })
+        }
         "/api/inbox" => listing::revised(db, "inbox", |db| listing::inbox(db, 0).map(Some)),
         "/api/asks" => listing::revised(db, "asks", |db| listing::asks(db).map(Some)),
         "/api/tasks" => {
@@ -421,6 +433,27 @@ fn refusal(db: &Connection, ask: Option<(i64, i64)>, refused: &str) -> Reply {
         Ok(Some(_)) => Reply::error(422, refused),
         Err(error) => Reply::error(500, &error.to_string()),
     }
+}
+
+/// A query value with its `%XX` escapes and `+` decoded; none when an escape or the UTF-8 is broken.
+fn decode(value: &str) -> Option<String> {
+    let mut bytes = Vec::with_capacity(value.len());
+    let mut rest = value.as_bytes();
+    while let Some((&byte, tail)) = rest.split_first() {
+        rest = tail;
+        bytes.push(match byte {
+            b'+' => b' ',
+            b'%' => {
+                let hex = std::str::from_utf8(rest.get(..2)?)
+                    .ok()
+                    .filter(|hex| hex.bytes().all(|digit| digit.is_ascii_hexdigit()))?;
+                rest = &rest[2..];
+                u8::from_str_radix(hex, 16).ok()?
+            }
+            byte => byte,
+        });
+    }
+    String::from_utf8(bytes).ok()
 }
 
 /// A web view file, or the page itself for any other path, such as `/asks/42`.
