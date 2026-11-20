@@ -2,6 +2,7 @@ use crate::room::{self, Share};
 use crate::route::{self, Decision};
 use crate::trace::Trace;
 use herdr_bus::Message;
+use priory_factory::explain;
 use priory_factory::factory::{Factory, Loaded, Session, Workflow};
 use priory_factory::lanes::{Lanes, Subject};
 use priory_runtime::room::Room;
@@ -10,7 +11,7 @@ use std::collections::BTreeMap;
 use std::io::Write;
 use std::time::Duration;
 
-const VERSION: i64 = 43;
+const VERSION: i64 = 44;
 
 const SCHEMA: &str = "
 CREATE TABLE tasks (
@@ -766,6 +767,19 @@ CREATE TABLE IF NOT EXISTS ask_refusals (
 "
 );
 
+// The human steps whose answer lets an irreversible step run, as the daemon last recorded them.
+const SCHEMA_44: &str = concat!(
+    "CREATE TABLE IF NOT EXISTS irreversible_asks (
+  workflow TEXT NOT NULL,
+  step     TEXT NOT NULL,
+  PRIMARY KEY (workflow, step)
+);
+",
+    bumps!("irreversible_asks"),
+    "PRAGMA user_version = 44;
+"
+);
+
 /// Each schema change in order: a file at version `n` applies those from index `n` on.
 const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA, SCHEMA_2, SCHEMA_3, SCHEMA_4, SCHEMA_5, SCHEMA_6, SCHEMA_7, SCHEMA_8, SCHEMA_9,
@@ -773,7 +787,7 @@ const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA_18, SCHEMA_19, SCHEMA_20, SCHEMA_21, SCHEMA_22, SCHEMA_23, SCHEMA_24, SCHEMA_25,
     SCHEMA_26, SCHEMA_27, SCHEMA_28, SCHEMA_29, SCHEMA_30, SCHEMA_31, SCHEMA_32, SCHEMA_33,
     SCHEMA_34, SCHEMA_35, SCHEMA_36, SCHEMA_37, SCHEMA_38, SCHEMA_39, SCHEMA_40, SCHEMA_41,
-    SCHEMA_42, SCHEMA_43,
+    SCHEMA_42, SCHEMA_43, SCHEMA_44,
 ];
 
 /// The order the queue starts tasks in: band, then a person's order, then age. A band the factory
@@ -1085,6 +1099,27 @@ pub(crate) fn bands(db: &mut Connection, bands: &[&str]) -> rusqlite::Result<()>
         "UPDATE tasks SET band = ?1 WHERE band IS NULL",
         [bands.last()],
     )?;
+    tx.commit()
+}
+
+/// Records each workflow's human steps whose answer lets an irreversible step run, so listings
+/// read an ask's risk without the factory.
+pub(crate) fn irreversible_asks(
+    db: &mut Connection,
+    workflows: &BTreeMap<String, Loaded<Workflow>>,
+) -> rusqlite::Result<()> {
+    let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    tx.execute("DELETE FROM irreversible_asks", [])?;
+    for (name, workflow) in workflows {
+        for step in &workflow.value.steps {
+            if explain::answer_lets_irreversible_run(&workflow.value, &step.id) {
+                tx.execute(
+                    "INSERT INTO irreversible_asks (workflow, step) VALUES (?1, ?2)",
+                    params![name, step.id],
+                )?;
+            }
+        }
+    }
     tx.commit()
 }
 
