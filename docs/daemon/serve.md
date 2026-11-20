@@ -1,7 +1,8 @@
 # Serve
 
 Priory serves the factory's state over HTTP, as JSON under `/api`, for the web view and other
-adapters. The server reads the state; it changes nothing. The keys are under
+adapters. The server reads the state, and changes it only by sending the daemon the same lines as
+the CLI, as [Writes](#writes) explains. The keys are under
 [`[serve]`](../reference/factory.md#serve), and the endpoints in
 [serve.md](../reference/serve.md).
 
@@ -39,6 +40,31 @@ Generate a token once and keep it in the services' environment file, not in the 
 ```sh
 echo "PRIORY_TOKEN=$(openssl rand -hex 32)" >> ~/.config/priory/env
 ```
+
+## Writes
+
+Three endpoints change the state: answer an ask, dismiss one, and snooze a desk item. Each is the
+twin of a CLI verb, `priory answer`, `priory dismiss` and `priory snooze`. It builds the same line
+the verb builds and sends it to the daemon on its socket, so the daemon applies it in the same
+transaction, with the same checks and the same refusals. The server thread never opens the state
+for writing. [serve.md](../reference/serve.md#writes) lists the bodies and status codes.
+
+A write carries the revision of the ask the client showed, as `priory answer --revision` does. The
+first answer to that revision stands. When the daemon refuses, the server reads the ask again: a
+revision that moved, or an ask that closed, gets `409` with the ask, so a view can redraw it and
+keep the person's draft.
+
+`priory serve` without a daemon has no socket to send to: its writes get `503`, and its reads keep
+working.
+
+A browser cannot be made to write from another site. The token travels only in the `Authorization`
+header, never in a cookie, so a form or script on another page has nothing to send: the browser
+attaches no credential by itself, and the server answers no CORS preflight that would let a page
+set the header. The server also refuses a `POST` whose `Origin` names another host with `403`.
+That check alone does not stop DNS rebinding, where a hostile name resolves to this machine and its
+origin then matches `Host`. The token still stops it: the web view keeps the token in the local
+storage of its own origin, which a rebound page cannot read. Keep it that way: never add cookie
+auth.
 
 ## Beyond this machine
 
@@ -78,7 +104,7 @@ kept a revision from a replaced state file does not hang.
 | Limit | Value | Past it |
 | ----- | ----- | ------- |
 | Request head: request line and headers | 8 KiB, 32 headers | `431` |
-| Request body | none allowed, except 1 MiB on `POST /hooks/github` | `413` |
+| Request body | none on a `GET`; 16 KiB on a write; 1 MiB on `POST /hooks/github` | `413` |
 | Time to send the whole request, head and body | 5 seconds | `408` |
 | Connections served at once | 8 | Others wait in the listen backlog |
 | `/api/events` requests held at once | 4 | `503` |

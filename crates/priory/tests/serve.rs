@@ -1943,3 +1943,223 @@ fn up_next_lists_each_firing_of_a_keyless_schedule_and_none_of_a_held_one() {
         ]
     );
 }
+
+/// Posts `body` as JSON with the token and `extra` header lines, and returns the status and body.
+fn post(address: &str, path: &str, extra: &str, body: &str) -> (u16, String) {
+    raw(
+        address,
+        &format!(
+            "POST {path} HTTP/1.1\r\nHost: {address}\r\nAuthorization: Bearer {TOKEN}\r\n\
+             Content-Type: application/json\r\n{extra}Content-Length: {}\r\n\r\n{body}",
+            body.len()
+        ),
+    )
+}
+
+impl Setup {
+    /// `seed`, with task 1 asleep on its open ask, as an agent's ask leaves it.
+    fn asleep_on_ask(&self) {
+        self.seed();
+        self.db()
+            .execute("UPDATE tasks SET state = 'asleep' WHERE id = 1", [])
+            .unwrap();
+    }
+
+    fn db(&self) -> rusqlite::Connection {
+        rusqlite::Connection::open(self.dir.join("priory.db")).unwrap()
+    }
+
+    /// Ask 1 as `priory asks --json` lists it.
+    fn ask(&self) -> Value {
+        json_of(self, "asks")["asks"][0].clone()
+    }
+}
+
+#[test]
+fn an_answer_through_the_endpoint_wakes_the_task_as_priory_answer_does() {
+    let mut setup = Setup::new("web-answer", SERVE);
+    setup.asleep_on_ask();
+    let address = setup.start(&["daemon", &setup.factory()]);
+
+    let (status, body) = post(
+        &address,
+        "/api/asks/1/answer",
+        "",
+        r#"{"option": "left", "revision": 2}"#,
+    );
+
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(
+        serde_json::from_str::<Value>(&body).unwrap(),
+        json!({ "ok": "ask 1 answered" })
+    );
+    let ask = setup.ask();
+    assert_eq!([&ask["state"], &ask["answer"]], ["answered", "left"]);
+    let prompt: String = setup
+        .db()
+        .query_row(
+            "SELECT text FROM outbox WHERE task = 1 ORDER BY id DESC LIMIT 1",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(prompt.starts_with("left"), "{prompt}");
+}
+
+#[test]
+fn a_stale_revision_gets_409_with_the_current_ask_and_changes_nothing() {
+    let mut setup = Setup::new("web-stale", SERVE);
+    setup.asleep_on_ask();
+    let address = setup.start(&["daemon", &setup.factory()]);
+    let before = setup.ask();
+
+    let (status, body) = post(
+        &address,
+        "/api/asks/1/answer",
+        "",
+        r#"{"option": "left", "revision": 1}"#,
+    );
+
+    assert_eq!(status, 409, "{body}");
+    let body: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(body["error"], "ask 1 is at revision 2, not 1");
+    assert_eq!(body["ask"], before);
+    assert_eq!(setup.ask(), before);
+}
+
+#[test]
+fn a_wrong_token_gets_401_and_a_foreign_origin_403_and_neither_changes_anything() {
+    let mut setup = Setup::new("web-refused", SERVE);
+    setup.asleep_on_ask();
+    let address = setup.start(&["daemon", &setup.factory()]);
+    let before = setup.ask();
+    let body = r#"{"option": "left", "revision": 2}"#;
+
+    let wrong = raw(
+        &address,
+        &format!(
+            "POST /api/asks/1/answer HTTP/1.1\r\nHost: {address}\r\nAuthorization: Bearer nope\r\n\
+             Content-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
+            body.len()
+        ),
+    );
+    let foreign = post(
+        &address,
+        "/api/asks/1/answer",
+        "Origin: http://evil.example\r\n",
+        body,
+    );
+    let null = post(&address, "/api/asks/1/dismiss", "Origin: null\r\n", body);
+
+    assert_eq!(wrong.0, 401, "{}", wrong.1);
+    assert_eq!(foreign.0, 403, "{}", foreign.1);
+    assert_eq!(null.0, 403, "{}", null.1);
+    assert_eq!(setup.ask(), before);
+    let own = post(
+        &address,
+        "/api/asks/1/answer",
+        &format!("Origin: http://{address}\r\n"),
+        body,
+    );
+    assert_eq!(own.0, 200, "{}", own.1);
+}
+
+#[test]
+fn serve_without_a_daemon_gets_503_on_writes_and_200_on_reads() {
+    let mut setup = Setup::new("web-no-daemon", SERVE);
+    setup.asleep_on_ask();
+    let address = setup.start(&["serve", &setup.factory()]);
+
+    let (status, body) = post(
+        &address,
+        "/api/asks/1/answer",
+        "",
+        r#"{"option": "left", "revision": 2}"#,
+    );
+
+    assert_eq!(status, 503, "{body}");
+    assert!(body.contains("Start `priory daemon`"), "{body}");
+    assert_eq!(get(&address, "/api/asks", Some(TOKEN)).0, 200);
+    assert_eq!(setup.ask()["state"], "open");
+}
+
+#[test]
+fn a_write_body_over_16_kib_gets_413_and_one_not_json_415() {
+    let mut setup = Setup::new("web-limits", SERVE);
+    setup.asleep_on_ask();
+    let address = setup.start(&["daemon", &setup.factory()]);
+    let long = format!(r#"{{"text": "{}", "revision": 2}}"#, "a".repeat(16 * 1024));
+
+    let (status, body) = post(&address, "/api/asks/1/answer", "", &long);
+    let form = raw(
+        &address,
+        &format!(
+            "POST /api/asks/1/answer HTTP/1.1\r\nHost: {address}\r\nAuthorization: Bearer {TOKEN}\r\n\
+             Content-Type: application/x-www-form-urlencoded\r\nContent-Length: 6\r\n\r\noption"
+        ),
+    );
+
+    assert_eq!(status, 413, "{body}");
+    assert_eq!(form.0, 415, "{}", form.1);
+    assert_eq!(setup.ask()["state"], "open");
+}
+
+#[test]
+fn dismiss_and_snooze_through_their_endpoints_do_what_their_cli_verbs_do() {
+    let mut setup = Setup::new("web-dismiss", SERVE);
+    setup.asleep_on_ask();
+    let address = setup.start(&["daemon", &setup.factory()]);
+
+    let snoozed = post(
+        &address,
+        "/api/snooze",
+        "",
+        r#"{"kind": "ask", "id": 1, "for": "1h"}"#,
+    );
+    assert_eq!(snoozed.0, 200, "{}", snoozed.1);
+    assert!(setup.ask()["snoozed_until"].is_string());
+    let cleared = post(
+        &address,
+        "/api/snooze",
+        "",
+        r#"{"kind": "ask", "id": 1, "clear": true}"#,
+    );
+    assert_eq!(cleared.0, 200, "{}", cleared.1);
+    assert!(setup.ask()["snoozed_until"].is_null());
+    let both = post(
+        &address,
+        "/api/snooze",
+        "",
+        r#"{"kind": "ask", "id": 1, "for": "1h", "clear": true}"#,
+    );
+    assert_eq!(both.0, 400, "{}", both.1);
+    let unknown = post(
+        &address,
+        "/api/snooze",
+        "",
+        r#"{"kind": "run", "id": 1, "for": "1h"}"#,
+    );
+    assert_eq!(unknown.0, 422, "{}", unknown.1);
+
+    let dismissed = post(&address, "/api/asks/1/dismiss", "", r#"{"revision": 2}"#);
+
+    assert_eq!(dismissed.0, 200, "{}", dismissed.1);
+    let ask = setup.ask();
+    assert_eq!(
+        [&ask["state"], &ask["withdrawn_why"]],
+        ["withdrawn", "dismissed"]
+    );
+    let again = post(&address, "/api/asks/1/dismiss", "", r#"{"revision": 2}"#);
+    assert_eq!(again.0, 409, "{}", again.1);
+    assert_eq!(get(&address, "/api/asks/1/answer", Some(TOKEN)).0, 405);
+    assert_eq!(
+        post(
+            &address,
+            "/api/asks/9/answer",
+            "",
+            r#"{"text": "x", "revision": 1}"#
+        )
+        .0,
+        404
+    );
+}

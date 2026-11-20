@@ -1,4 +1,4 @@
-// Priory's web view (DESIGN.md): the frame, the Desk and the Asks, read-only.
+// Priory's web view (DESIGN.md): the frame, the Desk and the Asks, with answering through the CLI's verbs.
 // Agent text is untrusted: every value goes through `html`, which escapes it.
 
 const ICONS = {
@@ -91,6 +91,11 @@ const state = {
   rendered: 0,
   scrolls: new Map(),
   observers: [],
+  // The answer waiting out its Undo, then in flight: { id, text, timer, sending }.
+  pending: null,
+  drafts: new Map(),
+  notices: new Map(),
+  writing: new Set(),
 };
 
 // Times: relative under 24 h, then a date (DESIGN.md, Copy).
@@ -390,18 +395,37 @@ function askDetail(id, wide) {
     ${nav(open[at - 1], "Previous ask", "chevron-up")}${nav(open[at + 1], "Next ask", "chevron-down")}
     ${wide ? html`<a class="iconbtn" href="${back[0]}" aria-label="Close">${icon("x", "s20")}</a>` : ""}</div>`;
   const options = ask.options || [];
+  const pending = state.pending?.id === ask.id ? state.pending : null;
+  // A command ask's answer runs its command (R6.8), which the web view does not send yet.
+  const locked = ask.command ? "command" : state.failed ? "offline" : null;
   const optionButtons = options.map((option, i) => {
     const recommended = option === ask.recommendation;
-    return html`<button class="opt ${recommended ? "rec-opt" : ""}" data-option="${i}" aria-disabled="true" aria-describedby="answer-later">
-      <span>${option}${recommended ? html`<small>Recommended</small>` : ""}</span>${wide ? html`<kbd>${i + 1}</kbd>` : ""}</button>`;
+    const chosen = pending?.text === option;
+    const off = locked || (pending && !chosen);
+    return html`<button class="opt ${recommended ? "rec-opt" : ""} ${chosen ? "chosen" : ""}" data-option="${i}" data-answer="${i}" aria-disabled="${off || pending ? "true" : "false"}" ${locked ? raw('aria-describedby="answer-locked"') : ""}>
+      ${chosen ? icon("check", "s20") : ""}<span>${option}${recommended ? html`<small>Recommended</small>` : ""}</span>${wide ? html`<kbd>${i + 1}</kbd>` : ""}</button>`;
   });
+  const notice = state.notices.get(ask.id);
+  const lockedNote = {
+    command: html`<p class="note" id="answer-locked">${icon("lock", "s15")}<span>This ask runs a command when answered, which the web view cannot do yet. Run <code>priory answer ${ask.id} OPTION --revision ${ask.revision}</code>.</span></p>`,
+    offline: html`<p class="note" id="answer-locked">${icon("unplug", "s15")}<span>Reconnect to answer.</span></p>`,
+  }[locked] || "";
+  const writing = state.writing.has(ask.id) && !locked;
+  const write = writing
+    ? html`<form class="writeform" data-action="send-text"><label class="sr" for="draft">Your answer</label><textarea id="draft" name="text" rows="3">${state.drafts.get(ask.id) || ""}</textarea><button class="btn primary" ${pending ? raw('aria-disabled="true"') : ""}>Send</button></form>`
+    : html`<button class="ghost write" data-action="write" aria-disabled="${locked || pending ? "true" : "false"}">${icon("pencil", "s15")}Write an answer</button>`;
+  const busy = pending ? "true" : "false";
+  const snoozeButtons = !ask.task || locked === "offline"
+    ? ""
+    : ask.snoozed_until
+      ? html`<button class="ghost" data-action="unsnooze" aria-disabled="${busy}">Unsnooze</button>`
+      : html`<button class="ghost" data-action="snooze" data-for="1h" aria-disabled="${busy}">Snooze 1 h</button><button class="ghost" data-action="snooze" data-tomorrow="9" aria-disabled="${busy}">Snooze until tomorrow 09:00</button>`;
+  const more = html`<div class="more">${write}${locked ? "" : html`<button class="ghost" data-action="dismiss" aria-disabled="${busy}">Dismiss</button>`}${snoozeButtons}</div>`;
   const decided = ask.state !== "open"
-    ? html`<div class="rec">${ask.state === "answered" ? html`<span><b>Answered: ${ask.answer}.</b> ${ask.answered_at ? age(ask.answered_at) + " ago" : ""}</span>` : html`<span><b>Withdrawn.</b></span>`}</div>`
-    : html`${ask.recommendation ? html`<div class="rec"><span><b>Recommended: ${ask.recommendation}.</b></span>
+    ? html`${notice ? html`<p class="warnline" role="status">${notice}</p>` : ""}<div class="rec">${ask.state === "answered" ? html`<span><b>Answered: ${ask.answer}.</b> ${ask.answered_at ? age(ask.answered_at) + " ago" : ""}</span>` : html`<span><b>Withdrawn${ask.withdrawn_why ? `: ${ask.withdrawn_why}` : ""}.</b></span>`}</div>`
+    : html`${notice ? html`<p class="warnline" role="status">${notice}</p>` : ""}${ask.recommendation ? html`<div class="rec"><span><b>Recommended: ${ask.recommendation}.</b></span>
         ${ask.next_action ? html`<span class="then">${icon("corner-down-right", "s15")}<span>${ask.next_action}</span></span>` : ""}</div>` : ""}
-      <div class="opts" role="group" aria-label="Options">${optionButtons}</div>
-      <p class="note" id="answer-later">${icon("lock", "s15")}<span>Answering from the web view comes next. Meanwhile run <code>priory answer ${ask.id} OPTION --revision ${ask.revision}</code>.</span></p>
-      <span class="ghost write" aria-disabled="true">${icon("pencil", "s15")}Write an answer</span>`;
+      <div class="opts" role="group" aria-label="Options">${optionButtons}</div>${lockedNote}${more}`;
   const top = html`<div class="ask">
     <a class="ctx" href="${ask.task ? `/tasks/${ask.task}` : "/asks"}">${wide ? "" : tile("ask", "sm")}<span class="mono">${ask.key}</span><span>${ask.step}</span><span>${ask.lane || ""}</span>${ask.command ? html`<span class="tag">Command</span>` : ""}${wide ? "" : html`<span>${timeTag(ask.since)}</span><span>revision ${ask.revision}</span>`}</a>
     <h2 class="question">${ask.question || ask.title}</h2>${decided}</div>`;
@@ -418,13 +442,146 @@ function askDetail(id, wide) {
   if (ask.state === "withdrawn") historyItems.unshift(html`<li>${tile("withdrawn", "sm")}<span>Withdrawn${ask.withdrawn_why ? `: ${ask.withdrawn_why}` : ""}</span><span></span></li>`);
   const history = html`<section class="sect" id="history"><div class="sh">${icon("history", "s15")}Answer history</div><ol class="hist">${historyItems}</ol></section>`;
   const recommended = options.find((option) => option === ask.recommendation) || options[0];
-  const bar = !wide && ask.state === "open" && options.length
-    ? html`<div class="abar" hidden><span class="btn secondary" aria-disabled="true">${icon("chevron-up", "s15")}${options.length} options</span>
-      <span class="btn primary" aria-disabled="true"><span>${recommended}</span><small>${recommended === ask.recommendation ? "Recommended" : "First option"}</small></span>
-      <p class="note">${icon("lock", "s15")}<span>Answering comes next. Use <code>priory answer</code> meanwhile.</span></p></div>`
+  const sending = pending
+    ? html`<div class="sending" role="status"><span>Sending <b>"${pending.text}"</b></span>${pending.sending ? "" : html`<button class="btn secondary" data-action="undo">Undo</button>`}</div>`
     : "";
-  if (wide) return html`<div class="pinned">${header}${top}</div><div class="scroll" data-sections>${jump}${why}${history}${command}</div>`;
-  return html`${header}<div class="scroll" data-sections>${top}${jump}${why}${history}${command}</div>${bar}`;
+  const bar = !wide && !pending && ask.state === "open" && options.length
+    ? html`<div class="abar" hidden><button class="btn secondary" data-action="options">${icon("chevron-up", "s15")}${options.length} options</button>
+      <button class="btn primary" data-answer="${options.indexOf(recommended)}" aria-disabled="${locked ? "true" : "false"}"><span>${recommended}</span><small>${recommended === ask.recommendation ? "Recommended" : "First option"}</small></button>
+      ${locked ? html`<p class="note">${icon("lock", "s15")}<span>${locked === "command" ? "Answer this command ask with priory answer." : "Reconnect to answer."}</span></p>` : ""}</div>`
+    : "";
+  if (wide) return html`<div class="pinned">${header}${top}${sending}</div><div class="scroll" data-sections>${jump}${why}${history}${command}</div>`;
+  return html`${header}<div class="scroll" data-sections>${top}${jump}${why}${history}${command}</div>${bar}${sending}`;
+}
+
+// Writes: each is the twin of a CLI verb, sent with the revision the page showed.
+const UNDO_MS = 4000;
+const askOnScreen = () => state.data.asks.find((ask) => String(ask.id) === selectedAsk());
+
+async function post(path, body) {
+  const response = await fetch(path, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${state.token}`, "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+    cache: "no-store",
+  });
+  return { status: response.status, body: await response.json().catch(() => ({})) };
+}
+
+// Nothing leaves the page until the Undo time passes; then Undo goes, since the daemon may apply it.
+function answer(ask, text, written) {
+  if (state.pending) return;
+  state.notices.delete(ask.id);
+  const pending = { id: ask.id, text, sending: false };
+  pending.timer = setTimeout(() => send(ask, pending, written), UNDO_MS);
+  state.pending = pending;
+  render();
+}
+
+function undo() {
+  if (!state.pending || state.pending.sending) return;
+  clearTimeout(state.pending.timer);
+  state.pending = null;
+  render();
+}
+
+async function send(ask, pending, written) {
+  pending.sending = true;
+  render();
+  const body = { [written ? "text" : "option"]: pending.text, revision: ask.revision };
+  const sent = await write(ask, `/api/asks/${encodeURIComponent(ask.id)}/answer`, body, pending.text);
+  state.pending = null;
+  if (sent) return next(ask);
+  render();
+}
+
+// True once the daemon applied the write; else the reason shows on the ask and the draft stays.
+async function write(ask, path, body, draft) {
+  let reply;
+  try {
+    reply = await post(path, body);
+  } catch {
+    reply = { status: 0, body: { error: "the connection dropped" } };
+  }
+  const { status, body: answered } = reply;
+  if (status === 200) {
+    state.drafts.delete(ask.id);
+    state.writing.delete(ask.id);
+    state.notices.delete(ask.id);
+    return true;
+  }
+  if (status === 401) {
+    signOut("The daemon refused this token. Paste the current one.");
+    return false;
+  }
+  if (draft) {
+    state.drafts.set(ask.id, draft);
+    state.writing.add(ask.id);
+  }
+  const fresh = answered.ask;
+  if (status === 409 && fresh) {
+    state.data.asks = state.data.asks.map((candidate) => (candidate.id === fresh.id ? fresh : candidate));
+    state.notices.set(ask.id, fresh.state === "open"
+      ? `The question changed. Read revision ${fresh.revision} and answer again.`
+      : fresh.state === "answered"
+        ? `Already answered ${age(fresh.answered_at)} ago: ${fresh.answer}.`
+        : `Withdrawn: ${fresh.withdrawn_why}.`);
+  } else if (status === 503) {
+    state.notices.set(ask.id, "Could not send: no priory daemon runs beside this server. Start priory daemon, then send again.");
+  } else if (status === 504 || status === 0) {
+    state.notices.set(ask.id, "The daemon may have applied this but did not confirm it. Check the ask's state before you send again.");
+    refresh();
+  } else {
+    state.notices.set(ask.id, `Could not send: ${answered.error || `the server answered ${status}`}.`);
+  }
+  return false;
+}
+
+// After an answer, the next open ask opens, or the list once none is left.
+async function next(ask) {
+  const before = openAsks().map((candidate) => candidate.id);
+  await refresh();
+  if (selectedAsk() !== String(ask.id)) return;
+  const left = openAsks().filter((candidate) => candidate.id !== ask.id);
+  const following = left.find((candidate) => before.indexOf(candidate.id) > before.indexOf(ask.id)) || left[0];
+  go(following ? `/asks/${encodeURIComponent(following.id)}` : state.listUrl);
+}
+
+async function snooze(ask, button) {
+  const body = { kind: "ask", id: ask.id };
+  if (button.dataset.action === "unsnooze") body.clear = true;
+  else if (button.dataset.for) body.for = button.dataset.for;
+  else {
+    const at = new Date();
+    at.setDate(at.getDate() + 1);
+    at.setHours(Number(button.dataset.tomorrow), 0, 0, 0);
+    body.until = at.toISOString();
+  }
+  if (!(await write(ask, "/api/snooze", body, null))) return render();
+  if (body.clear) return refresh();
+  next(ask);
+}
+
+async function dismiss(ask) {
+  if (await write(ask, `/api/asks/${encodeURIComponent(ask.id)}/dismiss`, { revision: ask.revision }, null)) return next(ask);
+  render();
+}
+
+function act(target) {
+  const ask = askOnScreen();
+  if (!ask || target.getAttribute("aria-disabled") === "true") return;
+  if (target.dataset.answer !== undefined) return answer(ask, ask.options[Number(target.dataset.answer)], false);
+  const action = target.dataset.action;
+  if (action === "undo") return undo();
+  if (state.pending) return;
+  if (action === "options") return document.querySelector(".opts")?.scrollIntoView({ block: "center" });
+  if (action === "write") {
+    state.writing.add(ask.id);
+    render();
+    return document.getElementById("draft")?.focus();
+  }
+  if (action === "dismiss") return dismiss(ask);
+  if (action === "snooze" || action === "unsnooze") return snooze(ask, target);
 }
 
 // Frame pieces
@@ -578,9 +735,15 @@ function focusKey(element) {
 
 function render() {
   const app = document.getElementById("app");
+  // Leaving the ask, or signing out, cancels an answer that has not left yet.
+  if (state.pending && !state.pending.sending && (!state.token || selectedAsk() !== String(state.pending.id))) {
+    clearTimeout(state.pending.timer);
+    state.pending = null;
+  }
   if (state.renderedKey) state.scrolls.set(state.renderedKey, [...app.querySelectorAll(".scroll")].map((element) => element.scrollTop));
   const focused = focusKey(document.activeElement);
   const typed = app.querySelector("#token")?.value;
+  const caret = document.activeElement?.id === "draft" ? document.activeElement.selectionStart : undefined;
   state.observers.forEach((observer) => observer.disconnect());
   state.observers = [];
   app.innerHTML = page().text;
@@ -590,6 +753,7 @@ function render() {
   app.querySelectorAll(".scroll").forEach((element, i) => { element.scrollTop = scrolls[i] || 0; });
   if (typed && app.querySelector("#token")) app.querySelector("#token").value = typed;
   if (focused) [...app.querySelectorAll(focused)].find((element) => !element.closest("[inert]"))?.focus({ preventScroll: true });
+  if (caret !== undefined) app.querySelector("#draft")?.setSelectionRange(caret, caret);
   for (const row of app.querySelectorAll("tr[data-href]")) row.addEventListener("click", () => go(row.dataset.href));
   watchSections(app);
 }
@@ -657,6 +821,7 @@ document.addEventListener("click", (event) => {
   const action = target.dataset.action;
   if (action === "retry") return refresh();
   if (action === "sign-out") { event.preventDefault(); return signOut(null); }
+  if (target.dataset.answer !== undefined || ["undo", "options", "write", "dismiss", "snooze", "unsnooze"].includes(action)) return act(target);
   if (action === "mode" || action === "theme") {
     const root = document.documentElement;
     if (action === "mode") root.dataset.mode = target.dataset.pickMode;
@@ -675,7 +840,19 @@ document.addEventListener("click", (event) => {
   }
 });
 
+document.addEventListener("input", (event) => {
+  const ask = event.target.id === "draft" && askOnScreen();
+  if (ask) state.drafts.set(ask.id, event.target.value);
+});
+
 document.addEventListener("submit", (event) => {
+  if (event.target.dataset.action === "send-text") {
+    event.preventDefault();
+    const ask = askOnScreen();
+    const text = (state.drafts.get(ask?.id) || "").trim();
+    if (ask && text) answer(ask, text, true);
+    return;
+  }
   if (event.target.dataset.action !== "sign-in") return;
   event.preventDefault();
   const token = new FormData(event.target).get("token").trim();
@@ -695,7 +872,9 @@ document.addEventListener("keydown", (event) => {
   const rows = [...document.querySelectorAll(".list [href^='/asks/'], .list tr[data-href]")];
   const hrefOf = (row) => row.getAttribute("href") || row.dataset.href;
   const at = rows.findIndex((row) => row.getAttribute("aria-current") === "true");
-  if (event.key === "j" || event.key === "k") {
+  if (selectedAsk() && /^[1-9]$/.test(event.key)) {
+    document.querySelector(`.opt[data-answer="${Number(event.key) - 1}"]`)?.click();
+  } else if (event.key === "j" || event.key === "k") {
     const next = rows[Math.min(rows.length - 1, Math.max(0, at + (event.key === "j" ? 1 : -1)))];
     if (next) go(hrefOf(next));
   } else if (event.key === "Enter" && at >= 0 && document.activeElement === document.body) {

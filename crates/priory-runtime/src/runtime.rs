@@ -860,12 +860,15 @@ pub fn replay(
     }
 }
 
+/// How `call`'s error starts when no daemon took the line, so it was never sent.
+pub const NO_DAEMON: &str = "no priory daemon listens on";
+
 /// Sends one line to the daemon and returns its reply. Nothing is spooled: with no daemon, it fails.
 pub fn call(home: &Path, line: &str) -> Result<String, String> {
     let wait = Some(Duration::from_secs(10));
     let path = socket(home);
     let mut stream = UnixStream::connect(&path)
-        .map_err(|error| format!("no priory daemon listens on {}: {error}", path.display()))?;
+        .map_err(|error| format!("{NO_DAEMON} {}: {error}", path.display()))?;
     let mut reply = String::new();
     stream
         .set_write_timeout(wait)
