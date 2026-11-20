@@ -1935,6 +1935,7 @@ pub(crate) fn cancel(
         ),
         [task],
     )?;
+    crate::hold::close_asks(tx, task)?;
     tx.execute(
         &format!(
             "UPDATE holds SET released = {NOW}, released_as = 'cancelled' WHERE task = ?1 AND released IS NULL"

@@ -499,14 +499,7 @@ pub(crate) fn read(db: &mut Connection, id: i64, current: &str) -> rusqlite::Res
 /// Ends the open hold of `task` by dropping it, with `why` as its reason, and closes the hold's
 /// open asks.
 fn drop_task(tx: &Transaction, task: i64, why: &str) -> rusqlite::Result<()> {
-    tx.execute(
-        &format!(
-            "UPDATE asks SET answer = 'drop', answered = {NOW}
-             WHERE id IN (SELECT ask FROM holds WHERE task = ?1 AND released IS NULL)
-             AND answer IS NULL AND withdrawn IS NULL"
-        ),
-        [task],
-    )?;
+    close_asks(tx, task)?;
     tx.execute(
         &format!(
             "UPDATE holds SET released = {NOW}, released_as = 'dropped'
@@ -517,6 +510,19 @@ fn drop_task(tx: &Transaction, task: i64, why: &str) -> rusqlite::Result<()> {
     tx.execute(
         "UPDATE tasks SET state = 'dropped', reason = ?2 WHERE id = ?1",
         params![task, why],
+    )
+    .map(drop)
+}
+
+/// Answers `drop` to the open asks of `task`'s open hold, as the task is dropped.
+pub(crate) fn close_asks(tx: &Transaction, task: i64) -> rusqlite::Result<()> {
+    tx.execute(
+        &format!(
+            "UPDATE asks SET answer = 'drop', answered = {NOW}
+             WHERE id IN (SELECT ask FROM holds WHERE task = ?1 AND released IS NULL)
+             AND answer IS NULL AND withdrawn IS NULL"
+        ),
+        [task],
     )
     .map(drop)
 }

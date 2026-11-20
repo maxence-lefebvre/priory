@@ -7179,6 +7179,18 @@ fn dropping_a_task_through_one_merge_ask_closes_its_other_merge_ask() {
 }
 
 #[test]
+fn cancelling_a_held_task_closes_its_merge_asks() {
+    let setup = queued_without_room("hold-cancel-asks");
+    person(&setup, "hold", &["1", "--reason", "a", "--merge", "7"]);
+    setup.publish(&closed_7(false, 400));
+    setup.until("asks", |rows| rows.len() == 1);
+
+    person(&setup, "cancel", &["1"]);
+
+    assert_eq!(setup.rows("asks"), Vec::<Vec<String>>::new());
+}
+
+#[test]
 fn a_task_request_whose_hold_names_null_conditions_files_its_task_held() {
     let mut setup = Setup::new("hold-null");
     setup.memory(0);
