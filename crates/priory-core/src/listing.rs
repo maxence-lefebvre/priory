@@ -143,7 +143,7 @@ pub fn queue(db: &Connection) -> rusqlite::Result<Value> {
     }))
 }
 
-/// A stalled queue's banner, the asleep count, what waits on a person, the queue, then every
+/// The pause's line, a stalled queue's banner, the asleep count, what waits on a person, the queue, then every
 /// worktree under `home` that stays and why.
 pub fn desk(db: &Connection, home: &Path) -> rusqlite::Result<Value> {
     let _snapshot = db.unchecked_transaction()?;
@@ -161,6 +161,7 @@ pub fn desk(db: &Connection, home: &Path) -> rusqlite::Result<Value> {
         |row| row.get(0),
     )?;
     Ok(json!({
+        "paused": state::pause_banner(db)?,
         "banner": stall::banner(db)?,
         "counts": { "asleep": asleep },
         "items": items,

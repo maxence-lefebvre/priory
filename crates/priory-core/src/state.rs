@@ -10,7 +10,7 @@ use std::collections::BTreeMap;
 use std::io::Write;
 use std::time::Duration;
 
-const VERSION: i64 = 29;
+const VERSION: i64 = 30;
 
 const SCHEMA: &str = "
 CREATE TABLE tasks (
@@ -480,12 +480,22 @@ ALTER TABLE tasks ADD COLUMN grade TEXT;
 ALTER TABLE tasks ADD COLUMN grade_reason TEXT;
 PRAGMA user_version = 29;
 ";
+
+// A person's pause: while its one row exists, no queued task starts a run.
+const SCHEMA_30: &str = "
+CREATE TABLE pause (
+  id     INTEGER PRIMARY KEY CHECK (id = 1),
+  reason TEXT,
+  since  TEXT NOT NULL
+);
+PRAGMA user_version = 30;
+";
 /// Each schema change in order: a file at version `n` applies those from index `n` on.
 const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA, SCHEMA_2, SCHEMA_3, SCHEMA_4, SCHEMA_5, SCHEMA_6, SCHEMA_7, SCHEMA_8, SCHEMA_9,
     SCHEMA_10, SCHEMA_11, SCHEMA_12, SCHEMA_13, SCHEMA_14, SCHEMA_15, SCHEMA_16, SCHEMA_17,
     SCHEMA_18, SCHEMA_19, SCHEMA_20, SCHEMA_21, SCHEMA_22, SCHEMA_23, SCHEMA_24, SCHEMA_25,
-    SCHEMA_26, SCHEMA_27, SCHEMA_28, SCHEMA_29,
+    SCHEMA_26, SCHEMA_27, SCHEMA_28, SCHEMA_29, SCHEMA_30,
 ];
 
 /// The order the queue starts tasks in: band, then a person's order, then age. A band the factory
@@ -985,6 +995,7 @@ pub(crate) fn admissible<'r>(
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     let promised = promised(db, factory, None)?;
+    let paused = paused(db)?;
     // The first task that waits for room: no task behind it starts, so it is never starved.
     let mut head = None;
     let mut stall = None;
@@ -1008,6 +1019,8 @@ pub(crate) fn admissible<'r>(
                 }),
             _ => None,
         };
+        // A pause holds only new tasks: a woken, resumed or revived one is `ready` and goes on.
+        let busy = busy.or_else(|| paused.clone().filter(|_| admission.fresh));
         let waits = match (busy, head) {
             (Some(reason), _) => Some(reason),
             // The sweeper frees the room the queue waits for, so it never waits for room itself.
@@ -1045,6 +1058,47 @@ pub(crate) fn admissible<'r>(
     }
     crate::stall::record(db, stall.as_ref().map(|(task, short)| (*task, short)))?;
     Ok(None)
+}
+
+/// Pauses admissions with `reason`: no queued task starts until `unpause`. A second pause keeps
+/// the first one's start and takes the new reason.
+pub fn pause(db: &Connection, reason: Option<&str>) -> rusqlite::Result<String> {
+    db.execute(
+        &format!(
+            "INSERT INTO pause (id, reason, since) VALUES (1, ?1, {NOW})
+             ON CONFLICT (id) DO UPDATE SET reason = ?1"
+        ),
+        [reason],
+    )?;
+    Ok("priory is paused: no queued task starts until `priory unpause`".to_owned())
+}
+
+/// Ends the pause, so queued tasks start again.
+pub fn unpause(db: &Connection) -> rusqlite::Result<String> {
+    Ok(match db.execute("DELETE FROM pause", [])? {
+        0 => "priory was not paused".to_owned(),
+        _ => "priory is unpaused".to_owned(),
+    })
+}
+
+/// Why a queued task waits while admissions are paused: `waits: priory is paused[: <reason>]`.
+fn paused(db: &Connection) -> rusqlite::Result<Option<String>> {
+    db.query_row(
+        "SELECT 'waits: priory is paused' || coalesce(': ' || reason, '') FROM pause",
+        [],
+        |row| row.get(0),
+    )
+    .optional()
+}
+
+/// The desk's line while admissions are paused: `paused since <since>[: <reason>]`.
+pub fn pause_banner(db: &Connection) -> rusqlite::Result<Option<String>> {
+    db.query_row(
+        "SELECT 'paused since ' || since || coalesce(': ' || reason, '') FROM pause",
+        [],
+        |row| row.get(0),
+    )
+    .optional()
 }
 
 /// The task whose live run holds `agent`'s shared session, which runs one turn at a time.

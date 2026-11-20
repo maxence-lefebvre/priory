@@ -1439,6 +1439,9 @@ pub struct Act {
     pub step: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hold: Option<priory_factory::factory::Hold>,
+    /// What `say` tells the task's agent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
 }
 
 /// Applies a desk action. `resume` makes a blocked task `ready`, with a prompt that says why it
@@ -1506,6 +1509,13 @@ pub(crate) fn act(
             Err(format!("task {} is {state}, not blocked", act.task)),
             None,
         )),
+        "say" => {
+            let said = say(&tx, act, &state, &factory.workflows)?;
+            if said.is_ok() {
+                tx.commit()?;
+            }
+            Ok((said, None))
+        }
         "cancel" if ["done", "failed", "dropped"].contains(&state.as_str()) => {
             Ok((Err(format!("task {} is already {state}", act.task)), None))
         }
@@ -1553,6 +1563,49 @@ pub(crate) fn cancel(
     )?;
     set(tx, task, "dropped", None, Some(reason))?;
     Ok(tmux)
+}
+
+/// Queues a person's text as the next prompt of the agent at the task's model step, as an answer
+/// is: typed once its run is idle, or waking an asleep task into a new run that resumes the session.
+fn say(
+    tx: &Transaction,
+    act: &Act,
+    state: &str,
+    workflows: &Workflows,
+) -> rusqlite::Result<Result<String, String>> {
+    let task = act.task;
+    let Some(text) = act.text.as_deref().filter(|text| !text.trim().is_empty()) else {
+        return Ok(Err("say needs a text".to_owned()));
+    };
+    if ["done", "failed", "dropped"].contains(&state) {
+        return Ok(Err(format!("task {task} is {state}")));
+    }
+    let (workflow, at): (String, String) = tx.query_row(
+        "SELECT workflow, step FROM tasks WHERE id = ?1",
+        [task],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )?;
+    if step(workflows, &workflow, &at).is_none_or(|step| step.decides != Decider::Model) {
+        return Ok(Err(format!(
+            "task {task} is at step {at}, which no agent runs"
+        )));
+    }
+    // A task no run took yet starts with its step's prompt, which a queued text would displace.
+    let started: bool = tx.query_row(
+        "SELECT EXISTS (SELECT 1 FROM runs WHERE task = ?1)",
+        [task],
+        |row| row.get(0),
+    )?;
+    if !started {
+        return Ok(Err(format!(
+            "task {task} has no run yet: say it once its agent started"
+        )));
+    }
+    wake(tx, task, text)?;
+    if state == "asleep" {
+        set(tx, task, "ready", None, None)?;
+    }
+    Ok(Ok(format!("task {task} will hear it")))
 }
 
 /// Moves a failed or dropped task back into its step, or `act.step`, as its next generation, and

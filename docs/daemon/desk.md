@@ -1,6 +1,6 @@
 # Desk
 
-`priory desk` prints the stall banner first while the queue is stalled (see Room), then what waits on a person, oldest first: since, kind, id, task, lane, what and the task's generation.
+`priory desk` prints the pause line first while admissions are paused (see Pause), then the stall banner while the queue is stalled (see Room), then what waits on a person, oldest first: since, kind, id, task, lane, what and the task's generation.
 
 | Kind | Id | What | Since |
 | ---- | -- | ---- | ----- |
@@ -31,6 +31,35 @@ already. `priory cancel <task>` drops an active task with the reason `cancelled 
 live run as `cancelled` and kills its tmux session. Both go to the daemon over `priory.sock`, as
 `priory answer` does, and are refused for a task in any other state. An answer to an ask of a done,
 failed or dropped task is refused too.
+
+## Say
+
+`priory say TASK TEXT` sends TEXT to the agent of a task at a model step. It goes to the daemon over
+`priory.sock` and queues TEXT through the outbox, as an answer does: TEXT, then the line that ends
+the step, when no queued prompt carries it already. It goes ahead of the task's other queued
+prompts.
+
+- A running task's agent gets TEXT once its run is idle.
+- An asleep task becomes `ready`, and its next run resumes the agent's session with TEXT as its
+  first prompt. Its open asks and waits stay open, so the agent sleeps on them again unless it
+  ends them.
+- A `ready` or `blocked` task's next run gets TEXT.
+
+It replies `task <id> will hear it`. It refuses a `done`, `failed` or `dropped` task, a task at a
+human or code step, and a task that no run took yet, since its first run starts with the step's
+prompt.
+
+## Pause
+
+`priory pause [REASON]` stops admissions: no `queued` task starts a run until `priory unpause`.
+Everything else goes on. Live runs keep working, and an answer, a wait's event, `say`, `resume` and
+`revive` still wake their tasks, whose new runs start as usual. A queued task waits with the reason
+`waits: priory is paused: <reason>`, which `priory tasks` shows.
+
+The pause lives in the state file, so it survives a daemon restart, and `pause` and `unpause` work
+while the daemon is stopped. A second `pause` keeps the first one's start and takes the new reason.
+While it lasts, `priory desk` starts with `paused since <time>: <reason>`, and `priory desk --json`
+carries that line as `paused`.
 
 ## Revive
 
