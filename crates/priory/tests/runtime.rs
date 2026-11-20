@@ -11259,7 +11259,7 @@ fn a_comment_on_a_subscribed_pull_request_is_queued_while_the_task_runs() {
     setup.start();
     setup.written("fake/tools.log");
 
-    setup.publish(&commented());
+    setup.publish(&off_branch(commented()));
 
     let outbox = setup.until("outbox", |rows| rows.len() == 2);
     assert_eq!(outbox[1][3], "queued");
@@ -11302,10 +11302,7 @@ fn an_unsubscribed_pull_request_no_longer_wakes_the_task() {
         "task 1 unsubscribed from github:owner/repo#7\n"
     );
 
-    // Off the task's branch, which it owns apart from the subscription.
-    let mut comment = commented();
-    comment.data["head_branch"] = json!("feature");
-    setup.publish(&comment);
+    setup.publish(&off_branch(commented()));
 
     let inbox = setup.until("inbox", |rows| rows.len() == 2);
     assert_eq!(inbox[1][4], "ignored");
@@ -11328,6 +11325,12 @@ fn the_unsubscribe_tool_ends_the_subscription_without_ending_the_turn() {
     assert!(!error, "{text}");
     assert_eq!(text, "task 1 unsubscribed from github:owner/repo#7");
     assert_eq!(task_json(&setup, "1")["subscriptions"], json!([]));
+}
+
+/// `message` from a branch other than the task's, which it owns apart from any subscription.
+fn off_branch(mut message: Message) -> Message {
+    message.data["head_branch"] = json!("feature");
+    message
 }
 
 fn task_json(setup: &Setup, task: &str) -> serde_json::Value {
