@@ -1,0 +1,10 @@
+# The view Priory ships. A factory's views/default.toml replaces it.
+[layout]
+tabs = [
+  { panel = "desk" },
+  { panel = "asks" },
+  { panel = "tasks" },
+  { panel = "runs" },
+  { panel = "inbox" },
+  { panel = "reports" },
+]

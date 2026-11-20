@@ -22,6 +22,97 @@ const WAIT: u64 = 25;
 /// Requests `/api/events` holds at once: half the workers, so listings always find a free one.
 const WAITERS: usize = http::WORKERS / 2;
 
+macro_rules! file {
+    ($path:literal, $kind:expr, $source:literal) => {
+        (
+            $path,
+            $kind,
+            include_bytes!(concat!("../../../", $source)).as_slice(),
+        )
+    };
+}
+
+const JS: &str = "text/javascript; charset=utf-8";
+const CSS: &str = "text/css; charset=utf-8";
+const WOFF2: &str = "font/woff2";
+
+/// The web view's files: the path each is served at, its type and its bytes.
+const WEB: &[(&str, &str, &[u8])] = &[
+    file!("/boot.js", JS, "crates/priory-core/web/boot.js"),
+    file!("/app.js", JS, "crates/priory-core/web/app.js"),
+    file!("/app.css", CSS, "crates/priory-core/web/app.css"),
+    file!("/tokens/structure.css", CSS, "design/tokens/structure.css"),
+    file!("/tokens/themes.css", CSS, "design/tokens/themes.css"),
+    file!("/favicon.ico", "image/x-icon", "design/logo/favicon.ico"),
+    file!("/favicon.svg", "image/svg+xml", "design/logo/favicon.svg"),
+    file!(
+        "/apple-touch-icon.png",
+        "image/png",
+        "design/logo/apple-touch-icon.png"
+    ),
+    file!(
+        "/fonts/mona-sans-200-900.woff2",
+        WOFF2,
+        "design/fonts/mona-sans-200-900.woff2"
+    ),
+    file!(
+        "/fonts/jetbrains-mono-400-500.woff2",
+        WOFF2,
+        "design/fonts/jetbrains-mono-400-500.woff2"
+    ),
+    file!(
+        "/fonts/eb-garamond-400-800.woff2",
+        WOFF2,
+        "design/fonts/eb-garamond-400-800.woff2"
+    ),
+    file!(
+        "/fonts/ibm-plex-sans-400-700.woff2",
+        WOFF2,
+        "design/fonts/ibm-plex-sans-400-700.woff2"
+    ),
+    file!(
+        "/fonts/ibm-plex-mono-400.woff2",
+        WOFF2,
+        "design/fonts/ibm-plex-mono-400.woff2"
+    ),
+    file!(
+        "/fonts/ibm-plex-mono-500.woff2",
+        WOFF2,
+        "design/fonts/ibm-plex-mono-500.woff2"
+    ),
+    file!(
+        "/fonts/alegreya-400-900.woff2",
+        WOFF2,
+        "design/fonts/alegreya-400-900.woff2"
+    ),
+    file!(
+        "/fonts/alegreya-sans-400.woff2",
+        WOFF2,
+        "design/fonts/alegreya-sans-400.woff2"
+    ),
+    file!(
+        "/fonts/alegreya-sans-500.woff2",
+        WOFF2,
+        "design/fonts/alegreya-sans-500.woff2"
+    ),
+    file!(
+        "/fonts/alegreya-sans-700.woff2",
+        WOFF2,
+        "design/fonts/alegreya-sans-700.woff2"
+    ),
+    file!(
+        "/fonts/alegreya-sans-800.woff2",
+        WOFF2,
+        "design/fonts/alegreya-sans-800.woff2"
+    ),
+];
+
+/// Agent text reaches the page, so the page runs and loads only its own files.
+const WEB_HEADERS: &str = "Content-Security-Policy: default-src 'none'; script-src 'self'; \
+    style-src 'self'; font-src 'self'; img-src 'self'; connect-src 'self'; base-uri 'none'; \
+    form-action 'none'; frame-ancestors 'none'\r\nX-Content-Type-Options: nosniff\r\n\
+    Referrer-Policy: no-referrer\r\n";
+
 /// Listens on `listen` and serves the state from a pool of threads, each with its own read-only
 /// connection. Refuses to start without the token or a state file it can read.
 pub fn start(factory: &Factory, listen: SocketAddr) -> Result<Vec<JoinHandle<()>>, String> {
@@ -44,14 +135,18 @@ pub fn start(factory: &Factory, listen: SocketAddr) -> Result<Vec<JoinHandle<()>
         .local_addr()
         .map_err(|error| format!("listen on {listen}: {error}"))?;
     let web = config.web;
-    let schedules = Arc::new(listing::schedule_triggers(factory));
+    let served = Arc::new(Served {
+        views: serde_json::json!({ "factory": factory.name, "views": factory.views() }).to_string(),
+        schedules: listing::schedule_triggers(factory),
+    });
     let hooks: &[&str] = if github.is_some() { &[GITHUB] } else { &[] };
     let waiters = Arc::new(AtomicUsize::new(0));
-    let workers = http::serve(listener, token, hooks, move || {
+    let public = |path: &str| !path.starts_with("/api") && !path.starts_with("/hooks");
+    let workers = http::serve(listener, token, hooks, public, move || {
         let db = state::read_only();
         let waiters = Arc::clone(&waiters);
         let home = runtime::home();
-        let schedules = schedules.clone();
+        let served = served.clone();
         let github = github.clone().map(|github| {
             (
                 github,
@@ -67,7 +162,7 @@ pub fn start(factory: &Factory, listen: SocketAddr) -> Result<Vec<JoinHandle<()>
             _ => route(
                 &db,
                 &home,
-                &schedules,
+                &served,
                 web,
                 &waiters,
                 request.method,
@@ -88,10 +183,16 @@ fn env(name: &str, what: &str) -> Result<String, String> {
         .ok_or_else(|| format!("{name} is unset or empty: set it to {what}"))
 }
 
+/// What every server thread reads from the factory, once, when the server starts.
+struct Served {
+    views: String,
+    schedules: Vec<(String, Trigger)>,
+}
+
 fn route(
     db: &Result<Connection, String>,
     home: &Path,
-    schedules: &[(String, Trigger)],
+    served: &Served,
     web: bool,
     waiters: &AtomicUsize,
     method: &str,
@@ -101,12 +202,11 @@ fn route(
         return Reply::error(405, "only GET is served");
     }
     let (path, query) = path.split_once('?').unwrap_or((path, ""));
-    if web && matches!(path, "/" | "/index.html") {
-        return Reply {
-            status: 200,
-            kind: "text/html; charset=utf-8",
-            body: INDEX.to_vec(),
-        };
+    if web && !path.starts_with("/api") && !path.starts_with("/hooks") {
+        return web_file(path);
+    }
+    if path == "/api/views" {
+        return Reply::json(200, served.views.clone());
     }
     let db = match db {
         Ok(db) => db,
@@ -134,7 +234,7 @@ fn route(
         }
         "/api/queue" => match intake::now() {
             Ok(now) => listing::revised(db, "queue", |db| {
-                listing::queue(db, schedules, now).map(Some)
+                listing::queue(db, &served.schedules, now).map(Some)
             }),
             Err(error) => return Reply::error(500, &error),
         },
@@ -177,6 +277,27 @@ fn decode(value: &str) -> Option<String> {
         });
     }
     String::from_utf8(bytes).ok()
+}
+
+/// A web view file, or the page itself for any other path, such as `/asks/42`.
+fn web_file(path: &str) -> Reply {
+    let found = WEB.iter().find(|(served, _, _)| *served == path);
+    let (kind, body) = match found {
+        Some((_, kind, body)) => (*kind, *body),
+        None if path.starts_with("/fonts/")
+            || path.starts_with("/tokens/")
+            || (!path[1..].contains('/') && path.contains('.') && path != "/index.html") =>
+        {
+            return Reply::error(404, "no such file");
+        }
+        None => ("text/html; charset=utf-8", INDEX),
+    };
+    Reply {
+        status: 200,
+        kind,
+        headers: WEB_HEADERS,
+        body: body.to_vec(),
+    }
 }
 
 /// `/api/events?since=REV[&timeout=SECONDS]`: the revision once it differs from `since`, or the

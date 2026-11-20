@@ -3,11 +3,11 @@
 The HTTP server's endpoints and the JSON they return. [serve.md](../daemon/serve.md) explains where
 the server runs, its token and its limits.
 
-Every endpoint but `POST /hooks/github` takes `GET` and needs `Authorization: Bearer <token>`. Each
-listing returns the same JSON as the CLI command with `--json`, with the state's `revision`, an
-integer, read in the same transaction. A listing that is an object has a `revision` field. A
-listing that is a list comes as `{"revision": N, "<name>": [...]}`, where `<name>` is `inbox`,
-`asks` or `tasks`.
+Every endpoint but `POST /hooks/github` takes `GET`. Each one under `/api` needs
+`Authorization: Bearer <token>`; the web view's files do not. Each listing returns the same JSON as
+the CLI command with `--json`, with the state's `revision`, an integer, read in the same
+transaction. A listing that is an object has a `revision` field. A listing that is a list comes as
+`{"revision": N, "<name>": [...]}`, where `<name>` is `inbox`, `asks` or `tasks`.
 
 | Endpoint | CLI | Returns |
 | -------- | --- | ------- |
@@ -17,11 +17,12 @@ listing that is a list comes as `{"revision": N, "<name>": [...]}`, where `<name
 | `/api/tasks` | `priory tasks --json` | `tasks`: an array of [tasks](#tasks) |
 | `/api/tasks/{id}` | | one [task in detail](#task-in-detail) |
 | `/api/queue` | `priory queue --json` | an object: [Queue](#queue) |
+| `/api/views` | | an object: [Views](#views) |
 | `/api/reports/latest` | `priory report show --json` | the [report](#report) written last |
 | `/api/reports/{task}` | `priory report show TASK --json` | the task's [report](#report) |
 | `/api/events?since=REV` | `priory wait --since REV` | `{"revision": N}` once it differs from `REV`. See [below](#apievents) |
-| `/`, `/index.html` | | the web view, with `web = true` |
 | `POST /hooks/github` | | `202` for a signed GitHub delivery, with `[webhooks.github]`. See [below](#post-hooksgithub) |
+| any other path | | the web view, with `web = true`: see [Web view files](#web-view-files) |
 
 Times are RFC 3339 strings in UTC. A field with no value is `null`. Agent text, such as a question
 or a reason, is untrusted: render it as text.
@@ -33,8 +34,8 @@ or a reason, is untrusted: render it as text.
 | `200` | The endpoint answered |
 | `202` | A signed webhook delivery was taken: published, or dropped on purpose |
 | `400` | The request does not parse; `/api/events` lacks `since` or has a parameter out of range; `/api/desk` has a parameter other than `person`, or a broken escape; for a webhook, it sends two `Content-Length`, or its payload lacks a field its event needs |
-| `401` | The token is missing or wrong; for a webhook, the signature is |
-| `404` | No such path, no such task, or no such report |
+| `401` | The token is missing or wrong on a path under `/api`; for a webhook, the signature is |
+| `404` | No such path, task, report or web view file |
 | `405` | A method other than `GET`, on any path |
 | `408` | The request took over 5 seconds |
 | `411` | A webhook delivery has no `Content-Length`, or uses `Transfer-Encoding` |
@@ -199,6 +200,36 @@ the schedule trigger of a `scheduled` entry, and is null otherwise.
 - A firing for a live task that is not asleep coalesces into it, so up next leaves it out.
 - Up next leaves out a schedule with a `hold`, and held tasks without a time hold. They wait for
   their release, so they have no start time.
+
+
+## Views
+
+| Field | Type | Meaning |
+| ----- | ---- | ------- |
+| `factory` | string | The factory's name |
+| `views` | object | Each view by name: the views Priory ships, each replaced by the factory's view of the same name, then the factory's other views. Each is the file's tree as JSON, such as `{ "layout": { "tabs": [{ "panel": "desk" }] } }`. See [views.md](views.md) |
+
+The server reads the views when it starts.
+
+## Web view files
+
+With `web = true`, the server sends these without the token:
+
+| Path | Type |
+| ---- | ---- |
+| `/boot.js`, `/app.js` | `text/javascript; charset=utf-8` |
+| `/app.css`, `/tokens/structure.css`, `/tokens/themes.css` | `text/css; charset=utf-8` |
+| `/fonts/<file>.woff2` | `font/woff2` |
+| `/favicon.ico`, `/favicon.svg`, `/apple-touch-icon.png` | the image's type |
+| any other path outside `/hooks`, such as `/` or `/asks/42` | the page, `text/html; charset=utf-8` |
+
+An unknown file under `/fonts/` or `/tokens/`, or at the top level with a `.` in its name, such as
+`/nothing.js`, gets `404`.
+
+Every file carries `Content-Security-Policy: default-src 'none'; script-src 'self'; style-src
+'self'; font-src 'self'; img-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'none';
+frame-ancestors 'none'`, `X-Content-Type-Options: nosniff` and `Referrer-Policy: no-referrer`. The
+page loads nothing from another host.
 
 ## Report
 

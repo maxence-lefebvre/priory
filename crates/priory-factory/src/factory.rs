@@ -757,6 +757,63 @@ fn dollars<'de, D: Deserializer<'de>>(deserializer: D) -> Result<f64, D::Error> 
     )))
 }
 
+/// `views/<name>.toml` or `.yaml`: a layout of the web view, a tree whose leaves are panels.
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+#[schemars(title = "view")]
+pub struct View {
+    pub layout: Node,
+}
+
+/// A row or column splits its space between its children; tabs show one child at a time.
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum Node {
+    Row(
+        #[serde(deserialize_with = "children")]
+        #[schemars(length(min = 1))]
+        Vec<Node>,
+    ),
+    Column(
+        #[serde(deserialize_with = "children")]
+        #[schemars(length(min = 1))]
+        Vec<Node>,
+    ),
+    Tabs(
+        #[serde(deserialize_with = "children")]
+        #[schemars(length(min = 1))]
+        Vec<Node>,
+    ),
+    Panel(Panel),
+}
+
+fn children<'de, D: Deserializer<'de>>(input: D) -> Result<Vec<Node>, D::Error> {
+    let nodes = Vec::<Node>::deserialize(input)?;
+    if nodes.is_empty() {
+        return Err(D::Error::custom(
+            "a row, column or tabs needs at least one child",
+        ));
+    }
+    Ok(nodes)
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum Panel {
+    Desk,
+    Asks,
+    Inbox,
+    Queue,
+    Tasks,
+    Runs,
+    Terminal,
+    Workflow,
+    Reports,
+}
+
+/// The views Priory ships, by name.
+const VIEWS: &[(&str, &str)] = &[("default", include_str!("../views/default.toml"))];
+
 pub struct Loaded<T> {
     pub file: PathBuf,
     pub value: T,
@@ -772,6 +829,7 @@ pub struct Factory {
     pub triggers: BTreeMap<String, Loaded<Trigger>>,
     pub workflows: BTreeMap<String, Loaded<Workflow>>,
     pub runners: BTreeMap<String, Loaded<Runner>>,
+    pub views: BTreeMap<String, Loaded<View>>,
     /// `prices.toml`: each model's price.
     pub prices: BTreeMap<String, Price>,
     pub lanes: Option<Loaded<Lanes>>,
@@ -832,6 +890,22 @@ impl Factory {
     /// The HTTP server's settings; none listens nowhere.
     pub fn serve(&self) -> Option<&Serve> {
         self.settings.as_ref()?.value.serve.as_ref()
+    }
+
+    /// The views Priory ships, each replaced by the factory's view of the same name, and the
+    /// factory's other views.
+    pub fn views(&self) -> BTreeMap<String, View> {
+        let mut views: BTreeMap<String, View> = VIEWS
+            .iter()
+            .map(|(name, text)| {
+                let view = toml::from_str(text).expect("a shipped view parses");
+                ((*name).to_owned(), view)
+            })
+            .collect();
+        for (name, loaded) in &self.views {
+            views.insert(name.clone(), loaded.value.clone());
+        }
+        views
     }
 
     /// The command that delivers an outside ask's answer, under the factory folder; none only
@@ -931,6 +1005,11 @@ pub fn load(dir: &Path) -> (Factory, Vec<Problem>) {
     for file in found.config_files("workflows") {
         if let Some((value, lines)) = found.parse::<Workflow>(&file) {
             found.define(&mut factory.workflows, stem(&file), &file, value, lines);
+        }
+    }
+    for file in found.config_files("views") {
+        if let Some((value, lines)) = found.parse::<View>(&file) {
+            found.define(&mut factory.views, stem(&file), &file, value, lines);
         }
     }
     for file in found.config_files("runners") {

@@ -1241,3 +1241,29 @@ fn a_search_table_names_a_known_summarizer_and_one_embedder() {
         )
     );
 }
+
+#[test]
+fn a_view_with_an_unknown_panel_names_its_file_and_line() {
+    let view = "[layout]\ntabs = [\n  { panel = \"desk\" },\n  { panel = \"kanban\" },\n]\n";
+
+    let outcome = check(&factory("bad-view", &with("views/default.toml", view)));
+
+    assert_eq!(outcome.code, 1);
+    assert_eq!(
+        outcome.stderr,
+        "views/default.toml:4:13: unknown variant `kanban`, expected one of `desk`, `asks`, `inbox`, `queue`, `tasks`, `runs`, `terminal`, `workflow`, `reports`\n"
+    );
+}
+
+#[test]
+fn a_view_with_an_empty_container_names_its_file_and_line() {
+    let view = "[layout]\nrow = [\n  { panel = \"desk\" },\n  { tabs = [] },\n]\n";
+
+    let outcome = check(&factory("empty-view", &with("views/default.toml", view)));
+
+    assert_eq!(outcome.code, 1);
+    assert_eq!(
+        outcome.stderr,
+        "views/default.toml:4:3: a row, column or tabs needs at least one child\n"
+    );
+}
