@@ -46,6 +46,24 @@ echo "PRIORY_TOKEN=$(openssl rand -hex 32)" >> ~/.config/priory/env
 network is the factory owner's choice for each machine. The server speaks plain HTTP: put it behind
 a TLS proxy before it leaves the machine.
 
+## Waiting for a change
+
+The state carries a revision, a number that every committed change to the tasks, asks, runs, waits,
+holds, inbox, reports, snoozes and the pause raises. SQLite triggers raise it in the same transaction
+as the change, so no write path can miss it. Each listing carries the revision it read, read in one
+transaction with its data.
+
+A view keeps the revision of its last read and waits for the next one instead of polling:
+
+- Over HTTP, `GET /api/events?since=REV` answers at once when the state's revision differs from
+  `REV`. Otherwise it holds the request until a change, or for 25 seconds, and answers with the
+  revision either way. The view reads its listings again when the revision changed.
+- From the CLI, `priory wait --since REV [--timeout D]` does the same and prints the revision.
+
+The server holds at most 4 such requests at once, half its 8 workers, so a listing always finds a
+free worker. Past that, `/api/events` answers `503` with `Retry-After: 1`. Worktrees on disk are
+not in the state: a desk item for a worktree changes without a new revision.
+
 ## Limits
 
 | Limit | Value | Past it |
@@ -54,6 +72,7 @@ a TLS proxy before it leaves the machine.
 | Request body | none allowed, except 1 MiB on `POST /hooks/github` | `413` |
 | Time to send the whole request, head and body | 5 seconds | `408` |
 | Connections served at once | 8 | Others wait in the listen backlog |
+| `/api/events` requests held at once | 4 | `503` |
 
 Each connection carries one request and closes after the reply.
 

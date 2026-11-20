@@ -389,7 +389,7 @@ fn each_endpoint_returns_what_the_cli_shows_and_its_json() {
     }
     let tasks = api(&address, "/api/tasks");
     assert_eq!(
-        tasks
+        tasks["tasks"]
             .as_array()
             .unwrap()
             .iter()
@@ -409,7 +409,7 @@ fn each_endpoint_returns_what_the_cli_shows_and_its_json() {
         "id\tkey\tworkflow\tstep\tstate\tband\tlane\treason\tposition\tgeneration\tretired\tgrade\tgrade_reason\n"
     ));
     let asks = api(&address, "/api/asks");
-    let ask = &asks[0];
+    let ask = &asks["asks"][0];
     assert_eq!(
         [
             &ask["id"],
@@ -456,7 +456,10 @@ fn each_endpoint_returns_what_the_cli_shows_and_its_json() {
     assert_eq!(desk["items"][0]["kind"], "ask");
     let inbox = api(&address, "/api/inbox");
     let text = String::from_utf8(setup.priory(&["inbox"]).stdout).unwrap();
-    assert_eq!(inbox.as_array().unwrap().len(), text.lines().count() - 1);
+    assert_eq!(
+        inbox["inbox"].as_array().unwrap().len(),
+        text.lines().count() - 1
+    );
 }
 
 #[test]
@@ -1171,4 +1174,135 @@ fn malformed_or_stale_signed_deliveries_publish_nothing() {
     );
     assert_eq!(status, 400);
     assert!(setup.published().is_empty());
+}
+
+#[test]
+fn a_change_bumps_the_revision_that_each_listing_carries() {
+    let mut setup = Setup::new("revision", SERVE);
+    let before = json_of(&setup, "tasks");
+    assert_eq!(before["tasks"], json!([]));
+
+    setup.seed();
+
+    let after = json_of(&setup, "tasks");
+    assert!(
+        after["revision"].as_i64().unwrap() > before["revision"].as_i64().unwrap(),
+        "{before} then {after}"
+    );
+    assert_eq!(after["tasks"].as_array().unwrap().len(), 2);
+    let address = setup.start(&["serve", &setup.factory()]);
+    for path in ["desk", "inbox", "asks", "tasks", "queue", "tasks/1"] {
+        assert_eq!(
+            api(&address, &format!("/api/{path}"))["revision"],
+            after["revision"],
+            "{path}"
+        );
+    }
+}
+
+#[test]
+fn events_answers_at_once_when_behind_and_within_a_second_of_a_change() {
+    let mut setup = Setup::new("events", SERVE);
+    let address = setup.start(&["serve", &setup.factory()]);
+    let revision = api(&address, "/api/tasks")["revision"].as_i64().unwrap();
+
+    let started = Instant::now();
+    let behind = api(&address, &format!("/api/events?since={}", revision - 1));
+    assert_eq!(behind, json!({ "revision": revision }));
+    assert!(started.elapsed() < Duration::from_secs(1));
+
+    let waiter = {
+        let address = address.clone();
+        std::thread::spawn(move || {
+            let reply = api(&address, &format!("/api/events?since={revision}"));
+            (reply, Instant::now())
+        })
+    };
+    std::thread::sleep(Duration::from_millis(500));
+    succeeded(&setup.priory(&["pause", "lunch"]));
+    let changed = Instant::now();
+    let (reply, answered) = waiter.join().unwrap();
+
+    assert!(reply["revision"].as_i64().unwrap() > revision, "{reply}");
+    assert!(answered.duration_since(changed) < Duration::from_secs(1));
+}
+
+#[test]
+fn events_answers_with_the_same_revision_after_its_timeout() {
+    let mut setup = Setup::new("events-timeout", SERVE);
+    let address = setup.start(&["serve", &setup.factory()]);
+    let revision = api(&address, "/api/tasks")["revision"].as_i64().unwrap();
+
+    let started = Instant::now();
+    let reply = api(&address, &format!("/api/events?since={revision}&timeout=1"));
+
+    assert_eq!(reply, json!({ "revision": revision }));
+    assert!(started.elapsed() >= Duration::from_secs(1));
+    assert!(started.elapsed() < Duration::from_secs(3));
+    assert_eq!(get(&address, "/api/events", Some(TOKEN)).0, 400);
+    assert_eq!(get(&address, "/api/events?since=x", Some(TOKEN)).0, 400);
+    assert_eq!(
+        get(
+            &address,
+            &format!("/api/events?since={revision}&timeout=26"),
+            Some(TOKEN)
+        )
+        .0,
+        400
+    );
+}
+
+#[test]
+fn waiters_beyond_the_cap_get_503_while_listings_still_answer() {
+    let mut setup = Setup::new("events-cap", SERVE);
+    let address = setup.start(&["serve", &setup.factory()]);
+    let revision = api(&address, "/api/tasks")["revision"].as_i64().unwrap();
+    let path = format!("/api/events?since={revision}&timeout=3");
+
+    let waiters: Vec<_> = (0..4)
+        .map(|_| {
+            let (address, path) = (address.clone(), path.clone());
+            std::thread::spawn(move || get(&address, &path, Some(TOKEN)).0)
+        })
+        .collect();
+    std::thread::sleep(Duration::from_millis(500));
+
+    assert_eq!(get(&address, &path, Some(TOKEN)).0, 503);
+    assert_eq!(get(&address, "/api/tasks", Some(TOKEN)).0, 200);
+    for waiter in waiters {
+        assert_eq!(waiter.join().unwrap(), 200);
+    }
+}
+
+#[test]
+fn wait_prints_the_new_revision_on_a_change_or_the_same_one_after_its_timeout() {
+    let setup = Setup::new("wait", SERVE);
+    let revision = json_of(&setup, "tasks")["revision"].as_i64().unwrap();
+
+    let timed_out = setup.priory(&["wait", "--since", &revision.to_string(), "--timeout", "1s"]);
+    succeeded(&timed_out);
+    assert_eq!(
+        String::from_utf8_lossy(&timed_out.stdout),
+        format!("{revision}\n")
+    );
+
+    let waiter = setup
+        .command()
+        .args(["wait", "--since", &revision.to_string()])
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    std::thread::sleep(Duration::from_millis(500));
+    succeeded(&setup.priory(&["pause", "lunch"]));
+    let changed = Instant::now();
+    let output = waiter.wait_with_output().unwrap();
+
+    succeeded(&output);
+    assert!(changed.elapsed() < Duration::from_secs(1));
+    let after: i64 = String::from_utf8_lossy(&output.stdout)
+        .trim()
+        .parse()
+        .unwrap();
+    assert!(after > revision);
+    assert!(!setup.priory(&["wait"]).status.success());
 }
