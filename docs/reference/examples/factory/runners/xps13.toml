@@ -1,0 +1,3 @@
+#:schema https://raw.githubusercontent.com/maxence-lefebvre/priory/main/docs/schemas/config/runner.json
+platform = { os = "linux", arch = "x86_64" }
+agents = { cpu = "50%", memory = "60%" }   # a laptop in use; omit for 90% of each

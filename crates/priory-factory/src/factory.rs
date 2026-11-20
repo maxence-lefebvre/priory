@@ -1,5 +1,6 @@
 use crate::lanes::Lanes;
 use crate::lines::{self, Lines};
+use schemars::JsonSchema;
 use serde::de::{DeserializeOwned, Deserializer, Error as _, IntoDeserializer};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -25,9 +26,12 @@ impl fmt::Display for Problem {
     }
 }
 
-#[derive(Debug, Deserialize)]
+/// `factory.toml` or `factory.yaml`: the factory's name and the daemon's settings.
+#[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[schemars(title = "factory.toml")]
 pub struct Settings {
+    /// The factory's name.
     pub name: String,
     /// The bands, highest first, when they are not the default ones.
     pub bands: Option<Vec<String>>,
@@ -37,9 +41,11 @@ pub struct Settings {
     pub handler: Option<String>,
     /// How long a run goes without a hook event or a change on its pane before it counts as stalled.
     #[serde(default, deserialize_with = "duration")]
+    #[schemars(with = "Option<String>", regex(pattern = r"^[0-9]+[smh]$"))]
     pub stalled: Option<Duration>,
     /// How long one git, gh or tmux command may run before Priory kills it.
     #[serde(default, deserialize_with = "duration")]
+    #[schemars(with = "Option<String>", regex(pattern = r"^[0-9]+[smh]$"))]
     pub command_timeout: Option<Duration>,
     #[serde(default)]
     pub search: Search,
@@ -47,7 +53,7 @@ pub struct Settings {
 }
 
 /// Where the daemon exports its trace records as OpenTelemetry spans.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Telemetry {
     /// The OTLP/HTTP base URL, such as `http://127.0.0.1:4318`; spans go to its `/v1/traces`.
@@ -55,11 +61,12 @@ pub struct Telemetry {
 }
 
 /// How tasks are found: who writes their TL;DR, and whether search compares embeddings too.
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Search {
     /// The agent whose model writes a new task's TL;DR; no summarizer runs without one.
     pub tldr: Option<String>,
+    /// Whether search compares embeddings of TL;DRs as well as keywords.
     #[serde(default)]
     pub embeddings: bool,
     /// The embedding model Priory runs in process, a Hugging Face repository.
@@ -93,11 +100,12 @@ impl Search {
 
 /// How the daemon frees room: the built-in worktree sweep, the person's scripts, and the sweeper
 /// agent it starts when they do not free enough.
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Sweep {
     /// How often the built-in worktree sweep runs; every 10 minutes when unset.
     #[serde(default, deserialize_with = "duration")]
+    #[schemars(with = "Option<String>", regex(pattern = r"^[0-9]+[smh]$"))]
     pub every: Option<Duration>,
     /// Scripts run when the resource they name stalls the queue.
     #[serde(default)]
@@ -105,6 +113,7 @@ pub struct Sweep {
     /// How long the queue stays stalled after its scripts ran before the sweeper starts; 30 minutes
     /// when unset.
     #[serde(default, deserialize_with = "duration")]
+    #[schemars(with = "Option<String>", regex(pattern = r"^[0-9]+[smh]$"))]
     pub after: Option<Duration>,
     /// The agent of the built-in `sweep` workflow; no sweeper starts without one.
     pub agent: Option<String>,
@@ -118,14 +127,16 @@ impl Sweep {
     }
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Script {
     /// A shell command, run by `sh -c` in `PRIORY_HOME`.
     pub run: String,
+    /// The resource whose shortage runs the script.
     pub when: Resource,
     /// How long it may run before Priory kills it; 5 minutes when unset.
     #[serde(default, deserialize_with = "duration")]
+    #[schemars(with = "Option<String>", regex(pattern = r"^[0-9]+[smh]$"))]
     pub timeout: Option<Duration>,
 }
 
@@ -168,7 +179,7 @@ next = { opened = "done", failed = "stop" }
 "#;
 
 /// A resource the room check measures.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum Resource {
     Memory,
@@ -189,22 +200,39 @@ impl Resource {
 /// The bands a factory has when `factory.toml` names none, highest first.
 pub const BANDS: [&str; 4] = ["blocker", "now", "today", "later"];
 
-#[derive(Debug, Deserialize)]
+/// The frontmatter of `agents/<name>/agent.md`: who runs a model step. The Markdown after it is
+/// the agent's instructions.
+#[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
+#[schemars(title = "agent.md frontmatter")]
 pub struct Agent {
+    /// One line on what the agent does.
     pub description: String,
+    /// The coding agent CLI that runs it.
     pub harness: Harness,
+    /// The harness's model name, such as `sonnet`; the harness default when unset.
     pub model: Option<String>,
+    /// The harness's reasoning effort, such as `high`; the harness default when unset.
     pub effort: Option<String>,
+    /// The runner it runs on, by Tailscale hostname, or `any`.
     pub runner: Option<String>,
     #[serde(default)]
     pub session: Session,
     /// What a runner must have free to admit a run of this agent, in bytes.
     #[serde(default, deserialize_with = "size")]
+    #[schemars(
+        with = "Option<String>",
+        regex(pattern = r"^[0-9]+(\.[0-9]+)?(KB|MB|GB|TB)$")
+    )]
     pub memory: Option<u64>,
     /// What a runner keeps free on disk for a run of this agent, past its floor, in bytes.
     #[serde(default, deserialize_with = "size")]
+    #[schemars(
+        with = "Option<String>",
+        regex(pattern = r"^[0-9]+(\.[0-9]+)?(KB|MB|GB|TB)$")
+    )]
     pub disk: Option<u64>,
+    /// The MCP servers the run gets, by name.
     #[serde(default)]
     pub mcp_servers: Vec<String>,
     #[serde(default)]
@@ -215,19 +243,22 @@ pub struct Agent {
 }
 
 /// Claude Code's own `permissions` settings, so a person can copy rules across.
-#[derive(Debug, Default, Deserialize, Serialize)]
+#[derive(Debug, Default, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct Permissions {
     /// The run's `--permission-mode`, not a setting: Claude's flag outranks every settings file.
     #[serde(default, deserialize_with = "refuse_bypass", skip_serializing)]
     pub default_mode: Option<PermissionMode>,
+    /// Claude Code permission rules the run allows, such as `Bash(cargo test:*)`.
     #[serde(default)]
     pub allow: Vec<String>,
+    /// Claude Code permission rules the run denies, such as `Bash(git push:*)`.
     #[serde(default)]
     pub deny: Vec<String>,
 }
 
-#[derive(Debug, Clone, Copy, Deserialize)]
+/// Claude Code's `--permission-mode`; `bypassPermissions` is refused.
+#[derive(Debug, Clone, Copy, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub enum PermissionMode {
     /// Claude Code's `--permission-mode` no longer takes `default`, its older name for `manual`.
@@ -265,14 +296,16 @@ fn refuse_bypass<'de, D: Deserializer<'de>>(
     PermissionMode::deserialize(mode.into_deserializer()).map(Some)
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+/// The coding agent CLI that runs an agent.
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "kebab-case")]
 pub enum Harness {
     ClaudeCode,
     Codex,
 }
 
-#[derive(Debug, Default, Deserialize)]
+/// `per-task`: one conversation per task. `shared`: one conversation across tasks, such as a lead.
+#[derive(Debug, Default, Deserialize, JsonSchema)]
 #[serde(rename_all = "kebab-case")]
 pub enum Session {
     #[default]
@@ -280,36 +313,62 @@ pub enum Session {
     Shared,
 }
 
-#[derive(Debug, Deserialize)]
+/// `triggers/<name>.toml` or `.yaml`: an event source, its filter and the workflow its events
+/// start. The file name is the trigger's name.
+#[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[schemars(title = "trigger")]
 pub struct Trigger {
+    /// `github`, `linear`, `linear.view`, `slack` or `schedule`.
     pub source: String,
+    /// The repository the trigger's tasks work in, `owner/name`; the polled one for `github`.
     pub repo: Option<String>,
+    /// The event that starts a task, such as `issues.labeled`; depends on `source`.
     #[serde(default)]
     pub on: String,
+    /// The saved Linear view a `linear.view` trigger reads: its id, or the slug id ending its URL.
     pub view: Option<String>,
     /// The Slack channel id a `slack` trigger reads, such as `C0123`.
     pub channel: Option<String>,
+    /// Values an event must have: `label` for GitHub; `team`, `label`, `state` for Linear; `text`
+    /// for Slack.
     pub filter: Option<BTreeMap<String, String>>,
+    /// The workflow a matching event starts, by file name.
     pub workflow: String,
+    /// Which events are the same work, such as `issue.number`; for a schedule, a fixed key.
     pub key: Option<String>,
+    /// The band of its tasks.
     pub band: Option<String>,
+    /// The lane of its tasks, `<team>/<theme>`; `lanes.toml` derives it when unset.
     pub lane: Option<String>,
+    /// Whether the events of the first poll start tasks too.
     pub backfill: Option<bool>,
     /// The local time of day a schedule fires, `HH:MM`.
     #[serde(default, deserialize_with = "time_of_day")]
+    #[schemars(with = "Option<String>", regex(pattern = r"^[0-2][0-9]:[0-5][0-9]$"))]
     pub at: Option<jiff::civil::Time>,
     /// The weekdays a schedule fires on; every day when unset.
     #[serde(default, deserialize_with = "weekdays")]
+    #[schemars(
+        with = "Option<Vec<String>>",
+        length(min = 1),
+        extend("items" = { "enum": ["mon", "tue", "wed", "thu", "fri", "sat", "sun"] })
+    )]
     pub days: Option<Vec<jiff::civil::Weekday>>,
     /// How often a schedule fires again after `at`, the same day; once a day when unset.
     #[serde(default, deserialize_with = "duration")]
+    #[schemars(with = "Option<String>", regex(pattern = r"^[0-9]+[smh]$"))]
     pub every: Option<Duration>,
     /// When a schedule's day of firings ends; the end of the day when unset.
     #[serde(default, deserialize_with = "until")]
+    #[schemars(
+        with = "Option<String>",
+        regex(pattern = r"^([0-2][0-9]:[0-5][0-9]|[0-9]+[smh])$")
+    )]
     pub until: Option<Until>,
-    /// The zone `at` is read in; the machine's own when unset.
+    /// The IANA zone `at` is read in, such as `Europe/Paris`; the machine's own when unset.
     #[serde(default, deserialize_with = "time_zone")]
+    #[schemars(with = "Option<String>")]
     pub timezone: Option<jiff::tz::TimeZone>,
     /// What a schedule's firing tells the task it wakes.
     pub prompt: Option<String>,
@@ -318,9 +377,10 @@ pub struct Trigger {
 }
 
 /// Why a task is held, and at most one condition that releases it. With none, a person does.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Hold {
+    /// Why the task waits, shown to a person.
     pub reason: String,
     /// An RFC 3339 instant, or a duration such as `2 hours` after the hold.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -399,9 +459,13 @@ fn time_zone<'de, D: Deserializer<'de>>(input: D) -> Result<Option<jiff::tz::Tim
     })
 }
 
-#[derive(Debug, Deserialize)]
+/// `workflows/<name>.toml` or `.yaml`: the typed steps a task goes through. The file name is the
+/// workflow's name.
+#[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[schemars(title = "workflow")]
 pub struct Workflow {
+    /// The id of the first step.
     pub start: String,
     /// The band of its tasks when neither their request nor their trigger sets one.
     pub band: Option<String>,
@@ -424,23 +488,33 @@ impl Workflow {
     }
 }
 
-#[derive(Debug, Deserialize)]
+/// One step: who decides its outcome, what it may change, and where each outcome leads.
+#[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Step {
+    /// The step's id, unique in the workflow; `done` and `stop` are reserved.
     pub id: String,
     pub decides: Decider,
     pub effect: Effect,
+    /// The agent that runs a model step.
     pub agent: Option<String>,
+    /// What a model step tells its agent.
     pub prompt: Option<String>,
+    /// The answers a person picks from at a human step.
     #[serde(default)]
     pub options: Vec<String>,
+    /// The built-in action a code step runs, such as `open-pr`.
     pub action: Option<String>,
+    /// The irreversible steps a human step approves.
     #[serde(default)]
     pub approves: Vec<String>,
+    /// Each outcome and the step it leads to, or `done` or `stop`.
     pub next: BTreeMap<String, String>,
+    /// Why an irreversible step may run without a person's approval.
     pub autonomous: Option<String>,
     /// How long one turn of a model step may run before Priory ends it.
     #[serde(default, deserialize_with = "duration")]
+    #[schemars(with = "Option<String>", regex(pattern = r"^[0-9]+[smh]$"))]
     pub timeout: Option<Duration>,
 }
 
@@ -479,7 +553,8 @@ fn size<'de, D: serde::Deserializer<'de>>(input: D) -> Result<Option<u64>, D::Er
         })
 }
 
-#[derive(Debug, Deserialize, PartialEq, Eq)]
+/// Who decides a step's outcome: a `code` action, a `model` run or a `human`.
+#[derive(Debug, Deserialize, PartialEq, Eq, JsonSchema)]
 #[serde(rename_all = "kebab-case")]
 pub enum Decider {
     Code,
@@ -497,7 +572,8 @@ impl Decider {
     }
 }
 
-#[derive(Debug, Deserialize, Serialize, PartialEq, Eq)]
+/// What a step may change: `none`, `read`, `reversible` or `irreversible`.
+#[derive(Debug, Deserialize, Serialize, PartialEq, Eq, JsonSchema)]
 #[serde(rename_all = "kebab-case")]
 pub enum Effect {
     None,
@@ -517,21 +593,27 @@ impl Effect {
     }
 }
 
-#[derive(Debug, Deserialize)]
+/// `runners/<tailscale-hostname>.toml` or `.yaml`: a machine that runs agents. Capacity is
+/// measured live, so the file holds the platform and the share its agents may take.
+#[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[schemars(title = "runner")]
 pub struct Runner {
     pub platform: Platform,
+    /// The share of the machine its agents may take together; 90% of each when unset.
     pub agents: Option<Share>,
 }
 
-#[derive(Debug, Deserialize)]
+/// The machine's operating system and CPU architecture.
+#[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Platform {
     pub os: Os,
+    /// The CPU architecture, such as `x86_64` or `aarch64`.
     pub arch: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, JsonSchema)]
 #[serde(rename_all = "kebab-case")]
 pub enum Os {
     Linux,
@@ -539,14 +621,17 @@ pub enum Os {
     Windows,
 }
 
-#[derive(Debug, Deserialize)]
+/// Shares such as `60%`, above 0 and at most 100%.
+#[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Share {
     /// The fraction of the machine's CPUs the runner's agents may load together.
     #[serde(default, deserialize_with = "percent")]
+    #[schemars(with = "Option<String>", regex(pattern = r"^[0-9]+(\.[0-9]+)?%$"))]
     pub cpu: Option<f64>,
     /// The fraction of the machine's memory the runner's agents may take together.
     #[serde(default, deserialize_with = "percent")]
+    #[schemars(with = "Option<String>", regex(pattern = r"^[0-9]+(\.[0-9]+)?%$"))]
     pub memory: Option<f64>,
 }
 

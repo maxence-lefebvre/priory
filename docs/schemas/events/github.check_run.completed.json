@@ -1,0 +1,181 @@
+{
+  "$id": "https://raw.githubusercontent.com/maxence-lefebvre/priory/main/docs/schemas/events/github.check_run.completed.json",
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "additionalProperties": false,
+  "definitions": {
+    "CheckRunCompleted": {
+      "additionalProperties": false,
+      "description": "A check run completed on a pull request's head commit, once per pull request.",
+      "properties": {
+        "app": {
+          "description": "The slug of the GitHub App that ran the check.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "base_branch": {
+          "description": "The branch the pull request merges into.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "baseline": {
+          "description": "True when the event came from the first poll of its stream.",
+          "type": "boolean"
+        },
+        "conclusion": {
+          "description": "`success`, `failure`, `neutral`, `cancelled`, `skipped`, `timed_out`, `action_required`,\n`stale` or `startup_failure`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "failing": {
+          "description": "Check runs on the same commit completed with a conclusion other than success, neutral or\nskipped.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "github_id": {
+          "description": "GitHub's check run id.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "head_branch": {
+          "description": "The head branch; null when GitHub no longer returns the pull request.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "head_sha": {
+          "description": "The head commit; for a check, the commit it ran on.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "name": {
+          "description": "The check run's name, as branch protection names a required check.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "pending": {
+          "description": "Check runs on the same commit not completed at the poll, counting those past the first 100.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "pull_request": {
+          "description": "The pull request number.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "repo": {
+          "description": "`owner/name`.",
+          "type": "string"
+        },
+        "time": {
+          "description": "When the event happened, RFC 3339.",
+          "format": "date-time",
+          "type": "string"
+        },
+        "triggers": {
+          "description": "The triggers the event matched, so the triggers it requests tasks for; may be empty.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "url": {
+          "description": "The pull request's page; the review's for a review, the check run's for a check.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "repo",
+        "pull_request",
+        "url",
+        "head_branch",
+        "head_sha",
+        "base_branch",
+        "name",
+        "conclusion",
+        "app",
+        "pending",
+        "failing",
+        "github_id",
+        "time",
+        "baseline",
+        "triggers"
+      ],
+      "type": "object"
+    },
+    "Link": {
+      "additionalProperties": false,
+      "description": "A link for people.",
+      "properties": {
+        "label": {
+          "description": "`issue` or `pull_request`.",
+          "type": "string"
+        },
+        "url": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "label",
+        "url"
+      ],
+      "type": "object"
+    }
+  },
+  "description": "A check run completed on a pull request's head commit, once per pull request.",
+  "properties": {
+    "data": {
+      "$ref": "#/definitions/CheckRunCompleted"
+    },
+    "id": {
+      "description": "A UUIDv5 of the message's name, so a retried publish keeps its id.",
+      "format": "uuid",
+      "type": "string"
+    },
+    "links": {
+      "description": "GitHub and Linear events carry one link to the event's page.",
+      "items": {
+        "$ref": "#/definitions/Link"
+      },
+      "type": "array"
+    },
+    "subject": {
+      "description": "A short line for listings, such as `owner/name#42`.",
+      "type": "string"
+    },
+    "time": {
+      "description": "When the event happened, RFC 3339.",
+      "format": "date-time",
+      "type": "string"
+    },
+    "type": {
+      "const": "github.check_run.completed",
+      "description": "The message type, such as `github.issues.labeled`.",
+      "type": "string"
+    }
+  },
+  "required": [
+    "id",
+    "type",
+    "subject",
+    "time",
+    "data",
+    "links"
+  ],
+  "title": "github.check_run.completed",
+  "type": "object"
+}

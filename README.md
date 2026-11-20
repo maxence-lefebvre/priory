@@ -179,8 +179,8 @@ Run `priory` with no arguments to print its usage.
 
 **Factory.** The folder of files that defines everything else: `factory.toml`, `agents/`,
 `workflows/`, `triggers/`, `runners/`, and optionally `lanes.toml` and `prices.toml`. Each file can be
-TOML or YAML. Changing the factory is a pull request. See
-[Configuration in the PRD](docs/prd.md#configuration).
+TOML or YAML. Changing the factory is a pull request. Every key is in
+[docs/reference/](docs/reference/README.md).
 
 **Trigger.** One event source, a filter and the workflow its events start. Sources are `github`,
 `linear`, `linear.view`, `slack` and `schedule`. A trigger's `key` says which events are the same
@@ -236,6 +236,8 @@ Priory is in early development. The milestones come from [docs/prd.md](docs/prd.
 ## Documentation
 
 - [docs/prd.md](docs/prd.md): what Priory does, and in which milestone.
+- [docs/reference/](docs/reference/README.md): every key of the factory's files, every intake
+  message, and their JSON Schemas.
 - [docs/daemon/](docs/daemon/README.md): how the daemon runs tasks, one file per topic.
 - [docs/intake/](docs/intake/README.md): the messages the intake publishes, one file per source.
 - [docs/trace-schema.md](docs/trace-schema.md): the format of trace records.

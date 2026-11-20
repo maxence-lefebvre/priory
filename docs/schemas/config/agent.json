@@ -1,0 +1,142 @@
+{
+  "$id": "https://raw.githubusercontent.com/maxence-lefebvre/priory/main/docs/schemas/config/agent.json",
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "additionalProperties": false,
+  "definitions": {
+    "Harness": {
+      "description": "The coding agent CLI that runs an agent.",
+      "enum": [
+        "claude-code",
+        "codex"
+      ],
+      "type": "string"
+    },
+    "PermissionMode": {
+      "description": "Claude Code's `--permission-mode`; `bypassPermissions` is refused.",
+      "oneOf": [
+        {
+          "enum": [
+            "acceptEdits",
+            "plan",
+            "auto",
+            "dontAsk"
+          ],
+          "type": "string"
+        },
+        {
+          "const": "manual",
+          "description": "Claude Code's `--permission-mode` no longer takes `default`, its older name for `manual`.",
+          "type": "string"
+        }
+      ]
+    },
+    "Permissions": {
+      "additionalProperties": false,
+      "description": "Claude Code's own `permissions` settings, so a person can copy rules across.",
+      "properties": {
+        "allow": {
+          "default": [],
+          "description": "Claude Code permission rules the run allows, such as `Bash(cargo test:*)`.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "defaultMode": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/PermissionMode"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The run's `--permission-mode`, not a setting: Claude's flag outranks every settings file.",
+          "writeOnly": true
+        },
+        "deny": {
+          "default": [],
+          "description": "Claude Code permission rules the run denies, such as `Bash(git push:*)`.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "type": "object"
+    },
+    "Session": {
+      "description": "`per-task`: one conversation per task. `shared`: one conversation across tasks, such as a lead.",
+      "enum": [
+        "per-task",
+        "shared"
+      ],
+      "type": "string"
+    }
+  },
+  "description": "The frontmatter of `agents/<name>/agent.md`: who runs a model step. The Markdown after it is\nthe agent's instructions.",
+  "properties": {
+    "description": {
+      "description": "One line on what the agent does.",
+      "type": "string"
+    },
+    "disk": {
+      "description": "What a runner keeps free on disk for a run of this agent, past its floor, in bytes.",
+      "pattern": "^[0-9]+(\\.[0-9]+)?(KB|MB|GB|TB)$",
+      "type": "string"
+    },
+    "effort": {
+      "description": "The harness's reasoning effort, such as `high`; the harness default when unset.",
+      "type": "string"
+    },
+    "harness": {
+      "allOf": [
+        {
+          "$ref": "#/definitions/Harness"
+        }
+      ],
+      "description": "The coding agent CLI that runs it."
+    },
+    "mcpServers": {
+      "default": [],
+      "description": "The MCP servers the run gets, by name.",
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "memory": {
+      "description": "What a runner must have free to admit a run of this agent, in bytes.",
+      "pattern": "^[0-9]+(\\.[0-9]+)?(KB|MB|GB|TB)$",
+      "type": "string"
+    },
+    "model": {
+      "description": "The harness's model name, such as `sonnet`; the harness default when unset.",
+      "type": "string"
+    },
+    "permissions": {
+      "allOf": [
+        {
+          "$ref": "#/definitions/Permissions"
+        }
+      ],
+      "default": {
+        "allow": [],
+        "deny": []
+      }
+    },
+    "runner": {
+      "description": "The runner it runs on, by Tailscale hostname, or `any`.",
+      "type": "string"
+    },
+    "session": {
+      "$ref": "#/definitions/Session"
+    }
+  },
+  "required": [
+    "description",
+    "harness"
+  ],
+  "title": "agent.md frontmatter",
+  "type": "object"
+}

@@ -1,0 +1,11 @@
+#:schema https://raw.githubusercontent.com/maxence-lefebvre/priory/main/docs/schemas/config/trigger.json
+source = "schedule"
+repo = "owner/name"            # the repository its runs work in
+at = "09:00"                   # local time of day
+days = ["mon", "tue", "wed", "thu", "fri"]   # every day when unset
+every = "1h"                   # fire again every hour after at, the same day
+until = "18:00"                # a time of day, or a duration after at such as "9h"
+timezone = "Europe/Paris"      # the machine's zone when unset
+key = "support-day"            # every firing names the same task
+prompt = "Sweep the support queue."
+workflow = "implement"

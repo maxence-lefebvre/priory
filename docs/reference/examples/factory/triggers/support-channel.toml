@@ -1,0 +1,9 @@
+#:schema https://raw.githubusercontent.com/maxence-lefebvre/priory/main/docs/schemas/config/trigger.json
+source = "slack"
+channel = "C0123"              # the channel id, not its name
+on = "message.posted"
+filter = { text = "@priory" }  # the message contains it, ignoring case
+repo = "owner/name"
+workflow = "implement"
+key = "message.ts"             # the task key is slack:C0123:<ts>
+backfill = false

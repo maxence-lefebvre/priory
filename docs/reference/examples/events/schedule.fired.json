@@ -1,0 +1,11 @@
+{
+  "id": "a2899904-21cf-501b-afc1-9476ffc2fb37",
+  "type": "schedule.fired",
+  "subject": "schedule:support-day@2026-11-19T08:00:00Z",
+  "time": "2026-11-19T08:00:00Z",
+  "data": {
+    "trigger": "support-day",
+    "scheduled": "2026-11-19T08:00:00Z"
+  },
+  "links": []
+}

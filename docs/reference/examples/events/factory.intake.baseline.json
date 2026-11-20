@@ -1,0 +1,12 @@
+{
+  "id": "fc467208-9103-506d-9743-f29511b19ec4",
+  "type": "factory.intake.baseline",
+  "subject": "acme/widgets github.issues.labeled",
+  "time": "2026-11-17T16:58:50.369119964Z",
+  "data": {
+    "repo": "acme/widgets",
+    "stream": "github.issues.labeled",
+    "position": 36430795541
+  },
+  "links": []
+}

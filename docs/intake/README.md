@@ -12,13 +12,17 @@ priory intake [DIR] [--once]
 does, and refuses to start while it has problems. Without `--once`, it polls every 60 seconds.
 With `--once`, it polls once and exits.
 
+For lookup, [events.md](../reference/events.md) lists every message type with its fields and an
+example, and [triggers.md](../reference/triggers.md) lists every trigger key. These pages explain
+how each source behaves.
+
 ## What it polls
 
 | Source | Polled when | Read through |
 | ------ | ----------- | ------------ |
 | GitHub | a trigger names the repository, whatever the trigger's source, or an open wait or `--merge` hold names a pull request in it | `gh api` and `gh api graphql`, as the user `gh` is logged in as |
-| Linear | the factory has a Linear trigger, or an open wait names a Linear issue | `curl` (see Linear calls in [linear.md](linear.md)) |
-| Slack | the factory has a Slack trigger, or an open wait names a Slack thread | `curl` (see Slack calls in [slack.md](slack.md)) |
+| Linear | the factory has a Linear trigger, or an open wait names a Linear issue | `curl` (see [linear.md](linear.md#calls-and-cost)) |
+| Slack | the factory has a Slack trigger, or an open wait names a Slack thread | `curl` (see [slack.md](slack.md#calls-and-cost)) |
 | Schedules | on every poll, for each schedule trigger that is due | no network (see [schedule.md](schedule.md)) |
 
 [watches.md](watches.md) explains how open waits add to what the intake polls.
@@ -34,17 +38,20 @@ a message log in one SQLite file that `HERDR_BUS_DB` names. Several consumers ca
 each at its own position.
 
 These pages are the contract for every consumer of that output: the Priory daemon, and another
-factory such as herdr-bowtie.
+factory such as herdr-bowtie. Each message type also has a JSON Schema in
+[`docs/schemas/events/`](../schemas/events/).
 
 ## Which file to read
 
-- [envelope.md](envelope.md): the fields every message carries, and how each message id is made.
-- [github-issues.md](github-issues.md): `github.issues.labeled` and `github.issues.opened`.
-- [pull-requests.md](pull-requests.md): pull request, review and check run events, and check run snapshots.
-- [schedule.md](schedule.md): `schedule.fired` and when a schedule trigger fires.
-- [linear.md](linear.md): Linear events, Linear streams and Linear API calls.
-- [slack.md](slack.md): Slack events, the channel stream and Slack API calls.
-- [watches.md](watches.md): the Linear issues, Slack threads and pull requests an open wait makes the intake watch.
-- [cli.md](cli.md): `priory request` and the `priory.task.requested.cli` event.
-- [task-requests.md](task-requests.md): `factory.task.requested`, which creates tasks, and its `hold`.
-- [github-polling.md](github-polling.md): GitHub streams, baselines, API cost and recovery after a restart.
+| File | Covers |
+| ---- | ------ |
+| [envelope.md](envelope.md) | The fields every message carries, and how each message id is made |
+| [github-issues.md](github-issues.md) | `github.issues.labeled` and `github.issues.opened` |
+| [pull-requests.md](pull-requests.md) | Pull request, review and check run events, and check run snapshots |
+| [github-polling.md](github-polling.md) | GitHub streams, baselines, API cost and recovery after a restart |
+| [linear.md](linear.md) | Linear events, streams and API calls |
+| [slack.md](slack.md) | Slack events, the channel stream and API calls |
+| [schedule.md](schedule.md) | `schedule.fired` and when a schedule trigger fires |
+| [watches.md](watches.md) | The Linear issues, Slack threads and pull requests an open wait makes the intake watch |
+| [cli.md](cli.md) | `priory request` and the `priory.task.requested.cli` event |
+| [task-requests.md](task-requests.md) | `factory.task.requested`, which creates tasks, and its `hold` |

@@ -1,0 +1,22 @@
+{
+  "id": "2bf5fb6a-416e-57ab-925c-faf8dec1b2d6",
+  "type": "linear.issue.blockers",
+  "subject": "ENG-7",
+  "time": "2026-11-17T13:05:44.120Z",
+  "data": {
+    "issue": "ENG-7",
+    "linear_id": "9f2c4b1e-7d3a-4c55-8e21-0b6f3a9d1c47",
+    "title": "Export fails on an empty project",
+    "url": "https://linear.app/acme/issue/ENG-7/export-fails-on-an-empty-project",
+    "team": "ENG",
+    "project": "Desktop",
+    "state": "In Progress",
+    "labels": ["agent", "bug"],
+    "blockers": [],
+    "blocker": "ENG-3",
+    "time": "2026-11-17T13:05:44.120Z",
+    "baseline": false,
+    "triggers": []
+  },
+  "links": [{ "label": "issue", "url": "https://linear.app/acme/issue/ENG-7/export-fails-on-an-empty-project" }]
+}

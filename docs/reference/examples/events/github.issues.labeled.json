@@ -1,0 +1,19 @@
+{
+  "id": "98c30eca-6e69-591d-b9ab-d4731abf371a",
+  "type": "github.issues.labeled",
+  "subject": "acme/widgets#42",
+  "time": "2026-11-17T15:18:55Z",
+  "data": {
+    "repo": "acme/widgets",
+    "issue": 42,
+    "title": "Export fails on an empty project",
+    "url": "https://github.com/acme/widgets/issues/42",
+    "label": "agent",
+    "actor": "octocat",
+    "time": "2026-11-17T15:18:55Z",
+    "github_id": 36421224333,
+    "baseline": false,
+    "triggers": ["agent-label"]
+  },
+  "links": [{ "label": "issue", "url": "https://github.com/acme/widgets/issues/42" }]
+}

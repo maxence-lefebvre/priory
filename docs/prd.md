@@ -115,7 +115,7 @@ otlp = "http://127.0.0.1:4318"   # optional: export trace records as OpenTelemet
 
 Markdown files carry frontmatter fenced by `---` for YAML or `+++` for TOML. Standalone files pick
 their format by extension. Both formats share one schema, defined in code and published as JSON
-Schema. YAML is parsed as YAML 1.2, so `on` and `no` stay strings. Durations and sizes are strings,
+Schema in [`docs/schemas/`](schemas/). [`docs/reference/`](reference/README.md) lists every key. YAML is parsed as YAML 1.2, so `on` and `no` stay strings. Durations and sizes are strings,
 such as `"15m"` and `"4GB"`.
 
 `agents/implementer/agent.md`:

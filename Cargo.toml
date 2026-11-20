@@ -10,6 +10,7 @@ repository = "https://github.com/maxence-lefebvre/priory"
 [workspace.dependencies]
 herdr-bus = { git = "https://github.com/flupke/herdr-bus", version = "0.1.0" }
 jiff = "0.2.46"
+schemars = "1.2.3"
 rusqlite = { version = "0.38.0", features = ["bundled"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde-saphyr = "2.1.1"

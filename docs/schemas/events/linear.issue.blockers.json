@@ -1,0 +1,157 @@
+{
+  "$id": "https://raw.githubusercontent.com/maxence-lefebvre/priory/main/docs/schemas/events/linear.issue.blockers.json",
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "additionalProperties": false,
+  "definitions": {
+    "LinearBlockers": {
+      "additionalProperties": false,
+      "description": "A Linear issue whose blocker changed, since Linear does not update an issue when its blocker\ncloses.",
+      "properties": {
+        "baseline": {
+          "description": "True when the event came from the first poll of its stream.",
+          "type": "boolean"
+        },
+        "blocker": {
+          "description": "The identifier of the blocker whose change published the event.",
+          "type": "string"
+        },
+        "blockers": {
+          "description": "The identifiers of the open issues that block it; null past 20 relations.",
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "issue": {
+          "description": "The issue identifier, such as `ENG-7`.",
+          "type": "string"
+        },
+        "labels": {
+          "description": "The issue's label names.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "linear_id": {
+          "description": "Linear's id of what the event is about: the issue, history entry or comment.",
+          "type": "string"
+        },
+        "project": {
+          "description": "The issue's project name; null without one.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "state": {
+          "description": "The issue's state name.",
+          "type": "string"
+        },
+        "team": {
+          "description": "The issue's team key.",
+          "type": "string"
+        },
+        "time": {
+          "description": "When the event happened, RFC 3339.",
+          "format": "date-time",
+          "type": "string"
+        },
+        "title": {
+          "description": "The issue title.",
+          "type": "string"
+        },
+        "triggers": {
+          "description": "The triggers the event matched, so the triggers it requests tasks for; may be empty.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "url": {
+          "description": "The issue's page, or the comment's for a comment.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "issue",
+        "linear_id",
+        "title",
+        "url",
+        "team",
+        "project",
+        "state",
+        "labels",
+        "blockers",
+        "blocker",
+        "time",
+        "baseline",
+        "triggers"
+      ],
+      "type": "object"
+    },
+    "Link": {
+      "additionalProperties": false,
+      "description": "A link for people.",
+      "properties": {
+        "label": {
+          "description": "`issue` or `pull_request`.",
+          "type": "string"
+        },
+        "url": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "label",
+        "url"
+      ],
+      "type": "object"
+    }
+  },
+  "description": "A Linear issue whose blocker changed, since Linear does not update an issue when its blocker\ncloses.",
+  "properties": {
+    "data": {
+      "$ref": "#/definitions/LinearBlockers"
+    },
+    "id": {
+      "description": "A UUIDv5 of the message's name, so a retried publish keeps its id.",
+      "format": "uuid",
+      "type": "string"
+    },
+    "links": {
+      "description": "GitHub and Linear events carry one link to the event's page.",
+      "items": {
+        "$ref": "#/definitions/Link"
+      },
+      "type": "array"
+    },
+    "subject": {
+      "description": "A short line for listings, such as `owner/name#42`.",
+      "type": "string"
+    },
+    "time": {
+      "description": "When the event happened, RFC 3339.",
+      "format": "date-time",
+      "type": "string"
+    },
+    "type": {
+      "const": "linear.issue.blockers",
+      "description": "The message type, such as `github.issues.labeled`.",
+      "type": "string"
+    }
+  },
+  "required": [
+    "id",
+    "type",
+    "subject",
+    "time",
+    "data",
+    "links"
+  ],
+  "title": "linear.issue.blockers",
+  "type": "object"
+}

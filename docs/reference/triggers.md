@@ -1,0 +1,236 @@
+# Triggers
+
+A trigger names an event source, a filter and the workflow its events start. Each file
+`triggers/<name>.toml`, `.yaml` or `.yml` defines one trigger, named after the file. The intake
+reads the triggers, polls their sources and publishes one task request per matching event (see
+[task-requests.md](../intake/task-requests.md)).
+
+Schema: [`config/trigger.json`](../schemas/config/trigger.json). It covers every source, so it
+cannot tell which keys a source refuses; `priory check` does.
+
+- [Keys every trigger takes](#keys-every-trigger-takes)
+- [`github`](#github)
+- [`linear`](#linear)
+- [`linear.view`](#linearview)
+- [`slack`](#slack)
+- [`schedule`](#schedule)
+- [Task requests: `triggers/cli.toml` and `hold`](#task-requests-triggersclitoml-and-hold)
+- [Errors from `priory check`](#errors-from-priory-check)
+
+## Keys every trigger takes
+
+| Key | Type | Required | Default | Meaning | Example |
+| --- | ---- | -------- | ------- | ------- | ------- |
+| `source` | string | yes | | `github`, `linear`, `linear.view`, `slack` or `schedule` | `"github"` |
+| `workflow` | string | yes | | The workflow a matching event starts, by file name | `"implement"` |
+| `repo` | string | per source | | The repository the trigger's tasks work in, `owner/name` | `"owner/name"` |
+| `key` | string | no | per source | Which events are the same work. A factory holds at most one active task per key | `"issue.number"` |
+| `band` | string | no | the workflow's `band`, else the last band | The band of its tasks | `"today"` |
+| `lane` | string | no | derived by `lanes.toml` | The lane of its tasks, `<team>/<theme>` | `"core/intake"` |
+| `hold` | table | no | | Files each task held. See [`hold`](#hold) | `{ reason = "triage first" }` |
+
+Without a `repo`, a Linear or Slack trigger's tasks block before their first run.
+
+## `github`
+
+Starts a task when an issue or pull request of `repo` is opened or labeled. See
+[github-issues.md](../intake/github-issues.md) and [pull-requests.md](../intake/pull-requests.md).
+
+| Key | Type | Required | Default | Meaning | Example |
+| --- | ---- | -------- | ------- | ------- | ------- |
+| `repo` | string | yes | | The repository the intake polls, `owner/name` | `"owner/name"` |
+| `on` | string | yes | | `issues.labeled`, `issues.opened`, `pull_request.labeled` or `pull_request.opened` | `"issues.labeled"` |
+| `filter` | table | no | | `label`: only events that add this label. `*.labeled` only | `{ label = "agent" }` |
+| `key` | string | no | the number | `issue.number`, or `pull_request.number` for a `pull_request.*` event. The task key is `github:owner/name#42` | `"issue.number"` |
+| `backfill` | boolean | no | `false` | Whether the first poll's events start tasks too | `true` |
+
+<!-- example: factory/triggers/agent-label.toml -->
+```toml
+#:schema https://raw.githubusercontent.com/maxence-lefebvre/priory/main/docs/schemas/config/trigger.json
+source = "github"
+repo = "owner/name"            # the repository the intake polls
+on = "issues.labeled"          # or issues.opened, pull_request.labeled, pull_request.opened
+filter = { label = "agent" }   # *.labeled only
+workflow = "implement"
+key = "issue.number"           # pull_request.number for a pull_request event
+band = "today"
+lane = "core/intake"           # otherwise lanes.toml derives it
+backfill = false               # true: the first poll's events start tasks too
+```
+
+## `linear`
+
+Starts a task when a Linear issue is created, changes state or gets a comment, anywhere in the
+workspace. The intake reads the key from `LINEAR_API_KEY`. See [linear.md](../intake/linear.md).
+
+| Key | Type | Required | Default | Meaning | Example |
+| --- | ---- | -------- | ------- | ------- | ------- |
+| `on` | string | yes | | `issue.created`, `issue.state_changed` or `comment.created` | `"issue.created"` |
+| `filter` | table | no | | `team` (a team key), `label` (one of the issue's labels) and `state` (the state it moved to, or its state). Every key must match | `{ team = "ENG" }` |
+| `key` | string | no | the identifier | `issue.identifier`. The task key is `linear:ENG-7` | `"issue.identifier"` |
+| `backfill` | boolean | no | `false` | Whether the first poll's events start tasks too | `true` |
+
+<!-- example: factory/triggers/triage.yaml -->
+```yaml
+# yaml-language-server: $schema=https://raw.githubusercontent.com/maxence-lefebvre/priory/main/docs/schemas/config/trigger.json
+source: linear
+on: issue.created              # or issue.state_changed, comment.created
+filter:                        # every key must match
+  team: ENG                    # the issue's team key
+  label: bug                   # one of the issue's labels
+repo: owner/name
+workflow: implement
+key: issue.identifier
+hold:                          # file each task held until a person releases it
+  reason: triage first
+```
+
+## `linear.view`
+
+Starts a task when an issue enters or leaves a saved Linear view. See
+[linear.md](../intake/linear.md).
+
+| Key | Type | Required | Default | Meaning | Example |
+| --- | ---- | -------- | ------- | ------- | ------- |
+| `view` | string | yes | | The saved view: its id, or the slug id ending its URL | `"6b3c2f9a1d4e"` |
+| `on` | string | yes | | `issue.entered` or `issue.left` | `"issue.entered"` |
+| `key` | string | no | the identifier | `issue.identifier`. The task key is `linear:ENG-7` | `"issue.identifier"` |
+| `backfill` | boolean | no | `false` | Whether the issues in the view at the first poll start tasks | `true` |
+
+A `linear.view` trigger takes no `filter`: the view filters.
+
+<!-- example: factory/triggers/agent-ready.toml -->
+```toml
+#:schema https://raw.githubusercontent.com/maxence-lefebvre/priory/main/docs/schemas/config/trigger.json
+source = "linear.view"
+view = "6b3c2f9a1d4e"          # a saved view: its id, or the slug id ending its URL
+on = "issue.entered"           # or issue.left
+repo = "owner/name"            # where its tasks work; without it they block
+workflow = "implement"
+key = "issue.identifier"       # the task key is linear:ENG-7
+band = "now"
+```
+
+## `slack`
+
+Starts a task when someone posts in a channel, outside a thread. The intake reads a bot token from
+`SLACK_BOT_TOKEN`. See [slack.md](../intake/slack.md).
+
+| Key | Type | Required | Default | Meaning | Example |
+| --- | ---- | -------- | ------- | ------- | ------- |
+| `channel` | string | yes | | The channel id, not its name | `"C0123"` |
+| `on` | string | yes | | `message.posted` | `"message.posted"` |
+| `filter` | table | no | | `text`: only messages that contain it, ignoring case | `{ text = "@priory" }` |
+| `key` | string | no | the message | `message.ts`. The task key is `slack:<channel>:<ts>` | `"message.ts"` |
+| `backfill` | boolean | no | `false` | Whether the 50 messages of the first poll start tasks too | `true` |
+
+<!-- example: factory/triggers/support-channel.toml -->
+```toml
+#:schema https://raw.githubusercontent.com/maxence-lefebvre/priory/main/docs/schemas/config/trigger.json
+source = "slack"
+channel = "C0123"              # the channel id, not its name
+on = "message.posted"
+filter = { text = "@priory" }  # the message contains it, ignoring case
+repo = "owner/name"
+workflow = "implement"
+key = "message.ts"             # the task key is slack:C0123:<ts>
+backfill = false
+```
+
+## `schedule`
+
+Starts or wakes a task at a time of day. See [schedule.md](../intake/schedule.md).
+
+| Key | Type | Required | Default | Meaning | Example |
+| --- | ---- | -------- | ------- | ------- | ------- |
+| `repo` | string | yes | | The repository its runs work in | `"owner/name"` |
+| `at` | `HH:MM` | yes | | The local time of day it fires | `"09:00"` |
+| `days` | array of `mon` to `sun` | no | every day | The weekdays it fires on | `["mon", "fri"]` |
+| `every` | duration | no | once a day | How often it fires again after `at`, the same day. At least `1m` | `"1h"` |
+| `until` | `HH:MM` or duration | no | the end of the day | When its day of firings ends: a time of day, or a duration after `at` | `"18:00"`, `"9h"` |
+| `timezone` | string | no | the machine's zone | The IANA zone `at` is read in | `"Europe/Paris"` |
+| `key` | string | no | one task per firing | A fixed key: every firing names the same task, `schedule:<key>` | `"support-day"` |
+| `prompt` | string | no | | What a firing tells the asleep task it wakes | `"Sweep the support queue."` |
+
+<!-- example: factory/triggers/support-day.toml -->
+```toml
+#:schema https://raw.githubusercontent.com/maxence-lefebvre/priory/main/docs/schemas/config/trigger.json
+source = "schedule"
+repo = "owner/name"            # the repository its runs work in
+at = "09:00"                   # local time of day
+days = ["mon", "tue", "wed", "thu", "fri"]   # every day when unset
+every = "1h"                   # fire again every hour after at, the same day
+until = "18:00"                # a time of day, or a duration after at such as "9h"
+timezone = "Europe/Paris"      # the machine's zone when unset
+key = "support-day"            # every firing names the same task
+prompt = "Sweep the support queue."
+workflow = "implement"
+```
+
+## Task requests: `triggers/cli.toml` and `hold`
+
+`priory request` starts a task by hand, with no source event (see [cli.md](../intake/cli.md)). It
+reads `repo` from `triggers/cli.toml` when the request names none. The intake polls nothing for it.
+
+<!-- example: factory/triggers/cli.toml -->
+```toml
+#:schema https://raw.githubusercontent.com/maxence-lefebvre/priory/main/docs/schemas/config/trigger.json
+source = "cli"                 # read by priory request, never polled
+repo = "owner/name"            # the repository when a request names none
+workflow = "implement"
+```
+
+### `hold`
+
+Any trigger can file its tasks held, so each waits for a person or a condition before it starts.
+`priory request --hold` does the same for one request. See Holds in
+[runs.md](../daemon/runs.md).
+
+| Key | Type | Required | Default | Meaning | Example |
+| --- | ---- | -------- | ------- | ------- | ------- |
+| `reason` | string | yes | | Why the task waits, shown to a person | `"triage first"` |
+| `until` | string | no | | An RFC 3339 instant, or a duration such as `2 hours` after the hold | `"2 hours"` |
+| `after` | integer | no | | Another task's id: the hold lasts until it ends | `12` |
+| `merge` | string | no | | A pull request, `owner/name#42` or `42` in the task's repository: until it merges | `"owner/name#42"` |
+| `if_closed` | `release`, `drop` or `ask` | no | `ask` | What a pull request closed without a merge does. With `merge` only | `"drop"` |
+| `blockers` | boolean | no | `false` | Until the task's Linear issue has no open blocker | `true` |
+
+Set at most one condition. With none, a person releases the task.
+
+## Errors from `priory check`
+
+| Message | Cause |
+| ------- | ----- |
+| `` unknown field `<key>`, expected one of ... `` | A key no table above lists |
+| `` missing field `workflow` `` | No `workflow` |
+| `` workflow `<name>` does not exist `` | `workflow` names no file under `workflows/` |
+| `` band `<band>` is not one of <bands> `` | `band` is not a band of the factory |
+| `` lane `<lane>` is not `<team>/<theme>` `` | A malformed `lane` |
+| `` `<name>` is also defined in triggers/<name>.toml `` | `<name>.toml` and `<name>.yaml` both exist |
+| `` a GitHub trigger needs `repo = "owner/name"` `` | A `github` trigger without a valid `repo`. A `schedule` trigger gets the same with `schedule` |
+| `` a GitHub trigger handles `issues.labeled`, `issues.opened`, `pull_request.labeled` or `pull_request.opened`, not `<on>` `` | A bad `on` |
+| `` `filter` works only with `on = "*.labeled"`, on `label` `` | A GitHub `filter` on another event or key |
+| `` a GitHub trigger's `key` is `issue.number` `` | Another `key`. `pull_request.number` for a pull request event |
+| `` a `linear.view` trigger, and only it, names a `view` `` | `view` missing on `linear.view`, or set on `linear` |
+| `` a `linear` trigger handles `issue.created`, `issue.state_changed`, `comment.created`, not `<on>` `` | A bad `on`. `linear.view` lists `issue.entered`, `issue.left` |
+| `` a `linear` trigger filters on `team`, `label` or `state` `` | Another `filter` key |
+| `` a `linear.view` trigger takes no `filter`: its view filters `` | A `filter` on a view trigger |
+| `` a Linear trigger's `repo` is `owner/name` `` | A malformed `repo`. Slack gets the same with `a Slack trigger's` |
+| `` a Linear trigger's `key` is `issue.identifier` `` | Another `key` |
+| `` a Slack trigger handles `message.posted`, not `<on>` `` | A bad `on` |
+| `` a Slack trigger needs `channel = "<channel id>"` `` | No `channel` |
+| `` a Slack trigger filters on `text` only `` | Another `filter` key |
+| `` a Slack trigger names no `view` `` | `view` on a Slack trigger |
+| `` a Slack trigger's `key` is `message.ts` `` | Another `key` |
+| `` only a GitHub, Linear or Slack trigger has `backfill` `` | `backfill` on a schedule or `cli` trigger |
+| `` only a Slack trigger names a `channel` `` | `channel` on another source |
+| `` only a schedule trigger has `<key>` `` | `at`, `days`, `every`, `until`, `timezone` or `prompt` on another source |
+| `` a schedule trigger needs `at = "HH:MM"` `` | A schedule without `at` |
+| `` `every` is shorter than the intake's 1-minute poll `` | `every` under `1m` |
+| `` `until` is before `at`, so it never fires `` | A time-of-day `until` earlier than `at` |
+| `"<text>" is not a time of day such as "09:00"` | A bad `at` |
+| `"<text>" is not a day: use mon, tue, wed, thu, fri, sat or sun` | A bad entry in `days` |
+| `` `days` is empty, so it never fires `` | `days = []` |
+| `"<text>" is not a duration such as 90s, 15m or 2h` | A bad `every` |
+| `"<text>" is not a time of day such as "18:00" or a duration such as 8h` | A bad `until` |
+| `"<text>" is not a time zone such as "Europe/Paris"` | A `timezone` that is not an IANA name |

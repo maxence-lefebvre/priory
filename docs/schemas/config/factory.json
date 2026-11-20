@@ -1,0 +1,162 @@
+{
+  "$id": "https://raw.githubusercontent.com/maxence-lefebvre/priory/main/docs/schemas/config/factory.json",
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "additionalProperties": false,
+  "definitions": {
+    "Resource": {
+      "description": "A resource the room check measures.",
+      "enum": [
+        "memory",
+        "disk",
+        "cpu"
+      ],
+      "type": "string"
+    },
+    "Script": {
+      "additionalProperties": false,
+      "properties": {
+        "run": {
+          "description": "A shell command, run by `sh -c` in `PRIORY_HOME`.",
+          "type": "string"
+        },
+        "timeout": {
+          "description": "How long it may run before Priory kills it; 5 minutes when unset.",
+          "pattern": "^[0-9]+[smh]$",
+          "type": "string"
+        },
+        "when": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/Resource"
+            }
+          ],
+          "description": "The resource whose shortage runs the script."
+        }
+      },
+      "required": [
+        "run",
+        "when"
+      ],
+      "type": "object"
+    },
+    "Search": {
+      "additionalProperties": false,
+      "description": "How tasks are found: who writes their TL;DR, and whether search compares embeddings too.",
+      "properties": {
+        "command": {
+          "description": "A command that reads text on stdin and prints a JSON array of floats, instead of `model`.",
+          "type": "string"
+        },
+        "embeddings": {
+          "default": false,
+          "description": "Whether search compares embeddings of TL;DRs as well as keywords.",
+          "type": "boolean"
+        },
+        "model": {
+          "description": "The embedding model Priory runs in process, a Hugging Face repository.",
+          "type": "string"
+        },
+        "tldr": {
+          "description": "The agent whose model writes a new task's TL;DR; no summarizer runs without one.",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "Sweep": {
+      "additionalProperties": false,
+      "description": "How the daemon frees room: the built-in worktree sweep, the person's scripts, and the sweeper\nagent it starts when they do not free enough.",
+      "properties": {
+        "after": {
+          "description": "How long the queue stays stalled after its scripts ran before the sweeper starts; 30 minutes\nwhen unset.",
+          "pattern": "^[0-9]+[smh]$",
+          "type": "string"
+        },
+        "agent": {
+          "description": "The agent of the built-in `sweep` workflow; no sweeper starts without one.",
+          "type": "string"
+        },
+        "every": {
+          "description": "How often the built-in worktree sweep runs; every 10 minutes when unset.",
+          "pattern": "^[0-9]+[smh]$",
+          "type": "string"
+        },
+        "repo": {
+          "description": "The repository the sweeper works in and files its issue on, `owner/name`.",
+          "type": "string"
+        },
+        "scripts": {
+          "description": "Scripts run when the resource they name stalls the queue.",
+          "items": {
+            "$ref": "#/definitions/Script"
+          },
+          "type": "array"
+        }
+      },
+      "type": "object"
+    },
+    "Telemetry": {
+      "additionalProperties": false,
+      "description": "Where the daemon exports its trace records as OpenTelemetry spans.",
+      "properties": {
+        "otlp": {
+          "description": "The OTLP/HTTP base URL, such as `http://127.0.0.1:4318`; spans go to its `/v1/traces`.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "otlp"
+      ],
+      "type": "object"
+    }
+  },
+  "description": "`factory.toml` or `factory.yaml`: the factory's name and the daemon's settings.",
+  "properties": {
+    "bands": {
+      "description": "The bands, highest first, when they are not the default ones.",
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "command_timeout": {
+      "description": "How long one git, gh or tmux command may run before Priory kills it.",
+      "pattern": "^[0-9]+[smh]$",
+      "type": "string"
+    },
+    "handler": {
+      "description": "The agent whose model reads a stalled run's screen; no handler runs without one.",
+      "type": "string"
+    },
+    "name": {
+      "description": "The factory's name.",
+      "type": "string"
+    },
+    "search": {
+      "$ref": "#/definitions/Search"
+    },
+    "stalled": {
+      "description": "How long a run goes without a hook event or a change on its pane before it counts as stalled.",
+      "pattern": "^[0-9]+[smh]$",
+      "type": "string"
+    },
+    "sweep": {
+      "$ref": "#/definitions/Sweep"
+    },
+    "telemetry": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/Telemetry"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "required": [
+    "name"
+  ],
+  "title": "factory.toml",
+  "type": "object"
+}
