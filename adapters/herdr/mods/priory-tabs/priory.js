@@ -23,7 +23,7 @@ export function priory({ exec, binary = "priory-oss", on = null, factory = null 
   const inFactory = factory ? [factory] : [];
 
   return {
-    desk: () => read("desk"),
+    desk: ({ all = false } = {}) => read("desk", ...(all ? ["--all"] : [])),
     asks: () => read("asks", "--all"),
     tasks: () => read("tasks"),
     queue: () => read("queue", ...inFactory),

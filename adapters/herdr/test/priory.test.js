@@ -41,6 +41,12 @@ test("reads the desk as JSON", async () => {
   assert.deepEqual(run.argv(), [["desk", "--json"]]);
 });
 
+test("reads the desk with its snoozed items", async () => {
+  const run = fake({ desk: { revision: 7, items: [] } });
+  await priory({ exec, binary: FAKE }).desk({ all: true });
+  assert.deepEqual(run.argv(), [["desk", "--all", "--json"]]);
+});
+
 test("a failed call rejects with priory's last error line", async () => {
   fake();
   const client = priory({ exec, binary: FAKE });
