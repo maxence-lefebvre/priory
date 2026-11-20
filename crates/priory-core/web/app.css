@@ -89,6 +89,15 @@ input { font: 400 16px/20px var(--font-ui); color: var(--text); background: var(
 .views a span { font-weight: 400; color: var(--text-3); }
 .views a[aria-current="true"] { background: var(--emph); color: var(--on-emph); box-shadow: none; }
 .views a[aria-current="true"] span { color: var(--on-emph-2); }
+.facets { flex: none; display: flex; gap: var(--space-2); padding: 0 var(--gutter) 5px; flex-wrap: wrap; }
+.facet { position: relative; }
+.facet > summary, a.facet { list-style: none; height: var(--chip); padding: 0 10px; border-radius: var(--radius-sm); display: inline-flex; align-items: center; gap: 4px; font: 500 14px/1 var(--font-ui); color: var(--text); background: var(--surface); box-shadow: inset 0 0 0 1px var(--control-line); white-space: nowrap; cursor: pointer; }
+.facet > summary::-webkit-details-marker { display: none; }
+a.facet[aria-current="true"] { background: var(--action-soft); color: var(--action-text); box-shadow: inset 0 0 0 1px var(--action-soft); }
+.facet .pick { position: absolute; z-index: 5; top: calc(100% + 4px); left: 0; min-width: 160px; padding: 4px; border-radius: var(--radius-md); background: var(--surface); box-shadow: inset 0 0 0 1px var(--control-line); display: grid; }
+.facet .pick a { min-height: var(--chip); padding: 0 10px; display: flex; align-items: center; justify-content: space-between; gap: 12px; border-radius: var(--radius-sm); font: 400 14px/1 var(--font-ui); color: var(--text); }
+.facet .pick a:hover { background: var(--action-soft); }
+.facet .pick span { color: var(--text-3); }
 
 /* Room banner */
 .banner { margin: 6px var(--gutter); padding: 10px 12px; border: 1px solid var(--warn-text); border-radius: var(--radius-md); background: var(--surface); display: grid; grid-template-columns: 20px 1fr; gap: 10px; font: 400 var(--type-small) var(--font-ui); }
@@ -200,7 +209,8 @@ textarea { font: 400 16px/22px var(--font-ui); color: var(--text); background: v
 .lhead .cnt .n { font: var(--count-weight) var(--type-count-wide) var(--font-display); font-stretch: var(--count-stretch); letter-spacing: calc(var(--count-tracking) / 2); color: var(--count); }
 .lhead .cnt .w { font: 650 15px/18px var(--font-ui); padding-bottom: 4px; }
 .lhead .cnt .w span { display: block; font: 400 var(--type-caption) var(--font-ui); color: var(--text-3); }
-.wide .views, .wide .sec { padding-left: 20px; padding-right: 20px; }
+.wide .views, .wide .facets, .wide .sec { padding-left: 20px; padding-right: 20px; }
+.wide .facet > summary, .wide a.facet { height: var(--control-fine); font-size: 13.5px; }
 .wide .views a { height: var(--control-fine); font-size: 13.5px; }
 .wide .banner, .wide .strip { margin-left: 20px; margin-right: 20px; }
 .tbl { border-collapse: collapse; width: calc(100% - 40px); margin: 6px 20px 0; font: 400 14px/18px var(--font-ui); table-layout: fixed; }
@@ -278,6 +288,10 @@ textarea { font: 400 16px/22px var(--font-ui); color: var(--text); background: v
 .cmd .mono { color: var(--text); font-weight: 500; overflow-wrap: anywhere; }
 .cmd small { font: 400 var(--type-caption) var(--font-ui); color: var(--text-2); }
 .list { container-type: inline-size; }
+/* The fixed columns take 498 px: below 760 px Answer goes first, so the question keeps its width. */
+@container (max-width: 760px) {
+  .tbl th:nth-child(5), .tbl td:nth-child(5) { width: 0; padding: 0; font-size: 0; visibility: hidden; }
+}
 @container (max-width: 560px) {
   .tbl th:nth-child(3), .tbl td:nth-child(3), .tbl th:nth-child(5), .tbl td:nth-child(5) { width: 0; padding: 0; font-size: 0; visibility: hidden; }
   .tbl th:nth-child(1) { width: 32px; font-size: 0; }
@@ -287,12 +301,13 @@ textarea { font: 400 16px/22px var(--font-ui); color: var(--text); background: v
 .opt[aria-disabled="true"]:not(.rec-opt), .abar .btn.secondary[aria-disabled="true"] { color: var(--text-3); }
 .medium.no-drawer, .compact.no-drawer { display: flex; flex-direction: column; }
 @media (pointer: coarse) {
-  .views a, .jump a { position: relative; }
-  .views a::after, .jump a::after {
+  .views a, .jump a, .facet > summary, a.facet { position: relative; }
+  .views a::after, .jump a::after, .facet > summary::after, a.facet::after {
     content: ""; position: absolute;
     inset: calc(50% - var(--control) / 2) min(0px, calc(50% - var(--control) / 2));
   }
   .ahead .iconbtn { width: var(--control); }
+  .facet .pick a { min-height: var(--control); }
 }
 .drawer { container-type: inline-size; }
 @container (max-width: 600px) { .drawer .opts { flex-direction: column; } }
