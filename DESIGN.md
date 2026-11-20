@@ -7,13 +7,13 @@ main components and their states in every theme. The token files in
 [`design/tokens/`](design/tokens/) are the source of truth for values. When the artifact, this
 file and the token files disagree, the token files win for values and this file wins for rules.
 Fix the others. The artifact still shows the older Ledger layout and four themes; redraw it for
-Explorer and Matins.
+Explorer.
 
 The M2 test is "one working day of asks answered from a phone only". Every decision below serves
 that first: a person on a phone, often one-handed, reads an ask and answers it correctly.
 
-The view has one structure, called Explorer, and five themes: Indigo (the default), Ink,
-Parchment, Abbey and Matins, each in light and dark. A person picks a theme and a mode on the
+The view has one structure, called Explorer, and four themes: Indigo (the default), Ink,
+Parchment and Abbey, each in light and dark. A person picks a theme and a mode on the
 Appearance screen.
 
 Explorer treats every list as one query over the factory. Saved views and facet chips narrow it,
@@ -75,7 +75,7 @@ The view sets two attributes on `<html>`:
 <html data-theme="indigo" data-mode="system">
 ```
 
-- `data-theme` is `indigo`, `ink`, `parchment`, `abbey` or `matins`. On `<html>`, a missing or
+- `data-theme` is `indigo`, `ink`, `parchment` or `abbey`. On `<html>`, a missing or
   unknown value gives Indigo.
 - `data-mode` is `system`, `light` or `dark`. `system` follows `prefers-color-scheme` through
   `color-scheme: light dark`, with no script. `light` and `dark` pin the mode.
@@ -142,7 +142,6 @@ The view sets two attributes on `<html>`:
 | Ink       | Monochrome. What needs you is printed in solid ink. | Mona Sans / Mona Sans / JetBrains Mono      | ink    | ink               | ink        |
 | Parchment | Parchment and iron-gall ink, rubric red and lapis.  | EB Garamond / IBM Plex Sans / IBM Plex Mono | lapis  | rubric red        | ink        |
 | Abbey     | Vellum, lapis and gold, rubric red.                 | Alegreya / Alegreya Sans / IBM Plex Mono    | lapis  | rubric red        | deep lapis |
-| Matins    | A tracing tool: instrument blue on blue-black.      | Geist / Geist / Geist Mono                  | blue   | blue              | ink        |
 
 - **Rubric red marks only what waits on a person.** In Parchment and Abbey, red appears on ask
   tiles, the ask count and the Desk badge, and nowhere else. Actions, including the recommended
@@ -150,7 +149,7 @@ The view sets two attributes on `<html>`:
   danger text a pale rose in dark mode, both apart from rubric red in lightness.
 - **The recommended option takes `--recommended`, which is the theme's action color in every
   theme.** It is never `--wait`.
-- **Fonts:** all nine families are under the SIL Open Font License 1.1. Ship their `woff2` files
+- **Fonts:** all seven families are under the SIL Open Font License 1.1. Ship their `woff2` files
   with the daemon and serve them from the view. Never load fonts from a CDN: the view must work on
   a factory with no internet. Load a theme's families only when that theme is active or shown
   in an Appearance preview. The `woff2` files land with the first web view code, not with this
@@ -299,17 +298,17 @@ the `circle-help` icon. Add it here in the same change that adds it to the daemo
 Each role's tile fill in each theme, light / dark, from
 [`design/tokens/themes.css`](design/tokens/themes.css):
 
-| Role   | Token           | States                                               | Indigo                | Ink                   | Parchment             | Abbey                 | Matins                |
-| ------ | --------------- | ---------------------------------------------------- | --------------------- | --------------------- | --------------------- | --------------------- | --------------------- |
-| wait   | `--wait`        | asks                                                 | `#5856D6` / `#5E5CE6` | `#0A0A0A` / `#EDEDED` | `#A4161A` / `#B9302A` | `#A31F1A` / `#B42A22` | `#2F55D4` / `#3A60E4` |
-| live   | `--tile-live`   | running, ready                                       | `#5856D6` / `#5E5CE6` | `#0A0A0A` / `#EDEDED` | `#1F3F8F` / `#3F63C4` | `#24489C` / `#4466C8` | `#2F55D4` / `#3A60E4` |
-| warn   | `--tile-warn`   | blocked, lost                                        | `#C96800` / `#C96800` | `#B45309` / `#B45309` | `#9A6400` / `#A36A00` | `#A86B00` / `#A86B00` | `#B06600` / `#B06600` |
-| danger | `--tile-danger` | failed, exited                                       | `#D70015` / `#D70015` | `#CB1D26` / `#D92D35` | `#4A1A12` / `#6E2216` | `#5A1C17` / `#6E241E` | `#D1293D` / `#D1293D` |
-| ok     | `--tile-ok`     | done                                                 | `#248A3D` / `#2E8B47` | `#18793A` / `#24873F` | `#3F6B2A` / `#4A7A33` | `#2F6B4F` / `#2F7A57` | `#0F7D59` / `#128862` |
-| hold   | `--tile-hold`   | held                                                 | `#8944AB` / `#9A55BF` | `#7340B8` / `#8550C8` | `#4B3F8F` / `#5C4FA8` | `#5B4A9C` / `#6A58B5` | `#7A4FD0` / `#8A60DC` |
-| muted  | `--tile-muted`  | queued, asleep, dropped, moved, restarted, cancelled | `#8E8E93` / `#636366` | `#8A8A8A` / `#555555` | `#8A7A5C` / `#6A5D48` | `#8C8170` / `#4C5468` | `#848C9A` / `#525A69` |
+| Role   | Token           | States                                               | Indigo                | Ink                   | Parchment             | Abbey                 |
+| ------ | --------------- | ---------------------------------------------------- | --------------------- | --------------------- | --------------------- | --------------------- |
+| wait   | `--wait`        | asks                                                 | `#5856D6` / `#5E5CE6` | `#0A0A0A` / `#EDEDED` | `#A4161A` / `#B9302A` | `#A31F1A` / `#B42A22` |
+| live   | `--tile-live`   | running, ready                                       | `#5856D6` / `#5E5CE6` | `#0A0A0A` / `#EDEDED` | `#1F3F8F` / `#3F63C4` | `#24489C` / `#4466C8` |
+| warn   | `--tile-warn`   | blocked, lost                                        | `#C96800` / `#C96800` | `#B45309` / `#B45309` | `#9A6400` / `#A36A00` | `#A86B00` / `#A86B00` |
+| danger | `--tile-danger` | failed, exited                                       | `#D70015` / `#D70015` | `#CB1D26` / `#D92D35` | `#4A1A12` / `#6E2216` | `#5A1C17` / `#6E241E` |
+| ok     | `--tile-ok`     | done                                                 | `#248A3D` / `#2E8B47` | `#18793A` / `#24873F` | `#3F6B2A` / `#4A7A33` | `#2F6B4F` / `#2F7A57` |
+| hold   | `--tile-hold`   | held                                                 | `#8944AB` / `#9A55BF` | `#7340B8` / `#8550C8` | `#4B3F8F` / `#5C4FA8` | `#5B4A9C` / `#6A58B5` |
+| muted  | `--tile-muted`  | queued, asleep, dropped, moved, restarted, cancelled | `#8E8E93` / `#636366` | `#8A8A8A` / `#555555` | `#8A7A5C` / `#6A5D48` | `#8C8170` / `#4C5468` |
 
-In Indigo, Ink and Matins the ask tile and the live tile share a fill; the icon tells them apart.
+In Indigo and Ink the ask tile and the live tile share a fill; the icon tells them apart.
 
 An answered or withdrawn ask is not a task state either. In the asks list it takes a muted tile
 with the `check` icon (answered) or the `minus` icon (withdrawn).
@@ -522,7 +521,7 @@ Settings, then Appearance. It holds:
 1. A screen title, "Appearance", in `--type-screen`.
 2. **Mode**: a segmented control, System, Light and Dark, `--control` (44 px) tall on
    `--raised`. The selected segment sits on `--surface`.
-3. **Theme**: one card per theme, in the order Indigo, Ink, Parchment, Abbey, Matins. Each card
+3. **Theme**: one card per theme, in the order Indigo, Ink, Parchment, Abbey. Each card
    shows the desk in that theme, light and dark side by side at one fifth scale, the theme's
    name in the display role, one sentence about it, and a radio. The selected card has a 2 px
    `--action` edge and a filled radio.
@@ -669,6 +668,121 @@ run.
 - Sentence case for everything. No uppercase labels.
 - Plain English, short sentences, active voice, no em dashes.
 - Agent text appears as the agent wrote it, as text. Links in it show their host.
+
+## Herdr adapter
+
+Priory's panels also ship as Herdr mods (R8.6). A mod renders natively with gpui-kit, in a pane
+beside other panes, with a fine pointer. It keeps this file's structure, tokens, state tiles, copy
+and ask rules. This section lists only what differs, and the four panels the adapter ships first:
+Desk, Asks, Queue and Bonjour. [`docs/adapters/herdr.md`](docs/adapters/herdr.md) explains where
+the adapter lives, how it reads and acts, and the data each panel needs. The approved boards are in
+`~/shared/priory-round-6/` on the author's machine.
+
+### What differs from the web view
+
+- **Density.** A pane takes the `--pane-*` tokens from
+  [`design/tokens/structure.css`](design/tokens/structure.css): rows of at least `--pane-row`
+  (52 px) with a `--pane-tile` (24 px) tile, views and chips `--pane-chip` (28 px) tall, options
+  `--pane-option` (40 px) tall, the question in `--type-pane-question` (18 / 24), the desk count in
+  `--type-pane-count` (40 / 1), and buttons at `--control-fine`.
+- **Width.** Every panel works at `--pane-narrow` (420 px), the side panel's default width. Below
+  `--pane-split` (720 px) a selected row opens its detail in place, under the row. From
+  `--pane-split`, the list and the detail sit side by side.
+- **Selection.** A selected row takes the `--action-soft` fill on its own rounded surface. It has
+  no 3 px leading bar: gpui-kit's design guide forbids leading-edge selection bars.
+- **Navigation.** Herdr owns tabs and panes, so a panel has no tab bar, rail or Answer capsule.
+  `Enter` opens the selected row.
+- **Overlays.** The answer sheet becomes a popover from the answer bar's "3 options". Secondary
+  commands sit in a menu, opened by a `more-horizontal` button, and in a context menu. No command
+  appears only on hover.
+- **The armed command option** counts its 4 s down with a bar that drains under its label,
+  instead of a ring.
+- **Pointer.** Buttons keep the arrow cursor. Only links that leave Priory take the pointing hand.
+- **Mode.** A mod draws with Priory's tokens, not Herdr's theme. The adapter resolves each
+  `light-dark()` pair from Herdr's appearance.
+
+gpui-kit lacks `light-dark()`, conic gradients, repeating stripes, `position: sticky`, container
+queries and a line clamp with an ellipsis. So the answer bar and section chips sit outside the
+scroll region, the open ask's trace bar is solid `--wait`, and a panel picks its layout from its
+measured width. Check in a real mod whether variable font widths work; if not, the wide cuts of
+Mona Sans need static font files.
+
+### Snooze
+
+A person can snooze any ask or Desk item. Snoozing hides the item for a while; the agent keeps
+waiting, and the daemon does nothing different.
+
+- **Snooze 1 h** and **Snooze until tomorrow 09:00** sit in the ask's overflow menu next to the
+  answer bar, and beside "Write an answer". `S` snoozes the selected row for 1 h. The Desk's next
+  thing card has a "Snooze 1 h" button.
+- A snoozed item leaves the Needs me count, the Open count and the Desk badge. It moves to the
+  saved view "Snoozed", with its count, on the Desk and in Asks.
+- A snoozed row keeps its tile and shows "Snoozed until 12:05" in `--text-3`, with the `clock`
+  icon. Its detail offers Unsnooze and the other snooze.
+- A meaningful change brings the item back early: a new ask revision, a change of task state or a
+  new failure. The row then shows the `rotate-ccw` icon and "Back early: new revision 2" in
+  `--action-text`, and Since you looked lists it.
+
+### Desk
+
+The calm count, then the one next thing, then the explorer list. It opens as a tab in the center
+stack.
+
+1. **Count** in `--type-pane-count`, as the web desk's: "2 asks need you. Oldest waits 42 min. 1
+   stopped. 2 snoozed."
+2. **The next thing**: a card on `--surface` with the oldest open ask that is not snoozed, its
+   recommendation, and the buttons Answer… (primary), Open task and Snooze 1 h. Answer… opens the
+   ask in the Asks panel, so a person answers in one place.
+3. **Saved views**: Needs me, Running, Asleep, Snoozed and All.
+4. The room banner, Asks, Stopped and Later, as on the web desk.
+5. **Since you looked**, from 1024 px: the events since the person's last visit.
+
+From 1024 px the count, next thing, banner and Since you looked form a 440 px column; the rest is
+the wide table with Recommends and the key hint bar (`J` `K`, `Enter`, `S`, `R`, `?`).
+
+### Asks
+
+Every ask, with the web's ask detail fitted to the pane. It sits in the side panel stack.
+
+- Saved views: Open, Snoozed, Answered and All. Facet chips: Command, Lane and Task.
+- The detail keeps the web's order: context line, question, recommendation with what happens next,
+  options with keys `1` to `9`, write an answer, then the section chips Why, Brief, Plan, PR,
+  Trace and History.
+- Once the options scroll out of view, the sticky answer bar shows "3 options", the recommended
+  option and the overflow menu.
+
+### Queue
+
+What runs next and why. It sits in the side panel stack, under the same activity bar as Asks.
+
+- **Up next**: a strip with the next 3 runs, queued or scheduled. Each line shows when ("now, on
+  room", "about 11:50", "08:30 Fri"), the task or schedule, and why. It opens the task.
+- Then Running, the bands in order (Blocker, Now, Today, Later, or the factory's names), Held with
+  each hold's reason, and Last day, folded.
+- Each waiting row shows its position in its band and why it has not started, in its role's text
+  color. A grip in a fixed trailing lane, and `Shift J` and `Shift K`, reorder a band.
+- An opened row offers Move…, Hold… and Cancel…, and Open task.
+
+### Bonjour
+
+The morning dossier. It opens as a tab in the center stack.
+
+- A toolbar with the date and older and newer arrows, "n of m agreed" with a progress bar, Next
+  pick and search.
+- The greeting in the display role, then the report's sections **in the order the factory gives
+  them**. The panel knows no section by name. Each section has a title, an optional count and
+  rows; a row may carry a pick.
+- A pick is a segmented control of its options. The recommended option shows a `check` in
+  `--action-text` until a person chooses. An agreed pick folds to one line with Change.
+- From 1024 px a 200 px list of the sections, with counts and "Picks", sits on the left. Below,
+  the same list becomes section chips under the toolbar.
+
+### Open questions
+
+- **The same ask three times.** In the full layout the oldest ask shows as the Desk's next thing,
+  as the Desk's first row and in the Asks panel. Max will tweak this next week.
+- **Snooze in the web view.** Snooze is drawn for the Herdr panels. The web desk and asks list
+  should take the same views and rows when their slices land.
 
 ## When to change this file
 
