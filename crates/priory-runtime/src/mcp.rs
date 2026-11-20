@@ -210,5 +210,30 @@ fn tools() -> Value {
                 "required": ["query"],
             },
         },
+        {
+            "name": "progress",
+            "description": "Publish where your task stands, for a person who reads the desk: its goal, acceptance criteria, latest change and next action. A field you leave out keeps its value. It does not end your turn.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "goal": text("What the task must achieve, in one or two sentences."),
+                    "acceptanceCriteria": {
+                        "type": "array",
+                        "description": "Every criterion the task must meet. It replaces the stored list.",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "id": text("A short id, such as AC1."),
+                                "description": text("What meets the criterion."),
+                                "required": { "type": "boolean", "description": "Whether the task cannot finish without it." },
+                            },
+                            "required": ["id", "description", "required"],
+                        },
+                    },
+                    "latestChange": text("What changed last, in one sentence."),
+                    "nextAction": text("What you do next, in one sentence."),
+                },
+            },
+        },
     ])
 }

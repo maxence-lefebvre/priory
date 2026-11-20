@@ -6,7 +6,7 @@ use crate::snooze::{self, Snooze};
 use crate::state::{self, Admission, NewRun, Signal};
 use crate::tools::{self, Act, Answer, Call, Dismiss, Done, Repair};
 use crate::trace::Trace;
-use crate::{deliver, embed, handler, search, sections, stall, summary, sweep};
+use crate::{deliver, embed, handler, progress, search, sections, stall, summary, sweep};
 use herdr_bus::{Bus, Start};
 use priory_factory::factory::{self, Factory, Harness, PermissionMode, Session};
 use priory_intake::intake::OUTPUT;
@@ -553,7 +553,7 @@ fn apply(db: &mut Connection, line: Line, trace: &Trace) -> Result<(), Error> {
 }
 
 /// What arrives on the socket: a hook's signal, a run's tool call, a person's answer, desk action
-/// or snooze, a pick on a report, or a memory gate message.
+/// or snooze, a pick on a report, a task's progress, or a memory gate message.
 #[derive(serde::Deserialize)]
 #[serde(untagged)]
 enum Input {
@@ -564,6 +564,7 @@ enum Input {
     Act(Act),
     Snooze(Snooze),
     Choice(sections::Choice),
+    Progress(progress::Put),
     Gate(Gate),
 }
 
@@ -576,6 +577,9 @@ fn take(db: &mut Connection, line: &str, trace: &Trace) -> Result<(String, Optio
     };
     match serde_json::from_str::<Input>(line) {
         Ok(Input::Signal(signal)) => Ok(("ok".to_owned(), state::signal(db, &signal, trace)?)),
+        Ok(Input::Call(call)) if call.tool == "progress" => {
+            Ok((replied(progress::tool(db, &call, trace)?), None))
+        }
         Ok(Input::Call(call)) => Ok((replied(tools::call(db, &call, trace.factory)?), None)),
         Ok(Input::Answer(answer)) => Ok((
             replied(tools::answer(db, &answer, trace, &|worktree, branch| {
@@ -594,6 +598,7 @@ fn take(db: &mut Connection, line: &str, trace: &Trace) -> Result<(String, Optio
         Ok(Input::Choice(choice)) => {
             Ok((replied(sections::pick(db, &choice, trace.factory)?), None))
         }
+        Ok(Input::Progress(put)) => Ok((replied(progress::put(db, &put, trace)?), None)),
         Ok(Input::Gate(gate)) => {
             let share = Share::of(trace.factory, trace.machine.as_deref());
             let room = || room::measure(&runtime::home());

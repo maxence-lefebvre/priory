@@ -134,6 +134,31 @@ Compacting is described under Compact in [outbox.md](outbox.md).
 Neither ends the turn, and either can come after a result, an ask or a wait. `priory mcp` answers
 both itself from the state file, without the daemon. See [search.md](search.md).
 
+### `progress(goal?, acceptanceCriteria?, latestChange?, nextAction?)`
+
+`progress` publishes where the task stands, for a person who reads the desk. It does not end the
+turn, so the agent can call it at any point while its run is live. The daemon stores it on the task.
+
+| Field | Type | Meaning |
+| ----- | ---- | ------- |
+| `goal` | string | What the task must achieve |
+| `acceptanceCriteria` | array | Each entry `{ "id", "description", "required" }`: two strings and a boolean. A new list replaces the stored one |
+| `latestChange` | string | What changed last |
+| `nextAction` | string | What the agent does next |
+
+A call merges into what is stored: a field left out, or null, keeps its value. A call with no
+field, an unknown field or a field of the wrong type is refused, and nothing is stored. Each change
+appends a `factory.task.progressed` record to the trace with the merged progress, so the trace keeps
+every earlier value (see [the trace schema](../trace-schema.md)).
+
+`priory progress TASK JSON` does the same for any task, through the daemon:
+
+```sh
+priory progress 7 '{"nextAction": "Wait for CI"}'
+```
+
+`priory tasks --json`, `/api/tasks` and `/api/tasks/ID` show the stored value as `progress`.
+
 ### `report(date, since, greeting, sections)`
 
 `report` stores the task's report: ordered sections of rows, some with a pick. It replaces the

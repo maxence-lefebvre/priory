@@ -149,8 +149,12 @@ An `ask`, `blocked`, `failed` or `prompt` desk item, and every ask, carry these 
 
 Every task in start order: `id`, `key`, `workflow`, `step`, `state`, `band`, `lane`, `reason`,
 `position` (its place in the queue from 1, or null), `generation`, `retired`, `tldr`, `since`
-(when the task last changed state), `grade` (`red`, `yellow`, `green` or null) and `grade_reason`.
-See Grades in [tools.md](../daemon/tools.md#grades).
+(when the task last changed state), `grade` (`red`, `yellow`, `green` or null), `grade_reason` and
+`progress`. See Grades in [tools.md](../daemon/tools.md#grades).
+
+`progress` is null until the task's agent or a person publishes one. Then it is an object with any
+of `goal`, `acceptanceCriteria` (each `{ "id", "description", "required" }`), `latestChange` and
+`nextAction`. See the `progress` tool in [tools.md](../daemon/tools.md).
 
 ## Task in detail
 
