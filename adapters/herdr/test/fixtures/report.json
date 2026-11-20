@@ -1,0 +1,221 @@
+{
+  "report": {
+    "date": "2026-11-20",
+    "greeting": "Bonjour, Max",
+    "revision": 3,
+    "sections": [
+      {
+        "count": null,
+        "id": "reading",
+        "rows": [
+          {
+            "comments": [],
+            "id": null,
+            "key": null,
+            "meta": "opentelemetry.io, 8 min",
+            "owner": null,
+            "pick": null,
+            "state": null,
+            "text": "OpenTelemetry GenAI semantic conventions: agent spans",
+            "time": null
+          },
+          {
+            "comments": [],
+            "id": null,
+            "key": null,
+            "meta": "zed.dev, 11 min",
+            "owner": null,
+            "pick": null,
+            "state": null,
+            "text": "GPUI: virtual lists that keep the row under the pointer",
+            "time": null
+          }
+        ],
+        "title": "Reading"
+      },
+      {
+        "count": null,
+        "id": "slack",
+        "rows": [
+          {
+            "comments": [],
+            "id": null,
+            "key": null,
+            "meta": null,
+            "owner": null,
+            "pick": null,
+            "state": null,
+            "text": "Yesterday: merged the MCP v2 plan review, answered 4 Priory asks.\nToday: agree the picks and land #212. <b>not html</b>",
+            "time": null
+          }
+        ],
+        "title": "Slack notes"
+      },
+      {
+        "count": 3,
+        "id": "sentry",
+        "rows": [
+          {
+            "comments": [],
+            "id": "fnd-2409",
+            "key": "FND-2409",
+            "meta": "41 events, 3 users since 18:00",
+            "owner": null,
+            "pick": {
+              "applied": "requested task cli:FND-2409",
+              "chosen": "Take",
+              "id": "2026-11-20_sentry_fnd-2409",
+              "options": [
+                "Take",
+                "Later",
+                "Drop"
+              ],
+              "recommended": "Take",
+              "requests": {
+                "Take": {
+                  "key": "FND-2409",
+                  "text": "Fix the DWARF pause",
+                  "workflow": "fix"
+                }
+              }
+            },
+            "state": null,
+            "text": "Release build pauses on a DWARF breakpoint at app.rs:216",
+            "time": null
+          },
+          {
+            "comments": [],
+            "id": "fnd-2413",
+            "key": "FND-2413",
+            "meta": "plan rev 3 ready",
+            "owner": null,
+            "pick": {
+              "applied": null,
+              "chosen": null,
+              "id": "2026-11-20_sentry_fnd-2413",
+              "options": [
+                "Take",
+                "Later",
+                "Drop"
+              ],
+              "recommended": "Later"
+            },
+            "state": null,
+            "text": "Private fonts show in font queries",
+            "time": null
+          }
+        ],
+        "title": "Sentry"
+      },
+      {
+        "count": null,
+        "id": "agree",
+        "rows": [
+          {
+            "comments": [],
+            "id": null,
+            "key": "priory-schedules",
+            "meta": "Today, infra/intake",
+            "owner": null,
+            "pick": {
+              "applied": null,
+              "chosen": "Take",
+              "id": "2026-11-20_agree_priory-schedules",
+              "options": [
+                "Take",
+                "Later",
+                "Drop"
+              ],
+              "recommended": "Take"
+            },
+            "state": null,
+            "text": "Triggers that fire on a schedule",
+            "time": null
+          },
+          {
+            "comments": [],
+            "id": null,
+            "key": "priory-compact",
+            "meta": "Now, infra/agents",
+            "owner": null,
+            "pick": {
+              "applied": null,
+              "chosen": null,
+              "id": "2026-11-20_agree_priory-compact",
+              "options": [
+                "Apply",
+                "Skip"
+              ],
+              "recommended": null
+            },
+            "state": null,
+            "text": "Let an agent ask the daemon to compact its conversation",
+            "time": null
+          }
+        ],
+        "title": "To agree"
+      },
+      {
+        "count": null,
+        "id": "blocked",
+        "rows": [
+          {
+            "comments": [],
+            "id": null,
+            "key": "PRI-55",
+            "meta": "resume or edit the agent",
+            "owner": "on Max",
+            "pick": null,
+            "state": "blocked",
+            "text": "Permission prompt denied",
+            "time": null
+          },
+          {
+            "comments": [],
+            "id": null,
+            "key": "PRI-69",
+            "meta": "then it releases",
+            "owner": "on #212",
+            "pick": null,
+            "state": "held",
+            "text": "Held until #212 merges",
+            "time": null
+          }
+        ],
+        "title": "Blocked"
+      },
+      {
+        "count": null,
+        "id": "moved",
+        "rows": [
+          {
+            "comments": [],
+            "id": null,
+            "key": "PRI-63",
+            "meta": "merged #210, checks green",
+            "owner": null,
+            "pick": null,
+            "state": "done",
+            "text": "Fix waits, the done gate and ownership",
+            "time": "2026-11-19T18:42:00Z"
+          },
+          {
+            "comments": [],
+            "id": null,
+            "key": "PRI-60",
+            "meta": "dropped: duplicate of PRI-63",
+            "owner": null,
+            "pick": null,
+            "state": "dropped",
+            "text": "One nudge when a turn ends without an exit",
+            "time": "2026-11-20T06:05:00Z"
+          }
+        ],
+        "title": "Moved"
+      }
+    ],
+    "since": "2026-11-19T17:00:00Z",
+    "task": 1
+  },
+  "revision": 6
+}
