@@ -6,33 +6,42 @@ component. The live reference is the
 main components and their states in every theme. The token files in
 [`design/tokens/`](design/tokens/) are the source of truth for values. When the artifact, this
 file and the token files disagree, the token files win for values and this file wins for rules.
-Fix the others.
+Fix the others. The artifact still shows the older Ledger layout and four themes; redraw it for
+Explorer and Matins.
 
 The M2 test is "one working day of asks answered from a phone only". Every decision below serves
 that first: a person on a phone, often one-handed, reads an ask and answers it correctly.
 
-The view has one structure, called Ledger, and four themes: Indigo (the default), Ink, Parchment
-and Abbey, each in light and dark. A person picks a theme and a mode on the Appearance screen.
+The view has one structure, called Explorer, and five themes: Indigo (the default), Ink,
+Parchment, Abbey and Matins, each in light and dark. A person picks a theme and a mode on the
+Appearance screen.
+
+Explorer treats every list as one query over the factory. Saved views and facet chips narrow it,
+so nobody has to learn a syntax. The desk is the "Needs me" view. An ask opens into a detail that
+puts the decision first and everything to read after it.
 
 ## Principles
 
 1. **The desk comes first.** What waits on a person (asks, blocked tasks, uncertain prompts, room
    banners) is the default view and the first tab. Everything else is context for an answer.
-2. **Ink for attention, the action color for actions, color for state.** The next ask is printed
-   in solid ink. Buttons a person taps take the theme's action color. Every other color belongs
-   to a state tile. A screen with nothing to do looks quiet.
-3. **Dense, not cramped.** Rows show state, key, step and age in one glance. Density comes from
+2. **Ink for attention, the action color for actions, color for state.** The active view and the
+   active tab are printed in solid ink. Buttons a person taps take the theme's action color. Every
+   other color belongs to a state tile. A screen with nothing to do looks quiet.
+3. **Decide first, then read.** An ask shows its question, recommendation and options before any
+   context. The context follows for the person who doubts, and answering stays one tap away while
+   they read.
+4. **Dense, not cramped.** Rows show state, key, step and age in one glance. Density comes from
    tight type and hairlines, never from small touch targets.
-4. **Phone first, desktop extends.** Design each panel at 360 px wide first. Wider screens show
+5. **Phone first, desktop extends.** Design each panel at 360 px wide first. Wider screens show
    more panels side by side; they do not get different components.
-5. **State is a tile: shape and word, then color.** Every state has an icon and its daemon name.
+6. **State is a tile: shape and word, then color.** Every state has an icon and its daemon name.
    Color only reinforces it.
-6. **One structure, many themes.** A theme changes colors and the three font roles, nothing else.
-7. **Never answer by accident.** No gesture answers an ask. Answers to command asks need a second,
+7. **One structure, many themes.** A theme changes colors and the three font roles, nothing else.
+8. **Never answer by accident.** No gesture answers an ask. Answers to command asks need a second,
    deliberate tap.
-8. **Agent text is untrusted.** Render questions, options, summaries and terminal output as text
+9. **Agent text is untrusted.** Render questions, options, summaries and terminal output as text
    or sanitized Markdown. Never as HTML.
-9. **Offline is normal.** Show the last known state with its age when the connection drops.
+10. **Offline is normal.** Show the last known state with its age when the connection drops.
    Never blank a panel.
 
 ## Structure and themes
@@ -66,8 +75,8 @@ The view sets two attributes on `<html>`:
 <html data-theme="indigo" data-mode="system">
 ```
 
-- `data-theme` is `indigo`, `ink`, `parchment` or `abbey`. On `<html>`, a missing or unknown
-  value gives Indigo.
+- `data-theme` is `indigo`, `ink`, `parchment`, `abbey` or `matins`. On `<html>`, a missing or
+  unknown value gives Indigo.
 - `data-mode` is `system`, `light` or `dark`. `system` follows `prefers-color-scheme` through
   `color-scheme: light dark`, with no script. `light` and `dark` pin the mode.
 - The view stores both choices per device in local storage and applies them before first paint,
@@ -85,10 +94,14 @@ The view sets two attributes on `<html>`:
   `gap`, not margins. The side gutter is `--gutter`, 16 px or the safe-area inset.
 - **Radii:** `--radius-sm` (5 px) for tags and key hints, `--radius-tile` (8 px) for state tiles,
   `--radius-md` (12 px) for inputs, banners, the segmented control, the workflow grid and the
-  terminal, `--radius-card` (14 px) for the next-ask card, option buttons and theme cards,
-  `--radius-full` for the Answer capsule, live dots and badges. Rows have no radius.
+  terminal, `--radius-card` (14 px) for option buttons, the answer bar's buttons, sheets and theme
+  cards, `--radius-full` for the Answer capsule, saved views, live dots and badges. Facet chips
+  take `--radius-sm`. Rows have no radius.
 - **Elevation:** hairlines (`--line`) separate. Only the Answer capsule (`--shadow-float`) and
-  sheets (`--shadow-sheet`) cast a shadow.
+  sheets (`--shadow-sheet`) cast a shadow. A sheet on a phone sits over `--scrim`, which dims
+  and disables everything behind it.
+- **Sizes:** `--rail` (72 px) and `--drawer` (640 px) on wide screens, `--chip` (34 px) for views
+  and chips, `--answer-bar` (64 px) for the sticky answer bar, `--measure` (68ch) for Markdown.
 - **Motion:** `--dur-1` to `--dur-3` with `--ease-out` and `--ease-in`, all zero under
   `prefers-reduced-motion`.
 
@@ -96,14 +109,17 @@ The view sets two attributes on `<html>`:
 
 | Token             | Size / line | Role    | Weight   | Use                                            |
 | ----------------- | ----------- | ------- | -------- | ---------------------------------------------- |
-| `--type-count`    | 104 / 0.8   | display | theme    | the desk's ask count, nothing else             |
-| `--type-count-wide` | 88 / 0.8  | display | theme    | the ask count in the wide desk column          |
+| `--type-count`    | 64 / 0.85   | display | theme    | the desk's ask count on a phone                |
+| `--type-count-wide` | 44 / 1    | display | theme    | the ask count in the wide list header          |
 | `--type-screen`   | 34 / 40     | display | 700      | screen titles, such as Appearance              |
 | `--type-task`     | 32 / 38     | display | 700      | the task title on wide screens                 |
-| `--type-question` | 25 / 31     | display | 700      | the question in answer mode                    |
-| `--type-hero`     | 24 / 27     | display | 700      | "asks need you" beside the count               |
-| `--type-next`     | 18 / 24     | display | 600      | the question in the next-ask card              |
-| `--type-option`   | 17 / 22     | UI      | 600      | option labels, the Answer capsule              |
+| `--type-question` | 25 / 31     | display | 700      | the question in an ask's detail on a phone     |
+| `--type-question-wide` | 22 / 28 | display | 700     | the question in the ask drawer                 |
+| `--type-hero`     | 20 / 24     | display | 700      | "asks need you" beside the count               |
+| `--type-read-h1`  | 20 / 26     | display | 700      | Markdown h1                                    |
+| `--type-option`   | 17 / 22     | UI      | 600      | option labels, the Answer capsule, answer bar  |
+| `--type-read-h2`  | 16 / 22     | UI      | 650      | Markdown h2 and h3, collapsible section titles |
+| `--type-read`     | 15 / 23     | UI      | 400      | Markdown body: ask text, briefs and plans      |
 | `--type-body`     | 15 / 20     | UI      | 400, 500 | row text, default text                         |
 | `--type-small`    | 14 / 20     | UI      | 400, 500 | reasons, trade-off, banner text                |
 | `--type-caption`  | 13 / 18     | UI      | 400, 600 | row metadata, section heads, ages              |
@@ -113,10 +129,10 @@ The view sets two attributes on `<html>`:
 
 - The display role takes `--display-stretch`; the count also takes `--count-stretch`,
   `--count-weight` and `--count-tracking`. A grotesk theme uses them for its wide cut; a serif
-  theme sets them to plain values.
+  theme sets them to plain values. The wide count halves `--count-tracking`.
 - Set inputs at 16 px at every width. Smaller inputs make iOS Safari zoom the page.
 - Use `font-variant-numeric: tabular-nums` for every column of numbers, durations and times.
-- Keep reading text under 72 characters per line.
+- Keep reading text within `--measure`.
 
 ## Themes
 
@@ -126,6 +142,7 @@ The view sets two attributes on `<html>`:
 | Ink       | Monochrome. What needs you is printed in solid ink. | Mona Sans / Mona Sans / JetBrains Mono      | ink    | ink               | ink        |
 | Parchment | Parchment and iron-gall ink, rubric red and lapis.  | EB Garamond / IBM Plex Sans / IBM Plex Mono | lapis  | rubric red        | ink        |
 | Abbey     | Vellum, lapis and gold, rubric red.                 | Alegreya / Alegreya Sans / IBM Plex Mono    | lapis  | rubric red        | deep lapis |
+| Matins    | A tracing tool: instrument blue on blue-black.      | Geist / Geist / Geist Mono                  | blue   | blue              | ink        |
 
 - **Rubric red marks only what waits on a person.** In Parchment and Abbey, red appears on ask
   tiles, the ask count and the Desk badge, and nowhere else. Actions, including the recommended
@@ -133,25 +150,27 @@ The view sets two attributes on `<html>`:
   danger text a pale rose in dark mode, both apart from rubric red in lightness.
 - **The recommended option takes `--recommended`, which is the theme's action color in every
   theme.** It is never `--wait`.
-- **Fonts:** all seven families are under the SIL Open Font License 1.1. Ship their `woff2` files
+- **Fonts:** all nine families are under the SIL Open Font License 1.1. Ship their `woff2` files
   with the daemon and serve them from the view. Never load fonts from a CDN: the view must work on
   a factory with no internet. Load a theme's families only when that theme is active or shown
-  in an Appearance preview.
+  in an Appearance preview. The `woff2` files land with the first web view code, not with this
+  file; until then the design boards load the families from Google Fonts.
 
 ### Theme tokens
 
 | Token                                       | Meaning                                                                |
 | ------------------------------------------- | ---------------------------------------------------------------------- |
 | `--bg`                                      | page ground                                                            |
-| `--surface`                                 | cards, the detail pane, option buttons, inputs                         |
-| `--raised`                                  | pressed rows, the segmented control track, skeletons                   |
+| `--surface`                                 | the drawer, sheets, option buttons, chips, inputs                      |
+| `--raised`                                  | pressed rows, the segmented control track, skeletons, code and commands |
 | `--line`                                    | hairlines between rows and around panels; never the only edge of a control |
 | `--control-line`                            | edges of inputs, option buttons and secondary buttons, at least 3:1    |
-| `--bar`                                     | the tab bar and the fade behind the Answer capsule                     |
+| `--bar`                                     | the tab bar, the rail, the answer bar and the fade behind the capsule  |
+| `--scrim`                                   | the dimmed backdrop behind a sheet; alpha over the page                |
 | `--text`, `--text-2`, `--text-3`            | primary, secondary and metadata text                                   |
-| `--emph`, `--on-emph`, `--on-emph-2`        | solid ink: the next-ask card, the current workflow step, the active tab |
+| `--emph`, `--on-emph`, `--on-emph-2`        | solid ink: the active view, the active tab, the current workflow step, an armed command option |
 | `--action`, `--on-action`                   | primary buttons, the Answer capsule, the recommended option            |
-| `--action-soft`, `--action-text`            | selected rows and sidebar items, links, ghost buttons, the focus ring  |
+| `--action-soft`, `--action-text`            | selected rows and rail items, set facet chips, the recommendation, links, ghost buttons, the focus ring |
 | `--wait`, `--on-wait`                       | the ask tile: what waits on a person                                   |
 | `--count`                                   | the desk's ask count                                                   |
 | `--badge`, `--on-badge`                     | the count of open asks on the Desk tab                                 |
@@ -162,8 +181,9 @@ The view sets two attributes on `<html>`:
 | `--recommended`, `--on-recommended`         | derived: equal to `--action` and `--on-action`                         |
 
 Contrast, checked for every theme in both modes: text tokens, state text tokens and
-`--action-text` reach 4.5:1 on `--bg` and `--surface`; `--on-action`, `--on-emph`, `--on-emph-2`,
-`--on-badge` and the terminal text reach 4.5:1 on their fill, and so does `--on-tile` on
+`--action-text` reach 4.5:1 on `--bg` and `--surface`, and `--action-text` also on
+`--action-soft`; `--on-action`, `--on-emph`, `--on-emph-2`, `--on-badge` and the terminal text
+reach 4.5:1 on their fill, and so does `--on-tile` on
 `--tile-danger`, which is also the danger button; tile icons, `--on-wait` and `--control-line`
 reach 3:1; the count reaches 3:1 on `--bg`. Re-check every pair with a contrast
 tool after any change to a theme.
@@ -171,7 +191,7 @@ tool after any change to a theme.
 ### The illuminated initial is dropped
 
 An illuminated initial, the count in a gilded square, was tried for Parchment and Abbey. It is
-dropped: it would be the one place a theme changes layout, breaking principle 6, and its 84 px
+dropped: it would be the one place a theme changes layout, breaking principle 7, and its 84 px
 square shrinks the count. Those themes keep their character through their serif display role
 and the rubric red `--count`.
 
@@ -182,13 +202,14 @@ and the rubric red `--count`.
 | Name    | Width         | Layout                                                                |
 | ------- | ------------- | --------------------------------------------------------------------- |
 | compact | below 600 px  | One panel at a time. Bottom tab bar. Detail pages push over the list. |
-| medium  | 600 to 1023   | List and detail side by side, list 320 to 400 px wide.                |
-| wide    | 1024 and up   | Sidebar, desk column and detail, or the view file's tree as written.  |
+| medium  | 600 to 1023   | List and drawer side by side, list 320 to 400 px wide. Bottom tab bar. |
+| wide    | 1024 and up   | Rail, list and drawer, or the view file's tree as written.            |
 
 - A view file (R8.2) describes the wide layout. On compact screens, each leaf panel becomes a tab
   in the tree's order. The bottom bar shows the first four and a "More" tab for the rest.
-- The default view puts the desk first, then queue, tasks and runs. Inbox, workflows, reports and
-  terminals sit under "More".
+- The default view puts the desk first, then asks, tasks and runs. The queue is a saved view of
+  tasks. Inbox, workflows, reports and terminals sit under "More".
+- "Asks" names the list of every ask. The PRD's inbox stays the log of events (R3).
 - Panels lay out by their own width with container queries, not by the viewport.
 - Every task, run and ask has its own URL, such as `/asks/42`. A link from a notification opens
   that ask directly, on any screen size.
@@ -196,9 +217,10 @@ and the rubric red `--count`.
 ### Frame on a phone
 
 - **Top bar**, `--top-bar` (52 px), with a hairline under it: the factory name in the display
-  role, the connection state as a dot and a word ("live", "reconnecting"), and a search button.
+  role, the connection state as a dot and a word ("live", "reconnecting"), a filter button and a
+  search button. A list panel shows its title in the display role instead of the factory name.
   It stays sticky below the safe-area inset.
-- **Tab bar**, `--tab-bar` (60 px plus the bottom safe area), on `--bar`: Desk, Queue, Tasks,
+- **Tab bar**, `--tab-bar` (60 px plus the bottom safe area), on `--bar`: Desk, Asks, Tasks,
   Runs, More, each an icon and a label. The active tab is a solid `--emph` pill. The Desk tab
   carries the open-ask count in `--badge`.
 - The page never scrolls sideways. Only tables, diagrams and the terminal scroll inside their own
@@ -208,12 +230,15 @@ and the rubric red `--count`.
 
 - **Top bar**: the factory name and connection state, a command bar in the middle ("Search or run
   a command", `Ctrl K`), and the runner name on the right.
-- **Sidebar**, `--sidebar` (200 px): Desk, Queue, Tasks and Runs with counts, then a "More"
-  group. The active item takes `--action-soft` and `--action-text`.
-- **Desk column**, `--desk-column` (400 px): the desk, as on the phone, without the capsule.
-- **Detail**: the selected task or run on `--surface`.
-- **Key hint bar** at the bottom, 40 px: `J` `K` move, `Enter` open, `1` to `9` answer, `W` write,
-  `?` all shortcuts.
+- **Rail**, `--rail` (72 px) on `--bar`: Desk, Asks, Tasks, Runs, Inbox and Reports, each an
+  icon over a label, then Settings at the bottom. The active item takes `--action-soft` and
+  `--action-text`. The Desk item carries the open-ask badge.
+- **List**: the selected view as an explorer list (below), at least 600 px wide at 1440 px. It
+  holds no facet column and no histogram: facets are chips, and the histogram lives in Runs.
+- **Drawer**, `--drawer` (640 px) on `--surface`: the selected ask, task or run. It opens beside
+  the list and never covers it.
+- **Key hint bar** at the bottom of the list, 40 px: `J` `K` move, `Enter` open, `1` to `9`
+  answer, `W` write, `[` `]` sections, `?` all shortcuts.
 
 ## Components
 
@@ -274,41 +299,65 @@ the `circle-help` icon. Add it here in the same change that adds it to the daemo
 Each role's tile fill in each theme, light / dark, from
 [`design/tokens/themes.css`](design/tokens/themes.css):
 
-| Role   | Token           | States                                               | Indigo                | Ink                   | Parchment             | Abbey                 |
-| ------ | --------------- | ---------------------------------------------------- | --------------------- | --------------------- | --------------------- | --------------------- |
-| wait   | `--wait`        | asks                                                 | `#5856D6` / `#5E5CE6` | `#0A0A0A` / `#EDEDED` | `#A4161A` / `#B9302A` | `#A31F1A` / `#B42A22` |
-| live   | `--tile-live`   | running, ready                                       | `#5856D6` / `#5E5CE6` | `#0A0A0A` / `#EDEDED` | `#1F3F8F` / `#3F63C4` | `#24489C` / `#4466C8` |
-| warn   | `--tile-warn`   | blocked, lost                                        | `#C96800` / `#C96800` | `#B45309` / `#B45309` | `#9A6400` / `#A36A00` | `#A86B00` / `#A86B00` |
-| danger | `--tile-danger` | failed, exited                                       | `#D70015` / `#D70015` | `#CB1D26` / `#D92D35` | `#4A1A12` / `#6E2216` | `#5A1C17` / `#6E241E` |
-| ok     | `--tile-ok`     | done                                                 | `#248A3D` / `#2E8B47` | `#18793A` / `#24873F` | `#3F6B2A` / `#4A7A33` | `#2F6B4F` / `#2F7A57` |
-| hold   | `--tile-hold`   | held                                                 | `#8944AB` / `#9A55BF` | `#7340B8` / `#8550C8` | `#4B3F8F` / `#5C4FA8` | `#5B4A9C` / `#6A58B5` |
-| muted  | `--tile-muted`  | queued, asleep, dropped, moved, restarted, cancelled | `#8E8E93` / `#636366` | `#8A8A8A` / `#555555` | `#8A7A5C` / `#6A5D48` | `#8C8170` / `#4C5468` |
+| Role   | Token           | States                                               | Indigo                | Ink                   | Parchment             | Abbey                 | Matins                |
+| ------ | --------------- | ---------------------------------------------------- | --------------------- | --------------------- | --------------------- | --------------------- | --------------------- |
+| wait   | `--wait`        | asks                                                 | `#5856D6` / `#5E5CE6` | `#0A0A0A` / `#EDEDED` | `#A4161A` / `#B9302A` | `#A31F1A` / `#B42A22` | `#2F55D4` / `#3A60E4` |
+| live   | `--tile-live`   | running, ready                                       | `#5856D6` / `#5E5CE6` | `#0A0A0A` / `#EDEDED` | `#1F3F8F` / `#3F63C4` | `#24489C` / `#4466C8` | `#2F55D4` / `#3A60E4` |
+| warn   | `--tile-warn`   | blocked, lost                                        | `#C96800` / `#C96800` | `#B45309` / `#B45309` | `#9A6400` / `#A36A00` | `#A86B00` / `#A86B00` | `#B06600` / `#B06600` |
+| danger | `--tile-danger` | failed, exited                                       | `#D70015` / `#D70015` | `#CB1D26` / `#D92D35` | `#4A1A12` / `#6E2216` | `#5A1C17` / `#6E241E` | `#D1293D` / `#D1293D` |
+| ok     | `--tile-ok`     | done                                                 | `#248A3D` / `#2E8B47` | `#18793A` / `#24873F` | `#3F6B2A` / `#4A7A33` | `#2F6B4F` / `#2F7A57` | `#0F7D59` / `#128862` |
+| hold   | `--tile-hold`   | held                                                 | `#8944AB` / `#9A55BF` | `#7340B8` / `#8550C8` | `#4B3F8F` / `#5C4FA8` | `#5B4A9C` / `#6A58B5` | `#7A4FD0` / `#8A60DC` |
+| muted  | `--tile-muted`  | queued, asleep, dropped, moved, restarted, cancelled | `#8E8E93` / `#636366` | `#8A8A8A` / `#555555` | `#8A7A5C` / `#6A5D48` | `#8C8170` / `#4C5468` | `#848C9A` / `#525A69` |
 
-In Indigo and Ink the ask tile and the live tile share a fill; the icon tells them apart.
+In Indigo, Ink and Matins the ask tile and the live tile share a fill; the icon tells them apart.
+
+An answered or withdrawn ask is not a task state either. In the asks list it takes a muted tile
+with the `check` icon (answered) or the `minus` icon (withdrawn).
+
+### Explorer list
+
+Every list panel (desk, asks, tasks, runs, inbox) is the same explorer over one query.
+
+1. **Saved views**: a row of chips, `--chip` tall with `--radius-full`, each a name and a count
+   in `--text-3`. The active view is solid `--emph`. Views name a whole query, such as "Needs
+   me", "Running", "Asleep" or "All". On a phone the row fits the width; a view that does not fit
+   moves to the view's menu, and the row never scrolls sideways.
+2. **Facet chips**: one chip per facet the panel offers (lane, step, runner, age, task, command),
+   `--chip` tall like the views, with `--radius-sm` and a `--control-line` edge. Tapping one
+   opens a picker sheet with values and counts. A set chip takes `--action-soft` and `--action-text`, shows its value
+   and an `x` that clears it. A last "Filter" ghost chip adds a facet. On a phone the facet row
+   sits behind the top bar's filter button, except in the asks list.
+3. **Query bar**, optional: hidden by default. Search on a phone, or the "Query" button on wide
+   screens, opens it. It shows the current views and chips as text, such as `needs:me
+   lane:infra/*`, so a person who knows the syntax can edit it. Nobody needs it to filter.
+4. **Rows**, grouped by the view's sections, as described for each panel below.
+
+On wide screens the list is a table: one row per item, `--row-wide` (38 px) at least. A long
+question wraps to two lines instead of truncating.
 
 ### Desk
 
-The desk lists, top to bottom:
+The desk is the "Needs me" view. It lists, top to bottom:
 
 1. **Count**: the number of open asks in `--type-count` and `--count`, beside "asks need you" in
-   `--type-hero` and a line in `--text-3`: "Oldest waits 42 min. 2 stopped."
-2. **Room banners** (R4.3): a `--warn-text` edge on `--surface`, the `hard-drive` or
+   `--type-hero` and a line in `--text-3`: "Oldest waits 42 min. 2 stopped." On wide screens
+   the count sits at the right of the list header in `--type-count-wide`.
+2. **Saved views**: Needs me, Running, Asleep, All on a phone; Queue joins them on wide screens.
+3. **Room banners** (R4.3): a `--warn-text` edge on `--surface`, the `hard-drive` or
    `memory-stick` icon, and the daemon's sentence: what is short, by how much, since when, and
    the waiting task.
-3. **Next-ask card**: the oldest open ask, a button in solid `--emph` with `--radius-card`. Its
-   context line (ask icon, task key, step, a "Command" tag for a command ask, age) sits above the
-   question in `--type-next`, clamped at 3 lines, and "Oldest ask. Tap to answer." Tapping it
-   opens answer mode on that ask.
-4. **Then**: the other open asks, oldest first, as rows.
+4. **Asks**: the open asks, oldest first, as ask rows.
 5. **Stopped**: blocked tasks, uncertain prompts (R5.4) and failed tasks, each with its reason in
-   the role's text color.
+   the role's text color. On wide screens the Recommends column names the action: Resume or
+   Revive.
 6. **Asleep**: one row, "9 tasks asleep on waits", that opens the tasks panel filtered to asleep.
 7. Reports waiting for review, when there are any.
 
 On a phone, the **Answer capsule** floats above the tab bar: a full-width `--action` button,
 `--capsule` (54 px) tall, `--capsule-gap` above the tab bar, with `--radius-full` and
-`--shadow-float`, labelled "Answer 3 asks". It opens answer mode on the oldest ask. A fade from
-transparent to `--bar` sits behind it.
+`--shadow-float`, labelled "Answer 3 asks". It opens the oldest ask's detail. A fade from
+transparent to `--bar` sits behind it. Wide screens have no capsule: `Enter` opens the
+selected row.
 
 - **The desk list ends with bottom padding of `--desk-end`**: the capsule's height plus its gap
   above and below, so the capsule never covers the last row when the list is scrolled to the end.
@@ -317,33 +366,87 @@ transparent to `--bar` sits behind it.
 
 Rows on the desk are at least `--row-min` (64 px) tall with a hairline above each: a state tile
 on the left, then line 1 (task key in mono, step, tags, and the age on the right in `--text-3`),
-line 2 (the question or reason, clamped at 2 lines), and a chevron. The whole row is the touch
-target.
+line 2 (the question or reason, clamped at 2 lines), and a chevron. An ask row adds line 3 in
+`--type-caption`: "Recommends" and the recommended option in `--text-2` at 600, then icons for
+what the ask carries (`file-text` brief, `list-checks` plan, `git-pull-request` and the pull
+request number). The whole row is the touch target.
 
-### Answer mode
+### Asks list
 
-On compact screens, answering opens answer mode: one ask fills the screen.
+The Asks tab lists every ask. Saved views: Open, Answered and All, each with a count. Facet
+chips: Command, Lane and Task, shown on a phone too. Each view shows these sections, in order,
+and leaves out an empty one:
 
-1. **Header**: "Desk" with a back chevron on the left, the position "1/3" on the right in the
-   display role, the total in `--text-3`.
-2. **Context line**: the ask tile, task key, step, lane and age. It wraps. Tapping it opens the
-   task.
-3. **Question** in `--type-question`. A long question scrolls; the options never move.
-4. **Options**: one full-width button per option, in the agent's order. Never reorder them. Each
+| Section          | Open | Answered | All | Order        | Line 3                                       |
+| ---------------- | ---- | -------- | --- | ------------ | -------------------------------------------- |
+| Open             | yes  |          | yes | oldest first | "Recommends" and the recommended option      |
+| Answered today   |      | yes      | yes | newest first | "Answered", the answer, then who answered    |
+| Answered earlier |      | yes      | yes | newest first | as above, with a date instead of a time      |
+| Withdrawn        |      |          | yes | newest first | "Withdrawn" and why, such as "task revived"  |
+
+Answered and withdrawn rows take the muted tiles from the state tile section. A long section
+loads more rows as the person scrolls; its header keeps the total.
+
+### Ask detail
+
+An ask opens into its detail: a full screen on a phone, the drawer on wide screens. It is ordered
+for a decision. Every ask has its own URL, such as `/asks/42`.
+
+**Decide** (the top, inside the thumb's reach on a phone):
+
+1. **Header**: a back chevron with the list's name, the position "1/3" in the display role, and
+   previous and next buttons.
+2. **Context line**: the ask tile, task key, step, lane, a "Command" tag for a command ask, age
+   and revision. It wraps. Tapping it opens the task.
+3. **Question** in `--type-question`, or `--type-question-wide` in the drawer.
+4. **Recommendation** on `--action-soft` with `--radius-md`: "Recommended: Merge." in
+   `--action-text`, the agent's reason, then a `corner-down-right` line with what the agent does
+   next after that answer.
+5. **Options**: one full-width button per option, in the agent's order. Never reorder them. Each
    is at least `--option-min` (58 px) tall with `--radius-card` and a left-aligned label in
    `--type-option`. Ordinary options sit on `--surface` with a 1 px `--control-line` edge. The
-   recommended option fills with `--recommended` and shows "Recommended" under its label. The
-   options sit in the bottom half, inside the thumb's reach.
-5. **Trade-off** under the options: "Trade-off." then the agent's sentence, in `--type-small`.
+   recommended option fills with `--recommended` and shows "Recommended" under its label, plus
+   "Runs a command" when its answer runs one. In the drawer the options sit in one row, each with
+   its key `1` to `9`.
 6. **Write an answer**: a ghost button that expands into a 16 px text field with a "Send"
    button. Free text is always possible.
-7. **Bar**: "Skip" on the left, "Revision 2" in the middle in `--text-3`, "Next" on the right.
+
+**Read** (below, in the order a doubt follows): a row of section chips (Why, Brief, Plan, PR,
+Trace, History, and Command in the drawer) jumps to each part and marks the one in view.
+
+1. **Why**: what the agent says, as Markdown, with the run that asked; then "Trade-off." and
+   "What waits." as two facts with the `scale` and `hourglass` icons.
+2. **Brief**: the task's brief file as Markdown, with its file name and an open link.
+3. **Plan**: the task's plan as Markdown; a checklist shows done items with `check` in
+   `--ok-text`.
+4. **PR**: the pull request summary (below).
+5. **Trace**: the runs that led to the ask, as a waterfall (below).
+6. **History**: the answer history (below).
+7. **Command**: for a command ask, the command and its target (below).
+
+A section the task lacks, such as a plan, is left out with its chip.
+
+**Answer while reading.** On a phone, once the options scroll out of view:
+
+- The header shrinks to one line: the question, clamped, over the task key, step and revision.
+- The section chips stick under the header.
+- A **sticky answer bar** on `--bar`, `--answer-bar` tall, holds two buttons with
+  `--radius-card`: a secondary "3 options" with `chevron-up`, and the recommended option as a
+  primary button with "Recommended" under its label. The recommended button answers in one tap,
+  or arms a command ask. "3 options" opens the answer sheet.
+- The **answer sheet** slides up over `--scrim`: "Answer ask #42" and the revision, every
+  option, the command block for a command ask, and a close button. Tapping the scrim closes it.
+
+In the drawer, the decide part stays pinned at the top and the reading part scrolls under it.
+The pinned part takes at most 50 % of the drawer's height and scrolls on its own past that. In
+it, the question clamps at 3 lines and the recommendation at 4, each with a "More" ghost button
+that expands it. Options sit in one row while each label fits on two lines, and wrap to a column
+otherwise. `[` and `]` move between sections.
 
 - After an answer, the next ask slides in and the position updates.
-- "Skip", "Next" and a horizontal swipe move without answering. Nothing answers except a tap on
+- Previous, next and a horizontal swipe move without answering. Nothing answers except a tap on
   an option or "Send".
-- Leaving answer mode returns to the desk at the same scroll position.
-- On wide screens the same ask card shows in the detail column; `1` to `9` pick an option.
+- Leaving the detail returns to the list at the same scroll position.
 
 Ask states:
 
@@ -352,18 +455,65 @@ Ask states:
 | open      | As above.                                                                                 |
 | sending   | The chosen option shows a check; the others dim. A bar at the bottom says `Sending "Merge"` with an "Undo" button for 4 s. The view sends after the 4 s. |
 | answered  | The card collapses to the question, the answer, who answered and when. No buttons.        |
-| refused   | A `--warn-text` banner: "The question changed. Read revision 3 and answer again." The card reloads the new revision; the old answer stays in the text field. |
+| refused   | A `--warn-text` banner: "The question changed. Read revision 3 and answer again." The detail reloads the new revision; the old answer stays in the text field and in the history. |
 | taken     | "Already answered 2 min ago: Merge." Shown when another answer came first.                |
 | withdrawn | Muted: "Withdrawn: the task was revived." No buttons.                                     |
 | offline   | Options stay visible but disabled, with "Reconnect to answer".                            |
 
-A **command ask** (R6.8) also shows the command and its target in a mono block on `--raised`
-above the options. Its answer runs the command, so:
+A **command ask** (R6.8) binds one option to a command. Its answer runs the command, so:
 
-- It has no undo bar. The first tap turns the option into "Tap again to run" for 4 s; the second
-  tap sends.
+- The option says so before any tap: "Recommended. Runs a command", or "Runs a command".
+- The Command section and the answer sheet show the command in a mono block on `--raised`: the
+  exact command line, its target, the revision it is bound to, and "Runs at most once."
+- It has no undo bar. The first tap arms the option: it turns solid `--emph` with a 3 px
+  `--action` ring, reads "Tap again to run" over the option's name and "Cancels in 4 s", and a
+  ring counts the 4 s down. The other options dim. The second tap sends. In the drawer, the
+  option's key pressed twice does the same.
+- While armed, the command block sits right under the armed option, in the options and in the
+  sheet, or right above the answer bar when armed there: the command line, its target and
+  "Bound to revision 2". The person sees exactly what the second tap runs without scrolling.
 - After sending it shows the outcome: `running`, `done`, `failed` with the error, or `uncertain`
   in `--warn-text`: "Priory stopped while this ran. Check the target before you act on it."
+
+### Markdown
+
+Ask text, briefs and plans render as sanitized Markdown, never as HTML (principle 9).
+
+- Body in `--type-read`, at most `--measure` wide. Headings: h1 in `--type-read-h1`, h2 and h3 in
+  `--type-read-h2`. Lists indent 22 px with markers in `--text-3`.
+- Inline code in mono 13 px on `--raised` with `--radius-sm`. Code blocks in `--type-mono` on
+  `--raised` with `--radius-md`; a long line scrolls inside its block, never the page.
+- A heading section longer than a screen can collapse: a `details` row, `--control` tall, with a
+  `chevron-right` that turns 90 degrees when open, the heading, and a count in `--text-3`, such
+  as "4 criteria". A brief opens with Goal and Scope expanded and the rest collapsed.
+- Links show their host after the text. Images do not load; they show their alt text and host.
+
+### Pull request summary
+
+The pull request's title, then a line of branch, base, additions in `--ok-text`, deletions in
+`--danger-text`, file count and head sha. Then the largest files, up to 4 on a phone and 5 in
+the drawer: path in mono (ellipsized from the left), counts, and five squares of added and
+deleted share in `--tile-ok` and `--tile-danger`. Then the checks, each a `check`, `x` or live
+dot with its name and duration, and the review state.
+
+### Trace waterfall and run blocks
+
+The trace is the task's runs and waits on a time axis, ending at now.
+
+- One row per run or wait, 28 px tall: a label (state icon in the role's text color, step and
+  run id) and a bar on the axis. Bars: `--tile-muted` for moved and asleep runs, `--tile-warn`
+  for lost ones, `--tile-ok` for done, a dashed outline for a wait, and stripes of `--wait` for
+  the open ask. The duration sits after the bar, or before it near the right edge.
+- The ask's row is selected: `--action-soft` with a 3 px `--action` bar.
+- On a phone the label column is 138 px and the axis shows two ticks; in the drawer, 190 px and
+  every half hour.
+- **Run blocks** are the same bars without labels, 10 px tall in one strip: a task's runs at a
+  glance in a row or a card.
+
+### Answer history
+
+Every revision and answer of the ask, newest first: a small tile, a sentence and a time in mono.
+A refused answer shows on a warn tile with "Refused:" and the answer in `--warn-text`, and why.
 
 ### Appearance screen
 
@@ -372,10 +522,10 @@ Settings, then Appearance. It holds:
 1. A screen title, "Appearance", in `--type-screen`.
 2. **Mode**: a segmented control, System, Light and Dark, `--control` (44 px) tall on
    `--raised`. The selected segment sits on `--surface`.
-3. **Theme**: one card per theme, in the order Indigo, Ink, Parchment, Abbey. Each card shows the
-   desk in that theme, light and dark side by side at one fifth scale, the theme's name in the
-   display role, one sentence about it, and a radio. The selected card has a 2 px `--action` edge
-   and a filled radio.
+3. **Theme**: one card per theme, in the order Indigo, Ink, Parchment, Abbey, Matins. Each card
+   shows the desk in that theme, light and dark side by side at one fifth scale, the theme's
+   name in the display role, one sentence about it, and a radio. The selected card has a 2 px
+   `--action` edge and a filled radio.
 4. A note in `--text-3`: "A theme changes color and type only. Every screen keeps the same
    layout."
 
@@ -477,8 +627,8 @@ run.
   8 px between neighbours.
 - Put the primary action of a screen in its bottom third on compact screens.
 - Every gesture has a visible button that does the same thing.
-- Allowed gestures: horizontal swipe between asks in answer mode and between tabs; pinch and drag
-  on diagrams; the browser's own back swipe. Nothing else.
+- Allowed gestures: horizontal swipe between asks in an ask's detail and between tabs; pinch and
+  drag on diagrams; the browser's own back swipe. Nothing else.
 - No pull to refresh: panels update live. Set `overscroll-behavior: contain` on scrolling panels.
 - No long press, no hover-only controls, no double tap except the command ask's second tap.
 - Respect the safe-area insets on all four edges.
@@ -489,8 +639,11 @@ run.
 - Focus ring: 2 px solid `--action-text` with a 2 px offset, on every focusable element, using
   `:focus-visible`.
 - Every control works by keyboard. Desktop shortcuts: `j` and `k` move, `Enter` opens, `1` to
-  `9` pick an option, `w` writes an answer, `Esc` closes, `?` lists shortcuts. Single-key
-  shortcuts never fire inside an input, and a setting turns them off.
+  `9` pick an option (twice for a command), `w` writes an answer, `[` and `]` move between
+  sections, `Esc` closes, `?` lists shortcuts. Single-key shortcuts never fire inside an input,
+  and a setting turns them off.
+- The sheet over `--scrim` is a modal `dialog`: focus moves into it, stays there, and returns to
+  the answer bar when it closes. The section chips are a `nav` of in-page links.
 - Each panel is a `region` labelled by its title. The tab bar is a `nav`.
 - A new ask is announced once through a polite live region: "New ask from task 61." Never
   assertive.

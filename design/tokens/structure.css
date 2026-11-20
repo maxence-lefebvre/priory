@@ -33,18 +33,24 @@
   --option-min: 58px;        /* ask option buttons */
   --control: 44px;           /* buttons and inputs on a coarse pointer */
   --control-fine: 32px;      /* buttons and inputs on a fine pointer */
-  --sidebar: 200px;
-  --desk-column: 400px;
+  --chip: 34px;              /* saved views and facet chips; the row keeps a 44px target */
+  --answer-bar: 64px;        /* the sticky answer bar in an ask's detail, plus the bottom safe area */
+  --rail: 72px;              /* the view rail on wide screens */
+  --drawer: 640px;           /* the ask or task drawer on wide screens */
+  --measure: 68ch;           /* the longest line of Markdown */
 
   /* Type scale: size / line height. The family comes from the theme's font roles. */
-  --type-count: 104px/0.8;    /* the desk's ask count, display role */
-  --type-count-wide: 88px/0.8; /* the ask count in the wide desk column */
+  --type-count: 64px/0.85;    /* the desk's ask count on a phone, display role */
+  --type-count-wide: 44px/1;  /* the ask count in the wide list header, display role */
   --type-screen: 34px/40px;   /* screen titles such as Appearance, display role */
   --type-task: 32px/38px;     /* task title on wide screens, display role */
-  --type-question: 25px/31px; /* the question in answer mode, display role */
-  --type-hero: 24px/27px;     /* "asks need you" beside the count, display role */
-  --type-next: 18px/24px;     /* question in the next-ask card, display role */
-  --type-option: 17px/22px;   /* option labels and the capsule, UI role */
+  --type-question: 25px/31px; /* the question in an ask's detail on a phone, display role */
+  --type-question-wide: 22px/28px; /* the question in the ask drawer, display role */
+  --type-hero: 20px/24px;     /* "asks need you" beside the count, display role */
+  --type-read: 15px/23px;     /* Markdown body: ask text, briefs and plans, UI role */
+  --type-read-h1: 20px/26px;  /* Markdown h1, display role */
+  --type-read-h2: 16px/22px;  /* Markdown h2 and h3, UI role, 650 */
+  --type-option: 17px/22px;   /* option labels, the capsule and the answer bar, UI role */
   --type-body: 15px/20px;     /* row text, UI role */
   --type-small: 14px/20px;    /* reasons, trade-off, banner, UI role */
   --type-caption: 13px/18px;  /* row metadata, section heads, UI role */
@@ -54,7 +60,7 @@
 
   /* Elevation: hairlines separate; a shadow means the element floats. */
   --shadow-float: 0 6px 20px rgba(0, 0, 0, 0.18); /* Answer capsule */
-  --shadow-sheet: 0 -8px 32px rgba(0, 0, 0, 0.24);
+  --shadow-sheet: 0 -8px 32px rgba(0, 0, 0, 0.24); /* sheets, over the theme's --scrim */
 
   /* Motion */
   --dur-1: 100ms;  /* press, toggle */
