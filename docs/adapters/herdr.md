@@ -144,7 +144,9 @@ DESIGN.md's "Herdr adapter" section holds its visual rules; this section says ho
   way. Dismiss runs `priory dismiss` at once.
 - **Refused answers.** When a verb fails, the panel reads the asks again and says why on the ask:
   the question changed to another revision, someone else answered, the ask was withdrawn, or the
-  CLI's error. A refused answer goes back into the text field, so the person can send it again.
+  CLI's error. When the ask has left the view, the reason shows in a strip under the header
+  instead. A refused answer goes back into the text field, so the person can send it again. While
+  one answer, snooze or dismissal is in flight, the panel starts no other.
 - **Snooze.** "Snooze 1 h" and the overflow menu's "Snooze until tomorrow 09:00" run
   `priory snooze ask ID`. They show only on an ask that belongs to a task. "Attach to task" asks the
   Priory bar to attach, as [Attaching](#how-it-reads-and-acts) describes.
