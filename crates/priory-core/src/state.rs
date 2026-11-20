@@ -10,7 +10,7 @@ use std::collections::BTreeMap;
 use std::io::Write;
 use std::time::Duration;
 
-const VERSION: i64 = 28;
+const VERSION: i64 = 29;
 
 const SCHEMA: &str = "
 CREATE TABLE tasks (
@@ -472,12 +472,52 @@ CREATE TABLE vectors (
 );
 PRAGMA user_version = 28;
 ";
+
+// An outside ask belongs to no task: the rebuild lets `task` and `step` be NULL. The deferred
+// foreign keys let `DROP TABLE` leave the approvals and holds that name an ask until the rename.
+const SCHEMA_29: &str = "
+PRAGMA defer_foreign_keys = ON;
+CREATE TABLE asks_29 (
+  id             INTEGER PRIMARY KEY AUTOINCREMENT,
+  task           INTEGER REFERENCES tasks (id),
+  run            INTEGER REFERENCES runs (id),
+  step           TEXT,
+  kind           TEXT NOT NULL CHECK (kind IN ('step', 'agent', 'outside')),
+  revision       INTEGER NOT NULL DEFAULT 1,
+  question       TEXT NOT NULL,
+  options        TEXT NOT NULL,
+  recommendation TEXT,
+  tradeoff       TEXT,
+  answer         TEXT,
+  answered       TEXT,
+  created        TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+  withdrawn      INTEGER,
+  name           TEXT UNIQUE,
+  title          TEXT,
+  text           TEXT,
+  what_waits     TEXT,
+  next_action    TEXT,
+  command        TEXT,
+  coordinator    TEXT,
+  key            TEXT,
+  run_id         TEXT,
+  session        TEXT,
+  CHECK ((kind = 'outside') = (task IS NULL))
+);
+INSERT INTO asks_29 (id, task, run, step, kind, revision, question, options, recommendation,
+  tradeoff, answer, answered, created, withdrawn)
+  SELECT id, task, run, step, kind, revision, question, options, recommendation, tradeoff, answer,
+  answered, created, withdrawn FROM asks;
+DROP TABLE asks;
+ALTER TABLE asks_29 RENAME TO asks;
+PRAGMA user_version = 29;
+";
 /// Each schema change in order: a file at version `n` applies those from index `n` on.
 const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA, SCHEMA_2, SCHEMA_3, SCHEMA_4, SCHEMA_5, SCHEMA_6, SCHEMA_7, SCHEMA_8, SCHEMA_9,
     SCHEMA_10, SCHEMA_11, SCHEMA_12, SCHEMA_13, SCHEMA_14, SCHEMA_15, SCHEMA_16, SCHEMA_17,
     SCHEMA_18, SCHEMA_19, SCHEMA_20, SCHEMA_21, SCHEMA_22, SCHEMA_23, SCHEMA_24, SCHEMA_25,
-    SCHEMA_26, SCHEMA_27, SCHEMA_28,
+    SCHEMA_26, SCHEMA_27, SCHEMA_28, SCHEMA_29,
 ];
 
 /// The order the queue starts tasks in: band, then a person's order, then age. A band the factory

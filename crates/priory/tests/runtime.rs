@@ -2840,7 +2840,22 @@ fn an_agent_ask_sleeps_the_task_and_the_answer_wakes_it_as_its_prompt() {
     assert_eq!(setup.rows("tasks")[0][4], "asleep");
     assert_eq!(
         setup.rows("asks"),
-        [["1", "1", "1", "Which database?", r#"["sqlite","postgres"]"#]]
+        [[
+            "1",
+            "1",
+            "1",
+            "Which database?",
+            r#"["sqlite","postgres"]"#,
+            "-",
+            "-",
+            "-",
+            "-",
+            "-",
+            "-",
+            "-",
+            "-",
+            "-"
+        ]]
     );
 
     let answered = setup.priory(&["answer", "1", "duckdb, actually", "--revision", "1"]);
@@ -2853,6 +2868,174 @@ fn an_agent_ask_sleeps_the_task_and_the_answer_wakes_it_as_its_prompt() {
     );
     let tasks = setup.rows("tasks");
     assert_eq!([&tasks[0][3], &tasks[0][4]], ["plan", "running"]);
+}
+
+#[test]
+fn an_agent_ask_stores_and_lists_its_title_text_what_waits_next_action_and_command() {
+    let mut setup = Setup::with_workflow("ask-fields", STEPS);
+    setup.calls(&[json!({ "name": "ask", "arguments": {
+        "title": "Which database?",
+        "text": "The cache needs a store.\n\nPick one.",
+        "options": ["sqlite", "postgres"],
+        "recommendation": "sqlite: one file",
+        "tradeoff": "postgres scales, sqlite needs no server",
+        "whatWaits": "the cache PR",
+        "nextAction": "wire the store",
+        "command": "cargo test",
+    } })]);
+    setup.publish(&requested(42));
+
+    setup.start();
+
+    setup.until("tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == "asleep")
+    });
+    assert_eq!(
+        setup.rows("asks"),
+        [[
+            "1",
+            "1",
+            "1",
+            "Which database?",
+            r#"["sqlite","postgres"]"#,
+            "Which database?",
+            r"The cache needs a store.\n\nPick one.",
+            "the cache PR",
+            "wire the store",
+            "cargo test",
+            "-",
+            "-",
+            "-",
+            "-",
+        ]]
+    );
+}
+
+fn fleet_ask(options: &[&str]) -> String {
+    json!({
+        "title": "Ship the cache today?",
+        "text": "The cache is ready.\n\nThe docs are not.",
+        "options": options,
+        "recommendation": "ship",
+        "tradeoff": "Docs can follow, but readers will miss the flag.",
+        "whatWaits": "the cache PR",
+        "nextAction": "merge the PR",
+        "coordinator": "cache-lead",
+        "key": "cache",
+        "runId": "run-7",
+        "session": "cache-worker",
+        "colour": "blue",
+    })
+    .to_string()
+}
+
+#[test]
+fn an_outside_ask_takes_fleets_json_shows_on_the_desk_and_a_changed_one_is_a_new_revision() {
+    let setup = Setup::new("outside-ask");
+
+    let asked = setup.priory(&["ask", "cache.ship", &fleet_ask(&["ship", "wait"])]);
+
+    assert!(asked.status.success(), "{asked:?}");
+    assert_eq!(String::from_utf8_lossy(&asked.stdout), "cache.ship\n");
+    assert_eq!(
+        String::from_utf8_lossy(&asked.stderr),
+        "priory ask: ignored unknown field colour\n"
+    );
+    let row = |revision: &'static str, options: &'static str| {
+        vec![
+            "cache.ship",
+            "-",
+            revision,
+            "Ship the cache today?",
+            options,
+            "Ship the cache today?",
+            r"The cache is ready.\n\nThe docs are not.",
+            "the cache PR",
+            "merge the PR",
+            "-",
+            "cache-lead",
+            "cache",
+            "run-7",
+            "cache-worker",
+        ]
+    };
+    assert_eq!(setup.rows("asks"), [row("1", r#"["ship","wait"]"#)]);
+    let desk = setup.rows("desk");
+    assert_eq!(
+        [&desk[0][1], &desk[0][2], &desk[0][3]],
+        ["ask", "cache.ship", "-"]
+    );
+
+    let same = setup.priory(&["ask", "cache.ship", &fleet_ask(&["ship", "wait"])]);
+    let changed = setup.priory(&["ask", "cache.ship", &fleet_ask(&["ship", "drop"])]);
+
+    assert!(same.status.success() && changed.status.success());
+    assert_eq!(setup.rows("asks"), [row("2", r#"["ship","drop"]"#)]);
+}
+
+#[test]
+fn a_dismissed_agent_ask_wakes_its_task_with_one_line_and_a_stale_dismiss_is_refused() {
+    let mut setup = Setup::with_workflow("dismiss", STEPS);
+    setup.calls(&[ask()]);
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == "asleep")
+    });
+
+    let stale = setup.priory(&["dismiss", "--expected", "2", "1"]);
+    let dismissed = setup.priory(&["dismiss", "--expected", "1", "1"]);
+    let answered = setup.priory(&["answer", "--expected", "1", "--", "1", "sqlite"]);
+
+    assert_eq!(
+        String::from_utf8_lossy(&stale.stderr),
+        "priory dismiss: ask 1 is at revision 1, not 2\n"
+    );
+    assert!(dismissed.status.success(), "{dismissed:?}");
+    assert_eq!(String::from_utf8_lossy(&dismissed.stdout), "ask 1 dismissed\n");
+    assert_eq!(
+        String::from_utf8_lossy(&answered.stderr),
+        "priory answer: ask 1 was dismissed\n"
+    );
+    assert!(setup.rows("asks").is_empty());
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 2);
+    assert_eq!(
+        setup.typed()[1],
+        "A person dismissed ask 1 without an answer. Continue your task.\nEnd this step by calling the result tool of the priory MCP server with one of these outcomes: hopeless, ready, unsure.\n"
+    );
+}
+
+#[test]
+fn an_outside_ask_takes_an_answer_or_a_dismiss_only_at_its_current_revision() {
+    let mut setup = Setup::new("outside-answer");
+    setup.start();
+    for options in [["ship", "wait"], ["ship", "drop"]] {
+        setup.priory(&["ask", "cache.ship", &fleet_ask(&options)]);
+        setup.priory(&["ask", "cache.notes", &fleet_ask(&options)]);
+    }
+
+    let stale = setup.priory(&["answer", "--expected", "1", "--", "cache.ship", "ship"]);
+    let answered = setup.priory(&["answer", "--expected", "2", "--", "cache.ship", "ship"]);
+    let stale_dismiss = setup.priory(&["dismiss", "--expected", "1", "cache.notes"]);
+    let dismissed = setup.priory(&["dismiss", "cache.notes"]);
+
+    assert_eq!(
+        String::from_utf8_lossy(&stale.stderr),
+        "priory answer: ask cache.ship is at revision 2, not 1\n"
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&answered.stdout),
+        "ask cache.ship answered\n"
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&stale_dismiss.stderr),
+        "priory dismiss: ask cache.notes is at revision 2, not 1\n"
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&dismissed.stdout),
+        "ask cache.notes dismissed\n"
+    );
+    assert!(setup.rows("asks").is_empty());
 }
 
 #[test]

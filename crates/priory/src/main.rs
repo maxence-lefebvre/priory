@@ -60,8 +60,11 @@ fn main() -> ExitCode {
             "SELECT id, task, run, state, replace(text, char(10), '\\n') FROM outbox ORDER BY id",
         ),
         Some("asks") => list(
-            "id\ttask\trevision\tquestion\toptions",
-            "SELECT id, task, revision, replace(question, char(10), '\\n'), options FROM asks
+            "id\ttask\trevision\tquestion\toptions\ttitle\ttext\twhat waits\tnext action\tcommand\tcoordinator\tkey\trun id\tsession",
+            "SELECT coalesce(name, id), task, revision, replace(question, char(10), '\\n'), options,
+               replace(title, char(10), '\\n'), replace(text, char(10), '\\n'),
+               replace(what_waits, char(10), '\\n'), replace(next_action, char(10), '\\n'),
+               replace(command, char(10), '\\n'), coordinator, key, run_id, session FROM asks
              WHERE answer IS NULL AND withdrawn IS NULL ORDER BY id",
         ),
         Some("waits") => list(
@@ -93,6 +96,10 @@ fn main() -> ExitCode {
         Some("search") => search(args.map(|arg| arg.to_string_lossy().into_owned()).collect()),
         Some("memory") => memory(args.collect()),
         Some("answer") => answer(args.map(|arg| arg.to_string_lossy().into_owned()).collect()),
+        Some("ask") => match (args.next(), args.next(), args.next()) {
+            (Some(name), Some(fields), None) => ask(&name.to_string_lossy(), &fields.to_string_lossy()),
+            _ => usage(),
+        },
         Some("mcp") => match (args.next(), args.next(), args.next()) {
             (Some(flag), Some(session), None) if flag == "--session" => {
                 let session = session.to_string_lossy();
@@ -301,12 +308,12 @@ fn report(args: Vec<String>) -> ExitCode {
 /// Asks, blocked tasks and uncertain prompts oldest first, then the queue in start order.
 const DESK: &str = "SELECT since, kind, id, task, lane, what,
                (SELECT generation FROM tasks WHERE tasks.id = task) FROM (
-               SELECT 0 AS part, asks.created AS since, 'ask' AS kind, asks.id AS id,
-                 asks.task AS task, tasks.lane AS lane,
+               SELECT 0 AS part, asks.created AS since, 'ask' AS kind,
+                 coalesce(asks.name, asks.id) AS id, asks.task AS task, tasks.lane AS lane,
                  replace(asks.question, char(10), '\\n') || ' ' || asks.options AS what
-               FROM asks JOIN tasks ON tasks.id = asks.task
+               FROM asks LEFT JOIN tasks ON tasks.id = asks.task
                WHERE asks.answer IS NULL AND asks.withdrawn IS NULL
-                 AND tasks.state NOT IN ('done', 'failed', 'dropped')
+                 AND coalesce(tasks.state, '') NOT IN ('done', 'failed', 'dropped')
                UNION ALL
                SELECT 0, changed, 'blocked', id, id, lane, reason FROM tasks WHERE state = 'blocked'
                UNION ALL
@@ -560,6 +567,23 @@ fn answer(mut args: Vec<String>) -> ExitCode {
     })
     .expect("an answer serializes");
     send("answer", &line)
+}
+
+/// Stores or revises an ask from a session Priory did not start, from Fleet's JSON shape.
+fn ask(name: &str, fields: &str) -> ExitCode {
+    let stored = serde_json::from_str(fields)
+        .map_err(|error| format!("ask fields must be a JSON object: {error}"))
+        .and_then(|fields| {
+            let mut db = state::open()?;
+            tools::ask_outside(&mut db, name, &fields).map_err(|error| error.to_string())?
+        })
+        .map(|ignored| {
+            for field in ignored {
+                eprintln!("priory ask: ignored unknown field {field}");
+            }
+            println!("{name}");
+        });
+    exit("ask", stored)
 }
 
 /// Sets a task's TL;DR by hand.

@@ -71,6 +71,27 @@ fn text(arguments: &Value, name: &str) -> Result<String, String> {
         .ok_or_else(|| format!("{name} must be a string"))
 }
 
+/// An ask's question: its `question`, else its `title`, as a Fleet-shaped ask names it.
+fn question(arguments: &Value) -> Result<String, String> {
+    optional(arguments, "question")?
+        .or(optional(arguments, "title")?)
+        .ok_or_else(|| "question or title must be a string".to_owned())
+}
+
+/// The fields that describe an ask beyond its question, in `ASK_FIELDS` order.
+fn described(arguments: &Value) -> Result<[Option<String>; 5], String> {
+    let [title, text, what_waits, next_action, command] = ASK_FIELDS;
+    Ok([
+        optional(arguments, title)?,
+        optional(arguments, text)?,
+        optional(arguments, what_waits)?,
+        optional(arguments, next_action)?,
+        optional(arguments, command)?,
+    ])
+}
+
+const ASK_FIELDS: [&str; 5] = ["title", "text", "whatWaits", "nextAction", "command"];
+
 /// `commit` in lower case, as GitHub names a pull request head; an abbreviated SHA could never
 /// match one.
 fn full_sha(commit: &str) -> Result<String, String> {
@@ -307,19 +328,22 @@ fn ask(tx: &Transaction, run: &Run, arguments: &Value) -> rusqlite::Result<Resul
             })
             .ok_or("options must be an array of strings")?;
         Ok::<_, String>((
-            text(arguments, "question")?,
+            question(arguments)?,
             serde_json::to_string(&options).expect("options serialize"),
             text(arguments, "recommendation")?,
             text(arguments, "tradeoff")?,
+            described(arguments)?,
         ))
     })();
-    let (question, options, recommendation, tradeoff) = match fields {
+    let (question, options, recommendation, tradeoff, described) = match fields {
         Ok(fields) => fields,
         Err(error) => return Ok(Err(error)),
     };
+    let [title, body, what_waits, next_action, command] = described;
     tx.execute(
-        "INSERT INTO asks (task, run, step, kind, question, options, recommendation, tradeoff)
-         VALUES (?1, ?2, ?3, 'agent', ?4, ?5, ?6, ?7)",
+        "INSERT INTO asks (task, run, step, kind, question, options, recommendation, tradeoff,
+           title, text, what_waits, next_action, command)
+         VALUES (?1, ?2, ?3, 'agent', ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
         params![
             run.task,
             run.id,
@@ -327,13 +351,110 @@ fn ask(tx: &Transaction, run: &Run, arguments: &Value) -> rusqlite::Result<Resul
             question,
             options,
             recommendation,
-            tradeoff
+            tradeoff,
+            title,
+            body,
+            what_waits,
+            next_action,
+            command
         ],
     )?;
     Ok(Ok(format!(
         "ask {} stored: end your turn now; the answer arrives as your next prompt",
         tx.last_insert_rowid()
     )))
+}
+
+/// The fields `priory ask` stores, as Fleet's `priory ask` names them.
+const OUTSIDE_FIELDS: [&str; 13] = [
+    "question",
+    "options",
+    "recommendation",
+    "tradeoff",
+    "title",
+    "text",
+    "whatWaits",
+    "nextAction",
+    "command",
+    "coordinator",
+    "key",
+    "runId",
+    "session",
+];
+
+/// Stores an ask from a session Priory did not start, under `name`, and returns the fields it
+/// ignored. Asking again with other fields replaces them all and starts a new revision, which
+/// reopens an answered or dismissed ask; the same fields change nothing.
+pub fn ask_outside(
+    db: &mut Connection,
+    name: &str,
+    arguments: &Value,
+) -> rusqlite::Result<Result<Vec<String>, String>> {
+    let named = (1..=100).contains(&name.len())
+        && name
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || b"._-".contains(&byte))
+        && !name.bytes().all(|byte| byte.is_ascii_digit());
+    if !named {
+        return Ok(Err(format!(
+            "not an ask id: {name:?}; use 1 to 100 letters, digits, '.', '_' or '-', not only digits"
+        )));
+    }
+    let Some(fields) = arguments.as_object() else {
+        return Ok(Err("ask fields must be a JSON object".to_owned()));
+    };
+    let parsed = (|| {
+        let options = match &arguments["options"] {
+            Value::Null => Vec::new(),
+            options => options
+                .as_array()
+                .and_then(|options| options.iter().map(Value::as_str).collect::<Option<Vec<_>>>())
+                .ok_or("options must be an array of strings")?,
+        };
+        let mut texts = Vec::new();
+        for field in OUTSIDE_FIELDS.iter().skip(2) {
+            texts.push(optional(arguments, field)?);
+        }
+        Ok::<_, String>((
+            question(arguments)?,
+            serde_json::to_string(&options).expect("options serialize"),
+            texts,
+        ))
+    })();
+    let (question, options, texts) = match parsed {
+        Ok(parsed) => parsed,
+        Err(error) => return Ok(Err(error)),
+    };
+    let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    tx.execute(
+        "INSERT INTO asks (kind, name, question, options, recommendation, tradeoff, title, text,
+           what_waits, next_action, command, coordinator, key, run_id, session)
+         VALUES ('outside', ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
+         ON CONFLICT (name) DO UPDATE SET revision = revision + 1, answer = NULL, answered = NULL,
+           withdrawn = NULL, question = excluded.question, options = excluded.options,
+           recommendation = excluded.recommendation, tradeoff = excluded.tradeoff,
+           title = excluded.title, text = excluded.text, what_waits = excluded.what_waits,
+           next_action = excluded.next_action, command = excluded.command,
+           coordinator = excluded.coordinator, key = excluded.key, run_id = excluded.run_id,
+           session = excluded.session
+         WHERE (question, options, recommendation, tradeoff, title, text, what_waits, next_action,
+           command, coordinator, key, run_id, session)
+           IS NOT (excluded.question, excluded.options, excluded.recommendation,
+           excluded.tradeoff, excluded.title, excluded.text, excluded.what_waits,
+           excluded.next_action, excluded.command, excluded.coordinator, excluded.key,
+           excluded.run_id, excluded.session)",
+        rusqlite::params_from_iter(
+            [Some(name.to_owned()), Some(question), Some(options)]
+                .into_iter()
+                .chain(texts),
+        ),
+    )?;
+    tx.commit()?;
+    Ok(Ok(fields
+        .keys()
+        .filter(|field| !OUTSIDE_FIELDS.contains(&field.as_str()))
+        .cloned()
+        .collect()))
 }
 
 fn open_wait(tx: &Transaction, run: i64) -> rusqlite::Result<Option<i64>> {
