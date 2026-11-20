@@ -94,8 +94,8 @@ A poll publishes reviews and checks before the issue streams. So a crash after a
 | What fails | Then |
 | ---------- | ---- |
 | `gh` for one repository | that repository publishes nothing; the others still publish |
-| `gh`, without `--once` | the error is logged and retried on the next poll |
-| `gh`, with `--once` | the intake exits non-zero after publishing the rest |
+| `gh`, without `--once` | the error is logged and retried on the next poll. With `PRIORY_DB` set, it shows on the desk until a poll succeeds: see [desk.md](../daemon/desk.md#intake-banner) |
+| `gh`, with `--once` | the intake polls the other sources, records the failure, then exits non-zero |
 | a publish | the intake ends, so its restart recovers what it left out |
 
 ## Limits
