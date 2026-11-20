@@ -184,3 +184,61 @@ test("snooze until tomorrow names 09:00 local time on the next day", () => {
   assert.equal(tomorrowAt(9, now), "2026-11-21T09:00:00.000Z");
   assert.equal(tomorrowAt(9, Date.parse("2026-11-30T23:59:00Z")), "2026-12-01T09:00:00.000Z");
 });
+
+// Captured from this branch's `priory asks --all --json` and `priory task 1 --json` on a scratch
+// state seeded by SQL: an ask answered, revised, a stale answer refused, then answered; the task has a
+// groom and a plan result, a pull request with two checks, and three runs.
+test("History lists every revision and refused answer of the ask, newest first", () => {
+  const [ask] = fixture("asks-history.json").asks;
+  assert.deepEqual(askDetail(ask, { now, armed: null }).history, [
+    { tile: "answered", text: "Answered Merge", time: "10:07" },
+    { tile: "refused", text: "Refused: Close, sent for revision 1 from cli: ask 1 is at revision 2, not 1", time: "10:06" },
+    { tile: "ask", text: "Asked revision 2: Merge #212 into main? Checks are green.", time: "10:05" },
+    { tile: "answered", text: "Answered Wait", time: "09:55" },
+    { tile: "ask", text: "Asked revision 1: Merge #212 into main?", time: "09:50" },
+  ]);
+});
+
+test("Brief, Plan, PR and Trace come from the task's detail, each left out when the task lacks it", () => {
+  const [ask] = fixture("asks-history.json").asks;
+  const task = fixture("task.json");
+  const detail = askDetail(ask, { now, armed: null, task });
+  assert.deepEqual(detail.chips, [["why", "Why"], ["brief", "Brief"], ["plan", "Plan"], ["pr", "PR"], ["trace", "Trace"], ["history", "History"]]);
+  assert.deepEqual(detail.brief, {
+    request: "Export the board as CSV.\n\nKeep the column order.",
+    text: "## Goal\nExport the board as CSV.\n\n## Scope\nOne CSV per board.",
+    from: "groom, run 1",
+  });
+  assert.deepEqual(detail.plan, { text: "- [x] Write the exporter\n- [ ] Merge #212", from: "plan, run 2" });
+  assert.deepEqual(detail.pr, {
+    title: "#212 Export the board as CSV",
+    line: "pri-61 into main, head a1f3c9e, open",
+    checks: [{ name: "clippy", ok: false, text: "failure" }, { name: "test", ok: true, text: "success" }],
+    review: null,
+  });
+  assert.deepEqual(detail.trace, [
+    { tile: "moved", label: "groom, run 1", span: "08:00 to 08:20, 20 min", outcome: "yellow", tokens: null },
+    { tile: "moved", label: "plan, run 2", span: "08:20 to 08:40, 20 min", outcome: "planned", tokens: "6000 tokens" },
+    { tile: "asleep", label: "implement, run 3", span: "08:40 to 09:50, 70 min", outcome: null, tokens: null },
+  ]);
+
+  const bare = askDetail(ask, { now, armed: null, task: { ...task, brief: { request: null, result: null }, plan: null, progress: null, pull_request: null, runs: [] } });
+  assert.deepEqual(bare.chips, [["why", "Why"], ["history", "History"]]);
+});
+
+test("Plan falls back to the task's progress when no plan step ran", () => {
+  const [ask] = fixture("asks-history.json").asks;
+  const progress = { goal: "Export the board", acceptanceCriteria: [{ id: "AC1", description: "a CSV per board", required: true }], latestChange: "wrote the exporter", nextAction: "merge" };
+  const detail = askDetail(ask, { now, armed: null, task: { ...fixture("task.json"), plan: null, progress } });
+  assert.deepEqual(detail.plan, { text: "Goal: Export the board\n- AC1: a CSV per board\nLatest change: wrote the exporter\nNext: merge", from: "progress" });
+});
+
+test("History keeps entries of the same second newest first", () => {
+  // Hand-built from the captured ask: both revisions and the first answer within one second.
+  const [ask] = fixture("asks-history.json").asks;
+  const at = "2026-11-20T10:00:00Z";
+  const same = { ...ask, refused: [], revisions: ask.revisions.map((revision) => ({ ...revision, at, answered_at: revision.answered_at && at })) };
+  assert.deepEqual(askDetail(same, { now, armed: null }).history.map((item) => item.text), [
+    "Answered Merge", "Asked revision 2: Merge #212 into main? Checks are green.", "Answered Wait", "Asked revision 1: Merge #212 into main?",
+  ]);
+});

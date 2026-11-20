@@ -49,6 +49,9 @@ export default class PrioryAsks extends View {
     this.data = null;
     /** @type {string | null} */
     this.error = null;
+    /** `priory task ID --json` of the selected ask's task: its brief, plan, pull request and runs. */
+    /** @type {any} */
+    this.task = null;
     this.updated = 0;
     this.width = 420;
     this.view = "open";
@@ -96,6 +99,7 @@ export default class PrioryAsks extends View {
           this.updated = Date.now();
           this.error = null;
           if (!this.rows().some((row) => row.id === this.selected)) this.selected = this.firstRow();
+          await this.readTask();
           cx.notify();
           await this.priory.client.wait(read.revision);
         } catch (error) {
@@ -114,6 +118,15 @@ export default class PrioryAsks extends View {
 
   rows() {
     return this.list().sections.flatMap((section) => section.rows);
+  }
+
+  /** Reads the selected ask's task; a task that cannot be read leaves its sections out. */
+  async readTask() {
+    const id = this.selectedAsk()?.task;
+    const read = (this.taskReads = (this.taskReads ?? 0) + 1);
+    const task = id == null || !this.priory ? null : await this.priory.client.task(id).catch(() => null);
+    // Only the latest read lands, so a slower earlier one never replaces it.
+    if (read === this.taskReads) this.task = task;
   }
 
   firstRow() {
@@ -155,6 +168,11 @@ export default class PrioryAsks extends View {
     this.reading = null;
     this.popover = null;
     this.armed = null;
+    this.task = null;
+    cx.spawn(async (cx) => {
+      await this.readTask();
+      cx.notify();
+    });
     cx.notify();
   }
 
@@ -299,7 +317,7 @@ export default class PrioryAsks extends View {
     if (event.is_held && !["j", "k", "up", "down"].includes(event.key)) return;
     // Single keys never fire inside the answer field.
     if (this.typing || event.modifiers?.control || event.modifiers?.platform || event.modifiers?.alt) return;
-    const detail = ask && askDetail(ask, { now: Date.now(), armed: this.armed });
+    const detail = ask && askDetail(ask, { now: Date.now(), armed: this.armed, task: this.task });
     const digit = Number(event.key);
     if (event.key === "j" || event.key === "down") return this.move(1, cx);
     if (event.key === "k" || event.key === "up") return this.move(-1, cx);
@@ -464,7 +482,9 @@ export default class PrioryAsks extends View {
 
   /** @param {string} kind ask, answered or withdrawn @param {Palette} t */
   tile(kind, t) {
-    const [fill, icon, ink] = kind === "ask" ? [t.wait, "ask", t["on-wait"]] : [t["tile-muted"], kind === "answered" ? "check" : "minus", t["on-tile"]];
+    const [fill, icon, ink] = kind === "ask" ? [t.wait, "ask", t["on-wait"]]
+      : kind === "refused" ? [t["tile-warn"], "x", t["on-tile"]]
+      : [t["tile-muted"], kind === "answered" ? "check" : "minus", t["on-tile"]];
     return h_flex().size(PANE.tile).flex_none().items_center().justify_center().rounded(RADIUS.tile).bg(fill)
       .accessibility_label(kind === "ask" ? "ask" : kind).child(svg(ICON(icon)).size(14).text_color(ink));
   }
@@ -482,7 +502,7 @@ export default class PrioryAsks extends View {
   /** The decide part: context, question, recommendation, options, write an answer and the overflow menu. */
   /** @param {any} ask @param {Palette} t @param {number} now */
   decide(ask, t, now) {
-    const detail = askDetail(ask, { now, armed: this.armed });
+    const detail = askDetail(ask, { now, armed: this.armed, task: this.task });
     const notice = this.notices.get(ask.id);
     return v_flex().gap(10)
       .child(h_flex().flex_wrap().gap(6).items_center().text_size(TYPE.caption[0]).text_color(t["text-3"])
@@ -628,7 +648,7 @@ export default class PrioryAsks extends View {
 
   /** @param {any} ask @param {Palette} t */
   chips(ask, t) {
-    const detail = askDetail(ask, { now: Date.now(), armed: null });
+    const detail = askDetail(ask, { now: Date.now(), armed: null, task: this.task });
     const current = this.reading ?? (this.width >= PANE.split ? "why" : null);
     return h_flex().flex_none().gap(4).flex_wrap().children(detail.chips.map(([id, label]) =>
       Button.new(`chip-${ask.id}-${id}`).h(PANE.chip).px(10).flex().items_center().rounded(999).selected(current === id)
@@ -644,7 +664,7 @@ export default class PrioryAsks extends View {
 
   /** @param {any} ask @param {string} id @param {Palette} t @param {number} now */
   section(ask, id, t, now) {
-    const detail = askDetail(ask, { now, armed: this.armed });
+    const detail = askDetail(ask, { now, armed: this.armed, task: this.task });
     /** @param {string} icon @param {string} title @param {string} [meta] */
     const head = (icon, title, meta = "") => h_flex().gap(6).items_center().text_size(TYPE.small[0]).font_weight(650)
       .child(svg(ICON(icon)).size(14).text_color(t["text-2"])).child(title).child(div().flex_1())
@@ -655,8 +675,35 @@ export default class PrioryAsks extends View {
     if (id === "history") {
       return v_flex().gap(8).child(head("history", "Answer history"))
         .children(detail.history.map((item) => h_flex().gap(8).items_center().text_size(TYPE.small[0])
-          .child(this.tile(item.tile, t)).child(div().flex_1().whitespace_normal().child(item.text))
+          .child(this.tile(item.tile, t)).child(div().flex_1().whitespace_normal()
+            .text_color(item.tile === "refused" ? t["warn-text"] : t.text).child(item.text))
           .child(div().font_family(this.font.mono).text_size(TYPE.caption[0]).text_color(t["text-3"]).child(item.time))));
+    }
+    /** @param {string} text */
+    const body = (text) => div().whitespace_normal().text_size(TYPE.body[0]).line_height("22px").child(text);
+    /** @param {string} text */
+    const caption = (text) => div().whitespace_normal().text_size(TYPE.caption[0]).text_color(t["text-3"]).child(text);
+    // Briefs, plans and results are agent text: they draw as plain text, never as Markdown or HTML.
+    if (id === "brief" && detail.brief) {
+      return v_flex().gap(8).child(head("message-text", "Brief", detail.brief.from ?? ""))
+        .when(Boolean(detail.brief.request), (el) => el.child(caption("The request")).child(body(detail.brief.request)))
+        .when(Boolean(detail.brief.text), (el) => el.child(body(detail.brief.text)));
+    }
+    if (id === "plan" && detail.plan) {
+      return v_flex().gap(8).child(head("check", "Plan", detail.plan.from)).child(body(detail.plan.text));
+    }
+    if (id === "pr" && detail.pr) {
+      return v_flex().gap(8).child(head("terminal", detail.pr.title, detail.pr.review ?? ""))
+        .child(caption(detail.pr.line))
+        .children(detail.pr.checks.map((check) => h_flex().gap(6).items_center().text_size(TYPE.small[0])
+          .child(svg(ICON(check.ok ? "check" : "x")).size(14).text_color(check.ok ? t["ok-text"] : t["danger-text"]))
+          .child(div().flex_1().child(check.name)).child(div().text_color(t["text-3"]).child(check.text))));
+    }
+    if (id === "trace") {
+      return v_flex().gap(8).child(head("clock", "Trace"))
+        .children(detail.trace.map((run) => h_flex().gap(8).items_center().text_size(TYPE.small[0])
+          .child(div().w(138).flex_none().font_family(this.font.mono).child(run.label))
+          .child(div().flex_1().whitespace_normal().text_color(t["text-2"]).child([run.span, run.outcome, run.tokens].filter(Boolean).join(", ")))));
     }
     if (id === "command" && detail.command) {
       return v_flex().gap(8).child(head("terminal", detail.command.title)).child(this.commandBlock(detail.command, t));
@@ -681,7 +728,7 @@ export default class PrioryAsks extends View {
   /** From 720 px: the decide part pinned at the top, and the sections scrolling under it. */
   /** @param {any} ask @param {Palette} t @param {number} now */
   drawer(ask, t, now) {
-    const detail = askDetail(ask, { now, armed: this.armed });
+    const detail = askDetail(ask, { now, armed: this.armed, task: this.task });
     return v_flex().flex_1().min_w_0().min_h_0()
       .child(v_flex().id("ask-decide").flex_none().max_h("50%").overflow_y_scrollbar().p(16).gap(12).border_b(1).border_color(t.line)
         .child(this.decide(ask, t, now)).child(this.chips(ask, t)))
@@ -693,7 +740,7 @@ export default class PrioryAsks extends View {
   /** Below 720 px, reading a section: a one-line header, the chips, the section, and the answer bar. */
   /** @param {any} ask @param {Palette} t @param {number} now */
   reader(ask, t, now) {
-    const detail = askDetail(ask, { now, armed: this.armed });
+    const detail = askDetail(ask, { now, armed: this.armed, task: this.task });
     const open = this.rows().filter((row) => row.tile === "ask").map((row) => row.id);
     const at = open.indexOf(ask.id);
     /** @param {string} id @param {string} icon @param {string} label @param {(cx: import("gpui-kit").Context) => void} action @param {boolean} [off] */

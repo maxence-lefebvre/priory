@@ -11,7 +11,7 @@ use std::collections::BTreeMap;
 use std::io::Write;
 use std::time::Duration;
 
-const VERSION: i64 = 43;
+const VERSION: i64 = 44;
 
 const SCHEMA: &str = "
 CREATE TABLE tasks (
@@ -719,8 +719,56 @@ const SCHEMA_42: &str = "CREATE TABLE dispatches (
 PRAGMA user_version = 42;
 ";
 
-// The human steps whose answer lets an irreversible step run, as the daemon last recorded them.
+// Every revision of an ask as it was asked and answered, and every answer the daemon refused.
+// Triggers record each revision and its answer, so no writer of `asks` can skip one. An ask stored
+// before keeps only its current revision, dated when the ask was first asked.
 const SCHEMA_43: &str = concat!(
+    "CREATE TABLE IF NOT EXISTS ask_revisions (
+  ask            INTEGER NOT NULL REFERENCES asks (id),
+  revision       INTEGER NOT NULL,
+  question       TEXT NOT NULL,
+  options        TEXT NOT NULL,
+  recommendation TEXT,
+  text           TEXT,
+  created        TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+  answer         TEXT,
+  answered       TEXT,
+  PRIMARY KEY (ask, revision)
+);
+INSERT OR IGNORE INTO ask_revisions (ask, revision, question, options, recommendation, text, created,
+  answer, answered)
+  SELECT id, revision, question, options, recommendation, text, created, answer, answered FROM asks;
+CREATE TRIGGER IF NOT EXISTS ask_revision_asked AFTER INSERT ON asks BEGIN
+  INSERT INTO ask_revisions (ask, revision, question, options, recommendation, text)
+  VALUES (NEW.id, NEW.revision, NEW.question, NEW.options, NEW.recommendation, NEW.text);
+END;
+CREATE TRIGGER IF NOT EXISTS ask_revision_revised AFTER UPDATE OF revision ON asks
+  WHEN NEW.revision IS NOT OLD.revision BEGIN
+  INSERT OR REPLACE INTO ask_revisions (ask, revision, question, options, recommendation, text)
+  VALUES (NEW.id, NEW.revision, NEW.question, NEW.options, NEW.recommendation, NEW.text);
+END;
+CREATE TRIGGER IF NOT EXISTS ask_revision_answered AFTER UPDATE OF answer ON asks
+  WHEN NEW.answer IS NOT NULL AND NEW.answer IS NOT OLD.answer BEGIN
+  UPDATE ask_revisions SET answer = NEW.answer, answered = NEW.answered
+  WHERE ask = NEW.id AND revision = NEW.revision;
+END;
+CREATE TABLE IF NOT EXISTS ask_refusals (
+  id       INTEGER PRIMARY KEY AUTOINCREMENT,
+  ask      INTEGER NOT NULL REFERENCES asks (id),
+  revision INTEGER NOT NULL,
+  answer   TEXT NOT NULL,
+  by       TEXT NOT NULL,
+  why      TEXT NOT NULL,
+  created  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+);
+",
+    bumps!("ask_refusals"),
+    "PRAGMA user_version = 43;
+"
+);
+
+// The human steps whose answer lets an irreversible step run, as the daemon last recorded them.
+const SCHEMA_44: &str = concat!(
     "CREATE TABLE IF NOT EXISTS irreversible_asks (
   workflow TEXT NOT NULL,
   step     TEXT NOT NULL,
@@ -728,7 +776,7 @@ const SCHEMA_43: &str = concat!(
 );
 ",
     bumps!("irreversible_asks"),
-    "PRAGMA user_version = 43;
+    "PRAGMA user_version = 44;
 "
 );
 
@@ -739,7 +787,7 @@ const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA_18, SCHEMA_19, SCHEMA_20, SCHEMA_21, SCHEMA_22, SCHEMA_23, SCHEMA_24, SCHEMA_25,
     SCHEMA_26, SCHEMA_27, SCHEMA_28, SCHEMA_29, SCHEMA_30, SCHEMA_31, SCHEMA_32, SCHEMA_33,
     SCHEMA_34, SCHEMA_35, SCHEMA_36, SCHEMA_37, SCHEMA_38, SCHEMA_39, SCHEMA_40, SCHEMA_41,
-    SCHEMA_42, SCHEMA_43,
+    SCHEMA_42, SCHEMA_43, SCHEMA_44,
 ];
 
 /// The order the queue starts tasks in: band, then a person's order, then age. A band the factory

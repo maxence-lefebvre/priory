@@ -429,6 +429,7 @@ fn write_line(
                 revision,
                 text,
                 run: body.run,
+                by: "serve".to_owned(),
             };
             Ok((line(&answer), Some((ask, revision))))
         }
