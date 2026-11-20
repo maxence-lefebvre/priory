@@ -122,7 +122,14 @@ fn asks_query() -> String {
       FROM deliveries WHERE deliveries.ask = asks.id ORDER BY id DESC LIMIT 1) AS delivery,
      (SELECT json_object('status', status, 'revision', revision, 'error', error, 'stdout', stdout,
         'stderr', stderr)
-      FROM actions WHERE actions.ask = asks.id ORDER BY id DESC LIMIT 1) AS ran, {}
+      FROM actions WHERE actions.ask = asks.id ORDER BY id DESC LIMIT 1) AS ran,
+     (SELECT json_group_array(json_object('revision', revision, 'question', question,
+        'options', json(options), 'recommendation', recommendation, 'text', text, 'at', created,
+        'answer', answer, 'answered_at', answered))
+      FROM (SELECT * FROM ask_revisions WHERE ask = asks.id ORDER BY revision)) AS revisions,
+     (SELECT json_group_array(json_object('revision', revision, 'answer', answer, 'by', by,
+        'why', why, 'at', created))
+      FROM (SELECT * FROM ask_refusals WHERE ask = asks.id ORDER BY id)) AS refused, {}
    FROM asks LEFT JOIN tasks ON tasks.id = asks.task
    LEFT JOIN snoozes ON snoozes.kind = 'ask' AND snoozes.item = asks.id
    WHERE (?1 IS NULL OR asks.task = ?1) AND (?2 IS NULL OR asks.id = ?2)
@@ -274,11 +281,10 @@ fn asks_of(
         if let Some(options) = ask["options"].as_str() {
             ask["options"] = serde_json::from_str(options).unwrap_or(Value::Null);
         }
-        if let Some(delivery) = ask["delivery"].as_str() {
-            ask["delivery"] = serde_json::from_str(delivery).unwrap_or(Value::Null);
-        }
-        if let Some(ran) = ask["ran"].as_str() {
-            ask["ran"] = serde_json::from_str(ran).unwrap_or(Value::Null);
+        for field in ["delivery", "ran", "revisions", "refused"] {
+            if let Some(text) = ask[field].as_str() {
+                ask[field] = serde_json::from_str(text).unwrap_or(Value::Null);
+            }
         }
         // An agent's command is an object; an outside ask's stays the string it sent.
         let agents = ask["task"].is_i64();
@@ -572,7 +578,12 @@ pub fn task(db: &Connection, id: i64) -> rusqlite::Result<Option<Value>> {
         (
             "runs",
             "SELECT id, step, agent, tmux, coalesce(thread, session) AS session, started, ended,
-               ended_as AS end FROM runs WHERE task = ?1 ORDER BY id",
+               ended_as AS end, (SELECT outcome FROM results WHERE results.run = runs.id) AS outcome,
+               (SELECT json_extract(event, '$.data.tokens') FROM trace
+                WHERE type = 'factory.step.ended'
+                  AND json_extract(event, '$.data.run') = CAST(runs.id AS TEXT)
+                ORDER BY seq DESC LIMIT 1) AS tokens
+             FROM runs WHERE task = ?1 ORDER BY id",
         ),
         (
             "steps",
@@ -595,8 +606,89 @@ pub fn task(db: &Connection, id: i64) -> rusqlite::Result<Option<Value>> {
         task[name] = rows(db, query, [id])?;
     }
     task["asks"] = asks_of(db, Some(id), None, None)?;
+    for run in task["runs"].as_array_mut().expect("rows are an array") {
+        if let Some(tokens) = run["tokens"].as_str() {
+            run["tokens"] = serde_json::from_str(tokens).unwrap_or(Value::Null);
+        }
+    }
+    let first = |rows: Value| rows.as_array().and_then(|rows| rows.first()).cloned();
+    let request = first(rows(
+        db,
+        "SELECT nullif(title, '') AS title, nullif(request, '') AS request
+         FROM task_text WHERE task = ?1",
+        [id],
+    )?)
+    .unwrap_or_else(|| json!({ "title": null, "request": null }));
+    let latest = |step: &str| {
+        task["results"]
+            .as_array()
+            .and_then(|results| results.iter().rev().find(|result| result["step"] == step))
+            .cloned()
+            .unwrap_or(Value::Null)
+    };
+    let (brief, plan) = (latest(BRIEF_STEP), latest(PLAN_STEP));
+    task["brief"] = json!({
+        "title": request["title"],
+        "request": request["request"],
+        "result": brief,
+    });
+    task["plan"] = plan;
+    task["pull_request"] = pull_request(db, id)?.unwrap_or(Value::Null);
     parse_json(&mut task);
     Ok(Some(task))
+}
+
+/// The step whose result is a task's brief, and the one whose result is its plan.
+const BRIEF_STEP: &str = "groom";
+const PLAN_STEP: &str = "plan";
+
+/// The latest pull request task `id` owns, as its stored GitHub events tell it: its title, state,
+/// latest review and the latest conclusion of each check run on its latest head. The head comes
+/// from the pull request's own events, since a check run on an older commit can complete later.
+fn pull_request(db: &Connection, id: i64) -> rusqlite::Result<Option<Value>> {
+    let found = rows(
+        db,
+        "WITH pr AS (SELECT substr(owns.resource, 8) AS subject FROM owns
+           WHERE owns.task = ?1 AND owns.resource LIKE 'github:%#%' AND EXISTS (
+             SELECT 1 FROM inbox WHERE inbox.subject = substr(owns.resource, 8)
+               AND (inbox.type LIKE 'github.pull_request%' OR inbox.type LIKE 'github.check_run%'))
+           ORDER BY owns.rowid DESC LIMIT 1),
+         events AS (SELECT inbox.seq, inbox.type, inbox.time, inbox.data FROM inbox JOIN pr
+           ON inbox.subject = pr.subject
+           WHERE inbox.type LIKE 'github.pull_request%' OR inbox.type LIKE 'github.check_run%'),
+         head AS (SELECT data FROM events
+           ORDER BY type LIKE 'github.pull_request%' DESC, seq DESC LIMIT 1)
+         SELECT json_extract(head.data, '$.repo') AS repo,
+           json_extract(head.data, '$.pull_request') AS number,
+           (SELECT json_extract(data, '$.title') FROM events
+            WHERE json_extract(data, '$.title') IS NOT NULL ORDER BY seq DESC LIMIT 1) AS title,
+           'https://github.com/' || json_extract(head.data, '$.repo') || '/pull/'
+             || json_extract(head.data, '$.pull_request') AS url,
+           json_extract(head.data, '$.head_branch') AS branch,
+           json_extract(head.data, '$.base_branch') AS base,
+           json_extract(head.data, '$.head_sha') AS head_sha,
+           coalesce((SELECT CASE WHEN json_extract(data, '$.merged') THEN 'merged' ELSE 'closed' END
+             FROM events WHERE type = 'github.pull_request.closed' ORDER BY seq DESC LIMIT 1),
+             'open') AS state,
+           (SELECT json_extract(data, '$.state') FROM events
+            WHERE type = 'github.pull_request_review.submitted' ORDER BY seq DESC LIMIT 1) AS review,
+           (SELECT json_group_array(json_object('name', name, 'conclusion', conclusion, 'at', time))
+            FROM (SELECT json_extract(data, '$.name') AS name,
+                json_extract(data, '$.conclusion') AS conclusion, time,
+                row_number() OVER (PARTITION BY json_extract(data, '$.name') ORDER BY seq DESC) AS nth
+              FROM events WHERE type = 'github.check_run.completed'
+                AND json_extract(data, '$.head_sha') = json_extract(head.data, '$.head_sha'))
+            WHERE nth = 1 ORDER BY name) AS checks
+         FROM head",
+        [id],
+    )?;
+    let Some(mut pull) = found.as_array().and_then(|rows| rows.first()).cloned() else {
+        return Ok(None);
+    };
+    if let Some(checks) = pull["checks"].as_str() {
+        pull["checks"] = serde_json::from_str(checks).unwrap_or(Value::Null);
+    }
+    Ok(Some(pull))
 }
 
 /// The rows of `query` as JSON objects keyed by column name.

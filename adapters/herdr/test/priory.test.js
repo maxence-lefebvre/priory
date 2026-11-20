@@ -77,10 +77,11 @@ test("confirms an answer that runs the ask's command with --run before the words
 });
 
 test("reads every listing, with the factory folder where one is needed", async () => {
-  const run = fake({ asks: {}, tasks: {}, queue: {}, schedules: {}, report: {} });
+  const run = fake({ asks: {}, tasks: {}, task: {}, queue: {}, schedules: {}, report: {} });
   const client = priory({ exec, binary: FAKE, factory: "/srv/factory" });
   await client.asks();
   await client.tasks();
+  await client.task(1);
   await client.queue();
   await client.schedules();
   await client.report();
@@ -88,6 +89,7 @@ test("reads every listing, with the factory folder where one is needed", async (
   assert.deepEqual(run.argv(), [
     ["asks", "--all", "--json"],
     ["tasks", "--json"],
+    ["task", "1", "--json"],
     ["queue", "/srv/factory", "--json"],
     ["schedules", "/srv/factory", "--json"],
     ["report", "show", "--json"],

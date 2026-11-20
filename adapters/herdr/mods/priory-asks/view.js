@@ -122,17 +122,84 @@ export function press(ask, index, armed, now) {
   return { arm: { id: ask.id, revision: ask.revision, option: index, at: now } };
 }
 
+/** Every revision with its answer, every refused answer, and a withdrawal, newest first. @param {any} ask */
+function history(ask) {
+  // An ask listed before Priory kept its revisions shows only its current one.
+  const revisions = ask.revisions ?? [{ revision: ask.revision, at: ask.since, answer: ask.answer, answered_at: ask.answered_at }];
+  const dated = [
+    ...revisions.flatMap((/** @type {any} */ revision) => [
+      { tile: "ask", text: `Asked revision ${revision.revision}${revision.question ? `: ${revision.question}` : ""}`, at: revision.at },
+      ...(revision.answer == null ? [] : [{ tile: "answered", text: `Answered ${revision.answer}`, at: revision.answered_at ?? revision.at }]),
+    ]),
+    ...(ask.refused ?? []).map((/** @type {any} */ refusal) => ({
+      tile: "refused", text: `Refused: ${refusal.answer}, sent for revision ${refusal.revision} from ${refusal.by}: ${refusal.why}`, at: refusal.at,
+    })),
+  // Built oldest first; reversed, entries of the same second stay newest first through the stable sort.
+  ].reverse().sort((a, b) => b.at.localeCompare(a.at));
+  const withdrawn = ask.state === "withdrawn" ? [{ tile: "withdrawn", text: `Withdrawn${ask.withdrawn_why ? `: ${ask.withdrawn_why}` : ""}`, at: "" }] : [];
+  return [...withdrawn, ...dated].map(({ tile, text, at }) => ({ tile, text, time: at ? clock(at) : "" }));
+}
+
+const minutes = (/** @type {string} */ from, /** @type {string} */ to) => Math.round((Date.parse(to) - Date.parse(from)) / 60_000);
+
+/** The plan step's latest result, else the progress the agent last published. @param {any} task */
+function plan(task) {
+  if (task.plan) return { text: task.plan.summary, from: `${task.plan.step}, run ${task.plan.run}` };
+  const progress = task.progress;
+  if (!progress) return null;
+  const lines = [
+    progress.goal && `Goal: ${progress.goal}`,
+    ...(progress.acceptanceCriteria ?? []).map((/** @type {any} */ criterion) => `- ${criterion.id}: ${criterion.description}`),
+    progress.latestChange && `Latest change: ${progress.latestChange}`,
+    progress.nextAction && `Next: ${progress.nextAction}`,
+  ];
+  return { text: lines.filter(Boolean).join("\n"), from: "progress" };
+}
+
+/** @param {any} pull */
+function pullRequest(pull) {
+  if (!pull) return null;
+  return {
+    title: `#${pull.number} ${pull.title ?? ""}`.trim(),
+    line: `${pull.branch} into ${pull.base}, head ${String(pull.head_sha).slice(0, 7)}, ${pull.state}`,
+    checks: pull.checks.map((/** @type {any} */ check) => ({ name: check.name, ok: check.conclusion === "success", text: check.conclusion })),
+    review: pull.review,
+  };
+}
+
+/** The task's runs on a time axis: step, run, span, outcome and tokens. @param {any[]} runs @param {number} now */
+function trace(runs, now) {
+  return runs.map((run) => {
+    const end = run.ended ?? new Date(now).toISOString();
+    const tokens = run.tokens ? Object.values(run.tokens).reduce((sum, count) => sum + (Number(count) || 0), 0) : null;
+    return {
+      tile: run.ended ? run.end ?? "moved" : "ask",
+      label: `${run.step}, run ${run.id}`,
+      span: `${clock(run.started)} to ${run.ended ? clock(run.ended) : "now"}, ${minutes(run.started, end)} min`,
+      outcome: run.outcome,
+      tokens: tokens === null ? null : `${tokens} tokens`,
+    };
+  });
+}
+
 /**
- * One ask's detail: the decision first, then what to read.
+ * One ask's detail: the decision first, then what to read. `task` is `priory task ID --json` of the
+ * ask's task, when it was read: it fills Brief, Plan, PR and Trace.
  * @param {any} ask
- * @param {{ now: number, armed: Armed | null }} options
+ * @param {{ now: number, armed: Armed | null, task?: any }} options
  */
-export function askDetail(ask, { now, armed }) {
+export function askDetail(ask, { now, armed, task = null }) {
   const open = ask.state === "open";
   /** @type {string[]} */
   const options = open ? ask.options ?? [] : [];
   const arming = holds(armed, ask, now) ? armed.option : null;
   const recommended = Math.max(0, options.indexOf(ask.recommendation));
+  const request = task?.brief?.request;
+  const groomed = task?.brief?.result;
+  const brief = request || groomed ? { request, text: groomed?.summary ?? null, from: groomed ? `${groomed.step}, run ${groomed.run}` : null } : null;
+  const planned = task ? plan(task) : null;
+  const pr = pullRequest(task?.pull_request);
+  const runs = trace(task?.runs ?? [], now);
   return {
     context: [ask.key, ask.step, ask.lane, ask.command ? "Command" : null, age(ask.since, now), `revision ${ask.revision}`].filter(Boolean),
     question: ask.title || ask.question,
@@ -146,16 +213,19 @@ export function askDetail(ask, { now, armed }) {
       armed: arming === index,
       dimmed: arming !== null && arming !== index,
     })),
-    chips: [["why", "Why"], ["history", "History"], ...(ask.command ? [["command", "Command"]] : [])],
+    chips: /** @type {[string, string][]} */ ([
+      ["why", "Why"], brief && ["brief", "Brief"], planned && ["plan", "Plan"], pr && ["pr", "PR"],
+      runs.length > 0 && ["trace", "Trace"], ["history", "History"], ask.command && ["command", "Command"],
+    ].filter(Boolean)),
+    brief,
+    plan: planned,
+    pr,
+    trace: runs,
     why: { text: ask.text || ask.question, run: ask.run, tradeoff: ask.tradeoff, whatWaits: ask.what_waits },
     decided: ask.state === "answered" ? `Answered: ${ask.answer}.${ask.answered_at ? ` ${age(ask.answered_at, now)} ago.` : ""}`
       : ask.state === "withdrawn" ? `Withdrawn${ask.withdrawn_why ? `: ${ask.withdrawn_why}` : ""}.` : null,
     ran: ask.ran ? { text: ask.ran.status === "failed" ? `${RAN.failed}: ${ask.ran.error}.` : RAN[ask.ran.status] ?? ask.ran.status, warn: ask.ran.status === "uncertain" } : null,
-    history: [
-      ...(ask.state === "answered" ? [{ tile: "answered", text: `Answered ${ask.answer}`, time: ask.answered_at ? clock(ask.answered_at) : "" }] : []),
-      ...(ask.state === "withdrawn" ? [{ tile: "withdrawn", text: `Withdrawn${ask.withdrawn_why ? `: ${ask.withdrawn_why}` : ""}`, time: "" }] : []),
-      { tile: "ask", text: `Asked revision ${ask.revision}`, time: clock(ask.since) },
-    ],
+    history: history(ask),
     command: command(ask),
     bar: options.length ? { count: `${options.length} options`, option: recommended } : null,
     canSnooze: open && ask.task != null,

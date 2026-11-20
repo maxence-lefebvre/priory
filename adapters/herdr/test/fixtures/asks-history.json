@@ -1,0 +1,80 @@
+{
+    "asks": [
+        {
+            "answer": "Merge",
+            "answered_at": "2026-11-20T10:07:00Z",
+            "back_early": null,
+            "band": null,
+            "command": null,
+            "coordinator": null,
+            "delivery": null,
+            "id": 1,
+            "key": "cli:PRI-61",
+            "lane": "none/misc",
+            "next_action": null,
+            "options": [
+                "Merge",
+                "Wait",
+                "Close"
+            ],
+            "question": "Merge #212 into main? Checks are green.",
+            "ran": null,
+            "recommendation": "Merge",
+            "refused": [
+                {
+                    "answer": "Close",
+                    "at": "2026-11-20T10:06:00Z",
+                    "by": "cli",
+                    "revision": 1,
+                    "why": "ask 1 is at revision 2, not 1"
+                }
+            ],
+            "revision": 2,
+            "revisions": [
+                {
+                    "answer": "Wait",
+                    "answered_at": "2026-11-20T09:55:00Z",
+                    "at": "2026-11-20T09:50:00Z",
+                    "options": [
+                        "Merge",
+                        "Wait"
+                    ],
+                    "question": "Merge #212 into main?",
+                    "recommendation": "Merge",
+                    "revision": 1,
+                    "text": "Checks are running."
+                },
+                {
+                    "answer": "Merge",
+                    "answered_at": "2026-11-20T10:07:00Z",
+                    "at": "2026-11-20T10:05:00Z",
+                    "options": [
+                        "Merge",
+                        "Wait",
+                        "Close"
+                    ],
+                    "question": "Merge #212 into main? Checks are green.",
+                    "recommendation": "Merge",
+                    "revision": 2,
+                    "text": "Checks are green."
+                }
+            ],
+            "run": 3,
+            "run_id": null,
+            "session": null,
+            "since": "2026-11-20T09:50:00Z",
+            "snoozed_at": null,
+            "snoozed_until": null,
+            "state": "answered",
+            "step": "merge",
+            "task": 1,
+            "text": "Checks are green.",
+            "title": null,
+            "tradeoff": null,
+            "what_waits": null,
+            "withdrawn_why": null
+        }
+    ],
+    "bands": [],
+    "revision": 16
+}

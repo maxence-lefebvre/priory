@@ -3780,6 +3780,76 @@ fn an_outside_ask_takes_an_answer_or_a_dismiss_only_at_its_current_revision() {
 }
 
 #[test]
+fn a_revised_ask_lists_each_revision_oldest_first() {
+    let mut setup = Setup::new("ask-revisions");
+    setup.start();
+    listening(&setup);
+    setup.priory(&["ask", "cache.ship", &fleet_ask(&["ship", "wait"])]);
+    setup.priory(&["ask", "cache.ship", &fleet_ask(&["ship", "drop"])]);
+
+    let asks: serde_json::Value =
+        serde_json::from_slice(&setup.priory(&["asks", "--all", "--json"]).stdout).unwrap();
+
+    let revisions = &asks["asks"][0]["revisions"];
+    assert_eq!(revisions.as_array().unwrap().len(), 2, "{revisions}");
+    for (at, options) in [json!(["ship", "wait"]), json!(["ship", "drop"])]
+        .iter()
+        .enumerate()
+    {
+        let revision = &revisions[at];
+        assert_eq!(revision["revision"], at + 1);
+        assert_eq!(revision["question"], "Ship the cache today?");
+        assert_eq!(&revision["options"], options);
+        assert_eq!(revision["recommendation"], "ship");
+        assert_eq!(revision["text"], "The cache is ready.\n\nThe docs are not.");
+        assert!(revision["at"].is_string(), "{revision}");
+    }
+}
+
+#[test]
+fn an_answered_revision_keeps_its_answer_after_the_ask_is_revised() {
+    let mut setup = Setup::new("ask-revision-answer");
+    setup.start();
+    listening(&setup);
+    setup.priory(&["ask", "cache.ship", &fleet_ask(&["ship", "wait"])]);
+    setup.priory(&["answer", "--expected", "1", "--", "cache.ship", "wait"]);
+    setup.priory(&["ask", "cache.ship", &fleet_ask(&["ship", "drop"])]);
+
+    let asks: serde_json::Value =
+        serde_json::from_slice(&setup.priory(&["asks", "--all", "--json"]).stdout).unwrap();
+
+    let ask = &asks["asks"][0];
+    assert_eq!(ask["answer"], serde_json::Value::Null);
+    assert_eq!(ask["revisions"][0]["answer"], "wait");
+    assert!(ask["revisions"][0]["answered_at"].is_string(), "{ask}");
+    assert_eq!(ask["revisions"][1]["answer"], serde_json::Value::Null);
+}
+
+#[test]
+fn a_stale_answer_is_listed_under_refused_with_the_revision_it_answered() {
+    let mut setup = Setup::new("ask-refused");
+    setup.start();
+    listening(&setup);
+    setup.priory(&["ask", "cache.ship", &fleet_ask(&["ship", "wait"])]);
+    setup.priory(&["ask", "cache.ship", &fleet_ask(&["ship", "drop"])]);
+
+    setup.priory(&["answer", "--expected", "1", "--", "cache.ship", "wait"]);
+    setup.priory(&["answer", "--expected", "2", "--", "cache.ship", "ship"]);
+    let asks: serde_json::Value =
+        serde_json::from_slice(&setup.priory(&["asks", "--all", "--json"]).stdout).unwrap();
+
+    let ask = &asks["asks"][0];
+    assert_eq!(ask["answer"], "ship");
+    let refused = ask["refused"].as_array().unwrap();
+    assert_eq!(refused.len(), 1, "{refused:?}");
+    assert_eq!(refused[0]["revision"], 1);
+    assert_eq!(refused[0]["answer"], "wait");
+    assert_eq!(refused[0]["by"], "cli");
+    assert_eq!(refused[0]["why"], "ask cache.ship is at revision 2, not 1");
+    assert!(refused[0]["at"].is_string());
+}
+
+#[test]
 fn an_outside_ask_named_only_dots_or_with_a_slash_is_refused() {
     let setup = Setup::new("outside-names");
 
@@ -4943,6 +5013,8 @@ fn a_state_file_whose_asks_an_approval_names_upgrades_to_outside_asks() {
          DROP TABLE deliveries;
          DROP TABLE reports;
          DROP TABLE dispatches;
+         DROP TABLE ask_revisions;
+         DROP TABLE ask_refusals;
          PRAGMA legacy_alter_table = ON;
          CREATE TABLE asks_32 (
            id INTEGER PRIMARY KEY AUTOINCREMENT, task INTEGER NOT NULL REFERENCES tasks (id),
