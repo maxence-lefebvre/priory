@@ -602,6 +602,15 @@ fn check_workflow(factory: &Factory, workflow: &Loaded<Workflow>, problems: &mut
                 ));
             }
         }
+        for outcome in step
+            .by
+            .keys()
+            .filter(|outcome| !step.next.contains_key(*outcome))
+        {
+            report(format!(
+                "`by` has outcome `{outcome}`, which is not in `next`"
+            ));
+        }
         if !reached.contains(step.id.as_str()) {
             report("no path from start reaches it".into());
         }

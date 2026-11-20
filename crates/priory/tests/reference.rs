@@ -44,7 +44,7 @@ fn the_example_factory_passes_check() {
 }
 
 #[test]
-fn every_starter_factory_passes_check() {
+fn every_starter_factory_passes_check_and_its_explanation() {
     let starters = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples");
     let mut checked = 0;
     for entry in fs::read_dir(&starters).unwrap() {
@@ -52,18 +52,21 @@ fn every_starter_factory_passes_check() {
         if !starter.is_dir() {
             continue;
         }
-        let output = Command::new(env!("CARGO_BIN_EXE_priory"))
-            .arg("check")
-            .arg(&starter)
-            .output()
-            .unwrap();
-        assert!(
-            output.status.success(),
-            "{}: {}{}",
-            starter.display(),
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
-        );
+        for flags in [&[][..], &["--explain"]] {
+            let output = Command::new(env!("CARGO_BIN_EXE_priory"))
+                .arg("check")
+                .args(flags)
+                .arg(&starter)
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{} {flags:?}: {}{}",
+                starter.display(),
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
         checked += 1;
     }
     assert!(checked > 0, "no starter under {}", starters.display());

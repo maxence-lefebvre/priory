@@ -68,6 +68,7 @@ repository fact, so it names the person and text, not a GitHub id.
 | Event `time` | when the command ran, equal to `data.time` |
 | Event id | the UUIDv5 of `priory.task.requested.cli:{len}:{key}:{text}`, with the `cli:` key and `len` its byte length, so a `:` in the key or text cannot make two requests collide |
 | Task request id | the UUIDv5 of `factory.task.requested:cli:{source}` |
+| Event id from a report pick | the UUIDv5 of `priory.task.requested.cli:pick:{plen}:{pick}:{len}:{key}:{text}`, with `plen` the pick id's byte length (see [reports.md](../daemon/reports.md)) |
 
 Running the same command again, with the same key and text, adds nothing: herdr-bus drops both
 messages. Another text under the same key is a new request for the same task.

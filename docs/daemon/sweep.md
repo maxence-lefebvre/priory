@@ -45,14 +45,15 @@ A retired task stays `asleep` with its `retired` time set. It keeps every wait, 
 routing, holds and waits treat it as any asleep task. R4.1's states stay as they are. When its wait
 fires or its ask is answered, it becomes `ready`, as R3.2 says. Its next run re-adds the worktree
 from the branch at the same path, so `claude --resume` finds the session stored for that folder.
-Starting the run, or an `open-pr` that adds the worktree back, clears `retired`. An answer approving
+Starting the run, or an `open-pr` or `run` action that adds the worktree back, clears `retired`. An answer approving
 a step, and the action it approves, read the branch's commit from Priory's clone while the task is
 retired.
 
-A code step skips the room check, except `open-pr` on a retired task: it pushes from the worktree,
-so it must add it back. Other actions, such as `open-issue`, run without it. While free disk is at or
+A code step skips the room check, except `open-pr` or `run` on a retired task: `open-pr` pushes from
+the worktree and `run` works in it, so each must add it back. Other actions, such as `open-issue`, run without it. While free disk is at or
 under the floor, the task stays `ready` with the reason `waits for room to add back its worktree`,
-or `waits for room: <error>` when the disk cannot be measured, and so do the code steps behind it.
+or `waits for room: <error>` when the disk cannot be measured. The daemon goes on to the next task
+at a code step, so the code steps behind it still run.
 
 A task that cannot retire gets the reason `cannot retire: <why>`, with the same reasons as the sweep,
 such as `untracked files`. The daemon sets and logs it only when it changes, so it is reported once.
