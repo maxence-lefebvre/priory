@@ -236,12 +236,35 @@ fn route(
             })
         }
         "/api/inbox" => listing::revised(db, "inbox", |db| listing::inbox(db, 0).map(Some)),
-        "/api/asks" => match since(query) {
-            Ok(since) => listing::revised(db, "asks", |db| {
-                listing::recent_asks(db, since.as_deref()).map(Some)
-            }),
-            Err(reply) => return reply,
-        },
+        "/api/asks" => {
+            let (mut bands, mut all) = (Vec::new(), false);
+            for pair in query.split('&').filter(|pair| !pair.is_empty()) {
+                match pair.split_once('=') {
+                    Some(("all", "1")) => all = true,
+                    Some(("band", value)) => match decode(value) {
+                        Some(value) => bands.extend(value.split(',').map(str::to_owned)),
+                        None => return Reply::error(400, "band is not percent-encoded UTF-8"),
+                    },
+                    _ => {
+                        return Reply::error(400, "asks takes band=BAND[,BAND...] and all=1");
+                    }
+                }
+            }
+            for band in &bands {
+                if let Err(refusal) = state::check_band(db, band) {
+                    return Reply::error(400, &refusal);
+                }
+            }
+            let since = match week_ago() {
+                _ if all => None,
+                Ok(since) => since,
+                Err(reply) => return reply,
+            };
+            let bands: Vec<&str> = bands.iter().map(String::as_str).collect();
+            listing::revised(db, "asks", |db| {
+                listing::recent_asks(db, &bands, since.as_deref()).map(Some)
+            })
+        }
         "/api/tasks" => match since(query) {
             Ok(since) => listing::revised(db, "tasks", |db| {
                 listing::recent_tasks(db, since.as_deref()).map(Some)
@@ -456,19 +479,22 @@ fn refusal(db: &Connection, ask: Option<(i64, i64)>, refused: &str) -> Reply {
     }
 }
 
-/// The time a week ago, from which a listing keeps closed rows, or none for `all=1`: every row.
+/// The time from which `/api/tasks` keeps ended tasks: a week ago, or none for `all=1`.
 fn since(query: &str) -> Result<Option<String>, Reply> {
     match query {
         "all=1" => Ok(None),
-        "" => {
-            let now = intake::now().map_err(|error| Reply::error(500, &error))?;
-            let week = now
-                .checked_sub(jiff::SignedDuration::from_hours(7 * 24))
-                .map_err(|error| Reply::error(500, &error.to_string()))?;
-            Ok(Some(week.strftime("%Y-%m-%dT%H:%M:%SZ").to_string()))
-        }
-        _ => Err(Reply::error(400, "this listing takes one parameter: all=1")),
+        "" => week_ago(),
+        _ => Err(Reply::error(400, "tasks takes one parameter: all=1")),
     }
+}
+
+/// The time a week ago, from which a listing keeps closed rows.
+fn week_ago() -> Result<Option<String>, Reply> {
+    let now = intake::now().map_err(|error| Reply::error(500, &error))?;
+    let week = now
+        .checked_sub(jiff::SignedDuration::from_hours(7 * 24))
+        .map_err(|error| Reply::error(500, &error.to_string()))?;
+    Ok(Some(week.strftime("%Y-%m-%dT%H:%M:%SZ").to_string()))
 }
 
 /// A query value with its `%XX` escapes and `+` decoded; none when an escape or the UTF-8 is broken.

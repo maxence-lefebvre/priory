@@ -108,7 +108,7 @@ const DESK: &str = "SELECT 0 AS part, asks.created AS since, 'ask' AS kind,
 fn asks_query() -> String {
     format!(
         "SELECT coalesce(asks.name, asks.id) AS id, asks.task,
-     coalesce(tasks.key, asks.key) AS key, asks.step, tasks.lane, asks.run,
+     coalesce(tasks.key, asks.key) AS key, asks.step, tasks.lane, tasks.band, asks.run,
      CASE WHEN asks.withdrawn IS NOT NULL THEN 'withdrawn'
        WHEN asks.answer IS NOT NULL THEN 'answered' ELSE 'open' END AS state,
      CASE asks.withdrawn WHEN -1 THEN 'dismissed' WHEN -2 THEN 'a wait of its run fired first'
@@ -213,26 +213,48 @@ fn parse_json(task: &mut Value) {
     }
 }
 
-/// Every ask with its state, oldest first.
-pub fn asks(db: &Connection) -> rusqlite::Result<Value> {
-    asks_of(db, None, None, None)
+/// Every ask with its state and its task's band, oldest first, or the asks of tasks in one of
+/// `bands`, beside the factory's bands highest first.
+pub fn asks(db: &Connection, bands: &[&str]) -> rusqlite::Result<Value> {
+    let asks = asks_in(db, bands, None)?;
+    Ok(json!({ "asks": asks, "bands": state::band_names(db)? }))
 }
 
-/// The open asks and those closed since `since`, or every ask without it, oldest first, as `asks`,
-/// with the number of answered and withdrawn asks left out as `older`. A withdrawn ask counts as
-/// closed when it was asked: the state keeps no time for a withdrawal.
-pub fn recent_asks(db: &Connection, since: Option<&str>) -> rusqlite::Result<Value> {
+/// As `asks`, with only the open asks and those closed since `since` when it is given, and the
+/// number of answered and withdrawn asks left out as `older`. A withdrawn ask counts as closed
+/// when it was asked: the state keeps no time for a withdrawal.
+pub fn recent_asks(
+    db: &Connection,
+    bands: &[&str],
+    since: Option<&str>,
+) -> rusqlite::Result<Value> {
     let (answered, withdrawn): (i64, i64) = db.query_row(
-        "SELECT count(*) FILTER (WHERE withdrawn IS NULL), count(*) FILTER (WHERE withdrawn IS NOT NULL)
-         FROM asks WHERE (answer IS NOT NULL OR withdrawn IS NOT NULL)
-           AND coalesce(answered, created) < ?1",
-        [since],
+        "SELECT count(*) FILTER (WHERE asks.withdrawn IS NULL),
+           count(*) FILTER (WHERE asks.withdrawn IS NOT NULL)
+         FROM asks LEFT JOIN tasks ON tasks.id = asks.task
+         WHERE (asks.answer IS NOT NULL OR asks.withdrawn IS NOT NULL)
+           AND coalesce(asks.answered, asks.created) < ?1
+           AND (?2 = '[]' OR tasks.band IN (SELECT value FROM json_each(?2)))",
+        params![since, json!(bands).to_string()],
         |row| Ok((row.get(0)?, row.get(1)?)),
     )?;
     Ok(json!({
-        "asks": asks_of(db, None, None, since)?,
+        "asks": asks_in(db, bands, since)?,
+        "bands": state::band_names(db)?,
         "older": { "answered": answered, "withdrawn": withdrawn },
     }))
+}
+
+fn asks_in(db: &Connection, bands: &[&str], since: Option<&str>) -> rusqlite::Result<Value> {
+    let mut asks = asks_of(db, None, None, since)?;
+    if let (Some(asks), false) = (asks.as_array_mut(), bands.is_empty()) {
+        asks.retain(|ask| {
+            ask["band"]
+                .as_str()
+                .is_some_and(|band| bands.contains(&band))
+        });
+    }
+    Ok(asks)
 }
 
 /// Ask `id` as `asks` lists it, if there is one.

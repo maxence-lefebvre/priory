@@ -150,7 +150,7 @@ async function refresh() {
     // Ages read in minutes, so an unchanged state needs a new paint once a minute at most.
     if (state.data && snapshot === state.snapshot && !failed && Date.now() - state.rendered < 60000) return true;
     const before = state.data ? new Set(state.data.asks.filter((ask) => ask.state === "open").map((ask) => ask.id)) : null;
-    state.data = { views, desk, asks, queue, tasks, older };
+    state.data = { views, desk, asks, bands: asksList.bands, queue, tasks, older };
     state.snapshot = snapshot;
     announce(before);
   } catch (error) {
@@ -203,6 +203,11 @@ function deskModel() {
   return { open, stopped, reports, other, asleep: desk.counts.asleep, banner: desk.banner, running: queue.running, queue: queue.waiting, tasks, upNext: queue.up_next, needs: items.length };
 }
 const openAsks = () => deskModel().open;
+// The open asks the list shows, so previous, next and the ask after an answer stay in its band.
+const listedAsks = () => {
+  const band = new URLSearchParams(listSearch()).get("band");
+  return band ? openAsks().filter((ask) => bandOf(ask) === band) : openAsks();
+};
 
 // Rows
 function askRow(ask, current) {
@@ -266,9 +271,9 @@ function deskView() {
   return DESK_VIEWS.includes(name) ? name : "needs";
 }
 
-function savedViews(list, base) {
+function savedViews(list, base, facets = "") {
   return html`<nav class="views" aria-label="Saved views">${list.map(([key, label, count, on]) =>
-    html`<a href="${base}?view=${key}" aria-current="${on ? "true" : "false"}">${label}${count === null ? "" : html`<span class="num">${count}</span>`}</a>`)}</nav>`;
+    html`<a href="${base}?view=${key}${facets}" aria-current="${on ? "true" : "false"}">${label}${count === null ? "" : html`<span class="num">${count}</span>`}</a>`)}</nav>`;
 }
 
 function countLine(model) {
@@ -371,17 +376,34 @@ function askTableRow(ask, selected) {
     <td class="recw">${answered ? ask.answer : ask.state === "withdrawn" ? ask.withdrawn_why || "" : snoozed(ask, Date.now()) ? snoozedUntil(ask) : ask.recommendation || ""}</td><td class="r">${when}</td></tr>`;
 }
 
+// An ask with no band, such as an outside ask, shows under `none`.
+const bandOf = (ask) => ask.band ?? "none";
+
+function bandFacet(view, band) {
+  if (band) return html`<a class="facet" aria-current="true" href="/asks?view=${view}" aria-label="Band: ${band}. Clear">${band}${icon("x", "s13")}</a>`;
+  const order = [...(state.data.bands || []), "none"];
+  const counts = new Map();
+  for (const ask of state.data.asks) counts.set(bandOf(ask), (counts.get(bandOf(ask)) || 0) + 1);
+  const values = [...counts].sort(([a], [b]) => order.indexOf(a) - order.indexOf(b));
+  return html`<details class="facet"><summary aria-label="Filter by band">Band${icon("chevron-down", "s13")}</summary>
+    <div class="pick">${values.map(([name, count]) => html`<a href="/asks?view=${view}&band=${encodeURIComponent(name)}">${name}<span class="num">${count}</span></a>`)}</div></details>`;
+}
+
 function asksBody(wide) {
-  const { asks, older } = state.data;
+  const band = new URLSearchParams(listSearch()).get("band");
+  const asks = band ? state.data.asks.filter((ask) => bandOf(ask) === band) : state.data.asks;
   const current = askView();
   const { open, snoozed: asleep, answered, withdrawn } = askGroups(asks, Date.now());
-  const left = older.asks;
+  // shortcut: older counts are not per band, so a band facet counts the loaded rows only; split `older` by band if that misleads.
+  const pending = state.data.older.asks;
+  const left = band ? { answered: 0, withdrawn: 0 } : pending;
   const total = { open: open.length, answered: answered.length + left.answered, all: asks.length + left.answered + left.withdrawn };
   const views = savedViews([
     ["open", "Open", total.open, current === "open"],
     ["answered", "Answered", total.answered, current === "answered"],
     ["all", "All", total.all, current === "all"],
-  ], "/asks");
+  ], "/asks", band ? `&band=${encodeURIComponent(band)}` : "");
+  const facets = html`<div class="facets" aria-label="Facets">${bandFacet(current, band)}</div>`;
   const selected = selectedAsk();
   const section = (title, list, note, count = list.length) => {
     if (!count) return "";
@@ -396,11 +418,11 @@ function asksBody(wide) {
     current !== "open" ? section("Answered today", answeredToday, answeredToday.length) : "",
     current !== "open" ? section("Answered earlier", answeredEarlier, answeredEarlier.length + left.answered, answeredEarlier.length + left.answered) : "",
     current === "all" ? section("Withdrawn", withdrawn, withdrawn.length + left.withdrawn, withdrawn.length + left.withdrawn) : "",
-    current === "open" ? "" : olderRow("asks", current === "all" ? left.answered + left.withdrawn : left.answered, wide),
+    current === "open" ? "" : olderRow("asks", current === "all" ? pending.answered + pending.withdrawn : pending.answered, wide),
   ];
   const empty = { open: "No open asks. Agents ask here when they need you.", answered: "No answered asks yet. An ask moves here once someone answers it.", all: "No asks yet. Agents ask here when they need you." }[current];
   const rows = wide ? html`<table class="tbl"><thead><tr><th>State</th><th>Task</th><th>Step</th><th>Question</th><th>${current === "open" ? "Recommends" : "Answer"}</th><th class="r">Age</th></tr></thead><tbody>${sections}</tbody></table>` : sections;
-  return { views, rows: total[current] ? rows : html`<p class="empty">${empty}</p>`, open };
+  return { views: html`${views}${facets}`, rows: total[current] ? rows : html`<p class="empty">${empty}</p>`, open };
 }
 
 // Ask detail
@@ -417,7 +439,7 @@ function askDetail(id, wide) {
     return html`<p class="empty">Loading ask ${id}…</p>`;
   }
   if (!ask) return html`<p class="empty">No ask ${id} here. It may belong to another factory. Check <code>priory asks --all</code>.</p>`;
-  const open = openAsks();
+  const open = listedAsks();
   const at = open.findIndex((candidate) => String(candidate.id) === id);
   const back = [state.listUrl, state.list === "asks" ? "Asks" : "Desk"];
   const nav = (to, label, name) => (to
@@ -629,10 +651,10 @@ async function write(ask, path, body, draft) {
 
 // After an answer, the next open ask opens, or the list once none is left.
 async function next(ask) {
-  const before = openAsks().map((candidate) => candidate.id);
+  const before = listedAsks().map((candidate) => candidate.id);
   await refresh();
   if (selectedAsk() !== String(ask.id)) return;
-  const left = openAsks().filter((candidate) => candidate.id !== ask.id);
+  const left = listedAsks().filter((candidate) => candidate.id !== ask.id);
   const following = left.find((candidate) => before.indexOf(candidate.id) > before.indexOf(ask.id)) || left[0];
   go(following ? `/asks/${encodeURIComponent(following.id)}` : state.listUrl);
 }

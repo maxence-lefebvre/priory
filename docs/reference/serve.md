@@ -8,7 +8,7 @@ Every endpoint takes `GET`, except the three [writes](#writes) and `POST /hooks/
 Each listing returns the same JSON as
 the CLI command with `--json`, with the state's `revision`, an integer, read in the same
 transaction. A listing that is an object has a `revision` field. A listing that is a list comes as
-`{"revision": N, "<name>": [...]}`, where `<name>` is `inbox`, `asks` or `tasks`.
+`{"revision": N, "<name>": [...]}`, where `<name>` is `inbox` or `tasks`.
 
 `/api/asks` and `/api/tasks` leave out the rows that closed over a week ago, and add `older`, the
 number they left out: see [Asks](#asks) and [Tasks](#tasks). `?all=1` returns every row, as the CLI
@@ -18,7 +18,7 @@ does, with every count in `older` at 0. Their rows match the CLI's JSON only wit
 | -------- | --- | ------- |
 | `/api/desk?person=NAME` | `priory desk --json --person NAME` | an object: [Desk](#desk) |
 | `/api/inbox` | `priory inbox --json` | `inbox`: an array of [inbox messages](#inbox) |
-| `/api/asks?all=1` | `priory asks --json` | `asks`: an array of [asks](#asks), and `older` |
+| `/api/asks?band=BAND&all=1` | `priory asks --json --band BAND` | an object: `asks`, an array of [asks](#asks), `bands` and `older` |
 | `/api/tasks?all=1` | `priory tasks --json` | `tasks`: an array of [tasks](#tasks), and `older` |
 | `/api/tasks/{id}` | | one [task in detail](#task-in-detail) |
 | `/api/queue` | `priory queue --json` | an object: [Queue](#queue) |
@@ -41,7 +41,7 @@ or a reason, is untrusted: render it as text.
 | ---- | ---- |
 | `200` | The endpoint answered |
 | `202` | A signed webhook delivery was taken: published, or dropped on purpose |
-| `400` | The request does not parse, or its target does not start with `/`; `/api/events` lacks `since` or has a parameter out of range; `/api/desk` has a parameter other than `person`, or a broken escape; `/api/asks` or `/api/tasks` has a parameter other than `all=1`; a write's body is not the shape [below](#writes); for a webhook, it sends two `Content-Length`, or its payload lacks a field its event needs |
+| `400` | The request does not parse, or its target does not start with `/`; `/api/events` lacks `since` or has a parameter out of range; `/api/desk` has a parameter other than `person`, or a broken escape; `/api/asks` has a parameter other than `band` and `all=1`, or a band the factory does not have; `/api/tasks` has a parameter other than `all=1`; a write's body is not the shape [below](#writes); for a webhook, it sends two `Content-Length`, or its payload lacks a field its event needs |
 | `401` | The token is missing or wrong on a path under `/api`; for a webhook, the signature is |
 | `403` | A `POST` carries an `Origin` whose host and port differ from its `Host`, such as a page on another site |
 | `404` | No such path, task, report, ask or web view file |
@@ -156,14 +156,20 @@ line as `line`, and, once read, when it was read as `read`. Both are null on a m
 
 ## Asks
 
-Every ask, oldest first. Without `all=1`, the open asks and the asks answered or asked in the last 7
-days. The state keeps no time for a withdrawal, so a withdrawn ask counts from when it was asked.
-`older` is an object: `answered` and `withdrawn`, the number of each left out.
+Every ask, oldest first, in `asks`, and the factory's bands, highest first, in `bands`. With
+`band`, only the asks of tasks in that band. `band` takes a comma-separated list and repeats, so
+`?band=now,today` and `?band=now&band=today` are the same. A band the factory does not have gets
+`400`, with the factory's bands in the error. `priory asks --band BAND` filters the same way and
+refuses the same bands.
+
+Without `all=1`, `asks` holds the open asks and the asks answered or asked in the last 7 days. The
+state keeps no time for a withdrawal, so a withdrawn ask counts from when it was asked. `older` is
+an object: `answered` and `withdrawn`, the number of each left out, within `band` when it is given.
 
 | Field | Type | Meaning |
 | ----- | ---- | ------- |
 | `id` | integer or string | The ask: its number, or the id an outside ask was given |
-| `task`, `key`, `step`, `lane` | | The task, its key, the ask's step and the task's lane. An outside ask has no task, and its `key` is the one it sent |
+| `task`, `key`, `step`, `lane`, `band` | | The task, its key, the ask's step, and the task's lane and band. An outside ask has no task, so its `lane` and `band` are null, and its `key` is the one it sent |
 | `run` | integer or null | The run that asked |
 | `state` | string | `open`, `answered` or `withdrawn` |
 | `withdrawn_why` | string or null | Why a withdrawn ask closed: `dismissed`, `a later run called another tool` or `revived as generation <n>` |

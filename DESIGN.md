@@ -335,7 +335,7 @@ Every list panel (desk, asks, tasks, runs, inbox) is the same explorer over one 
    in `--text-3`. The active view is solid `--emph`. Views name a whole query, such as "Needs
    me", "Running", "Asleep" or "All". On a phone the row fits the width; a view that does not fit
    moves to the view's menu, and the row never scrolls sideways.
-2. **Facet chips**: one chip per facet the panel offers (lane, step, runner, age, task, command),
+2. **Facet chips**: one chip per facet the panel offers (lane, band, step, runner, age, task, command),
    `--chip` tall like the views, with `--radius-sm` and a `--control-line` edge. Tapping one
    opens a picker sheet with values and counts. A set chip takes `--action-soft` and `--action-text`, shows its value
    and an `x` that clears it. A last "Filter" ghost chip adds a facet. On a phone the facet row
@@ -391,7 +391,8 @@ request number). The whole row is the touch target.
 ### Asks list
 
 The Asks tab lists every ask. Saved views: Open, Answered and All, each with a count. Facet
-chips: Command, Lane and Task, shown on a phone too. Each view shows these sections, in order,
+chips: Command, Lane, Band and Task, shown on a phone too. Band picks the task's band, with its
+values in the factory's band order, then `none` for an ask with no band, such as an outside ask. Each view shows these sections, in order,
 and leaves out an empty one:
 
 | Section          | Open | Answered | All | Order        | Line 3                                       |
@@ -771,7 +772,7 @@ the wide table with Recommends and the key hint bar (`J` `K`, `Enter`, `S`, `R`,
 
 Every ask, with the web's ask detail fitted to the pane. It sits in the side panel stack.
 
-- Saved views: Open, Snoozed, Answered and All. Facet chips: Command, Lane and Task.
+- Saved views: Open, Snoozed, Answered and All. Facet chips: Command, Lane, Band and Task.
 - The detail keeps the web's order: context line, question, recommendation with what happens next,
   options with keys `1` to `9`, write an answer, then the section chips Why, Brief, Plan, PR,
   Trace and History.
