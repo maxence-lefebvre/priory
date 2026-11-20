@@ -209,7 +209,7 @@ subscription does not end when one event arrives. Its events reach the task by i
 | Task | An event on the resource |
 | ---- | ------------------------ |
 | `running` | is queued as a prompt, read after the current turn |
-| `asleep` at a model step, with no checks gate | wakes it, unless it fires an open wait first. The inbox records `woke` |
+| `asleep` at a model step, with no checks gate | wakes it, unless the task has an open wait on the resource, which decides instead. The inbox records `woke` |
 | `done` | reopens it, when it is feedback on a pull request (see [routing.md](routing.md#feedback-reopens-a-done-task)) |
 
 For example, to hear every review of an upstream pull request while the task works on:

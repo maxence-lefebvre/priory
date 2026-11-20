@@ -11434,3 +11434,19 @@ fn subscribe_refuses_a_resource_it_cannot_name() {
         "priory subscribe: `owner/repo#7` is not a resource: name github:owner/name#7, linear:ENG-7 or slack:C0123:1763500000.000100\n"
     );
 }
+
+#[test]
+fn an_open_wait_on_a_subscribed_pull_request_decides_which_events_wake_the_task() {
+    let mut setup = Setup::new("subscribe-wait");
+    let mut on = on_pull_7("checks");
+    on["head_sha"] = json!("def0000000000000000000000000000000000000");
+    setup.calls(&[json!([subscribe("subscribe"), wait(on)])]);
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("runs", |rows| rows.len() == 1 && rows[0][7] == "asleep");
+
+    setup.publish(&off_branch(check(1, 0)));
+
+    setup.until("inbox", |rows| rows.len() == 2);
+    stays_asleep_after(&setup, 1);
+}

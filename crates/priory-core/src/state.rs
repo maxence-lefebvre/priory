@@ -1145,11 +1145,14 @@ fn delivered(
     Ok(false)
 }
 
-/// Whether `task` subscribes to any of `resources`.
+/// Whether `task` subscribes to any of `resources` with no open wait on them: a wait on the
+/// resource decides which of its events wake the task.
 fn subscribes(tx: &Transaction, task: i64, resources: &[String]) -> rusqlite::Result<bool> {
     let resources = serde_json::to_string(resources).expect("resources serialize");
     tx.query_row(
         "SELECT EXISTS (SELECT 1 FROM subscriptions WHERE task = ?1
+           AND resource IN (SELECT value FROM json_each(?2)))
+         AND NOT EXISTS (SELECT 1 FROM waits WHERE task = ?1 AND fired IS NULL AND withdrawn IS NULL
            AND resource IN (SELECT value FROM json_each(?2)))",
         params![task, resources],
         |row| row.get(0),
