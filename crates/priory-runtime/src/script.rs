@@ -106,6 +106,7 @@ impl Script {
         if let Some(mut stdin) = self.child.stdin.take() {
             let _ = std::io::Write::write_all(&mut stdin, b"\n");
         }
+        self.started = Instant::now();
     }
 
     /// Its status and the tail of its output once it ended, killing its children, or killing it

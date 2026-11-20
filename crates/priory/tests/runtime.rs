@@ -5613,7 +5613,7 @@ fn a_gh_call_past_the_command_timeout_is_killed_and_its_action_fails() {
     assert!(actions[0][7].ends_with("timed out after 1s"), "{actions:?}");
 }
 
-/// A workflow whose one step runs `command` and routes `found`, `ok` and `failed`.
+/// A workflow whose one step runs `command` and routes `found`, `running`, `ok` and `failed`.
 fn run_step(command: &str, timeout: &str) -> String {
     format!(
         r#"
@@ -5626,7 +5626,7 @@ action = "run"
 run = {command:?}
 effect = "reversible"
 {timeout}
-next = {{ found = "done", ok = "stop", failed = "stop" }}
+next = {{ found = "done", running = "done", ok = "stop", failed = "stop" }}
 "#
     )
 }
@@ -5711,6 +5711,26 @@ fn a_restart_while_a_run_step_runs_kills_it_and_fails_it_without_running_it_agai
     let starts = fs::read_to_string(setup.dir.join("factory/starts")).unwrap();
     assert_eq!(starts, "started\n");
     assert_eq!(setup.rows("tasks")[0][4], "dropped");
+}
+
+#[test]
+fn an_outcome_named_running_is_an_ended_action_a_restart_leaves_alone() {
+    let mut setup = Setup::with_workflow("run-named-running", &run_step("echo running", ""));
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == "done")
+    });
+    let actions = setup.rows("actions");
+
+    setup.crash();
+    setup.start();
+    // A second task's action ends after the restarted daemon reaped its predecessor's commands.
+    setup.publish(&requested(43));
+    setup.until("tasks", |rows| rows.len() == 2 && rows[1][4] == "done");
+
+    assert_eq!(actions[0][4], "running");
+    assert_eq!(setup.rows("actions")[0], actions[0]);
 }
 
 /// Whether process `pid` is alive, not a zombie.
