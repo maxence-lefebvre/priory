@@ -60,9 +60,17 @@ A view keeps the revision of its last read and waits for the next one instead of
   revision either way. The view reads its listings again when the revision changed.
 - From the CLI, `priory wait --since REV [--timeout D]` does the same and prints the revision.
 
-The server holds at most 4 such requests at once, half its 8 workers, so a listing always finds a
-free worker. Past that, `/api/events` answers `503` with `Retry-After: 1`. Worktrees on disk are
-not in the state: a desk item for a worktree changes without a new revision.
+The server holds at most 4 such requests at once, half its 8 workers, so waiting clients leave 4
+workers to the other requests. A fifth request that would wait gets `503` with `Retry-After: 1`; one
+whose answer is ready gets it at once.
+
+The revision changes with what is stored, not with the clock or the disk. Three things change a
+listing without a new revision: a snoozed item comes back at its `snoozed_until`, an ended task
+leaves the queue's `ended` list after a day, and a desk item for a worktree follows the disk. A view
+that shows them re-reads at those times as well.
+
+The wait answers at once when the revision differs from `REV`, lower included, so a client that
+kept a revision from a replaced state file does not hang.
 
 ## Limits
 

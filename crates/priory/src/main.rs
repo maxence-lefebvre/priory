@@ -1,8 +1,11 @@
 use priory_core::memory::Gate;
-use priory_core::{daemon, embed, listing, post, report, search, serve, snooze, state, tools};
+use priory_core::{
+    daemon, embed, listing, post, report, search, sections, serve, snooze, state, tools,
+};
 use priory_factory::{factory, rules};
 use priory_intake::{intake, request};
 use priory_runtime::{mcp, runtime};
+use serde_json::Value;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
@@ -114,7 +117,8 @@ fn main() -> ExitCode {
             (Some(flag), Some(session), None) if flag == "--session" => {
                 let session = session.to_string_lossy();
                 let local = |tool: &str, arguments: &serde_json::Value| {
-                    search::tool(&session, tool, arguments, &runtime::home())
+                    sections::tool(&session, tool, arguments)
+                        .or_else(|| search::tool(&session, tool, arguments, &runtime::home()))
                 };
                 exit("mcp", mcp::serve(&session, &local))
             }
@@ -130,7 +134,7 @@ fn main() -> ExitCode {
 
 fn usage() -> ExitCode {
     eprintln!(
-        "usage: priory check [DIR]\n       priory draw [DIR] WORKFLOW\n       priory intake [DIR] [--once]\n       priory daemon [DIR] [--once]\n       priory request [DIR] --workflow <name> --key <key> [--band <band>] [--lane <lane>] [--repo <owner/name>] [--hold <reason> [CONDITION]] <text>\n       priory serve [DIR] [--listen ADDR]\n       priory inbox [--since SEQ] [--json]\n       priory inbox read SEQ\n       priory post SOURCE LINE\n       priory tasks [--lane <lane>] [--grade red|yellow|green] [--json]\n       priory queue [--json]\n       priory runs\n       priory outbox\n       priory asks [--all] [--json]\n       priory waits\n       priory actions\n       priory attach (TASK | --run RUN) [--read-only] [--print]\n       priory desk [--all] [--json]\n       priory wait --since REV [--timeout D]\n       priory snooze (ask | blocked | failed | prompt) ID (--for DURATION | --until TIME | --clear)\n       priory trace\n       priory report [DIR] --workflow <name> [--since <instant-or-duration>] [--cost] [--by lane]\n       priory move TASK [--band <band>] [--top | --before TASK | --after TASK]\n       priory resume TASK\n       priory say TASK TEXT\n       priory pause [REASON]\n       priory unpause\n       priory cancel TASK\n       priory revive TASK [--step STEP]\n       priory hold TASK --reason TEXT [--until TIME | --after TASK | --merge PR [--if-closed release|drop|ask] | --blockers]\n       priory release TASK\n       priory tldr TASK TEXT\n       priory search QUERY [--state STATE[,STATE...]] [--limit N]\n       priory memory [acquire [--gb N] [--timeout D] -- COMMAND...]\n       priory answer [--revision N | --expected N] [--] ASK OPTION-OR-TEXT\n       priory ask ID JSON\n       priory dismiss [--expected N] ASK\n       priory mcp --session ID\n       priory hook EVENT"
+        "usage: priory check [DIR]\n       priory draw [DIR] WORKFLOW\n       priory intake [DIR] [--once]\n       priory daemon [DIR] [--once]\n       priory request [DIR] --workflow <name> --key <key> [--band <band>] [--lane <lane>] [--repo <owner/name>] [--hold <reason> [CONDITION]] <text>\n       priory serve [DIR] [--listen ADDR]\n       priory inbox [--since SEQ] [--json]\n       priory inbox read SEQ\n       priory post SOURCE LINE\n       priory tasks [--lane <lane>] [--grade red|yellow|green] [--json]\n       priory queue [--json]\n       priory runs\n       priory outbox\n       priory asks [--all] [--json]\n       priory waits\n       priory actions\n       priory attach (TASK | --run RUN) [--read-only] [--print]\n       priory desk [--all] [--json]\n       priory wait --since REV [--timeout D]\n       priory snooze (ask | blocked | failed | prompt) ID (--for DURATION | --until TIME | --clear)\n       priory trace\n       priory report put TASK FILE|-\n       priory report show [TASK] [--json]\n       priory report pick PICK OPTION --expected REVISION\n       priory report [DIR] --workflow <name> [--since <instant-or-duration>] [--cost] [--by lane]\n       priory move TASK [--band <band>] [--top | --before TASK | --after TASK]\n       priory resume TASK\n       priory say TASK TEXT\n       priory pause [REASON]\n       priory unpause\n       priory cancel TASK\n       priory revive TASK [--step STEP]\n       priory hold TASK --reason TEXT [--until TIME | --after TASK | --merge PR [--if-closed release|drop|ask] | --blockers]\n       priory release TASK\n       priory tldr TASK TEXT\n       priory search QUERY [--state STATE[,STATE...]] [--limit N]\n       priory memory [acquire [--gb N] [--timeout D] -- COMMAND...]\n       priory answer [--revision N | --expected N] [--] ASK OPTION-OR-TEXT\n       priory ask ID JSON\n       priory dismiss [--expected N] ASK\n       priory mcp --session ID\n       priory hook EVENT"
     );
     ExitCode::from(2)
 }
@@ -255,6 +259,12 @@ fn trace() -> ExitCode {
 /// Prints `priory report [DIR] --workflow <name> [--since <window>] [--cost]`. Only `--cost` reads
 /// the factory, for its prices.
 fn report(args: Vec<String>) -> ExitCode {
+    match args.first().map(String::as_str) {
+        Some("put") => return report_put(&args[1..]),
+        Some("show") => return report_show(&args[1..]),
+        Some("pick") => return report_pick(&args[1..]),
+        _ => {}
+    }
     let mut workflow = None;
     let mut since = report::SINCE.to_owned();
     let mut cost = false;
@@ -294,6 +304,90 @@ fn report(args: Vec<String>) -> ExitCode {
     let printed =
         state::open().and_then(|db| report::cost(&db, &workflow, &since, &factory.prices));
     exit("report", printed)
+}
+
+/// Stores a task's report from a file, or from stdin with `-`: `priory report put TASK FILE|-`.
+fn report_put(args: &[String]) -> ExitCode {
+    let [task, file] = args else {
+        return usage();
+    };
+    let Ok(task) = task.parse() else {
+        return usage();
+    };
+    let text = if file == "-" {
+        std::io::read_to_string(std::io::stdin())
+    } else {
+        std::fs::read_to_string(file)
+    };
+    let put = text
+        .map_err(|error| format!("{file}: {error}"))
+        .and_then(|text| sections::parse(&text))
+        .and_then(|report| state::open().and_then(|mut db| sections::put(&mut db, task, report)))
+        .map(|done| println!("{done}"));
+    exit("report put", put)
+}
+
+/// Sends `priory report pick PICK OPTION --expected REVISION` to the daemon, which applies it.
+fn report_pick(args: &[String]) -> ExitCode {
+    let [pick, option, flag, expected] = args else {
+        return usage();
+    };
+    let (true, Ok(expected)) = (flag == "--expected", expected.parse()) else {
+        return usage();
+    };
+    let line = serde_json::to_string(&sections::Choice {
+        pick: pick.clone(),
+        option: option.clone(),
+        expected,
+    })
+    .expect("a choice serializes");
+    send("report pick", &line)
+}
+
+/// Prints a task's report, or the one written last: `priory report show [TASK] [--json]`.
+fn report_show(args: &[String]) -> ExitCode {
+    let (json, rest): (Vec<_>, Vec<_>) = args.iter().partition(|arg| *arg == "--json");
+    let task = match rest[..] {
+        [] => None,
+        [task] => match task.parse() {
+            Ok(task) => Some(task),
+            Err(_) => return usage(),
+        },
+        _ => return usage(),
+    };
+    let shown = state::open().and_then(|db| {
+        let report = listing::revised(&db, "report", |db| sections::show(db, task))
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| match task {
+                Some(task) => format!("task {task} has no report"),
+                None => "no task has a report".to_owned(),
+            })?;
+        if !json.is_empty() {
+            state::emit(&report.to_string());
+            return Ok(());
+        }
+        let report = &report["report"];
+        state::emit(&format!(
+            "task {} revision {} {}: {}",
+            report["task"], report["revision"], report["date"], report["greeting"]
+        ));
+        for section in report["sections"].as_array().into_iter().flatten() {
+            state::emit(&format!("{}", section["title"]));
+            for row in section["rows"].as_array().into_iter().flatten() {
+                let pick = &row["pick"];
+                let choice = match &pick["chosen"] {
+                    Value::Null if pick.is_object() => {
+                        format!("  pick {}: {}", pick["id"], pick["options"])
+                    }
+                    Value::Null => String::new(),
+                    chosen => format!("  pick {}: {chosen}", pick["id"]),
+                };
+                state::emit(&format!("  {}{choice}", row["text"]));
+            }
+        }
+        Ok(())
+    });
+    exit("report show", shown)
 }
 
 /// Sends `priory snooze KIND ID (--for DURATION | --until TIME | --clear)` to the daemon, with the

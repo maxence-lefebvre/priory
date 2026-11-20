@@ -7,14 +7,26 @@ use std::path::PathBuf;
 pub const REQUESTED: &str = "priory.task.requested.cli";
 const TRIGGER: &str = "cli";
 
+/// A task request: `priory request`'s flags, or a report pick option's request.
+#[derive(Clone, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct Request {
+    /// The workflow the task starts.
     workflow: String,
+    /// The task's key, which Priory prefixes with `cli:`.
     key: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     band: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     lane: Option<String>,
+    /// `owner/name`; `triggers/cli.toml`'s `repo` when unset.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     repo: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     hold: Option<Hold>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     tldr: Option<String>,
+    /// What the task is about.
     text: String,
 }
 
@@ -85,6 +97,12 @@ pub fn parse(args: Vec<String>) -> Option<(PathBuf, Request)> {
         text,
     };
     Some((dir, request))
+}
+
+impl Request {
+    pub fn key(&self) -> &str {
+        &self.key
+    }
 }
 
 pub fn run(factory: &Factory, request: &Request) -> Result<(), String> {

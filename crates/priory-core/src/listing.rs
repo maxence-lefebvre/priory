@@ -96,7 +96,8 @@ fn asks_query() -> String {
 }
 
 /// What `read` returns, read in one snapshot with the revision it read. An object gains
-/// `revision`; an array becomes `{"revision": N, "<name>": [...]}`.
+/// `revision`; an array, or an object with a `revision` of its own, such as a report, becomes
+/// `{"revision": N, "<name>": ...}`.
 pub fn revised(
     db: &Connection,
     name: &str,
@@ -105,7 +106,7 @@ pub fn revised(
     let _snapshot = db.unchecked_transaction()?;
     let revision = state::revision(db)?;
     Ok(read(db)?.map(|value| match value {
-        Value::Object(mut object) => {
+        Value::Object(mut object) if !object.contains_key("revision") => {
             object.insert("revision".to_owned(), revision.into());
             Value::Object(object)
         }

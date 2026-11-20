@@ -1,7 +1,7 @@
 //! The HTTP server over the state: `/api` as JSON, with `web` the web view's files, and with a
 //! GitHub webhook its signed deliveries.
 
-use crate::{listing, state};
+use crate::{listing, sections, state};
 use herdr_bus::Bus;
 use priory_factory::factory::Factory;
 use priory_intake::intake::Github;
@@ -110,20 +110,29 @@ fn route(
             listing::revised(db, "tasks", |db| listing::tasks(db, None, None).map(Some))
         }
         "/api/queue" => listing::revised(db, "queue", |db| listing::queue(db).map(Some)),
-        _ => match path.strip_prefix("/api/tasks/").map(str::parse) {
-            Some(Ok(id)) => listing::revised(db, "task", |db| listing::task(db, id)),
+        "/api/reports/latest" => listing::revised(db, "report", |db| sections::show(db, None)),
+        _ => match (
+            path.strip_prefix("/api/tasks/").map(str::parse),
+            path.strip_prefix("/api/reports/").map(str::parse),
+        ) {
+            (Some(Ok(id)), _) => listing::revised(db, "task", |db| listing::task(db, id)),
+            (_, Some(Ok(task))) => {
+                listing::revised(db, "report", |db| sections::show(db, Some(task)))
+            }
             _ => return Reply::error(404, "no such path"),
         },
     };
     match read {
         Ok(Some(body)) => Reply::json(200, body.to_string()),
+        Ok(None) if path.starts_with("/api/reports/") => Reply::error(404, "no such report"),
         Ok(None) => Reply::error(404, "no such task"),
         Err(error) => Reply::error(500, &error.to_string()),
     }
 }
 
 /// `/api/events?since=REV[&timeout=SECONDS]`: the revision once it differs from `since`, or the
-/// same one after the timeout. Refuses a request past `WAITERS` held at once with `503`.
+/// same one after the timeout. Refuses a request that would wait past `WAITERS` held at once with
+/// `503`.
 fn events(db: &Connection, query: &str, waiters: &AtomicUsize) -> Reply {
     let (mut since, mut timeout) = (None, Some(WAIT));
     for pair in query.split('&').filter(|pair| !pair.is_empty()) {
@@ -141,6 +150,14 @@ fn events(db: &Connection, query: &str, waiters: &AtomicUsize) -> Reply {
             "events needs since=REV, and timeout=SECONDS of at most 25",
         );
     };
+    let answer = |revision: rusqlite::Result<i64>| match revision {
+        Ok(revision) => Reply::json(200, serde_json::json!({ "revision": revision }).to_string()),
+        Err(error) => Reply::error(500, &error.to_string()),
+    };
+    match state::revision(db) {
+        Ok(revision) if revision == since && timeout > 0 => {}
+        ready => return answer(ready),
+    }
     let held = waiters.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |held| {
         (held < WAITERS).then_some(held + 1)
     });
@@ -149,8 +166,5 @@ fn events(db: &Connection, query: &str, waiters: &AtomicUsize) -> Reply {
     }
     let waited = state::wait(db, since, Duration::from_secs(timeout));
     waiters.fetch_sub(1, Ordering::SeqCst);
-    match waited {
-        Ok(revision) => Reply::json(200, serde_json::json!({ "revision": revision }).to_string()),
-        Err(error) => Reply::error(500, &error.to_string()),
-    }
+    answer(waited)
 }
