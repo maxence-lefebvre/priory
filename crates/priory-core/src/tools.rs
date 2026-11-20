@@ -429,10 +429,11 @@ pub fn ask_outside(
         && name
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || b"._-".contains(&byte))
-        && !name.bytes().all(|byte| byte.is_ascii_digit());
+        && !name.bytes().all(|byte| byte.is_ascii_digit())
+        && !name.bytes().all(|byte| byte == b'.');
     if !named {
         return Ok(Err(format!(
-            "not an ask id: {name:?}; use 1 to 100 letters, digits, '.', '_' or '-', not only digits"
+            "not an ask id: {name:?}; use 1 to 100 letters, digits, '.', '_' or '-', not only digits or dots"
         )));
     }
     let Some(fields) = arguments.as_object() else {

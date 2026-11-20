@@ -9,6 +9,7 @@
 | `blocked` | the task | its reason | the task last changed state |
 | `failed` | the task | its reason, then `revive: priory revive <task>` | the task last changed state |
 | `prompt` | the outbox prompt | its text, for an `uncertain` prompt | it was attempted |
+| `command` | the answer's action | `Priory stopped while answer <answer> to ask <ask> ran <argv> in <dir>: check the target`, for an `uncertain` command (see [tools.md](tools.md#commands-an-answer-runs)) | it ended |
 | `held` | the hold | the task's reason: why it is held, and until what | it was held |
 | `memory` | the memory grant | `waits for <N> GB: <command>` | it was requested |
 | `queue` | the task's place in the queue | its band, then its reason when it has one | the task last changed state |
@@ -142,8 +143,8 @@ A failed task is one its repair could not restart (see Repair).
 
 ## Snooze
 
-`priory snooze KIND ID --for DURATION`, or `--until TIME`, hides an `ask`, `blocked`, `failed` or
-`prompt` item from `priory desk` and `priory asks` until that time. `KIND` and `ID` are the desk's
+`priory snooze KIND ID --for DURATION`, or `--until TIME`, hides an `ask` of a task, or a `blocked`,
+`failed` or `prompt` item, from `priory desk` and `priory asks` until that time. `KIND` and `ID` are the desk's
 kind and id columns. `DURATION` is a span such as `2h` or `1d`. `TIME` is an RFC 3339 time such as
 `2026-11-23T09:00:00+01:00`. `priory snooze KIND ID --clear` brings the item back at once.
 
