@@ -6913,6 +6913,30 @@ fn a_task_hold_releases_the_task_when_the_other_task_ends() {
 }
 
 #[test]
+fn a_hold_on_two_tasks_releases_only_after_both_end() {
+    let setup = queued_without_room("hold-all-tasks");
+    setup.publish(&requested(43));
+    setup.publish(&requested(44));
+    setup.until("tasks", |rows| rows.len() == 3);
+
+    let reply = person(
+        &setup,
+        "hold",
+        &["3", "--reason", "same files", "--after", "1", "--after", "2"],
+    );
+    person(&setup, "cancel", &["1"]);
+    std::thread::sleep(Duration::from_millis(1100));
+    assert_eq!(held_as(&setup, "3")[0], "held");
+    person(&setup, "cancel", &["2"]);
+
+    assert_eq!(
+        reply,
+        "task 3 held: same files, until task 1 ends and until task 2 ends\n"
+    );
+    setup.until("tasks", |rows| rows[2][4] == "queued");
+}
+
+#[test]
 fn a_running_task_cannot_be_held() {
     let mut setup = Setup::new("hold-running");
     setup.publish(&requested(42));

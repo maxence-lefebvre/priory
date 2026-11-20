@@ -1,5 +1,5 @@
-use priory_factory::factory::{Factory, Hold};
-use rusqlite::{OptionalExtension, Transaction, params};
+use priory_factory::factory::{After, Factory, Hold};
+use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 
 const NOW: &str = "strftime('%Y-%m-%dT%H:%M:%SZ', 'now')";
 
@@ -24,34 +24,40 @@ pub(crate) fn hold(
             "task {task} is {state}: only a queued or ready task can be held"
         )));
     }
-    let condition = match condition(tx, task, hold, factory)? {
-        Ok(condition) => condition,
+    let conditions = match conditions(tx, task, hold, factory)? {
+        Ok(conditions) => conditions,
         Err(error) => return Ok(Err(error)),
     };
-    let reason = format!("held: {}, {}", hold.reason, condition.text);
-    tx.execute(
-        "INSERT INTO holds (task, reason, kind, until, target, resource, if_closed, resume)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-        params![
-            task,
-            hold.reason,
-            condition.kind,
-            condition.until,
-            condition.target,
-            condition.resource,
-            condition.if_closed,
-            state
-        ],
-    )?;
-    let id = tx.last_insert_rowid();
+    let texts: Vec<&str> = conditions.iter().map(|condition| &*condition.text).collect();
+    let reason = format!("held: {}, {}", hold.reason, texts.join(" and "));
+    let mut ids = vec![];
+    for condition in &conditions {
+        tx.execute(
+            "INSERT INTO holds (task, reason, kind, until, target, resource, if_closed, resume)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            params![
+                task,
+                hold.reason,
+                condition.kind,
+                condition.until,
+                condition.target,
+                condition.resource,
+                condition.if_closed,
+                state
+            ],
+        )?;
+        ids.push(tx.last_insert_rowid());
+    }
     tx.execute(
         "UPDATE tasks SET state = 'held', reason = ?2 WHERE id = ?1",
         params![task, reason],
     )?;
     due(tx)?;
-    judge(tx, id)?;
+    for &id in &ids {
+        judge(tx, id)?;
+    }
     let released: Option<String> =
-        tx.query_row("SELECT released_as FROM holds WHERE id = ?1", [id], |row| {
+        tx.query_row("SELECT released_as FROM holds WHERE id = ?1", [ids[0]], |row| {
             row.get(0)
         })?;
     Ok(Ok(match released {
@@ -94,78 +100,39 @@ struct Condition {
     if_closed: Option<&'static str>,
 }
 
-/// The one condition `hold` names, checked; a person's when it names none.
-fn condition(
+/// The conditions `hold` names, checked; a person's when it names none.
+fn conditions(
     tx: &Transaction,
     task: i64,
     hold: &Hold,
     factory: &Factory,
-) -> rusqlite::Result<Result<Condition, String>> {
-    let named = [
-        hold.until.is_some(),
-        hold.after.is_some(),
-        hold.merge.is_some(),
-        hold.blockers,
-    ];
-    if named.iter().filter(|named| **named).count() > 1 {
-        return Ok(Err(
-            "a hold takes one condition: until, after, merge or blockers".to_owned(),
-        ));
-    }
-    if let Some(until) = &hold.until {
-        return Ok(crate::tools::instant(tx, until)?.map(|at| Condition {
-            kind: "time",
-            text: format!("until {at}"),
-            until: Some(at),
-            ..Condition::default()
-        }));
-    }
-    if let Some(other) = hold.after {
-        let known = tx
-            .query_row("SELECT 1 FROM tasks WHERE id = ?1", [other], |_| Ok(()))
-            .optional()?;
-        if known.is_none() || other == task {
-            return Ok(Err(format!("after must name another task, not {other}")));
-        }
-        return Ok(Ok(Condition {
-            kind: "task",
-            text: format!("until task {other} ends"),
-            target: Some(other),
-            ..Condition::default()
-        }));
-    }
-    if hold.if_closed.is_some() && hold.merge.is_none() {
+) -> rusqlite::Result<Result<Vec<Condition>, String>> {
+    if hold.if_closed.is_some() && hold.merge.is_empty() {
         return Ok(Err("if_closed goes with merge only".to_owned()));
     }
-    if let Some(merge) = &hold.merge {
-        let (if_closed, does) = match hold.if_closed.as_deref() {
-            Some("release") => ("release", "releases it"),
-            Some("drop") => ("drop", "drops it"),
-            None | Some("ask") => ("ask", "asks"),
-            Some(other) => {
-                return Ok(Err(format!(
-                    "if_closed takes release, drop or ask, not {other:?}"
-                )));
-            }
-        };
-        let (trigger, repo): (String, Option<String>) = tx.query_row(
-            "SELECT trigger, repo FROM tasks WHERE id = ?1",
-            [task],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )?;
-        let repo = crate::daemon::repo_of(factory, &trigger, repo.as_deref());
-        let Some(resource) = pull_request(merge, repo) else {
-            return Ok(Err(format!(
-                "merge takes owner/name#number, or a number in the task's repository, not {merge:?}"
-            )));
-        };
-        return Ok(Ok(Condition {
-            kind: "merge",
-            text: format!("until {resource} merges, and {does} if it closes unmerged"),
-            resource: Some(resource),
-            if_closed: Some(if_closed),
-            ..Condition::default()
-        }));
+    let mut conditions = vec![];
+    if let Some(until) = &hold.until {
+        match crate::tools::instant(tx, until)? {
+            Ok(at) => conditions.push(Condition {
+                kind: "time",
+                text: format!("until {at}"),
+                until: Some(at),
+                ..Condition::default()
+            }),
+            Err(error) => return Ok(Err(error)),
+        }
+    }
+    for after in &hold.after {
+        match after_condition(tx, task, after)? {
+            Ok(condition) => conditions.push(condition),
+            Err(error) => return Ok(Err(error)),
+        }
+    }
+    for merge in &hold.merge {
+        match merge_condition(tx, task, merge, hold.if_closed.as_deref(), factory)? {
+            Ok(condition) => conditions.push(condition),
+            Err(error) => return Ok(Err(error)),
+        }
     }
     if hold.blockers {
         let issue = tx.query_row(
@@ -180,21 +147,100 @@ fn condition(
             )));
         };
         let resource = format!("linear:{issue}");
-        return Ok(Ok(Condition {
+        conditions.push(Condition {
             kind: "blockers",
             text: format!("until {resource} has no open blocker"),
             resource: Some(resource),
             ..Condition::default()
-        }));
+        });
+    }
+    if conditions.is_empty() {
+        conditions.push(Condition {
+            kind: "person",
+            text: "until a person releases it".to_owned(),
+            ..Condition::default()
+        });
+    }
+    Ok(Ok(conditions))
+}
+
+/// The condition `after` names: another task that ends, or a Linear issue that closes.
+fn after_condition(
+    tx: &Transaction,
+    task: i64,
+    after: &After,
+) -> rusqlite::Result<Result<Condition, String>> {
+    let after = match after {
+        After::Issue(text) => match text.parse() {
+            Ok(after) => after,
+            Err(error) => return Ok(Err(error)),
+        },
+        After::Task(other) => After::Task(*other),
+    };
+    let other = match after {
+        After::Issue(issue) => {
+            return Ok(Ok(Condition {
+                kind: "issue",
+                text: format!("until {issue} is Done or Canceled"),
+                resource: Some(format!("linear:{issue}")),
+                ..Condition::default()
+            }));
+        }
+        After::Task(other) => other,
+    };
+    let known = tx
+        .query_row("SELECT 1 FROM tasks WHERE id = ?1", [other], |_| Ok(()))
+        .optional()?;
+    if known.is_none() || other == task {
+        return Ok(Err(format!("after must name another task, not {other}")));
     }
     Ok(Ok(Condition {
-        kind: "person",
-        text: "until a person releases it".to_owned(),
+        kind: "task",
+        text: format!("until task {other} ends"),
+        target: Some(other),
         ..Condition::default()
     }))
 }
 
-/// Releases every held task whose time passed or whose other task ended.
+/// The condition that the pull request `merge` merges, doing `if_closed` if it closes unmerged.
+fn merge_condition(
+    tx: &Transaction,
+    task: i64,
+    merge: &str,
+    if_closed: Option<&str>,
+    factory: &Factory,
+) -> rusqlite::Result<Result<Condition, String>> {
+    let (if_closed, does) = match if_closed {
+        Some("release") => ("release", "releases it"),
+        Some("drop") => ("drop", "drops it"),
+        None | Some("ask") => ("ask", "asks"),
+        Some(other) => {
+            return Ok(Err(format!(
+                "if_closed takes release, drop or ask, not {other:?}"
+            )));
+        }
+    };
+    let (trigger, repo): (String, Option<String>) = tx.query_row(
+        "SELECT trigger, repo FROM tasks WHERE id = ?1",
+        [task],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )?;
+    let repo = crate::daemon::repo_of(factory, &trigger, repo.as_deref());
+    let Some(resource) = pull_request(merge, repo) else {
+        return Ok(Err(format!(
+            "merge takes owner/name#number, or a number in the task's repository, not {merge:?}"
+        )));
+    };
+    Ok(Ok(Condition {
+        kind: "merge",
+        text: format!("until {resource} merges, and {does} if it closes unmerged"),
+        resource: Some(resource),
+        if_closed: Some(if_closed),
+        ..Condition::default()
+    }))
+}
+
+/// Meets every open condition whose time passed or whose other task ended.
 pub(crate) fn due(tx: &Transaction) -> rusqlite::Result<()> {
     let due: Vec<(i64, String)> = tx
         .prepare(
@@ -202,7 +248,7 @@ pub(crate) fn due(tx: &Transaction) -> rusqlite::Result<()> {
                'task ' || target.id || ' is ' || target.state)
              FROM holds JOIN tasks ON tasks.id = holds.task
              LEFT JOIN tasks AS target ON target.id = holds.target
-             WHERE holds.released IS NULL AND tasks.state = 'held'
+             WHERE holds.released IS NULL AND holds.met IS NULL AND tasks.state = 'held'
              AND ((holds.kind = 'time' AND holds.until <= strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
                OR (holds.kind = 'task' AND target.state IN ('done', 'failed', 'dropped')))
              ORDER BY holds.id",
@@ -210,35 +256,43 @@ pub(crate) fn due(tx: &Transaction) -> rusqlite::Result<()> {
         .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
         .collect::<rusqlite::Result<_>>()?;
     for (id, how) in due {
-        release(tx, id, &how)?;
+        meet(tx, id, &how)?;
     }
     Ok(())
 }
 
-/// A person's release of the held `task`, back to the state it was held from.
+/// A person's release of the held `task`, back to the state it was held from, whatever its
+/// conditions.
 pub(crate) fn release_task(
     tx: &Transaction,
     task: i64,
 ) -> rusqlite::Result<Result<String, String>> {
-    let open = tx
+    let resume = tx
         .query_row(
-            "SELECT holds.id, holds.resume FROM holds JOIN tasks ON tasks.id = holds.task
-             WHERE holds.task = ?1 AND holds.released IS NULL AND tasks.state = 'held'",
+            "SELECT holds.resume FROM holds JOIN tasks ON tasks.id = holds.task
+             WHERE holds.task = ?1 AND holds.released IS NULL AND tasks.state = 'held' LIMIT 1",
             [task],
-            |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)),
+            |row| row.get::<_, String>(0),
         )
         .optional()?;
-    let Some((id, resume)) = open else {
+    let Some(resume) = resume else {
         return Ok(Err(format!("task {task} is not held")));
     };
-    release(tx, id, "released by a person")?;
+    let unmet: Vec<i64> = tx
+        .prepare("SELECT id FROM holds WHERE task = ?1 AND released IS NULL AND met IS NULL")?
+        .query_map([task], |row| row.get(0))?
+        .collect::<rusqlite::Result<_>>()?;
+    for id in unmet {
+        meet(tx, id, "released by a person")?;
+    }
     Ok(Ok(format!("task {task} is {resume}")))
 }
 
-/// Ends the hold `id` as `how`, and returns its task to the state it was held from.
-fn release(tx: &Transaction, id: i64, how: &str) -> rusqlite::Result<()> {
+/// Meets the condition `id` as `how`, answering its ask, and releases its task once every
+/// condition of its hold is met.
+fn meet(tx: &Transaction, id: i64, how: &str) -> rusqlite::Result<()> {
     tx.execute(
-        &format!("UPDATE holds SET released = {NOW}, released_as = ?2 WHERE id = ?1"),
+        &format!("UPDATE holds SET met = {NOW}, met_as = ?2 WHERE id = ?1 AND met IS NULL"),
         params![id, how],
     )?;
     tx.execute(
@@ -248,10 +302,29 @@ fn release(tx: &Transaction, id: i64, how: &str) -> rusqlite::Result<()> {
         ),
         params![id, how],
     )?;
+    let task: i64 = tx.query_row("SELECT task FROM holds WHERE id = ?1", [id], |row| {
+        row.get(0)
+    })?;
+    let unmet: bool = tx.query_row(
+        "SELECT count(*) > 0 FROM holds WHERE task = ?1 AND released IS NULL AND met IS NULL",
+        [task],
+        |row| row.get(0),
+    )?;
+    if unmet {
+        return Ok(());
+    }
     tx.execute(
-        "UPDATE tasks SET state = (SELECT resume FROM holds WHERE id = ?1), reason = NULL
-         WHERE id = (SELECT task FROM holds WHERE id = ?1) AND state = 'held'",
-        [id],
+        &format!(
+            "UPDATE holds SET released = {NOW}, released_as = (SELECT group_concat(met_as, ' and ')
+               FROM (SELECT met_as FROM holds WHERE task = ?1 AND released IS NULL ORDER BY id))
+             WHERE task = ?1 AND released IS NULL"
+        ),
+        [task],
+    )?;
+    tx.execute(
+        "UPDATE tasks SET state = (SELECT resume FROM holds WHERE id = ?2), reason = NULL
+         WHERE id = ?1 AND state = 'held'",
+        [task, id],
     )
     .map(drop)
 }
@@ -266,12 +339,12 @@ fn pull_request(merge: &str, repo: Option<&str>) -> Option<String> {
     Some(crate::route::pull_request(repo, number.parse().ok()?))
 }
 
-/// Judges every open hold on a resource that the message just stored in the inbox names.
+/// Judges every unmet condition on a resource that the message just stored in the inbox names.
 pub(crate) fn event(tx: &Transaction, resources: &[String]) -> rusqlite::Result<()> {
     let resources = serde_json::to_string(resources).expect("resources serialize");
     let open: Vec<i64> = tx
         .prepare(
-            "SELECT id FROM holds WHERE released IS NULL
+            "SELECT id FROM holds WHERE released IS NULL AND met IS NULL
              AND resource IN (SELECT value FROM json_each(?1)) ORDER BY id",
         )?
         .query_map([resources], |row| row.get(0))?
@@ -282,15 +355,16 @@ pub(crate) fn event(tx: &Transaction, resources: &[String]) -> rusqlite::Result<
     Ok(())
 }
 
-/// Judges the hold `id` on the newest event in the inbox about its resource: a merge releases it,
-/// and a close without one does what the hold says; an issue with no open blocker releases it.
+/// Judges the condition `id` on the newest event in the inbox about its resource: a merge meets it,
+/// and a close without one does what the hold says; an issue with no open blocker, or one Done or
+/// Canceled, meets it.
 fn judge(tx: &Transaction, id: i64) -> rusqlite::Result<()> {
     let open = tx
         .query_row(
             "SELECT holds.task, holds.kind, holds.reason, holds.resource, holds.if_closed, holds.ask
              FROM holds JOIN tasks ON tasks.id = holds.task
-             WHERE holds.id = ?1 AND holds.released IS NULL AND tasks.state = 'held'
-             AND holds.resource IS NOT NULL",
+             WHERE holds.id = ?1 AND holds.released IS NULL AND holds.met IS NULL
+             AND tasks.state = 'held' AND holds.resource IS NOT NULL",
             [id],
             |row| {
                 Ok((
@@ -320,9 +394,21 @@ fn judge(tx: &Transaction, id: i64) -> rusqlite::Result<()> {
             )
             .optional()?;
         if unblocked == Some(true) {
-            release(tx, id, &format!("{resource} has no open blocker"))?;
+            meet(tx, id, &format!("{resource} has no open blocker"))?;
         }
         return Ok(());
+    }
+    if kind == "issue" {
+        let state = tx
+            .query_row(
+                "SELECT json_extract(data, '$.to') FROM inbox
+                 WHERE type = 'linear.issue.state_changed'
+                 AND 'linear:' || json_extract(data, '$.issue') = ?1 ORDER BY seq DESC LIMIT 1",
+                [&resource],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?;
+        return closed(tx, id, &resource, state.as_deref());
     }
     let merged = tx
         .query_row(
@@ -337,8 +423,8 @@ fn judge(tx: &Transaction, id: i64) -> rusqlite::Result<()> {
     let unmerged = format!("{resource} closed without a merge");
     match (merged, if_closed.as_deref()) {
         (None, _) => Ok(()),
-        (Some(Some(true)), _) => release(tx, id, &format!("{resource} merged")),
-        (Some(Some(false)), Some("release")) => release(tx, id, &unmerged),
+        (Some(Some(true)), _) => meet(tx, id, &format!("{resource} merged")),
+        (Some(Some(false)), Some("release")) => meet(tx, id, &unmerged),
         (Some(Some(false)), Some("drop")) => drop_task(tx, id, task, &unmerged),
         (Some(merged), _) if ask.is_none() => {
             let closed = match merged {
@@ -363,10 +449,53 @@ fn judge(tx: &Transaction, id: i64) -> rusqlite::Result<()> {
     }
 }
 
-/// Ends the hold `id` by dropping its task, with `why` as the task's reason.
+/// Meets the issue condition `id` when `state`, its Linear issue's newest, closes the issue.
+// shortcut: matches Linear's default state names; a team that renames them needs the state's type.
+fn closed(tx: &Transaction, id: i64, resource: &str, state: Option<&str>) -> rusqlite::Result<()> {
+    let Some(state) = state.filter(|state| matches!(*state, "Done" | "Canceled")) else {
+        return Ok(());
+    };
+    let issue = resource.trim_start_matches("linear:");
+    meet(tx, id, &format!("{issue} is {state}"))
+}
+
+/// The unmet issue conditions of held tasks, with the `linear:<issue>` each waits on, whose
+/// current state the daemon reads.
+pub(crate) fn readable(db: &Connection) -> rusqlite::Result<Vec<(i64, String)>> {
+    db.prepare(
+        "SELECT holds.id, holds.resource FROM holds JOIN tasks ON tasks.id = holds.task
+         WHERE holds.kind = 'issue' AND holds.released IS NULL AND holds.met IS NULL
+         AND tasks.state = 'held' ORDER BY holds.id",
+    )?
+    .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+    .collect()
+}
+
+/// Meets the issue condition `id` if `current`, the state the daemon read for its issue, closes it.
+pub(crate) fn read(db: &mut Connection, id: i64, current: &str) -> rusqlite::Result<()> {
+    let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let resource = tx
+        .query_row(
+            "SELECT holds.resource FROM holds JOIN tasks ON tasks.id = holds.task
+             WHERE holds.id = ?1 AND holds.released IS NULL AND holds.met IS NULL
+             AND tasks.state = 'held'",
+            [id],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?;
+    if let Some(resource) = resource {
+        closed(&tx, id, &resource, Some(current))?;
+    }
+    tx.commit()
+}
+
+/// Ends the hold of condition `id` by dropping its task, with `why` as the task's reason.
 fn drop_task(tx: &Transaction, id: i64, task: i64, why: &str) -> rusqlite::Result<()> {
     tx.execute(
-        &format!("UPDATE holds SET released = {NOW}, released_as = 'dropped' WHERE id = ?1"),
+        &format!(
+            "UPDATE holds SET released = {NOW}, released_as = 'dropped'
+             WHERE task = (SELECT task FROM holds WHERE id = ?1) AND released IS NULL"
+        ),
         [id],
     )?;
     tx.execute(
@@ -389,7 +518,7 @@ pub(crate) fn of_ask(tx: &Transaction, ask: i64) -> rusqlite::Result<Option<i64>
 /// Applies a person's answer to a hold's ask: `release` or `drop`.
 pub(crate) fn answered(tx: &Transaction, id: i64, answer: &str) -> rusqlite::Result<()> {
     if answer == "release" {
-        return release(tx, id, "released by a person");
+        return meet(tx, id, "released by a person");
     }
     let task: i64 = tx.query_row("SELECT task FROM holds WHERE id = ?1", [id], |row| {
         row.get(0)
