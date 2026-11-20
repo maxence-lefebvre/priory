@@ -403,36 +403,21 @@ fn snooze(args: Vec<String>) -> ExitCode {
         return usage();
     };
     let until = match rest {
-        [flag] if flag == "--clear" => None,
-        [flag, span] if flag == "--for" => {
-            let Ok(span) = span.parse::<jiff::Span>() else {
-                return usage();
-            };
-            match jiff::Zoned::now().checked_add(span) {
-                Ok(at) => Some(at.timestamp()),
-                Err(error) => return exit("snooze", Err(error.to_string())),
-            }
-        }
-        [flag, time] if flag == "--until" => match time.parse::<jiff::Timestamp>() {
-            Ok(at) => Some(at),
-            Err(error) => return exit("snooze", Err(format!("{time}: {error}"))),
-        },
+        [flag] if flag == "--clear" => snooze::until(None, None),
+        [flag, span] if flag == "--for" => snooze::until(Some(span), None),
+        [flag, time] if flag == "--until" => snooze::until(None, Some(time)),
         _ => return usage(),
     };
-    // Rounded up, so the item never comes back before the time asked for.
-    let second = jiff::TimestampRound::new()
-        .smallest(jiff::Unit::Second)
-        .mode(jiff::RoundMode::Ceil);
-    let until = match until.map(|at| at.round(second)).transpose() {
+    let until = match until {
         Ok(until) => until,
-        Err(error) => return exit("snooze", Err(error.to_string())),
+        Err(error) => return exit("snooze", Err(error)),
     };
     let line = serde_json::to_string(&snooze::Snooze {
         snooze: snooze::Item {
             kind: kind.clone(),
             id,
         },
-        until: until.map(|at| at.strftime("%Y-%m-%dT%H:%M:%SZ").to_string()),
+        until,
     })
     .expect("a snooze serializes");
     send("snooze", &line)

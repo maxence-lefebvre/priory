@@ -1,7 +1,7 @@
 //! The HTTP server over the state: `/api` as JSON, with `web` the web view's files, and with a
 //! GitHub webhook its signed deliveries.
 
-use crate::{listing, sections, state};
+use crate::{listing, sections, snooze, state, tools};
 use herdr_bus::Bus;
 use priory_factory::factory::{Factory, Trigger};
 use priory_intake::intake::{self, Github};
@@ -159,6 +159,7 @@ pub fn start(factory: &Factory, listen: SocketAddr) -> Result<Vec<JoinHandle<()>
             {
                 github.receive(bus, request)
             }
+            _ if request.method == "POST" => write(&db, &home, request),
             _ => route(
                 &db,
                 &home,
@@ -202,6 +203,12 @@ fn route(
         return Reply::error(405, "only GET is served");
     }
     let (path, query) = path.split_once('?').unwrap_or((path, ""));
+    if Write::of(path).is_some() {
+        return Reply {
+            headers: "Allow: POST\r\n",
+            ..Reply::error(405, "only POST is served")
+        };
+    }
     if web && !path.starts_with("/api") && !path.starts_with("/hooks") {
         return web_file(path);
     }
@@ -242,6 +249,176 @@ fn route(
         Ok(Some(body)) => Reply::json(200, body.to_string()),
         Ok(None) if path.starts_with("/api/reports/") => Reply::error(404, "no such report"),
         Ok(None) => Reply::error(404, "no such task"),
+        Err(error) => Reply::error(500, &error.to_string()),
+    }
+}
+
+/// A path that writes, each the twin of a CLI verb. An ask is named by its number or, for an
+/// outside ask, its name.
+enum Write<'a> {
+    Answer(&'a str),
+    Dismiss(&'a str),
+    Snooze,
+}
+
+impl<'a> Write<'a> {
+    fn of(path: &'a str) -> Option<Self> {
+        if path == "/api/snooze" {
+            return Some(Write::Snooze);
+        }
+        match path.strip_prefix("/api/asks/")?.split_once('/')? {
+            (ask, "answer") => Some(Write::Answer(ask)),
+            (ask, "dismiss") => Some(Write::Dismiss(ask)),
+            _ => None,
+        }
+    }
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AnswerBody {
+    option: Option<String>,
+    text: Option<String>,
+    revision: i64,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DismissBody {
+    revision: i64,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SnoozeBody {
+    kind: String,
+    id: i64,
+    #[serde(rename = "for")]
+    span: Option<String>,
+    until: Option<String>,
+    #[serde(default)]
+    clear: bool,
+}
+
+/// Sends a write to the daemon on its socket, as the CLI verb does; this thread never writes the
+/// state. A refusal re-reads the ask to tell a stale or closed ask (`409`) from a refused one.
+fn write(db: &Result<Connection, String>, home: &Path, request: &Request) -> Reply {
+    let path = request.path.split('?').next().unwrap_or_default();
+    let Some(write) = Write::of(path) else {
+        return Reply::error(405, "only GET is served");
+    };
+    let json = request
+        .header("content-type")
+        .and_then(|value| std::str::from_utf8(value).ok())
+        .and_then(|value| value.split(';').next())
+        .is_some_and(|kind| kind.trim().eq_ignore_ascii_case("application/json"));
+    if !json {
+        return Reply::error(415, "send the body as Content-Type: application/json");
+    }
+    let db = match db {
+        Ok(db) => db,
+        Err(error) => return Reply::error(500, error),
+    };
+    let (line, ask) = match write_line(db, &write, request.body) {
+        Ok(line) => line,
+        Err(reply) => return reply,
+    };
+    let reply = match runtime::call(home, &line) {
+        Ok(reply) => reply,
+        Err(error) => {
+            return Reply::error(
+                503,
+                &format!("{error}. Start `priory daemon` to write; reads still work"),
+            );
+        }
+    };
+    match serde_json::from_str::<Result<String, String>>(&reply) {
+        Ok(Ok(done)) => Reply::json(200, serde_json::json!({ "ok": done }).to_string()),
+        Ok(Err(refused)) => refusal(db, ask, &refused),
+        Err(error) => Reply::error(500, &format!("unreadable reply {reply:?}: {error}")),
+    }
+}
+
+/// The socket line of `write` and, for an ask, its number and the revision the body sent.
+fn write_line(
+    db: &Connection,
+    write: &Write,
+    body: &[u8],
+) -> Result<(String, Option<(i64, i64)>), Reply> {
+    let bad = |error: serde_json::Error| Reply::error(400, &error.to_string());
+    match write {
+        Write::Answer(ask) => {
+            let body: AnswerBody = serde_json::from_slice(body).map_err(bad)?;
+            let text = match (body.option, body.text) {
+                (Some(text), None) | (None, Some(text)) => text,
+                _ => return Err(Reply::error(400, "send one of option and text")),
+            };
+            let ask = ask_id(db, ask)?;
+            let revision = body.revision;
+            let answer = tools::Answer {
+                ask,
+                revision,
+                text,
+            };
+            Ok((line(&answer), Some((ask, revision))))
+        }
+        Write::Dismiss(ask) => {
+            let body: DismissBody = serde_json::from_slice(body).map_err(bad)?;
+            let ask = ask_id(db, ask)?;
+            let dismiss = tools::Dismiss {
+                dismiss: ask,
+                revision: Some(body.revision),
+            };
+            Ok((line(&dismiss), Some((ask, body.revision))))
+        }
+        Write::Snooze => {
+            let body: SnoozeBody = serde_json::from_slice(body).map_err(bad)?;
+            let until = match (&body.span, &body.until, body.clear) {
+                (Some(span), None, false) => snooze::until(Some(span), None),
+                (None, Some(at), false) => snooze::until(None, Some(at)),
+                (None, None, true) => Ok(None),
+                _ => return Err(Reply::error(400, "send one of for, until and clear: true")),
+            }
+            .map_err(|error| Reply::error(400, &error))?;
+            let snooze = snooze::Snooze {
+                snooze: snooze::Item {
+                    kind: body.kind,
+                    id: body.id,
+                },
+                until,
+            };
+            Ok((line(&snooze), None))
+        }
+    }
+}
+
+fn line(message: &impl serde::Serialize) -> String {
+    serde_json::to_string(message).expect("a socket line serializes")
+}
+
+/// The ask's number, from its number or the name of an outside ask, as `priory answer` reads it.
+fn ask_id(db: &Connection, ask: &str) -> Result<i64, Reply> {
+    if !ask.is_empty() && ask.bytes().all(|byte| byte.is_ascii_digit()) {
+        return ask
+            .parse()
+            .map_err(|_| Reply::error(404, &format!("there is no ask {ask}")));
+    }
+    tools::ask_named(db, ask).map_err(|error| Reply::error(404, &error))
+}
+
+/// The reply to a write the daemon refused. For an ask: `404` once it is gone, `409` with the ask
+/// when its revision moved or it closed, `422` otherwise, such as an option a step does not take.
+fn refusal(db: &Connection, ask: Option<(i64, i64)>, refused: &str) -> Reply {
+    let Some((id, sent)) = ask else {
+        return Reply::error(422, refused);
+    };
+    match listing::ask(db, id) {
+        Ok(None) => Reply::error(404, refused),
+        Ok(Some(ask)) if ask["state"] != "open" || ask["revision"] != sent => Reply::json(
+            409,
+            serde_json::json!({ "error": refused, "ask": ask }).to_string(),
+        ),
+        Ok(Some(_)) => Reply::error(422, refused),
         Err(error) => Reply::error(500, &error.to_string()),
     }
 }
