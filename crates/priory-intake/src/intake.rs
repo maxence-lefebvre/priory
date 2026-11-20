@@ -86,12 +86,18 @@ pub struct Watch {
     pub since: Timestamp,
 }
 
+/// What one poll found of each source it polled, `github`, `linear` or `slack`: none when the poll
+/// succeeded, else its errors joined by `; `.
+pub type Outcomes<'a> = [(&'a str, Option<String>)];
+
 /// Polls the sources until stopped, or once. `watched` reads the open waits on each poll, so that
 /// the intake polls the Slack threads, Linear issues and pull request repositories they name.
+/// `health` records each poll's outcomes at the poll's time.
 pub fn run(
     factory: &Factory,
     once: bool,
     watched: fn() -> Result<Vec<Watch>, String>,
+    health: fn(&Outcomes, Timestamp) -> Result<(), String>,
 ) -> Result<(), String> {
     priory_runtime::runtime::bound_commands(factory.command_timeout());
     let from = |source: &str| -> Vec<(&str, &Trigger)> {
@@ -118,15 +124,26 @@ pub fn run(
         .collect();
     let bus = Bus::open_default().map_err(|error| error.to_string())?;
     bus.declare(&output()).map_err(|error| error.to_string())?;
+    // A source the triggers need that cannot start, such as one without its key, ends the intake;
+    // recording it first lets the desk say why while systemd restarts it.
+    let started = |source: &str, error: String| {
+        if let Err(unrecorded) = now().and_then(|at| health(&[(source, Some(error.clone()))], at)) {
+            eprintln!("{unrecorded}");
+        }
+        error
+    };
     let mut linear = (!linear_triggers.is_empty())
         .then(|| linear::Linear::start(&bus, linear_triggers.clone()))
-        .transpose()?;
+        .transpose()
+        .map_err(|error| started("linear", error))?;
     let mut reviews = (!review_triggers.is_empty())
         .then(|| reviews::Reviews::start(&bus, review_triggers))
-        .transpose()?;
+        .transpose()
+        .map_err(|error| started("github", error))?;
     let mut slack = (!slack_triggers.is_empty())
         .then(|| slack::Slack::start(&bus, slack_triggers.clone()))
-        .transpose()?;
+        .transpose()
+        .map_err(|error| started("slack", error))?;
     // The loop reports a failing read of the waits; here it only costs those repos their cursors.
     let waiting = watched().unwrap_or_default();
     let resumed: BTreeSet<&str> = repos
@@ -161,54 +178,64 @@ pub fn run(
                 .iter()
                 .any(|watch| watch.resource.starts_with(source))
         };
-        // A wait starts a source the triggers left off; a missing key fails that poll only.
+        // Each source's errors this poll; a wait starts a source the triggers left off, and a
+        // missing key fails that poll only.
+        let mut failed: BTreeMap<&str, Vec<String>> = BTreeMap::new();
         if linear.is_none() && names("linear:") {
             match linear::Linear::start(&bus, Vec::new()) {
                 Ok(started) => linear = Some(started),
-                Err(error) if once => return Err(error),
-                Err(error) => eprintln!("{error}"),
+                Err(error) => failed.entry("linear").or_default().push(error),
             }
         }
         if slack.is_none() && names("slack:") {
             match slack::Slack::start(&bus, Vec::new()) {
                 Ok(started) => slack = Some(started),
-                Err(error) if once => return Err(error),
-                Err(error) => eprintln!("{error}"),
+                Err(error) => failed.entry("slack").or_default().push(error),
             }
         }
         schedule::fire(&bus, &schedules, now()?)?;
         let waited = watching.iter().filter_map(pull_request_repo);
         let polled: BTreeSet<&str> = repos.iter().copied().chain(waited).collect();
-        let (found, failed) = fetch(&polled, &cursors);
+        let (found, errors) = fetch(&polled, &cursors);
         // A publish error ends the intake: its restart recovers the source it left behind.
         publish_all(&bus, &triggers, found, &mut cursors, &mut published)?;
-        for error in failed {
-            if once {
-                return Err(error);
-            }
-            eprintln!("{error}");
-        }
+        failed.entry("github").or_default().extend(errors);
         if let Some(reviews) = &mut reviews {
-            for error in reviews.poll(&bus, now()?)? {
-                if once {
-                    return Err(error);
-                }
-                eprintln!("{error}");
-            }
+            let errors = reviews.poll(&bus, now()?)?;
+            failed.entry("github").or_default().extend(errors);
         }
         if let Some(linear) = &mut linear {
             match linear.fetch() {
                 Ok(polled) => linear.publish_all(&bus, polled)?,
-                Err(error) if once => return Err(error),
-                Err(error) => eprintln!("{error}"),
+                Err(error) => failed.entry("linear").or_default().push(error),
             }
         }
-        if let Some(slack) = &mut slack {
-            match slack.poll(&bus, &watching) {
-                Ok(()) => {}
-                Err(error) if once => return Err(error),
-                Err(error) => eprintln!("{error}"),
+        if let Some(Err(error)) = slack.as_mut().map(|slack| slack.poll(&bus, &watching)) {
+            failed.entry("slack").or_default().push(error);
+        }
+        let sources = [
+            ("github", true),
+            ("linear", linear.is_some()),
+            ("slack", slack.is_some()),
+        ];
+        let outcomes: Vec<(&str, Option<String>)> = sources
+            .into_iter()
+            .filter(|(source, on)| *on || failed.contains_key(source))
+            .map(|(source, _)| {
+                let errors = failed.get(source).filter(|errors| !errors.is_empty());
+                (source, errors.map(|errors| errors.join("; ")))
+            })
+            .collect();
+        let recorded = health(&outcomes, now()?);
+        for error in recorded
+            .err()
+            .into_iter()
+            .chain(failed.into_values().flatten())
+        {
+            if once {
+                return Err(error);
             }
+            eprintln!("{error}");
         }
         if once {
             return Ok(());

@@ -12,7 +12,7 @@ use std::collections::BTreeMap;
 use std::io::Write;
 use std::time::Duration;
 
-const VERSION: i64 = 45;
+const VERSION: i64 = 46;
 
 const SCHEMA: &str = "
 CREATE TABLE tasks (
@@ -781,9 +781,27 @@ const SCHEMA_44: &str = concat!(
 "
 );
 
+// Each intake source's last poll and, while it fails, its error and the report that tells it. A
+// poll writes `polled` every minute, so only a new source or a changed error bumps the revision.
+const SCHEMA_45: &str = "CREATE TABLE IF NOT EXISTS intake_sources (
+  source        TEXT PRIMARY KEY,
+  polled        TEXT NOT NULL,
+  error         TEXT,
+  failing_since TEXT,
+  report        INTEGER
+);
+CREATE TRIGGER IF NOT EXISTS revision_intake_sources_insert AFTER INSERT ON intake_sources
+  BEGIN UPDATE revision SET value = value + 1; END;
+CREATE TRIGGER IF NOT EXISTS revision_intake_sources_error AFTER UPDATE OF error ON intake_sources
+  WHEN NEW.error IS NOT OLD.error BEGIN UPDATE revision SET value = value + 1; END;
+CREATE TRIGGER IF NOT EXISTS revision_intake_sources_delete AFTER DELETE ON intake_sources
+  BEGIN UPDATE revision SET value = value + 1; END;
+PRAGMA user_version = 45;
+";
+
 // The resources a task subscribes to, beside its ownership in `owns`: polled and woken on until
 // the resource closes, the task retires or unsubscribes. `owned` is what a task owns either way.
-const SCHEMA_45: &str = concat!(
+const SCHEMA_46: &str = concat!(
     "CREATE TABLE IF NOT EXISTS subscriptions (
   task     INTEGER NOT NULL REFERENCES tasks (id),
   resource TEXT NOT NULL,
@@ -795,7 +813,7 @@ CREATE VIEW IF NOT EXISTS owned AS
   SELECT task, resource FROM owns UNION SELECT task, resource FROM subscriptions;
 ",
     bumps!("subscriptions"),
-    "PRAGMA user_version = 45;
+    "PRAGMA user_version = 46;
 "
 );
 
@@ -806,7 +824,7 @@ const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA_18, SCHEMA_19, SCHEMA_20, SCHEMA_21, SCHEMA_22, SCHEMA_23, SCHEMA_24, SCHEMA_25,
     SCHEMA_26, SCHEMA_27, SCHEMA_28, SCHEMA_29, SCHEMA_30, SCHEMA_31, SCHEMA_32, SCHEMA_33,
     SCHEMA_34, SCHEMA_35, SCHEMA_36, SCHEMA_37, SCHEMA_38, SCHEMA_39, SCHEMA_40, SCHEMA_41,
-    SCHEMA_42, SCHEMA_43, SCHEMA_44, SCHEMA_45,
+    SCHEMA_42, SCHEMA_43, SCHEMA_44, SCHEMA_45, SCHEMA_46,
 ];
 
 /// The order the queue starts tasks in: band, then a person's order, then age. A band the factory
