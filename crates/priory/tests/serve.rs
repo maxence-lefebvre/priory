@@ -1,4 +1,5 @@
 mod conform;
+mod tmux_dir;
 
 use herdr_bus::{Bus, Output as BusOutput};
 use serde_json::{Value, json};
@@ -8,6 +9,7 @@ use std::net::TcpStream;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
 use std::time::{Duration, Instant};
+use tmux_dir::TmuxDir;
 
 const WORKFLOW: &str = r#"
 start = "implement"
@@ -37,6 +39,7 @@ struct Setup {
     server: Option<Child>,
     /// The GitHub webhook secret, generated for this test.
     secret: String,
+    tmux: TmuxDir,
 }
 
 impl Setup {
@@ -55,9 +58,9 @@ impl Setup {
             fs::create_dir_all(file.parent().unwrap()).unwrap();
             fs::write(file, content).unwrap();
         }
-        fs::create_dir_all(dir.join("tmux")).unwrap();
         fs::create_dir_all(dir.join("fake")).unwrap();
         let setup = Setup {
+            tmux: TmuxDir::new(&dir),
             dir,
             server: None,
             secret: uuid::Uuid::new_v4().to_string(),
@@ -88,7 +91,7 @@ impl Setup {
         command
             .env_remove("TMUX")
             .env("PATH", path)
-            .env("TMUX_TMPDIR", self.dir.join("tmux"))
+            .env("TMUX_TMPDIR", self.tmux.path())
             .env("HERDR_BUS_DB", self.dir.join("bus.db"))
             .env("PRIORY_DB", self.dir.join("priory.db"))
             .env("PRIORY_HOME", self.dir.join("home"))
@@ -162,10 +165,6 @@ impl Drop for Setup {
             let _ = server.kill();
             let _ = server.wait();
         }
-        let _ = Command::new("tmux")
-            .env("TMUX_TMPDIR", self.dir.join("tmux"))
-            .arg("kill-server")
-            .output();
     }
 }
 
