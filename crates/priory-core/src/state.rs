@@ -10,7 +10,7 @@ use std::collections::BTreeMap;
 use std::io::Write;
 use std::time::Duration;
 
-const VERSION: i64 = 30;
+const VERSION: i64 = 31;
 
 const SCHEMA: &str = "
 CREATE TABLE tasks (
@@ -508,12 +508,18 @@ CREATE TRIGGER snooze_ends_on_a_task_state_change AFTER UPDATE OF state ON tasks
 END;
 PRAGMA user_version = 30;
 ";
+
+// When a person read a posted report; a read report leaves the desk.
+const SCHEMA_31: &str = "
+ALTER TABLE inbox ADD COLUMN read TEXT;
+PRAGMA user_version = 31;
+";
 /// Each schema change in order: a file at version `n` applies those from index `n` on.
 const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA, SCHEMA_2, SCHEMA_3, SCHEMA_4, SCHEMA_5, SCHEMA_6, SCHEMA_7, SCHEMA_8, SCHEMA_9,
     SCHEMA_10, SCHEMA_11, SCHEMA_12, SCHEMA_13, SCHEMA_14, SCHEMA_15, SCHEMA_16, SCHEMA_17,
     SCHEMA_18, SCHEMA_19, SCHEMA_20, SCHEMA_21, SCHEMA_22, SCHEMA_23, SCHEMA_24, SCHEMA_25,
-    SCHEMA_26, SCHEMA_27, SCHEMA_28, SCHEMA_29, SCHEMA_30,
+    SCHEMA_26, SCHEMA_27, SCHEMA_28, SCHEMA_29, SCHEMA_30, SCHEMA_31,
 ];
 
 /// The order the queue starts tasks in: band, then a person's order, then age. A band the factory
