@@ -191,9 +191,10 @@ fn result(
             text(arguments, "summary")?,
             optional(arguments, "evidence")?,
             optional(arguments, "commit")?,
+            optional(arguments, "reason")?,
         ))
     })();
-    let (outcome, summary, evidence, commit) = match fields {
+    let (outcome, summary, evidence, commit, reason) = match fields {
         Ok(fields) => fields,
         Err(error) => return Ok(Err(error)),
     };
@@ -225,10 +226,10 @@ fn result(
         )));
     }
     tx.execute(
-        "INSERT INTO results (run, task, step, outcome, summary, evidence, commit_sha, inbox)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, (SELECT max(seq) FROM inbox))",
+        "INSERT INTO results (run, task, step, outcome, summary, evidence, commit_sha, reason, inbox)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, (SELECT max(seq) FROM inbox))",
         params![
-            run.id, run.task, run.step, outcome, summary, evidence, commit
+            run.id, run.task, run.step, outcome, summary, evidence, commit, reason
         ],
     )?;
     Ok(Ok(format!(
@@ -1123,18 +1124,39 @@ pub(crate) fn gone(db: &mut Connection, session: &str, trace: &Trace) -> rusqlit
     Ok(settled)
 }
 
+/// The outcomes that grade a task.
+pub const GRADES: [&str; 3] = ["red", "yellow", "green"];
+
 /// Moves the run's task by its result, or puts it to sleep on its open ask or wait. `None` when
 /// none of them ended the turn; otherwise the tmux session to kill, if any.
 fn settle(tx: &Transaction, run: &Run, trace: &Trace) -> rusqlite::Result<Option<Option<String>>> {
     let workflows = &trace.factory.workflows;
     let outcome = tx
         .query_row(
-            "SELECT outcome, summary FROM results WHERE run = ?1",
+            "SELECT outcome, summary, reason FROM results WHERE run = ?1",
             [run.id],
-            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                ))
+            },
         )
         .optional()?;
-    if let Some((outcome, summary)) = outcome {
+    if let Some((outcome, summary, reason)) = outcome {
+        if GRADES.contains(&outcome.as_str()) {
+            let reason = reason.as_deref().unwrap_or(&summary);
+            tx.execute(
+                "UPDATE tasks SET grade = ?2, grade_reason = ?3 WHERE id = ?1",
+                // A tab would split the reason across `priory tasks` columns.
+                params![
+                    run.task,
+                    outcome,
+                    reason.lines().next().unwrap_or_default().replace('\t', " ")
+                ],
+            )?;
+        }
         let target = step(workflows, &run.workflow, &run.step)
             .and_then(|step| step.next.get(&outcome))
             .cloned()
