@@ -37,6 +37,27 @@
       },
       "type": "object"
     },
+    "RequestDefaults": {
+      "additionalProperties": false,
+      "description": "What `priory add` and `POST /api/request` use when a request names no workflow or band.",
+      "properties": {
+        "band": {
+          "description": "The band of a request that names none.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "workflow": {
+          "description": "The workflow a request starts when it names none.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "workflow"
+      ],
+      "type": "object"
+    },
     "Resource": {
       "description": "A resource the room check measures.",
       "enum": [
@@ -237,6 +258,16 @@
     "name": {
       "description": "The factory's name.",
       "type": "string"
+    },
+    "request": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/RequestDefaults"
+        },
+        {
+          "type": "null"
+        }
+      ]
     },
     "search": {
       "$ref": "#/definitions/Search"
