@@ -1,0 +1,26 @@
+#:schema https://raw.githubusercontent.com/maxence-lefebvre/priory/main/docs/schemas/config/workflow.json
+start = "diagnose"
+band = "now"
+
+[[steps]]
+id = "diagnose"
+decides = "model"
+agent = "fixer"
+prompt = "Find the failed checks of the last hour on the default branch and on open pull requests. Pick one that needs a fix, find its cause, fix it, and commit. Your result's first line becomes the pull request title. End with clear when no failure needs a fix."
+effect = "reversible"
+next = { fixed = "approve-pr", clear = "done" }
+
+[[steps]]
+id = "approve-pr"
+decides = "human"
+effect = "none"
+approves = ["open-pr"]
+options = ["open", "stop"]
+next = { open = "open-pr", stop = "stop" }
+
+[[steps]]
+id = "open-pr"
+decides = "code"
+action = "open-pr"
+effect = "irreversible"
+next = { opened = "done", failed = "stop" }

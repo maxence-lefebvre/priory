@@ -1,0 +1,51 @@
+#:schema https://raw.githubusercontent.com/maxence-lefebvre/priory/main/docs/schemas/config/workflow.json
+start = "groom"
+band = "today"
+
+[[steps]]
+id = "groom"
+decides = "model"
+agent = "implementer"
+prompt = "Read the ticket and grade it red, yellow or green with a one-line reason. Write the brief, and for red or yellow your plan, in your result."
+effect = "reversible"
+next = { red = "approve-plan", yellow = "implement", green = "implement-green" }
+
+[[steps]]
+id = "approve-plan"
+decides = "human"
+effect = "none"
+options = ["approved", "rejected"]
+next = { approved = "implement", rejected = "stop" }
+
+[[steps]]
+id = "implement"
+decides = "model"
+agent = "implementer"
+prompt = "Implement the brief and its plan, run the tests, and commit."
+effect = "reversible"
+next = { passed = "review", failed = "stop" }
+
+[[steps]]
+id = "review"
+decides = "model"
+agent = "reviewer"
+prompt = "Review the committed change against its brief."
+effect = "reversible"
+next = { clean = "open-pr", fix = "implement" }
+
+[[steps]]
+id = "implement-green"
+decides = "model"
+agent = "implementer"
+prompt = "Implement the brief, run the tests, and commit. Your result's first line becomes the pull request title."
+effect = "reversible"
+next = { passed = "open-pr", failed = "stop" }
+
+# A person reviews every pull request before it merges, and nothing here merges.
+[[steps]]
+id = "open-pr"
+decides = "code"
+action = "open-pr"
+effect = "irreversible"
+autonomous = "it only opens a pull request, which a person reviews before anyone merges it"
+next = { opened = "done", failed = "stop" }
