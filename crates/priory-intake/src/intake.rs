@@ -4,6 +4,7 @@ mod gh;
 mod issues;
 mod linear;
 mod pulls;
+mod reviews;
 mod schedule;
 mod slack;
 mod webhook;
@@ -54,6 +55,8 @@ pub(crate) fn output() -> Output {
             REVIEWED,
             CHECKED,
             CHECK_RUNS,
+            reviews::REQUESTED,
+            reviews::REMOVED,
             crate::request::REQUESTED,
             schedule::FIRED,
             linear::ENTERED,
@@ -102,10 +105,18 @@ pub fn run(
         .collect();
     let linear_triggers = [from("linear"), from("linear.view")].concat();
     let slack_triggers = from("slack");
+    let review_triggers: Vec<(&str, &Trigger)> = triggers
+        .iter()
+        .copied()
+        .filter(|(_, trigger)| trigger.reviewer.is_some())
+        .collect();
     let bus = Bus::open_default().map_err(|error| error.to_string())?;
     bus.declare(&output()).map_err(|error| error.to_string())?;
     let mut linear = (!linear_triggers.is_empty())
         .then(|| linear::Linear::start(&bus, linear_triggers.clone()))
+        .transpose()?;
+    let mut reviews = (!review_triggers.is_empty())
+        .then(|| reviews::Reviews::start(&bus, review_triggers))
         .transpose()?;
     let mut slack = (!slack_triggers.is_empty())
         .then(|| slack::Slack::start(&bus, slack_triggers.clone()))
@@ -170,6 +181,14 @@ pub fn run(
                 return Err(error);
             }
             eprintln!("{error}");
+        }
+        if let Some(reviews) = &mut reviews {
+            for error in reviews.poll(&bus, now()?)? {
+                if once {
+                    return Err(error);
+                }
+                eprintln!("{error}");
+            }
         }
         if let Some(linear) = &mut linear {
             match linear.fetch() {
@@ -428,16 +447,17 @@ fn dispatch(bus: &Bus, triggers: &[(&str, &Trigger)], source: &Message) -> Resul
         if let Some((name, trigger)) = triggers.iter().find(|(other, _)| *other == name) {
             let data = &source.data;
             let number = data.get("issue").unwrap_or(&data["pull_request"]);
+            let repo = data["repo"].as_str().unwrap_or_default();
             let key = match (number.as_str(), data["channel"].as_str()) {
+                _ if source.kind == reviews::REQUESTED => {
+                    review_key(repo, number, data["reviewer"].as_str().unwrap_or_default())
+                }
                 (_, Some(channel)) => format!(
                     "slack:{channel}:{}",
                     data["ts"].as_str().unwrap_or_default()
                 ),
                 (Some(identifier), _) => format!("linear:{identifier}"),
-                (None, None) => format!(
-                    "github:{}#{number}",
-                    data["repo"].as_str().unwrap_or_default()
-                ),
+                (None, None) => format!("github:{repo}#{number}"),
             };
             publish(bus, &task_requested(name, trigger, source, key))?;
         }
@@ -520,6 +540,10 @@ fn task_requested(name: &str, trigger: &Trigger, source: &Message, key: String) 
             data[field] = value.clone();
         }
     }
+    // A review request names no repository in its trigger: its task works in the pull request's.
+    if source.kind == reviews::REQUESTED {
+        data["repo"] = source.data["repo"].clone();
+    }
     if let Some(hold) = &trigger.hold {
         data["hold"] = json!(hold);
     }
@@ -527,6 +551,11 @@ fn task_requested(name: &str, trigger: &Trigger, source: &Message, key: String) 
         .id(id(&format!("{TASK_REQUESTED}:{name}:{}", source.id)))
         .subject(key)
         .time(source.time)
+}
+
+/// The key of the task that reviews pull request `number` of `repo` for `reviewer`.
+pub fn review_key(repo: &str, number: impl std::fmt::Display, reviewer: &str) -> String {
+    format!("github:{repo}:pulls/{number}:review:{reviewer}")
 }
 
 /// UUIDv5 in Priory's namespace, so a retried publish keeps its id.

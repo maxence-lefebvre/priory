@@ -170,9 +170,10 @@ fn result(
             text(arguments, "summary")?,
             optional(arguments, "evidence")?,
             optional(arguments, "commit")?,
+            optional(arguments, "reason")?,
         ))
     })();
-    let (outcome, summary, evidence, commit) = match fields {
+    let (outcome, summary, evidence, commit, reason) = match fields {
         Ok(fields) => fields,
         Err(error) => return Ok(Err(error)),
     };
@@ -204,10 +205,10 @@ fn result(
         )));
     }
     tx.execute(
-        "INSERT INTO results (run, task, step, outcome, summary, evidence, commit_sha, inbox)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, (SELECT max(seq) FROM inbox))",
+        "INSERT INTO results (run, task, step, outcome, summary, evidence, commit_sha, reason, inbox)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, (SELECT max(seq) FROM inbox))",
         params![
-            run.id, run.task, run.step, outcome, summary, evidence, commit
+            run.id, run.task, run.step, outcome, summary, evidence, commit, reason
         ],
     )?;
     Ok(Ok(format!(
@@ -987,18 +988,39 @@ pub(crate) fn gone(db: &mut Connection, session: &str, trace: &Trace) -> rusqlit
     Ok(settled)
 }
 
+/// The outcomes that grade a task.
+pub const GRADES: [&str; 3] = ["red", "yellow", "green"];
+
 /// Moves the run's task by its result, or puts it to sleep on its open ask or wait. `None` when
 /// none of them ended the turn; otherwise the tmux session to kill, if any.
 fn settle(tx: &Transaction, run: &Run, trace: &Trace) -> rusqlite::Result<Option<Option<String>>> {
     let workflows = &trace.factory.workflows;
     let outcome = tx
         .query_row(
-            "SELECT outcome, summary FROM results WHERE run = ?1",
+            "SELECT outcome, summary, reason FROM results WHERE run = ?1",
             [run.id],
-            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                ))
+            },
         )
         .optional()?;
-    if let Some((outcome, summary)) = outcome {
+    if let Some((outcome, summary, reason)) = outcome {
+        if GRADES.contains(&outcome.as_str()) {
+            let reason = reason.as_deref().unwrap_or(&summary);
+            tx.execute(
+                "UPDATE tasks SET grade = ?2, grade_reason = ?3 WHERE id = ?1",
+                // A tab would split the reason across `priory tasks` columns.
+                params![
+                    run.task,
+                    outcome,
+                    reason.lines().next().unwrap_or_default().replace('\t', " ")
+                ],
+            )?;
+        }
         let target = step(workflows, &run.workflow, &run.step)
             .and_then(|step| step.next.get(&outcome))
             .cloned()
@@ -1132,7 +1154,8 @@ fn queue_first(tx: &Transaction, task: i64, text: &str) -> rusqlite::Result<i64>
 }
 
 /// The pull request the task owns: the latest one its actions opened, else the one its latest wait
-/// named, else the latest one opened from its branch, else its key when a pull request event created it.
+/// named, else the latest one opened from its branch, else its key when a pull request event created
+/// it. A review request's task reviews the pull request and does not own it.
 fn pull_request(tx: &Transaction, task: i64) -> rusqlite::Result<Option<String>> {
     tx.query_row(
         "SELECT resource FROM (
@@ -1150,6 +1173,7 @@ fn pull_request(tx: &Transaction, task: i64) -> rusqlite::Result<Option<String>>
            UNION ALL
            SELECT tasks.key, 0, 0 FROM tasks JOIN inbox ON inbox.id = tasks.source
              WHERE tasks.id = ?1 AND inbox.type LIKE 'github.pull_request.%'
+             AND inbox.type NOT LIKE 'github.pull_request.review_request%'
          ) ORDER BY rank DESC, at DESC LIMIT 1",
         [task],
         |row| row.get(0),
@@ -1486,32 +1510,7 @@ pub(crate) fn act(
             Ok((Err(format!("task {} is already {state}", act.task)), None))
         }
         "cancel" => {
-            let tmux = tx
-                .query_row(
-                    "SELECT tmux FROM runs WHERE task = ?1 AND ended IS NULL",
-                    [act.task],
-                    |row| row.get::<_, String>(0),
-                )
-                .optional()?;
-            tx.execute(
-                &format!(
-                    "UPDATE runs SET ended = {NOW}, ended_as = 'cancelled' WHERE task = ?1 AND ended IS NULL"
-                ),
-                [act.task],
-            )?;
-            tx.execute(
-                &format!(
-                    "UPDATE holds SET released = {NOW}, released_as = 'cancelled' WHERE task = ?1 AND released IS NULL"
-                ),
-                [act.task],
-            )?;
-            set(
-                &tx,
-                act.task,
-                "dropped",
-                None,
-                Some("cancelled from the desk"),
-            )?;
+            let tmux = cancel(&tx, act.task, "cancelled from the desk")?;
             tx.commit()?;
             Ok((Ok(format!("task {} dropped", act.task)), tmux))
         }
@@ -1524,6 +1523,36 @@ pub(crate) fn act(
         }
         other => Ok((Err(format!("unknown action {other}")), None)),
     }
+}
+
+/// Drops an active task with `reason`, ends its live run and its holds, and returns the run's tmux
+/// session to kill once the transaction commits.
+pub(crate) fn cancel(
+    tx: &Transaction,
+    task: i64,
+    reason: &str,
+) -> rusqlite::Result<Option<String>> {
+    let tmux = tx
+        .query_row(
+            "SELECT tmux FROM runs WHERE task = ?1 AND ended IS NULL",
+            [task],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?;
+    tx.execute(
+        &format!(
+            "UPDATE runs SET ended = {NOW}, ended_as = 'cancelled' WHERE task = ?1 AND ended IS NULL"
+        ),
+        [task],
+    )?;
+    tx.execute(
+        &format!(
+            "UPDATE holds SET released = {NOW}, released_as = 'cancelled' WHERE task = ?1 AND released IS NULL"
+        ),
+        [task],
+    )?;
+    set(tx, task, "dropped", None, Some(reason))?;
+    Ok(tmux)
 }
 
 /// Moves a failed or dropped task back into its step, or `act.step`, as its next generation, and

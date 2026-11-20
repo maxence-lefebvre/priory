@@ -12,12 +12,45 @@
 | `memory` | the memory grant | `waits for <N> GB: <command>` | it was requested |
 | `queue` | the task's place in the queue | its band, then its reason when it has one | the task last changed state |
 | `sweep` | the script's run | its command, then `running`, or its status and output, for the open stall | it started |
+| `report` | the report's inbox sequence number | `<source>: <line>`, for an unread report | it was posted |
 | `retired` | the task | `its worktree was removed to free disk; it resurrects from <branch> when its wait fires` | it retired |
 | `worktree` | the worktree's path | why it stays: see Sweep | `-` |
 
 The lane column is the task's lane, or `-` for a `worktree` row.
 
-It lists only asks and prompts of active tasks, holds of held tasks and waiting memory grants. Then the `queue` rows in start order, then one `worktree` row per worktree the sweep keeps. `priory asks` still prints every open ask.
+It lists only asks and prompts of active tasks, holds of held tasks and waiting memory grants. Then the `queue` rows in start order, then one `worktree` row per worktree the sweep keeps. `priory asks` prints every open ask. Both leave snoozed items out, unless you pass `--all` (see Snooze).
+
+## Reports
+
+`priory post SOURCE LINE` stores one report line on the inbox for a person to read, and prints its
+sequence number. The daemon routes it to no task. `SOURCE` matches `[a-z0-9-]{1,32}`. The sources
+the intake and the daemon publish under are refused: `cli`, `factory`, `github`, `linear`, `priory`,
+`schedule` and `slack`, so a script cannot pass for an event. `LINE` is one line, cut at 500
+characters.
+
+`priory inbox` prints reports with the messages, with the line in its `line` column. `priory inbox
+--since SEQ` prints only the entries after `SEQ`, so a caller that keeps the last sequence number it
+printed can resume from it. `--json` prints the same entries as JSON.
+
+An unread report shows on the desk as a `report` row. `priory inbox read SEQ` marks it read, and it
+leaves the desk. It is refused for a sequence number that is not a report.
+
+A systemd unit reports its own failure through `OnFailure=` and a template unit, such as
+`priory-notice@.service`:
+
+```ini
+[Unit]
+Description=Post that %i failed
+
+[Service]
+Type=oneshot
+Environment=PRIORY_DB=%h/.local/state/priory-oss/priory.db
+ExecStart=priory post systemd "%i failed"
+```
+
+Each watched unit adds `OnFailure=priory-notice@%n.service`, so `%i` is the failed unit's name.
+
+## Resume
 
 `priory resume <task>` makes a blocked task `ready`. A task that has no run and no queued prompt,
 as when its first clone failed, becomes `queued` instead, so its next run gets the step's prompt as
@@ -69,3 +102,38 @@ fires nothing, and the task keeps it like any event that matches no wait, for th
 withdrawn ask or wait.
 
 A failed task is one its repair could not restart (see Repair).
+
+## Snooze
+
+`priory snooze KIND ID --for DURATION`, or `--until TIME`, hides an `ask`, `blocked`, `failed` or
+`prompt` item from `priory desk` and `priory asks` until that time. `KIND` and `ID` are the desk's
+kind and id columns. `DURATION` is a span such as `2h` or `1d`. `TIME` is an RFC 3339 time such as
+`2026-11-23T09:00:00+01:00`. `priory snooze KIND ID --clear` brings the item back at once.
+
+The snooze goes to the daemon over `priory.sock`. The daemon refuses a time that is not in the
+future, an item that the desk does not list, and a `--clear` for an item that is not snoozed. A
+second snooze of an item replaces the first. Snoozing changes only what a person sees: the task,
+its runs, asks and waits stay as they are, and the agent keeps waiting.
+
+The item comes back by itself at its time. No loop runs for that: each listing compares the time
+with the clock. It comes back early when something meaningful changes:
+
+| Item | Comes back early when | Reason |
+| ---- | --------------------- | ------ |
+| `ask` | the ask gets a new revision, as when its approval is asked again | `new revision` |
+| `ask` | the task changes state while the ask stays open, as when a schedule wakes it | `task state changed` |
+| `blocked`, `failed`, `prompt` | the task becomes blocked or failed | `new failure` |
+| `blocked`, `failed`, `prompt` | the task changes to any other state | `task state changed` |
+
+For a `blocked`, `failed` or `prompt` item, the latest change gives the reason. For an ask, a new
+revision always does, and a task state change counts only while the ask is open and not yet back.
+A task's `blocked` and `failed` items share one snooze, so a blocked task that fails keeps it.
+
+The desk and `priory asks` end each row with the item's `snoozed_until` time while it is snoozed,
+and its `back_early` once a change brought it back, as `{"at":"<time>","reason":"<reason>"}`. The
+snoozed rows show only with `--all`. With `--json`, the desk's `counts.snoozed` says how many it
+leaves out (see the [serve reference](../reference/serve.md#snooze)).
+
+The trace records each snooze as `factory.task.snoozed` and each `--clear` as
+`factory.task.unsnoozed` (see the [trace schema](../trace-schema.md)). The end of a snooze, by
+time or by a change, records nothing.

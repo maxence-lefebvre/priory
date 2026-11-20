@@ -21,6 +21,7 @@ how each source behaves.
 | Source | Polled when | Read through |
 | ------ | ----------- | ------------ |
 | GitHub | a trigger names the repository, whatever the trigger's source, or an open wait or `--merge` hold names a pull request in it | `gh api` and `gh api graphql`, as the user `gh` is logged in as |
+| GitHub review requests | a `pull_request.review_requested` trigger names the reviewer; every repository | `gh api search/issues` (see [review-requests.md](review-requests.md#calls-and-cost)) |
 | Linear | the factory has a Linear trigger, or an open wait names a Linear issue | `curl` (see [linear.md](linear.md#calls-and-cost)) |
 | Slack | the factory has a Slack trigger, or an open wait names a Slack thread | `curl` (see [slack.md](slack.md#calls-and-cost)) |
 | Schedules | on every poll, for each schedule trigger that is due | no network (see [schedule.md](schedule.md)) |
@@ -49,6 +50,7 @@ factory such as herdr-bowtie. Each message type also has a JSON Schema in
 | [github-issues.md](github-issues.md) | `github.issues.labeled` and `github.issues.opened` |
 | [pull-requests.md](pull-requests.md) | Pull request, review and check run events, and check run snapshots |
 | [github-polling.md](github-polling.md) | GitHub streams, baselines, API cost and recovery after a restart |
+| [review-requests.md](review-requests.md) | `github.pull_request.review_requested` and `review_request_removed`, and the review tasks they start and withdraw |
 | [linear.md](linear.md) | Linear events, streams and API calls |
 | [slack.md](slack.md) | Slack events, the channel stream and API calls |
 | [schedule.md](schedule.md) | `schedule.fired` and when a schedule trigger fires |

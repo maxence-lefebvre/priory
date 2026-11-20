@@ -12,7 +12,9 @@ Each type has a JSON Schema in [`docs/schemas/events/`](../schemas/events/), nam
 - GitHub: [`github.issues.labeled`](#githubissueslabeled), [`github.issues.opened`](#githubissuesopened),
   [`github.pull_request.opened`](#githubpull_requestopened), [`github.pull_request.labeled`](#githubpull_requestlabeled),
   [`github.pull_request.closed`](#githubpull_requestclosed), [`github.pull_request_review.submitted`](#githubpull_request_reviewsubmitted),
-  [`github.check_run.completed`](#githubcheck_runcompleted), [`github.pull_request.check_runs`](#githubpull_requestcheck_runs)
+  [`github.check_run.completed`](#githubcheck_runcompleted), [`github.pull_request.check_runs`](#githubpull_requestcheck_runs),
+  [`github.pull_request.review_requested`](#githubpull_requestreview_requested),
+  [`github.pull_request.review_request_removed`](#githubpull_requestreview_request_removed)
 - Linear: [`linear.issue.entered`](#linearissueentered), [`linear.issue.left`](#linearissueleft),
   [`linear.issue.created`](#linearissuecreated), [`linear.issue.state_changed`](#linearissuestate_changed),
   [`linear.issue.blockers`](#linearissueblockers), [`linear.comment.created`](#linearcommentcreated)
@@ -35,7 +37,7 @@ Every GitHub, Linear and Slack event ends its `data` with the same three fields:
 
 | Field | Type | Meaning |
 | ----- | ---- | ------- |
-| `time` | RFC 3339 | When the event happened; for a view event, when the intake polled |
+| `time` | RFC 3339 | When the event happened; for a view or review request event, when the intake polled |
 | `baseline` | boolean | True when it came from the first poll of its stream |
 | `triggers` | array of strings | The triggers it matched, so the triggers it requests tasks for; may be empty |
 
@@ -363,6 +365,83 @@ The pull request fields, and:
     "runs": 3,
     "updated_at": "2026-11-17T16:05:00Z",
     "time": "2026-11-17T16:06:01.482913Z",
+    "baseline": false,
+    "triggers": []
+  },
+  "links": [{ "label": "pull_request", "url": "https://github.com/acme/widgets/pull/43" }]
+}
+```
+
+### `github.pull_request.review_requested`
+
+One message per open pull request that asks a reviewer for a review and did not at the previous
+poll, in any repository. See [review-requests.md](../intake/review-requests.md). Subject:
+`owner/name#43`.
+Schema: [`github.pull_request.review_requested.json`](../schemas/events/github.pull_request.review_requested.json).
+
+| Field | Type | Meaning |
+| ----- | ---- | ------- |
+| `repo` | string | `owner/name` |
+| `pull_request` | integer | The pull request number |
+| `title` | string | The title when the intake polled |
+| `url` | string | The pull request's page |
+| `author` | string or null | The GitHub login who opened it; null for a deleted user |
+| `since` | RFC 3339 | When the intake first found the request: the time of that poll |
+| `reviewer` | string | The GitHub login asked for the review, as the trigger names it |
+
+<!-- example: events/github.pull_request.review_requested.json -->
+```json
+{
+  "id": "d417fdba-388d-5bba-8e5f-459630ca1557",
+  "type": "github.pull_request.review_requested",
+  "subject": "acme/widgets#43",
+  "time": "2026-11-20T09:01:00.214Z",
+  "data": {
+    "repo": "acme/widgets",
+    "pull_request": 43,
+    "title": "Fix the empty export",
+    "url": "https://github.com/acme/widgets/pull/43",
+    "author": "hubot",
+    "since": "2026-11-20T09:01:00.214Z",
+    "reviewer": "octocat",
+    "time": "2026-11-20T09:01:00.214Z",
+    "baseline": false,
+    "triggers": ["review-requests"]
+  },
+  "links": [{ "label": "pull_request", "url": "https://github.com/acme/widgets/pull/43" }]
+}
+```
+
+### `github.pull_request.review_request_removed`
+
+One message per pull request gone from a reviewer's requests since the previous poll. Its fields
+come from that earlier poll. See [review-requests.md](../intake/review-requests.md). Subject:
+`owner/name#43`.
+Schema: [`github.pull_request.review_request_removed.json`](../schemas/events/github.pull_request.review_request_removed.json).
+
+The fields of `github.pull_request.review_requested`, and:
+
+| Field | Type | Meaning |
+| ----- | ---- | ------- |
+| `reviewed` | boolean | Whether the reviewer submitted a review since `since`. False means the request ended some other way: someone removed it, or the pull request closed |
+
+<!-- example: events/github.pull_request.review_request_removed.json -->
+```json
+{
+  "id": "d2d46f0a-ce30-5ae6-88ba-fd4e0d882c5a",
+  "type": "github.pull_request.review_request_removed",
+  "subject": "acme/widgets#43",
+  "time": "2026-11-20T10:12:00.530Z",
+  "data": {
+    "repo": "acme/widgets",
+    "pull_request": 43,
+    "title": "Fix the empty export",
+    "url": "https://github.com/acme/widgets/pull/43",
+    "author": "hubot",
+    "since": "2026-11-20T09:01:00.214Z",
+    "reviewer": "octocat",
+    "reviewed": false,
+    "time": "2026-11-20T10:12:00.530Z",
     "baseline": false,
     "triggers": []
   },
@@ -741,7 +820,7 @@ Schema: [`factory.task.requested.json`](../schemas/events/factory.task.requested
 | `source` | UUID string | The `id` of the source event's message |
 | `team` | string or null, optional | The Linear issue's team. Linear sources only |
 | `project` | string or null, optional | The Linear issue's project. Linear sources only |
-| `repo` | string or null, optional | `priory request --repo`. CLI requests only |
+| `repo` | string or null, optional | `priory request --repo` for a CLI request; the pull request's repository for a review request. Those sources only |
 | `hold` | object, optional | The trigger's `hold` or `priory request --hold`. See [triggers.md](triggers.md#hold) |
 | `tldr` | string, optional | `priory request --tldr` |
 | `scheduled` | RFC 3339, optional | When the firing was due. Schedule sources only |
@@ -776,9 +855,9 @@ Schema: [`factory.intake.baseline.json`](../schemas/events/factory.intake.baseli
 | Field | Type | Meaning |
 | ----- | ---- | ------- |
 | `repo` | string, optional | `owner/name`. GitHub streams only |
-| `stream` | string | The stream, such as `github.issues.labeled`, `linear.comments` or `slack.channel:C0123` |
-| `position` | integer or string | A GitHub id or number, a count of view changes, a Linear time or a Slack `ts` |
-| `members` | array, optional | The issue fields of every issue in the view. Linear view streams only |
+| `stream` | string | The stream, such as `github.issues.labeled`, `github.review_requests:octocat`, `linear.comments` or `slack.channel:C0123` |
+| `position` | integer or string | A GitHub id or number, a count of set changes, a Linear time or a Slack `ts` |
+| `members` | array, optional | The issue fields of every issue in the view, or the pull request fields of every review request. Linear view and review request streams only |
 | `seen` | array of strings, optional | The ids of the events at the position's instant. Linear issue and comment streams only |
 
 <!-- example: events/factory.intake.baseline.json -->

@@ -113,6 +113,7 @@ fn step_spans(row: &Row) -> Vec<Value> {
         ("priory.run.id", &data["run"]),
         ("priory.step", &data["step"]),
         ("priory.outcome", &data["outcome"]),
+        ("priory.grade", &data["grade"]),
         ("priory.lane", &data["lane"]),
         ("priory.workflow", &data["workflow"]),
         ("priory.key", &data["key"]),

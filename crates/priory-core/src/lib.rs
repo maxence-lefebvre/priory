@@ -7,11 +7,13 @@ pub mod memory;
 #[cfg(feature = "model")]
 mod model;
 mod otlp;
+pub mod post;
 pub mod report;
 mod room;
 mod route;
 pub mod search;
 pub mod serve;
+pub mod snooze;
 pub mod stall;
 pub mod state;
 mod summary;

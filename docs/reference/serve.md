@@ -61,14 +61,15 @@ gets `400`.
 | ----- | ---- | ------- |
 | `banner` | string or null | The stall banner while the queue is stalled |
 | `counts.asleep` | integer | Tasks asleep on a wait |
-| `items` | array | What waits on a person, then the queue, then worktrees that stay |
+| `counts.snoozed` | integer | Items snoozed now, which `items` leaves out |
+| `items` | array | What waits on a person, then the queue, then worktrees that stay. `priory desk --all --json` keeps the snoozed items |
 
 Each item:
 
 | Field | Type | Meaning |
 | ----- | ---- | ------- |
-| `kind` | string | `ask`, `blocked`, `failed`, `prompt`, `held`, `sweep`, `memory`, `retired`, `queue` or `worktree`. See [desk.md](../daemon/desk.md) |
-| `id` | integer or string | The ask, task, prompt, hold, sweep, grant or queue place; a worktree's path |
+| `kind` | string | `ask`, `blocked`, `failed`, `prompt`, `held`, `sweep`, `memory`, `report`, `retired`, `queue` or `worktree`. See [desk.md](../daemon/desk.md) |
+| `id` | integer or string | The ask, task, prompt, hold, sweep, grant, report's inbox sequence number or queue place; a worktree's path |
 | `task` | integer or null | The task |
 | `key` | string or null | The task's key |
 | `step` | string or null | The task's step |
@@ -76,10 +77,13 @@ Each item:
 | `since` | string or null | When the item started waiting |
 | `what` | string | What the item is about |
 | `generation` | integer or null | The task's generation |
+| `snoozed_until`, `snoozed_at`, `back_early` | | The item's [snooze](#snooze) |
 
 ## Inbox
 
-Each message, oldest first: `seq`, `type`, `subject`, `task`, `outcome` and `time`.
+Each message and report, oldest first: `seq`, `type`, `subject`, `task`, `outcome`, `time`, `line`
+and `read`. A report has the type `priory.report`, its source as `subject`, the outcome `report`, its
+line as `line`, and, once read, when it was read as `read`. Both are null on a message.
 
 ## Asks
 
@@ -97,14 +101,28 @@ Every ask, oldest first.
 | `recommendation`, `tradeoff` | string or null | What the agent recommends, and the trade-off |
 | `answer`, `answered_at` | string or null | The answer and when it came |
 | `since` | string | When the agent asked |
+| `snoozed_until`, `snoozed_at`, `back_early` | | The ask's [snooze](#snooze) |
 
-`priory asks` without `--json` prints only the open asks.
+`priory asks` without `--json` prints only the open asks that are not snoozed, and `--all` adds the
+snoozed ones.
+
+## Snooze
+
+An `ask`, `blocked`, `failed` or `prompt` desk item, and every ask, carry these fields. See
+[desk.md](../daemon/desk.md#snooze).
+
+| Field | Type | Meaning |
+| ----- | ---- | ------- |
+| `snoozed_until` | string or null | When the item comes back by itself, while it is snoozed |
+| `snoozed_at` | string or null | When a person last snoozed it |
+| `back_early` | object or null | `{ "at", "reason" }` once a change brought it back before its time. `reason` is `new revision`, `task state changed` or `new failure` |
 
 ## Tasks
 
 Every task in start order: `id`, `key`, `workflow`, `step`, `state`, `band`, `lane`, `reason`,
-`position` (its place in the queue from 1, or null), `generation`, `retired`, `tldr` and `since`
-(when the task last changed state).
+`position` (its place in the queue from 1, or null), `generation`, `retired`, `tldr`, `since`
+(when the task last changed state), `grade` (`red`, `yellow`, `green` or null) and `grade_reason`.
+See Grades in [tools.md](../daemon/tools.md#grades).
 
 ## Task in detail
 
@@ -116,7 +134,7 @@ The fields of [Tasks](#tasks), plus `repo` and `branch`, and these arrays, oldes
 | `steps` | A code step's action: `id`, `step`, `action`, `status`, `pull_request`, `commit_sha`, `error`, `created` |
 | `asks` | An ask, as in [Asks](#asks) |
 | `waits` | `id`, `run`, `kind`, `resource`, `until`, `target`, `created`, `fired`, `withdrawn` |
-| `results` | `run`, `step`, `outcome`, `summary`, `evidence`, `commit_sha`, `created` |
+| `results` | `run`, `step`, `outcome`, `summary`, `evidence`, `commit_sha`, `reason`, `created` |
 
 ## Queue
 

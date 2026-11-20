@@ -164,6 +164,8 @@ fn a_task_request_creates_one_queued_task_at_its_workflow_start() {
             "-",
             "1",
             "1",
+            "-",
+            "-",
             "-"
         ])]
     );
@@ -175,14 +177,16 @@ fn a_task_request_creates_one_queued_task_at_its_workflow_start() {
                 "github.issues.labeled",
                 "owner/repo#42",
                 "-",
-                "ignored"
+                "ignored",
+                "-"
             ]),
             row(&[
                 "2",
                 "factory.task.requested",
                 "github:owner/repo#42",
                 "1",
-                "created"
+                "created",
+                "-"
             ]),
         ]
     );
@@ -506,4 +510,42 @@ fn tasks_filtered_by_lane_lists_only_that_lane() {
         .collect();
     assert_eq!(keys, ["github:owner/repo#7"]);
     assert!(!setup.priory(&["tasks", "--lane"]).status.success());
+}
+
+/// A review request event for pull request 42 of `owner/repo`, reviewed by `max`.
+fn review_event(kind: &str) -> Message {
+    Message::new(
+        kind,
+        json!({
+            "repo": "owner/repo",
+            "pull_request": 42,
+            "title": "Tidy the parser",
+            "url": "https://github.com/owner/repo/pull/42",
+            "author": "alice",
+            "since": "2026-11-20T09:00:00Z",
+            "reviewer": "max",
+            "reviewed": true,
+            "time": "2026-11-20T10:00:00Z",
+            "baseline": false,
+            "triggers": []
+        }),
+    )
+    .subject("owner/repo#42")
+}
+
+#[test]
+fn a_review_event_goes_to_the_review_task_over_an_older_task_keyed_by_its_pull_request() {
+    let setup = Setup::new("review-over-pull");
+    let source = labeled(42);
+    let key = "github:owner/repo:pulls/42:review:max";
+    let mut review = requested(&source, 42);
+    review.data["key"] = json!(key);
+    for message in [&source, &requested(&source, 42), &review.subject(key)] {
+        setup.publish(message);
+    }
+    setup.publish(&review_event("github.pull_request.review_request_removed"));
+
+    succeeded(&setup.daemon());
+
+    assert_eq!(routes(&setup)[3], route("2", "kept"));
 }

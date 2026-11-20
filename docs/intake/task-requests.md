@@ -14,7 +14,7 @@ after the source event. So a consumer has already seen the source when it reads 
 
 | Source | Matches as described in |
 | ------ | ----------------------- |
-| GitHub | the rule below |
+| GitHub | the rule below; review requests as in [review-requests.md](review-requests.md#trigger) |
 | Linear | [linear.md](linear.md#trigger) |
 | Slack | [slack.md](slack.md#trigger) |
 | Schedule | [schedule.md](schedule.md#when-it-fires) |
@@ -73,6 +73,7 @@ with `"triggers": ["agent-label"]`, then this request:
 | Source | Task key |
 | ------ | -------- |
 | GitHub issue or pull request | `github:owner/name#42`. GitHub numbers both from one sequence per repository |
+| GitHub review request | `github:owner/name:pulls/42:review:<reviewer>` |
 | Linear issue | `linear:ENG-7` |
 | Slack message | `slack:<channel>:<ts>` |
 | Schedule | `schedule:<key>`, or `schedule:<trigger>@<scheduled>` without a fixed key |
@@ -87,7 +88,7 @@ source event's id.
 | ----- | ---- |
 | `workflow`, `band`, `lane` | the trigger; `band` and `lane` are null when it sets none |
 | `team`, `project` | the Linear issue, for a Linear source only |
-| `repo` | `priory request --repo`; otherwise the daemon uses the trigger's `repo` |
+| `repo` | `priory request --repo`, or a review request's pull request; otherwise the daemon uses the trigger's `repo` |
 | `hold` | the trigger's `hold`, or `priory request --hold` |
 | `tldr` | `priory request --tldr`. The summarizer then skips the task (see [search.md](../daemon/search.md)) |
 
