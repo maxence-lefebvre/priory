@@ -3,432 +3,452 @@
 The design system for Priory's web view (`docs/prd.md`, R8). Follow it for every panel, view and
 component. The live reference is the
 [Priory design system artifact](https://claude.ai/artifact/3YYj2s5hmKksarCCC3VgHb): tokens, the
-main components and their states in both themes. When the artifact and this file disagree, this
-file wins; fix the artifact.
+main components and their states in every theme. The token files in
+[`design/tokens/`](design/tokens/) are the source of truth for values. When the artifact, this
+file and the token files disagree, the token files win for values and this file wins for rules.
+Fix the others.
 
 The M2 test is "one working day of asks answered from a phone only". Every decision below serves
 that first: a person on a phone, often one-handed, reads an ask and answers it correctly.
+
+The view has one structure, called Ledger, and four themes: Indigo (the default), Ink, Parchment
+and Abbey, each in light and dark. A person picks a theme and a mode on the Appearance screen.
 
 ## Principles
 
 1. **The desk comes first.** What waits on a person (asks, blocked tasks, uncertain prompts, room
    banners) is the default view and the first tab. Everything else is context for an answer.
-2. **Calm by default, loud only when a person must act.** Neutral surfaces, one accent, and color
-   spent on state. A screen with nothing to do looks quiet.
+2. **Ink for attention, the action color for actions, color for state.** The next ask is printed
+   in solid ink. Buttons a person taps take the theme's action color. Every other color belongs
+   to a state tile. A screen with nothing to do looks quiet.
 3. **Dense, not cramped.** Rows show state, key, step and age in one glance. Density comes from
    tight type and hairlines, never from small touch targets.
 4. **Phone first, desktop extends.** Design each panel at 360 px wide first. Wider screens show
    more panels side by side; they do not get different components.
-5. **State is shape and word, then color.** Every state has an icon and its daemon name. Color
-   only reinforces it.
-6. **Never answer by accident.** No gesture answers an ask. Answers to command asks need a second,
+5. **State is a tile: shape and word, then color.** Every state has an icon and its daemon name.
+   Color only reinforces it.
+6. **One structure, many themes.** A theme changes colors and the three font roles, nothing else.
+7. **Never answer by accident.** No gesture answers an ask. Answers to command asks need a second,
    deliberate tap.
-7. **Agent text is untrusted.** Render questions, options, summaries and terminal output as text
+8. **Agent text is untrusted.** Render questions, options, summaries and terminal output as text
    or sanitized Markdown. Never as HTML.
-8. **Offline is normal.** Show the last known state with its age when the connection drops.
+9. **Offline is normal.** Show the last known state with its age when the connection drops.
    Never blank a panel.
 
-## Tokens
+## Structure and themes
 
-Tokens are CSS custom properties. The block below is the source of truth: copy it into the view's
-stylesheet as it is, and style components only through these names. Never write a literal color
-in a component rule.
+Tokens are CSS custom properties in two files. Components style only through their names. Never
+write a literal color, typeface, size or radius in a component rule.
 
-The theme follows the system setting. A person can pin light or dark per device; the view stores
-that choice locally and sets `data-theme` on `<html>`.
+- [`design/tokens/structure.css`](design/tokens/structure.css): spacing, radii, sizes, the type
+  scale, elevation and motion. The same in every theme.
+- [`design/tokens/themes.css`](design/tokens/themes.css): colors and font roles, one block per
+  theme. Every theme defines every token.
 
-### Color
+A theme may set only:
 
-Each text role meets WCAG AA (4.5:1) on `--bg`, `--surface` and `--raised`, and on its own
-`-soft` fill, in both themes. `--accent` and `--line-control` meet 3:1 on every surface, so focus
-rings and control borders stay visible. `--line` is decorative: never use it as the only edge of
-a control.
+- **Colors.** Every color token listed under [Theme tokens](#theme-tokens), each as one
+  `light-dark()` pair so the theme works in both modes.
+- **The three font roles.** `--font-display` for the ask count, titles and questions;
+  `--font-ui` for everything a person reads or taps; `--font-mono` for machine text. A role may
+  carry its tuning: `--display-stretch`, `--count-stretch`, `--count-weight` and
+  `--count-tracking`.
 
-`--ok` and `--danger` differ mostly in hue. That is acceptable only because every state also
-carries an icon and a word (principle 5).
+A theme never changes layout, spacing, radii, sizes, the type scale, motion, icons, copy or which
+components appear. A design idea that needs any of these is a change to the structure, for every
+theme, in this file.
 
-```css
-:root {
-  color-scheme: light;
-  /* Grounds */
-  --bg: #F6F7F9;            /* page ground behind panels */
-  --surface: #FFFFFF;       /* panels, cards, sheets */
-  --raised: #F0F2F5;        /* hover, pressed, inset fields, skeletons */
-  --line: #E3E6EB;          /* hairlines between rows and around panels */
-  --line-control: #7E8595;  /* borders of inputs and secondary buttons, 3:1 */
-  /* Text */
-  --text: #15171C;          /* primary text */
-  --text-2: #4B5161;        /* secondary text, labels */
-  --text-3: #636A7A;        /* metadata, timestamps, placeholders */
-  /* Accent: lapis, the blue of illuminated manuscripts */
-  --accent: #2B4FC4;        /* links, focus ring, selection marker, accent icons */
-  --accent-solid: #2B4FC4;  /* primary button fill */
-  --on-accent: #FFFFFF;     /* text on --accent-solid */
-  --accent-soft: #E9EEFC;   /* selected row, recommended option */
-  /* State roles: text and icon on the matching -soft fill or any ground */
-  --ok: #12704F;      --ok-soft: #E3F2EC;      /* done */
-  --warn: #8A5200;    --warn-soft: #FCF0DA;    /* blocked, lost, needs you */
-  --danger: #B3212B;  --danger-soft: #FCE9E9;  /* failed, exited */
-  --hold: #6A3EC2;    --hold-soft: #F0EAFB;    /* held */
-  --muted: #4B5161;   --muted-soft: #EDEFF3;   /* queued, asleep, dropped, ended runs */
-  --danger-solid: #B3212B;  /* destructive button fill */
-  --on-danger: #FFFFFF;
-  /* Terminal: one dark palette in both themes, because agents print for a dark terminal */
-  --term-bg: #0B0D12;
-  --term-fg: #D5D9E2;
-  --term-dim: #8C93A3;
-  --scrim: rgba(15, 17, 23, 0.48);  /* behind sheets and dialogs */
-}
+### Choosing a theme and a mode
 
-@media (prefers-color-scheme: dark) {
-  :root:not([data-theme="light"]) {
-    color-scheme: dark;
-    --bg: #0F1117;  --surface: #161920;  --raised: #1D2029;
-    --line: #272B35;  --line-control: #6E7586;
-    --text: #E7E9EF;  --text-2: #A8AEBC;  --text-3: #8C93A3;
-    --accent: #8AA4FF;  --accent-solid: #3D5FD6;  --on-accent: #FFFFFF;  --accent-soft: #1C2442;
-    --ok: #4FC99A;      --ok-soft: #112821;
-    --warn: #E5AE4A;    --warn-soft: #2B2212;
-    --danger: #FF8086;  --danger-soft: #311A1D;
-    --hold: #B59CFF;    --hold-soft: #231C38;
-    --muted: #A8AEBC;   --muted-soft: #232733;
-    --danger-solid: #C93A44;  --on-danger: #FFFFFF;
-    --scrim: rgba(0, 0, 0, 0.6);
-    --shadow-overlay: 0 1px 2px rgba(0, 0, 0, 0.4), 0 8px 24px rgba(0, 0, 0, 0.5);
-    --shadow-sheet: 0 -8px 32px rgba(0, 0, 0, 0.6);
-  }
-}
-:root[data-theme="dark"] {
-  /* The same values again, so a pinned theme wins both ways. */
-  color-scheme: dark;
-  --bg: #0F1117;  --surface: #161920;  --raised: #1D2029;
-  --line: #272B35;  --line-control: #6E7586;
-  --text: #E7E9EF;  --text-2: #A8AEBC;  --text-3: #8C93A3;
-  --accent: #8AA4FF;  --accent-solid: #3D5FD6;  --on-accent: #FFFFFF;  --accent-soft: #1C2442;
-  --ok: #4FC99A;    --ok-soft: #112821;
-  --warn: #E5AE4A;  --warn-soft: #2B2212;
-  --danger: #FF8086;  --danger-soft: #311A1D;
-  --hold: #B59CFF;  --hold-soft: #231C38;
-  --muted: #A8AEBC;   --muted-soft: #232733;
-  --danger-solid: #C93A44;  --on-danger: #FFFFFF;
-  --scrim: rgba(0, 0, 0, 0.6);
-  --shadow-overlay: 0 1px 2px rgba(0, 0, 0, 0.4), 0 8px 24px rgba(0, 0, 0, 0.5);
-  --shadow-sheet: 0 -8px 32px rgba(0, 0, 0, 0.6);
-}
+The view sets two attributes on `<html>`:
 
-body { background: var(--bg); color: var(--text); }
+```html
+<html data-theme="indigo" data-mode="system">
 ```
 
-Measured contrast, light and dark, on `--surface`: `--text` 17.9 and 14.5, `--text-2` 7.9 and
-7.9, `--text-3` 5.4 and 5.7, `--accent` 7.0 and 7.4, white on `--accent-solid` 7.0 and 5.5,
-`--line-control` 3.3 and 3.8. Each state role on its `-soft` fill is at least 4.7 in both themes.
-Re-check with a contrast tool after any change to these values.
+- `data-theme` is `indigo`, `ink`, `parchment` or `abbey`. On `<html>`, a missing or unknown
+  value gives Indigo.
+- `data-mode` is `system`, `light` or `dark`. `system` follows `prefers-color-scheme` through
+  `color-scheme: light dark`, with no script. `light` and `dark` pin the mode.
+- The view stores both choices per device in local storage and applies them before first paint,
+  so a theme never flashes.
+- The same two attributes on any element scope a theme and mode to it. The Appearance previews
+  use this to show every theme on one screen.
 
-### Typography
+`light-dark()` needs Safari 17.5, Chrome 123 or Firefox 120.
 
-One family for the interface, one for machine text.
+## Structure tokens
 
-- **Geist** (SIL OFL 1.1) for all interface text. It is narrow and even at 13 and 14 px, which
-  keeps rows dense and legible.
-- **Geist Mono** (SIL OFL 1.1) only for machine text: ids, task keys, branches, commit shas,
-  commands and the terminal. Never for labels or headings.
-- Ship the `woff2` files with the daemon and serve them from the view. Never load fonts from a
-  CDN: the view must work on a factory with no internet.
+[`design/tokens/structure.css`](design/tokens/structure.css) holds the values. The rules:
 
-```css
-:root {
-  --font-sans: "Geist", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
-  --font-mono: "Geist Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
-}
-```
+- **Spacing:** a 4 px grid, `--space-1` (4 px) to `--space-8` (48 px). Lay out siblings with
+  `gap`, not margins. The side gutter is `--gutter`, 16 px or the safe-area inset.
+- **Radii:** `--radius-sm` (5 px) for tags and key hints, `--radius-tile` (8 px) for state tiles,
+  `--radius-md` (12 px) for inputs, banners, the segmented control, the workflow grid and the
+  terminal, `--radius-card` (14 px) for the next-ask card, option buttons and theme cards,
+  `--radius-full` for the Answer capsule, live dots and badges. Rows have no radius.
+- **Elevation:** hairlines (`--line`) separate. Only the Answer capsule (`--shadow-float`) and
+  sheets (`--shadow-sheet`) cast a shadow.
+- **Motion:** `--dur-1` to `--dur-3` with `--ease-out` and `--ease-in`, all zero under
+  `prefers-reduced-motion`.
 
-| Style     | Size / line height | Weight | Use                                                         |
-| --------- | ------------------ | ------ | ----------------------------------------------------------- |
-| `caption` | 12 / 16            | 500    | badges, counts, timestamps in rows                          |
-| `small`   | 13 / 18            | 400    | second line of a row, metadata, help text                   |
-| `body`    | 14 / 20            | 400    | default text, row titles (500)                              |
-| `reading` | 16 / 24            | 400    | ask questions, results, report prose, every input field     |
-| `title`   | 16 / 24            | 600    | panel titles, sheet titles                                  |
-| `heading` | 20 / 28            | 600    | the title of a task, run or ask page                        |
-| `display` | 24 / 32            | 600    | the desk's count of open asks, nothing else                 |
-| `mono`    | 13 / 20            | 400    | ids, keys, shas, commands; 12 / 16 inside rows              |
+### Type scale
 
-- Use three weights only: 400, 500, 600.
+| Token             | Size / line | Role    | Weight   | Use                                            |
+| ----------------- | ----------- | ------- | -------- | ---------------------------------------------- |
+| `--type-count`    | 104 / 0.8   | display | theme    | the desk's ask count, nothing else             |
+| `--type-count-wide` | 88 / 0.8  | display | theme    | the ask count in the wide desk column          |
+| `--type-screen`   | 34 / 40     | display | 700      | screen titles, such as Appearance              |
+| `--type-task`     | 32 / 38     | display | 700      | the task title on wide screens                 |
+| `--type-question` | 25 / 31     | display | 700      | the question in answer mode                    |
+| `--type-hero`     | 24 / 27     | display | 700      | "asks need you" beside the count               |
+| `--type-next`     | 18 / 24     | display | 600      | the question in the next-ask card              |
+| `--type-option`   | 17 / 22     | UI      | 600      | option labels, the Answer capsule              |
+| `--type-body`     | 15 / 20     | UI      | 400, 500 | row text, default text                         |
+| `--type-small`    | 14 / 20     | UI      | 400, 500 | reasons, trade-off, banner text                |
+| `--type-caption`  | 13 / 18     | UI      | 400, 600 | row metadata, section heads, ages              |
+| `--type-mono`     | 12.5 / 19   | mono    | 400, 500 | task keys, ids, shas, commands, wide terminal  |
+| `--type-mono-compact` | 12 / 16 | mono    | 400      | the terminal on compact screens                |
+| `--type-tab`      | 11 / 14     | UI      | 600      | tab bar labels                                 |
+
+- The display role takes `--display-stretch`; the count also takes `--count-stretch`,
+  `--count-weight` and `--count-tracking`. A grotesk theme uses them for its wide cut; a serif
+  theme sets them to plain values.
 - Set inputs at 16 px at every width. Smaller inputs make iOS Safari zoom the page.
 - Use `font-variant-numeric: tabular-nums` for every column of numbers, durations and times.
 - Keep reading text under 72 characters per line.
-- Use sentence case everywhere. Never uppercase labels.
 
-### Spacing
+## Themes
 
-A 4 px grid. Lay out siblings with `gap`, not margins.
+| Theme     | Character                                           | Display / UI / mono                         | Action | Waits on a person | Emphasis   |
+| --------- | --------------------------------------------------- | ------------------------------------------- | ------ | ----------------- | ---------- |
+| Indigo    | The default. Ink emphasis with an indigo action.    | Mona Sans / Mona Sans / JetBrains Mono      | indigo | indigo            | ink        |
+| Ink       | Monochrome. What needs you is printed in solid ink. | Mona Sans / Mona Sans / JetBrains Mono      | ink    | ink               | ink        |
+| Parchment | Parchment and iron-gall ink, rubric red and lapis.  | EB Garamond / IBM Plex Sans / IBM Plex Mono | lapis  | rubric red        | ink        |
+| Abbey     | Vellum, lapis and gold, rubric red.                 | Alegreya / Alegreya Sans / IBM Plex Mono    | lapis  | rubric red        | deep lapis |
 
-```css
-:root {
-  --space-1: 4px;   /* icon to label */
-  --space-2: 8px;   /* between items in a row, between touch targets */
-  --space-3: 12px;  /* row vertical padding, card inner gap */
-  --space-4: 16px;  /* side gutter at every width, card padding */
-  --space-5: 24px;  /* between groups in a panel */
-  --space-6: 32px;  /* between sections of a page */
-  --space-8: 48px;  /* empty state padding */
-}
-```
+- **Rubric red marks only what waits on a person.** In Parchment and Abbey, red appears on ask
+  tiles, the ask count and the Desk badge, and nowhere else. Actions, including the recommended
+  option and the Answer capsule, take the lapis action color. Failure takes dark oxblood, and
+  danger text a pale rose in dark mode, both apart from rubric red in lightness.
+- **The recommended option takes `--recommended`, which is the theme's action color in every
+  theme.** It is never `--wait`.
+- **Fonts:** all seven families are under the SIL Open Font License 1.1. Ship their `woff2` files
+  with the daemon and serve them from the view. Never load fonts from a CDN: the view must work on
+  a factory with no internet. Load a theme's families only when that theme is active or shown
+  in an Appearance preview.
 
-### Radii
+### Theme tokens
 
-Radius marks what an element is. It does not decorate.
+| Token                                       | Meaning                                                                |
+| ------------------------------------------- | ---------------------------------------------------------------------- |
+| `--bg`                                      | page ground                                                            |
+| `--surface`                                 | cards, the detail pane, option buttons, inputs                         |
+| `--raised`                                  | pressed rows, the segmented control track, skeletons                   |
+| `--line`                                    | hairlines between rows and around panels; never the only edge of a control |
+| `--control-line`                            | edges of inputs, option buttons and secondary buttons, at least 3:1    |
+| `--bar`                                     | the tab bar and the fade behind the Answer capsule                     |
+| `--text`, `--text-2`, `--text-3`            | primary, secondary and metadata text                                   |
+| `--emph`, `--on-emph`, `--on-emph-2`        | solid ink: the next-ask card, the current workflow step, the active tab |
+| `--action`, `--on-action`                   | primary buttons, the Answer capsule, the recommended option            |
+| `--action-soft`, `--action-text`            | selected rows and sidebar items, links, ghost buttons, the focus ring  |
+| `--wait`, `--on-wait`                       | the ask tile: what waits on a person                                   |
+| `--count`                                   | the desk's ask count                                                   |
+| `--badge`, `--on-badge`                     | the count of open asks on the Desk tab                                 |
+| `--tile-live`, `--tile-warn`, `--tile-danger`, `--tile-ok`, `--tile-hold`, `--tile-muted` | state tile fills |
+| `--on-tile`, `--on-tile-live`               | the icon on a state tile; `--on-tile-live` on the live tile            |
+| `--warn-text`, `--danger-text`, `--ok-text` | reasons and state words in text                                        |
+| `--term-bg`, `--term-fg`, `--term-dim`      | the terminal, dark in every theme and mode                             |
+| `--recommended`, `--on-recommended`         | derived: equal to `--action` and `--on-action`                         |
 
-```css
-:root {
-  --radius-sm: 4px;      /* badges, kbd hints, chips */
-  --radius-md: 6px;      /* buttons, inputs, menu items, option buttons */
-  --radius-lg: 10px;     /* cards, panels on wide screens, sheets (top corners) */
-  --radius-full: 999px;  /* status dots, toggles, count pills */
-}
-```
+Contrast, checked for every theme in both modes: text tokens, state text tokens and
+`--action-text` reach 4.5:1 on `--bg` and `--surface`; `--on-action`, `--on-emph`, `--on-emph-2`,
+`--on-badge` and the terminal text reach 4.5:1 on their fill, and so does `--on-tile` on
+`--tile-danger`, which is also the danger button; tile icons, `--on-wait` and `--control-line`
+reach 3:1; the count reaches 3:1 on `--bg`. Re-check every pair with a contrast
+tool after any change to a theme.
 
-Rows inside a panel have no radius. Panels on compact screens are full bleed with no radius.
+### The illuminated initial is dropped
 
-### Elevation
-
-Hairlines separate; shadows mean "this floats above the page". Panels, rows and cards use
-`--line`, never a shadow. The dark values sit in the theme blocks above; in dark, a floating
-element also takes `--raised` as its fill, since shadows barely show on a dark ground.
-
-```css
-:root {
-  --shadow-overlay: 0 1px 2px rgba(16, 18, 24, 0.06), 0 8px 24px rgba(16, 18, 24, 0.12); /* menus, popovers */
-  --shadow-sheet: 0 -8px 32px rgba(16, 18, 24, 0.16);  /* bottom sheets, dialogs */
-}
-```
-
-### Motion
-
-Motion shows what changed after a person acts. Nothing moves on its own except the dot of a live
-run.
-
-```css
-:root {
-  --dur-1: 100ms;  /* press, hover, toggle */
-  --dur-2: 160ms;  /* expand, collapse, fade */
-  --dur-3: 240ms;  /* sheet in, page push */
-  --ease-out: cubic-bezier(0.2, 0, 0, 1);  /* entering */
-  --ease-in: cubic-bezier(0.4, 0, 1, 1);   /* leaving */
-}
-@media (prefers-reduced-motion: reduce) {
-  :root { --dur-1: 0ms; --dur-2: 0ms; --dur-3: 0ms; }
-}
-```
-
-- A new row gets an `--accent-soft` background that fades out over 1.2 s. With reduced motion it
-  keeps a small accent dot until the person scrolls past it.
-- The live-run dot pulses once per 2 s. With reduced motion it stays solid.
-- Sheets slide up with `--dur-3`. With reduced motion they appear in place.
-- Never animate layout height of a list that updates live. Insert rows without moving the row
-  under the person's thumb: if they scrolled, keep their scroll position and show "3 new" at the
-  top instead.
+An illuminated initial, the count in a gilded square, was tried for Parchment and Abbey. It is
+dropped: it would be the one place a theme changes layout, breaking principle 6, and its 84 px
+square shrinks the count. Those themes keep their character through their serif display role
+and the rubric red `--count`.
 
 ## Layout
 
 ### Breakpoints
 
-| Name    | Width         | Layout                                                                 |
-| ------- | ------------- | ---------------------------------------------------------------------- |
-| compact | below 600 px  | One panel at a time. Bottom tab bar. Detail pages push over the list.  |
-| medium  | 600 to 1023   | List and detail side by side, list 320 to 400 px wide.                 |
-| wide    | 1024 and up   | The view file's tree of rows, columns and tabs, as written.            |
+| Name    | Width         | Layout                                                                |
+| ------- | ------------- | --------------------------------------------------------------------- |
+| compact | below 600 px  | One panel at a time. Bottom tab bar. Detail pages push over the list. |
+| medium  | 600 to 1023   | List and detail side by side, list 320 to 400 px wide.                |
+| wide    | 1024 and up   | Sidebar, desk column and detail, or the view file's tree as written.  |
 
 - A view file (R8.2) describes the wide layout. On compact screens, each leaf panel becomes a tab
   in the tree's order. The bottom bar shows the first four and a "More" tab for the rest.
 - The default view puts the desk first, then queue, tasks and runs. Inbox, workflows, reports and
   terminals sit under "More".
-- Panels lay out by their own width with container queries, not by the viewport. A panel can be
-  320 px wide on a 1440 px screen.
-- A panel narrower than 320 px in a wide layout folds into its sibling's tabs.
+- Panels lay out by their own width with container queries, not by the viewport.
 - Every task, run and ask has its own URL, such as `/asks/42`. A link from a notification opens
   that ask directly, on any screen size.
 
-### Frame
+### Frame on a phone
 
-- Top bar, 48 px: factory name, connection state, search, theme menu. It stays sticky below the
-  safe-area inset.
-- Bottom tab bar on compact, 56 px plus `env(safe-area-inset-bottom)`. The desk tab shows the
-  count of open asks.
-- Side gutter: `max(var(--space-4), env(safe-area-inset-left))` and the same on the right.
+- **Top bar**, `--top-bar` (52 px), with a hairline under it: the factory name in the display
+  role, the connection state as a dot and a word ("live", "reconnecting"), and a search button.
+  It stays sticky below the safe-area inset.
+- **Tab bar**, `--tab-bar` (60 px plus the bottom safe area), on `--bar`: Desk, Queue, Tasks,
+  Runs, More, each an icon and a label. The active tab is a solid `--emph` pill. The Desk tab
+  carries the open-ask count in `--badge`.
 - The page never scrolls sideways. Only tables, diagrams and the terminal scroll inside their own
-  box.
-- Use `height: 100dvh` for one-screen layouts so mobile browser bars do not hide the tab bar.
+  box. Use `height: 100dvh` so mobile browser bars do not hide the tab bar.
+
+### Frame on a wide screen
+
+- **Top bar**: the factory name and connection state, a command bar in the middle ("Search or run
+  a command", `Ctrl K`), and the runner name on the right.
+- **Sidebar**, `--sidebar` (200 px): Desk, Queue, Tasks and Runs with counts, then a "More"
+  group. The active item takes `--action-soft` and `--action-text`.
+- **Desk column**, `--desk-column` (400 px): the desk, as on the phone, without the capsule.
+- **Detail**: the selected task or run on `--surface`.
+- **Key hint bar** at the bottom, 40 px: `J` `K` move, `Enter` open, `1` to `9` answer, `W` write,
+  `?` all shortcuts.
 
 ## Components
 
 Every component below lists its states. Build no state that is not listed without adding it here
-first.
+first. Icons come from [Lucide](https://lucide.dev) (ISC license), inlined as SVG.
 
-### Status badge
+### State tile
 
-A badge names a task or run state with an icon and the daemon's exact word, in lowercase, as
-`priory tasks` and `priory runs` print it.
+A state tile names a task or run state: a `--tile` (30 px) square with `--radius-tile` corners,
+filled with the role's token, holding a 17 px icon in `--on-tile`, or `--on-tile-live` on the
+live role (running, ready). Next to it, the row shows the daemon's exact word in lowercase, as
+`priory tasks` and `priory runs` print it. In wide tables the tile becomes a 15 px icon in the
+role's text color before the word.
 
-Anatomy: 20 px tall, `--radius-sm`, padding `0 6px`, `caption` style, 12 px icon, role text on
-the role's `-soft` fill. Icons come from [Lucide](https://lucide.dev) (ISC license), inlined as
-SVG.
+Each role's text color: live `--action-text`, warn `--warn-text`, danger `--danger-text`, ok
+`--ok-text`; wait, hold and muted `--text-2`.
+
+An ask is not a state, but it takes a tile too: `--wait` with the `message-circle-question` icon
+in `--on-wait`. A running tile holds a live dot in `--on-tile-live` instead of an icon; the dot
+pulses once per 2 s and stays solid under reduced motion.
 
 Task states (`crates/priory-core/src/state.rs`, `tasks.state`):
 
-| State     | Role     | Icon            | Means for the person                          |
-| --------- | -------- | --------------- | --------------------------------------------- |
-| `queued`  | muted    | `circle-dashed` | Waits in the queue for its turn.              |
-| `held`    | hold     | `pause`         | Held by a person or a condition; shows why.   |
-| `ready`   | accent   | `circle-dot`    | Next to start when a runner has room.         |
-| `running` | accent   | live dot        | An agent is working on it now.                |
-| `asleep`  | muted    | `moon`          | Waits on an event; holds no process.          |
-| `blocked` | warn     | `hand`          | Needs a person. Always on the desk.           |
-| `done`    | ok       | `check`         | Finished.                                     |
-| `failed`  | danger   | `circle-x`      | Ended in failure. Can be revived.             |
-| `dropped` | muted    | `minus`         | Stopped on purpose. Can be revived.           |
+| State     | Role   | Icon            | Means for the person                        |
+| --------- | ------ | --------------- | ------------------------------------------- |
+| `queued`  | muted  | `circle-dashed` | Waits in the queue for its turn.            |
+| `held`    | hold   | `pause`         | Held by a person or a condition; shows why. |
+| `ready`   | live   | `circle-dot`    | Next to start when a runner has room.       |
+| `running` | live   | live dot        | An agent is working on it now.              |
+| `asleep`  | muted  | `moon`          | Waits on an event; holds no process.        |
+| `blocked` | warn   | `hand`          | Needs a person. Always on the desk.         |
+| `done`    | ok     | `check`         | Finished.                                   |
+| `failed`  | danger | `circle-x`      | Ended in failure. Can be revived.           |
+| `dropped` | muted  | `minus`         | Stopped on purpose. Can be revived.         |
 
-An asleep task whose `retired` column is set shows `asleep` plus a second muted chip `retired`
-with the `archive` icon: it has no worktree and resurrects on its event.
+An asleep task whose `retired` column is set shows `asleep` plus a muted tag `retired` with the
+`archive` icon: it has no worktree and resurrects on its event.
 
 Run states (`runs.ended_as`; a run with no `ended` is live):
 
-| State       | Role   | Icon          | Means                                                 |
-| ----------- | ------ | ------------- | ----------------------------------------------------- |
-| `running`   | accent | live dot      | Live. Shows `idle` in `--text-3` when the agent waits for input. |
-| `done`      | ok     | `check`       | The task reached done in this run.                    |
-| `moved`     | muted  | `arrow-right` | The step ended; the task went to its next step.       |
-| `asleep`    | muted  | `moon`        | Ended by `wait` or `ask`.                             |
-| `blocked`   | warn   | `hand`        | Ended by a verdict that needs a person.               |
-| `lost`      | warn   | `unplug`      | Lost with its tmux server; resumes once.              |
-| `restarted` | muted  | `rotate-ccw`  | Restarted by a handler.                               |
-| `cancelled` | muted  | `x`           | Cancelled by a person.                                |
-| `dropped`   | muted  | `minus`       | The task was stopped.                                 |
-| `exited`    | danger | `log-out`     | The agent process exited unexpectedly.                |
-| `failed`    | danger | `circle-x`    | The run failed.                                       |
+| State       | Role   | Icon          | Means                                                            |
+| ----------- | ------ | ------------- | ---------------------------------------------------------------- |
+| `running`   | live   | live dot      | Live. Shows `idle` in `--text-3` when the agent waits for input. |
+| `done`      | ok     | `check`       | The task reached done in this run.                               |
+| `moved`     | muted  | `arrow-right` | The step ended; the task went to its next step.                  |
+| `asleep`    | muted  | `moon`        | Ended by `wait` or `ask`.                                        |
+| `blocked`   | warn   | `hand`        | Ended by a verdict that needs a person.                          |
+| `lost`      | warn   | `unplug`      | Lost with its tmux server; resumes once.                         |
+| `restarted` | muted  | `rotate-ccw`  | Restarted by a handler.                                          |
+| `cancelled` | muted  | `x`           | Cancelled by a person.                                           |
+| `dropped`   | muted  | `minus`       | The task was stopped.                                            |
+| `exited`    | danger | `log-out`     | The agent process exited unexpectedly.                           |
+| `failed`    | danger | `circle-x`    | The run failed.                                                  |
 
-If the daemon reports a state not in these tables, show it as a muted badge with its raw word and
+If the daemon reports a state not in these tables, show it as a muted tile with its raw word and
 the `circle-help` icon. Add it here in the same change that adds it to the daemon.
 
-### Ask card
+Each role's tile fill in each theme, light / dark, from
+[`design/tokens/themes.css`](design/tokens/themes.css):
 
-The most important component. It shows one ask (`asks` table, R6.3) and takes its answer.
+| Role   | Token           | States                                               | Indigo                | Ink                   | Parchment             | Abbey                 |
+| ------ | --------------- | ---------------------------------------------------- | --------------------- | --------------------- | --------------------- | --------------------- |
+| wait   | `--wait`        | asks                                                 | `#5856D6` / `#5E5CE6` | `#0A0A0A` / `#EDEDED` | `#A4161A` / `#B9302A` | `#A31F1A` / `#B42A22` |
+| live   | `--tile-live`   | running, ready                                       | `#5856D6` / `#5E5CE6` | `#0A0A0A` / `#EDEDED` | `#1F3F8F` / `#3F63C4` | `#24489C` / `#4466C8` |
+| warn   | `--tile-warn`   | blocked, lost                                        | `#C96800` / `#C96800` | `#B45309` / `#B45309` | `#9A6400` / `#A36A00` | `#A86B00` / `#A86B00` |
+| danger | `--tile-danger` | failed, exited                                       | `#D70015` / `#D70015` | `#CB1D26` / `#D92D35` | `#4A1A12` / `#6E2216` | `#5A1C17` / `#6E241E` |
+| ok     | `--tile-ok`     | done                                                 | `#248A3D` / `#2E8B47` | `#18793A` / `#24873F` | `#3F6B2A` / `#4A7A33` | `#2F6B4F` / `#2F7A57` |
+| hold   | `--tile-hold`   | held                                                 | `#8944AB` / `#9A55BF` | `#7340B8` / `#8550C8` | `#4B3F8F` / `#5C4FA8` | `#5B4A9C` / `#6A58B5` |
+| muted  | `--tile-muted`  | queued, asleep, dropped, moved, restarted, cancelled | `#8E8E93` / `#636366` | `#8A8A8A` / `#555555` | `#8A7A5C` / `#6A5D48` | `#8C8170` / `#4C5468` |
 
-Anatomy, top to bottom:
+In Indigo and Ink the ask tile and the live tile share a fill; the icon tells them apart.
 
-1. **Context line** (`small`, `--text-3`): task key in `mono`, the step, the lane, and the age on
-   the right ("12 min"). Tapping it opens the task.
-2. **Question** (`reading`, `--text`): the full question. Clamp at 8 lines with "Show all".
-3. **Options**: one full-width button per option, in the agent's order. Never reorder them.
-   Each is at least 48 px tall, `--radius-md`, left-aligned label, `--line-control` border.
-   The recommended option has an `--accent-soft` fill, an `--accent` border and a "Recommended"
-   caption under its label.
-4. **Trade-off** (`small`, `--text-2`), under the options, headed "Trade-off".
-5. **Other answer**: a "Write an answer" button that expands into a 16 px text field with a
-   "Send" button. Free text is always possible.
-6. **Footer** (`caption`, `--text-3`): the revision ("revision 2") and links to the task and the
-   run's terminal.
+### Desk
 
-States:
+The desk lists, top to bottom:
 
-| State        | What the person sees                                                                      |
-| ------------ | ----------------------------------------------------------------------------------------- |
-| open         | As above.                                                                                 |
-| sending      | The chosen option shows a check; the others dim. A bar at the bottom says `Sending "Merge"` with an "Undo" button for 4 s. The view sends after the 4 s. |
-| answered     | The card collapses to the question, the answer, who answered and when. No buttons.        |
-| refused      | `--warn-soft` banner: "The question changed. Read revision 3 and answer again." The card reloads the new revision; the old answer stays in the text field. |
-| taken        | "Already answered 2 min ago: Merge." Shown when another answer came first.         |
-| withdrawn    | Muted: "Withdrawn: the task was revived." No buttons.                                     |
-| offline      | Options stay visible but disabled, with "Reconnect to answer".                            |
+1. **Count**: the number of open asks in `--type-count` and `--count`, beside "asks need you" in
+   `--type-hero` and a line in `--text-3`: "Oldest waits 42 min. 2 stopped."
+2. **Room banners** (R4.3): a `--warn-text` edge on `--surface`, the `hard-drive` or
+   `memory-stick` icon, and the daemon's sentence: what is short, by how much, since when, and
+   the waiting task.
+3. **Next-ask card**: the oldest open ask, a button in solid `--emph` with `--radius-card`. Its
+   context line (ask icon, task key, step, a "Command" tag for a command ask, age) sits above the
+   question in `--type-next`, clamped at 3 lines, and "Oldest ask. Tap to answer." Tapping it
+   opens answer mode on that ask.
+4. **Then**: the other open asks, oldest first, as rows.
+5. **Stopped**: blocked tasks, uncertain prompts (R5.4) and failed tasks, each with its reason in
+   the role's text color.
+6. **Asleep**: one row, "9 tasks asleep on waits", that opens the tasks panel filtered to asleep.
+7. Reports waiting for review, when there are any.
 
-A **command ask** (R6.8) also shows the command and its target in a `mono` block on `--raised`
+On a phone, the **Answer capsule** floats above the tab bar: a full-width `--action` button,
+`--capsule` (54 px) tall, `--capsule-gap` above the tab bar, with `--radius-full` and
+`--shadow-float`, labelled "Answer 3 asks". It opens answer mode on the oldest ask. A fade from
+transparent to `--bar` sits behind it.
+
+- **The desk list ends with bottom padding of `--desk-end`**: the capsule's height plus its gap
+  above and below, so the capsule never covers the last row when the list is scrolled to the end.
+- The capsule hides when no ask is open. An empty desk shows: "No open asks. Agents ask here when
+  they need you."
+
+Rows on the desk are at least `--row-min` (64 px) tall with a hairline above each: a state tile
+on the left, then line 1 (task key in mono, step, tags, and the age on the right in `--text-3`),
+line 2 (the question or reason, clamped at 2 lines), and a chevron. The whole row is the touch
+target.
+
+### Answer mode
+
+On compact screens, answering opens answer mode: one ask fills the screen.
+
+1. **Header**: "Desk" with a back chevron on the left, the position "1/3" on the right in the
+   display role, the total in `--text-3`.
+2. **Context line**: the ask tile, task key, step, lane and age. It wraps. Tapping it opens the
+   task.
+3. **Question** in `--type-question`. A long question scrolls; the options never move.
+4. **Options**: one full-width button per option, in the agent's order. Never reorder them. Each
+   is at least `--option-min` (58 px) tall with `--radius-card` and a left-aligned label in
+   `--type-option`. Ordinary options sit on `--surface` with a 1 px `--control-line` edge. The
+   recommended option fills with `--recommended` and shows "Recommended" under its label. The
+   options sit in the bottom half, inside the thumb's reach.
+5. **Trade-off** under the options: "Trade-off." then the agent's sentence, in `--type-small`.
+6. **Write an answer**: a ghost button that expands into a 16 px text field with a "Send"
+   button. Free text is always possible.
+7. **Bar**: "Skip" on the left, "Revision 2" in the middle in `--text-3`, "Next" on the right.
+
+- After an answer, the next ask slides in and the position updates.
+- "Skip", "Next" and a horizontal swipe move without answering. Nothing answers except a tap on
+  an option or "Send".
+- Leaving answer mode returns to the desk at the same scroll position.
+- On wide screens the same ask card shows in the detail column; `1` to `9` pick an option.
+
+Ask states:
+
+| State     | What the person sees                                                                      |
+| --------- | ----------------------------------------------------------------------------------------- |
+| open      | As above.                                                                                 |
+| sending   | The chosen option shows a check; the others dim. A bar at the bottom says `Sending "Merge"` with an "Undo" button for 4 s. The view sends after the 4 s. |
+| answered  | The card collapses to the question, the answer, who answered and when. No buttons.        |
+| refused   | A `--warn-text` banner: "The question changed. Read revision 3 and answer again." The card reloads the new revision; the old answer stays in the text field. |
+| taken     | "Already answered 2 min ago: Merge." Shown when another answer came first.                |
+| withdrawn | Muted: "Withdrawn: the task was revived." No buttons.                                     |
+| offline   | Options stay visible but disabled, with "Reconnect to answer".                            |
+
+A **command ask** (R6.8) also shows the command and its target in a mono block on `--raised`
 above the options. Its answer runs the command, so:
 
-- It has no undo bar. The first tap turns the option into "Tap again to run" in `--accent-solid`
-  for 4 s; the second tap sends.
+- It has no undo bar. The first tap turns the option into "Tap again to run" for 4 s; the second
+  tap sends.
 - After sending it shows the outcome: `running`, `done`, `failed` with the error, or `uncertain`
-  in warn: "Priory stopped while this ran. Check the target before you act on it."
+  in `--warn-text`: "Priory stopped while this ran. Check the target before you act on it."
 
-### Desk and answer mode
+### Appearance screen
 
-- The desk lists, in this order: room banners (R4.3), open asks oldest first, blocked tasks,
-  uncertain prompts (R5.4), then reports waiting for review.
-- On compact screens, "Answer" opens **answer mode**: one ask fills the screen. The question
-  scrolls at the top; the options sit in the bottom half, inside the thumb's reach.
-- After an answer, the next ask slides in. "3 of 7" sits in the top bar.
-- "Skip" (bottom left) and "Next" move without answering. A horizontal swipe does the same.
-  Nothing answers except a tap on an option or "Send".
-- Leaving answer mode returns to the desk at the same scroll position.
+Settings, then Appearance. It holds:
 
-### Task row
+1. A screen title, "Appearance", in `--type-screen`.
+2. **Mode**: a segmented control, System, Light and Dark, `--control` (44 px) tall on
+   `--raised`. The selected segment sits on `--surface`.
+3. **Theme**: one card per theme, in the order Indigo, Ink, Parchment, Abbey. Each card shows the
+   desk in that theme, light and dark side by side at one fifth scale, the theme's name in the
+   display role, one sentence about it, and a radio. The selected card has a 2 px `--action` edge
+   and a filled radio.
+4. A note in `--text-3`: "A theme changes color and type only. Every screen keeps the same
+   layout."
 
-- Compact, two lines, at least 56 px tall: line 1 is the status badge (icon only, with the state
-  as its accessible name) and the task key in `mono`, truncated in the middle so the number
-  stays visible. Line 2 (`small`, `--text-3`) is workflow and step, lane, band and age.
-- Medium and wide, one line, 36 px tall: badge with word, key, workflow and step, lane, band,
-  age, each in its own column.
-- A `blocked`, `held` or `failed` row shows its reason on line 2 in the role's color.
-- States: default, hover (`--raised`), pressed (`--raised`), selected (`--accent-soft` and a
-  2 px `--accent` bar on the leading edge), new (fading `--accent-soft`), focused (focus ring).
+- Choosing applies at once, with no save button, and is stored on this device.
+- The cards are a `radiogroup`; each card is a `radio` named by its theme.
+- Each preview renders the real desk component with the theme's attributes, not a picture, so it
+  can never drift from the theme.
+
+### Task row and run row
+
+- **Phone**: rows as on the desk. Line 2 is workflow and step, lane, band and age; a `blocked`,
+  `held` or `failed` row shows its reason there in the role's text color.
+- **Wide**: one line, `--row-wide` (38 px), with columns for state, key, workflow and step, lane,
+  band and age (tasks) or run id, step, agent, started, duration and state (runs). Numbers are
+  right aligned in `tabular-nums`.
+- States: default, pressed (`--raised`), selected (bold text and a 3 px `--action` bar on the
+  leading edge), new (fading `--action-soft`), focused (focus ring).
+- A live run shows its duration counting up once per minute, not per second. Tapping a run opens
+  its terminal.
 - Actions live on the task page, not in the row: Resume, Cancel, Revive, Hold, Release, Move.
 
-### Run row
+### Task detail and workflow grid
 
-- Run id in `mono`, task key, step, agent, started, duration in `tabular-nums`, and the run
-  badge. A live run shows its duration counting up once per minute, not per second.
-- Tapping a run opens its terminal.
-- Same states as the task row.
+- Context line: task key in mono, the task's state tile and word, workflow, lane, band.
+- Title in `--type-task`.
+- **Workflow grid**: one cell per step in a row of equal columns with `--radius-md` and hairlines
+  between cells. Each cell holds the step name and its decider with an icon: `cog` for model and
+  code steps, `user` for human steps. Done steps show a check in `--ok-text`. The current step is
+  solid `--emph` with a live dot. Future steps are in `--text-3`. An irreversible step has a
+  1.5 px `--danger-text` edge and the `lock` icon.
+- Then the runs table and the terminal of the selected run.
+- The full workflow diagram (steps as nodes, outcome edges) keeps the same encodings, top to
+  bottom on compact and left to right on wide, with pinch, drag and a "Fit" button.
 
 ### Panel chrome
 
-- Header, 44 px, sticky: title (`title` style), count in `--text-3`, then up to two icon buttons
-  (filter, menu). Any further action goes in the menu.
+- Header, 44 px, sticky: title in the display role, count in `--text-3`, then up to two icon
+  buttons (filter, menu). Any further action goes in the menu.
 - Body scrolls on its own with `overscroll-behavior: contain`.
-- Wide screens: `--surface`, 1 px `--line` border, `--radius-lg`. Compact: full bleed, no border.
-- When the event stream drops, a `--warn-soft` strip under the header says "Reconnecting. Last
+- When the event stream drops, a `--warn-text` strip under the header says "Reconnecting. Last
   update 2 min ago." The panel keeps its rows.
 
 ### Terminal pane
 
-- Always the `--term-*` palette, in both themes. `mono` at 12 / 16 on compact, 13 / 18 on wide.
+- Always the `--term-*` tokens, dark in every theme and mode, with `--radius-md`. Mono at 12 / 16
+  on compact, 12.5 / 19 on wide.
 - tmux sets the width, so lines never wrap. The pane scrolls sideways inside its own box. A "Fit"
   toggle scales the text down to fit the width, never below 9 px.
 - Read-only by default. "Type" opens a one-line input at the bottom that sends a line on Enter.
-  The header shows `read-only` or `typing` as a badge.
-- Header: session name in `mono`, run id, the run badge, "Copy screen", "Fit".
-- When the run ends, the pane keeps its last screen and shows the run badge.
-
-### Workflow diagram
-
-- Steps are nodes; edges carry the outcome that takes the task from one step to the next.
-- Node shape says who decides: model steps have `--radius-lg` corners, human steps have square
-  corners and the `user` icon, code steps have `--radius-sm` corners and the `cog` icon.
-- An irreversible step has a `--danger` border and the `lock` icon.
-- The task's current step has an `--accent-soft` fill and `--accent` border. Visited edges are
-  solid `--text-2`; others are dashed `--line-control`.
-- Top to bottom on compact, left to right on wide. Pinch and drag to move; a "Fit" button resets.
+  The header shows `read-only` or `typing`.
+- Header: the `terminal` icon, session name in mono, run id, "Copy screen", "Fit", "Attach".
+- When the run ends, the pane keeps its last screen and shows the run's state tile.
 
 ### Reports and tables
 
 - Numbers right-aligned in `tabular-nums`. The first column stays sticky when the table scrolls
   sideways on a phone.
-- Headers in `caption` style, `--text-2`, sentence case.
+- Headers in `--type-caption`, `--text-3`, sentence case.
 
 ### Buttons and inputs
 
-| Kind      | Fill             | Text            | Border           | Use                                  |
-| --------- | ---------------- | --------------- | ---------------- | ------------------------------------ |
-| primary   | `--accent-solid` | `--on-accent`   | none             | One per region: the expected action. |
-| secondary | `--surface`      | `--text`        | `--line-control` | Every other action.                  |
-| ghost     | none             | `--accent`      | none             | Links and low-weight actions.        |
-| danger    | `--danger-solid` | `--on-danger`   | none             | Cancel task, drop. Always confirms.  |
+| Kind      | Fill            | Text            | Edge             | Use                                  |
+| --------- | --------------- | --------------- | ---------------- | ------------------------------------ |
+| primary   | `--action`      | `--on-action`   | none             | One per region: the expected action. |
+| secondary | `--surface`     | `--text`        | `--control-line` | Every other action.                  |
+| ghost     | none            | `--action-text` | none             | Links and low-weight actions.        |
+| danger    | `--tile-danger` | `--on-tile`     | none             | Cancel task, drop. Always confirms.  |
 
-- Height 32 px on a fine pointer, 44 px on a coarse one (`@media (pointer: coarse)`).
-- States: hover (8 % darker fill or `--raised`), pressed, focused, disabled (`--text-3` text,
-  no fill change, `aria-disabled`), busy (an inline 12 px spinner replaces the icon; the label
-  stays).
-- Inputs: 16 px text, `--surface` fill, `--line-control` border, `--radius-md`, 44 px tall on
-  coarse pointers. Errors show under the field in `--danger` with the `circle-x` icon.
+- Height `--control` (44 px) on a coarse pointer, `--control-fine` (32 px) on a fine one.
+- States: pressed, focused, disabled (`--text-3` text, no fill change, `aria-disabled`), busy (an
+  inline 12 px spinner replaces the icon; the label stays).
+- Inputs: 16 px text, `--surface` fill, `--control-line` edge, `--radius-md`. Errors show under
+  the field in `--danger-text` with the `circle-x` icon.
 
 ### Empty, loading and error states
 
@@ -436,11 +456,20 @@ above the options. Its answer runs the command, so:
   or CLI command. "No open asks. Agents ask here when they need you."
 - **Loading**: show nothing for the first 300 ms, then skeleton rows on `--raised` at the real
   row height. Never a full-page spinner. A list that has data keeps it while it refreshes.
-- **Error**: where it failed, why, and how to fix it, with a "Retry" button.
-  "Could not load runs: the daemon refused the connection. Check that the daemon runs on
-  its runner, then retry." Keep any stale data visible under the error.
-- **Banner** (desk top, R4.3): `--warn-soft`, the `hard-drive` or `memory-stick` icon, and the
-  sentence from the daemon: what is short, by how much, since when, and the waiting task.
+- **Error**: where it failed, why, and how to fix it, with a "Retry" button. "Could not load runs:
+  the daemon refused the connection. Check that the daemon runs on its runner, then retry." Keep
+  any stale data visible under the error.
+
+### Motion
+
+Motion shows what changed after a person acts. Nothing moves on its own except the dot of a live
+run.
+
+- A new row gets an `--action-soft` background that fades out over 1.2 s. With reduced motion it
+  keeps a small dot until the person scrolls past it.
+- Sheets slide up with `--dur-3`. With reduced motion they appear in place.
+- Never animate the height of a list that updates live. Insert rows without moving the row under
+  the person's thumb: if they scrolled, keep their position and show "3 new" at the top instead.
 
 ## Touch and gestures
 
@@ -456,8 +485,8 @@ above the options. Its answer runs the command, so:
 
 ## Accessibility
 
-- Meet WCAG 2.2 AA. The tokens above already meet the contrast part; keep it that way.
-- Focus ring: 2 px solid `--accent` with a 2 px offset, on every focusable element, using
+- Meet WCAG 2.2 AA in every theme and mode. The tokens already meet the contrast part; keep it so.
+- Focus ring: 2 px solid `--action-text` with a 2 px offset, on every focusable element, using
   `:focus-visible`.
 - Every control works by keyboard. Desktop shortcuts: `j` and `k` move, `Enter` opens, `1` to
   `9` pick an option, `w` writes an answer, `Esc` closes, `?` lists shortcuts. Single-key
@@ -465,14 +494,14 @@ above the options. Its answer runs the command, so:
 - Each panel is a `region` labelled by its title. The tab bar is a `nav`.
 - A new ask is announced once through a polite live region: "New ask from task 61." Never
   assertive.
-- An icon-only badge has the state word as its accessible name. Decorative icons are
-  `aria-hidden`.
+- A state tile has the state word as its accessible name when the word is not shown beside it.
+  Decorative icons are `aria-hidden`.
 - The terminal is a `pre` with an accessible name ("Terminal of run 18") and a "Copy screen"
   button, so its text can be read elsewhere.
 - Text reflows at 320 px wide and at 200 % zoom. Only the terminal, diagrams and wide tables
   scroll in two directions.
-- Under `prefers-contrast: more`, `--line` takes the value of `--line-control`.
-- Under `forced-colors: active`, badges and option buttons keep a 1 px `CanvasText` border.
+- Under `prefers-contrast: more`, `--line` takes the value of `--control-line`.
+- Under `forced-colors: active`, tiles, cards and option buttons keep a 1 px `CanvasText` edge.
 
 ## Copy
 
@@ -490,5 +519,7 @@ above the options. Its answer runs the command, so:
 
 ## When to change this file
 
-Change `DESIGN.md` in the same pull request as the code that needs the change, and update the
-artifact to match. A new component, state or token starts here, not in the code.
+Change `DESIGN.md` and the token files in the same pull request as the code that needs the
+change, and update the artifact to match. A new component, state, token or theme starts here, not
+in the code. A new theme defines every token in `themes.css`, passes the contrast checks above in
+both modes, and adds a card to the Appearance screen.

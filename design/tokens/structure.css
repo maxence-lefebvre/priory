@@ -1,0 +1,69 @@
+/*
+ * Structure tokens for Priory's web view (DESIGN.md, "Structure tokens").
+ * Layout, spacing, radii, sizes, the type scale and motion. No color and no typeface:
+ * those come from a theme in themes.css. A theme never overrides anything here.
+ */
+:root {
+  /* Spacing: a 4 px grid. Lay out siblings with gap, not margins. */
+  --space-1: 4px;   /* icon to label */
+  --space-2: 8px;   /* between items in a row, between touch targets */
+  --space-3: 12px;  /* row vertical padding, card inner gap */
+  --space-4: 16px;  /* side gutter at every width, card padding */
+  --space-5: 24px;  /* between groups in a panel */
+  --space-6: 32px;  /* between sections of a page */
+  --space-8: 48px;  /* empty state padding */
+  --gutter: max(var(--space-4), env(safe-area-inset-left));
+
+  /* Radii: radius marks what an element is. */
+  --radius-sm: 5px;      /* tags, kbd hints */
+  --radius-tile: 8px;    /* state tiles */
+  --radius-md: 12px;     /* inputs, banners, segmented control, workflow grid, terminal */
+  --radius-card: 14px;   /* next-ask card, option buttons, theme cards */
+  --radius-full: 999px;  /* Answer capsule, live dots, badges */
+
+  /* Sizes */
+  --top-bar: 52px;
+  --tab-bar: calc(60px + env(safe-area-inset-bottom));
+  --capsule: 54px;           /* Answer capsule height */
+  --capsule-gap: 14px;       /* between the capsule and the tab bar */
+  --desk-end: calc(var(--capsule) + 2 * var(--capsule-gap)); /* bottom padding of the phone desk list */
+  --row-min: 64px;           /* phone rows */
+  --row-wide: 38px;          /* table rows on wide screens */
+  --tile: 30px;              /* state tile; wide tables show a 15px icon instead */
+  --option-min: 58px;        /* ask option buttons */
+  --control: 44px;           /* buttons and inputs on a coarse pointer */
+  --control-fine: 32px;      /* buttons and inputs on a fine pointer */
+  --sidebar: 200px;
+  --desk-column: 400px;
+
+  /* Type scale: size / line height. The family comes from the theme's font roles. */
+  --type-count: 104px/0.8;    /* the desk's ask count, display role */
+  --type-count-wide: 88px/0.8; /* the ask count in the wide desk column */
+  --type-screen: 34px/40px;   /* screen titles such as Appearance, display role */
+  --type-task: 32px/38px;     /* task title on wide screens, display role */
+  --type-question: 25px/31px; /* the question in answer mode, display role */
+  --type-hero: 24px/27px;     /* "asks need you" beside the count, display role */
+  --type-next: 18px/24px;     /* question in the next-ask card, display role */
+  --type-option: 17px/22px;   /* option labels and the capsule, UI role */
+  --type-body: 15px/20px;     /* row text, UI role */
+  --type-small: 14px/20px;    /* reasons, trade-off, banner, UI role */
+  --type-caption: 13px/18px;  /* row metadata, section heads, UI role */
+  --type-mono: 12.5px/19px;   /* keys, ids, shas, terminal on wide screens, mono role */
+  --type-mono-compact: 12px/16px; /* the terminal on compact screens, mono role */
+  --type-tab: 11px/14px;      /* tab bar labels, UI role */
+
+  /* Elevation: hairlines separate; a shadow means the element floats. */
+  --shadow-float: 0 6px 20px rgba(0, 0, 0, 0.18); /* Answer capsule */
+  --shadow-sheet: 0 -8px 32px rgba(0, 0, 0, 0.24);
+
+  /* Motion */
+  --dur-1: 100ms;  /* press, toggle */
+  --dur-2: 160ms;  /* expand, collapse, fade */
+  --dur-3: 240ms;  /* sheet in, page push */
+  --ease-out: cubic-bezier(0.2, 0, 0, 1);
+  --ease-in: cubic-bezier(0.4, 0, 1, 1);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root { --dur-1: 0ms; --dur-2: 0ms; --dur-3: 0ms; }
+}
