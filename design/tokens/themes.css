@@ -2,7 +2,7 @@
  * Theme tokens for Priory's web view (DESIGN.md, "Themes").
  * A theme sets colors and the three font roles, nothing else. Each color is one
  * light-dark() pair, so the mode follows color-scheme:
- *   <html data-theme="indigo|ink|parchment|abbey|matins" data-mode="system|light|dark">
+ *   <html data-theme="indigo|ink|parchment|abbey" data-mode="system|light|dark">
  * The same attributes on any element scope a theme to it, as the Appearance previews do.
  * Indigo is the default. Every theme defines every token below.
  */
@@ -187,51 +187,6 @@
   --term-fg: light-dark(#ECE6D8, #ECE6D8);
   --term-dim: light-dark(#9C9584, #9C9584);
   --scrim: light-dark(rgb(28 26 23 / 0.42), rgb(0 0 0 / 0.64));
-}
-
-/* Matins: from a tracing tool; cool instrument blue on blue-black, one grotesk family */
-[data-theme="matins"] {
-  --font-display: "Geist", system-ui, sans-serif;
-  --font-ui: "Geist", system-ui, sans-serif;
-  --font-mono: "Geist Mono", ui-monospace, monospace;
-  --display-stretch: 100%; --count-stretch: 100%; --count-weight: 800; --count-tracking: -3px;
-
-  --bg: light-dark(#F4F6F9, #090B10);
-  --surface: light-dark(#FFFFFF, #12151C);
-  --raised: light-dark(#EAEDF2, #1B1F28);
-  --line: light-dark(#E0E4EB, #232834);
-  --control-line: light-dark(#7E8696, #6C7385);
-  --bar: light-dark(#FFFFFF, #0C0F14);
-  --text: light-dark(#0C111C, #EEF1F6);
-  --text-2: light-dark(#394150, #C3C9D4);
-  --text-3: light-dark(#5D6676, #8D95A4);
-  --emph: light-dark(#0C111C, #EEF1F6);
-  --on-emph: light-dark(#FFFFFF, #090B10);
-  --on-emph-2: light-dark(#A3ABBA, #5A6272);
-  --action: light-dark(#2F55D4, #3A60E4);
-  --on-action: light-dark(#FFFFFF, #FFFFFF);
-  --action-soft: light-dark(#E6ECFD, #172142);
-  --action-text: light-dark(#2A4CC2, #8EA8FF);
-  --wait: light-dark(#2F55D4, #3A60E4);
-  --on-wait: light-dark(#FFFFFF, #FFFFFF);
-  --count: light-dark(#0C111C, #EEF1F6);
-  --badge: light-dark(#D1293D, #D1293D);
-  --on-badge: light-dark(#FFFFFF, #FFFFFF);
-  --tile-live: light-dark(#2F55D4, #3A60E4);
-  --tile-warn: light-dark(#B06600, #B06600);
-  --tile-danger: light-dark(#D1293D, #D1293D);
-  --tile-ok: light-dark(#0F7D59, #128862);
-  --tile-hold: light-dark(#7A4FD0, #8A60DC);
-  --tile-muted: light-dark(#848C9A, #525A69);
-  --on-tile: light-dark(#FFFFFF, #FFFFFF);
-  --on-tile-live: light-dark(#FFFFFF, #FFFFFF);
-  --warn-text: light-dark(#8F5300, #F0B44C);
-  --danger-text: light-dark(#C4233A, #FF7B88);
-  --ok-text: light-dark(#0E7351, #3DD9A0);
-  --term-bg: light-dark(#0E121A, #07090D);
-  --term-fg: light-dark(#E3E8F0, #E3E8F0);
-  --term-dim: light-dark(#8D96A6, #8D96A6);
-  --scrim: light-dark(rgb(12 17 28 / 0.40), rgb(0 0 0 / 0.66));
 }
 
 /* Derived, the same in every theme; declared on each theme root so it resolves to that theme. */
