@@ -1,4 +1,5 @@
 pub mod daemon;
+mod deliver;
 pub mod embed;
 mod handler;
 mod hold;

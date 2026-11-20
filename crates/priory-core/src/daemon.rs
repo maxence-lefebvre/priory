@@ -6,7 +6,7 @@ use crate::snooze::{self, Snooze};
 use crate::state::{self, Admission, NewRun, Signal};
 use crate::tools::{self, Act, Answer, Call, Dismiss, Done, Repair};
 use crate::trace::Trace;
-use crate::{embed, handler, search, stall, summary, sweep};
+use crate::{deliver, embed, handler, search, stall, summary, sweep};
 use herdr_bus::{Bus, Start};
 use priory_factory::factory::{self, Factory, Harness, PermissionMode, Session};
 use priory_intake::intake::OUTPUT;
@@ -179,6 +179,7 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
         after: Instant::now(),
     });
     let mut scripts = Vec::new();
+    let mut deliveries = deliver::adopt(&db)?;
     let every = factory.sweep().every.unwrap_or(SWEEP);
     let mut swept: Option<Instant> = None;
     loop {
@@ -193,6 +194,7 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
         if let Some(export) = &mut export {
             send_spans(&db, &trace, &home, export)?;
         }
+        deliver::tick(&db, factory, &home, &mut deliveries)?;
         if sweep_scripts(&db, factory, &home, &mut scripts)? {
             swept = None;
         }
@@ -580,7 +582,7 @@ fn take(db: &mut Connection, line: &str, trace: &Trace) -> Result<(String, Optio
             })?),
             None,
         )),
-        Ok(Input::Dismiss(dismiss)) => Ok((replied(tools::dismiss(db, &dismiss)?), None)),
+        Ok(Input::Dismiss(dismiss)) => Ok((replied(tools::dismiss(db, &dismiss, trace.factory)?), None)),
         Ok(Input::Act(act)) => {
             let (reply, kill) = tools::act(db, &act, trace.factory)?;
             Ok((replied(reply), kill))

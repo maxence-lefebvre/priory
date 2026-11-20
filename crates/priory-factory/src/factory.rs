@@ -52,6 +52,18 @@ pub struct Settings {
     pub search: Search,
     pub telemetry: Option<Telemetry>,
     pub serve: Option<Serve>,
+    #[serde(default)]
+    pub asks: Asks,
+}
+
+/// What happens to the answer of an ask from a session Priory did not start.
+#[derive(Debug, Default, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct Asks {
+    /// The command that delivers an answer to the session that asked, relative to the factory
+    /// folder. It gets the ask's id, revision, session, `answered` or `dismissed`, and the answer
+    /// as its arguments. Without it, the answer is only stored.
+    pub deliver: Option<PathBuf>,
 }
 
 /// The HTTP server over the factory's state, in the daemon and in `priory serve`.
@@ -799,6 +811,13 @@ impl Factory {
     /// The HTTP server's settings; none listens nowhere.
     pub fn serve(&self) -> Option<&Serve> {
         self.settings.as_ref()?.value.serve.as_ref()
+    }
+
+    /// The command that delivers an outside ask's answer, under the factory folder; none only
+    /// stores it.
+    pub fn deliver(&self) -> Option<PathBuf> {
+        let deliver = self.settings.as_ref()?.value.asks.deliver.as_ref()?;
+        Some(self.dir.join(deliver))
     }
 
     pub fn bands(&self) -> Vec<&str> {
