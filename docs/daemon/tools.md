@@ -53,7 +53,7 @@ stays in the step's result and in its `factory.step.ended` record, which carries
 `priory tasks` prints the grade and its reason in the `grade` and `grade_reason` columns, and
 `priory tasks --grade green` lists only the green tasks.
 
-### `ask(question, options, recommendation, tradeoff)`
+### `ask(question, options, recommendation, tradeoff, title?, text?, whatWaits?, nextAction?, command?)`
 
 `ask` puts a question on the desk and stores it as an ask at revision 1. The agent then ends its
 turn and sleeps with no process. The person's answer arrives as its next prompt (see
@@ -67,6 +67,38 @@ turn and sleeps with no process. The person's answer arrives as its next prompt 
   "tradeoff": "A new flag is easier to find, but adds a second way to do the same thing."
 }
 ```
+
+`options` is a list of plain strings. The other fields are optional strings that describe the ask:
+
+| Field        | Meaning                                                              |
+| ------------ | -------------------------------------------------------------------- |
+| `title`      | The question in one line                                             |
+| `text`       | The ask's body, in Markdown                                          |
+| `whatWaits`  | What waits on the answer                                             |
+| `nextAction` | What the agent does once it has the answer                           |
+| `command`    | A command for the answer to run. Priory stores it but runs nothing yet (R6.8) |
+
+`priory asks` and `priory asks --json` show them, the JSON as `title`, `text`, `what_waits`,
+`next_action` and `command`.
+
+### Asks from outside Priory
+
+`priory ask ID JSON` stores an ask from a session that Priory did not start, such as a person's
+Claude session. It takes the JSON of Fleet's `priory ask`: the fields of the `ask` tool, all
+optional except `question` or `title`, and `coordinator`, `key`, `runId` and `session`. It prints
+`ID`. An ID is 1 to 100 letters, digits, `.`, `_` or `-`, and not only digits.
+
+```sh
+priory ask cache.ship '{"title": "Ship the cache today?", "options": ["ship", "wait"], "session": "cache-worker"}'
+```
+
+The ask belongs to no task, and shows on the desk and in `priory asks` under its ID. A field the ask
+does not know is ignored, with `priory ask: ignored unknown field <name>` on stderr. Asking again
+under the same ID replaces every field. If any field changed, the ask gets a new revision and is
+open again, even after an answer or a dismiss. The same fields change nothing.
+
+`priory answer` stores the answer to an outside ask, under the same revision rule as any ask.
+Nothing delivers it to the asking session yet: Priory stores `session` for that.
 
 ### `wait(on)`
 

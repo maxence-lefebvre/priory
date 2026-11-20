@@ -25,7 +25,7 @@ fn desk_items() -> String {
            (SELECT step FROM tasks WHERE tasks.id = desk.task) AS step, desk.lane, desk.what,
            (SELECT generation FROM tasks WHERE tasks.id = desk.task) AS generation, {}
          FROM ({DESK}) AS desk
-         LEFT JOIN snoozes ON snoozes.item = desk.id AND snoozes.kind =
+         LEFT JOIN snoozes ON snoozes.item = desk.id AND typeof(desk.id) = 'integer' AND snoozes.kind =
            CASE WHEN desk.kind IN ('blocked', 'failed') THEN 'task' ELSE desk.kind END
          ORDER BY desk.part, CASE WHEN desk.part = 0 THEN desk.since END, desk.kind, desk.id",
         places(),
@@ -33,11 +33,12 @@ fn desk_items() -> String {
     )
 }
 
-const DESK: &str = "SELECT 0 AS part, asks.created AS since, 'ask' AS kind, asks.id AS id,
-                 asks.task AS task, tasks.lane AS lane, asks.question || ' ' || asks.options AS what
-               FROM asks JOIN tasks ON tasks.id = asks.task
+const DESK: &str = "SELECT 0 AS part, asks.created AS since, 'ask' AS kind,
+                 coalesce(asks.name, asks.id) AS id, asks.task AS task, tasks.lane AS lane,
+                 asks.question || ' ' || asks.options AS what
+               FROM asks LEFT JOIN tasks ON tasks.id = asks.task
                WHERE asks.answer IS NULL AND asks.withdrawn IS NULL
-                 AND tasks.state NOT IN ('done', 'failed', 'dropped')
+                 AND coalesce(tasks.state, '') NOT IN ('done', 'failed', 'dropped')
                UNION ALL
                SELECT 0, changed, 'blocked', id, id, lane, reason FROM tasks WHERE state = 'blocked'
                UNION ALL
@@ -79,12 +80,16 @@ const DESK: &str = "SELECT 0 AS part, asks.created AS since, 'ask' AS kind, asks
 
 fn asks_query() -> String {
     format!(
-        "SELECT asks.id, asks.task, tasks.key, asks.step, tasks.lane, asks.run,
+        "SELECT coalesce(asks.name, asks.id) AS id, asks.task,
+     coalesce(tasks.key, asks.key) AS key, asks.step, tasks.lane, asks.run,
      CASE WHEN asks.withdrawn IS NOT NULL THEN 'withdrawn'
        WHEN asks.answer IS NOT NULL THEN 'answered' ELSE 'open' END AS state,
+     CASE asks.withdrawn WHEN -1 THEN 'dismissed' WHEN 0 THEN 'a later run called another tool'
+       ELSE 'revived as generation ' || asks.withdrawn END AS withdrawn_why,
      asks.revision, asks.question, asks.options, asks.recommendation, asks.tradeoff, asks.answer,
-     asks.answered AS answered_at, asks.created AS since, {}
-   FROM asks JOIN tasks ON tasks.id = asks.task
+     asks.answered AS answered_at, asks.created AS since, asks.title, asks.text,
+     asks.what_waits, asks.next_action, asks.command, asks.coordinator, asks.run_id, asks.session, {}
+   FROM asks LEFT JOIN tasks ON tasks.id = asks.task
    LEFT JOIN snoozes ON snoozes.kind = 'ask' AND snoozes.item = asks.id WHERE ?1 IS NULL OR asks.task = ?1 ORDER BY asks.id",
         snooze::FIELDS
     )
