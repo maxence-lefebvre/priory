@@ -6,7 +6,7 @@ use crate::snooze::{self, Snooze};
 use crate::state::{self, Admission, NewRun, Signal};
 use crate::tools::{self, Act, Answer, Call, Dismiss, Done, Repair};
 use crate::trace::Trace;
-use crate::{deliver, embed, handler, search, stall, summary, sweep};
+use crate::{deliver, embed, handler, search, sections, stall, summary, sweep};
 use herdr_bus::{Bus, Start};
 use priory_factory::factory::{self, Factory, Harness, PermissionMode, Session};
 use priory_intake::intake::OUTPUT;
@@ -89,7 +89,7 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
     }
     let listening = runtime::listen(&home)?;
     if let Some(config) = factory.serve() {
-        crate::serve::start(config, config.listen)?;
+        crate::serve::start(factory, config.listen)?;
     }
     if let Some(name) = embedder.clone() {
         let home = home.clone();
@@ -553,7 +553,7 @@ fn apply(db: &mut Connection, line: Line, trace: &Trace) -> Result<(), Error> {
 }
 
 /// What arrives on the socket: a hook's signal, a run's tool call, a person's answer, desk action
-/// or snooze, or a memory gate message.
+/// or snooze, a pick on a report, or a memory gate message.
 #[derive(serde::Deserialize)]
 #[serde(untagged)]
 enum Input {
@@ -563,6 +563,7 @@ enum Input {
     Dismiss(Dismiss),
     Act(Act),
     Snooze(Snooze),
+    Choice(sections::Choice),
     Gate(Gate),
 }
 
@@ -588,6 +589,9 @@ fn take(db: &mut Connection, line: &str, trace: &Trace) -> Result<(String, Optio
             Ok((replied(reply), kill))
         }
         Ok(Input::Snooze(snooze)) => Ok((replied(snooze::snooze(db, &snooze, trace)?), None)),
+        Ok(Input::Choice(choice)) => {
+            Ok((replied(sections::pick(db, &choice, trace.factory)?), None))
+        }
         Ok(Input::Gate(gate)) => {
             let share = Share::of(trace.factory, trace.machine.as_deref());
             let room = || room::measure(&runtime::home());

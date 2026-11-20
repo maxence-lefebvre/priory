@@ -10,7 +10,7 @@ use std::collections::BTreeMap;
 use std::io::Write;
 use std::time::Duration;
 
-const VERSION: i64 = 34;
+const VERSION: i64 = 35;
 
 const SCHEMA: &str = "
 CREATE TABLE tasks (
@@ -575,6 +575,16 @@ PRAGMA user_version = 33;
 ";
 
 const SCHEMA_34: &str = "
+CREATE TABLE reports (
+  task     INTEGER PRIMARY KEY REFERENCES tasks (id),
+  revision INTEGER NOT NULL,
+  report   TEXT NOT NULL,
+  put      TEXT NOT NULL
+);
+PRAGMA user_version = 34;
+";
+
+const SCHEMA_35: &str = "
 CREATE TABLE deliveries (
   id          INTEGER PRIMARY KEY AUTOINCREMENT,
   ask         INTEGER NOT NULL REFERENCES asks (id),
@@ -590,15 +600,16 @@ CREATE TABLE deliveries (
   created     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
   ended       TEXT
 );
-PRAGMA user_version = 34;
+PRAGMA user_version = 35;
 ";
+
 /// Each schema change in order: a file at version `n` applies those from index `n` on.
 const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA, SCHEMA_2, SCHEMA_3, SCHEMA_4, SCHEMA_5, SCHEMA_6, SCHEMA_7, SCHEMA_8, SCHEMA_9,
     SCHEMA_10, SCHEMA_11, SCHEMA_12, SCHEMA_13, SCHEMA_14, SCHEMA_15, SCHEMA_16, SCHEMA_17,
     SCHEMA_18, SCHEMA_19, SCHEMA_20, SCHEMA_21, SCHEMA_22, SCHEMA_23, SCHEMA_24, SCHEMA_25,
     SCHEMA_26, SCHEMA_27, SCHEMA_28, SCHEMA_29, SCHEMA_30, SCHEMA_31, SCHEMA_32, SCHEMA_33,
-    SCHEMA_34,
+    SCHEMA_34, SCHEMA_35,
 ];
 
 /// The order the queue starts tasks in: band, then a person's order, then age. A band the factory

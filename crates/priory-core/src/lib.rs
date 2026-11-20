@@ -13,6 +13,7 @@ pub mod report;
 mod room;
 mod route;
 pub mod search;
+pub mod sections;
 pub mod serve;
 pub mod snooze;
 pub mod stall;

@@ -1792,7 +1792,7 @@ pub(crate) fn cancel(
 
 /// Queues a person's text as the next prompt of the agent at the task's model step, as an answer
 /// is: typed once its run is idle, or waking an asleep task into a new run that resumes the session.
-fn say(
+pub(crate) fn say(
     tx: &Transaction,
     act: &Act,
     state: &str,
