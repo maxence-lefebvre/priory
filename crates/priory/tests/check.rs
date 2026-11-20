@@ -321,6 +321,21 @@ fn start_must_name_a_step() {
 }
 
 #[test]
+fn reopen_must_name_a_model_step() {
+    let outcome = workflow_with(
+        "reopen",
+        "start = \"implement\"",
+        "start = \"implement\"\nreopen = \"approve-pr\"",
+    );
+
+    assert_eq!(outcome.code, 1);
+    assert_eq!(
+        outcome.stderr,
+        "workflows/implement.toml:3: reopen `approve-pr` is not a model step\n"
+    );
+}
+
+#[test]
 fn every_step_must_be_reachable_from_start() {
     let outcome = workflow_with(
         "unreachable",

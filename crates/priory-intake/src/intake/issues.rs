@@ -1,7 +1,10 @@
 use super::gh::{Login, pages};
-use super::pulls::{open_pulls, pull_requests, reviews_and_checks};
+use super::pulls::{
+    comment, open_pulls, pull_requests, reviews_and_checks, thread_comment, thread_comments,
+};
 use super::{
-    CHECKED, Cursors, LABELED, OPENED, Observed, PR_CLOSED, PR_LABELED, PR_OPENED, Polled, REVIEWED,
+    CHECKED, Cursors, LABELED, OPENED, Observed, PR_CLOSED, PR_LABELED, PR_OPENED, Polled,
+    REVIEWED, THREAD_COMMENTED,
 };
 use serde::Deserialize;
 use serde_json::json;
@@ -143,7 +146,31 @@ pub(super) fn fetch_repo(repo: &str, cursors: &Cursors) -> Result<Vec<Polled>, S
     let closed = pulls
         .values()
         .filter(|pull| !open.iter().any(|other| other.number == pull.number));
-    let (reviews, checks) = reviews_and_checks(repo, open.iter().chain(closed), cursor);
+    let watched: BTreeMap<u64, _> = open
+        .iter()
+        .chain(closed)
+        .map(|pull| (pull.number, pull))
+        .collect();
+    let (mut reviews, checks) = reviews_and_checks(repo, watched.values().copied(), cursor);
+    for found in thread_comments(repo)? {
+        let number = found["pull_request_url"]
+            .as_str()
+            .and_then(|url| url.rsplit('/').next()?.parse().ok());
+        let Some(pull) = number.and_then(|number| watched.get(&number)) else {
+            continue;
+        };
+        let Some(data) = thread_comment(&found) else {
+            continue;
+        };
+        let mut observed = comment(THREAD_COMMENTED, repo, pull.number, &pull.branches(), data);
+        observed.baseline = cursor(REVIEWED).is_none();
+        reviews.push(observed);
+    }
+    let order = |event: &Observed| {
+        let time = event.data["time"].as_str().unwrap_or_default().to_owned();
+        (time, event.data["github_id"].as_u64())
+    };
+    reviews.sort_by_key(order);
     let top = |events: &[Observed]| {
         events
             .iter()

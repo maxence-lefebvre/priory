@@ -86,8 +86,14 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
         counter: None,
         tried: None,
     };
+    let trace = Trace {
+        factory,
+        revision: runtime::revision(&factory.dir),
+        machine: room::hostname(),
+        usage: transcript::usage,
+    };
     if once {
-        drain(&bus, &mut db, factory, counting.get(&home))?;
+        drain(&bus, &mut db, &trace, counting.get(&home))?;
         return Ok(());
     }
     let listening = runtime::listen(&home)?;
@@ -98,12 +104,6 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
         let home = home.clone();
         std::thread::spawn(move || embed_all(&name, embed::Lazy::new(&home, true)));
     }
-    let trace = Trace {
-        factory,
-        revision: runtime::revision(&factory.dir),
-        machine: room::hostname(),
-        usage: transcript::usage,
-    };
     let share = Share::of(factory, trace.machine.as_deref());
     let slice = slice::name();
     let scope = slice::scope(&slice, share.cpu, share.memory).unwrap_or_else(|error| {
@@ -210,7 +210,7 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
     let every = factory.sweep().every.unwrap_or(SWEEP);
     let mut swept: Option<Instant> = None;
     loop {
-        drain(&bus, &mut db, factory, counting.get(&home))?;
+        drain(&bus, &mut db, &trace, counting.get(&home))?;
         while let Ok(line) = listening.lines.try_recv() {
             apply(&mut db, line, &trace)?;
         }
@@ -1346,7 +1346,7 @@ fn harness(harness: &Harness) -> &'static dyn runtime::Harness {
 fn drain(
     bus: &Bus,
     db: &mut Connection,
-    factory: &Factory,
+    trace: &Trace,
     counter: Option<&embed::Counter>,
 ) -> Result<(), Error> {
     match bus.connect(CONSUMER, OUTPUT, Start::Beginning) {
@@ -1360,7 +1360,7 @@ fn drain(
             return Ok(());
         }
         for delivery in deliveries {
-            let ended = state::handle(db, &delivery.message, factory, counter)?;
+            let ended = state::handle(db, &delivery.message, trace, counter)?;
             bus.ack(delivery.connection, delivery.seq)?;
             ended.inspect(|tmux| runtime::kill(tmux));
         }

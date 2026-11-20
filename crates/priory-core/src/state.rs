@@ -846,9 +846,10 @@ fn refiltered(data: &serde_json::Value) -> String {
 pub(crate) fn handle(
     db: &mut Connection,
     message: &Message,
-    factory: &Factory,
+    trace: &crate::trace::Trace,
     counter: Option<&crate::embed::Counter>,
 ) -> Result<Option<String>, Box<dyn std::error::Error>> {
+    let factory = trace.factory;
     let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
     let seen = tx
         .query_row(
@@ -868,7 +869,12 @@ pub(crate) fn handle(
         (false, None) => (None, owners(&tx, &resources)?),
     };
     let owner = keyed.as_ref().or(owners.first());
+    let reopening = match owner {
+        None => crate::tools::reopenable(&tx, message)?,
+        Some(_) => None,
+    };
     let (task, outcome) = match route::route(message, owner, factory) {
+        _ if reopening.is_some() => (reopening, "reopened"),
         _ if keyed.is_some() && route::withdraws(message) => {
             (keyed.as_ref().map(|task| task.id), "withdrew")
         }
@@ -988,6 +994,7 @@ pub(crate) fn handle(
             let text = message.data["prompt"].as_str().unwrap_or(&line);
             crate::tools::wake_on(&tx, task, text, Some(seq))?;
         }
+        (Some(task), "reopened") => crate::tools::reopen(&tx, trace, task, seq)?,
         (Some(task), "withdrew") => {
             let tmux = crate::tools::cancel(&tx, task, "review request removed")?;
             tx.commit()?;

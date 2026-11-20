@@ -98,6 +98,38 @@ names the run that failed.
 | `action`  | yes      | What the factory did about the cause, such as `sweep` or `wait for room`  |
 | `outcome` | yes      | `ready` when the task waits to start its agent again, `failed` when it stays failed |
 
+## `factory.task.reopened`
+
+Feedback on the open pull request of a done task moved it back to a step, as its next generation.
+It shares `factory`, `factory_revision`, `workflow`, `task`, `key`, `generation`, `step` and
+`machine` with `factory.step.ended`. `generation` is the new one and `step` the step it went back to.
+
+```json
+{
+  "specversion": "1.0",
+  "id": "0196f1d5-0000-7000-8000-000000000006",
+  "source": "factory://example/xps13",
+  "type": "factory.task.reopened",
+  "time": "2026-11-20T18:12:40Z",
+  "datacontenttype": "application/json",
+  "data": {
+    "factory": "example",
+    "factory_revision": "999daf0",
+    "workflow": "implement",
+    "task": "0196f1b0-0000-7000-8000-000000000001",
+    "key": "github:example/app#42",
+    "generation": 2,
+    "step": "implement",
+    "machine": "xps13",
+    "pull_request": "github:example/app#57"
+  }
+}
+```
+
+| Field          | Required | Meaning                                               |
+| -------------- | -------- | ----------------------------------------------------- |
+| `pull_request` | yes      | The pull request whose feedback reopened the task     |
+
 ## `factory.task.snoozed` and `factory.task.unsnoozed`
 
 A person snoozed a desk item of a task, or cleared its snooze. Both share `factory`,
