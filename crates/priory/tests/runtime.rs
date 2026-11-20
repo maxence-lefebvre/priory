@@ -9084,3 +9084,57 @@ fn a_pick_option_that_requests_a_task_creates_it_and_fills_applied() {
         ["Take", "requested task cli:fnd-2409"]
     );
 }
+
+#[test]
+fn a_rewrite_that_drops_the_chosen_option_is_refused() {
+    let setup = asleep_on_a_report("report-drop-chosen", &bonjour(serde_json::Value::Null));
+    let picked = setup.priory(&["report", "pick", PICK, "Take", "--expected", "1"]);
+    assert!(picked.status.success(), "{picked:?}");
+    let mut rewrite = bonjour(serde_json::Value::Null);
+    rewrite["sections"][0]["rows"][0]["pick"]["options"] = json!(["Later"]);
+    rewrite["sections"][0]["rows"][0]["pick"]["recommended"] = json!("Later");
+    let file = setup.dir.join("rewrite.json");
+    fs::write(&file, rewrite.to_string()).unwrap();
+
+    let put = setup.priory(&["report", "put", "1", file.to_str().unwrap()]);
+
+    assert!(!put.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&put.stderr),
+        format!(
+            "priory report put: the report is refused: pick \"{PICK}\" was chosen as \"Take\", which its options drop\n"
+        )
+    );
+    assert_eq!(shown(&setup)["revision"], 2);
+}
+
+#[test]
+fn a_pick_on_a_task_at_a_step_no_agent_runs_is_refused_and_records_nothing() {
+    let mut setup = Setup::with_workflow("report-human-step", STEPS);
+    setup.calls(&[
+        json!({ "name": "report", "arguments": bonjour(serde_json::Value::Null) }),
+        json!({ "name": "result", "arguments": { "outcome": "unsure", "summary": "Unsure." } }),
+    ]);
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("tasks", |rows| {
+        rows.first()
+            .is_some_and(|row| row[3] == "approve" && row[4] == "asleep")
+    });
+
+    let picked = setup.priory(&["report", "pick", PICK, "Take", "--expected", "1"]);
+
+    assert!(!picked.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&picked.stderr),
+        format!(
+            "priory report pick: pick {PICK}: task 1 is at step approve, which no agent runs\n"
+        )
+    );
+    let shown = shown(&setup);
+    assert_eq!(shown["revision"], 1);
+    assert_eq!(
+        shown["sections"][0]["rows"][0]["pick"]["chosen"],
+        serde_json::Value::Null
+    );
+}

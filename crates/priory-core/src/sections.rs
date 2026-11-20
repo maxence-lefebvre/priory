@@ -165,6 +165,33 @@ pub fn put(db: &mut Connection, task: i64, mut report: Report) -> Result<String,
     }
     for pick in picks(&mut report) {
         pick.chosen = chosen.remove(&pick.id).flatten();
+        if let Some(kept) = pick
+            .chosen
+            .as_ref()
+            .filter(|kept| !pick.options.contains(kept))
+        {
+            return Err(format!(
+                "the report is refused: pick {:?} was chosen as {kept:?}, which its options drop",
+                pick.id
+            ));
+        }
+        let owner: Option<i64> = tx
+            .query_row(
+                "SELECT task FROM reports WHERE task != ?1 AND EXISTS (
+                   SELECT 1 FROM json_each(report, '$.sections') AS section,
+                     json_each(section.value, '$.rows') AS row
+                   WHERE json_extract(row.value, '$.pick.id') = ?2)",
+                params![task, pick.id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(at)?;
+        if let Some(owner) = owner {
+            return Err(format!(
+                "the report is refused: task {owner}'s report already has the pick {:?}",
+                pick.id
+            ));
+        }
     }
     let text = serde_json::to_string(&report).expect("a report serializes");
     let revision: i64 = tx
@@ -237,8 +264,9 @@ pub struct Choice {
     pub expected: i64,
 }
 
-/// Records a person's choice on the report that holds its pick. The first choice stands. An option
-/// with a request publishes it and fills `applied`; any other wakes the report's task with a line.
+/// Records a person's choice on the report that holds its pick, which one report at most holds. The
+/// first choice stands. An option with a request publishes it and fills `applied`; any other tells
+/// the report's agent, as `priory say` does.
 pub(crate) fn pick(
     db: &mut Connection,
     choice: &Choice,
@@ -252,7 +280,7 @@ pub(crate) fn pick(
              WHERE EXISTS (SELECT 1 FROM json_each(reports.report, '$.sections') AS section,
                json_each(section.value, '$.rows') AS row
                WHERE json_extract(row.value, '$.pick.id') = ?1)
-             ORDER BY reports.put DESC, reports.task DESC LIMIT 1",
+             LIMIT 1",
             [&choice.pick],
             |row| {
                 Ok((
@@ -294,18 +322,20 @@ pub(crate) fn pick(
             }
             pick.applied = Some(format!("requested task cli:{}", request.key()));
         }
-        None if ["done", "failed", "dropped"].contains(&state.as_str()) => {
-            return Ok(Err(format!(
-                "task {task} is {state}, so nothing would apply pick {}",
-                pick.id
-            )));
-        }
         None => {
-            let line = format!(
-                "The person picked {} on {} in your report: apply it, then write the report again with the pick's applied filled.",
-                choice.option, pick.id
-            );
-            crate::tools::wake_on(&tx, task, &line, None)?;
+            let say = crate::tools::Act {
+                act: "say".to_owned(),
+                task,
+                step: None,
+                hold: None,
+                text: Some(format!(
+                    "The person picked {} on {} in your report: apply it, then write the report again with the pick's applied filled.",
+                    choice.option, pick.id
+                )),
+            };
+            if let Err(error) = crate::tools::say(&tx, &say, &state, &factory.workflows)? {
+                return Ok(Err(format!("pick {}: {error}", pick.id)));
+            }
         }
     }
     pick.chosen = Some(choice.option.clone());

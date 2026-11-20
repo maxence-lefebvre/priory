@@ -1316,6 +1316,7 @@ fn the_report_endpoints_return_what_report_show_json_prints() {
     succeeded(&setup.put("2", &report()));
     let mut first = report();
     first["greeting"] = json!("Earlier");
+    first["sections"][0]["rows"][0]["pick"]["id"] = json!("2026-11-20_sentry_other");
     succeeded(&setup.put("1", &first));
     let address = setup.start(&["serve", &setup.factory()]);
 
@@ -1323,4 +1324,21 @@ fn the_report_endpoints_return_what_report_show_json_prints() {
     assert_eq!(api(&address, "/api/reports/latest")["task"], 1);
     assert_eq!(api(&address, "/api/reports/2"), setup.shown(&["2"]));
     assert_eq!(get(&address, "/api/reports/3", Some(TOKEN)).0, 404);
+}
+
+#[test]
+fn a_report_whose_pick_another_tasks_report_has_is_refused() {
+    let setup = Setup::new("report-shared-pick", SERVE);
+    setup.seed();
+    succeeded(&setup.put("1", &report()));
+
+    let put = setup.put("2", &report());
+
+    assert!(!put.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&put.stderr),
+        "priory report put: the report is refused: task 1's report already has the pick \"2026-11-20_sentry_fnd-2409\"\n"
+    );
+    let missing = setup.priory(&["report", "show", "2", "--json"]);
+    assert!(!missing.status.success());
 }

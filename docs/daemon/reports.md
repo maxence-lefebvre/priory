@@ -58,9 +58,11 @@ each pick, by pick id, whatever `chosen` it carries.
 
 Priory refuses a report when:
 
-- a field is missing, unknown or of the wrong type;
+- a required field is missing, or a field is unknown or of the wrong type;
 - `date` is not a date, or `since` is not an RFC 3339 instant;
 - two sections share an id, or two picks share an id;
+- another task's report holds one of its pick ids, so a pick id names one report;
+- a pick keeps a choice that its new options drop;
 - a pick has no options, or its `recommended` or a `requests` key is not one of its options;
 - a row's `comments` is not empty. Comments on rows come in a later version.
 
@@ -87,15 +89,16 @@ the pick when:
 - the pick already has a choice: the first one stands;
 - `OPTION` is not one of the pick's options.
 
-A recorded pick raises the report's revision. Then the daemon wakes the report's task with one
-line, as its next prompt:
+A recorded pick raises the report's revision. The daemon tells the report's agent with one line,
+as `priory say` does: the line is its next prompt, and it wakes an asleep task. The pick is refused,
+and nothing is recorded, when `say` would refuse it: the task is done, failed or dropped, its step
+is one no agent runs, or it has no run yet. The line:
 
 ```text
 The person picked Take on 2026-11-20_sentry_fnd-2409 in your report: apply it, then write the report again with the pick's applied filled.
 ```
 
-The workflow applies the choice and writes the report again with `applied` set. A pick on the report
-of a done, failed or dropped task is refused, since nothing would apply it.
+The workflow applies the choice and writes the report again with `applied` set.
 
 ## Request a task from a pick
 
