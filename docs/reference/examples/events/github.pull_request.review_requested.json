@@ -1,0 +1,19 @@
+{
+  "id": "d417fdba-388d-5bba-8e5f-459630ca1557",
+  "type": "github.pull_request.review_requested",
+  "subject": "acme/widgets#43",
+  "time": "2026-11-20T09:01:00.214Z",
+  "data": {
+    "repo": "acme/widgets",
+    "pull_request": 43,
+    "title": "Fix the empty export",
+    "url": "https://github.com/acme/widgets/pull/43",
+    "author": "hubot",
+    "since": "2026-11-20T09:01:00.214Z",
+    "reviewer": "octocat",
+    "time": "2026-11-20T09:01:00.214Z",
+    "baseline": false,
+    "triggers": ["review-requests"]
+  },
+  "links": [{ "label": "pull_request", "url": "https://github.com/acme/widgets/pull/43" }]
+}

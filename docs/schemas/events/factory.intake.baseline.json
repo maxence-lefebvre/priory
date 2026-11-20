@@ -8,14 +8,15 @@
       "description": "Where a stream stands after a poll that moved it; a missing marker means the stream is still\nin its baseline.",
       "properties": {
         "members": {
-          "description": "Every issue in the view. Linear view streams only.",
-          "items": {
-            "$ref": "#/definitions/LinearIssue"
-          },
-          "type": [
-            "array",
-            "null"
-          ]
+          "anyOf": [
+            {
+              "$ref": "#/definitions/Members"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Every issue in the view, or every pull request asking the reviewer for a review. Linear view\nand review request streams only."
         },
         "position": {
           "$ref": "#/definitions/Position"
@@ -38,7 +39,7 @@
           ]
         },
         "stream": {
-          "description": "The stream, such as `github.issues.labeled`, `linear.comments` or `slack.channel:C0123`.",
+          "description": "The stream, such as `github.issues.labeled`, `github.review_requests:octocat`, `linear.comments`\nor `slack.channel:C0123`.",
           "type": "string"
         }
       },
@@ -120,6 +121,23 @@
       ],
       "type": "object"
     },
+    "Members": {
+      "anyOf": [
+        {
+          "items": {
+            "$ref": "#/definitions/LinearIssue"
+          },
+          "type": "array"
+        },
+        {
+          "items": {
+            "$ref": "#/definitions/RequestedPull"
+          },
+          "type": "array"
+        }
+      ],
+      "description": "The members of a set stream."
+    },
     "Position": {
       "anyOf": [
         {
@@ -131,7 +149,51 @@
           "type": "string"
         }
       ],
-      "description": "A GitHub id or number, a count of view changes, a Linear time or a Slack `ts`."
+      "description": "A GitHub id or number, a count of set changes, a Linear time or a Slack `ts`."
+    },
+    "RequestedPull": {
+      "description": "An open pull request that asks a person for a review, as GitHub's search lists it.",
+      "properties": {
+        "author": {
+          "description": "The GitHub login who opened it; null for a deleted user.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "pull_request": {
+          "description": "The pull request number.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "repo": {
+          "description": "`owner/name`.",
+          "type": "string"
+        },
+        "since": {
+          "description": "When the intake first found the request: the time of that poll.",
+          "format": "date-time",
+          "type": "string"
+        },
+        "title": {
+          "description": "The pull request title when the intake polled.",
+          "type": "string"
+        },
+        "url": {
+          "description": "The pull request's page on GitHub.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "repo",
+        "pull_request",
+        "title",
+        "url",
+        "author",
+        "since"
+      ],
+      "type": "object"
     }
   },
   "description": "Where a stream stands after a poll that moved it; a missing marker means the stream is still\nin its baseline.",

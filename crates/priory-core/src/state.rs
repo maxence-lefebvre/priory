@@ -10,7 +10,7 @@ use std::collections::BTreeMap;
 use std::io::Write;
 use std::time::Duration;
 
-const VERSION: i64 = 30;
+const VERSION: i64 = 31;
 
 const SCHEMA: &str = "
 CREATE TABLE tasks (
@@ -481,17 +481,45 @@ ALTER TABLE tasks ADD COLUMN grade_reason TEXT;
 PRAGMA user_version = 29;
 ";
 
-// When a person read a posted report; a read report leaves the desk.
 const SCHEMA_30: &str = "
-ALTER TABLE inbox ADD COLUMN read TEXT;
+CREATE TABLE snoozes (
+  kind        TEXT NOT NULL CHECK (kind IN ('ask', 'task', 'prompt')),
+  item        INTEGER NOT NULL,
+  task        INTEGER NOT NULL REFERENCES tasks (id),
+  snoozed     TEXT NOT NULL,
+  until       TEXT NOT NULL,
+  back        TEXT,
+  back_reason TEXT,
+  PRIMARY KEY (kind, item)
+);
+CREATE TRIGGER snooze_ends_on_a_new_revision AFTER UPDATE OF revision ON asks
+  WHEN NEW.revision IS NOT OLD.revision BEGIN
+  UPDATE snoozes SET back = strftime('%Y-%m-%dT%H:%M:%SZ', 'now'), back_reason = 'new revision'
+  WHERE kind = 'ask' AND item = NEW.id AND until > strftime('%Y-%m-%dT%H:%M:%SZ', 'now');
+END;
+CREATE TRIGGER snooze_ends_on_a_task_state_change AFTER UPDATE OF state ON tasks
+  WHEN NEW.state IS NOT OLD.state BEGIN
+  UPDATE snoozes SET back = strftime('%Y-%m-%dT%H:%M:%SZ', 'now'),
+    back_reason = CASE WHEN NEW.state IN ('blocked', 'failed') THEN 'new failure'
+      ELSE 'task state changed' END
+  WHERE task = NEW.id AND until > strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
+    AND (kind != 'ask' OR back IS NULL AND item IN (SELECT id FROM asks WHERE task = NEW.id
+      AND answer IS NULL AND withdrawn IS NULL));
+END;
 PRAGMA user_version = 30;
+";
+
+// When a person read a posted report; a read report leaves the desk.
+const SCHEMA_31: &str = "
+ALTER TABLE inbox ADD COLUMN read TEXT;
+PRAGMA user_version = 31;
 ";
 /// Each schema change in order: a file at version `n` applies those from index `n` on.
 const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA, SCHEMA_2, SCHEMA_3, SCHEMA_4, SCHEMA_5, SCHEMA_6, SCHEMA_7, SCHEMA_8, SCHEMA_9,
     SCHEMA_10, SCHEMA_11, SCHEMA_12, SCHEMA_13, SCHEMA_14, SCHEMA_15, SCHEMA_16, SCHEMA_17,
     SCHEMA_18, SCHEMA_19, SCHEMA_20, SCHEMA_21, SCHEMA_22, SCHEMA_23, SCHEMA_24, SCHEMA_25,
-    SCHEMA_26, SCHEMA_27, SCHEMA_28, SCHEMA_29, SCHEMA_30,
+    SCHEMA_26, SCHEMA_27, SCHEMA_28, SCHEMA_29, SCHEMA_30, SCHEMA_31,
 ];
 
 /// The order the queue starts tasks in: band, then a person's order, then age. A band the factory
@@ -576,13 +604,13 @@ pub fn read_only() -> Result<Connection, String> {
 }
 
 /// Records `message` in the inbox and applies its route, in one transaction. A message
-/// already in the inbox changes nothing.
+/// already in the inbox changes nothing. Returns the tmux session of a run it ended, to kill.
 pub(crate) fn handle(
     db: &mut Connection,
     message: &Message,
     factory: &Factory,
     counter: Option<&crate::embed::Counter>,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<Option<String>, Box<dyn std::error::Error>> {
     let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
     let seen = tx
         .query_row(
@@ -592,16 +620,20 @@ pub(crate) fn handle(
         )
         .optional()?;
     if seen.is_some() {
-        return Ok(());
+        return Ok(None);
     }
     let resources = route::resources(message);
-    let (keyed, owners) = if route::requests(message) {
-        (keyed(&tx, resources.first())?, Vec::new())
-    } else {
-        (None, owners(&tx, &resources)?)
+    // A review event goes to its review task first, even when an older task is keyed by its PR.
+    let (keyed, owners) = match (route::requests(message), route::review(message)) {
+        (true, _) => (keyed(&tx, resources.first())?, Vec::new()),
+        (false, Some(review)) => (keyed(&tx, Some(&review))?, owners(&tx, &resources)?),
+        (false, None) => (None, owners(&tx, &resources)?),
     };
     let owner = keyed.as_ref().or(owners.first());
     let (task, outcome) = match route::route(message, owner, factory) {
+        _ if keyed.is_some() && route::withdraws(message) => {
+            (keyed.as_ref().map(|task| task.id), "withdrew")
+        }
         Decision::Create(new) => {
             tx.execute(
                 "INSERT INTO tasks
@@ -636,7 +668,7 @@ pub(crate) fn handle(
             }
             (Some(id), "created")
         }
-        Decision::Keep(id) if route::tick(message) => {
+        Decision::Keep(id) if route::tick(message, factory) => {
             // A human step or a daemon's checks gate has no agent turn for a tick to wake.
             let asleep_at: Option<(String, String)> = tx
                 .query_row(
@@ -715,9 +747,15 @@ pub(crate) fn handle(
             let text = message.data["prompt"].as_str().unwrap_or(&line);
             crate::tools::wake_on(&tx, task, text, Some(seq))?;
         }
+        (Some(task), "withdrew") => {
+            let tmux = crate::tools::cancel(&tx, task, "review request removed")?;
+            tx.commit()?;
+            return Ok(tmux);
+        }
         _ => {}
     }
-    Ok(tx.commit()?)
+    tx.commit()?;
+    Ok(None)
 }
 
 /// Records the factory's bands, highest first, so listings and moves read them without the factory.

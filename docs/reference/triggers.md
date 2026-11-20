@@ -39,7 +39,7 @@ Starts a task when an issue or pull request of `repo` is opened or labeled. See
 | Key | Type | Required | Default | Meaning | Example |
 | --- | ---- | -------- | ------- | ------- | ------- |
 | `repo` | string | yes | | The repository the intake polls, `owner/name` | `"owner/name"` |
-| `on` | string | yes | | `issues.labeled`, `issues.opened`, `pull_request.labeled` or `pull_request.opened` | `"issues.labeled"` |
+| `on` | string | yes | | `issues.labeled`, `issues.opened`, `pull_request.labeled` or `pull_request.opened`. For `pull_request.review_requested`, see [Review requests](#review-requests) | `"issues.labeled"` |
 | `filter` | table | no | | `label`: only events that add this label. `*.labeled` only | `{ label = "agent" }` |
 | `key` | string | no | the number | `issue.number`, or `pull_request.number` for a `pull_request.*` event. The task key is `github:owner/name#42` | `"issue.number"` |
 | `backfill` | boolean | no | `false` | Whether the first poll's events start tasks too | `true` |
@@ -56,6 +56,31 @@ key = "issue.number"           # pull_request.number for a pull_request event
 band = "today"
 lane = "core/intake"           # otherwise lanes.toml derives it
 backfill = false               # true: the first poll's events start tasks too
+```
+
+### Review requests
+
+A `github` trigger with `on = "pull_request.review_requested"` starts a task when someone asks
+`reviewer` directly for a review of an open pull request, in any repository `gh` can read. It polls
+no repository and takes no `repo`, `filter` or `key`: its tasks work in the pull request's
+repository. See [review-requests.md](../intake/review-requests.md).
+
+| Key | Type | Required | Default | Meaning | Example |
+| --- | ---- | -------- | ------- | ------- | ------- |
+| `on` | string | yes | | `pull_request.review_requested` | `"pull_request.review_requested"` |
+| `reviewer` | string | yes | | The GitHub login asked for reviews. The task key is `github:owner/name:pulls/43:review:octocat` | `"octocat"` |
+| `backfill` | boolean | no | `false` | Whether the requests open at the first poll start tasks too | `true` |
+
+A `teams` key, for requests to a team the reviewer is in, is not built yet.
+
+<!-- example: factory/triggers/review-requests.toml -->
+```toml
+#:schema https://raw.githubusercontent.com/maxence-lefebvre/priory/main/docs/schemas/config/trigger.json
+source = "github"
+on = "pull_request.review_requested"
+reviewer = "octocat"           # the GitHub login asked for reviews, in any repository
+workflow = "implement"
+band = "today"
 ```
 
 ## `linear`
@@ -210,7 +235,10 @@ Set at most one condition. With none, a person releases the task.
 | `` lane `<lane>` is not `<team>/<theme>` `` | A malformed `lane` |
 | `` `<name>` is also defined in triggers/<name>.toml `` | `<name>.toml` and `<name>.yaml` both exist |
 | `` a GitHub trigger needs `repo = "owner/name"` `` | A `github` trigger without a valid `repo`. A `schedule` trigger gets the same with `schedule` |
-| `` a GitHub trigger handles `issues.labeled`, `issues.opened`, `pull_request.labeled` or `pull_request.opened`, not `<on>` `` | A bad `on` |
+| `` a GitHub trigger handles `issues.labeled`, `issues.opened`, `pull_request.labeled`, `pull_request.opened` or `pull_request.review_requested`, not `<on>` `` | A bad `on` |
+| `` a `pull_request.review_requested` trigger needs `reviewer = "<GitHub login>"` `` | No `reviewer`, or one that is not letters, digits and dashes |
+| `` a `pull_request.review_requested` trigger takes no `<key>`: ... `` | `repo`, `filter` or `key` on a review request trigger |
+| `` only a GitHub `pull_request.review_requested` trigger names a `reviewer` `` | `reviewer` on another trigger |
 | `` `filter` works only with `on = "*.labeled"`, on `label` `` | A GitHub `filter` on another event or key |
 | `` a GitHub trigger's `key` is `issue.number` `` | Another `key`. `pull_request.number` for a pull request event |
 | `` a `linear.view` trigger, and only it, names a `view` `` | `view` missing on `linear.view`, or set on `linear` |

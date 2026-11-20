@@ -1,0 +1,6 @@
+#:schema https://raw.githubusercontent.com/maxence-lefebvre/priory/main/docs/schemas/config/trigger.json
+source = "github"
+on = "pull_request.review_requested"
+reviewer = "octocat"           # the GitHub login asked for reviews, in any repository
+workflow = "implement"
+band = "today"

@@ -213,6 +213,52 @@ pub struct CheckRuns {
     pub source: Source,
 }
 
+/// An open pull request that asks a person for a review, as GitHub's search lists it.
+#[derive(JsonSchema)]
+pub struct RequestedPull {
+    /// `owner/name`.
+    pub repo: String,
+    /// The pull request number.
+    pub pull_request: u64,
+    /// The pull request title when the intake polled.
+    pub title: String,
+    /// The pull request's page on GitHub.
+    pub url: String,
+    /// The GitHub login who opened it; null for a deleted user.
+    pub author: Option<String>,
+    /// When the intake first found the request: the time of that poll.
+    #[schemars(extend("format" = "date-time"))]
+    pub since: String,
+}
+
+/// A pull request that asks a person for a review and did not at the previous poll.
+#[derive(JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ReviewRequested {
+    #[serde(flatten)]
+    pub pull: RequestedPull,
+    /// The GitHub login asked for the review, as the trigger names it.
+    pub reviewer: String,
+    #[serde(flatten)]
+    pub source: Source,
+}
+
+/// A pull request that left a person's review requests since the previous poll: they reviewed it,
+/// someone removed the request, or it closed.
+#[derive(JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ReviewRequestRemoved {
+    #[serde(flatten)]
+    pub pull: RequestedPull,
+    /// The GitHub login asked for the review, as the trigger names it.
+    pub reviewer: String,
+    /// Whether the reviewer submitted a review since `since`. False means the request ended some
+    /// other way: someone removed it, or the pull request closed.
+    pub reviewed: bool,
+    #[serde(flatten)]
+    pub source: Source,
+}
+
 /// The fields of a Linear issue every Linear event carries, as the intake saw it.
 #[derive(JsonSchema)]
 pub struct LinearIssue {
@@ -390,7 +436,8 @@ pub struct TaskRequested {
     /// The Linear issue's project name, or null without one. Linear sources only.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub project: Option<Option<String>>,
-    /// The repository the task works in, from `priory request --repo`. CLI requests only.
+    /// The repository the task works in: `priory request --repo` for a CLI request, the pull
+    /// request's for a review request. Those sources only.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub repo: Option<Option<String>>,
     /// Files the task held: the trigger's `hold`, or `priory request --hold`.
@@ -416,18 +463,28 @@ pub struct Baseline {
     /// `owner/name`. GitHub streams only.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub repo: Option<String>,
-    /// The stream, such as `github.issues.labeled`, `linear.comments` or `slack.channel:C0123`.
+    /// The stream, such as `github.issues.labeled`, `github.review_requests:octocat`, `linear.comments`
+    /// or `slack.channel:C0123`.
     pub stream: String,
     pub position: Position,
-    /// Every issue in the view. Linear view streams only.
+    /// Every issue in the view, or every pull request asking the reviewer for a review. Linear view
+    /// and review request streams only.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub members: Option<Vec<LinearIssue>>,
+    pub members: Option<Members>,
     /// The ids of the events at the position's instant. Linear issue and comment streams only.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub seen: Option<Vec<String>>,
 }
 
-/// A GitHub id or number, a count of view changes, a Linear time or a Slack `ts`.
+/// The members of a set stream.
+#[derive(JsonSchema)]
+#[serde(untagged)]
+pub enum Members {
+    Issues(Vec<LinearIssue>),
+    Pulls(Vec<RequestedPull>),
+}
+
+/// A GitHub id or number, a count of set changes, a Linear time or a Slack `ts`.
 #[derive(JsonSchema)]
 #[serde(untagged)]
 pub enum Position {

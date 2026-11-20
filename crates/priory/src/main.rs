@@ -1,5 +1,5 @@
 use priory_core::memory::Gate;
-use priory_core::{daemon, embed, listing, post, report, search, serve, state, tools};
+use priory_core::{daemon, embed, listing, post, report, search, serve, snooze, state, tools};
 use priory_factory::{factory, rules};
 use priory_intake::{intake, request};
 use priory_runtime::{mcp, runtime};
@@ -47,6 +47,7 @@ fn main() -> ExitCode {
         Some(verb @ ("inbox" | "tasks" | "asks" | "desk" | "queue")) => {
             listed(verb, args.map(|arg| arg.to_string_lossy().into_owned()).collect())
         }
+        Some("snooze") => snooze(args.map(|arg| arg.to_string_lossy().into_owned()).collect()),
         Some("serve") => serve_http(args.map(|arg| arg.to_string_lossy().into_owned()).collect()),
         Some("runs") => list(
             "id\ttask\tstep\ttmux\tsession\tstarted\tended\tend",
@@ -105,7 +106,7 @@ fn main() -> ExitCode {
 
 fn usage() -> ExitCode {
     eprintln!(
-        "usage: priory check [DIR]\n       priory draw [DIR] WORKFLOW\n       priory intake [DIR] [--once]\n       priory daemon [DIR] [--once]\n       priory request [DIR] --workflow <name> --key <key> [--band <band>] [--lane <lane>] [--repo <owner/name>] [--hold <reason> [CONDITION]] <text>\n       priory serve [DIR] [--listen ADDR]\n       priory inbox [--since SEQ] [--json]\n       priory inbox read SEQ\n       priory post SOURCE LINE\n       priory tasks [--lane <lane>] [--grade red|yellow|green] [--json]\n       priory queue [--json]\n       priory runs\n       priory outbox\n       priory asks [--json]\n       priory waits\n       priory actions\n       priory attach (TASK | --run RUN) [--read-only] [--print]\n       priory desk [--json]\n       priory trace\n       priory report [DIR] --workflow <name> [--since <instant-or-duration>] [--cost] [--by lane]\n       priory move TASK [--band <band>] [--top | --before TASK | --after TASK]\n       priory resume TASK\n       priory cancel TASK\n       priory revive TASK [--step STEP]\n       priory hold TASK --reason TEXT [--until TIME | --after TASK | --merge PR [--if-closed release|drop|ask] | --blockers]\n       priory release TASK\n       priory tldr TASK TEXT\n       priory search QUERY [--state STATE[,STATE...]] [--limit N]\n       priory memory [acquire --gb N [--timeout D] -- COMMAND...]\n       priory answer ASK OPTION-OR-TEXT --revision N\n       priory mcp --session ID\n       priory hook EVENT"
+        "usage: priory check [DIR]\n       priory draw [DIR] WORKFLOW\n       priory intake [DIR] [--once]\n       priory daemon [DIR] [--once]\n       priory request [DIR] --workflow <name> --key <key> [--band <band>] [--lane <lane>] [--repo <owner/name>] [--hold <reason> [CONDITION]] <text>\n       priory serve [DIR] [--listen ADDR]\n       priory inbox [--since SEQ] [--json]\n       priory inbox read SEQ\n       priory post SOURCE LINE\n       priory tasks [--lane <lane>] [--grade red|yellow|green] [--json]\n       priory queue [--json]\n       priory runs\n       priory outbox\n       priory asks [--all] [--json]\n       priory waits\n       priory actions\n       priory attach (TASK | --run RUN) [--read-only] [--print]\n       priory desk [--all] [--json]\n       priory snooze (ask | blocked | failed | prompt) ID (--for DURATION | --until TIME | --clear)\n       priory trace\n       priory report [DIR] --workflow <name> [--since <instant-or-duration>] [--cost] [--by lane]\n       priory move TASK [--band <band>] [--top | --before TASK | --after TASK]\n       priory resume TASK\n       priory cancel TASK\n       priory revive TASK [--step STEP]\n       priory hold TASK --reason TEXT [--until TIME | --after TASK | --merge PR [--if-closed release|drop|ask] | --blockers]\n       priory release TASK\n       priory tldr TASK TEXT\n       priory search QUERY [--state STATE[,STATE...]] [--limit N]\n       priory memory [acquire --gb N [--timeout D] -- COMMAND...]\n       priory answer ASK OPTION-OR-TEXT --revision N\n       priory mcp --session ID\n       priory hook EVENT"
     );
     ExitCode::from(2)
 }
@@ -271,6 +272,51 @@ fn report(args: Vec<String>) -> ExitCode {
     exit("report", printed)
 }
 
+/// Sends `priory snooze KIND ID (--for DURATION | --until TIME | --clear)` to the daemon, with the
+/// time in UTC to the second.
+fn snooze(args: Vec<String>) -> ExitCode {
+    let [kind, id, rest @ ..] = &args[..] else {
+        return usage();
+    };
+    let Ok(id) = id.parse() else {
+        return usage();
+    };
+    let until = match rest {
+        [flag] if flag == "--clear" => None,
+        [flag, span] if flag == "--for" => {
+            let Ok(span) = span.parse::<jiff::Span>() else {
+                return usage();
+            };
+            match jiff::Zoned::now().checked_add(span) {
+                Ok(at) => Some(at.timestamp()),
+                Err(error) => return exit("snooze", Err(error.to_string())),
+            }
+        }
+        [flag, time] if flag == "--until" => match time.parse::<jiff::Timestamp>() {
+            Ok(at) => Some(at),
+            Err(error) => return exit("snooze", Err(format!("{time}: {error}"))),
+        },
+        _ => return usage(),
+    };
+    // Rounded up, so the item never comes back before the time asked for.
+    let second = jiff::TimestampRound::new()
+        .smallest(jiff::Unit::Second)
+        .mode(jiff::RoundMode::Ceil);
+    let until = match until.map(|at| at.round(second)).transpose() {
+        Ok(until) => until,
+        Err(error) => return exit("snooze", Err(error.to_string())),
+    };
+    let line = serde_json::to_string(&snooze::Snooze {
+        snooze: snooze::Item {
+            kind: kind.clone(),
+            id,
+        },
+        until: until.map(|at| at.strftime("%Y-%m-%dT%H:%M:%SZ").to_string()),
+    })
+    .expect("a snooze serializes");
+    send("snooze", &line)
+}
+
 /// Prints `priory inbox|tasks|asks|desk|queue`, as a table or, with `--json`, as the JSON that
 /// `serve` returns. `priory inbox read SEQ` marks a report read instead.
 fn listed(verb: &str, mut args: Vec<String>) -> ExitCode {
@@ -290,6 +336,11 @@ fn listed(verb: &str, mut args: Vec<String>) -> ExitCode {
         .iter()
         .position(|arg| arg == "--json")
         .map(|at| args.remove(at));
+    let all = args
+        .iter()
+        .position(|arg| arg == "--all" && ["asks", "desk"].contains(&verb))
+        .map(|at| args.remove(at))
+        .is_some();
     let (mut lane, mut grade, mut since) = (None, None, None);
     for pair in args.chunks(2) {
         match (verb, pair) {
@@ -318,7 +369,7 @@ fn listed(verb: &str, mut args: Vec<String>) -> ExitCode {
             "inbox" => listing::inbox(&db, since.unwrap_or(0)),
             "tasks" => listing::tasks(&db, lane, grade),
             "asks" => listing::asks(&db),
-            "desk" => listing::desk(&db, &home),
+            "desk" => listing::desk(&db, &home, all),
             _ => listing::queue(&db),
         }
         .map_err(|error| error.to_string())?;
@@ -354,11 +405,19 @@ fn listed(verb: &str, mut args: Vec<String>) -> ExitCode {
                     .as_array()
                     .into_iter()
                     .flatten()
-                    .filter(|ask| ask["state"] == "open")
+                    .filter(|ask| ask["state"] == "open" && (all || ask["snoozed_until"].is_null()))
                     .cloned()
                     .collect();
                 listing::print(
-                    &["id", "task", "revision", "question", "options"],
+                    &[
+                        "id",
+                        "task",
+                        "revision",
+                        "question",
+                        "options",
+                        "snoozed_until",
+                        "back_early",
+                    ],
                     &serde_json::Value::Array(open),
                 );
             }
@@ -367,7 +426,17 @@ fn listed(verb: &str, mut args: Vec<String>) -> ExitCode {
                     state::emit(banner);
                 }
                 listing::print(
-                    &["since", "kind", "id", "task", "lane", "what", "generation"],
+                    &[
+                        "since",
+                        "kind",
+                        "id",
+                        "task",
+                        "lane",
+                        "what",
+                        "generation",
+                        "snoozed_until",
+                        "back_early",
+                    ],
                     &value["items"],
                 );
             }
