@@ -1,0 +1,9 @@
+#:schema https://raw.githubusercontent.com/maxence-lefebvre/priory/main/docs/schemas/config/trigger.json
+# No trigger fires on a failed check yet, so this one looks for failures every hour on workdays.
+source = "schedule"
+repo = "owner/repo"
+at = "09:00"
+days = ["mon", "tue", "wed", "thu", "fri"]
+every = "1h"
+until = "18:00"
+workflow = "fix-ci"
