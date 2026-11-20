@@ -81,13 +81,17 @@
       "type": "string"
     },
     "disk": {
+      "default": null,
       "description": "What a runner keeps free on disk for a run of this agent, past its floor, in bytes.",
-      "pattern": "^[0-9]+(\\.[0-9]+)?(KB|MB|GB|TB)$",
+      "pattern": "^(?=[^KMGT]*[1-9])([0-9]+(\\.[0-9]*)?|\\.[0-9]+)(KB|MB|GB|TB)$",
       "type": "string"
     },
     "effort": {
       "description": "The harness's reasoning effort, such as `high`; the harness default when unset.",
-      "type": "string"
+      "type": [
+        "string",
+        "null"
+      ]
     },
     "harness": {
       "allOf": [
@@ -106,13 +110,17 @@
       "type": "array"
     },
     "memory": {
+      "default": null,
       "description": "What a runner must have free to admit a run of this agent, in bytes.",
-      "pattern": "^[0-9]+(\\.[0-9]+)?(KB|MB|GB|TB)$",
+      "pattern": "^(?=[^KMGT]*[1-9])([0-9]+(\\.[0-9]*)?|\\.[0-9]+)(KB|MB|GB|TB)$",
       "type": "string"
     },
     "model": {
       "description": "The harness's model name, such as `sonnet`; the harness default when unset.",
-      "type": "string"
+      "type": [
+        "string",
+        "null"
+      ]
     },
     "permissions": {
       "allOf": [
@@ -127,7 +135,10 @@
     },
     "runner": {
       "description": "The runner it runs on, by Tailscale hostname, or `any`.",
-      "type": "string"
+      "type": [
+        "string",
+        "null"
+      ]
     },
     "session": {
       "$ref": "#/definitions/Session"

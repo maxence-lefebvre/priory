@@ -43,6 +43,76 @@ fn the_example_factory_passes_check() {
     );
 }
 
+/// Values whose shape a config schema checks with a pattern, valid or not to the loader.
+#[test]
+fn the_config_schemas_accept_the_values_the_loader_accepts() {
+    let schedule = "source = \"schedule\"\nrepo = \"owner/name\"\nworkflow = \"implement\"\n";
+    let cases = [
+        ("at", "09:00"),
+        ("at", "9:00"),
+        ("at", "23:59"),
+        ("at", "24:00"),
+        ("at", "29:00"),
+        ("at", "09:00:00"),
+        ("every", "90s"),
+        ("every", "2h"),
+        ("every", "0m"),
+        ("every", "1.5h"),
+        ("every", "60"),
+        ("until", "18:00"),
+        ("until", "9h"),
+        ("until", "6pm"),
+    ]
+    .map(|(key, value)| {
+        let at = if key == "at" { "" } else { "at = \"08:00\"\n" };
+        let text = format!("{schedule}{at}{key} = \"{value}\"\n");
+        ("triggers/edge.toml", "trigger", text)
+    });
+    let shares = ["60%", "100%", "0.5%", "0%", "101%", "150%", "60", "sixty%"].map(|value| {
+        let text = format!("platform = {{ os = \"linux\" }}\nagents = {{ cpu = \"{value}\" }}\n");
+        ("runners/edge.toml", "runner", text)
+    });
+    let sizes = ["6GB", "1.5TB", ".5GB", "512MB", "0GB", "6G", "6 GB"].map(|value| {
+        let text =
+            format!("+++\ndescription = \"d\"\nharness = \"codex\"\nmemory = \"{value}\"\n+++\n");
+        ("agents/edge/agent.md", "agent", text)
+    });
+    let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join("reference-edge");
+    let mut disagree = Vec::new();
+    for (file, schema, text) in cases.into_iter().chain(shares).chain(sizes) {
+        let _ = fs::remove_dir_all(&dir);
+        copy(&examples().join("factory"), &dir);
+        fs::create_dir_all(dir.join(file).parent().unwrap()).unwrap();
+        fs::write(dir.join(file), &text).unwrap();
+        let loads = Command::new(env!("CARGO_BIN_EXE_priory"))
+            .arg("check")
+            .arg(&dir)
+            .output()
+            .unwrap()
+            .status
+            .success();
+        let value = match file.ends_with(".md") {
+            true => frontmatter(&text),
+            false => toml::from_str(&text).unwrap(),
+        };
+        let validates = conform::errors(&format!("config/{schema}.json"), &value).is_empty();
+        if loads != validates {
+            disagree.push(format!(
+                "{file}: {text:?} loads {loads}, validates {validates}"
+            ));
+        }
+    }
+    assert!(disagree.is_empty(), "{disagree:#?}");
+}
+
+fn copy(from: &Path, to: &Path) {
+    for file in files(from, from) {
+        let target = to.join(&file);
+        fs::create_dir_all(target.parent().unwrap()).unwrap();
+        fs::copy(from.join(&file), target).unwrap();
+    }
+}
+
 #[test]
 fn every_example_config_matches_its_schema() {
     let dir = examples().join("factory");

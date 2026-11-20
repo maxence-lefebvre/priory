@@ -17,7 +17,10 @@
       "properties": {
         "arch": {
           "description": "The CPU architecture, such as `x86_64` or `aarch64`.",
-          "type": "string"
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "os": {
           "$ref": "#/definitions/Os"
@@ -33,13 +36,15 @@
       "description": "Shares such as `60%`, above 0 and at most 100%.",
       "properties": {
         "cpu": {
+          "default": null,
           "description": "The fraction of the machine's CPUs the runner's agents may load together.",
-          "pattern": "^[0-9]+(\\.[0-9]+)?%$",
+          "pattern": "^(?=[^%]*[1-9])(0*100(\\.0*)?|0*[0-9]{1,2}(\\.[0-9]*)?|\\.[0-9]+)%$",
           "type": "string"
         },
         "memory": {
+          "default": null,
           "description": "The fraction of the machine's memory the runner's agents may take together.",
-          "pattern": "^[0-9]+(\\.[0-9]+)?%$",
+          "pattern": "^(?=[^%]*[1-9])(0*100(\\.0*)?|0*[0-9]{1,2}(\\.[0-9]*)?|\\.[0-9]+)%$",
           "type": "string"
         }
       },

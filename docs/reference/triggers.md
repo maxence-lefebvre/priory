@@ -169,21 +169,23 @@ workflow = "implement"
 
 ## Task requests: `triggers/cli.toml` and `hold`
 
-`priory request` starts a task by hand, with no source event (see [cli.md](../intake/cli.md)). It
-reads `repo` from `triggers/cli.toml` when the request names none. The intake polls nothing for it.
+`priory request` starts a task by hand, without a matching trigger (see
+[cli.md](../intake/cli.md)). It reads only `repo` from `triggers/cli.toml`, when the request names
+none. Like every trigger's `repo`, that repository is polled for GitHub events.
 
 <!-- example: factory/triggers/cli.toml -->
 ```toml
 #:schema https://raw.githubusercontent.com/maxence-lefebvre/priory/main/docs/schemas/config/trigger.json
-source = "cli"                 # read by priory request, never polled
+source = "cli"                 # read by priory request
 repo = "owner/name"            # the repository when a request names none
 workflow = "implement"
 ```
 
 ### `hold`
 
-Any trigger can file its tasks held, so each waits for a person or a condition before it starts.
-`priory request --hold` does the same for one request. See Holds in
+A trigger can file its tasks held, so each waits for a person or a condition before it starts.
+`priory request` ignores the `hold` of `triggers/cli.toml`; `priory request --hold` holds one
+request. See Holds in
 [runs.md](../daemon/runs.md).
 
 | Key | Type | Required | Default | Meaning | Example |

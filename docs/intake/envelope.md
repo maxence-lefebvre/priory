@@ -61,4 +61,4 @@ A retried publish makes the same name, so it keeps its id. Each source page list
 | `schedule.fired` | [schedule.md](schedule.md#keys-and-ids) |
 | `priory.task.requested.cli` | [cli.md](cli.md#keys-and-ids) |
 | `factory.task.requested` | [task-requests.md](task-requests.md#keys-and-ids) |
-| `factory.intake.baseline` | `factory.intake.baseline:{repo}:{stream}` for a GitHub stream, or `factory.intake.baseline:{stream}:{position}` for a Linear stream or a Slack channel |
+| `factory.intake.baseline` | `factory.intake.baseline:{repo}:{stream}` for a GitHub stream. `factory.intake.baseline:{stream}:{position}:{seen}` for a Linear stream, with `seen` as JSON, `null` for a view. `factory.intake.baseline:{stream}:{position}` for a Slack channel |

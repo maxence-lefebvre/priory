@@ -31,7 +31,7 @@ Each type has a JSON Schema in [`docs/schemas/events/`](../schemas/events/), nam
 | `data` | object | The fields below, by type |
 | `links` | array | GitHub and Linear events carry one `{ "label", "url" }` to the event's page; others carry none |
 
-Every source event ends its `data` with the same three fields:
+Every GitHub, Linear and Slack event ends its `data` with the same three fields:
 
 | Field | Type | Meaning |
 | ----- | ---- | ------- |
@@ -619,13 +619,13 @@ Schema: [`slack.message.posted.json`](../schemas/events/slack.message.posted.jso
 <!-- example: events/slack.message.posted.json -->
 ```json
 {
-  "id": "345596ce-5ede-5963-83c0-c194b82ba9c5",
+  "id": "7d892a3e-a083-5b61-836d-d1c7dfd5f1d5",
   "type": "slack.message.posted",
-  "subject": "C0123:1763500000.000100",
+  "subject": "C0123:1795036000.000100",
   "time": "2026-11-18T21:06:40.000100Z",
   "data": {
     "channel": "C0123",
-    "ts": "1763500000.000100",
+    "ts": "1795036000.000100",
     "user": "U0PERSON",
     "text": "@priory the export is broken again",
     "time": "2026-11-18T21:06:40.000100Z",
@@ -648,14 +648,14 @@ message. `baseline` is always false.
 <!-- example: events/slack.thread.replied.json -->
 ```json
 {
-  "id": "1b9da2e7-ec44-5b07-b825-f7580b565caa",
+  "id": "5f232f58-c5ec-5a26-b515-eaa03352c6ff",
   "type": "slack.thread.replied",
-  "subject": "C0123:1763500000.000100",
+  "subject": "C0123:1795036000.000100",
   "time": "2026-11-18T21:06:41.000200Z",
   "data": {
     "channel": "C0123",
-    "thread_ts": "1763500000.000100",
-    "ts": "1763500001.000200",
+    "thread_ts": "1795036000.000100",
+    "ts": "1795036001.000200",
     "user": "U0PERSON",
     "text": "Looks good, ship it.",
     "time": "2026-11-18T21:06:41.000200Z",

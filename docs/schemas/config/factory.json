@@ -20,8 +20,9 @@
           "type": "string"
         },
         "timeout": {
+          "default": null,
           "description": "How long it may run before Priory kills it; 5 minutes when unset.",
-          "pattern": "^[0-9]+[smh]$",
+          "pattern": "^0*[1-9][0-9]*[smh]$",
           "type": "string"
         },
         "when": {
@@ -45,7 +46,10 @@
       "properties": {
         "command": {
           "description": "A command that reads text on stdin and prints a JSON array of floats, instead of `model`.",
-          "type": "string"
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "embeddings": {
           "default": false,
@@ -54,11 +58,17 @@
         },
         "model": {
           "description": "The embedding model Priory runs in process, a Hugging Face repository.",
-          "type": "string"
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "tldr": {
           "description": "The agent whose model writes a new task's TL;DR; no summarizer runs without one.",
-          "type": "string"
+          "type": [
+            "string",
+            "null"
+          ]
         }
       },
       "type": "object"
@@ -68,22 +78,30 @@
       "description": "How the daemon frees room: the built-in worktree sweep, the person's scripts, and the sweeper\nagent it starts when they do not free enough.",
       "properties": {
         "after": {
+          "default": null,
           "description": "How long the queue stays stalled after its scripts ran before the sweeper starts; 30 minutes\nwhen unset.",
-          "pattern": "^[0-9]+[smh]$",
+          "pattern": "^0*[1-9][0-9]*[smh]$",
           "type": "string"
         },
         "agent": {
           "description": "The agent of the built-in `sweep` workflow; no sweeper starts without one.",
-          "type": "string"
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "every": {
+          "default": null,
           "description": "How often the built-in worktree sweep runs; every 10 minutes when unset.",
-          "pattern": "^[0-9]+[smh]$",
+          "pattern": "^0*[1-9][0-9]*[smh]$",
           "type": "string"
         },
         "repo": {
           "description": "The repository the sweeper works in and files its issue on, `owner/name`.",
-          "type": "string"
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "scripts": {
           "description": "Scripts run when the resource they name stalls the queue.",
@@ -117,16 +135,23 @@
       "items": {
         "type": "string"
       },
-      "type": "array"
+      "type": [
+        "array",
+        "null"
+      ]
     },
     "command_timeout": {
+      "default": null,
       "description": "How long one git, gh or tmux command may run before Priory kills it.",
-      "pattern": "^[0-9]+[smh]$",
+      "pattern": "^0*[1-9][0-9]*[smh]$",
       "type": "string"
     },
     "handler": {
       "description": "The agent whose model reads a stalled run's screen; no handler runs without one.",
-      "type": "string"
+      "type": [
+        "string",
+        "null"
+      ]
     },
     "name": {
       "description": "The factory's name.",
@@ -136,8 +161,9 @@
       "$ref": "#/definitions/Search"
     },
     "stalled": {
+      "default": null,
       "description": "How long a run goes without a hook event or a change on its pane before it counts as stalled.",
-      "pattern": "^[0-9]+[smh]$",
+      "pattern": "^0*[1-9][0-9]*[smh]$",
       "type": "string"
     },
     "sweep": {

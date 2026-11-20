@@ -8,7 +8,7 @@ use schemars::JsonSchema;
 /// A message on `factory.intake`: a herdr-bus message shaped like a CloudEvent.
 #[derive(JsonSchema)]
 #[serde(deny_unknown_fields)]
-pub struct Envelope<D> {
+pub struct Envelope<Data> {
     /// A UUIDv5 of the message's name, so a retried publish keeps its id.
     #[schemars(extend("format" = "uuid"))]
     pub id: String,
@@ -20,7 +20,7 @@ pub struct Envelope<D> {
     /// When the event happened, RFC 3339.
     #[schemars(extend("format" = "date-time"))]
     pub time: String,
-    pub data: D,
+    pub data: Data,
     /// GitHub and Linear events carry one link to the event's page.
     pub links: Vec<Link>,
 }
@@ -34,7 +34,7 @@ pub struct Link {
     pub url: String,
 }
 
-/// The fields every source event ends with.
+/// The fields every GitHub, Linear and Slack event ends with.
 #[derive(JsonSchema)]
 pub struct Source {
     /// When the event happened, RFC 3339.

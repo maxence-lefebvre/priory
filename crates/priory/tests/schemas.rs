@@ -17,37 +17,14 @@ fn schema<T: JsonSchema>(settings: SchemaSettings, path: &str) -> (String, Value
     (path.to_owned(), schema)
 }
 
-/// TOML has no null, so an unset key is simply absent.
 fn config<T: JsonSchema>(name: &str) -> (String, Value) {
-    let (path, mut schema) = schema::<T>(SchemaSettings::draft07(), &format!("config/{name}.json"));
-    drop_null(&mut schema);
-    (path, schema)
+    schema::<T>(SchemaSettings::draft07(), &format!("config/{name}.json"))
 }
 
-fn drop_null(schema: &mut Value) {
-    match schema {
-        Value::Object(map) => {
-            if map.get("default") == Some(&Value::Null) {
-                map.remove("default");
-            }
-            if let Some(Value::Array(types)) = map.get_mut("type") {
-                types.retain(|kind| kind != "null");
-                if let [kind] = types.as_slice() {
-                    let kind = kind.clone();
-                    map.insert("type".into(), kind);
-                }
-            }
-            map.values_mut().for_each(drop_null);
-        }
-        Value::Array(items) => items.iter_mut().for_each(drop_null),
-        _ => {}
-    }
-}
-
-/// The envelope with `data` of type `D`, titled and described by the message type.
-fn event<D: JsonSchema>(kind: &str) -> (String, Value) {
+/// The envelope around `Data`, titled and described by the message type.
+fn event<Data: JsonSchema>(kind: &str) -> (String, Value) {
     let settings = SchemaSettings::draft07().for_serialize();
-    let (path, mut schema) = schema::<Envelope<D>>(settings, &format!("events/{kind}.json"));
+    let (path, mut schema) = schema::<Envelope<Data>>(settings, &format!("events/{kind}.json"));
     let data = schema["properties"]["data"]["$ref"]
         .as_str()
         .unwrap()

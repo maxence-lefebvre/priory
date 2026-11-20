@@ -41,11 +41,11 @@ pub struct Settings {
     pub handler: Option<String>,
     /// How long a run goes without a hook event or a change on its pane before it counts as stalled.
     #[serde(default, deserialize_with = "duration")]
-    #[schemars(with = "Option<String>", regex(pattern = r"^[0-9]+[smh]$"))]
+    #[schemars(with = "String", regex(pattern = r"^0*[1-9][0-9]*[smh]$"))]
     pub stalled: Option<Duration>,
     /// How long one git, gh or tmux command may run before Priory kills it.
     #[serde(default, deserialize_with = "duration")]
-    #[schemars(with = "Option<String>", regex(pattern = r"^[0-9]+[smh]$"))]
+    #[schemars(with = "String", regex(pattern = r"^0*[1-9][0-9]*[smh]$"))]
     pub command_timeout: Option<Duration>,
     #[serde(default)]
     pub search: Search,
@@ -105,7 +105,7 @@ impl Search {
 pub struct Sweep {
     /// How often the built-in worktree sweep runs; every 10 minutes when unset.
     #[serde(default, deserialize_with = "duration")]
-    #[schemars(with = "Option<String>", regex(pattern = r"^[0-9]+[smh]$"))]
+    #[schemars(with = "String", regex(pattern = r"^0*[1-9][0-9]*[smh]$"))]
     pub every: Option<Duration>,
     /// Scripts run when the resource they name stalls the queue.
     #[serde(default)]
@@ -113,7 +113,7 @@ pub struct Sweep {
     /// How long the queue stays stalled after its scripts ran before the sweeper starts; 30 minutes
     /// when unset.
     #[serde(default, deserialize_with = "duration")]
-    #[schemars(with = "Option<String>", regex(pattern = r"^[0-9]+[smh]$"))]
+    #[schemars(with = "String", regex(pattern = r"^0*[1-9][0-9]*[smh]$"))]
     pub after: Option<Duration>,
     /// The agent of the built-in `sweep` workflow; no sweeper starts without one.
     pub agent: Option<String>,
@@ -136,7 +136,7 @@ pub struct Script {
     pub when: Resource,
     /// How long it may run before Priory kills it; 5 minutes when unset.
     #[serde(default, deserialize_with = "duration")]
-    #[schemars(with = "Option<String>", regex(pattern = r"^[0-9]+[smh]$"))]
+    #[schemars(with = "String", regex(pattern = r"^0*[1-9][0-9]*[smh]$"))]
     pub timeout: Option<Duration>,
 }
 
@@ -221,15 +221,15 @@ pub struct Agent {
     /// What a runner must have free to admit a run of this agent, in bytes.
     #[serde(default, deserialize_with = "size")]
     #[schemars(
-        with = "Option<String>",
-        regex(pattern = r"^[0-9]+(\.[0-9]+)?(KB|MB|GB|TB)$")
+        with = "String",
+        regex(pattern = r"^(?=[^KMGT]*[1-9])([0-9]+(\.[0-9]*)?|\.[0-9]+)(KB|MB|GB|TB)$")
     )]
     pub memory: Option<u64>,
     /// What a runner keeps free on disk for a run of this agent, past its floor, in bytes.
     #[serde(default, deserialize_with = "size")]
     #[schemars(
-        with = "Option<String>",
-        regex(pattern = r"^[0-9]+(\.[0-9]+)?(KB|MB|GB|TB)$")
+        with = "String",
+        regex(pattern = r"^(?=[^KMGT]*[1-9])([0-9]+(\.[0-9]*)?|\.[0-9]+)(KB|MB|GB|TB)$")
     )]
     pub disk: Option<u64>,
     /// The MCP servers the run gets, by name.
@@ -345,30 +345,30 @@ pub struct Trigger {
     pub backfill: Option<bool>,
     /// The local time of day a schedule fires, `HH:MM`.
     #[serde(default, deserialize_with = "time_of_day")]
-    #[schemars(with = "Option<String>", regex(pattern = r"^[0-2][0-9]:[0-5][0-9]$"))]
+    #[schemars(with = "String", regex(pattern = r"^([01]?[0-9]|2[0-3]):[0-5][0-9]$"))]
     pub at: Option<jiff::civil::Time>,
     /// The weekdays a schedule fires on; every day when unset.
     #[serde(default, deserialize_with = "weekdays")]
     #[schemars(
-        with = "Option<Vec<String>>",
+        with = "Vec<String>",
         length(min = 1),
         extend("items" = { "enum": ["mon", "tue", "wed", "thu", "fri", "sat", "sun"] })
     )]
     pub days: Option<Vec<jiff::civil::Weekday>>,
     /// How often a schedule fires again after `at`, the same day; once a day when unset.
     #[serde(default, deserialize_with = "duration")]
-    #[schemars(with = "Option<String>", regex(pattern = r"^[0-9]+[smh]$"))]
+    #[schemars(with = "String", regex(pattern = r"^0*[1-9][0-9]*[smh]$"))]
     pub every: Option<Duration>,
     /// When a schedule's day of firings ends; the end of the day when unset.
     #[serde(default, deserialize_with = "until")]
     #[schemars(
-        with = "Option<String>",
-        regex(pattern = r"^([0-2][0-9]:[0-5][0-9]|[0-9]+[smh])$")
+        with = "String",
+        regex(pattern = r"^(([01]?[0-9]|2[0-3]):[0-5][0-9]|0*[1-9][0-9]*[smh])$")
     )]
     pub until: Option<Until>,
     /// The IANA zone `at` is read in, such as `Europe/Paris`; the machine's own when unset.
     #[serde(default, deserialize_with = "time_zone")]
-    #[schemars(with = "Option<String>")]
+    #[schemars(with = "String")]
     pub timezone: Option<jiff::tz::TimeZone>,
     /// What a schedule's firing tells the task it wakes.
     pub prompt: Option<String>,
@@ -514,7 +514,7 @@ pub struct Step {
     pub autonomous: Option<String>,
     /// How long one turn of a model step may run before Priory ends it.
     #[serde(default, deserialize_with = "duration")]
-    #[schemars(with = "Option<String>", regex(pattern = r"^[0-9]+[smh]$"))]
+    #[schemars(with = "String", regex(pattern = r"^0*[1-9][0-9]*[smh]$"))]
     pub timeout: Option<Duration>,
 }
 
@@ -627,11 +627,17 @@ pub enum Os {
 pub struct Share {
     /// The fraction of the machine's CPUs the runner's agents may load together.
     #[serde(default, deserialize_with = "percent")]
-    #[schemars(with = "Option<String>", regex(pattern = r"^[0-9]+(\.[0-9]+)?%$"))]
+    #[schemars(
+        with = "String",
+        regex(pattern = r"^(?=[^%]*[1-9])(0*100(\.0*)?|0*[0-9]{1,2}(\.[0-9]*)?|\.[0-9]+)%$")
+    )]
     pub cpu: Option<f64>,
     /// The fraction of the machine's memory the runner's agents may take together.
     #[serde(default, deserialize_with = "percent")]
-    #[schemars(with = "Option<String>", regex(pattern = r"^[0-9]+(\.[0-9]+)?%$"))]
+    #[schemars(
+        with = "String",
+        regex(pattern = r"^(?=[^%]*[1-9])(0*100(\.0*)?|0*[0-9]{1,2}(\.[0-9]*)?|\.[0-9]+)%$")
+    )]
     pub memory: Option<f64>,
 }
 

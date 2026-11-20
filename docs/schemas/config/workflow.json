@@ -28,11 +28,17 @@
       "properties": {
         "action": {
           "description": "The built-in action a code step runs, such as `open-pr`.",
-          "type": "string"
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "agent": {
           "description": "The agent that runs a model step.",
-          "type": "string"
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "approves": {
           "default": [],
@@ -44,7 +50,10 @@
         },
         "autonomous": {
           "description": "Why an irreversible step may run without a person's approval.",
-          "type": "string"
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "decides": {
           "$ref": "#/definitions/Decider"
@@ -73,11 +82,15 @@
         },
         "prompt": {
           "description": "What a model step tells its agent.",
-          "type": "string"
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "timeout": {
+          "default": null,
           "description": "How long one turn of a model step may run before Priory ends it.",
-          "pattern": "^[0-9]+[smh]$",
+          "pattern": "^0*[1-9][0-9]*[smh]$",
           "type": "string"
         }
       },
@@ -94,7 +107,10 @@
   "properties": {
     "band": {
       "description": "The band of its tasks when neither their request nor their trigger sets one.",
-      "type": "string"
+      "type": [
+        "string",
+        "null"
+      ]
     },
     "start": {
       "description": "The id of the first step.",
