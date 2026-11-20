@@ -1,0 +1,12 @@
+{
+    "banner": null,
+    "counts": {
+        "asleep": 0,
+        "snoozed": 0
+    },
+    "items": [],
+    "last_visit": null,
+    "paused": null,
+    "revision": 0,
+    "since_you_looked": []
+}
