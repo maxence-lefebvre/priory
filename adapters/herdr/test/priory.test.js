@@ -105,6 +105,10 @@ test("acts through priory's verbs with argv only", async () => {
   await client.move(7, { band: "now", top: true });
   await client.move(7, { before: 8 });
   await client.move(7, { after: 9 });
+  await client.cancel(7);
+  await client.pause("the disk is low");
+  await client.pause();
+  await client.unpause();
   assert.deepEqual(run.argv(), [
     ["dismiss", "--expected", "4", "12"],
     ["snooze", "ask", "12", "--for", "1h"],
@@ -119,6 +123,10 @@ test("acts through priory's verbs with argv only", async () => {
     ["move", "7", "--band", "now", "--top"],
     ["move", "7", "--before", "8"],
     ["move", "7", "--after", "9"],
+    ["cancel", "7"],
+    ["pause", "the disk is low"],
+    ["pause"],
+    ["unpause"],
   ]);
 });
 
