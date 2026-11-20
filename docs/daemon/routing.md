@@ -1,30 +1,83 @@
 # Messages and routing
 
+The daemon reads the intake's messages one at a time. For each message, it records an inbox entry,
+finds the task the message concerns, and decides what to do with it. This page explains how.
+
 ## One message at a time
 
-Each message is handled in one SQLite transaction: its inbox entry, any task it creates, and the
-entry's outcome. The daemon acks it on the bus only after the commit. A message redelivered after
-a crash between commit and ack adds nothing: the inbox drops a message id it already holds. An
-error stops the daemon before the ack, so the next start handles it again.
+Each message is handled in one SQLite transaction. The transaction holds the message's inbox
+entry, any task the message creates, and the entry's outcome. The daemon acks the message on the
+bus only after that transaction commits.
 
-## Routing
+So each message changes the state exactly once:
 
-A task owns resources, stored in one table: its trigger key from its creation, its branch
-`github:{repo}@priory/{id}` from its first run, and each pull request `github:{repo}#{n}` a wait of
-its names. A message names resources too: a task request its `key`, a CLI request its subject, a
-GitHub event its issue or pull request `github:{repo}#{n}` and, for a pull request event, its head
-branch `github:{repo}@{head_branch}`. The active task whose own key is one of them decides the
-route, else the oldest active task owning any of them. Each other active task that owns one of them
-still has its open wait fired when the message satisfies it, so two tasks can share a pull request:
-task B, created for pull request 7, gets its events, and task A, which waited on 7 before B existed,
-still wakes on the close or review it waits for, in a prompt of its own. A task may wait again on
-a resource it already owns, or report a pull request it already owns, even while another task's key
-decides its route. Its new wait catches up on an event another task kept since its last prompt.
-A task request is the exception: only an active task whose own key is the request's `key` keeps it.
-A task that owns that key only as a pull request or an issue it waits on does not, so the request
-creates its task.
-A task is active in any state except done, failed and dropped. So an agent that opens a pull request
-from its branch gets that pull request's events, with no trigger.
+- If the daemon crashes after the commit and before the ack, the bus delivers the message again.
+  The redelivery adds nothing, because the inbox drops a message id it already holds.
+- If handling the message fails with an error, the daemon stops before the ack. The next start
+  handles the message again.
+
+`priory inbox` lists every entry, with the task it went to and its outcome.
+
+## Resources: what a task owns
+
+A task owns resources. A resource is a string that names one thing an event can be about. The
+daemon stores every task's resources in one table.
+
+A task gets its resources at these moments:
+
+| When | Resource | Example |
+| ---- | -------- | ------- |
+| The task is created | its trigger key | `github:owner/name#42`, `linear:ENG-7`, `cli:docs-1` |
+| Its first run starts | its branch | `github:owner/name@priory/3` |
+| A wait of its names a pull request | that pull request | `github:owner/name#57` |
+| A wait of its names a Linear issue or a Slack thread | that issue or thread | `linear:ENG-7`, `slack:C0123:1763500000.000100` |
+
+GitHub numbers issues and pull requests from one sequence per repository, so
+`github:owner/name#42` names either an issue or a pull request.
+
+A message names resources too:
+
+| Message | Resources it names |
+| ------- | ------------------ |
+| `factory.task.requested` | its `key` |
+| `priory.task.requested.cli` | its subject, such as `cli:docs-1` |
+| A GitHub event | its issue or pull request, `github:{repo}#{n}`, and for a pull request event its head branch, `github:{repo}@{head_branch}` |
+| A Linear event | its issue, `linear:{issue}` |
+| A Slack event | its thread, `slack:{channel}:{thread_ts}`, or `slack:{channel}:{ts}` for a message outside a thread |
+
+## Finding the task
+
+A task is active in any state except done, failed and dropped. Only active tasks take messages.
+
+For most messages, the daemon looks for the active tasks that own any resource the message names:
+
+1. If one of them has a key that the message names, that task takes the message.
+2. Otherwise the oldest of them takes it.
+
+So an agent that opens a pull request from its branch gets that pull request's events, with no
+trigger. The pull request event names the head branch `github:owner/name@priory/3`, and task 3 owns
+that branch.
+
+Each other active task that owns one of the resources still has its open wait fired, when the
+message satisfies that wait. So two tasks can share a pull request. For example:
+
+1. Task A waits on pull request 7. It now owns `github:owner/name#7`.
+2. A trigger creates task B for pull request 7. Task B's key is `github:owner/name#7`.
+3. A review arrives on pull request 7. Task B takes the event, since its own key names it.
+4. If task A waits for that review, its wait still fires, and task A wakes with the event in a
+   prompt of its own.
+
+A task may wait again on a resource it already owns, or report a pull request it already owns,
+even while another task's key decides that resource's route. Its new wait catches up on any event
+that another task kept since the waiting task's last prompt.
+
+A task request is the exception to these rules. Only an active task whose own key equals the
+request's `key` keeps it. A task that owns that key only as a pull request or issue it waits on
+does not. In that case, the request creates its own task.
+
+## Outcomes
+
+Each inbox entry gets one of these outcomes:
 
 | Message                                   | Outcome   | Task                                         |
 | ----------------------------------------- | --------- | -------------------------------------------- |
@@ -35,25 +88,44 @@ from its branch gets that pull request's events, with no trigger.
 | `factory.task.requested`, malformed       | `ignored` | none                                         |
 | Any other                                 | `ignored` | none                                         |
 
-A task request for a workflow the factory lacks still creates its task, `queued` with no step, so
-the daemon keeps serving. Each tick gives it the reason `waits for workflow <name>, which the
-factory lacks`. Once a daemon starts with that workflow, the task moves to the workflow's start. A
-malformed request is ignored.
+A task request can name a workflow the factory lacks. It still creates its task, `queued` with no
+step, so the daemon keeps serving the other tasks. On each tick, that task gets the reason
+`waits for workflow <name>, which the factory lacks`. Once a daemon starts with that workflow, the
+task moves to the workflow's start step. A malformed request is ignored.
 
-A source event comes before its task request, so it is recorded as `ignored`. The task keeps its
-id in `source`.
+The intake publishes a source event before its task request. So when the source event arrives, no
+task owns it yet, and it is recorded as `ignored`. The task that its request creates keeps the
+event's id in `source`, and the task's first prompt carries the event.
 
-A schedule's task request carries `scheduled` (see `docs/intake/schedule.md`). Only a schedule with
-a fixed `key` sends a second one for the same key. A request that finds the task asleep at a model
-step wakes it, even when its wait does not match. Its prompt is the trigger's `prompt`, then the
-firing's line (which carries the firing time), then the events the task kept while asleep. Its open
-ask and wait stay open. At its `Stop`, a run with no result takes over the task's open asks and agent
-waits, so the task sleeps on them again. A run that calls `result`, `ask` or `wait` instead moves on:
-the call withdraws the open asks and agent waits of earlier runs. A request that finds the task in any other state, such
-as running, asleep at a human step, or asleep on the daemon's checks gate, is recorded as
-`coalesced` and never typed, so firings never stack.
+## What a kept message does
 
-A message kept for a `running` task also gets an outbox prompt, so the agent reads it after its
-current turn. A message kept for a task that satisfies its open wait fires the wait in any active
-state (see Waits): an asleep task wakes, and a ready, blocked or held task gets the prompt for its
-next run. Any other message kept for a task waits for its next run.
+What happens to a `kept` message depends on the task's state:
+
+- For a `running` task, the daemon also queues an outbox prompt with the message, so the agent reads
+  it after its current turn.
+- If the message satisfies the task's open wait, the wait fires in any active state (see
+  [waits.md](waits.md)). An asleep task wakes. A ready, blocked or held task keeps its state, and
+  its next run gets the prompt.
+- Any other kept message waits for the task's next run, which reads it in its first prompt.
+
+## Schedule firings
+
+A schedule's task request carries `scheduled`, the time the firing was due (see
+[schedule.md](../intake/schedule.md)). Only a schedule with a fixed `key` sends a second request for
+the same key. Without a fixed key, each firing has its own key and creates its own task.
+
+When a firing finds its task asleep at a model step, it wakes the task, even when the task's wait
+does not match. The task becomes `ready`. Its prompt is the trigger's `prompt`, then the firing's
+line, which carries the firing time, then the events the task kept while asleep.
+
+The task's open ask and wait stay open through that wake. What happens next depends on how the run
+ends its turn:
+
+- If the run reaches `Stop` with no result, it takes over the task's open asks and agent waits, so
+  the task sleeps on them again.
+- If the run calls `result`, `ask` or `wait` instead, it moves on. The call withdraws the open asks
+  and agent waits of earlier runs.
+
+When a firing finds the task in any other state, the inbox records it as `coalesced` and nothing is
+typed. That covers a running task, a task asleep at a human step, and a task asleep on the daemon's
+checks gate. So firings never stack up.

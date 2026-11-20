@@ -1,20 +1,56 @@
 # Which threads and issues the intake watches
 
-The intake reads open waits on `linear_comment`, `linear_state`, `slack_reply`, `pull_request`,
-`checks` and `review` from the state file `PRIORY_DB` every poll, and the open `--merge` holds
-(see Holds in `docs/daemon/runs.md`). Without `PRIORY_DB`, it watches none. It skips the waits and
-holds of a task that is `done`, `failed` or `dropped`. Each wait gives a resource and its agent's
-last prompt time. A hold gives its pull request and the time it was set.
+Triggers tell the intake which repositories, Linear views and Slack channels to poll. An agent's
+wait can name something no trigger covers, such as a Slack thread where it asked a question. This
+page explains how the intake learns about those waits and polls for them.
 
-- For a pull request, waited on or held for, the intake polls its repository as it polls a trigger's (see
-  `github-polling.md`). A repository that no trigger names starts with a baseline, whose reviews and
-  checks still reach the wait. A restart resumes it from where it stopped, as long as a wait or hold
-  still names it.
-- For each Slack thread, the intake reads `conversations.replies` from that time on, every poll,
-  until the wait fires or is withdrawn. herdr-bus drops replies it already holds.
-- For a Linear issue, the intake starts the issues and comments streams when no Linear trigger
-  has. The streams read, in two queries, every issue updated and comment created in the workspace
-  since their position, so it never polls one issue at a time. Their first poll is a baseline, but
-  its events still reach the wait: the daemon judges events by time, not by `baseline`.
+## Where the list comes from
 
-A missing key fails only that source's poll, so a wait cannot stop GitHub polling.
+On every poll, the intake reads the state file that `PRIORY_DB` names. It collects:
+
+- every open wait of the kinds `linear_comment`, `linear_state`, `slack_reply`, `pull_request`,
+  `checks` and `review` (see [waits.md](../daemon/waits.md));
+- every open `--merge` hold (see Holds in [runs.md](../daemon/runs.md)).
+
+It skips the waits and holds of a task that is `done`, `failed` or `dropped`. Without `PRIORY_DB`,
+the intake watches none of them.
+
+Each wait gives a resource, such as `slack:C0123:1763500000.000100`, and the time of its agent's
+last prompt. Each hold gives its pull request and the time the hold was set. The intake uses that
+time as the point to read from.
+
+A missing key, such as an unset `SLACK_BOT_TOKEN`, fails only that source's poll. So a wait cannot
+stop GitHub polling.
+
+## Pull requests
+
+For a pull request that a task waits on or is held for, the intake polls its repository the same
+way it polls a trigger's repository (see [github-polling.md](github-polling.md)).
+
+A repository that no trigger names starts with a baseline. The reviews and checks of that baseline
+still reach the wait. After a restart, the intake resumes the repository from where it stopped, as
+long as a wait or hold still names it.
+
+## Slack threads
+
+For each Slack thread, the intake reads `conversations.replies` from the wait's time on, every
+poll, until the wait fires or is withdrawn. herdr-bus drops the replies it already holds.
+
+For example, an agent posts a question in a thread, then calls:
+
+```json
+{ "on": { "type": "slack_reply", "channel": "C0123", "thread_ts": "1763500000.000100" } }
+```
+
+From the next poll on, the intake reads that thread's replies posted at or after the agent's last
+prompt. A person's reply becomes a `slack.thread.replied` event, which fires the wait and wakes the
+agent (see [slack.md](slack.md)).
+
+## Linear issues
+
+For a Linear issue, the intake starts the issues and comments streams, if no Linear trigger has
+started them already. In two queries, these streams read every issue updated and every comment
+created in the workspace since their position. So the intake never polls one issue at a time.
+
+The first poll of a stream is a baseline. Its events still reach the wait, because the daemon judges
+events by their time, not by their `baseline` flag.
