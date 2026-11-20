@@ -521,6 +521,7 @@ fn check_workflow(factory: &Factory, workflow: &Loaded<Workflow>, problems: &mut
             (!step.options.is_empty(), Decider::Human, "`options`"),
             (!step.approves.is_empty(), Decider::Human, "`approves`"),
             (step.action.is_some(), Decider::Code, "an `action`"),
+            (step.run.is_some(), Decider::Code, "a `run` command"),
         ];
         for (_, owner, field) in fields
             .iter()
@@ -562,7 +563,11 @@ fn check_workflow(factory: &Factory, workflow: &Loaded<Workflow>, problems: &mut
             Decider::Code if step.action.is_none() => {
                 report("a code step needs an `action`".into())
             }
-            Decider::Code => {}
+            Decider::Code => match (step.action.as_deref() == Some("run"), &step.run) {
+                (true, None) => report("a `run` action needs a `run` command".into()),
+                (false, Some(_)) => report("only a `run` action has a `run` command".into()),
+                _ => {}
+            },
         }
         if step.next.is_empty() {
             report("`next` is empty".into());

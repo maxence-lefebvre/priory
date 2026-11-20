@@ -513,6 +513,35 @@ fn every_step_needs_a_next() {
 }
 
 #[test]
+fn a_run_action_needs_a_command_and_only_a_run_action_has_one() {
+    let bare = workflow_with("run-bare", "action = \"open-pr\"", "action = \"run\"");
+    let foreign = workflow_with(
+        "run-foreign",
+        "action = \"open-pr\"",
+        "action = \"open-pr\"\nrun = \"true\"",
+    );
+    let model = workflow_with(
+        "run-model",
+        "agent = \"implementer\"",
+        "agent = \"implementer\"\nrun = \"true\"",
+    );
+
+    assert_eq!(bare.code, 1);
+    assert_eq!(
+        bare.stderr,
+        "workflows/implement.toml:20: step `open-pr`: a `run` action needs a `run` command\n"
+    );
+    assert_eq!(
+        foreign.stderr,
+        "workflows/implement.toml:20: step `open-pr`: only a `run` action has a `run` command\n"
+    );
+    assert_eq!(
+        model.stderr,
+        "workflows/implement.toml:4: step `implement`: only a code step has a `run` command\n"
+    );
+}
+
+#[test]
 fn a_step_holds_only_its_deciders_fields() {
     let outcome = workflow_with(
         "foreign-field",

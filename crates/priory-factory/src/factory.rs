@@ -583,8 +583,10 @@ pub struct Step {
     /// The answers a person picks from at a human step.
     #[serde(default)]
     pub options: Vec<String>,
-    /// The built-in action a code step runs, such as `open-pr`.
+    /// The built-in action a code step runs: `open-pr`, `open-issue` or `run`.
     pub action: Option<String>,
+    /// The command a `run` action runs with `sh -c`.
+    pub run: Option<String>,
     /// The irreversible steps a human step approves.
     #[serde(default)]
     pub approves: Vec<String>,
@@ -592,7 +594,8 @@ pub struct Step {
     pub next: BTreeMap<String, String>,
     /// Why an irreversible step may run without a person's approval.
     pub autonomous: Option<String>,
-    /// How long one turn of a model step may run before Priory ends it.
+    /// How long one turn of a model step, or a `run` action's command, may run before Priory ends
+    /// it.
     #[serde(default, deserialize_with = "duration")]
     #[schemars(with = "String", regex(pattern = r"^0*[1-9][0-9]*[smh]$"))]
     pub timeout: Option<Duration>,

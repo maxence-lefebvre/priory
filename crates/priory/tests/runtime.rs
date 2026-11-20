@@ -40,9 +40,12 @@ const OUTPUT: &str = "factory.intake";
 
 /// Takes a state file back before schema 28, which added search, 29, which added grades, 30,
 /// which added snoozes, 31, which added read reports, 32, which added the pause, 34, which added
-/// reports of sections, and 36, which added deliveries.
-const UNDO_SINCE_SEARCH: &str = "ALTER TABLE tasks DROP COLUMN progress;
-  DROP TABLE deliveries; DROP TABLE reports; DROP TABLE pause;
+/// reports of sections, 36, which added deliveries, 37, which added progress, and 39, which added
+/// run actions. Schema 38's visits table is created only if missing, so it stays.
+const UNDO_SINCE_SEARCH: &str = "ALTER TABLE actions DROP COLUMN stdout;
+  ALTER TABLE actions DROP COLUMN stderr; ALTER TABLE actions DROP COLUMN pid;
+  ALTER TABLE actions DROP COLUMN pid_started; ALTER TABLE actions DROP COLUMN ended;
+  ALTER TABLE tasks DROP COLUMN progress; DROP TABLE deliveries; DROP TABLE reports; DROP TABLE pause;
   ALTER TABLE outbox DROP COLUMN wakes;
   DROP TRIGGER snooze_ends_on_a_new_revision;
   DROP TRIGGER snooze_ends_on_a_task_state_change; DROP TABLE snoozes;
@@ -4487,7 +4490,10 @@ fn a_state_file_whose_asks_an_approval_names_upgrades_to_outside_asks() {
     // The state file as version 32 left it: every ask belongs to a task.
     let db = rusqlite::Connection::open(setup.dir.join("priory.db")).unwrap();
     db.execute_batch(
-        "ALTER TABLE tasks DROP COLUMN progress;
+        "ALTER TABLE actions DROP COLUMN stdout; ALTER TABLE actions DROP COLUMN stderr;
+         ALTER TABLE actions DROP COLUMN pid; ALTER TABLE actions DROP COLUMN pid_started;
+         ALTER TABLE actions DROP COLUMN ended;
+         ALTER TABLE tasks DROP COLUMN progress;
          DROP TABLE deliveries;
          DROP TABLE reports;
          PRAGMA legacy_alter_table = ON;
@@ -5537,6 +5543,8 @@ fn an_approved_open_pr_pushes_the_branch_opens_a_pull_request_and_the_task_owns_
             "opened",
             "github:owner/repo#7",
             &commit,
+            "-",
+            "-",
             "-"
         ]
     );
@@ -5603,6 +5611,138 @@ fn a_gh_call_past_the_command_timeout_is_killed_and_its_action_fails() {
     let actions = setup.until("actions", |rows| rows.len() == 1);
     assert_eq!(actions[0][4], "failed");
     assert!(actions[0][7].ends_with("timed out after 1s"), "{actions:?}");
+}
+
+/// A workflow whose one step runs `command` and routes `found`, `running`, `ok` and `failed`.
+fn run_step(command: &str, timeout: &str) -> String {
+    format!(
+        r#"
+start = "poll"
+
+[[steps]]
+id = "poll"
+decides = "code"
+action = "run"
+run = {command:?}
+effect = "reversible"
+{timeout}
+next = {{ found = "done", running = "done", ok = "stop", failed = "stop" }}
+"#
+    )
+}
+
+/// Starts task 1 on a run step of `command` and returns once its action ended.
+fn ran(name: &str, command: &str, timeout: &str) -> (Setup, Vec<Vec<String>>) {
+    let mut setup = Setup::with_workflow(name, &run_step(command, timeout));
+    setup.publish(&requested(42));
+    setup.start();
+    let actions = setup.until("actions", |rows| rows.len() == 1 && rows[0][4] != "running");
+    (setup, actions)
+}
+
+#[test]
+fn a_run_step_whose_last_line_names_an_outcome_routes_there() {
+    let (setup, actions) = ran(
+        "run-found",
+        "echo checking; echo \"task $PRIORY_TASK\" >&2; echo found",
+        "",
+    );
+
+    assert_eq!(actions[0][1..5], ["1", "poll", "run", "found"]);
+    assert_eq!(actions[0][8..], ["checking\\nfound", "task 1"]);
+    assert_eq!(setup.rows("tasks")[0][4], "done");
+}
+
+#[test]
+fn a_run_step_routes_ok_on_exit_0_and_failed_on_another_exit() {
+    let (_quiet, quiet) = ran("run-ok", "echo nothing new", "");
+    let (setup, broken) = ran("run-failed", "echo found; exit 3", "");
+
+    assert_eq!(quiet[0][4..8], ["ok", "-", "-", "-"]);
+    // A named last line routes even on a failing exit, which the error keeps.
+    assert_eq!(broken[0][4..9], ["found", "-", "-", "exit 3", "found"]);
+    let (_crashed, crashed) = ran("run-crashed", "echo oops >&2; exit 1", "");
+    assert_eq!(
+        crashed[0][4..10],
+        ["failed", "-", "-", "exit 1", "", "oops"]
+    );
+    assert_eq!(setup.rows("tasks")[0][4], "done");
+}
+
+#[test]
+fn a_run_step_past_its_timeout_is_killed_with_its_children_and_fails() {
+    let (setup, actions) = ran(
+        "run-timeout",
+        "sleep 60 & echo $! > child; echo found; wait",
+        "timeout = \"1s\"",
+    );
+
+    assert_eq!(actions[0][4], "failed");
+    assert_eq!(actions[0][7], "timed out after 1s");
+    let child = fs::read_to_string(setup.dir.join("factory/child")).unwrap();
+    assert!(!alive(child.trim()), "the backgrounded sleep still runs");
+    assert_eq!(setup.rows("tasks")[0][4], "dropped");
+}
+
+#[test]
+fn a_restart_while_a_run_step_runs_kills_it_and_fails_it_without_running_it_again() {
+    let mut setup = Setup::with_workflow(
+        "run-restart",
+        &run_step(
+            "echo started >> starts; echo $$ > pid; sleep 60; echo found",
+            "",
+        ),
+    );
+    setup.publish(&requested(42));
+    setup.start();
+    setup.written("factory/pid");
+    let pid = fs::read_to_string(setup.dir.join("factory/pid")).unwrap();
+
+    setup.crash();
+    setup.start();
+
+    let actions = setup.until("actions", |rows| rows[0][4] != "running");
+    assert_eq!(actions.len(), 1);
+    assert_eq!(
+        actions[0][4..8],
+        ["failed", "-", "-", "interrupted by a daemon restart"]
+    );
+    assert!(!alive(pid.trim()), "the interrupted command still runs");
+    let starts = fs::read_to_string(setup.dir.join("factory/starts")).unwrap();
+    assert_eq!(starts, "started\n");
+    assert_eq!(setup.rows("tasks")[0][4], "dropped");
+}
+
+#[test]
+fn an_outcome_named_running_is_an_ended_action_a_restart_leaves_alone() {
+    let mut setup = Setup::with_workflow("run-named-running", &run_step("echo running", ""));
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == "done")
+    });
+    let actions = setup.rows("actions");
+
+    setup.crash();
+    setup.start();
+    // A second task's action ends after the restarted daemon reaped its predecessor's commands.
+    setup.publish(&requested(43));
+    setup.until("tasks", |rows| rows.len() == 2 && rows[1][4] == "done");
+
+    assert_eq!(actions[0][4], "running");
+    assert_eq!(setup.rows("actions")[0], actions[0]);
+}
+
+/// Whether process `pid` is alive, not a zombie.
+fn alive(pid: &str) -> bool {
+    fs::read_to_string(format!("/proc/{pid}/stat")).is_ok_and(|stat| {
+        !stat
+            .rsplit_once(')')
+            .unwrap()
+            .1
+            .trim_start()
+            .starts_with('Z')
+    })
 }
 
 #[test]
