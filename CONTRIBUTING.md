@@ -7,7 +7,7 @@ change behaviour or name a concept, and use the terms of its Concepts table.
 
 ## Verify
 
-Before you call a change done, run the three checks in the [Verify section of
+Before you call a change done, run the checks in the [Verify section of
 AGENTS.md](AGENTS.md#verify) and fix every failure. CI runs the same checks on every pull request.
 
 ## Code

@@ -13,6 +13,8 @@ Read it before you change behaviour or name a concept, and use its Concepts tabl
 - `crates/priory-core`: the state database, routing, tools and the daemon. It depends on the three crates above.
 - `crates/priory`: `main.rs` only. It builds the `priory` binary, and its CLI tests live in `tests/`.
 - `examples/`: one starter factory per folder. A test runs `priory check` on each folder.
+- `adapters/`: one view host per folder, outside the Cargo workspace. `adapters/herdr/` holds the
+  Herdr mods, layout and install script, and their Node.js tests.
 - `docs/prd.md`: what Priory does and in which milestone.
 - `docs/daemon/`: how the daemon runs tasks, one file per topic. Its `README.md` says which file to read.
 - `docs/intake/`: the intake's message contract, one file per source. Its `README.md` says which file to read.
@@ -29,9 +31,10 @@ Before you call a change done, run these from the repository root and fix every 
 cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
+node --test adapters/herdr/test/*.test.js
 ```
 
-CI runs the same three commands on every push to `main` and every pull request.
+CI runs the same four commands on every push to `main` and every pull request.
 
 ## Rules
 

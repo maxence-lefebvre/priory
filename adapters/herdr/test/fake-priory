@@ -1,0 +1,30 @@
+#!/usr/bin/env node
+// A stand-in for the priory binary. It records each argv as a JSON line in $FAKE_PRIORY_LOG.
+// It replies from $FAKE_PRIORY_DIR/<verb>.json, else fails a --json listing and acknowledges a verb.
+// `wait --since REV` returns once $FAKE_PRIORY_DIR/revision holds another number.
+import { appendFileSync, readFileSync, existsSync } from "node:fs";
+import { join } from "node:path";
+
+const args = process.argv.slice(2);
+const dir = process.env.FAKE_PRIORY_DIR;
+appendFileSync(process.env.FAKE_PRIORY_LOG, JSON.stringify(args) + "\n");
+
+if (args[0] === "wait") {
+  const since = Number(args[2]);
+  const revision = () => Number(readFileSync(join(dir, "revision"), "utf8"));
+  const timer = setInterval(() => {
+    if (revision() === since) return;
+    clearInterval(timer);
+    console.log(revision());
+  }, 20);
+} else {
+  const reply = join(dir, `${args[0]}.json`);
+  if (!existsSync(reply) && !args.includes("--json")) {
+    console.log(`${args[0]} done`);
+  } else if (!existsSync(reply)) {
+    console.error(`priory ${args[0]}: no such thing`);
+    process.exit(1);
+  } else {
+    process.stdout.write(readFileSync(reply, "utf8"));
+  }
+}

@@ -1,0 +1,3 @@
+# Herdr writes these into each mod folder it loads, and the installed mods are links to here.
+*/gpui-kit.d.ts
+*/jsconfig.json
