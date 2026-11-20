@@ -1,5 +1,6 @@
 {
     "banner": null,
+    "intake": null,
     "counts": {
         "asleep": 0,
         "snoozed": 0

@@ -112,7 +112,7 @@ state database and never writes a file in the factory.
 ## The Desk panel
 
 `priory-desk` opens as a tab in the center stack, from the Priory bar. It follows DESIGN.md's
-Herdr Desk: the count, the next thing, the room banner, the saved views, then the rows.
+Herdr Desk: the count, the next thing, the room and intake banners, the saved views, then the rows.
 
 - **What it reads.** `desk --all --json`, `asks --all --json`, `tasks --json` and
   `queue FACTORY --json`, read together, then again after each `priory wait`, even one that ends

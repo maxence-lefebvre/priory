@@ -64,9 +64,12 @@ test("Needs me lists the asks oldest first, then the stopped tasks, then what ne
   ]);
 });
 
-test("the room banner, Since you looked and Up next come from the desk and the queue", () => {
+test("the room and intake banners, Since you looked and Up next come from the desk and the queue", () => {
   const model = deskModel(data, { now });
-  assert.deepEqual(model.banners, ["stalled since 2026-11-20T11:02:00Z: short of disk by 4.1 GB; task 7 waits for room"]);
+  assert.deepEqual(model.banners, [
+    "stalled since 2026-11-20T11:02:00Z: short of disk by 4.1 GB; task 7 waits for room",
+    "the intake fails to poll github since 2026-11-20T10:58:00Z: gh api repos/owner/repo/issues/events?per_page=100&page=1 failed: HTTP 401: Bad credentials",
+  ]);
   assert.equal(model.since.from, "09:12");
   assert.deepEqual(model.since.rows.slice(0, 2), [
     { key: "cli:PRI-66", task: 6, what: "factory.run.started triage", time: "11:02" },

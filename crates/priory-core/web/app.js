@@ -106,6 +106,12 @@ const state = {
   pending: null,
   // The command option the first tap armed, until the second tap or 4 s: { id, text, at, timer }.
   armed: null,
+  // A task's cancel or revive armed by its first tap, until the second tap or 4 s: { task, act, at, timer }.
+  taskArmed: null,
+  // The task whose action is in flight, each task's last action note, and its unsent say text.
+  taskBusy: null,
+  taskNotices: new Map(),
+  sayDrafts: new Map(),
   drafts: new Map(),
   notices: new Map(),
   writing: new Set(),
@@ -210,7 +216,7 @@ function deskModel() {
   const stopped = items.filter((item) => ["blocked", "failed", "prompt", "command"].includes(item.kind));
   const reports = items.filter((item) => item.kind === "report");
   const other = items.filter((item) => !["ask", "blocked", "failed", "prompt", "command", "report"].includes(item.kind));
-  return { open, stopped, reports, other, asleep: desk.counts.asleep, banner: desk.banner, running: queue.running, queue: queue.waiting, tasks, upNext: queue.up_next, needs: items.length };
+  return { open, stopped, reports, other, asleep: desk.counts.asleep, asleepTasks: queue.asleep, banner: desk.banner, intake: desk.intake, running: queue.running, queue: queue.waiting, tasks, upNext: queue.up_next, needs: items.length };
 }
 const openAsks = () => deskModel().open;
 // The open asks the list shows, so previous, next and the ask after an answer stay in its facets.
@@ -248,10 +254,23 @@ function olderRow(listing, count, wide) {
 function itemRow(item) {
   // An uncertain command, like an uncertain prompt, waits on a person to check what happened.
   const kind = ["prompt", "command"].includes(item.kind) ? "prompt" : ["blocked", "failed"].includes(item.kind) ? item.kind : item.kind === "held" ? "held" : "queued";
+  const stopped = ["blocked", "failed"].includes(item.kind);
+  const key = stopped ? html`<a class="mono" href="/tasks/${item.task}">${item.key || ""}</a>` : html`<span class="mono">${item.key || ""}</span>`;
   return html`<div class="row">
     ${tile(kind)}
-    <span class="l1"><span class="mono">${item.key || ""}</span><span>${item.step || ""}</span><span>${item.kind}</span><span class="age">${timeTag(item.since)}</span></span>
-    <span class="l2 r t-${role(kind)}">${autolinked(item.what, null)}</span></div>`;
+    <span class="l1">${key}<span>${item.step || ""}</span><span>${item.kind}</span><span class="age">${timeTag(item.since)}</span></span>
+    <span class="l2 r t-${role(kind)}">${autolinked(item.what, null)}</span>${stopped ? taskActs(item.task, item.kind) : ""}</div>`;
+}
+
+// An asleep task with what each of its open waits waits on, and since when.
+function asleepRow(task) {
+  const waits = (task.waits || []).map((wait) => `${wait.kind} ${wait.on}, ${age(wait.since)}`).join("; ");
+  return html`<a class="row" href="/tasks/${task.id}">
+    ${tile("asleep")}
+    <span class="l1"><span class="mono">${task.key}</span><span>${task.workflow} ${task.step}</span><span>asleep</span><span class="age">${timeTag(task.since)}</span></span>
+    <span class="l2 r">${task.title || task.lane || ""}</span>
+    <span class="l3"><span>${waits ? `Waits on ${waits}` : "Waits on an ask"}</span></span>
+    <span class="chev">${icon("chevron-right", "s15")}</span></a>`;
 }
 
 function taskRow(task) {
@@ -316,11 +335,13 @@ function deskBody(wide) {
     ["asleep", "Asleep", model.asleep, current === "asleep"],
     ["all", "All", wide ? model.tasks.length + olderTasks() : null, current === "all"],
   ], "/");
-  const banner = model.banner ? html`<div class="banner" role="status">${icon("hard-drive", "s20")}<span>${model.banner}</span></div>` : "";
+  const banner = [[model.banner, "hard-drive"], [model.intake, "unplug"]]
+    .filter(([text]) => text)
+    .map(([text, name]) => html`<div class="banner" role="status">${icon(name, "s20")}<span>${text}</span></div>`);
   let rows;
   if (current === "running") rows = model.running.length ? model.running.map(runRow) : html`<p class="empty">No run is live. Runs show here while an agent works.</p>`;
   else if (current === "queue") rows = listOrEmpty(model.queue.map(taskRow), html`The queue is empty. A task waits here for its turn; see <code>priory queue</code>.`);
-  else if (current === "asleep") rows = listOrEmpty(model.tasks.filter((task) => task.state === "asleep").map(taskRow), "No task is asleep. A task sleeps here while it waits on an event.");
+  else if (current === "asleep") rows = listOrEmpty(model.asleepTasks.map(asleepRow), "No task is asleep. A task sleeps here while it waits on an event.");
   else if (current === "all") rows = model.tasks.length || olderTasks() ? [...model.tasks.map(taskRow), olderRow("tasks", olderTasks(), false)] : listOrEmpty([], html`No tasks yet. Add one with the + button, or run <code>priory add</code>.`);
   else rows = needsMe(model, wide);
   return { model, views, banner, rows };
@@ -351,8 +372,8 @@ function deskTable(model, selected) {
     <td>${stateWord("ask")}</td><td class="mono">${ask.key}</td><td>${ask.step}</td><td class="q"><span>${ask.title || ask.question}</span></td>
     <td class="recw">${ask.recommendation || ""}</td><td class="r">${timeTag(ask.since)}</td></tr>`;
   const itemLine = (item) => html`<tr>
-    <td>${stateWord(item.kind === "prompt" ? "prompt" : item.kind)}</td><td class="mono">${item.key || ""}</td><td>${item.step || ""}</td>
-    <td class="q full t-${role(item.kind)}"><span>${item.what}</span></td><td class="recw">${item.kind === "failed" ? "Revive" : item.kind === "blocked" ? "Resume" : ""}</td><td class="r">${timeTag(item.since)}</td></tr>`;
+    <td>${stateWord(item.kind === "prompt" ? "prompt" : item.kind)}</td><td class="mono">${["blocked", "failed"].includes(item.kind) ? html`<a href="/tasks/${item.task}">${item.key || ""}</a>` : item.key || ""}</td><td>${item.step || ""}</td>
+    <td class="q full t-${role(item.kind)}"><span>${item.what}</span></td><td class="recw">${["blocked", "failed"].includes(item.kind) ? taskActs(item.task, item.kind) : ""}</td><td class="r">${timeTag(item.since)}</td></tr>`;
   const group = (title, count) => html`<tr class="grp"><td colspan="6">${title}<span>${count}</span></td></tr>`;
   return html`<table class="tbl">
     <thead><tr><th>State</th><th>Task</th><th>Step</th><th>Waits on you</th><th>Recommends</th><th class="r">Age</th></tr></thead>
@@ -561,8 +582,96 @@ function taskOf(ask) {
     if (state.task?.id !== ask.task) return;
     state.task.body = body;
     render();
-  }, () => {});
+  }, (error) => {
+    if (state.task?.id !== ask.task) return;
+    state.task.error = error.message;
+    render();
+  });
   return null;
+}
+
+// Desk actions on a task, each the twin of its CLI verb. Cancel and revive arm on the first tap and
+// send on the second, as a command ask does.
+const ACTS = { resume: "Resume", revive: "Revive", cancel: "Cancel" };
+const DONE_AS = { resume: "Resumed", revive: "Revived", cancel: "Cancelled", say: "Said" };
+const ARMS = ["revive", "cancel"];
+const ENDED = ["done", "failed", "dropped"];
+const actsOf = (taskState) => (taskState === "blocked" ? ["resume", "cancel"] : ["failed", "dropped"].includes(taskState) ? ["revive"] : taskState === "done" ? [] : ["cancel"]);
+
+// The action buttons of a task in `taskState`, and its last action's note.
+function taskActs(task, taskState) {
+  const busy = state.taskBusy !== null || Boolean(state.failed);
+  const buttons = actsOf(taskState).map((act) => {
+    const armed = state.taskArmed?.task === task && state.taskArmed.act === act;
+    const label = armed ? html`<span><small>Tap again to ${act}</small>${ACTS[act]}</span><span class="drain" aria-hidden="true"></span>` : ACTS[act];
+    return html`<button id="act-${task}-${act}" class="btn secondary act ${armed ? "armed" : ""}" data-action="task-act" data-task="${task}" data-act="${act}" aria-disabled="${busy ? "true" : "false"}">${label}</button>`;
+  });
+  const notice = state.taskNotices.get(task);
+  return html`<span class="task-acts">${buttons}</span>${notice ? html`<p class="note acts-note" role="status">${notice}</p>` : ""}`;
+}
+
+function disarmTask() {
+  if (!state.taskArmed) return;
+  clearTimeout(state.taskArmed.timer);
+  state.taskArmed = null;
+}
+
+function taskAct(target) {
+  const task = Number(target.dataset.task);
+  const act = target.dataset.act;
+  if (target.getAttribute("aria-disabled") === "true") return;
+  const armed = state.taskArmed?.task === task && state.taskArmed.act === act;
+  disarmTask();
+  if (ARMS.includes(act) && !armed) {
+    state.taskArmed = { task, act, at: Date.now(), timer: setTimeout(() => { state.taskArmed = null; render(); }, ARM_MS) };
+    return render();
+  }
+  // A cancel carries the revision the page showed, as `priory cancel --expected` does.
+  taskWrite(task, act, act === "cancel" ? { revision: state.revision } : {});
+}
+
+async function taskWrite(task, act, body) {
+  state.taskBusy = task;
+  render();
+  let reply;
+  try {
+    reply = await post(`/api/tasks/${task}/${act}`, body);
+  } catch {
+    reply = { status: 0, body: { error: "the connection dropped" } };
+  }
+  state.taskBusy = null;
+  const { status, body: answered } = reply;
+  if (status === 401) return signOut("The daemon refused this token. Paste the current one.");
+  // Text typed while the say was in flight stays as the next draft.
+  if (status === 200 && act === "say" && (state.sayDrafts.get(task) || "").trim() === body.text) state.sayDrafts.delete(task);
+  state.taskNotices.set(task, status === 200 ? `${DONE_AS[act]}: ${answered.ok}.`
+    : status === 409 ? "The state changed since this page loaded. Read the task again, then tap again."
+      : status === 503 ? "Could not send: no priory daemon runs beside this server. Start priory daemon, then send again."
+        : status === 504 || status === 0 ? "The daemon may have applied this but did not confirm it. Check the task's state before you send again."
+          : `Could not ${act}: ${answered.error || `the server answered ${status}`}.`);
+  // A refused action changes no listing, so the refresh may not paint: the note shows now.
+  render();
+  refresh();
+}
+
+// A task's page: its state, reason, actions, a box to say something to its agent, then its brief,
+// plan, pull request and trace.
+function taskPage(id) {
+  const back = html`<div class="top"><a class="back" href="/">${icon("chevron-left", "s22")}Desk</a></div>`;
+  const task = taskOf({ task: id });
+  if (!task) {
+    const failed = state.task?.error;
+    return html`${back}<p class="empty">${failed ? `Could not load task ${id}: ${failed}.` : `Loading task ${id}…`}</p>`;
+  }
+  const said = state.taskBusy === task.id ? raw('aria-disabled="true"') : "";
+  const say = ENDED.includes(task.state) ? "" : html`<form class="writeform" data-action="say" data-task="${task.id}"><label class="sr" for="say">Say to the agent</label>
+    <textarea id="say" name="text" rows="2" placeholder="Say to the agent">${state.sayDrafts.get(task.id) || ""}</textarea><button class="btn primary" ${said}>Say</button></form>`;
+  const sections = taskSections(task).map(([, , section]) => section);
+  return html`${back}<div class="scroll"><div class="ask task">
+    <p class="ctx">${tile(task.state, "sm")}<span class="mono">${task.key}</span><span>${task.state}</span><span>${task.workflow} ${task.step}</span><span>${task.lane || ""}</span><span>${task.band || ""}</span></p>
+    <h2 class="question">${autolinked(task.tldr || task.brief?.title || task.brief?.request?.split("\n")[0] || task.key, task.repo)}</h2>
+    ${task.reason ? html`<p class="text t-${role(task.state)}">${task.reason}</p>` : ""}
+    ${taskActs(task.id, task.state)}${say}</div>${sections}</div>`;
 }
 
 // Brief, Plan, PR and Trace, each left out when the task lacks it. Agent text shows as plain text.
@@ -1071,8 +1180,10 @@ function render() {
   if (state.armed && (!state.token || selectedAsk() !== String(state.armed.id))) disarm();
   app.innerHTML = page().text;
   // A render must not restart the countdown; CSP allows no inline style, so it is set here.
-  const elapsed = state.armed ? Date.now() - state.armed.at : 0;
-  app.querySelectorAll(".drain").forEach((drain) => { drain.style.animationDelay = `-${elapsed}ms`; });
+  app.querySelectorAll(".drain").forEach((drain) => {
+    const armed = drain.closest(".act") ? state.taskArmed : state.armed;
+    drain.style.animationDelay = `-${armed ? Date.now() - armed.at : 0}ms`;
+  });
   state.renderedKey = routeKey();
   state.rendered = Date.now();
   const scrolls = state.scrolls.get(state.renderedKey) || [];
@@ -1092,12 +1203,14 @@ function page() {
   const size = layout();
   const here = current();
   if (["desk", "asks"].includes(here) && !selectedAsk()) Object.assign(state, { list: here, listUrl: routeKey() });
+  const taskId = here === "tasks" && /^\d+$/.test(route()[1] || "") ? Number(route()[1]) : null;
   if (size === "compact") {
     let body;
     if (selectedAsk()) body = askDetail(selectedAsk(), false);
     else if (here === "desk") body = deskPhone();
     else if (here === "asks") body = asksPhone();
     else if (here === "more") body = morePage();
+    else if (taskId) body = taskPage(taskId);
     else if (here === "settings") body = html`<div class="top"><a class="back" href="/more">${icon("chevron-left", "s22")}More</a></div>${appearance()}`;
     else if (PANELS[here]) body = html`<div class="top"><h1>${PANELS[here][0]}</h1></div>${laterPanel(here)}`;
     else body = notFound();
@@ -1107,7 +1220,7 @@ function page() {
   const list = selectedAsk() ? state.list : here;
   const top = html`<header class="wtop"><span class="fac">${state.data.views.factory}</span>${connection()}<span class="sp"></span>${addButton("addtop")}</header>`;
   const wide = size === "wide";
-  const utility = here === "settings" ? appearance() : here === "more" ? morePage() : PANELS[list] ? null : notFound();
+  const utility = taskId ? taskPage(taskId) : here === "settings" ? appearance() : here === "more" ? morePage() : PANELS[list] ? null : notFound();
   const nav = (kind) => tabs(here === "settings" && wide ? "settings" : here === "settings" ? "more" : list, kind);
   if (utility) {
     return html`${staleStrip()}${top}<div class="${size} no-drawer">${wide ? nav("rail") : ""}<div class="list">${utility}</div></div>${wide ? "" : nav("bar")}`;
@@ -1167,6 +1280,7 @@ document.addEventListener("click", (event) => {
     return document.getElementById("add-text")?.focus();
   }
   if (action === "sign-out") { event.preventDefault(); return signOut(null); }
+  if (action === "task-act") return taskAct(target);
   if (target.dataset.answer !== undefined || ["undo", "options", "write", "dismiss", "snooze", "unsnooze"].includes(action)) return act(target);
   if (action === "mode" || action === "theme") {
     const root = document.documentElement;
@@ -1198,6 +1312,8 @@ document.addEventListener("input", (event) => {
   }
   const ask = event.target.id === "draft" && askOnScreen();
   if (ask) state.drafts.set(ask.id, event.target.value);
+  const form = event.target.id === "say" && event.target.closest("form");
+  if (form) state.sayDrafts.set(Number(form.dataset.task), event.target.value);
 });
 
 document.addEventListener("submit", (event) => {
@@ -1210,6 +1326,13 @@ document.addEventListener("submit", (event) => {
     const ask = askOnScreen();
     const text = (state.drafts.get(ask?.id) || "").trim();
     if (ask && text) answer(ask, text, true);
+    return;
+  }
+  if (event.target.dataset.action === "say") {
+    event.preventDefault();
+    const task = Number(event.target.dataset.task);
+    const text = (state.sayDrafts.get(task) || "").trim();
+    if (text && state.taskBusy === null) taskWrite(task, "say", { text });
     return;
   }
   if (event.target.dataset.action !== "sign-in") return;

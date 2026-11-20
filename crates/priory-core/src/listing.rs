@@ -221,9 +221,9 @@ fn tasks_since(
     Ok(tasks)
 }
 
-/// `progress` and `conditions` as the JSON they are stored or read as.
+/// `progress`, `conditions` and `waits` as the JSON they are stored or read as.
 fn parse_json(task: &mut Value) {
-    for field in ["progress", "conditions"] {
+    for field in ["progress", "conditions", "waits"] {
         if let Some(text) = task[field].as_str() {
             task[field] = serde_json::from_str(text).unwrap_or(Value::Null);
         }
@@ -399,6 +399,7 @@ pub fn queue(
         "workflows": workflows,
         "up_next": up_next(db, &waiting, schedules, now)?,
         "waiting": waiting,
+        "asleep": asleep(db)?,
         "running": rows(
             db,
             &format!(
@@ -420,6 +421,30 @@ pub fn queue(
             [],
         )?,
     }))
+}
+
+/// The asleep tasks, longest asleep first, each with its open waits: what each waits on, as
+/// `priory waits` shows it, and since when.
+fn asleep(db: &Connection) -> rusqlite::Result<Value> {
+    let mut asleep = rows(
+        db,
+        &format!(
+            "SELECT id, key, {TITLE}, workflow, step, band, lane, changed AS since, retired,
+               (SELECT json_group_array(json_object('kind', kind, 'on', coalesce(resource, until,
+                  'task ' || target, printf('%.1f GB free', bytes / 1073741824.0)),
+                  'since', created))
+                FROM (SELECT * FROM waits WHERE waits.task = tasks.id AND fired IS NULL
+                  AND withdrawn IS NULL ORDER BY id)) AS waits
+             FROM tasks WHERE state = 'asleep' ORDER BY changed, id"
+        ),
+        [],
+    )?;
+    asleep
+        .as_array_mut()
+        .expect("rows are an array")
+        .iter_mut()
+        .for_each(parse_json);
+    Ok(asleep)
 }
 
 /// The factory's links, as `serve` and `priory links --json` show them.
@@ -604,7 +629,7 @@ fn since_you_looked(db: &Connection, person: &str) -> rusqlite::Result<Value> {
     )
 }
 
-/// The pause's line, a stalled queue's banner, the asleep and snoozed counts, what waits on a person, the queue, then
+/// The pause's line, a stalled queue's banner, the intake's banner, the asleep and snoozed counts, what waits on a person, the queue, then
 /// every worktree under `home` that stays and why. The snoozed items show only with `all`. Then
 /// `person`'s last visit and what happened since.
 pub fn desk(db: &Connection, home: &Path, all: bool, person: &str) -> rusqlite::Result<Value> {
@@ -631,6 +656,7 @@ pub fn desk(db: &Connection, home: &Path, all: bool, person: &str) -> rusqlite::
     Ok(json!({
         "paused": state::pause_banner(db)?,
         "banner": stall::banner(db)?,
+        "intake": post::intake_banner(db)?,
         "counts": { "asleep": asleep, "snoozed": snoozed },
         "items": items,
         "last_visit": db
