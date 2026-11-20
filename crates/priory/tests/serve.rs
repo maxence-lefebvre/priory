@@ -1,0 +1,459 @@
+use herdr_bus::{Bus, Output as BusOutput};
+use serde_json::{Value, json};
+use std::fs;
+use std::io::{BufRead, BufReader, Read, Write};
+use std::net::TcpStream;
+use std::path::{Path, PathBuf};
+use std::process::{Child, Command, Output, Stdio};
+use std::time::{Duration, Instant};
+
+const WORKFLOW: &str = r#"
+start = "implement"
+
+[[steps]]
+id = "implement"
+decides = "model"
+agent = "implementer"
+prompt = "Implement the issue."
+effect = "reversible"
+next = { passed = "done", failed = "stop" }
+"#;
+
+const AGENT: &str = "+++\ndescription = \"Implements one task.\"\nharness = \"claude-code\"\n+++\n";
+
+const SERVE: &str = "name = \"demo\"\n\n[serve]\nlisten = \"127.0.0.1:0\"\ntoken_env = \"TEST_TOKEN\"\n";
+
+const TOKEN: &str = "s3cret-token";
+
+/// A factory, a bus, a state file and Priory home under the test's own directory. Dropping it kills
+/// the server it started and the tmux server of its daemon.
+struct Setup {
+    dir: PathBuf,
+    server: Option<Child>,
+}
+
+impl Setup {
+    fn new(name: &str, settings: &str) -> Self {
+        let dir = Path::new(env!("CARGO_TARGET_TMPDIR"))
+            .join("serve")
+            .join(name);
+        let _ = fs::remove_dir_all(&dir);
+        let files = [
+            ("factory/factory.toml", settings),
+            ("factory/agents/implementer/agent.md", AGENT),
+            ("factory/workflows/implement.toml", WORKFLOW),
+        ];
+        for (path, content) in files {
+            let file = dir.join(path);
+            fs::create_dir_all(file.parent().unwrap()).unwrap();
+            fs::write(file, content).unwrap();
+        }
+        fs::create_dir_all(dir.join("tmux")).unwrap();
+        fs::create_dir_all(dir.join("fake")).unwrap();
+        let setup = Setup { dir, server: None };
+        setup
+            .bus()
+            .declare(&BusOutput::new("factory.intake"))
+            .unwrap();
+        setup
+    }
+
+    fn bus(&self) -> Bus {
+        Bus::open(&self.dir.join("bus.db")).unwrap()
+    }
+
+    fn factory(&self) -> String {
+        self.dir.join("factory").to_str().unwrap().to_owned()
+    }
+
+    fn command(&self) -> Command {
+        let fake = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fake");
+        let path = std::env::join_paths(
+            std::iter::once(fake).chain(std::env::split_paths(&std::env::var_os("PATH").unwrap())),
+        )
+        .unwrap();
+        let mut command = Command::new(env!("CARGO_BIN_EXE_priory"));
+        command
+            .env_remove("TMUX")
+            .env("PATH", path)
+            .env("TMUX_TMPDIR", self.dir.join("tmux"))
+            .env("HERDR_BUS_DB", self.dir.join("bus.db"))
+            .env("PRIORY_DB", self.dir.join("priory.db"))
+            .env("PRIORY_HOME", self.dir.join("home"))
+            .env("FAKE_DIR", self.dir.join("fake"))
+            .env("TEST_TOKEN", TOKEN);
+        command
+    }
+
+    fn priory(&self, args: &[&str]) -> Output {
+        self.command().args(args).output().unwrap()
+    }
+
+    /// Two tasks, the second queued, and an open ask on the first.
+    fn seed(&self) {
+        for (key, text) in [("docs-1", "Fix the docs"), ("docs-2", "Fix the\nreadme")] {
+            let factory = self.factory();
+            let output = self.priory(&[
+                "request", &factory, "--repo", "owner/repo", "--workflow", "implement", "--key",
+                key, text,
+            ]);
+            succeeded(&output);
+        }
+        succeeded(&self.priory(&["daemon", &self.factory(), "--once"]));
+        let db = rusqlite::Connection::open(self.dir.join("priory.db")).unwrap();
+        db.execute(
+            "INSERT INTO asks (task, step, kind, revision, question, options)
+             VALUES (1, 'implement', 'agent', 2, 'Which way?\nPick one.', '[\"left\",\"right\"]')",
+            [],
+        )
+        .unwrap();
+    }
+
+    /// Starts `priory <args>` and returns the address it prints once it listens.
+    fn start(&mut self, args: &[&str]) -> String {
+        let mut child = self
+            .command()
+            .args(args)
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let mut stderr = BufReader::new(child.stderr.take().unwrap());
+        self.server = Some(child);
+        let mut said = String::new();
+        loop {
+            let mut line = String::new();
+            assert!(
+                stderr.read_line(&mut line).unwrap() > 0,
+                "priory {args:?} exited before it listened: {said}"
+            );
+            if let Some(address) = line.trim().strip_prefix("priory: serving on http://") {
+                std::thread::spawn(move || std::io::copy(&mut stderr, &mut std::io::sink()));
+                return address.to_owned();
+            }
+            said.push_str(&line);
+        }
+    }
+}
+
+impl Drop for Setup {
+    fn drop(&mut self) {
+        if let Some(mut server) = self.server.take() {
+            let _ = server.kill();
+            let _ = server.wait();
+        }
+        let _ = Command::new("tmux")
+            .env("TMUX_TMPDIR", self.dir.join("tmux"))
+            .arg("kill-server")
+            .output();
+    }
+}
+
+fn succeeded(output: &Output) {
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+/// Sends `head` as a whole request head and returns the status code and body.
+fn raw(address: &str, head: &str) -> (u16, String) {
+    let mut stream = TcpStream::connect(address).unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
+    stream.write_all(head.as_bytes()).unwrap();
+    let mut response = String::new();
+    stream.read_to_string(&mut response).unwrap();
+    let status = response[9..12].parse().unwrap();
+    let body = response
+        .split_once("\r\n\r\n")
+        .map_or("", |(_, body)| body);
+    (status, body.to_owned())
+}
+
+fn get(address: &str, path: &str, token: Option<&str>) -> (u16, String) {
+    let auth = token.map_or(String::new(), |token| {
+        format!("Authorization: Bearer {token}\r\n")
+    });
+    raw(
+        address,
+        &format!("GET {path} HTTP/1.1\r\nHost: {address}\r\n{auth}Connection: close\r\n\r\n"),
+    )
+}
+
+fn api(address: &str, path: &str) -> Value {
+    let (status, body) = get(address, path, Some(TOKEN));
+    assert_eq!(status, 200, "{path}: {body}");
+    serde_json::from_str(&body).unwrap()
+}
+
+fn json_of(setup: &Setup, verb: &str) -> Value {
+    let output = setup.priory(&[verb, "--json"]);
+    succeeded(&output);
+    serde_json::from_slice(&output.stdout).unwrap()
+}
+
+/// Whether process `pid` holds a listening TCP socket.
+fn listening(pid: u32) -> bool {
+    let sockets: Vec<String> = fs::read_dir(format!("/proc/{pid}/fd"))
+        .unwrap()
+        .filter_map(|fd| fs::read_link(fd.ok()?.path()).ok())
+        .filter_map(|link| {
+            let link = link.to_string_lossy().into_owned();
+            Some(link.strip_prefix("socket:[")?.strip_suffix(']')?.to_owned())
+        })
+        .collect();
+    ["tcp", "tcp6"].iter().any(|table| {
+        fs::read_to_string(format!("/proc/{pid}/net/{table}"))
+            .unwrap()
+            .lines()
+            .skip(1)
+            .map(|line| line.split_whitespace().collect::<Vec<_>>())
+            // State 0A is LISTEN; column 9 is the socket's inode.
+            .any(|cells| cells[3] == "0A" && sockets.contains(&cells[9].to_owned()))
+    })
+}
+
+#[test]
+fn check_refuses_a_listen_address_beyond_loopback_without_public() {
+    let setup = Setup::new(
+        "public",
+        "name = \"demo\"\n[serve]\nlisten = \"0.0.0.0:7340\"\n",
+    );
+
+    let output = setup.priory(&["check", &setup.factory()]);
+
+    assert!(!output.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&output.stderr),
+        format!(
+            "{}: `[serve] listen` 0.0.0.0:7340 is beyond this machine: set `public = true` to serve it\n",
+            setup.dir.join("factory/factory.toml:3:1").display()
+        )
+    );
+    let public = "name = \"demo\"\n[serve]\nlisten = \"0.0.0.0:7340\"\npublic = true\n";
+    fs::write(setup.dir.join("factory/factory.toml"), public).unwrap();
+    succeeded(&setup.priory(&["check", &setup.factory()]));
+}
+
+#[test]
+fn serve_refuses_a_listen_flag_beyond_loopback_without_public() {
+    let setup = Setup::new("flag", SERVE);
+
+    let output = setup.priory(&["serve", &setup.factory(), "--listen", "0.0.0.0:7340"]);
+
+    assert!(!output.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&output.stderr),
+        "priory serve: `[serve] listen` 0.0.0.0:7340 is beyond this machine: set `public = true` to serve it\n"
+    );
+}
+
+#[test]
+fn serve_refuses_to_start_without_its_token() {
+    let setup = Setup::new("token", SERVE);
+
+    for value in [None, Some("")] {
+        let mut command = setup.command();
+        command.args(["serve", &setup.factory()]);
+        match value {
+            None => command.env_remove("TEST_TOKEN"),
+            Some(value) => command.env("TEST_TOKEN", value),
+        };
+        let output = command.output().unwrap();
+
+        assert!(!output.status.success());
+        assert_eq!(
+            String::from_utf8_lossy(&output.stderr),
+            "priory serve: TEST_TOKEN is unset or empty: set it to the token clients send\n"
+        );
+    }
+}
+
+#[test]
+fn serve_refuses_a_factory_without_a_serve_table() {
+    let setup = Setup::new("none", "name = \"demo\"\n");
+
+    let output = setup.priory(&["serve", &setup.factory()]);
+
+    assert!(!output.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&output.stderr),
+        "priory serve: factory.toml has no [serve] table, so nothing listens\n"
+    );
+}
+
+#[test]
+fn a_request_without_the_token_gets_401() {
+    let mut setup = Setup::new("auth", SERVE);
+    let address = setup.start(&["serve", &setup.factory()]);
+
+    for token in [None, Some("wrong"), Some("s3cret-tokenX"), Some("s3cret-toke")] {
+        let (status, _) = get(&address, "/api/tasks", token);
+        assert_eq!(status, 401, "token {token:?}");
+    }
+    let (status, _) = get(&address, "/api/tasks", Some(TOKEN));
+    assert_eq!(status, 200);
+}
+
+#[test]
+fn each_endpoint_returns_what_the_cli_shows_and_its_json() {
+    let mut setup = Setup::new("endpoints", SERVE);
+    setup.seed();
+    let address = setup.start(&["serve", &setup.factory()]);
+
+    for verb in ["desk", "inbox", "asks", "tasks", "queue"] {
+        assert_eq!(
+            api(&address, &format!("/api/{verb}")),
+            json_of(&setup, verb),
+            "{verb}"
+        );
+    }
+    let tasks = api(&address, "/api/tasks");
+    assert_eq!(
+        tasks
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|task| (task["id"].clone(), task["key"].clone(), task["state"].clone()))
+            .collect::<Vec<_>>(),
+        vec![
+            (json!(1), json!("docs-1"), json!("queued")),
+            (json!(2), json!("docs-2"), json!("queued")),
+        ]
+    );
+    let text = String::from_utf8(setup.priory(&["tasks"]).stdout).unwrap();
+    assert!(text.starts_with("id\tkey\tworkflow\tstep\tstate\tband\tlane\treason\tposition\tgeneration\tretired\n"));
+    assert_eq!(
+        api(&address, "/api/asks"),
+        json!([{
+            "id": 1, "task": 1, "revision": 2, "question": "Which way?\nPick one.",
+            "options": ["left", "right"]
+        }])
+    );
+    let asks = String::from_utf8(setup.priory(&["asks"]).stdout).unwrap();
+    assert_eq!(
+        asks,
+        "id\ttask\trevision\tquestion\toptions\n1\t1\t2\tWhich way?\\nPick one.\t[\"left\",\"right\"]\n"
+    );
+    let queue = api(&address, "/api/queue");
+    assert_eq!(queue[0]["position"], 1);
+    assert_eq!(queue[1]["id"], 2);
+    let desk = api(&address, "/api/desk");
+    assert_eq!(desk["banner"], Value::Null);
+    assert_eq!(desk["items"][0]["kind"], "ask");
+    let inbox = api(&address, "/api/inbox");
+    assert_eq!(inbox.as_array().unwrap().len(), 2);
+}
+
+#[test]
+fn a_task_endpoint_returns_its_runs_steps_asks_waits_results_and_tldr() {
+    let mut setup = Setup::new("task", SERVE);
+    setup.seed();
+    succeeded(&setup.priory(&["tldr", "1", "Fixes the docs."]));
+    let address = setup.start(&["serve", &setup.factory()]);
+
+    let task = api(&address, "/api/tasks/1");
+
+    assert_eq!(task["id"], 1);
+    assert_eq!(task["key"], "docs-1");
+    assert_eq!(task["tldr"], "Fixes the docs.");
+    assert_eq!(task["asks"][0]["revision"], 2);
+    for list in ["runs", "steps", "waits", "results"] {
+        assert_eq!(task[list], json!([]), "{list}");
+    }
+    assert_eq!(get(&address, "/api/tasks/9", Some(TOKEN)).0, 404);
+    assert_eq!(get(&address, "/api/tasks/x", Some(TOKEN)).0, 404);
+}
+
+#[test]
+fn unknown_paths_404_other_methods_405_and_oversize_heads_431() {
+    let mut setup = Setup::new("limits", SERVE);
+    let address = setup.start(&["serve", &setup.factory()]);
+
+    assert_eq!(get(&address, "/api/nothing", Some(TOKEN)).0, 404);
+    let post = format!(
+        "POST /api/tasks HTTP/1.1\r\nAuthorization: Bearer {TOKEN}\r\nContent-Length: 0\r\n\r\n"
+    );
+    assert_eq!(raw(&address, &post).0, 405);
+    let body = format!(
+        "GET /api/tasks HTTP/1.1\r\nAuthorization: Bearer {TOKEN}\r\nContent-Length: 5\r\n\r\nhello"
+    );
+    assert_eq!(raw(&address, &body).0, 413);
+    let huge = format!(
+        "GET /api/tasks HTTP/1.1\r\nAuthorization: Bearer {TOKEN}\r\nX-Pad: {}\r\n\r\n",
+        "a".repeat(16 * 1024)
+    );
+    assert_eq!(raw(&address, &huge).0, 431);
+    let (status, body) = get(&address, "/", Some(TOKEN));
+    assert_eq!(status, 200);
+    assert!(body.contains("<html"), "{body}");
+}
+
+#[test]
+fn web_false_serves_only_the_api() {
+    let mut setup = Setup::new("web", &format!("{SERVE}web = false\n"));
+    let address = setup.start(&["serve", &setup.factory()]);
+
+    assert_eq!(get(&address, "/", Some(TOKEN)).0, 404);
+    assert_eq!(get(&address, "/api/tasks", Some(TOKEN)).0, 200);
+}
+
+#[test]
+fn a_silent_client_is_dropped_after_the_read_timeout() {
+    let mut setup = Setup::new("timeout", SERVE);
+    let address = setup.start(&["serve", &setup.factory()]);
+    let mut stream = TcpStream::connect(&address).unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_secs(30)))
+        .unwrap();
+    let started = Instant::now();
+
+    let mut response = String::new();
+    stream.read_to_string(&mut response).unwrap();
+
+    assert!(response.starts_with("HTTP/1.1 408"), "{response}");
+    assert!(started.elapsed() < Duration::from_secs(20));
+}
+
+#[test]
+fn the_daemon_serves_its_state_when_the_factory_has_a_serve_table() {
+    let mut setup = Setup::new("daemon", SERVE);
+    setup.seed();
+
+    let address = setup.start(&["daemon", &setup.factory()]);
+
+    assert_eq!(api(&address, "/api/tasks"), json_of(&setup, "tasks"));
+}
+
+#[test]
+fn the_daemon_listens_nowhere_without_a_serve_table() {
+    let mut setup = Setup::new("quiet", "name = \"demo\"\n");
+    let mut child = setup
+        .command()
+        .args(["daemon", &setup.factory()])
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let pid = child.id();
+    let socket = setup.dir.join("home");
+    let deadline = Instant::now() + Duration::from_secs(10);
+    // The daemon's hook socket under PRIORY_HOME shows it is past its start.
+    while !fs::read_dir(&socket).is_ok_and(|mut dir| dir.any(|entry| {
+        entry.is_ok_and(|entry| entry.file_type().is_ok_and(|kind| {
+            use std::os::unix::fs::FileTypeExt;
+            kind.is_socket()
+        }))
+    })) {
+        assert!(Instant::now() < deadline, "the daemon did not start");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+
+    let listens = listening(pid);
+
+    let _ = child.kill();
+    let _ = child.wait();
+    setup.server = None;
+    assert!(!listens);
+}
