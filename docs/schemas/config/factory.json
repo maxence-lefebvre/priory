@@ -73,6 +73,33 @@
       },
       "type": "object"
     },
+    "Serve": {
+      "additionalProperties": false,
+      "description": "The HTTP server over the factory's state, in the daemon and in `priory serve`.",
+      "properties": {
+        "listen": {
+          "default": "127.0.0.1:7340",
+          "description": "The address and port to listen on; a loopback address unless `public` is set.",
+          "type": "string"
+        },
+        "public": {
+          "default": false,
+          "description": "Whether `listen` may be an address beyond this machine.",
+          "type": "boolean"
+        },
+        "token_env": {
+          "default": "PRIORY_TOKEN",
+          "description": "The environment variable that holds the token clients send, never the token itself.",
+          "type": "string"
+        },
+        "web": {
+          "default": true,
+          "description": "Whether to serve the web view's files as well as `/api`.",
+          "type": "boolean"
+        }
+      },
+      "type": "object"
+    },
     "Sweep": {
       "additionalProperties": false,
       "description": "How the daemon frees room: the built-in worktree sweep, the person's scripts, and the sweeper\nagent it starts when they do not free enough.",
@@ -159,6 +186,16 @@
     },
     "search": {
       "$ref": "#/definitions/Search"
+    },
+    "serve": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/Serve"
+        },
+        {
+          "type": "null"
+        }
+      ]
     },
     "stalled": {
       "default": null,

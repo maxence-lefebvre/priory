@@ -142,20 +142,14 @@ pub(crate) fn retire(
     Ok(())
 }
 
-/// Prints a `worktree` row of the desk for every worktree that stays, with the reason.
-pub fn print_stays(db: &Connection, home: &Path) -> rusqlite::Result<()> {
-    for entry in assess(db, home)? {
-        if let Some(reason) = entry.stays {
-            let task = entry
-                .found
-                .name
-                .parse::<i64>()
-                .map_or("-".to_owned(), |id| id.to_string());
-            crate::state::emit(&format!(
-                "-\tworktree\t{}\t{task}\t-\t{reason}\t-",
-                entry.found.path.display()
-            ));
-        }
-    }
-    Ok(())
+/// Every worktree under `home` that stays: its path, its task when its name is one, and why.
+pub fn stays(db: &Connection, home: &Path) -> rusqlite::Result<Vec<(String, Option<i64>, String)>> {
+    Ok(assess(db, home)?
+        .into_iter()
+        .filter_map(|entry| {
+            let reason = entry.stays?;
+            let task = entry.found.name.parse().ok();
+            Some((entry.found.path.display().to_string(), task, reason))
+        })
+        .collect())
 }

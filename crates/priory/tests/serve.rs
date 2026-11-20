@@ -21,7 +21,8 @@ next = { passed = "done", failed = "stop" }
 
 const AGENT: &str = "+++\ndescription = \"Implements one task.\"\nharness = \"claude-code\"\n+++\n";
 
-const SERVE: &str = "name = \"demo\"\n\n[serve]\nlisten = \"127.0.0.1:0\"\ntoken_env = \"TEST_TOKEN\"\n";
+const SERVE: &str =
+    "name = \"demo\"\n\n[serve]\nlisten = \"127.0.0.1:0\"\ntoken_env = \"TEST_TOKEN\"\n";
 
 const TOKEN: &str = "s3cret-token";
 
@@ -94,8 +95,15 @@ impl Setup {
         for (key, text) in [("docs-1", "Fix the docs"), ("docs-2", "Fix the\nreadme")] {
             let factory = self.factory();
             let output = self.priory(&[
-                "request", &factory, "--repo", "owner/repo", "--workflow", "implement", "--key",
-                key, text,
+                "request",
+                &factory,
+                "--repo",
+                "owner/repo",
+                "--workflow",
+                "implement",
+                "--key",
+                key,
+                text,
             ]);
             succeeded(&output);
         }
@@ -166,9 +174,7 @@ fn raw(address: &str, head: &str) -> (u16, String) {
     let mut response = String::new();
     stream.read_to_string(&mut response).unwrap();
     let status = response[9..12].parse().unwrap();
-    let body = response
-        .split_once("\r\n\r\n")
-        .map_or("", |(_, body)| body);
+    let body = response.split_once("\r\n\r\n").map_or("", |(_, body)| body);
     (status, body.to_owned())
 }
 
@@ -227,10 +233,7 @@ fn check_refuses_a_listen_address_beyond_loopback_without_public() {
     assert!(!output.status.success());
     assert_eq!(
         String::from_utf8_lossy(&output.stderr),
-        format!(
-            "{}: `[serve] listen` 0.0.0.0:7340 is beyond this machine: set `public = true` to serve it\n",
-            setup.dir.join("factory/factory.toml:3:1").display()
-        )
+        "factory.toml:2: `[serve] listen` 0.0.0.0:7340 is beyond this machine: set `public = true` to serve it\n"
     );
     let public = "name = \"demo\"\n[serve]\nlisten = \"0.0.0.0:7340\"\npublic = true\n";
     fs::write(setup.dir.join("factory/factory.toml"), public).unwrap();
@@ -289,7 +292,12 @@ fn a_request_without_the_token_gets_401() {
     let mut setup = Setup::new("auth", SERVE);
     let address = setup.start(&["serve", &setup.factory()]);
 
-    for token in [None, Some("wrong"), Some("s3cret-tokenX"), Some("s3cret-toke")] {
+    for token in [
+        None,
+        Some("wrong"),
+        Some("s3cret-tokenX"),
+        Some("s3cret-toke"),
+    ] {
         let (status, _) = get(&address, "/api/tasks", token);
         assert_eq!(status, 401, "token {token:?}");
     }
@@ -316,21 +324,42 @@ fn each_endpoint_returns_what_the_cli_shows_and_its_json() {
             .as_array()
             .unwrap()
             .iter()
-            .map(|task| (task["id"].clone(), task["key"].clone(), task["state"].clone()))
+            .map(|task| (
+                task["id"].clone(),
+                task["key"].clone(),
+                task["state"].clone()
+            ))
             .collect::<Vec<_>>(),
         vec![
-            (json!(1), json!("docs-1"), json!("queued")),
-            (json!(2), json!("docs-2"), json!("queued")),
+            (json!(1), json!("cli:docs-1"), json!("queued")),
+            (json!(2), json!("cli:docs-2"), json!("queued")),
         ]
     );
     let text = String::from_utf8(setup.priory(&["tasks"]).stdout).unwrap();
-    assert!(text.starts_with("id\tkey\tworkflow\tstep\tstate\tband\tlane\treason\tposition\tgeneration\tretired\n"));
+    assert!(text.starts_with(
+        "id\tkey\tworkflow\tstep\tstate\tband\tlane\treason\tposition\tgeneration\tretired\n"
+    ));
+    let asks = api(&address, "/api/asks");
+    let ask = &asks[0];
     assert_eq!(
-        api(&address, "/api/asks"),
-        json!([{
-            "id": 1, "task": 1, "revision": 2, "question": "Which way?\nPick one.",
-            "options": ["left", "right"]
-        }])
+        [
+            &ask["id"],
+            &ask["task"],
+            &ask["key"],
+            &ask["state"],
+            &ask["revision"],
+            &ask["question"],
+            &ask["options"]
+        ],
+        [
+            &json!(1),
+            &json!(1),
+            &json!("cli:docs-1"),
+            &json!("open"),
+            &json!(2),
+            &json!("Which way?\nPick one."),
+            &json!(["left", "right"])
+        ]
     );
     let asks = String::from_utf8(setup.priory(&["asks"]).stdout).unwrap();
     assert_eq!(
@@ -338,13 +367,24 @@ fn each_endpoint_returns_what_the_cli_shows_and_its_json() {
         "id\ttask\trevision\tquestion\toptions\n1\t1\t2\tWhich way?\\nPick one.\t[\"left\",\"right\"]\n"
     );
     let queue = api(&address, "/api/queue");
-    assert_eq!(queue[0]["position"], 1);
-    assert_eq!(queue[1]["id"], 2);
+    let waiting = &queue["waiting"];
+    assert_eq!(
+        [
+            &waiting[0]["id"],
+            &waiting[0]["position"],
+            &waiting[1]["id"],
+            &waiting[1]["band_position"]
+        ],
+        [&json!(1), &json!(1), &json!(2), &json!(2)]
+    );
+    assert_eq!(queue["running"], json!([]));
+    assert_eq!(api(&address, "/api/desk")["counts"], json!({ "asleep": 0 }));
     let desk = api(&address, "/api/desk");
     assert_eq!(desk["banner"], Value::Null);
     assert_eq!(desk["items"][0]["kind"], "ask");
     let inbox = api(&address, "/api/inbox");
-    assert_eq!(inbox.as_array().unwrap().len(), 2);
+    let text = String::from_utf8(setup.priory(&["inbox"]).stdout).unwrap();
+    assert_eq!(inbox.as_array().unwrap().len(), text.lines().count() - 1);
 }
 
 #[test]
@@ -357,7 +397,7 @@ fn a_task_endpoint_returns_its_runs_steps_asks_waits_results_and_tldr() {
     let task = api(&address, "/api/tasks/1");
 
     assert_eq!(task["id"], 1);
-    assert_eq!(task["key"], "docs-1");
+    assert_eq!(task["key"], "cli:docs-1");
     assert_eq!(task["tldr"], "Fixes the docs.");
     assert_eq!(task["asks"][0]["revision"], 2);
     for list in ["runs", "steps", "waits", "results"] {
@@ -440,12 +480,16 @@ fn the_daemon_listens_nowhere_without_a_serve_table() {
     let socket = setup.dir.join("home");
     let deadline = Instant::now() + Duration::from_secs(10);
     // The daemon's hook socket under PRIORY_HOME shows it is past its start.
-    while !fs::read_dir(&socket).is_ok_and(|mut dir| dir.any(|entry| {
-        entry.is_ok_and(|entry| entry.file_type().is_ok_and(|kind| {
-            use std::os::unix::fs::FileTypeExt;
-            kind.is_socket()
-        }))
-    })) {
+    while !fs::read_dir(&socket).is_ok_and(|mut dir| {
+        dir.any(|entry| {
+            entry.is_ok_and(|entry| {
+                entry.file_type().is_ok_and(|kind| {
+                    use std::os::unix::fs::FileTypeExt;
+                    kind.is_socket()
+                })
+            })
+        })
+    }) {
         assert!(Instant::now() < deadline, "the daemon did not start");
         std::thread::sleep(Duration::from_millis(50));
     }
