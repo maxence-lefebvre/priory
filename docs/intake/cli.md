@@ -13,7 +13,8 @@ priory request ./factory --workflow implement --key docs-1 --repo owner/repo "Fi
 ```text
 priory request [DIR] --workflow <name> --key <key> [--band <band>] [--lane <lane>]
                [--repo <owner/name>] [--tldr <text>]
-               [--hold <reason> [--until <time> | --after <task> | --merge <pr> [--if-closed release|drop|ask] | --blockers]]
+               [--hold <reason> [--until <time>] [--after <task-or-issue>]... [--merge <pr>]...
+                               [--if-closed release|drop|ask] [--blockers]]
                [--] <text>
 ```
 
@@ -25,7 +26,7 @@ priory request [DIR] --workflow <name> --key <key> [--band <band>] [--lane <lane
 | `--band`, `--lane` | The task's band and lane |
 | `--repo` | The repository the task works in, `owner/name` |
 | `--tldr` | The task's TL;DR, so the summarizer skips it (see [search.md](../daemon/search.md)) |
-| `--hold` | Files the task held, with the condition that follows it (see [`hold`](task-requests.md#hold)) |
+| `--hold` | Files the task held, with the conditions that follow it (see [`hold`](task-requests.md#hold)). `--after` and `--merge` repeat |
 | `text` | The request |
 
 A flag value cannot start with `--`. Put `--` before text that does.

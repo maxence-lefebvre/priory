@@ -96,20 +96,27 @@ race the hold. Hold such a task once it is back in the queue. `priory release <t
 task go, back to the state it was held from. Both go to the daemon over `priory.sock`, as
 `priory resume` does, so a hold and a run start never race.
 
-A hold takes at most one condition, which releases it without a person:
+A hold takes conditions, which release it without a person once all of them are met. `--after` and
+`--merge` repeat. `--until` and `--blockers` come once.
 
-| Flag | Released when |
-| ---- | ------------- |
+| Flag | Met when |
+| ---- | -------- |
 | none | a person runs `priory release` |
 | `--until <time>` | the time passes: an RFC 3339 instant, or a duration such as `2 hours` from the hold, as for a time wait |
 | `--after <task>` | the other task is done, failed or dropped |
+| `--after <issue>` | the Linear issue, such as `ENG-7`, is Done or Canceled |
 | `--merge <pr>` | the pull request merges: `owner/name#42`, or `42` in the task's repository |
 | `--blockers` | the task's Linear issue has no open blocker left |
 
-`--merge` takes `--if-closed release|drop|ask` for a pull request closed without a merge. `release`
-lets the task go. `drop` drops it with the reason `<pr> closed without a merge`. `ask`, the default,
-puts an ask on the desk with the options `release` and `drop` while the task stays held.
-`priory answer` takes either. A merge after the ask releases the task and answers it. A close whose
+For example, `priory hold 12 --reason "needs both" --after 9 --after ENG-7 --merge 42` releases task
+12 once task 9 ends, ENG-7 is Done or Canceled, and pull request 42 merges, in any order. A condition
+met stays met. `priory release` lets the task go whatever its conditions.
+
+`--merge` takes `--if-closed release|drop|ask` for a pull request closed without a merge, and it
+applies to every `--merge`. `release` counts the condition as met. `drop` drops the task with the
+reason `<pr> closed without a merge`. `ask`, the default, puts an ask on the desk with the options
+`release` and `drop` while the task stays held. `priory answer` takes either: `release` meets that
+condition only. A merge after the ask meets the condition and answers the ask. A close whose
 `merged` is null, because GitHub no longer returns the pull request, does not say whether it merged,
 so it asks whatever `--if-closed` says.
 
@@ -119,14 +126,22 @@ newest event about the issue that carries `blockers` decides: an empty list rele
 null one, which Linear's paging left unknown, does not. That event is a creation or state change of
 the issue, or a `linear.issue.blockers` that one of its blockers published when it changed.
 
-The daemon judges a hold when it is stored. Then it judges a time or task hold on each tick, and a
-merge or blockers hold on each message that names its pull request or issue, whatever the message's
-route. A condition that already holds, such as a pull request merged before the hold, releases the
-task at once. A task request with `hold` (see `docs/intake/task-requests.md`) creates its task held
+`--after <issue>` reads the `to` of `linear.issue.state_changed` events about the issue. The intake
+polls Linear for the issue while the condition is unmet (see `docs/intake/watches.md`). When the
+daemon has `LINEAR_API_KEY`, it also reads the issue's current state through the intake's Linear
+transport once, off its loop, so an issue already Done or Canceled meets the condition within a
+tick or two.
+
+The daemon judges each condition when the hold is stored. Then it judges time and task conditions
+on each tick, and merge, blockers and issue conditions on each message that names their pull request
+or issue, whatever the message's route. A condition that already holds, such as a pull request
+merged before the hold, is met at once. A task request with `hold` (see `docs/intake/task-requests.md`) creates its task held
 the same way.
 
-A held task has the reason `held: <reason>, <condition>`, which `priory tasks` and the desk show.
-For example: `held: needs the schema, until github:owner/repo#7 merges, and asks if it closes unmerged`.
+A held task has the reason `held: <reason>, <condition> and <condition>`, which `priory tasks` and
+the desk show. For example: `held: needs the schema, until github:owner/repo#7 merges, and asks if it
+closes unmerged`. `priory tasks --json`, `priory queue --json` and serve list each condition of a held
+task under `conditions`, with `met` and `met_as` once it is met.
 Events for a held task are kept for its first run, as for a queued one, and a schedule's tick for it
 is coalesced. `priory cancel` drops a held task and ends its hold.
 
@@ -134,4 +149,5 @@ Known limits:
 
 - A pull request closed, reopened and merged later is judged on its newest close only. With
   `drop` or `ask`, the first close already acted.
-- A hold names one condition; holding until two of them takes a person.
+- `--after <issue>` knows Linear's default state names, Done and Canceled. A team that renamed them
+  needs a person to release the task.

@@ -6924,18 +6924,81 @@ fn a_hold_on_two_tasks_releases_only_after_both_end() {
     let reply = person(
         &setup,
         "hold",
-        &["3", "--reason", "same files", "--after", "1", "--after", "2"],
+        &[
+            "3",
+            "--reason",
+            "same files",
+            "--after",
+            "1",
+            "--after",
+            "2",
+        ],
     );
+    let desk = setup.rows("desk");
     person(&setup, "cancel", &["1"]);
     std::thread::sleep(Duration::from_millis(1100));
     assert_eq!(held_as(&setup, "3")[0], "held");
     person(&setup, "cancel", &["2"]);
+
+    assert_eq!(with(&desk, 1, "held"), 1, "{desk:?}");
 
     assert_eq!(
         reply,
         "task 3 held: same files, until task 1 ends and until task 2 ends\n"
     );
     setup.until("tasks", |rows| rows[2][4] == "queued");
+}
+
+#[test]
+fn a_hold_on_a_merge_and_a_linear_issue_releases_once_both_are_met_in_either_order() {
+    let setup = queued_without_room("hold-merge-issue");
+    setup.publish(&requested(43));
+    setup.until("tasks", |rows| rows.len() == 2);
+    let reply = person(
+        &setup,
+        "hold",
+        &["1", "--reason", "a", "--merge", "7", "--after", "ENG-7"],
+    );
+    person(
+        &setup,
+        "hold",
+        &["2", "--reason", "b", "--after", "eng-8", "--merge", "7"],
+    );
+
+    setup.publish(&moved_to_done("ENG-8"));
+    std::thread::sleep(Duration::from_millis(1100));
+    assert_eq!(held_as(&setup, "2")[0], "held");
+    setup.publish(&closed_7(true, 400));
+    setup.until("tasks", |rows| rows[1][4] == "queued");
+    assert_eq!(held_as(&setup, "1")[0], "held");
+    setup.publish(&moved_to_done("ENG-7"));
+
+    assert_eq!(
+        reply,
+        "task 1 held: a, until ENG-7 is Done or Canceled and until github:owner/repo#7 merges, and asks if it closes unmerged\n"
+    );
+    setup.until("tasks", |rows| rows[0][4] == "queued");
+}
+
+#[test]
+fn a_hold_after_a_linear_issue_already_done_releases_the_task_at_once() {
+    let mut setup = Setup::new("hold-issue-done");
+    setup.memory(0);
+    fs::write(
+        setup.dir.join("fake/linear"),
+        json!({ "data": { "issue": { "state": { "name": "Done" } } } }).to_string(),
+    )
+    .unwrap();
+    setup.publish(&requested(42));
+    setup.start_with(
+        Path::new(env!("CARGO_BIN_EXE_priory")),
+        &[("LINEAR_API_KEY", "lin_api_test")],
+    );
+    setup.until("tasks", |rows| rows.len() == 1);
+
+    person(&setup, "hold", &["1", "--reason", "a", "--after", "ENG-7"]);
+
+    setup.until("tasks", |rows| rows[0][4] == "queued");
 }
 
 #[test]

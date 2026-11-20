@@ -28,7 +28,10 @@ pub(crate) fn hold(
         Ok(conditions) => conditions,
         Err(error) => return Ok(Err(error)),
     };
-    let texts: Vec<&str> = conditions.iter().map(|condition| &*condition.text).collect();
+    let texts: Vec<&str> = conditions
+        .iter()
+        .map(|condition| &*condition.text)
+        .collect();
     let reason = format!("held: {}, {}", hold.reason, texts.join(" and "));
     let mut ids = vec![];
     for condition in &conditions {
@@ -56,10 +59,11 @@ pub(crate) fn hold(
     for &id in &ids {
         judge(tx, id)?;
     }
-    let released: Option<String> =
-        tx.query_row("SELECT released_as FROM holds WHERE id = ?1", [ids[0]], |row| {
-            row.get(0)
-        })?;
+    let released: Option<String> = tx.query_row(
+        "SELECT released_as FROM holds WHERE id = ?1",
+        [ids[0]],
+        |row| row.get(0),
+    )?;
     Ok(Ok(match released {
         Some(how) => format!("task {task} {reason}; released at once: {how}"),
         None => format!("task {task} {reason}"),

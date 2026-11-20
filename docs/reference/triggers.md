@@ -217,12 +217,12 @@ request. See Holds in
 | --- | ---- | -------- | ------- | ------- | ------- |
 | `reason` | string | yes | | Why the task waits, shown to a person | `"triage first"` |
 | `until` | string | no | | An RFC 3339 instant, or a duration such as `2 hours` after the hold | `"2 hours"` |
-| `after` | integer | no | | Another task's id: the hold lasts until it ends | `12` |
-| `merge` | string | no | | A pull request, `owner/name#42` or `42` in the task's repository: until it merges | `"owner/name#42"` |
+| `after` | integer, string, or a list of them | no | | Other tasks' ids, until each ends, or Linear issues, until each is Done or Canceled | `[12, "ENG-7"]` |
+| `merge` | string, or a list of them | no | | Pull requests, `owner/name#42` or `42` in the task's repository: until each merges | `"owner/name#42"` |
 | `if_closed` | `release`, `drop` or `ask` | no | `ask` | What a pull request closed without a merge does. With `merge` only | `"drop"` |
 | `blockers` | boolean | no | `false` | Until the task's Linear issue has no open blocker | `true` |
 
-Set at most one condition. With none, a person releases the task.
+The task is released once every condition is met. With none, a person releases it.
 
 ## Errors from `priory check`
 

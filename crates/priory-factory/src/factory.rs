@@ -529,6 +529,7 @@ impl std::str::FromStr for After {
 /// One value, or a list of them.
 #[derive(Deserialize, JsonSchema)]
 #[serde(untagged)]
+#[schemars(rename = "OneOrMany_{T}")]
 enum OneOrMany<T> {
     One(T),
     Many(Vec<T>),
