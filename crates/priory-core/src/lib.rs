@@ -1,3 +1,4 @@
+mod command;
 pub mod daemon;
 mod deliver;
 pub mod embed;

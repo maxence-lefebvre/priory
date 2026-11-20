@@ -93,6 +93,8 @@ const state = {
   observers: [],
   // The answer waiting out its Undo, then in flight: { id, text, timer, sending }.
   pending: null,
+  // The command option the first tap armed, until the second tap or 4 s: { id, text, at, timer }.
+  armed: null,
   drafts: new Map(),
   notices: new Map(),
   writing: new Set(),
@@ -181,9 +183,9 @@ function deskModel() {
   const byId = new Map(asks.map((ask) => [ask.id, ask]));
   const items = desk.items.filter((item) => item.kind !== "queue");
   const open = items.filter((item) => item.kind === "ask").map((item) => byId.get(item.id) || { ...item, question: item.what, options: [] });
-  const stopped = items.filter((item) => ["blocked", "failed", "prompt"].includes(item.kind));
+  const stopped = items.filter((item) => ["blocked", "failed", "prompt", "command"].includes(item.kind));
   const reports = items.filter((item) => item.kind === "report");
-  const other = items.filter((item) => !["ask", "blocked", "failed", "prompt", "report"].includes(item.kind));
+  const other = items.filter((item) => !["ask", "blocked", "failed", "prompt", "command", "report"].includes(item.kind));
   return { open, stopped, reports, other, asleep: desk.counts.asleep, banner: desk.banner, running: queue.running, queue: queue.waiting, tasks, upNext: queue.up_next, needs: items.length };
 }
 const openAsks = () => deskModel().open;
@@ -208,7 +210,8 @@ function askRow(ask, current) {
 }
 
 function itemRow(item) {
-  const kind = item.kind === "prompt" ? "prompt" : ["blocked", "failed"].includes(item.kind) ? item.kind : item.kind === "held" ? "held" : "queued";
+  // An uncertain command, like an uncertain prompt, waits on a person to check what happened.
+  const kind = ["prompt", "command"].includes(item.kind) ? "prompt" : ["blocked", "failed"].includes(item.kind) ? item.kind : item.kind === "held" ? "held" : "queued";
   return html`<div class="row">
     ${tile(kind)}
     <span class="l1"><span class="mono">${item.key || ""}</span><span>${item.step || ""}</span><span>${item.kind}</span><span class="age">${timeTag(item.since)}</span></span>
@@ -396,20 +399,24 @@ function askDetail(id, wide) {
     ${wide ? html`<a class="iconbtn" href="${back[0]}" aria-label="Close">${icon("x", "s20")}</a>` : ""}</div>`;
   const options = ask.options || [];
   const pending = state.pending?.id === ask.id ? state.pending : null;
-  // A command ask's answer runs its command (R6.8), which the web view does not send yet.
-  const locked = ask.command ? "command" : state.failed ? "offline" : null;
+  const armed = state.armed?.id === ask.id ? state.armed.text : null;
+  const locked = state.failed ? "offline" : null;
+  const bound = `Bound to revision ${ask.revision}.`;
   const optionButtons = options.map((option, i) => {
     const recommended = option === ask.recommendation;
+    const runs = runsCommand(ask, option);
     const chosen = pending?.text === option;
     const off = locked || (pending && !chosen);
-    return html`<button class="opt ${recommended ? "rec-opt" : ""} ${chosen ? "chosen" : ""}" data-option="${i}" data-answer="${i}" aria-disabled="${off || pending ? "true" : "false"}" ${locked ? raw('aria-describedby="answer-locked"') : ""}>
-      ${chosen ? icon("check", "s20") : ""}<span>${option}${recommended ? html`<small>Recommended</small>` : ""}</span>${wide ? html`<kbd>${i + 1}</kbd>` : ""}</button>`;
+    const notes = [recommended && "Recommended", runs && "Runs a command"].filter(Boolean).join(". ");
+    const label = armed === option
+      ? html`<span><small>Tap again to run</small>${option}<small>Cancels in 4 s</small></span><span class="drain" aria-hidden="true"></span>`
+      : html`<span>${option}${notes ? html`<small>${notes}</small>` : ""}</span>`;
+    const button = html`<button class="opt ${recommended ? "rec-opt" : ""} ${chosen ? "chosen" : ""} ${armed === option ? "armed" : ""}" data-option="${i}" data-answer="${i}" aria-disabled="${off || pending ? "true" : "false"}" ${locked ? raw('aria-describedby="answer-locked"') : ""}>
+      ${chosen ? icon("check", "s20") : ""}${label}${wide ? html`<kbd>${i + 1}</kbd>` : ""}</button>`;
+    return armed === option ? html`${button}${commandBlock(ask, bound)}` : button;
   });
   const notice = state.notices.get(ask.id);
-  const lockedNote = {
-    command: html`<p class="note" id="answer-locked">${icon("lock", "s15")}<span>This ask runs a command when answered, which the web view cannot do yet. Run <code>priory answer ${ask.id} OPTION --revision ${ask.revision}</code>.</span></p>`,
-    offline: html`<p class="note" id="answer-locked">${icon("unplug", "s15")}<span>Reconnect to answer.</span></p>`,
-  }[locked] || "";
+  const lockedNote = locked ? html`<p class="note" id="answer-locked">${icon("unplug", "s15")}<span>Reconnect to answer.</span></p>` : "";
   const writing = state.writing.has(ask.id) && !locked;
   const write = writing
     ? html`<form class="writeform" data-action="send-text"><label class="sr" for="draft">Your answer</label><textarea id="draft" name="text" rows="3">${state.drafts.get(ask.id) || ""}</textarea><button class="btn primary" ${pending ? raw('aria-disabled="true"') : ""}>Send</button></form>`
@@ -422,7 +429,7 @@ function askDetail(id, wide) {
       : html`<button class="ghost" data-action="snooze" data-for="1h" aria-disabled="${busy}">Snooze 1 h</button><button class="ghost" data-action="snooze" data-tomorrow="9" aria-disabled="${busy}">Snooze until tomorrow 09:00</button>`;
   const more = html`<div class="more">${write}${locked ? "" : html`<button class="ghost" data-action="dismiss" aria-disabled="${busy}">Dismiss</button>`}${snoozeButtons}</div>`;
   const decided = ask.state !== "open"
-    ? html`${notice ? html`<p class="warnline" role="status">${notice}</p>` : ""}<div class="rec">${ask.state === "answered" ? html`<span><b>Answered: ${ask.answer}.</b> ${ask.answered_at ? age(ask.answered_at) + " ago" : ""}</span>` : html`<span><b>Withdrawn${ask.withdrawn_why ? `: ${ask.withdrawn_why}` : ""}.</b></span>`}</div>`
+    ? html`${notice ? html`<p class="warnline" role="status">${notice}</p>` : ""}<div class="rec">${ask.state === "answered" ? html`<span><b>Answered: ${ask.answer}.</b> ${ask.answered_at ? age(ask.answered_at) + " ago" : ""}</span>` : html`<span><b>Withdrawn${ask.withdrawn_why ? `: ${ask.withdrawn_why}` : ""}.</b></span>`}</div>${ranLine(ask.ran)}`
     : html`${notice ? html`<p class="warnline" role="status">${notice}</p>` : ""}${ask.recommendation ? html`<div class="rec"><span><b>Recommended: ${ask.recommendation}.</b></span>
         ${ask.next_action ? html`<span class="then">${icon("corner-down-right", "s15")}<span>${ask.next_action}</span></span>` : ""}</div>` : ""}
       <div class="opts" role="group" aria-label="Options">${optionButtons}</div>${lockedNote}${more}`;
@@ -435,8 +442,11 @@ function askDetail(id, wide) {
     <p class="text">${ask.text || ask.question}</p>
     ${ask.tradeoff ? html`<p class="fact">${icon("scale", "s15")}<span><b>Trade-off.</b> ${ask.tradeoff}</span></p>` : ""}
     ${ask.what_waits ? html`<p class="fact">${icon("hourglass", "s15")}<span><b>What waits.</b> ${ask.what_waits}</span></p>` : ""}</section>`;
-  const command = ask.command ? html`<section class="sect" id="command"><div class="sh">${icon("terminal", "s15")}Command the asker attached</div>
-    <div class="cmd"><span class="mono">$ ${ask.command}</span><small>Bound to revision ${ask.revision}. Priory stores this command and runs nothing yet.</small></div></section>` : "";
+  const command = !ask.command ? "" : typeof ask.command === "string"
+    ? html`<section class="sect" id="command"><div class="sh">${icon("terminal", "s15")}Command the asker attached</div>
+      <div class="cmd"><span class="mono">$ ${ask.command}</span><small>Priory stores this command and never runs it: the ask came from outside Priory.</small></div></section>`
+    : html`<section class="sect" id="command"><div class="sh">${icon("terminal", "s15")}Command an answer runs</div>
+      ${commandBlock(ask, `Runs on ${ask.command.runs.join(", ")}. ${bound} Runs at most once.`)}</section>`;
   const historyItems = [html`<li>${tile("ask", "sm")}<span>Asked revision <b>${ask.revision}</b></span>${timeTag(ask.since, clock(ask.since))}</li>`];
   if (ask.state === "answered") historyItems.unshift(html`<li>${tile("answered", "sm")}<span>Answered <b>${ask.answer}</b></span>${ask.answered_at ? timeTag(ask.answered_at, clock(ask.answered_at)) : ""}</li>`);
   if (ask.state === "withdrawn") historyItems.unshift(html`<li>${tile("withdrawn", "sm")}<span>Withdrawn${ask.withdrawn_why ? `: ${ask.withdrawn_why}` : ""}</span><span></span></li>`);
@@ -445,17 +455,44 @@ function askDetail(id, wide) {
   const sending = pending
     ? html`<div class="sending" role="status"><span>Sending <b>"${pending.text}"</b></span>${pending.sending ? "" : html`<button class="btn secondary" data-action="undo">Undo</button>`}</div>`
     : "";
+  const barArmed = armed !== null && armed === recommended;
   const bar = !wide && !pending && ask.state === "open" && options.length
-    ? html`<div class="abar" hidden><button class="btn secondary" data-action="options">${icon("chevron-up", "s15")}${options.length} options</button>
-      <button class="btn primary" data-answer="${options.indexOf(recommended)}" aria-disabled="${locked ? "true" : "false"}"><span>${recommended}</span><small>${recommended === ask.recommendation ? "Recommended" : "First option"}</small></button>
-      ${locked ? html`<p class="note">${icon("lock", "s15")}<span>${locked === "command" ? "Answer this command ask with priory answer." : "Reconnect to answer."}</span></p>` : ""}</div>`
+    ? html`<div class="abar" hidden>${barArmed ? commandBlock(ask, bound) : ""}<button class="btn secondary" data-action="options">${icon("chevron-up", "s15")}${options.length} options</button>
+      <button class="btn primary ${barArmed ? "armed" : ""}" data-answer="${options.indexOf(recommended)}" aria-disabled="${locked ? "true" : "false"}">${barArmed
+        ? html`<span><small>Tap again to run</small>${recommended}<small>Cancels in 4 s</small></span><span class="drain" aria-hidden="true"></span>`
+        : html`<span>${recommended}</span><small>${[recommended === ask.recommendation ? "Recommended" : "First option", runsCommand(ask, recommended) && "Runs a command"].filter(Boolean).join(". ")}</small>`}</button>
+      ${locked ? html`<p class="note">${icon("unplug", "s15")}<span>Reconnect to answer.</span></p>` : ""}</div>`
     : "";
   if (wide) return html`<div class="pinned">${header}${top}${sending}</div><div class="scroll" data-sections>${jump}${why}${history}${command}</div>`;
   return html`${header}<div class="scroll" data-sections>${top}${jump}${why}${history}${command}</div>${bar}${sending}`;
 }
 
+// An agent's command runs on the options in its `runs`; an outside ask's string command never runs.
+const runsCommand = (ask, option) => Array.isArray(ask.command?.runs) && ask.command.runs.includes(option);
+
+// The argv word by word, each in its own box, so a space, a quote or an empty word shows as it is.
+function commandBlock(ask, note) {
+  const { argv, target, dir } = ask.command;
+  return html`<div class="cmd"><ol class="argv" aria-label="Command, word by word">${argv.map((word) => html`<li><code>${word}</code></li>`)}</ol>
+    <small>In <span class="mono">${dir}</span> (${target}). ${note}</small></div>`;
+}
+
+const RAN = {
+  running: "The command runs.",
+  done: "The command ran: exit 0.",
+  failed: "The command failed",
+  uncertain: "Priory stopped while this ran. Check the target before you act on it.",
+};
+
+function ranLine(ran) {
+  if (!ran) return "";
+  const text = ran.status === "failed" ? `${RAN.failed}: ${ran.error}.` : RAN[ran.status] || ran.status;
+  return html`<p class="${ran.status === "uncertain" ? "warnline" : "note"}" role="status">${icon("terminal", "s15")}<span>${text}</span></p>`;
+}
+
 // Writes: each is the twin of a CLI verb, sent with the revision the page showed.
 const UNDO_MS = 4000;
+const ARM_MS = 4000;
 const askOnScreen = () => state.data.asks.find((ask) => String(ask.id) === selectedAsk());
 
 async function post(path, body) {
@@ -485,10 +522,32 @@ function undo() {
   render();
 }
 
-async function send(ask, pending, written) {
+// The first tap on a command option arms it; the second, within 4 s, runs it with no Undo.
+function arm(ask, option) {
+  disarm();
+  state.armed = { id: ask.id, text: option, at: Date.now(), timer: setTimeout(() => { state.armed = null; render(); }, ARM_MS) };
+  render();
+}
+
+function disarm() {
+  if (!state.armed) return;
+  clearTimeout(state.armed.timer);
+  state.armed = null;
+}
+
+function runCommand(ask, option) {
+  disarm();
+  if (state.pending) return;
+  state.notices.delete(ask.id);
+  state.pending = { id: ask.id, text: option, sending: false };
+  send(ask, state.pending, false, true);
+}
+
+async function send(ask, pending, written, confirmed = false) {
   pending.sending = true;
   render();
   const body = { [written ? "text" : "option"]: pending.text, revision: ask.revision };
+  if (confirmed) body.run = true;
   const sent = await write(ask, `/api/asks/${encodeURIComponent(ask.id)}/answer`, body, pending.text);
   state.pending = null;
   if (sent) return next(ask);
@@ -570,7 +629,15 @@ async function dismiss(ask) {
 function act(target) {
   const ask = askOnScreen();
   if (!ask || target.getAttribute("aria-disabled") === "true") return;
-  if (target.dataset.answer !== undefined) return answer(ask, ask.options[Number(target.dataset.answer)], false);
+  if (target.dataset.answer !== undefined) {
+    const option = ask.options[Number(target.dataset.answer)];
+    if (!runsCommand(ask, option)) {
+      disarm();
+      return answer(ask, option, false);
+    }
+    if (state.armed?.id === ask.id && state.armed.text === option) return runCommand(ask, option);
+    return arm(ask, option);
+  }
   const action = target.dataset.action;
   if (action === "undo") return undo();
   if (state.pending) return;
@@ -746,7 +813,11 @@ function render() {
   const caret = document.activeElement?.id === "draft" ? document.activeElement.selectionStart : undefined;
   state.observers.forEach((observer) => observer.disconnect());
   state.observers = [];
+  if (state.armed && (!state.token || selectedAsk() !== String(state.armed.id))) disarm();
   app.innerHTML = page().text;
+  // A render must not restart the countdown; CSP allows no inline style, so it is set here.
+  const elapsed = state.armed ? Date.now() - state.armed.at : 0;
+  app.querySelectorAll(".drain").forEach((drain) => { drain.style.animationDelay = `-${elapsed}ms`; });
   state.renderedKey = routeKey();
   state.rendered = Date.now();
   const scrolls = state.scrolls.get(state.renderedKey) || [];

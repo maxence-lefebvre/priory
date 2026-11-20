@@ -67,6 +67,14 @@ const DESK: &str = "SELECT 0 AS part, asks.created AS since, 'ask' AS kind,
                FROM outbox JOIN tasks ON tasks.id = outbox.task
                WHERE outbox.state = 'uncertain' AND tasks.state NOT IN ('done', 'failed', 'dropped')
                UNION ALL
+               SELECT 0, actions.ended, 'command', actions.id, actions.task, tasks.lane,
+                 'Priory stopped while answer ' || json_quote(asks.answer) || ' to ask ' || asks.id
+                   || ' ran ' || json_extract(actions.command, '$.argv') || ' in '
+                   || json_extract(actions.command, '$.dir') || ': check the target'
+               FROM actions JOIN asks ON asks.id = actions.ask JOIN tasks ON tasks.id = actions.task
+               WHERE actions.action = 'answer' AND actions.status = 'uncertain'
+                 AND tasks.state NOT IN ('done', 'failed', 'dropped')
+               UNION ALL
                SELECT 0, holds.created, 'held', holds.id, holds.task, tasks.lane, tasks.reason
                FROM holds JOIN tasks ON tasks.id = holds.task
                WHERE holds.released IS NULL AND tasks.state = 'held' AND holds.id = (
@@ -111,7 +119,10 @@ fn asks_query() -> String {
      asks.what_waits, asks.next_action, asks.command, asks.coordinator, asks.run_id, asks.session,
      (SELECT json_object('state', state, 'revision', revision, 'tries', tries, 'error', error,
         'since', coalesce(ended, created))
-      FROM deliveries WHERE deliveries.ask = asks.id ORDER BY id DESC LIMIT 1) AS delivery, {}
+      FROM deliveries WHERE deliveries.ask = asks.id ORDER BY id DESC LIMIT 1) AS delivery,
+     (SELECT json_object('status', status, 'revision', revision, 'error', error, 'stdout', stdout,
+        'stderr', stderr)
+      FROM actions WHERE actions.ask = asks.id ORDER BY id DESC LIMIT 1) AS ran, {}
    FROM asks LEFT JOIN tasks ON tasks.id = asks.task
    LEFT JOIN snoozes ON snoozes.kind = 'ask' AND snoozes.item = asks.id
    WHERE (?1 IS NULL OR asks.task = ?1) AND (?2 IS NULL OR asks.id = ?2) ORDER BY asks.id",
@@ -196,6 +207,18 @@ fn asks_of(db: &Connection, task: Option<i64>, id: Option<i64>) -> rusqlite::Res
         }
         if let Some(delivery) = ask["delivery"].as_str() {
             ask["delivery"] = serde_json::from_str(delivery).unwrap_or(Value::Null);
+        }
+        if let Some(ran) = ask["ran"].as_str() {
+            ask["ran"] = serde_json::from_str(ran).unwrap_or(Value::Null);
+        }
+        // An agent's command is an object; an outside ask's stays the string it sent.
+        let agents = ask["task"].is_i64();
+        if let Some(Ok(command)) = ask["command"]
+            .as_str()
+            .filter(|_| agents)
+            .map(serde_json::from_str)
+        {
+            ask["command"] = command;
         }
         parse_back_early(ask);
     }

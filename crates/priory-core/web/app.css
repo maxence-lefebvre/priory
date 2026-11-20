@@ -297,3 +297,15 @@ textarea { font: 400 16px/22px var(--font-ui); color: var(--text); background: v
 .drawer { container-type: inline-size; }
 @container (max-width: 600px) { .drawer .opts { flex-direction: column; } }
 @media (max-width: 599px) { .views { gap: 6px; } .views a { padding: 0 8px; } }
+
+/* A command option armed by its first tap (DESIGN.md, Ask detail): the second tap runs it. */
+@property --left { syntax: "<angle>"; inherits: false; initial-value: 360deg; }
+.opt.armed, .abar .btn.primary.armed { background: var(--emph); color: var(--on-emph); box-shadow: 0 0 0 3px var(--action); }
+.abar .btn.primary.armed { flex-direction: row; align-items: center; justify-content: space-between; }
+.armed .drain { margin-left: auto; flex: none; width: 22px; height: 22px; border-radius: 50%; background: conic-gradient(var(--on-emph) var(--left), transparent 0); box-shadow: inset 0 0 0 2px var(--on-emph); animation: drain 4s linear forwards; }
+@keyframes drain { to { --left: 0deg; } }
+@media (prefers-reduced-motion: reduce) { .armed .drain { animation: none; } }
+.opts:has(.armed) .opt:not(.armed) { opacity: 0.45; }
+.abar .cmd { grid-column: 1 / -1; }
+.argv { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 6px; }
+.argv code { display: inline-block; min-width: 1ch; min-height: 18px; white-space: pre-wrap; overflow-wrap: anywhere; padding: 2px 6px; border-radius: var(--radius-sm); background: var(--surface); box-shadow: inset 0 0 0 1px var(--control-line); font: 500 13px/18px var(--font-mono); color: var(--text); }

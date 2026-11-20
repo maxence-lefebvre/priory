@@ -33,12 +33,12 @@ pub fn spawn_command(
     start(command, dir, log, None, Stdio::null(), timeout)
 }
 
-/// Starts `run` with `sh -c` and `env` in `dir`, in its own process group, its stdout going to
-/// `log` and its stderr to `errors`. `run` waits for `release`, and never runs if the caller dies
-/// first, so the caller can record the process group before anything runs. `poll` returns the
-/// tail of stdout alone.
+/// Execs `argv` with `env` in `dir`, in its own process group, its stdout going to `log` and its
+/// stderr to `errors`. It waits for `release`, and never runs if the caller dies first, so the
+/// caller can record the process group before anything runs. `poll` returns the tail of stdout
+/// alone.
 pub fn spawn_held(
-    run: &str,
+    argv: &[&str],
     env: &[(&str, &std::ffi::OsStr)],
     dir: &Path,
     log: &Path,
@@ -47,12 +47,8 @@ pub fn spawn_held(
 ) -> Result<Script, String> {
     let mut command = Command::new("sh");
     command
-        .args([
-            "-c",
-            "read -r _ && exec sh -c \"$1\" sh </dev/null",
-            "sh",
-            run,
-        ])
+        .args(["-c", "read -r _ && exec \"$@\" </dev/null", "sh"])
+        .args(argv)
         .envs(env.iter().copied());
     start(command, dir, log, Some(errors), Stdio::piped(), timeout)
 }
