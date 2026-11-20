@@ -83,6 +83,10 @@
             "null"
           ]
         },
+        "open": {
+          "description": "Whether the pull request was open when the intake read it; a done task reopens only\nfor feedback on an open one.",
+          "type": "boolean"
+        },
         "path": {
           "description": "The file the thread is on.",
           "type": "string"
@@ -128,6 +132,7 @@
         "head_sha",
         "base_branch",
         "actor",
+        "open",
         "body",
         "path",
         "line",

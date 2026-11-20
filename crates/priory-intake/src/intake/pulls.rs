@@ -16,6 +16,7 @@ pub(super) struct Pull {
     pub(super) head_ref_oid: String,
     pub(super) base_ref_name: String,
     pub(super) merged: bool,
+    state: String,
     updated_at: String,
     reviews: Nodes<Review>,
     #[serde(default)]
@@ -146,6 +147,7 @@ pub(super) fn reviews_and_checks<'a>(
             let mut observed = on_pull(REVIEWED, name, review.database_id, time, &review.url);
             observed.data["state"] = json!(review.state.to_lowercase());
             observed.data["actor"] = json!(review.author.as_ref().map(|author| &author.login));
+            observed.data["open"] = json!(pull.state == "OPEN");
             reviews.push(observed);
         }
         let people = pull.comments.nodes.iter().filter(|comment| {
@@ -257,7 +259,7 @@ pub(super) fn reviews_and_checks<'a>(
     (reviews, checks)
 }
 
-const PULL_FIELDS: &str = "fragment pull on PullRequest { number headRefName headRefOid baseRefName merged \
+const PULL_FIELDS: &str = "fragment pull on PullRequest { number headRefName headRefOid baseRefName merged state \
     reviews(last: 50) { nodes { databaseId state submittedAt url author { login } } } \
     comments(last: 50) { nodes { databaseId body url createdAt author { login __typename } } } \
     updatedAt commits(last: 1) { nodes { commit { statusCheckRollup { contexts(first: 100) { totalCount nodes { \
@@ -344,12 +346,13 @@ impl Pull {
             "head_branch": self.head_ref_name,
             "head_sha": self.head_ref_oid,
             "base_branch": self.base_ref_name,
+            "open": self.state == "OPEN",
         })
     }
 }
 
 /// A comment on pull request `number` as an event of `kind`: `branches` holds its head and base
-/// fields, and `data` the comment's own, its `github_id` among them.
+/// fields and whether it is open, and `data` the comment's own, its `github_id` among them.
 pub(super) fn comment(
     kind: &'static str,
     repo: &str,
@@ -361,7 +364,7 @@ pub(super) fn comment(
     let name = format!("github:{repo}:{path}/comments:{}", data["github_id"]);
     data["repo"] = json!(repo);
     data["pull_request"] = json!(number);
-    for field in ["head_branch", "head_sha", "base_branch"] {
+    for field in ["head_branch", "head_sha", "base_branch", "open"] {
         data[field] = branches[field].clone();
     }
     Observed {

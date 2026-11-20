@@ -1391,6 +1391,7 @@ fn issue_pull_request_and_review_deliveries_publish_their_poll_types() {
             "base_branch": "main",
             "state": "approved",
             "actor": "ana",
+            "open": false,
             "time": "2026-11-17T10:30:00Z",
             "github_id": 2561579718u64,
             "delivery": "d-2",
@@ -1428,6 +1429,7 @@ fn a_comment_a_poll_published_publishes_nothing_more_from_its_webhook() {
         "headRefOid": "abc123",
         "baseRefName": "main",
         "merged": false,
+        "state": "OPEN",
         "updatedAt": "2999-01-01T00:00:00Z",
         "reviews": { "nodes": [] },
         "comments": { "nodes": [{

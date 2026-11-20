@@ -11,6 +11,7 @@
     "head_sha": "4b2ee8eb670ba9f77d54d59ab97ced618f024fb9",
     "base_branch": "main",
     "actor": "octocat",
+    "open": true,
     "body": "This returns early on an empty sheet. Keep the header row?",
     "path": "src/export.rs",
     "line": 42,

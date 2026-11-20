@@ -266,6 +266,7 @@ The pull request fields, and:
 | ----- | ---- | ------- |
 | `state` | string | `approved`, `changes_requested`, `commented` or `dismissed`, at poll time |
 | `actor` | string or null | Who reviewed |
+| `open` | boolean | Whether the pull request was open when the intake read it. A done task reopens only for feedback on an open one |
 | `github_id` | integer | GitHub's review id |
 
 <!-- example: events/github.pull_request_review.submitted.json -->
@@ -284,6 +285,7 @@ The pull request fields, and:
     "base_branch": "main",
     "state": "approved",
     "actor": "octocat",
+    "open": true,
     "time": "2026-11-17T16:40:03Z",
     "github_id": 2561579718,
     "baseline": false,
@@ -304,6 +306,7 @@ The pull request fields, and:
 | Field | Type | Meaning |
 | ----- | ---- | ------- |
 | `actor` | string or null | Who commented; null for a deleted user |
+| `open` | boolean | Whether the pull request was open when the intake read it. A done task reopens only for feedback on an open one |
 | `body` | string | The comment's Markdown, as written |
 | `github_id` | integer | GitHub's comment id |
 
@@ -324,6 +327,7 @@ A webhook's message has null head and base fields: its payload names no branch.
     "head_sha": "4b2ee8eb670ba9f77d54d59ab97ced618f024fb9",
     "base_branch": "main",
     "actor": "octocat",
+    "open": true,
     "body": "Can you split the export fix from the rename?",
     "time": "2026-11-17T16:45:10Z",
     "github_id": 2561579801,
@@ -345,6 +349,7 @@ The pull request fields, and:
 | Field | Type | Meaning |
 | ----- | ---- | ------- |
 | `actor` | string or null | Who commented; null for a deleted user |
+| `open` | boolean | Whether the pull request was open when the intake read it. A done task reopens only for feedback on an open one |
 | `body` | string | The comment's Markdown, as written |
 | `path` | string | The file the thread is on |
 | `line` | integer or null | The line of the diff's new side; null once the line is outdated |
@@ -366,6 +371,7 @@ The pull request fields, and:
     "head_sha": "4b2ee8eb670ba9f77d54d59ab97ced618f024fb9",
     "base_branch": "main",
     "actor": "octocat",
+    "open": true,
     "body": "This returns early on an empty sheet. Keep the header row?",
     "path": "src/export.rs",
     "line": 42,

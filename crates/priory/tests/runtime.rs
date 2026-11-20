@@ -6055,6 +6055,44 @@ fn an_autonomous_irreversible_step_runs_without_an_ask() {
     assert!(setup.rows("asks").is_empty());
 }
 
+#[test]
+fn a_done_task_reopens_at_the_model_step_whose_result_opened_its_pull_request() {
+    let mut setup = Setup::with_workflow("reopen-opened", AUTONOMOUS);
+    setup.calls(&[passed_with_evidence()]);
+    setup.publish(&requested(42));
+    setup.start();
+    let actions = setup.until("actions", |rows| rows.len() == 1);
+    let mut green = check(1, 0);
+    green.data["head_sha"] = json!(actions[0][6]);
+    setup.until("tasks", |rows| rows[0][4] == "asleep");
+    setup.publish(&green);
+    setup.until("tasks", |rows| rows[0][4] == "done");
+    std::thread::sleep(Duration::from_millis(1100));
+
+    setup.publish(&commented());
+
+    let tasks = setup.until("tasks", |rows| rows[0][4] != "done");
+    assert_eq!(tasks[0][3], "implement", "{tasks:?}");
+    assert_eq!(setup.rows("actions").len(), 1, "open-pr does not run again");
+}
+
+#[test]
+fn a_comment_on_a_closed_pull_request_reopens_nothing_before_its_close_arrives() {
+    let setup = gated("reopen-closed");
+    setup.publish(&check(1, 0));
+    setup.until("tasks", |rows| rows[0][4] == "done");
+    std::thread::sleep(Duration::from_millis(1100));
+    let mut late = commented();
+    late.data["open"] = json!(false);
+
+    setup.publish(&late);
+
+    setup.until("inbox", |rows| rows.len() == 4);
+    std::thread::sleep(Duration::from_millis(1500));
+    assert_eq!(setup.rows("tasks")[0][4], "done");
+    assert_eq!(setup.rows("runs").len(), 2);
+}
+
 const UNKNOWN_ACTION: &str = r#"
 start = "implement"
 

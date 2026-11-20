@@ -196,6 +196,7 @@ impl Github {
                 let state = review["state"].as_str().unwrap_or_default();
                 data["state"] = json!(state.to_lowercase());
                 data["github_id"] = review["id"].clone();
+                data["open"] = json!(pull["state"] == "open");
                 let name = format!("github:{repo}:pulls/reviews:{}", review["id"]);
                 (REVIEWED, name, data)
             }
@@ -250,6 +251,7 @@ fn feedback(event: &str, repo: &str, payload: &Value) -> Option<Observed> {
             "head_branch": pull["head"]["ref"],
             "head_sha": pull["head"]["sha"],
             "base_branch": pull["base"]["ref"],
+            "open": pull["state"] == "open",
         });
         let number = pull["number"].as_u64()?;
         return Some(comment(
@@ -270,7 +272,7 @@ fn feedback(event: &str, repo: &str, payload: &Value) -> Option<Observed> {
         "github_id": found["id"],
     });
     // The issue in the payload names no branch: routing finds the task by its pull request.
-    let branches = json!({});
+    let branches = json!({ "open": issue["state"] == "open" });
     Some(comment(
         COMMENTED,
         repo,

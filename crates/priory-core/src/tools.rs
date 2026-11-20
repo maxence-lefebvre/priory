@@ -2108,22 +2108,7 @@ fn revive(
         )));
     }
     let generation = generation + 1;
-    tx.execute(
-        "UPDATE asks SET withdrawn = ?2 WHERE task = ?1 AND answer IS NULL AND withdrawn IS NULL",
-        [act.task, generation],
-    )?;
-    tx.execute(
-        "UPDATE waits SET withdrawn = ?2 WHERE task = ?1 AND fired IS NULL AND withdrawn IS NULL",
-        [act.task, generation],
-    )?;
-    tx.execute(
-        "UPDATE outbox SET state = 'withdrawn' WHERE task = ?1 AND state = 'queued'",
-        [act.task],
-    )?;
-    tx.execute(
-        "UPDATE tasks SET generation = ?2 WHERE id = ?1",
-        [act.task, generation],
-    )?;
+    regenerate(tx, act.task, generation)?;
     enter(tx, act.task, &workflow, target, None, "", workflows)?;
     if entered.decides == Decider::Model {
         let after = reason.map_or(state.clone(), |reason| format!("{state}: {reason}"));
@@ -2141,6 +2126,28 @@ fn revive(
     )))
 }
 
+/// Makes `generation` the task's, withdrawing the open asks, waits and queued prompts of the
+/// earlier ones so that no late answer or event reaches it.
+fn regenerate(tx: &Transaction, task: i64, generation: i64) -> rusqlite::Result<()> {
+    tx.execute(
+        "UPDATE asks SET withdrawn = ?2 WHERE task = ?1 AND answer IS NULL AND withdrawn IS NULL",
+        [task, generation],
+    )?;
+    tx.execute(
+        "UPDATE waits SET withdrawn = ?2 WHERE task = ?1 AND fired IS NULL AND withdrawn IS NULL",
+        [task, generation],
+    )?;
+    tx.execute(
+        "UPDATE outbox SET state = 'withdrawn' WHERE task = ?1 AND state = 'queued'",
+        [task],
+    )?;
+    tx.execute(
+        "UPDATE tasks SET generation = ?2 WHERE id = ?1",
+        [task, generation],
+    )
+    .map(drop)
+}
+
 /// The done task that feedback in `message` reopens: the newest that owns its pull request, done
 /// before the feedback was written, with no close of that pull request in the inbox and no active
 /// task on its key.
@@ -2152,7 +2159,8 @@ pub(crate) fn reopenable(
     let (Some(repo), Some(number)) = (data["repo"].as_str(), data["pull_request"].as_u64()) else {
         return Ok(None);
     };
-    if !FEEDBACK.contains(&message.kind.as_str()) {
+    // A pull request the intake read as closed may reopen nothing before its close arrives.
+    if !FEEDBACK.contains(&message.kind.as_str()) || data["open"] == false {
         return Ok(None);
     }
     tx.query_row(
@@ -2201,8 +2209,9 @@ pub(crate) fn reopen(tx: &Transaction, trace: &Trace, task: i64, seq: i64) -> ru
     );
     let opened: Option<String> = tx
         .query_row(
-            "SELECT step FROM actions WHERE task = ?1 AND pull_request = ?2 AND status = 'opened'
-             ORDER BY id DESC LIMIT 1",
+            "SELECT results.step FROM actions JOIN results ON results.run = actions.result
+             WHERE actions.task = ?1 AND actions.pull_request = ?2 AND actions.status = 'opened'
+             ORDER BY actions.id DESC LIMIT 1",
             params![task, resource],
             |row| row.get(0),
         )
@@ -2212,22 +2221,7 @@ pub(crate) fn reopen(tx: &Transaction, trace: &Trace, task: i64, seq: i64) -> ru
         .and_then(|flow| flow.value.reopen.clone());
     let target = named.or(opened).unwrap_or(at);
     let generation = generation + 1;
-    tx.execute(
-        "UPDATE asks SET withdrawn = ?2 WHERE task = ?1 AND answer IS NULL AND withdrawn IS NULL",
-        [task, generation],
-    )?;
-    tx.execute(
-        "UPDATE waits SET withdrawn = ?2 WHERE task = ?1 AND fired IS NULL AND withdrawn IS NULL",
-        [task, generation],
-    )?;
-    tx.execute(
-        "UPDATE outbox SET state = 'withdrawn' WHERE task = ?1 AND state = 'queued'",
-        [task],
-    )?;
-    tx.execute(
-        "UPDATE tasks SET generation = ?2 WHERE id = ?1",
-        [task, generation],
-    )?;
+    regenerate(tx, task, generation)?;
     enter(tx, task, &workflow, &target, None, "", workflows)?;
     let said = feedback(&resource, &kind, &data).unwrap_or_default();
     let text = format!("Feedback reopened this done task as generation {generation}: {said}");

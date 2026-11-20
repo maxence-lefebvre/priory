@@ -142,11 +142,12 @@ reopens the newest done task that:
 
 - owns its pull request, through `open-pr` or a wait;
 - became done at or before the feedback's `time`, to the second;
-- has no `github.pull_request.closed` event of that pull request in the inbox, merged or not;
+- has no `github.pull_request.closed` event of that pull request in the inbox, merged or not, and
+  the feedback's `open` is true, so a close the intake publishes after it reopens nothing;
 - shares its key with no active task.
 
-The task goes back, as its next generation, to its workflow's `reopen` step, else the step whose
-`open-pr` opened the pull request, else the step it was done at. As `priory revive` does, the
+The task goes back, as its next generation, to its workflow's `reopen` step, else the model step
+whose result led to the `open-pr` that opened the pull request, else the step it was done at. As `priory revive` does, the
 reopen withdraws the open asks, waits and queued prompts of the earlier generation. Its first
 prompt is one line, then the event's own line:
 
