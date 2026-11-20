@@ -117,16 +117,17 @@ Herdr Desk: the count, the next thing, the room banner, the saved views, then th
   actions.
 - **Up next** shows `queue`'s `up_next`, under the list below 1024 px and in the left column from
   1024 px. **Since you looked** shows from 1024 px.
-- **Since you looked** keeps the events the panel opened on. Once they are on screen, the panel
-  runs `priory seen --at` once, with the time it started that first read, and adds each newer
-  event to the top. `herdr-app check` runs no
+- **Since you looked** keeps the events the panel opened on, and adds each newer event to the top.
+  The first time the panel draws the list, from 1024 px, it runs `priory seen --at` once, with
+  the time it started its first read. A panel that stays narrower records no visit. `herdr-app check` runs no
   `priory` command at all.
 - **Acting.** Snooze 1 h, Snooze until tomorrow 09:00 and Unsnooze run `priory snooze KIND ID`
   with `--for 1h`, `--until` or `--clear`. Resume runs `priory resume TASK` for a blocked task or an
   uncertain prompt, and Revive runs `priory revive TASK` for a failed one.
   Attach asks the Priory bar with `priory.attach`. Answer… opens the ask in the Asks panel: it sets
   `setShared("priory.asks.open", { ask, at: Date.now() })` and shows the side panel on Asks.
-- **Keys.** `J` and `K` move the selection, `Enter` opens the selected ask in Asks, `S`
+- **Keys.** `J` and `K` move the selection, `Enter` opens the selected ask in Asks or the Asleep
+  view from the asleep row, `S`
   snoozes the selected row for 1 h, or unsnoozes a snoozed one, and `R` resumes or revives it. The
   mod is focusable, so `pane.go` moves the keyboard onto it.
 - **Width.** Below 1024 px, one column. From 1024 px, a 440 px column beside the list and the key

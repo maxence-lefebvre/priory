@@ -79,6 +79,10 @@ export default class PrioryDesk extends View {
     this.theme = "indigo";
     /** @type {{ cancel(): void } | null} */
     this.retry = null;
+    this.chain = 0;
+    /** @type {string | null} */
+    this.opened = null;
+    this.seenSent = false;
     this.focus = cx.focus_handle();
     // herdr-app check runs init for real: no priory call, and above all no `priory seen`.
     if (checking()) return;
@@ -94,8 +98,9 @@ export default class PrioryDesk extends View {
   }
 
   // A snooze ends by the clock, which no revision records, so every `priory wait` ends in a read.
-  /** Reads every listing, then waits and reads again. @param {import("gpui-kit").Context} cx @param {number | null} since */
-  load(cx, since) {
+  // One chain runs at a time: Retry starts a new one, and an older chain stops at its next step.
+  /** Reads every listing, then waits and reads again. @param {import("gpui-kit").Context} cx @param {number | null} since @param {number} [chain] */
+  load(cx, since, chain = ++this.chain) {
     cx.spawn(async (cx) => {
       try {
         // Connects on first use, and again after a failure, so a machine that comes back works.
@@ -103,24 +108,42 @@ export default class PrioryDesk extends View {
         const { theme, client } = await this.client;
         this.theme = theme;
         if (since != null) await client.wait(since);
-        const first = !this.data;
-        // Taken before the read, so an event between the read and `priory seen` still shows next time.
-        const opened = new Date().toISOString().replace(/\.\d+Z$/, "Z");
+        if (chain !== this.chain) return;
+        // Taken before the first read, so an event between that read and `priory seen` still shows next time.
+        const read = new Date().toISOString().replace(/\.\d+Z$/, "Z");
         const [desk, asks, tasks, queue] = await Promise.all([client.desk({ all: true }), client.asks(), client.tasks(), client.queue()]);
+        if (chain !== this.chain) return;
+        if (!this.data) {
+          this.sinceFrom = desk.last_visit;
+          this.opened = read;
+        }
         this.since = mergeSince(this.since, desk.since_you_looked);
-        if (first) this.sinceFrom = desk.last_visit;
         this.data = { desk, asks, tasks, queue };
         this.error = null;
         cx.notify();
-        if (first) {
-          await client.seen({ at: opened }).catch((error) => { this.actionError = `Could not record your visit: ${message(error)}`; });
-          cx.notify();
-        }
-        this.load(cx, desk.revision);
+        this.load(cx, desk.revision, chain);
       } catch (error) {
+        if (chain !== this.chain) return;
         this.error = message(error);
         cx.notify();
         this.retry = cx.timer.after(RETRY_MS, (cx) => this.load(cx, null));
+      }
+    });
+  }
+
+  // Records the visit once Since you looked is drawn, which happens only from WIDE.
+  /** @param {import("gpui-kit").Context} cx */
+  seen(cx) {
+    if (this.seenSent || !this.opened || !this.client) return;
+    this.seenSent = true;
+    const client = this.client;
+    const at = this.opened;
+    cx.spawn(async (cx) => {
+      try {
+        await (await client).client.seen({ at });
+      } catch (error) {
+        this.actionError = `Could not record your visit: ${message(error)}`;
+        cx.notify();
       }
     });
   }
@@ -184,6 +207,8 @@ export default class PrioryDesk extends View {
       this.selected = rows[Math.min(rows.length - 1, Math.max(0, index + step))].id;
     } else if (event.keystroke === "enter" && row?.kind === "ask" && row.snooze && !row.snoozed) {
       this.answer(row.snooze.id);
+    } else if (event.keystroke === "enter" && row?.id === "asleep") {
+      this.view = "asleep";
     } else if (event.keystroke === "s" && row?.snooze) {
       this.snooze(cx, row.snooze, row.snoozed ? null : HOUR);
     } else if (event.keystroke === "r" && row && RESTART[row.kind]) {
@@ -225,6 +250,7 @@ export default class PrioryDesk extends View {
     const rows = this.rows(model);
     if (!rows.some((row) => row.id === this.selected)) this.selected = rows[0]?.id ?? null;
     const wide = this.width >= WIDE;
+    if (wide) this.seen(cx);
     // The wide table needs --pane-split beside the column, or its question column has no room.
     const table = wide && this.width - COLUMN >= S["pane-split"];
     const summary = v_flex().gap(S["space-3"]).flex_none()
@@ -346,7 +372,13 @@ export default class PrioryDesk extends View {
     return v_flex().id(`row-${row.id}`).px(S["space-2"]).py(S["space-2"]).gap(S["space-2"]).min_h(S["pane-row"]).rounded(S["radius-md"])
       .border_t(1).border_color(selected ? t["action-soft"] : t.line)
       .bg(selected ? t["action-soft"] : t.bg).hover((s) => s.bg(selected ? t["action-soft"] : t.surface))
-      .on_click((/** @type {unknown} */ _e, /** @type {import("gpui-kit").Context} */ cx) => { this.selected = row.id; this.focus.focus(); cx.notify(); })
+      .on_click((/** @type {unknown} */ _e, /** @type {import("gpui-kit").Context} */ cx) => {
+        // The asleep summary row opens the Asleep view.
+        if (row.id === "asleep") this.view = "asleep";
+        else this.selected = row.id;
+        this.focus.focus();
+        cx.notify();
+      })
       .child(head)
       .when(selected, (el) => el.child(this.detail(ui, row)));
   }
