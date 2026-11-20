@@ -254,6 +254,10 @@ textarea { font: 400 16px/22px var(--font-ui); color: var(--text); background: v
 .screen { padding: 16px var(--gutter) 32px; display: grid; gap: 20px; max-width: 760px; }
 .screen h1 { font: 700 var(--type-screen) var(--font-display); font-stretch: var(--display-stretch); letter-spacing: -0.5px; }
 .screen h2 { font: 650 var(--type-read-h2) var(--font-ui); }
+.screen > p:not(.note) { color: var(--text-2); max-width: 62ch; }
+.note.warn { color: var(--warn-text); }
+.note.warn .ico { color: var(--warn-text); }
+.push-row { display: grid; gap: 8px; justify-items: start; }
 .seg { display: grid; grid-template-columns: repeat(3, 1fr); height: var(--control); background: var(--raised); border-radius: var(--radius-md); padding: 3px; }
 .seg button { border-radius: calc(var(--radius-md) - 3px); text-align: center; font: 600 var(--type-small) var(--font-ui); color: var(--text-2); }
 .seg button[aria-checked="true"] { background: var(--surface); color: var(--text); }

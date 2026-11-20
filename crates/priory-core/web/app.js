@@ -42,6 +42,7 @@ const ICONS = {
   "message-text": '<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/><path d="M13 8H7"/><path d="M17 12H7"/>',
   hourglass: '<path d="M5 22h14"/><path d="M5 2h14"/><path d="M17 22v-4.172a2 2 0 0 0-.586-1.414L12 12l-4.414 4.414A2 2 0 0 0 7 17.828V22"/><path d="M7 2v4.172a2 2 0 0 0 .586 1.414L12 12l4.414-4.414A2 2 0 0 0 17 6.172V2"/>',
   "corner-down-right": '<polyline points="15 10 20 15 15 20"/><path d="M4 4v7a4 4 0 0 0 4 4h12"/>',
+  bell: '<path d="M10.27 21a2 2 0 0 0 3.46 0"/><path d="M3.26 15.33A1 1 0 0 0 4 17h16a1 1 0 0 0 .74-1.67C19.41 13.96 18 12.5 18 8A6 6 0 0 0 6 8c0 4.5-1.41 5.96-2.74 7.33"/>',
   lock: '<rect width="18" height="11" x="3" y="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/>',
   "unplug": '<path d="m19 5 3-3"/><path d="m2 22 3-3"/><path d="M6.3 20.3a2.4 2.4 0 0 0 3.4 0L12 18l-6-6-2.3 2.3a2.4 2.4 0 0 0 0 3.4Z"/><path d="M7.5 13.5 10 11"/><path d="M10.5 16.5 13 14"/><path d="m12 6 6 6 2.3-2.3a2.4 2.4 0 0 0 0-3.4l-2.6-2.6a2.4 2.4 0 0 0-3.4 0Z"/>',
 };
@@ -87,13 +88,17 @@ const PANELS = {
 };
 const CLI = { tasks: "priory tasks", runs: "priory tasks", inbox: "priory inbox", reports: "priory inbox", queue: "priory queue", terminal: "priory attach", workflow: "priory check" };
 
+// The last listings read, kept on this device, so an offline start shows them with their age.
+const kept = JSON.parse(localStorage.getItem("priory.snapshot") || "null");
 const state = {
   token: localStorage.getItem("priory.token"),
-  data: null,
+  data: kept,
+  // The data came from this device, not the server: views and links are read again.
+  cached: Boolean(kept),
   // The listings to read in full, once the person scrolls to their older rows.
   all: { asks: false, tasks: false },
   refreshes: 0,
-  updated: null,
+  updated: Number(localStorage.getItem("priory.updated")) || null,
   failed: null,
   signInError: null,
   list: "desk",
@@ -116,6 +121,10 @@ const state = {
   notices: new Map(),
   writing: new Set(),
   // The Add sheet: its draft and chips, the server's defaults, and where the last send got to.
+  // Notifications on this device: its status, a request in flight, and why the last one failed.
+  push: { status: null, busy: false, error: null },
+  // The browser's install prompt, kept until the person taps Install.
+  install: null,
   add: { phase: "empty", error: null, defaults: null, task: null, draft: { text: "" }, ...JSON.parse(localStorage.getItem("priory.add") || "{}") },
 };
 
@@ -149,8 +158,8 @@ async function refresh() {
   for (const listing of ["asks", "tasks"]) state.all[listing] &&= history[listing];
   try {
     // The server reads the views once, when it starts.
-    const views = state.data?.views || (await api("/api/views"));
-    const links = state.data?.links || (await api("/api/links")).links;
+    const views = (!state.cached && state.data?.views) || (await api("/api/views"));
+    const links = (!state.cached && state.data?.links) || (await api("/api/links")).links;
     const full = (listing) => (state.all[listing] ? `/api/${listing}?all=1` : `/api/${listing}`);
     const [desk, asksList, queue, tasksList] = await Promise.all(["/api/desk", full("asks"), "/api/queue", full("tasks")].map(api));
     // A later call, such as the one that loads older rows, supersedes this one.
@@ -162,12 +171,15 @@ async function refresh() {
     const snapshot = JSON.stringify([desk, asks, queue, tasks, older]);
     state.updated = Date.now();
     state.failed = null;
+    state.cached = false;
+    localStorage.setItem("priory.updated", String(state.updated));
     // Ages read in minutes, so an unchanged state needs a new paint once a minute at most.
     if (state.data && snapshot === state.snapshot && !failed && Date.now() - state.rendered < 60000) return true;
     const before = state.data ? new Set(state.data.asks.filter((ask) => ask.state === "open").map((ask) => ask.id)) : null;
     state.data = { views, links, desk, asks, bands: asksList.bands, queue, tasks, older };
     state.task = null;
     state.snapshot = snapshot;
+    keep(state.data);
     announce(before);
   } catch (error) {
     if (error.status === 401) return signOut("The daemon refused this token. Paste the current one.");
@@ -185,8 +197,15 @@ function announce(before) {
   if (fresh) document.getElementById("announce").textContent = `New ask from task ${fresh.key || fresh.task}.`;
 }
 
+// A full storage only costs the offline start, so a failed write is dropped.
+function keep(data) {
+  try {
+    localStorage.setItem("priory.snapshot", JSON.stringify(data));
+  } catch {}
+}
+
 function signOut(reason) {
-  localStorage.removeItem("priory.token");
+  for (const key of ["priory.token", "priory.snapshot", "priory.updated"]) localStorage.removeItem(key);
   Object.assign(state, { token: null, data: null, snapshot: null, revision: undefined, signInError: reason, all: { asks: false, tasks: false } });
   render();
 }
@@ -1052,6 +1071,7 @@ function morePage() {
   return html`<div class="top"><h1>More</h1></div><div class="scroll"><ul class="links">
     ${rest.map((panel) => html`<li><a href="/${panel}">${icon(PANELS[panel][1], "s20")}${PANELS[panel][0]}<span class="chev">${icon("chevron-right", "s15")}</span></a></li>`)}
     <li><a href="/settings/appearance">${icon("settings", "s20")}Appearance<span class="chev">${icon("chevron-right", "s15")}</span></a></li>
+    <li><a href="/settings/notifications">${icon("bell", "s20")}Notifications<span class="chev">${icon("chevron-right", "s15")}</span></a></li>
     <li><a href="/" data-action="sign-out">${icon("lock", "s20")}Sign out of this device<span class="chev">${icon("chevron-right", "s15")}</span></a></li></ul></div>`;
 }
 
@@ -1078,7 +1098,91 @@ function appearance() {
           <div class="preview" data-theme="${key}" data-mode="light"><div>${preview}</div></div>
           <div class="preview" data-theme="${key}" data-mode="dark"><div>${preview}</div></div></div>
         <span class="name">${name}<span class="radio"></span></span><p>${line}</p></div>`)}</div>
-    <p class="note">A theme changes color and type only. Every screen keeps the same layout.</p></div></div>`;
+    <p class="note">A theme changes color and type only. Every screen keeps the same layout.</p></div>
+    <ul class="links"><li><a href="/settings/notifications">${icon("bell", "s20")}Notifications<span class="chev">${icon("chevron-right", "s15")}</span></a></li></ul></div>`;
+}
+
+// Notifications
+const settingsScreen = () => (route()[1] === "notifications" ? notifications() : appearance());
+
+// iOS lets only a Home Screen web app subscribe, so Safari in a tab lacks PushManager.
+const iosTab = () => /iPhone|iPad|iPod/.test(navigator.userAgent) && !navigator.standalone;
+
+async function pushStatus() {
+  if (!window.isSecureContext) return "insecure";
+  if (!("serviceWorker" in navigator) || !("PushManager" in window) || !("Notification" in window)) return iosTab() ? "install" : "unsupported";
+  if (Notification.permission === "denied") return "blocked";
+  const registration = await navigator.serviceWorker.ready;
+  return (await registration.pushManager.getSubscription()) ? "on" : "off";
+}
+
+const PUSH_NOTES = {
+  on: "On for this device.",
+  blocked: "Notifications are blocked for this site. Allow them in the browser's site settings, then come back.",
+  install: "On iPhone and iPad, only Priory on the Home Screen can get notifications. Tap Share, then Add to Home Screen, and open Priory from there.",
+  insecure: "Notifications need HTTPS. Open Priory at its https address, such as the one tailscale serve gives, or at localhost on this machine.",
+  unsupported: "This browser cannot get notifications from a web page.",
+};
+
+function notifications() {
+  const { status, busy, error } = state.push;
+  if (status === null) {
+    pushStatus().then((found) => { state.push.status = found; render(); }, () => { state.push.status = "unsupported"; render(); });
+  }
+  const button = status === "on"
+    ? html`<button class="btn secondary" data-action="push-off" aria-disabled="${busy}">Turn off notifications</button>`
+    : status === "off" ? html`<button class="btn primary" data-action="push-on" aria-disabled="${busy}">Turn on notifications</button>` : "";
+  const install = state.install
+    ? html`<div class="push-row"><button class="btn secondary" data-action="install">Install Priory</button>
+      <p class="note">Installing opens Priory in its own window, so notifications reach it with no tab open.</p></div>`
+    : "";
+  return html`<div class="scroll"><div class="screen">
+    <h1>Notifications</h1>
+    <p>Get a notification on this device when an agent asks you something, or when a task is blocked or failed. It shows the ask's title and opens the ask. A snoozed item sends nothing.</p>
+    ${PUSH_NOTES[status] ? html`<p class="note" role="status">${icon(status === "on" ? "check" : "unplug", "s15")}<span>${PUSH_NOTES[status]}</span></p>` : ""}
+    ${error ? html`<p class="note warn" role="alert">${icon("unplug", "s15")}<span>${error}</span></p>` : ""}
+    ${button ? html`<div class="push-row">${button}</div>` : ""}
+    ${install}</div></div>`;
+}
+
+// The VAPID key as the bytes PushManager.subscribe takes.
+const keyBytes = (base64url) => Uint8Array.from(atob(base64url.replace(/-/g, "+").replace(/_/g, "/")), (char) => char.charCodeAt(0));
+
+async function turnPush(on) {
+  if (state.push.busy) return;
+  Object.assign(state.push, { busy: true, error: null });
+  render();
+  try {
+    if (on) {
+      // iOS asks only from a tap, so this is the first await after it.
+      const permission = await Notification.requestPermission();
+      if (permission !== "granted") return void (state.push.status = permission === "denied" ? "blocked" : "off");
+      const { key } = await api("/api/push/key");
+      const registration = await navigator.serviceWorker.ready;
+      const subscription = await registration.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: keyBytes(key) });
+      const { status, body } = await post("/api/push/subscribe", subscription.toJSON());
+      if (status !== 200) {
+        await subscription.unsubscribe();
+        throw new Error(body.error || `the server answered ${status}`);
+      }
+      state.push.status = "on";
+      return;
+    }
+    const subscription = await (await navigator.serviceWorker.ready).pushManager.getSubscription();
+    if (subscription) {
+      const { status, body } = await post("/api/push/unsubscribe", { endpoint: subscription.endpoint });
+      if (status !== 200) throw new Error(body.error || `the server answered ${status}`);
+      await subscription.unsubscribe();
+    }
+    state.push.status = "off";
+  } catch (error) {
+    const verb = on ? "turn on" : "turn off";
+    const why = error instanceof TypeError ? "the connection dropped" : error.message;
+    state.push.error = `Could not ${verb} notifications: ${why}. Check that the daemon runs, then try again.`;
+  } finally {
+    state.push.busy = false;
+    render();
+  }
 }
 
 // Screens
@@ -1211,7 +1315,7 @@ function page() {
     else if (here === "asks") body = asksPhone();
     else if (here === "more") body = morePage();
     else if (taskId) body = taskPage(taskId);
-    else if (here === "settings") body = html`<div class="top"><a class="back" href="/more">${icon("chevron-left", "s22")}More</a></div>${appearance()}`;
+    else if (here === "settings") body = html`<div class="top"><a class="back" href="/more">${icon("chevron-left", "s22")}More</a></div>${settingsScreen()}`;
     else if (PANELS[here]) body = html`<div class="top"><h1>${PANELS[here][0]}</h1></div>${laterPanel(here)}`;
     else body = notFound();
     const tab = selectedAsk() ? null : here === "settings" ? "more" : here;
@@ -1220,7 +1324,7 @@ function page() {
   const list = selectedAsk() ? state.list : here;
   const top = html`<header class="wtop"><span class="fac">${state.data.views.factory}</span>${connection()}<span class="sp"></span>${addButton("addtop")}</header>`;
   const wide = size === "wide";
-  const utility = taskId ? taskPage(taskId) : here === "settings" ? appearance() : here === "more" ? morePage() : PANELS[list] ? null : notFound();
+  const utility = taskId ? taskPage(taskId) : here === "settings" ? settingsScreen() : here === "more" ? morePage() : PANELS[list] ? null : notFound();
   const nav = (kind) => tabs(here === "settings" && wide ? "settings" : here === "settings" ? "more" : list, kind);
   if (utility) {
     return html`${staleStrip()}${top}<div class="${size} no-drawer">${wide ? nav("rail") : ""}<div class="list">${utility}</div></div>${wide ? "" : nav("bar")}`;
@@ -1280,6 +1384,12 @@ document.addEventListener("click", (event) => {
     return document.getElementById("add-text")?.focus();
   }
   if (action === "sign-out") { event.preventDefault(); return signOut(null); }
+  if (action === "push-on" || action === "push-off") return turnPush(action === "push-on");
+  if (action === "install" && state.install) {
+    state.install.prompt();
+    state.install = null;
+    return render();
+  }
   if (action === "task-act") return taskAct(target);
   if (target.dataset.answer !== undefined || ["undo", "options", "write", "dismiss", "snooze", "unsnooze"].includes(action)) return act(target);
   if (action === "mode" || action === "theme") {
@@ -1395,5 +1505,12 @@ async function follow() {
 }
 // Ages read in minutes, so repaint them once a minute even when nothing changes.
 setInterval(() => { if (!document.hidden && state.token) refresh(); }, 60000);
+// The browser offers to install only once the page handles this; the Notifications screen shows it.
+addEventListener("beforeinstallprompt", (event) => {
+  event.preventDefault();
+  state.install = event;
+  render();
+});
+if ("serviceWorker" in navigator) navigator.serviceWorker.register("/sw.js").catch(() => {});
 follow();
 refresh();

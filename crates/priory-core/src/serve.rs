@@ -43,6 +43,24 @@ const WEB: &[(&str, &str, &[u8])] = &[
     file!("/asks.js", JS, "crates/priory-core/web/asks.js"),
     file!("/add.js", JS, "crates/priory-core/web/add.js"),
     file!("/links.js", JS, "crates/priory-core/web/links.js"),
+    file!("/sw.js", JS, "crates/priory-core/web/sw.js"),
+    file!(
+        "/manifest.webmanifest",
+        "application/manifest+json",
+        "crates/priory-core/web/manifest.webmanifest"
+    ),
+    file!("/icon-192.png", "image/png", "design/logo/icon-192.png"),
+    file!("/icon-512.png", "image/png", "design/logo/icon-512.png"),
+    file!(
+        "/icon-maskable-192.png",
+        "image/png",
+        "design/logo/icon-maskable-192.png"
+    ),
+    file!(
+        "/icon-maskable-512.png",
+        "image/png",
+        "design/logo/icon-maskable-512.png"
+    ),
     file!("/app.css", CSS, "crates/priory-core/web/app.css"),
     file!("/tokens/structure.css", CSS, "design/tokens/structure.css"),
     file!("/tokens/themes.css", CSS, "design/tokens/themes.css"),
@@ -112,8 +130,8 @@ const WEB: &[(&str, &str, &[u8])] = &[
 
 /// Agent text reaches the page, so the page runs and loads only its own files.
 const WEB_HEADERS: &str = "Content-Security-Policy: default-src 'none'; script-src 'self'; \
-    style-src 'self'; font-src 'self'; img-src 'self'; connect-src 'self'; base-uri 'none'; \
-    form-action 'none'; frame-ancestors 'none'\r\nX-Content-Type-Options: nosniff\r\n\
+    style-src 'self'; font-src 'self'; img-src 'self'; connect-src 'self'; manifest-src 'self'; \
+    worker-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'\r\nX-Content-Type-Options: nosniff\r\n\
     Referrer-Policy: no-referrer\r\n";
 
 /// Listens on `listen` and serves the state from a pool of threads, each with its own read-only

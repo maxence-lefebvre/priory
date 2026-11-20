@@ -1578,6 +1578,10 @@ fn the_web_view_serves_every_file_with_its_type_and_a_strict_policy_without_the_
             "/favicon.ico",
             "/favicon.svg",
             "/apple-touch-icon.png",
+            "/icon-192.png",
+            "/icon-512.png",
+            "/icon-maskable-192.png",
+            "/icon-maskable-512.png",
         ]
         .map(str::to_owned),
     );
@@ -1593,6 +1597,7 @@ fn the_web_view_serves_every_file_with_its_type_and_a_strict_policy_without_the_
             "ico" => "image/x-icon",
             "svg" => "image/svg+xml",
             "png" => "image/png",
+            "webmanifest" => "application/manifest+json",
             other => panic!("no type expected for .{other}"),
         };
         assert_eq!(status, 200, "{path}: {}", String::from_utf8_lossy(&body));
@@ -1612,8 +1617,8 @@ fn the_web_view_serves_every_file_with_its_type_and_a_strict_policy_without_the_
         header(&head, "content-security-policy"),
         Some(
             "default-src 'none'; script-src 'self'; style-src 'self'; font-src 'self'; \
-             img-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'none'; \
-             frame-ancestors 'none'"
+             img-src 'self'; connect-src 'self'; manifest-src 'self'; worker-src 'self'; \
+             base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
         )
     );
     assert_eq!(fetch(&address, "/asks/cache.ship").2, index);
