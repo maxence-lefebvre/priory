@@ -2270,3 +2270,240 @@ fn a_slack_trigger_requests_one_task_per_matching_message_and_drops_a_duplicate(
         .unwrap();
     assert_eq!(String::from_utf8(tasks.stdout).unwrap().lines().count(), 3);
 }
+
+const REVIEW_TRIGGER: &str = r#"
+source = "github"
+on = "pull_request.review_requested"
+reviewer = "max"
+workflow = "implement"
+band = "today"
+"#;
+
+const REVIEW_SEARCH: &str =
+    "search/issues?q=is%3Apr+is%3Aopen+user-review-requested%3Amax&per_page=100";
+
+impl Setup {
+    /// A factory with only the review request trigger for `max`, whose first poll found `pulls`.
+    fn reviews(name: &str, pulls: &[(&str, u64)]) -> Self {
+        let setup = Setup::new(name, &[]);
+        fs::remove_file(setup.dir.join("factory/triggers/agent-label.toml")).unwrap();
+        write(
+            &setup.dir.join("factory/triggers/review.toml"),
+            REVIEW_TRIGGER,
+        );
+        setup.requested(pulls);
+        succeeded(&setup.intake());
+        setup
+    }
+
+    /// Makes the fake `gh` answer the review request search with `pulls`, and the reviews query
+    /// with no review from `max`.
+    fn requested(&self, pulls: &[(&str, u64)]) {
+        self.requested_after(pulls, &[]);
+    }
+
+    /// As `requested`, with `max`'s reviews submitted at `submitted`.
+    fn requested_after(&self, pulls: &[(&str, u64)], submitted: &[&str]) {
+        let items: Vec<serde_json::Value> = pulls
+            .iter()
+            .map(|(repo, number)| {
+                json!({
+                    "number": number,
+                    "title": "Tidy the parser",
+                    "html_url": format!("https://github.com/{repo}/pull/{number}"),
+                    "repository_url": format!("https://api.github.com/repos/{repo}"),
+                    "user": { "login": "alice" },
+                    "updated_at": "2026-11-20T09:00:00Z",
+                    "pull_request": { "url": format!("https://api.github.com/repos/{repo}/pulls/{number}") }
+                })
+            })
+            .collect();
+        let answer =
+            json!({ "total_count": items.len(), "incomplete_results": false, "items": items });
+        let nodes: Vec<_> = submitted
+            .iter()
+            .map(|time| json!({ "submittedAt": time }))
+            .collect();
+        let reviews = json!({ "data": { "repository": { "pullRequest": { "reviews": { "nodes": nodes } } } } });
+        self.answer(&[(REVIEW_SEARCH, answer), ("graphql", reviews)]);
+    }
+
+    /// The `priory tasks` rows, as key and state.
+    fn task_states(&self) -> Vec<[String; 2]> {
+        let output = Command::new(env!("CARGO_BIN_EXE_priory"))
+            .arg("tasks")
+            .env("PRIORY_DB", self.dir.join("priory.db"))
+            .output()
+            .unwrap();
+        succeeded(&output);
+        String::from_utf8(output.stdout)
+            .unwrap()
+            .lines()
+            .skip(1)
+            .map(|line| {
+                let cells: Vec<&str> = line.split('\t').collect();
+                [cells[1].to_owned(), cells[4].to_owned()]
+            })
+            .collect()
+    }
+}
+
+#[test]
+fn a_first_review_request_poll_is_a_baseline_that_publishes_nothing() {
+    let setup = Setup::reviews("review-baseline", &[("acme/app", 7)]);
+
+    let published = setup.published();
+    assert_eq!(kinds(&published), ["github.pull_request.review_requested"]);
+    assert_eq!(published[0].message.data["baseline"], true);
+    assert_eq!(published[0].message.data["triggers"], json!([]));
+    let marker = setup.output().pop().unwrap().message;
+    assert_eq!(marker.kind, "factory.intake.baseline");
+    assert_eq!(marker.data["stream"], "github.review_requests:max");
+}
+
+const REVIEW_KEY: &str = "github:acme/app:pulls/7:review:max";
+
+#[test]
+fn a_new_review_request_publishes_the_event_and_creates_its_task() {
+    let setup = Setup::reviews("review-requested", &[]);
+    setup.requested(&[("acme/app", 7)]);
+
+    succeeded(&setup.intake());
+
+    let published = setup.published();
+    assert_eq!(
+        kinds(&published),
+        [
+            "github.pull_request.review_requested",
+            "factory.task.requested"
+        ]
+    );
+    let (source, task) = (&published[0].message, &published[1].message);
+    assert_eq!(source.data["since"], source.data["time"]);
+    let mut data = timeless(source);
+    data.as_object_mut().unwrap().remove("since");
+    assert_eq!(
+        data,
+        json!({
+            "repo": "acme/app",
+            "pull_request": 7,
+            "title": "Tidy the parser",
+            "url": "https://github.com/acme/app/pull/7",
+            "author": "alice",
+            "reviewer": "max",
+            "baseline": false,
+            "triggers": ["review"]
+        })
+    );
+    assert_eq!(source.subject.as_deref(), Some("acme/app#7"));
+    assert_eq!(task.data["key"], REVIEW_KEY);
+    assert_eq!(task.data["repo"], "acme/app");
+    let routed: Vec<[String; 2]> = setup
+        .inbox()
+        .into_iter()
+        .filter(|row| row[1] != "factory.intake.baseline")
+        .map(|row| [row[3].clone(), row[4].clone()])
+        .collect();
+    assert_eq!(
+        routed,
+        [["-", "ignored"], ["1", "created"]].map(|row| row.map(str::to_owned))
+    );
+    assert_eq!(
+        setup.task_states(),
+        [[REVIEW_KEY, "queued"].map(str::to_owned)]
+    );
+}
+
+#[test]
+fn a_removed_review_request_publishes_the_event_and_withdraws_its_task() {
+    let setup = Setup::reviews("review-removed", &[]);
+    setup.requested(&[("acme/app", 7)]);
+    succeeded(&setup.intake());
+    setup.inbox();
+    setup.requested(&[]);
+
+    succeeded(&setup.intake());
+
+    let removed = setup.published().pop().unwrap().message;
+    assert_eq!(removed.kind, "github.pull_request.review_request_removed");
+    assert_eq!(removed.data["reviewer"], "max");
+    assert_eq!(removed.data["triggers"], json!([]));
+    let mut inbox = setup.inbox();
+    inbox.retain(|row| row[1] != "factory.intake.baseline");
+    let last = inbox.pop().unwrap();
+    assert_eq!(last[1], "github.pull_request.review_request_removed");
+    assert_eq!([&last[3], &last[4]], ["1", "withdrew"]);
+    assert_eq!(
+        setup.task_states(),
+        [[REVIEW_KEY, "dropped"].map(str::to_owned)]
+    );
+}
+
+#[test]
+fn a_review_re_request_reaches_the_same_task() {
+    let setup = Setup::reviews("review-re-requested", &[]);
+    setup.requested(&[("acme/app", 7), ("acme/app", 8)]);
+    succeeded(&setup.intake());
+    // Max reviews 7, which leaves the set, and the author asks again.
+    setup.requested_after(&[("acme/app", 8)], &["2999-01-01T00:00:00Z"]);
+    succeeded(&setup.intake());
+    setup.requested(&[("acme/app", 7), ("acme/app", 8)]);
+
+    succeeded(&setup.intake());
+
+    let routed: Vec<[String; 3]> = setup
+        .inbox()
+        .into_iter()
+        .filter(|row| row[2].starts_with("github:acme/app:pulls/7") || row[2] == "acme/app#7")
+        .map(|row| [row[1].clone(), row[3].clone(), row[4].clone()])
+        .collect();
+    // A queued task has no turn to wake: the request coalesces into it.
+    assert_eq!(
+        routed[routed.len() - 3..],
+        [
+            ["github.pull_request.review_request_removed", "1", "kept"],
+            ["github.pull_request.review_requested", "1", "kept"],
+            ["factory.task.requested", "1", "coalesced"],
+        ]
+        .map(|row| row.map(str::to_owned))
+    );
+    let tasks = setup.task_states();
+    assert_eq!(tasks.len(), 2, "{tasks:?}");
+    assert_eq!(tasks[0], [REVIEW_KEY, "queued"].map(str::to_owned));
+}
+
+#[test]
+fn a_failed_review_search_publishes_nothing_and_removes_nothing() {
+    let setup = Setup::reviews("review-failed", &[("acme/app", 7)]);
+    let before = setup.output().len();
+    Setup::fake_gh(&setup.dir, "#!/bin/sh\necho 'HTTP 502' >&2\nexit 1\n");
+
+    let output = setup.intake();
+
+    assert!(!output.status.success());
+    assert_eq!(setup.output().len(), before);
+    setup.requested(&[("acme/app", 7)]);
+    succeeded(&setup.intake());
+    assert_eq!(setup.output().len(), before, "7 never left the set");
+}
+
+#[test]
+fn a_review_request_on_a_pull_request_gone_from_github_is_removed_unreviewed() {
+    let setup = Setup::reviews("review-gone", &[("acme/app", 7)]);
+    let empty = json!({ "total_count": 0, "incomplete_results": false, "items": [] });
+    let answer = setup.dir.join("empty-search.json");
+    write(&answer, &empty.to_string());
+    Setup::fake_gh(
+        &setup.dir,
+        &format!(
+            "#!/bin/sh\ncase \"$*\" in\n  \"api search/\"*) cat '{}' ;;\n  *) echo 'gh: Could not resolve to a Repository with the name acme/app.' >&2; exit 1 ;;\nesac\n",
+            answer.display()
+        ),
+    );
+
+    succeeded(&setup.intake());
+
+    let removed = setup.published().pop().unwrap().message;
+    assert_eq!(removed.kind, "github.pull_request.review_request_removed");
+    assert_eq!(removed.data["reviewed"], false);
+}

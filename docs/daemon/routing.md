@@ -42,6 +42,7 @@ A message names resources too:
 | `factory.task.requested` | its `key` |
 | `priory.task.requested.cli` | its subject, such as `cli:docs-1` |
 | A GitHub event | its issue or pull request, `github:{repo}#{n}`, and for a pull request event its head branch, `github:{repo}@{head_branch}` |
+| A review request event | also its review task's key, `github:{repo}:pulls/{n}:review:{reviewer}` |
 | A Linear event | its issue, `linear:{issue}` |
 | A Slack event | its thread, `slack:{channel}:{thread_ts}`, or `slack:{channel}:{ts}` for a message outside a thread |
 
@@ -81,8 +82,9 @@ Each inbox entry gets one of these outcomes:
 
 | Message                                   | Outcome   | Task                                         |
 | ----------------------------------------- | --------- | -------------------------------------------- |
-| A schedule's `factory.task.requested`, with a task asleep at a model step owning its key | `woke` | that task, now `ready` |
-| A schedule's `factory.task.requested`, with a task in another active state owning its key | `coalesced` | that task, unchanged |
+| A schedule's or review request's `factory.task.requested`, with a task asleep at a model step owning its key | `woke` | that task, now `ready` |
+| A schedule's or review request's `factory.task.requested`, with a task in another active state owning its key | `coalesced` | that task, unchanged |
+| `github.pull_request.review_request_removed` with `reviewed: false`, with an active task whose key is its review key | `withdrew` | that task, now `dropped`, its live run ended |
 | Any other, with an active task owning a resource it names | `kept` | that task                   |
 | `factory.task.requested`, no active task  | `created` | a new task, `queued` at its workflow's start |
 | `factory.task.requested`, malformed       | `ignored` | none                                         |

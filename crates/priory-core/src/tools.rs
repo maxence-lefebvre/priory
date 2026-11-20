@@ -1486,32 +1486,7 @@ pub(crate) fn act(
             Ok((Err(format!("task {} is already {state}", act.task)), None))
         }
         "cancel" => {
-            let tmux = tx
-                .query_row(
-                    "SELECT tmux FROM runs WHERE task = ?1 AND ended IS NULL",
-                    [act.task],
-                    |row| row.get::<_, String>(0),
-                )
-                .optional()?;
-            tx.execute(
-                &format!(
-                    "UPDATE runs SET ended = {NOW}, ended_as = 'cancelled' WHERE task = ?1 AND ended IS NULL"
-                ),
-                [act.task],
-            )?;
-            tx.execute(
-                &format!(
-                    "UPDATE holds SET released = {NOW}, released_as = 'cancelled' WHERE task = ?1 AND released IS NULL"
-                ),
-                [act.task],
-            )?;
-            set(
-                &tx,
-                act.task,
-                "dropped",
-                None,
-                Some("cancelled from the desk"),
-            )?;
+            let tmux = cancel(&tx, act.task, "cancelled from the desk")?;
             tx.commit()?;
             Ok((Ok(format!("task {} dropped", act.task)), tmux))
         }
@@ -1524,6 +1499,36 @@ pub(crate) fn act(
         }
         other => Ok((Err(format!("unknown action {other}")), None)),
     }
+}
+
+/// Drops an active task with `reason`, ends its live run and its holds, and returns the run's tmux
+/// session to kill once the transaction commits.
+pub(crate) fn cancel(
+    tx: &Transaction,
+    task: i64,
+    reason: &str,
+) -> rusqlite::Result<Option<String>> {
+    let tmux = tx
+        .query_row(
+            "SELECT tmux FROM runs WHERE task = ?1 AND ended IS NULL",
+            [task],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?;
+    tx.execute(
+        &format!(
+            "UPDATE runs SET ended = {NOW}, ended_as = 'cancelled' WHERE task = ?1 AND ended IS NULL"
+        ),
+        [task],
+    )?;
+    tx.execute(
+        &format!(
+            "UPDATE holds SET released = {NOW}, released_as = 'cancelled' WHERE task = ?1 AND released IS NULL"
+        ),
+        [task],
+    )?;
+    set(tx, task, "dropped", None, Some(reason))?;
+    Ok(tmux)
 }
 
 /// Moves a failed or dropped task back into its step, or `act.step`, as its next generation, and

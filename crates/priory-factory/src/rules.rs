@@ -111,6 +111,14 @@ pub fn check(factory: &Factory) -> Vec<Problem> {
                 "only a Slack trigger names a `channel`".into(),
             ));
         }
+        let reviews = trigger.value.source == "github" && trigger.value.on == REVIEW_REQUESTED;
+        if !reviews && trigger.value.reviewer.is_some() {
+            problems.push(problem(
+                trigger,
+                trigger.lines.field("reviewer"),
+                format!("only a GitHub `{REVIEW_REQUESTED}` trigger names a `reviewer`"),
+            ));
+        }
         if trigger.value.source == "schedule" {
             check_schedule(trigger, &mut problems);
         } else {
@@ -248,6 +256,43 @@ fn check_schedule(trigger: &Loaded<Trigger>, problems: &mut Vec<Problem>) {
     }
 }
 
+const REVIEW_REQUESTED: &str = "pull_request.review_requested";
+
+/// A review request trigger polls one person's requests in every repository, so it names that
+/// person and no repository, filter or key.
+fn check_review_request(trigger: &Loaded<Trigger>, problems: &mut Vec<Problem>) {
+    let value = &trigger.value;
+    let mut report = |field: &str, message: &str| {
+        let line = trigger.lines.field(field).or(trigger.lines.field("on"));
+        problems.push(problem(trigger, line, message.into()));
+    };
+    let login = |login: &str| {
+        !login.is_empty()
+            && !login.starts_with('-')
+            && login.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
+    };
+    if !value.reviewer.as_deref().is_some_and(login) {
+        report(
+            "reviewer",
+            "a `pull_request.review_requested` trigger needs `reviewer = \"<GitHub login>\"`",
+        );
+    }
+    for (field, set) in [
+        ("repo", value.repo.is_some()),
+        ("filter", value.filter.is_some()),
+        ("key", value.key.is_some()),
+    ] {
+        if set {
+            report(
+                field,
+                &format!(
+                    "a `pull_request.review_requested` trigger takes no `{field}`: its tasks work in the pull request's repository, keyed by it and the reviewer"
+                ),
+            );
+        }
+    }
+}
+
 /// Whether `repo` reads `owner/name`.
 fn owner_name(repo: &str) -> bool {
     repo.split_once('/')
@@ -269,6 +314,9 @@ fn check_repo(trigger: &Loaded<Trigger>, source: &str, problems: &mut Vec<Proble
 
 fn check_github(trigger: &Loaded<Trigger>, problems: &mut Vec<Problem>) {
     let value = &trigger.value;
+    if value.on == REVIEW_REQUESTED {
+        return check_review_request(trigger, problems);
+    }
     check_repo(trigger, "GitHub", problems);
     const ON: [&str; 4] = [
         "issues.labeled",
@@ -281,7 +329,7 @@ fn check_github(trigger: &Loaded<Trigger>, problems: &mut Vec<Problem>) {
             trigger,
             trigger.lines.field("on").or(trigger.lines.field("source")),
             format!(
-                "a GitHub trigger handles `issues.labeled`, `issues.opened`, `pull_request.labeled` or `pull_request.opened`, not `{}`",
+                "a GitHub trigger handles `issues.labeled`, `issues.opened`, `pull_request.labeled`, `pull_request.opened` or `{REVIEW_REQUESTED}`, not `{}`",
                 value.on
             ),
         ));

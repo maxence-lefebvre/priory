@@ -8023,3 +8023,90 @@ fn attach_refuses_a_same_named_session_on_another_tmux_server_that_runs_no_prior
          run attach with the daemon's TMUX and TMUX_TMPDIR\n"
     );
 }
+
+const REVIEW_TRIGGER: &str = r#"
+source = "github"
+on = "pull_request.review_requested"
+reviewer = "max"
+workflow = "implement"
+"#;
+
+const REVIEW_KEY: &str = "github:owner/repo:pulls/7:review:max";
+
+fn reviews(name: &str) -> Setup {
+    let setup = Setup::new(name);
+    fs::write(
+        setup.dir.join("factory/triggers/review.toml"),
+        REVIEW_TRIGGER,
+    )
+    .unwrap();
+    setup
+}
+
+/// The intake's request for the review of pull request 7, after its `round`th request.
+fn review_request(round: u32) -> Message {
+    Message::new(
+        "factory.task.requested",
+        json!({
+            "workflow": "implement",
+            "key": REVIEW_KEY,
+            "band": null,
+            "lane": null,
+            "trigger": "review",
+            "source": format!("source-{round}"),
+            "repo": "owner/repo"
+        }),
+    )
+    .subject(REVIEW_KEY)
+}
+
+#[test]
+fn a_review_re_request_wakes_its_asleep_task() {
+    let mut setup = reviews("review-wakes");
+    setup.calls(&[ask()]);
+    setup.publish(&review_request(1));
+    setup.start();
+    setup.until("tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == "asleep")
+    });
+
+    setup.publish(&review_request(2));
+
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 2);
+    assert_eq!(setup.rows("inbox")[1][4], "woke");
+    assert_eq!(setup.rows("tasks").len(), 1);
+}
+
+#[test]
+fn a_removed_review_request_drops_its_running_task_and_ends_its_run() {
+    let mut setup = reviews("review-withdrawn");
+    setup.hold("hold-stop");
+    setup.publish(&review_request(1));
+    setup.start();
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 1);
+
+    setup.publish(
+        &Message::new(
+            "github.pull_request.review_request_removed",
+            json!({
+                "repo": "owner/repo",
+                "pull_request": 7,
+                "title": "Tidy the parser",
+                "url": "https://github.com/owner/repo/pull/7",
+                "author": "alice",
+                "since": "2026-11-20T09:00:00Z",
+                "reviewer": "max",
+                "reviewed": false,
+                "time": "2026-11-20T10:00:00Z",
+                "baseline": false,
+                "triggers": []
+            }),
+        )
+        .subject("owner/repo#7"),
+    );
+
+    let tasks = setup.until("tasks", |rows| rows[0][4] == "dropped");
+    assert_eq!(tasks[0][7], "review request removed");
+    assert_eq!(setup.rows("runs")[0][7], "cancelled");
+    setup.gone("priory-1");
+}

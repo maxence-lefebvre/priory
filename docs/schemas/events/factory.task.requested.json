@@ -116,7 +116,7 @@
           ]
         },
         "repo": {
-          "description": "The repository the task works in, from `priory request --repo`. CLI requests only.",
+          "description": "The repository the task works in: `priory request --repo` for a CLI request, the pull\nrequest's for a review request. Those sources only.",
           "type": [
             "string",
             "null"
