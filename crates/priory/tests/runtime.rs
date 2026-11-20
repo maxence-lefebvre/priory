@@ -8734,7 +8734,6 @@ fn the_progress_tool_stores_the_four_fields_on_the_agents_task() {
         serde_json::from_slice(&setup.priory(&["tasks", "--json"]).stdout).unwrap();
     assert_eq!(tasks["tasks"][0]["progress"], progress);
 }
-
 impl Setup {
     /// Turns the OTLP exporter on in `factory.toml`, sending to `endpoint`.
     fn telemetry(&self, endpoint: &str) {

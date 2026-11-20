@@ -1028,7 +1028,7 @@ fn tldr(task: &str, text: &str) -> ExitCode {
     exit("tldr", set)
 }
 
-/// Sends `priory progress TASK JSON` to the daemon, which merges the fields into the task's progress.
+/// Sends `priory progress TASK JSON` to the daemon.
 fn progress(task: &str, fields: &str) -> ExitCode {
     let Ok(task) = task.parse() else {
         return usage();

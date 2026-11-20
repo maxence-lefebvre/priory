@@ -152,8 +152,8 @@ pub fn tasks(db: &Connection, lane: Option<&str>, grade: Option<&str>) -> rusqli
     let mut tasks = rows(db, &query, [lane, grade])?;
     tasks
         .as_array_mut()
-        .into_iter()
-        .flatten()
+        .expect("rows are an array")
+        .iter_mut()
         .for_each(parse_progress);
     Ok(tasks)
 }

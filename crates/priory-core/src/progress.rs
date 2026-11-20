@@ -11,7 +11,6 @@ pub struct Put {
     pub progress: Value,
 }
 
-/// The shape a progress call must have. Every field is optional, since a call merges.
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 struct Fields {
@@ -35,6 +34,17 @@ struct Criterion {
 
 /// The fields of `progress` a call sets, or why its shape is refused.
 fn checked(progress: &Value) -> Result<Map<String, Value>, String> {
+    // Serde also reads a struct from an array, so refuse positional fields first.
+    let mut criteria = progress["acceptanceCriteria"]
+        .as_array()
+        .into_iter()
+        .flatten();
+    if !progress.is_object() || criteria.any(|criterion| !criterion.is_object()) {
+        return Err(
+            "progress must be an object, and each acceptance criterion {id, description, required}"
+                .to_owned(),
+        );
+    }
     let fields = serde_json::from_value::<Fields>(progress.clone())
         .map_err(|error| format!("progress: {error}"))?;
     let Ok(Value::Object(set)) = serde_json::to_value(fields) else {
@@ -48,8 +58,7 @@ fn checked(progress: &Value) -> Result<Map<String, Value>, String> {
     Ok(set)
 }
 
-/// Merges `put.progress` into its task's progress: a field left out keeps its value. The trace
-/// records the merged progress, so it keeps every earlier value.
+/// Merges `put.progress` into its task's progress, and records the result in the trace.
 pub(crate) fn put(
     db: &mut Connection,
     put: &Put,
@@ -84,8 +93,8 @@ pub(crate) fn put(
     Ok(Ok(format!("task {} has its progress", put.task)))
 }
 
-/// The `progress` tool: merges its arguments into the progress of the task whose live run has the
-/// call's session.
+/// The `progress` tool. It skips `tools::call`, since it does not end the turn: it stays open after
+/// an ask, a wait or a result, and withdraws nothing.
 pub(crate) fn tool(
     db: &mut Connection,
     call: &Call,

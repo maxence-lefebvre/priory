@@ -552,6 +552,13 @@ fn progress_refuses_a_bad_acceptance_criteria_shape_and_stores_nothing() {
     assert!(!refused.status.success(), "{refused:?}");
     let error = String::from_utf8_lossy(&refused.stderr);
     assert!(error.contains("missing field `required`"), "{error}");
+    for positional in [
+        r#"{"acceptanceCriteria": [["PF1", "tests pass", true]]}"#,
+        r#"["Fix the docs"]"#,
+    ] {
+        let refused = setup.priory(&["progress", "1", positional]);
+        assert!(!refused.status.success(), "{positional}: {refused:?}");
+    }
     assert_eq!(api(&address, "/api/tasks/1")["progress"], Value::Null);
 }
 
