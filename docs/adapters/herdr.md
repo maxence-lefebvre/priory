@@ -60,8 +60,8 @@ Asks and Desk items (blocked tasks, failed tasks, uncertain prompts) share these
   `new revision`, `task state changed` and `new failure`.
 
 A snoozed item leaves the Needs me count, the Open count and the Desk badge. The agent keeps
-waiting: snoozing changes what a person sees, never what the daemon does. *`priory snooze ITEM
---for 1h`*, *`--until TIME`* and *`--clear`* set and clear it.
+waiting: snoozing changes what a person sees, never what the daemon does. `priory snooze KIND ID
+--for 1h`, `--until TIME` and `--clear` set and clear it.
 
 ### Desk
 

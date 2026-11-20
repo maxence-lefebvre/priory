@@ -1,5 +1,5 @@
 use priory_core::memory::Gate;
-use priory_core::{daemon, embed, report, search, stall, state, sweep, tools};
+use priory_core::{daemon, embed, report, search, snooze, stall, state, sweep, tools};
 use priory_factory::{factory, rules};
 use priory_intake::{intake, request};
 use priory_runtime::{mcp, runtime};
@@ -59,11 +59,10 @@ fn main() -> ExitCode {
             "id\ttask\trun\tstate\ttext",
             "SELECT id, task, run, state, replace(text, char(10), '\\n') FROM outbox ORDER BY id",
         ),
-        Some("asks") => list(
-            "id\ttask\trevision\tquestion\toptions",
-            "SELECT id, task, revision, replace(question, char(10), '\\n'), options FROM asks
-             WHERE answer IS NULL AND withdrawn IS NULL ORDER BY id",
-        ),
+        Some("asks") => match all(args) {
+            Some(all) => asks(all),
+            None => usage(),
+        },
         Some("waits") => list(
             "id\ttask\trun\tkind\ton\tcreated",
             "SELECT id, task, run, kind, coalesce(resource, until, 'task ' || target,
@@ -71,7 +70,11 @@ fn main() -> ExitCode {
              FROM waits WHERE fired IS NULL AND withdrawn IS NULL ORDER BY id",
         ),
         Some("attach") => attach(args.map(|arg| arg.to_string_lossy().into_owned()).collect()),
-        Some("desk") => desk(),
+        Some("desk") => match all(args) {
+            Some(all) => desk(all),
+            None => usage(),
+        },
+        Some("snooze") => snooze(args.map(|arg| arg.to_string_lossy().into_owned()).collect()),
         Some("trace") => trace(),
         Some("report") => report(args.map(|arg| arg.to_string_lossy().into_owned()).collect()),
         Some("move") => move_task(args.map(|arg| arg.to_string_lossy().into_owned()).collect()),
@@ -113,7 +116,7 @@ fn main() -> ExitCode {
 
 fn usage() -> ExitCode {
     eprintln!(
-        "usage: priory check [DIR]\n       priory draw [DIR] WORKFLOW\n       priory intake [DIR] [--once]\n       priory daemon [DIR] [--once]\n       priory request [DIR] --workflow <name> --key <key> [--band <band>] [--lane <lane>] [--repo <owner/name>] [--hold <reason> [CONDITION]] <text>\n       priory inbox\n       priory tasks [--lane <lane>]\n       priory runs\n       priory outbox\n       priory asks\n       priory waits\n       priory actions\n       priory attach (TASK | --run RUN) [--read-only] [--print]\n       priory desk\n       priory trace\n       priory report [DIR] --workflow <name> [--since <instant-or-duration>] [--cost] [--by lane]\n       priory move TASK [--band <band>] [--top | --before TASK | --after TASK]\n       priory resume TASK\n       priory cancel TASK\n       priory revive TASK [--step STEP]\n       priory hold TASK --reason TEXT [--until TIME | --after TASK | --merge PR [--if-closed release|drop|ask] | --blockers]\n       priory release TASK\n       priory tldr TASK TEXT\n       priory search QUERY [--state STATE[,STATE...]] [--limit N]\n       priory memory [acquire --gb N [--timeout D] -- COMMAND...]\n       priory answer ASK OPTION-OR-TEXT --revision N\n       priory mcp --session ID\n       priory hook EVENT"
+        "usage: priory check [DIR]\n       priory draw [DIR] WORKFLOW\n       priory intake [DIR] [--once]\n       priory daemon [DIR] [--once]\n       priory request [DIR] --workflow <name> --key <key> [--band <band>] [--lane <lane>] [--repo <owner/name>] [--hold <reason> [CONDITION]] <text>\n       priory inbox\n       priory tasks [--lane <lane>]\n       priory runs\n       priory outbox\n       priory asks [--all]\n       priory waits\n       priory actions\n       priory attach (TASK | --run RUN) [--read-only] [--print]\n       priory desk [--all]\n       priory snooze (ask | blocked | failed | prompt) ID (--for DURATION | --until TIME | --clear)\n       priory trace\n       priory report [DIR] --workflow <name> [--since <instant-or-duration>] [--cost] [--by lane]\n       priory move TASK [--band <band>] [--top | --before TASK | --after TASK]\n       priory resume TASK\n       priory cancel TASK\n       priory revive TASK [--step STEP]\n       priory hold TASK --reason TEXT [--until TIME | --after TASK | --merge PR [--if-closed release|drop|ask] | --blockers]\n       priory release TASK\n       priory tldr TASK TEXT\n       priory search QUERY [--state STATE[,STATE...]] [--limit N]\n       priory memory [acquire --gb N [--timeout D] -- COMMAND...]\n       priory answer ASK OPTION-OR-TEXT --revision N\n       priory mcp --session ID\n       priory hook EVENT"
     );
     ExitCode::from(2)
 }
@@ -225,18 +228,96 @@ fn shell_word(word: &str) -> String {
     format!("'{}'", word.replace('\'', r"'\''"))
 }
 
+/// Whether the only argument, if any, is `--all`.
+fn all(mut args: impl Iterator<Item = OsString>) -> Option<bool> {
+    match (args.next(), args.next()) {
+        (None, _) => Some(false),
+        (Some(flag), None) if flag == "--all" => Some(true),
+        _ => None,
+    }
+}
+
+/// Open asks, without the snoozed ones unless `all`.
+fn asks(all: bool) -> ExitCode {
+    let printed = state::open().and_then(|db| {
+        state::print(
+            &db,
+            "id\ttask\trevision\tquestion\toptions\tsnoozed",
+            &format!(
+                "SELECT asks.id, asks.task, asks.revision, replace(asks.question, char(10), '\\n'),
+                   asks.options, {}
+                 FROM asks LEFT JOIN snoozes ON snoozes.kind = 'ask' AND snoozes.item = asks.id
+                 WHERE asks.answer IS NULL AND asks.withdrawn IS NULL AND (?1 OR NOT {})
+                 ORDER BY asks.id",
+                snooze::SHOWN,
+                snooze::SNOOZED
+            ),
+            [all],
+        )
+        .map_err(|error| error.to_string())
+    });
+    exit("asks", printed)
+}
+
+/// Sends `priory snooze KIND ID (--for DURATION | --until TIME | --clear)` to the daemon, with the
+/// time in UTC to the second.
+fn snooze(args: Vec<String>) -> ExitCode {
+    let [kind, id, rest @ ..] = &args[..] else {
+        return usage();
+    };
+    let Ok(id) = id.parse() else {
+        return usage();
+    };
+    let until = match rest {
+        [flag] if flag == "--clear" => None,
+        [flag, span] if flag == "--for" => {
+            let Ok(span) = span.parse::<jiff::Span>() else {
+                return usage();
+            };
+            match jiff::Zoned::now().checked_add(span) {
+                Ok(at) => Some(at.timestamp()),
+                Err(error) => return exit("snooze", Err(error.to_string())),
+            }
+        }
+        [flag, time] if flag == "--until" => match time.parse::<jiff::Timestamp>() {
+            Ok(at) => Some(at),
+            Err(error) => return exit("snooze", Err(format!("{time}: {error}"))),
+        },
+        _ => return usage(),
+    };
+    let line = serde_json::to_string(&snooze::Snooze {
+        snooze: snooze::Item {
+            kind: kind.clone(),
+            id,
+        },
+        until: until.map(|at| at.strftime("%Y-%m-%dT%H:%M:%SZ").to_string()),
+    })
+    .expect("a snooze serializes");
+    send("snooze", &line)
+}
+
 /// A stalled queue's banner, what waits on a person, then every worktree under `PRIORY_HOME` that
 /// stays and why.
-fn desk() -> ExitCode {
+fn desk(all: bool) -> ExitCode {
     let printed = state::open().and_then(|db| {
         stall::banner(&db)
             .map_err(|error| error.to_string())?
             .inspect(|banner| state::emit(banner));
         state::print(
             &db,
-            "since\tkind\tid\ttask\tlane\twhat\tgeneration",
-            &format!("{} {DESK}", queue()),
-            [],
+            "since\tkind\tid\ttask\tlane\twhat\tgeneration\tsnoozed",
+            &format!(
+                "{} SELECT desk.since, desk.kind, desk.id, desk.task, desk.lane, desk.what,
+                   (SELECT generation FROM tasks WHERE tasks.id = desk.task), {}
+                 FROM ({DESK}) AS desk
+                 LEFT JOIN snoozes ON snoozes.kind = desk.kind AND snoozes.item = desk.id
+                 WHERE ?1 OR NOT {}
+                 ORDER BY desk.part, CASE WHEN desk.part = 0 THEN desk.since END, desk.kind, desk.id",
+                queue(),
+                snooze::SHOWN,
+                snooze::SNOOZED
+            ),
+            [all],
         )
         .and_then(|()| sweep::print_stays(&db, &runtime::home()))
         .map_err(|error| error.to_string())
@@ -298,10 +379,8 @@ fn report(args: Vec<String>) -> ExitCode {
     exit("report", printed)
 }
 
-/// Asks, blocked tasks and uncertain prompts oldest first, then the queue in start order.
-const DESK: &str = "SELECT since, kind, id, task, lane, what,
-               (SELECT generation FROM tasks WHERE tasks.id = task) FROM (
-               SELECT 0 AS part, asks.created AS since, 'ask' AS kind, asks.id AS id,
+/// Asks, blocked tasks and uncertain prompts, then the queue, each with its part: 0, then 1.
+const DESK: &str = "SELECT 0 AS part, asks.created AS since, 'ask' AS kind, asks.id AS id,
                  asks.task AS task, tasks.lane AS lane,
                  replace(asks.question, char(10), '\\n') || ' ' || asks.options AS what
                FROM asks JOIN tasks ON tasks.id = asks.task
@@ -342,8 +421,7 @@ const DESK: &str = "SELECT since, kind, id, task, lane, what,
                UNION ALL
                SELECT 1, tasks.changed, 'queue', queue.place, tasks.id, tasks.lane,
                  coalesce(tasks.band, '-') || coalesce(': ' || tasks.reason, '')
-               FROM tasks JOIN queue USING (id)
-             ) ORDER BY part, CASE WHEN part = 0 THEN since END, kind, id";
+               FROM tasks JOIN queue USING (id)";
 
 /// Each queued or ready task's place in the start order, from 1.
 fn queue() -> String {

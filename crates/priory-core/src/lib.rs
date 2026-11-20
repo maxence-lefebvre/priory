@@ -10,6 +10,7 @@ pub mod report;
 mod room;
 mod route;
 pub mod search;
+pub mod snooze;
 pub mod stall;
 pub mod state;
 mod summary;
