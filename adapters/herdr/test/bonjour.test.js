@@ -1,0 +1,124 @@
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { dossier, nextPick, refusal } from "../mods/priory-bonjour/view.js";
+
+process.env.TZ = "UTC";
+
+// Captured from `priory report show --json` on a scratch factory: its report stored with
+// `priory report put`, then its picks chosen and applied by SQL as the daemon and the workflow
+// would. report-revised.json is the same state after someone picked Later on FND-2413.
+const fixture = (name) => JSON.parse(readFileSync(new URL(`./fixtures/${name}`, import.meta.url), "utf8"));
+const read = fixture("report.json");
+const now = Date.parse("2026-11-20T08:30:00Z");
+
+test("draws the report's sections in its own order, each with its count or its number of rows", () => {
+  const view = dossier(read, { now });
+  assert.deepEqual(view.sections.map((section) => [section.id, section.title, section.count]), [
+    ["reading", "Reading", 2],
+    ["slack", "Slack notes", 1],
+    ["sentry", "Sentry", 3],
+    ["agree", "To agree", 2],
+    ["blocked", "Blocked", 2],
+    ["moved", "Moved", 2],
+  ]);
+});
+
+test("a row shows its tile, key, text, meta, owner and time, and agent text stays as written", () => {
+  const sections = dossier(read, { now }).sections;
+  const rows = (id) => sections.find((section) => section.id === id).rows.map(({ pick, ...row }) => row);
+  assert.deepEqual(rows("slack"), [{
+    id: "slack/0", tile: null, key: null, owner: null, time: null, meta: null,
+    text: "Yesterday: merged the MCP v2 plan review, answered 4 Priory asks.\nToday: agree the picks and land #212. <b>not html</b>",
+  }]);
+  assert.deepEqual(rows("blocked"), [
+    { id: "blocked/0", tile: "blocked", key: "PRI-55", text: "Permission prompt denied", meta: "resume or edit the agent", owner: "on Max", time: null },
+    { id: "blocked/1", tile: "held", key: "PRI-69", text: "Held until #212 merges", meta: "then it releases", owner: "on #212", time: null },
+  ]);
+  // A time today shows its clock, an earlier one its date.
+  assert.deepEqual(rows("moved").map((row) => [row.id, row.tile, row.time]), [["moved/0", "done", "Nov 19, 18:42"], ["moved/1", "dropped", "06:05"]]);
+  // Row ids are unique only in their section, so the section names them.
+  assert.deepEqual(rows("sentry").map((row) => row.id), ["sentry/fnd-2409", "sentry/fnd-2413"]);
+});
+
+test("an open pick offers its options with the recommended one marked, and a chosen pick folds to its choice", () => {
+  const picks = Object.fromEntries(dossier(read, { now }).sections.flatMap((section) => section.rows).filter((row) => row.pick).map((row) => [row.id, row.pick]));
+  assert.deepEqual(picks["sentry/fnd-2413"], {
+    id: "2026-11-20_sentry_fnd-2413",
+    state: "open",
+    options: [
+      { label: "Take", key: "1", recommended: false },
+      { label: "Later", key: "2", recommended: true },
+      { label: "Drop", key: "3", recommended: false },
+    ],
+    note: "Recommends Later",
+    chosen: null,
+  });
+  assert.equal(picks["agree/1"].note, null);
+  assert.deepEqual(picks["agree/0"], {
+    id: "2026-11-20_agree_priory-schedules", state: "agreed", options: [], chosen: "Take", note: "Waiting for the workflow to apply it.",
+  });
+  assert.deepEqual(picks["sentry/fnd-2409"], {
+    id: "2026-11-20_sentry_fnd-2409", state: "applied", options: [], chosen: "Take", note: "requested task cli:FND-2409",
+  });
+  assert.equal(Object.keys(picks).length, 4);
+});
+
+test("the toolbar and greeting give the date, how many picks are agreed, and both revisions", () => {
+  const view = dossier(read, { now });
+  assert.deepEqual(
+    { date: view.date, greeting: view.greeting, since: view.since, progress: view.progress, task: view.task, revision: view.revision, waited: view.waited },
+    {
+      date: "Nov 20",
+      greeting: "Bonjour, Max",
+      since: "Since Thu 17:00. 2 picks to agree.",
+      progress: { agreed: 2, total: 4, label: "2 of 4 agreed" },
+      // A pick takes the report's revision; `priory wait` takes the state's.
+      task: 1, revision: 3, waited: 6,
+    },
+  );
+  const allAgreed = fixture("report-revised.json");
+  allAgreed.report.sections[3].rows[1].pick.chosen = "Skip";
+  assert.equal(dossier(allAgreed, { now }).since, "Since Thu 17:00. Every pick is agreed.");
+  // Hand-built: a report since this morning, with no picks.
+  const calm = { revision: 9, report: { ...read.report, since: "2026-11-20T06:00:00Z", sections: [read.report.sections[0]] } };
+  assert.deepEqual([dossier(calm, { now }).since, dossier(calm, { now }).progress], ["Since 06:00.", { agreed: 0, total: 0, label: "No picks" }]);
+});
+
+test("the Picks view keeps only the rows with a pick to agree, in their sections", () => {
+  const all = dossier(read, { now });
+  assert.deepEqual(all.views, [{ id: "all", label: "All sections", count: null }, { id: "picks", label: "Picks", count: 2 }]);
+  const picks = dossier(read, { now, view: "picks" });
+  assert.deepEqual(picks.sections.map((section) => [section.title, section.rows.map((row) => row.id)]), [
+    ["Sentry", ["sentry/fnd-2413"]],
+    ["To agree", ["agree/1"]],
+  ]);
+  assert.deepEqual(picks.views, all.views);
+});
+
+test("Next pick goes to the next pick to agree after the selected row, and wraps", () => {
+  const view = dossier(read, { now });
+  assert.equal(nextPick(view, null), "sentry/fnd-2413");
+  assert.equal(nextPick(view, "sentry/fnd-2413"), "agree/1");
+  assert.equal(nextPick(view, "agree/1"), "sentry/fnd-2413");
+  // From a row without a pick to agree, the next one below it.
+  assert.equal(nextPick(view, "agree/0"), "agree/1");
+  assert.equal(nextPick(view, "moved/1"), "sentry/fnd-2413");
+  const done = fixture("report-revised.json");
+  done.report.sections[3].rows[1].pick.chosen = "Skip";
+  assert.equal(nextPick(dossier(done, { now }), null), null);
+});
+
+test("a refused pick says why, from the report as Priory shows it after the refusal", () => {
+  const sent = { pick: "2026-11-20_sentry_fnd-2413", option: "Take", revision: 3 };
+  const error = "priory report pick: task 1's report is at revision 4, not 3";
+  assert.equal(refusal(sent, fixture("report-revised.json"), error), "Already picked Later.");
+  // Hand-built: the report moved on, by a rewrite that left this pick open, or that dropped it.
+  const rewritten = { revision: 8, report: { ...read.report, revision: 5 } };
+  assert.equal(refusal(sent, rewritten, error), "The report changed to revision 5. Read it and pick again.");
+  const dropped = { revision: 8, report: { ...read.report, revision: 5, sections: [] } };
+  assert.equal(refusal(sent, dropped, error), "The report no longer holds this pick.");
+  assert.equal(refusal(sent, read, "priory report pick: no priory daemon listens on /run/priory.sock"),
+    "Not sent: priory report pick: no priory daemon listens on /run/priory.sock.");
+  assert.equal(refusal(sent, null, "priory report show: no task has a report"), "Not sent: priory report show: no task has a report.");
+});
