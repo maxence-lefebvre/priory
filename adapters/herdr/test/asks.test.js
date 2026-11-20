@@ -77,8 +77,17 @@ test("facets narrow every view and offer each lane and task with its count", () 
   assert.deepEqual(asksList(asks, { view: "all", now, facets: { command: true } }).sections.map(ids), [[1, "review-7"]]);
   assert.deepEqual(byLane.facets, {
     lane: [["none/misc", 4]],
+    band: [["now", 1], ["later", 1], ["blocker", 2], ["none", 1]],
     task: [["cli:PRI-docs-1", 1], ["cli:PRI-docs-2", 1], ["cli:PRI-docs-3", 2], ["REL-7", 1]],
   });
+});
+
+test("the band facet narrows by the task's band, offers bands in the factory's order, and puts an outside ask under none", () => {
+  const { bands } = fixture("asks.json");
+  assert.deepEqual(asksList(asks, { view: "all", now, bands }).facets.band, [["blocker", 2], ["now", 1], ["later", 1], ["none", 1]]);
+  assert.deepEqual(asksList(asks, { view: "all", now, bands, facets: { band: "now" } }).sections.map(ids), [[1]]);
+  assert.deepEqual(asksList(asks, { view: "all", now, bands, facets: { band: "none" } }).sections.map(ids), [["review-7"]]);
+  assert.deepEqual(asksList(asks, { view: "all", now, bands, facets: { band: "blocker" } }).views.map((view) => view.count), [0, 0, 1, 2]);
 });
 
 test("an open command ask's detail puts the decision first, then Why, History and the command word by word", () => {

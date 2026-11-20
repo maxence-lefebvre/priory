@@ -235,7 +235,25 @@ fn route(
             })
         }
         "/api/inbox" => listing::revised(db, "inbox", |db| listing::inbox(db, 0).map(Some)),
-        "/api/asks" => listing::revised(db, "asks", |db| listing::asks(db).map(Some)),
+        "/api/asks" => {
+            let mut bands = Vec::new();
+            for pair in query.split('&').filter(|pair| !pair.is_empty()) {
+                let Some(("band", value)) = pair.split_once('=') else {
+                    return Reply::error(400, "asks takes one parameter: band=BAND[,BAND...]");
+                };
+                let Some(value) = decode(value) else {
+                    return Reply::error(400, "band is not percent-encoded UTF-8");
+                };
+                bands.extend(value.split(',').map(str::to_owned));
+            }
+            for band in &bands {
+                if let Err(refusal) = state::check_band(db, band) {
+                    return Reply::error(400, &refusal);
+                }
+            }
+            let bands: Vec<&str> = bands.iter().map(String::as_str).collect();
+            listing::revised(db, "asks", |db| listing::asks(db, &bands).map(Some))
+        }
         "/api/tasks" => {
             listing::revised(db, "tasks", |db| listing::tasks(db, None, None).map(Some))
         }

@@ -461,6 +461,117 @@ fn each_endpoint_returns_what_the_cli_shows_and_its_json() {
     );
 }
 
+impl Setup {
+    /// `seed`'s asks on band `later`, an ask on a third task in band `now`, and an outside ask.
+    fn seed_bands(&self) {
+        self.seed();
+        let factory = self.factory();
+        succeeded(&self.priory(&[
+            "request",
+            &factory,
+            "--repo",
+            "owner/repo",
+            "--workflow",
+            "implement",
+            "--key",
+            "docs-3",
+            "--band",
+            "now",
+            "Fix the index",
+        ]));
+        succeeded(&self.priory(&["daemon", &factory, "--once"]));
+        let db = rusqlite::Connection::open(self.dir.join("priory.db")).unwrap();
+        db.execute(
+            "INSERT INTO asks (task, step, kind, revision, question, options)
+             VALUES (3, 'implement', 'agent', 1, 'Now?', '[\"yes\",\"no\"]')",
+            [],
+        )
+        .unwrap();
+        let outside = json!({ "title": "Ship it?", "options": ["ship", "wait"], "key": "REL-7" });
+        succeeded(&self.priory(&["ask", "review-7", &outside.to_string()]));
+    }
+}
+
+fn ids(asks: &Value) -> Vec<Value> {
+    asks["asks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|ask| ask["id"].clone())
+        .collect()
+}
+
+#[test]
+fn asks_band_lists_only_the_asks_of_tasks_in_that_band() {
+    let setup = Setup::new("asks-band", "name = \"demo\"\n");
+    setup.seed_bands();
+
+    let output = setup.priory(&["asks", "--band", "now", "--json"]);
+    succeeded(&output);
+    let now: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(ids(&now), vec![json!(2)]);
+    assert_eq!(now["asks"][0]["band"], "now");
+
+    let both = setup.priory(&["asks", "--band", "now,later", "--json"]);
+    assert_eq!(
+        ids(&serde_json::from_slice(&both.stdout).unwrap()),
+        vec![json!(1), json!(2)]
+    );
+    let repeated = setup.priory(&["asks", "--band", "now", "--band", "later", "--json"]);
+    assert_eq!(repeated.stdout, both.stdout);
+    let text = String::from_utf8(setup.priory(&["asks", "--band", "now"]).stdout).unwrap();
+    assert_eq!(text.lines().count(), 2, "{text}");
+    assert!(
+        text.lines().nth(1).unwrap().starts_with("2\t3\t1\tNow?"),
+        "{text}"
+    );
+}
+
+#[test]
+fn asks_refuses_an_unknown_band_with_the_factorys_bands() {
+    let mut setup = Setup::new("asks-unknown-band", SERVE);
+    setup.seed_bands();
+    let address = setup.start(&["serve", &setup.factory()]);
+
+    let output = setup.priory(&["asks", "--band", "now,someday"]);
+    assert!(!output.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&output.stderr),
+        "priory asks: band `someday` is not one of blocker, now, today, later\n"
+    );
+    let (status, body) = get(&address, "/api/asks?band=someday", Some(TOKEN));
+    assert_eq!(status, 400);
+    assert!(
+        body.contains("band `someday` is not one of blocker, now, today, later"),
+        "{body}"
+    );
+}
+
+#[test]
+fn the_asks_endpoint_filters_by_band_as_the_cli_does_and_an_outside_ask_has_none() {
+    let mut setup = Setup::new("asks-band-api", SERVE);
+    setup.seed_bands();
+    let address = setup.start(&["serve", &setup.factory()]);
+
+    let cli = setup.priory(&["asks", "--band", "now", "--json"]);
+    succeeded(&cli);
+    let cli: Value = serde_json::from_slice(&cli.stdout).unwrap();
+    assert_eq!(api(&address, "/api/asks?band=now"), cli);
+    assert_eq!(
+        api(&address, "/api/asks?band=now%2Clater"),
+        api(&address, "/api/asks?band=now&band=later")
+    );
+
+    let all = api(&address, "/api/asks");
+    assert_eq!(all["bands"], json!(["blocker", "now", "today", "later"]));
+    let outside = &all["asks"][2];
+    assert_eq!(
+        [&outside["id"], &outside["band"]],
+        [&json!("review-7"), &Value::Null]
+    );
+    assert_eq!(all["asks"][0]["band"], "later");
+}
+
 #[test]
 fn the_desk_endpoint_lists_since_you_looked_for_a_person_as_the_cli_does() {
     let mut setup = Setup::new("looked", SERVE);

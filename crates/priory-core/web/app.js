@@ -136,7 +136,7 @@ async function refresh() {
     // Ages read in minutes, so an unchanged state needs a new paint once a minute at most.
     if (state.data && snapshot === state.snapshot && !failed && Date.now() - state.rendered < 60000) return true;
     const before = state.data ? new Set(state.data.asks.filter((ask) => ask.state === "open").map((ask) => ask.id)) : null;
-    state.data = { views, desk, asks, queue, tasks };
+    state.data = { views, desk, asks, bands: asksList.bands, queue, tasks };
     state.snapshot = snapshot;
     announce(before);
   } catch (error) {
@@ -242,9 +242,9 @@ function deskView() {
   return DESK_VIEWS.includes(name) ? name : "needs";
 }
 
-function savedViews(list, base) {
+function savedViews(list, base, facets = "") {
   return html`<nav class="views" aria-label="Saved views">${list.map(([key, label, count, on]) =>
-    html`<a href="${base}?view=${key}" aria-current="${on ? "true" : "false"}">${label}${count === null ? "" : html`<span class="num">${count}</span>`}</a>`)}</nav>`;
+    html`<a href="${base}?view=${key}${facets}" aria-current="${on ? "true" : "false"}">${label}${count === null ? "" : html`<span class="num">${count}</span>`}</a>`)}</nav>`;
 }
 
 function countLine(model) {
@@ -346,8 +346,22 @@ function askTableRow(ask, selected) {
     <td class="recw">${answered ? ask.answer : ask.state === "withdrawn" ? ask.withdrawn_why || "" : ask.recommendation || ""}</td><td class="r">${when}</td></tr>`;
 }
 
+// An ask with no band, such as an outside ask, shows under `none`.
+const bandOf = (ask) => ask.band ?? "none";
+
+function bandFacet(view, band) {
+  if (band) return html`<a class="facet" aria-current="true" href="/asks?view=${view}" aria-label="Band: ${band}. Clear">${band}${icon("x", "s13")}</a>`;
+  const order = [...(state.data.bands || []), "none"];
+  const counts = new Map();
+  for (const ask of state.data.asks) counts.set(bandOf(ask), (counts.get(bandOf(ask)) || 0) + 1);
+  const values = [...counts].sort(([a], [b]) => order.indexOf(a) - order.indexOf(b));
+  return html`<details class="facet"><summary aria-label="Filter by band">Band${icon("chevron-down", "s13")}</summary>
+    <div class="pick">${values.map(([name, count]) => html`<a href="/asks?view=${view}&band=${encodeURIComponent(name)}">${name}<span class="num">${count}</span></a>`)}</div></details>`;
+}
+
 function asksBody(wide) {
-  const asks = state.data.asks;
+  const band = new URLSearchParams(listSearch()).get("band");
+  const asks = band ? state.data.asks.filter((ask) => bandOf(ask) === band) : state.data.asks;
   const current = askView();
   const open = asks.filter((ask) => ask.state === "open");
   const answered = asks.filter((ask) => ask.state === "answered").sort((a, b) => (b.answered_at || "").localeCompare(a.answered_at || ""));
@@ -356,7 +370,8 @@ function asksBody(wide) {
     ["open", "Open", open.length, current === "open"],
     ["answered", "Answered", answered.length, current === "answered"],
     ["all", "All", asks.length, current === "all"],
-  ], "/asks");
+  ], "/asks", band ? `&band=${encodeURIComponent(band)}` : "");
+  const facets = html`<div class="facets" aria-label="Facets">${bandFacet(current, band)}</div>`;
   const selected = selectedAsk();
   const section = (title, list, note) => {
     if (!list.length) return "";
@@ -374,7 +389,7 @@ function asksBody(wide) {
   const empty = { open: "No open asks. Agents ask here when they need you.", answered: "No answered asks yet. An ask moves here once someone answers it.", all: "No asks yet. Agents ask here when they need you." }[current];
   const shown = { open: open.length, answered: answered.length, all: asks.length }[current];
   const rows = wide ? html`<table class="tbl"><thead><tr><th>State</th><th>Task</th><th>Step</th><th>Question</th><th>${current === "open" ? "Recommends" : "Answer"}</th><th class="r">Age</th></tr></thead><tbody>${sections}</tbody></table>` : sections;
-  return { views, rows: shown ? rows : html`<p class="empty">${empty}</p>`, open };
+  return { views: html`${views}${facets}`, rows: shown ? rows : html`<p class="empty">${empty}</p>`, open };
 }
 
 // Ask detail
