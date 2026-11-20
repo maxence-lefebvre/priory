@@ -167,7 +167,7 @@ When someone labels issue 42 of `owner/name` with `agent`, this happens:
 | `priory desk` | Lists what waits on you: asks, blocked and failed tasks, held tasks, the queue |
 | `priory answer ASK OPTION --revision N` | Answers an ask |
 | `priory snooze KIND ID --for 2h`, `--until TIME`, `--clear` | Hides a desk item until then, or brings it back |
-| `priory tasks [--lane LANE]` | Lists tasks in start order |
+| `priory tasks [--lane LANE] [--grade GRADE]` | Lists tasks in start order, with their grade |
 | `priory attach TASK [--read-only]` | Attaches your terminal to a task's agent |
 | `priory resume TASK` | Resumes a blocked task |
 | `priory cancel TASK` | Drops an active task and ends its run |

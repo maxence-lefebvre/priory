@@ -149,6 +149,9 @@ pub(crate) fn ended(
         .as_ref()
         .and_then(|name| trace.factory.agents.get(name))
         .filter(|_| step.decides == Decider::Model);
+    if agent.is_some() && crate::tools::GRADES.contains(&outcome) {
+        data["grade"] = json!(outcome);
+    }
     if let Some(agent) = agent {
         data["harness"] = json!(agent.value.harness);
         data["model"] = json!(ended.model.or_else(|| agent.value.model.clone()));

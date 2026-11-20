@@ -42,6 +42,10 @@ The outcomes of a step come from:
 | `human` | the option the person picks; every option needs a `next` |
 | `code` | the action's status, such as `opened` or `failed` |
 
+A model step outcome of `red`, `yellow` or `green` also grades the task: how risky or uncertain its
+work is. The task keeps the latest grade and its reason. See Grades in
+[tools.md](../daemon/tools.md#grades).
+
 ## Example
 
 <!-- example: factory/workflows/implement.toml -->

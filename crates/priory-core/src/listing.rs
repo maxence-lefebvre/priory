@@ -94,16 +94,17 @@ pub fn inbox(db: &Connection) -> rusqlite::Result<Value> {
     )
 }
 
-/// Every task in start order, or the tasks of one lane.
-pub fn tasks(db: &Connection, lane: Option<&str>) -> rusqlite::Result<Value> {
+/// Every task in start order, or the tasks of one lane, of one grade, or both.
+pub fn tasks(db: &Connection, lane: Option<&str>, grade: Option<&str>) -> rusqlite::Result<Value> {
     let query = format!(
         "{} SELECT id, key, workflow, step, state, band, lane, reason, queue.place AS position,
-           generation, retired, tldr, changed AS since
-         FROM tasks LEFT JOIN queue USING (id) WHERE ?1 IS NULL OR lane = ?1 ORDER BY {}",
+           generation, retired, tldr, changed AS since, grade, grade_reason
+         FROM tasks LEFT JOIN queue USING (id)
+         WHERE (?1 IS NULL OR lane = ?1) AND (?2 IS NULL OR grade = ?2) ORDER BY {}",
         places(),
         state::START_ORDER
     );
-    rows(db, &query, [lane])
+    rows(db, &query, [lane, grade])
 }
 
 /// Every ask with its state, oldest first.
@@ -203,7 +204,7 @@ pub fn task(db: &Connection, id: i64) -> rusqlite::Result<Option<Value>> {
         db,
         &format!(
             "{} SELECT id, key, workflow, step, state, band, lane, reason, queue.place AS position,
-               generation, retired, tldr, changed AS since, repo, branch
+               generation, retired, tldr, changed AS since, repo, branch, grade, grade_reason
              FROM tasks LEFT JOIN queue USING (id) WHERE id = ?1",
             places()
         ),
@@ -230,7 +231,7 @@ pub fn task(db: &Connection, id: i64) -> rusqlite::Result<Option<Value>> {
         ),
         (
             "results",
-            "SELECT run, step, outcome, summary, evidence, commit_sha, created
+            "SELECT run, step, outcome, summary, evidence, commit_sha, reason, created
              FROM results WHERE task = ?1 ORDER BY run",
         ),
     ];

@@ -36,10 +36,14 @@ key = "issue.number"
 
 const OUTPUT: &str = "factory.intake";
 
-/// Takes a state file back before schema 28, which added search, and 30, which added snoozes.
+/// Takes a state file back before schema 28, which added search, 29, which added grades, and 30,
+/// which added snoozes.
 const UNDO_SINCE_SEARCH: &str = "DROP TRIGGER snooze_ends_on_a_new_revision;
   DROP TRIGGER snooze_ends_on_a_task_state_change; DROP TABLE snoozes;
-  DROP TRIGGER search_task_created; DROP TRIGGER search_tldr_changed; DROP TRIGGER search_result_stored; DROP VIEW task_text; DROP TABLE search; DROP TABLE summaries;
+  ALTER TABLE results DROP COLUMN reason; ALTER TABLE tasks DROP COLUMN grade;
+  ALTER TABLE tasks DROP COLUMN grade_reason;
+  DROP TRIGGER search_task_created; DROP TRIGGER search_tldr_changed; DROP TRIGGER search_result_stored;
+  DROP VIEW task_text; DROP TABLE search; DROP TABLE summaries;
   DROP TABLE embedder; DROP TABLE vectors; ALTER TABLE tasks DROP COLUMN tldr;";
 
 /// A factory, bus, state, Priory home, tmux server, origin repository and fake `claude`, all under
@@ -2513,6 +2517,165 @@ fn a_result_with_a_valid_outcome_moves_the_task_to_the_next_model_step_after_sto
         "one session carries the conversation"
     );
     assert_eq!(runs[0][3], runs[1][3]);
+}
+
+const GRADED: &str = r#"
+start = "plan"
+
+[[steps]]
+id = "plan"
+decides = "model"
+agent = "implementer"
+prompt = "Plan the change. Grade it red, yellow or green."
+effect = "reversible"
+next = { red = "regrade", yellow = "regrade", green = "regrade" }
+
+[[steps]]
+id = "regrade"
+decides = "model"
+agent = "implementer"
+prompt = "Grade the plan again."
+effect = "reversible"
+next = { red = "implement", yellow = "implement", green = "implement" }
+
+[[steps]]
+id = "implement"
+decides = "model"
+agent = "implementer"
+prompt = "Implement the plan."
+effect = "reversible"
+next = { passed = "done", failed = "stop" }
+"#;
+
+/// The `grade` and `grade_reason` columns of `priory tasks` for its first task.
+fn grade(tasks: &[Vec<String>]) -> [&str; 2] {
+    [&tasks[0][11], &tasks[0][12]]
+}
+
+#[test]
+fn a_step_ending_green_with_a_reason_sets_the_task_grade_and_reason() {
+    let mut setup = Setup::with_workflow("grade-green", GRADED);
+    setup.calls(&[json!({ "name": "result", "arguments": {
+        "outcome": "green", "summary": "Plan: add a flag", "reason": "one file,\tcovered by tests"
+    } })]);
+    setup.publish(&requested(42));
+    setup.hold("hold-stop");
+
+    setup.start();
+
+    setup.written("fake/tools.log");
+    assert_eq!(
+        grade(&setup.rows("tasks")),
+        ["-", "-"],
+        "graded before the step ended"
+    );
+    setup.release("hold-stop");
+    let tasks = setup.until("tasks", |rows| {
+        rows.first().is_some_and(|task| task[3] == "regrade")
+    });
+    assert_eq!(grade(&tasks), ["green", "one file, covered by tests"]);
+    let listed: serde_json::Value =
+        serde_json::from_slice(&setup.priory(&["tasks", "--json"]).stdout).unwrap();
+    assert_eq!(
+        [&listed[0]["grade"], &listed[0]["grade_reason"]],
+        [&json!("green"), &json!("one file, covered by tests")]
+    );
+}
+
+#[test]
+fn a_second_grading_step_overwrites_the_grade_and_the_trace_keeps_both() {
+    let mut setup = Setup::with_workflow("grade-twice", GRADED);
+    setup.calls(&[
+        json!({ "name": "result", "arguments": {
+            "outcome": "green", "summary": "Plan: add a flag", "reason": "one file"
+        } }),
+        json!({ "name": "result", "arguments": {
+            "outcome": "red", "summary": "It touches the schema\n\nA migration is needed."
+        } }),
+    ]);
+    setup.publish(&requested(42));
+
+    setup.start();
+
+    let tasks = setup.until("tasks", |rows| {
+        rows.first().is_some_and(|task| task[3] == "implement")
+    });
+    assert_eq!(grade(&tasks), ["red", "It touches the schema"]);
+    let grades: Vec<_> = setup
+        .trace()
+        .iter()
+        .filter(|record| record["type"] == "factory.step.ended")
+        .map(|record| {
+            (
+                record["data"]["step"].clone(),
+                record["data"]["grade"].clone(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        grades,
+        [
+            (json!("plan"), json!("green")),
+            (json!("regrade"), json!("red"))
+        ]
+    );
+}
+
+#[test]
+fn a_step_ending_with_another_outcome_leaves_the_grade() {
+    let mut setup = Setup::with_workflow("grade-kept", GRADED);
+    setup.telemetry("http://127.0.0.1:4318");
+    setup.calls(&[
+        json!({ "name": "result", "arguments": {
+            "outcome": "yellow", "summary": "Plan", "reason": "two crates"
+        } }),
+        result("green"),
+        result("passed"),
+    ]);
+    setup.publish(&requested(42));
+
+    setup.start();
+
+    let tasks = setup.until("tasks", |rows| {
+        rows.first().is_some_and(|task| task[4] == "done")
+    });
+    assert_eq!(grade(&tasks), ["green", "green it"]);
+    let spans = setup.until_spans(6);
+    let exported = |step: &str| {
+        let span = spans.iter().find(|span| span["name"] == step).unwrap();
+        attribute(&span["attributes"], "priory.grade")
+    };
+    assert_eq!(
+        [exported("plan"), exported("regrade"), exported("implement")],
+        [json!("yellow"), json!("green"), json!(null)]
+    );
+}
+
+#[test]
+fn tasks_filtered_by_grade_lists_only_that_grade() {
+    let mut setup = Setup::with_workflow("grade-filter", GRADED);
+    setup.calls(&[result("green")]);
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("tasks", |rows| {
+        rows.first().is_some_and(|task| task[3] == "regrade")
+    });
+    setup.publish(&requested(43));
+    setup.until("tasks", |rows| rows.len() == 2);
+
+    let listed = |grade: &str| {
+        let output = setup.priory(&["tasks", "--grade", grade]);
+        assert!(output.status.success(), "{output:?}");
+        String::from_utf8(output.stdout)
+            .unwrap()
+            .lines()
+            .skip(1)
+            .map(|line| line.split('\t').next().unwrap().to_owned())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(listed("green"), ["1"]);
+    assert!(listed("red").is_empty());
+    assert!(!setup.priory(&["tasks", "--grade", "blue"]).status.success());
 }
 
 #[test]

@@ -473,8 +473,13 @@ CREATE TABLE vectors (
 PRAGMA user_version = 28;
 ";
 
-/// Held for the grade slice's schema, which takes version 29.
-const SCHEMA_29: &str = "PRAGMA user_version = 29;";
+// A task's grooming grade, set by the latest model step that ended red, yellow or green.
+const SCHEMA_29: &str = "
+ALTER TABLE results ADD COLUMN reason TEXT;
+ALTER TABLE tasks ADD COLUMN grade TEXT;
+ALTER TABLE tasks ADD COLUMN grade_reason TEXT;
+PRAGMA user_version = 29;
+";
 
 const SCHEMA_30: &str = "
 CREATE TABLE snoozes (

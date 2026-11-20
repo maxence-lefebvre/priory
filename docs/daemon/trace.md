@@ -63,7 +63,7 @@ task id, run id or record id, so sending a record again gives the same ids.
 | Attribute | Span | Value |
 | --------- | ---- | ----- |
 | `priory.task.id`, `priory.run.id`, `priory.step`, `priory.lane` | both | the record's `task`, `run`, `step` and `lane` |
-| `priory.outcome`, `priory.workflow`, `priory.key`, `priory.generation`, `priory.decider`, `priory.effect`, `priory.harness` | step | the record's fields of the same name |
+| `priory.outcome`, `priory.grade`, `priory.workflow`, `priory.key`, `priory.generation`, `priory.decider`, `priory.effect`, `priory.harness` | step | the record's fields of the same name |
 | `gen_ai.request.model` | both | the record's `model` |
 | `gen_ai.usage.input_tokens` | step | the record's `input`, `cache_read` and `cache_write` tokens together |
 | `gen_ai.usage.output_tokens`, `gen_ai.usage.cache_read.input_tokens`, `gen_ai.usage.cache_creation.input_tokens` | step | the record's `output`, `cache_read` and `cache_write` tokens |

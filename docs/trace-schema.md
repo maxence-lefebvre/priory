@@ -54,6 +54,7 @@ such as a revert, arrives as a second record that points at the first. Each reco
 | `decider`          | yes      | `code`, `model` or `human`                                            |
 | `effect`           | yes      | `none`, `read`, `reversible` or `irreversible`                        |
 | `outcome`          | yes      | The label that chose the next step, such as `approved` or `failed`    |
+| `grade`            | no       | For a `model` step whose outcome is `red`, `yellow` or `green`: that outcome |
 | `harness`, `model` | no       | For `model` steps                                                     |
 | `machine`          | yes      | Where the step ran                                                    |
 | `started`          | yes      | When the step started                                                 |

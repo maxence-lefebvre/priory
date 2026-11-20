@@ -338,7 +338,7 @@ fn each_endpoint_returns_what_the_cli_shows_and_its_json() {
     );
     let text = String::from_utf8(setup.priory(&["tasks"]).stdout).unwrap();
     assert!(text.starts_with(
-        "id\tkey\tworkflow\tstep\tstate\tband\tlane\treason\tposition\tgeneration\tretired\n"
+        "id\tkey\tworkflow\tstep\tstate\tband\tlane\treason\tposition\tgeneration\tretired\tgrade\tgrade_reason\n"
     ));
     let asks = api(&address, "/api/asks");
     let ask = &asks[0];
