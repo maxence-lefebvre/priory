@@ -242,21 +242,34 @@ fn route(
         }
         "/api/inbox" => listing::revised(db, "inbox", |db| listing::inbox(db, 0).map(Some)),
         "/api/asks" => {
-            let (mut bands, mut all) = (Vec::new(), false);
+            let (mut bands, mut risks, mut all) = (Vec::new(), Vec::new(), false);
             for pair in query.split('&').filter(|pair| !pair.is_empty()) {
-                match pair.split_once('=') {
-                    Some(("all", "1")) => all = true,
-                    Some(("band", value)) => match decode(value) {
-                        Some(value) => bands.extend(value.split(',').map(str::to_owned)),
-                        None => return Reply::error(400, "band is not percent-encoded UTF-8"),
-                    },
-                    _ => {
-                        return Reply::error(400, "asks takes band=BAND[,BAND...] and all=1");
+                let (list, name, value) = match pair.split_once('=') {
+                    Some(("all", "1")) => {
+                        all = true;
+                        continue;
                     }
-                }
+                    Some(("band", value)) => (&mut bands, "band", value),
+                    Some(("risk", value)) => (&mut risks, "risk", value),
+                    _ => {
+                        return Reply::error(
+                            400,
+                            "asks takes band=BAND[,BAND...], risk=RISK[,RISK...] and all=1",
+                        );
+                    }
+                };
+                let Some(value) = decode(value) else {
+                    return Reply::error(400, &format!("{name} is not percent-encoded UTF-8"));
+                };
+                list.extend(value.split(',').map(str::to_owned));
             }
             for band in &bands {
                 if let Err(refusal) = state::check_band(db, band) {
+                    return Reply::error(400, &refusal);
+                }
+            }
+            for risk in &risks {
+                if let Err(refusal) = listing::check_risk(risk) {
                     return Reply::error(400, &refusal);
                 }
             }
@@ -266,8 +279,9 @@ fn route(
                 Err(reply) => return reply,
             };
             let bands: Vec<&str> = bands.iter().map(String::as_str).collect();
+            let risks: Vec<&str> = risks.iter().map(String::as_str).collect();
             listing::revised(db, "asks", |db| {
-                listing::recent_asks(db, &bands, since.as_deref()).map(Some)
+                listing::recent_asks(db, &bands, &risks, since.as_deref()).map(Some)
             })
         }
         "/api/tasks" => match since(query) {

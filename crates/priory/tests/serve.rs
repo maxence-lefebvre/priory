@@ -574,6 +574,184 @@ fn the_asks_endpoint_filters_by_band_as_the_cli_does_and_an_outside_ask_has_none
     assert_eq!(all["asks"][0]["band"], "later");
 }
 
+/// Answering `approve-pr` lets `open-pr` run; answering `approve-plan` waits for `approve-pr`.
+const GATED: &str = r#"
+start = "implement"
+
+[[steps]]
+id = "implement"
+decides = "model"
+agent = "implementer"
+prompt = "Implement the issue."
+effect = "reversible"
+next = { passed = "approve-plan", failed = "stop" }
+
+[[steps]]
+id = "approve-plan"
+decides = "human"
+effect = "none"
+options = ["approved", "rejected"]
+next = { approved = "approve-pr", rejected = "stop" }
+
+[[steps]]
+id = "approve-pr"
+decides = "human"
+effect = "none"
+approves = ["open-pr"]
+options = ["open", "stop"]
+next = { open = "open-pr", stop = "stop" }
+
+[[steps]]
+id = "open-pr"
+decides = "code"
+action = "open-pr"
+effect = "irreversible"
+next = { opened = "done", failed = "stop" }
+"#;
+
+impl Setup {
+    /// Tasks 1 to 3 graded red, green and none; asks 1 to 4 and the outside ask `review-7`.
+    fn seed_risks(&self) {
+        fs::write(self.dir.join("factory/workflows/implement.toml"), GATED).unwrap();
+        let factory = self.factory();
+        for key in ["docs-1", "docs-2", "docs-3"] {
+            succeeded(&self.priory(&[
+                "request",
+                &factory,
+                "--repo",
+                "owner/repo",
+                "--workflow",
+                "implement",
+                "--key",
+                key,
+                "Fix the docs",
+            ]));
+        }
+        succeeded(&self.priory(&["daemon", &factory, "--once"]));
+        let db = rusqlite::Connection::open(self.dir.join("priory.db")).unwrap();
+        db.execute_batch(
+            r#"UPDATE tasks SET grade = 'red' WHERE id = 1;
+            UPDATE tasks SET grade = 'green' WHERE id = 2;
+            INSERT INTO asks (task, step, kind, question, options)
+              VALUES (1, 'approve-pr', 'step', 'Open the PR?', '["open","stop"]');
+            INSERT INTO asks (task, step, kind, question, options)
+              VALUES (2, 'approve-plan', 'step', 'Plan ok?', '["approved","rejected"]');
+            INSERT INTO asks (task, step, kind, question, options, command)
+              VALUES (3, 'implement', 'agent', 'Deploy?', '["deploy","wait"]',
+                '{"argv":["make","deploy"],"target":"worktree","dir":"/tmp","runs":["deploy"]}');
+            INSERT INTO asks (task, step, kind, question, options)
+              VALUES (3, 'implement', 'agent', 'Which way?', '["left","right"]');"#,
+        )
+        .unwrap();
+        let outside =
+            json!({ "title": "Ship it?", "options": ["ship", "wait"], "command": "make ship" });
+        succeeded(&self.priory(&["ask", "review-7", &outside.to_string()]));
+    }
+}
+
+fn risks(asks: &Value) -> Vec<(Value, Value)> {
+    asks["asks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|ask| (ask["id"].clone(), ask["risk"].clone()))
+        .collect()
+}
+
+#[test]
+fn an_ask_lists_irreversible_when_its_answer_lets_an_irreversible_step_run_and_its_tasks_grade() {
+    let setup = Setup::new("asks-risk", "name = \"demo\"\n");
+    setup.seed_risks();
+
+    let asks = json_of(&setup, "asks");
+    assert_eq!(
+        risks(&asks)[..2],
+        [
+            (json!(1), json!(["irreversible", "red"])),
+            (json!(2), json!(["green"]))
+        ]
+    );
+}
+
+#[test]
+fn a_command_ask_is_irreversible_and_an_outside_ask_has_no_risk() {
+    let setup = Setup::new("asks-risk-command", "name = \"demo\"\n");
+    setup.seed_risks();
+
+    let asks = json_of(&setup, "asks");
+    assert_eq!(
+        risks(&asks)[2..],
+        [
+            (json!(3), json!(["irreversible"])),
+            (json!(4), json!([])),
+            (json!("review-7"), json!([]))
+        ]
+    );
+}
+
+#[test]
+fn asks_risk_lists_only_the_asks_with_that_risk_and_none_lists_those_with_neither() {
+    let setup = Setup::new("asks-risk-filter", "name = \"demo\"\n");
+    setup.seed_risks();
+    let listed = |args: &[&str]| {
+        let output = setup.priory(&[&["asks"], args, &["--json"]].concat());
+        succeeded(&output);
+        ids(&serde_json::from_slice(&output.stdout).unwrap())
+    };
+
+    assert_eq!(listed(&["--risk", "none"]), [json!(4), json!("review-7")]);
+    assert_eq!(listed(&["--risk", "irreversible"]), [json!(1), json!(3)]);
+    assert_eq!(
+        listed(&["--risk", "green,none"]),
+        [json!(2), json!(4), json!("review-7")]
+    );
+    assert_eq!(
+        listed(&["--risk", "green", "--risk", "none"]),
+        listed(&["--risk", "green,none"])
+    );
+    let output = setup.priory(&["asks", "--risk", "grey"]);
+    assert!(!output.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&output.stderr),
+        "priory asks: risk `grey` is not one of irreversible, red, yellow, green, none\n"
+    );
+}
+
+#[test]
+fn the_asks_endpoint_filters_by_risk_as_the_cli_does() {
+    let mut setup = Setup::new("asks-risk-api", SERVE);
+    setup.seed_risks();
+    let address = setup.start(&["serve", &setup.factory()]);
+
+    let cli = setup.priory(&["asks", "--risk", "red", "--json"]);
+    succeeded(&cli);
+    let cli: Value = serde_json::from_slice(&cli.stdout).unwrap();
+    assert_eq!(ids(&cli), [json!(1)]);
+    let mut served = api(&address, "/api/asks?risk=red&all=1");
+    served.as_object_mut().unwrap().remove("older");
+    assert_eq!(served, cli);
+    assert_eq!(
+        api(&address, "/api/asks?risk=green%2Cnone"),
+        api(&address, "/api/asks?risk=green&risk=none")
+    );
+    let (status, body) = get(&address, "/api/asks?risk=grey", Some(TOKEN));
+    assert_eq!(status, 400);
+    assert!(body.contains("risk `grey` is not one of"), "{body}");
+
+    let db = rusqlite::Connection::open(setup.dir.join("priory.db")).unwrap();
+    db.execute(
+        "UPDATE asks SET answer = 'open', answered = '2026-01-01T00:00:00Z' WHERE id = 1",
+        [],
+    )
+    .unwrap();
+    let red = api(&address, "/api/asks?risk=red");
+    assert_eq!((ids(&red), &red["older"]["answered"]), (vec![], &json!(1)));
+    assert_eq!(
+        api(&address, "/api/asks?risk=green")["older"]["answered"],
+        0
+    );
+}
+
 #[test]
 fn the_desk_endpoint_lists_since_you_looked_for_a_person_as_the_cli_does() {
     let mut setup = Setup::new("looked", SERVE);

@@ -18,6 +18,7 @@ Read it before you change behaviour or name a concept, and use its Concepts tabl
 - `docs/prd.md`: what Priory does and in which milestone.
 - `docs/daemon/`: how the daemon runs tasks, one file per topic. Its `README.md` says which file to read.
 - `docs/intake/`: the intake's message contract, one file per source. Its `README.md` says which file to read.
+- `docs/design/`: explanation notes on work not built yet, one file per topic.
 - `docs/adr/`: one file per hard-to-reverse decision, `NNNN-<decision-as-a-sentence>.md`.
 - `docs/images/`: the README's screenshots, each PNG under 400 KB.
 - `GETTING_STARTED.md`: build, first factory, first run, day to day commands and concepts.

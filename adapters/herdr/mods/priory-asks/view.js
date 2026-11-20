@@ -34,6 +34,9 @@ function row(ask, now) {
   };
 }
 
+/** The Risk facet's values in the order it offers them, as `priory asks --risk` takes them. */
+const RISKS = ["irreversible", "red", "yellow", "green", "none"];
+
 /** Each value of a field, in first-seen order, with how many asks carry it. @param {any[]} asks @param {string} field */
 function counted(asks, field) {
   const counts = new Map();
@@ -44,13 +47,16 @@ function counted(asks, field) {
 /**
  * The saved views with their counts, and the chosen view's sections, each left out when empty.
  * @param {any[]} all
- * @param {{ view: string, now: number, bands?: string[], facets?: { command?: boolean, lane?: string, band?: string, task?: string } }} options
- *   `bands` is the factory's, highest first; an ask without a band shows under `none`.
+ * @param {{ view: string, now: number, bands?: string[], facets?: { command?: boolean, lane?: string, band?: string, risk?: string, task?: string } }} options
+ *   `bands` is the factory's, highest first; an ask without a band shows under `none`, and one
+ *   without a risk under the risk `none`.
  */
 export function asksList(all, { view, now, bands = [], facets = {} }) {
   const band = (/** @type {any} */ ask) => ask.band ?? "none";
+  const risks = (/** @type {any} */ ask) => (ask.risk?.length ? ask.risk : ["none"]);
   const asks = all.filter((ask) => (!facets.command || ask.command) && (!facets.lane || ask.lane === facets.lane)
-    && (!facets.band || band(ask) === facets.band) && (!facets.task || ask.key === facets.task));
+    && (!facets.band || band(ask) === facets.band) && (!facets.risk || risks(ask).includes(facets.risk))
+    && (!facets.task || ask.key === facets.task));
   const open = asks.filter((ask) => ask.state === "open" && !snoozed(ask, now));
   const asleep = asks.filter((ask) => snoozed(ask, now));
   const backToday = open.filter((ask) => ask.back_early && sameDay(ask.back_early.at, now));
@@ -79,7 +85,8 @@ export function asksList(all, { view, now, bands = [], facets = {} }) {
   }[view] ?? [];
   const order = [...bands, "none"];
   const byBand = counted(all.map((ask) => ({ band: band(ask) })), "band").sort(([a], [b]) => order.indexOf(a) - order.indexOf(b));
-  return { views, facets: { lane: counted(all, "lane"), band: byBand, task: counted(all, "key") }, sections:sections.filter((candidate) => candidate.rows.length) };
+  const byRisk = counted(all.flatMap((ask) => risks(ask).map((risk) => ({ risk }))), "risk").sort(([a], [b]) => RISKS.indexOf(a) - RISKS.indexOf(b));
+  return { views, facets: { lane: counted(all, "lane"), band: byBand, risk: byRisk, task: counted(all, "key") }, sections:sections.filter((candidate) => candidate.rows.length) };
 }
 
 /** An agent's command runs on the options in its `runs`; an outside ask's string command never runs. @param {any} ask @param {string} option */
