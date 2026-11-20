@@ -80,6 +80,7 @@ export default class PrioryDesk extends View {
     /** @type {{ cancel(): void } | null} */
     this.retry = null;
     this.chain = 0;
+    this.reading = false;
     /** @type {string | null} */
     this.opened = null;
     this.seenSent = false;
@@ -109,9 +110,11 @@ export default class PrioryDesk extends View {
         this.theme = theme;
         if (since != null) await client.wait(since);
         if (chain !== this.chain) return;
+        this.reading = true;
         // Taken before the first read, so an event between that read and `priory seen` still shows next time.
         const read = new Date().toISOString().replace(/\.\d+Z$/, "Z");
-        const [desk, asks, tasks, queue] = await Promise.all([client.desk({ all: true }), client.asks(), client.tasks(), client.queue()]);
+        const [desk, asks, tasks, queue] = await Promise.all([client.desk({ all: true }), client.asks(), client.tasks(), client.queue()])
+          .finally(() => { this.reading = false; });
         if (chain !== this.chain) return;
         if (!this.data) {
           this.sinceFrom = desk.last_visit;
@@ -123,6 +126,7 @@ export default class PrioryDesk extends View {
         cx.notify();
         this.load(cx, desk.revision, chain);
       } catch (error) {
+        this.reading = false;
         if (chain !== this.chain) return;
         this.error = message(error);
         cx.notify();
@@ -238,7 +242,11 @@ export default class PrioryDesk extends View {
       ? h_flex().flex_none().px(S["space-4"]).py(S["space-2"]).gap(S["space-2"]).items_center().border_b(1).border_color(t.line).bg(t.surface)
         .child(div().flex_1().min_w_0().whitespace_normal().text_size(S["type-small"][0]).text_color(t["danger-text"])
           .child(`Could not read the desk: ${this.error}. Check that priory runs where settings.json's "priory" object says, then retry.`))
-        .child(ui.button("retry", "Retry", (_e, cx) => { this.retry?.cancel(); this.load(cx, null); }))
+        .child(ui.button("retry", "Retry", (_e, cx) => {
+          if (this.reading) return;
+          this.retry?.cancel();
+          this.load(cx, null);
+        }, { disabled: this.reading }))
       : null;
     if (!this.data) {
       return root.when(Boolean(failed), (el) => el.child(failed))
