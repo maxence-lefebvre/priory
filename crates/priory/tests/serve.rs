@@ -707,6 +707,136 @@ fn a_task_endpoint_returns_its_runs_steps_asks_waits_results_and_tldr() {
 }
 
 #[test]
+fn task_json_prints_the_task_endpoints_body() {
+    let mut setup = Setup::new("task-json", SERVE);
+    setup.seed();
+    let address = setup.start(&["serve", &setup.factory()]);
+
+    let output = setup.priory(&["task", "1", "--json"]);
+    succeeded(&output);
+    let printed: Value = serde_json::from_slice(&output.stdout).unwrap();
+
+    assert_eq!(printed, api(&address, "/api/tasks/1"));
+    assert_eq!(printed["id"], 1);
+    let missing = setup.priory(&["task", "9", "--json"]);
+    assert!(!missing.status.success());
+    assert!(String::from_utf8_lossy(&missing.stderr).contains("no task 9"));
+}
+
+#[test]
+fn a_task_endpoint_shows_its_brief_plan_pull_request_and_each_runs_tokens() {
+    let mut setup = Setup::new("task-detail", SERVE);
+    setup.seed();
+    let db = rusqlite::Connection::open(setup.dir.join("priory.db")).unwrap();
+    let tokens = r#"{"input":120,"output":30,"cache_read":0,"cache_write":0}"#;
+    for (run, step, summary) in [
+        (1, "groom", "Brief: fix the docs."),
+        (2, "plan", "1. Old plan."),
+        (3, "plan", "1. Edit the README.\n2. Test."),
+        (4, "implement", "Implemented."),
+    ] {
+        db.execute(
+            "INSERT INTO runs (id, task, step, tmux, session, started, ended, ended_as)
+             VALUES (?1, 1, ?2, 'tmux', 's', '2026-11-17T10:00:00Z', '2026-11-17T10:30:00Z', 'moved')",
+            rusqlite::params![run, step],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO results (run, task, step, outcome, summary) VALUES (?1, 1, ?2, 'passed', ?3)",
+            rusqlite::params![run, step, summary],
+        )
+        .unwrap();
+    }
+    let ended = json!({ "type": "factory.step.ended",
+        "data": { "task": "1", "run": "3", "step": "plan", "tokens": serde_json::from_str::<Value>(tokens).unwrap() } });
+    db.execute(
+        "INSERT INTO trace (id, type, time, event) VALUES ('e1', 'factory.step.ended', '2026-11-17T10:30:00Z', ?1)",
+        [ended.to_string()],
+    )
+    .unwrap();
+    db.execute(
+        "INSERT INTO owns (task, resource) VALUES (1, 'github:owner/repo#43')",
+        [],
+    )
+    .unwrap();
+    let pr = |name: &str, conclusion: &str| {
+        json!({ "repo": "owner/repo", "pull_request": 43, "head_sha": "abc", "head_branch": "docs-1",
+            "base_branch": "main", "url": "https://github.com/owner/repo/pull/43",
+            "title": "Fix the docs", "name": name, "conclusion": conclusion, "state": "approved" })
+    };
+    for (seq, kind, data) in [
+        (1, "github.pull_request.opened", pr("", "")),
+        (2, "github.check_run.completed", pr("test", "failure")),
+        (3, "github.check_run.completed", pr("test", "success")),
+        (4, "github.check_run.completed", pr("lint", "success")),
+        (5, "github.pull_request_review.submitted", pr("", "")),
+        // A check run on the commit before the head, completing late.
+        (6, "github.check_run.completed", {
+            let mut late = pr("test", "failure");
+            late["head_sha"] = json!("old");
+            late
+        }),
+    ] {
+        db.execute(
+            "INSERT INTO inbox (id, type, subject, time, data, links, outcome)
+             VALUES (?1, ?2, 'owner/repo#43', ?3, ?4, '[]', 'ignored')",
+            rusqlite::params![
+                format!("pr-{seq}"),
+                kind,
+                format!("2026-11-17T11:0{seq}:00Z"),
+                data.to_string()
+            ],
+        )
+        .unwrap();
+    }
+    let address = setup.start(&["serve", &setup.factory()]);
+
+    let task = api(&address, "/api/tasks/1");
+
+    assert_eq!(task["brief"]["request"], "Fix the docs");
+    assert_eq!(task["brief"]["result"]["summary"], "Brief: fix the docs.");
+    assert_eq!(task["brief"]["result"]["run"], 1);
+    assert_eq!(task["plan"]["summary"], "1. Edit the README.\n2. Test.");
+    assert_eq!(task["plan"]["run"], 3);
+    let pull = &task["pull_request"];
+    assert_eq!(pull["number"], 43);
+    assert_eq!(pull["repo"], "owner/repo");
+    assert_eq!(pull["title"], "Fix the docs");
+    assert_eq!(pull["state"], "open");
+    assert_eq!(pull["head_sha"], "abc");
+    assert_eq!(pull["review"], "approved");
+    assert_eq!(
+        pull["checks"],
+        json!([
+            { "name": "lint", "conclusion": "success", "at": "2026-11-17T11:04:00Z" },
+            { "name": "test", "conclusion": "success", "at": "2026-11-17T11:03:00Z" }
+        ])
+    );
+    let run = &task["runs"][2];
+    assert_eq!(run["step"], "plan");
+    assert_eq!(run["outcome"], "passed");
+    assert_eq!(
+        run["tokens"],
+        serde_json::from_str::<Value>(tokens).unwrap()
+    );
+    assert_eq!(task["runs"][0]["tokens"], Value::Null);
+}
+
+#[test]
+fn a_task_without_a_groom_or_plan_step_or_pull_request_shows_none() {
+    let mut setup = Setup::new("task-detail-empty", SERVE);
+    setup.seed();
+    let address = setup.start(&["serve", &setup.factory()]);
+
+    let task = api(&address, "/api/tasks/2");
+
+    assert_eq!(task["brief"]["request"], "Fix the\nreadme");
+    assert_eq!(task["brief"]["result"], Value::Null);
+    assert_eq!(task["plan"], Value::Null);
+    assert_eq!(task["pull_request"], Value::Null);
+}
+
+#[test]
 fn a_task_endpoint_shows_the_output_its_run_step_kept() {
     let mut setup = Setup::new("task-run-step", SERVE);
     setup.seed();
@@ -2476,7 +2606,7 @@ fn an_answer_that_runs_a_command_needs_run_true_and_the_ask_then_shows_what_it_r
 }
 
 #[test]
-fn a_stale_revision_gets_409_with_the_current_ask_and_changes_nothing() {
+fn a_stale_revision_gets_409_with_the_current_ask_and_changes_only_its_refused_answers() {
     let mut setup = Setup::new("web-stale", SERVE);
     setup.asleep_on_ask();
     let address = setup.start(&["daemon", &setup.factory()]);
@@ -2492,8 +2622,14 @@ fn a_stale_revision_gets_409_with_the_current_ask_and_changes_nothing() {
     assert_eq!(status, 409, "{body}");
     let body: Value = serde_json::from_str(&body).unwrap();
     assert_eq!(body["error"], "ask 1 is at revision 2, not 1");
-    assert_eq!(body["ask"], before);
-    assert_eq!(setup.ask(), before);
+    let mut after = setup.ask();
+    assert_eq!(body["ask"], after);
+    let refused = after["refused"].take();
+    assert_eq!(refused[0]["answer"], "left");
+    assert_eq!(refused[0]["by"], "serve");
+    assert_eq!(refused.as_array().unwrap().len(), 1);
+    after["refused"] = before["refused"].clone();
+    assert_eq!(after, before);
 }
 
 #[test]

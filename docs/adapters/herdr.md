@@ -181,7 +181,8 @@ DESIGN.md's "Herdr adapter" section holds its visual rules; this section says ho
   The node tests in `test/asks.test.js` check `view.js` against JSON captured from a real
   `priory asks --all --json`.
 - **Reading.** The panel reads `priory asks --all --json`, then waits with `priory wait` and reads
-  again. When a call fails, it keeps the last list and shows "Reconnecting to priory" with the age
+  again. With each read and each new selection, it reads the selected ask's task with
+  `priory task ID --json`. When a call fails, it keeps the last list and shows "Reconnecting to priory" with the age
   of its last update, and the options stay disabled until it reconnects.
 - **List.** The saved views are Open, Snoozed, Answered and All, each with its count. The facet
   chips Command, Lane, Band and Task narrow every view. Band lists the bands in the factory's
@@ -211,10 +212,12 @@ DESIGN.md's "Herdr adapter" section holds its visual rules; this section says ho
   sections and `Esc` closes. Single keys never fire while the text field has the keyboard.
 - **Agent text.** The question, options, text, trade-off and what waits draw as plain text.
 
-The detail shows the sections Why, History and Command. `priory` has no command that prints a
-task's brief, plan, pull request or runs, so the Brief, Plan, PR and Trace sections are left out
-with their chips, as DESIGN.md does for any section a task lacks. History shows the ask's current
-revision and its answer, since Priory keeps no earlier revisions or refused answers.
+The detail shows the sections Why, Brief, Plan, PR, Trace, History and Command. Brief shows the
+request and the `groom` step's result, Plan the `plan` step's result or else the task's
+`progress`, PR the pull request's title, branches, state and checks, and Trace each run with its
+span, outcome and tokens. A section the task lacks is left out with its chip, as DESIGN.md says.
+History lists every revision and refused answer of the ask, and its answer, newest first. A refused
+answer shows on a warn tile. Briefs, plans and results draw as plain text, like the agent's text.
 
 ## The Queue panel
 
@@ -343,9 +346,9 @@ waiting: snoozing changes what a person sees, never what the daemon does. `prior
   `options`, `recommendation`, `tradeoff`, and for a command ask the command line, its target and
   the revision it is bound to (R6.8).
 - An answered ask adds `answer`, `answered_by` and `answered_at`; a withdrawn one adds why.
-- The detail adds the agent's text and the run that asked, what waits and what the agent does
-  next, *the brief and plan paths*, *the pull request summary*, the task's runs for the trace, and
-  *the ask's revisions and refused answers* for its history.
+- The detail adds the agent's text and the run that asked, `what_waits` and `next_action`, and
+  the ask's `revisions` and `refused` for its history. `priory task ID --json` adds the task's
+  `brief`, `plan`, `pull_request` and `runs`.
 
 ### Queue
 
@@ -424,10 +427,6 @@ The panels still need these from Priory's core. Each is a separate slice.
 1. Comments on report rows. Report sections and picks exist.
 2. Earlier reports listed by date, for the Bonjour panel's older and newer arrows.
 3. A `report pick` that replaces a choice the workflow has not applied yet, for Change.
-4. A task's brief, plan, pull request summary and runs from the CLI, for the Asks panel's Brief,
-   Plan, PR and Trace sections. `/api/tasks/{id}` serves the runs but has no CLI twin, and nothing
-   serves the brief, the plan or the pull request summary yet.
-5. An ask's earlier revisions and refused answers, for its History section.
 
 The core already serves the rest of the fields above:
 
@@ -444,3 +443,5 @@ The core already serves the rest of the fields above:
 - Reports and picks: [reports.md](../daemon/reports.md).
 - Ask fields: `what_waits`, `next_action`, `title` and a Markdown `text`, in
   [tools.md](../daemon/tools.md).
+- Ask history: each ask's `revisions` and `refused` answers, in `priory asks --json`.
+- Task detail: `priory task ID --json` prints a task's `brief`, `plan`, `pull_request` and runs.

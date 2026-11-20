@@ -27,6 +27,8 @@ export function priory({ exec, binary = "priory-oss", on = null, factory = null 
     desk: ({ all = false } = {}) => read("desk", ...(all ? ["--all"] : [])),
     asks: () => read("asks", "--all"),
     tasks: () => read("tasks"),
+    // One task with its brief, plan, pull request, runs and asks, as `/api/tasks/{id}` serves it.
+    task: (/** @type {Id} */ id) => read("task", String(id)),
     queue: () => read("queue", ...inFactory),
     schedules: () => read("schedules", ...inFactory),
     report: (/** @type {Id | null} */ task = null) => read("report", "show", ...(task == null ? [] : [String(task)])),
