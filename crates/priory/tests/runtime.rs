@@ -1687,6 +1687,31 @@ fn teardown_kills_a_tmux_server_that_a_late_child_starts() {
 }
 
 #[test]
+fn a_test_that_panics_after_its_run_starts_leaves_no_tmux_server() {
+    let mut socket = None;
+    let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let mut setup = Setup::new("teardown-after-panic");
+        setup.publish(&requested(42));
+        setup.start();
+        setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 1);
+        socket = Some(self::socket(&setup));
+        panic!("the test fails while its agent runs");
+    }));
+
+    assert!(caught.is_err());
+    let socket = socket.expect("the run never got a tmux session");
+    let listed = Command::new("tmux")
+        .args(["-S", &socket, "list-sessions"])
+        .output()
+        .unwrap();
+    assert!(!listed.status.success(), "a tmux server outlived its test");
+    assert!(
+        !Path::new(&socket).parent().unwrap().exists(),
+        "the socket directory outlived its test"
+    );
+}
+
+#[test]
 fn high_load_or_low_disk_holds_admission() {
     let mut setup = Setup::new("load-disk");
     setup.load(f64::NAN);
