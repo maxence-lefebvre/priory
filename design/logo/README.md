@@ -8,11 +8,10 @@ marks the page where a person is needed. It is provisional, chosen on 2026-11-20
 | File                                            | Use                                                        |
 | ----------------------------------------------- | ---------------------------------------------------------- |
 | `mark.svg`                                      | The flat mark in `currentColor`, for one-color uses        |
-| `mark-16.svg`                                   | The flat mark without the P, for 16 px                     |
 | `mark-two-tone.svg`                             | The book in `currentColor`, the ribbon in Indigo's action color |
 | `lockup.svg`, `lockup-dark.svg`                 | The mark and the outlined wordmark, for light and dark grounds |
 | `favicon.svg`                                   | The flat mark without the P, ink in light mode and white in dark mode |
-| `favicon.ico`                                   | 16, 32 and 48 px, the flat mark in the action color, the P from 32 px |
+| `favicon.ico`                                   | 16, 32 and 48 px, the flat mark in the action color; the 16 px frame drops the P |
 | `icon-192.png`, `icon-512.png`                  | PWA icons, purpose `any`: a rounded ink tile               |
 | `icon-maskable-192.png`, `icon-maskable-512.png` | PWA icons, purpose `maskable`: a full-bleed ink tile, the mark inside the 80 % safe zone |
 | `apple-touch-icon.png`                          | 180 px, a full-bleed ink tile that iOS rounds              |
@@ -29,9 +28,9 @@ measure it from the mark's height.
 
 ## Minimum size
 
-- Flat mark: 16 px. At 16 px use `mark-16.svg`: the P's counter closes at that size. Use it for
-  the favicon, tabs and sidebars.
-- The P: 24 px.
+- Flat mark: 16 px, with the P. Use it for tabs and sidebars.
+- The favicon alone drops the P, because its counter closes at 16 px: `favicon.svg` and the
+  16 px frame of `favicon.ico` show the book and the ribbon only.
 - Two-tone mark: 24 px. Below that, the ribbon's color stops reading; use the flat mark.
 - Lockup: 24 px tall.
 

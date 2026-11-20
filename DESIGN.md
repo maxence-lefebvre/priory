@@ -247,9 +247,9 @@ and the rubric red `--count`.
 - **Where the mark appears:** the favicon, the PWA and home screen icons, the README header and
   the Priory row of the Herdr sidebar. The view's top bar keeps the factory name in the display
   role and shows no mark.
-- **Flat or two-tone:** below 24 px, and in Ink, the mark is flat in the row's text color. At
-  16 px it drops the P. From
-  24 px, the book takes `--text` and the ribbon `--action`.
+- **Flat or two-tone:** below 24 px, and in Ink, the mark is flat in the row's text color. From
+  24 px, the book takes `--text` and the ribbon `--action`. The favicon alone drops the P, whose
+  counter closes at 16 px.
 - **Interface icons** come from [Lucide](https://lucide.dev) (ISC license), inlined as SVG. The
   mark never stands for a panel, a state or an action.
 
