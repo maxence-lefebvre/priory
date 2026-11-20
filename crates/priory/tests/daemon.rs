@@ -177,14 +177,16 @@ fn a_task_request_creates_one_queued_task_at_its_workflow_start() {
                 "github.issues.labeled",
                 "owner/repo#42",
                 "-",
-                "ignored"
+                "ignored",
+                "-"
             ]),
             row(&[
                 "2",
                 "factory.task.requested",
                 "github:owner/repo#42",
                 "1",
-                "created"
+                "created",
+                "-"
             ]),
         ]
     );

@@ -688,7 +688,10 @@ fn a_report_of_a_bad_shape_is_refused_with_why_and_nothing_stored() {
     commented["sections"][1]["rows"][0]["comments"] = json!([{ "text": "hi" }]);
     let cases = [
         (untitled, "missing field `title`"),
-        (stray, r#"pick "2026-11-20_sentry_fnd-2409": "Maybe" is not one of its options"#),
+        (
+            stray,
+            r#"pick "2026-11-20_sentry_fnd-2409": "Maybe" is not one of its options"#,
+        ),
         (commented, r#"section "backlog": comments must be empty"#),
     ];
 
@@ -698,7 +701,8 @@ fn a_report_of_a_bad_shape_is_refused_with_why_and_nothing_stored() {
         assert!(!put.status.success());
         let stderr = String::from_utf8_lossy(&put.stderr);
         assert!(
-            stderr.starts_with("priory report put: the report is refused: ") && stderr.contains(why),
+            stderr.starts_with("priory report put: the report is refused: ")
+                && stderr.contains(why),
             "{stderr}"
         );
     }

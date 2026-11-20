@@ -1,9 +1,11 @@
 use priory_core::memory::Gate;
-use priory_core::{daemon, embed, listing, report, search, sections, serve, snooze, state, tools};
-use serde_json::Value;
+use priory_core::{
+    daemon, embed, listing, post, report, search, sections, serve, snooze, state, tools,
+};
 use priory_factory::{factory, rules};
 use priory_intake::{intake, request};
 use priory_runtime::{mcp, runtime};
+use serde_json::Value;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
@@ -39,6 +41,12 @@ fn main() -> ExitCode {
             serve(verb, &dir, run, !once.is_empty())
         }
         Some("request") => request(args.map(|arg| arg.to_string_lossy().into_owned()).collect()),
+        Some("post") => match (args.next(), args.next(), args.next()) {
+            (Some(source), Some(line), None) => {
+                post(&source.to_string_lossy(), &line.to_string_lossy())
+            }
+            _ => usage(),
+        },
         Some(verb @ ("inbox" | "tasks" | "asks" | "desk" | "queue")) => {
             listed(verb, args.map(|arg| arg.to_string_lossy().into_owned()).collect())
         }
@@ -102,7 +110,7 @@ fn main() -> ExitCode {
 
 fn usage() -> ExitCode {
     eprintln!(
-        "usage: priory check [DIR]\n       priory draw [DIR] WORKFLOW\n       priory intake [DIR] [--once]\n       priory daemon [DIR] [--once]\n       priory request [DIR] --workflow <name> --key <key> [--band <band>] [--lane <lane>] [--repo <owner/name>] [--hold <reason> [CONDITION]] <text>\n       priory serve [DIR] [--listen ADDR]\n       priory inbox [--json]\n       priory tasks [--lane <lane>] [--grade red|yellow|green] [--json]\n       priory queue [--json]\n       priory runs\n       priory outbox\n       priory asks [--all] [--json]\n       priory waits\n       priory actions\n       priory attach (TASK | --run RUN) [--read-only] [--print]\n       priory desk [--all] [--json]\n       priory snooze (ask | blocked | failed | prompt) ID (--for DURATION | --until TIME | --clear)\n       priory trace\n       priory report [DIR] --workflow <name> [--since <instant-or-duration>] [--cost] [--by lane]\n       priory move TASK [--band <band>] [--top | --before TASK | --after TASK]\n       priory resume TASK\n       priory cancel TASK\n       priory revive TASK [--step STEP]\n       priory hold TASK --reason TEXT [--until TIME | --after TASK | --merge PR [--if-closed release|drop|ask] | --blockers]\n       priory release TASK\n       priory tldr TASK TEXT\n       priory search QUERY [--state STATE[,STATE...]] [--limit N]\n       priory memory [acquire --gb N [--timeout D] -- COMMAND...]\n       priory answer ASK OPTION-OR-TEXT --revision N\n       priory mcp --session ID\n       priory hook EVENT"
+        "usage: priory check [DIR]\n       priory draw [DIR] WORKFLOW\n       priory intake [DIR] [--once]\n       priory daemon [DIR] [--once]\n       priory request [DIR] --workflow <name> --key <key> [--band <band>] [--lane <lane>] [--repo <owner/name>] [--hold <reason> [CONDITION]] <text>\n       priory serve [DIR] [--listen ADDR]\n       priory inbox [--since SEQ] [--json]\n       priory inbox read SEQ\n       priory post SOURCE LINE\n       priory tasks [--lane <lane>] [--grade red|yellow|green] [--json]\n       priory queue [--json]\n       priory runs\n       priory outbox\n       priory asks [--all] [--json]\n       priory waits\n       priory actions\n       priory attach (TASK | --run RUN) [--read-only] [--print]\n       priory desk [--all] [--json]\n       priory snooze (ask | blocked | failed | prompt) ID (--for DURATION | --until TIME | --clear)\n       priory trace\n       priory report [DIR] --workflow <name> [--since <instant-or-duration>] [--cost] [--by lane]\n       priory move TASK [--band <band>] [--top | --before TASK | --after TASK]\n       priory resume TASK\n       priory cancel TASK\n       priory revive TASK [--step STEP]\n       priory hold TASK --reason TEXT [--until TIME | --after TASK | --merge PR [--if-closed release|drop|ask] | --blockers]\n       priory release TASK\n       priory tldr TASK TEXT\n       priory search QUERY [--state STATE[,STATE...]] [--limit N]\n       priory memory [acquire --gb N [--timeout D] -- COMMAND...]\n       priory answer ASK OPTION-OR-TEXT --revision N\n       priory mcp --session ID\n       priory hook EVENT"
     );
     ExitCode::from(2)
 }
@@ -343,7 +351,9 @@ fn report_show(args: &[String]) -> ExitCode {
             for row in section["rows"].as_array().into_iter().flatten() {
                 let pick = &row["pick"];
                 let choice = match &pick["chosen"] {
-                    Value::Null if pick.is_object() => format!("  pick {}: {}", pick["id"], pick["options"]),
+                    Value::Null if pick.is_object() => {
+                        format!("  pick {}: {}", pick["id"], pick["options"])
+                    }
                     Value::Null => String::new(),
                     chosen => format!("  pick {}: {chosen}", pick["id"]),
                 };
@@ -401,8 +411,20 @@ fn snooze(args: Vec<String>) -> ExitCode {
 }
 
 /// Prints `priory inbox|tasks|asks|desk|queue`, as a table or, with `--json`, as the JSON that
-/// `serve` returns.
+/// `serve` returns. `priory inbox read SEQ` marks a report read instead.
 fn listed(verb: &str, mut args: Vec<String>) -> ExitCode {
+    if verb == "inbox" && args.first().is_some_and(|arg| arg == "read") {
+        let [_, seq] = &args[..] else {
+            return usage();
+        };
+        let Ok(seq) = seq.parse() else {
+            return usage();
+        };
+        return exit(
+            "inbox read",
+            state::open().and_then(|db| post::read(&db, seq)),
+        );
+    }
     let json = args
         .iter()
         .position(|arg| arg == "--json")
@@ -412,9 +434,15 @@ fn listed(verb: &str, mut args: Vec<String>) -> ExitCode {
         .position(|arg| arg == "--all" && ["asks", "desk"].contains(&verb))
         .map(|at| args.remove(at))
         .is_some();
-    let (mut lane, mut grade) = (None, None);
+    let (mut lane, mut grade, mut since) = (None, None, None);
     for pair in args.chunks(2) {
         match (verb, pair) {
+            ("inbox", [flag, value]) if flag == "--since" && since.is_none() => {
+                let Ok(value) = value.parse() else {
+                    return usage();
+                };
+                since = Some(value)
+            }
             ("tasks", [flag, value]) if flag == "--lane" && lane.is_none() => {
                 lane = Some(value.as_str())
             }
@@ -431,7 +459,7 @@ fn listed(verb: &str, mut args: Vec<String>) -> ExitCode {
     let home = runtime::home();
     let shown = state::open().and_then(|db| {
         let value = match verb {
-            "inbox" => listing::inbox(&db),
+            "inbox" => listing::inbox(&db, since.unwrap_or(0)),
             "tasks" => listing::tasks(&db, lane, grade),
             "asks" => listing::asks(&db),
             "desk" => listing::desk(&db, &home, all),
@@ -443,7 +471,10 @@ fn listed(verb: &str, mut args: Vec<String>) -> ExitCode {
             return Ok(());
         }
         match verb {
-            "inbox" => listing::print(&["seq", "type", "subject", "task", "outcome"], &value),
+            "inbox" => listing::print(
+                &["seq", "type", "subject", "task", "outcome", "line"],
+                &value,
+            ),
             "tasks" => listing::print(
                 &[
                     "id",
@@ -521,6 +552,14 @@ fn listed(verb: &str, mut args: Vec<String>) -> ExitCode {
         Ok(())
     });
     exit(verb, shown)
+}
+
+/// Stores one report line on the inbox and prints its sequence number: `priory post SOURCE LINE`.
+fn post(source: &str, line: &str) -> ExitCode {
+    let posted = state::open()
+        .and_then(|db| post::post(&db, source, line))
+        .map(|seq| state::emit(&seq.to_string()));
+    exit("post", posted)
 }
 
 /// Serves the state over HTTP until killed: `priory serve [DIR] [--listen ADDR]`.

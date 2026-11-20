@@ -152,9 +152,11 @@ pub fn put(db: &mut Connection, task: i64, mut report: Report) -> Result<String,
         return Err(format!("there is no task {task}"));
     }
     let stored: Option<String> = tx
-        .query_row("SELECT report FROM reports WHERE task = ?1", [task], |row| {
-            row.get(0)
-        })
+        .query_row(
+            "SELECT report FROM reports WHERE task = ?1",
+            [task],
+            |row| row.get(0),
+        )
         .optional()
         .map_err(at)?;
     let mut chosen = HashMap::new();
@@ -309,7 +311,10 @@ pub(crate) fn pick(
     pick.chosen = Some(choice.option.clone());
     tx.execute(
         "UPDATE reports SET revision = revision + 1, report = ?2 WHERE task = ?1",
-        params![task, serde_json::to_string(&report).expect("a report serializes")],
+        params![
+            task,
+            serde_json::to_string(&report).expect("a report serializes")
+        ],
     )?;
     tx.commit()?;
     Ok(Ok(format!(

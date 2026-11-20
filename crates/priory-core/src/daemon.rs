@@ -585,7 +585,9 @@ fn take(db: &mut Connection, line: &str, trace: &Trace) -> Result<(String, Optio
             Ok((replied(reply), kill))
         }
         Ok(Input::Snooze(snooze)) => Ok((replied(snooze::snooze(db, &snooze, trace)?), None)),
-        Ok(Input::Choice(choice)) => Ok((replied(sections::pick(db, &choice, trace.factory)?), None)),
+        Ok(Input::Choice(choice)) => {
+            Ok((replied(sections::pick(db, &choice, trace.factory)?), None))
+        }
         Ok(Input::Gate(gate)) => {
             let share = Share::of(trace.factory, trace.machine.as_deref());
             let room = || room::measure(&runtime::home());

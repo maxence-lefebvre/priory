@@ -7,6 +7,7 @@ pub mod memory;
 #[cfg(feature = "model")]
 mod model;
 mod otlp;
+pub mod post;
 pub mod report;
 mod room;
 mod route;

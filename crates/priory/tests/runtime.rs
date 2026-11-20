@@ -36,11 +36,11 @@ key = "issue.number"
 
 const OUTPUT: &str = "factory.intake";
 
-/// Takes a state file back before schema 28, which added search, 29, which added grades, and 30,
-/// which added snoozes.
+/// Takes a state file back before schema 28, which added search, 29, which added grades, 30,
+/// which added snoozes, and 31, which added read reports.
 const UNDO_SINCE_SEARCH: &str = "DROP TRIGGER snooze_ends_on_a_new_revision;
   DROP TRIGGER snooze_ends_on_a_task_state_change; DROP TABLE snoozes;
-  ALTER TABLE results DROP COLUMN reason; ALTER TABLE tasks DROP COLUMN grade;
+  ALTER TABLE inbox DROP COLUMN read; ALTER TABLE results DROP COLUMN reason; ALTER TABLE tasks DROP COLUMN grade;
   ALTER TABLE tasks DROP COLUMN grade_reason;
   DROP TRIGGER search_task_created; DROP TRIGGER search_tldr_changed; DROP TRIGGER search_result_stored;
   DROP VIEW task_text; DROP TABLE search; DROP TABLE summaries;
@@ -3955,7 +3955,7 @@ fn a_pull_request_event_naming_the_task_branch_reaches_the_task() {
 
     let inbox = setup.until("inbox", |rows| rows.len() == 2);
     assert_eq!(
-        inbox[1][1..],
+        inbox[1][1..5],
         ["github.pull_request.opened", "owner/repo#7", "1", "kept"]
     );
 }
@@ -8587,7 +8587,10 @@ fn a_pick_at_a_stale_revision_is_refused_and_changes_nothing() {
     );
     let shown = shown(&setup);
     assert_eq!(shown["revision"], 1);
-    assert_eq!(shown["sections"][0]["rows"][0]["pick"]["chosen"], serde_json::Value::Null);
+    assert_eq!(
+        shown["sections"][0]["rows"][0]["pick"]["chosen"],
+        serde_json::Value::Null
+    );
     assert_eq!(setup.rows("tasks")[0][4], "asleep");
 }
 
@@ -8605,5 +8608,8 @@ fn a_pick_option_that_requests_a_task_creates_it_and_fills_applied() {
     assert_eq!(tasks[1][1], "cli:fnd-2409");
     assert_eq!(tasks[0][4], "asleep");
     let pick = &shown(&setup)["sections"][0]["rows"][0]["pick"];
-    assert_eq!([&pick["chosen"], &pick["applied"]], ["Take", "requested task cli:fnd-2409"]);
+    assert_eq!(
+        [&pick["chosen"], &pick["applied"]],
+        ["Take", "requested task cli:fnd-2409"]
+    );
 }
