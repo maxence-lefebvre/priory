@@ -533,6 +533,39 @@ fn a_queued_task_at_a_model_step_gets_a_worktree_a_tmux_session_and_a_run() {
 }
 
 #[test]
+fn an_add_linking_the_key_of_an_asleep_task_wakes_it_with_the_text_as_say_does() {
+    let mut setup = Setup::with_workflow("add-asleep", STEPS);
+    setup.calls(&[ask()]);
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == "asleep")
+    });
+    let session = setup.rows("runs")[0][4].clone();
+    let factory = setup.dir.join("factory");
+
+    let added = setup.priory(&[
+        "add",
+        factory.to_str().unwrap(),
+        "--workflow",
+        "implement",
+        "/also cover https://github.com/owner/repo/issues/42 on Windows",
+    ]);
+
+    assert!(added.status.success(), "{added:?}");
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 2);
+    assert!(
+        setup.typed()[1].starts_with(
+            "A person says: /also cover https://github.com/owner/repo/issues/42 on Windows\n"
+        ),
+        "{:?}",
+        setup.typed()
+    );
+    assert_eq!(setup.rows("runs")[1][4], session);
+    assert_eq!(setup.rows("tasks").len(), 1);
+}
+
+#[test]
 fn a_cli_request_starts_its_run_in_the_repository_it_names() {
     let mut setup = Setup::new("cli-repo");
     let factory = setup.dir.join("factory");
@@ -913,12 +946,12 @@ fn a_codex_run_stores_the_thread_codex_chose_and_an_answer_resumes_it() {
     assert!(
         fs::read_to_string(setup.dir.join("fake/codex-prompt"))
             .unwrap()
-            .starts_with("sqlite\n")
+            .starts_with("Answer to ask 1 (revision 1): sqlite\n")
     );
     let runs = setup.rows("runs");
     assert_eq!([&runs[1][2], &runs[1][4]], ["plan", &thread]);
     assert!(
-        setup.typed()[1].starts_with("sqlite\n"),
+        setup.typed()[1].starts_with("Answer to ask 1 (revision 1): sqlite\n"),
         "{:?}",
         setup.typed()
     );
@@ -1186,7 +1219,10 @@ fn a_queued_answer_and_its_nudge_are_typed_before_the_compact_asked_ahead_of_the
     assert!(answered.status.success(), "{answered:?}");
     setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 5);
     let typed = setup.typed();
-    assert!(typed[1].starts_with("sqlite\n"), "{typed:?}");
+    assert!(
+        typed[1].starts_with("Answer to ask 1 (revision 1): sqlite\n"),
+        "{typed:?}"
+    );
     assert!(typed[2].starts_with("Your turn ended"), "{typed:?}");
     assert_eq!(typed[3], "/compact the plan\n", "{typed:?}");
     assert!(
@@ -3090,7 +3126,7 @@ fn an_answer_on_the_second_agent_step_resumes_the_second_agent_session() {
     assert_eq!(
         setup.typed()[2],
         format!(
-            "sqlite\n{}\n",
+            "Answer to ask 1 (revision 1): sqlite\n{}\n",
             "End this step by calling the result tool of the priory MCP server with one of these outcomes: approved, changes."
         )
     );
@@ -3145,10 +3181,46 @@ fn an_agent_ask_sleeps_the_task_and_the_answer_wakes_it_as_its_prompt() {
     setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 2);
     assert_eq!(
         setup.typed()[1],
-        "duckdb, actually\nEnd this step by calling the result tool of the priory MCP server with one of these outcomes: hopeless, ready, unsure.\n"
+        "Answer to ask 1 (revision 1): duckdb, actually\nEnd this step by calling the result tool of the priory MCP server with one of these outcomes: hopeless, ready, unsure.\n"
     );
     let tasks = setup.rows("tasks");
     assert_eq!([&tasks[0][3], &tasks[0][4]], ["plan", "running"]);
+}
+
+#[test]
+fn an_answer_or_a_say_starting_with_a_slash_reaches_the_agent_behind_a_fixed_first_line() {
+    let mut setup = Setup::with_workflow("slash-answer", STEPS);
+    setup.calls(&[ask()]);
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == "asleep")
+    });
+
+    let answered = setup.priory(&["answer", "1", "/clear the cache first", "--revision", "1"]);
+    assert!(answered.status.success(), "{answered:?}");
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 2);
+    let said = setup.priory(&["say", "1", "/compact is fine too"]);
+    assert!(said.status.success(), "{said:?}");
+    setup.until("outbox", |_| {
+        setup.typed().iter().any(|typed| typed.contains("/compact"))
+    });
+
+    let typed = setup.typed();
+    assert!(
+        typed[1].starts_with("Answer to ask 1 (revision 1): /clear the cache first\n"),
+        "{typed:?}"
+    );
+    assert!(
+        typed
+            .iter()
+            .any(|typed| typed.contains("A person says: /compact is fine too\n")),
+        "{typed:?}"
+    );
+    assert!(
+        !typed.iter().any(|typed| typed.starts_with('/')),
+        "{typed:?}"
+    );
 }
 
 /// The desk's rows that wait on a person, without the worktrees the sweep keeps.
@@ -3648,7 +3720,7 @@ fn an_option_outside_a_commands_runs_answers_without_running_it() {
     assert!(answered.status.success(), "{answered:?}");
     setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 2);
     assert!(
-        setup.typed()[1].starts_with("wait\n"),
+        setup.typed()[1].starts_with("Answer to ask 1 (revision 1): wait\n"),
         "{:?}",
         setup.typed()
     );
@@ -4177,7 +4249,7 @@ fn say_types_its_text_into_an_idle_run() {
     setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 3);
     assert_eq!(
         setup.typed()[2],
-        "Also fix the typo in the README.\nEnd this step by calling the result tool of the priory MCP server with one of these outcomes: failed, passed.\n"
+        "A person says: Also fix the typo in the README.\nEnd this step by calling the result tool of the priory MCP server with one of these outcomes: failed, passed.\n"
     );
 }
 
@@ -4196,7 +4268,7 @@ fn say_before_the_stop_of_a_turn_that_asked_is_typed_into_the_same_run() {
     setup.release("hold-stop");
     setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 2);
     assert!(
-        setup.typed()[1].starts_with("Pick sqlite and go on.\n"),
+        setup.typed()[1].starts_with("A person says: Pick sqlite and go on.\n"),
         "{:?}",
         setup.typed()
     );
@@ -4227,7 +4299,10 @@ fn say_to_a_ready_task_no_run_took_yet_comes_before_its_step_prompt() {
     setup.memory(60);
     setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 1);
     let typed = setup.typed();
-    assert!(typed[0].starts_with("Keep it small.\n"), "{typed:?}");
+    assert!(
+        typed[0].starts_with("A person says: Keep it small.\n"),
+        "{typed:?}"
+    );
     assert!(typed[0].contains("\nPlan the change.\n"), "{typed:?}");
 }
 
@@ -4248,7 +4323,7 @@ fn say_wakes_an_asleep_task_with_its_text_in_its_session() {
     setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 2);
     assert_eq!(
         setup.typed()[1],
-        "Pick sqlite and go on.\nEnd this step by calling the result tool of the priory MCP server with one of these outcomes: hopeless, ready, unsure.\n"
+        "A person says: Pick sqlite and go on.\nEnd this step by calling the result tool of the priory MCP server with one of these outcomes: hopeless, ready, unsure.\n"
     );
     assert_eq!(setup.rows("runs")[1][4], session);
 }
@@ -4357,7 +4432,7 @@ fn an_answer_to_a_stale_revision_or_a_second_answer_is_refused() {
     setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 2);
     assert_eq!(
         setup.typed()[1],
-        "sqlite\nEnd this step by calling the result tool of the priory MCP server with one of these outcomes: hopeless, ready, unsure.\n"
+        "Answer to ask 1 (revision 1): sqlite\nEnd this step by calling the result tool of the priory MCP server with one of these outcomes: hopeless, ready, unsure.\n"
     );
 }
 
@@ -5148,7 +5223,13 @@ fn an_answer_that_beats_the_stop_is_typed_into_the_same_run_once() {
                 "{}\n",
                 prompted("Plan the change.", "hopeless, ready, unsure")
             ),
-            format!("{}\n", prompted("sqlite", "hopeless, ready, unsure")),
+            format!(
+                "{}\n",
+                prompted(
+                    "Answer to ask 1 (revision 1): sqlite",
+                    "hopeless, ready, unsure"
+                )
+            ),
             NUDGE.replace("failed, passed", "hopeless, ready, unsure")
         ]
     );
@@ -5753,6 +5834,36 @@ fn a_done_task_whose_open_pull_request_gets_a_comment_reopens_and_resumes_its_se
     assert_eq!(reopened[0]["data"]["generation"], 2);
     assert_eq!(reopened[0]["data"]["step"], "implement");
     assert_eq!(reopened[0]["data"]["pull_request"], "github:owner/repo#7");
+}
+
+/// A review in `state` by bot, written now.
+fn review_in(state: &str, github_id: u64) -> Message {
+    on_pull(
+        "github.pull_request_review.submitted",
+        json!({ "state": state, "actor": "bot", "github_id": github_id }),
+    )
+    .time(herdr_bus::Timestamp::now())
+}
+
+#[test]
+fn an_approving_or_dismissed_review_neither_wakes_the_done_gate_nor_reopens_a_done_task() {
+    let setup = gated("reopen-approved");
+    setup.publish(&review_in("approved", 310));
+    setup.until("inbox", |rows| rows.len() == 3);
+    stays_asleep_after(&setup, 2);
+    setup.publish(&check(1, 0));
+    setup.until("tasks", |rows| rows[0][4] == "done");
+    std::thread::sleep(Duration::from_millis(1100));
+
+    setup.publish(&review_in("approved", 311));
+    setup.publish(&review_in("dismissed", 312));
+    setup.until("inbox", |rows| rows.len() == 6);
+    std::thread::sleep(Duration::from_millis(1500));
+    assert_eq!(setup.rows("tasks")[0][4], "done");
+    assert_eq!(setup.rows("runs").len(), 2);
+
+    setup.publish(&review_in("changes_requested", 313));
+    setup.until("runs", |rows| rows.len() == 3);
 }
 
 #[test]
@@ -8748,7 +8859,7 @@ fn an_answer_beside_a_wait_wakes_the_task_and_withdraws_the_wait() {
     assert!(answered.status.success(), "{answered:?}");
     setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 2);
     assert!(
-        setup.typed()[1].starts_with("sqlite\n"),
+        setup.typed()[1].starts_with("Answer to ask 1 (revision 1): sqlite\n"),
         "{:?}",
         setup.typed()
     );
@@ -8820,7 +8931,7 @@ fn an_answer_before_the_stop_of_a_run_beside_a_wait_keeps_the_run_going() {
 
     setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 2);
     assert!(
-        setup.typed()[1].starts_with("sqlite\n"),
+        setup.typed()[1].starts_with("Answer to ask 1 (revision 1): sqlite\n"),
         "{:?}",
         setup.typed()
     );
@@ -9781,33 +9892,56 @@ fn a_task_that_waited_on_a_linear_issue_is_done_on_its_result_without_a_pull_req
 }
 
 #[test]
-fn a_linear_comment_no_task_owned_before_the_wait_wakes_the_task_at_once() {
-    let mut setup = Setup::new("linear-already");
-    setup.calls(&[wait(json!({ "type": "linear_comment", "issue": "ENG-7" }))]);
-    setup.hold("hold-call");
-    setup.publish(&requested(42));
-    setup.start();
-    setup.written("fake/submitted");
-    setup.until("outbox", |rows| with(rows, 3, "confirmed") == 1);
-    // The comment lands after the agent's prompt, while no task owns ENG-7 yet.
-    setup.publish(&linear_event(
-        "linear.comment.created",
-        "ENG-7",
-        json!({ "body": "Already answered." }),
-    ));
-    setup.until("inbox", |rows| rows.len() == 2 && rows[1][4] == "ignored");
+fn an_agents_own_linear_comment_or_slack_reply_before_its_wait_neither_fires_it_nor_withdraws_its_ask()
+ {
+    let linear = || {
+        linear_event(
+            "linear.comment.created",
+            "ENG-7",
+            json!({ "body": "Which database?" }),
+        )
+    };
+    let slack = || replied(THREAD, "1763500001.000001", herdr_bus::Timestamp::now());
+    let cases: [(&str, serde_json::Value, &dyn Fn() -> Message); 2] = [
+        (
+            "linear-own",
+            json!({ "type": "linear_comment", "issue": "ENG-7" }),
+            &linear,
+        ),
+        (
+            "slack-own",
+            json!({ "type": "slack_reply", "channel": "C0123", "thread_ts": THREAD }),
+            &slack,
+        ),
+    ];
+    for (name, on, own) in cases {
+        let mut setup = Setup::new(name);
+        setup.calls(&[json!([ask(), wait(on)])]);
+        setup.hold("hold-call");
+        setup.publish(&requested(42));
+        setup.start();
+        setup.written("fake/submitted");
+        setup.until("outbox", |rows| with(rows, 3, "confirmed") == 1);
+        // The agent posts its question in its turn, after its prompt and before its wait.
+        setup.publish(&own());
+        setup.until("inbox", |rows| rows.len() == 2);
+        std::thread::sleep(Duration::from_millis(1100));
 
-    setup.release("hold-call");
+        setup.release("hold-call");
 
-    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 2);
-    let (text, error) = reply(&setup.replies()[0]);
-    assert!(!error, "{text}");
-    assert!(text.starts_with("wait 1 already holds"), "{text}");
-    assert!(
-        setup.typed()[1].starts_with("linear.comment.created ENG-7 {"),
-        "{:?}",
-        setup.typed()
-    );
+        setup.until("runs", |rows| {
+            rows.first().is_some_and(|row| row[7] == "asleep")
+        });
+        stays_asleep(&setup);
+        let answered = setup.priory(&["answer", "1", "sqlite", "--revision", "1"]);
+        assert!(answered.status.success(), "{name}: {answered:?}");
+        setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 2);
+        assert!(
+            setup.typed()[1].starts_with("Answer to ask 1 (revision 1): sqlite\n"),
+            "{name}: {:?}",
+            setup.typed()
+        );
+    }
 }
 
 /// A factory whose runs count as stalled after 2 seconds without a hook event or a pane change, and

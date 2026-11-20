@@ -376,18 +376,11 @@ pub(crate) fn pick(
             pick.applied = Some(format!("requested task cli:{}", request.key()));
         }
         None => {
-            let say = crate::tools::Act {
-                act: "say".to_owned(),
-                task,
-                step: None,
-                hold: None,
-                text: Some(format!(
-                    "The person picked {} on {} in your report: apply it, then write the report again with the pick's applied filled.",
-                    choice.option, pick.id
-                )),
-                expected: None,
-            };
-            if let Err(error) = crate::tools::say(&tx, &say, &state, &factory.workflows)? {
+            let text = format!(
+                "The person picked {} on {} in your report: apply it, then write the report again with the pick's applied filled.",
+                choice.option, pick.id
+            );
+            if let Err(error) = crate::tools::say(&tx, task, &text, &state, &factory.workflows)? {
                 return Ok(Err(format!("pick {}: {error}", pick.id)));
             }
         }
