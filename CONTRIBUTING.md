@@ -16,6 +16,9 @@ AGENTS.md](AGENTS.md#verify) and fix every failure. CI runs the same checks on e
 - Add an adapter trait in the change that brings its second adapter.
 - Test behaviour through the CLI and public interfaces. Substitute only the clock, filesystem,
   network and terminal host.
+- Give each test that starts tmux a `TmuxDir` from `crates/priory/tests/tmux_dir` as its
+  `TMUX_TMPDIR`. It keeps the socket under `/tmp`, short wherever the worktree lives, and dropping
+  it kills every process that inherited it, even when the test panics.
 - Write a comment only for a reason the code cannot show, in one line.
 - Before you write generic logic (parsing, validation, graphs, retries, CLI, time), search
   crates.io for a maintained crate that does it, and use it when it fits.
