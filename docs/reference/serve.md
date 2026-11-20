@@ -39,6 +39,7 @@ An error's body is `{"error": "<why>"}`.
 
 | Field | Type | Meaning |
 | ----- | ---- | ------- |
+| `paused` | string or null | `paused since <time>: <reason>` while admissions are paused |
 | `banner` | string or null | The stall banner while the queue is stalled |
 | `counts.asleep` | integer | Tasks asleep on a wait |
 | `counts.snoozed` | integer | Items snoozed now, which `items` leaves out |
