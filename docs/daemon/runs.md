@@ -92,7 +92,7 @@ after them, oldest first. `priory move` writes the state file directly. It needs
 daemon reads the new order on its next tick.
 
 `priory move`, `hold`, `release` and `cancel` take `--expected REVISION`, the state revision that
-every listing carries. When the state moved past it, the verb changes nothing and fails with `the
+every listing carries. When the state's revision differs from it, the verb changes nothing and fails with `the
 state is at revision <current>, not <REVISION>`, so a change made on a stale read never applies.
 Without the flag, the verb applies to the state as it is.
 

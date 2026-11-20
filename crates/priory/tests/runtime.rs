@@ -2249,6 +2249,7 @@ fn a_renamed_band_set_orders_the_queue_and_moves() {
 
 /// The state revision once the daemon has left it unchanged for over a tick.
 fn settled(setup: &Setup) -> i64 {
+    let deadline = Instant::now() + Duration::from_secs(15);
     let mut read = revision(setup);
     loop {
         std::thread::sleep(Duration::from_millis(1100));
@@ -2256,6 +2257,11 @@ fn settled(setup: &Setup) -> i64 {
         if again == read {
             return read;
         }
+        assert!(
+            Instant::now() < deadline,
+            "the revision never settled: {again}\ndaemon: {}",
+            fs::read_to_string(setup.dir.join("daemon.log")).unwrap_or_default()
+        );
         read = again;
     }
 }
@@ -2275,7 +2281,7 @@ fn a_move_on_a_stale_revision_is_refused_and_moves_nothing() {
     route(&setup);
     let read = revision(&setup);
     let before = queue(&setup);
-    succeeded_as(&setup, &["tldr", "1", "Changed since the read"]);
+    person(&setup, "tldr", &["1", "Changed since the read"]);
     let current = revision(&setup);
 
     let stale = setup.priory(&["move", "2", "--top", "--expected", &read.to_string()]);
@@ -2288,11 +2294,6 @@ fn a_move_on_a_stale_revision_is_refused_and_moves_nothing() {
     assert_eq!(queue(&setup), before);
     moved(&setup, &["2", "--top", "--expected", &current.to_string()]);
     assert_eq!(queue(&setup)[0][0], "2");
-}
-
-fn succeeded_as(setup: &Setup, args: &[&str]) {
-    let output = setup.priory(args);
-    assert!(output.status.success(), "{output:?}");
 }
 
 /// A `review` workflow whose one step runs the reviewer, which declares the default 4 GB.
@@ -7669,9 +7670,9 @@ fn a_held_task_never_starts_until_a_person_releases_it() {
 fn a_stalled_queue_keeps_the_state_revision_still() {
     let setup = queued_without_room("stall-revision");
     setup.until_banner(|banner| banner.is_some());
-    let read = revision(&setup);
+    let read = settled(&setup);
 
-    std::thread::sleep(Duration::from_millis(2100));
+    std::thread::sleep(Duration::from_millis(3100));
 
     assert_eq!(revision(&setup), read);
 }
@@ -7706,6 +7707,15 @@ fn hold_release_and_cancel_on_a_stale_revision_are_refused_and_change_nothing() 
         );
         assert_eq!(held_as(&setup, "1")[0], after, "{args:?}");
     }
+}
+
+#[test]
+fn a_hold_reason_that_reads_as_a_flag_stays_the_reason() {
+    let setup = queued_without_room("hold-reason-flag");
+
+    let reply = person(&setup, "hold", &["1", "--reason", "--expected"]);
+
+    assert!(reply.starts_with("task 1 held: --expected"), "{reply}");
 }
 
 #[test]

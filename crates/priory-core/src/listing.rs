@@ -417,7 +417,9 @@ fn up_next(
         }
         // Each firing of a keyless schedule is its own task; a fixed key's later ones coalesce.
         let count = if firing.key.is_none() { 3 } else { 1 };
-        let row = json!({ "id": firing.task.map(|(id, _)| id), "key": firing.key });
+        let row = json!({
+            "id": firing.task.map(|(id, _)| id), "key": firing.key, "title": firing.title,
+        });
         let slots = std::iter::successors(firing.next, |at| schedule::next(firing.trigger, *at));
         for at in slots.take(count) {
             let why = format!("schedule {} fires", firing.name);
@@ -459,6 +461,8 @@ struct Firing<'a> {
     key: Option<String>,
     /// The live task the fixed key names, and its state.
     task: Option<(i64, String)>,
+    /// That task's title.
+    title: Option<String>,
 }
 
 fn firings<'a>(
@@ -466,18 +470,21 @@ fn firings<'a>(
     schedules: &'a [(String, Trigger)],
     now: Timestamp,
 ) -> rusqlite::Result<Vec<Firing<'a>>> {
-    let mut live = db.prepare(
-        "SELECT id, state FROM tasks WHERE key = ?1 AND state NOT IN ('done', 'failed', 'dropped')
-         ORDER BY id DESC LIMIT 1",
-    )?;
+    let mut live = db.prepare(&format!(
+        "SELECT id, state, {TITLE} FROM tasks
+         WHERE key = ?1 AND state NOT IN ('done', 'failed', 'dropped') ORDER BY id DESC LIMIT 1"
+    ))?;
     let mut firings = Vec::new();
     for (name, trigger) in schedules {
         let key = trigger.key.as_ref().map(|key| format!("schedule:{key}"));
-        let task = match &key {
+        let (task, title) = match &key {
             Some(key) => live
-                .query_row([key], |row| Ok((row.get(0)?, row.get(1)?)))
-                .optional()?,
-            None => None,
+                .query_row([key], |row| {
+                    Ok((Some((row.get(0)?, row.get(1)?)), row.get(2)?))
+                })
+                .optional()?
+                .unwrap_or_default(),
+            None => (None, None),
         };
         firings.push(Firing {
             name,
@@ -485,6 +492,7 @@ fn firings<'a>(
             next: schedule::next(trigger, now),
             key,
             task,
+            title,
         });
     }
     Ok(firings)

@@ -2261,6 +2261,7 @@ fn a_schedule_past_its_until_fires_next_at_the_start_of_its_next_day_and_names_i
     let args = ["schedules", factory.as_str(), "--json"];
     let during = setup.json_at("2026-11-19T10:30:00Z", &args);
     let after = setup.json_at("2026-11-19T17:30:00Z", &args);
+    let queue = setup.json_at("2026-11-19T17:30:00Z", &["queue", &factory, "--json"]);
 
     assert_eq!(during["schedules"][0]["next"], "2026-11-19T11:00:00Z");
     assert_eq!(
@@ -2273,6 +2274,10 @@ fn a_schedule_past_its_until_fires_next_at_the_start_of_its_next_day_and_names_i
             "task": 2,
             "task_state": "asleep",
         }])
+    );
+    assert_eq!(
+        [&queue["up_next"][1]["task"], &queue["up_next"][1]["title"]],
+        [&json!(2), &json!("Fix the")]
     );
 }
 

@@ -60,6 +60,8 @@ export default class PrioryQueue extends View {
     this.priory = null;
     /** @type {any} `priory queue --json` */
     this.data = null;
+    /** @type {number | null} the revision of the read the last frame drew */
+    this.drawn = null;
     /** @type {import("./view.js").Room} */
     this.room = {};
     /** @type {string | null} */
@@ -172,7 +174,7 @@ export default class PrioryQueue extends View {
   act(task, label, verb, cx) {
     this.popover = null;
     if (this.acting || this.error) return cx.notify();
-    const revision = this.data?.revision ?? null;
+    const revision = this.drawn;
     this.acting = true;
     this.settles = Infinity;
     this.notice = null;
@@ -243,6 +245,8 @@ export default class PrioryQueue extends View {
 
   /** @param {import("gpui-kit").Context} cx */
   render(cx) {
+    // Each action sends the revision of the read on screen, so priory refuses it once the queue changed.
+    this.drawn = this.data?.revision ?? null;
     const theme = this.priory?.theme ?? "indigo";
     const t = /** @type {Palette} */ (palette(theme, cx.theme().appearance));
     this.font = FONTS[/** @type {keyof typeof FONTS} */ (theme)] ?? FONTS.indigo;
