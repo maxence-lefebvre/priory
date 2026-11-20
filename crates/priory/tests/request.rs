@@ -325,6 +325,25 @@ fn a_request_with_a_hold_files_its_task_held() {
             .concat(),
         ),
     );
+    let both = [
+        "--after",
+        "1",
+        "--after",
+        "ENG-7",
+        "--merge",
+        "owner/repo#7",
+    ];
+    succeeded(
+        &setup.request(
+            &[
+                &request[..],
+                &["docs-3", "--hold", "both"],
+                &both,
+                &["Fix it"],
+            ]
+            .concat(),
+        ),
+    );
     let factory = setup.dir.join("factory");
 
     succeeded(&setup.priory(&["daemon", factory.to_str().unwrap(), "--once"]));
@@ -348,7 +367,15 @@ fn a_request_with_a_hold_files_its_task_held() {
             [
                 "held",
                 "held: later, until a person releases it, since its condition failed: after must name another task, not 99"
+            ],
+            [
+                "held",
+                "held: both, until task 1 ends and until ENG-7 is Done or Canceled and until github:owner/repo#7 merges, and asks if it closes unmerged"
             ]
         ]
+    );
+    assert_eq!(
+        setup.published()[5].message.data["hold"],
+        json!({ "reason": "both", "after": [1, "ENG-7"], "merge": ["owner/repo#7"] })
     );
 }

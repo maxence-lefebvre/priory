@@ -33,8 +33,8 @@ pub struct Request {
 pub fn parse(args: Vec<String>) -> Option<(PathBuf, Request)> {
     let (mut workflow, mut key, mut band, mut lane, mut repo) = (None, None, None, None, None);
     let mut tldr = None;
-    let (mut reason, mut until, mut after, mut merge, mut if_closed) =
-        (None, None, None, None, None);
+    let (mut reason, mut until, mut if_closed) = (None, None, None);
+    let (mut after, mut merge) = (vec![], vec![]);
     let mut blockers = false;
     let mut positional = vec![];
     let mut args = args.into_iter();
@@ -51,9 +51,15 @@ pub fn parse(args: Vec<String>) -> Option<(PathBuf, Request)> {
             "--repo" => &mut repo,
             "--tldr" => &mut tldr,
             "--hold" => &mut reason,
-            "--until" => &mut until,
-            "--after" => &mut after,
-            "--merge" => &mut merge,
+            "--until" if until.is_none() => &mut until,
+            "--after" => {
+                after.push(args.next()?.parse().ok()?);
+                continue;
+            }
+            "--merge" => {
+                merge.push(args.next().filter(|value| !value.starts_with("--"))?);
+                continue;
+            }
             "--if-closed" => &mut if_closed,
             "--blockers" => {
                 blockers = true;
@@ -73,12 +79,12 @@ pub fn parse(args: Vec<String>) -> Option<(PathBuf, Request)> {
             (PathBuf::from(dir), text)
         }
     };
-    let conditions = until.is_some() || after.is_some() || merge.is_some() || blockers;
+    let conditions = until.is_some() || !after.is_empty() || !merge.is_empty() || blockers;
     let hold = match reason {
         Some(reason) => Some(Hold {
             reason,
             until,
-            after: after.map(|after| after.parse()).transpose().ok()?,
+            after,
             merge,
             if_closed,
             blockers,
