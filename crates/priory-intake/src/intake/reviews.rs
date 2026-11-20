@@ -169,6 +169,13 @@ fn requested(reviewer: &str) -> Result<BTreeMap<String, Value>, String> {
     }
     items
         .iter()
+        // A repository that is not `owner/name` could lead a task's worktree out of Priory's home.
+        .filter(|item| {
+            item["repository_url"]
+                .as_str()
+                .and_then(|url| url.split_once("/repos/"))
+                .is_none_or(|(_, repo)| priory_runtime::runtime::check_repo(repo).is_ok())
+        })
         .map(|item| {
             let repo = item["repository_url"]
                 .as_str()

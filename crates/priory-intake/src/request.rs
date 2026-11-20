@@ -130,6 +130,9 @@ pub fn check(factory: &Factory, request: &Request) -> Result<(), String> {
                 .to_owned(),
         );
     }
+    if let Some(repo) = &request.repo {
+        priory_runtime::runtime::check_repo(repo)?;
+    }
     Ok(())
 }
 

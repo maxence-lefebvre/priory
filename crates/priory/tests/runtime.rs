@@ -567,6 +567,45 @@ fn a_cli_request_starts_its_run_in_the_repository_it_names() {
 }
 
 #[test]
+fn a_task_whose_repo_leaves_priorys_home_fails_and_deletes_nothing() {
+    let mut setup = Setup::new("repo-escape");
+    let victim = setup.dir.join("victim");
+    fs::create_dir_all(victim.with_extension("partial")).unwrap();
+    fs::write(victim.with_extension("partial").join("keep"), "keep").unwrap();
+    let mut message = requested(42);
+    message.data["repo"] = json!(victim);
+    setup.publish(&message);
+
+    setup.start();
+
+    let tasks = setup.until("tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == "blocked")
+    });
+    assert!(victim.with_extension("partial").join("keep").is_file());
+    assert!(
+        tasks[0][7].contains("is not a GitHub owner/name"),
+        "{tasks:?}"
+    );
+    assert!(!victim.exists());
+}
+
+#[test]
+fn a_first_clone_leaves_the_clone_of_a_repository_named_like_its_partial_folder() {
+    let mut setup = Setup::new("partial-neighbour");
+    let neighbour = setup.dir.join("home/repos/owner/repo.partial");
+    fs::create_dir_all(&neighbour).unwrap();
+    fs::write(neighbour.join("keep"), "keep").unwrap();
+    setup.publish(&requested(42));
+
+    setup.start();
+
+    setup.until("tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == "running")
+    });
+    assert!(neighbour.join("keep").is_file());
+}
+
+#[test]
 fn a_cli_task_stored_before_tasks_kept_a_repository_starts_in_its_requests_repository() {
     let mut setup = Setup::new("cli-repo-upgrade");
     let factory = setup.dir.join("factory");
@@ -7556,6 +7595,35 @@ fn a_held_task_never_starts_until_a_person_releases_it() {
 }
 
 #[test]
+fn a_silent_client_on_the_daemons_socket_does_not_stop_a_persons_command() {
+    let setup = queued_without_room("socket-silent");
+    listening(&setup);
+    let _silent =
+        std::os::unix::net::UnixStream::connect(setup.dir.join("home/priory.sock")).unwrap();
+
+    let reply = person(&setup, "hold", &["1", "--reason", "later"]);
+
+    assert!(reply.starts_with("task 1 held"), "{reply}");
+}
+
+#[test]
+fn a_client_that_trickles_a_line_on_the_daemons_socket_does_not_stop_a_persons_command() {
+    let setup = queued_without_room("socket-trickle");
+    listening(&setup);
+    let mut trickle =
+        std::os::unix::net::UnixStream::connect(setup.dir.join("home/priory.sock")).unwrap();
+    std::thread::spawn(move || {
+        while std::io::Write::write_all(&mut trickle, b"x").is_ok() {
+            std::thread::sleep(Duration::from_millis(500));
+        }
+    });
+
+    let reply = person(&setup, "hold", &["1", "--reason", "later"]);
+
+    assert!(reply.starts_with("task 1 held"), "{reply}");
+}
+
+#[test]
 fn a_time_hold_releases_the_task_once_its_time_passes() {
     let setup = queued_without_room("hold-time");
     let past = person(
@@ -10714,6 +10782,32 @@ fn a_pick_option_that_requests_a_task_creates_it_and_fills_applied() {
     assert_eq!(
         [&pick["chosen"], &pick["applied"]],
         ["Take", "requested task cli:fnd-2409"]
+    );
+}
+
+#[test]
+fn a_pick_whose_request_names_a_repo_outside_owner_slash_name_is_refused_and_changes_nothing() {
+    let requests = json!({ "Take": {
+        "workflow": "implement", "key": "fnd-2409", "text": "Fix it", "repo": "../../victim"
+    } });
+    let setup = asleep_on_a_report("report-bad-repo", &bonjour(requests));
+
+    let picked = setup.priory(&["report", "pick", PICK, "Take", "--expected", "1"]);
+
+    assert!(!picked.status.success(), "{picked:?}");
+    assert!(
+        String::from_utf8_lossy(&picked.stderr).contains("is not a GitHub owner/name"),
+        "{picked:?}"
+    );
+    assert!(
+        requested_tasks(&setup)
+            .iter()
+            .all(|key| key != "cli:fnd-2409")
+    );
+    let pick = &shown(&setup)["sections"][0]["rows"][0]["pick"];
+    assert_eq!(
+        [&pick["chosen"], &pick["applied"]],
+        [&json!(null), &json!(null)]
     );
 }
 
