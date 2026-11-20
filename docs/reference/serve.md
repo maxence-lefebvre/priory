@@ -52,7 +52,7 @@ or a reason, is untrusted: render it as text.
 | `411` | A `POST` has no `Content-Length`, or uses `Transfer-Encoding` |
 | `413` | A `GET` has a body; a write's body is over 16 KiB; a webhook's is over 1 MiB |
 | `415` | A write's `Content-Type` is not `application/json` |
-| `422` | The daemon refused a write for another reason, such as an option a step does not take, or a request's unknown workflow or bad `repo` |
+| `422` | The daemon refused a write for another reason, such as an option a step does not take, or a request's unknown workflow or bad `repo`. A request the bus could not take gets `422` too, with the bus's error |
 | `431` | The request head is over 8 KiB or 32 headers |
 | `500` | The state could not be read, a delivery could not be published, or Priory failed while answering. The server keeps serving |
 | `503` | 4 requests already wait on `/api/events` and this one would wait too; or a write found no daemon on its socket, as under `priory serve` alone. It comes with `Retry-After: 1` |

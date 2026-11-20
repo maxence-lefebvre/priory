@@ -237,7 +237,8 @@ fn linked(factory: &Factory, text: &str) -> (Vec<String>, Vec<String>) {
             }
             ["linear.app", _, "issue", issue, ..] => {
                 let team = issue.split('-').next().unwrap_or_default();
-                let repo = factory.triggers.values().find_map(|trigger| {
+                // Every matching trigger's repo counts, so two that disagree set none.
+                let matching = factory.triggers.values().filter_map(|trigger| {
                     let trigger = &trigger.value;
                     let filter = trigger.filter.as_ref()?;
                     let linear = trigger.source.starts_with("linear");
@@ -245,7 +246,7 @@ fn linked(factory: &Factory, text: &str) -> (Vec<String>, Vec<String>) {
                         .then(|| trigger.repo.clone())?
                 });
                 keys.push(format!("linear:{issue}"));
-                repos.extend(repo);
+                repos.extend(matching);
             }
             _ => {}
         }

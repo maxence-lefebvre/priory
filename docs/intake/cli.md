@@ -69,7 +69,7 @@ priory add [DIR] [--workflow <name>] [--band <band>] [--lane <lane>] [--repo <ow
 | workflow | `--workflow`, then `[request] workflow` |
 | band | `--band`, then `[request] band` |
 | lane | `--lane` |
-| repo | `--repo`, then the repository of the GitHub URLs in the text when they all name one, then the Linear trigger of a Linear issue URL's team, then `repo` in `triggers/cli.toml` |
+| repo | `--repo`, then the repository the linked issues agree on, then `repo` in `triggers/cli.toml`. A GitHub URL's repository is in the URL. A Linear issue's is the `repo` of each Linear trigger whose `filter.team` is the issue's team key, such as `ENG`. Links that name two repositories set none |
 | key | the issue or pull request when the text links to exactly one, as `github:owner/name#42` or `linear:ENG-7`; else `cli:<YYYY-MM-DD>-<n>` |
 
 A GitHub URL counts when it names an issue or pull request, such as
@@ -79,7 +79,8 @@ one is active.
 
 The date is today's in the machine's time zone, and `n` is the first number no other `priory add`
 took that day. Two adds that run at once get different keys: the key alone names the source event,
-and the first one published owns it.
+and the first one published owns it. A `priory request --key` or a report pick under the same
+`cli:` key is not counted, so avoid keys of that form there.
 
 It refuses what `priory request` refuses, and, with neither `--workflow` nor `[request]`:
 

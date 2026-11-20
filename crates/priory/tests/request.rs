@@ -575,3 +575,22 @@ fn add_without_a_request_table_or_workflow_says_what_to_set_and_publishes_nothin
     );
     assert!(setup.published().is_empty());
 }
+
+#[test]
+fn two_linear_triggers_of_one_team_with_different_repos_set_no_repo() {
+    let setup = Setup::with("add-linear-ambiguous", DEFAULTS);
+    fs::create_dir_all(setup.dir.join("factory/triggers")).unwrap();
+    for (name, repo) in [("eng", "owner/eng"), ("eng-web", "owner/web")] {
+        fs::write(
+            setup.dir.join(format!("factory/triggers/{name}.toml")),
+            format!("source = \"linear\"\nrepo = \"{repo}\"\non = \"issue.created\"\nfilter = {{ team = \"ENG\" }}\nworkflow = \"implement\"\n"),
+        )
+        .unwrap();
+    }
+
+    let output = setup.add(&["Do https://linear.app/acme/issue/ENG-7/fix-it"]);
+
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("names no repo"));
+    assert!(setup.published().is_empty());
+}

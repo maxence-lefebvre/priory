@@ -122,7 +122,8 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
         runtime::kill(&tmux);
     }
     runtime::replay(&home, |line| {
-        let (_, kill) = take(&mut db, line, &trace).map_err(|error| error.to_string())?;
+        let (_, kill) =
+            take(&mut db, line, &trace, counting.get(&home)).map_err(|error| error.to_string())?;
         kill.inspect(|tmux| runtime::kill(tmux));
         Ok(())
     })?;
@@ -212,7 +213,7 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
     loop {
         drain(&bus, &mut db, &trace, counting.get(&home))?;
         while let Ok(line) = listening.lines.try_recv() {
-            apply(&mut db, line, &trace)?;
+            apply(&mut db, line, &trace, counting.get(&home))?;
         }
         start_answers(&mut db, &trace, &home, &mut commands)?;
         commands = run_commands(&mut db, &trace, &home, commands)?;
@@ -241,7 +242,7 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
             sweep::retire(&db, &home, short)?;
         }
         match listening.lines.recv_timeout(EVERY) {
-            Ok(line) => apply(&mut db, line, &trace)?,
+            Ok(line) => apply(&mut db, line, &trace, counting.get(&home))?,
             Err(RecvTimeoutError::Timeout) => {}
             Err(RecvTimeoutError::Disconnected) => return Err("the signal socket closed".into()),
         }
@@ -575,8 +576,13 @@ fn log_of(home: &Path, id: i64) -> std::path::PathBuf {
 
 /// Applies a line from the socket and replies to its sender. A run its line ended is killed after
 /// the reply, so the hook that sent it is not killed first.
-fn apply(db: &mut Connection, line: Line, trace: &Trace) -> Result<(), Error> {
-    let (reply, kill) = take(db, &line.text, trace)?;
+fn apply(
+    db: &mut Connection,
+    line: Line,
+    trace: &Trace,
+    counter: Option<&embed::Counter>,
+) -> Result<(), Error> {
+    let (reply, kill) = take(db, &line.text, trace, counter)?;
     let _ = line.applied.send(reply);
     kill.inspect(|tmux| runtime::kill(tmux));
     Ok(())
@@ -612,12 +618,13 @@ fn add(
     db: &mut Connection,
     add: &priory_intake::request::Add,
     trace: &Trace,
+    counter: Option<&embed::Counter>,
 ) -> Result<Result<String, String>, Error> {
     let key = match priory_intake::request::add(trace.factory, add) {
         Ok(key) => key,
         Err(refused) => return Ok(Err(refused)),
     };
-    drain(&Bus::open_default()?, db, trace, None)?;
+    drain(&Bus::open_default()?, db, trace, counter)?;
     let tx = db.transaction()?;
     let id = state::owner(&tx, std::slice::from_ref(&key))?.map(|task| task.id);
     drop(tx);
@@ -702,12 +709,17 @@ fn current_state(kind: &str, resource: &str) -> Option<Read> {
 /// Applies one line and returns its reply, with a tmux session to kill. A signal's reply is `ok`;
 /// a call's or an answer's is the JSON of its `Result`. A line that is none of them is reported
 /// and dropped.
-fn take(db: &mut Connection, line: &str, trace: &Trace) -> Result<(String, Option<String>), Error> {
+fn take(
+    db: &mut Connection,
+    line: &str,
+    trace: &Trace,
+    counter: Option<&embed::Counter>,
+) -> Result<(String, Option<String>), Error> {
     let replied = |result: Result<String, String>| {
         serde_json::to_string(&result).expect("a result serializes")
     };
     match serde_json::from_str::<Input>(line) {
-        Ok(Input::Add(line)) => Ok((replied(add(db, &line.add, trace)?), None)),
+        Ok(Input::Add(line)) => Ok((replied(add(db, &line.add, trace, counter)?), None)),
         Ok(Input::Signal(signal)) => Ok(("ok".to_owned(), state::signal(db, &signal, trace)?)),
         Ok(Input::Call(call)) if call.tool == "progress" => {
             Ok((replied(progress::tool(db, &call, trace)?), None))
