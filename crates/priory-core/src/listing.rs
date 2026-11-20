@@ -472,7 +472,8 @@ pub fn task(db: &Connection, id: i64) -> rusqlite::Result<Option<Value>> {
         ),
         (
             "steps",
-            "SELECT id, step, action, status, pull_request, commit_sha, error, created
+            "SELECT id, step, action, status, pull_request, commit_sha, error, stdout, stderr,
+               created
              FROM actions WHERE task = ?1 ORDER BY id",
         ),
         (

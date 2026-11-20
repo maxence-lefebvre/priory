@@ -57,6 +57,10 @@ run had attempted stays `uncertain` and is never typed again, unless the run nev
 `SessionStart`: then it never took the prompt, as a Codex run takes its first one at launch, so the
 prompt is queued again after the one that says the run was lost.
 
+A code step's `run` action is not a run: it starts a command without tmux, an agent or a room check,
+and a restarted daemon kills that command and ends its step `failed` instead of keeping it. See The
+`run` action in [tools.md](tools.md#the-run-action).
+
 ## Queue
 
 The queue holds the `queued` and `ready` tasks at a model step. It starts their runs in band order,

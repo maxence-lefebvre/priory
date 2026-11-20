@@ -27,10 +27,11 @@ Schema: [`config/workflow.json`](../schemas/config/workflow.json).
 | `effect` | `none`, `read`, `reversible` or `irreversible` | yes | | What the step may change | `"reversible"` |
 | `agent` | string | model steps | | The agent that runs the step, by folder name under `agents/` | `"implementer"` |
 | `prompt` | string | model steps | | What the step tells its agent | `"Implement the plan."` |
-| `timeout` | duration | no | none | How long one turn of a model step may run before Priory ends it | `"30m"` |
+| `timeout` | duration | no | none, or `command_timeout` for a `run` action | How long one turn of a model step, or a `run` action's command, may run before Priory ends it | `"30m"` |
 | `options` | array of strings | human steps | `[]` | The answers a person picks from | `["open", "stop"]` |
 | `approves` | array of strings | no | `[]` | Human steps only: the irreversible steps this answer approves | `["open-pr"]` |
-| `action` | string | code steps | | The built-in action: `open-pr` or `open-issue` | `"open-pr"` |
+| `action` | string | code steps | | The built-in action: `open-pr`, `open-issue` or `run` | `"open-pr"` |
+| `run` | string | `run` actions | | The command a `run` action runs with `sh -c` | `"scripts/poll.sh"` |
 | `next` | table of strings | yes | | Each outcome and where it leads: a step id, `done` or `stop` | `{ passed = "done", failed = "stop" }` |
 | `autonomous` | string | no | | Why an irreversible step may run without a person's approval | `"it only labels issues"` |
 
@@ -40,7 +41,7 @@ The outcomes of a step come from:
 | --------- | -------------- |
 | `model` | the `outcome` field of the run's `result` |
 | `human` | the option the person picks; every option needs a `next` |
-| `code` | the action's status, such as `opened` or `failed` |
+| `code` | the action's status, such as `opened` or `failed`. A `run` action's is the last line of its stdout when `next` names it, else `ok` on exit 0 and `failed` otherwise |
 
 A model step outcome of `red`, `yellow` or `green` also grades the task: how risky or uncertain its
 work is. The task keeps the latest grade and its reason. See Grades in
@@ -94,6 +95,24 @@ effect = "irreversible"
 next = { opened = "done", failed = "stop" }
 ```
 
+A `run` step polls a script with no agent. See Code steps in [tools.md](../daemon/tools.md#code-steps)
+for its folder, environment and restarts:
+
+<!-- example: factory/workflows/poll.toml -->
+```toml
+#:schema https://raw.githubusercontent.com/maxence-lefebvre/priory/main/docs/schemas/config/workflow.json
+start = "poll"
+
+[[steps]]
+id = "poll"
+decides = "code"
+action = "run"                 # runs a command, with no agent
+run = "scripts/poll.sh"        # in the factory folder, as the task has no worktree
+effect = "read"
+timeout = "2m"                 # else the factory's command_timeout
+next = { found = "done", ok = "stop", failed = "stop" }  # found: the script's last line
+```
+
 When `factory.toml` sets `[sweep] agent` and no `workflows/sweep.toml` exists, the factory also gets
 the built-in `sweep` workflow. See [sweep.md](../daemon/sweep.md).
 
@@ -115,6 +134,9 @@ Errors about one step start with `` step `<id>`: `` and point at the step's line
 | `` option `<option>` has no `next` `` | A human step's option leads nowhere |
 | `` `next` has outcome `<outcome>`, which is not an option `` | A human step's `next` names an answer it does not offer |
 | `` a code step needs an `action` `` | A code step without `action` |
+| `` a `run` action needs a `run` command `` | `action = "run"` without `run` |
+| `` only a `run` action has a `run` command `` | `run` on a code step with another action |
+| `` only a code step has a `run` command `` | `run` on a model or human step |
 | `` `next` is empty `` | A step with no outcome |
 | `` outcome `<outcome>` leads to `<target>`, which is not a step, `done` or `stop` `` | A `next` target that does not exist |
 | `no path from start reaches it` | No chain of `next` from `start` reaches the step |

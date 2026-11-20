@@ -27,7 +27,7 @@
       "description": "One step: who decides its outcome, what it may change, and where each outcome leads.",
       "properties": {
         "action": {
-          "description": "The built-in action a code step runs, such as `open-pr`.",
+          "description": "The built-in action a code step runs: `open-pr`, `open-issue` or `run`.",
           "type": [
             "string",
             "null"
@@ -87,9 +87,16 @@
             "null"
           ]
         },
+        "run": {
+          "description": "The command a `run` action runs with `sh -c`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "timeout": {
           "default": null,
-          "description": "How long one turn of a model step may run before Priory ends it.",
+          "description": "How long one turn of a model step, or a `run` action's command, may run before Priory ends\nit.",
           "pattern": "^0*[1-9][0-9]*[smh]$",
           "type": "string"
         }

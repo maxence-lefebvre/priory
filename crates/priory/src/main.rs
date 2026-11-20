@@ -101,9 +101,10 @@ fn main() -> ExitCode {
         },
         Some("hold") => hold(args.map(|arg| arg.to_string_lossy().into_owned()).collect()),
         Some("actions") => list(
-            "id\ttask\tstep\taction\tstatus\tpull_request\tcommit\terror",
+            "id\ttask\tstep\taction\tstatus\tpull_request\tcommit\terror\tstdout\tstderr",
             "SELECT id, task, step, action, status, pull_request, commit_sha,
-             replace(error, char(10), '\\n') FROM actions ORDER BY id",
+             replace(error, char(10), '\\n'), replace(stdout, char(10), '\\n'),
+             replace(stderr, char(10), '\\n') FROM actions ORDER BY id",
         ),
         Some("tldr") => match (args.next(), args.next(), args.next()) {
             (Some(task), Some(text), None) => tldr(&task.to_string_lossy(), &text.to_string_lossy()),

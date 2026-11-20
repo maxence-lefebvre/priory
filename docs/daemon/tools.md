@@ -208,9 +208,10 @@ sweep removes it.
 A code step runs its `action` in the daemon, with no agent and no run. Each loop, the daemon takes
 the oldest `queued` or `ready` task at a code step and runs its action outside any transaction. One
 transaction then records the action run and moves the task by `next[status]` (see the table under
-Moving on). An action that is not built yet blocks the task with `action <name> is not built yet`.
+Moving on). A `run` action records itself first and runs in the background (see The `run` action).
+An action that is not built yet blocks the task with `action <name> is not built yet`.
 
-`open-pr` is the one built-in action:
+The built-in actions are `open-pr`, `open-issue` and `run`. `open-pr`:
 
 1. It pushes the commit of the task's branch, the one its approval covers, to that branch on the
    clone's `origin`.
@@ -227,6 +228,52 @@ Done and checks pins the commit that `open-pr` pushed.
 If the daemon stops after `gh pr create` and before recording it, the action runs again at its next
 start, once the approval still holds. The push repeats and the open pull request is reused. If
 someone closed that pull request meanwhile, a second one opens.
+
+`open-issue` opens an issue the same way; [sweep.md](sweep.md) describes it.
+
+### The `run` action
+
+A `run` action runs the step's `run` command with `sh -c`, so a script can decide a step without an
+agent. It runs in the task's worktree when it has one, else in the factory folder. Its environment
+adds:
+
+| Variable         | Value                                    |
+| ---------------- | ---------------------------------------- |
+| `PRIORY_TASK`    | the task's id                            |
+| `PRIORY_HOME`    | Priory home, as an absolute path         |
+| `PRIORY_DB`      | the state file, as an absolute path      |
+| `PRIORY_FACTORY` | the factory folder, as an absolute path  |
+
+The daemon stores the action as `running`, and the task as `running`, before the command starts.
+The shell then waits until the daemon has recorded its process group, and exits without running
+the command if the daemon dies first. The command runs in its own process group while the daemon
+carries on with other tasks, with stdin closed.
+
+Its outcome is the last line of its stdout, ignoring trailing blank lines and surrounding spaces,
+when the step's `next` names it and the command exited. Otherwise it is `ok` on exit 0 and `failed`
+on any other exit, a signal or a kill. A command past the step's `timeout`, or the factory's
+`command_timeout` when the step sets none, is killed with its process group and ends `failed`
+whatever it printed. Children it leaves in the background are killed when it ends. A non-zero exit
+or a kill is the action's error, such as `exit 3` or `timed out after 120s`.
+
+A task whose worktree the sweep removed gets it back before the command starts, as for `open-pr`. A
+command that cannot start, such as in a missing folder, ends `failed` with `cannot start: <error>`.
+
+The action keeps the last 2000 bytes of stdout and of stderr, which `priory actions` and the task's
+`steps` in `GET /api/tasks/<id>` show. A cancelled task's command is killed, and the task stays
+dropped. Only the task's latest action moves it, so a command killed by a cancel never moves the
+task that a revive started again.
+
+A daemon restart never runs a command twice. The restarted daemon kills the command its predecessor
+left running, after checking its process group's start time in `/proc`, and ends the action
+`failed` with the error `interrupted by a daemon restart`. The task then follows `next.failed`. So
+a restart reads as a failure even when the command had finished just before it.
+
+Known limits:
+
+- A restarted daemon cannot kill background children of a command whose shell already exited. It
+  cannot tell that group from a process that reused the shell's pid.
+- `priory queue` lists a task whose command runs in neither `waiting` nor `running`.
 
 ### Approvals
 
@@ -247,5 +294,5 @@ A branch with no commit to compare also blocks the task. `priory check` refuses 
 that a path reaches with no approving human step. So the `none` row needs a factory changed while
 the task ran.
 
-`priory actions` prints each action run: id, task, step, action, status, pull request, pushed commit
-and error.
+`priory actions` prints each action run: id, task, step, action, status, pull request, pushed commit,
+error, stdout and stderr. A `run` action's status is `running` until its command ends.

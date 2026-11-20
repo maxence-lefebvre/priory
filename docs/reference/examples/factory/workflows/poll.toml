@@ -1,0 +1,11 @@
+#:schema https://raw.githubusercontent.com/maxence-lefebvre/priory/main/docs/schemas/config/workflow.json
+start = "poll"
+
+[[steps]]
+id = "poll"
+decides = "code"
+action = "run"                 # runs a command, with no agent
+run = "scripts/poll.sh"        # in the factory folder, as the task has no worktree
+effect = "read"
+timeout = "2m"                 # else the factory's command_timeout
+next = { found = "done", ok = "stop", failed = "stop" }  # found: the script's last line
