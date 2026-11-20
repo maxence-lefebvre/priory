@@ -359,16 +359,20 @@ The desk is the "Needs me" view. It lists, top to bottom:
 2. **Saved views**: Needs me, Running, Asleep, All on a phone; Queue joins them on wide screens.
 3. **Room banners** (R4.3): a `--warn-text` edge on `--surface`, the `hard-drive` or
    `memory-stick` icon, and the daemon's sentence: what is short, by how much, since when, and
-   the waiting task.
+   the waiting task. The intake banner looks the same with the `unplug` icon: which source fails
+   to poll, since when and why, or since when the intake has not polled.
 4. **Asks**: the open asks, oldest first, as ask rows.
 5. **Stopped**: blocked tasks, uncertain prompts (R5.4) and failed tasks, each with its reason in
-   the role's text color. On wide screens the Recommends column names the action: Resume or
-   Revive. Then **Also waiting**: the desk's other items (held tasks, sweeps, memory waits,
+   the role's text color. A blocked row carries Resume and Cancel buttons, a failed row Revive, in
+   `.btn secondary` under its reason; its key opens the task page. On wide screens the Recommends
+   column holds the same buttons, compact. Then **Also waiting**: the desk's other items (held tasks, sweeps, memory waits,
    retired tasks and worktrees that stay), each with the daemon's sentence.
 6. **Up next**: a strip with the next 3 runs, queued or scheduled, as in the Herdr Queue panel.
    Each line shows when, the task and why, and opens the task. With none, the strip says "Nothing
    is queued or scheduled to run next."
-7. **Asleep**: one row, "9 tasks asleep on waits", that opens the tasks panel filtered to asleep.
+7. **Asleep**: one row, "9 tasks asleep on waits", that opens the Asleep view. Each of its rows
+   says what the task waits on and since when: "Waits on review github:o/r#7, 2 h", and opens
+   the task page.
 8. Reports waiting for review, when there are any.
 
 On a phone, the **Answer capsule** floats above the tab bar: a full-width `--action` button,
@@ -614,12 +618,20 @@ Settings, then Appearance. It holds:
   leading edge), new (fading `--action-soft`), focused (focus ring).
 - A live run shows its duration counting up once per minute, not per second. Tapping a run opens
   its terminal.
-- Actions live on the task page, not in the row: Resume, Cancel, Revive, Hold, Release, Move.
+- Actions live on the task page, not in the row: Resume, Cancel, Revive, Hold, Release, Move. The
+  desk's stopped rows are the one exception, since acting on them is why they are there.
 
 ### Task detail and workflow grid
 
 - Context line: task key in mono, the task's state tile and word, workflow, lane, band.
-- Title in `--type-task`.
+- Title in `--type-task`, then the task's reason in its role's text color.
+- **Actions**, in `.btn secondary`: Resume and Cancel for a blocked task, Revive for a failed or
+  dropped one, Cancel for any other active task. Cancel and Revive arm on the first tap, as a
+  command option does: the button turns `--emph`, reads "Tap again to cancel" over its verb, and a
+  ring counts 4 s down. The second tap sends. After it, a `--text-2` note says the verb and the
+  daemon's sentence: "Cancelled: task 3 dropped."
+- **Say**: for an active task, a text box "Say to the agent" and a primary Say button under the
+  actions. The draft stays on this device until the daemon takes it.
 - **Workflow grid**: one cell per step in a row of equal columns with `--radius-md` and hairlines
   between cells. Each cell holds the step name and its decider with an icon: `cog` for model and
   code steps, `user` for human steps. Done steps show a check in `--ok-text`. The current step is
@@ -699,7 +711,8 @@ run.
 - Allowed gestures: horizontal swipe between asks in an ask's detail and between tabs; pinch and
   drag on diagrams; the browser's own back swipe. Nothing else.
 - No pull to refresh: panels update live. Set `overscroll-behavior: contain` on scrolling panels.
-- No long press, no hover-only controls, no double tap except the command ask's second tap.
+- No long press, no hover-only controls, no double tap except the second tap of a command ask, a
+  Cancel or a Revive.
 - Respect the safe-area insets on all four edges.
 
 ## Accessibility

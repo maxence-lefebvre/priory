@@ -272,10 +272,11 @@ export default class PrioryBonjour extends View {
     const row = model && this.rows(model).find((candidate) => candidate.id === this.selected);
     const text = this.draft.value().trim();
     if (!model || !row?.target || !text) return;
-    const [target, replyTo, revision] = [row.target, this.replyTo, model.revision];
+    const [task, target, replyTo, revision] = [model.task, row.target, this.replyTo, model.revision];
     this.remark(row, (client) => (replyTo == null ? client.comment(target, text, revision) : client.reply(replyTo, text)), cx, () => {
       // The person may have moved on or typed more while it was in flight.
-      if (this.selected !== row.id || this.draft.value().trim() !== text) return;
+      const same = this.data?.report.task === task && this.selected === row.id && this.replyTo === replyTo;
+      if (!same || this.draft.value().trim() !== text) return;
       this.draft.set_value("");
       this.replyTo = null;
     });
