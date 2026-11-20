@@ -83,6 +83,9 @@ const EXPECTED: &str = r#"flowchart TD
     n3 -.->|approves| n4
     n4 -->|"failed"| stop
     n4 -->|"opened"| done
+    linkStyle 11,12 stroke:#555
+    linkStyle 1,2,3,6,7 stroke:#06c
+    linkStyle 4,5,8,9 stroke:#c60,stroke-width:3px
 "#;
 
 fn factory(name: &str, workflow: &str) -> PathBuf {
@@ -190,4 +193,25 @@ fn an_invalid_factory_fails_like_check() {
     assert_eq!(outcome.stdout, "");
     assert_ne!(outcome.stderr, "");
     assert_eq!(outcome.code, 1);
+}
+
+#[test]
+fn an_explicit_by_restyles_its_edge() {
+    let asleep = IMPLEMENT.replace(
+        "next = { passed = \"approve-pr\", failed = \"stop\" }",
+        "next = { passed = \"approve-pr\", failed = \"stop\" }\nby = { passed = \"asleep\" }",
+    );
+    let outcome = draw(&factory("by", &asleep), "implement");
+
+    assert_eq!(outcome.stderr, "");
+    assert!(
+        outcome
+            .stdout
+            .contains("    linkStyle 1,2,3,6 stroke:#06c\n")
+    );
+    assert!(
+        outcome
+            .stdout
+            .ends_with("    linkStyle 7 stroke:#888,stroke-dasharray:4 4\n")
+    );
 }

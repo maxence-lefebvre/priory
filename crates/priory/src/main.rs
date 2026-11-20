@@ -2,7 +2,7 @@ use priory_core::memory::Gate;
 use priory_core::{
     daemon, embed, listing, post, progress, report, search, sections, serve, snooze, state, tools,
 };
-use priory_factory::{factory, rules};
+use priory_factory::{explain, factory, rules};
 use priory_intake::{intake, request};
 use priory_runtime::{mcp, runtime};
 use serde_json::Value;
@@ -14,10 +14,7 @@ use std::time::{Duration, Instant};
 fn main() -> ExitCode {
     let mut args = std::env::args_os().skip(1);
     match args.next().as_deref().and_then(|verb| verb.to_str()) {
-        Some("check") => check(
-            args.next()
-                .map_or_else(|| PathBuf::from("."), PathBuf::from),
-        ),
+        Some("check") => check(args.collect()),
         Some("draw") => {
             let args: Vec<_> = args.collect();
             match &args[..] {
@@ -145,7 +142,7 @@ fn main() -> ExitCode {
 
 fn usage() -> ExitCode {
     eprintln!(
-        "usage: priory check [DIR]\n       priory draw [DIR] WORKFLOW\n       priory intake [DIR] [--once]\n       priory daemon [DIR] [--once]\n       priory request [DIR] --workflow <name> --key <key> [--band <band>] [--lane <lane>] [--repo <owner/name>] [--hold <reason> [CONDITION]...] <text>\n       priory serve [DIR] [--listen ADDR]\n       priory inbox [--since SEQ] [--json]\n       priory inbox read SEQ\n       priory post SOURCE LINE\n       priory tasks [--lane <lane>] [--grade red|yellow|green] [--json]\n       priory queue [DIR] [--json]\n       priory schedules [DIR] [--json]\n       priory runs\n       priory outbox\n       priory asks [--all] [--json]\n       priory waits\n       priory actions\n       priory attach (TASK | --run RUN) [--read-only] [--print]\n       priory desk [--all] [--json] [--person NAME]\n       priory seen [--person NAME] [--at TIME]\n       priory wait --since REV [--timeout D]\n       priory snooze (ask | blocked | failed | prompt) ID (--for DURATION | --until TIME | --clear)\n       priory trace\n       priory report put TASK FILE|-\n       priory report show [TASK] [--json]\n       priory report pick PICK OPTION --expected REVISION\n       priory report [DIR] --workflow <name> [--since <instant-or-duration>] [--cost] [--by lane]\n       priory move TASK [--band <band>] [--top | --before TASK | --after TASK]\n       priory resume TASK\n       priory say TASK TEXT\n       priory pause [REASON]\n       priory unpause\n       priory cancel TASK\n       priory revive TASK [--step STEP]\n       priory hold TASK --reason TEXT [--until TIME] [--after TASK-OR-ISSUE]... [--merge PR]... [--if-closed release|drop|ask] [--blockers]\n       priory release TASK\n       priory tldr TASK TEXT\n       priory progress TASK JSON\n       priory search QUERY [--state STATE[,STATE...]] [--limit N]\n       priory memory [(acquire | lease) [--gb N] [--timeout D] -- COMMAND...]\n       priory answer [--revision N | --expected N] [--run] [--] ASK OPTION-OR-TEXT\n       priory ask ID JSON\n       priory dismiss [--expected N] ASK\n       priory mcp --session ID\n       priory hook EVENT"
+        "usage: priory check [DIR] [--explain [--json]]\n       priory draw [DIR] WORKFLOW\n       priory intake [DIR] [--once]\n       priory daemon [DIR] [--once]\n       priory request [DIR] --workflow <name> --key <key> [--band <band>] [--lane <lane>] [--repo <owner/name>] [--hold <reason> [CONDITION]...] <text>\n       priory serve [DIR] [--listen ADDR]\n       priory inbox [--since SEQ] [--json]\n       priory inbox read SEQ\n       priory post SOURCE LINE\n       priory tasks [--lane <lane>] [--grade red|yellow|green] [--json]\n       priory queue [DIR] [--json]\n       priory schedules [DIR] [--json]\n       priory runs\n       priory outbox\n       priory asks [--all] [--json]\n       priory waits\n       priory actions\n       priory attach (TASK | --run RUN) [--read-only] [--print]\n       priory desk [--all] [--json] [--person NAME]\n       priory seen [--person NAME] [--at TIME]\n       priory wait --since REV [--timeout D]\n       priory snooze (ask | blocked | failed | prompt) ID (--for DURATION | --until TIME | --clear)\n       priory trace\n       priory report put TASK FILE|-\n       priory report show [TASK] [--json]\n       priory report pick PICK OPTION --expected REVISION\n       priory report [DIR] --workflow <name> [--since <instant-or-duration>] [--cost] [--by lane]\n       priory move TASK [--band <band>] [--top | --before TASK | --after TASK]\n       priory resume TASK\n       priory say TASK TEXT\n       priory pause [REASON]\n       priory unpause\n       priory cancel TASK\n       priory revive TASK [--step STEP]\n       priory hold TASK --reason TEXT [--until TIME] [--after TASK-OR-ISSUE]... [--merge PR]... [--if-closed release|drop|ask] [--blockers]\n       priory release TASK\n       priory tldr TASK TEXT\n       priory progress TASK JSON\n       priory search QUERY [--state STATE[,STATE...]] [--limit N]\n       priory memory [(acquire | lease) [--gb N] [--timeout D] -- COMMAND...]\n       priory answer [--revision N | --expected N] [--run] [--] ASK OPTION-OR-TEXT\n       priory ask ID JSON\n       priory dismiss [--expected N] ASK\n       priory mcp --session ID\n       priory hook EVENT"
     );
     ExitCode::from(2)
 }
@@ -1257,10 +1254,30 @@ fn send(verb: &str, line: &str) -> ExitCode {
     }
 }
 
-fn check(dir: PathBuf) -> ExitCode {
+/// `priory check [DIR] [--explain [--json]]`.
+fn check(args: Vec<OsString>) -> ExitCode {
+    let (flags, dirs): (Vec<_>, Vec<_>) = args
+        .iter()
+        .partition(|arg| arg.to_str().is_some_and(|arg| arg.starts_with("--")));
+    let flags: Vec<_> = flags.iter().filter_map(|flag| flag.to_str()).collect();
+    let (explain, json) = match flags[..] {
+        [] => (false, false),
+        ["--explain"] => (true, false),
+        ["--explain", "--json"] | ["--json", "--explain"] => (true, true),
+        _ => return usage(),
+    };
+    let dir = match &dirs[..] {
+        [] => PathBuf::from("."),
+        [dir] => PathBuf::from(dir),
+        _ => return usage(),
+    };
     let Some(factory) = load(&dir) else {
         return ExitCode::FAILURE;
     };
+    if explain {
+        print_explanation(&factory, json);
+        return ExitCode::SUCCESS;
+    }
     println!(
         "ok: {}, {}, {}, {}",
         count(factory.agents.len(), "agent"),
@@ -1269,6 +1286,73 @@ fn check(dir: PathBuf) -> ExitCode {
         count(factory.runners.len(), "runner"),
     );
     ExitCode::SUCCESS
+}
+
+/// Prints each workflow's irreversible steps with their gates, and its paths to one with no human
+/// edge, as two tables or as JSON.
+fn print_explanation(factory: &factory::Factory, json: bool) {
+    let gates: Vec<_> = factory
+        .workflows
+        .iter()
+        .flat_map(|(name, workflow)| {
+            explain::gates(&workflow.value)
+                .into_iter()
+                .map(move |gate| (name, gate))
+        })
+        .collect();
+    let paths: Vec<_> = factory
+        .workflows
+        .iter()
+        .flat_map(|(name, workflow)| {
+            explain::unattended_paths(&workflow.value)
+                .into_iter()
+                .map(move |path| (name, path))
+        })
+        .collect();
+    if json {
+        let irreversible: Vec<_> = gates
+            .iter()
+            .map(|(name, gate)| {
+                serde_json::json!({
+                    "workflow": name,
+                    "step": gate.step,
+                    "approved_by": gate.approved_by,
+                    "autonomous": gate.autonomous,
+                })
+            })
+            .collect();
+        let paths: Vec<_> = paths
+            .iter()
+            .map(|(name, path)| serde_json::json!({ "workflow": name, "path": path }))
+            .collect();
+        state::emit(
+            &serde_json::json!({ "irreversible": irreversible, "paths": paths }).to_string(),
+        );
+        return;
+    }
+    let cell = |text: &str| {
+        text.replace('\t', "\\t")
+            .replace('\r', "\\r")
+            .replace('\n', "\\n")
+    };
+    state::emit("workflow\tstep\tgate");
+    for (name, gate) in &gates {
+        let shown = match &gate.autonomous {
+            Some(reason) => format!("autonomous: {reason}"),
+            None => gate.approved_by.join(", "),
+        };
+        state::emit(&format!(
+            "{}\t{}\t{}",
+            cell(name),
+            cell(&gate.step),
+            cell(&shown)
+        ));
+    }
+    state::emit("");
+    state::emit("workflow\tpath with no human decision");
+    for (name, path) in &paths {
+        state::emit(&format!("{}\t{}", cell(name), cell(&path.join(" -> "))));
+    }
 }
 
 fn draw(dir: &Path, workflow: &std::ffi::OsStr) -> ExitCode {

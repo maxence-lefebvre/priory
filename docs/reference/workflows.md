@@ -6,7 +6,8 @@ workflow its tasks start.
 
 A task starts at `start` and follows `next` from step to step. Reaching `done` ends it as done,
 and reaching `stop` ends it as dropped. The [PRD](../prd.md#workflows) explains deciders, effects
-and the approval rule. `priory draw` prints a workflow as a diagram.
+and the approval rule. `priory draw` prints a workflow as a diagram, and `priory check --explain`
+lists what gates each irreversible step.
 
 Schema: [`config/workflow.json`](../schemas/config/workflow.json).
 
@@ -34,6 +35,7 @@ Schema: [`config/workflow.json`](../schemas/config/workflow.json).
 | `action` | string | code steps | | The built-in action: `open-pr`, `open-issue` or `run` | `"open-pr"` |
 | `run` | string | `run` actions | | The command a `run` action runs with `sh -c` | `"scripts/poll.sh"` |
 | `next` | table of strings | yes | | Each outcome and where it leads: a step id, `done` or `stop` | `{ passed = "done", failed = "stop" }` |
+| `by` | table of `code`, `model`, `human` or `asleep` | no | the step's `decides` | Who decides an outcome's edge, where it differs from the step's decider | `{ passed = "asleep" }` |
 | `autonomous` | string | no | | Why an irreversible step may run without a person's approval | `"it only labels issues"` |
 
 The outcomes of a step come from:
@@ -43,6 +45,11 @@ The outcomes of a step come from:
 | `model` | the `outcome` field of the run's `result` |
 | `human` | the option the person picks; every option needs a `next` |
 | `code` | the action's status, such as `opened` or `failed`. A `run` action's is the last line of its stdout when `next` names it, else `ok` on exit 0 and `failed` otherwise |
+
+Each edge, an outcome and its target, has a `by`: who decides that the task follows it. It defaults
+to the step's `decides`. Set `by` for an outcome when that is wrong, such as `asleep` for an outcome
+that comes from a wait on CI rather than from the model. `priory draw` colors each edge by its `by`,
+and `priory check --explain` counts only a `human` edge as a person's decision.
 
 A model step outcome of `red`, `yellow` or `green` also grades the task: how risky or uncertain its
 work is. The task keeps the latest grade and its reason. See Grades in
@@ -114,6 +121,37 @@ timeout = "2m"                 # else the factory's command_timeout
 next = { found = "done", ok = "stop", failed = "stop" }  # found: the script's last line
 ```
 
+## Irreversible steps and their gates
+
+`priory check --explain [DIR]` runs the checks, then prints two tab-separated tables:
+
+- each irreversible step of each workflow with its gate: the human steps that approve it, or
+  `autonomous:` and its reason;
+- every path of steps from `start` to an irreversible step that follows no `human` edge.
+
+For the example above and a workflow `triage` whose autonomous `label` step follows `read`:
+
+```text
+workflow	step	gate
+implement	open-pr	approve-pr
+triage	label	autonomous: it only labels issues
+
+workflow	path with no human decision
+triage	read -> label
+```
+
+`--json` prints the same rows as one object:
+
+```json
+{
+  "irreversible": [
+    { "workflow": "implement", "step": "open-pr", "approved_by": ["approve-pr"], "autonomous": null },
+    { "workflow": "triage", "step": "label", "approved_by": [], "autonomous": "it only labels issues" }
+  ],
+  "paths": [{ "workflow": "triage", "path": ["read", "label"] }]
+}
+```
+
 When `factory.toml` sets `[sweep] agent` and no `workflows/sweep.toml` exists, the factory also gets
 the built-in `sweep` workflow. See [sweep.md](../daemon/sweep.md).
 
@@ -139,6 +177,7 @@ Errors about one step start with `` step `<id>`: `` and point at the step's line
 | `` only a `run` action has a `run` command `` | `run` on a code step with another action |
 | `` only a code step has a `run` command `` | `run` on a model or human step |
 | `` `next` is empty `` | A step with no outcome |
+| `` `by` has outcome `<outcome>`, which is not in `next` `` | `by` names an outcome the step does not have |
 | `` outcome `<outcome>` leads to `<target>`, which is not a step, `done` or `stop` `` | A `next` target that does not exist |
 | `no path from start reaches it` | No chain of `next` from `start` reaches the step |
 | `` approves `<id>`, which is not an irreversible step `` | `approves` names a missing or reversible step |

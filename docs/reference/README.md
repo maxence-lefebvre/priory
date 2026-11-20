@@ -6,7 +6,7 @@ config page gives a field table, a complete example and the errors `priory check
 | Page | Covers |
 | ---- | ------ |
 | [factory.md](factory.md) | `factory.toml`: the factory's name and the daemon's settings |
-| [workflows.md](workflows.md) | `workflows/<name>.toml`: steps, deciders, effects and outcomes |
+| [workflows.md](workflows.md) | `workflows/<name>.toml`: steps, deciders, effects, outcomes and `priory check --explain` |
 | [agents.md](agents.md) | `agents/<name>/agent.md`: harness, model, session and permissions |
 | [triggers.md](triggers.md) | `triggers/<name>.toml`: one section per source, and `hold` |
 | [runners.md](runners.md) | `runners/<hostname>.toml`: platform and share of the machine |

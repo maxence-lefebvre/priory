@@ -292,6 +292,7 @@ next = { opened = "done", failed = "stop" }
 | Effect                | the second line of the label, after the decider           |
 | `irreversible` effect | a red border and a `⚠` after the effect                   |
 | Outcome               | an arrow from the step to its target, labelled            |
+| Edge's `by`           | the arrow's color: grey `code`, blue `model`, thick orange `human`, dashed `asleep` |
 | `done` and `stop`     | circles                                                   |
 | `start`               | a circle with an arrow to the workflow's `start` step     |
 | `approves`            | a dotted arrow, labelled `approves`, to the approved step |
@@ -322,6 +323,9 @@ flowchart TD
     n3 -.->|approves| n4
     n4 -->|"failed"| stop
     n4 -->|"opened"| done
+    linkStyle 11,12 stroke:#555
+    linkStyle 1,2,3,6,7 stroke:#06c
+    linkStyle 4,5,8,9 stroke:#c60,stroke-width:3px
 ```
 
 ### Approval of irreversible steps
