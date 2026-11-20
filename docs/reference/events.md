@@ -911,7 +911,8 @@ Schema: [`schedule.fired.json`](../schemas/events/schedule.fired.json).
 
 ### `priory.task.requested.cli`
 
-One message per `priory request`. Subject: the task key, `cli:<key>`.
+One message per `priory request`, and one per report pick whose option requests a task (see
+[reports.md](../daemon/reports.md)). Subject: the task key, `cli:<key>`.
 Schema: [`priory.task.requested.cli.json`](../schemas/events/priory.task.requested.cli.json).
 
 | Field | Type | Meaning |

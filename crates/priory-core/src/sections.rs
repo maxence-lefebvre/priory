@@ -317,9 +317,16 @@ pub(crate) fn pick(
     }
     match pick.requests.get(&choice.option) {
         Some(request) => {
-            if let Err(error) = priory_intake::request::run(factory, request) {
+            if let Err(error) = priory_intake::request::check(factory, request) {
                 return Ok(Err(format!("pick {}: {error}", pick.id)));
             }
+            tx.execute(
+                "INSERT INTO dispatches (pick, request) VALUES (?1, ?2)",
+                params![
+                    pick.id,
+                    serde_json::to_string(request).expect("a request serializes")
+                ],
+            )?;
             pick.applied = Some(format!("requested task cli:{}", request.key()));
         }
         None => {
@@ -347,10 +354,46 @@ pub(crate) fn pick(
         ],
     )?;
     tx.commit()?;
-    Ok(Ok(format!(
+    let recorded = format!(
         "pick {} is {} at revision {}",
         choice.pick,
         choice.option,
         revision + 1
-    )))
+    );
+    Ok(match dispatch(db, factory, Some(&choice.pick))?.pop() {
+        None => Ok(recorded),
+        Some(error) => Err(format!(
+            "{recorded}, but {error}; the daemon publishes it again when it starts"
+        )),
+    })
+}
+
+/// Publishes the pending dispatch of `only`, or every one, under its pick's id, so publishing one
+/// twice adds nothing. A daemon start publishes those a crash or a failed publish left. Returns
+/// why each one that failed is not published.
+pub(crate) fn dispatch(
+    db: &Connection,
+    factory: &priory_factory::factory::Factory,
+    only: Option<&str>,
+) -> rusqlite::Result<Vec<String>> {
+    let pending = db
+        .prepare(
+            "SELECT pick, request FROM dispatches WHERE ?1 IS NULL OR pick = ?1 ORDER BY rowid",
+        )?
+        .query_map([only], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    let mut failed = Vec::new();
+    for (pick, text) in pending {
+        let request: priory_intake::request::Request =
+            serde_json::from_str(&text).expect("a stored request parses");
+        match priory_intake::request::run(factory, &request, Some(&pick)) {
+            Ok(()) => {
+                db.execute("DELETE FROM dispatches WHERE pick = ?1", [&pick])?;
+            }
+            Err(error) => failed.push(format!("pick {pick}'s request is not published: {error}")),
+        }
+    }
+    Ok(failed)
 }

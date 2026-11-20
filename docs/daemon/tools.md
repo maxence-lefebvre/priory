@@ -125,7 +125,7 @@ Ask 7 was answered "deploy" at revision 1, which ran ["scripts/deploy","--env","
 
 The command belongs to the generation it was answered in. A cancel or a revive kills it, or keeps
 it from starting, and the task is not woken. An answer that beats the run's Stop does not end the
-turn's process early: `ask` and `wait` are refused until the command ends, and the Stop ends the
+turn's process early: `ask`, `wait` and `result` are refused until the command ends, and the Stop ends the
 run while the task stays `running`. The task wakes when the command ends.
 
 A daemon restart never runs the command again. The restarted daemon kills a command its
@@ -267,7 +267,8 @@ sweep removes it.
 ## Code steps
 
 A code step runs its `action` in the daemon, with no agent and no run. Each loop, the daemon takes
-the oldest `queued` or `ready` task at a code step and runs its action outside any transaction. One
+the oldest `queued` or `ready` task at a code step that does not wait for disk (see
+[sweep.md](sweep.md)) and runs its action outside any transaction. One
 transaction then records the action run and moves the task by `next[status]` (see the table under
 Moving on). A `run` action records itself first and runs in the background (see The `run` action).
 An action that is not built yet blocks the task with `action <name> is not built yet`.
