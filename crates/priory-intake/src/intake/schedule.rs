@@ -35,40 +35,68 @@ pub(super) fn fire(bus: &Bus, triggers: &[(&str, &Trigger)], now: Timestamp) -> 
 
 /// The latest time at or before `now` that the trigger fires.
 fn latest(trigger: &Trigger, now: Timestamp) -> Option<Timestamp> {
-    let at = trigger.at?;
+    days(trigger, now, -7..=0).rev().find_map(|(first, end)| {
+        let last = end.min(now);
+        if last < first {
+            return None;
+        }
+        let Some(every) = trigger.every else {
+            return Some(first);
+        };
+        let every = every.as_secs() as i64;
+        let steps = (last.as_second() - first.as_second()) / every;
+        first
+            .checked_add(SignedDuration::from_secs(steps * every))
+            .ok()
+    })
+}
+
+/// The first time after `now` that the trigger fires; none when it never does.
+pub fn next(trigger: &Trigger, now: Timestamp) -> Option<Timestamp> {
+    days(trigger, now, 0..=7).find_map(|(first, end)| {
+        let slot = match trigger.every {
+            _ if first > now => first,
+            None => return None,
+            Some(every) => {
+                let every = every.as_secs() as i64;
+                let steps = (now.as_second() - first.as_second()) / every + 1;
+                first
+                    .checked_add(SignedDuration::from_secs(steps * every))
+                    .ok()?
+            }
+        };
+        (slot <= end).then_some(slot)
+    })
+}
+
+/// The first and last instants of each firing day from `offsets` days after today, in order.
+fn days(
+    trigger: &Trigger,
+    now: Timestamp,
+    offsets: std::ops::RangeInclusive<i64>,
+) -> impl DoubleEndedIterator<Item = (Timestamp, Timestamp)> + '_ {
     let zone = trigger.timezone.clone().unwrap_or_else(TimeZone::system);
-    let instant = |day: Date, time: Time| {
+    let today = now.to_zoned(zone.clone()).date();
+    let instant = move |day: Date, time: Time| {
         let zoned = day.to_datetime(time).to_zoned(zone.clone()).ok()?;
         Some(zoned.timestamp())
     };
-    let today = now.to_zoned(zone.clone()).date();
-    (0..=7_i64)
-        .filter_map(|back| today.checked_sub(back.days()).ok())
+    offsets
+        .filter_map(move |offset| today.checked_add(offset.days()).ok())
         .filter(|day| {
             trigger
                 .days
                 .as_ref()
                 .is_none_or(|days| days.contains(&day.weekday()))
         })
-        .find_map(|day| {
-            let first = instant(day, at)?;
+        .filter_map(move |day| {
+            let first = instant(day, trigger.at?)?;
             let midnight = instant(day, Time::MAX)?;
             let end = match trigger.until {
                 Some(Until::At(until)) => instant(day, until)?,
                 Some(Until::After(after)) => first.checked_add(after).ok()?.min(midnight),
                 None => midnight,
             };
-            let last = end.min(now);
-            if last < first {
-                return None;
-            }
-            let Some(every) = trigger.every else {
-                return Some(first);
-            };
-            let every = every.as_secs() as i64;
-            let steps = (last.as_second() - first.as_second()) / every;
-            first
-                .checked_add(SignedDuration::from_secs(steps * every))
-                .ok()
+            Some((first, end))
         })
 }

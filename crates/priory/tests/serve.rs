@@ -1554,3 +1554,174 @@ fn a_report_whose_pick_another_tasks_report_has_is_refused() {
     let missing = setup.priory(&["report", "show", "2", "--json"]);
     assert!(!missing.status.success());
 }
+
+impl Setup {
+    fn schedule(&self, name: &str, trigger: &str) {
+        fs::create_dir_all(self.dir.join("factory/triggers")).unwrap();
+        fs::write(
+            self.dir.join(format!("factory/triggers/{name}.toml")),
+            trigger,
+        )
+        .unwrap();
+    }
+
+    fn json_at(&self, now: &str, args: &[&str]) -> Value {
+        let output = self
+            .command()
+            .env("PRIORY_NOW", now)
+            .args(args)
+            .output()
+            .unwrap();
+        succeeded(&output);
+        serde_json::from_slice(&output.stdout).unwrap()
+    }
+}
+
+const WEEKDAYS: &str = r#"
+source = "schedule"
+repo = "owner/repo"
+at = "09:00"
+days = ["mon", "tue", "wed", "thu", "fri"]
+timezone = "Europe/Paris"
+workflow = "implement"
+"#;
+
+#[test]
+fn a_weekday_schedule_seen_on_friday_evening_fires_on_monday_morning() {
+    let setup = Setup::new("schedules-weekday", SERVE);
+    setup.schedule("standup", WEEKDAYS);
+
+    let schedules = setup.json_at(
+        "2026-11-20T19:00:00Z",
+        &["schedules", &setup.factory(), "--json"],
+    );
+
+    assert_eq!(
+        schedules["schedules"],
+        json!([{
+            "trigger": "standup",
+            "workflow": "implement",
+            "next": "2026-11-23T08:00:00Z",
+            "key": null,
+            "task": null,
+            "task_state": null,
+        }])
+    );
+}
+
+const SUPPORT_DAY: &str = r#"
+source = "schedule"
+repo = "owner/repo"
+at = "09:00"
+every = "1h"
+until = "18:00"
+timezone = "Europe/Paris"
+key = "support-day"
+workflow = "implement"
+"#;
+
+#[test]
+fn a_schedule_past_its_until_fires_next_at_the_start_of_its_next_day_and_names_its_task() {
+    let setup = Setup::new("schedules-until", SERVE);
+    setup.seed();
+    let db = rusqlite::Connection::open(setup.dir.join("priory.db")).unwrap();
+    db.execute(
+        "UPDATE tasks SET key = 'schedule:support-day', state = 'asleep' WHERE id = 2",
+        [],
+    )
+    .unwrap();
+    setup.schedule("support", SUPPORT_DAY);
+
+    let factory = setup.factory();
+    let args = ["schedules", factory.as_str(), "--json"];
+    let during = setup.json_at("2026-11-19T10:30:00Z", &args);
+    let after = setup.json_at("2026-11-19T17:30:00Z", &args);
+
+    assert_eq!(during["schedules"][0]["next"], "2026-11-19T11:00:00Z");
+    assert_eq!(
+        after["schedules"],
+        json!([{
+            "trigger": "support",
+            "workflow": "implement",
+            "next": "2026-11-20T08:00:00Z",
+            "key": "schedule:support-day",
+            "task": 2,
+            "task_state": "asleep",
+        }])
+    );
+}
+
+#[test]
+fn up_next_lists_the_next_three_runs_queued_held_or_scheduled_in_time_order() {
+    let mut setup = Setup::new("up-next", SERVE);
+    setup.seed();
+    let db = rusqlite::Connection::open(setup.dir.join("priory.db")).unwrap();
+    db.execute_batch(
+        "UPDATE tasks SET state = 'held', reason = 'until tonight' WHERE id = 2;
+         INSERT INTO holds (task, reason, kind, until, resume)
+         VALUES (2, 'until tonight', 'time', '2026-11-17T20:00:00Z', 'queued');",
+    )
+    .unwrap();
+    setup.schedule(
+        "friday",
+        &WEEKDAYS.replace(r#"["mon", "tue", "wed", "thu", "fri"]"#, r#"["fri"]"#),
+    );
+    setup.schedule(
+        "nightly",
+        "source = \"schedule\"\nrepo = \"owner/repo\"\nat = \"23:00\"\ntimezone = \"UTC\"\nworkflow = \"implement\"\n",
+    );
+    let factory = setup.factory();
+    let address = setup.start(&["serve", &factory]);
+
+    let queue = setup.json_at("2026-11-17T12:00:00Z", &["queue", &factory, "--json"]);
+
+    assert_eq!(
+        queue["up_next"],
+        json!([
+            {
+                "at": "2026-11-17T12:00:00Z", "kind": "queued", "task": 1, "key": "cli:docs-1",
+                "trigger": null, "why": "first in the queue",
+            },
+            {
+                "at": "2026-11-17T20:00:00Z", "kind": "held", "task": 2, "key": "cli:docs-2",
+                "trigger": null, "why": "held until 2026-11-17T20:00:00Z",
+            },
+            {
+                "at": "2026-11-17T23:00:00Z", "kind": "scheduled", "task": null, "key": null,
+                "trigger": "nightly", "why": "schedule nightly fires",
+            },
+        ])
+    );
+    assert_eq!(api(&address, "/api/queue"), queue);
+}
+
+#[test]
+fn up_next_lists_each_firing_of_a_keyless_schedule_and_none_of_a_held_one() {
+    let setup = Setup::new("up-next-firings", SERVE);
+    setup.schedule(
+        "hourly",
+        "source = \"schedule\"\nrepo = \"owner/repo\"\nat = \"13:00\"\nevery = \"1h\"\ntimezone = \"UTC\"\nworkflow = \"implement\"\n",
+    );
+    setup.schedule(
+        "held",
+        "source = \"schedule\"\nrepo = \"owner/repo\"\nat = \"12:30\"\ntimezone = \"UTC\"\nworkflow = \"implement\"\nhold = { reason = \"a person starts it\" }\n",
+    );
+    let factory = setup.factory();
+
+    let queue = setup.json_at("2026-11-17T12:00:00Z", &["queue", &factory, "--json"]);
+
+    let at: Vec<&Value> = queue["up_next"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|entry| &entry["at"])
+        .collect();
+    assert_eq!(
+        at,
+        [
+            "2026-11-17T13:00:00Z",
+            "2026-11-17T14:00:00Z",
+            "2026-11-17T15:00:00Z"
+        ]
+    );
+}

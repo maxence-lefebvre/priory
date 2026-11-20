@@ -172,9 +172,32 @@ The fields of [Tasks](#tasks), plus `repo` and `branch`, and these arrays, oldes
 
 | Field | Each entry |
 | ----- | ---------- |
+| `up_next` | One of the next three runs, soonest first: `at`, `kind`, `task`, `key`, `trigger` and `why`. See [Up next](#up-next) |
 | `waiting` | A queued or ready task in start order, then each held task by when it was held: `position` and `band_position` (its place in the queue and in its band, null for a held task), `id`, `key`, `workflow`, `step`, `state`, `band`, `lane`, `reason`, `since`, and for a held task its hold: `hold` (`person`, `time`, `task`, `merge` or `blockers`), `hold_until`, `hold_target`, `hold_resource` |
 | `running` | A live run: `run`, `task`, `key`, `step`, `agent`, `started` |
 | `ended` | A task done, failed or dropped in the last day, latest first: `id`, `key`, `workflow`, `step`, `state`, `reason`, `ended` |
+
+### Up next
+
+`/api/queue` reads the schedules of the factory `serve` runs. `priory queue DIR --json` reads those
+of the factory in `DIR`, and `priory queue --json` lists no schedule firings.
+
+| `kind` | `at` | `why` |
+| ------ | ---- | ----- |
+| `queued` | Now: it starts once there is room | `first in the queue`, `a band above it`, or `queue position <n>` |
+| `held` | The end of its time hold | `held until <time>` |
+| `scheduled` | The trigger's [next firing](../intake/schedule.md#next-firing) | `schedule <trigger> fires` |
+
+`task` and `key` name the task, and are null for a firing that starts a new task. `trigger` names
+the schedule trigger of a `scheduled` entry, and is null otherwise.
+
+- A schedule without a fixed `key` starts a task at each firing, so up next can list several of
+  its firings.
+- A schedule with a fixed `key` lists only its next firing. Its later firings coalesce into that
+  task.
+- A firing for a live task that is not asleep coalesces into it, so up next leaves it out.
+- Up next leaves out a schedule with a `hold`, and held tasks without a time hold. They wait for
+  their release, so they have no start time.
 
 ## Report
 
