@@ -26,6 +26,15 @@ fn the_groom_example_takes_a_green_issue_to_a_pull_request_whose_checks_pass() {
 }
 
 #[test]
+fn the_review_example_writes_a_pending_review_and_asks_to_submit_it() {
+    let examples = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/review");
+
+    let played = Play::run("ci", &examples, &examples.join("e2e/pending.toml"));
+
+    played.check();
+}
+
+#[test]
 #[ignore = "plays the factory PRIORY_E2E_FACTORY names through the scenario PRIORY_E2E_SCENARIO names"]
 fn a_factory_plays_the_scenario_the_environment_names() {
     let examples = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/groom");

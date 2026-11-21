@@ -1,0 +1,26 @@
+# A review request ends at submit with a pending review written. The workflow's gh-api-write lets
+# the review's `gh api` POST through, and the guard still denies an approving review.
+# Run it with `cargo test -p priory --test factory_e2e`; see docs/testing-a-factory.md.
+
+[request]
+trigger = "review-requests"
+key = "github:owner/repo:pulls/43:review:your-login"
+repo = "owner/repo"
+
+[[turns]]   # risk
+calls = [{ name = "result", arguments = { outcome = "low", summary = "Merge risk low", risk = { ask = "low: fixes the retry the issue names", blast_radius = "low: one function", verification = "low: a test covers the retry", rollback = "low: a revert restores it", detection = "low: the retry test fails" } } }]
+
+[[turns]]   # review
+calls = [
+  { name = "Bash", arguments = { command = "gh api -X POST repos/owner/repo/pulls/43/reviews -f body='One finding, inline'" } },
+  { name = "Bash", arguments = { command = "gh api -X POST repos/owner/repo/pulls/43/reviews -f event=APPROVE" } },
+  { name = "result", arguments = { outcome = "written", summary = "Pending review https://github.com/owner/repo/pull/43#pullrequestreview-1" } },
+]
+
+[expect]
+path = ["risk:low", "review:written"]
+step = "submit"
+state = "asleep"
+allowed = ["-f body=One finding, inline"]
+denied = ["-f event=APPROVE"]
+output = [{ args = ["asks"], contains = ["submitted", "discarded"] }]

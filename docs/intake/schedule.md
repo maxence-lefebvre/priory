@@ -106,6 +106,7 @@ The firing's time names both ids, so a second poll in the same slot publishes no
 ## Limits
 
 - A new schedule trigger fires its latest past slot on its first poll, as a missed firing would.
+  A weekday 07:00 trigger whose intake first polls on a Sunday fires Friday's slot at once.
 - Only the latest slot fires. A poll delayed past two slots, such as by a slow `gh`, skips the
   older one.
 - The last slot of a day fires even when its poll comes after `until`.

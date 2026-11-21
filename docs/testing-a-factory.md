@@ -74,8 +74,8 @@ To keep a result, redirect the output to a file:
 ... --nocapture > ~/my-factory/e2e/results/green.txt 2>&1
 ```
 
-Without the two variables, the ignored test plays `examples/groom` with its green scenario. The
-test that CI runs does the same, so the harness itself stays covered.
+Without the two variables, the ignored test plays `examples/groom` with its green scenario. CI
+plays that scenario and `examples/review/e2e/pending.toml`, so the harness itself stays covered.
 
 ## 3. Read a failure
 
