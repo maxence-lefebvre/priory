@@ -1,3 +1,4 @@
+pub mod eval;
 pub mod http;
 pub mod mcp;
 pub mod room;
