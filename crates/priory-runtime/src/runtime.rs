@@ -608,7 +608,14 @@ pub fn launch(harness: &dyn Harness, launch: &Launch) -> Result<(), String> {
         .arg("-e")
         .arg(format!("PRIORY_HOME={}", launch.home.display()))
         .arg("-e")
-        .arg(format!("PRIORY_SESSION={}", launch.session))
+        .arg(format!("PRIORY_SESSION={}", launch.session));
+    // A tmux server started elsewhere has its own, and the hooks must find this daemon's socket.
+    if let Some(run) = std::env::var_os("XDG_RUNTIME_DIR").filter(|run| !run.is_empty()) {
+        command
+            .arg("-e")
+            .arg(format!("XDG_RUNTIME_DIR={}", run.to_string_lossy()));
+    }
+    command
         .args(launch.env.iter().flat_map(|variable| ["-e", variable]))
         .arg("--");
     if let Some(prompt) = launch.prompt {
@@ -653,6 +660,9 @@ fn mcp_config(exe: &Path, launch: &Launch) -> String {
 /// the bridge reads that file itself from the agent's worktree.
 fn mcp_env(home: &Path) -> serde_json::Value {
     let mut env = json!({ "PRIORY_HOME": home });
+    if let Some(run) = std::env::var_os("XDG_RUNTIME_DIR").filter(|run| !run.is_empty()) {
+        env["XDG_RUNTIME_DIR"] = json!(run);
+    }
     if let Some(db) = std::env::var_os("PRIORY_DB").and_then(|db| std::path::absolute(db).ok()) {
         env["PRIORY_DB"] = json!(db);
     }
@@ -894,11 +904,12 @@ pub fn socket_in(run: Option<&Path>, home: &Path) -> PathBuf {
         .fold(0xcbf29ce484222325u64, |hash, byte| {
             (hash ^ u64::from(*byte)).wrapping_mul(0x100000001b3)
         });
-    let dir = match run {
-        Some(run) => run.join("priory"),
-        None => PathBuf::from(format!("/tmp/priory-{}", uid())),
-    };
-    dir.join(format!("{hash:016x}.sock"))
+    let name = format!("{hash:016x}.sock");
+    let under_run = run.map(|run| run.join("priory").join(&name));
+    // sun_path holds 108 bytes with its NUL.
+    under_run
+        .filter(|path| path.as_os_str().len() < 108)
+        .unwrap_or_else(|| PathBuf::from(format!("/tmp/priory-{}", uid())).join(name))
 }
 
 fn uid() -> u32 {
@@ -1085,6 +1096,23 @@ pub fn send(home: &Path, line: &str) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_runtime_directory_too_long_for_a_socket_path_falls_back_to_tmp() {
+        let home = std::env::temp_dir();
+        let long = PathBuf::from("/run/").join("u".repeat(90));
+
+        let socket = socket_in(Some(&long), &home);
+
+        assert!(
+            socket.starts_with(format!("/tmp/priory-{}", uid())),
+            "{socket:?}"
+        );
+        assert!(
+            socket_in(Some(Path::new("/run/user/1000")), &home)
+                .starts_with("/run/user/1000/priory")
+        );
+    }
 
     #[test]
     fn a_socket_directory_of_another_user_is_refused() {

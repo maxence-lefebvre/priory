@@ -1018,6 +1018,25 @@ fn a_workflow_with_a_claude_step_then_a_codex_step_runs_to_done() {
 }
 
 #[test]
+fn a_run_in_a_tmux_server_started_elsewhere_still_finds_the_daemons_socket() {
+    let mut setup = Setup::new("pane-runtime-dir");
+    let started = setup
+        .command("tmux")
+        .env("XDG_RUNTIME_DIR", "/elsewhere")
+        .args(["new-session", "-d", "-s", "keep", "sleep", "600"])
+        .output()
+        .unwrap();
+    assert!(started.status.success());
+    setup.publish(&requested(42));
+
+    setup.start();
+
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 1);
+    let seen = fs::read_to_string(setup.dir.join("fake/xdg.log")).unwrap();
+    assert_eq!(seen, setup.tmux.path().to_str().unwrap());
+}
+
+#[test]
 fn a_run_starts_without_the_variables_of_the_claude_session_that_started_the_daemon() {
     let mut setup = Setup::new("nested-env");
     setup.publish(&requested(42));

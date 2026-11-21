@@ -60,7 +60,8 @@ The socket is not in Priory home. A Unix socket path of more than 108 bytes cann
 `PRIORY_HOME` can be as long as a worktree path. So the socket is at a short path that every client
 derives from `PRIORY_HOME` the same way:
 
-- `$XDG_RUNTIME_DIR/priory/<hash>.sock` when `XDG_RUNTIME_DIR` is set and not empty.
+- `$XDG_RUNTIME_DIR/priory/<hash>.sock` when `XDG_RUNTIME_DIR` is set and not empty, and that path
+  is under 108 bytes.
 - `/tmp/priory-<uid>/<hash>.sock` otherwise.
 
 `<hash>` is 16 hex digits of the FNV-1a hash of the canonical path of `PRIORY_HOME`, so two homes
@@ -69,8 +70,10 @@ folder exists but another user owns it, it is not a folder, or its mode lets any
 error names the folder. Fix it with `chmod 700`, or remove it. A socket left by a dead daemon is
 replaced at the next start.
 
-A hook, command or tool must see the same `PRIORY_HOME` and `XDG_RUNTIME_DIR` as the daemon, or it
-looks at another socket and reports `no priory daemon listens on <path>`. The path is in that error. The daemon reads one connection at a time, and drops one that sends no
+The daemon passes its `XDG_RUNTIME_DIR` to the agents' panes and MCP servers, so a tmux server
+started elsewhere does not change it. A command you run yourself must see the same `PRIORY_HOME` and
+`XDG_RUNTIME_DIR` as the daemon, or it looks at another socket and reports
+`no priory daemon listens on <path>`. The path is in that error. The daemon reads one connection at a time, and drops one that sends no
 full line within 2 seconds, so a silent client cannot stop the others.
 
 `signals.spool` holds the signals sent while no daemon listened. The next daemon applies them first.
