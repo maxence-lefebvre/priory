@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { ARM_MS, UNDO_MS, choose, due, observe, reply, undo } from "../lib/ask.js";
+import { ARM_MS, UNDO_MS, choose, due, observe, reply, takesText, undo } from "../lib/ask.js";
 
 const ASK = { id: 88, revision: 1, state: "open", options: ["Rename it", "Keep the name"], command: null };
 const COMMAND = { ...ASK, id: 90, options: ["Run it", "Skip"], command: { argv: ["make", "deploy"], target: "staging", runs: ["Run it"] } };
@@ -77,4 +77,9 @@ test("a lost write is outcome-unknown until a read shows the answer, or the pers
   assert.equal(observe(unknown, ASK, NOW), unknown);
   assert.equal(observe(unknown, { ...ASK, state: "answered", answer: "Rename it" }, NOW).phase, "sent");
   assert.equal(choose(unknown, ASK, { option: "Rename it", again: true }, NOW).phase, "waiting");
+});
+
+test("a step's ask offers no free text and no dismissal, and an agent's ask does", () => {
+  assert.equal(takesText({ ...ASK, free_text: false }), false);
+  assert.equal(takesText({ ...ASK, free_text: true }), true);
 });

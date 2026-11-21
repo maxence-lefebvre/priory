@@ -2718,16 +2718,65 @@ fn answer_in(
         Err(error) => return Ok(Err(error)),
     };
     let options: Vec<String> = serde_json::from_str(&options).expect("options are stored as JSON");
+    let hold = crate::hold::of_ask(tx, answer.ask)?;
+    let (chosen, note) = match answer.text.split_once(':') {
+        Some((option, note))
+            if kind == "step"
+                && !options.contains(&answer.text)
+                && options.iter().any(|known| known == option.trim())
+                && !note.trim().is_empty() =>
+        {
+            (option.trim().to_owned(), Some(note.trim()))
+        }
+        _ => (answer.text.clone(), None),
+    };
     let runs = command
         .as_deref()
         .filter(|_| kind == "agent" || kind == "step")
         .and_then(|command| serde_json::from_str::<command::Command>(command).ok())
-        .filter(|command| command.runs.contains(&answer.text));
-    let hold = crate::hold::of_ask(tx, answer.ask)?;
-    if (kind == "step" || hold.is_some()) && !options.contains(&answer.text) {
+        .filter(|command| command.runs.contains(&chosen));
+    if (kind == "step" || hold.is_some()) && !options.contains(&chosen) {
         return Ok(Err(format!(
             "ask {label} takes one of: {}",
             options.join(", ")
+        )));
+    }
+    let asked = step(workflows, &workflow, &at);
+    let target = match (kind == "step", asked) {
+        (false, _) => None,
+        // A `plan` task's grading step: an approval moves it by its grade.
+        (true, Some(asked)) if asked.decides == Decider::Model => Some(match chosen.as_str() {
+            "approved" => {
+                let grade: Option<String> = match task {
+                    Some(task) => {
+                        tx.query_row("SELECT grade FROM tasks WHERE id = ?1", [task], |row| {
+                            row.get(0)
+                        })?
+                    }
+                    None => None,
+                };
+                grade
+                    .as_deref()
+                    .and_then(|grade| asked.next.get(grade))
+                    .cloned()
+                    .unwrap_or_else(|| format!("{at}?{}", grade.unwrap_or_default()))
+            }
+            _ => "stop".to_owned(),
+        }),
+        (true, _) => Some(answered_target(workflows, &workflow, &at, &chosen)),
+    };
+    // A note goes where someone reads it: the next model step's prompt, the next human step's
+    // question, or the dropped task's reason.
+    let reads_note = |target: &str| {
+        target == "stop"
+            || step(workflows, &workflow, target)
+                .is_some_and(|next| matches!(next.decides, Decider::Model | Decider::Human))
+    };
+    if let (Some(_), Some(target)) = (note, target.as_deref())
+        && (runs.is_some() || !reads_note(target))
+    {
+        return Ok(Err(format!(
+            "ask {label} answered {chosen} leads to {target}, which reads no note: answer {chosen} alone"
         )));
     }
     if let Some(runs) = &runs
@@ -2793,36 +2842,40 @@ fn answer_in(
     }
     if let Some(hold) = hold {
         crate::hold::answered(tx, hold, &answer.text)?;
-    } else if kind == "step"
-        && step(workflows, &workflow, &at).is_some_and(|asked| asked.decides == Decider::Model)
-    {
-        // A `plan` task's grading step: an approval moves it by its grade.
-        let target = match answer.text.as_str() {
-            "approved" => {
-                let grade: Option<String> =
-                    tx.query_row("SELECT grade FROM tasks WHERE id = ?1", [task], |row| {
-                        row.get(0)
-                    })?;
-                step(workflows, &workflow, &at)
-                    .and_then(|asked| asked.next.get(grade.as_deref()?))
-                    .cloned()
-                    .unwrap_or_else(|| format!("{at}?{}", grade.unwrap_or_default()))
-            }
-            _ => "stop".to_owned(),
-        };
-        enter(tx, task, &workflow, &target, None, "", trace.factory)?;
-    } else if kind == "step" {
-        let target = answered_target(workflows, &workflow, &at, &answer.text);
-        approve(
+    } else if let Some(target) = target {
+        if !asked.is_some_and(|asked| asked.decides == Decider::Model) {
+            approve(
+                tx,
+                task,
+                answer,
+                &approvals(workflows, &workflow, &at, &target),
+                head,
+            )?;
+            trace::ended(tx, trace, task, &chosen, None)?;
+            crate::grades::answered(tx, trace, task, &at, &chosen, &target)?;
+        }
+        let note = note
+            .map(|note| format!("A person answered {chosen} on step {at}, with a note: {note}"));
+        let next = step(workflows, &workflow, &target).map(|next| &next.decides);
+        if let (Some(note), Some(Decider::Model)) = (&note, next) {
+            queue_first(tx, task, note)?;
+        }
+        let context = note.as_deref().filter(|_| next == Some(&Decider::Human));
+        enter(
             tx,
             task,
-            answer,
-            &approvals(workflows, &workflow, &at, &target),
-            head,
+            &workflow,
+            &target,
+            None,
+            context.unwrap_or_default(),
+            trace.factory,
         )?;
-        trace::ended(tx, trace, task, &answer.text, None)?;
-        crate::grades::answered(tx, trace, task, &at, &answer.text, &target)?;
-        enter(tx, task, &workflow, &target, None, "", trace.factory)?;
+        if let (Some(note), "stop") = (&note, target.as_str()) {
+            tx.execute(
+                "UPDATE tasks SET reason = ?2 WHERE id = ?1",
+                params![task, note],
+            )?;
+        }
     } else {
         withdraw_waits(tx, answer.ask, "answered-elsewhere")?;
         wake(

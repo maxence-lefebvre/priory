@@ -1,6 +1,6 @@
 // Priory's web view (DESIGN.md): the frame, the Desk and the Asks, with answering through the CLI's verbs.
 // Agent text is untrusted: every value goes through `html`, which escapes it.
-import { ARM_MS, ASK_VIEWS, answeredBy, askGroups, routedMark, routedNote, shownGroups, snoozeShortcut, snoozed, stillArmed, writeNote } from "./asks.js";
+import { ARM_MS, ASK_VIEWS, answeredBy, askGroups, routedMark, routedNote, shownGroups, snoozeShortcut, snoozed, stillArmed, takesText, writeNote } from "./asks.js";
 import { SPLITS, attentionView, costTiles, dayBars, money, splitTable } from "./costs.js";
 import { addBody, addOutcome } from "./add.js";
 import { linked } from "./links.js";
@@ -704,7 +704,9 @@ function askDetail(id, wide) {
   const notice = state.notices.get(ask.id);
   const lockedNote = locked ? html`<p class="note" id="answer-locked">${icon("unplug", "s15")}<span>Reconnect to answer.</span></p>` : "";
   const writing = state.writing.has(ask.id) && !locked;
-  const write = writing
+  const write = !takesText(ask)
+    ? ""
+    : writing
     ? html`<form class="writeform" data-action="send-text"><label class="sr" for="draft">Your answer</label><textarea id="draft" name="text" rows="3">${state.drafts.get(ask.id) || ""}</textarea><button class="btn primary" ${pending ? raw('aria-disabled="true"') : ""}>Send</button></form>`
     : html`<button class="ghost write" data-action="write" aria-disabled="${locked || pending ? "true" : "false"}">${icon("pencil", "s15")}Write an answer</button>`;
   const busy = pending ? "true" : "false";
@@ -713,7 +715,7 @@ function askDetail(id, wide) {
     : ask.snoozed_until
       ? html`<button class="ghost" data-action="unsnooze" aria-disabled="${busy}">Unsnooze</button>`
       : html`<button class="ghost" data-action="snooze" data-for="1h" aria-disabled="${busy}">Snooze 1 h</button><button class="ghost" data-action="snooze" data-tomorrow="9" aria-disabled="${busy}">Snooze until tomorrow 09:00</button>`;
-  const more = html`<div class="more">${write}${locked ? "" : html`<button class="ghost" data-action="dismiss" aria-disabled="${busy}">Dismiss</button>`}${snoozeButtons}</div>`;
+  const more = html`<div class="more">${write}${locked || !takesText(ask) ? "" : html`<button class="ghost" data-action="dismiss" aria-disabled="${busy}">Dismiss</button>`}${snoozeButtons}</div>`;
   const decided = ask.state !== "open"
     ? html`${notice ? html`<p class="warnline" role="status">${notice}</p>` : ""}<div class="rec">${ask.state === "answered" ? html`<span><b>Answered: ${ask.answer}.</b> ${ask.answered_at ? age(ask.answered_at) + " ago" : ""}${byLine(ask) ? ` By ${answeredBy(ask.answered_by)}.` : ""}</span>` : html`<span><b>Withdrawn${ask.withdrawn_why ? `: ${ask.withdrawn_why}` : ""}.</b></span>`}</div>${ranLine(ask.ran)}`
     : html`${notice ? html`<p class="warnline" role="status">${notice}</p>` : ""}${routedNote(ask) ? html`<p class="routednote">${icon("corner-down-right", "s15")}${routedNote(ask)}</p>` : ""}${ask.recommendation ? html`<div class="rec"><span><b>Recommended: ${ask.recommendation}.</b></span>

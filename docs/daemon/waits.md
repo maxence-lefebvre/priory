@@ -7,7 +7,8 @@
 `priory answer <ask> <option-or-text> --revision <n>` sends the answer to the daemon. `--expected`
 is the same flag, and `--` ends the flags, as in `priory answer --expected 2 -- cache.ship ship`.
 The first answer to the ask's revision stands. Refused: an answer to another revision, a second
-answer, or, for a step's ask, a text that is not one of its options. In a factory of several
+answer, or, for a step's ask, a text that is neither one of its options nor `OPTION: NOTE` (see
+below). In a factory of several
 runners, `priory answer <runner>:<ask>` answers another runner's ask through the log (see
 [runners.md](runners.md#answering-another-runners-ask)).
 
@@ -19,6 +20,13 @@ ask are refused, since only one of their options moves the task on.
 
 - A step's ask moves the task by `next[option]`, as in the table. A model step makes the task
   `ready` with that step's prompt queued.
+- A step's ask also takes a note after its option, as `OPTION: NOTE`, such as
+  `priory answer 12 'approved: skip the migration'`. The ask keeps the whole text as its answer, and
+  the task moves by the option. The note reads `A person answered <option> on step <step>, with a
+  note: <note>`, and goes where someone reads it. A model step gets it after its prompt, a human
+  step's ask gets it after its question, and `stop` makes it the dropped task's reason. An option
+  that leads anywhere else, such as `done` or a code step, or that runs a command, refuses a note:
+  `ask 12 answered approved leads to done, which reads no note: answer approved alone`.
 - An agent's ask queues the answer as the task's next prompt, after fixed words such as
   `Answer to ask 12 (revision 2): `, so an answer starting with `/` never runs as a slash command.
   An asleep task becomes `ready`. A task whose run has not stopped yet stays `running`, and the

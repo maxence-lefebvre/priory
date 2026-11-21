@@ -357,7 +357,7 @@ export default class PrioryAsks extends View {
     if (event.key === "enter" && ask && this.width < PANE.split) { this.reading = this.reading ? null : "why"; return cx.notify(); }
     if (!ask || !detail) return;
     if (digit >= 1 && digit <= detail.options.length) return this.choose(ask, digit - 1, cx);
-    if (event.key === "w" && ask.state === "open") { this.writing.add(ask.id); this.draft(ask.id).focus(); return cx.notify(); }
+    if (event.key === "w" && ask.state === "open" && ask.free_text !== false) { this.writing.add(ask.id); this.draft(ask.id).focus(); return cx.notify(); }
     if (event.key === "s" && detail.canSnooze && !ask.snoozed_until) return this.snooze(ask, { for: "1h" }, cx);
     if (event.key === "[" || event.key === "]") {
       const chips = detail.chips.map(([id]) => id);
@@ -618,11 +618,11 @@ export default class PrioryAsks extends View {
   actions(ask, detail, t) {
     const snoozed = Boolean(ask.snoozed_until) && !ask.back_early;
     return h_flex().gap(4).items_center()
-      .child(this.ghost(`write-${ask.id}`, "pencil", "Write an answer…", (cx) => {
+      .when(detail.takesText, (el) => el.child(this.ghost(`write-${ask.id}`, "pencil", "Write an answer…", (cx) => {
         this.writing.add(ask.id);
         this.draft(ask.id).focus();
         cx.notify();
-      }, t))
+      }, t)))
       .child(div().flex_1())
       .when(detail.canSnooze, (el) => el.child(snoozed
         ? this.ghost(`unsnooze-${ask.id}`, "clock", "Unsnooze", (cx) => this.snooze(ask, null, cx), t)
@@ -651,11 +651,13 @@ export default class PrioryAsks extends View {
         cx.notify();
       }, "terminal"]);
     }
-    items.push(["Dismiss", "", (cx) => {
-      this.popover = null;
-      if (!this.busy()) this.act(ask, (client) => client.dismiss(ask.id, ask.revision), cx);
-      cx.notify();
-    }, "x"]);
+    if (detail.takesText) {
+      items.push(["Dismiss", "", (cx) => {
+        this.popover = null;
+        if (!this.busy()) this.act(ask, (client) => client.dismiss(ask.id, ask.revision), cx);
+        cx.notify();
+      }, "x"]);
+    }
     return Popover.new(`more-menu-${ask.id}`).trigger(trigger).anchor("bottom_right").open(open)
       .on_open_change((/** @type {boolean} */ next, /** @type {import("gpui-kit").Context} */ cx) => { this.popover = next ? "more" : null; cx.notify(); })
       .content(this.menu(t, items));

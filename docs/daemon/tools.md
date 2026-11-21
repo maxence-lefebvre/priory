@@ -232,7 +232,8 @@ folder; a bare name is looked up in `PATH`.
 An answer with an option in `runs` must confirm that it runs the command: `priory answer --run`, or
 `"run": true` over HTTP. Without it, the answer is refused with the command, its folder, its target
 and the revision it is bound to. An answer with another option, or free text, answers as usual and
-runs nothing.
+runs nothing. An option that runs a command takes no note (see
+[waits.md](waits.md#asks-and-answers)).
 
 The answer is bound to the revision it read, as any answer is, and the command stored with that
 revision is the one that runs. The first answer stands, so a second answer never runs it again.
