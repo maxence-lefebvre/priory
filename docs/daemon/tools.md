@@ -88,14 +88,17 @@ comment, an issue comment or a Linear comment, and its URL is the event's `url`.
 }
 ```
 
-A result is refused when an item the agent was typed has no class, from this result or an earlier
-one, when `feedback` is not an object of the three classes, or when it sorts an item as
-`persons-call` and no ask of the task names the item's URL in its `question`, `title` or `text`.
-A `result` cannot coexist with an open ask, so the agent asks, reads the answer in its next turn
-and then sends the result. The refusals read:
+A result is refused when an item the agent was typed since the task's last result has no class,
+from this result or an earlier one, when `feedback` is not an object of the three classes, or when
+it sorts an item as `persons-call` and no ask of the task names the item's URL in its `question`,
+`title` or `text`. An item typed to a run before the task's last result was that result's to sort,
+so a later result need not name it. One refusal names every item without a class. A `result`
+cannot coexist with an open ask, so the agent asks, reads the answer in its next turn and then
+sends the result. The refusals read:
 
 ```text
 feedback item https://github.com/owner/name/pull/57#discussion_r803 has no class: feedback must be an object from each item's URL to trivial, nothing-to-do or persons-call
+feedback items https://github.com/owner/name/pull/57#discussion_r803, https://github.com/owner/name/pull/57#discussion_r804 have no class: feedback must be an object from each item's URL to trivial, nothing-to-do or persons-call
 ```
 
 An item written by the login `gh api user` names, the account the intake runs as and so the

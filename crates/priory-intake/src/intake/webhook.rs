@@ -6,7 +6,7 @@ use super::{
 use crate::log::{self, Log};
 use herdr_bus::Timestamp;
 use hmac::{Hmac, KeyInit, Mac};
-use priory_factory::factory::{Factory, Trigger};
+use priory_factory::factory::{EventLog, Factory, Trigger};
 use priory_runtime::http::{Reply, Request};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -20,6 +20,8 @@ pub struct Github {
     triggers: Vec<(String, Trigger)>,
     /// The repositories some trigger names, which polling reads too.
     repos: BTreeSet<String>,
+    /// The log a delivery publishes on, opened again while a worker's open failed.
+    log: EventLog,
 }
 
 impl Github {
@@ -42,12 +44,13 @@ impl Github {
             secret,
             triggers,
             repos,
+            log: factory.log().clone(),
         })
     }
 
     /// Verifies, maps and publishes one delivery. Every delivery Priory takes or drops on purpose
     /// gets 202, so GitHub does not retry it.
-    pub fn receive(&self, bus: &Result<Box<dyn Log>, String>, request: &Request) -> Reply {
+    pub fn receive(&self, bus: &mut Result<Box<dyn Log>, String>, request: &Request) -> Reply {
         if !self.signed(request) {
             return Reply::error(
                 401,
@@ -71,9 +74,9 @@ impl Github {
             Ok(None) => return accepted("dropped"),
             Err(error) => return Reply::error(400, &error),
         };
-        let bus = match bus {
-            Ok(bus) => bus.as_ref(),
-            Err(error) => return Reply::error(500, error),
+        let bus = match opened(bus, || log::open(&self.log)) {
+            Ok(bus) => bus,
+            Err(error) => return Reply::error(500, &error),
         };
         let triggers: Vec<(&str, &Trigger)> = self
             .triggers
@@ -306,6 +309,18 @@ fn head_repo(data: &mut Value, pull: &Value) {
     }
 }
 
+/// The log `bus` holds, or the one `open` opens in its place: an open that failed, as against a
+/// database down when the worker started, is tried again and kept once it succeeds.
+pub(super) fn opened(
+    bus: &mut Result<Box<dyn Log>, String>,
+    open: impl FnOnce() -> log::Result<Box<dyn Log>>,
+) -> Result<&dyn Log, String> {
+    if bus.is_err() {
+        *bus = open().map_err(|error| error.to_string());
+    }
+    bus.as_deref().map_err(String::clone)
+}
+
 fn accepted(outcome: &str) -> Reply {
     Reply::json(202, json!({ "outcome": outcome }).to_string())
 }
@@ -339,6 +354,7 @@ mod tests {
             secret: "s".to_owned(),
             triggers: vec![("t".to_owned(), trigger)],
             repos: BTreeSet::from(["o/r".to_owned()]),
+            log: EventLog::default(),
         }
     }
 
@@ -408,5 +424,21 @@ mod tests {
                 prop_assert_eq!(hex(&bytes).into_bytes(), text.to_ascii_lowercase());
             }
         }
+    }
+
+    #[test]
+    fn a_log_that_failed_to_open_opens_on_a_later_delivery_and_stays_open() {
+        let dir = std::env::temp_dir().join(format!("priory-opened-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("bus.db");
+        let mut bus: Result<Box<dyn Log>, String> = Err("the database is down".to_owned());
+
+        let down = opened(&mut bus, || Err("the database is still down".into())).err();
+        let up = opened(&mut bus, || Ok(Box::new(herdr_bus::Bus::open(&file)?))).is_ok();
+        let kept = opened(&mut bus, || panic!("an open log is opened again")).is_ok();
+
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(down.as_deref(), Some("the database is still down"));
+        assert!(up && kept);
     }
 }

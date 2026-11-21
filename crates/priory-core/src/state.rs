@@ -1649,9 +1649,12 @@ pub(crate) fn route_in(
     }
     crate::hold::event(tx, &resources)?;
     // The keyed task keeps the event; another task that shares the resource hears it through its
-    // wait or its subscription.
+    // wait or its subscription. A merge that fires a gate may end a run a person's `say` started.
+    let mut kill = None;
     for other in owners.iter().filter(|other| Some(other.id) != task) {
-        if !crate::tools::event(tx, other.id, seq, factory)?
+        let (fired, ended) = crate::tools::event(tx, other.id, seq, factory)?;
+        kill = kill.or(ended);
+        if !fired
             && let Some((outcome, prompt)) =
                 delivered(tx, other.id, message, &resources, None, factory)?
         {
@@ -1664,7 +1667,9 @@ pub(crate) fn route_in(
     }
     match (task, outcome) {
         (Some(task), "kept") => {
-            if !crate::tools::event(tx, task, seq, factory)?
+            let (fired, ended) = crate::tools::event(tx, task, seq, factory)?;
+            kill = kill.or(ended);
+            if !fired
                 && delivered(tx, task, message, &resources, Some(seq), factory)?
                     .is_some_and(|(outcome, _)| outcome == "woke")
             {
@@ -1705,7 +1710,7 @@ pub(crate) fn route_in(
         }
         (Some(task), "reopened") => crate::tools::reopen(tx, trace, task, seq)?,
         (Some(task), "withdrew") => {
-            return Ok(crate::tools::cancel(tx, task, "review request removed")?);
+            return Ok(crate::tools::cancel(tx, task, "review request removed")?.or(kill));
         }
         _ => {}
     }
@@ -1716,7 +1721,7 @@ pub(crate) fn route_in(
             [resources.first()],
         )?;
     }
-    Ok(None)
+    Ok(kill)
 }
 
 /// Stores `message` in the inbox with the task it went to and its outcome, and returns its seq.
