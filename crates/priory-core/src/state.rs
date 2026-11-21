@@ -1000,11 +1000,15 @@ const SCHEMA_56: &str = concat!(
 );
 
 // The desk finds an ask by `coalesce(name, id)` and lists the newest trace and inbox entries by
-// `julianday(time)`; without these each desk read scans every ask, trace record and inbox entry.
+// `julianday(time)`; the attention report looks up snooze records by trace type, withdrawals by ask and
+// asks by task. Without these each read scans every ask, trace record and inbox entry.
 const SCHEMA_57: &str = "
 CREATE INDEX IF NOT EXISTS asks_by_ref ON asks (coalesce(name, id));
 CREATE INDEX IF NOT EXISTS trace_by_day ON trace (julianday(time));
 CREATE INDEX IF NOT EXISTS inbox_by_day ON inbox (julianday(time));
+CREATE INDEX IF NOT EXISTS trace_by_type ON trace (type);
+CREATE INDEX IF NOT EXISTS ask_withdrawals_by_ask ON ask_withdrawals (ask);
+CREATE INDEX IF NOT EXISTS asks_by_task ON asks (task);
 PRAGMA user_version = 57;
 ";
 

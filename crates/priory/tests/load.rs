@@ -87,7 +87,8 @@ struct Load {
 
 impl Load {
     fn new() -> Self {
-        let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join("load");
+        let dir =
+            Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("load-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         let files = [
             ("factory/factory.toml", FACTORY),
@@ -162,6 +163,11 @@ impl Load {
             )
             .unwrap();
         }
+        tx.execute_batch(
+            "UPDATE tasks SET created = '2026-11-16T08:00:00Z', changed = '2026-11-16T08:00:00Z',
+               entered = '2026-11-16T08:00:00Z'",
+        )
+        .unwrap();
         for id in 1..=asks {
             let answered = id % 3 == 0;
             tx.execute(
@@ -179,6 +185,10 @@ impl Load {
                 .unwrap();
             }
         }
+        tx.execute_batch(
+            "UPDATE ask_revisions SET created = (SELECT created FROM asks WHERE asks.id = ask)",
+        )
+        .unwrap();
         for seq in 1..=inbox_events {
             tx.execute(
                 "INSERT INTO inbox (id, type, subject, time, data, links, task, outcome)
@@ -200,7 +210,10 @@ impl Load {
                  (lower(hex(randomblob(16))), 'factory.step.ended',
                   strftime('%Y-%m-%dT%H:%M:%S.000Z', '2026-11-16T00:00:00Z', ?1),
                   json_object('data', json(?2)))",
-                rusqlite::params![format!("+{} seconds", number * 30), data.to_string()],
+                rusqlite::params![
+                    format!("+{} seconds", number * 100_000 / trace_records),
+                    data.to_string()
+                ],
             )
             .unwrap();
         }
@@ -333,6 +346,24 @@ fn the_daemon_reads_and_routes_within_budget_on_a_loaded_state() {
         "GET /api/tasks",
         slowest(5, || timed_get(&address, "/api/tasks")),
     ));
+
+    let seeded: serde_json::Value = serde_json::from_str(&get(&address, "/api/tasks")).unwrap();
+    assert_eq!(
+        seeded["tasks"].as_array().unwrap().len() as i64,
+        counts().tasks + NEW_ISSUES as i64
+    );
+    let attention = load.priory(&[
+        "report",
+        "attention",
+        "--since",
+        "2026-11-10T00:00:00Z",
+        "--json",
+    ]);
+    let attention: serde_json::Value = serde_json::from_slice(&attention.stdout).unwrap();
+    assert_eq!(
+        attention["tasks"].as_array().unwrap().len() as i64,
+        counts().tasks
+    );
 
     let revision = revision(&load);
     let waiting = {
