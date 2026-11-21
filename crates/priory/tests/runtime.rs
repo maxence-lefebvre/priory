@@ -10212,8 +10212,9 @@ fn a_holder_killed_before_the_daemon_takes_the_command_leaves_no_command_running
         );
     };
     let mut holder = acquire(&setup, "8", &held("a"));
+    let db = setup.dir.join("priory.db");
     let grants = || {
-        rusqlite::Connection::open(setup.dir.join("priory.db"))
+        rusqlite::Connection::open(&db)
             .and_then(|db| {
                 db.query_row("SELECT count(*) FROM grants", [], |row| {
                     row.get::<_, i64>(0)
@@ -10238,20 +10239,25 @@ fn a_holder_killed_before_the_daemon_takes_the_command_leaves_no_command_running
     }
     holder.kill().unwrap();
     holder.wait().unwrap();
-    signal("-CONT", &daemon);
+    // The restart loses the command's pid hand-off, still queued at the stopped daemon.
+    setup.crash();
+    setup.start();
 
-    let deadline = Instant::now() + Duration::from_secs(60);
-    while grants() != 0 {
-        assert!(Instant::now() < deadline, "the grant never went");
+    // Either the daemon took the command's pid first and the command runs with its grant, or the
+    // command never ran and the grant went.
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while grants() != 0 && Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(50));
     }
     std::thread::sleep(Duration::from_millis(500));
-    let started = order(&setup);
+    let (running, held) = (!order(&setup).is_empty(), grants() != 0);
     setup.release("hold-a");
-    assert!(
-        started.is_empty(),
-        "the command ran with no grant behind it: {started:?}"
-    );
+    assert!(running <= held, "the command ran with no grant behind it");
+    let deadline = Instant::now() + Duration::from_secs(60);
+    while grants() != 0 {
+        assert!(Instant::now() < deadline, "the grant leaked");
+        std::thread::sleep(Duration::from_millis(50));
+    }
 }
 
 #[test]

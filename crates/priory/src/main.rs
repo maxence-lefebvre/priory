@@ -1227,9 +1227,10 @@ fn held(
     use std::io::Write;
     use std::os::fd::AsRawFd;
     let (reader, mut writer) = std::io::pipe()?;
-    // The shell opens the pipe's read end through /proc, which keeps the command's stdin as it was.
+    // The shell opens the pipe's read end through /proc by this pid, not $PPID, which a dead holder turns into init, and which keeps the command's stdin as it was.
     let wait = format!(
-        "read -r _ <\"/proc/$PPID/fd/{}\" && exec \"$@\"",
+        "read -r _ <\"/proc/{}/fd/{}\" && exec \"$@\"",
+        std::process::id(),
         reader.as_raw_fd()
     );
     let mut child = Command::new("sh")
