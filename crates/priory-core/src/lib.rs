@@ -24,6 +24,7 @@ pub mod proof;
 mod push;
 pub mod relate;
 pub mod report;
+pub mod risk;
 mod room;
 mod route;
 pub mod runners;

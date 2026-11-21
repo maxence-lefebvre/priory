@@ -5066,6 +5066,33 @@ fn a_note_after_a_step_ask_s_option_that_stops_the_task_is_its_reason() {
 }
 
 #[test]
+fn a_stopping_note_keeps_its_first_line_with_no_tab_as_the_reason() {
+    let workflow = STEPS
+        .replace("start = \"plan\"", "start = \"approve\"")
+        .replace("approved = \"implement\"", "approved = \"plan\"");
+    let mut setup = Setup::with_workflow("step-note-tab", &workflow);
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("asks", |rows| rows.len() == 1);
+
+    let answered = setup.priory(&[
+        "answer",
+        "1",
+        "rejected: too\tbig\nsplit it first",
+        "--revision",
+        "1",
+    ]);
+
+    assert!(answered.status.success(), "{answered:?}");
+    let task = setup.priory(&["task", "1", "--json"]);
+    let task: serde_json::Value = serde_json::from_slice(&task.stdout).unwrap();
+    assert_eq!(
+        task["reason"],
+        "A person answered rejected on step approve, with a note: too big"
+    );
+}
+
+#[test]
 fn a_note_on_a_step_ask_whose_option_leads_to_done_is_refused() {
     let workflow = STEPS
         .replace("start = \"plan\"", "start = \"approve\"")
@@ -17221,11 +17248,16 @@ fn a_person_gives_a_started_task_to_another_runner_which_starts_it_over_and_its_
         })
     });
     let factory = b.dir.join("factory");
-    let give = |runner: &str| {
+    let give = |runner: &str, flags: &[&str]| {
         let dir = factory.to_str().unwrap();
-        b.priory(&["give", dir, "github:owner/repo#1", runner])
+        b.command(exe.to_str().unwrap())
+            .env("PRIORY_NOW", AN_HOUR_LATER)
+            .args(["give", dir, "github:owner/repo#1", runner])
+            .args(flags)
+            .output()
+            .unwrap()
     };
-    let given = give("b");
+    let given = give("b", &[]);
     assert_eq!(
         String::from_utf8_lossy(&given.stdout),
         "github:owner/repo#1 given to runner b: b takes it and a drops it as each reads the log\n",
@@ -17237,18 +17269,19 @@ fn a_person_gives_a_started_task_to_another_runner_which_starts_it_over_and_its_
     a.start_with(exe, &[("PRIORY_NOW", AN_HOUR_LATER)]);
     let tasks = a.until("tasks", |rows| rows[0][4] == "dropped");
     assert_eq!(tasks.len(), 1);
-    let refused = give("b");
+    let refused = give("b", &[]);
     assert_eq!(
         String::from_utf8_lossy(&refused.stderr),
         "priory give: runner b holds github:owner/repo#1 already\n"
     );
-    let unknown = give("c");
+    let unknown = give("c", &[]);
     assert_eq!(
         String::from_utf8_lossy(&unknown.stderr),
         "priory give: runner c has no runner file in runners/\n"
     );
 
-    let back = give("a");
+    // b, alive at this hour, holds a live lease.
+    let back = give("a", &["--force"]);
     assert!(
         back.status.success(),
         "{}",
@@ -17257,6 +17290,58 @@ fn a_person_gives_a_started_task_to_another_runner_which_starts_it_over_and_its_
     let tasks = a.until("tasks", |rows| rows.len() == 2 && rows[1][4] == "asleep");
     assert_eq!(tasks[0][4], "dropped", "{tasks:?}");
     b.until("tasks", |rows| rows[0][4] == "dropped");
+}
+
+#[test]
+fn a_person_gives_a_task_whose_owner_may_still_run_it_only_with_force() {
+    let mut a = runner("give-live", "a", None);
+    let mut b = runner("give-live", "b", Some(&a));
+    let mut asked = requested(1);
+    asked.data["workflow"] = json!("approve");
+    a.publish(&asked);
+    let exe = Path::new(env!("CARGO_BIN_EXE_priory"));
+    a.start_with(exe, &[("PRIORY_NOW", T0)]);
+    a.until("asks", |rows| rows.len() == 1);
+    logged(
+        &a,
+        "priory.task.held",
+        json!({ "key": "github:owner/repo#1", "runner": "a", "hold": "kept" }),
+    );
+
+    b.start_with(exe, &[("PRIORY_NOW", "2026-11-21T10:10:00Z")]);
+    b.until("inbox", |rows| {
+        rows.iter().any(|row| {
+            row.contains(&"priory.runner.alive".to_owned()) && row.contains(&"b".to_owned())
+        })
+    });
+    let factory = b.dir.join("factory");
+    let give = |now: &str, flags: &[&str]| {
+        let dir = factory.to_str().unwrap();
+        b.command(exe.to_str().unwrap())
+            .env("PRIORY_NOW", now)
+            .args(["give", dir, "github:owner/repo#1", "b"])
+            .args(flags)
+            .output()
+            .unwrap()
+    };
+    let refused = give("2026-11-21T10:29:59Z", &[]);
+    assert_eq!(
+        String::from_utf8_lossy(&refused.stderr),
+        "priory give: runner a's lease lasts until 2026-11-21T10:30:00Z, and a may still run \
+         github:owner/repo#1: give it then, or pass --force\n"
+    );
+    std::thread::sleep(Duration::from_secs(2));
+    assert!(b.rows("tasks").is_empty(), "nothing moved");
+    assert_eq!(a.rows("tasks")[0][4], "asleep");
+
+    let forced = give("2026-11-21T10:10:00Z", &["--force"]);
+    assert!(
+        forced.status.success(),
+        "{}",
+        String::from_utf8_lossy(&forced.stderr)
+    );
+    b.until("asks", |rows| rows.len() == 1);
+    a.until("tasks", |rows| rows[0][4] == "dropped");
 }
 
 #[test]
@@ -17458,6 +17543,20 @@ fn a_persons_call_without_an_open_ask_naming_it_is_refused() {
     let (text, error) = result_sorting(&setup, sorted);
     assert!(error, "an ask about another item does not cover it: {text}");
     assert_eq!(task_json(&setup, "1")["triage"], json!([]));
+}
+
+#[test]
+fn a_persons_call_whose_ask_the_person_dismissed_is_accepted() {
+    let setup = woken_by_feedback("triage-dismissed");
+    let sorted =
+        json!({ REVIEW_URL: "persons-call", THREAD_URL: "trivial", OTHER_URL: "nothing-to-do" });
+    ask_about(&setup, &[REVIEW_URL]);
+    let dismissed = setup.priory(&["dismiss", "--expected", "1", "1"]);
+    assert!(dismissed.status.success(), "{dismissed:?}");
+
+    let (text, error) = result_sorting(&setup, sorted);
+
+    assert!(!error, "{text}");
 }
 
 #[test]

@@ -61,8 +61,10 @@ each command unless you pass `--run`. Replace `me@second` with your ssh target.
 4. Give it to the second machine, named by its hostname:
 
    ```sh
-   scripts/second-machine.sh --run priory me@second local give cli:demo-1 key-drum
+   scripts/second-machine.sh --run priory me@second local give cli:demo-1 key-drum --force
    ```
+
+   This machine's runner is alive, so `give` needs `--force` to move its task.
 
    The second runner runs the fake agent, and the task asks at its `approve` step.
    `scripts/second-machine.sh --run priory me@second remote asks` prints the ask's id and revision.
@@ -134,4 +136,4 @@ added this guide.
 - This machine holds the log. When it is down, the second runner keeps its started tasks going until
   it is back, as when the tunnel closes.
 - A runner's tasks move only 30 minutes after its last alive message, and only those that never
-  started. Use `priory give` to move one sooner.
+  started. Use `priory give --force` to move one sooner.

@@ -259,10 +259,16 @@ A task's progress changed, through the `progress` tool or `priory progress`. It 
 
 A judgement that arrives after the step, such as a rejected approval, red CI after a merge, or a
 revert. `step_event` is the `id` of the `factory.step.ended` record it judges. Priory writes one per
-task and label, judging the step that graded the task, as [Outcome
+task, label and source event, judging the step that graded the task, as [Outcome
 labels](daemon/trace.md#outcome-labels) describes. Its `data` also holds `factory`,
 `factory_revision`, `workflow`, `task`, `key`, `generation` and `machine` as above, and `grade`, the
 task's grade when it was labeled. A task no step graded has no `step_event`.
+
+| Field        | Required | Meaning                                                              |
+| ------------ | -------- | -------------------------------------------------------------------- |
+| `label`      | yes      | One of the outcome labels                                            |
+| `evidence`   | yes      | The event's URL, or the human step and its answer                    |
+| `happened`   | no       | When the event the label reads happened. The record's `time` is when Priory wrote it. A record written before this field has none |
 
 ```json
 {
@@ -274,7 +280,8 @@ task's grade when it was labeled. A task no step graded has no `step_event`.
   "data": {
     "step_event": "0196f1c2-7a3e-7c41-9b2d-5e8f0a1b2c3d",
     "label": "reverted",
-    "evidence": "https://github.com/example/app/pull/57"
+    "evidence": "https://github.com/example/app/pull/57",
+    "happened": "2026-11-18T08:47:30Z"
   }
 }
 ```

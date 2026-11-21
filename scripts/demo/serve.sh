@@ -1,0 +1,19 @@
+#!/bin/sh
+# Seeds a scratch state with synthetic data and serves it on 127.0.0.1:7391 for 15 minutes.
+# Usage: scripts/demo/serve.sh DIR [PRIORY_BIN]
+# DIR is a new or scratch folder. PRIORY_BIN defaults to target/debug/priory.
+set -eu
+here=$(cd "$(dirname "$0")" && pwd)
+root=$(cd "$here/../.." && pwd)
+dir=${1:?usage: serve.sh DIR [PRIORY_BIN]}
+bin=${2:-$root/target/debug/priory}
+mkdir -p "$dir/home" "$dir/factory"
+cp -R "$root/examples/batches/." "$dir/factory/"
+cp "$here/prices.toml" "$dir/factory/prices.toml"
+sed -i 's/^name = .*/name = "shop"/' "$dir/factory/factory.toml"
+printf '\n[serve]\nlisten = "127.0.0.1:7391"\ntoken_env = "PRIORY_TOKEN"\n' >> "$dir/factory/factory.toml"
+export PRIORY_DB="$dir/state.db" PRIORY_HOME="$dir/home" PRIORY_TOKEN=demo-token
+[ ! -e "$PRIORY_DB" ] || { echo "serve.sh: $PRIORY_DB exists; give a new folder" >&2; exit 1; }
+"$bin" tasks --json > /dev/null # any verb creates and migrates the state
+sqlite3 "$PRIORY_DB" < "$here/seed.sql"
+exec timeout 900 "$bin" serve "$dir/factory"
