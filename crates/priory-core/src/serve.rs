@@ -312,11 +312,21 @@ fn route(
                 },
                 _ => return Reply::error(400, "desk takes one parameter: person=NAME"),
             };
+            let now = match intake::now() {
+                Ok(now) => now,
+                Err(error) => return Reply::error(500, &error),
+            };
             listing::revised(db, "desk", |db| {
-                listing::desk(db, home, false, &person).map(Some)
+                listing::desk(db, home, false, &person, now).map(Some)
             })
         }
-        "/api/inbox" => listing::revised(db, "inbox", |db| listing::inbox(db, 0).map(Some)),
+        "/api/inbox" => match query {
+            "" => listing::revised(db, "inbox", |db| listing::inbox(db, 0).map(Some)),
+            "unrouted=1" => {
+                listing::revised(db, "unrouted", |db| listing::unrouted(db, 0).map(Some))
+            }
+            _ => return Reply::error(400, "inbox takes one parameter: unrouted=1"),
+        },
         "/api/asks" => {
             let (mut bands, mut risks, mut all) = (Vec::new(), Vec::new(), false);
             for pair in query.split('&').filter(|pair| !pair.is_empty()) {

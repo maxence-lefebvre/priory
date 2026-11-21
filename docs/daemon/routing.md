@@ -151,6 +151,45 @@ The intake publishes a source event before its task request. So when the source 
 task owns it yet, and it is recorded as `ignored`. The task that its request creates keeps the
 event's id in `source`, and the task's first prompt carries the event.
 
+## The task's inbox
+
+`priory task ID --json` and `/api/tasks/{id}` list, as `inbox`, every event routed to the task,
+newest first: its source event, the events routing gave it, and the events that fired one of its
+waits while another task took them (see [serve.md](../reference/serve.md#task-in-detail)). Each
+event has its outcome, `prompt`, the state of the outbox prompt that carries it, and `wait`, the
+task's wait it fired. Together they say what the event did:
+
+| `outcome` | `prompt` | What happened |
+| --------- | -------- | ------------- |
+| `woke` | `confirmed` | It woke the asleep task, and its prompt was delivered |
+| `reopened` | `confirmed` | It reopened the done task, and its prompt was delivered |
+| `coalesced` | null | A schedule firing or review request that the task already covered |
+| `said` | `queued` or `confirmed` | A repeated `priory request` for the task's key: its text is queued, then delivered |
+| `ignored` | `confirmed` | The task's source event, which its first prompt carried |
+| `kept` | `queued` | Its prompt is still queued: for after the current turn, or for the next run |
+| `kept` | `confirmed` | Delivered as a prompt |
+| `kept` | null | Kept while the task was asleep, or not yet running: its next run reads it |
+| any | `withdrawn` | A reopen or `priory revive` withdrew its prompt |
+
+An event with `wait` set fired that wait: an asleep task wakes on it, and another task keeps its
+state until its next run. An event that only a subscription delivered to a second task, beside the
+task routing gave it, is not in the second task's inbox: nothing records that delivery.
+
+A prompt is `attempted` while the agent is being typed to, and `uncertain` when a daemon restart cut
+that short (see [outbox.md](outbox.md)).
+
+## Events that reach no task
+
+An event is unrouted when its outcome is `ignored`, no task took it, and it is not the source event
+of a task that its request created. Such an event concerned no active task, so it changed nothing.
+An event that names no resource is not listed, since no task could own it.
+
+`priory inbox --unrouted [--since SEQ]` and `/api/inbox?unrouted=1` group these events by the first
+resource each names (see [serve.md](../reference/serve.md#unrouted)). Each group prints the two
+commands that would route its next event: `priory subscribe TASK RESOURCE` gives it to an existing
+task, and `priory request --workflow WORKFLOW --key RESOURCE TEXT` creates one. The Desk counts the
+unrouted events of the last 24 hours (see [desk.md](desk.md#unrouted-events)).
+
 ## What a kept message does
 
 What happens to a `kept` message depends on the task's state:

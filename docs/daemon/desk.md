@@ -26,6 +26,17 @@ web Desk and the Herdr Desk show it as "with <lead>" on the ask's row and in the
 
 It lists only asks and prompts of active tasks, holds of held tasks and waiting memory grants. Then the `queue` rows in start order, then one `worktree` row per worktree the sweep keeps. `priory asks` prints every open ask. Both leave snoozed items out, unless you pass `--all` (see Snooze).
 
+## Unrouted events
+
+When events reached no task in the last 24 hours, `priory desk` prints one line before its rows:
+
+```text
+3 events reached no task in the last 24 hours. See them with `priory inbox --unrouted`.
+```
+
+It is a count, not an alarm: nothing ranks for it. `priory desk --json` carries it as
+`counts.unrouted`, 0 when there are none. See [routing.md](routing.md#events-that-reach-no-task).
+
 ## The next thing
 
 The desk ranks what waits on a person, so a client can show one next thing. `priory desk --json`
