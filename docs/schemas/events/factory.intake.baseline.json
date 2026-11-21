@@ -67,7 +67,7 @@
           "type": "array"
         },
         "linear_id": {
-          "description": "Linear's id of what the event is about: the issue, history entry or comment.",
+          "description": "Linear's id of what the event is about: the issue, history entry or comment. A webhook's\nstate change has no history entry, so it holds the issue's id.",
           "type": "string"
         },
         "project": {

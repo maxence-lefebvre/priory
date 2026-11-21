@@ -30,6 +30,9 @@ web = true                                     # false serves only /api
 [webhooks.github]
 secret_env = "PRIORY_GITHUB_WEBHOOK_SECRET"    # the variable holding the webhook's secret
 
+[webhooks.linear]
+secret_env = "PRIORY_LINEAR_WEBHOOK_SECRET"    # the variable holding Linear's signing secret
+
 [asks]
 deliver = "bin/deliver"                        # delivers outside answers, from the factory folder
 targets = { ops = "../ops" }                   # where an answer can run an ask's command

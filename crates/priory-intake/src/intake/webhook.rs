@@ -302,7 +302,7 @@ fn hex(bytes: &[u8]) -> String {
 }
 
 /// The bytes of a lowercase or uppercase hex string, or none when it is not one.
-fn unhex(hex: &[u8]) -> Option<Vec<u8>> {
+pub(super) fn unhex(hex: &[u8]) -> Option<Vec<u8>> {
     if !hex.len().is_multiple_of(2) || !hex.iter().all(u8::is_ascii_hexdigit) {
         return None;
     }

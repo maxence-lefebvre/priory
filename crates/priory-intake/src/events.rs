@@ -391,7 +391,8 @@ pub struct ReviewRequestRemoved {
 pub struct LinearIssue {
     /// The issue identifier, such as `ENG-7`.
     pub issue: String,
-    /// Linear's id of what the event is about: the issue, history entry or comment.
+    /// Linear's id of what the event is about: the issue, history entry or comment. A webhook's
+    /// state change has no history entry, so it holds the issue's id.
     pub linear_id: String,
     /// The issue title.
     pub title: String,
@@ -446,6 +447,10 @@ pub struct LinearIssueCreated {
     pub actor: Option<String>,
     /// The identifiers of the open issues that block it; null past 20 relations.
     pub blockers: Option<Vec<String>>,
+    /// The `Linear-Delivery` of the webhook delivery that reported it; absent when a poll did.
+    /// Linear does not sign it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub delivery: Option<String>,
     #[serde(flatten)]
     pub source: Source,
 }
@@ -456,14 +461,18 @@ pub struct LinearIssueCreated {
 pub struct LinearStateChanged {
     #[serde(flatten)]
     pub issue: LinearIssue,
-    /// The state it moved from.
-    pub from: String,
+    /// The state it moved from; null from a webhook, whose payload names only its id.
+    pub from: Option<String>,
     /// The state it moved to.
     pub to: String,
     /// The Linear display name of who moved it.
     pub actor: Option<String>,
     /// The identifiers of the open issues that block it; null past 20 relations.
     pub blockers: Option<Vec<String>>,
+    /// The `Linear-Delivery` of the webhook delivery that reported it; absent when a poll did.
+    /// Linear does not sign it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub delivery: Option<String>,
     #[serde(flatten)]
     pub source: Source,
 }
@@ -493,6 +502,10 @@ pub struct LinearCommentCreated {
     pub body: String,
     /// The Linear display name of who commented.
     pub actor: Option<String>,
+    /// The `Linear-Delivery` of the webhook delivery that reported it; absent when a poll did.
+    /// Linear does not sign it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub delivery: Option<String>,
     #[serde(flatten)]
     pub source: Source,
 }
