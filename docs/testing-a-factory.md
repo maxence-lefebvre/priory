@@ -8,8 +8,10 @@ state, before any real agent runs. It assumes a clone of this repository with it
 The test copies your factory into a scratch folder and replaces its runners with one for the test
 host. It then starts this build's daemon with the fake `claude`, `codex` and `gh` of
 `crates/priory/tests/fake/`, and a bare Git origin for each repository your triggers name. It
-asks for one task, plays your scenario, and checks where the task ended. Nothing reaches GitHub,
-Linear or a model, and nothing touches your Priory home.
+asks for one task, plays your scenario, and checks where the task ended. `gh`, `claude`, `codex`
+and Git's GitHub remotes go to fakes, and every process starts with a cleared environment, a
+scratch home and a scratch Priory home. Your factory's own scripts still run as written, so read
+what a `run` step calls before you play it.
 
 ## 1. Write a scenario
 
@@ -43,7 +45,9 @@ state = "done"
 ```
 
 Each turn's calls are the tool calls the fake agent makes, in order, before its turn ends. One
-model step usually takes one turn. A step that waits takes a second turn once an event wakes it.
+model step usually takes one turn. A step whose agent calls `wait` takes another turn once an event
+wakes it. A wait that a code step's action made, such as `open-pr` waiting on checks, takes none.
+Each event must wake the task within 10 seconds, and every event must play before the task ends.
 
 ## 2. Run it
 
@@ -84,5 +88,8 @@ test that CI runs does the same, so the harness itself stays covered.
   `defaultMode`. The guard's own decision is what `allowed` and `denied` check.
 - The fake agent runs no commands. A call's `run` key runs a command in the factory copy before
   the daemon starts, and uses what it prints as that call's arguments.
+- The turns form one queue, so a scenario follows one task whose agent runs at a time. A firing
+  that also starts a code-step task, such as a poll, is fine; name the task to follow with
+  `workflow`.
 - A Linear or Slack source has no fake answers. Its poll fails, and a `[fire]` scenario still fires
   its schedule triggers.

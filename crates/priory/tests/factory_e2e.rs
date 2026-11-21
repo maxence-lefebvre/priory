@@ -20,7 +20,7 @@ const SETTLED: &[&str] = &["done", "dropped", "failed", "blocked"];
 fn the_groom_example_takes_a_green_issue_to_a_pull_request_whose_checks_pass() {
     let examples = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/groom");
 
-    let played = Play::run(&examples, &examples.join("e2e/green.toml"));
+    let played = Play::run("ci", &examples, &examples.join("e2e/green.toml"));
 
     played.check();
 }
@@ -33,7 +33,7 @@ fn a_factory_plays_the_scenario_the_environment_names() {
     let scenario = std::env::var_os("PRIORY_E2E_SCENARIO")
         .map_or_else(|| factory.join("e2e/green.toml"), PathBuf::from);
 
-    let played = Play::run(&factory, &scenario);
+    let played = Play::run("env", &factory, &scenario);
 
     println!("{}", played.report());
     played.check();
@@ -50,13 +50,14 @@ struct Play {
 }
 
 impl Play {
-    fn run(factory: &Path, file: &Path) -> Self {
+    fn run(test: &str, factory: &Path, file: &Path) -> Self {
         let scenario: toml::Value = fs::read_to_string(file)
             .map_err(|error| error.to_string())
             .and_then(|text| toml::from_str(&text).map_err(|error| error.to_string()))
             .unwrap_or_else(|error| panic!("{}: {error}", file.display()));
         let dir = Path::new(env!("CARGO_TARGET_TMPDIR"))
             .join("e2e")
+            .join(test)
             .join(scenario_name(factory, file));
         let _ = fs::remove_dir_all(&dir);
         let tmux = TmuxDir::new(&dir);
@@ -72,6 +73,8 @@ impl Play {
         play.origins();
         play.bus().declare(&Output::new(OUTPUT)).unwrap();
         play.queue_turns();
+        // A new state file switches to WAL on its first open, which does not wait for another opener.
+        play.json(&["tasks", "--json"]);
         play.start();
         play.request();
         play.drive();
@@ -94,6 +97,10 @@ impl Play {
             .unwrap();
         assert!(copied.success(), "cp {}", factory.display());
         for (path, content) in self.table("files") {
+            assert!(
+                !path.starts_with('/') && !path.split('/').any(|part| part == ".."),
+                "{path} leaves the factory copy"
+            );
             let file = match path.strip_prefix("~/") {
                 Some(home) => self.dir.join("home").join(home),
                 None => self.factory().join(path),
@@ -148,20 +155,20 @@ impl Play {
             let file = self.dir.join(format!("gh/{index}"));
             let answer = answer.as_str().expect("a gh answer is a string");
             write(&file, answer);
+            let file = shell_quote(&file.display().to_string());
             let reply = if answer.starts_with("#!") {
-                "exec '{}' \"$@\""
+                format!("exec {file} \"$@\"")
             } else {
-                "cat '{}'"
+                format!("cat {file}")
             };
-            let reply = reply.replace("{}", &file.display().to_string());
             script.push_str(&format!(
                 "  {}*) jq -nc '$ARGS.positional' --args -- \"$@\" >> \"$FAKE_DIR/gh.log\"; {reply} ;;\n",
                 shell_quote(prefix),
             ));
         }
         script.push_str(&format!(
-            "  *) exec '{}/gh' \"$@\" ;;\nesac\n",
-            fake_dir().display()
+            "  *) exec {} \"$@\" ;;\nesac\n",
+            shell_quote(&fake_dir().join("gh").display().to_string())
         ));
         write(&bin.join("gh"), &script);
         std::os::unix::fs::symlink(env!("CARGO_BIN_EXE_priory"), bin.join("priory")).unwrap();
@@ -177,11 +184,11 @@ impl Play {
             &["add", "README.md"],
             &["commit", "-qm", "init"],
         ] {
-            assert!(git(&work).args(args).status().unwrap().success());
+            assert!(git(self, &work).args(args).status().unwrap().success());
         }
         for repo in self.repos() {
             let bare = self.dir.join(format!("origin/{repo}.git"));
-            let cloned = git(&self.dir)
+            let cloned = git(self, &self.dir)
                 .args(["clone", "-q", "--bare"])
                 .arg(&work)
                 .arg(&bare)
@@ -378,6 +385,11 @@ impl Play {
             std::thread::sleep(Duration::from_millis(100));
             let Some(task) = self.task() else { continue };
             if SETTLED.contains(&task["state"].as_str().unwrap_or_default()) {
+                assert!(
+                    next.is_none(),
+                    "the task settled before {next:?} played\n{}",
+                    self.report()
+                );
                 return;
             }
             if task["state"] != "asleep" {
@@ -391,21 +403,28 @@ impl Play {
                 Some(option) => self.answer(option.as_str().expect("answer is an option")),
                 None => self.publish(event),
             }
+            assert!(
+                self.woken(&task),
+                "{event} did not wake the task\n{}",
+                self.report()
+            );
             next = events.next();
-            self.woken(&task);
         }
     }
 
-    /// Waits up to 10 seconds for the task to leave the sleep `asleep` saw.
-    fn woken(&self, asleep: &Value) {
+    /// Whether the task leaves the sleep `asleep` saw within 10 seconds.
+    fn woken(&self, asleep: &Value) -> bool {
         let deadline = Instant::now() + Duration::from_secs(10);
-        while Instant::now() < deadline
-            && self
+        while Instant::now() < deadline {
+            let still = self
                 .task()
-                .is_some_and(|task| task["state"] == "asleep" && task["since"] == asleep["since"])
-        {
+                .is_some_and(|task| task["state"] == "asleep" && task["since"] == asleep["since"]);
+            if !still {
+                return true;
+            }
             std::thread::sleep(Duration::from_millis(100));
         }
+        false
     }
 
     /// Publishes one scenario event, with `{head}` in its data replaced by the commit the task's
@@ -427,7 +446,7 @@ impl Play {
         let (Some(repo), Some(branch)) = (task["repo"].as_str(), task["branch"].as_str()) else {
             panic!("{{head}} needs a task with a branch: {task}");
         };
-        let output = git(&self.dir.join(format!("origin/{repo}.git")))
+        let output = git(self, &self.dir.join(format!("origin/{repo}.git")))
             .args(["rev-parse", branch])
             .output()
             .unwrap();
@@ -507,17 +526,19 @@ impl Play {
         report
     }
 
-    /// Asserts each of the scenario's expectations: the steps the task finished, with their
+    /// Asserts each of the scenario's expectations, a path and a state at least: the steps the task finished, with their
     /// outcomes, its final step and state, the commands the guard denied it or let through, the text the fake
     /// agent's tool calls got back, and the output of `priory` commands.
     fn check(&self) {
         let expect = &self.scenario["expect"];
         let task = self.task().unwrap_or(Value::Null);
         let report = self.report();
-        if let Some(path) = expect.get("path") {
-            let path: Vec<String> = serde_json::from_value(path.clone()).unwrap();
-            assert_eq!(self.path(), path, "{report}");
-        }
+        let path = expect
+            .get("path")
+            .expect("a scenario expects a path, [] for none");
+        let path: Vec<String> = serde_json::from_value(path.clone()).unwrap();
+        assert_eq!(self.path(), path, "{report}");
+        assert!(expect.get("state").is_some(), "a scenario expects a state");
         for field in ["state", "step"] {
             if let Some(value) = expect.get(field) {
                 assert_eq!(&task[field], value, "{field}\n{report}");
@@ -582,7 +603,6 @@ impl Drop for Play {
             let _ = daemon.kill();
             let _ = daemon.wait();
         }
-        self.tmux.kill();
     }
 }
 
@@ -614,10 +634,12 @@ fn write(file: &Path, content: &str) {
     }
 }
 
-fn git(dir: &Path) -> Command {
-    let mut command = Command::new("git");
+/// Git with the test's own environment and home, so no global or system config applies.
+fn git(play: &Play, dir: &Path) -> Command {
+    let mut command = play.command("git");
     command
         .current_dir(dir)
+        .env("GIT_CONFIG_NOSYSTEM", "1")
         .env("GIT_AUTHOR_NAME", "e2e")
         .env("GIT_AUTHOR_EMAIL", "e2e@example.com")
         .env("GIT_COMMITTER_NAME", "e2e")
