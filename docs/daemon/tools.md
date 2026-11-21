@@ -334,8 +334,8 @@ The built-in actions are `open-pr`, `open-issue` and `run`. `open-pr`:
    the first line of the latest result's `summary`. The body is the `summary`, then its `evidence`.
 
 Its status is `opened` or `failed`. A failure records the error, which a human step reached by
-`next.failed` shows in its question. On `opened`, the task owns the pull request and its events
-route to the task. A pull request that another active task owns fails instead, and that task is
+`next.failed` shows in its question. On `opened`, the task owns the pull request and subscribes to
+it, so its events route to the task until it closes, and its repository is polled. A pull request that another active task owns fails instead, and that task is
 named. If the task then reaches `done` and its latest result names no `commit`, the checks wait of
 Done and checks pins the commit that `open-pr` pushed.
 

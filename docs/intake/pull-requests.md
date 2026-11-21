@@ -13,8 +13,8 @@ consumer can route it to the task that owns the pull request or branch.
 | review thread comments | the repository's `pulls/comments`, newest 100, kept for the pull requests the query read | `github.pull_request_review.submitted` |
 | check runs and snapshots | the same query, on each pull request's head commit | `github.check_run.completed` |
 
-An open wait or a `--merge` hold on a pull request adds its repository to the polled ones (see
-[watches.md](watches.md)). Polling and API cost are in [github-polling.md](github-polling.md).
+An open wait, a `--merge` hold, a subscription or an active task's branch adds its repository to the
+polled ones (see [watches.md](watches.md)). Polling and API cost are in [github-polling.md](github-polling.md).
 
 ## Trigger
 
