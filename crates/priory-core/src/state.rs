@@ -1472,26 +1472,26 @@ fn refiltered(data: &serde_json::Value) -> String {
 }
 
 /// Records `message` in the inbox and applies its route, in one transaction. A message
-/// already in the inbox changes nothing. Returns the tmux session of a run it ended, to kill.
+/// already in the inbox changes nothing. Returns the tmux sessions of the runs it ended, to kill.
 pub(crate) fn handle(
     db: &mut Connection,
     message: &Message,
     trace: &crate::trace::Trace,
     counter: Option<&crate::embed::Counter>,
-) -> Result<Option<String>, Box<dyn std::error::Error>> {
+) -> Result<Vec<String>, Box<dyn std::error::Error>> {
     let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
     let kill = handle_in(&tx, message, trace, counter)?;
     tx.commit()?;
     Ok(kill)
 }
 
-/// Records `message` in `tx` and routes it, returning the tmux session to kill once it commits.
+/// Records `message` in `tx` and routes it, returning the tmux sessions to kill once it commits.
 pub(crate) fn handle_in(
     tx: &Transaction,
     message: &Message,
     trace: &crate::trace::Trace,
     counter: Option<&crate::embed::Counter>,
-) -> Result<Option<String>, Box<dyn std::error::Error>> {
+) -> Result<Vec<String>, Box<dyn std::error::Error>> {
     let seen = tx
         .query_row(
             "SELECT 1 FROM inbox WHERE id = ?1",
@@ -1500,22 +1500,23 @@ pub(crate) fn handle_in(
         )
         .optional()?;
     if seen.is_some() {
-        return Ok(None);
+        return Ok(Vec::new());
     }
     route_in(tx, message, trace, counter)
 }
 
 /// Routes `message` in `tx` and records it, or records its new route when the inbox holds it.
+/// Returns the tmux session of each run it ended, to kill once it commits.
 pub(crate) fn route_in(
     tx: &Transaction,
     message: &Message,
     trace: &crate::trace::Trace,
     counter: Option<&crate::embed::Counter>,
-) -> Result<Option<String>, Box<dyn std::error::Error>> {
+) -> Result<Vec<String>, Box<dyn std::error::Error>> {
     let factory = trace.factory;
     if route::outsider(message) {
         record(tx, message, None, "outsider", None)?;
-        return Ok(None);
+        return Ok(Vec::new());
     }
     if let Some(me) = trace.runner.as_deref()
         && let Some(kill) = crate::runners::handle(tx, message, me, trace, counter)?
@@ -1669,10 +1670,10 @@ pub(crate) fn route_in(
     crate::hold::event(tx, &resources)?;
     // The keyed task keeps the event; another task that shares the resource hears it through its
     // wait or its subscription. A merge that fires a gate may end a run a person's `say` started.
-    let mut kill = None;
+    let mut kill = Vec::new();
     for other in owners.iter().filter(|other| Some(other.id) != task) {
         let (fired, ended) = crate::tools::event(tx, other.id, seq, factory)?;
-        kill = kill.or(ended);
+        kill.extend(ended);
         if !fired
             && let Some((outcome, prompt)) =
                 delivered(tx, other.id, message, &resources, None, factory)?
@@ -1687,7 +1688,7 @@ pub(crate) fn route_in(
     match (task, outcome) {
         (Some(task), "kept") => {
             let (fired, ended) = crate::tools::event(tx, task, seq, factory)?;
-            kill = kill.or(ended);
+            kill.extend(ended);
             if !fired
                 && delivered(tx, task, message, &resources, Some(seq), factory)?
                     .is_some_and(|(outcome, _)| outcome == "woke")
@@ -1718,7 +1719,7 @@ pub(crate) fn route_in(
             // An agent that cannot hear it yet reads the request with its next prompt instead.
             if crate::tools::say(tx, task, &text, &state, &factory.workflows)?.is_err() {
                 tx.execute("UPDATE inbox SET outcome = 'kept' WHERE seq = ?1", [seq])?;
-                crate::tools::event(tx, task, seq, factory)?;
+                kill.extend(crate::tools::event(tx, task, seq, factory)?.1);
             } else {
                 tx.execute(
                     "UPDATE inbox SET outbox = (SELECT max(id) FROM outbox WHERE task = ?2 AND state = 'queued')
@@ -1729,7 +1730,8 @@ pub(crate) fn route_in(
         }
         (Some(task), "reopened") => crate::tools::reopen(tx, trace, task, seq)?,
         (Some(task), "withdrew") => {
-            return Ok(crate::tools::cancel(tx, task, "review request removed")?.or(kill));
+            kill.extend(crate::tools::cancel(tx, task, "review request removed")?);
+            return Ok(kill);
         }
         _ => {}
     }
