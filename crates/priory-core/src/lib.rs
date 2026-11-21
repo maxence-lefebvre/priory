@@ -20,6 +20,7 @@ pub mod serve;
 pub mod snooze;
 pub mod stall;
 pub mod state;
+pub mod subscribe;
 mod summary;
 pub mod sweep;
 pub mod tools;
