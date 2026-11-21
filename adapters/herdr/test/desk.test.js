@@ -261,3 +261,17 @@ test("Open task opens the Task panel, and Attach stays its own action", async ()
   press(draw(panel, cx), "open-ask:2");
   assert.equal(herdr.shared.get("priory.task.open").task, 2);
 });
+
+test("a going batch is one Later row, with a muted layers tile, its counts, and what starts next below", () => {
+  const batch = {
+    since: "2026-11-20T07:00:00Z", kind: "batch", id: 4, task: 30, key: "batch:2026-11-21-1", step: "close", lane: "billing/exports",
+    what: "Invoice exports: 1 merged, 3 started, 2 planned. Next: tasks 36 and 37 start when task 34 merges.",
+    generation: 1, snoozed_until: null, snoozed_at: null, back_early: null,
+  };
+  const desk = { ...data.desk, items: [...data.desk.items, batch] };
+  const later = deskModel({ ...data, desk }, { now }).sections("needs")[2].rows;
+  const row = later.find((/** @type {any} */ row) => row.kind === "batch");
+  assert.deepEqual([row.key, row.text, row.progress, row.recommends, row.snooze], [
+    "batch:2026-11-21-1", "Invoice exports: 1 merged, 3 started, 2 planned.", ["Next: tasks 36 and 37 start when task 34 merges."], null, null,
+  ]);
+});

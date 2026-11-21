@@ -8,7 +8,7 @@ import { dossier, refusal } from "./reports.js";
 import { prStack } from "./stack.js";
 import { KINDS, edgeStyle, nodeShape, timeline, ungatedPairs } from "./flows.js";
 import { handled, neverOwned, routeAction, unroutedNote } from "./inbox.js";
-import { actionNote, dueParts, mergeSince, nextLink, progressView, rowAction, sectionInView, sinceGroups } from "./desk.js";
+import { actionNote, batchParts, dueParts, mergeSince, nextLink, progressView, rowAction, sectionInView, sinceGroups } from "./desk.js";
 
 const ICONS = {
   check: '<path d="M20 6 9 17l-5-5"/>',
@@ -17,6 +17,7 @@ const ICONS = {
   x: '<path d="M18 6 6 18"/><path d="m6 6 12 12"/>',
   "circle-x": '<circle cx="12" cy="12" r="10"/><path d="m15 9-6 6"/><path d="m9 9 6 6"/>',
   square: '<rect width="18" height="18" x="3" y="3" rx="2"/>',
+  layers: '<path d="m12.83 2.18a2 2 0 0 0-1.66 0L2.6 6.08a1 1 0 0 0 0 1.83l8.58 3.91a2 2 0 0 0 1.66 0l8.58-3.9a1 1 0 0 0 0-1.83Z"/><path d="m22 17.65-9.17 4.16a2 2 0 0 1-1.66 0L2 17.65"/><path d="m22 12.65-9.17 4.16a2 2 0 0 1-1.66 0L2 12.65"/>',
   "circle-dashed": '<path d="M10.1 2.18a9.93 9.93 0 0 1 3.8 0"/><path d="M17.6 3.71a9.95 9.95 0 0 1 2.69 2.7"/><path d="M21.82 10.1a9.93 9.93 0 0 1 0 3.8"/><path d="M20.29 17.6a9.95 9.95 0 0 1-2.7 2.69"/><path d="M13.9 21.82a9.94 9.94 0 0 1-3.8 0"/><path d="M6.4 20.29a9.95 9.95 0 0 1-2.69-2.7"/><path d="M2.18 13.9a9.93 9.93 0 0 1 0-3.8"/><path d="M3.71 6.4a9.95 9.95 0 0 1 2.7-2.69"/>',
   "circle-dot": '<circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="1"/>',
   "circle-help": '<circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><path d="M12 17h.01"/>',
@@ -79,7 +80,7 @@ const STATES = {
   running: ["live", null], asleep: ["muted", "moon"], blocked: ["warn", "hand"], done: ["ok", "check"],
   failed: ["danger", "circle-x"], dropped: ["muted", "minus"], lost: ["warn", "unplug"],
   ask: ["wait", "ask"], answered: ["muted", "check"], withdrawn: ["muted", "minus"], prompt: ["warn", "hand"],
-  refused: ["warn", "x"], moved: ["muted", "check"], todo: ["wait", "square"],
+  refused: ["warn", "x"], moved: ["muted", "check"], todo: ["wait", "square"], batch: ["muted", "layers"],
 };
 const role = (state) => (STATES[state] || ["muted", "circle-help"])[0];
 function tile(state, size = "") {
@@ -321,13 +322,15 @@ function olderRow(listing, count, wide) {
 
 function itemRow(item) {
   // An uncertain command, like an uncertain prompt, waits on a person to check what happened.
-  const kind = ["prompt", "command"].includes(item.kind) ? "prompt" : ["blocked", "failed"].includes(item.kind) ? item.kind : item.kind === "held" ? "held" : "queued";
+  const kind = ["prompt", "command"].includes(item.kind) ? "prompt" : ["blocked", "failed", "held", "batch"].includes(item.kind) ? item.kind : "queued";
   const stopped = ["blocked", "failed"].includes(item.kind);
-  const key = stopped ? html`<a class="mono" href="/tasks/${item.task}">${item.key || ""}</a>` : html`<span class="mono">${item.key || ""}</span>`;
+  // A batch has no page yet, so its row opens its planning task.
+  const key = stopped || item.kind === "batch" ? html`<a class="mono" href="/tasks/${item.task}">${item.key || ""}</a>` : html`<span class="mono">${item.key || ""}</span>`;
+  const { line, next } = item.kind === "batch" ? batchParts(item.what) : { line: item.what, next: null };
   return html`<div class="row">
     ${tile(kind)}
-    <span class="l1">${key}<span>${item.step || ""}</span><span>${item.kind}</span>${item.task ? prsTag({}, item.task) : ""}<span class="age">${timeTag(item.since)}</span></span>
-    <span class="l2 r t-${role(kind)}">${autolinked(item.what, null)}</span>${stopped ? taskActs(item.task, item.kind) : rowActs(item)}</div>`;
+    <span class="l1">${key}<span>${item.step || ""}</span><span>${item.kind}</span>${item.task && item.kind !== "batch" ? prsTag({}, item.task) : ""}<span class="age">${timeTag(item.since)}</span></span>
+    <span class="l2 r t-${role(kind)}">${autolinked(line, null)}</span>${next ? html`<span class="l3">${next}</span>` : ""}${stopped ? taskActs(item.task, item.kind) : rowActs(item)}</div>`;
 }
 
 // Read on a report and Release on a held task, the twins of `priory inbox read` and `priory release`.
@@ -639,7 +642,7 @@ function deskTable(model, selected) {
     <td>${stateWord("ask")}</td><td class="mono">${ask.key}</td><td>${ask.step}</td><td class="q"><span>${ask.title || ask.question}</span>${routedTag(ask)}</td>
     <td class="recw">${ask.recommendation || ""}</td><td class="r">${timeTag(ask.since)}</td></tr>`;
   const itemLine = (item) => html`<tr>
-    <td>${stateWord(item.kind === "prompt" ? "prompt" : item.kind)}</td><td class="mono">${["blocked", "failed"].includes(item.kind) ? html`<a href="/tasks/${item.task}">${item.key || ""}</a>` : item.key || ""}</td><td>${item.step || ""}</td>
+    <td>${stateWord(item.kind === "prompt" ? "prompt" : item.kind)}</td><td class="mono">${["blocked", "failed", "batch"].includes(item.kind) ? html`<a href="/tasks/${item.task}">${item.key || ""}</a>` : item.key || ""}</td><td>${item.step || ""}</td>
     <td class="q full t-${role(item.kind)}">${item.task ? prsTag({}, item.task) : ""}<span>${item.what}</span></td><td class="recw">${["blocked", "failed"].includes(item.kind) ? taskActs(item.task, item.kind) : rowActs(item)}</td><td class="r">${timeTag(item.since)}</td></tr>`;
   const todoLine = (item) => html`<tr>
     <td>${stateWord("todo")}</td><td class="mono"></td><td></td><td class="q full"><span>${todoText(item)}</span></td><td class="recw">${todoDone(item.id)}</td><td class="r">${timeTag(item.since)}</td></tr>`;

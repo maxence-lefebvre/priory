@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { nextLink, sinceGroups, mergeSince, progressView, sectionInView, dueText, rowAction, actionNote } from "./desk.js";
+import { nextLink, sinceGroups, mergeSince, progressView, sectionInView, dueText, rowAction, actionNote, batchParts } from "./desk.js";
 
 const why = "an alarm: work stopped and waits on a person";
 
@@ -96,4 +96,12 @@ test("a refused row action says why, and a stale revision says to read again", (
   assert.match(actionNote("Read", 503, {}), /no priory daemon runs beside this server/);
   assert.match(actionNote("Read", 504, {}), /may have applied this/);
   assert.match(actionNote("Read", 0, {}), /may have applied this/);
+});
+
+test("a batch line splits into its counts and what starts next, or keeps a line with no next whole", () => {
+  assert.deepEqual(batchParts("Invoice exports: 1 merged, 2 planned. Next: task 36 starts when task 34 merges."), {
+    line: "Invoice exports: 1 merged, 2 planned.",
+    next: "Next: task 36 starts when task 34 merges.",
+  });
+  assert.deepEqual(batchParts("Invoice exports: 2 started."), { line: "Invoice exports: 2 started.", next: null });
 });

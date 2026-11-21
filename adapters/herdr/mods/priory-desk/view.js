@@ -35,7 +35,13 @@ export function dueText(what, now) {
 }
 
 /** @param {any} item @param {number} now */
-const itemText = (item, now) => (item.kind === "todo" ? dueText(item.what, now) : item.what);
+const itemText = (item, now) => (item.kind === "todo" ? dueText(item.what, now) : item.kind === "batch" ? batchParts(item.what)[0] : item.what);
+
+/** A batch line split into its counts and its `Next: ...` sentence, or none. @param {string} what */
+const batchParts = (what) => {
+  const at = what.indexOf(" Next: ");
+  return at < 0 ? [what, null] : [what.slice(0, at), what.slice(at + 1)];
+};
 
 /** Relative under 24 h, then a date (DESIGN.md, Copy). @param {string} iso @param {number} now */
 export function age(iso, now) {
@@ -96,7 +102,7 @@ export function deskModel({ desk, asks: asksListing, tasks: tasksListing, queue 
       task: item.task,
       prs: prStack(task?.stack).label,
       revision: ask?.revision ?? null,
-      progress: progressLines(task?.progress),
+      progress: item.kind === "batch" ? [batchParts(item.what)[1]].filter(Boolean) : progressLines(task?.progress),
       ...(routedMark(item) && { routed: routedMark(item) }),
     };
   }
