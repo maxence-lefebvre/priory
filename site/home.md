@@ -12,8 +12,8 @@
 </div>
 </div>
 <figure>
-<img class="shot" src="docs/images/web-view-desktop.png" alt="The desk on a 1440 px screen in the Indigo theme, dark mode: a rail of views, the list of asks and stopped tasks with what each recommends, and a drawer with the ask's question, recommendation and options.">
-<figcaption>The desk in the web view, Indigo theme, dark mode.</figcaption>
+<img class="shot" src="docs/images/web-view-desk-ask-1440-dark.png" alt="The desk on a 1440 px screen in dark mode: a rail of views, the list of asks and stopped tasks, and a drawer with the ask 'Open the pull request for ENG-212?', its recommendation and its options.">
+<figcaption>The desk in the web view, dark mode.</figcaption>
 </figure>
 </section>
 

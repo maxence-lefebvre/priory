@@ -21,7 +21,7 @@ class RewriteTarget(unittest.TestCase):
         self.check("../README.md", "docs/prd.md", "../index.md")
 
     def test_keeps_a_copied_file_under_docs(self):
-        self.check("docs/images/web-view-phone.png", "README.md", "docs/images/web-view-phone.png")
+        self.check("docs/images/web-view-ask-390-light.png", "README.md", "docs/images/web-view-ask-390-light.png")
 
     def test_points_a_file_outside_the_book_at_github(self):
         self.check("DESIGN.md#copy", "README.md", f"{build.REPO}/blob/main/DESIGN.md#copy")
