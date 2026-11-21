@@ -2905,7 +2905,7 @@ fn answer_in(
     if kind == "step"
         && let Some(task) = task
     {
-        let target = answered_target(workflows, &workflow, &at, &answer.text);
+        let target = answered_target(workflows, &workflow, &at, &chosen);
         let go = step(workflows, &workflow, &target)
             .is_some_and(|starts| starts.action.as_deref() == Some("start-batch"));
         if let Err(refused) = crate::batch::answering(tx, task, go, &answer.by)? {
@@ -2928,7 +2928,7 @@ fn answer_in(
     };
     if let Some(runs) = runs {
         if kind == "step" {
-            let target = answered_target(workflows, &workflow, &at, &answer.text);
+            let target = answered_target(workflows, &workflow, &at, &chosen);
             approve(
                 tx,
                 task,
@@ -3444,6 +3444,7 @@ fn revive(
     }
     let generation = generation + 1;
     regenerate(tx, act.task, generation)?;
+    crate::hold::revived(tx, act.task)?;
     enter(tx, act.task, &workflow, target, None, "", factory)?;
     if entered.decides == Decider::Model {
         let after = reason.map_or(state.clone(), |reason| format!("{state}: {reason}"));
