@@ -356,24 +356,37 @@ The desk is the "Needs me" view. It lists, top to bottom:
 1. **Count**: the number of open asks in `--type-count` and `--count`, beside "asks need you" in
    `--type-hero` and a line in `--text-3`: "Oldest waits 42 min. 2 stopped." On wide screens
    the count sits at the right of the list header in `--type-count-wide`.
-2. **Saved views**: Needs me, Running, Asleep, All on a phone; Queue joins them on wide screens.
-3. **Room banners** (R4.3): a `--warn-text` edge on `--surface`, the `hard-drive` or
+2. **The next thing**: a card on `--surface` with `--radius-md` and a `--line` edge, in every
+   saved view, with the desk's `next` whatever its kind: an alarm (a blocked or failed task, an
+   uncertain prompt or command, a failing intake) or the ask that ranks first. It shows the tile,
+   key, step and age, the question or the reason, then `why` in the role's text color, and an
+   ask's recommendation. One button opens what answers it: Answer… (primary) for an ask, Open
+   task (secondary) for a task's item, and See the banner for a failing intake, which scrolls to
+   the intake banner. On wide screens the card is at most 440 px wide. With no `next` it hides.
+3. **Saved views**: Needs me, Running, Asleep, All on a phone; Queue joins them on wide screens.
+4. **Room banners** (R4.3): a `--warn-text` edge on `--surface`, the `hard-drive` or
    `memory-stick` icon, and the daemon's sentence: what is short, by how much, since when, and
    the waiting task. The intake banner looks the same with the `unplug` icon: which source fails
    to poll, since when and why, or since when the intake has not polled.
-4. **Asks**: the open asks, oldest first, as ask rows.
-5. **Stopped**: blocked tasks, uncertain prompts (R5.4) and failed tasks, each with its reason in
+5. **Asks**: the open asks, oldest first, as ask rows.
+6. **Stopped**: blocked tasks, uncertain prompts (R5.4) and failed tasks, each with its reason in
    the role's text color. A blocked row carries Resume and Cancel buttons, a failed row Revive, in
    `.btn secondary` under its reason; its key opens the task page. On wide screens the Recommends
    column holds the same buttons, compact. Then **Also waiting**: the desk's other items (held tasks, sweeps, memory waits,
    retired tasks and worktrees that stay), each with the daemon's sentence.
-6. **Up next**: a strip with the next 3 runs, queued or scheduled, as in the Herdr Queue panel.
+7. **Up next**: a strip with the next 3 runs, queued or scheduled, as in the Herdr Queue panel.
    Each line shows when, the task and why, and opens the task. With none, the strip says "Nothing
    is queued or scheduled to run next."
-7. **Asleep**: one row, "9 tasks asleep on waits", that opens the Asleep view. Each of its rows
+8. **Since you looked**: a strip with the events since the person's last visit, one group per
+   task, the task with the newest event first. Each group opens with the task's key, which opens
+   the task page, then each event's time and what. The heading's note says "since 09:12", or
+   "latest 50" before a first visit. With none, the strip says "Nothing happened since you
+   looked." Once the strip is drawn, the page records the visit (`POST /api/seen`) and keeps the
+   events it opened on until it reloads.
+9. **Asleep**: one row, "9 tasks asleep on waits", that opens the Asleep view. Each of its rows
    says what the task waits on and since when: "Waits on review github:o/r#7, 2 h", and opens
    the task page.
-8. Reports waiting for review, when there are any.
+10. Reports waiting for review, when there are any.
 
 On a phone, the **Answer capsule** floats above the tab bar: a full-width `--action` button,
 `--capsule` (54 px) tall, `--capsule-gap` above the tab bar, with `--radius-full` and
@@ -676,6 +689,10 @@ open Priory window when there is one.
   daemon's sentence: "Cancelled: task 3 dropped."
 - **Say**: for an active task, a text box "Say to the agent" and a primary Say button under the
   actions. The draft stays on this device until the daemon takes it.
+- **Progress**, when the task's agent or a person published one: the goal, the acceptance
+  criteria as rows of id in mono, description and a Required or Optional tag, then the latest
+  change and the next action. Each part hides when unset. A **Plan** section follows when the
+  task has a `plan` result.
 - **Workflow grid**: one cell per step in a row of equal columns with `--radius-md` and hairlines
   between cells. Each cell holds the step name and its decider with an icon: `cog` for model and
   code steps, `user` for human steps. Done steps show a check in `--ok-text`. The current step is
@@ -721,7 +738,9 @@ sits under More.
   on `--raised` with "1 of 4 agreed". A report with no pick shows no bar.
 - **Sections** in the report's own order, each a `.sect` with its title and its count. Section
   chips sit under the header and stick to the top. From 1024 px they become a 200 px list on the
-  left, sticky, with each section's count.
+  left, sticky, with each section's count. The lit chip is the last section whose top has passed
+  under the chip bar, or the last section once the list is scrolled to its end. On a phone the
+  chip strip scrolls sideways to keep the lit chip in view.
 - **Row**: its tile, its key in mono, its text, then a caption line with its meta, owner and time.
   The key and the text take the factory's autolinks.
 - **Pick**: a segmented control on `--raised`. The recommended option shows a `check` in

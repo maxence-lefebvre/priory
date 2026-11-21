@@ -5,6 +5,7 @@ import { addBody, addOutcome } from "./add.js";
 import { linked } from "./links.js";
 import { dossier, refusal } from "./reports.js";
 import { prStack } from "./stack.js";
+import { mergeSince, nextLink, progressView, sectionInView, sinceGroups } from "./desk.js";
 
 const ICONS = {
   check: '<path d="M20 6 9 17l-5-5"/>',
@@ -136,6 +137,9 @@ const state = {
   push: { status: null, busy: false, error: null, check: 0, checking: false },
   // The browser's install prompt, kept until the person taps Install.
   install: null,
+  // Since you looked: the events the Desk opened on and each newer one, the visit they start
+  // from, when the first live read began, and whether POST /api/seen went.
+  since: { events: [], from: null, opened: null, sent: false },
   add: { phase: "empty", error: null, defaults: null, task: null, draft: { text: "" }, ...JSON.parse(localStorage.getItem("priory.add") || "{}") },
 };
 
@@ -173,12 +177,16 @@ async function refresh() {
     const links = (!state.cached && state.data?.links) || (await api("/api/links")).links;
     const full = (listing) => (state.all[listing] ? `/api/${listing}?all=1` : `/api/${listing}`);
     // No task has written a report until the first `priory report put`.
+    // Taken before the read, so an event between that read and the visit still shows next time.
+    const read = new Date().toISOString().replace(/\.\d+Z$/, "Z");
     const latest = api("/api/reports/latest").catch((error) => (error.status === 404 ? null : Promise.reject(error)));
     const [desk, asksList, queue, tasksList, report] = await Promise.all([...["/api/desk", full("asks"), "/api/queue", full("tasks")].map(api), latest]);
     // A later call, such as the one that loads older rows, supersedes this one.
     if (call !== state.refreshes) return true;
     const [asks, tasks] = [asksList.asks, tasksList.tasks];
     const older = { asks: asksList.older, tasks: tasksList.older };
+    if (!state.since.opened) Object.assign(state.since, { opened: read, from: desk.last_visit });
+    state.since.events = mergeSince(state.since.events, desk.since_you_looked);
     // The listings are read one after another; the oldest revision makes the next wait catch what they missed.
     state.revision = Math.min(desk.revision, asksList.revision, queue.revision, tasksList.revision, report?.revision ?? Infinity);
     const snapshot = JSON.stringify([desk, asks, queue, tasks, older, report]);
@@ -254,7 +262,7 @@ function deskModel() {
   const other = items.filter((item) => !["ask", "blocked", "failed", "prompt", "command", "report"].includes(item.kind));
   // The capsule opens the ask that ranks first, not only the oldest one.
   const first = desk.ranked?.find((item) => item.kind === "ask");
-  return { open, first: first ? byId.get(first.id) || open[0] : open[0], stopped, reports, other, asleep: desk.counts.asleep, asleepTasks: queue.asleep, banner: desk.banner, intake: desk.intake, running: queue.running, queue: queue.waiting, tasks, upNext: queue.up_next, needs: items.length };
+  return { next: desk.next, open, first: first ? byId.get(first.id) || open[0] : open[0], stopped, reports, other, asleep: desk.counts.asleep, asleepTasks: queue.asleep, banner: desk.banner, intake: desk.intake, running: queue.running, queue: queue.waiting, tasks, upNext: queue.up_next, needs: items.length };
 }
 const openAsks = () => deskModel().open;
 // The open asks the list shows, so previous, next and the ask after an answer stay in its facets.
@@ -370,6 +378,33 @@ function upNext(model) {
   return html`<div class="sec">Up next<span>next 3 runs</span></div><div class="strip">${body}</div>`;
 }
 
+// The one next thing (DESIGN.md, Desk): the desk's `next`, an alarm or the ask that ranks first, and why.
+function nextCard(model) {
+  const item = model.next;
+  if (!item) return "";
+  const ask = item.kind === "ask" ? state.data.asks.find((each) => String(each.id) === String(item.id)) : null;
+  const task = state.data.tasks.find((each) => each.id === item.task);
+  const text = ask ? ask.title || ask.question : ["blocked", "failed"].includes(item.kind) && task?.reason ? task.reason : item.what;
+  const kind = ["prompt", "command"].includes(item.kind) ? "prompt" : item.kind === "report" ? "lost" : item.kind;
+  const href = nextLink(item);
+  const verb = ask ? "Answer…" : href?.startsWith("#") ? "See the banner" : "Open task";
+  return html`<section class="next" aria-label="The next thing"><p class="l1">${tile(kind, "sm")}<span class="mono">${item.key || ""}</span><span>${item.step || ""}</span><span class="age">${timeTag(item.since)}</span></p>
+    <p class="q">${autolinked(text, ask?.repo || task?.repo)}</p><p class="why t-${role(kind)}">${item.why}</p>
+    ${ask?.recommendation ? html`<p class="rec">${icon("corner-down-right", "s15")}<span>${ask.recommendation}</span></p>` : ""}
+    ${href ? html`<a class="btn ${ask ? "primary" : "secondary"}" href="${href}">${verb}</a>` : ""}</section>`;
+}
+
+// Since you looked (DESIGN.md, Desk): what happened since the last visit, one group per task.
+function sinceYouLooked() {
+  const { events, from } = state.since;
+  const groups = sinceGroups(events);
+  const body = groups.length
+    ? groups.map((group) => html`<div class="sgroup">${group.task ? html`<a class="mono" href="/tasks/${group.task}">${group.key}</a>` : html`<span class="mono">factory</span>`}
+      <ol>${group.events.map((event) => html`<li>${timeTag(event.time, today(event.time) ? clock(event.time) : date(event.time))}<span>${event.what}</span></li>`)}</ol></div>`)
+    : html`<p>Nothing happened since you looked.</p>`;
+  return html`<div class="sec">Since you looked<span>${from ? `since ${today(from) ? clock(from) : date(from)}` : "latest 50"}</span></div><div class="strip since" data-since>${body}</div>`;
+}
+
 function deskBody(wide) {
   const model = deskModel();
   const current = deskView();
@@ -382,7 +417,7 @@ function deskBody(wide) {
   ], "/");
   const banner = [[model.banner, "hard-drive"], [model.intake, "unplug"]]
     .filter(([text]) => text)
-    .map(([text, name]) => html`<div class="banner" role="status">${icon(name, "s20")}<span>${text}</span></div>`);
+    .map(([text, name]) => html`<div class="banner" role="status" ${name === "unplug" ? raw('id="intake"') : ""}>${icon(name, "s20")}<span>${text}</span></div>`);
   let rows;
   if (current === "running") rows = model.running.length ? model.running.map(runRow) : html`<p class="empty">No run is live. Runs show here while an agent works.</p>`;
   else if (current === "queue") rows = listOrEmpty(model.queue.map(taskRow), html`The queue is empty. A task waits here for its turn; see <code>priory queue</code>.`);
@@ -406,7 +441,7 @@ function needsMe(model, wide) {
     if (model.stopped.length) sections.push(html`<div class="sec">Stopped<span>${model.stopped.length}</span></div>${model.stopped.map(itemRow)}`);
     if (model.other.length) sections.push(html`<div class="sec">Also waiting<span>${model.other.length}</span></div>${model.other.map(itemRow)}`);
   }
-  sections.push(upNext(model));
+  sections.push(upNext(model), sinceYouLooked());
   if (model.asleep) sections.push(html`<div class="sec"></div><a class="row one" href="/?view=asleep">${tile("asleep")}<span>${model.asleep} tasks asleep on waits</span><span class="num">${model.asleep}</span><span class="chev">${icon("chevron-right", "s15")}</span></a>`);
   if (model.reports.length) sections.push(html`<div class="sec">Reports<span>${model.reports.length}</span></div>${model.reports.map(itemRow)}`);
   return sections;
@@ -729,11 +764,13 @@ function taskSections(task) {
     sections.push(["brief", "Brief", sect("brief", "file-text", "Brief", result ? `${result.step}, run ${result.run}` : "",
       html`${request ? html`<p class="meta">The request</p><p class="text">${autolinked(request, task.repo)}</p>` : ""}${result ? html`<p class="text">${autolinked(result.summary, task.repo)}</p>` : ""}`)]);
   }
-  const progress = task.progress;
-  const plan = task.plan ? [`${task.plan.step}, run ${task.plan.run}`, task.plan.summary]
-    : progress ? ["progress", [progress.goal && `Goal: ${progress.goal}`, ...(progress.acceptanceCriteria || []).map((c) => `- ${c.id}: ${c.description}`),
-      progress.latestChange && `Latest change: ${progress.latestChange}`, progress.nextAction && `Next: ${progress.nextAction}`].filter(Boolean).join("\n")] : null;
-  if (plan) sections.push(["plan", "Plan", sect("plan", "check", "Plan", plan[0], html`<p class="text">${autolinked(plan[1], task.repo)}</p>`)]);
+  const progress = progressView(task.progress);
+  if (progress) {
+    const line = (label, text) => (text ? html`<p class="meta">${label}</p><p class="text">${autolinked(text, task.repo)}</p>` : "");
+    const criteria = progress.criteria.length ? html`<p class="meta">Acceptance criteria</p><ol class="hist crit">${progress.criteria.map((criterion) => html`<li><span class="mono">${criterion.id}</span><span>${autolinked(criterion.description, task.repo)}</span><span class="tag">${criterion.state}</span></li>`)}</ol>` : "";
+    sections.push(["progress", "Progress", sect("progress", "check", "Progress", "", html`${line("Goal", progress.goal)}${criteria}${line("Latest change", progress.latestChange)}${line("Next", progress.nextAction)}`)]);
+  }
+  if (task.plan) sections.push(["plan", "Plan", sect("plan", "check", "Plan", `${task.plan.step}, run ${task.plan.run}`, html`<p class="text">${autolinked(task.plan.summary, task.repo)}</p>`)]);
   const pr = task.pull_request;
   if (pr) {
     sections.push(["pr", "PR", sect("pr", "workflow", `#${pr.number} ${pr.title || ""}`, pr.review || "",
@@ -1447,7 +1484,7 @@ function deskPhone(withCapsule = true) {
   return html`<div class="top"><span class="fac">${state.data.views.factory}</span>${connection()}</div>
     <div class="panel" role="region" aria-label="Desk"><div class="scroll ${withCapsule ? "desk-end" : ""}">
       <div class="count"><span class="n num">${n}</span><span class="w">${n === 1 ? "ask needs you" : "asks need you"}<span>${countLine(model)}</span></span></div>
-      ${views}${banner}${rows}</div>${withCapsule ? capsule(model) : ""}</div>`;
+      ${nextCard(model)}${views}${banner}${rows}</div>${withCapsule ? capsule(model) : ""}</div>`;
 }
 
 function asksPhone() {
@@ -1462,7 +1499,7 @@ function listPanel(panel, wide) {
     const n = model.open.length;
     return html`<div class="list" role="region" aria-label="Desk"><div class="lhead"><h1>Desk</h1>
       <span class="cnt"><span class="n num">${n}</span><span class="w">${n === 1 ? "ask needs you" : "asks need you"}<span>${countLine(model)}</span></span></span></div>
-      ${views}${banner}<div class="scroll">${rows}</div>${wide ? keyHints() : ""}</div>`;
+      ${nextCard(model)}${views}${banner}<div class="scroll">${rows}</div>${wide ? keyHints() : ""}</div>`;
   }
   if (panel === "asks") {
     const { views, rows } = asksBody(wide);
@@ -1557,6 +1594,7 @@ function render() {
   if (caret !== undefined) app.querySelector(`#${caret[0]}`)?.setSelectionRange(caret[1], caret[2], caret[3]);
   for (const row of app.querySelectorAll("tr[data-href]")) row.addEventListener("click", () => go(row.dataset.href));
   watchSections(app);
+  if (app.querySelector("[data-since]")) seen();
   // The sheet lives outside #app; it redraws when the connection drops or comes back under it.
   if (addSheet().open && state.add.shownOffline !== Boolean(state.failed)) renderAdd();
 }
@@ -1616,18 +1654,39 @@ function watchSections(app) {
   for (const scroller of app.querySelectorAll("[data-sections]")) {
     const chips = [...scroller.querySelectorAll(".jump a")];
     const sections = [...scroller.querySelectorAll(".sect")];
-    const visible = new Set();
-    const observer = track(new IntersectionObserver((entries) => {
-      for (const entry of entries) visible[entry.isIntersecting ? "add" : "delete"](entry.target);
-      const first = sections.find((section) => visible.has(section));
-      if (first) chips.forEach((chip) => chip.setAttribute("aria-current", String(chip.hash === `#${first.id}`)));
-    }, { root: scroller, rootMargin: "-48px 0px -40% 0px" }));
-    sections.forEach((section) => observer.observe(section));
+    let shown = null;
+    const light = () => {
+      const top = scroller.getBoundingClientRect().top - scroller.scrollTop;
+      const tops = sections.map((section) => section.getBoundingClientRect().top - top);
+      // A chip lands its section under the chip bar, at the section's scroll-margin-top.
+      const bar = sections.length ? parseFloat(getComputedStyle(sections[0]).scrollMarginTop) || 0 : 0;
+      const lit = sections[sectionInView({ tops, scrollTop: scroller.scrollTop, height: scroller.clientHeight, scrollHeight: scroller.scrollHeight, bar })];
+      if (!lit || lit.id === shown) return;
+      shown = lit.id;
+      chips.forEach((chip) => chip.setAttribute("aria-current", String(chip.hash === `#${lit.id}`)));
+      // On a phone the chips scroll sideways: keep the lit one in view.
+      const chip = chips.find((each) => each.hash === `#${lit.id}`);
+      const strip = chip?.parentElement;
+      if (strip && strip.scrollWidth > strip.clientWidth) strip.scrollLeft = chip.offsetLeft - (strip.clientWidth - chip.offsetWidth) / 2;
+    };
+    if (chips.length) {
+      scroller.addEventListener("scroll", light, { passive: true });
+      light();
+    }
     const options = scroller.querySelector(".opts");
     const bar = app.querySelector(".abar");
     if (!options || !bar) continue;
     track(new IntersectionObserver(([entry]) => { bar.hidden = entry.isIntersecting; }, { root: scroller })).observe(options);
   }
+}
+
+// Records the visit once, after Since you looked is drawn, at the time the first live read began.
+async function seen() {
+  if (state.since.sent || !state.since.opened || state.failed) return;
+  state.since.sent = true;
+  // As the Herdr Desk: one try. A visit not recorded shows the same events again next time.
+  const { status, body } = await post("/api/seen", { at: state.since.opened }).catch((error) => ({ status: 0, body: { error: error.message } }));
+  if (status !== 200) console.warn(`priory: could not record the visit: ${body.error || status}`);
 }
 
 // Events

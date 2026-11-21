@@ -110,6 +110,7 @@ application/json` and a JSON body of at most 16 KiB with exactly the fields belo
 | `POST /api/reports/resolve`, `POST /api/reports/reopen` | `comment`, an integer |
 | `POST /api/push/subscribe` | the browser's `PushSubscription.toJSON()`: `endpoint`, a string, `keys`, an object of `p256dh` and `auth`, base64url strings, and optionally `expirationTime`, which is ignored. See [Notifications](#notifications) |
 | `POST /api/push/unsubscribe` | `endpoint`, a string |
+| `POST /api/seen` | `at`, an RFC 3339 time: the visit to the desk to record for `me`, as `priory seen --at` records it, to the second |
 
 In `/api/asks/{id}`, `{id}` is the ask's `id` as `/api/asks` lists it: its number, or an outside
 ask's name, and `revision` is the ask's `revision` the client showed. In `/api/tasks/{id}`, `{id}` is
@@ -160,7 +161,7 @@ gets `400`.
 | `items` | array | What waits on a person, then the queue, then worktrees that stay. `priory desk --all --json` keeps the snoozed items |
 | `next` | object or null | The item that ranks first, as in `ranked`; null when nothing waits on a person |
 | `ranked` | array | What waits on a person, best first, without the snoozed items: each a desk item with `why`, why it ranks there, and `title`, the line a notification carries. See [desk.md](../daemon/desk.md#the-next-thing) |
-| `last_visit` | string or null | The person's last visit, which `priory seen` records |
+| `last_visit` | string or null | The person's last visit, which `priory seen` and `POST /api/seen` record |
 | `since_you_looked` | array | The events from the second of `last_visit` on, newest first, at most 50: each with `time`, `task`, `key` and `what`. See [desk.md](../daemon/desk.md#since-you-looked) |
 
 `/api/desk?person=NAME` reads the visit of `NAME`, percent-encoded, as `priory desk --json --person
@@ -390,7 +391,7 @@ With `web = true`, the server sends these without the token:
 
 | Path | Type |
 | ---- | ---- |
-| `/boot.js`, `/app.js`, `/asks.js`, `/add.js`, `/links.js`, `/reports.js`, `/stack.js` | `text/javascript; charset=utf-8` |
+| `/boot.js`, `/app.js`, `/asks.js`, `/add.js`, `/links.js`, `/reports.js`, `/stack.js`, `/desk.js` | `text/javascript; charset=utf-8` |
 | `/app.css`, `/tokens/structure.css`, `/tokens/themes.css` | `text/css; charset=utf-8` |
 | `/fonts/<file>.woff2` | `font/woff2` |
 | `/sw.js`, the service worker | `text/javascript; charset=utf-8` |

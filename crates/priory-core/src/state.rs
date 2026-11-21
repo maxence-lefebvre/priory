@@ -1877,12 +1877,29 @@ fn paused(db: &Connection) -> rusqlite::Result<Option<String>> {
     .optional()
 }
 
-/// Records that `person` looked at the desk at `at`, so its Since you looked starts there.
-pub fn seen(db: &Connection, person: &str, at: &str) -> rusqlite::Result<String> {
+/// The socket line of `POST /api/seen`: `{"seen": {"person": ..., "at": ...}}`.
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SeenLine {
+    pub seen: Visit,
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Visit {
+    pub person: String,
+    pub at: jiff::Timestamp,
+}
+
+/// Records that `person` looked at the desk at `at`, so its Since you looked starts there. Whole
+/// seconds, as inbox times are: the desk lists events from the visit's second on, so an event in
+/// that second shows again rather than never.
+pub fn seen(db: &Connection, person: &str, at: jiff::Timestamp) -> rusqlite::Result<String> {
+    let at = at.strftime("%Y-%m-%dT%H:%M:%SZ").to_string();
     db.execute(
         "INSERT INTO visits (person, seen) VALUES (?1, ?2)
          ON CONFLICT (person) DO UPDATE SET seen = ?2",
-        [person, at],
+        [person, &at],
     )?;
     Ok(format!("{person} looked at {at}"))
 }

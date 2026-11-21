@@ -234,4 +234,7 @@ message's type, subject and outcome, or a report's `<source>: <line>`. `priory d
 `--json` prints neither.
 
 Reading the desk records no visit, so a client calls `priory seen` once the person has read the
-events.
+events. `POST /api/seen` does the same through the daemon, for `me`, at the time its body names (see
+[serve.md](../reference/serve.md#writes)). The web Desk sends it once per page load, after it draws
+Since you looked, with the time its first read began, so an event that arrived during that read
+shows again on the next load. It keeps the events it opened on until the page reloads.
