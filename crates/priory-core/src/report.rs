@@ -8,7 +8,7 @@ pub const SINCE: &str = "7 days";
 
 /// The start of the window `since`: an RFC 3339 instant, or a duration back from `now` such as
 /// `7 days`, as an SQLite date modifier.
-pub fn start(db: &Connection, since: &str, now: &str) -> Result<String, String> {
+fn start(db: &Connection, since: &str, now: &str) -> Result<String, String> {
     let start: Option<String> = db
         .query_row(
             "SELECT coalesce(strftime('%Y-%m-%dT%H:%M:%fZ', ?1),
@@ -299,15 +299,65 @@ pub struct Costs {
     split: BTreeMap<String, Total>,
 }
 
-/// The costs of model steps, handler calls and summarizer calls up to `now`, priced from `prices`.
-/// With no `since`, the current window starts this Monday at 00:00 local time and the previous one
-/// is last week; otherwise the previous window has the current one's length. Days are local.
+/// The current window, from `start` to `until`, and the previous one, from `previous` to `start`.
+pub struct Window {
+    until: String,
+    start: String,
+    previous: String,
+}
+
+/// The windows up to `now`. With no `since`, the current window starts this Monday at 00:00 local
+/// time and the previous one is last week; otherwise the previous window has the current one's
+/// length. Refuses a `since` that does not parse or does not start before `now`.
+pub fn window(db: &Connection, since: Option<&str>, now: &str) -> Result<Window, String> {
+    let row = |row: &rusqlite::Row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, Option<String>>(2)?,
+        ))
+    };
+    let (until, start, previous) = match since {
+        None => db.query_row(
+            "SELECT strftime('%Y-%m-%dT%H:%M:%fZ', ?1),
+               strftime('%Y-%m-%dT%H:%M:%fZ', ?1, 'localtime', 'start of day', '-6 days',
+                 'weekday 1', 'utc'),
+               strftime('%Y-%m-%dT%H:%M:%fZ', ?1, 'localtime', 'start of day', '-6 days',
+                 'weekday 1', '-7 days', 'utc')",
+            [now],
+            row,
+        ),
+        Some(since) => {
+            let start = start(db, since, now)?;
+            db.query_row(
+                "SELECT strftime('%Y-%m-%dT%H:%M:%fZ', ?1), ?2,
+                   strftime('%Y-%m-%dT%H:%M:%fZ', 2 * julianday(?2) - julianday(?1))",
+                [now, &start],
+                row,
+            )
+        }
+    }
+    .map_err(|error| error.to_string())?;
+    match previous {
+        Some(previous) if start < until => Ok(Window {
+            until,
+            start,
+            previous,
+        }),
+        _ => Err(format!(
+            "--since {:?} does not start before now, or its previous window is out of range",
+            since.unwrap_or_default()
+        )),
+    }
+}
+
+/// The costs of model steps, handler calls and summarizer calls in `window` and the one before
+/// it, priced from `prices`, with the merges of owned pull requests. Days are local.
 pub fn costs(
     db: &Connection,
     prices: &BTreeMap<String, Price>,
-    since: Option<&str>,
+    window: &Window,
     by: &str,
-    now: &str,
 ) -> Result<Costs, String> {
     let key = match by {
         "workflow" => "coalesce(json_extract(trace.event, '$.data.workflow'), '-')",
@@ -322,27 +372,11 @@ pub fn costs(
         _ => return Err(format!("--by {by:?} is none of {}", BY.join(", "))),
     };
     let error = |error: rusqlite::Error| error.to_string();
-    let (until, start, previous): (String, String, String) = match since {
-        None => db.query_row(
-            "SELECT strftime('%Y-%m-%dT%H:%M:%fZ', ?1),
-               strftime('%Y-%m-%dT%H:%M:%fZ', ?1, 'localtime', 'start of day', '-6 days',
-                 'weekday 1', 'utc'),
-               strftime('%Y-%m-%dT%H:%M:%fZ', ?1, 'localtime', 'start of day', '-6 days',
-                 'weekday 1', '-7 days', 'utc')",
-            [now],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-        ),
-        Some(since) => {
-            let start = start(db, since, now)?;
-            db.query_row(
-                "SELECT strftime('%Y-%m-%dT%H:%M:%fZ', ?1), ?2,
-                   strftime('%Y-%m-%dT%H:%M:%fZ', 2 * julianday(?2) - julianday(?1))",
-                [now, &start],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-            )
-        }
-    }
-    .map_err(error)?;
+    let Window {
+        until,
+        start,
+        previous,
+    } = window;
     let mut costs = Costs {
         by: by.to_owned(),
         windows: [
@@ -370,9 +404,7 @@ pub fn costs(
                AND json_extract(trace.event, '$.data.decider') = 'model'))"
         ))
         .map_err(error)?;
-    let mut rows = statement
-        .query([&previous, &start, &until])
-        .map_err(error)?;
+    let mut rows = statement.query([previous, start, until]).map_err(error)?;
     while let Some(row) = rows.next().map_err(error)? {
         let (day, current, key, model): (String, bool, String, String) = (
             row.get(0).map_err(error)?,
@@ -408,18 +440,19 @@ pub fn costs(
     }
     let mut statement = db
         .prepare(
-            "SELECT date(time, 'localtime'), strftime('%Y-%m-%dT%H:%M:%fZ', time) >= ?2,
-               count(DISTINCT subject)
-             FROM inbox WHERE type = 'github.pull_request.closed'
-             AND json_extract(data, '$.merged') = 1
-             AND strftime('%Y-%m-%dT%H:%M:%fZ', time) >= ?1
-             AND strftime('%Y-%m-%dT%H:%M:%fZ', time) < ?3
-             AND EXISTS (SELECT 1 FROM owns WHERE owns.resource = 'github:' || inbox.subject)
-             GROUP BY 1, 2",
+            "WITH merged AS (
+               SELECT min(strftime('%Y-%m-%dT%H:%M:%fZ', time)) AS time FROM inbox
+               WHERE type = 'github.pull_request.closed' AND json_extract(data, '$.merged') = 1
+               AND EXISTS (SELECT 1 FROM owns WHERE owns.resource IN ('github:' || inbox.subject,
+                 'github:' || json_extract(inbox.data, '$.repo') || '@'
+                   || json_extract(inbox.data, '$.head_branch')))
+               GROUP BY subject)
+             SELECT date(time, 'localtime'), time >= ?2, count(*) FROM merged
+             WHERE time >= ?1 AND time < ?3 GROUP BY 1, 2",
         )
         .map_err(error)?;
     let merges = statement
-        .query_map([&previous, &start, &until], |row| {
+        .query_map([previous, start, until], |row| {
             Ok((
                 row.get::<_, String>(0)?,
                 row.get::<_, bool>(1)?,

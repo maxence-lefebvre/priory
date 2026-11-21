@@ -267,11 +267,12 @@ fn costs_by_model_price_each_model_and_list_unpriced_tokens_apart() {
 fn merges_per_day_count_only_the_merged_pull_requests_a_task_owned() {
     let setup = Setup::new("merges");
     let db = setup.db();
-    // The owning tasks matter only through `owns`, so they are left out.
+    // The owning tasks matter only through `owns`, so they are left out. Task 3 owns its branch,
+    // as a worker's task does, and #1's second merged close is the same merge.
     db.execute_batch(
         "PRAGMA foreign_keys = OFF;
          INSERT INTO owns (task, resource) VALUES (1, 'github:o/r#1'), (1, 'github:o/r#2'),
-           (2, 'github:o/r#4');
+           (2, 'github:o/r#4'), (3, 'github:o/r@priory/x');
          INSERT INTO inbox (id, type, subject, time, data, links, outcome) VALUES
            ('m1', 'github.pull_request.closed', 'o/r#1', '2026-11-16T09:00:00Z',
             '{\"merged\":true}', '[]', 'stored'),
@@ -280,6 +281,10 @@ fn merges_per_day_count_only_the_merged_pull_requests_a_task_owned() {
            ('m3', 'github.pull_request.closed', 'o/r#3', '2026-11-16T09:00:00Z',
             '{\"merged\":true}', '[]', 'stored'),
            ('m4', 'github.pull_request.closed', 'o/r#4', '2026-11-15T22:30:00Z',
+            '{\"merged\":true}', '[]', 'stored'),
+           ('m5', 'github.pull_request.closed', 'o/r#5', '2026-11-16T10:00:00Z',
+            '{\"merged\":true,\"repo\":\"o/r\",\"head_branch\":\"priory/x\"}', '[]', 'stored'),
+           ('m6', 'github.pull_request.closed', 'o/r#1', '2026-11-17T08:00:00Z',
             '{\"merged\":true}', '[]', 'stored');",
     )
     .unwrap();
@@ -288,7 +293,7 @@ fn merges_per_day_count_only_the_merged_pull_requests_a_task_owned() {
 
     assert_eq!(
         [&costs["current"]["merges"], &costs["previous"]["merges"]],
-        [1, 1]
+        [2, 1]
     );
     let days: Vec<_> = costs["days"]
         .as_array()
@@ -301,7 +306,7 @@ fn merges_per_day_count_only_the_merged_pull_requests_a_task_owned() {
             )
         })
         .collect();
-    assert_eq!(days, [("2026-11-15", 1), ("2026-11-16", 1)]);
+    assert_eq!(days, [("2026-11-15", 1), ("2026-11-16", 2)]);
     assert_eq!(costs["days"][0]["cost_usd"], 0.0);
 }
 
@@ -347,6 +352,8 @@ fn the_costs_endpoint_answers_what_costs_json_prints() {
         "/api/costs?since=soon",
         "/api/costs?who=me",
         "/api/costs?since=%zz",
+        "/api/costs?since=2026-11-18T00:00:00Z",
+        "/api/costs?since=2026",
     ] {
         assert_eq!(get(&address, path).0, 400, "{path}");
     }

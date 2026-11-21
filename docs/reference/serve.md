@@ -9,6 +9,7 @@ Each listing returns the same JSON as
 the CLI command with `--json`, with the state's `revision`, an integer, read in the same
 transaction. A listing that is an object has a `revision` field. A listing that is a list comes as
 `{"revision": N, "<name>": [...]}`, where `<name>` is `inbox` or `tasks`.
+`/api/costs` is a report rather than a listing: it has no `revision`.
 
 `/api/asks` and `/api/tasks` leave out the rows that closed over a week ago, and add `older`, the
 number they left out: see [Asks](#asks) and [Tasks](#tasks). `?all=1` returns every row, as the CLI
@@ -55,7 +56,7 @@ or a reason, is untrusted: render it as text.
 | ---- | ---- |
 | `200` | The endpoint answered |
 | `202` | A signed webhook delivery was taken: published, or dropped on purpose |
-| `400` | The request does not parse, or its target does not start with `/`; `/api/events` lacks `since` or has a parameter out of range; `/api/desk` has a parameter other than `person`, or a broken escape; `/api/asks` has a parameter other than `band`, `risk` and `all=1`, a band the factory does not have, or a risk other than the five [below](#asks); `/api/tasks` has a parameter other than `all=1`; `/api/costs` has a parameter other than `since` and `by`, a broken escape, a `since` that is neither an RFC 3339 instant nor a duration, or a `by` other than the five [below](#costs); a write's body is not the shape [below](#writes); for a webhook, it sends two `Content-Length`, or its payload lacks a field its event needs |
+| `400` | The request does not parse, or its target does not start with `/`; `/api/events` lacks `since` or has a parameter out of range; `/api/desk` has a parameter other than `person`, or a broken escape; `/api/asks` has a parameter other than `band`, `risk` and `all=1`, a band the factory does not have, or a risk other than the five [below](#asks); `/api/tasks` has a parameter other than `all=1`; `/api/costs` has a parameter other than `since` and `by`, a broken escape, a `since` that is neither an RFC 3339 instant nor a duration or that does not start before now, or a `by` other than the five [below](#costs); a write's body is not the shape [below](#writes); for a webhook, it sends two `Content-Length`, or its payload lacks a field its event needs |
 | `401` | The token is missing or wrong on a path under `/api`; for a webhook, the signature is |
 | `403` | A `POST` carries an `Origin` whose host and port differ from its `Host`, such as a page on another site |
 | `404` | No such path, task, report, ask or web view file |
@@ -345,7 +346,7 @@ one of `workflow` (the default), `agent`, `model`, `machine` and `repo`. See
 | `cost_usd` | The dollars of the priced tokens. Null when no record was priced and some were unpriced or had no tokens |
 | `tokens` | Every counted token: `input`, `output`, `cache_read` and `cache_write` |
 | `unpriced` | Each model with no price: `model` and its `tokens` |
-| `unknown` | The model steps with no `tokens` |
+| `unknown` | The records with no `tokens`: model steps, handler calls and summarizer calls |
 
 ## Views
 

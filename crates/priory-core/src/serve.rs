@@ -763,10 +763,11 @@ fn costs(db: &Connection, prices: &BTreeMap<String, Price>, query: &str) -> Repl
         Ok(now) => now.to_string(),
         Err(error) => return Reply::error(500, &error),
     };
-    if let Some(Err(refusal)) = since.as_deref().map(|since| report::start(db, since, &now)) {
-        return Reply::error(400, &refusal);
-    }
-    match report::costs(db, prices, since.as_deref(), &by, &now) {
+    let window = match report::window(db, since.as_deref(), &now) {
+        Ok(window) => window,
+        Err(refusal) => return Reply::error(400, &refusal),
+    };
+    match report::costs(db, prices, &window, &by) {
         Ok(costs) => Reply::json(200, costs.json().to_string()),
         Err(error) => Reply::error(500, &error),
     }

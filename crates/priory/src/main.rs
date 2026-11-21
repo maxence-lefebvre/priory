@@ -323,7 +323,8 @@ fn costs(args: Vec<String>) -> ExitCode {
     let printed = intake::now().and_then(|now| {
         let now = now.to_string();
         let db = state::open()?;
-        let costs = report::costs(&db, &factory.prices, since.as_deref(), &by, &now)?;
+        let window = report::window(&db, since.as_deref(), &now)?;
+        let costs = report::costs(&db, &factory.prices, &window, &by)?;
         match json {
             true => state::emit(&costs.json().to_string()),
             false => costs.print(),

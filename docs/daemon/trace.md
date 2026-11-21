@@ -140,6 +140,7 @@ current	2026-11-15T23:00:00.000Z	2026-11-17T11:00:00.000Z	$2.000000	-	1
 previous	2026-11-08T23:00:00.000Z	2026-11-15T23:00:00.000Z	$5.000000	-	1
 
 day	cost	notes	merges
+2026-11-14	$2.000000	-	0
 2026-11-15	$3.000000	-	1
 2026-11-16	$2.000000	-	1
 
@@ -155,8 +156,8 @@ prices them from the same `prices.toml` in `DIR` (default: the current folder).
 
 - Without `--since`, the current window starts this Monday at 00:00 in the local timezone (`TZ`) and
   ends now, and the previous window is the full week before it.
-- `--since` takes what `report --since` takes. The previous window then has the current window's
-  length and ends where the current one starts.
+- `--since` takes what `report --since` takes, and must start before now. The previous window then
+  has the current window's length and ends where the current one starts.
 - Days are local dates. A day appears once it has a record or a merge.
 - `--by` defaults to `workflow`. `agent` is the run's agent, `handler` for a handler call and
   `summarizer` for a summarizer call. `repo` is the task's repository. A record with no value reads
@@ -164,8 +165,9 @@ prices them from the same `prices.toml` in `DIR` (default: the current folder).
 - A model with no price keeps its tokens apart, as `price missing for <model>`. A row whose records
   were all unpriced or had no tokens has no cost, `-`, never `$0`. A model step with no `tokens`
   counts as `tokens unknown`.
-- `merges` counts the pull requests that a task owned and whose stored `github.pull_request.closed`
-  event says they merged, by the local day of that event. The split has no merges.
+- `merges` counts the pull requests whose stored `github.pull_request.closed` event says they
+  merged, when a task owns the pull request or its head branch, as a worker's task owns its branch.
+  A pull request counts once, on the local day of its first merged close. The split has no merges.
 
 `--json` prints one object, which `GET /api/costs` also answers (see
 [the serve reference](../reference/serve.md#costs)).
@@ -174,3 +176,5 @@ Known limits:
 
 - Prices apply at report time, as for `report --cost`.
 - A merge counts only once its webhook or poll stored the closed event.
+- A pull request a task only subscribed to does not count: its subscription ends when it closes.
+- `--since` also takes what SQLite reads as a time, such as `12:00`, which is noon on 2000-01-01.
