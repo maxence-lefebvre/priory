@@ -914,6 +914,9 @@ pub struct Step {
     /// What the daemon checks before it accepts an outcome, by outcome.
     #[serde(default)]
     pub proof: BTreeMap<String, Proof>,
+    /// The fields of a plan result that this model step's prompt or agent must ask for.
+    #[serde(default)]
+    pub plan_requires: Vec<PlanField>,
     /// Why an irreversible step may run without a person's approval.
     pub autonomous: Option<String>,
     /// The guarded calls an irreversible step may make while it is approved or autonomous.
@@ -1003,6 +1006,28 @@ pub enum By {
     Model,
     Human,
     Asleep,
+}
+
+/// A field a plan result carries beside its summary.
+#[derive(Debug, Deserialize, Serialize, Clone, Copy, PartialEq, Eq, JsonSchema)]
+#[serde(rename_all = "kebab-case")]
+pub enum PlanField {
+    /// What the change must achieve.
+    Goal,
+    /// How the change is tested: the method, not the checks.
+    Testing,
+    /// The commands or checks that prove the change.
+    Verification,
+}
+
+impl PlanField {
+    pub fn name(self) -> &'static str {
+        match self {
+            PlanField::Goal => "goal",
+            PlanField::Testing => "testing",
+            PlanField::Verification => "verification",
+        }
+    }
 }
 
 /// A check the daemon makes before it accepts a model step's outcome.
