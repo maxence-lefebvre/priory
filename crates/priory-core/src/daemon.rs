@@ -229,7 +229,6 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
         }
         start_answers(&mut db, &trace, &home, &mut commands)?;
         commands = run_commands(&mut db, &trace, &home, commands)?;
-        overlap::tick(&mut db, factory, &home)?;
         tend(&mut db, &trace, &share, &home, &scope, &mut commands)?;
         handle_stalls(&mut db, &trace, &home, &mut stalls)?;
         let counter = counting.get(&home);
@@ -860,6 +859,7 @@ fn tend(
         }
     }
     state::due(db)?;
+    overlap::tick(db, factory, home)?;
     tools::enter_queued(db, factory)?;
     state::disk_due(db, || room::measure(home).ok().map(|room| room.disk_free))?;
     memory::reclaim(db)?;

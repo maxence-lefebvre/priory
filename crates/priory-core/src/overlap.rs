@@ -7,7 +7,8 @@ use std::path::Path;
 /// Records the files each task's branch changed at the end of its latest run, then holds each
 /// queued or ready task that changes files an earlier, unfinished task changes, until that task's
 /// pull request merges or, with none, the task ends. A person's release of the hold stays final for
-/// that earlier task.
+/// that earlier task. Tasks in other repositories never overlap, and a task never waits on one that
+/// waits on it.
 pub(crate) fn tick(db: &mut Connection, factory: &Factory, home: &Path) -> rusqlite::Result<()> {
     if !factory.overlap() {
         return Ok(());
@@ -26,7 +27,12 @@ pub(crate) fn tick(db: &mut Connection, factory: &Factory, home: &Path) -> rusql
         let earlier: Vec<(i64, Vec<String>)> = tx
             .prepare(
                 "SELECT id, files FROM tasks WHERE id < ?1 AND json_array_length(files) > 0
-                 AND state NOT IN ('failed', 'dropped') ORDER BY id",
+                 AND state NOT IN ('failed', 'dropped')
+                 AND replace(worktree, '/' || id, '') = replace(
+                   (SELECT worktree FROM tasks WHERE id = ?1), '/' || ?1, '')
+                 AND NOT EXISTS (SELECT 1 FROM holds WHERE holds.task = tasks.id
+                   AND holds.target = ?1 AND holds.released IS NULL)
+                 ORDER BY id",
             )?
             .query_map([task], |row| Ok((row.get(0)?, row.get::<_, String>(1)?)))?
             .map(|row| row.map(|(id, files)| (id, files_of(&files))))
@@ -41,7 +47,8 @@ pub(crate) fn tick(db: &mut Connection, factory: &Factory, home: &Path) -> rusql
                 continue;
             }
             let said: bool = tx.query_row(
-                "SELECT count(*) > 0 FROM holds WHERE task = ?1 AND reason LIKE ?2",
+                "SELECT count(*) > 0 FROM holds WHERE task = ?1 AND reason LIKE ?2
+                 AND (released IS NULL OR met_as = 'released by a person')",
                 params![task, format!("overlaps task {other} on %")],
                 |row| row.get(0),
             )?;
