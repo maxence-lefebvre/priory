@@ -4957,6 +4957,12 @@ fn an_answer_to_a_stale_revision_or_a_second_answer_is_refused() {
         rows.first().is_some_and(|row| row[4] == "asleep")
     });
 
+    let asks = setup.priory(&["asks", "--json"]);
+    let asks: serde_json::Value = serde_json::from_slice(&asks.stdout).unwrap();
+    assert_eq!(
+        asks["asks"][0]["free_text"], true,
+        "an agent's ask takes text"
+    );
     let stale = setup.priory(&["answer", "1", "sqlite", "--revision", "2"]);
     let first = setup.priory(&["answer", "1", "sqlite", "--revision", "1"]);
     let second = setup.priory(&["answer", "1", "postgres", "--revision", "1"]);
@@ -4997,6 +5003,84 @@ fn a_step_ask_takes_only_its_options() {
         "priory answer: ask 1 takes one of: approved, rejected\n"
     );
     assert_eq!(setup.rows("asks").len(), 1);
+}
+
+#[test]
+fn a_note_after_a_step_ask_s_option_reaches_the_next_step_s_prompt() {
+    let workflow = STEPS
+        .replace("start = \"plan\"", "start = \"approve\"")
+        .replace("approved = \"implement\"", "approved = \"plan\"");
+    let mut setup = Setup::with_workflow("step-note", &workflow);
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("asks", |rows| rows.len() == 1);
+
+    let answered = setup.priory(&[
+        "answer",
+        "1",
+        "approved: skip the migration",
+        "--revision",
+        "1",
+    ]);
+
+    assert!(answered.status.success(), "{answered:?}");
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 1);
+    let typed = setup.typed();
+    assert!(typed[0].starts_with("Plan the change.\n"), "{typed:?}");
+    assert!(
+        typed[0].contains(
+            "\nA person answered approved on step approve, with a note: skip the migration\n"
+        ),
+        "{typed:?}"
+    );
+}
+
+#[test]
+fn a_note_after_a_step_ask_s_option_that_stops_the_task_is_its_reason() {
+    let workflow = STEPS
+        .replace("start = \"plan\"", "start = \"approve\"")
+        .replace("approved = \"implement\"", "approved = \"plan\"");
+    let mut setup = Setup::with_workflow("step-note-stop", &workflow);
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("asks", |rows| rows.len() == 1);
+
+    let answered = setup.priory(&["answer", "1", "rejected: too big", "--revision", "1"]);
+
+    assert!(answered.status.success(), "{answered:?}");
+    let task = setup.priory(&["task", "1", "--json"]);
+    let task: serde_json::Value = serde_json::from_slice(&task.stdout).unwrap();
+    assert_eq!(task["state"], "dropped");
+    assert_eq!(
+        task["reason"],
+        "A person answered rejected on step approve, with a note: too big"
+    );
+    let asks = setup.priory(&["asks", "--all", "--json"]);
+    let asks: serde_json::Value = serde_json::from_slice(&asks.stdout).unwrap();
+    assert_eq!(asks["asks"][0]["answer"], "rejected: too big");
+    assert_eq!(asks["asks"][0]["free_text"], false);
+}
+
+#[test]
+fn a_note_on_a_step_ask_whose_option_leads_to_done_is_refused() {
+    let workflow = STEPS
+        .replace("start = \"plan\"", "start = \"approve\"")
+        .replace(
+            "approved = \"implement\", rejected = \"stop\"",
+            "approved = \"done\", rejected = \"plan\"",
+        );
+    let mut setup = Setup::with_workflow("step-note-done", &workflow);
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("asks", |rows| rows.len() == 1);
+
+    let answered = setup.priory(&["answer", "1", "approved: ship it", "--revision", "1"]);
+
+    assert!(!answered.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&answered.stderr),
+        "priory answer: ask 1 answered approved leads to done, which reads no note: answer approved alone\n"
+    );
 }
 
 #[test]

@@ -1396,6 +1396,14 @@ pub fn open() -> Result<Connection, String> {
     Ok(db)
 }
 
+/// A state in memory with every migration applied, for unit tests.
+#[cfg(test)]
+pub(crate) fn memory() -> Connection {
+    let mut db = Connection::open_in_memory().expect("an in-memory state opens");
+    migrate(&mut db).expect("the migrations apply");
+    db
+}
+
 /// Applies the migrations the file lacks in one transaction, which a broken reference rolls back.
 fn migrate(db: &mut Connection) -> Result<(), String> {
     let at = |error: rusqlite::Error| error.to_string();

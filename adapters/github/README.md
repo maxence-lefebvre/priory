@@ -45,7 +45,8 @@ answers. A `401` from the daemon signs you out too.
   request no active task holds, it says so, with Add a task…. When the daemon is out of reach, it
   says how old the last read is.
 - **Ask**: the open asks of the task, oldest first, with the web view's order: context, question,
-  recommendation, options, Write an answer, Dismiss and Snooze. An answer waits 4 s with Undo, then
+  recommendation, options, Write an answer, Dismiss and Snooze. A step's ask and a hold's ask take
+  only their options, so they show neither Write an answer nor Dismiss. An answer waits 4 s with Undo, then
   goes with the revision you saw. Leave the page or close the panel before then, and the panel
   shows the answer unsent the next time it opens on that pull request, with Send and Discard. A
   changed question keeps your draft and says so. Keys 1 to 9 pick an option while the panel has

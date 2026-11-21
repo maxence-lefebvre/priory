@@ -7,6 +7,7 @@ use priory_factory::{explain, factory, rules};
 use priory_intake::{intake, request};
 use priory_runtime::{eval, mcp, runtime};
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
@@ -866,6 +867,7 @@ fn listed(verb: &str, mut args: Vec<String>) -> ExitCode {
         }
         if unrouted {
             print_unrouted(&value[name]);
+            print_outsider(&value["outsider"]);
             return Ok(());
         }
         let rows = &value[verb];
@@ -943,6 +945,16 @@ fn listed(verb: &str, mut args: Vec<String>) -> ExitCode {
                     let events = if unrouted == 1 { "event" } else { "events" };
                     state::emit(&format!(
                         "{unrouted} {events} reached no task in the last 24 hours. See them with `priory inbox --unrouted`."
+                    ));
+                }
+                if let Some(outsider) = value["counts"]["outsider"].as_u64().filter(|n| *n > 0) {
+                    let (comments, them) = if outsider == 1 {
+                        ("comment", "it")
+                    } else {
+                        ("comments", "them")
+                    };
+                    state::emit(&format!(
+                        "{outsider} {comments} from outside the repository came in the last 24 hours. See {them} with `priory inbox --unrouted`."
                     ));
                 }
                 listing::print(
@@ -1975,6 +1987,28 @@ fn handled(event: &serde_json::Value, task: i64) -> String {
     text
 }
 
+/// Prints the comments and reviews from outside the repository as a group of their own: its count
+/// and one line per event, with who wrote it. No command routes them: they reach no task.
+fn print_outsider(events: &serde_json::Value) {
+    let Some(events) = events.as_array().filter(|events| !events.is_empty()) else {
+        return;
+    };
+    let plural = if events.len() == 1 { "" } else { "s" };
+    println!(
+        "from outside the repository: {} event{plural}",
+        events.len()
+    );
+    for event in events {
+        println!(
+            "  {}  {}  {}  {}",
+            event["seq"],
+            event["type"].as_str().unwrap_or_default(),
+            event["subject"].as_str().unwrap_or("-"),
+            event["actor"].as_str().unwrap_or("-")
+        );
+    }
+}
+
 fn task_json(task: &str) -> ExitCode {
     let Ok(id) = task.parse() else {
         return usage();
@@ -2292,6 +2326,7 @@ fn check(args: Vec<OsString>) -> ExitCode {
             factory::WRITING_LIMIT
         );
     }
+    warn_of_stale_herdr_layout(&factory, &dir);
     if explain {
         print_explanation(&factory, json);
         return ExitCode::SUCCESS;
@@ -2304,6 +2339,44 @@ fn check(args: Vec<OsString>) -> ExitCode {
         count(factory.runners.len(), "runner"),
     );
     ExitCode::SUCCESS
+}
+
+/// Warns when the Herdr layout `adapters/herdr/install` wrote on this machine was built from other
+/// view files: its root id ends in 12 hex digits of the SHA-256 of what `priory views --json`
+/// prints, and an id without them predates the hash. Another machine's layout is not checked.
+fn warn_of_stale_herdr_layout(factory: &factory::Factory, dir: &Path) {
+    let Some(app) = std::env::var_os("HERDR_APP_HOME")
+        .map(PathBuf::from)
+        .or_else(|| {
+            std::env::var_os("HOME").map(|home| Path::new(&home).join(".config/herdr-app"))
+        })
+    else {
+        return;
+    };
+    let path = app.join("layouts/priory.json");
+    let Some(id) = std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
+        .and_then(|layout| layout["id"].as_str().map(str::to_owned))
+    else {
+        return;
+    };
+    let hash: String = Sha256::digest(listing::views(factory).to_string().as_bytes())[..6]
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    let current = id == format!("priory-generated-{hash}");
+    let ours = id == "priory-generated"
+        || id
+            .strip_prefix("priory-generated-")
+            .is_some_and(|rest| rest.len() == 12 && rest.bytes().all(|b| b.is_ascii_hexdigit()));
+    if ours && !current {
+        eprintln!(
+            "warning: the Herdr layout {} was built from other view files: run `priory views {} --json | adapters/herdr/install` again, with --copy if you installed copies",
+            path.display(),
+            dir.display()
+        );
+    }
 }
 
 /// Prints each workflow's irreversible steps with their gates, its paths to one with no human edge,
