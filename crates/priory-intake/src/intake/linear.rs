@@ -1,4 +1,4 @@
-use super::{BASELINE, OUTPUT, claim, dispatch, id, publish, recent, same_change};
+use super::{BASELINE, OUTPUT, Watch, claim, dispatch, id, publish, recent, same_change};
 use crate::log::{self, Log};
 use herdr_bus::{Message, Timestamp};
 use priory_factory::factory::Trigger;
@@ -16,10 +16,13 @@ pub(super) const CREATED: &str = "linear.issue.created";
 pub(super) const STATE_CHANGED: &str = "linear.issue.state_changed";
 pub(super) const COMMENTED: &str = "linear.comment.created";
 pub(super) const BLOCKERS: &str = "linear.issue.blockers";
+pub(super) const UPDATED: &str = "linear.issue.updated";
 const ISSUES: &str = "linear.issues";
 const COMMENTS: &str = "linear.comments";
 /// How many issues or comments a stream's first poll reads.
 const FIRST: u64 = 50;
+/// How many characters of a changed description `linear.issue.updated` carries.
+const EXCERPT: usize = 200;
 
 const ISSUE: &str = "fragment issue on Issue { id identifier title url createdAt updatedAt \
     team { key } project { id name } state { name } labels { nodes { name } } creator { displayName } }";
@@ -27,6 +30,10 @@ const ISSUE: &str = "fragment issue on Issue { id identifier title url createdAt
 const BLOCKING: &str = "inverseRelations(first: 20) { nodes { type issue { identifier state { type } } } \
     pageInfo { hasNextPage } }";
 const PAGE: &str = "pageInfo { hasNextPage endCursor }";
+/// The fields of a history entry that say what an edit changed. Linear records that a description
+/// changed, not its text.
+const EDITS: &str = "fromTitle toTitle updatedDescription addedLabelIds removedLabelIds \
+    fromAssigneeId toAssigneeId fromPriority toPriority";
 
 /// The Linear streams the triggers need, and where each stands: its last marker's data, or none
 /// while it is still in its baseline.
@@ -86,13 +93,21 @@ impl<'a> Linear<'a> {
         })
     }
 
-    /// Queries every stream first, so that a failing query publishes nothing.
-    pub(super) fn fetch(&self) -> Result<Vec<Polled>, String> {
+    /// Queries every stream first, so that a failing query publishes nothing. `watching` names the
+    /// Linear issues whose edits the issues stream publishes, from each one's time on.
+    pub(super) fn fetch(&self, watching: &[Watch]) -> Result<Vec<Polled>, String> {
         let now = Timestamp::now();
+        let mut watched: BTreeMap<&str, Timestamp> = BTreeMap::new();
+        for watch in watching {
+            if let Some(issue) = watch.resource.strip_prefix("linear:") {
+                let since = watched.entry(issue).or_insert(watch.since);
+                *since = (*since).min(watch.since);
+            }
+        }
         let mut polled = Vec::new();
         for (stream, marker) in &self.streams {
             polled.push(match stream.as_str() {
-                ISSUES => self.issues(marker.as_ref())?,
+                ISSUES => self.issues(marker.as_ref(), &watched)?,
                 COMMENTS => self.comments(marker.as_ref())?,
                 _ => self.view(stream, marker.as_ref(), now)?,
             });
@@ -237,15 +252,20 @@ impl<'a> Linear<'a> {
         })
     }
 
-    /// Issues created and state changes since the stream's position, the last `updatedAt` seen.
-    fn issues(&self, marker: Option<&Value>) -> Result<Polled, String> {
+    /// Issues created, state changes and the edits of `watched` issues since the stream's position,
+    /// the last `updatedAt` seen.
+    fn issues(
+        &self,
+        marker: Option<&Value>,
+        watched: &BTreeMap<&str, Timestamp>,
+    ) -> Result<Polled, String> {
         let since = marker.and_then(|marker| marker["position"].as_str());
         let query = format!(
             "query Issues($filter: IssueFilter, $first: Int!, $after: String) {{ \
              issues(filter: $filter, first: $first, after: $after, orderBy: updatedAt, \
              includeArchived: true) {{ nodes {{ \
-             ...issue history(first: 50, orderBy: createdAt) {{ nodes {{ id createdAt \
-             fromState {{ name }} toState {{ name }} actor {{ displayName }} }} }} \
+             ...issue description history(first: 50, orderBy: createdAt) {{ nodes {{ id createdAt \
+             fromState {{ name }} toState {{ name }} actor {{ displayName }} {EDITS} }} }} \
              {BLOCKING} relations(first: 20) {{ nodes {{ type relatedIssue {{ id }} }} }} }} {PAGE} }} }} {ISSUE}"
         );
         let issues = self.nodes(&query, page(since, "updatedAt"), "/issues", since.is_some())?;
@@ -274,6 +294,36 @@ impl<'a> Linear<'a> {
                 data["time"] = change["createdAt"].clone();
                 let name = format!("linear:history:{}", text(&change["id"]));
                 events.push(self.message(STATE_CHANGED, &name, data, since.is_none())?);
+            }
+            let Some(watched) = watched.get(text(&issue["identifier"])) else {
+                continue;
+            };
+            let changes = issue["history"]["nodes"].as_array().into_iter().flatten();
+            for change in changes.filter(|change| {
+                let time = change["createdAt"].as_str();
+                after(since, &change["createdAt"])
+                    && time
+                        .and_then(|time| time.parse::<Timestamp>().ok())
+                        .is_none_or(|time| time >= *watched)
+            }) {
+                let changed = edited(change);
+                if changed.is_empty() {
+                    continue;
+                }
+                let mut data = fields(issue);
+                data["linear_id"] = change["id"].clone();
+                if changed.contains(&"title") {
+                    data["title"] = change["toTitle"].clone();
+                }
+                data["description"] = match changed.contains(&"description") {
+                    true => excerpt(&issue["description"]),
+                    false => Value::Null,
+                };
+                data["changed"] = json!(changed);
+                data["actor"] = change["actor"]["displayName"].clone();
+                data["time"] = change["createdAt"].clone();
+                let name = format!("linear:history:{}:updated", text(&change["id"]));
+                events.push(self.message(UPDATED, &name, data, since.is_none())?);
             }
         }
         // A blocker that closes changes the issues it blocks, which Linear does not update.
@@ -635,6 +685,42 @@ fn fields(issue: &Value) -> Value {
     })
 }
 
+/// The issue fields the history entry `change` edits, of title, description, labels, assignee and
+/// priority.
+fn edited(change: &Value) -> Vec<&'static str> {
+    let differs = |from: &str, to: &str| {
+        !(change[from].is_null() && change[to].is_null()) && change[from] != change[to]
+    };
+    let any = |field: &str| change[field].as_array().is_some_and(|ids| !ids.is_empty());
+    [
+        (
+            "title",
+            change["toTitle"].is_string() && differs("fromTitle", "toTitle"),
+        ),
+        ("description", change["updatedDescription"] == true),
+        ("labels", any("addedLabelIds") || any("removedLabelIds")),
+        ("assignee", differs("fromAssigneeId", "toAssigneeId")),
+        ("priority", differs("fromPriority", "toPriority")),
+    ]
+    .into_iter()
+    .filter(|(_, changed)| *changed)
+    .map(|(field, _)| field)
+    .collect()
+}
+
+/// The first `EXCERPT` characters of a description, with an ellipsis when cut; null without one.
+fn excerpt(description: &Value) -> Value {
+    let Some(description) = description.as_str() else {
+        return Value::Null;
+    };
+    let description = description.trim();
+    let mut cut: String = description.chars().take(EXCERPT).collect();
+    if cut.len() < description.len() {
+        cut = format!("{}…", cut.trim_end());
+    }
+    json!(cut)
+}
+
 /// The identifiers of the issues that block `issue` and are neither completed nor canceled. Null
 /// when Linear has more relations than one page holds, since one of those could block it.
 fn blockers(issue: &Value) -> Value {
@@ -683,7 +769,7 @@ fn resume(
             let stream = match message.kind.as_str() {
                 BASELINE => text(&message.data["stream"]).to_string(),
                 ENTERED | LEFT => view_stream(text(&message.data["view"])),
-                CREATED | STATE_CHANGED | BLOCKERS => ISSUES.to_string(),
+                CREATED | STATE_CHANGED | BLOCKERS | UPDATED => ISSUES.to_string(),
                 COMMENTED => COMMENTS.to_string(),
                 _ => continue,
             };
@@ -792,6 +878,9 @@ mod tests {
         fn an_issue_of_any_shape_gives_its_fields_and_blockers_without_panicking(issue in json_value()) {
             fields(&issue);
             blockers(&issue);
+            edited(&issue);
+            excerpt(&issue);
+            excerpt(&issue["description"]);
         }
 
         #[test]

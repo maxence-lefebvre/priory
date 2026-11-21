@@ -387,9 +387,9 @@ a Linear issue or a Slack thread. So a reply in the Slack thread that started a 
 comment on its Linear issue reopens it once done. That subscription reads from the time of the
 event that requested the task, so a reply posted before the task existed still reaches it.
 
-The subscription to the task's own key carries only what people say and closes: reviews, comments,
-review thread comments, a pull request or issue closed, a Linear comment or state change, and a
-Slack reply. A check run, a label or a push on the task's own pull request wakes nothing, since
+The subscription to the task's own key carries only what people say, edit and close: reviews,
+comments, review thread comments, a pull request or issue closed, a Linear comment, state change or
+edit of the title, description, labels, assignee or priority, and a Slack reply. A check run, a label or a push on the task's own pull request wakes nothing, since
 each would start a run; the checks gate and waits take those. A subscription made with `subscribe`
 carries every event, on the task's own key too: `subscribe` to the own key turns its subscription
 into one that carries every event.
