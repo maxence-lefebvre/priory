@@ -201,19 +201,19 @@ pub fn start(factory: &Factory, listen: SocketAddr) -> Result<Vec<JoinHandle<()>
         let waiters = Arc::clone(&waiters);
         let home = runtime::home();
         let served = served.clone();
-        let github = github.clone().map(|github| {
+        let mut github = github.clone().map(|github| {
             (
                 github,
                 log::open(&event_log).map_err(|error| error.to_string()),
             )
         });
-        let linear = linear.clone().map(|linear| {
+        let mut linear = linear.clone().map(|linear| {
             (
                 linear,
                 log::open(&event_log).map_err(|error| error.to_string()),
             )
         });
-        move |request: &Request| match (&github, &linear) {
+        move |request: &Request| match (&mut github, &mut linear) {
             (Some((github, bus)), _)
                 if request.method == "POST" && request.path.split('?').next() == Some(GITHUB) =>
             {

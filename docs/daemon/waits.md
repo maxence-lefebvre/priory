@@ -218,8 +218,10 @@ The `result` tool refuses an outcome that leads to `done`, or to a step with `af
 without `commit` when the task owns a pull request that has not merged yet.
 
 A step with `after = "merged"` stores the same gates when the task reaches it. Green checks then
-leave the task asleep, and the merge that would mark it done enters that step instead. See [Steps
-after the merge](../reference/workflows.md#steps-after-the-merge).
+leave the task asleep, and the merge that would mark it done enters that step instead. When a
+person's `say` started a run while the task slept, the merge moves that run as a result would: it
+carries on into a model step of the same agent, and otherwise ends and its session is killed. See
+[Steps after the merge](../reference/workflows.md#steps-after-the-merge).
 
 ### A stack of pull requests
 

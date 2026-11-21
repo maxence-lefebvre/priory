@@ -961,7 +961,14 @@ fn tend(
                 None => break,
             }
         }
-        if let Err(reason) = start(db, factory, home, scope, &admission)? {
+        if let Err(reason) = start(
+            db,
+            factory,
+            trace.runner.as_deref(),
+            home,
+            scope,
+            &admission,
+        )? {
             state::block(db, trace, admission.task, "failed", &reason)?;
         }
     }
@@ -1108,7 +1115,7 @@ fn act(
             .as_deref()
             .is_some_and(|worktree| !Path::new(worktree).exists())
     {
-        match restore_worktree(db, home, repo, due.task)? {
+        match restore_worktree(db, home, repo, trace.runner.as_deref(), due.task)? {
             Restored::Ready => {}
             Restored::Waits => return Ok(true),
             Restored::Failed(reason) => {
@@ -1144,6 +1151,27 @@ fn act(
     };
     tools::performed(db, due.task, &due.workflow, step, done, trace)?;
     Ok(false)
+}
+
+/// The task's worktree folder and branch name, `priory/<name>`: the branch it has, else
+/// `<runner>-<task>` with runners, whose task ids overlap, else `<task>`.
+fn worktree_name(db: &Connection, runner: Option<&str>, task: i64) -> rusqlite::Result<String> {
+    let branch: Option<String> =
+        db.query_row("SELECT branch FROM tasks WHERE id = ?1", [task], |row| {
+            row.get(0)
+        })?;
+    Ok(
+        match (
+            branch
+                .as_deref()
+                .and_then(|branch| branch.strip_prefix("priory/")),
+            runner,
+        ) {
+            (Some(name), _) => name.to_owned(),
+            (None, Some(runner)) => format!("{runner}-{task}"),
+            (None, None) => task.to_string(),
+        },
+    )
 }
 
 /// Starts `due`'s batch and records the action in one transaction, so a crash between them never
@@ -1183,6 +1211,7 @@ fn restore_worktree(
     db: &Connection,
     home: &Path,
     repo: &str,
+    runner: Option<&str>,
     task: i64,
 ) -> Result<Restored, Error> {
     // A resurrected task goes through the room check, which a code step otherwise skips.
@@ -1200,7 +1229,7 @@ fn restore_worktree(
         )?;
         return Ok(Restored::Waits);
     }
-    if let Err(reason) = runtime::worktree(home, repo, task) {
+    if let Err(reason) = runtime::worktree(home, repo, &worktree_name(db, runner, task)?) {
         return Ok(Restored::Failed(reason));
     }
     db.execute("UPDATE tasks SET retired = NULL WHERE id = ?1", [task])?;
@@ -1279,7 +1308,7 @@ fn start_answers(
                 |row| Ok((row.get(0)?, row.get(1)?)),
             )?;
             let restored = match repo_of(trace.factory, &trigger, repo.as_deref()) {
-                Some(repo) => restore_worktree(db, home, repo, task)?,
+                Some(repo) => restore_worktree(db, home, repo, trace.runner.as_deref(), task)?,
                 None => Restored::Failed(format!("task {task} names no repo")),
             };
             match restored {
@@ -1490,6 +1519,7 @@ fn open_issue(db: &Connection, factory: &Factory, due: &state::Due) -> Result<Do
 fn start(
     db: &mut Connection,
     factory: &Factory,
+    runner: Option<&str>,
     home: &Path,
     scope: &[String],
     admission: &Admission,
@@ -1508,7 +1538,8 @@ fn start(
     let Some(repo) = repo_of(factory, &admission.trigger, admission.repo.as_deref()) else {
         return Ok(Err(format!("task {} names no repo", admission.task)));
     };
-    let (worktree, branch) = match runtime::worktree(home, repo, admission.task) {
+    let folder = worktree_name(db, runner, admission.task)?;
+    let (worktree, branch) = match runtime::worktree(home, repo, &folder) {
         Ok(found) => found,
         Err(reason) => return Ok(Err(reason)),
     };
@@ -1563,6 +1594,8 @@ fn start(
             lanes: factory.lanes(),
         },
     )?;
+    // The new run is the task's only live one, so a session of this name is an ended run's agent.
+    runtime::kill(&tmux);
     let first = match agent.value.harness {
         Harness::Codex => state::claim(db, run)?,
         Harness::ClaudeCode => None,
@@ -1809,7 +1842,8 @@ fn drain(
             return Ok(());
         }
         for delivery in deliveries {
-            let ended = state::handle(db, &delivery.message, trace, counter)?;
+            let message = runners::clocked(delivery.message.clone(), delivery.logged);
+            let ended = state::handle(db, &message, trace, counter)?;
             bus.ack(consumer, &delivery)?;
             ended.inspect(|tmux| runtime::kill(tmux));
         }

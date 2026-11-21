@@ -165,6 +165,7 @@ impl Log for Postgres {
                     output: stored.output,
                     seq: stored.seq,
                     message: stored.message,
+                    logged: Some(stored.published),
                 })
             })
             .collect()

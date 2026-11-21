@@ -18,7 +18,7 @@ SITE = ROOT / "site"
 
 # (title, folder, pages placed first); the remaining pages of the folder follow in README link order.
 GROUPS = [
-    ("Start", None, ["GETTING_STARTED.md", "docs/testing-a-factory.md", "docs/evaluating-a-prompt.md"]),
+    ("Start", None, ["GETTING_STARTED.md", "docs/testing-a-factory.md", "docs/evaluating-a-prompt.md", "docs/adding-a-second-machine.md"]),
     ("Reference", "docs/reference", ["docs/reference/README.md"]),
     ("The daemon", "docs/daemon", ["docs/daemon/README.md"]),
     ("The intake", "docs/intake", ["docs/intake/README.md"]),

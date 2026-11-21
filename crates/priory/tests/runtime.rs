@@ -4585,6 +4585,27 @@ fn a_failed_delivery_can_be_cleared_from_the_desk_then_retried() {
 }
 
 #[test]
+fn a_failed_delivery_of_an_older_revision_than_the_ask_has_is_not_retried() {
+    let mut setup = delivering("deliver-retry-stale", "exit 3");
+    setup.start();
+    listening(&setup);
+    setup.priory(&["ask", "cache.ship", &fleet_ask(&["ship", "wait"])]);
+    setup.priory(&["answer", "--expected", "1", "--", "cache.ship", "ship"]);
+    delivery(&setup, "cache.ship", |delivery| {
+        delivery["state"] == "failed"
+    });
+    setup.priory(&["ask", "cache.ship", &fleet_ask(&["ship", "drop"])]);
+
+    let retried = setup.priory(&["deliver", "cache.ship", "--retry"]);
+
+    assert_eq!(
+        String::from_utf8_lossy(&retried.stderr),
+        "priory deliver: the failed delivery of cache.ship is of revision 1, and the ask is at revision 2 now: answer it again\n"
+    );
+    assert_eq!(delivery(&setup, "cache.ship", |_| true)["state"], "failed");
+}
+
+#[test]
 fn a_daemon_restarted_while_a_delivery_runs_waits_for_that_command_and_delivers_once() {
     let mut setup = delivering(
         "deliver-restart",
@@ -6313,6 +6334,49 @@ fn green_checks_leave_a_task_before_a_step_after_the_merge_asleep_and_the_merge_
         "{:?}",
         setup.typed()
     );
+}
+
+#[test]
+fn a_merge_that_moves_a_said_run_to_another_agent_kills_its_session_and_starts_the_next_step() {
+    let workflow = AFTER_MERGE.replace(
+        "agent = \"implementer\"\nprompt = \"Watch",
+        "agent = \"reviewer\"\nprompt = \"Watch",
+    );
+    let mut setup = Setup::with_workflow("after-merge-said", &workflow);
+    setup.calls(&[
+        wait(on_pull_7("review")),
+        passed_at("abc0000000000000000000000000000000000000"),
+        serde_json::Value::Null,
+        json!({ "name": "result", "arguments": { "outcome": "quiet", "summary": "all quiet" } }),
+    ]);
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("runs", |rows| rows.len() == 1 && rows[0][7] == "asleep");
+    setup.publish(&reviewed());
+    setup.until("runs", |rows| rows.len() == 2 && rows[1][7] == "asleep");
+    // The person's turn is still going when the pull request merges.
+    setup.hold("hold-stop");
+    assert!(setup.priory(&["say", "1", "Hold on."]).status.success());
+    setup.until("outbox", |_| {
+        setup
+            .typed()
+            .iter()
+            .any(|text| text.starts_with("A person says: Hold on."))
+    });
+    let said = fs::read_to_string(setup.dir.join("fake/pid")).unwrap();
+
+    setup.publish(&closed());
+    setup.release("hold-stop");
+
+    setup.until("tasks", |rows| rows[0][4] == "done");
+    let runs = setup.rows("runs");
+    assert_eq!(runs.len(), 4, "{runs:?}");
+    assert_eq!(runs[3][2], "watch");
+    let alive = Command::new("kill")
+        .args(["-0", said.trim()])
+        .status()
+        .unwrap();
+    assert!(!alive.success(), "the said run's agent {said} still runs");
 }
 
 #[test]
@@ -16318,18 +16382,43 @@ fn a_result_sorting_every_item_stores_the_triage_and_task_json_shows_it() {
 }
 
 #[test]
-fn a_result_leaving_an_item_unsorted_is_refused_with_the_item_named() {
+fn a_result_leaving_items_unsorted_is_refused_once_with_every_item_named() {
     let setup = woken_by_feedback("triage-refused");
-    let partial = json!({ REVIEW_URL: "persons-call", THREAD_URL: "trivial" });
+    let partial = json!({ REVIEW_URL: "persons-call" });
 
     let (text, error) = result_sorting(&setup, partial);
 
     assert!(error, "{text}");
     assert!(
-        text.contains(OTHER_URL) && text.contains("no class"),
+        text.starts_with(&format!(
+            "feedback items {THREAD_URL}, {OTHER_URL} have no class"
+        )),
         "{text}"
     );
     assert_eq!(task_json(&setup, "1")["triage"], json!([]));
+}
+
+#[test]
+fn a_result_need_not_sort_an_item_typed_before_the_tasks_last_result() {
+    let setup = woken_by_feedback("triage-since-result");
+    // An earlier run's result, as an upgrade leaves one, came after the first comment was typed.
+    let db = rusqlite::Connection::open(setup.dir.join("priory.db")).unwrap();
+    db.execute_batch(&format!(
+        "INSERT INTO runs (id, task, step, tmux, session, ended, ended_as)
+           VALUES (0, 1, 'implement', 'priory-1', 'old', '2026-11-19T08:00:00Z', 'moved');
+         INSERT INTO results (run, task, step, outcome, summary) VALUES (0, 1, 'implement', 'passed', 'old');
+         UPDATE outbox SET run = 0 WHERE instr(text, '{THREAD_URL}') > 0;"
+    ))
+    .unwrap();
+    ask_about(&setup, &[REVIEW_URL]);
+    answer_the_ask(&setup);
+
+    let (text, error) = result_sorting(
+        &setup,
+        json!({ REVIEW_URL: "persons-call", OTHER_URL: "trivial" }),
+    );
+
+    assert!(!error, "{text}");
 }
 
 const APPROVE: &str = r#"
@@ -16615,6 +16704,102 @@ fn a_runner_that_joins_late_reads_a_finished_task_without_running_it_again() {
         b.rows("tasks").is_empty(),
         "b's late claim of the finished request loses"
     );
+}
+
+#[test]
+fn a_runner_added_to_a_factory_that_had_one_does_not_run_its_finished_requests_again() {
+    let mut a = runner("joined", "a", None);
+    let mut b = runner("joined", "b", Some(&a));
+    let runners = a.dir.join("factory/runners");
+    let later = a.dir.join("runners-later");
+    fs::rename(&runners, &later).unwrap();
+    let exe = Path::new(env!("CARGO_BIN_EXE_priory"));
+    a.calls(&[result("passed")]);
+    a.publish(&requested(1));
+    a.start_with(exe, &[("PRIORY_NOW", T0)]);
+    a.until("tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == "done")
+    });
+    a.crash();
+
+    fs::rename(&later, &runners).unwrap();
+    a.start_with(exe, &[("PRIORY_NOW", T0)]);
+    logged(&a, "priory.runner.alive", json!({ "runner": "a" }));
+    b.start_with(exe, &[("PRIORY_NOW", T0)]);
+    b.until("inbox", |rows| {
+        rows.iter().any(|row| {
+            row.contains(&"priory.runner.alive".to_owned()) && row.contains(&"b".to_owned())
+        })
+    });
+
+    assert!(
+        b.rows("tasks").is_empty(),
+        "b does not run the request a finished before it had runners"
+    );
+}
+
+#[test]
+fn a_malformed_answer_for_this_runner_is_refused_and_the_daemon_goes_on() {
+    let mut a = runner("answer-malformed", "a", None);
+    a.publish(&Message::new(
+        "priory.ask.answered",
+        json!({ "runner": "a", "ask": "one" }),
+    ));
+    a.publish(&requested(1));
+
+    a.start_with(
+        Path::new(env!("CARGO_BIN_EXE_priory")),
+        &[("PRIORY_NOW", T0)],
+    );
+
+    let inbox = a.until("inbox", |rows| {
+        rows.iter().any(|row| row[1] == "factory.task.requested")
+    });
+    let answered: Vec<&str> = inbox
+        .iter()
+        .filter(|row| row[1] == "priory.ask.answered")
+        .map(|row| row[4].as_str())
+        .collect();
+    assert_eq!(answered, ["refused"], "{inbox:?}");
+}
+
+#[test]
+fn an_answer_to_the_ask_of_a_runner_without_a_runner_file_is_refused() {
+    let b = runner("answer-unknown", "b", None);
+    let factory = b.dir.join("factory");
+
+    let sent = b.priory(&[
+        "answer",
+        factory.to_str().unwrap(),
+        "c:1",
+        "approved",
+        "--revision",
+        "1",
+    ]);
+
+    assert_eq!(
+        String::from_utf8_lossy(&sent.stderr),
+        "priory answer: runner c has no runner file in runners/\n"
+    );
+    assert!(!sent.status.success());
+}
+
+#[test]
+fn a_runners_task_branch_names_the_runner_since_task_ids_overlap_across_runners() {
+    let mut a = runner("branch", "a", None);
+    a.publish(&requested(1));
+    a.start_with(
+        Path::new(env!("CARGO_BIN_EXE_priory")),
+        &[("PRIORY_NOW", T0)],
+    );
+    a.until("tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == "running")
+    });
+
+    let task = task_json(&a, "1");
+    assert_eq!(task["branch"], "priory/a-1", "{task}");
+    let worktree = a.dir.join("home/worktrees/owner/repo/a-1");
+    assert!(worktree.is_dir(), "{}", worktree.display());
 }
 
 #[test]
