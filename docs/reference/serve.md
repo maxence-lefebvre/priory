@@ -315,8 +315,8 @@ of `goal`, `acceptanceCriteria` (each `{ "id", "description", "required" }`), `l
 
 The fields of [Tasks](#tasks), plus `repo`, `branch`, `intervention` (`plan`, `hands-off` or null)
 `lead` (the agent that answers a `hands-off` task's asks, or null), `merge_risk` (as in
-[Asks](#asks)), `plan_brief` and `verification` (what the latest result that gave them sent as its
-`brief` and `verification`, else null; see [`result`](../daemon/tools.md#resultoutcome-summary-evidence-commit-reason-branches-risk-brief-verification)),
+[Asks](#asks)), `plan_goal`, `plan_testing`, `plan_brief` and `verification` (what the latest result that gave
+them sent as its `goal`, `testing`, `brief` and `verification`, else null; see [`result`](../daemon/tools.md#resultoutcome-summary-evidence-commit-reason-branches-risk-goal-testing-brief-verification)),
 and these arrays, oldest first:
 
 | Field | Each entry |

@@ -15,9 +15,11 @@ You take one ticket from a request to a pull request a person reviews.
   - red: unclear, risky, or it changes data, security or a public interface.
 - Give the grade's reason in one line in the result's `reason`. Write the brief in its `summary`:
   the goal, the scope and how to check the result. For yellow and red, add your plan.
-- Also fill the result's `brief` (what to change and why, in a few sentences) and `verification`
-  (the commands or checks that prove the change). A person reads both when approving a red plan,
-  and the implement step must run the verification.
+- Also fill the result's `goal` (what the change must achieve), `testing` (how it is tested: the
+  person's method, else the one this repository's AGENTS.md gives), `brief` (what to change and
+  why, in a few sentences) and `verification` (the commands or checks that prove the change). A
+  person reads all four when approving a red plan, and the implement step must run the
+  verification.
 - Write the same brief and plan to `.priory/brief.md`, and add `.priory/` to the file that
   `git rev-parse --git-path info/exclude` names, so it is never committed. Another agent reviews
   your change against that file.

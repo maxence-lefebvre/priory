@@ -9,9 +9,11 @@ yellow or green with a one-line reason, and writes the brief. `priory tasks` sho
 | yellow | It writes its plan into the task, implements, gets an independent review pass, grades the merge risk, describes the change, then opens the pull request. |
 | red | It writes its plan and waits for you to approve it, then goes on as yellow. |
 
-The groom step also sends a `brief` (what to change and why) and a `verification` (the commands or
-checks that prove it). The approval ask shows both, `priory task <id> --json` stores them as
-`plan_brief` and `verification`, and the implement steps' prompts name the verification.
+The groom step also sends a `goal`, a `testing` method, a `brief` (what to change and why) and a
+`verification` (the commands or checks that prove it). The approval ask shows all four,
+`priory task <id> --json` stores them as `plan_goal`, `plan_testing`, `plan_brief` and
+`verification`, and the implement steps' prompts name the verification. The step's `plan_requires`
+makes `priory check` refuse the workflow if its prompt and agent stop asking for them.
 
 ## What it needs
 

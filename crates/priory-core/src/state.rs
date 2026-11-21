@@ -1098,8 +1098,10 @@ ALTER TABLE tasks ADD COLUMN merge_risk TEXT;
 PRAGMA user_version = 62;
 ";
 
-// What a plan result proposed: the change to make and why, and how it will be proved.
+// What a plan result proposed: its goal, how it is tested, the change to make and why, and how it will be proved.
 const SCHEMA_63: &str = "
+ALTER TABLE tasks ADD COLUMN plan_goal TEXT;
+ALTER TABLE tasks ADD COLUMN plan_testing TEXT;
 ALTER TABLE tasks ADD COLUMN plan_brief TEXT;
 ALTER TABLE tasks ADD COLUMN verification TEXT;
 PRAGMA user_version = 63;

@@ -40,6 +40,7 @@ Schema: [`config/workflow.json`](../schemas/config/workflow.json).
 | `next` | table of strings | yes | | Each outcome and where it leads: a step id, `done` or `stop` | `{ passed = "done", failed = "stop" }` |
 | `by` | table of `code`, `model`, `human` or `asleep` | no | the step's `decides` | Who decides an outcome's edge, where it differs from the step's decider | `{ passed = "asleep" }` |
 | `proof` | table of `gate-passed` | no | none: every outcome is the agent's word | Model steps only. The proof the daemon checks before it accepts an outcome, by outcome. `gate-passed`: the factory's [`gate`](factory.md#top-level-keys) passed at the head of the task's branch. See Proofs in [tools.md](../daemon/tools.md#proofs) | `{ passed = "gate-passed" }` |
+| `plan_requires` | array of `goal`, `testing`, `verification` | no | `[]` | Model steps only. The plan result fields this step's `prompt` or its agent's instructions must ask for. `priory check` refuses the step when neither mentions a named field. See `result` in [tools.md](../daemon/tools.md) | `["goal", "testing", "verification"]` |
 | `autonomous` | string | no | | Why an irreversible step may run without a person's approval | `"it only labels issues"` |
 | `guard` | table | no | none allowed | Irreversible model steps only. `allow`: the guards whose calls the step's agent may make while the step is approved at the task's commit or `autonomous`. An `autonomous` step cannot name `gh-pr-merge` or `gh-pr-approve`. See [guard.md](../daemon/guard.md) | `{ allow = ["gh-pr-comment"] }` |
 
@@ -235,6 +236,8 @@ Errors about one step start with `` step `<id>`: `` and point at the step's line
 | `` only a model step has a `proof` `` | `proof` on a human or code step |
 | `` `proof` has outcome `<outcome>`, which is not in `next` `` | `proof` names an outcome the step does not have |
 | `` `proof` names `gate-passed`, and factory.toml sets no `gate` `` | A step needs the gate, and the factory has none |
+| `` only a model step has `plan_requires` `` | `plan_requires` on a human or code step |
+| `` `plan_requires` names `<field>`, which neither the step's prompt nor its agent's instructions mention `` | A required plan field that no text asks the agent for |
 | `` outcome `<outcome>` leads to `<target>`, which is not a step, `done` or `stop` `` | A `next` target that does not exist |
 | `no path from start reaches it` | No chain of `next` from `start` reaches the step |
 | `` approves `<id>`, which is not an irreversible step `` | `approves` names a missing or reversible step |

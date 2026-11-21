@@ -20,7 +20,7 @@ wait or both. A `result` after an open ask or wait is refused, as is a second `a
 `wait`. An ask and a wait side by side wake the task on the first answer or event (see An ask
 beside a wait in [waits.md](waits.md)).
 
-### `result(outcome, summary, evidence?, commit?, reason?, branches?, risk?, brief?, verification?)`
+### `result(outcome, summary, evidence?, commit?, reason?, branches?, risk?, goal?, testing?, brief?, verification?)`
 
 `result` stores the run's result and ends the step. Nothing can change or delete a stored result.
 
@@ -44,13 +44,18 @@ capitals is stored in lower case.
 The `open-pr` action titles its pull request with the first line of `summary` (see Code steps
 below).
 
-`brief` and `verification`, optional strings, are for a plan step: what to change and why, and how
-the change will be proved, as commands or checks. The task keeps the latest of each as `plan_brief`
-and `verification`, and a result that omits one leaves the stored one. `priory task <id> --json`
-shows both. The ask that approves the plan, a `plan` task's or a human step's, carries them as its
-`text`: `Brief: ...`, `Verification: ...`, then the merge risk when the task has one. Each model
+`goal`, `testing`, `brief` and `verification`, optional strings, are for a plan step: what the
+change must achieve, how it is tested (the person's method, else the repository's), what to change
+and why, and how the change will be proved, as commands or checks. The task keeps the latest of
+each as `plan_goal`, `plan_testing`, `plan_brief` and `verification`, and a result that omits one
+leaves the stored one. `priory task <id> --json` shows all four. The ask that approves the plan, a
+`plan` task's or a human step's, carries them as its `text`: `Goal: ...`, `Testing: ...`,
+`Brief: ...`, `Verification: ...`, then the merge risk when the task has one. The ask's text is
+refreshed when an irreversible step's approval is asked again. Each model
 step the task enters afterwards gets the line `Prove the change with: ` and the verification at the
-end of its prompt. A plan without them changes nothing.
+end of its prompt. A plan without them changes nothing. A step's `plan_requires` makes
+`priory check` refuse a workflow whose step and agent never ask for them (see
+[workflows.md](../reference/workflows.md)).
 
 An outcome that the step's `proof` names is refused until its proof holds. See Proofs below.
 

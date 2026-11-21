@@ -693,6 +693,11 @@ fn check_workflow(factory: &Factory, workflow: &Loaded<Workflow>, problems: &mut
         let fields = [
             (step.agent.is_some(), Decider::Model, "an `agent`"),
             (step.prompt.is_some(), Decider::Model, "a `prompt`"),
+            (
+                !step.plan_requires.is_empty(),
+                Decider::Model,
+                "`plan_requires`",
+            ),
             (!step.options.is_empty(), Decider::Human, "`options`"),
             (!step.approves.is_empty(), Decider::Human, "`approves`"),
             (step.command.is_some(), Decider::Human, "a `command`"),
@@ -716,6 +721,25 @@ fn check_workflow(factory: &Factory, workflow: &Loaded<Workflow>, problems: &mut
                 }
                 if step.prompt.is_none() {
                     report("a model step needs a `prompt`".into());
+                }
+                let asked = format!(
+                    "{} {}",
+                    step.prompt.as_deref().unwrap_or_default(),
+                    step.agent
+                        .as_ref()
+                        .and_then(|agent| factory.agents.get(agent))
+                        .map_or("", |agent| agent.value.body.as_str())
+                )
+                .to_lowercase();
+                for field in step
+                    .plan_requires
+                    .iter()
+                    .filter(|field| !asked.contains(field.name()))
+                {
+                    report(format!(
+                        "`plan_requires` names `{}`, which neither the step's prompt nor its agent's instructions mention",
+                        field.name()
+                    ));
                 }
             }
             Decider::Human => {

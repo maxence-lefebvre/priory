@@ -54,7 +54,7 @@ fn as_version_57(db: &rusqlite::Connection) {
          DROP TRIGGER push_an_uncertain_prompt; DROP TRIGGER push_an_uncertain_command;
          ALTER TABLE waits DROP COLUMN green; ALTER TABLE tasks DROP COLUMN files;
          ALTER TABLE tasks DROP COLUMN files_run; ALTER TABLE tasks DROP COLUMN merge_risk;
-         ALTER TABLE tasks DROP COLUMN plan_brief; ALTER TABLE tasks DROP COLUMN verification;
+         ALTER TABLE tasks DROP COLUMN plan_goal; ALTER TABLE tasks DROP COLUMN plan_testing; ALTER TABLE tasks DROP COLUMN plan_brief; ALTER TABLE tasks DROP COLUMN verification;
          ALTER TABLE results DROP COLUMN merge_risk; PRAGMA user_version = 57;",
     )
     .unwrap();

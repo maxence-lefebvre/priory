@@ -247,11 +247,13 @@ fn result(
             optional(arguments, "evidence")?,
             optional(arguments, "commit")?,
             optional(arguments, "reason")?,
-            optional(arguments, "brief")?,
-            optional(arguments, "verification")?,
+            PLAN_FIELDS
+                .map(|(name, _)| optional(arguments, name))
+                .into_iter()
+                .collect::<Result<Vec<_>, _>>()?,
         ))
     })();
-    let (outcome, summary, evidence, commit, reason, plan_brief, verification) = match fields {
+    let (outcome, summary, evidence, commit, reason, plan) = match fields {
         Ok(fields) => fields,
         Err(error) => return Ok(Err(error)),
     };
@@ -305,11 +307,12 @@ fn result(
             run.id, run.task, run.step, outcome, summary, evidence, commit, reason, merge_risk
         ],
     )?;
-    tx.execute(
-        "UPDATE tasks SET plan_brief = coalesce(?2, plan_brief), verification = coalesce(?3, verification)
-         WHERE id = ?1",
-        params![run.task, plan_brief, verification],
-    )?;
+    for ((_, column), value) in PLAN_FIELDS.iter().zip(&plan) {
+        tx.execute(
+            &format!("UPDATE tasks SET {column} = coalesce(?2, {column}) WHERE id = ?1"),
+            params![run.task, value],
+        )?;
+    }
     if let Some(branches) = branches {
         tx.execute(
             "INSERT INTO result_branches (run, branches) VALUES (?1, ?2)",
@@ -384,16 +387,30 @@ fn ask_text(tx: &Transaction, task: i64) -> rusqlite::Result<Option<String>> {
     Ok((!parts.is_empty()).then(|| parts.join("\n\n")))
 }
 
-/// The brief and verification a plan result proposed, as Markdown, if it has either.
+/// The fields a plan result may carry beside its summary, with the task column each is kept in, in
+/// the order an approval shows them.
+const PLAN_FIELDS: [(&str, &str); 4] = [
+    ("goal", "plan_goal"),
+    ("testing", "plan_testing"),
+    ("brief", "plan_brief"),
+    ("verification", "verification"),
+];
+
+/// The plan fields a plan result proposed, as Markdown, if it sent any.
 fn plan_text(tx: &Transaction, task: i64) -> rusqlite::Result<Option<String>> {
-    let (brief, verification): (Option<String>, Option<String>) = tx.query_row(
-        "SELECT plan_brief, verification FROM tasks WHERE id = ?1",
+    let columns: Vec<_> = PLAN_FIELDS.iter().map(|(_, column)| *column).collect();
+    let stored: Vec<Option<String>> = tx.query_row(
+        &format!("SELECT {} FROM tasks WHERE id = ?1", columns.join(", ")),
         [task],
-        |row| Ok((row.get(0)?, row.get(1)?)),
+        |row| (0..columns.len()).map(|at| row.get(at)).collect(),
     )?;
-    let lines: Vec<_> = [("Brief", brief), ("Verification", verification)]
-        .into_iter()
-        .filter_map(|(label, text)| Some(format!("{label}: {}", text?)))
+    let lines: Vec<_> = PLAN_FIELDS
+        .iter()
+        .zip(stored)
+        .filter_map(|((name, _), text)| {
+            let (first, rest) = name.split_at(1);
+            Some(format!("{}{rest}: {}", first.to_uppercase(), text?))
+        })
         .collect();
     Ok((!lines.is_empty()).then(|| lines.join("\n\n")))
 }
