@@ -1,0 +1,10 @@
+{
+  "revision": 63,
+  "runs": [
+    { "run": 93, "task": 2, "key": "ENG-244", "step": "review", "agent": "reviewer", "started": "2026-11-17T11:50:00Z", "ended": null, "end": null, "outcome": null, "model": null, "tokens": null },
+    { "run": 92, "task": 1, "key": "ENG-212", "step": "implement", "agent": "coder", "started": "2026-11-17T10:00:00Z", "ended": "2026-11-17T10:42:00Z", "end": "moved", "outcome": "passed", "model": "claude-sonnet-5-5", "tokens": { "input": 300000, "output": 12000 } },
+    { "run": 91, "task": 3, "key": "ENG-219", "step": "implement", "agent": null, "started": "2026-11-16T08:00:00Z", "ended": "2026-11-16T09:05:00Z", "end": "failed", "outcome": null, "model": null, "tokens": null },
+    { "run": 80, "task": 4, "key": "ENG-150", "step": "implement", "agent": "coder", "started": "2026-11-01T09:00:00Z", "ended": "2026-11-01T09:30:00Z", "end": "moved", "outcome": "passed", "model": "claude-sonnet-5-5", "tokens": null }
+  ],
+  "older": 0
+}
