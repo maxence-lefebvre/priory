@@ -41,9 +41,9 @@ const OUTPUT: &str = "factory.intake";
 /// Takes a state file back before schema 28, which added search, 29, which added grades, 30,
 /// which added snoozes, 31, which added read reports, 32, which added the pause, 34, which added
 /// reports of sections, 36, which added deliveries, 37, which added progress, 39, which added run
-/// actions, 40, which added answer actions, 42, which added dispatches, and 49, which added task ends. Schema 38's visits table is created only if
-/// missing, so it stays.
-const UNDO_SINCE_SEARCH: &str = "DROP TRIGGER task_created; DROP TRIGGER task_ended; DROP TRIGGER task_restarted;
+/// actions, 40, which added answer actions, 42, which added dispatches, 49, which added task ends, and 51, which added a run's crossing of `compactAt`. Schema 38's visits
+/// table is created only if missing, so it stays.
+const UNDO_SINCE_SEARCH: &str = "ALTER TABLE runs DROP COLUMN crossed; DROP TRIGGER task_created; DROP TRIGGER task_ended; DROP TRIGGER task_restarted;
   DROP TABLE task_ends; ALTER TABLE exports DROP COLUMN ended; ALTER TABLE tasks DROP COLUMN created;
   ALTER TABLE actions DROP COLUMN ask;
   ALTER TABLE actions DROP COLUMN revision; ALTER TABLE actions DROP COLUMN command; ALTER TABLE actions DROP COLUMN generation;
@@ -1248,6 +1248,188 @@ fn a_codex_run_gets_a_bare_compact_and_its_post_compact_hook_brings_the_continua
     let typed = setup.typed();
     assert_eq!(typed[1], "/compact\n", "{typed:?}");
     assert_eq!(typed[2], CONTINUED, "{typed:?}");
+}
+
+impl Setup {
+    /// Sets the implementer's `compactAt`, and the context size the fake reports on each turn.
+    fn compact_at(&self, tokens: u64, contexts: &[u64]) {
+        let agent = AGENT.replace(
+            "effort = \"low\"\n",
+            &format!("effort = \"low\"\ncompactAt = {tokens}\n"),
+        );
+        fs::write(self.dir.join("factory/agents/implementer/agent.md"), agent).unwrap();
+        self.contexts(contexts);
+    }
+
+    fn contexts(&self, contexts: &[u64]) {
+        let lines: String = contexts
+            .iter()
+            .map(|context| format!("{context}\n"))
+            .collect();
+        fs::write(self.dir.join("fake/context"), lines).unwrap();
+    }
+
+    fn compactions(&self) -> usize {
+        self.typed()
+            .iter()
+            .filter(|prompt| prompt.starts_with("/compact"))
+            .count()
+    }
+}
+
+#[test]
+fn a_session_past_compact_at_gets_one_compaction_once_idle_then_the_continuation() {
+    let mut setup = Setup::new("auto-compact");
+    setup.compact_at(5000, &[6000]);
+    setup.publish(&requested(42));
+
+    setup.start();
+
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 3);
+    let typed = setup.typed();
+    assert_eq!(typed[1], "/compact\n", "{typed:?}");
+    assert!(
+        typed[2].starts_with(CONTINUED.lines().next().unwrap()),
+        "{typed:?}"
+    );
+    std::thread::sleep(Duration::from_millis(1500));
+    assert_eq!(setup.compactions(), 1, "{:?}", setup.typed());
+}
+
+#[test]
+fn an_agent_without_compact_at_is_never_compacted_though_another_agent_sets_it() {
+    let mut setup = Setup::new("auto-compact-unset");
+    let reviewer = REVIEWER.replace("+++\nYou", "compactAt = 5000\n+++\nYou");
+    fs::write(setup.dir.join("factory/agents/reviewer/agent.md"), reviewer).unwrap();
+    setup.contexts(&[900_000, 900_000]);
+    setup.publish(&requested(42));
+
+    setup.start();
+
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 2);
+    std::thread::sleep(Duration::from_millis(1500));
+    assert_eq!(setup.typed().len(), 2, "{:?}", setup.typed());
+    assert_eq!(setup.compactions(), 0);
+}
+
+#[test]
+fn a_turn_past_compact_at_that_asks_is_compacted_before_the_task_sleeps() {
+    let mut setup = Setup::with_workflow("auto-compact-ask", STEPS);
+    setup.compact_at(5000, &[6000]);
+    setup.calls(&[ask()]);
+    setup.publish(&requested(42));
+
+    setup.start();
+
+    setup.until("tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == "asleep")
+    });
+    let typed = setup.typed();
+    assert_eq!(typed[1], "/compact\n", "{typed:?}");
+    assert!(
+        typed[2].starts_with(
+            "Priory compacted this conversation, as you asked. You are on task 1, at step plan."
+        ),
+        "{typed:?}"
+    );
+    assert_eq!(typed.len(), 3, "{typed:?}");
+}
+
+#[test]
+fn a_new_run_of_the_session_does_not_compact_again_while_the_context_stays_over() {
+    let mut setup = Setup::with_workflow("auto-compact-wake", STEPS);
+    setup.compact_at(5000, &[6000, 7000, 7000]);
+    setup.calls(&[ask()]);
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == "asleep")
+    });
+
+    let answered = setup.priory(&["answer", "1", "sqlite", "--revision", "1"]);
+
+    assert!(answered.status.success(), "{answered:?}");
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 4);
+    std::thread::sleep(Duration::from_millis(1500));
+    assert_eq!(setup.rows("runs").len(), 2);
+    assert_eq!(setup.compactions(), 1, "{:?}", setup.typed());
+}
+
+#[test]
+fn a_result_carried_into_the_next_step_compacts_there() {
+    let mut setup = Setup::with_workflow("auto-compact-result", STEPS);
+    setup.compact_at(5000, &[6000, 6000]);
+    setup.calls(&[result("ready")]);
+    setup.publish(&requested(42));
+
+    setup.start();
+
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 5);
+    let typed = setup.typed();
+    assert_eq!(setup.compactions(), 1, "{typed:?}");
+    assert!(
+        typed.iter().any(|prompt| prompt.starts_with(
+            "Priory compacted this conversation, as you asked. You are on task 1, at step implement."
+        )),
+        "{typed:?}"
+    );
+}
+
+#[test]
+fn a_compact_tool_call_after_an_automatic_compaction_still_follows_the_answer() {
+    let mut setup = Setup::with_workflow("auto-compact-then-tool", STEPS);
+    setup.compact_at(5000, &[6000, 7000]);
+    // The continuation after the automatic compaction asks for another compact, then asks.
+    setup.calls(&[serde_json::Value::Null, json!([compact("the plan"), ask()])]);
+    setup.publish(&requested(42));
+
+    setup.start();
+
+    setup.until("tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == "asleep")
+    });
+    assert_eq!(setup.compactions(), 1, "{:?}", setup.typed());
+}
+
+#[test]
+fn a_turn_past_compact_at_is_not_compacted_until_it_ends() {
+    let mut setup = Setup::new("auto-compact-busy");
+    setup.compact_at(5000, &[6000]);
+    setup.hold("hold-stop");
+    setup.publish(&requested(42));
+    setup.start();
+    setup.written("fake/submitted");
+
+    std::thread::sleep(Duration::from_millis(1500));
+    assert_eq!(setup.typed().len(), 1, "{:?}", setup.typed());
+
+    setup.release("hold-stop");
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 3);
+    assert_eq!(setup.compactions(), 1, "{:?}", setup.typed());
+}
+
+#[test]
+fn a_session_is_compacted_again_only_after_its_context_reads_below_compact_at() {
+    // Turns: the intro, the continuation after the compaction, its nudge.
+    for (name, contexts, prompts, compactions) in [
+        ("auto-compact-stays-over", [6000, 7000, 7000], 4, 1),
+        ("auto-compact-crosses-again", [6000, 1000, 6000], 7, 2),
+    ] {
+        let mut setup = Setup::new(name);
+        setup.compact_at(5000, &contexts);
+        setup.publish(&requested(42));
+
+        setup.start();
+
+        setup.until("outbox", |rows| with(rows, 3, "confirmed") >= prompts);
+        std::thread::sleep(Duration::from_millis(1500));
+        assert_eq!(
+            setup.compactions(),
+            compactions,
+            "{name}: {:?}",
+            setup.typed()
+        );
+    }
 }
 
 #[test]
@@ -5139,7 +5321,7 @@ fn a_state_file_whose_asks_an_approval_names_upgrades_to_outside_asks() {
     // The state file as version 32 left it: every ask belongs to a task.
     let db = rusqlite::Connection::open(setup.dir.join("priory.db")).unwrap();
     db.execute_batch(
-        "DROP TRIGGER task_created; DROP TRIGGER task_ended; DROP TRIGGER task_restarted;
+        "ALTER TABLE runs DROP COLUMN crossed; DROP TRIGGER task_created; DROP TRIGGER task_ended; DROP TRIGGER task_restarted;
          DROP TABLE task_ends; ALTER TABLE exports DROP COLUMN ended; ALTER TABLE tasks DROP COLUMN created;
          ALTER TABLE actions DROP COLUMN ask; ALTER TABLE actions DROP COLUMN revision;
          ALTER TABLE actions DROP COLUMN command; ALTER TABLE actions DROP COLUMN generation;
@@ -5460,6 +5642,26 @@ fn a_review_a_comment_or_a_close_wakes_a_task_waiting_on_it() {
         assert!(typed[1].starts_with(line), "{kind}: {typed:?}");
         assert_eq!(setup.rows("tasks")[0][4], "running");
     }
+}
+
+#[test]
+fn a_review_that_asks_for_changes_wakes_its_wait_with_the_first_line_of_its_body() {
+    let setup = asleep_on("wake-review-body", on_pull_7("review"));
+    let review = on_pull(
+        "github.pull_request_review.submitted",
+        json!({ "state": "changes_requested", "actor": "ana", "body": "Split the parser.\nIt is too long.", "url": "u", "github_id": 301 }),
+    );
+
+    setup.publish(&review.time(herdr_bus::Timestamp::now()));
+
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 2);
+    let typed = setup.typed();
+    assert!(
+        typed[1].starts_with(
+            "wait 1 fired: ana reviewed github:owner/repo#7: changes_requested: Split the parser. u\n"
+        ),
+        "{typed:?}"
+    );
 }
 
 #[test]
@@ -5847,6 +6049,7 @@ fn a_done_task_whose_open_pull_request_gets_a_comment_reopens_and_resumes_its_se
     assert_eq!(reopened[0]["data"]["generation"], 2);
     assert_eq!(reopened[0]["data"]["step"], "implement");
     assert_eq!(reopened[0]["data"]["pull_request"], "github:owner/repo#7");
+    assert_eq!(reopened[0]["data"]["resource"], "github:owner/repo#7");
 }
 
 /// A review in `state` by bot, written now.
@@ -7237,6 +7440,36 @@ fn two_tasks_of_a_shared_agent_resume_one_session_one_after_the_other() {
     ] {
         assert!(intro.contains(part), "{part} in {intro}");
     }
+}
+
+#[test]
+fn a_shared_session_whose_tasks_each_end_in_one_result_is_compacted_when_resumed() {
+    let mut setup = shared("shared-compact");
+    let lead = LEAD.replace(
+        "session = \"shared\"\n",
+        "session = \"shared\"\ncompactAt = 5000\n",
+    );
+    fs::write(setup.dir.join("factory/agents/implementer/agent.md"), lead).unwrap();
+    setup.contexts(&[6000, 6000, 1000]);
+    // Task 2's first result is refused while the compact is queued, so it ends its turn.
+    setup.calls(&[result("passed"), result("passed"), result("passed")]);
+    setup.publish(&requested(42));
+    setup.publish(&requested(43));
+
+    setup.start();
+
+    setup.until("tasks", |rows| {
+        rows.len() == 2 && rows.iter().all(|row| row[4] == "done")
+    });
+    let typed = setup.typed();
+    assert_eq!(setup.compactions(), 1, "{typed:?}");
+    assert_eq!(typed[2], "/compact\n", "{typed:?}");
+    assert!(
+        typed[3].starts_with(
+            "Priory compacted this conversation, as you asked. You are on task 2, at step implement."
+        ),
+        "{typed:?}"
+    );
 }
 
 #[test]
@@ -8965,6 +9198,157 @@ fn replied(thread: &str, ts: &str, time: herdr_bus::Timestamp) -> Message {
 }
 
 #[test]
+fn a_comment_on_a_done_tasks_own_issue_or_thread_reopens_it() {
+    let issue_comment = Message::new(
+        "github.issues.comment",
+        json!({ "repo": "owner/repo", "issue": 42, "actor": "ana", "body": "Still broken.\nSee the log.",
+                "url": "u", "github_id": 901 }),
+    )
+    .subject("owner/repo#42");
+    let mut linear = linear_event(
+        "linear.comment.created",
+        "ENG-7",
+        json!({ "body": "Still broken.", "actor": "Ana" }),
+    );
+    linear.data["url"] = json!("u");
+    for (name, key, event, line) in [
+        (
+            "reopen-issue",
+            "github:owner/repo#42".to_owned(),
+            issue_comment,
+            "ana commented on github:owner/repo#42: Still broken. u",
+        ),
+        (
+            "reopen-linear",
+            "linear:ENG-7".to_owned(),
+            linear,
+            "Ana commented on linear:ENG-7: Still broken. u",
+        ),
+        (
+            "reopen-slack",
+            format!("slack:C0123:{THREAD}"),
+            replied(THREAD, "1763500001.000009", herdr_bus::Timestamp::now()),
+            "U0PERSON replied in slack:C0123:1763500000.000100: reply 1763500001.000009",
+        ),
+    ] {
+        let mut setup = Setup::new(name);
+        setup.calls(&[result("passed")]);
+        let mut request = requested(42);
+        request.data["key"] = json!(key);
+        setup.publish(&request.subject(&key));
+        setup.start();
+        setup.until("tasks", |rows| {
+            rows.first().is_some_and(|row| row[4] == "done")
+        });
+        // The comment comes after the task was done, to the second.
+        std::thread::sleep(Duration::from_millis(1100));
+
+        setup.publish(&event.time(herdr_bus::Timestamp::now()));
+
+        setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 2);
+        let typed = setup.typed();
+        assert!(
+            typed[1].starts_with(&format!(
+                "Feedback reopened this done task as generation 2: {line}\n"
+            )),
+            "{name}: {typed:?}"
+        );
+    }
+}
+
+/// A comment by ana on issue 42, written now.
+fn issue_commented(github_id: u64) -> Message {
+    Message::new(
+        "github.issues.comment",
+        json!({ "repo": "owner/repo", "issue": 42, "actor": "ana", "body": "Also the empty case.",
+                "url": "u", "github_id": github_id }),
+    )
+    .subject("owner/repo#42")
+    .time(herdr_bus::Timestamp::now())
+}
+
+#[test]
+fn a_comment_on_a_done_tasks_issue_reopens_nothing_once_it_unsubscribed_or_the_issue_closed() {
+    let closed = Message::new(
+        "github.issues.closed",
+        json!({ "repo": "owner/repo", "issue": 42, "title": "t", "url": "u", "actor": "ana", "github_id": 5 }),
+    )
+    .subject("owner/repo#42");
+    for (name, close) in [
+        ("issue-reopen-unsubscribed", false),
+        ("issue-reopen-closed", true),
+    ] {
+        let mut setup = Setup::new(name);
+        setup.calls(&[result("passed")]);
+        setup.publish(&requested(42));
+        setup.start();
+        setup.until("tasks", |rows| {
+            rows.first().is_some_and(|row| row[4] == "done")
+        });
+        std::thread::sleep(Duration::from_millis(1100));
+        if close {
+            setup.publish(&closed.clone().time(herdr_bus::Timestamp::now()));
+            setup.until("inbox", |rows| rows.len() == 2);
+            assert_eq!(task_json(&setup, "1")["subscriptions"], json!([]), "{name}");
+        } else {
+            let output = setup.priory(&["unsubscribe", "1", "github:owner/repo#42"]);
+            assert!(output.status.success(), "{output:?}");
+        }
+
+        setup.publish(&issue_commented(902));
+
+        let inbox = setup.until("inbox", |rows| {
+            rows.iter().any(|row| row[1] == "github.issues.comment")
+        });
+        assert_eq!(inbox.last().unwrap()[4], "ignored", "{name}: {inbox:?}");
+        assert_eq!(setup.rows("tasks")[0][4], "done", "{name}");
+    }
+}
+
+#[test]
+fn a_check_run_on_a_task_keyed_on_its_pull_request_wakes_nothing_and_a_comment_does() {
+    let mut setup = Setup::new("own-key-checks");
+    setup.calls(&[wait(json!({ "type": "time", "until": "1 hour" }))]);
+    setup.publish(&requested(7));
+    setup.start();
+    setup.until("runs", |rows| {
+        rows.first().is_some_and(|row| row[7] == "asleep")
+    });
+    let mut green = check(1, 0);
+    green.data["head_branch"] = json!("feature");
+
+    setup.publish(&green);
+
+    setup.until("inbox", |rows| rows.len() == 2);
+    stays_asleep(&setup);
+    setup.publish(&off_branch(commented()));
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 2);
+    assert!(
+        setup.typed()[1].starts_with("github.pull_request.comment owner/repo#7 {"),
+        "{:?}",
+        setup.typed()
+    );
+}
+
+#[test]
+fn a_comment_on_an_issue_wakes_the_task_keyed_on_it() {
+    let setup = asleep_on(
+        "issue-comment-wakes",
+        json!({ "type": "time", "until": "1 hour" }),
+    );
+
+    setup.publish(&issue_commented(901));
+
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 2);
+    let typed = setup.typed();
+    assert!(
+        typed[1].starts_with("github.issues.comment owner/repo#42 {")
+            && typed[1].contains("Also the empty case."),
+        "{typed:?}"
+    );
+}
+
+#[test]
 fn a_slack_reply_wait_fires_on_a_new_reply_in_its_thread_only() {
     let setup = asleep_on(
         "slack-reply",
@@ -9047,13 +9431,20 @@ impl Setup {
     }
 
     /// One poll of `priory intake`, which may fail. Without a fake `gh` in `bin`, every `gh` call
-    /// prints [], since the branch of an active task makes the intake poll `owner/repo`.
+    /// prints [], since the branch of an active task makes the intake poll `owner/repo`. Without a
+    /// fake `curl`, Linear has nothing new, since a Linear task subscribes to its issue.
     fn poll(&self, env: &[(&str, &str)]) -> Exit {
         let gh = self.dir.join("bin/gh");
         if !gh.exists() {
             fs::create_dir_all(gh.parent().unwrap()).unwrap();
             fs::write(&gh, "#!/bin/sh\necho '[]'\n").unwrap();
             fs::set_permissions(&gh, fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        if !self.dir.join("bin/curl").exists() {
+            self.answer_curl(&[
+                ("query Issues", linear_page("issues", json!([]))),
+                ("query Comments", linear_page("comments", json!([]))),
+            ]);
         }
         let factory = self.dir.join("intake-factory");
         for (path, content) in [
@@ -9122,6 +9513,87 @@ fn a_reply_posted_before_the_wait_wakes_the_task_and_the_bots_own_reply_never_do
     assert!(stdin.contains(SLACK_TOKEN));
     let args = fs::read_to_string(setup.dir.join("curl-args")).unwrap();
     assert!(!args.contains(SLACK_TOKEN), "{args}");
+}
+
+#[test]
+fn a_reply_in_the_thread_of_a_slack_tasks_key_wakes_the_task_with_no_wait_on_it() {
+    let mut setup = Setup::new("slack-key-thread");
+    setup.calls(&[wait(json!({ "type": "time", "until": "1 hour" }))]);
+    let key = format!("slack:C0123:{THREAD}");
+    let mut request = requested(42);
+    request.data["key"] = json!(key);
+    // The request carries its trigger message's time; the reply came before the task existed.
+    let posted = herdr_bus::Timestamp::now()
+        .checked_sub(Duration::from_secs(60))
+        .unwrap();
+    setup.publish(&request.subject(&key).time(posted));
+    setup.start();
+    setup.until("runs", |rows| {
+        rows.first().is_some_and(|row| row[7] == "asleep")
+    });
+    let before_task = posted.checked_add(Duration::from_secs(10)).unwrap();
+    setup.answer_slack(&[slack_message(&ts(before_task), "U0PERSON")]);
+
+    setup.intake();
+
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 2);
+    assert!(
+        setup.typed()[1].starts_with(&format!("slack.thread.replied C0123:{THREAD} {{")),
+        "{:?}",
+        setup.typed()
+    );
+}
+
+#[test]
+fn a_wait_on_a_slack_tasks_own_thread_reads_the_thread_once_a_poll() {
+    let mut setup = Setup::new("slack-key-wait");
+    setup.calls(&[wait(
+        json!({ "type": "slack_reply", "channel": "C0123", "thread_ts": THREAD }),
+    )]);
+    let key = format!("slack:C0123:{THREAD}");
+    let mut request = requested(42);
+    request.data["key"] = json!(key);
+    setup.publish(&request.subject(&key));
+    setup.start();
+    setup.until("runs", |rows| {
+        rows.first().is_some_and(|row| row[7] == "asleep")
+    });
+    setup.answer_slack(&[]);
+
+    setup.intake();
+
+    let args = fs::read_to_string(setup.dir.join("curl-args")).unwrap();
+    assert_eq!(args.matches("conversations.replies").count(), 1, "{args}");
+}
+
+#[test]
+fn the_intake_stops_polling_a_done_slack_tasks_thread_a_week_after_it_was_done() {
+    let mut setup = Setup::new("slack-key-done");
+    setup.calls(&[result("passed")]);
+    let key = format!("slack:C0123:{THREAD}");
+    let mut request = requested(42);
+    request.data["key"] = json!(key);
+    setup.publish(&request.subject(&key));
+    setup.start();
+    setup.until("tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == "done")
+    });
+    setup.answer_slack(&[]);
+    setup.intake();
+    let args = fs::read_to_string(setup.dir.join("curl-args")).unwrap();
+    assert!(args.contains("conversations.replies"), "{args}");
+    fs::remove_file(setup.dir.join("curl-args")).unwrap();
+    let db = rusqlite::Connection::open(setup.dir.join("priory.db")).unwrap();
+    db.execute(
+        "UPDATE tasks SET changed = strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-7 days')",
+        [],
+    )
+    .unwrap();
+
+    setup.intake();
+
+    let args = fs::read_to_string(setup.dir.join("curl-args")).unwrap_or_default();
+    assert!(!args.contains("conversations.replies"), "{args}");
 }
 
 #[test]
@@ -11542,13 +12014,26 @@ fn the_unsubscribe_tool_ends_the_subscription_without_ending_the_turn() {
     let (text, error) = reply(&setup.replies()[1]);
     assert!(!error, "{text}");
     assert_eq!(text, "task 1 unsubscribed from github:owner/repo#7");
-    assert_eq!(task_json(&setup, "1")["subscriptions"], json!([]));
+    assert_eq!(subscriptions(&setup, "1"), ["github:owner/repo#42"]);
 }
 
 /// `message` from a branch other than the task's, which it owns apart from any subscription.
 fn off_branch(mut message: Message) -> Message {
     message.data["head_branch"] = json!("feature");
     message
+}
+
+/// The resources `task` subscribes to, its own key's among them, sorted.
+fn subscriptions(setup: &Setup, task: &str) -> Vec<String> {
+    let listed = task_json(setup, task)["subscriptions"].clone();
+    let mut resources: Vec<String> = listed
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|row| row["resource"].as_str().unwrap().to_owned())
+        .collect();
+    resources.sort();
+    resources
 }
 
 fn task_json(setup: &Setup, task: &str) -> serde_json::Value {
@@ -11574,9 +12059,11 @@ fn a_subscription_owned_by_another_active_task_is_refused_naming_it() {
         String::from_utf8_lossy(&output.stderr),
         "priory subscribe: github:owner/repo#7 belongs to task 1, not this one\n"
     );
-    let listed = task_json(&setup, "1")["subscriptions"].clone();
-    assert_eq!(listed[0]["resource"], "github:owner/repo#7", "{listed}");
-    assert_eq!(task_json(&setup, "2")["subscriptions"], json!([]));
+    assert_eq!(
+        subscriptions(&setup, "1"),
+        ["github:owner/repo#42", "github:owner/repo#7"]
+    );
+    assert_eq!(subscriptions(&setup, "2"), ["github:owner/repo#43"]);
 }
 
 #[test]
@@ -11594,10 +12081,10 @@ fn a_done_tasks_subscription_yields_to_an_active_task() {
     let output = setup.priory(&["subscribe", "2", "github:owner/repo#07"]);
 
     assert!(output.status.success(), "{output:?}");
-    assert_eq!(task_json(&setup, "1")["subscriptions"], json!([]));
+    assert_eq!(subscriptions(&setup, "1"), ["github:owner/repo#42"]);
     assert_eq!(
-        task_json(&setup, "2")["subscriptions"][0]["resource"],
-        "github:owner/repo#7"
+        subscriptions(&setup, "2"),
+        ["github:owner/repo#43", "github:owner/repo#7"]
     );
     let output = setup.priory(&["unsubscribe", "2", "github:owner/repo#7"]);
     assert!(output.status.success(), "{output:?}");
@@ -11619,7 +12106,7 @@ fn a_closed_pull_request_wakes_its_subscriber_and_ends_its_subscriptions() {
         "{:?}",
         setup.typed()
     );
-    assert_eq!(task_json(&setup, "1")["subscriptions"], json!([]));
+    assert_eq!(subscriptions(&setup, "1"), ["github:owner/repo#42"]);
 }
 
 #[test]
@@ -11769,8 +12256,8 @@ fn a_done_linear_task_hears_a_comment_on_the_pull_request_it_opened_and_reopens(
     let actions = setup.until("actions", |rows| rows.len() == 1);
     assert_eq!(actions[0][5], "github:owner/repo#7");
     assert_eq!(
-        task_json(&setup, "1")["subscriptions"][0]["resource"],
-        "github:owner/repo#7"
+        subscriptions(&setup, "1"),
+        ["github:owner/repo#7", "linear:ENG-7"]
     );
     let mut green = check(1, 0);
     green.data["head_sha"] = json!(actions[0][6]);
@@ -11811,8 +12298,8 @@ fn a_pull_request_the_worker_opened_on_its_branch_is_claimed_and_its_comments_wa
             .any(|row| row[1] == "github.pull_request.opened")
     });
     assert_eq!(
-        task_json(&setup, "1")["subscriptions"][0]["resource"],
-        "github:owner/repo#8"
+        subscriptions(&setup, "1"),
+        ["github:owner/repo#8", "linear:ENG-7"]
     );
     setup.github(&[github_pull(8, "priory/1", &[801])]);
     setup.intake();
@@ -11863,10 +12350,10 @@ fn a_pull_request_on_another_tasks_branch_is_not_claimed() {
     setup.publish(&opened);
 
     setup.until("inbox", |rows| rows.len() == 3);
-    assert_eq!(task_json(&setup, "1")["subscriptions"], json!([]));
+    assert_eq!(subscriptions(&setup, "1"), ["github:owner/repo#42"]);
     assert_eq!(
-        task_json(&setup, "2")["subscriptions"][0]["resource"],
-        "github:owner/repo#7"
+        subscriptions(&setup, "2"),
+        ["github:owner/repo#43", "github:owner/repo#7"]
     );
 }
 
@@ -11930,7 +12417,7 @@ fn an_unsubscribed_claimed_pull_request_is_not_claimed_again() {
         rows.iter()
             .any(|row| row[1] == "github.pull_request.comment")
     });
-    assert_eq!(task_json(&setup, "1")["subscriptions"], json!([]));
+    assert_eq!(subscriptions(&setup, "1"), ["linear:ENG-7"]);
 }
 
 #[test]

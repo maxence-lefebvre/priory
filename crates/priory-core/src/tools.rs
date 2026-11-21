@@ -3,7 +3,8 @@ use crate::route;
 use crate::trace::{self, Trace};
 use priory_factory::factory::{Decider, Effect, Factory, Harness, Loaded, Step, Workflow};
 use priory_intake::intake::{
-    CHECK_RUNS, CHECKED, COMMENTED, PASSING, PR_CLOSED as CLOSED, REVIEWED, THREAD_COMMENTED,
+    CHECK_RUNS, CHECKED, COMMENTED, ISSUE_CLOSED, ISSUE_COMMENTED, PASSING, PR_CLOSED as CLOSED,
+    REVIEWED, THREAD_COMMENTED,
 };
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 use serde_json::Value;
@@ -344,6 +345,69 @@ fn compact(
     Ok(Ok(format!(
         "Queued {text}. End your turn now: Priory types it once you are idle, then a prompt to carry on."
     )))
+}
+
+/// Queues `/compact` once per crossing when the session's `context` reaches its agent's
+/// `compactAt`. Every run of the session shares the crossing. A run with a result is skipped, since
+/// the result may move the task to another conversation, and so is a task whose answer's command
+/// runs. Says whether the compact it queued for the crossing is still queued, so the run must not
+/// sleep yet. A reading below `compactAt` withdraws that compact if it was never typed.
+pub(crate) fn overflow(
+    tx: &Transaction,
+    session: &str,
+    context: Option<u64>,
+    factory: &Factory,
+) -> rusqlite::Result<bool> {
+    let Some(run) = run(tx, session)? else {
+        return Ok(false);
+    };
+    let Some(limit) = run
+        .agent
+        .as_ref()
+        .and_then(|agent| factory.agents.get(agent))
+        .and_then(|agent| agent.value.compact_at)
+    else {
+        return Ok(false);
+    };
+    if context.is_some_and(|context| context < limit.get()) {
+        tx.execute(
+            "DELETE FROM outbox WHERE state = 'queued'
+             AND id IN (SELECT crossed FROM runs WHERE session = ?1)",
+            [session],
+        )?;
+        tx.execute("UPDATE runs SET crossed = 0 WHERE session = ?1", [session])?;
+        return Ok(false);
+    }
+    if commanding(tx, run.task)? {
+        return Ok(false);
+    }
+    let (crossed, pending): (bool, bool) = tx.query_row(
+        "SELECT max(crossed) > 0, EXISTS (SELECT 1 FROM outbox WHERE state = 'queued'
+           AND id = (SELECT max(crossed) FROM runs WHERE session = ?1))
+         FROM runs WHERE session = ?1",
+        [session],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )?;
+    if crossed {
+        return Ok(pending);
+    }
+    let result: bool = tx.query_row(
+        "SELECT EXISTS (SELECT 1 FROM results WHERE run = ?1)",
+        [run.id],
+        |row| row.get(0),
+    )?;
+    if context.is_none() || result || compact_queued(tx, run.task)? {
+        return Ok(false);
+    }
+    tx.execute(
+        "INSERT INTO outbox (task, text, compact) VALUES (?1, '/compact', 1)",
+        [run.task],
+    )?;
+    tx.execute(
+        "UPDATE runs SET crossed = ?2 WHERE session = ?1",
+        params![session, tx.last_insert_rowid()],
+    )?;
+    Ok(true)
 }
 
 /// Ends a `/compact` Priory typed into `run`; a compaction it did not type changes nothing.
@@ -1012,6 +1076,43 @@ pub(crate) fn event(tx: &Transaction, task: i64, seq: i64) -> rusqlite::Result<b
 /// The events of a person's feedback on a pull request.
 const FEEDBACK: [&str; 3] = [REVIEWED, COMMENTED, THREAD_COMMENTED];
 
+/// The resource that feedback of `kind` is on: its pull request for pull request feedback, its
+/// issue, Linear issue or Slack thread for a comment there; none for any other event.
+fn feedback_on(kind: &str, data: &Value) -> Option<String> {
+    let text = |field: &str| data[field].as_str();
+    match kind {
+        _ if FEEDBACK.contains(&kind) => Some(route::pull_request(
+            text("repo")?,
+            data["pull_request"].as_u64()?,
+        )),
+        ISSUE_COMMENTED => Some(route::pull_request(text("repo")?, data["issue"].as_u64()?)),
+        "linear.comment.created" => Some(format!("linear:{}", text("issue")?)),
+        "slack.thread.replied" => {
+            Some(format!("slack:{}:{}", text("channel")?, text("thread_ts")?))
+        }
+        _ => None,
+    }
+}
+
+/// Who said what on `resource`, for the prompt of the done task that feedback of `kind` reopens.
+fn reopened_by(resource: &str, place: Option<&str>, kind: &str, data: &Value) -> String {
+    if let Some(said) = feedback(resource, place, kind, data) {
+        return said;
+    }
+    let who = data["actor"].as_str().or(data["user"].as_str());
+    let who = who.unwrap_or("a deleted user");
+    let body = data["body"].as_str().or(data["text"].as_str());
+    let first = body.unwrap_or_default().lines().next().unwrap_or_default();
+    let url = data["url"].as_str().unwrap_or_default();
+    let verb = match kind {
+        "slack.thread.replied" => "replied in",
+        _ => "commented on",
+    };
+    format!("{who} {verb} {resource}: {first} {url}")
+        .trim_end()
+        .to_owned()
+}
+
 /// Whether `data` is a review that asks the agent for nothing: an approval or a dismissal.
 fn settles(kind: &str, data: &Value) -> bool {
     kind == REVIEWED && matches!(data["state"].as_str(), Some("approved" | "dismissed"))
@@ -1035,7 +1136,10 @@ fn feedback(resource: &str, place: Option<&str>, kind: &str, data: &Value) -> Op
     let said = match kind {
         REVIEWED => {
             let state = data["state"].as_str().unwrap_or("submitted");
-            format!("{who} reviewed {resource}: {state}")
+            match first {
+                "" => format!("{who} reviewed {resource}: {state}"),
+                _ => format!("{who} reviewed {resource}: {state}: {first}"),
+            }
         }
         COMMENTED => format!("{who} commented on {resource}: {first}"),
         _ => {
@@ -1771,11 +1875,18 @@ fn queue_first(tx: &Transaction, task: i64, text: &str) -> rusqlite::Result<i64>
         tx.execute("DELETE FROM outbox WHERE id = ?1", [old])?;
     }
     // A queued `/compact` must be typed alone, so it follows the new prompt instead of joining it.
-    tx.execute(
+    let moved = tx.execute(
         "INSERT INTO outbox (task, text, compact) SELECT task, text, 1 FROM outbox
          WHERE task = ?1 AND state = 'queued' AND compact = 1 AND id < ?2",
         [task, id],
     )?;
+    if moved > 0 {
+        tx.execute(
+            "UPDATE runs SET crossed = ?3 WHERE crossed IN (SELECT id FROM outbox
+             WHERE task = ?1 AND state = 'queued' AND compact = 1 AND id < ?2)",
+            params![task, id, tx.last_insert_rowid()],
+        )?;
+    }
     tx.execute(
         "DELETE FROM outbox WHERE task = ?1 AND state = 'queued' AND compact = 1 AND id < ?2",
         [task, id],
@@ -2547,38 +2658,39 @@ fn regenerate(tx: &Transaction, task: i64, generation: i64) -> rusqlite::Result<
     .map(drop)
 }
 
-/// The done task that feedback in `message` reopens: the newest that owns its pull request, done
-/// before the feedback was written, with no close of that pull request in the inbox and no active
-/// task on its key.
+/// The done task that feedback in `message` reopens: the newest that owns the pull request, issue,
+/// Linear issue or Slack thread it is on, done before the feedback was written, with no close of
+/// that pull request in the inbox and no active task on its key.
 pub(crate) fn reopenable(
     tx: &Transaction,
     message: &herdr_bus::Message,
 ) -> rusqlite::Result<Option<i64>> {
     let data = &message.data;
-    let (Some(repo), Some(number)) = (data["repo"].as_str(), data["pull_request"].as_u64()) else {
+    let Some(resource) = feedback_on(&message.kind, data) else {
         return Ok(None);
     };
     // A pull request the intake read as closed may reopen nothing before its close arrives.
-    if !FEEDBACK.contains(&message.kind.as_str())
-        || settles(&message.kind, data)
-        || data["open"] == false
-    {
+    if settles(&message.kind, data) || data["open"] == false {
         return Ok(None);
     }
+    // Pull request feedback reaches what the task owns; a comment elsewhere, its subscriptions only.
+    let owner = match FEEDBACK.contains(&message.kind.as_str()) {
+        true => "owned",
+        false => "subscriptions",
+    };
     tx.query_row(
-        "SELECT tasks.id FROM owned JOIN tasks ON tasks.id = owned.task
-         WHERE owned.resource = ?1 AND tasks.state = 'done'
-         AND julianday(?2) >= julianday(tasks.changed)
-         AND NOT EXISTS (SELECT 1 FROM inbox WHERE type = ?3
-           AND 'github:' || json_extract(data, '$.repo') || '#' || json_extract(data, '$.pull_request') = ?1)
-         AND NOT EXISTS (SELECT 1 FROM tasks AS other WHERE other.key = tasks.key
-           AND other.state NOT IN ('done', 'failed', 'dropped'))
-         ORDER BY tasks.id DESC LIMIT 1",
-        params![
-            route::pull_request(repo, number),
-            message.time.to_string(),
-            CLOSED
-        ],
+        &format!(
+            "SELECT tasks.id FROM {owner} AS held JOIN tasks ON tasks.id = held.task
+             WHERE held.resource = ?1 AND tasks.state = 'done'
+             AND julianday(?2) >= julianday(tasks.changed)
+             AND NOT EXISTS (SELECT 1 FROM inbox WHERE type IN (?3, ?4) AND 'github:'
+               || json_extract(data, '$.repo') || '#'
+               || coalesce(json_extract(data, '$.pull_request'), json_extract(data, '$.issue')) = ?1)
+             AND NOT EXISTS (SELECT 1 FROM tasks AS other WHERE other.key = tasks.key
+               AND other.state NOT IN ('done', 'failed', 'dropped'))
+             ORDER BY tasks.id DESC LIMIT 1"
+        ),
+        params![resource, message.time.to_string(), CLOSED, ISSUE_CLOSED],
         |row| row.get(0),
     )
     .optional()
@@ -2605,10 +2717,7 @@ pub(crate) fn reopen(tx: &Transaction, trace: &Trace, task: i64, seq: i64) -> ru
             },
         )?;
     let data: Value = serde_json::from_str(&data).expect("inbox data is JSON");
-    let resource = route::pull_request(
-        data["repo"].as_str().unwrap_or_default(),
-        data["pull_request"].as_u64().unwrap_or_default(),
-    );
+    let resource = feedback_on(&kind, &data).unwrap_or_default();
     let opened: Option<String> = tx
         .query_row(
             "SELECT results.step FROM actions JOIN results ON results.run = actions.result
@@ -2626,10 +2735,13 @@ pub(crate) fn reopen(tx: &Transaction, trace: &Trace, task: i64, seq: i64) -> ru
     regenerate(tx, task, generation)?;
     enter(tx, task, &workflow, &target, None, "", workflows)?;
     let place = crate::stack::place(tx, task, &resource)?;
-    let said = feedback(&resource, place.as_deref(), &kind, &data).unwrap_or_default();
+    let said = reopened_by(&resource, place.as_deref(), &kind, &data);
     let text = format!("Feedback reopened this done task as generation {generation}: {said}");
     wake_on(tx, task, &text, Some(seq))?;
-    trace::reopened(tx, trace, task, &resource)
+    let pull_request = FEEDBACK
+        .contains(&kind.as_str())
+        .then_some(resource.as_str());
+    trace::reopened(tx, trace, task, &resource, pull_request)
 }
 
 /// Ends the live run of `session`, whose tmux session was gone when the daemon started, as `lost`.

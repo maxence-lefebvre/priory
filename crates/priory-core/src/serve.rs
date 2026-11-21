@@ -1,13 +1,14 @@
 //! The HTTP server over the state: `/api` as JSON, with `web` the web view's files, and with a
 //! GitHub webhook its signed deliveries.
 
-use crate::{listing, push, sections, snooze, state, tools};
+use crate::{listing, push, report, sections, snooze, state, tools};
 use herdr_bus::Bus;
-use priory_factory::factory::{Factory, Trigger};
+use priory_factory::factory::{Factory, Price, Trigger};
 use priory_intake::intake::{self, Github};
 use priory_runtime::http::{self, Reply, Request};
 use priory_runtime::runtime;
 use rusqlite::{Connection, OptionalExtension};
+use std::collections::BTreeMap;
 use std::net::{SocketAddr, TcpListener};
 use std::path::Path;
 use std::sync::Arc;
@@ -170,6 +171,7 @@ pub fn start(factory: &Factory, listen: SocketAddr) -> Result<Vec<JoinHandle<()>
             "bands": factory.bands(),
         })
         .to_string(),
+        prices: factory.prices.clone(),
     });
     let hooks: &[&str] = if github.is_some() { &[GITHUB] } else { &[] };
     let waiters = Arc::new(AtomicUsize::new(0));
@@ -224,6 +226,7 @@ struct Served {
     workflows: Vec<String>,
     /// `GET /api/request`: what the Add control prefills and offers.
     request: String,
+    prices: BTreeMap<String, Price>,
 }
 
 fn route(
@@ -338,6 +341,7 @@ fn route(
             Err(error) => return Reply::error(500, &error),
         },
         "/api/reports/latest" => listing::revised(db, "report", |db| sections::show(db, None)),
+        "/api/costs" => return costs(db, &served.prices, query),
         _ => match (
             path.strip_prefix("/api/tasks/").map(str::parse),
             path.strip_prefix("/api/reports/").map(str::parse),
@@ -735,6 +739,38 @@ fn pick_refusal(db: &Connection, pick: &str, option: &str, sent: i64, refused: &
         Ok(Some((at, chosen))) if at != sent || chosen.is_some() => Reply::error(409, refused),
         Ok(Some(_)) => Reply::error(422, refused),
         Err(error) => Reply::error(500, &error.to_string()),
+    }
+}
+
+/// `GET /api/costs?since=WINDOW&by=SPLIT`: what `priory costs --json` prints.
+fn costs(db: &Connection, prices: &BTreeMap<String, Price>, query: &str) -> Reply {
+    let (mut since, mut by) = (None, "workflow".to_owned());
+    for pair in query.split('&').filter(|pair| !pair.is_empty()) {
+        let Some((name @ ("since" | "by"), value)) = pair.split_once('=') else {
+            return Reply::error(400, "costs takes since=WINDOW and by=SPLIT");
+        };
+        let Some(value) = decode(value) else {
+            return Reply::error(400, &format!("{name} is not percent-encoded UTF-8"));
+        };
+        match name {
+            "since" => since = Some(value),
+            _ => by = value,
+        }
+    }
+    if !report::BY.contains(&by.as_str()) {
+        return Reply::error(400, &format!("by is none of {}", report::BY.join(", ")));
+    }
+    let now = match intake::now() {
+        Ok(now) => now.to_string(),
+        Err(error) => return Reply::error(500, &error),
+    };
+    let window = match report::window(db, since.as_deref(), &now) {
+        Ok(window) => window,
+        Err(refusal) => return Reply::error(400, &refusal),
+    };
+    match report::costs(db, prices, &window, &by) {
+        Ok(costs) => Reply::json(200, costs.json().to_string()),
+        Err(error) => Reply::error(500, &error),
     }
 }
 

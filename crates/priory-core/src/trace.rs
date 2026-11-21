@@ -14,35 +14,37 @@ pub struct Trace<'a> {
 }
 
 /// Records the run's transcript at its `SessionStart`. What it holds already belongs to earlier runs
-/// of the session, so the run's turns start at its end.
+/// of the session, so the run's turns start at its end. Returns the session's context size, if
+/// its transcript holds a message.
 pub(crate) fn begin(
     tx: &Transaction,
     trace: &Trace,
     run: i64,
     transcript: Option<&str>,
-) -> rusqlite::Result<()> {
+) -> rusqlite::Result<Option<u64>> {
     let Some(transcript) = transcript else {
-        return Ok(());
+        return Ok(None);
     };
     let Some(usage) = (trace.usage)(Path::new(transcript), 0) else {
-        return Ok(());
+        return Ok(None);
     };
     tx.execute(
         "UPDATE runs SET transcript = ?2, read = ?3 WHERE id = ?1",
         params![run, transcript, usage.end as i64],
     )?;
-    Ok(())
+    Ok(usage.context)
 }
 
 /// Adds the tokens of the run's turns since its last read to its task's current step. A run with no
 /// transcript recorded, as one live across the upgrade that added it, only starts reading there,
 /// since its transcript may hold other runs' turns. An unreadable transcript keeps the offset.
+/// Returns the session's context size after the last message read, if it read one.
 pub(crate) fn account(
     tx: &Transaction,
     trace: &Trace,
     run: i64,
     transcript: Option<&str>,
-) -> rusqlite::Result<()> {
+) -> rusqlite::Result<Option<u64>> {
     let known = tx
         .query_row(
             "SELECT transcript, read FROM runs WHERE id = ?1",
@@ -51,21 +53,21 @@ pub(crate) fn account(
         )
         .optional()?;
     let Some((recorded, read)) = known else {
-        return Ok(());
+        return Ok(None);
     };
     let Some(path) = recorded.as_deref().or(transcript) else {
-        return Ok(());
+        return Ok(None);
     };
     let from = if recorded.is_some() { read as u64 } else { 0 };
     let Some(usage) = (trace.usage)(Path::new(path), from) else {
-        return Ok(());
+        return Ok(None);
     };
     tx.execute(
         "UPDATE runs SET transcript = ?2, read = ?3 WHERE id = ?1",
         params![run, path, usage.end as i64],
     )?;
     if recorded.is_none() || usage.messages == 0 {
-        return Ok(());
+        return Ok(usage.context);
     }
     tx.execute(
         "UPDATE tasks SET model = coalesce(?2, model), tokens = json_object(
@@ -83,7 +85,7 @@ pub(crate) fn account(
             usage.cache_write as i64
         ],
     )?;
-    Ok(())
+    Ok(usage.context)
 }
 
 /// Appends a `factory.step.ended` record, as `docs/trace-schema.md` defines it, for the step `task`
@@ -400,7 +402,8 @@ pub(crate) fn reopened(
     tx: &Transaction,
     trace: &Trace,
     task: i64,
-    pull_request: &str,
+    resource: &str,
+    pull_request: Option<&str>,
 ) -> rusqlite::Result<()> {
     let (workflow, step, key, generation, time): (String, String, String, i64, String) = tx
         .query_row(
@@ -426,6 +429,7 @@ pub(crate) fn reopened(
         "generation": generation,
         "step": step,
         "machine": trace.machine,
+        "resource": resource,
         "pull_request": pull_request,
     });
     if let Value::Object(fields) = &mut data {

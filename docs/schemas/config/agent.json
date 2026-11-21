@@ -76,6 +76,15 @@
   },
   "description": "The frontmatter of `agents/<name>/agent.md`: who runs a model step. The Markdown after it is\nthe agent's instructions.",
   "properties": {
+    "compactAt": {
+      "description": "The context size, in tokens, past which the daemon compacts the conversation between turns.",
+      "format": "uint64",
+      "minimum": 1,
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
     "description": {
       "description": "One line on what the agent does.",
       "type": "string"

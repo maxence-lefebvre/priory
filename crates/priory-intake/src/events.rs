@@ -96,6 +96,46 @@ pub struct IssueOpened {
     pub source: Source,
 }
 
+/// A GitHub issue closed, from the repository's issue events.
+#[derive(JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct IssueClosed {
+    /// `owner/name`.
+    pub repo: String,
+    /// The issue number.
+    pub issue: u64,
+    /// The issue title when the intake polled.
+    pub title: String,
+    /// The issue's page on GitHub.
+    pub url: String,
+    /// The GitHub login who closed it; null for a deleted user.
+    pub actor: Option<String>,
+    /// GitHub's issue event id.
+    pub github_id: u64,
+    #[serde(flatten)]
+    pub source: Source,
+}
+
+/// A comment on a GitHub issue, from the repository's issue comments; bots' comments are skipped.
+#[derive(JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct IssueComment {
+    /// `owner/name`.
+    pub repo: String,
+    /// The issue number.
+    pub issue: u64,
+    /// The comment's page on GitHub.
+    pub url: String,
+    /// The GitHub login who commented; null for a deleted user.
+    pub actor: Option<String>,
+    /// The comment's Markdown, as written.
+    pub body: String,
+    /// GitHub's comment id.
+    pub github_id: u64,
+    #[serde(flatten)]
+    pub source: Source,
+}
+
 /// The pull request every pull request event names, read when the intake polled.
 #[derive(JsonSchema)]
 pub struct PullRequest {
@@ -185,6 +225,8 @@ pub struct ReviewSubmitted {
     pub pull: PullRequest,
     /// `approved`, `changes_requested`, `commented` or `dismissed`, at poll time.
     pub state: String,
+    /// The review's summary Markdown, as written; empty when the reviewer wrote none.
+    pub body: String,
     /// The GitHub login who reviewed.
     pub actor: Option<String>,
     /// Whether the pull request was open when the intake read it; a done task reopens only
