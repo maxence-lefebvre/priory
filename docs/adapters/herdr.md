@@ -25,8 +25,9 @@ The adapter lives in `adapters/herdr/` at the repository root, outside the Cargo
 - `adapters/herdr/mods/priory-flows/`: the Flows panel. See [The Flows panel](#the-flows-panel).
 - `adapters/herdr/mods/priory-task/`: the Task panel. See [The Task panel](#the-task-panel).
 - `adapters/herdr/mods/priory-inbox/`: the Inbox panel. See [The Inbox panel](#the-inbox-panel).
+- `adapters/herdr/mods/priory-tasks/`: the Tasks panel. See [The Tasks panel](#the-tasks-panel).
 - `adapters/herdr/mods/priory-elsewhere/`: the placeholder for a view's panel that has no mod yet:
-  `tasks` and `runs`. It names the panel and links to it in the web view.
+  `runs`. It names the panel and links to it in the web view.
 - `adapters/herdr/layouts/frame.json`: Herdr's chrome around the view: the sidebar, the top bar
   with the Priory bar, 420 px wide, and Herdr's tab bar, the work body with Herdr's `main` block,
   and the status line.
@@ -56,9 +57,9 @@ with Priory's colors keeps a copy of `lib/tokens.js`. The Desk and Queue panels 
 Priory bar keep `lib/layout.js`. A test fails when a copy differs from the
 library. After you change a file in `lib/`, copy it into every mod that carries it.
 
-The Costs, Flows and Inbox panels keep the web view's own view models: `mods/priory-costs/view.js` is a
-copy of `crates/priory-core/web/costs.js`, `mods/priory-flows/view.js` of `flows.js`, and
-`mods/priory-inbox/view.js` of `inbox.js`. A test
+The Costs, Flows, Inbox and Tasks panels keep the web view's own view models: `mods/priory-costs/view.js` is a
+copy of `crates/priory-core/web/costs.js`, `mods/priory-flows/view.js` of `flows.js`,
+`mods/priory-inbox/view.js` of `inbox.js`, and `mods/priory-tasks/view.js` of `tasks.js`. A test
 fails when a copy differs from the web file. After you change one, copy it into its mod. Herdr's
 engine has no `Intl`, so these files format numbers and dates by hand.
 
@@ -116,8 +117,8 @@ panels, and a view that places a panel twice is refused.
 | ----- | -------- | --- |
 | `desk`, `asks`, `queue` | an aside | `priory-desk`, `priory-asks`, `priory-queue` |
 | `reports` | a tab in the center | `priory-bonjour` |
-| `workflow`, `costs`, `inbox` | a tab in the center | `priory-flows`, `priory-costs`, `priory-inbox` |
-| `tasks`, `runs` | a tab in the center | `priory-elsewhere` |
+| `workflow`, `costs`, `inbox`, `tasks` | a tab in the center | `priory-flows`, `priory-costs`, `priory-inbox`, `priory-tasks` |
+| `runs` | a tab in the center | `priory-elsewhere` |
 | `terminal` | the frame's `main` block, where Herdr shows the active tab, which is always in the center | none |
 
 The work body is a row: the center, then each aside in the view's order, then Herdr's own panel.
@@ -199,9 +200,10 @@ state database and never writes a file in the factory.
   browser. A panel reads the rules once, when it connects. When `priory links` fails, such as with
   no factory to read, the panel draws its text unlinked. See [Links](#links).
 - **Attaching.** A panel asks the Priory bar to attach with
-  `setShared("priory.attach", { task, at: Date.now() })`. The bar runs
-  `priory attach TASK --print` and opens a terminal tab that runs the printed command, which starts
-  a tmux client on the task's live run (R5.6). tmux stays the owner. When the task has no live run,
+  `setShared("priory.attach", { task, at: Date.now(), readOnly })`. The bar runs
+  `priory attach TASK --print`, with `--read-only` when `readOnly` is true, and opens a terminal tab
+  that runs the printed command, which starts a tmux client on the task's live run (R5.6). A
+  read-only tab, named "Watch task N", cannot type and leaves the agent's window size alone. tmux stays the owner. When the task has no live run,
   the bar shows Priory's error instead. The tab opens in the space shown when the panel asked. When
   that space is on another machine than Priory, the bar refuses and asks for a space on Priory's
   machine.
@@ -543,6 +545,24 @@ DESIGN.md's "Inbox" section holds its visual rules; this section says how it wor
   group says what the verb did, or why priory refused it. One verb runs at a time, and after one
   succeeds the buttons stay disabled until a read shows its result.
 
+## The Tasks panel
+
+`mods/priory-tasks/` is the Tasks panel. The Priory bar opens it as a tab in the center stack.
+DESIGN.md's "Tasks" section holds its visual rules; this section says how it works.
+
+- **Files.** `view.js`, a copy of the web view's `tasks.js`, splits the tasks into saved views and
+  filters them by facet. `main.js` reads and draws.
+- **Reading.** The panel reads `priory tasks --json` and follows its revision with `priory wait`.
+- **Views.** Active lists the tasks not done, failed or dropped, in start order. Blocked lists the
+  blocked ones. Ended lists the done, failed and dropped ones, newest first. Each view's chip
+  shows its count.
+- **Facets.** State, Lane and Workflow chips each open a menu of every task's values, A to Z, with
+  counts, as the web's do. A picked chip shows its value, and pressing it again clears it. A task
+  with no lane shows under `none`. The view chips count the tasks the picked values keep.
+- **Rows.** Each row shows the task's tile, key, workflow, step, state and how long it has been in
+  that state (a date after a day), then its title, then its lane and band, or the reason of a
+  blocked, held, failed or dropped task, and its batch. Pressing a row opens it in the [Task panel](#the-task-panel).
+
 ## The Flows panel
 
 `mods/priory-flows/` is the Flows panel. The Priory bar opens it as a tab in the center stack.
@@ -572,14 +592,15 @@ Priory bar opens it as a tab in the center stack when another panel sets `priory
   `priory wait` and reads again. When another task opens, it stops that loop and starts one for
   the new task. When a call fails, it keeps the last read and shows "Reconnecting to priory" with
   its age.
-- **What it shows.** The header holds the task's state tile, key and state, and Attach. Then the
+- **What it shows.** The header holds the task's state tile, key and state, then Watch and Attach. Then the
   title with its [links](#links), the workflow, step, lane and band, and the task's reason. Asks
   lists the task's asks, open ones first. Pull request shows the latest pull request's title as a
   link, its branches and state, its checks, and the task's stack (see [Stacks](#stacks)). History
   lists the last 10 runs, newest first, each with its step, outcome and start time. A section the
   task lacks is left out.
-- **Acting.** Attach asks the Priory bar to attach, as [Attaching](#how-it-reads-and-acts)
-  describes. Answering stays in the Asks panel.
+- **Acting.** Watch asks the Priory bar for a read-only terminal, and Attach for one that types,
+  as [Attaching](#how-it-reads-and-acts) describes. Watch comes first, since it cannot change the
+  run. Answering stays in the Asks panel.
 
 ## Data each panel needs
 
@@ -693,6 +714,11 @@ name: it draws the sections in the order the report gives them.
   [Attention](../reference/serve.md#attention).
 - Flows: `priory flows --json`, the object `/api/flows` serves; see
   [serve.md's Flows](../reference/serve.md#flows).
+
+### Tasks
+
+- `priory tasks --json`, the object `/api/tasks` serves; see
+  [serve.md's Tasks](../reference/serve.md#tasks).
 
 ### Inbox
 

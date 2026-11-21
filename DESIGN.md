@@ -884,9 +884,19 @@ The **lane graph** draws a plan, in the batch page and in a go ask.
 - tmux sets the width, so lines never wrap. The pane scrolls sideways inside its own box. A "Fit"
   toggle scales the text down to fit the width, never below 9 px.
 - Read-only by default. "Type" opens a one-line input at the bottom that sends a line on Enter.
-  The header shows `read-only` or `typing`.
-- Header: the `terminal` icon, session name in mono, run id, "Copy screen", "Fit", "Attach".
-- When the run ends, the pane keeps its last screen and shows the run's state tile.
+  The header shows `read-only` or `typing`. The web view has no "Type" yet.
+- Header: the `terminal` icon, session name in mono, run id, "Copy screen", "Fit", "Attach". In the
+  web view "Attach" copies `priory attach N --read-only`, since a page cannot open a tmux client.
+  Under 480 px of pane width the three buttons show their icon only, with their name as a label.
+- A `[redacted]` in the screen takes `--term-dim` with a dotted underline.
+- Notes about the screen sit above the pane in page tokens, as `.note` lines: `--warn-text` with
+  the `shield` icon for "2 secrets hidden on this screen", `--warn-text` with `unplug` for
+  "Reconnecting. Screen from 14:02, 40 s ago." when a poll fails, and `--text-2` with the run's
+  ended state icon for "Run 1 ended as done. This is the last screen this page saw."
+- When the run ends, the pane keeps its last screen, dims its text to `--term-dim` and shows the
+  run's state tile.
+- The page keeps no screen in local storage, and drops it on sign-out, on a `401` and when the pane
+  switches runs.
 
 ### Reports and tables
 
@@ -1108,7 +1118,7 @@ run.
 Priory's panels also ship as Herdr mods (R8.6). A mod renders natively with gpui-kit, in a pane
 beside other panes, with a fine pointer. It keeps this file's structure, tokens, state tiles, copy
 and ask rules. This section lists only what differs, and the panels the adapter ships: Desk, Asks,
-Queue, Bonjour, Costs, Flows, Task and Inbox. Bonjour is also the web view's Reports panel. [`docs/adapters/herdr.md`](docs/adapters/herdr.md) explains where
+Queue, Bonjour, Costs, Flows, Task, Inbox and Tasks. Bonjour is also the web view's Reports panel. [`docs/adapters/herdr.md`](docs/adapters/herdr.md) explains where
 the adapter lives, how it reads and acts, and the data each panel needs. The approved boards are in
 `~/shared/priory-round-6/` on the author's machine.
 
@@ -1294,6 +1304,20 @@ The web's [Inbox](#inbox) panel, as a tab in the center stack.
 - The verb's sentence shows under the button in `--text-2`; a refusal says why. Subscribe carries
   the revision the panel read, as the web's does.
 - While it reads: "Reading the unrouted events…"
+
+### Tasks
+
+The web's [Tasks panel](#tasks-panel), as a tab in the center stack.
+
+- Under the 44 px header, the saved views Active, Blocked and Ended as chips with their counts
+  after the facets, then a State, Lane and Workflow chip each, whose menu lists every task's
+  values A to Z with counts, as on the web.
+- Every row is the desk's task row at every width: tile, key in mono, workflow, step, the state
+  word in its role's text color and the age in `--text-3`; the title in `--type-small`; then lane
+  and band in `--text-3`, or the reason in its role's text color, then `batch N`. A row opens the
+  [Task](#task) panel.
+- The batch tag is text: Herdr has no batch panel yet.
+- While it reads: "Reading the tasks…"
 
 ### Open questions
 

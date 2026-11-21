@@ -1469,6 +1469,9 @@ pub const START_ORDER: &str = "coalesce((SELECT rank FROM bands WHERE bands.name
 
 const NOW: &str = "strftime('%Y-%m-%dT%H:%M:%SZ', 'now')";
 
+/// To the millisecond, so a wait's catch-up never takes an event of the prompt's second as later.
+pub(crate) const CONFIRMED: &str = "strftime('%Y-%m-%dT%H:%M:%fZ', 'now')";
+
 /// Bumps the revision when a task ended over a day ago left the queue's `ended` list since the
 /// last call at `since`, which no write marks. The first call only notes the time.
 pub(crate) fn age_queue(db: &Connection, since: &mut Option<String>) -> rusqlite::Result<()> {
@@ -2347,6 +2350,7 @@ pub enum Attach {
 /// A live run's id, tmux session and the harness session its pane is tagged with.
 pub struct Attached {
     pub id: i64,
+    pub task: i64,
     pub tmux: String,
     pub session: String,
 }
@@ -2359,15 +2363,16 @@ pub fn live_run(db: &Connection, target: &Attach) -> Result<Attached, String> {
             id: row.get(0)?,
             tmux: row.get(1)?,
             session: row.get(2)?,
+            task: row.get(3)?,
         })
     };
     match *target {
         Attach::Run(run) => {
             let found = db
                 .query_row(
-                    "SELECT id, tmux, session, ended_as FROM runs WHERE id = ?1",
+                    "SELECT id, tmux, session, task, ended_as FROM runs WHERE id = ?1",
                     [run],
-                    |row| Ok((live(row)?, row.get::<_, Option<String>>(3)?)),
+                    |row| Ok((live(row)?, row.get::<_, Option<String>>(4)?)),
                 )
                 .optional()
                 .map_err(at)?;
@@ -2388,7 +2393,7 @@ pub fn live_run(db: &Connection, target: &Attach) -> Result<Attached, String> {
                 return Err(format!("no task {task}"));
             };
             db.query_row(
-                "SELECT id, tmux, session FROM runs WHERE task = ?1 AND ended IS NULL",
+                "SELECT id, tmux, session, task FROM runs WHERE task = ?1 AND ended IS NULL",
                 [task],
                 live,
             )
@@ -2397,6 +2402,15 @@ pub fn live_run(db: &Connection, target: &Attach) -> Result<Attached, String> {
             .ok_or_else(|| format!("task {task} is {state}, with no live run"))
         }
     }
+}
+
+/// Why the live run `run` shows no pane to the tmux server this process reaches.
+pub fn no_pane(run: &Attached) -> String {
+    format!(
+        "tmux session {} on this tmux server runs no live pane of run {}'s agent; \
+         run attach with the daemon's TMUX and TMUX_TMPDIR",
+        run.tmux, run.id
+    )
 }
 
 /// The rows of `query`, each column as text and `-` for null, tab-separated after `header`.
@@ -3242,7 +3256,7 @@ pub(crate) fn signal(
             {
                 tx.execute(
                     &format!(
-                        "UPDATE outbox SET state = 'confirmed', confirmed = {NOW} WHERE id = ?1"
+                        "UPDATE outbox SET state = 'confirmed', confirmed = {CONFIRMED} WHERE id = ?1"
                     ),
                     [id],
                 )?;

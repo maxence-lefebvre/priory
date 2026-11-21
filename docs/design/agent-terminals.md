@@ -41,7 +41,7 @@ no per-viewer process and no state between requests.
 
 | Field | Meaning |
 | ----- | ------- |
-| `run`, `task`, `state` | The run, its task, and the run's state, as `/api/tasks/{id}` lists them |
+| `run`, `task` | The run and its task. The endpoint answers only for a live run, so it sends no state |
 | `width`, `height` | The pane's size, from `#{pane_width}` and `#{pane_height}` |
 | `cursor` | `{ "x", "y" }`, or null when the cursor is hidden |
 | `lines` | The visible screen, one string per row, blank rows kept, trailing spaces trimmed, after redaction |

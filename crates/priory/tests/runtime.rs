@@ -10737,6 +10737,18 @@ fn slack_message(ts: &str, user: &str) -> serde_json::Value {
     json!({ "ts": ts, "thread_ts": THREAD, "user": user, "text": format!("said {ts}") })
 }
 
+/// The instant the first wait counts events from: its task's last confirmed prompt.
+fn wait_since(setup: &Setup) -> herdr_bus::Timestamp {
+    rusqlite::Connection::open(setup.dir.join("priory.db"))
+        .unwrap()
+        .query_row("SELECT since FROM waits ORDER BY id LIMIT 1", [], |row| {
+            row.get::<_, String>(0)
+        })
+        .unwrap()
+        .parse()
+        .unwrap()
+}
+
 /// Slack's `ts` for `time`: seconds since the epoch, with six decimals.
 fn ts(time: herdr_bus::Timestamp) -> String {
     format!("{}.{:06}", time.as_second(), time.subsec_microsecond())
@@ -10748,8 +10760,8 @@ fn a_reply_posted_before_the_wait_wakes_the_task_and_the_bots_own_reply_never_do
         "slack-intake",
         json!({ "type": "slack_reply", "channel": "C0123", "thread_ts": THREAD }),
     );
-    // The second the wait was stored in: after the agent's last prompt, before the intake polls.
-    let stored: herdr_bus::Timestamp = setup.rows("waits")[0][5].parse().unwrap();
+    // The instant the wait counts replies from: the agent's last prompt, before the intake polls.
+    let stored = wait_since(&setup);
     let before_prompt = stored.checked_sub(Duration::from_secs(3600)).unwrap();
     let old = slack_message(&ts(before_prompt), "U0PERSON");
     let mine = slack_message(&ts(herdr_bus::Timestamp::now()), "U0BOT");
@@ -10797,7 +10809,7 @@ fn a_slack_reply_names_its_author_by_display_name_asking_slack_once_per_user() {
         "slack-actor",
         json!({ "type": "slack_reply", "channel": "C0123", "thread_ts": THREAD }),
     );
-    let stored: herdr_bus::Timestamp = setup.rows("waits")[0][5].parse().unwrap();
+    let stored = wait_since(&setup);
     let later = stored.checked_add(Duration::from_secs(1)).unwrap();
     let mut messages =
         vec![json!({ "ts": THREAD, "thread_ts": THREAD, "user": "U0PERSON", "text": "first" })];
@@ -10844,7 +10856,7 @@ fn a_slack_reply_names_its_author_by_id_without_the_users_read_scope() {
         "slack-actor-scope",
         json!({ "type": "slack_reply", "channel": "C0123", "thread_ts": THREAD }),
     );
-    let stored: herdr_bus::Timestamp = setup.rows("waits")[0][5].parse().unwrap();
+    let stored = wait_since(&setup);
     let mut messages =
         vec![json!({ "ts": THREAD, "thread_ts": THREAD, "user": "U0PERSON", "text": "first" })];
     messages.push(slack_message(&ts(stored), "U0PERSON"));
@@ -11057,7 +11069,7 @@ fn a_failing_slack_channel_still_lets_a_watched_thread_publish_its_reply() {
         "source = \"slack\"\nchannel = \"C0999\"\non = \"message.posted\"\nworkflow = \"implement\"\n",
     )
     .unwrap();
-    let stored: herdr_bus::Timestamp = setup.rows("waits")[0][5].parse().unwrap();
+    let stored = wait_since(&setup);
     // The fake answers no `conversations.history`, so the trigger's channel fails.
     setup.answer_slack(&[slack_message(&ts(stored), "U0PERSON")]);
 
@@ -19820,4 +19832,356 @@ fn a_factory_with_one_runner_posts_no_ask() {
     std::thread::sleep(Duration::from_secs(2));
 
     assert!(on_log(&setup, "priory.ask.posted").is_empty());
+}
+
+/// `priory serve` on `setup`'s factory with `serve` as its `[serve]` table and `env` set, its log in
+/// `serve.log`, and the address it listens on.
+#[allow(clippy::zombie_processes)]
+fn serving(setup: &Setup, serve: &str, env: &[(&str, &str)]) -> (Child, String) {
+    let factory = setup.dir.join("factory/factory.toml");
+    let settings = fs::read_to_string(&factory).unwrap();
+    fs::write(&factory, format!("{settings}\n{serve}\n")).unwrap();
+    let mut child = setup
+        .command(env!("CARGO_BIN_EXE_priory"))
+        .args(["serve", setup.dir.join("factory").to_str().unwrap()])
+        .envs(env.iter().copied())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut stderr = std::io::BufReader::new(child.stderr.take().unwrap());
+    let mut line = String::new();
+    assert!(
+        std::io::BufRead::read_line(&mut stderr, &mut line).unwrap() > 0,
+        "priory serve exited"
+    );
+    let address = line
+        .trim()
+        .strip_prefix("priory: serving on http://")
+        .expect(&line)
+        .to_owned();
+    let mut log = fs::File::create(setup.dir.join("serve.log")).unwrap();
+    std::thread::spawn(move || std::io::copy(&mut stderr, &mut log));
+    (child, address)
+}
+
+const WATCH: &str = "[serve]\nlisten = \"127.0.0.1:0\"\ntoken_env = \"TEST_TOKEN\"\n";
+
+impl Setup {
+    /// A run of task 1, live in tmux session `priory-1`, whose quiet pane shows only what the test
+    /// writes: no daemon types into it and a `sleep` replaced the agent.
+    fn running(name: &str) -> Setup {
+        let mut setup = Setup::new(name);
+        setup.publish(&requested(42));
+        setup.start();
+        setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 1);
+        setup.crash();
+        setup.tmux_out(&["respawn-pane", "-k", "-t", "=priory-1:", "sleep 600"]);
+        setup
+    }
+
+    fn tmux_out(&self, args: &[&str]) -> String {
+        let output = self.tmux(args);
+        assert!(output.status.success(), "{output:?}");
+        String::from_utf8(output.stdout).unwrap()
+    }
+
+    /// Clears the screen of `pane` and shows `text` on it, as a program in it would.
+    fn shows(&self, pane: &str, text: &str) {
+        let tty = self.tmux_out(&["display-message", "-p", "-t", pane, "#{pane_tty}"]);
+        fs::write(tty.trim(), format!("\x1b[2J\x1b[H{text}")).unwrap();
+    }
+}
+
+/// The screen of run 1 once `ready` holds for it, through `/api/runs/1/screen`.
+fn screen_once(address: &str, ready: impl Fn(&serde_json::Value) -> bool) -> serde_json::Value {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let (status, body) = http(address, "GET", "/api/runs/1/screen", "", "");
+        let screen = serde_json::from_str(&body).unwrap_or(serde_json::Value::Null);
+        if status == 200 && ready(&screen) {
+            return screen;
+        }
+        assert!(Instant::now() < deadline, "{status}: {body}");
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
+fn screen_row(screen: &serde_json::Value, index: usize) -> &str {
+    screen["lines"][index].as_str().unwrap_or("")
+}
+
+#[test]
+fn a_runs_screen_returns_its_rows_blank_ones_kept_its_size_and_a_hash_that_follows_the_text() {
+    let setup = Setup::running("screen");
+    let (mut server, address) = serving(&setup, WATCH, &[("TEST_TOKEN", SERVE_TOKEN)]);
+    setup.tmux_out(&["resize-window", "-t", "=priory-1", "-x", "120", "-y", "30"]);
+    setup.shows("=priory-1:", "\x1b[?25lfirst row\r\n\r\nthird row   ");
+
+    let screen = screen_once(&address, |screen| screen_row(screen, 2) == "third row");
+
+    assert_eq!(screen["run"], 1);
+    assert_eq!(screen["task"], 1);
+    assert_eq!(
+        (screen["width"].clone(), screen["height"].clone()),
+        (json!(120), json!(30))
+    );
+    assert_eq!(screen["lines"].as_array().unwrap().len(), 30);
+    assert_eq!(
+        (screen_row(&screen, 0), screen_row(&screen, 1)),
+        ("first row", "")
+    );
+    assert_eq!(screen["cursor"], json!(null));
+    assert_eq!(screen["redacted"], 0);
+    let hash = screen["hash"].as_str().unwrap().to_owned();
+    let (status, same) = http(
+        &address,
+        "GET",
+        &format!("/api/runs/1/screen?have={hash}"),
+        "",
+        "",
+    );
+    assert_eq!(
+        (
+            status,
+            serde_json::from_str::<serde_json::Value>(&same).unwrap()
+        ),
+        (200, json!({ "hash": hash, "same": true }))
+    );
+
+    setup.shows("=priory-1:", "\x1b[?25hnew text");
+    let changed = screen_once(&address, |screen| screen_row(screen, 0) == "new text");
+    assert_ne!(changed["hash"], json!(hash));
+    assert!(changed["cursor"]["x"].is_u64(), "{changed}");
+    let cli = setup.priory(&["screen", "1", "--json"]);
+    assert!(cli.status.success(), "{cli:?}");
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&cli.stdout).unwrap(),
+        changed
+    );
+    server.kill().unwrap();
+    server.wait().unwrap();
+}
+
+#[test]
+fn a_runs_screen_reads_its_tagged_pane_not_the_active_one_and_refuses_a_run_it_cannot_show() {
+    let setup = Setup::running("screen-panes");
+    let (mut server, address) = serving(&setup, WATCH, &[("TEST_TOKEN", SERVE_TOKEN)]);
+    setup.shows("=priory-1:", "the agent's pane");
+    setup.tmux_out(&[
+        "split-window",
+        "-t",
+        "=priory-1:",
+        "printf 'another program'; sleep 600",
+    ]);
+
+    let screen = screen_once(&address, |screen| {
+        screen_row(screen, 0) == "the agent's pane"
+    });
+    assert!(
+        !screen["lines"].to_string().contains("another program"),
+        "{screen}"
+    );
+
+    let sentence = "tmux session priory-1 on this tmux server runs no live pane of run 1's agent; \
+                    run attach with the daemon's TMUX and TMUX_TMPDIR";
+    let tagged = setup.tmux_out(&[
+        "list-panes",
+        "-s",
+        "-t",
+        "=priory-1:",
+        "-F",
+        "#{pane_id} #{@priory}",
+    ]);
+    let agent = tagged
+        .lines()
+        .find(|line| line.split(' ').nth(1).is_some_and(|tag| !tag.is_empty()))
+        .unwrap();
+    let pane = agent.split(' ').next().unwrap();
+    setup.tmux_out(&["set-option", "-p", "-t", pane, "@priory", "another-session"]);
+    let (status, body) = http(&address, "GET", "/api/runs/1/screen", "", "");
+    assert_eq!(
+        (status, body),
+        (404, json!({ "error": sentence }).to_string())
+    );
+    let (status, body) = http(&address, "GET", "/api/runs/9/screen", "", "");
+    assert_eq!(
+        (status, body),
+        (404, json!({ "error": "no run 9" }).to_string())
+    );
+    rusqlite::Connection::open(setup.dir.join("priory.db"))
+        .unwrap()
+        .execute(
+            "UPDATE runs SET ended = '2026-11-21T10:00:00Z', ended_as = 'cancelled' WHERE id = 1",
+            [],
+        )
+        .unwrap();
+    let (status, body) = http(&address, "GET", "/api/runs/1/screen", "", "");
+    assert_eq!(
+        (status, body),
+        (
+            404,
+            json!({ "error": "run 1 ended as cancelled" }).to_string()
+        )
+    );
+    server.kill().unwrap();
+    server.wait().unwrap();
+}
+
+#[test]
+fn a_runs_screen_hides_the_factorys_secrets_and_secret_shapes_and_its_hash_ignores_them() {
+    let setup = Setup::running("screen-secrets");
+    let serve = format!(
+        "{WATCH}redact_env = [\"TEST_ONE\", \"TEST_TWO\"]\n\n[webhooks.github]\nsecret_env = \"TEST_HOOK\"\n\n\
+         [telemetry]\notlp = \"http://127.0.0.1:4318\"\nheaders_env = \"TEST_HEADERS\"\n"
+    );
+    let env = [
+        ("TEST_TOKEN", SERVE_TOKEN),
+        ("TEST_HOOK", "hook-secret-value"),
+        (
+            "TEST_HEADERS",
+            "x-api-key=header-secret-9,x-short=tiny,authorization=Bearer%20opaque-secret-12",
+        ),
+        ("TEST_ONE", "overlap-secret-one"),
+        ("TEST_TWO", "secret-one-and-more"),
+    ];
+    let (mut server, address) = serving(&setup, &serve, &env);
+    let screen = |github: &str| {
+        format!(
+            "token {SERVE_TOKEN} hook hook-secret-value\r\nheader header-secret-9 tiny Bearer opaque-secret-12\r\n\
+             gh {github} and overlap-secret-one-and-more\r\n\x1b[50;1H-----BEGIN RSA PRIVATE KEY-----"
+        )
+    };
+    setup.shows(
+        "=priory-1:",
+        &screen("ghp_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
+    );
+
+    let shown = screen_once(&address, |screen| {
+        screen_row(screen, 49).contains("redacted")
+    });
+
+    assert_eq!(
+        (
+            screen_row(&shown, 0),
+            screen_row(&shown, 1),
+            screen_row(&shown, 2),
+            screen_row(&shown, 49)
+        ),
+        (
+            "token [redacted] hook [redacted]",
+            "header [redacted] tiny [redacted]",
+            "gh [redacted] and [redacted]",
+            "[redacted]"
+        )
+    );
+    assert_eq!(shown["redacted"], 7);
+    setup.shows(
+        "=priory-1:",
+        &screen("ghp_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"),
+    );
+    std::thread::sleep(Duration::from_millis(300));
+    let again = screen_once(&address, |screen| screen_row(screen, 49) == "[redacted]");
+    assert_eq!(again["hash"], shown["hash"]);
+    server.kill().unwrap();
+    server.wait().unwrap();
+    let log = fs::read_to_string(setup.dir.join("serve.log")).unwrap();
+    for (_, secret) in env {
+        assert!(!log.contains(secret), "{log}");
+    }
+}
+
+#[test]
+fn a_screen_gives_up_on_a_hung_tmux_at_its_deadline_and_a_third_at_once_gets_503() {
+    let setup = Setup::running("screen-hung");
+    let (mut server, address) = serving(&setup, WATCH, &[("TEST_TOKEN", SERVE_TOKEN)]);
+    let revision = http(&address, "GET", "/api/desk", "", "").1;
+    let revision =
+        serde_json::from_str::<serde_json::Value>(&revision).unwrap()["revision"].clone();
+    for _ in 0..4 {
+        let (address, path) = (address.clone(), format!("/api/events?since={revision}"));
+        std::thread::spawn(move || http(&address, "GET", &path, "", ""));
+    }
+    fs::write(setup.dir.join("fake/tmux-hang-panes"), "").unwrap();
+    let started = Instant::now();
+    let hung: Vec<_> = (0..2)
+        .map(|_| {
+            let address = address.clone();
+            std::thread::spawn(move || http(&address, "GET", "/api/runs/1/screen", "", ""))
+        })
+        .collect();
+    std::thread::sleep(Duration::from_millis(500));
+
+    let (status, body) = http(&address, "GET", "/api/runs/1/screen", "", "");
+    assert_eq!(status, 503, "{body}");
+    assert_eq!(http(&address, "GET", "/api/desk", "", "").0, 200);
+    for hung in hung {
+        assert_eq!(hung.join().unwrap().0, 404);
+    }
+    assert!(
+        started.elapsed() < Duration::from_secs(4),
+        "{:?}",
+        started.elapsed()
+    );
+    fs::remove_file(setup.dir.join("fake/tmux-hang-panes")).unwrap();
+    for _ in 0..3 {
+        let (status, body) = http(&address, "GET", "/api/runs/1/screen", "", "");
+        assert_eq!(status, 200, "{body}");
+    }
+    server.kill().unwrap();
+    server.wait().unwrap();
+}
+
+/// The whole response to `GET path` with `auth` and an `Origin` of the server itself.
+fn same_origin_get(address: &str, path: &str, auth: &str) -> String {
+    use std::io::{Read, Write};
+    let mut stream = std::net::TcpStream::connect(address).unwrap();
+    write!(
+        stream,
+        "GET {path} HTTP/1.1\r\nHost: {address}\r\nOrigin: http://{address}\r\n{auth}Connection: close\r\n\r\n"
+    )
+    .unwrap();
+    let mut response = String::new();
+    stream.read_to_string(&mut response).unwrap();
+    response
+}
+
+#[test]
+fn a_screen_is_never_cached_needs_the_token_and_terminal_off_serves_none() {
+    let setup = Setup::running("screen-rules");
+    let (mut server, address) = serving(&setup, WATCH, &[("TEST_TOKEN", SERVE_TOKEN)]);
+    let path = "/api/runs/1/screen";
+
+    let shown = same_origin_get(
+        &address,
+        path,
+        &format!("Authorization: Bearer {SERVE_TOKEN}\r\n"),
+    );
+    let (head, _) = shown.split_once("\r\n\r\n").unwrap();
+    assert!(head.starts_with("HTTP/1.1 200"), "{shown}");
+    assert!(head.contains("\r\nCache-Control: no-store\r\n"), "{head}");
+    for auth in ["", "Authorization: Bearer wrong\r\n"] {
+        let refused = same_origin_get(&address, path, auth);
+        assert!(refused.starts_with("HTTP/1.1 401"), "{refused}");
+    }
+    server.kill().unwrap();
+    server.wait().unwrap();
+
+    let factory = setup.dir.join("factory/factory.toml");
+    let settings = fs::read_to_string(&factory).unwrap().replace(WATCH, "");
+    fs::write(&factory, settings).unwrap();
+    let (mut server, address) = serving(
+        &setup,
+        &format!("{WATCH}terminal = \"off\"\n"),
+        &[("TEST_TOKEN", SERVE_TOKEN)],
+    );
+    let (status, body) = http(&address, "GET", path, "", "");
+    assert_eq!(
+        (status, body),
+        (
+            404,
+            json!({ "error": "[serve] terminal = \"off\" serves no screen" }).to_string()
+        )
+    );
+    server.kill().unwrap();
+    server.wait().unwrap();
 }
