@@ -457,13 +457,13 @@ fn pull_request(merge: &str, repo: Option<&str>) -> Option<String> {
 /// names: an issue or blockers condition met earlier is met no more once its issue reopens or gets
 /// a blocker back, and every unmet one is judged.
 pub(crate) fn event(tx: &Transaction, resources: &[String]) -> rusqlite::Result<()> {
-    let resources = serde_json::to_string(resources).expect("resources serialize");
+    let listed = serde_json::to_string(resources).expect("resources serialize");
     let met: Vec<(i64, String, String)> = tx
         .prepare(
             "SELECT id, kind, resource FROM holds WHERE released IS NULL AND met IS NOT NULL
              AND kind IN ('issue', 'blockers') AND resource IN (SELECT value FROM json_each(?1))",
         )?
-        .query_map([&resources], |row| {
+        .query_map([&listed], |row| {
             Ok((row.get(0)?, row.get(1)?, row.get(2)?))
         })?
         .collect::<rusqlite::Result<_>>()?;
@@ -484,14 +484,14 @@ pub(crate) fn event(tx: &Transaction, resources: &[String]) -> rusqlite::Result<
             "SELECT id FROM holds WHERE released IS NULL AND met IS NULL
              AND resource IN (SELECT value FROM json_each(?1)) ORDER BY id",
         )?
-        .query_map([&resources], |row| row.get(0))?
+        .query_map([&listed], |row| row.get(0))?
         .collect::<rusqlite::Result<_>>()?;
     for id in open {
         judge(tx, id)?;
     }
-    for resource in serde_json::from_str::<Vec<String>>(&resources).expect("resources parse") {
-        if let Some(state) = issue_state(tx, &resource)?.filter(|state| closes(state)) {
-            closed_outside(tx, &resource, &state)?;
+    for resource in resources {
+        if let Some(state) = issue_state(tx, resource)?.filter(|state| closes(state)) {
+            closed_outside(tx, resource, &state)?;
         }
     }
     Ok(())
@@ -505,7 +505,7 @@ fn closed_outside(tx: &Transaction, resource: &str, state: &str) -> rusqlite::Re
         .prepare(
             "SELECT id, batch, state FROM tasks WHERE batch_entry IS NOT NULL
              AND (key = ?1 OR substr(key, 1, length(?1) + 1) = ?1 || '.')
-             AND state IN ('queued', 'held')
+             AND state IN ('queued', 'ready', 'held')
              AND NOT EXISTS (SELECT 1 FROM runs WHERE runs.task = tasks.id)
              AND NOT EXISTS (SELECT 1 FROM holds WHERE holds.task = tasks.id
                AND holds.kind = 'person' AND holds.ask IS NOT NULL)
@@ -521,7 +521,8 @@ fn closed_outside(tx: &Transaction, resource: &str, state: &str) -> rusqlite::Re
         tx.execute(
             "INSERT INTO holds (task, reason, kind, resume)
              VALUES (?1, ?2, 'person', coalesce((SELECT resume FROM holds
-               WHERE task = ?1 AND released IS NULL LIMIT 1), 'queued'))",
+               WHERE task = ?1 AND released IS NULL LIMIT 1),
+               (SELECT state FROM tasks WHERE id = ?1)))",
             params![task, reason],
         )?;
         let id = tx.last_insert_rowid();

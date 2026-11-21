@@ -174,8 +174,8 @@ When an entry's Linear issue goes Done or Canceled before the entry ran, the iss
 plan, and its state is no proof of merged code. The daemon holds the entry, or adds to its hold, and
 asks on that hold, with `drop` and `keep`: `ENG-42 is Done outside batch 4. Drop the entry?`. `keep`
 lets the entry wait for its other conditions. `drop` drops it, and the entries that wait on it get
-their own asks. The issue's state meets no condition of the entry's successors: only a merge or a
-person's `release` does. The daemon asks once per entry.
+their own asks. The issue's state meets no condition of the entry's successors, which still follow
+the rules of the `merged` condition above. The daemon asks once per entry.
 
 A person can move, hold, release or cancel an entry like any task. The batch reads its tasks' states
 and keeps no copy.
