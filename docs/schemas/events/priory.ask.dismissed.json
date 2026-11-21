@@ -1,0 +1,99 @@
+{
+  "$id": "https://raw.githubusercontent.com/maxence-lefebvre/priory/main/docs/schemas/events/priory.ask.dismissed.json",
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "additionalProperties": false,
+  "definitions": {
+    "AskDismissed": {
+      "additionalProperties": false,
+      "description": "A person dismisses an ask of another runner, with `priory dismiss RUNNER:ASK` or its endpoint.\nOnly that runner applies it, with the checks of a local dismiss.",
+      "properties": {
+        "ask": {
+          "description": "The ask's id on that runner.",
+          "format": "int64",
+          "type": "integer"
+        },
+        "revision": {
+          "description": "The question revision the person read.",
+          "format": "int64",
+          "type": "integer"
+        },
+        "runner": {
+          "description": "The runner whose ask it dismisses.",
+          "type": "string"
+        },
+        "submission": {
+          "description": "The dismiss's own message id, which the runner's `priory.ask.applied` names.",
+          "format": "uuid",
+          "type": "string"
+        }
+      },
+      "required": [
+        "runner",
+        "ask",
+        "revision",
+        "submission"
+      ],
+      "type": "object"
+    },
+    "Link": {
+      "additionalProperties": false,
+      "description": "A link for people.",
+      "properties": {
+        "label": {
+          "description": "`issue` or `pull_request`.",
+          "type": "string"
+        },
+        "url": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "label",
+        "url"
+      ],
+      "type": "object"
+    }
+  },
+  "description": "A person dismisses an ask of another runner, with `priory dismiss RUNNER:ASK` or its endpoint.\nOnly that runner applies it, with the checks of a local dismiss.",
+  "properties": {
+    "data": {
+      "$ref": "#/definitions/AskDismissed"
+    },
+    "id": {
+      "description": "A UUIDv5 of the message's name, so a retried publish keeps its id.",
+      "format": "uuid",
+      "type": "string"
+    },
+    "links": {
+      "description": "GitHub and Linear events carry one link to the event's page.",
+      "items": {
+        "$ref": "#/definitions/Link"
+      },
+      "type": "array"
+    },
+    "subject": {
+      "description": "A short line for listings, such as `owner/name#42`.",
+      "type": "string"
+    },
+    "time": {
+      "description": "When the event happened, RFC 3339.",
+      "format": "date-time",
+      "type": "string"
+    },
+    "type": {
+      "const": "priory.ask.dismissed",
+      "description": "The message type, such as `github.issues.labeled`.",
+      "type": "string"
+    }
+  },
+  "required": [
+    "id",
+    "type",
+    "subject",
+    "time",
+    "data",
+    "links"
+  ],
+  "title": "priory.ask.dismissed",
+  "type": "object"
+}

@@ -157,8 +157,16 @@ application/json` and a JSON body of at most 16 KiB with exactly the fields belo
 | `POST /api/todos/{id}/done` | `{}`, as `priory todo done`. A to-do already done gets `422` |
 | `POST /api/seen` | `at`, an RFC 3339 time: the visit to the desk to record for `me`, as `priory seen --at` records it, to the second |
 
-In `/api/asks/{id}`, `{id}` is the ask's `id` as `/api/asks` lists it: its number, or an outside
-ask's name, and `revision` is the ask's `revision` the client showed. In `/api/tasks/{id}`, `{id}` is
+In `/api/asks/{id}`, `{id}` is the ask's `id` as `/api/asks` lists it: its number, an outside
+ask's name, or `<runner>:<ask>` for another runner's ask, and `revision` is the ask's `revision` the
+client showed.
+
+A write to another runner's ask is not applied here. The server checks it against that runner's last
+post: an ask the post shows closed or at another revision gets `409` with the ask, and an answer that
+runs the ask's command without `run: true` gets `422`, whose error says `Runs on <runner>`. Otherwise
+it publishes the write on the log for that runner and replies `202`. The runner applies it when it
+reads the log, even after time away, and the ask's `submissions` then show the outcome. See
+[runners.md](../daemon/runners.md#every-runners-asks). In `/api/tasks/{id}`, `{id}` is
 the task's number.
 
 ```sh
@@ -169,12 +177,13 @@ curl -X POST http://127.0.0.1:7340/api/asks/42/answer -H "Authorization: Bearer 
 | Reply | When |
 | ----- | ---- |
 | `200` `{"ok": "ask 42 answered"}` | The daemon applied it |
+| `202` `{"sent": "xps13", "submission": "<id>"}` | For another runner's ask: the write is on the log for that runner, which applies it when it reads it. `submission` names it in the ask's `submissions` |
 | `200` `{"key": "cli:2026-11-20-1", "id": 7}` | For `/api/request`: the daemon published the request and task `id` holds `key`. `id` is `null` when no task took the key |
 | `409` `{"error", "ask"}` | The ask's revision is no longer the one sent, or it was answered, dismissed or withdrawn. `ask` is its current state |
 | `409` `{"error"}` | A cancel's or a move's `revision` is no longer the state's. Or a pick's report is at another revision than the one sent, or the pick already has a choice: read the report again |
 | `409` `{"error", "key", "id"}` | For `/api/request`: the same text already went to `key`, so nothing was added. `id` is the active task that holds `key`, or `null` |
 | `404`, `422` `{"error"}` | The ask, task or pick is gone, or the daemon refused for another reason, such as a resume of a task that is not blocked, a say to a task with no run yet, or a comment on a stale report revision. `error` is the CLI's sentence |
-| `503` `{"error"}` | No daemon listens on the socket, so nothing was sent. Reads keep working |
+| `503` `{"error"}` | No daemon listens on the socket, or the log cannot be reached for another runner's ask, so nothing was sent. Reads keep working |
 | `504` `{"error"}` | The daemon took the line but did not reply within 10 seconds. It may have applied it: read the state before you retry |
 
 ## `POST /hooks/github`
@@ -331,6 +340,7 @@ an object: `answered` and `withdrawn`, the number of each left out, within `band
 | `snoozed_until`, `snoozed_at`, `back_early` | | The ask's [snooze](#snooze) |
 | `runner` | string, absent with one runner | In a factory of several runners, the runner that owns the ask |
 | `last_seen` | string or null | Another runner's ask only: when its runner was last alive, from its last `priory.runner.alive` |
+| `submissions` | array | Another runner's ask only: every answer and dismiss sent to it from any machine, oldest first: `submission`, `verb` (`answer` or `dismiss`), `revision`, `text`, `sent`, then `outcome` (`answered`, `dismissed` or `refused`), `why` and `applied`, null until its runner applied it |
 
 In a factory of several runners, `asks` also lists every other runner's asks from their last
 [`priory.ask.posted`](events.md#prioryaskposted), with `<runner>:<ask>` as `id`. Their `task` is the
