@@ -2628,6 +2628,7 @@ fn step_in(
         set(tx, task, "blocked", None, Some(&reason))?;
         return finish("blocked");
     };
+    drop_ending(tx, task)?;
     set_ending(tx, task, Some(step))?;
     match step.decides {
         Decider::Model => {
@@ -3714,6 +3715,38 @@ pub(crate) fn set_ending(tx: &Transaction, task: i64, step: Option<&Step>) -> ru
         params![task, ending],
     )
     .map(drop)
+}
+
+/// Removes the line that ends the task's current step from its queued prompts, as before it enters
+/// another step: a prompt queued for the old step, such as a person's `say`, must not name its
+/// outcomes.
+fn drop_ending(tx: &Transaction, task: i64) -> rusqlite::Result<()> {
+    let ending: Option<String> =
+        tx.query_row("SELECT ending FROM tasks WHERE id = ?1", [task], |row| {
+            row.get(0)
+        })?;
+    let Some(ending) = ending else {
+        return Ok(());
+    };
+    let queued = tx
+        .prepare(
+            "SELECT id, text FROM outbox WHERE task = ?1 AND state = 'queued' AND compact = 0",
+        )?
+        .query_map([task], |row| {
+            Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    for (id, text) in queued {
+        let kept: Vec<&str> = text.lines().filter(|line| *line != ending).collect();
+        // A prompt always says something before the ending, so none is left empty.
+        if kept.len() != text.lines().count() && !kept.is_empty() {
+            tx.execute(
+                "UPDATE outbox SET text = ?2 WHERE id = ?1",
+                params![id, kept.join("\n")],
+            )?;
+        }
+    }
+    Ok(())
 }
 
 /// Fills `ending` for tasks stored before it existed.
