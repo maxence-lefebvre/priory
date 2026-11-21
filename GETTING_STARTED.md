@@ -146,6 +146,9 @@ lists the outcomes it verifies. See Proofs in [tools.md](docs/daemon/tools.md#pr
 To play a task through the whole factory with fake agents before a real one runs, follow
 [testing-a-factory.md](docs/testing-a-factory.md).
 
+To run one factory on two machines that share one event log, follow
+[adding-a-second-machine.md](docs/adding-a-second-machine.md).
+
 ## 4. Pick a starter
 
 The repository's `examples/` folder holds ready-made factories. Each one passes `priory check`, and
