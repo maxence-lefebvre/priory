@@ -4642,6 +4642,37 @@ fn a_restarted_daemon_does_not_notify_the_item_it_already_told() {
 }
 
 #[test]
+fn an_ask_asked_again_and_a_task_blocked_again_notify_again() {
+    let mut setup = Setup::new(
+        "notify-again",
+        &format!("{SERVE}\n[notify]\ndesktop = true\n"),
+    );
+    setup.seed();
+    succeeded(&setup.priory(&["pause"]));
+    setup.start(&["daemon", &setup.factory()]);
+    setup.until_notices(1);
+
+    let db = setup.db();
+    db.execute("UPDATE asks SET revision = revision + 1 WHERE task = 1", [])
+        .unwrap();
+    assert_eq!(setup.until_notices(2).len(), 2);
+
+    db.execute(
+        "UPDATE tasks SET state = 'blocked', reason = 'tests fail',
+           changed = '2026-11-17T11:00:00Z' WHERE id = 2",
+        [],
+    )
+    .unwrap();
+    assert_eq!(setup.until_notices(3).len(), 3);
+    db.execute_batch(
+        "UPDATE tasks SET state = 'running' WHERE id = 2;
+         UPDATE tasks SET state = 'blocked', changed = '2026-11-17T12:00:00Z' WHERE id = 2;",
+    )
+    .unwrap();
+    assert_eq!(setup.until_notices(4).len(), 4, "{:?}", setup.notices());
+}
+
+#[test]
 fn without_notify_desktop_the_daemon_runs_no_notify_send() {
     let mut setup = Setup::new("notify-off", SERVE);
     setup.seed();

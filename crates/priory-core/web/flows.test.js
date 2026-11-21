@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { KINDS, edgeStyle, nodeShape, timeline, ungatedPairs } from "./flows.js";
+import { KINDS, edgeStyle, lockBadge, nodeShape, timeline, ungatedPairs } from "./flows.js";
 
 // `step` and `workflow` as `GET /api/flows` sends them.
 const edge = (outcome, to, by) => ({ outcome, to, by });
@@ -102,4 +102,8 @@ test("outcomes that share both ends take their own lines and labels", () => {
   const [failed, , ok] = timeline(poll, new Set()).edges;
   assert.notEqual(failed.d, ok.d);
   assert.notDeepEqual(failed.mid, ok.mid);
+});
+
+test("an irreversible step's padlock has a size in the drawing's own units", () => {
+  assert.deepEqual(lockBadge(150), { x: 110, y: 6, size: 15 });
 });

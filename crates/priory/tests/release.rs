@@ -57,14 +57,22 @@ fn scratch(name: &str) -> PathBuf {
     dir
 }
 
-/// Runs `install.sh`, with `path_first` ahead of `PATH` when given.
+/// Runs `install.sh`, with `path_first` ahead of `PATH` when given, and then a `gh` that is not
+/// signed in, so a developer's own `gh` checks no fake binary.
 fn install(release: &Path, prefix: &Path, path_first: Option<&Path>) -> Output {
     let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../install.sh");
     let mut command = Command::new("sh");
-    if let Some(dir) = path_first {
-        let path = std::env::var("PATH").unwrap();
-        command.env("PATH", format!("{}:{path}", dir.display()));
-    }
+    let signed_out = stub(
+        &format!("{}-gh", prefix.file_name().unwrap().to_string_lossy()),
+        "gh",
+        "exit 1",
+    );
+    let path = std::env::var("PATH").unwrap();
+    let path = match path_first {
+        Some(dir) => format!("{}:{}:{path}", dir.display(), signed_out.display()),
+        None => format!("{}:{path}", signed_out.display()),
+    };
+    command.env("PATH", path);
     command
         .arg(script)
         .arg("--prefix")
@@ -168,4 +176,66 @@ fn install_stages_inside_the_prefix_and_keeps_the_installed_binary_when_the_move
     let moved = fs::read_to_string(failing_mv.join("moved")).unwrap();
     let staged = format!("{}/bin/.priory-install.", prefix.display());
     assert!(moved.contains(&staged), "{moved}");
+}
+
+/// A `gh` that is signed in, logs each `attestation` call's arguments and exits with `verified`.
+fn gh(name: &str, verified: i32) -> PathBuf {
+    stub(
+        name,
+        "gh",
+        &format!(
+            "case \"$1\" in\n  auth) exit 0 ;;\n  attestation) echo \"$@\" >> \"$(dirname \"$0\")/verified\"; exit {verified} ;;\nesac\nexit 2"
+        ),
+    )
+}
+
+#[test]
+fn install_checks_the_build_provenance_with_a_signed_in_gh() {
+    let release = release("attested", &sha256(FAKE));
+    let prefix = scratch("attested-prefix");
+    let gh = gh("attested-gh", 0);
+
+    let output = install(&release, &prefix, Some(&gh));
+
+    assert!(output.status.success(), "{output:?}");
+    let verified = fs::read_to_string(gh.join("verified")).unwrap();
+    assert!(
+        verified.starts_with("attestation verify ")
+            && verified.contains(" --repo maxence-lefebvre/priory")
+            && verified.contains(
+                " --signer-workflow maxence-lefebvre/priory/.github/workflows/release.yml"
+            ),
+        "{verified}"
+    );
+    assert_eq!(fs::read(prefix.join("bin/priory")).unwrap(), FAKE);
+}
+
+#[test]
+fn install_refuses_a_binary_whose_provenance_gh_does_not_verify() {
+    let release = release("unattested", &sha256(FAKE));
+    let prefix = installed("unattested");
+    let gh = gh("unattested-gh", 1);
+
+    let output = install(&release, &prefix, Some(&gh));
+
+    assert!(!output.status.success(), "{output:?}");
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("provenance"),
+        "{output:?}"
+    );
+    assert_untouched(&prefix, "unattested");
+}
+
+#[test]
+fn install_without_a_signed_in_gh_says_it_checked_the_checksum_only() {
+    let release = release("checksum-only", &sha256(FAKE));
+    let prefix = scratch("checksum-only-prefix");
+
+    let output = install(&release, &prefix, None);
+
+    assert!(output.status.success(), "{output:?}");
+    assert!(
+        String::from_utf8_lossy(&output.stdout).contains("Skipped the provenance check"),
+        "{output:?}"
+    );
 }

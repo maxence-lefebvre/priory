@@ -33,6 +33,10 @@ AGENTS.md](AGENTS.md#verify) and fix every failure. CI runs the same checks on e
 - Start any web view work from a design reviewed by a person before you write code.
 - Follow [DESIGN.md](DESIGN.md) for tokens, components, states, touch and copy. Change it in the
   same pull request when the UI needs something it lacks.
+- Retake the README's screenshots from synthetic data. Run `scripts/demo/serve.sh DIR` with a new
+  folder `DIR`: it seeds a scratch state and serves it on 127.0.0.1:7391 for 15 minutes. In another
+  shell, run `PLAYWRIGHT=<path to playwright-core/index.mjs> node scripts/demo/shoot.mjs docs/images`.
+  Keep each PNG under 400 KB.
 
 ## Writing
 
@@ -56,10 +60,13 @@ AGENTS.md](AGENTS.md#verify) and fix every failure. CI runs the same checks on e
 
 A pushed `v*` tag runs [`.github/workflows/release.yml`](.github/workflows/release.yml). It builds
 `priory` for Linux x86_64 and aarch64 (static, musl) and macOS arm64, packs the Herdr adapter and
-the GitHub extension, and publishes them with a `.sha256` beside each as a GitHub Release. The
-workflow refuses a tag that differs from the workspace version. A manual run, or a pull request
-that changes the workflow or `install.sh`, builds and checks the same files as CI artifacts and
-publishes nothing.
+the GitHub extension, and publishes them with a `.sha256` beside each as a GitHub Release. It
+attests the build provenance of each asset, which `install.sh` checks with `gh attestation verify`
+when gh is signed in. The workflow refuses a tag that differs from the workspace version or that
+points at a commit not on `main`. A version with a pre-release part, such as `0.2.0-rc1`, publishes
+as a pre-release, so `install.sh` keeps serving the last full release. A manual run, or a pull
+request that changes the workflow or `install.sh`, builds and checks the same files as CI artifacts
+and publishes nothing.
 
 To cut a release:
 
