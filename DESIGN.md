@@ -1192,8 +1192,10 @@ the adapter lives, how it reads and acts, and the data each panel needs. The app
   `--pane-split`, the list and the detail sit side by side.
 - **Selection.** A selected row takes the `--action-soft` fill on its own rounded surface. It has
   no 3 px leading bar: gpui-kit's design guide forbids leading-edge selection bars.
-- **Placement.** The layout follows the `default` view: each `tabs` node is a stack, and the
-  Priory bar shows one button per child of each stack. The Task panel and an Asks panel the view
+- **Placement.** Each view gets its own layout, and the default layout follows the `default`
+  view. Narrow panels open as asides and wide ones as tabs in the center, and the Priory bar shows
+  one button per aside and per center tab. When the view files change, the bar posts one notice,
+  "The view files changed", whose click regenerates the layouts. The Task panel and an Asks panel the view
   lacks open as tabs in the center.
 - **Navigation.** Herdr owns tabs and panes, so a panel has no tab bar, rail or Answer capsule.
   `Enter` opens the selected row.
