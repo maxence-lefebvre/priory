@@ -97,6 +97,21 @@ test("reads every listing, with the factory folder where one is needed", async (
   ]);
 });
 
+test("reads costs by a split, attention and flows, with the factory folder costs and flows need", async () => {
+  const run = fake({ costs: {}, report: {}, flows: {} });
+  const client = priory({ exec, binary: FAKE, factory: "/srv/factory" });
+  await client.costs();
+  await client.costs("model");
+  await client.attention();
+  await client.flows();
+  assert.deepEqual(run.argv(), [
+    ["costs", "/srv/factory", "--json"],
+    ["costs", "/srv/factory", "--by", "model", "--json"],
+    ["report", "attention", "--json"],
+    ["flows", "/srv/factory", "--json"],
+  ]);
+});
+
 test("acts through priory's verbs with argv only", async () => {
   const run = fake();
   const client = priory({ exec, binary: FAKE });
