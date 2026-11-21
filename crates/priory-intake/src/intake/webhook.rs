@@ -355,5 +355,44 @@ mod tests {
                 let _ = observed.message(&[]);
             }
         }
+
+        #[test]
+        fn a_valid_delivery_with_one_field_replaced_is_observed_or_refused_without_panicking(
+            event in prop_oneof![Just("pull_request"), Just("issues"), Just("pull_request_review")],
+            field in prop_oneof![
+                Just("id"), Just("number"), Just("html_url"), Just("title"), Just("created_at"),
+                Just("state"), Just("user"), Just("head"), Just("body"), Just("merged"),
+            ],
+            replacement in json_value(),
+            action in prop_oneof![Just("opened"), Just("closed"), Just("submitted"), Just("labeled")],
+        ) {
+            let node = json!({
+                "id": 7, "number": 3, "html_url": "https://github.com/o/r/pull/3", "title": "t",
+                "created_at": "2026-01-01T00:00:00Z", "updated_at": "2026-01-01T00:00:00Z",
+                "closed_at": "2026-01-01T00:00:00Z", "submitted_at": "2026-01-01T00:00:00Z",
+                "state": "open", "user": { "login": "u" }, "merged": true, "body": "b",
+                "head": { "ref": "h", "sha": "s" }, "base": { "ref": "main" },
+            });
+            let mut changed = node.clone();
+            changed[field] = replacement;
+            let payload = json!({
+                "action": action, "repository": { "full_name": "o/r" }, "sender": { "login": "u" },
+                "label": { "name": "l" }, "issue": changed, "pull_request": changed,
+                "review": changed, "comment": changed,
+            });
+            let body = payload.to_string();
+            if let Ok(Some(observed)) = github().observe(event, &payload, body.as_bytes()) {
+                let _ = observed.message(&[]);
+            }
+        }
+
+        #[test]
+        fn any_signature_text_is_unhexed_or_refused_without_panicking(
+            text in proptest::collection::vec(any::<u8>(), 0..200),
+        ) {
+            if let Some(bytes) = unhex(&text) {
+                prop_assert_eq!(hex(&bytes).into_bytes(), text.to_ascii_lowercase());
+            }
+        }
     }
 }

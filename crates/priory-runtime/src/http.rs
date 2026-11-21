@@ -415,18 +415,27 @@ mod tests {
         ]
     }
 
+    /// One server for every case: `serve` starts workers that never end.
+    static SERVER: std::sync::LazyLock<std::net::SocketAddr> = std::sync::LazyLock::new(|| {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        serve(
+            listener,
+            "t".to_owned(),
+            &["/hook"],
+            |_| false,
+            || |_: &Request| Reply::json(200, "{}".to_owned()),
+        )
+        .unwrap();
+        address
+    });
+
     proptest! {
         #![proptest_config(ProptestConfig::with_cases(96))]
 
         #[test]
-        fn any_bytes_get_an_http_status_and_leave_every_worker_serving(bytes in wire()) {
-            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-            let address = listener.local_addr().unwrap();
-            serve(listener, "t".to_owned(), &["/hook"], |_| false, || {
-                |_: &Request| Reply::json(200, "{}".to_owned())
-            })
-            .unwrap();
-
+        fn any_bytes_get_a_status_but_never_a_500_and_leave_every_worker_serving(bytes in wire()) {
+            let address = *SERVER;
             let mut stream = TcpStream::connect(address).unwrap();
             stream.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
             let _ = stream.write_all(&bytes);
@@ -434,7 +443,10 @@ mod tests {
             let mut response = Vec::new();
             let _ = stream.read_to_end(&mut response);
             prop_assert!(response.starts_with(b"HTTP/1.1 "), "no status line");
-            prop_assert_eq!(status(address, "/fine"), "200");
+            prop_assert!(!response.starts_with(b"HTTP/1.1 500"), "a panic inside Priory");
+            for _ in 0..WORKERS {
+                prop_assert_eq!(status(address, "/fine"), "200");
+            }
         }
     }
 }

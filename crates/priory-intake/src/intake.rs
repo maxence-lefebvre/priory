@@ -665,7 +665,44 @@ pub(crate) mod fuzz {
     use proptest::prelude::*;
     use serde_json::{Value, json};
 
-    /// Any JSON value, leaning on the strings and numbers the mapper reads.
+    fn key() -> impl Strategy<Value = String> {
+        prop_oneof![
+            "[a-z_]{1,8}",
+            proptest::sample::select(vec![
+                "inverseRelations",
+                "pageInfo",
+                "hasNextPage",
+                "nodes",
+                "type",
+                "issue",
+                "state",
+                "identifier",
+                "created_at",
+                "updated_at",
+                "closed_at",
+                "submitted_at",
+                "private_metadata",
+                "html_url",
+                "id",
+                "number",
+                "title",
+                "user",
+                "login",
+                "body",
+                "labels",
+                "name",
+                "head",
+                "base",
+                "ref",
+                "sha",
+                "merged",
+                "repository",
+            ])
+            .prop_map(str::to_owned),
+        ]
+    }
+
+    /// Any JSON value, leaning on the keys, strings and numbers the mappers read.
     pub(crate) fn json_value() -> impl Strategy<Value = Value> {
         let leaf = prop_oneof![
             Just(Value::Null),
@@ -683,7 +720,7 @@ pub(crate) mod fuzz {
         leaf.prop_recursive(6, 64, 6, |inner| {
             prop_oneof![
                 proptest::collection::vec(inner.clone(), 0..5).prop_map(Value::Array),
-                proptest::collection::vec(("[a-z_]{1,8}", inner), 0..5)
+                proptest::collection::vec((key(), inner), 0..5)
                     .prop_map(|pairs| Value::Object(pairs.into_iter().collect())),
             ]
         })

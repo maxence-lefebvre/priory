@@ -758,6 +758,16 @@ mod tests {
         }
 
         #[test]
+        fn relations_of_any_shape_give_blockers_without_panicking(
+            nodes in json_value(),
+            has_next in json_value(),
+        ) {
+            let issue = json!({ "inverseRelations": { "pageInfo": { "hasNextPage": has_next }, "nodes": nodes } });
+            blockers(&issue);
+            blockers(&json!({ "inverseRelations": { "pageInfo": { "hasNextPage": false }, "nodes": issue["inverseRelations"]["nodes"] } }));
+        }
+
+        #[test]
         fn any_time_is_compared_without_panicking(since in proptest::option::of("\\PC{0,40}"), time in json_value()) {
             after(since.as_deref(), &time);
             page(since.as_deref(), "updatedAt");

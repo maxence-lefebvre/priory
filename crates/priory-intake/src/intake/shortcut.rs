@@ -320,5 +320,11 @@ mod tests {
             form(&Factory::default(), &payload);
             super::metadata(&payload);
         }
+
+        #[test]
+        fn private_metadata_of_any_text_is_read_without_panicking(text in "\\PC{0,300}") {
+            let payload = json!({ "view": { "private_metadata": text } });
+            super::metadata(&payload);
+        }
     }
 }

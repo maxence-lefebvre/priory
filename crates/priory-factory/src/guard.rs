@@ -1430,6 +1430,26 @@ mod tests {
         }
 
         #[test]
+        fn a_mutated_guarded_command_is_matched_or_missed_without_panicking(
+            command in proptest::sample::select(vec![
+                "git push --force origin main", "git push origin :main", "gh api -X POST repos/o/r/pulls/1/merge",
+                "gh api repos/o/r/pulls/1/reviews -f event=APPROVE", "curl -d '{}' https://slack.com/api/chat.postMessage",
+                "gh pr merge 12 --admin", "git -C repo push -fu origin HEAD",
+            ]),
+            at in 0..60usize,
+            junk in "\\PC{0,12}",
+            cut in 0..60usize,
+        ) {
+            let chars: Vec<char> = command.chars().collect();
+            let at = at.min(chars.len());
+            let mut mutated: String = chars[..at].iter().collect();
+            mutated.push_str(&junk);
+            mutated.extend(&chars[at..chars.len().min(cut.max(at))]);
+            guards(&mutated);
+            guards(&format!("{mutated} {command}"));
+        }
+
+        #[test]
         fn any_text_is_split_without_panicking(script in "\\PC{0,300}") {
             commands(&script);
         }
