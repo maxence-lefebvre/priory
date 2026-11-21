@@ -310,6 +310,22 @@ impl Setup {
         self.within(60, verb, done)
     }
 
+    /// This runner's rows of `priory tasks`: another runner's task has no id here.
+    fn own_tasks(&self) -> Vec<Vec<String>> {
+        self.rows("tasks")
+            .into_iter()
+            .filter(|row| row[0] != "-")
+            .collect()
+    }
+
+    /// Waits until `done` holds for this runner's rows of `priory tasks`.
+    fn until_own_tasks(&self, done: impl Fn(&[Vec<String>]) -> bool) -> Vec<Vec<String>> {
+        let own = |rows: &[Vec<String>]| -> Vec<Vec<String>> {
+            rows.iter().filter(|row| row[0] != "-").cloned().collect()
+        };
+        own(&self.until("tasks", |rows| done(&own(rows))))
+    }
+
     fn within(
         &self,
         seconds: u64,
@@ -17225,9 +17241,8 @@ fn a_runner_away_for_an_hour_keeps_its_asked_task_and_its_answer_and_loses_only_
         );
     }
     b.publish(&requested(3));
-    let tasks = b.until("tasks", |rows| {
-        rows.iter().filter(|row| row[4] == "running").count() == 2
-    });
+    let tasks =
+        b.until_own_tasks(|rows| rows.iter().filter(|row| row[4] == "running").count() == 2);
     let mut keys: Vec<&str> = tasks.iter().map(|row| row[1].as_str()).collect();
     keys.sort_unstable();
     assert_eq!(
@@ -17238,7 +17253,7 @@ fn a_runner_away_for_an_hour_keeps_its_asked_task_and_its_answer_and_loses_only_
 
     a.memory(60);
     a.start_with(exe, &[("PRIORY_NOW", AN_HOUR_LATER)]);
-    let tasks = a.until("tasks", |rows| {
+    let tasks = a.until_own_tasks(|rows| {
         rows.iter()
             .all(|row| ["done", "dropped"].contains(&row[4].as_str()))
     });
@@ -17350,7 +17365,7 @@ fn a_person_gives_a_started_task_to_another_runner_which_starts_it_over_and_its_
     b.until("asks", |rows| rows.iter().any(|row| !row[0].contains(':')));
 
     a.start_with(exe, &[("PRIORY_NOW", AN_HOUR_LATER)]);
-    let tasks = a.until("tasks", |rows| rows[0][4] == "dropped");
+    let tasks = a.until_own_tasks(|rows| rows[0][4] == "dropped");
     assert_eq!(tasks.len(), 1);
     let refused = give("b", &[]);
     assert_eq!(
@@ -17370,9 +17385,9 @@ fn a_person_gives_a_started_task_to_another_runner_which_starts_it_over_and_its_
         "{}",
         String::from_utf8_lossy(&back.stderr)
     );
-    let tasks = a.until("tasks", |rows| rows.len() == 2 && rows[1][4] == "asleep");
+    let tasks = a.until_own_tasks(|rows| rows.len() == 2 && rows[1][4] == "asleep");
     assert_eq!(tasks[0][4], "dropped", "{tasks:?}");
-    b.until("tasks", |rows| rows[0][4] == "dropped");
+    b.until_own_tasks(|rows| rows[0][4] == "dropped");
 }
 
 #[test]
@@ -17414,8 +17429,8 @@ fn a_person_gives_a_task_whose_owner_may_still_run_it_only_with_force() {
          github:owner/repo#1: give it then, or pass --force\n"
     );
     std::thread::sleep(Duration::from_secs(2));
-    assert!(b.rows("tasks").is_empty(), "nothing moved");
-    assert_eq!(a.rows("tasks")[0][4], "asleep");
+    assert!(b.own_tasks().is_empty(), "nothing moved");
+    assert_eq!(a.own_tasks()[0][4], "asleep");
 
     let forced = give("2026-11-21T10:10:00Z", &["--force"]);
     assert!(
@@ -17424,7 +17439,7 @@ fn a_person_gives_a_task_whose_owner_may_still_run_it_only_with_force() {
         String::from_utf8_lossy(&forced.stderr)
     );
     b.until("asks", |rows| rows.len() == 1);
-    a.until("tasks", |rows| rows[0][4] == "dropped");
+    a.until_own_tasks(|rows| rows[0][4] == "dropped");
 }
 
 #[test]
@@ -17459,7 +17474,7 @@ fn a_runner_that_joins_late_reads_a_finished_task_without_running_it_again() {
         rows.iter().any(|row| row.contains(&"refused".to_owned()))
     });
     assert!(
-        b.rows("tasks").is_empty(),
+        b.own_tasks().is_empty(),
         "b's late claim of the finished request loses"
     );
 }
@@ -17475,9 +17490,7 @@ fn a_runner_added_to_a_factory_that_had_one_does_not_run_its_finished_requests_a
     a.calls(&[result("passed")]);
     a.publish(&requested(1));
     a.start_with(exe, &[("PRIORY_NOW", T0)]);
-    a.until("tasks", |rows| {
-        rows.first().is_some_and(|row| row[4] == "done")
-    });
+    a.until_own_tasks(|rows| rows.first().is_some_and(|row| row[4] == "done"));
     a.crash();
 
     fs::rename(&later, &runners).unwrap();
@@ -17491,7 +17504,7 @@ fn a_runner_added_to_a_factory_that_had_one_does_not_run_its_finished_requests_a
     });
 
     assert!(
-        b.rows("tasks").is_empty(),
+        b.own_tasks().is_empty(),
         "b does not run the request a finished before it had runners"
     );
 }
@@ -17550,9 +17563,7 @@ fn a_runners_task_branch_names_the_runner_since_task_ids_overlap_across_runners(
         Path::new(env!("CARGO_BIN_EXE_priory")),
         &[("PRIORY_NOW", T0)],
     );
-    a.until("tasks", |rows| {
-        rows.first().is_some_and(|row| row[4] == "running")
-    });
+    a.until_own_tasks(|rows| rows.first().is_some_and(|row| row[4] == "running"));
 
     let task = task_json(&a, "1");
     assert_eq!(task["branch"], "priory/a-1", "{task}");
@@ -17568,9 +17579,7 @@ fn a_copy_reopened_on_a_runner_whose_key_another_runner_owns_drops_with_the_owne
     a.calls(&[result("passed")]);
     a.publish(&requested(1));
     a.start_with(exe, &[("PRIORY_NOW", T0)]);
-    a.until("tasks", |rows| {
-        rows.first().is_some_and(|row| row[4] == "done")
-    });
+    a.until_own_tasks(|rows| rows.first().is_some_and(|row| row[4] == "done"));
     logged(
         &a,
         "priory.task.held",
@@ -17581,7 +17590,7 @@ fn a_copy_reopened_on_a_runner_whose_key_another_runner_owns_drops_with_the_owne
     // A new request for the key goes to b, which a hears only once it is back.
     b.publish(&requested(1));
     b.start_with(exe, &[("PRIORY_NOW", T0)]);
-    b.until("tasks", |rows| rows.len() == 1);
+    b.until_own_tasks(|rows| rows.len() == 1);
     a.start_with(exe, &[("PRIORY_NOW", T0)]);
     a.until("inbox", |rows| {
         rows.iter()
@@ -17600,12 +17609,12 @@ fn a_copy_reopened_on_a_runner_whose_key_another_runner_owns_drops_with_the_owne
         .time(herdr_bus::Timestamp::now()),
     );
 
-    let tasks = a.until("tasks", |rows| rows[0][4] == "dropped");
+    let tasks = a.until_own_tasks(|rows| rows[0][4] == "dropped");
     assert_eq!(tasks.len(), 1, "{tasks:?}");
     let task = a.priory(&["task", &tasks[0][0], "--json"]);
     let task: serde_json::Value = serde_json::from_slice(&task.stdout).unwrap();
     assert_eq!(task["reason"], "owned by runner b", "{task}");
-    assert_eq!(b.rows("tasks")[0][4], "running");
+    assert_eq!(b.own_tasks()[0][4], "running");
 }
 
 #[test]
