@@ -15977,7 +15977,9 @@ fn a_copy_reopened_on_a_runner_whose_key_another_runner_owns_drops_with_the_owne
     a.calls(&[result("passed")]);
     a.publish(&requested(1));
     a.start_with(exe, &[("PRIORY_NOW", T0)]);
-    a.until("tasks", |rows| rows.first().is_some_and(|row| row[4] == "done"));
+    a.until("tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == "done")
+    });
     logged(
         &a,
         "priory.task.held",
@@ -15997,13 +15999,15 @@ fn a_copy_reopened_on_a_runner_whose_key_another_runner_owns_drops_with_the_owne
     // The comment comes after the task was done, to the second.
     std::thread::sleep(Duration::from_millis(1100));
 
-    a.publish(&Message::new(
-        "github.issues.comment",
-        json!({ "repo": "owner/repo", "issue": 1, "actor": "ana", "body": "Still broken.",
+    a.publish(
+        &Message::new(
+            "github.issues.comment",
+            json!({ "repo": "owner/repo", "issue": 1, "actor": "ana", "body": "Still broken.",
                 "url": "u", "github_id": 901 }),
-    )
-    .subject("owner/repo#1")
-    .time(herdr_bus::Timestamp::now()));
+        )
+        .subject("owner/repo#1")
+        .time(herdr_bus::Timestamp::now()),
+    );
 
     let tasks = a.until("tasks", |rows| rows[0][4] == "dropped");
     assert_eq!(tasks.len(), 1, "{tasks:?}");
