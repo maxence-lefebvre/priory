@@ -542,6 +542,21 @@ textarea { font: 400 16px/22px var(--font-ui); color: var(--text); background: v
 .days text.wk { fill: var(--text-2); }
 [data-costs] > .scroll > .note.warn { padding: 10px var(--gutter) 0; align-items: center; }
 [data-costs] > .scroll > .note.asof { padding: 6px var(--gutter) 0; }
+/* Tasks and Runs: rows open a page; a key or batch link inside a row goes on its own. */
+.row[data-href], .tbl tr[data-href] { cursor: pointer; }
+.row .l1 a.mono { text-decoration: none; }
+.tbl td.mono a { color: inherit; text-decoration: none; }
+.row[data-href] .l1 > * { white-space: nowrap; flex: none; }
+.row[data-href] .l1 > span:nth-child(2) { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.row[data-href] .l3 > span { overflow: hidden; text-overflow: ellipsis; }
+.row .l3 .tag .ico, .tbl .tag .ico { margin-right: 3px; vertical-align: -2px; }
+.tbl .t3 { color: var(--text-3); }
+.tbl td.q span.why { font-size: 13px; margin-top: 2px; }
+.tbl.tasks th:nth-child(3) { width: auto; } .tbl.tasks th:nth-child(4) { width: 190px; } .tbl.tasks th:nth-child(5) { width: 100px; }
+.tbl.tasks th:nth-child(6) { width: 70px; } .tbl.tasks th:nth-child(7) { width: 110px; }
+.tbl.runs th:nth-child(2) { width: 52px; } .tbl.runs th:nth-child(3) { width: 96px; } .tbl.runs th:nth-child(4) { width: auto; }
+.tbl.runs th:nth-child(5) { width: 250px; } .tbl.runs th:nth-child(6) { width: 96px; } .tbl.runs th:nth-child(7), .tbl.runs th:nth-child(8) { width: 84px; }
+.tbl.runs th:nth-child(9) { width: 110px; }
 
 /* Batches (DESIGN.md, Batch page and Lane graph): the stage bar, the lane graph and an entry's edit menu. */
 .stagebar { display: flex; height: 8px; gap: 2px; border-radius: var(--radius-full); overflow: hidden; }

@@ -8,11 +8,12 @@ Every endpoint takes `GET`, except the [writes](#writes), `POST /hooks/github` a
 Each listing returns the same JSON as
 the CLI command with `--json`, with the state's `revision`, an integer, read in the same
 transaction. A listing that is an object has a `revision` field. A listing that is a list comes as
-`{"revision": N, "<name>": [...]}`, where `<name>` is `inbox` or `tasks`.
+`{"revision": N, "<name>": [...]}`, where `<name>` is `inbox` or `tasks`. `/api/runs` comes as
+`{"revision": N, "runs": [...], "older": N}`.
 `/api/costs`, `/api/attention` and `/api/grades` are reports rather than listings: they have no `revision`.
 
-`/api/asks` and `/api/tasks` leave out the rows that closed over a week ago, and add `older`, the
-number they left out: see [Asks](#asks) and [Tasks](#tasks). `?all=1` returns every row, as the CLI
+`/api/asks`, `/api/tasks` and `/api/runs` leave out the rows that closed over a week ago, and add
+`older`, the number they left out: see [Asks](#asks), [Tasks](#tasks) and [Runs](#runs). `?all=1` returns every row, as the CLI
 does, with every count in `older` at 0. Their rows match the CLI's JSON only with `?all=1`.
 
 | Endpoint | CLI | Returns |
@@ -24,6 +25,7 @@ does, with every count in `older` at 0. Their rows match the CLI's JSON only wit
 | `/api/tasks?all=1` | `priory tasks --json` | `tasks`: an array of [tasks](#tasks), and `older` |
 | `/api/tasks?pr=RESOURCE` | | `tasks`: the active tasks that hold a pull request. See [Tasks that hold a pull request](#tasks-that-hold-a-pull-request) |
 | `/api/tasks/{id}` | `priory task ID --json` | one [task in detail](#task-in-detail) |
+| `/api/runs?all=1` | | `runs`: an array of [runs](#runs), newest first, and `older` |
 | `/api/queue` | `priory queue --json` | an object: [Queue](#queue) |
 | `/api/batches` | `priory batch show --json` | `batches`: every batch, newest first, without its entries and closes. See [batches.md](../daemon/batches.md#priory-batch-show) |
 | `/api/batches/{id}` | `priory batch show ID --json` | one batch with its entries, closes and splits. `ID` is the batch's id or its key |
@@ -67,7 +69,7 @@ or a reason, is untrusted: render it as text.
 | ---- | ---- |
 | `200` | The endpoint answered |
 | `202` | A signed webhook delivery was taken: published, or dropped on purpose |
-| `400` | The request does not parse, or its target does not start with `/`; `/api/events` lacks `since` or has a parameter out of range; `/api/desk` has a parameter other than `person`, or a broken escape; `/api/asks` has a parameter other than `band`, `risk` and `all=1`, a band the factory does not have, or a risk other than the eight [below](#asks); `/api/tasks` has a parameter other than `all=1`, or a `pr` that is not a pull request such as `github:owner/repo#7`; `/api/costs` has a parameter other than `since` and `by`, a broken escape, a `since` that cannot form a window (see [trace.md](../daemon/trace.md#costs)), or a `by` other than the five [below](#costs); `/api/grades` has a parameter other than `since`, a broken escape, or a `since` that does not parse; `/api/attention` has the same faults, with a `by` other than the three [below](#attention); a write's body is not the shape [below](#writes); for a webhook, it sends two `Content-Length`, or its payload lacks a field its event needs |
+| `400` | The request does not parse, or its target does not start with `/`; `/api/events` lacks `since` or has a parameter out of range; `/api/desk` has a parameter other than `person`, or a broken escape; `/api/asks` has a parameter other than `band`, `risk` and `all=1`, a band the factory does not have, or a risk other than the eight [below](#asks); `/api/tasks` has a parameter other than `all=1`, or a `pr` that is not a pull request such as `github:owner/repo#7`; `/api/runs` has a parameter other than `all=1`; `/api/costs` has a parameter other than `since` and `by`, a broken escape, a `since` that cannot form a window (see [trace.md](../daemon/trace.md#costs)), or a `by` other than the five [below](#costs); `/api/grades` has a parameter other than `since`, a broken escape, or a `since` that does not parse; `/api/attention` has the same faults, with a `by` other than the three [below](#attention); a write's body is not the shape [below](#writes); for a webhook, it sends two `Content-Length`, or its payload lacks a field its event needs |
 | `401` | The token is missing or wrong on a path under `/api`; for a webhook, the signature is |
 | `403` | A `POST` carries an `Origin` whose host and port differ from its `Host`, such as a page on another site, and that is not one of [`[serve] extension_origins`](factory.md#serve) |
 | `404` | No such path, task, report, ask, batch or web view file |
@@ -322,8 +324,9 @@ Every task in start order. Without `all=1`, the tasks still going and the tasks 
 has `id`, `key`, `workflow`, `step`, `state`, `band`, `lane`, `reason`, `position` (its place in
 the queue from 1, or null), `generation`, `retired`, `tldr`, `since`
 (when the task last changed state), `grade` (`red`, `yellow`, `green` or null), `grade_reason`,
-`progress`, `conditions`, a held task's [conditions](#conditions) or null, `stack` and
-`relations`. See Grades in [tools.md](../daemon/tools.md#grades).
+`progress`, `conditions`, a held task's [conditions](#conditions) or null, `title` (its TL;DR, else
+the first line of its request, cut to 120 characters), `batch` (the id of the batch it is an entry
+or the planning task of, or null), `stack` and `relations`. See Grades in [tools.md](../daemon/tools.md#grades).
 
 `relations` lists every relation the task is in, on either side, oldest first (see
 [relations.md](../daemon/relations.md)). Each entry:
@@ -351,6 +354,26 @@ none. Each entry:
 `progress` is null until the task's agent or a person publishes one. Then it is an object with any
 of `goal`, `acceptanceCriteria` (each `{ "id", "description", "required" }`), `latestChange` and
 `nextAction`. See the `progress` tool in [tools.md](../daemon/tools.md).
+
+## Runs
+
+The runs still live and those started in the last 7 days, newest first. Without `all=1`, `older`,
+an integer, is the number of ended runs left out. `priory runs` prints the same runs without the
+task, result and trace fields. Each run:
+
+| Field | Type | Meaning |
+| ----- | ---- | ------- |
+| `run` | integer | The run's id |
+| `task` | integer | Its task's id |
+| `key` | string | Its task's key |
+| `step` | string | The step it ran |
+| `agent` | string or null | The agent it ran |
+| `started` | RFC 3339 | When it started |
+| `ended` | RFC 3339 or null | When it ended; null while it is live |
+| `end` | string or null | How it ended, such as `done`, `moved`, `blocked`, `lost` or `exited`. See [runs.md](../daemon/runs.md) |
+| `outcome` | string or null | Its result's outcome, such as `passed` or `approved`, or null without a result |
+| `model` | string or null | The model its `factory.step.ended` event recorded |
+| `tokens` | object or null | That event's `input`, `output`, `cache_read` and `cache_write` token counts |
 
 ## Tasks that hold a pull request
 

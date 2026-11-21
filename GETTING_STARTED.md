@@ -313,6 +313,12 @@ Open and waits in Snoozed. On a phone, once the options scroll out of view, the 
 A batch's go ask shows the plan as a lane graph, and each entry's menu moves or drops it before you
 answer. The desk's batch row opens the batch page, with each entry's state and when it starts.
 
+The web view's Tasks panel lists every task, with the saved views Active, Blocked and Ended and
+filters by state, lane and workflow; each row opens the task's page, and a batch's entries link to
+the batch. The Runs panel lists the runs of the last 7 days with their agent, model, outcome,
+duration and tokens, filtered by outcome, agent or step. `priory tasks` and `priory runs` print the
+same tasks and runs.
+
 A workflow can write a report for you, such as a morning dossier: `priory report show` prints the
 last one. The web view's Reports panel shows it, and takes its picks and row comments as
 `priory report pick` and `priory report comment` do. See [docs/daemon/reports.md](docs/daemon/reports.md).

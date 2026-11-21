@@ -69,3 +69,18 @@ INSERT INTO asks (task,step,kind,question,options,created,title)
 SELECT id,'approve-pr','step','Open the pull request?','["open","stop"]', strftime('%Y-%m-%dT%H:%M:%SZ','now',printf('-%d hours',19+(id-20)*22)),'Open the pull request' FROM tasks WHERE id BETWEEN 20 AND 31;
 UPDATE ask_revisions SET created = (SELECT created FROM asks WHERE asks.id = ask_revisions.ask) WHERE ask IN (SELECT id FROM asks WHERE task BETWEEN 20 AND 31);
 UPDATE asks SET answer='open', answered_by='serve', answered = strftime('%Y-%m-%dT%H:%M:%SZ', created, printf('+%d minutes', 3+(id%5)*4)) WHERE task BETWEEN 20 AND 31;
+-- runs, for the Runs panel: each ended run's result and its step.ended event with model and tokens
+INSERT INTO runs (id,task,step,tmux,session,agent,started,ended,ended_as) VALUES
+(101,6,'plan','demo','demo-101','planner',strftime('%Y-%m-%dT%H:%M:%SZ','now','-5 hours'),strftime('%Y-%m-%dT%H:%M:%SZ','now','-288 minutes'),'done'),
+(102,1,'implement','demo','demo-102','implementer',strftime('%Y-%m-%dT%H:%M:%SZ','now','-4 hours'),strftime('%Y-%m-%dT%H:%M:%SZ','now','-189 minutes'),'moved'),
+(103,3,'implement','demo','demo-103','implementer',strftime('%Y-%m-%dT%H:%M:%SZ','now','-206 minutes'),strftime('%Y-%m-%dT%H:%M:%SZ','now','-3 hours'),'blocked'),
+(104,2,'implement','demo','demo-104','implementer',strftime('%Y-%m-%dT%H:%M:%SZ','now','-157 minutes'),strftime('%Y-%m-%dT%H:%M:%SZ','now','-2 hours'),'moved'),
+(105,8,'implement','demo','demo-105','implementer',strftime('%Y-%m-%dT%H:%M:%SZ','now','-70 minutes'),strftime('%Y-%m-%dT%H:%M:%SZ','now','-62 minutes'),'exited');
+INSERT INTO results (run,task,step,outcome,summary) VALUES
+(101,6,'plan','approved','Planned four entries'),(102,1,'implement','passed','Retries with backoff'),
+(103,3,'implement','blocked','The staging search cluster refused the connection'),(104,2,'implement','passed','VAT number on the PDF');
+INSERT INTO trace (id,type,time,event)
+SELECT 'demo-run-' || id, 'factory.step.ended', ended, json_object('data', json_object('run', CAST(id AS TEXT), 'step', step,
+  'model', CASE WHEN id IN (101,103) THEN 'claude-opus-5-5' ELSE 'claude-sonnet-5-5' END,
+  'tokens', json_object('input', 30000+id%7*41000, 'output', 9000+id%5*3000, 'cache_read', 120000+id%4*90000, 'cache_write', 20000)))
+FROM runs WHERE id BETWEEN 101 AND 105;
