@@ -18133,7 +18133,9 @@ fn a_lost_predecessor_asks_once_per_condition_and_each_answer_moves_only_its_tas
     person(&setup, "answer", &[&go[0][0], "go", "--revision", "1"]);
 
     let tasks = setup.until("tasks", |rows| {
-        let roots = rows.iter().filter(|row| ["2", "3"].contains(&row[0].as_str()));
+        let roots = rows
+            .iter()
+            .filter(|row| ["2", "3"].contains(&row[0].as_str()));
         let states: Vec<_> = roots.map(|row| row[4].as_str()).collect();
         states.contains(&"dropped") && states.contains(&"asleep")
     });
