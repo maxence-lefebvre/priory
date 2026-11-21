@@ -21,23 +21,21 @@
 
 ## Start in three steps
 
-<p class="sub">Priory needs Linux, the pinned Rust toolchain, git, tmux, gh logged in to GitHub, and claude or codex.</p>
+<p class="sub">Priory needs Linux, git, tmux, gh logged in to GitHub, and claude or codex.</p>
 
 <ol class="steps">
 <li>
 
-### Build Priory
-
-<!-- Once the release slice merges, put the install line here and keep building from source as the alternative. -->
+### Install Priory
 
 ```sh
-cargo build --release
-export PATH="$PWD/target/release:$PATH"
+curl -fsSL https://raw.githubusercontent.com/maxence-lefebvre/priory/main/install.sh | sh
+priory --version
 ```
 
-From the root of your clone. `priory` then prints its usage.
+The script installs the latest release to `~/.local/bin`. You can also build from source.
 
-[Build Priory](GETTING_STARTED.md#1-build-priory)
+[Install Priory](GETTING_STARTED.md#1-install-priory)
 
 </li>
 <li>
