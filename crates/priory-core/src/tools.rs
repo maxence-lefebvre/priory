@@ -1113,6 +1113,41 @@ fn feedback_on(kind: &str, data: &Value) -> Option<String> {
     }
 }
 
+/// Fires the checks gate of `task` on a comment or reply in `message` on its issue, Linear issue
+/// or Slack thread, as pull request feedback fires it, since a merge would end the task unheard.
+pub(crate) fn gate_feedback(
+    tx: &Transaction,
+    task: i64,
+    message: &herdr_bus::Message,
+    seq: Option<i64>,
+) -> rusqlite::Result<bool> {
+    let Some(resource) = feedback_on(&message.kind, &message.data)
+        .filter(|_| !FEEDBACK.contains(&message.kind.as_str()))
+    else {
+        return Ok(false);
+    };
+    let gate: Option<i64> = tx.query_row(
+        "SELECT min(waits.id) FROM waits JOIN tasks ON tasks.id = waits.task
+         WHERE waits.task = ?1 AND waits.daemon AND waits.fired IS NULL AND waits.withdrawn IS NULL
+         AND tasks.state = 'asleep'",
+        [task],
+        |row| row.get(0),
+    )?;
+    let Some(gate) = gate else {
+        return Ok(false);
+    };
+    let said = reopened_by(&resource, None, &message.kind, &message.data);
+    let mut text = format!("wait {gate} fired: {said}");
+    // Another task kept the event, so its whole line goes with the reason.
+    if seq.is_none() {
+        let data = message.data.to_string();
+        let line = crate::state::line(&message.kind, message.subject.as_deref(), &data);
+        text = format!("{text}\n{line}");
+    }
+    fire(tx, gate, task, &text, seq)?;
+    Ok(true)
+}
+
 /// Who said what on `resource`, for the prompt of the done task that feedback of `kind` reopens.
 fn reopened_by(resource: &str, place: Option<&str>, kind: &str, data: &Value) -> String {
     if let Some(said) = feedback(resource, place, kind, data) {
@@ -3007,7 +3042,7 @@ fn regenerate(tx: &Transaction, task: i64, generation: i64) -> rusqlite::Result<
 
 /// The done task that feedback in `message` reopens: the newest that owns the pull request, issue,
 /// Linear issue or Slack thread it is on, done before the feedback was written, with no close of
-/// that pull request in the inbox and no active task on its key.
+/// that pull request in the inbox, no merged pull request and no active task on its key.
 pub(crate) fn reopenable(
     tx: &Transaction,
     message: &herdr_bus::Message,
@@ -3035,6 +3070,7 @@ pub(crate) fn reopenable(
                || coalesce(json_extract(data, '$.pull_request'), json_extract(data, '$.issue')) = ?1)
              AND NOT EXISTS (SELECT 1 FROM tasks AS other WHERE other.key = tasks.key
                AND other.state NOT IN ('done', 'failed', 'dropped'))
+             AND NOT EXISTS (SELECT 1 FROM pull_requests WHERE task = tasks.id AND state = 'merged')
              ORDER BY tasks.id DESC LIMIT 1"
         ),
         params![resource, message.time.to_string(), CLOSED, ISSUE_CLOSED],

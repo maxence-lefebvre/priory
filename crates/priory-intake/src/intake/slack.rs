@@ -11,6 +11,8 @@ pub(super) const TOKEN: &str = "SLACK_BOT_TOKEN";
 pub(super) const API: &str = "https://slack.com/api/";
 pub(super) const POSTED: &str = "slack.message.posted";
 pub(super) const REPLIED: &str = "slack.thread.replied";
+const FILE_SHARE: &str = "file_share";
+const BROADCAST: &str = "thread_broadcast";
 /// How many messages a channel's first poll reads.
 const FIRST: u64 = 50;
 
@@ -90,10 +92,12 @@ impl<'a> Slack<'a> {
         self.turn += 1;
         let mut replies = Vec::new();
         for (channel, thread, since) in threads[start..].iter().chain(&threads[..start]) {
-            // A deleted thread or a channel the bot left fails only its own wait's poll.
+            // A deleted thread or a channel the bot left fails the poll once the rest is published. A
+            // rate limit only delays the thread: the next poll starts with it.
             match self.replies(channel, thread, *since) {
                 Ok(found) => replies.extend(found),
-                Err(error) => eprintln!("{error}"),
+                Err(error) if error.ends_with(": ratelimited") => eprintln!("{error}"),
+                Err(error) => failed.push(format!("thread {channel}:{thread}: {error}")),
             }
         }
         for (channel, events, top) in polled {
@@ -138,7 +142,12 @@ impl<'a> Slack<'a> {
             .map(str::to_owned);
         let mut events: Vec<Message> = messages
             .iter()
-            .filter(|message| after(text(&message["ts"])) && self.by_someone(message))
+            // A reply also sent to the channel stays a reply: its thread's poll reads it.
+            .filter(|message| {
+                after(text(&message["ts"]))
+                    && self.by_someone(message)
+                    && text(&message["subtype"]) != BROADCAST
+            })
             .map(|message| self.posted(channel, message, cursor.is_none()))
             .collect::<Result<_, _>>()?;
         events.sort_by_key(|event| event.time);
@@ -173,6 +182,7 @@ impl<'a> Slack<'a> {
                 "ts": ts,
                 "user": message["user"],
                 "text": message["text"],
+                "files": files(&message),
                 "time": time.to_string(),
                 "baseline": false,
                 "triggers": [],
@@ -187,9 +197,12 @@ impl<'a> Slack<'a> {
         Ok(replies)
     }
 
-    /// Whether a person wrote `message`: not the bot itself, and not a join or another subtype.
+    /// Whether a person wrote `message`: not the bot itself, and not a join or another subtype
+    /// than an upload or a reply also sent to the channel.
     fn by_someone(&self, message: &Value) -> bool {
-        message.get("subtype").is_none()
+        message
+            .get("subtype")
+            .is_none_or(|subtype| [FILE_SHARE, BROADCAST].contains(&text(subtype)))
             && text(&message["user"]) != self.user
             && message
                 .get("bot_id")
@@ -205,6 +218,7 @@ impl<'a> Slack<'a> {
             "ts": ts,
             "user": message["user"],
             "text": message["text"],
+            "files": files(message),
             "time": time.to_string(),
             "baseline": baseline,
         });
@@ -252,6 +266,12 @@ impl<'a> Slack<'a> {
             query.push(("cursor", next.to_owned()));
         }
     }
+}
+
+/// The names of the files uploaded with `message`.
+fn files(message: &Value) -> Vec<&str> {
+    let files = message["files"].as_array().into_iter().flatten();
+    files.map(|file| text(&file["name"])).collect()
 }
 
 pub(super) fn text(value: &Value) -> &str {

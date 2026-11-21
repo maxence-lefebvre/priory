@@ -522,6 +522,9 @@ pub struct SlackPosted {
     pub user: Option<String>,
     /// The message, in Slack's markup.
     pub text: String,
+    /// The names of the files uploaded with it; empty when none.
+    #[serde(default)]
+    pub files: Vec<String>,
     #[serde(flatten)]
     pub source: Source,
 }
@@ -540,6 +543,9 @@ pub struct SlackReplied {
     pub user: Option<String>,
     /// The reply, in Slack's markup.
     pub text: String,
+    /// The names of the files uploaded with it; empty when none.
+    #[serde(default)]
+    pub files: Vec<String>,
     #[serde(flatten)]
     pub source: Source,
 }

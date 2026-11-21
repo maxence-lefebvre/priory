@@ -1523,8 +1523,21 @@ fn delivered(
         message.subject.as_deref(),
         &message.data.to_string(),
     );
-    if wakes(tx, task, factory)? {
+    // An event the task keeps that was written while it ran, such as the agent's own comment,
+    // wakes nothing: its next wake carries it. To the second, as waits: the last second is after.
+    let fresh: bool = kept.is_none()
+        || tx.query_row(
+            "SELECT NOT EXISTS (SELECT 1 FROM runs WHERE id = (SELECT max(id) FROM runs WHERE task = ?1)
+               AND julianday(?2) >= (SELECT julianday(min(started)) FROM runs WHERE task = ?1)
+               AND julianday(?2) < julianday(ended))",
+            params![task, message.time.to_string()],
+            |row| row.get(0),
+        )?;
+    if fresh && wakes(tx, task, factory)? {
         crate::tools::wake_on(tx, task, &placed(tx, task, resources, &line)?, kept)?;
+        return Ok(true);
+    }
+    if fresh && crate::tools::gate_feedback(tx, task, message, kept)? {
         return Ok(true);
     }
     if kept.is_none() {

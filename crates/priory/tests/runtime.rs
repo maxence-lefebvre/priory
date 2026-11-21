@@ -9515,6 +9515,83 @@ fn a_comment_on_a_done_tasks_issue_reopens_nothing_once_it_unsubscribed_or_the_i
 }
 
 #[test]
+fn the_tasks_own_comment_or_state_change_on_its_key_wakes_nothing_and_a_later_comment_does() {
+    let mut setup = Setup::with_workflow("own-key-own-comment", STEPS);
+    setup.calls(&[ask()]);
+    let mut request = requested(42);
+    request.data["key"] = json!("linear:ENG-7");
+    setup.publish(&request.subject("linear:ENG-7"));
+    // The turn lasts past its first second, as a real one does.
+    setup.hold("hold-stop");
+    setup.start();
+    setup.until("runs", |rows| rows.len() == 1);
+    std::thread::sleep(Duration::from_millis(1100));
+    setup.release("hold-stop");
+    setup.until("runs", |rows| {
+        rows.first().is_some_and(|row| row[7] == "asleep")
+    });
+    // The agent commented and moved the issue in the turn that asked; the next poll reads both.
+    let during: herdr_bus::Timestamp = setup.rows("runs")[0][5].parse().unwrap();
+    let mut own = linear_event(
+        "linear.comment.created",
+        "ENG-7",
+        json!({ "body": "Plan ready.", "actor": "Max" }),
+    );
+    own.data["linear_id"] = json!("own-comment");
+    let moved = linear_event(
+        "linear.issue.state_changed",
+        "ENG-7",
+        json!({ "from": "Todo", "to": "In Progress", "actor": "Max" }),
+    );
+
+    setup.publish(&own.time(during));
+    setup.publish(&moved.time(during));
+    setup.until("inbox", |rows| rows.len() == 3);
+    stays_asleep(&setup);
+    setup.publish(
+        &linear_event(
+            "linear.comment.created",
+            "ENG-7",
+            json!({ "body": "Also the empty case.", "actor": "Ana" }),
+        )
+        .time(herdr_bus::Timestamp::now()),
+    );
+
+    setup.until("runs", |rows| rows.len() == 2);
+}
+
+#[test]
+fn a_comment_on_the_tasks_issue_while_it_sleeps_at_its_checks_gate_wakes_the_agent() {
+    let setup = gated("gate-issue-comment");
+
+    setup.publish(&issue_commented(901));
+
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 3);
+    let typed = setup.typed();
+    assert!(
+        typed[2].starts_with(
+            "wait 2 fired: ana commented on github:owner/repo#42: Also the empty case. u\ngithub.issues.comment owner/repo#42 {"
+        ),
+        "{typed:?}"
+    );
+}
+
+#[test]
+fn a_comment_on_the_issue_of_a_done_task_whose_pull_request_merged_reopens_nothing() {
+    let setup = gated("reopen-issue-merged");
+    setup.publish(&closed());
+    setup.until("tasks", |rows| rows[0][4] == "done");
+    std::thread::sleep(Duration::from_millis(1100));
+
+    setup.publish(&issue_commented(901));
+
+    setup.until("inbox", |rows| rows.len() == 4);
+    std::thread::sleep(Duration::from_millis(1500));
+    assert_eq!(setup.rows("tasks")[0][4], "done");
+    assert_eq!(setup.rows("runs").len(), 2);
+}
+
+#[test]
 fn a_check_run_on_a_task_keyed_on_its_pull_request_wakes_nothing_and_a_comment_does() {
     let mut setup = Setup::new("own-key-checks");
     setup.calls(&[wait(json!({ "type": "time", "until": "1 hour" }))]);
@@ -9773,6 +9850,77 @@ fn a_wait_on_a_slack_tasks_own_thread_reads_the_thread_once_a_poll() {
 
     let args = fs::read_to_string(setup.dir.join("curl-args")).unwrap();
     assert_eq!(args.matches("conversations.replies").count(), 1, "{args}");
+}
+
+#[test]
+fn a_reply_with_a_file_or_also_sent_to_the_channel_wakes_the_task_with_its_file_names() {
+    let setup = asleep_on(
+        "slack-subtypes",
+        json!({ "type": "slack_reply", "channel": "C0123", "thread_ts": THREAD }),
+    );
+    let now = herdr_bus::Timestamp::now();
+    let mut shared = slack_message(&ts(now), "U0PERSON");
+    shared["subtype"] = json!("file_share");
+    shared["files"] = json!([{ "id": "F01", "name": "screenshot.png" }]);
+    let mut broadcast = slack_message(
+        &ts(now.checked_add(Duration::from_secs(1)).unwrap()),
+        "U0ANA",
+    );
+    broadcast["subtype"] = json!("thread_broadcast");
+    let mut joined = slack_message(&ts(now), "U0JOIN");
+    joined["subtype"] = json!("channel_join");
+    setup.answer_slack(&[shared, broadcast, joined]);
+
+    setup.intake();
+
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 2);
+    let typed = setup.typed();
+    assert!(
+        typed[1].contains(r#""files":["screenshot.png"]"#),
+        "{typed:?}"
+    );
+    let replies: Vec<String> = setup
+        .rows("inbox")
+        .into_iter()
+        .filter(|row| row[1] == "slack.thread.replied")
+        .map(|row| row.join(" "))
+        .collect();
+    // The upload and the broadcast; the join is no reply.
+    assert_eq!(replies.len(), 2, "{replies:?}");
+}
+
+#[test]
+fn a_thread_the_intake_cannot_read_fails_the_poll_and_reaches_the_desk() {
+    let setup = asleep_on(
+        "slack-thread-fails",
+        json!({ "type": "slack_reply", "channel": "C0123", "thread_ts": THREAD }),
+    );
+    setup.answer_curl(&[
+        (
+            "auth.test",
+            json!({ "ok": true, "user_id": "U0BOT", "bot_id": "B0BOT" }),
+        ),
+        (
+            "conversations.replies",
+            json!({ "ok": false, "error": "not_in_channel" }),
+        ),
+    ]);
+
+    let output = setup.poll(&[]);
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!output.status.success(), "{stderr}");
+    assert!(
+        stderr.contains(&format!("C0123:{THREAD}")) && stderr.contains("not_in_channel"),
+        "{stderr}"
+    );
+    let desk = desk(&setup, &[]);
+    assert!(
+        desk.iter().any(
+            |row| row.join(" ").contains("slack: ") && row.join(" ").contains("not_in_channel")
+        ),
+        "{desk:?}"
+    );
 }
 
 #[test]

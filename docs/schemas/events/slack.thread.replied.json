@@ -33,6 +33,14 @@
           "description": "The channel id.",
           "type": "string"
         },
+        "files": {
+          "default": [],
+          "description": "The names of the files uploaded with it; empty when none.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
         "text": {
           "description": "The reply, in Slack's markup.",
           "type": "string"
@@ -71,6 +79,7 @@
         "ts",
         "user",
         "text",
+        "files",
         "time",
         "baseline",
         "triggers"

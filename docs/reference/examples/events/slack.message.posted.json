@@ -8,6 +8,7 @@
     "ts": "1795036000.000100",
     "user": "U0PERSON",
     "text": "@priory the export is broken again",
+    "files": ["export.log"],
     "time": "2026-11-18T21:06:40.000100Z",
     "baseline": false,
     "triggers": ["support-channel"]
