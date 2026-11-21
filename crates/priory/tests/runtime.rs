@@ -41,9 +41,9 @@ const OUTPUT: &str = "factory.intake";
 /// Takes a state file back before schema 28, which added search, 29, which added grades, 30,
 /// which added snoozes, 31, which added read reports, 32, which added the pause, 34, which added
 /// reports of sections, 36, which added deliveries, 37, which added progress, 39, which added run
-/// actions, 40, which added answer actions, 42, which added dispatches, and 49, which added task ends. Schema 38's visits table is created only if
-/// missing, so it stays.
-const UNDO_SINCE_SEARCH: &str = "DROP TRIGGER task_created; DROP TRIGGER task_ended; DROP TRIGGER task_restarted;
+/// actions, 40, which added answer actions, 42, which added dispatches, 49, which added task ends, and 51, which added a run's crossing of `compactAt`. Schema 38's visits
+/// table is created only if missing, so it stays.
+const UNDO_SINCE_SEARCH: &str = "ALTER TABLE runs DROP COLUMN crossed; DROP TRIGGER task_created; DROP TRIGGER task_ended; DROP TRIGGER task_restarted;
   DROP TABLE task_ends; ALTER TABLE exports DROP COLUMN ended; ALTER TABLE tasks DROP COLUMN created;
   ALTER TABLE actions DROP COLUMN ask;
   ALTER TABLE actions DROP COLUMN revision; ALTER TABLE actions DROP COLUMN command; ALTER TABLE actions DROP COLUMN generation;
@@ -1248,6 +1248,188 @@ fn a_codex_run_gets_a_bare_compact_and_its_post_compact_hook_brings_the_continua
     let typed = setup.typed();
     assert_eq!(typed[1], "/compact\n", "{typed:?}");
     assert_eq!(typed[2], CONTINUED, "{typed:?}");
+}
+
+impl Setup {
+    /// Sets the implementer's `compactAt`, and the context size the fake reports on each turn.
+    fn compact_at(&self, tokens: u64, contexts: &[u64]) {
+        let agent = AGENT.replace(
+            "effort = \"low\"\n",
+            &format!("effort = \"low\"\ncompactAt = {tokens}\n"),
+        );
+        fs::write(self.dir.join("factory/agents/implementer/agent.md"), agent).unwrap();
+        self.contexts(contexts);
+    }
+
+    fn contexts(&self, contexts: &[u64]) {
+        let lines: String = contexts
+            .iter()
+            .map(|context| format!("{context}\n"))
+            .collect();
+        fs::write(self.dir.join("fake/context"), lines).unwrap();
+    }
+
+    fn compactions(&self) -> usize {
+        self.typed()
+            .iter()
+            .filter(|prompt| prompt.starts_with("/compact"))
+            .count()
+    }
+}
+
+#[test]
+fn a_session_past_compact_at_gets_one_compaction_once_idle_then_the_continuation() {
+    let mut setup = Setup::new("auto-compact");
+    setup.compact_at(5000, &[6000]);
+    setup.publish(&requested(42));
+
+    setup.start();
+
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 3);
+    let typed = setup.typed();
+    assert_eq!(typed[1], "/compact\n", "{typed:?}");
+    assert!(
+        typed[2].starts_with(CONTINUED.lines().next().unwrap()),
+        "{typed:?}"
+    );
+    std::thread::sleep(Duration::from_millis(1500));
+    assert_eq!(setup.compactions(), 1, "{:?}", setup.typed());
+}
+
+#[test]
+fn an_agent_without_compact_at_is_never_compacted_though_another_agent_sets_it() {
+    let mut setup = Setup::new("auto-compact-unset");
+    let reviewer = REVIEWER.replace("+++\nYou", "compactAt = 5000\n+++\nYou");
+    fs::write(setup.dir.join("factory/agents/reviewer/agent.md"), reviewer).unwrap();
+    setup.contexts(&[900_000, 900_000]);
+    setup.publish(&requested(42));
+
+    setup.start();
+
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 2);
+    std::thread::sleep(Duration::from_millis(1500));
+    assert_eq!(setup.typed().len(), 2, "{:?}", setup.typed());
+    assert_eq!(setup.compactions(), 0);
+}
+
+#[test]
+fn a_turn_past_compact_at_that_asks_is_compacted_before_the_task_sleeps() {
+    let mut setup = Setup::with_workflow("auto-compact-ask", STEPS);
+    setup.compact_at(5000, &[6000]);
+    setup.calls(&[ask()]);
+    setup.publish(&requested(42));
+
+    setup.start();
+
+    setup.until("tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == "asleep")
+    });
+    let typed = setup.typed();
+    assert_eq!(typed[1], "/compact\n", "{typed:?}");
+    assert!(
+        typed[2].starts_with(
+            "Priory compacted this conversation, as you asked. You are on task 1, at step plan."
+        ),
+        "{typed:?}"
+    );
+    assert_eq!(typed.len(), 3, "{typed:?}");
+}
+
+#[test]
+fn a_new_run_of_the_session_does_not_compact_again_while_the_context_stays_over() {
+    let mut setup = Setup::with_workflow("auto-compact-wake", STEPS);
+    setup.compact_at(5000, &[6000, 7000, 7000]);
+    setup.calls(&[ask()]);
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == "asleep")
+    });
+
+    let answered = setup.priory(&["answer", "1", "sqlite", "--revision", "1"]);
+
+    assert!(answered.status.success(), "{answered:?}");
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 4);
+    std::thread::sleep(Duration::from_millis(1500));
+    assert_eq!(setup.rows("runs").len(), 2);
+    assert_eq!(setup.compactions(), 1, "{:?}", setup.typed());
+}
+
+#[test]
+fn a_result_carried_into_the_next_step_compacts_there() {
+    let mut setup = Setup::with_workflow("auto-compact-result", STEPS);
+    setup.compact_at(5000, &[6000, 6000]);
+    setup.calls(&[result("ready")]);
+    setup.publish(&requested(42));
+
+    setup.start();
+
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 5);
+    let typed = setup.typed();
+    assert_eq!(setup.compactions(), 1, "{typed:?}");
+    assert!(
+        typed.iter().any(|prompt| prompt.starts_with(
+            "Priory compacted this conversation, as you asked. You are on task 1, at step implement."
+        )),
+        "{typed:?}"
+    );
+}
+
+#[test]
+fn a_compact_tool_call_after_an_automatic_compaction_still_follows_the_answer() {
+    let mut setup = Setup::with_workflow("auto-compact-then-tool", STEPS);
+    setup.compact_at(5000, &[6000, 7000]);
+    // The continuation after the automatic compaction asks for another compact, then asks.
+    setup.calls(&[serde_json::Value::Null, json!([compact("the plan"), ask()])]);
+    setup.publish(&requested(42));
+
+    setup.start();
+
+    setup.until("tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == "asleep")
+    });
+    assert_eq!(setup.compactions(), 1, "{:?}", setup.typed());
+}
+
+#[test]
+fn a_turn_past_compact_at_is_not_compacted_until_it_ends() {
+    let mut setup = Setup::new("auto-compact-busy");
+    setup.compact_at(5000, &[6000]);
+    setup.hold("hold-stop");
+    setup.publish(&requested(42));
+    setup.start();
+    setup.written("fake/submitted");
+
+    std::thread::sleep(Duration::from_millis(1500));
+    assert_eq!(setup.typed().len(), 1, "{:?}", setup.typed());
+
+    setup.release("hold-stop");
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 3);
+    assert_eq!(setup.compactions(), 1, "{:?}", setup.typed());
+}
+
+#[test]
+fn a_session_is_compacted_again_only_after_its_context_reads_below_compact_at() {
+    // Turns: the intro, the continuation after the compaction, its nudge.
+    for (name, contexts, prompts, compactions) in [
+        ("auto-compact-stays-over", [6000, 7000, 7000], 4, 1),
+        ("auto-compact-crosses-again", [6000, 1000, 6000], 7, 2),
+    ] {
+        let mut setup = Setup::new(name);
+        setup.compact_at(5000, &contexts);
+        setup.publish(&requested(42));
+
+        setup.start();
+
+        setup.until("outbox", |rows| with(rows, 3, "confirmed") >= prompts);
+        std::thread::sleep(Duration::from_millis(1500));
+        assert_eq!(
+            setup.compactions(),
+            compactions,
+            "{name}: {:?}",
+            setup.typed()
+        );
+    }
 }
 
 #[test]
@@ -5139,7 +5321,7 @@ fn a_state_file_whose_asks_an_approval_names_upgrades_to_outside_asks() {
     // The state file as version 32 left it: every ask belongs to a task.
     let db = rusqlite::Connection::open(setup.dir.join("priory.db")).unwrap();
     db.execute_batch(
-        "DROP TRIGGER task_created; DROP TRIGGER task_ended; DROP TRIGGER task_restarted;
+        "ALTER TABLE runs DROP COLUMN crossed; DROP TRIGGER task_created; DROP TRIGGER task_ended; DROP TRIGGER task_restarted;
          DROP TABLE task_ends; ALTER TABLE exports DROP COLUMN ended; ALTER TABLE tasks DROP COLUMN created;
          ALTER TABLE actions DROP COLUMN ask; ALTER TABLE actions DROP COLUMN revision;
          ALTER TABLE actions DROP COLUMN command; ALTER TABLE actions DROP COLUMN generation;
@@ -7237,6 +7419,36 @@ fn two_tasks_of_a_shared_agent_resume_one_session_one_after_the_other() {
     ] {
         assert!(intro.contains(part), "{part} in {intro}");
     }
+}
+
+#[test]
+fn a_shared_session_whose_tasks_each_end_in_one_result_is_compacted_when_resumed() {
+    let mut setup = shared("shared-compact");
+    let lead = LEAD.replace(
+        "session = \"shared\"\n",
+        "session = \"shared\"\ncompactAt = 5000\n",
+    );
+    fs::write(setup.dir.join("factory/agents/implementer/agent.md"), lead).unwrap();
+    setup.contexts(&[6000, 6000, 1000]);
+    // Task 2's first result is refused while the compact is queued, so it ends its turn.
+    setup.calls(&[result("passed"), result("passed"), result("passed")]);
+    setup.publish(&requested(42));
+    setup.publish(&requested(43));
+
+    setup.start();
+
+    setup.until("tasks", |rows| {
+        rows.len() == 2 && rows.iter().all(|row| row[4] == "done")
+    });
+    let typed = setup.typed();
+    assert_eq!(setup.compactions(), 1, "{typed:?}");
+    assert_eq!(typed[2], "/compact\n", "{typed:?}");
+    assert!(
+        typed[3].starts_with(
+            "Priory compacted this conversation, as you asked. You are on task 2, at step implement."
+        ),
+        "{typed:?}"
+    );
 }
 
 #[test]

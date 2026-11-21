@@ -5,6 +5,7 @@ model = "sonnet"
 effort = "high"
 runner = "any"
 session = "per-task"           # or "shared": one conversation across tasks
+compactAt = 150000             # compact between turns once the context reaches it
 memory = "6GB"                 # what a runner must have free to admit a run
 disk = "20GB"                  # disk a run reserves above the runner's floor
 mcpServers = ["github"]

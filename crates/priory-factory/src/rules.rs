@@ -305,6 +305,14 @@ fn check_codex(agent: &Loaded<Agent>, problems: &mut Vec<Problem>) {
     if !matches!(value.harness, Harness::Codex) {
         return;
     }
+    if value.compact_at.is_some() {
+        let message = "a codex agent cannot take `compactAt`: Priory reads no Codex tokens, so it never knows the context size";
+        problems.push(problem(
+            agent,
+            agent.lines.field("compactAt"),
+            message.into(),
+        ));
+    }
     let line = agent.lines.field("permissions");
     let permissions = &value.permissions;
     if matches!(permissions.default_mode, Some(PermissionMode::Plan)) {
