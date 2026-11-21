@@ -51,8 +51,13 @@ export default class PrioryInbox extends View {
     this.groups = null;
     /** @type {string | null} */
     this.error = null;
-    /** @type {string | null} the resource whose action is in flight */
+    /** @type {string | null} the resource whose action is in flight, or whose result no read shows yet */
     this.busy = null;
+    /** @type {number | null} the revision of the groups shown */
+    this.revision = null;
+    /** Counts reads; an action's result shows from the read numbered `settles` on. */
+    this.reads = 0;
+    this.settles = 0;
     /** @type {Map<string, string>} what the last action on each resource did */
     this.notices = new Map();
     this.font = FONTS.indigo;
@@ -62,8 +67,10 @@ export default class PrioryInbox extends View {
       read: async () => {
         this.priory ??= await connect();
         client = this.priory.client;
+        const at = ++this.reads;
         const read = await client.unrouted();
-        [this.groups, this.error] = [read.unrouted, null];
+        [this.groups, this.revision, this.error] = [read.unrouted, read.revision, null];
+        if (at >= this.settles) this.busy = null;
         cx.notify();
         return read.revision;
       },
@@ -79,7 +86,8 @@ export default class PrioryInbox extends View {
   }
 
   /**
-   * Runs one route action on a group; its notice says what happened. The read loop shows the result.
+   * Runs one route action on a group; its notice says what happened. The buttons stay disabled
+   * until a read started after the action shows its result; a refused action frees them at once.
    * @param {Group} group @param {(client: ReturnType<typeof priory>) => Promise<string>} verb @param {import("gpui-kit").Context} cx
    */
   act(group, verb, cx) {
@@ -90,10 +98,11 @@ export default class PrioryInbox extends View {
     cx.spawn(async (cx) => {
       try {
         this.notices.set(group.resource, await verb(client));
+        this.settles = this.reads + 1;
       } catch (error) {
         this.notices.set(group.resource, `Could not route it: ${message(error)}.`);
+        this.busy = null;
       }
-      this.busy = null;
       cx.notify();
     });
   }
@@ -163,7 +172,7 @@ export default class PrioryInbox extends View {
     const verbs = {
       revive: [`Revive task ${task.id}`, async (client) => { await client.revive(task.id); return `Revived task ${task.id}. Its next event reaches it.`; }],
       request: ["Request a task", async (client) => `Requested ${await client.add(group.request_text ?? "", { workflow: task.workflow })}. It owns this resource's next event.`],
-      subscribe: [`Subscribe task ${task.id}`, async (client) => `Subscribed: ${(await client.subscribe(task.id, group.resource)).trim()}. Its next event goes to task ${task.id}.`],
+      subscribe: [`Subscribe task ${task.id}`, async (client) => `Subscribed: ${(await client.subscribe(task.id, group.resource, this.revision)).trim()}. Its next event goes to task ${task.id}.`],
     };
     const [label, verb] = verbs[action];
     const off = this.busy !== null || !this.priory;

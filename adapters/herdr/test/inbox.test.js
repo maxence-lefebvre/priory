@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { context, draw, herdr, press, settle, text } from "./kit.js";
+import { context, draw, find, herdr, press, settle, text } from "./kit.js";
 
 process.env.TZ = "UTC";
 const { default: Inbox } = await import("../mods/priory-inbox/main.js");
@@ -31,28 +31,44 @@ test("reads the unrouted groups and shows each with its owner, its events and th
   assert.match(shown, /No task ever owned: 1 linear event\./);
 });
 
-test("each group routes its next event by its owner's state, with the CLI's verb, and says what it did", async () => {
-  const { drawn } = await inbox();
-  herdr.replies.subscribe = "linear:ENG-7";
-  herdr.replies.revive = "";
-  herdr.replies.add = "github:owner/repo#7";
+/** Presses a group's route button with `verb` answering `reply`; returns the panel and the verb's argv. */
+async function route(/** @type {string} */ resource, /** @type {string} */ verb, /** @type {string} */ reply) {
+  const panel = await inbox();
+  herdr.replies[verb] = reply;
+  press(panel.drawn(), `route-${resource}`);
+  await settle();
+  return { ...panel, argv: herdr.argv.filter((args) => args[0] === verb) };
+}
 
-  press(drawn(), "route-linear:ENG-7");
-  await settle();
-  press(drawn(), "route-github:owner/repo#8");
-  await settle();
-  press(drawn(), "route-github:owner/repo#7");
+test("an active owner subscribes on the revision the panel read, and says where the next event goes", async () => {
+  const { drawn, argv } = await route("linear:ENG-7", "subscribe", "linear:ENG-7");
+
+  assert.deepEqual(argv, [["subscribe", "13", "linear:ENG-7", "--expected", "41"]]);
+  assert.match(text(drawn()), /Its next event goes to task 13\./);
+});
+
+test("a dropped owner revives", async () => {
+  const { drawn, argv } = await route("github:owner/repo#8", "revive", "");
+
+  assert.deepEqual(argv, [["revive", "12"]]);
+  assert.match(text(drawn()), /Revived task 12\./);
+});
+
+test("a done owner's resource requests a new task with the group's text and the owner's workflow", async () => {
+  const { drawn, argv } = await route("github:owner/repo#7", "add", "github:owner/repo#7");
+
+  assert.deepEqual(argv, [["add", "--workflow", "implement", "--", "Follow up on https://github.com/owner/repo/issues/7 after event 30"]]);
+  assert.match(text(drawn()), /Requested "?github:owner\/repo#7"?\. It owns/);
+});
+
+test("after an action, the route buttons wait for a read that shows its result", async () => {
+  const { drawn } = await route("linear:ENG-7", "subscribe", "linear:ENG-7");
+  assert.equal(find(drawn(), "route-github:owner/repo#8").calls.disabled[0], true);
+
+  herdr.wake();
   await settle();
 
-  assert.deepEqual(herdr.argv.slice(1).filter((args) => args[0] !== "wait"), [
-    ["subscribe", "13", "linear:ENG-7"],
-    ["revive", "12"],
-    ["add", "--workflow", "implement", "--", "Follow up on https://github.com/owner/repo/issues/7 after event 30"],
-  ]);
-  const shown = text(drawn());
-  assert.match(shown, /Its next event goes to task 13\./);
-  assert.match(shown, /Revived task 12\./);
-  assert.match(shown, /Requested "?github:owner\/repo#7"?\. It owns/);
+  assert.equal(find(drawn(), "route-github:owner/repo#8").calls.disabled[0], false);
 });
 
 test("a refused action says why on its group", async () => {
@@ -62,6 +78,7 @@ test("a refused action says why on its group", async () => {
   await settle();
 
   assert.match(text(drawn()), /Could not route it: priory subscribe: no such thing\./);
+  assert.equal(find(drawn(), "route-linear:ENG-7").calls.disabled[0], false);
 });
 
 test("pressing a group's owner opens it in the Task panel", async () => {
