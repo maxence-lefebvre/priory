@@ -48,11 +48,12 @@ async function connect() {
 
 const message = (/** @type {unknown} */ error) => (error instanceof Error ? error.message : String(error));
 
-/** How long a task has been in its state: "18 min", "4 h", "3 d". @param {string} since @param {number} now */
+/** How long a task has been in its state, as the web's age(): "18 min", "4 h", then a date. @param {string} since @param {number} now */
 function age(since, now) {
-  const minutes = Math.max(0, Math.floor((now - Date.parse(since)) / 60000));
+  const minutes = Math.max(0, Math.round((now - Date.parse(since)) / 60000));
   if (minutes < 60) return `${minutes} min`;
-  return minutes < 1440 ? `${Math.floor(minutes / 60)} h` : `${Math.floor(minutes / 1440)} d`;
+  if (minutes < 1440) return `${Math.floor(minutes / 60)} h`;
+  return new Date(since).toLocaleString("en", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
 }
 
 export default class PrioryTasks extends View {
@@ -97,8 +98,8 @@ export default class PrioryTasks extends View {
     const theme = this.priory?.theme ?? "indigo";
     const t = /** @type {Palette} */ (palette(theme, cx.theme().appearance));
     this.font = FONTS[/** @type {keyof typeof FONTS} */ (theme)] ?? FONTS.indigo;
-    const views = /** @type {Record<string, any[]>} */ (taskViews(this.tasks ?? []));
-    const shown = filtered(views[this.view], this.picks);
+    const views = /** @type {Record<string, any[]>} */ (taskViews(filtered(this.tasks ?? [], this.picks)));
+    const shown = views[this.view];
     return v_flex().id("priory-tasks").size_full().min_h_0().bg(t.bg).text_color(t.text).font_family(this.font.ui).text_size(S["type-body"][0])
       .child(h_flex().flex_none().h(S["pane-head"]).px(S["space-4"]).items_center().border_b(1).border_color(t.line).child(div().font_weight(650).child("Tasks")))
       .when(Boolean(this.error), (el) => el.child(div().flex_none().px(S["space-4"]).py(6).whitespace_normal().text_size(S["type-small"][0])
@@ -117,7 +118,7 @@ export default class PrioryTasks extends View {
     return shown.map((task) => this.row(task, t, now));
   }
 
-  /** The saved views with their counts, then a chip per facet. @param {Record<string, any[]>} views @param {Palette} t */
+  /** The saved views with their filtered counts, then a chip per facet offering every task's values A to Z. @param {Record<string, any[]>} views @param {Palette} t */
   filters(views, t) {
     const chip = (/** @type {string} */ id, /** @type {boolean} */ on) => Button.new(id).h(S["pane-chip"]).px(10).flex().flex_none().items_center().gap(4)
       .selected(on).text_size(S["type-small"][0]).focus((s) => s.border(2).border_color(t["action-text"]));
@@ -131,13 +132,13 @@ export default class PrioryTasks extends View {
       if (value) return trigger.on_click((_event, cx) => { this.picks.delete(key); cx.notify(); });
       /** @type {Map<string, number>} */
       const counts = new Map();
-      for (const task of views[this.view]) for (const name of values(task)) counts.set(name, (counts.get(name) ?? 0) + 1);
+      for (const task of this.tasks ?? []) for (const name of values(task)) counts.set(name, (counts.get(name) ?? 0) + 1);
       return Popover.new(`facet-${key}-menu`).trigger(trigger).anchor("top_left").open(this.popover === key)
         .on_open_change((/** @type {boolean} */ next, /** @type {import("gpui-kit").Context} */ cx) => { this.popover = next ? key : null; cx.notify(); })
         .content(v_flex().min_w(200).p(4).gap(2).rounded(S["radius-md"]).bg(t.surface).border(1).border_color(t["control-line"])
-          .children([...counts].map(([name, count]) => Button.new(`pick-${key}-${name}`).h(S["control-fine"]).px(8).flex().items_center().gap(8)
+          .children([...counts].sort(([a], [b]) => a.localeCompare(b)).map(([name, count]) => Button.new(`pick-${key}-${name}`).h(S["control-fine"]).px(8).flex().items_center().gap(8)
             .rounded(S["radius-sm"]).text_size(S["type-small"][0]).hover((s) => s.bg(t.raised)).focus((s) => s.bg(t.raised))
-            .on_click((_event, cx) => { [this.popover] = [null, this.picks.set(key, name)]; cx.notify(); })
+            .on_click((_event, cx) => { this.picks.set(key, name); this.popover = null; cx.notify(); })
             .child(div().flex_1().child(name)).child(div().text_color(t["text-3"]).child(String(count))))));
     };
     return v_flex().flex_none().px(S["space-4"]).py(S["space-2"]).gap(S["space-2"]).border_b(1).border_color(t.line)
@@ -165,10 +166,10 @@ export default class PrioryTasks extends View {
           .child(task.workflow).child(task.step)
           .child(div().text_color(t[ROLE[task.state] ?? "text-2"]).child(task.state))
           .child(div().flex_1()).child(div().text_color(t["text-3"]).child(age(task.since, now))))
-        .child(div().min_w_0().truncate().text_size(S["type-small"][0]).child(task.title ?? task.key))
-        .child(reason
-          ? caption(reason, ROLE[task.state] ?? "text-2")
-          : caption([task.lane, task.band, task.batch != null ? `batch ${task.batch}` : null].filter(Boolean).join(" · "), "text-3")));
+        .child(div().min_w_0().truncate().text_size(S["type-small"][0]).child(task.title || task.tldr || ""))
+        .child(h_flex().gap(6).min_w_0()
+          .child(reason ? caption(reason, ROLE[task.state] ?? "text-2") : caption([task.lane, task.band].filter(Boolean).join(" · "), "text-3"))
+          .when(task.batch != null, (el) => el.child(caption(`· batch ${task.batch}`, "text-3")))));
   }
 
   /** @param {string} state @param {Palette} t */

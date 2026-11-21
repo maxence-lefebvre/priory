@@ -555,12 +555,12 @@ DESIGN.md's "Tasks" section holds its visual rules; this section says how it wor
 - **Views.** Active lists the tasks not done, failed or dropped, in start order. Blocked lists the
   blocked ones. Ended lists the done, failed and dropped ones, newest first. Each view's chip
   shows its count.
-- **Facets.** State, Lane and Workflow chips each open a menu of the values in the view, with
-  counts. A picked chip shows its value, and pressing it again clears it. A task with no lane
-  shows under `none`.
+- **Facets.** State, Lane and Workflow chips each open a menu of every task's values, A to Z, with
+  counts, as the web's do. A picked chip shows its value, and pressing it again clears it. A task
+  with no lane shows under `none`. The view chips count the tasks the picked values keep.
 - **Rows.** Each row shows the task's tile, key, workflow, step, state and how long it has been in
-  that state, then its title, then its lane, band and batch, or the reason of a blocked, held,
-  failed or dropped task. Pressing a row opens it in the [Task panel](#the-task-panel).
+  that state (a date after a day), then its title, then its lane and band, or the reason of a
+  blocked, held, failed or dropped task, and its batch. Pressing a row opens it in the [Task panel](#the-task-panel).
 
 ## The Flows panel
 
