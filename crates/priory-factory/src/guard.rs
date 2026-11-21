@@ -461,15 +461,19 @@ pub fn moves_head(command: &str) -> bool {
 fn git_push(words: &[String], git: Git) -> Option<&'static str> {
     let mut dir = None;
     let mut configured = false;
+    let mut mirrored = false;
     let mut args = words[1..].iter();
     loop {
         let arg = args.next()?;
         if arg == "-C" {
             dir = args.next().map(String::as_str);
         } else if arg == "-c" || arg == "--config-env" {
-            configured |= args.next().is_some_and(|setting| routes_push(setting));
+            let setting = args.next().map_or("", String::as_str);
+            configured |= routes_push(setting);
+            mirrored |= mirrors(setting);
         } else if let Some(setting) = arg.strip_prefix("--config-env=") {
             configured |= routes_push(setting);
+            mirrored |= mirrors(setting);
         } else if takes_value("git", arg) {
             args.next();
         } else if !arg.starts_with('-') {
@@ -517,6 +521,13 @@ fn git_push(words: &[String], git: Git) -> Option<&'static str> {
             _ => refspecs.push(arg),
         }
     }
+    let configured_mirror = || {
+        git(dir, &["config", "--get-regexp", r"^remote\..*\.mirror$"])
+            .is_some_and(|lines| lines.lines().any(|line| line.ends_with(" true")))
+    };
+    if mirrored || configured_mirror() {
+        return Some("git-push-force");
+    }
     let refspecs = if remote_given {
         &refspecs[..]
     } else {
@@ -557,6 +568,13 @@ fn git_push(words: &[String], git: Git) -> Option<&'static str> {
 }
 
 /// Whether a `-c` or `--config-env` setting can change where a push goes.
+/// Whether a `-c` or `--config-env` setting makes a push mirror its remote, which force-updates and
+/// deletes its branches.
+fn mirrors(setting: &str) -> bool {
+    let key = setting.split('=').next().unwrap_or_default();
+    key.to_ascii_lowercase().starts_with("remote.") && key.to_ascii_lowercase().ends_with(".mirror")
+}
+
 fn routes_push(setting: &str) -> bool {
     let key = setting
         .split('=')
@@ -760,10 +778,16 @@ impl Split<'_> {
     /// `printf` prints for it.
     fn end_piped(&mut self) {
         self.end_word();
+        // The guard does not format: it reads the format and the arguments joined as scripts.
         let printed = match self.words.split_first() {
-            Some((program, args)) if program.ends_with("echo") => Some(args.join(" ")),
-            Some((program, args)) if program.ends_with("printf") => Some(args.join("\n")),
-            _ => None,
+            Some((program, args)) if program.ends_with("echo") => {
+                let options = args.iter().take_while(|arg| arg.starts_with('-')).count();
+                vec![args[options..].join(" ")]
+            }
+            Some((program, [format, args @ ..])) if program.ends_with("printf") => {
+                vec![format.clone(), args.join(" ")]
+            }
+            _ => Vec::new(),
         };
         self.end_command();
         self.stdin.extend(printed);
@@ -844,11 +868,19 @@ impl Split<'_> {
 
     /// The rest of a `$'...'` word, with its backslash escapes decoded.
     fn ansi_c_quoted(&mut self) {
-        self.word.get_or_insert_default();
+        let word = self.word.get_or_insert_default();
+        let start = word.len();
         while let Some(c) = self.peek(0) {
             self.at += 1;
             match c {
-                '\'' => return,
+                '\'' => {
+                    // Bash ends the quote's text at a NUL byte.
+                    let word = self.word.get_or_insert_default();
+                    if let Some(nul) = word[start..].find('\0') {
+                        word.truncate(start + nul);
+                    }
+                    return;
+                }
                 '\\' => {
                     let Some(next) = self.peek(0) else {
                         return;
@@ -870,11 +902,9 @@ impl Split<'_> {
                             self.at += 1;
                         }
                         let code: String = self.chars[start..self.at].iter().collect();
-                        if let Some(c) = u32::from_str_radix(&code, radix)
-                            .ok()
-                            .and_then(char::from_u32)
-                        {
-                            self.push(c);
+                        // Bash keeps the low byte of a value past 255, as `\547` is `g`.
+                        if let Ok(value) = u32::from_str_radix(&code, radix) {
+                            self.push(char::from(value as u8));
                         }
                         continue;
                     }
@@ -960,7 +990,13 @@ impl Split<'_> {
                         delimiter.push(inner);
                     }
                 }
-                '\\' => quoted = true,
+                '\\' => {
+                    quoted = true;
+                    if let Some(escaped) = self.peek(0) {
+                        delimiter.push(escaped);
+                        self.at += 1;
+                    }
+                }
                 c => delimiter.push(c),
             }
         }
@@ -1091,6 +1127,9 @@ const SHELLS: &[&str] = &["sh", "bash", "zsh", "dash", "ksh"];
 /// Strips the assignments, keywords and wrappers in front of `words`' program, then adds the
 /// command, or the commands of the script a shell or `eval` runs.
 fn unwrap(words: &[String], depth: usize, found: &mut Vec<Vec<String>>) {
+    if depth > DEPTH {
+        return;
+    }
     let mut at = 0;
     while let Some(word) = words.get(at) {
         if assignment(word) || KEYWORDS.contains(&word.as_str()) {
@@ -1109,7 +1148,7 @@ fn unwrap(words: &[String], depth: usize, found: &mut Vec<Vec<String>>) {
                 .map(str::to_owned)
                 .chain(rest.iter().cloned())
                 .collect();
-            return unwrap(&expanded, depth, found);
+            return unwrap(&expanded, depth + 1, found);
         }
         let skip = |values: &[&str]| options(rest, values);
         match program {
@@ -1125,9 +1164,9 @@ fn unwrap(words: &[String], depth: usize, found: &mut Vec<Vec<String>>) {
                         .take_while(|arg| *arg != ";" && *arg != "+")
                         .cloned()
                         .collect();
-                    unwrap(&command, depth, found);
+                    unwrap(&command, depth + 1, found);
                 }
-                return;
+                break;
             }
             "env" => {
                 let mut index = 0;
@@ -1676,6 +1715,7 @@ mod tests {
             "priory report put 7 -",
             "priory tasks",
             "priory report reply 3 ok",
+            "priory gate",
         ] {
             assert_eq!(hit(command), None, "{command}");
         }
@@ -1729,6 +1769,50 @@ mod tests {
         );
         assert_eq!(hit("echo 'gh pr merge 12' | grep merge"), None);
         assert_eq!(hit("grep x <<< 'gh pr merge 12'"), None);
+    }
+
+    #[test]
+    fn escaped_delimiters_echo_options_printf_formats_and_bash_bytes_are_read() {
+        for command in [
+            "cat <<E\\ OF\ntext\nE OF\ngh pr merge 12",
+            "printf '%s ' gh pr merge 12 | bash",
+            "echo -n 'gh pr merge 12' | bash",
+            "$'\\547h' pr merge 12",
+            "$'gh\\0ignored' pr merge 12",
+        ] {
+            assert_eq!(hit(command).as_deref(), Some("gh-pr-merge"), "{command:?}");
+        }
+    }
+
+    #[test]
+    fn find_keeps_its_own_guard_and_its_exec_nesting_is_bounded() {
+        let guards = Guards {
+            commands: vec![CommandGuard {
+                name: "find-delete".into(),
+                run: vec!["find".into()],
+                flags: vec!["-delete".into()],
+            }],
+            tools: Vec::new(),
+        };
+        let git = |_: Option<&str>, _: &[&str]| None;
+        let hits = guards.hits("Bash", Some("find . -name x -delete"), &git);
+        assert_eq!(hits[0].guard, "find-delete");
+        let nested = format!("{}gh pr merge 12", "find . -exec ".repeat(5000));
+        guards.hits("Bash", Some(&nested), &git);
+    }
+
+    #[test]
+    fn a_mirror_push_set_on_the_command_line_or_in_config_is_a_force_push() {
+        assert_eq!(
+            hit("git -c remote.origin.mirror=true push origin").as_deref(),
+            Some("git-push-force")
+        );
+        let git = |_: Option<&str>, args: &[&str]| match args {
+            ["config", "--get-regexp", ..] => Some("remote.origin.mirror true".to_owned()),
+            _ => None,
+        };
+        let hits = Guards::default().hits("Bash", Some("git push origin"), &git);
+        assert_eq!(hits[0].guard, "git-push-force");
     }
 
     #[test]
