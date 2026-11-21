@@ -13,7 +13,9 @@ const rows = (view) => view.sections.flatMap((section) => section.rows);
 
 test("the web view and the Bonjour panel share one report view model", () => {
   const source = (path) => readFileSync(new URL(path, import.meta.url), "utf8");
-  assert.equal(source("./reports.js"), source("../../../adapters/herdr/mods/priory-bonjour/view.js"));
+  // Each imports autolink from its own copy of the links module.
+  const web = source("./reports.js").replace('from "./links.js"', 'from "./priory.js"');
+  assert.equal(web, source("../../../adapters/herdr/mods/priory-bonjour/view.js"));
 });
 
 test("sections keep the report's own order", () => {

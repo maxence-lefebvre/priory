@@ -906,7 +906,7 @@ const reportRows = (model) => model.sections.flatMap((section) => section.rows);
 function reportsPage(compact) {
   const read = state.data.report;
   const head = compact ? html`<div class="top"><h1>Reports</h1><span class="sp"></span>${connection()}</div>` : html`<div class="lhead"><h1>Reports</h1></div>`;
-  if (!read) return html`${head}<p class="empty">No report yet. A workflow writes one with the <code>report</code> tool or <code>priory report put</code>.</p>`;
+  if (!read) return html`${head}<div class="panel" role="region" aria-label="Reports"><p class="empty">No report yet. A workflow writes one with the <code>report</code> tool or <code>priory report put</code>.</p></div>`;
   const model = dossier(read, { now: Date.now() });
   const { agreed, total, label } = model.progress;
   const jump = html`<nav class="jump" aria-label="Sections">${model.sections.map((section, i) => html`<a href="#report-${i}" aria-current="${i === 0 ? "true" : "false"}">${section.title}<span class="num">${section.count}</span></a>`)}</nav>`;
@@ -916,7 +916,7 @@ function reportsPage(compact) {
   const pending = state.reportPending;
   const sending = pending ? html`<div class="sending" role="status"><span>Picking <b>"${pending.option}"</b></span>${pending.sending ? "" : html`<button class="btn secondary" data-action="pick-undo">Undo</button>`}</div>` : "";
   return html`${head}<div class="panel report" role="region" aria-label="Reports"><div class="scroll" data-sections>
-    <header class="rhead"><p class="greet">${model.greeting}</p><p class="meta">${model.date}, task <a class="ghost" href="/tasks/${model.task}">${model.task}</a>. ${model.since}</p>
+    <header class="rhead"><p class="greet">${model.greeting}</p><p class="meta">${model.date}, <a href="/tasks/${model.task}">task ${model.task}</a>. ${model.since}</p>
       ${total ? html`<p class="prog"><progress max="${total}" value="${agreed}" aria-label="Picks agreed"></progress><span class="num">${label}</span></p>` : ""}</header>
     <div class="rbody">${jump}<div>${sections}</div></div></div>${sending}</div>`;
 }
@@ -1221,7 +1221,7 @@ function tabs(current, kind) {
   if (kind === "rail") {
     return html`<nav class="rail" aria-label="Panels">${shown.map(link)}<a class="settings" href="/settings/appearance" aria-current="${current === "settings" ? "page" : "false"}">${icon("settings", "s20")}Settings</a></nav>`;
   }
-  return html`<nav class="tabbar" aria-label="Panels">${shown.map(link)}<a href="/more" aria-current="${current === "more" || current === "settings" ? "page" : "false"}">${icon("more", "s20")}More</a></nav>`;
+  return html`<nav class="tabbar" aria-label="Panels">${shown.map(link)}<a href="/more" aria-current="${current === "more" || current === "settings" || (PANELS[current] && !shown.includes(current)) ? "page" : "false"}">${icon("more", "s20")}More</a></nav>`;
 }
 
 function laterPanel(panel) {

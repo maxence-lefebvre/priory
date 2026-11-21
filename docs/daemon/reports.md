@@ -100,6 +100,9 @@ The person picked Take on 2026-11-20_sentry_fnd-2409 in your report: apply it, t
 
 The workflow applies the choice and writes the report again with `applied` set.
 
+`POST /api/reports/pick` sends the same pick from the web view ([serve endpoints](../reference/serve.md#writes)).
+It answers `409` when the report moved past the revision sent or the pick already has a choice.
+
 ## Comment on a row
 
 A person comments on a row to direct the report's agent, as Fleet's `bonjour comment` and

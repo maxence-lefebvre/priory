@@ -382,6 +382,7 @@ textarea { font: 400 16px/22px var(--font-ui); color: var(--text); background: v
 .rhead { display: grid; gap: 6px; padding: 16px var(--gutter) 14px; }
 .rhead .greet { font: 700 var(--type-question) var(--font-display); font-stretch: var(--display-stretch); letter-spacing: -0.4px; overflow-wrap: anywhere; }
 .rhead .meta { font: 400 var(--type-small) var(--font-ui); color: var(--text-2); }
+.rhead .meta a { color: var(--action-text); text-decoration: underline; text-underline-offset: 2px; }
 .prog { display: flex; align-items: center; gap: 10px; font: 600 var(--type-caption) var(--font-ui); color: var(--text-2); }
 .prog progress { appearance: none; flex: 1; max-width: 240px; height: 6px; border: 0; border-radius: var(--radius-full); background: var(--raised); overflow: hidden; }
 .prog progress::-webkit-progress-bar { background: var(--raised); }

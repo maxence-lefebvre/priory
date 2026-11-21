@@ -223,6 +223,10 @@ If you work in [Herdr](docs/adapters/herdr.md), its Desk panel shows the same de
 panel lists the same asks and answers them through these verbs. `adapters/herdr/install` links
 them into Herdr.
 
+A workflow can write a report for you, such as a morning dossier: `priory report show` prints the
+last one. The web view's Reports panel shows it, and takes its picks and row comments as
+`priory report pick` and `priory report comment` do. See [docs/daemon/reports.md](docs/daemon/reports.md).
+
 ## Concepts
 
 **Factory.** The folder of files that defines everything else: `factory.toml`, `agents/`,
