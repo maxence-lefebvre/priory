@@ -987,7 +987,7 @@ run.
 Priory's panels also ship as Herdr mods (R8.6). A mod renders natively with gpui-kit, in a pane
 beside other panes, with a fine pointer. It keeps this file's structure, tokens, state tiles, copy
 and ask rules. This section lists only what differs, and the panels the adapter ships: Desk, Asks,
-Queue, Bonjour, Costs and Flows. Bonjour is also the web view's Reports panel. [`docs/adapters/herdr.md`](docs/adapters/herdr.md) explains where
+Queue, Bonjour, Costs, Flows and Task. Bonjour is also the web view's Reports panel. [`docs/adapters/herdr.md`](docs/adapters/herdr.md) explains where
 the adapter lives, how it reads and acts, and the data each panel needs. The approved boards are in
 `~/shared/priory-round-6/` on the author's machine.
 
@@ -1052,8 +1052,9 @@ stack.
    count is above zero. Herdr has no task view, so the task Inbox is web and CLI only.
 2. **The next thing**: a card on `--surface` with the desk's `next`: an alarm or the ask that ranks
    first, why it ranks first, its recommendation, and the buttons Answer… (primary, for an ask),
-   Open task and Snooze 1 h. Answer… opens the
-   ask in the Asks panel, so a person answers in one place.
+   Open task, Attach and Snooze 1 h. Answer… opens the
+   ask in the Asks panel, so a person answers in one place. Open task opens the [Task](#task)
+   panel; Attach opens the live run's terminal.
 3. **Saved views**: Needs me, Running, Asleep, Snoozed and All.
 4. The room banner, Asks, Stopped, To-dos and Later, as on the web desk. A routed ask shows the
    [routed mark](#routed-ask) under its question, and in the next thing's card. A selected
@@ -1133,6 +1134,22 @@ The web's [Flows panel](#flows-panel), as a tab in the center stack.
   characters, and the drawing keeps 76 px on its right for it.
 - "Steps as text" is a button that shows or hides the list under the drawing. "Read again" in the
   header reads the flows again.
+
+### Task
+
+The web's [task detail](#task-detail-and-workflow-grid), cut to what a pane reads, as a tab in the
+center stack. Open task on the Desk and an Up next line open it.
+
+- A 44 px header with the task's tile at 18 px, its key in mono, its state word in its role's text
+  color, and Attach as a secondary button at the right.
+- The title in `--type-pane-question`, then the workflow, step, lane and band in `--text-2`, then
+  the reason in its role's text color.
+- Asks, Pull request and History, each a caption heading with its count, then rows with an 18 px
+  tile and a `--type-small` line over a `--text-3` caption, split by hairlines. History lists the
+  last 10 runs, newest first.
+- With no task opened: "Open a task from the Desk to see it here." While it reads: "Reading task
+  7…"
+- The actions, Say, Progress and the workflow grid stay on the web page for now.
 
 ### Open questions
 

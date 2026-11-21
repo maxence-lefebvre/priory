@@ -1,7 +1,7 @@
 import { View, div, svg } from "gpui-kit";
 import { h_flex, v_flex, Button, Input, InputState, Popover, TextView } from "gpui-base";
 import { appHome, exec, home as herdrHome, readTextFile, setShared } from "herdr";
-import { priory, spansHtml } from "./priory.js";
+import { follow, priory, spansHtml } from "./priory.js";
 import { addChoices } from "./add.js";
 import { AddForm } from "./add-form.js";
 import { FONTS, palette } from "./tokens.js";
@@ -117,22 +117,26 @@ export default class PrioryQueue extends View {
   /** Reads the queue and the room, then waits for the next revision and reads again; keeps the last good read on failure. */
   /** @param {import("gpui-kit").AsyncContext} cx */
   refresh(cx) {
-    cx.spawn(async (cx) => {
-      for (;;) {
-        try {
-          this.priory ??= await connect();
-          this.links = this.priory.links;
-          if (await this.read()) this.error = null;
-          cx.notify();
-          await this.priory.client.wait(this.data.revision);
-        } catch (error) {
-          this.priory = null;
-          this.error = message(error);
-          cx.notify();
-          await cx.sleep(RETRY_MS);
-        }
-      }
-    });
+    /** @type {ReturnType<typeof priory>} the client of the last read, which its wait uses */
+    let client;
+    cx.spawn((cx) => follow({
+      read: async () => {
+        this.priory ??= await connect();
+        this.links = this.priory.links;
+        client = this.priory.client;
+        if (await this.read()) this.error = null;
+        cx.notify();
+        return this.data.revision;
+      },
+      wait: (since) => client.wait(since),
+      sleep: (ms) => cx.sleep(ms),
+      failed: (error) => {
+        this.priory = null;
+        this.error = message(error);
+        cx.notify();
+      },
+      retry: RETRY_MS,
+    }));
   }
 
   /** Reads the queue and the room; false when a newer read started meanwhile and this one was dropped. */

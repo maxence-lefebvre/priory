@@ -223,3 +223,41 @@ test("an ask routed to a lead shows with the lead in its row and as the next thi
   assert.equal(model.next.routed, "with lead");
   assert.equal("routed" in deskModel(data, { now }).next, false);
 });
+
+/** The Desk panel drawn from the fixtures, in Node, with the fake kit. */
+async function deskPanel() {
+  const { context, herdr, settle } = await import("./kit.js");
+  const { default: Desk } = await import("../mods/priory-desk/main.js");
+  herdr.reset();
+  herdr.replies = { desk: data.desk, asks: data.asks, tasks: data.tasks, queue: data.queue, links: { links: [] } };
+  const panel = new Desk();
+  const cx = context();
+  panel.init({}, cx);
+  await settle();
+  return { panel, cx, herdr };
+}
+
+test("an Up next line opens its task in the Task panel, and a schedule's line opens nothing", async () => {
+  const { draw, press } = await import("./kit.js");
+  const { panel, cx, herdr } = await deskPanel();
+
+  press(draw(panel, cx), "up-next-1");
+  assert.equal(herdr.shared.get("priory.task.open"), undefined);
+  press(draw(panel, cx), "up-next-0");
+  assert.equal(herdr.shared.get("priory.task.open").task, 7);
+});
+
+test("Open task opens the Task panel, and Attach stays its own action", async () => {
+  const { draw, press } = await import("./kit.js");
+  const { panel, cx, herdr } = await deskPanel();
+
+  press(draw(panel, cx), "next-open");
+  assert.equal(herdr.shared.get("priory.task.open").task, 4);
+  assert.equal(herdr.shared.get("priory.attach"), undefined);
+  press(draw(panel, cx), "next-attach");
+  assert.equal(herdr.shared.get("priory.attach").task, 4);
+
+  press(draw(panel, cx), "row-ask:2");
+  press(draw(panel, cx), "open-ask:2");
+  assert.equal(herdr.shared.get("priory.task.open").task, 2);
+});
