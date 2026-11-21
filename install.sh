@@ -43,6 +43,7 @@ main() {
     mkdir -p "$prefix/bin"
     tmp="$(mktemp -d "$prefix/bin/.priory-install.XXXXXX")"
     trap 'rm -rf "$tmp"' EXIT
+    trap 'exit 1' HUP INT TERM
     asset="priory-$target"
     echo "Downloading $url/$asset"
     curl -fsSL -o "$tmp/$asset" "$url/$asset"

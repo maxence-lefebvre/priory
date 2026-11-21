@@ -93,22 +93,52 @@ fn install_puts_the_checked_binary_in_the_prefix() {
     );
 }
 
+/// A folder holding one executable `command` with the shell `body`, to put ahead of `PATH`.
+fn stub(name: &str, command: &str, body: &str) -> PathBuf {
+    let dir = scratch(name);
+    fs::write(dir.join(command), format!("#!/bin/sh\n{body}\n")).unwrap();
+    fs::set_permissions(dir.join(command), fs::Permissions::from_mode(0o755)).unwrap();
+    dir
+}
+
+/// A prefix that already holds an installed `priory`.
+fn installed(name: &str) -> PathBuf {
+    let prefix = scratch(&format!("{name}-prefix"));
+    fs::create_dir_all(prefix.join("bin")).unwrap();
+    fs::write(prefix.join("bin/priory"), b"old priory").unwrap();
+    prefix
+}
+
+fn assert_untouched(prefix: &Path, name: &str) {
+    assert_eq!(
+        fs::read(prefix.join("bin/priory")).unwrap(),
+        b"old priory",
+        "{name}"
+    );
+    assert_eq!(
+        fs::read_dir(prefix.join("bin")).unwrap().count(),
+        1,
+        "{name}"
+    );
+}
+
 #[test]
 fn install_refuses_a_wrong_or_missing_checksum_and_keeps_the_installed_binary() {
+    let right = sha256(FAKE);
     let wrong = sha256(b"something else");
-    let broken = scratch("broken-hasher");
-    fs::write(broken.join("sha256sum"), "#!/bin/sh\nexit 1\n").unwrap();
-    fs::set_permissions(broken.join("sha256sum"), fs::Permissions::from_mode(0o755)).unwrap();
+    let failing_hasher = stub(
+        "failing-hasher",
+        "sha256sum",
+        &format!("echo \"{right}  $1\"\nexit 1"),
+    );
     for (name, checksum, path_first) in [
         ("wrong", wrong.as_str(), None),
         ("empty", "", None),
         ("garbled", "not-hex", None),
-        ("unhashable", "", Some(broken.as_path())),
+        ("unhashable", right.as_str(), Some(failing_hasher.as_path())),
     ] {
         let release = release(name, checksum);
-        let prefix = scratch(&format!("{name}-prefix"));
-        fs::create_dir_all(prefix.join("bin")).unwrap();
-        fs::write(prefix.join("bin/priory"), b"old priory").unwrap();
+        let prefix = installed(name);
 
         let output = install(&release, &prefix, path_first);
 
@@ -117,11 +147,25 @@ fn install_refuses_a_wrong_or_missing_checksum_and_keeps_the_installed_binary() 
             String::from_utf8_lossy(&output.stderr).contains("checksum"),
             "{name}: {output:?}"
         );
-        assert_eq!(fs::read(prefix.join("bin/priory")).unwrap(), b"old priory");
-        assert_eq!(
-            fs::read_dir(prefix.join("bin")).unwrap().count(),
-            1,
-            "{name}"
-        );
+        assert_untouched(&prefix, name);
     }
+}
+
+#[test]
+fn install_stages_inside_the_prefix_and_keeps_the_installed_binary_when_the_move_fails() {
+    let release = release("unmoved", &sha256(FAKE));
+    let prefix = installed("unmoved");
+    let failing_mv = stub(
+        "failing-mv",
+        "mv",
+        "echo \"$@\" > \"$(dirname \"$0\")/moved\"\nexit 1",
+    );
+
+    let output = install(&release, &prefix, Some(&failing_mv));
+
+    assert!(!output.status.success(), "{output:?}");
+    assert_untouched(&prefix, "unmoved");
+    let moved = fs::read_to_string(failing_mv.join("moved")).unwrap();
+    let staged = format!("{}/bin/.priory-install.", prefix.display());
+    assert!(moved.contains(&staged), "{moved}");
 }
