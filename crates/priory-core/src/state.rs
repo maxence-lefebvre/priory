@@ -12,7 +12,7 @@ use std::collections::BTreeMap;
 use std::io::Write;
 use std::time::Duration;
 
-const VERSION: i64 = 51;
+const VERSION: i64 = 52;
 
 const SCHEMA: &str = "
 CREATE TABLE tasks (
@@ -927,6 +927,17 @@ const SCHEMA_51: &str = "ALTER TABLE runs ADD COLUMN crossed INTEGER NOT NULL DE
 PRAGMA user_version = 51;
 ";
 
+// When an ask was last withdrawn, such as a person's dismissal, for the attention report. An ask
+// withdrawn before has none.
+const SCHEMA_52: &str = "ALTER TABLE asks ADD COLUMN withdrawn_at TEXT;
+CREATE TRIGGER ask_withdrawn_at AFTER UPDATE OF withdrawn ON asks
+  WHEN NEW.withdrawn IS NOT OLD.withdrawn BEGIN
+  UPDATE asks SET withdrawn_at = CASE WHEN NEW.withdrawn IS NULL THEN NULL
+    ELSE strftime('%Y-%m-%dT%H:%M:%fZ', 'now') END WHERE id = NEW.id;
+END;
+PRAGMA user_version = 52;
+";
+
 /// Each schema change in order: a file at version `n` applies those from index `n` on.
 const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA, SCHEMA_2, SCHEMA_3, SCHEMA_4, SCHEMA_5, SCHEMA_6, SCHEMA_7, SCHEMA_8, SCHEMA_9,
@@ -935,7 +946,7 @@ const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA_26, SCHEMA_27, SCHEMA_28, SCHEMA_29, SCHEMA_30, SCHEMA_31, SCHEMA_32, SCHEMA_33,
     SCHEMA_34, SCHEMA_35, SCHEMA_36, SCHEMA_37, SCHEMA_38, SCHEMA_39, SCHEMA_40, SCHEMA_41,
     SCHEMA_42, SCHEMA_43, SCHEMA_44, SCHEMA_45, SCHEMA_46, SCHEMA_47, SCHEMA_48, SCHEMA_49,
-    SCHEMA_50, SCHEMA_51,
+    SCHEMA_50, SCHEMA_51, SCHEMA_52,
 ];
 
 /// The order the queue starts tasks in: band, then a person's order, then age. A band the factory
