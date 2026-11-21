@@ -1737,6 +1737,36 @@ fn a_log_url_env_names_a_variable_never_the_url() {
     );
 }
 
+#[test]
+fn the_deliver_command_is_an_executable_file_in_the_factory() {
+    use std::os::unix::fs::PermissionsExt;
+    let toml = "name = \"demo\"\n\n[asks]\ndeliver = \"bin/deliver\"\n";
+    let missing = check(&factory("deliver-missing", &with("factory.toml", toml)));
+    let mut files = with("factory.toml", toml);
+    files.push(("bin/deliver", "#!/bin/sh\nexit 0\n"));
+    let dir = factory("deliver-plain", &files);
+    let plain = check(&dir);
+    fs::set_permissions(dir.join("bin/deliver"), fs::Permissions::from_mode(0o755)).unwrap();
+
+    let runnable = check(&dir);
+
+    assert_eq!(
+        (missing.code, missing.stderr.as_str()),
+        (
+            1,
+            "factory.toml:3: `[asks] deliver`: bin/deliver is not a file in the factory folder\n"
+        )
+    );
+    assert_eq!(
+        (plain.code, plain.stderr.as_str()),
+        (
+            1,
+            "factory.toml:3: `[asks] deliver`: bin/deliver is not executable: chmod +x it\n"
+        )
+    );
+    assert_eq!((runnable.code, runnable.stderr.as_str()), (0, ""));
+}
+
 fn with_writing(name: &str, guide: Option<&str>) -> PathBuf {
     let mut files = valid();
     files[0] = ("factory.toml", "name = \"demo\"\nwriting = \"WRITING.md\"");

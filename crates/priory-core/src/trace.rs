@@ -322,6 +322,44 @@ pub(crate) fn snoozed(
     item: i64,
     until: Option<&str>,
 ) -> rusqlite::Result<()> {
+    let kind_of = match until {
+        Some(_) => "factory.task.snoozed",
+        None => "factory.task.unsnoozed",
+    };
+    snooze_record(
+        tx,
+        trace,
+        kind_of,
+        (task, kind, item),
+        json!({ "until": until }),
+    )
+}
+
+/// Appends a `factory.task.snooze_ended` record for a snooze that ended by itself: at its time,
+/// as `reason` `time`, or early on a change, with the change's reason.
+pub(crate) fn snooze_ended(
+    tx: &Transaction,
+    trace: &Trace,
+    (task, kind, item): (i64, &str, i64),
+    reason: &str,
+) -> rusqlite::Result<()> {
+    let fields = json!({ "reason": reason });
+    snooze_record(
+        tx,
+        trace,
+        "factory.task.snooze_ended",
+        (task, kind, item),
+        fields,
+    )
+}
+
+fn snooze_record(
+    tx: &Transaction,
+    trace: &Trace,
+    kind_of: &str,
+    (task, kind, item): (i64, &str, i64),
+    fields: Value,
+) -> rusqlite::Result<()> {
     let (workflow, step, key, generation, time): (String, String, String, i64, String) = tx
         .query_row(
             "SELECT workflow, step, key, generation, strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
@@ -347,16 +385,12 @@ pub(crate) fn snoozed(
         "step": step,
         "machine": trace.machine,
         "item": { "kind": kind, "id": item.to_string() },
-        "until": until,
     });
-    if let Value::Object(fields) = &mut data {
-        fields.retain(|_, value| !value.is_null());
+    if let (Value::Object(data), Value::Object(fields)) = (&mut data, fields) {
+        data.extend(fields);
+        data.retain(|_, value| !value.is_null());
     }
-    let kind = match until {
-        Some(_) => "factory.task.snoozed",
-        None => "factory.task.unsnoozed",
-    };
-    append(tx, trace, kind, &time, data)
+    append(tx, trace, kind_of, &time, data)
 }
 
 /// Appends a `factory.task.progressed` record with `task`'s progress after a change.

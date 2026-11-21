@@ -1,6 +1,6 @@
 mod command;
 pub mod daemon;
-mod deliver;
+pub mod deliver;
 pub mod embed;
 mod findings;
 pub mod grades;

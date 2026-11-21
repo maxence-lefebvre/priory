@@ -1027,7 +1027,10 @@ fn the_asks_endpoint_leaves_out_asks_closed_over_a_week_ago_unless_asked_for_all
            (1, 'implement', 'agent', 'Recent?', '[]', 'no', '2026-11-15T09:00:00Z',
              '2026-11-01T08:00:00Z');
          INSERT INTO asks (task, step, kind, question, options, withdrawn, withdrawn_reason, created)
-           VALUES (1, 'implement', 'agent', 'Gone?', '[]', 1, 'dismissed', '2026-11-02T08:00:00Z');",
+           VALUES (1, 'implement', 'agent', 'Gone?', '[]', 1, 'dismissed', '2026-11-02T08:00:00Z');
+         INSERT INTO asks (task, step, kind, question, options, created)
+           VALUES (1, 'implement', 'agent', 'Lately gone?', '[]', '2026-11-02T08:00:00Z');
+         UPDATE asks SET withdrawn = 1, withdrawn_reason = 'dismissed' WHERE id = 5;",
     )
     .unwrap();
     let address = setup.start(&["serve", &setup.factory()]);
@@ -1043,9 +1046,11 @@ fn the_asks_endpoint_leaves_out_asks_closed_over_a_week_ago_unless_asked_for_all
     let recent = api(&address, "/api/asks");
     let all = api(&address, "/api/asks?all=1");
 
-    assert_eq!(ids(&recent), [1, 3]);
+    // An ask withdrawn now ages from its withdrawal, however old it is.
+    assert_eq!(ids(&recent), [1, 3, 5]);
+    assert!(recent["asks"][2]["withdrawn_at"].is_string(), "{recent}");
     assert_eq!(recent["older"], json!({ "answered": 1, "withdrawn": 1 }));
-    assert_eq!(ids(&all), [1, 2, 3, 4]);
+    assert_eq!(ids(&all), [1, 2, 3, 4, 5]);
     assert_eq!(all["older"], json!({ "answered": 0, "withdrawn": 0 }));
     assert_eq!(all["asks"], json_of(&setup, "asks")["asks"]);
     assert_eq!(get(&address, "/api/asks?all=yes", Some(TOKEN)).0, 400);
@@ -2749,6 +2754,47 @@ fn wait_prints_the_new_revision_on_a_change_or_the_same_one_after_its_timeout() 
         .unwrap();
     assert!(after > revision);
     assert!(!setup.priory(&["wait"]).status.success());
+}
+
+#[test]
+fn a_task_leaving_the_queues_ended_list_after_a_day_bumps_the_revision() {
+    let mut setup = Setup::new("queue-ages", SERVE);
+    succeeded(&setup.priory(&[
+        "request",
+        &setup.factory(),
+        "--repo",
+        "owner/repo",
+        "--workflow",
+        "implement",
+        "--key",
+        "docs-1",
+        "Fix the docs",
+    ]));
+    succeeded(&setup.priory(&["daemon", &setup.factory(), "--once"]));
+    let db = rusqlite::Connection::open(setup.dir.join("priory.db")).unwrap();
+    // A trigger stamps `changed` on a state change, so the time goes in a second update.
+    db.execute_batch(
+        "UPDATE tasks SET state = 'done';
+         UPDATE tasks SET changed = strftime('%Y-%m-%dT%H:%M:%SZ', 'now', '-1 day', '+8 seconds');",
+    )
+    .unwrap();
+    setup.start(&["daemon", &setup.factory()]);
+    let queue = json_of(&setup, "queue");
+    assert_eq!(queue["ended"].as_array().unwrap().len(), 1, "{queue}");
+    let revision = queue["revision"].as_i64().unwrap().to_string();
+    let idle = setup.priory(&["wait", "--since", &revision, "--timeout", "1s"]);
+    assert_eq!(
+        String::from_utf8_lossy(&idle.stdout),
+        format!("{revision}\n")
+    );
+
+    let aged = setup.priory(&["wait", "--since", &revision, "--timeout", "30s"]);
+
+    assert_ne!(
+        String::from_utf8_lossy(&aged.stdout),
+        format!("{revision}\n")
+    );
+    assert_eq!(json_of(&setup, "queue")["ended"], json!([]));
 }
 
 /// A report with its sections out of alphabetical order, so a read in any other order shows.
@@ -4490,6 +4536,14 @@ fn use_factory(setup: &Setup, from: &Path) {
         text.push_str("\n[serve]\nlisten = \"127.0.0.1:0\"\ntoken_env = \"TEST_TOKEN\"\n");
     }
     fs::write(file, text).unwrap();
+    // The reference example names a `deliver` script that its pages do not show.
+    let deliver = to.join("bin/deliver");
+    if !deliver.exists() {
+        use std::os::unix::fs::PermissionsExt;
+        fs::create_dir_all(deliver.parent().unwrap()).unwrap();
+        fs::write(&deliver, "#!/bin/sh\n").unwrap();
+        fs::set_permissions(&deliver, fs::Permissions::from_mode(0o755)).unwrap();
+    }
 }
 
 #[test]

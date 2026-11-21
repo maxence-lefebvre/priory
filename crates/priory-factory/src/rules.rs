@@ -65,6 +65,24 @@ pub fn check(factory: &Factory) -> Vec<Problem> {
                 "`gate` is empty".to_owned(),
             ));
         }
+        if let (Some(named), Some(path)) = (&settings.value.asks.deliver, factory.deliver()) {
+            use std::os::unix::fs::PermissionsExt;
+            let named = named.display();
+            let refused = match std::fs::metadata(&path) {
+                Ok(file) if file.is_file() && file.permissions().mode() & 0o111 == 0 => {
+                    Some(format!("{named} is not executable: chmod +x it"))
+                }
+                Ok(file) if file.is_file() => None,
+                _ => Some(format!("{named} is not a file in the factory folder")),
+            };
+            if let Some(refused) = refused {
+                problems.push(problem(
+                    settings,
+                    settings.lines.field("asks"),
+                    format!("`[asks] deliver`: {refused}"),
+                ));
+            }
+        }
         if !cfg!(feature = "postgres") && settings.value.log.backend == Backend::Postgres {
             problems.push(problem(
                 settings,
