@@ -361,6 +361,25 @@ the queue from 1, or null), `generation`, `retired`, `tldr`, `since`
 the first line of its request, cut to 120 characters), `batch` (the id of the batch it is an entry
 or the planning task of, or null), `stack` and `relations`. See Grades in [tools.md](../daemon/tools.md#grades).
 
+In a factory of several runners, each task also has `runner`, this runner's name, and `hold`, the
+hold this runner last published for it (`waiting`, `kept`, `ended`, or null before its first claim).
+The list then adds, after this runner's tasks, each task another runner holds whose hold is not
+`ended`, from that runner's claim (see [runners.md](../daemon/runners.md#every-runners-tasks)):
+
+| Field | Type | Meaning |
+| ----- | ---- | ------- |
+| `id`, `state`, `step` | null | The task's number, state and step stay on its runner |
+| `key` | string | The task's key |
+| `runner` | string | The runner that holds it |
+| `hold` | string | `waiting` or `kept`, as that runner last published it |
+| `last_seen` | string or null | When that runner was last alive, from its last alive, claim or held message |
+| `since` | string | When the claim that gave it the key was published |
+| `workflow`, `band`, `lane` | string or null | From the task's request |
+| `title` | string or null | The request's TL;DR, else its subject |
+
+`priory tasks` without `--json` prints them too, with three more columns, `runner`, `hold` and
+`last_seen`. `--lane` and `--grade` keep this runner's tasks only.
+
 `relations` lists every relation the task is in, on either side, oldest first (see
 [relations.md](../daemon/relations.md)). Each entry:
 

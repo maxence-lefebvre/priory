@@ -633,7 +633,7 @@ pub(crate) fn name(db: &Connection, me: Option<&str>) -> rusqlite::Result<()> {
 }
 
 /// The runner this state file belongs to, in a factory of several.
-pub(crate) fn me(db: &Connection) -> rusqlite::Result<Option<String>> {
+pub fn me(db: &Connection) -> rusqlite::Result<Option<String>> {
     db.query_row("SELECT name FROM runner WHERE id = 1", [], |row| row.get(0))
         .optional()
 }
@@ -649,16 +649,7 @@ fn remote_row(
 ) -> rusqlite::Result<Value> {
     listed["id"] = json!(format!("{runner}:{ask}"));
     listed["runner"] = json!(runner);
-    listed["last_seen"] = json!(
-        db.query_row(
-            "SELECT alive FROM leases WHERE runner = ?1",
-            [runner],
-            |row| { row.get::<_, i64>(0) }
-        )
-        .optional()?
-        .and_then(|second| Timestamp::from_second(second).ok())
-        .map(|at| at.to_string())
-    );
+    listed["last_seen"] = json!(last_seen(db, runner)?);
     Ok(listed)
 }
 
@@ -706,6 +697,72 @@ pub(crate) fn with_remote_asks(
         ask["runner"] = json!(me);
     }
     list.extend(remote_rows(db, since)?);
+    Ok(())
+}
+
+/// When runner `runner` was last alive, from its last alive, claim or held message.
+fn last_seen(db: &Connection, runner: &str) -> rusqlite::Result<Option<String>> {
+    Ok(db
+        .query_row(
+            "SELECT alive FROM leases WHERE runner = ?1",
+            [runner],
+            |row| row.get::<_, i64>(0),
+        )
+        .optional()?
+        .and_then(|second| Timestamp::from_second(second).ok())
+        .map(|at| at.to_string()))
+}
+
+/// In a factory of several runners, names this runner and each task's hold on `tasks`, and adds
+/// each task another runner holds, from its claim: its key, runner, hold and the request's
+/// workflow, band, lane and TL;DR. Their owner keeps their state, steps and runs, so `id` and
+/// `state` are null. A key whose task ended is left out, since its owner holds it no more.
+pub(crate) fn with_remote_tasks(db: &Connection, tasks: &mut Value) -> rusqlite::Result<()> {
+    let (Some(me), Some(list)) = (me(db)?, tasks.as_array_mut()) else {
+        return Ok(());
+    };
+    for task in list.iter_mut() {
+        let hold = db
+            .query_row(
+                // What the owner last published, before it reads it back from the log.
+                "SELECT coalesce(published, hold) FROM claims WHERE key = ?1 AND runner = ?2",
+                params![task["key"].as_str(), me],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?;
+        task["runner"] = json!(me);
+        task["hold"] = json!(hold);
+    }
+    let mut remote = db
+        .prepare(
+            "SELECT claims.key, claims.runner, claims.hold, claim.time,
+               json_extract(request.data, '$.workflow'), json_extract(request.data, '$.band'),
+               json_extract(request.data, '$.lane'),
+               coalesce(nullif(json_extract(request.data, '$.tldr'), ''), request.subject)
+             FROM claims LEFT JOIN inbox AS claim ON claim.seq = claims.won
+               LEFT JOIN inbox AS request ON request.id = claims.request
+             WHERE claims.runner != ?1 AND claims.hold != 'ended'
+             ORDER BY claim.seq, claims.key",
+        )?
+        .query_map([&me], |row| {
+            Ok((
+                row.get::<_, String>(1)?,
+                json!({
+                    "id": null, "key": row.get::<_, String>(0)?, "runner": row.get::<_, String>(1)?,
+                    "hold": row.get::<_, String>(2)?, "since": row.get::<_, Option<String>>(3)?,
+                    "workflow": row.get::<_, Option<String>>(4)?,
+                    "band": row.get::<_, Option<String>>(5)?,
+                    "lane": row.get::<_, Option<String>>(6)?,
+                    "title": row.get::<_, Option<String>>(7)?,
+                    "state": null, "step": null,
+                }),
+            ))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    for (runner, task) in &mut remote {
+        task["last_seen"] = json!(last_seen(db, runner)?);
+    }
+    list.extend(remote.into_iter().map(|(_, task)| task));
     Ok(())
 }
 
