@@ -24,9 +24,9 @@ pub struct Eval {
 #[serde(deny_unknown_fields)]
 pub struct Variant {
     pub name: String,
-    #[serde(default)]
-    pub text: String,
-    /// Instead of `text`, relative to the evaluation file. [`load`] reads it into `text`.
+    /// Set for every variant once [`load`] has read its `file`.
+    pub text: Option<String>,
+    /// Instead of `text`, relative to the evaluation file.
     pub file: Option<PathBuf>,
 }
 
@@ -122,8 +122,8 @@ pub fn run(
                 let dir = scratch.join(format!("{c}-{v}-{n}"));
                 fs::create_dir_all(&dir)
                     .map_err(|error| format!("cannot create {}: {error}", dir.display()))?;
-                let Some(verdict) =
-                    one(eval, case, &variant.text, &dir, options, &mut report, agent)?
+                let text = variant.text.as_deref().unwrap_or_default();
+                let Some(verdict) = one(eval, case, text, &dir, options, &mut report, agent)?
                 else {
                     break;
                 };
@@ -174,6 +174,9 @@ fn one(
         };
         let spent = agent.turn(&turn)?;
         report.spent += spent.cost;
+        if report.spent > options.budget {
+            report.complete = false;
+        }
         if let Some(error) = spent.error {
             report.complete = false;
             return Ok(Some(format!("agent error: {error}")));
@@ -238,13 +241,13 @@ pub fn load(path: &Path) -> Result<Eval, String> {
     names("cases", eval.cases.iter().map(|case| &case.name).collect())?;
     let dir = path.parent().unwrap_or(Path::new("."));
     for variant in &mut eval.variants {
-        match (variant.text.is_empty(), &variant.file) {
-            (false, None) => {}
-            (true, Some(file)) => {
+        match (&variant.text, &variant.file) {
+            (Some(_), None) => {}
+            (None, Some(file)) => {
                 let file = dir.join(file);
                 let text = fs::read_to_string(&file)
                     .map_err(|error| format!("{}: {error}", file.display()))?;
-                variant.text = text.trim_end().to_owned();
+                variant.text = Some(text.trim_end().to_owned());
             }
             _ => {
                 return Err(unreadable(&format!(
@@ -511,6 +514,41 @@ mod tests {
             BTreeMap::from([("no exit".to_owned(), 1)])
         );
         assert!(report.tallies[1].did.is_empty());
+    }
+
+    #[test]
+    fn a_last_turn_that_overspends_leaves_the_report_incomplete() {
+        let report = report("overspend", &mut Fake::default(), 1, 0.035);
+
+        assert!(!report.complete);
+        assert_eq!(report.tallies[1].did.values().sum::<usize>(), 1);
+    }
+
+    #[test]
+    fn load_reads_an_empty_text_and_refuses_text_with_file() {
+        let dir = scratch("empty-text");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("p.txt"), "From file.\n").unwrap();
+        let file = dir.join("x.eval.toml");
+        let case = "[[cases]]\nname = \"a\"\nprompt = \"p\"\nexpect = \"ask\"\n";
+
+        fs::write(
+            &file,
+            format!("variants = [{{ name = \"none\", text = \"\" }}]\n{case}"),
+        )
+        .unwrap();
+        assert_eq!(load(&file).unwrap().variants[0].text.as_deref(), Some(""));
+        fs::write(
+            &file,
+            format!("variants = [{{ name = \"both\", text = \"\", file = \"p.txt\" }}]\n{case}"),
+        )
+        .unwrap();
+        assert!(
+            load(&file)
+                .unwrap_err()
+                .contains("needs one of text or file")
+        );
+        fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

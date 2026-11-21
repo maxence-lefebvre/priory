@@ -26,7 +26,7 @@ budget before every turn. A run that the budget cuts short is dropped, and no la
 
 The table replaces the lines between the doc's markers only when the file names a `doc`, no
 `--case` was given, and the evaluation is complete: every run finished within the budget and no
-turn failed. Otherwise its first line says `Incomplete` and the doc keeps its table.
+turn failed. When the budget ran out or a turn failed, the table's first line says `Incomplete`.
 
 A run's ending is its agent's first `result`, `ask` or `wait` call after the prompt under test:
 
