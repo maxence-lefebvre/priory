@@ -1,6 +1,6 @@
 // The Task panel's view model: `priory task ID --json` in, what the panel draws out. No drawing, no IO.
 
-import { autolink, prStack } from "./priory.js";
+import { autolink, eventWords, prStack } from "./priory.js";
 
 // The runs History shows, newest first.
 const HISTORY = 10;
@@ -72,7 +72,7 @@ export function taskView(task, { now, links = [] }) {
     inbox: (task.inbox ?? []).slice(0, INBOX).map((/** @type {any} */ event) => ({
       id: event.seq,
       tile: PROMPT_TILES[event.prompt] || (event.outcome === "kept" && event.task === task.id ? "asleep" : "ready"),
-      text: `${event.type} ${event.subject ?? ""}`.trim(),
+      text: `${eventWords(event.type)} ${event.subject ?? ""}`.trim(),
       note: `${handled(event, task.id)} · ${when(event.time, now)}`,
     })),
     inboxTotal: (task.inbox ?? []).length,
