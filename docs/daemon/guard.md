@@ -12,10 +12,18 @@ every permission mode, before any allow rule.
 
 A call is guarded when a guard matches it. A guarded call runs only when one of these holds:
 
-- the task's current step is an irreversible model step marked `autonomous`;
-- the task's current step is an irreversible model step that a person approved, and the task's
-  branch is still at the commit the approval was given for;
+- the task's current step is an irreversible model step that lists the guard in its own
+  `guard.allow`, and either a person approved the step and the task's branch is still at the
+  commit the approval was given for, or the step is `autonomous`;
 - the task's workflow lists the guard in `guard.allow`.
+
+An approved or `autonomous` step grants only the guards it names. A step that names none may make
+no guarded call beyond its workflow's list.
+
+`gh-pr-merge` and `gh-pr-approve` need a person's approval: an `autonomous` step's grant never
+covers them, and `priory check` refuses them in an `autonomous` step's `guard.allow` and in a
+workflow's. So no call the guard reads merges or approves a pull request without a human step
+that approves the step making it.
 
 A call that runs several guarded commands, such as `gh pr merge 12 && git push --force`, needs a yes
 for each one. A call that also moves the branch's commit, such as `git commit -am fix && gh pr
@@ -28,9 +36,9 @@ person must do or approve it. The daemon appends a `factory.tool.denied` record 
 with its task, step, guard and command.
 
 So the guard reuses the step's approval. A workflow that needs an agent to merge gives it a step for
-that, such as an irreversible `merge` model step that a human step `approves`. The daemon already
-refuses to start that step without the approval. The guard then lets the merge through inside it,
-and nowhere else.
+that, such as an irreversible `merge` model step with `guard = { allow = ["gh-pr-merge"] }` that a
+human step `approves`. The daemon already refuses to start that step without the approval. The
+guard then lets the merge through inside it, and nowhere else.
 
 A run with no task step, such as the stall handler, is denied every guarded call.
 
@@ -38,19 +46,21 @@ A run with no task step, such as the stall handler, is denied every guarded call
 
 | Guard | Matches |
 | ----- | ------- |
-| `gh-pr-merge` | `gh pr merge` |
-| `gh-pr-approve` | `gh pr review` with `--approve` or `-a` |
+| `gh-pr-merge` | `gh pr merge`; a `gh api` write to `repos/<owner>/<repo>/pulls/<n>/merge`, or to `graphql` with `mergePullRequest`, `enablePullRequestAutoMerge` or a body read from a file; and MCP tools named `merge_pull_request` |
+| `gh-pr-approve` | `gh pr review` with `--approve` or `-a`; a `gh api` write to a pull request's `reviews` with `event=APPROVE` or a body read from a file; and a `gh api` write to `graphql` with a `PullRequestReview` mutation and `APPROVE` |
 | `gh-pr-comment` | `gh pr comment` |
 | `gh-issue-comment` | `gh issue comment` |
-| `gh-api-write` | `gh api` with a method other than GET, or with a field or `--input`, which make it a POST |
+| `gh-api-write` | `gh api` with a method other than GET, or with a field or `--input`, which make it a POST, other than the merges and approvals above |
 | `git-push-default` | `git push` whose destination is `main`, `master` or `origin/HEAD`'s branch, a push with no refspec from that branch, `--all`, `--branches` and wildcard refspecs |
 | `git-push-force` | `git push` with `--force`, `--force-with-lease`, `-f`, `--mirror`, `--delete`, `-d`, `--prune`, a `+refspec` or a `:branch` deletion |
 | `slack-write` | `curl` to `hooks.slack.com` or `slack.com/api/chat.*`, and `slack chat send` |
 | `linear-write` | `curl` to `api.linear.app` with a body that holds `mutation` or comes from a file, and `linear issue create`, `update`, `delete` or `comment` |
-| `mcp-write` | MCP tools named `merge_pull_request`, `add_issue_comment`, `send_message`, `slack_send_message`, `schedule_message`, `slack_schedule_message`, `save_comment`, `create_comment`, `save_issue`, `create_issue` or `update_issue`, on any server but `priory` |
+| `mcp-write` | MCP tools named `add_issue_comment`, `send_message`, `slack_send_message`, `schedule_message`, `slack_schedule_message`, `save_comment`, `create_comment`, `save_issue`, `create_issue` or `update_issue`, on any server but `priory` |
 
 A push to the task's own branch passes, and so do `--help`, `git push --dry-run` and `git push -n`. A factory adds its own guards with `[guard]` in
-`factory.toml` (see [factory.md](../reference/factory.md#guard)).
+`factory.toml` (see [factory.md](../reference/factory.md#guard)). A factory guard that matches the
+same call as `gh-pr-merge` or `gh-pr-approve`, such as one on `gh pr` or `mcp__github__*`, does not
+rename it: the call keeps its built-in guard.
 
 ## How a command is read
 

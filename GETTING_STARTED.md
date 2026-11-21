@@ -112,8 +112,9 @@ The web view's Flows panel, under More, draws each workflow as a timeline, with 
 reach an irreversible step with no person's decision highlighted.
 
 The same rule holds inside a model step. Priory's tool guard denies an agent's irreversible call,
-such as `gh pr merge` or `git push origin main`, unless its step is approved or `autonomous`, and
-tells the agent to `ask`. See [guard.md](docs/daemon/guard.md).
+such as `gh pr merge` or `git push origin main`, and tells the agent to `ask`. The call passes when
+its step names the guard in `guard.allow` and is approved or `autonomous`, or when its workflow's
+`guard.allow` names it. A merge or an approving review needs an approved step. See [guard.md](docs/daemon/guard.md).
 
 ## 4. Pick a starter
 
