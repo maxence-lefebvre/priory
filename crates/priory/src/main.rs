@@ -1734,7 +1734,7 @@ fn task_text(task: &str) -> ExitCode {
         return usage();
     };
     let shown = state::open().and_then(|db| {
-        let task = listing::task(&db, id)
+        let task = listing::revised(&db, "task", |db| listing::task(db, id))
             .map_err(|error| error.to_string())?
             .ok_or_else(|| format!("no task {id}"))?;
         let text = |value: &serde_json::Value| value.as_str().unwrap_or("-").to_owned();
@@ -1771,7 +1771,7 @@ fn handled(event: &serde_json::Value, task: i64) -> String {
         Some("attempted") => "being typed",
         Some("uncertain") => "typed, unconfirmed",
         Some("withdrawn") => "prompt withdrawn",
-        _ if text == "kept" => "for its next run",
+        _ if text == "kept" && event["task"].as_i64() == Some(task) => "for its next run",
         _ => "",
     };
     if !prompt.is_empty() {

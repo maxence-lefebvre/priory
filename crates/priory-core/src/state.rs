@@ -1792,7 +1792,7 @@ fn delivered(
     }
     let queued = |tx: &Transaction| -> rusqlite::Result<Option<i64>> {
         tx.query_row(
-            "SELECT max(id) FROM outbox WHERE task = ?1 AND state = 'queued'",
+            "SELECT max(id) FROM outbox WHERE task = ?1 AND state = 'queued' AND compact = 0",
             [task],
             |row| row.get(0),
         )

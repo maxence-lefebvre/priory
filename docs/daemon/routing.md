@@ -178,6 +178,8 @@ state until its next run.
 When routing gives an event to one task and a subscription delivers it to a second, the second
 task's inbox lists it with `task` naming the first. Its `outcome` and `prompt` are the second
 task's own: `woke` when the event woke it, or `kept` when it queued a prompt while the task ran.
+A comment that wakes the second task from its checks gate shows no `wait`, since that delivery
+records the prompt but not the wait.
 
 `priory task ID` prints the task's key, workflow, step and state, then an Inbox section with one
 line per event: its sequence number, time, type, subject and what it did, such as

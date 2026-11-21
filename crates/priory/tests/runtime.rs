@@ -13573,6 +13573,41 @@ fn an_event_a_subscription_delivered_to_a_second_task_is_in_that_tasks_inbox() {
 }
 
 #[test]
+fn an_event_a_subscription_delivered_to_a_running_second_task_shows_its_queued_prompt() {
+    let mut setup = Setup::new("inbox-secondary-running");
+    setup.calls(&[subscribe("subscribe")]);
+    setup.hold("hold-stop");
+    setup.publish(&requested(42));
+    setup.start();
+    setup.written("fake/tools.log");
+    setup.publish(&requested(7));
+    setup.until("tasks", |rows| rows.len() == 2);
+
+    setup.publish(&off_branch(commented()));
+
+    setup.until("outbox", |rows| {
+        rows.iter().filter(|row| row[1] == "1").count() == 2
+    });
+    let inbox = &task_json(&setup, "1")["inbox"][0];
+    assert_eq!(
+        [
+            &inbox["type"],
+            &inbox["task"],
+            &inbox["outcome"],
+            &inbox["prompt"]
+        ],
+        [
+            &json!("github.pull_request.comment"),
+            &json!(2),
+            &json!("kept"),
+            &json!("queued")
+        ],
+        "{inbox}"
+    );
+    setup.release("hold-stop");
+}
+
+#[test]
 fn subscribe_refuses_a_resource_it_cannot_name() {
     let setup = Setup::new("subscribe-unknown");
 
