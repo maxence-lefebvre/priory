@@ -358,3 +358,26 @@ fn the_costs_endpoint_answers_what_costs_json_prints() {
         assert_eq!(get(&address, path).0, 400, "{path}");
     }
 }
+
+#[test]
+fn at_monday_midnight_this_week_is_empty_and_last_week_is_whole() {
+    let setup = Setup::new("monday");
+    setup.step("2026-11-15T22:30:00.000Z", "m1", Some([3_000_000, 0, 0, 0]));
+
+    let output = setup
+        .command()
+        .env("PRIORY_NOW", "2026-11-15T23:00:00Z")
+        .args(["costs", &setup.factory(), "--json"])
+        .output()
+        .unwrap();
+
+    succeeded(&output);
+    let costs: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(
+        [
+            &costs["current"]["cost_usd"],
+            &costs["previous"]["cost_usd"]
+        ],
+        [0.0, 3.0]
+    );
+}

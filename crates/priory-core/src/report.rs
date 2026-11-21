@@ -339,7 +339,7 @@ pub fn window(db: &Connection, since: Option<&str>, now: &str) -> Result<Window,
     }
     .map_err(|error| error.to_string())?;
     match previous {
-        Some(previous) if start < until => Ok(Window {
+        Some(previous) if start < until || since.is_none() => Ok(Window {
             until,
             start,
             previous,
