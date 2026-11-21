@@ -2,7 +2,7 @@
 
 use crate::trace::{self, Trace};
 use priory_factory::factory::Effect;
-use priory_factory::guard::{NEED_APPROVAL, UNREADABLE};
+use priory_factory::guard::{NEED_APPROVAL, SIGN_IN, UNREADABLE};
 use priory_runtime::runtime;
 use rusqlite::{Connection, OptionalExtension, params};
 use std::path::Path;
@@ -34,6 +34,7 @@ struct Run {
     step: String,
     worktree: Option<String>,
     branch: Option<String>,
+    agent: Option<String>,
 }
 
 /// Allows the call when its workflow allows the guard, or when the task's step is irreversible,
@@ -53,7 +54,7 @@ pub(crate) fn decide(
     };
     let run = db
         .query_row(
-            "SELECT runs.id, runs.task, tasks.workflow, tasks.step, tasks.worktree, tasks.branch
+            "SELECT runs.id, runs.task, tasks.workflow, tasks.step, tasks.worktree, tasks.branch, runs.agent
              FROM runs JOIN tasks ON tasks.id = runs.task
              WHERE runs.session = ?1 AND runs.ended IS NULL ORDER BY runs.id DESC LIMIT 1",
             [&call.session],
@@ -65,6 +66,7 @@ pub(crate) fn decide(
                     step: row.get(3)?,
                     worktree: row.get(4)?,
                     branch: row.get(5)?,
+                    agent: row.get(6)?,
                 })
             },
         )
@@ -79,6 +81,9 @@ pub(crate) fn decide(
         trace::tool_denied(&tx, trace, run.task, run.id, call, &reason)?;
         tx.commit()?;
         return Ok(Err(reason));
+    }
+    if call.guard == SIGN_IN {
+        return sign_in(db, call, &run, trace);
     }
     let workflow = trace
         .factory
@@ -150,4 +155,44 @@ pub(crate) fn decide(
     trace::tool_denied(&tx, trace, run.task, run.id, call, &reason)?;
     tx.commit()?;
     Ok(Err(reason))
+}
+
+/// An unattended run never signs in: the denial tells it to go on and records the connector as a
+/// to-do for a person, unless the run's agent opted in with `connectorSignIn`.
+fn sign_in(
+    db: &mut Connection,
+    call: &Call,
+    run: &Run,
+    trace: &Trace,
+) -> rusqlite::Result<Result<String, String>> {
+    let opted_in = run
+        .agent
+        .as_deref()
+        .and_then(|agent| trace.factory.agents.get(agent))
+        .is_some_and(|agent| agent.value.connector_sign_in);
+    if opted_in {
+        return Ok(Ok(format!(
+            "agent {} may sign in",
+            run.agent.as_deref().unwrap_or("")
+        )));
+    }
+    let connector = connector(&call.tool);
+    let reason = format!(
+        "Priory denied `{}`: an unattended run never signs in to `{connector}`, because signing in clears the token every later run needs. Carry on with your other sources, and name `{connector}` in your result as a connector a person must sign in to.",
+        call.call
+    );
+    let tx = db.transaction()?;
+    tx.execute(
+        "INSERT OR IGNORE INTO todos (text, connector) VALUES (?1, ?2)",
+        params![format!("Sign in to {connector}"), connector],
+    )?;
+    trace::tool_denied(&tx, trace, run.task, run.id, call, &reason)?;
+    tx.commit()?;
+    Ok(Err(reason))
+}
+
+/// The MCP server of a tool named `mcp__<server>__<tool>`.
+pub(crate) fn connector(tool: &str) -> &str {
+    let name = tool.strip_prefix("mcp__").unwrap_or(tool);
+    name.rsplit_once("__").map_or(name, |(server, _)| server)
 }

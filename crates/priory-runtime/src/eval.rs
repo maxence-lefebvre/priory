@@ -16,7 +16,8 @@ pub struct Eval {
     pub tool: Option<String>,
     /// The doc whose result table this evaluation rewrites, relative to the file.
     pub doc: Option<PathBuf>,
-    /// Name, in an `ask` ending, which of `whatWaits` and `nextAction` the ask filled.
+    /// Name, in an `ask` ending, the ask's shape: a short question, and which of `whatWaits` and
+    /// `nextAction` it filled.
     #[serde(default)]
     pub shape: bool,
     pub variants: Vec<Variant>,
@@ -203,7 +204,7 @@ fn one(
 const NO_EXIT: &str = "no exit";
 
 /// The first `result`, `ask` or `wait` call in `log`, with its outcome or condition, or `no exit`.
-/// With `shape`, an ask names the optional fields it filled, `whatWaits` before `nextAction`.
+/// With `shape`, an ask names its [`shape_of`].
 fn ending(log: &Path, shape: bool) -> Result<String, String> {
     let text = match fs::read_to_string(log) {
         Ok(text) => text,
@@ -216,15 +217,7 @@ fn ending(log: &Path, shape: bool) -> Result<String, String> {
         let arguments = &call["arguments"];
         let detail = match call["name"].as_str().unwrap_or_default() {
             "result" => arguments["outcome"].as_str().unwrap_or("without outcome"),
-            "ask" if shape => &["whatWaits", "nextAction"]
-                .into_iter()
-                .filter(|field| {
-                    arguments[field]
-                        .as_str()
-                        .is_some_and(|text| !text.trim().is_empty())
-                })
-                .collect::<Vec<_>>()
-                .join(" "),
+            "ask" if shape => &shape_of(arguments),
             "ask" => "",
             "wait" => arguments["on"]["type"].as_str().unwrap_or("any"),
             _ => continue,
@@ -236,6 +229,25 @@ fn ending(log: &Path, shape: bool) -> Result<String, String> {
         );
     }
     Ok(NO_EXIT.to_owned())
+}
+
+/// What an ask's shape shows: `short` when its question is one line of at most 25 words, then the
+/// optional fields it filled, `whatWaits` before `nextAction`.
+fn shape_of(arguments: &Value) -> String {
+    let filled = |field: &&str| {
+        arguments[*field]
+            .as_str()
+            .is_some_and(|text| !text.trim().is_empty())
+    };
+    let short = arguments["question"].as_str().is_some_and(|question| {
+        !question.trim().contains('\n') && question.split_whitespace().count() <= 25
+    });
+    short
+        .then_some("short")
+        .into_iter()
+        .chain(["whatWaits", "nextAction"].iter().copied().filter(filled))
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// Reads the evaluation file at `path`, with each variant's `file` read into its text.
@@ -574,7 +586,7 @@ mod tests {
         let ask = json!({ "name": "ask", "arguments": { "question": "Q?", "nextAction": "Then I ship." } });
         record(&log, &ask).unwrap();
 
-        assert_eq!(ending(&log, true).unwrap(), "ask nextAction");
+        assert_eq!(ending(&log, true).unwrap(), "ask short nextAction");
         assert_eq!(ending(&log, false).unwrap(), "ask");
         fs::remove_dir_all(dir).unwrap();
     }

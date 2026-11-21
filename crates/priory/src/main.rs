@@ -2198,7 +2198,27 @@ fn guard() -> Option<String> {
             }
         }
     }
+    report_connector_use(tool);
     None
+}
+
+/// Tells the daemon a run used a connector with an open sign-in to-do, so it can clear the item.
+/// Best effort after the guards allowed the call: a daemon that does not answer holds it for 1s at most.
+fn report_connector_use(tool: &str) {
+    let Some(name) = tool.strip_prefix("mcp__") else {
+        return;
+    };
+    let Some((server, short)) = name.rsplit_once("__") else {
+        return;
+    };
+    let watched = std::env::var("PRIORY_CONNECTORS").unwrap_or_default();
+    if priory_factory::guard::SIGN_IN_TOOLS.contains(&short)
+        || !watched.split(',').any(|name| name == server)
+    {
+        return;
+    }
+    let line = serde_json::json!({ "connector_used": server });
+    let _ = runtime::call(&runtime::home(), &line.to_string(), Duration::from_secs(1));
 }
 
 /// Reports a harness hook to the daemon: `event`, with the session and prompt from the hook's JSON

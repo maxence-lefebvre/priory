@@ -12,7 +12,7 @@ use std::collections::BTreeMap;
 use std::io::Write;
 use std::time::Duration;
 
-const VERSION: i64 = 67;
+const VERSION: i64 = 68;
 
 const SCHEMA: &str = "
 CREATE TABLE tasks (
@@ -1168,6 +1168,14 @@ CREATE TABLE IF NOT EXISTS sends (
 PRAGMA user_version = 67;
 ";
 
+// The connector a to-do asks a person to sign in to: one open to-do per connector.
+const SCHEMA_68: &str = "
+ALTER TABLE todos ADD COLUMN connector TEXT;
+CREATE UNIQUE INDEX IF NOT EXISTS todos_open_connector ON todos (connector)
+  WHERE connector IS NOT NULL AND done IS NULL;
+PRAGMA user_version = 68;
+";
+
 /// Each schema change in order: a file at version `n` applies those from index `n` on.
 const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA, SCHEMA_2, SCHEMA_3, SCHEMA_4, SCHEMA_5, SCHEMA_6, SCHEMA_7, SCHEMA_8, SCHEMA_9,
@@ -1178,7 +1186,7 @@ const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA_42, SCHEMA_43, SCHEMA_44, SCHEMA_45, SCHEMA_46, SCHEMA_47, SCHEMA_48, SCHEMA_49,
     SCHEMA_50, SCHEMA_51, SCHEMA_52, SCHEMA_53, SCHEMA_54, SCHEMA_55, SCHEMA_56, SCHEMA_57,
     SCHEMA_58, SCHEMA_59, SCHEMA_60, SCHEMA_61, SCHEMA_62, SCHEMA_63, SCHEMA_64, SCHEMA_65,
-    SCHEMA_66, SCHEMA_67,
+    SCHEMA_66, SCHEMA_67, SCHEMA_68,
 ];
 
 /// The order the queue starts tasks in: band, then a person's order, then age. A band the factory
