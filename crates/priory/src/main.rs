@@ -980,10 +980,14 @@ fn links(mut args: Vec<String>) -> ExitCode {
 
 /// Prints what `GET /api/flows` serves: `priory flows [DIR] --json`. `priory check --explain`
 /// prints the same facts as text.
-fn flows(args: Vec<String>) -> ExitCode {
+fn flows(mut args: Vec<String>) -> ExitCode {
+    let Some(at) = args.iter().position(|arg| arg == "--json") else {
+        return usage();
+    };
+    args.remove(at);
     let dir = match &args[..] {
-        [json] if json == "--json" => PathBuf::from("."),
-        [dir, json] if json == "--json" && !dir.starts_with("--") => PathBuf::from(dir),
+        [] => PathBuf::from("."),
+        [dir] if !dir.starts_with("--") => PathBuf::from(dir),
         _ => return usage(),
     };
     let Some(factory) = load(&dir) else {

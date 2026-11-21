@@ -1,7 +1,7 @@
 import { Background, PathBuilder, View, div, svg } from "gpui-kit";
 import { h_flex, v_flex, Button } from "gpui-base";
 import { appHome, exec, home as herdrHome, readTextFile } from "herdr";
-import { pathCalls } from "./path.js";
+import { labelSpots, pathCalls } from "./path.js";
 import { priory } from "./priory.js";
 import { FONTS, palette, STRUCTURE as S } from "./tokens.js";
 import { edgeStyle, KINDS, nodeShape, timeline, ungatedPairs } from "./view.js";
@@ -44,13 +44,13 @@ const message = (/** @type {unknown} */ error) => (error instanceof Error ? erro
 const clip = (/** @type {string} */ text, /** @type {number} */ size) => (text.length > size ? `${text.slice(0, size - 1)}...` : text);
 const word = (/** @type {Record<string, string>} */ words, /** @type {string} */ key) => words[key] ?? key;
 
-/** gpui-kit geometry from an SVG path of view.js, scaled. @param {PathBuilder} builder @param {string} d @param {number} scale */
+/** @param {PathBuilder} builder @param {string} d @param {number} scale */
 function build(builder, d, scale) {
   // @ts-ignore each call names a PathBuilder method with its arguments
   return pathCalls(d, scale).reduce((path, [method, ...args]) => path[method](...args), builder).build();
 }
 
-/** A filled arrowhead at an edge's end, pointing along its last curve. @param {string} d @param {number} scale */
+/** @param {string} d @param {number} scale */
 function arrowhead(d, scale) {
   const last = pathCalls(d, scale).at(-1) ?? ["move_to", 0, 0];
   const [x, y] = /** @type {number[]} */ (last.slice(1, 3));
@@ -136,15 +136,16 @@ export default class PrioryFlows extends View {
     ];
   }
 
-  /** The six node shapes, the four line styles and the highlight, so no reader has to guess a mark. @param {Palette} t */
+  /** @param {Palette} t */
   legend(t) {
+    const shape = (/** @type {string} */ kind) => nodeShape(kind, 150, 52).d;
     const item = (/** @type {any} */ mark, /** @type {string} */ label) => h_flex().gap(6).items_center().child(mark).child(label);
     return v_flex().gap(S["space-2"])
       .child(div().text_size(S["type-small"][0]).font_weight(650).child("Key"))
       .child(h_flex().gap_x(S["space-3"]).gap_y(S["space-1"]).flex_wrap().text_size(S["type-caption"][0]).text_color(t["text-2"])
         .children(KINDS.map((kind) => item(div().w(45).h(16).relative()
-          .child(window.paint_path(build(PathBuilder.fill(), nodeShape(kind, 45, 16).d, 1), this.fill(kind, t)).absolute().inset_0())
-          .child(window.paint_path(build(PathBuilder.stroke(1), nodeShape(kind, 45, 16).d, 1), kind === "irreversible" ? t["danger-text"] : t["control-line"]).absolute().inset_0()),
+          .child(window.paint_path(build(PathBuilder.fill(), shape(kind), 0.3), this.fill(kind, t)).absolute().inset_0())
+          .child(window.paint_path(build(PathBuilder.stroke(1), shape(kind), 0.3), kind === "irreversible" ? t["danger-text"] : t["control-line"]).absolute().inset_0()),
         word(KIND_WORD, kind))))
         .children(BY.map((by) => item(div().w(48).h(8).relative()
           .child(window.paint_path(this.dashed(PathBuilder.stroke(edgeStyle(by).width), edgeStyle(by).dash).move_to(0, 4).line_to(48, 4).build(), this.ink(by, t)).absolute().inset_0()),
@@ -168,7 +169,7 @@ export default class PrioryFlows extends View {
         .child(div().font_weight(400).text_color(t["text-3"]).child(`${workflow.steps.length} steps`)))
       .child(div().id(`diagram-${workflow.name}`).relative().flex_none().w(drawing.width * scale + lanes).h(drawing.height * scale)
         .accessibility_label(drawing.text)
-        .children(edges.map((edge) => this.edge(edge, scale, t)))
+        .children(labelSpots(edges, scale).map((spot, index) => this.edge(edges[index], spot, scale, t)))
         .children(drawing.nodes.map((node) => this.node(node, scale, t))))
       .when(open.length > 0, (el) => el.child(v_flex().gap(S["space-1"]).text_size(S["type-small"][0]).text_color(t["danger-text"])
         .child(h_flex().gap(6).items_center().child(svg(ICON("lock")).size(14).flex_none()).child("Reaches an irreversible step with no person's decision:"))
@@ -205,10 +206,9 @@ export default class PrioryFlows extends View {
     return dash ? builder.dash_array(dash.split(" ").map(Number)) : builder;
   }
 
-  /** @param {Edge} edge @param {number} scale @param {Palette} t */
-  edge(edge, scale, t) {
+  /** @param {Edge} edge @param {{ x: number, y: number }} spot its label's @param {number} scale @param {Palette} t */
+  edge(edge, { x, y }, scale, t) {
     const style = edgeStyle(edge.by);
-    const [x, y] = [edge.mid.x * scale + (edge.vertical ? 6 : 5), edge.mid.y * scale - 8];
     return div().absolute().inset_0()
       .when(edge.ungated, (el) => el.child(window.paint_path(build(PathBuilder.stroke(style.width + 6), edge.d, scale), Background.solid(t["danger-text"]).opacity(0.22)).absolute().inset_0()))
       .child(window.paint_path(build(this.dashed(PathBuilder.stroke(style.width), style.dash), edge.d, scale), this.ink(edge.by, t)).absolute().inset_0())
@@ -227,11 +227,12 @@ export default class PrioryFlows extends View {
         .font_family(this.font.mono).text_size(12).text_color(t["text-2"]).accessibility_label(node.label).child(node.label);
     }
     const irreversible = node.kind === "irreversible";
-    const { d } = nodeShape(node.kind, width, height);
+    // The shape at its drawn size, scaled after, so a small node keeps its corner cuts in proportion.
+    const { d } = nodeShape(node.kind, node.width, node.height);
     const second = node.gate ? clip(node.gate, 24) : word(KIND_WORD, node.kind);
     return box.accessibility_label(`${node.label}: ${word(KIND_WORD, node.kind)}${node.gate ? `, ${node.gate}` : ""}`)
-      .child(window.paint_path(build(PathBuilder.fill(), d, 1), this.fill(node.kind, t)).absolute().inset_0())
-      .child(window.paint_path(build(PathBuilder.stroke(irreversible ? 2.5 : 1.5), d, 1), irreversible ? t["danger-text"] : t["control-line"]).absolute().inset_0())
+      .child(window.paint_path(build(PathBuilder.fill(), d, scale), this.fill(node.kind, t)).absolute().inset_0())
+      .child(window.paint_path(build(PathBuilder.stroke(irreversible ? 2.5 : 1.5), d, scale), irreversible ? t["danger-text"] : t["control-line"]).absolute().inset_0())
       .child(v_flex().absolute().inset_0().items_center().justify_center().px(S["space-3"])
         .child(h_flex().gap(S["space-1"]).items_center().max_w_full()
           .when(irreversible, (el) => el.child(svg(ICON("lock")).size(12).flex_none().text_color(t["danger-text"])))

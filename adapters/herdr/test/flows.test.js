@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { timeline, ungatedPairs } from "../mods/priory-flows/view.js";
-import { pathCalls } from "../mods/priory-flows/path.js";
+import { labelSpots, pathCalls } from "../mods/priory-flows/path.js";
 
 // Captured from `priory flows DIR --json`: flows-groom.json on examples/groom, flows.json on
 // docs/reference/examples/factory.
@@ -54,4 +54,16 @@ test("an SVG path becomes PathBuilder calls, scaled, with H and V as lines from 
   assert.deepEqual(pathCalls("M75 64C75 94 30 106 30 136V180L0 1.5", 1), [
     ["move_to", 75, 64], ["cubic_bezier_to", 30, 136, 75, 94, 30, 106], ["line_to", 30, 180], ["line_to", 0, 1.5],
   ]);
+});
+
+test("an upright lane label that would cover another moves down a line, and the rest stay at their edge's middle", () => {
+  const flows = fixture("flows-groom");
+  const [groom] = flows.workflows;
+  const edges = timeline(groom, ungatedPairs(groom.name, flows.paths)).edges;
+  const spots = labelSpots(edges, 1);
+  const at = (from, to) => spots[edges.findIndex((edge) => edge.from === from && edge.to === to)];
+  // rejected and failed share their lanes' middle, 42 px apart: the later one moves 16 px down.
+  assert.deepEqual([at("approve-plan", "stop"), at("implement-green", "stop")], [{ x: 365, y: 422 }, { x: 407, y: 438 }]);
+  assert.deepEqual(at("groom", "implement"), { x: 351, y: 142 });
+  assert.deepEqual(at("groom", "approve-plan"), { x: 135.5, y: 86 });
 });

@@ -5,8 +5,9 @@
 const grouped = (/** @type {string} */ digits) => digits.replace(/\B(?=(\d{3})+(?!\d))/g, ",");
 export const money = (/** @type {number | null} */ value) => {
   if (value == null) return "-";
-  const [whole, cents] = Math.abs(value).toFixed(2).split(".");
-  return `${value < 0 ? "-" : ""}$${grouped(whole)}.${cents}`;
+  // toPrecision drops the binary noise that makes 1.005 * 100 read 100.4999..., so half a cent rounds up.
+  const cents = Math.round(Number((Math.abs(value) * 100).toPrecision(15)));
+  return `${value < 0 ? "-" : ""}$${grouped(String(Math.floor(cents / 100)))}.${String(cents % 100).padStart(2, "0")}`;
 };
 
 /** The change from `before` to `now`, or null when either is missing or `before` is 0. @param {number | null} now @param {number | null} before */

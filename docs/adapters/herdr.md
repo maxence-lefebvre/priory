@@ -85,7 +85,8 @@ state database and never writes a file in the factory.
   `PRIORY_DB` in the environment, or name a wrapper script that sets it.
 - **Reading.** A mod runs the CLI with Herdr's `exec` and parses its JSON: `priory desk --all --json`,
   `asks --all --json`, `tasks --json`, `queue --json`, `schedules --json`, `links --json`,
-  `report show --json`, `costs [--by SPLIT] --json`, `report attention --json` and `flows --json`. Each answer carries the state's `revision`. `report show --json` wraps the
+  `report show --json`, `costs [--by SPLIT] --json`, `report attention --json` and `flows --json`. Each answer carries the state's `revision`, except
+  the reports `costs` and `report attention`, and `flows`, which reads the factory's files. `report show --json` wraps the
   report as `{"revision": STATE, "report": {...}}`: the outer `revision` is the state's, and the
   report's own `revision` is the one `report pick --expected` takes. Then the mod runs
   `priory wait --since REVISION`, which returns as soon as the state changes, or after 25 s, and
@@ -405,8 +406,8 @@ DESIGN.md's "Costs panel" section holds its visual rules; this section says how 
   gpui-kit. The node tests in `test/costs.test.js` check `view.js` against JSON captured from a real
   `priory costs --json` and `priory report attention --json`.
 - **Reading.** The panel reads `priory costs FACTORY --by SPLIT --json` and
-  `priory report attention --json` together, then waits with `priory wait` and reads again, at
-  most once a minute. When a call fails, it keeps the last read, says why, and shows "Costs as
+  `priory report attention --json` together, then reads them again every minute: they carry no
+  revision to wait on, and their window ends at the time of the read. When a call fails, it keeps the last read, says why, and shows "Costs as
   read" with the time of that read. It shows that line too while the read is over a minute old.
 - **Views.** From 1024 px Costs and Attention sit side by side, with a hairline between them.
   Below, the header's Costs and Attention chips pick one.

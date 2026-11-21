@@ -11,7 +11,6 @@ const SIDE_BY_SIDE = 1024;
 const WEEKDAYS = 520;
 const CHART = 96;
 const RETRY_MS = 3000;
-// The reports cover a week of records, so a burst of revisions reads them at most once a minute.
 const READ_EVERY_MS = 60_000;
 const ICON = (/** @type {string} */ name) => `mods/priory-costs/icons/${name}.svg`;
 const TRENDS = { up: "trending-up", down: "trending-down" };
@@ -72,19 +71,16 @@ export default class PrioryCosts extends View {
     this.refresh(cx);
   }
 
-  /** Reads both reports, then waits for the next revision and reads again, at most once a minute. */
+  // The reports have no revision to wait on, and their window ends now, so they are read once a minute.
   /** @param {import("gpui-kit").AsyncContext} cx */
   refresh(cx) {
     cx.spawn(async (cx) => {
-      // The state revision last read; -1 makes the first wait return at once with the current one.
-      let since = -1;
       for (;;) {
         try {
           this.priory ??= await connect();
           await this.read();
           cx.notify();
-          since = await this.priory.client.wait(since);
-          await cx.sleep(Math.max(0, this.updated + READ_EVERY_MS - Date.now()));
+          await cx.sleep(READ_EVERY_MS);
         } catch (error) {
           this.priory = null;
           this.error = message(error);
@@ -95,12 +91,20 @@ export default class PrioryCosts extends View {
     });
   }
 
-  /** Reads costs by the picked split and attention; keeps the last read when a call fails. */
+  /** Keeps the last read when a call fails; a read overtaken by a newer one is dropped, failed or not. */
   async read() {
     const client = /** @type {NonNullable<typeof this.priory>} */ (this.priory).client;
     const [read, by] = [++this.reads, this.by];
-    const [costs, attention] = await Promise.all([client.costs(by), client.attention()]);
+    /** @type {any[]} */
+    let reports;
+    try {
+      reports = await Promise.all([client.costs(by), client.attention()]);
+    } catch (error) {
+      if (read === this.reads) throw error;
+      return;
+    }
     if (read !== this.reads) return;
+    const [costs, attention] = reports;
     this.data = { costs, attention };
     this.updated = Date.now();
     this.error = null;
@@ -173,7 +177,7 @@ export default class PrioryCosts extends View {
       .child(title).when(Boolean(meta), (el) => el.child(div().font_weight(400).text_color(t["text-3"]).child(meta ?? "")));
   }
 
-  /** A row of equal cells in one box with hairlines between them. @param {Tile[]} tiles @param {Palette} t */
+  /** @param {Tile[]} tiles @param {Palette} t */
   tiles(tiles, t) {
     return h_flex().rounded(S["radius-md"]).border(1).border_color(t.line).bg(t.surface)
       .children(tiles.map((tile, index) => v_flex().flex_1().min_w_0().p(S["space-3"]).gap(2).when(index > 0, (el) => el.border_l(1).border_color(t.line))
@@ -276,7 +280,7 @@ export default class PrioryCosts extends View {
     ];
   }
 
-  /** The trace waterfall's encodings: solid, stripes, a dashed outline and a plain fill. @param {string} part @param {Palette} t */
+  /** @param {string} part @param {Palette} t */
   part(part, t) {
     if (part === "working") return div().bg(t["tile-live"]);
     if (part === "person") return div().relative().child(window.paint_path(WHOLE, Background.pattern_slash(t.wait, 2, 5)).absolute().inset_0());
@@ -284,7 +288,7 @@ export default class PrioryCosts extends View {
     return div().bg(t.raised);
   }
 
-  /** A 12 px bar split by 2 px gaps of the ground. @param {TaskTime} task @param {Palette} t */
+  /** @param {TaskTime} task @param {Palette} t */
   taskBar(task, t) {
     return h_flex().h(12).gap(2).accessibility_label(task.text)
       .children(task.parts.filter((part) => part.fraction > 0).map((part) => this.part(part.part, t).h_full().rounded(2)

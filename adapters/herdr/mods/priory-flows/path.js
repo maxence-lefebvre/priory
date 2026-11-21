@@ -1,5 +1,29 @@
-// Turns the absolute SVG paths that view.js draws (M, L, H, V, C, A and Z) into gpui-kit
-// PathBuilder calls, scaled. No drawing, no IO.
+// The drawing's geometry for gpui-kit: the absolute SVG paths that view.js draws (M, L, H, V, C, A
+// and Z) as PathBuilder calls, scaled, and where each edge's outcome label sits. No drawing, no IO.
+
+// An 11 px label is about this wide per character, and a line this tall; main.js clips a lane's label to 10 characters.
+const LABEL = { char: 6.5, line: 16, lane: 10 };
+
+/**
+ * Each edge's label: beside a lane edge, else beside its curve, at its middle. gpui-kit turns no
+ * text, so an upright lane label that would cover one placed before it moves down a line.
+ * @param {{ outcome: string, mid: { x: number, y: number }, vertical: boolean }[]} edges
+ * @param {number} scale
+ * @returns {{ x: number, y: number }[]}
+ */
+export function labelSpots(edges, scale) {
+  /** @type {{ x: number, y: number, width: number }[]} */
+  const placed = [];
+  return edges.map((edge) => {
+    const x = edge.mid.x * scale + (edge.vertical ? 6 : 5);
+    let y = edge.mid.y * scale - LABEL.line / 2;
+    if (!edge.vertical) return { x, y };
+    const width = Math.min(edge.outcome.length, LABEL.lane) * LABEL.char;
+    while (placed.some((other) => Math.abs(other.y - y) < LABEL.line && x < other.x + other.width && other.x < x + width)) y += LABEL.line;
+    placed.push({ x, y, width });
+    return { x, y };
+  });
+}
 
 /** @typedef {[string, ...(number | boolean)[]]} Call */
 
