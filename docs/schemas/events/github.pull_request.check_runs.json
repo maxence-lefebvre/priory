@@ -25,6 +25,13 @@
             "null"
           ]
         },
+        "head_repo": {
+          "description": "The head branch's repository, `owner/name`, which differs from `repo` for a fork; absent\nwhen the event does not say, as for a check run or a deleted fork.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "head_sha": {
           "description": "The head commit; for a check, the commit it ran on.",
           "type": [

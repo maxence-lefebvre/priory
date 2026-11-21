@@ -86,6 +86,7 @@ impl Github {
                 return Ok(false);
             }
             message.data["delivery"] = json!(delivery);
+            super::mark_own(&mut message);
             let _claim = claim()?;
             if reported(bus, &message)? {
                 return Ok(false);
@@ -149,7 +150,7 @@ impl Github {
             })
         };
         let on_pull = |url: &Value, time: &Value, actor: &Value| {
-            json!({
+            let mut data = json!({
                 "repo": repo,
                 "pull_request": pull["number"],
                 "url": url,
@@ -158,7 +159,9 @@ impl Github {
                 "base_branch": pull["base"]["ref"],
                 "actor": actor,
                 "time": time,
-            })
+            });
+            head_repo(&mut data, pull);
+            data
         };
         let (kind, name, data) = match (event, action) {
             ("issues", "opened") => (
@@ -207,6 +210,7 @@ impl Github {
                 data["body"] = json!(review["body"].as_str().unwrap_or_default());
                 data["commit"] = review["commit_id"].clone();
                 data["github_id"] = review["id"].clone();
+                super::pulls::associate(&mut data, &review["author_association"]);
                 data["open"] = json!(pull["state"] == "open");
                 let name = format!("github:{repo}:pulls/reviews:{}", review["id"]);
                 (REVIEWED, name, data)
@@ -258,12 +262,13 @@ fn feedback(event: &str, repo: &str, payload: &Value) -> Option<Observed> {
     }
     let pull = &payload["pull_request"];
     if event == "pull_request_review_comment" {
-        let branches = json!({
+        let mut branches = json!({
             "head_branch": pull["head"]["ref"],
             "head_sha": pull["head"]["sha"],
             "base_branch": pull["base"]["ref"],
             "open": pull["state"] == "open",
         });
+        head_repo(&mut branches, pull);
         let number = pull["number"].as_u64()?;
         return Some(comment(
             THREAD_COMMENTED,
@@ -275,13 +280,14 @@ fn feedback(event: &str, repo: &str, payload: &Value) -> Option<Observed> {
     }
     let issue = &payload["issue"];
     issue.get("pull_request")?;
-    let data = json!({
+    let mut data = json!({
         "url": found["html_url"],
         "actor": found["user"]["login"],
         "body": found["body"],
         "time": found["created_at"],
         "github_id": found["id"],
     });
+    super::pulls::associate(&mut data, &found["author_association"]);
     // The issue in the payload names no branch: routing finds the task by its pull request.
     let branches = json!({ "open": issue["state"] == "open" });
     Some(comment(
@@ -291,6 +297,13 @@ fn feedback(event: &str, repo: &str, payload: &Value) -> Option<Observed> {
         &branches,
         data,
     ))
+}
+
+/// Sets `head_repo` from the payload's `pull` when it names the head's repository.
+fn head_repo(data: &mut Value, pull: &Value) {
+    if let Some(head) = pull["head"]["repo"]["full_name"].as_str() {
+        data["head_repo"] = json!(head);
+    }
 }
 
 fn accepted(outcome: &str) -> Reply {

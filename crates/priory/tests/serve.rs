@@ -1439,6 +1439,29 @@ fn eight_silent_clients_delay_a_request_by_about_a_second_not_the_whole_read_tim
 }
 
 #[test]
+fn eight_clients_that_send_one_byte_and_stall_do_not_delay_a_request() {
+    let mut setup = Setup::new("stalled-eight", SERVE);
+    let address = setup.start(&["serve", &setup.factory()]);
+    let _stalled: Vec<_> = (0..8)
+        .map(|_| {
+            let mut stream = TcpStream::connect(&address).unwrap();
+            stream.write_all(b"G").unwrap();
+            stream
+        })
+        .collect();
+    std::thread::sleep(Duration::from_millis(1100));
+    let started = Instant::now();
+
+    assert_eq!(get(&address, "/api/tasks", Some(TOKEN)).0, 200);
+
+    assert!(
+        started.elapsed() < Duration::from_secs(2),
+        "{:?}",
+        started.elapsed()
+    );
+}
+
+#[test]
 fn a_head_whose_first_byte_comes_at_once_has_the_whole_read_timeout_to_finish() {
     let mut setup = Setup::new("slow-head", SERVE);
     let address = setup.start(&["serve", &setup.factory()]);

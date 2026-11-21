@@ -40,7 +40,7 @@ A task gets its resources at these moments:
 | A wait of its names a Linear issue or a Slack thread | that issue or thread | `linear:ENG-7`, `slack:C0123:1763500000.000100` |
 | It subscribes, with the `subscribe` tool or `priory subscribe` | that resource, until `unsubscribe` | `github:owner/name#57` |
 | Its `open-pr` opens a pull request | that pull request, subscribed, and each pull request of its stack | `github:owner/name#57` |
-| The first GitHub event of an open pull request names its branch, or a branch named after it, as the head | that pull request, subscribed, unless another active task owns it | `github:owner/name#58` |
+| The first GitHub event of an open pull request names a branch the task made, its own or one named after it, as the head | that pull request, subscribed, unless another active task owns it | `github:owner/name#58` |
 
 The last row is the claim. A worker that opens its pull request with `gh pr create` instead of
 `open-pr` still gets its reviews and comments, and its checks gate, once the intake reads an event of
@@ -50,6 +50,12 @@ the first event of a pull request claims it, so an `unsubscribe` from it holds.
 A head named after the task's branch, such as `priory/3-api` for task 3, is claimed too when the
 pull request's base is the trunk or another branch of the task. The trunk is any branch outside
 `priory/`. So a stack the worker opens itself, with `gh stack` for example, is the task's.
+
+The name alone claims nothing. The head must be a branch in the task's worktree, which its worker
+made, and the event's `head_repo`, when it has one, must be the pull request's own repository. So a
+pull request from a fork, or from a branch someone else pushed under a task's name, joins no stack.
+A fork's branch is not a resource of the event at all, so its events reach no task by branch. A
+task whose worktree the sweep removed claims no new pull request.
 
 ### Stacks
 
@@ -123,6 +129,7 @@ Each inbox entry gets one of these outcomes:
 | Any other, with an active task owning a resource it names | `kept` | that task                   |
 | `factory.task.requested`, no active task  | `created` | a new task, `queued` at its workflow's start |
 | `factory.task.requested`, malformed       | `ignored` | none                                         |
+| A GitHub comment or review whose `association` is not `OWNER`, `MEMBER` or `COLLABORATOR` | `outsider` | none: it wakes, reopens, claims and reaches no task |
 | A task request whose key no runner holds, with several runners | `claiming` | none until this runner's claim wins (see [runners.md](runners.md)) |
 | A task request whose key another runner holds | `elsewhere` | none                                    |
 | `priory.task.claimed` that wins its key   | `claimed` | the task this runner creates, when it is the new owner |
@@ -225,4 +232,8 @@ Limits:
   such as the subscription to its key (see [watches.md](../intake/watches.md)).
 - The intake publishes no bot's comment, and only feedback after the task was done reopens it. A
   person who comments as the same GitHub account Priory acts as reopens it like anyone else.
+- Only feedback from someone with write access to the repository reopens or wakes a task: GitHub's
+  `author_association` must be `OWNER`, `MEMBER` or `COLLABORATOR`. A stranger's comment on a public
+  repository stays in the inbox as `outsider`, for a person to read with `priory inbox`. No factory
+  setting lets other authors through.
 

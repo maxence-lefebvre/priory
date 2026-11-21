@@ -86,7 +86,7 @@ pub(crate) fn handle(
         },
         _ => return Ok(None),
     };
-    record(tx, message, None, outcome)?;
+    crate::state::record(tx, message, None, outcome, None)?;
     Ok(Some(None))
 }
 
@@ -145,7 +145,7 @@ fn claimed(
         alive,
     });
     if !wins(&claim, held.as_ref()) {
-        record(tx, message, None, "refused")?;
+        crate::state::record(tx, message, None, "refused", None)?;
         return Ok(None);
     }
     let request = data["request"]
@@ -179,7 +179,7 @@ fn claimed(
         kill = kill.or(crate::state::handle_in(tx, &request, trace, counter)?);
     }
     let task = crate::state::keyed(tx, Some(&key.to_owned()))?.map(|task| task.id);
-    record(tx, message, task.filter(|_| runner == me), "claimed")?;
+    crate::state::record(tx, message, task.filter(|_| runner == me), "claimed", None)?;
     Ok(kill)
 }
 
@@ -285,29 +285,6 @@ fn owner(tx: &Transaction, key: &str) -> rusqlite::Result<Option<Owned>> {
         },
     )
     .optional()
-}
-
-fn record(
-    tx: &Transaction,
-    message: &Message,
-    task: Option<i64>,
-    outcome: &str,
-) -> rusqlite::Result<()> {
-    tx.execute(
-        "INSERT INTO inbox (id, type, subject, time, data, links, task, outcome)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-        params![
-            message.id.to_string(),
-            message.kind,
-            message.subject,
-            message.time.to_string(),
-            message.data.to_string(),
-            serde_json::to_string(&message.links).expect("links serialize"),
-            task,
-            outcome
-        ],
-    )?;
-    Ok(())
 }
 
 /// A message of `kind` whose id derives from `name`, so a runner that sends it again adds nothing.

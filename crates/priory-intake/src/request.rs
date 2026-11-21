@@ -416,6 +416,28 @@ impl Request {
     pub fn key(&self) -> &str {
         &self.key
     }
+
+    /// What the request starts, as a person reads it before they trust it: its key, workflow,
+    /// repository, who answers its asks, its hold and its text.
+    pub fn summary(&self) -> String {
+        let repo = self
+            .repo
+            .as_deref()
+            .unwrap_or("the cli trigger's repository");
+        let intervention = self
+            .intervention
+            .map_or("the cli trigger's", |intervention| intervention.as_str());
+        let hold = self.hold.as_ref().map_or(String::new(), |hold| {
+            format!(
+                ", held {}",
+                serde_json::to_string(hold).expect("a hold serializes")
+            )
+        });
+        format!(
+            "task cli:{} in workflow {} on {repo}, {intervention} intervention{hold}: {}",
+            self.key, self.workflow, self.text
+        )
+    }
 }
 
 /// Why `factory` refuses `request`, if it does.

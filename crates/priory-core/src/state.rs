@@ -12,7 +12,7 @@ use std::collections::BTreeMap;
 use std::io::Write;
 use std::time::Duration;
 
-const VERSION: i64 = 64;
+const VERSION: i64 = 65;
 
 const SCHEMA: &str = "
 CREATE TABLE tasks (
@@ -1107,7 +1107,33 @@ ALTER TABLE tasks ADD COLUMN verification TEXT;
 PRAGMA user_version = 63;
 ";
 
+// Migration 58 named every old wait withdrawn as -2 `sibling-fired`, which also meant an answer, a
+// dismiss or a stack ask. A wait whose run had no fired wait was withdrawn by its run's dismissed or
+// answered ask; a gate of a task none of whose gates fired, by a stack ask. Since 58 every
+// `sibling-fired` wait has a fired sibling, so these rows are old ones only.
+// A lead task that blocks sent its ask back to the person, so it is dropped: no resume can answer.
+// Already blocked lead tasks drop too.
 const SCHEMA_64: &str = "
+CREATE TRIGGER IF NOT EXISTS a_blocked_lead_drops AFTER UPDATE OF state ON tasks
+  WHEN NEW.trigger = 'priory/lead' AND NEW.state = 'blocked' BEGIN
+  UPDATE tasks SET state = 'dropped' WHERE id = NEW.id;
+END;
+UPDATE tasks SET state = 'dropped' WHERE trigger = 'priory/lead' AND state = 'blocked';
+UPDATE waits SET withdrawn_reason = CASE
+    WHEN EXISTS (SELECT 1 FROM asks WHERE asks.run = waits.run AND asks.withdrawn_reason = 'dismissed')
+      THEN 'dismissed'
+    WHEN EXISTS (SELECT 1 FROM asks WHERE asks.run = waits.run AND asks.answer IS NOT NULL)
+      THEN 'answered-elsewhere'
+    ELSE withdrawn_reason END
+  WHERE withdrawn_reason = 'sibling-fired' AND NOT daemon AND NOT EXISTS (SELECT 1 FROM waits AS
+    sibling WHERE sibling.run = waits.run AND NOT sibling.daemon AND sibling.fired IS NOT NULL);
+UPDATE waits SET withdrawn_reason = 'asked'
+  WHERE withdrawn_reason = 'sibling-fired' AND daemon AND NOT EXISTS (SELECT 1 FROM waits AS
+    sibling WHERE sibling.task = waits.task AND sibling.daemon AND sibling.fired IS NOT NULL);
+PRAGMA user_version = 64;
+";
+
+const SCHEMA_65: &str = "
 CREATE TABLE IF NOT EXISTS claims (
   key       TEXT PRIMARY KEY,
   runner    TEXT NOT NULL,
@@ -1123,7 +1149,7 @@ CREATE TABLE IF NOT EXISTS sends (
   id      INTEGER PRIMARY KEY,
   message TEXT NOT NULL
 );
-PRAGMA user_version = 64;
+PRAGMA user_version = 65;
 ";
 
 /// Each schema change in order: a file at version `n` applies those from index `n` on.
@@ -1135,7 +1161,7 @@ const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA_34, SCHEMA_35, SCHEMA_36, SCHEMA_37, SCHEMA_38, SCHEMA_39, SCHEMA_40, SCHEMA_41,
     SCHEMA_42, SCHEMA_43, SCHEMA_44, SCHEMA_45, SCHEMA_46, SCHEMA_47, SCHEMA_48, SCHEMA_49,
     SCHEMA_50, SCHEMA_51, SCHEMA_52, SCHEMA_53, SCHEMA_54, SCHEMA_55, SCHEMA_56, SCHEMA_57,
-    SCHEMA_58, SCHEMA_59, SCHEMA_60, SCHEMA_61, SCHEMA_62, SCHEMA_63, SCHEMA_64,
+    SCHEMA_58, SCHEMA_59, SCHEMA_60, SCHEMA_61, SCHEMA_62, SCHEMA_63, SCHEMA_64, SCHEMA_65,
 ];
 
 /// The order the queue starts tasks in: band, then a person's order, then age. A band the factory
@@ -1283,6 +1309,10 @@ pub(crate) fn handle_in(
     if seen.is_some() {
         return Ok(None);
     }
+    if route::outsider(message) {
+        record(tx, message, None, "outsider", None)?;
+        return Ok(None);
+    }
     if let Some(me) = trace.runner.as_deref()
         && let Some(kill) = crate::runners::handle(tx, message, me, trace, counter)?
     {
@@ -1415,22 +1445,7 @@ pub(crate) fn handle_in(
     } else {
         None
     };
-    tx.execute(
-        "INSERT INTO inbox (id, type, subject, time, data, links, task, outcome, outbox)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
-        params![
-            message.id.to_string(),
-            message.kind,
-            message.subject,
-            message.time.to_string(),
-            message.data.to_string(),
-            serde_json::to_string(&message.links).expect("links serialize"),
-            task,
-            outcome,
-            outbox
-        ],
-    )?;
-    let seq = tx.last_insert_rowid();
+    let seq = record(tx, message, task, outcome, outbox)?;
     crate::grades::label(tx, trace, message)?;
     if message.kind == "linear.view.changed" {
         crate::post::report(tx, "linear", &refiltered(&message.data))?;
@@ -1493,6 +1508,32 @@ pub(crate) fn handle_in(
     Ok(None)
 }
 
+/// Stores `message` in the inbox with the task it went to and its outcome, and returns its seq.
+pub(crate) fn record(
+    tx: &Transaction,
+    message: &Message,
+    task: Option<i64>,
+    outcome: &str,
+    outbox: Option<i64>,
+) -> rusqlite::Result<i64> {
+    tx.execute(
+        "INSERT INTO inbox (id, type, subject, time, data, links, task, outcome, outbox)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+        params![
+            message.id.to_string(),
+            message.kind,
+            message.subject,
+            message.time.to_string(),
+            message.data.to_string(),
+            serde_json::to_string(&message.links).expect("links serialize"),
+            task,
+            outcome,
+            outbox
+        ],
+    )?;
+    Ok(tx.last_insert_rowid())
+}
+
 /// Subscribes the task whose branch is the head of the open pull request `message` names, on the
 /// first event of that pull request, when no other active task owns it, and adds it to its stack.
 /// A head named after the task's branch, `priory/7-api`, counts too when its base is the trunk (a
@@ -1510,11 +1551,14 @@ fn claim_pull_request(tx: &Transaction, message: &Message) -> rusqlite::Result<(
     if !message.kind.starts_with("github.") || message.kind == CLOSED || data["open"] == false {
         return Ok(());
     }
+    if data.get("head_repo").is_some_and(|head| head != repo) {
+        return Ok(());
+    }
     let resource = route::pull_request(repo, number);
     let base = data["base_branch"].as_str().unwrap_or_default();
     let claimer = tx
         .query_row(
-            "SELECT owns.task FROM owns JOIN tasks ON tasks.id = owns.task
+            "SELECT owns.task, tasks.worktree FROM owns JOIN tasks ON tasks.id = owns.task
              WHERE owns.resource GLOB 'github:*@*' AND tasks.state NOT IN ('failed', 'dropped')
              AND (owns.resource = ?2 OR (?2 GLOB owns.resource || '-?*'
                AND (?5 NOT GLOB 'priory/*' OR ('github:' || ?3 || '@' || ?5) = owns.resource
@@ -1523,7 +1567,7 @@ fn claim_pull_request(tx: &Transaction, message: &Message) -> rusqlite::Result<(
                WHERE owned.resource = ?1 AND owned.task != owns.task
                AND other.state NOT IN ('done', 'failed', 'dropped'))
              AND NOT EXISTS (SELECT 1 FROM inbox WHERE json_extract(data, '$.repo') = ?3
-               AND json_extract(data, '$.pull_request') = ?4)
+               AND json_extract(data, '$.pull_request') = ?4 AND outcome != 'outsider')
              ORDER BY owns.task DESC LIMIT 1",
             params![
                 resource,
@@ -1532,10 +1576,16 @@ fn claim_pull_request(tx: &Transaction, message: &Message) -> rusqlite::Result<(
                 number as i64,
                 base
             ],
-            |row| row.get::<_, i64>(0),
+            |row| Ok((row.get::<_, i64>(0)?, row.get::<_, Option<String>>(1)?)),
         )
         .optional()?;
-    let Some(task) = claimer else {
+    // Only a branch the task made in its worktree is its own: a same-named one is someone else's.
+    let made = |worktree: &str| {
+        priory_runtime::runtime::head(std::path::Path::new(worktree), head).is_some()
+    };
+    let Some((task, Some(_))) =
+        claimer.filter(|(_, worktree)| worktree.as_deref().is_some_and(made))
+    else {
         return Ok(());
     };
     tx.execute(
@@ -1600,7 +1650,9 @@ fn delivered(
     );
     // An event the task keeps that was written while it ran, such as the agent's own comment,
     // wakes nothing: its next wake carries it. To the second, as waits: the last second is after.
+    // A comment the intake knows another login wrote is a person's, whenever it was written.
     let fresh: bool = kept.is_none()
+        || message.data["own"] == false
         || tx.query_row(
             "SELECT NOT EXISTS (SELECT 1 FROM runs WHERE id = (SELECT max(id) FROM runs WHERE task = ?1)
                AND julianday(?2) >= (SELECT julianday(min(started)) FROM runs WHERE task = ?1)
@@ -1738,8 +1790,8 @@ pub(crate) fn due(db: &mut Connection) -> rusqlite::Result<()> {
 }
 
 /// The resource and the agent's last prompt of each open wait that the intake polls for, then the
-/// pull request or Linear issue and creation time of each unmet merge or issue condition of a hold,
-/// then each subscription of a task that has not failed or been dropped, then the branch of each
+/// pull request or Linear issue and creation time of each unmet merge condition and each issue
+/// condition of an open hold, met or not, then each subscription of a task that has not failed or been dropped, then the branch of each
 /// active task, or of a task done in the last 10 minutes whose branch no event named yet, so the
 /// intake sees a pull request its worker opened itself.
 pub fn watched(db: &Connection) -> rusqlite::Result<Vec<(String, String)>> {
@@ -1753,7 +1805,8 @@ pub fn watched(db: &Connection) -> rusqlite::Result<Vec<(String, String)>> {
            UNION ALL
            SELECT 1, holds.id, holds.resource, holds.created FROM holds
            JOIN tasks ON tasks.id = holds.task AND tasks.state NOT IN ('done', 'failed', 'dropped')
-           WHERE holds.kind IN ('merge', 'issue') AND holds.released IS NULL AND holds.met IS NULL
+           WHERE holds.kind IN ('merge', 'issue') AND holds.released IS NULL
+           AND (holds.met IS NULL OR holds.kind = 'issue')
            UNION ALL
            SELECT 2, subscriptions.rowid, subscriptions.resource, subscriptions.created
            FROM subscriptions
@@ -1766,8 +1819,8 @@ pub fn watched(db: &Connection) -> rusqlite::Result<Vec<(String, String)>> {
            JOIN tasks ON tasks.id = owns.task
            WHERE owns.resource GLOB 'github:*@*' AND (tasks.state NOT IN ('done', 'failed', 'dropped')
              OR (tasks.state = 'done' AND julianday('now') - julianday(tasks.changed) < 10.0 / 1440
-               AND NOT EXISTS (SELECT 1 FROM inbox WHERE owns.resource = 'github:'
-                 || json_extract(inbox.data, '$.repo') || '@' || json_extract(inbox.data, '$.head_branch'))))
+               AND NOT EXISTS (SELECT 1 FROM inbox WHERE inbox.outcome != 'outsider' AND owns.resource =
+                 'github:' || json_extract(inbox.data, '$.repo') || '@' || json_extract(inbox.data, '$.head_branch'))))
          ) ORDER BY source, id",
     )?
     .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
