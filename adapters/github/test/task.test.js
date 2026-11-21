@@ -51,6 +51,15 @@ test("Update branch names only the branch of a task that owns the pull request, 
   assert.deepEqual(fixBranch(keyed, ["key"], PR), { branch: "fix-docs", base: "main" });
 });
 
+test("a page that writes the repository in another case still finds the task's stack entry", () => {
+  const upper = { resource: "github:Owner/Repo#7", url: "https://github.com/Owner/Repo/pull/7" };
+  const stacked = { stack: [{ pull_request: PR.resource, branch: "priory/12", base: "main" }] };
+  const keyed = { stack: [], pull_request: { url: PR.url, branch: "fix-docs", base: "main" } };
+
+  assert.deepEqual(fixBranch(stacked, ["stack"], upper), { branch: "priory/12", base: "main" });
+  assert.deepEqual(fixBranch(keyed, ["key"], upper), { branch: "fix-docs", base: "main" });
+});
+
 test("a task that only waits on, reviews or subscribes to the pull request gets no branch, nor its own", () => {
   const own = { branch: "priory/12", stack: [], pull_request: { url: "https://github.com/owner/repo/pull/9", branch: "priory/12", base: "main" } };
 

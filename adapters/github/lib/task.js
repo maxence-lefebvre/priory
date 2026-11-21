@@ -25,7 +25,9 @@ export function sayRoute(task, flows) {
  */
 export function fixBranch(task, holds, pr) {
   if (!holds?.includes("key") && !holds?.includes("stack")) return null;
-  const pull = task.stack?.find((entry) => entry.pull_request === pr.resource) ?? (task.pull_request?.url === pr.url ? task.pull_request : null);
+  // GitHub's owner and repository names ignore case, so a page's URL may not match Priory's.
+  const same = (a, b) => a?.toLowerCase() === b.toLowerCase();
+  const pull = task.stack?.find((entry) => same(entry.pull_request, pr.resource)) ?? (same(task.pull_request?.url, pr.url) ? task.pull_request : null);
   return pull?.branch ? { branch: pull.branch, base: pull.base ?? "main" } : null;
 }
 
