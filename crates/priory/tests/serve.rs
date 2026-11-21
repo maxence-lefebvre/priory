@@ -4341,7 +4341,7 @@ fn use_factory(setup: &Setup, from: &Path) {
 }
 
 #[test]
-fn the_flows_endpoint_carries_check_explains_json_and_each_workflows_graph() {
+fn the_flows_endpoint_serves_check_explains_json_and_each_graph_as_priory_flows_prints_them() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let factories = [
         root.join("examples/groom"),
@@ -4354,6 +4354,10 @@ fn the_flows_endpoint_carries_check_explains_json_and_each_workflows_graph() {
 
         let flows = api(&address, "/api/flows");
 
+        let twin = setup.priory(&["flows", &setup.factory(), "--json"]);
+        succeeded(&twin);
+        let twin: Value = serde_json::from_slice(&twin.stdout).unwrap();
+        assert_eq!(twin, flows, "{from:?}: priory flows --json");
         let explain = setup.priory(&["check", &setup.factory(), "--explain", "--json"]);
         succeeded(&explain);
         let explain: Value = serde_json::from_slice(&explain.stdout).unwrap();
