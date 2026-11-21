@@ -35,6 +35,15 @@ fn the_review_example_writes_a_pending_review_and_asks_to_submit_it() {
 }
 
 #[test]
+fn the_ship_and_watch_example_watches_a_merged_change_and_announces_it_once_approved() {
+    let examples = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/ship-and-watch");
+
+    let played = Play::run("ci", &examples, &examples.join("e2e/merged.toml"));
+
+    played.check();
+}
+
+#[test]
 #[ignore = "plays the factory PRIORY_E2E_FACTORY names through the scenario PRIORY_E2E_SCENARIO names"]
 fn a_factory_plays_the_scenario_the_environment_names() {
     let examples = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/groom");
@@ -473,8 +482,8 @@ impl Play {
             .as_array()
             .and_then(|asks| asks.iter().find(|ask| ask["task"] == task["id"]))
             .unwrap_or_else(|| panic!("task {} has no ask: {asks}", task["id"]));
-        let id = ask["id"].to_string();
-        let output = self.priory(&["answer", &id, option]);
+        let (id, revision) = (ask["id"].to_string(), ask["revision"].to_string());
+        let output = self.priory(&["answer", "--revision", &revision, &id, option]);
         assert!(output.status.success(), "answer: {output:?}");
     }
 
