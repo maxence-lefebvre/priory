@@ -320,10 +320,19 @@ impl Setup {
 
     /// Waits until `done` holds for this runner's rows of `priory tasks`.
     fn until_own_tasks(&self, done: impl Fn(&[Vec<String>]) -> bool) -> Vec<Vec<String>> {
+        self.within_own_tasks(60, done)
+    }
+
+    /// Waits up to `seconds` until `done` holds for this runner's rows of `priory tasks`.
+    fn within_own_tasks(
+        &self,
+        seconds: u64,
+        done: impl Fn(&[Vec<String>]) -> bool,
+    ) -> Vec<Vec<String>> {
         let own = |rows: &[Vec<String>]| -> Vec<Vec<String>> {
             rows.iter().filter(|row| row[0] != "-").cloned().collect()
         };
-        own(&self.until("tasks", |rows| done(&own(rows))))
+        own(&self.within(seconds, "tasks", |rows| done(&own(rows))))
     }
 
     fn within(
