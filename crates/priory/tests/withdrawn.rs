@@ -1,5 +1,5 @@
-//! Why an ask or wait was withdrawn, kept in `withdrawn_reason` and backfilled from the sentinel
-//! values `withdrawn` held before version 58.
+//! Why and when an ask or wait was withdrawn, kept in `withdrawn_reason` and `withdrawn_at`, and
+//! backfilled from the sentinel values `withdrawn` held before version 58 and the withdrawal log.
 
 use serde_json::Value;
 use std::path::{Path, PathBuf};
@@ -50,7 +50,10 @@ fn as_version_57(db: &rusqlite::Connection) {
         .unwrap();
     }
     db.execute_batch(
-        "DROP TRIGGER ask_returns_from_its_lead; DROP TRIGGER push_an_intake_failure;
+        "ALTER TABLE deliveries DROP COLUMN cleared; ALTER TABLE snoozes DROP COLUMN ended;
+         DROP TRIGGER ask_withdrawn_at; DROP TRIGGER wait_withdrawn_at;
+         ALTER TABLE asks DROP COLUMN withdrawn_at; ALTER TABLE waits DROP COLUMN withdrawn_at;
+         DROP TRIGGER ask_returns_from_its_lead; DROP TRIGGER push_an_intake_failure;
          DROP TRIGGER push_an_uncertain_prompt; DROP TRIGGER push_an_uncertain_command;
          ALTER TABLE waits DROP COLUMN green; ALTER TABLE tasks DROP COLUMN files;
          ALTER TABLE tasks DROP COLUMN files_run; ALTER TABLE tasks DROP COLUMN merge_risk;
@@ -115,6 +118,24 @@ fn an_upgrade_names_the_reason_each_sentinel_meant() {
         logged,
         ["dismissed", "sibling-fired", "moved-on", "revived"]
     );
+    let logged_at: Vec<Value> = db
+        .prepare("SELECT created FROM ask_withdrawals ORDER BY ask")
+        .unwrap()
+        .query_map([], |row| row.get::<_, String>(0))
+        .unwrap()
+        .map(|at| Value::from(at.unwrap()))
+        .collect();
+    let at = |list: &str| -> Vec<Value> {
+        task[list]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|row| row["withdrawn_at"].clone())
+            .collect()
+    };
+    // The log holds when each ask was withdrawn; nothing held it for a wait.
+    assert_eq!(at("asks"), logged_at);
+    assert_eq!(at("waits"), [Value::Null, Value::Null, Value::Null]);
 }
 
 #[test]

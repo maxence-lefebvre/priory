@@ -165,7 +165,7 @@ fn asks_query() -> String {
      coalesce(tasks.key, asks.key) AS key, asks.step, tasks.lane, tasks.band, tasks.repo, asks.run,
      CASE WHEN asks.withdrawn IS NOT NULL THEN 'withdrawn'
        WHEN asks.answer IS NOT NULL THEN 'answered' ELSE 'open' END AS state,
-     asks.withdrawn_reason,
+     asks.withdrawn_reason, asks.withdrawn_at,
      CASE asks.withdrawn_reason WHEN 'sibling-fired' THEN 'a wait of its run fired first'
        WHEN 'moved-on' THEN 'a later run called another tool'
        WHEN 'revived' THEN 'its task was revived' ELSE asks.withdrawn_reason END AS withdrawn_why,
@@ -190,7 +190,7 @@ fn asks_query() -> String {
    LEFT JOIN snoozes ON snoozes.kind = 'ask' AND snoozes.item = asks.id
    WHERE (?1 IS NULL OR asks.task = ?1) AND (?2 IS NULL OR asks.id = ?2)
      AND (?3 IS NULL OR (asks.answer IS NULL AND asks.withdrawn IS NULL)
-       OR coalesce(asks.answered, asks.created) >= ?3)
+       OR coalesce(asks.answered, asks.withdrawn_at, asks.created) >= ?3)
    ORDER BY asks.id",
         snooze::FIELDS
     )
@@ -340,7 +340,7 @@ pub fn asks(db: &Connection, bands: &[&str], risks: &[&str]) -> rusqlite::Result
 
 /// As `asks`, with only the open asks and those closed since `since` when it is given, and the
 /// number of answered and withdrawn asks left out as `older`. A withdrawn ask counts as closed
-/// when it was asked: the state keeps no time for a withdrawal.
+/// when it was withdrawn, or when it was asked if it was withdrawn before schema 70 kept the time.
 pub fn recent_asks(
     db: &Connection,
     bands: &[&str],
@@ -353,7 +353,7 @@ pub fn recent_asks(
                count(*) FILTER (WHERE asks.withdrawn IS NOT NULL)
              FROM asks LEFT JOIN tasks ON tasks.id = asks.task
              WHERE (asks.answer IS NOT NULL OR asks.withdrawn IS NOT NULL)
-               AND coalesce(asks.answered, asks.created) < ?1
+               AND coalesce(asks.answered, asks.withdrawn_at, asks.created) < ?1
                AND (?2 = '[]' OR tasks.band IN (SELECT value FROM json_each(?2)))",
             params![since, json!(bands).to_string()],
             |row| Ok((row.get(0)?, row.get(1)?)),
@@ -366,7 +366,10 @@ pub fn recent_asks(
                 .into_iter()
                 .flatten()
                 .filter(|ask| {
-                    let closed = ask["answered_at"].as_str().or(ask["since"].as_str());
+                    let closed = ask["answered_at"].as_str();
+                    let closed = closed
+                        .or(ask["withdrawn_at"].as_str())
+                        .or(ask["since"].as_str());
                     ask["state"] == state && closed.is_some_and(|closed| closed < since)
                 })
                 .count() as i64
@@ -1021,7 +1024,7 @@ pub fn task(db: &Connection, id: i64) -> rusqlite::Result<Option<Value>> {
         (
             "waits",
             "SELECT id, run, kind, resource, until, target, created, fired, withdrawn,
-               withdrawn_reason
+               withdrawn_reason, withdrawn_at
              FROM waits WHERE task = ?1 ORDER BY id",
         ),
         (

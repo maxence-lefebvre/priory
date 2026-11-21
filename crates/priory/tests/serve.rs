@@ -1027,7 +1027,10 @@ fn the_asks_endpoint_leaves_out_asks_closed_over_a_week_ago_unless_asked_for_all
            (1, 'implement', 'agent', 'Recent?', '[]', 'no', '2026-11-15T09:00:00Z',
              '2026-11-01T08:00:00Z');
          INSERT INTO asks (task, step, kind, question, options, withdrawn, withdrawn_reason, created)
-           VALUES (1, 'implement', 'agent', 'Gone?', '[]', 1, 'dismissed', '2026-11-02T08:00:00Z');",
+           VALUES (1, 'implement', 'agent', 'Gone?', '[]', 1, 'dismissed', '2026-11-02T08:00:00Z');
+         INSERT INTO asks (task, step, kind, question, options, created)
+           VALUES (1, 'implement', 'agent', 'Lately gone?', '[]', '2026-11-02T08:00:00Z');
+         UPDATE asks SET withdrawn = 1, withdrawn_reason = 'dismissed' WHERE id = 5;",
     )
     .unwrap();
     let address = setup.start(&["serve", &setup.factory()]);
@@ -1043,9 +1046,11 @@ fn the_asks_endpoint_leaves_out_asks_closed_over_a_week_ago_unless_asked_for_all
     let recent = api(&address, "/api/asks");
     let all = api(&address, "/api/asks?all=1");
 
-    assert_eq!(ids(&recent), [1, 3]);
+    // An ask withdrawn now ages from its withdrawal, however old it is.
+    assert_eq!(ids(&recent), [1, 3, 5]);
+    assert!(recent["asks"][2]["withdrawn_at"].is_string(), "{recent}");
     assert_eq!(recent["older"], json!({ "answered": 1, "withdrawn": 1 }));
-    assert_eq!(ids(&all), [1, 2, 3, 4]);
+    assert_eq!(ids(&all), [1, 2, 3, 4, 5]);
     assert_eq!(all["older"], json!({ "answered": 0, "withdrawn": 0 }));
     assert_eq!(all["asks"], json_of(&setup, "asks")["asks"]);
     assert_eq!(get(&address, "/api/asks?all=yes", Some(TOKEN)).0, 400);

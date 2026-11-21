@@ -1182,11 +1182,27 @@ const SCHEMA_69: &str = "PRAGMA user_version = 69;
 
 // When a person cleared a failed delivery from the desk with `priory deliver --clear`, and when
 // the daemon saw a snooze end, so it traces each end once. Snoozes already over count as seen.
+// When an ask or wait was withdrawn, stamped by trigger at every write that withdraws one, and
+// backfilled from the withdrawal log. `withdrawn` stays: about 60 queries still test it for null.
 const SCHEMA_70: &str = "
 ALTER TABLE deliveries ADD COLUMN cleared TEXT;
 ALTER TABLE snoozes ADD COLUMN ended TEXT;
 UPDATE snoozes SET ended = coalesce(back, until)
   WHERE back IS NOT NULL OR until <= strftime('%Y-%m-%dT%H:%M:%SZ', 'now');
+ALTER TABLE asks ADD COLUMN withdrawn_at TEXT;
+ALTER TABLE waits ADD COLUMN withdrawn_at TEXT;
+UPDATE asks SET withdrawn_at = (SELECT max(created) FROM ask_withdrawals WHERE ask = asks.id)
+  WHERE withdrawn IS NOT NULL;
+CREATE TRIGGER ask_withdrawn_at AFTER UPDATE OF withdrawn ON asks
+  WHEN NEW.withdrawn IS NOT OLD.withdrawn BEGIN
+  UPDATE asks SET withdrawn_at = CASE WHEN NEW.withdrawn IS NOT NULL
+    THEN strftime('%Y-%m-%dT%H:%M:%SZ', 'now') END WHERE id = NEW.id;
+END;
+CREATE TRIGGER wait_withdrawn_at AFTER UPDATE OF withdrawn ON waits
+  WHEN NEW.withdrawn IS NOT OLD.withdrawn BEGIN
+  UPDATE waits SET withdrawn_at = CASE WHEN NEW.withdrawn IS NOT NULL
+    THEN strftime('%Y-%m-%dT%H:%M:%SZ', 'now') END WHERE id = NEW.id;
+END;
 PRAGMA user_version = 70;
 ";
 

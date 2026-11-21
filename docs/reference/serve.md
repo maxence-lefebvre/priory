@@ -229,8 +229,9 @@ and repeats the same way, and an ask matches when it carries any of the risks as
 gets `400`. Both filters together keep the asks that match each. `priory asks --band BAND` and
 `priory asks --risk RISK` filter the same way and refuse the same values.
 
-Without `all=1`, `asks` holds the open asks and the asks answered or asked in the last 7 days. The
-state keeps no time for a withdrawal, so a withdrawn ask counts from when it was asked. `older` is
+Without `all=1`, `asks` holds the open asks and the asks answered or withdrawn in the last 7 days.
+An ask withdrawn before Priory kept `withdrawn_at`, with no withdrawal on record, counts from when it
+was asked. `older` is
 an object: `answered` and `withdrawn`, the number of each left out, within `band` and `risk` when they are given.
 
 | Field | Type | Meaning |
@@ -242,6 +243,7 @@ an object: `answered` and `withdrawn`, the number of each left out, within `band
 | `run` | integer or null | The run that asked |
 | `state` | string | `open`, `answered` or `withdrawn` |
 | `withdrawn_reason` | string or null | Why a withdrawn ask closed, one of the [withdrawal reasons](../daemon/waits.md#why-an-ask-or-wait-was-withdrawn): `dismissed`, `sibling-fired`, `moved-on` or `revived` |
+| `withdrawn_at` | string or null | When the ask was withdrawn, in UTC. Null for an ask withdrawn before Priory kept the time, with no withdrawal on record |
 | `withdrawn_why` | string or null | `withdrawn_reason` in words: `dismissed`, `a wait of its run fired first`, `a later run called another tool` or `its task was revived` |
 | `revision` | integer | The question's revision. `priory answer` and `priory dismiss` take it |
 | `question` | string | The question |
@@ -348,7 +350,7 @@ and these arrays, oldest first:
 | `runs` | `id`, `step`, `agent`, `tmux`, `session`, `started`, `ended`, `end`, `outcome` (its result's, or null), `tokens` (the tokens its step used, as the `factory.step.ended` trace record holds them, or null) |
 | `steps` | A code step's action: `id`, `step`, `action`, `status`, `pull_request`, `commit_sha`, `error`, `created` |
 | `asks` | An ask, as in [Asks](#asks) |
-| `waits` | `id`, `run`, `kind`, `resource`, `until`, `target`, `created`, `fired`, `withdrawn` (1 once withdrawn, else null), `withdrawn_reason` (see [withdrawal reasons](../daemon/waits.md#why-an-ask-or-wait-was-withdrawn)) |
+| `waits` | `id`, `run`, `kind`, `resource`, `until`, `target`, `created`, `fired`, `withdrawn` (1 once withdrawn, else null), `withdrawn_reason` (see [withdrawal reasons](../daemon/waits.md#why-an-ask-or-wait-was-withdrawn)), `withdrawn_at` (when, in UTC; null for a wait withdrawn before Priory kept the time) |
 | `results` | `run`, `step`, `outcome`, `summary`, `evidence`, `commit_sha`, `reason`, `merge_risk` (a risk step's verdict and lines, else null), `created` |
 | `subscriptions` | `resource`, `created`: what the task subscribes to now. Empty once it fails or is dropped |
 
