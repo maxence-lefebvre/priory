@@ -10737,7 +10737,6 @@ fn slack_message(ts: &str, user: &str) -> serde_json::Value {
     json!({ "ts": ts, "thread_ts": THREAD, "user": user, "text": format!("said {ts}") })
 }
 
-/// Slack's `ts` for `time`: seconds since the epoch, with six decimals.
 /// The instant the first wait counts events from: its task's last confirmed prompt.
 fn wait_since(setup: &Setup) -> herdr_bus::Timestamp {
     rusqlite::Connection::open(setup.dir.join("priory.db"))
@@ -10750,6 +10749,7 @@ fn wait_since(setup: &Setup) -> herdr_bus::Timestamp {
         .unwrap()
 }
 
+/// Slack's `ts` for `time`: seconds since the epoch, with six decimals.
 fn ts(time: herdr_bus::Timestamp) -> String {
     format!("{}.{:06}", time.as_second(), time.subsec_microsecond())
 }
