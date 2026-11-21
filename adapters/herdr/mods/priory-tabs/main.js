@@ -1,19 +1,13 @@
 import { View } from "gpui-kit";
 import { h_flex, Button } from "gpui-base";
 import { appHome, exec, focused, home as herdrHome, layout, notify, panes, readTextFile, run, settings, shared, spaces, theme as herdrTheme, window } from "herdr";
-import { reveal } from "./layout.js";
+import { buttons, reveal } from "./layout.js";
 import { priory } from "./priory.js";
 
 const theme = /** @type {() => Record<string, import("gpui-kit").Color>} */ (herdrTheme);
 
-// The bar's label for each panel, and for the main block, which shows the `terminal` panel.
-const LABELS = { desk: "Desk", asks: "Asks", queue: "Queue", tasks: "Tasks", runs: "Runs", inbox: "Inbox", reports: "Bonjour", workflow: "Flows", costs: "Costs", terminal: "Terminal" };
-
-/** @param {any} node @returns {string} a block's panel label, or its blocks' labels joined */
-const label = (node) => (node.children ? node.children.map(label).join(" · ") : LABELS[node.id === "main" ? "terminal" : node.content?.props?.panel] ?? node.id);
-
-/** @param {any} node @returns {any[]} every stack in the tree, in its order */
-const stacks = (node) => [...(node.type === "stack" ? [node] : []), ...(node.children ?? []).flatMap(stacks)];
+// The bar's label for each panel.
+const LABELS = { desk: "Desk", asks: "Asks", queue: "Queue", tasks: "Tasks", runs: "Runs", inbox: "Inbox", reports: "Bonjour", workflow: "Flows", costs: "Costs" };
 
 /** @param {any} node @param {string} id @returns {any} */
 function find(node, id) {
@@ -96,7 +90,7 @@ export default class PrioryTabs extends View {
       cx.spawn(async () => openTab("Task", "priory-task"));
     }
     const root = /** @type {{ traffic_lights?: number[] }} */ (layout()), w = window();
-    const sidebar = find(root, "sidebar"), view = find(root, "view");
+    const sidebar = find(root, "sidebar");
     // This bar is the top bar's first block, so it keeps clear of the macOS traffic lights.
     const lightsPadding = w?.platform === "macos" && w.titlebar === "none" && !w.fullscreen && root?.traffic_lights
       ? Math.max(10, (root.traffic_lights[0] + 64) / Number(settings().zoom || 1) - (sidebar?.hidden ? 0 : sidebar?.size?.px ?? 0))
@@ -108,16 +102,20 @@ export default class PrioryTabs extends View {
       .text_size(12).bg(on ? t.selected : t.chrome).text_color(on ? t.foreground : t.muted)
       .hover(s => s.bg(t.hover)).active(s => s.bg(t.selected)).focus(s => s.bg(t.selected))
       .on_mouse_down("left", stop).on_click(action).child(label);
-    // A child is shown when no stack above it shows another and nothing above it is hidden.
+    // A tab is shown when no stack above it shows another and nothing above it is hidden.
     const shown = (/** @type {string} */ id) => reveal(root, id).length === 0;
-    // The view beside main hides from its shown button; a view around main stays, or the terminals would go.
-    const toggle = (/** @type {string} */ id) => {
-      if (shown(id) && !find(view, "main")) return run("layout.hide", { id: "view" });
+    // An aside toggles. A shown tab gives the center back to main, or the terminals would stay hidden.
+    /** @param {{ id: string, aside: boolean }} item */
+    const press = ({ id, aside }) => {
+      if (aside) return run("layout.toggle", { id });
+      if (shown(id)) return run("layout.select", { stack: "center", child: "main" });
       for (const [command, args] of reveal(root, id)) run(command, args);
     };
-    // A view's stacks can hold more buttons than the bar's width.
+    const items = buttons(root);
+    // An installed layout from before the asides has none of their blocks, until `install` runs again.
+    if (!items.length) return h_flex().id("priory-bar").size_full().px(10).pl(lightsPadding).items_center().bg(t.chrome).border_b(1).border_color(t.border).text_size(12).text_color(t.muted).child("The installed layout is older than this bar: run install again");
+    // The panels can hold more buttons than the bar's width.
     return h_flex().id("priory-bar").overflow_x_scroll().size_full().min_w(0).px(10).pl(lightsPadding).gap(3).items_center().bg(t.chrome).border_b(1).border_color(t.border)
-      .children((view ? stacks(view) : []).flatMap((stack) => stack.children.map((/** @type {any} */ child) =>
-        button(child.id, label(child), shown(child.id), () => toggle(child.id)))));
+      .children(items.map((item) => button(item.id, LABELS[/** @type {keyof typeof LABELS} */ (item.panel)], shown(item.id), () => press(item))));
   }
 }
