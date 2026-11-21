@@ -661,7 +661,7 @@ fn mcp_config(exe: &Path, launch: &Launch) -> String {
 fn mcp_env(home: &Path) -> serde_json::Value {
     let mut env = json!({ "PRIORY_HOME": home });
     if let Some(run) = std::env::var_os("XDG_RUNTIME_DIR").filter(|run| !run.is_empty()) {
-        env["XDG_RUNTIME_DIR"] = json!(run);
+        env["XDG_RUNTIME_DIR"] = json!(run.to_string_lossy());
     }
     if let Some(db) = std::env::var_os("PRIORY_DB").and_then(|db| std::path::absolute(db).ok()) {
         env["PRIORY_DB"] = json!(db);
