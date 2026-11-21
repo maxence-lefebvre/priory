@@ -245,6 +245,14 @@
       "additionalProperties": false,
       "description": "The HTTP server over the factory's state, in the daemon and in `priory serve`.",
       "properties": {
+        "extension_origins": {
+          "default": [],
+          "description": "The browser extensions whose pages may write, by exact origin, such as\n`chrome-extension://<id>`. They still send the token.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
         "listen": {
           "default": "127.0.0.1:7340",
           "description": "The address and port to listen on; a loopback address unless `public` is set.",

@@ -195,6 +195,10 @@ pub struct Serve {
     /// Whether `listen` may be an address beyond this machine.
     #[serde(default)]
     pub public: bool,
+    /// The browser extensions whose pages may write, by exact origin, such as
+    /// `chrome-extension://<id>`. They still send the token.
+    #[serde(default)]
+    pub extension_origins: Vec<String>,
 }
 
 fn listen() -> SocketAddr {
@@ -210,8 +214,22 @@ fn web() -> bool {
 }
 
 impl Serve {
-    /// Refuses `listen` beyond this machine unless the factory says `public = true`.
+    /// Refuses `listen` beyond this machine unless the factory says `public = true`, and an
+    /// extension origin that is not exactly a Chromium extension's.
     pub fn allows(&self, listen: SocketAddr) -> Result<(), String> {
+        let id = |origin: &str| {
+            origin
+                .strip_prefix("chrome-extension://")
+                .is_some_and(|id| {
+                    id.len() == 32 && id.bytes().all(|byte| (b'a'..=b'p').contains(&byte))
+                })
+        };
+        if let Some(bad) = self.extension_origins.iter().find(|origin| !id(origin)) {
+            return Err(format!(
+                "`[serve] extension_origins` {bad} is not a Chromium extension's origin, \
+                 `chrome-extension://` and its 32-letter id"
+            ));
+        }
         if listen.ip().is_loopback() || self.public {
             return Ok(());
         }

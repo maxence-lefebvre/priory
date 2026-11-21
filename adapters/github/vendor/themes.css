@@ -1,0 +1,193 @@
+/*
+ * Theme tokens for Priory's web view (DESIGN.md, "Themes").
+ * A theme sets colors and the three font roles, nothing else. Each color is one
+ * light-dark() pair, so the mode follows color-scheme:
+ *   <html data-theme="indigo|ink|parchment|abbey" data-mode="system|light|dark">
+ * The same attributes on any element scope a theme to it, as the Appearance previews do.
+ * Indigo is the default. Every theme defines every token below.
+ */
+:root, [data-mode="system"] { color-scheme: light dark; }
+[data-mode="light"] { color-scheme: light; }
+[data-mode="dark"] { color-scheme: dark; }
+
+/* Indigo (default): ink emphasis, indigo action */
+:root, [data-theme="indigo"] {
+  --font-display: "Mona Sans", system-ui, sans-serif;
+  --font-ui: "Mona Sans", system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, monospace;
+  --display-stretch: 112%; --count-stretch: 125%; --count-weight: 850; --count-tracking: -6px;
+
+  --bg: light-dark(#F7F7FA, #000000);
+  --surface: light-dark(#FFFFFF, #1C1C1E);
+  --raised: light-dark(#ECECF2, #2C2C2E);
+  --line: light-dark(#E3E3EA, #2C2C30);
+  --control-line: light-dark(#85858F, #6E6E78);
+  --bar: light-dark(#FFFFFF, #0A0A0C);
+  --text: light-dark(#0B0B14, #FFFFFF);
+  --text-2: light-dark(#3C3C46, #D1D1D6);
+  --text-3: light-dark(#686872, #98989F);
+  --emph: light-dark(#0B0B14, #F2F2F7);
+  --on-emph: light-dark(#FFFFFF, #0B0B14);
+  --on-emph-2: light-dark(#A9A9C0, #55556A);
+  --action: light-dark(#5856D6, #5E5CE6);
+  --on-action: light-dark(#FFFFFF, #FFFFFF);
+  --action-soft: light-dark(#ECEBFC, #24234A);
+  --action-text: light-dark(#4F4DC9, #9D9BFF);
+  --wait: light-dark(#5856D6, #5E5CE6);
+  --on-wait: light-dark(#FFFFFF, #FFFFFF);
+  --count: light-dark(#0B0B14, #FFFFFF);
+  --badge: light-dark(#D70015, #D70015);
+  --on-badge: light-dark(#FFFFFF, #FFFFFF);
+  --tile-live: light-dark(#5856D6, #5E5CE6);
+  --tile-warn: light-dark(#C96800, #C96800);
+  --tile-danger: light-dark(#D70015, #D70015);
+  --tile-ok: light-dark(#248A3D, #2E8B47);
+  --tile-hold: light-dark(#8944AB, #9A55BF);
+  --tile-muted: light-dark(#8E8E93, #636366);
+  --on-tile: light-dark(#FFFFFF, #FFFFFF);
+  --on-tile-live: light-dark(#FFFFFF, #FFFFFF);
+  --warn-text: light-dark(#9C5000, #FFB340);
+  --danger-text: light-dark(#C4161C, #FF6961);
+  --ok-text: light-dark(#1E7A35, #30D158);
+  --term-bg: light-dark(#12121A, #0E0E12);
+  --term-fg: light-dark(#E4E4EA, #E4E4EA);
+  --term-dim: light-dark(#9A9AA3, #9A9AA3);
+  --scrim: light-dark(rgb(11 11 20 / 0.40), rgb(0 0 0 / 0.64));
+}
+
+/* Ink: monochrome; what needs you is printed in solid ink */
+[data-theme="ink"] {
+  --font-display: "Mona Sans", system-ui, sans-serif;
+  --font-ui: "Mona Sans", system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, monospace;
+  --display-stretch: 112%; --count-stretch: 125%; --count-weight: 850; --count-tracking: -6px;
+
+  --bg: light-dark(#FFFFFF, #000000);
+  --surface: light-dark(#FAFAFA, #0E0E0E);
+  --raised: light-dark(#F0F0F0, #1C1C1C);
+  --line: light-dark(#EBEBEB, #262626);
+  --control-line: light-dark(#8A8A8A, #777777);
+  --bar: light-dark(#FFFFFF, #000000);
+  --text: light-dark(#0A0A0A, #EDEDED);
+  --text-2: light-dark(#474747, #B4B4B4);
+  --text-3: light-dark(#6B6B6B, #8F8F8F);
+  --emph: light-dark(#0A0A0A, #EDEDED);
+  --on-emph: light-dark(#FFFFFF, #0A0A0A);
+  --on-emph-2: light-dark(#B5B5B5, #4A4A4A);
+  --action: light-dark(#0A0A0A, #EDEDED);
+  --on-action: light-dark(#FFFFFF, #0A0A0A);
+  --action-soft: light-dark(#EFEFEF, #1F1F1F);
+  --action-text: light-dark(#0A0A0A, #EDEDED);
+  --wait: light-dark(#0A0A0A, #EDEDED);
+  --on-wait: light-dark(#FFFFFF, #0A0A0A);
+  --count: light-dark(#0A0A0A, #EDEDED);
+  --badge: light-dark(#CB1D26, #FF6166);
+  --on-badge: light-dark(#FFFFFF, #0A0A0A);
+  --tile-live: light-dark(#0A0A0A, #EDEDED);
+  --tile-warn: light-dark(#B45309, #B45309);
+  --tile-danger: light-dark(#CB1D26, #D92D35);
+  --tile-ok: light-dark(#18793A, #24873F);
+  --tile-hold: light-dark(#7340B8, #8550C8);
+  --tile-muted: light-dark(#8A8A8A, #555555);
+  --on-tile: light-dark(#FFFFFF, #FFFFFF);
+  --on-tile-live: light-dark(#FFFFFF, #0A0A0A);
+  --warn-text: light-dark(#A35200, #F5A524);
+  --danger-text: light-dark(#CB1D26, #FF6166);
+  --ok-text: light-dark(#18793A, #45C46A);
+  --term-bg: light-dark(#0A0A0A, #0A0A0A);
+  --term-fg: light-dark(#EDEDED, #EDEDED);
+  --term-dim: light-dark(#8F8F8F, #8F8F8F);
+  --scrim: light-dark(rgb(10 10 10 / 0.40), rgb(0 0 0 / 0.66));
+}
+/* Parchment: parchment and iron-gall ink; rubric red marks only what waits on a person; lapis is the action */
+[data-theme="parchment"] {
+  --font-display: "EB Garamond", Georgia, serif;
+  --font-ui: "IBM Plex Sans", system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, monospace;
+  --display-stretch: 100%; --count-stretch: 100%; --count-weight: 700; --count-tracking: -2px;
+
+  --bg: light-dark(#F1E8D4, #17130E);
+  --surface: light-dark(#F9F3E5, #211B14);
+  --raised: light-dark(#E8DCC2, #2C241A);
+  --line: light-dark(#D9CAA8, #3A3024);
+  --control-line: light-dark(#8A7A5C, #8C7C5E);
+  --bar: light-dark(#F6EEDC, #1A150F);
+  --text: light-dark(#241B12, #EDE3CC);
+  --text-2: light-dark(#4E4130, #CBBE9F);
+  --text-3: light-dark(#66563F, #A89A7C);
+  --emph: light-dark(#241B12, #EDE3CC);
+  --on-emph: light-dark(#F9F3E5, #17130E);
+  --on-emph-2: light-dark(#C9B993, #6A5A44);
+  --action: light-dark(#1F3F8F, #3F63C4);
+  --on-action: light-dark(#FFF8EE, #FFFFFF);
+  --action-soft: light-dark(#DDE3F2, #1E2742);
+  --action-text: light-dark(#1F3F8F, #9DB2FF);
+  --wait: light-dark(#A4161A, #B9302A);
+  --on-wait: light-dark(#FFF8EE, #FFF8EE);
+  --count: light-dark(#A4161A, #FF8A7A);
+  --badge: light-dark(#A4161A, #B9302A);
+  --on-badge: light-dark(#FFF8EE, #FFF8EE);
+  --tile-live: light-dark(#1F3F8F, #3F63C4);
+  --tile-warn: light-dark(#9A6400, #A36A00);
+  --tile-danger: light-dark(#4A1A12, #6E2216);
+  --tile-ok: light-dark(#3F6B2A, #4A7A33);
+  --tile-hold: light-dark(#4B3F8F, #5C4FA8);
+  --tile-muted: light-dark(#8A7A5C, #6A5D48);
+  --on-tile: light-dark(#FFF8EE, #FFF8EE);
+  --on-tile-live: light-dark(#FFF8EE, #FFF8EE);
+  --warn-text: light-dark(#7D5100, #E8B04A);
+  --danger-text: light-dark(#6E1B10, #F2BBA9);
+  --ok-text: light-dark(#3A6427, #9CCB86);
+  --term-bg: light-dark(#1E1812, #0F0C08);
+  --term-fg: light-dark(#EDE3CC, #EDE3CC);
+  --term-dim: light-dark(#A89A7C, #A89A7C);
+  --scrim: light-dark(rgb(36 27 18 / 0.42), rgb(0 0 0 / 0.64));
+}
+
+/* Abbey: vellum, lapis and gold; rubric red marks only what waits on a person; lapis is the action */
+[data-theme="abbey"] {
+  --font-display: "Alegreya", Georgia, serif;
+  --font-ui: "Alegreya Sans", system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, monospace;
+  --display-stretch: 100%; --count-stretch: 100%; --count-weight: 800; --count-tracking: -2px;
+
+  --bg: light-dark(#F3EDE0, #0E1119);
+  --surface: light-dark(#FFFCF5, #171B26);
+  --raised: light-dark(#EAE1CE, #20263A);
+  --line: light-dark(#E0D4BD, #2A3145);
+  --control-line: light-dark(#8C8170, #737D97);
+  --bar: light-dark(#FFFCF5, #0E1119);
+  --text: light-dark(#1C1A17, #ECE6D8);
+  --text-2: light-dark(#47423A, #C3BCAA);
+  --text-3: light-dark(#625B4F, #9C9584);
+  --emph: light-dark(#1F3366, #ECE6D8);
+  --on-emph: light-dark(#FFFCF5, #0E1119);
+  --on-emph-2: light-dark(#B9C3DE, #5A5A66);
+  --action: light-dark(#24489C, #4466C8);
+  --on-action: light-dark(#FFFFFF, #FFFFFF);
+  --action-soft: light-dark(#E3E8F5, #1E2742);
+  --action-text: light-dark(#24489C, #9DB2FF);
+  --wait: light-dark(#A31F1A, #B42A22);
+  --on-wait: light-dark(#FFFCF5, #FFFCF5);
+  --count: light-dark(#A31F1A, #F08A7E);
+  --badge: light-dark(#A31F1A, #B42A22);
+  --on-badge: light-dark(#FFFCF5, #FFFCF5);
+  --tile-live: light-dark(#24489C, #4466C8);
+  --tile-warn: light-dark(#A86B00, #A86B00);
+  --tile-danger: light-dark(#5A1C17, #6E241E);
+  --tile-ok: light-dark(#2F6B4F, #2F7A57);
+  --tile-hold: light-dark(#5B4A9C, #6A58B5);
+  --tile-muted: light-dark(#8C8170, #4C5468);
+  --on-tile: light-dark(#FFFCF5, #FFFCF5);
+  --on-tile-live: light-dark(#FFFCF5, #FFFCF5);
+  --warn-text: light-dark(#7F5200, #E5B04A);
+  --danger-text: light-dark(#6B1A14, #F2BBA9);
+  --ok-text: light-dark(#2A6247, #6FD1A7);
+  --term-bg: light-dark(#121624, #080A10);
+  --term-fg: light-dark(#ECE6D8, #ECE6D8);
+  --term-dim: light-dark(#9C9584, #9C9584);
+  --scrim: light-dark(rgb(28 26 23 / 0.42), rgb(0 0 0 / 0.64));
+}
+
+/* Derived, the same in every theme; declared on each theme root so it resolves to that theme. */
+:root, [data-theme] { --recommended: var(--action); --on-recommended: var(--on-action); }

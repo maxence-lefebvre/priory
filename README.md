@@ -81,6 +81,8 @@ Priory is in early development. The milestones come from [docs/prd.md](docs/prd.
 - [docs/trace-schema.md](docs/trace-schema.md): the format of trace records.
 - [docs/adapters/herdr.md](docs/adapters/herdr.md): the Herdr adapter, Priory's panels as Herdr
   mods: Desk, Asks, Queue, Bonjour, Costs and Flows.
+- [adapters/github/README.md](adapters/github/README.md): the GitHub extension, Priory on a pull
+  request's page: its task, its asks and a review guide.
 - [docs/evaluating-a-prompt.md](docs/evaluating-a-prompt.md): measure a change to a prompt Priory
   gives agents before you ship it. One case, once, on Haiku, for under ten cents:
   `cargo run -p priory -- eval crates/priory-core/src/nudge.eval.toml --case finished --runs 1 --budget 0.10`.
