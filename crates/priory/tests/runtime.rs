@@ -41,7 +41,7 @@ const OUTPUT: &str = "factory.intake";
 /// Takes a state file back before schema 28, which added search, 29, which added grades, 30,
 /// which added snoozes, 31, which added read reports, 32, which added the pause, 34, which added
 /// reports of sections, 36, which added deliveries, 37, which added progress, 39, which added run
-/// actions, 40, which added answer actions, 42, which added dispatches, 49, which added task ends, 51, which added a run's crossing of `compactAt`, and 53, which added intervention levels. Schema 38's visits
+/// actions, 40, which added answer actions, 42, which added dispatches, 49, which added task ends, 51, which added a run's crossing of `compactAt`, 53, which added intervention levels, and 56, which added the step an irreversible approval lets run. Schema 38's visits
 /// table is created only if missing, so it stays.
 const UNDO_SINCE_SEARCH: &str = "DROP TRIGGER push_a_new_ask; ALTER TABLE asks DROP COLUMN routed;
   ALTER TABLE asks DROP COLUMN answered_by; ALTER TABLE tasks DROP COLUMN intervention;
@@ -60,7 +60,8 @@ const UNDO_SINCE_SEARCH: &str = "DROP TRIGGER push_a_new_ask; ALTER TABLE asks D
   ALTER TABLE tasks DROP COLUMN grade_reason;
   DROP TRIGGER search_task_created; DROP TRIGGER search_tldr_changed; DROP TRIGGER search_result_stored;
   DROP VIEW task_text; DROP TABLE search; DROP TABLE summaries;
-  DROP TABLE embedder; DROP TABLE vectors; ALTER TABLE tasks DROP COLUMN tldr; DROP TABLE dispatches;";
+  DROP TABLE embedder; DROP TABLE vectors; ALTER TABLE tasks DROP COLUMN tldr; DROP TABLE dispatches;
+  ALTER TABLE irreversible_asks DROP COLUMN lets;";
 
 /// A factory, bus, state, Priory home, origin repository and fake `claude`, all under the test's
 /// own directory, and a tmux server in its own short directory. Dropping it kills the daemon and
@@ -3762,10 +3763,7 @@ fn a_runbook_of_human_steps_advances_on_answers_and_runs_its_step_command_once_o
 
     assert!(checked.status.success(), "{checked:?}");
     assert_eq!(asks[0][3], "test");
-    assert_eq!(
-        desk["next"]["why"], "its answer lets an irreversible step run",
-        "{desk}"
-    );
+    assert_eq!(desk["next"]["why"], "it runs `sh` in ops", "{desk}");
     assert!(!without.status.success(), "{without:?}");
     assert!(ran.status.success(), "{ran:?}");
     assert_eq!(tasks.len(), 1);
@@ -5462,6 +5460,7 @@ fn a_state_file_whose_asks_an_approval_names_upgrades_to_outside_asks() {
          DROP TABLE deliveries;
          DROP TABLE reports;
          DROP TABLE dispatches;
+         ALTER TABLE irreversible_asks DROP COLUMN lets;
          DROP TABLE ask_revisions;
          DROP TABLE ask_refusals;
          PRAGMA legacy_alter_table = ON;

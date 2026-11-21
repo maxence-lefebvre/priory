@@ -14,6 +14,29 @@ const date = (/** @type {string} */ iso) => new Date(iso).toLocaleString("en", {
 /** A time of day today, else a date. @param {string} iso @param {number} now */
 export const when = (iso, now) => (sameDay(iso, now) ? clock(iso) : date(iso));
 
+const DUE = /, due (\d{4}-\d\d-\d\dT[\d:]+Z)$/;
+const localDay = (/** @type {number} */ at) => Date.UTC(new Date(at).getFullYear(), new Date(at).getMonth(), new Date(at).getDate()) / 86_400_000;
+
+/**
+ * A to-do's text with its `, due <RFC 3339 UTC>` ending in local time and a relative hint: a clock
+ * time today, tomorrow or yesterday, else a date and a count of days. Other text is returned as is.
+ * @param {string} what @param {number} now
+ */
+export function dueText(what, now) {
+  const found = DUE.exec(what);
+  const at = found ? Date.parse(found[1]) : NaN;
+  if (!found || Number.isNaN(at)) return what;
+  const clock = new Date(at).toLocaleTimeString("en", { hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
+  const days = localDay(at) - localDay(now);
+  const near = { "-1": "yesterday", 0: "today", 1: "tomorrow" }[/** @type {"0"} */ (String(days))];
+  const day = new Date(at).toLocaleString("en", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
+  const hint = days > 0 ? `in ${days} days` : `${-days} days ago`;
+  return `${what.slice(0, found.index)}, due ${near ? `${near} ${clock}` : `${day} (${hint})`}`;
+}
+
+/** @param {any} item @param {number} now */
+const itemText = (item, now) => (item.kind === "todo" ? dueText(item.what, now) : item.what);
+
 /** Relative under 24 h, then a date (DESIGN.md, Copy). @param {string} iso @param {number} now */
 export function age(iso, now) {
   const minutes = Math.max(0, Math.round((now - Date.parse(iso)) / 60_000));
@@ -52,7 +75,7 @@ export function deskModel({ desk, asks: asksListing, tasks: tasksListing, queue 
     const ask = item.kind === "ask" ? askById.get(item.id) : null;
     const task = taskById.get(item.task);
     const back = item.back_early;
-    const text = ask ? ask.title || ask.question : ["blocked", "failed"].includes(item.kind) && task?.reason ? task.reason : item.what;
+    const text = ask ? ask.title || ask.question : ["blocked", "failed"].includes(item.kind) && task?.reason ? task.reason : itemText(item, now);
     return {
       id: `${item.kind}:${item.id}`,
       kind: item.kind,
@@ -174,7 +197,7 @@ function nextThing(item, ask, task, now, links) {
   const progress = task?.progress;
   const isAsk = item.kind === "ask";
   // As in `itemRow`: only a blocked or failed task's reason replaces the desk's `what`.
-  const question = isAsk ? ask?.title || ask?.question || item.what : ["blocked", "failed"].includes(item.kind) && task?.reason ? task.reason : item.what;
+  const question = isAsk ? ask?.title || ask?.question || itemText(item, now) : ["blocked", "failed"].includes(item.kind) && task?.reason ? task.reason : itemText(item, now);
   return {
     ask: isAsk ? item.id : null,
     snooze: SNOOZABLE.includes(item.kind) ? { kind: item.kind, id: item.id } : null,

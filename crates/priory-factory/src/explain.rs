@@ -126,25 +126,30 @@ fn unattended_targets(step: &Step) -> BTreeSet<&str> {
 /// Whether answering the ask of human step `ask` can let an irreversible step run before a
 /// person decides again.
 pub fn answer_lets_irreversible_run(workflow: &Workflow, ask: &str) -> bool {
-    let Some(step) = workflow.step(ask) else {
-        return false;
-    };
+    irreversible_step_after(workflow, ask).is_some()
+}
+
+/// The first irreversible step, in workflow order, that answering the ask of human step `ask` can
+/// let run before a person decides again.
+pub fn irreversible_step_after<'a>(workflow: &'a Workflow, ask: &str) -> Option<&'a str> {
+    let step = workflow.step(ask)?;
     let mut reached: BTreeSet<&str> = step.next.values().map(String::as_str).collect();
     let mut pending: Vec<&str> = reached.iter().copied().collect();
     while let Some(id) = pending.pop() {
         let Some(step) = workflow.step(id) else {
             continue;
         };
-        if step.effect == Effect::Irreversible {
-            return true;
-        }
         for target in unattended_targets(step) {
             if reached.insert(target) {
                 pending.push(target);
             }
         }
     }
-    false
+    workflow
+        .steps
+        .iter()
+        .find(|step| step.effect == Effect::Irreversible && reached.contains(step.id.as_str()))
+        .map(|step| step.id.as_str())
 }
 
 /// How a step reads in a drawing: `ask` and `answer` for a human step, which `answer`s when it

@@ -7,7 +7,7 @@ import { linked } from "./links.js";
 import { dossier, refusal } from "./reports.js";
 import { prStack } from "./stack.js";
 import { KINDS, edgeStyle, nodeShape, timeline, ungatedPairs } from "./flows.js";
-import { mergeSince, nextLink, progressView, sectionInView, sinceGroups } from "./desk.js";
+import { dueParts, mergeSince, nextLink, progressView, sectionInView, sinceGroups } from "./desk.js";
 
 const ICONS = {
   check: '<path d="M20 6 9 17l-5-5"/>',
@@ -324,12 +324,18 @@ function itemRow(item) {
     <span class="l2 r t-${role(kind)}">${autolinked(item.what, null)}</span>${stopped ? taskActs(item.task, item.kind) : ""}</div>`;
 }
 
+// A to-do's text with its due time in local time; the `<time>` keeps the UTC time (DESIGN.md, Copy).
+function todoText(item) {
+  const due = dueParts(item.what, Date.now());
+  return due ? html`${autolinked(due.text, null)}, due ${timeTag(due.iso, due.label)}` : autolinked(item.what, null);
+}
+
 // A person's to-do: its text and due time, and Done, the twin of `priory todo done`.
 function todoRow(item) {
   return html`<div class="row">
     ${tile("todo")}
     <span class="l1"><span>to-do</span><span class="age">${timeTag(item.since)}</span></span>
-    <span class="l2 r">${autolinked(item.what, null)}</span>${todoDone(item.id)}</div>`;
+    <span class="l2 r">${todoText(item)}</span>${todoDone(item.id)}</div>`;
 }
 
 // `place` keeps the next thing card's button apart from the row's, so focus returns to the one tapped.
@@ -443,7 +449,7 @@ function nextCard(model) {
   const verb = ask ? "Answer…" : href?.startsWith("#") ? "See the banner" : "Open task";
   const button = item.kind === "todo" ? todoDone(item.id, "next") : href ? html`<a class="btn ${ask ? "primary" : "secondary"}" href="${href}">${verb}</a>` : "";
   return html`<section class="next" aria-label="The next thing"><p class="l1">${tile(kind, "sm")}<span class="mono">${item.key || ""}</span><span>${item.step || ""}</span><span class="age">${timeTag(item.since)}</span></p>
-    <p class="q">${autolinked(text, ask?.repo || task?.repo)}</p>${ask && routedMark(ask) ? html`<p class="why t-live">${routedMark(ask)}</p>` : ""}<p class="why t-${role(kind)}">${item.why}</p>
+    <p class="q">${item.kind === "todo" ? todoText(item) : autolinked(text, ask?.repo || task?.repo)}</p>${ask && routedMark(ask) ? html`<p class="why t-live">${routedMark(ask)}</p>` : ""}<p class="why t-${role(kind)}">${item.why}</p>
     ${ask?.recommendation ? html`<p class="rec">${icon("corner-down-right", "s15")}<span>${ask.recommendation}</span></p>` : ""}
     ${button}</section>`;
 }
@@ -512,7 +518,7 @@ function deskTable(model, selected) {
     <td>${stateWord(item.kind === "prompt" ? "prompt" : item.kind)}</td><td class="mono">${["blocked", "failed"].includes(item.kind) ? html`<a href="/tasks/${item.task}">${item.key || ""}</a>` : item.key || ""}</td><td>${item.step || ""}</td>
     <td class="q full t-${role(item.kind)}">${item.task ? prsTag({}, item.task) : ""}<span>${item.what}</span></td><td class="recw">${["blocked", "failed"].includes(item.kind) ? taskActs(item.task, item.kind) : ""}</td><td class="r">${timeTag(item.since)}</td></tr>`;
   const todoLine = (item) => html`<tr>
-    <td>${stateWord("todo")}</td><td class="mono"></td><td></td><td class="q full"><span>${item.what}</span></td><td class="recw">${todoDone(item.id)}</td><td class="r">${timeTag(item.since)}</td></tr>`;
+    <td>${stateWord("todo")}</td><td class="mono"></td><td></td><td class="q full"><span>${todoText(item)}</span></td><td class="recw">${todoDone(item.id)}</td><td class="r">${timeTag(item.since)}</td></tr>`;
   const group = (title, count) => html`<tr class="grp"><td colspan="6">${title}<span>${count}</span></td></tr>`;
   return html`<table class="tbl">
     <thead><tr><th>State</th><th>Task</th><th>Step</th><th>Waits on you</th><th>Recommends</th><th class="r">Age</th></tr></thead>

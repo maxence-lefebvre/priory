@@ -807,11 +807,36 @@ fn the_desk_ranks_alarms_then_irreversible_asks_then_plans_then_the_rest_each_ol
         desk["next"]["why"],
         "an alarm: work stopped and waits on a person"
     );
+    assert_eq!(desk["ranked"][2]["why"], "it lets step `open-pr` run");
+    assert_eq!(desk["ranked"][3]["why"], "it approves a plan");
+}
+
+#[test]
+fn a_command_ask_says_what_it_runs_and_where() {
+    let setup = Setup::new("desk-why-command", "name = \"demo\"\n");
+    setup.seed_ranks();
+
+    let desk = json_of(&setup, "desk");
+
+    assert_eq!(desk["ranked"][1]["id"], 3);
+    assert_eq!(desk["ranked"][1]["why"], "it runs `make` in worktree");
+}
+
+#[test]
+fn an_approval_recorded_before_the_step_was_kept_keeps_the_general_why() {
+    let setup = Setup::new("desk-why-upgraded", "name = \"demo\"\n");
+    setup.seed_ranks();
+    let db = rusqlite::Connection::open(setup.dir.join("priory.db")).unwrap();
+    db.execute("UPDATE irreversible_asks SET lets = ''", [])
+        .unwrap();
+
+    let desk = json_of(&setup, "desk");
+
+    assert_eq!(desk["ranked"][2]["id"], 1);
     assert_eq!(
-        desk["ranked"][1]["why"],
+        desk["ranked"][2]["why"],
         "its answer lets an irreversible step run"
     );
-    assert_eq!(desk["ranked"][3]["why"], "it approves a plan");
 }
 
 #[test]
