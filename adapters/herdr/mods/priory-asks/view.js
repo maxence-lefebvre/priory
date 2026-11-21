@@ -253,7 +253,8 @@ export function askDetail(ask, { now, armed, task = null, links = [] }) {
     why: { text: why, textSpans: autolink(why, links, ask.repo ?? null), run: ask.run, tradeoff: ask.tradeoff, whatWaits: ask.what_waits },
     ...(routedNote(ask) && { routed: routedNote(ask) }),
     ...(owner && {
-      sent: open ? sentNote(ask) : null,
+      // A closed ask still says why its runner refused an answer sent to it.
+      sent: open || sentNote(ask)?.refused ? sentNote(ask) : null,
       elsewhere: `This ask belongs to ${owner}. Your answer goes there through the log, and ${owner} applies it when it reads it. Snooze stays on ${owner}.`,
     }),
     decided: ask.state === "answered" ? `Answered: ${ask.answer}.${ask.answered_at ? ` ${age(ask.answered_at, now)} ago.` : ""}${answeredBy(ask.answered_by) ? ` By ${answeredBy(ask.answered_by)}.` : ""}`

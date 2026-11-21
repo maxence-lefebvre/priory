@@ -416,6 +416,7 @@ export default class PrioryAsks extends View {
       .hover((s) => s.opacity(0.88)).focus((s) => s.border(2).border_color(t["action-text"]))
       .on_click((_event, cx) => action(cx)).child(label);
     /** @param {"lane" | "band" | "risk" | "task" | "runner"} facet @param {string} label */
+    const here = (/** @type {unknown} */ name) => (this.data?.asks ?? []).some((/** @type {any} */ ask) => ask.runner === name && !runnerOf(ask));
     const picker = (facet, label) => {
       const value = this.facets[facet];
       const trigger = Button.new(`facet-${facet}`).h(PANE.chip).px(10).flex().flex_none().items_center().gap(4).rounded(RADIUS.sm)
@@ -427,7 +428,7 @@ export default class PrioryAsks extends View {
       if (value) return trigger.on_click((_event, cx) => { delete this.facets[facet]; this.refilter(cx); });
       return Popover.new(`facet-${facet}-menu`).trigger(trigger).anchor("top_left").open(this.popover === facet)
         .on_open_change((/** @type {boolean} */ next, /** @type {import("gpui-kit").Context} */ cx) => { this.popover = next ? facet : null; cx.notify(); })
-        .content(this.menu(t, list.facets[facet].map(([name, count]) => [String(name), String(count), (cx) => {
+        .content(this.menu(t, list.facets[facet].map(([name, count]) => [facet === "runner" && here(name) ? `${name} (here)` : String(name), String(count), (cx) => {
           this.facets[facet] = String(name);
           this.refilter(cx);
         }])));

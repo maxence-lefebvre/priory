@@ -400,3 +400,9 @@ test("another runner's command ask names its runner, says the answer goes there,
   assert.deepEqual(detail.sent, { text: "laptop refused reject: ask 3 is at revision 2", refused: true });
   assert.equal(detail.elsewhere, "This ask belongs to laptop. Your answer goes there through the log, and laptop applies it when it reads it. Snooze stays on laptop.");
 });
+
+test("a closed ask of another runner still says why it refused the answer sent to it", () => {
+  const refused = { verb: "answer", text: "approved", outcome: "refused", why: "ask 12 is answered" };
+  const detail = askDetail(remote({ state: "answered", answer: "rejected", answered_at: "2026-11-20T20:47:00Z", submissions: [refused] }), { now, armed: null });
+  assert.deepEqual(detail.sent, { text: "xps13 refused approved: ask 12 is answered", refused: true });
+});

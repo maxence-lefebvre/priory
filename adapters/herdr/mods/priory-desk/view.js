@@ -206,7 +206,7 @@ function nextThing(item, ask, task, now, links) {
   const question = isAsk ? ask?.title || ask?.question || itemText(item, now) : ["blocked", "failed"].includes(item.kind) && task?.reason ? task.reason : itemText(item, now);
   return {
     ask: isAsk ? item.id : null,
-    snooze: SNOOZABLE.includes(item.kind) ? { kind: item.kind, id: item.id } : null,
+    snooze: SNOOZABLE.includes(item.kind) && !runnerOf(ask) ? { kind: item.kind, id: item.id } : null,
     revision: ask?.revision ?? null,
     todo: item.kind === "todo" ? item.id : null,
     task: item.task,
@@ -220,6 +220,7 @@ function nextThing(item, ask, task, now, links) {
     tradeoff: ask?.tradeoff ?? null,
     progress: progress ? { latestChange: progress.latestChange ?? null, nextAction: progress.nextAction ?? null } : null,
     ...(routedMark(item) && { routed: routedMark(item) }),
+    ...(runnerOf(ask) && { runner: runnerOf(ask), away: seenAgo(ask, now, (iso) => age(iso, now)), sent: sentNote(ask) }),
   };
 }
 

@@ -369,6 +369,8 @@ export default class PrioryDesk extends View {
         .child(div().text_color(t["text-3"]).child(`waits ${next.age}`)))
       .child(div().whitespace_normal().text_size(S["type-caption"][0]).text_color(t["text-3"]).child(`First because ${next.why}`))
       .when(Boolean(next.routed), (el) => el.child(routed(ui, next.routed)))
+      .when(Boolean(next.runner), (el) => el.child(div().text_size(S["type-caption"][0]).text_color(next.away ? t["warn-text"] : t["text-2"]).child([next.runner, next.away].filter(Boolean).join(", "))))
+      .when(Boolean(next.sent), (el) => el.child(div().text_size(S["type-caption"][0]).text_color(next.sent?.refused ? t["warn-text"] : t["action-text"]).child(next.sent?.text ?? "")))
       .child(div().whitespace_normal().font_family(ui.fonts.display).text_size(S["type-pane-question"][0]).line_height(S["type-pane-question"][1] / S["type-pane-question"][0]).font_weight(650).child(linked("next-question", next.questionSpans)))
       .when(Boolean(next.recommendation || next.tradeoff), (el) => el.child(div().whitespace_normal().text_size(S["type-small"][0]).text_color(t["text-2"])
         .child(next.recommendation ? `Recommends ${next.recommendation}. ${next.tradeoff ?? ""}` : String(next.tradeoff))))

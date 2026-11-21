@@ -331,3 +331,13 @@ test("another runner's ask names its runner and when it was last seen, says what
   assert.deepEqual(row.sent, { text: "Sent to xps13: approved", refused: false });
   assert.equal(row.snooze, null);
 });
+
+test("another runner's ask as the next thing names its runner and offers no snooze", () => {
+  const item = { kind: "ask", id: "xps13:12", task: null, key: "ENG-260", step: "approve-pr", since: new Date(now - 60_000).toISOString(), what: "Merge?", why: "oldest ask", runner: "xps13", last_seen: null, snoozed_until: null };
+  const ask = { id: "xps13:12", task: 4, key: "ENG-260", question: "Merge?", options: ["approved"], revision: 1, runner: "xps13", last_seen: null, submissions: [] };
+  const model = deskModel({ ...data, desk: { ...data.desk, items: [item], next: item }, asks: { ...data.asks, asks: [ask] } }, { now });
+
+  assert.equal(model.next.snooze, null);
+  assert.equal(model.next.runner, "xps13");
+  assert.equal(model.next.away, "never seen");
+});

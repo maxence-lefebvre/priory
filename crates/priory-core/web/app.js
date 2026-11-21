@@ -544,7 +544,7 @@ function nextCard(model) {
   const verb = ask ? "Answer…" : href?.startsWith("#") ? "See the banner" : "Open task";
   const button = item.kind === "todo" ? todoDone(item.id, "next") : href ? html`<a class="btn ${ask ? "primary" : "secondary"}" href="${href}">${verb}</a>` : "";
   return html`<section class="next" aria-label="The next thing"><p class="l1">${tile(kind, "sm")}<span class="mono">${item.key || ""}</span><span>${item.step || ""}</span><span class="age">${timeTag(item.since)}</span></p>
-    <p class="q">${item.kind === "todo" ? todoText(item) : autolinked(text, ask?.repo || task?.repo)}</p>${ask && routedMark(ask) ? html`<p class="why t-live">${routedMark(ask)}</p>` : ""}<p class="why t-${role(kind)}">${item.why}</p>
+    <p class="q">${item.kind === "todo" ? todoText(item) : autolinked(text, ask?.repo || task?.repo)}</p>${ask && routedMark(ask) ? html`<p class="why t-live">${routedMark(ask)}</p>` : ""}${runnerOf(ask) ? html`<p class="why">${runnerTag(ask)} ${sentLine(ask)}</p>` : ""}<p class="why t-${role(kind)}">${item.why}</p>
     ${ask?.recommendation ? html`<p class="rec">${icon("corner-down-right", "s15")}<span>${ask.recommendation}</span></p>` : ""}
     ${button}</section>`;
 }
@@ -692,9 +692,6 @@ function needsMe(model, wide) {
 }
 
 function deskTable(model, selected) {
-  const askLine = (ask) => html`<tr data-href="/asks/${ask.id}" aria-current="${String(ask.id) === selected ? "true" : "false"}">
-    <td>${stateWord("ask")}</td><td class="mono">${ask.key}</td><td>${ask.step}</td><td class="q"><span>${ask.title || ask.question}</span>${routedTag(ask)}</td>
-    <td class="recw">${ask.recommendation || ""}</td><td class="r">${timeTag(ask.since)}</td></tr>`;
   const itemLine = (item) => html`<tr>
     <td>${stateWord(item.kind === "prompt" ? "prompt" : item.kind)}</td><td class="mono">${item.kind === "batch" ? html`<a href="/batches/${item.id}">${item.key || ""}</a>` : ["blocked", "failed"].includes(item.kind) ? html`<a href="/tasks/${item.task}">${item.key || ""}</a>` : item.key || ""}</td><td>${item.step || ""}</td>
     <td class="q full t-${role(item.kind)}">${item.task ? prsTag({}, item.task) : ""}<span>${item.what}</span></td><td class="recw">${["blocked", "failed"].includes(item.kind) ? taskActs(item.task, item.kind) : rowActs(item)}</td><td class="r">${timeTag(item.since)}</td></tr>`;
@@ -703,7 +700,7 @@ function deskTable(model, selected) {
   const group = (title, count) => html`<tr class="grp"><td colspan="6">${title}<span>${count}</span></td></tr>`;
   return html`<table class="tbl">
     <thead><tr><th>State</th><th>Task</th><th>Step</th><th>Waits on you</th><th>Recommends</th><th class="r">Age</th></tr></thead>
-    <tbody>${model.open.map(askLine)}
+    <tbody>${model.open.map((ask) => askTableRow(ask, selected))}
     ${model.stopped.length ? [group("Stopped", model.stopped.length), model.stopped.map(itemLine)] : ""}
     ${model.todos.length ? [group("To-dos", model.todos.length), model.todos.map(todoLine)] : ""}
     ${model.other.length ? [group("Also waiting", model.other.length), model.other.map(itemLine)] : ""}
@@ -950,12 +947,13 @@ function askDetail(id, wide) {
   const owner = runnerOf(ask);
   const away = seenAgo(ask, Date.now(), age);
   const sent = sentNote(ask);
-  const sentShown = !sent || notice ? "" : sent.refused
+  // A closed ask still says why its runner refused an answer sent to it.
+  const sentShown = !sent || notice || (ask.state !== "open" && !sent.refused) ? "" : sent.refused
     ? html`<p class="warnline" role="status">${sent.text}.</p>`
     : html`<p class="routednote" role="status">${icon("corner-down-right", "s15")}<span>${sent.text}. It applies when ${owner} reads the log.${away ? ` ${owner} was ${away}.` : ""}</span></p>`;
   const elsewhere = owner ? html`<p class="note">${icon("corner-down-right", "s15")}<span>This ask belongs to ${owner}. Your answer goes there through the log, and ${owner} applies it when it reads it. Snooze stays on ${owner}.</span></p>` : "";
   const decided = ask.state !== "open"
-    ? html`${notice ? html`<p class="warnline" role="status">${notice}</p>` : ""}<div class="rec">${ask.state === "answered" ? html`<span><b>Answered: ${ask.answer}.</b> ${ask.answered_at ? age(ask.answered_at) + " ago" : ""}${byLine(ask) ? ` By ${answeredBy(ask.answered_by)}.` : ""}</span>` : html`<span><b>Withdrawn${ask.withdrawn_why ? `: ${ask.withdrawn_why}` : ""}.</b></span>`}</div>${ranLine(ask.ran)}`
+    ? html`${notice ? html`<p class="warnline" role="status">${notice}</p>` : ""}${sentShown}<div class="rec">${ask.state === "answered" ? html`<span><b>Answered: ${ask.answer}.</b> ${ask.answered_at ? age(ask.answered_at) + " ago" : ""}${byLine(ask) ? ` By ${answeredBy(ask.answered_by)}.` : ""}</span>` : html`<span><b>Withdrawn${ask.withdrawn_why ? `: ${ask.withdrawn_why}` : ""}.</b></span>`}</div>${ranLine(ask.ran)}`
     : html`${notice ? html`<p class="warnline" role="status">${notice}</p>` : ""}${sentShown}${routedNote(ask) ? html`<p class="routednote">${icon("corner-down-right", "s15")}${routedNote(ask)}</p>` : ""}${ask.recommendation ? html`<div class="rec"><span><b>Recommended: ${ask.recommendation}.</b></span>
         ${ask.next_action ? html`<span class="then">${icon("corner-down-right", "s15")}<span>${ask.next_action}</span></span>` : ""}</div>` : ""}
       <div class="opts" role="group" aria-label="Options">${optionButtons}</div>${lockedNote}${more}${elsewhere}`;
@@ -1053,13 +1051,15 @@ function batchOf(which, version = null) {
 // this revision, so a Go never answers a plan the page did not show.
 function lockOf(ask) {
   if (state.failed) return "offline";
+  if (runnerOf(ask)) return null;
   const read = state.batch?.which === ask.key && state.batch.version === ask.revision && state.batch.body;
   return ask.state === "open" && ask.key?.startsWith("batch:") && !read ? "plan" : null;
 }
 
 // The go ask's batch, once the batch names this ask as its go, read for this revision of the ask.
 function goBatch(ask) {
-  if (!ask.key?.startsWith("batch:")) return null;
+  // Another runner's batch lives on that runner; this server cannot read its plan.
+  if (!ask.key?.startsWith("batch:") || runnerOf(ask)) return null;
   const batch = batchOf(ask.key, ask.revision);
   return batch?.ask === ask.id ? batch : null;
 }
