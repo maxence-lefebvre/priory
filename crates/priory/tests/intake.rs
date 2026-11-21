@@ -866,6 +866,9 @@ fn a_labeled_pull_request_requests_a_task_only_for_a_matching_label() {
 #[test]
 fn a_merged_pull_request_publishes_closed_with_merged() {
     let setup = Setup::baseline("pr-merged");
+    let mut merged = pull(43, true, json!([]), json!([]));
+    merged["mergeCommit"] = json!({ "oid": "def456" });
+    merged["body"] = json!("Reverts owner/repo#7");
     setup.answer(&[
         (
             EVENTS_PATH,
@@ -874,7 +877,7 @@ fn a_merged_pull_request_publishes_closed_with_merged() {
                 pull_event(102, 43, "merged", None),
             ]),
         ),
-        (PULLS, pulls(&[pull(43, true, json!([]), json!([]))])),
+        (PULLS, pulls(&[merged])),
     ]);
 
     succeeded(&setup.intake());
@@ -891,6 +894,10 @@ fn a_merged_pull_request_publishes_closed_with_merged() {
         ),
         (&json!(43), &json!(true), &json!("max"), &json!(103))
     );
+    assert_eq!(
+        (&data["merge_commit"], &data["body"]),
+        (&json!("def456"), &json!("Reverts owner/repo#7"))
+    );
 }
 
 #[test]
@@ -903,6 +910,7 @@ fn a_submitted_review_and_a_completed_check_publish_once() {
             "body": "Ship it.",
             "submittedAt": "2026-11-17T12:00:00Z",
             "url": "https://github.com/owner/repo/pull/43#pullrequestreview-501",
+            "commit": { "oid": "fff000" },
             "author": { "login": "reviewer" }
         },
         { "databaseId": 502, "state": "PENDING", "submittedAt": null, "url": "u", "author": null }
@@ -956,6 +964,7 @@ fn a_submitted_review_and_a_completed_check_publish_once() {
             "base_branch": "main",
             "state": "approved",
             "body": "Ship it.",
+            "commit": "fff000",
             "actor": "reviewer",
             "open": true,
             "time": "2026-11-17T12:00:00Z",

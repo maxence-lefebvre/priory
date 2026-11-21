@@ -2451,6 +2451,7 @@ fn answer_in(
             .collect();
         approve(tx, task, answer, &approved, head)?;
         trace::ended(tx, trace, task, &answer.text, None)?;
+        crate::grades::answered(tx, trace, task, &at, &answer.text, &target)?;
         enter(tx, task, &workflow, &target, None, "", workflows)?;
     } else {
         withdraw_waits(tx, answer.ask)?;

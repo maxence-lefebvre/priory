@@ -301,6 +301,8 @@ The pull request fields, and:
 | ----- | ---- | ------- |
 | `title` | string | The title when the intake polled |
 | `merged` | boolean or null | Whether this close merged it: it is merged and this is its last close the poll read |
+| `merge_commit` | string or null | The commit the merge made on the base branch; null unless `merged` |
+| `body` | string | The description when the intake read it; empty when it has none |
 | `actor` | string or null | Who closed it |
 | `github_id` | integer or null | GitHub's issue event id; null from a webhook |
 
@@ -320,6 +322,8 @@ The pull request fields, and:
     "base_branch": "main",
     "title": "Handle an empty project in export",
     "merged": true,
+    "merge_commit": "9c1d0e7a52b4f3e8d6a1c0b9f2e4d7a8b3c6e1f0",
+    "body": "An export of a project with no layers wrote nothing. It now writes an empty file.",
     "actor": "octocat",
     "time": "2026-11-17T17:36:14Z",
     "github_id": 36429719781,
@@ -341,6 +345,7 @@ The pull request fields, and:
 | ----- | ---- | ------- |
 | `state` | string | `approved`, `changes_requested`, `commented` or `dismissed`, at poll time |
 | `body` | string | The review's summary Markdown, as written; empty when the reviewer wrote none |
+| `commit` | string or null | The commit the review was written on; `head_sha` passes it once a commit is pushed after the review |
 | `actor` | string or null | Who reviewed |
 | `open` | boolean | Whether the pull request was open when the intake read it. A done task reopens only for feedback on an open one |
 | `github_id` | integer | GitHub's review id |
@@ -361,6 +366,7 @@ The pull request fields, and:
     "base_branch": "main",
     "state": "approved",
     "body": "Looks good. One nit inline.",
+    "commit": "4b2ee8eb670ba9f77d54d59ab97ced618f024fb9",
     "actor": "octocat",
     "open": true,
     "time": "2026-11-17T16:40:03Z",

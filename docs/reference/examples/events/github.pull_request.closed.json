@@ -12,6 +12,8 @@
     "base_branch": "main",
     "title": "Handle an empty project in export",
     "merged": true,
+    "merge_commit": "9c1d0e7a52b4f3e8d6a1c0b9f2e4d7a8b3c6e1f0",
+    "body": "An export of a project with no layers wrote nothing. It now writes an empty file.",
     "actor": "octocat",
     "time": "2026-11-17T17:36:14Z",
     "github_id": 36429719781,

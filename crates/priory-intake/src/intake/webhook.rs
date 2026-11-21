@@ -181,7 +181,15 @@ impl Github {
                 data["github_id"] = Value::Null;
                 match kind {
                     PR_LABELED => data["label"] = payload["label"]["name"].clone(),
-                    PR_CLOSED => data["merged"] = pull["merged"].clone(),
+                    PR_CLOSED => {
+                        data["merged"] = pull["merged"].clone();
+                        // GitHub names a test merge commit on an unmerged pull request too.
+                        data["merge_commit"] = match pull["merged"] == true {
+                            true => pull["merge_commit_sha"].clone(),
+                            false => Value::Null,
+                        };
+                        data["body"] = json!(pull["body"].as_str().unwrap_or_default());
+                    }
                     _ => {}
                 }
                 (kind, signed(), data)
@@ -196,6 +204,7 @@ impl Github {
                 let state = review["state"].as_str().unwrap_or_default();
                 data["state"] = json!(state.to_lowercase());
                 data["body"] = json!(review["body"].as_str().unwrap_or_default());
+                data["commit"] = review["commit_id"].clone();
                 data["github_id"] = review["id"].clone();
                 data["open"] = json!(pull["state"] == "open");
                 let name = format!("github:{repo}:pulls/reviews:{}", review["id"]);
