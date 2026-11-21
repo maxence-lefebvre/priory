@@ -247,6 +247,16 @@
       "description": "`github`, `linear`, `linear.view`, `slack` or `schedule`.",
       "type": "string"
     },
+    "teams": {
+      "description": "The GitHub teams, as `org/team`, whose review requests start tasks for `reviewer` too.",
+      "items": {
+        "type": "string"
+      },
+      "type": [
+        "array",
+        "null"
+      ]
+    },
     "timezone": {
       "description": "The IANA zone `at` is read in, such as `Europe/Paris`; the machine's own when unset.",
       "type": "string"
