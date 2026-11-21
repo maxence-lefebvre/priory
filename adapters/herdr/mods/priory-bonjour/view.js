@@ -1,5 +1,6 @@
-// The Bonjour panel's view model: `priory report show --json` in, sections, rows, picks and threads out.
-// No drawing, no IO. It knows no section by name.
+// The report view model of the Bonjour panel and of the web view's Reports panel: `priory report
+// show --json` in, sections, rows, picks and threads out. No drawing, no IO. It knows no section by
+// name. crates/priory-core/web/reports.js is a copy, and a test keeps the two the same.
 
 const sameDay = (/** @type {number} */ at, /** @type {number} */ now) => new Date(at).toDateString() === new Date(now).toDateString();
 const clock = (/** @type {number} */ at) => new Date(at).toLocaleTimeString("en", { hour: "2-digit", minute: "2-digit", hourCycle: "h23" });

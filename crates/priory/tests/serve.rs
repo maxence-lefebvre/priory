@@ -3320,3 +3320,57 @@ fn the_comment_endpoints_do_what_their_cli_verbs_do() {
         setup.shown(&[])["report"]
     );
 }
+
+#[test]
+fn the_pick_endpoint_records_a_choice_and_tells_a_stale_one_by_409() {
+    let mut setup = Setup::new("web-pick", SERVE);
+    setup.asleep_on_ask();
+    setup
+        .db()
+        .execute(
+            "INSERT INTO runs (task, step, tmux, session, ended) VALUES (1, 'implement', 'gone', 'gone', '2026-11-20T08:00:00Z')",
+            [],
+        )
+        .unwrap();
+    succeeded(&setup.put("1", &report()));
+    let address = setup.start(&["daemon", &setup.factory()]);
+    let pick = |option: &str, revision: i64| {
+        post(
+            &address,
+            "/api/reports/pick",
+            "",
+            &json!({ "pick": "2026-11-20_sentry_fnd-2409", "option": option, "revision": revision })
+                .to_string(),
+        )
+    };
+
+    let (stale, reply) = pick("Take", 0);
+    assert_eq!(stale, 409, "{reply}");
+    let (status, reply) = pick("Later", 1);
+    assert_eq!(status, 200, "{reply}");
+    assert_eq!(
+        serde_json::from_str::<Value>(&reply).unwrap()["ok"],
+        "pick 2026-11-20_sentry_fnd-2409 is Later at revision 2"
+    );
+    let (again, reply) = pick("Take", 2);
+    assert_eq!(again, 409, "{reply}");
+    assert!(reply.contains("already Later"), "{reply}");
+    assert_eq!(
+        api(&address, "/api/reports/latest")["report"]["sections"][0]["rows"][0]["pick"]["chosen"],
+        "Later"
+    );
+    assert_eq!(
+        post(
+            &address,
+            "/api/reports/pick",
+            "",
+            r#"{"pick": "gone", "option": "Take", "revision": 2}"#
+        )
+        .0,
+        404
+    );
+    assert_eq!(
+        post(&address, "/api/reports/pick", "", r#"{"pick": "x"}"#).0,
+        400
+    );
+}
