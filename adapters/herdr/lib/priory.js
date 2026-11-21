@@ -27,6 +27,10 @@ export function priory({ exec, binary = "priory-oss", on = null, factory = null 
     desk: ({ all = false } = {}) => read("desk", ...(all ? ["--all"] : [])),
     asks: () => read("asks", "--all"),
     tasks: () => read("tasks"),
+    // The events that reached no task, grouped by the resource's last owner, as `/api/inbox?unrouted=1` serves them.
+    unrouted: () => read("inbox", "--unrouted"),
+    // Sends the resource's next event to the task.
+    subscribe: (/** @type {Id} */ task, /** @type {string} */ resource) => call(["subscribe", String(task), resource]),
     // One task with its brief, plan, pull request, runs and asks, as `/api/tasks/{id}` serves it.
     task: (/** @type {Id} */ id) => read("task", String(id)),
     queue: () => read("queue", ...inFactory),
