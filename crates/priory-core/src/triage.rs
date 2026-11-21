@@ -74,10 +74,11 @@ pub(crate) fn sorted(
     // Items typed before the task's last result were that result's to sort, or predate sorting.
     // An own item written inside a run of the task is the agent's reply, as routing reads it. A
     // comment in a run's first or last second may have woken or ended it, so it stays the person's.
+    // Runs keep whole seconds, so the comment's time is compared to the second.
     let mut statement = tx.prepare(
         "SELECT inbox.type, inbox.data, EXISTS (SELECT 1 FROM runs WHERE runs.task = ?1
-           AND julianday(inbox.time) > julianday(runs.started)
-           AND (runs.ended IS NULL OR julianday(inbox.time) < julianday(runs.ended)))
+           AND unixepoch(inbox.time) > unixepoch(runs.started)
+           AND (runs.ended IS NULL OR unixepoch(inbox.time) < unixepoch(runs.ended)))
          FROM inbox JOIN outbox ON outbox.id = inbox.outbox
          WHERE inbox.task = ?1 AND outbox.state = 'confirmed'
          AND outbox.run > coalesce((SELECT max(run) FROM results WHERE task = ?1), 0)

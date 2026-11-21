@@ -17645,10 +17645,13 @@ fn a_persons_call_whose_ask_the_person_dismissed_is_accepted() {
 #[test]
 fn the_persons_own_review_item_is_not_put_to_the_agent_and_is_recorded_as_a_persons_call() {
     let mut setup = Setup::new("triage-own");
-    setup.calls(&[wait(json!({ "type": "time", "until": "3 seconds" }))]);
+    // The person's comment, not the wait, wakes the task, so it is written while the task sleeps.
+    setup.calls(&[wait(json!({ "type": "time", "until": "1 hour" }))]);
     setup.publish(&requested(42));
     setup.start();
-    setup.until("runs", |rows| rows.len() == 1 && rows[0][7] == "asleep");
+    setup.until("runs", |rows| {
+        rows.len() == 1 && rows[0][7] == "asleep" && rows[0][6] != "-"
+    });
     setup.hold("hold-stop");
     let mut own = thread_comment_at(802);
     own.data["own"] = json!(true);
