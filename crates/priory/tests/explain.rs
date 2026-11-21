@@ -303,6 +303,7 @@ agent = "implementer"
 prompt = "Publish the release."
 effect = "irreversible"
 autonomous = "the docs site rebuilds from main"
+guard = { allow = ["gh-pr-comment"] }
 next = { released = "done" }
 "#;
 
@@ -326,12 +327,49 @@ fn an_agent_lists_the_guarded_calls_it_can_make_with_no_human_decision() {
         "{table}"
     );
     assert!(
-        rows.contains(&"implementer\tgh-pr-merge\tdocs\tautonomous step release"),
+        rows.contains(&"implementer\tgh-pr-comment\tdocs\tautonomous step release"),
         "{table}"
     );
-    assert!(
-        rows.iter().all(|row| !row.contains("\timplement\t")),
-        "{table}"
+    assert_eq!(rows.len(), 2, "{table}");
+}
+
+#[test]
+fn only_a_persons_approval_grants_a_merge_or_an_approving_review() {
+    let autonomous = DOCS.replace("\"gh-pr-comment\"", "\"gh-pr-merge\"");
+    let workflow = DOCS.replace("git-push-default", "gh-pr-approve");
+
+    let outcomes = [autonomous, workflow]
+        .map(|docs| priory(&["check"], &factory("allow-merge", &[("docs", &docs)])));
+
+    assert_eq!(outcomes.each_ref().map(|outcome| outcome.code), [1, 1]);
+    assert_eq!(
+        outcomes[0].stderr,
+        "workflows/docs.toml:12: step `release`: `guard.allow` names `gh-pr-merge`, which only a person's approval grants, and the step is `autonomous`\n"
+    );
+    assert_eq!(
+        outcomes[1].stderr,
+        "workflows/docs.toml:2: `guard.allow` names `gh-pr-approve`, which only a person's approval grants, so only an irreversible step may name it\n"
+    );
+}
+
+#[test]
+fn a_step_allows_only_guards_that_exist_and_only_when_irreversible() {
+    let docs = DOCS
+        .replace(
+            "effect = \"reversible\"",
+            "effect = \"reversible\"\nguard = { allow = [\"gh-pr-comment\"] }",
+        )
+        .replace(
+            "[\"gh-pr-comment\"] }\nnext = { released",
+            "[\"gh-pr-coment\"] }\nnext = { released",
+        );
+
+    let outcome = priory(&["check"], &factory("step-allow", &[("docs", &docs)]));
+
+    assert_eq!(outcome.code, 1);
+    assert_eq!(
+        outcome.stderr,
+        "workflows/docs.toml:4: step `write`: `guard.allow` grants nothing on a step that is not an irreversible model step\nworkflows/docs.toml:13: step `release`: `guard.allow` names `gh-pr-coment`, which is no built-in guard nor one of `[guard]` in factory.toml\n"
     );
 }
 

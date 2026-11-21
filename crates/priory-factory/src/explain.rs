@@ -11,11 +11,10 @@ pub struct Reach {
 }
 
 /// Per agent, the guarded calls it can make with no human decision: those a workflow it runs a step
-/// of allows, every guard in an autonomous irreversible step it runs, and, for a Codex agent with
+/// of allows, the guards an autonomous irreversible step it runs names, and, for a Codex agent with
 /// MCP servers, MCP calls, which Codex may run without the guard's hook.
 pub fn tools(factory: &Factory) -> Vec<Reach> {
     let guards = factory.guards();
-    let names = guards.names();
     let mut reach = BTreeSet::new();
     let mut add = |agent: &str, guard: &str, workflow: &str, why: String| {
         reach.insert(Reach {
@@ -39,7 +38,7 @@ pub fn tools(factory: &Factory) -> Vec<Reach> {
                 add(agent, guard, name, "allowed by the workflow".to_owned());
             }
             if step.effect == Effect::Irreversible && step.autonomous.is_some() {
-                for guard in &names {
+                for guard in &step.guard.allow {
                     add(agent, guard, name, format!("autonomous step {}", step.id));
                 }
             }

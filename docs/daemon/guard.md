@@ -12,10 +12,18 @@ every permission mode, before any allow rule.
 
 A call is guarded when a guard matches it. A guarded call runs only when one of these holds:
 
-- the task's current step is an irreversible model step marked `autonomous`;
-- the task's current step is an irreversible model step that a person approved, and the task's
-  branch is still at the commit the approval was given for;
+- the task's current step is an irreversible model step that lists the guard in its own
+  `guard.allow`, and either a person approved the step and the task's branch is still at the
+  commit the approval was given for, or the step is `autonomous`;
 - the task's workflow lists the guard in `guard.allow`.
+
+An approved or `autonomous` step grants only the guards it names. A step that names none may make
+no guarded call beyond its workflow's list.
+
+`gh-pr-merge` and `gh-pr-approve` need a person's approval: an `autonomous` step's grant never
+covers them, and `priory check` refuses them in an `autonomous` step's `guard.allow` and in a
+workflow's. So nothing merges or approves a pull request without a human step that approves the
+step doing it.
 
 A call that runs several guarded commands, such as `gh pr merge 12 && git push --force`, needs a yes
 for each one. A call that also moves the branch's commit, such as `git commit -am fix && gh pr
@@ -28,9 +36,9 @@ person must do or approve it. The daemon appends a `factory.tool.denied` record 
 with its task, step, guard and command.
 
 So the guard reuses the step's approval. A workflow that needs an agent to merge gives it a step for
-that, such as an irreversible `merge` model step that a human step `approves`. The daemon already
-refuses to start that step without the approval. The guard then lets the merge through inside it,
-and nowhere else.
+that, such as an irreversible `merge` model step with `guard = { allow = ["gh-pr-merge"] }` that a
+human step `approves`. The daemon already refuses to start that step without the approval. The
+guard then lets the merge through inside it, and nowhere else.
 
 A run with no task step, such as the stall handler, is denied every guarded call.
 

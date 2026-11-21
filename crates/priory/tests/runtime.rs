@@ -12664,6 +12664,7 @@ decides = "model"
 agent = "implementer"
 prompt = "Merge the pull request."
 effect = "irreversible"
+guard = { allow = ["gh-pr-merge"] }
 next = { merged = "done", failed = "stop" }
 "#;
 
@@ -12698,6 +12699,65 @@ fn a_merge_in_the_step_a_person_approved_passes_however_it_is_wrapped() {
     let last = &replies[calls.len()];
     let reason = guard_denied(last).unwrap_or_else(|| panic!("{last}"));
     assert!(reason.contains("a call of its own"), "{reason}");
+}
+
+/// One autonomous irreversible model step, with `guard` as its extra lines.
+fn autonomous_build(guard: &str) -> String {
+    format!(
+        r#"
+start = "build"
+
+[[steps]]
+id = "build"
+decides = "model"
+agent = "implementer"
+prompt = "Build and attach the change."
+effect = "irreversible"
+autonomous = "it only comments on its own pull request"
+{guard}
+next = {{ passed = "done", failed = "stop" }}
+"#
+    )
+}
+
+#[test]
+fn an_autonomous_step_that_names_no_guard_may_make_no_guarded_call() {
+    let mut setup = Setup::with_workflow("guard-autonomous-none", &autonomous_build(""));
+    let calls = [
+        ("gh pr comment 12 --body hi", "gh-pr-comment"),
+        ("gh pr merge 12", "gh-pr-merge"),
+        ("git push origin main", "git-push-default"),
+    ];
+    setup.calls(&[json!(calls.map(|(command, _)| bash(command)))]);
+    setup.publish(&requested(42));
+
+    setup.start();
+
+    let replies = setup.replied(calls.len());
+    for ((command, guard), reply) in calls.iter().zip(&replies) {
+        let reason = guard_denied(reply).unwrap_or_else(|| panic!("{command}: {reply}"));
+        assert!(reason.contains(guard), "{reason}");
+    }
+}
+
+#[test]
+fn an_autonomous_step_may_make_the_calls_it_names_but_never_a_merge() {
+    let mut setup = Setup::with_workflow(
+        "guard-autonomous-named",
+        &autonomous_build(r#"guard = { allow = ["gh-pr-comment"] }"#),
+    );
+    setup.calls(&[json!([
+        bash("gh pr comment 12 --body hi"),
+        bash("gh pr merge 12")
+    ])]);
+    setup.publish(&requested(42));
+
+    setup.start();
+
+    let replies = setup.replied(2);
+    assert_eq!(guard_denied(&replies[0]), None, "{}", replies[0]);
+    let reason = guard_denied(&replies[1]).unwrap_or_else(|| panic!("{}", replies[1]));
+    assert!(reason.contains("gh-pr-merge"), "{reason}");
 }
 
 #[test]
@@ -12806,12 +12866,12 @@ fn a_daemon_that_does_not_answer_gets_a_guarded_call_denied() {
 
 #[test]
 fn a_workflow_that_allows_a_guard_lets_its_steps_make_that_call_only() {
-    let workflow = format!("guard = {{ allow = [\"gh-pr-merge\"] }}\n{WORKFLOW}");
+    let workflow = format!("guard = {{ allow = [\"gh-pr-comment\"] }}\n{WORKFLOW}");
     let mut setup = Setup::with_workflow("guard-allow", &workflow);
     setup.calls(&[json!([
-        bash("gh pr merge 12"),
+        bash("gh pr comment 12 --body hi"),
         bash("git push origin main"),
-        bash("gh pr merge 12 && git push --force origin feature"),
+        bash("gh pr comment 12 --body hi && git push --force origin feature"),
     ])]);
     setup.publish(&requested(42));
 

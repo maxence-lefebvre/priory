@@ -84,6 +84,9 @@ pub const BUILT_IN: &[&str] = &[
     "mcp-write",
 ];
 
+/// The guards only a person's approval grants: never `autonomous` nor a workflow's `guard.allow`.
+pub const NEED_APPROVAL: &[&str] = &["gh-pr-merge", "gh-pr-approve"];
+
 /// Runs git with these arguments, in the `-C` directory if any, and returns its trimmed output.
 pub type Git<'a> = &'a dyn Fn(Option<&str>, &[&str]) -> Option<String>;
 

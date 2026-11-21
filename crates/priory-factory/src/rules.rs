@@ -2,6 +2,7 @@ use crate::factory::{
     Agent, Decider, Effect, Factory, Harness, Loaded, PermissionMode, Problem, Step, Trigger,
     Until, Workflow,
 };
+use crate::guard::NEED_APPROVAL;
 use crate::lanes::{self, Lanes};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -583,17 +584,18 @@ fn check_workflow(factory: &Factory, workflow: &Loaded<Workflow>, problems: &mut
         }
     }
     let guards = factory.guards().names();
-    for allowed in workflow
-        .value
-        .guard
-        .allow
-        .iter()
-        .filter(|allowed| !guards.contains(allowed))
-    {
+    for allowed in &workflow.value.guard.allow {
+        let why = if !guards.contains(allowed) {
+            UNKNOWN_GUARD
+        } else if NEED_APPROVAL.contains(&allowed.as_str()) {
+            "which only a person's approval grants, so only an irreversible step may name it"
+        } else {
+            continue;
+        };
         problems.push(problem(
             workflow,
             workflow.lines.field("guard"),
-            format!("`guard.allow` names `{allowed}`, which is no built-in guard nor one of `[guard]` in factory.toml"),
+            format!("`guard.allow` names `{allowed}`, {why}"),
         ));
     }
     let start = workflow.value.start.as_str();
@@ -718,6 +720,22 @@ fn check_workflow(factory: &Factory, workflow: &Loaded<Workflow>, problems: &mut
         if step.autonomous.is_some() && autonomous.is_none() {
             report("`autonomous` needs a reason".into());
         }
+        let grants = step.effect == Effect::Irreversible && step.decides == Decider::Model;
+        if !grants && !step.guard.allow.is_empty() {
+            report(
+                "`guard.allow` grants nothing on a step that is not an irreversible model step"
+                    .into(),
+            );
+        }
+        for allowed in &step.guard.allow {
+            if !guards.contains(allowed) {
+                report(format!("`guard.allow` names `{allowed}`, {UNKNOWN_GUARD}"));
+            } else if step.autonomous.is_some() && NEED_APPROVAL.contains(&allowed.as_str()) {
+                report(format!(
+                    "`guard.allow` names `{allowed}`, which only a person's approval grants, and the step is `autonomous`"
+                ));
+            }
+        }
         if step.effect == Effect::Irreversible && autonomous.is_none() {
             let unapproved = reachable(&steps, start, |other| {
                 other.decides == Decider::Human && other.approves.contains(&step.id)
@@ -728,6 +746,8 @@ fn check_workflow(factory: &Factory, workflow: &Loaded<Workflow>, problems: &mut
         }
     }
 }
+
+const UNKNOWN_GUARD: &str = "which is no built-in guard nor one of `[guard]` in factory.toml";
 
 /// Steps reachable from `start`, never walking past a step for which `stops` holds.
 pub(crate) fn reachable<'a>(
