@@ -48,6 +48,8 @@ pub struct Settings {
     #[serde(default, deserialize_with = "duration")]
     #[schemars(with = "String", regex(pattern = r"^0*[1-9][0-9]*[smh]$"))]
     pub command_timeout: Option<Duration>,
+    /// The project's gate: the command `priory gate` runs with `sh -c` in a task's worktree.
+    pub gate: Option<String>,
     #[serde(default)]
     pub search: Search,
     pub telemetry: Option<Telemetry>,
@@ -885,6 +887,9 @@ pub struct Step {
     /// Who decides an outcome's edge, where it differs from the step's decider.
     #[serde(default)]
     pub by: BTreeMap<String, By>,
+    /// What the daemon checks before it accepts an outcome, by outcome.
+    #[serde(default)]
+    pub proof: BTreeMap<String, Proof>,
     /// Why an irreversible step may run without a person's approval.
     pub autonomous: Option<String>,
     /// The guarded calls an irreversible step may make while it is approved or autonomous.
@@ -974,6 +979,22 @@ pub enum By {
     Model,
     Human,
     Asleep,
+}
+
+/// A check the daemon makes before it accepts a model step's outcome.
+#[derive(Debug, Deserialize, Serialize, Clone, Copy, PartialEq, Eq, JsonSchema)]
+#[serde(rename_all = "kebab-case")]
+pub enum Proof {
+    /// The factory's gate passed at the task's head, run by `priory gate`.
+    GatePassed,
+}
+
+impl Proof {
+    pub fn name(self) -> &'static str {
+        match self {
+            Proof::GatePassed => "gate-passed",
+        }
+    }
 }
 
 impl Step {
@@ -1277,6 +1298,13 @@ impl Factory {
     pub fn target(&self, name: &str) -> Option<PathBuf> {
         let folder = self.settings.as_ref()?.value.asks.targets.get(name)?;
         Some(self.dir.join(folder))
+    }
+
+    /// The command `priory gate` runs, from `factory.toml`.
+    pub fn gate(&self) -> Option<&str> {
+        self.settings
+            .as_ref()
+            .and_then(|settings| settings.value.gate.as_deref())
     }
 
     /// The names of the ask command targets besides `worktree`.

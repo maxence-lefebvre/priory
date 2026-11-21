@@ -374,6 +374,13 @@
       "pattern": "^0*[1-9][0-9]*[smh]$",
       "type": "string"
     },
+    "gate": {
+      "description": "The project's gate: the command `priory gate` runs with `sh -c` in a task's worktree.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
     "guard": {
       "allOf": [
         {

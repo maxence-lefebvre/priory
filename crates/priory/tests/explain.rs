@@ -138,7 +138,9 @@ fn the_example_workflow_gates_open_pr_on_approve_pr() {
          \n\
          workflow\tpath with no human decision\n\
          \n\
-         agent\tguard\tworkflow\twhy\n"
+         agent\tguard\tworkflow\twhy\n\
+         \n\
+         workflow\tstep\toutcome\tproof\n"
     );
 }
 
@@ -156,7 +158,9 @@ fn an_autonomous_step_lists_its_reason_and_the_path_with_no_human_decision() {
          workflow\tpath with no human decision\n\
          draft\tplan -> open-pr\n\
          \n\
-         agent\tguard\tworkflow\twhy\n"
+         agent\tguard\tworkflow\twhy\n\
+         \n\
+         workflow\tstep\toutcome\tproof\n"
     );
 }
 
@@ -194,8 +198,9 @@ fn json_holds_the_same_rows_as_the_table() {
             steps.join(" -> ")
         );
     }
-    rebuilt += "\nagent\tguard\tworkflow\twhy\n";
+    rebuilt += "\nagent\tguard\tworkflow\twhy\n\nworkflow\tstep\toutcome\tproof\n";
     assert_eq!(json["tools"], serde_json::json!([]));
+    assert_eq!(json["proofs"], serde_json::json!([]));
     assert_eq!(rebuilt, table);
     assert_eq!(json["irreversible"].as_array().unwrap().len(), 2);
 }
@@ -216,7 +221,9 @@ fn an_explicit_by_overrides_the_steps_decider() {
          \n\
          workflow\tpath with no human decision\n\
          \n\
-         agent\tguard\tworkflow\twhy\n"
+         agent\tguard\tworkflow\twhy\n\
+         \n\
+         workflow\tstep\toutcome\tproof\n"
     );
 }
 
@@ -321,7 +328,7 @@ fn an_agent_lists_the_guarded_calls_it_can_make_with_no_human_decision() {
         .split("agent\tguard\tworkflow\twhy\n")
         .nth(1)
         .unwrap();
-    let rows: Vec<&str> = table.lines().collect();
+    let rows: Vec<&str> = table.lines().take_while(|row| !row.is_empty()).collect();
     assert!(
         rows.contains(&"implementer\tgit-push-default\tdocs\tallowed by the workflow"),
         "{table}"
@@ -417,9 +424,89 @@ fn a_codex_agent_with_mcp_servers_lists_mcp_calls_the_guard_may_not_see() {
     assert_eq!(outcome.stderr, "");
     assert!(
         outcome.stdout.ends_with(
-            "agent\tguard\tworkflow\twhy\nimplementer\tmcp-write\t-\tcodex: an MCP call may skip the guard's hook\n"
+            "agent\tguard\tworkflow\twhy\nimplementer\tmcp-write\t-\tcodex: an MCP call may skip the guard's hook\n\nworkflow\tstep\toutcome\tproof\n"
         ),
         "{}",
         outcome.stdout
+    );
+}
+
+/// `IMPLEMENT` with its `implement` step's `passed` proved by `proof`, in a factory whose gate is
+/// `cargo test`.
+fn proved(name: &str, proof: &str) -> PathBuf {
+    let proved = IMPLEMENT.replace(
+        "next = { passed = \"approve-pr\", failed = \"stop\" }",
+        &format!("next = {{ passed = \"approve-pr\", failed = \"stop\" }}\n{proof}"),
+    );
+    let dir = factory(name, &[("implement", &proved)]);
+    fs::write(
+        dir.join("factory.toml"),
+        "name = \"demo\"\ngate = \"cargo test\"\n",
+    )
+    .unwrap();
+    dir
+}
+
+#[test]
+fn an_outcome_with_a_proof_is_listed_as_verified() {
+    let dir = proved("proof", "proof = { passed = \"gate-passed\" }");
+
+    let outcome = explain(&dir);
+
+    assert_eq!(outcome.stderr, "");
+    assert_eq!(
+        outcome.stdout,
+        "workflow\tstep\tgate\n\
+         implement\topen-pr\tapprove-pr\n\
+         \n\
+         workflow\tpath with no human decision\n\
+         \n\
+         agent\tguard\tworkflow\twhy\n\
+         \n\
+         workflow\tstep\toutcome\tproof\n\
+         implement\timplement\tpassed\tgate-passed\n"
+    );
+    let json: Value =
+        serde_json::from_str(&priory(&["check", "--explain", "--json"], &dir).stdout).unwrap();
+    assert_eq!(
+        json["proofs"],
+        serde_json::json!([
+            { "workflow": "implement", "step": "implement", "outcome": "passed", "proof": "gate-passed" }
+        ])
+    );
+}
+
+#[test]
+fn a_proof_needs_a_model_step_an_outcome_in_next_and_a_gate() {
+    let cases = [
+        (
+            "proof = { failed = \"gate-passed\", lost = \"gate-passed\" }",
+            "workflows/implement.toml:18: step `implement`: `proof` has outcome `lost`, which is not in `next`\n",
+        ),
+        (
+            "proof = { passed = \"tests-ran\" }",
+            "unknown variant `tests-ran`, expected `gate-passed`",
+        ),
+    ];
+    for (proof, error) in cases {
+        let outcome = priory(&["check"], &proved("proof-wrong", proof));
+
+        assert_eq!(outcome.code, 1, "{proof}");
+        assert!(
+            outcome.stderr.contains(error),
+            "{proof}: {}",
+            outcome.stderr
+        );
+    }
+    let on_human = IMPLEMENT.replace(
+        "next = { approved = \"implement\", rejected = \"stop\" }",
+        "next = { approved = \"implement\", rejected = \"stop\" }\nproof = { approved = \"gate-passed\" }",
+    );
+    let dir = factory("proof-human", &[("implement", &on_human)]);
+    let outcome = priory(&["check"], &dir);
+    assert_eq!(
+        outcome.stderr,
+        "workflows/implement.toml:11: step `approve-plan`: only a model step has a `proof`\n\
+         workflows/implement.toml:11: step `approve-plan`: `proof` names `gate-passed`, and factory.toml sets no `gate`\n"
     );
 }

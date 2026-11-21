@@ -623,6 +623,7 @@ enum Input {
     Comment(sections::Comment),
     Progress(progress::Put),
     Gate(Gate),
+    Proof(crate::proof::Line),
     Push(push::Line),
     Seen(state::SeenLine),
     Read(crate::post::ReadLine),
@@ -771,6 +772,15 @@ fn take(
             replied(tools::call(db, &call, trace, &|worktree, branch| {
                 runtime::kept_head(&runtime::home(), worktree, branch)
             })?),
+            None,
+        )),
+        Ok(Input::Proof(line)) => Ok((
+            replied(crate::proof::gate(
+                db,
+                &line,
+                trace,
+                &|worktree, branch| runtime::kept_head(&runtime::home(), worktree, branch),
+            )?),
             None,
         )),
         Ok(Input::Answer(answer)) => Ok((

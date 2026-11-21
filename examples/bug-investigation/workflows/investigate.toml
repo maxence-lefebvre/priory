@@ -17,6 +17,7 @@ agent = "investigator"
 prompt = "Fix the root cause you found, add a test that fails without the fix, and commit. Your result's first line becomes the pull request title."
 effect = "reversible"
 next = { passed = "approve-pr", failed = "stop" }
+proof = { passed = "gate-passed" }
 
 [[steps]]
 id = "approve-pr"

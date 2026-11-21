@@ -16,10 +16,12 @@ causes to its author.
 
 `gh` logged in to GitHub with access to the repository, `claude` on `PATH`, and `PRIORY_DB`
 set for the intake and the daemon. Replace `owner/repo` in `triggers/hourly-checks.toml`, and rename
-`runners/my-machine.toml` after your machine's Tailscale hostname.
+`runners/my-machine.toml` after your machine's Tailscale hostname. Set `gate` in `factory.toml` to
+the command that runs your project's tests.
 
 ## Gates
 
+- `diagnose` takes `fixed` only once `priory gate` passed at the branch's head.
 - `approve-pr` asks you before `open-pr` pushes the branch and opens the pull request.
 - The agent's permissions deny `git push`, `gh pr create` and `gh run rerun`.
 

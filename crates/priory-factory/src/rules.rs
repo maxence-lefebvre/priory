@@ -1,5 +1,5 @@
 use crate::factory::{
-    Agent, Decider, Effect, Factory, Harness, Intervention, Loaded, PermissionMode, Problem,
+    Agent, Decider, Effect, Factory, Harness, Intervention, Loaded, PermissionMode, Problem, Proof,
     Session, Step, Trigger, Until, Workflow,
 };
 use crate::guard::NEED_APPROVAL;
@@ -751,6 +751,22 @@ fn check_workflow(factory: &Factory, workflow: &Loaded<Workflow>, problems: &mut
             report(format!(
                 "`by` has outcome `{outcome}`, which is not in `next`"
             ));
+        }
+        if !step.proof.is_empty() && step.decides != Decider::Model {
+            report("only a model step has a `proof`".into());
+        }
+        for outcome in step
+            .proof
+            .keys()
+            .filter(|outcome| !step.next.contains_key(*outcome))
+        {
+            report(format!(
+                "`proof` has outcome `{outcome}`, which is not in `next`"
+            ));
+        }
+        if step.proof.values().any(|proof| *proof == Proof::GatePassed) && factory.gate().is_none()
+        {
+            report("`proof` names `gate-passed`, and factory.toml sets no `gate`".into());
         }
         if !reached.contains(step.id.as_str()) {
             report("no path from start reaches it".into());

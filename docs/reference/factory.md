@@ -14,6 +14,7 @@ Schema: [`config/factory.json`](../schemas/config/factory.json).
 | `handler` | string | no | none: no handler runs | The agent whose model reads a stalled run's screen. It needs `harness = "claude-code"`. See [health.md](../daemon/health.md) | `"reviewer"` |
 | `stalled` | duration | no | `"10m"` | How long a run goes without a hook event or a pane change before it counts as stalled | `"15m"` |
 | `command_timeout` | duration | no | `"5m"` | How long one `git`, `gh` or `tmux` command may run before Priory kills it. See [home.md](../daemon/home.md) | `"20m"` |
+| `gate` | string | no | none: no step can name the `gate-passed` proof | The project's check, such as its tests. `priory gate` runs it with `sh -c` in a task's worktree. See Proofs in [tools.md](../daemon/tools.md#proofs) | `"cargo test"` |
 | `sweep` | table | no | the built-in worktree sweep alone | How the daemon frees room. See [`[sweep]`](#sweep) | |
 | `search` | table | no | keyword search, no summarizer | How tasks are found. See [`[search]`](#search) | |
 | `telemetry` | table | no | no export | Where trace records go. See [`[telemetry]`](#telemetry) | |
@@ -209,6 +210,7 @@ bands = ["blocker", "now", "today", "later"]   # the default bands, highest firs
 handler = "reviewer"                           # reads a stalled run's screen; claude-code only
 stalled = "10m"                                # no hook event and no pane change for this long
 command_timeout = "5m"                         # the limit on one git, gh or tmux command
+gate = "cargo test"                            # what `priory gate` runs in a worktree
 
 [sweep]
 every = "10m"                                  # the built-in worktree sweep

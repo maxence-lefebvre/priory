@@ -44,6 +44,8 @@ capitals is stored in lower case.
 The `open-pr` action titles its pull request with the first line of `summary` (see Code steps
 below).
 
+An outcome that the step's `proof` names is refused until its proof holds. See Proofs below.
+
 `branches`, optional, asks `open-pr` for a stack of pull requests: their branches, bottom first,
 each based on the one before it. The last one must be the task's own branch, and each lower one is
 named after it, such as `priory/7-api` for task 7. A list that breaks these rules, names a branch
@@ -344,6 +346,44 @@ priory progress 7 '{"nextAction": "Wait for CI"}'
 task's report and keeps the choices already made. It does not end the turn. `priory mcp` answers it
 itself from the state file, without the daemon. A pick or a comment on a row arrives as the next
 prompt; the agent answers a comment with `priory report reply`. See [reports.md](reports.md).
+
+#### Proofs
+
+An outcome is the agent's word, unless the step names a proof for it. A step's `proof` table lists
+the outcomes the daemon checks before it stores them (see [workflows.md](../reference/workflows.md#step-keys)).
+Priory knows one proof, `gate-passed`: the factory's `gate` passed at the head of the task's branch.
+
+The agent runs the gate from its pane, in any folder:
+
+```sh
+priory gate
+```
+
+`priory gate` asks the daemon for the factory's `gate`, the run's worktree and the head of the
+task's branch. It runs the gate with `sh -c` in the worktree, with its output on the terminal. Then
+it sends the commit and the exit code to the daemon, which appends a `factory.gate.ran` record to the
+trace (see [trace-schema.md](../trace-schema.md#factorygateran)). `priory gate` exits as the gate
+did. It refuses to run outside a run's pane, where `PRIORY_SESSION` is unset, and in a factory with
+no `gate`.
+
+A step with a proof ends its prompt with a line that names the outcomes to prove. When the agent
+sends a proved outcome, the daemon reads the task's gate runs in the trace and refuses the result,
+telling the agent why, when:
+
+- no gate ran for the task:
+  `outcome passed needs a gate that passed at the head <sha>, and no gate ran for task 7: run `priory gate` in the worktree, then send the result again`
+- the last gate run at the head failed: `..., and the last gate run at it exited 1: ...`
+- the gate ran only at other commits: `..., and the last gate run for task 7 was at another commit, <sha>: ...`
+
+The agent fixes what it must, runs `priory gate` again and sends the result again. Outcomes the
+`proof` table does not name are stored as before.
+
+Known limits:
+
+- A proof checks that the agent ran the gate, not that it could not lie. An agent can write to the
+  daemon's socket itself.
+- The gate runs at the branch's head commit, with any uncommitted change in the worktree. A change
+  left uncommitted after the gate passed does not refuse the outcome.
 
 ## Moving on
 
