@@ -302,7 +302,8 @@ fn compact(
 /// Queues `/compact` once per crossing when the session's `context` reaches its agent's
 /// `compactAt`. Every run of the session shares the crossing. A run with a result is skipped, since
 /// the result may move the task to another conversation, and so is a task whose answer's command
-/// runs. Says whether the session's compact is still queued, so the run must not sleep yet.
+/// runs. Says whether the compact it queued for the crossing is still queued, so the run must not
+/// sleep yet. A reading below `compactAt` withdraws that compact if it was never typed.
 pub(crate) fn overflow(
     tx: &Transaction,
     session: &str,
@@ -321,34 +322,43 @@ pub(crate) fn overflow(
         return Ok(false);
     };
     if context.is_some_and(|context| context < limit.get()) {
+        tx.execute(
+            "DELETE FROM outbox WHERE state = 'queued'
+             AND id IN (SELECT crossed FROM runs WHERE session = ?1)",
+            [session],
+        )?;
         tx.execute("UPDATE runs SET crossed = 0 WHERE session = ?1", [session])?;
         return Ok(false);
     }
     if commanding(tx, run.task)? {
         return Ok(false);
     }
-    let crossed: bool = tx.query_row(
-        "SELECT max(crossed) FROM runs WHERE session = ?1",
+    let (crossed, pending): (bool, bool) = tx.query_row(
+        "SELECT max(crossed) > 0, EXISTS (SELECT 1 FROM outbox WHERE state = 'queued'
+           AND id = (SELECT max(crossed) FROM runs WHERE session = ?1))
+         FROM runs WHERE session = ?1",
         [session],
-        |row| row.get(0),
+        |row| Ok((row.get(0)?, row.get(1)?)),
     )?;
-    let queued = compact_queued(tx, run.task)?;
     if crossed {
-        return Ok(queued);
+        return Ok(pending);
     }
     let result: bool = tx.query_row(
         "SELECT EXISTS (SELECT 1 FROM results WHERE run = ?1)",
         [run.id],
         |row| row.get(0),
     )?;
-    if context.is_none() || result || queued {
+    if context.is_none() || result || compact_queued(tx, run.task)? {
         return Ok(false);
     }
     tx.execute(
         "INSERT INTO outbox (task, text, compact) VALUES (?1, '/compact', 1)",
         [run.task],
     )?;
-    tx.execute("UPDATE runs SET crossed = 1 WHERE session = ?1", [session])?;
+    tx.execute(
+        "UPDATE runs SET crossed = ?2 WHERE session = ?1",
+        params![session, tx.last_insert_rowid()],
+    )?;
     Ok(true)
 }
 
@@ -1613,11 +1623,18 @@ fn queue_first(tx: &Transaction, task: i64, text: &str) -> rusqlite::Result<i64>
         tx.execute("DELETE FROM outbox WHERE id = ?1", [old])?;
     }
     // A queued `/compact` must be typed alone, so it follows the new prompt instead of joining it.
-    tx.execute(
+    let moved = tx.execute(
         "INSERT INTO outbox (task, text, compact) SELECT task, text, 1 FROM outbox
          WHERE task = ?1 AND state = 'queued' AND compact = 1 AND id < ?2",
         [task, id],
     )?;
+    if moved > 0 {
+        tx.execute(
+            "UPDATE runs SET crossed = ?3 WHERE crossed IN (SELECT id FROM outbox
+             WHERE task = ?1 AND state = 'queued' AND compact = 1 AND id < ?2)",
+            params![task, id, tx.last_insert_rowid()],
+        )?;
+    }
     tx.execute(
         "DELETE FROM outbox WHERE task = ?1 AND state = 'queued' AND compact = 1 AND id < ?2",
         [task, id],

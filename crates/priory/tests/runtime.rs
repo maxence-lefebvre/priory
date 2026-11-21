@@ -1376,6 +1376,22 @@ fn a_result_carried_into_the_next_step_compacts_there() {
 }
 
 #[test]
+fn a_compact_tool_call_after_an_automatic_compaction_still_follows_the_answer() {
+    let mut setup = Setup::with_workflow("auto-compact-then-tool", STEPS);
+    setup.compact_at(5000, &[6000, 7000]);
+    // The continuation after the automatic compaction asks for another compact, then asks.
+    setup.calls(&[serde_json::Value::Null, json!([compact("the plan"), ask()])]);
+    setup.publish(&requested(42));
+
+    setup.start();
+
+    setup.until("tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == "asleep")
+    });
+    assert_eq!(setup.compactions(), 1, "{:?}", setup.typed());
+}
+
+#[test]
 fn a_turn_past_compact_at_is_not_compacted_until_it_ends() {
     let mut setup = Setup::new("auto-compact-busy");
     setup.compact_at(5000, &[6000]);

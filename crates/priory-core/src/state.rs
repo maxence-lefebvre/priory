@@ -898,7 +898,8 @@ END;
 PRAGMA user_version = 49;
 ";
 
-// Whether the daemon queued a compaction since the run's context last read below `compactAt`.
+// The outbox id of the compact the daemon queued since the session's context last read below
+// `compactAt`, or 0.
 const SCHEMA_50: &str = "ALTER TABLE runs ADD COLUMN crossed INTEGER NOT NULL DEFAULT 0;
 PRAGMA user_version = 50;
 ";

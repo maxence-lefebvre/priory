@@ -60,7 +60,9 @@ and wakes.
 While the daemon's `/compact` is queued, a turn's ask or wait does not settle: the task sleeps on it
 at the first `Stop` after the compaction and its continuation. So a lead that ends every turn with
 an ask or a wait is still compacted before it sleeps. A task whose answer's command still runs is
-neither compacted nor kept awake: it waits for the command, and a later turn compacts.
+neither compacted nor kept awake: it waits for the command, and a later turn compacts. A turn whose
+context reads below `compactAt` before the `/compact` is typed withdraws it. A `/compact` the agent
+asks for with the tool keeps the tool's own rules.
 
 A turn that stores a result is compacted only if the next step carries on in the same process. A
 result that moves the task to another conversation leaves the crossing to the session's next run,
@@ -68,6 +70,9 @@ which checks at its `SessionStart`. Its first `result` is then refused until the
 the `compact` tool.
 
 A Codex agent cannot take `compactAt`: Priory reads no Codex tokens (see [codex.md](codex.md)).
+
+Known limit: an answer that reaches a run kept awake for its `/compact` can start its command
+before the compaction, so the continuation may come while the command runs.
 
 ## Attaching to a run
 
