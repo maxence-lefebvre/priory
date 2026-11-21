@@ -90,6 +90,18 @@
       },
       "type": "object"
     },
+    "Notify": {
+      "additionalProperties": false,
+      "description": "Where the daemon tells a person that the desk's next item changed, besides Web Push.",
+      "properties": {
+        "desktop": {
+          "default": false,
+          "description": "Whether the daemon runs `notify-send` with the title of each new next item that is an ask\nor an alarm.",
+          "type": "boolean"
+        }
+      },
+      "type": "object"
+    },
     "RequestDefaults": {
       "additionalProperties": false,
       "description": "What `priory add` and `POST /api/request` use when a request names no workflow or band.",
@@ -370,6 +382,16 @@
     "name": {
       "description": "The factory's name.",
       "type": "string"
+    },
+    "notify": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/Notify"
+        },
+        {
+          "type": "null"
+        }
+      ]
     },
     "request": {
       "anyOf": [

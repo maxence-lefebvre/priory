@@ -252,7 +252,9 @@ function deskModel() {
   const stopped = items.filter((item) => ["blocked", "failed", "prompt", "command"].includes(item.kind));
   const reports = items.filter((item) => item.kind === "report");
   const other = items.filter((item) => !["ask", "blocked", "failed", "prompt", "command", "report"].includes(item.kind));
-  return { open, stopped, reports, other, asleep: desk.counts.asleep, asleepTasks: queue.asleep, banner: desk.banner, intake: desk.intake, running: queue.running, queue: queue.waiting, tasks, upNext: queue.up_next, needs: items.length };
+  // The capsule opens the ask that ranks first, not only the oldest one.
+  const first = desk.ranked?.find((item) => item.kind === "ask");
+  return { open, first: first ? byId.get(first.id) || open[0] : open[0], stopped, reports, other, asleep: desk.counts.asleep, asleepTasks: queue.asleep, banner: desk.banner, intake: desk.intake, running: queue.running, queue: queue.waiting, tasks, upNext: queue.up_next, needs: items.length };
 }
 const openAsks = () => deskModel().open;
 // The open asks the list shows, so previous, next and the ask after an answer stay in its facets.
@@ -431,7 +433,7 @@ const addButton = (kind) => html`<button class="${kind}" data-action="add-open" 
 // On a phone the Add button sits beside the capsule, or alone where the capsule hides.
 function capsule(model) {
   const n = model.open.length;
-  const answer = n && deskView() === "needs" ? html`<a class="capsule" href="/asks/${model.open[0].id}">${icon("ask", "s20")}Answer ${n} ${n === 1 ? "ask" : "asks"}</a>` : "";
+  const answer = n && deskView() === "needs" ? html`<a class="capsule" href="/asks/${model.first.id}">${icon("ask", "s20")}Answer ${n} ${n === 1 ? "ask" : "asks"}</a>` : "";
   return html`<div class="fade"></div><div class="dock">${answer}${addButton("fab")}</div>`;
 }
 
