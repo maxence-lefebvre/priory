@@ -160,3 +160,15 @@ test("an ask's question and a task's title turn the factory's keys into link spa
   assert.deepEqual(model.sections("running")[0].rows[0].textSpans,
     [{ text: "Retry " }, { text: "ENG-7", url: "https://linear.app/acme/issue/ENG-7" }, { text: " with backoff" }]);
 });
+
+/** A stack entry as `tasks --json` lists it. @param {number} number @param {string} branch @param {string} base @param {string} state */
+const pull = (number, branch, base, state) => ({ pull_request: `github:acme/app#${number}`, number, branch, base, state });
+
+test("a task row with a stack of two or more says how many PRs; one PR or none says nothing", () => {
+  const stack = [pull(57, "pri-66-a", "main", "merged"), pull(58, "pri-66-b", "pri-66-a", "open"), pull(59, "pri-66-c", "pri-66-b", "open")];
+  const tasks = data.tasks.tasks.map((/** @type {any} */ task) => ({ ...task, stack: task.id === 6 ? stack : task.id === 4 ? [pull(60, "pri-55", "main", "open")] : [] }));
+  const model = deskModel({ ...data, tasks: { tasks } }, { now });
+  assert.deepEqual(model.sections("running")[0].rows.map((row) => [row.key, row.prs]), [["cli:PRI-66", "3 PRs"]]);
+  assert.deepEqual(model.sections("needs")[1].rows.map((row) => [row.key, row.prs]), [["cli:PRI-55", null]]);
+  assert.deepEqual(model.sections("all")[0].rows.map((row) => row.prs).filter(Boolean), ["3 PRs"]);
+});

@@ -703,10 +703,16 @@ export default class PrioryAsks extends View {
     }
     if (id === "pr" && detail.pr) {
       return v_flex().gap(8).child(head("terminal", detail.pr.title, detail.pr.review ?? ""))
-        .child(caption(detail.pr.line))
+        .when(Boolean(detail.pr.line), (el) => el.child(caption(String(detail.pr.line))))
         .children(detail.pr.checks.map((check) => h_flex().gap(6).items_center().text_size(TYPE.small[0])
           .child(svg(ICON(check.ok ? "check" : "x")).size(14).text_color(check.ok ? t["ok-text"] : t["danger-text"]))
-          .child(div().flex_1().child(check.name)).child(div().text_color(t["text-3"]).child(check.text))));
+          .child(div().flex_1().child(check.name)).child(div().text_color(t["text-3"]).child(check.text))))
+        .when(Boolean(detail.pr.stack), (el) => el.child(div().text_size(TYPE.caption[0]).text_color(t["text-2"]).child(`Stack, bottom first: ${detail.pr.prs}`))
+          .children((detail.pr.stack ?? []).map((pull) => h_flex().gap(8).items_center().text_size(TYPE.small[0])
+            .child(div().w(56).flex_none().font_family(this.font.mono).child(linked(`stack-${pull.number}`, [{ text: `#${pull.number}`, url: pull.url }])))
+            .child(div().flex_1().min_w_0().truncate().text_color(t["text-2"]).child(`${pull.branch} into ${pull.base}`))
+            .when(Boolean(pull.checks), (row) => row.child(div().flex_none().text_color(t["text-3"]).child(String(pull.checks))))
+            .child(div().flex_none().text_color(pull.next ? t["action-text"] : t["text-3"]).child(pull.next ? `${pull.state}, next to merge` : pull.state)))));
     }
     if (id === "trace") {
       return v_flex().gap(8).child(head("clock", "Trace"))

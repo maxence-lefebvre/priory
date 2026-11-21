@@ -4,6 +4,7 @@ import { askGroups, snoozed } from "./asks.js";
 import { addBody, addOutcome } from "./add.js";
 import { linked } from "./links.js";
 import { dossier, refusal } from "./reports.js";
+import { prStack } from "./stack.js";
 
 const ICONS = {
   check: '<path d="M20 6 9 17l-5-5"/>',
@@ -295,7 +296,7 @@ function itemRow(item) {
   const key = stopped ? html`<a class="mono" href="/tasks/${item.task}">${item.key || ""}</a>` : html`<span class="mono">${item.key || ""}</span>`;
   return html`<div class="row">
     ${tile(kind)}
-    <span class="l1">${key}<span>${item.step || ""}</span><span>${item.kind}</span><span class="age">${timeTag(item.since)}</span></span>
+    <span class="l1">${key}<span>${item.step || ""}</span><span>${item.kind}</span>${item.task ? prsTag({}, item.task) : ""}<span class="age">${timeTag(item.since)}</span></span>
     <span class="l2 r t-${role(kind)}">${autolinked(item.what, null)}</span>${stopped ? taskActs(item.task, item.kind) : ""}</div>`;
 }
 
@@ -304,16 +305,23 @@ function asleepRow(task) {
   const waits = (task.waits || []).map((wait) => `${wait.kind} ${wait.on}, ${age(wait.since)}`).join("; ");
   return html`<a class="row" href="/tasks/${task.id}">
     ${tile("asleep")}
-    <span class="l1"><span class="mono">${task.key}</span><span>${task.workflow} ${task.step}</span><span>asleep</span><span class="age">${timeTag(task.since)}</span></span>
+    <span class="l1"><span class="mono">${task.key}</span><span>${task.workflow} ${task.step}</span><span>asleep</span>${prsTag(task)}<span class="age">${timeTag(task.since)}</span></span>
     <span class="l2 r">${task.title || task.lane || ""}</span>
     <span class="l3"><span>${waits ? `Waits on ${waits}` : "Waits on an ask"}</span></span>
     <span class="chev">${icon("chevron-right", "s15")}</span></a>`;
 }
 
+// "3 PRs" for a task with a stack of two or more. The queue and desk carry no stacks; the tasks listing does.
+const prs = (task, id = task.id) => prStack(task.stack ?? state.data.tasks.find((each) => each.id === id)?.stack).label;
+const prsTag = (task, id) => {
+  const label = prs(task, id);
+  return label ? html`<span class="tag">${label}</span>` : "";
+};
+
 function taskRow(task) {
   return html`<div class="row">
     ${tile(task.state)}
-    <span class="l1"><span class="mono">${task.key}</span><span>${task.workflow} ${task.step}</span><span>${task.state}</span><span class="age">${timeTag(task.since)}</span></span>
+    <span class="l1"><span class="mono">${task.key}</span><span>${task.workflow} ${task.step}</span><span>${task.state}</span>${prsTag(task)}<span class="age">${timeTag(task.since)}</span></span>
     <span class="l2 r ${task.reason ? `t-${role(task.state)}` : ""}">${autolinked(task.reason || task.tldr || task.title || task.lane || "", task.repo)}</span></div>`;
 }
 
@@ -410,7 +418,7 @@ function deskTable(model, selected) {
     <td class="recw">${ask.recommendation || ""}</td><td class="r">${timeTag(ask.since)}</td></tr>`;
   const itemLine = (item) => html`<tr>
     <td>${stateWord(item.kind === "prompt" ? "prompt" : item.kind)}</td><td class="mono">${["blocked", "failed"].includes(item.kind) ? html`<a href="/tasks/${item.task}">${item.key || ""}</a>` : item.key || ""}</td><td>${item.step || ""}</td>
-    <td class="q full t-${role(item.kind)}"><span>${item.what}</span></td><td class="recw">${["blocked", "failed"].includes(item.kind) ? taskActs(item.task, item.kind) : ""}</td><td class="r">${timeTag(item.since)}</td></tr>`;
+    <td class="q full t-${role(item.kind)}">${item.task ? prsTag({}, item.task) : ""}<span>${item.what}</span></td><td class="recw">${["blocked", "failed"].includes(item.kind) ? taskActs(item.task, item.kind) : ""}</td><td class="r">${timeTag(item.since)}</td></tr>`;
   const group = (title, count) => html`<tr class="grp"><td colspan="6">${title}<span>${count}</span></td></tr>`;
   return html`<table class="tbl">
     <thead><tr><th>State</th><th>Task</th><th>Step</th><th>Waits on you</th><th>Recommends</th><th class="r">Age</th></tr></thead>
@@ -730,7 +738,10 @@ function taskSections(task) {
   if (pr) {
     sections.push(["pr", "PR", sect("pr", "workflow", `#${pr.number} ${pr.title || ""}`, pr.review || "",
       html`<p class="meta">${pr.branch} into ${pr.base}, head <span class="mono">${String(pr.head_sha).slice(0, 7)}</span>, ${pr.state}</p>
-      <ol class="hist">${pr.checks.map((check) => html`<li>${tile(check.conclusion === "success" ? "done" : "failed", "sm")}<span>${check.name}</span><span>${check.conclusion}</span></li>`)}</ol>`)]);
+      <ol class="hist">${pr.checks.map((check) => html`<li>${tile(check.conclusion === "success" ? "done" : "failed", "sm")}<span>${check.name}</span><span>${check.conclusion}</span></li>`)}</ol>${prStackList(task.stack, pr)}`)]);
+  } else if (prs(task)) {
+    // The summary needs the pull request's events; the stack does not.
+    sections.push(["pr", "PR", sect("pr", "workflow", prs(task), "", prStackList(task.stack, null))]);
   }
   if (task.runs?.length) {
     sections.push(["trace", "Trace", sect("trace", "runs", "Trace", "", html`<ol class="hist">${task.runs.map((run) => {
@@ -740,6 +751,17 @@ function taskSections(task) {
     })}</ol>`)]);
   }
   return sections;
+}
+
+const PULL_TILES = { merged: "done", closed: "dropped" };
+
+function prStackList(stack, latest) {
+  const { label, entries } = prStack(stack, latest);
+  if (!label) return "";
+  return html`<p class="meta">Stack, bottom first: ${label}</p><ol class="hist" aria-label="Pull requests, bottom first">${entries.map((pull) => html`<li>
+    ${tile(PULL_TILES[pull.state] || (pull.next ? "ready" : "queued"), "sm")}
+    <span><a class="autolink mono" href="${pull.url}" rel="noopener noreferrer" target="_blank">#${pull.number}</a> ${pull.branch} into ${pull.base}${pull.checks ? `, ${pull.checks}` : ""}</span>
+    <span class="${pull.next ? "t-live" : ""}">${pull.next ? `${pull.state}, next to merge` : pull.state}</span></li>`)}</ol>`;
 }
 
 // An agent's command runs on the options in its `runs`; an outside ask's string command never runs.

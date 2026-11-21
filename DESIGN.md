@@ -569,6 +569,14 @@ the drawer: path in mono (ellipsized from the left), counts, and five squares of
 deleted share in `--tile-ok` and `--tile-danger`. Then the checks, each a `check`, `x` or live
 dot with its name and duration, and the review state.
 
+A task with a stack of two or more pull requests adds "Stack, bottom first: 3 PRs" in
+`--text-2`, then one `.hist` row per pull request, bottom first: a small tile, the number as a link
+in mono, "branch into base", the checks when known ("1 of 2 checks failing", for the latest one
+only), and the state at the trailing edge. Tiles: merged `done`, closed `dropped`, the next to merge
+`ready`, other open ones `queued`. The lowest open one reads "open, next to merge" in
+`--action-text`. One pull request keeps the summary above with no stack rows. A stack whose latest
+pull request has no events yet shows the stack rows alone, under the title "3 PRs".
+
 ### Trace waterfall and run blocks
 
 The trace is the task's runs and waits on a time axis, ending at now.
@@ -647,6 +655,9 @@ open Priory window when there is one.
 - **Wide**: one line, `--row-wide` (38 px), with columns for state, key, workflow and step, lane,
   band and age (tasks) or run id, step, agent, started, duration and state (runs). Numbers are
   right aligned in `tabular-nums`.
+- A task with a stack of two or more pull requests shows `3 PRs` as a `.tag` after its state, in
+  task, asleep and stopped rows. The wide desk table puts it above the row's reason. A task with one
+  pull request shows none.
 - States: default, pressed (`--raised`), selected (bold text and a 3 px `--action` bar on the
   leading edge), new (fading `--action-soft`), focused (focus ring).
 - A live run shows its duration counting up once per minute, not per second. Tapping a run opens
@@ -848,6 +859,9 @@ the adapter lives, how it reads and acts, and the data each panel needs. The app
 - **Overlays.** The answer sheet becomes a popover from the answer bar's "3 options". Secondary
   commands sit in a menu, opened by a `more-horizontal` button, and in a context menu. No command
   appears only on hover.
+- **Stacks.** A Desk or Queue row shows `3 PRs` in `--text-2` after its state, and the wide Desk
+  table under the row's text. The Asks PR section draws each stack row's state in words, with no
+  tile.
 - **The armed command option** counts its 4 s down with a bar that drains under its label,
   instead of a ring.
 - **Pointer.** Buttons keep the arrow cursor. Only links that leave Priory take the pointing hand.
