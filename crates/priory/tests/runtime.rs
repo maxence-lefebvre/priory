@@ -16604,6 +16604,38 @@ fn a_runner_that_joins_late_reads_a_finished_task_without_running_it_again() {
 }
 
 #[test]
+fn a_runner_added_to_a_factory_that_had_one_does_not_run_its_finished_requests_again() {
+    let mut a = runner("joined", "a", None);
+    let mut b = runner("joined", "b", Some(&a));
+    let runners = a.dir.join("factory/runners");
+    let later = a.dir.join("runners-later");
+    fs::rename(&runners, &later).unwrap();
+    let exe = Path::new(env!("CARGO_BIN_EXE_priory"));
+    a.calls(&[result("passed")]);
+    a.publish(&requested(1));
+    a.start_with(exe, &[("PRIORY_NOW", T0)]);
+    a.until("tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == "done")
+    });
+    a.crash();
+
+    fs::rename(&later, &runners).unwrap();
+    a.start_with(exe, &[("PRIORY_NOW", T0)]);
+    logged(&a, "priory.runner.alive", json!({ "runner": "a" }));
+    b.start_with(exe, &[("PRIORY_NOW", T0)]);
+    b.until("inbox", |rows| {
+        rows.iter().any(|row| {
+            row.contains(&"priory.runner.alive".to_owned()) && row.contains(&"b".to_owned())
+        })
+    });
+
+    assert!(
+        b.rows("tasks").is_empty(),
+        "b does not run the request a finished before it had runners"
+    );
+}
+
+#[test]
 fn a_copy_reopened_on_a_runner_whose_key_another_runner_owns_drops_with_the_owner_named() {
     let mut a = runner("reopen-elsewhere", "a", None);
     let mut b = runner("reopen-elsewhere", "b", Some(&a));

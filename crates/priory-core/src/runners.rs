@@ -129,6 +129,7 @@ fn claimed(
         data["runner"].as_str().unwrap_or_default(),
     );
     let given = data["given"] == true;
+    let ended = data["ended"] == true;
     let current = owner(tx, key)?;
     let alive = match &current {
         Some(current) => lease(tx, &current.runner)?,
@@ -168,10 +169,16 @@ fn claimed(
     }
     let seq = crate::state::record(tx, message, None, "claimed", None)?;
     tx.execute(
-        "INSERT INTO claims (key, runner, request, won) VALUES (?1, ?2, ?3, ?4)
+        "INSERT INTO claims (key, runner, request, won, hold) VALUES (?1, ?2, ?3, ?4, ?5)
          ON CONFLICT (key) DO UPDATE SET runner = excluded.runner, request = excluded.request,
-           hold = 'waiting', published = NULL, won = excluded.won",
-        params![key, runner, request, seq],
+           hold = excluded.hold, published = NULL, won = excluded.won",
+        params![
+            key,
+            runner,
+            request,
+            seq,
+            if ended { "ended" } else { "waiting" }
+        ],
     )?;
     // The request, then each later one of the key that no task here took, are this task's.
     let mut pending: Vec<String> = tx
@@ -206,8 +213,9 @@ fn claimed(
             )?;
             continue;
         }
-        // A runner that adopts its own task, or is given it back, already has it.
-        if id == request && crate::state::keyed(tx, Some(&key.to_owned()))?.is_some() {
+        // A runner that adopts its own task, or is given it back, already has it; an ended one
+        // needs none.
+        if id == request && (ended || crate::state::keyed(tx, Some(&key.to_owned()))?.is_some()) {
             continue;
         }
         let Some(request) = stored(tx, id)? else {
@@ -444,27 +452,36 @@ pub(crate) fn cleared(db: &mut Connection, me: &str, task: i64) -> rusqlite::Res
 
 /// Claims the keys of this runner's active tasks that no runner holds yet, such as the tasks of a
 /// factory that had one runner before or one it reopened, so that another runner does not claim
-/// them too. Until the claim is read back, admission skips the task.
+/// them too. Until the claim is read back, admission skips the task. A key whose last task ended
+/// before the factory had runners is claimed once as ended, so no runner that reads its request
+/// later runs it again.
 fn adopt(db: &mut Connection, me: &str) -> rusqlite::Result<()> {
     let tx = db.transaction()?;
     let unclaimed = tx
         .prepare(
-            "SELECT tasks.key, inbox.id, tasks.generation FROM tasks
+            "SELECT tasks.key, inbox.id, tasks.generation,
+               tasks.state IN ('done', 'failed', 'dropped') FROM tasks
                JOIN inbox ON inbox.task = tasks.id AND inbox.outcome = 'created'
-             WHERE tasks.state NOT IN ('done', 'failed', 'dropped')
-               AND NOT EXISTS (SELECT 1 FROM claims WHERE claims.key = tasks.key
-                 AND claims.runner = ?1)",
+             WHERE CASE WHEN tasks.state IN ('done', 'failed', 'dropped')
+               THEN tasks.id = (SELECT max(id) FROM tasks AS later WHERE later.key = tasks.key)
+                 AND NOT EXISTS (SELECT 1 FROM claims WHERE claims.key = tasks.key)
+               ELSE NOT EXISTS (SELECT 1 FROM claims WHERE claims.key = tasks.key
+                 AND claims.runner = ?1) END",
         )?
         .query_map([me], |row| {
             Ok((
                 row.get::<_, String>(0)?,
                 row.get::<_, String>(1)?,
                 row.get::<_, i64>(2)?,
+                row.get::<_, bool>(3)?,
             ))
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
-    for (key, request, generation) in unclaimed {
-        let claim = json!({ "key": key, "runner": me, "request": request });
+    for (key, request, generation, ended) in unclaimed {
+        let mut claim = json!({ "key": key, "runner": me, "request": request });
+        if ended {
+            claim["ended"] = json!(true);
+        }
         // A reopened task claims afresh: its first claim's id is on the log already.
         let id = format!("adopt/{request}/{me}/{generation}");
         send(&tx, &stamped(CLAIMED, claim, &id).subject(key))?;

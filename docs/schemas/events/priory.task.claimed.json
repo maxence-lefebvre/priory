@@ -25,6 +25,13 @@
       "additionalProperties": false,
       "description": "A runner claims a task's key: for a request no runner holds, to take over a waiting task of a\nrunner whose lease ended, or because a person gave it the task with `priory give`. The first\nclaim in log order that wins a key makes its runner the owner. Published by daemons of a factory\nwith several runners, and by `priory give`.",
       "properties": {
+        "ended": {
+          "description": "True when the runner's task of the key ended before the factory had runners, so the claim\nonly marks its request as handled.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
         "from": {
           "description": "The runner it takes the key from, for a takeover or a gift.",
           "type": [

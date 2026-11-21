@@ -21,9 +21,16 @@ A factory with one runner file or none works as before: its one daemon owns ever
 A daemon claims the key of each active task of its own whose key it does not hold, such as a task
 from before the factory got its second runner, or one that feedback reopened. It starts no run of
 that task until it reads its claim back. When that claim loses, because the log gives the key to
-another runner, the daemon drops its copy with the reason `owned by runner <name>`. When a factory that had one runner gets a second, start the
-first runner's daemon first. If the new runner's claim of one of those keys lands first, the first
-runner drops its copy, and the task starts over on the new runner.
+another runner, the daemon drops its copy with the reason `owned by runner <name>`.
+
+The daemon also claims, once, the key of each task of its own that ended before the factory had
+runners, with `ended` set. A new runner reads every old request of the log, and claims it. That
+claim comes after the ended one in the log, so it loses, and the new runner does not run a finished
+task again.
+
+When a factory that had one runner gets a second, start the first runner's daemon first. If the new
+runner's claim of one of those keys lands first, the first runner drops its copy, and the task
+starts over on the new runner. A finished task runs again there.
 
 ## Every runner reads the whole log
 
