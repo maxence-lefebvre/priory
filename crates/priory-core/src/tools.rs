@@ -3389,6 +3389,7 @@ fn revive(
     }
     let generation = generation + 1;
     regenerate(tx, act.task, generation)?;
+    crate::hold::revived(tx, act.task)?;
     enter(tx, act.task, &workflow, target, None, "", factory)?;
     if entered.decides == Decider::Model {
         let after = reason.map_or(state.clone(), |reason| format!("{state}: {reason}"));

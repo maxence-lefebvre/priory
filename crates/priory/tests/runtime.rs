@@ -18896,3 +18896,76 @@ fn a_failed_part_revives_while_the_next_part_waits_on_it() {
         rows.iter().any(|row| row[0] == "3" && row[4] != "failed")
     });
 }
+
+#[test]
+fn reviving_a_failed_predecessor_withdraws_the_ask_of_the_entry_that_waits_on_it() {
+    let mut setup = batched("batch-predecessor-revived");
+    let entries = [entry("e1", "ENG-40", &[]), entry("e2", "ENG-41", &["e1"])];
+    setup.calls(&[planned(json!({ "title": "t", "entries": entries }))]);
+    batch_add(&setup, &["ENG-40", "ENG-41"]);
+    setup.start();
+    let go = setup.until("asks", |rows| rows.len() == 1);
+    setup.hold("crash");
+    person(&setup, "answer", &[&go[0][0], "go", "--revision", "1"]);
+    setup.until("asks", |rows| rows.iter().any(|row| row[1] == "3"));
+    setup.release("crash");
+    setup.memory(0);
+
+    person(&setup, "revive", &["2"]);
+
+    let asks = task_json(&setup, "3")["asks"].clone();
+    assert_eq!(asks[0]["withdrawn_reason"], "predecessor-revived", "{asks}");
+    assert_eq!(entry_state(&setup, "3"), "held");
+    let shown = batch_json(&setup, &["1"]);
+    assert!(shown["entries"][1]["after"][0]["met"].is_null(), "{shown}");
+}
+
+#[test]
+fn an_entrys_issue_closed_outside_the_batch_before_it_starts_asks_to_drop_or_keep_it() {
+    let entries = [entry("e1", "ENG-40", &[]), entry("e2", "ENG-41", &["e1"])];
+    let close = [json!({ "issue": "ENG-43", "why": "done", "evidence": "#1" })];
+    let (setup, ask) = at_the_go(
+        "batch-issue-closed",
+        json!({ "title": "t", "entries": entries, "close": close }),
+    );
+    person(&setup, "answer", &[&ask, "go", "--revision", "1"]);
+    setup.until("tasks", |rows| rows.len() == 3);
+
+    setup.publish(&moved_to_done("ENG-41"));
+    let mut canceled = moved_to_done("ENG-40");
+    canceled.data["to"] = json!("Canceled");
+    canceled.data["linear_id"] = json!("ENG-40-Canceled");
+    setup.publish(&canceled);
+
+    let asks = setup.until("asks", |rows| rows.len() == 2);
+    let mut questions: Vec<_> = asks
+        .iter()
+        .map(|row| [&*row[1], &row[3], &row[4]])
+        .collect();
+    questions.sort();
+    assert_eq!(
+        questions,
+        [
+            [
+                "2",
+                "ENG-40 is Canceled outside batch 1. Drop the entry?",
+                "[\"drop\",\"keep\"]"
+            ],
+            [
+                "3",
+                "ENG-41 is Done outside batch 1. Drop the entry?",
+                "[\"drop\",\"keep\"]"
+            ],
+        ]
+    );
+    let ask_of = |task: &str| asks.iter().find(|row| row[1] == task).unwrap()[0].clone();
+    assert_eq!(entry_state(&setup, "2"), "held");
+
+    person(&setup, "answer", &[&ask_of("3"), "keep", "--revision", "1"]);
+    person(&setup, "answer", &[&ask_of("2"), "drop", "--revision", "1"]);
+
+    assert_eq!(entry_state(&setup, "2"), "dropped");
+    assert_eq!(entry_state(&setup, "3"), "held");
+    let shown = batch_json(&setup, &["1"]);
+    assert!(shown["entries"][1]["after"][0]["met"].is_null(), "{shown}");
+}

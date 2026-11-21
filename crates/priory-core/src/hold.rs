@@ -317,6 +317,22 @@ pub(crate) fn merged(tx: &Transaction, factory: &Factory) -> rusqlite::Result<()
     Ok(())
 }
 
+/// Makes each unmet condition on the revived task `task` wait again, withdrawing the ask it put
+/// to a person when `task` was lost.
+pub(crate) fn revived(tx: &Transaction, task: i64) -> rusqlite::Result<()> {
+    tx.execute(
+        "UPDATE asks SET withdrawn = 1, withdrawn_reason = 'predecessor-revived'
+         WHERE id IN (SELECT ask FROM holds WHERE target = ?1 AND released IS NULL AND met IS NULL)
+         AND answer IS NULL AND withdrawn IS NULL",
+        [task],
+    )?;
+    tx.execute(
+        "UPDATE holds SET ask = NULL WHERE target = ?1 AND released IS NULL AND met IS NULL",
+        [task],
+    )
+    .map(drop)
+}
+
 /// Asks a person whether to release or drop `task`, held on the condition `id` that can no
 /// longer be met.
 fn ask_person(tx: &Transaction, id: i64, task: i64, question: &str) -> rusqlite::Result<()> {
@@ -468,10 +484,69 @@ pub(crate) fn event(tx: &Transaction, resources: &[String]) -> rusqlite::Result<
             "SELECT id FROM holds WHERE released IS NULL AND met IS NULL
              AND resource IN (SELECT value FROM json_each(?1)) ORDER BY id",
         )?
-        .query_map([resources], |row| row.get(0))?
+        .query_map([&resources], |row| row.get(0))?
         .collect::<rusqlite::Result<_>>()?;
     for id in open {
         judge(tx, id)?;
+    }
+    for resource in serde_json::from_str::<Vec<String>>(&resources).expect("resources parse") {
+        if let Some(state) = issue_state(tx, &resource)?.filter(|state| closes(state)) {
+            closed_outside(tx, &resource, &state)?;
+        }
+    }
+    Ok(())
+}
+
+/// Asks a person whether to drop or keep each batch entry on the Linear issue `resource`, which
+/// went `state` before the entry started, holding the entry until they answer. The issue's state
+/// is no proof of merged code, so it meets no condition of the entry's successors.
+fn closed_outside(tx: &Transaction, resource: &str, state: &str) -> rusqlite::Result<()> {
+    let entries: Vec<(i64, i64, String)> = tx
+        .prepare(
+            "SELECT id, batch, state FROM tasks WHERE batch_entry IS NOT NULL
+             AND (key = ?1 OR substr(key, 1, length(?1) + 1) = ?1 || '.')
+             AND state IN ('queued', 'held')
+             AND NOT EXISTS (SELECT 1 FROM runs WHERE runs.task = tasks.id)
+             AND NOT EXISTS (SELECT 1 FROM holds WHERE holds.task = tasks.id
+               AND holds.kind = 'person' AND holds.ask IS NOT NULL)
+             ORDER BY id",
+        )?
+        .query_map([resource], |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+        })?
+        .collect::<rusqlite::Result<_>>()?;
+    let issue = resource.trim_start_matches("linear:");
+    for (task, batch, held) in entries {
+        let reason = format!("batch {batch}");
+        tx.execute(
+            "INSERT INTO holds (task, reason, kind, resume)
+             VALUES (?1, ?2, 'person', coalesce((SELECT resume FROM holds
+               WHERE task = ?1 AND released IS NULL LIMIT 1), 'queued'))",
+            params![task, reason],
+        )?;
+        let id = tx.last_insert_rowid();
+        let waits = format!("until a person answers whether to keep it, since {issue} is {state}");
+        let reason = match held.as_str() {
+            "held" => format!(" and {waits}"),
+            _ => format!("held: {reason}, {waits}"),
+        };
+        tx.execute(
+            "UPDATE tasks SET state = 'held',
+               reason = iif(state = 'held', coalesce(reason, '') || ?2, ?2) WHERE id = ?1",
+            params![task, reason],
+        )?;
+        tx.execute(
+            "INSERT INTO asks (task, step, kind, question, options)
+             SELECT id, step, 'agent', ?2, '[\"drop\",\"keep\"]' FROM tasks WHERE id = ?1",
+            params![
+                task,
+                format!("{issue} is {state} outside batch {batch}. Drop the entry?")
+            ],
+        )?;
+        tx.execute(
+            "UPDATE holds SET ask = ?2 WHERE id = ?1",
+            params![id, tx.last_insert_rowid()],
+        )?;
     }
     Ok(())
 }
@@ -666,8 +741,10 @@ pub(crate) fn of_ask(tx: &Transaction, ask: i64) -> rusqlite::Result<Option<i64>
 
 /// Applies a person's answer to a hold's ask: `release` or `drop`.
 pub(crate) fn answered(tx: &Transaction, id: i64, answer: &str) -> rusqlite::Result<()> {
-    if answer == "release" {
-        return meet(tx, id, "released by a person");
+    match answer {
+        "release" => return meet(tx, id, "released by a person"),
+        "keep" => return meet(tx, id, "kept by a person"),
+        _ => {}
     }
     let (task, kind): (i64, String) =
         tx.query_row("SELECT task, kind FROM holds WHERE id = ?1", [id], |row| {
@@ -675,6 +752,7 @@ pub(crate) fn answered(tx: &Transaction, id: i64, answer: &str) -> rusqlite::Res
         })?;
     let why = match kind.as_str() {
         "merged" => "dropped by a person after the task it waited on could not merge",
+        "person" => "dropped by a person after its issue closed outside its batch",
         _ => "dropped by a person after its pull request closed",
     };
     drop_task(tx, task, why)
