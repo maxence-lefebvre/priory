@@ -246,10 +246,10 @@ fn outputs_keep_separate_cursors(store: &dyn Store) {
     log.declare(&Output::new("other.events")).unwrap();
     log.publish("other.events", &event(1)).unwrap();
     log.publish(OUTPUT, &event(2)).unwrap();
-    for delivery in log.read("daemon", "other.events", 100).unwrap() {
-        log.ack("daemon", &delivery).unwrap();
-    }
-    assert_eq!(numbers(&*log, "daemon"), [2]);
+    assert_eq!(log.read("daemon", "other.events", 1).unwrap().len(), 1);
+    let ours = log.read("daemon", OUTPUT, 1).unwrap();
+    assert_eq!(ours.len(), 1);
+    assert_eq!(ours[0].message.data["n"], 2);
 }
 
 /// A tap of the same consumer, made with herdr-bus's own CLI, delivers the output's messages too.
@@ -260,11 +260,21 @@ fn herdr_acks_through_the_output_despite_a_tap() {
     bus.connect("daemon", herdr_bus::TAP, herdr_bus::Start::Beginning)
         .unwrap();
     let log = declared(&store);
-    log.publish(OUTPUT, &event(1)).unwrap();
-    for delivery in log.read("daemon", OUTPUT, 100).unwrap() {
-        log.ack("daemon", &delivery).unwrap();
+    for n in [1, 2, 3] {
+        log.publish(OUTPUT, &event(n)).unwrap();
     }
-    assert_eq!(numbers(&*log, "daemon"), Vec::<u64>::new());
+    let mut read = Vec::new();
+    loop {
+        let deliveries = log.read("daemon", OUTPUT, 2).unwrap();
+        if deliveries.is_empty() {
+            break;
+        }
+        for delivery in deliveries {
+            read.push(delivery.message.data["n"].as_u64().unwrap());
+            log.ack("daemon", &delivery).unwrap();
+        }
+    }
+    assert_eq!(read, [1, 2, 3]);
 }
 
 /// Runs every case against one adapter, each on a store of its own.

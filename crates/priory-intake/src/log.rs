@@ -80,14 +80,32 @@ impl Log for Bus {
                 message: delivery.message,
             })
             .collect();
-        if full && ours.is_empty() {
-            return Err(format!(
-                "{consumer}'s other herdr-bus connections hold {limit} messages ahead of {output}: \
-                 disconnect them"
-            )
-            .into());
+        if !full || !ours.is_empty() {
+            return Ok(ours);
         }
-        Ok(ours)
+        // The other connections filled the pull: page the output back to this cursor instead.
+        let cursor = self.connection(connection)?.cursor;
+        let mut past = Vec::new();
+        let mut before = None;
+        loop {
+            let page = Log::messages(self, output, before, 500)?;
+            let reached = page.last().is_none_or(|oldest| oldest.seq <= cursor);
+            before = page.last().map(|oldest| oldest.seq);
+            past.extend(page.into_iter().filter(|stored| stored.seq > cursor));
+            if reached {
+                break;
+            }
+        }
+        Ok(past
+            .into_iter()
+            .rev()
+            .take(limit)
+            .map(|stored| Delivery {
+                output: stored.output,
+                seq: stored.seq,
+                message: stored.message,
+            })
+            .collect())
     }
 
     fn ack(&self, consumer: &str, delivery: &Delivery) -> Result<()> {

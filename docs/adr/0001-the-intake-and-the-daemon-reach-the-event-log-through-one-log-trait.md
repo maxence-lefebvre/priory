@@ -34,8 +34,9 @@ A delivery names its output and seq, not a herdr-bus connection. `ack` takes the
 delivery, so another store needs no notion of a connection. The herdr-bus adapter looks the
 connection up again on each ack, one more small write. Herdr-bus pulls every connection of a
 consumer at once, so the adapter keeps only the deliveries of the output's own connection. When
-the consumer's other connections, such as a tap made with herdr-bus's CLI, fill a whole read, the
-read fails and names them instead of returning nothing.
+the consumer's other connections, such as a tap made with herdr-bus's CLI, fill a whole pull, the
+adapter pages the output back to its cursor instead. That read costs one page per 500 messages
+pending, and only runs in that case.
 
 Reading an output nobody declared yet returns nothing. The daemon can then start before the
 intake ever ran, as it could before.
