@@ -455,7 +455,7 @@ fn each_endpoint_returns_what_the_cli_shows_and_its_json() {
     assert_eq!(queue["running"], json!([]));
     assert_eq!(
         api(&address, "/api/desk")["counts"],
-        json!({ "asleep": 0, "snoozed": 0, "unrouted": 0 })
+        json!({ "asleep": 0, "snoozed": 0, "unrouted": 0, "since_no_task": 0 })
     );
     let desk = api(&address, "/api/desk");
     assert_eq!(desk["banner"], Value::Null);
@@ -5167,6 +5167,54 @@ fn the_unrouted_endpoint_returns_what_the_cli_prints() {
     assert_eq!(served["unrouted"][0]["resource"], "github:owner/repo#7");
     let (status, _) = get(&address, "/api/inbox?unrouted=2", Some(TOKEN));
     assert_eq!(status, 400);
+}
+
+#[test]
+fn since_you_looked_keeps_a_task_s_events_when_newer_events_reach_no_task_and_counts_those() {
+    let setup = Setup::new("since-busy", SERVE);
+    let factory = setup.factory();
+    succeeded(&setup.priory(&[
+        "request",
+        &factory,
+        "--repo",
+        "owner/repo",
+        "--workflow",
+        "implement",
+        "--key",
+        "docs-1",
+        "Fix the docs",
+    ]));
+    succeeded(&setup.priory(&["daemon", &factory, "--once"]));
+    let later = jiff::Timestamp::now() + jiff::SignedDuration::from_hours(1);
+    for n in 0..60 {
+        let time = (later + jiff::SignedDuration::from_secs(n)).to_string();
+        unrouted_comment(&setup, 100 + n as u64, &time);
+    }
+    succeeded(&setup.priory(&["daemon", &factory, "--once"]));
+
+    let desk = json_of(&setup, "desk");
+
+    let looked = desk["since_you_looked"].as_array().unwrap();
+    assert!(
+        looked.iter().any(|event| event["key"] == "cli:docs-1"),
+        "{looked:?}"
+    );
+    assert!(
+        looked
+            .iter()
+            .all(|event| !event["what"].as_str().unwrap().starts_with("github.")),
+        "{looked:?}"
+    );
+    assert_eq!(desk["counts"]["since_no_task"], 60);
+    let output = setup.priory(&["desk"]);
+    succeeded(&output);
+    let text = String::from_utf8(output.stdout).unwrap();
+    assert!(
+        text.contains(
+            "60 events reached no task since you looked. See them with `priory inbox`.\n"
+        ),
+        "{text}"
+    );
 }
 
 #[test]

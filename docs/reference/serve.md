@@ -189,11 +189,12 @@ gets `400`.
 | `counts.asleep` | integer | Tasks asleep on a wait |
 | `counts.snoozed` | integer | Items snoozed now, which `items` leaves out |
 | `counts.unrouted` | integer | [Unrouted](#unrouted) events from the 24 hours before now (`PRIORY_NOW` when set). See [desk.md](../daemon/desk.md#unrouted-events) |
+| `counts.since_no_task` | integer | The inbox entries from the second of `last_visit` on that reached no task, which `since_you_looked` leaves out. A report and a request that created a task do not count. See [desk.md](../daemon/desk.md#since-you-looked) |
 | `items` | array | What waits on a person, then the queue, then worktrees that stay. `priory desk --all --json` keeps the snoozed items |
 | `next` | object or null | The item that ranks first, as in `ranked`; null when nothing waits on a person |
 | `ranked` | array | What waits on a person, best first, without the snoozed items: each a desk item with `why`, why it ranks there, and `title`, the line a notification carries. See [desk.md](../daemon/desk.md#the-next-thing) |
 | `last_visit` | string or null | The person's last visit, which `priory seen` and `POST /api/seen` record |
-| `since_you_looked` | array | The events from the second of `last_visit` on, newest first, at most 50: each with `time`, `task`, `key` and `what`. See [desk.md](../daemon/desk.md#since-you-looked) |
+| `since_you_looked` | array | The trace records, the inbox entries routed to a task and the reports from the second of `last_visit` on, newest first, at most 50: each with `time`, `task`, `key` and `what`. See [desk.md](../daemon/desk.md#since-you-looked) |
 
 `/api/desk?person=NAME` reads the visit of `NAME`, percent-encoded, as `priory desk --json --person
 NAME` does. Without it, the person is `me`. Any other parameter, or a broken escape, gets `400`.

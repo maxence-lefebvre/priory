@@ -956,7 +956,10 @@ fn listed(verb: &str, mut args: Vec<String>) -> ExitCode {
                     ],
                     &value["items"],
                 );
-                print_since_you_looked(&value["since_you_looked"]);
+                print_since_you_looked(
+                    &value["since_you_looked"],
+                    value["counts"]["since_no_task"].as_u64().unwrap_or(0),
+                );
             }
             _ => {
                 listing::print(
@@ -982,13 +985,17 @@ fn listed(verb: &str, mut args: Vec<String>) -> ExitCode {
     exit(verb, shown)
 }
 
-/// After a blank line, what happened since the person last looked, newest first, when anything did.
-fn print_since_you_looked(events: &Value) {
-    let Some(events) = events.as_array().filter(|events| !events.is_empty()) else {
+/// After a blank line, what happened since the person last looked, newest first, when anything did,
+/// then how many events reached no task.
+fn print_since_you_looked(events: &Value, no_task: u64) {
+    let events = events.as_array().map(Vec::as_slice).unwrap_or_default();
+    if events.is_empty() && no_task == 0 {
         return;
-    };
+    }
     state::emit("");
-    state::emit("since you looked\ttask\twhat");
+    if !events.is_empty() {
+        state::emit("since you looked\ttask\twhat");
+    }
     for event in events {
         let cell = |field: &str| event[field].as_str().unwrap_or("-");
         state::emit(&format!(
@@ -996,6 +1003,12 @@ fn print_since_you_looked(events: &Value) {
             cell("time"),
             cell("key"),
             cell("what")
+        ));
+    }
+    if no_task > 0 {
+        let events = if no_task == 1 { "event" } else { "events" };
+        state::emit(&format!(
+            "{no_task} {events} reached no task since you looked. See them with `priory inbox`."
         ));
     }
 }
