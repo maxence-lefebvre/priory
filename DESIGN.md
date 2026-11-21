@@ -332,8 +332,8 @@ with the `check` icon (answered) or the `minus` icon (withdrawn).
 
 A batch is not a task state either. Its desk row takes a muted tile with the `layers` icon.
 
-Another runner's task shows its hold instead of a state: `kept` or `waiting`, each a muted tile with
-the `server` icon.
+Another runner's task shows its hold instead of a state: `kept` or `waiting`, beside a muted tile
+with the `server` icon. A task of this runner in the `waiting` state keeps its own tile.
 
 ### Explorer list
 
@@ -392,8 +392,9 @@ The desk is the "Needs me" view. It lists, top to bottom:
    sends the revision the page drew (`POST /api/tasks/{id}/release`), Read sends `POST /api/inbox/{seq}/read`.
    A refused action keeps the row and shows why under it, in the row's note.
 7. **Up next**: a strip with the next 3 runs, queued or scheduled, as in the Herdr Queue panel.
-   Each line shows when, the task and why, and opens the task. With none, the strip says "Nothing
-   is queued or scheduled to run next."
+   Each line shows when, the task and why, and opens the task. A queued task waiting for its place
+   shows "now, on room"; one with its own wait reason shows "now" and that reason. With none, the
+   strip says "Nothing is queued or scheduled to run next."
 8. **Since you looked**: a strip with the events since the person's last visit, one group per
    task, the task with the newest event first. Each group opens with the task's key, which opens
    the task page, then each event's time and what. The heading's note says "since 09:12", or
@@ -712,6 +713,10 @@ person" for an answer from the CLI or the web view. An answer from before Priory
 answered says nothing. An answered row in the lists and the answered card say it too: "Answered
 Merge by agent:lead", and "By agent:lead." after the age.
 A refused answer shows on a warn tile with "Refused:" and the answer in `--warn-text`, and why.
+Another runner's ask also lists each answer and dismiss sent to it, at the time it was sent: "Sent
+approve to xps13 for revision 2. Not applied yet" on a `queued` tile, then "xps13 applied it" on an
+`answered` tile, or on a `withdrawn` tile for a dismiss. A refused one reads "xps13 refused it: why"
+on a warn tile in `--warn-text`.
 
 ### Appearance screen
 
@@ -799,7 +804,9 @@ values A to Z with counts; a task with no lane shows under `none`. Ended lists t
 and loads the older tasks once the person scrolls to its end, with or without a facet set; a set
 facet counts the loaded tasks only. The rows take the whole width, with no
 drawer: each opens the task's page. In a factory of several runners, Active also lists each task
-another runner holds, after this runner's, and the State facet counts them under `elsewhere`.
+another runner holds, after this runner's, and the State facet counts them under `elsewhere`. A
+Runner facet then offers each runner with its count, as the Asks list's does: this runner reads
+"workstation (here)".
 
 ### Runs panel
 
@@ -1379,7 +1386,11 @@ The web's [Tasks panel](#tasks-panel), as a tab in the center stack.
   and band in `--text-3`, or the reason in its role's text color, then `batch N`. A row opens the
   [Task](#task) panel.
 - The batch tag is text: Herdr has no batch panel yet.
-- Another runner's tasks stay out: Herdr has no row for a task with no page here yet.
+- Another runner's task row shows its hold's tile, the `server` icon on `--tile-muted`, and word in
+  place of the state, and its workflow without a step. Its last line reads "On runner a, last seen
+  12 min ago" in `--text-3`. Pressing it does nothing: its page stays on its runner.
+- In a factory of several runners a Runner chip follows Workflow, and this runner reads
+  "workstation (here)", as on the web.
 - While it reads: "Reading the tasks…"
 
 ### Runs

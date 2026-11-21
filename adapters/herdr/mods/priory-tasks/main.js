@@ -3,7 +3,7 @@ import { h_flex, v_flex, Button, Popover } from "gpui-base";
 import { appHome, exec, home as herdrHome, readTextFile, setShared } from "herdr";
 import { follow, priory } from "./priory.js";
 import { FONTS, palette, STRUCTURE as S } from "./tokens.js";
-import { filtered, TASK_FACETS, TASK_VIEWS, taskViews } from "./view.js";
+import { elsewhere, filtered, TASK_VIEWS, taskFacets, taskViews } from "./view.js";
 
 const RETRY_MS = 3000;
 const ICON = (/** @type {string} */ name) => `mods/priory-tasks/icons/${name}.svg`;
@@ -19,6 +19,7 @@ const TILES = {
   queued: ["tile-muted", "on-tile", "circle-dashed"], held: ["tile-hold", "on-tile", "pause"], ready: ["tile-live", "on-tile-live", "circle-dot"],
   running: ["tile-live", "on-tile-live", null], asleep: ["tile-muted", "on-tile", "moon"], blocked: ["tile-warn", "on-tile", "hand"],
   done: ["tile-ok", "on-tile", "check"], failed: ["tile-danger", "on-tile", "circle-x"], dropped: ["tile-muted", "on-tile", "minus"],
+  elsewhere: ["tile-muted", "on-tile", "server"],
 };
 // A task state's text color (DESIGN.md, State tile); the other states take --text-2.
 const ROLE = /** @type {Record<string, string>} */ ({ running: "action-text", ready: "action-text", blocked: "warn-text", failed: "danger-text", done: "ok-text" });
@@ -78,8 +79,7 @@ export default class PrioryTasks extends View {
         this.priory ??= await connect();
         client = this.priory.client;
         const read = await client.tasks();
-        // Another runner's task has no page here to open, so the panel keeps this runner's.
-        [this.tasks, this.error] = [read.tasks.filter((/** @type {any} */ task) => task.id != null), null];
+        [this.tasks, this.error] = [read.tasks, null];
         cx.notify();
         return read.revision;
       },
@@ -99,14 +99,15 @@ export default class PrioryTasks extends View {
     const theme = this.priory?.theme ?? "indigo";
     const t = /** @type {Palette} */ (palette(theme, cx.theme().appearance));
     this.font = FONTS[/** @type {keyof typeof FONTS} */ (theme)] ?? FONTS.indigo;
-    const views = /** @type {Record<string, any[]>} */ (taskViews(filtered(this.tasks ?? [], this.picks)));
+    const facets = taskFacets(this.tasks ?? []);
+    const views = /** @type {Record<string, any[]>} */ (taskViews(filtered(this.tasks ?? [], this.picks, facets)));
     const shown = views[this.view];
     return v_flex().id("priory-tasks").size_full().min_h_0().bg(t.bg).text_color(t.text).font_family(this.font.ui).text_size(S["type-body"][0])
       .child(h_flex().flex_none().h(S["pane-head"]).px(S["space-4"]).items_center().border_b(1).border_color(t.line).child(div().font_weight(650).child("Tasks")))
       .when(Boolean(this.error), (el) => el.child(div().flex_none().px(S["space-4"]).py(6).whitespace_normal().text_size(S["type-small"][0])
         .text_color(t["warn-text"]).border_b(1).border_color(t.line)
         .child(`Could not read the tasks: ${this.error}. Check that priory runs, then it reads again on its own.`)))
-      .child(this.filters(views, t))
+      .child(this.filters(views, facets, t))
       .child(v_flex().id("tasks-body").flex_1().min_h_0().overflow_y_scrollbar().px(S["space-2"]).py(S["space-2"]).children(this.body(shown, t)));
   }
 
@@ -119,12 +120,12 @@ export default class PrioryTasks extends View {
     return shown.map((task) => this.row(task, t, now));
   }
 
-  /** The saved views with their filtered counts, then a chip per facet offering every task's values A to Z. @param {Record<string, any[]>} views @param {Palette} t */
-  filters(views, t) {
+  /** The saved views with their filtered counts, then a chip per facet offering every task's values A to Z. @param {Record<string, any[]>} views @param {any[]} facets @param {Palette} t */
+  filters(views, facets, t) {
     const chip = (/** @type {string} */ id, /** @type {boolean} */ on) => Button.new(id).h(S["pane-chip"]).px(10).flex().flex_none().items_center().gap(4)
       .selected(on).text_size(S["type-small"][0]).focus((s) => s.border(2).border_color(t["action-text"]));
-    /** @param {[string, string, (task: any) => string[]]} facet */
-    const picker = ([key, label, values]) => {
+    /** @param {[string, string, (task: any) => string[], unknown, ((name: string) => string)?]} facet */
+    const picker = ([key, label, values, , named = (name) => name]) => {
       const value = this.picks.get(key);
       const trigger = chip(`facet-${key}`, this.popover === key).rounded(S["radius-sm"]).border(1)
         .border_color(value ? t["action-soft"] : t["control-line"]).bg(value ? t["action-soft"] : t.surface).text_color(value ? t["action-text"] : t.text)
@@ -140,7 +141,7 @@ export default class PrioryTasks extends View {
           .children([...counts].sort(([a], [b]) => a.localeCompare(b)).map(([name, count]) => Button.new(`pick-${key}-${name}`).h(S["control-fine"]).px(8).flex().items_center().gap(8)
             .rounded(S["radius-sm"]).text_size(S["type-small"][0]).hover((s) => s.bg(t.raised)).focus((s) => s.bg(t.raised))
             .on_click((_event, cx) => { this.picks.set(key, name); this.popover = null; cx.notify(); })
-            .child(div().flex_1().child(name)).child(div().text_color(t["text-3"]).child(String(count))))));
+            .child(div().flex_1().child(named(name))).child(div().text_color(t["text-3"]).child(String(count))))));
     };
     return v_flex().flex_none().px(S["space-4"]).py(S["space-2"]).gap(S["space-2"]).border_b(1).border_color(t.line)
       .child(h_flex().gap(6).flex_wrap().children(TASK_VIEWS.map((id) => {
@@ -149,11 +150,13 @@ export default class PrioryTasks extends View {
           .on_click((_event, cx) => { [this.view, this.popover] = [id, null]; cx.notify(); })
           .child(LABELS[id]).child(div().opacity(0.7).child(String(views[id].length)));
       })))
-      .child(h_flex().gap(6).flex_wrap().children(TASK_FACETS.map(picker)));
+      .child(h_flex().gap(6).flex_wrap().children(facets.map(picker)));
   }
 
   /** The desk's task row: key, workflow, step, state and age; the title; lane, band and batch, or the reason. @param {any} task @param {Palette} t @param {number} now */
   row(task, t, now) {
+    const away = elsewhere(task, (iso) => `${age(iso, now)} ago`);
+    if (away) return this.remoteRow(task, away, t, now);
     const reason = REASONED.includes(task.state) && task.reason;
     const caption = (/** @type {string} */ line, /** @type {string} */ color) => div().min_w_0().truncate().text_size(S["type-caption"][0]).text_color(t[color]).child(line);
     return Button.new(`task-${task.id}`).w_full().min_h(S["pane-row"]).px(S["space-2"]).py(S["space-2"]).flex().gap(S["space-3"]).items_start()
@@ -171,6 +174,19 @@ export default class PrioryTasks extends View {
         .child(h_flex().gap(6).min_w_0()
           .child(reason ? caption(reason, ROLE[task.state] ?? "text-2") : caption([task.lane, task.band].filter(Boolean).join(" · "), "text-3"))
           .when(task.batch != null, (el) => el.child(caption(`· batch ${task.batch}`, "text-3")))));
+  }
+
+  /** Another runner's task: its hold for a state, where it runs, and no Task panel to open. @param {any} task @param {string} away @param {Palette} t @param {number} now */
+  remoteRow(task, away, t, now) {
+    return h_flex().w_full().min_h(S["pane-row"]).px(S["space-2"]).py(S["space-2"]).gap(S["space-3"]).items_start()
+      .child(this.tile("elsewhere", t))
+      .child(v_flex().flex_1().min_w_0().gap(2)
+        .child(h_flex().gap(6).items_baseline().text_size(S["type-caption"][0]).text_color(t["text-2"])
+          .child(div().font_family(this.font.mono).text_color(t.text).child(task.key))
+          .child(task.workflow ?? "").child(task.hold)
+          .child(div().flex_1()).child(div().text_color(t["text-3"]).child(age(task.since, now))))
+        .child(div().min_w_0().truncate().text_size(S["type-small"][0]).child(task.title || task.key))
+        .child(div().min_w_0().truncate().text_size(S["type-caption"][0]).text_color(t["text-3"]).child(away)));
   }
 
   /** @param {string} state @param {Palette} t */

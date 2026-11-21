@@ -1,6 +1,6 @@
 // The Asks panel's view model: `priory asks --all --json` in, rows and states out. No drawing, no IO.
 
-import { answeredBy, autolink, prStack, routedMark, routedNote, runnerOf, seenAgo, sentNote } from "./priory.js";
+import { answeredBy, autolink, prStack, routedMark, routedNote, runnerOf, seenAgo, sentNote, submitted } from "./priory.js";
 
 /** @typedef {{ pattern: string, url: string }[]} Links the rules `priory links` lists */
 
@@ -143,7 +143,7 @@ const byLine = (ask, revision) => {
   return by ? ` by ${by}` : "";
 };
 
-/** Every revision with its answer, every refused answer, and a withdrawal, newest first. @param {any} ask */
+/** Every revision with its answer, every refused answer and submission, and a withdrawal, newest first. @param {any} ask */
 function history(ask) {
   // An ask listed before Priory kept its revisions shows only its current one.
   const revisions = ask.revisions ?? [{ revision: ask.revision, at: ask.since, answer: ask.answer, answered_at: ask.answered_at }];
@@ -155,6 +155,7 @@ function history(ask) {
     ...(ask.refused ?? []).map((/** @type {any} */ refusal) => ({
       tile: "refused", text: `Refused: ${refusal.answer}, sent for revision ${refusal.revision} from ${refusal.by}: ${refusal.why}`, at: refusal.at,
     })),
+    ...submitted(ask),
   // Built oldest first; reversed, entries of the same second stay newest first through the stable sort.
   ].reverse().sort((a, b) => b.at.localeCompare(a.at));
   const withdrawn = ask.state === "withdrawn" ? [{ tile: "withdrawn", text: `Withdrawn${ask.withdrawn_why ? `: ${ask.withdrawn_why}` : ""}`, at: "" }] : [];

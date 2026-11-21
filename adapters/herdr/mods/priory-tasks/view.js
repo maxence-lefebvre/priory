@@ -34,6 +34,17 @@ export const TASK_FACETS = [
 ];
 
 /**
+ * The task facets, with a Runner facet in a factory of several runners, where every task names one.
+ * Like the Asks list's, it has no order and names this runner "<name> (here)". @param {any[]} tasks
+ * @returns {any[]}
+ */
+export function taskFacets(tasks) {
+  if (!tasks.some((task) => task.runner)) return TASK_FACETS;
+  const named = (name) => (tasks.some((task) => task.runner === name && task.id != null) ? `${name} (here)` : name);
+  return [...TASK_FACETS, ["runner", "Runner", (task) => [task.runner ?? "none"], null, named]];
+}
+
+/**
  * The items every picked facet value matches. @template T @param {T[]} items
  * @param {Map<string, string>} picks @param {[string, string, (item: T) => string[]][]} facets
  */
