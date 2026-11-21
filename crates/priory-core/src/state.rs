@@ -1071,7 +1071,7 @@ PRAGMA user_version = 59;
 
 // Findings: the problems a scheduled run handed to fix tasks, kept as the run memory of its next run.
 const SCHEMA_60: &str = "
-CREATE TABLE findings (
+CREATE TABLE IF NOT EXISTS findings (
   task       INTEGER NOT NULL REFERENCES tasks (id),
   key        TEXT NOT NULL,
   title      TEXT NOT NULL,
