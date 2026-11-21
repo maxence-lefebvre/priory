@@ -12,7 +12,7 @@ use std::collections::BTreeMap;
 use std::io::Write;
 use std::time::Duration;
 
-const VERSION: i64 = 72;
+const VERSION: i64 = 73;
 
 const SCHEMA: &str = "
 CREATE TABLE tasks (
@@ -1235,9 +1235,19 @@ END;
 PRAGMA user_version = 71;
 ";
 
+// The desk items a desktop notification already told a person, so a restarted daemon tells none twice.
+const SCHEMA_72: &str = "
+CREATE TABLE IF NOT EXISTS notified (
+  kind TEXT NOT NULL,
+  item TEXT NOT NULL,
+  PRIMARY KEY (kind, item)
+);
+PRAGMA user_version = 72;
+";
+
 // An event a subscription delivered to a task other than the one routing gave it, with how it
 // reached that task. The prompt can be merged or deleted later, so it is not a foreign key.
-const SCHEMA_72: &str = concat!(
+const SCHEMA_73: &str = concat!(
     "CREATE TABLE IF NOT EXISTS subscription_deliveries (
   seq     INTEGER NOT NULL REFERENCES inbox (seq),
   task    INTEGER NOT NULL REFERENCES tasks (id),
@@ -1247,7 +1257,7 @@ const SCHEMA_72: &str = concat!(
 );
 ",
     bumps!("subscription_deliveries"),
-    "PRAGMA user_version = 72;
+    "PRAGMA user_version = 73;
 "
 );
 
@@ -1261,7 +1271,7 @@ const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA_42, SCHEMA_43, SCHEMA_44, SCHEMA_45, SCHEMA_46, SCHEMA_47, SCHEMA_48, SCHEMA_49,
     SCHEMA_50, SCHEMA_51, SCHEMA_52, SCHEMA_53, SCHEMA_54, SCHEMA_55, SCHEMA_56, SCHEMA_57,
     SCHEMA_58, SCHEMA_59, SCHEMA_60, SCHEMA_61, SCHEMA_62, SCHEMA_63, SCHEMA_64, SCHEMA_65,
-    SCHEMA_66, SCHEMA_67, SCHEMA_68, SCHEMA_69, SCHEMA_70, SCHEMA_71, SCHEMA_72,
+    SCHEMA_66, SCHEMA_67, SCHEMA_68, SCHEMA_69, SCHEMA_70, SCHEMA_71, SCHEMA_72, SCHEMA_73,
 ];
 
 /// The order the queue starts tasks in: band, then a person's order, then age. A band the factory

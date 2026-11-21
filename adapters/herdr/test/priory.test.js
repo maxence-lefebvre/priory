@@ -4,7 +4,7 @@ import { execFile } from "node:child_process";
 import { existsSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { autolink, priory, spansHtml } from "../lib/priory.js";
+import { autolink, follow, priory, spansHtml } from "../lib/priory.js";
 
 const FAKE = new URL("./fake-priory", import.meta.url).pathname;
 
@@ -263,4 +263,73 @@ test("routedMark, routedNote and answeredBy are the web view's, word for word", 
   const web = readFileSync(new URL("../../../crates/priory-core/web/asks.js", import.meta.url), "utf8");
   const herdr = readFileSync(new URL("../lib/priory.js", import.meta.url), "utf8");
   assert.equal(helpers(herdr), helpers(web), "copy the three helpers from adapters/herdr/lib/priory.js to crates/priory-core/web/asks.js");
+});
+
+// A scripted read loop: each read and wait takes the next reply, an Error throws it, and `log` keeps the calls in order.
+// It stops once the read numbered `stopAfter` has waited or backed off.
+function script(reads, waits, { stopAfter }) {
+  const log = [];
+  let count = 0;
+  const take = (replies, call) => {
+    log.push(call);
+    const reply = replies.shift();
+    if (reply instanceof Error) return Promise.reject(reply);
+    return Promise.resolve(reply);
+  };
+  return {
+    log,
+    loop: {
+      read: () => { count += 1; return take(reads, ["read"]); },
+      wait: (since) => take(waits, ["wait", since]),
+      sleep: (ms) => { log.push(["sleep", ms]); return Promise.resolve(); },
+      failed: (error) => log.push(["failed", error.message]),
+      retry: 3000,
+      stopped: () => count >= stopAfter && log.at(-1)[0] !== "read",
+    },
+  };
+}
+
+test("follow waits from the revision each read returned, and reads again after each wait", async () => {
+  const { log, loop } = script([7, 9, 9], [9, 9, 12], { stopAfter: 3 });
+  await follow(loop);
+  assert.deepEqual(log, [["read"], ["wait", 7], ["read"], ["wait", 9], ["read"], ["wait", 9]]);
+});
+
+test("follow waits from the last wait's revision when a read has none, at first from -1", async () => {
+  const { log, loop } = script([null, null, 4], [3, 4, 5], { stopAfter: 3 });
+  await follow(loop);
+  assert.deepEqual(log, [["read"], ["wait", -1], ["read"], ["wait", 3], ["read"], ["wait", 4]]);
+});
+
+test("follow backs off after a failed read or wait, then reads again", async () => {
+  const { log, loop } = script([new Error("priory desk: no such thing"), 5, 6], [new Error("wait: daemon gone"), 7], { stopAfter: 3 });
+  await follow(loop);
+  assert.deepEqual(log, [
+    ["read"], ["failed", "priory desk: no such thing"], ["sleep", 3000],
+    ["read"], ["wait", 5], ["failed", "wait: daemon gone"], ["sleep", 3000],
+    ["read"], ["wait", 6],
+  ]);
+});
+
+test("follow stops before it waits, and reports no failure once stopped", async () => {
+  let stop = false;
+  const log = [];
+  await follow({
+    read: async () => { log.push("read"); stop = true; return 3; },
+    wait: async () => { log.push("wait"); return 4; },
+    sleep: async () => log.push("sleep"),
+    failed: () => log.push("failed"),
+    retry: 3000,
+    stopped: () => stop,
+  });
+  stop = false;
+  await follow({
+    read: async () => { log.push("read"); stop = true; throw new Error("late"); },
+    wait: async () => 0,
+    sleep: async () => log.push("sleep"),
+    failed: () => log.push("failed"),
+    retry: 3000,
+    stopped: () => stop,
+  });
+  assert.deepEqual(log, ["read", "read"]);
 });

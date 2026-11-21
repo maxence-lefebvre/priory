@@ -3,18 +3,15 @@
 
 use crate::listing;
 use rusqlite::Connection;
-use std::collections::HashSet;
 use std::io::ErrorKind;
 use std::process::{Child, Command, Stdio};
 
 /// The longest title a notification carries, in characters, as Web Push's.
 const TITLE: usize = 120;
 
-/// What the daemon already told a person, and the `notify-send` runs not yet reaped.
+/// The `notify-send` runs not yet reaped. What was told is in the `notified` table.
 #[derive(Default)]
 pub(crate) struct Desktop {
-    // shortcut: kept in memory, so a restarted daemon tells the current next item again; store it if that annoys.
-    told: HashSet<(String, String)>,
     running: Vec<Child>,
     missing: bool,
 }
@@ -30,8 +27,11 @@ pub(crate) fn tick(db: &Connection, desktop: &mut Desktop) -> rusqlite::Result<(
     if next["kind"] != "ask" && next["why"] != listing::ALARM {
         return Ok(());
     }
-    let item = (next["kind"].to_string(), next["id"].to_string());
-    if !desktop.told.insert(item) {
+    let told = db.execute(
+        "INSERT OR IGNORE INTO notified (kind, item) VALUES (?1, ?2)",
+        [next["kind"].to_string(), next["id"].to_string()],
+    )?;
+    if told == 0 {
         return Ok(());
     }
     let title: String = next["title"]
@@ -49,14 +49,25 @@ pub(crate) fn tick(db: &Connection, desktop: &mut Desktop) -> rusqlite::Result<(
         .spawn();
     match run {
         Ok(child) => desktop.running.push(child),
-        Err(error) if error.kind() == ErrorKind::NotFound => {
-            if !std::mem::replace(&mut desktop.missing, true) {
+        Err(error) => {
+            // A launch that failed told nobody: forget the item so a fixed `notify-send` tells it.
+            forget(db, &next)?;
+            if error.kind() != ErrorKind::NotFound {
+                eprintln!("priory daemon: notify-send: {error}");
+            } else if !std::mem::replace(&mut desktop.missing, true) {
                 eprintln!(
                     "priory daemon: desktop notifications are off: notify-send is not on PATH"
                 );
             }
         }
-        Err(error) => eprintln!("priory daemon: notify-send: {error}"),
     }
+    Ok(())
+}
+
+fn forget(db: &Connection, next: &serde_json::Value) -> rusqlite::Result<()> {
+    db.execute(
+        "DELETE FROM notified WHERE kind = ?1 AND item = ?2",
+        [next["kind"].to_string(), next["id"].to_string()],
+    )?;
     Ok(())
 }
