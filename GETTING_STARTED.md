@@ -286,8 +286,8 @@ When someone labels issue 42 of `owner/name` with `agent`, this happens:
 Run `priory` with no arguments to print its usage.
 
 If you work in [Herdr](docs/adapters/herdr.md), its Desk panel shows the same desk, and its Asks
-panel lists the same asks and answers them through these verbs. `adapters/herdr/install` links
-them into Herdr.
+panel lists the same asks and answers them through these verbs. `priory views --json |
+adapters/herdr/install` links them into Herdr and writes a layout from your `default` view.
 
 If you review on GitHub, the [GitHub extension](adapters/github/README.md) shows the task that holds
 a pull request on its page, answers its asks, says to its agent, and walks you through the agent's

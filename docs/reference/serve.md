@@ -27,7 +27,7 @@ does, with every count in `older` at 0. Their rows match the CLI's JSON only wit
 | `/api/queue` | `priory queue --json` | an object: [Queue](#queue) |
 | `/api/batches` | `priory batch show --json` | `batches`: every batch, newest first, without its entries and closes. See [batches.md](../daemon/batches.md#priory-batch-show) |
 | `/api/batches/{id}` | `priory batch show ID --json` | one batch with its entries and closes. `ID` is the batch's id or its key |
-| `/api/views` | | an object: [Views](#views) |
+| `/api/views` | `priory views --json` | an object: [Views](#views) |
 | `/api/request` | | what the web view's Add prefills: `workflow` and `band`, the [`[request]`](factory.md#request) defaults, each `null` when unset; `workflows`, the factory's workflow names; and `bands`, its bands in order |
 | `/api/links` | `priory links --json` | an object: [Links](#links) |
 | `/api/flows` | `priory flows --json` | an object: [Flows](#flows) |
@@ -517,7 +517,8 @@ a wait and away time. Minutes are numbers, not rounded.
 | `factory` | string | The factory's name |
 | `views` | object | Each view by name: the views Priory ships, each replaced by the factory's view of the same name, then the factory's other views. Each is the file's tree as JSON, such as `{ "layout": { "tabs": [{ "panel": "desk" }] } }`. See [views.md](views.md) |
 
-The server reads the views when it starts.
+The server reads the views when it starts. `priory views [DIR] --json` prints the same object from
+the factory's files, with no server running.
 
 ## Links
 

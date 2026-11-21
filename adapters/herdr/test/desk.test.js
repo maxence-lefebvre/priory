@@ -247,6 +247,36 @@ test("an Up next line opens its task in the Task panel, and a schedule's line op
   assert.equal(herdr.shared.get("priory.task.open").task, 7);
 });
 
+test("Answer opens the ask in the Asks block, selected in its stack and shown", async () => {
+  const { draw, press } = await import("./kit.js");
+  const { layout } = await import("../lib/layout.js");
+  const { panel, cx, herdr } = await deskPanel();
+  const frame = JSON.parse(readFileSync(new URL("../layouts/frame.json", import.meta.url), "utf8"));
+  const tabs = ["desk", "asks", "tasks"].map((panel) => ({ panel }));
+  herdr.layout = layout("default", { layout: { tabs } }, frame);
+  herdr.layout.children[1].children[1].children[1].hidden = true;
+
+  press(draw(panel, cx), "row-ask:2");
+  press(draw(panel, cx), "answer-ask:2");
+
+  assert.equal(herdr.shared.get("priory.asks.open").ask, 2);
+  assert.deepEqual(herdr.runs, [["layout.show", { id: "view" }], ["layout.select", { stack: "view", child: "view-1" }]]);
+});
+
+test("Answer opens an Asks tab when the view has no Asks block", async () => {
+  const { draw, press } = await import("./kit.js");
+  const { layout } = await import("../lib/layout.js");
+  const { panel, cx, herdr } = await deskPanel();
+  const frame = JSON.parse(readFileSync(new URL("../layouts/frame.json", import.meta.url), "utf8"));
+  herdr.layout = layout("default", { layout: { panel: "desk" } }, frame);
+
+  press(draw(panel, cx), "row-ask:2");
+  press(draw(panel, cx), "answer-ask:2");
+
+  assert.equal(herdr.shared.get("priory.asks.open").ask, 2);
+  assert.deepEqual(herdr.runs, [["tab.new", { space: "space-1", name: "Asks", mod: "priory-asks" }]]);
+});
+
 test("Open task opens the Task panel, and Attach stays its own action", async () => {
   const { draw, press } = await import("./kit.js");
   const { panel, cx, herdr } = await deskPanel();

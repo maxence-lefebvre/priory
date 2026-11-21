@@ -70,3 +70,10 @@ row = [
 | `` `default` is also defined in views/default.toml `` | `default.toml` and `default.yaml` both exist |
 
 `priory serve` and the daemon read the views when they start. Restart them after a change.
+
+## Printing the views
+
+`priory views [DIR] --json` prints the resolved views as `GET /api/views` serves them: the views
+Priory ships, each replaced by the factory's view of the same name, then the factory's other views.
+See [serve.md](serve.md#views). The [Herdr adapter](../adapters/herdr.md#installing) builds its
+layout from this output.
