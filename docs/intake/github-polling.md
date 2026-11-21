@@ -71,6 +71,7 @@ The events' ids are on their own pages.
 | A repository with N open pull requests and nothing new | 5 `gh` calls: 4 REST requests (`issues/events`, `issues`, `pulls/comments` and `issues/comments`, one page each) and 1 GraphQL query |
 | N over 100 | the query pages itself: ceil(N/100) requests, about 4 points each on `cli/cli` |
 | New pull request events | 1 more GraphQL query for the pull requests they name |
+| A task pull request merged in the last 7 days | 1 more REST request per merge commit whose checks have not all completed ([why](pull-requests.md#check-runs-at-a-merge)) |
 | Over 100 new events in a stream since the last poll | 1 more REST page per 100 |
 
 A subscription or a task branch adds no call for a repository a trigger already names. For one no

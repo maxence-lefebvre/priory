@@ -1,15 +1,15 @@
 use super::gh::{Login, pages};
 use super::pulls::{
-    comment, issue_comments, open_pulls, pull_requests, reviews_and_checks, thread_comment,
-    thread_comments,
+    comment, issue_comments, merge_checks, open_pulls, pull_requests, reviews_and_checks,
+    thread_comment, thread_comments,
 };
 use super::{
-    CHECKED, Cursors, ISSUE_CLOSED, ISSUE_COMMENTED, LABELED, OPENED, Observed, PR_CLOSED,
+    CHECKED, Cursors, ISSUE_CLOSED, ISSUE_COMMENTED, LABELED, Merge, OPENED, Observed, PR_CLOSED,
     PR_LABELED, PR_OPENED, Polled, REVIEWED, THREAD_COMMENTED,
 };
 use serde::Deserialize;
 use serde_json::json;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 #[derive(Deserialize)]
 struct Label {
@@ -38,7 +38,12 @@ struct IssueEvent {
 }
 
 /// One poll of `repo`'s streams. Pull request events need a GraphQL query for their branches.
-pub(super) fn fetch_repo(repo: &str, cursors: &Cursors) -> Result<Vec<Polled>, String> {
+pub(super) fn fetch_repo(
+    repo: &str,
+    cursors: &Cursors,
+    merges: &[Merge],
+    unchecked: &mut HashSet<String>,
+) -> Result<Vec<Polled>, String> {
     let cursor = |kind| cursors.get(&(repo.to_string(), kind)).copied();
     let (events, events_top): (Vec<IssueEvent>, _) = pages(
         &format!("repos/{repo}/issues/events?"),
@@ -158,7 +163,9 @@ pub(super) fn fetch_repo(repo: &str, cursors: &Cursors) -> Result<Vec<Polled>, S
         .chain(closed)
         .map(|pull| (pull.number, pull))
         .collect();
-    let (mut reviews, checks) = reviews_and_checks(repo, watched.values().copied(), cursor);
+    let (mut reviews, mut checks) = reviews_and_checks(repo, watched.values().copied(), cursor);
+    checks.extend(merge_checks(repo, merges, unchecked, cursor)?);
+    checks.sort_by_key(|check| check.data["github_id"].as_u64());
     for found in thread_comments(repo)? {
         let number = found["pull_request_url"]
             .as_str()

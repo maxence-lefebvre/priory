@@ -1,9 +1,9 @@
 use super::gh::{Login, gh};
-use super::{CHECK_RUNS, CHECKED, COMMENTED, Observed, REVIEWED};
+use super::{CHECK_RUNS, CHECKED, COMMENTED, Merge, Observed, REVIEWED};
 use herdr_bus::Timestamp;
 use serde::Deserialize;
 use serde_json::{Value, json};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 /// GitHub creates check runs seconds after a push, and a push updates the pull request.
 const GRACE_SECONDS: i64 = 5 * 60;
@@ -272,6 +272,97 @@ pub(super) fn reviews_and_checks<'a>(
     }
     checks.sort_by_key(|check| check.data["github_id"].as_u64());
     (reviews, checks)
+}
+
+#[derive(Deserialize)]
+struct CommitRuns {
+    total_count: usize,
+    check_runs: Vec<Run>,
+}
+
+#[derive(Deserialize)]
+struct Run {
+    id: u64,
+    name: String,
+    status: String,
+    conclusion: Option<String>,
+    completed_at: Option<String>,
+    html_url: String,
+    app: Option<App>,
+}
+
+/// The completed check runs on the merge commits of `merges` in `repo`, as events of the pull
+/// requests that merged there. A commit is read once per poll until every run completed, when the
+/// daemon's record of these events stops `merges` listing it, or until it has no run past the grace
+/// period, which `unchecked` remembers.
+pub(super) fn merge_checks(
+    repo: &str,
+    merges: &[Merge],
+    unchecked: &mut HashSet<String>,
+    cursor: impl Fn(&'static str) -> Option<u64>,
+) -> Result<Vec<Observed>, String> {
+    let now = Timestamp::now().as_second();
+    let mut checks = Vec::new();
+    let unread: Vec<&Merge> = merges
+        .iter()
+        .filter(|merge| merge.repo == repo && !unchecked.contains(&merge.commit))
+        .collect();
+    for merge in unread {
+        let path = format!(
+            "repos/{repo}/commits/{}/check-runs?per_page=100",
+            merge.commit
+        );
+        let found: CommitRuns = gh(&path, &[])?;
+        let merged = merge
+            .time
+            .parse::<Timestamp>()
+            .map_or(now, |time| time.as_second());
+        if found.total_count == 0 && merged + GRACE_SECONDS <= now {
+            unchecked.insert(merge.commit.clone());
+        }
+        let done = |run: &&Run| run.status == "completed";
+        let pending = found.total_count - found.check_runs.iter().filter(done).count();
+        let conclusion = |run: &Run| run.conclusion.as_deref().unwrap_or_default().to_lowercase();
+        let failing = found
+            .check_runs
+            .iter()
+            .filter(done)
+            .filter(|run| !super::PASSING.contains(&conclusion(run).as_str()))
+            .count();
+        for run in found.check_runs.iter().filter(done) {
+            let Some(time) = run.completed_at.as_deref() else {
+                continue;
+            };
+            let data = json!({
+                "repo": repo,
+                "pull_request": merge.pull_request,
+                "url": run.html_url,
+                "head_branch": merge.head_branch,
+                "head_sha": merge.commit,
+                "base_branch": merge.base_branch,
+                "time": time,
+                "github_id": run.id,
+                "name": run.name,
+                "conclusion": conclusion(run),
+                "app": run.app.as_ref().map(|app| &app.slug),
+                "pending": pending,
+                "failing": failing,
+            });
+            checks.push(Observed {
+                kind: CHECKED,
+                name: format!(
+                    "github:{repo}:check-runs:{}:pulls/{}",
+                    run.id, merge.pull_request
+                ),
+                repo: repo.to_string(),
+                number: merge.pull_request,
+                label: None,
+                baseline: cursor(CHECKED).is_none(),
+                data,
+            });
+        }
+    }
+    Ok(checks)
 }
 
 const PULL_FIELDS: &str = "fragment pull on PullRequest { number headRefName headRefOid baseRefName merged mergeCommit { oid } body state \

@@ -5,7 +5,7 @@ use herdr_bus::Message;
 use priory_factory::explain;
 use priory_factory::factory::{Factory, Loaded, Session, Workflow};
 use priory_factory::lanes::{Lanes, Subject};
-use priory_intake::intake::{ISSUE_CLOSED, PR_CLOSED as CLOSED};
+use priory_intake::intake::{CHECKED, ISSUE_CLOSED, PR_CLOSED as CLOSED};
 use priory_runtime::room::Room;
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 use std::collections::BTreeMap;
@@ -1603,6 +1603,40 @@ pub fn watched(db: &Connection) -> rusqlite::Result<Vec<(String, String)>> {
          ) ORDER BY source, id",
     )?
     .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+    .collect()
+}
+
+/// The merged pull requests of a task, the pull request's repository, number, head and base branch,
+/// merge commit and merge time, merged since `since` and with no check run event at the merge
+/// commit that saw every check complete: the commits the intake still reads check runs at.
+pub fn merges(db: &Connection, since: &str) -> rusqlite::Result<Vec<priory_intake::intake::Merge>> {
+    db.prepare(
+        "SELECT DISTINCT json_extract(data, '$.repo'), json_extract(data, '$.pull_request'),
+           json_extract(data, '$.head_branch'), json_extract(data, '$.base_branch'),
+           json_extract(data, '$.merge_commit'), time
+         FROM inbox closed
+         WHERE type = ?1 AND json_extract(data, '$.merged') = 1 AND time >= ?2
+         AND json_extract(data, '$.merge_commit') IS NOT NULL
+         AND (EXISTS (SELECT 1 FROM pull_requests WHERE resource = 'github:'
+               || json_extract(closed.data, '$.repo') || '#' || json_extract(closed.data, '$.pull_request'))
+           OR EXISTS (SELECT 1 FROM owns WHERE resource = 'github:'
+               || json_extract(closed.data, '$.repo') || '@' || json_extract(closed.data, '$.head_branch')))
+         AND NOT EXISTS (SELECT 1 FROM inbox WHERE type = ?3
+           AND json_extract(data, '$.repo') = json_extract(closed.data, '$.repo')
+           AND json_extract(data, '$.head_sha') = json_extract(closed.data, '$.merge_commit')
+           AND json_extract(data, '$.pending') = 0)
+         ORDER BY time",
+    )?
+    .query_map(params![CLOSED, since, CHECKED], |row| {
+        Ok(priory_intake::intake::Merge {
+            repo: row.get(0)?,
+            pull_request: row.get::<_, i64>(1)? as u64,
+            head_branch: row.get(2)?,
+            base_branch: row.get(3)?,
+            commit: row.get(4)?,
+            time: row.get(5)?,
+        })
+    })?
     .collect()
 }
 
