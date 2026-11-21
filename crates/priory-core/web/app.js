@@ -1286,7 +1286,7 @@ async function taskWrite(task, act, body) {
 // A task's page: its state, reason, actions, a box to say something to its agent, then its brief,
 // plan, pull request and trace.
 function taskPage(id) {
-  const back = html`<div class="top"><a class="back" href="/">${icon("chevron-left", "s22")}Desk</a></div>`;
+  const back = html`<div class="top"><a class="back" href="/tasks">${icon("chevron-left", "s22")}Tasks</a></div>`;
   const task = taskOf({ task: id });
   if (!task) {
     const failed = state.task?.error;

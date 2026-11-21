@@ -13137,6 +13137,46 @@ fn attach_read_only_adds_tmuxs_read_only_flag() {
 }
 
 #[test]
+fn attach_without_read_only_records_that_a_command_that_can_type_was_issued() {
+    let mut setup = Setup::new("attach-record");
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 1);
+
+    assert!(
+        setup
+            .priory(&["attach", "1", "--read-only", "--print"])
+            .status
+            .success()
+    );
+    assert!(
+        setup
+            .priory(&["attach", "--run", "1", "--print"])
+            .status
+            .success()
+    );
+    setup.crash();
+    let printed = setup.priory(&["attach", "1", "--print"]);
+
+    assert!(printed.status.success(), "{printed:?}");
+    assert_eq!(
+        String::from_utf8_lossy(&printed.stderr),
+        "priory attach: not recorded: no priory daemon listens; attaching anyway\n"
+    );
+    let issued: Vec<_> = setup
+        .trace()
+        .into_iter()
+        .filter(|record| record["type"] == "factory.terminal.attach_issued")
+        .map(|record| record["data"].clone())
+        .collect();
+    assert_eq!(issued.len(), 1, "{issued:?}");
+    assert_eq!(
+        (&issued[0]["task"], &issued[0]["run"], &issued[0]["printed"]),
+        (&json!("1"), &json!("1"), &json!(true))
+    );
+}
+
+#[test]
 fn attach_refuses_an_ended_run_a_task_with_no_live_run_and_an_unknown_id() {
     let mut setup = Setup::new("attach-ended");
     setup.publish(&requested(42));
@@ -17755,7 +17795,8 @@ fn a_copy_reopened_on_a_runner_whose_key_another_runner_owns_drops_with_the_owne
     let task = a.priory(&["task", &tasks[0][0], "--json"]);
     let task: serde_json::Value = serde_json::from_slice(&task.stdout).unwrap();
     assert_eq!(task["reason"], "owned by runner b", "{task}");
-    assert_eq!(b.own_tasks()[0][4], "running");
+    // b starts its task on its own clock, so wait for it rather than read it once.
+    b.until_own_tasks(|rows| rows[0][4] == "running");
 }
 
 #[test]
@@ -20782,6 +20823,492 @@ fn a_screen_is_never_cached_needs_the_token_and_terminal_off_serves_none() {
             json!({ "error": "[serve] terminal = \"off\" serves no screen" }).to_string()
         )
     );
+    server.kill().unwrap();
+    server.wait().unwrap();
+}
+
+const TYPE: &str =
+    "[serve]\nlisten = \"127.0.0.1:0\"\ntoken_env = \"TEST_TOKEN\"\nterminal = \"type\"\n";
+
+impl Setup {
+    /// A run of task 1 whose pane runs `cat`, so its screen echoes what reaches it, under a daemon
+    /// and a `priory serve` with `[serve] terminal = "type"`, and the server's address.
+    fn typing(name: &str) -> (Setup, Child, String) {
+        let mut setup = Setup::running(name);
+        setup.tmux_out(&["respawn-pane", "-k", "-t", "=priory-1:", "cat"]);
+        // A busy run with nothing left to type, so only what a test sends reaches `cat`.
+        rusqlite::Connection::open(setup.dir.join("priory.db"))
+            .unwrap()
+            .execute_batch("UPDATE runs SET idle = 0; UPDATE outbox SET state = 'confirmed';")
+            .unwrap();
+        let served = serving(&setup, TYPE, &[("TEST_TOKEN", SERVE_TOKEN)]);
+        setup.start_with(
+            Path::new(env!("CARGO_BIN_EXE_priory")),
+            &[("TEST_TOKEN", SERVE_TOKEN)],
+        );
+        // The crashed daemon left its socket file, so only a connection shows this one listens.
+        let deadline = Instant::now() + Duration::from_secs(60);
+        while std::os::unix::net::UnixStream::connect(setup.socket()).is_err() {
+            assert!(Instant::now() < deadline, "the daemon never listened");
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        (setup, served.0, served.1)
+    }
+}
+
+/// `POST` of `body` to `path`, its status and its body as JSON.
+fn post(address: &str, path: &str, body: serde_json::Value) -> (u16, serde_json::Value) {
+    let (status, reply) = http(address, "POST", path, "", &body.to_string());
+    (status, serde_json::from_str(&reply).unwrap_or(json!(reply)))
+}
+
+/// Takes the keyboard of run 1 at the state's current revision, read again while a starting daemon
+/// moves it, and returns the grant's secret.
+fn take_keyboard(address: &str) -> String {
+    take_keyboard_as(address, "")["secret"]
+        .as_str()
+        .unwrap()
+        .to_owned()
+}
+
+/// The grant `take_keyboard` gets, sent with the `extra` headers.
+fn take_keyboard_as(address: &str, extra: &str) -> serde_json::Value {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let desk = http(address, "GET", "/api/desk", "", "").1;
+        let revision =
+            serde_json::from_str::<serde_json::Value>(&desk).unwrap()["revision"].clone();
+        let body = json!({ "revision": revision }).to_string();
+        let (status, grant) = http(address, "POST", "/api/runs/1/keyboard", extra, &body);
+        if status == 200 {
+            return serde_json::from_str(&grant).unwrap();
+        }
+        assert!(
+            status == 409 && Instant::now() < deadline,
+            "{status}: {grant}"
+        );
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
+/// How many times the screen of run 1 shows `text`, once it shows it `times` times.
+fn on_screen(address: &str, text: &str, times: usize) -> usize {
+    let screen = screen_once(address, |screen| {
+        screen["lines"].to_string().matches(text).count() >= times
+    });
+    screen["lines"].to_string().matches(text).count()
+}
+
+#[test]
+fn keys_type_text_as_text_and_send_a_listed_key_as_that_key() {
+    let (_setup, mut server, address) = Setup::typing("keys-text");
+    let secret = take_keyboard(&address);
+    let text = "a; -t =other ünïcödé 漢字 C-c";
+
+    let (status, typed) = post(
+        &address,
+        "/api/runs/1/keys",
+        json!({ "secret": secret, "request": "r1", "text": text }),
+    );
+    assert_eq!(
+        (status, &typed["outcome"]),
+        (200, &json!("sent")),
+        "{typed}"
+    );
+    let (status, pressed) = post(
+        &address,
+        "/api/runs/1/keys",
+        json!({ "secret": secret, "request": "r2", "key": "Enter" }),
+    );
+    assert_eq!(
+        (status, &pressed["outcome"]),
+        (200, &json!("sent")),
+        "{pressed}"
+    );
+
+    // `cat` echoes the line as typed, then prints it back once Enter ends it.
+    assert_eq!(on_screen(&address, text, 2), 2);
+    server.kill().unwrap();
+    server.wait().unwrap();
+}
+
+/// Sends `input` under `secret` as request `request` to run 1.
+fn keys(
+    address: &str,
+    secret: &str,
+    request: &str,
+    input: serde_json::Value,
+) -> (u16, serde_json::Value) {
+    let mut body = json!({ "secret": secret, "request": request });
+    body.as_object_mut()
+        .unwrap()
+        .extend(input.as_object().unwrap().clone());
+    post(address, "/api/runs/1/keys", body)
+}
+
+#[test]
+fn keys_refuse_a_control_character_in_text_and_a_key_off_the_list_and_send_nothing() {
+    let (setup, mut server, address) = Setup::typing("keys-refused");
+    let secret = take_keyboard(&address);
+
+    for text in ["a\nb", "\u{1b}[A", "a\tb", "\u{7f}", "\u{85}", "\r", ""] {
+        let (status, refused) = keys(&address, &secret, "t", json!({ "text": text }));
+        assert_eq!(status, 400, "{text:?}: {refused}");
+    }
+    for key in ["F1", "Enter; kill-server", "-t", "enter"] {
+        let (status, refused) = keys(&address, &secret, "k", json!({ "key": key }));
+        assert_eq!(status, 400, "{key:?}: {refused}");
+    }
+    let both = keys(
+        &address,
+        &secret,
+        "b",
+        json!({ "text": "a", "key": "Enter" }),
+    );
+    let long = keys(&address, &secret, "l", json!({ "text": "x".repeat(1025) }));
+    assert_eq!((both.0, long.0), (400, 400));
+    let (status, sent) = keys(&address, &secret, "ok", json!({ "text": "only this" }));
+    assert_eq!((status, &sent["outcome"]), (200, &json!("sent")));
+    assert_eq!(on_screen(&address, "only this", 1), 1);
+    let kinds: Vec<_> = setup
+        .trace()
+        .into_iter()
+        .filter(|record| record["type"] == "factory.terminal.keys")
+        .map(|record| {
+            (
+                record["data"]["input"].clone(),
+                record["data"]["length"].clone(),
+            )
+        })
+        .collect();
+    assert_eq!(kinds, [(json!("text"), json!(9))]);
+    server.kill().unwrap();
+    server.wait().unwrap();
+}
+
+#[test]
+fn a_repeated_request_id_gets_the_first_outcome_and_sends_nothing() {
+    let (setup, mut server, address) = Setup::typing("keys-repeat");
+    let secret = take_keyboard(&address);
+
+    let first = keys(&address, &secret, "same", json!({ "text": "once" }));
+    let again = keys(&address, &secret, "same", json!({ "text": "twice" }));
+    let other = keys(&address, &secret, "other", json!({ "text": "-again" }));
+
+    assert_eq!(first, (200, json!({ "outcome": "sent" })));
+    assert_eq!(again, (200, json!({ "outcome": "sent", "repeated": true })));
+    assert_eq!(other.0, 200);
+    assert_eq!(on_screen(&address, "once-again", 1), 1);
+    assert_eq!(on_screen(&address, "twice", 0), 0);
+    let sent = setup
+        .trace()
+        .into_iter()
+        .filter(|record| record["type"] == "factory.terminal.keys")
+        .count();
+    assert_eq!(sent, 2);
+    server.kill().unwrap();
+    server.wait().unwrap();
+}
+
+#[test]
+fn a_request_a_crash_cut_before_its_outcome_is_uncertain_and_never_sent_again() {
+    let (mut setup, mut server, address) = Setup::typing("keys-crash");
+    let secret = take_keyboard(&address);
+    setup.crash();
+    // What a crash between the stored request and its send leaves behind.
+    rusqlite::Connection::open(setup.dir.join("priory.db"))
+        .unwrap()
+        .execute(
+            "INSERT INTO keyboard_keys (grant_id, request, input, length) VALUES (1, 'cut', 'text', 4)",
+            [],
+        )
+        .unwrap();
+    setup.start_with(
+        Path::new(env!("CARGO_BIN_EXE_priory")),
+        &[("TEST_TOKEN", SERVE_TOKEN)],
+    );
+
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let (status, repeated) = loop {
+        let reply = keys(&address, &secret, "cut", json!({ "text": "lost" }));
+        if reply.0 != 503 || Instant::now() > deadline {
+            break reply;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    };
+    assert_eq!(
+        (status, repeated),
+        (200, json!({ "outcome": "uncertain", "repeated": true }))
+    );
+    let records: Vec<_> = setup
+        .trace()
+        .into_iter()
+        .filter(|record| record["type"] == "factory.terminal.keys")
+        .map(|record| {
+            (
+                record["data"]["request"].clone(),
+                record["data"]["outcome"].clone(),
+            )
+        })
+        .collect();
+    assert_eq!(records, [(json!("cut"), json!("uncertain"))]);
+    assert_eq!(on_screen(&address, "lost", 0), 0);
+    server.kill().unwrap();
+    server.wait().unwrap();
+}
+
+#[test]
+fn an_expired_returned_or_replaced_grant_is_refused_and_each_end_is_recorded() {
+    let (setup, mut server, address) = Setup::typing("keys-ended");
+    let db = rusqlite::Connection::open(setup.dir.join("priory.db")).unwrap();
+
+    let expired = take_keyboard(&address);
+    db.execute(
+        "UPDATE keyboard_grants SET ends = strftime('%Y-%m-%dT%H:%M:%SZ', 'now', '-1 second')",
+        [],
+    )
+    .unwrap();
+    let (status, refused) = keys(&address, &expired, "a", json!({ "text": "zz-refused" }));
+    assert_eq!(status, 403, "{refused}");
+    assert!(
+        refused["error"].as_str().unwrap().contains("(expired)"),
+        "{refused}"
+    );
+
+    let returned = take_keyboard(&address);
+    let (status, _) = post(
+        &address,
+        "/api/runs/1/keyboard/return",
+        json!({ "secret": returned }),
+    );
+    assert_eq!(status, 200);
+    assert_eq!(
+        keys(&address, &returned, "b", json!({ "text": "zz-refused" })).0,
+        403
+    );
+    let again = post(
+        &address,
+        "/api/runs/1/keyboard/return",
+        json!({ "secret": returned }),
+    );
+    assert_eq!(again.0, 403);
+
+    let replaced = take_keyboard(&address);
+    let current = take_keyboard(&address);
+    assert_eq!(
+        keys(&address, &replaced, "c", json!({ "text": "zz-refused" })).0,
+        403
+    );
+    assert_eq!(
+        keys(&address, &current, "d", json!({ "text": "zz-typed" })).0,
+        200
+    );
+    let wrong = keys(
+        &address,
+        "not-a-secret",
+        "e",
+        json!({ "text": "zz-refused" }),
+    );
+    assert_eq!(wrong.0, 403);
+
+    let trace = setup.trace();
+    let of = |kind: &str| -> Vec<serde_json::Value> {
+        trace
+            .iter()
+            .filter(|record| record["type"] == kind)
+            .map(|record| record["data"].clone())
+            .collect()
+    };
+    let reasons: Vec<_> = of("factory.terminal.returned")
+        .iter()
+        .map(|data| (data["grant"].clone(), data["reason"].clone()))
+        .collect();
+    assert_eq!(
+        reasons,
+        [
+            (json!("1"), json!("expired")),
+            (json!("2"), json!("returned")),
+            (json!("3"), json!("replaced")),
+        ]
+    );
+    let taken = of("factory.terminal.taken");
+    assert_eq!(taken.len(), 4);
+    assert_eq!(
+        (&taken[0]["run"], &taken[0]["task"]),
+        (&json!("1"), &json!("1"))
+    );
+    assert!(taken[0]["ends"].is_string(), "{}", taken[0]);
+    assert_eq!(on_screen(&address, "zz-typed", 1), 1);
+    assert_eq!(on_screen(&address, "zz-refused", 0), 0);
+    server.kill().unwrap();
+    server.wait().unwrap();
+}
+
+#[test]
+fn the_outbox_types_nothing_into_a_run_whose_keyboard_a_person_holds() {
+    let (setup, mut server, address) = Setup::typing("keys-outbox");
+    let secret = take_keyboard(&address);
+    // An idle run with no prompt in flight, as a nudge the restart replayed may have left one.
+    rusqlite::Connection::open(setup.dir.join("priory.db"))
+        .unwrap()
+        .execute_batch(
+            "UPDATE runs SET idle = 1 WHERE id = 1; UPDATE outbox SET state = 'confirmed';",
+        )
+        .unwrap();
+    let said = setup.priory(&["say", "1", "hello from the desk"]);
+    assert!(said.status.success(), "{said:?}");
+
+    std::thread::sleep(Duration::from_secs(3));
+    let queued = setup.rows("outbox");
+    assert_eq!(queued.last().unwrap()[3], "queued", "{queued:?}");
+
+    let (status, _) = post(
+        &address,
+        "/api/runs/1/keyboard/return",
+        json!({ "secret": secret }),
+    );
+    assert_eq!(status, 200);
+    setup.until("outbox", |rows| rows.last().unwrap()[3] != "queued");
+    screen_once(&address, |screen| {
+        screen["lines"].to_string().contains("hello from the desk")
+    });
+    server.kill().unwrap();
+    server.wait().unwrap();
+}
+
+#[test]
+fn every_keys_endpoint_is_404_unless_the_terminal_types_and_behind_the_token_and_origin() {
+    let (mut setup, mut server, address) = Setup::typing("keys-gated");
+    let secret = take_keyboard(&address);
+    let paths = [
+        ("/api/runs/1/keyboard", json!({ "revision": 0 })),
+        ("/api/runs/1/keyboard/return", json!({ "secret": secret })),
+        (
+            "/api/runs/1/keys",
+            json!({ "secret": secret, "request": "r", "text": "x" }),
+        ),
+    ];
+    for (path, body) in &paths {
+        let body = body.to_string();
+        let no_token = http(
+            &address,
+            "POST",
+            path,
+            "Authorization: Bearer nope\r\n",
+            &body,
+        );
+        let foreign = http(
+            &address,
+            "POST",
+            path,
+            "Origin: http://evil.example\r\n",
+            &body,
+        );
+        assert_eq!((no_token.0, foreign.0), (401, 403), "{path}");
+    }
+    server.kill().unwrap();
+    server.wait().unwrap();
+
+    for terminal in ["watch", "off"] {
+        let factory = setup.dir.join("factory/factory.toml");
+        let settings = fs::read_to_string(&factory).unwrap();
+        let start = settings.find("[serve]").unwrap();
+        fs::write(&factory, &settings[..start]).unwrap();
+        let serve = format!("{WATCH}terminal = \"{terminal}\"\n");
+        let (mut server, address) = serving(&setup, &serve, &[("TEST_TOKEN", SERVE_TOKEN)]);
+        for (path, body) in &paths {
+            for method in ["POST", "GET", "PUT"] {
+                let body = if method == "POST" {
+                    body.to_string()
+                } else {
+                    String::new()
+                };
+                let status = http(&address, method, path, "", &body).0;
+                assert_eq!(status, 404, "{terminal} {method} {path}");
+            }
+        }
+        server.kill().unwrap();
+        server.wait().unwrap();
+    }
+
+    // The daemon reads its own factory: no longer "type", it ends the open grant.
+    setup.crash();
+    setup.start_with(
+        Path::new(env!("CARGO_BIN_EXE_priory")),
+        &[("TEST_TOKEN", SERVE_TOKEN)],
+    );
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        let returned: Vec<_> = setup
+            .trace()
+            .into_iter()
+            .filter(|record| record["type"] == "factory.terminal.returned")
+            .map(|record| record["data"]["reason"].clone())
+            .collect();
+        if !returned.is_empty() {
+            assert_eq!(returned, [json!("terminal not \"type\"")]);
+            break;
+        }
+        assert!(Instant::now() < deadline, "the daemon kept the grant");
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
+#[test]
+fn taking_the_keyboard_records_its_label_and_no_record_or_log_holds_the_secret() {
+    let (setup, mut server, address) = Setup::typing("keys-secret");
+    let desk = http(&address, "GET", "/api/desk", "", "").1;
+    let revision = serde_json::from_str::<serde_json::Value>(&desk).unwrap()["revision"].clone();
+    let stale = post(
+        &address,
+        "/api/runs/1/keyboard",
+        json!({ "revision": revision.as_i64().unwrap() - 1 }),
+    );
+    assert_eq!(stale.0, 409, "{}", stale.1);
+    let grant = take_keyboard_as(
+        &address,
+        &format!("User-Agent: {}\r\n", "Phone ".repeat(20)),
+    );
+    let secret = grant["secret"].as_str().unwrap();
+    assert_eq!(secret.len(), 32);
+    let pressed = keys(&address, secret, "r", json!({ "key": "C-c" }));
+    assert_eq!(pressed, (200, json!({ "outcome": "sent" })));
+    // A line serve would never build, holding typed text: the daemon refuses it without logging it.
+    let mut socket = std::os::unix::net::UnixStream::connect(setup.socket()).unwrap();
+    let malformed = json!({ "keys": { "run": 1, "hash": "h", "request": "m",
+        "input": { "text": "typed-pass-sentinel" }, "extra": 1 } });
+    std::io::Write::write_all(&mut socket, format!("{malformed}\n").as_bytes()).unwrap();
+    let mut reply = String::new();
+    std::io::Read::read_to_string(&mut socket, &mut reply).unwrap();
+    assert!(reply.contains("unreadable line"), "{reply}");
+    let missing = post(
+        &address,
+        "/api/runs/9/keyboard",
+        json!({ "revision": revision }),
+    );
+    assert_eq!(missing.0, 404);
+
+    let taken = setup
+        .trace()
+        .into_iter()
+        .find(|record| record["type"] == "factory.terminal.taken")
+        .unwrap();
+    assert_eq!(taken["data"]["label"], json!("Phone ".repeat(11)[..64]));
+    assert_eq!(taken["data"]["grant"], json!(grant["grant"].to_string()));
+    let db = fs::read(setup.dir.join("priory.db")).unwrap();
+    let wal = fs::read(setup.dir.join("priory.db-wal")).unwrap_or_default();
+    let daemon_log = fs::read_to_string(setup.dir.join("daemon.log")).unwrap();
+    assert!(!daemon_log.contains("typed-pass-sentinel"), "{daemon_log}");
+    let logs = [
+        daemon_log,
+        fs::read_to_string(setup.dir.join("serve.log")).unwrap(),
+        String::from_utf8_lossy(&db).into_owned(),
+        String::from_utf8_lossy(&wal).into_owned(),
+        setup.trace().iter().map(ToString::to_string).collect(),
+    ];
+    for log in logs {
+        assert!(!log.contains(secret));
+    }
     server.kill().unwrap();
     server.wait().unwrap();
 }

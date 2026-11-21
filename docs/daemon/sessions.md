@@ -160,6 +160,13 @@ detach.
 - `--print` prints the attach command instead of running it, so a view host can run it in a pane,
   such as `hc run -- <that command>` in a Herdr pane.
 
+Without `--read-only`, attach first sends the daemon one line, which appends a
+`factory.terminal.attach_issued` record with the task, the run and whether it printed or ran the
+command. It records that someone asked for a command that can type, not that a client attached nor
+what it typed: a printed command can run later or never, and tmux does not report a client's keys.
+Without a daemon it says `priory attach: not recorded: no priory daemon listens; attaching anyway`
+on stderr and attaches.
+
 A task with no live run, a run that ended, or an unknown id exits with 1 and names the state, such
 as `priory attach: task 1 is dropped, with no live run` or `run 3 ended as cancelled`. A session
 missing from your tmux server, or one whose panes carry no live tag of the run, exits with 1 and

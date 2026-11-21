@@ -139,6 +139,7 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
         Vec::new()
     });
     state::uncertain(&db)?;
+    crate::keyboard::adopt(&mut db, &trace)?;
     // No one watches a compaction a stopped daemon started, so it never types its `/compact`.
     for tmux in idle::tmux_sessions(&db)? {
         runtime::kill(&tmux);
@@ -698,6 +699,10 @@ enum Input {
     Read(crate::post::ReadLine),
     BatchEdit(crate::batch::EditLine),
     Move(state::MoveLine),
+    Keyboard(crate::keyboard::TakeLine),
+    KeyboardReturn(crate::keyboard::ReturnLine),
+    Keys(crate::keyboard::KeysLine),
+    Attach(crate::keyboard::AttachLine),
 }
 
 /// `POST /api/request`'s line: `{"add": {...}}`.
@@ -849,6 +854,27 @@ fn take(
             Ok((replied(crate::batch::apply(db, &line.batch_edit)), None))
         }
         Ok(Input::Move(line)) => Ok((replied(state::move_line(db, line.r#move)), None)),
+        Ok(Input::Keyboard(line)) => Ok((
+            replied(crate::keyboard::take(db, &line.keyboard, trace)?),
+            None,
+        )),
+        Ok(Input::KeyboardReturn(line)) => Ok((
+            replied(crate::keyboard::give_back(
+                db,
+                &line.keyboard_return,
+                trace,
+            )?),
+            None,
+        )),
+        Ok(Input::Keys(line)) => Ok((replied(crate::keyboard::keys(db, &line.keys, trace)?), None)),
+        Ok(Input::Attach(line)) => Ok((
+            replied(crate::keyboard::attach_issued(
+                db,
+                &line.attach_issued,
+                trace,
+            )?),
+            None,
+        )),
         Ok(Input::Deliver(line)) => Ok((replied(deliver::act(db, &line)?), None)),
         Ok(Input::Add(line)) => Ok((replied(add(db, &line.add, trace, counter)?), None)),
         Ok(Input::Signal(signal)) => Ok(("ok".to_owned(), state::signal(db, &signal, trace)?)),
@@ -915,7 +941,11 @@ fn take(
             Ok((replied(reply), None))
         }
         Err(error) => {
-            eprintln!("priory daemon: dropped line {line:?}: {error}");
+            // Never the line: a keys line holds what a person typed, maybe a password.
+            eprintln!(
+                "priory daemon: dropped a line of {} bytes: {error}",
+                line.len()
+            );
             Ok((replied(Err(format!("unreadable line: {error}"))), None))
         }
     }
@@ -971,6 +1001,7 @@ fn tend(
     state::disk_due(db, || room::measure(home).ok().map(|room| room.disk_free))?;
     memory::reclaim(db)?;
     perform(db, trace, home, commands)?;
+    crate::keyboard::sweep(db, trace)?;
     loop {
         // Measured again after each start, since its clone and worktree take disk.
         let measured = OnceCell::new();

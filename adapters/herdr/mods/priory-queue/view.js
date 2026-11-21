@@ -35,6 +35,7 @@ function why(task, before, room) {
   // "stalled since TIME: short of RESOURCE by AMOUNT; task N waits for room"
   const stall = /^stalled since (\S+): (short of .+); task (\d+) waits for room$/.exec(room.banner ?? "");
   if (stall && Number(stall[3]) === task.id) return { text: `Waits for room: ${stall[2]} since ${clock(stall[1])}.`, tone: "warn" };
+  if (task.reason) return { text: sentence(task.reason), tone: "muted" };
   if (!before) return { text: "Starts when the runner has room.", tone: "muted" };
   if (task.band_position === 1) return { text: `Starts after ${before.key}, the band above.`, tone: "muted" };
   return { text: `Starts after ${before.key}.`, tone: "muted" };
@@ -140,13 +141,19 @@ function day(iso, now) {
   return date.toLocaleDateString("en", { month: "short", day: "numeric" });
 }
 
-/** Why a queued task is next, from the `why` of `priory queue --json`. @param {string} why */
+/** Why a queued task is next, from the `why` of `priory queue --json`: its place, or its own wait reason. @param {string} why */
 function queuedWhy(why) {
   if (why === "first in the queue") return "First in the queue. It starts once there is room.";
   if (why === "a band above it") return "First in its band, after the band above.";
   const position = /^queue position (\d+)$/.exec(why);
-  return position ? `${ordinal(Number(position[1]))} in the queue.` : why;
+  return position ? `${ordinal(Number(position[1]))} in the queue.` : sentence(why);
 }
+
+/** A reason as a sentence: "waits for room" reads "Waits for room.". @param {string} reason */
+const sentence = (reason) => `${reason[0].toUpperCase()}${reason.slice(1)}${reason.endsWith(".") ? "" : "."}`;
+
+/** Whether up next's `why` is a place in the queue, which starts once there is room. @param {string} why */
+const placed = (why) => why === "first in the queue" || why === "a band above it" || /^queue position \d+$/.test(why);
 
 /**
  * The next three runs, queued, held or scheduled, each with when it starts and why.
@@ -155,7 +162,7 @@ function queuedWhy(why) {
  */
 export function upNext(queue, now) {
   return queue.up_next.map((/** @type {any} */ next) => {
-    if (next.kind === "queued") return { task: next.task, when: "now", sub: "on room", label: next.key, title: next.title, why: queuedWhy(next.why) };
+    if (next.kind === "queued") return { task: next.task, when: "now", sub: placed(next.why) ? "on room" : "", label: next.key, title: next.title, why: queuedWhy(next.why) };
     const label = next.kind === "scheduled" && next.task == null ? `${next.trigger}, schedule` : next.key;
     const why = next.kind === "held" ? "Its hold ends." : next.task == null ? "The schedule starts a task." : "The schedule wakes it.";
     return { task: next.task, when: clock(next.at), sub: day(next.at, now), label, title: next.title, why };
