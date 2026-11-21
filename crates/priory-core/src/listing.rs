@@ -441,18 +441,16 @@ pub fn recent_runs(db: &Connection, since: Option<&str>) -> rusqlite::Result<Val
     )?;
     let mut runs = rows(
         db,
-        &format!(
-            "WITH ended AS MATERIALIZED (SELECT json_extract(event, '$.data.run') AS run, max(seq),
-               json_extract(event, '$.data.model') AS model, json_extract(event, '$.data.tokens') AS tokens
-               FROM trace WHERE type = 'factory.step.ended' GROUP BY 1)
-             SELECT runs.id AS run, runs.task, tasks.key, {TITLE}, runs.step, runs.agent, runs.started,
-               runs.ended, runs.ended_as AS end, results.outcome, ended.model, ended.tokens
-             FROM runs JOIN tasks ON tasks.id = runs.task
-             LEFT JOIN results ON results.run = runs.id
-             LEFT JOIN ended ON ended.run = CAST(runs.id AS TEXT)
-             WHERE ?1 IS NULL OR runs.ended IS NULL OR runs.started >= ?1
-             ORDER BY runs.id DESC"
-        ),
+        "WITH ended AS MATERIALIZED (SELECT json_extract(event, '$.data.run') AS run, max(seq),
+           json_extract(event, '$.data.model') AS model, json_extract(event, '$.data.tokens') AS tokens
+           FROM trace WHERE type = 'factory.step.ended' AND (?1 IS NULL OR time >= ?1) GROUP BY 1)
+         SELECT runs.id AS run, runs.task, tasks.key, runs.step, runs.agent, runs.started,
+           runs.ended, runs.ended_as AS end, results.outcome, ended.model, ended.tokens
+         FROM runs JOIN tasks ON tasks.id = runs.task
+         LEFT JOIN results ON results.run = runs.id
+         LEFT JOIN ended ON ended.run = CAST(runs.id AS TEXT)
+         WHERE ?1 IS NULL OR runs.ended IS NULL OR runs.started >= ?1
+         ORDER BY runs.id DESC",
         [since],
     )?;
     for run in runs.as_array_mut().expect("rows are an array") {

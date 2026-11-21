@@ -10,7 +10,7 @@ import { KINDS, edgeStyle, lockBadge, nodeShape, timeline, ungatedPairs } from "
 import { handled, neverOwned, routeAction, unroutedNote } from "./inbox.js";
 import { editBody, issueName, laneLayout, momentWords, stages, successors } from "./batches.js";
 import { actionNote, batchParts, dueParts, mergeSince, nextLink, progressView, rowAction, sectionInView, sinceGroups } from "./desk.js";
-import { TASK_FACETS, TASK_VIEWS, filtered, taskViews } from "./tasks.js";
+import { TASK_FACETS, TASK_VIEWS, filtered, olderPart, taskViews } from "./tasks.js";
 import { RUN_FACETS, RUN_VIEWS, duration, runState, runViews, tokenText } from "./runs.js";
 
 const ICONS = {
@@ -744,7 +744,7 @@ const batchTag = (task) => (task.batch == null ? "" : html`<a class="tag" href="
 const reasonShown = (task) => Boolean(task.reason) && ["blocked", "held", "failed", "dropped"].includes(task.state);
 
 function taskListRow(task) {
-  const line3 = reasonShown(task) ? html`<span class="t-${role(task.state)}">${task.reason}</span>` : html`<span>${task.lane || ""}</span><span>${task.band || ""}</span>${batchTag(task)}`;
+  const line3 = reasonShown(task) ? html`<span class="t-${role(task.state)}">${task.reason}</span>${batchTag(task)}` : html`<span>${task.lane || ""}</span><span>${task.band || ""}</span>${batchTag(task)}`;
   return html`<div class="row" data-href="/tasks/${task.id}">${tile(task.state)}
     <span class="l1"><a class="mono" href="/tasks/${task.id}">${task.key}</a><span>${task.workflow} ${task.step}</span><span>${task.state}</span>${prsTag(task)}<span class="age">${timeTag(task.since)}</span></span>
     <span class="l2 r">${task.title || task.tldr || ""}</span><span class="l3">${line3}</span><span class="chev">${icon("chevron-right", "s15")}</span></div>`;
@@ -761,15 +761,14 @@ function tasksBody(wide) {
   const current = listView(TASK_VIEWS);
   const all = state.data.tasks;
   const views = taskViews(filtered(all, picks));
-  const older = picks.size ? 0 : olderTasks();
+  const { counted, unloaded } = olderPart({ view: current, history: "ended", older: olderTasks(), picked: picks.size > 0 });
   const chips = savedViews([
     ["active", "Active", views.active.length, current === "active"],
     ["blocked", "Blocked", views.blocked.length, current === "blocked"],
-    ["ended", "Ended", views.ended.length + older, current === "ended"],
+    ["ended", "Ended", views.ended.length + counted, current === "ended"],
   ], "/tasks", facetQuery(picks));
   const facets = html`<div class="facets" aria-label="Facets">${TASK_FACETS.map((spec) => facet(current, picks, spec, "/tasks", all))}</div>`;
   const list = views[current];
-  const unloaded = current === "ended" ? older : 0;
   const empty = { active: html`No active tasks. Add one with the + button, or run <code>priory add</code>.`, blocked: "No blocked tasks. A task shows here when it needs a person to go on.", ended: "No task ended in the last 7 days. A task shows here once it is done, failed or dropped." }[current];
   if (!list.length && !unloaded) return { views: html`${chips}${facets}`, rows: html`<p class="empty">${empty}</p>` };
   const rows = wide
@@ -798,11 +797,10 @@ function runsBody(wide) {
   const current = listView(RUN_VIEWS);
   const all = state.data.runs ?? [];
   const views = runViews(filtered(all, picks, RUN_FACETS));
-  const older = picks.size ? 0 : state.data.older.runs ?? 0;
-  const chips = savedViews([["recent", "Recent", views.recent.length + older, current === "recent"], ["live", "Live", views.live.length, current === "live"]], "/runs", facetQuery(picks));
+  const { counted, unloaded } = olderPart({ view: current, history: "recent", older: state.data.older.runs, picked: picks.size > 0 });
+  const chips = savedViews([["recent", "Recent", views.recent.length + counted, current === "recent"], ["live", "Live", views.live.length, current === "live"]], "/runs", facetQuery(picks));
   const facets = html`<div class="facets" aria-label="Facets">${RUN_FACETS.map((spec) => facet(current, picks, spec, "/runs", all))}</div>`;
   const list = views[current];
-  const unloaded = current === "recent" ? older : 0;
   const empty = current === "live" ? "No run is live. A run shows here while an agent works on a step." : "No run in the last 7 days. A run shows here once a task's step starts an agent.";
   if (!list.length && !unloaded) return { views: html`${chips}${facets}`, rows: html`<p class="empty">${empty}</p>` };
   const rows = wide

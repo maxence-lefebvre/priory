@@ -29,3 +29,10 @@ export const TASK_FACETS = [
  */
 export const filtered = (items, picks, facets = /** @type {any} */ (TASK_FACETS)) =>
   items.filter((item) => facets.every(([key, , values]) => !picks.has(key) || values(item).includes(/** @type {string} */ (picks.get(key)))));
+
+/**
+ * A list's rows the server left out: `counted` in its view's count, only without a filter since
+ * the server does not count them per facet, and `unloaded`, which loads them in the view that
+ * shows history. @param {{ view: string, history: string, older: number | undefined, picked: boolean }} list
+ */
+export const olderPart = ({ view, history, older = 0, picked }) => ({ counted: picked ? 0 : older, unloaded: view === history ? older : 0 });

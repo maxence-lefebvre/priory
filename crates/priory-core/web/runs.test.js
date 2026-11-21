@@ -22,9 +22,11 @@ test("the saved views list the recent runs newest first, or only the live ones",
   assert.deepEqual(ids(runViews(runs).live), [31]);
 });
 
-test("the facets filter by outcome, agent and step", () => {
+test("the facets filter by outcome, agent and step; a run's outcome is both how it ended and its result's outcome", () => {
   assert.deepEqual(RUN_FACETS.map(([key, label]) => [key, label]), [["outcome", "Outcome"], ["agent", "Agent"], ["step", "Step"]]);
   assert.deepEqual(ids(filtered(runs, new Map([["outcome", "moved"]]), RUN_FACETS)), [30]);
+  assert.deepEqual(ids(filtered(runs, new Map([["outcome", "done"]]), RUN_FACETS)), [30]);
+  assert.deepEqual(ids(filtered(runs, new Map([["outcome", "blocked"]]), RUN_FACETS)), [29]);
   assert.deepEqual(ids(filtered(runs, new Map([["outcome", "running"]]), RUN_FACETS)), [31]);
   assert.deepEqual(ids(filtered(runs, new Map([["agent", "none"]]), RUN_FACETS)), [25]);
   assert.deepEqual(ids(filtered(runs, new Map([["step", "implement"], ["agent", "coder"]]), RUN_FACETS)), [30, 29]);

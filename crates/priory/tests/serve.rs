@@ -1126,7 +1126,7 @@ fn the_runs_endpoint_lists_the_runs_of_the_last_week_newest_first_with_outcome_m
              strftime('%Y-%m-%dT%H:%M:%SZ', 'now', '-1 hours'), 'done'),
            (93, 2, 'implement', 't', 's93', 'implementer', strftime('%Y-%m-%dT%H:%M:%SZ', 'now', '-10 minutes'), NULL, NULL);
          INSERT INTO results (run, task, step, outcome, summary) VALUES (92, 1, 'implement', 'passed', 'Fixed');
-         INSERT INTO trace (id, type, time, event) VALUES ('e92', 'factory.step.ended', '2026-11-21T09:00:00Z',
+         INSERT INTO trace (id, type, time, event) VALUES ('e92', 'factory.step.ended', strftime('%Y-%m-%dT%H:%M:%SZ', 'now', '-1 hours'),
            json_object('data', json_object('run', '92', 'model', 'claude-opus-5-5',
              'tokens', json_object('input', 1200, 'output', 300))));",
     )
@@ -1142,7 +1142,6 @@ fn the_runs_endpoint_lists_the_runs_of_the_last_week_newest_first_with_outcome_m
             json!([
                 run["run"],
                 run["key"],
-                run["title"],
                 run["agent"],
                 run["end"],
                 run["outcome"],
@@ -1155,17 +1154,8 @@ fn the_runs_endpoint_lists_the_runs_of_the_last_week_newest_first_with_outcome_m
     assert_eq!(
         shown,
         [
-            json!([
-                93,
-                "cli:docs-2",
-                "Fix the",
-                "implementer",
-                null,
-                null,
-                null,
-                null
-            ]),
-            json!([92, "cli:docs-1", "Fix the docs", "implementer", "done", "passed", "claude-opus-5-5", { "input": 1200, "output": 300 }]),
+            json!([93, "cli:docs-2", "implementer", null, null, null, null]),
+            json!([92, "cli:docs-1", "implementer", "done", "passed", "claude-opus-5-5", { "input": 1200, "output": 300 }]),
         ]
     );
     assert_eq!(runs["older"], 1);

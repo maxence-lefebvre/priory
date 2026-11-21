@@ -366,7 +366,6 @@ task, result and trace fields. Each run:
 | `run` | integer | The run's id |
 | `task` | integer | Its task's id |
 | `key` | string | Its task's key |
-| `title` | string or null | Its task's title, as in [Tasks](#tasks) |
 | `step` | string | The step it ran |
 | `agent` | string or null | The agent it ran |
 | `started` | RFC 3339 | When it started |

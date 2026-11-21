@@ -734,7 +734,7 @@ open Priory window when there is one.
 
 - **Phone**: rows as on the desk. Line 1 is the key, workflow and step, state and age; line 2 the
   title. Line 3 is lane, band and the batch tag; a `blocked`, `held`, `failed` or `dropped` row
-  shows its reason there instead, in the role's text color. A run row's line 2 is its agent and
+  shows its reason there instead of lane and band, in the role's text color, and keeps the batch tag. A run row's line 2 is its agent and
   model, line 3 its run id, outcome, duration and tokens.
 - **Wide**: a table, `--row-wide` (38 px) at least, with columns for state, key, title, workflow
   and step, lane, band and age (tasks), or state, run id, key, step, agent and model, outcome,
@@ -757,13 +757,15 @@ open Priory window when there is one.
 Every task. Saved views: Active (not `done`, `failed` or `dropped`, in start order), Blocked, and
 Ended (newest first), each with a count. Facet chips: State, Lane and Workflow, each offering its
 values A to Z with counts; a task with no lane shows under `none`. Ended lists the last 7 days first
-and loads the older tasks once the person scrolls to its end. The rows take the whole width, with no
+and loads the older tasks once the person scrolls to its end, with or without a facet set; a set
+facet counts the loaded tasks only. The rows take the whole width, with no
 drawer: each opens the task's page.
 
 ### Runs panel
 
-The runs of the last 7 days, newest first. Saved views: Recent and Live. Facet chips: Outcome (the
-run's state from the [State tile](#state-tile) table, `running` while live), Agent and Step. Recent
+The runs of the last 7 days, newest first. Saved views: Recent and Live. Facet chips: Outcome, Agent and
+Step. A run's outcome is both its state from the [State tile](#state-tile) table (`running` while
+live) and its result's outcome, so `moved` and `passed` both find it. Recent
 loads the older runs once the person scrolls to its end. As on Tasks, the rows take the whole width
 and each opens its task's page.
 - Actions live on the task page, not in the row: Resume, Cancel, Revive, Hold, Release, Move. The

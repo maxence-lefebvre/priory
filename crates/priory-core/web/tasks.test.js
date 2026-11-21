@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { TASK_FACETS, TASK_VIEWS, filtered, taskViews } from "./tasks.js";
+import { TASK_FACETS, TASK_VIEWS, filtered, olderPart, taskViews } from "./tasks.js";
 
 // `/api/tasks` as the server sends it: in start order, ended tasks in it too.
 const tasks = [
@@ -27,4 +27,11 @@ test("the facets filter by state, lane and workflow, and a task with no lane cou
   assert.deepEqual(ids(filtered(tasks, new Map([["lane", "none"]]))), [10]);
   assert.deepEqual(ids(filtered(tasks, new Map([["workflow", "implement"], ["state", "done"]]))), [5]);
   assert.deepEqual(ids(filtered(tasks, new Map())), ids(tasks));
+});
+
+test("a list's older rows count only without a filter, yet still load in their view while one is set", () => {
+  assert.deepEqual(olderPart({ view: "ended", history: "ended", older: 23, picked: false }), { counted: 23, unloaded: 23 });
+  assert.deepEqual(olderPart({ view: "ended", history: "ended", older: 23, picked: true }), { counted: 0, unloaded: 23 });
+  assert.deepEqual(olderPart({ view: "active", history: "ended", older: 23, picked: true }), { counted: 0, unloaded: 0 });
+  assert.deepEqual(olderPart({ view: "recent", history: "recent", older: undefined, picked: false }), { counted: 0, unloaded: 0 });
 });
