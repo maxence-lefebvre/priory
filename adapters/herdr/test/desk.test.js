@@ -87,6 +87,11 @@ test("Needs me lists the asks oldest first, then the stopped tasks, then what ne
   ]);
 });
 
+test("a report row carries its sequence number, so its Read button marks it read", () => {
+  const rows = deskModel(data, { now }).sections("needs").flatMap((section) => section.rows);
+  assert.deepEqual(rows.filter((row) => row.report != null).map((row) => [row.kind, row.report]), [["report", 11]]);
+});
+
 test("Needs me lists the to-dos after the stopped tasks, each with Done", () => {
   const todo = { since: "2026-11-20T11:30:00Z", kind: "todo", id: 2, task: null, key: null, step: null, lane: null, what: "Renew the TLS cert, due 2026-12-01T09:00:00Z", generation: null, snoozed_until: null, snoozed_at: null, back_early: null };
   const desk = { ...data.desk, items: [...data.desk.items, todo] };

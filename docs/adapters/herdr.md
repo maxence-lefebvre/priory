@@ -139,6 +139,7 @@ Herdr Desk: the count, the next thing, the room and intake banners, the saved vi
   with `--for 1h`, `--until` or `--clear`. Resume runs `priory resume TASK` for a blocked task or an
   uncertain prompt, and Revive runs `priory revive TASK` for a failed one. Done runs
   `priory todo done ID` for a to-do, from its row or the next thing card.
+  Read runs `priory inbox read SEQ` for a report, from its row, so the row leaves the desk.
   Attach asks the Priory bar with `priory.attach`. Answer… opens the ask in the Asks panel: it sets
   `setShared("priory.asks.open", { ask, at: Date.now() })` and shows the side panel on Asks.
   Add, or `N`, opens the [Add form](#the-add-action).
