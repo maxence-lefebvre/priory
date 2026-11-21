@@ -2088,11 +2088,13 @@ pub(crate) fn disk_due(
     tx.commit()
 }
 
-/// The active task whose own key is `key`: owning the key as a resource is not enough.
+/// The active task whose own key is `key`, or the oldest batch part of it, keyed `<key>.<part>`:
+/// owning the key as a resource is not enough.
 pub(crate) fn keyed(tx: &Transaction, key: Option<&String>) -> rusqlite::Result<Option<Task>> {
     tx.query_row(
-        "SELECT id FROM tasks WHERE key = ?1
-         AND state NOT IN ('done', 'failed', 'dropped') ORDER BY id LIMIT 1",
+        "SELECT id FROM tasks WHERE (key = ?1 OR batch IS NOT NULL
+           AND substr(key, 1, length(?1) + 1) = ?1 || '.' AND batch_entry IS NOT NULL)
+         AND state NOT IN ('done', 'failed', 'dropped') ORDER BY key != ?1, id LIMIT 1",
         [key],
         |row| Ok(Task { id: row.get(0)? }),
     )

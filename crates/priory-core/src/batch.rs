@@ -56,6 +56,11 @@ struct Close {
     evidence: Option<String>,
 }
 
+/// The oldest active task that owns an issue, by its key or as a part of it.
+const TAKEN: &str = "SELECT tasks.id, tasks.state FROM owned JOIN tasks ON tasks.id = owned.task
+  WHERE owned.resource = ?1 AND tasks.state NOT IN ('done', 'failed', 'dropped')
+  ORDER BY tasks.id LIMIT 1";
+
 /// Records the batch of the planning task `task`, keyed `key`, that a `priory batch add` request
 /// created.
 pub(crate) fn created(
@@ -138,12 +143,9 @@ pub(crate) fn planned(
     for issue in named {
         let key = issue_key(issue);
         let active = tx
-            .query_row(
-                "SELECT id, state FROM tasks WHERE key = ?1
-                 AND state NOT IN ('done', 'failed', 'dropped')",
-                [&key],
-                |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)),
-            )
+            .query_row(TAKEN, [&key], |row| {
+                Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+            })
             .optional()?;
         if let Some((other, state)) = active {
             return Ok(Err(format!("{key} already has task {other} ({state})")));
@@ -169,17 +171,11 @@ fn checked(plan: &Plan, issues: &[String]) -> Result<(), String> {
             return Err(format!("entry id {} is used twice", entry.id));
         }
     }
-    let mut worked = BTreeSet::new();
+    let mut worked: BTreeMap<String, Vec<Option<i64>>> = BTreeMap::new();
     for entry in &plan.entries {
         let key = issue_key(&entry.issue);
         if !issues.contains(&key) {
             return Err(format!("{key} is not one of the batch's issues"));
-        }
-        if let Some(part) = entry.part {
-            return Err(format!(
-                "entry {} is part {part} of {key}; Priory does not split issues yet",
-                entry.id
-            ));
         }
         for edge in &entry.after {
             match edge.moment.as_str() {
@@ -199,9 +195,17 @@ fn checked(plan: &Plan, issues: &[String]) -> Result<(), String> {
                 ));
             }
         }
-        if !worked.insert(key.clone()) {
+        let parts = worked.entry(key.clone()).or_insert_with(Vec::new);
+        if parts.contains(&entry.part) && entry.part.is_some() {
+            return Err(format!(
+                "issue {key} has part {} twice",
+                entry.part.unwrap_or_default()
+            ));
+        }
+        if !parts.is_empty() && (entry.part.is_none() || parts.contains(&None)) {
             return Err(format!("issue {key} is in two entries; give them parts"));
         }
+        parts.push(entry.part);
     }
     let mut closed = BTreeSet::new();
     for close in &plan.close {
@@ -209,14 +213,14 @@ fn checked(plan: &Plan, issues: &[String]) -> Result<(), String> {
         if !issues.contains(&key) {
             return Err(format!("{key} is not one of the batch's issues"));
         }
-        if worked.contains(&key) {
+        if worked.contains_key(&key) {
             return Err(format!("issue {key} is both an entry and a close"));
         }
         closed.insert(key);
     }
     if let Some(left) = issues
         .iter()
-        .find(|issue| !worked.contains(*issue) && !closed.contains(*issue))
+        .find(|issue| !worked.contains_key(*issue) && !closed.contains(*issue))
     {
         return Err(format!(
             "issue {left} of the batch is in no entry and no close"
@@ -454,12 +458,9 @@ pub(crate) fn start(
     for issue in named {
         let key = issue_key(issue);
         let taken = tx
-            .query_row(
-                "SELECT id, state FROM tasks WHERE key = ?1
-                 AND state NOT IN ('done', 'failed', 'dropped')",
-                [&key],
-                |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)),
-            )
+            .query_row(TAKEN, [&key], |row| {
+                Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+            })
             .optional()?;
         if let Some((other, state)) = taken {
             return Ok(Err(format!(
@@ -475,7 +476,11 @@ pub(crate) fn start(
     let mut tasks = BTreeMap::new();
     let mut ordered = Vec::new();
     for entry in &plan.entries {
-        let key = issue_key(&entry.issue);
+        let issue = issue_key(&entry.issue);
+        let key = match entry.part {
+            Some(part) => format!("{issue}.{part}"),
+            None => issue.clone(),
+        };
         let source = uuid::Uuid::new_v4().to_string();
         // An entry takes the planning task's place and who answers its asks.
         tx.execute(
@@ -496,17 +501,20 @@ pub(crate) fn start(
             params![
                 source,
                 key,
-                json!({ "batch": id, "entry": entry.id, "issue": key, "title": entry.title,
+                json!({ "batch": id, "entry": entry.id, "issue": issue, "part": entry.part, "title": entry.title,
                         "text": entry.brief })
                 .to_string(),
                 created
             ],
         )?;
-        tx.execute(
-            "INSERT INTO owns (task, resource) VALUES (?1, ?2)",
-            params![created, key],
-        )?;
-        if let Some(resource) = crate::subscribe::resource(&key) {
+        // A part owns its issue too, so the issue's events reach the oldest part still active.
+        for owned in BTreeSet::from([&key, &issue]) {
+            tx.execute(
+                "INSERT INTO owns (task, resource) VALUES (?1, ?2)",
+                params![created, owned],
+            )?;
+        }
+        if let Some(resource) = crate::subscribe::resource(&issue) {
             tx.execute(
                 "INSERT OR IGNORE INTO subscriptions (task, resource) VALUES (?1, ?2)",
                 params![created, resource],
@@ -582,6 +590,264 @@ fn number(tx: &Transaction, band: Option<&str>, entries: &[i64]) -> rusqlite::Re
             "UPDATE tasks SET position = ?2 WHERE id = ?1",
             params![id, position as i64 + 1],
         )?;
+    }
+    Ok(())
+}
+
+/// One edit of a plan while its go ask is open.
+pub enum Edit {
+    Drop {
+        entry: String,
+        with_successors: bool,
+    },
+    Move {
+        entry: String,
+        place: Place,
+    },
+    Moment {
+        entry: String,
+        other: String,
+        moment: String,
+    },
+}
+
+/// Where `priory batch edit --move` puts an entry in the plan's start order.
+pub enum Place {
+    Top,
+    Before(String),
+    After(String),
+}
+
+/// The edit and expected plan revision a `POST /api/batches/{id}/edit` body names, or why it
+/// names none.
+pub fn edit_of(body: &Value) -> Result<(i64, Edit), String> {
+    let text = |field: &str| body[field].as_str().map(str::to_owned);
+    let revision = body["revision"]
+        .as_i64()
+        .ok_or("the body needs `revision`, the plan revision")?;
+    if let Some(entry) = text("drop") {
+        let with_successors = body["with_successors"].as_bool().unwrap_or(false);
+        return Ok((
+            revision,
+            Edit::Drop {
+                entry,
+                with_successors,
+            },
+        ));
+    }
+    if let Some(entry) = text("move") {
+        let place = match (body["top"].as_bool(), text("before"), text("after")) {
+            (Some(true), None, None) => Place::Top,
+            (None, Some(other), None) => Place::Before(other),
+            (None, None, Some(other)) => Place::After(other),
+            _ => return Err("`move` takes one of `top: true`, `before` or `after`".to_owned()),
+        };
+        return Ok((revision, Edit::Move { entry, place }));
+    }
+    let moment = &body["moment"];
+    let field = |name: &str| moment[name].as_str().map(str::to_owned);
+    if let (Some(entry), Some(other), Some(moment)) =
+        (field("entry"), field("other"), field("moment"))
+    {
+        return Ok((
+            revision,
+            Edit::Moment {
+                entry,
+                other,
+                moment,
+            },
+        ));
+    }
+    Err("the body needs `drop`, `move`, or `moment` with `entry`, `other` and `moment`".to_owned())
+}
+
+/// Applies one edit to the plan of the batch `which` names, by id or key, as its next revision,
+/// and asks its go again at that revision. Refused, it changes nothing.
+pub fn edit(
+    db: &mut Connection,
+    which: &str,
+    expected: i64,
+    change: &Edit,
+) -> Result<String, String> {
+    let error = |error: rusqlite::Error| error.to_string();
+    let tx = db
+        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+        .map_err(error)?;
+    let found = tx
+        .query_row(
+            "SELECT id, task, plan_revision, plan, issues FROM batches
+             WHERE CAST(id AS TEXT) = ?1 OR key = ?1",
+            [which],
+            |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, i64>(2)?,
+                    row.get::<_, Option<String>>(3)?,
+                    row.get::<_, String>(4)?,
+                ))
+            },
+        )
+        .optional()
+        .map_err(error)?;
+    let Some((id, task, current, plan, issues)) = found else {
+        return Err(format!("there is no batch {which}"));
+    };
+    let state = one(&tx, id, false).map_err(error)?["state"]
+        .as_str()
+        .unwrap_or_default()
+        .to_owned();
+    let ask: Option<i64> = tx
+        .query_row(
+            "SELECT max(id) FROM asks WHERE task = ?1 AND kind = 'step' AND answer IS NULL
+             AND withdrawn IS NULL",
+            [task],
+            |row| row.get(0),
+        )
+        .map_err(error)?;
+    let (Some(ask), Some(plan), "asked") = (ask, plan, state.as_str()) else {
+        return Err(format!(
+            "batch {id} is {state}; only an asked batch takes edits"
+        ));
+    };
+    if current != expected {
+        return Err(format!(
+            "the plan of batch {id} is at revision {current}, not {expected}"
+        ));
+    }
+    let mut plan: Plan = serde_json::from_str(&plan).expect("a stored plan parses");
+    applied(&mut plan, id, change)?;
+    let issues: Vec<String> = serde_json::from_str::<Vec<String>>(&issues)
+        .expect("issues are stored as JSON")
+        .into_iter()
+        .filter(|issue| {
+            let named = |named: &String| issue_key(named) == *issue;
+            plan.entries.iter().any(|entry| named(&entry.issue))
+                || plan.close.iter().any(|close| named(&close.issue))
+        })
+        .collect();
+    checked(&plan, &issues)?;
+    tx.execute(
+        "UPDATE batches SET plan = ?2, issues = ?3, plan_revision = plan_revision + 1
+         WHERE id = ?1",
+        params![
+            id,
+            serde_json::to_string(&plan).expect("a plan serializes"),
+            serde_json::to_string(&issues).expect("issues serialize")
+        ],
+    )
+    .map_err(error)?;
+    let (question, text) = go_ask(&tx, task)
+        .map_err(error)?
+        .expect("an asked batch has a plan");
+    tx.execute(
+        "UPDATE asks SET revision = revision + 1, question = ?2, text = ?3 WHERE id = ?1",
+        params![ask, question, text],
+    )
+    .map_err(error)?;
+    tx.commit().map_err(error)?;
+    Ok(format!("batch {id} is at plan revision {}", current + 1))
+}
+
+/// `names` as a reader lists them: `a`, `a and b`, `a, b and c`.
+fn listed(names: &[&str]) -> String {
+    match names {
+        [] => String::new(),
+        [one] => (*one).to_owned(),
+        [rest @ .., last] => format!("{} and {last}", rest.join(", ")),
+    }
+}
+
+/// Applies `change` to `plan`, of batch `id`, or says why it does not apply.
+fn applied(plan: &mut Plan, id: i64, change: &Edit) -> Result<(), String> {
+    let at = |plan: &Plan, entry: &str| {
+        plan.entries
+            .iter()
+            .position(|named| named.id == entry)
+            .ok_or_else(|| format!("no entry {entry} in batch {id}"))
+    };
+    match change {
+        Edit::Drop {
+            entry,
+            with_successors,
+        } => {
+            at(plan, entry)?;
+            let waits_on = |named: &Entry, on: &BTreeSet<&str>| {
+                named
+                    .after
+                    .iter()
+                    .any(|edge| on.contains(edge.entry.as_str()))
+            };
+            let only = BTreeSet::from([entry.as_str()]);
+            let successors: Vec<&str> = plan
+                .entries
+                .iter()
+                .filter(|named| waits_on(named, &only))
+                .map(|named| named.id.as_str())
+                .collect();
+            if !successors.is_empty() && !with_successors {
+                return Err(format!(
+                    "entry {entry} has successors {}; drop them first or add --with-successors",
+                    listed(&successors)
+                ));
+            }
+            // The entries run in start order, so each successor follows its predecessors.
+            let mut dropped = only;
+            for named in &plan.entries {
+                if waits_on(named, &dropped) {
+                    dropped.insert(named.id.as_str());
+                }
+            }
+            let dropped: BTreeSet<String> = dropped.into_iter().map(str::to_owned).collect();
+            plan.entries.retain(|named| !dropped.contains(&named.id));
+        }
+        Edit::Move { entry, place } => {
+            let from = at(plan, entry)?;
+            let to = match place {
+                Place::Top => 0,
+                Place::Before(other) | Place::After(other) if other == entry => {
+                    return Err(format!("entry {entry} cannot move next to itself"));
+                }
+                Place::Before(other) => at(plan, other)?,
+                Place::After(other) => at(plan, other)? + 1,
+            };
+            let moved = plan.entries.remove(from);
+            plan.entries
+                .insert(if to > from { to - 1 } else { to }, moved);
+            let mut earlier = BTreeSet::new();
+            for named in &plan.entries {
+                if let Some(edge) = named
+                    .after
+                    .iter()
+                    .find(|edge| !earlier.contains(edge.entry.as_str()))
+                {
+                    let other = &edge.entry;
+                    return Err(match named.id == *entry {
+                        true => {
+                            format!("entry {entry} starts after {other}; move it after {other}")
+                        }
+                        false => format!(
+                            "entry {} starts after {entry}; move {entry} before {}",
+                            named.id, named.id
+                        ),
+                    });
+                }
+                earlier.insert(named.id.as_str());
+            }
+        }
+        Edit::Moment {
+            entry,
+            other,
+            moment,
+        } => {
+            let at = at(plan, entry)?;
+            let edge = plan.entries[at]
+                .after
+                .iter_mut()
+                .find(|edge| edge.entry == *other)
+                .ok_or_else(|| format!("entry {entry} does not wait on {other}"))?;
+            edge.moment.clone_from(moment);
+        }
     }
     Ok(())
 }

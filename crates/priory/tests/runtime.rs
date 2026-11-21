@@ -17285,15 +17285,14 @@ fn a_plan_with_a_waiting_moment_is_refused_until_stacked_entries_exist() {
 }
 
 #[test]
-fn a_plan_that_splits_an_issue_is_refused_until_splits_exist() {
+fn a_plan_with_one_part_of_an_issue_twice_is_refused() {
     let mut entries = three_entries();
+    entries.push(entry("e4", "ENG-41", &[]));
     entries[1]["part"] = json!(1);
+    entries[3]["part"] = json!(1);
     assert_eq!(
         plan_refused("batch-part", json!({ "title": "t", "entries": entries })),
-        (
-            "entry e2 is part 1 of linear:ENG-41; Priory does not split issues yet".to_owned(),
-            true
-        )
+        ("issue linear:ENG-41 has part 1 twice".to_owned(), true)
     );
 }
 
@@ -17673,7 +17672,7 @@ fn a_go_on_a_plan_revision_the_ask_did_not_show_is_refused() {
         "batch-stale",
         json!({ "title": "t", "entries": three_entries() }),
     );
-    // shortcut: `priory batch edit` comes with a later slice, so the test revises the plan itself.
+    // `priory batch edit` asks the go again too; moving the plan alone reaches the go's own guard.
     let db = rusqlite::Connection::open(setup.dir.join("priory.db")).unwrap();
     db.execute("UPDATE batches SET plan_revision = 2", [])
         .unwrap();
@@ -17802,4 +17801,199 @@ fn an_issue_to_close_taken_between_plan_and_go_fails_the_start() {
         asks[0][3]
     );
     assert_eq!(setup.rows("tasks").len(), 2);
+}
+
+#[test]
+fn an_edit_drops_an_entry_and_asks_the_go_again_at_the_next_revision() {
+    let (setup, ask) = at_the_go(
+        "batch-edit-drop",
+        json!({ "title": "t", "entries": three_entries() }),
+    );
+
+    let edited = person(
+        &setup,
+        "batch",
+        &["edit", "1", "--expected", "1", "--drop", "e3"],
+    );
+
+    assert_eq!(edited, "batch 1 is at plan revision 2\n");
+    let asks = setup.rows("asks");
+    assert_eq!(asks[0][3], "Start batch 1: 2 tasks from 2 issues?");
+    let stale = setup.priory(&["answer", &ask, "go", "--revision", "1"]);
+    assert!(!stale.status.success());
+    person(&setup, "answer", &[&ask, "go", "--revision", "2"]);
+    let tasks = setup.until("tasks", |rows| rows.len() == 3);
+    let keys: Vec<_> = tasks.iter().skip(1).map(|row| &*row[1]).collect();
+    assert_eq!(keys, ["linear:ENG-40", "linear:ENG-41"]);
+}
+
+/// The error `priory batch edit` prints for `args`.
+fn edit_refused(setup: &Setup, args: &[&str]) -> String {
+    let refused = setup.priory(&[&["batch", "edit"], args].concat());
+    assert!(!refused.status.success(), "{refused:?}");
+    String::from_utf8(refused.stderr).unwrap()
+}
+
+#[test]
+fn an_edit_is_refused_and_changes_nothing_when_it_does_not_hold() {
+    let (setup, ask) = at_the_go(
+        "batch-edit-refused",
+        json!({ "title": "t", "entries": three_entries() }),
+    );
+
+    let refusals = [
+        (
+            &["1", "--expected", "2", "--drop", "e3"][..],
+            "the plan of batch 1 is at revision 1, not 2",
+        ),
+        (
+            &["1", "--expected", "1", "--drop", "e9"],
+            "no entry e9 in batch 1",
+        ),
+        (
+            &["1", "--expected", "1", "--drop", "e1"],
+            "entry e1 has successors e2 and e3; drop them first or add --with-successors",
+        ),
+        (
+            &["1", "--expected", "1", "--move", "e2", "--top"],
+            "entry e2 starts after e1; move it after e1",
+        ),
+        (
+            &["1", "--expected", "1", "--move", "e1", "--after", "e3"],
+            "entry e2 starts after e1; move e1 before e2",
+        ),
+        (
+            &["1", "--expected", "1", "--moment", "e2", "e1", "waiting"],
+            "entry e2 waits on e1 at `waiting`, which Priory does not build yet; use merged",
+        ),
+        (
+            &["1", "--expected", "1", "--moment", "e2", "e3", "merged"],
+            "entry e2 does not wait on e3",
+        ),
+    ];
+    for (args, error) in refusals {
+        assert_eq!(
+            edit_refused(&setup, args),
+            format!("priory batch edit: {error}\n")
+        );
+    }
+    assert_eq!(batch_json(&setup, &["1"])["plan_revision"], 1);
+
+    person(&setup, "answer", &[&ask, "go", "--revision", "1"]);
+    setup.until("tasks", |rows| rows.len() == 4);
+    assert_eq!(
+        edit_refused(&setup, &["1", "--expected", "1", "--drop", "e3"]),
+        "priory batch edit: batch 1 is going; only an asked batch takes edits\n"
+    );
+}
+
+#[test]
+fn an_edit_moves_an_entry_or_drops_it_with_its_successors() {
+    let entries = [
+        entry("e1", "ENG-40", &[]),
+        entry("e2", "ENG-41", &["e1"]),
+        entry("e3", "ENG-43", &[]),
+    ];
+    let (setup, _) = at_the_go(
+        "batch-edit-move",
+        json!({ "title": "t", "entries": entries }),
+    );
+
+    person(
+        &setup,
+        "batch",
+        &["edit", "1", "--expected", "1", "--move", "e3", "--top"],
+    );
+    let order = |setup: &Setup| -> Vec<String> {
+        batch_json(setup, &["1"])["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|entry| entry["entry"].as_str().unwrap().to_owned())
+            .collect()
+    };
+    assert_eq!(order(&setup), ["e3", "e1", "e2"]);
+    let key = batch_json(&setup, &["1"])["key"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    person(
+        &setup,
+        "batch",
+        &[
+            "edit",
+            &key,
+            "--expected",
+            "2",
+            "--drop",
+            "e1",
+            "--with-successors",
+        ],
+    );
+
+    assert_eq!(order(&setup), ["e3"]);
+    assert_eq!(
+        setup.rows("asks")[0][3],
+        "Start batch 1: 1 task from 1 issue?"
+    );
+}
+
+#[test]
+fn a_split_issue_becomes_one_task_per_part_and_its_events_reach_the_part_that_runs_first() {
+    let mut entries = vec![
+        entry("e1", "ENG-40", &[]),
+        entry("e2", "ENG-41", &[]),
+        entry("e3", "ENG-41", &["e2"]),
+    ];
+    entries[1]["part"] = json!(1);
+    entries[2]["part"] = json!(2);
+    let splits = [json!({ "issue": "ENG-41", "why": "CSV and PDF differ" })];
+    let mut setup = batched("batch-split");
+    setup.calls(&[planned(
+        json!({ "title": "t", "entries": entries, "splits": splits }),
+    )]);
+    batch_add(&setup, &["ENG-40", "ENG-41"]);
+    setup.start();
+    let go = setup.until("asks", |rows| rows.len() == 1);
+    setup.memory(0);
+
+    person(&setup, "answer", &[&go[0][0], "go", "--revision", "1"]);
+
+    let tasks = setup.until("tasks", |rows| rows.len() == 4);
+    let keys: Vec<_> = tasks
+        .iter()
+        .skip(1)
+        .map(|row| [&*row[0], &row[1]])
+        .collect();
+    assert_eq!(
+        keys,
+        [
+            ["2", "linear:ENG-40"],
+            ["3", "linear:ENG-41.1"],
+            ["4", "linear:ENG-41.2"]
+        ]
+    );
+    let shown = batch_json(&setup, &["1"]);
+    assert_eq!(shown["entries"][2]["part"], 2);
+    assert_eq!(shown["entries"][2]["key"], "linear:ENG-41.2");
+
+    setup.publish(&linear_event(
+        "linear.comment.created",
+        "ENG-41",
+        json!({ "body": "Keep the PDF small." }),
+    ));
+    let mut again = requested(0);
+    again.data["key"] = json!("linear:ENG-41");
+    setup.publish(&again.subject("linear:ENG-41"));
+
+    let inbox = setup.until("inbox", |rows| rows.len() == 7);
+    let reached: Vec<_> = inbox[5..].iter().map(|row| [&*row[1], &row[3]]).collect();
+    assert_eq!(
+        reached,
+        [
+            ["linear.comment.created", "3"],
+            ["factory.task.requested", "3"]
+        ]
+    );
+    assert_eq!(setup.rows("tasks").len(), 4);
 }
