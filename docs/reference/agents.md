@@ -37,6 +37,10 @@ binary, as in `/proc/meminfo`.
 
 A Codex agent takes `defaultMode` only, and not `plan`: Codex has no per-tool rules.
 
+A `deny` rule matches the command's text, so it misses wrapped forms such as `gh -R owner/repo pr
+merge` or `bash -c '...'`. Priory's tool guard denies irreversible calls whatever their wrapper,
+in every mode (see [guard.md](../daemon/guard.md)).
+
 ## Examples
 
 TOML frontmatter:

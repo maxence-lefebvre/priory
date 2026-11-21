@@ -130,6 +130,46 @@ It shares `factory`, `factory_revision`, `workflow`, `task`, `key`, `generation`
 | -------------- | -------- | ----------------------------------------------------- |
 | `pull_request` | yes      | The pull request whose feedback reopened the task     |
 
+## `factory.tool.denied`
+
+The tool guard denied a run's irreversible call (see [guard.md](daemon/guard.md)). It shares
+`factory`, `factory_revision`, `workflow`, `task`, `key`, `generation`, `step` and `machine` with
+`factory.step.ended`. `step` is the task's step when the run made the call.
+
+```json
+{
+  "specversion": "1.0",
+  "id": "0196f1d5-0000-7000-8000-000000000007",
+  "source": "factory://example/xps13",
+  "type": "factory.tool.denied",
+  "time": "2026-11-21T10:02:11Z",
+  "datacontenttype": "application/json",
+  "data": {
+    "factory": "example",
+    "factory_revision": "999daf0",
+    "workflow": "implement",
+    "task": "0196f1b0-0000-7000-8000-000000000001",
+    "run": "0196f1b0-0000-7000-8000-000000000002",
+    "key": "github:example/app#42",
+    "generation": 1,
+    "step": "implement",
+    "machine": "xps13",
+    "tool": "Bash",
+    "guard": "gh-pr-merge",
+    "call": "gh -R example/app pr merge 57",
+    "reason": "Priory denied `gh -R example/app pr merge 57`: it is irreversible (guard `gh-pr-merge`) and step `implement` is not irreversible, so no person approved a call like this. ..."
+  }
+}
+```
+
+| Field    | Required | Meaning                                                        |
+| -------- | -------- | -------------------------------------------------------------- |
+| `run`    | yes      | The run that made the call                                     |
+| `tool`   | yes      | The tool, such as `Bash` or an `mcp__<server>__<tool>` name    |
+| `guard`  | yes      | The guard the call matched                                     |
+| `call`   | yes      | The command that matched, its wrappers removed, or the MCP tool |
+| `reason` | yes      | What the agent was told                                        |
+
 ## `factory.task.snoozed` and `factory.task.unsnoozed`
 
 A person snoozed a desk item of a task, or cleared its snooze. Both share `factory`,
