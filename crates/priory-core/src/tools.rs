@@ -1496,7 +1496,11 @@ fn judge(tx: &Transaction, wait: i64, factory: &Factory) -> rusqlite::Result<Fir
         fire(tx, wait, task, &reason, Some(newest.seq))?;
         return Ok((true, None));
     }
-    if let Some(asked) = retargeted(task, &stack, &resource, newest)
+    let expected = match stack.first() {
+        Some(bottom) => expected_base(tx, task, &bottom.base)?,
+        None => None,
+    };
+    if let Some(asked) = retargeted(task, &stack, &resource, newest, expected.as_deref())
         && !answered(tx, &asked.name)?
     {
         return Ok((ask_stack(tx, task, asked)?, None));
@@ -1645,16 +1649,19 @@ fn answered(tx: &Transaction, name: &str) -> rusqlite::Result<bool> {
 }
 
 /// The ask when `resource`, the bottom of `stack`, is now based on another branch than its trunk,
-/// as when someone retargets it by hand: Priory cannot tell where the stack should land.
+/// as when someone retargets it by hand: Priory cannot tell where the stack should land. The
+/// `expected` base, which a stacked task's bottom moves to once its parent's pull request merges,
+/// asks no one, even when the retarget arrives before that merge.
 fn retargeted(
     task: i64,
     stack: &[crate::stack::Pull],
     resource: &str,
     seen: &Seen,
+    expected: Option<&str>,
 ) -> Option<StackAsk> {
     let bottom = stack.first().filter(|_| stack.len() > 1)?;
     let base = seen.data["base_branch"].as_str()?;
-    if bottom.resource != resource || base == bottom.base {
+    if bottom.resource != resource || base == bottom.base || Some(base) == expected {
         return None;
     }
     Some(StackAsk {
@@ -1666,6 +1673,19 @@ fn retargeted(
         ),
         onto: bottom.base.clone(),
     })
+}
+
+/// The base of the pull request that the task `task` stacks on from `branch`, its bottom's base:
+/// where GitHub retargets that bottom once the parent's pull request merges.
+fn expected_base(tx: &Transaction, task: i64, branch: &str) -> rusqlite::Result<Option<String>> {
+    tx.query_row(
+        "SELECT parent.base FROM tasks JOIN pull_requests AS parent
+           ON parent.task = tasks.base_task AND parent.branch = ?2
+         WHERE tasks.id = ?1 ORDER BY parent.created DESC LIMIT 1",
+        params![task, branch],
+        |row| row.get(0),
+    )
+    .optional()
 }
 
 /// The open pull requests above position `at` of `stack`, as `#8`.
@@ -1756,26 +1776,18 @@ pub(crate) fn restack_stacked(
     };
     let resource = route::pull_request(repo, number);
     let onto = close["base_branch"].as_str().unwrap_or("its base");
-    let stacked: Vec<(i64, String, String, String, i64)> = tx
+    let stacked: Vec<i64> = tx
         .prepare(
-            "SELECT DISTINCT tasks.id, tasks.state, tasks.workflow, tasks.step, tasks.generation
+            "SELECT DISTINCT tasks.id
              FROM tasks JOIN pull_requests AS parent
                ON parent.task = tasks.base_task AND parent.resource = ?1
              JOIN pull_requests AS own ON own.task = tasks.id AND own.base = ?2
                AND own.state = 'open'
              WHERE tasks.state NOT IN ('failed', 'dropped') ORDER BY tasks.id",
         )?
-        .query_map(params![resource, branch], |row| {
-            Ok((
-                row.get(0)?,
-                row.get(1)?,
-                row.get(2)?,
-                row.get(3)?,
-                row.get(4)?,
-            ))
-        })?
+        .query_map(params![resource, branch], |row| row.get(0))?
         .collect::<rusqlite::Result<_>>()?;
-    for (task, state, workflow, step, generation) in stacked {
+    for task in stacked {
         tx.execute(
             "UPDATE pull_requests SET base = ?3 WHERE task = ?1 AND base = ?2 AND state = 'open'",
             params![task, branch, onto],
@@ -1787,32 +1799,51 @@ pub(crate) fn restack_stacked(
             .map(|pull| format!("#{}", pull.number()))
             .collect();
         let text = format!("#{number} merged; rebase {} onto {onto}", listed(&open));
-        let gate: Option<i64> = tx
-            .query_row(
-                "SELECT id FROM waits WHERE task = ?1 AND daemon AND fired IS NULL
-                 AND withdrawn IS NULL ORDER BY id LIMIT 1",
-                [task],
-                |row| row.get(0),
-            )
-            .optional()?;
-        match (gate, state.as_str()) {
-            (Some(gate), _) => fire(tx, gate, task, &text, Some(seq))?,
-            (None, "running") => {
-                tx.execute(
-                    "INSERT INTO outbox (task, text) VALUES (?1, ?2)",
-                    params![task, text],
-                )?;
-            }
-            (None, "done") => {
-                let bottom = stack.first().map(|pull| pull.resource.clone());
-                let bottom = bottom.unwrap_or_default();
-                let generation = reenter(tx, trace, task, &workflow, &step, generation, &bottom)?;
-                let text = format!("This done task reopened as generation {generation}: {text}");
-                wake_on(tx, task, &text, Some(seq))?;
-                trace::reopened(tx, trace, task, &bottom, Some(&bottom))?;
-            }
-            _ => {}
+        tell_stacked(tx, trace, task, &text, Some(seq))?;
+    }
+    Ok(())
+}
+
+/// Tells the stacked `task` `text`, from the event `seq` when one brought it: the line fires its
+/// gate, reaches it while it runs, or reopens it when its checks already made it done.
+pub(crate) fn tell_stacked(
+    tx: &Transaction,
+    trace: &Trace,
+    task: i64,
+    text: &str,
+    seq: Option<i64>,
+) -> rusqlite::Result<()> {
+    let (state, workflow, step, generation): (String, String, String, i64) = tx.query_row(
+        "SELECT state, workflow, step, generation FROM tasks WHERE id = ?1",
+        [task],
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+    )?;
+    let gate: Option<i64> = tx
+        .query_row(
+            "SELECT id FROM waits WHERE task = ?1 AND daemon AND fired IS NULL
+             AND withdrawn IS NULL ORDER BY id LIMIT 1",
+            [task],
+            |row| row.get(0),
+        )
+        .optional()?;
+    match (gate, state.as_str()) {
+        (Some(gate), _) => fire(tx, gate, task, text, seq)?,
+        (None, "running") => {
+            tx.execute(
+                "INSERT INTO outbox (task, text) VALUES (?1, ?2)",
+                params![task, text],
+            )?;
         }
+        (None, "done") => {
+            let stack = crate::stack::of(tx, task)?;
+            let bottom = stack.first().map(|pull| pull.resource.clone());
+            let bottom = bottom.unwrap_or_default();
+            let generation = reenter(tx, trace, task, &workflow, &step, generation, &bottom)?;
+            let text = format!("This done task reopened as generation {generation}: {text}");
+            wake_on(tx, task, &text, seq)?;
+            trace::reopened(tx, trace, task, &bottom, Some(&bottom))?;
+        }
+        _ => {}
     }
     Ok(())
 }

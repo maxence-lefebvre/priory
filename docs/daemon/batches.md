@@ -6,7 +6,7 @@ one go, and the daemon creates one task per entry. Each entry starts once the en
 merged, or, at a `waiting` edge, once its stacking parent waits on its open pull request.
 
 This page describes `merged` and `waiting` moments, stacked entries, edits of a plan, split issues,
-the desk line, the HTTP API and the web view. The rest of stacked entries comes later; see
+the desk line, the HTTP API and the web view. The open questions about batches are in
 [design/batches.md](../design/batches.md).
 
 ## A batch's life
@@ -187,14 +187,25 @@ Anything that meets `merged` meets `waiting` too. An entry has at most one `wait
 
 A `waiting` edge makes a stack across two tasks. The go records the parent as the entry's base task.
 
+- When the `waiting` condition is met, the daemon records the parent's open pull request, branch
+  and head on the entry.
 - The entry's worktree starts from the parent's branch, such as `priory/31`, instead of the default
-  branch. If that branch is gone, the start is refused.
+  branch. If that branch is gone, the start is refused. If it moved since the `waiting` moment, the
+  start is refused too: the entry is held, with the reason `held: task 31 moved priory/31 from
+  <old> to <new> before it started, until a person answers`, and asks `Task 31 moved priory/31 from
+  <old> to <new> before task 32 started on it. Release the task to start from <new>, or drop it?`.
+  No one else wakes. `release`, or `priory release`, starts the entry from where the branch is now.
 - The entry's `open-pr` bases its bottom pull request on the parent's branch, while the parent has a
   pull request open from it. Its own stack still fits its own workflow's `max_prs`.
+- When the parent pushes its branch again, as after feedback, a started entry gets the line `task 31
+  pushed priory/31 to <sha>; rebase onto it`, while the parent's pull request from that branch is
+  open. The daemon reads the push from the remote-tracking branch in Priory's clone, so it hears the
+  parent's own pushes, and delivers the line as it delivers the merge line below.
 - When the parent's pull request merges, the entry gets the line a task's own stack gets: `#7 merged;
   rebase #8 onto main`. It fires the entry's gate, reaches the entry while it runs, or reopens it
   when its checks already made it `done`. The daemon records the merged one's base as the base of
-  the entry's bottom pull request, so the retarget GitHub makes asks no person.
+  the entry's bottom pull request, so the retarget GitHub makes asks no person. A retarget onto
+  that base that arrives before the parent's close asks no person either.
 
 Once the parent's pull request merged, a stacked entry that has not started yet starts from the
 default branch, and its pull request is based on it.
