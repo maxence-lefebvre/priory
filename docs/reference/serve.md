@@ -36,6 +36,10 @@ does, with every count in `older` at 0. Their rows match the CLI's JSON only wit
 | `POST /api/tasks/{id}/revive` | `priory revive ID [--step STEP]` | as above |
 | `POST /api/tasks/{id}/cancel` | `priory cancel ID [--expected N]` | as above |
 | `POST /api/tasks/{id}/say` | `priory say ID TEXT` | as above |
+| `POST /api/reports/comment` | `priory report comment ROW --expected N TEXT` | `{"ok": "<what the CLI prints>"}` |
+| `POST /api/reports/reply` | `priory report reply COMMENT TEXT` | as above |
+| `POST /api/reports/resolve` | `priory report resolve COMMENT` | as above |
+| `POST /api/reports/reopen` | `priory report reopen COMMENT` | as above |
 | `POST /hooks/github` | | `202` for a signed GitHub delivery, with `[webhooks.github]`. See [below](#post-hooksgithub) |
 | any other path | | the web view, with `web = true`: see [Web view files](#web-view-files) |
 
@@ -96,6 +100,9 @@ application/json` and a JSON body of at most 16 KiB with exactly the fields belo
 | `POST /api/tasks/{id}/revive` | optionally `step`, a string: the step to restart at, as `--step` |
 | `POST /api/tasks/{id}/cancel` | optionally `revision`, an integer: the state's revision the client showed, as `--expected`. A newer state gets `409` |
 | `POST /api/tasks/{id}/say` | `text`, a string: what the task's agent hears |
+| `POST /api/reports/comment` | `row`, the row's id, `text`, a string, and `revision`, the report's revision the client showed. A comment verb takes `text` only with `comment` and `reply`, and `revision` only with `comment` |
+| `POST /api/reports/reply` | `comment`, an integer, and `text`, a string |
+| `POST /api/reports/resolve`, `POST /api/reports/reopen` | `comment`, an integer |
 
 In `/api/asks/{id}`, `{id}` is the ask's `id` as `/api/asks` lists it: its number, or an outside
 ask's name, and `revision` is the ask's `revision` the client showed. In `/api/tasks/{id}`, `{id}` is
@@ -113,7 +120,7 @@ curl -X POST http://127.0.0.1:7340/api/asks/42/answer -H "Authorization: Bearer 
 | `409` `{"error", "ask"}` | The ask's revision is no longer the one sent, or it was answered, dismissed or withdrawn. `ask` is its current state |
 | `409` `{"error"}` | A cancel's `revision` is no longer the state's |
 | `409` `{"error", "key", "id"}` | For `/api/request`: the same text already went to `key`, so nothing was added. `id` is the active task that holds `key`, or `null` |
-| `404`, `422` `{"error"}` | The ask or task is gone, or the daemon refused for another reason, such as a resume of a task that is not blocked or a say to a task with no run yet. `error` is the CLI's sentence |
+| `404`, `422` `{"error"}` | The ask or task is gone, or the daemon refused for another reason, such as a resume of a task that is not blocked, a say to a task with no run yet, or a comment on a stale report revision. `error` is the CLI's sentence |
 | `503` `{"error"}` | No daemon listens on the socket, so nothing was sent. Reads keep working |
 | `504` `{"error"}` | The daemon took the line but did not reply within 10 seconds. It may have applied it: read the state before you retry |
 
@@ -359,6 +366,6 @@ The report a workflow wrote, in the shape of `docs/schemas/report.json`, with tw
 | Field | Type | Meaning |
 | ----- | ---- | ------- |
 | `task` | integer | The task that wrote it |
-| `revision` | integer | Raised by each write and each pick; `priory report pick --expected` takes it |
+| `revision` | integer | Raised by each write, pick and comment verb; `priory report pick --expected` and `priory report comment --expected` take it |
 | `date`, `since`, `greeting` | string | As written |
-| `sections` | array | In the order written |
+| `sections` | array | In the order written. Each row's `comments` holds its threads, as [reports.md](../daemon/reports.md#comment-on-a-row) shows |
