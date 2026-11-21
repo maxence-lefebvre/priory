@@ -23,28 +23,27 @@ function when(text, now) {
  * @typedef {{ id: string, title: string, count: number, rows: Row[] }} Section
  */
 
-/** An open pick's options; a chosen one folds to its choice and what the workflow did with it. @param {any} pick @returns {Pick} */
+/**
+ * An open pick's options; a chosen one folds to its choice and what the workflow did with it, and
+ * keeps its options until the workflow applies it, since Change reopens them.
+ * @param {any} pick @returns {Pick}
+ */
 function choice(pick) {
+  const options = pick.options.map((/** @type {string} */ label, /** @type {number} */ index) => ({
+    label,
+    key: index < 9 ? String(index + 1) : "",
+    recommended: label === pick.recommended,
+  }));
   if (pick.chosen != null) {
     return {
       id: pick.id,
       state: pick.applied == null ? "agreed" : "applied",
-      options: [],
+      options: pick.applied == null ? options : [],
       chosen: pick.chosen,
       note: pick.applied ?? "Waiting for the workflow to apply it.",
     };
   }
-  return {
-    id: pick.id,
-    state: "open",
-    options: pick.options.map((/** @type {string} */ label, /** @type {number} */ index) => ({
-      label,
-      key: index < 9 ? String(index + 1) : "",
-      recommended: label === pick.recommended,
-    })),
-    note: pick.recommended == null ? null : `Recommends ${pick.recommended}`,
-    chosen: null,
-  };
+  return { id: pick.id, state: "open", options, note: pick.recommended == null ? null : `Recommends ${pick.recommended}`, chosen: null };
 }
 
 /**
@@ -79,11 +78,12 @@ const comment = (entry, now) => ({ id: entry.id, author: entry.author, when: whe
 
 /**
  * @param {{ revision: number, report: any }} read
- * @param {{ now: number, view?: string, links?: { pattern: string, url: string }[] }} options `view` is "all",
- *   the default, or "picks"; `links` as `priory links` lists them
+ * @param {{ now: number, view?: string, links?: { pattern: string, url: string }[], query?: string }} options `view` is "all",
+ *   the default, or "picks"; `links` as `priory links` lists them; `query` keeps the rows that hold it
  */
-export function dossier(read, { now, view = "all", links = [] }) {
+export function dossier(read, { now, view = "all", links = [], query = "" }) {
   const { report } = read;
+  const needle = query.trim().toLowerCase();
   const picks = report.sections.flatMap((/** @type {any} */ section) => section.rows).map((/** @type {any} */ row) => row.pick).filter(Boolean);
   const agreed = picks.filter((/** @type {any} */ pick) => pick.chosen != null).length;
   const open = picks.length - agreed;
@@ -96,8 +96,10 @@ export function dossier(read, { now, view = "all", links = [] }) {
     title: section.title,
     count: section.count ?? section.rows.length,
     rows: section.rows.map((/** @type {any} */ candidate, /** @type {number} */ index) => row(section, candidate, index, now, links))
-      .filter((/** @type {Row} */ candidate) => view !== "picks" || candidate.pick?.state === "open"),
+      .filter((/** @type {Row} */ candidate) => view !== "picks" || candidate.pick?.state === "open")
+      .filter((/** @type {Row} */ candidate) => !needle || holds(candidate, needle)),
   }));
+  const shown = sections.filter((section) => (view !== "picks" && !needle) || section.rows.length);
   return {
     task: report.task,
     revision: report.revision,
@@ -107,9 +109,15 @@ export function dossier(read, { now, view = "all", links = [] }) {
     since: `Since ${from}.${left}`,
     progress: { agreed, total: picks.length, label: picks.length ? `${agreed} of ${picks.length} agreed` : "No picks" },
     views: [{ id: "all", label: "All sections", count: null }, { id: "picks", label: "Picks", count: open }],
-    sections: sections.filter((section) => view !== "picks" || section.rows.length),
+    sections: shown,
+    // How many rows a search found; null without one.
+    found: needle ? shown.reduce((sum, section) => sum + section.rows.length, 0) : null,
   };
 }
+
+/** Whether a row's key, text, meta, owner or a comment in its threads holds `needle`. @param {Row} row @param {string} needle */
+const holds = (row, needle) => [row.key, row.text, row.meta, row.owner, ...row.threads.flatMap((thread) => [thread, ...thread.replies].map((entry) => entry.text))]
+  .some((text) => text?.toLowerCase().includes(needle));
 
 /**
  * The next row with a pick to agree after row `after`, wrapping to the first; null when none is left.
@@ -124,7 +132,8 @@ export function nextPick(view, after) {
 
 /**
  * Why a pick did not go, given what was sent, the report as Priory shows it now, and the CLI's error.
- * @param {{ pick: string, option: string, revision: number }} sent
+ * `from` is the choice a Change replaces.
+ * @param {{ pick: string, option: string, revision: number, from?: string | null }} sent
  * @param {{ revision: number, report: any } | null} fresh
  * @param {string} error
  */
@@ -133,7 +142,18 @@ export function refusal(sent, fresh, error) {
   const pick = fresh.report.sections.flatMap((/** @type {any} */ section) => section.rows)
     .map((/** @type {any} */ row) => row.pick).find((/** @type {any} */ candidate) => candidate?.id === sent.pick);
   if (!pick) return "The report no longer holds this pick.";
-  if (pick.chosen != null) return `Already picked ${pick.chosen}.`;
+  if (pick.chosen != null && (pick.chosen !== sent.from || pick.applied != null)) return `Already picked ${pick.chosen}.`;
   if (fresh.report.revision !== sent.revision) return `The report changed to revision ${fresh.report.revision}. Read it and pick again.`;
   return `Not sent: ${error}.`;
+}
+
+/**
+ * The tasks of the reports written just before and just after task `task`'s, from `priory report
+ * list --json`'s reports, newest first; null at either end or when the list lacks the task.
+ * @param {{ task: number }[]} reports @param {number} task
+ */
+export function around(reports, task) {
+  const at = reports.findIndex((report) => report.task === task);
+  if (at < 0) return { older: null, newer: null };
+  return { older: reports[at + 1]?.task ?? null, newer: reports[at - 1]?.task ?? null };
 }

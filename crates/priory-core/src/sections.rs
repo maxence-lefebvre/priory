@@ -139,7 +139,8 @@ fn picks(report: &mut Report) -> impl Iterator<Item = &mut Pick> {
         .filter_map(|row| row.pick.as_mut())
 }
 
-/// Stores `report` as `task`'s, keeping the choices already made on its picks.
+/// Stores `report` as `task`'s, keeping the choices already made on its picks and what the workflow
+/// did with them when the write says nothing.
 pub fn put(db: &mut Connection, task: i64, mut report: Report) -> Result<String, String> {
     let at = |error: rusqlite::Error| error.to_string();
     let tx = db
@@ -162,10 +163,18 @@ pub fn put(db: &mut Connection, task: i64, mut report: Report) -> Result<String,
         .map_err(at)?;
     let mut chosen = HashMap::new();
     if let Some(mut old) = stored.and_then(|text| serde_json::from_str::<Report>(&text).ok()) {
-        chosen.extend(picks(&mut old).map(|pick| (pick.id.clone(), pick.chosen.take())));
+        chosen.extend(
+            picks(&mut old)
+                .map(|pick| (pick.id.clone(), (pick.chosen.take(), pick.applied.take()))),
+        );
     }
     for pick in picks(&mut report) {
-        pick.chosen = chosen.remove(&pick.id).flatten();
+        let (kept, applied) = chosen.remove(&pick.id).unwrap_or_default();
+        pick.chosen = kept;
+        // An applied choice stands, so a write that leaves `applied` empty keeps it.
+        if pick.chosen.is_some() && pick.applied.is_none() {
+            pick.applied = applied;
+        }
         if let Some(kept) = pick
             .chosen
             .as_ref()
@@ -235,6 +244,18 @@ pub fn show(db: &Connection, task: Option<i64>) -> rusqlite::Result<Option<Value
             threads(db, report)
         })
         .transpose()
+}
+
+/// Every task's report, newest first in the order `show` picks the latest: its task, date,
+/// greeting and when it was written.
+pub fn list(db: &Connection) -> rusqlite::Result<Value> {
+    crate::listing::rows(
+        db,
+        "SELECT task, json_extract(report, '$.date') AS date,
+           json_extract(report, '$.greeting') AS greeting, put
+         FROM reports ORDER BY put DESC, task DESC",
+        [],
+    )
 }
 
 /// `report` with each row's `comments` filled with its threads, oldest first.
@@ -310,9 +331,9 @@ pub struct Choice {
     pub expected: i64,
 }
 
-/// Records a person's choice on the report that holds its pick, which one report at most holds. The
-/// first choice stands. An option with a request publishes it and fills `applied`; any other tells
-/// the report's agent, as `priory say` does.
+/// Records a person's choice on the report that holds its pick, which one report at most holds. A
+/// choice changes until the workflow applies it. An option with a request publishes it and fills
+/// `applied`; any other tells the report's agent, as `priory say` does.
 pub(crate) fn pick(
     db: &mut Connection,
     choice: &Choice,
@@ -351,7 +372,12 @@ pub(crate) fn pick(
     let pick = picks(&mut report)
         .find(|pick| pick.id == choice.pick)
         .expect("the query found the pick");
-    if let Some(chosen) = &pick.chosen {
+    // A choice stands once the workflow applied it; before that a person can change it.
+    if let Some(chosen) = pick
+        .chosen
+        .as_ref()
+        .filter(|chosen| pick.applied.is_some() || **chosen == choice.option)
+    {
         return Ok(Err(format!("pick {} is already {chosen}", pick.id)));
     }
     if !pick.options.contains(&choice.option) {
@@ -376,10 +402,16 @@ pub(crate) fn pick(
             pick.applied = Some(format!("requested {}", request.summary()));
         }
         None => {
-            let text = format!(
-                "The person picked {} on {} in your report: apply it, then write the report again with the pick's applied filled.",
-                choice.option, pick.id
-            );
+            let text = match &pick.chosen {
+                Some(before) => format!(
+                    "The person changed their pick on {} in your report from {before} to {}: apply {} instead, then write the report again with the pick's applied filled.",
+                    pick.id, choice.option, choice.option
+                ),
+                None => format!(
+                    "The person picked {} on {} in your report: apply it, then write the report again with the pick's applied filled.",
+                    choice.option, pick.id
+                ),
+            };
             if let Err(error) = crate::tools::say(&tx, task, &text, &state, &factory.workflows)? {
                 return Ok(Err(format!("pick {}: {error}", pick.id)));
             }

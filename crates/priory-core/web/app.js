@@ -4,7 +4,7 @@ import { ARM_MS, ASK_VIEWS, answeredBy, askGroups, routedMark, routedNote, shown
 import { SPLITS, attentionView, costTiles, dayBars, money, splitTable } from "./costs.js";
 import { addBody, addOutcome } from "./add.js";
 import { linked } from "./links.js";
-import { dossier, refusal } from "./reports.js";
+import { around, dossier, nextPick, refusal } from "./reports.js";
 import { prStack } from "./stack.js";
 import { KINDS, edgeStyle, lockBadge, nodeShape, timeline, ungatedPairs } from "./flows.js";
 import { emptyDetail, eventWords, handled, neverOwned, routeAction, unroutedNote } from "./inbox.js";
@@ -35,6 +35,7 @@ const ICONS = {
   "hard-drive": '<path d="M22 12H2"/><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/><path d="M6 16h.01"/><path d="M10 16h.01"/>',
   "chevron-right": '<path d="m9 18 6-6-6-6"/>',
   "chevron-left": '<path d="m15 18-6-6 6-6"/>',
+  search: '<path d="m21 21-4.34-4.34"/><circle cx="11" cy="11" r="8"/>',
   clock: '<circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/>',
   "chevron-up": '<path d="m18 15-6-6-6 6"/>',
   "arrow-up": '<path d="m5 12 7-7 7 7"/><path d="M12 19V5"/>',
@@ -166,6 +167,12 @@ const state = {
   // comment field open on a row, with its text, and whether a comment verb is in flight.
   reportPending: null,
   reportNotices: new Map(),
+  // The task whose report shows, null for the one written last; the search text, null while it is
+  // closed; the row whose agreed pick Change reopened; the row Next pick reached last.
+  reportShown: null,
+  reportQuery: null,
+  reportChanging: null,
+  reportAt: null,
   // A pick's or a comment's outcome once its row has left the report.
   reportFlash: null,
   compose: null,
@@ -224,8 +231,10 @@ async function refresh() {
     // No task has written a report until the first `priory report put`.
     // Taken before the read, so an event between that read and the visit still shows next time.
     const read = new Date().toISOString().replace(/\.\d+Z$/, "Z");
-    const latest = api("/api/reports/latest").catch((error) => (error.status === 404 ? null : Promise.reject(error)));
-    const [desk, asksList, queue, tasksList, runsList, report] = await Promise.all([...["/api/desk", full("asks"), "/api/queue", full("tasks"), full("runs")].map(api), latest]);
+    const shown = api(state.reportShown == null ? "/api/reports/latest" : `/api/reports/${state.reportShown}`)
+      .catch((error) => (error.status === 404 ? null : Promise.reject(error)));
+    const listed = api("/api/reports").then((read) => read.reports);
+    const [desk, asksList, queue, tasksList, runsList, report, reports] = await Promise.all([...["/api/desk", full("asks"), "/api/queue", full("tasks"), full("runs")].map(api), shown, listed]);
     // A later call, such as the one that loads older rows, supersedes this one.
     if (call !== state.refreshes) return true;
     const [asks, tasks, runs] = [asksList.asks, tasksList.tasks, runsList.runs];
@@ -234,7 +243,7 @@ async function refresh() {
     state.since.events = mergeSince(state.since.events, desk.since_you_looked);
     // The listings are read one after another; the oldest revision makes the next wait catch what they missed.
     state.revision = Math.min(desk.revision, asksList.revision, queue.revision, tasksList.revision, runsList.revision, report?.revision ?? Infinity);
-    const snapshot = JSON.stringify([desk, asks, queue, tasks, runs, older, report]);
+    const snapshot = JSON.stringify([desk, asks, queue, tasks, runs, older, report, reports]);
     state.updated = Date.now();
     state.failed = null;
     state.cached = false;
@@ -244,7 +253,7 @@ async function refresh() {
     if (state.data && snapshot === state.snapshot && !failed && Date.now() - state.rendered < 60000) return keep(), true;
     const before = state.data ? new Set(state.data.asks.filter((ask) => ask.state === "open").map((ask) => ask.id)) : null;
     // The Costs panel reads its own reports; a refresh keeps the last ones.
-    state.data = { views, links, desk, asks, bands: asksList.bands, queue, tasks, runs, older, report, spend: state.data?.spend ?? null, flows: state.data?.flows ?? null };
+    state.data = { views, links, desk, asks, bands: asksList.bands, queue, tasks, runs, older, report, reports, spend: state.data?.spend ?? null, flows: state.data?.flows ?? null };
     acceptReport();
     state.task = null;
     if (state.batch) state.batch.stale = true;
@@ -1758,25 +1767,32 @@ function reportsPage(compact) {
   const read = state.data.report;
   const head = compact ? html`<div class="top"><h1>Reports</h1><span class="sp"></span>${connection()}</div>` : html`<div class="lhead"><h1>Reports</h1></div>`;
   if (!read) return html`${head}<div class="panel" role="region" aria-label="Reports"><p class="empty">No report yet. A workflow writes one with the <code>report</code> tool or <code>priory report put</code>.</p></div>`;
-  const model = dossier(read, { now: Date.now() });
+  const model = dossier(read, { now: Date.now(), query: state.reportQuery ?? "" });
   const { agreed, total, label } = model.progress;
+  const { older, newer } = around(state.data.reports ?? [], model.task);
+  const arrow = (task, glyph, name) => html`<button class="iconbtn" data-action="report-go" data-task="${task ?? ""}" aria-label="${name}" aria-disabled="${task == null ? "true" : "false"}">${icon(glyph, "s20")}</button>`;
+  const bar = html`<div class="rbar">${arrow(older, "chevron-left", "Older report")}<span class="rdate">${model.date}</span>${arrow(newer, "chevron-right", "Newer report")}<span class="sp"></span>
+    ${model.views[1].count ? html`<button class="btn secondary" data-action="report-next">Next pick</button>` : ""}
+    <button class="iconbtn" data-action="report-search" aria-label="Search this report" aria-pressed="${state.reportQuery == null ? "false" : "true"}">${icon("search", "s20")}</button></div>
+    ${state.reportQuery == null ? "" : html`<div class="rsearch"><label class="sr" for="report-query">Search this report</label><input id="report-query" type="search" placeholder="Search this report" value="${state.reportQuery}" autocomplete="off">${model.found == null ? "" : html`<span class="num" role="status">${model.found} found</span>`}</div>`}`;
   const jump = html`<nav class="jump" aria-label="Sections">${model.sections.map((section, i) => html`<a href="#report-${i}" aria-current="${i === 0 ? "true" : "false"}">${section.title}<span class="num">${section.count}</span></a>`)}</nav>`;
   const sections = model.sections.map((section, i) => html`<section class="sect" id="report-${i}" aria-labelledby="report-${i}-title">
     <h2 class="sh" id="report-${i}-title">${section.title}<span class="meta num">${section.count}</span></h2>
     <ol class="rrows">${section.rows.map(reportRow)}</ol></section>`);
   const pending = state.reportPending;
   const sending = pending ? html`<div class="sending" role="status"><span>Picking <b>"${pending.option}"</b></span>${pending.sending ? "" : html`<button class="btn secondary" data-action="pick-undo">Undo</button>`}</div>` : "";
-  return html`${head}<div class="panel report" role="region" aria-label="Reports"><div class="scroll" data-sections>
+  const found = model.found === 0 ? html`<p class="empty">Nothing in this report holds “${state.reportQuery.trim()}”.</p>` : "";
+  return html`${head}<div class="panel report" role="region" aria-label="Reports">${bar}<div class="scroll" data-sections>
     <header class="rhead"><p class="greet">${model.greeting}</p><p class="meta">${model.date}, <a href="/tasks/${model.task}">task ${model.task}</a>. ${model.since}</p>
       ${state.reportFlash ? html`<p class="warnline" role="status">${state.reportFlash}</p>` : ""}
       ${total ? html`<p class="prog"><progress max="${total}" value="${agreed}" aria-label="Picks agreed"></progress><span class="num">${label}</span></p>` : ""}</header>
-    <div class="rbody">${jump}<div>${sections}</div></div></div>${sending}</div>`;
+    <div class="rbody">${jump}<div>${found}${sections}</div></div></div>${sending}</div>`;
 }
 
 function reportRow(row) {
   const facts = [row.meta, row.owner].filter(Boolean);
   const notice = state.reportNotices.get(row.id);
-  return html`<li class="rrow">
+  return html`<li class="rrow" id="${focusId("row", row.id)}">
     <p class="rl1">${row.tile ? tile(row.tile, "sm") : ""}${row.key ? html`<span class="mono">${autolinked(row.key)}</span>` : ""}<span class="rtext">${autolinked(row.text)}</span></p>
     ${facts.length || row.time ? html`<p class="rl2">${facts.map((fact) => html`<span>${fact}</span>`)}${row.time ? html`<span>${row.time}</span>` : ""}</p>` : ""}
     ${row.pick ? reportPick(row) : ""}
@@ -1787,16 +1803,21 @@ function reportRow(row) {
 // Each button's id names its pick, thread or row, so focus finds it again after a redraw.
 function reportPick(row) {
   const { pick } = row;
-  if (pick.state !== "open") {
-    return html`<p class="note rpicked">${icon("check", "s15")}<span><b>Picked ${pick.chosen}.</b> ${pick.note}</span></p>`;
-  }
   const pending = state.reportPending;
+  const reopened = pick.state === "agreed" && state.reportChanging === row.id;
+  if (pick.state !== "open" && !reopened) {
+    const change = pick.state === "agreed" && !pending && !state.failed
+      ? html`<button id="${focusId("change", row.id)}" class="ghost" data-action="pick-change" data-row="${row.id}">Change</button>` : "";
+    return html`<p class="note rpicked">${icon("check", "s15")}<span><b>Picked ${pick.chosen}.</b> ${pick.note}</span>${change}</p>`;
+  }
   const mine = pending?.pick === pick.id ? pending : null;
   const off = Boolean(state.failed || (pending && !mine));
   return html`<div class="rpick" role="group" aria-label="Pick for ${row.key || row.text}">${pick.options.map((option) => {
-    const chosen = mine?.option === option.label;
-    return html`<button id="${focusId("pick", pick.id, option.label)}" class="${chosen ? "chosen" : ""}" data-action="pick" data-row="${row.id}" data-option="${option.label}" aria-pressed="${chosen ? "true" : "false"}" aria-disabled="${off || mine ? "true" : "false"}">${chosen || (!mine && option.recommended) ? icon("check", "s15") : ""}${option.label}</button>`;
-  })}</div>${state.failed ? html`<p class="note">${icon("unplug", "s15")}<span>Reconnect to pick.</span></p>` : pick.note ? html`<p class="note">${pick.note}</p>` : ""}`;
+    const chosen = mine ? mine.option === option.label : option.label === pick.chosen;
+    return html`<button id="${focusId("pick", pick.id, option.label)}" class="${chosen ? "chosen" : ""}" data-action="pick" data-row="${row.id}" data-option="${option.label}" aria-pressed="${chosen ? "true" : "false"}" aria-disabled="${off || mine ? "true" : "false"}">${chosen || (!mine && !reopened && option.recommended) ? icon("check", "s15") : ""}${option.label}</button>`;
+  })}</div>${state.failed ? html`<p class="note">${icon("unplug", "s15")}<span>Reconnect to pick.</span></p>`
+    : reopened ? html`<p class="note"><span>Picked ${pick.chosen}. Pick another option to change it.</span>${mine ? "" : html`<button class="ghost" data-action="pick-keep">Keep ${pick.chosen}</button>`}</p>`
+    : pick.note ? html`<p class="note">${pick.note}</p>` : ""}`;
 }
 
 function reportThread(row, thread) {
@@ -1809,11 +1830,15 @@ function reportThread(row, thread) {
     <p class="racts"><button id="reply-${thread.id}" class="ghost" data-action="reply" data-row="${row.id}" data-comment="${thread.id}" aria-disabled="${off}">Reply</button><button id="resolve-${thread.id}" class="ghost" data-action="resolve" data-row="${row.id}" data-comment="${thread.id}" aria-disabled="${off}">Resolve</button></p></div>`;
 }
 
-// A row without its own id takes no comments.
+const onNewest = () => state.reportShown == null && state.data.report?.report.task === state.data.reports?.[0]?.task;
+
+// A row without its own id takes no comments. Priory gives a row id's new thread to the newest
+// report holding it, so an older report takes replies only.
 function reportCompose(row) {
   if (!row.target) return "";
   const compose = state.compose?.row === row.id && state.compose.task === state.data.report.report.task ? state.compose : null;
   const off = state.failed ? "true" : "false";
+  if (!compose && !onNewest()) return "";
   if (!compose) return html`<p class="racts"><button id="${focusId("compose", row.id)}" class="ghost" data-action="compose" data-row="${row.id}" aria-disabled="${off}">${icon("message-text", "s15")}Comment</button></p>`;
   const verb = compose.replyTo == null ? "Comment" : "Reply";
   return html`<form class="writeform rcompose" data-action="remark">${compose.replyTo == null ? "" : html`<p class="note">Replying in thread ${compose.replyTo}</p>`}
@@ -1836,10 +1861,11 @@ const reportRowOf = (id) => (state.data.report ? reportRows(dossier(state.data.r
 // Nothing leaves the page until the Undo time passes, as an answer waits: a pick wakes the report's agent.
 function pick(target) {
   const row = reportRowOf(target.dataset.row);
-  if (!row || row.pick?.state !== "open" || state.reportPending || state.failed) return;
+  const reopened = row?.pick?.state === "agreed" && state.reportChanging === row.id;
+  if (!row?.pick || (row.pick.state !== "open" && !reopened) || target.dataset.option === row.pick.chosen || state.reportPending || state.failed) return;
   state.reportNotices.delete(row.id);
   state.reportFlash = null;
-  const pending = { row: row.id, task: state.data.report.report.task, pick: row.pick.id, option: target.dataset.option, revision: state.data.report.report.revision, sending: false };
+  const pending = { row: row.id, task: state.data.report.report.task, pick: row.pick.id, option: target.dataset.option, from: row.pick.chosen, revision: state.data.report.report.revision, sending: false };
   pending.timer = setTimeout(() => sendPick(pending), UNDO_MS);
   state.reportPending = pending;
   render();
@@ -1865,7 +1891,7 @@ function acceptReport() {
   const pending = state.reportPending;
   if (!pending || pending.sending) return;
   const row = state.data.report?.report.task === pending.task ? reportRowOf(pending.row) : null;
-  if (row?.pick?.id === pending.pick && row.pick.state === "open") return;
+  if (row?.pick?.id === pending.pick && row.pick.state !== "applied" && row.pick.chosen === pending.from) return;
   clearTimeout(pending.timer);
   state.reportPending = null;
   noteRow(pending.row, `${pending.option} was not sent: the report changed before it went.`, pending.task);
@@ -1877,10 +1903,11 @@ async function sendPick(pending) {
   const { status, body } = await post("/api/reports/pick", { pick: pending.pick, option: pending.option, revision: pending.revision })
     .catch(() => ({ status: 0, body: { error: "the connection dropped" } }));
   state.reportPending = null;
+  state.reportChanging = null;
   if (status === 401) return signOut("The daemon refused this token. Paste the current one.");
   await refresh();
   if (status === 200) return render();
-  const fresh = status === 409 ? state.data.report : null;
+  const fresh = status === 409 && state.data.report?.report.task === pending.task ? state.data.report : null;
   noteRow(pending.row, `${pending.option}: ${writeRefusal(status, body, () => refusal(pending, fresh, body.error))}`, pending.task);
   render();
 }
@@ -1924,7 +1951,7 @@ async function submitRemark() {
   const sent = state.compose;
   const row = sent?.task === state.data.report?.report.task && reportRowOf(sent.row);
   const text = sent?.text.trim();
-  if (!row?.target || !text || state.remarking) return;
+  if (!row?.target || !text || state.remarking || (sent.replyTo == null && !onNewest())) return;
   // Text typed while it was in flight stays as the next draft.
   const done = () => { if (state.compose === sent && sent.text.trim() === text) state.compose = null; };
   await remark(row.id, ...(sent.replyTo == null
@@ -1932,11 +1959,41 @@ async function submitRemark() {
     : ["/api/reports/reply", { comment: sent.replyTo, text }]), done);
 }
 
+// The newest report is followed as it changes; an older one stays until an arrow moves on.
+async function showReport(task) {
+  state.reportShown = task === state.data.reports?.[0]?.task ? null : task;
+  state.reportChanging = null;
+  state.reportAt = null;
+  await refresh();
+  render();
+  document.querySelector(".report .scroll")?.scrollTo({ top: 0 });
+}
+
+function reachNextPick() {
+  const id = nextPick(dossier(state.data.report, { now: Date.now(), query: state.reportQuery ?? "" }), state.reportAt);
+  if (!id) return;
+  state.reportAt = id;
+  const row = document.getElementById(focusId("row", id));
+  row?.scrollIntoView({ block: "center", behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth" });
+  row?.querySelector(".rpick button")?.focus({ preventScroll: true });
+}
+
 function reportAct(target) {
   if (target.getAttribute("aria-disabled") === "true") return;
   const action = target.dataset.action;
   if (action === "pick") return pick(target);
   if (action === "pick-undo") return undoPick();
+  if (action === "pick-change" || action === "pick-keep") {
+    state.reportChanging = action === "pick-change" ? target.dataset.row : null;
+    return render();
+  }
+  if (action === "report-go") return showReport(Number(target.dataset.task));
+  if (action === "report-next") return reachNextPick();
+  if (action === "report-search") {
+    state.reportQuery = state.reportQuery == null ? "" : null;
+    render();
+    return document.getElementById("report-query")?.focus();
+  }
   if (action === "compose" || action === "reply") return compose(target);
   if (action === "compose-cancel") {
     state.compose = null;
@@ -2513,7 +2570,7 @@ function render() {
   if (state.renderedKey) state.scrolls.set(state.renderedKey, [...app.querySelectorAll(".scroll")].map((element) => element.scrollTop));
   const focused = focusKey(document.activeElement);
   const typed = app.querySelector("#token")?.value;
-  const field = ["draft", "report-draft"].includes(document.activeElement?.id) ? document.activeElement : null;
+  const field = ["draft", "report-draft", "report-query"].includes(document.activeElement?.id) ? document.activeElement : null;
   const caret = field ? [field.id, field.selectionStart, field.selectionEnd, field.selectionDirection] : undefined;
   state.observers.forEach((observer) => observer.disconnect());
   state.observers = [];
@@ -2700,7 +2757,7 @@ document.addEventListener("click", (event) => {
     if (state.unrouted.busy === null) subscribeTask(target.dataset.resource, Number(target.dataset.task));
     return;
   }
-  if (["pick", "pick-undo", "compose", "compose-cancel", "reply", "resolve", "reopen"].includes(action)) return reportAct(target);
+  if (["pick", "pick-undo", "pick-change", "pick-keep", "report-go", "report-next", "report-search", "compose", "compose-cancel", "reply", "resolve", "reopen"].includes(action)) return reportAct(target);
   if (target.dataset.answer !== undefined || ["undo", "options", "write", "dismiss", "snooze", "unsnooze"].includes(action)) return act(target);
   if (action === "mode" || action === "theme") {
     const root = document.documentElement;
@@ -2747,6 +2804,10 @@ document.addEventListener("input", (event) => {
   const ask = event.target.id === "draft" && askOnScreen();
   if (ask) state.drafts.set(ask.id, event.target.value);
   if (event.target.id === "report-draft" && state.compose) state.compose.text = event.target.value;
+  if (event.target.id === "report-query") {
+    state.reportQuery = event.target.value;
+    render();
+  }
   const form = event.target.id === "say" && event.target.closest("form");
   if (form) state.sayDrafts.set(Number(form.dataset.task), event.target.value);
   if (event.target.id === "term-line") {

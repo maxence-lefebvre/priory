@@ -430,6 +430,7 @@ fn route(
             }),
             Err(error) => return Reply::error(500, &error),
         },
+        "/api/reports" => listing::revised(db, "reports", |db| sections::list(db).map(Some)),
         "/api/reports/latest" => listing::revised(db, "report", |db| sections::show(db, None)),
         "/api/costs" => return costs(db, &served.prices, query),
         "/api/grades" => return grades(db, query),
@@ -1097,7 +1098,7 @@ fn refusal(db: &Connection, sent: Sent, refused: &str) -> Reply {
 }
 
 /// The reply to a pick the daemon refused: `404` once no report holds it, `409` once its report
-/// moved past the revision sent or another choice took it. A pick this write recorded, whose request
+/// moved past the revision sent, or the pick holds this choice or an applied one. A pick this write recorded, whose request
 /// then failed to publish, gets `422`, as does any other refusal.
 fn pick_refusal(db: &Connection, pick: &str, option: &str, sent: i64, refused: &str) -> Reply {
     // `sections::pick` words a recorded pick so, whatever followed it.
@@ -1106,17 +1107,29 @@ fn pick_refusal(db: &Connection, pick: &str, option: &str, sent: i64, refused: &
     }
     let found = db
         .query_row(
-            "SELECT reports.revision, json_extract(row.value, '$.pick.chosen')
+            "SELECT reports.revision, json_extract(row.value, '$.pick.chosen'),
+               json_extract(row.value, '$.pick.applied') IS NOT NULL
              FROM reports, json_each(reports.report, '$.sections') AS section,
                json_each(section.value, '$.rows') AS row
              WHERE json_extract(row.value, '$.pick.id') = ?1 LIMIT 1",
             [pick],
-            |row| Ok((row.get::<_, i64>(0)?, row.get::<_, Option<String>>(1)?)),
+            |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, Option<String>>(1)?,
+                    row.get::<_, bool>(2)?,
+                ))
+            },
         )
         .optional();
     match found {
         Ok(None) => Reply::error(404, refused),
-        Ok(Some((at, chosen))) if at != sent || chosen.is_some() => Reply::error(409, refused),
+        Ok(Some((at, chosen, applied)))
+            if at != sent
+                || (chosen.is_some() && (applied || chosen.as_deref() == Some(option))) =>
+        {
+            Reply::error(409, refused)
+        }
         Ok(Some(_)) => Reply::error(422, refused),
         Err(error) => Reply::error(500, &error.to_string()),
     }

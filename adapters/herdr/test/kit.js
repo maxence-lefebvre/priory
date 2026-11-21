@@ -72,7 +72,14 @@ export function context() {
     stop_propagation() { cx.stopped = true; },
     /** @param {(cx: any) => unknown} work */
     spawn(work) { Promise.resolve().then(() => work(cx)).catch(() => {}); },
-    timer: { after: () => ({ cancel() {} }) },
+    // A test ends a timer by calling its `fire`.
+    timer: {
+      after: (/** @type {number} */ _ms, /** @type {(cx: any) => void} */ work) => {
+        const timer = { cancelled: false, cancel() { timer.cancelled = true; }, fire: () => { if (!timer.cancelled) work(cx); } };
+        herdr.timers.push(timer);
+        return timer;
+      },
+    },
     sleep: () => new Promise(() => {}),
     focus_handle: () => ({ focus() {} }),
     theme: () => ({ appearance: "light" }),
@@ -138,7 +145,7 @@ export const TextareaState = { new: fieldState };
 
 // herdr: what the test sets and reads.
 export const herdr = {
-  /** @type {Record<string, unknown>} each priory verb's JSON reply */
+  /** @type {Record<string, unknown>} each priory verb's JSON reply, or a function of its arguments that returns it */
   replies: {},
   /** @type {Map<string, unknown>} */
   shared: new Map(),
@@ -150,6 +157,8 @@ export const herdr = {
   layout: {},
   /** @type {Record<string, string>} the files readTextFile reads, by path */
   files: {},
+  /** @type {{ fire: () => void }[]} the timers panels set, oldest first */
+  timers: [],
   /** @type {(() => void)[]} the pending waits, which `wake` ends */
   waiting: [],
   /** Ends every pending `priory wait` with the next revision, so each panel reads once more. */
@@ -166,6 +175,7 @@ export const herdr = {
     this.layout = {};
     this.files = {};
     this.waiting = [];
+    this.timers = [];
   },
 };
 
@@ -173,7 +183,8 @@ export const herdr = {
 export async function exec(_binary, args) {
   herdr.argv.push(args);
   if (args[0] === "wait") return new Promise((resolve) => herdr.waiting.push(() => resolve({ code: 0, stdout: String(Number(args[2]) + 1), stderr: "" })));
-  const reply = herdr.replies[args[0]];
+  const given = herdr.replies[args[0]];
+  const reply = typeof given === "function" ? given(args) : given;
   if (reply === undefined) return { code: 1, stdout: "", stderr: `priory ${args[0]}: no such thing` };
   return { code: 0, stdout: JSON.stringify(reply), stderr: "" };
 }

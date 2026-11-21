@@ -41,6 +41,7 @@ export function priory({ exec, binary = "priory-oss", on = null, factory = null 
     // The rules `autolink` applies, as `GET /api/links` serves them.
     links: () => read("links", ...inFactory),
     report: (/** @type {Id | null} */ task = null) => read("report", "show", ...(task == null ? [] : [String(task)])),
+    reports: () => read("report", "list"),
     // This week's cost against last week's, split by workflow, agent, model, machine or repo; prices come from the factory.
     costs: (/** @type {string | null} */ by = null) => read("costs", ...inFactory, ...(by ? ["--by", by] : [])),
     attention: () => read("report", "attention"),

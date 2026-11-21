@@ -13494,6 +13494,44 @@ fn a_pick_at_the_reports_revision_records_the_choice_and_wakes_the_task_with_one
 }
 
 #[test]
+fn an_agreed_pick_changes_until_the_workflow_applies_it_and_wakes_the_task_with_the_change() {
+    let setup = asleep_on_a_report("report-change", &bonjour(serde_json::Value::Null));
+    let first = setup.priory(&["report", "pick", PICK, "Take", "--expected", "1"]);
+    assert!(first.status.success(), "{first:?}");
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 3);
+
+    let changed = setup.priory(&["report", "pick", PICK, "Later", "--expected", "2"]);
+
+    assert!(changed.status.success(), "{changed:?}");
+    assert_eq!(
+        String::from_utf8_lossy(&changed.stdout),
+        format!("pick {PICK} is Later at revision 3\n")
+    );
+    assert_eq!(
+        shown(&setup)["sections"][0]["rows"][0]["pick"]["chosen"],
+        "Later"
+    );
+    // The woken agent can get other prompts, such as a nudge, around the change's line.
+    let line = format!(
+        "The person changed their pick on {PICK} in your report from Take to Later: apply Later instead, then write the report again with the pick's applied filled."
+    );
+    let deadline = Instant::now() + Duration::from_secs(60);
+    while !setup
+        .typed()
+        .iter()
+        .any(|typed| typed.lines().next() == Some(line.as_str()))
+    {
+        assert!(Instant::now() < deadline, "{:?}", setup.typed());
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let same = setup.priory(&["report", "pick", PICK, "Later", "--expected", "3"]);
+    assert_eq!(
+        String::from_utf8_lossy(&same.stderr),
+        format!("priory report pick: pick {PICK} is already Later\n")
+    );
+}
+
+#[test]
 fn a_pick_at_a_stale_revision_is_refused_and_changes_nothing() {
     let setup = asleep_on_a_report("report-stale", &bonjour(serde_json::Value::Null));
 
