@@ -610,6 +610,7 @@ fn apply(
 #[derive(serde::Deserialize)]
 #[serde(untagged)]
 enum Input {
+    Guard(crate::guard::Line),
     Add(AddLine),
     Signal(Signal),
     Call(Call),
@@ -748,6 +749,9 @@ fn take(
         serde_json::to_string(&result).expect("a result serializes")
     };
     match serde_json::from_str::<Input>(line) {
+        Ok(Input::Guard(line)) => {
+            Ok((replied(crate::guard::decide(db, &line.guard, trace)?), None))
+        }
         Ok(Input::Add(line)) => Ok((replied(add(db, &line.add, trace, counter)?), None)),
         Ok(Input::Signal(signal)) => Ok(("ok".to_owned(), state::signal(db, &signal, trace)?)),
         Ok(Input::Call(call)) if call.tool == "progress" => {
@@ -1425,6 +1429,7 @@ fn start(
             }
         })
         .into_iter()
+        .chain(guard_env(factory))
         .collect();
     let permissions = serde_json::to_value(&agent.permissions).expect("permissions serialize");
     Ok(runtime::launch(
@@ -1448,6 +1453,15 @@ fn start(
             env: &env,
         },
     ))
+}
+
+/// `PRIORY_GUARD`: the factory's own guards, which the run's tool guard hook adds to the built-in ones.
+fn guard_env(factory: &Factory) -> Option<String> {
+    let guards = factory.guards();
+    (guards != Default::default()).then(|| {
+        let json = serde_json::to_string(&guards).expect("guards serialize");
+        format!("PRIORY_GUARD={json}")
+    })
 }
 
 /// The repository a task works in: its own, else its trigger's for a task stored before tasks

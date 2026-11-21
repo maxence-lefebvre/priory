@@ -3,6 +3,7 @@ pub mod daemon;
 mod deliver;
 pub mod embed;
 pub mod grades;
+mod guard;
 mod handler;
 mod hold;
 pub mod listing;

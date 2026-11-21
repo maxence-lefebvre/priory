@@ -64,6 +64,9 @@ Some events need more detail:
 `UserPromptSubmit` also stamps the start of the run's turn. `SessionStart` and `Stop` clear it. The
 step's `timeout` counts from that stamp.
 
+`PreToolUse` sends no signal. It is the tool guard's hook, which asks the daemon about an
+irreversible call and denies it unless a person approved it (see [guard.md](guard.md)).
+
 ## A turn, signal by signal
 
 Here is one turn of a Claude run, from launch to the end of a step:

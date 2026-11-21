@@ -10,7 +10,8 @@
 # Each turn pops the first line of FAKE_DIR/calls, if any: a tools/call params object such as
 # {"name":"result","arguments":{...}}, or a JSON array of them to call in turn. It calls that tool through the --mcp-config server, or, for
 # AskUserQuestion, runs the matching PreToolUse hooks, and appends the reply to tools.log. Any other
-# capitalized name is a built-in tool that needs permission: it runs the PermissionRequest hooks, and
+# capitalized or mcp__ name first runs the PreToolUse hooks its matcher matches and logs a decision
+# they print. Otherwise an mcp__ call logs {"passed": name}, and a capitalized name is a built-in tool that needs permission: it runs the PermissionRequest hooks, and
 # when none decides, shows the prompt through the permission_prompt Notification hooks.
 # Each turn n, counted across launches in FAKE_DIR/turns, appends to FAKE_DIR/transcript.jsonl, as
 # Claude's session transcript, one assistant message written as two lines, as Claude writes one per
@@ -66,6 +67,16 @@ hook() {
   done
 }
 
+# Runs the PreToolUse hooks whose matcher matches the tool $1, with input $2, and prints their output.
+pretool() {
+  jq -r --arg name "$1" '.hooks.PreToolUse[]? | select(.matcher as $m | $m != "AskUserQuestion" and ($name | test("^(" + $m + ")$"))) | .hooks[].command' <<<"$settings" |
+    while IFS= read -r command; do
+      jq -nc --arg session "$session" --arg name "$1" --argjson input "$2" --arg cwd "$PWD" \
+        '{session_id: $session, hook_event_name: "PreToolUse", tool_name: $name, tool_input: $input, cwd: $cwd}' |
+        sh -c "$command"
+    done
+}
+
 # Calls one tool as Claude does: start the server, initialize, then tools/call.
 tool() {
   local name
@@ -78,6 +89,18 @@ tool() {
         echo >> "$FAKE_DIR/tools.log"
       done
     return
+  fi
+  if [[ $name == [A-Z]* || $name == mcp__* ]]; then
+    local guarded
+    guarded=$(pretool "$name" "$(jq -c '.arguments // {}' <<<"$1")")
+    if [ -n "$guarded" ]; then
+      printf '%s\n' "$guarded" >> "$FAKE_DIR/tools.log"
+      return
+    fi
+    if [[ $name == mcp__* ]]; then
+      jq -nc --arg name "$name" '{passed: $name}' >> "$FAKE_DIR/tools.log"
+      return
+    fi
   fi
   if [[ $name == [A-Z]* ]]; then
     local decided=''

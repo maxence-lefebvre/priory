@@ -81,7 +81,7 @@ fn call(session: &str, params: &Value, local: &Local) -> Value {
             "session": session,
             "arguments": params["arguments"],
         });
-        runtime::call(&runtime::home(), &line.to_string()).and_then(|reply| {
+        runtime::call(&runtime::home(), &line.to_string(), runtime::REPLY).and_then(|reply| {
             serde_json::from_str::<Result<String, String>>(&reply)
                 .map_err(|error| format!("unreadable reply {reply:?}: {error}"))?
         })
