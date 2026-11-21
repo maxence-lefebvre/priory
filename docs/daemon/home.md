@@ -41,7 +41,9 @@ git config --global url."git@github.com:".insteadOf "https://github.com/"
 
 `worktrees/<owner>/<name>/<task id>` is the task's worktree. It is on the branch
 `priory/<task id>`, made from the remote's default branch. The task's `worktree` field names the
-folder only when Priory created it.
+folder only when Priory created it. With several runners, each numbers its own tasks, so the folder
+and branch take the runner's name first: `<runner>-<task id>` on `priory/<runner>-<task id>`. A task
+that had a branch before keeps it.
 
 A start reuses a worktree only when it belongs to Priory's clone and is on that branch.
 

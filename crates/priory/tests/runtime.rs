@@ -16636,6 +16636,24 @@ fn a_runner_added_to_a_factory_that_had_one_does_not_run_its_finished_requests_a
 }
 
 #[test]
+fn a_runners_task_branch_names_the_runner_since_task_ids_overlap_across_runners() {
+    let mut a = runner("branch", "a", None);
+    a.publish(&requested(1));
+    a.start_with(
+        Path::new(env!("CARGO_BIN_EXE_priory")),
+        &[("PRIORY_NOW", T0)],
+    );
+    a.until("tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == "running")
+    });
+
+    let task = task_json(&a, "1");
+    assert_eq!(task["branch"], "priory/a-1", "{task}");
+    let worktree = a.dir.join("home/worktrees/owner/repo/a-1");
+    assert!(worktree.is_dir(), "{}", worktree.display());
+}
+
+#[test]
 fn a_copy_reopened_on_a_runner_whose_key_another_runner_owns_drops_with_the_owner_named() {
     let mut a = runner("reopen-elsewhere", "a", None);
     let mut b = runner("reopen-elsewhere", "b", Some(&a));
