@@ -141,6 +141,9 @@ main { min-width: 0; padding: var(--space-6) var(--space-8) var(--space-8); outl
 .prose pre .copy:hover { background: rgb(255 255 255 / 0.08); color: var(--term-fg); }
 .prose blockquote { margin-left: 0; padding: var(--space-3) var(--space-4); background: var(--action-soft); border-radius: var(--radius-md); }
 .prose img { max-width: 100%; height: auto; border-radius: var(--radius-md); }
+/* mdBook wraps each image in a zoom checkbox with a second copy; the design shows the image once. */
+.checkbox-img, .checkbox-label img + img { display: none; }
+.checkbox-label { display: block; }
 .prose hr { border: 0; border-top: 1px solid var(--line); }
 
 /* Tables scroll in their own box; the first column sticks */
