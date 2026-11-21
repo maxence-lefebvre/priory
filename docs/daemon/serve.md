@@ -150,7 +150,7 @@ and icons, all built into the binary. They carry no state, so they need no token
 for the token once, keeps it in the browser's local storage, and sends it on every `/api` request;
 a `401` brings the sign-in back. A strict Content-Security-Policy lets the page load only its own
 files, and the page shows agent text as text. The view's layout comes from the factory's
-[views](../reference/views.md). Its Add control reads the defaults from `GET /api/request` and queues the task through `POST /api/request`, as `priory add` does. Its Reports panel reads `GET /api/reports/latest`, and picks and comments through the [report writes](../reference/serve.md#writes), as the `priory report` verbs do. Its Costs panel reads `GET /api/costs` and `GET /api/attention` each time the state changes while it is open. With `web = false`, every path outside `/api` gets `404`.
+[views](../reference/views.md). Its Add control reads the defaults from `GET /api/request` and queues the task through `POST /api/request`, as `priory add` does. Its Reports panel reads `GET /api/reports/latest`, and picks and comments through the [report writes](../reference/serve.md#writes), as the `priory report` verbs do. Its Flows panel reads `GET /api/flows` and draws each workflow top to bottom, with each edge styled by who decides it and the paths `priory check --explain` lists marked. Its Costs panel reads `GET /api/costs` and `GET /api/attention` each time the state changes while it is open. With `web = false`, every path outside `/api` gets `404`.
 
 The view is installable as an app. `manifest.webmanifest` names it and its icons, and the service
 worker `/sw.js` keeps a copy of the page's own files, so the view starts with no connection. The

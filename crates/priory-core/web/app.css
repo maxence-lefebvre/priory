@@ -454,6 +454,32 @@ textarea { font: 400 16px/22px var(--font-ui); color: var(--text); background: v
   .rpick button { min-height: var(--control); }
 }
 
+/* Flows */
+.fkey { list-style: none; display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: var(--space-2) var(--space-4); font: 400 var(--type-caption) var(--font-ui); color: var(--text-2); }
+.fkey li { display: flex; align-items: center; gap: var(--space-2); }
+.diagram { width: 100%; height: auto; max-width: 560px; margin: 0 auto; display: block; }
+.fnode path, .fnode rect { fill: var(--surface); stroke: var(--control-line); stroke-width: 1.5; }
+.fnode.k-read path { fill: none; }
+.fnode.k-ask path, .fnode.k-answer path { fill: var(--action-soft); }
+.fnode.k-verdict path { fill: var(--raised); }
+.fnode.k-irreversible path { stroke: var(--danger-text); stroke-width: 2.5; }
+.fnode.end rect { fill: var(--raised); }
+.fnode text { fill: var(--text); font: 500 12px var(--font-mono); }
+.fnode .fl2 { fill: var(--text-3); font: 400 10px var(--font-ui); }
+.fnode.k-irreversible .fl2 { fill: var(--danger-text); }
+.flock { color: var(--danger-text); }
+.fedge .fline { stroke: var(--text-3); marker-end: url(#arrow); }
+.fedge.by-model .fline { stroke: var(--action-text); }
+.fedge.by-human .fline { stroke: var(--emph); }
+.fedge .halo { stroke: var(--danger-text); opacity: 0.22; stroke-linecap: round; }
+.felabel { fill: var(--text-2); font: 400 11px var(--font-ui); paint-order: stroke; stroke: var(--bg); stroke-width: 3px; }
+.unattended { font: 400 var(--type-small) var(--font-ui); }
+.unattended p { display: flex; align-items: center; gap: var(--space-1); }
+.unattended ul { list-style: none; padding: var(--space-1) 0 0 var(--space-5); font-size: 12px; color: var(--text-2); }
+.astext summary { cursor: pointer; font: 500 var(--type-caption) var(--font-ui); color: var(--action-text); padding: var(--space-2) 0; min-height: 44px; display: flex; align-items: center; }
+.astext ol { padding: 0 0 var(--space-3) var(--space-5); font: 400 var(--type-caption) var(--font-ui); color: var(--text-2); display: grid; gap: var(--space-2); }
+.fnode .ico path, .fnode .ico rect { fill: none; stroke: currentColor; stroke-width: 2; }
+
 /* Costs panel */
 .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(100px, 1fr)); gap: 1px; background: var(--line); border: 1px solid var(--line); border-radius: var(--radius-md); overflow: hidden; }
 .stat { background: var(--bg); padding: 10px 12px 12px; display: grid; gap: 2px; align-content: start; }

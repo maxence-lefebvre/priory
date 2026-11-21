@@ -108,6 +108,8 @@ who decides it.
 
 `priory check --explain example` lists the irreversible step `open-pr` and the human step
 `approve-pr` that approves it. See [workflows.md](docs/reference/workflows.md#irreversible-steps-and-their-gates).
+The web view's Flows panel, under More, draws each workflow as a timeline, with the paths that
+reach an irreversible step with no person's decision highlighted.
 
 The same rule holds inside a model step. Priory's tool guard denies an agent's irreversible call,
 such as `gh pr merge` or `git push origin main`, and tells the agent to `ask`. The call passes when
