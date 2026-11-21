@@ -1,9 +1,13 @@
 [package]
 name = "priory"
-version = "0.0.0"
+version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
+
+[package.metadata.binstall]
+pkg-url = "{ repo }/releases/download/v{ version }/priory-{ target }"
+pkg-fmt = "bin"
 
 [dependencies]
 jiff.workspace = true
