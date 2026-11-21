@@ -1451,7 +1451,30 @@ pub struct Factory {
     pub skills: BTreeMap<String, Loaded<Skill>>,
     /// The text of `instructions.md`, which goes before every agent's own prompt.
     pub instructions: Option<String>,
+    /// `memories/<name>.md`: each fact every run gets in its index, by the file's name.
+    pub memories: BTreeMap<String, Loaded<Memory>>,
 }
+
+/// A memory: `memories/<name>.md`, one fact with a description that tells an agent when to read it.
+#[derive(Debug)]
+pub struct Memory {
+    pub description: String,
+    /// The file as it is on disk.
+    pub bytes: Vec<u8>,
+}
+
+/// The fields of a memory's frontmatter that Priory reads.
+#[derive(Deserialize)]
+struct MemoryFrontmatter {
+    name: Option<String>,
+    description: Option<String>,
+}
+
+/// The size past which `priory check` refuses a memory, so the index stays one look.
+pub const MEMORY_LIMIT: usize = 4096;
+
+/// The folder each run's memory index names when `priory check` counts it, as Priory home holds it.
+pub const MEMORY_FOLDER: &str = "$PRIORY_HOME/kit/<hash>/memories";
 
 /// A skill: `skills/<name>/SKILL.md` and the files beside it.
 #[derive(Debug)]
@@ -1717,6 +1740,35 @@ impl Factory {
         self.instructions.as_deref().unwrap_or("").trim()
     }
 
+    /// The index of the factory's memories, whose files are in `folder`, or nothing without any.
+    pub fn memory_index(&self, folder: &str) -> String {
+        if self.memories.is_empty() {
+            return String::new();
+        }
+        let mut index = format!(
+            "# Memories\n\nThe factory's memories are in {folder}, one fact per file. Read a memory's \
+             file when its description fits your task. Never edit these files: a memory changes only \
+             through a pull request to the factory.\n"
+        );
+        for (name, memory) in &self.memories {
+            let description = memory.value.description.split_whitespace();
+            index.push_str(&format!(
+                "\n- {name}.md: {}",
+                description.collect::<Vec<_>>().join(" ")
+            ));
+        }
+        index
+    }
+
+    /// The instructions, then the index of the memories in `folder`, as every run gets them.
+    pub fn run_instructions(&self, folder: &str) -> String {
+        [self.instructions(), &self.memory_index(folder)]
+            .into_iter()
+            .filter(|part| !part.is_empty())
+            .collect::<Vec<_>>()
+            .join("\n\n")
+    }
+
     pub fn bands(&self) -> Vec<&str> {
         match self
             .settings
@@ -1808,6 +1860,16 @@ pub fn load(dir: &Path) -> (Factory, Vec<Problem>) {
                 skill,
                 lines,
             );
+        }
+    }
+    for path in found.entries("memories").into_iter().filter(|path| {
+        // A dotfile such as .gitkeep keeps an empty folder in git.
+        !file_name(path).starts_with('.')
+    }) {
+        if let Some((memory, lines)) = found.memory(&path) {
+            let name = file_name(&path);
+            let name = name.trim_end_matches(".md").to_owned();
+            found.define(&mut factory.memories, name, &path, memory, lines);
         }
     }
     for path in found
@@ -2048,6 +2110,82 @@ impl Loader<'_> {
             return None;
         }
         Some((Skill { description, files }, lines))
+    }
+
+    /// The memory in `file`, once it is a `<name>.md` file under the limit whose frontmatter names
+    /// it after the file and describes it.
+    fn memory(&mut self, file: &Path) -> Option<(Memory, Lines)> {
+        let relative = self.relative(file);
+        let stem = file_name(file)
+            .strip_suffix(".md")
+            .filter(|_| file.is_file())
+            .map(str::to_owned);
+        let Some(stem) = stem else {
+            self.problems.push(Problem {
+                file: relative,
+                at: None,
+                message: "memories/ holds only <name>.md files, one memory each".into(),
+            });
+            return None;
+        };
+        let at = |line: Option<usize>| Some(line.unwrap_or(1).to_string());
+        let named = stem.starts_with(|c: char| c.is_ascii_lowercase() || c.is_ascii_digit())
+            && stem
+                .chars()
+                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-');
+        if !named {
+            self.problems.push(Problem {
+                file: relative,
+                at: at(None),
+                message:
+                    "a memory's file is named <name>.md, with lowercase letters, digits and hyphens"
+                        .into(),
+            });
+            return None;
+        }
+        let source = self.read(file)?;
+        if source.len() > MEMORY_LIMIT {
+            self.problems.push(Problem {
+                file: relative,
+                at: at(None),
+                message: format!(
+                    "a memory holds one fact in at most {MEMORY_LIMIT} bytes: this file is {} bytes",
+                    source.len()
+                ),
+            });
+            return None;
+        }
+        let (front, lines) = self.parse_source::<MemoryFrontmatter>(file, &source)?;
+        let mut problem = |line: Option<usize>, message: String| {
+            self.problems.push(Problem {
+                file: relative.clone(),
+                at: at(line),
+                message,
+            });
+        };
+        match front.name.as_deref().map(str::trim) {
+            None | Some("") => problem(None, "a memory's frontmatter needs a `name`".into()),
+            Some(name) if name != stem => problem(
+                lines.field("name"),
+                format!("`name` is `{name}`, but the memory's file is memories/{stem}.md"),
+            ),
+            Some(_) => {}
+        }
+        let description = match front.description.map(|text| text.trim().to_owned()) {
+            Some(text) if !text.is_empty() => text,
+            _ => {
+                problem(
+                    None,
+                    "a memory's frontmatter needs a `description`, which tells the agent when to read it".into(),
+                );
+                return None;
+            }
+        };
+        let memory = Memory {
+            description,
+            bytes: source.into_bytes(),
+        };
+        Some((memory, lines))
     }
 
     fn parse<T: DeserializeOwned>(&mut self, file: &Path) -> Option<(T, Lines)> {

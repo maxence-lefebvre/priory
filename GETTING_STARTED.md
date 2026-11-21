@@ -191,6 +191,14 @@ appends its text to the system prompt of every agent it starts. To use one in yo
 copy the file next to `factory.toml`, edit it to your voice, add the key, and run `priory check`.
 See [writing.md](docs/daemon/writing.md) for what the guide changes.
 
+### Share facts with every run
+
+A fact every run should know, such as the day releases go out, goes in its own file under
+`memories/`, with a `name` and a `description` in its frontmatter. Each run gets an index of the
+memories and reads a file when its description fits the task. `priory check` counts them in its
+`ok` line. To change a memory, edit the file and merge it like any other change to the factory.
+See [memories.md](docs/reference/memories.md) for the file's keys.
+
 ## 5. Run it
 
 Priory keeps its state in three places, each named by an environment variable:

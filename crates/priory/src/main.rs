@@ -2419,12 +2419,17 @@ fn check(args: Vec<OsString>) -> ExitCode {
         0 => String::new(),
         n => format!(", {}", count(n, "skill")),
     };
+    let memories = match factory.memories.len() {
+        0 => String::new(),
+        1 => ", 1 memory".to_owned(),
+        n => format!(", {n} memories"),
+    };
     let scorers = match factory.scorers.len() {
         0 => String::new(),
         n => format!(", {}", count(n, "scorer")),
     };
     println!(
-        "ok: {}, {}, {}, {}{skills}{scorers}",
+        "ok: {}, {}, {}, {}{skills}{memories}{scorers}",
         count(factory.agents.len(), "agent"),
         count(factory.triggers.len(), "trigger"),
         count(factory.workflows.len(), "workflow"),
