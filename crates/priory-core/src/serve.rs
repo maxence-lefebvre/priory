@@ -24,7 +24,7 @@ const WAIT: u64 = 25;
 /// Requests `/api/events` holds at once: half the workers, so listings always find a free one.
 const WAITERS: usize = http::WORKERS / 2;
 
-macro_rules! file {
+macro_rules! asset {
     ($path:literal, $kind:expr, $source:literal) => {
         (
             $path,
@@ -40,95 +40,95 @@ const WOFF2: &str = "font/woff2";
 
 /// The web view's files: the path each is served at, its type and its bytes.
 const WEB: &[(&str, &str, &[u8])] = &[
-    file!("/boot.js", JS, "crates/priory-core/web/boot.js"),
-    file!("/app.js", JS, "crates/priory-core/web/app.js"),
-    file!("/asks.js", JS, "crates/priory-core/web/asks.js"),
-    file!("/add.js", JS, "crates/priory-core/web/add.js"),
-    file!("/links.js", JS, "crates/priory-core/web/links.js"),
-    file!("/reports.js", JS, "crates/priory-core/web/reports.js"),
-    file!("/stack.js", JS, "crates/priory-core/web/stack.js"),
-    file!("/flows.js", JS, "crates/priory-core/web/flows.js"),
-    file!("/desk.js", JS, "crates/priory-core/web/desk.js"),
-    file!("/costs.js", JS, "crates/priory-core/web/costs.js"),
-    file!("/sw.js", JS, "crates/priory-core/web/sw.js"),
-    file!(
+    asset!("/boot.js", JS, "crates/priory-core/web/boot.js"),
+    asset!("/app.js", JS, "crates/priory-core/web/app.js"),
+    asset!("/asks.js", JS, "crates/priory-core/web/asks.js"),
+    asset!("/add.js", JS, "crates/priory-core/web/add.js"),
+    asset!("/links.js", JS, "crates/priory-core/web/links.js"),
+    asset!("/reports.js", JS, "crates/priory-core/web/reports.js"),
+    asset!("/stack.js", JS, "crates/priory-core/web/stack.js"),
+    asset!("/flows.js", JS, "crates/priory-core/web/flows.js"),
+    asset!("/desk.js", JS, "crates/priory-core/web/desk.js"),
+    asset!("/costs.js", JS, "crates/priory-core/web/costs.js"),
+    asset!("/sw.js", JS, "crates/priory-core/web/sw.js"),
+    asset!(
         "/manifest.webmanifest",
         "application/manifest+json",
         "crates/priory-core/web/manifest.webmanifest"
     ),
-    file!("/icon-192.png", "image/png", "design/logo/icon-192.png"),
-    file!("/icon-512.png", "image/png", "design/logo/icon-512.png"),
-    file!(
+    asset!("/icon-192.png", "image/png", "design/logo/icon-192.png"),
+    asset!("/icon-512.png", "image/png", "design/logo/icon-512.png"),
+    asset!(
         "/icon-maskable-192.png",
         "image/png",
         "design/logo/icon-maskable-192.png"
     ),
-    file!(
+    asset!(
         "/icon-maskable-512.png",
         "image/png",
         "design/logo/icon-maskable-512.png"
     ),
-    file!("/app.css", CSS, "crates/priory-core/web/app.css"),
-    file!("/tokens/structure.css", CSS, "design/tokens/structure.css"),
-    file!("/tokens/themes.css", CSS, "design/tokens/themes.css"),
-    file!("/favicon.ico", "image/x-icon", "design/logo/favicon.ico"),
-    file!("/favicon.svg", "image/svg+xml", "design/logo/favicon.svg"),
-    file!(
+    asset!("/app.css", CSS, "crates/priory-core/web/app.css"),
+    asset!("/tokens/structure.css", CSS, "design/tokens/structure.css"),
+    asset!("/tokens/themes.css", CSS, "design/tokens/themes.css"),
+    asset!("/favicon.ico", "image/x-icon", "design/logo/favicon.ico"),
+    asset!("/favicon.svg", "image/svg+xml", "design/logo/favicon.svg"),
+    asset!(
         "/apple-touch-icon.png",
         "image/png",
         "design/logo/apple-touch-icon.png"
     ),
-    file!(
+    asset!(
         "/fonts/mona-sans-200-900.woff2",
         WOFF2,
         "design/fonts/mona-sans-200-900.woff2"
     ),
-    file!(
+    asset!(
         "/fonts/jetbrains-mono-400-500.woff2",
         WOFF2,
         "design/fonts/jetbrains-mono-400-500.woff2"
     ),
-    file!(
+    asset!(
         "/fonts/eb-garamond-400-800.woff2",
         WOFF2,
         "design/fonts/eb-garamond-400-800.woff2"
     ),
-    file!(
+    asset!(
         "/fonts/ibm-plex-sans-400-700.woff2",
         WOFF2,
         "design/fonts/ibm-plex-sans-400-700.woff2"
     ),
-    file!(
+    asset!(
         "/fonts/ibm-plex-mono-400.woff2",
         WOFF2,
         "design/fonts/ibm-plex-mono-400.woff2"
     ),
-    file!(
+    asset!(
         "/fonts/ibm-plex-mono-500.woff2",
         WOFF2,
         "design/fonts/ibm-plex-mono-500.woff2"
     ),
-    file!(
+    asset!(
         "/fonts/alegreya-400-900.woff2",
         WOFF2,
         "design/fonts/alegreya-400-900.woff2"
     ),
-    file!(
+    asset!(
         "/fonts/alegreya-sans-400.woff2",
         WOFF2,
         "design/fonts/alegreya-sans-400.woff2"
     ),
-    file!(
+    asset!(
         "/fonts/alegreya-sans-500.woff2",
         WOFF2,
         "design/fonts/alegreya-sans-500.woff2"
     ),
-    file!(
+    asset!(
         "/fonts/alegreya-sans-700.woff2",
         WOFF2,
         "design/fonts/alegreya-sans-700.woff2"
     ),
-    file!(
+    asset!(
         "/fonts/alegreya-sans-800.woff2",
         WOFF2,
         "design/fonts/alegreya-sans-800.woff2"
@@ -193,7 +193,8 @@ pub fn start(factory: &Factory, listen: SocketAddr) -> Result<Vec<JoinHandle<()>
     };
     let waiters = Arc::new(AtomicUsize::new(0));
     let public = |path: &str| !path.starts_with("/api") && !path.starts_with("/hooks");
-    let workers = http::serve(listener, token, hooks, public, move || {
+    let origins = config.extension_origins.clone();
+    let workers = http::serve(listener, token, origins, hooks, public, move || {
         let db = state::read_only();
         let waiters = Arc::clone(&waiters);
         let home = runtime::home();
@@ -350,6 +351,15 @@ fn route(
             let risks: Vec<&str> = risks.iter().map(String::as_str).collect();
             listing::revised(db, "asks", |db| {
                 listing::recent_asks(db, &bands, &risks, since.as_deref()).map(Some)
+            })
+        }
+        "/api/tasks" if query.starts_with("pr=") => {
+            let Some((repo, number)) = decode(&query[3..]).as_deref().and_then(pull_request)
+            else {
+                return Reply::error(400, "pr is a pull request such as github:owner/repo#7");
+            };
+            listing::revised(db, "tasks", |db| {
+                listing::holding(db, &repo, number).map(Some)
             })
         }
         "/api/tasks" => match since(query) {
@@ -922,6 +932,21 @@ fn since(query: &str) -> Result<Option<String>, Reply> {
     }
 }
 
+/// The repository and number of `github:OWNER/REPO#N`.
+fn pull_request(resource: &str) -> Option<(String, u64)> {
+    let (repo, number) = resource.strip_prefix("github:")?.split_once('#')?;
+    let (owner, name) = repo.split_once('/')?;
+    let part = |part: &str| {
+        !part.is_empty()
+            && part
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || b"-_.".contains(&byte))
+    };
+    (part(owner) && part(name))
+        .then(|| Some((repo.to_owned(), number.parse().ok()?)))
+        .flatten()
+}
+
 /// The time a week ago, from which a listing keeps closed rows.
 fn week_ago() -> Result<Option<String>, Reply> {
     let now = intake::now().map_err(|error| Reply::error(500, &error))?;
@@ -1013,4 +1038,30 @@ fn events(db: &Connection, query: &str, waiters: &AtomicUsize) -> Reply {
     let waited = state::wait(db, since, Duration::from_secs(timeout));
     waiters.fetch_sub(1, Ordering::SeqCst);
     answer(waited)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::pull_request;
+    use proptest::prelude::*;
+
+    proptest! {
+        #[test]
+        fn a_pr_parameter_parses_to_the_resource_it_names_or_is_refused(
+            text in "(github:)?[a-z./#0-9+-]{0,30}|.{0,40}"
+        ) {
+            if let Some((repo, number)) = pull_request(&text) {
+                let resource = format!("github:{repo}#{number}");
+                prop_assert_eq!(pull_request(&resource), Some((repo, number)));
+            }
+        }
+    }
+
+    #[test]
+    fn a_pr_parameter_names_a_github_pull_request() {
+        assert_eq!(pull_request("github:o-1/r.s#7"), Some(("o-1/r.s".to_owned(), 7)));
+        for bad in ["github:o/r", "github:o#7", "github:/r#7", "github:o/r/x#7", "linear:E-7"] {
+            assert_eq!(pull_request(bad), None, "{bad}");
+        }
+    }
 }
