@@ -19,8 +19,8 @@ A scenario is a TOML file that says how the task starts, what the fake agent doe
 what reaches the task while it sleeps, and what you expect. Keep yours in your factory's `e2e/`
 folder. [e2e-scenarios.md](reference/e2e-scenarios.md) lists every key.
 
-This scenario, `examples/groom/e2e/green.toml`, takes a green issue to a pull request whose checks
-pass:
+This scenario, `examples/groom/e2e/green.toml`, takes a green issue through its merge risk to a
+pull request whose checks pass:
 
 ```toml
 [request]
@@ -31,16 +31,22 @@ key = "github:owner/repo#42"
 calls = [{ name = "result", arguments = { outcome = "green", summary = "Green: one function and its test" } }]
 
 [[turns]]
-calls = [{ name = "result", arguments = { outcome = "passed", summary = "Add the widget\nIt draws a box.", evidence = "cargo test passed" } }]
+calls = [{ name = "result", arguments = { outcome = "passed", summary = "Widget added", evidence = "cargo test passed" } }]
+
+[[turns]]
+calls = [{ name = "result", arguments = { outcome = "low", summary = "Merge risk low", risk = { ask = "low: adds the widget the issue asks for", blast_radius = "low: one new function", verification = "low: a test covers it", rollback = "low: a revert removes it", detection = "low: its test fails on a wrong box" } } }]
+
+[[turns]]
+calls = [{ name = "result", arguments = { outcome = "described", summary = "Add the widget\nIt draws a box. cargo test passes. Merge risk low." } }]
 
 [[events]]
-at = "implement-green"
+at = "describe"
 type = "github.check_run.completed"
 subject = "owner/repo#7"
 data = { repo = "owner/repo", pull_request = 7, head_branch = "priory/1", head_sha = "{head}", base_branch = "main", name = "test", conclusion = "success", github_id = 1, pending = 0, failing = 0 }
 
 [expect]
-path = ["groom:green", "implement-green:passed", "open-pr:opened"]
+path = ["groom:green", "implement-green:passed", "risk:low", "describe:described", "open-pr:opened"]
 state = "done"
 ```
 
