@@ -92,11 +92,13 @@ state database and never writes a file in the factory.
   `add FACTORY [--workflow W] [--band B] [--lane L] -- TEXT`. An answer always carries the revision the person read, so a
   changed question refuses it (R6.3).
 - **Safety.** `priory.js` passes every value as its own argument, never through a shell, and never
-  reads text output except `attach --print`. A mod draws agent text as plain text.
+  reads text output except `attach --print`. A mod draws agent text as plain text, apart from its links.
 - **Autolinks.** `autolink(text, links, repo)` in `priory.js` splits text into spans, each
   `{ text }` or `{ text, url }`, with the rules `links()` reads from `priory links --json`. It
-  returns the same spans as the web view, and links only to `https:` URLs. No panel draws links
-  yet.
+  returns the same spans as the web view, and links only to `https:` URLs. `spansHtml(spans)`
+  escapes them into the HTML Herdr's `TextView.html` draws; Herdr opens a link with the system's
+  browser. A panel reads the rules once, when it connects. When `priory links` fails, such as with
+  no factory to read, the panel draws its text unlinked. See [Links](#links).
 - **Attaching.** A panel asks the Priory bar to attach with
   `setShared("priory.attach", { task, at: Date.now() })`. The bar runs
   `priory attach TASK --print` and opens a terminal tab that runs the printed command, which starts
@@ -148,7 +150,7 @@ Herdr Desk: the count, the next thing, the room and intake banners, the saved vi
   hint bar. The list becomes the wide table with Recommends once it has 720 px of its own. The
   panel measures its own width, as gpui-kit has no container queries.
 
-The panel draws agent text as plain text and never parses it. Its view model, `view.js`, is pure:
+The panel draws agent text as plain text, apart from its [links](#links), and never parses it. Its view model, `view.js`, is pure:
 the listings in, the count and rows out. `adapters/herdr/test/desk.test.js` runs it against JSON
 captured from the CLI.
 
@@ -220,7 +222,8 @@ DESIGN.md's "Herdr adapter" section holds its visual rules; this section says ho
 - **Keys.** `J` and `K` move, `Enter` opens a section below 720 px, `1` to `9` press an option
   (twice for a command), `W` writes an answer, `S` snoozes for 1 h, `[` and `]` move between
   sections and `Esc` closes. Single keys never fire while the text field has the keyboard.
-- **Agent text.** The question, options, text, trade-off and what waits draw as plain text.
+- **Agent text.** The options, trade-off and what waits draw as plain text. The question and text
+  draw with their [links](#links).
 
 The detail shows the sections Why, Brief, Plan, PR, Trace, History and Command. Brief shows the
 request and the `groom` step's result, Plan the `plan` step's result or else the task's
@@ -275,12 +278,29 @@ Each row shows its task's title under its key and step. The header's Add, or `N`
 [Add form](#the-add-action); the new task opens in place once the queue lists it. The opened row's
 History is left out: the panel would need each task's events.
 
+## Links
+
+Each panel links the factory's keys in the text the web view links: an ask's question and text, a
+task's title and a report row's text. A text shows its links once: in the panel's detail where it
+has one, else in its row. A row drawn as a button that truncates to one line keeps plain text.
+
+| Panel | Linked text |
+| ----- | ----------- |
+| Desk | The next thing's question, and each row's text: an ask's question, a task's title or reason |
+| Asks | The opened ask's question, and its text under Why |
+| Queue | The opened row's title |
+| Bonjour | Each report row's text, and each pick card's text |
+
+A report and the Queue name no repository, so only the factory's own links apply there, not the
+built-in `#n` link.
+
 ## The Add action
 
 The Desk and Queue panels share one Add form, `lib/add-form.js`, over the view model `lib/add.js`.
 It holds one field, then chips for workflow, band and lane. The band chips are the factory's bands
-from `priory queue --json`. The workflow and lane chips are those the listed tasks carry, so the
-Queue panel, which reads no `priory tasks`, offers no workflow chip. An unpicked chip leaves the
+from `priory queue --json`, and the workflow chips its `workflows`. A queue read without the
+factory folder lists no workflows, so the chips then offer the workflows the listed tasks carry.
+The lane chips are the lanes the listed tasks carry. An unpicked chip leaves the
 value to the factory's [`[request]`](../reference/factory.md#request) table, as `priory add` does.
 
 `Enter` runs `priory add FACTORY -- TEXT` with a flag for each picked chip, and the form shows
@@ -332,7 +352,8 @@ its visual rules; this section says how it works.
   in the field. Rows that share an id share their threads.
 - **Keys.** `J` and `K` move between rows, `N` goes to the next pick, `1` to `9` press an option of
   the selected pick, and `Esc` undoes a pick still waiting out its Undo.
-- **Agent text.** Every row's text, meta, owner and the greeting draw as plain text.
+- **Agent text.** Every row's meta, owner and the greeting draw as plain text. Its text draws with
+  its [links](#links).
 
 The board's older and newer arrows, search and Change are left out. Priory keeps only the latest
 report of each task, so there is no older report to open. A pick's first choice stands, so Change
