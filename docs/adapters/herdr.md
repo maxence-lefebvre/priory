@@ -88,7 +88,7 @@ state database and never writes a file in the factory.
 - **Acting.** Every button runs a CLI verb: `answer --expected N [--run] -- ASK TEXT`,
   `dismiss --expected N ASK`, `snooze`, `say`, `report pick PICK OPTION --expected N`,
   `report comment ROW --expected N TEXT`, `report reply|resolve|reopen COMMENT`, `seen`,
-  `resume`, `revive`, `hold`, `release`, `move`, `cancel`, `pause`, `unpause` and
+  `resume`, `revive`, `todo done`, `hold`, `release`, `move`, `cancel`, `pause`, `unpause` and
   `add FACTORY [--workflow W] [--band B] [--lane L] -- TEXT`. An answer always carries the revision the person read, so a
   changed question refuses it (R6.3).
 - **Safety.** `priory.js` passes every value as its own argument, never through a shell, and never
@@ -137,7 +137,8 @@ Herdr Desk: the count, the next thing, the room and intake banners, the saved vi
   `priory` command at all.
 - **Acting.** Snooze 1 h, Snooze until tomorrow 09:00 and Unsnooze run `priory snooze KIND ID`
   with `--for 1h`, `--until` or `--clear`. Resume runs `priory resume TASK` for a blocked task or an
-  uncertain prompt, and Revive runs `priory revive TASK` for a failed one.
+  uncertain prompt, and Revive runs `priory revive TASK` for a failed one. Done runs
+  `priory todo done ID` for a to-do, from its row or the next thing card.
   Attach asks the Priory bar with `priory.attach`. Answer… opens the ask in the Asks panel: it sets
   `setShared("priory.asks.open", { ask, at: Date.now() })` and shows the side panel on Asks.
   Add, or `N`, opens the [Add form](#the-add-action).

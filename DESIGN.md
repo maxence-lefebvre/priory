@@ -373,7 +373,10 @@ The desk is the "Needs me" view. It lists, top to bottom:
 6. **Stopped**: blocked tasks, uncertain prompts (R5.4) and failed tasks, each with its reason in
    the role's text color. A blocked row carries Resume and Cancel buttons, a failed row Revive, in
    `.btn secondary` under its reason; its key opens the task page. On wide screens the Recommends
-   column holds the same buttons, compact. Then **Also waiting**: the desk's other items (held tasks, sweeps, memory waits,
+   column holds the same buttons, compact. Then **To-dos**: the person's own items, each with
+   the `square` tile in the ask role, its text and due time, and a Done button in `.btn
+   secondary` that marks it done (`POST /api/todos/{id}/done`). The next thing card offers Done
+   for a to-do. Then **Also waiting**: the desk's other items (held tasks, sweeps, memory waits,
    retired tasks and worktrees that stay), each with the daemon's sentence.
 7. **Up next**: a strip with the next 3 runs, queued or scheduled, as in the Herdr Queue panel.
    Each line shows when, the task and why, and opens the task. With none, the strip says "Nothing
@@ -940,8 +943,9 @@ stack.
    Open task and Snooze 1 h. Answer… opens the
    ask in the Asks panel, so a person answers in one place.
 3. **Saved views**: Needs me, Running, Asleep, Snoozed and All.
-4. The room banner, Asks, Stopped and Later, as on the web desk. A routed ask shows the
-   [routed mark](#routed-ask) under its question, and in the next thing's card.
+4. The room banner, Asks, Stopped, To-dos and Later, as on the web desk. A routed ask shows the
+   [routed mark](#routed-ask) under its question, and in the next thing's card. A selected
+   to-do's detail offers Done.
 5. **Since you looked**, from 1024 px: the events since the person's last visit.
 
 From 1024 px the count, next thing, banner and Since you looked form a 440 px column; the rest is

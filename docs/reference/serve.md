@@ -112,6 +112,8 @@ application/json` and a JSON body of at most 16 KiB with exactly the fields belo
 | `POST /api/reports/resolve`, `POST /api/reports/reopen` | `comment`, an integer |
 | `POST /api/push/subscribe` | the browser's `PushSubscription.toJSON()`: `endpoint`, a string, `keys`, an object of `p256dh` and `auth`, base64url strings, and optionally `expirationTime`, which is ignored. See [Notifications](#notifications) |
 | `POST /api/push/unsubscribe` | `endpoint`, a string |
+| `POST /api/todos` | `text`, one line, then optionally `band`, one of the factory's bands, and `due`, an RFC 3339 time, as `priory todo add`. The reply's `ok` is the new to-do's id |
+| `POST /api/todos/{id}/done` | `{}`, as `priory todo done`. A to-do already done gets `422` |
 | `POST /api/seen` | `at`, an RFC 3339 time: the visit to the desk to record for `me`, as `priory seen --at` records it, to the second |
 
 In `/api/asks/{id}`, `{id}` is the ask's `id` as `/api/asks` lists it: its number, or an outside
@@ -210,7 +212,7 @@ an object: `answered` and `withdrawn`, the number of each left out, within `band
 | ----- | ---- | ------- |
 | `id` | integer or string | The ask: its number, or the id an outside ask was given |
 | `task`, `key`, `step`, `lane`, `band`, `repo` | | The task, its key, the ask's step, and the task's lane, band and repository. An outside ask has no task, so its `lane`, `band` and `repo` are null, and its `key` is the one it sent |
-| `risk` | array of strings | What answering risks, empty for none: `irreversible` when the answer lets an irreversible step run before a person decides again, the rule `priory check --explain` uses, or when it is an agent's ask whose answer runs a [command](../daemon/tools.md#commands-an-answer-runs); then the task's grooming grade, `red`, `yellow` or `green`. An outside ask has none. The daemon records its factory's irreversible approvals when it starts |
+| `risk` | array of strings | What answering risks, empty for none: `irreversible` when the answer lets an irreversible step run before a person decides again, the rule `priory check --explain` uses, or when it is an agent's or a step's ask whose answer runs a [command](../daemon/tools.md#commands-an-answer-runs); then the task's grooming grade, `red`, `yellow` or `green`. An outside ask has none. The daemon records its factory's irreversible approvals when it starts |
 | `run` | integer or null | The run that asked |
 | `state` | string | `open`, `answered` or `withdrawn` |
 | `withdrawn_why` | string or null | Why a withdrawn ask closed: `dismissed`, `a later run called another tool` or `revived as generation <n>` |
