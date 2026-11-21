@@ -133,6 +133,7 @@ impl Slack {
         let mut names: Vec<_> = fs::read_dir(self.dir.join("calls"))
             .unwrap()
             .map(|entry| entry.unwrap().path())
+            .filter(|name| name.extension().is_none_or(|extension| extension != "tmp"))
             .collect();
         names.sort();
         names
