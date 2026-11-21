@@ -759,6 +759,158 @@ fn the_asks_endpoint_filters_by_risk_as_the_cli_does() {
     );
 }
 
+impl Setup {
+    /// `seed_risks`, with each ask asked at its own minute and task 2 blocked last.
+    fn seed_ranks(&self) {
+        self.seed_risks();
+        let db = rusqlite::Connection::open(self.dir.join("priory.db")).unwrap();
+        db.execute_batch(
+            "UPDATE asks SET created = CASE id WHEN 1 THEN '2026-11-17T10:05:00Z'
+               WHEN 2 THEN '2026-11-17T10:01:00Z' WHEN 3 THEN '2026-11-17T10:04:00Z'
+               WHEN 4 THEN '2026-11-17T10:00:00Z' ELSE '2026-11-17T10:02:00Z' END;
+             UPDATE tasks SET state = 'blocked', reason = 'tests fail',
+               changed = '2026-11-17T11:00:00Z' WHERE id = 2;",
+        )
+        .unwrap();
+    }
+}
+
+fn ranked(desk: &Value) -> Vec<(Value, Value)> {
+    desk["ranked"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|item| (item["kind"].clone(), item["id"].clone()))
+        .collect()
+}
+
+#[test]
+fn the_desk_ranks_alarms_then_irreversible_asks_then_plans_then_the_rest_each_oldest_first() {
+    let setup = Setup::new("desk-rank", "name = \"demo\"\n");
+    setup.seed_ranks();
+
+    let desk = json_of(&setup, "desk");
+
+    assert_eq!(
+        ranked(&desk),
+        [
+            (json!("blocked"), json!(2)),
+            (json!("ask"), json!(3)),
+            (json!("ask"), json!(1)),
+            (json!("ask"), json!(2)),
+            (json!("ask"), json!(4)),
+            (json!("ask"), json!("review-7")),
+        ]
+    );
+    assert_eq!(desk["next"]["kind"], "blocked");
+    assert_eq!(
+        desk["next"]["why"],
+        "an alarm: work stopped and waits on a person"
+    );
+    assert_eq!(
+        desk["ranked"][1]["why"],
+        "its answer lets an irreversible step run"
+    );
+    assert_eq!(desk["ranked"][3]["why"], "it approves a plan");
+}
+
+#[test]
+fn an_ask_that_reviews_a_pull_request_ranks_with_the_irreversible_ones() {
+    let setup = Setup::new("desk-rank-review", "name = \"demo\"\n");
+    setup.seed_ranks();
+    let db = rusqlite::Connection::open(setup.dir.join("priory.db")).unwrap();
+    db.execute(
+        "UPDATE tasks SET key = 'github:owner/repo:pulls/43:review:octocat' WHERE id = 3",
+        [],
+    )
+    .unwrap();
+    db.execute(
+        "UPDATE asks SET created = '2026-11-17T10:03:00Z' WHERE id = 4",
+        [],
+    )
+    .unwrap();
+
+    let desk = json_of(&setup, "desk");
+
+    assert_eq!(
+        ranked(&desk)[1..4],
+        [
+            (json!("ask"), json!(4)),
+            (json!("ask"), json!(3)),
+            (json!("ask"), json!(1)),
+        ]
+    );
+    assert_eq!(desk["ranked"][1]["why"], "it reviews a pull request");
+}
+
+#[test]
+fn a_snoozed_item_never_ranks_even_when_the_desk_shows_it() {
+    let setup = Setup::new("desk-rank-snoozed", "name = \"demo\"\n");
+    setup.seed_ranks();
+    let db = rusqlite::Connection::open(setup.dir.join("priory.db")).unwrap();
+    db.execute_batch(
+        "INSERT INTO snoozes (kind, item, task, snoozed, until)
+           VALUES ('task', 2, 2, '2026-11-17T11:00:00Z', '2999-01-01T00:00:00Z'),
+                  ('ask', 3, 3, '2026-11-17T11:00:00Z', '2999-01-01T00:00:00Z');",
+    )
+    .unwrap();
+
+    let output = setup.priory(&["desk", "--json", "--all"]);
+    succeeded(&output);
+    let desk: Value = serde_json::from_slice(&output.stdout).unwrap();
+
+    assert_eq!(
+        ranked(&desk)[..2],
+        [(json!("ask"), json!(1)), (json!("ask"), json!(2)),]
+    );
+    assert_eq!(desk["next"]["id"], 1);
+    assert_eq!(desk["ranked"].as_array().unwrap().len(), 4);
+}
+
+#[test]
+fn a_failing_intake_ranks_as_an_alarm_whose_title_names_the_source_not_the_error() {
+    let setup = Setup::new("desk-rank-intake", "name = \"demo\"\n");
+    setup.seed_ranks();
+    let db = rusqlite::Connection::open(setup.dir.join("priory.db")).unwrap();
+    db.execute(
+        "INSERT INTO inbox (seq, id, time, type, subject, data, links, outcome)
+         VALUES (900, 'r900', '2026-11-17T09:00:00Z', 'priory.report', 'intake',
+           '{\"line\":\"github: HTTP 401: token abc\"}', '[]', '')",
+        [],
+    )
+    .unwrap();
+
+    let desk = json_of(&setup, "desk");
+
+    assert_eq!(
+        (
+            &desk["next"]["kind"],
+            &desk["next"]["title"],
+            &desk["next"]["why"]
+        ),
+        (
+            &json!("report"),
+            &json!("the intake fails to poll github"),
+            &json!("an alarm: work stopped and waits on a person")
+        )
+    );
+}
+
+#[test]
+fn the_desk_endpoints_next_is_the_clis() {
+    let mut setup = Setup::new("desk-rank-api", SERVE);
+    setup.seed_ranks();
+    let address = setup.start(&["serve", &setup.factory()]);
+
+    let served = api(&address, "/api/desk");
+
+    assert_eq!(served["next"], json_of(&setup, "desk")["next"]);
+    assert_eq!(
+        (&served["next"]["kind"], &served["next"]["title"]),
+        (&json!("blocked"), &json!("task cli:docs-2 blocked"))
+    );
+}
+
 #[test]
 fn the_desk_endpoint_lists_since_you_looked_for_a_person_as_the_cli_does() {
     let mut setup = Setup::new("looked", SERVE);
@@ -3848,4 +4000,81 @@ fn an_ask_asked_again_before_its_first_push_went_out_pushes_once() {
     let pushes = setup.until_pushes(2);
     std::thread::sleep(Duration::from_millis(1500));
     assert_eq!(setup.pushes().len(), 2, "{pushes:?}");
+}
+
+impl Setup {
+    /// The argument lists the fake `notify-send` received, oldest first.
+    fn notices(&self) -> Vec<Value> {
+        fs::read_to_string(self.dir.join("fake/notify.jsonl"))
+            .unwrap_or_default()
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect()
+    }
+
+    /// Waits until the fake `notify-send` ran `count` times, then a while for any extra call.
+    fn until_notices(&self, count: usize) -> Vec<Value> {
+        let deadline = Instant::now() + Duration::from_secs(15);
+        while self.notices().len() < count {
+            assert!(
+                Instant::now() < deadline,
+                "{:?}\n{}",
+                self.notices(),
+                fs::read_to_string(self.dir.join("server.log")).unwrap_or_default()
+            );
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        std::thread::sleep(Duration::from_millis(1500));
+        self.notices()
+    }
+}
+
+#[test]
+fn desktop_notifications_run_notify_send_once_per_new_top_item_with_its_title_only() {
+    let mut setup = Setup::new("notify", &format!("{SERVE}\n[notify]\ndesktop = true\n"));
+    setup.seed();
+    succeeded(&setup.priory(&["pause"]));
+    setup.start(&["daemon", &setup.factory()]);
+    assert_eq!(
+        setup.until_notices(1),
+        [json!(["--", "task cli:docs-1 asks at implement"])]
+    );
+
+    let db = setup.db();
+    db.execute_batch(
+        "BEGIN;
+         UPDATE tasks SET state = 'blocked', reason = 'tests fail' WHERE id = 2;
+         INSERT INTO snoozes (kind, item, task, snoozed, until)
+           VALUES ('task', 2, 2, '2026-11-17T11:00:00Z', '2999-01-01T00:00:00Z');
+         COMMIT;",
+    )
+    .unwrap();
+    std::thread::sleep(Duration::from_millis(1500));
+    db.execute(
+        "INSERT INTO asks (task, step, kind, question, options, title, text, command)
+         VALUES (1, 'implement', 'agent', 'Deploy?', '[\"deploy\",\"wait\"]', 'Deploy the docs?',
+           'the brief: private plan', '{\"argv\":[\"make\",\"deploy\"],\"runs\":[\"deploy\"]}')",
+        [],
+    )
+    .unwrap();
+
+    assert_eq!(
+        setup.until_notices(2),
+        [
+            json!(["--", "task cli:docs-1 asks at implement"]),
+            json!(["--", "Deploy the docs?"])
+        ]
+    );
+}
+
+#[test]
+fn without_notify_desktop_the_daemon_runs_no_notify_send() {
+    let mut setup = Setup::new("notify-off", SERVE);
+    setup.seed();
+    succeeded(&setup.priory(&["pause"]));
+    setup.start(&["daemon", &setup.factory()]);
+
+    std::thread::sleep(Duration::from_millis(2500));
+
+    assert_eq!(setup.notices(), Vec::<Value>::new());
 }

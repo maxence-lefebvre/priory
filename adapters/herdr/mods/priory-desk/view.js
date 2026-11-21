@@ -135,7 +135,7 @@ export function deskModel({ desk, asks: asksListing, tasks: tasksListing, queue 
 
   return {
     count: { number: asks.length, label: asks.length === 1 ? "ask needs you" : "asks need you", line },
-    next: asks.length ? nextThing(asks[0], askById.get(asks[0].id), taskById.get(asks[0].task), now, links) : null,
+    next: desk.next ? nextThing(desk.next, desk.next.kind === "ask" ? askById.get(desk.next.id) : null, taskById.get(desk.next.task), now, links) : null,
     empty: asks.length || stopped.length ? null : "No open asks. Agents ask here when they need you.",
     views: [
       { id: "needs", label: "Needs me", count: asks.length + stopped.length },
@@ -161,22 +161,27 @@ export function deskModel({ desk, asks: asksListing, tasks: tasksListing, queue 
 }
 
 /**
- * @param {any} item a desk ask item @param {any} ask the same ask in `priory asks` @param {any} task @param {number} now
+ * The desk's `next`: an ask, or an alarm that ranks above every ask.
+ * @param {any} item the desk's `next` @param {any} ask the same ask in `priory asks`, when it is one @param {any} task @param {number} now
  * @param {{ pattern: string, url: string }[]} links
  */
 function nextThing(item, ask, task, now, links) {
   const progress = task?.progress;
-  const question = ask?.title || ask?.question || item.what;
+  const isAsk = item.kind === "ask";
+  // As in `itemRow`: only a blocked or failed task's reason replaces the desk's `what`.
+  const question = isAsk ? ask?.title || ask?.question || item.what : ["blocked", "failed"].includes(item.kind) && task?.reason ? task.reason : item.what;
   return {
-    ask: item.id,
+    ask: isAsk ? item.id : null,
+    snooze: SNOOZABLE.includes(item.kind) ? { kind: item.kind, id: item.id } : null,
     revision: ask?.revision ?? null,
     task: item.task,
     key: item.key ?? ask?.key ?? null,
     step: item.step,
     age: age(item.since, now),
+    why: item.why,
     question,
     questionSpans: autolink(question, links, ask?.repo ?? null),
-    recommendation: ask?.recommendation ?? null,
+    recommendation: isAsk ? ask?.recommendation ?? null : RECOMMENDS[item.kind] ?? null,
     tradeoff: ask?.tradeoff ?? null,
     progress: progress ? { latestChange: progress.latestChange ?? null, nextAction: progress.nextAction ?? null } : null,
   };
