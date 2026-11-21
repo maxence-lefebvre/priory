@@ -975,6 +975,7 @@ pub(crate) fn handle(
         return Ok(None);
     }
     let resources = route::resources(message);
+    claim_pull_request(&tx, message)?;
     // A review event goes to its review task first, even when an older task is keyed by its PR.
     let (keyed, owners) = match (route::requests(message), route::review(message)) {
         (true, _) => (keyed(&tx, resources.first())?, Vec::new()),
@@ -1140,6 +1141,40 @@ pub(crate) fn handle(
     Ok(None)
 }
 
+/// Subscribes the task whose branch is the head of the open pull request `message` names, on the
+/// first event of that pull request, when no other active task owns it. So a pull request a worker
+/// opened itself is its own, and a later `unsubscribe` holds.
+fn claim_pull_request(tx: &Transaction, message: &Message) -> rusqlite::Result<()> {
+    let data = &message.data;
+    let (Some(repo), Some(number), Some(head)) = (
+        data["repo"].as_str(),
+        data["pull_request"].as_u64(),
+        data["head_branch"].as_str(),
+    ) else {
+        return Ok(());
+    };
+    if !message.kind.starts_with("github.") || message.kind == CLOSED || data["open"] == false {
+        return Ok(());
+    }
+    tx.execute(
+        "INSERT OR IGNORE INTO subscriptions (task, resource)
+         SELECT owns.task, ?1 FROM owns JOIN tasks ON tasks.id = owns.task
+         WHERE owns.resource = ?2 AND tasks.state NOT IN ('failed', 'dropped')
+         AND NOT EXISTS (SELECT 1 FROM owned JOIN tasks AS other ON other.id = owned.task
+           WHERE owned.resource = ?1 AND owned.task != owns.task
+           AND other.state NOT IN ('done', 'failed', 'dropped'))
+         AND NOT EXISTS (SELECT 1 FROM inbox WHERE json_extract(data, '$.repo') = ?3
+           AND json_extract(data, '$.pull_request') = ?4)",
+        params![
+            route::pull_request(repo, number),
+            route::branch(repo, head),
+            repo,
+            number as i64
+        ],
+    )?;
+    Ok(())
+}
+
 /// Whether `task` sleeps where an event can wake it: asleep at a model step, with no daemon's
 /// checks gate, since a human step or a gate has no agent turn to wake.
 fn wakes(tx: &Transaction, task: i64, factory: &Factory) -> rusqlite::Result<bool> {
@@ -1271,7 +1306,10 @@ pub(crate) fn due(db: &mut Connection) -> rusqlite::Result<()> {
 }
 
 /// The resource and the agent's last prompt of each open wait that the intake polls for, then the
-/// pull request or Linear issue and creation time of each unmet merge or issue condition of a hold.
+/// pull request or Linear issue and creation time of each unmet merge or issue condition of a hold,
+/// then each subscription of a task that has not failed or been dropped, then the branch of each
+/// active task, or of a task done in the last 10 minutes whose branch no event named yet, so the
+/// intake sees a pull request its worker opened itself.
 pub fn watched(db: &Connection) -> rusqlite::Result<Vec<(String, String)>> {
     db.prepare(
         "SELECT resource, since FROM (
@@ -1284,6 +1322,17 @@ pub fn watched(db: &Connection) -> rusqlite::Result<Vec<(String, String)>> {
            SELECT 1, holds.id, holds.resource, holds.created FROM holds
            JOIN tasks ON tasks.id = holds.task AND tasks.state NOT IN ('done', 'failed', 'dropped')
            WHERE holds.kind IN ('merge', 'issue') AND holds.released IS NULL AND holds.met IS NULL
+           UNION ALL
+           SELECT 2, subscriptions.rowid, subscriptions.resource, subscriptions.created
+           FROM subscriptions
+           JOIN tasks ON tasks.id = subscriptions.task AND tasks.state NOT IN ('failed', 'dropped')
+           UNION ALL
+           SELECT 3, owns.rowid, owns.resource, tasks.changed FROM owns
+           JOIN tasks ON tasks.id = owns.task
+           WHERE owns.resource GLOB 'github:*@*' AND (tasks.state NOT IN ('done', 'failed', 'dropped')
+             OR (tasks.state = 'done' AND julianday('now') - julianday(tasks.changed) < 10.0 / 1440
+               AND NOT EXISTS (SELECT 1 FROM inbox WHERE owns.resource = 'github:'
+                 || json_extract(inbox.data, '$.repo') || '@' || json_extract(inbox.data, '$.head_branch'))))
          ) ORDER BY source, id",
     )?
     .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
