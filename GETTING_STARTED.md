@@ -274,7 +274,7 @@ When someone labels issue 42 of `owner/name` with `agent`, this happens:
 | `priory relate TASK KIND OTHER [--remove]` | Records that a task `builds-on`, `fixes`, `takes-up` or `relates` to another, or removes it |
 | `priory task TASK --json` | Prints one task with its brief, plan, pull request, runs and asks |
 | `priory attach TASK [--read-only]` | Attaches your terminal to a task's agent |
-| `priory screen TASK [--json]` | Prints what a task's agent shows now, with secrets hidden |
+| `priory screen TASK [--json]` | Prints what a task's agent shows now, in colour on a terminal, with secrets hidden. The task's page in the web view shows the same screen, with Load earlier for scrollback and Type to say a line to the agent |
 | `priory resume TASK` | Resumes a blocked task |
 | `priory say TASK TEXT` | Sends a task's agent a message, waking it if it sleeps |
 | `priory subscribe TASK RESOURCE [--expected REVISION]`, `priory unsubscribe TASK RESOURCE` | Routes a pull request's, Linear issue's or Slack thread's events to a task until it closes, or stops routing them. Every task already subscribes to its own key, such as the Slack thread that started it. `--expected` refuses the subscribe once the state moved past that revision |

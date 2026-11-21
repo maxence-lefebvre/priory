@@ -460,7 +460,9 @@ fn terminal(db: &Connection, served: &Served, run: &str, query: &str) -> Reply {
         return Reply::error(503, "too many screens are being read; retry in a second");
     }
     let have = query.split('&').find_map(|pair| pair.strip_prefix("have="));
-    let history = query.split('&').find_map(|pair| pair.strip_prefix("history="));
+    let history = query
+        .split('&')
+        .find_map(|pair| pair.strip_prefix("history="));
     let history = match history.map(str::parse::<usize>) {
         None => 0,
         Some(Ok(rows)) => rows.min(screen::HISTORY),

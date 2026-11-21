@@ -1067,9 +1067,10 @@ pub fn snapshot(name: &str, session: &str, history: usize, deadline: Duration) -
         .lines()
         .map(|line| line.trim_end().to_owned())
         .collect();
-    snapshot
-        .lines
-        .resize(snapshot.earlier + usize::from(snapshot.height), String::new());
+    snapshot.lines.resize(
+        snapshot.earlier + usize::from(snapshot.height),
+        String::new(),
+    );
     Some(snapshot)
 }
 
@@ -1412,7 +1413,7 @@ mod tests {
 
     #[test]
     fn the_tagged_pane_is_the_live_one_with_the_session_and_its_cursor_shows_only_when_on() {
-        let panes = "%1 0 80 24 1 3 4 other\n%2 1 80 24 1 3 4 s1\n%3 0 120 30 0 9 9 s1\n%4 0 120 30 1 5 6 s1";
+        let panes = "%1 0 80 24 1 3 4 0 other\n%2 1 80 24 1 3 4 0 s1\n%3 0 120 30 0 9 9 0 s1\n%4 0 120 30 1 5 6 0 s1";
         let found = |panes, session| {
             tagged_pane(panes, session)
                 .map(|(pane, shown)| (pane, shown.width, shown.height, shown.cursor))
@@ -1420,17 +1421,22 @@ mod tests {
 
         assert_eq!(found(panes, "s1"), Some(("%3", 120, 30, None)));
         assert_eq!(
-            found("%4 0 120 30 1 5 6 s1", "s1"),
+            found("%4 0 120 30 1 5 6 7 s1", "s1"),
             Some(("%4", 120, 30, Some((5, 6))))
         );
-        assert_eq!(found("%4 0 120 30 2 5 6 s1", "s1"), None);
+        assert_eq!(
+            tagged_pane("%4 0 120 30 1 5 6 1500 s1", "s1").map(|(_, shown)| shown.scrollback),
+            Some(1500)
+        );
+        assert_eq!(found("%4 0 120 30 2 5 6 0 s1", "s1"), None);
+        assert_eq!(found("%4 0 120 30 1 5 6 many s1", "s1"), None);
         assert_eq!(found(panes, "s9"), None);
     }
 
     proptest! {
         #[test]
         fn a_pane_listing_parses_or_is_refused_without_panicking(
-            listing in "(%[0-9]{1,3} [01] [0-9]{1,6} [0-9]{1,6} [0-9] [0-9]{1,6} [0-9]{1,6} s1\n){0,3}|.{0,80}"
+            listing in "(%[0-9]{1,3} [01] [0-9]{1,6} [0-9]{1,6} [0-9] [0-9]{1,6} [0-9]{1,6} [0-9]{1,6} s1\n){0,3}|.{0,80}"
         ) {
             if let Some((pane, ..)) = tagged_pane(&listing, "s1") {
                 prop_assert!(listing.contains(pane));

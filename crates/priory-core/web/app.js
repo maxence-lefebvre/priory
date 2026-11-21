@@ -9,7 +9,7 @@ import { prStack } from "./stack.js";
 import { KINDS, edgeStyle, lockBadge, nodeShape, timeline, ungatedPairs } from "./flows.js";
 import { handled, neverOwned, routeAction, unroutedNote } from "./inbox.js";
 import { editBody, issueName, laneLayout, momentWords, stages, successors } from "./batches.js";
-import { rowParts, screenWatch } from "./terminal.js";
+import { EARLIER_CAP, sayLine, screenRows, screenWatch } from "./terminal.js";
 import { actionNote, batchParts, dueParts, mergeSince, nextLink, progressView, rowAction, sectionInView, sinceGroups } from "./desk.js";
 import { TASK_FACETS, TASK_VIEWS, filtered, olderPart, taskViews } from "./tasks.js";
 import { RUN_FACETS, RUN_VIEWS, duration, runState, runViews, tokenText } from "./runs.js";
@@ -69,6 +69,7 @@ const ICONS = {
   copy: '<rect width="14" height="14" x="8" y="8" rx="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/>',
   fit: '<path d="M8 3H5a2 2 0 0 0-2 2v3"/><path d="M21 8V5a2 2 0 0 0-2-2h-3"/><path d="M3 16v3a2 2 0 0 0 2 2h3"/><path d="M16 21h3a2 2 0 0 0 2-2v-3"/>',
   eye: '<path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/>',
+  keyboard: '<path d="M10 8h.01"/><path d="M12 12h.01"/><path d="M14 8h.01"/><path d="M16 12h.01"/><path d="M18 8h.01"/><path d="M6 8h.01"/><path d="M7 16h10"/><path d="M8 12h.01"/><rect width="20" height="16" x="2" y="4" rx="2"/>',
   shield: '<path d="M20 13c0 5-3.5 7.5-7.7 9a1 1 0 0 1-.6 0C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.2-2.7a1.2 1.2 0 0 1 1.6 0C14.5 3.8 17 5 19 5a1 1 0 0 1 1 1z"/>',
 };
 
@@ -1294,14 +1295,16 @@ function taskSections(task) {
 
 // The run's terminal: its screen polled while shown (terminal.js), never kept on this device.
 const watch = screenWatch({
-  read: (run, have) => api(`/api/runs/${run}/screen${have ? `?have=${encodeURIComponent(have)}` : ""}`).catch((error) => {
+  read: (run, have, history) => api(`/api/runs/${run}/screen?${new URLSearchParams({ history, ...(have ? { have } : {}) })}`).catch((error) => {
     if (error.status === 401) signOut("The daemon refused this token. Paste the current one.");
     throw error;
   }),
   changed: () => paintTerminal(document.getElementById("app")),
 });
 // `left` is the pane's sideways scroll for run `run`, kept while a refresh redraws the task page.
-const terminal = { fit: false, copied: null, run: null, left: 0, onScreen: false };
+// `typing` opens the Say line, `line` holds its text, `said` its last note and whether it was said.
+const terminal = { fit: false, copied: null, run: null, left: 0, onScreen: false, typing: false, line: "", said: null, saying: false };
+const screenText = (screen) => screenRows(screen.lines).map((parts) => parts.map((part) => part.text).join("")).join("\n").trimEnd();
 
 // The live run, else the run whose last screen this page still holds.
 function terminalRun(task) {
@@ -1329,15 +1332,40 @@ function terminalBody({ term, task, tmux, end }) {
   if (end) notes.push(["", (STATES[end] || [, "circle-help"])[1], screen ? `Run ${run} ended as ${end}. This is the last screen this page saw.` : `Run ${run} ended as ${end}.`]);
   else if (gone) notes.push(["warn", "unplug", `This server reads no screen of run ${run}. Run priory screen ${task} on the runner to see why.`]);
   else if (!screen && !stale) notes.push(["", "clock", "Reading the screen…"]);
-  const rows = screen ? screen.lines.map((line) => html`${rowParts(line).map((part) => (part.hidden ? html`<span class="hid">${part.text}</span>` : part.text))}\n`) : "";
+  // Each part's classes come from screenRows' fixed set; its text stays text.
+  const part = (part) => (part.hidden ? html`<span class="hid">${part.text}</span>` : part.cls ? html`<span class="${part.cls}">${part.text}</span>` : part.text);
+  const earlier = screen?.earlier || 0;
+  const rows = screen ? screenRows(screen.lines).map((parts, at) => html`${at < earlier ? html`<span class="earlier">${parts.map(part)}</span>` : parts.map(part)}\n${at === earlier - 1 ? raw('<span class="fold" aria-hidden="true"></span>') : ""}`) : "";
+  const top = end || !screen ? "" : kept.more ? html`<button class="term-more" data-action="term-earlier">${icon("chevron-up", "s15")}Load earlier${earlier ? html` <span class="dim">(${earlier} shown)</span>` : ""}</button>`
+    : earlier >= EARLIER_CAP ? html`<p class="term-edge">The last ${EARLIER_CAP.toLocaleString("en")} lines are as far back as this pane reads.</p>` : "";
+  const typing = terminal.typing && !end;
   const copied = (what, text) => (terminal.copied === what ? "Copied" : text);
   return html`${notes.map(([kind, name, text]) => html`<p class="note ${kind}" role="status">${icon(name, "s15")}<span>${text}</span></p>`)}
     <div class="term${terminal.fit ? " fit" : ""}${end ? " ended" : ""}" role="region" aria-label="Terminal of run ${run}">
-      <div class="term-head">${icon("terminal", "s15")}<span class="mono">${tmux}</span><span>run ${run}</span>${end ? tile(end, "sm") : ""}<span class="ro">read-only</span><span class="sp"></span>
+      <div class="term-head">${icon("terminal", "s15")}<span class="mono">${tmux}</span><span class="rid">run ${run}</span>${end ? tile(end, "sm") : ""}<span class="ro${typing ? " on" : ""}">${typing ? "say" : "read-only"}</span><span class="sp"></span>
+        ${end ? "" : html`<button data-action="term-type" aria-label="Type" aria-pressed="${String(typing)}">${icon("keyboard", "s15")}<span>Type</span></button>`}
         <button data-action="term-copy" aria-label="Copy screen" ${screen ? "" : raw('aria-disabled="true"')}>${icon("copy", "s15")}<span>${copied("screen", "Copy screen")}</span></button>
         <button data-action="term-fit" aria-label="Fit" aria-pressed="${String(terminal.fit)}">${icon("fit", "s15")}<span>Fit</span></button>
         <button data-action="term-attach" aria-label="Copy the attach command" data-task="${task}">${icon("eye", "s15")}<span>${copied("attach", "Attach")}</span></button></div>
-      <pre id="term-screen" tabindex="0" aria-label="Screen${screen ? `, ${screen.width} by ${screen.height}` : ""}">${rows}</pre></div>`;
+      ${top}<pre id="term-screen" tabindex="0" aria-label="Screen${screen ? `, ${screen.width} by ${screen.height}` : ""}">${rows}</pre>
+      ${typing ? html`<div class="term-type"><form data-action="term-say" data-task="${task}"><span class="pr" aria-hidden="true">›</span><label class="sr" for="term-line">Say to the agent</label>
+        <input id="term-line" autocomplete="off" placeholder="Say to the agent" value="${terminal.line}"><button class="send" ${terminal.line.trim() && !terminal.saying ? "" : raw('aria-disabled="true"')}>Say</button></form>
+        ${terminal.said ? html`<p class="tn ${terminal.said.said ? "ok" : "no"}" role="status">${icon(terminal.said.said ? "check" : "circle-x", "s15")}<span>${terminal.said.note}</span></p>` : ""}</div>` : ""}</div>`;
+}
+
+// Says the pane's line through the task's say verb; a refusal keeps the line, as the task page's Say does.
+async function sayFromPane(task) {
+  const text = terminal.line;
+  if (terminal.saying || !text.trim()) return;
+  terminal.saying = true;
+  paintTerminal(document.getElementById("app"), true);
+  const said = await sayLine(post, task, text);
+  terminal.saying = false;
+  if (said.signOut) return signOut("The daemon refused this token. Paste the current one.");
+  // Text typed while the line was in flight stays.
+  if (said.said && terminal.line === text) terminal.line = "";
+  terminal.said = said;
+  paintTerminal(document.getElementById("app"), true);
 }
 
 // Repaints the pane when what it shows changed, or always after a render, keeping its sideways
@@ -1345,11 +1373,13 @@ function terminalBody({ term, task, tmux, end }) {
 function paintTerminal(app, rendered = false) {
   const box = app?.querySelector("[data-term]");
   if (!box) return;
-  const { screen, stale, gone, at } = watch.state();
-  const key = JSON.stringify([screen?.hash, stale, gone, stale && Math.round((Date.now() - at) / 1000), terminal.fit, terminal.copied, innerWidth]);
+  const { screen, stale, gone, at, more } = watch.state();
+  const key = JSON.stringify([screen?.hash, stale, gone, more, stale && Math.round((Date.now() - at) / 1000), terminal.fit, terminal.copied, terminal.typing, innerWidth]);
   if (box.dataset.painted === key && !rendered) return;
-  if (terminal.run !== box.dataset.term) Object.assign(terminal, { run: box.dataset.term, left: 0 });
-  const focused = box.contains(document.activeElement) ? document.activeElement.dataset.action || "pre" : null;
+  if (terminal.run !== box.dataset.term) Object.assign(terminal, { run: box.dataset.term, left: 0, typing: false, line: "", said: null });
+  const active = document.activeElement;
+  const focused = box.contains(active) ? active.id || active.dataset.action || "pre" : null;
+  const caret = active?.id === "term-line" ? [active.selectionStart, active.selectionEnd] : null;
   box.innerHTML = terminalBody(box.dataset).text;
   box.dataset.painted = key;
   const pre = box.querySelector("pre");
@@ -1359,7 +1389,8 @@ function paintTerminal(app, rendered = false) {
   pre.style.lineHeight = fit ? "1.33" : "";
   pre.scrollLeft = terminal.left;
   pre.addEventListener("scroll", () => { terminal.left = pre.scrollLeft; });
-  if (focused) (focused === "pre" ? pre : box.querySelector(`[data-action="${focused}"]`))?.focus({ preventScroll: true });
+  if (focused) (focused === "pre" ? pre : box.querySelector(`#${focused}, [data-action="${focused}"]`))?.focus({ preventScroll: true });
+  if (caret) box.querySelector("#term-line")?.setSelectionRange(...caret);
 }
 
 // Polls while a live run's pane is on screen and the page is shown.
@@ -2615,7 +2646,13 @@ document.addEventListener("click", (event) => {
   const action = target.dataset.action;
   if (action === "retry") return refresh();
   if (action === "term-fit") return (terminal.fit = !terminal.fit), paintTerminal(document.getElementById("app"));
-  if (action === "term-copy") return watch.state().screen && copyTerminal(watch.state().screen.lines.join("\n").trimEnd(), "screen");
+  if (action === "term-copy") return watch.state().screen && copyTerminal(screenText(watch.state().screen), "screen");
+  if (action === "term-earlier") return watch.earlier();
+  if (action === "term-type") {
+    Object.assign(terminal, { typing: !terminal.typing, said: null });
+    paintTerminal(document.getElementById("app"), true);
+    return terminal.typing && document.getElementById("term-line")?.focus();
+  }
   if (action === "term-attach") return copyTerminal(`priory attach ${target.dataset.task} --read-only`, "attach");
   // A refresh that reaches the daemon reads the costs again.
   if (action === "costs-retry") return (state.costs.error = null), refresh();
@@ -2701,6 +2738,11 @@ document.addEventListener("input", (event) => {
   if (event.target.id === "report-draft" && state.compose) state.compose.text = event.target.value;
   const form = event.target.id === "say" && event.target.closest("form");
   if (form) state.sayDrafts.set(Number(form.dataset.task), event.target.value);
+  if (event.target.id === "term-line") {
+    terminal.line = event.target.value;
+    // Only the button changes; a repaint per letter would cost the caret.
+    event.target.form.querySelector(".send").setAttribute("aria-disabled", String(!terminal.line.trim() || terminal.saying));
+  }
 });
 
 document.addEventListener("submit", (event) => {
@@ -2718,6 +2760,10 @@ document.addEventListener("submit", (event) => {
   if (event.target.dataset.action === "remark") {
     event.preventDefault();
     return submitRemark();
+  }
+  if (event.target.dataset.action === "term-say") {
+    event.preventDefault();
+    return sayFromPane(Number(event.target.dataset.task));
   }
   if (event.target.dataset.action === "say") {
     event.preventDefault();
@@ -2738,6 +2784,11 @@ document.addEventListener("submit", (event) => {
 
 // Desktop shortcuts: j and k move, Enter opens, Esc closes, S snoozes the selected ask for 1 h. Never inside an input.
 document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape" && event.target.id === "term-line") {
+    Object.assign(terminal, { typing: false, said: null });
+    paintTerminal(document.getElementById("app"), true);
+    return document.querySelector('[data-action="term-type"]')?.focus();
+  }
   if ((event.key === " " || event.key === "Enter") && event.target.matches?.("[role=radio]")) {
     event.preventDefault();
     return event.target.click();

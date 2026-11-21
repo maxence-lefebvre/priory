@@ -165,7 +165,9 @@ pub fn read(
     let run = state::live_run(db, target)?;
     let snapshot = runtime::snapshot(&run.tmux, &run.session, history, DEADLINE)
         .ok_or_else(|| state::no_pane(&run))?;
-    let rows = LINK.replace_all(&snapshot.lines.join("\n"), "").into_owned();
+    let rows = LINK
+        .replace_all(&snapshot.lines.join("\n"), "")
+        .into_owned();
     let (shown, redacted) = redact(&rows, exact)
         .ok_or("a secret on this screen stays visible after redaction, so it is not shown")?;
     let mut lines: Vec<&str> = shown.split('\n').collect();
