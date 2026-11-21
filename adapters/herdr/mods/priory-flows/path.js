@@ -18,7 +18,9 @@ export function labelSpots(edges, scale) {
     const x = edge.mid.x * scale + (edge.vertical ? 6 : 5);
     let y = edge.mid.y * scale - LABEL.line / 2;
     if (!edge.vertical) return { x, y };
-    const width = Math.min(edge.outcome.length, LABEL.lane) * LABEL.char;
+    // A clipped label shows lane - 1 characters and "...", inside 2 px of padding on each side.
+    const shown = edge.outcome.length > LABEL.lane ? LABEL.lane + 2 : edge.outcome.length;
+    const width = shown * LABEL.char + 4;
     while (placed.some((other) => Math.abs(other.y - y) < LABEL.line && x < other.x + other.width && other.x < x + width)) y += LABEL.line;
     placed.push({ x, y, width });
     return { x, y };
