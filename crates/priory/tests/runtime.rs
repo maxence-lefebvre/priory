@@ -50,7 +50,7 @@ const OUTPUT: &str = "factory.intake";
 const UNDO_SINCE_SEARCH: &str = "ALTER TABLE deliveries DROP COLUMN cleared; ALTER TABLE snoozes DROP COLUMN ended;
          DROP TRIGGER ask_withdrawn_at; DROP TRIGGER wait_withdrawn_at;
          ALTER TABLE asks DROP COLUMN withdrawn_at; ALTER TABLE waits DROP COLUMN withdrawn_at;
-         ALTER TABLE tasks DROP COLUMN batch; ALTER TABLE tasks DROP COLUMN batch_entry; DROP TABLE idle_compactions; ALTER TABLE shared_sessions DROP COLUMN definition; DROP INDEX todos_open_connector; ALTER TABLE todos DROP COLUMN connector; ALTER TABLE waits DROP COLUMN after; ALTER TABLE subscriptions DROP COLUMN chosen; ALTER TABLE approvals DROP COLUMN generation;
+         ALTER TABLE tasks DROP COLUMN base_task; ALTER TABLE tasks DROP COLUMN batch; ALTER TABLE tasks DROP COLUMN batch_entry; DROP TABLE idle_compactions; ALTER TABLE shared_sessions DROP COLUMN definition; DROP INDEX todos_open_connector; ALTER TABLE todos DROP COLUMN connector; ALTER TABLE waits DROP COLUMN after; ALTER TABLE subscriptions DROP COLUMN chosen; ALTER TABLE approvals DROP COLUMN generation;
          ALTER TABLE tasks DROP COLUMN plan_goal; ALTER TABLE tasks DROP COLUMN plan_testing; ALTER TABLE tasks DROP COLUMN plan_brief; ALTER TABLE tasks DROP COLUMN verification;
          ALTER TABLE tasks DROP COLUMN merge_risk; ALTER TABLE results DROP COLUMN merge_risk;
          DROP TRIGGER ask_returns_from_its_lead; ALTER TABLE waits DROP COLUMN green;
@@ -5822,7 +5822,7 @@ fn a_state_file_whose_asks_an_approval_names_upgrades_to_outside_asks() {
          DROP TABLE findings;
          DROP TRIGGER ask_withdrawn; ALTER TABLE asks DROP COLUMN withdrawn_reason;
          ALTER TABLE waits DROP COLUMN withdrawn_reason; ALTER TABLE ask_withdrawals DROP COLUMN reason;
-         ALTER TABLE tasks DROP COLUMN batch; ALTER TABLE tasks DROP COLUMN batch_entry; DROP INDEX todos_open_connector; ALTER TABLE todos DROP COLUMN connector; ALTER TABLE waits DROP COLUMN after;
+         ALTER TABLE tasks DROP COLUMN base_task; ALTER TABLE tasks DROP COLUMN batch; ALTER TABLE tasks DROP COLUMN batch_entry; DROP INDEX todos_open_connector; ALTER TABLE todos DROP COLUMN connector; ALTER TABLE waits DROP COLUMN after;
          DROP TABLE ask_revisions;
          DROP TABLE ask_refusals;
          PRAGMA legacy_alter_table = ON;
@@ -9876,7 +9876,7 @@ fn an_approval_stored_before_generations_were_kept_is_asked_again_after_the_upgr
         "ALTER TABLE deliveries DROP COLUMN cleared; ALTER TABLE snoozes DROP COLUMN ended;
          DROP TRIGGER ask_withdrawn_at; DROP TRIGGER wait_withdrawn_at;
          ALTER TABLE asks DROP COLUMN withdrawn_at; ALTER TABLE waits DROP COLUMN withdrawn_at;
-         ALTER TABLE tasks DROP COLUMN batch; ALTER TABLE tasks DROP COLUMN batch_entry; DROP TABLE idle_compactions; ALTER TABLE shared_sessions DROP COLUMN definition; DROP INDEX todos_open_connector; ALTER TABLE todos DROP COLUMN connector; ALTER TABLE waits DROP COLUMN after;
+         ALTER TABLE tasks DROP COLUMN base_task; ALTER TABLE tasks DROP COLUMN batch; ALTER TABLE tasks DROP COLUMN batch_entry; DROP TABLE idle_compactions; ALTER TABLE shared_sessions DROP COLUMN definition; DROP INDEX todos_open_connector; ALTER TABLE todos DROP COLUMN connector; ALTER TABLE waits DROP COLUMN after;
          ALTER TABLE subscriptions DROP COLUMN chosen; ALTER TABLE approvals DROP COLUMN generation;
          PRAGMA user_version = 64;",
     )
@@ -17922,14 +17922,19 @@ fn a_plan_with_an_unknown_moment_is_refused() {
 }
 
 #[test]
-fn a_plan_with_a_waiting_moment_is_refused_until_stacked_entries_exist() {
+fn a_plan_with_two_waiting_predecessors_for_one_entry_is_refused() {
     let mut entries = three_entries();
-    entries[1]["after"][0]["moment"] = json!("waiting");
+    entries[1] = entry("e2", "ENG-41", &[]);
+    entries[2] = entry("e3", "ENG-43", &["e1", "e2"]);
+    entries[2]["after"][0]["moment"] = json!("waiting");
+    entries[2]["after"][1]["moment"] = json!("waiting");
     assert_eq!(
-        plan_refused("batch-waiting", json!({ "title": "t", "entries": entries })),
+        plan_refused(
+            "batch-two-waiting",
+            json!({ "title": "t", "entries": entries })
+        ),
         (
-            "entry e2 waits on e1 at `waiting`, which Priory does not build yet; use merged"
-                .to_owned(),
+            "entry e3 has 2 waiting predecessors; give it one stacking parent".to_owned(),
             true
         )
     );
@@ -18221,10 +18226,18 @@ fn a_lost_predecessor_asks_once_per_condition_and_each_answer_moves_only_its_tas
     batch_add(&setup, &["ENG-40", "ENG-41", "ENG-42", "ENG-43"]);
     setup.start();
     let go = setup.until("asks", |rows| rows.len() == 1);
-    setup.calls(&[result("failed")]);
+    // The root that starts first is lost; the other sleeps, so it never runs out of calls.
+    let later = wait(json!({ "type": "time", "until": "1 hour" }));
+    setup.calls(&[result("failed"), later]);
     person(&setup, "answer", &[&go[0][0], "go", "--revision", "1"]);
 
-    let tasks = setup.until("tasks", |rows| rows.iter().any(|row| row[4] == "dropped"));
+    let tasks = setup.until("tasks", |rows| {
+        let roots = rows
+            .iter()
+            .filter(|row| ["2", "3"].contains(&row[0].as_str()));
+        let states: Vec<_> = roots.map(|row| row[4].as_str()).collect();
+        states.contains(&"dropped") && states.contains(&"asleep")
+    });
     let lost = tasks.iter().find(|row| row[4] == "dropped").unwrap();
     let (lost, key) = (&lost[0], &lost[1]);
     let asks = setup.until("asks", |rows| rows.len() == 2);
@@ -18522,10 +18535,6 @@ fn an_edit_is_refused_and_changes_nothing_when_it_does_not_hold() {
         (
             &["1", "--expected", "1", "--move", "e1", "--after", "e3"],
             "entry e2 starts after e1; move e1 before e2",
-        ),
-        (
-            &["1", "--expected", "1", "--moment", "e2", "e1", "waiting"],
-            "entry e2 waits on e1 at `waiting`, which Priory does not build yet; use merged",
         ),
         (
             &["1", "--expected", "1", "--moment", "e2", "e3", "merged"],
@@ -19088,6 +19097,138 @@ fn a_failed_part_revives_while_the_next_part_waits_on_it() {
     setup.until("tasks", |rows| {
         rows.iter().any(|row| row[0] == "3" && row[4] != "failed")
     });
+}
+
+/// A batch over `ENG-40` and `ENG-41` on `OPEN_PR`, `ENG-41` stacked on `ENG-40` at `waiting`, after
+/// task 2 committed `a.txt`, opened pull request 7 and went to sleep on its checks.
+fn stacked_entry(name: &str) -> Setup {
+    let mut setup = batched_with(name, OPEN_PR);
+    let mut entries = [entry("e1", "ENG-40", &[]), entry("e2", "ENG-41", &["e1"])];
+    entries[1]["after"][0]["moment"] = json!("waiting");
+    setup.calls(&[planned(json!({ "title": "t", "entries": entries }))]);
+    batch_add(&setup, &["ENG-40", "ENG-41"]);
+    setup.start();
+    let go = setup.until("asks", |rows| rows.len() == 1);
+    setup.calls(&[passed_with_evidence(), passed_with_evidence()]);
+    person(&setup, "answer", &[&go[0][0], "go", "--revision", "1"]);
+    let asks = setup.until("asks", |rows| rows.iter().any(|row| row[1] == "2"));
+    setup.gone("priory-2");
+    setup.commit(2, "a.txt");
+    assert_eq!(entry_state(&setup, "3"), "held");
+    person(&setup, "answer", &[&asks[0][0], "open", "--revision", "1"]);
+    setup.until("tasks", |rows| {
+        rows.iter().any(|row| row[0] == "2" && row[4] == "asleep")
+    });
+    setup
+}
+
+#[test]
+fn a_waiting_entry_starts_from_its_predecessors_branch_once_that_one_sleeps_on_its_pull_request() {
+    let setup = stacked_entry("batch-waiting-start");
+
+    setup.until("asks", |rows| rows.iter().any(|row| row[1] == "3"));
+
+    let worktree = setup.dir.join("home/worktrees/owner/repo/3");
+    assert!(
+        worktree.join("a.txt").exists(),
+        "task 3 did not start from priory/2"
+    );
+    let shown = batch_json(&setup, &["1"]);
+    assert_eq!(shown["entries"][1]["after"][0]["moment"], "waiting");
+    assert!(
+        shown["entries"][1]["after"][0]["met"].is_string(),
+        "{shown}"
+    );
+}
+
+/// `stacked_entry`, after task 3 committed `b.txt` and opened pull request 8.
+fn stacked_entry_opened(name: &str) -> Setup {
+    let setup = stacked_entry(name);
+    let asks = setup.until("asks", |rows| rows.iter().any(|row| row[1] == "3"));
+    setup.gone("priory-3");
+    setup.commit(3, "b.txt");
+    person(&setup, "answer", &[&asks[0][0], "open", "--revision", "1"]);
+    setup.until("tasks", |rows| {
+        rows.iter().any(|row| row[0] == "3" && row[4] == "asleep")
+    });
+    setup
+}
+
+#[test]
+fn a_waiting_entry_bases_its_pull_request_on_its_predecessors_branch() {
+    let setup = stacked_entry_opened("batch-waiting-base");
+
+    let created: Vec<[String; 2]> = setup
+        .gh()
+        .into_iter()
+        .filter(|call| call[..2] == ["pr", "create"])
+        .map(|call| [call[5].clone(), call[7].clone()])
+        .collect();
+    assert_eq!(
+        created,
+        [["main", "priory/2"], ["priory/2", "priory/3"]].map(|call| call.map(str::to_owned))
+    );
+    assert_eq!(batch_json(&setup, &["1"])["entries"][1]["stage"], "waiting");
+}
+
+#[test]
+fn the_predecessors_pull_request_merging_wakes_the_waiting_entry_to_rebase_onto_its_base() {
+    let setup = stacked_entry_opened("batch-waiting-restack");
+
+    setup.publish(&on_pull_2(
+        "github.pull_request.closed",
+        json!({ "merged": true, "github_id": 400 }),
+    ));
+
+    let outbox = setup.until("outbox", |rows| {
+        rows.iter()
+            .any(|row| row[1] == "3" && row[4].contains("merged; rebase"))
+    });
+    let woke = outbox
+        .iter()
+        .find(|row| row[1] == "3" && row[4].contains("merged; rebase"))
+        .unwrap();
+    assert!(
+        woke[4].starts_with("#7 merged; rebase #8 onto main"),
+        "{woke:?}"
+    );
+    assert!(setup.rows("asks").is_empty());
+}
+
+#[test]
+fn a_waiting_entry_done_at_green_checks_reopens_to_rebase_when_its_predecessor_merges() {
+    let setup = stacked_entry_opened("batch-waiting-done-restack");
+    let worktree = setup.dir.join("home/worktrees/owner/repo/3");
+    let head = git(&worktree).args(["rev-parse", "HEAD"]).output().unwrap();
+    let mut green = check(1, 0);
+    green.data["pull_request"] = json!(8);
+    green.data["head_branch"] = json!("priory/3");
+    green.data["base_branch"] = json!("priory/2");
+    green.data["head_sha"] = json!(String::from_utf8(head.stdout).unwrap().trim());
+    setup.publish(&green.subject("owner/repo#8"));
+    setup.until("tasks", |rows| {
+        rows.iter().any(|row| row[0] == "3" && row[4] == "done")
+    });
+
+    setup.publish(&on_pull_2(
+        "github.pull_request.closed",
+        json!({ "merged": true, "github_id": 400 }),
+    ));
+
+    let outbox = setup.until("outbox", |rows| {
+        rows.iter()
+            .any(|row| row[1] == "3" && row[4].contains("merged; rebase"))
+    });
+    let woke = outbox
+        .iter()
+        .find(|row| row[1] == "3" && row[4].contains("merged; rebase"))
+        .unwrap();
+    assert!(
+        woke[4]
+            .starts_with("This done task reopened as generation 2: #7 merged; rebase #8 onto main"),
+        "{woke:?}"
+    );
+    assert_eq!(task_json(&setup, "3")["stack"][0]["base"], "main");
 }
 
 #[test]

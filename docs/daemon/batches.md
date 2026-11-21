@@ -3,11 +3,11 @@
 A batch is a set of issues that one planning task turns into ordered tasks under one ask. A person
 hands the issues over with `priory batch add`. The planning task's agent plans them, a person answers
 one go, and the daemon creates one task per entry. Each entry starts once the entries it needs have
-merged.
+merged, or, at a `waiting` edge, once its stacking parent waits on its open pull request.
 
-This page describes `merged` moments, edits of a plan, split issues, the desk line and the HTTP API.
-Stacked entries (the `waiting` moment) and the web view's batch page come later; see
-[design/batches.md](../design/batches.md).
+This page describes `merged` and `waiting` moments, stacked entries, edits of a plan, split issues,
+the desk line and the HTTP API. The web view's batch page and the rest of stacked entries come
+later; see [design/batches.md](../design/batches.md).
 
 ## A batch's life
 
@@ -66,7 +66,7 @@ writes it. The daemon refuses the result, and the agent reads why:
 | `the plan has a loop: <e>, <f>, <e>` | A cycle |
 | `entry <e> waits on <f>, which comes after it; put <f> first` | An edge to a later entry, since the entries' order is their start order |
 | `` moment `<m>` is not merged or waiting `` | An unknown moment |
-| `` entry <e> waits on <other> at `waiting`, which Priory does not build yet; use merged `` | A stacked entry, not built yet |
+| `entry <e> has <n> waiting predecessors; give it one stacking parent` | Two `waiting` edges into one entry |
 | `<issue> already has task <id> (<state>)` | An active task other than the planning task is keyed on the issue. A task that only subscribes to it or waits on it does not count. Leave it out of the plan; never close it |
 | `<issue> is not one of the batch's issues` | An issue the person did not hand over |
 | `issue <issue> is both an entry and a close` | The plan both works and closes an issue |
@@ -105,8 +105,8 @@ show` prints it. One edit changes the plan while its go ask is open:
 - `--drop` takes an entry out of the plan. An issue that no entry or close names any more leaves the
   batch. With `--with-successors`, it drops every entry that starts after it too, directly or not.
 - `--move` changes the entry's place in the start order.
-- `--moment` sets the moment of the edge from `ENTRY` to `OTHER`. Until stacked entries exist, the
-  plan checks refuse every moment but `merged`.
+- `--moment` sets the moment of the edge from `ENTRY` to `OTHER`, `merged` or `waiting`. The plan
+  checks still apply, so a second `waiting` edge into one entry is refused.
 
 The edit stores the next plan revision, and asks the go again as the ask's next revision, with the
 new plan in its question and text: `batch 1 is at plan revision 2`. A go sent on the earlier
@@ -139,7 +139,8 @@ refused: `the plan of batch <id> is at revision <n>, not <m>; answer its new ask
 1. One task per entry, in plan order, keyed by its issue, or by its part key for a split issue. It runs the batch's entries workflow, in
    the planning task's band, lane and repository. Its request text is the entry's brief, from a
    `priory.batch.entry` source event in the inbox.
-2. One `merged` hold condition per edge, on the other entry's task. An entry with no edge is
+2. One hold condition per edge, of the edge's moment, `merged` or `waiting`, on the other entry's
+   task. A `waiting` edge also records that task as the entry's base task. An entry with no edge is
    `queued`.
 3. One `builds-on` relation per edge, by `priory`, which `priory tasks --graph` draws.
 4. Positions in the band after its other active tasks, in plan order, as `priory move` numbers them.
@@ -176,6 +177,27 @@ asks on that hold, with `drop` and `keep`: `ENG-42 is Done outside batch 4. Drop
 lets the entry wait for its other conditions. `drop` drops it, and the entries that wait on it get
 their own asks. The issue's state meets no condition of the entry's successors, which still follow
 the rules of the `merged` condition above. The daemon asks once per entry.
+
+## The `waiting` condition and stacked entries
+
+An entry's `waiting` condition on another task, its stacking parent, is met when the parent owns an
+open pull request and either is `done` or sleeps on the gates that `done` or a step with
+`after = "merged"` stores. Its work is finished, and it waits on review, checks or the merge.
+Anything that meets `merged` meets `waiting` too. An entry has at most one `waiting` predecessor.
+
+A `waiting` edge makes a stack across two tasks. The go records the parent as the entry's base task.
+
+- The entry's worktree starts from the parent's branch, such as `priory/31`, instead of the default
+  branch. If that branch is gone, the start is refused.
+- The entry's `open-pr` bases its bottom pull request on the parent's branch, while the parent has a
+  pull request open from it. Its own stack still fits its own workflow's `max_prs`.
+- When the parent's pull request merges, the entry gets the line a task's own stack gets: `#7 merged;
+  rebase #8 onto main`. It fires the entry's gate, reaches the entry while it runs, or reopens it
+  when its checks already made it `done`. The daemon records the merged one's base as the base of
+  the entry's bottom pull request, so the retarget GitHub makes asks no person.
+
+Once the parent's pull request merged, a stacked entry that has not started yet starts from the
+default branch, and its pull request is based on it.
 
 A person can move, hold, release or cancel an entry like any task. The batch reads its tasks' states
 and keeps no copy.
@@ -217,7 +239,8 @@ The list has `revision` and `batches`, each batch without `entries` and `closes`
 and `GET /api/batches/{id}` return the same JSON (see [serve.md](../reference/serve.md)).
 
 `state` is `planning`, `asked`, `going`, `ended` or `dropped`. An entry's `stage` is the batch's
-word for its task: `planned` (no task yet, or held), `queued`, `blocked`, `started`, `merged`,
-`failed` or `dropped`. `waiting` stays 0 until stacked entries exist. `position` is the entry's place
+word for its task: `planned` (no task yet, or held), `queued`, `blocked`, `started`, `waiting` (its
+task owns an open pull request and waits on it, as the `waiting` condition reads), `merged`, `failed`
+or `dropped`. `position` is the entry's place
 in the plan. `closed` is when the `close` step's result reported the issue closed, by an evidence
 line that starts with the issue and the word `closed`, such as `ENG-43: closed`.
