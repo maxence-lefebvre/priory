@@ -504,6 +504,7 @@ pub fn links(factory: &Factory) -> Value {
 pub fn flows(factory: &Factory) -> Value {
     let mut irreversible = Vec::new();
     let mut paths = Vec::new();
+    let mut proofs = Vec::new();
     let mut workflows = Vec::new();
     for (name, workflow) in &factory.workflows {
         let workflow = &workflow.value;
@@ -518,6 +519,11 @@ pub fn flows(factory: &Factory) -> Value {
         }
         for path in explain::unattended_paths(workflow) {
             paths.push(json!({ "workflow": name, "path": path }));
+        }
+        for (step, outcome, proof) in explain::proofs(workflow) {
+            proofs.push(json!({
+                "workflow": name, "step": step, "outcome": outcome, "proof": proof.name(),
+            }));
         }
         let steps: Vec<_> = workflow
             .steps
@@ -576,7 +582,13 @@ pub fn flows(factory: &Factory) -> Value {
             })
         })
         .collect();
-    json!({ "irreversible": irreversible, "paths": paths, "tools": tools, "workflows": workflows })
+    json!({
+        "irreversible": irreversible,
+        "paths": paths,
+        "tools": tools,
+        "proofs": proofs,
+        "workflows": workflows,
+    })
 }
 
 /// The factory's schedule triggers by name.

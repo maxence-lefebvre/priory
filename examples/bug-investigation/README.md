@@ -7,10 +7,13 @@ its root cause, fixes it with a test, and asks you before it opens the fix pull 
 
 `gh` logged in to GitHub with access to the repository, `claude` on `PATH`, and `PRIORY_DB`
 set for the intake and the daemon. Replace `owner/repo` in `triggers/bug-label.toml`, and rename
-`runners/my-machine.toml` after your machine's Tailscale hostname.
+`runners/my-machine.toml` after your machine's Tailscale hostname. Set `gate` in `factory.toml` to
+the command that runs your project's tests.
 
 ## Gates
 
+- `fix` takes `passed` only once the trace records a `priory gate` that passed at the branch's
+  head.
 - `approve-pr` asks you before `open-pr` pushes the branch and opens the pull request.
 - A bug the agent cannot reproduce ends the task at `investigate`, with nothing pushed.
 

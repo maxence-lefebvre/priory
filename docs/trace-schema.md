@@ -294,6 +294,45 @@ and `tokens` as above, and:
 
 Priory writes these records as described in [search](daemon/search.md).
 
+## `factory.gate.ran`
+
+`priory gate` ran the factory's gate in a task's worktree (see Proofs in
+[tools.md](daemon/tools.md#proofs)). It shares `factory`, `factory_revision`, `workflow`, `task`,
+`key`, `generation`, `step` and `machine` with `factory.step.ended`. `step` is the task's step when
+the gate ran, and `time` is when it ended.
+
+```json
+{
+  "specversion": "1.0",
+  "id": "0196f1d6-0000-7000-8000-000000000008",
+  "source": "factory://example/xps13",
+  "type": "factory.gate.ran",
+  "time": "2026-11-21T10:04:30Z",
+  "datacontenttype": "application/json",
+  "data": {
+    "factory": "example",
+    "factory_revision": "999daf0",
+    "workflow": "implement",
+    "task": "0196f1b0-0000-7000-8000-000000000001",
+    "run": "0196f1b0-0000-7000-8000-000000000002",
+    "key": "github:example/app#42",
+    "generation": 1,
+    "step": "implement",
+    "machine": "xps13",
+    "commit": "3f9c2a7e5b1d4c6f8a0e2b4d6f8a1c3e5b7d9f0a",
+    "exit": 0,
+    "duration_ms": 84200
+  }
+}
+```
+
+| Field         | Required | Meaning                                                          |
+| ------------- | -------- | ---------------------------------------------------------------- |
+| `run`         | yes      | The run whose agent ran the gate                                 |
+| `commit`      | yes      | The head of the task's branch when the gate started              |
+| `exit`        | yes      | The gate's exit code; `-1` when a signal killed it               |
+| `duration_ms` | yes      | How long the gate ran                                            |
+
 ## Spans
 
 A factory that exports OpenTelemetry spans (Priory does: see

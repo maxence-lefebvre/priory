@@ -1,5 +1,5 @@
 use crate::factory::{
-    Agent, Decider, Effect, Factory, Harness, Intervention, Loaded, PermissionMode, Problem,
+    Agent, Decider, Effect, Factory, Harness, Intervention, Loaded, PermissionMode, Problem, Proof,
     Session, Step, Trigger, Until, Workflow,
 };
 use crate::guard::NEED_APPROVAL;
@@ -51,6 +51,19 @@ pub fn check(factory: &Factory) -> Vec<Problem> {
             if let Some(message) = refused {
                 problems.push(problem(settings, settings.lines.field(field), message));
             }
+        }
+        // `sh -c ""` exits 0, so a blank gate would pass every proof.
+        if settings
+            .value
+            .gate
+            .as_deref()
+            .is_some_and(|gate| gate.trim().is_empty())
+        {
+            problems.push(problem(
+                settings,
+                settings.lines.field("gate"),
+                "`gate` is empty".to_owned(),
+            ));
         }
         let search = &settings.value.search;
         if search.model.is_some() && search.command.is_some() {
@@ -769,6 +782,22 @@ fn check_workflow(factory: &Factory, workflow: &Loaded<Workflow>, problems: &mut
             report(format!(
                 "`by` has outcome `{outcome}`, which is not in `next`"
             ));
+        }
+        if !step.proof.is_empty() && step.decides != Decider::Model {
+            report("only a model step has a `proof`".into());
+        }
+        for outcome in step
+            .proof
+            .keys()
+            .filter(|outcome| !step.next.contains_key(*outcome))
+        {
+            report(format!(
+                "`proof` has outcome `{outcome}`, which is not in `next`"
+            ));
+        }
+        if step.proof.values().any(|proof| *proof == Proof::GatePassed) && factory.gate().is_none()
+        {
+            report("`proof` names `gate-passed`, and factory.toml sets no `gate`".into());
         }
         if !reached.contains(step.id.as_str()) {
             report("no path from start reaches it".into());
