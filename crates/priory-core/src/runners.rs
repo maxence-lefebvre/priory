@@ -156,7 +156,15 @@ fn claimed(
     });
     if !trace.factory.runners.contains_key(runner) || !wins(&claim, held.as_ref()) {
         crate::state::record(tx, message, None, "refused", None)?;
-        return Ok(None);
+        // A copy here whose own claim lost can never run: the log gives its key to another runner.
+        let Some(owner) = current.filter(|current| runner == me && current.runner != me) else {
+            return Ok(None);
+        };
+        let Some(task) = crate::state::keyed(tx, Some(&key.to_owned()))? else {
+            return Ok(None);
+        };
+        let reason = format!("owned by runner {}", owner.runner);
+        return Ok(crate::tools::cancel(tx, task.id, &reason)?);
     }
     let seq = crate::state::record(tx, message, None, "claimed", None)?;
     tx.execute(
@@ -441,18 +449,24 @@ fn adopt(db: &mut Connection, me: &str) -> rusqlite::Result<()> {
     let tx = db.transaction()?;
     let unclaimed = tx
         .prepare(
-            "SELECT tasks.key, inbox.id FROM tasks JOIN inbox ON inbox.task = tasks.id
-               AND inbox.outcome = 'created'
+            "SELECT tasks.key, inbox.id, tasks.generation FROM tasks
+               JOIN inbox ON inbox.task = tasks.id AND inbox.outcome = 'created'
              WHERE tasks.state NOT IN ('done', 'failed', 'dropped')
-               AND NOT EXISTS (SELECT 1 FROM claims WHERE claims.key = tasks.key)",
+               AND NOT EXISTS (SELECT 1 FROM claims WHERE claims.key = tasks.key
+                 AND claims.runner = ?1)",
         )?
-        .query_map([], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        .query_map([me], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, i64>(2)?,
+            ))
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
-    for (key, request) in unclaimed {
+    for (key, request, generation) in unclaimed {
         let claim = json!({ "key": key, "runner": me, "request": request });
-        let id = format!("claim/{request}/{me}");
+        // A reopened task claims afresh: its first claim's id is on the log already.
+        let id = format!("adopt/{request}/{me}/{generation}");
         send(&tx, &stamped(CLAIMED, claim, &id).subject(key))?;
     }
     tx.commit()

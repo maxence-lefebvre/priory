@@ -136,7 +136,7 @@ Each inbox entry gets one of these outcomes:
 | A task request whose key no runner holds, with several runners | `claiming` | none until this runner's claim wins (see [runners.md](runners.md)) |
 | A task request whose key another runner holds | `elsewhere` | none                                    |
 | `priory.task.claimed` that wins its key   | `claimed` | the task this runner creates, when it is the new owner |
-| `priory.task.claimed` that loses          | `refused` | none                                         |
+| `priory.task.claimed` that loses          | `refused` | none; this runner's own losing claim drops its copy of the task, `owned by runner <name>` |
 | `priory.task.held` or `priory.runner.alive` | `noted` | none                                         |
 | `priory.ask.answered` for this runner     | `answered`, or `refused` by the revision check | the ask's task, as a local answer moves it |
 | `priory.ask.answered` for another runner  | `elsewhere` | none                                       |

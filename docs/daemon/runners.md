@@ -18,9 +18,10 @@ this machine, `<hostname>`, has no runner file in runners/, and the factory has 
 
 A factory with one runner file or none works as before: its one daemon owns every task.
 
-A daemon claims the key of each active task of its own that no runner holds, such as a task from
-before the factory got its second runner, or one that feedback reopened. It starts no run of that
-task until it reads its claim back. When a factory that had one runner gets a second, start the
+A daemon claims the key of each active task of its own whose key it does not hold, such as a task
+from before the factory got its second runner, or one that feedback reopened. It starts no run of
+that task until it reads its claim back. When that claim loses, because the log gives the key to
+another runner, the daemon drops its copy with the reason `owned by runner <name>`. When a factory that had one runner gets a second, start the
 first runner's daemon first. If the new runner's claim of one of those keys lands first, the first
 runner drops its copy, and the task starts over on the new runner.
 
@@ -126,7 +127,5 @@ Every runner also refuses a claim for a runner without a runner file.
   on the old runner.
 - A code step's `run` action starts without the `kept` check, so a crash in the second between its
   start and the next `kept` leaves that task `waiting` on the log.
-- A task whose own claim loses, because a claim of an older request of its key won first, stays
-  queued on its runner and never runs there.
 - This runner's `priory asks` and desk list only its own asks.
 - Each runner adds one alive message a minute to `factory.intake`.

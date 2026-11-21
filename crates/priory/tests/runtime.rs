@@ -15968,3 +15968,47 @@ fn a_runner_that_joins_late_reads_a_finished_task_without_running_it_again() {
         "b's late claim of the finished request loses"
     );
 }
+
+#[test]
+fn a_copy_reopened_on_a_runner_whose_key_another_runner_owns_drops_with_the_owner_named() {
+    let mut a = runner("reopen-elsewhere", "a", None);
+    let mut b = runner("reopen-elsewhere", "b", Some(&a));
+    let exe = Path::new(env!("CARGO_BIN_EXE_priory"));
+    a.calls(&[result("passed")]);
+    a.publish(&requested(1));
+    a.start_with(exe, &[("PRIORY_NOW", T0)]);
+    a.until("tasks", |rows| rows.first().is_some_and(|row| row[4] == "done"));
+    logged(
+        &a,
+        "priory.task.held",
+        json!({ "key": "github:owner/repo#1", "runner": "a", "hold": "ended" }),
+    );
+    a.crash();
+
+    // A new request for the key goes to b, which a hears only once it is back.
+    b.publish(&requested(1));
+    b.start_with(exe, &[("PRIORY_NOW", T0)]);
+    b.until("tasks", |rows| rows.len() == 1);
+    a.start_with(exe, &[("PRIORY_NOW", T0)]);
+    a.until("inbox", |rows| {
+        rows.iter()
+            .any(|row| row[1] == "priory.task.claimed" && row[4] == "refused")
+    });
+    // The comment comes after the task was done, to the second.
+    std::thread::sleep(Duration::from_millis(1100));
+
+    a.publish(&Message::new(
+        "github.issues.comment",
+        json!({ "repo": "owner/repo", "issue": 1, "actor": "ana", "body": "Still broken.",
+                "url": "u", "github_id": 901 }),
+    )
+    .subject("owner/repo#1")
+    .time(herdr_bus::Timestamp::now()));
+
+    let tasks = a.until("tasks", |rows| rows[0][4] == "dropped");
+    assert_eq!(tasks.len(), 1, "{tasks:?}");
+    let task = a.priory(&["task", &tasks[0][0], "--json"]);
+    let task: serde_json::Value = serde_json::from_slice(&task.stdout).unwrap();
+    assert_eq!(task["reason"], "owned by runner b", "{task}");
+    assert_eq!(b.rows("tasks")[0][4], "running");
+}
