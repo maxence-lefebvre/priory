@@ -15789,6 +15789,26 @@ fn result_sorting(setup: &Setup, feedback: serde_json::Value) -> (String, bool) 
     reply(&setup.mcp(&session, &[call])[0])
 }
 
+/// Raises an agent ask on task 1's live run whose question names `urls`.
+fn ask_about(setup: &Setup, urls: &[&str]) {
+    let session = setup.rows("runs").last().unwrap()[4].clone();
+    let mut call = ask();
+    call["arguments"]["question"] = json!(format!("Your call on {}?", urls.join(" and ")));
+    let call = json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": call });
+    let (text, error) = reply(&setup.mcp(&session, &[call])[0]);
+    assert!(!error, "{text}");
+}
+
+/// Answers task 1's first ask and waits for the answer to reach the run.
+fn answer_the_ask(setup: &Setup) {
+    let answered = setup.priory(&["answer", "1", "sqlite", "--revision", "1"]);
+    assert!(answered.status.success(), "{answered:?}");
+    setup.until("outbox", |rows| {
+        rows.iter()
+            .any(|row| row[4].starts_with("Answer to ask 1") && row[3] == "confirmed")
+    });
+}
+
 #[test]
 fn a_comment_that_wakes_the_task_comes_with_the_rule_for_sorting_it() {
     let setup = woken_by_feedback("triage-wake");
@@ -15805,6 +15825,8 @@ fn a_result_sorting_every_item_stores_the_triage_and_task_json_shows_it() {
     let setup = woken_by_feedback("triage-stored");
     let sorted =
         json!({ REVIEW_URL: "persons-call", THREAD_URL: "trivial", OTHER_URL: "nothing-to-do" });
+    ask_about(&setup, &[REVIEW_URL]);
+    answer_the_ask(&setup);
 
     let (text, error) = result_sorting(&setup, sorted);
 
@@ -16132,4 +16154,46 @@ fn a_copy_reopened_on_a_runner_whose_key_another_runner_owns_drops_with_the_owne
     let task: serde_json::Value = serde_json::from_slice(&task.stdout).unwrap();
     assert_eq!(task["reason"], "owned by runner b", "{task}");
     assert_eq!(b.rows("tasks")[0][4], "running");
+}
+
+#[test]
+fn a_persons_call_without_an_open_ask_naming_it_is_refused() {
+    let setup = woken_by_feedback("triage-no-ask");
+    let sorted =
+        json!({ REVIEW_URL: "persons-call", THREAD_URL: "trivial", OTHER_URL: "nothing-to-do" });
+
+    let (text, error) = result_sorting(&setup, sorted.clone());
+    assert!(error, "{text}");
+    assert!(
+        text.contains(REVIEW_URL) && text.contains("persons-call"),
+        "{text}"
+    );
+
+    ask_about(&setup, &[OTHER_URL]);
+    answer_the_ask(&setup);
+    let (text, error) = result_sorting(&setup, sorted);
+    assert!(error, "an ask about another item does not cover it: {text}");
+    assert_eq!(task_json(&setup, "1")["triage"], json!([]));
+}
+
+#[test]
+fn the_persons_own_review_item_is_not_put_to_the_agent_and_is_recorded_as_a_persons_call() {
+    let mut setup = Setup::new("triage-own");
+    setup.calls(&[wait(json!({ "type": "time", "until": "3 seconds" }))]);
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("runs", |rows| rows.len() == 1 && rows[0][7] == "asleep");
+    let mut own = thread_comment_at(802);
+    own.data["own"] = json!(true);
+    setup.publish(&own);
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 2);
+
+    let typed = setup.typed();
+    assert!(typed[1].contains("discussion_r802"), "{typed:?}");
+    assert!(!typed[1].contains("sort each item"), "{typed:?}");
+    let (text, error) = result_sorting(&setup, serde_json::Value::Null);
+
+    assert!(!error, "{text}");
+    assert_eq!(task_json(&setup, "1")["triage"][0]["class"], "persons-call");
+    assert_eq!(task_json(&setup, "1")["triage"][0]["item"], THREAD_URL);
 }

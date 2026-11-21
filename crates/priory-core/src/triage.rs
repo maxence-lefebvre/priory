@@ -14,14 +14,20 @@ const FEEDBACK: [&str; 5] = [
     "linear.comment.created",
 ];
 
-pub(crate) const RULE: &str = "Before you act on the feedback above, sort each item by its URL as one of: trivial (one obvious answer inside this change's scope: fix it and reply), nothing-to-do (an approval or thanks) or persons-call (a behaviour, design or scope change, a disagreement or anything unclear: ask the person and change nothing for it). End the step with the result tool's feedback field: an object from each item's URL to its class.";
+pub(crate) const RULE: &str = "Before you act on the feedback above, sort each item by its URL as one of: trivial (one obvious answer inside this change's scope: fix it and reply), nothing-to-do (an approval or thanks) or persons-call (a behaviour, design or scope change, a disagreement or anything unclear: ask the person with the ask tool, naming the item's URL in the question, and change nothing for it). End the step with the result tool's feedback field: an object from each item's URL to its class.";
 
-/// The URL naming the feedback item that `data` is, when an agent must sort it: a comment, or a
-/// review that is not an approval or a dismissal.
-pub(crate) fn item<'a>(kind: &str, data: &'a Value) -> Option<&'a str> {
+/// The URL naming the feedback item that `data` is: a comment, or a review that is not an
+/// approval or a dismissal.
+fn url<'a>(kind: &str, data: &'a Value) -> Option<&'a str> {
     let settled = matches!(data["state"].as_str(), Some("approved" | "dismissed"));
     let asks = FEEDBACK.contains(&kind) && !(kind == FEEDBACK[0] && settled);
     data["url"].as_str().filter(|url| asks && !url.is_empty())
+}
+
+/// The URL of an item the agent must sort. An item written by the login `gh api user` names, which
+/// the intake runs as, is the factory's person's own: it goes to the person, not the agent.
+pub(crate) fn item<'a>(kind: &str, data: &'a Value) -> Option<&'a str> {
+    url(kind, data).filter(|_| data["own"] != true)
 }
 
 /// Whether any of the inbox events `seqs` is an item to sort.
@@ -41,7 +47,8 @@ pub(crate) fn any(tx: &Transaction, seqs: &[i64]) -> rusqlite::Result<bool> {
 }
 
 /// The classes a result's `feedback` gives, as pairs of URL and class, or why it is refused: it
-/// must be an object of known classes that names every item the agent was typed and has not sorted.
+/// must be an object of known classes that names every item the agent was typed and has not sorted,
+/// and each persons-call needs an ask of the task that names it. The person's own items are recorded as persons-calls.
 pub(crate) fn sorted(
     tx: &Transaction,
     task: i64,
@@ -63,6 +70,7 @@ pub(crate) fn sorted(
         }
         _ => return Ok(Err(invalid.to_owned())),
     };
+    let mut own = Vec::new();
     let mut statement = tx.prepare(
         "SELECT inbox.type, inbox.data FROM inbox JOIN outbox ON outbox.id = inbox.outbox
          WHERE inbox.task = ?1 AND outbox.state = 'confirmed'
@@ -71,7 +79,12 @@ pub(crate) fn sorted(
     let mut rows = statement.query([task])?;
     while let Some(row) = rows.next()? {
         let data: Value = serde_json::from_str(&row.get::<_, String>(1)?).unwrap_or(Value::Null);
-        let Some(url) = item(&row.get::<_, String>(0)?, &data) else {
+        let kind = row.get::<_, String>(0)?;
+        if let Some(url) = url(&kind, &data).filter(|_| item(&kind, &data).is_none()) {
+            own.push((url.to_owned(), "persons-call".to_owned()));
+            continue;
+        }
+        let Some(url) = item(&kind, &data) else {
             continue;
         };
         let known: bool = tx.query_row(
@@ -83,7 +96,22 @@ pub(crate) fn sorted(
             return Ok(Err(format!("feedback item {url} has no class: {invalid}")));
         }
     }
-    Ok(Ok(given.into_iter().collect()))
+    for (url, class) in &given {
+        let asked: bool = tx.query_row(
+            "SELECT EXISTS (SELECT 1 FROM asks WHERE task = ?1 AND withdrawn IS NULL
+             AND instr(question || ' ' || coalesce(title, '') || ' ' || coalesce(text, ''), ?2) > 0)",
+            params![task, url],
+            |row| row.get(0),
+        )?;
+        if class == "persons-call" && !asked {
+            return Ok(Err(format!(
+                "feedback item {url} is a persons-call but no ask of this task names it: raise one with the ask tool, naming the URL, then send the result"
+            )));
+        }
+    }
+    let mut classes: Vec<_> = given.into_iter().collect();
+    classes.extend(own);
+    Ok(Ok(classes))
 }
 
 /// Records the classes that run `run` of `task` gave.
