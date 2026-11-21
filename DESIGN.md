@@ -360,7 +360,7 @@ The desk is the "Needs me" view. It lists, top to bottom:
    saved view, with the desk's `next` whatever its kind: an alarm (a blocked or failed task, an
    uncertain prompt or command, a failing intake) or the ask that ranks first. It shows the tile,
    key, step and age, the question or the reason on at most three lines, then `why` in the role's text color, and an
-   ask's recommendation. One button opens what answers it: Answer… (primary) for an ask, Open
+   ask's recommendation on at most two lines. One button opens what answers it: Answer… (primary) for an ask, Open
    task (secondary) for a task's item, and See the banner for a failing intake, which scrolls to
    the intake banner. On wide screens the card is at most 440 px wide. With no `next` it hides.
 3. **Saved views**: Needs me, Running, Asleep, All on a phone; Queue joins them on wide screens.
