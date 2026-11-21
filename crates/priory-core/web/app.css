@@ -133,7 +133,7 @@ a.facet[aria-current="true"] { background: var(--action-soft); color: var(--acti
 .next .l1 { display: flex; gap: 8px; align-items: center; font: 400 var(--type-caption) var(--font-ui); color: var(--text-3); min-width: 0; }
 .next .l1 .mono { color: var(--text); }
 .next .l1 .age { margin-left: auto; white-space: nowrap; }
-.next .q { font: 600 var(--type-body) var(--font-ui); overflow-wrap: anywhere; }
+.next .q { font: 600 var(--type-body) var(--font-ui); overflow-wrap: anywhere; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
 .next .why { font: 400 var(--type-caption) var(--font-ui); }
 .next .rec { display: flex; gap: 6px; align-items: baseline; color: var(--text-2); font: 400 var(--type-small) var(--font-ui); }
 .next .btn { justify-self: start; }

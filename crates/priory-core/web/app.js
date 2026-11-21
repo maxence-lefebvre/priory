@@ -396,7 +396,9 @@ function nextCard(model) {
 
 // Since you looked (DESIGN.md, Desk): what happened since the last visit, one group per task.
 function sinceYouLooked() {
-  const { events, from } = state.since;
+  // Until the first live read, the desk kept on this device: an offline start shows its events.
+  const { desk } = state.data;
+  const [events, from] = state.since.opened ? [state.since.events, state.since.from] : [desk.since_you_looked || [], desk.last_visit];
   const groups = sinceGroups(events);
   const body = groups.length
     ? groups.map((group) => html`<div class="sgroup">${group.task ? html`<a class="mono" href="/tasks/${group.task}">${group.key}</a>` : html`<span class="mono">factory</span>`}
