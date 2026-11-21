@@ -12,7 +12,7 @@ use std::collections::BTreeMap;
 use std::io::Write;
 use std::time::Duration;
 
-const VERSION: i64 = 47;
+const VERSION: i64 = 48;
 
 const SCHEMA: &str = "
 CREATE TABLE tasks (
@@ -831,6 +831,40 @@ CREATE VIEW IF NOT EXISTS owned AS
 "
 );
 
+// The browsers that get Web Push notifications, and the notifications the daemon has yet to send.
+// Triggers queue a new ask, an ask asked again, and a task that turns blocked or failed, only while
+// a browser subscribes.
+const SCHEMA_48: &str = "CREATE TABLE IF NOT EXISTS push_subscriptions (
+  endpoint TEXT PRIMARY KEY,
+  p256dh   TEXT NOT NULL,
+  auth     TEXT NOT NULL,
+  created  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+);
+CREATE TABLE IF NOT EXISTS push_queue (
+  id      INTEGER PRIMARY KEY AUTOINCREMENT,
+  kind    TEXT NOT NULL CHECK (kind IN ('ask', 'alarm')),
+  item    INTEGER NOT NULL,
+  revision INTEGER,
+  state   TEXT,
+  created TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+);
+CREATE TRIGGER IF NOT EXISTS push_a_new_ask AFTER INSERT ON asks
+  WHEN NEW.answer IS NULL AND EXISTS (SELECT 1 FROM push_subscriptions) BEGIN
+  INSERT INTO push_queue (kind, item, revision) VALUES ('ask', NEW.id, NEW.revision);
+END;
+CREATE TRIGGER IF NOT EXISTS push_an_ask_asked_again AFTER UPDATE OF revision ON asks
+  WHEN NEW.revision IS NOT OLD.revision AND NEW.answer IS NULL AND NEW.withdrawn IS NULL
+  AND EXISTS (SELECT 1 FROM push_subscriptions) BEGIN
+  INSERT INTO push_queue (kind, item, revision) VALUES ('ask', NEW.id, NEW.revision);
+END;
+CREATE TRIGGER IF NOT EXISTS push_an_alarm AFTER UPDATE OF state ON tasks
+  WHEN NEW.state IN ('blocked', 'failed') AND NEW.state IS NOT OLD.state
+  AND EXISTS (SELECT 1 FROM push_subscriptions) BEGIN
+  INSERT INTO push_queue (kind, item, state) VALUES ('alarm', NEW.id, NEW.state);
+END;
+PRAGMA user_version = 48;
+";
+
 /// Each schema change in order: a file at version `n` applies those from index `n` on.
 const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA, SCHEMA_2, SCHEMA_3, SCHEMA_4, SCHEMA_5, SCHEMA_6, SCHEMA_7, SCHEMA_8, SCHEMA_9,
@@ -838,7 +872,7 @@ const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA_18, SCHEMA_19, SCHEMA_20, SCHEMA_21, SCHEMA_22, SCHEMA_23, SCHEMA_24, SCHEMA_25,
     SCHEMA_26, SCHEMA_27, SCHEMA_28, SCHEMA_29, SCHEMA_30, SCHEMA_31, SCHEMA_32, SCHEMA_33,
     SCHEMA_34, SCHEMA_35, SCHEMA_36, SCHEMA_37, SCHEMA_38, SCHEMA_39, SCHEMA_40, SCHEMA_41,
-    SCHEMA_42, SCHEMA_43, SCHEMA_44, SCHEMA_45, SCHEMA_46, SCHEMA_47,
+    SCHEMA_42, SCHEMA_43, SCHEMA_44, SCHEMA_45, SCHEMA_46, SCHEMA_47, SCHEMA_48,
 ];
 
 /// The order the queue starts tasks in: band, then a person's order, then age. A band the factory

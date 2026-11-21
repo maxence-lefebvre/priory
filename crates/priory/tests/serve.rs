@@ -151,7 +151,9 @@ impl Setup {
                 "priory {args:?} exited before it listened: {said}"
             );
             if let Some(address) = line.trim().strip_prefix("priory: serving on http://") {
-                std::thread::spawn(move || std::io::copy(&mut stderr, &mut std::io::sink()));
+                let mut log = fs::File::create(self.dir.join("server.log")).unwrap();
+                log.write_all(said.as_bytes()).unwrap();
+                std::thread::spawn(move || std::io::copy(&mut stderr, &mut log));
                 return address.to_owned();
             }
             said.push_str(&line);
@@ -1598,6 +1600,10 @@ fn the_web_view_serves_every_file_with_its_type_and_a_strict_policy_without_the_
             "/favicon.ico",
             "/favicon.svg",
             "/apple-touch-icon.png",
+            "/icon-192.png",
+            "/icon-512.png",
+            "/icon-maskable-192.png",
+            "/icon-maskable-512.png",
         ]
         .map(str::to_owned),
     );
@@ -1613,6 +1619,7 @@ fn the_web_view_serves_every_file_with_its_type_and_a_strict_policy_without_the_
             "ico" => "image/x-icon",
             "svg" => "image/svg+xml",
             "png" => "image/png",
+            "webmanifest" => "application/manifest+json",
             other => panic!("no type expected for .{other}"),
         };
         assert_eq!(status, 200, "{path}: {}", String::from_utf8_lossy(&body));
@@ -1625,6 +1632,18 @@ fn the_web_view_serves_every_file_with_its_type_and_a_strict_policy_without_the_
         assert!(!body.is_empty(), "{path}");
     }
 
+    // The worker's install fails whole when one file it caches is missing.
+    let worker =
+        fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("../priory-core/web/sw.js"))
+            .unwrap();
+    let files = worker
+        .lines()
+        .find_map(|line| line.strip_prefix("const FILES = ["))
+        .unwrap();
+    for path in files.split('"').filter(|part| part.starts_with('/')) {
+        assert_eq!(fetch(&address, path).0, 200, "{path}");
+    }
+
     let (status, head, index) = fetch(&address, "/asks/42");
     assert_eq!(status, 200);
     assert_eq!(index, fetch(&address, "/").2);
@@ -1632,8 +1651,8 @@ fn the_web_view_serves_every_file_with_its_type_and_a_strict_policy_without_the_
         header(&head, "content-security-policy"),
         Some(
             "default-src 'none'; script-src 'self'; style-src 'self'; font-src 'self'; \
-             img-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'none'; \
-             frame-ancestors 'none'"
+             img-src 'self'; connect-src 'self'; manifest-src 'self'; worker-src 'self'; \
+             base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
         )
     );
     assert_eq!(fetch(&address, "/asks/cache.ship").2, index);
@@ -3396,4 +3415,424 @@ fn the_pick_endpoint_records_a_choice_and_tells_a_stale_one_by_409() {
         post(&address, "/api/reports/pick", "", r#"{"pick": "x"}"#).0,
         400
     );
+}
+
+/// A browser's `PushSubscription.toJSON()` for a fresh key pair, at `endpoint`.
+fn subscription(endpoint: &str) -> (Value, p256::SecretKey) {
+    use base64ct::{Base64UrlUnpadded, Encoding};
+    use p256::elliptic_curve::Generate;
+    let key = p256::SecretKey::generate();
+    let public = key.public_key().to_sec1_bytes();
+    let auth: [u8; 16] = *uuid::Uuid::new_v4().as_bytes();
+    let json = json!({
+        "endpoint": endpoint,
+        "expirationTime": null,
+        "keys": {
+            "p256dh": Base64UrlUnpadded::encode_string(&public),
+            "auth": Base64UrlUnpadded::encode_string(&auth),
+        },
+    });
+    (json, key)
+}
+
+#[test]
+fn the_push_key_endpoint_serves_the_public_key_once_a_daemon_made_the_pair() {
+    let mut setup = Setup::new("push-key", SERVE);
+    let alone = setup.start(&["serve", &setup.factory()]);
+    let before = get(&alone, "/api/push/key", Some(TOKEN));
+    let mut server = setup.server.take().unwrap();
+    server.kill().unwrap();
+    server.wait().unwrap();
+
+    let address = setup.start(&["daemon", &setup.factory()]);
+    let (status, body) = get(&address, "/api/push/key", Some(TOKEN));
+
+    assert_eq!(before.0, 503, "{}", before.1);
+    assert_eq!(get(&address, "/api/push/key", None).0, 401);
+    assert_eq!(status, 200, "{body}");
+    let reply: Value = serde_json::from_str(&body).unwrap();
+    let key = reply["key"].as_str().unwrap();
+    use base64ct::{Base64UrlUnpadded, Encoding};
+    let point = Base64UrlUnpadded::decode_vec(key).unwrap();
+    assert!(p256::PublicKey::from_sec1_bytes(&point).is_ok(), "{key}");
+    assert_eq!(reply.as_object().unwrap().len(), 1, "{body}");
+    let private = setup.dir.join("home/push/vapid.key");
+    use std::os::unix::fs::PermissionsExt;
+    let mode = fs::metadata(&private).unwrap().permissions().mode() & 0o777;
+    assert_eq!(mode, 0o600);
+    let secret = fs::read_to_string(&private).unwrap();
+    assert!(!body.contains(secret.trim()));
+}
+
+#[test]
+fn subscribe_and_unsubscribe_store_and_drop_a_subscription_behind_the_token_and_origin() {
+    let mut setup = Setup::new("push-subscribe", SERVE);
+    let address = setup.start(&["daemon", &setup.factory()]);
+    let (browser, _) = subscription("https://web.push.apple.com/send/abc");
+    let body = browser.to_string();
+    let stored = |setup: &Setup| -> Vec<String> {
+        let db = setup.db();
+        let mut rows = db
+            .prepare("SELECT endpoint FROM push_subscriptions")
+            .unwrap();
+        rows.query_map([], |row| row.get(0))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect()
+    };
+
+    let wrong = raw(
+        &address,
+        &format!(
+            "POST /api/push/subscribe HTTP/1.1\r\nHost: {address}\r\nAuthorization: Bearer nope\r\n\
+             Content-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
+            body.len()
+        ),
+    );
+    let foreign = post(
+        &address,
+        "/api/push/subscribe",
+        "Origin: http://evil.example\r\n",
+        &body,
+    );
+    let long = post(
+        &address,
+        "/api/push/subscribe",
+        "",
+        &json!({ "endpoint": "a".repeat(16 * 1024) }).to_string(),
+    );
+    let extra = post(
+        &address,
+        "/api/push/subscribe",
+        "",
+        &json!({ "endpoint": "https://web.push.apple.com/x", "keys": browser["keys"], "brief": "x" })
+            .to_string(),
+    );
+    let (plain, _) = subscription("http://web.push.apple.com/send/abc");
+    let (local, _) = subscription("https://127.0.0.1/send/abc");
+    let insecure = post(&address, "/api/push/subscribe", "", &plain.to_string());
+    let loopback = post(&address, "/api/push/subscribe", "", &local.to_string());
+    let others: Vec<(u16, String)> = [
+        "https://127.1/send/abc",
+        "https://intranet.corp.example/send/abc",
+        "https://fcm.googleapis.com.evil.example/send/abc",
+        "https://user@fcm.googleapis.com/send/abc",
+    ]
+    .iter()
+    .map(|endpoint| {
+        post(
+            &address,
+            "/api/push/subscribe",
+            "",
+            &subscription(endpoint).0.to_string(),
+        )
+    })
+    .collect();
+
+    assert_eq!(wrong.0, 401, "{}", wrong.1);
+    assert_eq!(foreign.0, 403, "{}", foreign.1);
+    assert_eq!(long.0, 413, "{}", long.1);
+    assert_eq!(extra.0, 400, "{}", extra.1);
+    assert_eq!(insecure.0, 422, "{}", insecure.1);
+    assert_eq!(loopback.0, 422, "{}", loopback.1);
+    for (status, body) in &others {
+        assert_eq!(*status, 422, "{body}");
+    }
+    assert!(stored(&setup).is_empty());
+
+    let own = post(
+        &address,
+        "/api/push/subscribe",
+        &format!("Origin: http://{address}\r\n"),
+        &body,
+    );
+    assert_eq!(own.0, 200, "{}", own.1);
+    assert_eq!(stored(&setup), ["https://web.push.apple.com/send/abc"]);
+
+    let gone = post(
+        &address,
+        "/api/push/unsubscribe",
+        "",
+        &json!({ "endpoint": "https://web.push.apple.com/send/abc" }).to_string(),
+    );
+    assert_eq!(gone.0, 200, "{}", gone.1);
+    assert!(stored(&setup).is_empty());
+}
+
+/// The plaintext of an RFC 8291 `body` sent to the subscription whose private key is `key`.
+fn decrypt(body: &[u8], key: &p256::SecretKey, auth: &[u8]) -> Vec<u8> {
+    use aes_gcm::aead::{Aead, KeyInit};
+    let expand = |salt: &[u8], secret: &[u8], info: &[u8], out: &mut [u8]| {
+        hkdf::Hkdf::<sha2::Sha256>::new(Some(salt), secret)
+            .expand(info, out)
+            .unwrap();
+    };
+    let (salt, rest) = body.split_at(16);
+    let length = usize::from(rest[4]);
+    let (from, sealed) = rest[5..].split_at(length);
+    let server = p256::PublicKey::from_sec1_bytes(from).unwrap();
+    let shared = p256::ecdh::diffie_hellman(key.to_nonzero_scalar(), server.as_affine());
+    let to = key.public_key().to_sec1_bytes();
+    let info = [b"WebPush: info\0".as_slice(), &to, from].concat();
+    let mut ikm = [0; 32];
+    expand(auth, shared.raw_secret_bytes(), &info, &mut ikm);
+    let (mut cek, mut nonce) = ([0; 16], [0; 12]);
+    expand(salt, &ikm, b"Content-Encoding: aes128gcm\0", &mut cek);
+    expand(salt, &ikm, b"Content-Encoding: nonce\0", &mut nonce);
+    let mut plain = aes_gcm::Aes128Gcm::new(&cek.into())
+        .decrypt(&nonce.into(), sealed)
+        .unwrap();
+    assert_eq!(
+        plain.pop(),
+        Some(2),
+        "one record, ending in the last-record delimiter"
+    );
+    plain
+}
+
+impl Setup {
+    /// Subscribes a browser at `endpoint` through the API, and returns its private key and auth.
+    fn subscribe(&self, address: &str, endpoint: &str) -> (p256::SecretKey, Vec<u8>) {
+        use base64ct::{Base64UrlUnpadded, Encoding};
+        let (browser, key) = subscription(endpoint);
+        let (status, body) = post(address, "/api/push/subscribe", "", &browser.to_string());
+        assert_eq!(status, 200, "{body}");
+        let auth = Base64UrlUnpadded::decode_vec(browser["keys"]["auth"].as_str().unwrap());
+        (key, auth.unwrap())
+    }
+
+    /// The Web Push requests the fake `curl` received, oldest first.
+    fn pushes(&self) -> Vec<Value> {
+        fs::read_to_string(self.dir.join("fake/push.jsonl"))
+            .unwrap_or_default()
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect()
+    }
+
+    /// Waits until the fake `curl` received `count` pushes, and returns them.
+    fn until_pushes(&self, count: usize) -> Vec<Value> {
+        let deadline = Instant::now() + Duration::from_secs(15);
+        loop {
+            let pushes = self.pushes();
+            if pushes.len() >= count {
+                return pushes;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "{} pushes: {pushes:?}\n{}",
+                pushes.len(),
+                fs::read_to_string(self.dir.join("server.log")).unwrap_or_default()
+            );
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+
+    /// Adds an open ask to task 1, with a brief and a command that must never reach a phone.
+    fn ask_more(&self, db: &rusqlite::Connection, title: &str) -> i64 {
+        db.execute(
+            "INSERT INTO asks (task, step, kind, question, options, title, text, command)
+             VALUES (1, 'implement', 'agent', 'Merge it?', '[\"yes\",\"no\"]', ?1,
+                     'the brief: private plan', 'rm -rf /tmp/x')",
+            [title],
+        )
+        .unwrap();
+        db.last_insert_rowid()
+    }
+}
+
+fn base64(text: &Value) -> Vec<u8> {
+    use base64ct::{Base64, Encoding};
+    Base64::decode_vec(text.as_str().unwrap()).unwrap()
+}
+
+#[test]
+fn a_new_ask_pushes_one_notification_per_subscription_with_only_its_title_and_url() {
+    let mut setup = Setup::new("push-ask", SERVE);
+    setup.seed();
+    // No task starts, so none turns blocked and sends an alarm of its own.
+    succeeded(&setup.priory(&["pause"]));
+    let address = setup.start(&["daemon", &setup.factory()]);
+    let phone = setup.subscribe(&address, "https://web.push.apple.com/phone");
+    let laptop = setup.subscribe(&address, "https://fcm.googleapis.com/laptop");
+
+    let ask = setup.ask_more(&setup.db(), "Merge the docs fix?");
+
+    let pushes = setup.until_pushes(2);
+    std::thread::sleep(Duration::from_millis(1500));
+    assert_eq!(setup.pushes().len(), 2, "{pushes:?}");
+    let mut urls: Vec<&str> = pushes
+        .iter()
+        .map(|push| push["url"].as_str().unwrap())
+        .collect();
+    urls.sort();
+    assert_eq!(
+        urls,
+        [
+            "https://fcm.googleapis.com/laptop",
+            "https://web.push.apple.com/phone"
+        ]
+    );
+    for push in &pushes {
+        let (key, auth) = if push["url"] == "https://web.push.apple.com/phone" {
+            &phone
+        } else {
+            &laptop
+        };
+        let plain = decrypt(&base64(&push["body"]), key, auth);
+        let payload: Value = serde_json::from_slice(&plain).unwrap();
+        assert_eq!(
+            payload,
+            json!({ "title": "Merge the docs fix?", "url": format!("/asks/{ask}") })
+        );
+        let headers = push["headers"].as_str().unwrap();
+        assert!(headers.contains("Content-Encoding: aes128gcm"), "{headers}");
+        assert!(headers.contains("Authorization: vapid t="), "{headers}");
+        assert!(
+            push["args"].as_str().unwrap().contains("--proto =https"),
+            "{push}"
+        );
+    }
+    let secret = fs::read_to_string(setup.dir.join("home/push/vapid.key")).unwrap();
+    let secret = secret.trim();
+    assert!(!secret.is_empty());
+    for file in ["fake/push.jsonl", "fake/curl.log", "server.log"] {
+        let text = fs::read_to_string(setup.dir.join(file)).unwrap_or_default();
+        assert!(!text.contains(secret), "{file} holds the private key");
+    }
+    assert!(
+        !get(&address, "/api/push/key", Some(TOKEN))
+            .1
+            .contains(secret)
+    );
+}
+
+#[test]
+fn a_snoozed_ask_pushes_nothing() {
+    let mut setup = Setup::new("push-snoozed", SERVE);
+    setup.seed();
+    // No task starts, so none turns blocked and sends an alarm of its own.
+    succeeded(&setup.priory(&["pause"]));
+    let address = setup.start(&["daemon", &setup.factory()]);
+    setup.subscribe(&address, "https://web.push.apple.com/phone");
+
+    let mut db = setup.db();
+    let tx = db.transaction().unwrap();
+    let snoozed = setup.ask_more(&tx, "Snoozed one");
+    tx.execute(
+        "INSERT INTO snoozes (kind, item, task, snoozed, until)
+         VALUES ('ask', ?1, 1, '2026-11-17T12:00:00Z', '2999-01-01T00:00:00Z')",
+        [snoozed],
+    )
+    .unwrap();
+    tx.commit().unwrap();
+    setup.ask_more(&db, "Awake one");
+
+    let pushes = setup.until_pushes(1);
+    std::thread::sleep(Duration::from_millis(1500));
+    assert_eq!(setup.pushes().len(), 1, "{pushes:?}");
+}
+
+#[test]
+fn a_subscription_the_push_service_calls_gone_is_removed() {
+    let mut setup = Setup::new("push-gone", SERVE);
+    setup.seed();
+    // No task starts, so none turns blocked and sends an alarm of its own.
+    succeeded(&setup.priory(&["pause"]));
+    let address = setup.start(&["daemon", &setup.factory()]);
+    setup.subscribe(&address, "https://web.push.apple.com/phone");
+    fs::write(setup.dir.join("fake/push-status"), "410").unwrap();
+
+    setup.ask_more(&setup.db(), "Anyone there?");
+
+    setup.until_pushes(1);
+    let deadline = Instant::now() + Duration::from_secs(15);
+    loop {
+        let left: i64 = setup
+            .db()
+            .query_row("SELECT count(*) FROM push_subscriptions", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        if left == 0 {
+            break;
+        }
+        assert!(Instant::now() < deadline, "the gone subscription stayed");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+#[test]
+fn an_ask_without_a_title_pushes_its_task_and_step_not_its_question() {
+    let mut setup = Setup::new("push-untitled", SERVE);
+    setup.seed();
+    // No task starts, so none turns blocked and sends an alarm of its own.
+    succeeded(&setup.priory(&["pause"]));
+    let address = setup.start(&["daemon", &setup.factory()]);
+    let phone = setup.subscribe(&address, "https://web.push.apple.com/phone");
+
+    setup
+        .db()
+        .execute(
+            "INSERT INTO asks (task, step, kind, question, options)
+             VALUES (1, 'implement', 'step', 'implement: ran rm -rf /srv with the deploy key', '[]')",
+            [],
+        )
+        .unwrap();
+
+    let pushes = setup.until_pushes(1);
+    let plain = decrypt(&base64(&pushes[0]["body"]), &phone.0, &phone.1);
+    let payload: Value = serde_json::from_slice(&plain).unwrap();
+    assert_eq!(payload["title"], "task cli:docs-1 asks at implement");
+}
+
+#[test]
+fn an_ask_asked_again_pushes_again() {
+    let mut setup = Setup::new("push-again", SERVE);
+    setup.seed();
+    // No task starts, so none turns blocked and sends an alarm of its own.
+    succeeded(&setup.priory(&["pause"]));
+    let address = setup.start(&["daemon", &setup.factory()]);
+    setup.subscribe(&address, "https://web.push.apple.com/phone");
+    let db = setup.db();
+    let ask = setup.ask_more(&db, "Approve the push?");
+    setup.until_pushes(1);
+    db.execute(
+        "UPDATE asks SET answer = 'yes', answered = '2026-11-17T12:00:00Z' WHERE id = ?1",
+        [ask],
+    )
+    .unwrap();
+
+    db.execute(
+        "UPDATE asks SET revision = revision + 1, answer = NULL, answered = NULL WHERE id = ?1",
+        [ask],
+    )
+    .unwrap();
+
+    setup.until_pushes(2);
+}
+
+#[test]
+fn an_ask_asked_again_before_its_first_push_went_out_pushes_once() {
+    let mut setup = Setup::new("push-superseded", SERVE);
+    setup.seed();
+    // No task starts, so none turns blocked and sends an alarm of its own.
+    succeeded(&setup.priory(&["pause"]));
+    let address = setup.start(&["daemon", &setup.factory()]);
+    setup.subscribe(&address, "https://web.push.apple.com/phone");
+
+    let mut db = setup.db();
+    let tx = db.transaction().unwrap();
+    let ask = setup.ask_more(&tx, "Approve the push?");
+    tx.execute(
+        "UPDATE asks SET revision = revision + 1 WHERE id = ?1",
+        [ask],
+    )
+    .unwrap();
+    tx.commit().unwrap();
+    setup.ask_more(&db, "Later one");
+
+    let pushes = setup.until_pushes(2);
+    std::thread::sleep(Duration::from_millis(1500));
+    assert_eq!(setup.pushes().len(), 2, "{pushes:?}");
 }
