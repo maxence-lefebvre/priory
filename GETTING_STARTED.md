@@ -133,7 +133,9 @@ workflow as a Mermaid flowchart, with each step's decider and effect, and each a
 who decides it.
 
 `priory check --explain example` lists the irreversible step `open-pr` and the human step
-`approve-pr` that approves it. See [workflows.md](docs/reference/workflows.md#irreversible-steps-and-their-gates).
+`approve-pr` that approves it. Once tasks ran it, the row adds its history: how many tasks a person
+stopped at the gate, and how many were judged wrong within 30 days. With no state file it shows `-`.
+See [workflows.md](docs/reference/workflows.md#irreversible-steps-and-their-gates).
 The web view's Flows panel, under More, draws each workflow as a timeline, with the paths that
 reach an irreversible step with no person's decision highlighted. `priory flows example --json`
 prints what it draws, and the [Herdr](docs/adapters/herdr.md) Flows panel draws the same.
@@ -304,8 +306,10 @@ Run `priory` with no arguments to print its usage.
 
 If you work in [Herdr](docs/adapters/herdr.md), its Desk panel shows the same desk, and its Asks
 panel lists the same asks and answers them through these verbs. `priory views --json |
-adapters/herdr/install` links them into Herdr and writes a layout from your `default` view: narrow panels as asides you toggle, wide ones as center tabs, and Herdr's own Files and Changes panels. `priory check`
-warns when that layout was built from other view files. On a Herdr that reads its folder through
+adapters/herdr/install` links them into Herdr and writes a layout from each view, `priory` for
+your `default` view and `priory-NAME` for each other: narrow panels as asides you toggle, wide ones
+as center tabs, and Herdr's own Files and Changes panels. `priory check` warns when those layouts
+were built from other view files, and the Priory bar offers to regenerate them. On a Herdr that reads its folder through
 Syncthing, which carries no links, use `install --copy`.
 
 If you review on GitHub, the [GitHub extension](adapters/github/README.md) shows the task that holds

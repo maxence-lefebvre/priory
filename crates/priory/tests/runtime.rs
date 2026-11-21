@@ -3487,7 +3487,8 @@ fn an_agent_ask_sleeps_the_task_and_the_answer_wakes_it_as_its_prompt() {
             "github:owner/repo#42",
             "-",
             "-",
-            "-"
+            "-",
+            "-",
         ]]
     );
 
@@ -3769,6 +3770,7 @@ fn an_agent_ask_stores_and_lists_its_title_text_what_waits_next_action_and_comma
             "stored",
             "-",
             "github:owner/repo#42",
+            "-",
             "-",
             "-",
             "-",
@@ -4320,6 +4322,7 @@ fn an_outside_ask_takes_fleets_json_shows_on_the_desk_and_a_changed_one_is_a_new
             "cache",
             "run-7",
             "cache-worker",
+            "-",
             "-",
         ]
     };
@@ -16701,12 +16704,12 @@ fn the_approve_pr_ask_shows_its_tasks_merge_risk_and_asks_filter_by_it() {
     let text = String::from_utf8(setup.priory(&["asks"]).stdout).unwrap();
     let lines: Vec<&str> = text.lines().collect();
     assert_eq!(
-        lines[0].split('\t').next_back(),
-        Some("merge_risk"),
+        lines[0].split('\t').rev().take(2).collect::<Vec<_>>(),
+        ["risk_estimate", "merge_risk"],
         "{text}"
     );
     assert!(
-        lines[1].ends_with("\tmedium: does what the issue asks; low: one widget; medium: a test draws the box; low: one revert; low: the widget test fails"),
+        lines[1].contains("\tmedium: does what the issue asks; low: one widget; medium: a test draws the box; low: one revert; low: the widget test fails\tHistory: 0 of 0 tasks"),
         "{text}"
     );
 }
@@ -21575,5 +21578,170 @@ fn each_runner_gives_its_runs_the_memories_of_its_own_factory_checkout() {
         a.rows("runs")[0][8],
         b.rows("runs")[0][8],
         "the same memories give the same hash on every runner"
+    );
+}
+
+/// Writes `scorers/<name>.toml` into the setup's factory.
+fn scorer(setup: &Setup, name: &str, toml: &str) {
+    let factory = setup.dir.join("factory");
+    fs::create_dir_all(factory.join("scorers")).unwrap();
+    fs::write(factory.join(format!("scorers/{name}.toml")), toml).unwrap();
+}
+
+const PASSED_SCORER: &str =
+    "description = \"Passed.\"\non = \"result\"\nkind = \"outcome\"\nexpect = [\"passed\"]\n";
+const SHORT_ASK_SCORER: &str =
+    "description = \"Short.\"\non = \"ask\"\nkind = \"ask-shape\"\nexpect = [\"short\"]\n";
+
+/// `priory score` on task 1, as rows of run, step, scorer, verdict and reason.
+fn scores(setup: &Setup, args: &[&str]) -> Vec<[String; 5]> {
+    let factory = setup.dir.join("factory");
+    let mut all = vec!["score", factory.to_str().unwrap(), "1", "--json"];
+    all.extend_from_slice(args);
+    let output = setup.priory(&all);
+    assert!(output.status.success(), "{output:?}");
+    let shown: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    shown["scores"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|row| {
+            ["run", "step", "scorer", "verdict", "reason"].map(|field| match &row[field] {
+                serde_json::Value::String(text) => text.clone(),
+                value => value.to_string(),
+            })
+        })
+        .collect()
+}
+
+fn scored_records(setup: &Setup) -> Vec<serde_json::Value> {
+    setup
+        .trace()
+        .into_iter()
+        .filter(|record| record["type"] == "factory.run.scored")
+        .collect()
+}
+
+/// Task 1 runs `plan` to `ready`, then `implement` to `passed`.
+fn scored_task(name: &str) -> Setup {
+    let mut setup = Setup::with_workflow(name, STEPS);
+    setup.calls(&[result("ready"), result("passed")]);
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == "done")
+    });
+    setup
+}
+
+#[test]
+fn priory_score_grades_the_latest_finished_run_of_each_step_and_traces_each_score() {
+    let setup = scored_task("score");
+    scorer(&setup, "passed", PASSED_SCORER);
+    scorer(&setup, "short-ask", SHORT_ASK_SCORER);
+
+    let rows = scores(&setup, &[]);
+
+    assert_eq!(
+        rows,
+        [
+            ["1", "plan", "passed", "fail", "outcome ready, not passed"],
+            [
+                "1",
+                "plan",
+                "short-ask",
+                "not applicable",
+                "the run asked nothing"
+            ],
+            ["2", "implement", "passed", "pass", "outcome passed"],
+            [
+                "2",
+                "implement",
+                "short-ask",
+                "not applicable",
+                "the run asked nothing"
+            ],
+        ]
+        .map(|row| row.map(str::to_owned))
+    );
+    let records = scored_records(&setup);
+    assert_eq!(records.len(), 4);
+    let first = &records[0]["data"];
+    assert_eq!(
+        [
+            &first["task"],
+            &first["run"],
+            &first["generation"],
+            &first["step"]
+        ],
+        [&json!("1"), &json!("1"), &json!(1), &json!("plan")]
+    );
+    assert_eq!(
+        [
+            &first["scorer"],
+            &first["kind"],
+            &first["verdict"],
+            &first["reason"]
+        ],
+        [
+            &json!("passed"),
+            &json!("outcome"),
+            &json!("fail"),
+            &json!("outcome ready, not passed")
+        ]
+    );
+
+    let again = scores(&setup, &["--scorer", "passed"]);
+
+    assert_eq!(again.len(), 2);
+    let later = scored_records(&setup);
+    assert_eq!(later.len(), 6);
+    assert_eq!(later[..4], records[..]);
+    assert_eq!(later[5]["data"]["scorer"], "passed");
+}
+
+#[test]
+fn a_run_that_asked_passes_an_ask_shape_scorer_and_fails_an_outcome_scorer() {
+    let mut setup = Setup::with_workflow("score-ask", STEPS);
+    setup.calls(&[ask()]);
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == "asleep")
+    });
+    scorer(&setup, "passed", PASSED_SCORER);
+    scorer(&setup, "short-ask", SHORT_ASK_SCORER);
+    scorer(
+        &setup,
+        "what-waits",
+        "description = \"Says what waits.\"\non = \"ask\"\nkind = \"ask-shape\"\nexpect = [\"short\", \"whatWaits\"]\n",
+    );
+
+    let rows = scores(&setup, &[]);
+
+    assert_eq!(
+        rows.iter()
+            .map(|row| [row[2].as_str(), row[3].as_str(), row[4].as_str()])
+            .collect::<Vec<_>>(),
+        [
+            ["passed", "fail", "the run asked and sent no result"],
+            ["short-ask", "pass", "1 ask(s) show short"],
+            ["what-waits", "fail", "ask 1 lacks whatWaits"],
+        ]
+    );
+}
+
+#[test]
+fn priory_score_names_a_scorer_the_factory_lacks() {
+    let setup = scored_task("score-unknown");
+    scorer(&setup, "passed", PASSED_SCORER);
+    let factory = setup.dir.join("factory");
+
+    let output = setup.priory(&["score", factory.to_str().unwrap(), "1", "--scorer", "gate"]);
+
+    assert!(!output.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&output.stderr),
+        "priory score: no scorer gate in scorers/\n"
     );
 }

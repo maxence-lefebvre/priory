@@ -217,12 +217,12 @@ request of the stack closed without one`. The start step cannot wait for a merge
 For the example above and a workflow `triage` whose autonomous `label` step follows `read`:
 
 ```text
-workflow	step	gate
-implement	open-pr	approve-pr
-triage	label	autonomous: it only labels issues
+workflow	step	gate	caught	judged wrong	landed wrong
+implement	open-pr	approve-pr	4	17 of 53, 95% bound 43.4%	3 of 53, 95% bound 13.7%
+triage	label	autonomous: it only labels issues	0	2 of 12, needs 20	0 of 12, needs 20
 
-workflow	path with no human decision
-triage	read -> label
+workflow	path with no human decision	caught	judged wrong	landed wrong
+triage	read -> label	0	2 of 12, needs 20	0 of 12, needs 20
 
 agent	guard	workflow	why
 
@@ -230,18 +230,26 @@ workflow	step	outcome	proof
 implement	implement	passed	gate-passed
 ```
 
+The first two tables end with the history of the irreversible step, the last step of a path, from
+[`priory report risk`](../daemon/trace.md#risk) over its default window: `caught`, the tasks a person
+stopped at the step's gate, then `judged wrong` and `landed wrong` as `k of n` with the 95 %
+posterior upper bound, or `k of n, needs 20` under 20 trials. These columns read the state file
+`PRIORY_DB` names, and show `-` when there is none this priory reads. `priory check` without
+`--explain` never reads the state, and no column changes a check's verdict.
+
 A workflow `docs` with `guard = { allow = ["git-push-default"] }` and a model step run by `writer`
 adds the row `writer	git-push-default	docs	allowed by the workflow`.
 
-`--json` prints the same rows as one object. `priory flows [DIR] --json` prints the same object with
+`--json` prints the same rows as one object, with the history as each irreversible step's
+`risk_estimate` (see [serve.md](serve.md#flows)), `null` with no state file. `priory flows [DIR] --json` prints the same object with
 each workflow's steps and edges added, as `GET /api/flows` serves it, and the Flows panels of the web
 view and the Herdr adapter draw them:
 
 ```json
 {
   "irreversible": [
-    { "workflow": "implement", "step": "open-pr", "approved_by": ["approve-pr"], "autonomous": null },
-    { "workflow": "triage", "step": "label", "approved_by": [], "autonomous": "it only labels issues" }
+    { "workflow": "implement", "step": "open-pr", "approved_by": ["approve-pr"], "autonomous": null, "risk_estimate": null },
+    { "workflow": "triage", "step": "label", "approved_by": [], "autonomous": "it only labels issues", "risk_estimate": null }
   ],
   "paths": [{ "workflow": "triage", "path": ["read", "label"] }],
   "tools": [],

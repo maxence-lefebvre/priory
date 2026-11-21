@@ -3,7 +3,7 @@
 A scorer grades one finished run: a run whose turn ended with a result or an ask. Each file
 `scorers/<name>.toml`, `.yaml` or `.yml` holds one, named by its file. A scorer answers `pass`,
 `fail`, `not applicable` or `error`. `priory score` runs them on demand, and no scorer runs by
-itself after a run.
+itself after a run (see [score.md](../daemon/score.md)).
 
 Schema: [`config/scorer.json`](../schemas/config/scorer.json).
 

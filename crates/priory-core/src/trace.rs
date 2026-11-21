@@ -677,6 +677,45 @@ pub(crate) fn gate_ran(
     append(tx, trace, "factory.gate.ran", &time, data)
 }
 
+/// Appends a `factory.run.scored` record: a scorer graded `score.run` of `task`.
+pub(crate) fn scored(
+    tx: &Transaction,
+    trace: &Trace,
+    task: i64,
+    score: &crate::score::Score,
+) -> rusqlite::Result<()> {
+    // A run of an earlier generation keeps the generation its step record named.
+    let (workflow, key, generation, time): (String, Option<String>, i64, String) = tx.query_row(
+        "SELECT workflow, key,
+           coalesce((SELECT json_extract(event, '$.data.generation') FROM trace
+             WHERE type = 'factory.step.ended' AND json_extract(event, '$.data.run') = ?2
+             ORDER BY seq DESC LIMIT 1), generation),
+           strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+         FROM tasks WHERE id = ?1",
+        params![task, score.run.to_string()],
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+    )?;
+    let mut data = json!({
+        "factory": trace.factory.name,
+        "factory_revision": trace.revision,
+        "workflow": workflow,
+        "task": task.to_string(),
+        "run": score.run.to_string(),
+        "key": key,
+        "generation": generation,
+        "step": score.step,
+        "machine": trace.machine,
+        "scorer": score.scorer,
+        "kind": score.kind.name(),
+        "verdict": score.verdict.name(),
+        "reason": score.reason,
+    });
+    if let Value::Object(fields) = &mut data {
+        fields.retain(|_, value| !value.is_null());
+    }
+    append(tx, trace, "factory.run.scored", &time, data)
+}
+
 /// The `source` of every record this factory writes on this machine.
 pub(crate) fn source(trace: &Trace) -> String {
     match &trace.machine {
