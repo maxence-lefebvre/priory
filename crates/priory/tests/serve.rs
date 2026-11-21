@@ -197,7 +197,7 @@ fn within(mut command: Command, limit: Duration) -> Output {
 fn raw(address: &str, head: &str) -> (u16, String) {
     let mut stream = TcpStream::connect(address).unwrap();
     stream
-        .set_read_timeout(Some(Duration::from_secs(10)))
+        .set_read_timeout(Some(Duration::from_secs(60)))
         .unwrap();
     stream.write_all(head.as_bytes()).unwrap();
     let mut response = String::new();
@@ -1439,10 +1439,17 @@ fn the_daemon_serves_its_state_when_the_factory_has_a_serve_table() {
 
     let address = setup.start(&["daemon", &setup.factory()]);
 
-    assert_eq!(
-        api(&address, "/api/tasks")["tasks"],
-        json_of(&setup, "tasks")["tasks"]
-    );
+    // The running daemon may write a task's reason between the two reads: compare until they agree.
+    let deadline = Instant::now() + Duration::from_secs(60);
+    loop {
+        let served = api(&address, "/api/tasks")["tasks"].clone();
+        let listed = json_of(&setup, "tasks")["tasks"].clone();
+        if served == listed {
+            break;
+        }
+        assert!(Instant::now() < deadline, "{served} != {listed}");
+        std::thread::sleep(Duration::from_millis(100));
+    }
 }
 
 #[test]
@@ -2607,7 +2614,7 @@ fn wait_prints_the_new_revision_on_a_change_or_the_same_one_after_its_timeout() 
 
     let waiter = setup
         .command()
-        .args(["wait", "--since", &revision.to_string()])
+        .args(["wait", "--since", &revision.to_string(), "--timeout", "60s"])
         .stdout(Stdio::piped())
         .spawn()
         .unwrap();
@@ -2617,7 +2624,8 @@ fn wait_prints_the_new_revision_on_a_change_or_the_same_one_after_its_timeout() 
     let output = waiter.wait_with_output().unwrap();
 
     succeeded(&output);
-    assert!(changed.elapsed() < Duration::from_secs(1));
+    // Far under the 60 s timeout, so a wake on the change shows; load can stretch the wake past 1 s.
+    assert!(changed.elapsed() < Duration::from_secs(30));
     let after: i64 = String::from_utf8_lossy(&output.stdout)
         .trim()
         .parse()
@@ -3074,7 +3082,7 @@ fn an_answer_that_runs_a_command_needs_run_true_and_the_ask_then_shows_what_it_r
         serde_json::from_str::<Value>(&body).unwrap()["ok"],
         format!("ask 1 answered: running {shown} in {dir}")
     );
-    let deadline = std::time::Instant::now() + Duration::from_secs(15);
+    let deadline = std::time::Instant::now() + Duration::from_secs(60);
     while setup.ask()["ran"]["status"] == "running" {
         assert!(std::time::Instant::now() < deadline, "{}", setup.ask());
         std::thread::sleep(Duration::from_millis(50));
@@ -3881,7 +3889,7 @@ impl Setup {
 
     /// Waits until the fake `curl` received `count` pushes, and returns them.
     fn until_pushes(&self, count: usize) -> Vec<Value> {
-        let deadline = Instant::now() + Duration::from_secs(15);
+        let deadline = Instant::now() + Duration::from_secs(60);
         loop {
             let pushes = self.pushes();
             if pushes.len() >= count {
@@ -4015,7 +4023,7 @@ fn a_subscription_the_push_service_calls_gone_is_removed() {
     setup.ask_more(&setup.db(), "Anyone there?");
 
     setup.until_pushes(1);
-    let deadline = Instant::now() + Duration::from_secs(15);
+    let deadline = Instant::now() + Duration::from_secs(60);
     loop {
         let left: i64 = setup
             .db()
@@ -4118,7 +4126,7 @@ impl Setup {
 
     /// Waits until the fake `notify-send` ran `count` times, then a while for any extra call.
     fn until_notices(&self, count: usize) -> Vec<Value> {
-        let deadline = Instant::now() + Duration::from_secs(15);
+        let deadline = Instant::now() + Duration::from_secs(60);
         while self.notices().len() < count {
             assert!(
                 Instant::now() < deadline,

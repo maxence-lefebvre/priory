@@ -2155,7 +2155,7 @@ fn a_view_whose_filter_changes_between_pages_fails_the_poll_and_publishes_nothin
         file.display().to_string()
     };
     let script = format!(
-        "#!/bin/sh\ncase \"$*\" in\n  *'query View'*'page-2'*) cat '{second}' ;;\n  \
+        "#!/bin/sh\ncat >/dev/null\ncase \"$*\" in\n  *'query View'*'page-2'*) cat '{second}' ;;\n  \
          *'query View'*) cat '{first}' ;;\n  *'query Comments'*) cat '{comments}' ;;\n  \
          *) cat '{issues}' ;;\nesac\n",
         first = page("Todo", 7, true),
