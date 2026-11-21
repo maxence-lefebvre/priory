@@ -81,13 +81,27 @@ pub(crate) fn resources(message: &Message) -> Vec<String> {
         return Vec::new();
     };
     let number = data.get("issue").unwrap_or(&data["pull_request"]).as_u64();
-    let head = data["head_branch"].as_str();
+    // A fork's branch is not the task's, whatever its name.
+    let head = data["head_branch"]
+        .as_str()
+        .filter(|_| data.get("head_repo").is_none_or(|head| head == repo));
     number
         .map(|number| pull_request(repo, number))
         .into_iter()
         .chain(head.map(|head| branch(repo, head)))
         .chain(review(message))
         .collect()
+}
+
+/// Whether `message` is a GitHub comment or review by someone without write access to the
+/// repository: its `association` names neither the owner, a member nor a collaborator. Such text
+/// wakes, reopens and reaches no task. An event without `association`, as `priory publish` sends
+/// one, is a person's.
+pub(crate) fn outsider(message: &Message) -> bool {
+    message.kind.starts_with("github.")
+        && message.data["association"]
+            .as_str()
+            .is_some_and(|association| !["OWNER", "MEMBER", "COLLABORATOR"].contains(&association))
 }
 
 /// The key of the review task a review request event is about.

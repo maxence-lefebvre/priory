@@ -131,11 +131,17 @@ kept a revision from a replaced state file does not hang.
 | Request body | none on a `GET`; 16 KiB on a write; 1 MiB on `POST /hooks/github` and `/hooks/linear` | `413` |
 | Time to send the first byte of the request | 1 second | `408` |
 | Time to send the whole request, head and body | 5 seconds | `408` |
-| Time for each write of the reply to go out | 5 seconds | The connection closes |
-| Connections served at once | 8 | Others wait in the listen backlog |
+| Time for the whole reply to go out | 5 seconds | The connection closes |
+| Connections read or written at once | 256 | The connection closes unanswered |
+| Requests handled at once | 8 | Others wait for a worker, with their connection open |
 | `/api/events` requests held at once | 4 | `503` |
 
-Each connection carries one request and closes after the reply.
+Each connection carries one request and closes after the reply. One thread accepts connections,
+and each connection reads its request and writes its reply on a thread of its own. Only a request
+read in full reaches one of the 8 workers that run the handlers. So a client that sends slowly, or
+reads its reply slowly, holds its own connection for at most 5 seconds each way and never a worker.
+Without the token, past those 256 connections a flood still shuts out other clients until its
+connections time out: the limit bounds memory, not a determined attacker.
 
 ## Webhooks
 

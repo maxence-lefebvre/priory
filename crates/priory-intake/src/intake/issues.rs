@@ -85,6 +85,9 @@ pub(super) fn fetch_repo(
             data["head_branch"] = json!(pull.map(|pull| &pull.head_ref_name));
             data["head_sha"] = json!(pull.map(|pull| &pull.head_ref_oid));
             data["base_branch"] = json!(pull.map(|pull| &pull.base_ref_name));
+            if let Some(pull) = pull {
+                pull.head_repo(&mut data);
+            }
         }
         Observed {
             kind,
@@ -190,6 +193,16 @@ pub(super) fn fetch_repo(
         let (Some(number), false) = (number, on_pull || found["user"]["type"] == "Bot") else {
             continue;
         };
+        let mut data = json!({
+            "repo": repo,
+            "issue": number,
+            "url": found["html_url"],
+            "actor": found["user"]["login"],
+            "body": found["body"],
+            "time": found["created_at"],
+            "github_id": found["id"],
+        });
+        super::pulls::associate(&mut data, &found["author_association"]);
         labeled.push(Observed {
             kind: ISSUE_COMMENTED,
             name: format!("github:{repo}:issues/comments:{}", found["id"]),
@@ -197,15 +210,7 @@ pub(super) fn fetch_repo(
             number,
             label: None,
             baseline: cursor(LABELED).is_none(),
-            data: json!({
-                "repo": repo,
-                "issue": number,
-                "url": found["html_url"],
-                "actor": found["user"]["login"],
-                "body": found["body"],
-                "time": found["created_at"],
-                "github_id": found["id"],
-            }),
+            data,
         });
     }
     // With the issue events, oldest first: a close then a comment never publish the other way round.

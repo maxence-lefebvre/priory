@@ -3,7 +3,8 @@
 
 use std::io::{self, Read, Write};
 use std::net::{Shutdown, TcpListener, TcpStream};
-use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, mpsc};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
@@ -18,7 +19,7 @@ const FIRST_BYTE: Duration = Duration::from_secs(1);
 const BODY: usize = 1024 * 1024;
 /// The largest body a `POST` with the token reads.
 const WRITE: usize = 16 * 1024;
-/// The connections served at once; others wait in the listen backlog.
+/// The handlers run at once; a request read while all are busy waits for one.
 pub const WORKERS: usize = 8;
 
 pub struct Reply {
@@ -63,10 +64,12 @@ impl Request<'_> {
     }
 }
 
-/// Serves `listener` on a fixed pool of threads. Each thread calls `make` once for its own
-/// handler, which gets each request that carries `token`, and each `POST` to one of `hooks` with
-/// its body and no token: the handler authenticates those itself. A request to a `public` path
-/// needs no token either. A `POST` from a page of another origin gets 403.
+/// Serves `listener`: one thread accepts, a thread per connection reads the request and writes
+/// the reply, each within its deadline, and a fixed pool of workers runs the handlers. So a slow
+/// client holds only its own connection's thread, never a worker. Each worker calls `make` once
+/// for its own handler, which gets each request that carries `token`, and each `POST` to one of
+/// `hooks` with its body and no token: the handler authenticates those itself. A request to a
+/// `public` path needs no token either. A `POST` from a page of another origin gets 403.
 pub fn serve<M, H>(
     listener: TcpListener,
     token: String,
@@ -78,26 +81,93 @@ where
     M: Fn() -> H + Send + Sync + 'static,
     H: FnMut(&Request) -> Reply,
 {
-    let gate = Gate {
+    let gate = Arc::new(Gate {
         token,
         hooks,
         public,
-    };
-    let shared = Arc::new((listener, gate, make));
-    (0..WORKERS)
+    });
+    let (jobs, queue) = mpsc::sync_channel::<Job>(0);
+    let queue = Arc::new(Mutex::new(queue));
+    let make = Arc::new(make);
+    let mut threads = (0..WORKERS)
         .map(|_| {
-            let shared = Arc::clone(&shared);
+            let queue = Arc::clone(&queue);
+            let make = Arc::clone(&make);
             std::thread::Builder::new()
                 .name("priory-http".to_owned())
                 .spawn(move || {
-                    let (listener, gate, make) = &*shared;
                     let mut handle = make();
-                    for stream in listener.incoming().flatten() {
-                        let _ = answer(stream, gate, &mut handle);
+                    loop {
+                        let Ok(job) = queue.lock().map(|queue| queue.recv()) else {
+                            return;
+                        };
+                        let Ok(job) = job else {
+                            return;
+                        };
+                        let _ = job.reply.send(work(&job, &mut handle));
                     }
                 })
         })
-        .collect()
+        .collect::<io::Result<Vec<_>>>()?;
+    let live = Arc::new(AtomicUsize::new(0));
+    let accept = std::thread::Builder::new()
+        .name("priory-http-accept".to_owned())
+        .spawn(move || {
+            for stream in listener.incoming().flatten() {
+                if live.fetch_add(1, Ordering::SeqCst) >= CONNECTIONS {
+                    live.fetch_sub(1, Ordering::SeqCst);
+                    continue;
+                }
+                let slot = Slot(Arc::clone(&live));
+                let (gate, jobs) = (Arc::clone(&gate), jobs.clone());
+                let _ = std::thread::Builder::new()
+                    .name("priory-http-connection".to_owned())
+                    .spawn(move || {
+                        let _slot = slot;
+                        let _ = answer(stream, &gate, &jobs);
+                    });
+            }
+        })?;
+    threads.push(accept);
+    Ok(threads)
+}
+
+/// The connections read or written at once; one past it is closed unanswered.
+const CONNECTIONS: usize = 256;
+
+/// A connection's place among `CONNECTIONS`, given back when its thread ends, even by a panic.
+struct Slot(Arc<AtomicUsize>);
+
+impl Drop for Slot {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+/// A request a connection read, for a worker to handle: its head and body, and where the reply goes.
+struct Job {
+    head: Vec<u8>,
+    body: Vec<u8>,
+    reply: mpsc::Sender<Reply>,
+}
+
+/// Runs `handle` on the request of `job`, whose head its connection already parsed.
+fn work(job: &Job, handle: &mut impl FnMut(&Request) -> Reply) -> Reply {
+    let mut headers = [httparse::EMPTY_HEADER; HEADERS];
+    let mut parsed = httparse::Request::new(&mut headers);
+    let (Ok(_), Some(method), Some(path)) = (parsed.parse(&job.head), parsed.method, parsed.path)
+    else {
+        return Reply::error(400, "the request head does not parse");
+    };
+    let request = Request {
+        method,
+        path,
+        headers: parsed.headers,
+        body: &job.body,
+    };
+    // A handler bug answers 500 instead of ending the worker, so none can drain the pool.
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| handle(&request)))
+        .unwrap_or_else(|_| Reply::error(500, "the request failed inside Priory"))
 }
 
 /// What lets a request through: the token, or a hook or public path.
@@ -107,19 +177,24 @@ struct Gate {
     public: fn(&str) -> bool,
 }
 
-fn answer(
-    mut stream: TcpStream,
-    gate: &Gate,
-    handle: &mut impl FnMut(&Request) -> Reply,
-) -> io::Result<()> {
-    stream.set_write_timeout(Some(TIMEOUT))?;
+fn answer(mut stream: TcpStream, gate: &Gate, jobs: &mpsc::SyncSender<Job>) -> io::Result<()> {
     let deadline = Instant::now() + TIMEOUT;
     let reply = match read_head(&mut stream, deadline) {
-        // A handler bug answers 500 instead of ending the worker, so none can drain the pool.
-        Ok((read, end)) => std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            respond(&mut stream, deadline, &read, end, gate, handle)
-        }))
-        .unwrap_or_else(|_| Reply::error(500, "the request failed inside Priory")),
+        Ok((read, end)) => {
+            let mut pooled = |request: &Request| {
+                let (reply, replied) = mpsc::channel();
+                let job = Job {
+                    head: read[..end].to_vec(),
+                    body: request.body.to_vec(),
+                    reply,
+                };
+                jobs.send(job)
+                    .ok()
+                    .and_then(|()| replied.recv().ok())
+                    .unwrap_or_else(|| Reply::error(500, "the request failed inside Priory"))
+            };
+            respond(&mut stream, deadline, &read, end, gate, &mut pooled)
+        }
         Err(reply) => reply,
     };
     let reason = match reply.status {
@@ -147,20 +222,38 @@ fn answer(
         503 => "Retry-After: 1\r\n",
         _ => "",
     };
-    write!(
-        stream,
+    let head = format!(
         "HTTP/1.1 {} {reason}\r\nContent-Type: {}\r\nContent-Length: {}\r\nCache-Control: no-store\r\n\
          {extra}{}Connection: close\r\n\r\n",
         reply.status,
         reply.kind,
         reply.body.len(),
         reply.headers
-    )?;
-    stream.write_all(&reply.body)?;
+    );
+    // One deadline for the whole reply: a write timeout alone bounds each write, not the reply.
+    let deadline = Instant::now() + TIMEOUT;
+    write_by(&mut stream, head.as_bytes(), deadline)?;
+    write_by(&mut stream, &reply.body, deadline)?;
     stream.shutdown(Shutdown::Write)?;
     // Closing with unread input resets the connection, which can drop the reply before the client reads it.
     stream.set_nonblocking(true)?;
     let _ = io::copy(&mut (&stream).take(64 * 1024), &mut io::sink());
+    Ok(())
+}
+
+/// Writes all of `bytes` before `deadline`, or errs.
+fn write_by(stream: &mut TcpStream, mut bytes: &[u8], deadline: Instant) -> io::Result<()> {
+    while !bytes.is_empty() {
+        let left = deadline.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            return Err(io::ErrorKind::TimedOut.into());
+        }
+        stream.set_write_timeout(Some(left))?;
+        match stream.write(&bytes[..bytes.len().min(16 * 1024)])? {
+            0 => return Err(io::ErrorKind::WriteZero.into()),
+            written => bytes = &bytes[written..],
+        }
+    }
     Ok(())
 }
 
