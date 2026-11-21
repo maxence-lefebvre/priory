@@ -48,9 +48,9 @@ answers. A `401` from the daemon signs you out too.
   recommendation, options, Write an answer, Dismiss and Snooze. A step's ask and a hold's ask take
   only their options, so they show neither Write an answer nor Dismiss. An answer waits 4 s with Undo, then
   goes with the revision you saw. Leave the page or close the panel before then, and the panel
-  shows the answer unsent the next time it opens on that pull request, with Send and Discard. A
-  changed question keeps your draft and says so. Keys 1 to 9 pick an option while the panel has
-  focus.
+  shows the answer unsent the next time it opens on that pull request, with Send and Discard,
+  until the question is asked again at a new revision. A changed question keeps your draft and
+  says so. Keys 1 to 9 pick an option while the panel has focus.
 - **A command ask**: a tap on an option that runs a command opens the browser's side panel with the
   command, its folder and its revision. Run it there, within 2 min of the tap. No page can cover
   the side panel. Run reads the ask again first, and runs only when the daemon, the revision and

@@ -101,6 +101,13 @@ test("an answer still waiting on Undo when the page changes comes back unsent, t
   assert.equal(again.restored, undefined);
 });
 
+test("a restored draft drops once its ask is asked again at a new revision, and stays at the same one", () => {
+  const kept = leftUnsent(choose(null, ASK, { option: "Rename it" }, NOW));
+
+  assert.equal(observe(kept, ASK, NOW + 60000), kept);
+  assert.equal(observe(kept, { ...ASK, revision: 2 }, NOW + 60000), null);
+});
+
 test("only a waiting answer is kept: one posting, armed, sent or undone is not", () => {
   const waiting = choose(null, ASK, { option: "Rename it" }, NOW);
   const posting = due(waiting, NOW + UNDO_MS).draft;

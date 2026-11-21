@@ -84,10 +84,12 @@ export function reply(draft, result, now) {
 
 /**
  * The draft once a fresh read shows its ask: an armed command disarms at a new revision or after
- * 4 s, and a lost write counts as sent once the ask shows it answered.
+ * 4 s, a restored draft drops at a new revision, since its choice was made on the old one, and a
+ * lost write counts as sent once the ask shows it answered.
  */
 export function observe(draft, ask, now) {
   if (!draft || draft.id !== ask.id) return draft;
+  if (draft.restored && ask.revision !== draft.revision) return null;
   if (draft.phase === "armed") return ask.revision === draft.revision && ask.state === "open" && now - draft.at < ARM_MS ? draft : null;
   if (draft.phase === "unknown" && ask.state !== "open") return { ...draft, phase: "sent", notice: null };
   return draft;
