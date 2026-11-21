@@ -1,4 +1,5 @@
-use herdr_bus::{Bus, Message, MessageQuery, Output, Timestamp, Uuid};
+use crate::log::{self, Log};
+use herdr_bus::{Bus, Message, Output, Timestamp, Uuid};
 use priory_factory::factory::{Factory, Trigger};
 mod gh;
 mod issues;
@@ -142,7 +143,8 @@ pub fn run(
         .copied()
         .filter(|(_, trigger)| trigger.reviewer.is_some())
         .collect();
-    let bus = Bus::open_default().map_err(|error| error.to_string())?;
+    let opened = log::open().map_err(|error| error.to_string())?;
+    let bus = opened.as_ref();
     bus.declare(&output()).map_err(|error| error.to_string())?;
     // A source the triggers need that cannot start, such as one without its key, ends the intake;
     // recording it first lets the desk say why while systemd restarts it.
@@ -153,15 +155,15 @@ pub fn run(
         error
     };
     let mut linear = (!linear_triggers.is_empty())
-        .then(|| linear::Linear::start(&bus, linear_triggers.clone()))
+        .then(|| linear::Linear::start(bus, linear_triggers.clone()))
         .transpose()
         .map_err(|error| started("linear", error))?;
     let mut reviews = (!review_triggers.is_empty())
-        .then(|| reviews::Reviews::start(&bus, review_triggers))
+        .then(|| reviews::Reviews::start(bus, review_triggers))
         .transpose()
         .map_err(|error| started("github", error))?;
     let mut slack = (!slack_triggers.is_empty())
-        .then(|| slack::Slack::start(&bus, slack_triggers.clone()))
+        .then(|| slack::Slack::start(bus, slack_triggers.clone()))
         .transpose()
         .map_err(|error| started("slack", error))?;
     if let Some(settings) = factory.slack_shortcut().filter(|_| !once) {
@@ -174,11 +176,11 @@ pub fn run(
         .copied()
         .chain(waiting.iter().filter_map(pull_request_repo))
         .collect();
-    let (newest, mut cursors) = newest(&bus, &resumed).map_err(|error| error.to_string())?;
+    let (newest, mut cursors) = newest(bus, &resumed).map_err(|error| error.to_string())?;
     for (stream, source) in newest {
         // A crash may have stopped between this source and its task requests.
         if source.data["baseline"] != true {
-            dispatch(&bus, &triggers, &source)?;
+            dispatch(bus, &triggers, &source)?;
         }
         if let Some(cursor) = cursors.get_mut(&stream) {
             *cursor = (*cursor).max(position(&source.data, stream.1));
@@ -207,18 +209,18 @@ pub fn run(
         // missing key fails that poll only.
         let mut failed: BTreeMap<&str, Vec<String>> = BTreeMap::new();
         if linear.is_none() && names("linear:") {
-            match linear::Linear::start(&bus, Vec::new()) {
+            match linear::Linear::start(bus, Vec::new()) {
                 Ok(started) => linear = Some(started),
                 Err(error) => failed.entry("linear").or_default().push(error),
             }
         }
         if slack.is_none() && names("slack:") {
-            match slack::Slack::start(&bus, Vec::new()) {
+            match slack::Slack::start(bus, Vec::new()) {
                 Ok(started) => slack = Some(started),
                 Err(error) => failed.entry("slack").or_default().push(error),
             }
         }
-        schedule::fire(&bus, &schedules, now()?)?;
+        schedule::fire(bus, &schedules, now()?)?;
         let waited = watching.iter().filter_map(pull_request_repo);
         let polled: BTreeSet<&str> = repos.iter().copied().chain(waited).collect();
         let merges = match merged(&since(now()?)) {
@@ -231,19 +233,19 @@ pub fn run(
         };
         let (found, errors) = fetch(&polled, &cursors, &merges, &mut unchecked);
         // A publish error ends the intake: its restart recovers the source it left behind.
-        publish_all(&bus, &triggers, found, &mut cursors, &mut published)?;
+        publish_all(bus, &triggers, found, &mut cursors, &mut published)?;
         failed.entry("github").or_default().extend(errors);
         if let Some(reviews) = &mut reviews {
-            let errors = reviews.poll(&bus, now()?)?;
+            let errors = reviews.poll(bus, now()?)?;
             failed.entry("github").or_default().extend(errors);
         }
         if let Some(linear) = &mut linear {
             match linear.fetch() {
-                Ok(polled) => linear.publish_all(&bus, polled)?,
+                Ok(polled) => linear.publish_all(bus, polled)?,
                 Err(error) => failed.entry("linear").or_default().push(error),
             }
         }
-        if let Some(Err(error)) = slack.as_mut().map(|slack| slack.poll(&bus, &watching)) {
+        if let Some(Err(error)) = slack.as_mut().map(|slack| slack.poll(bus, &watching)) {
             failed.entry("slack").or_default().push(error);
         }
         let sources = [
@@ -305,9 +307,9 @@ pub fn now() -> Result<Timestamp, String> {
 /// The newest source event per stream, and the baseline position of each stream that finished
 /// its baseline, read back newest first.
 fn newest(
-    bus: &Bus,
+    bus: &dyn Log,
     repos: &BTreeSet<&str>,
-) -> herdr_bus::Result<(BTreeMap<Stream, Message>, Cursors)> {
+) -> log::Result<(BTreeMap<Stream, Message>, Cursors)> {
     let wanted = repos.len() * STREAMS.len();
     let mut newest = BTreeMap::new();
     let mut baselines = Cursors::new();
@@ -315,12 +317,7 @@ fn newest(
     // shortcut: reads back to each stream's baseline marker, once per start; a stored cursor would
     // make this constant once the output is large.
     while baselines.len() < wanted {
-        let page = bus.messages(&MessageQuery {
-            output: Some(OUTPUT.into()),
-            before,
-            limit: 500,
-            ..MessageQuery::default()
-        })?;
+        let page = bus.messages(OUTPUT, before, 500)?;
         let Some(oldest) = page.last() else {
             break;
         };
@@ -405,7 +402,7 @@ fn fetch(
 }
 
 fn publish_all(
-    bus: &Bus,
+    bus: &dyn Log,
     triggers: &[(&str, &Trigger)],
     polled: Vec<Polled>,
     cursors: &mut Cursors,
@@ -466,7 +463,7 @@ fn claim() -> Result<std::fs::File, String> {
 }
 
 /// Whether the output already holds the other writer's report of `message`'s change.
-fn reported(bus: &Bus, message: &Message) -> Result<bool, String> {
+fn reported(bus: &dyn Log, message: &Message) -> Result<bool, String> {
     if !CHANGES.contains(&message.kind.as_str()) {
         return Ok(false);
     }
@@ -475,19 +472,14 @@ fn reported(bus: &Bus, message: &Message) -> Result<bool, String> {
 
 /// The source events of `CHANGES` types on the output, newest first, back 7 days and at most
 /// `LOOKBACK_MESSAGES` messages.
-fn recent(bus: &Bus) -> Result<Vec<Message>, String> {
+fn recent(bus: &dyn Log) -> Result<Vec<Message>, String> {
     let since = Timestamp::now().as_second() - LOOKBACK_SECONDS;
     let mut found = Vec::new();
     let mut before = None;
     let mut read = 0;
     while read < LOOKBACK_MESSAGES {
         let page = bus
-            .messages(&MessageQuery {
-                output: Some(OUTPUT.into()),
-                before,
-                limit: 500,
-                ..MessageQuery::default()
-            })
+            .messages(OUTPUT, before, 500)
             .map_err(|error| format!("read {OUTPUT}: {error}"))?;
         let Some(oldest) = page.last() else {
             break;
@@ -534,7 +526,7 @@ fn baseline((repo, kind): &Stream, position: u64) -> Message {
 }
 
 /// Publishes a task request for each trigger the source names, among those still defined.
-fn dispatch(bus: &Bus, triggers: &[(&str, &Trigger)], source: &Message) -> Result<(), String> {
+fn dispatch(bus: &dyn Log, triggers: &[(&str, &Trigger)], source: &Message) -> Result<(), String> {
     let named = source.data["triggers"].as_array().into_iter().flatten();
     for name in named.filter_map(|name| name.as_str()) {
         if let Some((name, trigger)) = triggers.iter().find(|(other, _)| *other == name) {
@@ -558,7 +550,7 @@ fn dispatch(bus: &Bus, triggers: &[(&str, &Trigger)], source: &Message) -> Resul
     Ok(())
 }
 
-fn publish(bus: &Bus, message: &Message) -> Result<(), String> {
+fn publish(bus: &dyn Log, message: &Message) -> Result<(), String> {
     bus.publish(OUTPUT, message)
         .map(drop)
         .map_err(|error| format!("publish on {OUTPUT}: {error}"))

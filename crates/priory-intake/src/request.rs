@@ -1,5 +1,6 @@
 use crate::intake::{self, OUTPUT, TASK_REQUESTED};
-use herdr_bus::{Bus, Message, Timestamp};
+use crate::log::{self, Log};
+use herdr_bus::{Message, Timestamp};
 use priory_factory::factory::{Factory, Hold, Intervention};
 use serde_json::json;
 use std::path::PathBuf;
@@ -266,7 +267,7 @@ pub fn add(factory: &Factory, add: &Add) -> Result<String, Refused> {
         );
         // Both ids derive from the text, so the bus keeps the first of each. A task request that
         // takes this call's time is new: an earlier add stopped before it, and this one completes it.
-        publish(&bus, &source)?;
+        publish(&*bus, &source)?;
         let task = task(&request, key, &source);
         let seq = bus
             .publish(OUTPUT, &task)
@@ -280,7 +281,7 @@ pub fn add(factory: &Factory, add: &Add) -> Result<String, Refused> {
     let today = intake::now()?.to_zoned(jiff::tz::TimeZone::system()).date();
     for n in 1.. {
         let key = format!("cli:{today}-{n}");
-        if claim(&bus, &request, &key)? {
+        if claim(&*bus, &request, &key)? {
             return Ok(key);
         }
     }
@@ -340,7 +341,7 @@ fn quick(factory: &Factory, add: &Add, repo: Option<String>) -> Result<Request, 
 
 /// Publishes `request` under `key` unless another request owns the key: the key alone names the
 /// source event, so the first to publish it owns the key.
-fn claim(bus: &Bus, request: &Request, key: &str) -> Result<bool, String> {
+fn claim(bus: &dyn Log, request: &Request, key: &str) -> Result<bool, String> {
     let source = source(request, key, &format!("{REQUESTED}:add:{key}"));
     let seq = bus
         .publish(OUTPUT, &source)
@@ -465,7 +466,7 @@ pub fn run(factory: &Factory, request: &Request, nonce: Option<&str>) -> Result<
     let task = task(request, &key, &source);
     let bus = open()?;
     for message in [source, task] {
-        publish(&bus, &message)?;
+        publish(&*bus, &message)?;
     }
     Ok(())
 }
@@ -518,14 +519,14 @@ fn task(request: &Request, key: &str, source: &Message) -> Message {
         .time(source.time)
 }
 
-fn open() -> Result<Bus, String> {
-    let bus = Bus::open_default().map_err(|error| error.to_string())?;
+fn open() -> Result<Box<dyn Log>, String> {
+    let bus = log::open().map_err(|error| error.to_string())?;
     bus.declare(&intake::output())
         .map_err(|error| error.to_string())?;
     Ok(bus)
 }
 
-fn publish(bus: &Bus, message: &Message) -> Result<(), String> {
+fn publish(bus: &dyn Log, message: &Message) -> Result<(), String> {
     bus.publish(OUTPUT, message)
         .map(|_| ())
         .map_err(|error| format!("publish on {OUTPUT}: {error}"))

@@ -16,6 +16,13 @@ So each message changes the state exactly once:
 - If handling the message fails with an error, the daemon stops before the ack. The next start
   handles the message again.
 
+The daemon and the intake reach the bus through the `Log` trait in `priory-intake`. The trait
+names what the guarantees above need: publishing that drops a repeated id, reading past a named
+consumer's cursor, and an ack that moves that cursor. Today herdr-bus's SQLite file implements it.
+A contract test suite in `crates/priory-intake/tests/log.rs` runs against every implementation, so
+a second store, such as Postgres, keeps these guarantees. See
+[ADR 0001](../adr/0001-the-intake-and-the-daemon-reach-the-event-log-through-one-log-trait.md).
+
 `priory inbox` lists every entry, with the task it went to and its outcome.
 
 ## Resources: what a task owns

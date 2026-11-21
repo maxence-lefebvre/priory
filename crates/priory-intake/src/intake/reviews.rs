@@ -1,6 +1,7 @@
 use super::gh::gh;
 use super::{BASELINE, OUTPUT, dispatch, id, publish};
-use herdr_bus::{Bus, Message, MessageQuery, Timestamp};
+use crate::log::{self, Log};
+use herdr_bus::{Message, Timestamp};
 use priory_factory::factory::Trigger;
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
@@ -18,7 +19,10 @@ pub(super) struct Reviews<'a> {
 }
 
 impl<'a> Reviews<'a> {
-    pub(super) fn start(bus: &Bus, triggers: Vec<(&'a str, &'a Trigger)>) -> Result<Self, String> {
+    pub(super) fn start(
+        bus: &dyn Log,
+        triggers: Vec<(&'a str, &'a Trigger)>,
+    ) -> Result<Self, String> {
         let mut streams: BTreeMap<String, Option<Value>> = triggers
             .iter()
             .filter_map(|(_, trigger)| trigger.reviewer.as_deref())
@@ -43,7 +47,7 @@ impl<'a> Reviews<'a> {
     /// Polls every reviewer, and returns the error of each that failed. A failed read changes
     /// nothing for its reviewer: it is not an empty set. The others still publish, and a publish
     /// error ends the poll.
-    pub(super) fn poll(&mut self, bus: &Bus, now: Timestamp) -> Result<Vec<String>, String> {
+    pub(super) fn poll(&mut self, bus: &dyn Log, now: Timestamp) -> Result<Vec<String>, String> {
         let mut failed = Vec::new();
         let streams: Vec<String> = self.streams.keys().cloned().collect();
         for stream in streams {
@@ -284,19 +288,14 @@ fn recover(marker: &Value, events: &[Message]) -> Value {
 /// Fills each stream with its newest marker, read back newest first, and returns the events of
 /// each stream published after that marker, oldest first: those of a poll a crash stopped.
 fn resume(
-    bus: &Bus,
+    bus: &dyn Log,
     streams: &mut BTreeMap<String, Option<Value>>,
-) -> herdr_bus::Result<BTreeMap<String, Vec<Message>>> {
+) -> log::Result<BTreeMap<String, Vec<Message>>> {
     let mut after: BTreeMap<String, Vec<Message>> = BTreeMap::new();
     let mut before = None;
     // shortcut: reads back to each stream's newest marker, once per start, as Linear's do.
     while streams.values().any(Option::is_none) {
-        let page = bus.messages(&MessageQuery {
-            output: Some(OUTPUT.into()),
-            before,
-            limit: 500,
-            ..MessageQuery::default()
-        })?;
+        let page = bus.messages(OUTPUT, before, 500)?;
         let Some(oldest) = page.last() else {
             break;
         };
