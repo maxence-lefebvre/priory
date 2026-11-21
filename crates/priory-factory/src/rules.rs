@@ -980,5 +980,9 @@ fn has_go(workflow: &Workflow) -> bool {
         .iter()
         .filter(|step| step.decides == Decider::Model)
         .flat_map(|step| step.next.values())
-        .any(|next| workflow.step(next).is_some_and(|step| step.decides == Decider::Human))
+        .any(|next| {
+            workflow
+                .step(next)
+                .is_some_and(|step| step.decides == Decider::Human)
+        })
 }

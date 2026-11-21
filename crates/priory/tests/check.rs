@@ -1583,7 +1583,10 @@ fn a_batch_workflow_needs_a_human_step_after_a_model_step() {
     );
     assert_eq!(
         (bad.code, bad.stderr.as_str()),
-        (1, "factory.toml:3: `[batch] entries` `groom` does not exist\n")
+        (
+            1,
+            "factory.toml:3: `[batch] entries` `groom` does not exist\n"
+        )
     );
 }
 

@@ -405,6 +405,13 @@ pub(crate) fn start(
     if went {
         return Ok(Ok(()));
     }
+    // A local transaction cannot stop another runner from claiming a request on an entry's issue.
+    if factory.runners.len() > 1 {
+        return Ok(Err(format!(
+            "batches need one runner; this factory has {}",
+            factory.runners.len()
+        )));
+    }
     let Some(plan) = plan else {
         return Ok(Err(format!("batch {id} has no plan")));
     };
@@ -426,7 +433,9 @@ pub(crate) fn start(
         }
     }
     let Some(flow) = factory.workflows.get(&workflow) else {
-        return Ok(Err(format!("batch {id}'s entries workflow {workflow} is not in the factory")));
+        return Ok(Err(format!(
+            "batch {id}'s entries workflow {workflow} is not in the factory"
+        )));
     };
     let mut tasks = BTreeMap::new();
     for entry in &plan.entries {
@@ -477,11 +486,21 @@ pub(crate) fn start(
         }
         crate::relate::created(tx, created, &key, &[])?;
         for edge in &entry.after {
-            crate::relate::insert(tx, created, "builds-on", tasks[edge.entry.as_str()], "priory")?;
+            crate::relate::insert(
+                tx,
+                created,
+                "builds-on",
+                tasks[edge.entry.as_str()],
+                "priory",
+            )?;
         }
         held(tx, id, created, &entry.after, &tasks)?;
     }
-    number(tx, band.as_deref(), &tasks.values().copied().collect::<Vec<_>>())?;
+    number(
+        tx,
+        band.as_deref(),
+        &tasks.values().copied().collect::<Vec<_>>(),
+    )?;
     tx.execute(
         "UPDATE batches SET state = 'going', went = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
          WHERE id = ?1",
@@ -601,7 +620,8 @@ fn one(db: &Connection, id: i64, full: bool) -> rusqlite::Result<Value> {
             ))
         },
     )?;
-    let plan: Option<Plan> = plan.map(|plan| serde_json::from_str(&plan).expect("a stored plan parses"));
+    let plan: Option<Plan> =
+        plan.map(|plan| serde_json::from_str(&plan).expect("a stored plan parses"));
     let mut entries = Vec::new();
     let mut counts: BTreeMap<&str, i64> = STAGES.iter().map(|stage| (*stage, 0)).collect();
     for (at, entry) in plan.iter().flat_map(|plan| plan.entries.iter().enumerate()) {
@@ -684,7 +704,8 @@ fn entry_of(db: &Connection, id: i64, at: usize, entry: &Entry) -> rusqlite::Res
                 |row| row.get(0),
             )
             .optional()?;
-        after.push(json!({ "entry": edge.entry, "task": other, "moment": edge.moment, "met": met }));
+        after
+            .push(json!({ "entry": edge.entry, "task": other, "moment": edge.moment, "met": met }));
     }
     Ok(json!({
         "entry": entry.id,
@@ -709,7 +730,12 @@ fn closed(db: &Connection, task: i64, close: &Close) -> rusqlite::Result<Value> 
              JOIN runs ON runs.id = results.run
              WHERE results.task = ?1 AND results.step = 'close' ORDER BY results.run DESC LIMIT 1",
             [task],
-            |row| Ok((row.get(0)?, row.get::<_, Option<String>>(1)?.unwrap_or_default())),
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get::<_, Option<String>>(1)?.unwrap_or_default(),
+                ))
+            },
         )
         .optional()?;
     let at = reported.and_then(|(evidence, at)| {
@@ -719,4 +745,51 @@ fn closed(db: &Connection, task: i64, close: &Close) -> rusqlite::Result<Value> 
             .then_some(at)
     });
     Ok(json!({ "issue": close.issue, "why": close.why, "evidence": close.evidence, "closed": at }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use proptest::prelude::*;
+
+    fn value() -> impl Strategy<Value = Value> {
+        let leaf = prop_oneof![
+            Just(Value::Null),
+            any::<bool>().prop_map(Value::from),
+            any::<i64>().prop_map(Value::from),
+            "(e[0-9]|ENG-[0-9]|merged|waiting|[a-z#/:-]{0,8})".prop_map(Value::from),
+        ];
+        leaf.prop_recursive(4, 64, 6, |inner| {
+            prop_oneof![
+                proptest::collection::vec(inner.clone(), 0..6).prop_map(Value::from),
+                proptest::collection::btree_map(
+                    "(id|issue|part|title|brief|files|after|entry|moment|why|entries|close|evidence|title)",
+                    inner,
+                    0..6
+                )
+                .prop_map(|map| Value::Object(map.into_iter().collect())),
+            ]
+        })
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(512))]
+
+        #[test]
+        fn a_plan_of_any_shape_is_checked_or_refused_without_panicking(batch in value()) {
+            let issues = ["linear:ENG-1".to_owned(), "linear:ENG-2".to_owned()];
+            if let Ok(plan) = serde_json::from_value::<Plan>(batch) {
+                let _ = checked(&plan, &issues);
+            }
+        }
+    }
+
+    #[test]
+    fn a_loop_is_named_from_the_first_entry_on_it() {
+        let after = BTreeMap::from([("e1", vec!["e2"]), ("e2", vec!["e3"]), ("e3", vec!["e2"])]);
+        assert_eq!(
+            looped(&after, "e1", &mut vec![], &mut BTreeSet::new()),
+            Some(vec!["e2", "e3", "e2"])
+        );
+    }
 }

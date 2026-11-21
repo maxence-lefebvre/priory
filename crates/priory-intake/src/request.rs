@@ -351,9 +351,11 @@ pub fn parse_batch(args: Vec<String>) -> Option<(PathBuf, Batch)> {
 /// next free key of the day, `batch:<YYYY-MM-DD>-<n>`, and returns that key.
 pub fn add_batch(factory: &Factory, batch: &Batch) -> Result<String, Refused> {
     let Some(defaults) = factory.batch() else {
-        return Err("factory.toml has no [batch] workflow; set one to plan batches"
-            .to_owned()
-            .into());
+        return Err(
+            "factory.toml has no [batch] workflow; set one to plan batches"
+                .to_owned()
+                .into(),
+        );
     };
     if factory.runners.len() > 1 {
         return Err(format!(

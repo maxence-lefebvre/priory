@@ -16479,7 +16479,10 @@ fn three_entries() -> Vec<serde_json::Value> {
 fn a_plan_that_leaves_an_issue_out_is_refused() {
     let entries = &three_entries()[..2];
     assert_eq!(
-        plan_refused("batch-left-out", json!({ "title": "t", "entries": entries })),
+        plan_refused(
+            "batch-left-out",
+            json!({ "title": "t", "entries": entries })
+        ),
         (
             "issue linear:ENG-43 of the batch is in no entry and no close".to_owned(),
             true
@@ -16505,7 +16508,10 @@ fn a_plan_with_a_dangling_edge_is_refused() {
     let mut entries = three_entries();
     entries[2] = entry("e3", "ENG-43", &["e9"]);
     assert_eq!(
-        plan_refused("batch-dangling", json!({ "title": "t", "entries": entries })),
+        plan_refused(
+            "batch-dangling",
+            json!({ "title": "t", "entries": entries })
+        ),
         (
             "entry e3 waits on e9, which the plan does not have".to_owned(),
             true
@@ -16543,7 +16549,8 @@ fn a_plan_with_a_waiting_moment_is_refused_until_stacked_entries_exist() {
     assert_eq!(
         plan_refused("batch-waiting", json!({ "title": "t", "entries": entries })),
         (
-            "entry e2 waits on e1 at `waiting`, which Priory does not build yet; use merged".to_owned(),
+            "entry e2 waits on e1 at `waiting`, which Priory does not build yet; use merged"
+                .to_owned(),
             true
         )
     );
@@ -16569,9 +16576,7 @@ fn a_plan_naming_an_issue_an_active_task_holds_is_refused() {
     other.data["key"] = json!("linear:ENG-41");
     other.data["hold"] = json!({ "reason": "later" });
     setup.publish(&other.subject("linear:ENG-41"));
-    setup.calls(&[planned(
-        json!({ "title": "t", "entries": three_entries() }),
-    )]);
+    setup.calls(&[planned(json!({ "title": "t", "entries": three_entries() }))]);
     batch_add(&setup, &["ENG-40", "ENG-41", "ENG-43"]);
     setup.start();
     setup.written("fake/tools.log");
@@ -16642,10 +16647,7 @@ fn batch_json(setup: &Setup, args: &[&str]) -> serde_json::Value {
 #[test]
 fn a_go_creates_one_task_per_entry_in_plan_order_with_its_holds_and_relations() {
     let close = [json!({ "issue": "ENG-43", "why": "Fixed by #198", "evidence": "#198" })];
-    let entries = [
-        entry("e1", "ENG-40", &[]),
-        entry("e2", "ENG-41", &["e1"]),
-    ];
+    let entries = [entry("e1", "ENG-40", &[]), entry("e2", "ENG-41", &["e1"])];
     let (setup, ask) = at_the_go(
         "batch-go",
         json!({ "title": "Invoice exports", "entries": entries, "close": close }),
@@ -16675,10 +16677,19 @@ fn a_go_creates_one_task_per_entry_in_plan_order_with_its_holds_and_relations() 
                 "waits for room: 0.0 GB of memory free, needs 4.0 GB and keeps 6.4 GB free",
                 "1"
             ],
-            ["3", "implement", "held", "held: batch 1, until task 2 merges", "-"],
+            [
+                "3",
+                "implement",
+                "held",
+                "held: batch 1, until task 2 merges",
+                "-"
+            ],
         ]
     );
-    assert_eq!([&tasks[1][1], &tasks[2][1]], ["linear:ENG-40", "linear:ENG-41"]);
+    assert_eq!(
+        [&tasks[1][1], &tasks[2][1]],
+        ["linear:ENG-40", "linear:ENG-41"]
+    );
     let graph = person(&setup, "tasks", &["--graph", "3"]);
     assert!(graph.contains("builds-on"), "{graph}");
     let shown = batch_json(&setup, &["1"]);
@@ -16781,7 +16792,10 @@ fn a_merged_condition_is_met_when_its_tasks_pull_request_merges() {
         rows.iter().any(|row| row[0] == "3" && row[4] != "held")
     });
     let shown = batch_json(&setup, &["1"]);
-    assert!(shown["entries"][1]["after"][0]["met"].is_string(), "{shown}");
+    assert!(
+        shown["entries"][1]["after"][0]["met"].is_string(),
+        "{shown}"
+    );
     assert_eq!(shown["entries"][0]["stage"], "merged");
 }
 
@@ -16854,7 +16868,11 @@ fn a_lost_predecessor_asks_once_per_condition_and_each_answer_moves_only_its_tas
     );
     let ask_of = |task: &str| asks.iter().find(|row| row[1] == task).unwrap()[0].clone();
 
-    person(&setup, "answer", &[&ask_of("4"), "release", "--revision", "1"]);
+    person(
+        &setup,
+        "answer",
+        &[&ask_of("4"), "release", "--revision", "1"],
+    );
     person(&setup, "answer", &[&ask_of("5"), "drop", "--revision", "1"]);
 
     assert_eq!(entry_state(&setup, "4"), "held");
@@ -16866,7 +16884,11 @@ fn a_lost_predecessor_asks_once_per_condition_and_each_answer_moves_only_its_tas
         .iter()
         .map(|edge| edge["met"].is_string())
         .collect();
-    let released = if lost == "2" { [true, false] } else { [false, true] };
+    let released = if lost == "2" {
+        [true, false]
+    } else {
+        [false, true]
+    };
     assert_eq!(met, released);
 }
 
@@ -16908,7 +16930,9 @@ fn a_daemon_stopped_after_the_start_does_not_create_the_tasks_again() {
 
     assert_eq!(setup.rows("tasks").len(), 4);
     let actions = setup.rows("actions");
-    let starts = actions.iter().filter(|row| row.contains(&"start-batch".to_owned()));
+    let starts = actions
+        .iter()
+        .filter(|row| row.contains(&"start-batch".to_owned()));
     assert_eq!(starts.count(), 1, "{actions:?}");
 }
 
@@ -16920,7 +16944,8 @@ fn a_go_on_a_plan_revision_the_ask_did_not_show_is_refused() {
     );
     // shortcut: `priory batch edit` comes with a later slice, so the test revises the plan itself.
     let db = rusqlite::Connection::open(setup.dir.join("priory.db")).unwrap();
-    db.execute("UPDATE batches SET plan_revision = 2", []).unwrap();
+    db.execute("UPDATE batches SET plan_revision = 2", [])
+        .unwrap();
 
     let refused = setup.priory(&["answer", &ask, "go", "--revision", "1"]);
 
@@ -16946,7 +16971,10 @@ fn batch_show_prints_each_batch_and_one_with_its_entries_and_closes() {
     let mut shown = batch_json(&setup, &["1"]);
     let all = batch_json(&setup, &[]);
 
-    assert!(shown["revision"].is_i64() && shown["went"].is_string(), "{shown}");
+    assert!(
+        shown["revision"].is_i64() && shown["went"].is_string(),
+        "{shown}"
+    );
     let key = shown["key"].as_str().unwrap().to_owned();
     assert!(key.starts_with("batch:"), "{key}");
     for field in ["revision", "went", "key"] {

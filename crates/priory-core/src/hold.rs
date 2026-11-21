@@ -270,7 +270,17 @@ pub(crate) fn due(tx: &Transaction) -> rusqlite::Result<()> {
 /// for its merge, or once it is done owning no pull request. When it can no longer be met, as the
 /// other task failed, was dropped or saw a pull request close unmerged, it asks a person.
 pub(crate) fn merged(tx: &Transaction, factory: &Factory) -> rusqlite::Result<()> {
-    let open: Vec<(i64, i64, i64, String, String, String, String, i64, Option<i64>)> = tx
+    let open: Vec<(
+        i64,
+        i64,
+        i64,
+        String,
+        String,
+        String,
+        String,
+        i64,
+        Option<i64>,
+    )> = tx
         .prepare(
             "SELECT holds.id, holds.task, target.id, target.key, target.state, target.workflow,
                target.step, coalesce(target.batch, 0), holds.ask

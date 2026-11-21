@@ -755,7 +755,12 @@ fn batch_add_publishes_one_planning_request_with_its_issues() {
     );
     let task = &published[1].message.data;
     assert_eq!(
-        [&task["workflow"], &task["key"], &task["lane"], &task["repo"]],
+        [
+            &task["workflow"],
+            &task["key"],
+            &task["lane"],
+            &task["repo"]
+        ],
         ["plan-batch", "batch:2026-11-20-1", "billing", "owner/repo"]
     );
     assert_eq!(
