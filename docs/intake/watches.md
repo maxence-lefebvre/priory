@@ -12,11 +12,14 @@ On every poll, the intake reads the state file that `PRIORY_DB` names and collec
 | ---- | ----- |
 | open waits | `linear_comment`, `linear_state`, `slack_reply`, `pull_request`, `checks` and `review` (see [waits.md](../daemon/waits.md)) |
 | open holds | unmet `--merge` and `--after <issue>` conditions (see Holds in [runs.md](../daemon/runs.md)) |
-| subscriptions | every resource a task subscribes to (see `subscribe` in [tools.md](../daemon/tools.md#subscribeon-and-unsubscribeon)) |
+| subscriptions | every resource a task subscribes to, its own key's among them (see `subscribe` in [tools.md](../daemon/tools.md#subscribeon-and-unsubscribeon)) |
 | task branches | `github:<owner/name>@priory/<task>` of an active task, or of one done in the last 10 minutes whose branch no event named yet |
 
 It skips the waits and holds of a task that is `done`, `failed` or `dropped`, and the subscriptions
-of one that is `failed` or `dropped`. A done task's subscriptions stay, so feedback can reopen it. Without `PRIORY_DB`,
+of one that is `failed` or `dropped`. A done task's subscriptions stay, so feedback can reopen it.
+A done task's own Slack thread, its key, is the exception: the intake stops reading it 7 days after
+the task was done, since each thread costs a call per poll. A thread that a wait and a subscription
+both name is read once a poll, from the earlier of their times. Without `PRIORY_DB`,
 the intake watches none of them.
 
 Each wait gives a resource and the time of its agent's last prompt. A subscription gives its
@@ -44,8 +47,10 @@ to, the same way it polls a trigger's repository (see [github-polling.md](github
 
 ## Slack threads
 
-For each Slack thread, the intake reads `conversations.replies` from the wait's time on, every poll,
-until the wait fires or is withdrawn. herdr-bus drops the replies it already holds.
+For each Slack thread, the intake reads `conversations.replies` from the wait's or subscription's
+time on, every poll, until the wait fires or is withdrawn, or the subscription ends. herdr-bus drops
+the replies it already holds. A task a Slack trigger started subscribes to its own thread, so the
+intake reads that thread while the task is active and for 7 days after it is done.
 
 For example, an agent posts a question in a thread, then waits on:
 

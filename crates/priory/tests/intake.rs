@@ -900,6 +900,7 @@ fn a_submitted_review_and_a_completed_check_publish_once() {
         {
             "databaseId": 501,
             "state": "APPROVED",
+            "body": "Ship it.",
             "submittedAt": "2026-11-17T12:00:00Z",
             "url": "https://github.com/owner/repo/pull/43#pullrequestreview-501",
             "author": { "login": "reviewer" }
@@ -954,6 +955,7 @@ fn a_submitted_review_and_a_completed_check_publish_once() {
             "head_sha": "abc123",
             "base_branch": "main",
             "state": "approved",
+            "body": "Ship it.",
             "actor": "reviewer",
             "open": true,
             "time": "2026-11-17T12:00:00Z",
@@ -1125,6 +1127,92 @@ fn review_comment(id: u64, reply_to: Option<u64>, login: &str, kind: &str) -> se
         "pull_request_url": "https://api.github.com/repos/owner/repo/pulls/43",
         "user": { "login": login, "type": kind }
     })
+}
+
+const ISSUE_COMMENTS: &str =
+    "repos/owner/repo/issues/comments?sort=created&direction=desc&per_page=100";
+
+/// A conversation comment as `issues/comments` lists it, on issue or pull request `number`.
+fn issue_comment(id: u64, number: u64, page: &str, kind: &str) -> serde_json::Value {
+    json!({
+        "id": id,
+        "body": "Also handle the empty case.",
+        "html_url": format!("https://github.com/owner/repo/{page}/{number}#issuecomment-{id}"),
+        "issue_url": format!("https://api.github.com/repos/owner/repo/issues/{number}"),
+        "created_at": "2026-11-17T12:00:00Z",
+        "user": { "login": "ana", "type": kind }
+    })
+}
+
+#[test]
+fn a_comment_on_an_issue_and_its_close_publish_once_for_the_issue_and_bots_none() {
+    let setup = Setup::baseline("issue-comment-close");
+    let mut closed = labeled(102, 42, "agent");
+    closed["event"] = json!("closed");
+    closed["label"] = json!(null);
+    closed["created_at"] = json!("2026-11-17T12:30:00Z");
+    let mut after_close = issue_comment(904, 42, "issues", "User");
+    after_close["created_at"] = json!("2026-11-17T12:45:00Z");
+    setup.answer(&[
+        (EVENTS_PATH, json!([closed])),
+        (
+            ISSUE_COMMENTS,
+            json!([
+                issue_comment(903, 42, "issues", "Bot"),
+                // Pull request comments come with the pull request's own query.
+                issue_comment(902, 43, "pull", "User"),
+                after_close,
+                issue_comment(901, 42, "issues", "User"),
+            ]),
+        ),
+    ]);
+
+    succeeded(&setup.intake());
+    succeeded(&setup.intake());
+
+    let published = setup.published();
+    // Oldest first with the close, so a comment after the close never arrives before it.
+    assert_eq!(
+        kinds(&published[1..]),
+        [
+            "github.issues.comment",
+            "github.issues.closed",
+            "github.issues.comment"
+        ]
+    );
+    assert_eq!(published[3].message.data["github_id"], 904);
+    assert_eq!(
+        published[1].message.subject.as_deref(),
+        Some("owner/repo#42")
+    );
+    assert_eq!(
+        published[1].message.data,
+        json!({
+            "repo": "owner/repo",
+            "issue": 42,
+            "url": "https://github.com/owner/repo/issues/42#issuecomment-901",
+            "actor": "ana",
+            "body": "Also handle the empty case.",
+            "time": "2026-11-17T12:00:00Z",
+            "github_id": 901,
+            "baseline": false,
+            "triggers": []
+        })
+    );
+    assert_eq!(
+        published[2].message.data,
+        json!({
+            "repo": "owner/repo",
+            "issue": 42,
+            "title": "Fix the thing",
+            "url": "https://github.com/owner/repo/issues/42",
+            "actor": "max",
+            "time": "2026-11-17T12:30:00Z",
+            "github_id": 102,
+            "baseline": false,
+            "triggers": []
+        })
+    );
 }
 
 #[test]

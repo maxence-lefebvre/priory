@@ -2177,6 +2177,7 @@ fn issue_pull_request_and_review_deliveries_publish_their_poll_types() {
                 "review": {
                     "id": 2561579718u64,
                     "state": "approved",
+                    "body": "Looks good.",
                     "html_url": "https://github.com/owner/repo/pull/43#pullrequestreview-2561579718",
                     "user": { "login": "ana" },
                     "submitted_at": "2026-11-17T10:30:00Z"
@@ -2220,6 +2221,7 @@ fn issue_pull_request_and_review_deliveries_publish_their_poll_types() {
             "head_sha": "abc123",
             "base_branch": "main",
             "state": "approved",
+            "body": "Looks good.",
             "actor": "ana",
             "open": false,
             "time": "2026-11-17T10:30:00Z",

@@ -402,7 +402,8 @@ pub(crate) fn reopened(
     tx: &Transaction,
     trace: &Trace,
     task: i64,
-    pull_request: &str,
+    resource: &str,
+    pull_request: Option<&str>,
 ) -> rusqlite::Result<()> {
     let (workflow, step, key, generation, time): (String, String, String, i64, String) = tx
         .query_row(
@@ -428,6 +429,7 @@ pub(crate) fn reopened(
         "generation": generation,
         "step": step,
         "machine": trace.machine,
+        "resource": resource,
         "pull_request": pull_request,
     });
     if let Value::Object(fields) = &mut data {

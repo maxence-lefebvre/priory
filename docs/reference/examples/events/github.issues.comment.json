@@ -1,0 +1,18 @@
+{
+  "id": "7d2e8b45-90c4-5f3a-a1e6-3c5b2f7d9e10",
+  "type": "github.issues.comment",
+  "subject": "acme/widgets#42",
+  "time": "2026-11-17T17:05:31Z",
+  "data": {
+    "repo": "acme/widgets",
+    "issue": 42,
+    "url": "https://github.com/acme/widgets/issues/42#issuecomment-2483019477",
+    "actor": "octocat",
+    "body": "It also fails when the project has one empty layer.",
+    "time": "2026-11-17T17:05:31Z",
+    "github_id": 2483019477,
+    "baseline": false,
+    "triggers": []
+  },
+  "links": [{ "label": "issue", "url": "https://github.com/acme/widgets/issues/42#issuecomment-2483019477" }]
+}

@@ -47,6 +47,8 @@ fn generated() -> Vec<(String, Value)> {
         schema::<priory_core::sections::Report>(SchemaSettings::draft07(), "report.json"),
         event::<IssueLabeled>("github.issues.labeled"),
         event::<IssueOpened>("github.issues.opened"),
+        event::<IssueClosed>("github.issues.closed"),
+        event::<IssueComment>("github.issues.comment"),
         event::<PullRequestOpened>("github.pull_request.opened"),
         event::<PullRequestLabeled>("github.pull_request.labeled"),
         event::<PullRequestClosed>("github.pull_request.closed"),

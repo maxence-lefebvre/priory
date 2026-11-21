@@ -57,6 +57,8 @@ struct Author {
 struct Review {
     database_id: u64,
     state: String,
+    #[serde(default)]
+    body: String,
     submitted_at: Option<String>,
     url: String,
     author: Option<Login>,
@@ -146,6 +148,7 @@ pub(super) fn reviews_and_checks<'a>(
             let name = format!("github:{repo}:pulls/reviews:{}", review.database_id);
             let mut observed = on_pull(REVIEWED, name, review.database_id, time, &review.url);
             observed.data["state"] = json!(review.state.to_lowercase());
+            observed.data["body"] = json!(review.body);
             observed.data["actor"] = json!(review.author.as_ref().map(|author| &author.login));
             observed.data["open"] = json!(pull.state == "OPEN");
             reviews.push(observed);
@@ -260,7 +263,7 @@ pub(super) fn reviews_and_checks<'a>(
 }
 
 const PULL_FIELDS: &str = "fragment pull on PullRequest { number headRefName headRefOid baseRefName merged state \
-    reviews(last: 50) { nodes { databaseId state submittedAt url author { login } } } \
+    reviews(last: 50) { nodes { databaseId state body submittedAt url author { login } } } \
     comments(last: 50) { nodes { databaseId body url createdAt author { login __typename } } } \
     updatedAt commits(last: 1) { nodes { commit { statusCheckRollup { contexts(first: 100) { totalCount nodes { \
     __typename ... on CheckRun { databaseId name status conclusion completedAt url checkSuite { app { slug } } } \
@@ -401,6 +404,15 @@ pub(super) fn thread_comment(comment: &Value) -> Option<Value> {
 pub(super) fn thread_comments(repo: &str) -> Result<Vec<Value>, String> {
     gh(
         &format!("repos/{repo}/pulls/comments?sort=created&direction=desc&per_page=100"),
+        &[],
+    )
+}
+
+/// The newest 100 conversation comments of `repo`, on its issues and pull requests alike: one REST
+/// call, as for review thread comments.
+pub(super) fn issue_comments(repo: &str) -> Result<Vec<Value>, String> {
+    gh(
+        &format!("repos/{repo}/issues/comments?sort=created&direction=desc&per_page=100"),
         &[],
     )
 }

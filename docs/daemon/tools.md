@@ -223,7 +223,7 @@ subscription does not end when one event arrives. Its events reach the task by i
 | ---- | ------------------------ |
 | `running` | is queued as a prompt, read after the current turn |
 | `asleep` at a model step, with no checks gate | wakes it, unless the task has an open wait on the resource, which decides instead. The inbox records `woke` |
-| `done` | reopens it, when it is feedback on a pull request (see [routing.md](routing.md#feedback-reopens-a-done-task)) |
+| `done` | reopens it, when it is a comment or a review that asks for something (see [routing.md](routing.md#feedback-reopens-a-done-task)) |
 
 For example, to hear every review of an upstream pull request while the task works on:
 
@@ -231,10 +231,23 @@ For example, to hear every review of an upstream pull request while the task wor
 { "on": { "type": "pull_request", "repo": "owner/name", "pull_request": 57 } }
 ```
 
+A task subscribes to its own key when it is created, when the key names an issue, a pull request,
+a Linear issue or a Slack thread. So a reply in the Slack thread that started a task wakes it, and a
+comment on its Linear issue reopens it once done. That subscription reads from the time of the
+event that requested the task, so a reply posted before the task existed still reaches it.
+
+The subscription to the task's own key carries only what people say and closes: reviews, comments,
+review thread comments, a pull request or issue closed, a Linear comment or state change, and a
+Slack reply. A check run, a label or a push on the task's own pull request wakes nothing, since
+each would start a run; the checks gate and waits take those. A subscription made with `subscribe`
+carries every event.
+
 `subscribe` is refused while another active task owns the resource: `github:owner/name#57 belongs
 to task 3, not this one`. A done task does not block it: its subscription ends and the active
-task's starts. A `github.pull_request.closed` event ends every subscription to its pull request.
-Linear issues and Slack threads stay subscribed until `unsubscribe` or the task retires.
+task's starts. A `github.pull_request.closed` or `github.issues.closed` event ends every
+subscription to its pull request or issue. Linear issues and Slack threads stay subscribed until
+`unsubscribe` or the task retires. The intake stops reading a done task's own Slack thread 7 days
+after it was done (see [watches.md](../intake/watches.md)).
 
 When another task takes an event on the resource, such as the task keyed by that pull request, the
 subscriber still gets it: a prompt of its own while it runs, or a wake while it sleeps. A close
