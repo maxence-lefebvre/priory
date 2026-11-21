@@ -7,6 +7,37 @@ use std::path::PathBuf;
 pub const REQUESTED: &str = "priory.task.requested.cli";
 const TRIGGER: &str = "cli";
 
+/// How a task can relate to another: it builds on it, fixes what it merged, takes it up after it
+/// was dropped or failed, or only relates to it.
+pub const RELATIONS: [&str; 4] = ["builds-on", "fixes", "takes-up", "relates"];
+
+/// A relation a request asks its new task to have: `--relates KIND:TASK`.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct Relation {
+    /// `builds-on`, `fixes`, `takes-up` or `relates`.
+    pub kind: String,
+    /// The other task's id.
+    pub task: i64,
+}
+
+impl std::str::FromStr for Relation {
+    type Err = ();
+
+    /// `KIND:TASK`, such as `builds-on:7`.
+    fn from_str(value: &str) -> Result<Self, ()> {
+        let (kind, task) = value.split_once(':').ok_or(())?;
+        if !RELATIONS.contains(&kind) {
+            return Err(());
+        }
+        let task = task.parse().map_err(drop)?;
+        Ok(Relation {
+            kind: kind.to_owned(),
+            task,
+        })
+    }
+}
+
 /// A task request: `priory request`'s flags, or a report pick option's request.
 #[derive(Clone, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -26,6 +57,9 @@ pub struct Request {
     hold: Option<Hold>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     tldr: Option<String>,
+    /// How the new task relates to existing ones.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    relates: Vec<Relation>,
     /// What the task is about.
     text: String,
 }
@@ -34,7 +68,7 @@ pub fn parse(args: Vec<String>) -> Option<(PathBuf, Request)> {
     let (mut workflow, mut key, mut band, mut lane, mut repo) = (None, None, None, None, None);
     let mut tldr = None;
     let (mut reason, mut until, mut if_closed) = (None, None, None);
-    let (mut after, mut merge) = (vec![], vec![]);
+    let (mut after, mut merge, mut relates) = (vec![], vec![], vec![]);
     let mut blockers = false;
     let mut positional = vec![];
     let mut args = args.into_iter();
@@ -58,6 +92,10 @@ pub fn parse(args: Vec<String>) -> Option<(PathBuf, Request)> {
             }
             "--merge" => {
                 merge.push(args.next().filter(|value| !value.starts_with("--"))?);
+                continue;
+            }
+            "--relates" => {
+                relates.push(args.next()?.parse().ok()?);
                 continue;
             }
             "--if-closed" => &mut if_closed,
@@ -94,6 +132,7 @@ pub fn parse(args: Vec<String>) -> Option<(PathBuf, Request)> {
         repo,
         hold,
         tldr,
+        relates,
         text,
     };
     Some((dir, request))
@@ -124,11 +163,13 @@ pub struct Add {
     pub lane: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub repo: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub relates: Vec<Relation>,
 }
 
 pub fn parse_add(args: Vec<String>) -> Option<(PathBuf, Add)> {
     let (mut workflow, mut band, mut lane, mut repo) = (None, None, None, None);
-    let mut positional = vec![];
+    let (mut positional, mut relates) = (vec![], vec![]);
     let mut args = args.into_iter();
     while let Some(arg) = args.next() {
         let flag = match arg.as_str() {
@@ -140,6 +181,10 @@ pub fn parse_add(args: Vec<String>) -> Option<(PathBuf, Add)> {
             "--band" => &mut band,
             "--lane" => &mut lane,
             "--repo" => &mut repo,
+            "--relates" => {
+                relates.push(args.next()?.parse().ok()?);
+                continue;
+            }
             _ => {
                 positional.push(arg);
                 continue;
@@ -154,6 +199,7 @@ pub fn parse_add(args: Vec<String>) -> Option<(PathBuf, Add)> {
         band,
         lane,
         repo,
+        relates,
     };
     Some((dir, add))
 }
@@ -267,6 +313,7 @@ fn quick(factory: &Factory, add: &Add, repo: Option<String>) -> Result<Request, 
         repo: add.repo.clone().or(repo),
         hold: None,
         tldr: None,
+        relates: add.relates.clone(),
         text: add.text.clone(),
     };
     check(factory, &request)?;
@@ -292,13 +339,7 @@ fn claim(bus: &Bus, request: &Request, key: &str) -> Result<bool, String> {
 /// repositories they are in. A Linear issue's repository is that of the Linear trigger of its team.
 fn linked(factory: &Factory, text: &str) -> (Vec<String>, Vec<String>) {
     let (mut keys, mut repos) = (Vec::new(), Vec::new());
-    for (at, _) in text.match_indices("https://") {
-        let url = text[at + "https://".len()..]
-            .split(|c: char| c.is_whitespace() || "()<>[]\"'`".contains(c))
-            .next()
-            .unwrap_or_default()
-            .trim_end_matches(['.', ',', ';', ':', '!', '?']);
-        let parts: Vec<&str> = url.split(['/', '#', '?']).collect();
+    for parts in urls(text) {
         match parts[..] {
             ["github.com", owner, name, "issues" | "pull", number, ..]
                 if number.parse::<u64>().is_ok() =>
@@ -325,6 +366,31 @@ fn linked(factory: &Factory, text: &str) -> (Vec<String>, Vec<String>) {
     keys.sort();
     keys.dedup();
     (keys, repos)
+}
+
+/// Each `https://` URL in `text`, without its scheme, split on `/`, `#` and `?`.
+fn urls(text: &str) -> impl Iterator<Item = Vec<&str>> {
+    text.match_indices("https://").map(|(at, _)| {
+        text[at + "https://".len()..]
+            .split(|c: char| c.is_whitespace() || "()<>[]\"'`".contains(c))
+            .next()
+            .unwrap_or_default()
+            .trim_end_matches(['.', ',', ';', ':', '!', '?'])
+            .split(['/', '#', '?'])
+            .collect()
+    })
+}
+
+/// The pull requests that GitHub URLs in `text` name, as `github:owner/name#7`.
+pub fn pull_requests(text: &str) -> Vec<String> {
+    urls(text)
+        .filter_map(|parts| match parts[..] {
+            ["github.com", owner, name, "pull", number, ..] if number.parse::<u64>().is_ok() => {
+                Some(format!("github:{owner}/{name}#{number}"))
+            }
+            _ => None,
+        })
+        .collect()
 }
 
 impl Request {
@@ -413,6 +479,9 @@ fn task(request: &Request, key: &str, source: &Message) -> Message {
     }
     if let Some(tldr) = &request.tldr {
         data["tldr"] = json!(tldr);
+    }
+    if !request.relates.is_empty() {
+        data["relates"] = json!(request.relates);
     }
     Message::new(TASK_REQUESTED, data)
         .id(intake::id(&format!(

@@ -1195,6 +1195,23 @@ fn a_task_endpoint_shows_the_output_its_run_step_kept() {
 }
 
 #[test]
+fn the_task_endpoint_and_the_tasks_listing_carry_the_tasks_relations() {
+    let mut setup = Setup::new("relations", SERVE);
+    setup.seed();
+    succeeded(&setup.priory(&["relate", "2", "builds-on", "1"]));
+    let address = setup.start(&["serve", &setup.factory()]);
+
+    let relations = api(&address, "/api/tasks/1")["relations"].clone();
+
+    assert_eq!(relations.as_array().map(Vec::len), Some(1), "{relations}");
+    assert_eq!(relations[0]["task"], 2);
+    assert_eq!(relations[0]["kind"], "builds-on");
+    assert_eq!(relations[0]["other"], 1);
+    assert_eq!(relations, json_of(&setup, "tasks")["tasks"][0]["relations"]);
+    assert_eq!(relations, api(&address, "/api/tasks/2")["relations"]);
+}
+
+#[test]
 fn progress_stores_the_four_fields_that_the_task_endpoint_and_the_tasks_listing_show() {
     let mut setup = Setup::new("progress", SERVE);
     setup.seed();
