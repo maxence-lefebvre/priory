@@ -28,7 +28,7 @@ test("a dry run prints each link and the layout it would write, and makes none",
   assert.deepEqual(links.trim().split("\n"), MODS.map((mod) => `link ${app}/mods/${mod} -> ${HERDR}/mods/${mod}`));
   assert.match(run.stdout, new RegExp(`^write ${app}/layouts/priory.json$`, "m"));
   const layout = JSON.parse(written);
-  assert.deepEqual(layout.children[1].children[1].children.map((/** @type {any} */ child) => child.id), ["main", "view", "panel"]);
+  assert.deepEqual(layout.children[1].children[1].children.map((/** @type {any} */ child) => child.id), ["center", "aside-desk", "panel"]);
   assert.equal(existsSync(app), false);
 });
 

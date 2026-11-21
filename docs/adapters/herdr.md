@@ -14,7 +14,7 @@ The adapter lives in `adapters/herdr/` at the repository root, outside the Cargo
 - `adapters/herdr/lib/priory.js`: the module every mod uses to read and act. It is the only code
   that runs `priory`.
 - `adapters/herdr/mods/priory-tabs/`: the Priory bar. It sits left of Herdr's own tab bar, shows
-  one button per child of each stack in the layout, opens the Task tab, and attaches to a task's
+  one button per aside and center tab in the layout, opens the Task tab, and attaches to a task's
   terminal. See [The layout](#the-layout).
 - `adapters/herdr/mods/priory-desk/`: the Desk panel. See [The Desk panel](#the-desk-panel).
 - `adapters/herdr/mods/priory-asks/`: the Asks panel. See [The Asks panel](#the-asks-panel).
@@ -106,36 +106,38 @@ its machine has another hash than the factory's views. A layout on another machi
 
 ## The layout
 
-`lib/layout.js` lays the view's tree out in the frame's work body:
+`lib/layout.js` lays the view's panels out in the frame's work body. One map, `PANELS`, says where
+each panel opens and which mod shows it. The view's `row`, `column` and `tabs` nodes only order the
+panels, and a view that places a panel twice is refused.
 
-| View node | Herdr node |
-| --------- | ---------- |
-| `row`, `column` | `row`, `column`, each child with `weight` 1 |
-| `tabs` | `stack`, its first child active |
-| `panel` | `block` with the panel's mod, and `props: { "panel": NAME }` |
-| `terminal` panel | the frame's `main` block, where Herdr shows the active tab |
+| Panel | Opens as | Mod |
+| ----- | -------- | --- |
+| `desk`, `asks`, `queue` | an aside | `priory-desk`, `priory-asks`, `priory-queue` |
+| `reports` | a tab in the center | `priory-bonjour` |
+| `workflow`, `costs` | a tab in the center | `priory-flows`, `priory-costs` |
+| `tasks`, `runs`, `inbox` | a tab in the center | `priory-elsewhere` |
+| `terminal` | the frame's `main` block, where Herdr shows the active tab, which is always in the center | none |
 
-| Panel | Mod |
-| ----- | --- |
-| `desk`, `asks`, `queue` | `priory-desk`, `priory-asks`, `priory-queue` |
-| `reports` | `priory-bonjour` |
-| `workflow`, `costs` | `priory-flows`, `priory-costs` |
-| `tasks`, `runs`, `inbox` | `priory-elsewhere` |
+The work body is a row: the center, then each aside in the view's order, then Herdr's own panel.
 
-Each node's id is its path in the tree: the root is `view`, and its second child's first child is
-`view-1-0`. When the view has no `terminal` panel, the work body is a row of `main` and the view,
-420 px wide by default, between 280 and 900. Otherwise the view fills the work body. A view
-carries no sizes, so the layout has none beyond these. The shipped `default` view gives one stack
-of eight panels beside `main`. Herdr's own Files and Changes panels stay, after the view, in the
-frame's `panel` column, as Herdr's `main` layout has them: hidden until the tab bar opens one, 368
-px wide, with `files` active. The Priory bar lists only the view's stacks, so it has no button for
-them.
+- **The center** is the `center` stack of `main` and the wide panels, with `main` active. It is
+  `main` alone when the view has no wide panel.
+- **An aside** is a column `aside-NAME`, 360 px wide, between 280 and 700, holding the panel's
+  block, whose id is the panel's name and whose `props` hold `{ "panel": NAME }`. The first aside
+  starts shown, and the others hidden. Several can be open side by side. Herdr remembers which are
+  open, as it does for its own Files and Changes.
+- **Herdr's own Files and Changes** stay last, in the frame's `panel` column, as Herdr's `main`
+  layout has them: hidden until the tab bar opens one, 368 px wide, with `files` active.
 
-The Priory bar shows one button per child of each stack, in the tree's order, labelled with its
-panels. A button selects its child in that stack and in each stack above it, and shows any hidden
-node on the way. The shown child's button hides the view beside `main`, and shows it again. The
-bar scrolls sideways when its buttons are wider than it. Before it opens the Task tab or a task's
-terminal, it brings `main` into view, since a view can hold it in a stack.
+A view carries no sizes, so the layout has none beyond these.
+
+The Priory bar shows a button for each aside, then one for each tab in the center, labelled with
+its panel. An aside's button shows or hides that aside. A tab's button selects it in the center,
+and the shown tab's button gives the center back to `main`. The bar scrolls sideways when its
+buttons are wider than it. Before it opens the Task tab or a task's terminal, it brings `main`
+into view. To toggle an aside from the keyboard, bind `layout.toggle:aside-NAME` in Herdr's
+`keys.json`, such as `"layout:priory": { "ctrl-alt-d": "layout.toggle:aside-desk" }`. A
+layout's bindings go under `layout:` and its name, here `priory`.
 
 `priory-elsewhere` reads `web` from the `priory` object of Herdr's `settings.json`, the web view's
 `http` or `https` address, such as `"http://127.0.0.1:7070"`. With it, the placeholder links to
