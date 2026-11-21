@@ -18,6 +18,11 @@ this machine, `<hostname>`, has no runner file in runners/, and the factory has 
 
 A factory with one runner file or none works as before: its one daemon owns every task.
 
+When a factory that had one runner gets a second, the first runner's daemon claims the keys of its
+active tasks when it starts. Start it before the new runner's daemon. If the new runner's claim of
+one of those keys lands first, the first runner drops its copy, and the task starts over on the new
+runner.
+
 ## Every runner reads the whole log
 
 Each runner reads `factory.intake` as its own consumer, `priory.<runner>`, so every runner sees every
@@ -27,9 +32,10 @@ while the owner routes it as [routing.md](routing.md) says.
 
 The runners publish four more message types on the same output, which
 [events.md](../reference/events.md#runners) lists: `priory.task.claimed`, `priory.task.held`,
-`priory.runner.alive` and `priory.ask.answered`. The daemon queues each one in the transaction of
-the change it follows, then publishes it. A message published twice after a crash adds nothing,
-because the log keeps the first message of each id.
+`priory.runner.alive` and `priory.ask.answered`. The daemon stores each claim, hold and alive
+message in its state file before it publishes it, so a crash between the two publishes it at the
+next start. A message published twice adds nothing, because the log keeps the first message of
+each id. `priory answer` and `priory give` publish straight to the log.
 
 ## Claims
 
@@ -38,7 +44,10 @@ publishes a claim of the key and records the request as `claiming`. The first cl
 wins. The winner creates the task from the request it stored. The others record the owner, and a
 later request for the key goes to it: `elsewhere` on the others' inboxes.
 
-A key whose task ended, done, failed or dropped, is free again: a new request claims it afresh.
+A key whose task ended, done, failed or dropped, is free again: a new request claims it afresh. A
+claim of a request that won once never wins again, so a runner that reads the log late does not
+start a finished task over. Another request of the key that arrived while the claim was pending
+goes to the winner's task, as it would had the task existed.
 
 ## Holds and leases
 
@@ -56,8 +65,12 @@ every runner agrees on which lease ended at which message.
 
 When a runner reads its own alive message, it claims each `waiting` key of another runner whose
 lease ended before it. That takeover wins only if the old owner sent no alive message in between
-and the key is still `waiting`. The new owner creates the task from its request. No run of it had
-started, so nothing is lost.
+and the key is still `waiting`. The new owner creates the task from its request.
+
+A runner never starts the first run of a `waiting` task at once. It publishes `kept` for it first,
+and starts the run only once it reads that message back from the log. If a takeover lands before
+it, the takeover wins and the runner drops the task. If `kept` lands first, the takeover loses. So
+no run of a task that moved had started, and nothing is lost.
 
 A `kept` task never moves on its own. A runner cut off from the others keeps its started tasks
 going, so a second runner that started them over would run them twice. A task asleep on an ask
@@ -90,13 +103,16 @@ publishes a claim of the key for `<runner>`, from the runner that owns it, whate
 lease. Use it to move a started task off a runner that will not come back. It prints
 `<key> given to runner <runner>: it moves when <owner> reads the log`.
 
-The new owner starts the task over from its request. When the old owner reads the claim, it ends its
-live run and drops its copy with the reason `given to runner <runner>`. If the old runner was only
-cut off, its run went on until then, so giving a started task trades that overlap for progress.
+Each runner acts when it reads the claim. The new owner starts the task over from its request. The
+old owner ends its live run and drops its copy with the reason `given to runner <runner>`. If the
+old runner was only cut off, its run went on until then, so giving a started task trades that
+overlap for progress. A task can be given back to a runner that had it before.
 
 `priory give` reads this machine's state file to find the owner. It refuses with
-`no runner holds <key>` for a key no runner holds or whose task ended, and with
-`runner <runner> holds <key> already`.
+`no runner holds <key>` for a key no runner holds or whose task ended, with
+`runner <runner> holds <key> already`, and with `runner <runner> never said it is alive on the log`
+for a runner this machine never heard from. Every runner also refuses a claim for a runner without
+a runner file.
 
 ## Limits
 
@@ -104,5 +120,7 @@ cut off, its run went on until then, so giving a started task trades that overla
   reach its log stops with an error. Riding out a network partition needs a networked log adapter.
 - A task that moves starts over at its workflow's start. Its old worktree, branch and sessions stay
   on the old runner.
+- A code step's `run` action starts without the `kept` check, so a crash in the second between its
+  start and the next `kept` leaves that task `waiting` on the log.
 - This runner's `priory asks` and desk list only its own asks.
 - Each runner adds one alive message a minute to `factory.intake`.

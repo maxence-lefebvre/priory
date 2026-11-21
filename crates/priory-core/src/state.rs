@@ -2108,7 +2108,11 @@ pub(crate) fn admissible<'r>(
 ) -> rusqlite::Result<Option<Admission>> {
     let mut statement = db.prepare(&format!(
         "SELECT id, workflow, step, trigger, state = 'queued', repo FROM tasks
-             WHERE state IN ('queued', 'ready') ORDER BY {START_ORDER}"
+             WHERE state IN ('queued', 'ready')
+             -- Its runner said it keeps it, and starts it once it reads that back from the log.
+             AND NOT EXISTS (SELECT 1 FROM claims WHERE claims.key = tasks.key
+               AND claims.hold = 'waiting' AND claims.published = 'kept')
+             ORDER BY {START_ORDER}"
     ))?;
     let queued = statement
         .query_map([], |row| {

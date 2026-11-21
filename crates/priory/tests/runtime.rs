@@ -15813,8 +15813,9 @@ fn a_person_gives_a_started_task_to_another_runner_which_starts_it_over_and_its_
 
     b.start_with(exe, &[("PRIORY_NOW", AN_HOUR_LATER)]);
     b.until("inbox", |rows| {
-        rows.iter()
-            .any(|row| row.contains(&"priory.task.held".to_owned()))
+        rows.iter().any(|row| {
+            row.contains(&"priory.runner.alive".to_owned()) && row.contains(&"b".to_owned())
+        })
     });
     let given = b.priory(&["give", "github:owner/repo#1", "b"]);
     assert_eq!(
@@ -15832,5 +15833,57 @@ fn a_person_gives_a_started_task_to_another_runner_which_starts_it_over_and_its_
     assert_eq!(
         String::from_utf8_lossy(&refused.stderr),
         "priory give: runner b holds github:owner/repo#1 already\n"
+    );
+    let unknown = b.priory(&["give", "github:owner/repo#1", "c"]);
+    assert_eq!(
+        String::from_utf8_lossy(&unknown.stderr),
+        "priory give: runner c never said it is alive on the log\n"
+    );
+
+    let back = b.priory(&["give", "github:owner/repo#1", "a"]);
+    assert!(
+        back.status.success(),
+        "{}",
+        String::from_utf8_lossy(&back.stderr)
+    );
+    let tasks = a.until("tasks", |rows| rows.len() == 2 && rows[1][4] == "asleep");
+    assert_eq!(tasks[0][4], "dropped", "{tasks:?}");
+    b.until("tasks", |rows| rows[0][4] == "dropped");
+}
+
+#[test]
+fn a_runner_that_joins_late_reads_a_finished_task_without_running_it_again() {
+    let mut a = runner("late", "a", None);
+    let mut b = runner("late", "b", Some(&a));
+    let mut asked = requested(1);
+    asked.data["workflow"] = json!("approve");
+    a.publish(&asked);
+    let exe = Path::new(env!("CARGO_BIN_EXE_priory"));
+    a.start_with(exe, &[("PRIORY_NOW", T0)]);
+    let asks = a.until("asks", |rows| rows.len() == 1);
+    let answered = a.priory(&["answer", &asks[0][0], "approved", "--revision", "1"]);
+    assert!(
+        answered.status.success(),
+        "{}",
+        String::from_utf8_lossy(&answered.stderr)
+    );
+    logged(
+        &a,
+        "priory.task.held",
+        json!({ "key": "github:owner/repo#1", "runner": "a", "hold": "ended" }),
+    );
+
+    b.start_with(exe, &[("PRIORY_NOW", T0)]);
+    logged(
+        &b,
+        "priory.task.claimed",
+        json!({ "key": "github:owner/repo#1", "runner": "b" }),
+    );
+    b.until("inbox", |rows| {
+        rows.iter().any(|row| row.contains(&"refused".to_owned()))
+    });
+    assert!(
+        b.rows("tasks").is_empty(),
+        "b's late claim of the finished request loses"
     );
 }

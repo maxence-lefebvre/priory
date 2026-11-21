@@ -134,9 +134,19 @@ fn claimed(
         Some(current) => lease(tx, &current.runner)?,
         None => None,
     };
+    let request = data["request"].as_str().unwrap_or_default();
+    let fresh = tx
+        .query_row(
+            "SELECT 1 FROM claimed_requests WHERE request = ?1",
+            [request],
+            |_| Ok(()),
+        )
+        .optional()?
+        .is_none();
     let claim = Claim {
         from: data["from"].as_str(),
         given,
+        fresh,
         time: message.time,
     };
     let held = current.as_ref().map(|current| Owner {
@@ -144,38 +154,61 @@ fn claimed(
         hold: current.hold,
         alive,
     });
-    if !wins(&claim, held.as_ref()) {
+    if !trace.factory.runners.contains_key(runner) || !wins(&claim, held.as_ref()) {
         crate::state::record(tx, message, None, "refused", None)?;
         return Ok(None);
     }
-    let request = data["request"]
-        .as_str()
-        .map(str::to_owned)
-        .or_else(|| current.as_ref().map(|current| current.request.clone()))
-        .unwrap_or_default();
     tx.execute(
         "INSERT INTO claims (key, runner, request) VALUES (?1, ?2, ?3)
          ON CONFLICT (key) DO UPDATE SET runner = excluded.runner, request = excluded.request,
            hold = 'waiting', published = NULL",
         params![key, runner, request],
     )?;
+    // The request, and any other of the key that waited for this claim, are this incarnation's.
+    let mut pending: Vec<String> = tx
+        .prepare(
+            "SELECT id FROM inbox WHERE outcome = 'claiming' AND subject = ?1 AND id != ?2
+             ORDER BY seq",
+        )?
+        .query_map([key, request], |row| row.get(0))?
+        .collect::<rusqlite::Result<_>>()?;
+    pending.insert(0, request.to_owned());
+    for id in &pending {
+        tx.execute(
+            "INSERT OR IGNORE INTO claimed_requests (request) VALUES (?1)",
+            [id],
+        )?;
+    }
     let mut kill = None;
-    let previous = current.filter(|current| current.hold != Hold::Ended);
-    if previous.is_some_and(|previous| previous.runner == me)
-        && runner != me
+    // Any copy of the task here stops, so the key runs on one runner only.
+    if runner != me
         && let Some(task) = crate::state::keyed(tx, Some(&key.to_owned()))?
     {
         let reason = if given {
             format!("given to runner {runner}")
-        } else {
+        } else if claim.from.is_some() {
             format!("moved to runner {runner}: its lease ended")
+        } else {
+            format!("claimed by runner {runner}")
         };
         kill = crate::tools::cancel(tx, task.id, &reason)?;
     }
-    if runner == me
-        && let Some(request) = stored(tx, &request)?
-    {
-        tx.execute("DELETE FROM inbox WHERE id = ?1", [request.id.to_string()])?;
+    for id in &pending {
+        if runner != me {
+            tx.execute(
+                "UPDATE inbox SET outcome = 'elsewhere' WHERE id = ?1 AND outcome = 'claiming'",
+                [id],
+            )?;
+            continue;
+        }
+        // A runner that adopts its own task, or is given it back, already has it.
+        if id == request && crate::state::keyed(tx, Some(&key.to_owned()))?.is_some() {
+            continue;
+        }
+        let Some(request) = stored(tx, id)? else {
+            continue;
+        };
+        tx.execute("DELETE FROM inbox WHERE id = ?1", [id])?;
         kill = kill.or(crate::state::handle_in(tx, &request, trace, counter)?);
     }
     let task = crate::state::keyed(tx, Some(&key.to_owned()))?.map(|task| task.id);
@@ -183,12 +216,11 @@ fn claimed(
     Ok(kill)
 }
 
-/// The request `id` as the inbox stored it, while no task of this runner took it.
+/// The request `id` as the inbox stored it.
 fn stored(tx: &Transaction, id: &str) -> Result<Option<Message>, Error> {
     let row = tx
         .query_row(
-            "SELECT type, subject, time, data, links FROM inbox
-             WHERE id = ?1 AND outcome IN ('claiming', 'elsewhere')",
+            "SELECT type, subject, time, data, links FROM inbox WHERE id = ?1",
             [id],
             |row| {
                 Ok((
@@ -269,18 +301,16 @@ fn lease(tx: &Transaction, runner: &str) -> rusqlite::Result<Option<Timestamp>> 
 struct Owned {
     runner: String,
     hold: Hold,
-    request: String,
 }
 
 fn owner(tx: &Transaction, key: &str) -> rusqlite::Result<Option<Owned>> {
     tx.query_row(
-        "SELECT runner, hold, request FROM claims WHERE key = ?1",
+        "SELECT runner, hold FROM claims WHERE key = ?1",
         [key],
         |row| {
             Ok(Owned {
                 runner: row.get(0)?,
                 hold: Hold::parse(&row.get::<_, String>(1)?),
-                request: row.get(2)?,
             })
         },
     )
@@ -305,25 +335,23 @@ fn send(tx: &Transaction, message: &Message) -> rusqlite::Result<()> {
 }
 
 /// Queues this runner's alive message once a minute, and a held message for each task of its own
-/// whose hold changed since it last said it.
-pub(crate) fn tick(db: &mut Connection, me: &str, now: Timestamp) -> rusqlite::Result<()> {
+/// whose hold changed since it last said it. `said` is the minute of the last alive message: the
+/// lease itself changes only as the log is read, so every runner judges it alike.
+pub(crate) fn tick(
+    db: &mut Connection,
+    me: &str,
+    now: Timestamp,
+    said: &mut Option<i64>,
+) -> rusqlite::Result<()> {
     let tx = db.transaction()?;
     let minute = now.as_second().div_euclid(60);
-    let said = tx
-        .query_row(
-            "SELECT 1 FROM leases WHERE runner = ?1 AND alive / 60 >= ?2",
-            params![me, minute],
-            |_| Ok(()),
-        )
-        .optional()?;
-    if said.is_none() {
+    if *said != Some(minute) {
         let alive = stamped(
             ALIVE,
             json!({ "runner": me }),
             &format!("alive/{me}/{minute}"),
         );
         send(&tx, &alive.subject(me).time(now))?;
-        renew(&tx, me, now)?;
     }
     let changed = tx
         .prepare(
@@ -342,6 +370,11 @@ pub(crate) fn tick(db: &mut Connection, me: &str, now: Timestamp) -> rusqlite::R
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     for (key, hold, published) in changed {
+        // A task reserved to start stays kept until it starts.
+        let hold = match (published.as_deref(), hold) {
+            (Some("kept"), Hold::Waiting) => Hold::Kept,
+            _ => hold,
+        };
         if published.as_deref() == Some(hold.as_str()) {
             continue;
         }
@@ -351,6 +384,66 @@ pub(crate) fn tick(db: &mut Connection, me: &str, now: Timestamp) -> rusqlite::R
             "UPDATE claims SET published = ?2 WHERE key = ?1",
             params![key, hold.as_str()],
         )?;
+    }
+    tx.commit()?;
+    *said = Some(minute);
+    Ok(())
+}
+
+/// Whether this runner may start the first run of `task` now. A task the log still holds as
+/// `waiting` could be taken over, so its runner first says it keeps it and starts it only once it
+/// read that back: a takeover published before then wins, and drops the task here.
+pub(crate) fn cleared(db: &mut Connection, me: &str, task: i64) -> rusqlite::Result<bool> {
+    let tx = db.transaction()?;
+    let claim = tx
+        .query_row(
+            "SELECT claims.key, claims.hold, claims.published FROM claims
+             JOIN tasks ON tasks.key = claims.key WHERE tasks.id = ?1 AND claims.runner = ?2",
+            params![task, me],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                ))
+            },
+        )
+        .optional()?;
+    let Some((key, _, published)) = claim.filter(|(_, hold, _)| hold == "waiting") else {
+        return Ok(true);
+    };
+    if published.as_deref() != Some("kept") {
+        let held = json!({ "key": key, "runner": me, "hold": "kept" });
+        let now = intake::now().unwrap_or_else(|_| Timestamp::now());
+        send(&tx, &Message::new(HELD, held).subject(&key).time(now))?;
+        tx.execute(
+            "UPDATE claims SET published = 'kept' WHERE key = ?1",
+            [&key],
+        )?;
+    }
+    tx.commit()?;
+    Ok(false)
+}
+
+/// Claims the keys of this runner's active tasks that no runner holds yet, such as the tasks of a
+/// factory that had one runner before, so that another runner does not claim them too.
+pub(crate) fn adopt(db: &mut Connection, me: &str) -> rusqlite::Result<()> {
+    let tx = db.transaction()?;
+    let unclaimed = tx
+        .prepare(
+            "SELECT tasks.key, inbox.id FROM tasks JOIN inbox ON inbox.task = tasks.id
+               AND inbox.outcome = 'created'
+             WHERE tasks.state NOT IN ('done', 'failed', 'dropped')
+               AND NOT EXISTS (SELECT 1 FROM claims WHERE claims.key = tasks.key)",
+        )?
+        .query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    for (key, request) in unclaimed {
+        let claim = json!({ "key": key, "runner": me, "request": request });
+        let id = format!("claim/{request}/{me}");
+        send(&tx, &stamped(CLAIMED, claim, &id).subject(key))?;
     }
     tx.commit()
 }
@@ -403,6 +496,15 @@ pub fn give(db: &Connection, key: &str, runner: &str) -> Result<String, String> 
     };
     if from == runner {
         return Err(format!("runner {runner} holds {key} already"));
+    }
+    let known = db
+        .query_row("SELECT 1 FROM leases WHERE runner = ?1", [runner], |_| {
+            Ok(())
+        })
+        .optional()
+        .map_err(|error| error.to_string())?;
+    if known.is_none() {
+        return Err(format!("runner {runner} never said it is alive on the log"));
     }
     let claim =
         json!({ "key": key, "runner": runner, "request": request, "from": from, "given": true });
@@ -473,13 +575,15 @@ pub(crate) struct Claim<'a> {
     pub(crate) from: Option<&'a str>,
     /// A person gave the key, so the hold and the lease do not matter.
     pub(crate) given: bool,
+    /// No claim of its request won a key before, so it is not a late copy of one that did.
+    pub(crate) fresh: bool,
     pub(crate) time: Timestamp,
 }
 
 /// Whether `claim` takes its key from `owner`.
 pub(crate) fn wins(claim: &Claim, owner: Option<&Owner>) -> bool {
     let Some(from) = claim.from else {
-        return owner.is_none_or(|owner| owner.hold == Hold::Ended);
+        return claim.fresh && owner.is_none_or(|owner| owner.hold == Hold::Ended);
     };
     let Some(owner) = owner.filter(|owner| owner.runner == from) else {
         return false;
@@ -519,8 +623,19 @@ mod tests {
         Claim {
             from,
             given,
+            fresh: true,
             time: at(minutes),
         }
+    }
+
+    #[test]
+    fn a_late_claim_of_a_request_that_already_won_loses_even_once_its_task_ended() {
+        let late = Claim {
+            fresh: false,
+            ..claim(None, false, 0)
+        };
+        assert!(!wins(&late, None));
+        assert!(!wins(&late, Some(&owner("a", Hold::Ended, 0))));
     }
 
     #[test]

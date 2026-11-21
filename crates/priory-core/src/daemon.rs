@@ -230,11 +230,15 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
     let mut reads = Reads::default();
     let every = factory.sweep().every.unwrap_or(SWEEP);
     let mut swept: Option<Instant> = None;
+    let mut alive = None;
+    if let Some(me) = &trace.runner {
+        runners::adopt(&mut db, me)?;
+    }
     loop {
         // A runner back from away reads the log, and so drops the tasks that moved, before any run.
         drain(&*bus, &consumer, &mut db, &trace, counting.get(&home))?;
         if let Some(me) = &trace.runner {
-            runners::tick(&mut db, me, intake::now()?)?;
+            runners::tick(&mut db, me, intake::now()?, &mut alive)?;
             runners::flush(&db, &*bus)?;
         }
         while let Ok(line) = listening.lines.try_recv() {
@@ -929,6 +933,11 @@ fn tend(
         let Some(admission) = state::admissible(db, factory, share, room)? else {
             break;
         };
+        if let Some(me) = &trace.runner
+            && !runners::cleared(db, me, admission.task)?
+        {
+            continue;
+        }
         if let Err(reason) = start(db, factory, home, scope, &admission)? {
             state::block(db, trace, admission.task, "failed", &reason)?;
         }

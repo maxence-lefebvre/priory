@@ -43,8 +43,9 @@ A task request whose key no runner owns does not create a task at once. The runn
 request it stored in its inbox. Every other runner records the owner. A request for a key that is
 owned already goes to the owner, as a second request goes to an active task today.
 
-A claim message has the id `claim:<request id>:<runner>`, so a daemon that restarts and claims
-again adds nothing.
+A claim message has an id derived from the request and the runner, so a daemon that restarts and
+claims again adds nothing. A claim of a request that won once never wins again, so a runner that
+reads the log late does not start a finished task over.
 
 ### Leases
 
@@ -61,8 +62,9 @@ holds:
 | `kept` | any other active state: running, blocked, held, or asleep on an ask or a wait | only when a person gives it |
 | `ended` | done, failed or dropped | no |
 
-The daemon publishes these on its tick by comparing each task with the hold it published last, so
-a crash between a state change and its publish heals at the next tick.
+The daemon publishes these on its tick by comparing each task with the hold it published last. A
+runner starts the first run of a `waiting` task only after it published `kept` for it and read that
+back from the log, so a takeover and a first run never both win.
 
 A `kept` task never moves on its own. In a partition, the cut-off runner keeps its started tasks
 going, as R9.2 asks, so a second runner that restarted them would run them twice. A task asleep on
@@ -109,7 +111,8 @@ trait, as ADR 0001 left them.
 ## Consequences
 
 - One migration adds a `claims` table (key, owner, request, hold, hold published), a `leases`
-  table (runner, last alive time) and a `sends` table, the messages queued for the log.
+  table (runner, last alive time), a `claimed_requests` table and a `sends` table, the messages
+  queued for the log.
 - A runner keeps every started task through any absence. Only tasks that never started move after
   30 minutes, so no task runs on two runners unless a person gives a started one away.
 - A started task on a runner that never comes back waits for `priory give`.
