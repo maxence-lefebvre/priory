@@ -280,12 +280,17 @@ pub fn check(factory: &Factory) -> Vec<Problem> {
             ));
         }
         let reviews = trigger.value.source == "github" && trigger.value.on == REVIEW_REQUESTED;
-        if !reviews && trigger.value.reviewer.is_some() {
-            problems.push(problem(
-                trigger,
-                trigger.lines.field("reviewer"),
-                format!("only a GitHub `{REVIEW_REQUESTED}` trigger names a `reviewer`"),
-            ));
+        for (field, set, what) in [
+            ("reviewer", trigger.value.reviewer.is_some(), "a `reviewer`"),
+            ("teams", trigger.value.teams.is_some(), "`teams`"),
+        ] {
+            if !reviews && set {
+                problems.push(problem(
+                    trigger,
+                    trigger.lines.field(field),
+                    format!("only a GitHub `{REVIEW_REQUESTED}` trigger names {what}"),
+                ));
+            }
         }
         if trigger.value.source == "schedule" {
             check_schedule(trigger, &mut problems);
@@ -506,6 +511,24 @@ fn check_review_request(trigger: &Loaded<Trigger>, problems: &mut Vec<Problem>) 
             "reviewer",
             "a `pull_request.review_requested` trigger needs `reviewer = \"<GitHub login>\"`",
         );
+    }
+    let slug = |slug: &str| {
+        !slug.is_empty()
+            && !slug.starts_with('-')
+            && slug
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+    };
+    for team in value.teams.iter().flatten() {
+        if !team
+            .split_once('/')
+            .is_some_and(|(org, name)| login(org) && slug(name))
+        {
+            report(
+                "teams",
+                &format!("team `{team}` is not `org/team`, a GitHub organization and team slug"),
+            );
+        }
     }
     for (field, set) in [
         ("repo", value.repo.is_some()),

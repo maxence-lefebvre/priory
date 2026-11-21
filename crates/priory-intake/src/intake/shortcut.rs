@@ -1,4 +1,5 @@
-use super::slack::{API, TOKEN, post, text};
+use super::Ended;
+use super::slack::{API, TOKEN, post, send, text};
 use crate::request::{self, Add, Refused};
 use priory_factory::factory::{Factory, SlackShortcut};
 use serde_json::{Value, json};
@@ -21,8 +22,9 @@ const QUIET: Duration = Duration::from_secs(30);
 
 /// Starts the shortcut: a thread that holds one Socket Mode connection and acknowledges every
 /// envelope before anything else, a worker that handles their payloads, and one that sends the
-/// "busy" replies when the worker's queue is full. Errs when a token is missing.
-pub(super) fn start(dir: &Path, shortcut: &SlackShortcut) -> Result<(), String> {
+/// "busy" replies when the worker's queue is full. `ended` counts the tasks with a key that ended,
+/// so a thread whose task ended takes a new one. Errs when a token is missing.
+pub(super) fn start(dir: &Path, shortcut: &SlackShortcut, ended: Ended) -> Result<(), String> {
     let env = |name: &str, what: &str| {
         std::env::var(name)
             .ok()
@@ -41,7 +43,7 @@ pub(super) fn start(dir: &Path, shortcut: &SlackShortcut) -> Result<(), String> 
     let (busy, overflow) = sync_channel(QUEUE);
     std::thread::spawn(move || {
         for payload in payloads {
-            if let Err(error) = handle(&factory, &users, &bot, &payload) {
+            if let Err(error) = handle(&factory, &users, &bot, &payload, ended) {
                 eprintln!("Slack shortcut: {error}");
             }
         }
@@ -58,12 +60,14 @@ pub(super) fn start(dir: &Path, shortcut: &SlackShortcut) -> Result<(), String> 
 }
 
 /// Holds one connection for good: reconnects at once after Slack's `disconnect`, and with a backoff
-/// of 1 s doubling to a minute after an error, back to 1 s once Slack says `hello`.
+/// of 1 s doubling to a minute after an error, back to 1 s once Slack says `hello`. A rate limit
+/// waits Slack's `Retry-After` instead.
 fn listen(app: &(String, String), work: &SyncSender<Value>, busy: &SyncSender<Value>) {
     let mut backoff = Duration::from_secs(1);
     loop {
         if let Err(error) = connection(app, work, busy, &mut backoff) {
-            eprintln!("Slack shortcut: {error}");
+            let wait = backoff.as_secs();
+            eprintln!("Slack shortcut: {error}; retrying in {wait}s");
             std::thread::sleep(backoff);
             backoff = (backoff * 2).min(LONGEST_WAIT);
         }
@@ -77,11 +81,14 @@ fn connection(
     busy: &SyncSender<Value>,
     backoff: &mut Duration,
 ) -> Result<(), String> {
-    let opened = post(
-        Some((name, token)),
-        &format!("{API}apps.connections.open"),
-        &json!({}),
-    )?;
+    let open = format!("{API}apps.connections.open");
+    let opened = send(Some((name, token)), &open, &json!({})).map_err(|(error, retry)| {
+        // A rate limit says when to come back; Slack's own value caps at an hour.
+        if let Some(seconds) = retry {
+            *backoff = Duration::from_secs(seconds.clamp(1, 3600));
+        }
+        error
+    })?;
     let url = text(&opened["url"]);
     let failed = |error: &dyn std::fmt::Display| format!("Socket Mode connect: {error}");
     let uri: tungstenite::http::Uri = url.parse().map_err(|error| failed(&error))?;
@@ -157,7 +164,13 @@ fn connection(
 
 /// Opens the form for a shortcut, or queues the task a submitted form asks for. Refuses anyone
 /// off the allowlist.
-fn handle(factory: &Factory, users: &[String], bot: &str, payload: &Value) -> Result<(), String> {
+fn handle(
+    factory: &Factory,
+    users: &[String],
+    bot: &str,
+    payload: &Value,
+    ended: Ended,
+) -> Result<(), String> {
     let allowed = users
         .iter()
         .any(|user| user == text(&payload["user"]["id"]));
@@ -174,7 +187,7 @@ fn handle(factory: &Factory, users: &[String], bot: &str, payload: &Value) -> Re
             if !allowed {
                 return reply(payload, REFUSED);
             }
-            reply(payload, &submit(factory, payload))
+            reply(payload, &submit(factory, payload, ended))
         }
         _ => Ok(()),
     }
@@ -245,8 +258,9 @@ fn form(factory: &Factory, payload: &Value) -> Value {
     })
 }
 
-/// Queues the task a submitted form asks for, under its thread's key, and says what happened.
-fn submit(factory: &Factory, payload: &Value) -> String {
+/// Queues the task a submitted form asks for, under its thread's key, from the person who sent it,
+/// and says what happened.
+fn submit(factory: &Factory, payload: &Value, ended: Ended) -> String {
     let metadata = metadata(payload);
     let values = &payload["view"]["state"]["values"];
     let value = |block: &str| {
@@ -276,12 +290,35 @@ fn submit(factory: &Factory, payload: &Value) -> String {
         relates: Vec::new(),
         intervention: None,
     };
-    match request::add_to(factory, &add, &format!("slack:{channel}:{thread}")) {
+    let key = format!("slack:{channel}:{thread}");
+    let ended = match ended(&key) {
+        Ok(ended) => ended,
+        Err(error) => return format!("Not queued: {error}"),
+    };
+    match request::add_as(factory, &add, &key, ended, Some(&person(payload))) {
         Ok(key) => format!("Queued as `{key}`."),
         Err(Refused::Repeated(key)) => {
             format!("This thread is already queued as `{key}`, so nothing was added.")
         }
         Err(Refused::Invalid(reason)) => format!("Not queued: {reason}"),
+    }
+}
+
+/// Who sent the form, as `<name> (<user id>)`, or the user id alone when Slack names nobody.
+fn person(payload: &Value) -> String {
+    let user = &payload["user"];
+    let id = text(&user["id"]);
+    let name: String = user["username"]
+        .as_str()
+        .or(user["name"].as_str())
+        .unwrap_or_default()
+        .chars()
+        .filter(|c| !c.is_control())
+        .take(80)
+        .collect();
+    match name.trim() {
+        "" => id.to_owned(),
+        name => format!("{name} ({id})"),
     }
 }
 
@@ -319,6 +356,7 @@ mod tests {
         fn a_shortcut_payload_of_any_shape_gets_a_form_without_panicking(payload in json_value()) {
             form(&Factory::default(), &payload);
             super::metadata(&payload);
+            person(&payload);
         }
 
         #[test]
