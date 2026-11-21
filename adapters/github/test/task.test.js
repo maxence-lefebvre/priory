@@ -32,6 +32,10 @@ test("a task at a human or code step, with no run yet, or ended cannot hear say,
   for (const [task, note] of cases) assert.deepEqual(sayRoute(task, FLOWS), { enabled: false, note });
 });
 
+test("without the factory's flows, say is off and the note does not guess the step's kind", () => {
+  assert.deepEqual(sayRoute(TASK, null), { enabled: false, note: "Task 61 is at implement. Priory has not said yet who decides that step." });
+});
+
 test("Update branch merges the base; Resolve conflicts says GitHub reports them first", () => {
   assert.equal(fixText("update", "priory/61-herdr", "main"), "Bring priory/61-herdr up to date with main by merging it, resolve any conflicts, run the tests and push.");
   assert.equal(fixText("conflicts", "priory/61-herdr", "main"), "GitHub reports conflicts between priory/61-herdr and main. Bring priory/61-herdr up to date with main by merging it, resolve any conflicts, run the tests and push.");

@@ -109,7 +109,8 @@ const openAsks = () => (S.task?.asks ?? []).filter((ask) => ask.state === "open"
 const waiting = () => openAsks().filter((ask) => !(ask.snoozed_until && Date.parse(ask.snoozed_until) > Date.now()));
 const api = (path, body, timeout) => call(fetch, S.config.origin, S.config.token, path, body, timeout);
 
-async function read() {
+// `quiet`, for a revision from the poller: a read that changed nothing leaves the view as it is.
+async function read(quiet = false) {
   if (!S.config || !S.pr) return render();
   const found = await api(`/api/tasks?pr=${encodeURIComponent(S.pr.resource)}`);
   if (found.status === 401) return signedOut();
@@ -127,10 +128,13 @@ async function read() {
     S.unreachable = true;
     return render();
   }
-  Object.assign(S, { holders, task: detail.body, unreachable: false, readAt: Date.now() });
+  const seen = JSON.stringify([holders, detail.body]);
+  S.readAt = Date.now();
+  if (seen === S.seen && !S.unreachable) return quiet ? undefined : render();
+  Object.assign(S, { seen, holders, task: detail.body, unreachable: false });
   for (const ask of S.task?.asks ?? []) S.draft = observe(S.draft, ask, Date.now());
   if (S.draft?.phase === "sent" && !S.task?.asks?.some((ask) => ask.id === S.draft.id && ask.state === "open")) S.draft = null;
-  put(`last:${S.pr.resource}`, { holders, task: S.task, readAt: S.readAt });
+  put(`last:${S.pr.resource}`, { holders, task: S.task, flows: S.flows, readAt: S.readAt });
   wakeAtSnoozeEnd();
   render();
 }
@@ -237,7 +241,7 @@ function strip() {
   return h("div", { class: "strip" }, brand, tile(S.task, asks.length > 0), h("span", { class: "mono" }, `task ${S.task.id}`),
     h("span", { class: "t2" }, `${S.task.state} at `, h("b", {}, S.task.step)),
     asks.length ? h("button", { class: "waitpill", onclick: () => send("open", { tab: "ask" }) }, icon("ask", "s14"), `${asks.length} ${asks.length > 1 ? "asks wait" : "ask waits"} on you`) : null,
-    stale ?? h("span", { class: "t3" }, age(S.task.since, Date.now())), h("span", { class: "sp" }), toggle(asks.length ? "ask" : "task"));
+    stale ?? (S.task.since ? h("span", { class: "t3" }, age(S.task.since, Date.now())) : null), h("span", { class: "sp" }), toggle(asks.length ? "ask" : "task"));
 }
 
 // ---------- The panel ----------
@@ -257,7 +261,7 @@ function panel() {
     h("button", { role: "tab", "aria-selected": String(S.tab === id), onclick: () => { S.tab = id; render(); } }, label, count ? h("span", { class: "badge" }, count) : null)));
   const stale = S.config && S.unreachable
     ? h("div", { class: "stale" }, icon("unplug", "s14"), S.readAt ? `Priory unreachable. Showing what it said ${age(new Date(S.readAt).toISOString(), Date.now())} ago.` : "Priory unreachable.",
-      h("button", { class: "btn secondary", onclick: read }, "Retry"))
+      h("button", { class: "btn secondary", onclick: () => read() }, "Retry"))
     : null;
   const body = S.tab === "guide" ? guideTab() : !S.config ? connectForm() : S.tab === "ask" ? askTab(asks) : taskTab();
   return h("div", { class: "panel" }, head, nav, stale, h("div", { class: "body" }, body));
@@ -349,7 +353,7 @@ function askTab(asks) {
     draft?.phase === "armed" ? commandBlock(ask) : null,
     S.writing
       ? h("form", { class: "field", onsubmit: (event) => { event.preventDefault(); if (S.written.trim()) pick(ask, { text: S.written.trim(), again: draft?.phase === "unknown" }); } },
-        h("textarea", { class: "input", rows: 3, "aria-label": "Your answer", value: S.written, oninput: (event) => { S.written = event.target.value; } }),
+        h("textarea", { id: "written", class: "input", rows: 3, "aria-label": "Your answer", value: S.written, oninput: (event) => { S.written = event.target.value; } }),
         h("div", { class: "end" }, h("button", { class: "btn primary", type: "submit", disabled: blocked }, "Send")))
       : null,
     h("div", { class: "lowrow" },
@@ -411,14 +415,14 @@ function taskTab() {
   return [
     h("div", { class: "ctx" }, tile(task, waiting().length > 0), h("span", { class: "mono" }, `task ${task.id}`), h("span", {}, task.key), h("span", {}, task.step), h("span", {}, task.lane), task.band ? h("span", {}, task.band) : null),
     h("div", { class: "q" }, task.brief?.title ?? task.key),
-    h("div", { class: "t2" }, `${task.state}${task.reason ? `: ${task.reason}` : ""}, since ${age(task.since, Date.now())}`),
+    h("div", { class: "t2" }, `${task.state}${task.reason ? `: ${task.reason}` : ""}${task.since ? `, since ${age(task.since, Date.now())}` : ""}`),
     steps.length ? h("div", { class: "grid" }, steps.map((step, i) => h("div", { class: [i < at ? "done" : i === at ? "cur" : "fut", step.effect === "irreversible" ? "irr" : ""].join(" ") }, step.id, h("small", {}, step.decides)))) : null,
     h("div", { class: "hr" }),
     h("div", { class: "sect" }, h("h3", {}, "Ask the agent"),
       h("div", { class: "row" },
         h("button", { class: "btn secondary", disabled: !canSay || !branch, onclick: () => say(fixText("update", branch, base)) }, icon("refresh", "s14"), "Update branch"),
         h("button", { class: "btn secondary", disabled: !canSay || !branch, onclick: () => say(fixText("conflicts", branch, base)) }, icon("merge", "s14"), "Resolve conflicts")),
-      h("div", { class: "note" }, icon("corner", "s14"), h("span", {}, route.note))),
+      h("div", { class: "note" }, icon("corner", "s14"), h("span", {}, S.unreachable ? "Reconnect to say." : route.note))),
     h("form", { class: "field", onsubmit: (event) => { event.preventDefault(); if (S.say.trim()) say(S.say.trim(), true); } },
       h("label", { for: "say" }, "Say to the agent"),
       h("textarea", { id: "say", class: "input", rows: 3, value: S.say, oninput: (event) => { S.say = event.target.value; } }),
@@ -527,9 +531,18 @@ function outcome(ran) {
 
 // ---------- Boot ----------
 
+// A redraw keeps what the person was doing: the focused field, its selection and the scroll.
 function render() {
   if (VIEW === "command") return;
+  const focused = document.activeElement;
+  const { id, selectionStart, selectionEnd } = focused ?? {};
+  const scroll = document.querySelector(".body")?.scrollTop ?? 0;
   document.body.replaceChildren(VIEW === "strip" ? strip() : panel());
+  document.querySelector(".body")?.scrollTo(0, scroll);
+  const again = id && document.getElementById(id);
+  if (!again) return;
+  again.focus();
+  if (selectionStart != null) again.setSelectionRange(selectionStart, selectionEnd);
 }
 
 async function boot() {
@@ -549,7 +562,7 @@ async function boot() {
     if (message.signedIn) get("config").then((config) => { S.config = config ?? null; read(); });
     else if (message.signedOut) signedOut();
     else if (message.unreachable) { S.unreachable = true; render(); }
-    else read();
+    else read(true);
   });
   if (VIEW === "panel") {
     loadGuide();

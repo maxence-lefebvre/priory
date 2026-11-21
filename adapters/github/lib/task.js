@@ -11,7 +11,8 @@ export function sayRoute(task, flows) {
   const name = `Task ${task.id}`;
   if (ENDED.has(task.state)) return { enabled: false, note: `${name} is ${task.state}.` };
   const decides = decider(flows, task);
-  if (decides !== "model") return { enabled: false, note: `${name} waits at ${task.step}, a ${decides ?? "human"} step. Say reaches it once it moves.` };
+  if (!decides) return { enabled: false, note: `${name} is at ${task.step}. Priory has not said yet who decides that step.` };
+  if (decides !== "model") return { enabled: false, note: `${name} waits at ${task.step}, a ${decides} step. Say reaches it once it moves.` };
   if (!task.runs?.length) return { enabled: false, note: `${name} has no run yet. Say reaches it once its agent started.` };
   const open = (task.asks ?? []).filter((ask) => ask.state === "open").map((ask) => `Ask ${ask.id}`);
   const wakes = task.state === "asleep" ? "It wakes, works" : "It works";
