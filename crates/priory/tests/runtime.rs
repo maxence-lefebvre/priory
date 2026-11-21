@@ -47,7 +47,7 @@ const OUTPUT: &str = "factory.intake";
 /// reports of sections, 36, which added deliveries, 37, which added progress, 39, which added run
 /// actions, 40, which added answer actions, 42, which added dispatches, 49, which added task ends, 51, which added a run's crossing of `compactAt`, 53, which added intervention levels, 56, which added the step an irreversible approval lets run, 58, which added withdrawal reasons, and 59, which added green stack gates and returned routed asks, 61, which added findings, 62, which added merge risk, 63, which added plan fields, 65, which added chosen subscriptions and approval generations, 66, which added the step a gate enters after the merge, 70, which added idle compactions and session definitions, and 71, which added cleared deliveries, ended snoozes and withdrawal times. Schema 38's visits
 /// table is created only if missing, so it stays.
-const UNDO_SINCE_SEARCH: &str = "ALTER TABLE tasks DROP COLUMN base_sha; ALTER TABLE runs DROP COLUMN kit_hash; ALTER TABLE deliveries DROP COLUMN cleared; ALTER TABLE snoozes DROP COLUMN ended;
+const UNDO_SINCE_SEARCH: &str = "ALTER TABLE tasks DROP COLUMN parent_pull_request; ALTER TABLE tasks DROP COLUMN parent_branch; ALTER TABLE tasks DROP COLUMN parent_head; ALTER TABLE tasks DROP COLUMN base_sha; ALTER TABLE runs DROP COLUMN kit_hash; ALTER TABLE deliveries DROP COLUMN cleared; ALTER TABLE snoozes DROP COLUMN ended;
          DROP TRIGGER ask_withdrawn_at; DROP TRIGGER wait_withdrawn_at;
          ALTER TABLE asks DROP COLUMN withdrawn_at; ALTER TABLE waits DROP COLUMN withdrawn_at;
          ALTER TABLE tasks DROP COLUMN base_task; ALTER TABLE tasks DROP COLUMN batch; ALTER TABLE tasks DROP COLUMN batch_entry; DROP TABLE idle_compactions; ALTER TABLE shared_sessions DROP COLUMN definition; DROP INDEX todos_open_connector; ALTER TABLE todos DROP COLUMN connector; ALTER TABLE waits DROP COLUMN after; ALTER TABLE subscriptions DROP COLUMN chosen; ALTER TABLE approvals DROP COLUMN generation;
@@ -5867,6 +5867,7 @@ fn a_state_file_whose_asks_an_approval_names_upgrades_to_outside_asks() {
          ALTER TABLE actions DROP COLUMN pid; ALTER TABLE actions DROP COLUMN pid_started;
          ALTER TABLE actions DROP COLUMN ended;
          ALTER TABLE tasks DROP COLUMN progress; ALTER TABLE tasks DROP COLUMN base_sha;
+         ALTER TABLE tasks DROP COLUMN parent_pull_request; ALTER TABLE tasks DROP COLUMN parent_branch; ALTER TABLE tasks DROP COLUMN parent_head;
          DROP TABLE deliveries;
          DROP TABLE reports;
          DROP TABLE dispatches;
@@ -10019,7 +10020,7 @@ fn an_approval_stored_before_generations_were_kept_is_asked_again_after_the_upgr
     // The state file as version 64 left it: an approval names no generation.
     let db = rusqlite::Connection::open(setup.dir.join("priory.db")).unwrap();
     db.execute_batch(
-        "ALTER TABLE tasks DROP COLUMN base_sha; ALTER TABLE runs DROP COLUMN kit_hash; ALTER TABLE deliveries DROP COLUMN cleared; ALTER TABLE snoozes DROP COLUMN ended;
+        "ALTER TABLE tasks DROP COLUMN parent_pull_request; ALTER TABLE tasks DROP COLUMN parent_branch; ALTER TABLE tasks DROP COLUMN parent_head; ALTER TABLE tasks DROP COLUMN base_sha; ALTER TABLE runs DROP COLUMN kit_hash; ALTER TABLE deliveries DROP COLUMN cleared; ALTER TABLE snoozes DROP COLUMN ended;
          DROP TRIGGER ask_withdrawn_at; DROP TRIGGER wait_withdrawn_at;
          ALTER TABLE asks DROP COLUMN withdrawn_at; ALTER TABLE waits DROP COLUMN withdrawn_at;
          ALTER TABLE tasks DROP COLUMN base_task; ALTER TABLE tasks DROP COLUMN batch; ALTER TABLE tasks DROP COLUMN batch_entry; DROP TABLE idle_compactions; ALTER TABLE shared_sessions DROP COLUMN definition; DROP INDEX todos_open_connector; ALTER TABLE todos DROP COLUMN connector; ALTER TABLE waits DROP COLUMN after;
@@ -19526,6 +19527,11 @@ fn a_codex_run_gets_the_factorys_instructions_before_its_prompt_and_each_run_rec
 /// A batch over `ENG-40` and `ENG-41` on `OPEN_PR`, `ENG-41` stacked on `ENG-40` at `waiting`, after
 /// task 2 committed `a.txt`, opened pull request 7 and went to sleep on its checks.
 fn stacked_entry(name: &str) -> Setup {
+    stacked_entry_with(name, passed_with_evidence())
+}
+
+/// `stacked_entry`, whose task 3 ends its run with `call`.
+fn stacked_entry_with(name: &str, call: serde_json::Value) -> Setup {
     let mut setup = batched_with(name, OPEN_PR);
     let mut entries = [entry("e1", "ENG-40", &[]), entry("e2", "ENG-41", &["e1"])];
     entries[1]["after"][0]["moment"] = json!("waiting");
@@ -19533,7 +19539,7 @@ fn stacked_entry(name: &str) -> Setup {
     batch_add(&setup, &["ENG-40", "ENG-41"]);
     setup.start();
     let go = setup.until("asks", |rows| rows.len() == 1);
-    setup.calls(&[passed_with_evidence(), passed_with_evidence()]);
+    setup.calls(&[passed_with_evidence(), call]);
     person(&setup, "answer", &[&go[0][0], "go", "--revision", "1"]);
     let asks = setup.until("asks", |rows| rows.iter().any(|row| row[1] == "2"));
     setup.gone("priory-2");
@@ -19562,6 +19568,59 @@ fn a_waiting_entry_starts_from_its_predecessors_branch_once_that_one_sleeps_on_i
     assert!(
         shown["entries"][1]["after"][0]["met"].is_string(),
         "{shown}"
+    );
+}
+
+#[test]
+fn a_waiting_entry_whose_predecessors_branch_moved_before_its_start_waits_for_a_person() {
+    let mut setup = batched_with("batch-waiting-moved", OPEN_PR);
+    let mut entries = [entry("e1", "ENG-40", &[]), entry("e2", "ENG-41", &["e1"])];
+    entries[1]["after"][0]["moment"] = json!("waiting");
+    setup.calls(&[planned(json!({ "title": "t", "entries": entries }))]);
+    batch_add(&setup, &["ENG-40", "ENG-41"]);
+    setup.start();
+    let go = setup.until("asks", |rows| rows.len() == 1);
+    setup.calls(&[passed_with_evidence(), passed_with_evidence()]);
+    person(&setup, "answer", &[&go[0][0], "go", "--revision", "1"]);
+    let asks = setup.until("asks", |rows| rows.iter().any(|row| row[1] == "2"));
+    setup.gone("priory-2");
+    setup.commit(2, "a.txt");
+    // No room, so task 3 stays queued once its waiting moment is met.
+    setup.memory(0);
+    person(&setup, "answer", &[&asks[0][0], "open", "--revision", "1"]);
+    setup.until("tasks", |rows| {
+        rows.iter().any(|row| row[0] == "3" && row[4] == "queued")
+    });
+
+    setup.commit(2, "c.txt");
+    setup.memory(60);
+
+    setup.until("tasks", |rows| {
+        rows.iter().any(|row| row[0] == "3" && row[4] == "held")
+    });
+    let [_, reason] = held_as(&setup, "3");
+    assert!(reason.contains("task 2 moved priory/2"), "{reason}");
+    let worktree = setup.dir.join("home/worktrees/owner/repo/3");
+    assert!(!worktree.exists(), "task 3 started");
+    let asks = setup.rows("asks");
+    let ask = asks.iter().find(|row| row[1] == "3").unwrap();
+    let question = task_json(&setup, "3")["asks"][0]["question"].clone();
+    assert!(
+        question
+            .as_str()
+            .unwrap()
+            .starts_with("Task 2 moved priory/2 from "),
+        "{question}"
+    );
+
+    person(&setup, "answer", &[&ask[0], "release", "--revision", "1"]);
+
+    setup.until("asks", |rows| {
+        rows.iter().any(|row| row[1] == "3" && row[0] != ask[0])
+    });
+    assert!(
+        worktree.join("c.txt").exists(),
+        "task 3 did not start from the moved branch"
     );
 }
 
@@ -19633,6 +19692,44 @@ fn a_waiting_entry_bases_its_pull_request_on_its_predecessors_branch() {
 }
 
 #[test]
+fn the_predecessor_pushing_again_wakes_the_waiting_entry_to_rebase_onto_the_new_head() {
+    let setup = stacked_entry_opened("batch-waiting-pushed");
+
+    let head = setup.commit(2, "c.txt");
+    let worktree = setup.dir.join("home/worktrees/owner/repo/2");
+    assert!(
+        git(&worktree)
+            .env("GIT_CONFIG_COUNT", "1")
+            .env(
+                "GIT_CONFIG_KEY_0",
+                format!(
+                    "url.file://{}/.insteadOf",
+                    setup.dir.join("origin").display()
+                ),
+            )
+            .env("GIT_CONFIG_VALUE_0", "https://github.com/")
+            .args(["push", "-q", "origin", "priory/2"])
+            .status()
+            .unwrap()
+            .success()
+    );
+
+    let line = format!("task 2 pushed priory/2 to {head}; rebase onto it");
+    let outbox = setup.until("outbox", |rows| {
+        rows.iter()
+            .any(|row| row[1] == "3" && row[4].contains(&line))
+    });
+    assert_eq!(
+        outbox
+            .iter()
+            .filter(|row| row[1] == "3" && row[4].contains("pushed priory/2"))
+            .count(),
+        1,
+        "{outbox:?}"
+    );
+}
+
+#[test]
 fn the_predecessors_pull_request_merging_wakes_the_waiting_entry_to_rebase_onto_its_base() {
     let setup = stacked_entry_opened("batch-waiting-restack");
 
@@ -19654,6 +19751,59 @@ fn the_predecessors_pull_request_merging_wakes_the_waiting_entry_to_rebase_onto_
         "{woke:?}"
     );
     assert!(setup.rows("asks").is_empty());
+}
+
+#[test]
+fn a_retarget_of_a_stacked_entrys_bottom_seen_before_its_predecessors_merge_asks_no_one() {
+    let setup = stacked_entry_with(
+        "batch-waiting-retarget-first",
+        stacked(&["priory/3-a", "priory/3"]),
+    );
+    let asks = setup.until("asks", |rows| rows.iter().any(|row| row[1] == "3"));
+    setup.gone("priory-3");
+    let bottom = setup.commit(3, "b.txt");
+    let worktree = setup.dir.join("home/worktrees/owner/repo/3");
+    assert!(
+        git(&worktree)
+            .args(["branch", "priory/3-a", &bottom])
+            .status()
+            .unwrap()
+            .success()
+    );
+    setup.commit(3, "d.txt");
+    person(&setup, "answer", &[&asks[0][0], "open", "--revision", "1"]);
+    setup.until("tasks", |rows| {
+        rows.iter().any(|row| row[0] == "3" && row[4] == "asleep")
+    });
+
+    // GitHub retargets #8 onto main before the intake sees #7 close.
+    let mut retargeted = on_pull(
+        "github.check_run.completed",
+        json!({
+            "name": "check 1", "conclusion": "success", "github_id": 1, "pending": 1, "failing": 0,
+            "pull_request": 8, "head_branch": "priory/3-a", "head_sha": bottom,
+        }),
+    );
+    retargeted = retargeted.subject("owner/repo#8");
+    setup.publish(&retargeted);
+    setup.publish(&on_pull_2(
+        "github.pull_request.closed",
+        json!({ "merged": true, "github_id": 400 }),
+    ));
+
+    let outbox = setup.until("outbox", |rows| {
+        rows.iter()
+            .any(|row| row[1] == "3" && row[4].contains("merged; rebase"))
+    });
+    let woke = outbox
+        .iter()
+        .find(|row| row[1] == "3" && row[4].contains("merged; rebase"))
+        .unwrap();
+    assert!(
+        woke[4].contains("#7 merged; rebase #8 and #9 onto main"),
+        "{woke:?}"
+    );
+    assert!(setup.rows("asks").is_empty(), "{:?}", setup.rows("asks"));
 }
 
 #[test]

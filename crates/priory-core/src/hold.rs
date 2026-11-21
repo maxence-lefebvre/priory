@@ -270,8 +270,13 @@ pub(crate) fn due(tx: &Transaction) -> rusqlite::Result<()> {
 /// entered a step that waits for its merge, or once it is done owning no pull request. `waiting`
 /// is met by those too, and once the other task waits on its open pull request. When a condition
 /// can no longer be met, as the other task failed, was dropped or saw a pull request close
-/// unmerged, it asks a person.
-pub(crate) fn merged(tx: &Transaction, factory: &Factory) -> rusqlite::Result<()> {
+/// unmerged, it asks a person. A `waiting` condition met records the other task's pull request,
+/// branch and head on the entry, as `head` reads it from a worktree and branch.
+pub(crate) fn merged(
+    tx: &Transaction,
+    factory: &Factory,
+    head: &dyn Fn(&str, &str) -> Option<String>,
+) -> rusqlite::Result<()> {
     let open: Vec<(i64, i64, String, i64, Option<i64>)> = tx
         .prepare(
             "SELECT holds.id, holds.task, holds.kind, holds.target, holds.ask
@@ -309,6 +314,7 @@ pub(crate) fn merged(tx: &Transaction, factory: &Factory) -> rusqlite::Result<()
             continue;
         }
         if kind == "waiting" && waits_on_pull_request(tx, other, &state)? {
+            record_parent(tx, task, other, head)?;
             meet(tx, id, &format!("task {other} waits on its pull request"))?;
             continue;
         }
@@ -327,6 +333,75 @@ pub(crate) fn merged(tx: &Transaction, factory: &Factory) -> rusqlite::Result<()
         ask_person(tx, id, task, &question)?;
     }
     Ok(())
+}
+
+/// Records on the entry `task` the open pull request, branch and head of `parent`, the task it
+/// stacks on, so that its start can tell whether that branch moved since.
+fn record_parent(
+    tx: &Transaction,
+    task: i64,
+    parent: i64,
+    head: &dyn Fn(&str, &str) -> Option<String>,
+) -> rusqlite::Result<()> {
+    let open: Option<(String, String, Option<String>)> = tx
+        .query_row(
+            "SELECT pull_requests.resource, tasks.branch, tasks.worktree FROM tasks
+             JOIN pull_requests ON pull_requests.task = tasks.id
+               AND pull_requests.branch = tasks.branch AND pull_requests.state = 'open'
+             WHERE tasks.id = ?1 ORDER BY pull_requests.created DESC LIMIT 1",
+            [parent],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .optional()?;
+    let Some((pull_request, branch, worktree)) = open else {
+        return Ok(());
+    };
+    let at = worktree.and_then(|worktree| head(&worktree, &branch));
+    tx.execute(
+        "UPDATE tasks SET parent_pull_request = ?2, parent_branch = ?3, parent_head = ?4
+         WHERE id = ?1 AND base_task = ?5",
+        params![task, pull_request, branch, at, parent],
+    )
+    .map(drop)
+}
+
+/// Holds the queued entry `task`, whose stacking parent `parent` moved `branch` from `was` to
+/// `now` since the `waiting` moment, until a person answers whether to start it from `now`. The
+/// entry forgets `was`, so the start after that answer, or after a release, takes the branch as
+/// it is.
+pub(crate) fn parent_moved(
+    tx: &Transaction,
+    task: i64,
+    parent: i64,
+    branch: &str,
+    was: &str,
+    now: &str,
+) -> rusqlite::Result<()> {
+    let reason = format!("task {parent} moved {branch}");
+    tx.execute(
+        "INSERT INTO holds (task, reason, kind, resume)
+         SELECT id, ?2, 'person', state FROM tasks WHERE id = ?1",
+        params![task, reason],
+    )?;
+    let id = tx.last_insert_rowid();
+    let (was, now) = (short(was), short(now));
+    tx.execute(
+        "UPDATE tasks SET state = 'held', parent_head = NULL, reason = ?2 WHERE id = ?1",
+        params![
+            task,
+            format!("held: {reason} from {was} to {now} before it started, until a person answers")
+        ],
+    )?;
+    let question = format!(
+        "Task {parent} moved {branch} from {was} to {now} before task {task} started on it. \
+         Release the task to start from {now}, or drop it?"
+    );
+    ask_person(tx, id, task, &question)
+}
+
+/// The first 7 characters of the commit `sha`, as git abbreviates it.
+fn short(sha: &str) -> &str {
+    sha.get(..7).unwrap_or(sha)
 }
 
 /// Makes each unmet condition on the revived task `task` wait again, withdrawing the ask it put
@@ -534,7 +609,7 @@ fn closed_outside(tx: &Transaction, resource: &str, state: &str) -> rusqlite::Re
              AND state IN ('queued', 'ready', 'held')
              AND NOT EXISTS (SELECT 1 FROM runs WHERE runs.task = tasks.id)
              AND NOT EXISTS (SELECT 1 FROM holds WHERE holds.task = tasks.id
-               AND holds.kind = 'person' AND holds.ask IS NOT NULL)
+               AND holds.kind = 'person' AND holds.ask IS NOT NULL AND holds.reason LIKE 'batch %')
              ORDER BY id",
         )?
         .query_map([resource], |row| {
@@ -773,12 +848,16 @@ pub(crate) fn answered(tx: &Transaction, id: i64, answer: &str) -> rusqlite::Res
         "keep" => return meet(tx, id, "kept by a person"),
         _ => {}
     }
-    let (task, kind): (i64, String) =
-        tx.query_row("SELECT task, kind FROM holds WHERE id = ?1", [id], |row| {
-            Ok((row.get(0)?, row.get(1)?))
-        })?;
+    let (task, kind, reason): (i64, String, String) = tx.query_row(
+        "SELECT task, kind, reason FROM holds WHERE id = ?1",
+        [id],
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+    )?;
     let why = match kind.as_str() {
         "merged" => "dropped by a person after the task it waited on could not merge",
+        "person" if reason.starts_with("task ") => {
+            "dropped by a person after the branch it stacks on moved"
+        }
         "person" => "dropped by a person after its issue closed outside its batch",
         _ => "dropped by a person after its pull request closed",
     };
