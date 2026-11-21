@@ -80,7 +80,7 @@ fn acts(db: &Connection, until: &str, key: &str) -> rusqlite::Result<Vec<Act>> {
     let mut statement = db.prepare(&format!(
         "WITH acts AS (
            SELECT answered AS time, ask, NULL AS task FROM ask_revisions WHERE answered IS NOT NULL
-           UNION ALL SELECT created, ask, NULL FROM ask_withdrawals WHERE withdrawn = -1
+           UNION ALL SELECT created, ask, NULL FROM ask_withdrawals WHERE reason = 'dismissed'
            UNION ALL SELECT created, ask, NULL FROM ask_refusals
            UNION ALL SELECT time, CASE json_extract(event, '$.data.item.kind') WHEN 'ask'
                THEN CAST(json_extract(event, '$.data.item.id') AS INTEGER) END,
@@ -114,7 +114,7 @@ fn waits(db: &Connection, window: &Window, key: &str) -> rusqlite::Result<Vec<Wa
          SELECT {asked}, (SELECT min({time}) FROM (
              SELECT revisions.answered AS time
              UNION ALL SELECT created FROM ask_withdrawals WHERE ask_withdrawals.ask = asks.id
-               AND ask_withdrawals.revision = revisions.revision AND withdrawn = -1
+               AND ask_withdrawals.revision = revisions.revision AND reason = 'dismissed'
              UNION ALL SELECT trace.time FROM trace WHERE trace.type = 'factory.task.snoozed'
                AND json_extract(trace.event, '$.data.item.kind') = 'ask'
                AND json_extract(trace.event, '$.data.item.id') = CAST(asks.id AS TEXT)

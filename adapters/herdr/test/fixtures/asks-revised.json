@@ -166,7 +166,8 @@
       "title": null,
       "tradeoff": null,
       "what_waits": null,
-      "withdrawn_why": "revived as generation 2",
+      "withdrawn_reason": "revived",
+      "withdrawn_why": "its task was revived",
       "band": "blocker",
       "risk": [
         "green"

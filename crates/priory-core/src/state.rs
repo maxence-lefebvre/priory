@@ -12,7 +12,7 @@ use std::collections::BTreeMap;
 use std::io::Write;
 use std::time::Duration;
 
-const VERSION: i64 = 57;
+const VERSION: i64 = 58;
 
 const SCHEMA: &str = "
 CREATE TABLE tasks (
@@ -1012,6 +1012,30 @@ CREATE INDEX IF NOT EXISTS asks_by_task ON asks (task);
 PRAGMA user_version = 57;
 ";
 
+// Why an ask or wait was withdrawn, in words. `withdrawn` used to say it with a sentinel: -1
+// dismissed, -2 a sibling fired, 0 a later run moved on, else the generation a revive started. A
+// wait's -2 also meant its run's ask was settled; those read as `sibling-fired`.
+const SCHEMA_58: &str = "
+DROP TRIGGER IF EXISTS ask_withdrawn;
+ALTER TABLE asks ADD COLUMN withdrawn_reason TEXT CHECK (withdrawn_reason IN
+  ('revived', 'moved-on', 'sibling-fired', 'answered-elsewhere', 'dismissed', 'asked'));
+ALTER TABLE waits ADD COLUMN withdrawn_reason TEXT CHECK (withdrawn_reason IN
+  ('revived', 'moved-on', 'sibling-fired', 'answered-elsewhere', 'dismissed', 'asked'));
+ALTER TABLE ask_withdrawals ADD COLUMN reason TEXT;
+UPDATE asks SET withdrawn_reason = CASE withdrawn WHEN -1 THEN 'dismissed' WHEN -2 THEN 'sibling-fired'
+  WHEN 0 THEN 'moved-on' ELSE 'revived' END, withdrawn = 1 WHERE withdrawn IS NOT NULL;
+UPDATE waits SET withdrawn_reason = CASE withdrawn WHEN -1 THEN 'dismissed' WHEN -2 THEN 'sibling-fired'
+  WHEN 0 THEN 'moved-on' ELSE 'revived' END, withdrawn = 1 WHERE withdrawn IS NOT NULL;
+UPDATE ask_withdrawals SET reason = CASE withdrawn WHEN -1 THEN 'dismissed' WHEN -2 THEN 'sibling-fired'
+  WHEN 0 THEN 'moved-on' ELSE 'revived' END, withdrawn = 1;
+CREATE TRIGGER ask_withdrawn AFTER UPDATE OF withdrawn ON asks
+  WHEN NEW.withdrawn IS NOT NULL AND NEW.withdrawn IS NOT OLD.withdrawn BEGIN
+  INSERT INTO ask_withdrawals (ask, revision, withdrawn, reason)
+    VALUES (NEW.id, NEW.revision, NEW.withdrawn, NEW.withdrawn_reason);
+END;
+PRAGMA user_version = 58;
+";
+
 /// Each schema change in order: a file at version `n` applies those from index `n` on.
 const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA, SCHEMA_2, SCHEMA_3, SCHEMA_4, SCHEMA_5, SCHEMA_6, SCHEMA_7, SCHEMA_8, SCHEMA_9,
@@ -1021,6 +1045,7 @@ const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA_34, SCHEMA_35, SCHEMA_36, SCHEMA_37, SCHEMA_38, SCHEMA_39, SCHEMA_40, SCHEMA_41,
     SCHEMA_42, SCHEMA_43, SCHEMA_44, SCHEMA_45, SCHEMA_46, SCHEMA_47, SCHEMA_48, SCHEMA_49,
     SCHEMA_50, SCHEMA_51, SCHEMA_52, SCHEMA_53, SCHEMA_54, SCHEMA_55, SCHEMA_56, SCHEMA_57,
+    SCHEMA_58,
 ];
 
 /// The order the queue starts tasks in: band, then a person's order, then age. A band the factory

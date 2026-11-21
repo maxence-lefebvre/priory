@@ -245,7 +245,7 @@ fn person_minutes_per_merged_pull_request_count_each_act_up_to_five_minutes() {
     setup
         .db()
         .execute_batch(
-            "UPDATE asks SET withdrawn = -1 WHERE id = 4;
+            "UPDATE asks SET withdrawn = 1, withdrawn_reason = 'dismissed' WHERE id = 4;
              UPDATE ask_withdrawals SET created = '2026-11-16T13:31:00.000Z' WHERE ask = 4;
              INSERT INTO owns (task, resource) VALUES (1, 'github:o/r#1'), (2, 'github:o/r#2');
              INSERT INTO inbox (id, type, subject, time, data, links, outcome) VALUES
@@ -409,8 +409,8 @@ fn a_dismissal_ends_its_asks_wait_when_it_happens() {
             "INSERT INTO asks (id, task, step, kind, question, options, created)
                VALUES (1, 1, 'work', 'agent', 'Which?', '[]', {asked});
              UPDATE ask_revisions SET created = {asked};
-             UPDATE asks SET withdrawn = -1 WHERE id = 1;
-             UPDATE asks SET revision = 2, withdrawn = NULL WHERE id = 1;"
+             UPDATE asks SET withdrawn = 1, withdrawn_reason = 'dismissed' WHERE id = 1;
+             UPDATE asks SET revision = 2, withdrawn = NULL, withdrawn_reason = NULL WHERE id = 1;"
         ))
         .unwrap();
 
