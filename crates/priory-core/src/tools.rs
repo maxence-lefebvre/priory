@@ -1391,12 +1391,15 @@ fn listed(items: &[String]) -> String {
 }
 
 /// Puts `asked` to a person for `task`, once by its name, and ends the task's gates: the answer
-/// wakes the agent.
+/// wakes the agent. A dismissed or withdrawn ask of that name is asked again as its next revision.
 fn ask_stack(tx: &Transaction, task: i64, asked: StackAsk) -> rusqlite::Result<bool> {
     let options = serde_json::json!([format!("restack onto {}", asked.onto), "stop"]).to_string();
     tx.execute(
-        "INSERT OR IGNORE INTO asks (task, step, kind, name, question, options)
-         SELECT id, step, 'agent', ?2, ?3, ?4 FROM tasks WHERE id = ?1",
+        "INSERT INTO asks (task, step, kind, name, question, options)
+         SELECT id, step, 'agent', ?2, ?3, ?4 FROM tasks WHERE id = ?1
+         ON CONFLICT (name) DO UPDATE SET revision = revision + 1, withdrawn = NULL,
+           step = excluded.step, question = excluded.question, options = excluded.options
+         WHERE withdrawn IS NOT NULL AND answer IS NULL",
         params![task, asked.name, asked.question, options],
     )?;
     tx.execute(

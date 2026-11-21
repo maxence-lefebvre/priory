@@ -13657,6 +13657,44 @@ fn reaching_done_with_a_closed_pull_request_no_one_decided_on_asks_instead() {
 }
 
 #[test]
+fn a_dismissed_stack_ask_is_asked_again_as_a_new_revision_when_the_task_reaches_done_again() {
+    let commit = "abc0000000000000000000000000000000000000";
+    let mut setup = Setup::new("stack-asked-again");
+    setup.calls(&[
+        wait(json!({ "type": "time", "until": "1 hour" })),
+        passed_at(commit),
+        passed_at(commit),
+    ]);
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("runs", |rows| rows.len() == 1 && rows[0][7] == "asleep");
+    let mut closed = opened_on(7, "priory/1-a", "main");
+    closed.kind = "github.pull_request.closed".to_owned();
+    closed.data["merged"] = json!(false);
+    closed.data["github_id"] = json!(470);
+    setup.publish(&opened_on(7, "priory/1-a", "main"));
+    setup.publish(&opened_on(8, "priory/1", "priory/1-a"));
+    setup.publish(&closed);
+    setup.until("asks", |rows| rows.len() == 1);
+
+    let dismissed = setup.priory(&["dismiss", "stack-1-closed-7"]);
+
+    assert!(dismissed.status.success(), "{dismissed:?}");
+    setup.until("runs", |rows| rows.len() == 3 && rows[2][7] == "asleep");
+    let shown = setup.priory(&["asks", "--json"]);
+    let shown: serde_json::Value = serde_json::from_slice(&shown.stdout).unwrap();
+    let open: Vec<_> = shown["asks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|ask| ask["state"] == "open")
+        .collect();
+    assert_eq!(open.len(), 1, "{shown}");
+    assert_eq!(open[0]["id"], "stack-1-closed-7");
+    assert_eq!(open[0]["revision"], 2);
+}
+
+#[test]
 fn reusing_a_pull_request_on_another_base_than_the_branch_below_fails() {
     let setup = asked_to_open_stack("stack-reused-base", OPEN_PR, &["priory/1-a", "priory/1"]);
     // Every head already has pull request 5 open, on main.
