@@ -1794,6 +1794,13 @@ fn launch(
         Harness::ClaudeCode => crate::kit::plugin(factory, home)?,
         Harness::Codex => None,
     };
+    let memories = crate::kit::memories(factory, home)?;
+    let instructions = factory.run_instructions(
+        &memories
+            .as_deref()
+            .map(|folder| folder.display().to_string())
+            .unwrap_or_default(),
+    );
     runtime::launch(
         harness(&agent.harness),
         &Launch {
@@ -1805,8 +1812,9 @@ fn launch(
             model: agent.model.as_deref(),
             effort: agent.effort.as_deref(),
             body: &factory.prompt(agent),
-            instructions: factory.instructions(),
+            instructions: &instructions,
             plugin: plugin.as_deref(),
+            memories: memories.as_deref(),
             prompt: started.prompt,
             permissions,
             permission_mode: agent

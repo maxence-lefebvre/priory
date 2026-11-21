@@ -14,11 +14,21 @@ export function taskViews(tasks) {
 }
 
 /**
+ * Where another runner's task runs, from its claim: "On runner a, last seen 12 min ago", or null for
+ * a task of this runner, which has an id. `ago` turns a time into "12 min ago".
+ * @param {any} task @param {(iso: string) => string} ago
+ */
+export function elsewhere(task, ago) {
+  if (task.id != null || !task.runner) return null;
+  return `On runner ${task.runner}, ${task.last_seen ? `last seen ${ago(task.last_seen)}` : "never seen alive"}`;
+}
+
+/**
  * Each facet's key, label and a task's values, as the Asks list's facets. A task with no lane
  * shows under `none`. @type {[string, string, (task: any) => string[]][]}
  */
 export const TASK_FACETS = [
-  ["state", "State", (task) => [task.state]],
+  ["state", "State", (task) => [task.state ?? "elsewhere"]],
   ["lane", "Lane", (task) => [task.lane ?? "none"]],
   ["workflow", "Workflow", (task) => [task.workflow]],
 ];
@@ -36,3 +46,8 @@ export const filtered = (items, picks, facets = /** @type {any} */ (TASK_FACETS)
  * shows history. @param {{ view: string, history: string, older: number | undefined, picked: boolean }} list
  */
 export const olderPart = ({ view, history, older = 0, picked }) => ({ counted: picked ? 0 : older, unloaded: view === history ? older : 0 });
+
+const TRIAGE_WORDS = { "nothing-to-do": "nothing to do", "persons-call": "your call" };
+
+/** A feedback item's class as the task page words it. */
+export const triageWords = (triage) => TRIAGE_WORDS[triage] || triage;

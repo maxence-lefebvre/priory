@@ -17,6 +17,8 @@ changed question refuses it, as it refuses an answer. A dismissed ask is withdra
 it is refused with `ask <id> was dismissed`. An agent's ask wakes its task with one prompt:
 `A person dismissed ask <id> without an answer. Continue your task.` A step's ask and a hold's
 ask are refused, since only one of their options moves the task on.
+`priory dismiss --revision <n> [DIR] <runner>:<ask>` dismisses another runner's ask through the log
+(see [runners.md](runners.md#answering-another-runners-ask)).
 
 - A step's ask moves the task by `next[option]`, as in the table. A model step makes the task
   `ready` with that step's prompt queued.

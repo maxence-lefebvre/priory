@@ -40,12 +40,14 @@ message in the same order. Each keeps only its own tasks in its own state file, 
 source event of a task that another runner owns finds no task here and is recorded as `ignored`,
 while the owner routes it as [routing.md](routing.md) says.
 
-The runners publish five more message types on the same output, which
+The runners publish more message types on the same output, which
 [events.md](../reference/events.md#runners) lists: `priory.task.claimed`, `priory.task.held`,
-`priory.runner.alive`, `priory.ask.posted` and `priory.ask.answered`. The daemon stores each claim,
-hold, alive and post message in its state file before it publishes it, so a crash between the two publishes it at the
-next start. A message published twice adds nothing, because the log keeps the first message of
-each id. `priory answer` and `priory give` publish straight to the log.
+`priory.runner.alive`, `priory.ask.posted`, `priory.ask.applied`, `priory.ask.answered` and
+`priory.ask.dismissed`. The daemon stores each claim, hold, alive, post and applied message in its
+state file before it publishes it, so a crash between the two publishes it at the next start. A
+message published twice adds nothing, because the log keeps the first message of each id.
+`priory answer`, `priory dismiss`, `priory give` and the answer and dismiss endpoints publish
+straight to the log.
 
 ## Claims
 
@@ -164,22 +166,47 @@ orders posts. A runner keeps the post with the highest version, so a post read t
 changes nothing. The daemon stores each post in its state file before it publishes it, as it does a
 claim.
 
-A runner that is away keeps its asks listed, with its last alive time. An answer to one, given with
-`priory answer` as below, applies when that runner reads the log again.
+A runner that is away keeps its asks listed, with its last alive time, and they still take answers,
+which it applies when it reads the log again.
+
+## Every runner's tasks
+
+Every runner already stores each claim, hold and alive message it reads. So `priory tasks`,
+`/api/tasks` and the web Tasks panel list each task another runner holds, from its claim: its key,
+its runner, its hold, `waiting` or `kept`, and `last_seen`, when that runner was last alive. The
+workflow, band, lane and title come from the task's request. No new message crosses for this.
+
+Only the owner and hold cross. The task's state, steps, runs and terminal stay on its runner, so its
+`id` is null and the row opens no page here: open that runner's own view for them. A task whose hold
+is `ended` leaves the list. Tasks of this runner carry its `runner` and `hold` too. The Herdr Tasks
+panel lists this runner's tasks only.
 
 ## Answering another runner's ask
 
 ```sh
-priory answer [DIR] <runner>:<ask> <option-or-text> --revision <n>
+priory answer [DIR] <runner>:<ask> <option-or-text> --revision <n> [--run]
+priory dismiss --revision <n> [DIR] <runner>:<ask>
 ```
 
-publishes the answer on the log of the factory in `DIR`, `.` by default, instead of sending it to
-this machine's daemon. Only that runner
-applies it, through the same check as a local answer: the first answer to a revision stands, and
+publish the answer or the dismiss on the log of the factory in `DIR`, `.` by default, instead of
+sending it to this machine's daemon. `POST /api/asks/<runner>:<ask>/answer` and `/dismiss` do the
+same and reply `202`. Each write first checks this runner's copy of the ask: one that copy shows
+closed, or at another revision, is refused at once, and nothing is published. Only the named runner
+applies the write, through the same check as a local one: the first answer to a revision stands, and
 a later one is refused and recorded. A runner that is away applies it when its daemon starts again.
-The ask's id and revision are the ones that runner's `priory asks` prints. An ask of this machine
-whose name is `<runner>:<ask>` is answered here first. `priory answer` refuses a runner without a
-runner file with `runner <runner> has no runner file in runners/`.
+
+Each write is a submission, named by its message's id, which the command prints and the endpoint
+returns. The runner publishes `priory.ask.applied` with the submission and its outcome, `answered`,
+`dismissed` or `refused` with the reason. Every runner lists each ask's submissions, pending until
+that message arrives, so a person sees what became of an answer on any machine.
+
+An answer that runs the ask's [command](tools.md#commands-an-answer-runs) runs it on the ask's runner.
+Without `--run`, or `run: true`, it is refused with `Runs on <runner>`.
+
+An ask of this machine whose name is `<runner>:<ask>` is answered here first. `priory answer` and
+`priory dismiss` refuse a runner without a runner file with
+`runner <runner> has no runner file in runners/`. An ask this runner has no copy of yet goes to its
+runner unchecked from the command line, and gets `404` from the endpoint.
 
 ## Giving a task to another runner
 
@@ -224,5 +251,7 @@ Every runner also refuses a claim for a runner without a runner file.
   on the old runner.
 - Each ask change adds one post to `factory.intake`.
 - Snoozes stay on their machine: another runner's ask cannot be snoozed here.
-- A machine without a runner file runs no daemon, so it has no copy of the asks to serve.
+- A machine without a runner file runs no daemon, so it has no copy of the asks or tasks to serve.
+- Another runner's task shows its hold, not its state, and cannot be resumed, cancelled or said to
+  from here.
 - Each runner adds one alive message a minute to `factory.intake`.

@@ -63,12 +63,12 @@ It refuses a run that ended, and a pane whose tag does not match, with `404` and
 as `priory attach`. A run that ended keeps no screen on the server: the page keeps the last one it
 painted, as DESIGN.md asks.
 
-The first slice sends plain text, from `capture-pane -p` without `-e`. Colours come later, from
-`-e`, as spans the page builds from the SGR codes itself (see [Later slices](#later-slices)). The
-page never parses another escape: a cursor move or a title change in the text is shown as text.
+The screen keeps its colours, from `capture-pane -e`, as spans the page builds from the SGR codes
+itself. The page never parses another escape: a cursor move or a title change in the text is shown
+as text.
 
-Scrollback is a second read, `?history=N` with `capture-pane -S -N`, capped at 2,000 lines. The
-first slice leaves it out: the agent's transcript, not its scrollback, is the record of what it did.
+Scrollback is a second read, `?history=N` with `capture-pane -S -N`, capped at 2,000 lines, behind
+a "Load earlier" button: the agent's transcript, not its scrollback, is the record of what it did.
 
 ### Typing: one line at a time, through the daemon, recorded
 
@@ -294,6 +294,8 @@ Tests:
 Each tmux test takes a `TmuxDir`, as CONTRIBUTING asks.
 
 ## Later slices
+
+Slices 1, 4 and 5 are built; 2 and 3 are not.
 
 1. **Say from the pane.** "Type" sends a line to the existing `POST /api/tasks/{id}/say`. It
    needs no new endpoint, so it can ship right after the first slice, apart from keys.

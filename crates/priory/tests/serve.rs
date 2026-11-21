@@ -1114,6 +1114,19 @@ fn the_tasks_endpoint_gives_each_task_its_title_and_batch() {
 }
 
 #[test]
+fn a_task_endpoint_names_the_batch_of_a_batch_entry() {
+    let mut setup = Setup::new("task-batch", SERVE);
+    setup.seed();
+    let db = rusqlite::Connection::open(setup.dir.join("priory.db")).unwrap();
+    db.execute("UPDATE tasks SET batch = 4 WHERE id = 2", [])
+        .unwrap();
+    let address = setup.start(&["serve", &setup.factory()]);
+
+    assert_eq!(api(&address, "/api/tasks/2")["batch"], 4);
+    assert_eq!(api(&address, "/api/tasks/1")["batch"], Value::Null);
+}
+
+#[test]
 fn the_runs_endpoint_lists_the_runs_of_the_last_week_newest_first_with_outcome_model_and_tokens() {
     let mut setup = Setup::new("runs", SERVE);
     setup.seed();
@@ -1365,7 +1378,14 @@ fn a_task_endpoint_shows_its_brief_plan_pull_request_and_each_runs_tokens() {
         (2, "github.check_run.completed", pr("test", "failure")),
         (3, "github.check_run.completed", pr("test", "success")),
         (4, "github.check_run.completed", pr("lint", "success")),
-        (5, "github.pull_request_review.submitted", pr("", "")),
+        // A review the intake read without the pull request's branches and head.
+        (5, "github.pull_request_review.submitted", {
+            let mut review = pr("", "");
+            review["head_branch"] = Value::Null;
+            review["base_branch"] = Value::Null;
+            review["head_sha"] = Value::Null;
+            review
+        }),
         // A check run on the commit before the head, completing late.
         (6, "github.check_run.completed", {
             let mut late = pr("test", "failure");
@@ -1400,6 +1420,8 @@ fn a_task_endpoint_shows_its_brief_plan_pull_request_and_each_runs_tokens() {
     assert_eq!(pull["title"], "Fix the docs");
     assert_eq!(pull["state"], "open");
     assert_eq!(pull["head_sha"], "abc");
+    assert_eq!(pull["branch"], "docs-1");
+    assert_eq!(pull["base"], "main");
     assert_eq!(pull["review"], "approved");
     assert_eq!(
         pull["checks"],
@@ -3116,6 +3138,49 @@ fn the_report_endpoints_return_what_report_show_json_prints() {
 }
 
 #[test]
+fn report_list_names_every_report_newest_first_as_its_endpoint_returns_them() {
+    let mut setup = Setup::new("report-list", SERVE);
+    setup.seed();
+    let listed = setup.priory(&["report", "list", "--json"]);
+    succeeded(&listed);
+    let empty: Value = serde_json::from_slice(&listed.stdout).unwrap();
+    assert_eq!(empty["reports"], json!([]));
+    succeeded(&setup.put("2", &report()));
+    let mut later = report();
+    later["date"] = json!("2026-11-21");
+    later["greeting"] = json!("Later");
+    later["sections"][0]["rows"][0]["pick"]["id"] = json!("2026-11-21_sentry_fnd-2409");
+    succeeded(&setup.put("1", &later));
+    let address = setup.start(&["serve", &setup.factory()]);
+
+    let listed = setup.priory(&["report", "list", "--json"]);
+
+    succeeded(&listed);
+    let listed: Value = serde_json::from_slice(&listed.stdout).unwrap();
+    let heads: Vec<_> = listed["reports"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|head| {
+            (
+                head["task"].clone(),
+                head["date"].clone(),
+                head["greeting"].clone(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        heads,
+        [
+            (json!(1), json!("2026-11-21"), json!("Later")),
+            (json!(2), json!("2026-11-20"), json!("Bonjour, Max")),
+        ]
+    );
+    assert!(listed["revision"].is_i64());
+    assert_eq!(api(&address, "/api/reports"), listed);
+}
+
+#[test]
 fn a_report_whose_pick_another_tasks_report_has_is_refused() {
     let setup = Setup::new("report-shared-pick", SERVE);
     setup.seed();
@@ -4228,12 +4293,30 @@ fn the_pick_endpoint_records_a_choice_and_tells_a_stale_one_by_409() {
     );
     let (same, reply) = pick("Later", 1);
     assert_eq!(same, 409, "{reply}");
-    let (again, reply) = pick("Take", 2);
+    let (again, reply) = pick("Later", 2);
     assert_eq!(again, 409, "{reply}");
     assert!(reply.contains("already Later"), "{reply}");
+    let (changed, reply) = pick("Take", 2);
+    assert_eq!(changed, 200, "{reply}");
+    let (unknown, reply) = pick("Maybe", 3);
+    assert_eq!(unknown, 422, "{reply}");
     assert_eq!(
         api(&address, "/api/reports/latest")["report"]["sections"][0]["rows"][0]["pick"]["chosen"],
-        "Later"
+        "Take"
+    );
+    let mut applied = report();
+    applied["sections"][0]["rows"][0]["pick"]["applied"] = json!("took it");
+    succeeded(&setup.put("1", &applied));
+    let (stands, reply) = pick("Later", 4);
+    assert_eq!(stands, 409, "{reply}");
+    assert!(reply.contains("already Take"), "{reply}");
+    // A write that leaves `applied` empty keeps the applied choice.
+    succeeded(&setup.put("1", &report()));
+    let (still, reply) = pick("Later", 5);
+    assert_eq!(still, 409, "{reply}");
+    assert_eq!(
+        api(&address, "/api/reports/latest")["report"]["sections"][0]["rows"][0]["pick"]["applied"],
+        "took it"
     );
     assert_eq!(
         post(

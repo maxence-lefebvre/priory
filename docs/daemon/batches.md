@@ -267,7 +267,8 @@ its plan revision. Under the title, a stage bar and its words count the entries 
 issues closed so far. Then the lane graph: one row per entry in start order, each with its issue,
 its task, its state tile and state, its title, when it starts in words, and its task's reason or
 step. A single line between two rows is `merged`; a double line is `waiting`. The desk's `batch`
-row opens the page.
+row opens the page, and so does "batch 4" on the task page of each of its tasks. Its back link
+goes to the Tasks panel.
 
 A go ask opens with a Plan section, then Closes and Splits, before Why. The plan is the same lane
 graph with numbered circles in place of tiles, and each entry's files. While the batch is `asked`,

@@ -1,9 +1,9 @@
 //! The HTTP server over the state: `/api` as JSON, with `web` the web view's files, and with a
 //! GitHub webhook its signed deliveries.
 
-use crate::{grades, listing, push, report, screen, sections, snooze, state, todo, tools};
+use crate::{grades, listing, push, report, runners, screen, sections, snooze, state, todo, tools};
 use priory_factory::factory::{Factory, Price, Terminal, Trigger};
-use priory_intake::intake::{self, Github, LinearWebhook};
+use priory_intake::intake::{self, ASK_ANSWERED, ASK_DISMISSED, Github, LinearWebhook};
 use priory_intake::log;
 use priory_runtime::http::{self, Reply, Request};
 use priory_runtime::runtime;
@@ -205,12 +205,17 @@ pub fn start(factory: &Factory, listen: SocketAddr) -> Result<Vec<JoinHandle<()>
     let waiters = Arc::new(AtomicUsize::new(0));
     let public = |path: &str| !path.starts_with("/api") && !path.starts_with("/hooks");
     let event_log = factory.log().clone();
+    let remote = Arc::new(Remote {
+        log: factory.log().clone(),
+        runners: factory.runners.keys().cloned().collect(),
+    });
     let origins = config.extension_origins.clone();
     let workers = http::serve(listener, token, origins, hooks, public, move || {
         let db = state::read_only();
         let waiters = Arc::clone(&waiters);
         let home = runtime::home();
         let served = served.clone();
+        let remote = remote.clone();
         let mut github = github.clone().map(|github| {
             (
                 github,
@@ -234,7 +239,7 @@ pub fn start(factory: &Factory, listen: SocketAddr) -> Result<Vec<JoinHandle<()>
             {
                 linear.receive(bus, request)
             }
-            _ if request.method == "POST" => write(&db, &home, request),
+            _ if request.method == "POST" => write(&db, &home, &remote, request),
             _ => route(
                 &db,
                 &home,
@@ -257,6 +262,12 @@ pub(crate) fn env(name: &str, what: &str) -> Result<String, String> {
         .ok()
         .filter(|value| !value.is_empty())
         .ok_or_else(|| format!("{name} is unset or empty: set it to {what}"))
+}
+
+/// Where a write to another runner's ask goes: the factory's log, and the runners it knows.
+struct Remote {
+    log: priory_factory::factory::EventLog,
+    runners: Vec<String>,
 }
 
 /// What every server thread reads from the factory, once, when the server starts.
@@ -419,6 +430,7 @@ fn route(
             }),
             Err(error) => return Reply::error(500, &error),
         },
+        "/api/reports" => listing::revised(db, "reports", |db| sections::list(db).map(Some)),
         "/api/reports/latest" => listing::revised(db, "report", |db| sections::show(db, None)),
         "/api/costs" => return costs(db, &served.prices, query),
         "/api/grades" => return grades(db, query),
@@ -460,7 +472,15 @@ fn terminal(db: &Connection, served: &Served, run: &str, query: &str) -> Reply {
         return Reply::error(503, "too many screens are being read; retry in a second");
     }
     let have = query.split('&').find_map(|pair| pair.strip_prefix("have="));
-    match screen::read(db, &state::Attach::Run(run), &served.secrets) {
+    let history = query
+        .split('&')
+        .find_map(|pair| pair.strip_prefix("history="));
+    let history = match history.map(str::parse::<usize>) {
+        None => 0,
+        Some(Ok(rows)) => rows.min(screen::HISTORY),
+        Some(Err(_)) => return Reply::error(400, "history is a number of rows"),
+    };
+    match screen::read(db, &state::Attach::Run(run), &served.secrets, history) {
         Ok(shown) => Reply::json(200, screen::reply(shown, have).to_string()),
         Err(error) => Reply::error(404, &error),
     }
@@ -660,7 +680,12 @@ struct Unsubscribe {
 
 /// Sends a write to the daemon on its socket, as the CLI verb does; this thread never writes the
 /// state. A refusal re-reads the ask to tell a stale or closed ask (`409`) from a refused one.
-fn write(db: &Result<Connection, String>, home: &Path, request: &Request) -> Reply {
+fn write(
+    db: &Result<Connection, String>,
+    home: &Path,
+    remote: &Remote,
+    request: &Request,
+) -> Reply {
     let path = request.path.split('?').next().unwrap_or_default();
     let Some(write) = Write::of(path) else {
         return Reply::error(405, "only GET is served");
@@ -677,6 +702,9 @@ fn write(db: &Result<Connection, String>, home: &Path, request: &Request) -> Rep
         Ok(db) => db,
         Err(error) => return Reply::error(500, error),
     };
+    if let Some(reply) = remote_write(db, remote, &write, request.body) {
+        return reply;
+    }
     let (line, sent) = match write_line(db, &write, request.body) {
         Ok(line) => line,
         Err(reply) => return reply,
@@ -710,6 +738,74 @@ fn write(db: &Result<Connection, String>, home: &Path, request: &Request) -> Rep
         Ok(Err(refused)) => refusal(db, sent, &refused),
         Err(error) => Reply::error(500, &format!("unreadable reply {reply:?}: {error}")),
     }
+}
+
+/// An answer or dismiss of `<runner>:<ask>`, another runner's ask, which this machine does not
+/// apply: it checks the ask against its mirror, publishes the write on the log for that runner and
+/// answers `202` with the submission. `None` for a write to this machine's own ask.
+fn remote_write(db: &Connection, remote: &Remote, write: &Write, body: &[u8]) -> Option<Reply> {
+    let (Write::Answer(ask) | Write::Dismiss(ask)) = write else {
+        return None;
+    };
+    let (runner, id) = ask.split_once(':')?;
+    if tools::ask_named(db, ask).is_ok() {
+        return None;
+    }
+    let bad = |error: serde_json::Error| Reply::error(400, &error.to_string());
+    let reply = (|| {
+        if !remote.runners.iter().any(|known| known == runner) {
+            let refused = format!("runner {runner} has no runner file in runners/");
+            return Err(Reply::error(404, &refused));
+        }
+        let gone = || Reply::error(404, &format!("there is no ask {ask}"));
+        let id: i64 = id.parse().map_err(|_| gone())?;
+        let (kind, revision, data) = match write {
+            Write::Answer(_) => {
+                let body: AnswerBody = serde_json::from_slice(body).map_err(bad)?;
+                let text = match (body.option, body.text) {
+                    (Some(text), None) | (None, Some(text)) => text,
+                    _ => return Err(Reply::error(400, "send one of option and text")),
+                };
+                let answer = tools::Answer {
+                    ask: id,
+                    revision: body.revision,
+                    text,
+                    run: body.run,
+                    by: "serve".to_owned(),
+                };
+                let data = serde_json::to_value(&answer).expect("an answer serializes");
+                (ASK_ANSWERED, body.revision, data)
+            }
+            _ => {
+                let body: DismissBody = serde_json::from_slice(body).map_err(bad)?;
+                let data = serde_json::json!({ "ask": id, "revision": body.revision });
+                (ASK_DISMISSED, body.revision, data)
+            }
+        };
+        let mirrored = runners::mirrored(db, runner, id)
+            .map_err(|error| Reply::error(500, &error.to_string()))?
+            .ok_or_else(gone)?;
+        if let Some(stale) = runners::stale(&mirrored, revision) {
+            let body = serde_json::json!({ "error": stale, "ask": mirrored });
+            return Err(Reply::json(409, body.to_string()));
+        }
+        let runs = mirrored["command"]["runs"]
+            .as_array()
+            .is_some_and(|runs| runs.contains(&data["text"]));
+        if kind == ASK_ANSWERED && runs && data["run"] != true {
+            let refused = format!(
+                "ask {ask} runs its command when answered {}. Runs on {runner}: send run: true to run it",
+                data["text"]
+            );
+            return Err(Reply::error(422, &refused));
+        }
+        // Nothing waits on this machine: unpublished, the write is not sent at all.
+        let submission = runners::submit(&remote.log, kind, runner, id, data)
+            .map_err(|error| Reply::error(503, &format!("{error}. Nothing was sent: try again")))?;
+        let sent = serde_json::json!({ "sent": runner, "submission": submission });
+        Ok(Reply::json(202, sent.to_string()))
+    })();
+    Some(reply.unwrap_or_else(|reply| reply))
 }
 
 /// The revision a write was made on, which tells a stale write from a refused one.
@@ -1002,7 +1098,7 @@ fn refusal(db: &Connection, sent: Sent, refused: &str) -> Reply {
 }
 
 /// The reply to a pick the daemon refused: `404` once no report holds it, `409` once its report
-/// moved past the revision sent or another choice took it. A pick this write recorded, whose request
+/// moved past the revision sent, or the pick holds this choice or an applied one. A pick this write recorded, whose request
 /// then failed to publish, gets `422`, as does any other refusal.
 fn pick_refusal(db: &Connection, pick: &str, option: &str, sent: i64, refused: &str) -> Reply {
     // `sections::pick` words a recorded pick so, whatever followed it.
@@ -1011,17 +1107,29 @@ fn pick_refusal(db: &Connection, pick: &str, option: &str, sent: i64, refused: &
     }
     let found = db
         .query_row(
-            "SELECT reports.revision, json_extract(row.value, '$.pick.chosen')
+            "SELECT reports.revision, json_extract(row.value, '$.pick.chosen'),
+               json_extract(row.value, '$.pick.applied') IS NOT NULL
              FROM reports, json_each(reports.report, '$.sections') AS section,
                json_each(section.value, '$.rows') AS row
              WHERE json_extract(row.value, '$.pick.id') = ?1 LIMIT 1",
             [pick],
-            |row| Ok((row.get::<_, i64>(0)?, row.get::<_, Option<String>>(1)?)),
+            |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, Option<String>>(1)?,
+                    row.get::<_, bool>(2)?,
+                ))
+            },
         )
         .optional();
     match found {
         Ok(None) => Reply::error(404, refused),
-        Ok(Some((at, chosen))) if at != sent || chosen.is_some() => Reply::error(409, refused),
+        Ok(Some((at, chosen, applied)))
+            if at != sent
+                || (chosen.is_some() && (applied || chosen.as_deref() == Some(option))) =>
+        {
+            Reply::error(409, refused)
+        }
         Ok(Some(_)) => Reply::error(422, refused),
         Err(error) => Reply::error(500, &error.to_string()),
     }

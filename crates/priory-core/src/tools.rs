@@ -3274,12 +3274,25 @@ pub(crate) fn dismiss(
     factory: &priory_factory::factory::Factory,
 ) -> rusqlite::Result<Result<String, String>> {
     let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
-    let ask = match open_ask(&tx, dismiss.dismiss, dismiss.revision)? {
+    let dismissed = dismiss_in_tx(&tx, dismiss, factory)?;
+    if dismissed.is_ok() {
+        tx.commit()?;
+    }
+    Ok(dismissed)
+}
+
+/// Dismisses an ask in `tx`, writing nothing when it refuses.
+pub(crate) fn dismiss_in_tx(
+    tx: &Transaction,
+    dismiss: &Dismiss,
+    factory: &priory_factory::factory::Factory,
+) -> rusqlite::Result<Result<String, String>> {
+    let ask = match open_ask(tx, dismiss.dismiss, dismiss.revision)? {
         Ok(ask) => ask,
         Err(error) => return Ok(Err(error)),
     };
     let label = &ask.label;
-    if ask.kind == "step" || crate::hold::of_ask(&tx, dismiss.dismiss)?.is_some() {
+    if ask.kind == "step" || crate::hold::of_ask(tx, dismiss.dismiss)?.is_some() {
         return Ok(Err(format!(
             "ask {label} moves its task on by its options: answer it instead"
         )));
@@ -3288,20 +3301,19 @@ pub(crate) fn dismiss(
         "UPDATE asks SET withdrawn = 1, withdrawn_reason = 'dismissed' WHERE id = ?1",
         [dismiss.dismiss],
     )?;
-    withdraw_waits(&tx, dismiss.dismiss, "dismissed")?;
-    drop_lead(&tx, dismiss.dismiss, &format!("ask {label} was dismissed"))?;
-    crate::deliver::queue(&tx, dismiss.dismiss, None, factory)?;
+    withdraw_waits(tx, dismiss.dismiss, "dismissed")?;
+    drop_lead(tx, dismiss.dismiss, &format!("ask {label} was dismissed"))?;
+    crate::deliver::queue(tx, dismiss.dismiss, None, factory)?;
     if let Some(task) = ask.task {
         wake(
-            &tx,
+            tx,
             task,
             &format!("A person dismissed ask {label} without an answer. Continue your task."),
         )?;
         if ask.state == "asleep" {
-            set(&tx, task, "ready", None, None)?;
+            set(tx, task, "ready", None, None)?;
         }
     }
-    tx.commit()?;
     Ok(Ok(format!("ask {label} dismissed")))
 }
 

@@ -310,6 +310,31 @@ impl Setup {
         self.within(60, verb, done)
     }
 
+    /// This runner's rows of `priory tasks`: another runner's task has no id here.
+    fn own_tasks(&self) -> Vec<Vec<String>> {
+        self.rows("tasks")
+            .into_iter()
+            .filter(|row| row[0] != "-")
+            .collect()
+    }
+
+    /// Waits until `done` holds for this runner's rows of `priory tasks`.
+    fn until_own_tasks(&self, done: impl Fn(&[Vec<String>]) -> bool) -> Vec<Vec<String>> {
+        self.within_own_tasks(60, done)
+    }
+
+    /// Waits up to `seconds` until `done` holds for this runner's rows of `priory tasks`.
+    fn within_own_tasks(
+        &self,
+        seconds: u64,
+        done: impl Fn(&[Vec<String>]) -> bool,
+    ) -> Vec<Vec<String>> {
+        let own = |rows: &[Vec<String>]| -> Vec<Vec<String>> {
+            rows.iter().filter(|row| row[0] != "-").cloned().collect()
+        };
+        own(&self.within(seconds, "tasks", |rows| done(&own(rows))))
+    }
+
     fn within(
         &self,
         seconds: u64,
@@ -13495,6 +13520,44 @@ fn a_pick_at_the_reports_revision_records_the_choice_and_wakes_the_task_with_one
 }
 
 #[test]
+fn an_agreed_pick_changes_until_the_workflow_applies_it_and_wakes_the_task_with_the_change() {
+    let setup = asleep_on_a_report("report-change", &bonjour(serde_json::Value::Null));
+    let first = setup.priory(&["report", "pick", PICK, "Take", "--expected", "1"]);
+    assert!(first.status.success(), "{first:?}");
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 3);
+
+    let changed = setup.priory(&["report", "pick", PICK, "Later", "--expected", "2"]);
+
+    assert!(changed.status.success(), "{changed:?}");
+    assert_eq!(
+        String::from_utf8_lossy(&changed.stdout),
+        format!("pick {PICK} is Later at revision 3\n")
+    );
+    assert_eq!(
+        shown(&setup)["sections"][0]["rows"][0]["pick"]["chosen"],
+        "Later"
+    );
+    // The woken agent can get other prompts, such as a nudge, around the change's line.
+    let line = format!(
+        "The person changed their pick on {PICK} in your report from Take to Later: apply Later instead, then write the report again with the pick's applied filled."
+    );
+    let deadline = Instant::now() + Duration::from_secs(60);
+    while !setup
+        .typed()
+        .iter()
+        .any(|typed| typed.lines().next() == Some(line.as_str()))
+    {
+        assert!(Instant::now() < deadline, "{:?}", setup.typed());
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let same = setup.priory(&["report", "pick", PICK, "Later", "--expected", "3"]);
+    assert_eq!(
+        String::from_utf8_lossy(&same.stderr),
+        format!("priory report pick: pick {PICK} is already Later\n")
+    );
+}
+
+#[test]
 fn a_pick_at_a_stale_revision_is_refused_and_changes_nothing() {
     let setup = asleep_on_a_report("report-stale", &bonjour(serde_json::Value::Null));
 
@@ -17319,9 +17382,8 @@ fn a_runner_away_for_an_hour_keeps_its_asked_task_and_its_answer_and_loses_only_
         );
     }
     b.publish(&requested(3));
-    let tasks = b.until("tasks", |rows| {
-        rows.iter().filter(|row| row[4] == "running").count() == 2
-    });
+    let tasks =
+        b.until_own_tasks(|rows| rows.iter().filter(|row| row[4] == "running").count() == 2);
     let mut keys: Vec<&str> = tasks.iter().map(|row| row[1].as_str()).collect();
     keys.sort_unstable();
     assert_eq!(
@@ -17332,7 +17394,7 @@ fn a_runner_away_for_an_hour_keeps_its_asked_task_and_its_answer_and_loses_only_
 
     a.memory(60);
     a.start_with(exe, &[("PRIORY_NOW", AN_HOUR_LATER)]);
-    let tasks = a.until("tasks", |rows| {
+    let tasks = a.until_own_tasks(|rows| {
         rows.iter()
             .all(|row| ["done", "dropped"].contains(&row[4].as_str()))
     });
@@ -17444,7 +17506,7 @@ fn a_person_gives_a_started_task_to_another_runner_which_starts_it_over_and_its_
     b.until("asks", |rows| rows.iter().any(|row| !row[0].contains(':')));
 
     a.start_with(exe, &[("PRIORY_NOW", AN_HOUR_LATER)]);
-    let tasks = a.until("tasks", |rows| rows[0][4] == "dropped");
+    let tasks = a.until_own_tasks(|rows| rows[0][4] == "dropped");
     assert_eq!(tasks.len(), 1);
     let refused = give("b", &[]);
     assert_eq!(
@@ -17464,9 +17526,9 @@ fn a_person_gives_a_started_task_to_another_runner_which_starts_it_over_and_its_
         "{}",
         String::from_utf8_lossy(&back.stderr)
     );
-    let tasks = a.until("tasks", |rows| rows.len() == 2 && rows[1][4] == "asleep");
+    let tasks = a.until_own_tasks(|rows| rows.len() == 2 && rows[1][4] == "asleep");
     assert_eq!(tasks[0][4], "dropped", "{tasks:?}");
-    b.until("tasks", |rows| rows[0][4] == "dropped");
+    b.until_own_tasks(|rows| rows[0][4] == "dropped");
 }
 
 #[test]
@@ -17508,8 +17570,8 @@ fn a_person_gives_a_task_whose_owner_may_still_run_it_only_with_force() {
          github:owner/repo#1: give it then, or pass --force\n"
     );
     std::thread::sleep(Duration::from_secs(2));
-    assert!(b.rows("tasks").is_empty(), "nothing moved");
-    assert_eq!(a.rows("tasks")[0][4], "asleep");
+    assert!(b.own_tasks().is_empty(), "nothing moved");
+    assert_eq!(a.own_tasks()[0][4], "asleep");
 
     let forced = give("2026-11-21T10:10:00Z", &["--force"]);
     assert!(
@@ -17518,7 +17580,7 @@ fn a_person_gives_a_task_whose_owner_may_still_run_it_only_with_force() {
         String::from_utf8_lossy(&forced.stderr)
     );
     b.until("asks", |rows| rows.len() == 1);
-    a.until("tasks", |rows| rows[0][4] == "dropped");
+    a.until_own_tasks(|rows| rows[0][4] == "dropped");
 }
 
 #[test]
@@ -17553,7 +17615,7 @@ fn a_runner_that_joins_late_reads_a_finished_task_without_running_it_again() {
         rows.iter().any(|row| row.contains(&"refused".to_owned()))
     });
     assert!(
-        b.rows("tasks").is_empty(),
+        b.own_tasks().is_empty(),
         "b's late claim of the finished request loses"
     );
 }
@@ -17569,9 +17631,7 @@ fn a_runner_added_to_a_factory_that_had_one_does_not_run_its_finished_requests_a
     a.calls(&[result("passed")]);
     a.publish(&requested(1));
     a.start_with(exe, &[("PRIORY_NOW", T0)]);
-    a.until("tasks", |rows| {
-        rows.first().is_some_and(|row| row[4] == "done")
-    });
+    a.until_own_tasks(|rows| rows.first().is_some_and(|row| row[4] == "done"));
     a.crash();
 
     fs::rename(&later, &runners).unwrap();
@@ -17585,7 +17645,7 @@ fn a_runner_added_to_a_factory_that_had_one_does_not_run_its_finished_requests_a
     });
 
     assert!(
-        b.rows("tasks").is_empty(),
+        b.own_tasks().is_empty(),
         "b does not run the request a finished before it had runners"
     );
 }
@@ -17644,9 +17704,7 @@ fn a_runners_task_branch_names_the_runner_since_task_ids_overlap_across_runners(
         Path::new(env!("CARGO_BIN_EXE_priory")),
         &[("PRIORY_NOW", T0)],
     );
-    a.until("tasks", |rows| {
-        rows.first().is_some_and(|row| row[4] == "running")
-    });
+    a.until_own_tasks(|rows| rows.first().is_some_and(|row| row[4] == "running"));
 
     let task = task_json(&a, "1");
     assert_eq!(task["branch"], "priory/a-1", "{task}");
@@ -17662,9 +17720,7 @@ fn a_copy_reopened_on_a_runner_whose_key_another_runner_owns_drops_with_the_owne
     a.calls(&[result("passed")]);
     a.publish(&requested(1));
     a.start_with(exe, &[("PRIORY_NOW", T0)]);
-    a.until("tasks", |rows| {
-        rows.first().is_some_and(|row| row[4] == "done")
-    });
+    a.until_own_tasks(|rows| rows.first().is_some_and(|row| row[4] == "done"));
     logged(
         &a,
         "priory.task.held",
@@ -17675,7 +17731,7 @@ fn a_copy_reopened_on_a_runner_whose_key_another_runner_owns_drops_with_the_owne
     // A new request for the key goes to b, which a hears only once it is back.
     b.publish(&requested(1));
     b.start_with(exe, &[("PRIORY_NOW", T0)]);
-    b.until("tasks", |rows| rows.len() == 1);
+    b.until_own_tasks(|rows| rows.len() == 1);
     a.start_with(exe, &[("PRIORY_NOW", T0)]);
     a.until("inbox", |rows| {
         rows.iter()
@@ -17694,12 +17750,12 @@ fn a_copy_reopened_on_a_runner_whose_key_another_runner_owns_drops_with_the_owne
         .time(herdr_bus::Timestamp::now()),
     );
 
-    let tasks = a.until("tasks", |rows| rows[0][4] == "dropped");
+    let tasks = a.until_own_tasks(|rows| rows[0][4] == "dropped");
     assert_eq!(tasks.len(), 1, "{tasks:?}");
     let task = a.priory(&["task", &tasks[0][0], "--json"]);
     let task: serde_json::Value = serde_json::from_slice(&task.stdout).unwrap();
     assert_eq!(task["reason"], "owned by runner b", "{task}");
-    assert_eq!(b.rows("tasks")[0][4], "running");
+    assert_eq!(b.own_tasks()[0][4], "running");
 }
 
 #[test]
@@ -17739,10 +17795,13 @@ fn a_persons_call_whose_ask_the_person_dismissed_is_accepted() {
 #[test]
 fn the_persons_own_review_item_is_not_put_to_the_agent_and_is_recorded_as_a_persons_call() {
     let mut setup = Setup::new("triage-own");
-    setup.calls(&[wait(json!({ "type": "time", "until": "3 seconds" }))]);
+    // The person's comment, not the wait, wakes the task, so it is written while the task sleeps.
+    setup.calls(&[wait(json!({ "type": "time", "until": "1 hour" }))]);
     setup.publish(&requested(42));
     setup.start();
-    setup.until("runs", |rows| rows.len() == 1 && rows[0][7] == "asleep");
+    setup.until("runs", |rows| {
+        rows.len() == 1 && rows[0][7] == "asleep" && rows[0][6] != "-"
+    });
     setup.hold("hold-stop");
     let mut own = thread_comment_at(802);
     own.data["own"] = json!(true);
@@ -17757,6 +17816,33 @@ fn the_persons_own_review_item_is_not_put_to_the_agent_and_is_recorded_as_a_pers
     assert!(!error, "{text}");
     assert_eq!(task_json(&setup, "1")["triage"][0]["class"], "persons-call");
     assert_eq!(task_json(&setup, "1")["triage"][0]["item"], THREAD_URL);
+}
+
+#[test]
+fn the_agents_own_reply_written_during_its_run_is_not_recorded_as_feedback() {
+    let mut setup = Setup::new("triage-agent-reply");
+    setup.calls(&[wait(json!({ "type": "time", "until": "3 seconds" }))]);
+    setup.publish(&requested(42));
+    // The turn lasts past its first second, as a real one does.
+    setup.hold("hold-stop");
+    setup.start();
+    setup.until("runs", |rows| rows.len() == 1);
+    std::thread::sleep(Duration::from_millis(2100));
+    setup.release("hold-stop");
+    setup.until("runs", |rows| rows[0][7] == "asleep");
+    setup.hold("hold-stop");
+    // The agent replied from the person's gh account while it ran; the poll reads it later.
+    let started: herdr_bus::Timestamp = setup.rows("runs")[0][5].parse().unwrap();
+    let during = herdr_bus::Timestamp::from_second(started.as_second() + 1).unwrap();
+    let mut reply = thread_comment_at(802).time(during);
+    reply.data["own"] = json!(true);
+    setup.publish(&reply);
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 2);
+
+    let (text, error) = result_sorting(&setup, serde_json::Value::Null);
+
+    assert!(!error, "{text}");
+    assert_eq!(task_json(&setup, "1")["triage"], json!([]));
 }
 
 const GUIDE: &str = "Open every ask with the question.";
@@ -19996,6 +20082,164 @@ fn another_runners_open_ask_is_listed_with_its_runner_on_the_asks_and_desk_endpo
 }
 
 #[test]
+fn an_answer_sent_to_another_runners_ask_is_accepted_applied_by_its_runner_and_its_outcome_listed()
+{
+    let (a, _b, ask, address) = asked_on_a("remote-answer");
+    let id = format!("a:{ask}");
+    until_ask(&address, &id, |ask| ask["state"] == "open");
+
+    let (status, sent) = runner_http(
+        &address,
+        "POST",
+        &format!("/api/asks/{id}/answer"),
+        r#"{"option": "approved", "revision": 1}"#,
+    );
+
+    assert_eq!(status, 202, "{sent}");
+    assert_eq!(sent["sent"], "a");
+    let submission = sent["submission"].as_str().unwrap().to_owned();
+    let closed = until_ask(&address, &id, |ask| {
+        ask["state"] == "answered" && ask["submissions"][0]["outcome"] == "answered"
+    });
+    assert_eq!(closed["answer"], "approved", "{closed}");
+    assert_eq!(closed["submissions"][0]["submission"], submission.as_str());
+    a.until("tasks", |rows| rows[0][4] == "done");
+}
+
+#[test]
+fn a_stale_answer_to_another_runners_ask_gets_409_and_nothing_is_published() {
+    let (a, _b, ask, address) = asked_on_a("remote-stale");
+    let id = format!("a:{ask}");
+    until_ask(&address, &id, |ask| ask["state"] == "open");
+
+    let (status, refused) = runner_http(
+        &address,
+        "POST",
+        &format!("/api/asks/{id}/answer"),
+        r#"{"option": "approved", "revision": 2}"#,
+    );
+
+    assert_eq!(status, 409, "{refused}");
+    assert_eq!(refused["ask"]["id"], id.as_str(), "{refused}");
+    assert_eq!(
+        refused["error"],
+        format!("ask {id} is at revision 1, not 2"),
+        "{refused}"
+    );
+    assert!(on_log(&a, "priory.ask.answered").is_empty());
+}
+
+#[test]
+fn of_two_answers_to_one_revision_the_first_stands_and_the_other_shows_refused_without_a_new_revision()
+ {
+    let (a, _b, ask, address) = asked_on_a("remote-twice");
+    let id = format!("a:{ask}");
+    until_ask(&address, &id, |ask| ask["state"] == "open");
+    let path = format!("/api/asks/{id}/answer");
+
+    let mut submissions = Vec::new();
+    for option in ["approved", "rejected"] {
+        let body = json!({ "option": option, "revision": 1 }).to_string();
+        let (status, sent) = runner_http(&address, "POST", &path, &body);
+        assert_eq!(status, 202, "{sent}");
+        submissions.push(sent["submission"].as_str().unwrap().to_owned());
+    }
+
+    let closed = until_ask(&address, &id, |ask| {
+        ask["submissions"]
+            .as_array()
+            .is_some_and(|sent| sent.iter().all(|sent| !sent["outcome"].is_null()))
+            && ask["refused"]
+                .as_array()
+                .is_some_and(|refused| !refused.is_empty())
+    });
+    let outcomes: Vec<(&str, &str)> = closed["submissions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|sent| {
+            (
+                sent["text"].as_str().unwrap(),
+                sent["outcome"].as_str().unwrap(),
+            )
+        })
+        .collect();
+    assert!(outcomes.contains(&("approved", "answered")), "{closed}");
+    assert!(outcomes.contains(&("rejected", "refused")), "{closed}");
+    assert_eq!(closed["answer"], "approved", "{closed}");
+    assert_eq!(
+        closed["revision"], 1,
+        "a refusal does not revise the question"
+    );
+    let versions: Vec<i64> = on_log(&a, "priory.ask.posted")
+        .iter()
+        .map(|post| post.data["version"].as_i64().unwrap())
+        .collect();
+    // Asked, answered, then refused: one post can cover changes read in one pass.
+    assert_eq!(versions.last(), Some(&3), "{versions:?}");
+    assert!(versions.is_sorted(), "{versions:?}");
+}
+
+#[test]
+fn an_answer_sent_while_its_runner_is_away_is_applied_once_when_it_starts_again() {
+    let (mut a, _b, ask, address) = asked_on_a("remote-away");
+    let id = format!("a:{ask}");
+    until_ask(&address, &id, |ask| ask["state"] == "open");
+    a.crash();
+
+    let (status, sent) = runner_http(
+        &address,
+        "POST",
+        &format!("/api/asks/{id}/answer"),
+        r#"{"option": "approved", "revision": 1}"#,
+    );
+    assert_eq!(status, 202, "{sent}");
+    let pending = until_ask(&address, &id, |ask| {
+        ask["submissions"]
+            .as_array()
+            .is_some_and(|sent| !sent.is_empty())
+    });
+    assert!(pending["submissions"][0]["outcome"].is_null(), "{pending}");
+    assert_eq!(pending["state"], "open", "{pending}");
+
+    a.start_with(
+        Path::new(env!("CARGO_BIN_EXE_priory")),
+        &[("PRIORY_NOW", T0)],
+    );
+
+    until_ask(&address, &id, |ask| {
+        ask["state"] == "answered" && ask["submissions"][0]["outcome"] == "answered"
+    });
+    assert_eq!(on_log(&a, "priory.ask.applied").len(), 1);
+}
+
+#[test]
+fn a_refused_dismiss_of_another_runners_ask_comes_back_with_the_owners_reason() {
+    let (a, b, ask, address) = asked_on_a("remote-dismiss");
+    let id = format!("a:{ask}");
+    until_ask(&address, &id, |ask| ask["state"] == "open");
+    let factory = b.dir.join("factory");
+
+    let sent = b.priory(&["dismiss", "--revision", "1", factory.to_str().unwrap(), &id]);
+
+    assert!(
+        sent.status.success(),
+        "{}",
+        String::from_utf8_lossy(&sent.stderr)
+    );
+    let refused = until_ask(&address, &id, |ask| {
+        ask["submissions"][0]["outcome"] == "refused"
+    });
+    assert_eq!(refused["submissions"][0]["verb"], "dismiss");
+    assert_eq!(
+        refused["submissions"][0]["why"],
+        format!("ask {ask} moves its task on by its options: answer it instead"),
+        "{refused}"
+    );
+    assert_eq!(a.rows("asks").len(), 1, "the ask stays open on a");
+}
+
+#[test]
 fn a_mirror_keeps_the_highest_version_of_a_post_whatever_order_it_reads_them_in() {
     let mut b = runner("remote-versions", "b", None);
     let post = |version: i64, question: &str| {
@@ -20029,6 +20273,52 @@ fn a_mirror_keeps_the_highest_version_of_a_post_whatever_order_it_reads_them_in(
         .collect();
     assert_eq!(mirrored.len(), 1, "{asks}");
     assert_eq!(mirrored[0]["question"], "newer");
+}
+
+#[test]
+fn a_command_answer_to_another_runners_ask_says_where_it_runs_and_needs_run() {
+    let mut b = runner("remote-command", "b", None);
+    b.publish(&Message::new(
+        "priory.ask.posted",
+        json!({
+            "runner": "a", "ask": 7, "version": 1, "kind": "step",
+            "listed": {
+                "id": 7, "state": "open", "revision": 1, "question": "Deploy?",
+                "command": { "argv": ["deploy"], "dir": ".", "runs": ["approved"] },
+            },
+        }),
+    ));
+    b.publish(&requested(1));
+    b.start_with(
+        Path::new(env!("CARGO_BIN_EXE_priory")),
+        &[("PRIORY_NOW", T0)],
+    );
+    b.until("inbox", |rows| {
+        rows.iter().any(|row| row[1] == "factory.task.requested")
+    });
+    let factory = b.dir.join("factory");
+    let dir = factory.to_str().unwrap();
+
+    let unconfirmed = b.priory(&["answer", "--revision", "1", dir, "a:7", "approved"]);
+    let confirmed = b.priory(&["answer", "--revision", "1", "--run", dir, "a:7", "approved"]);
+
+    assert_eq!(
+        String::from_utf8_lossy(&unconfirmed.stderr),
+        "priory answer: ask a:7 runs its command when answered \"approved\". Runs on a: answer again with --run to run it\n"
+    );
+    assert!(
+        confirmed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&confirmed.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&confirmed.stdout).ends_with("Runs on a.\n"),
+        "{}",
+        String::from_utf8_lossy(&confirmed.stdout)
+    );
+    let sent = on_log(&b, "priory.ask.answered");
+    assert_eq!(sent.len(), 1);
+    assert_eq!(sent[0].data["run"], true);
 }
 
 #[test]
@@ -20161,7 +20451,10 @@ fn a_runs_screen_returns_its_rows_blank_ones_kept_its_size_and_a_hash_that_follo
             status,
             serde_json::from_str::<serde_json::Value>(&same).unwrap()
         ),
-        (200, json!({ "hash": hash, "same": true }))
+        (
+            200,
+            json!({ "hash": hash, "same": true, "scrollback": screen["scrollback"] })
+        )
     );
 
     setup.shows("=priory-1:", "\x1b[?25hnew text");
@@ -20174,6 +20467,97 @@ fn a_runs_screen_returns_its_rows_blank_ones_kept_its_size_and_a_hash_that_follo
         serde_json::from_slice::<serde_json::Value>(&cli.stdout).unwrap(),
         changed
     );
+    server.kill().unwrap();
+    server.wait().unwrap();
+}
+
+#[test]
+fn a_runs_screen_keeps_its_colour_codes_drops_links_and_hides_a_secret_a_code_splits() {
+    let setup = Setup::running("screen-colours");
+    let (mut server, address) = serving(&setup, WATCH, &[("TEST_TOKEN", SERVE_TOKEN)]);
+    setup.shows(
+        "=priory-1:",
+        "\x1b[31mred\x1b[0m T=s3cret\x1b[1m-token\x1b[0m end\r\n\x1b]8;;http://x.example\x1b\\link\x1b]8;;\x1b\\ after",
+    );
+
+    let screen = screen_once(&address, |screen| screen_row(screen, 1).ends_with("after"));
+
+    assert_eq!(
+        screen_row(&screen, 0),
+        "\x1b[31mred\x1b[39m T=[redacted]\x1b[1m\x1b[0m end"
+    );
+    assert_eq!(screen_row(&screen, 1), "link after");
+    assert_eq!(screen["redacted"], 1);
+    server.kill().unwrap();
+    server.wait().unwrap();
+}
+
+#[test]
+fn a_runs_screen_takes_earlier_rows_up_to_its_cap_and_hashes_them() {
+    let setup = Setup::running("screen-history");
+    let (mut server, address) = serving(&setup, WATCH, &[("TEST_TOKEN", SERVE_TOKEN)]);
+    // A pane takes the history limit it was made with, so a new one holds more than the cap.
+    setup.tmux_out(&["set-option", "-g", "history-limit", "3000"]);
+    let tagged = setup.tmux_out(&[
+        "list-panes",
+        "-s",
+        "-t",
+        "=priory-1:",
+        "-F",
+        "#{pane_id} #{@priory}",
+    ]);
+    let (old, tag) = tagged.trim().split_once(' ').unwrap();
+    let new = setup.tmux_out(&[
+        "split-window",
+        "-P",
+        "-F",
+        "#{pane_id}",
+        "-t",
+        old,
+        "seq 1 2600; sleep 600",
+    ]);
+    setup.tmux_out(&["set-option", "-p", "-t", new.trim(), "@priory", tag]);
+    setup.tmux_out(&["kill-pane", "-t", old]);
+    let screen = screen_once(&address, |screen| screen.to_string().contains("\"2600\""));
+    let height = screen["height"].as_u64().unwrap() as usize;
+    assert_eq!(screen["earlier"], 0);
+    assert!(
+        screen["scrollback"].as_u64().unwrap() > 2000,
+        "{}",
+        screen["scrollback"]
+    );
+
+    let (status, body) = http(&address, "GET", "/api/runs/1/screen?history=5", "", "");
+    let five: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!((status, five["earlier"].clone()), (200, json!(5)));
+    assert_eq!(
+        five["lines"].as_array().unwrap()[5..],
+        screen["lines"].as_array().unwrap()[..]
+    );
+    let first: u32 = screen_row(&screen, 0).parse().unwrap();
+    assert_eq!(screen_row(&five, 0), (first - 5).to_string());
+    assert_ne!(five["hash"], screen["hash"]);
+    let (_, same) = http(
+        &address,
+        "GET",
+        &format!(
+            "/api/runs/1/screen?history=5&have={}",
+            five["hash"].as_str().unwrap()
+        ),
+        "",
+        "",
+    );
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&same).unwrap()["same"],
+        true
+    );
+
+    let (_, body) = http(&address, "GET", "/api/runs/1/screen?history=99999", "", "");
+    let capped: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(capped["earlier"], 2000);
+    assert_eq!(capped["lines"].as_array().unwrap().len(), 2000 + height);
+    let (status, _) = http(&address, "GET", "/api/runs/1/screen?history=many", "", "");
+    assert_eq!(status, 400);
     server.kill().unwrap();
     server.wait().unwrap();
 }
@@ -20400,4 +20784,242 @@ fn a_screen_is_never_cached_needs_the_token_and_terminal_off_serves_none() {
     );
     server.kill().unwrap();
     server.wait().unwrap();
+}
+
+/// Waits until `/api/tasks` on `address` lists a task of `key` from runner `runner` and `done`
+/// holds for it.
+fn until_task(
+    address: &str,
+    key: &str,
+    runner: &str,
+    done: impl Fn(Option<&serde_json::Value>) -> bool,
+) -> Option<serde_json::Value> {
+    let deadline = Instant::now() + Duration::from_secs(60);
+    loop {
+        let (status, tasks) = runner_http(address, "GET", "/api/tasks", "");
+        assert_eq!(status, 200, "{tasks}");
+        let found = tasks["tasks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|task| task["key"] == key && task["runner"] == runner)
+            .cloned();
+        if done(found.as_ref()) {
+            return found;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "no task {key} as wanted in {tasks}"
+        );
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
+#[test]
+fn another_runners_task_is_listed_with_its_runner_hold_and_last_alive_time() {
+    let (a, b, _ask, address) = asked_on_a("remote-tasks");
+    let key = "github:owner/repo#1";
+
+    let task = until_task(&address, key, "a", |task| {
+        task.is_some_and(|task| task["hold"] == "kept")
+    })
+    .unwrap();
+
+    assert_eq!(task["id"], json!(null), "{task}");
+    assert_eq!(task["state"], json!(null), "{task}");
+    assert_eq!(task["workflow"], "approve", "{task}");
+    assert!(task["last_seen"].is_string(), "{task}");
+    assert!(task["since"].is_string(), "{task}");
+    let cli = b.priory(&["tasks", "--json"]);
+    let cli: serde_json::Value = serde_json::from_slice(&cli.stdout).unwrap();
+    assert!(
+        cli["tasks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|task| task["key"] == key && task["runner"] == "a"),
+        "{cli}"
+    );
+    let rows = b.rows("tasks");
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    assert_eq!(rows[0][0], "-");
+    assert_eq!(rows[0][1], key);
+    assert!(
+        rows[0].ends_with(&[
+            "a".into(),
+            "kept".into(),
+            task["last_seen"].as_str().unwrap().into()
+        ]),
+        "{rows:?}"
+    );
+    // a names itself and its hold on its own tasks.
+    let own = a.priory(&["tasks", "--json"]);
+    let own: serde_json::Value = serde_json::from_slice(&own.stdout).unwrap();
+    assert_eq!(own["tasks"][0]["runner"], "a", "{own}");
+    assert_eq!(own["tasks"][0]["hold"], "kept", "{own}");
+}
+
+#[test]
+fn another_runners_task_leaves_the_listing_once_it_ends() {
+    let (a, _b, ask, address) = asked_on_a("remote-task-ends");
+    let key = "github:owner/repo#1";
+    until_task(&address, key, "a", |task| task.is_some());
+
+    let answered = a.priory(&["answer", &ask, "approved", "--revision", "1"]);
+    assert!(
+        answered.status.success(),
+        "{}",
+        String::from_utf8_lossy(&answered.stderr)
+    );
+
+    until_task(&address, key, "a", |task| task.is_none());
+}
+
+const RELEASE_DAY: &str = "---\nname: release-day\ndescription: When releases go out.\n---\nReleases go out on Tuesdays.\n";
+const GATE_COST: &str = "+++\nname = \"gate-cost\"\ndescription = \"How long the gate takes.\"\n+++\nThe gate takes about four minutes.\n";
+
+impl Setup {
+    /// Gives the factory two memories, `release-day` and `gate-cost`.
+    fn memories(&self) {
+        let memories = self.dir.join("factory/memories");
+        fs::create_dir_all(&memories).unwrap();
+        fs::write(memories.join("release-day.md"), RELEASE_DAY).unwrap();
+        fs::write(memories.join("gate-cost.md"), GATE_COST).unwrap();
+    }
+}
+
+/// The memory index a run gets for the two memories `Setup::memories` writes, in `folder`.
+fn memory_index(folder: &str) -> String {
+    format!(
+        "# Memories\n\nThe factory's memories are in {folder}, one fact per file. Read a memory's \
+         file when its description fits your task. Never edit these files: a memory changes only \
+         through a pull request to the factory.\n\n- gate-cost.md: How long the gate takes.\n\
+         - release-day.md: When releases go out."
+    )
+}
+
+#[test]
+fn a_claude_run_gets_an_index_of_the_factorys_memories_and_reads_their_files_from_its_snapshot() {
+    let mut setup = Setup::new("memories-claude");
+    setup.memories();
+    setup.publish(&requested(42));
+
+    setup.start();
+
+    let args = setup.claude_args(0);
+    let folder = PathBuf::from(arg(&args, "--add-dir").expect("--add-dir"));
+    assert!(
+        folder.starts_with(setup.dir.join("home/kit")) && folder.ends_with("memories"),
+        "{}",
+        folder.display()
+    );
+    assert_eq!(
+        tree(&folder),
+        tree(&setup.dir.join("factory/memories")),
+        "byte for byte"
+    );
+    let system = arg(&args, "--append-system-prompt-file").expect("--append-system-prompt-file");
+    assert_eq!(
+        fs::read_to_string(&system).unwrap(),
+        format!(
+            "{}\n\nYou implement one issue.",
+            memory_index(&folder.display().to_string())
+        )
+    );
+    assert_eq!(
+        arg(&args, "--plugin-dir"),
+        None,
+        "the factory has no skills"
+    );
+    let kit = setup.rows("runs")[0][8].clone();
+    assert_eq!(kit.len(), 32, "a run records the memories it got");
+
+    fs::write(
+        setup.dir.join("factory/memories/release-day.md"),
+        RELEASE_DAY.replace("Tuesdays", "Wednesdays"),
+    )
+    .unwrap();
+    setup.crash();
+    setup.start();
+    setup.publish(&requested(43));
+
+    let args = setup.claude_args(1);
+    let changed = PathBuf::from(arg(&args, "--add-dir").expect("--add-dir"));
+    assert_ne!(changed, folder, "a changed memory gets its own snapshot");
+    assert!(
+        fs::read_to_string(folder.join("release-day.md"))
+            .unwrap()
+            .contains("Tuesdays"),
+        "an earlier run's snapshot stays as it was"
+    );
+    assert_ne!(setup.rows("runs")[1][8], kit);
+}
+
+#[test]
+fn a_codex_run_gets_the_memory_index_in_its_developer_instructions() {
+    let mut setup = Setup::with_workflow("memories-codex", TWO_AGENTS);
+    fs::write(setup.dir.join("factory/agents/reviewer/agent.md"), CODEX).unwrap();
+    setup.memories();
+    setup.calls(&[result("passed"), result("approved")]);
+    setup.publish(&requested(42));
+
+    setup.start();
+
+    setup.until("tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == "done")
+    });
+    let config = codex_config(&setup);
+    let instructions = config["developer_instructions"].as_str().unwrap();
+    let folder = instructions
+        .split_once("memories are in ")
+        .and_then(|(_, rest)| rest.split_once(", one fact"))
+        .map(|(folder, _)| folder)
+        .unwrap_or_else(|| panic!("no folder in {instructions}"));
+    assert!(
+        Path::new(folder).starts_with(setup.dir.join("home/kit")),
+        "{folder}"
+    );
+    assert_eq!(
+        tree(Path::new(folder)),
+        tree(&setup.dir.join("factory/memories"))
+    );
+    assert_eq!(
+        instructions,
+        format!("{}\n\nYou review one change.", memory_index(folder))
+    );
+    let runs = setup.rows("runs");
+    assert_eq!(
+        runs[0][8], runs[1][8],
+        "without skills, both harnesses get the same memories"
+    );
+}
+
+#[test]
+fn each_runner_gives_its_runs_the_memories_of_its_own_factory_checkout() {
+    let mut a = runner("memories", "a", None);
+    let mut b = runner("memories", "b", Some(&a));
+    a.memories();
+    b.memories();
+    let exe = Path::new(env!("CARGO_BIN_EXE_priory"));
+    a.publish(&requested(1));
+    a.start_with(exe, &[("PRIORY_NOW", T0)]);
+    let on_a = a.claude_args(0);
+    a.crash();
+
+    b.publish(&requested(2));
+    b.start_with(exe, &[("PRIORY_NOW", T0)]);
+    let on_b = b.claude_args(0);
+
+    let (folder_a, folder_b) = (
+        PathBuf::from(arg(&on_a, "--add-dir").unwrap()),
+        PathBuf::from(arg(&on_b, "--add-dir").unwrap()),
+    );
+    assert!(folder_a.starts_with(a.dir.join("home/kit")), "{folder_a:?}");
+    assert!(folder_b.starts_with(b.dir.join("home/kit")), "{folder_b:?}");
+    assert_eq!(tree(&folder_a), tree(&folder_b));
+    assert_eq!(
+        a.rows("runs")[0][8],
+        b.rows("runs")[0][8],
+        "the same memories give the same hash on every runner"
+    );
 }

@@ -423,6 +423,16 @@ textarea { font: 400 16px/22px var(--font-ui); color: var(--text); background: v
 .jump a .num { margin-left: 6px; font-weight: 400; opacity: 0.75; }
 .report .jump { overflow-x: auto; scrollbar-width: none; }
 .report .sh { margin: 0; }
+.rbar { flex: none; display: flex; align-items: center; gap: 2px; padding: 4px var(--gutter); border-bottom: 1px solid var(--line); }
+.rbar .iconbtn { color: var(--text-2); }
+.rbar .iconbtn[aria-disabled="true"] { color: var(--text-3); opacity: 0.5; }
+.rbar .iconbtn[aria-pressed="true"] { background: var(--action-soft); color: var(--action-text); }
+.rdate { min-width: 56px; text-align: center; font: 600 var(--type-small) var(--font-ui); font-variant-numeric: tabular-nums; }
+.rbar .btn { margin-right: 4px; }
+.rsearch { flex: none; display: flex; align-items: center; gap: 10px; padding: 8px var(--gutter); border-bottom: 1px solid var(--line); }
+.rsearch input { flex: 1; min-width: 0; height: var(--control); padding: 0 12px; font: 400 16px/1 var(--font-ui); color: var(--text); background: var(--surface); border: 1px solid var(--control-line); border-radius: var(--radius-md); }
+.rsearch .num { font: 600 var(--type-caption) var(--font-ui); color: var(--text-2); font-variant-numeric: tabular-nums; }
+.rpick + .note .ghost, .rpicked .ghost { margin-left: auto; min-height: 32px; flex: none; white-space: nowrap; font: 600 var(--type-small) var(--font-ui); }
 .rrows { list-style: none; display: grid; }
 .rrow { display: grid; gap: 8px; padding: 12px 0; min-width: 0; }
 .rrow + .rrow { border-top: 1px solid var(--line); }
@@ -638,3 +648,40 @@ textarea { font: 400 16px/22px var(--font-ui); color: var(--text); background: v
 @container (min-width: 600px) { .term pre { font: 400 var(--type-mono) var(--font-mono); } }
 .term .hid { color: var(--term-dim); text-decoration: underline dotted; text-underline-offset: 3px; }
 .term.ended pre { color: var(--term-dim); }
+.term { grid-template-columns: minmax(0, 1fr); }
+@container (max-width: 400px) { .term-head .rid { display: none; } }
+.term-head .ro.on { color: var(--term-fg); box-shadow: inset 0 0 0 1px var(--term-fg); }
+.term-more { font: 600 13px/1 var(--font-ui); color: var(--term-fg); justify-self: start; display: inline-flex; gap: 6px; align-items: center; min-height: 36px; padding: 0 12px; margin-top: 6px; }
+@media (pointer: coarse) { .term-more { min-height: var(--control); } }
+.term-more .ico, .term-more .dim { color: var(--term-dim); font-weight: 400; }
+.term-more:focus-visible { outline-color: var(--term-fg); }
+.term-edge { font: 400 var(--type-caption) var(--font-ui); color: var(--term-dim); padding: 10px 12px 0; }
+.term .earlier { color: color-mix(in srgb, var(--term-fg) 82%, var(--term-bg)); }
+.term .fold { display: block; border-top: 1px dashed color-mix(in srgb, var(--term-dim) 45%, transparent); margin: 4px 0 2px; }
+/* SGR colours: the eight --term-* colours; a background is one at 30 % so text on it stays legible. */
+.term .f0 { color: var(--term-black); } .term .f1 { color: var(--term-red); } .term .f2 { color: var(--term-green); } .term .f3 { color: var(--term-yellow); }
+.term .f4 { color: var(--term-blue); } .term .f5 { color: var(--term-magenta); } .term .f6 { color: var(--term-cyan); } .term .f7 { color: var(--term-white); }
+.term .b0 { background: color-mix(in srgb, var(--term-black) 30%, transparent); } .term .b1 { background: color-mix(in srgb, var(--term-red) 30%, transparent); }
+.term .b2 { background: color-mix(in srgb, var(--term-green) 30%, transparent); } .term .b3 { background: color-mix(in srgb, var(--term-yellow) 30%, transparent); }
+.term .b4 { background: color-mix(in srgb, var(--term-blue) 30%, transparent); } .term .b5 { background: color-mix(in srgb, var(--term-magenta) 30%, transparent); }
+.term .b6 { background: color-mix(in srgb, var(--term-cyan) 30%, transparent); } .term .b7 { background: color-mix(in srgb, var(--term-white) 30%, transparent); }
+.term .bo { font-weight: 500; } .term .fa { opacity: .7; } .term .it { font-style: italic; } .term .ul { text-decoration: underline; }
+.term .rv { background: var(--term-fg); color: var(--term-bg); }
+.term :is(.r0, .r1, .r2, .r3, .r4, .r5, .r6, .r7) { color: var(--term-bg); }
+.term .r0 { background: var(--term-black); } .term .r1 { background: var(--term-red); } .term .r2 { background: var(--term-green); } .term .r3 { background: var(--term-yellow); }
+.term .r4 { background: var(--term-blue); } .term .r5 { background: var(--term-magenta); } .term .r6 { background: var(--term-cyan); } .term .r7 { background: var(--term-white); }
+.term.ended pre span { color: inherit; background: none; }
+.term-type { display: grid; gap: 6px; padding: 8px 8px 10px 12px; border-top: 1px solid color-mix(in srgb, var(--term-dim) 30%, transparent); }
+.term-type form { display: flex; gap: 8px; align-items: center; }
+.term-type .pr { font: 500 var(--type-mono) var(--font-mono); color: var(--term-dim); }
+.term-type input { flex: 1; min-width: 0; min-height: 40px; background: color-mix(in srgb, var(--term-fg) 8%, transparent); color: var(--term-fg); border: 1px solid color-mix(in srgb, var(--term-dim) 45%, transparent); border-radius: var(--radius-sm); padding: 0 10px; font: 400 var(--type-mono) var(--font-mono); }
+.term-type input::placeholder { color: var(--term-dim); }
+.term-type input:focus-visible { outline: 2px solid var(--term-fg); outline-offset: 1px; }
+.term-type .send { font: 600 13px/1 var(--font-ui); min-height: 40px; padding: 0 14px; border-radius: var(--radius-sm); background: var(--term-fg); color: var(--term-bg); }
+@media (pointer: coarse) { .term-type input, .term-type .send { min-height: var(--control); } }
+.term-type .send[aria-disabled="true"] { background: color-mix(in srgb, var(--term-fg) 30%, transparent); color: var(--term-dim); }
+.term-type .send:focus-visible { outline-color: var(--term-fg); }
+.term-type .tn { font: 400 var(--type-caption) var(--font-ui); color: var(--term-dim); display: flex; gap: 6px; }
+.term-type .tn .ico { flex: none; margin-top: 1px; }
+.term-type .tn.no { color: var(--term-yellow); }
+.term-type .tn.ok { color: var(--term-green); }

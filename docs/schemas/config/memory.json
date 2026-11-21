@@ -1,0 +1,23 @@
+{
+  "$id": "https://raw.githubusercontent.com/maxence-lefebvre/priory/main/docs/schemas/config/memory.json",
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "description": "The frontmatter of `memories/<name>.md`: one fact every run gets in its index. Priory reads\nthese keys and ignores any other.",
+  "properties": {
+    "description": {
+      "description": "When an agent should read the memory. The index shows it on one line.",
+      "minLength": 1,
+      "type": "string"
+    },
+    "name": {
+      "description": "The memory's name, the same as its file's, in lowercase letters, digits and hyphens.",
+      "pattern": "^[a-z0-9][a-z0-9-]*$",
+      "type": "string"
+    }
+  },
+  "required": [
+    "name",
+    "description"
+  ],
+  "title": "memory",
+  "type": "object"
+}

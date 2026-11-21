@@ -162,7 +162,10 @@ connections time out: the limit bounds memory, not a determined attacker.
 
 `GET /api/runs/{id}/screen` sends what a live run's agent shows, so a person can watch it from a
 phone. The server finds the pane that carries the run's tag, as `priory attach` does, and reads
-that pane by its id, never the session's active pane. It sends plain text, without colours. tmux
+that pane by its id, never the session's active pane. It sends the text with tmux's SGR colour
+codes, which the web view draws in eight terminal colours, and drops tmux's hyperlink codes. With
+`?history=N` it also sends up to 2,000 rows of scrollback above the screen; the agent's transcript,
+not its scrollback, stays the record of what it did. tmux
 finds its server from `TMUX` and `TMUX_TMPDIR`, so a `priory serve` run on its own needs the
 daemon's values. Without them each screen gets `404`.
 
@@ -177,10 +180,12 @@ it answers, the server replaces with `[redacted]`:
 - strings shaped like a secret: GitHub tokens (`ghp_`, `gho_`, `ghs_`, `ghu_`, `ghr_`,
   `github_pat_`), Anthropic and OpenAI keys (`sk-`), AWS access keys (`AKIA`), Slack tokens
   (`xoxa-`, `xoxb-`, `xoxp-`, `xoxr-`, `xapp-`), Linear keys (`lin_api_`) and PEM private keys,
-  even one cut off at the bottom row.
+  even one cut off at the bottom row. A key whose start lies above the first row sent hides every
+  row down to its end.
 
-A replacement can join its neighbours into a secret again, so the server repeats until no secret
-shows. When one still shows after 8 passes, it sends no screen. Like every reply, a screen carries
+The server looks for secrets in the text without its colour codes, so a code inside a secret does
+not split it; a code that sat inside a hidden secret moves after `[redacted]`. A replacement can
+join its neighbours into a secret again, so the server repeats until no secret shows. When one still shows after 8 passes, it sends no screen. Like every reply, a screen carries
 `Cache-Control: no-store`, and the server writes no screen to its log or the trace. Redaction is best effort: a secret split across two rows, a token in another shape or a
 password in plain words gets through. Whoever holds the token may read what the agent's screen
 shows. A factory that does not want that sets [`[serve] terminal = "off"`](../reference/factory.md#serve).
@@ -202,7 +207,7 @@ and icons, all built into the binary. They carry no state, so they need no token
 for the token once, keeps it in the browser's local storage, and sends it on every `/api` request;
 a `401` brings the sign-in back. A strict Content-Security-Policy lets the page load only its own
 files, and the page shows agent text as text. The view's layout comes from the factory's
-[views](../reference/views.md). Its Add control reads the defaults from `GET /api/request` and queues the task through `POST /api/request`, as `priory add` does. Its Reports panel reads `GET /api/reports/latest`, and picks and comments through the [report writes](../reference/serve.md#writes), as the `priory report` verbs do. Its Flows panel reads `GET /api/flows` and draws each workflow top to bottom, with each edge styled by who decides it and the paths `priory check --explain` lists marked. Its Costs panel reads `GET /api/costs` and `GET /api/attention` each time the state changes while it is open. A task's page shows the terminal of its live run under its runs: it reads [`GET /api/runs/{id}/screen`](#a-runs-screen) every second while the pane is on screen and the page is shown, every 3 seconds after 10 unchanged screens, and at once when the state changes. It keeps one read in flight, stops when the page hides, and keeps the screen in memory only. The Terminal panel lists the running tasks, each linking to its page. With `web = false`, every path outside `/api` gets `404`.
+[views](../reference/views.md). Its Add control reads the defaults from `GET /api/request` and queues the task through `POST /api/request`, as `priory add` does. Its Reports panel reads `GET /api/reports/latest`, or the report its older and newer arrows reached through `GET /api/reports` and `GET /api/reports/{task}`, and picks and comments through the [report writes](../reference/serve.md#writes), as the `priory report` verbs do. Its Flows panel reads `GET /api/flows` and draws each workflow top to bottom, with each edge styled by who decides it and the paths `priory check --explain` lists marked. Its Costs panel reads `GET /api/costs` and `GET /api/attention` each time the state changes while it is open. A task's page shows the terminal of its live run under its runs: it reads [`GET /api/runs/{id}/screen`](#a-runs-screen) every second while the pane is on screen and the page is shown, every 3 seconds after 10 unchanged screens, and at once when the state changes. It keeps one read in flight, stops when the page hides, and keeps the screen in memory only. The pane's Load earlier reads 500 more rows of scrollback a tap, up to 2,000, and its Type opens a line that says to the agent through [`POST /api/tasks/{id}/say`](../reference/serve.md#writes), as `priory say` does: typed once the run is idle, never as a slash command. The Terminal panel lists the running tasks, each linking to its page. With `web = false`, every path outside `/api` gets `404`.
 
 The view is installable as an app. `manifest.webmanifest` names it and its icons, and the service
 worker `/sw.js` keeps a copy of the page's own files, so the view starts with no connection. The

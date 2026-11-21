@@ -173,8 +173,9 @@ Tests, on two daemons that share one herdr-bus file, as the runner tests already
 
 ## Later slices
 
-1. Tasks of every runner in `/api/tasks` and the Tasks panel, from `claims` and `leases`, each with
-   its runner, hold and the owner's last alive time. No new message.
+1. Built: tasks of every runner in `/api/tasks`, `priory tasks` and the web Tasks panel, from
+   `claims` and `leases`, each with its runner, hold and the owner's last alive time. No new
+   message. See [runners.md](../daemon/runners.md#every-runners-tasks).
 2. Resume, revive, cancel, release and say on another runner's task, each naming the key and the
    generation, refused by the owner when either moved, with an applied message as for answers.
 3. `priory daemon --view-only`, for a machine with no runner file.
