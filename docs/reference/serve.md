@@ -459,7 +459,8 @@ web view's Flows panel. The server reads it when it starts.
 | `workflows` | array of objects | Each workflow by name: `name`, `start` and `steps` |
 
 A step has `id`, `decides`, `effect`, `kind`, `edges` and, when the step sets them, `agent`,
-`options`, `approves` and `autonomous`. `kind` is how a drawing shows the step:
+`options`, `approves` and `autonomous`, and, on an irreversible step, `approved_by`: the human steps
+that approve it, as in `irreversible`. `kind` is how a drawing shows the step:
 
 | `kind` | The step |
 | ------ | -------- |
@@ -482,7 +483,7 @@ Each of a step's `edges`, in outcome order, has `outcome`, `to` (a step id, `don
     "name": "implement",
     "start": "open-pr",
     "steps": [{
-      "id": "open-pr", "decides": "code", "effect": "irreversible", "kind": "irreversible",
+      "id": "open-pr", "decides": "code", "effect": "irreversible", "kind": "irreversible", "approved_by": ["approve-pr"],
       "edges": [{ "outcome": "opened", "to": "done", "by": "code" }, { "outcome": "failed", "to": "stop", "by": "code" }]
     }]
   }]

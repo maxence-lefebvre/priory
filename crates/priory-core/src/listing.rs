@@ -506,7 +506,8 @@ pub fn flows(factory: &Factory) -> Value {
     let mut workflows = Vec::new();
     for (name, workflow) in &factory.workflows {
         let workflow = &workflow.value;
-        for gate in explain::gates(workflow) {
+        let gates = explain::gates(workflow);
+        for gate in &gates {
             irreversible.push(json!({
                 "workflow": name,
                 "step": gate.step,
@@ -525,7 +526,7 @@ pub fn flows(factory: &Factory) -> Value {
                     .next
                     .iter()
                     .map(|(outcome, to)| {
-                        json!({ "outcome": outcome, "to": to, "by": step.by(outcome).name() })
+                        json!({ "outcome": outcome, "to": to, "by": step.by(outcome) })
                     })
                     .collect();
                 let mut value = json!({
@@ -554,6 +555,9 @@ pub fn flows(factory: &Factory) -> Value {
                     if let Some(field) = field {
                         value[key] = field;
                     }
+                }
+                if let Some(gate) = gates.iter().find(|gate| gate.step == step.id) {
+                    value["approved_by"] = json!(gate.approved_by);
                 }
                 value
             })

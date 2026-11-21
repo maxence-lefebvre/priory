@@ -208,7 +208,7 @@ async function refresh() {
     if (state.data && snapshot === state.snapshot && !failed && Date.now() - state.rendered < 60000) return keep(), true;
     const before = state.data ? new Set(state.data.asks.filter((ask) => ask.state === "open").map((ask) => ask.id)) : null;
     // The Costs panel reads its own reports; a refresh keeps the last ones.
-    state.data = { views, links, desk, asks, bands: asksList.bands, queue, tasks, older, report, spend: state.data?.spend ?? null };
+    state.data = { views, links, desk, asks, bands: asksList.bands, queue, tasks, older, report, spend: state.data?.spend ?? null, flows: state.data?.flows ?? null };
     acceptReport();
     state.task = null;
     state.snapshot = snapshot;
@@ -243,7 +243,7 @@ function signOut(reason) {
   for (const key of ["priory.token", "priory.snapshot"]) localStorage.removeItem(key);
   // A refresh still in flight must not store what this device just dropped.
   state.refreshes++;
-  Object.assign(state, { token: null, data: null, snapshot: null, revision: undefined, signInError: reason, flows: null, all: { asks: false, tasks: false }, costs: { by: "workflow", loading: false, slow: false, error: null } });
+  Object.assign(state, { token: null, data: null, snapshot: null, revision: undefined, signInError: reason, flowsError: null, all: { asks: false, tasks: false }, costs: { by: "workflow", loading: false, slow: false, error: null } });
   render();
 }
 
@@ -1526,11 +1526,24 @@ const KIND_WORD = { read: "read", reversible: "reversible write", irreversible: 
 const BY_WORD = { code: "code decides", model: "a model decides", human: "a person decides", asleep: "asleep, waiting" };
 const clip = (text, size) => (text.length > size ? `${text.slice(0, size - 1)}...` : text);
 
-function loadFlows() {
-  if (state.flowsLoading) return;
+async function loadFlows() {
+  const token = state.token;
+  if (state.flowsLoading || !token || !state.data || state.failed) return;
   state.flowsLoading = true;
-  api("/api/flows").then((flows) => { state.flows = flows; }, (error) => { state.flows = { error: error.message }; })
-    .finally(() => { state.flowsLoading = false; render(); });
+  try {
+    const flows = await api("/api/flows");
+    if (token !== state.token || !state.data) return;
+    state.data.flows = flows;
+    state.flowsError = null;
+    keep();
+  } catch (error) {
+    if (token !== state.token) return;
+    if (error.status === 401) return signOut("The daemon refused this token. Paste the current one.");
+    state.flowsError = error instanceof TypeError ? "the connection dropped" : error.message;
+  } finally {
+    state.flowsLoading = false;
+  }
+  render();
 }
 
 const flowNode = (node) => {
@@ -1573,9 +1586,9 @@ function flowSection(workflow, paths) {
 
 function flowsPage(compact) {
   const head = compact ? html`<div class="top"><h1>Flows</h1><span class="sp"></span>${connection()}</div>` : html`<div class="lhead"><h1>Flows</h1></div>`;
-  const flows = state.flows;
-  if (!flows) { loadFlows(); return html`${head}<p class="empty" role="status">Loading the flows.</p>`; }
-  if (flows.error) return html`${head}<p class="empty" role="alert">The flows did not load: ${flows.error}. Run <code>priory check --explain</code> meanwhile.</p>`;
+  const flows = state.data.flows;
+  if (!flows && state.flowsError) return html`${head}<p class="empty" role="alert">The flows did not load: ${state.flowsError}. Run <code>priory check --explain</code> meanwhile.</p><p class="empty"><button class="btn secondary" data-action="flows-retry">Retry</button></p>`;
+  if (!flows) { setTimeout(loadFlows); return html`${head}<p class="empty" role="status">Loading the flows.</p>`; }
   const body = flows.workflows.length ? html`${flowLegend()}${flows.workflows.map((workflow) => flowSection(workflow, flows.paths))}` : html`<p class="empty">This factory has no workflows. Add one under <code>workflows/</code>.</p>`;
   return html`${head}<div class="panel" role="region" aria-label="Flows"><div class="scroll">${body}</div></div>`;
 }
@@ -1953,6 +1966,7 @@ document.addEventListener("click", (event) => {
     renderAdd();
     return document.getElementById("add-text")?.focus();
   }
+  if (action === "flows-retry") { state.flowsError = null; return render(); }
   if (action === "sign-out") { event.preventDefault(); return signOut(null); }
   if (action === "push-on" || action === "push-off") return turnPush(action === "push-on");
   if (action === "install" && state.install) {

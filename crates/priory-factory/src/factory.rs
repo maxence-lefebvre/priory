@@ -962,17 +962,6 @@ pub enum By {
     Asleep,
 }
 
-impl By {
-    pub fn name(self) -> &'static str {
-        match self {
-            By::Code => "code",
-            By::Model => "model",
-            By::Human => "human",
-            By::Asleep => "asleep",
-        }
-    }
-}
-
 impl Step {
     /// Who decides the edge of `outcome`: its `by`, else the step's decider.
     pub fn by(&self, outcome: &str) -> By {

@@ -793,7 +793,8 @@ The web view's `/workflow`, named Flows: each workflow of the factory drawn as a
 - **One `.sect` per workflow**: its name, then "7 steps" in `--text-3`, then an inline SVG that
   scales to the panel's width, at most 560 px wide. The step the workflow starts at is the top row.
   Each step sits one row below the latest step that leads to it, and `done` and `stop` close the
-  last row. No chart or graph library draws it.
+  last row. A row holds at most two steps, so a wide branch wraps to the next row and the labels stay
+  readable on a phone. No chart or graph library draws it.
 - **Node shape is the step's kind, and never color alone**: a pill for `read`, a rectangle for a
   `reversible` write, an octagon for an `irreversible` write, a hexagon for an `ask` (a human step),
   a parallelogram for an `answer` (a human step that approves a gate) and a diamond for a `verdict`
@@ -802,12 +803,14 @@ The web view's `/workflow`, named Flows: each workflow of the factory drawn as a
   `--raised`, the rest `--surface`, all with a 1.5 px `--control-line` edge.
 - **An irreversible step** has a 2.5 px `--danger-text` edge and a `lock`. Its second line is the
   gate in `--danger-text`: "approved by approve-pr", or "autonomous:" and its reason, clipped to 24
-  characters. A step with no gate reads "no approval".
+  characters. The approvers are the human steps that approve it and lead to it, as `priory check
+  --explain` lists them. A step with no gate reads "no approval".
 - **Edge line style is who decides**, in dash and weight as well as color: `code` thin and dashed
   `6 2` in `--text-3`, `model` dashed `9 5` in `--action-text`, `human` solid and heavy (3.5 px) in
   `--emph`, `asleep` dotted in `--text-3`. Each ends in an arrowhead, and carries its outcome in 11
   px `--text-2` over a `--bg` halo. An edge that skips a row, or loops back, runs down a lane right
-  of the nodes with its label turned sideways, so it never crosses a step.
+  of the nodes with its label turned sideways, so it never crosses a step. So does an outcome that
+  shares both ends with another, so each keeps its own line and label.
 - **Ungated paths**: each edge on a path from the start to an irreversible step that follows no
   `human` edge, the paths `priory check --explain` lists, has a 6 px `--danger-text` halo at 22 %.
   Under the diagram, "Reaches an irreversible step with no person's decision:" lists each path in mono
@@ -819,7 +822,7 @@ The web view's `/workflow`, named Flows: each workflow of the factory drawn as a
 | State | What shows |
 | ----- | ---------- |
 | loading | "Loading the flows." |
-| error | "The flows did not load: ..." with `priory check --explain` as the fallback, in `role="alert"` |
+| error | "The flows did not load: ..." with `priory check --explain` as the fallback, in `role="alert"`, and a secondary Retry button |
 | empty | "This factory has no workflows. Add one under `workflows/`." |
 
 ### Costs panel

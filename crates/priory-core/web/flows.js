@@ -7,12 +7,12 @@ const WRITES = { reversible: "reversible write", irreversible: "irreversible wri
 const NODE = { width: 150, height: 52 };
 const GAP = { column: 24, row: 60, edge: 12 };
 const LANE = { pad: 8, step: 14 };
+const PER_ROW = 2;
 
 /**
- * The outline of a node of `kind` in a `width` by `height` box, as an SVG path. Each kind has its
- * own silhouette, so the kind never rests on color. Only an irreversible write has the danger edge.
+ * The outline of a node of `kind` in a `width` by `height` box, as an SVG path; each kind has its own silhouette.
  * @param {string} kind @param {number} width @param {number} height
- * @returns {{ d: string, danger: boolean }}
+ * @returns {{ d: string }}
  */
 export function nodeShape(kind, width, height) {
   const [w, h] = [width, height];
@@ -27,12 +27,11 @@ export function nodeShape(kind, width, height) {
     verdict: polygon([[w / 2, 0], [w, h / 2], [w / 2, h], [0, h / 2]]),
   };
   const known = /** @type {keyof typeof shapes} */ (kind in shapes ? kind : "reversible");
-  return { d: shapes[known], danger: known === "irreversible" };
+  return { d: shapes[known] };
 }
 
 /**
- * How an edge a decider decides is drawn: the dash and the weight; the color comes from its class. A person's
- * edge is the heaviest, and an asleep edge is dotted.
+ * The dash and weight of an edge by who decides it; its color comes from its class.
  * @param {string} by
  * @returns {{ dash: string, width: number }}
  */
@@ -89,23 +88,20 @@ export function timeline(workflow, ungated) {
   unplaced.forEach((/** @type {any} */ step) => row.set(step.id, last - 1));
 
   /** @type {string[][]} */
-  const rows = [];
-  for (const id of [...steps.keys(), ...ends]) (rows[row.get(id) ?? 0] ??= []).push(id);
-  const columns = Math.max(...rows.map((ids) => ids?.length ?? 0));
+  const depths = [];
+  for (const id of [...steps.keys(), ...ends]) (depths[row.get(id) ?? 0] ??= []).push(id);
+  const rows = depths.flatMap((ids = []) => Array.from({ length: Math.ceil(ids.length / PER_ROW) }, (_, at) => ids.slice(at * PER_ROW, (at + 1) * PER_ROW)));
+  const columns = Math.max(...rows.map((ids) => ids.length));
   const block = columns * NODE.width + (columns - 1) * GAP.column + 2 * GAP.edge;
-  const skipping = workflow.steps.flatMap((/** @type {any} */ step) => step.edges.filter((/** @type {any} */ next) => back.has(`${step.id}>${next.to}>${next.outcome}`) || row.get(next.to) - row.get(step.id) > 1));
-  const width = block + skipping.length * LANE.step + LANE.pad;
-  const approvers = (/** @type {string} */ id) => workflow.steps.filter((/** @type {any} */ step) => step.approves?.includes(id)).map((/** @type {any} */ step) => step.id);
   const gateOf = (/** @type {any} */ step) => {
     if (step.kind !== "irreversible") return null;
     if (step.autonomous) return `autonomous: ${step.autonomous}`;
-    const by = approvers(step.id);
-    return by.length ? `approved by ${by.join(", ")}` : "no approval";
+    return step.approved_by?.length ? `approved by ${step.approved_by.join(", ")}` : "no approval";
   };
 
   const nodes = rows.flatMap((ids, at) => {
-    const inner = (ids?.length ?? 0) * NODE.width + ((ids?.length ?? 0) - 1) * GAP.column;
-    return (ids ?? []).map((id, index) => {
+    const inner = ids.length * NODE.width + (ids.length - 1) * GAP.column;
+    return ids.map((id, index) => {
       const step = steps.get(id);
       const x = (block - inner) / 2 + index * (NODE.width + GAP.column);
       const base = { id, x, y: GAP.edge + at * (NODE.height + GAP.row), width: NODE.width, height: NODE.height };
@@ -114,14 +110,15 @@ export function timeline(workflow, ungated) {
     });
   });
   const at = (/** @type {string} */ id) => nodes.find((node) => node.id === id);
-  // An edge that skips a row, or loops back, runs down a lane right of the nodes, not through them.
   let lanes = 0;
-  const edges = workflow.steps.flatMap((/** @type {any} */ step) => step.edges.map((/** @type {any} */ next) => {
+  const edges = workflow.steps.flatMap((/** @type {any} */ step) => step.edges.map((/** @type {any} */ next, /** @type {number} */ index) => {
     const [from, to] = [at(step.id), at(next.to)];
+    const parallel = step.edges.findIndex((/** @type {any} */ other) => other.to === next.to) < index;
     const looped = back.has(`${step.id}>${next.to}>${next.outcome}`);
     const start = { x: from.x + from.width / 2, y: from.y + from.height };
     const end = { x: to.x + to.width / 2, y: to.y };
-    const skips = looped || to.y - from.y > NODE.height + GAP.row + 1;
+    // A lane keeps an edge that skips a row, loops back or repeats another's ends off the nodes.
+    const skips = looped || parallel || to.y - from.y > NODE.height + GAP.row + 1;
     const lane = skips ? block + lanes++ * LANE.step : 0;
     const d = skips
       ? `M${start.x} ${start.y}C${start.x} ${start.y + 24} ${lane} ${start.y + 24} ${lane} ${start.y + 44}V${end.y - 44}C${lane} ${end.y - 24} ${end.x} ${end.y - 24} ${end.x} ${end.y}`
@@ -132,10 +129,11 @@ export function timeline(workflow, ungated) {
       ungated: next.by !== "human" && ungated.has(`${step.id}>${next.to}`),
     };
   }));
+  const width = block + lanes * LANE.step + LANE.pad;
   const height = (rows.length) * (NODE.height + GAP.row) - GAP.row + 2 * GAP.edge;
   const text = [
     `Workflow ${workflow.name} starts at ${workflow.start}.`,
     ...workflow.steps.map((/** @type {any} */ step) => `${step.id}: ${WRITES[step.kind] ?? step.kind}, ${step.edges.map((/** @type {any} */ next) => `${next.outcome} to ${next.to} decided by ${next.by}`).join("; ")}.`),
   ].join(" ");
-  return { nodes, edges, width: Math.max(width, 0), height, text };
+  return { nodes, edges, width, height, text };
 }

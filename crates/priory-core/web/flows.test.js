@@ -22,10 +22,6 @@ test("each step kind has its own silhouette", () => {
   assert.equal(nodeShape("nonsense", 150, 52).d, nodeShape("reversible", 150, 52).d);
 });
 
-test("only an irreversible step is drawn with the danger edge", () => {
-  assert.deepEqual(KINDS.filter((kind) => nodeShape(kind, 150, 52).danger), ["irreversible"]);
-});
-
 test("each decider has its own line style, in dashes and weight as well as color", () => {
   const styles = ["code", "model", "human", "asleep"].map((by) => edgeStyle(by));
   assert.equal(new Set(styles.map((style) => `${style.dash}|${style.width}`)).size, 4);
@@ -67,10 +63,11 @@ test("an irreversible step carries its gate, and a loop back is drawn", () => {
   assert.equal(drawing.nodes.find((node) => node.id === "open-pr").gate, "autonomous: it only labels");
   assert.equal(drawing.nodes.find((node) => node.id === "plan").gate, null);
   const gated = structuredClone(implement);
-  gated.steps.push({ id: "approve-pr", decides: "human", kind: "answer", approves: ["open-pr"], edges: [edge("open", "open-pr", "human")] });
   delete gated.steps[3].autonomous;
-  gated.steps[2].edges[1] = edge("passed", "approve-pr", "model");
+  gated.steps[3].approved_by = ["approve-pr"];
   assert.equal(timeline(gated, new Set()).nodes.find((node) => node.id === "open-pr").gate, "approved by approve-pr");
+  gated.steps[3].approved_by = [];
+  assert.equal(timeline(gated, new Set()).nodes.find((node) => node.id === "open-pr").gate, "no approval");
   assert.equal(drawing.edges.find((edge) => edge.from === "approve-plan" && edge.to === "plan").back, true);
 });
 
@@ -82,4 +79,27 @@ test("the timeline is at most two nodes wide for a phone, and every node has a t
   assert.match(drawing.text, /plan/);
   assert.match(drawing.text, /open-pr: irreversible write, failed to stop/);
   assert.doesNotMatch(drawing.text, /write write/);
+});
+
+const fan = (count) => ({
+  name: "fan",
+  start: "start",
+  steps: [
+    { id: "start", decides: "model", effect: "reversible", kind: "reversible", edges: Array.from({ length: count }, (_, at) => edge(`o${at}`, `s${at}`, "model")) },
+    ...Array.from({ length: count }, (_, at) => ({ id: `s${at}`, decides: "code", effect: "read", kind: "read", edges: [edge("ok", "done", "code")] })),
+  ],
+});
+
+test("a row holds at most two steps, so a three way branch stays readable on a phone", () => {
+  const drawing = timeline(fan(5), new Set());
+  const perRow = Object.values(Object.groupBy(drawing.nodes, (node) => node.y)).map((row) => row.length);
+  assert.ok(Math.max(...perRow) <= 2);
+  assert.equal(drawing.nodes.filter((node) => /^s\d/.test(node.id)).length, 5);
+});
+
+test("outcomes that share both ends take their own lines and labels", () => {
+  const poll = { name: "poll", start: "poll", steps: [{ id: "poll", decides: "code", effect: "read", kind: "read", edges: [edge("failed", "stop", "code"), edge("found", "done", "code"), edge("ok", "stop", "code")] }] };
+  const [failed, , ok] = timeline(poll, new Set()).edges;
+  assert.notEqual(failed.d, ok.d);
+  assert.notDeepEqual(failed.mid, ok.mid);
 });

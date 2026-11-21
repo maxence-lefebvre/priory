@@ -1709,6 +1709,14 @@ fn check(args: Vec<OsString>) -> ExitCode {
 /// Prints each workflow's irreversible steps with their gates, and its paths to one with no human
 /// edge, as two tables or as JSON.
 fn print_explanation(factory: &factory::Factory, json: bool) {
+    if json {
+        let mut flows = listing::flows(factory);
+        if let Some(flows) = flows.as_object_mut() {
+            flows.remove("workflows");
+        }
+        state::emit(&flows.to_string());
+        return;
+    }
     let gates: Vec<_> = factory
         .workflows
         .iter()
@@ -1728,14 +1736,6 @@ fn print_explanation(factory: &factory::Factory, json: bool) {
         })
         .collect();
     let tools = explain::tools(factory);
-    if json {
-        let mut flows = listing::flows(factory);
-        if let Some(flows) = flows.as_object_mut() {
-            flows.remove("workflows");
-        }
-        state::emit(&flows.to_string());
-        return;
-    }
     let cell = |text: &str| {
         text.replace('\t', "\\t")
             .replace('\r', "\\r")
