@@ -24,6 +24,7 @@ Schema: [`config/factory.json`](../schemas/config/factory.json).
 | `asks` | table | no | answers are only stored | What happens to the answer of an ask from outside Priory. See [`[asks]`](#asks) | |
 | `links` | table of strings | no | the built-in `#n` link | Autolinks, each a regex and a URL template. See [`[links]`](#links) | |
 | `request` | table | no | `priory add` needs `--workflow` | The defaults of `priory add` and `POST /api/request`. See [`[request]`](#request) | |
+| `guard` | table | no | the built-in guards alone | Irreversible commands and MCP tools the tool guard denies on top of the built-in ones. See [`[guard]`](#guard) | |
 
 A duration is a whole number followed by `s`, `m` or `h`, such as `"90s"`, `"15m"` or `"2h"`.
 
@@ -160,6 +161,32 @@ What `priory add` and `POST /api/request` use when a request names no workflow o
 | `workflow` | string | yes | | The workflow a request starts when it names none, by file name | `"groom"` |
 | `band` | string | no | none, as `priory request` without `--band` | The band of a request that names none | `"today"` |
 
+## `[guard]`
+
+The tool guard denies an irreversible call that no person approved (see
+[guard.md](../daemon/guard.md), which lists the built-in guards). `[guard]` adds guards. A workflow
+lets its steps make a guarded call with `guard.allow` (see
+[workflows.md](workflows.md#top-level-keys)).
+
+| Key | Type | Required | Default | Meaning | Example |
+| --- | ---- | -------- | ------- | ------- | ------- |
+| `commands` | array of tables | no | `[]` | Shell commands, each a guard of its own name | see below |
+| `tools` | array of strings | no | `[]` | MCP tools, each a guard named as written: a full name, or a prefix ending in `*`. `guard.allow` names the pattern, such as `mcp__stripe__*` | `["mcp__stripe__create_refund", "mcp__pagerduty__*"]` |
+
+Each entry of `commands`:
+
+| Key | Type | Required | Default | Meaning | Example |
+| --- | ---- | -------- | ------- | ------- | ------- |
+| `name` | string | yes | | The guard's name, which no other guard has | `"fly-deploy"` |
+| `run` | array of strings | yes | | The program, then the first words after its options | `["fly", "deploy"]` |
+| `flags` | array of strings | no | `[]` | When set, the command matches only with one of these options | `["--prod"]` |
+
+```toml
+[guard]
+commands = [{ name = "fly-deploy", run = ["fly", "deploy"] }]
+tools = ["mcp__stripe__*"]
+```
+
 ## Example
 
 <!-- example: factory/factory.toml -->
@@ -210,6 +237,8 @@ band = "today"                                 # its band without --band
 | Message | Cause |
 | ------- | ----- |
 | `missing: a factory needs factory.toml or factory.yaml` | The folder has neither file |
+| `` `[guard]` command `<name>` has the name of another guard `` | A `[guard]` command takes a built-in guard's name or another command's |
+| `` `[guard]` command `<name>` needs a program in `run` `` | A `[guard]` command with an empty `run` |
 | `` unknown field `<key>`, expected one of ... `` | A key the tables above do not list |
 | `"<text>" is not a duration such as 90s, 15m or 2h` | A duration that is not a whole number and `s`, `m` or `h` |
 | `` `factory` is also defined in factory.toml `` | Both `factory.toml` and `factory.yaml` exist |

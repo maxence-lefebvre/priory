@@ -19,6 +19,7 @@ Schema: [`config/workflow.json`](../schemas/config/workflow.json).
 | `band` | string | no | the last band | The band of its tasks when neither their request nor their trigger sets one | `"today"` |
 | `reopen` | string | no | the step that opened the pull request | The model step a done task goes back to when its open pull request gets feedback (see [routing.md](../daemon/routing.md#feedback-reopens-a-done-task)) | `"implement"` |
 | `max_prs` | integer, at least 1 | no | no cap | The most pull requests a task's stack may hold. `open-pr` fails with more branches (see [tools.md](../daemon/tools.md#code-steps)) | `3` |
+| `guard` | table | no | none allowed | `allow`: the guards whose calls every step of the workflow may make with no approval, built-in or from `[guard]`. See [guard.md](../daemon/guard.md) | `{ allow = ["git-push-default"] }` |
 | `steps` | array of tables | yes | | The steps, in any order | see below |
 
 ## Step keys
@@ -124,11 +125,15 @@ next = { found = "done", ok = "stop", failed = "stop" }  # found: the script's l
 
 ## Irreversible steps and their gates
 
-`priory check --explain [DIR]` runs the checks, then prints two tab-separated tables:
+`priory check --explain [DIR]` runs the checks, then prints three tab-separated tables:
 
 - each irreversible step of each workflow with its gate: the human steps that approve it, or
   `autonomous:` and its reason;
-- every path of steps from `start` to an irreversible step that follows no `human` edge.
+- every path of steps from `start` to an irreversible step that follows no `human` edge;
+- per agent, each guarded call it can make with no human decision (see
+  [guard.md](../daemon/guard.md)): the guards a workflow it runs a model step of allows, every
+  guard in an `autonomous` irreversible model step it runs, and `mcp-write` and `[guard]` tools for
+  a Codex agent with MCP servers, since Codex may run MCP calls without the guard's hook.
 
 For the example above and a workflow `triage` whose autonomous `label` step follows `read`:
 
@@ -139,7 +144,12 @@ triage	label	autonomous: it only labels issues
 
 workflow	path with no human decision
 triage	read -> label
+
+agent	guard	workflow	why
 ```
+
+A workflow `docs` with `guard = { allow = ["git-push-default"] }` and a model step run by `writer`
+adds the row `writer	git-push-default	docs	allowed by the workflow`.
 
 `--json` prints the same rows as one object:
 
@@ -149,7 +159,8 @@ triage	read -> label
     { "workflow": "implement", "step": "open-pr", "approved_by": ["approve-pr"], "autonomous": null },
     { "workflow": "triage", "step": "label", "approved_by": [], "autonomous": "it only labels issues" }
   ],
-  "paths": [{ "workflow": "triage", "path": ["read", "label"] }]
+  "paths": [{ "workflow": "triage", "path": ["read", "label"] }],
+  "tools": []
 }
 ```
 
@@ -188,3 +199,4 @@ Errors about one step start with `` step `<id>`: `` and point at the step's line
 | `` reopen `<id>` is not a model step `` | `reopen` names a missing step, or a human or code step |
 | `"<text>" is not a duration such as 90s, 15m or 2h` | A bad `timeout` |
 | ``invalid value: integer `0`, expected a nonzero usize`` | `max_prs` is 0 |
+| `` `guard.allow` names `<name>`, which is no built-in guard nor one of `[guard]` in factory.toml `` | `guard.allow` names a guard that does not exist |

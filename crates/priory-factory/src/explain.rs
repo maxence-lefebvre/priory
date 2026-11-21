@@ -1,5 +1,65 @@
-use crate::factory::{By, Decider, Effect, Step, Workflow};
+use crate::factory::{By, Decider, Effect, Factory, Harness, Step, Workflow};
 use std::collections::BTreeSet;
+
+/// A guarded call an agent can make with no human decision, in a workflow, and why.
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Reach {
+    pub agent: String,
+    pub guard: String,
+    pub workflow: String,
+    pub why: String,
+}
+
+/// Per agent, the guarded calls it can make with no human decision: those a workflow it runs a step
+/// of allows, every guard in an autonomous irreversible step it runs, and, for a Codex agent with
+/// MCP servers, MCP calls, which Codex may run without the guard's hook.
+pub fn tools(factory: &Factory) -> Vec<Reach> {
+    let guards = factory.guards();
+    let names = guards.names();
+    let mut reach = BTreeSet::new();
+    let mut add = |agent: &str, guard: &str, workflow: &str, why: String| {
+        reach.insert(Reach {
+            agent: agent.to_owned(),
+            guard: guard.to_owned(),
+            workflow: workflow.to_owned(),
+            why,
+        });
+    };
+    for (name, workflow) in &factory.workflows {
+        let model_steps = workflow
+            .value
+            .steps
+            .iter()
+            .filter(|step| step.decides == Decider::Model);
+        for step in model_steps {
+            let Some(agent) = &step.agent else {
+                continue;
+            };
+            for guard in &workflow.value.guard.allow {
+                add(agent, guard, name, "allowed by the workflow".to_owned());
+            }
+            if step.effect == Effect::Irreversible && step.autonomous.is_some() {
+                for guard in &names {
+                    add(agent, guard, name, format!("autonomous step {}", step.id));
+                }
+            }
+        }
+    }
+    let codex = factory.agents.iter().filter(|(_, agent)| {
+        matches!(agent.value.harness, Harness::Codex) && !agent.value.mcp_servers.is_empty()
+    });
+    for (agent, _) in codex {
+        for guard in std::iter::once("mcp-write").chain(guards.tools.iter().map(String::as_str)) {
+            add(
+                agent,
+                guard,
+                "-",
+                "codex: an MCP call may skip the guard's hook".to_owned(),
+            );
+        }
+    }
+    reach.into_iter().collect()
+}
 
 /// An irreversible step and what lets it run: the human steps that approve it and lead to it, or
 /// its `autonomous` reason.

@@ -58,6 +58,9 @@ pub struct Settings {
     #[serde(default)]
     pub asks: Asks,
     pub request: Option<RequestDefaults>,
+    /// Irreversible commands and MCP tools on top of the built-in ones.
+    #[serde(default)]
+    pub guard: crate::guard::Guards,
     /// Autolinks, in order: each key a regex, each value an `https://` URL template whose `$1`
     /// names the regex's first group. An entry with a built-in link's regex replaces it.
     #[serde(default, deserialize_with = "links")]
@@ -758,10 +761,22 @@ pub struct Workflow {
     /// The model step a done task goes back to when its open pull request gets feedback; by
     /// default, the step that opened the pull request.
     pub reopen: Option<String>,
+    /// The guarded calls every step of the workflow may make with no approval.
+    #[serde(default)]
+    pub guard: WorkflowGuard,
     /// The most pull requests a task's stack may hold: `open-pr` refuses a longer one. No cap
     /// when unset.
     pub max_prs: Option<std::num::NonZeroUsize>,
     pub steps: Vec<Step>,
+}
+
+/// A workflow's `guard` table.
+#[derive(Debug, Default, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct WorkflowGuard {
+    /// Guard names, built-in or from `[guard]` in `factory.toml`.
+    #[serde(default)]
+    pub allow: Vec<String>,
 }
 
 impl Workflow {
@@ -1111,6 +1126,14 @@ impl Factory {
         self.settings
             .as_ref()
             .map_or(&BUILT_IN, |settings| &settings.value.search)
+    }
+
+    /// The factory's `[guard]` table, or none on top of the built-in guards.
+    pub fn guards(&self) -> crate::guard::Guards {
+        self.settings
+            .as_ref()
+            .map(|settings| settings.value.guard.clone())
+            .unwrap_or_default()
     }
 
     /// How long one git, gh or tmux command may run; 5 minutes when unset.
