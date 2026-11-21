@@ -331,7 +331,8 @@ function rowActs(item) {
   const action = rowAction(item, state.revision);
   if (!action) return "";
   const id = `${item.kind}-${item.id}`;
-  const busy = state.rowBusy !== null || Boolean(state.failed);
+  // A cached desk has no revision yet: Release waits for the live read, or it would skip the 409 check.
+  const busy = state.rowBusy !== null || Boolean(state.failed) || Object.values(action.body).includes(undefined);
   const notice = state.rowNotices.get(id);
   return html`<span class="task-acts"><button id="row-${id}" class="btn secondary act" data-action="row-act" data-row="${id}" data-kind="${item.kind}" data-item="${item.id}" data-task="${item.task ?? ""}" aria-disabled="${busy ? "true" : "false"}">${action.label}</button></span>${notice ? html`<p class="note acts-note" role="status">${notice}</p>` : ""}`;
 }
