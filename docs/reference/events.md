@@ -1000,8 +1000,12 @@ also sent to the channel included. It never names a trigger.
 Subject: `<channel>:<thread ts>`.
 Schema: [`slack.thread.replied.json`](../schemas/events/slack.thread.replied.json).
 
-The fields of `slack.message.posted`, and `thread_ts` (string), the `ts` of the thread's first
-message. `baseline` is always false.
+The fields of `slack.message.posted`, and these. `baseline` is always false.
+
+| Field | Type | Meaning |
+| ----- | ---- | ------- |
+| `thread_ts` | string | The `ts` of the thread's first message |
+| `actor` | string or null | The author's display name, from `users.info`; the user id without the `users:read` scope; null with no user id. See [slack.md](../intake/slack.md#events) |
 
 <!-- example: events/slack.thread.replied.json -->
 ```json
@@ -1015,6 +1019,7 @@ message. `baseline` is always false.
     "thread_ts": "1795036000.000100",
     "ts": "1795036001.000200",
     "user": "U0PERSON",
+    "actor": "Ana",
     "text": "Looks good, ship it.",
     "files": [],
     "time": "2026-11-18T21:06:41.000200Z",

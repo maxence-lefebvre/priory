@@ -10528,6 +10528,104 @@ fn a_reply_posted_before_the_wait_wakes_the_task_and_the_bots_own_reply_never_do
     assert!(!args.contains(SLACK_TOKEN), "{args}");
 }
 
+/// The replies the intake published, oldest first.
+fn replies(setup: &Setup) -> Vec<serde_json::Value> {
+    setup
+        .bus()
+        .messages(&herdr_bus::MessageQuery {
+            output: Some(OUTPUT.into()),
+            limit: 100,
+            ..herdr_bus::MessageQuery::default()
+        })
+        .unwrap()
+        .into_iter()
+        .filter(|stored| stored.message.kind == "slack.thread.replied")
+        .inspect(|stored| conform::conforms(&serde_json::to_value(&stored.message).unwrap()))
+        .map(|stored| stored.message.data)
+        .collect()
+}
+
+#[test]
+fn a_slack_reply_names_its_author_by_display_name_asking_slack_once_per_user() {
+    let setup = asleep_on(
+        "slack-actor",
+        json!({ "type": "slack_reply", "channel": "C0123", "thread_ts": THREAD }),
+    );
+    let stored: herdr_bus::Timestamp = setup.rows("waits")[0][5].parse().unwrap();
+    let later = stored.checked_add(Duration::from_secs(1)).unwrap();
+    let mut messages =
+        vec![json!({ "ts": THREAD, "thread_ts": THREAD, "user": "U0PERSON", "text": "first" })];
+    messages.extend([
+        slack_message(&ts(stored), "U0PERSON"),
+        slack_message(&ts(later), "U0PERSON"),
+    ]);
+    setup.answer_curl(&[
+        (
+            "auth.test",
+            json!({ "ok": true, "user_id": "U0BOT", "bot_id": "B0BOT" }),
+        ),
+        (
+            "users.info",
+            json!({ "ok": true, "user": { "id": "U0PERSON", "name": "ana.l",
+                "profile": { "display_name": "Ana", "real_name": "Ana Lima" } } }),
+        ),
+        (
+            "conversations.replies",
+            json!({ "ok": true, "messages": messages, "has_more": false }),
+        ),
+    ]);
+
+    setup.intake();
+
+    let actors: Vec<serde_json::Value> = replies(&setup)
+        .iter()
+        .map(|reply| reply["actor"].clone())
+        .collect();
+    assert_eq!(actors, [json!("Ana"), json!("Ana")]);
+    let args = fs::read_to_string(setup.dir.join("curl-args")).unwrap();
+    assert_eq!(args.matches("users.info").count(), 1, "{args}");
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 2);
+    assert!(
+        setup.typed()[1].contains(r#""actor":"Ana""#),
+        "{:?}",
+        setup.typed()
+    );
+}
+
+#[test]
+fn a_slack_reply_names_its_author_by_id_without_the_users_read_scope() {
+    let setup = asleep_on(
+        "slack-actor-scope",
+        json!({ "type": "slack_reply", "channel": "C0123", "thread_ts": THREAD }),
+    );
+    let stored: herdr_bus::Timestamp = setup.rows("waits")[0][5].parse().unwrap();
+    let mut messages =
+        vec![json!({ "ts": THREAD, "thread_ts": THREAD, "user": "U0PERSON", "text": "first" })];
+    messages.push(slack_message(&ts(stored), "U0PERSON"));
+    setup.answer_curl(&[
+        (
+            "auth.test",
+            json!({ "ok": true, "user_id": "U0BOT", "bot_id": "B0BOT" }),
+        ),
+        (
+            "users.info",
+            json!({ "ok": false, "error": "missing_scope", "needed": "users:read" }),
+        ),
+        (
+            "conversations.replies",
+            json!({ "ok": true, "messages": messages, "has_more": false }),
+        ),
+    ]);
+
+    setup.intake();
+
+    let actors: Vec<serde_json::Value> = replies(&setup)
+        .iter()
+        .map(|reply| reply["actor"].clone())
+        .collect();
+    assert_eq!(actors, [json!("U0PERSON")]);
+}
+
 #[test]
 fn a_reply_in_the_thread_of_a_slack_tasks_key_wakes_the_task_with_no_wait_on_it() {
     let mut setup = Setup::new("slack-key-thread");
