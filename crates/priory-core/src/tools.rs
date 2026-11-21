@@ -3,7 +3,8 @@ use crate::route;
 use crate::trace::{self, Trace};
 use priory_factory::explain;
 use priory_factory::factory::{
-    Decider, Effect, Factory, Harness, Intervention, Loaded, Step, Workflow, lead_workflow,
+    Decider, Effect, Factory, Harness, Intervention, Loaded, Step, StepAfter, Workflow,
+    lead_workflow,
 };
 use priory_intake::intake::{
     CHECK_RUNS, CHECKED, COMMENTED, ISSUE_CLOSED, ISSUE_COMMENTED, PASSING, PR_CLOSED as CLOSED,
@@ -222,7 +223,7 @@ pub(crate) fn call(
             Err(refused) => Err(refused),
         },
         "ask" => ask(&tx, &run, &call.arguments, factory)?,
-        "wait" => wait(&tx, &run, &call.arguments)?,
+        "wait" => wait(&tx, &run, &call.arguments, factory)?,
         "compact" => compact(&tx, &run, &call.arguments, factory)?,
         tool => Err(format!("unknown tool {tool}")),
     };
@@ -291,8 +292,14 @@ fn result(
     if let Some(refused) = crate::proof::refused(tx, run.task, step, &outcome, head)? {
         return Ok(Err(refused));
     }
-    if next == "done"
+    let gated = next == "done"
+        || workflows
+            .get(&run.workflow)
+            .and_then(|flow| flow.value.step(next))
+            .is_some_and(|s| s.after == Some(StepAfter::Merged));
+    if gated
         && commit.is_none()
+        && !all_merged(tx, run.task)?
         && let Some(resource) = pull_request(tx, run.task)?
     {
         return Ok(Err(format!(
@@ -891,6 +898,7 @@ fn wait(
     tx: &Transaction,
     run: &Run,
     arguments: &Value,
+    factory: &Factory,
 ) -> rusqlite::Result<Result<String, String>> {
     let conditions = match conditions(arguments) {
         Ok(conditions) => conditions,
@@ -904,7 +912,7 @@ fn wait(
         }
     }
     let ids = ids.join(", ");
-    let caught = catch_up(tx, run.task)?;
+    let caught = catch_up(tx, run.task, factory)?;
     if !caught {
         due(tx)?;
     }
@@ -1107,7 +1115,7 @@ pub(crate) fn instant(tx: &Transaction, until: &str) -> rusqlite::Result<Result<
 /// Fires the task's open wait on the first event since the agent's last prompt that satisfies it,
 /// on which none of its waits fired: one it kept and was not typed yet, or one another task kept
 /// since that prompt. Says whether one did.
-fn catch_up(tx: &Transaction, task: i64) -> rusqlite::Result<bool> {
+fn catch_up(tx: &Transaction, task: i64, factory: &Factory) -> rusqlite::Result<bool> {
     let mut candidates = Vec::new();
     {
         let mut statement = tx.prepare(
@@ -1126,7 +1134,7 @@ fn catch_up(tx: &Transaction, task: i64) -> rusqlite::Result<bool> {
         }
     }
     for seq in candidates {
-        if event(tx, task, seq)? {
+        if event(tx, task, seq, factory)? {
             return Ok(true);
         }
     }
@@ -1135,7 +1143,12 @@ fn catch_up(tx: &Transaction, task: i64) -> rusqlite::Result<bool> {
 
 /// Fires the first of the task's open waits that the inbox entry `seq` satisfies, and says whether
 /// one did.
-pub(crate) fn event(tx: &Transaction, task: i64, seq: i64) -> rusqlite::Result<bool> {
+pub(crate) fn event(
+    tx: &Transaction,
+    task: i64,
+    seq: i64,
+    factory: &Factory,
+) -> rusqlite::Result<bool> {
     let open = tx
         .prepare(
             "SELECT waits.id, waits.kind, waits.resource, waits.head_sha, waits.state,
@@ -1200,7 +1213,7 @@ pub(crate) fn event(tx: &Transaction, task: i64, seq: i64) -> rusqlite::Result<b
             .filter(|_| later || kind_of_event == REVIEWED || data["own"] == false);
         if daemon {
             let Some(said) = said.filter(|_| !settles(&kind_of_event, &data)) else {
-                return judge(tx, wait);
+                return judge(tx, wait, factory);
             };
             fire(
                 tx,
@@ -1374,14 +1387,15 @@ impl Seen {
 /// result that names another head wakes the agent. The newest check at the result's commit then
 /// decides: red wakes the agent, and green with none pending or failing marks the task done. With
 /// no check at the commit, a newest snapshot of no check runs marks it done too.
-fn judge(tx: &Transaction, wait: i64) -> rusqlite::Result<bool> {
-    let (task, resource, pinned, mark): (i64, String, Option<String>, Option<i64>) = tx.query_row(
+fn judge(tx: &Transaction, wait: i64, factory: &Factory) -> rusqlite::Result<bool> {
+    type Gate = (i64, String, Option<String>, Option<i64>, bool);
+    let (task, resource, pinned, mark, after): Gate = tx.query_row(
         "SELECT waits.task, waits.resource, waits.head_sha, coalesce(
            (SELECT max(inbox) FROM actions WHERE result = waits.run AND commit_sha = waits.head_sha),
-           results.inbox)
+           results.inbox), waits.after IS NOT NULL
          FROM waits JOIN results ON results.run = waits.run WHERE waits.id = ?1",
         [wait],
-        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
     )?;
     let mut seen = Vec::new();
     {
@@ -1410,10 +1424,10 @@ fn judge(tx: &Transaction, wait: i64) -> rusqlite::Result<bool> {
     let stacked = stack.len() > 1;
     if newest.kind == CLOSED {
         if newest.data["merged"] == true && stacked {
-            return merged(tx, wait, task, &resource, newest, &stack);
+            return merged(tx, wait, task, &resource, newest, &stack, factory);
         }
         if newest.data["merged"] == true {
-            return done(tx, wait, task, newest.seq);
+            return done(tx, wait, task, newest.seq, factory);
         }
         let at = stack.iter().position(|pull| pull.resource == resource);
         if let Some(asked) = at.filter(|_| stacked).map(|at| stranded(task, &stack, at))
@@ -1493,10 +1507,11 @@ fn judge(tx: &Transaction, wait: i64) -> rusqlite::Result<bool> {
     if stacked {
         return stack_green(tx, wait, task, green, &stack);
     }
-    if !green {
+    // A gate before a step that waits for the merge stays open on green checks.
+    if !green || after {
         return Ok(false);
     }
-    done(tx, wait, task, check.seq)
+    done(tx, wait, task, check.seq, factory)
 }
 
 /// Records whether gate `wait` of `task`'s stack is green. When that makes every open gate green,
@@ -1649,9 +1664,10 @@ fn merged(
     resource: &str,
     close: &Seen,
     stack: &[crate::stack::Pull],
+    factory: &Factory,
 ) -> rusqlite::Result<bool> {
     if stack.iter().all(|pull| pull.state == "merged") {
-        return done(tx, wait, task, close.seq);
+        return done(tx, wait, task, close.seq, factory);
     }
     let above = stack
         .iter()
@@ -1669,11 +1685,71 @@ fn merged(
     Ok(true)
 }
 
-/// Fires the daemon's checks wait `wait` on the event `seq` and marks its task done.
-fn done(tx: &Transaction, wait: i64, task: i64, seq: i64) -> rusqlite::Result<bool> {
+/// Fires the daemon's checks wait `wait` on the event `seq` and marks its task done, or enters
+/// the step the gate waited to enter.
+fn done(
+    tx: &Transaction,
+    wait: i64,
+    task: i64,
+    seq: i64,
+    factory: &Factory,
+) -> rusqlite::Result<bool> {
     mark_fired(tx, wait, Some(seq))?;
-    set(tx, task, "done", None, None)?;
+    let (workflow, after): (String, Option<String>) = tx.query_row(
+        "SELECT tasks.workflow, waits.after FROM waits JOIN tasks ON tasks.id = waits.task
+         WHERE waits.id = ?1",
+        [wait],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )?;
+    let Some(after) = after else {
+        set(tx, task, "done", None, None)?;
+        return Ok(true);
+    };
+    // A person's `say` may have started a run while the task slept on its gate.
+    let live: Option<String> = tx
+        .query_row(
+            "SELECT session FROM runs WHERE task = ?1 AND ended IS NULL",
+            [task],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let from = match live {
+        Some(session) => run(tx, &session)?,
+        None => None,
+    };
+    step_in(
+        tx,
+        task,
+        &workflow,
+        &after,
+        from.as_ref(),
+        "",
+        factory,
+        false,
+    )?;
     Ok(true)
+}
+
+/// Whether `task` owns a pull request and every one of its stack merged.
+fn all_merged(tx: &Transaction, task: i64) -> rusqlite::Result<bool> {
+    let stack = crate::stack::of(tx, task)?;
+    if !stack.is_empty() {
+        return Ok(stack.iter().all(|pull| pull.state == "merged"));
+    }
+    let Some(resource) = pull_request(tx, task)? else {
+        return Ok(false);
+    };
+    let merged = tx
+        .query_row(
+            "SELECT json_extract(data, '$.merged') FROM inbox WHERE type = ?2
+             AND 'github:' || json_extract(data, '$.repo') || '#' || json_extract(data, '$.pull_request') = ?1
+             ORDER BY seq DESC LIMIT 1",
+            params![resource, CLOSED],
+            |row| row.get::<_, Option<bool>>(0),
+        )
+        .optional()?
+        .flatten();
+    Ok(merged == Some(true))
 }
 
 /// Fires every open time wait whose instant passed and task wait whose task ended.
@@ -2390,6 +2466,22 @@ fn enter(
     context: &str,
     factory: &Factory,
 ) -> rusqlite::Result<Option<String>> {
+    step_in(tx, task, workflow, target, from, context, factory, true)
+}
+
+/// As `enter`. `gate` false enters a step after the merge without its gate, as the merge that
+/// fired the gate does.
+#[allow(clippy::too_many_arguments)]
+fn step_in(
+    tx: &Transaction,
+    task: i64,
+    workflow: &str,
+    target: &str,
+    from: Option<&Run>,
+    context: &str,
+    factory: &Factory,
+    gate: bool,
+) -> rusqlite::Result<Option<String>> {
     let workflows = &factory.workflows;
     let finish = |ended_as: &str| -> rusqlite::Result<Option<String>> {
         let Some(run) = from else {
@@ -2398,8 +2490,18 @@ fn enter(
         end(tx, run.id, ended_as)?;
         Ok(Some(run.tmux.clone()))
     };
-    if target == "done"
-        && let Some(resource) = pull_request(tx, task)?
+    let merge_step =
+        step(workflows, workflow, target).filter(|s| s.after == Some(StepAfter::Merged));
+    let after = merge_step.filter(|_| gate).map(|_| target);
+    let owned = pull_request(tx, task)?;
+    if after.is_some() && owned.is_none() {
+        let reason = format!("step {target} waits for a merge, but the task owns no pull request");
+        set(tx, task, "blocked", None, Some(&reason))?;
+        return finish("blocked");
+    }
+    if (target == "done" || after.is_some())
+        && !all_merged(tx, task)?
+        && let Some(resource) = owned
     {
         let last = tx
             .query_row(
@@ -2419,7 +2521,7 @@ fn enter(
             .optional()?;
         let Some((result_run, at, Some(commit))) = last else {
             let reason =
-                format!("task reached done owning {resource}, but no result names a commit");
+                format!("task reached {target} owning {resource}, but no result names a commit");
             set(tx, task, "blocked", None, Some(&reason))?;
             return finish("blocked");
         };
@@ -2448,26 +2550,33 @@ fn enter(
                 .collect(),
             _ => vec![(resource, Some(commit.as_str()))],
         };
-        if gates.is_empty() {
-            set(tx, task, "done", None, None)?;
-            return finish("done");
+        // A stack with no open pull request left is past its gates.
+        if !gates.is_empty() {
+            let mut waits = Vec::new();
+            for (resource, pinned) in gates {
+                tx.execute(
+                    "INSERT INTO waits (task, run, kind, resource, head_sha, daemon, after)
+                 VALUES (?1, ?2, 'checks', ?3, ?4, 1, ?5)",
+                    params![task, result_run, resource, pinned, after],
+                )?;
+                waits.push(tx.last_insert_rowid());
+            }
+            // The agent of the result's step fixes what the checks find, even after a human step.
+            set(tx, task, "asleep", Some(&at), None)?;
+            set_ending(tx, task, step(workflows, workflow, &at))?;
+            for wait in waits {
+                judge(tx, wait, factory)?;
+            }
+            return finish("asleep");
         }
-        let mut waits = Vec::new();
-        for (resource, pinned) in gates {
-            tx.execute(
-                "INSERT INTO waits (task, run, kind, resource, head_sha, daemon)
-                 VALUES (?1, ?2, 'checks', ?3, ?4, 1)",
-                params![task, result_run, resource, pinned],
-            )?;
-            waits.push(tx.last_insert_rowid());
+        // Answered asks about closed pull requests left no gate, and no merge.
+        if after.is_some() {
+            let reason = format!(
+                "step {target} waits for a merge, but a pull request of the stack closed without one"
+            );
+            set(tx, task, "blocked", None, Some(&reason))?;
+            return finish("blocked");
         }
-        // The agent of the result's step fixes what the checks find, even after a human step.
-        set(tx, task, "asleep", Some(&at), None)?;
-        set_ending(tx, task, step(workflows, workflow, &at))?;
-        for wait in waits {
-            judge(tx, wait)?;
-        }
-        return finish("asleep");
     }
     if target == "done" || target == "stop" {
         let state = if target == "done" { "done" } else { "dropped" };
