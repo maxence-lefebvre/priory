@@ -237,6 +237,7 @@ When someone labels issue 42 of `owner/name` with `agent`, this happens:
 | `priory answer ASK OPTION --revision N` | Answers an ask. `--expected N` is the same flag. `priory answer [DIR] RUNNER:ASK ...` answers another runner's ask (see [runners.md](docs/daemon/runners.md)) |
 | `priory give [DIR] KEY RUNNER` | Moves a task to another runner of a factory of several (see [runners.md](docs/daemon/runners.md)) |
 | `priory dismiss [--expected N] ASK` | Closes an ask with no answer |
+| `priory deliver ASK (--retry \| --clear)` | Sends a failed answer delivery again, or clears it from the desk |
 | `priory snooze KIND ID --for 2h`, `--until TIME`, `--clear` | Hides a desk item until then, or brings it back |
 | `priory todo add TEXT [--band B] [--due TIME]`, `priory todo done ID`, `priory todo list` | Adds a to-do of your own to the desk, marks it done, or lists them |
 | `priory tasks [--lane LANE] [--grade GRADE]` | Lists tasks in start order, with their grade |

@@ -128,6 +128,7 @@ pub const UNREADABLE: &str = "unreadable";
 pub const PERSON_VERBS: &[&str] = &[
     "answer",
     "dismiss",
+    "deliver",
     "resume",
     "revive",
     "cancel",

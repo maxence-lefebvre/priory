@@ -42,7 +42,12 @@ A delivery moves through these states, which `priory asks --json` and `/api/asks
 A failed try is tried again 1, 2, 4, then 8 seconds later, so 5 tries in about 15 seconds. A try
 that runs past 3 minutes is killed and counts as failed. The fifth failed try fails the delivery,
 with its exit status and the tail of its output as `error`. The desk shows a failed delivery until
-the asker asks the same ID again.
+the asker asks the same ID again, or a person clears or retries it.
+
+`priory deliver ASK --retry` queues the failed latest delivery of `ASK` again, with 5 fresh tries.
+`priory deliver ASK --clear` takes it off the desk and keeps it `failed`; `delivery.cleared` holds
+when. Both go to the daemon over its socket, and are refused with
+`the delivery of <ask> has not failed` while it is queued, running or delivered.
 
 ## Daemon restarts
 
@@ -63,5 +68,5 @@ Known limits:
 - A command that delivers, then exits with another code or runs past its timeout, is tried again.
   Exit 0 is the only proof of delivery that Priory reads.
 - An answer to an old revision is still delivered, with that revision, after the ask changed.
-- No verb retries a failed delivery or clears it from the desk.
-- `priory check` does not check that the `deliver` file exists. A missing one fails each try.
+- `priory check` refuses a `deliver` that is not an executable file in the factory folder, but it
+  does not run the file. A script with a syntax error still fails each try.

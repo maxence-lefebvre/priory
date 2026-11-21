@@ -4,7 +4,7 @@
 use crate::memory;
 use priory_factory::factory::Factory;
 use priory_runtime::script::{self, Script};
-use rusqlite::{Connection, params};
+use rusqlite::{Connection, OptionalExtension, params};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, Instant};
@@ -32,6 +32,53 @@ pub(crate) fn queue(
         params![ask, answer],
     )?;
     Ok(())
+}
+
+/// A person's `priory deliver ASK (--retry | --clear)` on the socket: `act` is `retry` or `clear`.
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Line {
+    pub deliver: i64,
+    pub act: Act,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Clone, Copy)]
+#[serde(rename_all = "lowercase")]
+pub enum Act {
+    Retry,
+    Clear,
+}
+
+/// Queues the failed latest delivery of an ask again with fresh tries, or clears it from the desk.
+pub(crate) fn act(db: &Connection, line: &Line) -> rusqlite::Result<Result<String, String>> {
+    let found: Option<(String, i64, String)> = db
+        .query_row(
+            "SELECT coalesce(asks.name, asks.id), deliveries.id, deliveries.state
+             FROM asks JOIN deliveries ON deliveries.ask = asks.id
+             WHERE asks.id = ?1 ORDER BY deliveries.id DESC LIMIT 1",
+            [line.deliver],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .optional()?;
+    let Some((label, id, state)) = found else {
+        return Ok(Err(format!("ask {} has no delivery", line.deliver)));
+    };
+    if state != "failed" {
+        return Ok(Err(format!("the delivery of {label} has not failed")));
+    }
+    let (sql, done) = match line.act {
+        Act::Retry => (
+            "UPDATE deliveries SET state = 'queued', tries = 0, error = NULL, ended = NULL,
+               cleared = NULL, due = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') WHERE id = ?1",
+            "is queued again",
+        ),
+        Act::Clear => (
+            "UPDATE deliveries SET cleared = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') WHERE id = ?1",
+            "is cleared from the desk",
+        ),
+    };
+    db.execute(sql, [id])?;
+    Ok(Ok(format!("the delivery of {label} {done}")))
 }
 
 /// Runs the command in `"$@"` and writes its exit code to the file `$0`, so a daemon that restarts
