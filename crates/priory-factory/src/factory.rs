@@ -958,7 +958,7 @@ fn percent<'de, D: serde::Deserializer<'de>>(input: D) -> Result<Option<f64>, D:
 }
 
 /// Dollars per million tokens of each kind, for one model.
-#[derive(Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Price {
     #[serde(deserialize_with = "dollars")]

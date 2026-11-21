@@ -1,18 +1,19 @@
 use priory_factory::factory::Price;
 use rusqlite::Connection;
+use serde_json::{Value, json};
 use std::collections::BTreeMap;
 
 /// The window a report covers when it names none.
 pub const SINCE: &str = "7 days";
 
-/// The start of the window `since`: an RFC 3339 instant, or a duration back from now such as
+/// The start of the window `since`: an RFC 3339 instant, or a duration back from `now` such as
 /// `7 days`, as an SQLite date modifier.
-fn start(db: &Connection, since: &str) -> Result<String, String> {
+pub fn start(db: &Connection, since: &str, now: &str) -> Result<String, String> {
     let start: Option<String> = db
         .query_row(
             "SELECT coalesce(strftime('%Y-%m-%dT%H:%M:%fZ', ?1),
-               strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-' || ?1))",
-            [since],
+               strftime('%Y-%m-%dT%H:%M:%fZ', ?2, '-' || ?1))",
+            [since, now],
             |row| row.get(0),
         )
         .map_err(|error| error.to_string())?;
@@ -25,7 +26,7 @@ fn start(db: &Connection, since: &str) -> Result<String, String> {
 /// visits that reached the step: those that ended it, and active tasks still at it.
 /// With `by_lane`, each lane is counted apart, by the lane its task has now.
 pub fn outcomes(db: &Connection, workflow: &str, since: &str, by_lane: bool) -> Result<(), String> {
-    let start = start(db, since)?;
+    let start = start(db, since, "now")?;
     let lane = |table: &str| {
         if by_lane {
             format!("coalesce({table}.lane, '-')")
@@ -116,7 +117,7 @@ pub fn cost(
     since: &str,
     prices: &BTreeMap<String, Price>,
 ) -> Result<(), String> {
-    let start = start(db, since)?;
+    let start = start(db, since, "now")?;
     let mut statement = db
         .prepare(
             "SELECT json_extract(event, '$.data.task') AS task,
@@ -200,4 +201,285 @@ pub fn cost(
         crate::state::emit(&format!("{task}\ttotal\t-\t{}\t{cost}", total.cells()));
     }
     Ok(())
+}
+
+/// What `priory costs` can split the current window's cost by.
+pub const BY: [&str; 5] = ["workflow", "agent", "model", "machine", "repo"];
+
+/// The cost of a set of records: priced tokens in dollars, the tokens of models without a price
+/// apart, and the records whose tokens are unknown.
+#[derive(Default)]
+struct Total {
+    priced: bool,
+    dollars: f64,
+    tokens: Tokens,
+    unpriced: BTreeMap<String, Tokens>,
+    unknown: i64,
+    merges: i64,
+}
+
+impl Total {
+    fn add(&mut self, model: &str, tokens: Option<&Tokens>, prices: &BTreeMap<String, Price>) {
+        let Some(tokens) = tokens else {
+            self.unknown += 1;
+            return;
+        };
+        self.tokens.add(tokens);
+        match prices.get(model) {
+            Some(price) => {
+                self.priced = true;
+                self.dollars += tokens.dollars(price);
+            }
+            None => self
+                .unpriced
+                .entry(model.to_owned())
+                .or_default()
+                .add(tokens),
+        }
+    }
+
+    /// The dollars, or none when no record was priced and some were not, so unpriced tokens never
+    /// read as a zero cost.
+    fn cost(&self) -> Option<f64> {
+        (self.priced || (self.unpriced.is_empty() && self.unknown == 0)).then_some(self.dollars)
+    }
+
+    fn json(&self) -> Value {
+        json!({
+            "cost_usd": self.cost(),
+            "tokens": self.tokens.json(),
+            "unpriced": self.unpriced.iter()
+                .map(|(model, tokens)| json!({ "model": model, "tokens": tokens.json() }))
+                .collect::<Vec<_>>(),
+            "unknown": self.unknown,
+        })
+    }
+
+    /// The cost cell and the notes cell of a text row.
+    fn cells(&self) -> String {
+        let cost = self
+            .cost()
+            .map_or_else(|| "-".to_owned(), |dollars| format!("${dollars:.6}"));
+        let mut notes: Vec<_> = self
+            .unpriced
+            .iter()
+            .map(|(model, tokens)| {
+                format!(
+                    "price missing for {model}: {} tokens",
+                    tokens.0.iter().sum::<i64>()
+                )
+            })
+            .collect();
+        if self.unknown > 0 {
+            notes.push(format!("tokens unknown for {} records", self.unknown));
+        }
+        let notes = if notes.is_empty() {
+            "-".to_owned()
+        } else {
+            notes.join("; ")
+        };
+        format!("{cost}\t{notes}")
+    }
+}
+
+impl Tokens {
+    fn json(&self) -> Value {
+        let [input, output, cache_read, cache_write] = self.0;
+        json!({ "input": input, "output": output, "cache_read": cache_read,
+                "cache_write": cache_write })
+    }
+}
+
+/// The current window against the one before it, day by day, and the current window split by one
+/// of `BY`.
+pub struct Costs {
+    by: String,
+    windows: [(String, String, Total); 2],
+    days: BTreeMap<String, Total>,
+    split: BTreeMap<String, Total>,
+}
+
+/// The costs of model steps, handler calls and summarizer calls up to `now`, priced from `prices`.
+/// With no `since`, the current window starts this Monday at 00:00 local time and the previous one
+/// is last week; otherwise the previous window has the current one's length. Days are local.
+pub fn costs(
+    db: &Connection,
+    prices: &BTreeMap<String, Price>,
+    since: Option<&str>,
+    by: &str,
+    now: &str,
+) -> Result<Costs, String> {
+    let key = match by {
+        "workflow" => "coalesce(json_extract(trace.event, '$.data.workflow'), '-')",
+        "agent" => {
+            "CASE trace.type WHEN 'factory.handler.called' THEN 'handler'
+               WHEN 'factory.summarizer.called' THEN 'summarizer'
+               ELSE coalesce(runs.agent, '-') END"
+        }
+        "model" => "coalesce(json_extract(trace.event, '$.data.model'), '-')",
+        "machine" => "coalesce(json_extract(trace.event, '$.data.machine'), '-')",
+        "repo" => "coalesce(tasks.repo, '-')",
+        _ => return Err(format!("--by {by:?} is none of {}", BY.join(", "))),
+    };
+    let error = |error: rusqlite::Error| error.to_string();
+    let (until, start, previous): (String, String, String) = match since {
+        None => db.query_row(
+            "SELECT strftime('%Y-%m-%dT%H:%M:%fZ', ?1),
+               strftime('%Y-%m-%dT%H:%M:%fZ', ?1, 'localtime', 'start of day', '-6 days',
+                 'weekday 1', 'utc'),
+               strftime('%Y-%m-%dT%H:%M:%fZ', ?1, 'localtime', 'start of day', '-6 days',
+                 'weekday 1', '-7 days', 'utc')",
+            [now],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        ),
+        Some(since) => {
+            let start = start(db, since, now)?;
+            db.query_row(
+                "SELECT strftime('%Y-%m-%dT%H:%M:%fZ', ?1), ?2,
+                   strftime('%Y-%m-%dT%H:%M:%fZ', 2 * julianday(?2) - julianday(?1))",
+                [now, &start],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+        }
+    }
+    .map_err(error)?;
+    let mut costs = Costs {
+        by: by.to_owned(),
+        windows: [
+            (start.clone(), until.clone(), Total::default()),
+            (previous.clone(), start.clone(), Total::default()),
+        ],
+        days: BTreeMap::new(),
+        split: BTreeMap::new(),
+    };
+    let mut statement = db
+        .prepare(&format!(
+            "SELECT date(trace.time, 'localtime'), trace.time >= ?2, {key},
+               coalesce(json_extract(trace.event, '$.data.model'), '-'),
+               json_extract(trace.event, '$.data.tokens') IS NOT NULL,
+               coalesce(json_extract(trace.event, '$.data.tokens.input'), 0),
+               coalesce(json_extract(trace.event, '$.data.tokens.output'), 0),
+               coalesce(json_extract(trace.event, '$.data.tokens.cache_read'), 0),
+               coalesce(json_extract(trace.event, '$.data.tokens.cache_write'), 0)
+             FROM trace
+             LEFT JOIN tasks ON tasks.id = CAST(json_extract(trace.event, '$.data.task') AS INTEGER)
+             LEFT JOIN runs ON runs.id = CAST(json_extract(trace.event, '$.data.run') AS INTEGER)
+             WHERE trace.time >= ?1 AND trace.time < ?3
+             AND (trace.type IN ('factory.handler.called', 'factory.summarizer.called')
+               OR (trace.type = 'factory.step.ended'
+               AND json_extract(trace.event, '$.data.decider') = 'model'))"
+        ))
+        .map_err(error)?;
+    let mut rows = statement
+        .query([&previous, &start, &until])
+        .map_err(error)?;
+    while let Some(row) = rows.next().map_err(error)? {
+        let (day, current, key, model): (String, bool, String, String) = (
+            row.get(0).map_err(error)?,
+            row.get(1).map_err(error)?,
+            row.get(2).map_err(error)?,
+            row.get(3).map_err(error)?,
+        );
+        let tokens = match row.get::<_, bool>(4).map_err(error)? {
+            true => Some(Tokens([
+                row.get(5).map_err(error)?,
+                row.get(6).map_err(error)?,
+                row.get(7).map_err(error)?,
+                row.get(8).map_err(error)?,
+            ])),
+            false => None,
+        };
+        let tokens = tokens.as_ref();
+        costs.windows[usize::from(!current)]
+            .2
+            .add(&model, tokens, prices);
+        costs
+            .days
+            .entry(day)
+            .or_default()
+            .add(&model, tokens, prices);
+        if current {
+            costs
+                .split
+                .entry(key)
+                .or_default()
+                .add(&model, tokens, prices);
+        }
+    }
+    let mut statement = db
+        .prepare(
+            "SELECT date(time, 'localtime'), strftime('%Y-%m-%dT%H:%M:%fZ', time) >= ?2,
+               count(DISTINCT subject)
+             FROM inbox WHERE type = 'github.pull_request.closed'
+             AND json_extract(data, '$.merged') = 1
+             AND strftime('%Y-%m-%dT%H:%M:%fZ', time) >= ?1
+             AND strftime('%Y-%m-%dT%H:%M:%fZ', time) < ?3
+             AND EXISTS (SELECT 1 FROM owns WHERE owns.resource = 'github:' || inbox.subject)
+             GROUP BY 1, 2",
+        )
+        .map_err(error)?;
+    let merges = statement
+        .query_map([&previous, &start, &until], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, bool>(1)?,
+                row.get::<_, i64>(2)?,
+            ))
+        })
+        .and_then(Iterator::collect::<rusqlite::Result<Vec<_>>>)
+        .map_err(error)?;
+    for (day, current, merged) in merges {
+        costs.windows[usize::from(!current)].2.merges += merged;
+        costs.days.entry(day).or_default().merges += merged;
+    }
+    Ok(costs)
+}
+
+impl Costs {
+    pub fn json(&self) -> Value {
+        let window = |(since, until, total): &(String, String, Total)| {
+            let mut json = total.json();
+            json["since"] = json!(since);
+            json["until"] = json!(until);
+            json["merges"] = json!(total.merges);
+            json
+        };
+        json!({
+            "by": self.by,
+            "current": window(&self.windows[0]),
+            "previous": window(&self.windows[1]),
+            "days": self.days.iter().map(|(day, total)| {
+                let mut json = total.json();
+                json["day"] = json!(day);
+                json["merges"] = json!(total.merges);
+                json
+            }).collect::<Vec<_>>(),
+            "split": self.split.iter().map(|(key, total)| {
+                let mut json = total.json();
+                json[&self.by] = json!(key);
+                json
+            }).collect::<Vec<_>>(),
+        })
+    }
+
+    pub fn print(&self) {
+        crate::state::emit("period\tsince\tuntil\tcost\tnotes\tmerges");
+        for ((since, until, total), period) in self.windows.iter().zip(["current", "previous"]) {
+            crate::state::emit(&format!(
+                "{period}\t{since}\t{until}\t{}\t{}",
+                total.cells(),
+                total.merges
+            ));
+        }
+        crate::state::emit("");
+        crate::state::emit("day\tcost\tnotes\tmerges");
+        for (day, total) in &self.days {
+            crate::state::emit(&format!("{day}\t{}\t{}", total.cells(), total.merges));
+        }
+        crate::state::emit("");
+        crate::state::emit(&format!("{}\tcost\tnotes", self.by));
+        for (key, total) in &self.split {
+            crate::state::emit(&format!("{key}\t{}", total.cells()));
+        }
+    }
 }
