@@ -2536,6 +2536,52 @@ fn a_comment_a_poll_published_publishes_nothing_more_from_its_webhook() {
 }
 
 #[test]
+fn a_failed_gh_api_user_is_asked_again_on_the_next_delivery() {
+    let mut setup = Setup::hooks("hook-viewer");
+    let address = setup.start(&["serve", &setup.factory()]);
+    let review = |id: u64| {
+        json!({
+            "action": "submitted",
+            "review": {
+                "id": id,
+                "state": "commented",
+                "body": "One thing.",
+                "html_url": format!("https://github.com/owner/repo/pull/43#pullrequestreview-{id}"),
+                "user": { "login": "ana" },
+                "commit_id": "fff000",
+                "submitted_at": "2026-11-17T10:30:00Z"
+            },
+            "pull_request": pull(),
+            "repository": { "full_name": "owner/repo" },
+            "sender": { "login": "ana" }
+        })
+        .to_string()
+    };
+    let send = |body: String| {
+        let signature = sign(&setup.secret, body.as_bytes());
+        let (status, reply) = deliver(
+            &address,
+            "pull_request_review",
+            "d-3",
+            Some(&signature),
+            &body,
+        );
+        assert_eq!(status, 202, "{reply}");
+    };
+
+    send(review(1));
+    fs::write(setup.dir.join("fake/gh-user"), "max").unwrap();
+    send(review(2));
+
+    let owns: Vec<_> = setup
+        .published()
+        .iter()
+        .map(|m| m.data["own"].clone())
+        .collect();
+    assert_eq!(owns, [Value::Null, json!(false)]);
+}
+
+#[test]
 fn a_poll_requests_the_task_a_crash_left_out_of_a_webhook() {
     let setup = Setup::hooks("hook-crash");
     setup.poll(json!([polled_label(100, 41, "bug")]));
