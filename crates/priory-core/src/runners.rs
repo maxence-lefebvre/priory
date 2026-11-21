@@ -500,8 +500,9 @@ fn adopt(db: &mut Connection, me: &str) -> rusqlite::Result<()> {
     tx.commit()
 }
 
-/// Publishes the queued messages, oldest first. One published twice after a crash adds nothing,
-/// since the log keeps the first message of each id.
+/// Publishes the queued messages, oldest first, but only the newest alive message: a lease runs
+/// from the last one, so a runner back from a long cut sends one instead of one per minute away.
+/// One published twice after a crash adds nothing, since the log keeps the first message of each id.
 pub(crate) fn flush(db: &Connection, log: &dyn Log) -> Result<(), Error> {
     let queued = db
         .prepare("SELECT id, message FROM sends ORDER BY id")?
@@ -509,8 +510,24 @@ pub(crate) fn flush(db: &Connection, log: &dyn Log) -> Result<(), Error> {
             Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
+    let queued = queued
+        .into_iter()
+        .map(|(id, message)| Ok((id, serde_json::from_str::<Message>(&message)?)))
+        .collect::<Result<Vec<_>, Error>>()?;
+    let newest = queued
+        .iter()
+        .rev()
+        .find(|(_, message)| message.kind == ALIVE)
+        .map(|(id, _)| *id);
+    db.execute(
+        "DELETE FROM sends WHERE id < ?1 AND json_extract(message, '$.type') = ?2",
+        params![newest, ALIVE],
+    )?;
     for (id, message) in queued {
-        log.publish(OUTPUT, &serde_json::from_str(&message)?)?;
+        if message.kind == ALIVE && Some(id) != newest {
+            continue;
+        }
+        log.publish(OUTPUT, &message)?;
         db.execute("DELETE FROM sends WHERE id = ?1", [id])?;
     }
     Ok(())
@@ -704,6 +721,80 @@ pub(crate) fn clocked(mut message: Message, logged: Option<Timestamp>) -> Messag
 #[cfg(test)]
 mod tests {
     use super::*;
+    use herdr_bus::{Output, Seq, Stored};
+    use priory_intake::log::Delivery;
+    use std::cell::RefCell;
+
+    /// A log that only takes publishes, in order.
+    #[derive(Default)]
+    struct Published(RefCell<Vec<Message>>);
+
+    impl Log for Published {
+        fn declare(&self, _: &Output) -> priory_intake::log::Result<()> {
+            Ok(())
+        }
+        fn publish(&self, _: &str, message: &Message) -> priory_intake::log::Result<Seq> {
+            self.0.borrow_mut().push(message.clone());
+            Ok(Seq(self.0.borrow().len() as i64))
+        }
+        fn message(&self, _: Seq) -> priory_intake::log::Result<Stored> {
+            unimplemented!()
+        }
+        fn messages(
+            &self,
+            _: &str,
+            _: Option<Seq>,
+            _: usize,
+        ) -> priory_intake::log::Result<Vec<Stored>> {
+            unimplemented!()
+        }
+        fn read(&self, _: &str, _: &str, _: usize) -> priory_intake::log::Result<Vec<Delivery>> {
+            unimplemented!()
+        }
+        fn ack(&self, _: &str, _: &Delivery) -> priory_intake::log::Result<()> {
+            unimplemented!()
+        }
+    }
+
+    #[test]
+    fn a_runner_back_from_a_cut_publishes_its_newest_alive_message_only_and_the_rest_in_order() {
+        let mut db = crate::state::memory();
+        let tx = db.transaction().unwrap();
+        let alive = |minute: i64| {
+            let alive = json!({ "runner": "a" });
+            stamped(ALIVE, alive, &format!("alive/a/{minute}")).time(at(minute))
+        };
+        let claim = json!({ "key": "k", "runner": "a", "request": "r" });
+        let held = json!({ "key": "k", "runner": "a", "hold": "kept" });
+        for message in [
+            alive(0),
+            stamped(CLAIMED, claim, "claim/r/a"),
+            alive(1),
+            alive(2),
+            Message::new(HELD, held),
+            alive(3),
+        ] {
+            send(&tx, &message).unwrap();
+        }
+        tx.commit().unwrap();
+
+        let log = Published::default();
+        flush(&db, &log).unwrap();
+
+        let published: Vec<_> = log
+            .0
+            .borrow()
+            .iter()
+            .map(|message| (message.kind.clone(), message.time))
+            .collect();
+        assert_eq!(published[0].0, CLAIMED);
+        assert_eq!(published[1].0, HELD);
+        assert_eq!(published[2..], [(ALIVE.to_owned(), at(3))]);
+        let left: i64 = db
+            .query_row("SELECT count(*) FROM sends", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(left, 0);
+    }
 
     #[test]
     fn a_runner_message_takes_the_logs_time_and_an_event_keeps_its_own() {

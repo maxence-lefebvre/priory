@@ -100,7 +100,8 @@ A daemon that cannot reach its log keeps running. It goes on with its own tasks:
 - No run of a `waiting` task starts, and no code step's action runs while the log says `waiting`.
   The daemon queues `kept` for the task and starts it only once it reads that back from the log.
 - Each claim, hold and alive message waits in the state file's queue, oldest first. Nothing reaches
-  the other runners until the link is back.
+  the other runners until the link is back. Only the newest alive message is kept to publish,
+  since a lease runs from the last one.
 - The daemon tries the log again 2 seconds after it fails, then waits twice as long after each
   failure, up to 1 minute.
 
@@ -128,7 +129,8 @@ is back.
 A daemon reads the log before it starts any run and before it publishes what it queued. A task that
 moved while it was away is dropped with the reason `moved to runner <name>: its lease ended`.
 Answers given meanwhile on other runners apply in log order, as below. Then it publishes its queue
-in order. Each queued message keeps its id, so one published twice adds nothing.
+in order: its claims and holds, and one alive message, the newest. Each queued message keeps its
+id, so one published twice adds nothing.
 
 ## Why no task runs twice
 
