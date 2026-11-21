@@ -296,10 +296,10 @@ since no later wake would carry it.
 
 A GitHub comment or review whose `own` is `false` is exempt: the intake knows another login wrote
 it, so it wakes the task and fires the gate whenever it was written. `own` compares the author with
-the login the intake's `gh` runs as, which a worker's `gh` posts as too. The intake learns that
-login from its first GraphQL poll, so `own` is absent before then, and on a daemon that only takes
-webhooks. When agents post with the person's own GitHub account, every comment of that account is
-`own`, and the time rule above still applies to it. Linear and Slack events have no `own`.
+the login that `gh api user` names, which a worker's `gh` posts as too. The poll and the webhook
+each ask `gh` once per process, and `own` is absent while `gh` cannot say. When agents post with
+the person's own GitHub account, every comment of that account is `own`, and the time rule above
+still applies to it. Linear and Slack events have no `own`.
 
 For example, to hear every review of an upstream pull request while the task works on:
 
@@ -578,10 +578,11 @@ first answer stands. A person's answer or dismissal drops the lead task while it
 with the reason `ask <id> was answered first` or `ask <id> was dismissed`. A lead task already
 running reads the refusal and ends `skipped`. A routed ask sends no push notification.
 
-When the lead task ends `done`, `failed` or `dropped` without answering, the ask returns to the
-person. A lead task that would turn `blocked`, on a timeout or a permission prompt, is `dropped`
-instead, with the blocking reason: its ask goes back to the person, so no resume could answer it. It loses its lead and is asked again as its next revision, which sends
-a push notification. Its question gains the reason, such as `Which database? (lead did not answer:
+When the lead task ends `done`, `failed` or `dropped`, or turns `blocked`, without answering, the
+ask returns to the person. A lead task that turns `blocked`, on a timeout, a permission prompt or
+a lost run, is `dropped` at once, with the blocking reason, since no resume could answer the ask
+any more. The ask loses its lead and is asked again as its next revision, which sends a push
+notification. Its question gains the reason, such as `Which database? (lead did not answer:
 its task is done)`. A lead that skips ends `done`.
 
 Known limits:

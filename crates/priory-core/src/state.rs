@@ -1102,7 +1102,14 @@ PRAGMA user_version = 62;
 // dismiss or a stack ask. A wait whose run had no fired wait was withdrawn by its run's dismissed or
 // answered ask; a gate of a task none of whose gates fired, by a stack ask. Since 58 every
 // `sibling-fired` wait has a fired sibling, so these rows are old ones only.
+// A lead task that blocks sent its ask back to the person, so it is dropped: no resume can answer.
+// Already blocked lead tasks drop too.
 const SCHEMA_63: &str = "
+CREATE TRIGGER IF NOT EXISTS a_blocked_lead_drops AFTER UPDATE OF state ON tasks
+  WHEN NEW.trigger = 'priory/lead' AND NEW.state = 'blocked' BEGIN
+  UPDATE tasks SET state = 'dropped' WHERE id = NEW.id;
+END;
+UPDATE tasks SET state = 'dropped' WHERE trigger = 'priory/lead' AND state = 'blocked';
 UPDATE waits SET withdrawn_reason = CASE
     WHEN EXISTS (SELECT 1 FROM asks WHERE asks.run = waits.run AND asks.withdrawn_reason = 'dismissed')
       THEN 'dismissed'
@@ -1519,7 +1526,7 @@ fn claim_pull_request(tx: &Transaction, message: &Message) -> rusqlite::Result<(
                WHERE owned.resource = ?1 AND owned.task != owns.task
                AND other.state NOT IN ('done', 'failed', 'dropped'))
              AND NOT EXISTS (SELECT 1 FROM inbox WHERE json_extract(data, '$.repo') = ?3
-               AND json_extract(data, '$.pull_request') = ?4)
+               AND json_extract(data, '$.pull_request') = ?4 AND outcome != 'outsider')
              ORDER BY owns.task DESC LIMIT 1",
             params![
                 resource,
@@ -1742,8 +1749,8 @@ pub(crate) fn due(db: &mut Connection) -> rusqlite::Result<()> {
 }
 
 /// The resource and the agent's last prompt of each open wait that the intake polls for, then the
-/// pull request or Linear issue and creation time of each unmet merge or issue condition of a hold,
-/// then each subscription of a task that has not failed or been dropped, then the branch of each
+/// pull request or Linear issue and creation time of each unmet merge condition and each issue
+/// condition of an open hold, met or not, then each subscription of a task that has not failed or been dropped, then the branch of each
 /// active task, or of a task done in the last 10 minutes whose branch no event named yet, so the
 /// intake sees a pull request its worker opened itself.
 pub fn watched(db: &Connection) -> rusqlite::Result<Vec<(String, String)>> {
@@ -1757,7 +1764,8 @@ pub fn watched(db: &Connection) -> rusqlite::Result<Vec<(String, String)>> {
            UNION ALL
            SELECT 1, holds.id, holds.resource, holds.created FROM holds
            JOIN tasks ON tasks.id = holds.task AND tasks.state NOT IN ('done', 'failed', 'dropped')
-           WHERE holds.kind IN ('merge', 'issue') AND holds.released IS NULL AND holds.met IS NULL
+           WHERE holds.kind IN ('merge', 'issue') AND holds.released IS NULL
+           AND (holds.met IS NULL OR holds.kind = 'issue')
            UNION ALL
            SELECT 2, subscriptions.rowid, subscriptions.resource, subscriptions.created
            FROM subscriptions
@@ -2559,8 +2567,8 @@ fn share(tx: &Transaction, run: &NewRun) -> rusqlite::Result<()> {
     Ok(())
 }
 
-/// Blocks `task` with `reason`, or drops it when it is a lead task, ending its live run first as
-/// `ended_as`, if it has one, after reading its transcript.
+/// Blocks `task` with `reason`, ending its live run first as `ended_as`, if it has one, after reading
+/// its transcript.
 pub(crate) fn block(
     db: &mut Connection,
     trace: &Trace,
@@ -2590,10 +2598,9 @@ pub(crate) fn block(
         &format!("UPDATE runs SET ended = {NOW}, ended_as = ?2 WHERE task = ?1 AND ended IS NULL"),
         params![task, ended_as],
     )?;
-    // A lead task's ask goes back to the person as it blocks, so no resume could answer it.
     tx.execute(
-        "UPDATE tasks SET state = iif(trigger = ?3, 'dropped', 'blocked'), reason = ?2 WHERE id = ?1",
-        params![task, reason, crate::tools::LEAD_TRIGGER],
+        "UPDATE tasks SET state = 'blocked', reason = ?2 WHERE id = ?1",
+        params![task, reason],
     )?;
     tx.commit()
 }

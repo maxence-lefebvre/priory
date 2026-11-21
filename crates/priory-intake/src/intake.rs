@@ -560,11 +560,14 @@ fn dispatch(bus: &dyn Log, triggers: &[(&str, &Trigger)], source: &Message) -> R
     Ok(())
 }
 
-/// Marks a GitHub comment or review `own` when the `gh` login the intake polls as wrote it, the
-/// login a worker's `gh` posts as. Unmarked until a poll named that login.
+/// Marks a GitHub comment or review `own` when the login `gh` runs as wrote it, the login a
+/// worker's `gh` posts as. Unmarked while `gh` cannot say who it is.
 fn mark_own(message: &mut Message) {
     let feedback = [COMMENTED, THREAD_COMMENTED, REVIEWED, ISSUE_COMMENTED];
-    if let Some(viewer) = gh::viewer().filter(|_| feedback.contains(&message.kind.as_str())) {
+    if !feedback.contains(&message.kind.as_str()) {
+        return;
+    }
+    if let Some(viewer) = gh::viewer() {
         message.data["own"] = json!(message.data["actor"] == viewer);
     }
 }

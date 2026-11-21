@@ -391,7 +391,7 @@ const PULL_FIELDS: &str = "fragment pull on PullRequest { number headRefName hea
 pub(super) fn open_pulls(repo: &str) -> Result<Vec<Pull>, String> {
     let (owner, name) = repo.split_once('/').unwrap_or_default();
     let query = format!(
-        "query($owner: String!, $name: String!, $endCursor: String) {{ viewer {{ login }} repository(owner: $owner, name: $name) {{ \
+        "query($owner: String!, $name: String!, $endCursor: String) {{ repository(owner: $owner, name: $name) {{ \
          pullRequests(states: OPEN, first: 100, after: $endCursor) {{ pageInfo {{ hasNextPage endCursor }} \
          nodes {{ ...pull }} }} }} }} {PULL_FIELDS}"
     );
@@ -408,7 +408,6 @@ pub(super) fn open_pulls(repo: &str) -> Result<Vec<Pull>, String> {
             &format!("query={query}"),
         ],
     )?;
-    pages.iter().for_each(super::gh::saw_viewer);
     let nodes = pages
         .iter()
         .flat_map(|page| page["data"]["repository"]["pullRequests"]["nodes"].as_array())
@@ -434,7 +433,7 @@ pub(super) fn pull_requests(
         .map(|number| format!("pr{number}: pullRequest(number: {number}) {{ ...pull }} "))
         .collect();
     let query = format!(
-        "query($owner: String!, $name: String!) {{ viewer {{ login }} repository(owner: $owner, name: $name) {{ {fields}}} }} {PULL_FIELDS}"
+        "query($owner: String!, $name: String!) {{ repository(owner: $owner, name: $name) {{ {fields}}} }} {PULL_FIELDS}"
     );
     let answer: serde_json::Value = gh(
         "graphql",
@@ -447,7 +446,6 @@ pub(super) fn pull_requests(
             &format!("query={query}"),
         ],
     )?;
-    super::gh::saw_viewer(&answer);
     let found = answer["data"]["repository"]
         .as_object()
         .into_iter()

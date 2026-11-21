@@ -501,32 +501,39 @@ fn closed(tx: &Transaction, id: i64, resource: &str, state: Option<&str>) -> rus
     meet(tx, id, &format!("{issue} is {state}"))
 }
 
-/// The unmet issue conditions of held tasks, with the `linear:<issue>` each waits on, whose
-/// current state the daemon reads.
+/// The issue conditions of held tasks, met or not, with the `linear:<issue>` each waits on, whose
+/// current state the daemon reads: a met one is met no more if its issue reopens.
 pub(crate) fn readable(db: &Connection) -> rusqlite::Result<Vec<(i64, String)>> {
     db.prepare(
         "SELECT holds.id, holds.resource FROM holds JOIN tasks ON tasks.id = holds.task
-         WHERE holds.kind = 'issue' AND holds.released IS NULL AND holds.met IS NULL
+         WHERE holds.kind = 'issue' AND holds.released IS NULL
          AND tasks.state = 'held' ORDER BY holds.id",
     )?
     .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
     .collect()
 }
 
-/// Meets the issue condition `id` if `current`, the state the daemon read for its issue, closes it.
+/// Meets the issue condition `id` if `current`, the state the daemon read for its issue, closes
+/// it, and makes a met one unmet if `current` no longer does.
 pub(crate) fn read(db: &mut Connection, id: i64, current: &str) -> rusqlite::Result<()> {
     let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
-    let resource = tx
+    let found = tx
         .query_row(
-            "SELECT holds.resource FROM holds JOIN tasks ON tasks.id = holds.task
-             WHERE holds.id = ?1 AND holds.released IS NULL AND holds.met IS NULL
-             AND tasks.state = 'held'",
+            "SELECT holds.resource, holds.met IS NOT NULL
+             FROM holds JOIN tasks ON tasks.id = holds.task WHERE holds.id = ?1 AND holds.released IS NULL AND tasks.state = 'held'",
             [id],
-            |row| row.get::<_, String>(0),
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, bool>(1)?)),
         )
         .optional()?;
-    if let Some(resource) = resource {
-        closed(&tx, id, &resource, Some(current))?;
+    match found {
+        Some((_, true)) if !closes(current) => {
+            tx.execute(
+                "UPDATE holds SET met = NULL, met_as = NULL WHERE id = ?1",
+                [id],
+            )?;
+        }
+        Some((resource, false)) => closed(&tx, id, &resource, Some(current))?,
+        _ => {}
     }
     tx.commit()
 }
