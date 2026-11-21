@@ -101,6 +101,38 @@ fn full_sha(commit: &str) -> Result<String, String> {
     ))
 }
 
+/// A result's `branches`, bottom first: the task's own branch last, each lower one named after it,
+/// so `open-pr` never pushes a branch of another task or the trunk.
+fn branches(value: &Value, own: Option<&str>) -> Result<Option<Vec<String>>, String> {
+    if value.is_null() {
+        return Ok(None);
+    }
+    let wrong = || {
+        format!(
+            "branches must list the stack's branches bottom first, each once, ending with the task's branch {}, each lower one named {}-<name>",
+            own.unwrap_or("-"),
+            own.unwrap_or("-")
+        )
+    };
+    let branches: Vec<String> = serde_json::from_value(value.clone()).map_err(|_| wrong())?;
+    let Some((top, lower)) = branches.split_last() else {
+        return Err(wrong());
+    };
+    let named = |branch: &String| {
+        own.and_then(|own| branch.strip_prefix(own)?.strip_prefix('-'))
+            .is_some_and(|name| !name.is_empty())
+    };
+    let unique = branches
+        .iter()
+        .collect::<std::collections::BTreeSet<_>>()
+        .len()
+        == branches.len();
+    if Some(top.as_str()) != own || !lower.iter().all(named) || !unique {
+        return Err(wrong());
+    }
+    Ok(Some(branches))
+}
+
 fn optional(arguments: &Value, name: &str) -> Result<Option<String>, String> {
     match &arguments[name] {
         Value::Null => Ok(None),
@@ -216,6 +248,15 @@ fn result(
         Ok(commit) => commit,
         Err(error) => return Ok(Err(error)),
     };
+    let own: Option<String> = tx.query_row(
+        "SELECT branch FROM tasks WHERE id = ?1",
+        [run.task],
+        |row| row.get(0),
+    )?;
+    let branches = match branches(&arguments["branches"], own.as_deref()) {
+        Ok(branches) => branches,
+        Err(error) => return Ok(Err(error)),
+    };
     let Some(step) = step(workflows, &run.workflow, &run.step) else {
         return Ok(Err(format!(
             "step {} is not in workflow {}",
@@ -246,6 +287,12 @@ fn result(
             run.id, run.task, run.step, outcome, summary, evidence, commit, reason
         ],
     )?;
+    if let Some(branches) = branches {
+        tx.execute(
+            "INSERT INTO result_branches (run, branches) VALUES (?1, ?2)",
+            params![run.id, Value::from(branches).to_string()],
+        )?;
+    }
     Ok(Ok(format!(
         "result stored: the task moves to {next} when this turn ends"
     )))
@@ -909,8 +956,17 @@ pub(crate) fn event(tx: &Transaction, task: i64, seq: i64) -> rusqlite::Result<b
         )?;
         let mut line = crate::state::line(&kind_of_event, subject.as_deref(), &data);
         let data: Value = serde_json::from_str(&data).expect("inbox data is JSON");
+        let on = data["repo"]
+            .as_str()
+            .zip(data["pull_request"].as_u64())
+            .map(|(repo, number)| route::pull_request(repo, number));
+        // Each pull request of a stack has its own gate, which only its events decide.
+        if daemon && on.as_deref() != Some(resource.as_str()) {
+            continue;
+        }
         // A comment written before the wait, such as the agent's own, wakes nothing.
-        let said = feedback(&resource, &kind_of_event, &data)
+        let place = crate::stack::place(tx, task, &resource)?;
+        let said = feedback(&resource, place.as_deref(), &kind_of_event, &data)
             .filter(|_| later || kind_of_event == REVIEWED);
         if daemon {
             let Some(said) = said.filter(|_| !settles(&kind_of_event, &data)) else {
@@ -961,12 +1017,17 @@ fn settles(kind: &str, data: &Value) -> bool {
     kind == REVIEWED && matches!(data["state"].as_str(), Some("approved" | "dismissed"))
 }
 
-/// Who said what and where, when `data` is feedback on the pull request `resource`.
-fn feedback(resource: &str, kind: &str, data: &Value) -> Option<String> {
+/// Who said what and where, when `data` is feedback on the pull request `resource`, at `place`
+/// in its task's stack.
+fn feedback(resource: &str, place: Option<&str>, kind: &str, data: &Value) -> Option<String> {
     let on = route::pull_request(data["repo"].as_str()?, data["pull_request"].as_u64()?);
     if on != resource || !FEEDBACK.contains(&kind) {
         return None;
     }
+    let resource = match place {
+        Some(place) => format!("{resource} ({place})"),
+        None => resource.to_owned(),
+    };
     let who = data["actor"].as_str().unwrap_or("a deleted user");
     let url = data["url"].as_str().unwrap_or_default();
     let body = data["body"].as_str().unwrap_or_default();
@@ -1009,7 +1070,7 @@ impl Seen {
 /// decides: red wakes the agent, and green with none pending or failing marks the task done. With
 /// no check at the commit, a newest snapshot of no check runs marks it done too.
 fn judge(tx: &Transaction, wait: i64) -> rusqlite::Result<bool> {
-    let (task, resource, commit, mark): (i64, String, String, Option<i64>) = tx.query_row(
+    let (task, resource, pinned, mark): (i64, String, Option<String>, Option<i64>) = tx.query_row(
         "SELECT waits.task, waits.resource, waits.head_sha, coalesce(
            (SELECT max(inbox) FROM actions WHERE result = waits.run AND commit_sha = waits.head_sha),
            results.inbox)
@@ -1040,9 +1101,20 @@ fn judge(tx: &Transaction, wait: i64) -> rusqlite::Result<bool> {
     let Some(newest) = seen.first() else {
         return Ok(false);
     };
+    let stack = crate::stack::of(tx, task)?;
+    let stacked = stack.len() > 1;
     if newest.kind == CLOSED {
+        if newest.data["merged"] == true && stacked {
+            return merged(tx, wait, task, &resource, newest, &stack);
+        }
         if newest.data["merged"] == true {
             return done(tx, wait, task, newest.seq);
+        }
+        let at = stack.iter().position(|pull| pull.resource == resource);
+        if let Some(asked) = at.filter(|_| stacked).map(|at| stranded(task, &stack, at))
+            && !answered(tx, &asked.name)?
+        {
+            return ask_stack(tx, task, asked);
         }
         let reason = match newest.data["merged"] {
             Value::Bool(false) => format!("wait {wait} fired: {resource} closed without a merge"),
@@ -1053,6 +1125,13 @@ fn judge(tx: &Transaction, wait: i64) -> rusqlite::Result<bool> {
         fire(tx, wait, task, &reason, Some(newest.seq))?;
         return Ok(true);
     }
+    if let Some(asked) = retargeted(task, &stack, &resource, newest)
+        && !answered(tx, &asked.name)?
+    {
+        return ask_stack(tx, task, asked);
+    }
+    // A lower pull request of a stack is judged at its newest head, since a restack moves it.
+    let commit = pinned.unwrap_or_else(|| newest.head.clone());
     if newest.head != commit {
         // A head seen before the result may be one the agent's commit replaced since.
         if newest.seq <= mark.unwrap_or_default() {
@@ -1101,10 +1180,136 @@ fn judge(tx: &Transaction, wait: i64) -> rusqlite::Result<bool> {
         CHECK_RUNS => check.data["runs"].as_u64() == Some(0),
         _ => check.data["pending"].as_u64() == Some(0) && failing == Some(0),
     };
-    if !green {
+    // A stack is done once every pull request merged, so green checks leave it waiting.
+    if !green || stacked {
         return Ok(false);
     }
     done(tx, wait, task, check.seq)
+}
+
+/// A daemon's ask about a stack: its stable name, so a repeated event asks once, and its question.
+struct StackAsk {
+    name: String,
+    question: String,
+    onto: String,
+}
+
+/// The ask about the pull request at `at` of `stack`, which closed without a merge.
+fn stranded(task: i64, stack: &[crate::stack::Pull], at: usize) -> StackAsk {
+    let pull = &stack[at];
+    let above = open_above(stack, at);
+    let based = match above.len() {
+        0 => String::new(),
+        1 => format!(", and {} is based on it", listed(&above)),
+        _ => format!(", and {} are based on it", listed(&above)),
+    };
+    StackAsk {
+        name: format!("stack-{task}-closed-{}", pull.number()),
+        question: format!(
+            "#{} ({} of {}) closed without a merge{based}. What should the worker do?",
+            pull.number(),
+            at + 1,
+            stack.len()
+        ),
+        onto: pull.base.clone(),
+    }
+}
+
+/// Whether a person answered the daemon's ask `name`: their decision stands, so the same event
+/// never asks again.
+fn answered(tx: &Transaction, name: &str) -> rusqlite::Result<bool> {
+    tx.query_row(
+        "SELECT EXISTS (SELECT 1 FROM asks WHERE name = ?1 AND answer IS NOT NULL)",
+        [name],
+        |row| row.get(0),
+    )
+}
+
+/// The ask when `resource`, the bottom of `stack`, is now based on another branch than its trunk,
+/// as when someone retargets it by hand: Priory cannot tell where the stack should land.
+fn retargeted(
+    task: i64,
+    stack: &[crate::stack::Pull],
+    resource: &str,
+    seen: &Seen,
+) -> Option<StackAsk> {
+    let bottom = stack.first().filter(|_| stack.len() > 1)?;
+    let base = seen.data["base_branch"].as_str()?;
+    if bottom.resource != resource || base == bottom.base {
+        return None;
+    }
+    Some(StackAsk {
+        name: format!("stack-{task}-retargeted-{}", bottom.number()),
+        question: format!(
+            "#{}, the bottom of the stack, is now based on {base}, not {}. What should the worker do?",
+            bottom.number(),
+            bottom.base
+        ),
+        onto: bottom.base.clone(),
+    })
+}
+
+/// The open pull requests above position `at` of `stack`, as `#8`.
+fn open_above(stack: &[crate::stack::Pull], at: usize) -> Vec<String> {
+    stack[at + 1..]
+        .iter()
+        .filter(|pull| pull.state == "open")
+        .map(|pull| format!("#{}", pull.number()))
+        .collect()
+}
+
+/// `#8`, `#8 and #9`, or `#8, #9 and #10`.
+fn listed(items: &[String]) -> String {
+    match items.split_last() {
+        None => String::new(),
+        Some((last, [])) => last.clone(),
+        Some((last, rest)) => format!("{} and {last}", rest.join(", ")),
+    }
+}
+
+/// Puts `asked` to a person for `task`, once by its name, and ends the task's gates: the answer
+/// wakes the agent.
+fn ask_stack(tx: &Transaction, task: i64, asked: StackAsk) -> rusqlite::Result<bool> {
+    let options = serde_json::json!([format!("restack onto {}", asked.onto), "stop"]).to_string();
+    tx.execute(
+        "INSERT OR IGNORE INTO asks (task, step, kind, name, question, options)
+         SELECT id, step, 'agent', ?2, ?3, ?4 FROM tasks WHERE id = ?1",
+        params![task, asked.name, asked.question, options],
+    )?;
+    tx.execute(
+        "UPDATE waits SET withdrawn = ?2 WHERE task = ?1 AND daemon AND fired IS NULL AND withdrawn IS NULL",
+        params![task, BEATEN],
+    )?;
+    Ok(true)
+}
+
+/// Fires the gate `wait` of a stack's pull request that merged: the task is done once every pull
+/// request merged, and wakes to restack the ones still open above it.
+fn merged(
+    tx: &Transaction,
+    wait: i64,
+    task: i64,
+    resource: &str,
+    close: &Seen,
+    stack: &[crate::stack::Pull],
+) -> rusqlite::Result<bool> {
+    if stack.iter().all(|pull| pull.state == "merged") {
+        return done(tx, wait, task, close.seq);
+    }
+    let above = stack
+        .iter()
+        .position(|pull| pull.resource == resource)
+        .map(|at| open_above(stack, at))
+        .unwrap_or_default();
+    if above.is_empty() {
+        mark_fired(tx, wait, Some(close.seq))?;
+        return Ok(true);
+    }
+    let onto = close.data["base_branch"].as_str().unwrap_or("its base");
+    let number = resource.rsplit_once('#').map_or("", |(_, number)| number);
+    let text = format!("#{number} merged; rebase {} onto {onto}", listed(&above));
+    fire(tx, wait, task, &text, Some(close.seq))?;
+    Ok(true)
 }
 
 /// Fires the daemon's checks wait `wait` on the event `seq` and marks its task done.
@@ -1226,6 +1431,12 @@ fn fire(
     seq: Option<i64>,
 ) -> rusqlite::Result<()> {
     if mark_fired(tx, wait, seq)? {
+        // The other gates of a stack end with this wake: the next `done` stores fresh ones.
+        tx.execute(
+            "UPDATE waits SET withdrawn = ?2 WHERE task = ?3 AND daemon AND fired IS NULL
+             AND withdrawn IS NULL AND (SELECT daemon FROM waits WHERE id = ?1)",
+            params![wait, BEATEN, task],
+        )?;
         wake_on(tx, task, text, seq)?;
     }
     Ok(())
@@ -1667,16 +1878,50 @@ fn enter(
             set(tx, task, "blocked", None, Some(&reason))?;
             return finish("blocked");
         };
-        tx.execute(
-            "INSERT INTO waits (task, run, kind, resource, head_sha, daemon)
-             VALUES (?1, ?2, 'checks', ?3, ?4, 1)",
-            params![task, result_run, resource, commit],
-        )?;
-        let wait = tx.last_insert_rowid();
+        let stack = crate::stack::of(tx, task)?;
+        // A closed pull request of a stack waits for a person's decision before anything else.
+        for closed in (0..stack.len()).filter(|&at| stack.len() > 1 && stack[at].state == "closed")
+        {
+            let asked = stranded(task, &stack, closed);
+            if answered(tx, &asked.name)? {
+                continue;
+            }
+            ask_stack(tx, task, asked)?;
+            set(tx, task, "asleep", Some(&at), None)?;
+            set_ending(tx, task, step(workflows, workflow, &at))?;
+            return finish("asleep");
+        }
+        // A stack gates each open pull request, its top at the result's commit; one is `resource`.
+        let gates: Vec<(String, Option<&str>)> = match stack.split_last() {
+            Some((top, lower)) if !lower.is_empty() => stack
+                .iter()
+                .filter(|pull| pull.state == "open")
+                .map(|pull| {
+                    let pinned = (pull.resource == top.resource).then_some(commit.as_str());
+                    (pull.resource.clone(), pinned)
+                })
+                .collect(),
+            _ => vec![(resource, Some(commit.as_str()))],
+        };
+        if gates.is_empty() {
+            set(tx, task, "done", None, None)?;
+            return finish("done");
+        }
+        let mut waits = Vec::new();
+        for (resource, pinned) in gates {
+            tx.execute(
+                "INSERT INTO waits (task, run, kind, resource, head_sha, daemon)
+                 VALUES (?1, ?2, 'checks', ?3, ?4, 1)",
+                params![task, result_run, resource, pinned],
+            )?;
+            waits.push(tx.last_insert_rowid());
+        }
         // The agent of the result's step fixes what the checks find, even after a human step.
         set(tx, task, "asleep", Some(&at), None)?;
         set_ending(tx, task, step(workflows, workflow, &at))?;
-        judge(tx, wait)?;
+        for wait in waits {
+            judge(tx, wait)?;
+        }
         return finish("asleep");
     }
     if target == "done" || target == "stop" {
@@ -2380,7 +2625,8 @@ pub(crate) fn reopen(tx: &Transaction, trace: &Trace, task: i64, seq: i64) -> ru
     let generation = generation + 1;
     regenerate(tx, task, generation)?;
     enter(tx, task, &workflow, &target, None, "", workflows)?;
-    let said = feedback(&resource, &kind, &data).unwrap_or_default();
+    let place = crate::stack::place(tx, task, &resource)?;
+    let said = feedback(&resource, place.as_deref(), &kind, &data).unwrap_or_default();
     let text = format!("Feedback reopened this done task as generation {generation}: {said}");
     wake_on(tx, task, &text, Some(seq))?;
     trace::reopened(tx, trace, task, &resource)
@@ -2720,6 +2966,15 @@ pub(crate) struct Done {
     pub pull_request: Option<String>,
     pub commit: Option<String>,
     pub error: Option<String>,
+    /// The pull requests `open-pr` opened, bottom first; the last is `pull_request`.
+    pub stack: Vec<Stacked>,
+}
+
+/// One pull request of a task's stack.
+pub(crate) struct Stacked {
+    pub resource: String,
+    pub branch: String,
+    pub base: String,
 }
 
 /// Stores the `run` action of the code step `at` as `running` before its command starts, and the
@@ -2877,13 +3132,13 @@ pub(crate) fn performed(
     trace: &Trace,
 ) -> rusqlite::Result<()> {
     let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
-    if let Some(resource) = done.pull_request.take() {
-        match crate::state::taken(&tx, task, &resource)? {
-            Some(refused) => {
-                done.status = "failed";
-                done.error = Some(refused);
-            }
-            None => done.pull_request = Some(resource),
+    for pull in &done.stack {
+        if let Some(refused) = crate::state::taken(&tx, task, &pull.resource)? {
+            done.status = "failed";
+            done.error = Some(refused);
+            done.pull_request = None;
+            done.stack.clear();
+            break;
         }
     }
     tx.execute(
@@ -2900,15 +3155,16 @@ pub(crate) fn performed(
             done.error
         ],
     )?;
-    if let Some(resource) = &done.pull_request {
+    for pull in &done.stack {
         tx.execute(
             "INSERT OR IGNORE INTO owns (task, resource) VALUES (?1, ?2)",
-            params![task, resource],
+            params![task, pull.resource],
         )?;
         tx.execute(
             "INSERT OR IGNORE INTO subscriptions (task, resource) VALUES (?1, ?2)",
-            params![task, resource],
+            params![task, pull.resource],
         )?;
+        crate::stack::record(&tx, task, &pull.resource, &pull.branch, &pull.base)?;
     }
     let target = at
         .next
