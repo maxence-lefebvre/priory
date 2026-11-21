@@ -47,7 +47,7 @@ const OUTPUT: &str = "factory.intake";
 /// reports of sections, 36, which added deliveries, 37, which added progress, 39, which added run
 /// actions, 40, which added answer actions, 42, which added dispatches, 49, which added task ends, 51, which added a run's crossing of `compactAt`, 53, which added intervention levels, 56, which added the step an irreversible approval lets run, 58, which added withdrawal reasons, and 59, which added green stack gates and returned routed asks, 61, which added findings, 62, which added merge risk, 63, which added plan fields, 65, which added chosen subscriptions and approval generations, 66, which added the step a gate enters after the merge, 70, which added idle compactions and session definitions, and 71, which added cleared deliveries, ended snoozes and withdrawal times. Schema 38's visits
 /// table is created only if missing, so it stays.
-const UNDO_SINCE_SEARCH: &str = "ALTER TABLE runs DROP COLUMN kit_hash; ALTER TABLE deliveries DROP COLUMN cleared; ALTER TABLE snoozes DROP COLUMN ended;
+const UNDO_SINCE_SEARCH: &str = "ALTER TABLE tasks DROP COLUMN base_sha; ALTER TABLE runs DROP COLUMN kit_hash; ALTER TABLE deliveries DROP COLUMN cleared; ALTER TABLE snoozes DROP COLUMN ended;
          DROP TRIGGER ask_withdrawn_at; DROP TRIGGER wait_withdrawn_at;
          ALTER TABLE asks DROP COLUMN withdrawn_at; ALTER TABLE waits DROP COLUMN withdrawn_at;
          ALTER TABLE tasks DROP COLUMN base_task; ALTER TABLE tasks DROP COLUMN batch; ALTER TABLE tasks DROP COLUMN batch_entry; DROP TABLE idle_compactions; ALTER TABLE shared_sessions DROP COLUMN definition; DROP INDEX todos_open_connector; ALTER TABLE todos DROP COLUMN connector; ALTER TABLE waits DROP COLUMN after; ALTER TABLE subscriptions DROP COLUMN chosen; ALTER TABLE approvals DROP COLUMN generation;
@@ -5841,7 +5841,7 @@ fn a_state_file_whose_asks_an_approval_names_upgrades_to_outside_asks() {
          ALTER TABLE actions DROP COLUMN stdout; ALTER TABLE actions DROP COLUMN stderr;
          ALTER TABLE actions DROP COLUMN pid; ALTER TABLE actions DROP COLUMN pid_started;
          ALTER TABLE actions DROP COLUMN ended;
-         ALTER TABLE tasks DROP COLUMN progress;
+         ALTER TABLE tasks DROP COLUMN progress; ALTER TABLE tasks DROP COLUMN base_sha;
          DROP TABLE deliveries;
          DROP TABLE reports;
          DROP TABLE dispatches;
@@ -9597,6 +9597,58 @@ fn a_dropped_task_revives_at_its_step_in_its_session_as_generation_2() {
 }
 
 #[test]
+fn a_task_keeps_the_commit_its_worktree_started_from_after_the_origin_moves_and_a_revive() {
+    let mut setup = Setup::with_workflow("base-sha", STEPS);
+    setup.calls(&[result("hopeless"), result("ready")]);
+    let bare = setup.dir.join("origin/owner/repo.git");
+    let origin_head = || {
+        let head = git(&bare).args(["rev-parse", "main"]).output().unwrap();
+        String::from_utf8(head.stdout).unwrap().trim().to_owned()
+    };
+    let started = origin_head();
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == "dropped")
+    });
+    let base = |setup: &Setup| {
+        let shown = setup.priory(&["task", "1", "--json"]);
+        assert!(shown.status.success(), "{shown:?}");
+        serde_json::from_slice::<serde_json::Value>(&shown.stdout).unwrap()["base_sha"].clone()
+    };
+    assert_eq!(base(&setup), json!(started));
+    let work = setup.dir.join("work");
+    fs::write(work.join("later.txt"), "later\n").unwrap();
+    for args in [
+        &["add", "later.txt"][..],
+        &[
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@t",
+            "commit",
+            "-qm",
+            "later",
+        ],
+    ] {
+        assert!(git(&work).args(args).status().unwrap().success());
+    }
+    let pushed = git(&work)
+        .args(["push", "-q"])
+        .arg(&bare)
+        .arg("main")
+        .status();
+    assert!(pushed.unwrap().success());
+    assert_ne!(origin_head(), started);
+    setup.gone("priory-1");
+
+    assert!(setup.priory(&["revive", "1"]).status.success());
+
+    setup.until("tasks", |rows| rows[0][3] == "implement");
+    assert_eq!(base(&setup), json!(started));
+}
+
+#[test]
 fn an_answer_to_the_ask_of_an_earlier_generation_is_refused() {
     let mut setup = Setup::with_workflow("revive-ask", STEPS);
     setup.calls(&[ask()]);
@@ -9901,7 +9953,7 @@ fn an_approval_stored_before_generations_were_kept_is_asked_again_after_the_upgr
     // The state file as version 64 left it: an approval names no generation.
     let db = rusqlite::Connection::open(setup.dir.join("priory.db")).unwrap();
     db.execute_batch(
-        "ALTER TABLE runs DROP COLUMN kit_hash; ALTER TABLE deliveries DROP COLUMN cleared; ALTER TABLE snoozes DROP COLUMN ended;
+        "ALTER TABLE tasks DROP COLUMN base_sha; ALTER TABLE runs DROP COLUMN kit_hash; ALTER TABLE deliveries DROP COLUMN cleared; ALTER TABLE snoozes DROP COLUMN ended;
          DROP TRIGGER ask_withdrawn_at; DROP TRIGGER wait_withdrawn_at;
          ALTER TABLE asks DROP COLUMN withdrawn_at; ALTER TABLE waits DROP COLUMN withdrawn_at;
          ALTER TABLE tasks DROP COLUMN base_task; ALTER TABLE tasks DROP COLUMN batch; ALTER TABLE tasks DROP COLUMN batch_entry; DROP TABLE idle_compactions; ALTER TABLE shared_sessions DROP COLUMN definition; DROP INDEX todos_open_connector; ALTER TABLE todos DROP COLUMN connector; ALTER TABLE waits DROP COLUMN after;

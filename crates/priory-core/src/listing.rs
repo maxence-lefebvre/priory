@@ -1267,7 +1267,7 @@ pub fn task(db: &Connection, id: i64) -> rusqlite::Result<Option<Value>> {
         db,
         &format!(
             "{} SELECT id, key, workflow, step, state, band, lane, reason, queue.place AS position,
-               generation, retired, tldr, changed AS since, repo, branch, grade, grade_reason,
+               generation, retired, tldr, changed AS since, repo, branch, base_sha, grade, grade_reason,
                merge_risk, progress, plan_goal, plan_testing, plan_brief, verification, intervention, lead, batch, {CONDITIONS}
              FROM tasks LEFT JOIN queue USING (id) WHERE id = ?1",
             places()

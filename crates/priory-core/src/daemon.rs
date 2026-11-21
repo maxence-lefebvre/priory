@@ -1273,8 +1273,9 @@ fn restore_worktree(
         )?;
         return Ok(Restored::Waits);
     }
-    if let Err(reason) = runtime::worktree(home, repo, &worktree_name(db, runner, task)?, None) {
-        return Ok(Restored::Failed(reason));
+    match runtime::worktree(home, repo, &worktree_name(db, runner, task)?, None) {
+        Ok((_, _, base)) => state::set_base(db, task, base.as_deref())?,
+        Err(reason) => return Ok(Restored::Failed(reason)),
     }
     db.execute("UPDATE tasks SET retired = NULL WHERE id = ?1", [task])?;
     Ok(Restored::Ready)
@@ -1601,7 +1602,10 @@ fn start(
     let folder = worktree_name(db, runner, admission.task)?;
     let base = base_branch(db, admission.task)?;
     let (worktree, branch) = match runtime::worktree(home, repo, &folder, base.as_deref()) {
-        Ok(found) => found,
+        Ok((worktree, branch, base)) => {
+            state::set_base(db, admission.task, base.as_deref())?;
+            (worktree, branch)
+        }
         Err(reason) => return Ok(Err(reason)),
     };
     let head = runtime::head(&worktree, &branch);
