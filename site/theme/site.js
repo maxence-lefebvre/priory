@@ -35,7 +35,11 @@ function mdbook_something_else_has_focus(e) {
     covered.forEach((el) => { if (el) el.inert = open; });
     navButton.setAttribute("aria-expanded", String(open));
     navButton.setAttribute("aria-label", open ? "Close the navigation" : "Open the navigation");
-    if (open) (nav.querySelector("a.active") || nav.querySelector("a")).focus();
+    const current = nav.querySelector("a.active") || nav.querySelector("a");
+    if (open && current) {
+      current.focus({ preventScroll: true });
+      current.scrollIntoView({ block: "center" });
+    }
   };
   navButton.addEventListener("click", () => setNav(!html.classList.contains("nav-open")));
   document.addEventListener("keydown", (e) => {
