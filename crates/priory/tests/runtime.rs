@@ -161,6 +161,7 @@ impl Setup {
             .env_remove("OTEL_RESOURCE_ATTRIBUTES")
             .env("PATH", path)
             .env("TMUX_TMPDIR", self.tmux.path())
+            .env("XDG_RUNTIME_DIR", self.tmux.path())
             .env("HERDR_BUS_DB", self.dir.join("bus.db"))
             .env("PRIORY_DB", self.dir.join("priory.db"))
             .env("PRIORY_HOME", self.dir.join("home"))
@@ -176,6 +177,11 @@ impl Setup {
             )
             .env("GIT_CONFIG_VALUE_0", "https://github.com/");
         command
+    }
+
+    /// Where this setup's daemon listens.
+    fn socket(&self) -> PathBuf {
+        priory_runtime::runtime::socket_in(Some(self.tmux.path()), &self.dir.join("home"))
     }
 
     fn priory(&self, args: &[&str]) -> Exit {
@@ -671,7 +677,7 @@ fn a_cli_task_stored_before_tasks_kept_a_repository_starts_in_its_requests_repos
     db.execute_batch("ALTER TABLE tasks DROP COLUMN repo; ALTER TABLE outbox DROP COLUMN compact; PRAGMA user_version = 23;")
         .unwrap();
     drop(db);
-    let _ = fs::remove_file(setup.dir.join("home/priory.sock"));
+    let _ = fs::remove_file(setup.socket());
 
     setup.start();
     listening(&setup);
@@ -1464,8 +1470,8 @@ fn a_restarted_daemon_reattaches_to_its_run_and_types_nothing_twice() {
 fn a_signal_the_daemon_dies_holding_is_spooled_for_the_next_daemon() {
     let setup = Setup::new("dying");
     fs::create_dir_all(setup.dir.join("home")).unwrap();
-    let listener =
-        std::os::unix::net::UnixListener::bind(setup.dir.join("home/priory.sock")).unwrap();
+    fs::create_dir_all(setup.socket().parent().unwrap()).unwrap();
+    let listener = std::os::unix::net::UnixListener::bind(setup.socket()).unwrap();
     // A daemon killed after it accepted the line closes the connection with no reply.
     let daemon = std::thread::spawn(move || {
         let (stream, _) = listener.accept().unwrap();
@@ -8286,8 +8292,7 @@ fn a_hold_reason_that_reads_as_a_flag_stays_the_reason() {
 fn a_silent_client_on_the_daemons_socket_does_not_stop_a_persons_command() {
     let setup = queued_without_room("socket-silent");
     listening(&setup);
-    let _silent =
-        std::os::unix::net::UnixStream::connect(setup.dir.join("home/priory.sock")).unwrap();
+    let _silent = std::os::unix::net::UnixStream::connect(setup.socket()).unwrap();
 
     let reply = person(&setup, "hold", &["1", "--reason", "later"]);
 
@@ -8298,8 +8303,7 @@ fn a_silent_client_on_the_daemons_socket_does_not_stop_a_persons_command() {
 fn a_client_that_trickles_a_line_on_the_daemons_socket_does_not_stop_a_persons_command() {
     let setup = queued_without_room("socket-trickle");
     listening(&setup);
-    let mut trickle =
-        std::os::unix::net::UnixStream::connect(setup.dir.join("home/priory.sock")).unwrap();
+    let mut trickle = std::os::unix::net::UnixStream::connect(setup.socket()).unwrap();
     std::thread::spawn(move || {
         while std::io::Write::write_all(&mut trickle, b"x").is_ok() {
             std::thread::sleep(Duration::from_millis(500));
@@ -10000,7 +10004,7 @@ fn once_listening(setup: &Setup, args: &[&str]) -> Exit {
 
 fn listening(setup: &Setup) {
     let deadline = Instant::now() + Duration::from_secs(60);
-    while !setup.dir.join("home/priory.sock").exists() {
+    while !setup.socket().exists() {
         assert!(Instant::now() < deadline, "the daemon never listened");
         std::thread::sleep(Duration::from_millis(50));
     }
@@ -12990,6 +12994,7 @@ fn guard_hook(home: &Path, command: &str) -> (String, Duration) {
     let mut hook = Command::new(env!("CARGO_BIN_EXE_priory"))
         .args(["hook", "PreToolUse"])
         .env("PRIORY_HOME", home)
+        .env("XDG_RUNTIME_DIR", home)
         .env("PRIORY_SESSION", "6f1c0b9e-0d2a-4f43-9a51-3c2e8e1b7d10")
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
@@ -13023,7 +13028,9 @@ fn a_daemon_that_does_not_answer_gets_a_guarded_call_denied() {
     let home = Path::new(env!("CARGO_TARGET_TMPDIR")).join("guard-silent");
     let _ = fs::remove_dir_all(&home);
     fs::create_dir_all(&home).unwrap();
-    let listener = std::os::unix::net::UnixListener::bind(home.join("priory.sock")).unwrap();
+    let socket = priory_runtime::runtime::socket_in(Some(&home), &home);
+    fs::create_dir_all(socket.parent().unwrap()).unwrap();
+    let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
     let silent = std::thread::spawn(move || listener.accept().map(|(stream, _)| stream));
 
     let (printed, took) = guard_hook(&home, "gh pr merge 12");
@@ -14033,4 +14040,46 @@ fn a_todo_ranks_after_the_asks_and_before_the_rest_until_it_is_done() {
         String::from_utf8_lossy(&again.stderr),
         "priory todo: to-do 1 is already done\n"
     );
+}
+
+#[test]
+fn a_daemon_under_a_home_longer_than_a_socket_path_still_takes_a_persons_command() {
+    let setup = queued_without_room(&"long".repeat(32));
+    assert!(setup.dir.join("home").as_os_str().len() > 120);
+
+    let reply = person(&setup, "hold", &["1", "--reason", "later"]);
+
+    assert!(reply.starts_with("task 1 held"), "{reply}");
+}
+
+#[test]
+fn two_homes_get_two_sockets_and_a_command_reaches_only_its_own_daemon() {
+    let first = queued_without_room("socket-first");
+    let second = queued_without_room("socket-second");
+
+    let reply = person(&second, "hold", &["1", "--reason", "later"]);
+
+    assert_ne!(first.socket(), second.socket());
+    assert!(first.socket().exists() && second.socket().exists());
+    assert!(reply.starts_with("task 1 held"), "{reply}");
+    assert_ne!(held_as(&first, "1")[0], "held");
+}
+
+#[test]
+fn a_daemon_refuses_a_socket_directory_that_others_can_enter() {
+    let mut setup = Setup::new("socket-loose");
+    let run = setup.tmux.path().join("loose");
+    let dir = run.join("priory");
+    fs::create_dir_all(&dir).unwrap();
+    fs::set_permissions(&dir, fs::Permissions::from_mode(0o755)).unwrap();
+
+    setup.start_with(
+        Path::new(env!("CARGO_BIN_EXE_priory")),
+        &[("XDG_RUNTIME_DIR", run.to_str().unwrap())],
+    );
+
+    let status = setup.daemon.as_mut().unwrap().wait().unwrap();
+    let log = fs::read_to_string(setup.dir.join("daemon.log")).unwrap();
+    assert!(!status.success(), "{log}");
+    assert!(log.contains("not a private folder of this user"), "{log}");
 }
