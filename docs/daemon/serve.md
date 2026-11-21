@@ -160,9 +160,10 @@ A browser can get a notification when an agent asks something or a task stops, w
 closed. The person turns them on in the view's Settings, under Notifications, on each device. The
 browser then subscribes with the daemon's public key, and the page sends the subscription to
 `POST /api/push/subscribe`. Like every write, it needs the token, passes the Origin rule, and
-reaches the daemon on its socket; the daemon stores it in the state. The page sends it again each
-time the Notifications screen opens, so a daemon that lost it, such as with a new state file, gets
-it back, and a subscription the daemon refuses is dropped from the browser too.
+reaches the daemon on its socket; the daemon stores it in the state. The page sends it again the
+first time the Notifications screen opens after the page loads, so a daemon that lost it, such as
+with a new state file, gets it back, and a subscription the daemon refuses is dropped from the
+browser too.
 
 The daemon makes its key pair once, in [Priory home](home.md#push-keys). A trigger in the state
 queues a notification in the same transaction as the change, and only while a browser subscribes:
