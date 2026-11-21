@@ -64,6 +64,16 @@ The inbox groups unrouted events by resource and offers actions to subscribe an 
 
 ![The inbox on a phone in dark mode.](docs/images/web-view-inbox-390-dark.png)
 
+Tasks lists every task by saved view and filter, and Runs lists the recent runs with their agent, model, outcome, duration and tokens. Each row opens its task.
+
+![Tasks on a 1440 px screen in light mode: the saved views Active, Blocked and Ended, the filters State, Lane and Workflow, and a table of tasks with their state, key, title, workflow and step, lane, band and age. A blocked task shows its reason under its title, and three tasks carry a batch 1 tag.](docs/images/web-view-tasks-1440-light.png)
+
+![Tasks on a phone in dark mode.](docs/images/web-view-tasks-390-dark.png)
+
+![Runs on a 1440 px screen in light mode: the saved views Recent and Live, the filters Outcome, Agent and Step, and a table of runs with their state, run, task, step, agent and model, outcome, duration, tokens and start.](docs/images/web-view-runs-1440-light.png)
+
+![Runs on a phone in dark mode.](docs/images/web-view-runs-390-dark.png)
+
 Flows draw each workflow and mark who decides each edge and which step is irreversible. Costs show spend, merges and your attention.
 
 ![The implement workflow in Flows on a 1440 px screen in light mode, from implement to approve-pr to open-pr, with model decisions as dashed arrows, human decisions as solid arrows and a padlock on the irreversible step open-pr.](docs/images/web-view-flows-1440-light.png)
