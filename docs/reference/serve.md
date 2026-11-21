@@ -38,6 +38,7 @@ does, with every count in `older` at 0. Their rows match the CLI's JSON only wit
 | `/api/costs?since=WINDOW&by=SPLIT` | `priory costs --json --since WINDOW --by SPLIT` | an object: [Costs](#costs) |
 | `/api/grades?since=WINDOW` | `priory grades --json --since WINDOW` | an object: [Grades](#grades) |
 | `/api/attention?since=WINDOW&by=SPLIT` | `priory report attention --json --since WINDOW --by SPLIT` | an object: [Attention](#attention) |
+| `/api/runs/{id}/screen?have=HASH` | `priory screen --run ID --json` | the run's screen, with secrets hidden. See [Run screen](#run-screen) |
 | `/api/events?since=REV` | `priory wait --since REV` | `{"revision": N}` once it differs from `REV`. See [below](#apievents) |
 | `/api/push/key` | | `{"key": "<base64url>"}`, the daemon's VAPID public key. See [Notifications](#notifications) |
 | `POST /api/asks/{id}/answer` | `priory answer ID TEXT --revision N` | `{"ok": "<what the CLI prints>"}`. See [Writes](#writes) |
@@ -72,7 +73,7 @@ or a reason, is untrusted: render it as text.
 | `400` | The request does not parse, or its target does not start with `/`; `/api/events` lacks `since` or has a parameter out of range; `/api/desk` has a parameter other than `person`, or a broken escape; `/api/asks` has a parameter other than `band`, `risk` and `all=1`, a band the factory does not have, or a risk other than the eight [below](#asks); `/api/tasks` has a parameter other than `all=1`, or a `pr` that is not a pull request such as `github:owner/repo#7`; `/api/runs` has a parameter other than `all=1`; `/api/costs` has a parameter other than `since` and `by`, a broken escape, a `since` that cannot form a window (see [trace.md](../daemon/trace.md#costs)), or a `by` other than the five [below](#costs); `/api/grades` has a parameter other than `since`, a broken escape, or a `since` that does not parse; `/api/attention` has the same faults, with a `by` other than the three [below](#attention); a write's body is not the shape [below](#writes); for a webhook, it sends two `Content-Length`, or its payload lacks a field its event needs |
 | `401` | The token is missing or wrong on a path under `/api`; for a webhook, the signature is |
 | `403` | A `POST` carries an `Origin` whose host and port differ from its `Host`, such as a page on another site, and that is not one of [`[serve] extension_origins`](factory.md#serve) |
-| `404` | No such path, task, report, ask, batch or web view file |
+| `404` | No such path, task, report, ask, batch or web view file; a run screen whose run ended, whose pane this server cannot find or read within 2 seconds, or that holds a secret redaction cannot hide; any run screen with `[serve] terminal = "off"` |
 | `405` | `POST` on a path that reads, or `GET` on a write. The `Allow` header names the method |
 | `408` | The request sent no byte within 1 second, or took over 5 seconds in all |
 | `409` | A write names an ask whose revision moved or that closed. The body adds the ask as `/api/asks` lists it. Or `/api/request` repeats a text already sent for the same linked issue. Or a cancel's `revision` is no longer the state's. Or a pick's report moved past its `revision`, or another choice took the pick. Or a batch edit's `revision` is no longer the plan's revision |
@@ -82,7 +83,7 @@ or a reason, is untrusted: render it as text.
 | `422` | The daemon refused a write for another reason, such as an option a step does not take, or a request's unknown workflow or bad `repo`, or a push subscription it does not take. A request the bus could not take gets `422` too, with the bus's error |
 | `431` | The request head is over 8 KiB or 32 headers |
 | `500` | The state could not be read, a delivery could not be published, or Priory failed while answering. The server keeps serving |
-| `503` | 4 requests already wait on `/api/events` and this one would wait too; or a write found no daemon on its socket, as under `priory serve` alone; or `/api/push/key` before a daemon made the key pair. It comes with `Retry-After: 1` |
+| `503` | 4 requests already wait on `/api/events` and this one would wait too; or a write found no daemon on its socket, as under `priory serve` alone; or `/api/push/key` before a daemon made the key pair; or 2 run screens are already being read. It comes with `Retry-After: 1` |
 | `504` | A write reached the daemon, which did not reply within 10 seconds. It may have applied it |
 
 An error's body is `{"error": "<why>"}`.
@@ -100,6 +101,29 @@ revision.
 The reply is `200` with `{"revision": N}`: at once when `N` differs from `since`, else after the
 first change, or after `timeout` with `N` equal to `since`. `priory wait --since REV [--timeout D]`
 prints `N` the same way, and waits 25 seconds by default. `D` is a duration such as `90s` or `2m`.
+
+## Run screen
+
+`/api/runs/{id}/screen` returns what the run's agent pane shows now, read with tmux's
+`capture-pane`. [serve.md](../daemon/serve.md#a-runs-screen) explains what it hides and why. The
+reply carries `Cache-Control: no-store`.
+
+| Field | Meaning |
+| ----- | ------- |
+| `run`, `task` | The run and its task |
+| `width`, `height` | The pane's size, in columns and rows |
+| `cursor` | `{"x", "y"}`, from the top left at 0, or `null` when the cursor is hidden |
+| `lines` | The screen, one string per row, `height` of them, blank rows kept and trailing spaces trimmed, with each secret replaced by `[redacted]` |
+| `cut` | How many top rows the server left out to keep `lines` under 256 KiB of JSON, 0 on a usual screen |
+| `redacted` | How many secrets the server replaced |
+| `hash` | 16 hex digits, a hash of the fields above after redaction. A hidden value never changes it |
+
+With `?have=HASH` equal to the current `hash`, the reply is `{"hash": "<HASH>", "same": true}`.
+
+`priory screen (TASK | --run RUN) [--json]` prints the same screen, as rows of text or, with
+`--json`, as this object. It hides the values of the default secret variables, such as
+`PRIORY_TOKEN`, from its own environment, and the secret shapes. Like the endpoint, it gives tmux
+2 seconds.
 
 ## Writes
 

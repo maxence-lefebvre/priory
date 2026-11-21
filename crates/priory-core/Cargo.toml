@@ -16,6 +16,7 @@ jiff = { workspace = true, features = ["serde"] }
 priory-factory.workspace = true
 priory-intake.workspace = true
 priory-runtime.workspace = true
+regex.workspace = true
 rusqlite.workspace = true
 schemars.workspace = true
 serde.workspace = true
