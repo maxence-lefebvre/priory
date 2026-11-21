@@ -1718,7 +1718,8 @@ fn the_views_endpoint_returns_the_default_view_priory_ships() {
                         { "panel": "runs" },
                         { "panel": "inbox" },
                         { "panel": "reports" },
-                        { "panel": "workflow" }
+                        { "panel": "workflow" },
+                        { "panel": "costs" }
                     ]
                 }
             }

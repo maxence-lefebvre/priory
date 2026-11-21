@@ -22,8 +22,8 @@ A node is a table with exactly one of these keys:
 | `tabs` | array of nodes | One child at a time, picked from a tab bar or the rail |
 | `panel` | panel name | A leaf: one panel |
 
-The panels are `desk`, `asks`, `inbox`, `queue`, `tasks`, `runs`, `terminal`, `workflow` and
-`reports`.
+The panels are `desk`, `asks`, `inbox`, `queue`, `tasks`, `runs`, `terminal`, `workflow`,
+`reports` and `costs`.
 
 ## The default view
 
@@ -37,6 +37,7 @@ tabs = [
   { panel = "inbox" },
   { panel = "reports" },
   { panel = "workflow" },
+  { panel = "costs" },
 ]
 ```
 

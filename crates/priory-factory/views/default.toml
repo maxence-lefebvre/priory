@@ -8,4 +8,5 @@ tabs = [
   { panel = "inbox" },
   { panel = "reports" },
   { panel = "workflow" },
+  { panel = "costs" },
 ]
