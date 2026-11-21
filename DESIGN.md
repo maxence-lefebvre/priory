@@ -456,9 +456,9 @@ The Asks tab lists every ask. Saved views: Open, Answered and All, each with a c
 chips: Command, Lane, Band, Risk and Task, shown on a phone too. Band picks the task's band, with
 its values in the factory's band order, then `none` for an ask with no band, such as an outside
 ask. Risk picks what answering risks, with its values in this order: `irreversible`, when the
-answer lets an irreversible step run or runs an agent's command; the task's grade `red`, `yellow`
-or `green`; then `none` for an ask with neither. An ask can carry `irreversible` and a grade, and
-counts under both. Risk is a facet chip like Band, with the same tokens, and its values are words,
+answer lets an irreversible step run or runs an agent's command; the task's merge risk `high`,
+`medium` or `low`; the task's grade `red`, `yellow` or `green`; then `none` for an ask with none of
+them. An ask can carry `irreversible`, a merge risk and a grade, and counts under each. Risk is a facet chip like Band, with the same tokens, and its values are words,
 so it adds no token. Each view shows these sections, in order, and leaves out an empty one:
 
 | Section          | Open | Answered | All | Order        | Line 3                                       |
