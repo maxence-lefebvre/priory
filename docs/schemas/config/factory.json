@@ -90,6 +90,18 @@
       },
       "type": "object"
     },
+    "LinearWebhook": {
+      "additionalProperties": false,
+      "description": "Linear webhooks, at `POST /hooks/linear`.",
+      "properties": {
+        "secret_env": {
+          "default": "PRIORY_LINEAR_WEBHOOK_SECRET",
+          "description": "The environment variable that holds the webhook's signing secret, never the secret itself.",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
     "Notify": {
       "additionalProperties": false,
       "description": "Where the daemon tells a person that the desk's next item changed, besides Web Push.",
@@ -321,6 +333,16 @@
           "anyOf": [
             {
               "$ref": "#/definitions/GithubWebhook"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "linear": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/LinearWebhook"
             },
             {
               "type": "null"

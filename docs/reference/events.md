@@ -755,6 +755,7 @@ Schema: [`linear.issue.created.json`](../schemas/events/linear.issue.created.jso
 | ----- | ---- | ------- |
 | `actor` | string or null | Who created it, by display name |
 | `blockers` | array of strings or null | Its open blockers |
+| `delivery` | string | Present when a webhook delivery published it: its `Linear-Delivery`. See [webhooks.md](../intake/webhooks.md#linear) |
 
 <!-- example: events/linear.issue.created.json -->
 ```json
@@ -786,15 +787,16 @@ Schema: [`linear.issue.created.json`](../schemas/events/linear.issue.created.jso
 ### `linear.issue.state_changed`
 
 One message per history entry that moves an issue from one state to another. `linear_id` is the
-history entry.
+history entry, or the issue from a webhook, which sees no history entry.
 Schema: [`linear.issue.state_changed.json`](../schemas/events/linear.issue.state_changed.json).
 
 | Field | Type | Meaning |
 | ----- | ---- | ------- |
-| `from` | string | The state it moved from |
+| `from` | string or null | The state it moved from; null from a webhook, whose payload names only its id |
 | `to` | string | The state it moved to |
 | `actor` | string or null | Who moved it |
 | `blockers` | array of strings or null | Its open blockers |
+| `delivery` | string | Present when a webhook delivery published it: its `Linear-Delivery`. See [webhooks.md](../intake/webhooks.md#linear) |
 
 <!-- example: events/linear.issue.state_changed.json -->
 ```json
@@ -872,6 +874,7 @@ Schema: [`linear.comment.created.json`](../schemas/events/linear.comment.created
 | ----- | ---- | ------- |
 | `body` | string | The comment, in Markdown |
 | `actor` | string or null | Who commented |
+| `delivery` | string | Present when a webhook delivery published it: its `Linear-Delivery`. See [webhooks.md](../intake/webhooks.md#linear) |
 
 <!-- example: events/linear.comment.created.json -->
 ```json

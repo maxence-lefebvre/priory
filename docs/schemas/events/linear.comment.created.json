@@ -22,6 +22,13 @@
           "description": "The comment, in Markdown.",
           "type": "string"
         },
+        "delivery": {
+          "description": "The `Linear-Delivery` of the webhook delivery that reported it; absent when a poll did.\nLinear does not sign it.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "issue": {
           "description": "The issue identifier, such as `ENG-7`.",
           "type": "string"
@@ -34,7 +41,7 @@
           "type": "array"
         },
         "linear_id": {
-          "description": "Linear's id of what the event is about: the issue, history entry or comment.",
+          "description": "Linear's id of what the event is about: the issue, history entry or comment. A webhook's\nstate change has no history entry, so it holds the issue's id.",
           "type": "string"
         },
         "project": {

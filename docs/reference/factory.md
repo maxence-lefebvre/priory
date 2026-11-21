@@ -19,7 +19,7 @@ Schema: [`config/factory.json`](../schemas/config/factory.json).
 | `telemetry` | table | no | no export | Where trace records go. See [`[telemetry]`](#telemetry) | |
 | `notify` | table | no | no desktop notification | Notifications besides Web Push. See [`[notify]`](#notify) | |
 | `serve` | table | no | nothing listens | The HTTP server over the factory's state. See [`[serve]`](#serve) | |
-| `webhooks` | table | no | no webhook is taken | The signed webhooks the server takes. Needs `[serve]`. See [`[webhooks.github]`](#webhooksgithub) | |
+| `webhooks` | table | no | no webhook is taken | The signed webhooks the server takes. Needs `[serve]`. See [`[webhooks.github]`](#webhooksgithub) and [`[webhooks.linear]`](#webhookslinear) | |
 | `slack` | table | no | no Slack shortcut | The Slack message shortcut. See [`[slack.shortcut]`](#slackshortcut) | |
 | `asks` | table | no | answers are only stored | What happens to the answer of an ask from outside Priory. See [`[asks]`](#asks) | |
 | `links` | table of strings | no | the built-in `#n` link | Autolinks, each a regex and a URL template. See [`[links]`](#links) | |
@@ -98,6 +98,18 @@ for the endpoint. With this table, the server takes GitHub deliveries at `POST /
 | Key | Type | Required | Default | Meaning | Example |
 | --- | ---- | -------- | ------- | ------- | ------- |
 | `secret_env` | string | no | `"PRIORY_GITHUB_WEBHOOK_SECRET"` | The environment variable that holds the webhook's secret. Never the secret itself | `"GITHUB_WEBHOOK_SECRET"` |
+
+`priory serve` and `priory daemon` refuse to start while that variable is unset or empty.
+
+## `[webhooks.linear]`
+
+See [webhooks.md](../intake/webhooks.md#linear) for what a delivery publishes, and
+[serve.md](serve.md#post-hookslinear) for the endpoint. With this table, the server takes Linear
+deliveries at `POST /hooks/linear`.
+
+| Key | Type | Required | Default | Meaning | Example |
+| --- | ---- | -------- | ------- | ------- | ------- |
+| `secret_env` | string | no | `"PRIORY_LINEAR_WEBHOOK_SECRET"` | The environment variable that holds the webhook's signing secret. Never the secret itself | `"LINEAR_WEBHOOK_SECRET"` |
 
 `priory serve` and `priory daemon` refuse to start while that variable is unset or empty.
 
@@ -222,6 +234,9 @@ web = true                                     # false serves only /api
 
 [webhooks.github]
 secret_env = "PRIORY_GITHUB_WEBHOOK_SECRET"    # the variable holding the webhook's secret
+
+[webhooks.linear]
+secret_env = "PRIORY_LINEAR_WEBHOOK_SECRET"    # the variable holding Linear's signing secret
 
 [asks]
 deliver = "bin/deliver"                        # delivers outside answers, from the factory folder

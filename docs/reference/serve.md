@@ -3,7 +3,7 @@
 The HTTP server's endpoints and the JSON they return. [serve.md](../daemon/serve.md) explains where
 the server runs, its token and its limits.
 
-Every endpoint takes `GET`, except the [writes](#writes) and `POST /hooks/github`, which take
+Every endpoint takes `GET`, except the [writes](#writes), `POST /hooks/github` and `POST /hooks/linear`, which take
 `POST`. Each one under `/api` needs `Authorization: Bearer <token>`; the web view's files do not.
 Each listing returns the same JSON as
 the CLI command with `--json`, with the state's `revision`, an integer, read in the same
@@ -50,6 +50,7 @@ does, with every count in `older` at 0. Their rows match the CLI's JSON only wit
 | `POST /api/reports/resolve` | `priory report resolve COMMENT` | as above |
 | `POST /api/reports/reopen` | `priory report reopen COMMENT` | as above |
 | `POST /hooks/github` | | `202` for a signed GitHub delivery, with `[webhooks.github]`. See [below](#post-hooksgithub) |
+| `POST /hooks/linear` | | `200` for a signed Linear delivery, with `[webhooks.linear]`. See [below](#post-hookslinear) |
 | any other path | | the web view, with `web = true`: see [Web view files](#web-view-files) |
 
 Times are RFC 3339 strings in UTC. A field with no value is `null`. Agent text, such as a question
@@ -156,6 +157,24 @@ publishes.
 
 The reply is `202` with `{"outcome": "published"}`, or `{"outcome": "dropped"}` for a delivery
 Priory does not take or already holds. A body that is not JSON, or lacks a field its event needs,
+gets `400`.
+
+## `POST /hooks/linear`
+
+Served only with [`[webhooks.linear]`](factory.md#webhookslinear). It takes no token: the
+signature is its authentication. [webhooks.md](../intake/webhooks.md#linear) explains what a
+delivery publishes.
+
+| Header | Meaning |
+| ------ | ------- |
+| `Linear-Signature` | The hex HMAC-SHA256 of the raw body under the signing secret, with no prefix. Missing or wrong: `401`, and the body is never parsed |
+| `Linear-Delivery` | The delivery's UUID, copied into `delivery`. Optional |
+| `Content-Length` | Required, at most 1 MiB. Over it: `413` before the body is read |
+
+The body's `webhookTimestamp`, in milliseconds, must be within 60 seconds of now, as Linear
+documents: else `401`. Linear retries any reply but `200`, so the reply is `200` with
+`{"outcome": "published"}`, or `{"outcome": "dropped"}` for a delivery Priory does not take or
+already holds. A body that is not JSON, lacks `webhookTimestamp`, or lacks a field its event needs
 gets `400`.
 
 ## Desk
