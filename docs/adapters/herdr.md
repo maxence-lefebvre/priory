@@ -26,8 +26,10 @@ The adapter lives in `adapters/herdr/` at the repository root, outside the Cargo
 - `adapters/herdr/mods/priory-task/`: the Task panel. See [The Task panel](#the-task-panel).
 - `adapters/herdr/mods/priory-inbox/`: the Inbox panel. See [The Inbox panel](#the-inbox-panel).
 - `adapters/herdr/mods/priory-tasks/`: the Tasks panel. See [The Tasks panel](#the-tasks-panel).
-- `adapters/herdr/mods/priory-elsewhere/`: the placeholder for a view's panel that has no mod yet:
-  `runs`. It names the panel and links to it in the web view.
+- `adapters/herdr/mods/priory-runs/`: the Runs panel. See [The Runs panel](#the-runs-panel).
+- `adapters/herdr/mods/priory-elsewhere/`: the placeholder for a panel that has no mod. Every panel
+  Priory ships has one now, so the layout uses it for none. It names the panel and links to it in
+  the web view.
 - `adapters/herdr/layouts/frame.json`: Herdr's chrome around the view: the sidebar, the top bar
   with the Priory bar, 420 px wide, and Herdr's tab bar, the work body with Herdr's `main` block,
   and the status line.
@@ -59,7 +61,8 @@ library. After you change a file in `lib/`, copy it into every mod that carries 
 
 The Costs, Flows, Inbox and Tasks panels keep the web view's own view models: `mods/priory-costs/view.js` is a
 copy of `crates/priory-core/web/costs.js`, `mods/priory-flows/view.js` of `flows.js`,
-`mods/priory-inbox/view.js` of `inbox.js`, and `mods/priory-tasks/view.js` of `tasks.js`. A test
+`mods/priory-inbox/view.js` of `inbox.js`, `mods/priory-tasks/view.js` of `tasks.js`, and
+`mods/priory-runs/view.js` of `runs.js`, beside its own copy of `tasks.js` for the facet filter. A test
 fails when a copy differs from the web file. After you change one, copy it into its mod. Herdr's
 engine has no `Intl`, so these files format numbers and dates by hand.
 
@@ -117,8 +120,7 @@ panels, and a view that places a panel twice is refused.
 | ----- | -------- | --- |
 | `desk`, `asks`, `queue` | an aside | `priory-desk`, `priory-asks`, `priory-queue` |
 | `reports` | a tab in the center | `priory-bonjour` |
-| `workflow`, `costs`, `inbox`, `tasks` | a tab in the center | `priory-flows`, `priory-costs`, `priory-inbox`, `priory-tasks` |
-| `runs` | a tab in the center | `priory-elsewhere` |
+| `workflow`, `costs`, `inbox`, `tasks`, `runs` | a tab in the center | `priory-flows`, `priory-costs`, `priory-inbox`, `priory-tasks`, `priory-runs` |
 | `terminal` | the frame's `main` block, where Herdr shows the active tab, which is always in the center | none |
 
 The work body is a row: the center, then each aside in the view's order, then Herdr's own panel.
@@ -562,6 +564,23 @@ DESIGN.md's "Tasks" section holds its visual rules; this section says how it wor
   that state, then its title, then its lane, band and batch, or the reason of a blocked, held,
   failed or dropped task. Pressing a row opens it in the [Task panel](#the-task-panel).
 
+## The Runs panel
+
+`mods/priory-runs/` is the Runs panel. The Priory bar opens it as a tab in the center stack.
+DESIGN.md's "Runs" section holds its visual rules; this section says how it works.
+
+- **Files.** `view.js`, a copy of the web view's `runs.js`, gives each run its state, saved views,
+  facets, duration and tokens. `tasks.js`, a copy of the web's, filters by facet. `main.js` reads
+  and draws.
+- **Reading.** The panel reads `priory runs --json` and follows its revision with `priory wait`.
+  It keeps the live runs and those started in the last 7 days, as `/api/runs` does.
+- **Views.** Recent lists those runs newest first, and Live the runs still going.
+- **Facets.** Outcome, Agent and Step, as the Tasks panel's. Outcome holds both how a run ended
+  and its result's outcome, so `moved` and `passed` both find a moved run that passed.
+- **Rows.** Each row shows the run's state tile, task key, step, state and how long ago it
+  started, then its agent and model, then its id, outcome, duration and tokens. Pressing a row
+  opens its task in the [Task panel](#the-task-panel), whose History lists the task's runs.
+
 ## The Flows panel
 
 `mods/priory-flows/` is the Flows panel. The Priory bar opens it as a tab in the center stack.
@@ -717,6 +736,11 @@ name: it draws the sections in the order the report gives them.
 
 - `priory tasks --json`, the object `/api/tasks` serves; see
   [serve.md's Tasks](../reference/serve.md#tasks).
+
+### Runs
+
+- `priory runs --json`, the object `/api/runs?all=1` serves; see
+  [serve.md's Runs](../reference/serve.md#runs).
 
 ### Inbox
 

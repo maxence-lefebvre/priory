@@ -269,6 +269,7 @@ When someone labels issue 42 of `owner/name` with `agent`, this happens:
 | `priory snooze KIND ID --for 2h`, `--until TIME`, `--clear` | Hides a desk item until then, or brings it back |
 | `priory todo add TEXT [--band B] [--due TIME]`, `priory todo done ID`, `priory todo list` | Adds a to-do of your own to the desk, marks it done, or lists them |
 | `priory tasks [--lane LANE] [--grade GRADE]` | Lists tasks in start order, with their grade |
+| `priory runs [--json]` | Lists every run; `--json` adds its task key, outcome, model and tokens |
 | `priory batch add [DIR] ISSUE...`, `priory batch show [BATCH] [--json]`, `priory batch edit BATCH --expected N ...` | Hands several issues to a planner that orders them under one go, shows each batch and its entries, and drops or moves an entry before the go (see [batches.md](docs/daemon/batches.md)) |
 | `priory tasks --graph [TASK] [--mermaid]` | Draws how tasks relate, as a tree or a Mermaid flowchart |
 | `priory relate TASK KIND OTHER [--remove]` | Records that a task `builds-on`, `fixes`, `takes-up` or `relates` to another, or removes it |
@@ -317,7 +318,7 @@ The web view's Tasks panel lists every task, with the saved views Active, Blocke
 filters by state, lane and workflow; each row opens the task's page, and a batch's entries link to
 the batch. The Runs panel lists the runs of the last 7 days with their agent, model, outcome,
 duration and tokens, filtered by outcome, agent or step. `priory tasks` and `priory runs` print the
-same tasks and runs.
+same tasks and runs, and the Herdr Tasks and Runs panels show them too.
 
 A workflow can write a report for you, such as a morning dossier: `priory report show` prints the
 last one. The web view's Reports panel shows it, and takes its picks and row comments as

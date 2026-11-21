@@ -4,7 +4,7 @@ import { appHome, readTextFile } from "herdr";
 import { spansHtml } from "./priory.js";
 import { palette, STRUCTURE as S } from "./tokens.js";
 
-// Stands in for a view's panel that has no mod yet, such as tasks, runs or inbox.
+// Stands in for a view's panel that has no mod yet; every panel Priory ships now has one.
 const LABELS = { tasks: "Tasks", runs: "Runs", inbox: "Inbox" };
 
 export default class PrioryElsewhere extends View {

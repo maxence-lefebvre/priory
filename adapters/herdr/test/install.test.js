@@ -38,7 +38,7 @@ test("links each mod and writes the layout, and a second run keeps the links and
   const app = join(home, ".config/herdr-app");
   for (const mod of MODS) assert.equal(readlinkSync(join(app, "mods", mod)), join(HERDR, "mods", mod));
   const layout = JSON.parse(readFileSync(join(app, "layouts/priory.json"), "utf8"));
-  assert.equal(JSON.stringify(layout).includes('"priory-elsewhere"'), true);
+  assert.equal(JSON.stringify(layout).includes('"priory-elsewhere"'), false, "every panel of the default view has its mod");
   const again = install(home, VIEWS);
   assert.equal(again.status, 0, again.stderr);
   assert.match(again.stdout, /^linked already /m);

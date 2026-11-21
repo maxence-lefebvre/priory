@@ -27,6 +27,8 @@ export function priory({ exec, binary = "priory-oss", on = null, factory = null 
     desk: ({ all = false } = {}) => read("desk", ...(all ? ["--all"] : [])),
     asks: () => read("asks", "--all"),
     tasks: () => read("tasks"),
+    // Every run with its task, outcome, model and tokens, newest first, as `/api/runs?all=1` serves them.
+    runs: () => read("runs"),
     // The events that reached no task, grouped by the resource's last owner, as `/api/inbox?unrouted=1` serves them.
     unrouted: () => read("inbox", "--unrouted"),
     // Sends the resource's next event to the task, unless the state moved past `revision`.
