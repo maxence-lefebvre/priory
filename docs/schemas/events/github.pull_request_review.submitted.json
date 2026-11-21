@@ -43,6 +43,10 @@
           "description": "True when the event came from the first poll of its stream.",
           "type": "boolean"
         },
+        "body": {
+          "description": "The review's summary Markdown, as written; empty when the reviewer wrote none.",
+          "type": "string"
+        },
         "delivery": {
           "description": "The `X-GitHub-Delivery` of the webhook delivery that reported it; absent when a poll did.\nGitHub does not sign it.",
           "type": [
@@ -113,6 +117,7 @@
         "head_sha",
         "base_branch",
         "state",
+        "body",
         "actor",
         "open",
         "github_id",

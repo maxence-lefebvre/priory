@@ -12,9 +12,9 @@ each named after a type:
 
 | Stream | Reads | Holds | Position |
 | ------ | ----- | ----- | -------- |
-| `github.issues.labeled` | `issues/events`, newest first | issue and pull request `labeled`, pull request `closed` | issue event id |
+| `github.issues.labeled` | `issues/events`, newest first | issue and pull request `labeled` and `closed` | issue event id |
 | `github.issues.opened` | `issues`, newest first by creation | issue and pull request `opened` | number |
-| `github.pull_request_review.submitted` | GraphQL: every open pull request, and every pull request a new event above names; REST: `pulls/comments`, newest 100 | reviews, comments and review thread comments | review id |
+| `github.pull_request_review.submitted` | GraphQL: every open pull request, and every pull request a new event above names; REST: `pulls/comments` and `issues/comments`, newest 100 each | reviews, comments, review thread comments and issue comments | review id |
 | `github.check_run.completed` | the same query | check runs on each pull request's head commit, and their snapshots | check run id |
 
 ## Baseline
@@ -57,12 +57,12 @@ The events' ids are on their own pages.
 
 | Poll | Calls |
 | ---- | ----- |
-| A repository with N open pull requests and nothing new | 4 `gh` calls: 3 REST requests (`issues/events`, `issues` and `pulls/comments`, one page each) and 1 GraphQL query |
+| A repository with N open pull requests and nothing new | 5 `gh` calls: 4 REST requests (`issues/events`, `issues`, `pulls/comments` and `issues/comments`, one page each) and 1 GraphQL query |
 | N over 100 | the query pages itself: ceil(N/100) requests, about 4 points each on `cli/cli` |
 | New pull request events | 1 more GraphQL query for the pull requests they name |
 | Over 100 new events in a stream since the last poll | 1 more REST page per 100 |
 
-At one poll a minute, that is 180 REST requests and about 240 GraphQL points an hour per repository,
+At one poll a minute, that is 240 REST requests and about 240 GraphQL points an hour per repository,
 each against GitHub's 5,000 an hour. Review thread comments come from REST because the query would
 pay for every thread of every open pull request: about 20 more points per poll at 20 threads each.
 

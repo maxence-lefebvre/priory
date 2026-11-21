@@ -195,6 +195,7 @@ impl Github {
                 );
                 let state = review["state"].as_str().unwrap_or_default();
                 data["state"] = json!(state.to_lowercase());
+                data["body"] = json!(review["body"].as_str().unwrap_or_default());
                 data["github_id"] = review["id"].clone();
                 data["open"] = json!(pull["state"] == "open");
                 let name = format!("github:{repo}:pulls/reviews:{}", review["id"]);

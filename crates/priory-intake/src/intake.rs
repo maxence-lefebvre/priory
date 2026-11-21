@@ -19,6 +19,8 @@ use std::time::Duration;
 pub const OUTPUT: &str = "factory.intake";
 const LABELED: &str = "github.issues.labeled";
 const OPENED: &str = "github.issues.opened";
+pub const ISSUE_CLOSED: &str = "github.issues.closed";
+pub const ISSUE_COMMENTED: &str = "github.issues.comment";
 const PR_OPENED: &str = "github.pull_request.opened";
 const PR_LABELED: &str = "github.pull_request.labeled";
 pub const PR_CLOSED: &str = "github.pull_request.closed";
@@ -52,6 +54,8 @@ pub(crate) fn output() -> Output {
         .types([
             LABELED,
             OPENED,
+            ISSUE_CLOSED,
+            ISSUE_COMMENTED,
             PR_OPENED,
             PR_LABELED,
             PR_CLOSED,
@@ -318,7 +322,7 @@ fn newest(
 /// The stream a message type belongs to: issue events, the issues list, reviews or checks.
 fn kind(name: &str) -> Option<&'static str> {
     match name {
-        PR_LABELED | PR_CLOSED => Some(LABELED),
+        PR_LABELED | PR_CLOSED | ISSUE_CLOSED => Some(LABELED),
         PR_OPENED => Some(OPENED),
         _ => STREAMS.into_iter().find(|kind| *kind == name),
     }

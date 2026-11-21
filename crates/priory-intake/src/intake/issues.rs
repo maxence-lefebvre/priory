@@ -1,10 +1,11 @@
 use super::gh::{Login, pages};
 use super::pulls::{
-    comment, open_pulls, pull_requests, reviews_and_checks, thread_comment, thread_comments,
+    comment, issue_comments, open_pulls, pull_requests, reviews_and_checks, thread_comment,
+    thread_comments,
 };
 use super::{
-    CHECKED, Cursors, LABELED, OPENED, Observed, PR_CLOSED, PR_LABELED, PR_OPENED, Polled,
-    REVIEWED, THREAD_COMMENTED,
+    CHECKED, Cursors, ISSUE_CLOSED, ISSUE_COMMENTED, LABELED, OPENED, Observed, PR_CLOSED,
+    PR_LABELED, PR_OPENED, Polled, REVIEWED, THREAD_COMMENTED,
 };
 use serde::Deserialize;
 use serde_json::json;
@@ -98,6 +99,7 @@ pub(super) fn fetch_repo(repo: &str, cursors: &Cursors) -> Result<Vec<Polled>, S
                 "labeled" if pull_request => PR_LABELED,
                 "labeled" => LABELED,
                 "closed" if pull_request => PR_CLOSED,
+                "closed" => ISSUE_CLOSED,
                 _ => return None,
             };
             let mut observed = source(
@@ -114,7 +116,7 @@ pub(super) fn fetch_repo(repo: &str, cursors: &Cursors) -> Result<Vec<Polled>, S
                 let last = last_close.get(&event.issue.number) == Some(&event.id);
                 let pull = pulls.get(&event.issue.number);
                 observed.data["merged"] = json!(pull.map(|pull| pull.merged && last));
-            } else {
+            } else if kind != ISSUE_CLOSED {
                 observed.label = event.label.as_ref().map(|label| label.name.clone());
                 observed.data["label"] = json!(observed.label);
             }
@@ -165,6 +167,34 @@ pub(super) fn fetch_repo(repo: &str, cursors: &Cursors) -> Result<Vec<Polled>, S
         let mut observed = comment(THREAD_COMMENTED, repo, pull.number, &pull.branches(), data);
         observed.baseline = cursor(REVIEWED).is_none();
         reviews.push(observed);
+    }
+    for found in issue_comments(repo)? {
+        let number = found["issue_url"]
+            .as_str()
+            .and_then(|url| url.rsplit('/').next()?.parse::<u64>().ok());
+        let on_pull = found["html_url"]
+            .as_str()
+            .is_some_and(|url| url.contains("/pull/"));
+        let (Some(number), false) = (number, on_pull || found["user"]["type"] == "Bot") else {
+            continue;
+        };
+        reviews.push(Observed {
+            kind: ISSUE_COMMENTED,
+            name: format!("github:{repo}:issues/comments:{}", found["id"]),
+            repo: repo.to_string(),
+            number,
+            label: None,
+            baseline: cursor(REVIEWED).is_none(),
+            data: json!({
+                "repo": repo,
+                "issue": number,
+                "url": found["html_url"],
+                "actor": found["user"]["login"],
+                "body": found["body"],
+                "time": found["created_at"],
+                "github_id": found["id"],
+            }),
+        });
     }
     let order = |event: &Observed| {
         let time = event.data["time"].as_str().unwrap_or_default().to_owned();

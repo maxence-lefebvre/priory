@@ -5450,6 +5450,26 @@ fn a_review_a_comment_or_a_close_wakes_a_task_waiting_on_it() {
 }
 
 #[test]
+fn a_review_that_asks_for_changes_wakes_its_wait_with_the_first_line_of_its_body() {
+    let setup = asleep_on("wake-review-body", on_pull_7("review"));
+    let review = on_pull(
+        "github.pull_request_review.submitted",
+        json!({ "state": "changes_requested", "actor": "ana", "body": "Split the parser.\nIt is too long.", "url": "u", "github_id": 301 }),
+    );
+
+    setup.publish(&review.time(herdr_bus::Timestamp::now()));
+
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 2);
+    let typed = setup.typed();
+    assert!(
+        typed[1].starts_with(
+            "wait 1 fired: ana reviewed github:owner/repo#7: changes_requested: Split the parser. u\n"
+        ),
+        "{typed:?}"
+    );
+}
+
+#[test]
 fn a_task_request_for_a_key_another_task_owns_as_a_resource_creates_its_task() {
     let setup = asleep_on("request-owned", on_pull_7("review"));
 

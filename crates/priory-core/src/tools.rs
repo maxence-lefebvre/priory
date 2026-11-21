@@ -960,7 +960,10 @@ fn feedback(resource: &str, kind: &str, data: &Value) -> Option<String> {
     let said = match kind {
         REVIEWED => {
             let state = data["state"].as_str().unwrap_or("submitted");
-            format!("{who} reviewed {resource}: {state}")
+            match first {
+                "" => format!("{who} reviewed {resource}: {state}"),
+                _ => format!("{who} reviewed {resource}: {state}: {first}"),
+            }
         }
         COMMENTED => format!("{who} commented on {resource}: {first}"),
         _ => {

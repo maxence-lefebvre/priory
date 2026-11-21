@@ -67,12 +67,13 @@ gate before `done`, with one line that names who said what and where. A review w
 `approved` or `dismissed` does not fire the checks gate, since it asks the agent for nothing:
 
 ```text
-wait 3 fired: ana reviewed github:owner/name#57: changes_requested https://github.com/owner/name/pull/57#pullrequestreview-301
+wait 3 fired: ana reviewed github:owner/name#57: changes_requested: Split the parser. https://github.com/owner/name/pull/57#pullrequestreview-301
 wait 3 fired: ana commented on github:owner/name#57: Can you split this? https://github.com/owner/name/pull/57#issuecomment-701
 wait 3 fired: ana commented on src/lib.rs:12 of github:owner/name#57: Rename this. https://github.com/owner/name/pull/57#discussion_r802
 ```
 
-The line quotes the first line of a comment. The event's own line follows with the whole body.
+The line quotes the first line of a comment or of a review's summary, when the review has one.
+The event's own line follows with the whole body.
 
 A comment fires a wait only when its `time` is at or after the wait was stored, to the second. So
 the agent's own comment, posted in the turn that stored the wait, fires nothing. Reviews fire at any
