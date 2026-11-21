@@ -48,3 +48,24 @@ AGENTS.md](AGENTS.md#verify) and fix every failure. CI runs the same checks on e
 - Write what the change solves and how in a few sentences at the top of the body.
 - Wait for CI to pass on the head commit. Pull requests are squash-merged, so bring a branch up to
   date by merging `main` into it rather than force-pushing.
+
+## Releases
+
+A pushed `v*` tag runs [`.github/workflows/release.yml`](.github/workflows/release.yml). It builds
+`priory` for Linux x86_64 and aarch64 (static, musl) and macOS arm64, packs the Herdr adapter and
+the GitHub extension, and publishes them with a `.sha256` beside each as a GitHub Release. The
+workflow refuses a tag that differs from the workspace version. A manual run, or a pull request
+that changes the workflow or `install.sh`, builds and checks the same files as CI artifacts and
+publishes nothing.
+
+To cut a release:
+
+1. In a pull request, set `version` under `[workspace.package]` in `Cargo.toml`, for example to
+   `0.2.0`. Merge it once CI passes.
+2. Tag the merge commit on `main` and push the tag:
+
+   ```sh
+   git fetch origin && git tag v0.2.0 origin/main && git push origin v0.2.0
+   ```
+
+3. Watch the Release workflow run. It publishes the release when every build passes.
