@@ -16183,6 +16183,7 @@ fn the_persons_own_review_item_is_not_put_to_the_agent_and_is_recorded_as_a_pers
     setup.publish(&requested(42));
     setup.start();
     setup.until("runs", |rows| rows.len() == 1 && rows[0][7] == "asleep");
+    setup.hold("hold-stop");
     let mut own = thread_comment_at(802);
     own.data["own"] = json!(true);
     setup.publish(&own);
