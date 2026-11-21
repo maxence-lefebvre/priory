@@ -264,7 +264,7 @@ When someone labels issue 42 of `owner/name` with `agent`, this happens:
 | `priory snooze KIND ID --for 2h`, `--until TIME`, `--clear` | Hides a desk item until then, or brings it back |
 | `priory todo add TEXT [--band B] [--due TIME]`, `priory todo done ID`, `priory todo list` | Adds a to-do of your own to the desk, marks it done, or lists them |
 | `priory tasks [--lane LANE] [--grade GRADE]` | Lists tasks in start order, with their grade |
-| `priory batch add [DIR] ISSUE...`, `priory batch show [BATCH] [--json]` | Hands several issues to a planner that orders them under one go, then shows each batch and its entries (see [batches.md](docs/daemon/batches.md)) |
+| `priory batch add [DIR] ISSUE...`, `priory batch show [BATCH] [--json]`, `priory batch edit BATCH --expected N ...` | Hands several issues to a planner that orders them under one go, shows each batch and its entries, and drops or moves an entry before the go (see [batches.md](docs/daemon/batches.md)) |
 | `priory tasks --graph [TASK] [--mermaid]` | Draws how tasks relate, as a tree or a Mermaid flowchart |
 | `priory relate TASK KIND OTHER [--remove]` | Records that a task `builds-on`, `fixes`, `takes-up` or `relates` to another, or removes it |
 | `priory task TASK --json` | Prints one task with its brief, plan, pull request, runs and asks |
