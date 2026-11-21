@@ -8,6 +8,10 @@ const BUSY = new Set(["waiting", "posting"]);
 /** Whether answering `option` runs the ask's command. */
 export const runsCommand = (ask, option) => typeof ask.command === "object" && Boolean(ask.command?.runs?.includes(option));
 
+/** The option index a key press picks: a digit 1 to 9 alone, else -1, so a browser shortcut or a held key picks nothing. */
+export const optionKey = (event) =>
+  event.ctrlKey || event.metaKey || event.altKey || event.repeat || !/^[1-9]$/.test(event.key) ? -1 : Number(event.key) - 1;
+
 /** "2 min", "3 h" or a date, as the views say how long ago. */
 export function age(iso, now) {
   const minutes = Math.max(0, Math.round((now - Date.parse(iso)) / 60000));

@@ -1,5 +1,5 @@
 // The strip, the docked panel and the side panel: every daemon call and all agent text live here.
-import { ARM_MS, UNDO_MS, age, answerBody, answerPath, choose, due, observe, refusal, reply, runsCommand, undo } from "./lib/ask.js";
+import { ARM_MS, UNDO_MS, age, answerBody, answerPath, choose, due, observe, optionKey, refusal, reply, runsCommand, undo } from "./lib/ask.js";
 import { grade, parseGuide, scoreKey } from "./lib/guide.js";
 import { live } from "./lib/live.js";
 import { parsePr } from "./lib/pr.js";
@@ -593,7 +593,7 @@ async function boot() {
     loadGuide();
     document.addEventListener("keydown", (event) => {
       const ask = S.tab === "ask" ? openAsks()[Math.min(S.index, openAsks().length - 1)] : null;
-      const option = ask?.options[Number(event.key) - 1];
+      const option = ask?.options[optionKey(event)];
       if (option && !event.target.closest("textarea, input") && !S.unreachable) pick(ask, { option });
     });
   }
