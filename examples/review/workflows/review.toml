@@ -1,5 +1,15 @@
 #:schema https://raw.githubusercontent.com/maxence-lefebvre/priory/main/docs/schemas/config/workflow.json
-start = "review"
+start = "risk"
+
+# Another agent grades the pull request first. Its verdict shows on the submit ask, and the
+# review's result, which names the pending review, stays the latest.
+[[steps]]
+id = "risk"
+decides = "model"
+agent = "risk"
+prompt = "Grade this pull request's merge risk low, medium or high."
+effect = "read"
+next = { low = "review", medium = "review", high = "review" }
 
 # A pending review is visible only to its author and can be deleted, so writing one is reversible.
 [[steps]]

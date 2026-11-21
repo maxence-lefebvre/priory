@@ -43,7 +43,8 @@ const OUTPUT: &str = "factory.intake";
 /// reports of sections, 36, which added deliveries, 37, which added progress, 39, which added run
 /// actions, 40, which added answer actions, 42, which added dispatches, 49, which added task ends, 51, which added a run's crossing of `compactAt`, 53, which added intervention levels, 56, which added the step an irreversible approval lets run, 58, which added withdrawal reasons, and 59, which added green stack gates and returned routed asks, and 61, which added findings. Schema 38's visits
 /// table is created only if missing, so it stays.
-const UNDO_SINCE_SEARCH: &str = "DROP TRIGGER ask_returns_from_its_lead; ALTER TABLE waits DROP COLUMN green;
+const UNDO_SINCE_SEARCH: &str = "ALTER TABLE tasks DROP COLUMN merge_risk; ALTER TABLE results DROP COLUMN merge_risk;
+         DROP TRIGGER ask_returns_from_its_lead; ALTER TABLE waits DROP COLUMN green;
   DROP TRIGGER ask_withdrawn; ALTER TABLE asks DROP COLUMN withdrawn_reason;
   ALTER TABLE waits DROP COLUMN withdrawn_reason; ALTER TABLE ask_withdrawals DROP COLUMN reason;
   DROP TRIGGER push_a_new_ask; ALTER TABLE asks DROP COLUMN routed;
@@ -3398,6 +3399,7 @@ fn an_agent_ask_sleeps_the_task_and_the_answer_wakes_it_as_its_prompt() {
             "-",
             "github:owner/repo#42",
             "-",
+            "-",
             "-"
         ]]
     );
@@ -3609,6 +3611,7 @@ fn an_agent_ask_stores_and_lists_its_title_text_what_waits_next_action_and_comma
             "stored",
             "-",
             "github:owner/repo#42",
+            "-",
             "-",
             "-",
         ]]
@@ -4159,6 +4162,7 @@ fn an_outside_ask_takes_fleets_json_shows_on_the_desk_and_a_changed_one_is_a_new
             "cache",
             "run-7",
             "cache-worker",
+            "-",
         ]
     };
     assert_eq!(setup.rows("asks"), [row("1", r#"["ship","wait"]"#)]);
@@ -5503,7 +5507,8 @@ fn a_state_file_whose_asks_an_approval_names_upgrades_to_outside_asks() {
     // The state file as version 32 left it: every ask belongs to a task.
     let db = rusqlite::Connection::open(setup.dir.join("priory.db")).unwrap();
     db.execute_batch(
-        "DROP TRIGGER ask_returns_from_its_lead; ALTER TABLE waits DROP COLUMN green;
+        "ALTER TABLE tasks DROP COLUMN merge_risk; ALTER TABLE results DROP COLUMN merge_risk;
+         DROP TRIGGER ask_returns_from_its_lead; ALTER TABLE waits DROP COLUMN green;
          ALTER TABLE tasks DROP COLUMN intervention; ALTER TABLE tasks DROP COLUMN lead;
          ALTER TABLE runs DROP COLUMN crossed; DROP TRIGGER task_created; DROP TRIGGER task_ended; DROP TRIGGER task_restarted;
          DROP TABLE task_ends; ALTER TABLE exports DROP COLUMN ended; ALTER TABLE tasks DROP COLUMN created;
@@ -12039,9 +12044,10 @@ fn starter_request(workflow: &str, trigger: &str, key: &str) -> Message {
 }
 
 #[test]
-fn the_review_starter_writes_its_pending_review_then_asks_the_person_to_submit_it() {
+fn the_review_starter_grades_its_merge_risk_writes_its_pending_review_then_asks_the_person_to_submit_it()
+ {
     let mut setup = Setup::starter("starter-review", "review");
-    setup.calls(&[result("written")]);
+    setup.calls(&[verdict("high"), result("written")]);
     let key = "github:owner/repo:pulls/7:review:your-login";
     setup.publish(&starter_request("review", "review-requests", key));
 
@@ -12051,10 +12057,13 @@ fn the_review_starter_writes_its_pending_review_then_asks_the_person_to_submit_i
         rows.first().is_some_and(|row| row[4] == "asleep")
     });
     assert_eq!(tasks[0][3], "submit");
-    assert_eq!(setup.rows("runs")[0][2], "review");
+    let runs = setup.rows("runs");
+    assert_eq!([&runs[0][2], &runs[1][2]], ["risk", "review"]);
+    assert_eq!(task_json(&setup, "1")["runs"][0]["agent"], "risk");
     let asks = setup.rows("asks");
     assert_eq!(asks.len(), 1, "{asks:?}");
-    assert!(asks[0][3].starts_with("submit"), "{asks:?}");
+    assert_eq!(asks[0][3], "submit: written it", "{asks:?}");
+    assert_eq!(asks_json(&setup)["asks"][0]["risk"], json!(["high"]));
 }
 
 /// A groom task whose groom step ends `grade`, and whose later turns take `then`.
@@ -12086,8 +12095,14 @@ fn a_green_groom_goes_straight_to_implement() {
 }
 
 #[test]
-fn a_yellow_groom_is_reviewed_on_codex_then_described_before_its_pull_request_opens() {
-    let then = [result("passed"), result("clean"), result("described")];
+fn a_yellow_groom_is_reviewed_on_codex_graded_for_merge_risk_then_described_before_its_pull_request_opens()
+ {
+    let then = [
+        result("passed"),
+        result("clean"),
+        verdict("low"),
+        result("described"),
+    ];
     let setup = groomed("starter-groom-yellow", "yellow", &then);
 
     setup.until("actions", |rows| !rows.is_empty());
@@ -12097,7 +12112,8 @@ fn a_yellow_groom_is_reviewed_on_codex_then_described_before_its_pull_request_op
         .into_iter()
         .map(|run| run[2].clone())
         .collect();
-    assert_eq!(steps, ["groom", "implement", "review", "describe"]);
+    assert_eq!(steps, ["groom", "implement", "review", "risk", "describe"]);
+    assert_eq!(task_json(&setup, "1")["merge_risk"]["verdict"], "low");
     assert!(
         setup.dir.join("fake/codex-args.log").exists(),
         "review ran on codex"
@@ -14666,6 +14682,153 @@ fn a_daemon_refuses_a_socket_directory_that_others_can_enter() {
     let log = fs::read_to_string(setup.dir.join("daemon.log")).unwrap();
     assert!(!status.success(), "{log}");
     assert!(log.contains("not a private folder of this user"), "{log}");
+}
+
+/// `OPEN_PR` with a `risk` step between the implementation and its `approve-pr` ask.
+fn risked() -> String {
+    OPEN_PR.replace("passed = \"approve-pr\"", "passed = \"risk\"")
+        + r#"
+[[steps]]
+id = "risk"
+decides = "model"
+agent = "implementer"
+prompt = "Grade the change's merge risk low, medium or high."
+effect = "reversible"
+next = { low = "approve-pr", medium = "approve-pr", high = "approve-pr" }
+"#
+}
+
+/// A `risk` step's result with the verdict `verdict` on every dimension but `blast_radius`, which is low.
+fn verdict(verdict: &str) -> serde_json::Value {
+    json!({ "name": "result", "arguments": {
+        "outcome": verdict,
+        "summary": format!("Merge risk {verdict}"),
+        "risk": {
+            "ask": format!("{verdict}: does what the issue asks"),
+            "blast_radius": "low: one widget",
+            "verification": format!("{verdict}: a test draws the box"),
+            "rollback": "low: one revert",
+            "detection": "low: the widget test fails",
+        },
+    } })
+}
+
+#[test]
+fn a_risk_step_stores_its_verdict_on_the_task_and_its_result() {
+    let mut setup = Setup::with_workflow("risk-verdict", &risked());
+    setup.calls(&[passed_with_evidence(), verdict("medium")]);
+    setup.publish(&requested(42));
+
+    setup.start();
+
+    setup.until("asks", |rows| rows.len() == 1);
+    let task = task_json(&setup, "1");
+    let expected = json!({
+        "verdict": "medium",
+        "ask": "medium: does what the issue asks",
+        "blast_radius": "low: one widget",
+        "verification": "medium: a test draws the box",
+        "rollback": "low: one revert",
+        "detection": "low: the widget test fails",
+    });
+    assert_eq!(task["merge_risk"], expected, "{task}");
+    assert_eq!(task["results"][1]["merge_risk"], expected, "{task}");
+}
+
+#[test]
+fn a_risk_verdict_below_its_highest_line_or_with_a_tab_in_a_line_is_refused() {
+    let mut setup = Setup::with_workflow("risk-refused", &risked());
+    let mut lowered = verdict("medium");
+    lowered["arguments"]["outcome"] = json!("low");
+    let mut tabbed = verdict("low");
+    tabbed["arguments"]["risk"]["rollback"] = json!("low: one\trevert");
+    setup.calls(&[passed_with_evidence(), lowered, tabbed]);
+    setup.publish(&requested(42));
+
+    setup.start();
+
+    let deadline = Instant::now() + Duration::from_secs(60);
+    while setup.replies().len() < 3 {
+        assert!(Instant::now() < deadline, "{:?}", setup.replies());
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let replies = setup.replies();
+    assert_eq!(
+        reply(&replies[1]),
+        (
+            "outcome low must be the highest level of risk's lines: medium".to_owned(),
+            true
+        )
+    );
+    assert_eq!(
+        reply(&replies[2]),
+        (
+            "risk must be an object with one line per dimension, ask, blast_radius, verification, rollback, detection, each its level, a colon and why, on one line".to_owned(),
+            true
+        )
+    );
+    assert_eq!(task_json(&setup, "1")["merge_risk"], json!(null));
+}
+
+#[test]
+fn the_approve_pr_ask_shows_its_tasks_merge_risk_and_asks_filter_by_it() {
+    let mut setup = Setup::with_workflow("risk-ask", &risked());
+    setup.calls(&[passed_with_evidence(), verdict("medium")]);
+    setup.publish(&requested(42));
+
+    setup.start();
+
+    setup.until("asks", |rows| rows.len() == 1);
+    let ask = &asks_json(&setup)["asks"][0];
+    assert_eq!(ask["risk"], json!(["irreversible", "medium"]), "{ask}");
+    assert_eq!(
+        ask["merge_risk"]["verification"], "medium: a test draws the box",
+        "{ask}"
+    );
+    assert_eq!(
+        ask["text"],
+        "Merge risk: medium\n\n- ask: medium: does what the issue asks\n- blast_radius: low: one widget\n- verification: medium: a test draws the box\n- rollback: low: one revert\n- detection: low: the widget test fails"
+    );
+    let listed = |risk: &str| -> usize {
+        let output = setup.priory(&["asks", "--all", "--json", "--risk", risk]);
+        assert!(output.status.success(), "{output:?}");
+        serde_json::from_slice::<serde_json::Value>(&output.stdout).unwrap()["asks"]
+            .as_array()
+            .unwrap()
+            .len()
+    };
+    assert_eq!([listed("medium"), listed("low"), listed("high")], [1, 0, 0]);
+    let text = String::from_utf8(setup.priory(&["asks"]).stdout).unwrap();
+    let lines: Vec<&str> = text.lines().collect();
+    assert_eq!(
+        lines[0].split('\t').next_back(),
+        Some("merge_risk"),
+        "{text}"
+    );
+    assert!(
+        lines[1].ends_with("\tmedium: does what the issue asks; low: one widget; medium: a test draws the box; low: one revert; low: the widget test fails"),
+        "{text}"
+    );
+}
+
+#[test]
+fn a_hands_off_tasks_approval_reaches_the_person_even_on_a_low_merge_risk() {
+    let mut setup = hands_off("hands-off-low-risk", &risked());
+    setup.calls(&[passed_with_evidence(), verdict("low")]);
+    setup.publish(&requested(42));
+
+    setup.start();
+
+    setup.until("tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == "asleep")
+    });
+    let ask = &asks_json(&setup)["asks"][0];
+    assert_eq!(
+        [&ask["routed_to"], &ask["merge_risk"]["verdict"]],
+        [&json!(null), &json!("low")],
+        "{ask}"
+    );
+    assert_eq!(setup.rows("tasks").len(), 1, "no lead task");
 }
 
 const PROVED: &str = r#"

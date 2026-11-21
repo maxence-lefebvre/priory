@@ -817,7 +817,16 @@ fn listed(verb: &str, mut args: Vec<String>) -> ExitCode {
                     .into_iter()
                     .flatten()
                     .filter(|ask| ask["state"] == "open" && (all || ask["snoozed_until"].is_null()))
-                    .cloned()
+                    .map(|ask| {
+                        let mut ask = ask.clone();
+                        if ask["merge_risk"].is_object() {
+                            let lines = tools::RISK_DIMENSIONS.map(|dimension| {
+                                ask["merge_risk"][dimension].as_str().unwrap_or_default()
+                            });
+                            ask["merge_risk"] = lines.join("; ").into();
+                        }
+                        ask
+                    })
                     .collect();
                 listing::print(
                     &[
@@ -837,6 +846,7 @@ fn listed(verb: &str, mut args: Vec<String>) -> ExitCode {
                         "key",
                         "run_id",
                         "session",
+                        "merge_risk",
                     ],
                     &serde_json::Value::Array(open),
                 );
