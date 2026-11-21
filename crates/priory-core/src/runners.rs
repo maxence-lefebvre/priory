@@ -304,7 +304,11 @@ fn renew(tx: &Transaction, runner: &str, time: Timestamp) -> rusqlite::Result<()
     tx.execute(
         "INSERT INTO leases (runner, alive) VALUES (?1, ?2)
          ON CONFLICT (runner) DO UPDATE SET alive = max(alive, excluded.alive)",
-        params![runner, time.as_second()],
+        // Rounded up, so a lease stored in whole seconds never ends before its full length.
+        params![
+            runner,
+            time.as_second() + i64::from(time.subsec_nanosecond() > 0)
+        ],
     )?;
     Ok(())
 }

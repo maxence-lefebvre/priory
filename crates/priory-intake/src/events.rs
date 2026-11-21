@@ -607,7 +607,8 @@ pub struct ScheduleFired {
 pub struct CliRequested {
     /// The request, as typed.
     pub text: String,
-    /// `$USER`; null when it is unset.
+    /// `$USER`, or the Slack user who sent the shortcut's form as `<username> (<user id>)`; null when
+    /// `$USER` is unset.
     pub person: Option<String>,
     /// When the command ran, RFC 3339.
     #[schemars(extend("format" = "date-time"))]
@@ -658,6 +659,9 @@ pub struct TaskRequested {
     /// trigger's when unset.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub intervention: Option<priory_factory::factory::Intervention>,
+    /// The batch a planning task plans, from `priory batch add`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub batch: Option<BatchRequest>,
     /// When the firing was due. Schedule sources only.
     #[serde(skip_serializing_if = "Option::is_none")]
     #[schemars(extend("format" = "date-time"))]
@@ -773,4 +777,14 @@ pub enum Members {
 pub enum Position {
     Number(u64),
     Text(String),
+}
+
+/// The issues a batch's planning task plans, as task keys, and the workflow of its entries' tasks.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct BatchRequest {
+    /// Each issue, `linear:ENG-7` or `github:owner/name#42`.
+    pub issues: Vec<String>,
+    /// The workflow each entry's task runs.
+    pub entries: String,
 }

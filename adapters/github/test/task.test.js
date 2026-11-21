@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { fixText, sayRoute } from "../lib/task.js";
+import { fixBranch, fixText, sayRoute } from "../lib/task.js";
 
 const FLOWS = {
   workflows: [{
@@ -39,4 +39,30 @@ test("without the factory's flows, say is off and the note does not guess the st
 test("Update branch merges the base; Resolve conflicts says GitHub reports them first", () => {
   assert.equal(fixText("update", "priory/61-herdr", "main"), "Bring priory/61-herdr up to date with main by merging it, resolve any conflicts, run the tests and push.");
   assert.equal(fixText("conflicts", "priory/61-herdr", "main"), "GitHub reports conflicts between priory/61-herdr and main. Bring priory/61-herdr up to date with main by merging it, resolve any conflicts, run the tests and push.");
+});
+
+const PR = { resource: "github:owner/repo#7", url: "https://github.com/owner/repo/pull/7" };
+
+test("Update branch names only the branch of a task that owns the pull request, by key or stack", () => {
+  const stacked = { branch: "priory/12", stack: [{ pull_request: "github:owner/repo#6", branch: "priory/12-a", base: "main" }, { pull_request: PR.resource, branch: "priory/12-b", base: "priory/12-a" }] };
+  const keyed = { branch: "priory/13", stack: [], pull_request: { url: PR.url, branch: "fix-docs", base: "main" } };
+
+  assert.deepEqual(fixBranch(stacked, ["stack", "subscription"], PR), { branch: "priory/12-b", base: "priory/12-a" });
+  assert.deepEqual(fixBranch(keyed, ["key"], PR), { branch: "fix-docs", base: "main" });
+});
+
+test("a page that writes the repository in another case still finds the task's stack entry", () => {
+  const upper = { resource: "github:Owner/Repo#7", url: "https://github.com/Owner/Repo/pull/7" };
+  const stacked = { stack: [{ pull_request: PR.resource, branch: "priory/12", base: "main" }] };
+  const keyed = { stack: [], pull_request: { url: PR.url, branch: "fix-docs", base: "main" } };
+
+  assert.deepEqual(fixBranch(stacked, ["stack"], upper), { branch: "priory/12", base: "main" });
+  assert.deepEqual(fixBranch(keyed, ["key"], upper), { branch: "fix-docs", base: "main" });
+});
+
+test("a task that only waits on, reviews or subscribes to the pull request gets no branch, nor its own", () => {
+  const own = { branch: "priory/12", stack: [], pull_request: { url: "https://github.com/owner/repo/pull/9", branch: "priory/12", base: "main" } };
+
+  for (const holds of [["wait"], ["review"], ["subscription"], ["owns"]]) assert.equal(fixBranch(own, holds, PR), null, holds[0]);
+  assert.equal(fixBranch(own, ["key"], PR), null);
 });

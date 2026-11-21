@@ -1,27 +1,46 @@
 # Getting started
 
-This guide takes you from a clone of this repository to a running factory. You build Priory, write a
-factory with one agent, one workflow and one trigger, check it, then run the intake and the daemon.
+This guide takes you from nothing to a running factory. You install Priory, write a factory with
+one agent, one workflow and one trigger, check it, then run the intake and the daemon.
 
 ## Before you start
 
-Priory needs Linux, the Rust toolchain that `rust-toolchain.toml` pins, and on `PATH`: `git`,
-`tmux`, `gh` logged in to GitHub, and `claude` or `codex`.
+Priory needs Linux and, on `PATH`: `git`, `tmux`, `gh` logged in to GitHub, and `claude` or
+`codex`. Building from source also needs the Rust toolchain that `rust-toolchain.toml` pins.
 
-## 1. Build Priory
+## 1. Install Priory
 
-From the root of your clone:
+```sh
+curl -fsSL https://raw.githubusercontent.com/maxence-lefebvre/priory/main/install.sh | sh
+priory --version
+```
+
+The script downloads the binary of the latest
+[release](https://github.com/maxence-lefebvre/priory/releases) for Linux x86_64, Linux aarch64 or
+macOS on Apple silicon, checks it against its `.sha256` and installs it to `~/.local/bin`. Run
+`sh install.sh --prefix /usr/local` from a clone to install to `/usr/local/bin` instead. Set
+`PRIORY_RELEASE_URL=https://github.com/maxence-lefebvre/priory/releases/download/v0.1.0` to pick a
+release other than the latest. With [cargo-binstall](https://github.com/cargo-bins/cargo-binstall),
+`cargo binstall --git https://github.com/maxence-lefebvre/priory priory` downloads the same binary.
+
+Each release also holds `priory-herdr.tar.gz`, the [Herdr adapter](adapters/herdr/), and
+`priory-github-extension.zip`, the [GitHub extension](adapters/github/README.md).
+
+### Build from source
+
+The release binaries leave out the cargo features. Build from your clone to get them, or to run
+an unreleased commit:
 
 ```sh
 cargo build --release
 export PATH="$PWD/target/release:$PATH"
-priory
+priory --version
 ```
 
-The last command prints the usage. To install the binary instead, `cargo install --path
-crates/priory` puts `priory` in `~/.cargo/bin`. The in-process embedding model for search sits
-behind a cargo feature: `cargo build --release --features model`. So does the Postgres event log,
-which lets several machines share one log: `--features postgres`, then `[log]` in
+To install the binary instead, `cargo install --path crates/priory` puts `priory` in
+`~/.cargo/bin`. The in-process embedding model for search sits behind a cargo feature:
+`cargo build --release --features model`. So does the Postgres event log, which lets several
+machines share one log: `--features postgres`, then `[log]` in
 [`factory.toml`](docs/reference/factory.md#log).
 
 ## 2. Write a factory
@@ -127,6 +146,9 @@ lists the outcomes it verifies. See Proofs in [tools.md](docs/daemon/tools.md#pr
 To play a task through the whole factory with fake agents before a real one runs, follow
 [testing-a-factory.md](docs/testing-a-factory.md).
 
+To run one factory on two machines that share one event log, follow
+[adding-a-second-machine.md](docs/adding-a-second-machine.md).
+
 ## 4. Pick a starter
 
 The repository's `examples/` folder holds ready-made factories. Each one passes `priory check`, and
@@ -141,6 +163,7 @@ its `README.md` says what it needs and which steps ask you first.
 | [`morning-digest`](examples/morning-digest/README.md) | On workday mornings, the agent posts the open asks, stuck tasks and yesterday's merges to your desk |
 | [`release-checklist`](examples/release-checklist/README.md) | A runbook: you start a release with `priory add`, and each step asks you. Answering `run` at the test step runs `cargo test` once |
 | [`groom`](examples/groom/README.md) | A `groom` label starts a task. The agent grades the ticket, writes the brief, and takes it to a pull request you review |
+| [`batches`](examples/batches/README.md) | `priory batch add` hands several issues to a planner, which orders them. After you answer `go`, each issue becomes a task that starts once the ones it needs merged |
 | [`ship-and-watch`](examples/ship-and-watch/README.md) | A `ship` label starts a task. After you merge its pull request, the agent watches the release for an hour, then drafts an announcement that posts once you approve it |
 
 Copy one into your working folder, then check it:
@@ -241,6 +264,7 @@ When someone labels issue 42 of `owner/name` with `agent`, this happens:
 | `priory snooze KIND ID --for 2h`, `--until TIME`, `--clear` | Hides a desk item until then, or brings it back |
 | `priory todo add TEXT [--band B] [--due TIME]`, `priory todo done ID`, `priory todo list` | Adds a to-do of your own to the desk, marks it done, or lists them |
 | `priory tasks [--lane LANE] [--grade GRADE]` | Lists tasks in start order, with their grade |
+| `priory batch add [DIR] ISSUE...`, `priory batch show [BATCH] [--json]` | Hands several issues to a planner that orders them under one go, then shows each batch and its entries (see [batches.md](docs/daemon/batches.md)) |
 | `priory tasks --graph [TASK] [--mermaid]` | Draws how tasks relate, as a tree or a Mermaid flowchart |
 | `priory relate TASK KIND OTHER [--remove]` | Records that a task `builds-on`, `fixes`, `takes-up` or `relates` to another, or removes it |
 | `priory task TASK --json` | Prints one task with its brief, plan, pull request, runs and asks |
@@ -272,7 +296,12 @@ review guide. Load `adapters/github/` unpacked in Chrome or Edge, and add its or
 
 The web view's Desk shows the same desk. It opens on the next thing: the alarm or ask that ranks
 first, with why it ranks there. Under the list, Since you looked shows what happened since your last
-visit, and opening the Desk records the visit as `priory seen` does.
+visit, and opening the Desk records the visit as `priory seen` does. `priory desk` prints the same
+events after its list.
+
+The web view's Asks panel has the saved views Open, Snoozed, Answered and All. A snoozed ask leaves
+Open and waits in Snoozed. On a phone, once the options scroll out of view, the answer bar's
+"N options" opens a sheet with every option. On a desktop, `S` snoozes the selected ask for 1 h.
 
 A workflow can write a report for you, such as a morning dossier: `priory report show` prints the
 last one. The web view's Reports panel shows it, and takes its picks and row comments as

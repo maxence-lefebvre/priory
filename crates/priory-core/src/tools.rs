@@ -311,6 +311,11 @@ fn result(
             run.task
         )));
     }
+    if !arguments["batch"].is_null()
+        && let Err(refused) = crate::batch::planned(tx, run.task, &arguments["batch"], &summary)?
+    {
+        return Ok(Err(refused));
+    }
     tx.execute(
         "INSERT INTO results (run, task, step, outcome, summary, evidence, commit_sha, reason, merge_risk, inbox)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, (SELECT max(seq) FROM inbox))",
@@ -1736,7 +1741,7 @@ fn done(
 }
 
 /// Whether `task` owns a pull request and every one of its stack merged.
-fn all_merged(tx: &Transaction, task: i64) -> rusqlite::Result<bool> {
+pub(crate) fn all_merged(tx: &Connection, task: i64) -> rusqlite::Result<bool> {
     let stack = crate::stack::of(tx, task)?;
     if !stack.is_empty() {
         return Ok(stack.iter().all(|pull| pull.state == "merged"));
@@ -1755,6 +1760,28 @@ fn all_merged(tx: &Transaction, task: i64) -> rusqlite::Result<bool> {
         .optional()?
         .flatten();
     Ok(merged == Some(true))
+}
+
+/// Whether a pull request `task` owns closed without a merge: one of its stack, or its only one.
+pub(crate) fn closed_unmerged(db: &Connection, task: i64) -> rusqlite::Result<bool> {
+    let stack = crate::stack::of(db, task)?;
+    if !stack.is_empty() {
+        return Ok(stack.iter().any(|pull| pull.state == "closed"));
+    }
+    let Some(resource) = pull_request(db, task)? else {
+        return Ok(false);
+    };
+    let merged = db
+        .query_row(
+            "SELECT json_extract(data, '$.merged') FROM inbox WHERE type = ?2
+             AND 'github:' || json_extract(data, '$.repo') || '#' || json_extract(data, '$.pull_request') = ?1
+             ORDER BY seq DESC LIMIT 1",
+            params![resource, CLOSED],
+            |row| row.get::<_, Option<bool>>(0),
+        )
+        .optional()?
+        .flatten();
+    Ok(merged == Some(false))
 }
 
 /// Fires every open time wait whose instant passed and task wait whose task ended.
@@ -2415,7 +2442,7 @@ fn queue_first(tx: &Transaction, task: i64, text: &str) -> rusqlite::Result<i64>
 /// The pull request the task owns: the latest one its actions opened, else the one its latest wait
 /// named, else the latest one opened from its branch, else its key when a pull request event created
 /// it. A review request's task reviews the pull request and does not own it.
-fn pull_request(tx: &Transaction, task: i64) -> rusqlite::Result<Option<String>> {
+pub(crate) fn pull_request(tx: &Connection, task: i64) -> rusqlite::Result<Option<String>> {
     tx.query_row(
         "SELECT resource FROM (
            SELECT pull_request AS resource, 3 AS rank, id AS at FROM actions
@@ -2622,10 +2649,17 @@ fn step_in(
             Ok(None)
         }
         Decider::Human => {
-            let question = if context.is_empty() {
-                target.to_owned()
-            } else {
-                format!("{target}: {context}")
+            let go = crate::batch::go_ask(tx, task)?;
+            // A result's summary is no news on a go; a failed start's error is.
+            let question = match (&go, context.is_empty()) {
+                (Some((asked, _)), _) if context.is_empty() || from.is_some() => asked.clone(),
+                (Some((asked, _)), _) => format!("{context}. {asked}"),
+                (None, true) => target.to_owned(),
+                (None, false) => format!("{target}: {context}"),
+            };
+            let text = match go {
+                Some((_, plan)) => Some(plan),
+                None => ask_text(tx, task)?,
             };
             let command = match step_command(tx, task, step, factory)? {
                 Ok(command) => command,
@@ -2646,7 +2680,7 @@ fn step_in(
                     serde_json::to_string(&step.options).expect("options serialize"),
                     lead,
                     command,
-                    ask_text(tx, task)?
+                    text
                 ],
             )?;
             if let Some(lead) = &lead {
@@ -2741,6 +2775,16 @@ fn answer_in(
             answer.revision,
             answer.text
         )));
+    }
+    if kind == "step"
+        && let Some(task) = task
+    {
+        let target = answered_target(workflows, &workflow, &at, &answer.text);
+        let go = step(workflows, &workflow, &target)
+            .is_some_and(|starts| starts.action.as_deref() == Some("start-batch"));
+        if let Err(refused) = crate::batch::answering(tx, task, go, &answer.by)? {
+            return Ok(Err(refused));
+        }
     }
     tx.execute(
         &format!("UPDATE asks SET answer = ?2, answered = {NOW}, answered_by = ?3 WHERE id = ?1"),
@@ -3940,12 +3984,25 @@ pub(crate) fn performed(
     task: i64,
     workflow: &str,
     at: &Step,
-    mut done: Done,
+    done: Done,
     trace: &Trace,
 ) -> rusqlite::Result<()> {
     let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    performed_in(&tx, task, workflow, at, done, trace)?;
+    tx.commit()
+}
+
+/// As `performed`, in `tx`.
+pub(crate) fn performed_in(
+    tx: &Transaction,
+    task: i64,
+    workflow: &str,
+    at: &Step,
+    mut done: Done,
+    trace: &Trace,
+) -> rusqlite::Result<()> {
     for pull in &done.stack {
-        if let Some(refused) = crate::state::taken(&tx, task, &pull.resource)? {
+        if let Some(refused) = crate::state::taken(tx, task, &pull.resource)? {
             done.status = "failed";
             done.error = Some(refused);
             done.pull_request = None;
@@ -3976,7 +4033,7 @@ pub(crate) fn performed(
             "INSERT OR IGNORE INTO subscriptions (task, resource) VALUES (?1, ?2)",
             params![task, pull.resource],
         )?;
-        crate::stack::record(&tx, task, &pull.resource, &pull.branch, &pull.base)?;
+        crate::stack::record(tx, task, &pull.resource, &pull.branch, &pull.base)?;
     }
     let target = at
         .next
@@ -3984,9 +4041,9 @@ pub(crate) fn performed(
         .cloned()
         .unwrap_or_else(|| format!("{}?{}", at.id, done.status));
     let context = done.error.as_deref().unwrap_or_default();
-    trace::ended(&tx, trace, task, done.status, None)?;
-    enter(&tx, task, workflow, &target, None, context, trace.factory)?;
-    tx.commit()
+    trace::ended(tx, trace, task, done.status, None)?;
+    enter(tx, task, workflow, &target, None, context, trace.factory)?;
+    Ok(())
 }
 
 #[cfg(test)]

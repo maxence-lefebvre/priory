@@ -937,7 +937,7 @@ fn tend(
             runtime::kill(&run.tmux);
         }
     }
-    state::due(db)?;
+    state::due(db, factory)?;
     overlap::tick(db, factory, home)?;
     tools::enter_queued(db, factory)?;
     state::disk_due(db, || room::measure(home).ok().map(|room| room.disk_free))?;
@@ -1133,6 +1133,10 @@ fn act(
     let done = match step.action.as_deref().unwrap_or_default() {
         "open-pr" => open_pr(db, factory, due, head.as_deref())?,
         "open-issue" => open_issue(db, factory, due)?,
+        "start-batch" => {
+            start_batch(db, trace, due, step)?;
+            return Ok(false);
+        }
         "run" => {
             start_command(db, trace, home, due, step, commands)?;
             return Ok(false);
@@ -1166,6 +1170,30 @@ fn worktree_name(db: &Connection, runner: Option<&str>, task: i64) -> rusqlite::
             (None, None) => task.to_string(),
         },
     )
+}
+
+/// Starts `due`'s batch and records the action in one transaction, so a crash between them never
+/// creates its tasks twice.
+fn start_batch(
+    db: &mut Connection,
+    trace: &Trace,
+    due: &state::Due,
+    step: &factory::Step,
+) -> Result<(), Error> {
+    let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    let done = match crate::batch::start(&tx, due.task, trace.factory)? {
+        Ok(()) => Done {
+            status: "started",
+            pull_request: None,
+            commit: None,
+            error: None,
+            stack: Vec::new(),
+        },
+        Err(error) => failed(error),
+    };
+    tools::performed_in(&tx, due.task, &due.workflow, step, done, trace)?;
+    tx.commit()?;
+    Ok(())
 }
 
 /// Where a removed worktree stands once `restore_worktree` looked at it.

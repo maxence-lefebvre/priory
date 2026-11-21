@@ -83,6 +83,8 @@ The keys of `factory.toml`, workflows and agents are in [docs/reference/](../ref
   makes on them.
 - [trace.md](trace.md): trace records, token counts, `priory report`, `priory costs`, the attention report, outcome labels, `priory grades` and the OpenTelemetry export.
 - [otel-recipes.md](otel-recipes.md): how to send the export to a local ClickStack, Honeycomb or Grafana Cloud.
+- [batches.md](batches.md): batches, `priory batch add` and `priory batch show`, the plan a
+  planning task sends, the go and the `merged` hold condition.
 - [relations.md](relations.md): how tasks relate, `priory relate`, the relations Priory records
   itself, and `priory tasks --graph`.
 - [search.md](search.md): TL;DRs, the summarizer, `priory search`, and the optional embeddings.

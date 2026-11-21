@@ -27,6 +27,7 @@ Schema: [`config/factory.json`](../schemas/config/factory.json).
 | `asks` | table | no | answers are only stored | What happens to the answer of an ask from outside Priory. See [`[asks]`](#asks) | |
 | `links` | table of strings | no | the built-in `#n` link | Autolinks, each a regex and a URL template. See [`[links]`](#links) | |
 | `request` | table | no | `priory add` needs `--workflow` | The defaults of `priory add` and `POST /api/request`. See [`[request]`](#request) | |
+| `batch` | table | no | `priory batch add` is refused | How `priory batch add` plans batches. See [`[batch]`](#batch) | |
 | `guard` | table | no | the built-in guards alone | Irreversible commands and MCP tools the tool guard denies on top of the built-in ones. See [`[guard]`](#guard) | |
 
 A duration is a whole number followed by `s`, `m` or `h`, such as `"90s"`, `"15m"` or `"2h"`.
@@ -200,6 +201,24 @@ What `priory add` and `POST /api/request` use when a request names no workflow o
 | --- | ---- | -------- | ------- | ------- | ------- |
 | `workflow` | string | yes | | The workflow a request starts when it names none, by file name | `"groom"` |
 | `band` | string | no | none, as `priory request` without `--band` | The band of a request that names none | `"today"` |
+
+## `[batch]`
+
+What `priory batch add` starts: the planning workflow, and the workflow of each entry's task. See
+[batches.md](../daemon/batches.md).
+
+| Key | Type | Required | Default | Meaning | Example |
+| --- | ---- | -------- | ------- | ------- | ------- |
+| `workflow` | string | yes | | The planning task's workflow, by file name. It needs a human step right after a model step: the go | `"plan-batch"` |
+| `entries` | string | no | `[request] workflow` | The workflow each entry's task runs | `"implement"` |
+
+`priory check` reports:
+
+| Problem | Message |
+| ------- | ------- |
+| An unknown planning workflow | `` `[batch] workflow` `<name>` does not exist `` |
+| No human step after a model step | `` `[batch] workflow` `<name>` needs a human step after a model step: the go that starts the batch `` |
+| An unknown entries' workflow | `` `[batch] entries` `<name>` does not exist `` |
 
 ## `[guard]`
 

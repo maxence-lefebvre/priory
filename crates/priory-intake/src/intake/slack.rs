@@ -389,12 +389,22 @@ fn call(token: &str, method: &str, query: &[(&str, String)]) -> Result<Value, St
 /// One JSON POST to `url`, under `token` when given as its variable's name and value. Everything
 /// goes to `curl` on its standard input, so neither the token nor the URL shows in a process list.
 pub(super) fn post(token: Option<(&str, &str)>, url: &str, body: &Value) -> Result<Value, String> {
+    send(token, url, body).map_err(|(error, _)| error)
+}
+
+/// As `post`, with the seconds of Slack's `Retry-After` header beside an error that has one.
+pub(super) fn send(
+    token: Option<(&str, &str)>,
+    url: &str,
+    body: &Value,
+) -> Result<Value, (String, Option<u64>)> {
     // A raw newline would end the config line, so control characters are refused, not quoted.
     if [url, token.map_or("", |(_, token)| token)]
         .iter()
         .any(|value| value.chars().any(char::is_control))
     {
-        return Err("Slack call refused: a control character in its URL or token".to_owned());
+        let error = "Slack call refused: a control character in its URL or token";
+        return Err((error.to_owned(), None));
     }
     let quote = |value: &str| format!("\"{}\"", value.replace('\\', "\\\\").replace('"', "\\\""));
     let mut config = String::new();
@@ -434,6 +444,8 @@ pub(super) fn post(token: Option<(&str, &str)>, url: &str, body: &Value) -> Resu
             "--proto",
             "=https",
             "--fail-with-body",
+            "--write-out",
+            "\n%header{retry-after}",
             "--config",
             "-",
         ])
@@ -441,26 +453,30 @@ pub(super) fn post(token: Option<(&str, &str)>, url: &str, body: &Value) -> Resu
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .map_err(|error| format!("Slack {method}: curl: {error}"))?;
+        .map_err(|error| (format!("Slack {method}: curl: {error}"), None))?;
     child
         .stdin
         .take()
         .expect("a piped stdin")
         .write_all(config.as_bytes())
-        .map_err(|error| format!("Slack {method}: curl: {error}"))?;
+        .map_err(|error| (format!("Slack {method}: curl: {error}"), None))?;
     let output = child
         .wait_with_output()
-        .map_err(|error| format!("Slack {method}: curl: {error}"))?;
+        .map_err(|error| (format!("Slack {method}: curl: {error}"), None))?;
     let stdout = String::from_utf8_lossy(&output.stdout);
+    // `--write-out` ends the output with a line holding `Retry-After`, empty without the header.
+    let (stdout, retry) = stdout.rsplit_once('\n').unwrap_or((&stdout, ""));
+    let retry = retry.trim().parse().ok();
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(failed(&format!("{} {}", stderr.trim(), stdout.trim())));
+        let error = failed(&format!("{} {}", stderr.trim(), stdout.trim()));
+        return Err((error, retry));
     }
     // A response_url answers `ok` as text, the Web API answers JSON.
     let answer: Value =
-        serde_json::from_str(&stdout).unwrap_or(json!({"ok": stdout.trim() == "ok"}));
+        serde_json::from_str(stdout).unwrap_or(json!({"ok": stdout.trim() == "ok"}));
     if answer["ok"] != true {
-        return Err(failed(text(&answer["error"])));
+        return Err((failed(text(&answer["error"])), retry));
     }
     Ok(answer)
 }

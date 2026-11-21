@@ -49,8 +49,9 @@ export default class PrioryTabs extends View {
   init() {
     /** @type {ReturnType<typeof connect> | null} */
     this.priory = null;
-    // A request left in shared state by an earlier session must not attach on start.
+    // A request left in shared state by an earlier session must not attach, or open a task, on start.
     this.attached = /** @type {{ at?: number } | null} */ (shared("priory.attach"))?.at ?? 0;
+    this.opened = /** @type {{ at?: number } | null} */ (shared("priory.task.open"))?.at ?? 0;
   }
 
   // Another Priory mod asks for a task's terminal with setShared("priory.attach", { task, at: Date.now() }).
@@ -76,6 +77,12 @@ export default class PrioryTabs extends View {
       this.attached = request.at;
       const space = (spaces() ?? []).find((candidate) => candidate.active);
       cx.spawn(async () => this.attach(request.task, space));
+    }
+    // Another Priory mod opens a task with setShared("priory.task.open", { task, at: Date.now() }); the Task panel reads which.
+    const opening = /** @type {{ at?: number } | null} */ (shared("priory.task.open"));
+    if ((opening?.at ?? 0) > this.opened) {
+      this.opened = opening?.at ?? 0;
+      cx.spawn(async () => openTab("Task", "priory-task"));
     }
     const root = /** @type {{ traffic_lights?: number[] }} */ (layout()), w = window();
     const sidebar = find(root, "sidebar"), panel = find(root, "panel"), body = find(root, "panel-body");

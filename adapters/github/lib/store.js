@@ -21,3 +21,4 @@ async function run(mode, use) {
 export const get = (key) => run("readonly", (store) => store.get(key));
 export const put = (key, value) => run("readwrite", (store) => store.put(value, key));
 export const remove = (key) => run("readwrite", (store) => store.delete(key));
+export const clear = () => run("readwrite", (store) => store.clear());

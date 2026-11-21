@@ -1,6 +1,6 @@
 // Priory's web view (DESIGN.md): the frame, the Desk and the Asks, with answering through the CLI's verbs.
 // Agent text is untrusted: every value goes through `html`, which escapes it.
-import { ARM_MS, answeredBy, askGroups, routedMark, routedNote, snoozed, stillArmed } from "./asks.js";
+import { ARM_MS, ASK_VIEWS, answeredBy, askGroups, routedMark, routedNote, shownGroups, snoozeShortcut, snoozed, stillArmed, writeNote } from "./asks.js";
 import { SPLITS, attentionView, costTiles, dayBars, money, splitTable } from "./costs.js";
 import { addBody, addOutcome } from "./add.js";
 import { linked } from "./links.js";
@@ -181,7 +181,7 @@ async function refresh() {
   const failed = state.failed;
   const call = ++state.refreshes;
   // Older rows load again when the person scrolls back to them.
-  const history = { asks: Boolean(selectedAsk()) || (current() === "asks" && askView() !== "open"), tasks: current() === "desk" && deskView() === "all" };
+  const history = { asks: Boolean(selectedAsk()) || (current() === "asks" && ["answered", "all"].includes(askView())), tasks: current() === "desk" && deskView() === "all" };
   for (const listing of ["asks", "tasks"]) state.all[listing] &&= history[listing];
   try {
     // The server reads the views once, when it starts.
@@ -573,7 +573,6 @@ function capsule(model) {
 }
 
 // Asks list
-const ASK_VIEWS = ["open", "answered", "all"];
 function askView() {
   const name = new URLSearchParams(listSearch()).get("view");
   return ASK_VIEWS.includes(name) ? name : "open";
@@ -619,10 +618,11 @@ function asksBody(wide) {
   // shortcut: older counts are not per facet, so a facet counts the loaded rows only; split `older` by facet if that misleads.
   const pending = state.data.older.asks;
   const left = picks.size ? { answered: 0, withdrawn: 0 } : pending;
-  const total = { open: open.length, answered: answered.length + left.answered, all: asks.length + left.answered + left.withdrawn };
-  const unloaded = { open: 0, answered: pending.answered, all: pending.answered + pending.withdrawn }[current];
+  const total = { open: open.length, snoozed: asleep.length, answered: answered.length + left.answered, all: asks.length + left.answered + left.withdrawn };
+  const unloaded = { open: 0, snoozed: 0, answered: pending.answered, all: pending.answered + pending.withdrawn }[current];
   const views = savedViews([
     ["open", "Open", total.open, current === "open"],
+    ["snoozed", "Snoozed", total.snoozed, current === "snoozed"],
     ["answered", "Answered", total.answered, current === "answered"],
     ["all", "All", total.all, current === "all"],
   ], "/asks", facetQuery(picks));
@@ -635,15 +635,16 @@ function asksBody(wide) {
   };
   const answeredToday = answered.filter((ask) => ask.answered_at && today(ask.answered_at));
   const answeredEarlier = answered.filter((ask) => !answeredToday.includes(ask));
+  const shows = (group) => shownGroups(current).includes(group);
   const sections = [
-    current !== "answered" ? section("Open", open, `${open.length}, oldest first`) : "",
-    current === "all" ? section("Snoozed", asleep, asleep.length) : "",
-    current !== "open" ? section("Answered today", answeredToday, answeredToday.length) : "",
-    current !== "open" ? section("Answered earlier", answeredEarlier, answeredEarlier.length + left.answered, answeredEarlier.length + left.answered) : "",
-    current === "all" ? section("Withdrawn", withdrawn, withdrawn.length + left.withdrawn, withdrawn.length + left.withdrawn) : "",
+    shows("open") ? section("Open", open, `${open.length}, oldest first`) : "",
+    shows("snoozed") ? section("Snoozed", asleep, asleep.length) : "",
+    shows("answered") ? section("Answered today", answeredToday, answeredToday.length) : "",
+    shows("answered") ? section("Answered earlier", answeredEarlier, answeredEarlier.length + left.answered, answeredEarlier.length + left.answered) : "",
+    shows("withdrawn") ? section("Withdrawn", withdrawn, withdrawn.length + left.withdrawn, withdrawn.length + left.withdrawn) : "",
     olderRow("asks", unloaded, wide),
   ];
-  const empty = { open: "No open asks. Agents ask here when they need you.", answered: "No answered asks yet. An ask moves here once someone answers it.", all: "No asks yet. Agents ask here when they need you." }[current];
+  const empty = { open: "No open asks. Agents ask here when they need you.", snoozed: "No snoozed asks. A snoozed ask waits here until its time.", answered: "No answered asks yet. An ask moves here once someone answers it.", all: "No asks yet. Agents ask here when they need you." }[current];
   const rows = wide ? html`<table class="tbl"><thead><tr><th>State</th><th>Task</th><th>Step</th><th>Question</th><th>${current === "open" ? "Recommends" : "Answer"}</th><th class="r">Age</th></tr></thead><tbody>${sections}</tbody></table>` : sections;
   return { views: html`${views}${facets}`, rows: total[current] || unloaded ? rows : html`<p class="empty">${empty}</p>`, open };
 }
@@ -653,6 +654,27 @@ const selectedAsk = () => {
   const [first, id] = route();
   return first === "asks" && id ? decodeURIComponent(id) : null;
 };
+
+// One button per option, as the detail and the answer sheet draw them. A command option armed by its first tap shows its command.
+function optionList(ask, wide) {
+  const pending = state.pending?.id === ask.id ? state.pending : null;
+  const armed = state.armed?.id === ask.id && state.armed.revision === ask.revision ? state.armed.text : null;
+  const locked = state.failed ? "offline" : null;
+  const bound = `Bound to revision ${ask.revision}.`;
+  return (ask.options || []).map((option, i) => {
+    const recommended = option === ask.recommendation;
+    const runs = runsCommand(ask, option);
+    const chosen = pending?.text === option;
+    const off = locked || (pending && !chosen);
+    const notes = [recommended && "Recommended", runs && "Runs a command"].filter(Boolean).join(". ");
+    const label = armed === option
+      ? html`<span><small>Tap again to run</small>${option}<small>Cancels in 4 s</small></span><span class="drain" aria-hidden="true"></span>`
+      : html`<span>${option}${notes ? html`<small>${notes}</small>` : ""}</span>`;
+    const button = html`<button class="opt ${recommended ? "rec-opt" : ""} ${chosen ? "chosen" : ""} ${armed === option ? "armed" : ""}" data-option="${i}" data-answer="${i}" aria-disabled="${off || pending ? "true" : "false"}" ${locked ? raw('aria-describedby="answer-locked"') : ""}>
+      ${chosen ? icon("check", "s20") : ""}${label}${wide ? html`<kbd>${i + 1}</kbd>` : ""}</button>`;
+    return armed === option ? html`${button}${commandBlock(ask, bound)}` : button;
+  });
+}
 
 function askDetail(id, wide) {
   const ask = state.data.asks.find((candidate) => String(candidate.id) === id);
@@ -678,19 +700,7 @@ function askDetail(id, wide) {
   const armed = state.armed?.id === ask.id && state.armed.revision === ask.revision ? state.armed.text : null;
   const locked = state.failed ? "offline" : null;
   const bound = `Bound to revision ${ask.revision}.`;
-  const optionButtons = options.map((option, i) => {
-    const recommended = option === ask.recommendation;
-    const runs = runsCommand(ask, option);
-    const chosen = pending?.text === option;
-    const off = locked || (pending && !chosen);
-    const notes = [recommended && "Recommended", runs && "Runs a command"].filter(Boolean).join(". ");
-    const label = armed === option
-      ? html`<span><small>Tap again to run</small>${option}<small>Cancels in 4 s</small></span><span class="drain" aria-hidden="true"></span>`
-      : html`<span>${option}${notes ? html`<small>${notes}</small>` : ""}</span>`;
-    const button = html`<button class="opt ${recommended ? "rec-opt" : ""} ${chosen ? "chosen" : ""} ${armed === option ? "armed" : ""}" data-option="${i}" data-answer="${i}" aria-disabled="${off || pending ? "true" : "false"}" ${locked ? raw('aria-describedby="answer-locked"') : ""}>
-      ${chosen ? icon("check", "s20") : ""}${label}${wide ? html`<kbd>${i + 1}</kbd>` : ""}</button>`;
-    return armed === option ? html`${button}${commandBlock(ask, bound)}` : button;
-  });
+  const optionButtons = optionList(ask, wide);
   const notice = state.notices.get(ask.id);
   const lockedNote = locked ? html`<p class="note" id="answer-locked">${icon("unplug", "s15")}<span>Reconnect to answer.</span></p>` : "";
   const writing = state.writing.has(ask.id) && !locked;
@@ -1023,21 +1033,9 @@ async function write(ask, path, body, draft) {
     state.writing.add(ask.id);
   }
   const fresh = answered.ask;
-  if (status === 409 && fresh) {
-    state.data.asks = state.data.asks.map((candidate) => (candidate.id === fresh.id ? fresh : candidate));
-    state.notices.set(ask.id, fresh.state === "open"
-      ? `The question changed. Read revision ${fresh.revision} and answer again.`
-      : fresh.state === "answered"
-        ? `Already answered ${age(fresh.answered_at)} ago: ${fresh.answer}.`
-        : `Withdrawn: ${fresh.withdrawn_why}.`);
-  } else if (status === 503) {
-    state.notices.set(ask.id, "Could not send: no priory daemon runs beside this server. Start priory daemon, then send again.");
-  } else if (status === 504 || status === 0) {
-    state.notices.set(ask.id, "The daemon may have applied this but did not confirm it. Check the ask's state before you send again.");
-    refresh();
-  } else {
-    state.notices.set(ask.id, `Could not send: ${answered.error || `the server answered ${status}`}.`);
-  }
+  if (status === 409 && fresh) state.data.asks = state.data.asks.map((candidate) => (candidate.id === fresh.id ? fresh : candidate));
+  state.notices.set(ask.id, writeNote(status, answered, age));
+  if (status === 504 || status === 0) refresh();
   return false;
 }
 
@@ -1086,7 +1084,7 @@ function act(target) {
   const action = target.dataset.action;
   if (action === "undo") return undo();
   if (state.pending) return;
-  if (action === "options") return document.querySelector(".opts")?.scrollIntoView({ block: "center" });
+  if (action === "options") return openSheet();
   if (action === "write") {
     state.writing.add(ask.id);
     render();
@@ -1438,6 +1436,26 @@ async function openAdd() {
 
 function closeAdd() {
   addSheet().close();
+}
+
+// The answer sheet (DESIGN.md, Answer while reading): every option of the ask on screen, opened by the bar's "N options".
+const answerSheet = () => document.getElementById("answer");
+
+function openSheet() {
+  if (!askOnScreen()) return;
+  renderSheet();
+  answerSheet().showModal();
+}
+
+// Closes itself once the ask is gone, answered, or its answer is sending.
+function renderSheet() {
+  const sheet = answerSheet();
+  const ask = state.data && askOnScreen();
+  if (!ask || ask.state !== "open" || state.pending) return sheet.close();
+  const focused = document.activeElement?.closest?.("#answer") ? focusKey(document.activeElement) : null;
+  sheet.innerHTML = html`<div class="shead"><h2 id="answer-title">Answer ask #${ask.id}<small>revision ${ask.revision}</small></h2><button class="iconbtn" data-action="sheet-close" aria-label="Close">${icon("x", "s20")}</button></div>
+    <div class="opts" role="group" aria-label="Options">${optionList(ask, false)}</div>`.text;
+  if (focused) sheet.querySelector(focused)?.focus();
 }
 
 function chip(name, label, value, values, none) {
@@ -1908,6 +1926,7 @@ function render() {
   if (app.querySelector("[data-costs]") && old && !state.failed && !state.costs.loading && !state.costs.error) setTimeout(loadCosts);
   // The sheet lives outside #app; it redraws when the connection drops or comes back under it.
   if (addSheet().open && state.add.shownOffline !== Boolean(state.failed)) renderAdd();
+  if (answerSheet().open) renderSheet();
 }
 
 function page() {
@@ -2012,6 +2031,7 @@ document.addEventListener("click", (event) => {
   if (action === "costs-retry") return (state.costs.error = null), refresh();
   if (action === "add-open") return openAdd();
   if (action === "add-close" || action === "add-done") return closeAdd();
+  if (action === "sheet-close") return answerSheet().close();
   if (action === "add-discard") return discardAdd();
   if (action === "add-another") {
     Object.assign(state.add, { phase: "empty", task: null });
@@ -2104,19 +2124,22 @@ document.addEventListener("submit", (event) => {
   refresh();
 });
 
-// Desktop shortcuts: j and k move, Enter opens, Esc closes. Never inside an input.
+// Desktop shortcuts: j and k move, Enter opens, Esc closes, S snoozes the selected ask for 1 h. Never inside an input.
 document.addEventListener("keydown", (event) => {
   if ((event.key === " " || event.key === "Enter") && event.target.matches?.("[role=radio]")) {
     event.preventDefault();
     return event.target.click();
   }
-  if (addSheet().open || event.target.closest("input, textarea, select") || event.metaKey || event.ctrlKey || event.altKey || !state.data) return;
+  if (addSheet().open || answerSheet().open || event.target.closest("input, textarea, select") || event.metaKey || event.ctrlKey || event.altKey || !state.data) return;
   const rows = [...document.querySelectorAll(".list [href^='/asks/'], .list tr[data-href]")];
   const hrefOf = (row) => row.getAttribute("href") || row.dataset.href;
   const at = rows.findIndex((row) => row.getAttribute("aria-current") === "true");
   if (event.key === "n" || event.key === "N") {
     event.preventDefault();
     openAdd();
+  } else if (event.key === "s" || event.key === "S") {
+    const body = askOnScreen() && !state.failed && !state.pending && snoozeShortcut(askOnScreen(), Date.now());
+    if (body) snooze(askOnScreen(), { dataset: { for: body.for } });
   } else if (selectedAsk() && /^[1-9]$/.test(event.key)) {
     document.querySelector(`.opt[data-answer="${Number(event.key) - 1}"]`)?.click();
   } else if (event.key === "j" || event.key === "k") {
@@ -2131,6 +2154,7 @@ document.addEventListener("keydown", (event) => {
 
 // A tap on the scrim, outside the sheet's box, closes it; closing hands focus back to an Add button.
 addSheet().addEventListener("click", (event) => { if (event.target === addSheet()) closeAdd(); });
+answerSheet().addEventListener("click", (event) => { if (event.target === answerSheet()) answerSheet().close(); });
 addSheet().addEventListener("close", () => document.querySelector("#app [data-action='add-open']")?.focus());
 addEventListener("popstate", render);
 for (const query of ["(min-width: 600px)", "(min-width: 1024px)"]) matchMedia(query).addEventListener("change", render);

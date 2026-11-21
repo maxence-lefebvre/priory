@@ -194,6 +194,31 @@ pub fn check(factory: &Factory) -> Vec<Problem> {
                 problems.push(problem(settings, line, message));
             }
         }
+        if let Some(batch) = &settings.value.batch {
+            let line = settings.lines.field("batch");
+            match factory.workflows.get(&batch.workflow) {
+                None => {
+                    let message = format!("`[batch] workflow` `{}` does not exist", batch.workflow);
+                    problems.push(problem(settings, line, message));
+                }
+                Some(flow) if !has_go(&flow.value) => {
+                    let message = format!(
+                        "`[batch] workflow` `{}` needs a human step after a model step: the go that starts the batch",
+                        batch.workflow
+                    );
+                    problems.push(problem(settings, line, message));
+                }
+                Some(_) => {}
+            }
+            if let Some(entries) = batch
+                .entries
+                .as_ref()
+                .filter(|entries| !factory.workflows.contains_key(*entries))
+            {
+                let message = format!("`[batch] entries` `{entries}` does not exist");
+                problems.push(problem(settings, line, message));
+            }
+        }
         if !owner_name(settings.value.sweep.repo()) {
             problems.push(problem(
                 settings,
@@ -280,12 +305,17 @@ pub fn check(factory: &Factory) -> Vec<Problem> {
             ));
         }
         let reviews = trigger.value.source == "github" && trigger.value.on == REVIEW_REQUESTED;
-        if !reviews && trigger.value.reviewer.is_some() {
-            problems.push(problem(
-                trigger,
-                trigger.lines.field("reviewer"),
-                format!("only a GitHub `{REVIEW_REQUESTED}` trigger names a `reviewer`"),
-            ));
+        for (field, set, what) in [
+            ("reviewer", trigger.value.reviewer.is_some(), "a `reviewer`"),
+            ("teams", trigger.value.teams.is_some(), "`teams`"),
+        ] {
+            if !reviews && set {
+                problems.push(problem(
+                    trigger,
+                    trigger.lines.field(field),
+                    format!("only a GitHub `{REVIEW_REQUESTED}` trigger names {what}"),
+                ));
+            }
         }
         if trigger.value.source == "schedule" {
             check_schedule(trigger, &mut problems);
@@ -506,6 +536,24 @@ fn check_review_request(trigger: &Loaded<Trigger>, problems: &mut Vec<Problem>) 
             "reviewer",
             "a `pull_request.review_requested` trigger needs `reviewer = \"<GitHub login>\"`",
         );
+    }
+    let slug = |slug: &str| {
+        !slug.is_empty()
+            && !slug.starts_with('-')
+            && slug
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+    };
+    for team in value.teams.iter().flatten() {
+        if !team
+            .split_once('/')
+            .is_some_and(|(org, name)| login(org) && slug(name))
+        {
+            report(
+                "teams",
+                &format!("team `{team}` is not `org/team`, a GitHub organization and team slug"),
+            );
+        }
     }
     for (field, set) in [
         ("repo", value.repo.is_some()),
@@ -987,4 +1035,18 @@ fn problem<T>(loaded: &Loaded<T>, line: Option<usize>, message: String) -> Probl
         at: line.map(|line| line.to_string()),
         message,
     }
+}
+
+/// Whether a model step of `workflow` leads straight to a human step, the go a batch's plan needs.
+fn has_go(workflow: &Workflow) -> bool {
+    workflow
+        .steps
+        .iter()
+        .filter(|step| step.decides == Decider::Model)
+        .flat_map(|step| step.next.values())
+        .any(|next| {
+            workflow
+                .step(next)
+                .is_some_and(|step| step.decides == Decider::Human)
+        })
 }

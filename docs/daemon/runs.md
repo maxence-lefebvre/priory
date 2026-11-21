@@ -155,6 +155,9 @@ A held task has the reason `held: <reason>, <condition> and <condition>`, which 
 the desk show. For example: `held: needs the schema, until github:owner/repo#7 merges, and asks if it
 closes unmerged`. `priory tasks --json`, `priory queue --json` and serve list each condition of a held
 task under `conditions`, with `met` and `met_as` once it is met.
+A batch's entry is held on one `merged` condition per entry it starts after, which no flag sets (see
+[batches.md](batches.md)). Its reason reads `held: batch 4, until task 31 merges`.
+
 Events for a held task are kept for its first run, as for a queued one, and a schedule's tick for it
 is coalesced. `priory cancel` drops a held task and ends its hold.
 

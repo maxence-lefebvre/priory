@@ -86,6 +86,22 @@ fn every_starter_factory_passes_check_and_its_explanation() {
     assert!(checked > 0, "no starter under {}", starters.display());
 }
 
+#[test]
+fn the_batches_starter_passes_check() {
+    let starter = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/batches");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_priory"))
+        .arg("check")
+        .arg(&starter)
+        .output()
+        .unwrap();
+
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "ok: 2 agents, 1 trigger, 2 workflows, 1 runner\n"
+    );
+}
+
 /// Values whose shape a config schema checks with a pattern, valid or not to the loader.
 #[test]
 fn the_config_schemas_accept_the_values_the_loader_accepts() {

@@ -8,11 +8,13 @@ trigger names.
 
 | Stream | Reads | Started by |
 | ------ | ----- | ---------- |
-| `github.review_requests:<login>` | GitHub search `is:pr is:open user-review-requested:<login>`, 100 results | a `pull_request.review_requested` trigger naming `<login>` as its `reviewer` |
+| `github.review_requests:<login>` | GitHub search `is:pr is:open user-review-requested:<login>`, and `team-review-requested:<org/team>` for each of its triggers' `teams`, every page of 100 | a `pull_request.review_requested` trigger naming `<login>` as its `reviewer` |
 
 `user-review-requested` matches only the pull requests that ask the person directly. A request to a
-team the person is in does not match. GitHub drops a request from the search once its reviewer
-submits a review, and lists it again when someone asks again.
+team matches only when a trigger for that person lists the team in `teams`. The stream holds the
+union of both searches, so every trigger naming the reviewer sees the requests of every team those
+triggers list. GitHub drops a request from the search once its reviewer submits a review, and lists
+it again when someone asks again.
 
 ## Trigger
 
@@ -23,11 +25,14 @@ each new request. Its keys are in [triggers.md](../reference/triggers.md#review-
 source = "github"
 on = "pull_request.review_requested"
 reviewer = "octocat"
+teams = ["acme/core"]
 workflow = "review"
 ```
 
 It takes no `repo`: each task works in its pull request's repository, which the task request carries
-in `repo`. A `teams = [...]` key, for team requests, is not built yet.
+in `repo`. A request to a team in `teams` starts a task keyed by `reviewer`, as a direct request
+does. The reviews query reads only the reviewer's own reviews, so a team request that leaves the
+search after a teammate's review says `reviewed: false`, and the reviewer's task is dropped.
 
 ## Events
 
@@ -101,15 +106,16 @@ A crash can stop a poll between its events and its marker. On start, the intake 
 
 ## Failures
 
-A failed search is not an empty set. When the search or a reviews query fails, or GitHub reports
-incomplete results or more than 100 requests, that reviewer's stream publishes nothing and keeps its
-marker. The next poll tries again. With `--once`, the intake exits non-zero.
+A failed search is not an empty set. When a search page or a reviews query fails, or GitHub reports
+incomplete results, or the pages hold more or fewer results than `total_count`, that reviewer's
+stream publishes nothing and keeps its marker. The next poll tries again. With `--once`, the intake
+exits non-zero.
 
 ## Calls and cost
 
 | Poll | Calls |
 | ---- | ----- |
-| Each reviewer | 1 REST search request. GitHub allows 30 search requests a minute per user |
+| Each reviewer, and each team in its triggers' `teams` | 1 REST search request per page of 100, at most 10. GitHub allows 30 search requests a minute per user |
 | Each pull request that left the set | 1 GraphQL query |
 
 ## Limits
@@ -117,7 +123,12 @@ marker. The next poll tries again. With `--once`, the intake exits non-zero.
 - A crash in the first poll, before its marker, makes the next start poll the baseline again, as a
   Linear view does. With `backfill = true`, a request removed during that crash then never
   publishes its removal, so its task stays active.
-- One page of 100 requests per reviewer. Past that, every poll fails rather than read a partial set.
+- At most 10 pages of 100, 1,000 requests, per search: GitHub search returns no more. Past that,
+  every poll of the reviewer fails rather than read a partial set.
+- A request that arrives or leaves between two pages of a search shifts the later pages. When the
+  pages then hold more or fewer results than `total_count`, the poll fails and the next one reads
+  again. A shift the counts do not show can miss one pull request for a poll: it publishes as
+  removed, and as requested again at the next poll.
 - A pull request the `gh` user can no longer read leaves the search, and GitHub answers its reviews
   query with `Could not resolve`. The intake then publishes it with `reviewed: false`, so its task
   is dropped.

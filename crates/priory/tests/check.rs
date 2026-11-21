@@ -1354,6 +1354,26 @@ fn a_review_request_trigger_names_a_reviewer_and_no_repository() {
 }
 
 #[test]
+fn a_review_request_trigger_names_its_teams_as_org_slash_team() {
+    let good = "source = \"github\"\non = \"pull_request.review_requested\"\nreviewer = \"octo-cat\"\nteams = [\"acme/core_team\", \"acme/web-1\"]\nworkflow = \"implement\"\n";
+    let wrong = "source = \"github\"\non = \"pull_request.review_requested\"\nreviewer = \"max\"\nteams = [\"core\", \"acme/a+b\"]\nworkflow = \"implement\"\n";
+    let stray = "source = \"github\"\nrepo = \"owner/name\"\non = \"issues.opened\"\nteams = [\"acme/core\"]\nworkflow = \"implement\"\n";
+    let mut files = with("triggers/agent-label.toml", good);
+    files.push(("triggers/wrong.toml", wrong));
+    files.push(("triggers/stray.toml", stray));
+
+    let outcome = check(&factory("review-teams", &files));
+
+    assert_eq!(outcome.code, 1);
+    assert_eq!(
+        outcome.stderr,
+        "triggers/stray.toml:4: only a GitHub `pull_request.review_requested` trigger names `teams`\n\
+         triggers/wrong.toml:4: team `core` is not `org/team`, a GitHub organization and team slug\n\
+         triggers/wrong.toml:4: team `acme/a+b` is not `org/team`, a GitHub organization and team slug\n"
+    );
+}
+
+#[test]
 fn a_trigger_or_workflow_naming_an_unknown_band_names_its_line() {
     let trigger = format!("{TRIGGER}band = \"someday\"\n");
     let workflow = WORKFLOW.replacen(
@@ -1609,6 +1629,37 @@ fn a_request_table_passes_and_an_unknown_workflow_or_band_is_refused() {
         bad.stderr,
         "factory.toml:3: `[request] workflow` `groom` does not exist\n\
          factory.toml:3: `[request] band` `someday` is not one of blocker, now, today, later\n"
+    );
+}
+
+#[test]
+fn a_batch_workflow_needs_a_human_step_after_a_model_step() {
+    let good = "name = \"demo\"\n\n[batch]\nworkflow = \"implement\"\nentries = \"implement\"\n";
+    let ok = check(&factory("batch-ok", &with("factory.toml", good)));
+    let plan_only = "start = \"plan\"\n\n[[steps]]\nid = \"plan\"\ndecides = \"model\"\nagent = \"implementer\"\nprompt = \"Plan.\"\neffect = \"read\"\nnext = { planned = \"done\" }\n";
+    let mut files = with("factory.toml", good);
+    files.push(("workflows/plan.toml", plan_only));
+    let no_go_toml = good.replace("workflow = \"implement\"", "workflow = \"plan\"");
+    files.retain(|(path, _)| *path != "factory.toml");
+    files.push(("factory.toml", &no_go_toml));
+    let no_go = check(&factory("batch-no-go", &files));
+    let unknown = good.replace("entries = \"implement\"", "entries = \"groom\"");
+    let bad = check(&factory("batch-unknown", &with("factory.toml", &unknown)));
+
+    assert_eq!((ok.code, ok.stderr.as_str()), (0, ""));
+    assert_eq!(
+        (no_go.code, no_go.stderr.as_str()),
+        (
+            1,
+            "factory.toml:3: `[batch] workflow` `plan` needs a human step after a model step: the go that starts the batch\n"
+        )
+    );
+    assert_eq!(
+        (bad.code, bad.stderr.as_str()),
+        (
+            1,
+            "factory.toml:3: `[batch] entries` `groom` does not exist\n"
+        )
     );
 }
 
