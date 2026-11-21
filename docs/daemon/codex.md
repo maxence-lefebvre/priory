@@ -28,6 +28,7 @@ fires at startup, so its paste and confirmation stay as they are.
 | A prompt shown anyway | `Notification` hook with `permission_prompt` | no equivalent: Codex has no notification hook for an approval prompt. A prompt that shows despite the deny hook stalls the turn until its step `timeout` blocks the task |
 | Permission policy (R7.2) | `--permission-mode`, `allow` and `deny` rules, `PermissionRequest` deny hook | `sandbox_mode`, `approval_policy` and `approvals_reviewer` by `defaultMode`, below, and the same `PermissionRequest` deny hook |
 | Built-in question tool (R6.4) | `PreToolUse` deny on `AskUserQuestion` | `PreToolUse` deny on `request_user_input`, which Codex offers only in plan collaboration mode, which Priory never sets |
+| Tool guard | `PreToolUse` hook on `Bash` and `mcp__.*` | the same hook on every tool. Codex 0.170 blocks a command or tool call that a `PreToolUse` hook denies; no test runs real Codex, so whether its shell tool and MCP calls reach the hook is unchecked |
 | Model, effort, agent body | `--model`, `--effort`, `--append-system-prompt` | `-c model`, `-c model_reasoning_effort`, `-c developer_instructions` |
 
 `defaultMode` maps to Codex's sandbox and approvals. `approvals_reviewer` is always set, so a user
@@ -60,6 +61,11 @@ survive upgrades. Under Nix, use the profile link, such as `~/.nix-profile/bin/p
 
 Known limits:
 
+- The tool guard (see [guard.md](guard.md)) added a `PreToolUse` hook, so Priory's Codex hooks
+  changed. Every Codex clone needs Priory's hooks trusted again, once: a run in an untrusted clone
+  blocks its task with the command to run, as above. `priory check --explain` lists the MCP calls
+  of a Codex agent with MCP servers as reachable with no human decision, since Codex may run them
+  without the hook.
 - No test runs a real Codex. Whether `/hooks` lists and keeps trust for `-c` hooks, and whether
   `auto_review` runs before the deny hook, come from Codex's documentation, unchecked. That
   `SessionStart` comes with the first turn was seen with Codex 0.170.

@@ -25,6 +25,36 @@
       },
       "type": "object"
     },
+    "CommandGuard": {
+      "additionalProperties": false,
+      "description": "A shell command that is irreversible: its program, then the first words after its options.",
+      "properties": {
+        "flags": {
+          "default": [],
+          "description": "When set, the command matches only with one of these options, such as `--prod`.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "name": {
+          "description": "The guard's name, which a workflow's `guard.allow` names.",
+          "type": "string"
+        },
+        "run": {
+          "description": "The program and the words it starts with, such as `[\"fly\", \"deploy\"]`.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "name",
+        "run"
+      ],
+      "type": "object"
+    },
     "GithubWebhook": {
       "additionalProperties": false,
       "description": "GitHub webhooks, at `POST /hooks/github`.",
@@ -33,6 +63,29 @@
           "default": "PRIORY_GITHUB_WEBHOOK_SECRET",
           "description": "The environment variable that holds the webhook's secret, never the secret itself.",
           "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "Guards": {
+      "additionalProperties": false,
+      "description": "`[guard]` in `factory.toml`: the irreversible calls the factory adds to the built-in ones.",
+      "properties": {
+        "commands": {
+          "default": [],
+          "description": "Shell commands, each a guard of its own name.",
+          "items": {
+            "$ref": "#/definitions/CommandGuard"
+          },
+          "type": "array"
+        },
+        "tools": {
+          "default": [],
+          "description": "MCP tools by full name, such as `mcp__stripe__create_refund`, or a prefix ending in `*`.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
         }
       },
       "type": "object"
@@ -298,6 +351,18 @@
       "description": "How long one git, gh or tmux command may run before Priory kills it.",
       "pattern": "^0*[1-9][0-9]*[smh]$",
       "type": "string"
+    },
+    "guard": {
+      "allOf": [
+        {
+          "$ref": "#/definitions/Guards"
+        }
+      ],
+      "default": {
+        "commands": [],
+        "tools": []
+      },
+      "description": "Irreversible commands and MCP tools on top of the built-in ones."
     },
     "handler": {
       "description": "The agent whose model reads a stalled run's screen; no handler runs without one.",
