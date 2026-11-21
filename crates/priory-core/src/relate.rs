@@ -15,11 +15,25 @@ pub fn relate(
     by: &str,
 ) -> rusqlite::Result<Result<String, String>> {
     let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
-    if let Some(refused) = refused(&tx, task, kind, other)? {
+    let recorded = record(&tx, task, kind, other, by)?;
+    if recorded.is_ok() {
+        tx.commit()?;
+    }
+    Ok(recorded)
+}
+
+/// `relate` inside the caller's transaction.
+fn record(
+    tx: &Transaction,
+    task: i64,
+    kind: &str,
+    other: i64,
+    by: &str,
+) -> rusqlite::Result<Result<String, String>> {
+    if let Some(refused) = refused(tx, task, kind, other)? {
         return Ok(Err(refused));
     }
-    insert(&tx, task, kind, other, by)?;
-    tx.commit()?;
+    insert(tx, task, kind, other, by)?;
     Ok(Ok(format!("task {task} {kind} task {other}")))
 }
 
@@ -121,15 +135,22 @@ pub(crate) fn created(
     if let Some(dropped) = dropped {
         insert(tx, task, "takes-up", dropped, "priory")?;
     }
+    // A source event's text is not checked, so a number must not fail the transaction.
     let request: String = tx.query_row(
-        "SELECT request FROM task_text WHERE task = ?1",
+        "SELECT CAST(request AS TEXT) FROM task_text WHERE task = ?1",
         [task],
         |row| row.get(0),
     )?;
     for pull in priory_intake::request::pull_requests(&request) {
         let merged_by = tx
             .prepare(
-                "SELECT task FROM pull_requests WHERE resource = ?1 AND state = 'merged' AND task != ?2",
+                "SELECT task FROM (SELECT task FROM owns WHERE resource = ?1
+                   UNION SELECT task FROM pull_requests WHERE resource = ?1)
+                 WHERE task != ?2 AND EXISTS (SELECT 1 FROM inbox WHERE type = 'github.pull_request.closed'
+                     AND json_extract(data, '$.merged') = 1
+                     AND 'github:' || json_extract(data, '$.repo') || '#'
+                       || json_extract(data, '$.pull_request') = ?1)
+                 ORDER BY task",
             )?
             .query_map(params![pull, task], |row| row.get::<_, i64>(0))?
             .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -203,7 +224,7 @@ pub fn graph(
     let mut chart = String::from("flowchart TD\n");
     for id in &seen {
         let label = label(*id)?.unwrap_or_default();
-        chart += &format!("    t{id}[\"{}\"]\n", label.replace('"', "#quot;"));
+        chart += &format!("    t{id}[\"{}\"]\n", priory_factory::draw::label(&label));
     }
     for (task, kind, other) in relations.iter().filter(|(task, ..)| seen.contains(task)) {
         chart += &format!("    t{task} -->|\"{kind}\"| t{other}\n");
@@ -269,8 +290,12 @@ pub fn tool(session: &str, tool: &str, arguments: &Value) -> Option<Result<Strin
         Ok((kind.to_owned(), task))
     };
     Some(read().and_then(|(kind, other)| {
+        let at = |error: rusqlite::Error| error.to_string();
         let mut db = crate::state::open()?;
-        let task = db
+        let tx = db
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(at)?;
+        let task = tx
             .query_row(
                 "SELECT task FROM runs WHERE ended IS NULL AND session = ?1",
                 [session],
@@ -279,6 +304,8 @@ pub fn tool(session: &str, tool: &str, arguments: &Value) -> Option<Result<Strin
             .optional()
             .map_err(|error| error.to_string())?
             .ok_or_else(|| format!("no live run has session {session}"))?;
-        relate(&mut db, task, &kind, other, "agent").map_err(|error| error.to_string())?
+        let recorded = record(&tx, task, &kind, other, "agent").map_err(at)??;
+        tx.commit().map_err(at)?;
+        Ok(recorded)
     }))
 }

@@ -1,7 +1,7 @@
 //! The HTTP server over the state: `/api` as JSON, with `web` the web view's files, and with a
 //! GitHub webhook its signed deliveries.
 
-use crate::{listing, push, report, sections, snooze, state, tools};
+use crate::{grades, listing, push, report, sections, snooze, state, tools};
 use herdr_bus::Bus;
 use priory_factory::factory::{Factory, Price, Trigger};
 use priory_intake::intake::{self, Github};
@@ -46,6 +46,7 @@ const WEB: &[(&str, &str, &[u8])] = &[
     file!("/links.js", JS, "crates/priory-core/web/links.js"),
     file!("/reports.js", JS, "crates/priory-core/web/reports.js"),
     file!("/stack.js", JS, "crates/priory-core/web/stack.js"),
+    file!("/desk.js", JS, "crates/priory-core/web/desk.js"),
     file!("/sw.js", JS, "crates/priory-core/web/sw.js"),
     file!(
         "/manifest.webmanifest",
@@ -342,6 +343,7 @@ fn route(
         },
         "/api/reports/latest" => listing::revised(db, "report", |db| sections::show(db, None)),
         "/api/costs" => return costs(db, &served.prices, query),
+        "/api/grades" => return grades(db, query),
         "/api/attention" => return attention(db, query),
         _ => match (
             path.strip_prefix("/api/tasks/").map(str::parse),
@@ -374,6 +376,7 @@ enum Write<'a> {
     Act(&'a str, &'a str),
     Subscribe,
     Unsubscribe,
+    Seen,
 }
 
 impl<'a> Write<'a> {
@@ -388,6 +391,7 @@ impl<'a> Write<'a> {
             "/api/reports/reopen" => return Some(Write::Comment(sections::Remark::Reopen)),
             "/api/push/subscribe" => return Some(Write::Subscribe),
             "/api/push/unsubscribe" => return Some(Write::Unsubscribe),
+            "/api/seen" => return Some(Write::Seen),
             _ => {}
         }
         if let Some((task, act)) = path
@@ -460,6 +464,13 @@ struct CommentBody {
     comment: Option<i64>,
     text: Option<String>,
     revision: Option<i64>,
+}
+
+/// `POST /api/seen`'s body: when the page read the desk it drew, as `priory seen --at`.
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SeenBody {
+    at: jiff::Timestamp,
 }
 
 #[derive(serde::Deserialize)]
@@ -665,6 +676,14 @@ fn write_line(db: &Connection, write: &Write, body: &[u8]) -> Result<(String, Se
             };
             Ok((line(&push::Line { push: change }), Sent::Nothing))
         }
+        Write::Seen => {
+            let body: SeenBody = serde_json::from_slice(body).map_err(bad)?;
+            let seen = state::Visit {
+                person: listing::ME.to_owned(),
+                at: body.at,
+            };
+            Ok((line(&state::SeenLine { seen }), Sent::Nothing))
+        }
     }
 }
 
@@ -790,6 +809,35 @@ fn costs(db: &Connection, prices: &BTreeMap<String, Price>, query: &str) -> Repl
     };
     match report::costs(db, prices, &window, &by) {
         Ok(costs) => Reply::json(200, costs.json().to_string()),
+        Err(error) => Reply::error(500, &error),
+    }
+}
+
+/// `GET /api/grades?since=WINDOW`: what `priory grades --json` prints.
+fn grades(db: &Connection, query: &str) -> Reply {
+    let mut since = None;
+    for pair in query.split('&').filter(|pair| !pair.is_empty()) {
+        let Some(("since", value)) = pair.split_once('=') else {
+            return Reply::error(400, "grades takes since=WINDOW");
+        };
+        let Some(value) = decode(value) else {
+            return Reply::error(400, "since is not percent-encoded UTF-8");
+        };
+        since = Some(value);
+    }
+    let now = match intake::now() {
+        Ok(now) => now.to_string(),
+        Err(error) => return Reply::error(500, &error),
+    };
+    let since = match since
+        .map(|since| report::start(db, &since, &now))
+        .transpose()
+    {
+        Ok(since) => since,
+        Err(refusal) => return Reply::error(400, &refusal),
+    };
+    match grades::grades(db, since) {
+        Ok(grades) => Reply::json(200, grades.json().to_string()),
         Err(error) => Reply::error(500, &error),
     }
 }

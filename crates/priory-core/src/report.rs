@@ -10,7 +10,7 @@ pub const SINCE: &str = "7 days";
 
 /// The start of the window `since`: an RFC 3339 instant, or a duration back from `now` such as
 /// `7 days`, as an SQLite date modifier.
-fn start(db: &Connection, since: &str, now: &str) -> Result<String, String> {
+pub fn start(db: &Connection, since: &str, now: &str) -> Result<String, String> {
     let start: Option<String> = db
         .query_row(
             "SELECT coalesce(strftime('%Y-%m-%dT%H:%M:%fZ', ?1),

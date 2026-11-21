@@ -13673,3 +13673,63 @@ fn a_leads_answer_outside_the_asks_options_is_refused() {
     assert_eq!(refused.0, "ask 1 takes one of: sqlite, postgres");
     assert_eq!(asks_json(&setup)["asks"][0]["answer"], json!("sqlite"));
 }
+
+#[test]
+fn a_request_that_links_a_pull_request_a_waiting_task_saw_merged_fixes_that_task() {
+    let mut setup = Setup::new("relate-fixes-wait");
+    setup.calls(&[wait(on_pull_7("pull_request"))]);
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("runs", |rows| rows.len() == 1 && rows[0][7] == "asleep");
+    setup.publish(&closed());
+    setup.until("inbox", |rows| rows.len() == 2);
+
+    held_request(
+        &setup,
+        "login-regression",
+        "Login broke after https://github.com/owner/repo/pull/7.",
+    );
+
+    setup.until("tasks", |rows| rows.len() == 2);
+    let relations = task_json(&setup, "2")["relations"].clone();
+    assert_eq!(
+        [
+            &relations[0]["task"],
+            &relations[0]["kind"],
+            &relations[0]["other"]
+        ],
+        [&json!(2), &json!("fixes"), &json!(1)],
+        "{relations}"
+    );
+}
+
+#[test]
+fn a_request_whose_source_text_is_not_a_string_still_creates_its_task() {
+    let setup = Setup::new("relate-number-text");
+    let source = Message::new(
+        "priory.task.requested.cli",
+        json!({ "text": 42, "person": null, "time": "2026-11-21T09:00:00Z", "repo": "owner/repo" }),
+    )
+    .subject("cli:numbers");
+    let task = Message::new(
+        "factory.task.requested",
+        json!({
+            "workflow": "implement",
+            "key": "cli:numbers",
+            "band": null,
+            "lane": null,
+            "trigger": "cli",
+            "source": source.id.to_string(),
+            "repo": "owner/repo"
+        }),
+    )
+    .subject("cli:numbers");
+    setup.publish(&source);
+    setup.publish(&task);
+
+    let factory = setup.dir.join("factory");
+    let once = setup.priory(&["daemon", factory.to_str().unwrap(), "--once"]);
+
+    assert!(once.status.success(), "{once:?}");
+    assert_eq!(setup.rows("tasks").len(), 1);
+}

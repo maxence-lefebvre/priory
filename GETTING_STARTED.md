@@ -230,12 +230,17 @@ When someone labels issue 42 of `owner/name` with `agent`, this happens:
 | `priory report DIR --workflow NAME [--cost]` | Prints outcome rates, or tokens and cost, per step |
 | `priory report attention [--by workflow\|lane\|kind] [--json]` | Prints this week's person-minutes per merged pull request, how long asks waited on you, and where each task's time went |
 | `priory costs DIR [--by workflow\|agent\|model\|machine\|repo] [--json]` | Prints this week's cost against last week's, per day with merges, and split by one dimension |
+| `priory grades [--since WINDOW] [--json]` | Prints how each grade's tasks turned out, headed by green's one-shot rate against 90 % |
 
 Run `priory` with no arguments to print its usage.
 
 If you work in [Herdr](docs/adapters/herdr.md), its Desk panel shows the same desk, and its Asks
 panel lists the same asks and answers them through these verbs. `adapters/herdr/install` links
 them into Herdr.
+
+The web view's Desk shows the same desk. It opens on the next thing: the alarm or ask that ranks
+first, with why it ranks there. Under the list, Since you looked shows what happened since your last
+visit, and opening the Desk records the visit as `priory seen` does.
 
 A workflow can write a report for you, such as a morning dossier: `priory report show` prints the
 last one. The web view's Reports panel shows it, and takes its picks and row comments as

@@ -47,6 +47,13 @@
           "description": "The review's summary Markdown, as written; empty when the reviewer wrote none.",
           "type": "string"
         },
+        "commit": {
+          "description": "The commit the review was written on, which `head_sha` passes once a commit is pushed after it.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "delivery": {
           "description": "The `X-GitHub-Delivery` of the webhook delivery that reported it; absent when a poll did.\nGitHub does not sign it.",
           "type": [
@@ -118,6 +125,7 @@
         "base_branch",
         "state",
         "body",
+        "commit",
         "actor",
         "open",
         "github_id",

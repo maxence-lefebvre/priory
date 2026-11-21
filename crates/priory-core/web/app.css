@@ -128,6 +128,23 @@ a.facet[aria-current="true"] { background: var(--action-soft); color: var(--acti
 .strip li { display: grid; grid-template-columns: 96px minmax(0, 1fr); gap: 8px; padding: 6px 0; color: var(--text-2); }
 .strip li + li { border-top: 1px solid var(--line); }
 
+/* The next thing and Since you looked */
+.next { margin: 4px var(--gutter) 8px; padding: 12px; border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--surface); display: grid; gap: 6px; }
+.next .l1 { display: flex; gap: 8px; align-items: center; font: 400 var(--type-caption) var(--font-ui); color: var(--text-3); min-width: 0; }
+.next .l1 .mono { color: var(--text); }
+.next .l1 .age { margin-left: auto; white-space: nowrap; }
+.next .q { font: 600 var(--type-body) var(--font-ui); overflow-wrap: anywhere; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+.next .why { font: 400 var(--type-caption) var(--font-ui); }
+.next .rec { display: flex; gap: 6px; align-items: baseline; color: var(--text-2); font: 400 var(--type-small) var(--font-ui); }
+.next .rec span { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; }
+.next .btn { justify-self: start; }
+.wide .next { margin-left: 20px; margin-right: 20px; max-width: 440px; }
+.since .sgroup + .sgroup { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--line); }
+.since .sgroup > .mono { color: var(--text); font-size: 13px; }
+.since li { padding: 4px 0; }
+.since li + li { border-top: 0; }
+.hist.crit li { grid-template-columns: auto minmax(0, 1fr) auto; align-items: baseline; }
+
 /* Answer capsule */
 .capsule { position: absolute; left: var(--gutter); right: var(--gutter); bottom: var(--capsule-gap); height: var(--capsule); border-radius: var(--radius-full); background: var(--action); color: var(--on-action); display: flex; align-items: center; justify-content: center; gap: 8px; font: 600 var(--type-option) var(--font-ui); box-shadow: var(--shadow-float); z-index: 2; }
 .fade { position: absolute; left: 0; right: 0; bottom: 0; height: var(--desk-end); background: linear-gradient(to bottom, transparent, var(--bar) 45%); z-index: 1; pointer-events: none; }

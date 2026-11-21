@@ -47,6 +47,9 @@ Their fields and examples are in [events.md](../reference/events.md#github).
 
 `merged` on a close is true only when the pull request is merged and this is its last `closed`
 event the poll read.
+A close also carries `merge_commit`, the commit the merge made on the base branch, or null unless
+`merged`, and `body`, the description. [Outcome labels](../daemon/trace.md#outcome-labels) read both
+to find a revert.
 
 ### Check runs, not suites
 

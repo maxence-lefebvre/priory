@@ -26,7 +26,7 @@ relation, as `by`, and when, as `created`.
 | The `relate(kind, task)` tool | that the caller's own task relates to `task` | `agent` |
 | `priory request` or `priory add` `--relates KIND:TASK` | that the new task relates to `TASK`. The flag repeats | `request` |
 | A new task on the key of a dropped or failed task | that the new task `takes-up` the latest such task | `priory` |
-| A new task whose request links a merged pull request | that the new task `fixes` each other task that merged it | `priory` |
+| A new task whose request links a merged pull request | that the new task `fixes` each other task that owns it | `priory` |
 
 `priory relate` writes the state file directly, as `priory subscribe` does. It exits 1 with one of
 these errors, and records nothing:
@@ -55,7 +55,8 @@ The daemon records both when it creates the task, in the same transaction:
   task ends, so a new request on it starts a new task. `priory revive` brings back the same task
   instead, so it records nothing.
 - `fixes`: the new task's request text links a pull request, as
-  `https://github.com/owner/name/pull/7`, that another task's stack holds as `merged`. The request
+  `https://github.com/owner/name/pull/7`, that the inbox holds a merged close of. Each other task
+  that owns it gets the relation: as its key, in its stack, or through a wait. The request
   text is the source event's `text`, `body`, `description` or `prompt`, so an issue body counts
   too. An issue URL counts for nothing, nor does a pull request that is still open or closed
   unmerged.
