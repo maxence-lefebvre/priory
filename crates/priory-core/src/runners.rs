@@ -422,6 +422,9 @@ pub(crate) fn tick(
     Ok(())
 }
 
+/// Why a task of this runner waits to start: the log has not given back its claim or its `kept`.
+pub(crate) const CLAIMING: &str = "waits for its claim to reach the log";
+
 /// Whether this runner may start the first run of `task` now, or `None` while no claim of its key
 /// is on the log yet, as for a task it adopts. A task the log still holds as `waiting` could be
 /// taken over, so its runner first says it keeps it and starts it only once it read that back: a
@@ -443,11 +446,25 @@ pub(crate) fn cleared(db: &mut Connection, me: &str, task: i64) -> rusqlite::Res
         )
         .optional()?;
     let Some((key, hold, published)) = claim else {
+        tx.execute(
+            "UPDATE tasks SET reason = ?2 WHERE id = ?1 AND reason IS NOT ?2",
+            params![task, CLAIMING],
+        )?;
+        tx.commit()?;
         return Ok(None);
     };
     if hold != "waiting" {
+        tx.execute(
+            "UPDATE tasks SET reason = NULL WHERE id = ?1 AND reason = ?2",
+            params![task, CLAIMING],
+        )?;
+        tx.commit()?;
         return Ok(Some(true));
     }
+    tx.execute(
+        "UPDATE tasks SET reason = ?2 WHERE id = ?1 AND reason IS NOT ?2",
+        params![task, CLAIMING],
+    )?;
     if published.as_deref() != Some("kept") {
         let held = json!({ "key": key, "runner": me, "hold": "kept" });
         let now = intake::now().unwrap_or_else(|_| Timestamp::now());

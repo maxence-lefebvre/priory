@@ -261,9 +261,13 @@ fn a_task_that_never_started_on_a_cut_off_runner_moves_once_its_lease_ends_and_r
     let takeover = json!({ "key": KEY, "runner": "b", "from": "a" });
     database.logged(&b, "priory.task.claimed", takeover);
     b.until("asks", |rows| rows.len() == 1);
-    // Room on `a` again, while it still cannot read the log: it starts nothing.
+    // Room on `a` again, while it still cannot read the log: it starts nothing, and says why.
     a.memory(60);
-    std::thread::sleep(Duration::from_secs(3));
+    let claiming = "waits for its claim to reach the log";
+    a.until("tasks", |rows| rows[0][7] == claiming);
+    let tasks = a.priory(&["tasks", "--json"]);
+    let tasks: serde_json::Value = serde_json::from_slice(&tasks.stdout).unwrap();
+    assert_eq!(tasks["tasks"][0]["reason"], claiming, "{tasks}");
     assert!(
         a.rows("runs").is_empty(),
         "a starts no task the log may have moved"

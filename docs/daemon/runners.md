@@ -20,7 +20,8 @@ A factory with one runner file or none works as before: its one daemon owns ever
 
 A daemon claims the key of each active task of its own whose key it does not hold, such as a task
 from before the factory got its second runner, or one that feedback reopened. It starts no run of
-that task until it reads its claim back. When that claim loses, because the log gives the key to
+that task until it reads its claim back, and the task waits with the reason
+`waits for its claim to reach the log`. When that claim loses, because the log gives the key to
 another runner, the daemon drops its copy with the reason `owned by runner <name>`.
 
 The daemon also claims, once, the key of each task of its own that ended before the factory had
@@ -99,6 +100,8 @@ A daemon that cannot reach its log keeps running. It goes on with its own tasks:
   before. A person answers a local ask with `priory answer` on that machine.
 - No run of a `waiting` task starts, and no code step's action runs while the log says `waiting`.
   The daemon queues `kept` for the task and starts it only once it reads that back from the log.
+  Until then the task's reason is `waits for its claim to reach the log`, in `priory tasks`, its
+  JSON and the Desk.
 - Each claim, hold and alive message waits in the state file's queue, oldest first. Nothing reaches
   the other runners until the link is back. Only the newest alive message is kept to publish,
   since a lease runs from the last one.
