@@ -18,7 +18,8 @@ priory report put TASK -        # the report on stdin
 
 Both check the shape first and refuse a bad one with the reason, storing nothing. Each write
 replaces the task's report and raises its revision by one. A write keeps the choice already made on
-each pick, by pick id, whatever `chosen` it carries.
+each pick, by pick id, whatever `chosen` it carries, and keeps its `applied` when the write leaves
+`applied` empty.
 
 `docs/schemas/report.json` is the JSON Schema of the shape. In short:
 

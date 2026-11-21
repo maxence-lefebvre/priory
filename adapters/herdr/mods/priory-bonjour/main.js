@@ -305,7 +305,7 @@ export default class PrioryBonjour extends View {
         if (fresh?.report.task === this.data?.report.task) this.accept(fresh);
         const notice = refusal(pending, fresh, message(error));
         const model = this.model();
-        if (model && this.rows(model).some((row) => row.id === pending.row)) this.notices.set(pending.row, notice);
+        if (model?.task === pending.task && this.rows(model).some((row) => row.id === pending.row)) this.notices.set(pending.row, notice);
         else this.flash = `${pending.option}: ${notice}`;
         this.pending = null;
         this.changing = null;
@@ -553,7 +553,8 @@ export default class PrioryBonjour extends View {
    * @param {Row} row
    */
   threadable(row) {
-    return row.target != null && this.shown == null;
+    const newest = this.list[0]?.task;
+    return row.target != null && this.shown == null && (newest == null || this.data?.report.task === newest);
   }
 
   /** @param {Row} row @param {Palette} t */

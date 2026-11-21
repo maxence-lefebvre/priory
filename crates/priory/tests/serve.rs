@@ -4288,6 +4288,14 @@ fn the_pick_endpoint_records_a_choice_and_tells_a_stale_one_by_409() {
     let (stands, reply) = pick("Later", 4);
     assert_eq!(stands, 409, "{reply}");
     assert!(reply.contains("already Take"), "{reply}");
+    // A write that leaves `applied` empty keeps the applied choice.
+    succeeded(&setup.put("1", &report()));
+    let (still, reply) = pick("Later", 5);
+    assert_eq!(still, 409, "{reply}");
+    assert_eq!(
+        api(&address, "/api/reports/latest")["report"]["sections"][0]["rows"][0]["pick"]["applied"],
+        "took it"
+    );
     assert_eq!(
         post(
             &address,

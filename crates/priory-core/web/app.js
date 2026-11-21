@@ -1797,13 +1797,15 @@ function reportThread(row, thread) {
     <p class="racts"><button id="reply-${thread.id}" class="ghost" data-action="reply" data-row="${row.id}" data-comment="${thread.id}" aria-disabled="${off}">Reply</button><button id="resolve-${thread.id}" class="ghost" data-action="resolve" data-row="${row.id}" data-comment="${thread.id}" aria-disabled="${off}">Resolve</button></p></div>`;
 }
 
+const onNewest = () => state.reportShown == null && state.data.report?.report.task === state.data.reports?.[0]?.task;
+
 // A row without its own id takes no comments. Priory gives a row id's new thread to the newest
 // report holding it, so an older report takes replies only.
 function reportCompose(row) {
   if (!row.target) return "";
   const compose = state.compose?.row === row.id && state.compose.task === state.data.report.report.task ? state.compose : null;
   const off = state.failed ? "true" : "false";
-  if (!compose && state.reportShown != null) return "";
+  if (!compose && !onNewest()) return "";
   if (!compose) return html`<p class="racts"><button id="${focusId("compose", row.id)}" class="ghost" data-action="compose" data-row="${row.id}" aria-disabled="${off}">${icon("message-text", "s15")}Comment</button></p>`;
   const verb = compose.replyTo == null ? "Comment" : "Reply";
   return html`<form class="writeform rcompose" data-action="remark">${compose.replyTo == null ? "" : html`<p class="note">Replying in thread ${compose.replyTo}</p>`}
@@ -1916,7 +1918,7 @@ async function submitRemark() {
   const sent = state.compose;
   const row = sent?.task === state.data.report?.report.task && reportRowOf(sent.row);
   const text = sent?.text.trim();
-  if (!row?.target || !text || state.remarking || (sent.replyTo == null && state.reportShown != null)) return;
+  if (!row?.target || !text || state.remarking || (sent.replyTo == null && !onNewest())) return;
   // Text typed while it was in flight stays as the next draft.
   const done = () => { if (state.compose === sent && sent.text.trim() === text) state.compose = null; };
   await remark(row.id, ...(sent.replyTo == null

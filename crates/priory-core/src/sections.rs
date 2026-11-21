@@ -139,7 +139,8 @@ fn picks(report: &mut Report) -> impl Iterator<Item = &mut Pick> {
         .filter_map(|row| row.pick.as_mut())
 }
 
-/// Stores `report` as `task`'s, keeping the choices already made on its picks.
+/// Stores `report` as `task`'s, keeping the choices already made on its picks and what the workflow
+/// did with them when the write says nothing.
 pub fn put(db: &mut Connection, task: i64, mut report: Report) -> Result<String, String> {
     let at = |error: rusqlite::Error| error.to_string();
     let tx = db
@@ -162,10 +163,18 @@ pub fn put(db: &mut Connection, task: i64, mut report: Report) -> Result<String,
         .map_err(at)?;
     let mut chosen = HashMap::new();
     if let Some(mut old) = stored.and_then(|text| serde_json::from_str::<Report>(&text).ok()) {
-        chosen.extend(picks(&mut old).map(|pick| (pick.id.clone(), pick.chosen.take())));
+        chosen.extend(
+            picks(&mut old)
+                .map(|pick| (pick.id.clone(), (pick.chosen.take(), pick.applied.take()))),
+        );
     }
     for pick in picks(&mut report) {
-        pick.chosen = chosen.remove(&pick.id).flatten();
+        let (kept, applied) = chosen.remove(&pick.id).unwrap_or_default();
+        pick.chosen = kept;
+        // An applied choice stands, so a write that leaves `applied` empty keeps it.
+        if pick.chosen.is_some() && pick.applied.is_none() {
+            pick.applied = applied;
+        }
         if let Some(kept) = pick
             .chosen
             .as_ref()
