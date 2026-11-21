@@ -532,9 +532,18 @@ pub fn flows(factory: &Factory) -> Value {
                 });
                 let optional = [
                     ("agent", step.agent.as_ref().map(|agent| json!(agent))),
-                    ("options", Some(json!(step.options)).filter(|_| !step.options.is_empty())),
-                    ("approves", Some(json!(step.approves)).filter(|_| !step.approves.is_empty())),
-                    ("autonomous", step.autonomous.as_ref().map(|reason| json!(reason))),
+                    (
+                        "options",
+                        (!step.options.is_empty()).then(|| json!(step.options)),
+                    ),
+                    (
+                        "approves",
+                        (!step.approves.is_empty()).then(|| json!(step.approves)),
+                    ),
+                    (
+                        "autonomous",
+                        step.autonomous.as_ref().map(|reason| json!(reason)),
+                    ),
                 ];
                 for (key, field) in optional {
                     if let Some(field) = field {

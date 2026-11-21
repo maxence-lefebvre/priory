@@ -147,6 +147,20 @@ pub fn answer_lets_irreversible_run(workflow: &Workflow, ask: &str) -> bool {
     false
 }
 
+/// How a step reads in a drawing: `ask` and `answer` for a human step, which `answer`s when it
+/// approves a gate, then by effect: `irreversible`, `reversible`, `read`, and `verdict` for a step
+/// that decides without touching anything.
+pub fn kind(step: &Step) -> &'static str {
+    match (&step.decides, &step.effect) {
+        (Decider::Human, _) if step.approves.is_empty() => "ask",
+        (Decider::Human, _) => "answer",
+        (_, Effect::Irreversible) => "irreversible",
+        (_, Effect::Reversible) => "reversible",
+        (_, Effect::Read) => "read",
+        (_, Effect::None) => "verdict",
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -213,19 +227,5 @@ next = { opened = "done", failed = "stop" }
                 .unwrap();
 
         assert!(answer_lets_irreversible_run(&workflow, "approve-plan"));
-    }
-}
-
-/// How a step reads in a drawing: `ask` and `answer` for a human step, which `answer`s when it
-/// approves a gate, then by effect: `irreversible`, `reversible`, `read`, and `verdict` for a step
-/// that decides without touching anything.
-pub fn kind(step: &Step) -> &'static str {
-    match (&step.decides, &step.effect) {
-        (Decider::Human, _) if step.approves.is_empty() => "ask",
-        (Decider::Human, _) => "answer",
-        (_, Effect::Irreversible) => "irreversible",
-        (_, Effect::Reversible) => "reversible",
-        (_, Effect::Read) => "read",
-        (_, Effect::None) => "verdict",
     }
 }

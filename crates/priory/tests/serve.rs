@@ -4184,10 +4184,18 @@ fn the_flows_endpoint_carries_check_explains_json_and_each_workflows_graph() {
         let workflows = flows["workflows"].as_array().unwrap();
         assert!(!workflows.is_empty(), "{from:?}");
         let step_ids = |workflow: &Value| -> Vec<Value> {
-            workflow["steps"].as_array().unwrap().iter().map(|step| step["id"].clone()).collect()
+            workflow["steps"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|step| step["id"].clone())
+                .collect()
         };
         for workflow in workflows {
-            assert!(step_ids(workflow).contains(&workflow["start"]), "{workflow}");
+            assert!(
+                step_ids(workflow).contains(&workflow["start"]),
+                "{workflow}"
+            );
         }
     }
 
