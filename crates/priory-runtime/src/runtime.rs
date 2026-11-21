@@ -1,5 +1,7 @@
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufRead, BufReader, Read, Write};
+use std::os::unix::ffi::OsStrExt;
+use std::os::unix::fs::{DirBuilderExt, MetadataExt};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
@@ -606,7 +608,14 @@ pub fn launch(harness: &dyn Harness, launch: &Launch) -> Result<(), String> {
         .arg("-e")
         .arg(format!("PRIORY_HOME={}", launch.home.display()))
         .arg("-e")
-        .arg(format!("PRIORY_SESSION={}", launch.session))
+        .arg(format!("PRIORY_SESSION={}", launch.session));
+    // A tmux server started elsewhere has its own, and the hooks must find this daemon's socket.
+    if let Some(run) = std::env::var_os("XDG_RUNTIME_DIR").filter(|run| !run.is_empty()) {
+        command
+            .arg("-e")
+            .arg(format!("XDG_RUNTIME_DIR={}", run.to_string_lossy()));
+    }
+    command
         .args(launch.env.iter().flat_map(|variable| ["-e", variable]))
         .arg("--");
     if let Some(prompt) = launch.prompt {
@@ -651,6 +660,9 @@ fn mcp_config(exe: &Path, launch: &Launch) -> String {
 /// the bridge reads that file itself from the agent's worktree.
 fn mcp_env(home: &Path) -> serde_json::Value {
     let mut env = json!({ "PRIORY_HOME": home });
+    if let Some(run) = std::env::var_os("XDG_RUNTIME_DIR").filter(|run| !run.is_empty()) {
+        env["XDG_RUNTIME_DIR"] = json!(run.to_string_lossy());
+    }
     if let Some(db) = std::env::var_os("PRIORY_DB").and_then(|db| std::path::absolute(db).ok()) {
         env["PRIORY_DB"] = json!(db);
     }
@@ -872,8 +884,61 @@ pub fn type_text(pane: &str, text: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn socket(home: &Path) -> PathBuf {
-    home.join("priory.sock")
+/// The socket of the daemon of `home`: a short path every client derives the same way, because a
+/// Unix socket path over 108 bytes cannot be bound.
+pub fn socket_path(home: &Path) -> PathBuf {
+    let run = std::env::var_os("XDG_RUNTIME_DIR").filter(|run| !run.is_empty());
+    socket_in(run.as_deref().map(Path::new), home)
+}
+
+/// `socket_path` with the runtime directory `run` given, or `/tmp/priory-<uid>` when there is none.
+pub fn socket_in(run: Option<&Path>, home: &Path) -> PathBuf {
+    let home = fs::canonicalize(home)
+        .or_else(|_| std::path::absolute(home))
+        .unwrap_or_else(|_| home.to_owned());
+    // FNV-1a, so a hook and a daemon of different builds agree.
+    let hash = home
+        .as_os_str()
+        .as_bytes()
+        .iter()
+        .fold(0xcbf29ce484222325u64, |hash, byte| {
+            (hash ^ u64::from(*byte)).wrapping_mul(0x100000001b3)
+        });
+    let name = format!("{hash:016x}.sock");
+    let under_run = run.map(|run| run.join("priory").join(&name));
+    // sun_path holds 108 bytes with its NUL.
+    under_run
+        .filter(|path| path.as_os_str().len() < 108)
+        .unwrap_or_else(|| PathBuf::from(format!("/tmp/priory-{}", uid())).join(name))
+}
+
+fn uid() -> u32 {
+    if let Ok(own) = fs::metadata("/proc/self") {
+        return own.uid();
+    }
+    let id = run(Command::new("id").arg("-u")).unwrap_or_default();
+    id.trim().parse().unwrap_or(u32::MAX)
+}
+
+/// Makes `dir` for the socket, readable by its owner only, or refuses one that is not a private
+/// folder of the user `owner`.
+fn private_dir(dir: &Path, owner: u32) -> Result<(), String> {
+    let at = |error: std::io::Error| format!("{}: {error}", dir.display());
+    match fs::DirBuilder::new().mode(0o700).create(dir) {
+        Ok(()) => return Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+        Err(error) => return Err(at(error)),
+    }
+    let found = fs::symlink_metadata(dir).map_err(at)?;
+    if found.is_dir() && found.uid() == owner && found.mode() & 0o077 == 0 {
+        return Ok(());
+    }
+    Err(format!(
+        "{}: not a private folder of this user (owner {}, mode {:o}); remove it or fix it with chmod 700",
+        dir.display(),
+        found.uid(),
+        found.mode() & 0o777
+    ))
 }
 
 fn spool(home: &Path) -> PathBuf {
@@ -906,7 +971,8 @@ pub fn listen(home: &Path) -> Result<Listening, String> {
         }
         std::thread::sleep(Duration::from_millis(50));
     }
-    let path = socket(home);
+    let path = socket_path(home);
+    private_dir(path.parent().unwrap_or(Path::new("/")), uid())?;
     let _ = fs::remove_file(&path);
     let listener = UnixListener::bind(&path).map_err(at)?;
     let (sender, lines) = mpsc::channel();
@@ -978,7 +1044,7 @@ pub const NO_DAEMON: &str = "no priory daemon listens on";
 /// with no daemon, it fails.
 pub fn call(home: &Path, line: &str, wait: Duration) -> Result<String, String> {
     let wait = Some(wait);
-    let path = socket(home);
+    let path = socket_path(home);
     let mut stream = UnixStream::connect(&path)
         .map_err(|error| format!("{NO_DAEMON} {}: {error}", path.display()))?;
     let mut reply = String::new();
@@ -999,7 +1065,7 @@ pub fn call(home: &Path, line: &str, wait: Duration) -> Result<String, String> {
 pub fn send(home: &Path, line: &str) -> Result<(), String> {
     let line = format!("{line}\n");
     let wait = Some(Duration::from_secs(10));
-    let sent = UnixStream::connect(socket(home)).and_then(|mut stream| {
+    let sent = UnixStream::connect(socket_path(home)).and_then(|mut stream| {
         stream.set_write_timeout(wait)?;
         stream.set_read_timeout(wait)?;
         stream.write_all(line.as_bytes())?;
@@ -1025,4 +1091,40 @@ pub fn send(home: &Path, line: &str) -> Result<(), String> {
         .open(spool(home))
         .and_then(|mut file| file.write_all(line.as_bytes()))
         .map_err(|error| format!("{}: {error}", spool(home).display()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_runtime_directory_too_long_for_a_socket_path_falls_back_to_tmp() {
+        let home = std::env::temp_dir();
+        let long = PathBuf::from("/run/").join("u".repeat(90));
+
+        let socket = socket_in(Some(&long), &home);
+
+        assert!(
+            socket.starts_with(format!("/tmp/priory-{}", uid())),
+            "{socket:?}"
+        );
+        assert!(
+            socket_in(Some(Path::new("/run/user/1000")), &home)
+                .starts_with("/run/user/1000/priory")
+        );
+    }
+
+    #[test]
+    fn a_socket_directory_of_another_user_is_refused() {
+        let dir = std::env::temp_dir().join(format!("priory-private-{}", std::process::id()));
+
+        assert_eq!(private_dir(&dir, uid()), Ok(()));
+        let refused = private_dir(&dir, uid() + 1).unwrap_err();
+        fs::remove_dir(&dir).unwrap();
+
+        assert!(
+            refused.contains("not a private folder of this user"),
+            "{refused}"
+        );
+    }
 }

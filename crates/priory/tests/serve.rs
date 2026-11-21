@@ -92,6 +92,7 @@ impl Setup {
             .env_remove("TMUX")
             .env("PATH", path)
             .env("TMUX_TMPDIR", self.tmux.path())
+            .env("XDG_RUNTIME_DIR", self.tmux.path())
             .env("HERDR_BUS_DB", self.dir.join("bus.db"))
             .env("PRIORY_DB", self.dir.join("priory.db"))
             .env("PRIORY_HOME", self.dir.join("home"))
@@ -1488,19 +1489,11 @@ fn the_daemon_listens_nowhere_without_a_serve_table() {
         .unwrap();
     let pid = child.id();
     setup.server = Some(child);
-    let socket = setup.dir.join("home");
     let deadline = Instant::now() + Duration::from_secs(10);
-    // The daemon's hook socket under PRIORY_HOME shows it is past its start.
-    while !fs::read_dir(&socket).is_ok_and(|mut dir| {
-        dir.any(|entry| {
-            entry.is_ok_and(|entry| {
-                entry.file_type().is_ok_and(|kind| {
-                    use std::os::unix::fs::FileTypeExt;
-                    kind.is_socket()
-                })
-            })
-        })
-    }) {
+    // The daemon's hook socket shows it is past its start.
+    let socket =
+        priory_runtime::runtime::socket_in(Some(setup.tmux.path()), &setup.dir.join("home"));
+    while !socket.exists() {
         assert!(Instant::now() < deadline, "the daemon did not start");
         std::thread::sleep(Duration::from_millis(50));
     }

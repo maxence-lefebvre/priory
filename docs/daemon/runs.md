@@ -102,7 +102,7 @@ Without the flag, the verb applies to the state as it is.
 its hold is released. It refuses any other state: a running task already has a process, which a
 hold would have to kill mid-turn, and an asleep task waits on its own ask or wait, whose wake would
 race the hold. Hold such a task once it is back in the queue. `priory release <task>` lets a held
-task go, back to the state it was held from. Both go to the daemon over `priory.sock`, as
+task go, back to the state it was held from. Both go to the daemon over its socket, as
 `priory resume` does, so a hold and a run start never race.
 
 A hold takes conditions, which release it without a person once all of them are met. `--after` and

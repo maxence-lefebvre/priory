@@ -152,7 +152,7 @@ Priory keeps its state in three places, each named by an environment variable:
 | -------------- | ------------------------------------------------------------- | -------------------------------- |
 | `PRIORY_DB`    | The daemon's SQLite state: tasks, runs, asks, waits, results  | none: the daemon refuses to start |
 | `HERDR_BUS_DB` | The [herdr-bus](https://github.com/flupke/herdr-bus) file the intake publishes to | `~/.local/share/herdr-bus/bus.db` |
-| `PRIORY_HOME`  | Clones, worktrees and the daemon's socket                     | `~/.local/state/priory-oss`      |
+| `PRIORY_HOME`  | Clones and worktrees; it names the daemon's socket            | `~/.local/state/priory-oss`      |
 
 Run the intake and the daemon side by side, each pointed at the factory folder:
 

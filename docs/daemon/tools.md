@@ -8,7 +8,7 @@ them. With these tools, an agent ends a step, asks a person a question, or sleep
 The run's settings start the server as `priory mcp --session <id>`, a stdio MCP server. It answers
 `initialize`, `ping`, `tools/list` and `tools/call`.
 
-The server sends each tool call to the daemon over `priory.sock` as
+The server sends each tool call to the daemon over its socket as
 `{"tool": ..., "session": ..., "arguments": ...}`. The daemon applies the call in one transaction
 and replies with the tool's text or error. With no daemon listening, the call fails and stores
 nothing.

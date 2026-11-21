@@ -1,6 +1,7 @@
 # Priory home
 
-Priory home is the folder where Priory keeps its clones, worktrees and the daemon's socket.
+Priory home is the folder where Priory keeps its clones and worktrees. The daemon's socket is
+named by it but lives elsewhere (see [Socket, spool and lock](#socket-spool-and-lock)).
 `PRIORY_HOME` names it. When `PRIORY_HOME` is unset or empty, Priory uses
 `$XDG_STATE_HOME/priory-oss`, else `~/.local/state/priory-oss`.
 
@@ -13,7 +14,6 @@ For a factory that works in `owner/name`, Priory home looks like this:
 ```
 $PRIORY_HOME/
   daemon.lock                  one daemon per home
-  priory.sock                  the socket that hooks, tools and commands talk to
   signals.spool                signals sent while no daemon listened
   repos/owner/name/            Priory's clone of owner/name, with no checkout
   partial/owner/name/          a clone in progress, renamed into repos/ once complete
@@ -53,8 +53,27 @@ still lists it.
 
 ### Socket, spool and lock
 
-Hooks report to `priory.sock` (see [signals.md](signals.md)). The MCP tools and commands such as
-`priory answer` use it too. The daemon reads one connection at a time, and drops one that sends no
+Hooks report to the daemon's socket (see [signals.md](signals.md)). The MCP tools and commands such
+as `priory answer` use it too.
+
+The socket is not in Priory home. A Unix socket path of more than 108 bytes cannot be bound, and
+`PRIORY_HOME` can be as long as a worktree path. So the socket is at a short path that every client
+derives from `PRIORY_HOME` the same way:
+
+- `$XDG_RUNTIME_DIR/priory/<hash>.sock` when `XDG_RUNTIME_DIR` is set and not empty, and that path
+  is under 108 bytes.
+- `/tmp/priory-<uid>/<hash>.sock` otherwise.
+
+`<hash>` is 16 hex digits of the FNV-1a hash of the canonical path of `PRIORY_HOME`, so two homes
+never share a socket. The daemon makes the folder with mode `0700`. It refuses to start when the
+folder exists but another user owns it, it is not a folder, or its mode lets anyone else in; the
+error names the folder. Fix it with `chmod 700`, or remove it. A socket left by a dead daemon is
+replaced at the next start.
+
+The daemon passes its `XDG_RUNTIME_DIR` to the agents' panes and MCP servers, so a tmux server
+started elsewhere does not change it. A command you run yourself must see the same `PRIORY_HOME` and
+`XDG_RUNTIME_DIR` as the daemon, or it looks at another socket and reports
+`no priory daemon listens on <path>`. The path is in that error. The daemon reads one connection at a time, and drops one that sends no
 full line within 2 seconds, so a silent client cannot stop the others.
 
 `signals.spool` holds the signals sent while no daemon listened. The next daemon applies them first.

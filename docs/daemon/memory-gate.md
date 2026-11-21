@@ -5,7 +5,7 @@ or a test suite, only when the machine has room for it. Builds from several agen
 instead of exhausting memory. N is a GB count, such as `8` or `1.5`, and 10 by default. D is a
 duration such as `90s`, `15m` or `2h`.
 
-1. The command asks the daemon over `priory.sock` for a grant of N GB. It sends its pid and, inside
+1. The command asks the daemon over its socket for a grant of N GB. It sends its pid and, inside
    a run, the run's `PRIORY_SESSION`, which names the grant's task.
 2. Grants wait in one queue, oldest first. The daemon grants the oldest waiting grant when the
    measured free memory, minus the memory promised to live runs and every held grant, minus N,
