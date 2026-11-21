@@ -878,9 +878,19 @@ The **lane graph** draws a plan, in the batch page and in a go ask.
 - tmux sets the width, so lines never wrap. The pane scrolls sideways inside its own box. A "Fit"
   toggle scales the text down to fit the width, never below 9 px.
 - Read-only by default. "Type" opens a one-line input at the bottom that sends a line on Enter.
-  The header shows `read-only` or `typing`.
-- Header: the `terminal` icon, session name in mono, run id, "Copy screen", "Fit", "Attach".
-- When the run ends, the pane keeps its last screen and shows the run's state tile.
+  The header shows `read-only` or `typing`. The web view has no "Type" yet.
+- Header: the `terminal` icon, session name in mono, run id, "Copy screen", "Fit", "Attach". In the
+  web view "Attach" copies `priory attach N --read-only`, since a page cannot open a tmux client.
+  Under 480 px of pane width the three buttons show their icon only, with their name as a label.
+- A `[redacted]` in the screen takes `--term-dim` with a dotted underline.
+- Notes about the screen sit above the pane in page tokens, as `.note` lines: `--warn-text` with
+  the `shield` icon for "2 secrets hidden on this screen", `--warn-text` with `unplug` for
+  "Reconnecting. Screen from 14:02, 40 s ago." when a poll fails, and `--text-2` with the run's
+  ended state icon for "Run 1 ended as done. This is the last screen this page saw."
+- When the run ends, the pane keeps its last screen, dims its text to `--term-dim` and shows the
+  run's state tile.
+- The page keeps no screen in local storage, and drops it on sign-out, on a `401` and when the pane
+  switches runs.
 
 ### Reports and tables
 

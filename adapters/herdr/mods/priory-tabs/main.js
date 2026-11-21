@@ -58,17 +58,17 @@ export default class PrioryTabs extends View {
     this.opened = /** @type {{ at?: number } | null} */ (shared("priory.task.open"))?.at ?? 0;
   }
 
-  // Another Priory mod asks for a task's terminal with setShared("priory.attach", { task, at: Date.now() }).
-  /** @param {number} task @param {import("herdr").SpaceInfo | undefined} space the space shown when asked */
-  async attach(task, space) {
+  // Another Priory mod asks for a task's terminal with setShared("priory.attach", { task, at: Date.now(), readOnly }).
+  /** @param {number} task @param {import("herdr").SpaceInfo | undefined} space the space shown when asked @param {boolean} readOnly */
+  async attach(task, space, readOnly) {
     try {
       // Connects on first use, and again after a failure, so a machine that comes back works.
       this.priory ??= connect().catch((error) => { this.priory = null; throw error; });
       const { machine, home, client } = await this.priory;
       if (!space || space.machine !== machine) throw new Error(`Open a space on ${machine ?? "this machine"}, where Priory runs, then attach again.`);
-      const command = await client.attach(task);
+      const command = await client.attach(task, { readOnly });
       showMain();
-      run("tab.new", { space: space.id, folder: space.folder || home, name: `Task ${task}`, argv: ["sh", "-c", command] });
+      run("tab.new", { space: space.id, folder: space.folder || home, name: readOnly ? `Watch task ${task}` : `Task ${task}`, argv: ["sh", "-c", command] });
     } catch (error) {
       notify({ title: `Can't attach to task ${task}`, body: error instanceof Error ? error.message : String(error), level: "error" });
     }
@@ -77,11 +77,11 @@ export default class PrioryTabs extends View {
   /** @param {import("gpui-kit").Context} cx */
   render(cx) {
     const t = theme();
-    const request = /** @type {{ task?: number, at?: number } | null} */ (shared("priory.attach"));
+    const request = /** @type {{ task?: number, at?: number, readOnly?: boolean } | null} */ (shared("priory.attach"));
     if (request?.task != null && (request.at ?? 0) > this.attached) {
       this.attached = request.at;
       const space = (spaces() ?? []).find((candidate) => candidate.active);
-      cx.spawn(async () => this.attach(request.task, space));
+      cx.spawn(async () => this.attach(request.task, space, Boolean(request.readOnly)));
     }
     // Another Priory mod opens a task with setShared("priory.task.open", { task, at: Date.now() }); the Task panel reads which.
     const opening = /** @type {{ at?: number } | null} */ (shared("priory.task.open"));

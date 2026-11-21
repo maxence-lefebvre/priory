@@ -75,7 +75,24 @@ test("the Task panel shows the task another panel opened, and Attach asks the Pr
   assert.match(text(find(tree, "task-scroll")), /Export the board as CSV\..*Merge #212 into main\?.*#212 Export the board as CSV.*groom, run 1, yellow/s);
 
   press(tree, "attach");
-  assert.equal(herdr.shared.get("priory.attach").task, 1);
+  assert.deepEqual([herdr.shared.get("priory.attach").task, herdr.shared.get("priory.attach").readOnly], [1, false]);
+  press(tree, "watch");
+  assert.deepEqual([herdr.shared.get("priory.attach").task, herdr.shared.get("priory.attach").readOnly], [1, true]);
+});
+
+test("the Priory bar opens a read-only terminal for Watch and a typing one for Attach", async () => {
+  herdr.reset();
+  herdr.replies = { attach: "tmux attach" };
+  const bar = new Tabs();
+  bar.init();
+  const cx = context();
+  for (const readOnly of [true, false]) {
+    herdr.shared.set("priory.attach", { task: 2, at: Date.now() + (readOnly ? 1 : 2), readOnly });
+    draw(bar, cx);
+    await settle();
+  }
+  assert.deepEqual(herdr.argv.filter((args) => args[0] === "attach"), [["attach", "2", "--read-only", "--print"], ["attach", "2", "--print"]]);
+  assert.deepEqual(herdr.runs.map(([command, args]) => [command, args.name]), [["tab.new", "Watch task 2"], ["tab.new", "Task 2"]]);
 });
 
 test("the Priory bar opens the Task tab for a new request, and not for one left from before it started", async () => {
