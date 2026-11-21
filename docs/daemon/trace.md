@@ -79,6 +79,9 @@ task id and generation, run id or record id, so sending a record again gives the
 
 The resource carries `service.name = priory`, `priory.factory` and `host.name`, the machine.
 
+To send to a local ClickStack, Honeycomb or Grafana Cloud, see
+[otel-recipes.md](otel-recipes.md).
+
 Each tick, the daemon sends up to 200 records and 200 task ends past the endpoint's cursors in one request, through
 `curl`, and moves on without waiting for it. `curl` gives up after `command_timeout`. The cursors, in
 the state file's `exports` table (`seq` for records, `ended` for the `task_ends` table, which
