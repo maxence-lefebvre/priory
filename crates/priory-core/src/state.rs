@@ -1378,8 +1378,11 @@ CREATE INDEX open_holds ON holds (task) WHERE released IS NULL;
 "
 );
 
-// Version 78 is held by #203; this slot keeps the numbering until it lands.
-const SCHEMA_78: &str = "PRAGMA user_version = 78;";
+// A hash of the factory's skills and instructions that a run got, so two runners whose factory
+// checkouts differ show it (R11.1).
+const SCHEMA_78: &str = "ALTER TABLE runs ADD COLUMN kit_hash TEXT;
+PRAGMA user_version = 78;
+";
 
 // Every runner's asks on every desk: each ask's `version`, raised by every change its post shows,
 // and the version it last posted; the asks other runners posted; the answers and dismisses sent
@@ -2871,6 +2874,8 @@ pub(crate) struct NewRun<'a> {
     pub changed: Option<&'a str>,
     /// Derives the lane of a task again, once, now that its branch is known.
     pub lanes: &'a Lanes,
+    /// A hash of the factory's skills and instructions the run gets, if any.
+    pub kit_hash: Option<&'a str>,
 }
 
 /// The agent's shared session, once a run of it reached `SessionStart`, which every task resumes.
@@ -2930,8 +2935,8 @@ pub(crate) fn thread(db: &Connection, session: &str) -> rusqlite::Result<Option<
 pub(crate) fn start(db: &mut Connection, run: &NewRun) -> rusqlite::Result<i64> {
     let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
     tx.execute(
-        "INSERT INTO runs (task, step, agent, tmux, session) VALUES (?1, ?2, ?3, ?4, ?5)",
-        params![run.task, run.step, run.agent, run.tmux, run.session],
+        "INSERT INTO runs (task, step, agent, tmux, session, kit_hash) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        params![run.task, run.step, run.agent, run.tmux, run.session, run.kit_hash],
     )?;
     let id = tx.last_insert_rowid();
     tx.execute(
@@ -3076,6 +3081,15 @@ pub(crate) fn block(
         params![task, reason],
     )?;
     tx.commit()
+}
+
+/// How many tasks are queued or ready to start a run.
+pub(crate) fn waiting(db: &Connection) -> rusqlite::Result<i64> {
+    db.query_row(
+        "SELECT count(*) FROM tasks WHERE state IN ('queued', 'ready')",
+        [],
+        |row| row.get(0),
+    )
 }
 
 pub(crate) struct LiveRun {

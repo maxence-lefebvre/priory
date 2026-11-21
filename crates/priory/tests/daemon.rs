@@ -327,6 +327,49 @@ fn a_second_run_over_the_same_messages_changes_nothing() {
 }
 
 #[test]
+fn once_says_that_queued_tasks_wait_for_a_running_daemon() {
+    let setup = Setup::new("once-waits");
+    for issue in [42, 43] {
+        let source = labeled(issue);
+        setup.publish(&source);
+        setup.publish(&requested(&source, issue));
+    }
+
+    let routed = setup.daemon();
+
+    succeeded(&routed);
+    assert_eq!(
+        String::from_utf8_lossy(&routed.stdout),
+        "2 tasks wait: --once only routes; a running daemon starts them\n"
+    );
+}
+
+#[test]
+fn once_with_no_task_waiting_prints_nothing() {
+    let setup = Setup::new("once-quiet");
+    setup.publish(&labeled(42));
+
+    let routed = setup.daemon();
+
+    succeeded(&routed);
+    assert_eq!(String::from_utf8_lossy(&routed.stdout), "");
+}
+
+#[test]
+fn the_usage_says_that_daemon_once_starts_no_task() {
+    let setup = Setup::new("once-usage");
+
+    let usage = setup.priory(&["daemon", "--bogus", "--twice"]);
+
+    assert!(
+        String::from_utf8_lossy(&usage.stderr).contains(
+            "priory daemon [DIR] [--once]    --once routes pending events, starts no task and exits"
+        ),
+        "{usage:?}"
+    );
+}
+
+#[test]
 fn a_message_handled_but_not_acked_is_not_handled_twice() {
     let setup = handled("not-acked");
     let (inbox, tasks) = (setup.rows("inbox"), setup.rows("tasks"));
