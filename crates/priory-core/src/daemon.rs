@@ -131,8 +131,10 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
     });
     state::uncertain(&db)?;
     // No one watches a compaction a stopped daemon started, so it never types its `/compact`.
+    for tmux in idle::tmux_sessions(&db)? {
+        runtime::kill(&tmux);
+    }
     for live in idle::live(&db)? {
-        runtime::kill(&live.tmux);
         idle::end(&db, live.id, "interrupted")?;
     }
     // A crash between ending a run and killing its session leaves its agent running.
@@ -1564,7 +1566,12 @@ fn definition(agent: &factory::Agent) -> serde_json::Value {
     let permissions = &agent.permissions;
     serde_json::json!({
         "prompt": digest(serde_json::json!(agent.body)),
-        "tools": digest(serde_json::json!([agent.mcp_servers, permissions.allow, permissions.deny])),
+        "tools": digest(serde_json::json!([
+            agent.mcp_servers,
+            permissions.allow,
+            permissions.deny,
+            agent.connector_sign_in
+        ])),
         "model": digest(serde_json::json!([agent.model, agent.effort])),
         "flags": digest(serde_json::json!(permissions.default_mode.map(PermissionMode::as_str))),
     })
@@ -1636,9 +1643,14 @@ fn compact_idle(
     scope: &[String],
 ) -> Result<(), Error> {
     for live in idle::live(db)? {
-        if live.overdue {
+        let ended_as = match (live.overdue, live.late) {
+            (true, _) => Some("timeout"),
+            (false, true) => Some("late"),
+            _ => None,
+        };
+        if let Some(ended_as) = ended_as {
             runtime::kill(&live.tmux);
-            idle::end(db, live.id, "timeout")?;
+            idle::end(db, live.id, ended_as)?;
             continue;
         }
         if !live.ready {
@@ -1662,13 +1674,26 @@ fn compact_idle(
         let Some(due) = idle::due(db, name)? else {
             continue;
         };
-        let dir = Path::new(&due.worktree);
-        let context = (trace.usage)(Path::new(&due.transcript), 0).and_then(|usage| usage.context);
-        if !dir.is_dir() || context.is_none_or(|context| context < limit.get()) {
-            continue;
-        }
         let tmux = format!("priory-idle-{name}");
         let id = idle::begin(db, name, &due.session, &tmux)?;
+        let dir = Path::new(&due.worktree);
+        let context = (trace.usage)(Path::new(&due.transcript), 0).and_then(|usage| usage.context);
+        // A resume with other flags than the cached conversation's would read it at full price.
+        let stored = state::definition(db, &due.session)?;
+        let skipped = if !dir.is_dir() {
+            Some("no worktree")
+        } else if context.is_none_or(|context| context < limit.get()) {
+            Some("small")
+        } else if stored.is_some_and(|stored| changed(&stored, &definition(&agent.value)).is_some())
+        {
+            Some("changed")
+        } else {
+            None
+        };
+        if let Some(skipped) = skipped {
+            idle::end(db, id, skipped)?;
+            continue;
+        }
         let started = Started {
             tmux: &tmux,
             dir,

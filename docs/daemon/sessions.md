@@ -78,7 +78,8 @@ before the compaction, so the continuation may come while the command runs.
 ## Compacting an idle session
 
 A shared session waits between tasks with no process. Anthropic's prompt cache keeps a
-conversation for 5 minutes, or for an hour with its longer lifetime. Priory assumes the hour. A task
+conversation for 5 minutes, or for an hour with its longer lifetime (Anthropic's prompt caching
+docs, `ttl: "1h"`). Priory assumes the hour. A task
 that resumes the session after it reads the whole context again at full price. An agent's `idleCompactAt` is a context
 size in tokens, such as `60000`. When its shared session has been idle for 55 minutes and its
 context is at or past `idleCompactAt`, the daemon compacts it while the cache still holds it. Unset,
@@ -91,12 +92,15 @@ stop, is left alone: its cache is gone, so a compaction would read the context a
 The daemon reads the context size from the session's transcript, as for `compactAt`. Then it:
 
 1. resumes the session in a tmux session named `priory-idle-<agent>`, in the worktree of its last
-   run, with the same flags as the agent's runs, so the resume matches the cached conversation,
-2. types `/compact` once Claude's `SessionStart` arrives,
+   run, with the same flags as the agent's runs, so the resume can reuse the cached conversation,
+2. types `/compact` once Claude's `SessionStart` arrives, unless 5 minutes passed since the launch:
+   then the cache may be gone, and it kills the tmux session instead,
 3. kills the tmux session at the `SessionStart` with `source: compact`.
 
-It compacts the session once per idle stretch. A run of the session that starts after the
-compaction makes its next idle stretch count again.
+It decides once per idle stretch. It skips a session below `idleCompactAt`, one whose last
+worktree is gone, and one whose agent changed since the session started (see When the agent
+changes), since a resume with other flags may not reuse the cache. A run of the session that starts
+after the decision makes its next idle stretch count again.
 
 It never compacts a session with a live run, so it never compacts a busy one. While the compaction
 runs, a task that needs the agent stays `queued` or `ready` with the reason
@@ -110,16 +114,18 @@ Known limits:
 
 - Priory does not read which cache lifetime Claude used. A session cached for 5 minutes, as with
   some API keys, is cold by the time the daemon compacts it.
-- Priory counts no tokens of an idle compaction toward any task.
-- The last run's worktree must still exist. A session whose worktree the sweep removed is not
-  compacted.
+- Priory does not check that the resume reused the cache, and counts no tokens of an idle
+  compaction toward any task.
+- A compaction starts without the room check, so it uses memory that the queue does not count.
+- When the launch of a resumed run fails, the line about the change stays in that task's prompt,
+  and another task that resumes the session first does not get it.
 
 ## When the agent changes
 
 Each run of an agent gets the agent's current instructions, model and permissions as flags. A
 shared session resumed days later still carries earlier turns that followed the old ones. So the
 daemon records what a shared session started with: a digest of the agent's prompt, its tools
-(`mcpServers`, `permissions.allow` and `permissions.deny`), its model and effort, and its flags
+(`mcpServers`, `permissions.allow`, `permissions.deny` and `connectorSignIn`), its model and effort, and its flags
 (`permissions.defaultMode`).
 
 When a task resumes the session and a digest differs, the task's first prompt starts with one line
@@ -133,7 +139,7 @@ The daemon then records the new digests, so the next task hears nothing. An unch
 nothing to the prompt.
 
 An agent with `onChange = "fresh"` starts a new shared session instead of resuming the old one.
-`priory check` refuses `onChange` on an agent whose `session` is not `shared`.
+`priory check` refuses `onChange = "fresh"` on an agent whose `session` is not `shared`.
 
 A session recorded before Priory kept digests has none: it is resumed as unchanged, and its next
 run records them.

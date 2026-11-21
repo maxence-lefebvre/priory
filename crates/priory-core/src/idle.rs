@@ -8,6 +8,8 @@ const CACHE: i64 = 60;
 const AFTER: i64 = 55;
 /// How long an idle compaction may take before the daemon kills it.
 const WITHIN: &str = "10 minutes";
+/// How long a compaction may wait for its `SessionStart`: later, the cache may be gone before `/compact`.
+const LATE: i64 = CACHE - AFTER;
 const NOW: &str = "strftime('%Y-%m-%dT%H:%M:%SZ', 'now')";
 
 /// A shared session idle long enough to compact.
@@ -47,7 +49,6 @@ pub(crate) fn due(db: &Connection, agent: &str) -> rusqlite::Result<Option<Due>>
     .optional()
 }
 
-/// Records an idle compaction of `session` in the tmux session `tmux`. Returns its id.
 pub(crate) fn begin(
     db: &Connection,
     agent: &str,
@@ -76,12 +77,22 @@ pub(crate) struct Live {
     pub tmux: String,
     /// Its `SessionStart` arrived and no `/compact` was typed yet.
     pub ready: bool,
+    /// No `/compact` was typed before the cache may have expired.
+    pub late: bool,
     pub overdue: bool,
+}
+
+/// The tmux sessions of every idle compaction, which a restarted daemon kills: one it ended may
+/// have crashed before it killed the session.
+pub(crate) fn tmux_sessions(db: &Connection) -> rusqlite::Result<Vec<String>> {
+    let mut statement = db.prepare("SELECT DISTINCT tmux FROM idle_compactions")?;
+    statement.query_map([], |row| row.get(0))?.collect()
 }
 
 pub(crate) fn live(db: &Connection) -> rusqlite::Result<Vec<Live>> {
     let mut statement = db.prepare(&format!(
         "SELECT id, session, tmux, ready AND typed IS NULL,
+           typed IS NULL AND started <= strftime('%Y-%m-%dT%H:%M:%SZ', 'now', '-{LATE} minutes'),
            started <= strftime('%Y-%m-%dT%H:%M:%SZ', 'now', '-{WITHIN}')
          FROM idle_compactions WHERE ended IS NULL"
     ))?;
@@ -92,7 +103,8 @@ pub(crate) fn live(db: &Connection) -> rusqlite::Result<Vec<Live>> {
                 session: row.get(1)?,
                 tmux: row.get(2)?,
                 ready: row.get(3)?,
-                overdue: row.get(4)?,
+                late: row.get(4)?,
+                overdue: row.get(5)?,
             })
         })?
         .collect()
