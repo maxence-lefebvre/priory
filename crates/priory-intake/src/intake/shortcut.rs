@@ -2,6 +2,7 @@ use super::slack::{API, TOKEN, post, text};
 use crate::request::{self, Add, Refused};
 use priory_factory::factory::{Factory, SlackShortcut};
 use serde_json::{Value, json};
+use std::net::{TcpStream, ToSocketAddrs};
 use std::path::Path;
 use std::sync::mpsc::{SyncSender, TrySendError, sync_channel};
 use std::time::Duration;
@@ -82,16 +83,27 @@ fn connection(
         &json!({}),
     )?;
     let url = text(&opened["url"]);
-    let (mut socket, _) =
-        tungstenite::connect(url).map_err(|error| format!("Socket Mode connect: {error}"))?;
-    let stream = match socket.get_ref() {
-        tungstenite::stream::MaybeTlsStream::Plain(stream) => stream,
-        tungstenite::stream::MaybeTlsStream::Rustls(stream) => stream.get_ref(),
-        _ => unreachable!("tungstenite is built with rustls only"),
+    let failed = |error: &dyn std::fmt::Display| format!("Socket Mode connect: {error}");
+    let uri: tungstenite::http::Uri = url.parse().map_err(|error| failed(&error))?;
+    let port = match uri.scheme_str() {
+        Some("ws") => 80,
+        _ => 443,
     };
+    let address = (
+        uri.host().unwrap_or_default(),
+        uri.port_u16().unwrap_or(port),
+    )
+        .to_socket_addrs()
+        .map_err(|error| failed(&error))?
+        .next()
+        .ok_or_else(|| failed(&"Slack's URL names no address"))?;
+    // Timeouts before the handshake, so neither it nor a blocked write can hold the thread.
+    let stream = TcpStream::connect_timeout(&address, QUIET).map_err(|error| failed(&error))?;
     stream
         .set_read_timeout(Some(QUIET))
-        .map_err(|error| format!("Socket Mode: {error}"))?;
+        .and_then(|()| stream.set_write_timeout(Some(QUIET)))
+        .map_err(|error| failed(&error))?;
+    let (mut socket, _) = tungstenite::client_tls(url, stream).map_err(|error| failed(&error))?;
     let mut pinged = false;
     loop {
         let frame = match socket.read() {

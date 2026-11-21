@@ -358,6 +358,13 @@ fn call(token: &str, method: &str, query: &[(&str, String)]) -> Result<Value, St
 /// One JSON POST to `url`, under `token` when given as its variable's name and value. Everything
 /// goes to `curl` on its standard input, so neither the token nor the URL shows in a process list.
 pub(super) fn post(token: Option<(&str, &str)>, url: &str, body: &Value) -> Result<Value, String> {
+    // A raw newline would end the config line, so control characters are refused, not quoted.
+    if [url, token.map_or("", |(_, token)| token)]
+        .iter()
+        .any(|value| value.chars().any(char::is_control))
+    {
+        return Err("Slack call refused: a control character in its URL or token".to_owned());
+    }
     let quote = |value: &str| format!("\"{}\"", value.replace('\\', "\\\\").replace('"', "\\\""));
     let mut config = String::new();
     if let Some((_, token)) = token {
@@ -378,6 +385,8 @@ pub(super) fn post(token: Option<(&str, &str)>, url: &str, body: &Value) -> Resu
             Some((name, token)) => error.replace(token, &format!("<{name}>")),
             None => error.to_owned(),
         };
+        // A response_url is a credential too.
+        let error = error.replace(url, &format!("<{method}>"));
         format!("Slack {method} failed: {error}")
     };
     let mut child = Command::new("curl")
@@ -389,6 +398,10 @@ pub(super) fn post(token: Option<(&str, &str)>, url: &str, body: &Value) -> Resu
             "10",
             "--max-time",
             "30",
+            "--max-filesize",
+            "1000000",
+            "--proto",
+            "=https",
             "--fail-with-body",
             "--config",
             "-",

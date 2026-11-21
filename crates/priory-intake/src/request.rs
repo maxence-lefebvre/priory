@@ -228,10 +228,23 @@ pub fn add(factory: &Factory, add: &Add) -> Result<String, Refused> {
 /// the factory's defaults for what it leaves unset. Only the first request for a key publishes.
 pub fn add_to(factory: &Factory, add: &Add, key: &str) -> Result<String, Refused> {
     let request = quick(factory, add, None)?;
-    if claim(&open()?, &request, key)? {
-        return Ok(key.to_owned());
+    let bus = open()?;
+    let source = source(&request, key, &format!("{REQUESTED}:add:{key}"));
+    let seq = bus
+        .publish(OUTPUT, &source)
+        .map_err(|error| format!("publish on {OUTPUT}: {error}"))?;
+    let first = bus.message(seq).map_err(|error| error.to_string())?.message;
+    // The task request's id derives from the first source's, so an add that stopped between the
+    // two is completed here, and one that did not keeps its task. Its own time tells them apart.
+    let task = task(&request, key, &first).time(Timestamp::now());
+    let seq = bus
+        .publish(OUTPUT, &task)
+        .map_err(|error| format!("publish on {OUTPUT}: {error}"))?;
+    let stored = bus.message(seq).map_err(|error| error.to_string())?;
+    if stored.message.time != task.time {
+        return Err(Refused::Repeated(key.to_owned()));
     }
-    Err(Refused::Repeated(key.to_owned()))
+    Ok(key.to_owned())
 }
 
 /// `add` as a request the factory takes, its repo else `repo`, its workflow and band else the

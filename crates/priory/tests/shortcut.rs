@@ -59,14 +59,15 @@ impl Slack {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         listener.set_nonblocking(true).unwrap();
         let port = listener.local_addr().unwrap().port();
-        // Each call's config (stdin) goes to its own file; `views.open` waits while `hold` exists.
+        // Each call's config (stdin) goes to its own file, named by time; `views.open` waits while
+        // `hold` exists, for 10 s at most.
         let curl = format!(
             "#!/bin/sh\necho \"$*\" >> '{dir}/args'\ncfg=$(cat)\n\
-             n=$(ls '{dir}/calls' | wc -l)\nprintf '%s' \"$cfg\" > '{dir}/calls/'$(printf %03d $n)\n\
+             call='{dir}/calls/'$(date +%s%N)-$$\nprintf '%s' \"$cfg\" > \"$call.tmp\"; mv \"$call.tmp\" \"$call\"\n\
              case \"$cfg\" in\n\
              *apps.connections.open*) if [ -e '{dir}/fail-open' ]; then rm '{dir}/fail-open'; \
              echo \"> $(printf %s \"$cfg\" | grep Authorization)\" >&2; echo 'curl: (22) 500' >&2; exit 22; fi; echo '{{\"ok\":true,\"url\":\"ws://127.0.0.1:{port}/link\"}}' ;;\n\
-             *views.open*) while [ -e '{dir}/hold' ]; do sleep 0.05; done; echo '{{\"ok\":true}}' ;;\n\
+             *views.open*) n=0; while [ -e '{dir}/hold' ] && [ $n -lt 200 ]; do sleep 0.05; n=$((n+1)); done; echo '{{\"ok\":true}}' ;;\n\
              *) echo '{{\"ok\":true}}' ;;\nesac\n",
             dir = dir.display()
         );
@@ -442,4 +443,58 @@ fn a_full_queue_answers_busy() {
         "{:?}",
         replies(&slack)
     );
+}
+
+#[test]
+fn a_submission_completes_a_thread_whose_source_was_published_without_its_task() {
+    let mut slack = Slack::new("orphan");
+    let key = format!("slack:{CHANNEL}:{THREAD}");
+    // The source an earlier submission published before it stopped, with the id the intake gives it.
+    let namespace = uuid::Uuid::new_v5(
+        &uuid::Uuid::NAMESPACE_URL,
+        b"https://github.com/maxence-lefebvre/priory/intake",
+    );
+    let name = format!("priory.task.requested.cli:add:{key}");
+    let orphan = herdr_bus::Message::new("priory.task.requested.cli", json!({"text": "first"}))
+        .id(uuid::Uuid::new_v5(&namespace, name.as_bytes()))
+        .subject(key.clone());
+    let bus = Bus::open(&slack.dir.join("bus.db")).unwrap();
+    bus.declare(&herdr_bus::Output::new("factory.intake"))
+        .unwrap();
+    bus.publish("factory.intake", &orphan).unwrap();
+    slack.start();
+    let mut socket = slack.accept();
+    socket.send(envelope("e1", shortcut(ALLOWED))).unwrap();
+    read(&mut socket);
+    let opened = body(&slack.call("views.open"));
+
+    socket
+        .send(envelope("e2", submission(&opened, ALLOWED, "Fix it")))
+        .unwrap();
+    read(&mut socket);
+    wait_for("the reply", || replies(&slack).len() == 1);
+
+    let requests = requests(&slack);
+    assert_eq!(requests.len(), 1, "{requests:?}");
+    assert_eq!(requests[0]["source"], orphan.id.to_string());
+    assert_eq!(replies(&slack), [format!("Queued as `{key}`.")]);
+}
+
+#[test]
+fn a_reply_url_with_a_newline_cannot_add_a_curl_option() {
+    let mut slack = Slack::new("newline");
+    slack.start();
+    let mut socket = slack.accept();
+    let mut payload = shortcut("U0STRANGER");
+    payload["response_url"] =
+        json!("https://hooks.slack.com/x\nurl = \"https://elsewhere.example/\"");
+    socket.send(envelope("e1", payload)).unwrap();
+    read(&mut socket);
+    socket.send(envelope("e2", shortcut("U0STRANGER"))).unwrap();
+    read(&mut socket);
+    wait_for("the second refusal", || replies(&slack).len() == 1);
+
+    assert!(!slack.calls().iter().any(|call| call.contains("elsewhere")));
+    let stderr = fs::read_to_string(slack.dir.join("stderr")).unwrap();
+    assert!(stderr.contains("a control character"), "{stderr}");
 }

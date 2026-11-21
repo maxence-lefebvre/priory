@@ -94,7 +94,8 @@ process list or an error.
 "Queue in Priory" is a message shortcut: in a message's menu, it opens a form with the workflow,
 the repository and a note, then queues a task for the message's thread. Its key is
 `slack:<channel>:<thread ts>`, so the replies a `slack_reply` wait watches in that thread reach the
-task. Its settings are in [`[slack.shortcut]`](../reference/factory.md#slackshortcut).
+task once the intake watches the thread, which needs the history scopes in [Calls and
+cost](#calls-and-cost). Its settings are in [`[slack.shortcut]`](../reference/factory.md#slackshortcut).
 
 ### How it reaches Priory
 
@@ -104,20 +105,22 @@ URL Slack returns. Nothing listens on the machine. `priory intake --once` opens 
 
 | Step | What Priory does |
 | ---- | ---------------- |
-| Any envelope | Acknowledges it with its `envelope_id` before anything else, since Slack shows the person an error after 3 seconds. Then hands the payload to a worker. Up to 16 payloads wait; another one gets a "busy" reply |
+| Any envelope | Acknowledges it with its `envelope_id` before anything else, since Slack shows the person an error after 3 seconds. Then hands the payload to a worker. Up to 16 payloads wait; up to 16 more get a "busy" reply, and the rest are dropped |
 | Shortcut (`callback_id` `priory_queue`) | Opens the form with `views.open`. The workflow starts at `[request] workflow`; an empty repository means `triggers/cli.toml`'s; the note starts as the message's text |
 | Form submitted | Queues the task through the same request code as `priory add`, so `check_repo`, workflow and band rules apply. The task's text is the note and a link to the message |
 | Reply | Posts an ephemeral message to the shortcut's `response_url`: the task key, "already queued", or why nothing was queued |
 | `disconnect` | Opens a new connection at once. Slack sends one every few hours |
-| A dropped or silent socket | Reconnects after 1 second, doubling to a minute while it keeps failing. A socket silent for 30 seconds gets a ping; one silent for 60 seconds is dropped |
+| A dropped or silent socket, or a connection, handshake or write that takes over 30 seconds | Reconnects after 1 second, doubling to a minute while it keeps failing. A socket silent for 30 seconds gets a ping; one silent for 60 seconds is dropped |
 
 Only the first submission for a thread queues a task. A later one, even with another note, replies
 that the thread is already queued.
 
 ### Who can use it
 
-Slack does not sign Socket Mode payloads, so the allowlist is the check: a shortcut or form from a
-user id not in `[slack.shortcut] users` gets an ephemeral refusal, and nothing is queued.
+The app-level token authenticates the connection, so only Slack sends on it, and Slack does not sign
+the payloads. Slack's `user.id` says who used the shortcut, and the allowlist says who may: a
+shortcut or form from a user id not in `[slack.shortcut] users` gets an ephemeral refusal, and
+nothing is queued.
 
 Each person makes their own Slack app, so the shortcut in their Slack reaches their own Priory.
 Slack lets an app hold up to 10 connections and sends each payload to any one of them, so two
