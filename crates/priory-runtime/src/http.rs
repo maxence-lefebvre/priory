@@ -69,10 +69,12 @@ impl Request<'_> {
 /// client holds only its own connection's thread, never a worker. Each worker calls `make` once
 /// for its own handler, which gets each request that carries `token`, and each `POST` to one of
 /// `hooks` with its body and no token: the handler authenticates those itself. A request to a
-/// `public` path needs no token either. A `POST` from a page of another origin gets 403.
+/// `public` path needs no token either. A `POST` from a page of another origin gets 403, unless
+/// that origin is one of `origins`, exactly.
 pub fn serve<M, H>(
     listener: TcpListener,
     token: String,
+    origins: Vec<String>,
     hooks: &'static [&'static str],
     public: fn(&str) -> bool,
     make: M,
@@ -83,6 +85,7 @@ where
 {
     let gate = Arc::new(Gate {
         token,
+        origins,
         hooks,
         public,
     });
@@ -173,6 +176,7 @@ fn work(job: &Job, handle: &mut impl FnMut(&Request) -> Reply) -> Reply {
 /// What lets a request through: the token, or a hook or public path.
 struct Gate {
     token: String,
+    origins: Vec<String>,
     hooks: &'static [&'static str],
     public: fn(&str) -> bool,
 }
@@ -384,7 +388,7 @@ fn respond(
         body: &[],
     };
     let bare = path.split_once('?').map_or(path, |(path, _)| path);
-    if method == "POST" && !same_origin(&request) {
+    if method == "POST" && !same_origin(&request, &gate.origins) {
         return Reply::error(403, "a page of another origin cannot post here");
     }
     if method == "POST" && gate.hooks.contains(&bare) {
@@ -424,11 +428,15 @@ fn respond(
 }
 
 /// Whether the request has no `Origin`, as from curl or a webhook, or one whose host and port are
-/// the `Host` it was sent to. The scheme is not compared, so a TLS proxy that keeps `Host` passes.
-fn same_origin(request: &Request) -> bool {
+/// the `Host` it was sent to, or one of `origins`. The scheme is not compared, so a TLS proxy that
+/// keeps `Host` passes.
+fn same_origin(request: &Request, origins: &[String]) -> bool {
     let Some(origin) = request.header("origin") else {
         return true;
     };
+    if origins.iter().any(|listed| listed.as_bytes() == origin) {
+        return true;
+    }
     let authority = origin
         .strip_prefix(b"http://")
         .or_else(|| origin.strip_prefix(b"https://"));
@@ -475,7 +483,15 @@ mod tests {
                 Reply::json(200, "{}".to_owned())
             }
         };
-        serve(listener, "t".to_owned(), &[], |_| false, handler).unwrap();
+        serve(
+            listener,
+            "t".to_owned(),
+            Vec::new(),
+            &[],
+            |_| false,
+            handler,
+        )
+        .unwrap();
 
         for _ in 0..=WORKERS {
             assert_eq!(status(address, "/panic"), "500");
@@ -515,6 +531,7 @@ mod tests {
         serve(
             listener,
             "t".to_owned(),
+            Vec::new(),
             &["/hook"],
             |_| false,
             || |_: &Request| Reply::json(200, "{}".to_owned()),

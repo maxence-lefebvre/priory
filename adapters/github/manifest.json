@@ -1,0 +1,22 @@
+{
+  "manifest_version": 3,
+  "name": "Priory on GitHub",
+  "version": "0.1.0",
+  "description": "Shows the Priory task that holds a pull request, its asks and a review guide, on GitHub's pull request page.",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAuJj2NI4Ez5W7gIbGmKLmCMhsd6+e0F5p1uskdAWsXnSUAH87KgPNGqEZdexa820v33rDKCEwWvUxT3awaDLk3K7GkaZgYbOnKZR9I/spezrChXK4EzA/vNQkLMx+mKlDE3FSamOotYlwxVdBuP9m+b1HnN1BYlJ6cnHdwncErZFjcPSGU6SC3Z199pGMNSImR9h5SaDbuoissoFA2DnwI3ZRRj0PQwuCBtcj/gdYSg17h0Pxm/loQD29Oqs77/z5LfD9a2oCAiuikEI97OQqU1+GORGN7n7DpSN0H+uI9PoD+0JQKg5bzvpHj3fZoISGQ0X/HDo0RqwPmARD1Q8NSwIDAQAB",
+  "minimum_chrome_version": "116",
+  "icons": { "192": "icon-192.png" },
+  "permissions": ["sidePanel"],
+  "host_permissions": ["https://github.com/*", "http://127.0.0.1/*", "http://localhost/*"],
+  "optional_host_permissions": ["https://*/*"],
+  "content_scripts": [
+    { "matches": ["https://github.com/*"], "js": ["content.js"], "run_at": "document_idle" }
+  ],
+  "web_accessible_resources": [
+    { "resources": ["frame.html", "lib/pr.js"], "matches": ["https://github.com/*"] }
+  ],
+  "side_panel": { "default_path": "command.html" },
+  "content_security_policy": {
+    "extension_pages": "default-src 'none'; script-src 'self'; style-src 'self'; font-src 'self'; img-src 'self'; connect-src https: http://127.0.0.1:* http://localhost:*; base-uri 'none'; form-action 'none'; frame-ancestors https://github.com"
+  }
+}

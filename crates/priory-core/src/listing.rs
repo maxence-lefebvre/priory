@@ -268,6 +268,40 @@ fn tasks_since(
 }
 
 /// `progress`, `conditions` and `waits` as the JSON they are stored or read as.
+/// The active tasks that hold pull request `number` of `repo`, each with how it holds it: `key`,
+/// `stack`, `wait`, `subscription`, `review`, or else `owns`, the ownership routing reads. Those
+/// that own its branch, by key or stack, come first, then by id.
+pub fn holding(db: &Connection, repo: &str, number: u64) -> rusqlite::Result<Value> {
+    let mut tasks = rows(
+        db,
+        "WITH named (task, how, rank) AS (
+           SELECT id, 'key', 0 FROM tasks WHERE key = ?1
+           UNION ALL SELECT task, 'stack', 1 FROM pull_requests WHERE resource = ?1
+           UNION ALL SELECT DISTINCT task, 'wait', 2 FROM waits WHERE resource = ?1
+           UNION ALL SELECT task, 'subscription', 3 FROM subscriptions WHERE resource = ?1
+           UNION ALL SELECT id, 'review', 4 FROM tasks WHERE key GLOB ?2
+         ),
+         held (task, how, rank) AS (
+           SELECT * FROM named
+           UNION ALL SELECT task, 'owns', 5 FROM owns
+             WHERE resource = ?1 AND task NOT IN (SELECT task FROM named)
+         )
+         SELECT id, key, workflow, step, state, json_group_array(how) AS holds
+         FROM (SELECT * FROM held ORDER BY rank) AS held JOIN tasks ON tasks.id = held.task
+         WHERE state NOT IN ('done', 'failed', 'dropped')
+         GROUP BY id ORDER BY min(rank) > 1, id",
+        params![
+            format!("github:{repo}#{number}"),
+            format!("github:{repo}:pulls/{number}:review:*")
+        ],
+    )?;
+    for task in tasks.as_array_mut().expect("rows are an array") {
+        let holds = task["holds"].as_str().unwrap_or("[]");
+        task["holds"] = serde_json::from_str(holds).unwrap_or(Value::Null);
+    }
+    Ok(tasks)
+}
+
 fn parse_json(task: &mut Value) {
     for field in ["progress", "conditions", "waits"] {
         if let Some(text) = task[field].as_str() {
