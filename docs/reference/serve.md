@@ -251,8 +251,19 @@ Every task in start order. Without `all=1`, the tasks still going and the tasks 
 has `id`, `key`, `workflow`, `step`, `state`, `band`, `lane`, `reason`, `position` (its place in
 the queue from 1, or null), `generation`, `retired`, `tldr`, `since`
 (when the task last changed state), `grade` (`red`, `yellow`, `green` or null), `grade_reason`,
-`progress`, `conditions`, a held task's [conditions](#conditions) or null, and `stack`. See Grades in
-[tools.md](../daemon/tools.md#grades).
+`progress`, `conditions`, a held task's [conditions](#conditions) or null, `stack` and
+`relations`. See Grades in [tools.md](../daemon/tools.md#grades).
+
+`relations` lists every relation the task is in, on either side, oldest first (see
+[relations.md](../daemon/relations.md)). Each entry:
+
+| Field | Type | Meaning |
+| ----- | ---- | ------- |
+| `task` | integer | The task the relation reads from, as in `5 fixes 3` |
+| `kind` | string | `builds-on`, `fixes`, `takes-up` or `relates` |
+| `other` | integer | The task it relates to |
+| `by` | string | Who recorded it: a person's `$USER`, `agent`, `request` or `priory` |
+| `created` | RFC 3339 | When it was recorded |
 
 `stack` lists the pull requests the task opened or claimed, bottom first, each based on the one
 before it (see [Stacks in routing.md](../daemon/routing.md#stacks)). It is empty when the task has

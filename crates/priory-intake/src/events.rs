@@ -585,6 +585,10 @@ pub struct TaskRequested {
     /// The task's TL;DR, from `priory request --tldr`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tldr: Option<String>,
+    /// How the new task relates to existing ones, from `priory request --relates`. The daemon skips
+    /// a relation to a task that does not exist.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub relates: Option<Vec<crate::request::Relation>>,
     /// Who answers the task's asks, from `priory request` or `priory add --intervention`; the
     /// trigger's when unset.
     #[serde(skip_serializing_if = "Option::is_none")]

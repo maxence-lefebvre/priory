@@ -5256,6 +5256,7 @@ fn the_mcp_server_lists_its_tools() {
             "wait",
             "subscribe",
             "unsubscribe",
+            "relate",
             "compact",
             "tldr",
             "report",

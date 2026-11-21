@@ -87,6 +87,7 @@ The Warp column comes from Warp's public page and is blank where that page says 
 | View       | A layout of panels that shows the factory and acts on it                  |              | Herdr mods       |
 | Queue      | The tasks waiting for a run, in band order, then a person's order, then age |              | queue            |
 | Lane       | A `<team>/<theme>` label that groups tasks in views and reports           |              | lane             |
+| Relation   | How one task relates to another: builds on, fixes, takes up or relates to |              |                  |
 
 ## Configuration
 

@@ -39,7 +39,9 @@ pub fn unrelate(
         params![task, kind, other],
     )?;
     if removed == 0 {
-        return Ok(Err(format!("task {task} does not {kind} task {other}")));
+        return Ok(Err(format!(
+            "task {task} has no {kind} relation to task {other}"
+        )));
     }
     tx.commit()?;
     Ok(Ok(format!("task {task} no longer {kind} task {other}")))
