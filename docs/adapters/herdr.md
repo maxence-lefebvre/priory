@@ -126,7 +126,7 @@ Herdr Desk: the count, the next thing, the room and intake banners, the saved vi
 
 - **What it reads.** `desk --all --json`, `asks --all --json`, `tasks --json` and
   `queue FACTORY --json`, read together, then again after each `priory wait`, even one that ends
-  with the same revision: a snooze ends by the clock, which no revision records. `--all` keeps the
+  with the same revision, so it also catches changes that raise no revision, such as a worktree item following the disk. `--all` keeps the
   snoozed items for the Snoozed view; the panel leaves them out of everything else.
 - **The count** counts the open asks that are not snoozed, then the oldest wait, the stopped items
   (`blocked`, `failed`, `prompt` and `delivery`) and `counts.snoozed`.

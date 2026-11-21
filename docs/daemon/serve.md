@@ -123,7 +123,7 @@ whose answer is ready gets it at once.
 
 The revision changes with what is stored, and the daemon raises it for two changes the clock makes:
 a snoozed item coming back at its `snoozed_until`, and an ended task leaving the queue's `ended`
-list after a day. Each shows within about a second while the daemon runs. Two things still change a
+list after a day. Each shows at the daemon's next tick while it runs. Two things still change a
 listing without a new revision: a closed ask or task leaves the default `/api/asks` or `/api/tasks`
 after 7 days, and a desk item for a worktree follows the disk. A view that shows them re-reads at
 those times as well.

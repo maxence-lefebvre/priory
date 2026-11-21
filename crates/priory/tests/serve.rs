@@ -4536,6 +4536,14 @@ fn use_factory(setup: &Setup, from: &Path) {
         text.push_str("\n[serve]\nlisten = \"127.0.0.1:0\"\ntoken_env = \"TEST_TOKEN\"\n");
     }
     fs::write(file, text).unwrap();
+    // The reference example names a `deliver` script that its pages do not show.
+    let deliver = to.join("bin/deliver");
+    if !deliver.exists() {
+        use std::os::unix::fs::PermissionsExt;
+        fs::create_dir_all(deliver.parent().unwrap()).unwrap();
+        fs::write(&deliver, "#!/bin/sh\n").unwrap();
+        fs::set_permissions(&deliver, fs::Permissions::from_mode(0o755)).unwrap();
+    }
 }
 
 #[test]

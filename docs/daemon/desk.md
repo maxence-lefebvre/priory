@@ -5,7 +5,7 @@
 | Kind | Id | What | Since |
 | ---- | -- | ---- | ----- |
 | `ask` | the ask | its question, then its options; `routed to <lead>: ` first for an ask a lead answers (see [tools.md](tools.md#hands-off)) | it was asked |
-| `delivery` | the outside ask | `the answer did not reach <session> after <N> tries: <error>`, until the ask is asked again (see [asks.md](asks.md)) | its last try ended |
+| `delivery` | the outside ask | `the answer did not reach <session> after <N> tries: <error>`, until the ask is asked again, or `priory deliver` clears or retries it (see [asks.md](asks.md)) | its last try ended |
 | `blocked` | the task | its reason | the task last changed state |
 | `failed` | the task | its reason, then `revive: priory revive <task>` | the task last changed state |
 | `prompt` | the outbox prompt | its text, for an `uncertain` prompt | it was attempted |
@@ -255,7 +255,7 @@ back early when something meaningful changes:
 For a `blocked`, `failed` or `prompt` item, the latest change gives the reason. For an ask, a new
 revision always does, and a task state change counts only while the ask is open and not yet back.
 
-Within a second of a snooze ending, at its time or early, the daemon marks it ended. The mark raises
+At its next tick after a snooze ends, at its time or early, the daemon marks it ended. The mark raises
 the state's revision, so a view waiting on it reads the item back (see
 [serve.md](serve.md#waiting-for-a-change)), and writes one `factory.task.snooze_ended` trace record
 with the reason, `time` for a snooze that reached its time. A person's `--clear` writes
@@ -269,8 +269,8 @@ snoozed rows show only with `--all`. With `--json`, the desk's `counts.snoozed` 
 leaves out (see the [serve reference](../reference/serve.md#snooze)).
 
 The trace records each snooze as `factory.task.snoozed` and each `--clear` as
-`factory.task.unsnoozed` (see the [trace schema](../trace-schema.md)). The end of a snooze, by
-time or by a change, records nothing.
+`factory.task.unsnoozed`, and each end by time or by a change as `factory.task.snooze_ended` (see
+the [trace schema](../trace-schema.md)).
 
 ## Since you looked
 

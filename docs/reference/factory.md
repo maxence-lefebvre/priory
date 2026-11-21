@@ -289,6 +289,8 @@ band = "today"                                 # its band without --band
 | `` `factory` is also defined in factory.toml `` | Both `factory.toml` and `factory.yaml` exist |
 | `` `bands` needs at least one band, each named once `` | `bands` is empty or names a band twice |
 | `` the sweeper agent `<name>` does not exist `` | `[sweep] agent` names no folder under `agents/` |
+| `` `[asks] deliver`: <path> is not a file in the factory folder `` | `deliver` names no file under the factory folder |
+| `` `[asks] deliver`: <path> is not executable: chmod +x it `` | The `deliver` file has no execute bit |
 | `` [log] backend = "postgres" needs a priory built with `--features postgres` `` | `[log] backend = "postgres"` in a build without the Postgres adapter |
 | `` `[log] url_env` names the environment variable that holds the connection string, such as PRIORY_LOG_URL, never the string itself `` | `url_env` is not a variable name, such as a pasted URL |
 | `` the handler agent `<name>` does not exist `` | `handler` names no agent |

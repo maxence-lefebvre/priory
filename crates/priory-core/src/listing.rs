@@ -340,7 +340,7 @@ pub fn asks(db: &Connection, bands: &[&str], risks: &[&str]) -> rusqlite::Result
 
 /// As `asks`, with only the open asks and those closed since `since` when it is given, and the
 /// number of answered and withdrawn asks left out as `older`. A withdrawn ask counts as closed
-/// when it was withdrawn, or when it was asked if it was withdrawn before schema 70 kept the time.
+/// when it was withdrawn, or when it was asked if it was withdrawn before schema 71 kept the time.
 pub fn recent_asks(
     db: &Connection,
     bands: &[&str],

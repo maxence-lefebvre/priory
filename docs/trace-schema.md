@@ -210,7 +210,7 @@ A person snoozed a desk item of a task, or cleared its snooze. Both share `facto
 ## `factory.task.snooze_ended`
 
 A snooze ended by itself: at its time, or early on a change (see
-[desk.md](daemon/desk.md#snooze)). The daemon writes one per snooze, within a second of its end. It
+[desk.md](daemon/desk.md#snooze)). The daemon writes one per snooze, at its next tick after the end. It
 shares the fields of `factory.task.snoozed`, without `until`, and adds:
 
 | Field    | Required | Meaning                                                              |

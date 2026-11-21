@@ -41,9 +41,12 @@ const OUTPUT: &str = "factory.intake";
 /// Takes a state file back before schema 28, which added search, 29, which added grades, 30,
 /// which added snoozes, 31, which added read reports, 32, which added the pause, 34, which added
 /// reports of sections, 36, which added deliveries, 37, which added progress, 39, which added run
-/// actions, 40, which added answer actions, 42, which added dispatches, 49, which added task ends, 51, which added a run's crossing of `compactAt`, 53, which added intervention levels, 56, which added the step an irreversible approval lets run, 58, which added withdrawal reasons, and 59, which added green stack gates and returned routed asks, 61, which added findings, 62, which added merge risk, 63, which added plan fields, 65, which added chosen subscriptions and approval generations, and 66, which added the step a gate enters after the merge. Schema 38's visits
+/// actions, 40, which added answer actions, 42, which added dispatches, 49, which added task ends, 51, which added a run's crossing of `compactAt`, 53, which added intervention levels, 56, which added the step an irreversible approval lets run, 58, which added withdrawal reasons, and 59, which added green stack gates and returned routed asks, 61, which added findings, 62, which added merge risk, 63, which added plan fields, 65, which added chosen subscriptions and approval generations, 66, which added the step a gate enters after the merge, and 71, which added cleared deliveries, ended snoozes and withdrawal times. Schema 38's visits
 /// table is created only if missing, so it stays.
-const UNDO_SINCE_SEARCH: &str = "DROP INDEX todos_open_connector; ALTER TABLE todos DROP COLUMN connector; ALTER TABLE waits DROP COLUMN after; ALTER TABLE subscriptions DROP COLUMN chosen; ALTER TABLE approvals DROP COLUMN generation;
+const UNDO_SINCE_SEARCH: &str = "ALTER TABLE deliveries DROP COLUMN cleared; ALTER TABLE snoozes DROP COLUMN ended;
+         DROP TRIGGER ask_withdrawn_at; DROP TRIGGER wait_withdrawn_at;
+         ALTER TABLE asks DROP COLUMN withdrawn_at; ALTER TABLE waits DROP COLUMN withdrawn_at;
+         DROP INDEX todos_open_connector; ALTER TABLE todos DROP COLUMN connector; ALTER TABLE waits DROP COLUMN after; ALTER TABLE subscriptions DROP COLUMN chosen; ALTER TABLE approvals DROP COLUMN generation;
          ALTER TABLE tasks DROP COLUMN plan_goal; ALTER TABLE tasks DROP COLUMN plan_testing; ALTER TABLE tasks DROP COLUMN plan_brief; ALTER TABLE tasks DROP COLUMN verification;
          ALTER TABLE tasks DROP COLUMN merge_risk; ALTER TABLE results DROP COLUMN merge_risk;
          DROP TRIGGER ask_returns_from_its_lead; ALTER TABLE waits DROP COLUMN green;
@@ -5612,7 +5615,10 @@ fn a_state_file_whose_asks_an_approval_names_upgrades_to_outside_asks() {
     // The state file as version 32 left it: every ask belongs to a task.
     let db = rusqlite::Connection::open(setup.dir.join("priory.db")).unwrap();
     db.execute_batch(
-        "ALTER TABLE subscriptions DROP COLUMN chosen; ALTER TABLE approvals DROP COLUMN generation;
+        "ALTER TABLE deliveries DROP COLUMN cleared; ALTER TABLE snoozes DROP COLUMN ended;
+         DROP TRIGGER ask_withdrawn_at; DROP TRIGGER wait_withdrawn_at;
+         ALTER TABLE asks DROP COLUMN withdrawn_at; ALTER TABLE waits DROP COLUMN withdrawn_at;
+         ALTER TABLE subscriptions DROP COLUMN chosen; ALTER TABLE approvals DROP COLUMN generation;
          ALTER TABLE tasks DROP COLUMN plan_goal; ALTER TABLE tasks DROP COLUMN plan_testing; ALTER TABLE tasks DROP COLUMN plan_brief; ALTER TABLE tasks DROP COLUMN verification;
          ALTER TABLE tasks DROP COLUMN merge_risk; ALTER TABLE results DROP COLUMN merge_risk;
          DROP TRIGGER ask_returns_from_its_lead; ALTER TABLE waits DROP COLUMN green;

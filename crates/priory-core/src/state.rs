@@ -12,7 +12,7 @@ use std::collections::BTreeMap;
 use std::io::Write;
 use std::time::Duration;
 
-const VERSION: i64 = 70;
+const VERSION: i64 = 71;
 
 const SCHEMA: &str = "
 CREATE TABLE tasks (
@@ -1176,15 +1176,17 @@ CREATE UNIQUE INDEX IF NOT EXISTS todos_open_connector ON todos (connector)
 PRAGMA user_version = 68;
 ";
 
-// shortcut: reserved for #171's migration 69; replace with it when merging origin/main.
+// shortcut: reserved for #171's migration 69 and #175's 70; take theirs when merging origin/main.
 const SCHEMA_69: &str = "PRAGMA user_version = 69;
+";
+const SCHEMA_70: &str = "PRAGMA user_version = 70;
 ";
 
 // When a person cleared a failed delivery from the desk with `priory deliver --clear`, and when
 // the daemon saw a snooze end, so it traces each end once. Snoozes already over count as seen.
 // When an ask or wait was withdrawn, stamped by trigger at every write that withdraws one, and
 // backfilled from the withdrawal log. `withdrawn` stays: about 60 queries still test it for null.
-const SCHEMA_70: &str = "
+const SCHEMA_71: &str = "
 ALTER TABLE deliveries ADD COLUMN cleared TEXT;
 ALTER TABLE snoozes ADD COLUMN ended TEXT;
 UPDATE snoozes SET ended = coalesce(back, until)
@@ -1203,7 +1205,7 @@ CREATE TRIGGER wait_withdrawn_at AFTER UPDATE OF withdrawn ON waits
   UPDATE waits SET withdrawn_at = CASE WHEN NEW.withdrawn IS NOT NULL
     THEN strftime('%Y-%m-%dT%H:%M:%SZ', 'now') END WHERE id = NEW.id;
 END;
-PRAGMA user_version = 70;
+PRAGMA user_version = 71;
 ";
 
 /// Each schema change in order: a file at version `n` applies those from index `n` on.
@@ -1216,7 +1218,7 @@ const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA_42, SCHEMA_43, SCHEMA_44, SCHEMA_45, SCHEMA_46, SCHEMA_47, SCHEMA_48, SCHEMA_49,
     SCHEMA_50, SCHEMA_51, SCHEMA_52, SCHEMA_53, SCHEMA_54, SCHEMA_55, SCHEMA_56, SCHEMA_57,
     SCHEMA_58, SCHEMA_59, SCHEMA_60, SCHEMA_61, SCHEMA_62, SCHEMA_63, SCHEMA_64, SCHEMA_65,
-    SCHEMA_66, SCHEMA_67, SCHEMA_68, SCHEMA_69, SCHEMA_70,
+    SCHEMA_66, SCHEMA_67, SCHEMA_68, SCHEMA_69, SCHEMA_70, SCHEMA_71,
 ];
 
 /// The order the queue starts tasks in: band, then a person's order, then age. A band the factory

@@ -89,6 +89,8 @@ pub(crate) fn snooze(
         kind => kind,
     };
     let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    // A replace or clear would drop an end the tick has not traced yet.
+    end(&tx, trace)?;
     let Some(until) = &snooze.until else {
         let task = tx
             .query_row(
@@ -138,6 +140,11 @@ pub(crate) fn snooze(
 /// mark bumps the state's revision, so a client waiting on it reads the item back.
 pub(crate) fn tick(db: &mut Connection, trace: &Trace) -> rusqlite::Result<()> {
     let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    end(&tx, trace)?;
+    tx.commit()
+}
+
+fn end(tx: &rusqlite::Transaction, trace: &Trace) -> rusqlite::Result<()> {
     let ended: Vec<(String, i64, i64, String)> = tx
         .prepare(
             "UPDATE snoozes SET ended = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
@@ -150,7 +157,7 @@ pub(crate) fn tick(db: &mut Connection, trace: &Trace) -> rusqlite::Result<()> {
         })?
         .collect::<rusqlite::Result<_>>()?;
     for (kind, item, task, reason) in &ended {
-        trace::snooze_ended(&tx, trace, (*task, kind, *item), reason)?;
+        trace::snooze_ended(tx, trace, (*task, kind, *item), reason)?;
     }
-    tx.commit()
+    Ok(())
 }
