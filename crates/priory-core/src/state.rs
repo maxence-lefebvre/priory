@@ -12,7 +12,7 @@ use std::collections::BTreeMap;
 use std::io::Write;
 use std::time::Duration;
 
-const VERSION: i64 = 66;
+const VERSION: i64 = 67;
 
 const SCHEMA: &str = "
 CREATE TABLE tasks (
@@ -1142,9 +1142,15 @@ ALTER TABLE approvals ADD COLUMN generation INTEGER;
 PRAGMA user_version = 65;
 ";
 
+// The step a daemon's checks gate enters once every pull request of its task merged.
+const SCHEMA_66: &str = "
+ALTER TABLE waits ADD COLUMN after TEXT;
+PRAGMA user_version = 66;
+";
+
 // The class a result gave each review feedback item of a task, named by its URL.
-const SCHEMA_66: &str = concat!(
-    "CREATE TABLE feedback_triage (
+const SCHEMA_67: &str = concat!(
+    "CREATE TABLE IF NOT EXISTS feedback_triage (
   task    INTEGER NOT NULL REFERENCES tasks (id),
   item    TEXT NOT NULL,
   class   TEXT NOT NULL CHECK (class IN ('trivial', 'nothing-to-do', 'persons-call')),
@@ -1154,7 +1160,7 @@ const SCHEMA_66: &str = concat!(
 );
 ",
     bumps!("feedback_triage"),
-    "PRAGMA user_version = 66;
+    "PRAGMA user_version = 67;
 "
 );
 
@@ -1168,7 +1174,7 @@ const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA_42, SCHEMA_43, SCHEMA_44, SCHEMA_45, SCHEMA_46, SCHEMA_47, SCHEMA_48, SCHEMA_49,
     SCHEMA_50, SCHEMA_51, SCHEMA_52, SCHEMA_53, SCHEMA_54, SCHEMA_55, SCHEMA_56, SCHEMA_57,
     SCHEMA_58, SCHEMA_59, SCHEMA_60, SCHEMA_61, SCHEMA_62, SCHEMA_63, SCHEMA_64, SCHEMA_65,
-    SCHEMA_66,
+    SCHEMA_66, SCHEMA_67,
 ];
 
 /// The order the queue starts tasks in: band, then a person's order, then age. A band the factory
@@ -1448,13 +1454,13 @@ pub(crate) fn handle(
     // The keyed task keeps the event; another task that shares the resource hears it through its
     // wait or its subscription.
     for other in owners.iter().filter(|other| Some(other.id) != task) {
-        if !crate::tools::event(&tx, other.id, seq)? {
+        if !crate::tools::event(&tx, other.id, seq, factory)? {
             delivered(&tx, other.id, message, &resources, None, factory)?;
         }
     }
     match (task, outcome) {
         (Some(task), "kept") => {
-            if !crate::tools::event(&tx, task, seq)?
+            if !crate::tools::event(&tx, task, seq, factory)?
                 && delivered(&tx, task, message, &resources, Some(seq), factory)?
             {
                 tx.execute("UPDATE inbox SET outcome = 'woke' WHERE seq = ?1", [seq])?;
@@ -1483,7 +1489,7 @@ pub(crate) fn handle(
             // An agent that cannot hear it yet reads the request with its next prompt instead.
             if crate::tools::say(&tx, task, &text, &state, &factory.workflows)?.is_err() {
                 tx.execute("UPDATE inbox SET outcome = 'kept' WHERE seq = ?1", [seq])?;
-                crate::tools::event(&tx, task, seq)?;
+                crate::tools::event(&tx, task, seq, factory)?;
             }
         }
         (Some(task), "reopened") => crate::tools::reopen(&tx, trace, task, seq)?,

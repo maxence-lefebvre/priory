@@ -1,0 +1,65 @@
+#:schema https://raw.githubusercontent.com/maxence-lefebvre/priory/main/docs/schemas/config/workflow.json
+start = "implement"
+band = "today"
+
+[[steps]]
+id = "implement"
+decides = "model"
+agent = "shipper"
+prompt = "Implement the issue, run the tests, and commit."
+effect = "reversible"
+next = { passed = "open-pr", failed = "stop" }
+
+# A person reviews every pull request before it merges, and nothing here merges.
+[[steps]]
+id = "open-pr"
+decides = "code"
+action = "open-pr"
+effect = "irreversible"
+autonomous = "it only opens a pull request, which a person reviews before anyone merges it"
+next = { opened = "watch", failed = "stop" }
+
+# The task enters this step only once its pull request merged. Until then, its checks and reviews
+# wake the implement step, as they do before `done`.
+[[steps]]
+id = "watch"
+after = "merged"
+decides = "model"
+agent = "shipper"
+prompt = "The change merged. Watch its release every 10 minutes for an hour. End with quiet, or with problem as soon as you find one."
+effect = "read"
+next = { quiet = "draft", problem = "look" }
+
+# Only a problem reaches the desk.
+[[steps]]
+id = "look"
+decides = "human"
+effect = "none"
+options = ["announce", "drop"]
+next = { announce = "draft", drop = "done" }
+
+[[steps]]
+id = "draft"
+decides = "model"
+agent = "shipper"
+prompt = "Draft the announcement for the team channel in your result's summary, or end with none when the change does not alter how people work."
+effect = "reversible"
+next = { drafted = "approve-announcement", none = "done" }
+
+[[steps]]
+id = "approve-announcement"
+decides = "human"
+effect = "none"
+approves = ["announce"]
+options = ["post", "skip"]
+next = { post = "announce", skip = "done" }
+
+# Posting to Slack cannot be undone, so only a person's approval opens slack-write.
+[[steps]]
+id = "announce"
+decides = "model"
+agent = "shipper"
+prompt = "Post the approved announcement to the team channel as it is."
+effect = "irreversible"
+guard = { allow = ["slack-write"] }
+next = { posted = "done", failed = "stop" }

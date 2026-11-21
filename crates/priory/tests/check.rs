@@ -418,6 +418,21 @@ fn a_workflow_with_max_prs_passes() {
 }
 
 #[test]
+fn the_start_step_cannot_wait_for_a_merge() {
+    let outcome = workflow_with(
+        "start-after",
+        "id = \"implement\"\ndecides",
+        "id = \"implement\"\nafter = \"merged\"\ndecides",
+    );
+
+    assert_eq!(outcome.code, 1);
+    assert_eq!(
+        outcome.stderr,
+        "workflows/implement.toml:2: start `implement` waits for a merge, and a task starts before it owns a pull request\n"
+    );
+}
+
+#[test]
 fn reopen_must_name_a_model_step() {
     let outcome = workflow_with(
         "reopen",
