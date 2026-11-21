@@ -1,0 +1,36 @@
+// A task's inbox and the unrouted events (docs/daemon/routing.md), worded as `priory task ID` prints them.
+
+const PROMPTS = {
+  confirmed: "delivered as prompt",
+  queued: "still queued",
+  attempted: "being typed",
+  uncertain: "typed, unconfirmed",
+  withdrawn: "prompt withdrawn",
+};
+
+/**
+ * What one event of task `task`'s inbox did: its outcome, its prompt, the wait it fired and the
+ * task routing gave it to when that is another task.
+ * @param {{ outcome: string, prompt: string | null, wait: number | null, task: number | null }} event
+ * @param {number} task
+ */
+export function handled(event, task) {
+  const own = event.task === task;
+  const prompt = PROMPTS[event.prompt] || (event.outcome === "kept" && own ? "for its next run" : "");
+  let text = prompt ? `${event.outcome}, ${prompt}` : event.outcome;
+  if (event.wait != null) text += `, fired wait ${event.wait}`;
+  if (event.task != null && !own) text += ` (routed to task ${event.task})`;
+  return text;
+}
+
+/** The desk's calm line for `count` unrouted events of the last 24 hours, or "" with none. */
+export function unroutedNote(count) {
+  if (!count) return "";
+  return `${count} ${count === 1 ? "event" : "events"} reached no task in the last 24 hours`;
+}
+
+/** The Add sheet's text for a task that owns `resource`: a GitHub URL keys the task by it. */
+export function requestText(resource) {
+  const github = /^github:([^/]+\/[^#]+)#(\d+)$/.exec(resource);
+  return github ? `https://github.com/${github[1]}/issues/${github[2]}` : resource;
+}

@@ -363,7 +363,9 @@ The desk is the "Needs me" view. It lists, top to bottom:
    ask's recommendation on at most two lines. One button opens what answers it: Answer… (primary) for an ask, Open
    task (secondary) for a task's item, and See the banner for a failing intake, which scrolls to
    the intake banner. On wide screens the card is at most 440 px wide. With no `next` it hides.
-3. **Saved views**: Needs me, Running, Asleep, All on a phone; Queue joins them on wide screens.
+3. **Saved views**: Needs me, Running, Asleep, All on a phone; Queue and Unrouted join them on wide
+   screens. On a phone the Unrouted row below opens Unrouted, and its chip shows while it is open.
+   Unrouted shows no count: its list holds every unrouted event, not only the last day's.
 4. **Room banners** (R4.3): a `--warn-text` edge on `--surface`, the `hard-drive` or
    `memory-stick` icon, and the daemon's sentence: what is short, by how much, since when, and
    the waiting task. The intake banner looks the same with the `unplug` icon: which source fails
@@ -393,7 +395,19 @@ The desk is the "Needs me" view. It lists, top to bottom:
 9. **Asleep**: one row, "9 tasks asleep on waits", that opens the Asleep view. Each of its rows
    says what the task waits on and since when: "Waits on review github:o/r#7, 2 h", and opens
    the task page.
-10. Reports waiting for review, when there are any.
+10. **Unrouted**: when events reached no task in the last 24 hours, one calm row under Asleep,
+   "3 events reached no task in the last 24 hours", with the `queued` tile and the count, that
+   opens the Unrouted view. It never ranks and never takes an alarm color.
+11. Reports waiting for review, when there are any.
+
+The **Unrouted** view lists `/api/inbox?unrouted=1`, one group per resource, newest first. A group
+shows the resource in mono with its event count, its 5 newest events as history rows (`queued`
+tile, type in bold, subject, time), and "and 3 older" past that. Under them, one row: a task number
+input, **Subscribe a task** (`.btn secondary`, `POST /api/subscribe` with the revision the page
+drew) and **Request a task** (`.btn secondary`), which opens the [Add](#add) sheet with a GitHub
+resource's URL as its text, so the new task's key is that resource. The daemon's sentence shows
+under the row, as a desk action's note does. With none: "Every event reached a task. An event no
+task owns shows here."
 
 On a phone, the **Answer capsule** floats above the tab bar: a full-width `--action` button,
 `--capsule` (54 px) tall, `--capsule-gap` above the tab bar, with `--radius-full` and
@@ -724,6 +738,12 @@ open Priory window when there is one.
   code steps, `user` for human steps. Done steps show a check in `--ok-text`. The current step is
   solid `--emph` with a live dot. Future steps are in `--text-3`. An irreversible step has a
   1.5 px `--danger-text` edge and the `lock` icon.
+- **Inbox**, after the pull request: the events routed to the task, newest first, at most 20, as
+  history rows. Each shows a tile for its prompt (`done` delivered, `queued` still queued, `running`
+  being typed, `prompt` unconfirmed, `dropped` withdrawn, `asleep` kept for the next run), the type
+  in bold and the subject, then what it did under them in `--text-2`, worded as `priory task ID`
+  prints it: "kept, still queued" or "woke, delivered as prompt, fired wait 3". Past 20, a note
+  says "Latest 20 of 57. `priory task 7` lists every event."
 - Then the runs table and the terminal of the selected run.
 - The full workflow diagram (steps as nodes, outcome edges) keeps the same encodings, top to
   bottom on compact and left to right on wide, with pinch, drag and a "Fit" button.
@@ -1028,7 +1048,8 @@ The calm count, then the one next thing, then the explorer list. It opens as a t
 stack.
 
 1. **Count** in `--type-pane-count`, as the web desk's: "2 asks need you. Oldest waits 42 min. 1
-   stopped. 2 snoozed."
+   stopped. 2 snoozed. 3 events reached no task in 24 h." The last sentence shows only when the
+   count is above zero. Herdr has no task view, so the task Inbox is web and CLI only.
 2. **The next thing**: a card on `--surface` with the desk's `next`: an alarm or the ask that ranks
    first, why it ranks first, its recommendation, and the buttons Answer… (primary, for an ask),
    Open task and Snooze 1 h. Answer… opens the

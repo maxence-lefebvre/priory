@@ -5141,3 +5141,34 @@ fn the_desk_counts_unrouted_events_of_the_last_24_hours_in_a_calm_line() {
         "{text}"
     );
 }
+
+#[test]
+fn the_subscribe_endpoint_subscribes_a_task_as_priory_subscribe_does() {
+    let mut setup = Setup::new("web-subscribe", SERVE);
+    setup.seed();
+    succeeded(&setup.priory(&["pause"]));
+    let address = setup.start(&["daemon", &setup.factory()]);
+    let subscribe = |extra: &str, body: Value| post(&address, "/api/subscribe", extra, &body.to_string());
+    let pull = "github:owner/repo#7";
+
+    let foreign = subscribe("Origin: http://evil.example\r\n", json!({ "task": 1, "resource": pull }));
+    let malformed = subscribe("", json!({ "task": 1, "resource": "owner/repo#7" }));
+    let stale = subscribe("", json!({ "task": 1, "resource": pull, "revision": 0 }));
+    let missing = subscribe("", json!({ "task": 9, "resource": pull }));
+    let revision = json_of(&setup, "desk")["revision"].clone();
+    let done = subscribe("", json!({ "task": 1, "resource": pull, "revision": revision }));
+    let taken = subscribe("", json!({ "task": 2, "resource": pull }));
+
+    assert_eq!(foreign.0, 403, "{}", foreign.1);
+    assert_eq!(malformed.0, 400, "{}", malformed.1);
+    assert_eq!(stale.0, 409, "{}", stale.1);
+    assert_eq!(missing.0, 404, "{}", missing.1);
+    assert_eq!(done, (200, json!({ "ok": "task 1 subscribes to github:owner/repo#7" }).to_string()));
+    assert_eq!(taken.0, 422, "{}", taken.1);
+    assert!(taken.1.contains("task 1"), "{}", taken.1);
+    let output = setup.priory(&["task", "1", "--json"]);
+    succeeded(&output);
+    let task: Value = serde_json::from_slice(&output.stdout).unwrap();
+    let resources: Vec<_> = task["subscriptions"].as_array().unwrap().iter().map(|row| row["resource"].clone()).collect();
+    assert!(resources.contains(&json!(pull)), "{resources:?}");
+}

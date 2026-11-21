@@ -41,6 +41,30 @@ pub fn subscribe(
     Ok(Ok(format!("task {task} subscribes to {resource}")))
 }
 
+/// `POST /api/subscribe` on the daemon's socket: `{"subscribe": {"task", "resource", "expected"}}`.
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Line {
+    pub subscribe: Request,
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Request {
+    pub task: i64,
+    pub resource: String,
+    /// The state's revision the client showed, as `--expected`: a newer state refuses it.
+    pub expected: Option<i64>,
+}
+
+/// Subscribes as `priory subscribe` does, once the state is still at the revision the client showed.
+pub fn apply(db: &mut Connection, request: &Request) -> rusqlite::Result<Result<String, String>> {
+    if let Err(stale) = crate::state::expect_revision(db, request.expected) {
+        return Ok(Err(stale));
+    }
+    subscribe(db, request.task, &request.resource)
+}
+
 /// Ends `task`'s subscription to `resource`. What it owns otherwise, such as its key, a pull
 /// request it opened or one it waited on, it still owns.
 pub fn unsubscribe(

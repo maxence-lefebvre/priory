@@ -7,6 +7,7 @@ import { linked } from "./links.js";
 import { dossier, refusal } from "./reports.js";
 import { prStack } from "./stack.js";
 import { KINDS, edgeStyle, nodeShape, timeline, ungatedPairs } from "./flows.js";
+import { handled, requestText, unroutedNote } from "./inbox.js";
 import { actionNote, dueParts, mergeSince, nextLink, progressView, rowAction, sectionInView, sinceGroups } from "./desk.js";
 
 const ICONS = {
@@ -125,6 +126,8 @@ const state = {
   // The task whose action is in flight, each task's last action note, and its unsent say text.
   taskBusy: null,
   taskNotices: new Map(),
+  // The Unrouted view's groups, read when the view opens, and each resource's last subscribe note.
+  unrouted: { groups: null, error: null, loading: false, busy: null, notices: new Map() },
   todoBusy: null,
   todoNotices: new Map(),
   rowBusy: null,
@@ -206,6 +209,7 @@ async function refresh() {
     state.failed = null;
     state.cached = false;
     if (current() === "costs") loadCosts();
+    if (current() === "desk" && deskView() === "unrouted") loadUnrouted();
     // Ages read in minutes, so an unchanged state needs a new paint once a minute at most.
     if (state.data && snapshot === state.snapshot && !failed && Date.now() - state.rendered < 60000) return keep(), true;
     const before = state.data ? new Set(state.data.asks.filter((ask) => ask.state === "open").map((ask) => ask.id)) : null;
@@ -434,7 +438,7 @@ function runRow(run) {
 }
 
 // Desk
-const DESK_VIEWS = ["needs", "running", "queue", "asleep", "all"];
+const DESK_VIEWS = ["needs", "running", "queue", "asleep", "unrouted", "all"];
 // While an ask is open, the list keeps the view it was opened from.
 const listSearch = () => (selectedAsk() ? new URL(state.listUrl, location.origin).search : location.search);
 
@@ -509,6 +513,7 @@ function deskBody(wide) {
     ["running", "Running", model.running.length, current === "running"],
     ...(wide ? [["queue", "Queue", model.queue.length, current === "queue"]] : []),
     ["asleep", "Asleep", model.asleep, current === "asleep"],
+    ...(wide || current === "unrouted" ? [["unrouted", "Unrouted", null, current === "unrouted"]] : []),
     ["all", "All", wide ? model.tasks.length + olderTasks() : null, current === "all"],
   ], "/");
   const banner = [[model.banner, "hard-drive"], [model.intake, "unplug"]]
@@ -518,9 +523,77 @@ function deskBody(wide) {
   if (current === "running") rows = model.running.length ? model.running.map(runRow) : html`<p class="empty">No run is live. Runs show here while an agent works.</p>`;
   else if (current === "queue") rows = listOrEmpty(model.queue.map(taskRow), html`The queue is empty. A task waits here for its turn; see <code>priory queue</code>.`);
   else if (current === "asleep") rows = listOrEmpty(model.asleepTasks.map(asleepRow), "No task is asleep. A task sleeps here while it waits on an event.");
+  else if (current === "unrouted") rows = unroutedRows();
   else if (current === "all") rows = model.tasks.length || olderTasks() ? [...model.tasks.map(taskRow), olderRow("tasks", olderTasks(), false)] : listOrEmpty([], html`No tasks yet. Add one with the + button, or run <code>priory add</code>.`);
   else rows = needsMe(model, wide);
   return { model, views, banner, rows };
+}
+
+// Unrouted (DESIGN.md, Desk): events that reached no task, by resource, each with a way to route the next one.
+async function loadUnrouted() {
+  const view = state.unrouted;
+  if (view.loading || !state.token || !state.data || state.failed) return;
+  view.loading = true;
+  try {
+    const body = await api("/api/inbox?unrouted=1");
+    Object.assign(view, { groups: body.unrouted, error: null });
+  } catch (error) {
+    view.error = error.message;
+  }
+  view.loading = false;
+  render();
+}
+
+function unroutedRows() {
+  const view = state.unrouted;
+  if (view.error) return html`<p class="empty">Could not read the unrouted events: ${view.error}. <button class="btn secondary" data-action="retry">Try again</button></p>`;
+  if (!view.groups) {
+    queueMicrotask(loadUnrouted);
+    return html`<p class="empty">Loading the unrouted events…</p>`;
+  }
+  if (!view.groups.length) return html`<p class="empty">Every event reached a task. An event no task owns shows here.</p>`;
+  return view.groups.map((group) => {
+    const busy = view.busy === group.resource ? raw('aria-disabled="true"') : "";
+    const notice = view.notices.get(group.resource);
+    return html`<section class="ugroup" aria-label="${group.resource}"><p class="l1"><span class="mono">${group.resource}</span><span class="num">${group.events.length}</span></p>
+      <ol class="hist">${group.events.slice(0, 5).map((event) => html`<li>${tile("queued", "sm")}<span><b>${event.type}</b> ${event.subject || ""}</span>${timeTag(event.time, today(event.time) ? clock(event.time) : date(event.time))}</li>`)}</ol>
+      ${group.events.length > 5 ? html`<p class="meta">and ${group.events.length - 5} older</p>` : ""}
+      <form class="routeform" data-action="subscribe" data-resource="${group.resource}"><label class="sr" for="sub-${group.events[0].seq}">Task number</label>
+        <input id="sub-${group.events[0].seq}" name="task" inputmode="numeric" pattern="[0-9]+" autocomplete="off" placeholder="Task" required>
+        <button class="btn secondary" ${busy}>Subscribe a task</button>
+        <button type="button" class="btn secondary" data-action="request-task" data-resource="${group.resource}">Request a task</button></form>
+      ${notice ? html`<p class="note" role="status">${notice}</p>` : ""}</section>`;
+  });
+}
+
+// Subscribes a task to the resource, as `priory subscribe`, with the revision the page showed.
+async function subscribeTask(resource, task) {
+  const view = state.unrouted;
+  view.busy = resource;
+  render();
+  let reply;
+  try {
+    reply = await post("/api/subscribe", { task, resource, revision: state.revision });
+  } catch {
+    reply = { status: 0, body: { error: "the connection dropped" } };
+  }
+  view.busy = null;
+  const { status, body } = reply;
+  if (status === 401) return signOut("The daemon refused this token. Paste the current one.");
+  view.notices.set(resource, status === 200 ? `Subscribed: ${body.ok}. Its next event goes to task ${task}.`
+    : status === 409 ? "The state changed since this page loaded. Check the task, then subscribe again."
+      : status === 503 ? "Could not send: no priory daemon runs beside this server. Start priory daemon, then send again."
+        : status === 504 || status === 0 ? "The daemon may have applied this but did not confirm it. Check the task before you send again."
+          : `Could not subscribe: ${body.error || `the server answered ${status}`}.`);
+  render();
+  refresh();
+}
+
+// The Add sheet, its text naming the resource, so the new task's key is it where Priory can tell.
+function requestTask(resource) {
+  state.add.draft.text = requestText(resource);
+  keepDraft();
+  openAdd();
 }
 
 const olderTasks = () => state.data.older.tasks;
@@ -540,6 +613,8 @@ function needsMe(model, wide) {
   }
   sections.push(upNext(model), sinceYouLooked());
   if (model.asleep) sections.push(html`<div class="sec"></div><a class="row one" href="/?view=asleep">${tile("asleep")}<span>${model.asleep} tasks asleep on waits</span><span class="num">${model.asleep}</span><span class="chev">${icon("chevron-right", "s15")}</span></a>`);
+  const unrouted = unroutedNote(state.data.desk.counts?.unrouted);
+  if (unrouted) sections.push(html`<a class="row one calm" href="/?view=unrouted">${tile("queued")}<span>${unrouted}</span><span class="num">${state.data.desk.counts.unrouted}</span><span class="chev">${icon("chevron-right", "s15")}</span></a>`);
   if (model.reports.length) sections.push(html`<div class="sec">Reports<span>${model.reports.length}</span></div>${model.reports.map(itemRow)}`);
   return sections;
 }
@@ -882,6 +957,12 @@ function taskSections(task) {
   } else if (task.triage?.length) {
     sections.push(["pr", "Feedback", sect("pr", "workflow", "Feedback", "", triageList(task.triage))]);
   }
+  if (task.inbox?.length) {
+    const shown = task.inbox.slice(0, INBOX_SHOWN);
+    const more = task.inbox.length > INBOX_SHOWN ? html`<p class="meta">Latest ${INBOX_SHOWN} of ${task.inbox.length}. <code>priory task ${task.id}</code> lists every event.</p>` : "";
+    sections.push(["inbox", "Inbox", sect("inbox", "message-text", "Inbox", "newest first", html`<ol class="hist" aria-label="Events routed to this task, newest first">${shown.map((event) =>
+      html`<li>${tile(INBOX_TILES[event.prompt] || (event.outcome === "kept" ? "asleep" : "ready"), "sm")}<span><b>${event.type}</b> ${event.subject || ""}<span class="meta">${handled(event, task.id)}</span></span>${timeTag(event.time, today(event.time) ? clock(event.time) : date(event.time))}</li>`)}</ol>${more}`)]);
+  }
   if (task.runs?.length) {
     sections.push(["trace", "Trace", sect("trace", "runs", "Trace", "", html`<ol class="hist">${task.runs.map((run) => {
       const tokens = run.tokens ? Object.values(run.tokens).reduce((sum, count) => sum + (Number(count) || 0), 0) : null;
@@ -891,6 +972,10 @@ function taskSections(task) {
   }
   return sections;
 }
+
+const INBOX_SHOWN = 20;
+// A prompt's state as a tile: delivered, waiting to be typed, being typed, or withdrawn.
+const INBOX_TILES = { confirmed: "done", queued: "queued", attempted: "running", uncertain: "prompt", withdrawn: "dropped" };
 
 const TRIAGE_TILES = { trivial: "ready", "nothing-to-do": "dropped", "persons-call": "ask" };
 
@@ -2029,6 +2114,7 @@ document.addEventListener("click", (event) => {
   if (action === "task-act") return taskAct(target);
   if (action === "todo-done") return markDone(target);
   if (action === "row-act") return rowAct(target);
+  if (action === "request-task") return requestTask(target.dataset.resource);
   if (["pick", "pick-undo", "compose", "compose-cancel", "reply", "resolve", "reopen"].includes(action)) return reportAct(target);
   if (target.dataset.answer !== undefined || ["undo", "options", "write", "dismiss", "snooze", "unsnooze"].includes(action)) return act(target);
   if (action === "mode" || action === "theme") {
@@ -2087,6 +2173,12 @@ document.addEventListener("submit", (event) => {
   if (event.target.dataset.action === "remark") {
     event.preventDefault();
     return submitRemark();
+  }
+  if (event.target.dataset.action === "subscribe") {
+    event.preventDefault();
+    const task = Number(new FormData(event.target).get("task"));
+    if (Number.isInteger(task) && task > 0 && state.unrouted.busy === null) subscribeTask(event.target.dataset.resource, task);
+    return;
   }
   if (event.target.dataset.action === "say") {
     event.preventDefault();

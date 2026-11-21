@@ -19,6 +19,13 @@ test("counts the open asks that are not snoozed, the oldest wait, the stopped an
   });
 });
 
+test("the count line ends with a calm count of the events that reached no task in 24 h", () => {
+  const desk = { ...data.desk, counts: { ...data.desk.counts, unrouted: 3 } };
+  assert.equal(deskModel({ ...data, desk }, { now }).count.line, "Oldest waits 42 min. 1 stopped. 2 snoozed. 3 events reached no task in 24 h.");
+  const one = { ...data.desk, counts: { ...data.desk.counts, unrouted: 1 } };
+  assert.match(deskModel({ ...data, desk: one }, { now }).count.line, / 1 event reached no task in 24 h\.$/);
+});
+
 test("the next thing is the desk's next, so an alarm comes before every ask", () => {
   assert.deepEqual(deskModel(data, { now }).next, {
     ask: null,

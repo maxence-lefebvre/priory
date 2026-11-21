@@ -663,6 +663,7 @@ enum Input {
     Guard(crate::guard::Line),
     Connector(crate::todo::ConnectorLine),
     Todo(crate::todo::Line),
+    Subscribe(subscribe::Line),
     Deliver(deliver::Line),
     Add(AddLine),
     Signal(Signal),
@@ -824,6 +825,9 @@ fn take(
             replied(crate::todo::change(db, &line, trace.factory)?),
             None,
         )),
+        Ok(Input::Subscribe(line)) => {
+            Ok((replied(subscribe::apply(db, &line.subscribe)?), None))
+        }
         Ok(Input::Deliver(line)) => Ok((replied(deliver::act(db, &line)?), None)),
         Ok(Input::Add(line)) => Ok((replied(add(db, &line.add, trace, counter)?), None)),
         Ok(Input::Signal(signal)) => Ok(("ok".to_owned(), state::signal(db, &signal, trace)?)),

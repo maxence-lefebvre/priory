@@ -187,7 +187,8 @@ An event that names no resource is not listed, since no task could own it.
 `priory inbox --unrouted [--since SEQ]` and `/api/inbox?unrouted=1` group these events by the first
 resource each names (see [serve.md](../reference/serve.md#unrouted)). Each group prints the two
 commands that would route its next event: `priory subscribe TASK RESOURCE` gives it to an existing
-task, and `priory request --workflow WORKFLOW --key RESOURCE TEXT` creates one. The Desk counts the
+task, and `priory request --workflow WORKFLOW --key RESOURCE TEXT` creates one. The web Desk's
+Unrouted view does both from a phone: `POST /api/subscribe`, and the Add sheet. The Desk counts the
 unrouted events of the last 24 hours (see [desk.md](desk.md#unrouted-events)).
 
 ## What a kept message does
