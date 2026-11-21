@@ -1725,6 +1725,7 @@ fn the_views_endpoint_returns_the_default_view_priory_ships() {
                         { "panel": "runs" },
                         { "panel": "inbox" },
                         { "panel": "reports" },
+                        { "panel": "workflow" },
                         { "panel": "costs" }
                     ]
                 }
@@ -4188,4 +4189,90 @@ fn without_notify_desktop_the_daemon_runs_no_notify_send() {
     std::thread::sleep(Duration::from_millis(2500));
 
     assert_eq!(setup.notices(), Vec::<Value>::new());
+}
+
+/// Copies the factory in `from` into `setup`, serving it with the test's token on any port.
+fn use_factory(setup: &Setup, from: &Path) {
+    let to = setup.dir.join("factory");
+    fs::remove_dir_all(&to).unwrap();
+    let mut pending = vec![from.to_owned()];
+    while let Some(dir) = pending.pop() {
+        for entry in fs::read_dir(&dir).unwrap() {
+            let path = entry.unwrap().path();
+            let target = to.join(path.strip_prefix(from).unwrap());
+            if path.is_dir() {
+                pending.push(path);
+                continue;
+            }
+            fs::create_dir_all(target.parent().unwrap()).unwrap();
+            fs::copy(path, target).unwrap();
+        }
+    }
+    let file = to.join("factory.toml");
+    let mut text = fs::read_to_string(&file)
+        .unwrap()
+        .replace("PRIORY_TOKEN", "TEST_TOKEN")
+        .replace(
+            "[webhooks.github]\nsecret_env = \"PRIORY_GITHUB_WEBHOOK_SECRET\"",
+            "",
+        );
+    if !text.contains("[serve]") {
+        text.push_str("\n[serve]\nlisten = \"127.0.0.1:0\"\ntoken_env = \"TEST_TOKEN\"\n");
+    }
+    fs::write(file, text).unwrap();
+}
+
+#[test]
+fn the_flows_endpoint_carries_check_explains_json_and_each_workflows_graph() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let factories = [
+        root.join("examples/groom"),
+        root.join("docs/reference/examples/factory"),
+    ];
+    for (index, from) in factories.iter().enumerate() {
+        let mut setup = Setup::new(&format!("flows-{index}"), SERVE);
+        use_factory(&setup, from);
+        let address = setup.start(&["serve", &setup.factory(), "--listen", "127.0.0.1:0"]);
+
+        let flows = api(&address, "/api/flows");
+
+        let explain = setup.priory(&["check", &setup.factory(), "--explain", "--json"]);
+        succeeded(&explain);
+        let explain: Value = serde_json::from_slice(&explain.stdout).unwrap();
+        for part in ["irreversible", "paths", "tools"] {
+            assert_eq!(flows[part], explain[part], "{from:?}: {part}");
+        }
+        let workflows = flows["workflows"].as_array().unwrap();
+        assert!(!workflows.is_empty(), "{from:?}");
+        let step_ids = |workflow: &Value| -> Vec<Value> {
+            workflow["steps"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|step| step["id"].clone())
+                .collect()
+        };
+        for workflow in workflows {
+            assert!(
+                step_ids(workflow).contains(&workflow["start"]),
+                "{workflow}"
+            );
+        }
+    }
+
+    let mut setup = Setup::new("flows-graph", SERVE);
+    let address = setup.start(&["serve", &setup.factory()]);
+    let flows = api(&address, "/api/flows");
+    let implement = &flows["workflows"][0];
+    assert_eq!(implement["name"], "implement");
+    assert_eq!(
+        implement["steps"][0],
+        json!({
+            "id": "implement", "decides": "model", "effect": "reversible", "agent": "implementer",
+            "kind": "reversible", "edges": [
+                { "outcome": "failed", "to": "stop", "by": "model" },
+                { "outcome": "passed", "to": "done", "by": "model" },
+            ],
+        })
+    );
 }
