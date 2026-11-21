@@ -1,7 +1,7 @@
 use priory_core::memory::Gate;
 use priory_core::{
     daemon, embed, grades, listing, post, progress, relate, report, search, sections, serve,
-    snooze, state, subscribe, tools,
+    snooze, state, subscribe, todo, tools,
 };
 use priory_factory::{explain, factory, rules};
 use priory_intake::{intake, request};
@@ -54,6 +54,7 @@ fn main() -> ExitCode {
             schedules(args.map(|arg| arg.to_string_lossy().into_owned()).collect())
         }
         Some("links") => links(args.map(|arg| arg.to_string_lossy().into_owned()).collect()),
+        Some("todo") => todo(args.map(|arg| arg.to_string_lossy().into_owned()).collect()),
         Some("snooze") => snooze(args.map(|arg| arg.to_string_lossy().into_owned()).collect()),
         Some("serve") => serve_http(args.map(|arg| arg.to_string_lossy().into_owned()).collect()),
         Some("runs") => list(
@@ -159,7 +160,7 @@ fn main() -> ExitCode {
 
 fn usage() -> ExitCode {
     eprintln!(
-        "usage: priory check [DIR] [--explain [--json]]\n       priory draw [DIR] WORKFLOW\n       priory intake [DIR] [--once]\n       priory daemon [DIR] [--once]\n       priory add [DIR] [--workflow <name>] [--band <band>] [--lane <lane>] [--repo <owner/name>] [--intervention plan|hands-off] [--relates KIND:TASK]... <text>\n       priory request [DIR] --workflow <name> --key <key> [--band <band>] [--lane <lane>] [--repo <owner/name>] [--intervention plan|hands-off] [--relates KIND:TASK]... [--hold <reason> [CONDITION]...] <text>\n       priory serve [DIR] [--listen ADDR]\n       priory inbox [--since SEQ] [--json]\n       priory inbox read SEQ\n       priory post SOURCE LINE\n       priory tasks [--lane <lane>] [--grade red|yellow|green] [--json]\n       priory tasks --graph [TASK] [--mermaid]\n       priory queue [DIR] [--json]\n       priory schedules [DIR] [--json]\n       priory links [DIR] [--json]\n       priory runs\n       priory outbox\n       priory asks [--all] [--band <band>[,<band>...]]... [--risk <risk>[,<risk>...]]... [--json]\n       priory waits\n       priory actions\n       priory attach (TASK | --run RUN) [--read-only] [--print]\n       priory desk [--all] [--json] [--person NAME]\n       priory seen [--person NAME] [--at TIME]\n       priory wait --since REV [--timeout D]\n       priory snooze (ask | blocked | failed | prompt) ID (--for DURATION | --until TIME | --clear)\n       priory trace\n       priory report put TASK FILE|-\n       priory report show [TASK] [--json]\n       priory report pick PICK OPTION --expected REVISION\n       priory report comment ROW --expected REVISION TEXT\n       priory report (reply COMMENT TEXT | resolve COMMENT | reopen COMMENT)\n       priory report [DIR] --workflow <name> [--since <instant-or-duration>] [--cost] [--by lane]\n       priory report attention [--since <instant-or-duration>] [--by workflow|lane|kind] [--json]\n       priory costs [DIR] [--since <instant-or-duration>] [--by workflow|agent|model|machine|repo] [--json]\n       priory grades [--since <instant-or-duration>] [--json]\n       priory move TASK [--band <band>] [--top | --before TASK | --after TASK] [--expected REVISION]\n       priory resume TASK\n       priory say TASK TEXT\n       priory pause [REASON]\n       priory unpause\n       priory cancel TASK [--expected REVISION]\n       priory revive TASK [--step STEP]\n       priory hold TASK --reason TEXT [--until TIME] [--after TASK-OR-ISSUE]... [--merge PR]... [--if-closed release|drop|ask] [--blockers] [--expected REVISION]\n       priory release TASK [--expected REVISION]\n       priory task TASK --json\n       priory relate TASK builds-on|fixes|takes-up|relates OTHER [--remove]\n       priory subscribe TASK RESOURCE\n       priory unsubscribe TASK RESOURCE\n       priory tldr TASK TEXT\n       priory progress TASK JSON\n       priory search QUERY [--state STATE[,STATE...]] [--limit N]\n       priory memory [(acquire | lease) [--gb N] [--timeout D] -- COMMAND...]\n       priory answer [--revision N | --expected N] [--run] [--] ASK OPTION-OR-TEXT\n       priory ask ID JSON\n       priory dismiss [--expected N] ASK\n       priory mcp --session ID\n       priory hook EVENT"
+        "usage: priory check [DIR] [--explain [--json]]\n       priory draw [DIR] WORKFLOW\n       priory intake [DIR] [--once]\n       priory daemon [DIR] [--once]\n       priory add [DIR] [--workflow <name>] [--band <band>] [--lane <lane>] [--repo <owner/name>] [--intervention plan|hands-off] [--relates KIND:TASK]... <text>\n       priory request [DIR] --workflow <name> --key <key> [--band <band>] [--lane <lane>] [--repo <owner/name>] [--intervention plan|hands-off] [--relates KIND:TASK]... [--hold <reason> [CONDITION]...] <text>\n       priory serve [DIR] [--listen ADDR]\n       priory inbox [--since SEQ] [--json]\n       priory inbox read SEQ\n       priory post SOURCE LINE\n       priory tasks [--lane <lane>] [--grade red|yellow|green] [--json]\n       priory tasks --graph [TASK] [--mermaid]\n       priory queue [DIR] [--json]\n       priory schedules [DIR] [--json]\n       priory links [DIR] [--json]\n       priory runs\n       priory outbox\n       priory asks [--all] [--band <band>[,<band>...]]... [--risk <risk>[,<risk>...]]... [--json]\n       priory waits\n       priory actions\n       priory attach (TASK | --run RUN) [--read-only] [--print]\n       priory desk [--all] [--json] [--person NAME]\n       priory seen [--person NAME] [--at TIME]\n       priory wait --since REV [--timeout D]\n       priory snooze (ask | blocked | failed | prompt) ID (--for DURATION | --until TIME | --clear)\n       priory todo add TEXT [--band B] [--due TIME]\n       priory todo done ID\n       priory todo list [--json]\n       priory trace\n       priory report put TASK FILE|-\n       priory report show [TASK] [--json]\n       priory report pick PICK OPTION --expected REVISION\n       priory report comment ROW --expected REVISION TEXT\n       priory report (reply COMMENT TEXT | resolve COMMENT | reopen COMMENT)\n       priory report [DIR] --workflow <name> [--since <instant-or-duration>] [--cost] [--by lane]\n       priory report attention [--since <instant-or-duration>] [--by workflow|lane|kind] [--json]\n       priory costs [DIR] [--since <instant-or-duration>] [--by workflow|agent|model|machine|repo] [--json]\n       priory grades [--since <instant-or-duration>] [--json]\n       priory move TASK [--band <band>] [--top | --before TASK | --after TASK] [--expected REVISION]\n       priory resume TASK\n       priory say TASK TEXT\n       priory pause [REASON]\n       priory unpause\n       priory cancel TASK [--expected REVISION]\n       priory revive TASK [--step STEP]\n       priory hold TASK --reason TEXT [--until TIME] [--after TASK-OR-ISSUE]... [--merge PR]... [--if-closed release|drop|ask] [--blockers] [--expected REVISION]\n       priory release TASK [--expected REVISION]\n       priory task TASK --json\n       priory relate TASK builds-on|fixes|takes-up|relates OTHER [--remove]\n       priory subscribe TASK RESOURCE\n       priory unsubscribe TASK RESOURCE\n       priory tldr TASK TEXT\n       priory progress TASK JSON\n       priory search QUERY [--state STATE[,STATE...]] [--limit N]\n       priory memory [(acquire | lease) [--gb N] [--timeout D] -- COMMAND...]\n       priory answer [--revision N | --expected N] [--run] [--] ASK OPTION-OR-TEXT\n       priory ask ID JSON\n       priory dismiss [--expected N] ASK\n       priory mcp --session ID\n       priory hook EVENT"
     );
     ExitCode::from(2)
 }
@@ -582,6 +583,61 @@ fn seen(args: Vec<String>) -> ExitCode {
     let done = state::open()
         .and_then(|db| state::seen(&db, person, at).map_err(|error| error.to_string()));
     exit("seen", done.map(|text| println!("{text}")))
+}
+
+/// `priory todo add TEXT [--band B] [--due TIME]` and `priory todo done ID` go to the daemon;
+/// `priory todo list [--json]` reads the state.
+fn todo(args: Vec<String>) -> ExitCode {
+    let change = match &args[..] {
+        [verb, rest @ ..] if verb == "add" => {
+            let (mut text, mut band, mut due) = (None, None, None);
+            let mut rest = rest.iter();
+            while let Some(arg) = rest.next() {
+                let slot = match arg.as_str() {
+                    "--band" => &mut band,
+                    "--due" => &mut due,
+                    _ if text.is_none() => {
+                        text = Some(arg.clone());
+                        continue;
+                    }
+                    _ => return usage(),
+                };
+                match rest.next() {
+                    Some(value) if slot.is_none() => *slot = Some(value.clone()),
+                    _ => return usage(),
+                }
+            }
+            let Some(text) = text else {
+                return usage();
+            };
+            todo::Change::Add(todo::Add { text, band, due })
+        }
+        [verb, id] if verb == "done" => match id.parse() {
+            Ok(id) => todo::Change::Done(id),
+            Err(_) => return usage(),
+        },
+        [verb, flags @ ..] if verb == "list" => {
+            let json = match flags {
+                [] => false,
+                [flag] if flag == "--json" => true,
+                _ => return usage(),
+            };
+            let listed =
+                state::open().and_then(|db| todo::list(&db).map_err(|error| error.to_string()));
+            return exit(
+                "todo",
+                listed.map(|rows| match json {
+                    true => println!("{rows}"),
+                    false => {
+                        listing::print(&["id", "text", "band", "due", "created", "done"], &rows)
+                    }
+                }),
+            );
+        }
+        _ => return usage(),
+    };
+    let line = serde_json::to_string(&todo::Line { todo: change }).expect("a to-do serializes");
+    send("todo", &line)
 }
 
 /// Sends `priory snooze KIND ID (--for DURATION | --until TIME | --clear)` to the daemon, with the

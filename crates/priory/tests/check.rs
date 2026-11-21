@@ -626,6 +626,32 @@ fn a_run_action_needs_a_command_and_only_a_run_action_has_one() {
 }
 
 #[test]
+fn a_human_steps_command_needs_a_program_a_known_target_and_runs_among_its_options() {
+    let human = workflow_with(
+        "step-command",
+        "options = [\"open\", \"stop\"]",
+        "options = [\"open\", \"stop\"]\ncommand = { argv = [], target = \"ops\", runs = [\"later\"] }",
+    );
+    let model = workflow_with(
+        "model-command",
+        "prompt = \"Implement the issue.\"",
+        "prompt = \"Implement the issue.\"\ncommand = { argv = [\"true\"], runs = [\"passed\"] }",
+    );
+
+    assert_eq!(human.code, 1);
+    assert_eq!(
+        human.stderr,
+        "workflows/implement.toml:12: step `approve-pr`: command argv must start with a program\n\
+         workflows/implement.toml:12: step `approve-pr`: command target `ops` is not worktree nor a name in [asks.targets]\n\
+         workflows/implement.toml:12: step `approve-pr`: command runs `later`, which is not an option\n"
+    );
+    assert_eq!(
+        model.stderr,
+        "workflows/implement.toml:4: step `implement`: only a human step has a `command`\n"
+    );
+}
+
+#[test]
 fn a_step_holds_only_its_deciders_fields() {
     let outcome = workflow_with(
         "foreign-field",
