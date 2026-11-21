@@ -360,6 +360,41 @@ fn only_a_persons_approval_grants_a_merge_or_an_approving_review() {
 }
 
 #[test]
+fn no_workflow_or_step_grants_priorys_person_verbs() {
+    let step = DOCS.replace("\"gh-pr-comment\"", "\"priory-person\"");
+    let workflow = DOCS.replace("git-push-default", "priory-person");
+
+    let outcomes = [step, workflow]
+        .map(|docs| priory(&["check"], &factory("allow-person", &[("docs", &docs)])));
+
+    assert_eq!(outcomes.each_ref().map(|outcome| outcome.code), [1, 1]);
+    assert_eq!(
+        outcomes[0].stderr,
+        "workflows/docs.toml:12: step `release`: `guard.allow` names `priory-person`, which only a person runs, so nothing may grant it\n"
+    );
+    assert_eq!(
+        outcomes[1].stderr,
+        "workflows/docs.toml:2: `guard.allow` names `priory-person`, which only a person runs, so nothing may grant it\n"
+    );
+}
+
+#[test]
+fn no_workflow_grants_a_script_the_guard_cannot_read() {
+    let workflow = DOCS.replace("git-push-default", "unreadable");
+
+    let outcome = priory(
+        &["check"],
+        &factory("allow-unreadable", &[("docs", &workflow)]),
+    );
+
+    assert_eq!(outcome.code, 1);
+    assert_eq!(
+        outcome.stderr,
+        "workflows/docs.toml:2: `guard.allow` names `unreadable`, which the guard cannot read, so nothing may grant it\n"
+    );
+}
+
+#[test]
 fn a_step_allows_only_guards_that_exist_and_only_when_irreversible() {
     let docs = DOCS
         .replace(

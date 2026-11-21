@@ -2,7 +2,7 @@
 
 use crate::trace::{self, Trace};
 use priory_factory::factory::Effect;
-use priory_factory::guard::NEED_APPROVAL;
+use priory_factory::guard::{NEED_APPROVAL, UNREADABLE};
 use priory_runtime::runtime;
 use rusqlite::{Connection, OptionalExtension, params};
 use std::path::Path;
@@ -72,6 +72,14 @@ pub(crate) fn decide(
     let Some(run) = run else {
         return Ok(Err(denied("this session runs no task step")));
     };
+    // Fail closed: what the guard cannot read, nothing grants.
+    if call.guard == UNREADABLE {
+        let reason = denied("is too deeply nested for the guard to read");
+        let tx = db.transaction()?;
+        trace::tool_denied(&tx, trace, run.task, run.id, call, &reason)?;
+        tx.commit()?;
+        return Ok(Err(reason));
+    }
     let workflow = trace
         .factory
         .workflows
