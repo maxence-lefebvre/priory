@@ -2,7 +2,7 @@ use crate::factory::{
     Agent, Decider, Effect, Factory, Harness, Intervention, Loaded, PermissionMode, Problem, Proof,
     Session, Step, Trigger, Until, Workflow,
 };
-use crate::guard::NEED_APPROVAL;
+use crate::guard::{NEED_APPROVAL, PERSON, UNREADABLE};
 use crate::lanes::{self, Lanes};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -650,6 +650,10 @@ fn check_workflow(factory: &Factory, workflow: &Loaded<Workflow>, problems: &mut
     for allowed in &workflow.value.guard.allow {
         let why = if !guards.contains(allowed) {
             UNKNOWN_GUARD
+        } else if allowed == PERSON {
+            PERSON_ONLY
+        } else if allowed == UNREADABLE {
+            UNREAD
         } else if NEED_APPROVAL.contains(&allowed.as_str()) {
             "which only a person's approval grants, so only an irreversible step may name it"
         } else {
@@ -853,6 +857,10 @@ fn check_workflow(factory: &Factory, workflow: &Loaded<Workflow>, problems: &mut
         for allowed in &step.guard.allow {
             if !guards.contains(allowed) {
                 report(format!("`guard.allow` names `{allowed}`, {UNKNOWN_GUARD}"));
+            } else if allowed == PERSON {
+                report(format!("`guard.allow` names `{allowed}`, {PERSON_ONLY}"));
+            } else if allowed == UNREADABLE {
+                report(format!("`guard.allow` names `{allowed}`, {UNREAD}"));
             } else if step.autonomous.is_some() && NEED_APPROVAL.contains(&allowed.as_str()) {
                 report(format!(
                     "`guard.allow` names `{allowed}`, which only a person's approval grants, and the step is `autonomous`"
@@ -871,6 +879,8 @@ fn check_workflow(factory: &Factory, workflow: &Loaded<Workflow>, problems: &mut
 }
 
 const UNKNOWN_GUARD: &str = "which is no built-in guard nor one of `[guard]` in factory.toml";
+const PERSON_ONLY: &str = "which only a person runs, so nothing may grant it";
+const UNREAD: &str = "which the guard cannot read, so nothing may grant it";
 
 /// Steps reachable from `start`, never walking past a step for which `stops` holds.
 pub(crate) fn reachable<'a>(

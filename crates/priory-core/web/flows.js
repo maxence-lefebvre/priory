@@ -133,7 +133,7 @@ export function timeline(workflow, ungated) {
   const height = (rows.length) * (NODE.height + GAP.row) - GAP.row + 2 * GAP.edge;
   const text = [
     `Workflow ${workflow.name} starts at ${workflow.start}.`,
-    ...workflow.steps.map((/** @type {any} */ step) => `${step.id}: ${WRITES[step.kind] ?? step.kind}, ${step.edges.map((/** @type {any} */ next) => `${next.outcome} to ${next.to} decided by ${next.by}`).join("; ")}.`),
+    ...workflow.steps.map((/** @type {any} */ step) => `${step.id}: ${WRITES[/** @type {keyof typeof WRITES} */ (step.kind)] ?? step.kind}, ${step.edges.map((/** @type {any} */ next) => `${next.outcome} to ${next.to} decided by ${next.by}`).join("; ")}.`),
   ].join(" ");
   return { nodes, edges, width, height, text };
 }

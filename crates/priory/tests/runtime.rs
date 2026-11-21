@@ -525,6 +525,15 @@ fn a_queued_task_at_a_model_step_gets_a_worktree_a_tmux_session_and_a_run() {
         .output()
         .unwrap();
     assert_eq!(String::from_utf8(branch.stdout).unwrap(), "priory/1\n");
+    let upstream = git(&worktree)
+        .args(["rev-parse", "--abbrev-ref", "priory/1@{upstream}"])
+        .output()
+        .unwrap();
+    assert!(
+        !upstream.status.success(),
+        "a bare push with push.default=upstream would reach {}",
+        String::from_utf8_lossy(&upstream.stdout)
+    );
     assert!(worktree.join("README.md").is_file());
     let args = fs::read_to_string(setup.dir.join("fake/args.log")).unwrap();
     let args: Vec<_> = args.lines().collect();
@@ -13244,6 +13253,23 @@ fn a_merge_in_a_step_no_person_approved_is_denied_however_it_is_wrapped() {
         assert!(reason.contains("gh-pr-merge"), "{reason}");
         assert!(reason.contains("ask tool"), "{reason}");
     }
+}
+
+#[test]
+fn a_script_too_deeply_nested_for_the_guard_to_read_is_denied() {
+    let mut setup = Setup::new("guard-deep");
+    let deep = format!("{}echo hi{}", "echo $(".repeat(20), ")".repeat(20));
+    setup.calls(&[json!([bash(&deep)])]);
+    setup.publish(&requested(42));
+
+    setup.start();
+
+    let replies = setup.replied(1);
+    let reason = guard_denied(&replies[0]).unwrap_or_else(|| panic!("{}", replies[0]));
+    assert!(
+        reason.contains("too deeply nested for the guard to read"),
+        "{reason}"
+    );
 }
 
 const MERGE: &str = r#"

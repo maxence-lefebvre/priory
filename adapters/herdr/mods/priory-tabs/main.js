@@ -5,8 +5,8 @@ import { priory } from "./priory.js";
 
 const theme = /** @type {() => Record<string, import("gpui-kit").Color>} */ (herdrTheme);
 
-// Desk and Bonjour open as center tabs; Asks and Queue are children of the layout's side panel.
-const TABS = [["desk", "Desk", "priory-desk"], ["bonjour", "Bonjour", "priory-bonjour"]];
+// Desk, Bonjour, Costs and Flows open as center tabs; Asks and Queue are children of the layout's side panel.
+const TABS = [["desk", "Desk", "priory-desk"], ["bonjour", "Bonjour", "priory-bonjour"], ["costs", "Costs", "priory-costs"], ["flows", "Flows", "priory-flows"]];
 const PANELS = [["asks", "Asks"], ["queue", "Queue"]];
 
 /** @param {any} node @param {string} id @returns {any} */

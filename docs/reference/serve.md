@@ -26,7 +26,7 @@ does, with every count in `older` at 0. Their rows match the CLI's JSON only wit
 | `/api/views` | | an object: [Views](#views) |
 | `/api/request` | | what the web view's Add prefills: `workflow` and `band`, the [`[request]`](factory.md#request) defaults, each `null` when unset; `workflows`, the factory's workflow names; and `bands`, its bands in order |
 | `/api/links` | `priory links --json` | an object: [Links](#links) |
-| `/api/flows` | `priory check --explain --json`, plus the graph | an object: [Flows](#flows) |
+| `/api/flows` | `priory flows --json` | an object: [Flows](#flows) |
 | `/api/reports/latest` | `priory report show --json` | the [report](#report) written last |
 | `/api/reports/{task}` | `priory report show TASK --json` | the task's [report](#report) |
 | `/api/costs?since=WINDOW&by=SPLIT` | `priory costs --json --since WINDOW --by SPLIT` | an object: [Costs](#costs) |
@@ -476,7 +476,8 @@ The server reads the links when it starts. `priory links [DIR]` without `--json`
 
 The same object as `priory check --explain --json` (see
 [workflows.md](workflows.md#irreversible-steps-and-their-gates)), with `workflows` added for the
-web view's Flows panel. The server reads it when it starts.
+web view's Flows panel. The server reads it when it starts. `priory flows [DIR] --json` prints the
+same object, for the Herdr adapter's Flows panel.
 
 | Field | Type | Meaning |
 | ----- | ---- | ------- |

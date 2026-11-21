@@ -34,6 +34,11 @@ export function priory({ exec, binary = "priory-oss", on = null, factory = null 
     // The rules `autolink` applies, as `GET /api/links` serves them.
     links: () => read("links", ...inFactory),
     report: (/** @type {Id | null} */ task = null) => read("report", "show", ...(task == null ? [] : [String(task)])),
+    // This week's cost against last week's, split by workflow, agent, model, machine or repo; prices come from the factory.
+    costs: (/** @type {string | null} */ by = null) => read("costs", ...inFactory, ...(by ? ["--by", by] : [])),
+    attention: () => read("report", "attention"),
+    // Each workflow's steps and edges, with the irreversible steps and the paths to one with no human decision.
+    flows: () => read("flows", ...inFactory),
     // priory wait gives up after 25 s with the same revision; Herdr's exec would stop it at 30 s.
     wait: async (/** @type {number} */ since) => Number(await call(["wait", "--since", String(since)], 60_000)),
     // `run` confirms an answer that runs the ask's command, as the person's second press does.
