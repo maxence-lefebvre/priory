@@ -11130,7 +11130,12 @@ fn a_task_that_waited_on_a_linear_issue_is_done_on_its_result_without_a_pull_req
     let mut setup = Setup::new("linear-done");
     setup.calls(&[
         wait(json!({ "type": "linear_comment", "issue": "ENG-7" })),
-        result("passed"),
+        {
+            let mut passed = result("passed");
+            passed["arguments"]["feedback"] =
+                json!({ "https://linear.app/acme/issue/ENG-7": "nothing-to-do" });
+            passed
+        },
     ]);
     setup.publish(&requested(42));
     setup.start();
