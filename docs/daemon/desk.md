@@ -65,6 +65,22 @@ The web Desk and the Herdr Desk show a to-do's due time in the viewer's local ti
 `due today 15:00`, `due tomorrow 09:00`, `due yesterday 09:00`, or `due Dec 1, 09:00 (in 11 days)` and
 `due Nov 17, 09:00 (3 days ago)` further out. The JSON and the CLI keep the RFC 3339 UTC time.
 
+## Sign-in to-dos
+
+A to-do named `Sign in to <connector>` asks a person to sign in to an MCP server that an
+unattended run could not use (see [guard.md](guard.md#connector-sign-in)). There is one open item
+per connector, however many runs were denied.
+
+It leaves the desk in two ways:
+
+- A person runs `priory todo done ID`, as for any to-do.
+- A later run calls another tool of that connector. The run's tool guard hook sees the call, since
+  the daemon gives each run the connectors with an open item in `PRIORY_CONNECTORS`, and tells the
+  daemon, which marks the to-do done. A daemon that does not answer never blocks the call.
+
+A run started before the item was added does not clear it. If the connector still needs a sign-in,
+the next denial adds the item again.
+
 ## Reports
 
 `priory post SOURCE LINE` stores one report line on the inbox for a person to read, and prints its

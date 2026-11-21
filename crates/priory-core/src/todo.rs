@@ -29,6 +29,36 @@ pub struct Add {
     pub due: Option<String>,
 }
 
+/// A hook's report that a run called a tool of this MCP server: `{"connector_used": "linear"}`.
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ConnectorLine {
+    pub connector_used: String,
+}
+
+/// `PRIORY_CONNECTORS`: the connectors with an open sign-in to-do, which a run's hook watches for.
+pub(crate) fn connectors_env(db: &Connection) -> rusqlite::Result<Option<String>> {
+    let mut statement =
+        db.prepare("SELECT connector FROM todos WHERE connector IS NOT NULL AND done IS NULL")?;
+    let names = statement
+        .query_map([], |row| row.get::<_, String>(0))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok((!names.is_empty()).then(|| format!("PRIORY_CONNECTORS={}", names.join(","))))
+}
+
+/// A run used `connector` without a denial, so its sign-in to-do is done.
+pub(crate) fn connector_used(
+    db: &Connection,
+    connector: &str,
+) -> rusqlite::Result<Result<String, String>> {
+    db.execute(
+        "UPDATE todos SET done = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
+         WHERE connector = ?1 AND done IS NULL",
+        [connector],
+    )?;
+    Ok(Ok(String::new()))
+}
+
 /// Adds a to-do and replies with its id, or marks one done.
 pub(crate) fn change(
     db: &Connection,

@@ -2,7 +2,7 @@ use crate::factory::{
     Agent, Backend, Decider, Effect, Factory, Harness, Intervention, Loaded, PermissionMode,
     Problem, Proof, Session, Step, Trigger, Until, Workflow,
 };
-use crate::guard::{NEED_APPROVAL, PERSON, UNREADABLE};
+use crate::guard::{NEED_APPROVAL, PERSON, SIGN_IN, UNREADABLE};
 use crate::lanes::{self, Lanes};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -677,6 +677,8 @@ fn check_workflow(factory: &Factory, workflow: &Loaded<Workflow>, problems: &mut
             PERSON_ONLY
         } else if allowed == UNREADABLE {
             UNREAD
+        } else if allowed == SIGN_IN {
+            SIGN_IN_ONLY
         } else if NEED_APPROVAL.contains(&allowed.as_str()) {
             "which only a person's approval grants, so only an irreversible step may name it"
         } else {
@@ -893,6 +895,8 @@ fn check_workflow(factory: &Factory, workflow: &Loaded<Workflow>, problems: &mut
                 report(format!("`guard.allow` names `{allowed}`, {PERSON_ONLY}"));
             } else if allowed == UNREADABLE {
                 report(format!("`guard.allow` names `{allowed}`, {UNREAD}"));
+            } else if allowed == SIGN_IN {
+                report(format!("`guard.allow` names `{allowed}`, {SIGN_IN_ONLY}"));
             } else if step.autonomous.is_some() && NEED_APPROVAL.contains(&allowed.as_str()) {
                 report(format!(
                     "`guard.allow` names `{allowed}`, which only a person's approval grants, and the step is `autonomous`"
@@ -912,6 +916,7 @@ fn check_workflow(factory: &Factory, workflow: &Loaded<Workflow>, problems: &mut
 
 const UNKNOWN_GUARD: &str = "which is no built-in guard nor one of `[guard]` in factory.toml";
 const PERSON_ONLY: &str = "which only a person runs, so nothing may grant it";
+const SIGN_IN_ONLY: &str = "which only an agent's `connectorSignIn` grants";
 const UNREAD: &str = "which the guard cannot read, so nothing may grant it";
 
 /// Steps reachable from `start`, never walking past a step for which `stops` holds.

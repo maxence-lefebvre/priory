@@ -638,6 +638,7 @@ fn apply(
 #[serde(untagged)]
 enum Input {
     Guard(crate::guard::Line),
+    Connector(crate::todo::ConnectorLine),
     Todo(crate::todo::Line),
     Add(AddLine),
     Signal(Signal),
@@ -783,6 +784,10 @@ fn take(
         Ok(Input::Guard(line)) => {
             Ok((replied(crate::guard::decide(db, &line.guard, trace)?), None))
         }
+        Ok(Input::Connector(line)) => Ok((
+            replied(crate::todo::connector_used(db, &line.connector_used)?),
+            None,
+        )),
         Ok(Input::Todo(line)) => Ok((
             replied(crate::todo::change(db, &line, trace.factory)?),
             None,
@@ -1492,6 +1497,7 @@ fn start(
         })
         .into_iter()
         .chain(guard_env(factory))
+        .chain(crate::todo::connectors_env(db)?)
         .collect();
     let permissions = serde_json::to_value(&agent.permissions).expect("permissions serialize");
     Ok(runtime::launch(

@@ -543,6 +543,10 @@ pub struct Agent {
     /// The MCP servers the run gets, by name.
     #[serde(default)]
     pub mcp_servers: Vec<String>,
+    /// Lets the run call an MCP server's `authenticate` tools. Off by default: an unattended run
+    /// that signs in clears the stored token every later run needs.
+    #[serde(default)]
+    pub connector_sign_in: bool,
     #[serde(default)]
     pub permissions: Permissions,
     /// The Markdown after the frontmatter: the agent's instructions.
