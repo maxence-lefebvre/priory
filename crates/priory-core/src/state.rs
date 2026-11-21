@@ -1235,7 +1235,6 @@ END;
 PRAGMA user_version = 71;
 ";
 
-
 // A batch: its planning task, the issues a person handed over and the plan its result sent. Each
 // entry's task names its batch and entry, and a `merged` hold condition waits on another task's
 // stack to merge.
