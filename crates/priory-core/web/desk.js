@@ -98,3 +98,10 @@ export function actionNote(label, status, body) {
   if (status === 504 || status === 0) return "The daemon may have applied this but did not confirm it. Check the desk before you send again.";
   return `Could not ${label.toLowerCase()} it: ${body?.error || `the server answered ${status}`}.`;
 }
+
+/** A `batch` row's line split into its counts and its `Next: ...` sentence, or null. @param {string} what */
+export function batchParts(what) {
+  // The daemon's sentence comes last, after a title that may hold the same words.
+  const at = what.lastIndexOf(" Next: ");
+  return at < 0 ? { line: what, next: null } : { line: what.slice(0, at), next: what.slice(at + 1) };
+}
