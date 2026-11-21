@@ -14,8 +14,8 @@ The adapter lives in `adapters/herdr/` at the repository root, outside the Cargo
 - `adapters/herdr/lib/priory.js`: the module every mod uses to read and act. It is the only code
   that runs `priory`.
 - `adapters/herdr/mods/priory-tabs/`: the Priory bar. It sits left of Herdr's own tab bar, opens or
-  focuses the Desk, Bonjour, Costs and Flows tabs, shows or hides the Asks and Queue panels, and
-  attaches to a task's terminal.
+  focuses the Desk, Bonjour, Costs and Flows tabs, shows or hides the Asks and Queue panels,
+  opens the Task tab, and attaches to a task's terminal.
 - `adapters/herdr/mods/priory-desk/`: the Desk panel. See [The Desk panel](#the-desk-panel).
 - `adapters/herdr/mods/priory-asks/`: the Asks panel. See [The Asks panel](#the-asks-panel).
 - `adapters/herdr/mods/priory-queue/`: the Queue panel. See [The Queue panel](#the-queue-panel).
@@ -23,13 +23,17 @@ The adapter lives in `adapters/herdr/` at the repository root, outside the Cargo
   [The Bonjour panel](#the-bonjour-panel).
 - `adapters/herdr/mods/priory-costs/`: the Costs panel. See [The Costs panel](#the-costs-panel).
 - `adapters/herdr/mods/priory-flows/`: the Flows panel. See [The Flows panel](#the-flows-panel).
+- `adapters/herdr/mods/priory-task/`: the Task panel. See [The Task panel](#the-task-panel).
 - `adapters/herdr/layouts/priory.json`: Herdr's default layout with the Priory bar, 420 px wide, in
   the top bar, and Asks and Queue in the side panel stack, 420 px wide by default, between 280 and
   900. Desk, Bonjour, Costs and Flows open as tabs in the center, from the Priory bar.
 - `adapters/herdr/install`: links the mods and the layout into Herdr's folder. See
   [Installing](#installing).
 - `adapters/herdr/test/`: `node --test` tests for the module and the install script, run against a
-  fake `priory`. CI runs them with `node --test adapters/herdr/test/*.test.js`.
+  fake `priory`. CI runs them with `node --test adapters/herdr/test/*.test.js`. `test/kit.js`
+  stands in for Herdr's `gpui-kit`, `gpui-base` and `herdr` modules, so a test can load a panel's
+  `main.js`, draw it to a tree and press its elements. A press reaches each element from the one
+  pressed up to the root, until a handler stops it, as gpui delivers it.
 - `adapters/herdr/lib/tokens.js`: Priory's theme colors and font roles from
   [`design/tokens/themes.css`](../../design/tokens/themes.css), every theme, each `light-dark()`
   pair kept as a light and a dark value, and the structure tokens a pane draws with from
@@ -90,7 +94,9 @@ state database and never writes a file in the factory.
   report as `{"revision": STATE, "report": {...}}`: the outer `revision` is the state's, and the
   report's own `revision` is the one `report pick --expected` takes. Then the mod runs
   `priory wait --since REVISION`, which returns as soon as the state changes, or after 25 s, and
-  reads again. It keeps the last good answer, with its age, when a call fails. `priory serve`
+  reads again. It keeps the last good answer, with its age, when a call fails, and tries again a
+  few seconds later. `follow` in `priory.js` is that loop, and every panel that waits uses it; a
+  panel stops its loop when it reads something else, such as another task. `priory serve`
   answers the same JSON over HTTP, and its `/api/events` waits for a change as `priory wait` does:
   see [serve.md](../reference/serve.md).
 - **Acting.** Every button runs a CLI verb: `answer --expected N [--run] -- ASK TEXT`,
@@ -114,6 +120,11 @@ state database and never writes a file in the factory.
   the bar shows Priory's error instead. The tab opens in the space shown when the panel asked. When
   that space is on another machine than Priory, the bar refuses and asks for a space on Priory's
   machine.
+- **Opening.** A panel opens an ask in Asks with `setShared("priory.asks.open", { ask, at: Date.now() })`,
+  and a task in the Task panel with `setShared("priory.task.open", { task, at: Date.now() })`. The
+  Asks panel opens the ask once a read lists it, and leaves out a request made over 30 s before it
+  started. The Priory bar opens or focuses the Task tab on each new `priory.task.open`, but not
+  for one left from before it started.
 - **Themes.** A panel draws with Priory's tokens, not Herdr's theme, so a theme looks the same in
   Herdr and in the browser. The adapter picks the light or dark value from Herdr's appearance. The
   Priory bar is part of Herdr's top bar, so it draws with Herdr's theme, as the tab bar beside it
@@ -138,7 +149,8 @@ Herdr Desk: the count, the next thing, the room and intake banners, the saved vi
 - **A selected row** opens in place under the row. It shows its task's published progress and its
   actions.
 - **Up next** shows `queue`'s `up_next`, under the list below 1024 px and in the left column from
-  1024 px. **Since you looked** shows from 1024 px.
+  1024 px. A line opens its task in the Task panel. A schedule that starts a new task names no task,
+  so its line opens nothing. **Since you looked** shows from 1024 px.
 - **Since you looked** keeps the events the panel opened on, and adds each newer event to the top.
   The first time the panel draws the list, from 1024 px, it runs `priory seen --at` once, with
   the time it started its first read. A panel that stays narrower records no visit. `herdr-app check` runs no
@@ -148,8 +160,9 @@ Herdr Desk: the count, the next thing, the room and intake banners, the saved vi
   uncertain prompt, and Revive runs `priory revive TASK` for a failed one. Done runs
   `priory todo done ID` for a to-do, from its row or the next thing card.
   Read runs `priory inbox read SEQ` for a report, from its row, so the row leaves the desk.
-  Attach asks the Priory bar with `priory.attach`. Answer… opens the ask in the Asks panel: it sets
-  `setShared("priory.asks.open", { ask, at: Date.now() })` and shows the side panel on Asks.
+  Open task opens the row's task in the [Task panel](#the-task-panel), and Attach asks the Priory
+  bar with `priory.attach`; the next thing card offers both. Answer… opens the ask in the Asks
+  panel: it sets `priory.asks.open` and shows the side panel on Asks.
   Add, or `N`, opens the [Add form](#the-add-action).
 - **Keys.** `J` and `K` move the selection, `Enter` opens the selected ask in Asks or the Asleep
   view from the asleep row, `S`
@@ -230,6 +243,8 @@ DESIGN.md's "Herdr adapter" section holds its visual rules; this section says ho
   CLI's error. When the ask has left the view, the reason shows in a strip under the header
   instead. A refused answer goes back into the text field, so the person can send it again. While
   one answer, snooze or dismissal is in flight, the panel starts no other.
+- **Opened from the Desk.** A new `priory.asks.open` selects its ask, clears the facet chips, and
+  moves to All when the current view hides the ask, such as a snoozed one.
 - **Snooze.** "Snooze 1 h" and the overflow menu's "Snooze until tomorrow 09:00" run
   `priory snooze ask ID`. They show only on an ask that belongs to a task. "Attach to task" asks the
   Priory bar to attach, as [Attaching](#how-it-reads-and-acts) describes.
@@ -387,7 +402,8 @@ its visual rules; this section says how it works.
 - **Keys.** `J` and `K` move between rows, `N` goes to the next pick, `1` to `9` press an option of
   the selected pick, and `Esc` undoes a pick still waiting out its Undo.
 - **Agent text.** Every row's meta, owner and the greeting draw as plain text. Its text draws with
-  its [links](#links).
+  its [links](#links). A press on linked text stays there, so a link opens without selecting the
+  row; the rest of the row still selects it.
 
 The board's older and newer arrows, search and Change are left out. Priory keeps only the latest
 report of each task, so there is no older report to open. A pick's first choice stands, so Change
@@ -432,6 +448,28 @@ DESIGN.md's "Flows panel" section holds its visual rules; this section says how 
 - **Drawing.** The key, then each workflow: its name and step count, the drawing at most 560 px
   wide, the paths that reach an irreversible step with no person's decision, and "Steps as text",
   which lists every step and where each outcome leads.
+
+## The Task panel
+
+`mods/priory-task/` is the Task panel: one task in detail, since Herdr has no task view. The
+Priory bar opens it as a tab in the center stack when another panel sets `priory.task.open`.
+
+- **Files.** `view.js` turns `priory task ID --json` into the header, the title, and the Asks,
+  Pull request and History sections, with no drawing and no IO. `main.js` draws them. The node
+  tests in `test/task.test.js` check `view.js` against JSON captured from a real
+  `priory task ID --json`, and draw the panel with the fake kit.
+- **Reading.** The panel reads the task that `priory.task.open` names, then waits with
+  `priory wait` and reads again. When another task opens, it stops that loop and starts one for
+  the new task. When a call fails, it keeps the last read and shows "Reconnecting to priory" with
+  its age.
+- **What it shows.** The header holds the task's state tile, key and state, and Attach. Then the
+  title with its [links](#links), the workflow, step, lane and band, and the task's reason. Asks
+  lists the task's asks, open ones first. Pull request shows the latest pull request's title as a
+  link, its branches and state, its checks, and the task's stack (see [Stacks](#stacks)). History
+  lists the last 10 runs, newest first, each with its step, outcome and start time. A section the
+  task lacks is left out.
+- **Acting.** Attach asks the Priory bar to attach, as [Attaching](#how-it-reads-and-acts)
+  describes. Answering stays in the Asks panel.
 
 ## Data each panel needs
 
