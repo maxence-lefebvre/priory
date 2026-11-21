@@ -771,7 +771,7 @@ const selectedAsk = () => {
 function optionList(ask, wide) {
   const pending = state.pending?.id === ask.id ? state.pending : null;
   const armed = state.armed?.id === ask.id && state.armed.revision === ask.revision ? state.armed.text : null;
-  const locked = state.failed ? "offline" : null;
+  const locked = lockOf(ask);
   const bound = `Bound to revision ${ask.revision}.`;
   return (ask.options || []).map((option, i) => {
     const recommended = option === ask.recommendation;
@@ -810,11 +810,13 @@ function askDetail(id, wide) {
   const options = ask.options || [];
   const pending = state.pending?.id === ask.id ? state.pending : null;
   const armed = state.armed?.id === ask.id && state.armed.revision === ask.revision ? state.armed.text : null;
-  const locked = state.failed ? "offline" : null;
+  const batch = goBatch(ask);
+  const locked = lockOf(ask);
   const bound = `Bound to revision ${ask.revision}.`;
   const optionButtons = optionList(ask, wide);
   const notice = state.notices.get(ask.id);
-  const lockedNote = locked ? html`<p class="note" id="answer-locked">${icon("unplug", "s15")}<span>Reconnect to answer.</span></p>` : "";
+  const lockedNote = locked === "offline" ? html`<p class="note" id="answer-locked">${icon("unplug", "s15")}<span>Reconnect to answer.</span></p>`
+    : locked ? html`<p class="note" id="answer-locked">${icon("layers", "s15")}<span>${state.batch?.error ? `Could not read the plan: ${state.batch.error}. It must load before you answer.` : `Reading the plan of revision ${ask.revision} before you answer.`}</span></p>` : "";
   const writing = state.writing.has(ask.id) && !locked;
   const write = !takesText(ask)
     ? ""
@@ -827,7 +829,6 @@ function askDetail(id, wide) {
     : ask.snoozed_until
       ? html`<button class="ghost" data-action="unsnooze" aria-disabled="${busy}">Unsnooze</button>`
       : html`<button class="ghost" data-action="snooze" data-for="1h" aria-disabled="${busy}">Snooze 1 h</button><button class="ghost" data-action="snooze" data-tomorrow="9" aria-disabled="${busy}">Snooze until tomorrow 09:00</button>`;
-  const batch = goBatch(ask);
   const editable = Boolean(batch) && ask.state === "open" && batch.state === "asked" && !locked;
   const editPlanLink = editable ? html`<a class="ghost" href="#batchplan">${icon("pencil", "s15")}Edit the plan</a>` : "";
   const more = html`<div class="more">${editPlanLink}${write}${locked || !takesText(ask) ? "" : html`<button class="ghost" data-action="dismiss" aria-disabled="${busy}">Dismiss</button>`}${snoozeButtons}</div>`;
@@ -879,7 +880,7 @@ function askDetail(id, wide) {
       <button class="btn primary ${barArmed ? "armed" : ""}" data-answer="${options.indexOf(recommended)}" aria-disabled="${locked ? "true" : "false"}">${barArmed
         ? html`<span><small>Tap again to run</small>${recommended}<small>Cancels in 4 s</small></span><span class="drain" aria-hidden="true"></span>`
         : html`<span>${recommended}</span><small>${[recommended === ask.recommendation ? "Recommended" : "First option", runsCommand(ask, recommended) && "Runs a command"].filter(Boolean).join(". ")}</small>`}</button>
-      ${locked ? html`<p class="note">${icon("unplug", "s15")}<span>Reconnect to answer.</span></p>` : ""}</div>`
+      ${locked === "offline" ? html`<p class="note">${icon("unplug", "s15")}<span>Reconnect to answer.</span></p>` : ""}</div>`
     : "";
   const reading = read.map(([, , section]) => section);
   const plan = planned.map(([, , section]) => section);
@@ -924,6 +925,14 @@ function batchOf(which, version = null) {
     render();
   });
   return state.batch.body;
+}
+
+// Why the options of an ask are disabled: offline, or a batch's ask whose plan is not read yet for
+// this revision, so a Go never answers a plan the page did not show.
+function lockOf(ask) {
+  if (state.failed) return "offline";
+  const read = state.batch?.which === ask.key && state.batch.version === ask.revision && state.batch.body;
+  return ask.state === "open" && ask.key?.startsWith("batch:") && !read ? "plan" : null;
 }
 
 // The go ask's batch, once the batch names this ask as its go, read for this revision of the ask.
@@ -2185,6 +2194,8 @@ function render() {
     clearTimeout(state.reportPending.timer);
     state.reportPending = null;
   }
+  // Leaving the page closes an entry's menu and disarms its Drop.
+  if (state.renderedKey && state.renderedKey !== routeKey()) Object.assign(state.planEdit, { open: null, armed: null });
   if (state.renderedKey) state.scrolls.set(state.renderedKey, [...app.querySelectorAll(".scroll")].map((element) => element.scrollTop));
   const focused = focusKey(document.activeElement);
   const typed = app.querySelector("#token")?.value;

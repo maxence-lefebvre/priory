@@ -571,7 +571,8 @@ turns `--emph` with an `--action` ring and reads "Tap again to drop it and ENG-4
 edit sends the plan revision the page drew; the plan's `.note` then says the daemon's sentence, such
 as "batch 4 is at plan revision 3", or why it was refused. Edit the plan never answers. The plan
 shows only once it is read for the ask's revision on screen, so a Go never answers a plan the page
-did not show.
+did not show. Until then the options are disabled under a `layers` note, "Reading the plan of revision
+2 before you answer.", or "Could not read the plan: ..." when the read fails.
 
 **Answer while reading.** On a phone, once the options scroll out of view:
 
