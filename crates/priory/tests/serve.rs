@@ -455,7 +455,7 @@ fn each_endpoint_returns_what_the_cli_shows_and_its_json() {
     assert_eq!(queue["running"], json!([]));
     assert_eq!(
         api(&address, "/api/desk")["counts"],
-        json!({ "asleep": 0, "snoozed": 0 })
+        json!({ "asleep": 0, "snoozed": 0, "unrouted": 0 })
     );
     let desk = api(&address, "/api/desk");
     assert_eq!(desk["banner"], Value::Null);
@@ -5032,4 +5032,57 @@ fn a_linear_issue_whose_project_the_payload_names_only_by_id_waits_for_the_poll(
     assert_eq!(status, 200);
     assert_eq!(reply, r#"{"outcome":"dropped"}"#);
     assert!(setup.published().is_empty());
+}
+
+/// Publishes a comment on pull request `pull_request` that no task owns, sent at `time`.
+fn unrouted_comment(setup: &Setup, pull_request: u64, time: &str) {
+    let message = herdr_bus::Message::new(
+        "github.pull_request.comment",
+        json!({ "repo": "owner/repo", "pull_request": pull_request, "actor": "ana", "body": "Hi." }),
+    )
+    .subject(format!("owner/repo#{pull_request}"))
+    .time(time.parse().unwrap());
+    setup.bus().publish("factory.intake", &message).unwrap();
+}
+
+#[test]
+fn the_unrouted_endpoint_returns_what_the_cli_prints() {
+    let mut setup = Setup::new("unrouted", SERVE);
+    unrouted_comment(&setup, 7, "2026-11-17T11:00:00Z");
+    succeeded(&setup.priory(&["daemon", &setup.factory(), "--once"]));
+    let address = setup.start(&["serve", &setup.factory()]);
+
+    let served = api(&address, "/api/inbox?unrouted=1");
+
+    let output = setup.priory(&["inbox", "--unrouted", "--json"]);
+    succeeded(&output);
+    assert_eq!(
+        served,
+        serde_json::from_slice::<Value>(&output.stdout).unwrap()
+    );
+    assert_eq!(served["unrouted"][0]["resource"], "github:owner/repo#7");
+    let (status, _) = get(&address, "/api/inbox?unrouted=2", Some(TOKEN));
+    assert_eq!(status, 400);
+}
+
+#[test]
+fn the_desk_counts_unrouted_events_of_the_last_24_hours_in_a_calm_line() {
+    let mut setup = Setup::new("desk-unrouted", SERVE);
+    unrouted_comment(&setup, 7, "2026-11-16T11:59:59Z");
+    unrouted_comment(&setup, 8, "2026-11-16T12:00:00Z");
+    unrouted_comment(&setup, 9, "2026-11-17T11:00:00Z");
+    succeeded(&setup.priory(&["daemon", &setup.factory(), "--once"]));
+    let address = setup.start(&["serve", &setup.factory()]);
+
+    assert_eq!(api(&address, "/api/desk")["counts"]["unrouted"], 2);
+    assert_eq!(json_of(&setup, "desk")["counts"]["unrouted"], 2);
+    let output = setup.priory(&["desk"]);
+    succeeded(&output);
+    let text = String::from_utf8(output.stdout).unwrap();
+    assert!(
+        text.starts_with(
+            "2 events reached no task in the last 24 hours. See them with `priory inbox --unrouted`.\n"
+        ),
+        "{text}"
+    );
 }

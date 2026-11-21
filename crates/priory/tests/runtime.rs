@@ -8129,6 +8129,28 @@ fn a_firing_while_the_task_runs_is_coalesced_and_not_typed() {
     assert!(!typed[1].contains("09:00"), "{typed:?}");
 }
 
+#[test]
+fn the_task_inbox_shows_a_coalesced_firing() {
+    let mut setup = support_day_with("inbox-coalesced", STEPS);
+    setup.calls(&[result("unsure")]);
+    setup.publish(&tick("2026-11-19T08:00:00Z"));
+    setup.start();
+    setup.until("tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == "asleep")
+    });
+
+    setup.publish(&tick("2026-11-19T09:00:00Z"));
+
+    setup.until("inbox", |rows| rows.len() == 2);
+    assert_eq!(
+        inbox_of(&setup, "1"),
+        [
+            ["factory.task.requested", "coalesced", "-"],
+            ["factory.task.requested", "created", "-"],
+        ]
+    );
+}
+
 impl Setup {
     /// The records `priory trace` prints, one JSON event per line.
     fn trace(&self) -> Vec<serde_json::Value> {
@@ -12837,6 +12859,166 @@ fn a_comment_on_a_subscribed_pull_request_is_queued_while_the_task_runs() {
         "{outbox:?}"
     );
     setup.release("hold-stop");
+}
+
+/// Each event of `task`'s inbox, newest first, as its type, outcome and the state of the prompt
+/// that carries it.
+fn inbox_of(setup: &Setup, task: &str) -> Vec<[String; 3]> {
+    let text = |value: &serde_json::Value| value.as_str().unwrap_or("-").to_owned();
+    task_json(setup, task)["inbox"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|event| {
+            [
+                text(&event["type"]),
+                text(&event["outcome"]),
+                text(&event["prompt"]),
+            ]
+        })
+        .collect()
+}
+
+#[test]
+fn the_task_inbox_shows_a_kept_event_still_queued_then_delivered_as_prompt() {
+    let mut setup = Setup::new("inbox-queued");
+    setup.calls(&[subscribe("subscribe")]);
+    setup.hold("hold-stop");
+    setup.publish(&requested(42));
+    setup.start();
+    setup.written("fake/tools.log");
+
+    setup.publish(&off_branch(commented()));
+
+    setup.until("outbox", |rows| rows.len() == 2);
+    assert_eq!(
+        inbox_of(&setup, "1")[0],
+        ["github.pull_request.comment", "kept", "queued"]
+    );
+    setup.release("hold-stop");
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 2);
+    assert_eq!(
+        inbox_of(&setup, "1"),
+        [
+            ["github.pull_request.comment", "kept", "confirmed"],
+            ["factory.task.requested", "created", "-"],
+        ]
+    );
+}
+
+#[test]
+fn the_task_inbox_shows_the_event_that_woke_the_task() {
+    let setup = subscribed("inbox-woke");
+
+    setup.publish(&commented());
+
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 2);
+    assert_eq!(
+        inbox_of(&setup, "1")[0],
+        ["github.pull_request.comment", "woke", "confirmed"]
+    );
+}
+
+#[test]
+fn the_task_inbox_shows_an_event_kept_while_asleep_with_no_prompt() {
+    let mut setup = Setup::new("inbox-kept");
+    let mut on = on_pull_7("checks");
+    on["head_sha"] = json!("def0000000000000000000000000000000000000");
+    setup.calls(&[json!([subscribe("subscribe"), wait(on)])]);
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("runs", |rows| rows.len() == 1 && rows[0][7] == "asleep");
+
+    setup.publish(&off_branch(check(1, 0)));
+
+    setup.until("inbox", |rows| rows.len() == 2);
+    stays_asleep_after(&setup, 1);
+    assert_eq!(inbox_of(&setup, "1")[0][1..], ["kept", "-"]);
+}
+
+#[test]
+fn the_task_inbox_shows_the_feedback_that_reopened_the_done_task() {
+    let mut setup = Setup::new("inbox-reopened");
+    setup.calls(&[json!([subscribe("subscribe"), result("passed")])]);
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == "done")
+    });
+    std::thread::sleep(Duration::from_millis(1100));
+
+    setup.publish(&commented());
+
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 2);
+    assert_eq!(
+        inbox_of(&setup, "1")[0],
+        ["github.pull_request.comment", "reopened", "confirmed"]
+    );
+}
+
+fn comment_on(pull_request: u64) -> Message {
+    let mut message = off_branch(commented());
+    message.data["pull_request"] = json!(pull_request);
+    message.subject = Some(format!("owner/repo#{pull_request}"));
+    message
+}
+
+#[test]
+fn unrouted_events_are_grouped_by_resource_with_their_follow_up_commands() {
+    let mut setup = Setup::new("inbox-unrouted");
+    setup.start();
+    for pull_request in [7, 8, 7] {
+        setup.publish(&comment_on(pull_request));
+    }
+    setup.until("inbox", |rows| rows.len() == 3);
+
+    let output = setup.priory(&["inbox", "--unrouted", "--json"]);
+    assert!(output.status.success(), "{output:?}");
+    let listed: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let groups: Vec<_> = listed["unrouted"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|group| {
+            let seqs: Vec<_> = group["events"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|event| event["seq"].as_i64().unwrap())
+                .collect();
+            (group["resource"].as_str().unwrap().to_owned(), seqs)
+        })
+        .collect();
+    assert_eq!(
+        groups,
+        [
+            ("github:owner/repo#7".to_owned(), vec![3, 1]),
+            ("github:owner/repo#8".to_owned(), vec![2]),
+        ]
+    );
+    assert_eq!(
+        listed["unrouted"][0]["subscribe"],
+        "priory subscribe TASK github:owner/repo#7"
+    );
+    assert_eq!(
+        listed["unrouted"][0]["request"],
+        "priory request --workflow WORKFLOW --key github:owner/repo#7 TEXT"
+    );
+
+    let output = setup.priory(&["inbox", "--unrouted", "--since", "1"]);
+    let text = String::from_utf8(output.stdout).unwrap();
+    assert!(output.status.success(), "{text}");
+    assert_eq!(
+        text,
+        "github:owner/repo#7: 1 event\n  \
+         3  github.pull_request.comment  owner/repo#7\n  \
+         priory subscribe TASK github:owner/repo#7\n  \
+         priory request --workflow WORKFLOW --key github:owner/repo#7 TEXT\n\
+         github:owner/repo#8: 1 event\n  \
+         2  github.pull_request.comment  owner/repo#8\n  \
+         priory subscribe TASK github:owner/repo#8\n  \
+         priory request --workflow WORKFLOW --key github:owner/repo#8 TEXT\n"
+    );
 }
 
 #[test]
