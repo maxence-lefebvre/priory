@@ -41,9 +41,10 @@ const OUTPUT: &str = "factory.intake";
 /// Takes a state file back before schema 28, which added search, 29, which added grades, 30,
 /// which added snoozes, 31, which added read reports, 32, which added the pause, 34, which added
 /// reports of sections, 36, which added deliveries, 37, which added progress, 39, which added run
-/// actions, 40, which added answer actions, 42, which added dispatches, 49, which added task ends, 51, which added a run's crossing of `compactAt`, 53, which added intervention levels, 56, which added the step an irreversible approval lets run, 58, which added withdrawal reasons, and 59, which added green stack gates and returned routed asks, and 61, which added findings. Schema 38's visits
+/// actions, 40, which added answer actions, 42, which added dispatches, 49, which added task ends, 51, which added a run's crossing of `compactAt`, 53, which added intervention levels, 56, which added the step an irreversible approval lets run, 58, which added withdrawal reasons, and 59, which added green stack gates and returned routed asks, 61, which added findings, 62, which added merge risk, and 63, which added chosen subscriptions and approval generations. Schema 38's visits
 /// table is created only if missing, so it stays.
-const UNDO_SINCE_SEARCH: &str = "ALTER TABLE tasks DROP COLUMN merge_risk; ALTER TABLE results DROP COLUMN merge_risk;
+const UNDO_SINCE_SEARCH: &str = "ALTER TABLE subscriptions DROP COLUMN chosen; ALTER TABLE approvals DROP COLUMN generation;
+ALTER TABLE tasks DROP COLUMN merge_risk; ALTER TABLE results DROP COLUMN merge_risk;
          DROP TRIGGER ask_returns_from_its_lead; ALTER TABLE waits DROP COLUMN green;
   DROP TRIGGER ask_withdrawn; ALTER TABLE asks DROP COLUMN withdrawn_reason;
   ALTER TABLE waits DROP COLUMN withdrawn_reason; ALTER TABLE ask_withdrawals DROP COLUMN reason;
@@ -5498,7 +5499,8 @@ fn a_state_file_whose_asks_an_approval_names_upgrades_to_outside_asks() {
     // The state file as version 32 left it: every ask belongs to a task.
     let db = rusqlite::Connection::open(setup.dir.join("priory.db")).unwrap();
     db.execute_batch(
-        "ALTER TABLE tasks DROP COLUMN merge_risk; ALTER TABLE results DROP COLUMN merge_risk;
+        "ALTER TABLE subscriptions DROP COLUMN chosen; ALTER TABLE approvals DROP COLUMN generation;
+         ALTER TABLE tasks DROP COLUMN merge_risk; ALTER TABLE results DROP COLUMN merge_risk;
          DROP TRIGGER ask_returns_from_its_lead; ALTER TABLE waits DROP COLUMN green;
          ALTER TABLE tasks DROP COLUMN intervention; ALTER TABLE tasks DROP COLUMN lead;
          ALTER TABLE runs DROP COLUMN crossed; DROP TRIGGER task_created; DROP TRIGGER task_ended; DROP TRIGGER task_restarted;
