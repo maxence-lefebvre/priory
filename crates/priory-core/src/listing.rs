@@ -90,7 +90,8 @@ fn desk_items() -> String {
 
 const DESK: &str = "SELECT 0 AS part, asks.created AS since, 'ask' AS kind,
                  coalesce(asks.name, asks.id) AS id, asks.task AS task, tasks.lane AS lane,
-                 asks.question || ' ' || asks.options AS what
+                 coalesce('routed to ' || asks.routed || ': ', '') || asks.question || ' '
+                   || asks.options AS what
                FROM asks LEFT JOIN tasks ON tasks.id = asks.task
                WHERE asks.answer IS NULL AND asks.withdrawn IS NULL
                  AND coalesce(tasks.state, '') NOT IN ('done', 'failed', 'dropped')
@@ -161,7 +162,7 @@ fn asks_query() -> String {
        WHEN 0 THEN 'a later run called another tool'
        ELSE 'revived as generation ' || asks.withdrawn END AS withdrawn_why,
      asks.revision, asks.question, asks.options, asks.recommendation, asks.tradeoff, asks.answer,
-     asks.answered AS answered_at, asks.created AS since, asks.title, asks.text,
+     asks.answered AS answered_at, asks.answered_by, asks.routed AS routed_to, asks.created AS since, asks.title, asks.text,
      asks.what_waits, asks.next_action, asks.command, asks.coordinator, asks.run_id, asks.session,
      (SELECT json_object('state', state, 'revision', revision, 'tries', tries, 'error', error,
         'since', coalesce(ended, created))
@@ -706,9 +707,23 @@ fn rank(items: &[Value]) -> Vec<Value> {
 
 /// The desk's `next`: what ranks first, if anything waits on a person.
 pub(crate) fn next(db: &Connection) -> rusqlite::Result<Option<Value>> {
-    let items = rows(db, &desk_items(), [])?;
-    let items = items.as_array().expect("rows are an array");
+    let mut items = rows(db, &desk_items(), [])?;
+    let items = items.as_array_mut().expect("rows are an array");
+    routed_to(db, items)?;
     Ok(rank(items).into_iter().next())
+}
+
+/// Gives each `ask` item the lead it is routed to, or null.
+fn routed_to(db: &Connection, items: &mut [Value]) -> rusqlite::Result<()> {
+    let mut routed = db.prepare("SELECT routed FROM asks WHERE id = ?1")?;
+    for item in items.iter_mut().filter(|item| item["kind"] == "ask") {
+        let to = match item["id"].as_i64() {
+            Some(ask) => routed.query_row([ask], |row| row.get::<_, Option<String>>(0))?,
+            None => None,
+        };
+        item["routed_to"] = json!(to);
+    }
+    Ok(())
 }
 
 /// The pause's line, a stalled queue's banner, the intake's banner, the asleep and snoozed counts, what waits on a person, the queue, then
@@ -722,6 +737,7 @@ pub fn desk(db: &Connection, home: &Path, all: bool, person: &str) -> rusqlite::
         .iter()
         .filter(|item| !item["snoozed_until"].is_null())
         .count();
+    routed_to(db, list)?;
     let ranked = rank(list);
     for item in list.iter_mut() {
         let item = item.as_object_mut().expect("rows are objects");
@@ -763,7 +779,7 @@ pub fn task(db: &Connection, id: i64) -> rusqlite::Result<Option<Value>> {
         &format!(
             "{} SELECT id, key, workflow, step, state, band, lane, reason, queue.place AS position,
                generation, retired, tldr, changed AS since, repo, branch, grade, grade_reason,
-               progress, {CONDITIONS}
+               progress, intervention, lead, {CONDITIONS}
              FROM tasks LEFT JOIN queue USING (id) WHERE id = ?1",
             places()
         ),

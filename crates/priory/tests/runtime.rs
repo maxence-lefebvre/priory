@@ -41,9 +41,11 @@ const OUTPUT: &str = "factory.intake";
 /// Takes a state file back before schema 28, which added search, 29, which added grades, 30,
 /// which added snoozes, 31, which added read reports, 32, which added the pause, 34, which added
 /// reports of sections, 36, which added deliveries, 37, which added progress, 39, which added run
-/// actions, 40, which added answer actions, 42, which added dispatches, 49, which added task ends, and 51, which added a run's crossing of `compactAt`. Schema 38's visits
+/// actions, 40, which added answer actions, 42, which added dispatches, 49, which added task ends, 51, which added a run's crossing of `compactAt`, and 53, which added intervention levels. Schema 38's visits
 /// table is created only if missing, so it stays.
-const UNDO_SINCE_SEARCH: &str = "ALTER TABLE runs DROP COLUMN crossed; DROP TRIGGER task_created; DROP TRIGGER task_ended; DROP TRIGGER task_restarted;
+const UNDO_SINCE_SEARCH: &str = "DROP TRIGGER push_a_new_ask; ALTER TABLE asks DROP COLUMN routed;
+  ALTER TABLE asks DROP COLUMN answered_by; ALTER TABLE tasks DROP COLUMN intervention;
+  ALTER TABLE tasks DROP COLUMN lead; ALTER TABLE runs DROP COLUMN crossed; DROP TRIGGER task_created; DROP TRIGGER task_ended; DROP TRIGGER task_restarted;
   DROP TABLE task_ends; ALTER TABLE exports DROP COLUMN ended; ALTER TABLE tasks DROP COLUMN created;
   ALTER TABLE actions DROP COLUMN ask;
   ALTER TABLE actions DROP COLUMN revision; ALTER TABLE actions DROP COLUMN command; ALTER TABLE actions DROP COLUMN generation;
@@ -5321,7 +5323,8 @@ fn a_state_file_whose_asks_an_approval_names_upgrades_to_outside_asks() {
     // The state file as version 32 left it: every ask belongs to a task.
     let db = rusqlite::Connection::open(setup.dir.join("priory.db")).unwrap();
     db.execute_batch(
-        "ALTER TABLE runs DROP COLUMN crossed; DROP TRIGGER task_created; DROP TRIGGER task_ended; DROP TRIGGER task_restarted;
+        "ALTER TABLE tasks DROP COLUMN intervention; ALTER TABLE tasks DROP COLUMN lead;
+         ALTER TABLE runs DROP COLUMN crossed; DROP TRIGGER task_created; DROP TRIGGER task_ended; DROP TRIGGER task_restarted;
          DROP TABLE task_ends; ALTER TABLE exports DROP COLUMN ended; ALTER TABLE tasks DROP COLUMN created;
          ALTER TABLE actions DROP COLUMN ask; ALTER TABLE actions DROP COLUMN revision;
          ALTER TABLE actions DROP COLUMN command; ALTER TABLE actions DROP COLUMN generation;
@@ -6874,6 +6877,10 @@ fn a_commit_made_after_the_approval_asks_again_instead_of_opening() {
     assert_eq!([&tasks[0][3], &tasks[0][4]], ["approve-pr", "asleep"]);
     assert!(setup.rows("actions").is_empty());
     assert!(setup.gh().is_empty());
+    assert_eq!(
+        asks_json(&setup)["asks"][0].get("answered_by"),
+        Some(&json!(null))
+    );
 
     setup.calls(&[passed_with_evidence()]);
     let stale = setup.priory(&["answer", "1", "open", "--revision", "1"]);
@@ -13324,4 +13331,255 @@ fn reusing_a_pull_request_on_another_base_than_the_branch_below_fails() {
         actions[0][7],
         "pull request #5 from priory/1 is based on main, not priory/1-a"
     );
+}
+
+/// A setup whose trigger sets `intervention`, with `extra` lines after it.
+fn intervened(name: &str, workflow: &str, intervention: &str, extra: &str) -> Setup {
+    let setup = Setup::with_workflow(name, workflow);
+    fs::write(
+        setup.dir.join("factory/triggers/agent-label.toml"),
+        format!("{TRIGGER}intervention = \"{intervention}\"\n{extra}"),
+    )
+    .unwrap();
+    setup
+}
+
+#[test]
+fn a_plan_task_waits_for_a_person_after_a_green_grade_then_moves_on_when_approved() {
+    let mut setup = intervened("plan-green", GRADED, "plan", "");
+    setup.calls(&[json!({ "name": "result", "arguments": {
+        "outcome": "green", "summary": "Plan: add a flag"
+    } })]);
+    setup.publish(&requested(42));
+
+    setup.start();
+
+    let asks = setup.until("asks", |rows| rows.len() == 1);
+    assert_eq!(
+        [&asks[0][3], &asks[0][4]],
+        [
+            "plan: approve the plan graded green? Plan: add a flag",
+            r#"["approved","rejected"]"#
+        ]
+    );
+    setup.until("tasks", |rows| rows[0][4] == "asleep");
+    assert_eq!(setup.rows("tasks")[0][3], "plan");
+
+    let answered = setup.priory(&["answer", "1", "approved", "--revision", "1"]);
+
+    assert!(answered.status.success(), "{answered:?}");
+    setup.until("tasks", |rows| rows[0][3] == "regrade");
+}
+
+/// A `hands-off` setup whose trigger names the shared agent `lead`.
+fn hands_off(name: &str, workflow: &str) -> Setup {
+    let setup = intervened(name, workflow, "hands-off", "lead = \"lead\"\n");
+    let lead = LEAD.replace("Leads every task.", "Answers asks.");
+    fs::create_dir_all(setup.dir.join("factory/agents/lead")).unwrap();
+    fs::write(setup.dir.join("factory/agents/lead/agent.md"), lead).unwrap();
+    setup
+}
+
+fn answered(answer: &str) -> serde_json::Value {
+    json!({ "name": "result", "arguments": { "outcome": "answered", "summary": answer } })
+}
+
+/// The asks `priory asks --json` lists.
+fn asks_json(setup: &Setup) -> serde_json::Value {
+    let output = setup.priory(&["asks", "--all", "--json"]);
+    assert!(output.status.success(), "{output:?}");
+    serde_json::from_slice(&output.stdout).unwrap()
+}
+
+#[test]
+fn a_hands_off_tasks_ask_reaches_its_lead_whose_answer_wakes_the_task() {
+    let mut setup = hands_off("hands-off-ask", WORKFLOW);
+    setup.calls(&[ask(), answered("sqlite"), result("passed")]);
+    setup.publish(&requested(42));
+
+    setup.start();
+
+    let tasks = setup.until("tasks", |rows| {
+        rows.len() == 2 && rows.iter().all(|row| row[4] == "done")
+    });
+    assert_eq!(tasks[1][1], "priory:ask:1:1");
+    let asks = asks_json(&setup);
+    assert_eq!(
+        [
+            &asks["asks"][0]["routed_to"],
+            &asks["asks"][0]["answer"],
+            &asks["asks"][0]["answered_by"]
+        ],
+        [&json!("lead"), &json!("sqlite"), &json!("agent:lead")],
+        "{asks}"
+    );
+    let typed = setup.typed();
+    assert!(
+        typed[1].contains("\"question\":\"Which database?\""),
+        "{typed:?}"
+    );
+    assert!(
+        typed[2].starts_with("Answer to ask 1 (revision 1): sqlite\n"),
+        "{typed:?}"
+    );
+}
+
+#[test]
+fn a_hands_off_tasks_ask_whose_answer_lets_an_irreversible_step_run_still_reaches_the_person() {
+    let mut setup = hands_off("hands-off-irreversible", OPEN_PR);
+    setup.calls(&[passed_with_evidence()]);
+    setup.publish(&requested(42));
+
+    setup.start();
+
+    setup.until("asks", |rows| rows.len() == 1);
+    setup.until("tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == "asleep")
+    });
+    assert_eq!(
+        asks_json(&setup)["asks"][0].get("routed_to"),
+        Some(&json!(null))
+    );
+    assert_eq!(setup.rows("tasks").len(), 1, "no lead task");
+}
+
+#[test]
+fn a_hands_off_tasks_command_ask_still_reaches_the_person() {
+    let mut setup = hands_off("hands-off-command", STEPS);
+    fs::write(
+        setup.dir.join("factory/factory.toml"),
+        "name = \"demo\"\n\n[asks.targets]\nops = \"ops\"\n",
+    )
+    .unwrap();
+    fs::create_dir_all(setup.dir.join("factory/ops")).unwrap();
+    setup.calls(&[command_ask(json!({ "argv": ["./go"], "target": "ops" }))]);
+    setup.publish(&requested(42));
+
+    setup.start();
+
+    setup.until("tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == "asleep")
+    });
+    assert_eq!(
+        asks_json(&setup)["asks"][0].get("routed_to"),
+        Some(&json!(null))
+    );
+    assert_eq!(setup.rows("tasks").len(), 1, "no lead task");
+}
+
+#[test]
+fn a_person_who_answers_a_routed_ask_first_drops_its_queued_lead_task() {
+    let mut setup = hands_off("hands-off-person-first", STEPS);
+    // The lead never fits, so its task stays queued.
+    let lead = LEAD.replace(
+        "session = \"shared\"\n",
+        "session = \"shared\"\nmemory = \"1000GB\"\n",
+    );
+    fs::write(setup.dir.join("factory/agents/lead/agent.md"), lead).unwrap();
+    setup.calls(&[ask()]);
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("tasks", |rows| rows.len() == 2 && rows[0][4] == "asleep");
+    assert_eq!(asks_json(&setup)["asks"][0]["routed_to"], json!("lead"));
+    let desk: serde_json::Value =
+        serde_json::from_slice(&setup.priory(&["desk", "--json"]).stdout).unwrap();
+    let item = &desk["items"][0];
+    assert_eq!(
+        [&item["kind"], &item["routed_to"]],
+        [&json!("ask"), &json!("lead")]
+    );
+    assert_eq!(desk["next"]["routed_to"], json!("lead"), "{desk}");
+    assert!(
+        item["what"]
+            .as_str()
+            .unwrap()
+            .starts_with("routed to lead: Which database?"),
+        "{item}"
+    );
+
+    let answered = setup.priory(&["answer", "1", "sqlite", "--revision", "1"]);
+
+    assert!(answered.status.success(), "{answered:?}");
+    let tasks = setup.rows("tasks");
+    assert_eq!(
+        [&tasks[1][4], &tasks[1][7]],
+        ["dropped", "ask 1 was answered first"]
+    );
+    assert_eq!(asks_json(&setup)["asks"][0]["answered_by"], json!("cli"));
+}
+
+#[test]
+fn a_comment_on_its_issue_does_not_wake_a_plan_task_waiting_for_its_approval() {
+    let mut setup = intervened("plan-comment", GRADED, "plan", "");
+    setup.calls(&[result("green")]);
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == "asleep")
+    });
+
+    setup.publish(&issue_commented(901));
+
+    setup.until("inbox", |rows| {
+        rows.iter().any(|row| row[1] == "github.issues.comment")
+    });
+    std::thread::sleep(Duration::from_millis(1500));
+    let tasks = setup.rows("tasks");
+    assert_eq!([&tasks[0][3], &tasks[0][4]], ["plan", "asleep"]);
+    assert_eq!(setup.rows("runs").len(), 1);
+}
+
+#[test]
+fn a_hands_off_tasks_ask_that_approves_an_irreversible_step_reaches_the_person_even_before_another_human_step()
+ {
+    let workflow = OPEN_PR.replace(
+        "next = { open = \"open-pr\", stop = \"stop\" }",
+        "next = { open = \"confirm\", stop = \"stop\" }",
+    ) + r#"
+[[steps]]
+id = "confirm"
+decides = "human"
+effect = "none"
+options = ["go", "stop"]
+next = { go = "open-pr", stop = "stop" }
+"#;
+    let mut setup = hands_off("hands-off-approves", &workflow);
+    setup.calls(&[passed_with_evidence()]);
+    setup.publish(&requested(42));
+
+    setup.start();
+
+    setup.until("tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == "asleep")
+    });
+    assert_eq!(
+        asks_json(&setup)["asks"][0].get("routed_to"),
+        Some(&json!(null))
+    );
+    assert_eq!(setup.rows("tasks").len(), 1, "no lead task");
+}
+
+#[test]
+fn a_leads_answer_outside_the_asks_options_is_refused() {
+    let mut setup = hands_off("hands-off-off-option", WORKFLOW);
+    setup.calls(&[
+        ask(),
+        json!([answered("mysql"), answered("sqlite")]),
+        result("passed"),
+    ]);
+    setup.publish(&requested(42));
+
+    setup.start();
+
+    setup.until("tasks", |rows| {
+        rows.len() == 2 && rows.iter().all(|row| row[4] == "done")
+    });
+    let refused = setup
+        .replies()
+        .into_iter()
+        .map(|line| reply(&line))
+        .find(|(_, error)| *error)
+        .expect("one refused call");
+    assert_eq!(refused.0, "ask 1 takes one of: sqlite, postgres");
+    assert_eq!(asks_json(&setup)["asks"][0]["answer"], json!("sqlite"));
 }
