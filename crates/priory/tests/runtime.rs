@@ -10168,11 +10168,14 @@ fn a_grant_is_released_when_its_command_fails_or_is_killed_or_its_holder_dies() 
     setup.written("fake/order");
     // The grant follows the command only once the daemon took its pid: killing the holder before
     // that releases the grant.
-    let held_by = || {
-        rusqlite::Connection::open(setup.dir.join("priory.db"))
-            .and_then(|db| db.query_row("SELECT pid FROM grants", [], |row| row.get::<_, u32>(0)))
-    };
-    while held_by().is_ok_and(|pid| pid == holder.id()) {
+    let deadline = Instant::now() + Duration::from_secs(60);
+    loop {
+        let pid = rusqlite::Connection::open(setup.dir.join("priory.db"))
+            .and_then(|db| db.query_row("SELECT pid FROM grants", [], |row| row.get::<_, u32>(0)));
+        if pid.as_ref().is_ok_and(|pid| *pid != holder.id()) {
+            break;
+        }
+        assert!(Instant::now() < deadline, "the grant never moved: {pid:?}");
         std::thread::sleep(Duration::from_millis(50));
     }
     holder.kill().unwrap();
@@ -11012,8 +11015,16 @@ impl Setup {
 
     /// The OTLP requests the fake `curl` received, each `{url, body}`, oldest first.
     fn posts(&self) -> Vec<serde_json::Value> {
+        fs::read_to_string(self.dir.join("fake/otlp.jsonl"))
+            .unwrap_or_default()
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect()
+    }
+
+    /// As `posts`, without a last line the fake `curl` still writes, for a poll that retries.
+    fn complete_posts(&self) -> Vec<serde_json::Value> {
         let written = fs::read_to_string(self.dir.join("fake/otlp.jsonl")).unwrap_or_default();
-        // The fake appends a post in chunks, so the last line may still be half written.
         written
             .split_inclusive('\n')
             .filter(|line| line.ends_with('\n'))
@@ -11025,7 +11036,7 @@ impl Setup {
     fn until_spans(&self, count: usize) -> Vec<serde_json::Value> {
         let deadline = Instant::now() + Duration::from_secs(60);
         loop {
-            let spans = spans(&self.posts());
+            let spans = spans(&self.complete_posts());
             if spans.len() >= count {
                 return spans;
             }
