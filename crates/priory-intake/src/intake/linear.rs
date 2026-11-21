@@ -127,8 +127,13 @@ impl<'a> Linear<'a> {
                         None => delivered.insert((claim()?, recent(bus)?)),
                     };
                     // A webhook's state change has no history id, so it matches by content.
-                    if let Some(other) = delivered.iter().find(|other| same_change(other, &event)) {
-                        dispatch(bus, &self.triggers, other)?;
+                    let found = delivered
+                        .iter()
+                        .position(|other| same_change(other, &event));
+                    if let Some(found) = found {
+                        // One delivery stands for one history entry.
+                        let other = delivered.remove(found);
+                        dispatch(bus, &self.triggers, &other)?;
                         continue;
                     }
                 }

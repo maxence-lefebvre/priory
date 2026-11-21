@@ -1,15 +1,15 @@
 use super::linear::{COMMENTED, CREATED, STATE_CHANGED, event};
-use super::webhook::{hex, unhex};
+use super::webhook::unhex;
 use super::{claim, dispatch, now, output, publish, reported};
 use crate::log::{self, Log};
 use hmac::{Hmac, KeyInit, Mac};
 use priory_factory::factory::{Factory, Trigger};
 use priory_runtime::http::{Reply, Request};
 use serde_json::{Value, json};
-use sha2::{Digest, Sha256};
+use sha2::Sha256;
 
 /// How far `webhookTimestamp` may be from now, in milliseconds: Linear's documented replay window.
-const WINDOW_MS: i64 = 60_000;
+const WINDOW_MS: u64 = 60_000;
 
 /// Linear deliveries to `POST /hooks/linear`: checked against the signing secret before anything
 /// reads them, then published on `factory.intake` as the polling intake publishes the same events.
@@ -50,11 +50,11 @@ impl LinearWebhook {
             return Reply::error(400, "the payload lacks `webhookTimestamp`");
         };
         match now() {
-            Ok(now) if (now.as_millisecond() - sent).abs() <= WINDOW_MS => {}
+            Ok(now) if now.as_millisecond().abs_diff(sent) <= WINDOW_MS => {}
             Ok(_) => return Reply::error(401, "`webhookTimestamp` is over a minute from now"),
             Err(error) => return Reply::error(500, &error),
         }
-        let (kind, name, data) = match self.observe(&payload, request.body) {
+        let (kind, name, data) = match self.observe(&payload) {
             Ok(Some(observed)) => observed,
             Ok(None) => return accepted("dropped"),
             Err(error) => return Reply::error(400, &error),
@@ -101,14 +101,10 @@ impl LinearWebhook {
     /// The type, id name and data of the event a delivery reports, or none for a type, action or
     /// team Priory does not take, or an event whose triggers the payload cannot decide. Errs when a
     /// field the event needs is missing.
-    fn observe(
-        &self,
-        payload: &Value,
-        body: &[u8],
-    ) -> Result<Option<(&'static str, String, Value)>, String> {
+    fn observe(&self, payload: &Value) -> Result<Option<(&'static str, String, Value)>, String> {
         let data = &payload["data"];
         let actor = &payload["actor"]["name"];
-        let (kind, name, event_time, mut fields, missing) =
+        let (kind, name, event_time, mut fields) =
             match (payload["type"].as_str(), payload["action"].as_str()) {
                 (Some("Issue"), Some("create")) => (
                     CREATED,
@@ -118,7 +114,6 @@ impl LinearWebhook {
                     ),
                     &data["createdAt"],
                     issue_fields(data, &payload["url"]),
-                    project_unknown(data),
                 ),
                 (Some("Issue"), Some("update"))
                     if payload["updatedFrom"].get("stateId").is_some() =>
@@ -126,34 +121,38 @@ impl LinearWebhook {
                     let mut fields = issue_fields(data, &payload["url"]);
                     fields["from"] = Value::Null;
                     fields["to"] = data["state"]["name"].clone();
+                    // Signed fields that a redelivery keeps, unlike the body's `webhookTimestamp`.
                     let name = format!(
-                        "linear:webhook:state_changed:{}",
-                        hex(&Sha256::digest(body))
+                        "linear:webhook:state_changed:{}:{}:{}",
+                        data["id"].as_str().unwrap_or_default(),
+                        data["state"]["id"].as_str().unwrap_or_default(),
+                        payload["createdAt"].as_str().unwrap_or_default(),
                     );
-                    (
-                        STATE_CHANGED,
-                        name,
-                        &payload["createdAt"],
-                        fields,
-                        project_unknown(data),
-                    )
+                    (STATE_CHANGED, name, &payload["createdAt"], fields)
                 }
                 (Some("Comment"), Some("create")) => {
                     let id = data["id"].as_str().unwrap_or_default();
                     let mut fields = comment_fields(payload);
                     fields["body"] = data["body"].clone();
-                    let name = format!("linear:comment:{id}");
                     (
                         COMMENTED,
-                        name,
+                        format!("linear:comment:{id}"),
                         &data["createdAt"],
                         fields,
-                        &["project", "label", "state"][..],
                     )
                 }
                 _ => return Ok(None),
             };
-        if !self.tracked(kind, &fields["team"], missing) {
+        if !self.names_team(&fields["team"]) {
+            return Ok(None);
+        }
+        // The poll reads what the payload lacks, and a task request cannot be repaired after the
+        // message that carries it is published: the first writer of an id wins.
+        let incomplete = match kind {
+            COMMENTED => self.requests(kind, &fields["team"]),
+            _ => data["projectId"].is_string() && !data["project"]["name"].is_string(),
+        };
+        if incomplete {
             return Ok(None);
         }
         fields["actor"] = actor.clone();
@@ -180,32 +179,29 @@ impl LinearWebhook {
         Ok(Some((kind, name, fields)))
     }
 
-    /// Whether a `linear` trigger of this event type names the team, and the payload holds every
-    /// field its filter reads. A trigger whose filter reads a field in `missing` could not be
-    /// matched here, and the poll, which reads it, publishes the same id with the whole event.
-    fn tracked(&self, kind: &str, team: &Value, missing: &[&str]) -> bool {
-        let names_team = |trigger: &Trigger| {
-            let filter = trigger.filter.as_ref();
-            filter
-                .and_then(|filter| filter.get("team"))
-                .is_none_or(|key| key == team)
-        };
-        let blind = |trigger: &Trigger| {
-            trigger
-                .filter
-                .iter()
-                .flatten()
-                .any(|(field, _)| missing.contains(&field.as_str()))
-        };
-        let of_kind =
-            |trigger: &&Trigger| format!("linear.{}", trigger.on) == kind && names_team(trigger);
-        let mut named = self
-            .triggers
+    /// Whether a `linear` trigger of type `kind` names the team.
+    fn requests(&self, kind: &str, team: &Value) -> bool {
+        self.triggers
             .iter()
-            .map(|(_, trigger)| trigger)
-            .filter(of_kind);
-        named.clone().next().is_some() && !named.any(blind)
+            .any(|(_, trigger)| format!("linear.{}", trigger.on) == kind && names(trigger, team))
     }
+
+    /// Whether any `linear` trigger names the team. The poll reads every event of the workspace for
+    /// them, so a delivery for one publishes even when no trigger of its type does.
+    fn names_team(&self, team: &Value) -> bool {
+        self.triggers
+            .iter()
+            .any(|(_, trigger)| names(trigger, team))
+    }
+}
+
+/// Whether the trigger's `team` filter equals the team key, or it has none.
+fn names(trigger: &Trigger, team: &Value) -> bool {
+    let key = trigger
+        .filter
+        .as_ref()
+        .and_then(|filter| filter.get("team"));
+    key.is_none_or(|key| key == team)
 }
 
 /// The fields of an `Issue` payload's data, as a poll reads them.
@@ -253,14 +249,6 @@ fn comment_fields(payload: &Value) -> Value {
         "state": "",
         "labels": [],
     })
-}
-
-/// The filter fields an `Issue` payload cannot decide: the project's name when it names only an id.
-fn project_unknown(data: &Value) -> &'static [&'static str] {
-    match data["projectId"].is_string() && !data["project"]["name"].is_string() {
-        true => &["project"],
-        false => &[],
-    }
 }
 
 fn accepted(outcome: &str) -> Reply {

@@ -158,10 +158,12 @@ change types, and point it at `<url>/hooks/linear`. See [Reaching the server](#r
 | `Comment` `create` | `linear.comment.created` |
 | anything else | nothing; `200` |
 
-A delivery publishes only when a `linear` trigger of that event's type names the issue's team: its
-`team` filter equals the team key, or it has none. A `linear.view` trigger names a view, and a
-delivery cannot tell whether an issue is in it, so views come from polling only. A delivery for
-any other team publishes nothing, so a webhook never widens what the factory acts on.
+A delivery publishes only when some `linear` trigger names the issue's team: its `team` filter
+equals the team key, or it has none. The type of that trigger does not matter, since the poll reads
+every event of the workspace for any Linear trigger and tasks subscribe to them. A `linear.view`
+trigger names a view, and a delivery cannot tell whether an issue is in it, so views come from
+polling only. A delivery for any other team publishes nothing, so a webhook never widens what the
+factory acts on.
 
 A webhook message differs from the poll's:
 
@@ -170,11 +172,12 @@ A webhook message differs from the poll's:
   on blockers waits for a poll's event.
 - `from` of a state change is null and its `linear_id` is the issue's: the payload names the
   previous state by id, and has no history entry.
-- A comment's payload carries no issue title, state or labels, so they are empty. A comment
-  publishes nothing when a trigger of its type filters on `project`, `label` or `state`, which the
-  payload cannot decide. The poll publishes it.
-- The same holds for an issue's project when the payload names only its id and a trigger filters
-  on `project`.
+- A comment's payload carries no issue title, state, labels or project, so they are empty. A
+  task request copies the team and project, so a comment publishes nothing when a `comment.created`
+  trigger names its team: the poll publishes it with the whole event. It publishes when no trigger
+  would request a task, so a task that waits on the issue still wakes at once.
+- An issue whose payload names its project only by id publishes nothing, for the same reason. The
+  poll publishes it.
 
 `time` is the payload's: the issue's `createdAt` for a creation, the delivery's `createdAt` for a
 state change, and the comment's `createdAt`.
@@ -188,7 +191,10 @@ comes first.
 A state change cannot: its poll id is the history entry's. As for GitHub's labels, each writer
 looks for the other's report of the same change before it publishes: same issue and new state,
 within 60 seconds. The look, its limits and its lock file are as in [Duplicates](#duplicates).
-A webhook's state change gets the id `linear:webhook:state_changed:{sha256 of the body}`.
+A webhook's state change gets the id `linear:webhook:state_changed:{issue id}:{state id}:{createdAt}`,
+from signed fields a redelivery keeps, so Linear's retry makes the same id. When the poll finds a
+history entry that matches a delivery, it consumes that delivery, so two moves to one state within
+a minute stay two messages.
 
 A delivery does not move a poll's position or marker, so the poll still reads the change.
 
@@ -197,4 +203,6 @@ A delivery does not move a poll's position or marker, so the poll still reads th
 - A creation or comment that a delivery publishes first keeps the delivery's fields, with the
   differences above, since the poll's message with the same id is dropped.
 - A state change whose second report comes over 60 seconds after the first publishes twice.
+- Two moves to one state within a minute, where the poll publishes first, drop the second delivery
+  as a duplicate of the first poll's entry.
 - A team that no `linear` trigger names gets its events from polling only, as does every view.

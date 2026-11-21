@@ -4360,9 +4360,16 @@ fn linear_signature(secret: &str, body: &str) -> String {
 impl Setup {
     /// A factory with `[serve]`, the Linear webhook and `linear` triggers on team ENG.
     fn linear_hooks(name: &str) -> Self {
+        Self::linear_hooks_on(
+            name,
+            &["issue.created", "issue.state_changed", "comment.created"],
+        )
+    }
+
+    fn linear_hooks_on(name: &str, ons: &[&str]) -> Self {
         let setup = Setup::new(name, LINEAR_HOOKS);
         fs::create_dir_all(setup.dir.join("factory/triggers")).unwrap();
-        for on in ["issue.created", "issue.state_changed", "comment.created"] {
+        for on in ons {
             fs::write(
                 setup.dir.join(format!("factory/triggers/{on}.toml")),
                 linear_trigger(on),
@@ -4498,7 +4505,10 @@ fn polled_issue() -> Value {
 
 #[test]
 fn a_signed_linear_state_change_and_comment_publish_their_poll_types() {
-    let mut setup = Setup::linear_hooks("linear-state-comment");
+    let mut setup = Setup::linear_hooks_on(
+        "linear-state-comment",
+        &["issue.created", "issue.state_changed"],
+    );
     let address = setup.start(&["serve", &setup.factory()]);
 
     assert_eq!(setup.send_linear(&address, &linear_state_change()).0, 200);
@@ -4511,8 +4521,7 @@ fn a_signed_linear_state_change_and_comment_publish_their_poll_types() {
         [
             "linear.issue.state_changed",
             "factory.task.requested",
-            "linear.comment.created",
-            "factory.task.requested"
+            "linear.comment.created"
         ]
     );
     let mut state = published[0].data.clone();
@@ -4538,7 +4547,7 @@ fn a_signed_linear_state_change_and_comment_publish_their_poll_types() {
             "team": "ENG", "project": null, "project_id": null, "state": "", "labels": [],
             "actor": "max", "time": "2026-11-17T10:30:00.000Z",
             "delivery": "234d1a4e-b617-4388-90fe-adc3633d6b72", "baseline": false,
-            "triggers": ["comment.created"]
+            "triggers": []
         })
     );
 }
@@ -4574,6 +4583,11 @@ fn a_linear_delivery_with_a_wrong_signature_or_a_stale_timestamp_gets_401_before
     let mut early = linear_issue("create", "ENG");
     early["webhookTimestamp"] = json!(NOW_MS + 61_000);
     assert_eq!(setup.send_linear(&address, &early).0, 401);
+    for extreme in [i64::MIN, i64::MAX] {
+        let mut body = linear_issue("create", "ENG");
+        body["webhookTimestamp"] = json!(extreme);
+        assert_eq!(setup.send_linear(&address, &body).0, 401, "{extreme}");
+    }
     let mut edge = linear_issue("create", "ENG");
     edge["webhookTimestamp"] = json!(NOW_MS - 60_000);
     assert_eq!(setup.send_linear(&address, &edge).0, 200);
@@ -4649,7 +4663,10 @@ fn a_linear_webhook_then_a_poll_of_the_same_changes_make_one_message_each() {
             .collect()
     };
     let after = setup.published();
-    assert_eq!(kinds(&after), kinds(&before));
+    // The comment would request a task, so the poll publishes it.
+    let mut expected = kinds(&before);
+    expected.push("linear.comment.created".into());
+    assert_eq!(kinds(&after), expected);
     assert_eq!(
         after
             .iter()
@@ -4689,4 +4706,78 @@ fn a_linear_poll_then_a_webhook_of_the_same_changes_make_one_message_each() {
         assert_eq!(status, 200, "{reply}");
     }
     assert_eq!(setup.published(), before);
+}
+
+#[test]
+fn a_redelivered_linear_state_change_with_a_new_timestamp_makes_one_message() {
+    let mut setup = Setup::linear_hooks("linear-redelivery");
+    let address = setup.start(&["serve", &setup.factory()]);
+    assert_eq!(setup.send_linear(&address, &linear_state_change()).0, 200);
+    let first = setup.published();
+    let mut again = linear_state_change();
+    again["webhookTimestamp"] = json!(NOW_MS + 5_000);
+
+    assert_eq!(setup.send_linear(&address, &again).0, 200);
+
+    assert_eq!(setup.published(), first);
+}
+
+#[test]
+fn a_linear_poll_consumes_one_webhook_state_change_per_history_entry() {
+    let mut setup = Setup::linear_hooks("linear-repeated");
+    setup.poll_linear(json!([]), json!([]));
+    let address = setup.start(&["serve", &setup.factory()]);
+    assert_eq!(setup.send_linear(&address, &linear_state_change()).0, 200);
+    let mut issue = polled_issue();
+    let entry = issue["history"]["nodes"][0].clone();
+    let mut second = entry.clone();
+    second["id"] = json!("history-2");
+    second["createdAt"] = json!("2026-11-17T10:00:20.000Z");
+    issue["history"]["nodes"] = json!([entry, second]);
+
+    setup.poll_linear(json!([issue]), json!([]));
+
+    let changes = setup
+        .published()
+        .iter()
+        .filter(|m| m.kind == "linear.issue.state_changed")
+        .count();
+    assert_eq!(changes, 2);
+}
+
+#[test]
+fn a_linear_comment_publishes_only_when_it_would_request_no_task() {
+    let mut setup = Setup::linear_hooks_on("linear-comment-only", &["issue.created"]);
+    let address = setup.start(&["serve", &setup.factory()]);
+
+    assert_eq!(setup.send_linear(&address, &linear_comment()).0, 200);
+    assert_eq!(setup.send_linear(&address, &linear_state_change()).0, 200);
+
+    let kinds: Vec<_> = setup.published().into_iter().map(|m| m.kind).collect();
+    assert_eq!(
+        kinds,
+        ["linear.comment.created", "linear.issue.state_changed"]
+    );
+    let mut setup = Setup::linear_hooks("linear-comment-triggered");
+    let address = setup.start(&["serve", &setup.factory()]);
+
+    let (status, reply) = setup.send_linear(&address, &linear_comment());
+
+    assert_eq!(status, 200);
+    assert_eq!(reply, r#"{"outcome":"dropped"}"#);
+    assert!(setup.published().is_empty());
+}
+
+#[test]
+fn a_linear_issue_whose_project_the_payload_names_only_by_id_waits_for_the_poll() {
+    let mut setup = Setup::linear_hooks("linear-project-id");
+    let address = setup.start(&["serve", &setup.factory()]);
+    let mut body = linear_issue("create", "ENG");
+    body["data"]["projectId"] = json!("project-1");
+
+    let (status, reply) = setup.send_linear(&address, &body);
+
+    assert_eq!(status, 200);
+    assert_eq!(reply, r#"{"outcome":"dropped"}"#);
+    assert!(setup.published().is_empty());
 }
