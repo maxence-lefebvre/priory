@@ -1,0 +1,24 @@
+# A green issue goes from its label to a pull request whose checks pass.
+# Run it with `cargo test -p priory --test factory_e2e`; see docs/testing-a-factory.md.
+
+[request]
+trigger = "groom-label"
+key = "github:owner/repo#42"
+
+[[turns]]
+calls = [{ name = "result", arguments = { outcome = "green", summary = "Green: one function and its test" } }]
+
+[[turns]]
+calls = [{ name = "result", arguments = { outcome = "passed", summary = "Add the widget\nIt draws a box.", evidence = "cargo test passed" } }]
+
+# open-pr pushes the branch and opens pull request 7, then the task sleeps on its checks at
+# implement-green, the step whose result opened it. {head} is the commit open-pr pushed.
+[[events]]
+at = "implement-green"
+type = "github.check_run.completed"
+subject = "owner/repo#7"
+data = { repo = "owner/repo", pull_request = 7, head_branch = "priory/1", head_sha = "{head}", base_branch = "main", name = "test", conclusion = "success", github_id = 1, pending = 0, failing = 0 }
+
+[expect]
+path = ["groom:green", "implement-green:passed", "open-pr:opened"]
+state = "done"

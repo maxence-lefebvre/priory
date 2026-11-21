@@ -116,6 +116,9 @@ such as `gh pr merge` or `git push origin main`, and tells the agent to `ask`. T
 its step names the guard in `guard.allow` and is approved or `autonomous`, or when its workflow's
 `guard.allow` names it. A merge or an approving review needs an approved step. See [guard.md](docs/daemon/guard.md).
 
+To play a task through the whole factory with fake agents before a real one runs, follow
+[testing-a-factory.md](docs/testing-a-factory.md).
+
 ## 4. Pick a starter
 
 The repository's `examples/` folder holds ready-made factories. Each one passes `priory check`, and
