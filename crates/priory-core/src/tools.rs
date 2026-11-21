@@ -3,8 +3,8 @@ use crate::route;
 use crate::trace::{self, Trace};
 use priory_factory::factory::{Decider, Effect, Factory, Harness, Loaded, Step, Workflow};
 use priory_intake::intake::{
-    CHECK_RUNS, CHECKED, COMMENTED, ISSUE_COMMENTED, PASSING, PR_CLOSED as CLOSED, REVIEWED,
-    THREAD_COMMENTED,
+    CHECK_RUNS, CHECKED, COMMENTED, ISSUE_CLOSED, ISSUE_COMMENTED, PASSING, PR_CLOSED as CLOSED,
+    REVIEWED, THREAD_COMMENTED,
 };
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 use serde_json::Value;
@@ -2358,16 +2358,24 @@ pub(crate) fn reopenable(
     if settles(&message.kind, data) || data["open"] == false {
         return Ok(None);
     }
+    // Pull request feedback reaches what the task owns; a comment elsewhere, its subscriptions only.
+    let owner = match FEEDBACK.contains(&message.kind.as_str()) {
+        true => "owned",
+        false => "subscriptions",
+    };
     tx.query_row(
-        "SELECT tasks.id FROM owned JOIN tasks ON tasks.id = owned.task
-         WHERE owned.resource = ?1 AND tasks.state = 'done'
-         AND julianday(?2) >= julianday(tasks.changed)
-         AND NOT EXISTS (SELECT 1 FROM inbox WHERE type = ?3
-           AND 'github:' || json_extract(data, '$.repo') || '#' || json_extract(data, '$.pull_request') = ?1)
-         AND NOT EXISTS (SELECT 1 FROM tasks AS other WHERE other.key = tasks.key
-           AND other.state NOT IN ('done', 'failed', 'dropped'))
-         ORDER BY tasks.id DESC LIMIT 1",
-        params![resource, message.time.to_string(), CLOSED],
+        &format!(
+            "SELECT tasks.id FROM {owner} AS held JOIN tasks ON tasks.id = held.task
+             WHERE held.resource = ?1 AND tasks.state = 'done'
+             AND julianday(?2) >= julianday(tasks.changed)
+             AND NOT EXISTS (SELECT 1 FROM inbox WHERE type IN (?3, ?4) AND 'github:'
+               || json_extract(data, '$.repo') || '#'
+               || coalesce(json_extract(data, '$.pull_request'), json_extract(data, '$.issue')) = ?1)
+             AND NOT EXISTS (SELECT 1 FROM tasks AS other WHERE other.key = tasks.key
+               AND other.state NOT IN ('done', 'failed', 'dropped'))
+             ORDER BY tasks.id DESC LIMIT 1"
+        ),
+        params![resource, message.time.to_string(), CLOSED, ISSUE_CLOSED],
         |row| row.get(0),
     )
     .optional()

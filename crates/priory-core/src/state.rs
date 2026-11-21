@@ -5,7 +5,7 @@ use herdr_bus::Message;
 use priory_factory::explain;
 use priory_factory::factory::{Factory, Loaded, Session, Workflow};
 use priory_factory::lanes::{Lanes, Subject};
-use priory_intake::intake::PR_CLOSED as CLOSED;
+use priory_intake::intake::{ISSUE_CLOSED, PR_CLOSED as CLOSED};
 use priory_runtime::room::Room;
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 use std::collections::BTreeMap;
@@ -1021,11 +1021,13 @@ pub(crate) fn handle(
                 "INSERT INTO owns (task, resource) VALUES (?1, ?2)",
                 params![id, new.key],
             )?;
-            // Its own issue, pull request or thread wakes it and reopens it once done.
+            // Its own issue, pull request or thread wakes it and reopens it once done. It reads from
+            // the request's time, so a reply posted before the task existed still reaches it.
             if let Some(resource) = crate::subscribe::resource(&new.key) {
                 tx.execute(
-                    "INSERT INTO subscriptions (task, resource) VALUES (?1, ?2)",
-                    params![id, resource],
+                    "INSERT INTO subscriptions (task, resource, created) VALUES (?1, ?2,
+                       min(strftime('%Y-%m-%dT%H:%M:%SZ', ?3, 'unixepoch'), strftime('%Y-%m-%dT%H:%M:%SZ', 'now')))",
+                    params![id, resource, message.time.as_second()],
                 )?;
                 tx.execute(
                     "DELETE FROM subscriptions WHERE resource = ?2 AND task != ?1
@@ -1143,7 +1145,7 @@ pub(crate) fn handle(
         _ => {}
     }
     // After the delivery above, so the close reaches its subscribers.
-    if message.kind == CLOSED {
+    if [CLOSED, ISSUE_CLOSED].contains(&message.kind.as_str()) {
         tx.execute(
             "DELETE FROM subscriptions WHERE resource = ?1",
             [resources.first()],
@@ -1338,9 +1340,9 @@ pub fn watched(db: &Connection) -> rusqlite::Result<Vec<(String, String)>> {
            SELECT 2, subscriptions.rowid, subscriptions.resource, subscriptions.created
            FROM subscriptions
            JOIN tasks ON tasks.id = subscriptions.task AND tasks.state NOT IN ('failed', 'dropped')
-           -- Slack reads one thread per call, so a done task's thread is read for a week only.
-           WHERE NOT (tasks.state = 'done' AND subscriptions.resource GLOB 'slack:*'
-             AND julianday('now') - julianday(tasks.changed) >= 7)
+           -- Slack reads one thread per call, so a done task's own thread is read for a week only.
+           WHERE NOT (tasks.state = 'done' AND subscriptions.resource = tasks.key
+             AND tasks.key GLOB 'slack:*' AND julianday('now') - julianday(tasks.changed) >= 7)
            UNION ALL
            SELECT 3, owns.rowid, owns.resource, tasks.changed FROM owns
            JOIN tasks ON tasks.id = owns.task

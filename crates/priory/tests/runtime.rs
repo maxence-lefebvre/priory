@@ -9040,6 +9040,70 @@ fn a_comment_on_a_done_tasks_own_issue_or_thread_reopens_it() {
     }
 }
 
+/// A comment by ana on issue 42, written now.
+fn issue_commented(github_id: u64) -> Message {
+    Message::new(
+        "github.issues.comment",
+        json!({ "repo": "owner/repo", "issue": 42, "actor": "ana", "body": "Also the empty case.",
+                "url": "u", "github_id": github_id }),
+    )
+    .subject("owner/repo#42")
+    .time(herdr_bus::Timestamp::now())
+}
+
+#[test]
+fn a_comment_on_a_done_tasks_issue_reopens_nothing_once_it_unsubscribed_or_the_issue_closed() {
+    let closed = Message::new(
+        "github.issues.closed",
+        json!({ "repo": "owner/repo", "issue": 42, "title": "t", "url": "u", "actor": "ana", "github_id": 5 }),
+    )
+    .subject("owner/repo#42");
+    for (name, close) in [("issue-reopen-unsubscribed", false), ("issue-reopen-closed", true)] {
+        let mut setup = Setup::new(name);
+        setup.calls(&[result("passed")]);
+        setup.publish(&requested(42));
+        setup.start();
+        setup.until("tasks", |rows| {
+            rows.first().is_some_and(|row| row[4] == "done")
+        });
+        std::thread::sleep(Duration::from_millis(1100));
+        if close {
+            setup.publish(&closed.clone().time(herdr_bus::Timestamp::now()));
+            setup.until("inbox", |rows| rows.len() == 2);
+            assert_eq!(task_json(&setup, "1")["subscriptions"], json!([]), "{name}");
+        } else {
+            let output = setup.priory(&["unsubscribe", "1", "github:owner/repo#42"]);
+            assert!(output.status.success(), "{output:?}");
+        }
+
+        setup.publish(&issue_commented(902));
+
+        let inbox = setup.until("inbox", |rows| {
+            rows.iter().any(|row| row[1] == "github.issues.comment")
+        });
+        assert_eq!(inbox.last().unwrap()[4], "ignored", "{name}: {inbox:?}");
+        assert_eq!(setup.rows("tasks")[0][4], "done", "{name}");
+    }
+}
+
+#[test]
+fn a_comment_on_an_issue_wakes_the_task_keyed_on_it() {
+    let setup = asleep_on(
+        "issue-comment-wakes",
+        json!({ "type": "time", "until": "1 hour" }),
+    );
+
+    setup.publish(&issue_commented(901));
+
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 2);
+    let typed = setup.typed();
+    assert!(
+        typed[1].starts_with("github.issues.comment owner/repo#42 {")
+            && typed[1].contains("Also the empty case."),
+        "{typed:?}"
+    );
+}
+
 #[test]
 fn a_slack_reply_wait_fires_on_a_new_reply_in_its_thread_only() {
     let setup = asleep_on(
@@ -9214,12 +9278,17 @@ fn a_reply_in_the_thread_of_a_slack_tasks_key_wakes_the_task_with_no_wait_on_it(
     let key = format!("slack:C0123:{THREAD}");
     let mut request = requested(42);
     request.data["key"] = json!(key);
-    setup.publish(&request.subject(&key));
+    // The request carries its trigger message's time; the reply came before the task existed.
+    let posted = herdr_bus::Timestamp::now()
+        .checked_sub(Duration::from_secs(60))
+        .unwrap();
+    setup.publish(&request.subject(&key).time(posted));
     setup.start();
     setup.until("runs", |rows| {
         rows.first().is_some_and(|row| row[7] == "asleep")
     });
-    setup.answer_slack(&[slack_message(&ts(herdr_bus::Timestamp::now()), "U0PERSON")]);
+    let before_task = posted.checked_add(Duration::from_secs(10)).unwrap();
+    setup.answer_slack(&[slack_message(&ts(before_task), "U0PERSON")]);
 
     setup.intake();
 
@@ -9229,6 +9298,28 @@ fn a_reply_in_the_thread_of_a_slack_tasks_key_wakes_the_task_with_no_wait_on_it(
         "{:?}",
         setup.typed()
     );
+}
+
+#[test]
+fn a_wait_on_a_slack_tasks_own_thread_reads_the_thread_once_a_poll() {
+    let mut setup = Setup::new("slack-key-wait");
+    setup.calls(&[wait(
+        json!({ "type": "slack_reply", "channel": "C0123", "thread_ts": THREAD }),
+    )]);
+    let key = format!("slack:C0123:{THREAD}");
+    let mut request = requested(42);
+    request.data["key"] = json!(key);
+    setup.publish(&request.subject(&key));
+    setup.start();
+    setup.until("runs", |rows| {
+        rows.first().is_some_and(|row| row[7] == "asleep")
+    });
+    setup.answer_slack(&[]);
+
+    setup.intake();
+
+    let args = fs::read_to_string(setup.dir.join("curl-args")).unwrap();
+    assert_eq!(args.matches("conversations.replies").count(), 1, "{args}");
 }
 
 #[test]

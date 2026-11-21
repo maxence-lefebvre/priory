@@ -17,8 +17,9 @@ On every poll, the intake reads the state file that `PRIORY_DB` names and collec
 
 It skips the waits and holds of a task that is `done`, `failed` or `dropped`, and the subscriptions
 of one that is `failed` or `dropped`. A done task's subscriptions stay, so feedback can reopen it.
-A done task's Slack thread is the exception: the intake stops reading it 7 days after the task was
-done, since each thread costs a call per poll. Without `PRIORY_DB`,
+A done task's own Slack thread, its key, is the exception: the intake stops reading it 7 days after
+the task was done, since each thread costs a call per poll. A thread that a wait and a subscription
+both name is read once a poll, from the earlier of their times. Without `PRIORY_DB`,
 the intake watches none of them.
 
 Each wait gives a resource and the time of its agent's last prompt. A subscription gives its

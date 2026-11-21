@@ -220,12 +220,15 @@ For example, to hear every review of an upstream pull request while the task wor
 
 A task subscribes to its own key when it is created, when the key names an issue, a pull request,
 a Linear issue or a Slack thread. So a reply in the Slack thread that started a task wakes it, and a
-comment on its Linear issue reopens it once done.
+comment on its Linear issue reopens it once done. That subscription reads from the time of the
+event that requested the task, so a reply posted before the task existed still reaches it.
 
 `subscribe` is refused while another active task owns the resource: `github:owner/name#57 belongs
 to task 3, not this one`. A done task does not block it: its subscription ends and the active
-task's starts. A `github.pull_request.closed` event ends every subscription to its pull request.
-Linear issues and Slack threads stay subscribed until `unsubscribe` or the task retires.
+task's starts. A `github.pull_request.closed` or `github.issues.closed` event ends every
+subscription to its pull request or issue. Linear issues and Slack threads stay subscribed until
+`unsubscribe` or the task retires. The intake stops reading a done task's own Slack thread 7 days
+after it was done (see [watches.md](../intake/watches.md)).
 
 When another task takes an event on the resource, such as the task keyed by that pull request, the
 subscriber still gets it: a prompt of its own while it runs, or a wake while it sleeps. A close

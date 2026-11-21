@@ -71,8 +71,8 @@ Each is published once, with a link to the issue.
 ## Limits
 
 - A webhook delivery of an issue's close or comment publishes nothing. The next poll publishes it.
-- The comments list reads the newest 100 per poll. Over 100 comments in a minute, the older ones
-  are missed.
+- The comments list reads the newest 100 conversation comments per poll, issues and pull requests
+  together. Over 100 between two successful polls, the older ones are missed.
 - An `opened` event's `title` is the title at poll time, which may differ from the title the issue
   was opened with.
 - The other limits of GitHub polling are in [github-polling.md](github-polling.md#limits).

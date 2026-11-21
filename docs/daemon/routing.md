@@ -161,10 +161,12 @@ Feedback is one of these events:
 
 When no active task owns a resource it names, it reopens the newest done task that:
 
-- owns the pull request, issue or thread it is on: as its key, through `open-pr`, a claim, a
-  wait or a subscription;
+- owns the pull request it is on, as its key, through `open-pr`, a claim, a wait or a
+  subscription; or, for a comment on an issue, a Linear issue or a Slack thread, subscribes to it,
+  as every task does to its own key until it unsubscribes;
 - became done at or before the feedback's `time`, to the second;
-- has no `github.pull_request.closed` event of that pull request in the inbox, merged or not, and
+- has no `github.pull_request.closed` or `github.issues.closed` event of that pull request or issue
+  in the inbox, merged or not, and
   the feedback's `open` is true, so a close the intake publishes after it reopens nothing;
 - shares its key with no active task.
 
