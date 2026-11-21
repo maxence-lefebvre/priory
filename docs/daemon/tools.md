@@ -20,6 +20,14 @@ wait or both. A `result` after an open ask or wait is refused, as is a second `a
 `wait`. An ask and a wait side by side wake the task on the first answer or event (see An ask
 beside a wait in [waits.md](waits.md)).
 
+Feedback the task kept while the agent ran waits in a queued prompt (see
+[routing.md](routing.md#what-a-kept-message-does)). Feedback is a person's comment, reply or review
+that asks for something, as [routing.md](routing.md#feedback-reopens-a-done-task) lists it, and not
+Priory's own comment. Until that prompt is typed, `result` and `ask` are refused with
+`feedback for this run is queued: end your turn to read it`. So a review comment read during the
+turn reaches the agent before the task ends or sleeps. Other kept events, such as check runs, do
+not refuse them.
+
 ### `result(outcome, summary, evidence?, commit?, reason?, branches?, risk?, goal?, testing?, brief?, verification?, feedback?)`
 
 `result` stores the run's result and ends the step. Nothing can change or delete a stored result.

@@ -195,7 +195,8 @@ unrouted events of the last 24 hours (see [desk.md](desk.md#unrouted-events)).
 What happens to a `kept` message depends on the task's state:
 
 - For a `running` task, the daemon also queues an outbox prompt with the message, so the agent reads
-  it after its current turn.
+  it after its current turn. Until then, for feedback, the agent's `result` and `ask` are refused
+  (see [tools.md](tools.md#the-tools)).
 - If the message satisfies the task's open wait, the wait fires in any active state (see
   [waits.md](waits.md)). An asleep task wakes. A ready, blocked or held task keeps its state, and
   its next run gets the prompt.

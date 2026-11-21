@@ -191,6 +191,10 @@ pub(crate) fn call(
         ("ask" | "wait", ..) if woken(&tx, &run)? => {
             Some("an answer or event for this run is queued: end your turn to read it".to_owned())
         }
+        // A result or ask would end or sleep the task over feedback it has not read yet.
+        ("result" | "ask", ..) if kept(&tx, run.task)? => {
+            Some("feedback for this run is queued: end your turn to read it".to_owned())
+        }
         // Its end would wake the task at whatever step the result moved it to.
         ("result", ..) if commanding(&tx, run.task)? => Some(
             "an answer's command for this task runs: end your turn, and its end wakes the task"
@@ -812,6 +816,23 @@ fn woken(tx: &Transaction, run: &Run) -> rusqlite::Result<bool> {
         params![run.id, run.task],
         |row| row.get(0),
     )
+}
+
+/// Whether a person's feedback the task kept while it ran waits in a queued prompt.
+fn kept(tx: &Transaction, task: i64) -> rusqlite::Result<bool> {
+    let mut statement = tx.prepare(
+        "SELECT inbox.type, inbox.data FROM inbox JOIN outbox ON outbox.id = inbox.outbox
+         WHERE inbox.task = ?1 AND inbox.outcome = 'kept' AND outbox.state = 'queued'",
+    )?;
+    let mut rows = statement.query([task])?;
+    while let Some(row) = rows.next()? {
+        let kind: String = row.get(0)?;
+        let data: Value = serde_json::from_str(&row.get::<_, String>(1)?).unwrap_or_default();
+        if feedback_on(&kind, &data).is_some() && !settles(&kind, &data) && data["own"] != true {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 fn commanding(tx: &Transaction, task: i64) -> rusqlite::Result<bool> {
