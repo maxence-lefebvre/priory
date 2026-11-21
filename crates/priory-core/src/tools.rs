@@ -146,18 +146,22 @@ fn optional(arguments: &Value, name: &str) -> Result<Option<String>, String> {
 }
 
 /// Applies a tool call from the run whose harness session is `call.session`. The inner error is
-/// the tool's error, returned to the agent with nothing stored.
+/// the tool's error, returned to the agent with nothing stored. Also returns the tmux session of a
+/// run the call ended, to kill once the agent has its reply.
 pub(crate) fn call(
     db: &mut Connection,
     call: &Call,
     trace: &Trace,
     head: &dyn Fn(&Path, &str) -> Option<String>,
-) -> rusqlite::Result<Result<String, String>> {
+) -> rusqlite::Result<(Result<String, String>, Option<String>)> {
     let factory = trace.factory;
     let workflows = &factory.workflows;
     let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
     let Some(run) = run(&tx, &call.session)? else {
-        return Ok(Err(format!("no live run has session {}", call.session)));
+        return Ok((
+            Err(format!("no live run has session {}", call.session)),
+            None,
+        ));
     };
     if let Some(outcome) = tx
         .query_row(
@@ -167,10 +171,13 @@ pub(crate) fn call(
         )
         .optional()?
     {
-        return Ok(Err(format!(
-            "run {} already has a result, {outcome}; a result is final",
-            run.id
-        )));
+        return Ok((
+            Err(format!(
+                "run {} already has a result, {outcome}; a result is final",
+                run.id
+            )),
+            None,
+        ));
     }
     // An ask and a wait may sit side by side: the first answer or event wins.
     let open_ask = tx
@@ -199,7 +206,7 @@ pub(crate) fn call(
         _ => None,
     };
     if let Some(refused) = refused {
-        return Ok(Err(refused));
+        return Ok((Err(refused), None));
     }
     // The run moves on from the asks and waits of earlier runs. A refused call rolls this back.
     tx.execute(
@@ -212,6 +219,7 @@ pub(crate) fn call(
          AND fired IS NULL AND withdrawn IS NULL AND NOT daemon",
         params![run.task, run.id],
     )?;
+    let mut kill = None;
     let stored = match call.tool.as_str() {
         // A result moves the task, maybe to another agent's conversation, before the compact is typed.
         "result" if compact_queued(&tx, run.task)? => Err(
@@ -223,15 +231,20 @@ pub(crate) fn call(
             Err(refused) => Err(refused),
         },
         "ask" => ask(&tx, &run, &call.arguments, factory)?,
-        "wait" => wait(&tx, &run, &call.arguments, factory)?,
+        "wait" => {
+            let (stored, ended) = wait(&tx, &run, &call.arguments, factory)?;
+            kill = ended;
+            stored
+        }
         "compact" => compact(&tx, &run, &call.arguments, factory)?,
         tool => Err(format!("unknown tool {tool}")),
     };
     if stored.is_ok() {
         tx.execute("UPDATE runs SET nudgeable = 0 WHERE id = ?1", [run.id])?;
         tx.commit()?;
+        return Ok((stored, kill));
     }
-    Ok(stored)
+    Ok((stored, None))
 }
 
 fn result(
@@ -903,26 +916,27 @@ pub(crate) fn resource(on: &Value) -> Result<String, String> {
 
 /// Stores a wait on each condition of `on` or `any`, and fires the first that already holds: an
 /// event since the agent's last prompt, a passed time or an ended task. The daemon reads the
-/// current states it can afterwards, outside this call (see `readable`).
+/// current states it can afterwards, outside this call (see `readable`). Also returns the tmux
+/// session of a run that a merge the catch-up judged ended, to kill once the agent has its reply.
 fn wait(
     tx: &Transaction,
     run: &Run,
     arguments: &Value,
     factory: &Factory,
-) -> rusqlite::Result<Result<String, String>> {
+) -> rusqlite::Result<(Result<String, String>, Option<String>)> {
     let conditions = match conditions(arguments) {
         Ok(conditions) => conditions,
-        Err(error) => return Ok(Err(error)),
+        Err(error) => return Ok((Err(error), None)),
     };
     let mut ids = Vec::new();
     for on in conditions {
         match condition(tx, run, on)? {
             Ok(id) => ids.push(id.to_string()),
-            Err(error) => return Ok(Err(error)),
+            Err(error) => return Ok((Err(error), None)),
         }
     }
     let ids = ids.join(", ");
-    let caught = catch_up(tx, run.task, factory)?;
+    let (caught, kill) = catch_up(tx, run.task, factory)?;
     if !caught {
         due(tx)?;
     }
@@ -945,7 +959,7 @@ fn wait(
             "waits {ids} stored: end your turn now; Priory wakes you with the first event that satisfies one of them"
         ),
     };
-    Ok(Ok(reply))
+    Ok((Ok(reply), kill))
 }
 
 /// The conditions of a wait call: `on`, one condition, or `any`, a list of them.
@@ -1124,8 +1138,8 @@ pub(crate) fn instant(tx: &Transaction, until: &str) -> rusqlite::Result<Result<
 
 /// Fires the task's open wait on the first event since the agent's last prompt that satisfies it,
 /// on which none of its waits fired: one it kept and was not typed yet, or one another task kept
-/// since that prompt. Says whether one did.
-fn catch_up(tx: &Transaction, task: i64, factory: &Factory) -> rusqlite::Result<bool> {
+/// since that prompt. Says whether one did, with the tmux session of a run its firing ended.
+fn catch_up(tx: &Transaction, task: i64, factory: &Factory) -> rusqlite::Result<Fired> {
     let mut candidates = Vec::new();
     {
         let mut statement = tx.prepare(
@@ -1144,12 +1158,12 @@ fn catch_up(tx: &Transaction, task: i64, factory: &Factory) -> rusqlite::Result<
         }
     }
     for seq in candidates {
-        // A run a merge ends here is the caller's own; the next launch kills its session.
-        if event(tx, task, seq, factory)?.0 {
-            return Ok(true);
+        let fired = event(tx, task, seq, factory)?;
+        if fired.0 {
+            return Ok(fired);
         }
     }
-    Ok(false)
+    Ok((false, None))
 }
 
 /// Whether a wait fired, and the tmux session of a run its firing ended, to kill once committed.
