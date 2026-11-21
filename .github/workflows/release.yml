@@ -22,6 +22,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          fetch-depth: 0
       - name: Refuse a tag that differs from the workspace version
         run: |
           test "$(grep -c '^version = ' Cargo.toml)" -eq 1
@@ -29,6 +30,13 @@ jobs:
           echo "Workspace version: $version"
           if [ "$GITHUB_REF_TYPE" = tag ] && [ "$GITHUB_REF_NAME" != "v$version" ]; then
             echo "::error::Tag $GITHUB_REF_NAME differs from the workspace version $version"
+            exit 1
+          fi
+      - name: Refuse a tag on a commit that is not on main
+        if: github.ref_type == 'tag'
+        run: |
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+            echo "::error::Tag $GITHUB_REF_NAME points at $GITHUB_SHA, which is not on main"
             exit 1
           fi
 
@@ -118,15 +126,26 @@ jobs:
     runs-on: ubuntu-24.04
     permissions:
       contents: write
+      id-token: write
+      attestations: write
     steps:
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           path: dist
           merge-multiple: true
+      - name: Attest the build provenance of each asset, for gh attestation verify
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: dist/*
       - name: Publish the release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           ls -l dist
+          # A version with a pre-release part, such as 0.2.0-rc1, must not become "latest".
+          case "$GITHUB_REF_NAME" in
+            *-*) prerelease=--prerelease ;;
+            *) prerelease= ;;
+          esac
           gh release create "$GITHUB_REF_NAME" dist/* --repo "$GITHUB_REPOSITORY" --verify-tag \
-            --title "Priory $GITHUB_REF_NAME" --generate-notes
+            --title "Priory $GITHUB_REF_NAME" --generate-notes $prerelease

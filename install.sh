@@ -4,6 +4,12 @@
 #   sh install.sh --prefix /usr/local
 # PRIORY_RELEASE_URL picks another release, for example
 #   https://github.com/maxence-lefebvre/priory/releases/download/v0.1.0
+#
+# The .sha256 comes from the same release as the binary, so it only catches a broken download:
+# whoever can replace the binary can replace its checksum too. When gh is on PATH and signed in,
+# the script also checks with `gh attestation verify` that the release workflow of this
+# repository built the binary, and refuses it otherwise. Without gh it prints a note and skips
+# that check.
 set -eu
 
 fail() {
@@ -57,6 +63,17 @@ main() {
     actual="$(sha256 "$tmp/$asset")" || fail "could not compute the checksum of $asset"
     actual="${actual%% *}"
     [ "$expected" = "$actual" ] || fail "checksum mismatch for $asset: expected $expected, got $actual"
+
+    if ! command -v gh >/dev/null; then
+        echo "Skipped the provenance check: gh is not on PATH. The checksum only catches a broken download."
+    elif ! gh auth status >/dev/null 2>&1; then
+        echo "Skipped the provenance check: gh is not signed in. The checksum only catches a broken download."
+    else
+        echo "Checking the build provenance of $asset with gh"
+        gh attestation verify "$tmp/$asset" --repo maxence-lefebvre/priory \
+            --signer-workflow maxence-lefebvre/priory/.github/workflows/release.yml >/dev/null \
+            || fail "gh found no build provenance from the release workflow for $asset"
+    fi
 
     chmod 755 "$tmp/$asset"
     mv -f "$tmp/$asset" "$prefix/bin/priory"
