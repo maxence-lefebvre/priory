@@ -34,6 +34,7 @@ fn places() -> String {
 const IRREVERSIBLE: &str = "CASE asks.kind
        WHEN 'step' THEN EXISTS (SELECT 1 FROM irreversible_asks AS gate
          WHERE gate.workflow = tasks.workflow AND gate.step = asks.step)
+         OR coalesce(json_array_length(asks.command, '$.runs') > 0, 0)
        WHEN 'agent' THEN coalesce(json_array_length(asks.command, '$.runs') > 0, 0)
        ELSE 0 END";
 

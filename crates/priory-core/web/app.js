@@ -320,10 +320,11 @@ function todoRow(item) {
     <span class="l2 r">${autolinked(item.what, null)}</span>${todoDone(item.id)}</div>`;
 }
 
-function todoDone(id) {
+// `place` keeps the next thing card's button apart from the row's, so focus returns to the one tapped.
+function todoDone(id, place = "row") {
   const busy = state.todoBusy !== null || Boolean(state.failed);
   const notice = state.todoNotices.get(id);
-  return html`<span class="task-acts"><button id="todo-${id}" class="btn secondary act" data-action="todo-done" data-todo="${id}" aria-disabled="${busy ? "true" : "false"}">Done</button></span>${notice ? html`<p class="note acts-note" role="status">${notice}</p>` : ""}`;
+  return html`<span class="task-acts"><button id="todo-${place}-${id}" class="btn secondary act" data-action="todo-done" data-todo="${id}" aria-disabled="${busy ? "true" : "false"}">Done</button></span>${notice ? html`<p class="note acts-note" role="status">${notice}</p>` : ""}`;
 }
 
 async function markDone(target) {
@@ -428,7 +429,7 @@ function nextCard(model) {
   const kind = ["prompt", "command"].includes(item.kind) ? "prompt" : item.kind === "report" ? "lost" : item.kind;
   const href = nextLink(item);
   const verb = ask ? "Answer…" : href?.startsWith("#") ? "See the banner" : "Open task";
-  const button = item.kind === "todo" ? todoDone(item.id) : href ? html`<a class="btn ${ask ? "primary" : "secondary"}" href="${href}">${verb}</a>` : "";
+  const button = item.kind === "todo" ? todoDone(item.id, "next") : href ? html`<a class="btn ${ask ? "primary" : "secondary"}" href="${href}">${verb}</a>` : "";
   return html`<section class="next" aria-label="The next thing"><p class="l1">${tile(kind, "sm")}<span class="mono">${item.key || ""}</span><span>${item.step || ""}</span><span class="age">${timeTag(item.since)}</span></p>
     <p class="q">${autolinked(text, ask?.repo || task?.repo)}</p><p class="why t-${role(kind)}">${item.why}</p>
     ${ask?.recommendation ? html`<p class="rec">${icon("corner-down-right", "s15")}<span>${ask.recommendation}</span></p>` : ""}

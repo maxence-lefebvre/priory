@@ -24,7 +24,7 @@ cp -r examples/release-checklist my-factory
 priory check my-factory
 export PRIORY_DB=~/.local/state/priory-oss/priory.db
 priory daemon my-factory &
-priory add "Release 1.2.0"
+priory add my-factory "Release 1.2.0"
 priory desk                   # the changelog step's ask
 priory answer 1 written --revision 1
 priory answer --run 2 run --revision 1

@@ -3753,6 +3753,8 @@ fn a_runbook_of_human_steps_advances_on_answers_and_runs_its_step_command_once_o
 
     let checked = setup.priory(&["answer", "1", "ok", "--revision", "1"]);
     let asks = setup.until("asks", |rows| rows.first().is_some_and(|row| row[0] == "2"));
+    let desk: serde_json::Value =
+        serde_json::from_slice(&setup.priory(&["desk", "--json"]).stdout).unwrap();
     let without = setup.priory(&["answer", "2", "run", "--revision", "1"]);
     let ran = setup.priory(&["answer", "--run", "2", "run", "--revision", "1"]);
     let tasks = setup.until("tasks", |rows| with(rows, 4, "done") == 1);
@@ -3760,6 +3762,10 @@ fn a_runbook_of_human_steps_advances_on_answers_and_runs_its_step_command_once_o
 
     assert!(checked.status.success(), "{checked:?}");
     assert_eq!(asks[0][3], "test");
+    assert_eq!(
+        desk["next"]["why"], "its answer lets an irreversible step run",
+        "{desk}"
+    );
     assert!(!without.status.success(), "{without:?}");
     assert!(ran.status.success(), "{ran:?}");
     assert_eq!(tasks.len(), 1);

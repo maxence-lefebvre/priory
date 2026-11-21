@@ -153,8 +153,8 @@ resolved to a folder, when the task enters the step. A step whose target is `wor
 task with no worktree, with the reason `step <id>: command target worktree: this task has no
 worktree`. The answer runs it as above. When it ends, the task moves by the answer on exit 0 and
 asks the step again otherwise, with `answer "<option>" ran <argv> in <dir>: <exit>.` in the
-question, or the uncertain outcome. Its ask counts as one whose answer runs a command, so a lead
-never answers it.
+question, or the uncertain outcome. Its ask counts as one whose answer runs a command: a lead
+never answers it, and its risk is `irreversible`, as an agent's command ask's is.
 
 `priory actions` lists each answer's action. `priory asks --json` and `/api/asks` show it on the
 ask as `ran`: its `status`, `revision`, `error`, `stdout` and `stderr`.
