@@ -645,6 +645,12 @@ export default class PrioryAsks extends View {
       items.push(["Snooze until tomorrow 09:00", "", (cx) => this.snooze(ask, { until: tomorrowAt(9, Date.now()) }, cx), "clock"]);
     }
     if (ask.task != null) {
+      // The Priory bar opens the Task tab, and the Task panel shows the task.
+      items.push(["Open task", "", (cx) => {
+        this.popover = null;
+        setShared("priory.task.open", { task: ask.task, at: Date.now() });
+        cx.notify();
+      }, "arrow-right"]);
       items.push(["Attach to task", "", (cx) => {
         this.popover = null;
         setShared("priory.attach", { task: ask.task, at: Date.now() });

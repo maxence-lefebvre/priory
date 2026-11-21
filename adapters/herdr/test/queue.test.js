@@ -176,3 +176,20 @@ test("a row whose task owns a stack of two or more says how many PRs, from `prio
   assert.deepEqual(rows.filter((row) => row.prs).map((row) => [row.key, row.prs]), [["cli:PRI-66", "2 PRs"], ["cli:PRI-73", "3 PRs"]]);
   assert.equal(rows.find((row) => row.key === "cli:PRI-74").prs, null);
 });
+
+test("an opened row's Open task opens the task in the Task panel", async () => {
+  const { context, draw, herdr, press, settle } = await import("./kit.js");
+  const { default: Queue } = await import("../mods/priory-queue/main.js");
+  herdr.reset();
+  herdr.replies = { queue, desk: { items: [] }, tasks: { tasks: [] }, links: { links: [] } };
+  const panel = new Queue();
+  const cx = context();
+  panel.init({}, cx);
+  await settle();
+  const task = queueList(queue, { view: "next", now }).sections[0].rows[0].id;
+  panel.select(task, cx);
+
+  press(draw(panel, cx), `open-${task}`);
+  assert.equal(herdr.shared.get("priory.task.open").task, task);
+  assert.equal(herdr.shared.get("priory.attach"), undefined);
+});

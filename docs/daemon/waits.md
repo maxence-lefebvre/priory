@@ -216,6 +216,9 @@ wait and at each new event:
 | Else, no check at the commit, and the newest `github.pull_request.check_runs` snapshot at it has `runs` 0 | marks the task done and starts no run  |
 | Otherwise                                                                           | the task sleeps on                     |
 
+When the wait marks the task done while a person's `say` has a run going, that run ends as `done`
+and its session is killed.
+
 Each wake line is followed by the event's own line, unless a queued prompt already carries it. The
 woken agent can fix the failure and send a new result, which stores a new checks wait at its new
 commit. Old-commit checks that finish before that result are history, so they do not count as a

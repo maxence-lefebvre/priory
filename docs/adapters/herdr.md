@@ -13,9 +13,9 @@ The adapter lives in `adapters/herdr/` at the repository root, outside the Cargo
 
 - `adapters/herdr/lib/priory.js`: the module every mod uses to read and act. It is the only code
   that runs `priory`.
-- `adapters/herdr/mods/priory-tabs/`: the Priory bar. It sits left of Herdr's own tab bar, opens or
-  focuses the Desk, Bonjour, Costs and Flows tabs, shows or hides the Asks and Queue panels,
-  opens the Task tab, and attaches to a task's terminal.
+- `adapters/herdr/mods/priory-tabs/`: the Priory bar. It sits left of Herdr's own tab bar, shows
+  one button per child of each stack in the layout, opens the Task tab, and attaches to a task's
+  terminal. See [The layout](#the-layout).
 - `adapters/herdr/mods/priory-desk/`: the Desk panel. See [The Desk panel](#the-desk-panel).
 - `adapters/herdr/mods/priory-asks/`: the Asks panel. See [The Asks panel](#the-asks-panel).
 - `adapters/herdr/mods/priory-queue/`: the Queue panel. See [The Queue panel](#the-queue-panel).
@@ -24,10 +24,16 @@ The adapter lives in `adapters/herdr/` at the repository root, outside the Cargo
 - `adapters/herdr/mods/priory-costs/`: the Costs panel. See [The Costs panel](#the-costs-panel).
 - `adapters/herdr/mods/priory-flows/`: the Flows panel. See [The Flows panel](#the-flows-panel).
 - `adapters/herdr/mods/priory-task/`: the Task panel. See [The Task panel](#the-task-panel).
-- `adapters/herdr/layouts/priory.json`: Herdr's default layout with the Priory bar, 420 px wide, in
-  the top bar, and Asks and Queue in the side panel stack, 420 px wide by default, between 280 and
-  900. Desk, Bonjour, Costs and Flows open as tabs in the center, from the Priory bar.
-- `adapters/herdr/install`: links the mods and the layout into Herdr's folder. See
+- `adapters/herdr/mods/priory-elsewhere/`: the placeholder for a view's panel that has no mod yet:
+  `tasks`, `runs` and `inbox`. It names the panel and links to it in the web view.
+- `adapters/herdr/layouts/frame.json`: Herdr's chrome around the view: the sidebar, the top bar
+  with the Priory bar, 420 px wide, and Herdr's tab bar, the work body with Herdr's `main` block,
+  and the status line.
+- `adapters/herdr/lib/layout.js`: turns a view into a Herdr layout inside the frame, and finds a
+  view's blocks in the layout Herdr shows. See [The layout](#the-layout).
+- `adapters/herdr/layout`: reads `priory views --json` on its standard input and prints the
+  layout for the `default` view.
+- `adapters/herdr/install`: links the mods into Herdr's folder and writes the layout. See
   [Installing](#installing).
 - `adapters/herdr/test/`: `node --test` tests for the module and the install script, run against a
   fake `priory`. CI runs them with `node --test adapters/herdr/test/*.test.js`. `test/kit.js`
@@ -45,7 +51,8 @@ The adapter lives in `adapters/herdr/` at the repository root, outside the Cargo
 Herdr loads a mod's imports only from the mod's own folder, and it resolves symbolic links before it
 checks. So each mod keeps a copy of `lib/priory.js` as its own `priory.js`, and a mod that draws
 with Priory's colors keeps a copy of `lib/tokens.js`. The Desk and Queue panels also keep
-`lib/add.js`, the Add action's view model, and `lib/add-form.js`, its form. A test fails when a copy differs from the
+`lib/add.js`, the Add action's view model, and `lib/add-form.js`, its form. The Desk and the
+Priory bar keep `lib/layout.js`. A test fails when a copy differs from the
 library. After you change a file in `lib/`, copy it into every mod that carries it.
 
 The Costs and Flows panels keep the web view's own view models: `mods/priory-costs/view.js` is a
@@ -53,23 +60,71 @@ copy of `crates/priory-core/web/costs.js`, and `mods/priory-flows/view.js` of `f
 fails when a copy differs from the web file. After you change one, copy it into its mod. Herdr's
 engine has no `Intl`, so these files format numbers and dates by hand.
 
-The adapter depends on no Priory crate, and no crate depends on it. It needs Node.js only for its
-tests.
+The adapter depends on no Priory crate, and no crate depends on it. It needs Node.js to install,
+because `install` builds the layout with it, and for its tests.
 
 ## Installing
 
-`adapters/herdr/install` links each folder in `adapters/herdr/mods/` into Herdr's mods folder and
-`layouts/priory.json` into its layouts folder. Herdr's folder is `$HERDR_APP_HOME`, or
-`~/.config/herdr-app`. The links point into your checkout, so a `git pull` updates the mods, and
-Herdr reloads them when their files change.
+Installing needs Node.js. Pipe the views into `install` on the machine Herdr runs on:
 
-- `install --dry-run` prints each link it would make and changes nothing.
-- A link that already points into this adapter stays as it is.
-- Any other file or link at a target stops the script before it links anything. Move that file away
-  and run it again.
+```sh
+priory views --json | adapters/herdr/install
+ssh xps13 priory views --json | adapters/herdr/install   # Priory on another machine
+```
 
-The layout names the Asks and Queue panel mods, and the Priory bar opens the Desk, Bonjour, Costs
-and Flows mods. Until a mod is installed, its block or tab stays empty.
+`install` links each folder in `adapters/herdr/mods/` into Herdr's mods folder, and writes the
+layout for the `default` view as `layouts/priory.json` in its layouts folder. Herdr's folder is
+`$HERDR_APP_HOME`, or `~/.config/herdr-app`. The links point into your checkout, so a `git pull`
+updates the mods, and Herdr reloads them when their files change. The layout is a file: run
+`install` again after you change a view.
+
+- `install --dry-run` prints each link it would make, then `write` and the layout, and changes
+  nothing.
+- A link that already points into this adapter stays as it is. The layout is written again on
+  every run.
+- Any other file or link at a mod's target stops the script before it changes anything. So does a
+  `priory.json` that `install` did not write: a file whose JSON root id is not
+  `priory-generated`, or a link elsewhere than to this adapter. Move that file away and run it
+  again.
+- Input that is not `priory views --json`, a node or panel Priory does not ship, or a `default`
+  view with two `terminal` panels stops the script before it changes anything.
+- `install` writes the layout beside its target and renames it over the target, so a failed write
+  keeps the old layout.
+
+## The layout
+
+`lib/layout.js` lays the view's tree out in the frame's work body:
+
+| View node | Herdr node |
+| --------- | ---------- |
+| `row`, `column` | `row`, `column`, each child with `weight` 1 |
+| `tabs` | `stack`, its first child active |
+| `panel` | `block` with the panel's mod, and `props: { "panel": NAME }` |
+| `terminal` panel | the frame's `main` block, where Herdr shows the active tab |
+
+| Panel | Mod |
+| ----- | --- |
+| `desk`, `asks`, `queue` | `priory-desk`, `priory-asks`, `priory-queue` |
+| `reports` | `priory-bonjour` |
+| `workflow`, `costs` | `priory-flows`, `priory-costs` |
+| `tasks`, `runs`, `inbox` | `priory-elsewhere` |
+
+Each node's id is its path in the tree: the root is `view`, and its second child's first child is
+`view-1-0`. When the view has no `terminal` panel, the work body is a row of `main` and the view,
+420 px wide by default, between 280 and 900. Otherwise the view fills the work body. A view
+carries no sizes, so the layout has none beyond these. The shipped `default` view gives one stack
+of eight panels beside `main`. Herdr's own Files and Changes panels are not in it.
+
+The Priory bar shows one button per child of each stack, in the tree's order, labelled with its
+panels. A button selects its child in that stack and in each stack above it, and shows any hidden
+node on the way. The shown child's button hides the view beside `main`, and shows it again. The
+bar scrolls sideways when its buttons are wider than it. Before it opens the Task tab or a task's
+terminal, it brings `main` into view, since a view can hold it in a stack.
+
+`priory-elsewhere` reads `web` from the `priory` object of Herdr's `settings.json`, the web view's
+`http` or `https` address, such as `"http://127.0.0.1:7070"`. With it, the placeholder links to
+the panel's page.
+Without it, the placeholder says where to set it.
 
 Herdr writes `gpui-kit.d.ts` and `jsconfig.json` into each mod folder it loads. Through the links,
 they land in your checkout, and Git ignores them.
@@ -81,7 +136,8 @@ state database and never writes a file in the factory.
 
 - **Which Priory.** A mod runs the program that the `priory` object of Herdr's `settings.json`
   names, on the Herdr machine it names: `{"priory": {"binary": "~/.local/bin/priory-oss",
-  "machine": "xps13", "factory": "/home/me/factory", "theme": "indigo"}}`. Every field is optional.
+  "machine": "xps13", "factory": "/home/me/factory", "theme": "indigo", "web":
+  "http://127.0.0.1:7070"}}`. Every field is optional.
   `theme` is `indigo`, `ink`, `parchment` or `abbey`, and defaults to `indigo`. `binary` defaults
   to `~/.local/bin/priory-oss`, and a leading `~` means the home folder on Priory's machine. A name
   without a slash is looked up on the `PATH`. `machine` defaults to the machine Herdr runs on. `factory` is the folder
@@ -162,7 +218,8 @@ Herdr Desk: the count, the next thing, the room and intake banners, the saved vi
   Read runs `priory inbox read SEQ` for a report, from its row, so the row leaves the desk.
   Open task opens the row's task in the [Task panel](#the-task-panel), and Attach asks the Priory
   bar with `priory.attach`; the next thing card offers both. Answer… opens the ask in the Asks
-  panel: it sets `priory.asks.open` and shows the side panel on Asks.
+  panel: it sets `priory.asks.open` and brings the first block that shows `asks` into view. When
+  the view has no `asks` panel, it opens or selects an Asks tab in `main`.
   Add, or `N`, opens the [Add form](#the-add-action).
 - **Keys.** `J` and `K` move the selection, `Enter` opens the selected ask in Asks or the Asleep
   view from the asleep row, `S`
@@ -207,7 +264,7 @@ such as a new conversation started in the same kept terminal. The check and the 
 
 ## The Asks panel
 
-`mods/priory-asks/` is the Asks panel, in the side panel stack. It replaces Fleet's `fleet-asks`.
+`mods/priory-asks/` is the Asks panel. It replaces Fleet's `fleet-asks`.
 DESIGN.md's "Herdr adapter" section holds its visual rules; this section says how it works.
 
 - **Files.** `view.js` turns `priory asks --all --json` into saved views, sections, rows and the
@@ -247,7 +304,8 @@ DESIGN.md's "Herdr adapter" section holds its visual rules; this section says ho
 - **Opened from the Desk.** A new `priory.asks.open` selects its ask, clears the facet chips, and
   moves to All when the current view hides the ask, such as a snoozed one.
 - **Snooze.** "Snooze 1 h" and the overflow menu's "Snooze until tomorrow 09:00" run
-  `priory snooze ask ID`. They show only on an ask that belongs to a task. "Attach to task" asks the
+  `priory snooze ask ID`. They show only on an ask that belongs to a task. On such an ask, the menu's
+  "Open task" opens the task in the [Task panel](#the-task-panel), and "Attach to task" asks the
   Priory bar to attach, as [Attaching](#how-it-reads-and-acts) describes.
 - **Outside asks.** An ask from outside Priory lists and answers like the others, by its name. Its
   command is a string that never runs, so its options answer after the Undo.
@@ -283,7 +341,7 @@ The web view keeps the same `prStack` in `crates/priory-core/web/stack.js`. A te
 
 ## The Queue panel
 
-`mods/priory-queue/` is the Queue panel, in the side panel stack under Asks. It replaces Fleet's
+`mods/priory-queue/` is the Queue panel. It replaces Fleet's
 `fleet-queue`. DESIGN.md's "Herdr adapter" section holds its visual rules; this section says how it
 works.
 
@@ -312,7 +370,8 @@ works.
 - **Acting.** An opened waiting row offers Move…, Hold… and Cancel…. Move… runs `priory move`, to
   the top of the band or into any other band of the factory, even an empty one. Hold… asks for a reason and runs
   `priory hold TASK --reason`. A held row offers Release and Cancel…, and a running row Attach and
-  Cancel…. Cancel… asks once more, then runs `priory cancel`. The header's menu runs `priory pause`
+  Cancel…. Every opened row offers Open task, which opens the task in the
+  [Task panel](#the-task-panel). Cancel… asks once more, then runs `priory cancel`. The header's menu runs `priory pause`
   or `priory unpause`. Move, Hold, Release and Cancel send `--expected` with the revision of the
   read the panel drew, so priory refuses them once the queue changed. When a verb fails or is
   refused, the panel says why on the task.

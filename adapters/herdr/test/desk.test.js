@@ -225,11 +225,11 @@ test("an ask routed to a lead shows with the lead in its row and as the next thi
 });
 
 /** The Desk panel drawn from the fixtures, in Node, with the fake kit. */
-async function deskPanel() {
+async function deskPanel(links = /** @type {{ pattern: string, url: string }[]} */ ([])) {
   const { context, herdr, settle } = await import("./kit.js");
   const { default: Desk } = await import("../mods/priory-desk/main.js");
   herdr.reset();
-  herdr.replies = { desk: data.desk, asks: data.asks, tasks: data.tasks, queue: data.queue, links: { links: [] } };
+  herdr.replies = { desk: data.desk, asks: data.asks, tasks: data.tasks, queue: data.queue, links: { links } };
   const panel = new Desk();
   const cx = context();
   panel.init({}, cx);
@@ -247,6 +247,36 @@ test("an Up next line opens its task in the Task panel, and a schedule's line op
   assert.equal(herdr.shared.get("priory.task.open").task, 7);
 });
 
+test("Answer opens the ask in the Asks block, selected in its stack and shown", async () => {
+  const { draw, press } = await import("./kit.js");
+  const { layout } = await import("../lib/layout.js");
+  const { panel, cx, herdr } = await deskPanel();
+  const frame = JSON.parse(readFileSync(new URL("../layouts/frame.json", import.meta.url), "utf8"));
+  const tabs = ["desk", "asks", "tasks"].map((panel) => ({ panel }));
+  herdr.layout = layout("default", { layout: { tabs } }, frame);
+  herdr.layout.children[1].children[1].children[1].hidden = true;
+
+  press(draw(panel, cx), "row-ask:2");
+  press(draw(panel, cx), "answer-ask:2");
+
+  assert.equal(herdr.shared.get("priory.asks.open").ask, 2);
+  assert.deepEqual(herdr.runs, [["layout.show", { id: "view" }], ["layout.select", { stack: "view", child: "view-1" }]]);
+});
+
+test("Answer opens an Asks tab when the view has no Asks block", async () => {
+  const { draw, press } = await import("./kit.js");
+  const { layout } = await import("../lib/layout.js");
+  const { panel, cx, herdr } = await deskPanel();
+  const frame = JSON.parse(readFileSync(new URL("../layouts/frame.json", import.meta.url), "utf8"));
+  herdr.layout = layout("default", { layout: { panel: "desk" } }, frame);
+
+  press(draw(panel, cx), "row-ask:2");
+  press(draw(panel, cx), "answer-ask:2");
+
+  assert.equal(herdr.shared.get("priory.asks.open").ask, 2);
+  assert.deepEqual(herdr.runs, [["tab.new", { space: "space-1", name: "Asks", mod: "priory-asks" }]]);
+});
+
 test("Open task opens the Task panel, and Attach stays its own action", async () => {
   const { draw, press } = await import("./kit.js");
   const { panel, cx, herdr } = await deskPanel();
@@ -260,4 +290,17 @@ test("Open task opens the Task panel, and Attach stays its own action", async ()
   press(draw(panel, cx), "row-ask:2");
   press(draw(panel, cx), "open-ask:2");
   assert.equal(herdr.shared.get("priory.task.open").task, 2);
+});
+
+test("a press on a row's link opens the link and leaves the selection where it was", async () => {
+  const { draw, press } = await import("./kit.js");
+  const { panel, cx } = await deskPanel([{ pattern: "backoff", url: "https://crates.io/crates/backoff" }]);
+  const tree = draw(panel, cx);
+  const before = panel.selected;
+
+  press(tree, "text-ask:2");
+  assert.notEqual(before, "ask:2");
+  assert.equal(panel.selected, before);
+  press(draw(panel, cx), "row-ask:2");
+  assert.equal(panel.selected, "ask:2");
 });

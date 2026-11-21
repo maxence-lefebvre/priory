@@ -3809,6 +3809,8 @@ const DEFAULTS: &str = "name = \"demo\"\n\n[serve]\nlisten = \"127.0.0.1:0\"\nto
 #[test]
 fn a_request_through_the_endpoint_queues_the_task_priory_add_does_and_answers_its_key_and_id() {
     let mut setup = Setup::new("web-request", DEFAULTS);
+    // No run starts, so a run's git and tmux commands never hold up the daemon's reply.
+    succeeded(&setup.priory(&["pause"]));
     let address = setup.start(&["daemon", &setup.factory()]);
 
     let (status, body) = post(
@@ -4675,6 +4677,27 @@ fn use_factory(setup: &Setup, from: &Path) {
         fs::create_dir_all(deliver.parent().unwrap()).unwrap();
         fs::write(&deliver, "#!/bin/sh\n").unwrap();
         fs::set_permissions(&deliver, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+}
+
+#[test]
+fn priory_views_prints_what_the_views_endpoint_serves() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let factories = [
+        root.join("examples/groom"),
+        root.join("docs/reference/examples/factory"),
+    ];
+    for (index, from) in factories.iter().enumerate() {
+        let mut setup = Setup::new(&format!("views-{index}"), SERVE);
+        use_factory(&setup, from);
+        let address = setup.start(&["serve", &setup.factory(), "--listen", "127.0.0.1:0"]);
+
+        let views = api(&address, "/api/views");
+
+        let twin = setup.priory(&["views", &setup.factory(), "--json"]);
+        succeeded(&twin);
+        let twin: Value = serde_json::from_slice(&twin.stdout).unwrap();
+        assert_eq!(twin, views, "{from:?}: priory views --json");
     }
 }
 

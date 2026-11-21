@@ -3551,6 +3551,23 @@ fn until_traced(setup: &Setup, kind: &str) -> serde_json::Value {
 #[test]
 fn a_snooze_ending_at_its_time_bumps_the_revision_and_is_traced() {
     let setup = asleep_on_an_ask("snooze-ends");
+    // The daemon stores the ended run's changed files a tick later, which moves the revision.
+    let deadline = Instant::now() + Duration::from_secs(60);
+    loop {
+        let run = rusqlite::Connection::open(setup.dir.join("priory.db")).and_then(|db| {
+            db.query_row("SELECT files_run FROM tasks", [], |row| {
+                row.get::<_, Option<i64>>(0)
+            })
+        });
+        if run.as_ref().is_ok_and(Option::is_some) {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the files were never stored: {run:?}"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
     let snoozed = setup.priory(&["snooze", "ask", "1", "--for", "4s"]);
     assert!(snoozed.status.success(), "{snoozed:?}");
     let json: serde_json::Value =
@@ -4619,6 +4636,23 @@ fn a_daemon_restarted_while_a_delivery_runs_waits_for_that_command_and_delivers_
         delivery["state"] == "running"
     });
     setup.written("fake/deliver.log");
+    // The command runs before the daemon stores its pid: a crash before that fails the delivery.
+    let deadline = Instant::now() + Duration::from_secs(60);
+    loop {
+        let pid = rusqlite::Connection::open(setup.dir.join("priory.db")).and_then(|db| {
+            db.query_row("SELECT pid FROM deliveries", [], |row| {
+                row.get::<_, Option<u32>>(0)
+            })
+        });
+        if pid.as_ref().is_ok_and(Option::is_some) {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the pid was never stored: {pid:?}"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
 
     setup.crash();
     setup.start();
@@ -6461,6 +6495,69 @@ fn a_merge_that_moves_a_said_run_to_another_agent_kills_its_session_and_starts_t
         .status()
         .unwrap();
     assert!(!alive.success(), "the said run's agent {said} still runs");
+}
+
+#[test]
+fn a_merge_that_carries_a_said_run_into_the_next_step_queues_only_that_steps_ending() {
+    let mut setup = Setup::with_workflow("after-merge-said-ending", AFTER_MERGE);
+    setup.calls(&[
+        wait(on_pull_7("review")),
+        passed_at("abc0000000000000000000000000000000000000"),
+        serde_json::Value::Null,
+        json!({ "name": "result", "arguments": { "outcome": "quiet", "summary": "all quiet" } }),
+    ]);
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("runs", |rows| rows.len() == 1 && rows[0][7] == "asleep");
+    setup.publish(&reviewed());
+    setup.until("runs", |rows| rows.len() == 2 && rows[1][7] == "asleep");
+    setup.hold("hold-stop");
+    assert!(setup.priory(&["say", "1", "Hold on."]).status.success());
+    setup.until("outbox", |_| {
+        setup
+            .typed()
+            .iter()
+            .any(|text| text.starts_with("A person says: Hold on."))
+    });
+    // The run is busy, so this one stays queued, with the ending of the step the task is at.
+    assert!(setup.priory(&["say", "1", "And this."]).status.success());
+
+    setup.publish(&closed());
+    setup.until("runs", |rows| rows.len() == 4 && rows[3][2] == "watch");
+    setup.release("hold-stop");
+
+    setup.until("tasks", |rows| rows[0][4] == "done");
+    let typed = setup.typed();
+    let watch = typed
+        .iter()
+        .find(|text| text.contains("Watch the release."))
+        .expect("the watch step's prompt was typed");
+    assert!(watch.contains("A person says: And this."), "{watch}");
+    assert!(watch.contains("outcomes: quiet."), "{watch}");
+    assert!(!watch.contains("outcomes: failed, passed"), "{watch}");
+}
+
+#[test]
+fn a_merge_that_marks_a_task_done_ends_its_said_run_and_kills_its_session() {
+    let setup = gated("gate-said-done");
+    setup.calls(&[serde_json::Value::Null]);
+    setup.hold("hold-stop");
+    assert!(setup.priory(&["say", "1", "Hold on."]).status.success());
+    setup.until("outbox", |_| {
+        setup
+            .typed()
+            .iter()
+            .any(|text| text.starts_with("A person says: Hold on."))
+    });
+
+    setup.publish(&closed());
+    setup.until("tasks", |rows| rows[0][4] == "done");
+    setup.release("hold-stop");
+
+    setup.gone("priory-1");
+    let runs = setup.rows("runs");
+    assert_eq!(runs.len(), 3, "{runs:?}");
+    assert_eq!(runs[2][7], "done", "{runs:?}");
 }
 
 #[test]
@@ -11387,12 +11484,23 @@ fn a_grant_is_released_when_its_command_fails_or_is_killed_or_its_holder_dies() 
     listening(&setup);
 
     let failed = acquire(&setup, "40", "exit 1").wait_with_output().unwrap();
-    assert_eq!(failed.status.code(), Some(1));
+    let daemon = || fs::read_to_string(setup.dir.join("daemon.log")).unwrap_or_default();
+    assert_eq!(
+        failed.status.code(),
+        Some(1),
+        "{failed:?}\ndaemon: {}",
+        daemon()
+    );
     assert!(setup.rows("memory").is_empty());
     let killed = acquire(&setup, "40", "kill -9 $$")
         .wait_with_output()
         .unwrap();
-    assert_eq!(killed.status.code(), Some(137));
+    assert_eq!(
+        killed.status.code(),
+        Some(137),
+        "{killed:?}\ndaemon: {}",
+        daemon()
+    );
     assert!(setup.rows("memory").is_empty());
 
     setup.hold("hold-orphan");
@@ -11959,8 +12067,8 @@ fn a_stalled_run_gets_a_handler_call_whose_nudge_reaches_its_pane_and_whose_cost
 
     setup.start();
 
-    // The silent turn, its Stop nudge, then the handler's nudge.
-    setup.within(20, "outbox", |rows| with(rows, 3, "confirmed") == 3);
+    // The silent turn, its Stop nudge, then the handler's nudge, after a real 2 s stall.
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") == 3);
     let typed = setup.typed();
     assert!(
         typed[2].contains("Run the tests, then call result."),
@@ -12080,8 +12188,8 @@ fn a_run_gets_at_most_three_handler_calls() {
 
     setup.start();
 
-    // The silent turn, its Stop nudge, then one prompt per handler call.
-    setup.within(30, "outbox", |rows| with(rows, 3, "confirmed") == 5);
+    // The silent turn, its Stop nudge, then one prompt per handler call, each after a 2 s stall.
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") == 5);
     std::thread::sleep(Duration::from_secs(5));
     assert_eq!(setup.handled().len(), 3);
     assert_eq!(setup.handler_records().len(), 3);
