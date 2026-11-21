@@ -236,9 +236,10 @@ subscription does not end when one event arrives. Its events reach the task by i
 | `asleep` at its checks gate | fires the gate when it is a comment on an issue or a Linear issue, or a Slack reply, as pull request feedback does. Other events wait for the next wake |
 | `done` | reopens it, when it is a comment or a review that asks for something and no pull request of the task merged (see [routing.md](routing.md#feedback-reopens-a-done-task)) |
 
-An event written during the task's last run, from its start up to the second it ended, wakes
-nothing and fires no gate: it is most likely the agent's own comment or state change. The task
-keeps it, and its next wake carries it. Priory cannot tell the agent's own comment by its author,
+An event the task keeps that was written while it ran, from the start of its first run up to the
+second its last run ended, wakes nothing and fires no gate: it is most likely the agent's own
+comment or state change. Its next wake carries it. An event another task keeps is not held back,
+since no later wake would carry it. Priory cannot tell the agent's own comment by its author,
 since agents usually post with the person's own Linear, GitHub or Slack user token.
 
 For example, to hear every review of an upstream pull request while the task works on:

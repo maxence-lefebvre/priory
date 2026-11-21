@@ -34,6 +34,7 @@
           "type": "string"
         },
         "files": {
+          "default": [],
           "description": "The names of the files uploaded with it; empty when none.",
           "items": {
             "type": "string"

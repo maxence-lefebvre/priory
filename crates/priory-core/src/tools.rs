@@ -1137,7 +1137,14 @@ pub(crate) fn gate_feedback(
         return Ok(false);
     };
     let said = reopened_by(&resource, None, &message.kind, &message.data);
-    fire(tx, gate, task, &format!("wait {gate} fired: {said}"), seq)?;
+    let mut text = format!("wait {gate} fired: {said}");
+    // Another task kept the event, so its whole line goes with the reason.
+    if seq.is_none() {
+        let data = message.data.to_string();
+        let line = crate::state::line(&message.kind, message.subject.as_deref(), &data);
+        text = format!("{text}\n{line}");
+    }
+    fire(tx, gate, task, &text, seq)?;
     Ok(true)
 }
 

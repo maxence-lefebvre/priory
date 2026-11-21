@@ -94,8 +94,8 @@ process list or an error.
   watched threads are published.
 - A thread the intake cannot read, such as one in a channel the bot is not a member of
   (`not_in_channel`) or a deleted one, fails the poll the same way, with an error that names
-  `thread <channel>:<thread_ts>`. A rate limit does not fail it: the next poll starts with that
-  thread. The desk then shows the Slack intake as failing until the thread
+  `thread <channel>:<thread_ts>`. A rate limit does not fail it: each poll starts at the next
+  thread, so every thread is read in turn. The desk then shows the Slack intake as failing until the thread
   reads again or no wait or subscription names it.
 
 ## Message shortcut
