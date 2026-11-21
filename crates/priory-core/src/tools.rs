@@ -2122,7 +2122,7 @@ fn settle(tx: &Transaction, run: &Run, trace: &Trace) -> rusqlite::Result<Option
             set(tx, run.task, "asleep", None, None)?;
             return Ok(Some(Some(run.tmux.clone())));
         }
-        return enter(
+        let tmux = enter(
             tx,
             run.task,
             &run.workflow,
@@ -2130,8 +2130,11 @@ fn settle(tx: &Transaction, run: &Run, trace: &Trace) -> rusqlite::Result<Option
             Some(run),
             &summary,
             trace.factory,
-        )
-        .map(Some);
+        )?;
+        if target == "stop" {
+            stopped(tx, run, &outcome, &summary)?;
+        }
+        return Ok(Some(tmux));
     }
     // A schedule's tick wakes a task with its ask or wait still open: this run sleeps on them again.
     tx.execute(
@@ -2483,6 +2486,30 @@ fn set(
         params![task, state, step, reason],
     )
     .map(drop)
+}
+
+/// Keeps the first line of the summary of the result that stopped the run's task as the task's
+/// reason, and posts it as a report, so the desk shows why the work ended.
+fn stopped(tx: &Transaction, run: &Run, outcome: &str, summary: &str) -> rusqlite::Result<()> {
+    // A tab would split the reason across `priory tasks` columns.
+    let line = summary
+        .lines()
+        .next()
+        .unwrap_or_default()
+        .replace('\t', " ");
+    tx.execute(
+        "UPDATE tasks SET reason = ?2 WHERE id = ?1 AND state = 'dropped'",
+        params![run.task, line],
+    )?;
+    let key: String = tx.query_row("SELECT key FROM tasks WHERE id = ?1", [run.task], |row| {
+        row.get(0)
+    })?;
+    let line = format!(
+        "task {} ({key}) stopped at {}, {outcome}: {line}",
+        run.task, run.step
+    );
+    crate::post::report(tx, "priory", &line)
+        .map_err(|error| rusqlite::Error::ToSqlConversionFailure(error.into()))
 }
 
 /// Moves `task` to `target`: a step id, `done` or `stop`. `from` is the run whose result moved it,

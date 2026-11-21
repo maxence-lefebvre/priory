@@ -9243,7 +9243,7 @@ fn a_close_that_does_not_say_whether_it_merged_asks_rather_than_drops() {
     assert_eq!(held_as(&setup, "1")[0], "held");
 }
 
-const REVIVED: &str = "A person revived this task as generation 2 after it was dropped. The asks and waits of its earlier generation are withdrawn. Check the worktree, then continue.\nPlan the change.\nEnd this step by calling the result tool of the priory MCP server with one of these outcomes: hopeless, ready, unsure.\n";
+const REVIVED: &str = "A person revived this task as generation 2 after it was dropped: hopeless it. The asks and waits of its earlier generation are withdrawn. Check the worktree, then continue.\nPlan the change.\nEnd this step by calling the result tool of the priory MCP server with one of these outcomes: hopeless, ready, unsure.\n";
 
 #[test]
 fn a_dropped_task_revives_at_its_step_in_its_session_as_generation_2() {
@@ -9342,6 +9342,36 @@ fn an_event_for_the_wait_of_an_earlier_generation_does_not_wake_the_revived_task
     std::thread::sleep(Duration::from_millis(1500));
     assert_eq!(setup.rows("tasks")[0][4], "asleep");
     assert_eq!(setup.rows("runs").len(), 2);
+}
+
+#[test]
+fn a_result_that_stops_the_task_keeps_its_summary_as_the_reason_and_posts_a_report() {
+    let mut setup = Setup::new("stopped-reason");
+    let failed = json!({ "name": "result", "arguments": { "outcome": "failed",
+        "summary": "The issue holds no acceptance criteria.\nAdd them and revive it." } });
+    setup.calls(&[failed]);
+    setup.publish(&requested(42));
+    setup.start();
+
+    let tasks = setup.until("tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == "dropped")
+    });
+
+    assert_eq!(tasks[0][7], "The issue holds no acceptance criteria.");
+    let inbox = setup.priory(&["inbox", "--json"]);
+    let inbox = String::from_utf8_lossy(&inbox.stdout);
+    assert!(
+        inbox.contains(
+            "task 1 (github:owner/repo#42) stopped at implement, failed: The issue holds no acceptance criteria."
+        ),
+        "{inbox}"
+    );
+    let desk = setup.priory(&["desk"]);
+    let desk = String::from_utf8_lossy(&desk.stdout);
+    assert!(
+        desk.contains("priory: task 1 (github:owner/repo#42) stopped"),
+        "{desk}"
+    );
 }
 
 #[test]
