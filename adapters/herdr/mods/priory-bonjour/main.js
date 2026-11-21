@@ -1,7 +1,7 @@
 import { View, div, svg } from "gpui-kit";
 import { h_flex, v_flex, Button, Input, InputState, ScrollHandle, TextView } from "gpui-base";
 import { appHome, exec, home as herdrHome, readTextFile } from "herdr";
-import { priory, spansHtml } from "./priory.js";
+import { follow, priory, spansHtml } from "./priory.js";
 import { FONTS, palette, STRUCTURE as S } from "./tokens.js";
 import { dossier, nextPick, refusal } from "./view.js";
 
@@ -56,8 +56,14 @@ async function connect() {
   return { theme: config.theme ?? "indigo", client, links };
 }
 
-/** Text with its autolinks; plain text stays a plain child. @param {string} id @param {{ text: string, url?: string }[]} spans */
-const linked = (id, spans) => (spans.some((span) => span.url) ? TextView.html(id, spansHtml(spans)) : spans.map((span) => span.text).join(""));
+/**
+ * Text with its autolinks; plain text stays a plain child. Linked text keeps its press, so a link
+ * opens without selecting the row Button around it.
+ * @param {string} id @param {{ text: string, url?: string }[]} spans
+ */
+const linked = (id, spans) => (spans.some((span) => span.url)
+  ? div().on_mouse_down("left", (_event, cx) => cx.stop_propagation()).child(TextView.html(id, spansHtml(spans)))
+  : spans.map((span) => span.text).join(""));
 
 const message = (/** @type {unknown} */ error) => (error instanceof Error ? error.message : String(error));
 
@@ -120,32 +126,34 @@ export default class PrioryBonjour extends View {
   /** Reads the report, then waits for the next revision and reads again; keeps the last good report on failure. */
   /** @param {import("gpui-kit").AsyncContext} cx */
   refresh(cx) {
-    cx.spawn(async (cx) => {
-      // The state revision last read; -1 makes the first wait return at once with the current one.
-      let since = -1;
-      for (;;) {
+    /** @type {ReturnType<typeof priory>} the client of the last read, which its wait uses */
+    let client;
+    cx.spawn((cx) => follow({
+      // With no report yet there is no report revision, so the wait goes on from the last one it returned.
+      read: async () => {
+        this.priory ??= await connect();
+        this.links = this.priory.links;
+        client = this.priory.client;
         try {
-          this.priory ??= await connect();
-          this.links = this.priory.links;
-          try {
-            this.accept(await this.priory.client.report());
-            since = this.data?.revision ?? since;
-          } catch (error) {
-            if (!message(error).endsWith(NO_REPORT)) throw error;
-            this.accept(null);
-          }
-          this.updated = Date.now();
-          this.error = null;
-          cx.notify();
-          since = await this.priory.client.wait(since);
+          this.accept(await client.report());
         } catch (error) {
-          this.priory = null;
-          this.error = message(error);
-          cx.notify();
-          await cx.sleep(RETRY_MS);
+          if (!message(error).endsWith(NO_REPORT)) throw error;
+          this.accept(null);
         }
-      }
-    });
+        this.updated = Date.now();
+        this.error = null;
+        cx.notify();
+        return this.data?.revision ?? null;
+      },
+      wait: (since) => client.wait(since),
+      sleep: (ms) => cx.sleep(ms),
+      failed: (error) => {
+        this.priory = null;
+        this.error = message(error);
+        cx.notify();
+      },
+      retry: RETRY_MS,
+    }));
   }
 
   /**

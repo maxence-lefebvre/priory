@@ -313,3 +313,29 @@ test("an answered ask's detail and history say who answered", () => {
   assert.deepEqual(detail.history.filter((entry) => entry.tile === "answered").map((entry) => entry.text), ["Answered Merge by agent:lead", "Answered Wait"]);
   assert.equal("routed" in detail, false);
 });
+
+test("an ask the Desk opens with priory.asks.open opens here, in a view that shows it, once", async () => {
+  const { context, draw, herdr, settle } = await import("./kit.js");
+  const { default: Asks } = await import("../mods/priory-asks/main.js");
+  herdr.reset();
+  herdr.replies = { asks: fixture("asks.json"), task: fixture("task.json"), links: { links: [] } };
+  // A request left by an earlier session opens nothing.
+  herdr.shared.set("priory.asks.open", { ask: "review-7", at: Date.now() - 60_000 });
+  const panel = new Asks();
+  const cx = context();
+  panel.init({}, cx);
+  await settle();
+  draw(panel, cx);
+  assert.equal(panel.selected, 1);
+
+  // Ask 2 is snoozed, so the Open view hides it and All shows it.
+  herdr.shared.set("priory.asks.open", { ask: 2, at: Date.now() });
+  draw(panel, cx);
+  await settle();
+  assert.deepEqual([panel.selected, panel.view], [2, "all"]);
+
+  panel.select(1, cx);
+  draw(panel, cx);
+  await settle();
+  assert.equal(panel.selected, 1);
+});

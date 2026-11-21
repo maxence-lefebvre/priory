@@ -1,7 +1,7 @@
 import { View, div, svg } from "gpui-kit";
 import { h_flex, v_flex, Button, Popover, ScrollHandle, Textarea, TextareaState, TextView } from "gpui-base";
-import { appHome, exec, home as herdrHome, readTextFile, setShared } from "herdr";
-import { priory, spansHtml } from "./priory.js";
+import { appHome, exec, home as herdrHome, readTextFile, setShared, shared } from "herdr";
+import { follow, priory, spansHtml } from "./priory.js";
 import { FONTS, palette } from "./tokens.js";
 import { ARM_MS, askDetail, asksList, press, refusal, tomorrowAt } from "./view.js";
 
@@ -13,6 +13,8 @@ const RADIUS = { sm: 5, tile: 8, md: 12, card: 14 };
 const TYPE = { question: [18, "24px"], body: [14, "20px"], small: [13, "18px"], caption: [12, "16px"] };
 const UNDO_MS = 4000;
 const RETRY_MS = 3000;
+// A request to open an ask counts this long before the panel starts, as the Desk may show the panel to open one.
+const OPEN_FRESH_MS = 30_000;
 const ICON = (/** @type {string} */ name) => `mods/priory-asks/icons/${name}.svg`;
 
 /** @typedef {Record<string, import("gpui-kit").Color>} Palette */
@@ -92,33 +94,55 @@ export default class PrioryAsks extends View {
     /** @type {Fonts} */
     this.font = FONTS.indigo;
     this.scroll = ScrollHandle.new();
+    /** When the last request to open an ask was made; an older request, as one left by an earlier session, opens nothing. */
+    this.asked = Date.now() - OPEN_FRESH_MS;
     this.refresh(cx);
+  }
+
+  // The Desk opens an ask here with setShared("priory.asks.open", { ask, at }); it opens once a read lists it.
+  // Render only claims the request: selecting notifies, which Herdr refuses during a render.
+  /** @param {import("gpui-kit").Context} cx */
+  opening(cx) {
+    const request = /** @type {{ ask?: string | number, at?: number } | null} */ (shared("priory.asks.open"));
+    if (request?.ask == null || (request.at ?? 0) <= this.asked) return;
+    const ask = this.data?.asks.find((candidate) => candidate.id === request.ask);
+    if (!ask) return;
+    this.asked = request.at ?? 0;
+    cx.spawn(async (cx) => {
+      this.facets = {};
+      if (!this.rows().some((row) => row.id === ask.id)) this.view = "all";
+      this.select(ask.id, cx);
+    });
   }
 
   /** Reads the asks, then waits for the next revision and reads again; keeps the last good list on failure. */
   /** @param {import("gpui-kit").AsyncContext} cx */
   refresh(cx) {
-    cx.spawn(async (cx) => {
-      for (;;) {
-        try {
-          this.priory ??= await connect();
-          this.links = this.priory.links;
-          const read = await this.priory.client.asks();
-          this.data = read;
-          this.updated = Date.now();
-          this.error = null;
-          if (!this.rows().some((row) => row.id === this.selected)) this.selected = this.firstRow();
-          await this.readTask();
-          cx.notify();
-          await this.priory.client.wait(read.revision);
-        } catch (error) {
-          this.priory = null;
-          this.error = message(error);
-          cx.notify();
-          await cx.sleep(RETRY_MS);
-        }
-      }
-    });
+    /** @type {ReturnType<typeof priory>} the client of the last read, which its wait uses */
+    let client;
+    cx.spawn((cx) => follow({
+      read: async () => {
+        this.priory ??= await connect();
+        this.links = this.priory.links;
+        client = this.priory.client;
+        const read = await client.asks();
+        this.data = read;
+        this.updated = Date.now();
+        this.error = null;
+        if (!this.rows().some((row) => row.id === this.selected)) this.selected = this.firstRow();
+        await this.readTask();
+        cx.notify();
+        return read.revision;
+      },
+      wait: (since) => client.wait(since),
+      sleep: (ms) => cx.sleep(ms),
+      failed: (error) => {
+        this.priory = null;
+        this.error = message(error);
+        cx.notify();
+      },
+      retry: RETRY_MS,
+    }));
   }
 
   list(now = Date.now()) {
@@ -345,6 +369,7 @@ export default class PrioryAsks extends View {
 
   /** @param {import("gpui-kit").Context} cx */
   render(cx) {
+    this.opening(cx);
     const theme = this.priory?.theme ?? "indigo";
     const t = /** @type {Palette} */ (palette(theme, cx.theme().appearance));
     this.font = FONTS[/** @type {keyof typeof FONTS} */ (theme)] ?? FONTS.indigo;
