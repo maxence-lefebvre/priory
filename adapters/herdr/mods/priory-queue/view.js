@@ -1,6 +1,6 @@
 // The Queue panel's view model: `priory queue DIR --json` in, rows and states out. No drawing, no IO.
 
-import { autolink } from "./priory.js";
+import { autolink, prStack } from "./priory.js";
 
 const title = (/** @type {string} */ name) => name.charAt(0).toUpperCase() + name.slice(1);
 const clock = (/** @type {string} */ iso) => new Date(iso).toLocaleTimeString("en", { hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
@@ -64,9 +64,10 @@ function counted(tasks, field) {
 /**
  * The saved views with their counts, and the chosen view's sections, each left out when empty.
  * @param {any} queue
- * @param {{ view: string, now: number, room?: Room, links?: Links, facets?: { lane?: string, band?: string } }} options
+ * @param {{ view: string, now: number, room?: Room, links?: Links, facets?: { lane?: string, band?: string }, tasks?: any[] }} options
+ *   `tasks` as `priory tasks --json` lists them, for each task's stack of pull requests
  */
-export function queueList(queue, { view, now, room = {}, links = [], facets = {} }) {
+export function queueList(queue, { view, now, room = {}, links = [], facets = {}, tasks = [] }) {
   /** A row's title, and its spans with the factory's links. @param {any} task */
   const titled = (task) => ({ title: task.title, titleSpans: autolink(task.title ?? "", links, null) });
   const all = queue.waiting.filter((/** @type {any} */ task) => task.state !== "held");
@@ -77,8 +78,12 @@ export function queueList(queue, { view, now, room = {}, links = [], facets = {}
   const held = queue.waiting.filter((/** @type {any} */ task) => task.state === "held" && shown(task));
   const runs = faceted ? [] : queue.running;
   const done = faceted ? [] : queue.ended;
+  // The queue carries no stacks; `priory tasks` does, by task id, which is each row's id.
+  const stacks = new Map(tasks.map((/** @type {any} */ task) => [task.id, task.stack]));
   /** @param {string} id @param {string} name @param {any[]} list @param {(item: any) => any} row */
-  const section = (id, name, list, row) => ({ id, title: name, note: String(list.length), rows: list.map(row) });
+  const section = (id, name, list, row) => ({
+    id, title: name, note: String(list.length), rows: list.map(row).map((each) => ({ ...each, prs: prStack(stacks.get(each.id)).label })),
+  });
   /** @param {any} task */
   const waitingRow = (task) => ({
     id: task.id,

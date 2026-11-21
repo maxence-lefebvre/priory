@@ -1,6 +1,6 @@
 // The Desk panel's view model: Priory's listings in, the count, sections and rows out. No drawing, no IO.
 
-import { autolink } from "./priory.js";
+import { autolink, prStack } from "./priory.js";
 
 const STOPPED = ["blocked", "failed", "prompt", "delivery"];
 const SNOOZABLE = ["ask", "blocked", "failed", "prompt"];
@@ -69,6 +69,7 @@ export function deskModel({ desk, asks: asksListing, tasks: tasksListing, queue 
       snooze: SNOOZABLE.includes(item.kind) ? { kind: item.kind, id: item.id } : null,
       snoozed: isSnoozed(item),
       task: item.task,
+      prs: prStack(task?.stack).label,
       revision: ask?.revision ?? null,
       progress: progressLines(task?.progress),
     };
@@ -90,6 +91,7 @@ export function deskModel({ desk, asks: asksListing, tasks: tasksListing, queue 
     snooze: /** @type {{ kind: string, id: number | string } | null} */ (null),
     snoozed: false,
     task: task.id,
+    prs: prStack(task.stack).label,
     revision: /** @type {number | null} */ (null),
     progress: progressLines(task.progress),
     };

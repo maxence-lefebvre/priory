@@ -44,6 +44,7 @@ const WEB: &[(&str, &str, &[u8])] = &[
     file!("/add.js", JS, "crates/priory-core/web/add.js"),
     file!("/links.js", JS, "crates/priory-core/web/links.js"),
     file!("/reports.js", JS, "crates/priory-core/web/reports.js"),
+    file!("/stack.js", JS, "crates/priory-core/web/stack.js"),
     file!("/sw.js", JS, "crates/priory-core/web/sw.js"),
     file!(
         "/manifest.webmanifest",
