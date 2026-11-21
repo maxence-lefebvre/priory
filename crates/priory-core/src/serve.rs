@@ -172,7 +172,7 @@ pub fn start(factory: &Factory, listen: SocketAddr) -> Result<Vec<JoinHandle<()>
         .map_err(|error| format!("listen on {listen}: {error}"))?;
     let web = config.web;
     let served = Arc::new(Served {
-        views: serde_json::json!({ "factory": factory.name, "views": factory.views() }).to_string(),
+        views: listing::views(factory).to_string(),
         links: listing::links(factory).to_string(),
         flows: listing::flows(factory).to_string(),
         schedules: listing::schedule_triggers(factory),

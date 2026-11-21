@@ -694,6 +694,11 @@ fn asleep(db: &Connection) -> rusqlite::Result<Value> {
     Ok(asleep)
 }
 
+/// The factory's resolved views, as `serve` and `priory views --json` show them.
+pub fn views(factory: &Factory) -> Value {
+    json!({ "factory": factory.name, "views": factory.views() })
+}
+
 /// The factory's links, as `serve` and `priory links --json` show them.
 pub fn links(factory: &Factory) -> Value {
     json!({ "links": factory.links() })

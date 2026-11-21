@@ -1,6 +1,7 @@
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex, Button, TextView } from "gpui-base";
-import { appHome, checking, exec, home as herdrHome, nextCommand, readTextFile, run, setShared, settings } from "herdr";
+import { appHome, checking, exec, focused, home as herdrHome, layout as shown, nextCommand, panes, readTextFile, run, setShared, settings } from "herdr";
+import { panelBlock, reveal } from "./layout.js";
 import { follow, priory, spansHtml } from "./priory.js";
 import { addChoices } from "./add.js";
 import { AddForm } from "./add-form.js";
@@ -218,8 +219,13 @@ export default class PrioryDesk extends View {
   /** @param {number | string} ask */
   answer(ask) {
     setShared("priory.asks.open", { ask, at: Date.now() });
-    run("layout.select", { stack: "panel-body", child: "asks" });
-    run("layout.show", { id: "panel" });
+    const root = shown(), block = panelBlock(root, "asks");
+    if (block) return reveal(root, block.id).forEach(([command, args]) => run(command, args));
+    // A view without Asks still answers: in an Asks tab, as the Priory bar opens the Task tab.
+    reveal(root, "main").forEach(([command, args]) => run(command, args));
+    const tab = (panes() ?? []).find((pane) => pane.mod === "priory-asks");
+    if (tab) return run("tab.select", { id: tab.tab });
+    run("tab.new", { space: focused()?.space, name: "Asks", mod: "priory-asks" });
   }
 
   /** @param {number} task */

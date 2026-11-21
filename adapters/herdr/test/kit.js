@@ -146,11 +146,17 @@ export const herdr = {
   runs: [],
   /** @type {string[][]} */
   argv: [],
+  /** @type {unknown} the layout Herdr shows */
+  layout: {},
+  /** @type {Record<string, string>} the files readTextFile reads, by path */
+  files: {},
   reset() {
     this.replies = {};
     this.shared.clear();
     this.runs = [];
     this.argv = [];
+    this.layout = {};
+    this.files = {};
   },
 };
 
@@ -164,7 +170,7 @@ export async function exec(_binary, args) {
 }
 export const appHome = () => "/herdr";
 export const home = () => "/home/me";
-export const readTextFile = async () => null;
+export const readTextFile = async (/** @type {string} */ path) => herdr.files[path] ?? null;
 export const checking = () => false;
 export const nextCommand = () => new Promise(() => {});
 export const settings = () => ({ zoom: 1 });
@@ -174,7 +180,7 @@ export const shared = (/** @type {string} */ key) => herdr.shared.get(key) ?? nu
 export const focused = () => ({ space: "space-1", tab: "tab-1" });
 export const panes = () => [];
 export const spaces = () => [{ id: "space-1", active: true, machine: null, folder: "/home/me" }];
-export const layout = () => ({});
+export const layout = () => herdr.layout;
 export const notify = () => {};
 export const theme = () => ({});
 export const window = () => null;
