@@ -14305,4 +14305,3 @@ fn a_daemon_refuses_a_socket_directory_that_others_can_enter() {
     assert!(!status.success(), "{log}");
     assert!(log.contains("not a private folder of this user"), "{log}");
 }
-
