@@ -1110,7 +1110,10 @@ fn judge(tx: &Transaction, wait: i64) -> rusqlite::Result<bool> {
         if newest.data["merged"] == true {
             return done(tx, wait, task, newest.seq);
         }
-        if let Some(asked) = stranded(task, &stack, &resource, newest) {
+        let at = stack.iter().position(|pull| pull.resource == resource);
+        if let Some(asked) = at.filter(|_| stacked).map(|at| stranded(task, &stack, at))
+            && !answered(tx, &asked.name)?
+        {
             return ask_stack(tx, task, asked);
         }
         let reason = match newest.data["merged"] {
@@ -1122,7 +1125,9 @@ fn judge(tx: &Transaction, wait: i64) -> rusqlite::Result<bool> {
         fire(tx, wait, task, &reason, Some(newest.seq))?;
         return Ok(true);
     }
-    if let Some(asked) = retargeted(task, &stack, &resource, newest) {
+    if let Some(asked) = retargeted(task, &stack, &resource, newest)
+        && !answered(tx, &asked.name)?
+    {
         return ask_stack(tx, task, asked);
     }
     // A lower pull request of a stack is judged at its newest head, since a restack moves it.
@@ -1189,36 +1194,35 @@ struct StackAsk {
     onto: String,
 }
 
-/// The ask when `resource`, a lower pull request of `stack`, closed without a merge while others
-/// are open above it.
-fn stranded(
-    task: i64,
-    stack: &[crate::stack::Pull],
-    resource: &str,
-    close: &Seen,
-) -> Option<StackAsk> {
-    let at = stack.iter().position(|pull| pull.resource == resource)?;
-    let above = open_above(stack, at);
-    let verb = match above.len() {
-        0 => return None,
-        1 => "is",
-        _ => "are",
-    };
+/// The ask about the pull request at `at` of `stack`, which closed without a merge.
+fn stranded(task: i64, stack: &[crate::stack::Pull], at: usize) -> StackAsk {
     let pull = &stack[at];
-    Some(StackAsk {
+    let above = open_above(stack, at);
+    let based = match above.len() {
+        0 => String::new(),
+        1 => format!(", and {} is based on it", listed(&above)),
+        _ => format!(", and {} are based on it", listed(&above)),
+    };
+    StackAsk {
         name: format!("stack-{task}-closed-{}", pull.number()),
         question: format!(
-            "#{} ({} of {}) closed without a merge, and {} {verb} based on it. What should the worker do?",
+            "#{} ({} of {}) closed without a merge{based}. What should the worker do?",
             pull.number(),
             at + 1,
-            stack.len(),
-            listed(&above)
+            stack.len()
         ),
-        onto: close.data["base_branch"]
-            .as_str()
-            .unwrap_or(&pull.base)
-            .to_owned(),
-    })
+        onto: pull.base.clone(),
+    }
+}
+
+/// Whether a person answered the daemon's ask `name`: their decision stands, so the same event
+/// never asks again.
+fn answered(tx: &Transaction, name: &str) -> rusqlite::Result<bool> {
+    tx.query_row(
+        "SELECT EXISTS (SELECT 1 FROM asks WHERE name = ?1 AND answer IS NOT NULL)",
+        [name],
+        |row| row.get(0),
+    )
 }
 
 /// The ask when `resource`, the bottom of `stack`, is now based on another branch than its trunk,
@@ -1875,6 +1879,18 @@ fn enter(
             return finish("blocked");
         };
         let stack = crate::stack::of(tx, task)?;
+        // A closed pull request of a stack waits for a person's decision before anything else.
+        for closed in (0..stack.len()).filter(|&at| stack.len() > 1 && stack[at].state == "closed")
+        {
+            let asked = stranded(task, &stack, closed);
+            if answered(tx, &asked.name)? {
+                continue;
+            }
+            ask_stack(tx, task, asked)?;
+            set(tx, task, "asleep", Some(&at), None)?;
+            set_ending(tx, task, step(workflows, workflow, &at))?;
+            return finish("asleep");
+        }
         // A stack gates each open pull request, its top at the result's commit; one is `resource`.
         let gates: Vec<(String, Option<&str>)> = match stack.split_last() {
             Some((top, lower)) if !lower.is_empty() => stack
@@ -3148,11 +3164,7 @@ pub(crate) fn performed(
             "INSERT OR IGNORE INTO subscriptions (task, resource) VALUES (?1, ?2)",
             params![task, pull.resource],
         )?;
-        tx.execute(
-            "INSERT INTO pull_requests (task, resource, branch, base) VALUES (?1, ?2, ?3, ?4)
-             ON CONFLICT (task, resource) DO UPDATE SET branch = ?3, base = ?4",
-            params![task, pull.resource, pull.branch, pull.base],
-        )?;
+        crate::stack::record(&tx, task, &pull.resource, &pull.branch, &pull.base)?;
     }
     let target = at
         .next

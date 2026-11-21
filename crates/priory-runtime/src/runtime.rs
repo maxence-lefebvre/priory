@@ -283,8 +283,8 @@ pub fn revision(dir: &Path) -> Option<String> {
 }
 
 /// Pushes `commit` to `branch` on the origin of `worktree`, then returns the open pull request from
-/// `branch` and its base: the one `gh pr list` finds, else one it creates on `base`, or on the
-/// default branch with no `base`.
+/// `branch` and its base: the one `gh pr list` finds, which must be on `base` when given, else one
+/// it creates on `base`, or on the default branch with no `base`.
 pub fn open_pull_request(
     worktree: &Path,
     repo: &str,
@@ -311,9 +311,14 @@ pub fn open_pull_request(
     let open: Vec<serde_json::Value> = serde_json::from_str(&open)
         .map_err(|error| format!("gh pr list printed {open:?}: {error}"))?;
     if let Some(pull) = open.first()
-        && let (Some(number), Some(base)) = (pull["number"].as_u64(), pull["baseRefName"].as_str())
+        && let (Some(number), Some(found)) = (pull["number"].as_u64(), pull["baseRefName"].as_str())
     {
-        return Ok((number, base.to_owned()));
+        if let Some(base) = base.filter(|base| *base != found) {
+            return Err(format!(
+                "pull request #{number} from {branch} is based on {found}, not {base}"
+            ));
+        }
+        return Ok((number, found.to_owned()));
     }
     let base = match base {
         Some(base) => base.to_owned(),

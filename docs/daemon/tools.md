@@ -360,8 +360,11 @@ fails instead, and that task is named. So do these:
 | Error | Cause |
 | ----- | ----- |
 | `the stack has <n> branches, past max_prs = <cap> of workflow <name>` | More branches than the workflow's [`max_prs`](../reference/workflows.md#top-level-keys) |
-| `branch <branch> is not below the approved commit <commit>` | A lower branch is missing, or holds a commit the approval does not cover | If the task then reaches `done` and its latest result names no `commit`, the checks wait of
-Done and checks pins the commit that `open-pr` pushed.
+| `branch <branch> is not below the approved commit <commit>` | A lower branch is missing, or holds a commit the approval does not cover |
+| `pull request #<n> from <branch> is based on <found>, not <base>` | The open pull request it would reuse is not based on the branch below. Retarget or close it |
+
+If the task then reaches `done` and its latest result names no `commit`, the checks wait of Done
+and checks pins the commit that `open-pr` pushed.
 
 If the daemon stops after `gh pr create` and before recording it, the action runs again at its next
 start, once the approval still holds. The push repeats and the open pull request is reused. If

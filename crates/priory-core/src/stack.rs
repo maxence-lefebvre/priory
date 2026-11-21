@@ -30,7 +30,8 @@ impl Pull {
 }
 
 /// The pull requests `task` opened or claimed, bottom first: each one's base is the branch of the
-/// one before it. Ones off that chain follow in the order they were added.
+/// one before it. A chain that a retarget broke follows the one below it, in the order they were
+/// added.
 pub(crate) fn of(db: &Connection, task: i64) -> rusqlite::Result<Vec<Pull>> {
     let mut left = db
         .prepare(
@@ -46,16 +47,19 @@ pub(crate) fn of(db: &Connection, task: i64) -> rusqlite::Result<Vec<Pull>> {
             })
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
-    let mut stack = Vec::with_capacity(left.len());
-    let mut below = left
-        .iter()
-        .position(|pull| !left.iter().any(|other| other.branch == pull.base));
-    while let Some(at) = below {
-        let pull = left.remove(at);
-        below = left.iter().position(|other| other.base == pull.branch);
-        stack.push(pull);
+    let mut stack: Vec<Pull> = Vec::with_capacity(left.len());
+    while !left.is_empty() {
+        // The next one sits on the last one placed, else it starts a chain of its own.
+        let next = stack
+            .last()
+            .and_then(|below| left.iter().position(|pull| pull.base == below.branch))
+            .or_else(|| {
+                left.iter()
+                    .position(|pull| !left.iter().any(|other| other.branch == pull.base))
+            })
+            .unwrap_or(0);
+        stack.push(left.remove(next));
     }
-    stack.append(&mut left);
     Ok(stack)
 }
 
@@ -76,4 +80,25 @@ pub(crate) fn place(
     Ok(at
         .filter(|_| stack.len() > 1)
         .map(|at| format!("#{}, {} of {}", stack[at].number(), at + 1, stack.len())))
+}
+
+/// Makes `resource` the pull request of `branch` in the stack of `task`: one that replaced a closed
+/// pull request of that branch takes its place, and a reopened one is open again.
+pub(crate) fn record(
+    tx: &rusqlite::Transaction,
+    task: i64,
+    resource: &str,
+    branch: &str,
+    base: &str,
+) -> rusqlite::Result<()> {
+    tx.execute(
+        "DELETE FROM pull_requests WHERE task = ?1 AND branch = ?3 AND resource != ?2",
+        params![task, resource, branch],
+    )?;
+    tx.execute(
+        "INSERT INTO pull_requests (task, resource, branch, base) VALUES (?1, ?2, ?3, ?4)
+         ON CONFLICT (task, resource) DO UPDATE SET branch = ?3, base = ?4, state = 'open'",
+        params![task, resource, branch, base],
+    )?;
+    Ok(())
 }

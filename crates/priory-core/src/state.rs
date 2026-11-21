@@ -1067,6 +1067,13 @@ pub(crate) fn handle(
     }
     let resources = route::resources(message);
     claim_pull_request(&tx, message)?;
+    // The intake publishes no reopen, so a later event of an open pull request tells it.
+    if message.kind != CLOSED && message.data["open"] == true {
+        tx.execute(
+            "UPDATE pull_requests SET state = 'open' WHERE resource = ?1 AND state = 'closed'",
+            [resources.first()],
+        )?;
+    }
     if message.kind == CLOSED {
         let state = if message.data["merged"] == true {
             "merged"
@@ -1293,11 +1300,18 @@ fn claim_pull_request(tx: &Transaction, message: &Message) -> rusqlite::Result<(
         "INSERT OR IGNORE INTO subscriptions (task, resource) VALUES (?1, ?2)",
         params![task, resource],
     )?;
-    tx.execute(
-        "INSERT OR IGNORE INTO pull_requests (task, resource, branch, base) VALUES (?1, ?2, ?3, ?4)",
-        params![task, resource, head, base],
-    )?;
-    Ok(())
+    // A pull request `open-pr` already recorded keeps the base it was opened on.
+    let known = tx
+        .query_row(
+            "SELECT 1 FROM pull_requests WHERE task = ?1 AND resource = ?2",
+            params![task, resource],
+            |_| Ok(()),
+        )
+        .optional()?;
+    if known.is_some() {
+        return Ok(());
+    }
+    crate::stack::record(tx, task, &resource, head, base)
 }
 
 /// Whether `task` sleeps where an event can wake it: asleep at a model step, with no daemon's
