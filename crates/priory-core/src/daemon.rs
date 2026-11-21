@@ -7,8 +7,8 @@ use crate::state::{self, Admission, NewRun, Signal};
 use crate::tools::{self, Act, Answer, Call, Dismiss, Done, Repair};
 use crate::trace::Trace;
 use crate::{
-    deliver, embed, handler, hold, notify, progress, push, search, sections, stall, subscribe,
-    summary, sweep,
+    deliver, embed, handler, hold, notify, overlap, progress, push, search, sections, stall,
+    subscribe, summary, sweep,
 };
 use priory_factory::factory::{self, Factory, Harness, PermissionMode, Session};
 use priory_intake::intake::OUTPUT;
@@ -896,6 +896,7 @@ fn tend(
         }
     }
     state::due(db)?;
+    overlap::tick(db, factory, home)?;
     tools::enter_queued(db, factory)?;
     state::disk_due(db, || room::measure(home).ok().map(|room| room.disk_free))?;
     memory::reclaim(db)?;
