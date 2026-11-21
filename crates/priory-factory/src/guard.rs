@@ -260,7 +260,7 @@ fn gh_api(words: &[String]) -> Option<&'static str> {
         match option {
             "-X" | "--method" => method = value(),
             "-f" | "-F" | "--field" | "--raw-field" => fields.extend(value()),
-            "--input" => opaque = true,
+            "--input" => opaque = value().is_some(),
             "-R" | "--repo" | "-H" | "--header" | "-q" | "--jq" | "-t" | "--template"
             | "--hostname" | "-p" | "--preview" | "--cache" => drop(value()),
             _ if arg.starts_with("-X") && arg.len() > 2 => method = Some(arg[2..].to_owned()),
@@ -288,7 +288,6 @@ fn gh_api(words: &[String]) -> Option<&'static str> {
         matches!(parts.as_slice(), ["repos", _, _, "pulls", number, first, ..]
             if number.parse::<u64>().is_ok() && *first == tail)
     };
-    let text = fields.join(" ");
     if pull("merge") {
         return Some("gh-pr-merge");
     }
@@ -296,13 +295,19 @@ fn gh_api(words: &[String]) -> Option<&'static str> {
         return Some("gh-pr-approve");
     }
     if endpoint == "graphql" {
+        // Only the query names the operation; the other fields are its variables.
+        let query = fields
+            .iter()
+            .find_map(|field| field.strip_prefix("query="))
+            .unwrap_or_default();
         if opaque
-            || text.contains("mergePullRequest")
-            || text.contains("enablePullRequestAutoMerge")
+            || query.contains("mergePullRequest")
+            || query.contains("enablePullRequestAutoMerge")
         {
             return Some("gh-pr-merge");
         }
-        if text.contains("PullRequestReview") && approves(&text) {
+        let approve = approves(query) || fields.iter().any(|field| field.ends_with("=APPROVE"));
+        if query.contains("PullRequestReview") && approve {
             return Some("gh-pr-approve");
         }
     }
@@ -1158,6 +1163,23 @@ mod tests {
                 Some("gh-pr-merge"),
             ),
             ("gh api graphql --input merge.json", Some("gh-pr-merge")),
+            ("gh api --input merge.json graphql", Some("gh-pr-merge")),
+            (
+                "gh api --input review.json repos/o/r/pulls/12/reviews",
+                Some("gh-pr-approve"),
+            ),
+            (
+                "gh api graphql -F query=@approve.graphql",
+                Some("gh-pr-merge"),
+            ),
+            (
+                "gh api graphql -f query='mutation($e: PullRequestReviewEvent!) { submitPullRequestReview(input: {event: $e}) { clientMutationId } }' -f e=APPROVE",
+                Some("gh-pr-approve"),
+            ),
+            (
+                "gh api graphql -f query='mutation($b: String!) { addComment(input: {body: $b}) { clientMutationId } }' -f b='Use mergePullRequest, PullRequestReview APPROVE'",
+                Some("gh-api-write"),
+            ),
             (
                 "gh api graphql -f query='{ search(query: \"review:approved\") { issueCount } }' -f states=APPROVED",
                 Some("gh-api-write"),
