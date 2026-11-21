@@ -1,5 +1,5 @@
 use crate::trace::Trace;
-use rusqlite::{Connection, params};
+use rusqlite::{Connection, OptionalExtension, params};
 use serde_json::{Value, json};
 use uuid::Uuid;
 
@@ -9,14 +9,34 @@ const BATCH: i64 = 200;
 /// Namespaces the ids derived from a record's source and task, run or record id.
 const IDS: Uuid = Uuid::from_u128(0x5d0c_7a1e_3b8f_4e2a_9c61_0f4d_2b7e_8a93);
 
-/// The records past `endpoint`'s cursor, at most a batch, as the seq of the last one and an OTLP/HTTP
-/// JSON request. The request is `None` when none of them is a step record, so the cursor moves on
-/// without a send. `None` overall when nothing is pending.
+/// How far an endpoint has received: the last `trace.seq` and the last `task_ends.seq` it accepted.
+#[derive(Clone, Copy, Default)]
+pub(crate) struct Cursor {
+    seq: i64,
+    ended: i64,
+}
+
+/// What is pending past `endpoint`'s cursor, at most a batch of trace records and a batch of task
+/// ends, as the cursor after them and an OTLP/HTTP JSON request. The request is `None` when none of
+/// them makes a span, so the cursor moves on without a send. `None` overall when nothing is pending.
 pub(crate) fn pending(
     db: &Connection,
     endpoint: &str,
     trace: &Trace,
-) -> rusqlite::Result<Option<(i64, Option<Value>)>> {
+) -> rusqlite::Result<Option<(Cursor, Option<Value>)>> {
+    let mut cursor = db
+        .query_row(
+            "SELECT seq, ended FROM exports WHERE endpoint = ?1",
+            [endpoint],
+            |row| {
+                Ok(Cursor {
+                    seq: row.get(0)?,
+                    ended: row.get(1)?,
+                })
+            },
+        )
+        .optional()?
+        .unwrap_or_default();
     let mut statement = db.prepare(
         "SELECT trace.seq, trace.event, runs.agent,
          CAST(round(unixepoch(runs.started, 'subsec') * 1000) AS INTEGER),
@@ -24,10 +44,10 @@ pub(crate) fn pending(
          CAST(round(unixepoch(trace.time, 'subsec') * 1000) AS INTEGER)
          FROM trace LEFT JOIN runs
            ON runs.id = CAST(json_extract(trace.event, '$.data.run') AS INTEGER)
-         WHERE trace.seq > coalesce((SELECT seq FROM exports WHERE endpoint = ?1), 0)
+         WHERE trace.seq > ?1
          ORDER BY trace.seq LIMIT ?2",
     )?;
-    let rows = statement.query_map(params![endpoint, BATCH], |row| {
+    let rows = statement.query_map(params![cursor.seq, BATCH], |row| {
         Ok(Row {
             seq: row.get(0)?,
             event: serde_json::from_str(&row.get::<_, String>(1)?).unwrap_or(Value::Null),
@@ -37,21 +57,57 @@ pub(crate) fn pending(
             time: row.get(5)?,
         })
     })?;
-    let mut last = None;
+    let mut pending = false;
     let mut spans = Vec::new();
     for row in rows {
         let row = row?;
-        last = Some(row.seq);
+        pending = true;
+        cursor.seq = row.seq;
         if row.event["type"] != "factory.step.ended" {
             continue;
         }
         spans.extend(step_spans(&row));
     }
-    let Some(last) = last else {
+    let source = crate::trace::source(trace);
+    let mut ends = db.prepare(
+        "SELECT task_ends.seq, task_ends.task, task_ends.generation, task_ends.state,
+         CAST(round(unixepoch(task_ends.created, 'subsec') * 1000) AS INTEGER),
+         CAST(round(unixepoch(task_ends.ended, 'subsec') * 1000) AS INTEGER),
+         tasks.key, tasks.workflow, tasks.lane, tasks.band, tasks.grade,
+         task_ends.run,
+         coalesce((SELECT max(earlier.run) FROM task_ends earlier
+           WHERE earlier.task = task_ends.task AND earlier.seq < task_ends.seq), 0)
+         FROM task_ends JOIN tasks ON tasks.id = task_ends.task
+         WHERE task_ends.seq > ?1 ORDER BY task_ends.seq LIMIT ?2",
+    )?;
+    let ends = ends.query_map(params![cursor.ended, BATCH], |row| {
+        Ok(End {
+            seq: row.get(0)?,
+            task: row.get(1)?,
+            generation: row.get(2)?,
+            state: row.get(3)?,
+            created: row.get(4)?,
+            ended: row.get(5)?,
+            key: row.get(6)?,
+            workflow: row.get(7)?,
+            lane: row.get(8)?,
+            band: row.get(9)?,
+            grade: row.get(10)?,
+            last_run: row.get(11)?,
+            first_run: row.get(12)?,
+        })
+    })?;
+    for end in ends {
+        let end = end?;
+        pending = true;
+        cursor.ended = end.seq;
+        spans.extend(end_spans(db, &source, &end)?);
+    }
+    if !pending {
         return Ok(None);
-    };
+    }
     if spans.is_empty() {
-        return Ok(Some((last, None)));
+        return Ok(Some((cursor, None)));
     }
     let resource: Vec<Value> = [
         attribute("service.name", &json!("priory")),
@@ -65,17 +121,126 @@ pub(crate) fn pending(
         "resource": { "attributes": resource },
         "scopeSpans": [{ "scope": { "name": "priory" }, "spans": spans }],
     }] });
-    Ok(Some((last, Some(request))))
+    Ok(Some((cursor, Some(request))))
 }
 
-/// Records that `endpoint` accepted every record up to `seq`.
-pub(crate) fn sent(db: &Connection, endpoint: &str, seq: i64) -> rusqlite::Result<()> {
+/// Records that `endpoint` accepted every record up to `cursor`.
+pub(crate) fn sent(db: &Connection, endpoint: &str, cursor: Cursor) -> rusqlite::Result<()> {
     db.execute(
-        "INSERT INTO exports (endpoint, seq) VALUES (?1, ?2)
-         ON CONFLICT (endpoint) DO UPDATE SET seq = excluded.seq",
-        params![endpoint, seq],
+        "INSERT INTO exports (endpoint, seq, ended) VALUES (?1, ?2, ?3)
+         ON CONFLICT (endpoint) DO UPDATE SET seq = excluded.seq, ended = excluded.ended",
+        params![endpoint, cursor.seq, cursor.ended],
     )?;
     Ok(())
+}
+
+/// A task's end: when its generation began and ended, and what it was by then.
+struct End {
+    seq: i64,
+    task: i64,
+    generation: i64,
+    state: String,
+    created: Option<i64>,
+    ended: Option<i64>,
+    key: String,
+    workflow: String,
+    lane: Option<String>,
+    band: Option<String>,
+    grade: Option<String>,
+    first_run: i64,
+    last_run: i64,
+}
+
+/// The task's root span, and a span for each of its runs that ended with no step, under it.
+fn end_spans(db: &Connection, source: &str, end: &End) -> rusqlite::Result<Vec<Value>> {
+    let (Some(created), Some(ended)) = (end.created, end.ended) else {
+        return Ok(Vec::new());
+    };
+    let task = json!(end.task.to_string());
+    let trace = derive(source, "task", &task).simple().to_string();
+    let root = root_id(source, &task, end.generation);
+    let attributes = [
+        ("priory.task.id", &task),
+        ("priory.key", &json!(end.key)),
+        ("priory.workflow", &json!(end.workflow)),
+        ("priory.lane", &json!(end.lane)),
+        ("priory.band", &json!(end.band)),
+        ("priory.grade", &json!(end.grade)),
+        ("priory.state", &json!(end.state)),
+        ("priory.generation", &json!(end.generation)),
+    ];
+    let mut spans = vec![span(
+        &trace,
+        &root,
+        &format!("task {}", end.key),
+        created * 1_000_000,
+        ended * 1_000_000,
+        &attributes,
+    )];
+    let mut runs = db.prepare(
+        "SELECT runs.id, runs.step, runs.agent, runs.ended_as,
+         CAST(round(unixepoch(runs.started, 'subsec') * 1000) AS INTEGER),
+         CAST(round(unixepoch(runs.ended, 'subsec') * 1000) AS INTEGER)
+         FROM runs
+         WHERE runs.task = ?1 AND runs.ended IS NOT NULL
+           AND runs.id > ?2 AND runs.id <= ?3
+           AND NOT EXISTS (SELECT 1 FROM trace WHERE trace.type = 'factory.step.ended'
+             AND json_extract(trace.event, '$.data.run') = CAST(runs.id AS TEXT))
+         ORDER BY runs.id",
+    )?;
+    let runs = runs.query_map(params![end.task, end.first_run, end.last_run], |row| {
+        Ok((
+            row.get::<_, i64>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, Option<String>>(2)?,
+            row.get::<_, Option<String>>(3)?,
+            row.get::<_, Option<i64>>(4)?,
+            row.get::<_, Option<i64>>(5)?,
+        ))
+    })?;
+    for run in runs {
+        let (id, step, agent, ended_as, started, run_ended) = run?;
+        let (Some(started), Some(run_ended)) = (started, run_ended) else {
+            continue;
+        };
+        let id = json!(id.to_string());
+        let attributes = [
+            ("priory.task.id", &task),
+            ("priory.run.id", &id),
+            ("priory.step", &json!(step)),
+            ("priory.lane", &json!(end.lane)),
+            ("priory.run.ended_as", &json!(ended_as)),
+            ("gen_ai.operation.name", &json!("invoke_agent")),
+            ("gen_ai.agent.name", &json!(agent)),
+        ];
+        let name = match &agent {
+            Some(agent) => format!("invoke_agent {agent}"),
+            None => "invoke_agent".to_owned(),
+        };
+        let mut run = span(
+            &trace,
+            &derive(source, "run", &id),
+            &name,
+            started * 1_000_000,
+            run_ended * 1_000_000,
+            &attributes,
+        );
+        run["parentSpanId"] = json!(span_id(&root));
+        spans.push(run);
+    }
+    Ok(spans)
+}
+
+/// The id of the root span of `task`'s `generation`, which each run span of the generation names.
+fn root_id(source: &str, task: &Value, generation: i64) -> Uuid {
+    derive(
+        source,
+        "root",
+        &json!(format!(
+            "{}/{generation}",
+            task.as_str().unwrap_or_default()
+        )),
+    )
 }
 
 /// A trace record with what the spans need from its run.
@@ -141,11 +306,22 @@ fn step_spans(row: &Row) -> Vec<Value> {
         end,
         &step_attributes,
     );
+    let root = root_id(
+        source,
+        &data["task"],
+        data["generation"].as_i64().unwrap_or(1),
+    );
     if data["run"].is_null() {
+        step["parentSpanId"] = json!(span_id(&root));
         return vec![step];
     }
     let run_id = derive(source, "run", &data["run"]);
     step["parentSpanId"] = json!(span_id(&run_id));
+    let root = root_id(
+        source,
+        &data["task"],
+        data["generation"].as_i64().unwrap_or(1),
+    );
     let agent = json!(row.agent);
     let run_attributes = [
         ("priory.task.id", &data["task"]),
@@ -161,7 +337,7 @@ fn step_spans(row: &Row) -> Vec<Value> {
         None => "invoke_agent".to_owned(),
     };
     let run_start = row.run_started.map_or(start, |started| started * 1_000_000);
-    let run = span(
+    let mut run = span(
         &trace,
         &run_id,
         &name,
@@ -169,6 +345,7 @@ fn step_spans(row: &Row) -> Vec<Value> {
         time * 1_000_000,
         &run_attributes,
     );
+    run["parentSpanId"] = json!(span_id(&root));
     vec![run, step]
 }
 

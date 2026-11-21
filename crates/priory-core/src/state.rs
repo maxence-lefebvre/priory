@@ -12,7 +12,7 @@ use std::collections::BTreeMap;
 use std::io::Write;
 use std::time::Duration;
 
-const VERSION: i64 = 49;
+const VERSION: i64 = 50;
 
 const SCHEMA: &str = "
 CREATE TABLE tasks (
@@ -865,9 +865,42 @@ END;
 PRAGMA user_version = 48;
 ";
 
-// Whether the daemon queued a compaction since the run's context last read below `compactAt`.
-const SCHEMA_49: &str = "ALTER TABLE runs ADD COLUMN crossed INTEGER NOT NULL DEFAULT 0;
+// When a task began and each time it ended, for the OTLP export's root span per task. `created`
+// starts again when a revive or reopen starts the next generation. Its seconds match `runs.started`,
+// so no run starts before its task. `task_ends` is a log, so its
+// `seq` is a cursor the export keeps in `exports.ended`.
+const SCHEMA_49: &str = "
+ALTER TABLE tasks ADD COLUMN created TEXT;
+UPDATE tasks SET created = coalesce((SELECT time FROM inbox WHERE inbox.id = tasks.source), entered, changed);
+CREATE TABLE task_ends (
+  seq        INTEGER PRIMARY KEY AUTOINCREMENT,
+  task       INTEGER NOT NULL REFERENCES tasks (id),
+  generation INTEGER NOT NULL,
+  state      TEXT NOT NULL,
+  created    TEXT NOT NULL,
+  ended      TEXT NOT NULL,
+  run        INTEGER NOT NULL
+);
+ALTER TABLE exports ADD COLUMN ended INTEGER NOT NULL DEFAULT 0;
+CREATE TRIGGER task_created AFTER INSERT ON tasks BEGIN
+  UPDATE tasks SET created = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') WHERE id = NEW.id;
+END;
+CREATE TRIGGER task_ended AFTER UPDATE OF state ON tasks
+  WHEN NEW.state IN ('done', 'failed', 'dropped') AND OLD.state NOT IN ('done', 'failed', 'dropped') BEGIN
+  INSERT INTO task_ends (task, generation, state, created, ended, run)
+    VALUES (NEW.id, NEW.generation, NEW.state, coalesce(NEW.created, strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+      strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), (SELECT coalesce(max(id), 0) FROM runs WHERE task = NEW.id));
+END;
+CREATE TRIGGER task_restarted AFTER UPDATE OF state ON tasks
+  WHEN OLD.state IN ('done', 'failed', 'dropped') AND NEW.state NOT IN ('done', 'failed', 'dropped') BEGIN
+  UPDATE tasks SET created = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') WHERE id = NEW.id;
+END;
 PRAGMA user_version = 49;
+";
+
+// Whether the daemon queued a compaction since the run's context last read below `compactAt`.
+const SCHEMA_50: &str = "ALTER TABLE runs ADD COLUMN crossed INTEGER NOT NULL DEFAULT 0;
+PRAGMA user_version = 50;
 ";
 
 /// Each schema change in order: a file at version `n` applies those from index `n` on.
@@ -878,6 +911,7 @@ const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA_26, SCHEMA_27, SCHEMA_28, SCHEMA_29, SCHEMA_30, SCHEMA_31, SCHEMA_32, SCHEMA_33,
     SCHEMA_34, SCHEMA_35, SCHEMA_36, SCHEMA_37, SCHEMA_38, SCHEMA_39, SCHEMA_40, SCHEMA_41,
     SCHEMA_42, SCHEMA_43, SCHEMA_44, SCHEMA_45, SCHEMA_46, SCHEMA_47, SCHEMA_48, SCHEMA_49,
+    SCHEMA_50,
 ];
 
 /// The order the queue starts tasks in: band, then a person's order, then age. A band the factory
