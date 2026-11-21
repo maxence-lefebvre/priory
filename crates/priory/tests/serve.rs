@@ -4307,6 +4307,19 @@ fn base64(text: &Value) -> Vec<u8> {
     Base64::decode_vec(text.as_str().unwrap()).unwrap()
 }
 
+/// A notification's payload without its `id`, once the id is the time the notification was queued
+/// and its queue row, which names nothing a lock screen shows.
+fn without_id(mut payload: Value) -> Value {
+    let id = payload
+        .as_object_mut()
+        .and_then(|fields| fields.remove("id"))
+        .expect("each notification carries an id");
+    let (queued, row) = id.as_str().unwrap().split_once('/').unwrap();
+    assert!(queued.parse::<jiff::Timestamp>().is_ok(), "{id}");
+    assert!(row.parse::<u64>().is_ok(), "{id}");
+    payload
+}
+
 #[test]
 fn a_new_ask_pushes_one_notification_per_subscription_with_only_its_title_and_url() {
     let mut setup = Setup::new("push-ask", SERVE);
@@ -4341,7 +4354,7 @@ fn a_new_ask_pushes_one_notification_per_subscription_with_only_its_title_and_ur
             &laptop
         };
         let plain = decrypt(&base64(&push["body"]), key, auth);
-        let payload: Value = serde_json::from_slice(&plain).unwrap();
+        let payload = without_id(serde_json::from_slice(&plain).unwrap());
         assert_eq!(
             payload,
             json!({ "title": "Merge the docs fix?", "url": format!("/asks/{ask}") })
@@ -4503,7 +4516,10 @@ fn a_failing_intake_and_an_uncertain_prompt_push_an_alarm_with_only_a_title_and_
     let payloads: Vec<Value> = pushes
         .iter()
         .map(|push| {
-            serde_json::from_slice(&decrypt(&base64(&push["body"]), &phone.0, &phone.1)).unwrap()
+            without_id(
+                serde_json::from_slice(&decrypt(&base64(&push["body"]), &phone.0, &phone.1))
+                    .unwrap(),
+            )
         })
         .collect();
     assert_eq!(
