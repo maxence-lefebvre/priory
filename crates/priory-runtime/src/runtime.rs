@@ -292,6 +292,19 @@ pub fn kept_head(home: &Path, worktree: &Path, branch: &str) -> Option<String> {
     head(&home.join("repos").join(repo), branch)
 }
 
+/// The commit Priory's clone under `home` last pushed `branch` to, or fetched it at, on origin:
+/// its remote-tracking branch, as the worktree `worktree` of that clone shares it.
+pub fn pushed_head(home: &Path, worktree: &Path, branch: &str) -> Option<String> {
+    let repo = worktree
+        .parent()?
+        .strip_prefix(home.join("worktrees"))
+        .ok()?;
+    let commit = format!("refs/remotes/origin/{branch}^{{commit}}");
+    run(git(&home.join("repos").join(repo)).args(["rev-parse", "--verify", "--quiet", &commit]))
+        .ok()
+        .map(|head| head.trim().to_owned())
+}
+
 /// The files `branch` changes against the default branch, read as `kept_head` reads, or `None`
 /// when git cannot say.
 pub fn changed_files(home: &Path, worktree: &Path, branch: &str) -> Option<Vec<String>> {
