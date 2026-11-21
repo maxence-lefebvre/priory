@@ -989,7 +989,7 @@ function askDetail(id, wide) {
       <div class="opts" role="group" aria-label="Options">${optionButtons}</div>${lockedNote}${more}${elsewhere}`;
   const top = html`<div class="ask">
     <a class="ctx" href="${ask.task && !owner ? `/tasks/${ask.task}` : "/asks"}">${wide ? "" : tile("ask", "sm")}<span class="mono">${ask.key}</span><span>${ask.step}</span><span>${ask.lane || ""}</span>${ask.command ? html`<span class="tag">Command</span>` : ""}${runnerTag(ask)}${wide ? "" : html`<span>${timeTag(ask.since)}</span><span>revision ${ask.revision}</span>`}</a>
-    ${ask.risk_estimate ? html`<p class="riskline">${icon("lock", "s15")}<span>${ask.risk_estimate.line}</span></p>` : ""}
+    ${ask.risk_estimate ? html`<p class="note">${icon("lock", "s15")}<span>${ask.risk_estimate.line}</span></p>` : ""}
     <h2 class="question">${autolinked(ask.question || ask.title, ask.repo)}</h2>${decided}</div>`;
   // A go ask reads its batch's plan first; the planning task's own plan result says the same.
   const planned = batch ? [

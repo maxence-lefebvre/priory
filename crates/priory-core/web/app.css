@@ -493,8 +493,6 @@ textarea { font: 400 16px/22px var(--font-ui); color: var(--text); background: v
 .fedge.by-human .fline { stroke: var(--emph); }
 .fedge .halo { stroke: var(--danger-text); opacity: 0.22; stroke-linecap: round; }
 .felabel { fill: var(--text-2); font: 400 11px var(--font-ui); paint-order: stroke; stroke: var(--bg); stroke-width: 3px; }
-.riskline { display: flex; gap: var(--space-1); align-items: flex-start; margin: var(--space-2) 0 0; font: 400 var(--type-caption) var(--font-ui); color: var(--text-2); }
-.riskline .ico { flex: none; margin-top: 1px; }
 .unattended { font: 400 var(--type-small) var(--font-ui); }
 .unattended p { display: flex; align-items: center; gap: var(--space-1); }
 .unattended ul { list-style: none; padding: var(--space-1) 0 0 var(--space-5); font-size: 12px; color: var(--text-2); }
@@ -531,14 +529,13 @@ textarea { font: 400 16px/22px var(--font-ui); color: var(--text); background: v
 .ctbl td, .ctbl th[scope="row"] { cursor: default; height: var(--row-wide); padding: 0 8px; border-top: 1px solid var(--line); white-space: nowrap; }
 .ctbl th[scope="row"] { position: sticky; left: 0; background: var(--bg); text-align: left; font-weight: 400; padding-left: 0; }
 .ctbl td.n { color: var(--text-3); font-size: var(--type-caption); }
-.history { margin-top: var(--space-3); }
-.history .note { margin: 0 0 var(--space-1); font: 400 var(--type-caption) var(--font-ui); color: var(--text-2); }
 .rtbl td[data-label] { height: auto; padding-block: var(--space-2); }
 .rtbl .bound { display: block; font: 400 var(--type-caption) var(--font-ui); color: var(--text-3); }
 @container (max-width: 599px) {
   .rtbl thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
-  .rtbl tr { display: grid; grid-template-columns: 1fr auto; padding: var(--space-2) 0; border-top: 1px solid var(--line); }
+  .rtbl tr { display: grid; grid-template-columns: minmax(0, 1fr) auto; padding: var(--space-2) 0; border-top: 1px solid var(--line); }
   .rtbl th[scope="row"], .rtbl td[data-label] { display: block; height: auto; padding: 0; border: 0; position: static; }
+  .rtbl th[scope="row"] { white-space: normal; overflow-wrap: anywhere; }
   .rtbl td[data-label]::before { content: attr(data-label) " "; }
   .rtbl td:not(.r) { grid-column: 1 / -1; font: 400 var(--type-caption) var(--font-ui); color: var(--text-2); white-space: normal; }
   .rtbl td:not(.r) .bound { display: inline; color: inherit; }
