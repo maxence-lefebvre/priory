@@ -20,6 +20,8 @@ against it, but `priory check` applies the same rules.
 | `runner` | string | no | | The runner it runs on, by Tailscale hostname, or `any`. Not read yet: every run starts on the daemon's machine | `"any"` |
 | `session` | `per-task` or `shared` | no | `"per-task"` | `per-task`: one conversation per task. `shared`: one conversation across tasks, such as a lead. See [sessions.md](../daemon/sessions.md) | `"shared"` |
 | `compactAt` | integer | no | | The context size, in tokens, past which the daemon compacts the conversation between turns. Claude Code only. See [sessions.md](../daemon/sessions.md#compacting-a-long-session) | `150000` |
+| `idleCompactAt` | integer | no | | The context size, in tokens, past which the daemon compacts a shared session idle for 55 minutes, before its prompt cache expires. Claude Code and `session = "shared"` only. See [sessions.md](../daemon/sessions.md#compacting-an-idle-session) | `60000` |
+| `onChange` | `tell` or `fresh` | no | `"tell"` | What a resumed shared session gets when the agent changed since it started. `tell`: a line naming what changed. `fresh`: a new session. `session = "shared"` only. See [sessions.md](../daemon/sessions.md#when-the-agent-changes) | `"fresh"` |
 | `memory` | size | no | | What a runner must have free to admit a run. See [memory-gate.md](../daemon/memory-gate.md) | `"6GB"` |
 | `disk` | size | no | | Disk a run reserves above the runner's floor | `"20GB"` |
 | `mcpServers` | array of strings | no | `[]` | The MCP servers the run gets, by name | `["github"]` |
@@ -95,7 +97,9 @@ Answer in one short paragraph.
 | `` a codex agent cannot take `permissions.defaultMode = "plan"`: use manual, acceptEdits, auto or dontAsk `` | A Codex agent in plan mode |
 | `` a codex agent cannot take `permissions.allow`: Codex has no per-tool rules, so its sandbox and approvals follow `defaultMode` alone `` | A Codex agent with `allow`. The same for `deny` |
 | `` a codex agent cannot take `compactAt`: Priory reads no Codex tokens, so it never knows the context size `` | A Codex agent with `compactAt` |
-| `invalid value: integer `0`, expected a nonzero u64` | `compactAt = 0`. A negative or non-integer value gets serde's matching message |
+| `` a codex agent cannot take `idleCompactAt`: Priory reads no Codex tokens, so it never knows the context size `` | A Codex agent with `idleCompactAt` |
+| `` `idleCompactAt` needs `session = "shared"`: only a shared session is resumed across tasks `` | `idleCompactAt` on a `per-task` agent. The same for `onChange = "fresh"` |
+| `invalid value: integer `0`, expected a nonzero u64` | `compactAt = 0` or `idleCompactAt = 0`. A negative or non-integer value gets serde's matching message |
 
 Other files name agents too: a workflow's model steps, and `handler`, `[search] tldr` and
 `[sweep] agent` in `factory.toml`. Their pages list those errors.

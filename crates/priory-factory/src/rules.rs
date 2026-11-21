@@ -1,6 +1,6 @@
 use crate::factory::{
-    Agent, Backend, Decider, Effect, Factory, Harness, Intervention, Loaded, PermissionMode,
-    Problem, Proof, Session, Step, Trigger, Until, Workflow,
+    Agent, Backend, Decider, Effect, Factory, Harness, Intervention, Loaded, OnChange,
+    PermissionMode, Problem, Proof, Session, Step, Trigger, Until, Workflow,
 };
 use crate::guard::{NEED_APPROVAL, PERSON, UNREADABLE};
 use crate::lanes::{self, Lanes};
@@ -292,6 +292,7 @@ pub fn check(factory: &Factory) -> Vec<Problem> {
     }
     for agent in factory.agents.values() {
         check_codex(agent, &mut problems);
+        check_shared(agent, &mut problems);
     }
     for workflow in factory.workflows.values() {
         check_band(
@@ -355,19 +356,41 @@ fn check_band<T>(
     }
 }
 
+/// Refuses the keys that only a shared session reads.
+fn check_shared(agent: &Loaded<Agent>, problems: &mut Vec<Problem>) {
+    let value = &agent.value;
+    if matches!(value.session, Session::Shared) {
+        return;
+    }
+    for (field, set) in [
+        ("idleCompactAt", value.idle_compact_at.is_some()),
+        ("onChange", value.on_change != OnChange::Tell),
+    ] {
+        if set {
+            let message = format!(
+                "`{field}` needs `session = \"shared\"`: only a shared session is resumed across tasks"
+            );
+            problems.push(problem(agent, agent.lines.field(field), message));
+        }
+    }
+}
+
 /// Refuses the Claude Code permissions a Codex run cannot apply.
 fn check_codex(agent: &Loaded<Agent>, problems: &mut Vec<Problem>) {
     let value = &agent.value;
     if !matches!(value.harness, Harness::Codex) {
         return;
     }
-    if value.compact_at.is_some() {
-        let message = "a codex agent cannot take `compactAt`: Priory reads no Codex tokens, so it never knows the context size";
-        problems.push(problem(
-            agent,
-            agent.lines.field("compactAt"),
-            message.into(),
-        ));
+    for (field, set) in [
+        ("compactAt", value.compact_at.is_some()),
+        ("idleCompactAt", value.idle_compact_at.is_some()),
+    ] {
+        if set {
+            let message = format!(
+                "a codex agent cannot take `{field}`: Priory reads no Codex tokens, so it never knows the context size"
+            );
+            problems.push(problem(agent, agent.lines.field(field), message));
+        }
     }
     let line = agent.lines.field("permissions");
     let permissions = &value.permissions;

@@ -7,6 +7,7 @@ pub mod grades;
 mod guard;
 mod handler;
 mod hold;
+mod idle;
 pub mod listing;
 pub mod memory;
 #[cfg(feature = "model")]

@@ -26,8 +26,9 @@ each task starts a new session instead of resuming the shared one.
 
 Known limits:
 
-- A long conversation is compacted by Priory only when its agent sets `compactAt` or calls the
-  `compact` tool. See Compacting a long session.
+- A long conversation is compacted by Priory only when its agent sets `compactAt` or
+  `idleCompactAt`, or calls the `compact` tool. See Compacting a long session and Compacting an
+  idle session.
 - Claude stores a session's transcript under its starting directory. Whether `--resume` finds it
   from another task's worktree depends on the Claude version. No test runs a real Claude.
 - Signals and tool calls name the harness session, not the process. The daemon kills a run's tmux
@@ -73,6 +74,69 @@ A Codex agent cannot take `compactAt`: Priory reads no Codex tokens (see [codex.
 
 Known limit: an answer that reaches a run kept awake for its `/compact` can start its command
 before the compaction, so the continuation may come while the command runs.
+
+## Compacting an idle session
+
+A shared session waits between tasks with no process. Anthropic's prompt cache keeps a
+conversation for 5 minutes, or for an hour with its longer lifetime. Priory assumes the hour. A task
+that resumes the session after it reads the whole context again at full price. An agent's `idleCompactAt` is a context
+size in tokens, such as `60000`. When its shared session has been idle for 55 minutes and its
+context is at or past `idleCompactAt`, the daemon compacts it while the cache still holds it. Unset,
+Priory never compacts an idle session.
+
+The 55 minutes count from the last hook of any run of the session. They leave five minutes of the
+hour for the launch, the resume and the `/compact`. A session idle past the hour, as after a daemon
+stop, is left alone: its cache is gone, so a compaction would read the context at full price too.
+
+The daemon reads the context size from the session's transcript, as for `compactAt`. Then it:
+
+1. resumes the session in a tmux session named `priory-idle-<agent>`, in the worktree of its last
+   run, with the same flags as the agent's runs, so the resume matches the cached conversation,
+2. types `/compact` once Claude's `SessionStart` arrives,
+3. kills the tmux session at the `SessionStart` with `source: compact`.
+
+It compacts the session once per idle stretch. A run of the session that starts after the
+compaction makes its next idle stretch count again.
+
+It never compacts a session with a live run, so it never compacts a busy one. While the compaction
+runs, a task that needs the agent stays `queued` or `ready` with the reason
+`waits for agent <name>: its shared session is being compacted`. A compaction that has not ended
+after 10 minutes is killed. A daemon restart kills the compactions it finds live.
+
+`priory check` refuses `idleCompactAt` on a Codex agent and on an agent whose `session` is not
+`shared`.
+
+Known limits:
+
+- Priory does not read which cache lifetime Claude used. A session cached for 5 minutes, as with
+  some API keys, is cold by the time the daemon compacts it.
+- Priory counts no tokens of an idle compaction toward any task.
+- The last run's worktree must still exist. A session whose worktree the sweep removed is not
+  compacted.
+
+## When the agent changes
+
+Each run of an agent gets the agent's current instructions, model and permissions as flags. A
+shared session resumed days later still carries earlier turns that followed the old ones. So the
+daemon records what a shared session started with: a digest of the agent's prompt, its tools
+(`mcpServers`, `permissions.allow` and `permissions.deny`), its model and effort, and its flags
+(`permissions.defaultMode`).
+
+When a task resumes the session and a digest differs, the task's first prompt starts with one line
+that names the parts that changed, before the line that names the task:
+
+```
+Your agent definition changed since this conversation started: its prompt, model.
+```
+
+The daemon then records the new digests, so the next task hears nothing. An unchanged agent adds
+nothing to the prompt.
+
+An agent with `onChange = "fresh"` starts a new shared session instead of resuming the old one.
+`priory check` refuses `onChange` on an agent whose `session` is not `shared`.
+
+A session recorded before Priory kept digests has none: it is resumed as unchanged, and its next
+run records them.
 
 ## Attaching to a run
 

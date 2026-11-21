@@ -11,6 +11,14 @@
       ],
       "type": "string"
     },
+    "OnChange": {
+      "description": "`tell`: a resumed shared session's first prompt names what changed in its agent. `fresh`: the\ntask starts a new session instead.",
+      "enum": [
+        "tell",
+        "fresh"
+      ],
+      "type": "string"
+    },
     "PermissionMode": {
       "description": "Claude Code's `--permission-mode`; `bypassPermissions` is refused.",
       "oneOf": [
@@ -110,6 +118,15 @@
       ],
       "description": "The coding agent CLI that runs it."
     },
+    "idleCompactAt": {
+      "description": "The context size, in tokens, past which the daemon compacts a shared session left idle\nfor 55 minutes, before its prompt cache expires. Unset, it never compacts an idle session.",
+      "format": "uint64",
+      "minimum": 1,
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
     "mcpServers": {
       "default": [],
       "description": "The MCP servers the run gets, by name.",
@@ -130,6 +147,14 @@
         "string",
         "null"
       ]
+    },
+    "onChange": {
+      "allOf": [
+        {
+          "$ref": "#/definitions/OnChange"
+        }
+      ],
+      "description": "What a resumed shared session does when the agent changed since it started."
     },
     "permissions": {
       "allOf": [

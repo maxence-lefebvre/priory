@@ -1,3 +1,4 @@
+use crate::idle;
 use crate::memory::{self, Gate};
 use crate::otlp;
 use crate::room::Share;
@@ -11,13 +12,14 @@ use crate::{
     deliver, embed, handler, hold, notify, overlap, progress, push, search, sections, stall,
     subscribe, summary, sweep,
 };
-use priory_factory::factory::{self, Factory, Harness, PermissionMode, Session};
+use priory_factory::factory::{self, Factory, Harness, OnChange, PermissionMode, Session};
 use priory_intake::intake::{self, OUTPUT};
 use priory_intake::log::{self, Log};
 use priory_runtime::runtime::{self, Launch, Line};
 use priory_runtime::script::{self, Script};
 use priory_runtime::{room, slice, transcript};
 use rusqlite::Connection;
+use sha2::{Digest, Sha256};
 use std::cell::OnceCell;
 use std::collections::HashMap;
 use std::path::Path;
@@ -128,6 +130,11 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
         Vec::new()
     });
     state::uncertain(&db)?;
+    // No one watches a compaction a stopped daemon started, so it never types its `/compact`.
+    for live in idle::live(&db)? {
+        runtime::kill(&live.tmux);
+        idle::end(&db, live.id, "interrupted")?;
+    }
     // A crash between ending a run and killing its session leaves its agent running.
     let ended = state::ended_sessions(&db)?;
     for (tmux, _) in runtime::tagged()
@@ -244,6 +251,7 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
         start_answers(&mut db, &trace, &home, &mut commands)?;
         commands = run_commands(&mut db, &trace, &home, commands)?;
         tend(&mut db, &trace, &share, &home, &scope, &mut commands)?;
+        compact_idle(&db, &trace, &home, &scope)?;
         handle_stalls(&mut db, &trace, &home, &mut stalls)?;
         let counter = counting.get(&home);
         summarize(&mut db, &trace, &summaries, &mut summarizing, counter)?;
@@ -1472,7 +1480,15 @@ fn start(
     } else {
         state::resumable(db, admission.task, name)?
     };
-    let harness = harness(&agent.value.harness);
+    let definition = definition(&agent.value);
+    let changed = match &resumed {
+        Some(session) if shared => {
+            state::definition(db, session)?.and_then(|stored| changed(&stored, &definition))
+        }
+        _ => None,
+    };
+    let fresh = changed.is_some() && agent.value.on_change == OnChange::Fresh;
+    let resumed = resumed.filter(|_| !fresh);
     let resume = match (&resumed, &agent.value.harness) {
         (Some(session), Harness::Codex) => state::thread(db, session)?,
         (Some(session), Harness::ClaudeCode) => {
@@ -1500,6 +1516,8 @@ fn start(
             prompt: admission.fresh.then_some(prompt.as_str()),
             ending: &tools::ending(step),
             shared,
+            definition: &definition.to_string(),
+            changed: changed.filter(|_| resume.is_some()).as_deref(),
             lanes: factory.lanes(),
         },
     )?;
@@ -1507,7 +1525,6 @@ fn start(
         Harness::Codex => state::claim(db, run)?,
         Harness::ClaudeCode => None,
     };
-    let agent = &agent.value;
     let env: Vec<String> = factory
         .otlp()
         .map(|_| {
@@ -1520,28 +1537,146 @@ fn start(
         .into_iter()
         .chain(guard_env(factory))
         .collect();
+    let started = Started {
+        tmux: &tmux,
+        dir: &worktree,
+        session: &session,
+        resume: resume.as_deref(),
+        prompt: first.as_deref(),
+    };
+    Ok(launch(&agent.value, home, scope, &env, &started))
+}
+
+/// What a shared session starts with: digests of its agent's prompt, tools, model and flags.
+fn definition(agent: &factory::Agent) -> serde_json::Value {
+    let digest = |part: serde_json::Value| {
+        Sha256::digest(part.to_string().as_bytes())[..8]
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>()
+    };
+    let permissions = &agent.permissions;
+    serde_json::json!({
+        "prompt": digest(serde_json::json!(agent.body)),
+        "tools": digest(serde_json::json!([agent.mcp_servers, permissions.allow, permissions.deny])),
+        "model": digest(serde_json::json!([agent.model, agent.effort])),
+        "flags": digest(serde_json::json!(permissions.default_mode.map(PermissionMode::as_str))),
+    })
+}
+
+/// The line that tells a resumed session which parts of its agent changed since `stored`, if any.
+fn changed(stored: &str, definition: &serde_json::Value) -> Option<String> {
+    let stored: serde_json::Value = serde_json::from_str(stored).ok()?;
+    let parts: Vec<&str> = ["prompt", "tools", "model", "flags"]
+        .into_iter()
+        .filter(|part| stored[part] != definition[part])
+        .collect();
+    (!parts.is_empty()).then(|| {
+        format!(
+            "Your agent definition changed since this conversation started: its {}.",
+            parts.join(", ")
+        )
+    })
+}
+
+/// Where and as what a harness starts.
+struct Started<'a> {
+    tmux: &'a str,
+    dir: &'a Path,
+    session: &'a str,
+    resume: Option<&'a str>,
+    prompt: Option<&'a str>,
+}
+
+/// Starts `agent`'s harness with the flags every run of it gets, so a resumed session keeps them.
+fn launch(
+    agent: &factory::Agent,
+    home: &Path,
+    scope: &[String],
+    env: &[String],
+    started: &Started,
+) -> Result<(), String> {
     let permissions = serde_json::to_value(&agent.permissions).expect("permissions serialize");
-    Ok(runtime::launch(
-        harness,
+    runtime::launch(
+        harness(&agent.harness),
         &Launch {
-            tmux: &tmux,
-            dir: &worktree,
+            tmux: started.tmux,
+            dir: started.dir,
             home,
-            session: &session,
-            resume: resume.as_deref(),
+            session: started.session,
+            resume: started.resume,
             model: agent.model.as_deref(),
             effort: agent.effort.as_deref(),
             body: &agent.body,
-            prompt: first.as_deref(),
+            prompt: started.prompt,
             permissions,
             permission_mode: agent
                 .permissions
                 .default_mode
                 .map_or("manual", PermissionMode::as_str),
             scope,
-            env: &env,
+            env,
         },
-    ))
+    )
+}
+
+/// Compacts each shared session left idle past its agent's `idleCompactAt` before its prompt cache
+/// expires: it resumes the session in tmux, types `/compact` once Claude started, and kills the
+/// session once Claude compacted it.
+fn compact_idle(
+    db: &Connection,
+    trace: &Trace,
+    home: &Path,
+    scope: &[String],
+) -> Result<(), Error> {
+    for live in idle::live(db)? {
+        if live.overdue {
+            runtime::kill(&live.tmux);
+            idle::end(db, live.id, "timeout")?;
+            continue;
+        }
+        if !live.ready {
+            continue;
+        }
+        let typed = runtime::pane(&live.tmux, &live.session)
+            .ok_or_else(|| "its pane is gone".to_owned())
+            .and_then(|pane| runtime::type_text(&pane, "/compact"));
+        if let Err(error) = typed {
+            eprintln!("priory daemon: compacting {}: {error}", live.tmux);
+            runtime::kill(&live.tmux);
+            idle::end(db, live.id, "failed")?;
+            continue;
+        }
+        idle::typed(db, live.id)?;
+    }
+    for (name, agent) in &trace.factory.agents {
+        let Some(limit) = agent.value.idle_compact_at else {
+            continue;
+        };
+        let Some(due) = idle::due(db, name)? else {
+            continue;
+        };
+        let dir = Path::new(&due.worktree);
+        let context = (trace.usage)(Path::new(&due.transcript), 0).and_then(|usage| usage.context);
+        if !dir.is_dir() || context.is_none_or(|context| context < limit.get()) {
+            continue;
+        }
+        let tmux = format!("priory-idle-{name}");
+        let id = idle::begin(db, name, &due.session, &tmux)?;
+        let started = Started {
+            tmux: &tmux,
+            dir,
+            session: &due.session,
+            resume: Some(&due.session),
+            prompt: None,
+        };
+        let env: Vec<String> = guard_env(trace.factory).into_iter().collect();
+        if let Err(error) = launch(&agent.value, home, scope, &env, &started) {
+            eprintln!("priory daemon: compacting {tmux}: {error}");
+            idle::end(db, id, "failed")?;
+        }
+    }
+    Ok(())
 }
 
 /// `PRIORY_GUARD`: the factory's own guards, which the run's tool guard hook adds to the built-in ones.
