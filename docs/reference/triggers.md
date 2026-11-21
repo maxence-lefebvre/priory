@@ -15,6 +15,7 @@ cannot tell which keys a source refuses; `priory check` does.
 - [`slack`](#slack)
 - [`schedule`](#schedule)
 - [Task requests: `triggers/cli.toml` and `hold`](#task-requests-triggersclitoml-and-hold)
+- [`intervention` and `lead`](#intervention-and-lead)
 - [Errors from `priory check`](#errors-from-priory-check)
 
 ## Keys every trigger takes
@@ -28,6 +29,8 @@ cannot tell which keys a source refuses; `priory check` does.
 | `band` | string | no | the workflow's `band`, else the last band | The band of its tasks | `"today"` |
 | `lane` | string | no | derived by `lanes.toml` | The lane of its tasks, `<team>/<theme>` | `"core/intake"` |
 | `hold` | table | no | | Files each task held. See [`hold`](#hold) | `{ reason = "triage first" }` |
+| `intervention` | `plan` or `hands-off` | no | a person answers every ask | Who answers its tasks' asks. See [`intervention` and `lead`](#intervention-and-lead) | `"plan"` |
+| `lead` | string | with `hands-off` | | The agent that answers asks of a `hands-off` task | `"lead"` |
 
 Without a `repo`, a Linear or Slack trigger's tasks block before their first run.
 
@@ -225,6 +228,32 @@ request. See Holds in
 
 The task is released once every condition is met. With none, a person releases it.
 
+## `intervention` and `lead`
+
+`intervention` sets how much a person steps in on the trigger's tasks. `priory request
+--intervention` and `priory add --intervention` set it for one task, and otherwise a CLI request
+takes the one in `triggers/cli.toml`. [tools.md](../daemon/tools.md#intervention) describes what
+each level does.
+
+| Value | Effect |
+| ----- | ------ |
+| unset | Every ask goes to a person |
+| `plan` | A step that grades the task waits for a person to approve its plan before the task moves on, even for a green grade |
+| `hands-off` | The `lead` agent answers the task's asks in the person's place, except an ask whose answer lets an irreversible step run and an ask whose answer runs a command |
+
+`lead` names a `claude-code` agent whose `session` is `shared`, so one conversation answers every
+ask. A CLI request's lead is the `lead` of `triggers/cli.toml`.
+
+```toml
+source = "github"
+repo = "owner/name"
+on = "issues.labeled"
+filter = { label = "agent" }
+workflow = "implement"
+intervention = "hands-off"
+lead = "lead"                  # agents/lead/agent.md, with session = "shared"
+```
+
 ## Errors from `priory check`
 
 | Message | Cause |
@@ -265,3 +294,6 @@ The task is released once every condition is met. With none, a person releases i
 | `"<text>" is not a duration such as 90s, 15m or 2h` | A bad `every` |
 | `"<text>" is not a time of day such as "18:00" or a duration such as 8h` | A bad `until` |
 | `"<text>" is not a time zone such as "Europe/Paris"` | A `timezone` that is not an IANA name |
+| `` `intervention = "hands-off"` needs a `lead`: the agent that answers asks in the person's place `` | `hands-off` without `lead` |
+| `` lead `<agent>` does not exist `` | `lead` names no file under `agents/` |
+| `` lead `<agent>` needs harness = "claude-code" and session = "shared" `` | A `lead` that is a Codex agent or has a `per-task` session |

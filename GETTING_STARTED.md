@@ -302,6 +302,11 @@ runs an agent, a `human` step asks a person, and a `code` step runs a built-in a
 only after a person approved it, unless it is marked `autonomous` with a reason. See
 [docs/daemon/tools.md](docs/daemon/tools.md).
 
+**Intervention.** A trigger's `intervention` sets how much a person steps in. `plan` makes a person
+approve each graded plan, even a green one. `hands-off` lets a lead agent answer the task's asks in
+your place, but an ask that lets an irreversible step run still comes to you. See
+[docs/reference/triggers.md](docs/reference/triggers.md#intervention-and-lead).
+
 **Task and run.** A task is one unit of work, from its event to `done`, `failed` or `dropped`. A run
 is one agent process working on a task's step. A task can have many runs, and its agent's session
 carries over between them. See [docs/daemon/runs.md](docs/daemon/runs.md).

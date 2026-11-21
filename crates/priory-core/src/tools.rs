@@ -1,7 +1,10 @@
 use crate::command;
 use crate::route;
 use crate::trace::{self, Trace};
-use priory_factory::factory::{Decider, Effect, Factory, Harness, Loaded, Step, Workflow};
+use priory_factory::explain;
+use priory_factory::factory::{
+    Decider, Effect, Factory, Harness, Intervention, Loaded, Step, Workflow, lead_workflow,
+};
 use priory_intake::intake::{
     CHECK_RUNS, CHECKED, COMMENTED, ISSUE_CLOSED, ISSUE_COMMENTED, PASSING, PR_CLOSED as CLOSED,
     REVIEWED, THREAD_COMMENTED,
@@ -146,8 +149,10 @@ fn optional(arguments: &Value, name: &str) -> Result<Option<String>, String> {
 pub(crate) fn call(
     db: &mut Connection,
     call: &Call,
-    factory: &Factory,
+    trace: &Trace,
+    head: &dyn Fn(&Path, &str) -> Option<String>,
 ) -> rusqlite::Result<Result<String, String>> {
+    let factory = trace.factory;
     let workflows = &factory.workflows;
     let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
     let Some(run) = run(&tx, &call.session)? else {
@@ -213,7 +218,10 @@ pub(crate) fn call(
             "a compact is queued for this run; end your turn and call result after the compaction"
                 .to_owned(),
         ),
-        "result" => result(&tx, &run, &call.arguments, workflows)?,
+        "result" => match lead_answer(&tx, &run, &call.arguments, trace, head)? {
+            Ok(()) => result(&tx, &run, &call.arguments, workflows)?,
+            Err(refused) => Err(refused),
+        },
         "ask" => ask(&tx, &run, &call.arguments, factory)?,
         "wait" => wait(&tx, &run, &call.arguments)?,
         "compact" => compact(&tx, &run, &call.arguments, factory)?,
@@ -486,10 +494,17 @@ fn ask(
         Err(error) => return Ok(Err(error)),
     };
     let [title, body, what_waits, next_action] = described;
+    let lead = lead_of(
+        tx,
+        run.task,
+        &run.step,
+        command.is_some(),
+        &factory.workflows,
+    )?;
     tx.execute(
         "INSERT INTO asks (task, run, step, kind, question, options, recommendation, tradeoff,
-           title, text, what_waits, next_action, command)
-         VALUES (?1, ?2, ?3, 'agent', ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+           title, text, what_waits, next_action, command, routed)
+         VALUES (?1, ?2, ?3, 'agent', ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
         params![
             run.task,
             run.id,
@@ -502,12 +517,16 @@ fn ask(
             body,
             what_waits,
             next_action,
-            command
+            command,
+            lead
         ],
     )?;
+    let id = tx.last_insert_rowid();
+    if let Some(lead) = &lead {
+        call_lead(tx, id, lead)?;
+    }
     Ok(Ok(format!(
-        "ask {} stored: end your turn now; the answer arrives as your next prompt",
-        tx.last_insert_rowid()
+        "ask {id} stored: end your turn now; the answer arrives as your next prompt"
     )))
 }
 
@@ -586,7 +605,7 @@ pub fn ask_outside(
         "INSERT INTO asks (kind, name, question, options, recommendation, tradeoff, title, text,
            what_waits, next_action, command, coordinator, key, run_id, session)
          VALUES ('outside', ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
-         ON CONFLICT (name) DO UPDATE SET revision = revision + 1, answer = NULL, answered = NULL,
+         ON CONFLICT (name) DO UPDATE SET revision = revision + 1, answer = NULL, answered = NULL, answered_by = NULL,
            withdrawn = NULL, question = excluded.question, options = excluded.options,
            recommendation = excluded.recommendation, tradeoff = excluded.tradeoff,
            title = excluded.title, text = excluded.text, what_waits = excluded.what_waits,
@@ -1742,6 +1761,20 @@ fn settle(tx: &Transaction, run: &Run, trace: &Trace) -> rusqlite::Result<Option
             .cloned()
             .unwrap_or_else(|| format!("{}?{outcome}", run.step));
         trace::ended(tx, trace, run.task, &outcome, Some(run.id))?;
+        if gates_plan(tx, run, &outcome, &target, workflows)? {
+            tx.execute(
+                "INSERT INTO asks (task, step, kind, question, options) VALUES (?1, ?2, 'step', ?3, ?4)",
+                params![
+                    run.task,
+                    run.step,
+                    format!("{}: approve the plan graded {outcome}? {summary}", run.step),
+                    serde_json::to_string(&PLAN_OPTIONS).expect("options serialize")
+                ],
+            )?;
+            end(tx, run.id, "asleep")?;
+            set(tx, run.task, "asleep", None, None)?;
+            return Ok(Some(Some(run.tmux.clone())));
+        }
         return enter(
             tx,
             run.task,
@@ -1792,6 +1825,165 @@ fn settle(tx: &Transaction, run: &Run, trace: &Trace) -> rusqlite::Result<Option
     end(tx, run.id, "asleep")?;
     set(tx, run.task, "asleep", None, None)?;
     Ok(Some(Some(run.tmux.clone())))
+}
+
+/// The trigger a lead task names. No trigger file has a `/` in its name, so none collides.
+pub const LEAD_TRIGGER: &str = "priory/lead";
+
+/// The lead a new ask of `task` at step `at` goes to: a `hands-off` task's lead, unless the ask
+/// runs a command, its answer can let an irreversible step run, or its step approves one.
+fn lead_of(
+    tx: &Transaction,
+    task: i64,
+    at: &str,
+    command: bool,
+    workflows: &Workflows,
+) -> rusqlite::Result<Option<String>> {
+    let (workflow, intervention, lead): (String, Option<String>, Option<String>) = tx.query_row(
+        "SELECT workflow, intervention, lead FROM tasks WHERE id = ?1",
+        [task],
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+    )?;
+    if command || intervention.as_deref() != Some(Intervention::HandsOff.as_str()) {
+        return Ok(None);
+    }
+    let Some(flow) = workflows.get(&workflow) else {
+        return Ok(None);
+    };
+    // A lead no trigger names any more has no workflow to answer in.
+    if lead
+        .as_ref()
+        .is_none_or(|lead| !workflows.contains_key(&lead_workflow(lead)))
+    {
+        return Ok(None);
+    }
+    let approves = flow
+        .value
+        .step(at)
+        .is_some_and(|step| !step.approves.is_empty());
+    if approves || explain::answer_lets_irreversible_run(&flow.value, at) {
+        return Ok(None);
+    }
+    Ok(lead)
+}
+
+/// Queues a lead task that answers `ask` in the person's place. Its source event carries the ask,
+/// so its first prompt names it.
+fn call_lead(tx: &Transaction, ask: i64, lead: &str) -> rusqlite::Result<()> {
+    let source = uuid::Uuid::new_v4().to_string();
+    tx.execute(
+        "INSERT INTO tasks
+           (key, workflow, step, state, band, lane, lane_derived, trigger, source, repo, entered)
+         SELECT 'priory:ask:' || asks.id || ':' || asks.revision, ?2, 'answer', 'queued',
+           tasks.band, tasks.lane, 0, ?3, ?4, tasks.repo, strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+         FROM asks JOIN tasks ON tasks.id = asks.task WHERE asks.id = ?1",
+        params![ask, lead_workflow(lead), LEAD_TRIGGER, source],
+    )?;
+    let task = tx.last_insert_rowid();
+    tx.execute(
+        "INSERT INTO owns (task, resource) SELECT id, key FROM tasks WHERE id = ?1",
+        [task],
+    )?;
+    tx.execute(
+        "INSERT INTO inbox (id, type, time, data, links, task, outcome)
+         SELECT ?2, 'priory.ask.routed', strftime('%Y-%m-%dT%H:%M:%SZ', 'now'),
+           json_object('task', asks.task, 'key', tasks.key, 'ask', asks.id,
+             'revision', asks.revision, 'question', asks.question, 'options', json(asks.options),
+             'recommendation', asks.recommendation, 'tradeoff', asks.tradeoff,
+             'title', asks.title, 'text', asks.text),
+           '[]', ?3, 'created'
+         FROM asks JOIN tasks ON tasks.id = asks.task WHERE asks.id = ?1",
+        params![ask, source, task],
+    )?;
+    Ok(())
+}
+
+/// Applies a lead task's `answered` result to the ask it was called for, as answered by its agent.
+fn lead_answer(
+    tx: &Transaction,
+    run: &Run,
+    arguments: &Value,
+    trace: &Trace,
+    head: &dyn Fn(&Path, &str) -> Option<String>,
+) -> rusqlite::Result<Result<(), String>> {
+    if arguments["outcome"] != "answered" {
+        return Ok(Ok(()));
+    }
+    let called = tx
+        .query_row(
+            "SELECT json_extract(inbox.data, '$.ask'), json_extract(inbox.data, '$.revision')
+             FROM tasks JOIN inbox ON inbox.id = tasks.source
+             WHERE tasks.id = ?1 AND tasks.trigger = ?2 AND inbox.type = 'priory.ask.routed'",
+            params![run.task, LEAD_TRIGGER],
+            |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
+        )
+        .optional()?;
+    let Some((ask, revision)) = called else {
+        return Ok(Ok(()));
+    };
+    let text = arguments["summary"].as_str().unwrap_or_default().trim();
+    let options: String = tx.query_row("SELECT options FROM asks WHERE id = ?1", [ask], |row| {
+        row.get(0)
+    })?;
+    let options: Vec<String> = serde_json::from_str(&options).expect("options are stored as JSON");
+    // A person may answer an agent's ask in free text; a lead picks one of its options.
+    if !options.is_empty() && !options.iter().any(|option| option == text) {
+        return Ok(Err(format!(
+            "ask {ask} takes one of: {}",
+            options.join(", ")
+        )));
+    }
+    let answer = Answer {
+        ask,
+        text: text.to_owned(),
+        revision,
+        run: false,
+        by: format!("agent:{}", run.agent.as_deref().unwrap_or_default()),
+    };
+    Ok(answer_in(tx, &answer, trace, head)?.map(drop))
+}
+
+/// Drops the lead task still queued for `ask`, which a person answered or dismissed first.
+fn drop_lead(tx: &Transaction, ask: i64, why: &str) -> rusqlite::Result<()> {
+    let queued = tx
+        .prepare(
+            "SELECT id FROM tasks WHERE trigger = ?1 AND state = 'queued'
+             AND key LIKE 'priory:ask:' || ?2 || ':%'",
+        )?
+        .query_map(params![LEAD_TRIGGER, ask], |row| row.get::<_, i64>(0))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    for task in queued {
+        set(tx, task, "dropped", None, Some(why))?;
+    }
+    Ok(())
+}
+
+/// The options of the ask a `plan` task's grading step waits on.
+const PLAN_OPTIONS: [&str; 2] = ["approved", "rejected"];
+
+/// Whether a `plan` task's grade waits for a person: the grade leads to a model or code step,
+/// so no human step of the workflow approves the plan.
+fn gates_plan(
+    tx: &Transaction,
+    run: &Run,
+    outcome: &str,
+    target: &str,
+    workflows: &Workflows,
+) -> rusqlite::Result<bool> {
+    if !GRADES.contains(&outcome) {
+        return Ok(false);
+    }
+    let unattended =
+        step(workflows, &run.workflow, target).is_some_and(|step| step.decides != Decider::Human);
+    if !unattended {
+        return Ok(false);
+    }
+    let intervention: Option<String> = tx.query_row(
+        "SELECT intervention FROM tasks WHERE id = ?1",
+        [run.task],
+        |row| row.get(0),
+    )?;
+    Ok(intervention.as_deref() == Some(Intervention::Plan.as_str()))
 }
 
 const RESUMED: &str = "A person resumed this task";
@@ -2075,15 +2267,21 @@ fn enter(
             } else {
                 format!("{target}: {context}")
             };
+            let lead = lead_of(tx, task, target, false, workflows)?;
             tx.execute(
-                "INSERT INTO asks (task, step, kind, question, options) VALUES (?1, ?2, 'step', ?3, ?4)",
+                "INSERT INTO asks (task, step, kind, question, options, routed)
+                 VALUES (?1, ?2, 'step', ?3, ?4, ?5)",
                 params![
                     task,
                     target,
                     question,
-                    serde_json::to_string(&step.options).expect("options serialize")
+                    serde_json::to_string(&step.options).expect("options serialize"),
+                    lead
                 ],
             )?;
+            if let Some(lead) = &lead {
+                call_lead(tx, tx.last_insert_rowid(), lead)?;
+            }
             set(tx, task, "asleep", Some(target), None)?;
             finish("asleep")
         }
@@ -2122,8 +2320,22 @@ fn apply_answer(
     trace: &Trace,
     head: &dyn Fn(&Path, &str) -> Option<String>,
 ) -> rusqlite::Result<Result<String, String>> {
-    let workflows = &trace.factory.workflows;
     let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let applied = answer_in(&tx, answer, trace, head)?;
+    if applied.is_ok() {
+        tx.commit()?;
+    }
+    Ok(applied)
+}
+
+/// Applies `answer` in `tx`, writing nothing when it refuses it.
+fn answer_in(
+    tx: &Transaction,
+    answer: &Answer,
+    trace: &Trace,
+    head: &dyn Fn(&Path, &str) -> Option<String>,
+) -> rusqlite::Result<Result<String, String>> {
+    let workflows = &trace.factory.workflows;
     let OpenAsk {
         label,
         task,
@@ -2133,7 +2345,7 @@ fn apply_answer(
         workflow,
         state,
         command,
-    } = match open_ask(&tx, answer.ask, Some(answer.revision))? {
+    } = match open_ask(tx, answer.ask, Some(answer.revision))? {
         Ok(ask) => ask,
         Err(error) => return Ok(Err(error)),
     };
@@ -2143,7 +2355,7 @@ fn apply_answer(
         .and_then(|command| serde_json::from_str::<command::Command>(command).ok())
         .filter(|command| command.runs.contains(&answer.text));
     let options: Vec<String> = serde_json::from_str(&options).expect("options are stored as JSON");
-    let hold = crate::hold::of_ask(&tx, answer.ask)?;
+    let hold = crate::hold::of_ask(tx, answer.ask)?;
     if (kind == "step" || hold.is_some()) && !options.contains(&answer.text) {
         return Ok(Err(format!(
             "ask {label} takes one of: {}",
@@ -2163,12 +2375,12 @@ fn apply_answer(
         )));
     }
     tx.execute(
-        &format!("UPDATE asks SET answer = ?2, answered = {NOW} WHERE id = ?1"),
-        params![answer.ask, answer.text],
+        &format!("UPDATE asks SET answer = ?2, answered = {NOW}, answered_by = ?3 WHERE id = ?1"),
+        params![answer.ask, answer.text, answer.by],
     )?;
+    drop_lead(tx, answer.ask, &format!("ask {label} was answered first"))?;
     let Some(task) = task else {
-        crate::deliver::queue(&tx, answer.ask, Some(&answer.text), trace.factory)?;
-        tx.commit()?;
+        crate::deliver::queue(tx, answer.ask, Some(&answer.text), trace.factory)?;
         if command.is_some() {
             return Ok(Ok(format!(
                 "ask {label} answered; its command does not run: Priory runs only the commands of its own runs' asks"
@@ -2177,7 +2389,7 @@ fn apply_answer(
         return Ok(Ok(format!("ask {label} answered")));
     };
     if let Some(runs) = runs {
-        withdraw_waits(&tx, answer.ask)?;
+        withdraw_waits(tx, answer.ask)?;
         tx.execute(
             "INSERT INTO actions (task, step, action, status, ask, revision, command, generation)
              VALUES (?1, ?2, 'answer', 'running', ?3, ?4, ?5,
@@ -2195,7 +2407,6 @@ fn apply_answer(
             "UPDATE tasks SET state = 'running' WHERE id = ?1 AND state = 'asleep'",
             [task],
         )?;
-        tx.commit()?;
         return Ok(Ok(format!(
             "ask {label} answered: running {} in {}",
             runs.shown(),
@@ -2203,7 +2414,25 @@ fn apply_answer(
         )));
     }
     if let Some(hold) = hold {
-        crate::hold::answered(&tx, hold, &answer.text)?;
+        crate::hold::answered(tx, hold, &answer.text)?;
+    } else if kind == "step"
+        && step(workflows, &workflow, &at).is_some_and(|asked| asked.decides == Decider::Model)
+    {
+        // A `plan` task's grading step: an approval moves it by its grade.
+        let target = match answer.text.as_str() {
+            "approved" => {
+                let grade: Option<String> =
+                    tx.query_row("SELECT grade FROM tasks WHERE id = ?1", [task], |row| {
+                        row.get(0)
+                    })?;
+                step(workflows, &workflow, &at)
+                    .and_then(|asked| asked.next.get(grade.as_deref()?))
+                    .cloned()
+                    .unwrap_or_else(|| format!("{at}?{}", grade.unwrap_or_default()))
+            }
+            _ => "stop".to_owned(),
+        };
+        enter(tx, task, &workflow, &target, None, "", workflows)?;
     } else if kind == "step" {
         let target = step(workflows, &workflow, &at)
             .and_then(|step| step.next.get(&answer.text))
@@ -2220,13 +2449,13 @@ fn apply_answer(
                     .filter(|approved| flow.reaches(&target, approved))
             })
             .collect();
-        approve(&tx, task, answer, &approved, head)?;
-        trace::ended(&tx, trace, task, &answer.text, None)?;
-        enter(&tx, task, &workflow, &target, None, "", workflows)?;
+        approve(tx, task, answer, &approved, head)?;
+        trace::ended(tx, trace, task, &answer.text, None)?;
+        enter(tx, task, &workflow, &target, None, "", workflows)?;
     } else {
-        withdraw_waits(&tx, answer.ask)?;
+        withdraw_waits(tx, answer.ask)?;
         wake(
-            &tx,
+            tx,
             task,
             &format!(
                 "Answer to ask {label} (revision {}): {}",
@@ -2235,10 +2464,9 @@ fn apply_answer(
         )?;
         // An answer that beats the run's Stop leaves it running: the answer is its next prompt.
         if state == "asleep" {
-            set(&tx, task, "ready", None, None)?;
+            set(tx, task, "ready", None, None)?;
         }
     }
-    tx.commit()?;
     Ok(Ok(format!("ask {label} answered")))
 }
 
@@ -2351,6 +2579,7 @@ pub(crate) fn dismiss(
         params![dismiss.dismiss, DISMISSED],
     )?;
     withdraw_waits(&tx, dismiss.dismiss)?;
+    drop_lead(&tx, dismiss.dismiss, &format!("ask {label} was dismissed"))?;
     crate::deliver::queue(&tx, dismiss.dismiss, None, factory)?;
     if let Some(task) = ask.task {
         wake(
@@ -2985,7 +3214,7 @@ pub(crate) fn approved(
     );
     tx.execute(
         // Asked again, an ask that a revive withdrew belongs to the current generation.
-        "UPDATE asks SET revision = revision + 1, answer = NULL, answered = NULL, withdrawn = NULL,
+        "UPDATE asks SET revision = revision + 1, answer = NULL, answered = NULL, answered_by = NULL, withdrawn = NULL,
          question = question || ?2 WHERE id = ?1",
         params![ask, moved],
     )?;
