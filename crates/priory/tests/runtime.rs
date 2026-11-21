@@ -64,7 +64,8 @@ const UNDO_SINCE_SEARCH: &str = "DROP TRIGGER ask_returns_from_its_lead; ALTER T
   DROP TRIGGER search_task_created; DROP TRIGGER search_tldr_changed; DROP TRIGGER search_result_stored;
   DROP VIEW task_text; DROP TABLE search; DROP TABLE summaries;
   DROP TABLE embedder; DROP TABLE vectors; ALTER TABLE tasks DROP COLUMN tldr; DROP TABLE dispatches;
-  ALTER TABLE irreversible_asks DROP COLUMN lets;";
+  ALTER TABLE irreversible_asks DROP COLUMN lets;
+  ALTER TABLE tasks DROP COLUMN files; ALTER TABLE tasks DROP COLUMN files_run;";
 
 /// A factory, bus, state, Priory home, origin repository and fake `claude`, all under the test's
 /// own directory, and a tmux server in its own short directory. Dropping it kills the daemon and
@@ -5506,6 +5507,7 @@ fn a_state_file_whose_asks_an_approval_names_upgrades_to_outside_asks() {
          DROP TABLE reports;
          DROP TABLE dispatches;
          ALTER TABLE irreversible_asks DROP COLUMN lets;
+         ALTER TABLE tasks DROP COLUMN files; ALTER TABLE tasks DROP COLUMN files_run;
          DROP TRIGGER ask_withdrawn; ALTER TABLE asks DROP COLUMN withdrawn_reason;
          ALTER TABLE waits DROP COLUMN withdrawn_reason; ALTER TABLE ask_withdrawals DROP COLUMN reason;
          DROP TABLE ask_revisions;

@@ -218,9 +218,6 @@ handler = "reviewer"                           # reads a stalled run's screen; c
 stalled = "10m"                                # no hook event and no pane change for this long
 command_timeout = "5m"                         # the limit on one git, gh or tmux command
 
-[queue]
-overlap = true                                 # hold a task whose files overlap an earlier task's
-
 [sweep]
 every = "10m"                                  # the built-in worktree sweep
 after = "30m"                                  # how long the queue stays stalled before the sweeper
