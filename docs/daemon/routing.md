@@ -154,8 +154,9 @@ event's id in `source`, and the task's first prompt carries the event.
 ## The task's inbox
 
 `priory task ID --json` and `/api/tasks/{id}` list, as `inbox`, every event routed to the task,
-newest first: its source event, the events routing gave it, and the events that fired one of its
-waits while another task took them (see [serve.md](../reference/serve.md#task-in-detail)). Each
+newest first: its source event, the events routing gave it, and the events another task took that
+fired one of its waits or that its subscription delivered to it (see
+[serve.md](../reference/serve.md#task-in-detail)). Each
 event has its outcome, `prompt`, the state of the outbox prompt that carries it, and `wait`, the
 task's wait it fired. Together they say what the event did:
 
@@ -172,8 +173,17 @@ task's wait it fired. Together they say what the event did:
 | any | `withdrawn` | A reopen or `priory revive` withdrew its prompt |
 
 An event with `wait` set fired that wait: an asleep task wakes on it, and another task keeps its
-state until its next run. An event that only a subscription delivered to a second task, beside the
-task routing gave it, is not in the second task's inbox: nothing records that delivery.
+state until its next run.
+
+When routing gives an event to one task and a subscription delivers it to a second, the second
+task's inbox lists it with `task` naming the first. Its `outcome` and `prompt` are the second
+task's own: `woke` when the event woke it, or `kept` when it queued a prompt while the task ran.
+A comment that wakes the second task from its checks gate shows no `wait`, since that delivery
+records the prompt but not the wait.
+
+`priory task ID` prints the task's key, workflow, step and state, then an Inbox section with one
+line per event: its sequence number, time, type, subject and what it did, such as
+`kept, still queued`, `woke, delivered as prompt` or `kept, for its next run (routed to task 2)`.
 
 A prompt is `attempted` while the agent is being typed to, and `uncertain` when a daemon restart cut
 that short (see [outbox.md](outbox.md)).
@@ -184,11 +194,22 @@ An event is unrouted when its outcome is `ignored`, no task took it, and it is n
 of a task that its request created. Such an event concerned no active task, so it changed nothing.
 An event that names no resource is not listed, since no task could own it.
 
-`priory inbox --unrouted [--since SEQ]` and `/api/inbox?unrouted=1` group these events by the first
-resource each names (see [serve.md](../reference/serve.md#unrouted)). Each group prints the two
-commands that would route its next event: `priory subscribe TASK RESOURCE` gives it to an existing
-task, and `priory request --workflow WORKFLOW --key RESOURCE TEXT` creates one. The Desk counts the
-unrouted events of the last 24 hours (see [desk.md](desk.md#unrouted-events)).
+Most unrouted events are noise: another person's pull request, a Slack message no trigger matched.
+The ones that matter are about a resource a task owned and that task has ended, such as a review on
+a done task's merged pull request. So `priory inbox --unrouted [--since SEQ]` and
+`/api/inbox?unrouted=1` split them (see [serve.md](../reference/serve.md#unrouted)):
+
+- Events whose first resource a task owned or subscribed to, in any state, are grouped by that
+  resource, with the newest such task and the command that routes the next event: `priory revive
+  ID` when the task failed or was dropped, `priory add` with the task's workflow and the
+  resource's GitHub or Linear URL when it is done, since a done task cannot be revived and `add`
+  keys the new task by that URL, and `priory subscribe ID RESOURCE` when it is still active. A
+  done task's Slack thread gets no command: no CLI verb keys a task by a thread.
+- The rest, which no task ever owned, are one count per source.
+
+The web Inbox panel's Unrouted view offers the same actions from a phone: Revive, the Add sheet, or
+`POST /api/subscribe`. The Desk counts only the first kind, over the last 24 hours (see
+[desk.md](desk.md#unrouted-events)).
 
 ## What a kept message does
 

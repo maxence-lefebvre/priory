@@ -113,6 +113,7 @@ application/json` and a JSON body of at most 16 KiB with exactly the fields belo
 | `POST /api/tasks/{id}/cancel` | optionally `revision`, an integer: the state's revision the client showed, as `--expected`. A newer state gets `409` |
 | `POST /api/tasks/{id}/release` | optionally `revision`, an integer, as `--expected`. A newer state gets `409` |
 | `POST /api/tasks/{id}/say` | `text`, a string: what the task's agent hears |
+| `POST /api/subscribe` | `task`, an integer, and `resource`, a string such as `github:owner/name#7`, `linear:ENG-7` or `slack:C0123:1763500000.000100`, as `priory subscribe TASK RESOURCE`. Optionally `revision`, an integer, as `--expected`: a newer state gets `409`. A resource it cannot name gets `400`, a missing task `404`, and a resource another active task owns `422`, naming that task |
 | `POST /api/inbox/{seq}/read` | `{}`: marks the report read, so its row leaves the desk. A sequence number that is not a report gets `422` |
 | `POST /api/reports/pick` | `pick`, the pick's id, `option`, one of its options, and `revision`, the report's revision the client showed |
 | `POST /api/reports/comment` | `row`, the row's id, `text`, a string, and `revision`, the report's revision the client showed. A comment verb takes `text` only with `comment` and `reply`, and `revision` only with `comment` |
@@ -222,19 +223,27 @@ line as `line`, and, once read, when it was read as `read`. Both are null on a m
 
 ## Unrouted
 
-The events that reached no task and changed nothing, grouped by the first resource each names (see
-[routing.md](../daemon/routing.md#events-that-reach-no-task)). The group with the newest event comes
-first. `priory inbox --unrouted --since SEQ` keeps the events after sequence number `SEQ`.
+The events that reached no task and changed nothing (see
+[routing.md](../daemon/routing.md#events-that-reach-no-task)), as an object `unrouted` with two
+arrays. `priory inbox --unrouted --since SEQ` keeps the events after sequence number `SEQ`.
+
+`owned` groups the events whose first resource a task owned or subscribed to, in any state, one
+group per resource, the group with the newest event first:
 
 | Field | Type | Meaning |
 | ----- | ---- | ------- |
 | `resource` | string | The resource, such as `github:owner/name#7` |
-| `events` | array | Its events, newest first: `seq`, `type`, `subject`, `time` |
-| `subscribe` | string | `priory subscribe TASK <resource>`: the command that routes its next event to a task |
-| `request` | string | `priory request --workflow WORKFLOW --key <resource> TEXT`: the command that creates a task for it |
+| `task` | object | The newest task that owned it: `id`, `key`, `state`, `workflow` |
+| `events` | array | Its events, newest first: `seq`, `type`, `subject`, `time`, and `line`, the first line of its body, text or title, or null |
+| `follow_up` | string or null | The command that routes its next event, each argument shell-quoted: `priory revive ID` for a failed or dropped task, `priory add --workflow WORKFLOW 'TEXT'` with the task's workflow and `request_text` for a done one, else `priory subscribe ID RESOURCE`. Null for a done task's resource that `request_text` cannot name, such as a Slack thread |
+| `request_text` | string or null | For a GitHub or Linear resource, the text of a new task keyed by it: `Follow up on URL after event SEQ`, the issue's URL, which `priory add` turns into the resource as key, and the newest event's sequence number, so each follow-up is a new request |
 
-Without `--json`, `priory inbox --unrouted` prints each group as its resource and event count, one
-line per event, then the two commands.
+`other` counts the rest, the events no task ever owned, per source (the resource's prefix, such as
+`github` or `slack`), most first: `source` and `events`.
+
+Without `--json`, `priory inbox --unrouted` prints each owned group as its resource, event count
+and task, one line per event, then its follow-up, and last one line such as `No task ever owned: 2
+github events, 1 linear event.`
 
 ## Asks
 
@@ -372,7 +381,7 @@ and these arrays, oldest first unless the table says otherwise:
 | `waits` | `id`, `run`, `kind`, `resource`, `until`, `target`, `created`, `fired`, `withdrawn` (1 once withdrawn, else null), `withdrawn_reason` (see [withdrawal reasons](../daemon/waits.md#why-an-ask-or-wait-was-withdrawn)), `withdrawn_at` (when, in UTC; null for a wait withdrawn before Priory kept the time) |
 | `results` | `run`, `step`, `outcome`, `summary`, `evidence`, `commit_sha`, `reason`, `merge_risk` (a risk step's verdict and lines, else null), `created` |
 | `subscriptions` | `resource`, `created`: what the task subscribes to now. Empty once it fails or is dropped |
-| `inbox` | Every event routed to the task, newest first: its source event, the events routing gave it and those that fired one of its waits. Each has `seq`, `type`, `subject`, `time`, `task` (the task routing gave it, or null), `outcome` (as [routing](../daemon/routing.md#outcomes) recorded it), `prompt` (the state of this task's prompt that carries the event: `queued`, `attempted`, `uncertain`, `confirmed`, `withdrawn`, or null when none does) and `wait` (the id of this task's wait it fired, or null). See [The task's inbox](../daemon/routing.md#the-tasks-inbox) |
+| `inbox` | Every event routed to the task, newest first: its source event, the events routing gave it, and those another task took that fired one of its waits or that its subscription delivered to it. Each has `seq`, `type`, `subject`, `time`, `task` (the task routing gave it, or null), `outcome` (as [routing](../daemon/routing.md#outcomes) recorded it, or for an event a subscription delivered beside another task, `woke` or `kept` for this task), `prompt` (the state of this task's prompt that carries the event: `queued`, `attempted`, `uncertain`, `confirmed`, `withdrawn`, or null when none does) and `wait` (the id of this task's wait it fired, or null). See [The task's inbox](../daemon/routing.md#the-tasks-inbox) |
 | `triage` | `item` (a feedback item's URL), `class` (`trivial`, `nothing-to-do` or `persons-call`), `run` (the run whose result sorted it), `created`: how the agent sorted each review feedback item, in the order it first did. See [Review feedback](../daemon/tools.md#review-feedback) |
 
 And these objects:
@@ -573,7 +582,7 @@ With `web = true`, the server sends these without the token:
 
 | Path | Type |
 | ---- | ---- |
-| `/boot.js`, `/app.js`, `/asks.js`, `/add.js`, `/links.js`, `/reports.js`, `/stack.js`, `/desk.js`, `/costs.js`, `/flows.js` | `text/javascript; charset=utf-8` |
+| `/boot.js`, `/app.js`, `/asks.js`, `/add.js`, `/links.js`, `/reports.js`, `/stack.js`, `/desk.js`, `/costs.js`, `/inbox.js`, `/flows.js` | `text/javascript; charset=utf-8` |
 | `/app.css`, `/tokens/structure.css`, `/tokens/themes.css` | `text/css; charset=utf-8` |
 | `/fonts/<file>.woff2` | `font/woff2` |
 | `/sw.js`, the service worker | `text/javascript; charset=utf-8` |

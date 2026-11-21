@@ -205,6 +205,13 @@ a.autolink { color: var(--action-text); text-decoration: underline; text-underli
 .more .write { margin-left: 0; }
 .writeform { flex: 1 0 100%; display: grid; gap: 8px; padding-left: 12px; }
 .writeform .btn { justify-self: end; }
+.ugroup { padding: 12px 16px; border-top: 1px solid var(--line); }
+.ugroup .l1 { display: flex; justify-content: space-between; gap: 8px; margin: 0 0 4px; }
+.ugroup .l1 .num { color: var(--text-3); font-variant-numeric: tabular-nums; }
+.routeform { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+.ugroup > .meta { display: flex; align-items: center; gap: 6px; }
+.unowned { padding: 12px 16px; border-top: 1px solid var(--line); }
+.hist li .meta { display: block; }
 textarea { font: 400 16px/22px var(--font-ui); color: var(--text); background: var(--surface); border: 1px solid var(--control-line); border-radius: var(--radius-md); padding: 10px 12px; width: 100%; resize: vertical; }
 .sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 .routednote { display: flex; gap: 6px; align-items: baseline; color: var(--action-text); font: 600 var(--type-small) var(--font-ui); }
