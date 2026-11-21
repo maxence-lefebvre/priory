@@ -1,9 +1,9 @@
 use super::linear::{COMMENTED, CREATED, STATE_CHANGED, event};
-use super::webhook::unhex;
+use super::webhook::{opened, unhex};
 use super::{claim, dispatch, now, output, publish, reported};
 use crate::log::{self, Log};
 use hmac::{Hmac, KeyInit, Mac};
-use priory_factory::factory::{Factory, Trigger};
+use priory_factory::factory::{EventLog, Factory, Trigger};
 use priory_runtime::http::{Reply, Request};
 use serde_json::{Value, json};
 use sha2::Sha256;
@@ -18,6 +18,8 @@ pub struct LinearWebhook {
     /// The `linear` triggers, which a delivery can match. A `linear.view` trigger names a view, which a
     /// delivery cannot tell membership of, so polling alone serves it.
     triggers: Vec<(String, Trigger)>,
+    /// The log a delivery publishes on, opened again while a worker's open failed.
+    log: EventLog,
 }
 
 impl LinearWebhook {
@@ -31,12 +33,16 @@ impl LinearWebhook {
             .filter(|(_, trigger)| trigger.value.source == "linear")
             .map(|(name, trigger)| (name.clone(), trigger.value.clone()))
             .collect();
-        Ok(LinearWebhook { secret, triggers })
+        Ok(LinearWebhook {
+            secret,
+            triggers,
+            log: factory.log().clone(),
+        })
     }
 
     /// Verifies, maps and publishes one delivery. Linear retries any reply but `200`, so every
     /// delivery Priory takes or drops on purpose gets it.
-    pub fn receive(&self, bus: &Result<Box<dyn Log>, String>, request: &Request) -> Reply {
+    pub fn receive(&self, bus: &mut Result<Box<dyn Log>, String>, request: &Request) -> Reply {
         if !self.signed(request) {
             return Reply::error(
                 401,
@@ -59,9 +65,9 @@ impl LinearWebhook {
             Ok(None) => return accepted("dropped"),
             Err(error) => return Reply::error(400, &error),
         };
-        let bus = match bus {
-            Ok(bus) => bus.as_ref(),
-            Err(error) => return Reply::error(500, error),
+        let bus = match opened(bus, || log::open(&self.log)) {
+            Ok(bus) => bus,
+            Err(error) => return Reply::error(500, &error),
         };
         let triggers: Vec<(&str, &Trigger)> = self
             .triggers
