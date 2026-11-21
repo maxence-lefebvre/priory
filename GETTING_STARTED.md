@@ -260,7 +260,7 @@ and only your tailnet can connect. It assumes Tailscale runs on the machine and 
 
 5. Under More, then Notifications, tap Turn on notifications, and allow them.
 
-A new ask now shows its title on the phone, and tapping it opens the ask. A task that turns blocked
+A new ask now shows its title on the phone, or its task and step, and tapping it opens the ask. A task that turns blocked
 or failed shows `task <key> <state>`. A snoozed item sends nothing. Turn notifications off on the
 same screen.
 

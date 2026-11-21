@@ -88,17 +88,17 @@ const PANELS = {
 };
 const CLI = { tasks: "priory tasks", runs: "priory tasks", inbox: "priory inbox", reports: "priory inbox", queue: "priory queue", terminal: "priory attach", workflow: "priory check" };
 
-// The last listings read, kept on this device, so an offline start shows them with their age.
+// The last listings read and when, kept on this device, so an offline start shows them with their age.
 const kept = JSON.parse(localStorage.getItem("priory.snapshot") || "null");
 const state = {
   token: localStorage.getItem("priory.token"),
-  data: kept,
+  data: kept?.data || null,
   // The data came from this device, not the server: views and links are read again.
   cached: Boolean(kept),
   // The listings to read in full, once the person scrolls to their older rows.
   all: { asks: false, tasks: false },
   refreshes: 0,
-  updated: Number(localStorage.getItem("priory.updated")) || null,
+  updated: kept?.updated || null,
   failed: null,
   signInError: null,
   list: "desk",
@@ -172,14 +172,13 @@ async function refresh() {
     state.updated = Date.now();
     state.failed = null;
     state.cached = false;
-    localStorage.setItem("priory.updated", String(state.updated));
     // Ages read in minutes, so an unchanged state needs a new paint once a minute at most.
-    if (state.data && snapshot === state.snapshot && !failed && Date.now() - state.rendered < 60000) return true;
+    if (state.data && snapshot === state.snapshot && !failed && Date.now() - state.rendered < 60000) return keep(), true;
     const before = state.data ? new Set(state.data.asks.filter((ask) => ask.state === "open").map((ask) => ask.id)) : null;
     state.data = { views, links, desk, asks, bands: asksList.bands, queue, tasks, older };
     state.task = null;
     state.snapshot = snapshot;
-    keep(state.data);
+    keep();
     announce(before);
   } catch (error) {
     if (error.status === 401) return signOut("The daemon refused this token. Paste the current one.");
@@ -197,15 +196,17 @@ function announce(before) {
   if (fresh) document.getElementById("announce").textContent = `New ask from task ${fresh.key || fresh.task}.`;
 }
 
-// A full storage only costs the offline start, so a failed write is dropped.
-function keep(data) {
+// The listings and their time go in one value, so a full storage never pairs old data with a new time.
+function keep() {
   try {
-    localStorage.setItem("priory.snapshot", JSON.stringify(data));
+    localStorage.setItem("priory.snapshot", JSON.stringify({ data: state.data, updated: state.updated }));
   } catch {}
 }
 
 function signOut(reason) {
-  for (const key of ["priory.token", "priory.snapshot", "priory.updated"]) localStorage.removeItem(key);
+  for (const key of ["priory.token", "priory.snapshot"]) localStorage.removeItem(key);
+  // A refresh still in flight must not store what this device just dropped.
+  state.refreshes++;
   Object.assign(state, { token: null, data: null, snapshot: null, revision: undefined, signInError: reason, all: { asks: false, tasks: false } });
   render();
 }
@@ -1160,10 +1161,13 @@ async function turnPush(on) {
       const { key } = await api("/api/push/key");
       const registration = await navigator.serviceWorker.ready;
       const subscription = await registration.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: keyBytes(key) });
-      const { status, body } = await post("/api/push/subscribe", subscription.toJSON());
-      if (status !== 200) {
-        await subscription.unsubscribe();
-        throw new Error(body.error || `the server answered ${status}`);
+      // A browser subscription the daemon never stored would read "On" and get nothing.
+      try {
+        const { status, body } = await post("/api/push/subscribe", subscription.toJSON());
+        if (status !== 200) throw new Error(body.error || `the server answered ${status}`);
+      } catch (error) {
+        await subscription.unsubscribe().catch(() => {});
+        throw error;
       }
       state.push.status = "on";
       return;

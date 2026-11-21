@@ -64,9 +64,9 @@ refuses to start.
 
 ### Push keys
 
-The daemon makes `push/` once, readable by its owner only, with the VAPID key pair that signs Web
-Push notifications. `vapid.key` holds the private key, mode `0600`; `vapid.pub` holds the public
-key that `GET /api/push/key` serves. The daemon reuses the pair on every start. Delete both files
+The daemon makes `push/`, readable by its owner only, with the VAPID key pair that signs Web Push
+notifications. `vapid.key` holds the private key, mode `0600`, written once and whole; `vapid.pub`
+holds the public key that `GET /api/push/key` serves, written again from it on every start. Delete both files
 to make a new pair: every browser then has to turn notifications on again. The private key never
 leaves the file: it is not logged, printed or sent. While a notification goes out, `push/` also
 holds its request's header and body files, which the daemon removes once `curl` ends.

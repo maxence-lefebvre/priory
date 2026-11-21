@@ -99,7 +99,10 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
         drain(&bus, &mut db, &trace, counting.get(&home))?;
         return Ok(());
     }
-    push::keys(&home)?;
+    // Without its key the daemon sends no notification, but still runs tasks.
+    if let Err(error) = push::keys(&home) {
+        eprintln!("priory daemon: notifications are off: {error}");
+    }
     let listening = runtime::listen(&home)?;
     if let Some(config) = factory.serve() {
         crate::serve::start(factory, config.listen)?;

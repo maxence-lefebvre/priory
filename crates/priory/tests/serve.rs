@@ -152,6 +152,7 @@ impl Setup {
             );
             if let Some(address) = line.trim().strip_prefix("priory: serving on http://") {
                 let mut log = fs::File::create(self.dir.join("server.log")).unwrap();
+                log.write_all(said.as_bytes()).unwrap();
                 std::thread::spawn(move || std::io::copy(&mut stderr, &mut log));
                 return address.to_owned();
             }
@@ -1629,6 +1630,18 @@ fn the_web_view_serves_every_file_with_its_type_and_a_strict_policy_without_the_
             "{path}"
         );
         assert!(!body.is_empty(), "{path}");
+    }
+
+    // The worker's install fails whole when one file it caches is missing.
+    let worker =
+        fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("../priory-core/web/sw.js"))
+            .unwrap();
+    let files = worker
+        .lines()
+        .find_map(|line| line.strip_prefix("const FILES = ["))
+        .unwrap();
+    for path in files.split('"').filter(|part| part.starts_with('/')) {
+        assert_eq!(fetch(&address, path).0, 200, "{path}");
     }
 
     let (status, head, index) = fetch(&address, "/asks/42");
@@ -3399,7 +3412,7 @@ fn the_push_key_endpoint_serves_the_public_key_once_a_daemon_made_the_pair() {
 fn subscribe_and_unsubscribe_store_and_drop_a_subscription_behind_the_token_and_origin() {
     let mut setup = Setup::new("push-subscribe", SERVE);
     let address = setup.start(&["daemon", &setup.factory()]);
-    let (browser, _) = subscription("https://push.example.com/send/abc");
+    let (browser, _) = subscription("https://web.push.apple.com/send/abc");
     let body = browser.to_string();
     let stored = |setup: &Setup| -> Vec<String> {
         let db = setup.db();
@@ -3436,13 +3449,29 @@ fn subscribe_and_unsubscribe_store_and_drop_a_subscription_behind_the_token_and_
         &address,
         "/api/push/subscribe",
         "",
-        &json!({ "endpoint": "https://push.example.com/x", "keys": browser["keys"], "brief": "x" })
+        &json!({ "endpoint": "https://web.push.apple.com/x", "keys": browser["keys"], "brief": "x" })
             .to_string(),
     );
-    let (plain, _) = subscription("http://push.example.com/send/abc");
+    let (plain, _) = subscription("http://web.push.apple.com/send/abc");
     let (local, _) = subscription("https://127.0.0.1/send/abc");
     let insecure = post(&address, "/api/push/subscribe", "", &plain.to_string());
     let loopback = post(&address, "/api/push/subscribe", "", &local.to_string());
+    let others: Vec<(u16, String)> = [
+        "https://127.1/send/abc",
+        "https://intranet.corp.example/send/abc",
+        "https://fcm.googleapis.com.evil.example/send/abc",
+        "https://user@fcm.googleapis.com/send/abc",
+    ]
+    .iter()
+    .map(|endpoint| {
+        post(
+            &address,
+            "/api/push/subscribe",
+            "",
+            &subscription(endpoint).0.to_string(),
+        )
+    })
+    .collect();
 
     assert_eq!(wrong.0, 401, "{}", wrong.1);
     assert_eq!(foreign.0, 403, "{}", foreign.1);
@@ -3450,6 +3479,9 @@ fn subscribe_and_unsubscribe_store_and_drop_a_subscription_behind_the_token_and_
     assert_eq!(extra.0, 400, "{}", extra.1);
     assert_eq!(insecure.0, 422, "{}", insecure.1);
     assert_eq!(loopback.0, 422, "{}", loopback.1);
+    for (status, body) in &others {
+        assert_eq!(*status, 422, "{body}");
+    }
     assert!(stored(&setup).is_empty());
 
     let own = post(
@@ -3459,13 +3491,13 @@ fn subscribe_and_unsubscribe_store_and_drop_a_subscription_behind_the_token_and_
         &body,
     );
     assert_eq!(own.0, 200, "{}", own.1);
-    assert_eq!(stored(&setup), ["https://push.example.com/send/abc"]);
+    assert_eq!(stored(&setup), ["https://web.push.apple.com/send/abc"]);
 
     let gone = post(
         &address,
         "/api/push/unsubscribe",
         "",
-        &json!({ "endpoint": "https://push.example.com/send/abc" }).to_string(),
+        &json!({ "endpoint": "https://web.push.apple.com/send/abc" }).to_string(),
     );
     assert_eq!(gone.0, 200, "{}", gone.1);
     assert!(stored(&setup).is_empty());
@@ -3562,9 +3594,11 @@ fn base64(text: &Value) -> Vec<u8> {
 fn a_new_ask_pushes_one_notification_per_subscription_with_only_its_title_and_url() {
     let mut setup = Setup::new("push-ask", SERVE);
     setup.seed();
+    // No task starts, so none turns blocked and sends an alarm of its own.
+    succeeded(&setup.priory(&["pause"]));
     let address = setup.start(&["daemon", &setup.factory()]);
-    let phone = setup.subscribe(&address, "https://push.example.com/phone");
-    let laptop = setup.subscribe(&address, "https://fcm.example.com/laptop");
+    let phone = setup.subscribe(&address, "https://web.push.apple.com/phone");
+    let laptop = setup.subscribe(&address, "https://fcm.googleapis.com/laptop");
 
     let ask = setup.ask_more(&setup.db(), "Merge the docs fix?");
 
@@ -3579,12 +3613,12 @@ fn a_new_ask_pushes_one_notification_per_subscription_with_only_its_title_and_ur
     assert_eq!(
         urls,
         [
-            "https://fcm.example.com/laptop",
-            "https://push.example.com/phone"
+            "https://fcm.googleapis.com/laptop",
+            "https://web.push.apple.com/phone"
         ]
     );
     for push in &pushes {
-        let (key, auth) = if push["url"] == "https://push.example.com/phone" {
+        let (key, auth) = if push["url"] == "https://web.push.apple.com/phone" {
             &phone
         } else {
             &laptop
@@ -3621,8 +3655,10 @@ fn a_new_ask_pushes_one_notification_per_subscription_with_only_its_title_and_ur
 fn a_snoozed_ask_pushes_nothing() {
     let mut setup = Setup::new("push-snoozed", SERVE);
     setup.seed();
+    // No task starts, so none turns blocked and sends an alarm of its own.
+    succeeded(&setup.priory(&["pause"]));
     let address = setup.start(&["daemon", &setup.factory()]);
-    setup.subscribe(&address, "https://push.example.com/phone");
+    setup.subscribe(&address, "https://web.push.apple.com/phone");
 
     let mut db = setup.db();
     let tx = db.transaction().unwrap();
@@ -3645,8 +3681,10 @@ fn a_snoozed_ask_pushes_nothing() {
 fn a_subscription_the_push_service_calls_gone_is_removed() {
     let mut setup = Setup::new("push-gone", SERVE);
     setup.seed();
+    // No task starts, so none turns blocked and sends an alarm of its own.
+    succeeded(&setup.priory(&["pause"]));
     let address = setup.start(&["daemon", &setup.factory()]);
-    setup.subscribe(&address, "https://push.example.com/phone");
+    setup.subscribe(&address, "https://web.push.apple.com/phone");
     fs::write(setup.dir.join("fake/push-status"), "410").unwrap();
 
     setup.ask_more(&setup.db(), "Anyone there?");
@@ -3666,4 +3704,54 @@ fn a_subscription_the_push_service_calls_gone_is_removed() {
         assert!(Instant::now() < deadline, "the gone subscription stayed");
         std::thread::sleep(Duration::from_millis(50));
     }
+}
+
+#[test]
+fn an_ask_without_a_title_pushes_its_task_and_step_not_its_question() {
+    let mut setup = Setup::new("push-untitled", SERVE);
+    setup.seed();
+    // No task starts, so none turns blocked and sends an alarm of its own.
+    succeeded(&setup.priory(&["pause"]));
+    let address = setup.start(&["daemon", &setup.factory()]);
+    let phone = setup.subscribe(&address, "https://web.push.apple.com/phone");
+
+    setup
+        .db()
+        .execute(
+            "INSERT INTO asks (task, step, kind, question, options)
+             VALUES (1, 'implement', 'step', 'implement: ran rm -rf /srv with the deploy key', '[]')",
+            [],
+        )
+        .unwrap();
+
+    let pushes = setup.until_pushes(1);
+    let plain = decrypt(&base64(&pushes[0]["body"]), &phone.0, &phone.1);
+    let payload: Value = serde_json::from_slice(&plain).unwrap();
+    assert_eq!(payload["title"], "task cli:docs-1 asks at implement");
+}
+
+#[test]
+fn an_ask_asked_again_pushes_again() {
+    let mut setup = Setup::new("push-again", SERVE);
+    setup.seed();
+    // No task starts, so none turns blocked and sends an alarm of its own.
+    succeeded(&setup.priory(&["pause"]));
+    let address = setup.start(&["daemon", &setup.factory()]);
+    setup.subscribe(&address, "https://web.push.apple.com/phone");
+    let db = setup.db();
+    let ask = setup.ask_more(&db, "Approve the push?");
+    setup.until_pushes(1);
+    db.execute(
+        "UPDATE asks SET answer = 'yes', answered = '2026-11-17T12:00:00Z' WHERE id = ?1",
+        [ask],
+    )
+    .unwrap();
+
+    db.execute(
+        "UPDATE asks SET revision = revision + 1, answer = NULL, answered = NULL WHERE id = ?1",
+        [ask],
+    )
+    .unwrap();
+
+    setup.until_pushes(2);
 }

@@ -39,21 +39,29 @@ pub(crate) fn keys(home: &Path) -> Result<(), String> {
         .create(&folder)
         .map_err(|error| at(&folder, error))?;
     let private = folder.join("vapid.key");
-    let key = match OpenOptions::new()
+    // Written whole beside it, then linked into place, so a crash never leaves a half key.
+    let draft = folder.join(format!("vapid.key.{}", std::process::id()));
+    let _ = fs::remove_file(&draft);
+    OpenOptions::new()
         .write(true)
         .create_new(true)
         .mode(0o600)
-        .open(&private)
-    {
-        Ok(mut file) => {
-            let key = SecretKey::generate();
-            file.write_all(Base64UrlUnpadded::encode_string(&key.to_bytes()).as_bytes())
-                .map_err(|error| at(&private, error))?;
-            key
-        }
-        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => private_key(home)?,
+        .open(&draft)
+        .and_then(|mut file| {
+            file.write_all(
+                Base64UrlUnpadded::encode_string(&SecretKey::generate().to_bytes()).as_bytes(),
+            )?;
+            file.sync_all()
+        })
+        .map_err(|error| at(&draft, error))?;
+    let linked = fs::hard_link(&draft, &private);
+    let _ = fs::remove_file(&draft);
+    match linked {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
         Err(error) => return Err(at(&private, error)),
-    };
+    }
+    let key = private_key(home)?;
     let public = folder.join("vapid.pub");
     fs::write(&public, public_text(&key.public_key())).map_err(|error| at(&public, error))
 }
@@ -162,38 +170,37 @@ fn check(subscription: &Subscription) -> Result<(), String> {
     Ok(())
 }
 
-/// The `https://host[:port]` origin of a push service's `endpoint`, which is the JWT's audience.
-/// Refuses any other scheme, an IP address and `localhost`, so the daemon posts only to a named
-/// service on the internet.
-fn host(endpoint: &str) -> Result<&str, String> {
-    let refused = || format!("{endpoint:?} is not an https URL of a push service");
-    if endpoint.len() > 2048
-        || endpoint
+/// The push services browsers subscribe through: Apple, Google (Chrome, Edge on Android),
+/// Mozilla and Microsoft. The daemon posts nowhere else, so a subscription cannot aim it at this
+/// machine or its network.
+const SERVICES: &[&str] = &[
+    "push.apple.com",
+    "fcm.googleapis.com",
+    "push.services.mozilla.com",
+    "notify.windows.com",
+];
+
+/// The `https://host` origin of a push service's `endpoint`, which is the JWT's audience. Refuses
+/// any other scheme, a port, user info, and a host that is not one of `SERVICES` or under it.
+fn host(endpoint: &str) -> Result<String, String> {
+    let refused = || format!("{endpoint:?} is not an https URL of a known push service");
+    let rest = endpoint.strip_prefix("https://").ok_or_else(refused)?;
+    let name = &rest[..rest.find(['/', '?', '#']).unwrap_or(rest.len())];
+    let valid = endpoint.len() <= 2048
+        && !endpoint
             .chars()
             .any(|c| c.is_whitespace() || c.is_control())
-    {
-        return Err(refused());
-    }
-    let rest = endpoint.strip_prefix("https://").ok_or_else(refused)?;
-    let authority = &rest[..rest.find(['/', '?', '#']).unwrap_or(rest.len())];
-    let name = authority
-        .rsplit_once(':')
-        .filter(|(_, port)| port.bytes().all(|byte| byte.is_ascii_digit()))
-        .map_or(authority, |(name, _)| name)
-        .to_ascii_lowercase();
-    let named = !name.is_empty()
-        && name.contains('.')
-        && !authority.contains(['@', '[', ']'])
-        && name.parse::<std::net::Ipv4Addr>().is_err()
-        && name != "localhost"
-        && !name.ends_with(".localhost")
         && name
             .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || b"-.".contains(&byte));
-    if !named {
+            .all(|byte| byte.is_ascii_alphanumeric() || b"-.".contains(&byte))
+        && SERVICES.iter().any(|service| {
+            let name = name.to_ascii_lowercase();
+            name == *service || name.ends_with(&format!(".{service}"))
+        });
+    if !valid {
         return Err(refused());
     }
-    Ok(&endpoint[..8 + authority.len()])
+    Ok(format!("https://{}", name.to_ascii_lowercase()))
 }
 
 /// The notification in flight: its row in `push_queue` and one `curl` per subscription.
@@ -345,7 +352,9 @@ fn next(db: &Connection) -> rusqlite::Result<Option<(i64, Option<String>)>> {
     let notice = if kind == "ask" {
         db.query_row(
             &format!(
-                "SELECT coalesce(asks.title, asks.question) FROM asks
+                // A question can hold a result's summary, so an untitled ask names its task and step.
+                "SELECT coalesce(asks.title, 'task ' || tasks.key || ' asks at ' || asks.step,
+                   'ask ' || asks.name) FROM asks
                  LEFT JOIN tasks ON tasks.id = asks.task
                  WHERE asks.id = ?1 AND asks.answer IS NULL AND asks.withdrawn IS NULL
                  AND (asks.task IS NULL OR tasks.state NOT IN ('done', 'failed', 'dropped'))
@@ -397,7 +406,7 @@ fn start(
     let headers = format!(
         "Authorization: vapid t={}, k={}\nContent-Encoding: aes128gcm\n\
          Content-Type: application/octet-stream\nTTL: {TTL}\nUrgency: high\n",
-        token(key, origin)?,
+        token(key, &origin)?,
         public_text(&key.public_key()),
     );
     for (file, bytes) in files.iter().zip([headers.as_bytes(), &body]) {

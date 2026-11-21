@@ -165,23 +165,28 @@ reaches the daemon on its socket; the daemon stores it in the state.
 The daemon makes its key pair once, in [Priory home](home.md#push-keys). A trigger in the state
 queues a notification in the same transaction as the change, and only while a browser subscribes:
 
-- for a new ask, from a step, an agent or outside;
+- for a new ask, from a step, an agent or outside, and for an ask asked again, such as an
+  approval whose branch moved;
 - for a task that turns `blocked` or `failed`, an alarm.
 
 The daemon sends the queue one notification at a time. Before it sends one, it reads the item
 again, and sends nothing when the ask closed, the task left that state, or a person snoozed it.
 A queue left by a stopped daemon goes out when the next one starts.
 
-Each notification carries the ask's title, or the task's key and state, and the path that opens it,
-`/asks/<id>` or `/tasks/<id>`. It carries no question text past 120 characters, no brief, plan,
-option, command or answer: the push service and the phone's lock screen see only that line. The
+Each notification carries the ask's title, or the task's key and step or state, and the path that
+opens it, `/asks/<id>` or `/tasks/<id>`. It never carries the question, which can quote a result's
+summary, nor a brief, plan, option, command or answer: the push service and the phone's lock screen
+see only that line. The
 payload is encrypted for the browser, so the push service cannot read it either.
 
 The daemon posts to the push service with `curl`, as the OTLP exporter does, with HTTPS only and
 the header lines in a file of its own, so the signed token does not show in the process list. A
 push service that answers `404` or `410` has dropped the subscription, and the daemon removes it.
 Any other failure is logged and not retried: the desk still shows the item. The daemon posts only
-to an `https://` endpoint whose host is a name, never an IP address or `localhost`.
+to the push services that browsers use, Apple's, Google's, Mozilla's and Microsoft's, so a
+subscription cannot aim it at this machine or its network. A daemon that cannot make or read its
+key logs it, sends no notification, and runs tasks as usual. A daemon stopped mid-send can send
+that notification again on its next start.
 
 On iPhone and iPad, only a view added to the Home Screen can subscribe, and it asks only after a
 tap. The Notifications screen says so in Safari. Android and desktop browsers subscribe from a tab

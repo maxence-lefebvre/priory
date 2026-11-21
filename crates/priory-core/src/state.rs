@@ -813,7 +813,8 @@ PRAGMA user_version = 46;
 ";
 
 // The browsers that get Web Push notifications, and the notifications the daemon has yet to send.
-// Triggers queue a new ask and a task that turns blocked or failed, only while a browser subscribes.
+// Triggers queue a new ask, an ask asked again, and a task that turns blocked or failed, only while
+// a browser subscribes.
 const SCHEMA_47: &str = "CREATE TABLE IF NOT EXISTS push_subscriptions (
   endpoint TEXT PRIMARY KEY,
   p256dh   TEXT NOT NULL,
@@ -829,6 +830,11 @@ CREATE TABLE IF NOT EXISTS push_queue (
 );
 CREATE TRIGGER IF NOT EXISTS push_a_new_ask AFTER INSERT ON asks
   WHEN NEW.answer IS NULL AND EXISTS (SELECT 1 FROM push_subscriptions) BEGIN
+  INSERT INTO push_queue (kind, item) VALUES ('ask', NEW.id);
+END;
+CREATE TRIGGER IF NOT EXISTS push_an_ask_asked_again AFTER UPDATE OF revision ON asks
+  WHEN NEW.revision IS NOT OLD.revision AND NEW.answer IS NULL AND NEW.withdrawn IS NULL
+  AND EXISTS (SELECT 1 FROM push_subscriptions) BEGIN
   INSERT INTO push_queue (kind, item) VALUES ('ask', NEW.id);
 END;
 CREATE TRIGGER IF NOT EXISTS push_an_alarm AFTER UPDATE OF state ON tasks

@@ -635,8 +635,8 @@ screens. It turns Web Push on or off for this device. It holds:
 
 The view never asks for the permission on its own: no banner and no prompt at load.
 
-A notification's title is "Priory". Its text is the ask's title, or `task <key> <state>` for a
-task that turned blocked or failed, and nothing else. Tapping it opens the ask or the task, in an
+A notification's title is "Priory". Its text is the ask's title, `task <key> asks at <step>` for an
+ask without one, or `task <key> <state>` for a task that turned blocked or failed, and nothing else. Tapping it opens the ask or the task, in an
 open Priory window when there is one.
 
 ### Task row and run row

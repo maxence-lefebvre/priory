@@ -375,8 +375,9 @@ key pair, it returns `503`.
 `POST /api/push/subscribe` stores the browser's subscription, or replaces the keys of one with the
 same `endpoint`. The daemon refuses it with `422` when:
 
-- `endpoint` is not an `https://` URL whose host is a name: an IP address, `localhost` or a name
-  without a dot is refused;
+- `endpoint` is not an `https://` URL, with no port and no user info, on one of the push
+  services browsers use: `push.apple.com`, `fcm.googleapis.com`, `push.services.mozilla.com` or
+  `notify.windows.com`, or a name under one of them;
 - `keys.p256dh` is not a base64url P-256 public key, or `keys.auth` is not a base64url 16 byte
   secret;
 - 20 other subscriptions exist.
@@ -390,7 +391,7 @@ JSON with two fields and nothing else:
 
 | Field | For a new ask | For an alarm |
 | ----- | ------------- | ------------ |
-| `title` | the ask's title, or its question when it has none, cut to 120 characters | `task <key> <state>`, such as `task gh:o/r#42 blocked` |
+| `title` | the ask's title, cut to 120 characters; without one, `task <key> asks at <step>`, or `ask <name>` for an outside ask | `task <key> <state>`, such as `task gh:o/r#42 blocked` |
 | `url` | `/asks/<id>` | `/tasks/<id>` |
 
 ## Report
