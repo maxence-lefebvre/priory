@@ -3116,6 +3116,49 @@ fn the_report_endpoints_return_what_report_show_json_prints() {
 }
 
 #[test]
+fn report_list_names_every_report_newest_first_as_its_endpoint_returns_them() {
+    let mut setup = Setup::new("report-list", SERVE);
+    setup.seed();
+    let listed = setup.priory(&["report", "list", "--json"]);
+    succeeded(&listed);
+    let empty: Value = serde_json::from_slice(&listed.stdout).unwrap();
+    assert_eq!(empty["reports"], json!([]));
+    succeeded(&setup.put("2", &report()));
+    let mut later = report();
+    later["date"] = json!("2026-11-21");
+    later["greeting"] = json!("Later");
+    later["sections"][0]["rows"][0]["pick"]["id"] = json!("2026-11-21_sentry_fnd-2409");
+    succeeded(&setup.put("1", &later));
+    let address = setup.start(&["serve", &setup.factory()]);
+
+    let listed = setup.priory(&["report", "list", "--json"]);
+
+    succeeded(&listed);
+    let listed: Value = serde_json::from_slice(&listed.stdout).unwrap();
+    let heads: Vec<_> = listed["reports"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|head| {
+            (
+                head["task"].clone(),
+                head["date"].clone(),
+                head["greeting"].clone(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        heads,
+        [
+            (json!(1), json!("2026-11-21"), json!("Later")),
+            (json!(2), json!("2026-11-20"), json!("Bonjour, Max")),
+        ]
+    );
+    assert!(listed["revision"].is_i64());
+    assert_eq!(api(&address, "/api/reports"), listed);
+}
+
+#[test]
 fn a_report_whose_pick_another_tasks_report_has_is_refused() {
     let setup = Setup::new("report-shared-pick", SERVE);
     setup.seed();
@@ -4228,13 +4271,21 @@ fn the_pick_endpoint_records_a_choice_and_tells_a_stale_one_by_409() {
     );
     let (same, reply) = pick("Later", 1);
     assert_eq!(same, 409, "{reply}");
-    let (again, reply) = pick("Take", 2);
+    let (again, reply) = pick("Later", 2);
     assert_eq!(again, 409, "{reply}");
     assert!(reply.contains("already Later"), "{reply}");
+    let (changed, reply) = pick("Take", 2);
+    assert_eq!(changed, 200, "{reply}");
     assert_eq!(
         api(&address, "/api/reports/latest")["report"]["sections"][0]["rows"][0]["pick"]["chosen"],
-        "Later"
+        "Take"
     );
+    let mut applied = report();
+    applied["sections"][0]["rows"][0]["pick"]["applied"] = json!("took it");
+    succeeded(&setup.put("1", &applied));
+    let (stands, reply) = pick("Later", 4);
+    assert_eq!(stands, 409, "{reply}");
+    assert!(reply.contains("already Take"), "{reply}");
     assert_eq!(
         post(
             &address,

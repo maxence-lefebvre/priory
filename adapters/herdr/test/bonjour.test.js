@@ -57,7 +57,8 @@ test("an open pick offers its options with the recommended one marked, and a cho
   });
   assert.equal(picks['["agree",1]'].note, null);
   assert.deepEqual(picks['["agree",0]'], {
-    id: "2026-11-20_agree_priory-schedules", state: "agreed", options: [], chosen: "Take", note: "Waiting for the workflow to apply it.",
+    id: "2026-11-20_agree_priory-schedules", state: "agreed", options: picks['["sentry","fnd-2413"]'].options.map((option) => ({ ...option, recommended: option.label === "Take" })),
+    chosen: "Take", note: "Waiting for the workflow to apply it.",
   });
   assert.deepEqual(picks['["sentry","fnd-2409"]'], {
     id: "2026-11-20_sentry_fnd-2409", state: "applied", options: [], chosen: "Take", note: "requested task cli:FND-2409",
@@ -162,7 +163,7 @@ test("a press on a row's link opens the link and leaves the row unselected", asy
   const { context, draw, herdr, press, settle } = await import("./kit.js");
   const { default: Bonjour } = await import("../mods/priory-bonjour/main.js");
   herdr.reset();
-  herdr.replies = { report: read, links: { links: [{ pattern: "OpenTelemetry", url: "https://opentelemetry.io/" }] } };
+  herdr.replies = { report: (args) => (args[1] === "list" ? { revision: 6, reports: [] } : read), links: { links: [{ pattern: "OpenTelemetry", url: "https://opentelemetry.io/" }] } };
   const panel = new Bonjour();
   const cx = context();
   panel.init({}, cx);
@@ -173,4 +174,79 @@ test("a press on a row's link opens the link and leaves the row unselected", asy
   assert.equal(panel.selected, null);
   press(draw(panel, cx), `row-${row.id}`);
   assert.equal(panel.selected, row.id);
+});
+
+/** The Bonjour panel drawn against `replies`, once its first read settled. @param {Record<string, unknown>} replies */
+async function mounted(replies) {
+  const kit = await import("./kit.js");
+  const { default: Bonjour } = await import("../mods/priory-bonjour/main.js");
+  kit.herdr.reset();
+  kit.herdr.replies = replies;
+  const panel = new Bonjour();
+  const cx = kit.context();
+  panel.init({}, cx);
+  await kit.settle();
+  return { ...kit, panel, view: () => kit.draw(panel, cx) };
+}
+
+// Hand-built: an older report of task 4, and `priory report list --json` naming both.
+const older = { revision: 6, report: { ...structuredClone(read.report), task: 4, date: "2026-11-19", greeting: "Bonjour again" } };
+const list = { revision: 6, reports: [{ task: 1, date: "2026-11-20" }, { task: 4, date: "2026-11-19" }] };
+const reports = (/** @type {string[]} */ args) => (args[1] === "list" ? list : args[2] === "4" ? older : read);
+
+test("the older and newer arrows show the report written before or after the one shown", async () => {
+  const { panel, view, press, find, settle, text, herdr } = await mounted({ report: reports });
+  assert.equal(find(view(), "report-newer").calls.disabled?.[0], true);
+
+  press(view(), "report-older");
+  await settle();
+
+  assert.match(text(view()), /Nov 19/);
+  assert.match(text(view()), /Bonjour again/);
+  assert.equal(find(view(), "report-older").calls.disabled?.[0], true);
+  // The panel keeps reading the report it shows when Priory wakes it.
+  herdr.wake();
+  await settle();
+  assert.deepEqual(herdr.argv.filter((args) => args[1] === "show").at(-1), ["report", "show", "4", "--json"]);
+  assert.match(text(view()), /Bonjour again/);
+
+  press(view(), "report-newer");
+  await settle();
+  assert.match(text(view()), /Nov 20/);
+  assert.equal(panel.shown, null);
+});
+
+test("search keeps the rows that hold its text and says how many it found", async () => {
+  const { panel, view, press, find, text } = await mounted({ report: reports });
+  assert.equal(find(view(), "report-query"), null);
+
+  press(view(), "report-search");
+  panel.query.set_value("pri-6");
+
+  const drawn = text(view());
+  assert.match(drawn, /3 found/);
+  assert.match(drawn, /Held until #212 merges/);
+  assert.doesNotMatch(drawn, /Private fonts/);
+  panel.query.set_value("no such words");
+  assert.match(text(view()), /Nothing in this report holds “no such words”\./);
+  // Closing the search shows every row again.
+  press(view(), "report-search");
+  assert.match(text(view()), /Private fonts/);
+});
+
+test("Change reopens an agreed pick, and a new option goes through the revision-guarded pick", async () => {
+  const { panel, view, press, find, settle, herdr } = await mounted({ report: reports });
+  const row = '["agree",0]';
+  assert.equal(find(view(), `pick-${row}-2`), null);
+
+  press(view(), `change-${row}`);
+  // The chosen option shows solid; picking it again changes nothing.
+  assert.equal(find(view(), `pick-${row}-1`).calls.selected?.[0], true);
+  press(view(), `pick-${row}-1`);
+  assert.equal(panel.pending, null);
+  press(view(), `pick-${row}-2`);
+  herdr.timers.at(-1).fire();
+  await settle();
+
+  assert.deepEqual(herdr.argv.find((args) => args[1] === "pick"), ["report", "pick", "2026-11-20_agree_priory-schedules", "Later", "--expected", "3"]);
 });

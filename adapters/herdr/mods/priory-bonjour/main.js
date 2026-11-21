@@ -3,7 +3,7 @@ import { h_flex, v_flex, Button, Input, InputState, ScrollHandle, TextView } fro
 import { appHome, exec, home as herdrHome, readTextFile } from "herdr";
 import { follow, priory, spansHtml } from "./priory.js";
 import { FONTS, palette, STRUCTURE as S } from "./tokens.js";
-import { dossier, nextPick, refusal } from "./view.js";
+import { around, dossier, nextPick, refusal } from "./view.js";
 
 // gpui-kit reads a bare line height as a multiplier, so a line height is given as a length.
 const LINE = (/** @type {number[]} */ [, height]) => /** @type {`${number}px`} */ (`${height}px`);
@@ -31,7 +31,7 @@ const NO_REPORT = "no task has a report";
 /** @typedef {ReturnType<typeof dossier>} Dossier */
 /** @typedef {Dossier["sections"][number]} Section */
 /** @typedef {Section["rows"][number]} Row */
-/** @typedef {{ task: number, row: string, pick: string, option: string, revision: number, timer: import("gpui-kit").Task | null }} Pending */
+/** @typedef {{ task: number, row: string, pick: string, option: string, from: string | null, revision: number, timer: import("gpui-kit").Task | null }} Pending */
 /** @typedef {["greeting"] | ["empty"] | ["section", Section] | ["row", Row]} Item */
 
 // settings.json's "priory" object: { binary, machine, factory, theme }, each optional. Mirrors priory-tabs.
@@ -98,11 +98,17 @@ export default class PrioryBonjour extends View {
     this.updated = 0;
     this.width = 420;
     this.view = "all";
+    /** @type {number | null} the task whose report shows; null follows the one written last */
+    this.shown = null;
+    /** @type {{ task: number }[]} `priory report list`'s reports, newest first */
+    this.list = [];
     /** @type {string | null} the selected row's id */
     this.selected = null;
     /** A pick waiting out its Undo, then in flight; nothing else is picked until it ends. */
     /** @type {Pending | null} */
     this.pending = null;
+    /** @type {string | null} the row whose agreed pick Change reopened */
+    this.changing = null;
     /** @type {Map<string, string>} why a pick on a row was refused */
     this.notices = new Map();
     /** @type {string | null} a pick's outcome when its row has left the view */
@@ -116,6 +122,12 @@ export default class PrioryBonjour extends View {
     this.draft.on("submit", (_event, cx) => this.post(cx));
     this.draft.on("focus", (_event, cx) => { this.typing = true; cx.notify(); });
     this.draft.on("blur", (_event, cx) => { this.typing = false; cx.notify(); });
+    /** Whether the search field shows; its text filters the rows. */
+    this.searching = false;
+    this.query = InputState.new({ placeholder: "Search this report" });
+    this.query.on("change", (_event, cx) => cx.notify());
+    this.query.on("focus", (_event, cx) => { this.typing = true; cx.notify(); });
+    this.query.on("blur", (_event, cx) => { this.typing = false; cx.notify(); });
     this.focus = cx.focus_handle();
     /** @type {Fonts} */
     this.font = FONTS.indigo;
@@ -134,8 +146,10 @@ export default class PrioryBonjour extends View {
         this.priory ??= await connect();
         this.links = this.priory.links;
         client = this.priory.client;
+        // The arrows are optional: a priory without `report list` leaves them off.
+        this.list = await client.reports().then((read) => read.reports, () => []);
         try {
-          this.accept(await client.report());
+          this.accept(await client.report(this.shown));
         } catch (error) {
           if (!message(error).endsWith(NO_REPORT)) throw error;
           this.accept(null);
@@ -164,6 +178,8 @@ export default class PrioryBonjour extends View {
    */
   accept(read) {
     if (read && this.data && read.revision < this.data.revision) return;
+    // A read that started before an arrow moved to another report.
+    if (read && this.shown != null && read.report.task !== this.shown) return;
     if (read?.report.task !== this.data?.report.task) {
       this.selectRow(null);
       this.notices.clear();
@@ -173,7 +189,8 @@ export default class PrioryBonjour extends View {
     const pending = this.pending;
     if (!pending?.timer) return;
     const still = read && read.report.task === pending.task
-      && this.rows(dossier(read, { now: Date.now() })).some((row) => row.id === pending.row && row.pick?.id === pending.pick && row.pick.state === "open");
+      && this.rows(dossier(read, { now: Date.now() })).some((row) => row.id === pending.row && row.pick?.id === pending.pick
+        && row.pick.state !== "applied" && row.pick.chosen === pending.from);
     if (still) return;
     pending.timer.cancel();
     this.pending = null;
@@ -182,7 +199,8 @@ export default class PrioryBonjour extends View {
 
   /** @param {number} [now] */
   model(now = Date.now()) {
-    return this.data ? dossier(this.data, { now, view: this.view, links: this.links }) : null;
+    const query = this.searching ? this.query.value() : "";
+    return this.data ? dossier(this.data, { now, view: this.view, links: this.links, query }) : null;
   }
 
   /** @param {Dossier} model */
@@ -194,6 +212,22 @@ export default class PrioryBonjour extends View {
   reveal(model, id) {
     const index = items(model).findIndex((item) => itemId(item) === id);
     if (index >= 0) this.scroll.scroll_to_item(index);
+  }
+
+  /** Shows task `task`'s report; the newest one is followed as it changes. @param {number} task @param {import("gpui-kit").Context} cx */
+  go(task, cx) {
+    this.shown = task === this.list[0]?.task ? null : task;
+    this.scroll.scroll_to_item(0);
+    const shown = this.shown;
+    cx.spawn(async (cx) => {
+      try {
+        const read = await this.priory?.client.report(shown);
+        if (read && this.shown === shown) this.accept(read);
+      } catch (error) {
+        this.flash = `Could not read that report: ${message(error)}.`;
+      }
+      cx.notify();
+    });
   }
 
   /** @param {Dossier} model @param {string | null} id @param {import("gpui-kit").Context} cx */
@@ -224,12 +258,14 @@ export default class PrioryBonjour extends View {
   // A pick wakes the report's agent or requests a task, and the first choice stands, so it waits out an Undo.
   /** @param {Dossier} model @param {Row} row @param {string} option @param {import("gpui-kit").Context} cx */
   choose(model, row, option, cx) {
-    if (this.pending || this.error || row.pick?.state !== "open") return;
+    const pick = row.pick;
+    const reopened = pick?.state === "agreed" && this.changing === row.id;
+    if (this.pending || this.error || !pick || (pick.state !== "open" && !reopened) || option === pick.chosen) return;
     this.selectRow(row.id);
     this.notices.delete(row.id);
     this.flash = null;
     /** @type {Pending} */
-    const pending = { task: model.task, row: row.id, pick: row.pick.id, option, revision: model.revision, timer: null };
+    const pending = { task: model.task, row: row.id, pick: pick.id, option, from: pick.chosen, revision: model.revision, timer: null };
     pending.timer = cx.timer.after(UNDO_MS, (cx) => {
       pending.timer = null;
       this.send(pending, cx);
@@ -269,6 +305,7 @@ export default class PrioryBonjour extends View {
         if (model && this.rows(model).some((row) => row.id === pending.row)) this.notices.set(pending.row, notice);
         else this.flash = `${pending.option}: ${notice}`;
         this.pending = null;
+        this.changing = null;
         return cx.notify();
       }
       // Priory took the pick; a failed read here leaves the read loop to show it.
@@ -278,6 +315,7 @@ export default class PrioryBonjour extends View {
         this.flash = `${pending.option} was sent. The report shows it once priory answers again.`;
       }
       this.pending = null;
+      this.changing = null;
       cx.notify();
     });
   }
@@ -372,6 +410,7 @@ export default class PrioryBonjour extends View {
       .when(Boolean(this.flash), (el) => el.child(h_flex().flex_none().px(S["space-4"]).py(6).gap(S["space-2"]).items_center().border_b(1).border_color(t.line)
         .text_size(S["type-small"][0]).text_color(t["warn-text"]).child(div().flex_1().whitespace_normal().child(this.flash ?? ""))
         .child(this.secondary("flash-close", "Close", (cx) => { this.flash = null; cx.notify(); }, t))))
+      .when(Boolean(model) && this.searching, (el) => el.child(this.searchbar(/** @type {Dossier} */ (model), t)))
       .when(Boolean(model) && !wide, (el) => el.child(this.chips(/** @type {Dossier} */ (model), t)))
       .child(h_flex().flex_1().min_h_0()
         .when(Boolean(model) && wide, (el) => el.child(this.rail(/** @type {Dossier} */ (model), t)))
@@ -381,8 +420,18 @@ export default class PrioryBonjour extends View {
   /** @param {Dossier | null} model @param {Palette} t @param {boolean} wide */
   toolbar(model, t, wide) {
     const progress = model?.progress;
+    const { older, newer } = model ? around(this.list, model.task) : { older: null, newer: null };
+    /** @param {string} id @param {string} label @param {string} icon @param {number | null} task */
+    const arrow = (id, label, icon, task) => Button.new(id).size(S["control-fine"] - 4).flex().flex_none().items_center().justify_center().rounded(S["radius-sm"])
+      .disabled(task == null).opacity(task == null ? 0.4 : 1).accessibility_label(label)
+      .when(task != null, (el) => el.hover((s) => s.bg(t.raised))).focus((s) => s.border(2).border_color(t["action-text"]))
+      .on_click((_event, cx) => { if (task != null) this.go(task, cx); })
+      .child(svg(ICON(icon)).size(14).text_color(t["text-2"]));
     return h_flex().flex_none().h(S["pane-head"]).px(S["space-4"]).gap(10).items_center().border_b(1).border_color(t.line)
-      .child(div().font_family(this.font.mono).font_weight(600).text_size(S["type-small"][0]).child(model?.date ?? "Bonjour"))
+      .child(h_flex().flex_none().gap(2).items_center()
+        .when(Boolean(model), (el) => el.child(arrow("report-older", "Older report", "chevron-left", older)))
+        .child(div().font_family(this.font.mono).font_weight(600).text_size(S["type-small"][0]).child(model?.date ?? "Bonjour"))
+        .when(Boolean(model), (el) => el.child(arrow("report-newer", "Newer report", "chevron-right", newer))))
       .when(wide && Boolean(model), (el) => el.child(div().text_size(S["type-caption"][0]).text_color(t["text-3"]).child(`Task ${model?.task}, revision ${model?.revision}`)))
       .child(div().flex_1())
       .when(Boolean(progress?.total), (el) => el.child(h_flex().flex_none().gap(S["space-2"]).items_center()
@@ -392,7 +441,25 @@ export default class PrioryBonjour extends View {
       .when(Boolean(model?.views[1].count), (el) => el.child(this.secondary("next-pick", "Next pick", (cx) => {
         const current = /** @type {Dossier} */ (model);
         this.select(current, nextPick(current, this.selected) ?? this.selected, cx);
-      }, t)));
+      }, t)))
+      .when(Boolean(model), (el) => el.child(this.secondary("report-search", this.searching ? "Close search" : "Search", (cx) => this.search(cx), t)));
+  }
+
+  /** Opens the search field, or closes it and clears its text. @param {import("gpui-kit").Context} cx */
+  search(cx) {
+    this.searching = !this.searching;
+    this.query.set_value("");
+    if (this.searching) this.query.focus();
+    else this.focus.focus();
+    cx.notify();
+  }
+
+  /** @param {Dossier} model @param {Palette} t */
+  searchbar(model, t) {
+    return h_flex().id("report-query").flex_none().px(S["space-4"]).py(6).gap(S["space-2"]).items_center().border_b(1).border_color(t.line)
+      .child(div().flex_1().min_w_0().h(S["control-fine"]).px(8).rounded(S["radius-sm"]).border(1).border_color(t["control-line"])
+        .child(Input.new(this.query).h_full().w_full().text_size(S["type-small"][0]).text_color(t.text)))
+      .when(model.found != null, (el) => el.child(div().flex_none().text_size(S["type-caption"][0]).text_color(t["text-2"]).child(`${model.found} found`)));
   }
 
   /** @param {Palette} t @param {number} now */
@@ -464,7 +531,9 @@ export default class PrioryBonjour extends View {
             .child(div().font_family(this.font.display).font_weight(700).text_size(S["type-hero"][0]).line_height(LINE(S["type-hero"])).whitespace_normal().child(model.greeting))
             .child(div().text_size(S["type-small"][0]).text_color(t["text-2"]).whitespace_normal().child(model.since));
         }
-        if (item[0] === "empty") return div().text_color(t["text-2"]).child(this.view === "picks" ? "Every pick is agreed." : "This report has no sections.");
+        if (item[0] === "empty") return div().text_color(t["text-2"]).child(model.found != null
+          ? `Nothing in this report holds “${this.query.value().trim()}”.`
+          : this.view === "picks" ? "Every pick is agreed." : "This report has no sections.");
         if (item[0] === "section") {
           return h_flex().max_w(DOCUMENT).pt(S["space-3"]).gap(6).items_center().text_size(S["type-small"][0]).font_weight(650)
             .child(item[1].title).child(div().font_weight(400).text_color(t["text-3"]).child(String(item[1].count)));
@@ -520,13 +589,18 @@ export default class PrioryBonjour extends View {
     const notice = this.notices.get(row.id);
     // A pick card selects nothing on a press, so a row with an id offers Comment to reach the field.
     const commentable = !selected && row.target != null;
-    if (pick.state !== "open") {
+    const reopened = pick.state === "agreed" && this.changing === row.id;
+    if (pick.state !== "open" && !reopened) {
       return v_flex().w_full().px(S["space-3"]).py(6).gap(S["space-1"]).rounded(S["radius-md"]).border(1).border_color(t.line).bg(selected ? t["action-soft"] : t.bg)
         .child(h_flex().min_h(S["control-fine"] - 4).gap(S["space-2"]).items_center()
           .child(svg(ICON("check")).size(14).flex_none().text_color(t["ok-text"]))
           .child(div().flex_none().max_w("40%").truncate().font_family(row.key ? this.font.mono : this.font.ui).text_size(S["type-small"][0]).text_color(t["text-2"]).child(row.key ?? row.text))
           .child(div().flex_none().font_weight(600).child(pick.chosen ?? ""))
           .child(div().flex_1().min_w_0().truncate().text_size(S["type-caption"][0]).text_color(t["text-3"]).child(pick.note ?? ""))
+          .when(pick.state === "agreed" && !this.pending && !this.error, (el) => el.child(this.secondary(`change-${row.id}`, "Change", (cx) => {
+            this.changing = row.id;
+            cx.notify();
+          }, t)))
           .when(commentable, (el) => el.child(this.secondary(`comment-${row.id}`, "Comment", (cx) => this.select(model, row.id, cx), t))))
         .when(Boolean(notice), (el) => el.child(this.notice(notice, t)));
     }
@@ -543,8 +617,8 @@ export default class PrioryBonjour extends View {
       .child(h_flex().gap(S["space-2"]).items_center().flex_wrap()
         .child(h_flex().min_w_0().flex_wrap().p(2).gap(2).rounded(S["radius-sm"] + 2).border(1).border_color(t["control-line"]).bg(t.bg)
           .children(pick.options.map((option) => {
-            const on = pending?.option === option.label;
-            const hint = !pending && option.recommended;
+            const on = pending ? pending.option === option.label : option.label === pick.chosen;
+            const hint = !pending && !reopened && option.recommended;
             return Button.new(`pick-${row.id}-${option.key || option.label}`).h(S["pane-chip"] - 4).px(10).flex().items_center().gap(S["space-1"]).rounded(S["radius-sm"])
               .selected(on).disabled(busy && !on).opacity(busy && !on ? 0.5 : 1)
               .bg(on ? t.emph : t.bg).text_color(on ? t["on-emph"] : hint ? t["action-text"] : t.text)
@@ -557,6 +631,7 @@ export default class PrioryBonjour extends View {
           })))
         .when(Boolean(pick.note) && !pending, (el) => el.child(div().text_size(S["type-caption"][0]).text_color(t["text-3"]).child(pick.note ?? "")))
         .when(commentable && !pending, (el) => el.child(this.secondary(`comment-${row.id}`, "Comment", (cx) => this.select(model, row.id, cx), t)))
+        .when(reopened && !pending, (el) => el.child(this.secondary("change-cancel", "Keep", (cx) => { this.changing = null; cx.notify(); }, t)))
         .when(Boolean(pending), (el) => el.child(h_flex().flex_1().gap(S["space-2"]).items_center().justify_end().text_size(S["type-small"][0])
           .child(div().child(pending?.timer ? `Picking ${pending.option}` : `Sending ${pending?.option}…`))
           .when(Boolean(pending?.timer), (el) => el.child(this.secondary("undo", "Undo", (cx) => this.undo(cx), t))))));

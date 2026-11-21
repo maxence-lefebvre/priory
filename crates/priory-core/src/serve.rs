@@ -419,6 +419,7 @@ fn route(
             }),
             Err(error) => return Reply::error(500, &error),
         },
+        "/api/reports" => listing::revised(db, "reports", |db| sections::list(db).map(Some)),
         "/api/reports/latest" => listing::revised(db, "report", |db| sections::show(db, None)),
         "/api/costs" => return costs(db, &served.prices, query),
         "/api/grades" => return grades(db, query),
