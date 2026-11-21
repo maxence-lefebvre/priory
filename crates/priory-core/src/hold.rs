@@ -270,13 +270,10 @@ pub(crate) fn due(tx: &Transaction) -> rusqlite::Result<()> {
 /// for its merge, or once it is done owning no pull request. When it can no longer be met, as the
 /// other task failed, was dropped or saw a pull request close unmerged, it asks a person.
 pub(crate) fn merged(tx: &Transaction, factory: &Factory) -> rusqlite::Result<()> {
-    let open: Vec<(i64, i64, i64, String, String, String, String, i64, i64, i64, Option<i64>)> = tx
+    let open: Vec<(i64, i64, i64, String, String, String, String, i64, Option<i64>)> = tx
         .prepare(
             "SELECT holds.id, holds.task, target.id, target.key, target.state, target.workflow,
-               target.step, coalesce(target.batch, 0),
-               (SELECT count(*) FROM pull_requests WHERE task = target.id),
-               (SELECT count(*) FROM pull_requests WHERE task = target.id AND state = 'merged'),
-               holds.ask
+               target.step, coalesce(target.batch, 0), holds.ask
              FROM holds JOIN tasks ON tasks.id = holds.task
              JOIN tasks AS target ON target.id = holds.target
              WHERE holds.kind = 'merged' AND holds.released IS NULL AND holds.met IS NULL
@@ -293,40 +290,17 @@ pub(crate) fn merged(tx: &Transaction, factory: &Factory) -> rusqlite::Result<()
                 row.get(6)?,
                 row.get(7)?,
                 row.get(8)?,
-                row.get(9)?,
-                row.get(10)?,
             ))
         })?
         .collect::<rusqlite::Result<_>>()?;
-    for (id, task, other, key, state, workflow, step, batch, pulls, merges, ask) in open {
-        let after_merge = factory
-            .workflows
-            .get(&workflow)
-            .and_then(|flow| flow.value.step(&step))
-            .is_some_and(|step| step.after == Some(priory_factory::factory::StepAfter::Merged));
-        let met = match () {
-            _ if pulls > 0 && pulls == merges => Some(format!("task {other} merged")),
-            _ if after_merge && state != "done" => {
-                Some(format!("task {other} entered {step} after its merge"))
-            }
-            _ if pulls == 0 && state == "done" => {
-                Some(format!("task {other} is done with no pull request"))
-            }
-            _ => None,
-        };
-        if let Some(how) = met {
+    for (id, task, other, key, state, workflow, step, batch, ask) in open {
+        if let Some(how) = merged_as(tx, factory, other, &state, &workflow, &step)? {
             meet(tx, id, &how)?;
             continue;
         }
-        let closed = pulls > merges
-            && tx.query_row(
-                "SELECT EXISTS (SELECT 1 FROM pull_requests WHERE task = ?1 AND state = 'closed')",
-                [other],
-                |row| row.get::<_, bool>(0),
-            )?;
         let lost = match state.as_str() {
             "failed" | "dropped" => format!("Task {other} ({key}) of batch {batch} {state}"),
-            _ if closed => format!(
+            _ if crate::tools::closed_unmerged(tx, other)? => format!(
                 "A pull request of task {other} ({key}) of batch {batch} closed without a merge"
             ),
             _ => continue,
@@ -347,6 +321,33 @@ pub(crate) fn merged(tx: &Transaction, factory: &Factory) -> rusqlite::Result<()
         )?;
     }
     Ok(())
+}
+
+/// How task `other`, in `state` at `step` of `workflow`, has its code merged, if it does.
+fn merged_as(
+    tx: &Transaction,
+    factory: &Factory,
+    other: i64,
+    state: &str,
+    workflow: &str,
+    step: &str,
+) -> rusqlite::Result<Option<String>> {
+    let owned = crate::tools::pull_request(tx, other)?;
+    if owned.is_some() && crate::tools::all_merged(tx, other)? {
+        return Ok(Some(format!("task {other} merged")));
+    }
+    let after_merge = factory
+        .workflows
+        .get(workflow)
+        .and_then(|flow| flow.value.step(step))
+        .is_some_and(|step| step.after == Some(priory_factory::factory::StepAfter::Merged));
+    if after_merge && !["failed", "dropped"].contains(&state) {
+        return Ok(Some(format!("task {other} entered {step} after its merge")));
+    }
+    if owned.is_none() && state == "done" {
+        return Ok(Some(format!("task {other} is done with no pull request")));
+    }
+    Ok(None)
 }
 
 /// A person's release of the held `task`, back to the state it was held from, whatever its

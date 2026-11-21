@@ -1736,7 +1736,7 @@ fn done(
 }
 
 /// Whether `task` owns a pull request and every one of its stack merged.
-fn all_merged(tx: &Transaction, task: i64) -> rusqlite::Result<bool> {
+pub(crate) fn all_merged(tx: &Connection, task: i64) -> rusqlite::Result<bool> {
     let stack = crate::stack::of(tx, task)?;
     if !stack.is_empty() {
         return Ok(stack.iter().all(|pull| pull.state == "merged"));
@@ -1755,6 +1755,28 @@ fn all_merged(tx: &Transaction, task: i64) -> rusqlite::Result<bool> {
         .optional()?
         .flatten();
     Ok(merged == Some(true))
+}
+
+/// Whether a pull request `task` owns closed without a merge: one of its stack, or its only one.
+pub(crate) fn closed_unmerged(db: &Connection, task: i64) -> rusqlite::Result<bool> {
+    let stack = crate::stack::of(db, task)?;
+    if !stack.is_empty() {
+        return Ok(stack.iter().any(|pull| pull.state == "closed"));
+    }
+    let Some(resource) = pull_request(db, task)? else {
+        return Ok(false);
+    };
+    let merged = db
+        .query_row(
+            "SELECT json_extract(data, '$.merged') FROM inbox WHERE type = ?2
+             AND 'github:' || json_extract(data, '$.repo') || '#' || json_extract(data, '$.pull_request') = ?1
+             ORDER BY seq DESC LIMIT 1",
+            params![resource, CLOSED],
+            |row| row.get::<_, Option<bool>>(0),
+        )
+        .optional()?
+        .flatten();
+    Ok(merged == Some(false))
 }
 
 /// Fires every open time wait whose instant passed and task wait whose task ended.
@@ -2412,7 +2434,7 @@ fn queue_first(tx: &Transaction, task: i64, text: &str) -> rusqlite::Result<i64>
 /// The pull request the task owns: the latest one its actions opened, else the one its latest wait
 /// named, else the latest one opened from its branch, else its key when a pull request event created
 /// it. A review request's task reviews the pull request and does not own it.
-fn pull_request(tx: &Transaction, task: i64) -> rusqlite::Result<Option<String>> {
+pub(crate) fn pull_request(tx: &Connection, task: i64) -> rusqlite::Result<Option<String>> {
     tx.query_row(
         "SELECT resource FROM (
            SELECT pull_request AS resource, 3 AS rank, id AS at FROM actions

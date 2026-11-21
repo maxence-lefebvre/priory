@@ -638,31 +638,27 @@ const STAGES: [&str; 8] = [
 fn entry_of(db: &Connection, id: i64, at: usize, entry: &Entry) -> rusqlite::Result<Value> {
     let task = db
         .query_row(
-            "SELECT id, key, state,
-               (SELECT count(*) FROM pull_requests WHERE task = tasks.id),
-               (SELECT count(*) FROM pull_requests WHERE task = tasks.id AND state = 'merged')
-             FROM tasks WHERE batch = ?1 AND batch_entry = ?2",
+            "SELECT id, key, state FROM tasks WHERE batch = ?1 AND batch_entry = ?2",
             params![id, entry.id],
             |row| {
                 Ok((
                     row.get::<_, i64>(0)?,
                     row.get::<_, String>(1)?,
                     row.get::<_, String>(2)?,
-                    row.get::<_, i64>(3)?,
-                    row.get::<_, i64>(4)?,
                 ))
             },
         )
         .optional()?;
     let stage = match &task {
         None => "planned",
-        Some((_, _, state, pulls, merged)) => match state.as_str() {
+        Some((own, _, state)) => match state.as_str() {
             "held" => "planned",
             "queued" => "queued",
             "blocked" => "blocked",
-            "done" if pulls == merged => "merged",
             "failed" => "failed",
             "dropped" => "dropped",
+            _ if crate::tools::all_merged(db, *own)? => "merged",
+            "done" if crate::tools::pull_request(db, *own)?.is_none() => "merged",
             _ => "started",
         },
     };
