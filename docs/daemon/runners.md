@@ -116,8 +116,8 @@ Meanwhile a person sees the desk banner
 banner. It is `intake` in `priory desk --json` and `/api/desk`, so the web Desk and the Herdr Desk
 show it too. On that machine, `priory give` and `priory answer <runner>:<ask>` refuse with
 `the log is unreachable since <time>: try again when it is back`, since this runner's view of the
-owners and asks is as old as its last read. They refuse the same way when their own publish gets no
-answer.
+owners and asks is as old as its last read. When their own publish gets no answer, they refuse with
+`the log is unreachable: <error>: try again when it is back`.
 
 A daemon that starts while its log is unreachable starts all the same, and connects on a later
 try. `priory add` on a cut-off runner publishes its request to the log, so it fails until the link

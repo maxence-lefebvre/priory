@@ -1099,7 +1099,8 @@ fn perform(
     Ok(())
 }
 
-/// Runs `due`'s action, or returns true when it waits for disk to add its worktree back.
+/// Runs `due`'s action, or returns true when it waits, for disk to add its worktree back or for
+/// the log to say this runner keeps it, so the next task's action may run.
 fn act(
     db: &mut Connection,
     trace: &Trace,
@@ -1111,7 +1112,7 @@ fn act(
     if let Some(me) = &trace.runner
         && runners::cleared(db, me, due.task)? != Some(true)
     {
-        return Ok(false);
+        return Ok(true);
     }
     let factory = trace.factory;
     let step = factory.workflows[&due.workflow]
@@ -1856,8 +1857,9 @@ fn drain(
         for delivery in deliveries {
             let message = runners::clocked(delivery.message.clone(), delivery.logged);
             let ended = state::handle(db, &message, trace, counter)?;
-            bus.ack(consumer, &delivery)?;
+            // Before the ack, which can fail on a lost link: a redelivered message kills nothing.
             ended.inspect(|tmux| runtime::kill(tmux));
+            bus.ack(consumer, &delivery)?;
         }
     }
 }

@@ -131,6 +131,7 @@ added this guide.
   tunnel is back: a request it missed stays with the runner that claimed it. A hung tunnel costs
   the daemon the `[log]` `timeout` on each try, at most once a minute.
 - A cut longer than 30 minutes ends the second runner's lease, and its never-started tasks move.
-- This machine holds the log. When it is down, both runners stop.
+- This machine holds the log. When it is down, the second runner keeps its started tasks going until
+  it is back, as when the tunnel closes.
 - A runner's tasks move only 30 minutes after its last alive message, and only those that never
   started. Use `priory give` to move one sooner.

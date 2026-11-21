@@ -89,9 +89,10 @@ impl Postgres {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         if self.busy.swap(true, Ordering::SeqCst) {
-            return Err(Box::new(Unreachable(
-                "an earlier call still waits on it".into(),
-            )));
+            return Err(Box::new(Unreachable(format!(
+                "a call got no answer within {}s and still waits",
+                self.timeout.as_secs_f64()
+            ))));
         }
         let (client, config, busy) = (slot.take(), self.config.clone(), Arc::clone(&self.busy));
         let (sender, receiver) = mpsc::channel();
