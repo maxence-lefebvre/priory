@@ -594,3 +594,79 @@ fn two_linear_triggers_of_one_team_with_different_repos_set_no_repo() {
     assert!(String::from_utf8_lossy(&output.stderr).contains("names no repo"));
     assert!(setup.published().is_empty());
 }
+
+#[test]
+fn a_requests_intervention_reaches_its_task() {
+    let setup = Setup::new("intervention");
+    succeeded(&setup.request(&[
+        "--workflow",
+        "implement",
+        "--key",
+        "docs-1",
+        "--intervention",
+        "plan",
+        "Fix the docs",
+    ]));
+
+    let factory = setup.dir.join("factory");
+    succeeded(&setup.priory(&["daemon", factory.to_str().unwrap(), "--once"]));
+
+    let task: serde_json::Value =
+        serde_json::from_slice(&setup.priory(&["task", "1", "--json"]).stdout).unwrap();
+    assert_eq!(task["intervention"], "plan", "{task}");
+}
+
+#[test]
+fn a_hands_off_request_without_a_cli_lead_exits_non_zero_and_publishes_nothing() {
+    let setup = Setup::new("hands-off-no-lead");
+
+    let output = setup.request(&[
+        "--workflow",
+        "implement",
+        "--key",
+        "docs-1",
+        "--intervention",
+        "hands-off",
+        "Fix the docs",
+    ]);
+
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(
+        String::from_utf8_lossy(&output.stderr),
+        "priory request: --intervention hands-off needs a lead; set lead in triggers/cli.toml\n"
+    );
+    assert!(setup.published().is_empty());
+}
+
+#[test]
+fn add_takes_an_intervention() {
+    let setup = Setup::with("add-intervention", DEFAULTS);
+
+    succeeded(&setup.add(&[
+        "--repo",
+        "owner/repo",
+        "--intervention",
+        "plan",
+        "Fix the docs",
+    ]));
+
+    assert_eq!(setup.published()[1].message.data["intervention"], "plan");
+}
+
+#[test]
+fn an_unknown_intervention_is_a_usage_error() {
+    let setup = Setup::new("bad-intervention");
+
+    let output = setup.request(&[
+        "--workflow",
+        "implement",
+        "--key",
+        "docs-1",
+        "--intervention",
+        "yolo",
+        "Fix the docs",
+    ]);
+
+    assert_eq!(output.status.code(), Some(2), "{output:?}");
+    assert!(setup.published().is_empty());
+}

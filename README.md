@@ -26,7 +26,8 @@ every poll:
 - An agent that waits holds no process. It names what it waits for, such as a pull request's
   checks, and goes to sleep. The daemon resumes its session when that event arrives.
 - Every question an agent asks lands on one list, the desk, with options and a recommendation.
-  You answer it from the command line.
+  You answer it from the command line, or a trigger hands its tasks' questions to a lead agent and
+  keeps only the irreversible ones for you.
 - Every workflow step declares who decides it (a model, a person or code) and what it changes. So
   `priory check` can refuse a workflow before it runs, for example one that pushes code with no
   person's approval. `priory check --explain` lists what a person approves before each

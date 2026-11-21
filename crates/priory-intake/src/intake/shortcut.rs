@@ -274,6 +274,7 @@ fn submit(factory: &Factory, payload: &Value) -> String {
         lane: None,
         repo: value("repo"),
         relates: Vec::new(),
+        intervention: None,
     };
     match request::add_to(factory, &add, &format!("slack:{channel}:{thread}")) {
         Ok(key) => format!("Queued as `{key}`."),

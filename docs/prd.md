@@ -336,6 +336,10 @@ commit it was given for. An answer grants the approval when its `next` leads tow
 step. If the task's commit changes before the irreversible step runs, Priory
 asks again.
 
+A trigger's `intervention` can hand a task's other asks to a lead agent (`hands-off`), or add a
+person's approval of every graded plan (`plan`). The lead never answers an ask whose answer lets an
+irreversible step run: that approval stays a person's.
+
 ## Requirements
 
 Milestones are defined below. Each requirement names the milestone that delivers it.

@@ -12,7 +12,7 @@ priory request ./factory --workflow implement --key docs-1 --repo owner/repo "Fi
 
 ```text
 priory request [DIR] --workflow <name> --key <key> [--band <band>] [--lane <lane>]
-               [--repo <owner/name>] [--tldr <text>]
+               [--repo <owner/name>] [--tldr <text>] [--intervention plan|hands-off]
                [--hold <reason> [--until <time>] [--after <task-or-issue>]... [--merge <pr>]...
                                [--if-closed release|drop|ask] [--blockers]]
                [--] <text>
@@ -26,6 +26,7 @@ priory request [DIR] --workflow <name> --key <key> [--band <band>] [--lane <lane
 | `--band`, `--lane` | The task's band and lane |
 | `--repo` | The repository the task works in, `owner/name` |
 | `--tldr` | The task's TL;DR, so the summarizer skips it (see [search.md](../daemon/search.md)) |
+| `--intervention` | Who answers the task's asks, `plan` or `hands-off`; `intervention` in `triggers/cli.toml` when unset (see [triggers.md](../reference/triggers.md#intervention-and-lead)). Another value is a usage error |
 | `--hold` | Files the task held, with the conditions that follow it (see [`hold`](task-requests.md#hold)). `--after` and `--merge` repeat |
 | `text` | The request |
 
@@ -41,6 +42,7 @@ It loads the factory as `priory check` does, and publishes nothing when it refus
 | A band the factory lacks | `` band `<band>` is not one of <bands> `` |
 | No `--repo`, and no `repo` in `triggers/cli.toml` | `the request names no repo; pass --repo owner/name, or set repo in triggers/cli.toml` |
 | A `--repo` that is not a GitHub `owner/name` | `repo "<repo>" is not a GitHub owner/name` |
+| `--intervention hands-off`, and no `lead` in `triggers/cli.toml` | `--intervention hands-off needs a lead; set lead in triggers/cli.toml` |
 
 A run needs a repository, hence the last two rules. Priory clones it under its home, so a `repo`
 holds only GitHub's characters: an owner of letters, digits and `-`, a name of letters, digits, `-`,
@@ -62,7 +64,8 @@ priory add ./factory "Review https://github.com/owner/repo/pull/42"
 ```
 
 ```text
-priory add [DIR] [--workflow <name>] [--band <band>] [--lane <lane>] [--repo <owner/name>] [--] <text>
+priory add [DIR] [--workflow <name>] [--band <band>] [--lane <lane>] [--repo <owner/name>]
+           [--intervention plan|hands-off] [--] <text>
 ```
 
 | Field | From, first that is set |
@@ -70,6 +73,7 @@ priory add [DIR] [--workflow <name>] [--band <band>] [--lane <lane>] [--repo <ow
 | workflow | `--workflow`, then `[request] workflow` |
 | band | `--band`, then `[request] band` |
 | lane | `--lane` |
+| intervention | `--intervention`, then `intervention` in `triggers/cli.toml` |
 | repo | `--repo`, then the repository the linked issues agree on, then `repo` in `triggers/cli.toml`. A GitHub URL's repository is in the URL. A Linear issue's is the `repo` of each Linear trigger whose `filter.team` is the issue's team key, such as `ENG`. Links that name two repositories set none |
 | key | the issue or pull request when the text links to exactly one, as `github:owner/name#42` or `linear:ENG-7`; else `cli:<YYYY-MM-DD>-<n>` |
 
@@ -101,7 +105,7 @@ The fields and examples are in [events.md](../reference/events.md#priorytaskrequ
 | Message | Data |
 | ------- | ---- |
 | `priory.task.requested.cli` | `text`, `person` (`$USER`, or null), `time` and `repo` |
-| `factory.task.requested` | `trigger` `cli`, `source` this event's id, the same key, and `band`, `lane` and `repo` from the flags, null when absent |
+| `factory.task.requested` | `trigger` `cli`, `source` this event's id, the same key, and `band`, `lane` and `repo` from the flags, null when absent, and `intervention` when a flag sets it |
 
 The type has no `github.` prefix because no GitHub event produced it. It ends in `.cli` because a
 later source, such as Linear, adds its own `priory.task.requested.<source>`. It is a request, not a

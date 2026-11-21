@@ -1515,3 +1515,48 @@ fn a_slack_shortcut_needs_users_with_slack_ids() {
         )
     );
 }
+
+#[test]
+fn a_hands_off_trigger_needs_a_lead() {
+    let trigger = format!("{TRIGGER}intervention = \"hands-off\"\n");
+
+    let outcome = check(&factory(
+        "hands-off-no-lead",
+        &with("triggers/agent-label.toml", &trigger),
+    ));
+
+    assert_eq!(outcome.code, 1);
+    assert_eq!(
+        outcome.stderr,
+        "triggers/agent-label.toml:8: `intervention = \"hands-off\"` needs a `lead`: the agent that answers asks in the person's place\n"
+    );
+}
+
+#[test]
+fn a_lead_is_a_claude_code_agent_with_a_shared_session() {
+    let trigger = format!("{TRIGGER}intervention = \"hands-off\"\nlead = \"implementer\"\n");
+
+    let outcome = check(&factory(
+        "per-task-lead",
+        &with("triggers/agent-label.toml", &trigger),
+    ));
+
+    assert_eq!(outcome.code, 1);
+    assert_eq!(
+        outcome.stderr,
+        "triggers/agent-label.toml:9: lead `implementer` needs harness = \"claude-code\" and session = \"shared\"\n"
+    );
+}
+
+#[test]
+fn a_hands_off_trigger_with_a_shared_lead_passes() {
+    let lead = AGENT.replace("session = \"per-task\"", "session = \"shared\"");
+    let trigger = format!("{TRIGGER}intervention = \"hands-off\"\nlead = \"lead\"\n");
+    let mut files = with("triggers/agent-label.toml", &trigger);
+    files.push(("agents/lead/agent.md", &lead));
+
+    let outcome = check(&factory("shared-lead", &files));
+
+    assert_eq!(outcome.stderr, "");
+    assert_eq!(outcome.code, 0);
+}

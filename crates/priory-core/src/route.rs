@@ -37,6 +37,10 @@ pub(crate) struct NewTask {
     pub tldr: Option<String>,
     #[serde(default)]
     pub relates: Vec<priory_intake::request::Relation>,
+    #[serde(default)]
+    pub intervention: Option<priory_factory::factory::Intervention>,
+    #[serde(skip)]
+    pub lead: Option<String>,
 }
 
 /// The resources a message names, which a task may own: a task request's key, a CLI request's
@@ -136,6 +140,7 @@ pub(crate) fn tick(message: &Message, factory: &Factory) -> bool {
 /// workflow the factory lacks creates its task with no step, which waits until the workflow is back.
 /// A request with no lane gets the one `lanes.toml` derives; no branch exists yet to match.
 /// A new task's band is its request's, else its trigger's, else its workflow's, else the last one.
+/// Its intervention is its request's, else its trigger's, and its lead its trigger's.
 pub(crate) fn route(message: &Message, owner: Option<&Task>, factory: &Factory) -> Decision {
     if let Some(task) = owner {
         return Decision::Keep(task.id);
@@ -162,6 +167,10 @@ pub(crate) fn route(message: &Message, owner: Option<&Task>, factory: &Factory) 
         .or_else(|| trigger.and_then(|trigger| trigger.value.band.clone()))
         .or_else(|| workflow.and_then(|workflow| workflow.value.band.clone()))
         .or_else(|| bands.last().map(|band| (*band).to_owned()));
+    task.intervention = task
+        .intervention
+        .or_else(|| trigger.and_then(|trigger| trigger.value.intervention));
+    task.lead = trigger.and_then(|trigger| trigger.value.lead.clone());
     if task.lane.is_none() {
         task.lane = Some(factory.lanes().lane(&Subject {
             key: &task.key,
