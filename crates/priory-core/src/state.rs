@@ -12,7 +12,7 @@ use std::collections::BTreeMap;
 use std::io::Write;
 use std::time::Duration;
 
-const VERSION: i64 = 56;
+const VERSION: i64 = 57;
 
 const SCHEMA: &str = "
 CREATE TABLE tasks (
@@ -999,6 +999,15 @@ const SCHEMA_56: &str = concat!(
 "
 );
 
+// The desk finds an ask by `coalesce(name, id)` and lists the newest trace and inbox entries by
+// `julianday(time)`; without these each desk read scans every ask, trace record and inbox entry.
+const SCHEMA_57: &str = "
+CREATE INDEX IF NOT EXISTS asks_by_ref ON asks (coalesce(name, id));
+CREATE INDEX IF NOT EXISTS trace_by_day ON trace (julianday(time));
+CREATE INDEX IF NOT EXISTS inbox_by_day ON inbox (julianday(time));
+PRAGMA user_version = 57;
+";
+
 /// Each schema change in order: a file at version `n` applies those from index `n` on.
 const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA, SCHEMA_2, SCHEMA_3, SCHEMA_4, SCHEMA_5, SCHEMA_6, SCHEMA_7, SCHEMA_8, SCHEMA_9,
@@ -1007,7 +1016,7 @@ const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA_26, SCHEMA_27, SCHEMA_28, SCHEMA_29, SCHEMA_30, SCHEMA_31, SCHEMA_32, SCHEMA_33,
     SCHEMA_34, SCHEMA_35, SCHEMA_36, SCHEMA_37, SCHEMA_38, SCHEMA_39, SCHEMA_40, SCHEMA_41,
     SCHEMA_42, SCHEMA_43, SCHEMA_44, SCHEMA_45, SCHEMA_46, SCHEMA_47, SCHEMA_48, SCHEMA_49,
-    SCHEMA_50, SCHEMA_51, SCHEMA_52, SCHEMA_53, SCHEMA_54, SCHEMA_55, SCHEMA_56,
+    SCHEMA_50, SCHEMA_51, SCHEMA_52, SCHEMA_53, SCHEMA_54, SCHEMA_55, SCHEMA_56, SCHEMA_57,
 ];
 
 /// The order the queue starts tasks in: band, then a person's order, then age. A band the factory
