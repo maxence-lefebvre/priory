@@ -23,6 +23,7 @@ against it, but `priory check` applies the same rules.
 | `memory` | size | no | | What a runner must have free to admit a run. See [memory-gate.md](../daemon/memory-gate.md) | `"6GB"` |
 | `disk` | size | no | | Disk a run reserves above the runner's floor | `"20GB"` |
 | `mcpServers` | array of strings | no | `[]` | The MCP servers the run gets, by name | `["github"]` |
+| `connectorSignIn` | boolean | no | `false` | Lets the run call an MCP server's `authenticate` and `complete_authentication` tools. Off by default: an unattended run that signs in clears the stored token every later run needs. See [guard.md](../daemon/guard.md#connector-sign-in) | `true` |
 | `permissions` | table | no | | Claude Code's own `permissions` settings, so rules copy across. See below | |
 
 A size is a number followed by `KB`, `MB`, `GB` or `TB`, such as `"512MB"` or `"1.5TB"`. Units are

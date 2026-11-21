@@ -43,7 +43,7 @@ const OUTPUT: &str = "factory.intake";
 /// reports of sections, 36, which added deliveries, 37, which added progress, 39, which added run
 /// actions, 40, which added answer actions, 42, which added dispatches, 49, which added task ends, 51, which added a run's crossing of `compactAt`, 53, which added intervention levels, 56, which added the step an irreversible approval lets run, 58, which added withdrawal reasons, and 59, which added green stack gates and returned routed asks, 61, which added findings, 62, which added merge risk, 63, which added plan fields, 65, which added chosen subscriptions and approval generations, and 66, which added the step a gate enters after the merge. Schema 38's visits
 /// table is created only if missing, so it stays.
-const UNDO_SINCE_SEARCH: &str = "ALTER TABLE waits DROP COLUMN after; ALTER TABLE subscriptions DROP COLUMN chosen; ALTER TABLE approvals DROP COLUMN generation;
+const UNDO_SINCE_SEARCH: &str = "DROP INDEX todos_open_connector; ALTER TABLE todos DROP COLUMN connector; ALTER TABLE waits DROP COLUMN after; ALTER TABLE subscriptions DROP COLUMN chosen; ALTER TABLE approvals DROP COLUMN generation;
          ALTER TABLE tasks DROP COLUMN plan_goal; ALTER TABLE tasks DROP COLUMN plan_testing; ALTER TABLE tasks DROP COLUMN plan_brief; ALTER TABLE tasks DROP COLUMN verification;
          ALTER TABLE tasks DROP COLUMN merge_risk; ALTER TABLE results DROP COLUMN merge_risk;
          DROP TRIGGER ask_returns_from_its_lead; ALTER TABLE waits DROP COLUMN green;
@@ -5533,7 +5533,7 @@ fn a_state_file_whose_asks_an_approval_names_upgrades_to_outside_asks() {
          DROP TABLE findings;
          DROP TRIGGER ask_withdrawn; ALTER TABLE asks DROP COLUMN withdrawn_reason;
          ALTER TABLE waits DROP COLUMN withdrawn_reason; ALTER TABLE ask_withdrawals DROP COLUMN reason;
-         ALTER TABLE waits DROP COLUMN after;
+         DROP INDEX todos_open_connector; ALTER TABLE todos DROP COLUMN connector; ALTER TABLE waits DROP COLUMN after;
          DROP TABLE ask_revisions;
          DROP TABLE ask_refusals;
          PRAGMA legacy_alter_table = ON;
@@ -9294,7 +9294,7 @@ fn an_approval_stored_before_generations_were_kept_is_asked_again_after_the_upgr
     // The state file as version 64 left it: an approval names no generation.
     let db = rusqlite::Connection::open(setup.dir.join("priory.db")).unwrap();
     db.execute_batch(
-        "ALTER TABLE waits DROP COLUMN after;
+        "DROP INDEX todos_open_connector; ALTER TABLE todos DROP COLUMN connector; ALTER TABLE waits DROP COLUMN after;
          ALTER TABLE subscriptions DROP COLUMN chosen; ALTER TABLE approvals DROP COLUMN generation;
          PRAGMA user_version = 64;",
     )
@@ -16015,4 +16015,124 @@ fn a_copy_reopened_on_a_runner_whose_key_another_runner_owns_drops_with_the_owne
     let task: serde_json::Value = serde_json::from_slice(&task.stdout).unwrap();
     assert_eq!(task["reason"], "owned by runner b", "{task}");
     assert_eq!(b.rows("tasks")[0][4], "running");
+}
+
+fn mcp(tool: &str) -> serde_json::Value {
+    json!({ "name": tool, "arguments": {} })
+}
+
+fn sign_in_rows(setup: &Setup) -> Vec<Vec<String>> {
+    desk(setup, &[])
+        .into_iter()
+        .filter(|row| row[1] == "todo" && row[5].contains("Sign in to"))
+        .collect()
+}
+
+#[test]
+fn an_unattended_run_that_calls_a_connectors_authenticate_tool_is_told_to_go_on_without_it() {
+    let mut setup = Setup::new("connector-denied");
+    setup.calls(&[json!([
+        mcp("mcp__linear__authenticate"),
+        mcp("mcp__linear__complete_authentication")
+    ])]);
+    setup.publish(&requested(42));
+
+    setup.start();
+
+    for reply in setup.replied(2) {
+        let reason = guard_denied(&reply).unwrap_or_else(|| panic!("{reply}"));
+        assert!(reason.contains("linear"), "{reason}");
+        assert!(
+            reason.contains("Carry on with your other sources"),
+            "{reason}"
+        );
+        assert!(reason.contains("result"), "{reason}");
+    }
+}
+
+#[test]
+fn two_runs_denied_for_one_connector_leave_one_desk_item_that_done_clears() {
+    let mut setup = Setup::new("connector-desk");
+    let auth = json!([mcp("mcp__linear__authenticate")]);
+    setup.calls(&[auth.clone(), auth]);
+    setup.publish(&requested(42));
+    setup.publish(&requested(43));
+    setup.start();
+    setup.replied(2);
+
+    let rows = sign_in_rows(&setup);
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    assert!(rows[0][5].contains("linear"), "{rows:?}");
+
+    assert!(
+        setup
+            .priory(&["todo", "done", &rows[0][2]])
+            .status
+            .success()
+    );
+    assert_eq!(sign_in_rows(&setup), Vec::<Vec<String>>::new());
+}
+
+#[test]
+fn an_agent_that_opts_in_may_call_authenticate() {
+    let mut setup = Setup::new("connector-opt-in");
+    let agent = AGENT.replace(
+        "effort = \"low\"\n",
+        "effort = \"low\"\nconnectorSignIn = true\n",
+    );
+    fs::write(setup.dir.join("factory/agents/implementer/agent.md"), agent).unwrap();
+    setup.calls(&[json!([mcp("mcp__linear__authenticate")])]);
+    setup.publish(&requested(42));
+
+    setup.start();
+
+    let replies = setup.replied(1);
+    assert_eq!(guard_denied(&replies[0]), None, "{}", replies[0]);
+    assert_eq!(sign_in_rows(&setup), Vec::<Vec<String>>::new());
+}
+
+#[test]
+fn a_later_run_that_uses_the_connector_clears_its_desk_item() {
+    let mut setup = Setup::new("connector-used");
+    setup.calls(&[
+        json!([mcp("mcp__linear__authenticate"), result("passed")]),
+        json!([mcp("mcp__linear__list_issues")]),
+    ]);
+    setup.publish(&requested(42));
+    setup.start();
+    setup.replied(1);
+    setup.until("tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] != "running")
+    });
+    assert_eq!(sign_in_rows(&setup).len(), 1);
+
+    setup.publish(&requested(43));
+
+    setup.replied(2);
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while !sign_in_rows(&setup).is_empty() {
+        assert!(Instant::now() < deadline, "the item never cleared");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+#[test]
+fn a_connector_call_a_guard_denies_leaves_its_desk_item_open() {
+    let mut setup = Setup::new("connector-denied-use");
+    setup.calls(&[
+        json!([mcp("mcp__linear__authenticate"), result("passed")]),
+        json!([mcp("mcp__linear__create_issue")]),
+    ]);
+    setup.publish(&requested(42));
+    setup.start();
+    setup.replied(1);
+    setup.until("tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] != "running")
+    });
+
+    setup.publish(&requested(43));
+
+    let replies = setup.replied(3);
+    assert!(guard_denied(&replies[2]).is_some(), "{}", replies[2]);
+    assert_eq!(sign_in_rows(&setup).len(), 1);
 }
