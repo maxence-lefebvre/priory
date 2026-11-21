@@ -5,8 +5,8 @@ hands the issues over with `priory batch add`. The planning task's agent plans t
 one go, and the daemon creates one task per entry. Each entry starts once the entries it needs have
 merged.
 
-This page describes `merged` moments, edits of a plan, split issues, the desk line and the HTTP API.
-Stacked entries (the `waiting` moment) and the web view's batch page come later.
+This page describes `merged` moments, edits of a plan, split issues, the desk line, the HTTP API and
+the web view. Stacked entries (the `waiting` moment) come later.
 
 ## A batch's life
 
@@ -192,20 +192,40 @@ key, and shows that batch, its entries and its closes. `--json` prints:
   "counts": { "planned": 1, "queued": 1, "blocked": 0, "started": 0, "waiting": 0, "merged": 0, "failed": 0, "dropped": 0 },
   "entries": [
     { "entry": "e1", "position": 1, "issue": "ENG-40", "part": null, "title": "Add the invoices table",
+      "files": ["migrations/"],
       "task": 2, "key": "linear:ENG-40", "state": "queued", "stage": "queued", "after": [] },
     { "entry": "e2", "position": 2, "issue": "ENG-41", "part": null, "title": "Export invoices as CSV",
-      "task": 3, "key": "linear:ENG-41", "state": "held", "stage": "planned",
+      "files": [], "task": 3, "key": "linear:ENG-41", "state": "held", "stage": "planned",
       "after": [{ "entry": "e1", "task": 2, "moment": "merged", "met": null }] }
   ],
-  "closes": [{ "issue": "ENG-43", "why": "Fixed by #198", "evidence": "https://github.com/acme/shop/pull/198", "closed": null }]
+  "closes": [{ "issue": "ENG-43", "why": "Fixed by #198", "evidence": "https://github.com/acme/shop/pull/198", "closed": null }],
+  "splits": []
 }
 ```
 
-The list has `revision` and `batches`, each batch without `entries` and `closes`. `GET /api/batches`
+The list has `revision` and `batches`, each batch without `entries`, `closes` and `splits`. `GET /api/batches`
 and `GET /api/batches/{id}` return the same JSON (see [serve.md](../reference/serve.md)).
 
 `state` is `planning`, `asked`, `going`, `ended` or `dropped`. An entry's `stage` is the batch's
 word for its task: `planned` (no task yet, or held), `queued`, `blocked`, `started`, `merged`,
 `failed` or `dropped`. `waiting` stays 0 until stacked entries exist. `position` is the entry's place
 in the plan. `closed` is when the `close` step's result reported the issue closed, by an evidence
-line that starts with the issue and the word `closed`, such as `ENG-43: closed`.
+line that starts with the issue and the word `closed`, such as `ENG-43: closed`. `files` is the
+planner's guess at the files an entry changes, and `splits` the plan's `splits`, each an issue and
+why the plan splits it.
+
+## In the web view
+
+The batch page, `/batches/<id>`, shows the batch's key, state, lane, when it went and by whom, and
+its plan revision. Under the title, a stage bar and its words count the entries per stage, and the
+issues closed so far. Then the lane graph: one row per entry in start order, each with its issue,
+its task, its state tile and state, its title, when it starts in words, and its task's reason or
+step. A single line between two rows is `merged`; a double line is `waiting`. The desk's `batch`
+row opens the page.
+
+A go ask opens with a Plan section, then Closes and Splits, before Why. The plan is the same lane
+graph with numbered circles in place of tiles, and each entry's files. While the batch is `asked`,
+each row has a menu: Move up, Move down and Drop, each sent as `POST /api/batches/{id}/edit` on the
+plan revision the page drew. A Drop of an entry that others start after asks for a second tap,
+naming them, and then drops them too. Each edit asks the go again, so the ask moves to its next
+revision.

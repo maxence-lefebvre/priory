@@ -51,6 +51,7 @@ const WEB: &[(&str, &str, &[u8])] = &[
     asset!("/desk.js", JS, "crates/priory-core/web/desk.js"),
     asset!("/costs.js", JS, "crates/priory-core/web/costs.js"),
     asset!("/inbox.js", JS, "crates/priory-core/web/inbox.js"),
+    asset!("/batches.js", JS, "crates/priory-core/web/batches.js"),
     asset!("/sw.js", JS, "crates/priory-core/web/sw.js"),
     asset!(
         "/manifest.webmanifest",

@@ -32,3 +32,6 @@ priory batch add my-factory ENG-40 ENG-41 ENG-43
 priory asks                 # answer the go: priory answer <ask> go --revision 1
 priory batch show 1
 ```
+
+With [`[serve]`](../../docs/reference/factory.md#serve), the web view shows the go ask's plan, with
+a menu to move or drop each entry, and the batch page at `/batches/1`.

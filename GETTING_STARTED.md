@@ -304,6 +304,8 @@ events after its list.
 The web view's Asks panel has the saved views Open, Snoozed, Answered and All. A snoozed ask leaves
 Open and waits in Snoozed. On a phone, once the options scroll out of view, the answer bar's
 "N options" opens a sheet with every option. On a desktop, `S` snoozes the selected ask for 1 h.
+A batch's go ask shows the plan as a lane graph, and each entry's menu moves or drops it before you
+answer. The desk's batch row opens the batch page, with each entry's state and when it starts.
 
 A workflow can write a report for you, such as a morning dossier: `priory report show` prints the
 last one. The web view's Reports panel shows it, and takes its picks and row comments as

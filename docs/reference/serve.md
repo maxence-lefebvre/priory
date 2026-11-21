@@ -26,7 +26,7 @@ does, with every count in `older` at 0. Their rows match the CLI's JSON only wit
 | `/api/tasks/{id}` | `priory task ID --json` | one [task in detail](#task-in-detail) |
 | `/api/queue` | `priory queue --json` | an object: [Queue](#queue) |
 | `/api/batches` | `priory batch show --json` | `batches`: every batch, newest first, without its entries and closes. See [batches.md](../daemon/batches.md#priory-batch-show) |
-| `/api/batches/{id}` | `priory batch show ID --json` | one batch with its entries and closes. `ID` is the batch's id or its key |
+| `/api/batches/{id}` | `priory batch show ID --json` | one batch with its entries, closes and splits. `ID` is the batch's id or its key |
 | `/api/views` | `priory views --json` | an object: [Views](#views) |
 | `/api/request` | | what the web view's Add prefills: `workflow` and `band`, the [`[request]`](factory.md#request) defaults, each `null` when unset; `workflows`, the factory's workflow names; and `bands`, its bands in order |
 | `/api/links` | `priory links --json` | an object: [Links](#links) |
@@ -594,13 +594,13 @@ With `web = true`, the server sends these without the token:
 
 | Path | Type |
 | ---- | ---- |
-| `/boot.js`, `/app.js`, `/asks.js`, `/add.js`, `/links.js`, `/reports.js`, `/stack.js`, `/desk.js`, `/costs.js`, `/inbox.js`, `/flows.js` | `text/javascript; charset=utf-8` |
+| `/boot.js`, `/app.js`, `/asks.js`, `/add.js`, `/links.js`, `/reports.js`, `/stack.js`, `/desk.js`, `/costs.js`, `/inbox.js`, `/flows.js`, `/batches.js` | `text/javascript; charset=utf-8` |
 | `/app.css`, `/tokens/structure.css`, `/tokens/themes.css` | `text/css; charset=utf-8` |
 | `/fonts/<file>.woff2` | `font/woff2` |
 | `/sw.js`, the service worker | `text/javascript; charset=utf-8` |
 | `/manifest.webmanifest` | `application/manifest+json` |
 | `/favicon.ico`, `/favicon.svg`, `/apple-touch-icon.png`, `/icon-192.png`, `/icon-512.png`, `/icon-maskable-192.png`, `/icon-maskable-512.png` | the image's type |
-| any other path outside `/hooks`, such as `/` or `/asks/42` | the page, `text/html; charset=utf-8` |
+| any other path outside `/hooks`, such as `/`, `/asks/42` or `/batches/4` | the page, `text/html; charset=utf-8` |
 
 An unknown file under `/fonts/` or `/tokens/`, or at the top level with a `.` in its name, such as
 `/nothing.js`, gets `404`.

@@ -35,7 +35,8 @@ for it. An entry held on a condition with an open ask, such as the ask a failed 
 keeps its own `held` row and its Release button. A `batch` row never ranks as the next thing, since
 it asks for nothing. See [batches.md](batches.md). The web Desk and the Herdr Desk show it under
 Also waiting with a muted tile and the `layers` icon. The web Desk's phone list puts its `Next:`
-sentence in a caption below its counts, and its key opens the planning task.
+sentence in a caption below its counts, and its key opens the batch page (see
+[batches.md](batches.md#in-the-web-view)).
 
 ## Unrouted events
 
