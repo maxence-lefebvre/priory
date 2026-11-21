@@ -32,7 +32,7 @@ fn main() -> ExitCode {
                 _ => return usage(),
             };
             let run = if verb == "intake" {
-                |factory: &factory::Factory, once| intake::run(factory, once, watched, health)
+                |factory: &factory::Factory, once| intake::run(factory, once, watched, merged, health)
             } else {
                 daemon::run
             };
@@ -196,6 +196,16 @@ fn watched() -> Result<Vec<intake::Watch>, String> {
             Ok(intake::Watch { resource, since })
         })
         .collect()
+}
+
+/// The task pull requests merged since `since` whose merge commits the intake reads check runs at;
+/// none when the intake runs without a state file.
+fn merged(since: &str) -> Result<Vec<intake::Merge>, String> {
+    if std::env::var_os("PRIORY_DB").is_none() {
+        return Ok(Vec::new());
+    }
+    let db = state::open()?;
+    state::merges(&db, since).map_err(|error| format!("merged pull requests: {error}"))
 }
 
 /// Records each intake source's poll in the state, when the intake has one.

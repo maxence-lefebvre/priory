@@ -14,6 +14,7 @@ request was retargeted (see [Stacks in routing.md](../daemon/routing.md#stacks))
 | reviews and comments | a GraphQL query of every open pull request, and every pull request a new event above names | `github.pull_request_review.submitted` |
 | review thread comments | the repository's `pulls/comments`, newest 100, kept for the pull requests the query read | `github.pull_request_review.submitted` |
 | check runs and snapshots | the same query, on each pull request's head commit | `github.check_run.completed` |
+| check runs at a merge | the commit's `check-runs`, for each task pull request merged in the last 7 days | `github.check_run.completed` |
 
 An open wait, a `--merge` hold, a subscription or an active task's branch adds its repository to the
 polled ones (see [watches.md](watches.md)). Polling and API cost are in [github-polling.md](github-polling.md).
@@ -42,7 +43,7 @@ Their fields and examples are in [events.md](../reference/events.md#github).
 | `github.pull_request_review.submitted` | review submitted; pending reviews are skipped |
 | `github.pull_request.comment` | comment on the conversation; bots' comments are skipped |
 | `github.pull_request_review_comment` | comment in a review thread; bots' comments are skipped |
-| `github.check_run.completed` | completed check run on a pull request's head commit, per pull request |
+| `github.check_run.completed` | completed check run on a pull request's head commit, or on its merge commit, per pull request |
 | `github.pull_request.check_runs` | head whose check runs first appeared, or that has none past the grace period |
 
 `merged` on a close is true only when the pull request is merged and this is its last `closed`
@@ -56,6 +57,21 @@ to find a revert.
 The intake reads check runs, not check suites. Branch protection and R6.6 name required checks by
 check run, such as `test (ubuntu)`, while a suite folds every run of one app into one conclusion.
 Commit statuses are not published. A re-run gets a new check run id, so it publishes again.
+
+### Check runs at a merge
+
+A check that fails on the base branch after a merge is how a task turns out red
+([`red-after-merge`](../daemon/trace.md#outcome-labels)). A pull request's own query stops at its
+head commit, so the intake also reads the merge commit. The same `github.check_run.completed` event
+carries the merge commit as `head_sha` and the branch it merged into as `base_branch`.
+
+- It reads the pull requests that a task owns, by its stack or its head branch, and that merged in the
+  last 7 days, in a repository it polls. It learns them from the state file, so without `PRIORY_DB` it reads none.
+- It makes one call per merge commit and poll, `repos/{repo}/commits/{sha}/check-runs`, up to 100 runs.
+- It stops reading a commit once a poll saw every run completed and the daemon stored every failing event of it. It also stops, until the next start, when the commit has no run 5 minutes after the merge.
+- A restart reads once more only a commit that had no run, since the daemon's record of the others persists.
+- A merge into a branch other than the default counts too: the event names the pull request's base branch as it is.
+- Past 100 runs on a commit, the first 100 are read and `pending` stays above 0, so the commit is read until the 7 days end.
 
 ### Check run snapshots
 
@@ -97,6 +113,7 @@ Each message id is the UUIDv5 of a name:
 
 ## Limits
 
+- A check run that starts after every run on a merge commit completed is not read.
 - Head and base fields come from the pull request when the intake polls, not when the event
   happened. They are null when GitHub no longer returns the pull request.
 - Reviews and checks are read for open pull requests and for any pull request a new issue event
