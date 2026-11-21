@@ -124,6 +124,7 @@ fn main() -> ExitCode {
         ),
         Some("task") => match (args.next(), args.next(), args.next()) {
             (Some(task), Some(flag), None) if flag == "--json" => task_json(&task.to_string_lossy()),
+            (Some(task), None, None) => task_text(&task.to_string_lossy()),
             _ => usage(),
         },
         Some(verb @ ("subscribe" | "unsubscribe")) => match (args.next(), args.next(), args.next()) {
@@ -203,7 +204,7 @@ fn main() -> ExitCode {
 
 fn usage() -> ExitCode {
     eprintln!(
-        "usage: priory check [DIR] [--explain [--json]]\n       priory draw [DIR] WORKFLOW\n       priory intake [DIR] [--once]\n       priory daemon [DIR] [--once]\n       priory add [DIR] [--workflow <name>] [--band <band>] [--lane <lane>] [--repo <owner/name>] [--intervention plan|hands-off] [--relates KIND:TASK]... <text>\n       priory request [DIR] --workflow <name> --key <key> [--band <band>] [--lane <lane>] [--repo <owner/name>] [--intervention plan|hands-off] [--relates KIND:TASK]... [--hold <reason> [CONDITION]...] <text>\n       priory serve [DIR] [--listen ADDR]\n       priory inbox [--unrouted] [--since SEQ] [--json]\n       priory inbox read SEQ\n       priory post SOURCE LINE\n       priory tasks [--lane <lane>] [--grade red|yellow|green] [--json]\n       priory tasks --graph [TASK] [--mermaid]\n       priory queue [DIR] [--json]\n       priory schedules [DIR] [--json]\n       priory links [DIR] [--json]\n       priory flows [DIR] --json\n       priory runs\n       priory outbox\n       priory asks [--all] [--band <band>[,<band>...]]... [--risk <risk>[,<risk>...]]... [--json]\n       priory waits\n       priory actions\n       priory attach (TASK | --run RUN) [--read-only] [--print]\n       priory desk [--all] [--json] [--person NAME]\n       priory seen [--person NAME] [--at TIME]\n       priory wait --since REV [--timeout D]\n       priory snooze (ask | blocked | failed | prompt) ID (--for DURATION | --until TIME | --clear)\n       priory todo add TEXT [--band B] [--due TIME]\n       priory todo done ID\n       priory todo list [--json]\n       priory trace\n       priory report put TASK FILE|-\n       priory report show [TASK] [--json]\n       priory report pick PICK OPTION --expected REVISION\n       priory report comment ROW --expected REVISION TEXT\n       priory report (reply COMMENT TEXT | resolve COMMENT | reopen COMMENT)\n       priory report [DIR] --workflow <name> [--since <instant-or-duration>] [--cost] [--by lane]\n       priory report attention [--since <instant-or-duration>] [--by workflow|lane|kind] [--json]\n       priory costs [DIR] [--since <instant-or-duration>] [--by workflow|agent|model|machine|repo] [--json]\n       priory grades [--since <instant-or-duration>] [--json]\n       priory move TASK [--band <band>] [--top | --before TASK | --after TASK] [--expected REVISION]\n       priory resume TASK\n       priory say TASK TEXT\n       priory pause [REASON]\n       priory unpause\n       priory cancel TASK [--expected REVISION]\n       priory revive TASK [--step STEP]\n       priory hold TASK --reason TEXT [--until TIME] [--after TASK-OR-ISSUE]... [--merge PR]... [--if-closed release|drop|ask] [--blockers] [--expected REVISION]\n       priory release TASK [--expected REVISION]\n       priory task TASK --json\n       priory relate TASK builds-on|fixes|takes-up|relates OTHER [--remove]\n       priory subscribe TASK RESOURCE\n       priory unsubscribe TASK RESOURCE\n       priory tldr TASK TEXT\n       priory progress TASK JSON\n       priory search QUERY [--state STATE[,STATE...]] [--limit N]\n       priory gate\n       priory memory [(acquire | lease) [--gb N] [--timeout D] -- COMMAND...]\n       priory answer [--revision N | --expected N] [--run] [--] [DIR] [RUNNER:]ASK OPTION-OR-TEXT\n       priory give [DIR] KEY RUNNER\n       priory ask ID JSON\n       priory dismiss [--expected N] ASK\n       priory deliver ASK (--retry | --clear)\n       priory mcp --session ID\n       priory mcp --eval LOG [--describe TOOL TEXT]\n       priory eval FILE --budget USD [--case NAME] [--runs N] [--model MODEL]\n       priory hook EVENT"
+        "usage: priory check [DIR] [--explain [--json]]\n       priory draw [DIR] WORKFLOW\n       priory intake [DIR] [--once]\n       priory daemon [DIR] [--once]\n       priory add [DIR] [--workflow <name>] [--band <band>] [--lane <lane>] [--repo <owner/name>] [--intervention plan|hands-off] [--relates KIND:TASK]... <text>\n       priory request [DIR] --workflow <name> --key <key> [--band <band>] [--lane <lane>] [--repo <owner/name>] [--intervention plan|hands-off] [--relates KIND:TASK]... [--hold <reason> [CONDITION]...] <text>\n       priory serve [DIR] [--listen ADDR]\n       priory inbox [--unrouted] [--since SEQ] [--json]\n       priory inbox read SEQ\n       priory post SOURCE LINE\n       priory tasks [--lane <lane>] [--grade red|yellow|green] [--json]\n       priory tasks --graph [TASK] [--mermaid]\n       priory queue [DIR] [--json]\n       priory schedules [DIR] [--json]\n       priory links [DIR] [--json]\n       priory flows [DIR] --json\n       priory runs\n       priory outbox\n       priory asks [--all] [--band <band>[,<band>...]]... [--risk <risk>[,<risk>...]]... [--json]\n       priory waits\n       priory actions\n       priory attach (TASK | --run RUN) [--read-only] [--print]\n       priory desk [--all] [--json] [--person NAME]\n       priory seen [--person NAME] [--at TIME]\n       priory wait --since REV [--timeout D]\n       priory snooze (ask | blocked | failed | prompt) ID (--for DURATION | --until TIME | --clear)\n       priory todo add TEXT [--band B] [--due TIME]\n       priory todo done ID\n       priory todo list [--json]\n       priory trace\n       priory report put TASK FILE|-\n       priory report show [TASK] [--json]\n       priory report pick PICK OPTION --expected REVISION\n       priory report comment ROW --expected REVISION TEXT\n       priory report (reply COMMENT TEXT | resolve COMMENT | reopen COMMENT)\n       priory report [DIR] --workflow <name> [--since <instant-or-duration>] [--cost] [--by lane]\n       priory report attention [--since <instant-or-duration>] [--by workflow|lane|kind] [--json]\n       priory costs [DIR] [--since <instant-or-duration>] [--by workflow|agent|model|machine|repo] [--json]\n       priory grades [--since <instant-or-duration>] [--json]\n       priory move TASK [--band <band>] [--top | --before TASK | --after TASK] [--expected REVISION]\n       priory resume TASK\n       priory say TASK TEXT\n       priory pause [REASON]\n       priory unpause\n       priory cancel TASK [--expected REVISION]\n       priory revive TASK [--step STEP]\n       priory hold TASK --reason TEXT [--until TIME] [--after TASK-OR-ISSUE]... [--merge PR]... [--if-closed release|drop|ask] [--blockers] [--expected REVISION]\n       priory release TASK [--expected REVISION]\n       priory task TASK [--json]\n       priory relate TASK builds-on|fixes|takes-up|relates OTHER [--remove]\n       priory subscribe TASK RESOURCE\n       priory unsubscribe TASK RESOURCE\n       priory tldr TASK TEXT\n       priory progress TASK JSON\n       priory search QUERY [--state STATE[,STATE...]] [--limit N]\n       priory gate\n       priory memory [(acquire | lease) [--gb N] [--timeout D] -- COMMAND...]\n       priory answer [--revision N | --expected N] [--run] [--] [DIR] [RUNNER:]ASK OPTION-OR-TEXT\n       priory give [DIR] KEY RUNNER\n       priory ask ID JSON\n       priory dismiss [--expected N] ASK\n       priory deliver ASK (--retry | --clear)\n       priory mcp --session ID\n       priory mcp --eval LOG [--describe TOOL TEXT]\n       priory eval FILE --budget USD [--case NAME] [--runs N] [--model MODEL]\n       priory hook EVENT"
     );
     ExitCode::from(2)
 }
@@ -1725,6 +1726,64 @@ fn print_unrouted(groups: &serde_json::Value) {
         println!("  {}", group["subscribe"].as_str().unwrap_or_default());
         println!("  {}", group["request"].as_str().unwrap_or_default());
     }
+}
+
+/// `priory task ID`: the task's key, workflow, step and state, then its Inbox section.
+fn task_text(task: &str) -> ExitCode {
+    let Ok(id) = task.parse() else {
+        return usage();
+    };
+    let shown = state::open().and_then(|db| {
+        let task = listing::task(&db, id)
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| format!("no task {id}"))?;
+        let text = |value: &serde_json::Value| value.as_str().unwrap_or("-").to_owned();
+        println!("task {id}  {}", text(&task["key"]));
+        println!(
+            "workflow {}, step {}, {}",
+            text(&task["workflow"]),
+            text(&task["step"]),
+            text(&task["state"])
+        );
+        println!("\nInbox");
+        for event in task["inbox"].as_array().into_iter().flatten() {
+            println!(
+                "  {}  {}  {}  {}  {}",
+                event["seq"],
+                text(&event["time"]),
+                text(&event["type"]),
+                text(&event["subject"]),
+                handled(event, id)
+            );
+        }
+        Ok(())
+    });
+    exit("task", shown)
+}
+
+/// What one event of a task's inbox did: its outcome, what became of its prompt, the wait it fired
+/// and the task routing gave it to when that is another task.
+fn handled(event: &serde_json::Value, task: i64) -> String {
+    let mut text = event["outcome"].as_str().unwrap_or("-").to_owned();
+    let prompt = match event["prompt"].as_str() {
+        Some("confirmed") => "delivered as prompt",
+        Some("queued") => "still queued",
+        Some("attempted") => "being typed",
+        Some("uncertain") => "typed, unconfirmed",
+        Some("withdrawn") => "prompt withdrawn",
+        _ if text == "kept" => "for its next run",
+        _ => "",
+    };
+    if !prompt.is_empty() {
+        text = format!("{text}, {prompt}");
+    }
+    if let Some(wait) = event["wait"].as_i64() {
+        text = format!("{text}, fired wait {wait}");
+    }
+    if let Some(other) = event["task"].as_i64().filter(|other| *other != task) {
+        text = format!("{text} (routed to task {other})");
+    }
+    text
 }
 
 fn task_json(task: &str) -> ExitCode {

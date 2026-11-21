@@ -2390,6 +2390,10 @@ fn queue_first(tx: &Transaction, task: i64, text: &str) -> rusqlite::Result<i64>
     let id = tx.last_insert_rowid();
     for old in queued {
         tx.execute("UPDATE inbox SET outbox = ?1 WHERE outbox = ?2", [id, old])?;
+        tx.execute(
+            "UPDATE subscription_deliveries SET outbox = ?1 WHERE outbox = ?2",
+            [id, old],
+        )?;
         tx.execute("DELETE FROM outbox WHERE id = ?1", [old])?;
     }
     // A queued `/compact` must be typed alone, so it follows the new prompt instead of joining it.

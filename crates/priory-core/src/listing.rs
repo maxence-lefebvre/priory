@@ -1111,11 +1111,15 @@ pub fn task(db: &Connection, id: i64) -> rusqlite::Result<Option<Value>> {
             "inbox",
             "WITH own AS (SELECT seq FROM inbox
                WHERE task = ?1 OR id = (SELECT source FROM tasks WHERE id = ?1))
-             SELECT inbox.seq, inbox.type, inbox.subject, inbox.time, inbox.task, inbox.outcome,
-               CASE WHEN inbox.seq IN own THEN outbox.state END AS prompt,
+             SELECT inbox.seq, inbox.type, inbox.subject, inbox.time, inbox.task,
+               CASE WHEN inbox.seq IN own THEN inbox.outcome
+                 ELSE coalesce(heard.outcome, inbox.outcome) END AS outcome,
+               CASE WHEN inbox.seq IN own THEN outbox.state ELSE prompt.state END AS prompt,
                (SELECT min(id) FROM waits WHERE task = ?1 AND waits.inbox = inbox.seq) AS wait
              FROM inbox LEFT JOIN outbox ON outbox.id = inbox.outbox
-             WHERE inbox.seq IN own
+             LEFT JOIN subscription_deliveries AS heard ON heard.seq = inbox.seq AND heard.task = ?1
+             LEFT JOIN outbox AS prompt ON prompt.id = heard.outbox
+             WHERE inbox.seq IN own OR heard.task IS NOT NULL
                OR inbox.seq IN (SELECT inbox FROM waits WHERE task = ?1 AND inbox IS NOT NULL)
              ORDER BY inbox.seq DESC",
         ),
