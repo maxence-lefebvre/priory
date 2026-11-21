@@ -261,7 +261,7 @@ prompt is one line, then the event's own line:
 ```text
 Feedback reopened this done task as generation 2: ana commented on github:owner/name#57: Can you split this? https://github.com/owner/name/pull/57#issuecomment-701
 Feedback reopened this done task as generation 2: Ana commented on linear:ENG-7: Still broken. https://linear.app/acme/issue/ENG-7
-Feedback reopened this done task as generation 2: U0123 replied in slack:C0123:1763500000.000100: Still broken.
+Feedback reopened this done task as generation 2: Ana replied in slack:C0123:1763500000.000100: Still broken.
 ```
 
 The task is `ready`, so its next run resumes the session of the step's agent. The daemon appends a

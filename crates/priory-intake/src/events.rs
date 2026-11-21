@@ -581,6 +581,9 @@ pub struct SlackReplied {
     pub ts: String,
     /// The Slack user id of the author.
     pub user: Option<String>,
+    /// The author's display name, from Slack's `users.info`; the user id when Slack does not
+    /// answer, as without the `users:read` scope; null with no user id.
+    pub actor: Option<String>,
     /// The reply, in Slack's markup.
     pub text: String,
     /// The names of the files uploaded with it; empty when none.
