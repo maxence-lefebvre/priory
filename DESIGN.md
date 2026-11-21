@@ -486,7 +486,8 @@ request number). The whole row is the touch target.
 ### Asks list
 
 The Asks tab lists every ask. Saved views: Open, Answered and All, each with a count. Facet
-chips: Command, Lane, Band, Risk and Task, shown on a phone too. Band picks the task's band, with
+chips: Command, Lane, Band, Risk and Task, shown on a phone too, and Runner in a factory of several
+runners. Band picks the task's band, with
 its values in the factory's band order, then `none` for an ask with no band, such as an outside
 ask. Risk picks what answering risks, with its values in this order: `irreversible`, when the
 answer lets an irreversible step run or runs an agent's command; the task's merge risk `high`,
@@ -521,6 +522,33 @@ mark**, "with lead", in the lead's name:
   on the web: "lead is answering. You can still answer first: the first answer stands." The options stay enabled.
 - The mark adds no token and no color: it reuses `.tag` and `--action-text`. An unrouted ask looks
   as before.
+
+### Another runner's ask
+
+In a factory of several runners, the lists mix every runner's asks in the usual order
+([runners.md](docs/daemon/runners.md#every-runners-asks)). An ask of this runner looks as before.
+Another runner's ask shows:
+
+- **Rows** (Desk, Asks list): a `.tag` with the runner's name on line 1, which never shrinks. Once
+  the runner's last alive message is over 3 minutes old, the tag takes `--warn-text` and line 3
+  starts with "xps13 last seen 40 min ago" in `--warn-text`. The wide table shows the whole tag,
+  "xps13, last seen 40 min ago", after the question.
+- **Runner facet**: a facet chip like Band, offering each runner with its count. This runner reads
+  "workstation (here)". It shows only when the asks name runners.
+- **Sent**: an answer or dismiss to another runner's ask is a submission, which its runner applies
+  when it reads the log. Until then line 3 reads "Sent to xps13: approved" in `--action-text`, and
+  the detail says under the question "Sent to xps13: approved. It applies when xps13 reads the
+  log." A refused submission reads "xps13 refused approved: why" in `--warn-text` instead. An
+  applied one shows as the ask's own answer.
+- **Could not send**: a write the log did not take shows its error in place of the Sent line:
+  nothing was sent, and the draft stays.
+- **Command**: the armed option's command block and the Command section say "Runs on laptop".
+- **Ask detail**: the context line carries the runner tag; under the actions a note says "This ask
+  belongs to laptop. Your answer goes there through the log, and laptop applies it when it reads
+  it. Snooze stays on laptop." Snooze is hidden, and the context does not link to the task, which
+  lives on that runner.
+
+It adds no token: it reuses `.tag`, `.facet`, `--action-text` and `--warn-text`.
 
 ### Ask detail
 
@@ -1231,7 +1259,11 @@ the wide table with Recommends and the key hint bar (`J` `K`, `Enter`, `S`, `R`,
 
 Every ask, with the web's ask detail fitted to the pane.
 
-- Saved views: Open, Snoozed, Answered and All. Facet chips: Command, Lane, Band, Risk and Task.
+- Saved views: Open, Snoozed, Answered and All. Facet chips: Command, Lane, Band, Risk and Task,
+  and Runner when the asks name runners.
+- [Another runner's ask](#another-runners-ask) shows its runner tag, "last seen", Sent or refused
+  lines and the note as on the web. It offers no snooze, Open task or Attach to task. The Desk
+  shows the same tag and lines, and offers no snooze on it.
 - A routed ask shows the [routed mark](#routed-ask) as a tag in its row and as a line under the
   question in its detail. An answered row and the history say who answered.
 - The detail keeps the web's order: context line, question, recommendation with what happens next,
