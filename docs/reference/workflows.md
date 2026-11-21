@@ -41,6 +41,7 @@ Schema: [`config/workflow.json`](../schemas/config/workflow.json).
 | `by` | table of `code`, `model`, `human` or `asleep` | no | the step's `decides` | Who decides an outcome's edge, where it differs from the step's decider | `{ passed = "asleep" }` |
 | `proof` | table of `gate-passed` | no | none: every outcome is the agent's word | Model steps only. The proof the daemon checks before it accepts an outcome, by outcome. `gate-passed`: the factory's [`gate`](factory.md#top-level-keys) passed at the head of the task's branch. See Proofs in [tools.md](../daemon/tools.md#proofs) | `{ passed = "gate-passed" }` |
 | `plan_requires` | array of `goal`, `testing`, `verification` | no | `[]` | Model steps only. The plan result fields this step's `prompt` or its agent's instructions must ask for. `priory check` refuses the step when neither mentions a named field. See `result` in [tools.md](../daemon/tools.md) | `["goal", "testing", "verification"]` |
+| `after` | `merged` | no | none | What the task waits for before it enters the step. `merged`: every pull request of the task's stack merged. Until then the task sleeps on the checks of [Done and checks](../daemon/waits.md#done-and-checks), and green checks alone do not move it on. See [Steps after the merge](#steps-after-the-merge) | `"merged"` |
 | `autonomous` | string | no | | Why an irreversible step may run without a person's approval | `"it only labels issues"` |
 | `guard` | table | no | none allowed | Irreversible model steps only. `allow`: the guards whose calls the step's agent may make while the step is approved at the task's commit or `autonomous`. An `autonomous` step cannot name `gh-pr-merge` or `gh-pr-approve`, and no step can name `priory-person` or `unreadable`. See [guard.md](../daemon/guard.md) | `{ allow = ["gh-pr-comment"] }` |
 
@@ -156,6 +157,41 @@ next = { run = "tag", skip = "tag", abort = "stop" }
 `priory add` or `priory request --workflow <runbook>` starts one, and the desk shows its current
 step as an ask.
 
+## Steps after the merge
+
+A step with `after = "merged"` lets a task go on once its pull request merged, instead of ending at
+`done`. `examples/ship-and-watch/` watches a release, then announces it:
+
+```toml
+[[steps]]
+id = "open-pr"
+decides = "code"
+action = "open-pr"
+effect = "irreversible"
+autonomous = "it only opens a pull request, which a person reviews before anyone merges it"
+next = { opened = "watch", failed = "stop" }
+
+[[steps]]
+id = "watch"
+after = "merged"
+decides = "model"
+agent = "shipper"
+prompt = "The change merged. Watch its release every 10 minutes for an hour."
+effect = "read"
+next = { quiet = "draft", problem = "look" }
+```
+
+When the task reaches `watch`, the daemon stores the checks gates that `done` stores, and the task
+sleeps at the step of its latest result. A red check, a moved head or feedback wakes that step's
+agent, as before `done`. Green checks leave the task asleep. Once every pull request of its stack
+merged, the task enters `watch`. A result that leads straight to such a step needs `commit`, as one
+that leads to `done` does. A step after the merge can lead to `done` with no `commit`.
+
+When the task reaches such a step after the merge, it enters it at once. It is blocked instead
+when it owns no pull request, `step <id> waits for a merge, but the task owns no pull request`, or
+when a pull request of its stack closed without a merge, `step <id> waits for a merge, but a pull
+request of the stack closed without one`. The start step cannot wait for a merge.
+
 ## Irreversible steps and their gates
 
 `priory check --explain [DIR]` runs the checks, then prints four tab-separated tables:
@@ -245,6 +281,7 @@ Errors about one step start with `` step `<id>`: `` and point at the step's line
 | `` `autonomous` needs a reason `` | `autonomous` is empty |
 | `irreversible, and a path from start reaches it with no human step that approves it` | An irreversible step without `autonomous` and without an approving human step on every path |
 | `` band `<band>` is not one of <bands> `` | `band` is not a band of the factory |
+| `` start `<id>` waits for a merge, and a task starts before it owns a pull request `` | The start step sets `after` |
 | `` reopen `<id>` is not a model step `` | `reopen` names a missing step, or a human or code step |
 | `"<text>" is not a duration such as 90s, 15m or 2h` | A bad `timeout` |
 | ``invalid value: integer `0`, expected a nonzero usize`` | `max_prs` is 0 |

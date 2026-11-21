@@ -946,6 +946,8 @@ pub struct Step {
     /// The fields of a plan result that this model step's prompt or agent must ask for.
     #[serde(default)]
     pub plan_requires: Vec<PlanField>,
+    /// What the task waits for before it enters the step: `merged`, every pull request it owns.
+    pub after: Option<StepAfter>,
     /// Why an irreversible step may run without a person's approval.
     pub autonomous: Option<String>,
     /// The guarded calls an irreversible step may make while it is approved or autonomous.
@@ -1035,6 +1037,14 @@ pub enum By {
     Model,
     Human,
     Asleep,
+}
+
+/// What a step waits for before the task enters it.
+#[derive(Debug, Deserialize, Serialize, Clone, Copy, PartialEq, Eq, JsonSchema)]
+#[serde(rename_all = "kebab-case")]
+pub enum StepAfter {
+    /// Every pull request of the task's stack merged.
+    Merged,
 }
 
 /// A field a plan result carries beside its summary.
