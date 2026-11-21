@@ -68,9 +68,10 @@ carries the merge commit as `head_sha` and the branch it merged into as `base_br
 - It reads the pull requests that a task owns, by its stack or its head branch, and that merged in the
   last 7 days, in a repository it polls. It learns them from the state file, so without `PRIORY_DB` it reads none.
 - It makes one call per merge commit and poll, `repos/{repo}/commits/{sha}/check-runs`, up to 100 runs.
-- It stops reading a commit once a poll saw every run completed, which the daemon's record of that
-  poll's events shows. It also stops, until the next start, when the commit has no run 5 minutes after the merge.
-- A restart reads each commit in the window once more, then stops again.
+- It stops reading a commit once a poll saw every run completed and the daemon stored every failing event of it. It also stops, until the next start, when the commit has no run 5 minutes after the merge.
+- A restart reads once more only a commit that had no run, since the daemon's record of the others persists.
+- A merge into a branch other than the default counts too: the event names the pull request's base branch as it is.
+- Past 100 runs on a commit, the first 100 are read and `pending` stays above 0, so the commit is read until the 7 days end.
 
 ### Check run snapshots
 

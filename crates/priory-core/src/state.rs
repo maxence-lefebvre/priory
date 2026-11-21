@@ -1624,7 +1624,12 @@ pub fn merges(db: &Connection, since: &str) -> rusqlite::Result<Vec<priory_intak
          AND NOT EXISTS (SELECT 1 FROM inbox WHERE type = ?3
            AND json_extract(data, '$.repo') = json_extract(closed.data, '$.repo')
            AND json_extract(data, '$.head_sha') = json_extract(closed.data, '$.merge_commit')
-           AND json_extract(data, '$.pending') = 0)
+           AND json_extract(data, '$.pending') = 0
+           -- A crash may have stored the passing events of the batch and not the failing ones.
+           AND json_extract(data, '$.failing') <= (SELECT count(*) FROM inbox AS red
+             WHERE red.type = ?3 AND json_extract(red.data, '$.repo') = json_extract(closed.data, '$.repo')
+             AND json_extract(red.data, '$.head_sha') = json_extract(closed.data, '$.merge_commit')
+             AND json_extract(red.data, '$.conclusion') NOT IN ('success', 'neutral', 'skipped')))
          ORDER BY time",
     )?
     .query_map(params![CLOSED, since, CHECKED], |row| {

@@ -525,6 +525,31 @@ fn a_merge_older_than_seven_days_is_not_read() {
     assert_eq!(setup.red_after_merge(), 0);
 }
 
+#[test]
+fn a_merge_commit_whose_failing_event_was_not_stored_is_read_again() {
+    let setup = Setup::new("partial-batch");
+    setup.polled_repo();
+    setup.task(1, "green");
+    setup.handle(&[
+        merged_on(10, 1, "aaa", "m10", "2026-11-20T10:00:00Z"),
+        on_pull(
+            "github.check_run.completed",
+            10,
+            1,
+            "m10",
+            json!({ "conclusion": "success", "name": "ci", "github_id": 1, "pending": 0, "failing": 1 }),
+        ),
+    ]);
+    setup.checks_at(
+        "m10",
+        &[(1, "completed", "success"), (2, "completed", "failure")],
+    );
+
+    setup.poll();
+
+    assert_eq!(setup.red_after_merge(), 1);
+}
+
 const TOKEN: &str = "s3cret-token";
 
 /// `GET <path>` on the server at `address`, as its status and body.
