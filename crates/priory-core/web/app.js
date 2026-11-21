@@ -591,7 +591,7 @@ function askTableRow(ask, selected) {
 // band, such as an outside ask, shows under `none`, and so does an ask with no risk.
 const FACETS = [
   ["band", "Band", (ask) => [ask.band ?? "none"], () => [...(state.data.bands || []), "none"]],
-  ["risk", "Risk", (ask) => (ask.risk?.length ? ask.risk : ["none"]), () => ["irreversible", "red", "yellow", "green", "none"]],
+  ["risk", "Risk", (ask) => (ask.risk?.length ? ask.risk : ["none"]), () => ["irreversible", "high", "medium", "low", "red", "yellow", "green", "none"]],
 ];
 const facetPicks = () => {
   const search = new URLSearchParams(listSearch());

@@ -1,7 +1,8 @@
 # Review
 
-When someone asks you to review a pull request, in any repository `gh` can read, an agent reads it
-and the ticket it links to, runs the checks if they are cheap, and writes a pending GitHub review.
+When someone asks you to review a pull request, in any repository `gh` can read, an agent grades its
+merge risk. Then another agent reads it and the ticket it links to, runs the checks if they are
+cheap, and writes a pending GitHub review.
 Only you see a pending review. You edit it and submit it on GitHub.
 
 ## What it needs
@@ -16,7 +17,11 @@ your machine's Tailscale hostname.
 - The agent never submits, approves or requests changes. Its prompt forbids it, and its permissions
   deny `gh pr review` and `gh pr merge`.
 - The `review` step is `reversible`: a pending review stays invisible and can be deleted.
+- First, a second agent, `risk`, grades the pull request's merge risk low, medium or high on five
+  dimensions, one line each. It reads only: it never comments on or reviews the pull request.
 - `submit` asks you to submit the review on GitHub, then to answer `submitted` or `discarded`.
+  `priory asks` shows the merge risk with it, and `priory asks --risk high` lists only the risky
+  ones.
 
 ## Run it
 
