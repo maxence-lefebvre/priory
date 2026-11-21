@@ -764,6 +764,10 @@ fn take(
         Ok(Input::Call(call)) if call.tool == "progress" => {
             Ok((replied(progress::tool(db, &call, trace)?), None))
         }
+        Ok(Input::Call(call)) if call.tool == "finding" => Ok((
+            replied(crate::findings::tool(db, &call, trace.factory)?),
+            None,
+        )),
         Ok(Input::Call(call)) if matches!(call.tool.as_str(), "subscribe" | "unsubscribe") => {
             Ok((replied(subscribe::tool(db, &call)?), None))
         }

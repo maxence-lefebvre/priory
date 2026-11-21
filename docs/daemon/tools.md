@@ -296,6 +296,50 @@ always the caller's own. `priory relate TASK KIND OTHER` does the same for any t
 { "kind": "builds-on", "task": 7 }
 ```
 
+### `finding(key, title, details?)`
+
+`finding` hands one problem that a scheduled run found to a fix task. It does not end the turn, and
+it works in any run, though it is made for the task a `schedule` trigger wakes again and again
+(see [schedule.md](../intake/schedule.md)).
+
+```json
+{ "key": "disk-full", "title": "The disk is full", "details": "df shows 100% on /var" }
+```
+
+| Field     | Meaning |
+| --------- | ------- |
+| `key`     | A stable name for the problem, the same in every run. Required |
+| `title`   | The problem in one line. Required |
+| `details` | Evidence and links the fix task needs |
+
+The first call of a key publishes a task request, as `priory request` does, with the factory's
+`[request]` defaults for its workflow and band and the scan's repository. Its key is
+`finding:<scan task>:<key>`, its text is the title and details, and it relates to the scan task
+(see [relations.md](relations.md)). A second call in the same run changes nothing.
+
+Priory remembers each finding by task and key, so a scan that reports the same problem in its next
+run opens no second task. A scan that skips a run has shown the problem gone: if it comes back, the
+finding opens a new task, keyed `finding:<scan task>:<key>:2`, then `:3`.
+
+#### Run memory
+
+A firing that wakes the scan adds the earlier findings to the prompt that wakes it, after the
+trigger's `prompt`:
+
+```text
+Findings from your earlier runs. Report a finding again with the same key, and no second fix task opens:
+- disk-full: The disk is full (reported in the last 2 runs in a row; fix task finding:1:disk-full)
+```
+
+A finding the last run did not report reads `not reported in the last run, so it looks fixed`. A
+person who wants the scan to look differently changes its prompt in a pull request on the factory.
+
+#### Streaks
+
+A finding reported in 3 runs in a row moves its fix task up one band, once, unless that task is
+done, failed, dropped or already in the first band. The tool's reply says so. The count is a
+constant, not a setting.
+
 ### `compact(focus?)`
 
 `compact` queues `/compact <focus>` in the outbox and tells the agent to end its turn. An agent

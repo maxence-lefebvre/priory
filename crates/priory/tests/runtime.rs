@@ -41,7 +41,7 @@ const OUTPUT: &str = "factory.intake";
 /// Takes a state file back before schema 28, which added search, 29, which added grades, 30,
 /// which added snoozes, 31, which added read reports, 32, which added the pause, 34, which added
 /// reports of sections, 36, which added deliveries, 37, which added progress, 39, which added run
-/// actions, 40, which added answer actions, 42, which added dispatches, 49, which added task ends, 51, which added a run's crossing of `compactAt`, 53, which added intervention levels, 56, which added the step an irreversible approval lets run, 58, which added withdrawal reasons, and 59, which added green stack gates and returned routed asks. Schema 38's visits
+/// actions, 40, which added answer actions, 42, which added dispatches, 49, which added task ends, 51, which added a run's crossing of `compactAt`, 53, which added intervention levels, 56, which added the step an irreversible approval lets run, 58, which added withdrawal reasons, and 59, which added green stack gates and returned routed asks, and 60, which added findings. Schema 38's visits
 /// table is created only if missing, so it stays.
 const UNDO_SINCE_SEARCH: &str = "DROP TRIGGER ask_returns_from_its_lead; ALTER TABLE waits DROP COLUMN green;
   DROP TRIGGER ask_withdrawn; ALTER TABLE asks DROP COLUMN withdrawn_reason;
@@ -64,7 +64,7 @@ const UNDO_SINCE_SEARCH: &str = "DROP TRIGGER ask_returns_from_its_lead; ALTER T
   DROP TRIGGER search_task_created; DROP TRIGGER search_tldr_changed; DROP TRIGGER search_result_stored;
   DROP VIEW task_text; DROP TABLE search; DROP TABLE summaries;
   DROP TABLE embedder; DROP TABLE vectors; ALTER TABLE tasks DROP COLUMN tldr; DROP TABLE dispatches;
-  ALTER TABLE irreversible_asks DROP COLUMN lets;";
+  ALTER TABLE irreversible_asks DROP COLUMN lets; DROP TABLE findings;";
 
 /// A factory, bus, state, Priory home, origin repository and fake `claude`, all under the test's
 /// own directory, and a tmux server in its own short directory. Dropping it kills the daemon and
@@ -5425,6 +5425,7 @@ fn the_mcp_server_lists_its_tools() {
             "subscribe",
             "unsubscribe",
             "relate",
+            "finding",
             "compact",
             "tldr",
             "report",
@@ -5506,6 +5507,7 @@ fn a_state_file_whose_asks_an_approval_names_upgrades_to_outside_asks() {
          DROP TABLE reports;
          DROP TABLE dispatches;
          ALTER TABLE irreversible_asks DROP COLUMN lets;
+         DROP TABLE findings;
          DROP TRIGGER ask_withdrawn; ALTER TABLE asks DROP COLUMN withdrawn_reason;
          ALTER TABLE waits DROP COLUMN withdrawn_reason; ALTER TABLE ask_withdrawals DROP COLUMN reason;
          DROP TABLE ask_revisions;
@@ -14560,4 +14562,114 @@ fn a_daemon_refuses_a_socket_directory_that_others_can_enter() {
     let log = fs::read_to_string(setup.dir.join("daemon.log")).unwrap();
     assert!(!status.success(), "{log}");
     assert!(log.contains("not a private folder of this user"), "{log}");
+}
+
+const FIX: &str = r#"
+start = "triage"
+
+[[steps]]
+id = "triage"
+decides = "human"
+effect = "none"
+options = ["approved", "rejected"]
+next = { approved = "done", rejected = "stop" }
+"#;
+
+/// The `support-day` schedule, whose fix tasks wait on a person, so the fake `claude` only
+/// serves the scan's own calls.
+fn scan(name: &str) -> Setup {
+    let setup = support_day(name);
+    let files = [
+        (
+            "factory/factory.toml",
+            "name = \"demo\"\n\n[request]\nworkflow = \"fix\"\nband = \"today\"\n",
+        ),
+        ("factory/workflows/fix.toml", FIX),
+    ];
+    for (path, content) in files {
+        fs::write(setup.dir.join(path), content).unwrap();
+    }
+    setup
+}
+
+fn finding(key: &str) -> serde_json::Value {
+    json!({ "name": "finding", "arguments": {
+        "key": key,
+        "title": "The disk is full",
+        "details": "df shows 100% on /var",
+    } })
+}
+
+#[test]
+fn a_finding_opens_one_fix_task_that_relates_to_the_scan() {
+    let mut setup = scan("finding-opens");
+    setup.calls(&[json!([finding("disk-full"), ask()])]);
+    setup.publish(&tick("2026-11-19T08:00:00Z"));
+    setup.start();
+
+    let tasks = setup.until("tasks", |rows| rows.len() == 2);
+
+    let fix = tasks.iter().find(|row| row[1] == "finding:1:disk-full");
+    assert!(
+        fix.is_some_and(|row| row[2] == "fix" && row[5] == "today"),
+        "{tasks:?}"
+    );
+}
+
+/// The scan's task row, whose prompts the typed log keeps: those that start with the schedule's own.
+fn wakes(setup: &Setup) -> Vec<String> {
+    setup
+        .typed()
+        .into_iter()
+        .filter(|typed| typed.starts_with("Sweep the support queue."))
+        .collect()
+}
+
+#[test]
+fn the_same_finding_next_run_opens_no_task_and_the_next_prompt_remembers_it() {
+    let mut setup = scan("finding-repeats");
+    setup.calls(&[json!([finding("disk-full"), ask()]), finding("disk-full")]);
+    setup.publish(&tick("2026-11-19T08:00:00Z"));
+    setup.start();
+    setup.until("tasks", |rows| rows.len() == 2);
+    setup.until("tasks", |rows| {
+        rows.iter()
+            .any(|row| row[1].starts_with("schedule") && row[4] == "asleep")
+    });
+
+    setup.publish(&tick("2026-11-19T09:00:00Z"));
+
+    setup.until("outbox", |_| wakes(&setup).len() == 1);
+    let woken = &wakes(&setup)[0];
+    assert!(
+        woken.contains("disk-full: The disk is full (reported in the last 1 runs in a row; fix task finding:1:disk-full)"),
+        "{woken}"
+    );
+    setup.calls_left(0);
+    setup.until("runs", |_| setup.replies().len() == 3);
+    assert_eq!(setup.rows("tasks").len(), 2);
+}
+
+#[test]
+fn a_finding_reported_three_runs_in_a_row_moves_its_fix_task_up_a_band() {
+    let mut setup = scan("finding-streak");
+    setup.calls(&[
+        json!([finding("disk-full"), ask()]),
+        finding("disk-full"),
+        finding("disk-full"),
+    ]);
+    setup.publish(&tick("2026-11-19T08:00:00Z"));
+    setup.start();
+    setup.until("tasks", |rows| rows.len() == 2);
+    for (n, hour) in ["09", "10"].into_iter().enumerate() {
+        setup.until("runs", |rows| rows.len() == n + 1 && rows[n][7] == "asleep");
+        setup.publish(&tick(&format!("2026-11-19T{hour}:00:00Z")));
+    }
+
+    let tasks = setup.until("tasks", |rows| {
+        rows.iter()
+            .any(|row| row[1] == "finding:1:disk-full" && row[5] == "now")
+    });
+
+    assert_eq!(tasks.len(), 2, "{tasks:?}");
 }
