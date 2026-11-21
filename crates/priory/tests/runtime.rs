@@ -8972,6 +8972,63 @@ fn replied(thread: &str, ts: &str, time: herdr_bus::Timestamp) -> Message {
 }
 
 #[test]
+fn a_comment_on_a_done_tasks_own_issue_or_thread_reopens_it() {
+    let issue_comment = Message::new(
+        "github.issues.comment",
+        json!({ "repo": "owner/repo", "issue": 42, "actor": "ana", "body": "Still broken.\nSee the log.",
+                "url": "u", "github_id": 901 }),
+    )
+    .subject("owner/repo#42");
+    let mut linear = linear_event(
+        "linear.comment.created",
+        "ENG-7",
+        json!({ "body": "Still broken.", "actor": "Ana" }),
+    );
+    linear.data["url"] = json!("u");
+    for (name, key, event, line) in [
+        (
+            "reopen-issue",
+            "github:owner/repo#42".to_owned(),
+            issue_comment,
+            "ana commented on github:owner/repo#42: Still broken. u",
+        ),
+        (
+            "reopen-linear",
+            "linear:ENG-7".to_owned(),
+            linear,
+            "Ana commented on linear:ENG-7: Still broken. u",
+        ),
+        (
+            "reopen-slack",
+            format!("slack:C0123:{THREAD}"),
+            replied(THREAD, "1763500001.000009", herdr_bus::Timestamp::now()),
+            "U0PERSON replied in slack:C0123:1763500000.000100: reply 1763500001.000009",
+        ),
+    ] {
+        let mut setup = Setup::new(name);
+        setup.calls(&[result("passed")]);
+        let mut request = requested(42);
+        request.data["key"] = json!(key);
+        setup.publish(&request.subject(&key));
+        setup.start();
+        setup.until("tasks", |rows| rows.first().is_some_and(|row| row[4] == "done"));
+        // The comment comes after the task was done, to the second.
+        std::thread::sleep(Duration::from_millis(1100));
+
+        setup.publish(&event.time(herdr_bus::Timestamp::now()));
+
+        setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 2);
+        let typed = setup.typed();
+        assert!(
+            typed[1].starts_with(&format!(
+                "Feedback reopened this done task as generation 2: {line}\n"
+            )),
+            "{name}: {typed:?}"
+        );
+    }
+}
+
+#[test]
 fn a_slack_reply_wait_fires_on_a_new_reply_in_its_thread_only() {
     let setup = asleep_on(
         "slack-reply",
@@ -9122,6 +9179,29 @@ fn a_reply_posted_before_the_wait_wakes_the_task_and_the_bots_own_reply_never_do
     assert!(stdin.contains(SLACK_TOKEN));
     let args = fs::read_to_string(setup.dir.join("curl-args")).unwrap();
     assert!(!args.contains(SLACK_TOKEN), "{args}");
+}
+
+#[test]
+fn a_reply_in_the_thread_of_a_slack_tasks_key_reaches_the_task_with_no_wait_on_it() {
+    let mut setup = Setup::new("slack-key-thread");
+    setup.calls(&[wait(json!({ "type": "time", "until": "1 hour" }))]);
+    let key = format!("slack:C0123:{THREAD}");
+    let mut request = requested(42);
+    request.data["key"] = json!(key);
+    setup.publish(&request.subject(&key));
+    setup.start();
+    setup.until("runs", |rows| {
+        rows.first().is_some_and(|row| row[7] == "asleep")
+    });
+    setup.answer_slack(&[slack_message(
+        &ts(herdr_bus::Timestamp::now()),
+        "U0PERSON",
+    )]);
+
+    setup.intake();
+
+    let inbox = setup.until("inbox", |rows| rows.len() == 2);
+    assert_eq!(inbox[1][1..5], ["slack.thread.replied", &format!("C0123:{THREAD}"), "1", "kept"], "{inbox:?}");
 }
 
 #[test]
