@@ -5429,6 +5429,10 @@ fn the_mcp_server_lists_its_tools() {
         )),
         "{instructions}"
     );
+    assert_eq!(
+        replies[1]["result"]["tools"][0]["inputSchema"]["properties"]["feedback"]["type"],
+        "object"
+    );
     let names: Vec<_> = replies[1]["result"]["tools"]
         .as_array()
         .unwrap()
@@ -11133,7 +11137,12 @@ fn a_task_that_waited_on_a_linear_issue_is_done_on_its_result_without_a_pull_req
     let mut setup = Setup::new("linear-done");
     setup.calls(&[
         wait(json!({ "type": "linear_comment", "issue": "ENG-7" })),
-        result("passed"),
+        {
+            let mut passed = result("passed");
+            passed["arguments"]["feedback"] =
+                json!({ "https://linear.app/acme/issue/ENG-7": "nothing-to-do" });
+            passed
+        },
     ]);
     setup.publish(&requested(42));
     setup.start();
@@ -15730,6 +15739,136 @@ fn a_finding_reported_three_runs_in_a_row_moves_its_fix_task_up_a_band() {
     assert_eq!(tasks.len(), 2, "{tasks:?}");
 }
 
+/// A thread comment from ana on pull request 7 at `url`.
+fn thread_comment_at(id: u64) -> Message {
+    let mut comment = thread_comment();
+    comment.data["github_id"] = json!(id);
+    comment.data["url"] = json!(format!(
+        "https://github.com/owner/repo/pull/7#discussion_r{id}"
+    ));
+    comment
+}
+
+/// A review of pull request 7 that asks for changes.
+fn changes_requested() -> Message {
+    on_pull(
+        "github.pull_request_review.submitted",
+        json!({
+            "state": "changes_requested", "actor": "ana", "body": "Two things.", "github_id": 301,
+            "url": "https://github.com/owner/repo/pull/7#pullrequestreview-301"
+        }),
+    )
+}
+
+/// Task 1 sleeps three seconds. A thread comment on its pull request wakes it, then a second one
+/// and a review reach it. Returns once all three are typed.
+fn woken_by_feedback(name: &str) -> Setup {
+    let mut setup = Setup::new(name);
+    setup.calls(&[wait(json!({ "type": "time", "until": "3 seconds" }))]);
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("runs", |rows| rows.len() == 1 && rows[0][7] == "asleep");
+    setup.publish(&thread_comment_at(802));
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 2);
+    setup.publish(&thread_comment_at(803));
+    setup.publish(&changes_requested());
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 4);
+    setup
+}
+
+const REVIEW_URL: &str = "https://github.com/owner/repo/pull/7#pullrequestreview-301";
+const THREAD_URL: &str = "https://github.com/owner/repo/pull/7#discussion_r802";
+const OTHER_URL: &str = "https://github.com/owner/repo/pull/7#discussion_r803";
+
+/// Calls `result` on task 1's live run with `feedback`, and returns the reply's text and error flag.
+fn result_sorting(setup: &Setup, feedback: serde_json::Value) -> (String, bool) {
+    let session = setup.rows("runs").last().unwrap()[4].clone();
+    let mut call = passed_at("abc0000000000000000000000000000000000000");
+    call["arguments"]["feedback"] = feedback;
+    let call = json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": call });
+    reply(&setup.mcp(&session, &[call])[0])
+}
+
+/// Raises an agent ask on task 1's live run whose question names `urls`.
+fn ask_about(setup: &Setup, urls: &[&str]) {
+    let session = setup.rows("runs").last().unwrap()[4].clone();
+    let mut call = ask();
+    call["arguments"]["question"] = json!(format!("Your call on {}?", urls.join(" and ")));
+    let call = json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": call });
+    let (text, error) = reply(&setup.mcp(&session, &[call])[0]);
+    assert!(!error, "{text}");
+}
+
+/// Answers task 1's first ask and waits for the answer to reach the run.
+fn answer_the_ask(setup: &Setup) {
+    let answered = setup.priory(&["answer", "1", "sqlite", "--revision", "1"]);
+    assert!(answered.status.success(), "{answered:?}");
+    setup.until("outbox", |rows| {
+        rows.iter()
+            .any(|row| row[4].starts_with("Answer to ask 1") && row[3] == "confirmed")
+    });
+}
+
+#[test]
+fn a_comment_that_wakes_the_task_comes_with_the_rule_for_sorting_it() {
+    let setup = woken_by_feedback("triage-wake");
+
+    let typed = setup.typed();
+    assert!(
+        typed[1].contains("sort each item by its URL as one of: trivial"),
+        "{typed:?}"
+    );
+}
+
+#[test]
+fn a_result_sorting_every_item_stores_the_triage_and_task_json_shows_it() {
+    let setup = woken_by_feedback("triage-stored");
+    let sorted =
+        json!({ REVIEW_URL: "persons-call", THREAD_URL: "trivial", OTHER_URL: "nothing-to-do" });
+    ask_about(&setup, &[REVIEW_URL]);
+    answer_the_ask(&setup);
+
+    let (text, error) = result_sorting(&setup, sorted);
+
+    assert!(!error, "{text}");
+    let triage = task_json(&setup, "1")["triage"].clone();
+    let mut classes: Vec<_> = triage
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|item| {
+            (
+                item["item"].as_str().unwrap(),
+                item["class"].as_str().unwrap(),
+            )
+        })
+        .collect();
+    classes.sort();
+    assert_eq!(
+        classes,
+        [
+            (THREAD_URL, "trivial"),
+            (OTHER_URL, "nothing-to-do"),
+            (REVIEW_URL, "persons-call")
+        ]
+    );
+}
+
+#[test]
+fn a_result_leaving_an_item_unsorted_is_refused_with_the_item_named() {
+    let setup = woken_by_feedback("triage-refused");
+    let partial = json!({ REVIEW_URL: "persons-call", THREAD_URL: "trivial" });
+
+    let (text, error) = result_sorting(&setup, partial);
+
+    assert!(error, "{text}");
+    assert!(
+        text.contains(OTHER_URL) && text.contains("no class"),
+        "{text}"
+    );
+    assert_eq!(task_json(&setup, "1")["triage"], json!([]));
+}
+
 const APPROVE: &str = r#"
 start = "approve"
 
@@ -16015,6 +16154,49 @@ fn a_copy_reopened_on_a_runner_whose_key_another_runner_owns_drops_with_the_owne
     let task: serde_json::Value = serde_json::from_slice(&task.stdout).unwrap();
     assert_eq!(task["reason"], "owned by runner b", "{task}");
     assert_eq!(b.rows("tasks")[0][4], "running");
+}
+
+#[test]
+fn a_persons_call_without_an_open_ask_naming_it_is_refused() {
+    let setup = woken_by_feedback("triage-no-ask");
+    let sorted =
+        json!({ REVIEW_URL: "persons-call", THREAD_URL: "trivial", OTHER_URL: "nothing-to-do" });
+
+    let (text, error) = result_sorting(&setup, sorted.clone());
+    assert!(error, "{text}");
+    assert!(
+        text.contains(REVIEW_URL) && text.contains("persons-call"),
+        "{text}"
+    );
+
+    ask_about(&setup, &[OTHER_URL]);
+    answer_the_ask(&setup);
+    let (text, error) = result_sorting(&setup, sorted);
+    assert!(error, "an ask about another item does not cover it: {text}");
+    assert_eq!(task_json(&setup, "1")["triage"], json!([]));
+}
+
+#[test]
+fn the_persons_own_review_item_is_not_put_to_the_agent_and_is_recorded_as_a_persons_call() {
+    let mut setup = Setup::new("triage-own");
+    setup.calls(&[wait(json!({ "type": "time", "until": "3 seconds" }))]);
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("runs", |rows| rows.len() == 1 && rows[0][7] == "asleep");
+    setup.hold("hold-stop");
+    let mut own = thread_comment_at(802);
+    own.data["own"] = json!(true);
+    setup.publish(&own);
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 2);
+
+    let typed = setup.typed();
+    assert!(typed[1].contains("discussion_r802"), "{typed:?}");
+    assert!(!typed[1].contains("sort each item"), "{typed:?}");
+    let (text, error) = result_sorting(&setup, serde_json::Value::Null);
+
+    assert!(!error, "{text}");
+    assert_eq!(task_json(&setup, "1")["triage"][0]["class"], "persons-call");
+    assert_eq!(task_json(&setup, "1")["triage"][0]["item"], THREAD_URL);
 }
 
 const GUIDE: &str = "Open every ask with the question.";

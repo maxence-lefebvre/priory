@@ -275,6 +275,10 @@ fn result(
         Ok(merge_risk) => merge_risk,
         Err(error) => return Ok(Err(error)),
     };
+    let triage = match crate::triage::sorted(tx, run.task, &arguments["feedback"])? {
+        Ok(triage) => triage,
+        Err(error) => return Ok(Err(error)),
+    };
     let Some(step) = step(workflows, &run.workflow, &run.step) else {
         return Ok(Err(format!(
             "step {} is not in workflow {}",
@@ -319,6 +323,7 @@ fn result(
             run.id, run.task, run.step, outcome, summary, evidence, commit, reason, merge_risk
         ],
     )?;
+    crate::triage::store(tx, run.task, run.id, &triage)?;
     for ((_, column), value) in PLAN_FIELDS.iter().zip(&plan) {
         tx.execute(
             &format!("UPDATE tasks SET {column} = coalesce(?2, {column}) WHERE id = ?1"),
@@ -1953,7 +1958,7 @@ pub(crate) fn wake_on(
     let mut text = text.to_owned();
     if let Some(seq) = seq {
         let (prompt, own, line): (Option<i64>, bool, String) = tx.query_row(
-            "SELECT inbox.outbox, coalesce(outbox.state = 'queued' AND outbox.text = line, 0), line
+            "SELECT inbox.outbox, coalesce(outbox.state = 'queued' AND substr(outbox.text, 1, length(line)) = line, 0), line
              FROM (SELECT seq, outbox, type || ' ' || coalesce(subject, '-') || ' ' || data AS line
                    FROM inbox WHERE seq = ?1) AS inbox
              LEFT JOIN outbox ON outbox.id = inbox.outbox",
@@ -1991,6 +1996,9 @@ pub(crate) fn wake_on(
                 &row.get::<_, String>(3)?,
             ));
         }
+    }
+    if crate::triage::any(tx, &carried)? {
+        text = format!("{text}\n{}", crate::triage::RULE);
     }
     let id = wake(tx, task, &text)?;
     for seq in carried {

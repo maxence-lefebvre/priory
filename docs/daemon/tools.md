@@ -20,7 +20,7 @@ wait or both. A `result` after an open ask or wait is refused, as is a second `a
 `wait`. An ask and a wait side by side wake the task on the first answer or event (see An ask
 beside a wait in [waits.md](waits.md)).
 
-### `result(outcome, summary, evidence?, commit?, reason?, branches?, risk?, goal?, testing?, brief?, verification?)`
+### `result(outcome, summary, evidence?, commit?, reason?, branches?, risk?, goal?, testing?, brief?, verification?, feedback?)`
 
 `result` stores the run's result and ends the step. Nothing can change or delete a stored result.
 
@@ -58,6 +58,53 @@ end of its prompt. A plan without them changes nothing. A step's `plan_requires`
 [workflows.md](../reference/workflows.md)).
 
 An outcome that the step's `proof` names is refused until its proof holds. See Proofs below.
+
+#### Review feedback
+
+A prompt that carries review feedback ends with a rule: sort each item by its URL before acting.
+An item is a review that is not an approval or a dismissal, a pull request comment, a review thread
+comment, an issue comment or a Linear comment, and its URL is the event's `url`. Each item is one of:
+
+| Class | Meaning | What the agent does |
+| ----- | ------- | ------------------- |
+| `trivial` | One obvious answer inside the change's scope | Fix it and reply |
+| `nothing-to-do` | An approval or thanks | Nothing |
+| `persons-call` | A behaviour, design or scope change, a disagreement, or anything unclear | Asks the person with `ask`, and changes nothing for it |
+
+`feedback`, an optional object from item URL to class, records the sorting:
+
+```json
+{
+  "outcome": "passed",
+  "summary": "Answer the review",
+  "commit": "3f9c2a7e5b1d4c6f8a0e2b4d6f8a1c3e5b7d9f0a",
+  "feedback": {
+    "https://github.com/owner/name/pull/57#discussion_r802": "trivial",
+    "https://github.com/owner/name/pull/57#pullrequestreview-301": "persons-call"
+  }
+}
+```
+
+A result is refused when an item the agent was typed has no class, from this result or an earlier
+one, when `feedback` is not an object of the three classes, or when it sorts an item as
+`persons-call` and no ask of the task names the item's URL in its `question`, `title` or `text`.
+A `result` cannot coexist with an open ask, so the agent asks, reads the answer in its next turn
+and then sends the result. The refusals read:
+
+```text
+feedback item https://github.com/owner/name/pull/57#discussion_r803 has no class: feedback must be an object from each item's URL to trivial, nothing-to-do or persons-call
+```
+
+An item written by the login `gh api user` names, the account the intake runs as and so the
+factory's person, goes to the person: the rule does not name it, the agent need not sort it, and
+the next result records it as `persons-call` with no ask. Only an item with `own` true is the
+person's, so a Linear or issue comment never is. The agent's own replies post as the same account,
+so they are recorded the same way. No factory key names another login.
+
+The task keeps each class, and a later result can sort an item again. `priory task <id> --json`
+gives them as `triage` (see [Task in detail](../reference/serve.md#task-in-detail)), and the task
+page lists them in its PR section. A result without `feedback` is a plain result while no typed
+item waits for a class. Priory adds the rule to a prompt only; no event type changes.
 
 `branches`, optional, asks `open-pr` for a stack of pull requests: their branches, bottom first,
 each based on the one before it. The last one must be the task's own branch, and each lower one is

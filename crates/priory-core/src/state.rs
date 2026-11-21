@@ -1176,8 +1176,23 @@ CREATE UNIQUE INDEX IF NOT EXISTS todos_open_connector ON todos (connector)
 PRAGMA user_version = 68;
 ";
 
-// shortcut: 69 to 71 are held for parallel work; replace these with theirs when they land.
-const SCHEMA_69: &str = "PRAGMA user_version = 69;";
+// The class a result gave each review feedback item of a task, named by its URL.
+const SCHEMA_69: &str = concat!(
+    "CREATE TABLE IF NOT EXISTS feedback_triage (
+  task    INTEGER NOT NULL REFERENCES tasks (id),
+  item    TEXT NOT NULL,
+  class   TEXT NOT NULL CHECK (class IN ('trivial', 'nothing-to-do', 'persons-call')),
+  run     INTEGER NOT NULL REFERENCES runs (id),
+  created TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+  PRIMARY KEY (task, item)
+);
+",
+    bumps!("feedback_triage"),
+    "PRAGMA user_version = 69;
+"
+);
+
+// shortcut: 70 and 71 are held for parallel work; replace these with theirs when they land.
 const SCHEMA_70: &str = "PRAGMA user_version = 70;";
 const SCHEMA_71: &str = "PRAGMA user_version = 71;";
 
@@ -1532,7 +1547,10 @@ pub(crate) fn route_in(
             message.subject.as_deref(),
             &message.data.to_string(),
         );
-        let text = placed(tx, task, &resources, &text)?;
+        let mut text = placed(tx, task, &resources, &text)?;
+        if crate::triage::item(&message.kind, &message.data).is_some() {
+            text = format!("{text}\n{}", crate::triage::RULE);
+        }
         tx.execute(
             "INSERT INTO outbox (task, text) VALUES (?1, ?2)",
             params![task, text],
@@ -2664,6 +2682,9 @@ pub(crate) fn start(db: &mut Connection, run: &NewRun) -> rusqlite::Result<i64> 
                 &row.get::<_, String>(3)?,
             ));
         }
+    }
+    if crate::triage::any(&tx, &events)? {
+        text = format!("{text}\n{}", crate::triage::RULE);
     }
     if !text.is_empty() {
         tx.execute(

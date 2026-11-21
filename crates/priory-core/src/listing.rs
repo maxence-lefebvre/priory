@@ -1038,6 +1038,11 @@ pub fn task(db: &Connection, id: i64) -> rusqlite::Result<Option<Value>> {
     for (name, query) in lists {
         task[name] = rows(db, query, [id])?;
     }
+    task["triage"] = rows(
+        db,
+        "SELECT item, class, run, created FROM feedback_triage WHERE task = ?1 ORDER BY rowid",
+        [id],
+    )?;
     task["asks"] = asks_of(db, Some(id), None, None)?;
     task["stack"] = crate::stack::json(db, id)?;
     task["relations"] = crate::relate::json(db, id)?;
