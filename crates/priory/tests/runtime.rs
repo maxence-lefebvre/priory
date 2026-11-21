@@ -6603,6 +6603,47 @@ fn a_merge_that_carries_a_said_run_into_the_next_step_queues_only_that_steps_end
 }
 
 #[test]
+fn a_merge_after_a_said_runs_silent_turn_drops_its_nudge_from_the_next_steps_prompt() {
+    let mut setup = Setup::with_workflow("after-merge-said-nudge", AFTER_MERGE);
+    setup.calls(&[
+        wait(on_pull_7("review")),
+        passed_at("abc0000000000000000000000000000000000000"),
+        serde_json::Value::Null,
+        json!({ "name": "result", "arguments": { "outcome": "quiet", "summary": "all quiet" } }),
+    ]);
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("runs", |rows| rows.len() == 1 && rows[0][7] == "asleep");
+    setup.publish(&reviewed());
+    setup.until("runs", |rows| rows.len() == 2 && rows[1][7] == "asleep");
+    setup.hold("hold-stop");
+    assert!(setup.priory(&["say", "1", "Hold on."]).status.success());
+    setup.until("outbox", |_| {
+        setup
+            .typed()
+            .iter()
+            .any(|text| text.starts_with("A person says: Hold on."))
+    });
+    // The merge waits on the log while the silent turn's Stop queues its nudge; the daemon reads
+    // the log before it types again, so the nudge is still queued when the task enters `watch`.
+    setup.publish(&closed());
+    setup.release("hold-stop");
+
+    setup.until("tasks", |rows| rows[0][4] == "done");
+    let typed = setup.typed();
+    let watch = typed
+        .iter()
+        .find(|text| text.contains("Watch the release."))
+        .expect("the watch step's prompt was typed");
+    assert!(
+        !watch.contains("Your last turn ended in text only"),
+        "{watch}"
+    );
+    assert!(!watch.contains("outcomes listed below"), "{watch}");
+    assert!(watch.contains("outcomes: quiet."), "{watch}");
+}
+
+#[test]
 fn a_merge_that_marks_a_task_done_ends_its_said_run_and_kills_its_session() {
     let setup = gated("gate-said-done");
     setup.calls(&[serde_json::Value::Null]);
