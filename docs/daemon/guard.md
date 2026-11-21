@@ -61,6 +61,7 @@ A run with no task step, such as the stall handler, is denied every guarded call
 | `slack-write` | `curl` or `wget` to `hooks.slack.com` or `slack.com/api/chat.*`, and `slack chat send` |
 | `linear-write` | `curl` or `wget` to `api.linear.app` with a body that holds `mutation` or comes from a file, and `linear issue create`, `update`, `delete` or `comment` |
 | `mcp-write` | MCP tools named `add_issue_comment`, `send_message`, `slack_send_message`, `schedule_message`, `slack_schedule_message`, `save_comment`, `create_comment`, `save_issue`, `create_issue` or `update_issue`, on any server but `priory` |
+| `connector-sign-in` | MCP tools named `authenticate` or `complete_authentication`, on any server but `priory`. See [Connector sign-in](#connector-sign-in) |
 | `priory-person` | `priory answer`, `dismiss`, `deliver`, `resume`, `revive`, `cancel`, `release`, `hold`, `move`, `say`, `pause`, `unpause`, `snooze`, `seen`, `subscribe`, `unsubscribe` and `report pick`. `priory add`, `request` and `gate` stay open to agents |
 | `unreadable` | A script nested more than 16 levels deep, through `bash -c`, `$(...)`, `eval`, `find -exec` and the like. The guard cannot read it, so the daemon denies it: "too deeply nested for the guard to read". Nothing grants it |
 
@@ -76,6 +77,22 @@ guarded. A factory adds its own guards with `[guard]` in
 `factory.toml` (see [factory.md](../reference/factory.md#guard)). A factory guard that matches the
 same call as `gh-pr-merge` or `gh-pr-approve`, such as one on `gh pr` or `mcp__github__*`, does not
 rename it: the call keeps its built-in guard.
+
+## Connector sign-in
+
+An MCP server that needs a sign-in offers an `authenticate` tool in place of its own. A run that
+calls it clears the stored token, so one unattended run signs out every later run. The guard
+denies `authenticate` and `complete_authentication` in every run, and only an agent with
+`connectorSignIn = true` in its frontmatter passes (see [agents.md](../reference/agents.md)).
+Nothing else grants `connector-sign-in`: `priory check` refuses it in any `guard.allow`.
+
+The denial tells the agent to carry on with its other sources and to name the connector in its
+result. The connector is the server in the tool's name: `linear` for `mcp__linear__authenticate`.
+Each denial also does two things:
+
+- It appends a `factory.tool.denied` record with the task, step and tool, as any denial does.
+- It adds a to-do, `Sign in to <connector>`, to the desk, unless one is open already. Two runs
+  denied for one connector leave one item. See [desk.md](desk.md#sign-in-to-dos).
 
 ## How a command is read
 
@@ -119,6 +136,7 @@ Every Claude run's settings register `priory hook PreToolUse` for `Bash` and `mc
 The hook matches the call itself, with the built-in guards and the factory's, which the run's pane
 holds in `PRIORY_GUARD`. A call no guard matches passes at once, without the daemon, so reads keep
 working while the daemon restarts.
+A call to a connector with an open sign-in to-do that the guards allow also reports the use to the daemon, and waits at most one second for the answer (see [desk.md](desk.md#sign-in-to-dos)).
 
 For a guarded call, the hook asks the daemon over the socket (see [home.md](home.md)) about each
 guard the call hits, and waits up to 5 seconds for each answer. It denies the call when the daemon

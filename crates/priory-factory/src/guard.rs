@@ -103,12 +103,20 @@ pub const BUILT_IN: &[&str] = &[
     "slack-write",
     "linear-write",
     "mcp-write",
+    SIGN_IN,
     PERSON,
     UNREADABLE,
 ];
 
 /// The guards only a person's approval grants: never `autonomous` nor a workflow's `guard.allow`.
 pub const NEED_APPROVAL: &[&str] = &["gh-pr-merge", "gh-pr-approve"];
+
+/// The guard on an MCP server's `authenticate` and `complete_authentication` tools, which only an
+/// agent with `connectorSignIn` passes.
+pub const SIGN_IN: &str = "connector-sign-in";
+
+/// The MCP tools that sign in to a connector.
+pub const SIGN_IN_TOOLS: &[&str] = &["authenticate", "complete_authentication"];
 
 /// The guard on Priory's own person verbs, which nothing grants to a run.
 pub const PERSON: &str = "priory-person";
@@ -181,6 +189,12 @@ impl Guards {
         let (server, short) = name.rsplit_once("__")?;
         if server == "priory" {
             return None;
+        }
+        if SIGN_IN_TOOLS.contains(&short) {
+            return Some(Hit {
+                guard: SIGN_IN.to_owned(),
+                call: tool.to_owned(),
+            });
         }
         let built_in = NAMED_TOOLS
             .iter()
