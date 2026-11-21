@@ -3344,7 +3344,7 @@ fn up_next_lists_the_next_three_runs_queued_held_or_scheduled_in_time_order() {
 
 #[test]
 fn up_next_says_a_queued_task_waits_for_its_own_reason_before_its_place() {
-    let mut setup = Setup::new("up-next-reason", SERVE);
+    let setup = Setup::new("up-next-reason", SERVE);
     setup.seed();
     let db = rusqlite::Connection::open(setup.dir.join("priory.db")).unwrap();
     db.execute(
