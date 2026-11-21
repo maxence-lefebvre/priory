@@ -110,7 +110,8 @@ pub(crate) fn sorted(
     }
     for (url, class) in &given {
         let asked: bool = tx.query_row(
-            "SELECT EXISTS (SELECT 1 FROM asks WHERE task = ?1 AND withdrawn IS NULL
+            "SELECT EXISTS (SELECT 1 FROM asks WHERE task = ?1
+             AND (withdrawn IS NULL OR withdrawn_reason = 'dismissed')
              AND instr(question || ' ' || coalesce(title, '') || ' ' || coalesce(text, ''), ?2) > 0)",
             params![task, url],
             |row| row.get(0),

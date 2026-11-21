@@ -11,6 +11,7 @@ config page gives a field table, a complete example and the errors `priory check
 | [triggers.md](triggers.md) | `triggers/<name>.toml`: one section per source, and `hold` |
 | [runners.md](runners.md) | `runners/<hostname>.toml`: platform and share of the machine |
 | [views.md](views.md) | `views/<name>.toml`: the web view's layouts |
+| [scorers.md](scorers.md) | `scorers/<name>.toml`: the questions that grade a finished run |
 | [serve.md](serve.md) | `priory serve` and the JSON of its endpoints and of the listings' `--json` |
 | [events.md](events.md) | Every message type on `factory.intake`, with an example payload |
 | [e2e-scenarios.md](e2e-scenarios.md) | The scenario file of the end-to-end factory test |
@@ -55,6 +56,7 @@ or the Red Hat YAML extension:
 | `triggers/*.toml` | `config/trigger.json` |
 | `runners/*.toml` | `config/runner.json` |
 | `views/*.toml` | `config/view.json` |
+| `scorers/*.toml` | `config/scorer.json` |
 | `agents/*/agent.md` | `config/agent.json`, for tools that read frontmatter; editors do not |
 
 A schema checks each file alone. Rules across files, such as a trigger naming a workflow that
