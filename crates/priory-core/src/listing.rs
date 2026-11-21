@@ -736,20 +736,23 @@ pub const ME: &str = "me";
 fn since_you_looked(db: &Connection, person: &str) -> rusqlite::Result<Value> {
     rows(
         db,
-        "WITH events AS (
-           SELECT time, CAST(json_extract(event, '$.data.task') AS INTEGER) AS task,
-             type || coalesce(' ' || json_extract(event, '$.data.step'), '')
-               || coalesce(': ' || json_extract(event, '$.data.outcome'), '') AS what,
-             0 AS source, seq
-           FROM trace
+        "WITH visited AS (SELECT coalesce((SELECT julianday(seen) FROM visits WHERE person = ?1), 0) AS at),
+         events AS (
+           SELECT * FROM (SELECT time, CAST(json_extract(event, '$.data.task') AS INTEGER) AS task,
+               type || coalesce(' ' || json_extract(event, '$.data.step'), '')
+                 || coalesce(': ' || json_extract(event, '$.data.outcome'), '') AS what,
+               0 AS source, seq
+             FROM trace WHERE julianday(time) >= (SELECT at FROM visited)
+             ORDER BY julianday(time) DESC, seq DESC LIMIT 50)
            UNION ALL
-           SELECT time, task, CASE type WHEN ?2 THEN subject || ': ' || json_extract(data, '$.line')
-               ELSE type || coalesce(' ' || subject, '') || coalesce(': ' || outcome, '') END,
-             1, seq
-           FROM inbox)
+           SELECT * FROM (SELECT time, task,
+               CASE type WHEN ?2 THEN subject || ': ' || json_extract(data, '$.line')
+                 ELSE type || coalesce(' ' || subject, '') || coalesce(': ' || outcome, '') END,
+               1, seq
+             FROM inbox WHERE julianday(time) >= (SELECT at FROM visited)
+             ORDER BY julianday(time) DESC, seq DESC LIMIT 50))
          SELECT time, task, (SELECT key FROM tasks WHERE tasks.id = events.task) AS key, what
          FROM events
-         WHERE julianday(time) >= coalesce((SELECT julianday(seen) FROM visits WHERE person = ?1), 0)
          ORDER BY julianday(time) DESC, source DESC, seq DESC LIMIT 50",
         params![person, post::REPORT],
     )
