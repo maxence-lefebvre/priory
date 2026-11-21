@@ -7,7 +7,7 @@ import { linked } from "./links.js";
 import { dossier, refusal } from "./reports.js";
 import { prStack } from "./stack.js";
 import { KINDS, edgeStyle, nodeShape, timeline, ungatedPairs } from "./flows.js";
-import { dueParts, mergeSince, nextLink, progressView, sectionInView, sinceGroups } from "./desk.js";
+import { actionNote, dueParts, mergeSince, nextLink, progressView, rowAction, sectionInView, sinceGroups } from "./desk.js";
 
 const ICONS = {
   check: '<path d="M20 6 9 17l-5-5"/>',
@@ -127,6 +127,8 @@ const state = {
   taskNotices: new Map(),
   todoBusy: null,
   todoNotices: new Map(),
+  rowBusy: null,
+  rowNotices: new Map(),
   sayDrafts: new Map(),
   drafts: new Map(),
   notices: new Map(),
@@ -321,7 +323,38 @@ function itemRow(item) {
   return html`<div class="row">
     ${tile(kind)}
     <span class="l1">${key}<span>${item.step || ""}</span><span>${item.kind}</span>${item.task ? prsTag({}, item.task) : ""}<span class="age">${timeTag(item.since)}</span></span>
-    <span class="l2 r t-${role(kind)}">${autolinked(item.what, null)}</span>${stopped ? taskActs(item.task, item.kind) : ""}</div>`;
+    <span class="l2 r t-${role(kind)}">${autolinked(item.what, null)}</span>${stopped ? taskActs(item.task, item.kind) : rowActs(item)}</div>`;
+}
+
+// Read on a report and Release on a held task, the twins of `priory inbox read` and `priory release`.
+function rowActs(item) {
+  const action = rowAction(item, state.revision);
+  if (!action) return "";
+  const id = `${item.kind}-${item.id}`;
+  const busy = state.rowBusy !== null || Boolean(state.failed);
+  const notice = state.rowNotices.get(id);
+  return html`<span class="task-acts"><button id="row-${id}" class="btn secondary act" data-action="row-act" data-row="${id}" data-kind="${item.kind}" data-item="${item.id}" data-task="${item.task ?? ""}" aria-disabled="${busy ? "true" : "false"}">${action.label}</button></span>${notice ? html`<p class="note acts-note" role="status">${notice}</p>` : ""}`;
+}
+
+async function rowAct(target) {
+  if (target.getAttribute("aria-disabled") === "true") return;
+  const { row, kind, item, task } = target.dataset;
+  const action = rowAction({ kind, id: item, task: task || null }, state.revision);
+  state.rowBusy = row;
+  render();
+  let reply;
+  try {
+    reply = await post(action.path, action.body);
+  } catch {
+    reply = { status: 0, body: { error: "the connection dropped" } };
+  }
+  state.rowBusy = null;
+  const { status, body } = reply;
+  if (status === 401) return signOut("The daemon refused this token. Paste the current one.");
+  if (status === 200) state.rowNotices.delete(row);
+  else state.rowNotices.set(row, actionNote(action.label, status, body));
+  render();
+  refresh();
 }
 
 // A to-do's text with its due time in local time; the `<time>` keeps the UTC time (DESIGN.md, Copy).
@@ -516,7 +549,7 @@ function deskTable(model, selected) {
     <td class="recw">${ask.recommendation || ""}</td><td class="r">${timeTag(ask.since)}</td></tr>`;
   const itemLine = (item) => html`<tr>
     <td>${stateWord(item.kind === "prompt" ? "prompt" : item.kind)}</td><td class="mono">${["blocked", "failed"].includes(item.kind) ? html`<a href="/tasks/${item.task}">${item.key || ""}</a>` : item.key || ""}</td><td>${item.step || ""}</td>
-    <td class="q full t-${role(item.kind)}">${item.task ? prsTag({}, item.task) : ""}<span>${item.what}</span></td><td class="recw">${["blocked", "failed"].includes(item.kind) ? taskActs(item.task, item.kind) : ""}</td><td class="r">${timeTag(item.since)}</td></tr>`;
+    <td class="q full t-${role(item.kind)}">${item.task ? prsTag({}, item.task) : ""}<span>${item.what}</span></td><td class="recw">${["blocked", "failed"].includes(item.kind) ? taskActs(item.task, item.kind) : rowActs(item)}</td><td class="r">${timeTag(item.since)}</td></tr>`;
   const todoLine = (item) => html`<tr>
     <td>${stateWord("todo")}</td><td class="mono"></td><td></td><td class="q full"><span>${todoText(item)}</span></td><td class="recw">${todoDone(item.id)}</td><td class="r">${timeTag(item.since)}</td></tr>`;
   const group = (title, count) => html`<tr class="grp"><td colspan="6">${title}<span>${count}</span></td></tr>`;
@@ -1982,6 +2015,7 @@ document.addEventListener("click", (event) => {
   }
   if (action === "task-act") return taskAct(target);
   if (action === "todo-done") return markDone(target);
+  if (action === "row-act") return rowAct(target);
   if (["pick", "pick-undo", "compose", "compose-cancel", "reply", "resolve", "reopen"].includes(action)) return reportAct(target);
   if (target.dataset.answer !== undefined || ["undo", "options", "write", "dismiss", "snooze", "unsnooze"].includes(action)) return act(target);
   if (action === "mode" || action === "theme") {

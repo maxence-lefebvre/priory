@@ -377,7 +377,10 @@ The desk is the "Needs me" view. It lists, top to bottom:
    the `square` tile in the ask role, its text and due time, and a Done button in `.btn
    secondary` that marks it done (`POST /api/todos/{id}/done`). The next thing card offers Done
    for a to-do. Then **Also waiting**: the desk's other items (held tasks, sweeps, memory waits,
-   retired tasks and worktrees that stay), each with the daemon's sentence.
+   retired tasks and worktrees that stay), each with the daemon's sentence. A held task's row carries a
+   Release button in `.btn secondary`, and a report row under **Reports** a Read button. Release
+   sends the revision the page drew (`POST /api/tasks/{id}/release`), Read sends `POST /api/inbox/{seq}/read`.
+   A refused action keeps the row and shows why under it, in the row's note.
 7. **Up next**: a strip with the next 3 runs, queued or scheduled, as in the Herdr Queue panel.
    Each line shows when, the task and why, and opens the task. With none, the strip says "Nothing
    is queued or scheduled to run next."
