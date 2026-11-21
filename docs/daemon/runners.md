@@ -169,6 +169,11 @@ claim.
 A runner that is away keeps its asks listed, with its last alive time, and they still take answers,
 which it applies when it reads the log again.
 
+The web view and the Herdr Desk and Asks panels tag each of another runner's asks with its runner,
+and say when that runner was last seen once it is quiet for over 3 minutes. The Asks list offers a
+Runner facet. Each answer sent there shows as `Sent to <runner>` until that runner applies it, then
+as the answer, or as the refusal and its reason.
+
 ## Every runner's tasks
 
 Every runner already stores each claim, hold and alive message it reads. So `priory tasks`,

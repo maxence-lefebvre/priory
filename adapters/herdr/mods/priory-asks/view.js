@@ -1,6 +1,6 @@
 // The Asks panel's view model: `priory asks --all --json` in, rows and states out. No drawing, no IO.
 
-import { answeredBy, autolink, prStack, routedMark, routedNote } from "./priory.js";
+import { answeredBy, autolink, prStack, routedMark, routedNote, runnerOf, seenAgo, sentNote } from "./priory.js";
 
 /** @typedef {{ pattern: string, url: string }[]} Links the rules `priory links` lists */
 
@@ -36,6 +36,7 @@ function row(ask, now) {
     snoozed: snoozed(ask, now) ? `Snoozed until ${when(ask.snoozed_until, now)}` : null,
     backEarly: ask.state === "open" && ask.back_early ? `Back early: ${ask.back_early.reason} ${ask.revision}` : null,
     ...(routedMark(ask) && { routed: routedMark(ask) }),
+    ...(runnerOf(ask) && { runner: runnerOf(ask), away: seenAgo(ask, now, (iso) => age(iso, now)), sent: sentNote(ask) }),
     ...(ask.state === "answered" && answeredBy(ask.answered_by) && { by: answeredBy(ask.answered_by) }),
   };
 }
@@ -53,7 +54,7 @@ function counted(asks, field) {
 /**
  * The saved views with their counts, and the chosen view's sections, each left out when empty.
  * @param {any[]} all
- * @param {{ view: string, now: number, bands?: string[], facets?: { command?: boolean, lane?: string, band?: string, risk?: string, task?: string } }} options
+ * @param {{ view: string, now: number, bands?: string[], facets?: { command?: boolean, lane?: string, band?: string, risk?: string, task?: string, runner?: string } }} options
  *   `bands` is the factory's, highest first; an ask without a band shows under `none`, and one
  *   without a risk under the risk `none`.
  */
@@ -62,7 +63,7 @@ export function asksList(all, { view, now, bands = [], facets = {} }) {
   const risks = (/** @type {any} */ ask) => (ask.risk?.length ? ask.risk : ["none"]);
   const asks = all.filter((ask) => (!facets.command || ask.command) && (!facets.lane || ask.lane === facets.lane)
     && (!facets.band || band(ask) === facets.band) && (!facets.risk || risks(ask).includes(facets.risk))
-    && (!facets.task || ask.key === facets.task));
+    && (!facets.task || ask.key === facets.task) && (!facets.runner || ask.runner === facets.runner));
   const open = asks.filter((ask) => ask.state === "open" && !snoozed(ask, now));
   const asleep = asks.filter((ask) => snoozed(ask, now));
   const backToday = open.filter((ask) => ask.back_early && sameDay(ask.back_early.at, now));
@@ -92,7 +93,7 @@ export function asksList(all, { view, now, bands = [], facets = {} }) {
   const order = [...bands, "none"];
   const byBand = counted(all.map((ask) => ({ band: band(ask) })), "band").sort(([a], [b]) => order.indexOf(a) - order.indexOf(b));
   const byRisk = counted(all.flatMap((ask) => risks(ask).map((risk) => ({ risk }))), "risk").sort(([a], [b]) => RISKS.indexOf(a) - RISKS.indexOf(b));
-  return { views, facets: { lane: counted(all, "lane"), band: byBand, risk: byRisk, task: counted(all, "key") }, sections:sections.filter((candidate) => candidate.rows.length) };
+  return { views, facets: { lane: counted(all, "lane"), band: byBand, risk: byRisk, task: counted(all, "key"), runner: counted(all, "runner") }, sections:sections.filter((candidate) => candidate.rows.length) };
 }
 
 /** An agent's command runs on the options in its `runs`; an outside ask's string command never runs. @param {any} ask @param {string} option */
@@ -108,12 +109,13 @@ const RAN = {
 
 /** @param {any} ask @returns {{ title: string, words: string[], note: string } | null} */
 function command(ask) {
+  const owner = runnerOf(ask);
   if (!ask.command) return null;
   if (typeof ask.command === "string") {
     return { title: "Command the asker attached", words: [ask.command], note: "Priory stores this command and never runs it: the ask came from outside Priory." };
   }
   const { argv, dir, target, runs } = ask.command;
-  return { title: "Command an answer runs", words: argv, note: `In ${dir} (${target}). Runs on ${runs.join(", ")}. Bound to revision ${ask.revision}. Runs at most once.` };
+  return { title: "Command an answer runs", words: argv, note: `In ${dir} (${target}). ${owner ? `Runs on ${owner} when` : "Runs when"} answered ${runs.join(" or ")}. Bound to revision ${ask.revision}. Runs at most once.` };
 }
 
 export const ARM_MS = 4000;
@@ -224,8 +226,10 @@ export function askDetail(ask, { now, armed, task = null, links = [] }) {
   const runs = trace(task?.runs ?? [], now);
   const question = ask.title || ask.question;
   const why = ask.text || ask.question;
+  const owner = runnerOf(ask);
+  const away = seenAgo(ask, now, (iso) => age(iso, now));
   return {
-    context: [ask.key, ask.step, ask.lane, ask.command ? "Command" : null, age(ask.since, now), `revision ${ask.revision}`].filter(Boolean),
+    context: [ask.key, ask.step, ask.lane, ask.command ? "Command" : null, owner && [owner, away].filter(Boolean).join(", "), age(ask.since, now), `revision ${ask.revision}`].filter(Boolean),
     question,
     questionSpans: autolink(question, links, ask.repo ?? null),
     recommendation: ask.recommendation ? { text: `Recommended: ${ask.recommendation}.`, next: ask.next_action } : null,
@@ -248,13 +252,18 @@ export function askDetail(ask, { now, armed, task = null, links = [] }) {
     trace: runs,
     why: { text: why, textSpans: autolink(why, links, ask.repo ?? null), run: ask.run, tradeoff: ask.tradeoff, whatWaits: ask.what_waits },
     ...(routedNote(ask) && { routed: routedNote(ask) }),
+    ...(owner && {
+      // A closed ask still says why its runner refused an answer sent to it.
+      sent: open || sentNote(ask)?.refused ? sentNote(ask) : null,
+      elsewhere: `This ask belongs to ${owner}. Your answer goes there through the log, and ${owner} applies it when it reads it. Snooze stays on ${owner}.`,
+    }),
     decided: ask.state === "answered" ? `Answered: ${ask.answer}.${ask.answered_at ? ` ${age(ask.answered_at, now)} ago.` : ""}${answeredBy(ask.answered_by) ? ` By ${answeredBy(ask.answered_by)}.` : ""}`
       : ask.state === "withdrawn" ? `Withdrawn${ask.withdrawn_why ? `: ${ask.withdrawn_why}` : ""}.` : null,
     ran: ask.ran ? { text: ask.ran.status === "failed" ? `${RAN.failed}: ${ask.ran.error}.` : RAN[ask.ran.status] ?? ask.ran.status, warn: ask.ran.status === "uncertain" } : null,
     history: history(ask),
     command: command(ask),
     bar: options.length ? { count: `${options.length} options`, option: recommended } : null,
-    canSnooze: open && ask.task != null,
+    canSnooze: open && ask.task != null && !owner,
     // A step's or a hold's ask takes only its options: no free text and no dismissal.
     takesText: open && ask.free_text !== false,
   };

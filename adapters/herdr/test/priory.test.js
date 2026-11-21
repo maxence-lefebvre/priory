@@ -266,11 +266,11 @@ test("prStack is the web view's prStack, word for word", () => {
   assert.equal(body(herdr), body(web), "copy prStack from adapters/herdr/lib/priory.js to crates/priory-core/web/stack.js");
 });
 
-test("routedMark, routedNote and answeredBy are the web view's, word for word", () => {
+test("routedMark, routedNote, runnerOf, seenAgo, sentNote and answeredBy are the web view's, word for word", () => {
   const helpers = (/** @type {string} */ source) => source.slice(source.indexOf('/** "with <'), source.indexOf("\n", source.indexOf("export const answeredBy")));
   const web = readFileSync(new URL("../../../crates/priory-core/web/asks.js", import.meta.url), "utf8");
   const herdr = readFileSync(new URL("../lib/priory.js", import.meta.url), "utf8");
-  assert.equal(helpers(herdr), helpers(web), "copy the three helpers from adapters/herdr/lib/priory.js to crates/priory-core/web/asks.js");
+  assert.equal(helpers(herdr), helpers(web), "copy the helpers from adapters/herdr/lib/priory.js to crates/priory-core/web/asks.js");
 });
 
 // A scripted read loop: each read and wait takes the next reply, an Error throws it, and `log` keeps the calls in order.

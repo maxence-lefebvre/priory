@@ -48,7 +48,7 @@ kbd { font: 500 11.5px/1 var(--font-mono); min-width: 20px; height: 20px; paddin
 .tile .dot { animation: pulse 2s infinite; }
 @keyframes pulse { 50% { opacity: 0.35; } }
 @media (prefers-reduced-motion: reduce) { .tile .dot { animation: none; } }
-.t-live { color: var(--action-text); } .t-warn { color: var(--warn-text); } .t-danger { color: var(--danger-text); } .t-ok { color: var(--ok-text); } .t-muted, .t-hold, .t-wait { color: var(--text-2); }
+.t-live { color: var(--action-text); } .t-action { color: var(--action-text); } .t-warn { color: var(--warn-text); } .t-danger { color: var(--danger-text); } .t-ok { color: var(--ok-text); } .t-muted, .t-hold, .t-wait { color: var(--text-2); }
 .sti { display: inline-flex; gap: 6px; align-items: center; font-weight: 550; }
 
 /* Buttons and inputs */
@@ -113,6 +113,8 @@ a.facet[aria-current="true"] { background: var(--action-soft); color: var(--acti
 .row .l1 { display: flex; gap: 8px; align-items: baseline; font: 400 var(--type-caption) var(--font-ui); color: var(--text-3); min-width: 0; }
 .row .l1 .mono { color: var(--text); }
 .row .l1 .tag.routed { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.row .l1 .tag.runner, .row .l1:has(.tag.runner) > .mono { flex: none; }
+.row .l1:has(.tag.runner) > span:nth-child(2) { min-width: 5ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .row .l1 .age { margin-left: auto; white-space: nowrap; }
 .row .l2 { grid-column: 2; font: 500 var(--type-body) var(--font-ui); display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; }
 .row .l2.r { font-size: 14px; }
