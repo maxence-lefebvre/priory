@@ -292,7 +292,12 @@ fn result(
     if let Some(refused) = crate::proof::refused(tx, run.task, step, &outcome, head)? {
         return Ok(Err(refused));
     }
-    if next == "done"
+    let gated = next == "done"
+        || workflows
+            .get(&run.workflow)
+            .and_then(|flow| flow.value.step(next))
+            .is_some_and(|s| s.after == Some(StepAfter::Merged));
+    if gated
         && commit.is_none()
         && !all_merged(tx, run.task)?
         && let Some(resource) = pull_request(tx, run.task)?
@@ -1696,12 +1701,32 @@ fn done(
         [wait],
         |row| Ok((row.get(0)?, row.get(1)?)),
     )?;
-    match after {
-        Some(after) => {
-            enter(tx, task, &workflow, &after, None, "", factory)?;
-        }
-        None => set(tx, task, "done", None, None)?,
-    }
+    let Some(after) = after else {
+        set(tx, task, "done", None, None)?;
+        return Ok(true);
+    };
+    // A person's `say` may have started a run while the task slept on its gate.
+    let live: Option<String> = tx
+        .query_row(
+            "SELECT session FROM runs WHERE task = ?1 AND ended IS NULL",
+            [task],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let from = match live {
+        Some(session) => run(tx, &session)?,
+        None => None,
+    };
+    step_in(
+        tx,
+        task,
+        &workflow,
+        &after,
+        from.as_ref(),
+        "",
+        factory,
+        false,
+    )?;
     Ok(true)
 }
 
@@ -2441,6 +2466,22 @@ fn enter(
     context: &str,
     factory: &Factory,
 ) -> rusqlite::Result<Option<String>> {
+    step_in(tx, task, workflow, target, from, context, factory, true)
+}
+
+/// As `enter`. `gate` false enters a step after the merge without its gate, as the merge that
+/// fired the gate does.
+#[allow(clippy::too_many_arguments)]
+fn step_in(
+    tx: &Transaction,
+    task: i64,
+    workflow: &str,
+    target: &str,
+    from: Option<&Run>,
+    context: &str,
+    factory: &Factory,
+    gate: bool,
+) -> rusqlite::Result<Option<String>> {
     let workflows = &factory.workflows;
     let finish = |ended_as: &str| -> rusqlite::Result<Option<String>> {
         let Some(run) = from else {
@@ -2451,7 +2492,7 @@ fn enter(
     };
     let merge_step =
         step(workflows, workflow, target).filter(|s| s.after == Some(StepAfter::Merged));
-    let after = merge_step.map(|_| target);
+    let after = merge_step.filter(|_| gate).map(|_| target);
     let owned = pull_request(tx, task)?;
     if after.is_some() && owned.is_none() {
         let reason = format!("step {target} waits for a merge, but the task owns no pull request");
@@ -2480,7 +2521,7 @@ fn enter(
             .optional()?;
         let Some((result_run, at, Some(commit))) = last else {
             let reason =
-                format!("task reached done owning {resource}, but no result names a commit");
+                format!("task reached {target} owning {resource}, but no result names a commit");
             set(tx, task, "blocked", None, Some(&reason))?;
             return finish("blocked");
         };
@@ -2527,6 +2568,14 @@ fn enter(
                 judge(tx, wait, factory)?;
             }
             return finish("asleep");
+        }
+        // Answered asks about closed pull requests left no gate, and no merge.
+        if after.is_some() {
+            let reason = format!(
+                "step {target} waits for a merge, but a pull request of the stack closed without one"
+            );
+            set(tx, task, "blocked", None, Some(&reason))?;
+            return finish("blocked");
         }
     }
     if target == "done" || target == "stop" {

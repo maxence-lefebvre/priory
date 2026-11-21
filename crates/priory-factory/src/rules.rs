@@ -674,6 +674,15 @@ fn check_workflow(factory: &Factory, workflow: &Loaded<Workflow>, problems: &mut
         ));
         return;
     }
+    if steps[start].after.is_some() {
+        problems.push(problem(
+            workflow,
+            workflow.lines.field("start"),
+            format!(
+                "start `{start}` waits for a merge, and a task starts before it owns a pull request"
+            ),
+        ));
+    }
     if let Some(reopen) = &workflow.value.reopen
         && steps
             .get(reopen.as_str())

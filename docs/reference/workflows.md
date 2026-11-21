@@ -184,10 +184,13 @@ next = { quiet = "draft", problem = "look" }
 When the task reaches `watch`, the daemon stores the checks gates that `done` stores, and the task
 sleeps at the step of its latest result. A red check, a moved head or feedback wakes that step's
 agent, as before `done`. Green checks leave the task asleep. Once every pull request of its stack
-merged, the task enters `watch`. A step after the merge can lead to `done` with no `commit`.
+merged, the task enters `watch`. A result that leads straight to such a step needs `commit`, as one
+that leads to `done` does. A step after the merge can lead to `done` with no `commit`.
 
-When the task reaches such a step after the merge, it enters it at once. When it owns no pull
-request, it is blocked: `step <id> waits for a merge, but the task owns no pull request`.
+When the task reaches such a step after the merge, it enters it at once. It is blocked instead
+when it owns no pull request, `step <id> waits for a merge, but the task owns no pull request`, or
+when a pull request of its stack closed without a merge, `step <id> waits for a merge, but a pull
+request of the stack closed without one`. The start step cannot wait for a merge.
 
 ## Irreversible steps and their gates
 
@@ -278,6 +281,7 @@ Errors about one step start with `` step `<id>`: `` and point at the step's line
 | `` `autonomous` needs a reason `` | `autonomous` is empty |
 | `irreversible, and a path from start reaches it with no human step that approves it` | An irreversible step without `autonomous` and without an approving human step on every path |
 | `` band `<band>` is not one of <bands> `` | `band` is not a band of the factory |
+| `` start `<id>` waits for a merge, and a task starts before it owns a pull request `` | The start step sets `after` |
 | `` reopen `<id>` is not a model step `` | `reopen` names a missing step, or a human or code step |
 | `"<text>" is not a duration such as 90s, 15m or 2h` | A bad `timeout` |
 | ``invalid value: integer `0`, expected a nonzero usize`` | `max_prs` is 0 |

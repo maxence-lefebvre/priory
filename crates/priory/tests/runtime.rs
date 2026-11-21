@@ -6536,6 +6536,25 @@ fn a_result_reaching_done_without_a_commit_is_refused_when_the_task_owns_a_pull_
 }
 
 #[test]
+fn a_result_leading_to_a_step_after_the_merge_without_a_commit_is_refused() {
+    let mut setup = Setup::with_workflow("after-merge-no-commit", AFTER_MERGE);
+    setup.calls(&[wait(on_pull_7("review")), result("passed")]);
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("runs", |rows| rows.len() == 1 && rows[0][7] == "asleep");
+
+    setup.publish(&reviewed());
+
+    setup.until("runs", |_| setup.replies().len() == 2);
+    let (text, error) = reply(&setup.replies()[1]);
+    assert!(error, "{text}");
+    assert_eq!(
+        text,
+        "task 1 owns github:owner/repo#7: send the result with the commit its head must match"
+    );
+}
+
+#[test]
 fn a_result_with_an_abbreviated_commit_is_refused() {
     let mut setup = Setup::new("short-commit");
     setup.calls(&[passed_at("3eebfbb")]);
