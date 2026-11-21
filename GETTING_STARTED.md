@@ -109,7 +109,8 @@ who decides it.
 `priory check --explain example` lists the irreversible step `open-pr` and the human step
 `approve-pr` that approves it. See [workflows.md](docs/reference/workflows.md#irreversible-steps-and-their-gates).
 The web view's Flows panel, under More, draws each workflow as a timeline, with the paths that
-reach an irreversible step with no person's decision highlighted.
+reach an irreversible step with no person's decision highlighted. `priory flows example --json`
+prints what it draws, and the [Herdr](docs/adapters/herdr.md) Flows panel draws the same.
 
 The same rule holds inside a model step. Priory's tool guard denies an agent's irreversible call,
 such as `gh pr merge` or `git push origin main`, and tells the agent to `ask`. The call passes when
@@ -263,7 +264,7 @@ The web view's Costs panel shows what the factory spent this week against last w
 split by workflow, agent, model, machine or repository, as `priory costs` prints it. Beside it,
 Attention shows the minutes of your attention per merged pull request, how long asks waited for
 you, and where each task's time went, as `priory report attention` prints it. On a phone, both sit
-under More. See [docs/daemon/trace.md](docs/daemon/trace.md#costs).
+under More. The Herdr Costs panel shows the same. See [docs/daemon/trace.md](docs/daemon/trace.md#costs).
 
 ## Use it from a phone
 

@@ -1,6 +1,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { attentionView, costTiles, dayBars, splitTable } from "./costs.js";
+import { attentionView, costTiles, dayBars, money, splitTable } from "./costs.js";
+
+test("money rounds half a cent up as written in decimal, groups thousands, and shows no cost as -", () => {
+  // What Intl.NumberFormat("en", { style: "currency", currency: "USD" }) prints, which Herdr's engine lacks.
+  assert.deepEqual([1.005, 2.675, 1234567.891, 0, -3, null].map(money), ["$1.01", "$2.68", "$1,234,567.89", "$0.00", "-$3.00", "-"]);
+});
 
 process.env.TZ = "UTC";
 
