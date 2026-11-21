@@ -1921,7 +1921,7 @@ pub(crate) fn stop(
     Ok(None)
 }
 
-/// Measure a change to it first: `priory eval crates/priory-core/src/nudge.eval.toml`.
+/// Measure a change to it first with `nudge.eval.toml` (docs/evaluating-a-prompt.md).
 const NUDGE: &str = include_str!("nudge.txt");
 
 /// Queues one nudge, ahead of any queued event, after a silent turn that Priory typed.

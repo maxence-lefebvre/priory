@@ -21,8 +21,12 @@ no built-in tools and no settings or MCP servers of yours. Its one MCP server is
 `priory mcp --eval`. A later turn of the same run resumes the first turn's session.
 
 The command prints a Markdown table: one row per case and variant, with the expected ending, the
-hits out of the runs, and every ending the agent chose with its count. When every case ran within
-the budget and the file names a `doc`, the table replaces the lines between the doc's markers.
+hits out of the runs, and every ending the agent chose with its count. The command checks the
+budget before every turn. A run that the budget cuts short is dropped, and no later run starts.
+
+The table replaces the lines between the doc's markers only when the file names a `doc`, no
+`--case` was given, and the evaluation is complete: every run finished within the budget and no
+turn failed. Otherwise its first line says `Incomplete` and the doc keeps its table.
 
 A run's ending is its agent's first `result`, `ask` or `wait` call after the prompt under test:
 
@@ -33,10 +37,14 @@ A run's ending is its agent's first `result`, `ask` or `wait` call after the pro
 | `wait <type>` | `wait`, with that condition type in `on`, or `any` for a list |
 | `no exit` | none of the three |
 | `<ending> before the prompt` | one of the three in a `before` turn, so the prompt was never typed |
+| `agent error: <why>` | nothing counted: the turn failed, such as `error_max_budget_usd` or `exit 1` |
 
 Errors:
 
 - `give --budget USD, the most the evaluation may spend`: the command has no `--budget`.
+- `no case NAME`: `--case` names no case of the file.
+- `needs at least one variant and one case`: the file lists no variant or no case.
+- `two variants named NAME` or `two cases named NAME`: two share a name.
 - `variant NAME needs one of text or file`: a variant has both keys, or neither.
 - `DOC has no line <!-- priory eval NAME -->`: the doc lacks the opening marker. `NAME` is the
   evaluation file's name, such as `nudge.eval.toml`.

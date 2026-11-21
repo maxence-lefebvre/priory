@@ -49,6 +49,6 @@ the doc alone.
 cargo run -p priory -- eval crates/priory-core/src/nudge.eval.toml --runs 5 --budget 1
 ```
 
-The command stops starting runs once it has spent the budget. When every case ran within it, the
-command replaces the lines between the two markers with the new table. Commit that table with your
+The command starts no turn once it has spent the budget. When every run finished within it and no
+turn failed, the command replaces the lines between the two markers with the new table. Commit that table with your
 change, and name the model and spend in the pull request.

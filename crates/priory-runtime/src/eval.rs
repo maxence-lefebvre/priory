@@ -5,7 +5,8 @@ use std::collections::BTreeMap;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Command;
+use std::time::Duration;
 
 /// An evaluation file: the variants of one prompt, and the cases each variant runs.
 #[derive(Debug, Deserialize)]
@@ -23,8 +24,9 @@ pub struct Eval {
 #[serde(deny_unknown_fields)]
 pub struct Variant {
     pub name: String,
-    pub text: Option<String>,
-    /// A file that holds the text, relative to the evaluation file.
+    #[serde(default)]
+    pub text: String,
+    /// Instead of `text`, relative to the evaluation file. [`load`] reads it into `text`.
     pub file: Option<PathBuf>,
 }
 
@@ -56,10 +58,11 @@ pub struct Turn<'a> {
     pub budget: f64,
 }
 
-/// What a turn left behind: its session, to resume, and what it cost in dollars.
+/// What a turn left behind: its session, to resume, its cost in dollars, and why it failed.
 pub struct Spent {
     pub session: String,
     pub cost: f64,
+    pub error: Option<String>,
 }
 
 pub trait Agent {
@@ -79,8 +82,8 @@ pub struct Tally {
 pub struct Report {
     pub tallies: Vec<Tally>,
     pub spent: f64,
-    /// Whether the budget ran out before every run.
-    pub stopped: bool,
+    /// False when the budget ran out or a turn failed, so the table must not replace the doc's.
+    pub complete: bool,
 }
 
 pub struct Options<'a> {
@@ -100,55 +103,30 @@ pub fn run(
     let mut report = Report {
         tallies: Vec::new(),
         spent: 0.0,
-        stopped: false,
+        complete: true,
     };
+    if let Some(name) = options.case
+        && !eval.cases.iter().any(|case| case.name == name)
+    {
+        return Err(format!("no case {name}"));
+    }
     let cases = eval
         .cases
         .iter()
-        .filter(|case| options.case.is_none_or(|name| case.name == name));
-    for case in cases {
-        for variant in &eval.variants {
-            let text = variant.text.as_deref().unwrap_or_default();
+        .enumerate()
+        .filter(|(_, case)| options.case.is_none_or(|name| case.name == name));
+    for (c, case) in cases {
+        for (v, variant) in eval.variants.iter().enumerate() {
             let mut did = BTreeMap::new();
             for n in 0..options.runs {
-                if report.spent >= options.budget {
-                    report.stopped = true;
-                    break;
-                }
-                let dir = scratch
-                    .join(&case.name)
-                    .join(&variant.name)
-                    .join(n.to_string());
+                let dir = scratch.join(format!("{c}-{v}-{n}"));
                 fs::create_dir_all(&dir)
                     .map_err(|error| format!("cannot create {}: {error}", dir.display()))?;
-                let describe = eval.tool.as_deref().map(|tool| (tool, text));
-                let prompt = case.prompt.replace("{prompt}", text);
-                let turns = case
-                    .before
-                    .iter()
-                    .map(String::as_str)
-                    .chain([prompt.as_str()]);
-                let mut session = None;
-                let mut verdict = String::new();
-                for (index, prompt) in turns.enumerate() {
-                    let log = dir.join(format!("calls-{index}.jsonl"));
-                    let turn = Turn {
-                        prompt,
-                        session: session.as_deref(),
-                        dir: &dir,
-                        log: &log,
-                        describe,
-                        budget: options.budget - report.spent,
-                    };
-                    let spent = agent.turn(&turn)?;
-                    report.spent += spent.cost;
-                    session = Some(spent.session);
-                    verdict = ending(&log)?;
-                    if index < case.before.len() && verdict != NO_EXIT {
-                        verdict = format!("{verdict} before the prompt");
-                        break;
-                    }
-                }
+                let Some(verdict) =
+                    one(eval, case, &variant.text, &dir, options, &mut report, agent)?
+                else {
+                    break;
+                };
                 *did.entry(verdict).or_default() += 1;
             }
             report.tallies.push(Tally {
@@ -160,6 +138,53 @@ pub fn run(
         }
     }
     Ok(report)
+}
+
+/// Plays one run's turns and returns its ending, or `None` when the budget ran out first.
+fn one(
+    eval: &Eval,
+    case: &Case,
+    text: &str,
+    dir: &Path,
+    options: &Options,
+    report: &mut Report,
+    agent: &mut dyn Agent,
+) -> Result<Option<String>, String> {
+    let prompt = case.prompt.replace("{prompt}", text);
+    let turns = case
+        .before
+        .iter()
+        .map(String::as_str)
+        .chain([prompt.as_str()]);
+    let mut session = None;
+    let mut verdict = String::new();
+    for (index, prompt) in turns.enumerate() {
+        if report.spent >= options.budget {
+            report.complete = false;
+            return Ok(None);
+        }
+        let log = dir.join(format!("calls-{index}.jsonl"));
+        let turn = Turn {
+            prompt,
+            session: session.as_deref(),
+            dir,
+            log: &log,
+            describe: eval.tool.as_deref().map(|tool| (tool, text)),
+            budget: options.budget - report.spent,
+        };
+        let spent = agent.turn(&turn)?;
+        report.spent += spent.cost;
+        if let Some(error) = spent.error {
+            report.complete = false;
+            return Ok(Some(format!("agent error: {error}")));
+        }
+        session = Some(spent.session);
+        verdict = ending(&log)?;
+        if index < case.before.len() && verdict != NO_EXIT {
+            return Ok(Some(format!("{verdict} before the prompt")));
+        }
+    }
+    Ok(Some(verdict))
 }
 
 const NO_EXIT: &str = "no exit";
@@ -196,15 +221,30 @@ pub fn load(path: &Path) -> Result<Eval, String> {
     let mut eval: Eval =
         toml::from_str(&fs::read_to_string(path).map_err(|error| unreadable(&error))?)
             .map_err(|error| unreadable(&error))?;
+    if eval.variants.is_empty() || eval.cases.is_empty() {
+        return Err(unreadable(&"needs at least one variant and one case"));
+    }
+    let names = |kind: &str, names: Vec<&String>| {
+        let mut seen = std::collections::BTreeSet::new();
+        match names.into_iter().find(|name| !seen.insert(*name)) {
+            Some(name) => Err(unreadable(&format!("two {kind} named {name}"))),
+            None => Ok(()),
+        }
+    };
+    names(
+        "variants",
+        eval.variants.iter().map(|variant| &variant.name).collect(),
+    )?;
+    names("cases", eval.cases.iter().map(|case| &case.name).collect())?;
     let dir = path.parent().unwrap_or(Path::new("."));
     for variant in &mut eval.variants {
-        variant.text = match (variant.text.take(), &variant.file) {
-            (Some(text), None) => Some(text),
-            (None, Some(file)) => {
+        match (variant.text.is_empty(), &variant.file) {
+            (false, None) => {}
+            (true, Some(file)) => {
                 let file = dir.join(file);
                 let text = fs::read_to_string(&file)
                     .map_err(|error| format!("{}: {error}", file.display()))?;
-                Some(text.trim_end().to_owned())
+                variant.text = text.trim_end().to_owned();
             }
             _ => {
                 return Err(unreadable(&format!(
@@ -212,7 +252,7 @@ pub fn load(path: &Path) -> Result<Eval, String> {
                     variant.name
                 )));
             }
-        };
+        }
     }
     if let Some(doc) = &mut eval.doc {
         *doc = dir.join(&*doc);
@@ -227,10 +267,10 @@ pub fn table(report: &Report, model: &str, runs: usize) -> String {
          | Case | Variant | Expected | Hits | What the agent did |\n\
          | ---- | ------- | -------- | ---- | ------------------ |\n",
         report.spent,
-        if report.stopped {
-            " The budget ran out before every run."
-        } else {
+        if report.complete {
             ""
+        } else {
+            " Incomplete: the budget ran out or a turn failed."
         },
     );
     for tally in &report.tallies {
@@ -276,6 +316,8 @@ pub fn rewrite(doc: &Path, name: &str, table: &str) -> Result<(), String> {
         .map_err(|error| format!("{}: {error}", doc.display()))
 }
 
+const TURN_TIMEOUT: Duration = Duration::from_secs(600);
+
 /// Runs each turn as a headless `claude -p` of `model`, whose only tools are the fake server's.
 pub struct Claude<'a> {
     pub model: &'a str,
@@ -317,40 +359,38 @@ impl Agent for Claude<'_> {
                     .iter()
                     .flat_map(|session| ["--resume", session]),
             )
-            .current_dir(turn.dir)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
+            .current_dir(turn.dir);
         for name in crate::runtime::NESTED {
             command.env_remove(name);
         }
-        let mut child = command
-            .spawn()
-            .map_err(|error| format!("cannot start claude: {error}"))?;
-        let mut stdin = child.stdin.take().expect("stdin is piped");
-        stdin
-            .write_all(turn.prompt.as_bytes())
-            .map_err(|error| format!("cannot type the prompt: {error}"))?;
-        drop(stdin);
-        let output = child
-            .wait_with_output()
-            .map_err(|error| error.to_string())?;
-        // A turn over its budget still reports its session and cost, so its status is not checked.
+        let output =
+            crate::runtime::fed_within(&mut command, Some(turn.prompt.into()), TURN_TIMEOUT)
+                .map_err(|error| format!("cannot run claude: {error}"))?
+                .ok_or("claude ran past its turn timeout")?;
         let parsed: Value = serde_json::from_slice(&output.stdout).unwrap_or_default();
-        match (
+        let (Some(session), Some(cost)) = (
             parsed["session_id"].as_str(),
             parsed["total_cost_usd"].as_f64(),
-        ) {
-            (Some(session), Some(cost)) => Ok(Spent {
-                session: session.to_owned(),
-                cost,
-            }),
-            _ => Err(format!(
+        ) else {
+            return Err(format!(
                 "claude gave no session and cost: {}{}",
                 String::from_utf8_lossy(&output.stdout),
                 String::from_utf8_lossy(&output.stderr)
-            )),
-        }
+            ));
+        };
+        let error = if parsed["is_error"] == true {
+            Some(parsed["subtype"].as_str().unwrap_or("error").to_owned())
+        } else {
+            (!output.status.success()).then(|| match output.status.code() {
+                Some(code) => format!("exit {code}"),
+                None => "killed".to_owned(),
+            })
+        };
+        Ok(Spent {
+            session: session.to_owned(),
+            cost,
+            error,
+        })
     }
 }
 
@@ -383,9 +423,12 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    /// Calls result passed after a prompt that says "clear", and nothing otherwise, for 0.01 a turn.
+    /// Calls result passed after a prompt that says "clear", and nothing otherwise, for 0.01 a
+    /// turn. With `fail`, every turn fails as Claude does past its budget.
+    #[derive(Default)]
     struct Fake {
         prompts: Vec<String>,
+        fail: bool,
     }
 
     impl Agent for Fake {
@@ -398,6 +441,7 @@ mod tests {
             Ok(Spent {
                 session: "s".to_owned(),
                 cost: 0.01,
+                error: self.fail.then(|| "error_max_budget_usd".to_owned()),
             })
         }
     }
@@ -422,21 +466,23 @@ mod tests {
         .unwrap()
     }
 
-    #[test]
-    fn a_run_counts_what_the_agent_did_after_the_prompt_under_test_per_variant() {
-        let eval = nudge();
-        let mut fake = Fake {
-            prompts: Vec::new(),
-        };
+    fn report(name: &str, fake: &mut Fake, runs: usize, budget: f64) -> Report {
+        let dir = scratch(name);
         let options = Options {
-            runs: 2,
-            budget: 1.0,
+            runs,
+            budget,
             case: None,
         };
-
-        let dir = scratch("count");
-        let report = run(&eval, &dir, &options, &mut fake).unwrap();
+        let report = run(&nudge(), &dir, &options, fake).unwrap();
         fs::remove_dir_all(dir).unwrap();
+        report
+    }
+
+    #[test]
+    fn a_run_counts_what_the_agent_did_after_the_prompt_under_test_per_variant() {
+        let mut fake = Fake::default();
+
+        let report = report("count", &mut fake, 2, 1.0);
 
         let tally = |variant: &str, did: &str| Tally {
             case: "done".to_owned(),
@@ -448,32 +494,69 @@ mod tests {
             report.tallies,
             [tally("old", "no exit"), tally("new", "result passed")]
         );
-        assert!(!report.stopped);
+        assert!(report.complete);
         assert_eq!(fake.prompts[..2], ["Do the step.", "Go on. End it."]);
     }
 
     #[test]
-    fn a_run_stops_starting_runs_once_the_budget_is_spent() {
-        let mut fake = Fake {
-            prompts: Vec::new(),
-        };
-        let options = Options {
-            runs: 2,
-            budget: 0.03,
-            case: None,
-        };
+    fn a_run_starts_no_turn_once_the_budget_is_spent_and_drops_the_unfinished_run() {
+        let mut fake = Fake::default();
 
-        let dir = scratch("budget");
-        let report = run(&nudge(), &dir, &options, &mut fake).unwrap();
-        fs::remove_dir_all(dir).unwrap();
+        let report = report("budget", &mut fake, 2, 0.03);
 
-        assert!(report.stopped);
-        assert_eq!(fake.prompts.len(), 4);
+        assert!(!report.complete);
+        assert_eq!(fake.prompts.len(), 3);
         assert_eq!(
             report.tallies[0].did,
-            BTreeMap::from([("no exit".to_owned(), 2)])
+            BTreeMap::from([("no exit".to_owned(), 1)])
         );
         assert!(report.tallies[1].did.is_empty());
+    }
+
+    #[test]
+    fn a_failed_turn_counts_as_an_agent_error_and_leaves_the_report_incomplete() {
+        let mut fake = Fake {
+            fail: true,
+            ..Fake::default()
+        };
+
+        let report = report("failed", &mut fake, 1, 1.0);
+
+        assert!(!report.complete);
+        assert_eq!(
+            report.tallies[1].did,
+            BTreeMap::from([("agent error: error_max_budget_usd".to_owned(), 1)])
+        );
+        assert_eq!(fake.prompts, ["Do the step.", "Do the step."]);
+    }
+
+    #[test]
+    fn load_refuses_duplicate_names_and_empty_lists() {
+        let dir = scratch("load");
+        fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("x.eval.toml");
+        let case = "[[cases]]\nname = \"a\"\nprompt = \"p\"\nexpect = \"ask\"\n";
+        for (text, error) in [
+            (
+                format!(
+                    "variants = [{{ name = \"v\", text = \"t\" }}, {{ name = \"v\", text = \"u\" }}]\n{case}"
+                ),
+                "two variants named v",
+            ),
+            (
+                format!("variants = [{{ name = \"v\", text = \"t\" }}]\n{case}{case}"),
+                "two cases named a",
+            ),
+            (
+                "variants = []\ncases = []\n".to_owned(),
+                "needs at least one variant and one case",
+            ),
+        ] {
+            fs::write(&file, text).unwrap();
+            let refused = load(&file).unwrap_err();
+            assert!(refused.contains(error), "{refused}");
+        }
+        fs::remove_dir_all(dir).unwrap();
     }
 
     proptest::proptest! {
@@ -490,6 +573,14 @@ mod tests {
             fs::write(&log, text).unwrap();
             let _ = ending(&log);
             fs::remove_file(log).unwrap();
+        }
+
+        #[test]
+        fn load_reads_any_file_without_panicking(text in "[ -~\n]{0,200}") {
+            let file = scratch("load-any").with_extension("toml");
+            fs::write(&file, text).unwrap();
+            let _ = load(&file);
+            fs::remove_file(file).unwrap();
         }
     }
 }

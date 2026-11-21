@@ -137,6 +137,46 @@ fn eval_of_one_case_prints_its_table_and_leaves_the_doc() {
 }
 
 #[test]
+fn eval_counts_a_failed_turn_as_an_agent_error_and_leaves_the_doc() {
+    let dir = dir("failed-turn");
+    fs::write(dir.join("prompt.eval.toml"), EVAL).unwrap();
+    fs::write(dir.join("prompt.txt"), "Go on.\n").unwrap();
+    fs::write(dir.join("behaviour.md"), DOC).unwrap();
+    fs::create_dir_all(dir.join("fake")).unwrap();
+    fs::write(dir.join("fake/handler-fail"), "").unwrap();
+
+    let output = eval(&dir, &["prompt.eval.toml", "--runs", "1", "--budget", "1"]);
+
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(
+        stdout.contains("| done | old | result passed | 0/1 | agent error: exit 1 1 |"),
+        "{stdout}"
+    );
+    assert_eq!(fs::read_to_string(dir.join("behaviour.md")).unwrap(), DOC);
+}
+
+#[test]
+fn eval_refuses_an_unknown_case() {
+    let dir = dir("unknown-case");
+    fs::write(dir.join("prompt.eval.toml"), EVAL).unwrap();
+    fs::write(dir.join("prompt.txt"), "Go on.\n").unwrap();
+
+    let output = eval(
+        &dir,
+        &["prompt.eval.toml", "--case", "typo", "--budget", "1"],
+    );
+
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("no case typo"));
+    assert!(!dir.join("fake/handler-args.log").exists());
+}
+
+#[test]
 fn eval_refuses_to_run_without_a_budget() {
     let dir = dir("no-budget");
     fs::write(dir.join("prompt.eval.toml"), EVAL).unwrap();

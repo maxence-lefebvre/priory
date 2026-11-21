@@ -1179,7 +1179,7 @@ fn prompt_eval(args: Vec<String>) -> ExitCode {
                 _ => return usage(),
             },
             [flag, value] if flag == "--budget" => match value.parse::<f64>() {
-                Ok(value) if value > 0.0 => budget = Some(value),
+                Ok(value) if value > 0.0 && value.is_finite() => budget = Some(value),
                 _ => return usage(),
             },
             _ => return usage(),
@@ -1208,7 +1208,7 @@ fn prompt_eval(args: Vec<String>) -> ExitCode {
         let table = eval::table(&report, &model, runs);
         print!("{table}");
         match &loaded.doc {
-            Some(doc) if case.is_none() && !report.stopped => {
+            Some(doc) if case.is_none() && report.complete => {
                 let name = path.file_name().unwrap_or_default().to_string_lossy();
                 eval::rewrite(doc, &name, &table)
             }
