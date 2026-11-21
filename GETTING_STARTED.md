@@ -289,6 +289,7 @@ When someone labels issue 42 of `owner/name` with `agent`, this happens:
 | `priory costs DIR [--by workflow\|agent\|model\|machine\|repo] [--json]` | Prints this week's cost against last week's, per day with merges, and split by one dimension |
 | `priory grades [--since WINDOW] [--json]` | Prints how each grade's tasks turned out, headed by green's one-shot rate against 90 % |
 | `priory report risk [DIR] [--workflow NAME] [--json]` | Prints, for each irreversible step, the share of tasks through it judged wrong and landed wrong within 30 days |
+| `priory label [DIR] TASK wrong --evidence URL`, `--clear` | Marks a task's work wrong for the risk report, then withdraws the mark |
 
 Run `priory` with no arguments to print its usage.
 
