@@ -19095,3 +19095,39 @@ fn the_predecessors_pull_request_merging_wakes_the_waiting_entry_to_rebase_onto_
     );
     assert!(setup.rows("asks").is_empty());
 }
+
+#[test]
+fn a_waiting_entry_done_at_green_checks_reopens_to_rebase_when_its_predecessor_merges() {
+    let setup = stacked_entry_opened("batch-waiting-done-restack");
+    let worktree = setup.dir.join("home/worktrees/owner/repo/3");
+    let head = git(&worktree).args(["rev-parse", "HEAD"]).output().unwrap();
+    let mut green = check(1, 0);
+    green.data["pull_request"] = json!(8);
+    green.data["head_branch"] = json!("priory/3");
+    green.data["base_branch"] = json!("priory/2");
+    green.data["head_sha"] = json!(String::from_utf8(head.stdout).unwrap().trim());
+    setup.publish(&green.subject("owner/repo#8"));
+    setup.until("tasks", |rows| {
+        rows.iter().any(|row| row[0] == "3" && row[4] == "done")
+    });
+
+    setup.publish(&on_pull_2(
+        "github.pull_request.closed",
+        json!({ "merged": true, "github_id": 400 }),
+    ));
+
+    let outbox = setup.until("outbox", |rows| {
+        rows.iter()
+            .any(|row| row[1] == "3" && row[4].contains("merged; rebase"))
+    });
+    let woke = outbox
+        .iter()
+        .find(|row| row[1] == "3" && row[4].contains("merged; rebase"))
+        .unwrap();
+    assert!(
+        woke[4]
+            .starts_with("This done task reopened as generation 2: #7 merged; rebase #8 onto main"),
+        "{woke:?}"
+    );
+    assert_eq!(task_json(&setup, "3")["stack"][0]["base"], "main");
+}

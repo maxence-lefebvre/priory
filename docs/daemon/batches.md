@@ -3,7 +3,7 @@
 A batch is a set of issues that one planning task turns into ordered tasks under one ask. A person
 hands the issues over with `priory batch add`. The planning task's agent plans them, a person answers
 one go, and the daemon creates one task per entry. Each entry starts once the entries it needs have
-merged.
+merged, or, at a `waiting` edge, once its stacking parent waits on its open pull request.
 
 This page describes `merged` and `waiting` moments, stacked entries, edits of a plan, split issues,
 the desk line and the HTTP API. The web view's batch page comes later.
@@ -138,7 +138,8 @@ refused: `the plan of batch <id> is at revision <n>, not <m>; answer its new ask
 1. One task per entry, in plan order, keyed by its issue, or by its part key for a split issue. It runs the batch's entries workflow, in
    the planning task's band, lane and repository. Its request text is the entry's brief, from a
    `priory.batch.entry` source event in the inbox.
-2. One `merged` hold condition per edge, on the other entry's task. An entry with no edge is
+2. One hold condition per edge, of the edge's moment, `merged` or `waiting`, on the other entry's
+   task. A `waiting` edge also records that task as the entry's base task. An entry with no edge is
    `queued`.
 3. One `builds-on` relation per edge, by `priory`, which `priory tasks --graph` draws.
 4. Positions in the band after its other active tasks, in plan order, as `priory move` numbers them.
@@ -179,8 +180,9 @@ A `waiting` edge makes a stack across two tasks. The go records the parent as th
 - The entry's `open-pr` bases its bottom pull request on the parent's branch, while the parent has a
   pull request open from it. Its own stack still fits its own workflow's `max_prs`.
 - When the parent's pull request merges, the entry gets the line a task's own stack gets: `#7 merged;
-  rebase #8 onto main`. It fires the entry's gate, or reaches the entry while it runs. GitHub
-  retargets the entry's pull request onto the merged one's base, which asks no person.
+  rebase #8 onto main`. It fires the entry's gate, reaches the entry while it runs, or reopens it
+  when its checks already made it `done`. The daemon records the merged one's base as the base of
+  the entry's bottom pull request, so the retarget GitHub makes asks no person.
 
 Once the parent's pull request merged, a stacked entry that has not started yet starts from the
 default branch, and its pull request is based on it.

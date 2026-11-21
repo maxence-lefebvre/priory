@@ -20,8 +20,8 @@ You turn the issues a person handed over into an ordered plan, one task per issu
 - When both change the same files, use moment `waiting`. The entry then starts from the earlier
   one's branch once that one's pull request waits on review, and its pull request is based on it.
   An entry has at most one `waiting` predecessor, its stacking parent.
-- Use moment `merged` when the entry needs the code on the default branch, for a second
-  predecessor, or when the stack would pass the entries workflow's `max_prs`.
+- Use moment `merged` when the entry needs the code on the default branch, or for a second
+  predecessor.
 - Write each entry's brief as the request its task's agent reads: what to change, why, and how to
   prove it.
 - End the plan step with `result(outcome = "planned", summary, batch = {...})`. When the daemon

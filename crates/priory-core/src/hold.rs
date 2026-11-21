@@ -351,18 +351,10 @@ pub(crate) fn waits_on_pull_request(
     task: i64,
     state: &str,
 ) -> rusqlite::Result<bool> {
-    let open = crate::stack::of(db, task)?
-        .iter()
-        .any(|pull| pull.state == "open");
-    if !open {
-        return Ok(false);
-    }
-    if state == "done" {
-        return Ok(true);
-    }
     db.query_row(
-        "SELECT ?2 = 'asleep' AND EXISTS (SELECT 1 FROM waits WHERE task = ?1 AND daemon
-           AND fired IS NULL AND withdrawn IS NULL)",
+        "SELECT EXISTS (SELECT 1 FROM pull_requests WHERE task = ?1 AND state = 'open')
+           AND (?2 = 'done' OR ?2 = 'asleep' AND EXISTS (SELECT 1 FROM waits WHERE task = ?1
+             AND daemon AND fired IS NULL AND withdrawn IS NULL))",
         params![task, state],
         |row| row.get(0),
     )

@@ -1715,7 +1715,7 @@ pub(crate) fn route_in(
     }
     crate::hold::event(tx, &resources)?;
     if message.kind == priory_intake::intake::PR_CLOSED && message.data["merged"] == true {
-        crate::tools::restack_stacked(tx, seq, &message.data)?;
+        crate::tools::restack_stacked(tx, trace, seq, &message.data)?;
     }
     // The keyed task keeps the event; another task that shares the resource hears it through its
     // wait or its subscription. A merge that fires a gate may end a run a person's `say` started.

@@ -1043,10 +1043,9 @@ fn entry_of(db: &Connection, id: i64, at: usize, entry: &Entry) -> rusqlite::Res
             Some((own, ..)) => db
                 .query_row(
                     "SELECT holds.met FROM holds JOIN tasks ON tasks.id = holds.target
-                     WHERE holds.task = ?1 AND holds.kind IN ('merged', 'waiting')
-                     AND tasks.batch_entry = ?2
+                     WHERE holds.task = ?1 AND holds.kind = ?3 AND tasks.batch_entry = ?2
                      ORDER BY holds.id DESC LIMIT 1",
-                    params![own, edge.entry],
+                    params![own, edge.entry, edge.moment],
                     |row| row.get::<_, Option<String>>(0),
                 )
                 .optional()?
