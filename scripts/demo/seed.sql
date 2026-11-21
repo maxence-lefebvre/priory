@@ -84,3 +84,11 @@ SELECT 'demo-run-' || id, 'factory.step.ended', ended, json_object('data', json_
   'model', CASE WHEN id IN (101,103) THEN 'claude-opus-5-5' ELSE 'claude-sonnet-5-5' END,
   'tokens', json_object('input', 30000+id%7*41000, 'output', 9000+id%5*3000, 'cache_read', 120000+id%4*90000, 'cache_write', 20000)))
 FROM runs WHERE id BETWEEN 101 AND 105;
+-- review feedback on task 1's pull request: a review the intake read without the branches, and the agent's sorting
+INSERT INTO inbox (id,type,subject,time,data,links,outcome,task) VALUES
+('p4','github.pull_request_review.submitted','acme/shop#212',strftime('%Y-%m-%dT%H:%M:%SZ','now','-150 minutes'),'{"repo":"acme/shop","pull_request":212,"head_sha":"a1f3c9e5b2d4","head_branch":null,"base_branch":null,"state":"changes_requested","body":"Two things.","url":"https://github.com/acme/shop/pull/212#pullrequestreview-301","actor":"reviewer-a","association":"MEMBER"}','[]','routed',1),
+('p5','linear.issue.updated','ENG-212',strftime('%Y-%m-%dT%H:%M:%SZ','now','-140 minutes'),'{"issue":"ENG-212","title":"Retry failed invoice emails"}','[]','routed',1);
+INSERT INTO feedback_triage (task,item,class,run) VALUES
+(1,'https://github.com/acme/shop/pull/212#discussion_r802','trivial',102),
+(1,'https://github.com/acme/shop/pull/212#discussion_r803','nothing-to-do',102),
+(1,'https://github.com/acme/shop/pull/212#pullrequestreview-301','persons-call',102);

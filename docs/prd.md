@@ -103,6 +103,7 @@ lanes.toml                   # or lanes.yaml
 prices.toml                  # or prices.yaml: dollars per million tokens, by model
 skills/<name>/SKILL.md
 instructions.md              # text before every agent's own prompt
+memories/<name>.md           # one fact per file, which every run gets in an index
 webhooks/  scorers/  benchmarks/
 ```
 

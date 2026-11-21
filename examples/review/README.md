@@ -5,7 +5,8 @@ merge risk. Then another agent reads it and the ticket it links to, runs the che
 cheap, and writes a pending GitHub review.
 Only you see a pending review. You edit it and submit it on GitHub.
 The reviewer writes its inline comments with the skill in `skills/review-comments/`, which Priory
-gives every run as `priory:review-comments`.
+gives every run as `priory:review-comments`. Every run also gets an index of the facts in
+`memories/`, where `pending-reviews.md` says why a review stays pending.
 
 ## What it needs
 

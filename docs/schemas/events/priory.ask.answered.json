@@ -13,7 +13,7 @@
           "type": "integer"
         },
         "by": {
-          "description": "Where the answer came from: `cli`.",
+          "description": "Where the answer came from: `cli` or `serve`.",
           "type": "string"
         },
         "revision": {
@@ -28,6 +28,14 @@
         "runner": {
           "description": "The runner whose ask it answers.",
           "type": "string"
+        },
+        "submission": {
+          "description": "The answer's own message id, which the runner's `priory.ask.applied` names.",
+          "format": "uuid",
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "text": {
           "description": "The answer.",
