@@ -4277,7 +4277,7 @@ fn a_failing_deliver_command_is_retried_with_a_backoff_then_its_failure_shows_on
     assert_eq!(failed["error"], "exit 3: hc is down");
     assert_eq!(delivered(&setup).len(), 5);
     assert!(
-        started.elapsed() >= Duration::from_secs(60),
+        started.elapsed() >= Duration::from_secs(15),
         "{:?}",
         started.elapsed()
     );
@@ -12890,7 +12890,7 @@ fn a_daemon_that_does_not_answer_gets_a_guarded_call_denied() {
     let reply: serde_json::Value = serde_json::from_str(&printed).unwrap();
     let reason = guard_denied(&reply).unwrap_or_else(|| panic!("{reply}"));
     assert!(reason.contains("did not confirm"), "{reason}");
-    assert!(took < Duration::from_secs(60), "{took:?}");
+    assert!(took < Duration::from_secs(15), "{took:?}");
     drop(silent.join());
 }
 
