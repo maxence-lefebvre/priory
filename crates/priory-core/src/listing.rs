@@ -138,6 +138,11 @@ const DESK: &str = "SELECT 0 AS part, asks.created AS since, 'ask' AS kind,
                UNION ALL
                SELECT 0, batches.went, 'batch', batches.id, batches.task, tasks.lane, batches.title
                FROM batches JOIN tasks ON tasks.id = batches.task WHERE batches.went IS NOT NULL
+                 AND (tasks.state NOT IN ('done', 'failed', 'dropped') OR EXISTS (SELECT 1
+                   FROM tasks AS entry LEFT JOIN pull_requests ON pull_requests.task = entry.id
+                   WHERE entry.batch = batches.id AND entry.id != batches.task
+                   AND (entry.state NOT IN ('done', 'failed', 'dropped')
+                     OR pull_requests.state = 'open')))
                UNION ALL
                SELECT 0, sweeps.started, 'sweep', sweeps.id, stalls.task, tasks.lane,
                  sweeps.script || ': ' || coalesce(sweeps.status
