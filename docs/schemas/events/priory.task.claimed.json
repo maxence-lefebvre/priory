@@ -1,0 +1,106 @@
+{
+  "$id": "https://raw.githubusercontent.com/maxence-lefebvre/priory/main/docs/schemas/events/priory.task.claimed.json",
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "additionalProperties": false,
+  "definitions": {
+    "Link": {
+      "additionalProperties": false,
+      "description": "A link for people.",
+      "properties": {
+        "label": {
+          "description": "`issue` or `pull_request`.",
+          "type": "string"
+        },
+        "url": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "label",
+        "url"
+      ],
+      "type": "object"
+    },
+    "TaskClaimed": {
+      "additionalProperties": false,
+      "description": "A runner claims a task's key: for a request no runner holds, to take over a waiting task of a\nrunner whose lease ended, or because a person gave it the task with `priory give`. The first\nclaim in log order that wins a key makes its runner the owner. Published by daemons of a factory\nwith several runners, and by `priory give`.",
+      "properties": {
+        "from": {
+          "description": "The runner it takes the key from, for a takeover or a gift.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "given": {
+          "description": "True when a person gave the task with `priory give`.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "key": {
+          "description": "The task's key, such as `github:owner/name#42`.",
+          "type": "string"
+        },
+        "request": {
+          "description": "The `id` of the task request the owner creates the task from.",
+          "format": "uuid",
+          "type": "string"
+        },
+        "runner": {
+          "description": "The runner that claims it.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "key",
+        "runner",
+        "request"
+      ],
+      "type": "object"
+    }
+  },
+  "description": "A runner claims a task's key: for a request no runner holds, to take over a waiting task of a\nrunner whose lease ended, or because a person gave it the task with `priory give`. The first\nclaim in log order that wins a key makes its runner the owner. Published by daemons of a factory\nwith several runners, and by `priory give`.",
+  "properties": {
+    "data": {
+      "$ref": "#/definitions/TaskClaimed"
+    },
+    "id": {
+      "description": "A UUIDv5 of the message's name, so a retried publish keeps its id.",
+      "format": "uuid",
+      "type": "string"
+    },
+    "links": {
+      "description": "GitHub and Linear events carry one link to the event's page.",
+      "items": {
+        "$ref": "#/definitions/Link"
+      },
+      "type": "array"
+    },
+    "subject": {
+      "description": "A short line for listings, such as `owner/name#42`.",
+      "type": "string"
+    },
+    "time": {
+      "description": "When the event happened, RFC 3339.",
+      "format": "date-time",
+      "type": "string"
+    },
+    "type": {
+      "const": "priory.task.claimed",
+      "description": "The message type, such as `github.issues.labeled`.",
+      "type": "string"
+    }
+  },
+  "required": [
+    "id",
+    "type",
+    "subject",
+    "time",
+    "data",
+    "links"
+  ],
+  "title": "priory.task.claimed",
+  "type": "object"
+}

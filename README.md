@@ -68,7 +68,7 @@ Priory is in early development. The milestones come from [docs/prd.md](docs/prd.
 | M0 | One machine, tmux, Claude Code, CLI and GitHub intake, inbox, workflows, waits, asks, results, health | Done |
 | M1 | Linear, Slack replies, schedules, queue order, holds, revive, lanes, bands, memory gate, agents slice, retiring tasks, traces, reports, nudges, repair, Codex | Done |
 | M2 | Web view, webhooks, terminal attach, command answers, OpenTelemetry export, search | In progress: terminal attach, OpenTelemetry export and search have landed |
-| M3 | Several machines, state adapters, shared skills and memories | Not started |
+| M3 | Several machines, state adapters, shared skills and memories | In progress: runners own tasks through claims and leases on one shared log |
 | M4 | Risk estimate, scorers and benchmarks | Not started |
 
 ## Documentation

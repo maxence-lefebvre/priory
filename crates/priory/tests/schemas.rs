@@ -72,6 +72,10 @@ fn generated() -> Vec<(String, Value)> {
         event::<CliRequested>("priory.task.requested.cli"),
         event::<TaskRequested>("factory.task.requested"),
         event::<Baseline>("factory.intake.baseline"),
+        event::<TaskClaimed>("priory.task.claimed"),
+        event::<TaskHeld>("priory.task.held"),
+        event::<RunnerAlive>("priory.runner.alive"),
+        event::<AskAnswered>("priory.ask.answered"),
     ]
 }
 

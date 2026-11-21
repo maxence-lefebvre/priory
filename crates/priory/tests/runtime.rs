@@ -75,6 +75,8 @@ const UNDO_SINCE_SEARCH: &str = "DROP INDEX todos_open_connector; ALTER TABLE to
 /// the tmux server.
 struct Setup {
     dir: PathBuf,
+    /// The log's file, which several runners can share.
+    bus: PathBuf,
     daemon: Option<Child>,
     tmux: TmuxDir,
 }
@@ -88,6 +90,7 @@ impl Setup {
         let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join("rt").join(name);
         let tmux = TmuxDir::new(&dir);
         let setup = Setup {
+            bus: dir.join("bus.db"),
             dir,
             daemon: None,
             tmux,
@@ -150,7 +153,7 @@ impl Setup {
     }
 
     fn bus(&self) -> Bus {
-        Bus::open(&self.dir.join("bus.db")).unwrap()
+        Bus::open(&self.bus).unwrap()
     }
 
     fn publish(&self, message: &Message) {
@@ -170,7 +173,7 @@ impl Setup {
             .env("PATH", path)
             .env("TMUX_TMPDIR", self.tmux.path())
             .env("XDG_RUNTIME_DIR", self.tmux.path())
-            .env("HERDR_BUS_DB", self.dir.join("bus.db"))
+            .env("HERDR_BUS_DB", &self.bus)
             .env("PRIORY_DB", self.dir.join("priory.db"))
             .env("PRIORY_HOME", self.dir.join("home"))
             .env("FAKE_DIR", self.dir.join("fake"))
@@ -15727,6 +15730,293 @@ fn a_finding_reported_three_runs_in_a_row_moves_its_fix_task_up_a_band() {
     assert_eq!(tasks.len(), 2, "{tasks:?}");
 }
 
+const APPROVE: &str = r#"
+start = "approve"
+
+[[steps]]
+id = "approve"
+decides = "human"
+effect = "none"
+options = ["approved", "rejected"]
+next = { approved = "done", rejected = "stop" }
+"#;
+
+const T0: &str = "2026-11-21T10:00:00Z";
+const AN_HOUR_LATER: &str = "2026-11-21T11:00:00Z";
+
+/// Runner `host` of a factory that has runners `a` and `b`, on the log of `bus` when given.
+fn runner(test: &str, host: &str, bus: Option<&Setup>) -> Setup {
+    let mut setup = Setup::new(&format!("{test}-{host}"));
+    for (path, content) in [
+        ("factory/runners/a.toml", "platform = { os = \"linux\" }\n"),
+        ("factory/runners/b.toml", "platform = { os = \"linux\" }\n"),
+        ("factory/workflows/approve.toml", APPROVE),
+        ("proc/sys/kernel/hostname", &format!("{host}\n")),
+    ] {
+        let file = setup.dir.join(path);
+        fs::create_dir_all(file.parent().unwrap()).unwrap();
+        fs::write(file, content).unwrap();
+    }
+    if let Some(other) = bus {
+        setup.bus = other.bus.clone();
+    }
+    setup
+}
+
+/// Waits until the log holds a message of `kind` whose data has every field of `fields`.
+fn logged(setup: &Setup, kind: &str, fields: serde_json::Value) {
+    let deadline = Instant::now() + Duration::from_secs(60);
+    loop {
+        let messages = setup
+            .bus()
+            .messages(&herdr_bus::MessageQuery {
+                output: Some(OUTPUT.into()),
+                limit: 1000,
+                ..herdr_bus::MessageQuery::default()
+            })
+            .unwrap();
+        let found = messages.iter().any(|stored| {
+            stored.message.kind == kind
+                && fields
+                    .as_object()
+                    .unwrap()
+                    .iter()
+                    .all(|(field, value)| &stored.message.data[field] == value)
+        });
+        if found {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "no {kind} {fields} in the log\ndaemon: {}",
+            fs::read_to_string(setup.dir.join("daemon.log")).unwrap_or_default()
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+#[test]
+fn a_runner_away_for_an_hour_keeps_its_asked_task_and_its_answer_and_loses_only_a_task_it_never_started()
+ {
+    let mut a = runner("away", "a", None);
+    let mut b = runner("away", "b", Some(&a));
+    let mut asked = requested(1);
+    asked.data["workflow"] = json!("approve");
+    a.publish(&asked);
+    a.publish(&requested(2));
+    // No room on `a`, so task 2 never starts there.
+    a.memory(0);
+    let exe = Path::new(env!("CARGO_BIN_EXE_priory"));
+
+    a.start_with(exe, &[("PRIORY_NOW", T0)]);
+    let asks = a.until("asks", |rows| rows.len() == 1);
+    logged(
+        &a,
+        "priory.task.held",
+        json!({ "key": "github:owner/repo#1", "runner": "a", "hold": "kept" }),
+    );
+    logged(
+        &a,
+        "priory.task.held",
+        json!({ "key": "github:owner/repo#2", "runner": "a", "hold": "waiting" }),
+    );
+    a.crash();
+
+    b.start_with(exe, &[("PRIORY_NOW", AN_HOUR_LATER)]);
+    let ask = format!("a:{}", asks[0][0]);
+    let factory = b.dir.join("factory");
+    for answer in ["approved", "rejected"] {
+        let dir = factory.to_str().unwrap();
+        let sent = b.priory(&["answer", dir, &ask, answer, "--revision", "1"]);
+        assert!(
+            sent.status.success(),
+            "{}",
+            String::from_utf8_lossy(&sent.stderr)
+        );
+    }
+    b.publish(&requested(3));
+    let tasks = b.until("tasks", |rows| {
+        rows.iter().filter(|row| row[4] == "running").count() == 2
+    });
+    let mut keys: Vec<&str> = tasks.iter().map(|row| row[1].as_str()).collect();
+    keys.sort_unstable();
+    assert_eq!(
+        keys,
+        ["github:owner/repo#2", "github:owner/repo#3"],
+        "{tasks:?}"
+    );
+
+    a.memory(60);
+    a.start_with(exe, &[("PRIORY_NOW", AN_HOUR_LATER)]);
+    let tasks = a.until("tasks", |rows| {
+        rows.iter()
+            .all(|row| ["done", "dropped"].contains(&row[4].as_str()))
+    });
+    let states: Vec<[&str; 2]> = tasks
+        .iter()
+        .map(|row| [row[1].as_str(), row[4].as_str()])
+        .collect();
+    assert_eq!(
+        states,
+        [
+            ["github:owner/repo#1", "done"],
+            ["github:owner/repo#2", "dropped"]
+        ],
+        "the first answer stands, and the task that moved is not a's any more"
+    );
+    assert!(a.rows("runs").is_empty(), "a never ran task 2");
+    let runs = b.rows("runs");
+    assert_eq!(runs.len(), 2, "{runs:?}");
+}
+
+#[test]
+fn a_person_gives_a_started_task_to_another_runner_which_starts_it_over_and_its_old_runner_drops_it()
+ {
+    let mut a = runner("give", "a", None);
+    let mut b = runner("give", "b", Some(&a));
+    let mut asked = requested(1);
+    asked.data["workflow"] = json!("approve");
+    a.publish(&asked);
+    let exe = Path::new(env!("CARGO_BIN_EXE_priory"));
+    a.start_with(exe, &[("PRIORY_NOW", T0)]);
+    a.until("asks", |rows| rows.len() == 1);
+    logged(
+        &a,
+        "priory.task.held",
+        json!({ "key": "github:owner/repo#1", "runner": "a", "hold": "kept" }),
+    );
+    a.crash();
+
+    b.start_with(exe, &[("PRIORY_NOW", AN_HOUR_LATER)]);
+    b.until("inbox", |rows| {
+        rows.iter().any(|row| {
+            row.contains(&"priory.runner.alive".to_owned()) && row.contains(&"b".to_owned())
+        })
+    });
+    let factory = b.dir.join("factory");
+    let give = |runner: &str| {
+        let dir = factory.to_str().unwrap();
+        b.priory(&["give", dir, "github:owner/repo#1", runner])
+    };
+    let given = give("b");
+    assert_eq!(
+        String::from_utf8_lossy(&given.stdout),
+        "github:owner/repo#1 given to runner b: b takes it and a drops it as each reads the log\n",
+        "{}",
+        String::from_utf8_lossy(&given.stderr)
+    );
+    b.until("asks", |rows| rows.len() == 1);
+
+    a.start_with(exe, &[("PRIORY_NOW", AN_HOUR_LATER)]);
+    let tasks = a.until("tasks", |rows| rows[0][4] == "dropped");
+    assert_eq!(tasks.len(), 1);
+    let refused = give("b");
+    assert_eq!(
+        String::from_utf8_lossy(&refused.stderr),
+        "priory give: runner b holds github:owner/repo#1 already\n"
+    );
+    let unknown = give("c");
+    assert_eq!(
+        String::from_utf8_lossy(&unknown.stderr),
+        "priory give: runner c has no runner file in runners/\n"
+    );
+
+    let back = give("a");
+    assert!(
+        back.status.success(),
+        "{}",
+        String::from_utf8_lossy(&back.stderr)
+    );
+    let tasks = a.until("tasks", |rows| rows.len() == 2 && rows[1][4] == "asleep");
+    assert_eq!(tasks[0][4], "dropped", "{tasks:?}");
+    b.until("tasks", |rows| rows[0][4] == "dropped");
+}
+
+#[test]
+fn a_runner_that_joins_late_reads_a_finished_task_without_running_it_again() {
+    let mut a = runner("late", "a", None);
+    let mut b = runner("late", "b", Some(&a));
+    let mut asked = requested(1);
+    asked.data["workflow"] = json!("approve");
+    a.publish(&asked);
+    let exe = Path::new(env!("CARGO_BIN_EXE_priory"));
+    a.start_with(exe, &[("PRIORY_NOW", T0)]);
+    let asks = a.until("asks", |rows| rows.len() == 1);
+    let answered = a.priory(&["answer", &asks[0][0], "approved", "--revision", "1"]);
+    assert!(
+        answered.status.success(),
+        "{}",
+        String::from_utf8_lossy(&answered.stderr)
+    );
+    logged(
+        &a,
+        "priory.task.held",
+        json!({ "key": "github:owner/repo#1", "runner": "a", "hold": "ended" }),
+    );
+
+    b.start_with(exe, &[("PRIORY_NOW", T0)]);
+    logged(
+        &b,
+        "priory.task.claimed",
+        json!({ "key": "github:owner/repo#1", "runner": "b" }),
+    );
+    b.until("inbox", |rows| {
+        rows.iter().any(|row| row.contains(&"refused".to_owned()))
+    });
+    assert!(
+        b.rows("tasks").is_empty(),
+        "b's late claim of the finished request loses"
+    );
+}
+
+#[test]
+fn a_copy_reopened_on_a_runner_whose_key_another_runner_owns_drops_with_the_owner_named() {
+    let mut a = runner("reopen-elsewhere", "a", None);
+    let mut b = runner("reopen-elsewhere", "b", Some(&a));
+    let exe = Path::new(env!("CARGO_BIN_EXE_priory"));
+    a.calls(&[result("passed")]);
+    a.publish(&requested(1));
+    a.start_with(exe, &[("PRIORY_NOW", T0)]);
+    a.until("tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == "done")
+    });
+    logged(
+        &a,
+        "priory.task.held",
+        json!({ "key": "github:owner/repo#1", "runner": "a", "hold": "ended" }),
+    );
+    a.crash();
+
+    // A new request for the key goes to b, which a hears only once it is back.
+    b.publish(&requested(1));
+    b.start_with(exe, &[("PRIORY_NOW", T0)]);
+    b.until("tasks", |rows| rows.len() == 1);
+    a.start_with(exe, &[("PRIORY_NOW", T0)]);
+    a.until("inbox", |rows| {
+        rows.iter()
+            .any(|row| row[1] == "priory.task.claimed" && row[4] == "refused")
+    });
+    // The comment comes after the task was done, to the second.
+    std::thread::sleep(Duration::from_millis(1100));
+
+    a.publish(
+        &Message::new(
+            "github.issues.comment",
+            json!({ "repo": "owner/repo", "issue": 1, "actor": "ana", "body": "Still broken.",
+                "url": "u", "github_id": 901 }),
+        )
+        .subject("owner/repo#1")
+        .time(herdr_bus::Timestamp::now()),
+    );
+
+    let tasks = a.until("tasks", |rows| rows[0][4] == "dropped");
+    assert_eq!(tasks.len(), 1, "{tasks:?}");
+    let task = a.priory(&["task", &tasks[0][0], "--json"]);
+    let task: serde_json::Value = serde_json::from_slice(&task.stdout).unwrap();
+    assert_eq!(task["reason"], "owned by runner b", "{task}");
+    assert_eq!(b.rows("tasks")[0][4], "running");
+}
+
 fn mcp(tool: &str) -> serde_json::Value {
     json!({ "name": tool, "arguments": {} })
 }
@@ -15824,4 +16114,25 @@ fn a_later_run_that_uses_the_connector_clears_its_desk_item() {
         assert!(Instant::now() < deadline, "the item never cleared");
         std::thread::sleep(Duration::from_millis(50));
     }
+}
+
+#[test]
+fn a_connector_call_a_guard_denies_leaves_its_desk_item_open() {
+    let mut setup = Setup::new("connector-denied-use");
+    setup.calls(&[
+        json!([mcp("mcp__linear__authenticate"), result("passed")]),
+        json!([mcp("mcp__linear__create_issue")]),
+    ]);
+    setup.publish(&requested(42));
+    setup.start();
+    setup.replied(1);
+    setup.until("tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] != "running")
+    });
+
+    setup.publish(&requested(43));
+
+    let replies = setup.replied(3);
+    assert!(guard_denied(&replies[2]).is_some(), "{}", replies[2]);
+    assert_eq!(sign_in_rows(&setup).len(), 1);
 }

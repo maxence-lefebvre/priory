@@ -136,7 +136,7 @@ Every Claude run's settings register `priory hook PreToolUse` for `Bash` and `mc
 The hook matches the call itself, with the built-in guards and the factory's, which the run's pane
 holds in `PRIORY_GUARD`. A call no guard matches passes at once, without the daemon, so reads keep
 working while the daemon restarts.
-A call to a connector with an open sign-in to-do also reports the use to the daemon, without waiting for an answer (see [desk.md](desk.md#sign-in-to-dos)).
+A call to a connector with an open sign-in to-do that the guards allow also reports the use to the daemon, and waits at most one second for the answer (see [desk.md](desk.md#sign-in-to-dos)).
 
 For a guarded call, the hook asks the daemon over the socket (see [home.md](home.md)) about each
 guard the call hits, and waits up to 5 seconds for each answer. It denies the call when the daemon

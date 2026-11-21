@@ -74,9 +74,10 @@ per connector, however many runs were denied.
 It leaves the desk in two ways:
 
 - A person runs `priory todo done ID`, as for any to-do.
-- A later run calls another tool of that connector. The run's tool guard hook sees the call, since
-  the daemon gives each run the connectors with an open item in `PRIORY_CONNECTORS`, and tells the
-  daemon, which marks the to-do done. A daemon that does not answer never blocks the call.
+- A later run calls another tool of that connector, and the guards allow the call. The run's tool
+  guard hook sees the call, since the daemon gives each run the connectors with an open item in
+  `PRIORY_CONNECTORS`, and tells the daemon, which marks the to-do done. A call a guard denies
+  clears nothing. A daemon that does not answer holds the call for one second at most.
 
 A run started before the item was added does not clear it. If the connector still needs a sign-in,
 the next denial adds the item again.
