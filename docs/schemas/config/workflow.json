@@ -32,6 +32,21 @@
       ],
       "type": "string"
     },
+    "GuardAllow": {
+      "additionalProperties": false,
+      "description": "A workflow's or a step's `guard` table.",
+      "properties": {
+        "allow": {
+          "default": [],
+          "description": "Guard names, built-in or from `[guard]` in `factory.toml`.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "type": "object"
+    },
     "Step": {
       "additionalProperties": false,
       "description": "One step: who decides its outcome, what it may change, and where each outcome leads.",
@@ -89,6 +104,14 @@
         },
         "effect": {
           "$ref": "#/definitions/Effect"
+        },
+        "guard": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/GuardAllow"
+            }
+          ],
+          "description": "The guarded calls an irreversible step may make while it is approved or autonomous."
         },
         "id": {
           "description": "The step's id, unique in the workflow; `done` and `stop` are reserved.",
@@ -169,21 +192,6 @@
         "runs"
       ],
       "type": "object"
-    },
-    "WorkflowGuard": {
-      "additionalProperties": false,
-      "description": "A workflow's `guard` table.",
-      "properties": {
-        "allow": {
-          "default": [],
-          "description": "Guard names, built-in or from `[guard]` in `factory.toml`.",
-          "items": {
-            "type": "string"
-          },
-          "type": "array"
-        }
-      },
-      "type": "object"
     }
   },
   "description": "`workflows/<name>.toml` or `.yaml`: the typed steps a task goes through. The file name is the\nworkflow's name.",
@@ -198,7 +206,7 @@
     "guard": {
       "allOf": [
         {
-          "$ref": "#/definitions/WorkflowGuard"
+          "$ref": "#/definitions/GuardAllow"
         }
       ],
       "description": "The guarded calls every step of the workflow may make with no approval."
