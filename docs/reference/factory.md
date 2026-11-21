@@ -121,6 +121,11 @@ endpoints. With no `[serve]` table, nothing listens.
 | `web` | boolean | no | `true` | Serve the web view's files as well as `/api`. `false` serves only `/api` | `false` |
 | `public` | boolean | no | `false` | Allow a `listen` address beyond this machine | `true` |
 | `extension_origins` | array of strings | no | `[]` | The browser extensions whose pages may write, each an exact origin: `chrome-extension://` and the extension's 32-letter id. They still send the token. `priory check` refuses any other value | `["chrome-extension://ekngedcpijdeijlmffkeehilmafoikkm"]` |
+| `terminal` | string | no | `"watch"` | What a token holder may do with a run's terminal. `"watch"` serves its screen at [`/api/runs/{id}/screen`](serve.md#run-screen); `"off"` serves none | `"off"` |
+| `redact_env` | array of strings | no | `[]` | More environment variables whose values the screen hides, besides the token and the factory's other secrets | `["OPENAI_API_KEY"]` |
+
+The screen is redacted on a best effort basis: whoever holds the token may read what an agent's
+screen shows. See [serve.md](../daemon/serve.md#a-runs-screen) for what it hides.
 
 `public = true` exposes the factory's state to the network the address reaches. Whether a machine
 may do that is the factory owner's choice, per machine. The server speaks plain HTTP, with no TLS.

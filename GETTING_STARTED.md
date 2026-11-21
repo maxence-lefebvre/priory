@@ -275,6 +275,7 @@ When someone labels issue 42 of `owner/name` with `agent`, this happens:
 | `priory relate TASK KIND OTHER [--remove]` | Records that a task `builds-on`, `fixes`, `takes-up` or `relates` to another, or removes it |
 | `priory task TASK --json` | Prints one task with its brief, plan, pull request, runs and asks |
 | `priory attach TASK [--read-only]` | Attaches your terminal to a task's agent |
+| `priory screen TASK [--json]` | Prints what a task's agent shows now, with secrets hidden |
 | `priory resume TASK` | Resumes a blocked task |
 | `priory say TASK TEXT` | Sends a task's agent a message, waking it if it sleeps |
 | `priory subscribe TASK RESOURCE [--expected REVISION]`, `priory unsubscribe TASK RESOURCE` | Routes a pull request's, Linear issue's or Slack thread's events to a task until it closes, or stops routing them. Every task already subscribes to its own key, such as the Slack thread that started it. `--expected` refuses the subscribe once the state moved past that revision |
@@ -319,6 +320,10 @@ filters by state, lane and workflow; each row opens the task's page, and a batch
 the batch. The Runs panel lists the runs of the last 7 days with their agent, model, outcome,
 duration and tokens, filtered by outcome, agent or step. `priory tasks` and `priory runs` print the
 same tasks and runs, and the Herdr Tasks and Runs panels show them too.
+
+The Queue panel, under More on a phone, shows Up next, then each band's waiting tasks in the order
+they start, with why each one waits. Its Move menu moves a task to the top of its band, up or down
+one, or to another band, as `priory move` does. `priory queue` prints the same queue.
 
 A workflow can write a report for you, such as a morning dossier: `priory report show` prints the
 last one. The web view's Reports panel shows it, and takes its picks and row comments as

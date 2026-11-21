@@ -19,6 +19,7 @@ const shots = [
   ["web-view-tasks-390-dark", "/tasks", 390, 844, "dark", 0],
   ["web-view-runs-1440-light", "/runs", 1440, 900, "light", 0],
   ["web-view-runs-390-dark", "/runs", 390, 844, "dark", 0],
+  ["web-view-queue-1440-light", "/queue", 1440, 900, "light", 0],
   ["web-view-flows-1440-light", "/workflow", 1440, 900, "light", 0],
   ["web-view-flows-390-dark", "/workflow", 390, 844, "dark", 0],
   ["web-view-costs-1440-light", "/costs", 1440, 900, "light", 0],

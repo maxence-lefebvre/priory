@@ -38,6 +38,7 @@ does, with every count in `older` at 0. Their rows match the CLI's JSON only wit
 | `/api/costs?since=WINDOW&by=SPLIT` | `priory costs --json --since WINDOW --by SPLIT` | an object: [Costs](#costs) |
 | `/api/grades?since=WINDOW` | `priory grades --json --since WINDOW` | an object: [Grades](#grades) |
 | `/api/attention?since=WINDOW&by=SPLIT` | `priory report attention --json --since WINDOW --by SPLIT` | an object: [Attention](#attention) |
+| `/api/runs/{id}/screen?have=HASH` | `priory screen --run ID --json` | the run's screen, with secrets hidden. See [Run screen](#run-screen) |
 | `/api/events?since=REV` | `priory wait --since REV` | `{"revision": N}` once it differs from `REV`. See [below](#apievents) |
 | `/api/push/key` | | `{"key": "<base64url>"}`, the daemon's VAPID public key. See [Notifications](#notifications) |
 | `POST /api/asks/{id}/answer` | `priory answer ID TEXT --revision N` | `{"ok": "<what the CLI prints>"}`. See [Writes](#writes) |
@@ -50,6 +51,7 @@ does, with every count in `older` at 0. Their rows match the CLI's JSON only wit
 | `POST /api/tasks/{id}/release` | `priory release ID [--expected N]` | as above |
 | `POST /api/inbox/{seq}/read` | `priory inbox read SEQ` | as above |
 | `POST /api/tasks/{id}/say` | `priory say ID TEXT` | as above |
+| `POST /api/tasks/{id}/move` | `priory move ID --expected N [--band BAND] [--top \| --before TASK \| --after TASK]` | as above |
 | `POST /api/batches/{id}/edit` | `priory batch edit ID --expected N ...` | as above |
 | `POST /api/reports/pick` | `priory report pick PICK OPTION --expected N` | `{"ok": "<what the CLI prints>"}` |
 | `POST /api/reports/comment` | `priory report comment ROW --expected N TEXT` | as above |
@@ -72,17 +74,17 @@ or a reason, is untrusted: render it as text.
 | `400` | The request does not parse, or its target does not start with `/`; `/api/events` lacks `since` or has a parameter out of range; `/api/desk` has a parameter other than `person`, or a broken escape; `/api/asks` has a parameter other than `band`, `risk` and `all=1`, a band the factory does not have, or a risk other than the eight [below](#asks); `/api/tasks` has a parameter other than `all=1`, or a `pr` that is not a pull request such as `github:owner/repo#7`; `/api/runs` has a parameter other than `all=1`; `/api/costs` has a parameter other than `since` and `by`, a broken escape, a `since` that cannot form a window (see [trace.md](../daemon/trace.md#costs)), or a `by` other than the five [below](#costs); `/api/grades` has a parameter other than `since`, a broken escape, or a `since` that does not parse; `/api/attention` has the same faults, with a `by` other than the three [below](#attention); a write's body is not the shape [below](#writes); for a webhook, it sends two `Content-Length`, or its payload lacks a field its event needs |
 | `401` | The token is missing or wrong on a path under `/api`; for a webhook, the signature is |
 | `403` | A `POST` carries an `Origin` whose host and port differ from its `Host`, such as a page on another site, and that is not one of [`[serve] extension_origins`](factory.md#serve) |
-| `404` | No such path, task, report, ask, batch or web view file |
+| `404` | No such path, task, report, ask, batch or web view file; a run screen whose run ended, whose pane this server cannot find or read within 2 seconds, or that holds a secret redaction cannot hide; any run screen with `[serve] terminal = "off"` |
 | `405` | `POST` on a path that reads, or `GET` on a write. The `Allow` header names the method |
 | `408` | The request sent no byte within 1 second, or took over 5 seconds in all |
-| `409` | A write names an ask whose revision moved or that closed. The body adds the ask as `/api/asks` lists it. Or `/api/request` repeats a text already sent for the same linked issue. Or a cancel's `revision` is no longer the state's. Or a pick's report moved past its `revision`, or another choice took the pick. Or a batch edit's `revision` is no longer the plan's revision |
+| `409` | A write names an ask whose revision moved or that closed. The body adds the ask as `/api/asks` lists it. Or `/api/request` repeats a text already sent for the same linked issue. Or a cancel's or a move's `revision` is no longer the state's. Or a pick's report moved past its `revision`, or another choice took the pick. Or a batch edit's `revision` is no longer the plan's revision |
 | `411` | A `POST` has no `Content-Length`, or uses `Transfer-Encoding` |
 | `413` | A `GET` has a body; a write's body is over 16 KiB; a webhook's is over 1 MiB |
 | `415` | A write's `Content-Type` is not `application/json` |
 | `422` | The daemon refused a write for another reason, such as an option a step does not take, or a request's unknown workflow or bad `repo`, or a push subscription it does not take. A request the bus could not take gets `422` too, with the bus's error |
 | `431` | The request head is over 8 KiB or 32 headers |
 | `500` | The state could not be read, a delivery could not be published, or Priory failed while answering. The server keeps serving |
-| `503` | 4 requests already wait on `/api/events` and this one would wait too; or a write found no daemon on its socket, as under `priory serve` alone; or `/api/push/key` before a daemon made the key pair. It comes with `Retry-After: 1` |
+| `503` | 4 requests already wait on `/api/events` and this one would wait too; or a write found no daemon on its socket, as under `priory serve` alone; or `/api/push/key` before a daemon made the key pair; or 2 run screens are already being read. It comes with `Retry-After: 1` |
 | `504` | A write reached the daemon, which did not reply within 10 seconds. It may have applied it |
 
 An error's body is `{"error": "<why>"}`.
@@ -101,6 +103,29 @@ The reply is `200` with `{"revision": N}`: at once when `N` differs from `since`
 first change, or after `timeout` with `N` equal to `since`. `priory wait --since REV [--timeout D]`
 prints `N` the same way, and waits 25 seconds by default. `D` is a duration such as `90s` or `2m`.
 
+## Run screen
+
+`/api/runs/{id}/screen` returns what the run's agent pane shows now, read with tmux's
+`capture-pane`. [serve.md](../daemon/serve.md#a-runs-screen) explains what it hides and why. The
+reply carries `Cache-Control: no-store`.
+
+| Field | Meaning |
+| ----- | ------- |
+| `run`, `task` | The run and its task |
+| `width`, `height` | The pane's size, in columns and rows |
+| `cursor` | `{"x", "y"}`, from the top left at 0, or `null` when the cursor is hidden |
+| `lines` | The screen, one string per row, `height` of them, blank rows kept and trailing spaces trimmed, with each secret replaced by `[redacted]` |
+| `cut` | How many top rows the server left out to keep `lines` under 256 KiB of JSON, 0 on a usual screen |
+| `redacted` | How many secrets the server replaced |
+| `hash` | 16 hex digits, a hash of the fields above after redaction. A hidden value never changes it |
+
+With `?have=HASH` equal to the current `hash`, the reply is `{"hash": "<HASH>", "same": true}`.
+
+`priory screen (TASK | --run RUN) [--json]` prints the same screen, as rows of text or, with
+`--json`, as this object. It hides the values of the default secret variables, such as
+`PRIORY_TOKEN`, from its own environment, and the secret shapes. Like the endpoint, it gives tmux
+2 seconds.
+
 ## Writes
 
 Each write sends the daemon the same line as its CLI verb, and the daemon applies it.
@@ -118,6 +143,7 @@ application/json` and a JSON body of at most 16 KiB with exactly the fields belo
 | `POST /api/tasks/{id}/cancel` | optionally `revision`, an integer: the state's revision the client showed, as `--expected`. A newer state gets `409` |
 | `POST /api/tasks/{id}/release` | optionally `revision`, an integer, as `--expected`. A newer state gets `409` |
 | `POST /api/tasks/{id}/say` | `text`, a string: what the task's agent hears |
+| `POST /api/tasks/{id}/move` | `revision`, an integer: the state's revision the client showed, as `--expected`. Then `band`, one of the factory's bands, a place, or both. The place is one of `"top": true`, `before` or `after`, a task's id, as `--top`, `--before` and `--after`. A body with two places, or with neither a band nor a place, gets `400`, a newer state `409`, and a band the factory lacks or a task that is not active `422` |
 | `POST /api/subscribe` | `task`, an integer, and `resource`, a string such as `github:owner/name#7`, `linear:ENG-7` or `slack:C0123:1763500000.000100`, as `priory subscribe TASK RESOURCE`. Optionally `revision`, an integer, as `--expected`: a newer state gets `409`. A resource it cannot name gets `400`, a missing task `404`, and a resource another active task owns `422`, naming that task |
 | `POST /api/batches/{id}/edit` | `revision`, the plan revision the client showed, then one edit: `drop`, an entry id, with optionally `"with_successors": true`; or `move`, an entry id, with one of `"top": true`, `before` or `after`, an entry id; or `moment`, an object of `entry`, `other` and `moment`, which sets the moment of the edge from `entry` to `other`. A body with no edit, two edits, or a field its edit does not take gets `400`, a plan whose revision moved `409`, and an edit the plan refuses `422`. See [batches.md](../daemon/batches.md#editing-a-plan) |
 | `POST /api/inbox/{seq}/read` | `{}`: marks the report read, so its row leaves the desk. A sequence number that is not a report gets `422` |
@@ -145,7 +171,7 @@ curl -X POST http://127.0.0.1:7340/api/asks/42/answer -H "Authorization: Bearer 
 | `200` `{"ok": "ask 42 answered"}` | The daemon applied it |
 | `200` `{"key": "cli:2026-11-20-1", "id": 7}` | For `/api/request`: the daemon published the request and task `id` holds `key`. `id` is `null` when no task took the key |
 | `409` `{"error", "ask"}` | The ask's revision is no longer the one sent, or it was answered, dismissed or withdrawn. `ask` is its current state |
-| `409` `{"error"}` | A cancel's `revision` is no longer the state's. Or a pick's report is at another revision than the one sent, or the pick already has a choice: read the report again |
+| `409` `{"error"}` | A cancel's or a move's `revision` is no longer the state's. Or a pick's report is at another revision than the one sent, or the pick already has a choice: read the report again |
 | `409` `{"error", "key", "id"}` | For `/api/request`: the same text already went to `key`, so nothing was added. `id` is the active task that holds `key`, or `null` |
 | `404`, `422` `{"error"}` | The ask, task or pick is gone, or the daemon refused for another reason, such as a resume of a task that is not blocked, a say to a task with no run yet, or a comment on a stale report revision. `error` is the CLI's sentence |
 | `503` `{"error"}` | No daemon listens on the socket, so nothing was sent. Reads keep working |
