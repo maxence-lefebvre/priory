@@ -1714,7 +1714,8 @@ fn merged(
 }
 
 /// Fires the daemon's checks wait `wait` on the event `seq` and marks its task done, or enters
-/// the step the gate waited to enter, ending a run a person's `say` started when that step does.
+/// the step the gate waited to enter. A run a person's `say` started ends when the task is done or
+/// that step does.
 fn done(
     tx: &Transaction,
     wait: i64,
@@ -1729,10 +1730,6 @@ fn done(
         [wait],
         |row| Ok((row.get(0)?, row.get(1)?)),
     )?;
-    let Some(after) = after else {
-        set(tx, task, "done", None, None)?;
-        return Ok((true, None));
-    };
     // A person's `say` may have started a run while the task slept on its gate.
     let live: Option<String> = tx
         .query_row(
@@ -1744,6 +1741,14 @@ fn done(
     let from = match live {
         Some(session) => run(tx, &session)?,
         None => None,
+    };
+    let Some(after) = after else {
+        set(tx, task, "done", None, None)?;
+        let Some(from) = from else {
+            return Ok((true, None));
+        };
+        end(tx, from.id, "done")?;
+        return Ok((true, Some(from.tmux)));
     };
     let kill = step_in(
         tx,

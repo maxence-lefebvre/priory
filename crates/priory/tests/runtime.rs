@@ -6420,6 +6420,29 @@ fn a_merge_that_carries_a_said_run_into_the_next_step_queues_only_that_steps_end
 }
 
 #[test]
+fn a_merge_that_marks_a_task_done_ends_its_said_run_and_kills_its_session() {
+    let setup = gated("gate-said-done");
+    setup.calls(&[serde_json::Value::Null]);
+    setup.hold("hold-stop");
+    assert!(setup.priory(&["say", "1", "Hold on."]).status.success());
+    setup.until("outbox", |_| {
+        setup
+            .typed()
+            .iter()
+            .any(|text| text.starts_with("A person says: Hold on."))
+    });
+
+    setup.publish(&closed());
+    setup.until("tasks", |rows| rows[0][4] == "done");
+    setup.release("hold-stop");
+
+    setup.gone("priory-1");
+    let runs = setup.rows("runs");
+    assert_eq!(runs.len(), 3, "{runs:?}");
+    assert_eq!(runs[2][7], "done", "{runs:?}");
+}
+
+#[test]
 fn a_merge_with_a_check_still_running_marks_the_task_done() {
     let setup = gated("gate-merged");
     setup.publish(&check(1, 1));
