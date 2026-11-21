@@ -445,7 +445,7 @@ one of `workflow` (the default), `agent`, `model`, `machine` and `repo`. See
 | Field | Value |
 | ----- | ----- |
 | `by` | The split's dimension |
-| `current`, `previous` | The two windows: `since` and `until`, then a [total](#cost-total) and `merges` |
+| `current`, `previous` | The two windows: `since` and `until`, `since_day`, the local date `since` falls on in the daemon's timezone, as `days` are keyed, then a [total](#cost-total) and `merges` |
 | `days` | One entry per local day of either window with a record or a merge, oldest first: `day` (`YYYY-MM-DD`), a [total](#cost-total) and `merges` |
 | `split` | One entry per value of the current window's records, sorted: the value under the dimension's name, such as `"model": "claude-opus-5-5"`, and a [total](#cost-total) |
 
