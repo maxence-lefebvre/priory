@@ -995,8 +995,8 @@ fn listed(verb: &str, mut args: Vec<String>) -> ExitCode {
         let rows = &value[verb];
         match verb {
             "inbox" => listing::print(&["seq", "type", "subject", "task", "outcome", "line"], rows),
-            "tasks" => listing::print(
-                &[
+            "tasks" => {
+                let mut columns = vec![
                     "id",
                     "key",
                     "workflow",
@@ -1010,9 +1010,17 @@ fn listed(verb: &str, mut args: Vec<String>) -> ExitCode {
                     "retired",
                     "grade",
                     "grade_reason",
-                ],
-                rows,
-            ),
+                ];
+                // In a factory of several runners, each task names its runner, hold and when that
+                // runner was last alive.
+                if priory_core::runners::me(&db)
+                    .map_err(|error| error.to_string())?
+                    .is_some()
+                {
+                    columns.extend(["runner", "hold", "last_seen"]);
+                }
+                listing::print(&columns, rows)
+            }
             "asks" => {
                 let open = rows
                     .as_array()

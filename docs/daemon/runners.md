@@ -169,6 +169,18 @@ claim.
 A runner that is away keeps its asks listed, with its last alive time, and they still take answers,
 which it applies when it reads the log again.
 
+## Every runner's tasks
+
+Every runner already stores each claim, hold and alive message it reads. So `priory tasks`,
+`/api/tasks` and the web Tasks panel list each task another runner holds, from its claim: its key,
+its runner, its hold, `waiting` or `kept`, and `last_seen`, when that runner was last alive. The
+workflow, band, lane and title come from the task's request. No new message crosses for this.
+
+Only the owner and hold cross. The task's state, steps, runs and terminal stay on its runner, so its
+`id` is null and the row opens no page here: open that runner's own view for them. A task whose hold
+is `ended` leaves the list. Tasks of this runner carry its `runner` and `hold` too. The Herdr Tasks
+panel lists this runner's tasks only.
+
 ## Answering another runner's ask
 
 ```sh
@@ -239,5 +251,7 @@ Every runner also refuses a claim for a runner without a runner file.
   on the old runner.
 - Each ask change adds one post to `factory.intake`.
 - Snoozes stay on their machine: another runner's ask cannot be snoozed here.
-- A machine without a runner file runs no daemon, so it has no copy of the asks to serve.
+- A machine without a runner file runs no daemon, so it has no copy of the asks or tasks to serve.
+- Another runner's task shows its hold, not its state, and cannot be resumed, cancelled or said to
+  from here.
 - Each runner adds one alive message a minute to `factory.intake`.

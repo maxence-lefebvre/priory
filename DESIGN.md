@@ -332,6 +332,9 @@ with the `check` icon (answered) or the `minus` icon (withdrawn).
 
 A batch is not a task state either. Its desk row takes a muted tile with the `layers` icon.
 
+Another runner's task shows its hold instead of a state: `kept` or `waiting`, each a muted tile with
+the `server` icon.
+
 ### Explorer list
 
 Every list panel (desk, asks, tasks, runs, inbox) is the same explorer over one query.
@@ -755,6 +758,10 @@ open Priory window when there is one.
 - A live run shows its duration counting up once per minute, not per second. Tapping a run opens
   its task's page, which holds the runs table and the terminal.
 - Tokens add up input, output and cache tokens: "640", "1.5k", "312k", "3.3M".
+- Another runner's task row shows its hold's tile and word in place of the state, and its workflow
+  without a step. Its line 3, or the line under its title on wide screens, reads "On runner a, last
+  seen 12 min ago" in `--text-3`, or "On runner a, never seen alive". Its key is plain text and the
+  row has no chevron: its page stays on its runner.
 
 ### Tasks panel
 
@@ -763,7 +770,8 @@ Ended (newest first), each with a count. Facet chips: State, Lane and Workflow, 
 values A to Z with counts; a task with no lane shows under `none`. Ended lists the last 7 days first
 and loads the older tasks once the person scrolls to its end, with or without a facet set; a set
 facet counts the loaded tasks only. The rows take the whole width, with no
-drawer: each opens the task's page.
+drawer: each opens the task's page. In a factory of several runners, Active also lists each task
+another runner holds, after this runner's, and the State facet counts them under `elsewhere`.
 
 ### Runs panel
 
@@ -1339,6 +1347,7 @@ The web's [Tasks panel](#tasks-panel), as a tab in the center stack.
   and band in `--text-3`, or the reason in its role's text color, then `batch N`. A row opens the
   [Task](#task) panel.
 - The batch tag is text: Herdr has no batch panel yet.
+- Another runner's tasks stay out: Herdr has no row for a task with no page here yet.
 - While it reads: "Reading the tasks…"
 
 ### Runs

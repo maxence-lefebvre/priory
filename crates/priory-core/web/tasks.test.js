@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { TASK_FACETS, TASK_VIEWS, filtered, olderPart, taskViews, triageWords } from "./tasks.js";
+import { TASK_FACETS, TASK_VIEWS, elsewhere, filtered, olderPart, taskViews, triageWords } from "./tasks.js";
 
 // `/api/tasks` as the server sends it: in start order, ended tasks in it too.
 const tasks = [
@@ -34,6 +34,16 @@ test("a list's older rows count only without a filter, yet still load in their v
   assert.deepEqual(olderPart({ view: "ended", history: "ended", older: 23, picked: true }), { counted: 0, unloaded: 23 });
   assert.deepEqual(olderPart({ view: "active", history: "ended", older: 23, picked: true }), { counted: 0, unloaded: 0 });
   assert.deepEqual(olderPart({ view: "recent", history: "recent", older: undefined, picked: false }), { counted: 0, unloaded: 0 });
+});
+
+test("another runner's task shows in Active, under the state elsewhere, with its runner and last alive time", () => {
+  const remote = { id: null, key: "ENG-250", workflow: "implement", step: null, state: null, lane: null, band: "now", since: "2026-11-21T08:00:00Z", runner: "a", hold: "kept", last_seen: "2026-11-21T09:48:00Z" };
+  const all = [...tasks, remote];
+  assert.deepEqual(taskViews(all).active.map((task) => task.key), ["ENG-224", "ENG-244", "ENG-239", "ENG-250"]);
+  assert.deepEqual(filtered(all, new Map([["state", "elsewhere"]])), [remote]);
+  assert.equal(elsewhere(remote, (iso) => (iso === remote.last_seen ? "12 min ago" : "?")), "On runner a, last seen 12 min ago");
+  assert.equal(elsewhere({ ...remote, last_seen: null }, () => "?"), "On runner a, never seen alive");
+  assert.equal(elsewhere({ ...tasks[0], runner: "b", hold: "kept" }, () => "?"), null);
 });
 
 test("a feedback item's class reads in plain words", () => {
