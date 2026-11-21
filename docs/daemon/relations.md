@@ -61,7 +61,9 @@ The daemon records both when it creates the task, in the same transaction:
   that owns it gets the relation: as its key, in its stack, or through a wait. The request
   text is the source event's `text`, `body`, `description` or `prompt`, so an issue body counts
   too. An issue URL counts for nothing, nor does a pull request that is still open or closed
-  unmerged.
+  unmerged. A `fixes` relation does not say the fixed work was wrong: `priory report risk` lists
+  it as a candidate, and a person decides with `priory label` (see
+  [trace.md](trace.md#risk)).
 
 ## `priory tasks --graph`
 

@@ -11,6 +11,7 @@ mod hold;
 mod idle;
 pub mod keyboard;
 mod kit;
+pub mod label;
 pub mod link;
 pub mod listing;
 pub mod memory;

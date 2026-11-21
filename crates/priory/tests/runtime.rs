@@ -17795,7 +17795,8 @@ fn a_copy_reopened_on_a_runner_whose_key_another_runner_owns_drops_with_the_owne
     let task = a.priory(&["task", &tasks[0][0], "--json"]);
     let task: serde_json::Value = serde_json::from_slice(&task.stdout).unwrap();
     assert_eq!(task["reason"], "owned by runner b", "{task}");
-    assert_eq!(b.own_tasks()[0][4], "running");
+    // b starts its task on its own clock, so wait for it rather than read it once.
+    b.until_own_tasks(|rows| rows[0][4] == "running");
 }
 
 #[test]

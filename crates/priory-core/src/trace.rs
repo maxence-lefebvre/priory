@@ -484,8 +484,9 @@ pub(crate) fn reopened(
 }
 
 /// Appends a `factory.step.labeled` record that judges `task` with `label`, once per task, label and
-/// source event: `happened`, when the event happened, else now, and `evidence`. It names the record
-/// of the step that graded the task, when one did, and its grade.
+/// source event since the label's last withdrawal: `happened`, when the event happened, else now,
+/// and `evidence`. It names the record of the step that graded the task, when one did, and its
+/// grade.
 pub(crate) fn labeled(
     tx: &Transaction,
     trace: &Trace,
@@ -515,7 +516,10 @@ pub(crate) fn labeled(
             "SELECT 1 FROM trace WHERE type = 'factory.step.labeled'
              AND json_extract(event, '$.data.task') = ?1 AND json_extract(event, '$.data.label') = ?2
              AND json_extract(event, '$.data.evidence') = ?3
-             AND json_extract(event, '$.data.happened') = ?4",
+             AND json_extract(event, '$.data.happened') = ?4
+             AND seq > coalesce((SELECT max(seq) FROM trace WHERE type = 'factory.step.unlabeled'
+               AND json_extract(event, '$.data.task') = ?1
+               AND json_extract(event, '$.data.label') = ?2), 0)",
             params![task.to_string(), label, evidence, happened],
             |_| Ok(()),
         )
@@ -550,6 +554,36 @@ pub(crate) fn labeled(
         fields.retain(|_, value| !value.is_null());
     }
     append(tx, trace, "factory.step.labeled", &time, data)
+}
+
+/// Appends a `factory.step.unlabeled` record that withdraws every `label` record of `task` before
+/// it, as a person who cleared a mark wrote at `time`.
+pub(crate) fn unlabeled(
+    tx: &Transaction,
+    trace: &Trace,
+    task: i64,
+    label: &str,
+    time: &str,
+) -> rusqlite::Result<()> {
+    let (workflow, key, generation): (String, String, i64) = tx.query_row(
+        "SELECT workflow, key, generation FROM tasks WHERE id = ?1",
+        [task],
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+    )?;
+    let mut data = json!({
+        "factory": trace.factory.name,
+        "factory_revision": trace.revision,
+        "workflow": workflow,
+        "task": task.to_string(),
+        "key": key,
+        "generation": generation,
+        "machine": trace.machine,
+        "label": label,
+    });
+    if let Value::Object(fields) = &mut data {
+        fields.retain(|_, value| !value.is_null());
+    }
+    append(tx, trace, "factory.step.unlabeled", time, data)
 }
 
 /// Appends a `factory.tool.denied` record: the tool guard denied `call` to `run` of `task`.
