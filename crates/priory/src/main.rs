@@ -380,7 +380,8 @@ fn screen(args: Vec<String>) -> ExitCode {
         return usage();
     };
     let secrets = priory_core::screen::secrets(&factory::Factory::default().secret_envs());
-    let read = state::open().and_then(|db| priory_core::screen::read(&db, &target, &secrets));
+    let read = state::open().and_then(|db| priory_core::screen::read(&db, &target, &secrets, 0));
+    let colours = std::io::IsTerminal::is_terminal(&std::io::stdout());
     exit(
         "screen",
         read.map(|screen| match json {
@@ -389,7 +390,11 @@ fn screen(args: Vec<String>) -> ExitCode {
                 .as_array()
                 .into_iter()
                 .flatten()
-                .for_each(|line| println!("{}", line.as_str().unwrap_or_default())),
+                .map(|line| line.as_str().unwrap_or_default())
+                .for_each(|line| match colours {
+                    true => println!("{line}"),
+                    false => println!("{}", priory_core::screen::plain(line)),
+                }),
         }),
     )
 }

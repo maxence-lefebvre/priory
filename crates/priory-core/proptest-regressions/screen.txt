@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 4dbe8344773ec0918b620b04993586b5a2cfe053ec0ffd9c4c9c75121801e2cc # shrinks to secret = "aaaaaaaa", pieces = ["ghp_aaaaaaaaaaaaaaaaaaaa", "¡ࠀ\u{e000}", "ghp_aaaaaaaaaaaaaaaaaaaa"], codes = []

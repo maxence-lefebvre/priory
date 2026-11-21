@@ -38,7 +38,7 @@ does, with every count in `older` at 0. Their rows match the CLI's JSON only wit
 | `/api/costs?since=WINDOW&by=SPLIT` | `priory costs --json --since WINDOW --by SPLIT` | an object: [Costs](#costs) |
 | `/api/grades?since=WINDOW` | `priory grades --json --since WINDOW` | an object: [Grades](#grades) |
 | `/api/attention?since=WINDOW&by=SPLIT` | `priory report attention --json --since WINDOW --by SPLIT` | an object: [Attention](#attention) |
-| `/api/runs/{id}/screen?have=HASH` | `priory screen --run ID --json` | the run's screen, with secrets hidden. See [Run screen](#run-screen) |
+| `/api/runs/{id}/screen?have=HASH&history=N` | `priory screen --run ID --json` | the run's screen in colour, after up to 2,000 rows of scrollback, with secrets hidden. See [Run screen](#run-screen) |
 | `/api/events?since=REV` | `priory wait --since REV` | `{"revision": N}` once it differs from `REV`. See [below](#apievents) |
 | `/api/push/key` | | `{"key": "<base64url>"}`, the daemon's VAPID public key. See [Notifications](#notifications) |
 | `POST /api/asks/{id}/answer` | `priory answer ID TEXT --revision N` | `{"ok": "<what the CLI prints>"}`. See [Writes](#writes) |
@@ -71,7 +71,7 @@ or a reason, is untrusted: render it as text.
 | ---- | ---- |
 | `200` | The endpoint answered |
 | `202` | A signed webhook delivery was taken: published, or dropped on purpose |
-| `400` | The request does not parse, or its target does not start with `/`; `/api/events` lacks `since` or has a parameter out of range; `/api/desk` has a parameter other than `person`, or a broken escape; `/api/asks` has a parameter other than `band`, `risk` and `all=1`, a band the factory does not have, or a risk other than the eight [below](#asks); `/api/tasks` has a parameter other than `all=1`, or a `pr` that is not a pull request such as `github:owner/repo#7`; `/api/runs` has a parameter other than `all=1`; `/api/costs` has a parameter other than `since` and `by`, a broken escape, a `since` that cannot form a window (see [trace.md](../daemon/trace.md#costs)), or a `by` other than the five [below](#costs); `/api/grades` has a parameter other than `since`, a broken escape, or a `since` that does not parse; `/api/attention` has the same faults, with a `by` other than the three [below](#attention); a write's body is not the shape [below](#writes); for a webhook, it sends two `Content-Length`, or its payload lacks a field its event needs |
+| `400` | The request does not parse, or its target does not start with `/`; `/api/events` lacks `since` or has a parameter out of range; `/api/desk` has a parameter other than `person`, or a broken escape; `/api/asks` has a parameter other than `band`, `risk` and `all=1`, a band the factory does not have, or a risk other than the eight [below](#asks); `/api/tasks` has a parameter other than `all=1`, or a `pr` that is not a pull request such as `github:owner/repo#7`; `/api/runs` has a parameter other than `all=1`; a run screen's `history` is not a whole number; `/api/costs` has a parameter other than `since` and `by`, a broken escape, a `since` that cannot form a window (see [trace.md](../daemon/trace.md#costs)), or a `by` other than the five [below](#costs); `/api/grades` has a parameter other than `since`, a broken escape, or a `since` that does not parse; `/api/attention` has the same faults, with a `by` other than the three [below](#attention); a write's body is not the shape [below](#writes); for a webhook, it sends two `Content-Length`, or its payload lacks a field its event needs |
 | `401` | The token is missing or wrong on a path under `/api`; for a webhook, the signature is |
 | `403` | A `POST` carries an `Origin` whose host and port differ from its `Host`, such as a page on another site, and that is not one of [`[serve] extension_origins`](factory.md#serve) |
 | `404` | No such path, task, report, ask, batch or web view file; a run screen whose run ended, whose pane this server cannot find or read within 2 seconds, or that holds a secret redaction cannot hide; any run screen with `[serve] terminal = "off"` |
@@ -106,25 +106,31 @@ prints `N` the same way, and waits 25 seconds by default. `D` is a duration such
 ## Run screen
 
 `/api/runs/{id}/screen` returns what the run's agent pane shows now, read with tmux's
-`capture-pane`. [serve.md](../daemon/serve.md#a-runs-screen) explains what it hides and why. The
+`capture-pane -e`. [serve.md](../daemon/serve.md#a-runs-screen) explains what it hides and why. The
 reply carries `Cache-Control: no-store`.
+
+| Parameter | Meaning |
+| --------- | ------- |
+| `have` | The `hash` the client holds. When it equals the current one, the reply is `{"hash": "<HASH>", "same": true, "scrollback": N}` |
+| `history` | Rows of scrollback to send above the screen, 0 by default. The server sends at most 2,000, however many are asked. A value that is not a whole number gets `400` |
 
 | Field | Meaning |
 | ----- | ------- |
 | `run`, `task` | The run and its task |
 | `width`, `height` | The pane's size, in columns and rows |
-| `cursor` | `{"x", "y"}`, from the top left at 0, or `null` when the cursor is hidden |
-| `lines` | The screen, one string per row, `height` of them, blank rows kept and trailing spaces trimmed, with each secret replaced by `[redacted]` |
+| `cursor` | `{"x", "y"}`, on the screen from the top left at 0, or `null` when the cursor is hidden |
+| `lines` | `earlier` rows of scrollback, then the screen's `height` rows, blank rows kept and trailing spaces trimmed, with each secret replaced by `[redacted]`. Each row keeps tmux's SGR colour codes (`ESC [ … m`); the style carries from one row to the next. tmux's hyperlink codes are dropped |
+| `earlier` | How many rows of scrollback `lines` starts with: `history`, or fewer when tmux keeps fewer |
 | `cut` | How many top rows the server left out to keep `lines` under 256 KiB of JSON, 0 on a usual screen |
 | `redacted` | How many secrets the server replaced |
 | `hash` | 16 hex digits, a hash of the fields above after redaction. A hidden value never changes it |
+| `scrollback` | How many rows of scrollback tmux keeps for the pane. The hash leaves it out |
 
-With `?have=HASH` equal to the current `hash`, the reply is `{"hash": "<HASH>", "same": true}`.
-
-`priory screen (TASK | --run RUN) [--json]` prints the same screen, as rows of text or, with
-`--json`, as this object. It hides the values of the default secret variables, such as
-`PRIORY_TOKEN`, from its own environment, and the secret shapes. Like the endpoint, it gives tmux
-2 seconds.
+`priory screen (TASK | --run RUN) [--json]` prints the same screen, with no scrollback, as rows of
+text or, with `--json`, as this object. Its rows keep their colours on a terminal and drop them
+when the output goes to a file or a pipe. It hides the values of the default secret variables,
+such as `PRIORY_TOKEN`, from its own environment, and the secret shapes. Like the endpoint, it
+gives tmux 2 seconds.
 
 ## Writes
 
