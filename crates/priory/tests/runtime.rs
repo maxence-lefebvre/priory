@@ -9307,7 +9307,7 @@ fn a_close_that_does_not_say_whether_it_merged_asks_rather_than_drops() {
     assert_eq!(held_as(&setup, "1")[0], "held");
 }
 
-const REVIVED: &str = "A person revived this task as generation 2 after it was dropped. The asks and waits of its earlier generation are withdrawn. Check the worktree, then continue.\nPlan the change.\nEnd this step by calling the result tool of the priory MCP server with one of these outcomes: hopeless, ready, unsure.\n";
+const REVIVED: &str = "A person revived this task as generation 2 after it was dropped: hopeless it. The asks and waits of its earlier generation are withdrawn. Check the worktree, then continue.\nPlan the change.\nEnd this step by calling the result tool of the priory MCP server with one of these outcomes: hopeless, ready, unsure.\n";
 
 #[test]
 fn a_dropped_task_revives_at_its_step_in_its_session_as_generation_2() {
@@ -9406,6 +9406,36 @@ fn an_event_for_the_wait_of_an_earlier_generation_does_not_wake_the_revived_task
     std::thread::sleep(Duration::from_millis(1500));
     assert_eq!(setup.rows("tasks")[0][4], "asleep");
     assert_eq!(setup.rows("runs").len(), 2);
+}
+
+#[test]
+fn a_result_that_stops_the_task_keeps_its_summary_as_the_reason_and_posts_a_report() {
+    let mut setup = Setup::new("stopped-reason");
+    let failed = json!({ "name": "result", "arguments": { "outcome": "failed",
+        "summary": "The issue holds no acceptance criteria.\nAdd them and revive it." } });
+    setup.calls(&[failed]);
+    setup.publish(&requested(42));
+    setup.start();
+
+    let tasks = setup.until("tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == "dropped")
+    });
+
+    assert_eq!(tasks[0][7], "The issue holds no acceptance criteria.");
+    let inbox = setup.priory(&["inbox", "--json"]);
+    let inbox = String::from_utf8_lossy(&inbox.stdout);
+    assert!(
+        inbox.contains(
+            "task 1 (github:owner/repo#42) stopped at implement, failed: The issue holds no acceptance criteria."
+        ),
+        "{inbox}"
+    );
+    let desk = setup.priory(&["desk"]);
+    let desk = String::from_utf8_lossy(&desk.stdout);
+    assert!(
+        desk.contains("priory: task 1 (github:owner/repo#42) stopped"),
+        "{desk}"
+    );
 }
 
 #[test]
@@ -10091,6 +10121,64 @@ fn issue_commented(github_id: u64) -> Message {
 }
 
 #[test]
+fn a_comment_kept_during_the_turn_refuses_the_result_until_the_agent_read_it() {
+    let mut setup = Setup::new("kept-during-turn");
+    let read = json!({ "name": "result", "arguments": { "outcome": "passed", "summary": "passed it",
+                                                      "feedback": { "u": "trivial" } } });
+    setup.calls(&[result("passed"), read]);
+    setup.hold("hold-call");
+    setup.publish(&requested(42));
+    setup.start();
+    setup.written("fake/submitted");
+    setup.publish(&issue_commented(801));
+    setup.until("inbox", |rows| rows.len() == 2 && rows[1][4] == "kept");
+
+    setup.release("hold-call");
+
+    setup.until("tasks", |rows| rows[0][4] == "done");
+    let (text, error) = reply(&setup.replies()[0]);
+    assert!(error, "{text}");
+    assert_eq!(
+        text,
+        "feedback for this run is queued: end your turn to read it"
+    );
+    assert!(
+        setup.typed()[1].contains("\ngithub.issues.comment owner/repo#42 {"),
+        "{:?}",
+        setup.typed()
+    );
+    let (text, error) = reply(&setup.replies()[1]);
+    assert!(!error, "{text}");
+}
+
+#[test]
+fn a_comment_on_a_dropped_tasks_own_issue_posts_a_report_that_names_its_revive() {
+    let mut setup = Setup::new("dropped-comment");
+    setup.calls(&[result("failed")]);
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == "dropped")
+    });
+    // The comment comes after the task was dropped, to the second.
+    std::thread::sleep(Duration::from_millis(1100));
+
+    setup.publish(&issue_commented(802));
+
+    let inbox = setup.until("inbox", |rows| rows.len() == 4);
+    assert_eq!(inbox[2][4], "ignored", "{inbox:?}");
+    let desk = setup.priory(&["desk"]);
+    let desk = String::from_utf8_lossy(&desk.stdout);
+    assert!(
+        desk.contains(
+            "priory: github:owner/repo#42 has a new comment; its task 1 dropped: priory revive 1"
+        ),
+        "{desk}"
+    );
+    assert_eq!(setup.rows("tasks").len(), 1);
+}
+
+#[test]
 fn a_comment_on_a_done_tasks_issue_reopens_nothing_once_it_unsubscribed_or_the_issue_closed() {
     let closed = Message::new(
         "github.issues.closed",
@@ -10560,6 +10648,26 @@ fn a_thread_the_intake_cannot_read_fails_the_poll_and_reaches_the_desk() {
         ),
         "{desk:?}"
     );
+}
+
+#[test]
+fn the_intake_still_polls_a_dropped_slack_tasks_own_thread() {
+    let mut setup = Setup::new("slack-key-dropped");
+    setup.calls(&[result("failed")]);
+    let key = format!("slack:C0123:{THREAD}");
+    let mut request = requested(42);
+    request.data["key"] = json!(key);
+    setup.publish(&request.subject(&key));
+    setup.start();
+    setup.until("tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == "dropped")
+    });
+    setup.answer_slack(&[]);
+
+    setup.intake();
+
+    let args = fs::read_to_string(setup.dir.join("curl-args")).unwrap_or_default();
+    assert!(args.contains("conversations.replies"), "{args}");
 }
 
 #[test]

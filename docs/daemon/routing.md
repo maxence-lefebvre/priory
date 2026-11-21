@@ -216,7 +216,8 @@ The web Inbox panel's Unrouted view offers the same actions from a phone: Revive
 What happens to a `kept` message depends on the task's state:
 
 - For a `running` task, the daemon also queues an outbox prompt with the message, so the agent reads
-  it after its current turn.
+  it after its current turn. Until then, for feedback, the agent's `result` and `ask` are refused
+  (see [tools.md](tools.md#the-tools)).
 - If the message satisfies the task's open wait, the wait fires in any active state (see
   [waits.md](waits.md)). An asleep task wakes. A ready, blocked or held task keeps its state, and
   its next run gets the prompt.
@@ -303,4 +304,19 @@ Limits:
   `author_association` must be `OWNER`, `MEMBER` or `COLLABORATOR`. A stranger's comment on a public
   repository stays in the inbox as `outsider`, for a person to read with `priory inbox`. No factory
   setting lets other authors through.
+
+## Feedback on a failed or dropped task
+
+Feedback never reopens a `failed` or `dropped` task: a person stopped it, or its workflow did. When
+a comment or reply lands on the key of the newest task on that key, and that task failed or was
+dropped before the comment was written, the inbox records the comment as `ignored` and posts one
+`priory.report` that names the revive:
+
+```text
+priory: linear:ENG-7 has a new comment; its task 12 dropped: priory revive 12
+```
+
+A Linear issue that never left its view publishes no new `issue.entered`, so this report is how
+"I added the missing criterion" reaches a person. The intake keeps reading that task's key for it
+(see [watches.md](../intake/watches.md)). Priory's own comment posts no report.
 
