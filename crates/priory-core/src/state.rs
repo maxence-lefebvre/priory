@@ -1327,8 +1327,23 @@ const SCHEMA_75: &str = concat!(
 "
 );
 
-// Version 76 is held by #209; this slot keeps the numbering until it lands.
-const SCHEMA_76: &str = "PRAGMA user_version = 76;";
+// A batch entry's ask on a predecessor that failed is withdrawn when that predecessor is revived.
+// SQLite cannot widen a CHECK, so the column is swapped for one that takes the new reason.
+const SCHEMA_76: &str = "
+ALTER TABLE asks ADD COLUMN withdrawn_reason_76 TEXT CHECK (withdrawn_reason_76 IN
+  ('revived', 'moved-on', 'sibling-fired', 'answered-elsewhere', 'dismissed', 'asked',
+   'predecessor-revived'));
+UPDATE asks SET withdrawn_reason_76 = withdrawn_reason;
+DROP TRIGGER ask_withdrawn;
+ALTER TABLE asks DROP COLUMN withdrawn_reason;
+ALTER TABLE asks RENAME COLUMN withdrawn_reason_76 TO withdrawn_reason;
+CREATE TRIGGER ask_withdrawn AFTER UPDATE OF withdrawn ON asks
+  WHEN NEW.withdrawn IS NOT NULL AND NEW.withdrawn IS NOT OLD.withdrawn BEGIN
+  INSERT INTO ask_withdrawals (ask, revision, withdrawn, reason)
+    VALUES (NEW.id, NEW.revision, NEW.withdrawn, NEW.withdrawn_reason);
+END;
+PRAGMA user_version = 76;
+";
 
 // Stacked batch entries: a hold condition met once another task waits on its open pull request,
 // and the task whose branch an entry starts from and bases its pull request on.
