@@ -53,7 +53,9 @@ signs you out too.
   the command are still the ones shown.
 - **Task**: the workflow grid, Update branch and Resolve conflicts, Say, the runs, and the other
   tasks on the pull request. The buttons send fixed text with `say` when the task's agent can hear
-  it, and say why not otherwise. Update branch merges the base, so nothing needs a force push.
+  it, and say why not otherwise. Update branch and Resolve conflicts stay off unless the task owns
+  the pull request's branch, by its key or its stack. Update branch merges the base, so nothing
+  needs a force push.
 - **Guide**: the review guide from the description, and its quiz.
 
 When a write loses its connection, the daemon may have applied it. The panel keeps the draft, says

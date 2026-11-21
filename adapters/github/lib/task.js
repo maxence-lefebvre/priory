@@ -19,6 +19,16 @@ export function sayRoute(task, flows) {
   return { enabled: true, note: `Sent with say to task ${task.id}'s agent. ${wakes} in its worktree and pushes.${stays}` };
 }
 
+/**
+ * The branch and base Update branch and Resolve conflicts name, or null when `holds` says the task
+ * does not own the pull request's branch: it only waits on, reviews or subscribes to it.
+ */
+export function fixBranch(task, holds, pr) {
+  if (!holds?.includes("key") && !holds?.includes("stack")) return null;
+  const pull = task.stack?.find((entry) => entry.pull_request === pr.resource) ?? (task.pull_request?.url === pr.url ? task.pull_request : null);
+  return pull?.branch ? { branch: pull.branch, base: pull.base ?? "main" } : null;
+}
+
 /** The fixed text Update branch or Resolve conflicts says: a merge of the base, so no force push. */
 export function fixText(kind, branch, base) {
   const update = `Bring ${branch} up to date with ${base} by merging it, resolve any conflicts, run the tests and push.`;
