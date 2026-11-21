@@ -184,7 +184,7 @@ fn asks_query() -> String {
      (SELECT json_group_array(json_object('revision', revision, 'answer', answer, 'by', by,
         'why', why, 'at', created))
       FROM (SELECT * FROM ask_refusals WHERE ask = asks.id ORDER BY id)) AS refused,
-     {IRREVERSIBLE} AS irreversible, tasks.grade, {}
+     {IRREVERSIBLE} AS irreversible, tasks.merge_risk, tasks.grade, {}
    FROM asks LEFT JOIN tasks ON tasks.id = asks.task
    LEFT JOIN snoozes ON snoozes.kind = 'ask' AND snoozes.item = asks.id
    WHERE (?1 IS NULL OR asks.task = ?1) AND (?2 IS NULL OR asks.id = ?2)
@@ -277,7 +277,16 @@ fn parse_json(task: &mut Value) {
 }
 
 /// An ask's risk values in the order the Risk facet shows them; `none` picks an ask with no risk.
-pub const RISKS: [&str; 5] = ["irreversible", "red", "yellow", "green", "none"];
+pub const RISKS: [&str; 8] = [
+    "irreversible",
+    "high",
+    "medium",
+    "low",
+    "red",
+    "yellow",
+    "green",
+    "none",
+];
 
 /// Refuses `risk` with `RISKS` when it is not one of them.
 pub fn check_risk(risk: &str) -> Result<(), String> {
@@ -381,7 +390,7 @@ fn asks_of(
         if let Some(options) = ask["options"].as_str() {
             ask["options"] = serde_json::from_str(options).unwrap_or(Value::Null);
         }
-        for field in ["delivery", "ran", "revisions", "refused"] {
+        for field in ["delivery", "ran", "revisions", "refused", "merge_risk"] {
             if let Some(text) = ask[field].as_str() {
                 ask[field] = serde_json::from_str(text).unwrap_or(Value::Null);
             }
@@ -404,6 +413,7 @@ fn asks_of(
         let risk: Vec<Value> = irreversible
             .then(|| json!("irreversible"))
             .into_iter()
+            .chain(object["merge_risk"].get("verdict").cloned())
             .chain(object.remove("grade").filter(Value::is_string))
             .collect();
         object.insert("risk".to_owned(), risk.into());
@@ -935,7 +945,7 @@ pub fn task(db: &Connection, id: i64) -> rusqlite::Result<Option<Value>> {
         &format!(
             "{} SELECT id, key, workflow, step, state, band, lane, reason, queue.place AS position,
                generation, retired, tldr, changed AS since, repo, branch, grade, grade_reason,
-               progress, intervention, lead, {CONDITIONS}
+               merge_risk, progress, intervention, lead, {CONDITIONS}
              FROM tasks LEFT JOIN queue USING (id) WHERE id = ?1",
             places()
         ),
@@ -969,7 +979,7 @@ pub fn task(db: &Connection, id: i64) -> rusqlite::Result<Option<Value>> {
         ),
         (
             "results",
-            "SELECT run, step, outcome, summary, evidence, commit_sha, reason, created
+            "SELECT run, step, outcome, summary, evidence, commit_sha, reason, merge_risk, created
              FROM results WHERE task = ?1 ORDER BY run",
         ),
         (
@@ -989,6 +999,15 @@ pub fn task(db: &Connection, id: i64) -> rusqlite::Result<Option<Value>> {
         if let Some(tokens) = run["tokens"].as_str() {
             run["tokens"] = serde_json::from_str(tokens).unwrap_or(Value::Null);
         }
+    }
+    let parse = |merge_risk: &mut Value| {
+        if let Some(text) = merge_risk.as_str() {
+            *merge_risk = serde_json::from_str(text).unwrap_or(Value::Null);
+        }
+    };
+    parse(&mut task["merge_risk"]);
+    for result in task["results"].as_array_mut().expect("rows are an array") {
+        parse(&mut result["merge_risk"]);
     }
     let first = |rows: Value| rows.as_array().and_then(|rows| rows.first()).cloned();
     let request = first(rows(

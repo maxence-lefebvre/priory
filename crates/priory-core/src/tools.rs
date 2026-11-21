@@ -265,6 +265,10 @@ fn result(
         Ok(branches) => branches,
         Err(error) => return Ok(Err(error)),
     };
+    let merge_risk = match merge_risk(&outcome, &arguments["risk"]) {
+        Ok(merge_risk) => merge_risk,
+        Err(error) => return Ok(Err(error)),
+    };
     let Some(step) = step(workflows, &run.workflow, &run.step) else {
         return Ok(Err(format!(
             "step {} is not in workflow {}",
@@ -289,10 +293,10 @@ fn result(
         )));
     }
     tx.execute(
-        "INSERT INTO results (run, task, step, outcome, summary, evidence, commit_sha, reason, inbox)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, (SELECT max(seq) FROM inbox))",
+        "INSERT INTO results (run, task, step, outcome, summary, evidence, commit_sha, reason, merge_risk, inbox)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, (SELECT max(seq) FROM inbox))",
         params![
-            run.id, run.task, run.step, outcome, summary, evidence, commit, reason
+            run.id, run.task, run.step, outcome, summary, evidence, commit, reason, merge_risk
         ],
     )?;
     if let Some(branches) = branches {
@@ -304,6 +308,60 @@ fn result(
     Ok(Ok(format!(
         "result stored: the task moves to {next} when this turn ends"
     )))
+}
+
+/// The outcomes of a risk step, lowest first: its verdict on the finished change.
+pub const RISK_LEVELS: [&str; 3] = ["low", "medium", "high"];
+
+/// What a risk step grades the change on, one line each.
+pub const RISK_DIMENSIONS: [&str; 5] = [
+    "ask",
+    "blast_radius",
+    "verification",
+    "rollback",
+    "detection",
+];
+
+/// The merge risk a result with `outcome` and `risk` stores, as JSON: the verdict and the line of
+/// each dimension. A verdict outcome needs `risk`, and `risk` needs the verdict its highest line has.
+fn merge_risk(outcome: &str, risk: &Value) -> Result<Option<String>, String> {
+    let verdict = RISK_LEVELS.iter().position(|level| *level == outcome);
+    let shape = format!(
+        "risk must be an object with one line per dimension, {}, each starting with low:, medium: or high:",
+        RISK_DIMENSIONS.join(", ")
+    );
+    let (Some(verdict), Some(lines)) = (verdict, risk.as_object()) else {
+        return match (verdict, risk) {
+            (None, Value::Null) => Ok(None),
+            (None, _) => Err("risk needs a low, medium or high outcome: its verdict".to_owned()),
+            (Some(_), _) => Err(shape),
+        };
+    };
+    if lines.len() != RISK_DIMENSIONS.len() {
+        return Err(shape);
+    }
+    let mut highest = 0;
+    for dimension in RISK_DIMENSIONS {
+        let level = lines
+            .get(dimension)
+            .and_then(Value::as_str)
+            .filter(|line| !line.contains('\n'))
+            .and_then(|line| line.split_once(": "))
+            .and_then(|(level, _)| RISK_LEVELS.iter().position(|known| *known == level));
+        let Some(level) = level else {
+            return Err(shape);
+        };
+        highest = highest.max(level);
+    }
+    if highest != verdict {
+        return Err(format!(
+            "outcome {outcome} must be the highest level of risk's lines: {}",
+            RISK_LEVELS[highest]
+        ));
+    }
+    let mut stored = lines.clone();
+    stored.insert("verdict".to_owned(), outcome.into());
+    Ok(Some(Value::Object(stored).to_string()))
 }
 
 /// A typed compact needs no check, since an agent mid-compaction calls no tool.
@@ -498,6 +556,7 @@ fn ask(
         run.task,
         &run.step,
         command.is_some(),
+        false,
         &factory.workflows,
     )?;
     tx.execute(
@@ -1844,6 +1903,11 @@ fn settle(tx: &Transaction, run: &Run, trace: &Trace) -> rusqlite::Result<Option
                 ],
             )?;
         }
+        tx.execute(
+            "UPDATE tasks SET merge_risk = (SELECT merge_risk FROM results WHERE run = ?2)
+             WHERE id = ?1 AND EXISTS (SELECT 1 FROM results WHERE run = ?2 AND merge_risk IS NOT NULL)",
+            params![run.task, run.id],
+        )?;
         let target = step(workflows, &run.workflow, &run.step)
             .and_then(|step| step.next.get(&outcome))
             .cloned()
@@ -1919,12 +1983,14 @@ fn settle(tx: &Transaction, run: &Run, trace: &Trace) -> rusqlite::Result<Option
 pub const LEAD_TRIGGER: &str = "priory/lead";
 
 /// The lead a new ask of `task` at step `at` goes to: a `hands-off` task's lead, unless the ask
-/// runs a command, its answer can let an irreversible step run, or its step approves one.
+/// runs a command, or its answer can let an irreversible step run or its step approves one and the
+/// change was not just graded `low_risk`.
 fn lead_of(
     tx: &Transaction,
     task: i64,
     at: &str,
     command: bool,
+    low_risk: bool,
     workflows: &Workflows,
 ) -> rusqlite::Result<Option<String>> {
     let (workflow, intervention, lead): (String, Option<String>, Option<String>) = tx.query_row(
@@ -1949,7 +2015,7 @@ fn lead_of(
         .value
         .step(at)
         .is_some_and(|step| !step.approves.is_empty());
-    if approves || explain::answer_lets_irreversible_run(&flow.value, at) {
+    if !low_risk && (approves || explain::answer_lets_irreversible_run(&flow.value, at)) {
         return Ok(None);
     }
     Ok(lead)
@@ -2364,7 +2430,20 @@ fn enter(
                     return finish("blocked");
                 }
             };
-            let lead = lead_of(tx, task, target, command.is_some(), workflows)?;
+            // Only the verdict of the step just ended counts, so a later change is never waved through.
+            let low_risk = match from {
+                Some(run) => tx
+                    .query_row(
+                        "SELECT json_extract(merge_risk, '$.verdict') = 'low' FROM results WHERE run = ?1",
+                        [run.id],
+                        |row| row.get::<_, Option<bool>>(0),
+                    )
+                    .optional()?
+                    .flatten()
+                    .unwrap_or(false),
+                None => false,
+            };
+            let lead = lead_of(tx, task, target, command.is_some(), low_risk, workflows)?;
             tx.execute(
                 "INSERT INTO asks (task, step, kind, question, options, routed, command)
                  VALUES (?1, ?2, 'step', ?3, ?4, ?5, ?6)",

@@ -20,7 +20,7 @@ wait or both. A `result` after an open ask or wait is refused, as is a second `a
 `wait`. An ask and a wait side by side wake the task on the first answer or event (see An ask
 beside a wait in [waits.md](waits.md)).
 
-### `result(outcome, summary, evidence?, commit?, reason?, branches?)`
+### `result(outcome, summary, evidence?, commit?, reason?, branches?, risk?)`
 
 `result` stores the run's result and ends the step. Nothing can change or delete a stored result.
 
@@ -67,6 +67,53 @@ stays in the step's result and in its `factory.step.ended` record, which carries
 
 `priory tasks` prints the grade and its reason in the `grade` and `grade_reason` columns, and
 `priory tasks --grade green` lists only the green tasks.
+
+#### Merge risk
+
+A grade is a forecast made before the work. A merge risk is a verdict on the finished change, given
+by a model step whose outcome is `low`, `medium` or `high`: a risk step. Give it its own agent, not
+the implementer, so the verdict is a fresh look at the diff.
+
+Its result carries `risk`, one line per dimension, each starting with its level:
+
+```json
+{
+  "outcome": "medium",
+  "summary": "Merge risk medium",
+  "risk": {
+    "ask": "low: does what the issue asks, nothing more",
+    "blast_radius": "medium: every task listing reads the new column",
+    "verification": "low: a test covers each new branch",
+    "rollback": "medium: the migration adds a column a revert leaves behind",
+    "detection": "low: the listing tests fail on a wrong value"
+  }
+}
+```
+
+| Dimension | Asks |
+| --------- | ---- |
+| `ask` | Does the change do what was asked, and nothing else? |
+| `blast_radius` | How much breaks if the change is wrong? |
+| `verification` | How well do the tests and checks prove it works? |
+| `rollback` | How costly is it to undo once merged? |
+| `detection` | Would a failure be noticed soon? |
+
+The outcome is the verdict and must be the highest level of the five lines. A `low`, `medium` or
+`high` outcome without `risk`, `risk` with another outcome, a missing, extra or multi-line
+dimension, and a line without its level are refused with:
+
+```text
+risk must be an object with one line per dimension, ask, blast_radius, verification, rollback, detection, each starting with low:, medium: or high:
+outcome low must be the highest level of risk's lines: medium
+risk needs a low, medium or high outcome: its verdict
+```
+
+The result keeps the verdict as `merge_risk`, and the task takes the latest one as its own
+`merge_risk`: `verdict` and the five lines (see [Task in
+detail](../reference/serve.md#task-in-detail)). Every ask of the task carries it: `priory asks
+--json` gives it as `merge_risk` and adds the verdict to the ask's `risk`, so `priory asks --risk
+low` lists the asks of tasks graded low. `priory asks` prints the five lines in its last column,
+`merge_risk`.
 
 ### `ask(question, options, recommendation, tradeoff, title?, text?, whatWaits?, nextAction?, command?)`
 
@@ -396,12 +443,17 @@ An ask of a `hands-off` task goes to the trigger's `lead`, a Claude Code agent w
 session, instead of the person. These asks still go to the person:
 
 - an ask whose answer can let an irreversible step run before a person decides again, the asks
-  that `priory asks --json` marks with the `irreversible` risk;
-- the ask of a human step with `approves`, since its answer grants an approval;
+  that `priory asks --json` marks with the `irreversible` risk, and the ask of a human step with
+  `approves`, since its answer grants an approval, unless the step just before graded the
+  [merge risk](#merge-risk) `low`;
 - an ask whose answer runs a command;
 - the asks the daemon makes itself: a hold's, a stack's, and an approval asked again at a new
   commit;
 - every ask once no trigger names the task's lead any more, since its workflow is gone.
+
+Only the verdict of the step that led to the human step counts. Put the risk step right before
+the approving step: a verdict from an earlier round may grade an older commit. A `medium` or `high`
+verdict, or none, keeps these asks with the person.
 
 In the transaction that stores a routed ask, the daemon queues a lead task for it, with the key
 `priory:ask:<ask>:<revision>`, the trigger `priory/lead`, and the asking task's repository, band and

@@ -59,6 +59,11 @@ A model step outcome of `red`, `yellow` or `green` also grades the task: how ris
 work is. The task keeps the latest grade and its reason. See Grades in
 [tools.md](../daemon/tools.md#grades).
 
+A model step outcome of `low`, `medium` or `high` is a merge risk verdict on the finished change,
+and its result must carry one line per risk dimension. The task keeps the latest verdict, and a
+`hands-off` task's approving ask goes to its lead right after a `low` one. See Merge risk in
+[tools.md](../daemon/tools.md#merge-risk).
+
 ## Example
 
 <!-- example: factory/workflows/implement.toml -->

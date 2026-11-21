@@ -321,7 +321,8 @@ only after a person approved it, unless it is marked `autonomous` with a reason.
 
 **Intervention.** A trigger's `intervention` sets how much a person steps in. `plan` makes a person
 approve each graded plan, even a green one. `hands-off` lets a lead agent answer the task's asks in
-your place, but an ask that lets an irreversible step run still comes to you. A routed ask shows
+your place, but an ask that lets an irreversible step run still comes to you, unless a risk step
+just graded the finished change's merge risk low. A routed ask shows
 "with <lead>" in the web view and the Herdr panels, you can still answer it first, and an answered
 ask says who answered. When the lead ends without answering, the ask comes back to you. See
 [docs/reference/triggers.md](docs/reference/triggers.md#intervention-and-lead).

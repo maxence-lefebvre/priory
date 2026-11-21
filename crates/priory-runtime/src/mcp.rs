@@ -125,6 +125,18 @@ fn tools() -> Value {
                     "evidence": text("How you checked it: commands, exits, links."),
                     "commit": text("The full SHA of the commit the result is about, if any, as git rev-parse HEAD prints it."),
                     "reason": text("For a red, yellow or green outcome: why, in one line. Defaults to the summary's first line."),
+                    "risk": {
+                        "type": "object",
+                        "description": "For a low, medium or high outcome, the merge risk verdict: one line per dimension, each starting with its level, such as \"low: one revert undoes it\". The outcome must be the highest level.",
+                        "properties": {
+                            "ask": text("Does the change do what was asked, and nothing else?"),
+                            "blast_radius": text("How much breaks if the change is wrong?"),
+                            "verification": text("How well do the tests and checks prove it works?"),
+                            "rollback": text("How costly is it to undo once merged?"),
+                            "detection": text("Would a failure be noticed soon?"),
+                        },
+                        "required": ["ask", "blast_radius", "verification", "rollback", "detection"],
+                    },
                     "branches": {
                         "type": "array",
                         "items": { "type": "string" },

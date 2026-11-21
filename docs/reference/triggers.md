@@ -239,7 +239,7 @@ each level does.
 | ----- | ------ |
 | unset | Every ask goes to a person |
 | `plan` | A step that grades the task waits for a person to approve its plan before the task moves on, even for a green grade |
-| `hands-off` | The `lead` agent answers the task's asks in the person's place, except an ask whose answer lets an irreversible step run and an ask whose answer runs a command |
+| `hands-off` | The `lead` agent answers the task's asks in the person's place, except an ask whose answer runs a command, and an ask whose answer lets an irreversible step run unless the step before it graded the [merge risk](../daemon/tools.md#merge-risk) `low` |
 
 `lead` names a `claude-code` agent whose `session` is `shared`, so one conversation answers every
 ask. A CLI request's lead is the `lead` of `triggers/cli.toml`.

@@ -8,7 +8,16 @@ decides = "model"
 agent = "reviewer"
 prompt = "Review this pull request and write your findings as one pending GitHub review, created without an event. Never submit it. Put the review's URL in your result."
 effect = "reversible"
-next = { written = "submit", "nothing-to-review" = "done" }
+next = { written = "risk", "nothing-to-review" = "done" }
+
+# Another agent grades the pull request, and its verdict shows on the submit ask.
+[[steps]]
+id = "risk"
+decides = "model"
+agent = "risk"
+prompt = "Grade this pull request's merge risk low, medium or high."
+effect = "read"
+next = { low = "submit", medium = "submit", high = "submit" }
 
 [[steps]]
 id = "submit"

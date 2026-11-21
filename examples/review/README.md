@@ -16,7 +16,11 @@ your machine's Tailscale hostname.
 - The agent never submits, approves or requests changes. Its prompt forbids it, and its permissions
   deny `gh pr review` and `gh pr merge`.
 - The `review` step is `reversible`: a pending review stays invisible and can be deleted.
+- A second agent, `risk`, then grades the pull request's merge risk low, medium or high on five
+  dimensions, one line each. It reads only: it never comments on or reviews the pull request.
 - `submit` asks you to submit the review on GitHub, then to answer `submitted` or `discarded`.
+  `priory asks` shows the merge risk with it, and `priory asks --risk high` lists only the risky
+  ones.
 
 ## Run it
 
