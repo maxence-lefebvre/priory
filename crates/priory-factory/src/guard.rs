@@ -72,7 +72,10 @@ const TOOLS: &[&str] = &[
 /// MCP tools that a command guard covers. The guard cannot read a tool's arguments, so any review
 /// counts as an approval and any file write as a push to the default branch.
 const NAMED_TOOLS: &[(&[&str], &str)] = &[
-    (&["merge_pull_request", "enable_pr_auto_merge"], "gh-pr-merge"),
+    (
+        &["merge_pull_request", "enable_pr_auto_merge"],
+        "gh-pr-merge",
+    ),
     (
         &[
             "pull_request_review_write",
@@ -220,8 +223,7 @@ impl Guards {
                 _ => None,
             });
         // A factory guard must not rename a merge or an approval, which only a person grants.
-        if let Some(name) =
-            built_in.filter(|name| NEED_APPROVAL.contains(name) || *name == PERSON)
+        if let Some(name) = built_in.filter(|name| NEED_APPROVAL.contains(name) || *name == PERSON)
         {
             return hit(name);
         }
@@ -367,13 +369,19 @@ fn gh_api(words: &[String], git: Git) -> Option<&'static str> {
         return None;
     }
     let endpoint = endpoint.unwrap_or_default();
-    let endpoint = endpoint.split_once("://").map_or(endpoint.as_str(), |(_, rest)| {
-        rest.split_once('/').map_or("", |(_, path)| path)
-    });
+    let endpoint = endpoint
+        .split_once("://")
+        .map_or(endpoint.as_str(), |(_, rest)| {
+            rest.split_once('/').map_or("", |(_, path)| path)
+        });
     let endpoint = endpoint.trim_start_matches('/');
     let endpoint = endpoint.strip_prefix("api/v3/").unwrap_or(endpoint);
     let endpoint = endpoint.split('?').next().unwrap_or_default();
-    let endpoint = if endpoint == "api/graphql" { "graphql" } else { endpoint };
+    let endpoint = if endpoint == "api/graphql" {
+        "graphql"
+    } else {
+        endpoint
+    };
     let parts: Vec<&str> = endpoint.split('/').collect();
     let pull = |tail: &str| {
         matches!(parts.as_slice(), ["repos", _, _, "pulls", number, first, ..]
@@ -383,7 +391,9 @@ fn gh_api(words: &[String], git: Git) -> Option<&'static str> {
         return Some("gh-pr-merge");
     }
     if let ["repos", _, _, "git", "refs", "heads", branch @ ..] = parts.as_slice() {
-        let deletes = method.as_deref().is_some_and(|m| m.eq_ignore_ascii_case("DELETE"));
+        let deletes = method
+            .as_deref()
+            .is_some_and(|m| m.eq_ignore_ascii_case("DELETE"));
         if deletes || fields.iter().any(|field| field == "force=true") {
             return Some("git-push-force");
         }
@@ -548,7 +558,11 @@ fn git_push(words: &[String], git: Git) -> Option<&'static str> {
 
 /// Whether a `-c` or `--config-env` setting can change where a push goes.
 fn routes_push(setting: &str) -> bool {
-    let key = setting.split('=').next().unwrap_or_default().to_ascii_lowercase();
+    let key = setting
+        .split('=')
+        .next()
+        .unwrap_or_default()
+        .to_ascii_lowercase();
     key.starts_with("push.")
         || key.starts_with("branch.")
         || (key.starts_with("remote.") && (key.ends_with(".push") || key.ends_with(".pushurl")))
@@ -564,7 +578,10 @@ fn is_default(git: Git, dir: Option<&str>, branch: &str) -> bool {
         dir,
         &["symbolic-ref", "--short", "refs/remotes/origin/HEAD"],
     );
-    origin.as_deref().and_then(|head| head.strip_prefix("origin/")) == Some(branch)
+    origin
+        .as_deref()
+        .and_then(|head| head.strip_prefix("origin/"))
+        == Some(branch)
 }
 
 /// `curl` or `wget` that posts to Slack's chat or a webhook, or sends Linear a mutation. A body read from a
@@ -853,7 +870,10 @@ impl Split<'_> {
                             self.at += 1;
                         }
                         let code: String = self.chars[start..self.at].iter().collect();
-                        if let Some(c) = u32::from_str_radix(&code, radix).ok().and_then(char::from_u32) {
+                        if let Some(c) = u32::from_str_radix(&code, radix)
+                            .ok()
+                            .and_then(char::from_u32)
+                        {
                             self.push(c);
                         }
                         continue;
@@ -1079,10 +1099,16 @@ fn unwrap(words: &[String], depth: usize, found: &mut Vec<Vec<String>>) {
         }
         let program = word.rsplit('/').next().unwrap_or(word);
         let rest = &words[at + 1..];
-        if let Some(list) = word.strip_prefix('{').and_then(|word| word.strip_suffix('}'))
+        if let Some(list) = word
+            .strip_prefix('{')
+            .and_then(|word| word.strip_suffix('}'))
             && list.contains(',')
         {
-            let expanded: Vec<String> = list.split(',').map(str::to_owned).chain(rest.iter().cloned()).collect();
+            let expanded: Vec<String> = list
+                .split(',')
+                .map(str::to_owned)
+                .chain(rest.iter().cloned())
+                .collect();
             return unwrap(&expanded, depth, found);
         }
         let skip = |values: &[&str]| options(rest, values);
@@ -1090,7 +1116,10 @@ fn unwrap(words: &[String], depth: usize, found: &mut Vec<Vec<String>>) {
             "function" => at += 2,
             "find" => {
                 let mut args = rest.iter();
-                while args.find(|arg| ["-exec", "-execdir", "-ok", "-okdir"].contains(&arg.as_str())).is_some() {
+                while args
+                    .find(|arg| ["-exec", "-execdir", "-ok", "-okdir"].contains(&arg.as_str()))
+                    .is_some()
+                {
                     let command: Vec<String> = args
                         .by_ref()
                         .take_while(|arg| *arg != ";" && *arg != "+")
@@ -1643,7 +1672,11 @@ mod tests {
             let hits = guards.hits("Bash", Some(command), &git);
             assert_eq!(hits[0].guard, "priory-person", "{command}");
         }
-        for command in ["priory report put 7 -", "priory tasks", "priory report reply 3 ok"] {
+        for command in [
+            "priory report put 7 -",
+            "priory tasks",
+            "priory report reply 3 ok",
+        ] {
             assert_eq!(hit(command), None, "{command}");
         }
     }
@@ -1663,7 +1696,11 @@ mod tests {
             "git --config-env=remote.origin.push=REFSPEC push origin",
             "git -c branch.priory/1.merge=refs/heads/main push",
         ] {
-            assert_eq!(hit(command).as_deref(), Some("git-push-default"), "{command}");
+            assert_eq!(
+                hit(command).as_deref(),
+                Some("git-push-default"),
+                "{command}"
+            );
         }
         assert_eq!(hit("git -c user.name=x push"), None);
     }
@@ -1700,7 +1737,10 @@ mod tests {
         for (tool, guard) in [
             ("mcp__github__pull_request_review_write", "gh-pr-approve"),
             ("mcp__github__create_pull_request_review", "gh-pr-approve"),
-            ("mcp__github__submit_pending_pull_request_review", "gh-pr-approve"),
+            (
+                "mcp__github__submit_pending_pull_request_review",
+                "gh-pr-approve",
+            ),
             ("mcp__github__enable_pr_auto_merge", "gh-pr-merge"),
             ("mcp__my__srv__merge_pull_request", "gh-pr-merge"),
             ("mcp__github__push_files", "git-push-default"),
@@ -1708,7 +1748,11 @@ mod tests {
             ("mcp__github__delete_file", "git-push-default"),
         ] {
             let hits = Guards::default().hits(tool, None, &git);
-            assert_eq!(hits.first().map(|hit| hit.guard.as_str()), Some(guard), "{tool}");
+            assert_eq!(
+                hits.first().map(|hit| hit.guard.as_str()),
+                Some(guard),
+                "{tool}"
+            );
         }
     }
 
@@ -1756,7 +1800,8 @@ mod tests {
     fn an_apostrophe_in_a_heredoc_inside_a_substitution_hides_nothing() {
         let comment = "gh pr comment 12 --body \"$(cat <<'EOF'\nit's done\nEOF\n)\" && gh pr merge 12 --squash";
         assert_eq!(guards(comment), ["gh-pr-comment", "gh-pr-merge"]);
-        let commit = "git commit -m \"$(cat <<-EOF\n\tdon't\n\tEOF\n)\" && git push origin HEAD:main";
+        let commit =
+            "git commit -m \"$(cat <<-EOF\n\tdon't\n\tEOF\n)\" && git push origin HEAD:main";
         assert_eq!(hit(commit).as_deref(), Some("git-push-default"));
         let ran = "echo \"$(bash <<EOF\ngh pr merge 12\nEOF\n)\"";
         assert_eq!(hit(ran).as_deref(), Some("gh-pr-merge"));
