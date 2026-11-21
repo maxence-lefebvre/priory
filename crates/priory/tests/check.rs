@@ -1709,14 +1709,17 @@ fn a_writing_guide_that_does_not_exist_fails_the_check() {
 
 #[test]
 fn a_writing_guide_past_the_size_limit_warns_and_still_passes() {
-    let guide = "Lead with the question.\n".repeat(200);
+    let at_limit = "a".repeat(4095) + "\n";
+    let past = "a".repeat(4096) + "\n";
 
-    let outcome = check(&with_writing("writing-large", Some(&guide)));
+    let quiet = check(&with_writing("writing-at-limit", Some(&at_limit)));
+    let warned = check(&with_writing("writing-past-limit", Some(&past)));
 
-    assert_eq!(outcome.code, 0, "{}", outcome.stderr);
+    assert_eq!((quiet.code, quiet.stderr.as_str()), (0, ""));
+    assert_eq!(warned.code, 0, "{}", warned.stderr);
     assert_eq!(
-        outcome.stderr,
-        "warning: WRITING.md is 4799 bytes: every agent's prompt carries it, so keep it under 4096\n"
+        warned.stderr,
+        "warning: WRITING.md is 4097 bytes: every agent's prompt carries it, so keep it under 4096\n"
     );
 }
 

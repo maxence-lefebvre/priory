@@ -33,6 +33,7 @@ pub struct Variant {
     /// Instead of `text`, relative to the evaluation file.
     pub file: Option<PathBuf>,
     /// Set once [`load`] has read `system_file`: appended to the agent's system prompt.
+    #[serde(skip)]
     pub system: Option<String>,
     /// A file with the text to append to the agent's system prompt, relative to the evaluation file.
     pub system_file: Option<PathBuf>,

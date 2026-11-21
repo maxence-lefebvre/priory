@@ -1529,7 +1529,7 @@ fn start(
     let permissions = serde_json::to_value(&agent.permissions).expect("permissions serialize");
     let body = [
         agent.body.trim_end(),
-        factory.writing.as_deref().unwrap_or(""),
+        factory.writing.as_deref().unwrap_or("").trim(),
     ]
     .into_iter()
     .filter(|part| !part.is_empty())

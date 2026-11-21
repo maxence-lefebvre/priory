@@ -1304,7 +1304,7 @@ pub struct Factory {
     pub prices: BTreeMap<String, Price>,
     pub lanes: Option<Loaded<Lanes>>,
     pub settings: Option<Loaded<Settings>>,
-    /// The text of the file `writing` names.
+    /// The text of the file `writing` names, as it is on disk.
     pub writing: Option<String>,
 }
 
@@ -1565,7 +1565,7 @@ pub fn load(dir: &Path) -> (Factory, Vec<Problem>) {
         && let Some(name) = &settings.value.writing
     {
         match fs::read_to_string(dir.join(name)) {
-            Ok(text) => factory.writing = Some(text.trim().to_owned()),
+            Ok(text) => factory.writing = Some(text),
             Err(error) => found.problems.push(Problem {
                 file: settings.file.clone(),
                 at: settings.lines.field("writing").map(|line| line.to_string()),
