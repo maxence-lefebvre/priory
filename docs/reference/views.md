@@ -36,6 +36,7 @@ tabs = [
   { panel = "runs" },
   { panel = "inbox" },
   { panel = "reports" },
+  { panel = "workflow" },
 ]
 ```
 
