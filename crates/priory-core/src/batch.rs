@@ -195,7 +195,7 @@ fn checked(plan: &Plan, issues: &[String]) -> Result<(), String> {
                 ));
             }
         }
-        let parts = worked.entry(key.clone()).or_insert_with(Vec::new);
+        let parts = worked.entry(key.clone()).or_default();
         if parts.contains(&entry.part) && entry.part.is_some() {
             return Err(format!(
                 "issue {key} has part {} twice",

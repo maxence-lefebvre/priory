@@ -18143,6 +18143,8 @@ fn a_going_batch_is_one_desk_line_in_place_of_the_held_tasks_its_edges_hold() {
 const SERVE_TOKEN: &str = "s3cret-token";
 
 /// `priory serve` on `setup`'s factory, beside its daemon, and the address it listens on.
+// The caller kills and waits on the server it gets back.
+#[allow(clippy::zombie_processes)]
 fn served(setup: &Setup) -> (Child, String) {
     let factory = setup.dir.join("factory/factory.toml");
     let settings = fs::read_to_string(&factory).unwrap();

@@ -11,6 +11,7 @@
 | `prompt` | the outbox prompt | its text, for an `uncertain` prompt | it was attempted |
 | `command` | the answer's action | `Priory stopped while answer <answer> to ask <ask> ran <argv> in <dir>: check the target`, for an `uncertain` command (see [tools.md](tools.md#commands-an-answer-runs)) | it ended |
 | `held` | the hold | the task's reason: why it is held, and until what | it was held |
+| `batch` | the batch | its title and counts, then which entries start next: `Invoice exports: 1 merged, 3 started, 2 planned. Next: tasks 36 and 37 start when task 34 merges.` One row per going batch, in place of the `held` rows of its entries (see Batches) | the go |
 | `memory` | the memory grant | `waits for <N> GB: <command>` | it was requested |
 | `queue` | the task's place in the queue | its band, then its reason when it has one | the task last changed state |
 | `sweep` | the script's run | its command, then `running`, or its status and output, for the open stall | it started |
@@ -25,6 +26,14 @@ In `priory desk --json`, an `ask` item carries `routed_to`: the lead it is route
 web Desk and the Herdr Desk show it as "with <lead>" on the ask's row and in the next thing.
 
 It lists only asks and prompts of active tasks, holds of held tasks and waiting memory grants. Then the `queue` rows in start order, then one `worktree` row per worktree the sweep keeps. `priory asks` prints every open ask. Both leave snoozed items out, unless you pass `--all` (see Snooze).
+
+## Batches
+
+A going batch shows as one `batch` row, until it ends. Its `task` and `key` are its planning
+task's. A held entry whose every open condition is a batch edge leaves `items`: the batch row stands
+for it. An entry held on a condition with an open ask, such as the ask a failed predecessor raises,
+keeps its own `held` row and its Release button. A `batch` row never ranks as the next thing, since
+it asks for nothing. See [batches.md](batches.md).
 
 ## Unrouted events
 
