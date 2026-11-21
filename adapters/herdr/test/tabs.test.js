@@ -22,64 +22,60 @@ function bar(tree) {
 
 const DEFAULT = { tabs: ["desk", "asks", "tasks", "runs", "inbox", "reports", "workflow", "costs"].map((panel) => ({ panel })) };
 
-test("the bar shows one button per child of the default view's stack, and selects the shown one", () => {
+test("the bar shows a button for each aside, then each tab in the center, and selects what is shown", () => {
   const { labels } = bar(DEFAULT);
 
-  assert.deepEqual(labels([0, 1, 2, 3, 4, 5, 6, 7].map((at) => `priory-view-${at}`)), [
+  assert.deepEqual(labels(["priory-aside-desk", "priory-aside-asks", "priory-tasks", "priory-costs"]), [
     "Desk Asks Tasks Runs Inbox Bonjour Flows Costs",
-    ["priory-view-0", "Desk", true],
-    ["priory-view-1", "Asks", false],
-    ["priory-view-2", "Tasks", false],
-    ["priory-view-3", "Runs", false],
-    ["priory-view-4", "Inbox", false],
-    ["priory-view-5", "Bonjour", false],
-    ["priory-view-6", "Flows", false],
-    ["priory-view-7", "Costs", false],
+    ["priory-aside-desk", "Desk", true],
+    ["priory-aside-asks", "Asks", false],
+    ["priory-tasks", "Tasks", false],
+    ["priory-costs", "Costs", false],
   ]);
 });
 
-test("a button selects its block in the stack, and the shown one hides the view beside main", () => {
+test("an aside's button toggles that aside, whatever else is open", () => {
   const { drawn } = bar(DEFAULT);
 
-  press(drawn(), "priory-view-1");
-  assert.deepEqual(herdr.runs, [["layout.select", { stack: "view", child: "view-1" }]]);
-  herdr.runs = [];
-  press(drawn(), "priory-view-0");
-  assert.deepEqual(herdr.runs, [["layout.hide", { id: "view" }]]);
-  herdr.runs = [];
-  herdr.layout.children[1].children[1].children[1].hidden = true;
-  press(drawn(), "priory-view-0");
-  assert.deepEqual(herdr.runs, [["layout.show", { id: "view" }]]);
+  press(drawn(), "priory-aside-asks");
+  press(drawn(), "priory-aside-desk");
+  assert.deepEqual(herdr.runs, [["layout.toggle", { id: "aside-asks" }], ["layout.toggle", { id: "aside-desk" }]]);
 });
 
-test("nested stacks each get their buttons, and a button selects its branch in every stack above it", () => {
-  const { drawn, labels } = bar({ tabs: [{ row: [{ panel: "desk" }, { tabs: [{ panel: "queue" }, { panel: "runs" }] }] }, { panel: "costs" }] });
-  herdr.layout.children[1].children[1].children[1].active = "view-1";
+test("a tab's button selects it in the center, and the shown one goes back to main", () => {
+  const { drawn, labels } = bar(DEFAULT);
 
-  assert.deepEqual(labels(["priory-view-0", "priory-view-1", "priory-view-0-1-0", "priory-view-0-1-1"]), [
-    "Desk · Queue · Runs Costs Queue Runs",
-    ["priory-view-0", "Desk · Queue · Runs", false],
-    ["priory-view-1", "Costs", true],
-    ["priory-view-0-1-0", "Queue", false],
-    ["priory-view-0-1-1", "Runs", false],
-  ]);
-  press(drawn(), "priory-view-0-1-1");
-  assert.deepEqual(herdr.runs, [
-    ["layout.select", { stack: "view", child: "view-0" }],
-    ["layout.select", { stack: "view-0-1", child: "view-0-1-1" }],
-  ]);
+  press(drawn(), "priory-costs");
+  assert.deepEqual(herdr.runs, [["layout.select", { stack: "center", child: "costs" }]]);
+  herdr.runs = [];
+  herdr.layout.children[1].children[1].children[0].active = "costs";
+  assert.equal(labels(["priory-costs"])[1][2], true);
+  press(drawn(), "priory-costs");
+  assert.deepEqual(herdr.runs, [["layout.select", { stack: "center", child: "main" }]]);
 });
 
 test("opening a task shows main first when a stack hides it", async () => {
   const { settle } = await import("./kit.js");
-  const { drawn } = bar({ tabs: [{ panel: "desk" }, { panel: "terminal" }] });
+  const { drawn } = bar({ tabs: [{ panel: "desk" }, { panel: "costs" }] });
+  herdr.layout.children[1].children[1].children[0].active = "costs";
 
   herdr.shared.set("priory.task.open", { task: 7, at: Date.now() + 1 });
   drawn();
   await settle();
 
   assert.deepEqual(herdr.runs, [
-    ["layout.select", { stack: "view", child: "main" }],
+    ["layout.select", { stack: "center", child: "main" }],
     ["tab.new", { space: "space-1", name: "Task", mod: "priory-task" }],
   ]);
+});
+
+test("a layout from before the asides gives a bar that says to run install again", () => {
+  herdr.reset();
+  herdr.layout = JSON.parse(JSON.stringify(FRAME));
+  herdr.layout.children[1].children[1].children.push({ id: "view", type: "stack", active: "view-0", children: [{ id: "view-0", type: "block", content: { mod: "priory-desk", props: { panel: "desk" } } }] });
+  const panel = new Tabs();
+  const cx = context();
+  panel.init();
+
+  assert.match(text(draw(panel, cx)), /older than this bar.*run install again/);
 });

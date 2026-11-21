@@ -195,9 +195,10 @@ queues a notification in the same transaction as the change, and only while a br
 
 The daemon sends the queue one notification at a time. Before it sends one, it reads the item
 again, and sends nothing when the ask closed, the task left that state, or a person snoozed it.
-A queue left by a stopped daemon goes out when the next one starts.
+A notification leaves the queue once every browser got it or the daemon gave up on that browser,
+so a queue left by a stopped daemon goes out when the next one starts.
 
-Each notification carries the ask's title, or the task's key and step or state, and the path that
+Each notification carries an id and the ask's title, or the task's key and step or state, and the path that
 opens it, `/asks/<id>` or `/tasks/<id>`. Another alarm carries the desk's title for it, such as
 `the intake fails to poll github` or `task cli:docs-1 prompt`, and its task's path, or `/` for an
 intake report. It never carries the question, which can quote a result's
@@ -208,11 +209,30 @@ payload is encrypted for the browser, so the push service cannot read it either.
 The daemon posts to the push service with `curl`, as the OTLP exporter does, with HTTPS only and
 the header lines in a file of its own, so the signed token does not show in the process list. A
 push service that answers `404` or `410` has dropped the subscription, and the daemon removes it.
-Any other failure is logged and not retried: the desk still shows the item. The daemon posts only
+When `curl` fails, or the push service answers `429` or a `5xx`, the daemon tries that browser
+again after 15 seconds, then after 1, 4 and 16 minutes, and gives up after those 5 tries. Each try
+reads the item again first, like the first send. Later notifications go out while a retry waits.
+Any other answer, such as `400` or `413`, is logged and not retried. Either way the desk still
+shows the item. The daemon posts only
 to the push services that browsers use, Apple's, Google's, Mozilla's and Microsoft's, so a
 subscription cannot aim it at this machine or its network. A daemon that cannot make or read its
-key logs it, sends no notification, and runs tasks as usual. A daemon stopped mid-send can send
-that notification again on its next start.
+key logs it, sends no notification, and runs tasks as usual.
+
+A daemon stopped mid-send sends that notification again on its next start, and a retry after an
+answer that got lost sends it twice too. The service worker keeps the ids of the last 50
+notifications and shows a repeated id silently, in place of the first one, so it never alerts
+twice. A browser that subscribed with `userVisibleOnly` must show something for every push, and
+Safari drops a subscription that shows nothing, so the worker does not skip the copy. The id is the
+time the notification was queued and its row in the queue, so a new state file, whose rows start
+at 1 again, does not repeat an old id.
+
+A push service can replace or expire a subscription, and the browser then fires
+`pushsubscriptionchange` at the service worker. The worker subscribes again with the same key and
+sends the new subscription to `POST /api/push/subscribe`, and the old endpoint to
+`/api/push/unsubscribe`. It reads the token from a copy the page keeps in the browser's Cache
+Storage for the worker, since a worker cannot read local storage. Signing out deletes that copy.
+Without it, the worker still subscribes again, and the page sends the new subscription the next
+time the Notifications screen opens.
 
 ### Desktop notifications
 

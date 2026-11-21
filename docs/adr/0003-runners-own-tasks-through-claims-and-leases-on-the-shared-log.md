@@ -117,9 +117,32 @@ trait, as ADR 0001 left them.
   30 minutes, so no task runs on two runners unless a person gives a started one away.
 - A started task on a runner that never comes back waits for `priory give`.
 - A given task starts over, so work its old runner had not pushed is not carried.
-- A daemon that cannot reach its log stops with an error, so a runner cut off from a Postgres log
-  stops instead of riding out the partition. On herdr-bus, the runners share one file, so a
-  disconnect can only be a stopped daemon.
+- A daemon that cannot reach its log keeps its tasks going: see the amendment below.
 - Every runner posts its asks on the log, and every desk lists them all, as R8.5 asks. See
   [runners.md](../daemon/runners.md#every-runners-asks).
 - Heartbeats add one message per runner per minute to `factory.intake`.
+
+## Amendment: a runner rides out a lost log
+
+Date: 2026-11-21.
+
+The first version stopped a daemon that could not reach its log. M3 is done only when a runner cut
+off for an hour keeps its tasks going and runs none twice, so the daemon now rides out the cut.
+
+- The `Log` adapters report a lost link as `Unreachable`, a retryable error. Postgres gives up on a
+  call after the `[log]` `timeout`, since a hung ssh tunnel keeps the socket open and no TCP timeout
+  fires. Other errors still stop the daemon.
+- While the log is unreachable, the daemon runs its started tasks, queues its claims, holds and
+  alive messages in `sends`, and tries the log again with a backoff of 2 seconds to 1 minute. Once
+  back, it reads the log before it publishes its queue.
+- The cut-off rule: a runner that cannot read the log starts no `waiting` task and runs no code
+  step's action for one, since it starts a task only once it reads `kept` back. A takeover wins
+  only a task still `waiting` whose owner's last alive message is a lease or more old. So no
+  takeover wins a task that runs on the cut-off runner, and no task runs twice, unless a person
+  gives it.
+- `priory give` and `priory answer <runner>:<ask>` refuse on a runner that cannot reach the log,
+  since its owners and asks are as old as its last read.
+
+We rejected moving the log calls to a thread of their own, which would keep the daemon's loop free
+of the timeout but adds a second writer of the state file, and a direct `tokio` dependency, which
+would bound calls without a thread per call but adds two crates to the manifest.

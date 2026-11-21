@@ -247,20 +247,19 @@ test("an Up next line opens its task in the Task panel, and a schedule's line op
   assert.equal(herdr.shared.get("priory.task.open").task, 7);
 });
 
-test("Answer opens the ask in the Asks block, selected in its stack and shown", async () => {
+test("Answer opens the ask in the Asks aside, shown", async () => {
   const { draw, press } = await import("./kit.js");
   const { layout } = await import("../lib/layout.js");
   const { panel, cx, herdr } = await deskPanel();
   const frame = JSON.parse(readFileSync(new URL("../layouts/frame.json", import.meta.url), "utf8"));
   const tabs = ["desk", "asks", "tasks"].map((panel) => ({ panel }));
   herdr.layout = layout("default", { layout: { tabs } }, frame);
-  herdr.layout.children[1].children[1].children[1].hidden = true;
 
   press(draw(panel, cx), "row-ask:2");
   press(draw(panel, cx), "answer-ask:2");
 
   assert.equal(herdr.shared.get("priory.asks.open").ask, 2);
-  assert.deepEqual(herdr.runs, [["layout.show", { id: "view" }], ["layout.select", { stack: "view", child: "view-1" }]]);
+  assert.deepEqual(herdr.runs, [["layout.show", { id: "aside-asks" }]]);
 });
 
 test("Answer opens an Asks tab when the view has no Asks block", async () => {
@@ -290,6 +289,20 @@ test("Open task opens the Task panel, and Attach stays its own action", async ()
   press(draw(panel, cx), "row-ask:2");
   press(draw(panel, cx), "open-ask:2");
   assert.equal(herdr.shared.get("priory.task.open").task, 2);
+});
+
+test("a going batch is one Later row with its whole line, which no action or snooze takes", () => {
+  const batch = {
+    since: "2026-11-20T07:00:00Z", kind: "batch", id: 4, task: 30, key: "batch:2026-11-21-1", step: "close", lane: "billing/exports",
+    what: "Invoice exports: 1 merged, 3 started, 2 planned. Next: tasks 36 and 37 start when task 34 merges.",
+    generation: 1, snoozed_until: null, snoozed_at: null, back_early: null,
+  };
+  const desk = { ...data.desk, items: [...data.desk.items, batch] };
+  const later = deskModel({ ...data, desk }, { now }).sections("needs")[2].rows;
+  const row = later.find((/** @type {any} */ row) => row.kind === "batch");
+  assert.deepEqual([row.key, row.text, row.recommends, row.snooze], [
+    "batch:2026-11-21-1", "Invoice exports: 1 merged, 3 started, 2 planned. Next: tasks 36 and 37 start when task 34 merges.", null, null,
+  ]);
 });
 
 test("a press on a row's link opens the link and leaves the selection where it was", async () => {

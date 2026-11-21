@@ -1314,8 +1314,20 @@ const SCHEMA_74: &str = concat!(
 "
 );
 
-// Versions 75 and 76 are held by #202 and #203; these slots keep the numbering until they land.
-const SCHEMA_75: &str = "PRAGMA user_version = 75;";
+// While the daemon cannot reach the log: since when, and the last error. No row while it can.
+const SCHEMA_75: &str = concat!(
+    "CREATE TABLE IF NOT EXISTS log_link (
+  id    INTEGER PRIMARY KEY CHECK (id = 1),
+  since TEXT NOT NULL,
+  error TEXT NOT NULL
+);
+",
+    bumps!("log_link"),
+    "PRAGMA user_version = 75;
+"
+);
+
+// Version 76 is held by #203; this slot keeps the numbering until it lands.
 const SCHEMA_76: &str = "PRAGMA user_version = 76;";
 
 // Every runner's asks on every desk: each ask's `version`, raised by every change its post shows,
@@ -1449,6 +1461,14 @@ pub fn open() -> Result<Connection, String> {
     migrate(&mut db).map_err(|error| format!("{}: {error}", path.display()))?;
     db.pragma_update(None, "foreign_keys", true).map_err(at)?;
     Ok(db)
+}
+
+/// A state in memory with every migration applied, for unit tests.
+#[cfg(test)]
+pub(crate) fn memory() -> Connection {
+    let mut db = Connection::open_in_memory().expect("an in-memory state opens");
+    migrate(&mut db).expect("the migrations apply");
+    db
 }
 
 /// Applies the migrations the file lacks in one transaction, which a broken reference rolls back.

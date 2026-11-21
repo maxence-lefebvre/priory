@@ -16,6 +16,7 @@ priory-factory.workspace = true
 priory-intake.workspace = true
 priory-runtime.workspace = true
 serde_json.workspace = true
+sha2.workspace = true
 
 [features]
 model = ["priory-core/model"]
@@ -34,7 +35,6 @@ jsonschema = { version = "=0.60.2", default-features = false }
 rusqlite.workspace = true
 schemars.workspace = true
 serde-saphyr.workspace = true
-sha2.workspace = true
 toml.workspace = true
 tungstenite.workspace = true
 uuid.workspace = true

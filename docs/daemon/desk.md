@@ -33,7 +33,9 @@ A going batch shows as one `batch` row, until it ends. Its `task` and `key` are 
 task's. A held entry whose every open condition is a batch edge leaves `items`: the batch row stands
 for it. An entry held on a condition with an open ask, such as the ask a failed predecessor raises,
 keeps its own `held` row and its Release button. A `batch` row never ranks as the next thing, since
-it asks for nothing. See [batches.md](batches.md).
+it asks for nothing. See [batches.md](batches.md). The web Desk and the Herdr Desk show it under
+Also waiting with a muted tile and the `layers` icon. The web Desk's phone list puts its `Next:`
+sentence in a caption below its counts, and its key opens the planning task.
 
 ## Unrouted events
 
@@ -46,6 +48,15 @@ hours, `priory desk` prints one line before its rows. Events no task ever owned 
 
 It is a count, not an alarm: nothing ranks for it. `priory desk --json` carries it as
 `counts.unrouted`, 0 when there are none. See [routing.md](routing.md#events-that-reach-no-task).
+
+A comment or review from someone outside the repository is not unrouted: its outcome is
+`outsider`. When some came in the last 24 hours, `priory desk` prints one more line:
+
+```text
+2 comments from outside the repository came in the last 24 hours. See them with `priory inbox --unrouted`.
+```
+
+`priory desk --json` carries it as `counts.outsider`, 0 when there are none.
 
 ## The next thing
 
@@ -153,6 +164,10 @@ A tick that polls no Linear or Slack source records only `github`.
 - When no source polled in the last 5 minutes, the banner is instead `the intake has not polled
   since <time>: waits on GitHub, Linear and Slack cannot fire`. A factory whose intake never ran
   shows no banner.
+
+While the daemon cannot reach its log, the banner starts with
+`the log is unreachable since <time>: <error>; <n> messages wait to publish`, joined to the
+intake's own by `; `. See [runners.md](runners.md#a-runner-cut-off-from-the-log).
 
 The banner is `intake` in `priory desk --json` and `/api/desk`. A source that starts failing, or
 recovers, moves the state's revision, so a client that waits on `/api/events` redraws the banner at

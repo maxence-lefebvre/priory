@@ -24,6 +24,7 @@ const TILES = /** @type {Record<string, [string, string | null, string]>} */ ({
   failed: ["tile-danger", "circle-x", "danger-text"],
   delivery: ["tile-danger", "circle-x", "danger-text"],
   held: ["tile-hold", "pause", "text-2"],
+  batch: ["tile-muted", "layers", "text-2"],
   queued: ["tile-muted", "circle-dashed", "text-2"],
   ready: ["tile-live", "circle-dot", "action-text"],
   running: ["tile-live", null, "action-text"],

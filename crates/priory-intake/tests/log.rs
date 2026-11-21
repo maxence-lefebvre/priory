@@ -6,6 +6,10 @@ use herdr_bus::{Bus, Message, Output, Seq, Stored, Timestamp};
 use priory_factory::factory::{Backend, EventLog};
 use priory_intake::log::{self, Delivery, Log, Result};
 
+#[cfg(feature = "postgres")]
+#[path = "../../priory/tests/proxy/mod.rs"]
+mod proxy;
+
 const OUTPUT: &str = "test.events";
 
 /// Opens handles on one log, as each process start does.
@@ -167,17 +171,27 @@ impl Drop for Postgres {
 }
 
 #[cfg(feature = "postgres")]
-impl Store for Postgres {
-    fn open(&self) -> Box<dyn Log> {
-        let separator = if self.url.contains('?') { '&' } else { '?' };
-        let url = format!(
-            "{}{separator}options=-csearch_path%3D{schema}&application_name={schema}",
-            self.url,
+impl Postgres {
+    /// `base`, the test database's URL or one through a proxy, set to this test's schema.
+    fn url(&self, base: &str) -> String {
+        let separator = if base.contains('?') { '&' } else { '?' };
+        format!(
+            "{base}{separator}options=-csearch_path%3D{schema}&application_name={schema}",
             schema = self.schema
-        );
-        Box::new(priory_intake::log::postgres::Postgres::connect(&url).unwrap())
+        )
     }
 }
+
+#[cfg(feature = "postgres")]
+impl Store for Postgres {
+    fn open(&self) -> Box<dyn Log> {
+        let url = self.url(&self.url);
+        Box::new(priory_intake::log::postgres::Postgres::connect(&url, TIMEOUT).unwrap())
+    }
+}
+
+#[cfg(feature = "postgres")]
+const TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
 
 fn declared(store: &dyn Store) -> Box<dyn Log> {
     let log = store.open();
@@ -381,6 +395,7 @@ fn postgres_log(url_env: &str) -> EventLog {
     EventLog {
         backend: Backend::Postgres,
         url_env: Some(url_env.into()),
+        timeout: None,
     }
 }
 
@@ -415,7 +430,7 @@ fn a_postgres_log_opens_the_database_its_url_variable_names() {
     let output = format!("{OUTPUT}.{}", store.schema);
     let log = log::open(&postgres_log("PRIORY_TEST_POSTGRES_URL")).unwrap();
     let seq = log.publish(&output, &event(1)).unwrap();
-    let other = priory_intake::log::postgres::Postgres::connect(&store.url).unwrap();
+    let other = priory_intake::log::postgres::Postgres::connect(&store.url, TIMEOUT).unwrap();
     let read = other.read("daemon", &output, 100).unwrap();
     let mut client = ::postgres::Client::connect(&store.url, ::postgres::NoTls).unwrap();
     client
@@ -498,4 +513,102 @@ fn postgres_concurrent_publishers_leave_no_message_behind_a_cursor() {
         handled,
         (0..u64::from(publishers * each)).collect::<Vec<_>>()
     );
+}
+
+#[cfg(feature = "postgres")]
+#[test]
+fn postgres_reports_a_cut_link_as_unreachable_and_works_again_once_it_is_back() {
+    let Some(store) = Postgres::new("cut") else {
+        return;
+    };
+    let proxy = proxy::Proxy::new(&store.url);
+    let url = store.url(&proxy.url);
+    let log = priory_intake::log::postgres::Postgres::connect(&url, TIMEOUT).unwrap();
+    log.publish(OUTPUT, &event(1)).unwrap();
+
+    proxy.set(proxy::Link::Cut);
+    let error = log.publish(OUTPUT, &event(2)).unwrap_err();
+    assert!(log::unreachable(&*error), "{error}");
+    let error = log.read("daemon", OUTPUT, 10).unwrap_err();
+    assert!(log::unreachable(&*error), "{error}");
+
+    proxy.set(proxy::Link::Up);
+    log.publish(OUTPUT, &event(2)).unwrap();
+    assert_eq!(numbers(&log, "daemon"), [1, 2]);
+}
+
+#[cfg(feature = "postgres")]
+#[test]
+fn postgres_gives_up_on_a_frozen_link_after_its_timeout_and_waits_on_one_call_at_a_time() {
+    let Some(store) = Postgres::new("frozen") else {
+        return;
+    };
+    let proxy = proxy::Proxy::new(&store.url);
+    let url = store.url(&proxy.url);
+    let log = priory_intake::log::postgres::Postgres::connect(&url, TIMEOUT).unwrap();
+    log.publish(OUTPUT, &event(1)).unwrap();
+
+    proxy.set(proxy::Link::Frozen);
+    let started = std::time::Instant::now();
+    let error = log.publish(OUTPUT, &event(2)).unwrap_err();
+    assert!(log::unreachable(&*error), "{error}");
+    let waited = started.elapsed();
+    assert!(waited >= TIMEOUT && waited < TIMEOUT * 2, "{waited:?}");
+    // The first call still waits on the frozen link: the next ones give up at once.
+    for _ in 0..3 {
+        let started = std::time::Instant::now();
+        let error = log.read("daemon", OUTPUT, 10).unwrap_err();
+        assert!(log::unreachable(&*error), "{error}");
+        assert!(started.elapsed() < std::time::Duration::from_millis(200));
+    }
+
+    proxy.set(proxy::Link::Up);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let read = loop {
+        match log.read("daemon", OUTPUT, 10) {
+            Ok(read) => break read,
+            Err(error) if log::unreachable(&*error) && std::time::Instant::now() < deadline => {
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+            Err(error) => panic!("{error}"),
+        }
+    };
+    assert_eq!(
+        read.len(),
+        2,
+        "the frozen publish landed once the link thawed"
+    );
+}
+
+#[cfg(feature = "postgres")]
+#[test]
+fn postgres_opens_while_its_link_is_cut_and_connects_once_it_is_back() {
+    let Some(store) = Postgres::new("open_cut") else {
+        return;
+    };
+    let proxy = proxy::Proxy::new(&store.url);
+    proxy.set(proxy::Link::Cut);
+    let url = store.url(&proxy.url);
+    let log = priory_intake::log::postgres::Postgres::connect(&url, TIMEOUT).unwrap();
+    let error = log.publish(OUTPUT, &event(1)).unwrap_err();
+    assert!(log::unreachable(&*error), "{error}");
+
+    proxy.set(proxy::Link::Up);
+    log.publish(OUTPUT, &event(1)).unwrap();
+    assert_eq!(numbers(&log, "daemon"), [1]);
+}
+
+#[cfg(feature = "postgres")]
+#[test]
+fn postgres_refuses_a_wrong_password_as_an_error_not_a_lost_link() {
+    let Some(store) = Postgres::new("password") else {
+        return;
+    };
+    let (credentials, host) = store.url.split_once('@').unwrap();
+    let (user, _) = credentials.rsplit_once(':').unwrap();
+    let wrong = format!("{user}:wrong@{host}");
+    let error = priory_intake::log::postgres::Postgres::connect(&store.url(&wrong), TIMEOUT)
+        .err()
+        .unwrap();
+    assert!(!log::unreachable(&*error), "{error}");
 }
