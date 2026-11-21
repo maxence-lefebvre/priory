@@ -26,12 +26,53 @@ each task starts a new session instead of resuming the shared one.
 
 Known limits:
 
-- A long shared conversation is never compacted by Priory.
+- A long conversation is compacted by Priory only when its agent sets `compactAt` or calls the
+  `compact` tool. See Compacting a long session.
 - Claude stores a session's transcript under its starting directory. Whether `--resume` finds it
   from another task's worktree depends on the Claude version. No test runs a real Claude.
 - Signals and tool calls name the harness session, not the process. The daemon kills a run's tmux
   session before admitting the next task, but a process that survived the kill could still report
   for the run that resumed its session.
+
+## Compacting a long session
+
+An agent's `compactAt` is a context size in tokens, such as `150000`. When a turn ends with the
+conversation's context at or past it, the daemon queues a `/compact`, as the `compact` tool does. It
+types it once the run is idle, then the same continuation line. [outbox.md](outbox.md) describes
+that path under Compact. Unset, Priory never compacts on its own.
+
+The context size is a count, not a fraction of the model's window: Priory does not know each
+model's window.
+
+The daemon reads the size at the turn's `Stop` hook, from the session transcript that the hook names.
+It reads it at a resumed run's `SessionStart` too, so a session past `compactAt` is compacted after
+its new task's first turn.
+It is the input, cached input, cache writes and output of the last message the model wrote. An
+error message Claude writes itself, marked `<synthetic>`, does not count. So the size lags by
+one turn: a turn that passes `compactAt` is compacted after it ends, never during it. Claude can
+still compact a turn itself if it fills the window first.
+
+It compacts once per crossing. After the daemon queues a `/compact`, it queues no other until a
+turn's context reads below `compactAt` again. Every run of the session shares that state, so a
+compaction that leaves the context above `compactAt` is not repeated, even after the task sleeps
+and wakes.
+
+While the daemon's `/compact` is queued, a turn's ask or wait does not settle: the task sleeps on it
+at the first `Stop` after the compaction and its continuation. So a lead that ends every turn with
+an ask or a wait is still compacted before it sleeps. A task whose answer's command still runs is
+neither compacted nor kept awake: it waits for the command, and a later turn compacts. A turn whose
+context reads below `compactAt` before the `/compact` is typed withdraws it. A `/compact` the agent
+asks for with the tool keeps the tool's own rules.
+
+A turn that stores a result is compacted only if the next step carries on in the same process. A
+result that moves the task to another conversation leaves the crossing to the session's next run,
+which checks at its `SessionStart`. Its first `result` is then refused until the compaction, as for
+the `compact` tool.
+
+A Codex agent cannot take `compactAt`: Priory reads no Codex tokens (see [codex.md](codex.md)).
+
+Known limit: an answer that reaches a run kept awake for its `/compact` can start its command
+before the compaction, so the continuation may come while the command runs.
 
 ## Attaching to a run
 

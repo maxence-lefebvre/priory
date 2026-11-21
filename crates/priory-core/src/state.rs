@@ -12,7 +12,7 @@ use std::collections::BTreeMap;
 use std::io::Write;
 use std::time::Duration;
 
-const VERSION: i64 = 50;
+const VERSION: i64 = 51;
 
 const SCHEMA: &str = "
 CREATE TABLE tasks (
@@ -921,6 +921,12 @@ CREATE TABLE IF NOT EXISTS result_branches (
 "
 );
 
+// The outbox id of the compact the daemon queued since the session's context last read below
+// `compactAt`, or 0.
+const SCHEMA_51: &str = "ALTER TABLE runs ADD COLUMN crossed INTEGER NOT NULL DEFAULT 0;
+PRAGMA user_version = 51;
+";
+
 /// Each schema change in order: a file at version `n` applies those from index `n` on.
 const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA, SCHEMA_2, SCHEMA_3, SCHEMA_4, SCHEMA_5, SCHEMA_6, SCHEMA_7, SCHEMA_8, SCHEMA_9,
@@ -929,7 +935,7 @@ const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA_26, SCHEMA_27, SCHEMA_28, SCHEMA_29, SCHEMA_30, SCHEMA_31, SCHEMA_32, SCHEMA_33,
     SCHEMA_34, SCHEMA_35, SCHEMA_36, SCHEMA_37, SCHEMA_38, SCHEMA_39, SCHEMA_40, SCHEMA_41,
     SCHEMA_42, SCHEMA_43, SCHEMA_44, SCHEMA_45, SCHEMA_46, SCHEMA_47, SCHEMA_48, SCHEMA_49,
-    SCHEMA_50,
+    SCHEMA_50, SCHEMA_51,
 ];
 
 /// The order the queue starts tasks in: band, then a person's order, then age. A band the factory
@@ -2350,12 +2356,19 @@ pub(crate) fn signal(
                  WHERE id = ?1",
                 params![run, signal.thread],
             )?;
-            crate::trace::begin(&tx, trace, run, signal.transcript.as_deref())?;
+            let context = crate::trace::begin(&tx, trace, run, signal.transcript.as_deref())?;
+            // A resumed session may already be past `compactAt`, as when every task ends in one result.
+            crate::tools::overflow(&tx, &signal.session, context, trace.factory)?;
         }
         "Stop" => {
             tx.execute("UPDATE runs SET idle = 1, turn = NULL WHERE id = ?1", [run])?;
-            crate::trace::account(&tx, trace, run, signal.transcript.as_deref())?;
-            kill = crate::tools::stop(&tx, &signal.session, trace)?;
+            let context = crate::trace::account(&tx, trace, run, signal.transcript.as_deref())?;
+            // The run settles its ask or wait once its compact is typed, so it never sleeps past it.
+            // A result carried into the next step on this process compacts there.
+            if !crate::tools::overflow(&tx, &signal.session, context, trace.factory)? {
+                kill = crate::tools::stop(&tx, &signal.session, trace)?;
+                crate::tools::overflow(&tx, &signal.session, context, trace.factory)?;
+            }
             tx.execute("UPDATE runs SET nudgeable = 0 WHERE id = ?1", [run])?;
         }
         "UserPromptSubmit" => {
