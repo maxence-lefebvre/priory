@@ -1247,10 +1247,14 @@ pub fn desk(
     for (resource, _) in unrouted_events(db, 0, Some((day.0, &day.1)))? {
         unrouted += usize::from(owner(db, &resource)?.is_some());
     }
-    let outside = [crate::link::banner(db)?, post::intake_banner(db)?]
-        .into_iter()
-        .flatten()
-        .reduce(|log, intake| format!("{log}; {intake}"));
+    let outside = [
+        crate::link::banner(db)?,
+        post::intake_banner(db)?,
+        crate::kit::banner(db)?,
+    ]
+    .into_iter()
+    .flatten()
+    .reduce(|first, next| format!("{first}; {next}"));
     let outsider = outsider_events(db, 0, Some((day.0, &day.1)))?
         .as_array()
         .map_or(0, Vec::len);

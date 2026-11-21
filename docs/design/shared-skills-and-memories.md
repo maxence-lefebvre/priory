@@ -21,7 +21,7 @@ slices after it, and the open questions with a recommendation for each.
   machine.
 - Each runner has its own checkout of the factory, and reads the shared log
   ([runners.md](../daemon/runners.md)). Nothing keeps those checkouts at the same commit: a person
-  pulls each one.
+  pulls each one. Each runner fetches a `[kit]` repository on its own (later slice 2).
 
 Max keeps his own kit, `maxence-lefebvre/abbey`, in a private repository: `claude/` (a `CLAUDE.md`
 and the docs it points to), `codex/AGENTS.md` and a `skills/` folder. It is the natural first
@@ -209,6 +209,12 @@ Tests:
    Codex agent's 8192-byte limit.
 2. `[kit]`: fetch at start and on the tick, the per-commit checkout, the desk banner on a failed
    fetch, and the run's recorded commit. Tests run against a local bare repository.
+   This slice is built: [skills.md](../daemon/skills.md#a-kit-repository) describes it. It differs
+   from this note in four ways: the mirror and checkouts live in Priory home, under
+   `$PRIORY_HOME/kit/`; the kit's instructions come before the factory's rather than giving way to
+   them; a kit commit that `priory check` would refuse is refused whole, as a failed fetch is; and
+   the daemon's log, not `priory check`, names a factory skill that hides a kit skill, since check
+   cannot see the kit.
 3. Memories on the log: `remember`, `forget` and `memory`, candidates and acceptance, and the
    `priory.memory.written` and `priory.memory.accepted` schemas. Tests run two runners on one
    herdr-bus file, as the runner tests do, and cover an overwrite after an accept and a forget of a
