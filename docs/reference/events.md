@@ -914,6 +914,7 @@ Schema: [`slack.message.posted.json`](../schemas/events/slack.message.posted.jso
 | `ts` | string | Slack's id of the message: seconds since the epoch, with microseconds |
 | `user` | string or null | The author's Slack user id |
 | `text` | string | The message, in Slack's markup |
+| `files` | array of strings | The names of the files uploaded with the message; empty when none |
 
 <!-- example: events/slack.message.posted.json -->
 ```json
@@ -927,6 +928,7 @@ Schema: [`slack.message.posted.json`](../schemas/events/slack.message.posted.jso
     "ts": "1795036000.000100",
     "user": "U0PERSON",
     "text": "@priory the export is broken again",
+    "files": ["export.log"],
     "time": "2026-11-18T21:06:40.000100Z",
     "baseline": false,
     "triggers": ["support-channel"]
@@ -937,7 +939,8 @@ Schema: [`slack.message.posted.json`](../schemas/events/slack.message.posted.jso
 
 ### `slack.thread.replied`
 
-One message per reply in a thread that an open `slack_reply` wait names. It never names a trigger.
+One message per reply in a thread that an open `slack_reply` wait or a subscription names, a reply
+also sent to the channel included. It never names a trigger.
 Subject: `<channel>:<thread ts>`.
 Schema: [`slack.thread.replied.json`](../schemas/events/slack.thread.replied.json).
 
@@ -957,6 +960,7 @@ message. `baseline` is always false.
     "ts": "1795036001.000200",
     "user": "U0PERSON",
     "text": "Looks good, ship it.",
+    "files": [],
     "time": "2026-11-18T21:06:41.000200Z",
     "baseline": false,
     "triggers": []

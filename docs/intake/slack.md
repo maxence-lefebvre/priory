@@ -12,7 +12,9 @@ thread, so replies under the message that started it reach it.
 | a thread | `conversations.replies` from the wait's or subscription's time on | an open `slack_reply` wait, or a subscription such as a Slack task's to its own thread (see [watches.md](watches.md)) |
 
 The intake publishes nothing for its own bot's messages, nor for a message with a `subtype`, such
-as a join.
+as a join. Two subtypes are a person's message and publish: `file_share`, a message with an upload,
+whose `files` lists the file names, and `thread_broadcast`, a reply also sent to the channel. A
+broadcast is published once, as a reply of its thread, and never as a channel message.
 
 ## Trigger
 
@@ -90,6 +92,11 @@ process list or an error.
   successive `--once` runs rotate too.
 - A failing channel publishes nothing. It fails the poll only after the other channels and the
   watched threads are published.
+- A thread the intake cannot read, such as one in a channel the bot is not a member of
+  (`not_in_channel`) or a deleted one, fails the poll the same way, with an error that names
+  `thread <channel>:<thread_ts>`. A rate limit does not fail it: the next poll starts with that
+  thread. The desk then shows the Slack intake as failing until the thread
+  reads again or no wait or subscription names it.
 
 ## Message shortcut
 

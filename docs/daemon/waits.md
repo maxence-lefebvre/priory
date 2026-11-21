@@ -78,6 +78,13 @@ wait 3 fired: ana commented on src/lib.rs:12 of github:owner/name#57: Rename thi
 The line quotes the first line of a comment or of a review's summary, when the review has one.
 The event's own line follows with the whole body.
 
+A comment on an issue or a Linear issue, or a Slack reply, that the task subscribes to fires the
+checks gate the same way, so a request made while a stack waits to merge reaches the agent:
+
+```text
+wait 3 fired: Ana commented on linear:ENG-7: Also handle the empty case. https://linear.app/acme/issue/ENG-7#comment-1
+```
+
 A comment fires a wait only when its `time` is at or after the wait was stored, to the second. So
 the agent's own comment, posted in the turn that stored the wait, fires nothing. Reviews fire at any
 time, since GitHub keeps an author from approving or rejecting their own pull request. The intake

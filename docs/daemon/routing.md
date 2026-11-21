@@ -193,6 +193,8 @@ When no active task owns a resource it names, it reopens the newest done task th
 - has no `github.pull_request.closed` or `github.issues.closed` event of that pull request or issue
   in the inbox, merged or not, and
   the feedback's `open` is true, so a close the intake publishes after it reopens nothing;
+- has no merged pull request, so a "Shipped, thanks" on the Linear issue or in the Slack thread a
+  week later starts no new generation on a merged branch;
 - shares its key with no active task.
 
 The task goes back, as its next generation, to its workflow's `reopen` step, else the model step
