@@ -3867,6 +3867,25 @@ fn move_through_its_endpoint_does_what_priory_move_does_at_the_revision_the_page
     setup.seed();
     succeeded(&setup.priory(&["pause"]));
     let address = setup.start(&["daemon", &setup.factory()]);
+    // The daemon's first pass records a summary per task after it listens, which bumps the revision.
+    let db = rusqlite::Connection::open(setup.dir.join("priory.db")).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(60);
+    while db
+        .query_row(
+            "SELECT count(*) FROM tasks
+             WHERE id NOT IN (SELECT task FROM summaries WHERE answered IS NOT NULL)",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .unwrap()
+        > 0
+    {
+        assert!(
+            Instant::now() < deadline,
+            "the daemon never summarized the tasks"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
     let queue = || json_of(&setup, "queue");
     let order = || -> Vec<(Value, Value)> {
         queue()["waiting"]
