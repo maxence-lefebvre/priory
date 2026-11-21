@@ -278,6 +278,9 @@ fn secret_env() -> String {
 pub struct Telemetry {
     /// The OTLP/HTTP base URL, such as `http://127.0.0.1:4318`; spans go to its `/v1/traces`.
     pub otlp: String,
+    /// The environment variable that holds the headers each request carries, such as an API key,
+    /// as `key1=value1,key2=value2` with URL-encoded values. Never the headers themselves.
+    pub headers_env: Option<String>,
 }
 
 /// Where the daemon tells a person that the desk's next item changed, besides Web Push.
@@ -1229,6 +1232,12 @@ impl Factory {
     pub fn otlp(&self) -> Option<&str> {
         let telemetry = self.settings.as_ref()?.value.telemetry.as_ref()?;
         Some(telemetry.otlp.as_str())
+    }
+
+    /// The environment variable that holds the OTLP exporter's headers, if it sends any.
+    pub fn otlp_headers_env(&self) -> Option<&str> {
+        let telemetry = self.settings.as_ref()?.value.telemetry.as_ref()?;
+        telemetry.headers_env.as_deref()
     }
 
     /// Whether the daemon sends desktop notifications.
