@@ -204,11 +204,11 @@ since	until	acts	person minutes	merges	per merge
 2026-11-16T00:00:00.000Z	2026-11-17T11:00:00.000Z	4	16.0	2	8.0
 
 asks	acted	open	median	p90	median present	p90 present
-all	4	0	31.0	61.0	31.0	61.0
+all	4	0	45.5	61.0	45.5	61.0
 
 workflow	acts	person minutes	acted	open	median	p90	median present	p90 present
-implement	2	6.0	2	0	60.0	61.0	60.0	61.0
-review	2	10.0	2	0	31.0	31.0	0.0	31.0
+implement	2	6.0	2	0	60.5	61.0	60.5	61.0
+review	2	10.0	2	0	31.0	31.0	15.5	31.0
 
 task	key	workflow	lane	state	wall	working	waiting on person	waiting on world	queued
 1	issue-1	implement	lane-a	done	240.0	110.0	30.0	90.0	10.0
@@ -224,9 +224,9 @@ The report reads what the state already stores. It counts one person: every act 
   up to 5 minutes. A burst of quick answers costs little, and an act after a break costs 5 minutes.
   `per merge` divides them by `merges`, counted as `priory costs` counts them, and reads `-` with no
   merge.
-- A wait runs from when an ask's revision was asked to the person's first act on it: its answer, a
-  snooze, or its dismissal, before the next revision. `median` and `p90` are nearest-rank
-  percentiles of the acted waits. The `present` figures subtract the part of each wait that fell in
+- A wait runs from when an ask's revision was asked to the person's first act on it: its answer,
+  its dismissal, or a snooze before the next revision. `median` is the acted waits' median, and
+  `p90` their nearest-rank 90th percentile. The `present` figures subtract the part of each wait that fell in
   an away gap. `open` counts revisions still waiting. A revision the agent replaced or withdrew
   before the person acted counts in neither.
 - The asks counted are the revisions asked in the window. Acts count when they fall in it.
@@ -238,14 +238,16 @@ Each task whose current generation overlaps the window gets a row, from its crea
 or to the window's end while it is active. Its wall time splits in this order of precedence, so an
 interval hides the lower ones it overlaps:
 
-1. Waiting on the person: an open ask of the task, until its answer or withdrawal, and a hold on a
-   person.
-2. Waiting on the world: a wait, such as on checks, a review or an event, until it fires, and any
+1. Waiting on the person: each revision of an ask of the task, until its answer, its withdrawal or
+   the next revision, and a hold on a person.
+2. Working: a live run. It outranks a wait, since a run can go on after its wait is withdrawn.
+3. Waiting on the world: a wait, such as on checks, a review or an event, until it fires, and any
    other hold.
-3. Working: a live run.
 4. Queued: the rest, such as waiting for a free slot.
 
-An ask or a wait with no stored end ends at the task's next run, else at the task's end.
+An ask or a wait with no stored end ends at the task's next run. Else a withdrawn wait ends with
+its own run, and the rest at the task's end. A task that ended before the state recorded task ends
+ends at its last state change.
 
 `--json` prints one object, which `GET /api/attention` also answers (see
 [the serve reference](../reference/serve.md#attention)).
@@ -254,6 +256,7 @@ Known limits:
 
 - Every act counts as one person's, however many people use the factory.
 - Person-minutes miss attention that leaves no act: reading a diff, a review on GitHub, a `say`.
-- An ask dismissed before the state recorded dismissal times has no act, so its wait never ends.
+- An ask dismissed before the state recorded withdrawals (schema 52) has no act, so its wait
+  never ends.
 - A blocked or failed task waiting on a person counts as queued: the state keeps no state history.
 - A task's earlier generations count in no row.

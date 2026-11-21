@@ -44,10 +44,11 @@ struct Task {
 }
 
 /// What a task's time went to, in order of precedence: an interval of a higher one hides the
-/// lower ones it overlaps. The time no interval covers is queued.
+/// lower ones it overlaps. The time no interval covers is queued. A live run outranks a wait, since
+/// a wait withdrawn while its run went on has no end of its own.
 const PERSON: usize = 0;
-const WORLD: usize = 1;
-const WORKING: usize = 2;
+const WORKING: usize = 1;
+const WORLD: usize = 2;
 const QUEUED: usize = 3;
 
 /// Where a person's attention went in a window: how long asks waited on them, and how each task's
@@ -79,8 +80,7 @@ fn acts(db: &Connection, until: &str, key: &str) -> rusqlite::Result<Vec<Act>> {
     let mut statement = db.prepare(&format!(
         "WITH acts AS (
            SELECT answered AS time, ask, NULL AS task FROM ask_revisions WHERE answered IS NOT NULL
-           UNION ALL SELECT withdrawn_at, id, NULL FROM asks
-             WHERE withdrawn = -1 AND withdrawn_at IS NOT NULL
+           UNION ALL SELECT created, ask, NULL FROM ask_withdrawals WHERE withdrawn = -1
            UNION ALL SELECT created, ask, NULL FROM ask_refusals
            UNION ALL SELECT time, CASE json_extract(event, '$.data.item.kind') WHEN 'ask'
                THEN CAST(json_extract(event, '$.data.item.id') AS INTEGER) END,
@@ -101,9 +101,9 @@ fn acts(db: &Connection, until: &str, key: &str) -> rusqlite::Result<Vec<Act>> {
         .collect()
 }
 
-/// Each revision of an ask asked in `window`, and the person's first act on it before the next
-/// revision and up to `until`: its answer, its dismissal or a snooze. A revision that no act ended
-/// is kept only while it is the ask's open revision.
+/// Each revision of an ask asked in `window`, and the person's first act on it up to `until`: its
+/// answer, its dismissal, or a snooze before the next revision. A revision that no act ended is
+/// kept only while it is the ask's open revision.
 fn waits(db: &Connection, window: &Window, key: &str) -> rusqlite::Result<Vec<Wait>> {
     let mut statement = db.prepare(&format!(
         "WITH revisions AS (
@@ -113,13 +113,15 @@ fn waits(db: &Connection, window: &Window, key: &str) -> rusqlite::Result<Vec<Wa
            FROM ask_revisions)
          SELECT {asked}, (SELECT min({time}) FROM (
              SELECT revisions.answered AS time
-             UNION ALL SELECT asks.withdrawn_at WHERE asks.withdrawn = -1
+             UNION ALL SELECT created FROM ask_withdrawals WHERE ask_withdrawals.ask = asks.id
+               AND ask_withdrawals.revision = revisions.revision AND withdrawn = -1
              UNION ALL SELECT trace.time FROM trace WHERE trace.type = 'factory.task.snoozed'
                AND json_extract(trace.event, '$.data.item.kind') = 'ask'
-               AND json_extract(trace.event, '$.data.item.id') = CAST(asks.id AS TEXT))
-             WHERE julianday(time) >= julianday(revisions.created)
-             AND (revisions.next IS NULL OR julianday(time) < julianday(revisions.next))
-             AND julianday(time) <= julianday(?2)) AS acted,
+               AND json_extract(trace.event, '$.data.item.id') = CAST(asks.id AS TEXT)
+               AND julianday(trace.time) >= julianday(revisions.created)
+               AND (revisions.next IS NULL
+                 OR julianday(trace.time) < julianday(revisions.next)))
+             WHERE julianday(time) <= julianday(?2)) AS acted,
            asks.revision = revisions.revision AND asks.answer IS NULL AND asks.withdrawn IS NULL,
            {key}
          FROM revisions JOIN asks ON asks.id = revisions.ask
@@ -154,29 +156,38 @@ fn waits(db: &Connection, window: &Window, key: &str) -> rusqlite::Result<Vec<Wa
 /// open asks, waits and holds. An interval with no stored end ends at the task's next run, else at
 /// the task's end.
 fn tasks(db: &Connection, window: &Window) -> rusqlite::Result<Vec<Task>> {
-    let next_run = |table: &str| {
+    let next_run = |created: &str| {
         format!(
-            "(SELECT min(started) FROM runs WHERE runs.task = {table}.task
-              AND julianday(runs.started) > julianday({table}.created))"
+            "(SELECT min(started) FROM runs WHERE runs.task = ?1
+              AND julianday(runs.started) > julianday({created}))"
         )
     };
     let mut intervals = db.prepare(&format!(
         "SELECT kind, {from}, {to} FROM (
            SELECT {WORKING} AS kind, started AS start, ended AS end FROM runs WHERE task = ?1
-           UNION ALL SELECT {PERSON}, created, coalesce(answered, withdrawn_at, {ask_run})
-             FROM asks WHERE task = ?1
-           UNION ALL SELECT {WORLD}, created, coalesce(fired, {wait_run}) FROM waits WHERE task = ?1
+           UNION ALL SELECT {PERSON}, revision.created, coalesce(revision.answered,
+             (SELECT min(created) FROM ask_withdrawals WHERE ask_withdrawals.ask = revision.ask
+               AND ask_withdrawals.revision = revision.revision),
+             (SELECT min(later.created) FROM ask_revisions AS later
+               WHERE later.ask = revision.ask AND later.revision > revision.revision),
+             {ask_run})
+             FROM ask_revisions AS revision JOIN asks ON asks.id = revision.ask
+             WHERE asks.task = ?1
+           UNION ALL SELECT {WORLD}, created, coalesce(fired, {wait_run}, CASE WHEN withdrawn
+             IS NOT NULL THEN (SELECT ended FROM runs WHERE runs.id = waits.run) END)
+             FROM waits WHERE task = ?1
            UNION ALL SELECT CASE kind WHEN 'person' THEN {PERSON} ELSE {WORLD} END, created,
              released FROM holds WHERE task = ?1)",
         from = ms("start"),
         to = ms("end"),
-        ask_run = next_run("asks"),
-        wait_run = next_run("waits"),
+        ask_run = next_run("revision.created"),
+        wait_run = next_run("waits.created"),
     ))?;
     let mut statement = db.prepare(&format!(
         "SELECT id, key, workflow, lane, state, created, ended, {since}, {until} FROM (
-           SELECT *, CASE WHEN state IN ('done', 'failed', 'dropped') THEN (SELECT max(ended)
-             FROM task_ends WHERE task = tasks.id AND generation = tasks.generation) END AS ended
+           SELECT *, CASE WHEN state IN ('done', 'failed', 'dropped') THEN coalesce((SELECT max(ended)
+             FROM task_ends WHERE task = tasks.id AND generation = tasks.generation), changed)
+             END AS ended
            FROM tasks)
          WHERE julianday(created) < julianday(?2)
          AND (ended IS NULL OR julianday(ended) >= julianday(?1))
@@ -318,13 +329,18 @@ fn minutes(ms: i64) -> f64 {
     ms as f64 / 60_000.0
 }
 
-/// The median and p90 of `minutes`, or none when it is empty.
+/// The median and the nearest-rank p90 of `minutes`, or none when it is empty.
 fn spread(mut minutes: Vec<f64>) -> [Option<f64>; 2] {
     minutes.sort_by(f64::total_cmp);
-    match minutes.is_empty() {
-        true => [None, None],
-        false => [percentile(&minutes, 50.0), percentile(&minutes, 90.0)].map(Some),
+    if minutes.is_empty() {
+        return [None, None];
     }
+    let middle = minutes.len() / 2;
+    let median = match minutes.len() % 2 {
+        0 => (minutes[middle - 1] + minutes[middle]) / 2.0,
+        _ => minutes[middle],
+    };
+    [Some(median), Some(percentile(&minutes, 90.0))]
 }
 
 impl Attention {

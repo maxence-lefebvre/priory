@@ -385,7 +385,7 @@ a wait and away time. Minutes are numbers, not rounded.
 | ----- | ----- |
 | `acted` | The ask revisions a person acted on |
 | `open` | The ask revisions still waiting |
-| `median_minutes`, `p90_minutes` | The acted waits' median and 90th percentile, nearest rank; null with none |
+| `median_minutes`, `p90_minutes` | The acted waits' median and nearest-rank 90th percentile; null with none |
 | `median_present_minutes`, `p90_present_minutes` | The same, without the time the person was away |
 
 ## Views

@@ -183,12 +183,12 @@ fn ask_waits_give_median_and_p90_with_and_without_the_persons_away_time() {
 
     assert_eq!(
         attention["waits"],
-        json!({ "acted": 4, "open": 1, "median_minutes": 20.0, "p90_minutes": 300.0,
-                "median_present_minutes": 10.0, "p90_present_minutes": 25.0 })
+        json!({ "acted": 4, "open": 1, "median_minutes": 22.5, "p90_minutes": 300.0,
+                "median_present_minutes": 15.0, "p90_present_minutes": 25.0 })
     );
     let text = setup.attention(&["--since", "2026-11-16T00:00:00Z"]);
     assert!(
-        text.contains("asks\tacted\topen\tmedian\tp90\tmedian present\tp90 present\nall\t4\t1\t20.0\t300.0\t10.0\t25.0\n"),
+        text.contains("asks\tacted\topen\tmedian\tp90\tmedian present\tp90 present\nall\t4\t1\t22.5\t300.0\t15.0\t25.0\n"),
         "{text}"
     );
 }
@@ -246,7 +246,7 @@ fn person_minutes_per_merged_pull_request_count_each_act_up_to_five_minutes() {
         .db()
         .execute_batch(
             "UPDATE asks SET withdrawn = -1 WHERE id = 4;
-             UPDATE asks SET withdrawn_at = '2026-11-16T13:31:00.000Z' WHERE id = 4;
+             UPDATE ask_withdrawals SET created = '2026-11-16T13:31:00.000Z' WHERE ask = 4;
              INSERT INTO owns (task, resource) VALUES (1, 'github:o/r#1'), (2, 'github:o/r#2');
              INSERT INTO inbox (id, type, subject, time, data, links, outcome) VALUES
                ('m1', 'github.pull_request.closed', 'o/r#1', '2026-11-16T11:00:00Z',
@@ -280,11 +280,11 @@ fn person_minutes_per_merged_pull_request_count_each_act_up_to_five_minutes() {
         attention["split"],
         json!([
             { "workflow": "implement", "acts": 2, "person_minutes": 6.0,
-              "waits": { "acted": 2, "open": 0, "median_minutes": 60.0, "p90_minutes": 61.0,
-                         "median_present_minutes": 60.0, "p90_present_minutes": 61.0 } },
+              "waits": { "acted": 2, "open": 0, "median_minutes": 60.5, "p90_minutes": 61.0,
+                         "median_present_minutes": 60.5, "p90_present_minutes": 61.0 } },
             { "workflow": "review", "acts": 2, "person_minutes": 10.0,
               "waits": { "acted": 2, "open": 0, "median_minutes": 31.0, "p90_minutes": 31.0,
-                         "median_present_minutes": 0.0, "p90_present_minutes": 31.0 } },
+                         "median_present_minutes": 15.5, "p90_present_minutes": 31.0 } },
         ])
     );
     let lanes = setup.attention_json(&["--since", "2026-11-16T00:00:00Z", "--by", "lane"]);
@@ -295,9 +295,60 @@ fn person_minutes_per_merged_pull_request_count_each_act_up_to_five_minutes() {
         "{text}"
     );
     assert!(
-        text.contains("workflow\tacts\tperson minutes\tacted\topen\tmedian\tp90\tmedian present\tp90 present\nimplement\t2\t6.0\t2\t0\t60.0\t61.0\t60.0\t61.0\nreview\t2\t10.0\t2\t0\t31.0\t31.0\t0.0\t31.0\n"),
+        text.contains("workflow\tacts\tperson minutes\tacted\topen\tmedian\tp90\tmedian present\tp90 present\nimplement\t2\t6.0\t2\t0\t60.5\t61.0\t60.5\t61.0\nreview\t2\t10.0\t2\t0\t31.0\t31.0\t15.5\t31.0\n"),
         "{text}"
     );
+}
+
+#[test]
+fn revisions_withdrawn_waits_and_tasks_ended_before_task_ends_keep_their_times() {
+    let setup = Setup::new("history");
+    setup.task(1, "implement", "lane-a", "2026-11-16T08:00:00Z");
+    setup.task(2, "implement", "lane-a", "2026-11-16T08:00:00Z");
+    // Task 1 runs 09:00 to 11:00 through an answered ask and a wait its run withdrew.
+    setup.ask(1, 1, "2026-11-16T09:30:00Z", Some("2026-11-16T10:00:00Z"));
+    // Task 2's ask is answered at 09:10 and asked again in the same second, then answered at 09:20.
+    setup.ask(2, 2, "2026-11-16T09:00:00Z", Some("2026-11-16T09:10:00Z"));
+    setup
+        .db()
+        .execute_batch(
+            "INSERT INTO runs (id, task, step, tmux, session, started, ended) VALUES
+               (1, 1, 'work', 't', 's', '2026-11-16T09:00:00Z', '2026-11-16T11:00:00Z');
+             INSERT INTO waits (task, run, kind, created, withdrawn) VALUES
+               (1, 1, 'checks', '2026-11-16T09:30:00Z', 0);
+             UPDATE tasks SET state = 'done' WHERE id = 1;
+             UPDATE task_ends SET ended = '2026-11-16T12:00:00.000Z' WHERE task = 1;
+             UPDATE asks SET revision = 2, answer = NULL, answered = NULL WHERE id = 2;
+             UPDATE ask_revisions SET created = '2026-11-16T09:10:00Z' WHERE ask = 2 AND revision = 2;
+             UPDATE asks SET answer = 'yes', answered = '2026-11-16T09:20:00Z' WHERE id = 2;
+             UPDATE tasks SET state = 'done' WHERE id = 2;
+             DELETE FROM task_ends WHERE task = 2;
+             UPDATE tasks SET changed = '2026-11-16T12:00:00Z' WHERE id = 2;",
+        )
+        .unwrap();
+
+    let attention = setup.attention_json(&["--since", "2026-11-16T00:00:00Z"]);
+
+    let split = |task: &Value| {
+        [
+            "wall_minutes",
+            "working_minutes",
+            "person_wait_minutes",
+            "world_wait_minutes",
+            "queued_minutes",
+        ]
+        .map(|field| task[field].as_f64().unwrap())
+    };
+    assert_eq!(
+        split(&attention["tasks"][0]),
+        [240.0, 90.0, 30.0, 0.0, 120.0]
+    );
+    assert_eq!(
+        split(&attention["tasks"][1]),
+        [240.0, 0.0, 20.0, 0.0, 220.0]
+    );
+    assert_eq!(attention["waits"]["acted"], 3);
+    assert_eq!(attention["waits"]["median_minutes"], 10.0);
 }
 
 /// `GET path` with the token, as the status code and body.
@@ -358,7 +409,8 @@ fn a_dismissal_ends_its_asks_wait_when_it_happens() {
             "INSERT INTO asks (id, task, step, kind, question, options, created)
                VALUES (1, 1, 'work', 'agent', 'Which?', '[]', {asked});
              UPDATE ask_revisions SET created = {asked};
-             UPDATE asks SET withdrawn = -1 WHERE id = 1;"
+             UPDATE asks SET withdrawn = -1 WHERE id = 1;
+             UPDATE asks SET revision = 2, withdrawn = NULL WHERE id = 1;"
         ))
         .unwrap();
 

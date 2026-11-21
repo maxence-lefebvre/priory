@@ -927,13 +927,17 @@ const SCHEMA_51: &str = "ALTER TABLE runs ADD COLUMN crossed INTEGER NOT NULL DE
 PRAGMA user_version = 51;
 ";
 
-// When an ask was last withdrawn, such as a person's dismissal, for the attention report. An ask
-// withdrawn before has none.
-const SCHEMA_52: &str = "ALTER TABLE asks ADD COLUMN withdrawn_at TEXT;
-CREATE TRIGGER ask_withdrawn_at AFTER UPDATE OF withdrawn ON asks
-  WHEN NEW.withdrawn IS NOT OLD.withdrawn BEGIN
-  UPDATE asks SET withdrawn_at = CASE WHEN NEW.withdrawn IS NULL THEN NULL
-    ELSE strftime('%Y-%m-%dT%H:%M:%fZ', 'now') END WHERE id = NEW.id;
+// Every withdrawal of an ask's revision, such as a person's dismissal, with its time, for the
+// attention report. A log, so an ask reopened later keeps it. Earlier withdrawals have none.
+const SCHEMA_52: &str = "CREATE TABLE IF NOT EXISTS ask_withdrawals (
+  ask       INTEGER NOT NULL REFERENCES asks (id),
+  revision  INTEGER NOT NULL,
+  withdrawn INTEGER NOT NULL,
+  created   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+CREATE TRIGGER IF NOT EXISTS ask_withdrawn AFTER UPDATE OF withdrawn ON asks
+  WHEN NEW.withdrawn IS NOT NULL AND NEW.withdrawn IS NOT OLD.withdrawn BEGIN
+  INSERT INTO ask_withdrawals (ask, revision, withdrawn) VALUES (NEW.id, NEW.revision, NEW.withdrawn);
 END;
 PRAGMA user_version = 52;
 ";
