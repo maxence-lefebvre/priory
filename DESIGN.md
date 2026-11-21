@@ -807,6 +807,7 @@ What starts next and why. Saved views: Waiting, Held and Last day, each with a c
 
 ### Task detail and workflow grid
 
+- On a phone the task page's back link goes to the Tasks panel, as the batch page's does.
 - Context line: task key in mono, the task's state tile and word, workflow, lane, band, and
   "batch 4" linking to the batch page when the task is a batch's entry or planning task.
 - Title in `--type-task`, then the task's reason in its role's text color.
