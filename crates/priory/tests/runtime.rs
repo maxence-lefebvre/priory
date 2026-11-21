@@ -6595,11 +6595,15 @@ fn a_merge_that_moves_a_said_run_to_another_agent_kills_its_session_and_starts_t
     let runs = setup.rows("runs");
     assert_eq!(runs.len(), 4, "{runs:?}");
     assert_eq!(runs[3][2], "watch");
-    let alive = Command::new("kill")
-        .args(["-0", said.trim()])
-        .status()
-        .unwrap();
-    assert!(!alive.success(), "the said run's agent {said} still runs");
+    // Killing its session hangs the agent up, and it exits once it is scheduled.
+    let deadline = Instant::now() + Duration::from_secs(60);
+    while !exited(said.trim()) {
+        assert!(
+            Instant::now() < deadline,
+            "the said run's agent {said} still runs"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
 }
 
 #[test]
