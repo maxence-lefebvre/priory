@@ -81,7 +81,6 @@ Its result carries `risk`, one line per dimension, each starting with its level:
 {
   "outcome": "medium",
   "summary": "Merge risk medium",
-  "commit": "3f9c2a7e5b1d4c6f8a0e2b4d6f8a1c3e5b7d9f0a",
   "risk": {
     "ask": "low: does what the issue asks, nothing more",
     "blast_radius": "medium: every task listing reads the new column",
@@ -111,8 +110,6 @@ risk needs a low, medium or high outcome: its verdict
 ```
 
 A `low`, `medium` or `high` outcome without `risk` is a plain outcome and stores no verdict.
-`commit`, the commit the verdict grades, is optional, but a `hands-off` task needs it (see
-[`hands-off`](#hands-off)).
 
 The result keeps the verdict as `merge_risk`, and the task takes the latest one as its own
 `merge_risk`: `verdict` and the five lines (see [Task in
@@ -494,20 +491,13 @@ An ask of a `hands-off` task goes to the trigger's `lead`, a Claude Code agent w
 session, instead of the person. These asks still go to the person:
 
 - an ask whose answer can let an irreversible step run before a person decides again, the asks
-  that `priory asks --json` marks with the `irreversible` risk, and the ask of a human step with
-  `approves`, since its answer grants an approval, unless the step just before graded the
-  [merge risk](#merge-risk) `low` at a commit;
+  that `priory asks --json` marks with the `irreversible` risk;
+- the ask of a human step with `approves`, since its answer grants an approval, even after a `low`
+  [merge risk](#merge-risk);
 - an ask whose answer runs a command;
 - the asks the daemon makes itself: a hold's, a stack's, and an approval asked again at a new
   commit;
 - every ask once no trigger names the task's lead any more, since its workflow is gone.
-
-Only the verdict of the step that led to the human step counts, and only with its `commit`. Put the
-risk step right before the approving step. When the lead answers, the daemon checks again: the
-task's latest verdict must still be `low`, at the commit the task's branch is at. Otherwise the
-lead's answer is not applied, and the ask returns to the person when the lead's task ends. A
-`medium` or `high` verdict, or none, keeps these asks with the person. An approval asked again at a
-new commit goes to the person.
 
 In the transaction that stores a routed ask, the daemon queues a lead task for it, with the key
 `priory:ask:<ask>:<revision>`, the trigger `priory/lead`, and the asking task's repository, band and

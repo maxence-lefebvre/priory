@@ -60,8 +60,8 @@ work is. The task keeps the latest grade and its reason. See Grades in
 [tools.md](../daemon/tools.md#grades).
 
 A model step outcome of `low`, `medium` or `high` whose result carries `risk`, one line per risk
-dimension, is a merge risk verdict on the finished change. The task keeps the latest verdict, and a
-`hands-off` task's approving ask goes to its lead right after a `low` one given at a commit. See Merge risk in
+dimension, is a merge risk verdict on the finished change. The task keeps the latest verdict, and its asks
+show it to the person. See Merge risk in
 [tools.md](../daemon/tools.md#merge-risk).
 
 ## Example

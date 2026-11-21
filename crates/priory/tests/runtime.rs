@@ -14785,64 +14785,10 @@ fn the_approve_pr_ask_shows_its_tasks_merge_risk_and_asks_filter_by_it() {
     );
 }
 
-/// `verdict`, about `commit`.
-fn verdict_at(level: &str, commit: &str) -> serde_json::Value {
-    let mut call = verdict(level);
-    call["arguments"]["commit"] = json!(commit);
-    call
-}
-
 #[test]
-fn a_hands_off_tasks_approval_reaches_its_lead_on_a_low_merge_risk_whose_answer_opens_the_pull_request()
- {
+fn a_hands_off_tasks_approval_reaches_the_person_even_on_a_low_merge_risk() {
     let mut setup = hands_off("hands-off-low-risk", &risked());
-    let head = setup.pushed("main");
-    setup.calls(&[
-        passed_with_evidence(),
-        verdict_at("low", &head),
-        answered("open"),
-    ]);
-    setup.publish(&requested(42));
-
-    setup.start();
-
-    let actions = setup.until("actions", |rows| !rows.is_empty());
-    assert_eq!(actions[0][2], "open-pr", "{actions:?}");
-    assert_eq!(setup.rows("tasks")[1][1], "priory:ask:1:1");
-    let ask = &asks_json(&setup)["asks"][0];
-    assert_eq!(
-        [&ask["routed_to"], &ask["answer"], &ask["answered_by"]],
-        [&json!("lead"), &json!("open"), &json!("agent:lead")],
-        "{ask}"
-    );
-}
-
-#[test]
-fn a_lead_cannot_approve_once_the_branch_moved_from_the_low_merge_risk_commit() {
-    let mut setup = hands_off("hands-off-low-risk-moved", &risked());
-    setup.calls(&[
-        passed_with_evidence(),
-        verdict_at("low", &"a".repeat(40)),
-        answered("open"),
-    ]);
-    setup.publish(&requested(42));
-
-    setup.start();
-
-    setup.until("tasks", |rows| rows.len() == 2 && rows[1][4] == "done");
-    let ask = &asks_json(&setup)["asks"][0];
-    assert_eq!(
-        [&ask["state"], &ask["routed_to"], &ask["revision"]],
-        [&json!("open"), &json!(null), &json!(2)],
-        "{ask}"
-    );
-    assert!(setup.rows("actions").is_empty());
-}
-
-#[test]
-fn a_hands_off_tasks_approval_reaches_the_person_on_a_medium_merge_risk() {
-    let mut setup = hands_off("hands-off-medium-risk", &risked());
-    setup.calls(&[passed_with_evidence(), verdict("medium")]);
+    setup.calls(&[passed_with_evidence(), verdict("low")]);
     setup.publish(&requested(42));
 
     setup.start();
@@ -14853,7 +14799,7 @@ fn a_hands_off_tasks_approval_reaches_the_person_on_a_medium_merge_risk() {
     let ask = &asks_json(&setup)["asks"][0];
     assert_eq!(
         [&ask["routed_to"], &ask["merge_risk"]["verdict"]],
-        [&json!(null), &json!("medium")],
+        [&json!(null), &json!("low")],
         "{ask}"
     );
     assert_eq!(setup.rows("tasks").len(), 1, "no lead task");

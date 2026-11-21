@@ -57,8 +57,7 @@ Out of scope for now: a hosted service, Kubernetes, and one factory shared by do
 2. Code decides what code can decide. Models judge; they do not schedule.
 3. A waiting agent holds no process.
 4. Every step declares its decider and its effect. An irreversible step runs only after a person
-   approved that step, unless the factory marks it autonomous with a reason, or a `hands-off`
-   trigger's lead approved it after a fresh reviewer graded the change's merge risk low.
+   approved that step, unless the factory marks it autonomous with a reason.
 5. Offline is normal. A machine that goes away and comes back loses nothing.
 6. Code gets a swappable adapter boundary only in the milestone that brings its second adapter.
 7. Anything a person must answer or unblock goes to the desk, never only to a terminal.
@@ -339,10 +338,8 @@ step. If the task's commit changes before the irreversible step runs, Priory
 asks again.
 
 A trigger's `intervention` can hand a task's other asks to a lead agent (`hands-off`), or add a
-person's approval of every graded plan (`plan`). The lead answers an ask whose answer lets an
-irreversible step run only when the step just before graded the change's merge risk low, at the
-commit the task's branch is still at when the lead answers. Otherwise that approval stays a
-person's.
+person's approval of every graded plan (`plan`). The lead never answers an ask whose answer lets an
+irreversible step run: that approval stays a person's.
 
 ## Requirements
 

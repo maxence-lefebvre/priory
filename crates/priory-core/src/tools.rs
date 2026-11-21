@@ -582,7 +582,6 @@ fn ask(
         run.task,
         &run.step,
         command.is_some(),
-        false,
         &factory.workflows,
     )?;
     tx.execute(
@@ -2009,14 +2008,12 @@ fn settle(tx: &Transaction, run: &Run, trace: &Trace) -> rusqlite::Result<Option
 pub const LEAD_TRIGGER: &str = "priory/lead";
 
 /// The lead a new ask of `task` at step `at` goes to: a `hands-off` task's lead, unless the ask
-/// runs a command, or its answer can let an irreversible step run or its step approves one and the
-/// change was not just graded `low_risk`.
+/// runs a command, its answer can let an irreversible step run, or its step approves one.
 fn lead_of(
     tx: &Transaction,
     task: i64,
     at: &str,
     command: bool,
-    low_risk: bool,
     workflows: &Workflows,
 ) -> rusqlite::Result<Option<String>> {
     let (workflow, intervention, lead): (String, Option<String>, Option<String>) = tx.query_row(
@@ -2041,7 +2038,7 @@ fn lead_of(
         .value
         .step(at)
         .is_some_and(|step| !step.approves.is_empty());
-    if !low_risk && (approves || explain::answer_lets_irreversible_run(&flow.value, at)) {
+    if approves || explain::answer_lets_irreversible_run(&flow.value, at) {
         return Ok(None);
     }
     Ok(lead)
@@ -2113,10 +2110,6 @@ fn lead_answer(
             options.join(", ")
         )));
     }
-    if !low_risk_holds(tx, ask, trace, head)? {
-        // Left unanswered, the ask returns to the person when this lead task ends.
-        return Ok(Ok(()));
-    }
     let answer = Answer {
         ask,
         text: text.to_owned(),
@@ -2125,44 +2118,6 @@ fn lead_answer(
         by: format!("agent:{}", run.agent.as_deref().unwrap_or_default()),
     };
     Ok(answer_in(tx, &answer, trace, head)?.map(drop))
-}
-
-/// Whether a lead may answer `ask`: always, unless its answer grants or leads to an irreversible
-/// step, which the task's latest merge risk must grade low at the commit its branch is at now.
-fn low_risk_holds(
-    tx: &Transaction,
-    ask: i64,
-    trace: &Trace,
-    head: &dyn Fn(&Path, &str) -> Option<String>,
-) -> rusqlite::Result<bool> {
-    let (step, workflow, worktree, branch, reviewed): (
-        String,
-        String,
-        Option<String>,
-        Option<String>,
-        Option<String>,
-    ) = tx.query_row(
-        "SELECT asks.step, tasks.workflow, tasks.worktree, tasks.branch,
-           (SELECT commit_sha FROM results WHERE results.task = tasks.id AND merge_risk IS NOT NULL
-              AND json_extract(merge_risk, '$.verdict') = 'low'
-              AND run = (SELECT max(run) FROM results WHERE task = tasks.id AND merge_risk IS NOT NULL))
-         FROM asks JOIN tasks ON tasks.id = asks.task WHERE asks.id = ?1",
-        [ask],
-        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
-    )?;
-    let gated = trace.factory.workflows.get(&workflow).is_none_or(|flow| {
-        flow.value
-            .step(&step)
-            .is_some_and(|step| !step.approves.is_empty())
-            || explain::answer_lets_irreversible_run(&flow.value, &step)
-    });
-    if !gated {
-        return Ok(true);
-    }
-    let now = worktree
-        .zip(branch)
-        .and_then(|(worktree, branch)| head(Path::new(&worktree), &branch));
-    Ok(reviewed.is_some() && reviewed == now)
 }
 
 /// Drops the lead task still queued for `ask`, which a person answered or dismissed first.
@@ -2498,21 +2453,7 @@ fn enter(
                     return finish("blocked");
                 }
             };
-            // Only the verdict of the step just ended counts, so a later change is never waved through.
-            let low_risk = match from {
-                Some(run) => tx
-                    .query_row(
-                        "SELECT json_extract(merge_risk, '$.verdict') = 'low' AND commit_sha IS NOT NULL
-                         FROM results WHERE run = ?1",
-                        [run.id],
-                        |row| row.get::<_, Option<bool>>(0),
-                    )
-                    .optional()?
-                    .flatten()
-                    .unwrap_or(false),
-                None => false,
-            };
-            let lead = lead_of(tx, task, target, command.is_some(), low_risk, workflows)?;
+            let lead = lead_of(tx, task, target, command.is_some(), workflows)?;
             tx.execute(
                 "INSERT INTO asks (task, step, kind, question, options, routed, command, text)
                  VALUES (?1, ?2, 'step', ?3, ?4, ?5, ?6, ?7)",
@@ -3518,7 +3459,7 @@ pub(crate) fn approved(
     tx.execute(
         // Asked again, an ask that a revive withdrew belongs to the current generation.
         "UPDATE asks SET revision = revision + 1, answer = NULL, answered = NULL, answered_by = NULL, withdrawn = NULL,
-         withdrawn_reason = NULL, routed = NULL, question = question || ?2 WHERE id = ?1",
+         withdrawn_reason = NULL, question = question || ?2 WHERE id = ?1",
         params![ask, moved],
     )?;
     unqueue(&tx, task, &step_prompt(at))?;
