@@ -64,7 +64,7 @@ backfill = false               # true: the first poll's events start tasks too
 ### Review requests
 
 A `github` trigger with `on = "pull_request.review_requested"` starts a task when someone asks
-`reviewer` directly for a review of an open pull request, in any repository `gh` can read. It polls
+`reviewer`, or one of its `teams`, for a review of an open pull request, in any repository `gh` can read. It polls
 no repository and takes no `repo`, `filter` or `key`: its tasks work in the pull request's
 repository. See [review-requests.md](../intake/review-requests.md).
 
@@ -72,9 +72,8 @@ repository. See [review-requests.md](../intake/review-requests.md).
 | --- | ---- | -------- | ------- | ------- | ------- |
 | `on` | string | yes | | `pull_request.review_requested` | `"pull_request.review_requested"` |
 | `reviewer` | string | yes | | The GitHub login asked for reviews. The task key is `github:owner/name:pulls/43:review:octocat` | `"octocat"` |
+| `teams` | list of strings | no | | GitHub teams, as `org/team`, whose review requests start a task for `reviewer` too, keyed by `reviewer` as a direct request is. `priory check` refuses a team that is not an organization login and a team slug | `["acme/core"]` |
 | `backfill` | boolean | no | `false` | Whether the requests open at the first poll start tasks too | `true` |
-
-A `teams` key, for requests to a team the reviewer is in, is not built yet.
 
 <!-- example: factory/triggers/review-requests.toml -->
 ```toml

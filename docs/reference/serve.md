@@ -336,7 +336,8 @@ of `goal`, `acceptanceCriteria` (each `{ "id", "description", "required" }`), `l
 
 `/api/tasks?pr=RESOURCE` returns the active tasks that hold one pull request, as `{"revision": N,
 "tasks": [...]}`. `RESOURCE` is the pull request's resource, percent-encoded, such as
-`github%3Aowner%2Frepo%237` for `github:owner/repo#7`. The GitHub extension reads it to find the
+`github%3Aowner%2Frepo%237` for `github:owner/repo#7`. The owner and repository match in any case,
+as GitHub's do, so `github:Owner/Repo#7` finds the same tasks. The GitHub extension reads it to find the
 task to show, and to know when no task holds the pull request at all. A task can hold it in several
 ways at once (see [Resources in routing.md](../daemon/routing.md#resources-what-a-task-owns)).
 

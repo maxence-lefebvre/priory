@@ -8,7 +8,7 @@
       "description": "A task asked for by hand with `priory request`.",
       "properties": {
         "person": {
-          "description": "`$USER`; null when it is unset.",
+          "description": "`$USER`, or the Slack user who sent the shortcut's form as `<username> (<user id>)`; null when\n`$USER` is unset.",
           "type": [
             "string",
             "null"

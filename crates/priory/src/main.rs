@@ -47,7 +47,9 @@ fn main() -> ExitCode {
                 _ => return usage(),
             };
             let run = if verb == "intake" {
-                |factory: &factory::Factory, once| intake::run(factory, once, watched, merged, health)
+                |factory: &factory::Factory, once| {
+                    intake::run(factory, once, watched, merged, health, ended)
+                }
             } else {
                 daemon::run
             };
@@ -254,6 +256,16 @@ fn merged(since: &str) -> Result<Vec<intake::Merge>, String> {
     }
     let db = state::open()?;
     state::merges(&db, since).map_err(|error| format!("merged pull requests: {error}"))
+}
+
+/// How many tasks with `key` ended, from `PRIORY_DB`; none when the intake runs without a state
+/// file.
+fn ended(key: &str) -> Result<u64, String> {
+    if std::env::var_os("PRIORY_DB").is_none() {
+        return Ok(0);
+    }
+    let db = state::open()?;
+    state::ended(&db, key).map_err(|error| format!("tasks with key {key}: {error}"))
 }
 
 /// Records each intake source's poll in the state, when the intake has one.

@@ -1164,6 +1164,42 @@ fn the_tasks_endpoint_finds_each_active_task_holding_a_pull_request_and_how_it_h
 }
 
 #[test]
+fn the_tasks_endpoint_finds_the_holders_of_a_pull_request_in_any_case_of_its_repository() {
+    let mut setup = Setup::new("tasks-pr-case", SERVE);
+    let db = setup.db();
+    db.execute_batch(
+        "INSERT INTO tasks (id, key, workflow, step, state, lane, trigger, source) VALUES
+           (1, 'github:owner/repo#7', 'implement', 'implement', 'asleep', 'none/misc', 'cli', 'cli-1'),
+           (2, 'cli:docs-2', 'implement', 'implement', 'asleep', 'none/misc', 'cli', 'cli-2'),
+           (3, 'github:owner/repo:pulls/7:review:ana', 'implement', 'implement', 'asleep', 'none/misc', 'cli', 'cli-3'),
+           (4, 'cli:docs-4', 'implement', 'implement', 'asleep', 'none/misc', 'cli', 'cli-4');
+         INSERT INTO pull_requests (task, resource, branch, base)
+           VALUES (2, 'github:owner/repo#7', 'priory/2', 'main');
+         INSERT INTO owns (task, resource) VALUES (4, 'github:owner/repo#7');",
+    )
+    .unwrap();
+    let address = setup.start(&["serve", &setup.factory()]);
+
+    let found = api(&address, "/api/tasks?pr=github%3AOwner%2FRepo%237");
+
+    let holds: Vec<(Value, Value)> = found["tasks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|task| (task["id"].clone(), task["holds"].clone()))
+        .collect();
+    assert_eq!(
+        holds,
+        [
+            (json!(1), json!(["key"])),
+            (json!(2), json!(["stack"])),
+            (json!(3), json!(["review"])),
+            (json!(4), json!(["owns"])),
+        ]
+    );
+}
+
+#[test]
 fn a_task_endpoint_returns_its_runs_steps_asks_waits_results_and_tldr() {
     let mut setup = Setup::new("task", SERVE);
     setup.seed();

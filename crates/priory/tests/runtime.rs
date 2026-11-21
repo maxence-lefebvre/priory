@@ -16602,6 +16602,52 @@ fn a_runner_away_for_an_hour_keeps_its_asked_task_and_its_answer_and_loses_only_
 }
 
 #[test]
+fn a_takeover_waits_the_whole_lease_after_an_alive_message_sent_partway_through_a_second() {
+    let mut a = runner("lease-second", "a", None);
+    let mut b = runner("lease-second", "b", Some(&a));
+    a.publish(&requested(1));
+    a.memory(0);
+    let exe = Path::new(env!("CARGO_BIN_EXE_priory"));
+    a.start_with(exe, &[("PRIORY_NOW", "2026-11-21T10:00:00.900Z")]);
+    logged(
+        &a,
+        "priory.task.held",
+        json!({ "key": "github:owner/repo#1", "runner": "a", "hold": "waiting" }),
+    );
+    a.crash();
+
+    // 29 minutes 59.6 seconds after a's last alive message: its lease still runs.
+    b.start_with(exe, &[("PRIORY_NOW", "2026-11-21T10:30:00.500Z")]);
+    b.until("inbox", |rows| {
+        rows.iter()
+            .any(|row| row[1] == "priory.runner.alive" && row[2] == "b")
+    });
+    b.crash();
+    b.start_with(exe, &[("PRIORY_NOW", "2026-11-21T10:31:00Z")]);
+    logged(
+        &b,
+        "priory.task.claimed",
+        json!({ "key": "github:owner/repo#1", "runner": "b", "from": "a" }),
+    );
+
+    let takeovers: Vec<String> = b
+        .bus()
+        .messages(&herdr_bus::MessageQuery {
+            output: Some(OUTPUT.into()),
+            limit: 1000,
+            ..herdr_bus::MessageQuery::default()
+        })
+        .unwrap()
+        .into_iter()
+        .filter(|stored| {
+            stored.message.kind == "priory.task.claimed" && stored.message.data["from"] == "a"
+        })
+        .map(|stored| stored.message.time.to_string())
+        .collect();
+    assert_eq!(takeovers, ["2026-11-21T10:31:00Z"]);
+}
+
+#[test]
 fn a_person_gives_a_started_task_to_another_runner_which_starts_it_over_and_its_old_runner_drops_it()
  {
     let mut a = runner("give", "a", None);

@@ -1019,7 +1019,7 @@ Schema: [`priory.task.requested.cli.json`](../schemas/events/priory.task.request
 | Field | Type | Meaning |
 | ----- | ---- | ------- |
 | `text` | string | The request, as typed |
-| `person` | string or null | `$USER` |
+| `person` | string or null | `$USER`, or for the Slack shortcut the user who sent the form, as `<username> (<user id>)` |
 | `time` | RFC 3339 | When the command ran |
 | `repo` | string or null | `--repo` |
 

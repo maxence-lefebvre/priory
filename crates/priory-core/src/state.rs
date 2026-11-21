@@ -1955,6 +1955,15 @@ pub(crate) fn due(db: &mut Connection) -> rusqlite::Result<()> {
     tx.commit()
 }
 
+/// How many tasks with `key` ended: done, failed or dropped.
+pub fn ended(db: &Connection, key: &str) -> rusqlite::Result<u64> {
+    db.query_row(
+        "SELECT count(*) FROM tasks WHERE key = ?1 AND state IN ('done', 'failed', 'dropped')",
+        [key],
+        |row| row.get::<_, i64>(0).map(i64::unsigned_abs),
+    )
+}
+
 /// The resource and the agent's last prompt of each open wait that the intake polls for, then the
 /// pull request or Linear issue and creation time of each unmet merge condition and each issue
 /// condition of an open hold, met or not, then each subscription of a task that has not failed or been dropped, then the branch of each
