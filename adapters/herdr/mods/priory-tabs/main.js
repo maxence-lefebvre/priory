@@ -25,8 +25,12 @@ function find(node, id) {
   return null;
 }
 
+// A tab shows in `main`, which a view can hold in a stack behind another panel.
+const showMain = () => { for (const [command, args] of reveal(layout(), "main")) run(command, args); };
+
 /** @param {string} name @param {string} mod */
 function openTab(name, mod) {
+  showMain();
   const open = (panes() ?? []).find((pane) => pane.mod === mod);
   if (open) return run("tab.select", { id: open.tab });
   run("tab.new", { space: focused()?.space, name, mod });
@@ -69,6 +73,7 @@ export default class PrioryTabs extends View {
       const { machine, home, client } = await this.priory;
       if (!space || space.machine !== machine) throw new Error(`Open a space on ${machine ?? "this machine"}, where Priory runs, then attach again.`);
       const command = await client.attach(task);
+      showMain();
       run("tab.new", { space: space.id, folder: space.folder || home, name: `Task ${task}`, argv: ["sh", "-c", command] });
     } catch (error) {
       notify({ title: `Can't attach to task ${task}`, body: error instanceof Error ? error.message : String(error), level: "error" });
@@ -110,7 +115,8 @@ export default class PrioryTabs extends View {
       if (shown(id) && !find(view, "main")) return run("layout.hide", { id: "view" });
       for (const [command, args] of reveal(root, id)) run(command, args);
     };
-    return h_flex().size_full().min_w(0).px(10).pl(lightsPadding).gap(3).items_center().bg(t.chrome).border_b(1).border_color(t.border)
+    // A view's stacks can hold more buttons than the bar's width.
+    return h_flex().id("priory-bar").overflow_x_scroll().size_full().min_w(0).px(10).pl(lightsPadding).gap(3).items_center().bg(t.chrome).border_b(1).border_color(t.border)
       .children((view ? stacks(view) : []).flatMap((stack) => stack.children.map((/** @type {any} */ child) =>
         button(child.id, label(child), shown(child.id), () => toggle(child.id)))));
   }

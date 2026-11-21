@@ -42,8 +42,10 @@ done
 # Its own layout is the link an earlier install made, or a file whose root has the frame's id.
 if [[ -L "$layout" ]]; then
   own=$([[ "$(readlink "$layout")" == "$adapter/layouts/priory.json" ]] && echo true || echo false)
+elif [[ -f "$layout" ]]; then
+  own=$(node -e 'try { process.exit(JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")).id === "priory-generated" ? 0 : 1) } catch { process.exit(1) }' "$layout" && echo true || echo false)
 elif [[ -e "$layout" ]]; then
-  own=$(grep -qx '  "id": "priory-generated",' "$layout" && echo true || echo false)
+  own=false
 else
   own=true
 fi
@@ -71,6 +73,6 @@ if $dry_run; then
   exit 0
 fi
 mkdir -p "$app/layouts"
-# Writing through the old link would write into the adapter, so the link goes first.
-if [[ -L "$layout" ]]; then rm -- "$layout"; fi
-printf '%s\n' "$generated" > "$layout"
+# A failed write leaves the old layout: write beside it, then rename over it, which also replaces an old link.
+printf '%s\n' "$generated" > "$layout.tmp"
+mv -f -- "$layout.tmp" "$layout"

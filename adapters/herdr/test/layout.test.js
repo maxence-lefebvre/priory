@@ -129,3 +129,13 @@ test("a view with two terminal panels is refused with its name", () => {
 
   assert.throws(() => layout("night", view, FRAME), { message: "view night has two terminal panels, and Herdr has one main block" });
 });
+
+test("a node or panel Priory does not ship is refused with the view's name", () => {
+  const refused = [
+    [{ grid: [{ panel: "desk" }] }, "view night has a node that is not a row, column, tabs or panel"],
+    [{ row: [] }, "view night has a node that is not a row, column, tabs or panel"],
+    [{ panel: "__proto__" }, "view night has a panel Priory does not ship: __proto__"],
+    [{ tabs: [{ panel: "kanban" }] }, "view night has a panel Priory does not ship: kanban"],
+  ];
+  for (const [tree, message] of refused) assert.throws(() => layout("night", { layout: tree }, FRAME), { message }, JSON.stringify(tree));
+});

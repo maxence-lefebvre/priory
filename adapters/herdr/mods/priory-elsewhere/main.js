@@ -1,6 +1,7 @@
 import { View } from "gpui-kit";
 import { v_flex, TextView } from "gpui-base";
 import { appHome, readTextFile } from "herdr";
+import { spansHtml } from "./priory.js";
 import { palette, STRUCTURE as S } from "./tokens.js";
 
 // Stands in for a view's panel that has no mod yet, such as tasks, runs or inbox.
@@ -17,7 +18,7 @@ export default class PrioryElsewhere extends View {
       try {
         const config = JSON.parse(await readTextFile(`${appHome()}/settings.json`) ?? "{}").priory ?? {};
         this.theme = config.theme ?? "indigo";
-        this.web = typeof config.web === "string" ? config.web.replace(/\/+$/, "") : null;
+        this.web = typeof config.web === "string" && /^https?:\/\//.test(config.web) ? config.web.replace(/\/+$/, "") : null;
       } catch {
         this.web = null;
       }
@@ -29,9 +30,9 @@ export default class PrioryElsewhere extends View {
   render(cx) {
     const t = /** @type {Record<string, import("gpui-kit").Color>} */ (palette(this.theme, cx.theme().appearance));
     const name = /** @type {Record<string, string>} */ (LABELS)[this.panel] ?? this.panel;
-    const where = this.web
-      ? `<a href="${this.web}/${this.panel}">Open ${name} in the web view</a>`
-      : `Set "web" in settings.json's "priory" object to link it in the web view.`;
+    const where = spansHtml([this.web
+      ? { text: `Open ${name} in the web view`, url: `${this.web}/${encodeURIComponent(this.panel)}` }
+      : { text: `Set "web" in settings.json's "priory" object to link it in the web view.` }]);
     return v_flex().size_full().p(S["space-4"]).gap(S["space-2"]).bg(t.bg).text_size(S["type-small"][0]).text_color(t["text-2"])
       .child(`${name} has no Herdr panel yet.`)
       .child(TextView.html("elsewhere-link", where));

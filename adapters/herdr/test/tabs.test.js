@@ -69,3 +69,17 @@ test("nested stacks each get their buttons, and a button selects its branch in e
     ["layout.select", { stack: "view-0-1", child: "view-0-1-1" }],
   ]);
 });
+
+test("opening a task shows main first when a stack hides it", async () => {
+  const { settle } = await import("./kit.js");
+  const { drawn } = bar({ tabs: [{ panel: "desk" }, { panel: "terminal" }] });
+
+  herdr.shared.set("priory.task.open", { task: 7, at: Date.now() + 1 });
+  drawn();
+  await settle();
+
+  assert.deepEqual(herdr.runs, [
+    ["layout.select", { stack: "view", child: "main" }],
+    ["tab.new", { space: "space-1", name: "Task", mod: "priory-task" }],
+  ]);
+});

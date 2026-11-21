@@ -21,8 +21,20 @@ function pathTo(node, id) {
   return null;
 }
 
-/** @param {any} node @returns {string[]} */
-const panels = (node) => (node.panel ? [node.panel] : Object.values(node).flat().flatMap(panels));
+const PANELS = new Set([...Object.keys(MODS), "tasks", "runs", "inbox", "terminal"]);
+
+/** The view's panels in tree order, once its nodes are known to be Priory's. @param {string} name @param {any} node @returns {string[]} */
+function panels(name, node) {
+  const [key, value] = node && typeof node === "object" && !Array.isArray(node) && Object.keys(node).length === 1 ? Object.entries(node)[0] : [];
+  if (key === "panel") {
+    if (!PANELS.has(value)) throw new Error(`view ${name} has a panel Priory does not ship: ${value}`);
+    return [value];
+  }
+  if (!["row", "column", "tabs"].includes(key) || !Array.isArray(value) || !value.length) {
+    throw new Error(`view ${name} has a node that is not a row, column, tabs or panel`);
+  }
+  return value.flatMap((child) => panels(name, child));
+}
 
 /**
  * The frame with its `work-body` laid out as the view: the view's tree beside the frame's `main`
@@ -30,7 +42,8 @@ const panels = (node) => (node.panel ? [node.panel] : Object.values(node).flat()
  * @param {string} name @param {{ layout: any }} view @param {any} frame
  */
 export function layout(name, view, frame) {
-  if (panels(view.layout).filter((panel) => panel === "terminal").length > 1) {
+  const terminals = panels(name, view.layout).filter((panel) => panel === "terminal").length;
+  if (terminals > 1) {
     throw new Error(`view ${name} has two terminal panels, and Herdr has one main block`);
   }
   const root = structuredClone(frame);
@@ -40,14 +53,14 @@ export function layout(name, view, frame) {
   /** @param {any} node @param {string} id @returns {any} */
   const convert = (node, id) => {
     if (node.panel === "terminal") return main;
-    if (node.panel) return { id, type: "block", content: { mod: MODS[node.panel] ?? "priory-elsewhere", props: { panel: node.panel } } };
+    if (node.panel) return { id, type: "block", content: { mod: /** @type {Record<string, string>} */ (MODS)[node.panel] ?? "priory-elsewhere", props: { panel: node.panel } } };
     const [type, children] = Object.entries(node)[0];
     const converted = children.map((/** @type {any} */ child, /** @type {number} */ at) => convert(child, `${id}-${at}`));
     if (type === "tabs") return { id, type: "stack", active: converted[0].id, children: converted };
     return { id, type, children: converted.map((/** @type {any} */ child) => ({ ...child, size: { weight: 1 } })) };
   };
   const tree = convert(view.layout, "view");
-  if (panels(view.layout).includes("terminal")) {
+  if (terminals) {
     body.children = [tree];
     return root;
   }

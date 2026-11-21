@@ -25,6 +25,14 @@ test("names the panel and links it in the web view that settings.json names", as
 test("without a web address, says where to set one", async () => {
   const shown = await elsewhere("inbox");
 
-  assert.match(shown, /Inbox has no Herdr panel yet\. Set "web" in settings\.json's "priory" object to link it in the web view\./);
+  assert.match(shown, /Inbox has no Herdr panel yet\. Set &quot;web&quot; in settings\.json&#39;s &quot;priory&quot; object to link it in the web view\./);
   assert.doesNotMatch(shown, /<a /);
+});
+
+test("escapes the web address, and takes only an http or https one", async () => {
+  const quoted = await elsewhere("runs", { web: 'https://example.test/" title="injected' });
+  assert.match(quoted, /<a href="https:\/\/example\.test\/&quot; title=&quot;injected\/runs">/);
+
+  const script = await elsewhere("runs", { web: "javascript:alert(1)" });
+  assert.doesNotMatch(script, /<a /);
 });

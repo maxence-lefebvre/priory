@@ -83,10 +83,13 @@ updates the mods, and Herdr reloads them when their files change. The layout is 
 - A link that already points into this adapter stays as it is. The layout is written again on
   every run.
 - Any other file or link at a mod's target stops the script before it changes anything. So does a
-  `priory.json` that `install` did not write: a file whose root id is not `priory-generated`, or a
-  link elsewhere than to this adapter. Move that file away and run it again.
-- Input that is not `priory views --json`, or a `default` view with two `terminal` panels, stops
-  the script before it changes anything.
+  `priory.json` that `install` did not write: a file whose JSON root id is not
+  `priory-generated`, or a link elsewhere than to this adapter. Move that file away and run it
+  again.
+- Input that is not `priory views --json`, a node or panel Priory does not ship, or a `default`
+  view with two `terminal` panels stops the script before it changes anything.
+- `install` writes the layout beside its target and renames it over the target, so a failed write
+  keeps the old layout.
 
 ## The layout
 
@@ -114,10 +117,13 @@ of eight panels beside `main`. Herdr's own Files and Changes panels are not in i
 
 The Priory bar shows one button per child of each stack, in the tree's order, labelled with its
 panels. A button selects its child in that stack and in each stack above it, and shows any hidden
-node on the way. The shown child's button hides the view beside `main`, and shows it again.
+node on the way. The shown child's button hides the view beside `main`, and shows it again. The
+bar scrolls sideways when its buttons are wider than it. Before it opens the Task tab or a task's
+terminal, it brings `main` into view, since a view can hold it in a stack.
 
 `priory-elsewhere` reads `web` from the `priory` object of Herdr's `settings.json`, the web view's
-address, such as `"http://127.0.0.1:7070"`. With it, the placeholder links to the panel's page.
+`http` or `https` address, such as `"http://127.0.0.1:7070"`. With it, the placeholder links to
+the panel's page.
 Without it, the placeholder says where to set it.
 
 Herdr writes `gpui-kit.d.ts` and `jsconfig.json` into each mod folder it loads. Through the links,
@@ -212,7 +218,8 @@ Herdr Desk: the count, the next thing, the room and intake banners, the saved vi
   Read runs `priory inbox read SEQ` for a report, from its row, so the row leaves the desk.
   Open task opens the row's task in the [Task panel](#the-task-panel), and Attach asks the Priory
   bar with `priory.attach`; the next thing card offers both. Answer… opens the ask in the Asks
-  panel: it sets `priory.asks.open` and brings the first block that shows `asks` into view.
+  panel: it sets `priory.asks.open` and brings the first block that shows `asks` into view. When
+  the view has no `asks` panel, it opens or selects an Asks tab in `main`.
   Add, or `N`, opens the [Add form](#the-add-action).
 - **Keys.** `J` and `K` move the selection, `Enter` opens the selected ask in Asks or the Asleep
   view from the asleep row, `S`

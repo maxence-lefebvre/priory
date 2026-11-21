@@ -263,6 +263,20 @@ test("Answer opens the ask in the Asks block, selected in its stack and shown", 
   assert.deepEqual(herdr.runs, [["layout.show", { id: "view" }], ["layout.select", { stack: "view", child: "view-1" }]]);
 });
 
+test("Answer opens an Asks tab when the view has no Asks block", async () => {
+  const { draw, press } = await import("./kit.js");
+  const { layout } = await import("../lib/layout.js");
+  const { panel, cx, herdr } = await deskPanel();
+  const frame = JSON.parse(readFileSync(new URL("../layouts/frame.json", import.meta.url), "utf8"));
+  herdr.layout = layout("default", { layout: { panel: "desk" } }, frame);
+
+  press(draw(panel, cx), "row-ask:2");
+  press(draw(panel, cx), "answer-ask:2");
+
+  assert.equal(herdr.shared.get("priory.asks.open").ask, 2);
+  assert.deepEqual(herdr.runs, [["tab.new", { space: "space-1", name: "Asks", mod: "priory-asks" }]]);
+});
+
 test("Open task opens the Task panel, and Attach stays its own action", async () => {
   const { draw, press } = await import("./kit.js");
   const { panel, cx, herdr } = await deskPanel();

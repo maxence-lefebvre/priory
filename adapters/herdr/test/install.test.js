@@ -69,6 +69,18 @@ test("refuses a priory.json it did not write, and links nothing", () => {
   assert.equal(existsSync(join(app, "mods")), false);
 });
 
+test("owns a priory.json by its root id, whatever its formatting", () => {
+  const home = scratch();
+  const app = join(home, ".config/herdr-app");
+  mkdirSync(join(app, "layouts"), { recursive: true });
+  writeFileSync(join(app, "layouts/priory.json"), JSON.stringify({ id: "priory-generated", type: "row", children: [] }));
+  assert.equal(install(home, VIEWS, "--dry-run").status, 0);
+  writeFileSync(join(app, "layouts/priory.json"), '{\n  "id": "mine",\n  "children": [\n  "id": "priory-generated",\n  ]\n}\n');
+  const run = install(home, VIEWS, "--dry-run");
+  assert.equal(run.status, 1);
+  assert.match(run.stderr, /is not a layout this adapter wrote/);
+});
+
 test("refuses input that is not the views JSON, and links nothing", () => {
   const home = scratch();
   const run = install(home, "", "--dry-run");
