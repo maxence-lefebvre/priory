@@ -73,6 +73,8 @@ const UNDO_SINCE_SEARCH: &str = "ALTER TABLE tasks DROP COLUMN merge_risk; ALTER
 /// the tmux server.
 struct Setup {
     dir: PathBuf,
+    /// The log's file, which several runners can share.
+    bus: PathBuf,
     daemon: Option<Child>,
     tmux: TmuxDir,
 }
@@ -86,6 +88,7 @@ impl Setup {
         let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join("rt").join(name);
         let tmux = TmuxDir::new(&dir);
         let setup = Setup {
+            bus: dir.join("bus.db"),
             dir,
             daemon: None,
             tmux,
@@ -148,7 +151,7 @@ impl Setup {
     }
 
     fn bus(&self) -> Bus {
-        Bus::open(&self.dir.join("bus.db")).unwrap()
+        Bus::open(&self.bus).unwrap()
     }
 
     fn publish(&self, message: &Message) {
@@ -168,7 +171,7 @@ impl Setup {
             .env("PATH", path)
             .env("TMUX_TMPDIR", self.tmux.path())
             .env("XDG_RUNTIME_DIR", self.tmux.path())
-            .env("HERDR_BUS_DB", self.dir.join("bus.db"))
+            .env("HERDR_BUS_DB", &self.bus)
             .env("PRIORY_DB", self.dir.join("priory.db"))
             .env("PRIORY_HOME", self.dir.join("home"))
             .env("FAKE_DIR", self.dir.join("fake"))
@@ -15287,4 +15290,117 @@ fn a_finding_reported_three_runs_in_a_row_moves_its_fix_task_up_a_band() {
     });
 
     assert_eq!(tasks.len(), 2, "{tasks:?}");
+}
+
+const APPROVE: &str = r#"
+start = "approve"
+
+[[steps]]
+id = "approve"
+decides = "human"
+effect = "none"
+options = ["approved", "rejected"]
+next = { approved = "done", rejected = "stop" }
+"#;
+
+const T0: &str = "2026-11-21T10:00:00Z";
+const AN_HOUR_LATER: &str = "2026-11-21T11:00:00Z";
+
+/// Runner `host` of a factory that has runners `a` and `b`, on the log of `bus` when given.
+fn runner(host: &str, bus: Option<&Setup>) -> Setup {
+    let mut setup = Setup::new(&format!("runner-{host}"));
+    for (path, content) in [
+        ("factory/runners/a.toml", "platform = { os = \"linux\" }\n"),
+        ("factory/runners/b.toml", "platform = { os = \"linux\" }\n"),
+        ("factory/workflows/approve.toml", APPROVE),
+        ("proc/sys/kernel/hostname", &format!("{host}\n")),
+    ] {
+        let file = setup.dir.join(path);
+        fs::create_dir_all(file.parent().unwrap()).unwrap();
+        fs::write(file, content).unwrap();
+    }
+    if let Some(other) = bus {
+        setup.bus = other.bus.clone();
+    }
+    setup
+}
+
+/// Waits until the log holds a message of `kind` whose data has every field of `fields`.
+fn logged(setup: &Setup, kind: &str, fields: serde_json::Value) {
+    let deadline = Instant::now() + Duration::from_secs(60);
+    loop {
+        let messages = setup
+            .bus()
+            .messages(&herdr_bus::MessageQuery {
+                output: Some(OUTPUT.into()),
+                limit: 1000,
+                ..herdr_bus::MessageQuery::default()
+            })
+            .unwrap();
+        let found = messages.iter().any(|stored| {
+            stored.message.kind == kind
+                && fields
+                    .as_object()
+                    .unwrap()
+                    .iter()
+                    .all(|(field, value)| &stored.message.data[field] == value)
+        });
+        if found {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "no {kind} {fields} in the log\ndaemon: {}",
+            fs::read_to_string(setup.dir.join("daemon.log")).unwrap_or_default()
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+#[test]
+fn a_runner_away_for_an_hour_keeps_its_asked_task_and_its_answer_and_loses_only_a_task_it_never_started()
+{
+    let mut a = runner("a", None);
+    let mut b = runner("b", Some(&a));
+    let mut asked = requested(1);
+    asked.data["workflow"] = json!("approve");
+    a.publish(&asked);
+    a.publish(&requested(2));
+    // No room on `a`, so task 2 never starts there.
+    a.memory(0);
+    let exe = Path::new(env!("CARGO_BIN_EXE_priory"));
+
+    a.start_with(exe, &[("PRIORY_NOW", T0)]);
+    let asks = a.until("asks", |rows| rows.len() == 1);
+    logged(&a, "priory.task.held", json!({ "key": "github:owner/repo#1", "runner": "a", "hold": "kept" }));
+    logged(&a, "priory.task.held", json!({ "key": "github:owner/repo#2", "runner": "a", "hold": "waiting" }));
+    a.crash();
+
+    b.start_with(exe, &[("PRIORY_NOW", AN_HOUR_LATER)]);
+    let ask = format!("a:{}", asks[0][0]);
+    for answer in ["approved", "rejected"] {
+        let sent = b.priory(&["answer", &ask, answer, "--revision", "1"]);
+        assert!(sent.status.success(), "{}", String::from_utf8_lossy(&sent.stderr));
+    }
+    b.publish(&requested(3));
+    let tasks = b.until("tasks", |rows| {
+        rows.iter().filter(|row| row[4] == "running").count() == 2
+    });
+    let keys: Vec<&str> = tasks.iter().map(|row| row[1].as_str()).collect();
+    assert_eq!(keys, ["github:owner/repo#2", "github:owner/repo#3"], "{tasks:?}");
+
+    a.memory(60);
+    a.start_with(exe, &[("PRIORY_NOW", AN_HOUR_LATER)]);
+    let tasks = a.until("tasks", |rows| {
+        rows.iter().all(|row| ["done", "dropped"].contains(&row[4].as_str()))
+    });
+    let states: Vec<[&str; 2]> = tasks.iter().map(|row| [row[1].as_str(), row[4].as_str()]).collect();
+    assert_eq!(
+        states,
+        [["github:owner/repo#1", "done"], ["github:owner/repo#2", "dropped"]],
+        "the first answer stands, and the task that moved is not a's any more"
+    );
+    assert!(a.rows("runs").is_empty(), "a never ran task 2");
+    let runs = b.rows("runs");
+    assert_eq!(runs.len(), 2, "{runs:?}");
 }
