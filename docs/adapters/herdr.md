@@ -59,7 +59,7 @@ with Priory's colors keeps a copy of `lib/tokens.js`. The Desk and Queue panels 
 Priory bar keep `lib/layout.js`. A test fails when a copy differs from the
 library. After you change a file in `lib/`, copy it into every mod that carries it.
 
-The Costs, Flows, Inbox and Tasks panels keep the web view's own view models: `mods/priory-costs/view.js` is a
+The Costs, Flows, Inbox, Tasks and Runs panels keep the web view's own view models: `mods/priory-costs/view.js` is a
 copy of `crates/priory-core/web/costs.js`, `mods/priory-flows/view.js` of `flows.js`,
 `mods/priory-inbox/view.js` of `inbox.js`, `mods/priory-tasks/view.js` of `tasks.js`, and
 `mods/priory-runs/view.js` of `runs.js`, beside its own copy of `tasks.js` for the facet filter. A test
