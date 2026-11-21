@@ -309,3 +309,51 @@ fn unhex(hex: &[u8]) -> Option<Vec<u8>> {
         .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).ok()?, 16).ok())
         .collect()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::intake::fuzz::json_value;
+    use proptest::prelude::*;
+
+    fn github() -> Github {
+        let trigger = serde_json::from_value(
+            json!({ "source": "github", "repo": "o/r", "on": "issues.labeled", "workflow": "w" }),
+        )
+        .unwrap();
+        Github {
+            secret: "s".to_owned(),
+            triggers: vec![("t".to_owned(), trigger)],
+            repos: BTreeSet::from(["o/r".to_owned()]),
+        }
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(512))]
+
+        #[test]
+        fn a_delivery_of_any_shape_is_observed_or_refused_without_panicking(
+            event in prop_oneof![
+                Just("issues"), Just("pull_request"), Just("pull_request_review"),
+                Just("issue_comment"), Just("pull_request_review_comment"), Just("ping"),
+            ],
+            action in prop_oneof![
+                Just("opened"), Just("labeled"), Just("closed"), Just("submitted"),
+                Just("created"), Just("deleted"),
+            ],
+            fields in proptest::collection::vec(json_value(), 8),
+            repository in prop_oneof![Just(json!({ "full_name": "o/r" })), json_value()],
+        ) {
+            let [issue, pull, review, comment, label, sender, user, extra] = <[Value; 8]>::try_from(fields).unwrap();
+            let payload = json!({
+                "action": action, "repository": repository, "issue": issue, "pull_request": pull,
+                "review": review, "comment": comment, "label": label,
+                "sender": sender, "user": user, "extra": extra,
+            });
+            let body = payload.to_string();
+            if let Ok(Some(observed)) = github().observe(event, &payload, body.as_bytes()) {
+                let _ = observed.message(&[]);
+            }
+        }
+    }
+}

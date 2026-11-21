@@ -263,6 +263,9 @@ fn time(ts: &str) -> Result<Timestamp, String> {
     let invalid = || format!("Slack ts `{ts}` is not seconds.microseconds");
     let (seconds, micros) = ts.split_once('.').ok_or_else(invalid)?;
     let seconds: i64 = seconds.parse().map_err(|_| invalid())?;
+    if !micros.bytes().all(|byte| byte.is_ascii_digit()) {
+        return Err(invalid());
+    }
     let micros: i32 = format!("{micros:0<6}")[..6]
         .parse()
         .map_err(|_| invalid())?;
@@ -441,4 +444,22 @@ pub(super) fn post(token: Option<(&str, &str)>, url: &str, body: &Value) -> Resu
         return Err(failed(text(&answer["error"])));
     }
     Ok(answer)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use proptest::prelude::*;
+
+    #[test]
+    fn a_ts_with_a_multibyte_character_in_its_fraction_is_refused() {
+        assert!(time("1.00000\u{e9}").is_err());
+    }
+
+    proptest! {
+        #[test]
+        fn any_ts_is_read_or_refused_without_panicking(ts in prop_oneof!["\\PC{0,40}", "[0-9-]{0,12}\\.[0-9\u{e9}\u{1f4a5}-]{0,12}"]) {
+            let _ = time(&ts);
+        }
+    }
 }

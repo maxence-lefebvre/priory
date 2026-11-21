@@ -305,3 +305,20 @@ fn reply(payload: &Value, message: &str) -> Result<(), String> {
     let body = json!({ "response_type": "ephemeral", "text": message });
     post(None, url, &body).map(drop)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::intake::fuzz::json_value;
+    use proptest::prelude::*;
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(256))]
+
+        #[test]
+        fn a_shortcut_payload_of_any_shape_gets_a_form_without_panicking(payload in json_value()) {
+            form(&Factory::default(), &payload);
+            super::metadata(&payload);
+        }
+    }
+}

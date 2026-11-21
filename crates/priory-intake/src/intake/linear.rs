@@ -741,3 +741,26 @@ fn graphql(key: &str, query: &str, variables: &Value) -> Result<Value, String> {
     }
     Ok(answer["data"].clone())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::intake::fuzz::json_value;
+    use proptest::prelude::*;
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(256))]
+
+        #[test]
+        fn an_issue_of_any_shape_gives_its_fields_and_blockers_without_panicking(issue in json_value()) {
+            fields(&issue);
+            blockers(&issue);
+        }
+
+        #[test]
+        fn any_time_is_compared_without_panicking(since in proptest::option::of("\\PC{0,40}"), time in json_value()) {
+            after(since.as_deref(), &time);
+            page(since.as_deref(), "updatedAt");
+        }
+    }
+}

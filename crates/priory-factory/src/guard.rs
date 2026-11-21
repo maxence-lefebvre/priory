@@ -1381,4 +1381,67 @@ mod tests {
             }]
         );
     }
+
+    use proptest::prelude::*;
+
+    fn single_quoted(script: &str) -> String {
+        format!("'{}'", script.replace('\'', "'\\''"))
+    }
+
+    fn double_quoted(script: &str) -> String {
+        let escaped: String = script
+            .chars()
+            .flat_map(|c| match c {
+                '\\' | '"' | '$' | '`' => vec!['\\', c],
+                _ => vec![c],
+            })
+            .collect();
+        format!("\"{escaped}\"")
+    }
+
+    /// One way to run `script` through something that must not hide it.
+    fn wrap(how: u8, script: String) -> String {
+        match how % 10 {
+            0 => format!("sudo -u me {script}"),
+            1 => format!("timeout -s KILL 30 {script}"),
+            2 => format!("FOO=bar {script}"),
+            3 => format!("bash -c {}", single_quoted(&script)),
+            4 => format!("sh -ec {}", double_quoted(&script)),
+            5 => format!("eval {}", single_quoted(&script)),
+            6 => format!("true && {script}"),
+            7 => format!("echo hi; {script}"),
+            8 => format!("echo \"$({script})\""),
+            _ => format!("( {script} ) | cat"),
+        }
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(512))]
+
+        #[test]
+        fn a_script_of_any_shape_is_split_without_panicking(
+            script in proptest::string::string_regex("[a-z '\"`$(){}<>|&;\\\\\\n=#-]{0,200}").unwrap(),
+            deep in 0..40usize,
+        ) {
+            commands(&script);
+            commands(&format!("{}{script}{}", "$(".repeat(deep), ")".repeat(deep)));
+            commands(&"bash -c '".repeat(deep));
+            commands(&"eval ".repeat(deep));
+        }
+
+        #[test]
+        fn any_text_is_split_without_panicking(script in "\\PC{0,300}") {
+            commands(&script);
+        }
+
+        #[test]
+        fn a_merge_stays_matched_under_wrapping_and_quoting(
+            hows in proptest::collection::vec(any::<u8>(), 0..5),
+        ) {
+            let command = hows
+                .into_iter()
+                .fold("gh pr merge 12".to_owned(), |script, how| wrap(how, script));
+            prop_assert!(guards(&command).contains(&"gh-pr-merge".to_owned()), "{command}");
+        }
+    }
 }

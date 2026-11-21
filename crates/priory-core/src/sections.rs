@@ -588,3 +588,39 @@ pub(crate) fn dispatch(
     }
     Ok(failed)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use proptest::prelude::*;
+
+    const VALID: &str = r#"{"date":"2026-11-21","since":"2026-11-20T00:00:00Z","greeting":"hi","sections":[{"id":"s","title":"t","rows":[{"id":"r","text":"x","pick":{"id":"p","options":["a","b"],"recommended":"a"}}]}]}"#;
+
+    #[test]
+    fn the_valid_report_is_accepted() {
+        assert!(parse(VALID).is_ok());
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(512))]
+
+        #[test]
+        fn text_of_any_shape_is_parsed_or_refused_without_panicking(
+            text in prop_oneof![
+                "\\PC{0,300}",
+                (0..VALID.len(), "\\PC{0,20}").prop_map(|(at, junk)| {
+                    let at = (0..=at).rev().find(|at| VALID.is_char_boundary(*at)).unwrap();
+                    format!("{}{junk}{}", &VALID[..at], &VALID[at..])
+                }),
+                (0..VALID.len()).prop_map(|at| {
+                    let at = (0..=at).rev().find(|at| VALID.is_char_boundary(*at)).unwrap();
+                    VALID[..at].to_owned()
+                }),
+                (1..20_000usize).prop_map(|depth| "[".repeat(depth)),
+                (1..20_000usize).prop_map(|depth| format!("{}1{}", "{\"a\":".repeat(depth), "}".repeat(depth))),
+            ],
+        ) {
+            let _ = parse(&text);
+        }
+    }
+}
