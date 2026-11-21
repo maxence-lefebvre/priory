@@ -30,6 +30,22 @@ test("a task shows its state, step, asks, pull request and its runs newest first
   ]);
 });
 
+test("the Inbox lists the events routed to the task, newest first, with what each did", async () => {
+  const inbox = [
+    { seq: 9, type: "github.pull_request.comment", subject: "acme/board#212", time: "2026-11-20T11:50:00Z", task: 1, outcome: "kept", prompt: "queued", wait: null },
+    { seq: 7, type: "github.check_run.completed", subject: "acme/board#212", time: "2026-11-20T11:00:00Z", task: 1, outcome: "woke", prompt: "confirmed", wait: 2 },
+    { seq: 5, type: "github.pull_request.comment", subject: "acme/board#212", time: "2026-11-19T10:00:00Z", task: 3, outcome: "kept", prompt: null, wait: 4 },
+  ];
+  const view = taskView({ ...task, id: 1, inbox }, { now });
+  assert.deepEqual(view.inbox.map((event) => [event.id, event.tile, event.text, event.note]), [
+    [9, "queued", "github.pull_request.comment acme/board#212", "kept, still queued · 11:50"],
+    [7, "done", "github.check_run.completed acme/board#212", "woke, delivered as prompt, fired wait 2 · 11:00"],
+    [5, "ready", "github.pull_request.comment acme/board#212", "kept, fired wait 4 (routed to task 3) · Nov 19, 10:00"],
+  ]);
+  const { handled: web } = await import("../../../crates/priory-core/web/inbox.js");
+  for (const event of inbox) assert.equal(view.inbox.find((row) => row.id === event.seq).note.split(" · ")[0], web(event, 1));
+});
+
 test("open asks come first, and an open one says since when", () => {
   const asks = [
     { id: 1, state: "answered", question: "Merge?", answer: "Merge" },

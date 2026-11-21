@@ -75,6 +75,27 @@ fn without_a_visit_since_you_looked_lists_the_latest_50_events_newest_first() {
 }
 
 #[test]
+fn since_you_looked_leaves_out_the_events_no_task_took() {
+    let setup = Setup::new("ignored");
+    setup.post("kept");
+    next_second();
+    let db = rusqlite::Connection::open(setup.dir.join("priory.db")).unwrap();
+    for n in 1..=60 {
+        db.execute(
+            "INSERT INTO inbox (id, type, subject, time, data, links, outcome)
+             VALUES (?1, 'github.issues.labeled', 'owner/repo#1',
+               strftime('%Y-%m-%dT%H:%M:%SZ', 'now'), '{}', '[]', 'ignored')",
+            [format!("ignored-{n}")],
+        )
+        .unwrap();
+    }
+
+    let looked = setup.looked(&[]);
+
+    assert_eq!(looked, ["systemd: kept"]);
+}
+
+#[test]
 fn after_seen_since_you_looked_lists_only_later_events() {
     let setup = Setup::new("later");
     setup.post("before");

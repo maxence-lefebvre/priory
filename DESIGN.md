@@ -393,8 +393,10 @@ The desk is the "Needs me" view. It lists, top to bottom:
 9. **Asleep**: one row, "9 tasks asleep on waits", that opens the Asleep view. Each of its rows
    says what the task waits on and since when: "Waits on review github:o/r#7, 2 h", and opens
    the task page.
-10. Reports waiting for review, when there are any.
-
+10. **Unrouted**: when events reached no task in the last 24 hours, one calm row under Asleep,
+   "3 events reached no task in the last 24 hours", with the `queued` tile and the count, that
+   opens the [Inbox](#inbox) panel's Unrouted view. It never ranks and never takes an alarm color.
+11. Reports waiting for review, when there are any.
 On a phone, the **Answer capsule** floats above the tab bar: a full-width `--action` button,
 `--capsule` (54 px) tall, `--capsule-gap` above the tab bar, with `--radius-full` and
 `--shadow-float`, labelled "Answer 3 asks". It opens the detail of the ask that ranks first (see `docs/daemon/desk.md`, The next thing). A fade from
@@ -408,6 +410,25 @@ selected row.
 - A round [Add](#add) button, `--capsule` wide and tall, sits at the right of the capsule with
   `--space-2` between them. It stays where the capsule hides. It takes `--surface` with a
   `--control-line` edge and `--action-text`, so the capsule stays the one primary action.
+
+### Inbox
+
+The Inbox panel, in the rail and under More on a phone, is an [explorer list](#explorer-list) with
+one saved view, **Unrouted**, which counts the events of a task's resources it lists. It lists the
+`owned` groups of `/api/inbox?unrouted=1`, one per resource, newest first. A group shows the
+resource in mono with its event count, then its task as a caption line: state tile, "task 12"
+linking to the task page, state and key. Then its 5 newest events as history rows (`queued` tile,
+type in bold, subject, the event's first line in `--text-2` under them, time), and "and 3 older"
+past that. Under them, the one action that routes the next event, by the task's state: the task
+page's **Revive** (armed, as there) for a failed or dropped task; **Request a task** for a done
+one, which opens the [Add](#add) sheet with the task's workflow and the group's `request_text`,
+whose GitHub or Linear URL makes the new task's key that resource (a Slack thread gets a
+`--text-2` line instead: "No new task can take this resource from here: start one from its
+thread."); **Subscribe task 12** for an active one (`POST /api/subscribe` with the revision the
+Inbox read was at). The daemon's sentence shows under the row, as a
+desk action's note does. A last `--text-2` line counts the events no task ever owned: "No task
+ever owned: 41 github events, 6 slack events." With no owned group: "No event of a task's resource
+went unrouted. An event about an ended task's pull request or issue shows here."
 
 ### Add
 
@@ -724,6 +745,13 @@ open Priory window when there is one.
   code steps, `user` for human steps. Done steps show a check in `--ok-text`. The current step is
   solid `--emph` with a live dot. Future steps are in `--text-3`. An irreversible step has a
   1.5 px `--danger-text` edge and the `lock` icon.
+- **Inbox**, after the pull request: the events routed to the task, newest first, at most 20, as
+  history rows. Each shows a tile for its prompt (`done` delivered, `queued` still queued, `running`
+  being typed, `prompt` unconfirmed, `dropped` withdrawn, `asleep` kept for the next run, `ready`
+  otherwise), the type
+  in bold and the subject, then what it did under them in `--text-2`, worded as `priory task ID`
+  prints it: "kept, still queued" or "woke, delivered as prompt, fired wait 3". Past 20, a note
+  says "Latest 20 of 57. `priory task 7` lists every event."
 - Then the runs table and the terminal of the selected run.
 - The full workflow diagram (steps as nodes, outcome edges) keeps the same encodings, top to
   bottom on compact and left to right on wide, with pinch, drag and a "Fit" button.
@@ -978,11 +1006,14 @@ the adapter lives, how it reads and acts, and the data each panel needs. The app
   (52 px) with a `--pane-tile` (24 px) tile, views and chips `--pane-chip` (28 px) tall, options
   `--pane-option` (40 px) tall, the question in `--type-pane-question` (18 / 24), the desk count in
   `--type-pane-count` (40 / 1), and buttons at `--control-fine`.
-- **Width.** Every panel works at `--pane-narrow` (420 px), the side panel's default width. Below
+- **Width.** Every panel works at `--pane-narrow` (420 px), the default width of the view beside Herdr's terminals. Below
   `--pane-split` (720 px) a selected row opens its detail in place, under the row. From
   `--pane-split`, the list and the detail sit side by side.
 - **Selection.** A selected row takes the `--action-soft` fill on its own rounded surface. It has
   no 3 px leading bar: gpui-kit's design guide forbids leading-edge selection bars.
+- **Placement.** The layout follows the `default` view: each `tabs` node is a stack, and the
+  Priory bar shows one button per child of each stack. The Task panel and an Asks panel the view
+  lacks open as tabs in the center.
 - **Navigation.** Herdr owns tabs and panes, so a panel has no tab bar, rail or Answer capsule.
   `Enter` opens the selected row.
 - **Add.** The Desk and Queue panels open [Add](#add) as a card under their header, not as a
@@ -1024,11 +1055,11 @@ waiting, and the daemon does nothing different.
 
 ### Desk
 
-The calm count, then the one next thing, then the explorer list. It opens as a tab in the center
-stack.
+The calm count, then the one next thing, then the explorer list.
 
 1. **Count** in `--type-pane-count`, as the web desk's: "2 asks need you. Oldest waits 42 min. 1
-   stopped. 2 snoozed."
+   stopped. 2 snoozed. 3 events reached no task in 24 h." The last sentence shows only when the
+   count is above zero. The Unrouted view stays on the web page and in `priory inbox --unrouted`.
 2. **The next thing**: a card on `--surface` with the desk's `next`: an alarm or the ask that ranks
    first, why it ranks first, its recommendation, and the buttons Answer… (primary, for an ask),
    Open task, Attach and Snooze 1 h. Answer… opens the
@@ -1045,7 +1076,7 @@ the wide table with Recommends and the key hint bar (`J` `K`, `Enter`, `S`, `R`,
 
 ### Asks
 
-Every ask, with the web's ask detail fitted to the pane. It sits in the side panel stack.
+Every ask, with the web's ask detail fitted to the pane.
 
 - Saved views: Open, Snoozed, Answered and All. Facet chips: Command, Lane, Band, Risk and Task.
 - A routed ask shows the [routed mark](#routed-ask) as a tag in its row and as a line under the
@@ -1055,10 +1086,12 @@ Every ask, with the web's ask detail fitted to the pane. It sits in the side pan
   Trace and History.
 - Once the options scroll out of view, the sticky answer bar shows "3 options", the recommended
   option and the overflow menu.
+- On an ask that belongs to a task, the overflow menu offers Open task, which opens the
+  [Task](#task) panel, and Attach to task.
 
 ### Queue
 
-What runs next and why. It sits in the side panel stack, under the same activity bar as Asks.
+What runs next and why.
 
 - **Up next**: a strip with the next 3 runs, queued or scheduled. Each line shows when ("now, on
   room", "about 11:50", "08:30 Fri"), the task or schedule, and why. It opens the task.
@@ -1070,7 +1103,7 @@ What runs next and why. It sits in the side panel stack, under the same activity
 
 ### Bonjour
 
-The morning dossier. It opens as a tab in the center stack.
+The morning dossier.
 
 - A toolbar with the date and older and newer arrows, "n of m agreed" with a progress bar, Next
   pick and search.
@@ -1094,7 +1127,7 @@ The morning dossier. It opens as a tab in the center stack.
 
 ### Costs
 
-The web's [Costs panel](#costs-panel), as a tab in the center stack.
+The web's [Costs panel](#costs-panel).
 
 - From 1024 px Costs and Attention sit side by side. Below, Costs and Attention chips in the
   header pick one, as saved views do.
@@ -1105,7 +1138,7 @@ The web's [Costs panel](#costs-panel), as a tab in the center stack.
 
 ### Flows
 
-The web's [Flows panel](#flows-panel), as a tab in the center stack.
+The web's [Flows panel](#flows-panel).
 
 - Nodes and edges paint with gpui-kit paths in the web's shapes, dashes, weights and colors, scaled
   to the pane, at most 560 px wide.
@@ -1117,15 +1150,17 @@ The web's [Flows panel](#flows-panel), as a tab in the center stack.
 ### Task
 
 The web's [task detail](#task-detail-and-workflow-grid), cut to what a pane reads, as a tab in the
-center stack. Open task on the Desk and an Up next line open it.
+center stack. Open task on the Desk, in Queue and in the Asks overflow menu, and an Up next line,
+open it.
 
 - A 44 px header with the task's tile at 18 px, its key in mono, its state word in its role's text
   color, and Attach as a secondary button at the right.
 - The title in `--type-pane-question`, then the workflow, step, lane and band in `--text-2`, then
   the reason in its role's text color.
-- Asks, Pull request and History, each a caption heading with its count, then rows with an 18 px
-  tile and a `--type-small` line over a `--text-3` caption, split by hairlines. History lists the
-  last 10 runs, newest first.
+- Asks, Pull request, Inbox and History, each a caption heading with its count, then rows with an
+  18 px tile and a `--type-small` line over a `--text-3` caption, split by hairlines. Inbox lists
+  the latest 20 events routed to the task, newest first, with the web's tiles and wording and the
+  time in the caption: "kept, still queued · 11:50". History lists the last 10 runs, newest first.
 - With no task opened: "Open a task from the Desk to see it here." While it reads: "Reading task
   7…"
 - The actions, Say, Progress and the workflow grid stay on the web page for now.

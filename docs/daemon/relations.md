@@ -44,8 +44,10 @@ The tool takes `kind` and `task`, the other task's id, and refuses any other fie
 always the caller's, so an agent records relations of its own task only. `priory mcp` answers it
 from the state file, without the daemon. It does not end the turn.
 
-A `--relates` value that is not `KIND:TASK` with a known kind is a usage error. The daemon skips a
-`--relates` relation whose task does not exist, since the request has already been published.
+A `--relates` value that is not `KIND:TASK` with a known kind is a usage error. `priory request` and
+`priory add` read the state file, which `PRIORY_DB` names, and refuse a `--relates` task it does not
+hold with `no task <id>`, before they publish anything. The web view's Add control gets the same
+refusal from the daemon. The daemon still skips such a relation in a request that reaches it.
 
 ### The two automatic relations
 

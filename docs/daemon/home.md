@@ -70,7 +70,9 @@ derives from `PRIORY_HOME` the same way:
 never share a socket. The daemon makes the folder with mode `0700`. It refuses to start when the
 folder exists but another user owns it, it is not a folder, or its mode lets anyone else in; the
 error names the folder. Fix it with `chmod 700`, or remove it. A socket left by a dead daemon is
-replaced at the next start.
+replaced at the next start. The daemon binds the socket as `<hash>.new` and renames it to
+`<hash>.sock` once it listens, so a client that finds `<hash>.sock` is never refused by a starting
+daemon.
 
 The daemon passes its `XDG_RUNTIME_DIR` to the agents' panes and MCP servers, so a tmux server
 started elsewhere does not change it. A command you run yourself must see the same `PRIORY_HOME` and

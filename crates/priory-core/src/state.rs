@@ -12,7 +12,7 @@ use std::collections::BTreeMap;
 use std::io::Write;
 use std::time::Duration;
 
-const VERSION: i64 = 73;
+const VERSION: i64 = 74;
 
 const SCHEMA: &str = "
 CREATE TABLE tasks (
@@ -1298,6 +1298,22 @@ CREATE INDEX open_holds ON holds (task) WHERE released IS NULL;
 "
 );
 
+// An event a subscription delivered to a task other than the one routing gave it, with how it
+// reached that task. The prompt can be merged or deleted later, so it is not a foreign key.
+const SCHEMA_74: &str = concat!(
+    "CREATE TABLE IF NOT EXISTS subscription_deliveries (
+  seq     INTEGER NOT NULL REFERENCES inbox (seq),
+  task    INTEGER NOT NULL REFERENCES tasks (id),
+  outcome TEXT NOT NULL,
+  outbox  INTEGER,
+  PRIMARY KEY (seq, task)
+);
+",
+    bumps!("subscription_deliveries"),
+    "PRAGMA user_version = 74;
+"
+);
+
 /// Each schema change in order: a file at version `n` applies those from index `n` on.
 const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA, SCHEMA_2, SCHEMA_3, SCHEMA_4, SCHEMA_5, SCHEMA_6, SCHEMA_7, SCHEMA_8, SCHEMA_9,
@@ -1309,6 +1325,7 @@ const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA_50, SCHEMA_51, SCHEMA_52, SCHEMA_53, SCHEMA_54, SCHEMA_55, SCHEMA_56, SCHEMA_57,
     SCHEMA_58, SCHEMA_59, SCHEMA_60, SCHEMA_61, SCHEMA_62, SCHEMA_63, SCHEMA_64, SCHEMA_65,
     SCHEMA_66, SCHEMA_67, SCHEMA_68, SCHEMA_69, SCHEMA_70, SCHEMA_71, SCHEMA_72, SCHEMA_73,
+    SCHEMA_74,
 ];
 
 /// The order the queue starts tasks in: band, then a person's order, then age. A band the factory
@@ -1450,26 +1467,26 @@ fn refiltered(data: &serde_json::Value) -> String {
 }
 
 /// Records `message` in the inbox and applies its route, in one transaction. A message
-/// already in the inbox changes nothing. Returns the tmux session of a run it ended, to kill.
+/// already in the inbox changes nothing. Returns the tmux sessions of the runs it ended, to kill.
 pub(crate) fn handle(
     db: &mut Connection,
     message: &Message,
     trace: &crate::trace::Trace,
     counter: Option<&crate::embed::Counter>,
-) -> Result<Option<String>, Box<dyn std::error::Error>> {
+) -> Result<Vec<String>, Box<dyn std::error::Error>> {
     let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
     let kill = handle_in(&tx, message, trace, counter)?;
     tx.commit()?;
     Ok(kill)
 }
 
-/// Records `message` in `tx` and routes it, returning the tmux session to kill once it commits.
+/// Records `message` in `tx` and routes it, returning the tmux sessions to kill once it commits.
 pub(crate) fn handle_in(
     tx: &Transaction,
     message: &Message,
     trace: &crate::trace::Trace,
     counter: Option<&crate::embed::Counter>,
-) -> Result<Option<String>, Box<dyn std::error::Error>> {
+) -> Result<Vec<String>, Box<dyn std::error::Error>> {
     let seen = tx
         .query_row(
             "SELECT 1 FROM inbox WHERE id = ?1",
@@ -1478,22 +1495,23 @@ pub(crate) fn handle_in(
         )
         .optional()?;
     if seen.is_some() {
-        return Ok(None);
+        return Ok(Vec::new());
     }
     route_in(tx, message, trace, counter)
 }
 
 /// Routes `message` in `tx` and records it, or records its new route when the inbox holds it.
+/// Returns the tmux session of each run it ended, to kill once it commits.
 pub(crate) fn route_in(
     tx: &Transaction,
     message: &Message,
     trace: &crate::trace::Trace,
     counter: Option<&crate::embed::Counter>,
-) -> Result<Option<String>, Box<dyn std::error::Error>> {
+) -> Result<Vec<String>, Box<dyn std::error::Error>> {
     let factory = trace.factory;
     if route::outsider(message) {
         record(tx, message, None, "outsider", None)?;
-        return Ok(None);
+        return Ok(Vec::new());
     }
     if let Some(me) = trace.runner.as_deref()
         && let Some(kill) = crate::runners::handle(tx, message, me, trace, counter)?
@@ -1634,6 +1652,12 @@ pub(crate) fn route_in(
         None
     };
     let seq = record(tx, message, task, outcome, outbox)?;
+    if outcome == "ignored"
+        && let Some(line) = crate::tools::unheard(tx, message)?
+    {
+        crate::post::report(tx, "priory", &line)
+            .map_err(|error| rusqlite::Error::ToSqlConversionFailure(error.into()))?;
+    }
     crate::grades::label(tx, trace, message)?;
     if message.kind == "linear.view.changed" {
         crate::post::report(tx, "linear", &refiltered(&message.data))?;
@@ -1641,19 +1665,29 @@ pub(crate) fn route_in(
     crate::hold::event(tx, &resources)?;
     // The keyed task keeps the event; another task that shares the resource hears it through its
     // wait or its subscription. A merge that fires a gate may end a run a person's `say` started.
-    let mut kill = None;
+    let mut kill = Vec::new();
     for other in owners.iter().filter(|other| Some(other.id) != task) {
         let (fired, ended) = crate::tools::event(tx, other.id, seq, factory)?;
-        kill = kill.or(ended);
-        if !fired {
-            delivered(tx, other.id, message, &resources, None, factory)?;
+        kill.extend(ended);
+        if !fired
+            && let Some((outcome, prompt)) =
+                delivered(tx, other.id, message, &resources, None, factory)?
+        {
+            tx.execute(
+                "INSERT OR IGNORE INTO subscription_deliveries (seq, task, outcome, outbox)
+                 VALUES (?1, ?2, ?3, ?4)",
+                params![seq, other.id, outcome, prompt],
+            )?;
         }
     }
     match (task, outcome) {
         (Some(task), "kept") => {
             let (fired, ended) = crate::tools::event(tx, task, seq, factory)?;
-            kill = kill.or(ended);
-            if !fired && delivered(tx, task, message, &resources, Some(seq), factory)? {
+            kill.extend(ended);
+            if !fired
+                && delivered(tx, task, message, &resources, Some(seq), factory)?
+                    .is_some_and(|(outcome, _)| outcome == "woke")
+            {
                 tx.execute("UPDATE inbox SET outcome = 'woke' WHERE seq = ?1", [seq])?;
             }
         }
@@ -1680,7 +1714,7 @@ pub(crate) fn route_in(
             // An agent that cannot hear it yet reads the request with its next prompt instead.
             if crate::tools::say(tx, task, &text, &state, &factory.workflows)?.is_err() {
                 tx.execute("UPDATE inbox SET outcome = 'kept' WHERE seq = ?1", [seq])?;
-                crate::tools::event(tx, task, seq, factory)?;
+                kill.extend(crate::tools::event(tx, task, seq, factory)?.1);
             } else {
                 tx.execute(
                     "UPDATE inbox SET outbox = (SELECT max(id) FROM outbox WHERE task = ?2 AND state = 'queued')
@@ -1691,7 +1725,8 @@ pub(crate) fn route_in(
         }
         (Some(task), "reopened") => crate::tools::reopen(tx, trace, task, seq)?,
         (Some(task), "withdrew") => {
-            return Ok(crate::tools::cancel(tx, task, "review request removed")?.or(kill));
+            kill.extend(crate::tools::cancel(tx, task, "review request removed")?);
+            return Ok(kill);
         }
         _ => {}
     }
@@ -1831,7 +1866,7 @@ fn wakes(tx: &Transaction, task: i64, factory: &Factory) -> rusqlite::Result<boo
 /// Delivers `message` to `task` when it subscribes to a resource of `resources` and no wait took
 /// it: a wake while it sleeps where an event can wake it, else a queued prompt while it runs. `kept`
 /// is the inbox entry when `task` kept the message, whose own prompt is already queued. Returns
-/// whether it woke the task.
+/// `woke` or `kept`, with the prompt that carries the message, when it reached the task.
 fn delivered(
     tx: &Transaction,
     task: i64,
@@ -1839,10 +1874,17 @@ fn delivered(
     resources: &[String],
     kept: Option<i64>,
     factory: &Factory,
-) -> rusqlite::Result<bool> {
+) -> rusqlite::Result<Option<(&'static str, Option<i64>)>> {
     if !subscribes(tx, task, resources, &message.kind)? {
-        return Ok(false);
+        return Ok(None);
     }
+    let queued = |tx: &Transaction| -> rusqlite::Result<Option<i64>> {
+        tx.query_row(
+            "SELECT max(id) FROM outbox WHERE task = ?1 AND state = 'queued' AND compact = 0",
+            [task],
+            |row| row.get(0),
+        )
+    };
     let line = line(
         &message.kind,
         message.subject.as_deref(),
@@ -1862,23 +1904,25 @@ fn delivered(
         )?;
     if fresh && wakes(tx, task, factory)? {
         crate::tools::wake_on(tx, task, &placed(tx, task, resources, &line)?, kept)?;
-        return Ok(true);
+        return Ok(Some(("woke", queued(tx)?)));
     }
     if fresh && crate::tools::gate_feedback(tx, task, message, kept)? {
-        return Ok(true);
+        return Ok(Some(("woke", queued(tx)?)));
     }
-    if kept.is_none() {
-        tx.execute(
+    if kept.is_none()
+        && tx.execute(
             "INSERT INTO outbox (task, text) SELECT id, ?2 FROM tasks WHERE id = ?1 AND state = 'running'",
             params![task, placed(tx, task, resources, &line)?],
-        )?;
+        )? == 1
+    {
+        return Ok(Some(("kept", Some(tx.last_insert_rowid()))));
     }
-    Ok(false)
+    Ok(None)
 }
 
-/// The events a task's subscription to its own key carries: what people say and closes. Checks,
+/// The events a task's subscription to its own key carries: what people say, edit and close. Checks,
 /// labels and pushes stay with the checks gate and waits, since each would start a run.
-const OWN_KEY: [&str; 9] = [
+const OWN_KEY: [&str; 10] = [
     "github.pull_request_review.submitted",
     "github.pull_request.comment",
     "github.pull_request_review_comment",
@@ -1887,6 +1931,7 @@ const OWN_KEY: [&str; 9] = [
     ISSUE_CLOSED,
     "linear.comment.created",
     "linear.issue.state_changed",
+    "linear.issue.updated",
     "slack.thread.replied",
 ];
 
@@ -2001,7 +2046,8 @@ pub fn ended(db: &Connection, key: &str) -> rusqlite::Result<u64> {
 
 /// The resource and the agent's last prompt of each open wait that the intake polls for, then the
 /// pull request or Linear issue and creation time of each unmet merge condition and each issue
-/// condition of an open hold, met or not, then each subscription of a task that has not failed or been dropped, then the branch of each
+/// condition of an open hold, met or not, then each subscription of a task that has not failed or
+/// been dropped, and the own key of the newest task on a key that did, then the branch of each
 /// active task, or of a task done in the last 10 minutes whose branch no event named yet, so the
 /// intake sees a pull request its worker opened itself.
 pub fn watched(db: &Connection) -> rusqlite::Result<Vec<(String, String)>> {
@@ -2020,9 +2066,12 @@ pub fn watched(db: &Connection) -> rusqlite::Result<Vec<(String, String)>> {
            UNION ALL
            SELECT 2, subscriptions.rowid, subscriptions.resource, subscriptions.created
            FROM subscriptions
-           JOIN tasks ON tasks.id = subscriptions.task AND tasks.state NOT IN ('failed', 'dropped')
-           -- Slack reads one thread per call, so a done task's own thread is read for a week only.
-           WHERE NOT (tasks.state = 'done' AND subscriptions.resource = tasks.key
+           JOIN tasks ON tasks.id = subscriptions.task AND (tasks.state NOT IN ('failed', 'dropped')
+             -- A comment on the own key of an ended task's newest generation asks for a revive.
+             OR (subscriptions.resource = tasks.key
+               AND tasks.id = (SELECT max(id) FROM tasks AS newest WHERE newest.key = tasks.key)))
+           -- Slack reads one thread per call, so an ended task's own thread is read for a week only.
+           WHERE NOT (tasks.state IN ('done', 'failed', 'dropped') AND subscriptions.resource = tasks.key
              AND tasks.key GLOB 'slack:*' AND julianday('now') - julianday(tasks.changed) >= 7)
            UNION ALL
            SELECT 3, owns.rowid, owns.resource, tasks.changed FROM owns

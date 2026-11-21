@@ -3809,6 +3809,8 @@ const DEFAULTS: &str = "name = \"demo\"\n\n[serve]\nlisten = \"127.0.0.1:0\"\nto
 #[test]
 fn a_request_through_the_endpoint_queues_the_task_priory_add_does_and_answers_its_key_and_id() {
     let mut setup = Setup::new("web-request", DEFAULTS);
+    // No run starts, so a run's git and tmux commands never hold up the daemon's reply.
+    succeeded(&setup.priory(&["pause"]));
     let address = setup.start(&["daemon", &setup.factory()]);
 
     let (status, body) = post(
@@ -4695,6 +4697,27 @@ fn use_factory(setup: &Setup, from: &Path) {
 }
 
 #[test]
+fn priory_views_prints_what_the_views_endpoint_serves() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let factories = [
+        root.join("examples/groom"),
+        root.join("docs/reference/examples/factory"),
+    ];
+    for (index, from) in factories.iter().enumerate() {
+        let mut setup = Setup::new(&format!("views-{index}"), SERVE);
+        use_factory(&setup, from);
+        let address = setup.start(&["serve", &setup.factory(), "--listen", "127.0.0.1:0"]);
+
+        let views = api(&address, "/api/views");
+
+        let twin = setup.priory(&["views", &setup.factory(), "--json"]);
+        succeeded(&twin);
+        let twin: Value = serde_json::from_slice(&twin.stdout).unwrap();
+        assert_eq!(twin, views, "{from:?}: priory views --json");
+    }
+}
+
+#[test]
 fn the_flows_endpoint_serves_check_explains_json_and_each_graph_as_priory_flows_prints_them() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let factories = [
@@ -5236,25 +5259,70 @@ fn a_linear_issue_whose_project_the_payload_names_only_by_id_waits_for_the_poll(
     assert!(setup.published().is_empty());
 }
 
-/// Publishes a comment on pull request `pull_request` that no task owns, sent at `time`.
+/// Publishes a comment on pull request `pull_request` that no active task owns, sent at `time`.
 fn unrouted_comment(setup: &Setup, pull_request: u64, time: &str) {
     let message = herdr_bus::Message::new(
         "github.pull_request.comment",
-        json!({ "repo": "owner/repo", "pull_request": pull_request, "actor": "ana", "body": "Hi." }),
+        json!({ "repo": "owner/repo", "pull_request": pull_request, "actor": "ana", "body": "Still broken on mobile.\nSee the log." }),
     )
     .subject(format!("owner/repo#{pull_request}"))
     .time(time.parse().unwrap());
     setup.bus().publish("factory.intake", &message).unwrap();
 }
 
+impl Setup {
+    /// A task in `state` that owned `resources`, added after the events routed, as a task that ended.
+    fn owner(&self, state: &str, resources: &[&str]) -> i64 {
+        let db = self.db();
+        db.execute(
+            "INSERT INTO tasks (key, workflow, step, state, trigger, source) VALUES (?1, 'implement', 'implement', ?2, 'cli', '-')",
+            [resources[0], state],
+        )
+        .unwrap();
+        let task = db.last_insert_rowid();
+        for resource in resources {
+            db.execute(
+                "INSERT INTO owns (task, resource) VALUES (?1, ?2)",
+                rusqlite::params![task, resource],
+            )
+            .unwrap();
+        }
+        task
+    }
+}
+
 #[test]
-fn the_unrouted_endpoint_returns_what_the_cli_prints() {
+fn unrouted_events_split_into_ended_owners_with_their_follow_up_and_a_count_per_source() {
     let mut setup = Setup::new("unrouted", SERVE);
+    // An issue id no shell should run, whose owner is still active, so its follow-up names it.
+    let hostile = herdr_bus::Message::new(
+        "linear.comment.created",
+        json!({ "issue": "ENG-7$(id)", "body": "Hm." }),
+    )
+    .subject("ENG-7")
+    .time("2026-11-17T10:00:00Z".parse().unwrap());
+    setup.bus().publish("factory.intake", &hostile).unwrap();
     unrouted_comment(&setup, 7, "2026-11-17T11:00:00Z");
+    unrouted_comment(&setup, 8, "2026-11-17T11:30:00Z");
+    unrouted_comment(&setup, 9, "2026-11-17T11:40:00Z");
+    let linear = herdr_bus::Message::new(
+        "linear.comment.created",
+        json!({ "issue": "ENG-9", "body": "Hm." }),
+    )
+    .subject("ENG-9")
+    .time("2026-11-17T11:50:00Z".parse().unwrap());
+    setup.bus().publish("factory.intake", &linear).unwrap();
     succeeded(&setup.priory(&["daemon", &setup.factory(), "--once"]));
+    let done = setup.owner("done", &["github:owner/repo#7"]);
+    let dropped = setup.owner("dropped", &["github:owner/repo#8"]);
+    let active = setup.owner("asleep", &["linear:ENG-7$(id)"]);
     let address = setup.start(&["serve", &setup.factory()]);
 
     let served = api(&address, "/api/inbox?unrouted=1");
+    assert_eq!(
+        served["unrouted"]["owned"][2]["follow_up"],
+        format!("priory subscribe {active} 'linear:ENG-7$(id)'")
+    );
 
     let output = setup.priory(&["inbox", "--unrouted", "--json"]);
     succeeded(&output);
@@ -5262,19 +5330,106 @@ fn the_unrouted_endpoint_returns_what_the_cli_prints() {
         served,
         serde_json::from_slice::<Value>(&output.stdout).unwrap()
     );
-    assert_eq!(served["unrouted"][0]["resource"], "github:owner/repo#7");
+    let owned: Vec<_> = served["unrouted"]["owned"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .take(2)
+        .map(|group| {
+            (
+                group["resource"].clone(),
+                group["task"]["id"].clone(),
+                group["task"]["state"].clone(),
+                group["events"][0]["line"].clone(),
+                group["follow_up"].clone(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        owned,
+        [
+            (
+                json!("github:owner/repo#8"),
+                json!(dropped),
+                json!("dropped"),
+                json!("Still broken on mobile."),
+                json!(format!("priory revive {dropped}"))
+            ),
+            (
+                json!("github:owner/repo#7"),
+                json!(done),
+                json!("done"),
+                json!("Still broken on mobile."),
+                json!(format!(
+                    "priory add --workflow implement 'Follow up on https://github.com/owner/repo/issues/7 after event {}'",
+                    served["unrouted"]["owned"][1]["events"][0]["seq"]
+                ))
+            ),
+        ]
+    );
+    let text = served["unrouted"]["owned"][1]["request_text"]
+        .as_str()
+        .unwrap();
+
+    // The follow-up's task owns the resource, so the next comment on #7 reaches it.
+    succeeded(&setup.priory(&["add", &setup.factory(), "--workflow", "implement", text]));
+    succeeded(&setup.priory(&["daemon", &setup.factory(), "--once"]));
+    unrouted_comment(&setup, 7, "2026-11-17T11:58:00Z");
+    succeeded(&setup.priory(&["daemon", &setup.factory(), "--once"]));
+    let inbox = json_of(&setup, "inbox");
+    let last = inbox["inbox"].as_array().unwrap().last().unwrap().clone();
+    let task: Value = serde_json::from_slice(
+        &setup
+            .priory(&["task", &last["task"].to_string(), "--json"])
+            .stdout,
+    )
+    .unwrap();
+    assert_eq!(
+        [&last["type"], &task["key"]],
+        [
+            &json!("github.pull_request.comment"),
+            &json!("github:owner/repo#7")
+        ],
+        "{last}"
+    );
+    assert_eq!(
+        served["unrouted"]["other"],
+        json!([{ "source": "github", "events": 1 }, { "source": "linear", "events": 1 }])
+    );
+    let text = String::from_utf8(setup.priory(&["inbox", "--unrouted"]).stdout).unwrap();
+    assert!(!text.contains("TASK"), "{text}");
+    assert!(
+        text.contains(&format!(
+            "github:owner/repo#8: 1 event, task {dropped} dropped\n"
+        )),
+        "{text}"
+    );
+    assert!(
+        text.ends_with("No task ever owned: 1 github event, 1 linear event.\n"),
+        "{text}"
+    );
     let (status, _) = get(&address, "/api/inbox?unrouted=2", Some(TOKEN));
     assert_eq!(status, 400);
 }
 
 #[test]
-fn the_desk_counts_unrouted_events_of_the_last_24_hours_in_a_calm_line() {
+fn the_desk_counts_the_last_24_hours_unrouted_events_of_ended_tasks_in_a_calm_line() {
     let mut setup = Setup::new("desk-unrouted", SERVE);
     unrouted_comment(&setup, 7, "2026-11-16T11:59:59Z");
     unrouted_comment(&setup, 8, "2026-11-16T12:00:00Z");
     unrouted_comment(&setup, 9, "2026-11-17T11:00:00Z");
     unrouted_comment(&setup, 10, "2026-11-17T12:00:01Z");
+    unrouted_comment(&setup, 11, "2026-11-17T11:00:00Z");
     succeeded(&setup.priory(&["daemon", &setup.factory(), "--once"]));
+    setup.owner(
+        "done",
+        &[
+            "github:owner/repo#7",
+            "github:owner/repo#8",
+            "github:owner/repo#9",
+            "github:owner/repo#10",
+        ],
+    );
     let address = setup.start(&["serve", &setup.factory()]);
 
     assert_eq!(api(&address, "/api/desk")["counts"]["unrouted"], 2);
@@ -5288,4 +5443,53 @@ fn the_desk_counts_unrouted_events_of_the_last_24_hours_in_a_calm_line() {
         ),
         "{text}"
     );
+}
+
+#[test]
+fn the_subscribe_endpoint_subscribes_a_task_as_priory_subscribe_does() {
+    let mut setup = Setup::new("web-subscribe", SERVE);
+    setup.seed();
+    succeeded(&setup.priory(&["pause"]));
+    let address = setup.start(&["daemon", &setup.factory()]);
+    let subscribe =
+        |extra: &str, body: Value| post(&address, "/api/subscribe", extra, &body.to_string());
+    let pull = "github:owner/repo#7";
+
+    let foreign = subscribe(
+        "Origin: http://evil.example\r\n",
+        json!({ "task": 1, "resource": pull }),
+    );
+    let malformed = subscribe("", json!({ "task": 1, "resource": "owner/repo#7" }));
+    let stale = subscribe("", json!({ "task": 1, "resource": pull, "revision": 0 }));
+    let missing = subscribe("", json!({ "task": 9, "resource": pull }));
+    let revision = json_of(&setup, "desk")["revision"].clone();
+    let done = subscribe(
+        "",
+        json!({ "task": 1, "resource": pull, "revision": revision }),
+    );
+    let taken = subscribe("", json!({ "task": 2, "resource": pull }));
+
+    assert_eq!(foreign.0, 403, "{}", foreign.1);
+    assert_eq!(malformed.0, 400, "{}", malformed.1);
+    assert_eq!(stale.0, 409, "{}", stale.1);
+    assert_eq!(missing.0, 404, "{}", missing.1);
+    assert_eq!(
+        done,
+        (
+            200,
+            json!({ "ok": "task 1 subscribes to github:owner/repo#7" }).to_string()
+        )
+    );
+    assert_eq!(taken.0, 422, "{}", taken.1);
+    assert!(taken.1.contains("task 1"), "{}", taken.1);
+    let output = setup.priory(&["task", "1", "--json"]);
+    succeeded(&output);
+    let task: Value = serde_json::from_slice(&output.stdout).unwrap();
+    let resources: Vec<_> = task["subscriptions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|row| row["resource"].clone())
+        .collect();
+    assert!(resources.contains(&json!(pull)), "{resources:?}");
 }

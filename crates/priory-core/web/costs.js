@@ -38,9 +38,8 @@ const longDay = (/** @type {string} */ day) => `${weekday(day)}, ${MONTHS[Number
 
 /** One bar per day, scaled to the busiest day, with a sentence for screen readers. @param {any} costs */
 export function dayBars(costs) {
-  // The window starts at the daemon's local midnight, so 12 hours later is still that local date in UTC.
-  // shortcut: right for a daemon above UTC-12 up to UTC+12; send the start's local date from the server for one outside.
-  const first = new Date(Date.parse(costs.current.since) + 12 * 3600000).toISOString().slice(0, 10);
+  // The daemon names the local date its window starts on, in its own zone, as it keys the days.
+  const first = costs.current.since_day;
   const max = Math.max(0, ...costs.days.map((/** @type {any} */ day) => day.cost_usd ?? 0));
   return costs.days.map((/** @type {any} */ day) => {
     const cost = day.cost_usd == null ? "no priced tokens" : money(day.cost_usd);

@@ -154,8 +154,9 @@ event's id in `source`, and the task's first prompt carries the event.
 ## The task's inbox
 
 `priory task ID --json` and `/api/tasks/{id}` list, as `inbox`, every event routed to the task,
-newest first: its source event, the events routing gave it, and the events that fired one of its
-waits while another task took them (see [serve.md](../reference/serve.md#task-in-detail)). Each
+newest first: its source event, the events routing gave it, and the events another task took that
+fired one of its waits or that its subscription delivered to it (see
+[serve.md](../reference/serve.md#task-in-detail)). Each
 event has its outcome, `prompt`, the state of the outbox prompt that carries it, and `wait`, the
 task's wait it fired. Together they say what the event did:
 
@@ -172,8 +173,17 @@ task's wait it fired. Together they say what the event did:
 | any | `withdrawn` | A reopen or `priory revive` withdrew its prompt |
 
 An event with `wait` set fired that wait: an asleep task wakes on it, and another task keeps its
-state until its next run. An event that only a subscription delivered to a second task, beside the
-task routing gave it, is not in the second task's inbox: nothing records that delivery.
+state until its next run.
+
+When routing gives an event to one task and a subscription delivers it to a second, the second
+task's inbox lists it with `task` naming the first. Its `outcome` and `prompt` are the second
+task's own: `woke` when the event woke it, or `kept` when it queued a prompt while the task ran.
+A comment that wakes the second task from its checks gate shows no `wait`, since that delivery
+records the prompt but not the wait.
+
+`priory task ID` prints the task's key, workflow, step and state, then an Inbox section with one
+line per event: its sequence number, time, type, subject and what it did, such as
+`kept, still queued`, `woke, delivered as prompt` or `kept, for its next run (routed to task 2)`.
 
 A prompt is `attempted` while the agent is being typed to, and `uncertain` when a daemon restart cut
 that short (see [outbox.md](outbox.md)).
@@ -184,24 +194,37 @@ An event is unrouted when its outcome is `ignored`, no task took it, and it is n
 of a task that its request created. Such an event concerned no active task, so it changed nothing.
 An event that names no resource is not listed, since no task could own it.
 
-`priory inbox --unrouted [--since SEQ]` and `/api/inbox?unrouted=1` group these events by the first
-resource each names (see [serve.md](../reference/serve.md#unrouted)). Each group prints the two
-commands that would route its next event: `priory subscribe TASK RESOURCE` gives it to an existing
-task, and `priory request --workflow WORKFLOW --key RESOURCE TEXT` creates one. The Desk counts the
-unrouted events of the last 24 hours (see [desk.md](desk.md#unrouted-events)).
+Most unrouted events are noise: another person's pull request, a Slack message no trigger matched.
+The ones that matter are about a resource a task owned and that task has ended, such as a review on
+a done task's merged pull request. So `priory inbox --unrouted [--since SEQ]` and
+`/api/inbox?unrouted=1` split them (see [serve.md](../reference/serve.md#unrouted)):
+
+- Events whose first resource a task owned or subscribed to, in any state, are grouped by that
+  resource, with the newest such task and the command that routes the next event: `priory revive
+  ID` when the task failed or was dropped, `priory add` with the task's workflow and the
+  resource's GitHub or Linear URL when it is done, since a done task cannot be revived and `add`
+  keys the new task by that URL, and `priory subscribe ID RESOURCE` when it is still active. A
+  done task's Slack thread gets no command: no CLI verb keys a task by a thread.
+- The rest, which no task ever owned, are one count per source.
+
+The web Inbox panel's Unrouted view offers the same actions from a phone: Revive, the Add sheet, or
+`POST /api/subscribe`. The Desk counts only the first kind, over the last 24 hours (see
+[desk.md](desk.md#unrouted-events)).
 
 ## What a kept message does
 
 What happens to a `kept` message depends on the task's state:
 
 - For a `running` task, the daemon also queues an outbox prompt with the message, so the agent reads
-  it after its current turn.
+  it after its current turn. Until then, for feedback, the agent's `result` and `ask` are refused
+  (see [tools.md](tools.md#the-tools)).
 - If the message satisfies the task's open wait, the wait fires in any active state (see
   [waits.md](waits.md)). An asleep task wakes. A ready, blocked or held task keeps its state, and
   its next run gets the prompt.
 - If the task subscribes to a resource the message names and has no open wait on it, an asleep
   task at a model step wakes with it, and the outcome becomes `woke`. The subscription to the task's
-  own key takes only feedback and closes (see [tools.md](tools.md#subscribeon-and-unsubscribeon)).
+  own key takes only feedback, closes, Linear state changes and `linear.issue.updated` edits (see
+  [tools.md](tools.md#subscribeon-and-unsubscribeon)).
   Another active task that subscribes to
   it gets it too: a prompt of its own while it runs, or a wake while it sleeps (see
   [tools.md](tools.md#subscribeon-and-unsubscribeon)).
@@ -261,7 +284,7 @@ prompt is one line, then the event's own line:
 ```text
 Feedback reopened this done task as generation 2: ana commented on github:owner/name#57: Can you split this? https://github.com/owner/name/pull/57#issuecomment-701
 Feedback reopened this done task as generation 2: Ana commented on linear:ENG-7: Still broken. https://linear.app/acme/issue/ENG-7
-Feedback reopened this done task as generation 2: U0123 replied in slack:C0123:1763500000.000100: Still broken.
+Feedback reopened this done task as generation 2: Ana replied in slack:C0123:1763500000.000100: Still broken.
 ```
 
 The task is `ready`, so its next run resumes the session of the step's agent. The daemon appends a
@@ -282,4 +305,19 @@ Limits:
   `author_association` must be `OWNER`, `MEMBER` or `COLLABORATOR`. A stranger's comment on a public
   repository stays in the inbox as `outsider`, for a person to read with `priory inbox`. No factory
   setting lets other authors through.
+
+## Feedback on a failed or dropped task
+
+Feedback never reopens a `failed` or `dropped` task: a person stopped it, or its workflow did. When
+a comment or reply lands on the key of the newest task on that key, and that task failed or was
+dropped before the comment was written, the inbox records the comment as `ignored` and posts one
+`priory.report` that names the revive:
+
+```text
+priory: linear:ENG-7 has a new comment; its task 12 dropped: priory revive 12
+```
+
+A Linear issue that never left its view publishes no new `issue.entered`, so this report is how
+"I added the missing criterion" reaches a person. The intake keeps reading that task's key for it
+(see [watches.md](../intake/watches.md)). Priory's own comment posts no report.
 

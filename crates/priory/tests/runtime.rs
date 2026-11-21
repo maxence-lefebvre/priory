@@ -3551,6 +3551,23 @@ fn until_traced(setup: &Setup, kind: &str) -> serde_json::Value {
 #[test]
 fn a_snooze_ending_at_its_time_bumps_the_revision_and_is_traced() {
     let setup = asleep_on_an_ask("snooze-ends");
+    // The daemon stores the ended run's changed files a tick later, which moves the revision.
+    let deadline = Instant::now() + Duration::from_secs(60);
+    loop {
+        let run = rusqlite::Connection::open(setup.dir.join("priory.db")).and_then(|db| {
+            db.query_row("SELECT files_run FROM tasks", [], |row| {
+                row.get::<_, Option<i64>>(0)
+            })
+        });
+        if run.as_ref().is_ok_and(Option::is_some) {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the files were never stored: {run:?}"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
     let snoozed = setup.priory(&["snooze", "ask", "1", "--for", "4s"]);
     assert!(snoozed.status.success(), "{snoozed:?}");
     let json: serde_json::Value =
@@ -4619,6 +4636,23 @@ fn a_daemon_restarted_while_a_delivery_runs_waits_for_that_command_and_delivers_
         delivery["state"] == "running"
     });
     setup.written("fake/deliver.log");
+    // The command runs before the daemon stores its pid: a crash before that fails the delivery.
+    let deadline = Instant::now() + Duration::from_secs(60);
+    loop {
+        let pid = rusqlite::Connection::open(setup.dir.join("priory.db")).and_then(|db| {
+            db.query_row("SELECT pid FROM deliveries", [], |row| {
+                row.get::<_, Option<u32>>(0)
+            })
+        });
+        if pid.as_ref().is_ok_and(Option::is_some) {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the pid was never stored: {pid:?}"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
 
     setup.crash();
     setup.start();
@@ -6377,6 +6411,69 @@ fn a_merge_that_moves_a_said_run_to_another_agent_kills_its_session_and_starts_t
         .status()
         .unwrap();
     assert!(!alive.success(), "the said run's agent {said} still runs");
+}
+
+#[test]
+fn a_merge_that_carries_a_said_run_into_the_next_step_queues_only_that_steps_ending() {
+    let mut setup = Setup::with_workflow("after-merge-said-ending", AFTER_MERGE);
+    setup.calls(&[
+        wait(on_pull_7("review")),
+        passed_at("abc0000000000000000000000000000000000000"),
+        serde_json::Value::Null,
+        json!({ "name": "result", "arguments": { "outcome": "quiet", "summary": "all quiet" } }),
+    ]);
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("runs", |rows| rows.len() == 1 && rows[0][7] == "asleep");
+    setup.publish(&reviewed());
+    setup.until("runs", |rows| rows.len() == 2 && rows[1][7] == "asleep");
+    setup.hold("hold-stop");
+    assert!(setup.priory(&["say", "1", "Hold on."]).status.success());
+    setup.until("outbox", |_| {
+        setup
+            .typed()
+            .iter()
+            .any(|text| text.starts_with("A person says: Hold on."))
+    });
+    // The run is busy, so this one stays queued, with the ending of the step the task is at.
+    assert!(setup.priory(&["say", "1", "And this."]).status.success());
+
+    setup.publish(&closed());
+    setup.until("runs", |rows| rows.len() == 4 && rows[3][2] == "watch");
+    setup.release("hold-stop");
+
+    setup.until("tasks", |rows| rows[0][4] == "done");
+    let typed = setup.typed();
+    let watch = typed
+        .iter()
+        .find(|text| text.contains("Watch the release."))
+        .expect("the watch step's prompt was typed");
+    assert!(watch.contains("A person says: And this."), "{watch}");
+    assert!(watch.contains("outcomes: quiet."), "{watch}");
+    assert!(!watch.contains("outcomes: failed, passed"), "{watch}");
+}
+
+#[test]
+fn a_merge_that_marks_a_task_done_ends_its_said_run_and_kills_its_session() {
+    let setup = gated("gate-said-done");
+    setup.calls(&[serde_json::Value::Null]);
+    setup.hold("hold-stop");
+    assert!(setup.priory(&["say", "1", "Hold on."]).status.success());
+    setup.until("outbox", |_| {
+        setup
+            .typed()
+            .iter()
+            .any(|text| text.starts_with("A person says: Hold on."))
+    });
+
+    setup.publish(&closed());
+    setup.until("tasks", |rows| rows[0][4] == "done");
+    setup.release("hold-stop");
+
+    setup.gone("priory-1");
+    let runs = setup.rows("runs");
+    assert_eq!(runs.len(), 3, "{runs:?}");
+    assert_eq!(runs[2][7], "done", "{runs:?}");
 }
 
 #[test]
@@ -9307,7 +9404,7 @@ fn a_close_that_does_not_say_whether_it_merged_asks_rather_than_drops() {
     assert_eq!(held_as(&setup, "1")[0], "held");
 }
 
-const REVIVED: &str = "A person revived this task as generation 2 after it was dropped. The asks and waits of its earlier generation are withdrawn. Check the worktree, then continue.\nPlan the change.\nEnd this step by calling the result tool of the priory MCP server with one of these outcomes: hopeless, ready, unsure.\n";
+const REVIVED: &str = "A person revived this task as generation 2 after it was dropped: hopeless it. The asks and waits of its earlier generation are withdrawn. Check the worktree, then continue.\nPlan the change.\nEnd this step by calling the result tool of the priory MCP server with one of these outcomes: hopeless, ready, unsure.\n";
 
 #[test]
 fn a_dropped_task_revives_at_its_step_in_its_session_as_generation_2() {
@@ -9406,6 +9503,36 @@ fn an_event_for_the_wait_of_an_earlier_generation_does_not_wake_the_revived_task
     std::thread::sleep(Duration::from_millis(1500));
     assert_eq!(setup.rows("tasks")[0][4], "asleep");
     assert_eq!(setup.rows("runs").len(), 2);
+}
+
+#[test]
+fn a_result_that_stops_the_task_keeps_its_summary_as_the_reason_and_posts_a_report() {
+    let mut setup = Setup::new("stopped-reason");
+    let failed = json!({ "name": "result", "arguments": { "outcome": "failed",
+        "summary": "The issue holds no acceptance criteria.\nAdd them and revive it." } });
+    setup.calls(&[failed]);
+    setup.publish(&requested(42));
+    setup.start();
+
+    let tasks = setup.until("tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == "dropped")
+    });
+
+    assert_eq!(tasks[0][7], "The issue holds no acceptance criteria.");
+    let inbox = setup.priory(&["inbox", "--json"]);
+    let inbox = String::from_utf8_lossy(&inbox.stdout);
+    assert!(
+        inbox.contains(
+            "task 1 (github:owner/repo#42) stopped at implement, failed: The issue holds no acceptance criteria."
+        ),
+        "{inbox}"
+    );
+    let desk = setup.priory(&["desk"]);
+    let desk = String::from_utf8_lossy(&desk.stdout);
+    assert!(
+        desk.contains("priory: task 1 (github:owner/repo#42) stopped"),
+        "{desk}"
+    );
 }
 
 #[test]
@@ -10091,6 +10218,64 @@ fn issue_commented(github_id: u64) -> Message {
 }
 
 #[test]
+fn a_comment_kept_during_the_turn_refuses_the_result_until_the_agent_read_it() {
+    let mut setup = Setup::new("kept-during-turn");
+    let read = json!({ "name": "result", "arguments": { "outcome": "passed", "summary": "passed it",
+                                                      "feedback": { "u": "trivial" } } });
+    setup.calls(&[result("passed"), read]);
+    setup.hold("hold-call");
+    setup.publish(&requested(42));
+    setup.start();
+    setup.written("fake/submitted");
+    setup.publish(&issue_commented(801));
+    setup.until("inbox", |rows| rows.len() == 2 && rows[1][4] == "kept");
+
+    setup.release("hold-call");
+
+    setup.until("tasks", |rows| rows[0][4] == "done");
+    let (text, error) = reply(&setup.replies()[0]);
+    assert!(error, "{text}");
+    assert_eq!(
+        text,
+        "feedback for this run is queued: end your turn to read it"
+    );
+    assert!(
+        setup.typed()[1].contains("\ngithub.issues.comment owner/repo#42 {"),
+        "{:?}",
+        setup.typed()
+    );
+    let (text, error) = reply(&setup.replies()[1]);
+    assert!(!error, "{text}");
+}
+
+#[test]
+fn a_comment_on_a_dropped_tasks_own_issue_posts_a_report_that_names_its_revive() {
+    let mut setup = Setup::new("dropped-comment");
+    setup.calls(&[result("failed")]);
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == "dropped")
+    });
+    // The comment comes after the task was dropped, to the second.
+    std::thread::sleep(Duration::from_millis(1100));
+
+    setup.publish(&issue_commented(802));
+
+    let inbox = setup.until("inbox", |rows| rows.len() == 4);
+    assert_eq!(inbox[2][4], "ignored", "{inbox:?}");
+    let desk = setup.priory(&["desk"]);
+    let desk = String::from_utf8_lossy(&desk.stdout);
+    assert!(
+        desk.contains(
+            "priory: github:owner/repo#42 has a new comment; its task 1 dropped: priory revive 1"
+        ),
+        "{desk}"
+    );
+    assert_eq!(setup.rows("tasks").len(), 1);
+}
+
+#[test]
 fn a_comment_on_a_done_tasks_issue_reopens_nothing_once_it_unsubscribed_or_the_issue_closed() {
     let closed = Message::new(
         "github.issues.closed",
@@ -10440,6 +10625,104 @@ fn a_reply_posted_before_the_wait_wakes_the_task_and_the_bots_own_reply_never_do
     assert!(!args.contains(SLACK_TOKEN), "{args}");
 }
 
+/// The replies the intake published, oldest first.
+fn replies(setup: &Setup) -> Vec<serde_json::Value> {
+    setup
+        .bus()
+        .messages(&herdr_bus::MessageQuery {
+            output: Some(OUTPUT.into()),
+            limit: 100,
+            ..herdr_bus::MessageQuery::default()
+        })
+        .unwrap()
+        .into_iter()
+        .filter(|stored| stored.message.kind == "slack.thread.replied")
+        .inspect(|stored| conform::conforms(&serde_json::to_value(&stored.message).unwrap()))
+        .map(|stored| stored.message.data)
+        .collect()
+}
+
+#[test]
+fn a_slack_reply_names_its_author_by_display_name_asking_slack_once_per_user() {
+    let setup = asleep_on(
+        "slack-actor",
+        json!({ "type": "slack_reply", "channel": "C0123", "thread_ts": THREAD }),
+    );
+    let stored: herdr_bus::Timestamp = setup.rows("waits")[0][5].parse().unwrap();
+    let later = stored.checked_add(Duration::from_secs(1)).unwrap();
+    let mut messages =
+        vec![json!({ "ts": THREAD, "thread_ts": THREAD, "user": "U0PERSON", "text": "first" })];
+    messages.extend([
+        slack_message(&ts(stored), "U0PERSON"),
+        slack_message(&ts(later), "U0PERSON"),
+    ]);
+    setup.answer_curl(&[
+        (
+            "auth.test",
+            json!({ "ok": true, "user_id": "U0BOT", "bot_id": "B0BOT" }),
+        ),
+        (
+            "users.info",
+            json!({ "ok": true, "user": { "id": "U0PERSON", "name": "ana.l",
+                "profile": { "display_name": "Ana", "real_name": "Ana Lima" } } }),
+        ),
+        (
+            "conversations.replies",
+            json!({ "ok": true, "messages": messages, "has_more": false }),
+        ),
+    ]);
+
+    setup.intake();
+
+    let actors: Vec<serde_json::Value> = replies(&setup)
+        .iter()
+        .map(|reply| reply["actor"].clone())
+        .collect();
+    assert_eq!(actors, [json!("Ana"), json!("Ana")]);
+    let args = fs::read_to_string(setup.dir.join("curl-args")).unwrap();
+    assert_eq!(args.matches("users.info").count(), 1, "{args}");
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 2);
+    assert!(
+        setup.typed()[1].contains(r#""actor":"Ana""#),
+        "{:?}",
+        setup.typed()
+    );
+}
+
+#[test]
+fn a_slack_reply_names_its_author_by_id_without_the_users_read_scope() {
+    let setup = asleep_on(
+        "slack-actor-scope",
+        json!({ "type": "slack_reply", "channel": "C0123", "thread_ts": THREAD }),
+    );
+    let stored: herdr_bus::Timestamp = setup.rows("waits")[0][5].parse().unwrap();
+    let mut messages =
+        vec![json!({ "ts": THREAD, "thread_ts": THREAD, "user": "U0PERSON", "text": "first" })];
+    messages.push(slack_message(&ts(stored), "U0PERSON"));
+    setup.answer_curl(&[
+        (
+            "auth.test",
+            json!({ "ok": true, "user_id": "U0BOT", "bot_id": "B0BOT" }),
+        ),
+        (
+            "users.info",
+            json!({ "ok": false, "error": "missing_scope", "needed": "users:read" }),
+        ),
+        (
+            "conversations.replies",
+            json!({ "ok": true, "messages": messages, "has_more": false }),
+        ),
+    ]);
+
+    setup.intake();
+
+    let actors: Vec<serde_json::Value> = replies(&setup)
+        .iter()
+        .map(|reply| reply["actor"].clone())
+        .collect();
+    assert_eq!(actors, [json!("U0PERSON")]);
+}
+
 #[test]
 fn a_reply_in_the_thread_of_a_slack_tasks_key_wakes_the_task_with_no_wait_on_it() {
     let mut setup = Setup::new("slack-key-thread");
@@ -10560,6 +10843,26 @@ fn a_thread_the_intake_cannot_read_fails_the_poll_and_reaches_the_desk() {
         ),
         "{desk:?}"
     );
+}
+
+#[test]
+fn the_intake_still_polls_a_dropped_slack_tasks_own_thread() {
+    let mut setup = Setup::new("slack-key-dropped");
+    setup.calls(&[result("failed")]);
+    let key = format!("slack:C0123:{THREAD}");
+    let mut request = requested(42);
+    request.data["key"] = json!(key);
+    setup.publish(&request.subject(&key));
+    setup.start();
+    setup.until("tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == "dropped")
+    });
+    setup.answer_slack(&[]);
+
+    setup.intake();
+
+    let args = fs::read_to_string(setup.dir.join("curl-args")).unwrap_or_default();
+    assert!(args.contains("conversations.replies"), "{args}");
 }
 
 #[test]
@@ -10749,6 +11052,88 @@ fn a_linear_wait_makes_an_intake_without_linear_triggers_poll_linear_for_its_iss
         "{typed:?}"
     );
     assert!(!typed[1].contains("elsewhere"), "{typed:?}");
+}
+
+/// Linear issue `issue` as the issues stream reads it, with one history entry `change` made now.
+fn linear_edited(issue: &str, change: serde_json::Value) -> serde_json::Value {
+    let now = herdr_bus::Timestamp::now().to_string();
+    let mut entry = json!({ "id": format!("history-{issue}"), "createdAt": now, "actor": { "displayName": "Ana" } });
+    entry
+        .as_object_mut()
+        .unwrap()
+        .extend(change.as_object().unwrap().clone());
+    json!({
+        "id": format!("issue-{issue}"), "identifier": issue, "title": "Export fails on an empty project",
+        "description": format!("{}\n\nSteps follow.", "The export crashes. ".repeat(20)),
+        "url": format!("https://linear.app/acme/issue/{issue}"),
+        "createdAt": "2026-11-17T09:00:00.000Z", "updatedAt": now,
+        "team": { "key": "ENG" }, "project": null, "state": { "name": "In Progress" },
+        "labels": { "nodes": [] }, "creator": { "displayName": "max" },
+        "history": { "nodes": [entry] },
+        "inverseRelations": { "nodes": [], "pageInfo": { "hasNextPage": false } },
+        "relations": { "nodes": [] }
+    })
+}
+
+#[test]
+fn an_edit_of_a_linear_tasks_issue_wakes_it_with_the_changed_fields() {
+    let mut setup = Setup::new("linear-edited");
+    setup.calls(&[wait(json!({ "type": "time", "until": "1 hour" }))]);
+    let mut request = requested(42);
+    request.data["key"] = json!("linear:ENG-7");
+    setup.publish(&request.subject("linear:ENG-7"));
+    setup.start();
+    setup.until("runs", |rows| {
+        rows.first().is_some_and(|row| row[7] == "asleep")
+    });
+    let edit = json!({
+        "fromTitle": "Export fails", "toTitle": "Export fails on an empty project",
+        "updatedDescription": true, "fromPriority": 3, "toPriority": 1
+    });
+    setup.answer_curl(&[
+        (
+            "query Issues",
+            linear_page(
+                "issues",
+                json!([
+                    linear_edited("ENG-8", edit.clone()),
+                    linear_edited("ENG-7", edit)
+                ]),
+            ),
+        ),
+        ("query Comments", linear_page("comments", json!([]))),
+    ]);
+
+    setup.intake();
+
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 2);
+    let typed = setup.typed();
+    assert!(
+        typed[1].starts_with("linear.issue.updated ENG-7 {")
+            && typed[1].contains(r#""changed":["title","description","priority"]"#)
+            && typed[1].contains(r#""title":"Export fails on an empty project""#)
+            && typed[1].contains(r#""description":"The export crashes. "#)
+            && !typed[1].contains("Steps follow."),
+        "{typed:?}"
+    );
+    let updated: Vec<String> = setup
+        .bus()
+        .messages(&herdr_bus::MessageQuery {
+            output: Some(OUTPUT.into()),
+            limit: 100,
+            ..herdr_bus::MessageQuery::default()
+        })
+        .unwrap()
+        .into_iter()
+        .filter(|stored| stored.message.kind == "linear.issue.updated")
+        .inspect(|stored| conform::conforms(&serde_json::to_value(&stored.message).unwrap()))
+        .map(|stored| stored.message.subject.unwrap_or_default())
+        .collect();
+    assert_eq!(
+        updated,
+        ["ENG-7"],
+        "an issue no task watches publishes none"
+    );
 }
 
 #[test]
@@ -11015,12 +11400,23 @@ fn a_grant_is_released_when_its_command_fails_or_is_killed_or_its_holder_dies() 
     listening(&setup);
 
     let failed = acquire(&setup, "40", "exit 1").wait_with_output().unwrap();
-    assert_eq!(failed.status.code(), Some(1));
+    let daemon = || fs::read_to_string(setup.dir.join("daemon.log")).unwrap_or_default();
+    assert_eq!(
+        failed.status.code(),
+        Some(1),
+        "{failed:?}\ndaemon: {}",
+        daemon()
+    );
     assert!(setup.rows("memory").is_empty());
     let killed = acquire(&setup, "40", "kill -9 $$")
         .wait_with_output()
         .unwrap();
-    assert_eq!(killed.status.code(), Some(137));
+    assert_eq!(
+        killed.status.code(),
+        Some(137),
+        "{killed:?}\ndaemon: {}",
+        daemon()
+    );
     assert!(setup.rows("memory").is_empty());
 
     setup.hold("hold-orphan");
@@ -11587,8 +11983,8 @@ fn a_stalled_run_gets_a_handler_call_whose_nudge_reaches_its_pane_and_whose_cost
 
     setup.start();
 
-    // The silent turn, its Stop nudge, then the handler's nudge.
-    setup.within(20, "outbox", |rows| with(rows, 3, "confirmed") == 3);
+    // The silent turn, its Stop nudge, then the handler's nudge, after a real 2 s stall.
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") == 3);
     let typed = setup.typed();
     assert!(
         typed[2].contains("Run the tests, then call result."),
@@ -11708,8 +12104,8 @@ fn a_run_gets_at_most_three_handler_calls() {
 
     setup.start();
 
-    // The silent turn, its Stop nudge, then one prompt per handler call.
-    setup.within(30, "outbox", |rows| with(rows, 3, "confirmed") == 5);
+    // The silent turn, its Stop nudge, then one prompt per handler call, each after a 2 s stall.
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") == 5);
     std::thread::sleep(Duration::from_secs(5));
     assert_eq!(setup.handled().len(), 3);
     assert_eq!(setup.handler_records().len(), 3);
@@ -13215,6 +13611,35 @@ fn the_task_inbox_shows_a_kept_event_still_queued_then_delivered_as_prompt() {
 }
 
 #[test]
+fn priory_task_prints_the_task_and_its_inbox_section() {
+    let setup = subscribed("task-text");
+    setup.publish(&commented());
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 2);
+
+    let output = setup.priory(&["task", "1"]);
+
+    let text = String::from_utf8(output.stdout).unwrap();
+    assert!(output.status.success(), "{text}");
+    let lines: Vec<&str> = text.lines().collect();
+    assert_eq!(lines[0], "task 1  github:owner/repo#42", "{text}");
+    assert!(lines[1].starts_with("workflow implement, step "), "{text}");
+    assert_eq!(lines[2..4], ["", "Inbox"], "{text}");
+    assert!(
+        lines[4].starts_with("  2  ")
+            && lines[4].ends_with(
+                "  github.pull_request.comment  owner/repo#7  woke, delivered as prompt"
+            ),
+        "{text}"
+    );
+    assert!(
+        lines[5].starts_with("  1  ")
+            && lines[5].ends_with("  factory.task.requested  github:owner/repo#42  created"),
+        "{text}"
+    );
+    assert_eq!(lines.len(), 6, "{text}");
+}
+
+#[test]
 fn the_task_inbox_shows_the_event_that_woke_the_task() {
     let setup = subscribed("inbox-woke");
 
@@ -13339,7 +13764,7 @@ fn comment_on(pull_request: u64) -> Message {
 }
 
 #[test]
-fn unrouted_events_are_grouped_by_resource_with_their_follow_up_commands() {
+fn unrouted_events_no_task_ever_owned_count_per_source_without_a_tasks_source_event() {
     let mut setup = Setup::new("inbox-unrouted");
     setup.start();
     for pull_request in [7, 8, 7] {
@@ -13354,50 +13779,16 @@ fn unrouted_events_are_grouped_by_resource_with_their_follow_up_commands() {
     let output = setup.priory(&["inbox", "--unrouted", "--json"]);
     assert!(output.status.success(), "{output:?}");
     let listed: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    let groups: Vec<_> = listed["unrouted"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|group| {
-            let seqs: Vec<_> = group["events"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .map(|event| event["seq"].as_i64().unwrap())
-                .collect();
-            (group["resource"].as_str().unwrap().to_owned(), seqs)
-        })
-        .collect();
+    assert_eq!(listed["unrouted"]["owned"], json!([]));
     assert_eq!(
-        groups,
-        [
-            ("github:owner/repo#7".to_owned(), vec![3, 1]),
-            ("github:owner/repo#8".to_owned(), vec![2]),
-        ]
-    );
-    assert_eq!(
-        listed["unrouted"][0]["subscribe"],
-        "priory subscribe TASK github:owner/repo#7"
-    );
-    assert_eq!(
-        listed["unrouted"][0]["request"],
-        "priory request --workflow WORKFLOW --key github:owner/repo#7 TEXT"
+        listed["unrouted"]["other"],
+        json!([{ "source": "github", "events": 3 }])
     );
 
     let output = setup.priory(&["inbox", "--unrouted", "--since", "1"]);
     let text = String::from_utf8(output.stdout).unwrap();
     assert!(output.status.success(), "{text}");
-    assert_eq!(
-        text,
-        "github:owner/repo#7: 1 event\n  \
-         3  github.pull_request.comment  owner/repo#7\n  \
-         priory subscribe TASK github:owner/repo#7\n  \
-         priory request --workflow WORKFLOW --key github:owner/repo#7 TEXT\n\
-         github:owner/repo#8: 1 event\n  \
-         2  github.pull_request.comment  owner/repo#8\n  \
-         priory subscribe TASK github:owner/repo#8\n  \
-         priory request --workflow WORKFLOW --key github:owner/repo#8 TEXT\n"
-    );
+    assert_eq!(text, "No task ever owned: 2 github events.\n");
 }
 
 #[test]
@@ -13575,6 +13966,73 @@ fn a_subscriber_hears_events_that_the_task_keyed_by_the_pull_request_takes() {
             .count()
             >= 2
     });
+}
+
+#[test]
+fn an_event_a_subscription_delivered_to_a_second_task_is_in_that_tasks_inbox() {
+    let setup = subscribed("inbox-secondary");
+    setup.publish(&requested(7));
+    setup.until("tasks", |rows| rows.len() == 2);
+
+    setup.publish(&off_branch(commented()));
+
+    setup.until("outbox", |rows| {
+        rows.iter()
+            .filter(|row| row[1] == "1" && row[3] == "confirmed")
+            .count()
+            >= 2
+    });
+    let inbox = &task_json(&setup, "1")["inbox"][0];
+    assert_eq!(
+        [
+            &inbox["type"],
+            &inbox["task"],
+            &inbox["outcome"],
+            &inbox["prompt"]
+        ],
+        [
+            &json!("github.pull_request.comment"),
+            &json!(2),
+            &json!("woke"),
+            &json!("confirmed")
+        ],
+        "{inbox}"
+    );
+}
+
+#[test]
+fn an_event_a_subscription_delivered_to_a_running_second_task_shows_its_queued_prompt() {
+    let mut setup = Setup::new("inbox-secondary-running");
+    setup.calls(&[subscribe("subscribe")]);
+    setup.hold("hold-stop");
+    setup.publish(&requested(42));
+    setup.start();
+    setup.written("fake/tools.log");
+    setup.publish(&requested(7));
+    setup.until("tasks", |rows| rows.len() == 2);
+
+    setup.publish(&off_branch(commented()));
+
+    setup.until("outbox", |rows| {
+        rows.iter().filter(|row| row[1] == "1").count() == 2
+    });
+    let inbox = &task_json(&setup, "1")["inbox"][0];
+    assert_eq!(
+        [
+            &inbox["type"],
+            &inbox["task"],
+            &inbox["outcome"],
+            &inbox["prompt"]
+        ],
+        [
+            &json!("github.pull_request.comment"),
+            &json!(2),
+            &json!("kept"),
+            &json!("queued")
+        ],
+        "{inbox}"
+    );
+    setup.release("hold-stop");
 }
 
 #[test]

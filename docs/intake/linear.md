@@ -1,7 +1,7 @@
 # Linear
 
 The intake turns Linear activity into events: issues entering or leaving a saved view, issues
-created, state changes, comments, and blockers that change.
+created, state changes, edits, comments, and blockers that change.
 
 ## What it watches
 
@@ -54,10 +54,25 @@ Their fields and examples are in [events.md](../reference/events.md#linear).
 | `linear.view.changed` | poll that finds a view's filter changed since the previous poll |
 | `linear.issue.created` | issue created |
 | `linear.issue.state_changed` | history entry that moves an issue from one state to another |
+| `linear.issue.updated` | history entry that edits the title, description, labels, assignee or priority of an issue a task owns or subscribes to |
 | `linear.comment.created` | comment on an issue |
 | `linear.issue.blockers` | issue that another issue blocks, each time the blocker changes |
 
 The daemon routes a Linear event to the active task whose key is `linear:<issue>`.
+
+### Edits
+
+The issues stream reads each issue's last 50 history entries. An entry that changes the title,
+description, labels, assignee or priority publishes one `linear.issue.updated`, which lists the
+changed fields in `changed`. The stream publishes it only for an issue that a wait or a subscription
+names (see [watches.md](watches.md)), and only for entries made at or after that watch's time. A
+task keyed on the issue subscribes to it, so an edit wakes the task when it sleeps, as a comment does
+(see [routing.md](../daemon/routing.md#what-a-kept-message-does)). An edit is not feedback: it
+reopens no done task.
+
+Linear's history records that a description changed, but not its old or new text. So the event
+carries the first 200 characters of the description as the intake reads it, which a later edit may
+already have changed. A webhook delivery publishes no edit: the next poll does.
 
 ### Filter changes
 
@@ -85,7 +100,7 @@ issue, with that issue's fields and open blockers.
 | Event | Carries `blockers` |
 | ----- | ------------------ |
 | `linear.issue.created`, `linear.issue.state_changed`, `linear.issue.blockers` | yes |
-| `linear.comment.created`, view events | no |
+| `linear.issue.updated`, `linear.comment.created`, view events | no |
 
 A leaving view event can carry the issue's fields from an earlier poll. `priory hold --blockers`
 reads `blockers` (see Holds in [runs.md](../daemon/runs.md)).
@@ -102,6 +117,7 @@ Each message id is a UUIDv5 of a name (see [envelope.md](envelope.md)):
 | `linear.view.changed` | `linear.view:{view}:{position}:changed`, with the view stream's new position |
 | `linear.issue.created` | `linear:issue:{issue id}:created` |
 | `linear.issue.state_changed` | `linear:history:{history id}`; a webhook's is `linear:webhook:state_changed:{issue id}:{state id}:{createdAt}`, and the two match by content (see [webhooks.md](webhooks.md#linear)) |
+| `linear.issue.updated` | `linear:history:{history id}:updated` |
 | `linear.comment.created` | `linear:comment:{comment id}` |
 | `linear.issue.blockers` | `linear:blockers:{blocked issue id}:{blocker issue id}:{blocker updatedAt}` |
 

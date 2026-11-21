@@ -663,6 +663,7 @@ enum Input {
     Guard(crate::guard::Line),
     Connector(crate::todo::ConnectorLine),
     Todo(crate::todo::Line),
+    Subscribe(subscribe::Line),
     Deliver(deliver::Line),
     Add(AddLine),
     Signal(Signal),
@@ -698,6 +699,9 @@ fn add(
     counter: Option<&embed::Counter>,
 ) -> Result<Result<String, String>, Error> {
     use priory_intake::request::Refused;
+    if let Some(missing) = crate::relate::missing(db, &add.relates)? {
+        return Ok(Err(missing));
+    }
     let (key, error) = match priory_intake::request::add(trace.factory, add) {
         Ok(key) => (key, None),
         Err(Refused::Invalid(refused)) => return Ok(Err(refused)),
@@ -824,6 +828,7 @@ fn take(
             replied(crate::todo::change(db, &line, trace.factory)?),
             None,
         )),
+        Ok(Input::Subscribe(line)) => Ok((replied(subscribe::apply(db, &line.subscribe)?), None)),
         Ok(Input::Deliver(line)) => Ok((replied(deliver::act(db, &line)?), None)),
         Ok(Input::Add(line)) => Ok((replied(add(db, &line.add, trace, counter)?), None)),
         Ok(Input::Signal(signal)) => Ok(("ok".to_owned(), state::signal(db, &signal, trace)?)),
@@ -837,12 +842,12 @@ fn take(
         Ok(Input::Call(call)) if matches!(call.tool.as_str(), "subscribe" | "unsubscribe") => {
             Ok((replied(subscribe::tool(db, &call)?), None))
         }
-        Ok(Input::Call(call)) => Ok((
-            replied(tools::call(db, &call, trace, &|worktree, branch| {
+        Ok(Input::Call(call)) => {
+            let (reply, kill) = tools::call(db, &call, trace, &|worktree, branch| {
                 runtime::kept_head(&runtime::home(), worktree, branch)
-            })?),
-            None,
-        )),
+            })?;
+            Ok((replied(reply), kill))
+        }
         Ok(Input::Proof(line)) => Ok((
             replied(crate::proof::gate(
                 db,
@@ -1843,7 +1848,7 @@ fn drain(
             let message = runners::clocked(delivery.message.clone(), delivery.logged);
             let ended = state::handle(db, &message, trace, counter)?;
             bus.ack(consumer, &delivery)?;
-            ended.inspect(|tmux| runtime::kill(tmux));
+            ended.iter().for_each(|tmux| runtime::kill(tmux));
         }
     }
 }

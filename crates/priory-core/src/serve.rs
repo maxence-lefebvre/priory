@@ -50,6 +50,7 @@ const WEB: &[(&str, &str, &[u8])] = &[
     asset!("/flows.js", JS, "crates/priory-core/web/flows.js"),
     asset!("/desk.js", JS, "crates/priory-core/web/desk.js"),
     asset!("/costs.js", JS, "crates/priory-core/web/costs.js"),
+    asset!("/inbox.js", JS, "crates/priory-core/web/inbox.js"),
     asset!("/sw.js", JS, "crates/priory-core/web/sw.js"),
     asset!(
         "/manifest.webmanifest",
@@ -171,7 +172,7 @@ pub fn start(factory: &Factory, listen: SocketAddr) -> Result<Vec<JoinHandle<()>
         .map_err(|error| format!("listen on {listen}: {error}"))?;
     let web = config.web;
     let served = Arc::new(Served {
-        views: serde_json::json!({ "factory": factory.name, "views": factory.views() }).to_string(),
+        views: listing::views(factory).to_string(),
         links: listing::links(factory).to_string(),
         flows: listing::flows(factory).to_string(),
         schedules: listing::schedule_triggers(factory),
@@ -426,6 +427,7 @@ enum Write<'a> {
     Act(&'a str, &'a str),
     Subscribe,
     Unsubscribe,
+    Follow,
     TodoAdd,
     TodoDone(i64),
     Seen,
@@ -444,6 +446,7 @@ impl<'a> Write<'a> {
             "/api/reports/reopen" => return Some(Write::Comment(sections::Remark::Reopen)),
             "/api/push/subscribe" => return Some(Write::Subscribe),
             "/api/push/unsubscribe" => return Some(Write::Unsubscribe),
+            "/api/subscribe" => return Some(Write::Follow),
             "/api/todos" => return Some(Write::TodoAdd),
             "/api/seen" => return Some(Write::Seen),
             _ => {}
@@ -542,6 +545,15 @@ struct Empty {}
 #[serde(deny_unknown_fields)]
 struct SeenBody {
     at: jiff::Timestamp,
+}
+
+/// `POST /api/subscribe`'s body: `revision` as `--expected`.
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FollowBody {
+    task: i64,
+    resource: String,
+    revision: Option<i64>,
 }
 
 #[derive(serde::Deserialize)]
@@ -746,6 +758,25 @@ fn write_line(db: &Connection, write: &Write, body: &[u8]) -> Result<(String, Se
                 endpoint: gone.endpoint,
             };
             Ok((line(&push::Line { push: change }), Sent::Nothing))
+        }
+        Write::Follow => {
+            let body: FollowBody = serde_json::from_slice(body).map_err(bad)?;
+            let Some(resource) = crate::subscribe::resource(&body.resource) else {
+                return Err(Reply::error(
+                    400,
+                    &format!(
+                        "`{}` is not a resource: name github:owner/name#7, linear:ENG-7 or slack:C0123:1763500000.000100",
+                        body.resource
+                    ),
+                ));
+            };
+            let request = crate::subscribe::Request {
+                task: body.task,
+                resource,
+                expected: body.revision,
+            };
+            let sent = Sent::Task(request.task, request.expected);
+            Ok((line(&crate::subscribe::Line { subscribe: request }), sent))
         }
         Write::TodoAdd => {
             let add: todo::Add = serde_json::from_slice(body).map_err(bad)?;
