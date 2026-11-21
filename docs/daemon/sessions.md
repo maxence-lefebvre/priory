@@ -45,6 +45,8 @@ The context size is a count, not a fraction of the model's window: Priory does n
 model's window.
 
 The daemon reads the size at the turn's `Stop` hook, from the session transcript that the hook names.
+It reads it at a resumed run's `SessionStart` too, so a session past `compactAt` is compacted after
+its new task's first turn.
 It is the input, cached input, cache writes and output of the last message the model wrote. An
 error message Claude writes itself, marked `<synthetic>`, does not count. So the size lags by
 one turn: a turn that passes `compactAt` is compacted after it ends, never during it. Claude can
@@ -55,12 +57,15 @@ turn's context reads below `compactAt` again. Every run of the session shares th
 compaction that leaves the context above `compactAt` is not repeated, even after the task sleeps
 and wakes.
 
-The turn that queues the `/compact` settles its ask or wait at the next `Stop`, after the compaction
-and its continuation. So a lead that ends every turn with an ask or a wait is still compacted before
-it sleeps.
+While the daemon's `/compact` is queued, a turn's ask or wait does not settle: the task sleeps on it
+at the first `Stop` after the compaction and its continuation. So a lead that ends every turn with
+an ask or a wait is still compacted before it sleeps. A task whose answer's command still runs is
+neither compacted nor kept awake: it waits for the command, and a later turn compacts.
 
 A turn that stores a result is compacted only if the next step carries on in the same process. A
-result that moves the task to another conversation leaves the crossing to the session's next turn.
+result that moves the task to another conversation leaves the crossing to the session's next run,
+which checks at its `SessionStart`. Its first `result` is then refused until the compaction, as for
+the `compact` tool.
 
 A Codex agent cannot take `compactAt`: Priory reads no Codex tokens (see [codex.md](codex.md)).
 

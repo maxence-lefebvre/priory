@@ -7406,6 +7406,36 @@ fn two_tasks_of_a_shared_agent_resume_one_session_one_after_the_other() {
 }
 
 #[test]
+fn a_shared_session_whose_tasks_each_end_in_one_result_is_compacted_when_resumed() {
+    let mut setup = shared("shared-compact");
+    let lead = LEAD.replace(
+        "session = \"shared\"\n",
+        "session = \"shared\"\ncompactAt = 5000\n",
+    );
+    fs::write(setup.dir.join("factory/agents/implementer/agent.md"), lead).unwrap();
+    setup.contexts(&[6000, 6000, 1000]);
+    // Task 2's first result is refused while the compact is queued, so it ends its turn.
+    setup.calls(&[result("passed"), result("passed"), result("passed")]);
+    setup.publish(&requested(42));
+    setup.publish(&requested(43));
+
+    setup.start();
+
+    setup.until("tasks", |rows| {
+        rows.len() == 2 && rows.iter().all(|row| row[4] == "done")
+    });
+    let typed = setup.typed();
+    assert_eq!(setup.compactions(), 1, "{typed:?}");
+    assert_eq!(typed[2], "/compact\n", "{typed:?}");
+    assert!(
+        typed[3].starts_with(
+            "Priory compacted this conversation, as you asked. You are on task 2, at step implement."
+        ),
+        "{typed:?}"
+    );
+}
+
+#[test]
 fn a_task_waits_for_a_shared_agent_while_another_task_runs_it_then_starts() {
     let mut setup = shared("shared-wait");
     setup.calls(&[result("passed")]);

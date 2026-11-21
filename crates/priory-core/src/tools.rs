@@ -299,16 +299,17 @@ fn compact(
     )))
 }
 
-/// Queues `/compact` once per crossing when the session's `context`, read at a `Stop`, reaches its
-/// agent's `compactAt`, and says whether it did. Every run of the session shares the crossing. A run
-/// with a result is skipped, since the result may move the task to another conversation.
+/// Queues `/compact` once per crossing when the session's `context` reaches its agent's
+/// `compactAt`. Every run of the session shares the crossing. A run with a result is skipped, since
+/// the result may move the task to another conversation, and so is a task whose answer's command
+/// runs. Says whether the session's compact is still queued, so the run must not sleep yet.
 pub(crate) fn overflow(
     tx: &Transaction,
     session: &str,
     context: Option<u64>,
     factory: &Factory,
 ) -> rusqlite::Result<bool> {
-    let Some((run, context)) = run(tx, session)?.zip(context) else {
+    let Some(run) = run(tx, session)? else {
         return Ok(false);
     };
     let Some(limit) = run
@@ -319,17 +320,28 @@ pub(crate) fn overflow(
     else {
         return Ok(false);
     };
-    if context < limit.get() {
+    if context.is_some_and(|context| context < limit.get()) {
         tx.execute("UPDATE runs SET crossed = 0 WHERE session = ?1", [session])?;
         return Ok(false);
     }
-    let skip: bool = tx.query_row(
-        "SELECT (SELECT max(crossed) FROM runs WHERE session = ?2)
-         OR EXISTS (SELECT 1 FROM results WHERE run = ?1)",
-        params![run.id, session],
+    if commanding(tx, run.task)? {
+        return Ok(false);
+    }
+    let crossed: bool = tx.query_row(
+        "SELECT max(crossed) FROM runs WHERE session = ?1",
+        [session],
         |row| row.get(0),
     )?;
-    if skip || compact_queued(tx, run.task)? {
+    let queued = compact_queued(tx, run.task)?;
+    if crossed {
+        return Ok(queued);
+    }
+    let result: bool = tx.query_row(
+        "SELECT EXISTS (SELECT 1 FROM results WHERE run = ?1)",
+        [run.id],
+        |row| row.get(0),
+    )?;
+    if context.is_none() || result || queued {
         return Ok(false);
     }
     tx.execute(

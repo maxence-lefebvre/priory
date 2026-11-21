@@ -2255,13 +2255,15 @@ pub(crate) fn signal(
                  WHERE id = ?1",
                 params![run, signal.thread],
             )?;
-            crate::trace::begin(&tx, trace, run, signal.transcript.as_deref())?;
+            let context = crate::trace::begin(&tx, trace, run, signal.transcript.as_deref())?;
+            // A resumed session may already be past `compactAt`, as when every task ends in one result.
+            crate::tools::overflow(&tx, &signal.session, context, trace.factory)?;
         }
         "Stop" => {
             tx.execute("UPDATE runs SET idle = 1, turn = NULL WHERE id = ?1", [run])?;
             let context = crate::trace::account(&tx, trace, run, signal.transcript.as_deref())?;
-            // The run settles its ask or wait at the next Stop, so a sleeping run never misses its
-            // compact. A result carried into the next step on this process compacts there.
+            // The run settles its ask or wait once its compact is typed, so it never sleeps past it.
+            // A result carried into the next step on this process compacts there.
             if !crate::tools::overflow(&tx, &signal.session, context, trace.factory)? {
                 kill = crate::tools::stop(&tx, &signal.session, trace)?;
                 crate::tools::overflow(&tx, &signal.session, context, trace.factory)?;

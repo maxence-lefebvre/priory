@@ -14,24 +14,25 @@ pub struct Trace<'a> {
 }
 
 /// Records the run's transcript at its `SessionStart`. What it holds already belongs to earlier runs
-/// of the session, so the run's turns start at its end.
+/// of the session, so the run's turns start at its end. Returns the session's context size, if
+/// its transcript holds a message.
 pub(crate) fn begin(
     tx: &Transaction,
     trace: &Trace,
     run: i64,
     transcript: Option<&str>,
-) -> rusqlite::Result<()> {
+) -> rusqlite::Result<Option<u64>> {
     let Some(transcript) = transcript else {
-        return Ok(());
+        return Ok(None);
     };
     let Some(usage) = (trace.usage)(Path::new(transcript), 0) else {
-        return Ok(());
+        return Ok(None);
     };
     tx.execute(
         "UPDATE runs SET transcript = ?2, read = ?3 WHERE id = ?1",
         params![run, transcript, usage.end as i64],
     )?;
-    Ok(())
+    Ok(usage.context)
 }
 
 /// Adds the tokens of the run's turns since its last read to its task's current step. A run with no
