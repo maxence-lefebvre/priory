@@ -1463,11 +1463,17 @@ pub struct Memory {
     pub bytes: Vec<u8>,
 }
 
-/// The fields of a memory's frontmatter that Priory reads.
-#[derive(Deserialize)]
-struct MemoryFrontmatter {
-    name: Option<String>,
-    description: Option<String>,
+/// The frontmatter of `memories/<name>.md`: one fact every run gets in its index. Priory reads
+/// these keys and ignores any other.
+#[derive(Deserialize, JsonSchema)]
+#[schemars(title = "memory")]
+pub struct MemoryFrontmatter {
+    /// The memory's name, the same as its file's, in lowercase letters, digits and hyphens.
+    #[schemars(required, regex(pattern = r"^[a-z0-9][a-z0-9-]*$"))]
+    pub name: Option<String>,
+    /// When an agent should read the memory. The index shows it on one line.
+    #[schemars(required, length(min = 1))]
+    pub description: Option<String>,
 }
 
 /// The size past which `priory check` refuses a memory, so the index stays one look.

@@ -59,6 +59,7 @@ or the Red Hat YAML extension:
 | `views/*.toml` | `config/view.json` |
 | `scorers/*.toml` | `config/scorer.json` |
 | `agents/*/agent.md` | `config/agent.json`, for tools that read frontmatter; editors do not |
+| `memories/*.md` | `config/memory.json`, for tools that read frontmatter; editors do not |
 
 A schema checks each file alone. Rules across files, such as a trigger naming a workflow that
 exists, need `priory check`. Patterns for durations, sizes and shares accept the usual forms, such

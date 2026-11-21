@@ -10,6 +10,9 @@ A memory's name has lowercase letters, digits and hyphens, and starts with a let
 file starts with frontmatter, fenced by `---` for YAML or `+++` for TOML. The Markdown after the
 closing fence is the fact. The whole file is at most 4096 bytes.
 
+Schema: [`config/memory.json`](../schemas/config/memory.json). Editors do not validate frontmatter
+against it, but `priory check` applies the same rules.
+
 `memories/` holds only memory files. A file whose name starts with `.`, such as `.gitkeep`, is
 skipped.
 
@@ -20,7 +23,7 @@ skipped.
 | `name` | string | yes | | The memory's name, the same as its file's | `"release-day"` |
 | `description` | string | yes | | When an agent should read the memory. The index shows it on one line | `"When releases go out."` |
 
-Priory reads no other key, and refuses none.
+Priory ignores any other key.
 
 ## Example
 
