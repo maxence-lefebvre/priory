@@ -2047,6 +2047,19 @@ fn teardown_kills_a_tmux_server_that_a_late_child_starts() {
     assert!(!listed.status.success(), "a tmux server outlived its test");
 }
 
+/// Whether process `pid` has exited. An init that reaps late, as in some containers, leaves a dead
+/// process a zombie for a while. Without `/proc`, a zombie counts as alive.
+fn exited(pid: &str) -> bool {
+    if !Path::new("/proc/self/stat").exists() {
+        let alive = Command::new("kill").args(["-0", pid]).output().unwrap();
+        return !alive.status.success();
+    }
+    fs::read_to_string(format!("/proc/{pid}/stat")).map_or(true, |stat| {
+        stat.rsplit_once(") ")
+            .is_some_and(|(_, rest)| rest.starts_with(['Z', 'X']))
+    })
+}
+
 #[test]
 fn a_test_that_panics_after_its_run_starts_leaves_no_tmux_server() {
     let mut server = None;
@@ -2063,10 +2076,11 @@ fn a_test_that_panics_after_its_run_starts_leaves_no_tmux_server() {
 
     assert!(caught.is_err());
     let (socket, pid) = server.expect("the run never got a tmux session");
-    assert!(
-        !Path::new(&format!("/proc/{pid}")).exists(),
-        "tmux server {pid} outlived its test"
-    );
+    if Path::new("/proc/self/stat").exists() {
+        assert!(exited(&pid), "tmux server {pid} outlived its test");
+    } else {
+        eprintln!("skipped the pid check: this host has no /proc to tell whether {pid} lives");
+    }
     let listed = Command::new("tmux")
         .args(["-S", &socket, "list-sessions"])
         .output()
