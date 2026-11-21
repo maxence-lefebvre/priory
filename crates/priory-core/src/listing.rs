@@ -226,6 +226,67 @@ pub fn inbox(db: &Connection, since: i64) -> rusqlite::Result<Value> {
     )
 }
 
+/// The events after sequence number `since` that reached no task and changed nothing, grouped by
+/// the resource each names first, newest first, with the commands that would route the next one.
+pub fn unrouted(db: &Connection, since: i64) -> rusqlite::Result<Value> {
+    let mut groups: Vec<(String, Vec<Value>)> = Vec::new();
+    for (resource, event) in unrouted_events(db, since, None)? {
+        match groups.iter_mut().find(|(named, _)| *named == resource) {
+            Some((_, events)) => events.push(event),
+            None => groups.push((resource, vec![event])),
+        }
+    }
+    Ok(groups
+        .into_iter()
+        .map(|(resource, events)| {
+            json!({
+                "resource": resource,
+                "events": events,
+                "subscribe": format!("priory subscribe TASK {resource}"),
+                "request": format!("priory request --workflow WORKFLOW --key {resource} TEXT"),
+            })
+        })
+        .collect())
+}
+
+/// Each unrouted event after `since`, and within `window` (from, to) when given, newest first,
+/// with the first resource it names. An event that names no resource is left out: no task could
+/// own it.
+fn unrouted_events(
+    db: &Connection,
+    since: i64,
+    window: Option<(&str, &str)>,
+) -> rusqlite::Result<Vec<(String, Value)>> {
+    let mut statement = db.prepare(
+        "SELECT seq, type, subject, time, data FROM inbox
+         WHERE task IS NULL AND outcome = 'ignored' AND seq > ?1
+           AND (?2 IS NULL OR julianday(time) BETWEEN julianday(?2) AND julianday(?3))
+           AND NOT EXISTS (SELECT 1 FROM tasks WHERE tasks.source = inbox.id)
+         ORDER BY seq DESC",
+    )?;
+    let (from, to) = window.unzip();
+    let mut rows = statement.query(params![since, from, to])?;
+    let mut events = Vec::new();
+    while let Some(row) = rows.next()? {
+        let (kind, subject): (String, Option<String>) = (row.get(1)?, row.get(2)?);
+        let data: String = row.get(4)?;
+        let mut message = herdr_bus::Message::new(
+            kind.as_str(),
+            serde_json::from_str(&data).unwrap_or(Value::Null),
+        );
+        message.subject = subject.clone();
+        let Some(resource) = crate::route::resources(&message).into_iter().next() else {
+            continue;
+        };
+        let event = json!({
+            "seq": row.get::<_, i64>(0)?, "type": kind, "subject": subject,
+            "time": row.get::<_, String>(3)?,
+        });
+        events.push((resource, event));
+    }
+    Ok(events)
+}
+
 /// Every task in start order, or the tasks of one lane, of one grade, or both.
 pub fn tasks(db: &Connection, lane: Option<&str>, grade: Option<&str>) -> rusqlite::Result<Value> {
     tasks_since(db, lane, grade, None)
@@ -943,7 +1004,13 @@ fn routed_to(db: &Connection, items: &mut [Value]) -> rusqlite::Result<()> {
 /// The pause's line, a stalled queue's banner, the intake's banner, the asleep and snoozed counts, what waits on a person, the queue, then
 /// every worktree under `home` that stays and why. The snoozed items show only with `all`. Then
 /// `person`'s last visit and what happened since.
-pub fn desk(db: &Connection, home: &Path, all: bool, person: &str) -> rusqlite::Result<Value> {
+pub fn desk(
+    db: &Connection,
+    home: &Path,
+    all: bool,
+    person: &str,
+    now: Timestamp,
+) -> rusqlite::Result<Value> {
     let mut items = rows(db, &desk_items(), [])?;
     let list = items.as_array_mut().expect("rows are an array");
     list.iter_mut().for_each(parse_back_early);
@@ -973,11 +1040,13 @@ pub fn desk(db: &Connection, home: &Path, all: bool, person: &str) -> rusqlite::
         [],
         |row| row.get(0),
     )?;
+    let day_ago = (now - jiff::SignedDuration::from_hours(24)).to_string();
+    let unrouted = unrouted_events(db, 0, Some((&day_ago, &now.to_string())))?.len();
     Ok(json!({
         "paused": state::pause_banner(db)?,
         "banner": stall::banner(db)?,
         "intake": post::intake_banner(db)?,
-        "counts": { "asleep": asleep, "snoozed": snoozed },
+        "counts": { "asleep": asleep, "snoozed": snoozed, "unrouted": unrouted },
         "items": items,
         "next": ranked.first(),
         "ranked": ranked,
@@ -1037,6 +1106,18 @@ pub fn task(db: &Connection, id: i64) -> rusqlite::Result<Option<Value>> {
             "SELECT resource, created FROM subscriptions
              WHERE task = ?1 AND (SELECT state FROM tasks WHERE id = ?1) NOT IN ('failed', 'dropped')
              ORDER BY created, resource",
+        ),
+        (
+            "inbox",
+            "WITH own AS (SELECT seq FROM inbox
+               WHERE task = ?1 OR id = (SELECT source FROM tasks WHERE id = ?1))
+             SELECT inbox.seq, inbox.type, inbox.subject, inbox.time, inbox.task, inbox.outcome,
+               CASE WHEN inbox.seq IN own THEN outbox.state END AS prompt,
+               (SELECT min(id) FROM waits WHERE task = ?1 AND waits.inbox = inbox.seq) AS wait
+             FROM inbox LEFT JOIN outbox ON outbox.id = inbox.outbox
+             WHERE inbox.seq IN own
+               OR inbox.seq IN (SELECT inbox FROM waits WHERE task = ?1 AND inbox IS NOT NULL)
+             ORDER BY inbox.seq DESC",
         ),
     ];
     for (name, query) in lists {

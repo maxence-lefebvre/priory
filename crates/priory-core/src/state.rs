@@ -1604,6 +1604,12 @@ pub(crate) fn route_in(
             if crate::tools::say(tx, task, &text, &state, &factory.workflows)?.is_err() {
                 tx.execute("UPDATE inbox SET outcome = 'kept' WHERE seq = ?1", [seq])?;
                 crate::tools::event(tx, task, seq, factory)?;
+            } else {
+                tx.execute(
+                    "UPDATE inbox SET outbox = (SELECT max(id) FROM outbox WHERE task = ?2 AND state = 'queued')
+                     WHERE seq = ?1",
+                    [seq, task],
+                )?;
             }
         }
         (Some(task), "reopened") => crate::tools::reopen(tx, trace, task, seq)?,
