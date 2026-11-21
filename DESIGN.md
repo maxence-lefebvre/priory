@@ -332,6 +332,9 @@ with the `check` icon (answered) or the `minus` icon (withdrawn).
 
 A batch is not a task state either. Its desk row takes a muted tile with the `layers` icon.
 
+Another runner's task shows its hold instead of a state: `kept` or `waiting`, each a muted tile with
+the `server` icon.
+
 ### Explorer list
 
 Every list panel (desk, asks, tasks, runs, inbox) is the same explorer over one query.
@@ -755,6 +758,10 @@ open Priory window when there is one.
 - A live run shows its duration counting up once per minute, not per second. Tapping a run opens
   its task's page, which holds the runs table and the terminal.
 - Tokens add up input, output and cache tokens: "640", "1.5k", "312k", "3.3M".
+- Another runner's task row shows its hold's tile and word in place of the state, and its workflow
+  without a step. Its line 3, or the line under its title on wide screens, reads "On runner a, last
+  seen 12 min ago" in `--text-3`, or "On runner a, never seen alive". Its key is plain text and the
+  row has no chevron: its page stays on its runner.
 
 ### Tasks panel
 
@@ -763,7 +770,8 @@ Ended (newest first), each with a count. Facet chips: State, Lane and Workflow, 
 values A to Z with counts; a task with no lane shows under `none`. Ended lists the last 7 days first
 and loads the older tasks once the person scrolls to its end, with or without a facet set; a set
 facet counts the loaded tasks only. The rows take the whole width, with no
-drawer: each opens the task's page.
+drawer: each opens the task's page. In a factory of several runners, Active also lists each task
+another runner holds, after this runner's, and the State facet counts them under `elsewhere`.
 
 ### Runs panel
 
@@ -925,6 +933,11 @@ The web view's `/reports`: the report written last, as the Herdr [Bonjour](#bonj
 it. Both use one view model, so sections, picks and threads read the same in both. On a phone it
 sits under More.
 
+- **Toolbar**: above the scroll region, older and newer arrows around the report's date, then Next
+  pick, which scrolls to the next pick to agree and focuses its first option, and a `search` button.
+  An arrow with no report beyond it is disabled. Search opens a field under the toolbar; its text
+  keeps the rows whose key, text, meta, owner or comments hold it, with "3 found" beside it, and
+  "Nothing in this report holds “x”." when none does.
 - **Header**: the greeting in the display role, then one `--text-2` line with the date, a link to
   the task that wrote it and "Since 18:00. 2 picks to agree.", then a 6 px `--action` progress bar
   on `--raised` with "1 of 4 agreed". A report with no pick shows no bar.
@@ -939,9 +952,11 @@ sits under More.
   `--action-text`, and the pick's note follows in a caption. A tap turns the option solid `--emph`
   with a `check` and dims the other picks; a bar at the bottom says `Picking "Take"` with Undo for
   4 s, as an answer's does. Nothing is sent before the 4 s end. An agreed pick folds to one line:
-  a `check` in `--ok-text`, "Picked Take." and what the workflow did with it.
+  a `check` in `--ok-text`, "Picked Take." and what the workflow did with it. Until the workflow
+  applies it, a ghost Change button ends the line: it reopens the control with the choice solid,
+  "Pick another option to change it." and Keep Take, and a new option goes through the same Undo.
 - **Threads** follow the Bonjour rules, with Reply and Resolve as ghost buttons in the card. A row
-  with an id ends with a Comment ghost button. It opens the comment field under the row, with
+  with an id ends with a Comment ghost button, on the newest report only: an older one takes replies. It opens the comment field under the row, with
   Cancel and Comment. Reply opens the same field, with "Replying in thread 3" above it.
 
 | State | What shows |
@@ -1332,6 +1347,7 @@ The web's [Tasks panel](#tasks-panel), as a tab in the center stack.
   and band in `--text-3`, or the reason in its role's text color, then `batch N`. A row opens the
   [Task](#task) panel.
 - The batch tag is text: Herdr has no batch panel yet.
+- Another runner's tasks stay out: Herdr has no row for a task with no page here yet.
 - While it reads: "Reading the tasks…"
 
 ### Runs

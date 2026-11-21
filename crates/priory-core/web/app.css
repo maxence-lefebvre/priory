@@ -423,6 +423,16 @@ textarea { font: 400 16px/22px var(--font-ui); color: var(--text); background: v
 .jump a .num { margin-left: 6px; font-weight: 400; opacity: 0.75; }
 .report .jump { overflow-x: auto; scrollbar-width: none; }
 .report .sh { margin: 0; }
+.rbar { flex: none; display: flex; align-items: center; gap: 2px; padding: 4px var(--gutter); border-bottom: 1px solid var(--line); }
+.rbar .iconbtn { color: var(--text-2); }
+.rbar .iconbtn[aria-disabled="true"] { color: var(--text-3); opacity: 0.5; }
+.rbar .iconbtn[aria-pressed="true"] { background: var(--action-soft); color: var(--action-text); }
+.rdate { min-width: 56px; text-align: center; font: 600 var(--type-small) var(--font-ui); font-variant-numeric: tabular-nums; }
+.rbar .btn { margin-right: 4px; }
+.rsearch { flex: none; display: flex; align-items: center; gap: 10px; padding: 8px var(--gutter); border-bottom: 1px solid var(--line); }
+.rsearch input { flex: 1; min-width: 0; height: var(--control); padding: 0 12px; font: 400 16px/1 var(--font-ui); color: var(--text); background: var(--surface); border: 1px solid var(--control-line); border-radius: var(--radius-md); }
+.rsearch .num { font: 600 var(--type-caption) var(--font-ui); color: var(--text-2); font-variant-numeric: tabular-nums; }
+.rpick + .note .ghost, .rpicked .ghost { margin-left: auto; min-height: 32px; flex: none; white-space: nowrap; font: 600 var(--type-small) var(--font-ui); }
 .rrows { list-style: none; display: grid; }
 .rrow { display: grid; gap: 8px; padding: 12px 0; min-width: 0; }
 .rrow + .rrow { border-top: 1px solid var(--line); }

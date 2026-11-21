@@ -310,6 +310,31 @@ impl Setup {
         self.within(60, verb, done)
     }
 
+    /// This runner's rows of `priory tasks`: another runner's task has no id here.
+    fn own_tasks(&self) -> Vec<Vec<String>> {
+        self.rows("tasks")
+            .into_iter()
+            .filter(|row| row[0] != "-")
+            .collect()
+    }
+
+    /// Waits until `done` holds for this runner's rows of `priory tasks`.
+    fn until_own_tasks(&self, done: impl Fn(&[Vec<String>]) -> bool) -> Vec<Vec<String>> {
+        self.within_own_tasks(60, done)
+    }
+
+    /// Waits up to `seconds` until `done` holds for this runner's rows of `priory tasks`.
+    fn within_own_tasks(
+        &self,
+        seconds: u64,
+        done: impl Fn(&[Vec<String>]) -> bool,
+    ) -> Vec<Vec<String>> {
+        let own = |rows: &[Vec<String>]| -> Vec<Vec<String>> {
+            rows.iter().filter(|row| row[0] != "-").cloned().collect()
+        };
+        own(&self.within(seconds, "tasks", |rows| done(&own(rows))))
+    }
+
     fn within(
         &self,
         seconds: u64,
@@ -13534,6 +13559,44 @@ fn a_pick_at_the_reports_revision_records_the_choice_and_wakes_the_task_with_one
 }
 
 #[test]
+fn an_agreed_pick_changes_until_the_workflow_applies_it_and_wakes_the_task_with_the_change() {
+    let setup = asleep_on_a_report("report-change", &bonjour(serde_json::Value::Null));
+    let first = setup.priory(&["report", "pick", PICK, "Take", "--expected", "1"]);
+    assert!(first.status.success(), "{first:?}");
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 3);
+
+    let changed = setup.priory(&["report", "pick", PICK, "Later", "--expected", "2"]);
+
+    assert!(changed.status.success(), "{changed:?}");
+    assert_eq!(
+        String::from_utf8_lossy(&changed.stdout),
+        format!("pick {PICK} is Later at revision 3\n")
+    );
+    assert_eq!(
+        shown(&setup)["sections"][0]["rows"][0]["pick"]["chosen"],
+        "Later"
+    );
+    // The woken agent can get other prompts, such as a nudge, around the change's line.
+    let line = format!(
+        "The person changed their pick on {PICK} in your report from Take to Later: apply Later instead, then write the report again with the pick's applied filled."
+    );
+    let deadline = Instant::now() + Duration::from_secs(60);
+    while !setup
+        .typed()
+        .iter()
+        .any(|typed| typed.lines().next() == Some(line.as_str()))
+    {
+        assert!(Instant::now() < deadline, "{:?}", setup.typed());
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let same = setup.priory(&["report", "pick", PICK, "Later", "--expected", "3"]);
+    assert_eq!(
+        String::from_utf8_lossy(&same.stderr),
+        format!("priory report pick: pick {PICK} is already Later\n")
+    );
+}
+
+#[test]
 fn a_pick_at_a_stale_revision_is_refused_and_changes_nothing() {
     let setup = asleep_on_a_report("report-stale", &bonjour(serde_json::Value::Null));
 
@@ -17358,9 +17421,8 @@ fn a_runner_away_for_an_hour_keeps_its_asked_task_and_its_answer_and_loses_only_
         );
     }
     b.publish(&requested(3));
-    let tasks = b.until("tasks", |rows| {
-        rows.iter().filter(|row| row[4] == "running").count() == 2
-    });
+    let tasks =
+        b.until_own_tasks(|rows| rows.iter().filter(|row| row[4] == "running").count() == 2);
     let mut keys: Vec<&str> = tasks.iter().map(|row| row[1].as_str()).collect();
     keys.sort_unstable();
     assert_eq!(
@@ -17371,7 +17433,7 @@ fn a_runner_away_for_an_hour_keeps_its_asked_task_and_its_answer_and_loses_only_
 
     a.memory(60);
     a.start_with(exe, &[("PRIORY_NOW", AN_HOUR_LATER)]);
-    let tasks = a.until("tasks", |rows| {
+    let tasks = a.until_own_tasks(|rows| {
         rows.iter()
             .all(|row| ["done", "dropped"].contains(&row[4].as_str()))
     });
@@ -17483,7 +17545,7 @@ fn a_person_gives_a_started_task_to_another_runner_which_starts_it_over_and_its_
     b.until("asks", |rows| rows.iter().any(|row| !row[0].contains(':')));
 
     a.start_with(exe, &[("PRIORY_NOW", AN_HOUR_LATER)]);
-    let tasks = a.until("tasks", |rows| rows[0][4] == "dropped");
+    let tasks = a.until_own_tasks(|rows| rows[0][4] == "dropped");
     assert_eq!(tasks.len(), 1);
     let refused = give("b", &[]);
     assert_eq!(
@@ -17503,9 +17565,9 @@ fn a_person_gives_a_started_task_to_another_runner_which_starts_it_over_and_its_
         "{}",
         String::from_utf8_lossy(&back.stderr)
     );
-    let tasks = a.until("tasks", |rows| rows.len() == 2 && rows[1][4] == "asleep");
+    let tasks = a.until_own_tasks(|rows| rows.len() == 2 && rows[1][4] == "asleep");
     assert_eq!(tasks[0][4], "dropped", "{tasks:?}");
-    b.until("tasks", |rows| rows[0][4] == "dropped");
+    b.until_own_tasks(|rows| rows[0][4] == "dropped");
 }
 
 #[test]
@@ -17547,8 +17609,8 @@ fn a_person_gives_a_task_whose_owner_may_still_run_it_only_with_force() {
          github:owner/repo#1: give it then, or pass --force\n"
     );
     std::thread::sleep(Duration::from_secs(2));
-    assert!(b.rows("tasks").is_empty(), "nothing moved");
-    assert_eq!(a.rows("tasks")[0][4], "asleep");
+    assert!(b.own_tasks().is_empty(), "nothing moved");
+    assert_eq!(a.own_tasks()[0][4], "asleep");
 
     let forced = give("2026-11-21T10:10:00Z", &["--force"]);
     assert!(
@@ -17557,7 +17619,7 @@ fn a_person_gives_a_task_whose_owner_may_still_run_it_only_with_force() {
         String::from_utf8_lossy(&forced.stderr)
     );
     b.until("asks", |rows| rows.len() == 1);
-    a.until("tasks", |rows| rows[0][4] == "dropped");
+    a.until_own_tasks(|rows| rows[0][4] == "dropped");
 }
 
 #[test]
@@ -17592,7 +17654,7 @@ fn a_runner_that_joins_late_reads_a_finished_task_without_running_it_again() {
         rows.iter().any(|row| row.contains(&"refused".to_owned()))
     });
     assert!(
-        b.rows("tasks").is_empty(),
+        b.own_tasks().is_empty(),
         "b's late claim of the finished request loses"
     );
 }
@@ -17608,9 +17670,7 @@ fn a_runner_added_to_a_factory_that_had_one_does_not_run_its_finished_requests_a
     a.calls(&[result("passed")]);
     a.publish(&requested(1));
     a.start_with(exe, &[("PRIORY_NOW", T0)]);
-    a.until("tasks", |rows| {
-        rows.first().is_some_and(|row| row[4] == "done")
-    });
+    a.until_own_tasks(|rows| rows.first().is_some_and(|row| row[4] == "done"));
     a.crash();
 
     fs::rename(&later, &runners).unwrap();
@@ -17624,7 +17684,7 @@ fn a_runner_added_to_a_factory_that_had_one_does_not_run_its_finished_requests_a
     });
 
     assert!(
-        b.rows("tasks").is_empty(),
+        b.own_tasks().is_empty(),
         "b does not run the request a finished before it had runners"
     );
 }
@@ -17683,9 +17743,7 @@ fn a_runners_task_branch_names_the_runner_since_task_ids_overlap_across_runners(
         Path::new(env!("CARGO_BIN_EXE_priory")),
         &[("PRIORY_NOW", T0)],
     );
-    a.until("tasks", |rows| {
-        rows.first().is_some_and(|row| row[4] == "running")
-    });
+    a.until_own_tasks(|rows| rows.first().is_some_and(|row| row[4] == "running"));
 
     let task = task_json(&a, "1");
     assert_eq!(task["branch"], "priory/a-1", "{task}");
@@ -17701,9 +17759,7 @@ fn a_copy_reopened_on_a_runner_whose_key_another_runner_owns_drops_with_the_owne
     a.calls(&[result("passed")]);
     a.publish(&requested(1));
     a.start_with(exe, &[("PRIORY_NOW", T0)]);
-    a.until("tasks", |rows| {
-        rows.first().is_some_and(|row| row[4] == "done")
-    });
+    a.until_own_tasks(|rows| rows.first().is_some_and(|row| row[4] == "done"));
     logged(
         &a,
         "priory.task.held",
@@ -17714,7 +17770,7 @@ fn a_copy_reopened_on_a_runner_whose_key_another_runner_owns_drops_with_the_owne
     // A new request for the key goes to b, which a hears only once it is back.
     b.publish(&requested(1));
     b.start_with(exe, &[("PRIORY_NOW", T0)]);
-    b.until("tasks", |rows| rows.len() == 1);
+    b.until_own_tasks(|rows| rows.len() == 1);
     a.start_with(exe, &[("PRIORY_NOW", T0)]);
     a.until("inbox", |rows| {
         rows.iter()
@@ -17733,12 +17789,12 @@ fn a_copy_reopened_on_a_runner_whose_key_another_runner_owns_drops_with_the_owne
         .time(herdr_bus::Timestamp::now()),
     );
 
-    let tasks = a.until("tasks", |rows| rows[0][4] == "dropped");
+    let tasks = a.until_own_tasks(|rows| rows[0][4] == "dropped");
     assert_eq!(tasks.len(), 1, "{tasks:?}");
     let task = a.priory(&["task", &tasks[0][0], "--json"]);
     let task: serde_json::Value = serde_json::from_slice(&task.stdout).unwrap();
     assert_eq!(task["reason"], "owned by runner b", "{task}");
-    assert_eq!(b.rows("tasks")[0][4], "running");
+    assert_eq!(b.own_tasks()[0][4], "running");
 }
 
 #[test]
@@ -21104,6 +21160,95 @@ fn taking_the_keyboard_records_its_label_and_no_record_or_log_holds_the_secret()
     }
     server.kill().unwrap();
     server.wait().unwrap();
+}
+
+/// Waits until `/api/tasks` on `address` lists a task of `key` from runner `runner` and `done`
+/// holds for it.
+fn until_task(
+    address: &str,
+    key: &str,
+    runner: &str,
+    done: impl Fn(Option<&serde_json::Value>) -> bool,
+) -> Option<serde_json::Value> {
+    let deadline = Instant::now() + Duration::from_secs(60);
+    loop {
+        let (status, tasks) = runner_http(address, "GET", "/api/tasks", "");
+        assert_eq!(status, 200, "{tasks}");
+        let found = tasks["tasks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|task| task["key"] == key && task["runner"] == runner)
+            .cloned();
+        if done(found.as_ref()) {
+            return found;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "no task {key} as wanted in {tasks}"
+        );
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
+#[test]
+fn another_runners_task_is_listed_with_its_runner_hold_and_last_alive_time() {
+    let (a, b, _ask, address) = asked_on_a("remote-tasks");
+    let key = "github:owner/repo#1";
+
+    let task = until_task(&address, key, "a", |task| {
+        task.is_some_and(|task| task["hold"] == "kept")
+    })
+    .unwrap();
+
+    assert_eq!(task["id"], json!(null), "{task}");
+    assert_eq!(task["state"], json!(null), "{task}");
+    assert_eq!(task["workflow"], "approve", "{task}");
+    assert!(task["last_seen"].is_string(), "{task}");
+    assert!(task["since"].is_string(), "{task}");
+    let cli = b.priory(&["tasks", "--json"]);
+    let cli: serde_json::Value = serde_json::from_slice(&cli.stdout).unwrap();
+    assert!(
+        cli["tasks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|task| task["key"] == key && task["runner"] == "a"),
+        "{cli}"
+    );
+    let rows = b.rows("tasks");
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    assert_eq!(rows[0][0], "-");
+    assert_eq!(rows[0][1], key);
+    assert!(
+        rows[0].ends_with(&[
+            "a".into(),
+            "kept".into(),
+            task["last_seen"].as_str().unwrap().into()
+        ]),
+        "{rows:?}"
+    );
+    // a names itself and its hold on its own tasks.
+    let own = a.priory(&["tasks", "--json"]);
+    let own: serde_json::Value = serde_json::from_slice(&own.stdout).unwrap();
+    assert_eq!(own["tasks"][0]["runner"], "a", "{own}");
+    assert_eq!(own["tasks"][0]["hold"], "kept", "{own}");
+}
+
+#[test]
+fn another_runners_task_leaves_the_listing_once_it_ends() {
+    let (a, _b, ask, address) = asked_on_a("remote-task-ends");
+    let key = "github:owner/repo#1";
+    until_task(&address, key, "a", |task| task.is_some());
+
+    let answered = a.priory(&["answer", &ask, "approved", "--revision", "1"]);
+    assert!(
+        answered.status.success(),
+        "{}",
+        String::from_utf8_lossy(&answered.stderr)
+    );
+
+    until_task(&address, key, "a", |task| task.is_none());
 }
 
 const RELEASE_DAY: &str = "---\nname: release-day\ndescription: When releases go out.\n---\nReleases go out on Tuesdays.\n";

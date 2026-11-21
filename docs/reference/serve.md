@@ -33,6 +33,7 @@ does, with every count in `older` at 0. Their rows match the CLI's JSON only wit
 | `/api/request` | | what the web view's Add prefills: `workflow` and `band`, the [`[request]`](factory.md#request) defaults, each `null` when unset; `workflows`, the factory's workflow names; and `bands`, its bands in order |
 | `/api/links` | `priory links --json` | an object: [Links](#links) |
 | `/api/flows` | `priory flows --json` | an object: [Flows](#flows) |
+| `/api/reports` | `priory report list --json` | `reports`: each task's report as `task`, `date`, `greeting` and `put`, newest first |
 | `/api/reports/latest` | `priory report show --json` | the [report](#report) written last |
 | `/api/reports/{task}` | `priory report show TASK --json` | the task's [report](#report) |
 | `/api/costs?since=WINDOW&by=SPLIT` | `priory costs --json --since WINDOW --by SPLIT` | an object: [Costs](#costs) |
@@ -80,7 +81,7 @@ or a reason, is untrusted: render it as text.
 | `404` | No such path, task, report, ask, batch or web view file; a run screen whose run ended, whose pane this server cannot find or read within 2 seconds, or that holds a secret redaction cannot hide; any run screen with `[serve] terminal = "off"`; any [keyboard](#keyboard) path, for any method, unless `[serve] terminal = "type"` |
 | `405` | `POST` on a path that reads, or `GET` on a write. The `Allow` header names the method |
 | `408` | The request sent no byte within 1 second, or took over 5 seconds in all |
-| `409` | A write names an ask whose revision moved or that closed. The body adds the ask as `/api/asks` lists it. Or `/api/request` repeats a text already sent for the same linked issue. Or a cancel's or a move's `revision` is no longer the state's. Or a pick's report moved past its `revision`, or another choice took the pick. Or a batch edit's `revision` is no longer the plan's revision. Or a keyboard take's `revision` is no longer the state's |
+| `409` | A write names an ask whose revision moved or that closed. The body adds the ask as `/api/asks` lists it. Or `/api/request` repeats a text already sent for the same linked issue. Or a cancel's or a move's `revision` is no longer the state's. Or a pick's report moved past its `revision`, or the pick already holds that choice or an applied one. Or a batch edit's `revision` is no longer the plan's revision. Or a keyboard take's `revision` is no longer the state's |
 | `411` | A `POST` has no `Content-Length`, or uses `Transfer-Encoding` |
 | `413` | A `GET` has a body; a write's body is over 16 KiB; a webhook's is over 1 MiB |
 | `415` | A write's `Content-Type` is not `application/json` |
@@ -217,7 +218,7 @@ curl -X POST http://127.0.0.1:7340/api/asks/42/answer -H "Authorization: Bearer 
 | `202` `{"sent": "xps13", "submission": "<id>"}` | For another runner's ask: the write is on the log for that runner, which applies it when it reads it. `submission` names it in the ask's `submissions` |
 | `200` `{"key": "cli:2026-11-20-1", "id": 7}` | For `/api/request`: the daemon published the request and task `id` holds `key`. `id` is `null` when no task took the key |
 | `409` `{"error", "ask"}` | The ask's revision is no longer the one sent, or it was answered, dismissed or withdrawn. `ask` is its current state |
-| `409` `{"error"}` | A cancel's or a move's `revision` is no longer the state's. Or a pick's report is at another revision than the one sent, or the pick already has a choice: read the report again |
+| `409` `{"error"}` | A cancel's or a move's `revision` is no longer the state's. Or a pick's report is at another revision than the one sent, or the pick already holds that choice or an applied one: read the report again |
 | `409` `{"error", "key", "id"}` | For `/api/request`: the same text already went to `key`, so nothing was added. `id` is the active task that holds `key`, or `null` |
 | `404`, `422` `{"error"}` | The ask, task or pick is gone, or the daemon refused for another reason, such as a resume of a task that is not blocked, a say to a task with no run yet, or a comment on a stale report revision. `error` is the CLI's sentence |
 | `503` `{"error"}` | No daemon listens on the socket, or the log cannot be reached for another runner's ask, so nothing was sent. Reads keep working |
@@ -407,6 +408,25 @@ the queue from 1, or null), `generation`, `retired`, `tldr`, `since`
 `progress`, `conditions`, a held task's [conditions](#conditions) or null, `title` (its TL;DR, else
 the first line of its request, cut to 120 characters), `batch` (the id of the batch it is an entry
 or the planning task of, or null), `stack` and `relations`. See Grades in [tools.md](../daemon/tools.md#grades).
+
+In a factory of several runners, each task also has `runner`, this runner's name, and `hold`, the
+hold this runner last published for it (`waiting`, `kept`, `ended`, or null before its first claim).
+The list then adds, after this runner's tasks, each task another runner holds whose hold is not
+`ended`, from that runner's claim (see [runners.md](../daemon/runners.md#every-runners-tasks)):
+
+| Field | Type | Meaning |
+| ----- | ---- | ------- |
+| `id`, `state`, `step` | null | The task's number, state and step stay on its runner |
+| `key` | string | The task's key |
+| `runner` | string | The runner that holds it |
+| `hold` | string | `waiting` or `kept`, as that runner last published it |
+| `last_seen` | string or null | When that runner was last alive, from its last alive, claim or held message |
+| `since` | string | When the claim that gave it the key was published |
+| `workflow`, `band`, `lane` | string or null | From the task's request |
+| `title` | string or null | The request's TL;DR, else its subject |
+
+`priory tasks` without `--json` prints them too, with three more columns, `runner`, `hold` and
+`last_seen`. `--lane` and `--grade` keep this runner's tasks only.
 
 `relations` lists every relation the task is in, on either side, oldest first (see
 [relations.md](../daemon/relations.md)). Each entry:
