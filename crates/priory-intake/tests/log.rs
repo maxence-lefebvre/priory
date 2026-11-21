@@ -277,6 +277,21 @@ fn herdr_acks_through_the_output_despite_a_tap() {
     assert_eq!(read, [1, 2, 3]);
 }
 
+#[test]
+fn herdr_reads_nothing_through_a_disabled_connection_despite_a_tap() {
+    let store = Herdr::new("disabled");
+    let bus = Bus::open(&store.0.join("bus.db")).unwrap();
+    bus.connect("daemon", herdr_bus::TAP, herdr_bus::Start::Beginning)
+        .unwrap();
+    let log = declared(&store);
+    log.publish(OUTPUT, &event(1)).unwrap();
+    let ours = bus
+        .connect("daemon", OUTPUT, herdr_bus::Start::Beginning)
+        .unwrap();
+    bus.set_enabled(ours, false).unwrap();
+    assert!(log.read("daemon", OUTPUT, 1).unwrap().is_empty());
+}
+
 /// Runs every case against one adapter, each on a store of its own.
 macro_rules! contract {
     ($adapter:ident, $store:expr) => {

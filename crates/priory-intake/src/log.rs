@@ -80,11 +80,15 @@ impl Log for Bus {
                 message: delivery.message,
             })
             .collect();
-        if !full || !ours.is_empty() {
+        if !full || !ours.is_empty() || limit == 0 {
             return Ok(ours);
         }
         // The other connections filled the pull: page the output back to this cursor instead.
-        let cursor = self.connection(connection)?.cursor;
+        let connection = self.connection(connection)?;
+        if !connection.enabled {
+            return Ok(Vec::new());
+        }
+        let cursor = connection.cursor;
         let mut past = Vec::new();
         let mut before = None;
         loop {
@@ -92,6 +96,8 @@ impl Log for Bus {
             let reached = page.last().is_none_or(|oldest| oldest.seq <= cursor);
             before = page.last().map(|oldest| oldest.seq);
             past.extend(page.into_iter().filter(|stored| stored.seq > cursor));
+            // Newest first: keep only the oldest `limit`.
+            past.drain(..past.len().saturating_sub(limit));
             if reached {
                 break;
             }
@@ -99,7 +105,6 @@ impl Log for Bus {
         Ok(past
             .into_iter()
             .rev()
-            .take(limit)
             .map(|stored| Delivery {
                 output: stored.output,
                 seq: stored.seq,
