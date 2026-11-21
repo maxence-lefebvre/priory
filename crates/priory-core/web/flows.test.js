@@ -80,4 +80,6 @@ test("the timeline is at most two nodes wide for a phone, and every node has a t
   assert.ok(Math.max(...perRow) <= 2);
   for (const node of drawing.nodes) assert.match(node.label, /\w/);
   assert.match(drawing.text, /plan/);
+  assert.match(drawing.text, /open-pr: irreversible write, failed to stop/);
+  assert.doesNotMatch(drawing.text, /write write/);
 });

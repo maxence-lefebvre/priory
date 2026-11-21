@@ -3,6 +3,7 @@
 
 export const KINDS = ["read", "reversible", "irreversible", "ask", "answer", "verdict"];
 
+const WRITES = { reversible: "reversible write", irreversible: "irreversible write" };
 const NODE = { width: 150, height: 52 };
 const GAP = { column: 24, row: 60, edge: 12 };
 const LANE = { pad: 8, step: 14 };
@@ -134,7 +135,7 @@ export function timeline(workflow, ungated) {
   const height = (rows.length) * (NODE.height + GAP.row) - GAP.row + 2 * GAP.edge;
   const text = [
     `Workflow ${workflow.name} starts at ${workflow.start}.`,
-    ...workflow.steps.map((/** @type {any} */ step) => `${step.id}: ${step.kind.replace("irreversible", "irreversible write").replace("reversible", "reversible write")}, ${step.edges.map((/** @type {any} */ next) => `${next.outcome} to ${next.to} decided by ${next.by}`).join("; ")}.`),
+    ...workflow.steps.map((/** @type {any} */ step) => `${step.id}: ${WRITES[step.kind] ?? step.kind}, ${step.edges.map((/** @type {any} */ next) => `${next.outcome} to ${next.to} decided by ${next.by}`).join("; ")}.`),
   ].join(" ");
   return { nodes, edges, width: Math.max(width, 0), height, text };
 }
