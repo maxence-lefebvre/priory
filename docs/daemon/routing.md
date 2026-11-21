@@ -121,7 +121,9 @@ What happens to a `kept` message depends on the task's state:
   [waits.md](waits.md)). An asleep task wakes. A ready, blocked or held task keeps its state, and
   its next run gets the prompt.
 - If the task subscribes to a resource the message names and has no open wait on it, an asleep
-  task at a model step wakes with it, and the outcome becomes `woke`. Another active task that subscribes to
+  task at a model step wakes with it, and the outcome becomes `woke`. The subscription to the task's
+  own key takes only feedback and closes (see [tools.md](tools.md#subscribeon-and-unsubscribeon)).
+  Another active task that subscribes to
   it gets it too: a prompt of its own while it runs, or a wake while it sleeps (see
   [tools.md](tools.md#subscribeon-and-unsubscribeon)).
 - Any other kept message waits for the task's next run, which reads it in its first prompt.

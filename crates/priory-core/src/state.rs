@@ -1288,7 +1288,7 @@ fn delivered(
     kept: Option<i64>,
     factory: &Factory,
 ) -> rusqlite::Result<bool> {
-    if !subscribes(tx, task, resources)? {
+    if !subscribes(tx, task, resources, &message.kind)? {
         return Ok(false);
     }
     let line = line(
@@ -1309,16 +1309,37 @@ fn delivered(
     Ok(false)
 }
 
+/// The events a task's subscription to its own key carries: what people say and closes. Checks,
+/// labels and pushes stay with the checks gate and waits, since each would start a run.
+const OWN_KEY: [&str; 9] = [
+    "github.pull_request_review.submitted",
+    "github.pull_request.comment",
+    "github.pull_request_review_comment",
+    CLOSED,
+    "github.issues.comment",
+    ISSUE_CLOSED,
+    "linear.comment.created",
+    "linear.issue.state_changed",
+    "slack.thread.replied",
+];
+
 /// Whether `task` subscribes to any of `resources` with no open wait on them: a wait on the
-/// resource decides which of its events wake the task.
-fn subscribes(tx: &Transaction, task: i64, resources: &[String]) -> rusqlite::Result<bool> {
+/// resource decides which of its events wake the task. Its own key's subscription takes only
+/// events of `OWN_KEY` kinds.
+fn subscribes(
+    tx: &Transaction,
+    task: i64,
+    resources: &[String],
+    kind: &str,
+) -> rusqlite::Result<bool> {
     let resources = serde_json::to_string(resources).expect("resources serialize");
     tx.query_row(
         "SELECT EXISTS (SELECT 1 FROM subscriptions WHERE task = ?1
-           AND resource IN (SELECT value FROM json_each(?2)))
+           AND resource IN (SELECT value FROM json_each(?2))
+           AND (?3 OR resource IS NOT (SELECT key FROM tasks WHERE id = ?1)))
          AND NOT EXISTS (SELECT 1 FROM waits WHERE task = ?1 AND fired IS NULL AND withdrawn IS NULL
            AND resource IN (SELECT value FROM json_each(?2)))",
-        params![task, resources],
+        params![task, resources, OWN_KEY.contains(&kind)],
         |row| row.get(0),
     )
 }

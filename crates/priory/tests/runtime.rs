@@ -9094,6 +9094,31 @@ fn a_comment_on_a_done_tasks_issue_reopens_nothing_once_it_unsubscribed_or_the_i
 }
 
 #[test]
+fn a_check_run_on_a_task_keyed_on_its_pull_request_wakes_nothing_and_a_comment_does() {
+    let mut setup = Setup::new("own-key-checks");
+    setup.calls(&[wait(json!({ "type": "time", "until": "1 hour" }))]);
+    setup.publish(&requested(7));
+    setup.start();
+    setup.until("runs", |rows| {
+        rows.first().is_some_and(|row| row[7] == "asleep")
+    });
+    let mut green = check(1, 0);
+    green.data["head_branch"] = json!("feature");
+
+    setup.publish(&green);
+
+    setup.until("inbox", |rows| rows.len() == 2);
+    stays_asleep(&setup);
+    setup.publish(&off_branch(commented()));
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 2);
+    assert!(
+        setup.typed()[1].starts_with("github.pull_request.comment owner/repo#7 {"),
+        "{:?}",
+        setup.typed()
+    );
+}
+
+#[test]
 fn a_comment_on_an_issue_wakes_the_task_keyed_on_it() {
     let setup = asleep_on(
         "issue-comment-wakes",

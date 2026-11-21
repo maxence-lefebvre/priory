@@ -223,6 +223,12 @@ a Linear issue or a Slack thread. So a reply in the Slack thread that started a 
 comment on its Linear issue reopens it once done. That subscription reads from the time of the
 event that requested the task, so a reply posted before the task existed still reaches it.
 
+The subscription to the task's own key carries only what people say and closes: reviews, comments,
+review thread comments, a pull request or issue closed, a Linear comment or state change, and a
+Slack reply. A check run, a label or a push on the task's own pull request wakes nothing, since
+each would start a run; the checks gate and waits take those. A subscription made with `subscribe`
+carries every event.
+
 `subscribe` is refused while another active task owns the resource: `github:owner/name#57 belongs
 to task 3, not this one`. A done task does not block it: its subscription ends and the active
 task's starts. A `github.pull_request.closed` or `github.issues.closed` event ends every
