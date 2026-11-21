@@ -1,4 +1,4 @@
-use super::{BASELINE, OUTPUT, dispatch, id, publish};
+use super::{BASELINE, OUTPUT, claim, dispatch, id, publish, recent, same_change};
 use crate::log::{self, Log};
 use herdr_bus::{Message, Timestamp};
 use priory_factory::factory::Trigger;
@@ -101,6 +101,8 @@ impl<'a> Linear<'a> {
     }
 
     pub(super) fn publish_all(&mut self, bus: &dyn Log, polled: Vec<Polled>) -> Result<(), String> {
+        // Taken at the first state change a webhook may also report, and held so none publishes meanwhile.
+        let mut delivered: Option<(std::fs::File, Vec<Message>)> = None;
         for Polled {
             stream,
             events,
@@ -118,6 +120,17 @@ impl<'a> Linear<'a> {
                 // Read again at the stream's position, and handled by an earlier poll.
                 if seen.contains(&json!(event.id.to_string())) {
                     continue;
+                }
+                if event.kind == STATE_CHANGED {
+                    let (_, delivered) = match &mut delivered {
+                        Some(delivered) => delivered,
+                        None => delivered.insert((claim()?, recent(bus)?)),
+                    };
+                    // A webhook's state change has no history id, so it matches by content.
+                    if let Some(other) = delivered.iter().find(|other| same_change(other, &event)) {
+                        dispatch(bus, &self.triggers, other)?;
+                        continue;
+                    }
                 }
                 publish(bus, &event)?;
                 dispatch(bus, &self.triggers, &event)?;
@@ -338,54 +351,10 @@ impl<'a> Linear<'a> {
         &self,
         kind: &str,
         name: &str,
-        mut data: Value,
+        data: Value,
         baseline: bool,
     ) -> Result<Message, String> {
-        let raw = data["time"].as_str().unwrap_or_default();
-        let time: Timestamp = raw
-            .parse()
-            .map_err(|error| format!("Linear time `{raw}`: {error}"))?;
-        data["baseline"] = json!(baseline);
-        data["triggers"] = json!(self.matching(kind, &data, baseline));
-        let subject = data["issue"].as_str().unwrap_or_default().to_string();
-        let url = data["url"].as_str().unwrap_or_default().to_string();
-        Ok(Message::new(kind, data)
-            .id(id(name))
-            .subject(subject)
-            .time(time)
-            .link("issue", &url))
-    }
-
-    fn matching(&self, kind: &str, data: &Value, baseline: bool) -> Vec<&'a str> {
-        let filtered = |trigger: &Trigger| {
-            let state = data.get("to").unwrap_or(&data["state"]);
-            trigger
-                .filter
-                .iter()
-                .flatten()
-                .all(|(field, value)| match field.as_str() {
-                    "team" => data["team"] == *value,
-                    "project" => data["project"] == *value || data["project_id"] == *value,
-                    "state" => *state == *value,
-                    "label" => data["labels"]
-                        .as_array()
-                        .is_some_and(|labels| labels.iter().any(|label| label == value)),
-                    _ => false,
-                })
-        };
-        self.triggers
-            .iter()
-            .filter(|(_, trigger)| {
-                format!("linear.{}", trigger.on) == kind
-                    && trigger
-                        .view
-                        .as_deref()
-                        .is_none_or(|view| data["view"] == view)
-                    && filtered(trigger)
-                    && (!baseline || trigger.backfill == Some(true))
-            })
-            .map(|(name, _)| *name)
-            .collect()
+        event(&self.triggers, kind, name, data, baseline)
     }
 
     /// The nodes of the connection at `path`, every page or only the first.
@@ -426,6 +395,66 @@ impl<'a> Linear<'a> {
             variables["after"] = next["endCursor"].clone();
         }
     }
+}
+
+/// A Linear event, with the triggers it matches.
+pub(super) fn event(
+    triggers: &[(&str, &Trigger)],
+    kind: &str,
+    name: &str,
+    mut data: Value,
+    baseline: bool,
+) -> Result<Message, String> {
+    let raw = data["time"].as_str().unwrap_or_default();
+    let time: Timestamp = raw
+        .parse()
+        .map_err(|error| format!("Linear time `{raw}`: {error}"))?;
+    data["baseline"] = json!(baseline);
+    data["triggers"] = json!(matching(triggers, kind, &data, baseline));
+    let subject = data["issue"].as_str().unwrap_or_default().to_string();
+    let url = data["url"].as_str().unwrap_or_default().to_string();
+    Ok(Message::new(kind, data)
+        .id(id(name))
+        .subject(subject)
+        .time(time)
+        .link("issue", &url))
+}
+
+pub(super) fn matching<'a>(
+    triggers: &[(&'a str, &Trigger)],
+    kind: &str,
+    data: &Value,
+    baseline: bool,
+) -> Vec<&'a str> {
+    let filtered = |trigger: &Trigger| {
+        let state = data.get("to").unwrap_or(&data["state"]);
+        trigger
+            .filter
+            .iter()
+            .flatten()
+            .all(|(field, value)| match field.as_str() {
+                "team" => data["team"] == *value,
+                "project" => data["project"] == *value || data["project_id"] == *value,
+                "state" => *state == *value,
+                "label" => data["labels"]
+                    .as_array()
+                    .is_some_and(|labels| labels.iter().any(|label| label == value)),
+                _ => false,
+            })
+    };
+    triggers
+        .iter()
+        .filter(|(_, trigger)| {
+            format!("linear.{}", trigger.on) == kind
+                && trigger
+                    .view
+                    .as_deref()
+                    .is_none_or(|view| data["view"] == view)
+                && filtered(trigger)
+                && (!baseline || trigger.backfill == Some(true))
+        })
+        .map(|(name, _)| *name)
+        .collect()
 }
 
 /// The variables of a time stream's query: its first page on a baseline, every node at or after
@@ -642,6 +671,10 @@ fn resume(
         before = Some(oldest.seq);
         for stored in &page {
             let message = &stored.message;
+            // A delivery does not move a stream's position, so it is no part of a stopped poll.
+            if message.data.get("delivery").is_some() {
+                continue;
+            }
             let stream = match message.kind.as_str() {
                 BASELINE => text(&message.data["stream"]).to_string(),
                 ENTERED | LEFT => view_stream(text(&message.data["view"])),

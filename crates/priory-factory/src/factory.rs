@@ -220,6 +220,7 @@ impl Serve {
 #[serde(deny_unknown_fields)]
 pub struct Webhooks {
     pub github: Option<GithubWebhook>,
+    pub linear: Option<LinearWebhook>,
 }
 
 /// GitHub webhooks, at `POST /hooks/github`.
@@ -228,6 +229,15 @@ pub struct Webhooks {
 pub struct GithubWebhook {
     /// The environment variable that holds the webhook's secret, never the secret itself.
     #[serde(default = "secret_env")]
+    pub secret_env: String,
+}
+
+/// Linear webhooks, at `POST /hooks/linear`.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct LinearWebhook {
+    /// The environment variable that holds the webhook's signing secret, never the secret itself.
+    #[serde(default = "linear_secret_env")]
     pub secret_env: String,
 }
 
@@ -252,6 +262,10 @@ pub struct SlackShortcut {
 
 fn app_token_env() -> String {
     "SLACK_APP_TOKEN".to_owned()
+}
+
+fn linear_secret_env() -> String {
+    "PRIORY_LINEAR_WEBHOOK_SECRET".to_owned()
 }
 
 fn secret_env() -> String {
@@ -1298,6 +1312,17 @@ impl Factory {
             .webhooks
             .as_ref()?
             .github
+            .as_ref()
+    }
+
+    /// The Linear webhook's settings; none takes no Linear webhook.
+    pub fn linear_webhook(&self) -> Option<&LinearWebhook> {
+        self.settings
+            .as_ref()?
+            .value
+            .webhooks
+            .as_ref()?
+            .linear
             .as_ref()
     }
 

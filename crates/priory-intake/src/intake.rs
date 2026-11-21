@@ -4,6 +4,7 @@ use priory_factory::factory::{Factory, Trigger};
 mod gh;
 mod issues;
 mod linear;
+mod linear_webhook;
 mod pulls;
 mod reviews;
 pub mod schedule;
@@ -12,6 +13,7 @@ mod slack;
 mod webhook;
 
 pub use linear::state as linear_state;
+pub use linear_webhook::LinearWebhook;
 pub use webhook::Github;
 
 use serde_json::json;
@@ -447,8 +449,14 @@ fn publish_all(
 }
 
 /// The types whose webhook id cannot be the poll's, since the payload lacks GitHub's issue event
-/// id or issue id: each writer compares the change itself with the other's reports.
-const CHANGES: [&str; 4] = [LABELED, PR_LABELED, PR_CLOSED, PR_OPENED];
+/// id or issue id, or Linear's history id: each writer compares the change itself with the other's reports.
+const CHANGES: [&str; 5] = [
+    LABELED,
+    PR_LABELED,
+    PR_CLOSED,
+    PR_OPENED,
+    linear::STATE_CHANGED,
+];
 
 /// An exclusive lock between the intake and webhook deliveries, held from a change match to the
 /// publish it allows, and released when dropped.
@@ -510,6 +518,7 @@ fn same_change(a: &Message, b: &Message) -> bool {
         && a.kind == b.kind
         && a.subject == b.subject
         && a.data["label"] == b.data["label"]
+        && a.data["to"] == b.data["to"]
         && match a.kind.as_str() {
             PR_CLOSED => apart == 0,
             PR_OPENED => true,

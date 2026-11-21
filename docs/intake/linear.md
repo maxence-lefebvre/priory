@@ -17,6 +17,9 @@ wait or a subscription on a Linear issue starts them too (see [watches.md](watch
 keyed on a Linear issue subscribes to it, so a comment there reopens the task once done (see
 [routing.md](../daemon/routing.md#feedback-reopens-a-done-task)).
 
+A signed webhook makes the issue and comment events arrive sooner than the next poll. See
+[webhooks.md](webhooks.md#linear).
+
 ## Trigger
 
 Two sources start tasks from Linear. Their keys are in [triggers.md](../reference/triggers.md#linear).
@@ -98,7 +101,7 @@ Each message id is a UUIDv5 of a name (see [envelope.md](envelope.md)):
 | `linear.issue.entered`, `linear.issue.left` | `linear.view:{view}:{position}:{issue id}:{type}`, with the view stream's new position |
 | `linear.view.changed` | `linear.view:{view}:{position}:changed`, with the view stream's new position |
 | `linear.issue.created` | `linear:issue:{issue id}:created` |
-| `linear.issue.state_changed` | `linear:history:{history id}` |
+| `linear.issue.state_changed` | `linear:history:{history id}`; a webhook's is `linear:webhook:state_changed:{sha256 of the body}`, and the two match by content (see [webhooks.md](webhooks.md#linear)) |
 | `linear.comment.created` | `linear:comment:{comment id}` |
 | `linear.issue.blockers` | `linear:blockers:{blocked issue id}:{blocker issue id}:{blocker updatedAt}` |
 

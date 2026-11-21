@@ -297,12 +297,12 @@ fn accepted(outcome: &str) -> Reply {
     Reply::json(202, json!({ "outcome": outcome }).to_string())
 }
 
-fn hex(bytes: &[u8]) -> String {
+pub(super) fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
 /// The bytes of a lowercase or uppercase hex string, or none when it is not one.
-fn unhex(hex: &[u8]) -> Option<Vec<u8>> {
+pub(super) fn unhex(hex: &[u8]) -> Option<Vec<u8>> {
     if !hex.len().is_multiple_of(2) || !hex.iter().all(u8::is_ascii_hexdigit) {
         return None;
     }

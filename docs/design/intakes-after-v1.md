@@ -25,10 +25,9 @@ Every source below reuses the same pieces:
 - The polling loop and its baselines, for a source with no push (see
   [linear.md](../intake/linear.md#positions-and-baselines)).
 
-What no source has yet: a webhook route other than `POST /hooks/github`, a signature check other
-than GitHub's HMAC-SHA256 header, and a section like `[webhooks.<source>]` for them. The first
-slice that adds a route should make the check a per-source function, so the next slice adds one
-function and one mapping.
+Two sources have a webhook route: `POST /hooks/github` and `POST /hooks/linear`, each with its own
+signature check, mapping and `[webhooks.<source>]` section. A new source adds one route, one check
+and one mapping beside them.
 
 All five sources are read-only: Priory receives or reads events and never writes to the vendor.
 

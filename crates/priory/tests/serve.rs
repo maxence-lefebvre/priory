@@ -4233,6 +4233,10 @@ fn use_factory(setup: &Setup, from: &Path) {
         .replace(
             "[webhooks.github]\nsecret_env = \"PRIORY_GITHUB_WEBHOOK_SECRET\"",
             "",
+        )
+        .replace(
+            "[webhooks.linear]\nsecret_env = \"PRIORY_LINEAR_WEBHOOK_SECRET\"",
+            "",
         );
     if !text.contains("[serve]") {
         text.push_str("\n[serve]\nlisten = \"127.0.0.1:0\"\ntoken_env = \"TEST_TOKEN\"\n");
@@ -4293,4 +4297,396 @@ fn the_flows_endpoint_carries_check_explains_json_and_each_workflows_graph() {
             ],
         })
     );
+}
+
+const LINEAR_HOOKS: &str = "name = \"demo\"\n\n[serve]\nlisten = \"127.0.0.1:0\"\ntoken_env = \"TEST_TOKEN\"\n\n[webhooks.linear]\nsecret_env = \"TEST_SECRET\"\n";
+
+/// Linear's webhook timestamp for `PRIORY_NOW`, 2026-11-17T12:00:00Z, in milliseconds.
+const NOW_MS: u64 = 1_794_916_800_000;
+
+fn linear_trigger(on: &str) -> String {
+    format!(
+        "source = \"linear\"\non = \"{on}\"\nfilter = {{ team = \"ENG\" }}\nworkflow = \"implement\"\nkey = \"issue.identifier\"\n"
+    )
+}
+
+/// A Linear `Issue` delivery for ENG-7. `action` is `create` or `update`, `team` its team key.
+fn linear_issue(action: &str, team: &str) -> Value {
+    json!({
+        "action": action,
+        "type": "Issue",
+        "actor": { "id": "u1", "type": "user", "name": "max" },
+        "data": {
+            "id": "issue-7",
+            "identifier": format!("{team}-7"),
+            "title": "Fix the thing",
+            "createdAt": "2026-11-17T09:00:00.000Z",
+            "updatedAt": "2026-11-17T10:00:00.000Z",
+            "teamId": "team-1",
+            "projectId": null,
+            "state": { "id": "s2", "name": "In Progress", "type": "started" },
+            "team": { "id": "team-1", "key": team, "name": "Engineering" },
+            "labels": [{ "id": "l1", "name": "agent" }]
+        },
+        "url": format!("https://linear.app/acme/issue/{team}-7/fix-the-thing"),
+        "createdAt": "2026-11-17T10:00:00.000Z",
+        "organizationId": "org-1",
+        "webhookTimestamp": NOW_MS,
+        "webhookId": "hook-1"
+    })
+}
+
+/// POSTs `body` to `/hooks/linear` as Linear would, signed with `signature` when given: the bare
+/// hex HMAC-SHA256 of the body.
+fn deliver_linear(address: &str, signature: Option<&str>, body: &str) -> (u16, String) {
+    let signature = signature.map_or(String::new(), |signature| {
+        format!("Linear-Signature: {signature}\r\n")
+    });
+    raw(
+        address,
+        &format!(
+            "POST /hooks/linear HTTP/1.1\r\nHost: {address}\r\nUser-Agent: Linear-Webhook\r\n\
+             Content-Type: application/json; charset=utf-8\r\nLinear-Delivery: 234d1a4e-b617-4388-90fe-adc3633d6b72\r\n\
+             Linear-Event: Issue\r\n{signature}Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        ),
+    )
+}
+
+fn linear_signature(secret: &str, body: &str) -> String {
+    sign(secret, body.as_bytes()).replace("sha256=", "")
+}
+
+impl Setup {
+    /// A factory with `[serve]`, the Linear webhook and `linear` triggers on team ENG.
+    fn linear_hooks(name: &str) -> Self {
+        let setup = Setup::new(name, LINEAR_HOOKS);
+        fs::create_dir_all(setup.dir.join("factory/triggers")).unwrap();
+        for on in ["issue.created", "issue.state_changed", "comment.created"] {
+            fs::write(
+                setup.dir.join(format!("factory/triggers/{on}.toml")),
+                linear_trigger(on),
+            )
+            .unwrap();
+        }
+        setup
+    }
+
+    fn send_linear(&self, address: &str, body: &Value) -> (u16, String) {
+        let body = body.to_string();
+        deliver_linear(address, Some(&linear_signature(&self.secret, &body)), &body)
+    }
+}
+
+#[test]
+fn a_signed_linear_issue_created_delivery_publishes_the_event_a_poll_would() {
+    let mut setup = Setup::linear_hooks("linear-created");
+    let address = setup.start(&["serve", &setup.factory()]);
+
+    let (status, reply) = setup.send_linear(&address, &linear_issue("create", "ENG"));
+
+    assert_eq!(status, 200, "{reply}");
+    assert_eq!(reply, r#"{"outcome":"published"}"#);
+    let published = setup.published();
+    let kinds: Vec<_> = published.iter().map(|m| m.kind.as_str()).collect();
+    assert_eq!(kinds, ["linear.issue.created", "factory.task.requested"]);
+    assert_eq!(published[0].subject.as_deref(), Some("ENG-7"));
+    assert_eq!(
+        published[0].data,
+        json!({
+            "issue": "ENG-7",
+            "linear_id": "issue-7",
+            "title": "Fix the thing",
+            "url": "https://linear.app/acme/issue/ENG-7/fix-the-thing",
+            "team": "ENG",
+            "project": null,
+            "project_id": null,
+            "state": "In Progress",
+            "labels": ["agent"],
+            "actor": "max",
+            "blockers": null,
+            "time": "2026-11-17T09:00:00.000Z",
+            "delivery": "234d1a4e-b617-4388-90fe-adc3633d6b72",
+            "baseline": false,
+            "triggers": ["issue.created"]
+        })
+    );
+    assert_eq!(published[1].subject.as_deref(), Some("linear:ENG-7"));
+}
+
+fn linear_state_change() -> Value {
+    let mut payload = linear_issue("update", "ENG");
+    payload["updatedFrom"] = json!({ "stateId": "s1", "updatedAt": "2026-11-17T09:00:00.000Z" });
+    payload["createdAt"] = json!("2026-11-17T10:00:00.000Z");
+    payload
+}
+
+fn linear_comment() -> Value {
+    json!({
+        "action": "create",
+        "type": "Comment",
+        "actor": { "id": "u1", "type": "user", "name": "max" },
+        "data": {
+            "id": "comment-1",
+            "createdAt": "2026-11-17T10:30:00.000Z",
+            "body": "Looks good",
+            "issueId": "issue-7",
+            "userId": "u1"
+        },
+        "url": "https://linear.app/acme/issue/ENG-7/fix-the-thing#comment-comment-1",
+        "createdAt": "2026-11-17T10:30:00.000Z",
+        "webhookTimestamp": NOW_MS
+    })
+}
+
+impl Setup {
+    /// Runs `priory intake --once` with a fake Linear that holds `issues` and `comments`.
+    fn poll_linear(&self, issues: Value, comments: Value) {
+        let page = |nodes: Value| {
+            json!({ "data": { "issues": { "nodes": nodes, "pageInfo": { "hasNextPage": false } },
+                "comments": { "nodes": [], "pageInfo": { "hasNextPage": false } } } })
+        };
+        let answer = |name: &str, body: Value| {
+            let file = self.dir.join(name);
+            fs::write(&file, body.to_string()).unwrap();
+            file.display().to_string()
+        };
+        let issues = answer("linear-issues.json", page(issues));
+        let mut comments_answer = page(json!([]));
+        comments_answer["data"]["comments"]["nodes"] = comments;
+        let comments = answer("linear-comments.json", comments_answer);
+        let empty = answer("linear-blocked.json", page(json!([])));
+        let script = format!(
+            "#!/bin/sh\ncat >/dev/null\ncase \"$*\" in\n  *'query Issues'*) cat '{issues}' ;;\n  \
+             *'query Comments'*) cat '{comments}' ;;\n  *) cat '{empty}' ;;\nesac\n"
+        );
+        let curl = self.dir.join("bin/curl");
+        fs::create_dir_all(curl.parent().unwrap()).unwrap();
+        fs::write(&curl, script).unwrap();
+        fs::set_permissions(&curl, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+        let path = format!(
+            "{}:{}",
+            curl.parent().unwrap().display(),
+            std::env::var("PATH").unwrap()
+        );
+        let mut command = self.command();
+        command
+            .args(["intake", "--once", &self.factory()])
+            .env("LINEAR_API_KEY", "lin_api_test")
+            .env("PATH", path);
+        succeeded(&command.output().unwrap());
+    }
+}
+
+/// What Linear's API answers for ENG-7 after `linear_issue` was created and moved to In Progress.
+fn polled_issue() -> Value {
+    json!({
+        "id": "issue-7", "identifier": "ENG-7", "title": "Fix the thing",
+        "url": "https://linear.app/acme/issue/ENG-7/fix-the-thing",
+        "createdAt": "2026-11-17T09:00:00.000Z", "updatedAt": "2026-11-17T10:00:00.000Z",
+        "team": { "key": "ENG" }, "project": null, "state": { "name": "In Progress" },
+        "labels": { "nodes": [{ "name": "agent" }] }, "creator": { "displayName": "max" },
+        "history": { "nodes": [{
+            "id": "history-1", "createdAt": "2026-11-17T10:00:03.000Z",
+            "fromState": { "name": "Todo" }, "toState": { "name": "In Progress" },
+            "actor": { "displayName": "max" }
+        }] },
+        "inverseRelations": { "nodes": [], "pageInfo": { "hasNextPage": false } },
+        "relations": { "nodes": [] }
+    })
+}
+
+#[test]
+fn a_signed_linear_state_change_and_comment_publish_their_poll_types() {
+    let mut setup = Setup::linear_hooks("linear-state-comment");
+    let address = setup.start(&["serve", &setup.factory()]);
+
+    assert_eq!(setup.send_linear(&address, &linear_state_change()).0, 200);
+    assert_eq!(setup.send_linear(&address, &linear_comment()).0, 200);
+
+    let published = setup.published();
+    let kinds: Vec<_> = published.iter().map(|m| m.kind.as_str()).collect();
+    assert_eq!(
+        kinds,
+        [
+            "linear.issue.state_changed",
+            "factory.task.requested",
+            "linear.comment.created",
+            "factory.task.requested"
+        ]
+    );
+    let mut state = published[0].data.clone();
+    assert_eq!(state["delivery"], "234d1a4e-b617-4388-90fe-adc3633d6b72");
+    for field in ["delivery", "triggers"] {
+        state.as_object_mut().unwrap().remove(field);
+    }
+    assert_eq!(
+        state,
+        json!({
+            "issue": "ENG-7", "linear_id": "issue-7", "title": "Fix the thing",
+            "url": "https://linear.app/acme/issue/ENG-7/fix-the-thing", "team": "ENG",
+            "project": null, "project_id": null, "state": "In Progress", "labels": ["agent"],
+            "from": null, "to": "In Progress", "actor": "max", "blockers": null,
+            "time": "2026-11-17T10:00:00.000Z", "baseline": false
+        })
+    );
+    assert_eq!(
+        published[2].data,
+        json!({
+            "issue": "ENG-7", "linear_id": "comment-1", "title": "", "body": "Looks good",
+            "url": "https://linear.app/acme/issue/ENG-7/fix-the-thing#comment-comment-1",
+            "team": "ENG", "project": null, "project_id": null, "state": "", "labels": [],
+            "actor": "max", "time": "2026-11-17T10:30:00.000Z",
+            "delivery": "234d1a4e-b617-4388-90fe-adc3633d6b72", "baseline": false,
+            "triggers": ["comment.created"]
+        })
+    );
+}
+
+#[test]
+fn a_linear_delivery_with_a_wrong_signature_or_a_stale_timestamp_gets_401_before_it_is_read() {
+    let mut setup = Setup::linear_hooks("linear-refused");
+    let address = setup.start(&["serve", &setup.factory()]);
+    let body = linear_issue("create", "ENG").to_string();
+    let signatures = [
+        Some(linear_signature("not-the-secret", &body)),
+        None,
+        Some("zz".to_owned()),
+        Some(sign(&setup.secret, body.as_bytes())),
+    ];
+    for signature in &signatures {
+        let (status, reply) = deliver_linear(&address, signature.as_deref(), &body);
+
+        assert_eq!(status, 401, "{signature:?}");
+        assert_eq!(
+            reply,
+            r#"{"error":"Linear-Signature is missing or does not match the body"}"#
+        );
+    }
+    let mut stale = linear_issue("create", "ENG");
+    stale["webhookTimestamp"] = json!(NOW_MS - 61_000);
+    let (status, reply) = setup.send_linear(&address, &stale);
+    assert_eq!(status, 401);
+    assert_eq!(
+        reply,
+        r#"{"error":"`webhookTimestamp` is over a minute from now"}"#
+    );
+    let mut early = linear_issue("create", "ENG");
+    early["webhookTimestamp"] = json!(NOW_MS + 61_000);
+    assert_eq!(setup.send_linear(&address, &early).0, 401);
+    let mut edge = linear_issue("create", "ENG");
+    edge["webhookTimestamp"] = json!(NOW_MS - 60_000);
+    assert_eq!(setup.send_linear(&address, &edge).0, 200);
+    assert_eq!(setup.published().len(), 2);
+}
+
+#[test]
+fn a_linear_body_over_1_mib_gets_413_before_it_is_read() {
+    let mut setup = Setup::linear_hooks("linear-oversize");
+    let address = setup.start(&["serve", &setup.factory()]);
+
+    let (status, reply) = raw(
+        &address,
+        &format!(
+            "POST /hooks/linear HTTP/1.1\r\nHost: {address}\r\nLinear-Signature: 00\r\n\
+             Content-Length: {}\r\n\r\n",
+            1024 * 1024 + 1
+        ),
+    );
+
+    assert_eq!(status, 413);
+    assert_eq!(reply, r#"{"error":"the body is over 1 MiB"}"#);
+    assert!(setup.published().is_empty());
+}
+
+#[test]
+fn a_linear_delivery_for_a_team_no_trigger_names_or_an_unmapped_event_gets_200_and_publishes_nothing()
+ {
+    let mut setup = Setup::linear_hooks("linear-dropped");
+    let address = setup.start(&["serve", &setup.factory()]);
+    let mut removed = linear_issue("remove", "ENG");
+    removed["action"] = json!("remove");
+    let mut renamed = linear_issue("update", "ENG");
+    renamed["updatedFrom"] = json!({ "title": "Old" });
+    let mut other_type = linear_issue("create", "ENG");
+    other_type["type"] = json!("Project");
+    let deliveries = [linear_issue("create", "OPS"), removed, renamed, other_type];
+
+    for body in deliveries {
+        let (status, reply) = setup.send_linear(&address, &body);
+
+        assert_eq!(status, 200, "{reply}");
+        assert_eq!(reply, r#"{"outcome":"dropped"}"#);
+    }
+    assert!(setup.published().is_empty());
+}
+
+#[test]
+fn a_linear_webhook_then_a_poll_of_the_same_changes_make_one_message_each() {
+    let mut setup = Setup::linear_hooks("linear-hook-then-poll");
+    setup.poll_linear(json!([]), json!([]));
+    let address = setup.start(&["serve", &setup.factory()]);
+    for body in [
+        linear_issue("create", "ENG"),
+        linear_state_change(),
+        linear_comment(),
+    ] {
+        assert_eq!(setup.send_linear(&address, &body).0, 200);
+    }
+    let before = setup.published();
+
+    let mut comment = json!({ "id": "comment-1", "body": "Looks good", "createdAt": "2026-11-17T10:30:00.000Z",
+        "url": "https://linear.app/acme/issue/ENG-7/fix-the-thing#comment-comment-1",
+        "user": { "displayName": "max" }, "issue": polled_issue() });
+    comment["issue"]["history"] = json!({ "nodes": [] });
+    setup.poll_linear(json!([polled_issue()]), json!([comment]));
+
+    let kinds = |messages: &[herdr_bus::Message]| -> Vec<String> {
+        messages
+            .iter()
+            .filter(|m| m.kind.starts_with("linear.") && !m.kind.contains("baseline"))
+            .map(|m| m.kind.clone())
+            .collect()
+    };
+    let after = setup.published();
+    assert_eq!(kinds(&after), kinds(&before));
+    assert_eq!(
+        after
+            .iter()
+            .filter(|m| m.kind == "factory.task.requested")
+            .count(),
+        3
+    );
+}
+
+#[test]
+fn a_linear_poll_then_a_webhook_of_the_same_changes_make_one_message_each() {
+    let mut setup = Setup::linear_hooks("linear-poll-then-hook");
+    setup.poll_linear(json!([]), json!([]));
+    let mut comment = json!({ "id": "comment-1", "body": "Looks good", "createdAt": "2026-11-17T10:30:00.000Z",
+        "url": "https://linear.app/acme/issue/ENG-7/fix-the-thing#comment-comment-1",
+        "user": { "displayName": "max" }, "issue": polled_issue() });
+    comment["issue"]["history"] = json!({ "nodes": [] });
+    setup.poll_linear(json!([polled_issue()]), json!([comment]));
+    let before = setup.published();
+    assert_eq!(
+        before
+            .iter()
+            .filter(|m| m.kind.starts_with("linear.") && !m.kind.contains("baseline"))
+            .count(),
+        3
+    );
+    let address = setup.start(&["serve", &setup.factory()]);
+
+    for body in [
+        linear_issue("create", "ENG"),
+        linear_state_change(),
+        linear_comment(),
+    ] {
+        let (status, reply) = setup.send_linear(&address, &body);
+
+        // A change that shares the poll's id publishes again, and herdr-bus drops it.
+        assert_eq!(status, 200, "{reply}");
+    }
+    assert_eq!(setup.published(), before);
 }
