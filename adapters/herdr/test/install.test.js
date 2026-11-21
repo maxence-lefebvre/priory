@@ -208,3 +208,43 @@ test("--copy leaves no staging folder behind", () => {
   assert.equal(install(home, VIEWS, "--copy").status, 0);
   assert.deepEqual(readdirSync(join(home, ".config/herdr-app/.priory-staging")), []);
 });
+
+test("removes a copy it made of a mod the adapter no longer ships, and keeps every other mod", () => {
+  const home = scratch();
+  const app = join(home, ".config/herdr-app");
+  for (const [mod, files] of [["priory-gone", { [MARKER]: "abc\n", "main.js": "" }], ["someone-else", { "main.js": "mine" }]]) {
+    mkdirSync(join(app, "mods", mod), { recursive: true });
+    for (const [name, body] of Object.entries(files)) writeFileSync(join(app, "mods", mod, name), body);
+  }
+  const dry = install(home, VIEWS, "--copy", "--dry-run");
+  assert.equal(dry.status, 0, dry.stderr);
+  assert.match(dry.stdout, new RegExp(`^remove ${app}/mods/priory-gone$`, "m"));
+  assert.equal(existsSync(join(app, "mods/priory-gone")), true);
+  const run = install(home, VIEWS, "--copy");
+  assert.equal(run.status, 0, run.stderr);
+  assert.equal(existsSync(join(app, "mods/priory-gone")), false);
+  assert.equal(readFileSync(join(app, "mods/someone-else/main.js"), "utf8"), "mine");
+});
+
+test("removes its own link to a mod the adapter no longer ships, and keeps a link to anything else", () => {
+  const home = scratch();
+  const app = join(home, ".config/herdr-app");
+  mkdirSync(join(app, "mods"), { recursive: true });
+  symlinkSync(join(HERDR, "mods/priory-gone"), join(app, "mods/priory-gone"));
+  symlinkSync(join(home, "priory-gone"), join(app, "mods/elsewhere-gone"));
+  const run = install(home, VIEWS);
+  assert.equal(run.status, 0, run.stderr);
+  assert.equal(lstatSync(join(app, "mods/priory-gone"), { throwIfNoEntry: false }), undefined);
+  assert.equal(readlinkSync(join(app, "mods/elsewhere-gone")), join(home, "priory-gone"));
+});
+
+test("a refused install removes nothing", () => {
+  const home = scratch();
+  const app = join(home, ".config/herdr-app");
+  mkdirSync(join(app, "mods/priory-gone"), { recursive: true });
+  writeFileSync(join(app, "mods/priory-gone", MARKER), "abc\n");
+  mkdirSync(join(app, "mods", MODS[0]));
+  const run = install(home, VIEWS, "--copy");
+  assert.equal(run.status, 1);
+  assert.equal(existsSync(join(app, "mods/priory-gone", MARKER)), true);
+});
