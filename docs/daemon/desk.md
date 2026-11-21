@@ -56,7 +56,7 @@ A to-do is an item a person owns on the desk, with no task or agent attached.
 - `priory todo list [--json]` prints every to-do, open ones first: id, text, band, due, created and
   done.
 
-`add` and `done` go to the daemon over `priory.sock`, as `priory answer` does. `POST /api/todos` and
+`add` and `done` go to the daemon over its socket, as `priory answer` does. `POST /api/todos` and
 `POST /api/todos/{id}/done` are their twins (see [serve.md](../reference/serve.md#writes)). An open
 to-do shows on the desk as a `todo` row and ranks after every ask, before the rest (see The next
 thing). A to-do sends no notification.
@@ -128,7 +128,7 @@ prompts, so its next run resumes the step agent's session with it. If its latest
 replaced, not repeated. The line that ends the step is added only when no queued prompt carries it
 already. `priory cancel <task>` drops an active task with the reason `cancelled from the desk`, ends its
 live run as `cancelled` and kills its tmux session. With `--expected REVISION`, a cancel on a stale
-read is refused, as [runs.md](runs.md#queue) says. Both go to the daemon over `priory.sock`, as
+read is refused, as [runs.md](runs.md#queue) says. Both go to the daemon over its socket, as
 `priory answer` does, and are refused for a task in any other state. An answer to an ask of a done,
 failed or dropped task is refused too. The daemon stores each refused answer with the revision it was
 sent for, where it came from and why, and every revision of each ask: `priory asks --json` lists
@@ -137,7 +137,7 @@ them as `revisions` and `refused`.
 ## Say
 
 `priory say TASK TEXT` sends TEXT to the agent of a task at a model step. It goes to the daemon over
-`priory.sock` and queues `A person says: TEXT` through the outbox, as an answer does, then the line
+its socket and queues `A person says: TEXT` through the outbox, as an answer does, then the line
 that ends the step, when no queued prompt carries it already. The fixed words come first so that a
 TEXT starting with `/` never runs as a slash command. It goes ahead of the task's other queued
 prompts.
@@ -172,7 +172,7 @@ carries that line as `paused`.
 ## Revive
 
 `priory revive <task> [--step <step>]` restarts a failed or dropped task as its next generation. A
-task starts at generation 1. The revive goes to the daemon over `priory.sock` and, in one
+task starts at generation 1. The revive goes to the daemon over its socket and, in one
 transaction:
 
 1. Withdraws every open ask and wait of the task, recording the new generation on each, and marks
@@ -214,7 +214,7 @@ A failed task is one its repair could not restart (see Repair).
 kind and id columns. `DURATION` is a span such as `2h` or `1d`. `TIME` is an RFC 3339 time such as
 `2026-11-23T09:00:00+01:00`. `priory snooze KIND ID --clear` brings the item back at once.
 
-The snooze goes to the daemon over `priory.sock`. The daemon refuses a time that is not in the
+The snooze goes to the daemon over its socket. The daemon refuses a time that is not in the
 future, an item that the desk does not list, and a `--clear` for an item that is not snoozed. A
 second snooze of an item replaces the first. Snoozing changes only what a person sees: the task,
 its runs, asks and waits stay as they are, and the agent keeps waiting.

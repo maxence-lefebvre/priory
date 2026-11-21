@@ -7,7 +7,7 @@ The daemon never reads the terminal screen to decide an agent is idle.
 ## How a hook reaches the daemon
 
 `priory hook <event>` reads Claude's hook JSON on stdin. It sends one JSON line to the daemon over
-the socket `priory.sock` in [Priory home](home.md), such as:
+the daemon's socket (see [Priory home](home.md#socket-spool-and-lock)), such as:
 
 ```json
 {"event": "UserPromptSubmit", "session": "6f1c0b9e-0d2a-4f43-9a51-3c2e8e1b7d10", "prompt": "Implement the request and run the tests.", "transcript": "/home/me/.claude/projects/.../6f1c0b9e.jsonl"}
