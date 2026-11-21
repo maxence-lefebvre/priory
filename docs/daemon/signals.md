@@ -101,3 +101,25 @@ the turn ends, it follows the nudge in the same prompt.
 
 The nudge is an outbox prompt, not the hook's `decision: block`. The daemon already confirms,
 retries and survives a restart for outbox prompts, while the hook has no reply channel beyond `ok`.
+
+### The nudge's evaluation
+
+[`nudge.eval.toml`](../../crates/priory-core/src/nudge.eval.toml) measures the nudge's text, kept
+in [`nudge.txt`](../../crates/priory-core/src/nudge.txt), against a proposed text. Each case
+starts with a step prompt that lacks its ending line, so the agent ends that turn in text, as a
+silent turn does. The nudge follows, with the step's ending line. A run hits when the agent then
+calls the tool the case expects. [evaluating-a-prompt.md](../evaluating-a-prompt.md) says how to
+run it again.
+
+<!-- priory eval nudge.eval.toml -->
+Model `haiku`, runs per case: 5, $0.0704 spent.
+
+| Case | Variant | Expected | Hits | What the agent did |
+| ---- | ------- | -------- | ---- | ------------------ |
+| finished | old | result passed | 5/5 | result passed 5 |
+| finished | new | result passed | 5/5 | result passed 5 |
+| needs-a-person | old | ask | 0/5 | result done 5 |
+| needs-a-person | new | ask | 5/5 | ask 5 |
+| waiting-on-checks | old | wait checks | 5/5 | wait checks 5 |
+| waiting-on-checks | new | wait checks | 5/5 | wait checks 5 |
+<!-- /priory eval -->

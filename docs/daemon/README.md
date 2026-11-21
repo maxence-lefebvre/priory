@@ -62,7 +62,8 @@ The keys of `factory.toml`, workflows and agents are in [docs/reference/](../ref
 - [sessions.md](sessions.md): shared agent sessions, attaching to a run's terminal, and trusting a
   clone for Claude.
 - [codex.md](codex.md): how a Codex run differs from a Claude run.
-- [signals.md](signals.md): the hook signals a run sends, and the nudge after a silent turn.
+- [signals.md](signals.md): the hook signals a run sends, the nudge after a silent turn, and the
+  nudge's evaluation.
 - [guard.md](guard.md): the tool guard, which denies irreversible tool calls no person approved.
 - [health.md](health.md): run verdicts, failed or blocked tasks, repair, and the stall handler.
 - [desk.md](desk.md): `priory desk`, reports and `priory post`, resume, cancel, revive, snooze, say,

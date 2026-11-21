@@ -18,13 +18,18 @@ fn instructions() -> String {
 /// `session`. `local` answers the tools this process serves itself; every other call goes to the
 /// daemon, which applies it and replies.
 pub fn serve(session: &str, local: &Local) -> Result<(), String> {
+    serve_with(&tools(), &|params| call(session, params, local))
+}
+
+/// Serves `tools` over MCP on stdin and stdout, answering each `tools/call` with `call`.
+pub(crate) fn serve_with(tools: &Value, call: &dyn Fn(&Value) -> Value) -> Result<(), String> {
     let stdout = std::io::stdout();
     for line in std::io::stdin().lock().lines() {
         let line = line.map_err(|error| error.to_string())?;
         if line.trim().is_empty() {
             continue;
         }
-        let Some(reply) = respond(session, &line, local) else {
+        let Some(reply) = respond(&line, tools, call) else {
             continue;
         };
         let mut out = stdout.lock();
@@ -36,7 +41,7 @@ pub fn serve(session: &str, local: &Local) -> Result<(), String> {
 }
 
 /// The reply to one JSON-RPC message, or `None` for a notification.
-fn respond(session: &str, line: &str, local: &Local) -> Option<Value> {
+fn respond(line: &str, tools: &Value, call: &dyn Fn(&Value) -> Value) -> Option<Value> {
     let Ok(request) = serde_json::from_str::<Value>(line) else {
         return Some(error(Value::Null, -32700, "parse error"));
     };
@@ -57,8 +62,8 @@ fn respond(session: &str, line: &str, local: &Local) -> Option<Value> {
             })
         }
         "ping" => json!({}),
-        "tools/list" => json!({ "tools": tools() }),
-        "tools/call" => call(session, params, local),
+        "tools/list" => json!({ "tools": tools }),
+        "tools/call" => call(params),
         method => return Some(error(id, -32601, &format!("unknown method {method}"))),
     };
     Some(json!({ "jsonrpc": "2.0", "id": id, "result": result }))
@@ -86,6 +91,11 @@ fn call(session: &str, params: &Value, local: &Local) -> Value {
                 .map_err(|error| format!("unreadable reply {reply:?}: {error}"))?
         })
     });
+    content(reply)
+}
+
+/// A tool result that carries `reply`'s text, with `isError` for an error.
+pub(crate) fn content(reply: Result<String, String>) -> Value {
     let (text, failed) = match reply {
         Ok(text) => (text, false),
         Err(text) => (text, true),
@@ -93,7 +103,7 @@ fn call(session: &str, params: &Value, local: &Local) -> Value {
     json!({ "content": [{ "type": "text", "text": text }], "isError": failed })
 }
 
-fn tools() -> Value {
+pub(crate) fn tools() -> Value {
     let text = |description: &str| json!({ "type": "string", "description": description });
     let condition = json!({
         "type": "object",
