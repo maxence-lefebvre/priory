@@ -41,9 +41,11 @@ const OUTPUT: &str = "factory.intake";
 /// Takes a state file back before schema 28, which added search, 29, which added grades, 30,
 /// which added snoozes, 31, which added read reports, 32, which added the pause, 34, which added
 /// reports of sections, 36, which added deliveries, 37, which added progress, 39, which added run
-/// actions, 40, which added answer actions, and 42, which added dispatches. Schema 38's visits table is created only if
+/// actions, 40, which added answer actions, 42, which added dispatches, and 49, which added task ends. Schema 38's visits table is created only if
 /// missing, so it stays.
-const UNDO_SINCE_SEARCH: &str = "ALTER TABLE actions DROP COLUMN ask;
+const UNDO_SINCE_SEARCH: &str = "DROP TRIGGER task_created; DROP TRIGGER task_ended; DROP TRIGGER task_restarted;
+  DROP TABLE task_ends; ALTER TABLE exports DROP COLUMN ended; ALTER TABLE tasks DROP COLUMN created;
+  ALTER TABLE actions DROP COLUMN ask;
   ALTER TABLE actions DROP COLUMN revision; ALTER TABLE actions DROP COLUMN command; ALTER TABLE actions DROP COLUMN generation;
   ALTER TABLE actions DROP COLUMN stdout;
   ALTER TABLE actions DROP COLUMN stderr; ALTER TABLE actions DROP COLUMN pid;
@@ -5137,7 +5139,9 @@ fn a_state_file_whose_asks_an_approval_names_upgrades_to_outside_asks() {
     // The state file as version 32 left it: every ask belongs to a task.
     let db = rusqlite::Connection::open(setup.dir.join("priory.db")).unwrap();
     db.execute_batch(
-        "ALTER TABLE actions DROP COLUMN ask; ALTER TABLE actions DROP COLUMN revision;
+        "DROP TRIGGER task_created; DROP TRIGGER task_ended; DROP TRIGGER task_restarted;
+         DROP TABLE task_ends; ALTER TABLE exports DROP COLUMN ended; ALTER TABLE tasks DROP COLUMN created;
+         ALTER TABLE actions DROP COLUMN ask; ALTER TABLE actions DROP COLUMN revision;
          ALTER TABLE actions DROP COLUMN command; ALTER TABLE actions DROP COLUMN generation;
          ALTER TABLE actions DROP COLUMN stdout; ALTER TABLE actions DROP COLUMN stderr;
          ALTER TABLE actions DROP COLUMN pid; ALTER TABLE actions DROP COLUMN pid_started;
@@ -10696,7 +10700,7 @@ fn a_finished_task_sends_one_trace_with_a_span_per_run_and_a_span_per_step_under
         rows.first().is_some_and(|row| row[4] == "done")
     });
 
-    let spans = setup.until_spans(4);
+    let spans = setup.until_spans(5);
 
     let posts = setup.posts();
     for post in &posts {
@@ -10705,13 +10709,13 @@ fn a_finished_task_sends_one_trace_with_a_span_per_run_and_a_span_per_step_under
         assert_eq!(attribute(resource, "service.name"), "priory");
         assert_eq!(attribute(resource, "host.name"), "runner");
     }
-    assert_eq!(spans.len(), 4, "{spans:?}");
+    assert_eq!(spans.len(), 5, "{spans:?}");
     let trace = &spans[0]["traceId"];
     assert!(is_hex(trace, 32), "{trace}");
     assert!(spans.iter().all(|span| &span["traceId"] == trace));
     let ids: std::collections::HashSet<_> =
         spans.iter().map(|span| span["spanId"].clone()).collect();
-    assert_eq!(ids.len(), 4);
+    assert_eq!(ids.len(), 5);
     assert!(ids.iter().all(|id| is_hex(id, 16)));
     let records = setup.trace();
     assert_eq!(records.len(), 2);
@@ -10729,10 +10733,11 @@ fn a_finished_task_sends_one_trace_with_a_span_per_run_and_a_span_per_step_under
             })
             .unwrap_or_else(|| panic!("no span for run {}: {spans:?}", data["run"]));
         assert_eq!(step["parentSpanId"], run["spanId"]);
-        assert!(
-            run.get("parentSpanId").is_none_or(|parent| parent == ""),
-            "{run}"
-        );
+        let root = spans
+            .iter()
+            .find(|span| span["name"] == "task github:owner/repo#42")
+            .unwrap();
+        assert_eq!(run["parentSpanId"], root["spanId"]);
         let attributes = &step["attributes"];
         assert_eq!(attribute(attributes, "priory.task.id"), "1");
         assert_eq!(attribute(attributes, "priory.run.id"), data["run"]);
@@ -10812,8 +10817,80 @@ fn exported(name: &str, endpoint: &str) -> (Setup, Vec<serde_json::Value>) {
     setup.until("tasks", |rows| {
         rows.first().is_some_and(|row| row[4] == "done")
     });
-    let spans = setup.until_spans(4);
+    let spans = setup.until_spans(5);
     (setup, spans)
+}
+
+#[test]
+fn a_finished_task_sends_one_root_span_that_every_run_span_is_a_child_of() {
+    let mut setup = Setup::with_workflow("otlp-root", STEPS);
+    setup.telemetry("http://127.0.0.1:4318");
+    setup.calls(&[result("ready"), result("passed")]);
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == "done")
+    });
+
+    let spans = setup.until_spans(5);
+
+    let roots: Vec<_> = spans
+        .iter()
+        .filter(|span| span.get("parentSpanId").is_none_or(|parent| parent == ""))
+        .collect();
+    assert_eq!(roots.len(), 1, "{spans:?}");
+    let root = roots[0];
+    assert_eq!(root["name"], "task github:owner/repo#42");
+    let attributes = &root["attributes"];
+    assert_eq!(attribute(attributes, "priory.task.id"), "1");
+    assert_eq!(attribute(attributes, "priory.key"), "github:owner/repo#42");
+    assert_eq!(attribute(attributes, "priory.workflow"), "implement");
+    assert_eq!(attribute(attributes, "priory.lane"), "none/misc");
+    assert_eq!(attribute(attributes, "priory.state"), "done");
+    let runs: Vec<_> = spans
+        .iter()
+        .filter(|span| span["name"] == "invoke_agent implementer")
+        .collect();
+    assert_eq!(runs.len(), 2, "{spans:?}");
+    assert!(runs.iter().all(|run| run["parentSpanId"] == root["spanId"]));
+    let nanos = |span: &serde_json::Value, key: &str| -> u64 {
+        span[key].as_str().unwrap().parse().unwrap()
+    };
+    let (start, end) = (
+        nanos(root, "startTimeUnixNano"),
+        nanos(root, "endTimeUnixNano"),
+    );
+    for run in runs {
+        assert!(start <= nanos(run, "startTimeUnixNano") && nanos(run, "endTimeUnixNano") <= end);
+    }
+}
+
+#[test]
+fn a_run_cancelled_before_any_step_sends_a_span_with_its_end_reason_under_the_root() {
+    let mut setup = Setup::with_workflow("otlp-cancelled", STEPS);
+    setup.telemetry("http://127.0.0.1:4318");
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 1);
+    assert!(setup.priory(&["cancel", "1"]).status.success());
+
+    let spans = setup.until_spans(2);
+
+    assert_eq!(spans.len(), 2, "{spans:?}");
+    let root = spans
+        .iter()
+        .find(|span| span["name"] == "task github:owner/repo#42")
+        .unwrap_or_else(|| panic!("no root: {spans:?}"));
+    assert_eq!(attribute(&root["attributes"], "priory.state"), "dropped");
+    let run = spans
+        .iter()
+        .find(|span| span["name"] == "invoke_agent implementer")
+        .unwrap_or_else(|| panic!("no run: {spans:?}"));
+    assert_eq!(run["parentSpanId"], root["spanId"]);
+    assert_eq!(
+        attribute(&run["attributes"], "priory.run.ended_as"),
+        "cancelled"
+    );
 }
 
 #[test]
@@ -10829,7 +10906,7 @@ fn a_restarted_daemon_resends_no_span() {
     std::thread::sleep(Duration::from_secs(3));
 
     assert_eq!(setup.posts().len(), posts, "{:?}", setup.posts());
-    assert_eq!(spans(&setup.posts()).len(), 4);
+    assert_eq!(spans(&setup.posts()).len(), 5);
 }
 
 #[test]
@@ -10839,7 +10916,7 @@ fn a_new_endpoint_gets_every_record_with_the_same_trace_and_span_ids() {
     setup.telemetry("http://127.0.0.1:4319/");
     setup.start();
 
-    let all = setup.until_spans(8);
+    let all = setup.until_spans(10);
 
     let ids = |spans: &[serde_json::Value]| {
         let mut ids: Vec<_> = spans
@@ -10857,7 +10934,7 @@ fn a_new_endpoint_gets_every_record_with_the_same_trace_and_span_ids() {
         .filter(|post| post["url"] == "http://127.0.0.1:4319/v1/traces")
         .collect();
     assert_eq!(ids(&spans(&resent)), ids(&first));
-    assert_eq!(all.len(), 8);
+    assert_eq!(all.len(), 10);
 }
 
 #[test]
@@ -10872,7 +10949,7 @@ fn a_failed_send_is_retried_and_its_spans_arrive_once() {
         rows.first().is_some_and(|row| row[4] == "done")
     });
 
-    setup.until_spans(4);
+    setup.until_spans(5);
 
     assert!(!setup.dir.join("fake/curl-fail").exists());
     let log = fs::read_to_string(setup.dir.join("daemon.log")).unwrap();
@@ -10882,7 +10959,7 @@ fn a_failed_send_is_retried_and_its_spans_arrive_once() {
     );
     assert!(log.contains("curl: (7)"), "{log}");
     std::thread::sleep(Duration::from_secs(2));
-    assert_eq!(spans(&setup.posts()).len(), 4);
+    assert_eq!(spans(&setup.posts()).len(), 5);
 }
 
 #[test]
@@ -10900,8 +10977,8 @@ fn a_batch_the_endpoint_rejects_as_malformed_is_skipped_rather_than_retried() {
 
     let calls = fs::read_to_string(setup.dir.join("fake/curl.log")).unwrap();
     assert_eq!(calls.lines().count(), setup.posts().len() + 1, "{calls}");
-    // A retry would deliver the rejected spans, making all four arrive.
-    assert!(spans(&setup.posts()).len() < 4, "{:?}", setup.posts());
+    // A retry would deliver the rejected spans, making all five arrive.
+    assert!(spans(&setup.posts()).len() < 5, "{:?}", setup.posts());
     let log = fs::read_to_string(setup.dir.join("daemon.log")).unwrap();
     assert_eq!(
         log.matches("rejected spans with HTTP 400").count(),

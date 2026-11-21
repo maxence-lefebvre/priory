@@ -250,6 +250,18 @@ and `tokens` as above, and:
 
 Priory writes these records as described in [search](daemon/search.md).
 
+## Spans
+
+A factory that exports OpenTelemetry spans (Priory does: see
+[OpenTelemetry export](daemon/trace.md#opentelemetry-export)) maps one task to one trace, with a root span
+per generation, and `factory.step.ended` records to spans below it:
+
+- A root span per task generation, from its creation to its end, which no record carries. The
+  exporter reads it from the task, so a task needs no record to end.
+- A span per run, child of the root: from a `factory.step.ended` record's `run`, or, for a run that
+  ended with no step, from the run itself.
+- A span per step, child of its run span, or of the root when it has no run.
+
 ## Rules
 
 - `id` is a UUID, stable across retries, so a reader drops duplicates by `id`.
