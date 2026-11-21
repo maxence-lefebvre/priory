@@ -30,6 +30,7 @@ pub mod risk;
 mod room;
 mod route;
 pub mod runners;
+pub mod score;
 pub mod screen;
 pub mod search;
 pub mod sections;
