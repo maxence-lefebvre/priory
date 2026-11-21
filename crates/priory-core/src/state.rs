@@ -2150,11 +2150,13 @@ pub(crate) fn disk_due(
     tx.commit()
 }
 
-/// The active task whose own key is `key`: owning the key as a resource is not enough.
+/// The active task whose own key is `key`, or the oldest batch part of it, keyed `<key>.<part>`:
+/// owning the key as a resource is not enough.
 pub(crate) fn keyed(tx: &Transaction, key: Option<&String>) -> rusqlite::Result<Option<Task>> {
     tx.query_row(
-        "SELECT id FROM tasks WHERE key = ?1
-         AND state NOT IN ('done', 'failed', 'dropped') ORDER BY id LIMIT 1",
+        "SELECT id FROM tasks WHERE (key = ?1 OR batch IS NOT NULL
+           AND substr(key, 1, length(?1) + 1) = ?1 || '.' AND batch_entry IS NOT NULL)
+         AND state NOT IN ('done', 'failed', 'dropped') ORDER BY key != ?1, id LIMIT 1",
         [key],
         |row| Ok(Task { id: row.get(0)? }),
     )
@@ -2186,14 +2188,19 @@ pub(crate) fn taken(
     Ok(other.map(|other| format!("{resource} belongs to task {}, not this one", other.id)))
 }
 
-/// Every active task that owns any of `resources`, in the order `owner` ranks them.
+/// Every active task that owns any of `resources`, in the order `owner` ranks them. The oldest
+/// active batch part of a resource, keyed `<resource>.<part>`, owns it too, and only that part.
 fn owners(tx: &Transaction, resources: &[String]) -> rusqlite::Result<Vec<Task>> {
     let resources = serde_json::to_string(resources).expect("resources serialize");
     tx.prepare(
         "SELECT DISTINCT tasks.id, tasks.key IN (SELECT value FROM json_each(?1)) AS keyed
-         FROM owned JOIN tasks ON tasks.id = owned.task
-         WHERE owned.resource IN (SELECT value FROM json_each(?1))
-         AND tasks.state NOT IN ('done', 'failed', 'dropped') ORDER BY keyed DESC, tasks.id",
+         FROM tasks WHERE tasks.state NOT IN ('done', 'failed', 'dropped')
+         AND (tasks.id IN (SELECT task FROM owned WHERE resource IN (SELECT value FROM json_each(?1)))
+           OR tasks.id = (SELECT min(part.id) FROM tasks AS part, json_each(?1) AS named
+             WHERE part.batch_entry IS NOT NULL
+             AND part.state NOT IN ('done', 'failed', 'dropped')
+             AND substr(part.key, 1, length(named.value) + 1) = named.value || '.'))
+         ORDER BY keyed DESC, tasks.id",
     )?
     .query_map([resources], |row| Ok(Task { id: row.get(0)? }))?
     .collect()
