@@ -107,6 +107,13 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
     if once {
         drain(&*bus, &consumer, &mut db, &trace, counting.get(&home))?;
         runners::flush(&db, &*bus)?;
+        match state::waiting(&db)? {
+            0 => {}
+            1 => println!("1 task waits: --once only routes; a running daemon starts it"),
+            waiting => {
+                println!("{waiting} tasks wait: --once only routes; a running daemon starts them")
+            }
+        }
         return Ok(());
     }
     // Without its key the daemon sends no notification, but still runs tasks.
@@ -1763,6 +1770,16 @@ fn launch(
             env,
         },
     )
+    .map_err(|failed| {
+        // The full command runs to kilobytes, so it goes to the daemon's log, not the reason.
+        if let Some(command) = &failed.command {
+            eprintln!(
+                "priory daemon: starting {}: {}\n  command: {command}",
+                started.tmux, failed.reason
+            );
+        }
+        failed.reason
+    })
 }
 
 /// Compacts each shared session left idle past its agent's `idleCompactAt` before its prompt cache

@@ -67,9 +67,11 @@ derives from `PRIORY_HOME` the same way:
 - `/tmp/priory-<uid>/<hash>.sock` otherwise.
 
 `<hash>` is 16 hex digits of the FNV-1a hash of the canonical path of `PRIORY_HOME`, so two homes
-never share a socket. The daemon makes the folder with mode `0700`. It refuses to start when the
-folder exists but another user owns it, it is not a folder, or its mode lets anyone else in; the
-error names the folder. Fix it with `chmod 700`, or remove it. A socket left by a dead daemon is
+never share a socket. The daemon makes the folder with mode `0700`. When the folder exists and is
+yours but its mode lets anyone else in, the daemon sets it to `0700`. It refuses to start when
+another user owns the folder or it is not a folder. The error names the folder and, for the `/tmp`
+fallback, says why the fallback was used. Remove the folder, or set `XDG_RUNTIME_DIR` to a short
+folder of your own. A socket left by a dead daemon is
 replaced at the next start. The daemon binds the socket as `<hash>.new` and renames it to
 `<hash>.sock` once it listens, so a client that finds `<hash>.sock` is never refused by a starting
 daemon.

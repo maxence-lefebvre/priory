@@ -1915,6 +1915,30 @@ fn a_turn_longer_than_its_step_timeout_ends_the_run_and_blocks_its_task() {
 }
 
 #[test]
+fn a_tmux_socket_path_over_the_limit_blocks_the_task_with_the_cause_first() {
+    let mut setup = Setup::new("tmux-long");
+    let long = setup.tmux.path().join("t".repeat(100));
+    fs::create_dir_all(&long).unwrap();
+    setup.publish(&requested(42));
+
+    setup.start_with(
+        Path::new(env!("CARGO_BIN_EXE_priory")),
+        &[("TMUX_TMPDIR", long.to_str().unwrap())],
+    );
+
+    let tasks = setup.until("tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == "blocked")
+    });
+    let reason = &tasks[0][7];
+    assert!(
+        reason.starts_with("the tmux socket path ")
+            && reason.contains("over the 108-byte limit of a Unix socket; set TMUX_TMPDIR"),
+        "{reason}"
+    );
+    assert!(!reason.contains("new-session"), "{reason}");
+}
+
+#[test]
 fn two_tasks_that_fit_both_start_without_waiting_for_each_other() {
     let mut setup = Setup::new("two-fit");
     setup.publish(&requested(42));
@@ -16256,22 +16280,35 @@ fn two_homes_get_two_sockets_and_a_command_reaches_only_its_own_daemon() {
 }
 
 #[test]
-fn a_daemon_refuses_a_socket_directory_that_others_can_enter() {
+fn a_daemon_tightens_its_own_socket_directory_that_others_can_enter() {
     let mut setup = Setup::new("socket-loose");
     let run = setup.tmux.path().join("loose");
     let dir = run.join("priory");
     fs::create_dir_all(&dir).unwrap();
-    fs::set_permissions(&dir, fs::Permissions::from_mode(0o755)).unwrap();
+    fs::set_permissions(&dir, fs::Permissions::from_mode(0o775)).unwrap();
 
     setup.start_with(
         Path::new(env!("CARGO_BIN_EXE_priory")),
         &[("XDG_RUNTIME_DIR", run.to_str().unwrap())],
     );
 
-    let status = setup.daemon.as_mut().unwrap().wait().unwrap();
-    let log = fs::read_to_string(setup.dir.join("daemon.log")).unwrap();
-    assert!(!status.success(), "{log}");
-    assert!(log.contains("not a private folder of this user"), "{log}");
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !socket_in_dir(&dir) && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let log = fs::read_to_string(setup.dir.join("daemon.log")).unwrap_or_default();
+    assert!(socket_in_dir(&dir), "{log}");
+    assert_eq!(
+        fs::metadata(&dir).unwrap().permissions().mode() & 0o777,
+        0o700
+    );
+}
+
+fn socket_in_dir(dir: &Path) -> bool {
+    fs::read_dir(dir).is_ok_and(|mut entries| {
+        entries
+            .any(|entry| entry.is_ok_and(|entry| entry.path().extension() == Some("sock".as_ref())))
+    })
 }
 
 /// `OPEN_PR` with a `risk` step between the implementation and its `approve-pr` ask.

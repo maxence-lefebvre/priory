@@ -3011,6 +3011,15 @@ pub(crate) fn block(
     tx.commit()
 }
 
+/// How many tasks are queued or ready to start a run.
+pub(crate) fn waiting(db: &Connection) -> rusqlite::Result<i64> {
+    db.query_row(
+        "SELECT count(*) FROM tasks WHERE state IN ('queued', 'ready')",
+        [],
+        |row| row.get(0),
+    )
+}
+
 pub(crate) struct LiveRun {
     pub id: i64,
     pub task: i64,
