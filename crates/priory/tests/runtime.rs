@@ -41,10 +41,11 @@ const OUTPUT: &str = "factory.intake";
 /// Takes a state file back before schema 28, which added search, 29, which added grades, 30,
 /// which added snoozes, 31, which added read reports, 32, which added the pause, 34, which added
 /// reports of sections, 36, which added deliveries, 37, which added progress, 39, which added run
-/// actions, 40, which added answer actions, 42, which added dispatches, 49, which added task ends, 51, which added a run's crossing of `compactAt`, 53, which added intervention levels, 56, which added the step an irreversible approval lets run, 58, which added withdrawal reasons, and 59, which added green stack gates and returned routed asks, 61, which added findings, 62, which added merge risk, and 63, which added chosen subscriptions and approval generations. Schema 38's visits
+/// actions, 40, which added answer actions, 42, which added dispatches, 49, which added task ends, 51, which added a run's crossing of `compactAt`, 53, which added intervention levels, 56, which added the step an irreversible approval lets run, 58, which added withdrawal reasons, and 59, which added green stack gates and returned routed asks, 61, which added findings, 62, which added merge risk, 63, which added plan fields, and 64, which added chosen subscriptions and approval generations. Schema 38's visits
 /// table is created only if missing, so it stays.
 const UNDO_SINCE_SEARCH: &str = "ALTER TABLE subscriptions DROP COLUMN chosen; ALTER TABLE approvals DROP COLUMN generation;
-ALTER TABLE tasks DROP COLUMN merge_risk; ALTER TABLE results DROP COLUMN merge_risk;
+         ALTER TABLE tasks DROP COLUMN plan_goal; ALTER TABLE tasks DROP COLUMN plan_testing; ALTER TABLE tasks DROP COLUMN plan_brief; ALTER TABLE tasks DROP COLUMN verification;
+         ALTER TABLE tasks DROP COLUMN merge_risk; ALTER TABLE results DROP COLUMN merge_risk;
          DROP TRIGGER ask_returns_from_its_lead; ALTER TABLE waits DROP COLUMN green;
   DROP TRIGGER ask_withdrawn; ALTER TABLE asks DROP COLUMN withdrawn_reason;
   ALTER TABLE waits DROP COLUMN withdrawn_reason; ALTER TABLE ask_withdrawals DROP COLUMN reason;
@@ -5509,6 +5510,7 @@ fn a_state_file_whose_asks_an_approval_names_upgrades_to_outside_asks() {
     let db = rusqlite::Connection::open(setup.dir.join("priory.db")).unwrap();
     db.execute_batch(
         "ALTER TABLE subscriptions DROP COLUMN chosen; ALTER TABLE approvals DROP COLUMN generation;
+         ALTER TABLE tasks DROP COLUMN plan_goal; ALTER TABLE tasks DROP COLUMN plan_testing; ALTER TABLE tasks DROP COLUMN plan_brief; ALTER TABLE tasks DROP COLUMN verification;
          ALTER TABLE tasks DROP COLUMN merge_risk; ALTER TABLE results DROP COLUMN merge_risk;
          DROP TRIGGER ask_returns_from_its_lead; ALTER TABLE waits DROP COLUMN green;
          ALTER TABLE tasks DROP COLUMN intervention; ALTER TABLE tasks DROP COLUMN lead;
@@ -7362,6 +7364,33 @@ fn an_irreversible_model_step_asks_again_after_a_commit_instead_of_starting() {
     );
 }
 
+#[test]
+fn a_reopened_approval_shows_the_verification_a_later_result_sent() {
+    let setup = asked_to_open("ship-reopen-text", APPROVE_THEN_SHIP);
+    setup.calls(&[json!({ "name": "result", "arguments": {
+        "outcome": "passed", "summary": "Polished", "verification": "cargo test polish"
+    } })]);
+    setup.hold("hold-stop");
+    let answered = setup.priory(&["answer", "1", "open", "--revision", "1"]);
+    assert!(answered.status.success(), "{answered:?}");
+    setup.written("fake/tools.log");
+    while setup.replies().len() < 2 {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    setup.commit(1, "polish.txt");
+
+    setup.release("hold-stop");
+
+    setup.until("asks", |rows| rows.len() == 1 && rows[0][2] == "2");
+    let ask = &asks_json(&setup)["asks"][0];
+    assert!(
+        ask["text"]
+            .as_str()
+            .is_some_and(|text| text.contains("Verification: cargo test polish")),
+        "{ask}"
+    );
+}
+
 impl Setup {
     /// A setup whose tasks 1 to `n` ran to done, with the daemon stopped.
     fn ended(name: &str, n: u64) -> Setup {
@@ -9103,11 +9132,11 @@ fn an_approval_stored_before_generations_were_kept_is_asked_again_after_the_upgr
     );
     setup.written("fake/tools.log");
     setup.crash();
-    // The state file as version 62 left it: an approval names no generation.
+    // The state file as version 63 left it: an approval names no generation.
     let db = rusqlite::Connection::open(setup.dir.join("priory.db")).unwrap();
     db.execute_batch(
         "ALTER TABLE subscriptions DROP COLUMN chosen; ALTER TABLE approvals DROP COLUMN generation;
-         PRAGMA user_version = 62;",
+         PRAGMA user_version = 63;",
     )
     .unwrap();
     drop(db);
@@ -14335,6 +14364,102 @@ fn a_plan_task_waits_for_a_person_after_a_green_grade_then_moves_on_when_approve
 
     assert!(answered.status.success(), "{answered:?}");
     setup.until("tasks", |rows| rows[0][3] == "regrade");
+}
+
+#[test]
+fn a_plan_results_brief_and_verification_reach_the_task_the_approval_ask_and_the_next_prompt() {
+    let mut setup = intervened("plan-fields", GRADED, "plan", "");
+    setup.calls(&[
+        json!({ "name": "result", "arguments": {
+            "outcome": "green", "summary": "Plan: add a flag",
+            "goal": "A person previews sweep deletions.",
+            "testing": "Integration test over the sweep verb.",
+            "brief": "Add --dry-run to sweep, so a person can preview deletions.",
+            "verification": "cargo test sweep; priory sweep --dry-run lists, deletes nothing."
+        } }),
+        result("green"),
+    ]);
+    setup.publish(&requested(42));
+
+    setup.start();
+
+    setup.until("asks", |rows| rows.len() == 1);
+    let ask = &asks_json(&setup)["asks"][0];
+    let text = ask["text"].as_str().unwrap_or_default();
+    assert!(
+        text.contains("Goal: A person previews sweep deletions.")
+            && text.contains("Testing: Integration test over the sweep verb.")
+            && text.contains("Brief: Add --dry-run to sweep")
+            && text.contains("Verification: cargo test sweep"),
+        "{ask}"
+    );
+    let task = task_json(&setup, "1");
+    assert_eq!(
+        [
+            &task["plan_goal"],
+            &task["plan_testing"],
+            &task["plan_brief"],
+            &task["verification"]
+        ],
+        [
+            &json!("A person previews sweep deletions."),
+            &json!("Integration test over the sweep verb."),
+            &json!("Add --dry-run to sweep, so a person can preview deletions."),
+            &json!("cargo test sweep; priory sweep --dry-run lists, deletes nothing.")
+        ]
+    );
+
+    let answered = setup.priory(&["answer", "1", "approved", "--revision", "1"]);
+
+    assert!(answered.status.success(), "{answered:?}");
+    setup.until("tasks", |rows| rows[0][3] == "regrade");
+    let deadline = Instant::now() + Duration::from_secs(60);
+    while setup.typed().len() < 2 {
+        assert!(Instant::now() < deadline, "no second prompt");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let prompt = &setup.typed()[1];
+    assert!(
+        prompt.contains("Grade the plan again.")
+            && prompt.contains("Prove the change with: cargo test sweep; priory sweep --dry-run"),
+        "{prompt}"
+    );
+}
+
+#[test]
+fn a_plan_result_without_a_brief_or_verification_leaves_the_ask_and_next_prompt_as_they_were() {
+    let mut setup = intervened("plan-no-fields", GRADED, "plan", "");
+    setup.calls(&[
+        json!({ "name": "result", "arguments": { "outcome": "green", "summary": "Plan: add a flag" } }),
+        result("green"),
+    ]);
+    setup.publish(&requested(42));
+
+    setup.start();
+
+    setup.until("asks", |rows| rows.len() == 1);
+    assert_eq!(
+        asks_json(&setup)["asks"][0]["text"],
+        serde_json::Value::Null
+    );
+    let task = task_json(&setup, "1");
+    assert_eq!(
+        [
+            &task["plan_goal"],
+            &task["plan_testing"],
+            &task["plan_brief"],
+            &task["verification"]
+        ],
+        [&serde_json::Value::Null; 4]
+    );
+    let answered = setup.priory(&["answer", "1", "approved", "--revision", "1"]);
+    assert!(answered.status.success(), "{answered:?}");
+    let deadline = Instant::now() + Duration::from_secs(60);
+    while setup.typed().len() < 2 {
+        assert!(Instant::now() < deadline, "no second prompt");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(!setup.typed()[1].contains("Prove the change with"));
 }
 
 /// A `hands-off` setup whose trigger names the shared agent `lead`.
