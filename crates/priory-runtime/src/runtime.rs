@@ -211,13 +211,14 @@ pub fn check_repo(repo: &str) -> Result<(), String> {
 /// The task's worktree folder `name` on `priory/<name>`, from the local branch `from` of Priory's
 /// own clone of `repo` (`owner/name`), else from its default branch. The clone has no checkout: a person trusts it once in Claude, and
 /// its worktrees inherit that trust. A worktree of that clone left on that branch by an interrupted
-/// start is reused.
+/// start is reused. The third value is the commit a new branch starts from, and `None` when the
+/// branch already existed.
 pub fn worktree(
     home: &Path,
     repo: &str,
     name: &str,
     from: Option<&str>,
-) -> Result<(PathBuf, String), String> {
+) -> Result<(PathBuf, String, Option<String>), String> {
     check_repo(repo)?;
     let clone = home.join("repos").join(repo);
     let branch = format!("priory/{name}");
@@ -250,7 +251,7 @@ pub fn worktree(
                 clone.display()
             ));
         }
-        return Ok((path, branch));
+        return Ok((path, branch, None));
     }
     // A revived task whose worktree the sweep removed carries on from the branch it left.
     if head(&clone, &branch).is_some() {
@@ -260,7 +261,7 @@ pub fn worktree(
             .args(["worktree", "add", "--quiet"])
             .arg(&path)
             .arg(&branch))?;
-        return Ok((path, branch));
+        return Ok((path, branch, None));
     }
     run(git(&clone).args(["fetch", "--quiet", "origin"]))?;
     run(git(&clone).args(["remote", "set-head", "origin", "--auto"]))?;
@@ -274,7 +275,8 @@ pub fn worktree(
         .args(["worktree", "add", "--quiet", "--no-track", "-b", &branch])
         .arg(&path)
         .arg(start))?;
-    Ok((path, branch))
+    let base = head(&path, &branch);
+    Ok((path, branch, base))
 }
 
 /// The commit `branch` points to, read from Priory's clone under `home` when `worktree` is gone, as

@@ -47,7 +47,7 @@ const OUTPUT: &str = "factory.intake";
 /// reports of sections, 36, which added deliveries, 37, which added progress, 39, which added run
 /// actions, 40, which added answer actions, 42, which added dispatches, 49, which added task ends, 51, which added a run's crossing of `compactAt`, 53, which added intervention levels, 56, which added the step an irreversible approval lets run, 58, which added withdrawal reasons, and 59, which added green stack gates and returned routed asks, 61, which added findings, 62, which added merge risk, 63, which added plan fields, 65, which added chosen subscriptions and approval generations, 66, which added the step a gate enters after the merge, 70, which added idle compactions and session definitions, and 71, which added cleared deliveries, ended snoozes and withdrawal times. Schema 38's visits
 /// table is created only if missing, so it stays.
-const UNDO_SINCE_SEARCH: &str = "ALTER TABLE runs DROP COLUMN kit_hash; ALTER TABLE deliveries DROP COLUMN cleared; ALTER TABLE snoozes DROP COLUMN ended;
+const UNDO_SINCE_SEARCH: &str = "ALTER TABLE tasks DROP COLUMN base_sha; ALTER TABLE runs DROP COLUMN kit_hash; ALTER TABLE deliveries DROP COLUMN cleared; ALTER TABLE snoozes DROP COLUMN ended;
          DROP TRIGGER ask_withdrawn_at; DROP TRIGGER wait_withdrawn_at;
          ALTER TABLE asks DROP COLUMN withdrawn_at; ALTER TABLE waits DROP COLUMN withdrawn_at;
          ALTER TABLE tasks DROP COLUMN base_task; ALTER TABLE tasks DROP COLUMN batch; ALTER TABLE tasks DROP COLUMN batch_entry; DROP TABLE idle_compactions; ALTER TABLE shared_sessions DROP COLUMN definition; DROP INDEX todos_open_connector; ALTER TABLE todos DROP COLUMN connector; ALTER TABLE waits DROP COLUMN after; ALTER TABLE subscriptions DROP COLUMN chosen; ALTER TABLE approvals DROP COLUMN generation;
@@ -5841,7 +5841,7 @@ fn a_state_file_whose_asks_an_approval_names_upgrades_to_outside_asks() {
          ALTER TABLE actions DROP COLUMN stdout; ALTER TABLE actions DROP COLUMN stderr;
          ALTER TABLE actions DROP COLUMN pid; ALTER TABLE actions DROP COLUMN pid_started;
          ALTER TABLE actions DROP COLUMN ended;
-         ALTER TABLE tasks DROP COLUMN progress;
+         ALTER TABLE tasks DROP COLUMN progress; ALTER TABLE tasks DROP COLUMN base_sha;
          DROP TABLE deliveries;
          DROP TABLE reports;
          DROP TABLE dispatches;
@@ -9597,6 +9597,58 @@ fn a_dropped_task_revives_at_its_step_in_its_session_as_generation_2() {
 }
 
 #[test]
+fn a_task_keeps_the_commit_its_worktree_started_from_after_the_origin_moves_and_a_revive() {
+    let mut setup = Setup::with_workflow("base-sha", STEPS);
+    setup.calls(&[result("hopeless"), result("ready")]);
+    let bare = setup.dir.join("origin/owner/repo.git");
+    let origin_head = || {
+        let head = git(&bare).args(["rev-parse", "main"]).output().unwrap();
+        String::from_utf8(head.stdout).unwrap().trim().to_owned()
+    };
+    let started = origin_head();
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == "dropped")
+    });
+    let base = |setup: &Setup| {
+        let shown = setup.priory(&["task", "1", "--json"]);
+        assert!(shown.status.success(), "{shown:?}");
+        serde_json::from_slice::<serde_json::Value>(&shown.stdout).unwrap()["base_sha"].clone()
+    };
+    assert_eq!(base(&setup), json!(started));
+    let work = setup.dir.join("work");
+    fs::write(work.join("later.txt"), "later\n").unwrap();
+    for args in [
+        &["add", "later.txt"][..],
+        &[
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@t",
+            "commit",
+            "-qm",
+            "later",
+        ],
+    ] {
+        assert!(git(&work).args(args).status().unwrap().success());
+    }
+    let pushed = git(&work)
+        .args(["push", "-q"])
+        .arg(&bare)
+        .arg("main")
+        .status();
+    assert!(pushed.unwrap().success());
+    assert_ne!(origin_head(), started);
+    setup.gone("priory-1");
+
+    assert!(setup.priory(&["revive", "1"]).status.success());
+
+    setup.until("tasks", |rows| rows[0][3] == "implement");
+    assert_eq!(base(&setup), json!(started));
+}
+
+#[test]
 fn an_answer_to_the_ask_of_an_earlier_generation_is_refused() {
     let mut setup = Setup::with_workflow("revive-ask", STEPS);
     setup.calls(&[ask()]);
@@ -9901,7 +9953,7 @@ fn an_approval_stored_before_generations_were_kept_is_asked_again_after_the_upgr
     // The state file as version 64 left it: an approval names no generation.
     let db = rusqlite::Connection::open(setup.dir.join("priory.db")).unwrap();
     db.execute_batch(
-        "ALTER TABLE runs DROP COLUMN kit_hash; ALTER TABLE deliveries DROP COLUMN cleared; ALTER TABLE snoozes DROP COLUMN ended;
+        "ALTER TABLE tasks DROP COLUMN base_sha; ALTER TABLE runs DROP COLUMN kit_hash; ALTER TABLE deliveries DROP COLUMN cleared; ALTER TABLE snoozes DROP COLUMN ended;
          DROP TRIGGER ask_withdrawn_at; DROP TRIGGER wait_withdrawn_at;
          ALTER TABLE asks DROP COLUMN withdrawn_at; ALTER TABLE waits DROP COLUMN withdrawn_at;
          ALTER TABLE tasks DROP COLUMN base_task; ALTER TABLE tasks DROP COLUMN batch; ALTER TABLE tasks DROP COLUMN batch_entry; DROP TABLE idle_compactions; ALTER TABLE shared_sessions DROP COLUMN definition; DROP INDEX todos_open_connector; ALTER TABLE todos DROP COLUMN connector; ALTER TABLE waits DROP COLUMN after;
@@ -19793,4 +19845,169 @@ fn a_factory_with_one_runner_posts_no_ask() {
     std::thread::sleep(Duration::from_secs(2));
 
     assert!(on_log(&setup, "priory.ask.posted").is_empty());
+}
+
+/// Writes `scorers/<name>.toml` into the setup's factory.
+fn scorer(setup: &Setup, name: &str, toml: &str) {
+    let factory = setup.dir.join("factory");
+    fs::create_dir_all(factory.join("scorers")).unwrap();
+    fs::write(factory.join(format!("scorers/{name}.toml")), toml).unwrap();
+}
+
+const PASSED_SCORER: &str =
+    "description = \"Passed.\"\non = \"result\"\nkind = \"outcome\"\nexpect = [\"passed\"]\n";
+const SHORT_ASK_SCORER: &str =
+    "description = \"Short.\"\non = \"ask\"\nkind = \"ask-shape\"\nexpect = [\"short\"]\n";
+
+/// `priory score` on task 1, as rows of run, step, scorer, verdict and reason.
+fn scores(setup: &Setup, args: &[&str]) -> Vec<[String; 5]> {
+    let factory = setup.dir.join("factory");
+    let mut all = vec!["score", factory.to_str().unwrap(), "1", "--json"];
+    all.extend_from_slice(args);
+    let output = setup.priory(&all);
+    assert!(output.status.success(), "{output:?}");
+    let shown: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    shown["scores"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|row| {
+            ["run", "step", "scorer", "verdict", "reason"].map(|field| match &row[field] {
+                serde_json::Value::String(text) => text.clone(),
+                value => value.to_string(),
+            })
+        })
+        .collect()
+}
+
+fn scored_records(setup: &Setup) -> Vec<serde_json::Value> {
+    setup
+        .trace()
+        .into_iter()
+        .filter(|record| record["type"] == "factory.run.scored")
+        .collect()
+}
+
+/// Task 1 runs `plan` to `ready`, then `implement` to `passed`.
+fn scored_task(name: &str) -> Setup {
+    let mut setup = Setup::with_workflow(name, STEPS);
+    setup.calls(&[result("ready"), result("passed")]);
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == "done")
+    });
+    setup
+}
+
+#[test]
+fn priory_score_grades_the_latest_finished_run_of_each_step_and_traces_each_score() {
+    let setup = scored_task("score");
+    scorer(&setup, "passed", PASSED_SCORER);
+    scorer(&setup, "short-ask", SHORT_ASK_SCORER);
+
+    let rows = scores(&setup, &[]);
+
+    assert_eq!(
+        rows,
+        [
+            ["1", "plan", "passed", "fail", "outcome ready, not passed"],
+            [
+                "1",
+                "plan",
+                "short-ask",
+                "not applicable",
+                "the run asked nothing"
+            ],
+            ["2", "implement", "passed", "pass", "outcome passed"],
+            [
+                "2",
+                "implement",
+                "short-ask",
+                "not applicable",
+                "the run asked nothing"
+            ],
+        ]
+        .map(|row| row.map(str::to_owned))
+    );
+    let records = scored_records(&setup);
+    assert_eq!(records.len(), 4);
+    let first = &records[0]["data"];
+    assert_eq!(
+        [
+            &first["task"],
+            &first["run"],
+            &first["generation"],
+            &first["step"]
+        ],
+        [&json!("1"), &json!("1"), &json!(1), &json!("plan")]
+    );
+    assert_eq!(
+        [
+            &first["scorer"],
+            &first["kind"],
+            &first["verdict"],
+            &first["reason"]
+        ],
+        [
+            &json!("passed"),
+            &json!("outcome"),
+            &json!("fail"),
+            &json!("outcome ready, not passed")
+        ]
+    );
+
+    let again = scores(&setup, &["--scorer", "passed"]);
+
+    assert_eq!(again.len(), 2);
+    let later = scored_records(&setup);
+    assert_eq!(later.len(), 6);
+    assert_eq!(later[..4], records[..]);
+    assert_eq!(later[5]["data"]["scorer"], "passed");
+}
+
+#[test]
+fn a_run_that_asked_passes_an_ask_shape_scorer_and_fails_an_outcome_scorer() {
+    let mut setup = Setup::with_workflow("score-ask", STEPS);
+    setup.calls(&[ask()]);
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == "asleep")
+    });
+    scorer(&setup, "passed", PASSED_SCORER);
+    scorer(&setup, "short-ask", SHORT_ASK_SCORER);
+    scorer(
+        &setup,
+        "what-waits",
+        "description = \"Says what waits.\"\non = \"ask\"\nkind = \"ask-shape\"\nexpect = [\"short\", \"whatWaits\"]\n",
+    );
+
+    let rows = scores(&setup, &[]);
+
+    assert_eq!(
+        rows.iter()
+            .map(|row| [row[2].as_str(), row[3].as_str(), row[4].as_str()])
+            .collect::<Vec<_>>(),
+        [
+            ["passed", "fail", "the run asked and sent no result"],
+            ["short-ask", "pass", "1 ask(s) show short"],
+            ["what-waits", "fail", "ask 1 lacks whatWaits"],
+        ]
+    );
+}
+
+#[test]
+fn priory_score_names_a_scorer_the_factory_lacks() {
+    let setup = scored_task("score-unknown");
+    scorer(&setup, "passed", PASSED_SCORER);
+    let factory = setup.dir.join("factory");
+
+    let output = setup.priory(&["score", factory.to_str().unwrap(), "1", "--scorer", "gate"]);
+
+    assert!(!output.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&output.stderr),
+        "priory score: no scorer gate in scorers/\n"
+    );
 }

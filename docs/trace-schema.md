@@ -352,6 +352,47 @@ the gate ran, and `time` is when it ended.
 | `exit`        | yes      | The gate's exit code; `-1` when a signal killed it               |
 | `duration_ms` | yes      | How long the gate ran                                            |
 
+## `factory.run.scored`
+
+A scorer graded one finished run: a run whose turn ended with a result or an ask (see
+[score.md](daemon/score.md)). It shares `factory`, `factory_revision`, `workflow`, `task`, `key`,
+`generation`, `step` and `machine` with `factory.step.ended`. `step` and `generation` are the run's,
+and `time` is when the score was recorded. Scoring a run again appends another record.
+
+```json
+{
+  "specversion": "1.0",
+  "id": "0196f1d6-0000-7000-8000-000000000009",
+  "source": "factory://example/xps13",
+  "type": "factory.run.scored",
+  "time": "2026-11-21T11:20:02Z",
+  "datacontenttype": "application/json",
+  "data": {
+    "factory": "example",
+    "factory_revision": "999daf0",
+    "workflow": "implement",
+    "task": "0196f1b0-0000-7000-8000-000000000001",
+    "run": "0196f1b0-0000-7000-8000-000000000002",
+    "key": "github:example/app#42",
+    "generation": 1,
+    "step": "implement",
+    "machine": "xps13",
+    "scorer": "gate",
+    "kind": "command",
+    "verdict": "pass",
+    "reason": "the tests pass"
+  }
+}
+```
+
+| Field     | Required | Meaning                                                              |
+| --------- | -------- | -------------------------------------------------------------------- |
+| `run`     | yes      | The run the scorer graded                                            |
+| `scorer`  | yes      | The scorer's name                                                    |
+| `kind`    | yes      | How it answers, such as `outcome`, `command` or `ask-shape`          |
+| `verdict` | yes      | `pass`, `fail`, `not applicable` or `error`                          |
+| `reason`  | yes      | One line of why                                                      |
+
 ## Spans
 
 A factory that exports OpenTelemetry spans (Priory does: see
