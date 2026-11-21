@@ -12,7 +12,7 @@ use std::collections::BTreeMap;
 use std::io::Write;
 use std::time::Duration;
 
-const VERSION: i64 = 79;
+const VERSION: i64 = 77;
 
 const SCHEMA: &str = "
 CREATE TABLE tasks (
@@ -1327,16 +1327,14 @@ const SCHEMA_75: &str = concat!(
 "
 );
 
-// Versions 76 to 78 are held by #203, #206 and #209; these slots keep the numbering until they land.
+// Version 76 is held by #209; this slot keeps the numbering until it lands.
 const SCHEMA_76: &str = "PRAGMA user_version = 76;";
-const SCHEMA_77: &str = "PRAGMA user_version = 77;";
-const SCHEMA_78: &str = "PRAGMA user_version = 78;";
 
 // Stacked batch entries: a hold condition met once another task waits on its open pull request,
 // and the task whose branch an entry starts from and bases its pull request on.
-const SCHEMA_79: &str = concat!(
+const SCHEMA_77: &str = concat!(
     "ALTER TABLE tasks ADD COLUMN base_task INTEGER;
-CREATE TABLE holds_79 (
+CREATE TABLE holds_77 (
   id          INTEGER PRIMARY KEY AUTOINCREMENT,
   task        INTEGER NOT NULL REFERENCES tasks (id),
   reason      TEXT NOT NULL,
@@ -1354,14 +1352,14 @@ CREATE TABLE holds_79 (
   released    TEXT,
   released_as TEXT
 );
-INSERT INTO holds_79 SELECT id, task, reason, kind, until, target, resource, if_closed, resume, ask,
+INSERT INTO holds_77 SELECT id, task, reason, kind, until, target, resource, if_closed, resume, ask,
   created, met, met_as, released, released_as FROM holds;
 DROP TABLE holds;
-ALTER TABLE holds_79 RENAME TO holds;
+ALTER TABLE holds_77 RENAME TO holds;
 CREATE INDEX open_holds ON holds (task) WHERE released IS NULL;
 ",
     bumps!("holds"),
-    "PRAGMA user_version = 79;
+    "PRAGMA user_version = 77;
 "
 );
 
@@ -1376,7 +1374,7 @@ const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA_50, SCHEMA_51, SCHEMA_52, SCHEMA_53, SCHEMA_54, SCHEMA_55, SCHEMA_56, SCHEMA_57,
     SCHEMA_58, SCHEMA_59, SCHEMA_60, SCHEMA_61, SCHEMA_62, SCHEMA_63, SCHEMA_64, SCHEMA_65,
     SCHEMA_66, SCHEMA_67, SCHEMA_68, SCHEMA_69, SCHEMA_70, SCHEMA_71, SCHEMA_72, SCHEMA_73,
-    SCHEMA_74, SCHEMA_75, SCHEMA_76, SCHEMA_77, SCHEMA_78, SCHEMA_79,
+    SCHEMA_74, SCHEMA_75, SCHEMA_76, SCHEMA_77,
 ];
 
 /// The order the queue starts tasks in: band, then a person's order, then age. A band the factory

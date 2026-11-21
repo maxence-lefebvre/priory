@@ -6,7 +6,8 @@ one go, and the daemon creates one task per entry. Each entry starts once the en
 merged, or, at a `waiting` edge, once its stacking parent waits on its open pull request.
 
 This page describes `merged` and `waiting` moments, stacked entries, edits of a plan, split issues,
-the desk line and the HTTP API. The web view's batch page comes later.
+the desk line and the HTTP API. The web view's batch page and the rest of stacked entries come
+later; see [design/batches.md](../design/batches.md).
 
 ## A batch's life
 
