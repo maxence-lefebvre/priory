@@ -326,7 +326,7 @@ they start, with why each one waits. Its Move menu moves a task to the top of it
 one, or to another band, as `priory move` does. `priory queue` prints the same queue.
 
 A workflow can write a report for you, such as a morning dossier: `priory report show` prints the
-last one. The web view's Reports panel shows it, and takes its picks and row comments as
+last one, and `priory report list` lists the earlier ones. The web view's Reports panel shows it, and takes its picks and row comments as
 `priory report pick` and `priory report comment` do. See [docs/daemon/reports.md](docs/daemon/reports.md).
 
 The web view's Costs panel shows what the factory spent this week against last week, each day, and

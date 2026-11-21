@@ -172,7 +172,7 @@ state database and never writes a file in the factory.
   `PRIORY_DB` in the environment, or name a wrapper script that sets it.
 - **Reading.** A mod runs the CLI with Herdr's `exec` and parses its JSON: `priory desk --all --json`,
   `asks --all --json`, `tasks --json`, `queue --json`, `schedules --json`, `links --json`,
-  `report show --json`, `costs [--by SPLIT] --json`, `report attention --json` and `flows --json`. Each answer carries the state's `revision`, except
+  `report show [TASK] --json`, `report list --json`, `costs [--by SPLIT] --json`, `report attention --json` and `flows --json`. Each answer carries the state's `revision`, except
   the reports `costs` and `report attention`, and `flows`, which reads the factory's files. `report show --json` wraps the
   report as `{"revision": STATE, "report": {...}}`: the outer `revision` is the state's, and the
   report's own `revision` is the one `report pick --expected` takes. Then the mod runs
@@ -455,22 +455,27 @@ its visual rules; this section says how it works.
   rows, picks and threads, with no drawing and no IO. `main.js` draws them with gpui-kit and runs
   `priory report pick` and the comment verbs. The node tests in `test/bonjour.test.js` check `view.js` against JSON
   captured from a real `priory report show --json`.
-- **Reading.** The panel reads the report written last, then waits with `priory wait` on the
-  state's revision and reads again. When no task has written a report yet, it says so and waits for
+- **Reading.** The panel reads the report written last, or the one its arrows reached, and
+  `priory report list`, then waits with `priory wait` on the state's revision and reads again. When no task has written a report yet, it says so and waits for
   one. When a call fails, it keeps the last report and shows "Reconnecting to priory" with the age
   of its last update, and the picks stay disabled until it reconnects.
 - **Sections.** The greeting, then the report's sections in the report's order. The panel knows no
   section by name. A section shows its `count`, or its number of rows when the report gives no
   count. A row shows its state tile, or a page icon when it has no `state`, then its key, text and
   meta, and its owner or time on the right. A time today shows its clock, an earlier one its date.
-- **Toolbar.** The report's date, "n of m agreed" with a bar, and Next pick, which selects the next
-  pick to agree and scrolls to it.
+- **Toolbar.** Older and newer arrows around the report's date, "n of m agreed" with a bar, Next
+  pick, which selects the next pick to agree and scrolls to it, and Search. The arrows walk
+  `priory report list` and read that task's report with `priory report show TASK`; the newest one
+  is followed as it changes, an older one stays until an arrow moves on. A priory without
+  `report list` leaves both arrows off.
+- **Search.** Search opens a field under the toolbar. Its text keeps the rows whose key, text, meta,
+  owner or comments hold it, ignoring case, with "3 found" beside it. Closing it clears the text.
 - **Views.** All sections, and Picks, which keeps only the rows with a pick to agree. From 1024 px
   the views and the sections sit in a 200 px list on the left; below, they are chips under the
   toolbar. A section in that list scrolls to it.
 - **Picking.** An open pick is a segmented control of its options, with a `check` on the
-  recommended one and "Recommends Take" beside it. A press waits out a 4 s Undo, since the first
-  choice stands, then runs `priory report pick PICK OPTION --expected REVISION` with the report's
+  recommended one and "Recommends Take" beside it. A press waits out a 4 s Undo, since the pick wakes the
+  report's agent, then runs `priory report pick PICK OPTION --expected REVISION` with the report's
   revision the person read. While one pick is in flight, the panel starts no other. When the report
   stops offering the pick during the Undo, because another task wrote a report or someone picked
   first, the panel cancels the pick and says so.
@@ -480,7 +485,10 @@ its visual rules; this section says how it works.
   the toolbar instead. A pick that Priory took stays sent even when the read after it fails. A read
   older than the one shown is dropped, so a slow read never rolls the report back.
 - **Agreed picks.** A chosen pick folds to one line: its key, the choice and, once the workflow
-  applied it, its `applied` text, else "Waiting for the workflow to apply it."
+  applied it, its `applied` text, else "Waiting for the workflow to apply it." with Change. Change
+  reopens the segmented control with the choice solid, and Keep folds it again. Another option goes
+  through the same Undo and `priory report pick`, which records the change until the workflow
+  applies the choice.
 - **Threads.** A row's threads sit under it. An open thread shows each comment's author, time and
   text, with Reply and Resolve; a resolved one folds to one line with Reopen. The selected row, when
   it has an id, ends with a comment field; a pick card offers Comment to select it. Comment runs
@@ -492,10 +500,6 @@ its visual rules; this section says how it works.
 - **Agent text.** Every row's meta, owner and the greeting draw as plain text. Its text draws with
   its [links](#links). A press on linked text stays there, so a link opens without selecting the
   row; the rest of the row still selects it.
-
-The board's older and newer arrows, search and Change are left out. Priory keeps only the latest
-report of each task, so there is no older report to open. A pick's first choice stands, so Change
-has no verb to run. Comments on rows stay hidden until Priory stores them.
 
 The web view's Reports panel draws the same report with the same view model, so Herdr has no
 separate Reports panel: Bonjour is it.

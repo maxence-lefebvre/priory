@@ -904,6 +904,11 @@ The web view's `/reports`: the report written last, as the Herdr [Bonjour](#bonj
 it. Both use one view model, so sections, picks and threads read the same in both. On a phone it
 sits under More.
 
+- **Toolbar**: above the scroll region, older and newer arrows around the report's date, then Next
+  pick, which scrolls to the next pick to agree and focuses its first option, and a `search` button.
+  An arrow with no report beyond it is disabled. Search opens a field under the toolbar; its text
+  keeps the rows whose key, text, meta, owner or comments hold it, with "3 found" beside it, and
+  "Nothing in this report holds “x”." when none does.
 - **Header**: the greeting in the display role, then one `--text-2` line with the date, a link to
   the task that wrote it and "Since 18:00. 2 picks to agree.", then a 6 px `--action` progress bar
   on `--raised` with "1 of 4 agreed". A report with no pick shows no bar.
@@ -918,7 +923,9 @@ sits under More.
   `--action-text`, and the pick's note follows in a caption. A tap turns the option solid `--emph`
   with a `check` and dims the other picks; a bar at the bottom says `Picking "Take"` with Undo for
   4 s, as an answer's does. Nothing is sent before the 4 s end. An agreed pick folds to one line:
-  a `check` in `--ok-text`, "Picked Take." and what the workflow did with it.
+  a `check` in `--ok-text`, "Picked Take." and what the workflow did with it. Until the workflow
+  applies it, a ghost Change button ends the line: it reopens the control with the choice solid,
+  "Pick another option to change it." and Keep Take, and a new option goes through the same Undo.
 - **Threads** follow the Bonjour rules, with Reply and Resolve as ghost buttons in the card. A row
   with an id ends with a Comment ghost button. It opens the comment field under the row, with
   Cancel and Comment. Reply opens the same field, with "Replying in thread 3" above it.
