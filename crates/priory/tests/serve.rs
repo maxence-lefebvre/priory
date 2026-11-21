@@ -1160,12 +1160,13 @@ fn the_runs_endpoint_lists_the_runs_of_the_last_week_newest_first_with_outcome_m
     );
     assert_eq!(runs["older"], 1);
     assert!(runs["revision"].is_i64());
+    let all = api(&address, "/api/runs?all=1");
+    assert_eq!(all["runs"].as_array().unwrap().len(), 3);
+    let output = setup.priory(&["runs", "--json"]);
+    succeeded(&output);
     assert_eq!(
-        api(&address, "/api/runs?all=1")["runs"]
-            .as_array()
-            .unwrap()
-            .len(),
-        3
+        serde_json::from_slice::<Value>(&output.stdout).unwrap(),
+        all
     );
 }
 

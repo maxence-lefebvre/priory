@@ -1112,7 +1112,7 @@ run.
 Priory's panels also ship as Herdr mods (R8.6). A mod renders natively with gpui-kit, in a pane
 beside other panes, with a fine pointer. It keeps this file's structure, tokens, state tiles, copy
 and ask rules. This section lists only what differs, and the panels the adapter ships: Desk, Asks,
-Queue, Bonjour, Costs, Flows, Task, Inbox and Tasks. Bonjour is also the web view's Reports panel. [`docs/adapters/herdr.md`](docs/adapters/herdr.md) explains where
+Queue, Bonjour, Costs, Flows, Task, Inbox, Tasks and Runs. Bonjour is also the web view's Reports panel. [`docs/adapters/herdr.md`](docs/adapters/herdr.md) explains where
 the adapter lives, how it reads and acts, and the data each panel needs. The approved boards are in
 `~/shared/priory-round-6/` on the author's machine.
 
@@ -1312,6 +1312,20 @@ The web's [Tasks panel](#tasks-panel), as a tab in the center stack.
   [Task](#task) panel.
 - The batch tag is text: Herdr has no batch panel yet.
 - While it reads: "Reading the tasks…"
+
+### Runs
+
+The web's [Runs panel](#runs-panel), as a tab in the center stack.
+
+- Under the 44 px header, the saved views Recent and Live as chips with their counts after the
+  facets, then an Outcome, Agent and Step chip each, as in Tasks.
+- Every row is a run row at every width: the run state's tile, the task key in mono, step, the
+  state word in its role's text color and how long ago it started in `--text-3`; the agent and
+  model in `--type-small`; then "run 92 · passed · 42 min · 312k tokens" in `--text-3`. A row
+  opens its task in the [Task](#task) panel.
+- Recent ends with a "Show 3 older runs" button in `--action-text` while runs older than 7 days
+  match: the pane already holds them, so it shows them on a press instead of on scroll.
+- While it reads: "Reading the runs…"
 
 ### Open questions
 
