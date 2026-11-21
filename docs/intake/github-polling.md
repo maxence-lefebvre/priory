@@ -6,9 +6,20 @@ poll, the API cost, and how a restart resumes. The events themselves are in
 
 ## What it watches
 
-A repository is polled when a trigger names it, whatever the trigger's source, or when an open wait
-or `--merge` hold names a pull request in it (see [watches.md](watches.md)). It has four streams,
-each named after a type:
+A repository is polled when a trigger names it, whatever the trigger's source, or when one of these
+names a pull request or branch in it (see [watches.md](watches.md)):
+
+- an open wait or `--merge` hold;
+- a subscription of a task that has not failed or been dropped, done tasks included, so feedback
+  after done reaches it. `open-pr` and the branch claim subscribe too (see
+  [routing.md](../daemon/routing.md#resources-what-a-task-owns));
+- the branch of an active task, or of a task done in the last 10 minutes whose branch no event
+  named yet, so the intake sees a pull request its worker opened with `gh pr create`.
+
+A closed or merged pull request ends its subscriptions, so its repository stops being polled once
+nothing else names it. An active task's branch still names it until the task is done.
+
+A polled repository has four streams, each named after a type:
 
 | Stream | Reads | Holds | Position |
 | ------ | ----- | ----- | -------- |
@@ -61,6 +72,10 @@ The events' ids are on their own pages.
 | N over 100 | the query pages itself: ceil(N/100) requests, about 4 points each on `cli/cli` |
 | New pull request events | 1 more GraphQL query for the pull requests they name |
 | Over 100 new events in a stream since the last poll | 1 more REST page per 100 |
+
+A subscription or a task branch adds no call for a repository a trigger already names. For one no
+trigger names, it adds that repository's 5 `gh` calls per poll, however many subscriptions and
+branches name it.
 
 At one poll a minute, that is 240 REST requests and about 240 GraphQL points an hour per repository,
 each against GitHub's 5,000 an hour. Review thread comments come from REST because the query would

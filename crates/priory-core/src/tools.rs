@@ -1627,7 +1627,7 @@ fn pull_request(tx: &Transaction, task: i64) -> rusqlite::Result<Option<String>>
            UNION ALL
            SELECT 'github:' || json_extract(inbox.data, '$.repo') || '#' || json_extract(inbox.data, '$.pull_request'), 1, inbox.seq
              FROM inbox JOIN tasks ON tasks.id = inbox.task
-             WHERE inbox.task = ?1 AND inbox.outcome = 'kept'
+             WHERE inbox.task = ?1 AND inbox.outcome IN ('kept', 'woke')
              AND json_extract(inbox.data, '$.pull_request') IS NOT NULL
              AND json_extract(inbox.data, '$.head_branch') = tasks.branch
            UNION ALL
@@ -2937,6 +2937,10 @@ pub(crate) fn performed(
     if let Some(resource) = &done.pull_request {
         tx.execute(
             "INSERT OR IGNORE INTO owns (task, resource) VALUES (?1, ?2)",
+            params![task, resource],
+        )?;
+        tx.execute(
+            "INSERT OR IGNORE INTO subscriptions (task, resource) VALUES (?1, ?2)",
             params![task, resource],
         )?;
     }
