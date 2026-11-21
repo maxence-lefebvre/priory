@@ -437,7 +437,7 @@ fn tmux() -> Command {
 }
 
 /// What a Claude Code session sets for its children. User settings such as `CLAUDE_CODE_USE_BEDROCK` stay.
-const NESTED: [&str; 12] = [
+pub(crate) const NESTED: [&str; 12] = [
     "CLAUDECODE",
     "CLAUDE_CODE_ENTRYPOINT",
     "CLAUDE_CODE_EXECPATH",

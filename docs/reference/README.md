@@ -14,6 +14,7 @@ config page gives a field table, a complete example and the errors `priory check
 | [serve.md](serve.md) | `priory serve` and the JSON of its endpoints and of the listings' `--json` |
 | [events.md](events.md) | Every message type on `factory.intake`, with an example payload |
 | [e2e-scenarios.md](e2e-scenarios.md) | The scenario file of the end-to-end factory test |
+| [prompt-evals.md](prompt-evals.md) | `priory eval`, its evaluation file and the fake MCP server |
 
 The examples are files of a complete factory in [`examples/factory/`](examples/factory/), and the
 example payloads are in [`examples/events/`](examples/events/). A test runs `priory check` on that

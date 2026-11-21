@@ -5,7 +5,7 @@ use priory_core::{
 };
 use priory_factory::{explain, factory, rules};
 use priory_intake::{intake, request};
-use priory_runtime::{mcp, runtime};
+use priory_runtime::{eval, mcp, runtime};
 use serde_json::Value;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
@@ -176,8 +176,22 @@ fn main() -> ExitCode {
                 };
                 exit("mcp", mcp::serve(&session, &local))
             }
+            (Some(flag), Some(log), describe) if flag == "--eval" => {
+                let rest: Vec<String> = describe
+                    .into_iter()
+                    .chain(args)
+                    .map(|arg| arg.to_string_lossy().into_owned())
+                    .collect();
+                let describe = match rest.as_slice() {
+                    [] => None,
+                    [flag, tool, text] if flag == "--describe" => Some((tool.as_str(), text.as_str())),
+                    _ => return usage(),
+                };
+                exit("mcp", eval::serve(Path::new(&log), describe))
+            }
             _ => usage(),
         },
+        Some("eval") => prompt_eval(args.map(|arg| arg.to_string_lossy().into_owned()).collect()),
         Some("hook") => match (args.next(), args.next()) {
             (Some(event), None) => hook(&event.to_string_lossy()),
             _ => usage(),
@@ -1162,6 +1176,61 @@ fn exit(verb: &str, done: Result<(), String>) -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+/// `priory eval FILE --budget USD`: runs a prompt evaluation against a real model, prints its table,
+/// and rewrites the doc's table when every case ran within the budget.
+fn prompt_eval(args: Vec<String>) -> ExitCode {
+    let Some((file, flags)) = args.split_first() else {
+        return usage();
+    };
+    let (mut case, mut runs, mut model, mut budget) = (None, 5, "haiku".to_owned(), None);
+    for pair in flags.chunks(2) {
+        match pair {
+            [flag, value] if flag == "--case" => case = Some(value.clone()),
+            [flag, value] if flag == "--model" => model = value.clone(),
+            [flag, value] if flag == "--runs" => match value.parse() {
+                Ok(value) if value > 0 => runs = value,
+                _ => return usage(),
+            },
+            [flag, value] if flag == "--budget" => match value.parse::<f64>() {
+                Ok(value) if value > 0.0 && value.is_finite() => budget = Some(value),
+                _ => return usage(),
+            },
+            _ => return usage(),
+        }
+    }
+    let Some(budget) = budget else {
+        eprintln!("priory eval: give --budget USD, the most the evaluation may spend");
+        return ExitCode::FAILURE;
+    };
+    let path = Path::new(file);
+    let done = eval::load(path).and_then(|loaded| {
+        let scratch = std::env::temp_dir().join(format!("priory-eval-{}", std::process::id()));
+        let options = eval::Options {
+            runs,
+            budget,
+            case: case.as_deref(),
+        };
+        let report = eval::run(
+            &loaded,
+            &scratch,
+            &options,
+            &mut eval::Claude { model: &model },
+        );
+        let _ = std::fs::remove_dir_all(&scratch);
+        let report = report?;
+        let table = eval::table(&report, &model, runs);
+        print!("{table}");
+        match &loaded.doc {
+            Some(doc) if case.is_none() && report.complete => {
+                let name = path.file_name().unwrap_or_default().to_string_lossy();
+                eval::rewrite(doc, &name, &table)
+            }
+            _ => Ok(()),
+        }
+    });
+    exit("eval", done)
 }
 
 /// `priory memory` lists the memory grants, held and waiting.
