@@ -687,5 +687,5 @@ fn an_ask_lists_with_a_null_estimate_when_the_history_cannot_be_read() {
 
     let ask = setup.listed_ask(1);
     assert_eq!(ask["risk"], json!(["irreversible"]));
-    assert_eq!(ask["risk_estimate"], Value::Null);
+    assert_eq!(ask.get("risk_estimate"), Some(&Value::Null));
 }
