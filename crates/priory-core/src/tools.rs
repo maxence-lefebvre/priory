@@ -2464,6 +2464,7 @@ fn answer_in(
             head,
         )?;
         trace::ended(tx, trace, task, &answer.text, None)?;
+        crate::grades::answered(tx, trace, task, &at, &answer.text, &target)?;
         enter(tx, task, &workflow, &target, None, "", trace.factory)?;
     } else {
         withdraw_waits(tx, answer.ask)?;
@@ -3519,6 +3520,7 @@ fn answer_ran(
         let workflows = &trace.factory.workflows;
         if outcome == "done" {
             let target = answered_target(workflows, &workflow, &at, &answer);
+            crate::grades::answered(tx, trace, task, &at, &answer, &target)?;
             trace::ended(tx, trace, task, &answer, None)?;
             enter(tx, task, &workflow, &target, None, "", trace.factory)?;
             return Ok(());
