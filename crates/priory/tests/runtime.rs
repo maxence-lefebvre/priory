@@ -3797,6 +3797,24 @@ fn a_crash_while_a_runbook_steps_command_runs_leaves_it_uncertain_and_asks_the_s
 }
 
 #[test]
+fn a_runbook_step_whose_command_runs_in_a_worktree_the_task_lacks_blocks_the_task() {
+    let workflow = runbook(r#"["true"]"#).replace(r#"target = "ops", "#, "");
+    let mut setup = Setup::with_workflow("runbook-no-worktree", &workflow);
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("asks", |rows| rows.len() == 1);
+
+    setup.priory(&["answer", "1", "ok", "--revision", "1"]);
+
+    let tasks = setup.until("tasks", |rows| with(rows, 4, "blocked") == 1);
+    assert!(
+        tasks[0]
+            .contains(&"step test: command target worktree: this task has no worktree".to_owned()),
+        "{tasks:?}"
+    );
+}
+
+#[test]
 fn a_runbook_steps_command_that_fails_asks_the_step_again_with_its_exit() {
     let setup = on_a_runbook("runbook-fails", r#"["sh", "-c", "exit 3"]"#);
     setup.priory(&["answer", "1", "ok", "--revision", "1"]);

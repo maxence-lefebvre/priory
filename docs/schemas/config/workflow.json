@@ -73,6 +73,17 @@
           "description": "Who decides an outcome's edge, where it differs from the step's decider.",
           "type": "object"
         },
+        "command": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/StepCommand"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The command a human step's answer runs, as an ask's `command`."
+        },
         "decides": {
           "$ref": "#/definitions/Decider"
         },
@@ -124,6 +135,38 @@
         "decides",
         "effect",
         "next"
+      ],
+      "type": "object"
+    },
+    "StepCommand": {
+      "additionalProperties": false,
+      "description": "The command a human step's answer runs once: `argv` exec'd in `target`, on the options in\n`runs`.",
+      "properties": {
+        "argv": {
+          "description": "The program and its arguments, never parsed by a shell.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "runs": {
+          "description": "The options whose answer runs it.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "target": {
+          "description": "`worktree`, the task's worktree, or a name in `[asks.targets]`; `worktree` when unset.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "argv",
+        "runs"
       ],
       "type": "object"
     },

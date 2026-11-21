@@ -34,6 +34,7 @@ Schema: [`config/workflow.json`](../schemas/config/workflow.json).
 | `timeout` | duration | no | none, or `command_timeout` for a `run` action | How long one turn of a model step, or a `run` action's command, may run before Priory ends it | `"30m"` |
 | `options` | array of strings | human steps | `[]` | The answers a person picks from | `["open", "stop"]` |
 | `approves` | array of strings | no | `[]` | Human steps only: the irreversible steps this answer approves | `["open-pr"]` |
+| `command` | table | no | none | Human steps only: a command an answer runs once. `argv`, the program and its arguments; `target`, `worktree` or a name in [`[asks.targets]`](factory.md#asks), default `worktree`; `runs`, the options that run it. See [Runbooks](#runbooks) | `{ argv = ["cargo", "test"], target = "repo", runs = ["run"] }` |
 | `action` | string | code steps | | The built-in action: `open-pr`, `open-issue` or `run` | `"open-pr"` |
 | `run` | string | `run` actions | | The command a `run` action runs with `sh -c` | `"scripts/poll.sh"` |
 | `next` | table of strings | yes | | Each outcome and where it leads: a step id, `done` or `stop` | `{ passed = "done", failed = "stop" }` |
@@ -123,6 +124,29 @@ timeout = "2m"                 # else the factory's command_timeout
 next = { found = "done", ok = "stop", failed = "stop" }  # found: the script's last line
 ```
 
+## Runbooks
+
+A runbook is a workflow made only of human steps, so no agent runs. Each step is an ask on the
+desk, and the task moves by the option the person picks. A human step's `command` runs once when
+the person picks an option in its `runs`, with the at-most-once and uncertain rules of an agent's
+ask command (see [tools.md](../daemon/tools.md#commands-an-answer-runs)). The task moves by that
+option once the command exits 0. A failed or uncertain command asks the step again, with the exit
+or the uncertain outcome in the question. `examples/release-checklist/` is a runbook with a
+`cargo test` step:
+
+```toml
+[[steps]]
+id = "test"
+decides = "human"
+effect = "read"
+options = ["run", "skip", "abort"]
+command = { argv = ["cargo", "test"], target = "repo", runs = ["run"] }
+next = { run = "tag", skip = "tag", abort = "stop" }
+```
+
+`priory add` or `priory request --workflow <runbook>` starts one, and the desk shows its current
+step as an ask.
+
 ## Irreversible steps and their gates
 
 `priory check --explain [DIR]` runs the checks, then prints three tab-separated tables:
@@ -188,6 +212,10 @@ Errors about one step start with `` step `<id>`: `` and point at the step's line
 | `` a `run` action needs a `run` command `` | `action = "run"` without `run` |
 | `` only a `run` action has a `run` command `` | `run` on a code step with another action |
 | `` only a code step has a `run` command `` | `run` on a model or human step |
+| `` only a human step has a `command` `` | `command` on a model or code step |
+| `command argv must start with a program` | A `command` with an empty `argv` or an empty first word |
+| `` command target `<target>` is not worktree nor a name in [asks.targets] `` | A `command` names a target the factory lacks |
+| `` command runs `<option>`, which is not an option `` | A `runs` entry the step does not offer |
 | `` `next` is empty `` | A step with no outcome |
 | `` `by` has outcome `<outcome>`, which is not in `next` `` | `by` names an outcome the step does not have |
 | `` outcome `<outcome>` leads to `<target>`, which is not a step, `done` or `stop` `` | A `next` target that does not exist |

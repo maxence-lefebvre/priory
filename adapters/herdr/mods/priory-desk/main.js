@@ -17,6 +17,7 @@ const STEPS = /** @type {Record<string, number>} */ ({ j: 1, down: 1, k: -1, up:
 // Each kind's state tile (DESIGN.md, State tile): its fill token, its icon, and its reason's text color.
 const TILES = /** @type {Record<string, [string, string | null, string]>} */ ({
   ask: ["wait", "ask", "text-2"],
+  todo: ["wait", "square", "text-2"],
   blocked: ["tile-warn", "hand", "warn-text"],
   prompt: ["tile-warn", "hand", "warn-text"],
   failed: ["tile-danger", "circle-x", "danger-text"],
@@ -199,6 +200,12 @@ export default class PrioryDesk extends View {
     this.act(cx, RESTART[row.kind].toLowerCase(), (client) => (row.kind === "failed" ? client.revive(task) : client.resume(task)));
   }
 
+  // Done for a to-do, as `priory todo done`.
+  /** @param {import("gpui-kit").Context} cx @param {number} todo */
+  done(cx, todo) {
+    this.act(cx, "mark it done", (client) => client.todoDone(todo));
+  }
+
   // The Asks panel is the one place to answer: open the ask there.
   /** @param {number | string} ask */
   answer(ask) {
@@ -342,6 +349,7 @@ export default class PrioryDesk extends View {
         .child(`Next: ${next.progress?.nextAction}`)))
       .child(h_flex().gap(S["space-2"]).flex_wrap().items_center()
         .when(next.ask != null, (el) => el.child(ui.button("next-answer", "Answer…", () => this.answer(/** @type {number | string} */ (next.ask)), { primary: true })))
+        .when(next.todo != null, (el) => el.child(ui.button("next-done", "Done", (_e, cx) => this.done(cx, /** @type {number} */ (next.todo)), { disabled: this.busy })))
         .when(next.task != null, (el) => el.child(ui.button("next-attach", "Attach", () => this.attach(/** @type {number} */ (next.task)))))
         .when(next.snooze != null, (el) => el.child(ui.button("next-snooze", "Snooze 1 h", (_e, cx) => this.snooze(cx, /** @type {{ kind: string, id: number | string }} */ (next.snooze), HOUR), { icon: "clock", disabled: this.busy })))
         .when(wide && next.ask != null, (el) => el.child(div().flex_1()).child(ui.hints([["Enter", "answer"], ["S", "snooze"]], true))))
@@ -434,6 +442,7 @@ export default class PrioryDesk extends View {
     const restart = RESTART[row.kind];
     const actions = h_flex().gap(S["space-2"]).flex_wrap()
       .when(ask != null && !row.snoozed, (el) => el.child(ui.button(`answer-${row.id}`, "Answer…", () => this.answer(/** @type {number | string} */ (ask)), { primary: true })))
+      .when(row.todo != null, (el) => el.child(ui.button(`done-${row.id}`, "Done", (_e, cx) => this.done(cx, /** @type {number} */ (row.todo)), { disabled: this.busy })))
       .when(Boolean(restart) && row.task != null, (el) => el.child(ui.button(`restart-${row.id}`, restart, (_e, cx) => this.restart(cx, row), { disabled: this.busy })))
       .when(row.task != null, (el) => el.child(ui.button(`attach-${row.id}`, "Attach", () => this.attach(/** @type {number} */ (row.task)))))
       .when(Boolean(item), (el) => el

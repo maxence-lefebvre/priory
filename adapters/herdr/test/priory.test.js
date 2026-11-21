@@ -114,6 +114,7 @@ test("acts through priory's verbs with argv only", async () => {
   await client.seen({ at: "2026-11-20T12:00:00Z" });
   await client.resume(4);
   await client.revive(5);
+  await client.todoDone(2);
   await client.hold(7, { reason: "waits for review" });
   await client.hold(7, { reason: "night", until: "2026-11-21T08:00:00Z" }, 11);
   await client.release(7, 12);
@@ -139,6 +140,7 @@ test("acts through priory's verbs with argv only", async () => {
     ["seen", "--at", "2026-11-20T12:00:00Z"],
     ["resume", "4"],
     ["revive", "5"],
+    ["todo", "done", "2"],
     ["hold", "7", "--reason", "waits for review"],
     ["hold", "7", "--reason", "night", "--until", "2026-11-21T08:00:00Z", "--expected", "11"],
     ["release", "7", "--expected", "12"],

@@ -111,6 +111,8 @@ application/json` and a JSON body of at most 16 KiB with exactly the fields belo
 | `POST /api/reports/resolve`, `POST /api/reports/reopen` | `comment`, an integer |
 | `POST /api/push/subscribe` | the browser's `PushSubscription.toJSON()`: `endpoint`, a string, `keys`, an object of `p256dh` and `auth`, base64url strings, and optionally `expirationTime`, which is ignored. See [Notifications](#notifications) |
 | `POST /api/push/unsubscribe` | `endpoint`, a string |
+| `POST /api/todos` | `text`, one line, then optionally `band`, one of the factory's bands, and `due`, an RFC 3339 time, as `priory todo add`. The reply's `ok` is the new to-do's id |
+| `POST /api/todos/{id}/done` | `{}`, as `priory todo done`. A to-do already done gets `422` |
 | `POST /api/seen` | `at`, an RFC 3339 time: the visit to the desk to record for `me`, as `priory seen --at` records it, to the second |
 
 In `/api/asks/{id}`, `{id}` is the ask's `id` as `/api/asks` lists it: its number, or an outside

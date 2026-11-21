@@ -13,6 +13,7 @@ const ICONS = {
   minus: '<path d="M5 12h14"/>',
   x: '<path d="M18 6 6 18"/><path d="m6 6 12 12"/>',
   "circle-x": '<circle cx="12" cy="12" r="10"/><path d="m15 9-6 6"/><path d="m9 9 6 6"/>',
+  square: '<rect width="18" height="18" x="3" y="3" rx="2"/>',
   "circle-dashed": '<path d="M10.1 2.18a9.93 9.93 0 0 1 3.8 0"/><path d="M17.6 3.71a9.95 9.95 0 0 1 2.69 2.7"/><path d="M21.82 10.1a9.93 9.93 0 0 1 0 3.8"/><path d="M20.29 17.6a9.95 9.95 0 0 1-2.7 2.69"/><path d="M13.9 21.82a9.94 9.94 0 0 1-3.8 0"/><path d="M6.4 20.29a9.95 9.95 0 0 1-2.69-2.7"/><path d="M2.18 13.9a9.93 9.93 0 0 1 0-3.8"/><path d="M3.71 6.4a9.95 9.95 0 0 1 2.7-2.69"/>',
   "circle-dot": '<circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="1"/>',
   "circle-help": '<circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><path d="M12 17h.01"/>',
@@ -72,7 +73,7 @@ const STATES = {
   running: ["live", null], asleep: ["muted", "moon"], blocked: ["warn", "hand"], done: ["ok", "check"],
   failed: ["danger", "circle-x"], dropped: ["muted", "minus"], lost: ["warn", "unplug"],
   ask: ["wait", "ask"], answered: ["muted", "check"], withdrawn: ["muted", "minus"], prompt: ["warn", "hand"],
-  refused: ["warn", "x"], moved: ["muted", "check"],
+  refused: ["warn", "x"], moved: ["muted", "check"], todo: ["wait", "square"],
 };
 const role = (state) => (STATES[state] || ["muted", "circle-help"])[0];
 function tile(state, size = "") {
@@ -119,6 +120,8 @@ const state = {
   // The task whose action is in flight, each task's last action note, and its unsent say text.
   taskBusy: null,
   taskNotices: new Map(),
+  todoBusy: null,
+  todoNotices: new Map(),
   sayDrafts: new Map(),
   drafts: new Map(),
   notices: new Map(),
@@ -259,10 +262,11 @@ function deskModel() {
   const open = items.filter((item) => item.kind === "ask").map((item) => byId.get(item.id) || { ...item, question: item.what, options: [] });
   const stopped = items.filter((item) => ["blocked", "failed", "prompt", "command"].includes(item.kind));
   const reports = items.filter((item) => item.kind === "report");
-  const other = items.filter((item) => !["ask", "blocked", "failed", "prompt", "command", "report"].includes(item.kind));
+  const todos = items.filter((item) => item.kind === "todo");
+  const other = items.filter((item) => !["ask", "blocked", "failed", "prompt", "command", "report", "todo"].includes(item.kind));
   // The capsule opens the ask that ranks first, not only the oldest one.
   const first = desk.ranked?.find((item) => item.kind === "ask");
-  return { next: desk.next, open, first: first ? byId.get(first.id) || open[0] : open[0], stopped, reports, other, asleep: desk.counts.asleep, asleepTasks: queue.asleep, banner: desk.banner, intake: desk.intake, running: queue.running, queue: queue.waiting, tasks, upNext: queue.up_next, needs: items.length };
+  return { next: desk.next, open, first: first ? byId.get(first.id) || open[0] : open[0], stopped, todos, reports, other, asleep: desk.counts.asleep, asleepTasks: queue.asleep, banner: desk.banner, intake: desk.intake, running: queue.running, queue: queue.waiting, tasks, upNext: queue.up_next, needs: items.length };
 }
 const openAsks = () => deskModel().open;
 // The open asks the list shows, so previous, next and the ask after an answer stay in its facets.
@@ -306,6 +310,42 @@ function itemRow(item) {
     ${tile(kind)}
     <span class="l1">${key}<span>${item.step || ""}</span><span>${item.kind}</span>${item.task ? prsTag({}, item.task) : ""}<span class="age">${timeTag(item.since)}</span></span>
     <span class="l2 r t-${role(kind)}">${autolinked(item.what, null)}</span>${stopped ? taskActs(item.task, item.kind) : ""}</div>`;
+}
+
+// A person's to-do: its text and due time, and Done, the twin of `priory todo done`.
+function todoRow(item) {
+  return html`<div class="row">
+    ${tile("todo")}
+    <span class="l1"><span>to-do</span><span class="age">${timeTag(item.since)}</span></span>
+    <span class="l2 r">${autolinked(item.what, null)}</span>${todoDone(item.id)}</div>`;
+}
+
+function todoDone(id) {
+  const busy = state.todoBusy !== null || Boolean(state.failed);
+  const notice = state.todoNotices.get(id);
+  return html`<span class="task-acts"><button id="todo-${id}" class="btn secondary act" data-action="todo-done" data-todo="${id}" aria-disabled="${busy ? "true" : "false"}">Done</button></span>${notice ? html`<p class="note acts-note" role="status">${notice}</p>` : ""}`;
+}
+
+async function markDone(target) {
+  const id = Number(target.dataset.todo);
+  if (target.getAttribute("aria-disabled") === "true") return;
+  state.todoBusy = id;
+  render();
+  let reply;
+  try {
+    reply = await post(`/api/todos/${id}/done`, {});
+  } catch {
+    reply = { status: 0, body: { error: "the connection dropped" } };
+  }
+  state.todoBusy = null;
+  const { status, body } = reply;
+  if (status === 401) return signOut("The daemon refused this token. Paste the current one.");
+  if (status === 200) state.todoNotices.delete(id);
+  else state.todoNotices.set(id, status === 503 ? "Could not send: no priory daemon runs beside this server. Start priory daemon, then send again."
+    : status === 504 || status === 0 ? "The daemon may have applied this but did not confirm it. Check the desk before you send again."
+      : `Could not mark it done: ${body.error || `the server answered ${status}`}.`);
+  render();
+  refresh();
 }
 
 // An asleep task with what each of its open waits waits on, and since when.
@@ -388,10 +428,11 @@ function nextCard(model) {
   const kind = ["prompt", "command"].includes(item.kind) ? "prompt" : item.kind === "report" ? "lost" : item.kind;
   const href = nextLink(item);
   const verb = ask ? "Answer…" : href?.startsWith("#") ? "See the banner" : "Open task";
+  const button = item.kind === "todo" ? todoDone(item.id) : href ? html`<a class="btn ${ask ? "primary" : "secondary"}" href="${href}">${verb}</a>` : "";
   return html`<section class="next" aria-label="The next thing"><p class="l1">${tile(kind, "sm")}<span class="mono">${item.key || ""}</span><span>${item.step || ""}</span><span class="age">${timeTag(item.since)}</span></p>
     <p class="q">${autolinked(text, ask?.repo || task?.repo)}</p><p class="why t-${role(kind)}">${item.why}</p>
     ${ask?.recommendation ? html`<p class="rec">${icon("corner-down-right", "s15")}<span>${ask.recommendation}</span></p>` : ""}
-    ${href ? html`<a class="btn ${ask ? "primary" : "secondary"}" href="${href}">${verb}</a>` : ""}</section>`;
+    ${button}</section>`;
 }
 
 // Since you looked (DESIGN.md, Desk): what happened since the last visit, one group per task.
@@ -441,6 +482,7 @@ function needsMe(model, wide) {
   } else {
     if (model.open.length) sections.push(html`<div class="sec">Asks<span>oldest first</span></div>${model.open.map((ask) => askRow(ask, String(ask.id) === selected))}`);
     if (model.stopped.length) sections.push(html`<div class="sec">Stopped<span>${model.stopped.length}</span></div>${model.stopped.map(itemRow)}`);
+    if (model.todos.length) sections.push(html`<div class="sec">To-dos<span>${model.todos.length}</span></div>${model.todos.map(todoRow)}`);
     if (model.other.length) sections.push(html`<div class="sec">Also waiting<span>${model.other.length}</span></div>${model.other.map(itemRow)}`);
   }
   sections.push(upNext(model), sinceYouLooked());
@@ -456,11 +498,14 @@ function deskTable(model, selected) {
   const itemLine = (item) => html`<tr>
     <td>${stateWord(item.kind === "prompt" ? "prompt" : item.kind)}</td><td class="mono">${["blocked", "failed"].includes(item.kind) ? html`<a href="/tasks/${item.task}">${item.key || ""}</a>` : item.key || ""}</td><td>${item.step || ""}</td>
     <td class="q full t-${role(item.kind)}">${item.task ? prsTag({}, item.task) : ""}<span>${item.what}</span></td><td class="recw">${["blocked", "failed"].includes(item.kind) ? taskActs(item.task, item.kind) : ""}</td><td class="r">${timeTag(item.since)}</td></tr>`;
+  const todoLine = (item) => html`<tr>
+    <td>${stateWord("todo")}</td><td class="mono"></td><td></td><td class="q full"><span>${item.what}</span></td><td class="recw">${todoDone(item.id)}</td><td class="r">${timeTag(item.since)}</td></tr>`;
   const group = (title, count) => html`<tr class="grp"><td colspan="6">${title}<span>${count}</span></td></tr>`;
   return html`<table class="tbl">
     <thead><tr><th>State</th><th>Task</th><th>Step</th><th>Waits on you</th><th>Recommends</th><th class="r">Age</th></tr></thead>
     <tbody>${model.open.map(askLine)}
     ${model.stopped.length ? [group("Stopped", model.stopped.length), model.stopped.map(itemLine)] : ""}
+    ${model.todos.length ? [group("To-dos", model.todos.length), model.todos.map(todoLine)] : ""}
     ${model.other.length ? [group("Also waiting", model.other.length), model.other.map(itemLine)] : ""}
     </tbody></table>`;
 }
@@ -1713,6 +1758,7 @@ document.addEventListener("click", (event) => {
     return render();
   }
   if (action === "task-act") return taskAct(target);
+  if (action === "todo-done") return markDone(target);
   if (["pick", "pick-undo", "compose", "compose-cancel", "reply", "resolve", "reopen"].includes(action)) return reportAct(target);
   if (target.dataset.answer !== undefined || ["undo", "options", "write", "dismiss", "snooze", "unsnooze"].includes(action)) return act(target);
   if (action === "mode" || action === "theme") {

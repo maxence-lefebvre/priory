@@ -79,7 +79,7 @@ The Warp column comes from Warp's public page and is blank where that page says 
 | Event      | Something that happened: a poll result, a webhook, a schedule, an answer | delivery     | event            |
 | Intake     | The process that polls sources, matches triggers and publishes events     |              | watch-poll       |
 | Inbox      | The durable list of events, each routed to the task it concerns          |              | inbox            |
-| Desk       | What waits on a person: asks, blocked tasks and reports                   |              | asks panel       |
+| Desk       | What waits on a person: asks, blocked tasks, reports and to-dos           |              | asks panel       |
 | Wait       | The conditions an agent names before it sleeps                            |              | `retire --on`    |
 | Ask        | A question to a person, with options, a recommendation and a trade-off    | review gate  | ask              |
 | Result     | The immutable record of a run's outcome and its evidence                  |              | result           |
