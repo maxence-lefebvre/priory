@@ -20478,6 +20478,11 @@ fn a_runs_screen_returns_its_rows_blank_ones_kept_its_size_and_a_hash_that_follo
     );
     assert_eq!(screen["cursor"], json!(null));
     assert_eq!(screen["redacted"], 0);
+    assert_eq!(
+        screen.get("keyboard"),
+        None,
+        "only \"type\" offers the keyboard"
+    );
     let hash = screen["hash"].as_str().unwrap().to_owned();
     let (status, same) = http(
         &address,
@@ -20927,6 +20932,7 @@ fn keys_type_text_as_text_and_send_a_listed_key_as_that_key() {
 
     // `cat` echoes the line as typed, then prints it back once Enter ends it.
     assert_eq!(on_screen(&address, text, 2), 2);
+    assert_eq!(screen_once(&address, |_| true)["keyboard"], json!(true));
     server.kill().unwrap();
     server.wait().unwrap();
 }

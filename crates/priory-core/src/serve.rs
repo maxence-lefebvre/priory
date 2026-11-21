@@ -486,7 +486,13 @@ fn terminal(db: &Connection, served: &Served, run: &str, query: &str) -> Reply {
         Some(Err(_)) => return Reply::error(400, "history is a number of rows"),
     };
     match screen::read(db, &state::Attach::Run(run), &served.secrets, history) {
-        Ok(shown) => Reply::json(200, screen::reply(shown, have).to_string()),
+        Ok(mut shown) => {
+            // Outside the hash, as the setting is not the screen's: the page offers keys only then.
+            if served.terminal == Terminal::Type {
+                shown["keyboard"] = serde_json::json!(true);
+            }
+            Reply::json(200, screen::reply(shown, have).to_string())
+        }
         Err(error) => Reply::error(404, &error),
     }
 }

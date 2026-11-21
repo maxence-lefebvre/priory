@@ -9,7 +9,7 @@ import { prStack } from "./stack.js";
 import { KINDS, edgeStyle, lockBadge, nodeShape, timeline, ungatedPairs } from "./flows.js";
 import { emptyDetail, eventWords, handled, neverOwned, routeAction, unroutedNote } from "./inbox.js";
 import { editBody, issueName, laneLayout, momentWords, stages, successors } from "./batches.js";
-import { EARLIER_CAP, sayLine, screenRows, screenWatch } from "./terminal.js";
+import { EARLIER_CAP, KEYS, keyboardSession, sayLine, screenRows, screenWatch } from "./terminal.js";
 import { actionNote, batchParts, dueParts, mergeSince, nextLink, progressView, rowAction, sectionInView, sinceGroups } from "./desk.js";
 import { TASK_FACETS, TASK_VIEWS, elsewhere, filtered, olderPart, taskViews, triageWords } from "./tasks.js";
 import { RUN_FACETS, RUN_VIEWS, duration, runState, runViews, tokenText } from "./runs.js";
@@ -304,6 +304,8 @@ function signOut(reason) {
   // A refresh still in flight must not store what this device just dropped.
   state.refreshes++;
   watch.stop();
+  // Before the token goes: giving the keyboard back needs it.
+  keyboard.leave();
   Object.assign(state, { token: null, data: null, snapshot: null, revision: undefined, signInError: reason, flowsError: null, all: { asks: false, tasks: false, runs: false }, costs: { by: "workflow", loading: false, slow: false, error: null } });
   render();
 }
@@ -1355,7 +1357,20 @@ const watch = screenWatch({
 });
 // `left` is the pane's sideways scroll for run `run`, kept while a refresh redraws the task page.
 // `typing` opens the Say line, `line` holds its text, `said` its last note and whether it was said.
-const terminal = { fit: false, copied: null, run: null, left: 0, onScreen: false, typing: false, line: "", said: null, saying: false };
+// `menu` opens the header's More, and `keys` holds the text the keys bar pastes.
+const terminal = { fit: false, copied: null, run: null, left: 0, onScreen: false, typing: false, line: "", said: null, saying: false, menu: false, keys: "" };
+// This page's hold on the pane's keyboard (terminal.js). Its writes keep going while the page unloads.
+const keyboard = keyboardSession({
+  post: (path, body) => fetch(path, {
+    method: "POST",
+    keepalive: true,
+    headers: { Authorization: `Bearer ${state.token}`, "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  }).then(async (response) => ({ status: response.status, body: await response.json().catch(() => ({})) })),
+  signOut: () => signOut("The daemon refused this token. Paste the current one."),
+  changed: () => paintTerminal(document.getElementById("app"), true),
+  format: (iso) => clock(iso),
+});
 const screenText = (screen) => screenRows(screen.lines).map((parts) => parts.map((part) => part.text).join("")).join("\n").trimEnd();
 
 // The live run, else the run whose last screen this page still holds.
@@ -1384,6 +1399,10 @@ function terminalBody({ term, task, tmux, end }) {
   if (end) notes.push(["", (STATES[end] || [, "circle-help"])[1], screen ? `Run ${run} ended as ${end}. This is the last screen this page saw.` : `Run ${run} ended as ${end}.`]);
   else if (gone) notes.push(["warn", "unplug", `This server reads no screen of run ${run}. Run priory screen ${task} on the runner to see why.`]);
   else if (!screen && !stale) notes.push(["", "clock", "Reading the screen…"]);
+  const keys = keyboard.state();
+  const held = end ? null : keys.held;
+  const offer = !end && !held && Boolean(screen?.keyboard);
+  if (keys.ended && !held) notes.push(["", "clock", keys.ended, offer]);
   // Each part's classes come from screenRows' fixed set; its text stays text.
   const part = (part) => (part.hidden ? html`<span class="hid">${part.text}</span>` : part.cls ? html`<span class="${part.cls}">${part.text}</span>` : part.text);
   const earlier = screen?.earlier || 0;
@@ -1392,33 +1411,78 @@ function terminalBody({ term, task, tmux, end }) {
     : earlier >= EARLIER_CAP ? html`<p class="term-edge">The last ${EARLIER_CAP.toLocaleString("en")} lines are as far back as this pane reads.</p>` : "";
   const typing = terminal.typing && !end;
   const copied = (what, text) => (terminal.copied === what ? "Copied" : text);
-  return html`${notes.map(([kind, name, text]) => html`<p class="note ${kind}" role="status">${icon(name, "s15")}<span>${text}</span></p>`)}
-    <div class="term${terminal.fit ? " fit" : ""}${end ? " ended" : ""}" role="region" aria-label="Terminal of run ${run}">
-      <div class="term-head">${icon("terminal", "s15")}<span class="mono">${tmux}</span><span class="rid">run ${run}</span>${end ? tile(end, "sm") : ""}<span class="ro${typing ? " on" : ""}">${typing ? "say" : "read-only"}</span><span class="sp"></span>
-        ${end ? "" : html`<button data-action="term-type" aria-label="Type" aria-pressed="${String(typing)}">${icon("keyboard", "s15")}<span>Type</span></button>`}
+  const tag = held ? html`<span class="ro keys">keys</span>` : html`<span class="ro${typing ? " on" : ""}">${typing ? "say" : "read-only"}</span>`;
+  const menu = terminal.menu ? html`<div class="term-menu" id="term-more">
+      ${offer ? html`<button data-action="term-take-ask">${icon("keyboard", "s15")}<span>Take the keyboard<small>Send keys straight into the pane</small></span></button>` : ""}
+      ${held ? html`<button data-action="term-give-ask">${icon("keyboard", "s15")}<span>Give the keyboard back</span></button>` : ""}
+      <button data-action="term-attach" data-task="${task}">${icon("eye", "s15")}<span>${copied("attach", "Copy attach command")}</span></button></div>` : "";
+  return html`${notes.map(([kind, name, text, again]) => html`<p class="note ${kind}" role="status">${icon(name, "s15")}<span>${text}${again ? html` <button class="linkish" data-action="term-take-ask">Take it again</button>` : ""}</span></p>`)}
+    <div class="term${terminal.fit ? " fit" : ""}${end ? " ended" : ""}${held ? " held" : ""}" role="region" aria-label="Terminal of run ${run}">
+      <div class="term-head">${icon("terminal", "s15")}<span class="mono">${tmux}</span><span class="rid">run ${run}</span>${end ? tile(end, "sm") : ""}${tag}<span class="sp"></span>
+        ${end ? "" : html`<button data-action="term-type" aria-label="Type" aria-pressed="${String(typing)}">${icon("message-text", "s15")}<span>Type</span></button>`}
         <button data-action="term-copy" aria-label="Copy screen" ${screen ? "" : raw('aria-disabled="true"')}>${icon("copy", "s15")}<span>${copied("screen", "Copy screen")}</span></button>
         <button data-action="term-fit" aria-label="Fit" aria-pressed="${String(terminal.fit)}">${icon("fit", "s15")}<span>Fit</span></button>
-        <button data-action="term-attach" aria-label="Copy the attach command" data-task="${task}">${icon("eye", "s15")}<span>${copied("attach", "Attach")}</span></button></div>
-      ${top}<pre id="term-screen" tabindex="0" aria-label="Screen${screen ? `, ${screen.width} by ${screen.height}` : ""}">${rows}</pre>
+        <button data-action="term-menu" aria-label="More" aria-controls="term-more" aria-expanded="${String(terminal.menu)}">${icon("more", "s15")}</button></div>
+      ${menu}${top}<pre id="term-screen" tabindex="0" aria-label="Screen${screen ? `, ${screen.width} by ${screen.height}` : ""}">${rows}</pre>
       ${typing ? html`<div class="term-type"><form data-action="term-say" data-task="${task}"><span class="pr" aria-hidden="true">›</span><label class="sr" for="term-line">Say to the agent</label>
         <input id="term-line" autocomplete="off" placeholder="Say to the agent" value="${terminal.line}"><button class="send" ${terminal.line.trim() && !terminal.saying ? "" : raw('aria-disabled="true"')}>Say</button></form>
-        ${terminal.said ? html`<p class="tn ${terminal.said.said ? "ok" : "no"}" role="status">${icon(terminal.said.said ? "check" : "circle-x", "s15")}<span>${terminal.said.note}</span></p>` : ""}</div>` : ""}</div>`;
+        ${terminal.said ? html`<p class="tn ${terminal.said.said ? "ok" : "no"}" role="status">${icon(terminal.said.said ? "check" : "circle-x", "s15")}<span>${terminal.said.note}</span></p>` : ""}</div>` : ""}
+      ${held ? keysBar(held, keys) : ""}</div>`;
 }
 
-// Says the pane's line through the task's say verb; a refusal keeps the line, as the task page's Say does.
-async function sayFromPane(task) {
-  const [text, run] = [terminal.line, terminal.run];
-  if (terminal.saying || !text.trim()) return;
-  terminal.saying = true;
-  paintTerminal(document.getElementById("app"), true);
-  const said = await sayLine(post, task, text);
-  if (said.signOut) return signOut("The daemon refused this token. Paste the current one.");
-  // The pane moved to another run meanwhile: its line and note are not this one's.
-  if (terminal.run !== run) return;
-  terminal.saying = false;
-  // Text typed while the line was in flight stays.
-  if (said.said && terminal.line === text) terminal.line = "";
-  terminal.said = said;
+// The bar of a held keyboard: whose and until when, a text pasted without Enter, and one button a key.
+function keysBar(held, { note, returning, pasting }) {
+  const row = KEYS.map((key) => (key ? html`<button data-action="term-key" data-key="${key[0]}" aria-label="${key[0]}"${key[2] ? raw(' class="hot"') : ""}>${key[1]}</button>` : raw('<span class="gap" aria-hidden="true"></span>')));
+  return html`<div class="keys-bar"><p class="who">${icon("keyboard", "s15")}<span><b>Your keys</b> until ${clock(held.ends)}</span><span class="sp"></span><button class="give" data-action="term-give-ask" ${returning ? raw('aria-disabled="true"') : ""}>${returning ? "Giving back…" : "Give back"}</button></p>
+    <form data-action="term-paste"><span class="pr" aria-hidden="true">›</span><label class="sr" for="term-keys">Text to paste, without Enter</label>
+      <input id="term-keys" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="Text, sent without Enter" value="${terminal.keys}"><button class="send" ${pasting || returning ? raw('aria-disabled="true"') : ""}>Send</button></form>
+    <div class="keys-row" role="group" aria-label="Keys">${row}</div>
+    ${note ? html`<p class="tn" role="status">${icon("check", "s15")}<span>${note}</span></p>` : ""}</div>`;
+}
+
+const keyboardSheet = () => document.getElementById("keyboard");
+
+// The confirm sheet before a person takes the keyboard, or gives it back (DESIGN.md, Terminal pane).
+function openKeyboardSheet(kind) {
+  const sheet = keyboardSheet();
+  const run = keyboard.state().run;
+  // The sheet acts on the run it names, never on one the pane switched to under it.
+  sheet.dataset.run = run;
+  const tail = (watch.state().screen?.lines || []).map((line) => line.replace(/\x1b\[[0-9;:]*m/g, "")).filter((line) => line.trim()).slice(-2).join("\n");
+  sheet.innerHTML = (kind === "take"
+    ? html`<div class="shead"><h2 id="keyboard-title">Take the keyboard of run ${run}?</h2><button class="iconbtn" data-action="keyboard-close" aria-label="Close">${icon("x", "s20")}</button></div>
+      <p class="warnline">${icon("shield", "s15")}<span>Your keys reach the agent and its shell directly. Priory's guard does not check them.</span></p>
+      <ul class="facts"><li>${icon("clock", "s15")}<span>For 15 minutes, or until you give it back.</span></li>
+        <li>${icon("pause", "s15")}<span>The agent's queued prompts and your Says wait until then.</span></li>
+        <li>${icon("pencil", "s15")}<span>Priory records each key and the length of each text, never the text.</span></li></ul>
+      <div class="acts"><button class="btn secondary" data-action="keyboard-close">Keep watching</button><button class="btn danger" data-action="term-take">${icon("keyboard", "s15")}Take the keyboard</button></div>`
+    : html`<div class="shead"><h2 id="keyboard-title">Give the keyboard back?</h2><button class="iconbtn" data-action="keyboard-close" aria-label="Close">${icon("x", "s20")}</button></div>
+      <p class="line">Anything you typed and did not submit stays in the agent's input box, and its next prompt joins it. Clear it with ⌃C or submit it with ⏎ first.</p>
+      ${tail ? html`<pre class="peek">${tail}</pre>` : ""}
+      <div class="acts"><button class="btn secondary" data-action="keyboard-close">Keep typing</button><button class="btn primary" data-action="term-give">Give back</button></div>`).text;
+  if (!sheet.open) sheet.showModal();
+  sheet.querySelector(".acts .btn:last-child")?.focus();
+}
+
+async function keyboardAct(action) {
+  const sheet = keyboardSheet();
+  const run = keyboard.state().run;
+  sheet.close();
+  if (String(run) !== sheet.dataset.run) return;
+  if (action === "term-take") {
+    terminal.typing = false;
+    await keyboard.take(run, state.revision);
+    return document.getElementById("term-keys")?.focus();
+  }
+  await keyboard.giveBack();
+  watch.revision();
+}
+
+// Sends one input; a text leaves the field once it was sent, unless the person typed on.
+async function sendInput(input) {
+  const sent = await keyboard.send(input);
+  if (sent && input.text !== undefined && terminal.keys === input.text) terminal.keys = "";
+  if (sent) watch.revision();
   paintTerminal(document.getElementById("app"), true);
 }
 
@@ -1426,14 +1490,17 @@ async function sayFromPane(task) {
 // scroll and focus. Fit sizes the text to the pane, between 9 px and the pane's own size.
 function paintTerminal(app, rendered = false) {
   const box = app?.querySelector("[data-term]");
-  if (!box) return;
+  // A page without the pane gives back a keyboard it held.
+  if (!box) return app && keyboard.leave();
   const { screen, stale, gone, at, more } = watch.state();
-  const key = JSON.stringify([screen?.hash, stale, gone, more, stale && Math.round((Date.now() - at) / 1000), terminal.fit, terminal.copied, terminal.typing, innerWidth]);
+  const key = JSON.stringify([screen?.hash, stale, gone, more, stale && Math.round((Date.now() - at) / 1000), terminal.fit, terminal.copied, terminal.typing, terminal.menu, keyboard.state(), innerWidth]);
   if (box.dataset.painted === key && !rendered) return;
-  if (terminal.run !== box.dataset.term) Object.assign(terminal, { run: box.dataset.term, left: 0, typing: false, line: "", said: null, saying: false });
+  // A grant this page holds on a run it no longer shows goes back, so that run's outbox resumes.
+  keyboard.at(box.dataset.end ? null : Number(box.dataset.term));
+  if (terminal.run !== box.dataset.term) Object.assign(terminal, { run: box.dataset.term, left: 0, typing: false, line: "", said: null, saying: false, menu: false, keys: "" });
   const active = document.activeElement;
-  const focused = box.contains(active) ? active.id || active.dataset.action || "pre" : null;
-  const caret = active?.id === "term-line" ? [active.selectionStart, active.selectionEnd] : null;
+  const focused = !box.contains(active) ? null : active.dataset.key ? `[data-key="${CSS.escape(active.dataset.key)}"]` : active.id ? `#${active.id}` : active.dataset.action ? `[data-action="${active.dataset.action}"]` : "pre";
+  const caret = ["term-line", "term-keys"].includes(active?.id) ? [active.id, active.selectionStart, active.selectionEnd] : null;
   box.innerHTML = terminalBody(box.dataset).text;
   box.dataset.painted = key;
   const pre = box.querySelector("pre");
@@ -1443,8 +1510,8 @@ function paintTerminal(app, rendered = false) {
   pre.style.lineHeight = fit ? "1.33" : "";
   pre.scrollLeft = terminal.left;
   pre.addEventListener("scroll", () => { terminal.left = pre.scrollLeft; });
-  if (focused) (focused === "pre" ? pre : box.querySelector(`#${focused}, [data-action="${focused}"]`))?.focus({ preventScroll: true });
-  if (caret) box.querySelector("#term-line")?.setSelectionRange(...caret);
+  if (focused) (focused === "pre" ? pre : box.querySelector(focused))?.focus({ preventScroll: true });
+  if (caret) box.querySelector(`#${caret[0]}`)?.setSelectionRange(caret[1], caret[2]);
 }
 
 // Polls while a live run's pane is on screen and the page is shown.
@@ -2590,7 +2657,7 @@ function loading() {
 }
 
 const routeKey = () => location.pathname + location.search;
-const FOCUS_ATTRIBUTES = ["id", "href", "data-option", "data-pick-mode", "data-theme-pick", "data-add-chip", "data-action"];
+const FOCUS_ATTRIBUTES = ["id", "href", "data-option", "data-pick-mode", "data-theme-pick", "data-add-chip", "data-key", "data-action"];
 function focusKey(element) {
   if (!element || element === document.body) return null;
   const name = FOCUS_ATTRIBUTES.find((attribute) => element.hasAttribute(attribute));
@@ -2765,6 +2832,15 @@ document.addEventListener("click", (event) => {
     return terminal.typing && document.getElementById("term-line")?.focus();
   }
   if (action === "term-attach") return copyTerminal(`priory attach ${target.dataset.task} --read-only`, "attach");
+  if (action === "term-menu") return (terminal.menu = !terminal.menu), paintTerminal(document.getElementById("app"), true);
+  if (action === "term-take-ask" || action === "term-give-ask") {
+    terminal.menu = false;
+    paintTerminal(document.getElementById("app"), true);
+    return openKeyboardSheet(action === "term-take-ask" ? "take" : "give");
+  }
+  if (action === "term-take" || action === "term-give") return keyboardAct(action);
+  if (action === "keyboard-close") return keyboardSheet().close();
+  if (action === "term-key") return sendInput({ key: target.dataset.key });
   // A refresh that reaches the daemon reads the costs again.
   if (action === "costs-retry") return (state.costs.error = null), refresh();
   if (action === "add-open") return openAdd();
@@ -2853,6 +2929,7 @@ document.addEventListener("input", (event) => {
   }
   const form = event.target.id === "say" && event.target.closest("form");
   if (form) state.sayDrafts.set(Number(form.dataset.task), event.target.value);
+  if (event.target.id === "term-keys") terminal.keys = event.target.value;
   if (event.target.id === "term-line") {
     terminal.line = event.target.value;
     // Only the button changes; a repaint per letter would cost the caret.
@@ -2875,6 +2952,10 @@ document.addEventListener("submit", (event) => {
   if (event.target.dataset.action === "remark") {
     event.preventDefault();
     return submitRemark();
+  }
+  if (event.target.dataset.action === "term-paste") {
+    event.preventDefault();
+    return terminal.keys && sendInput({ text: terminal.keys });
   }
   if (event.target.dataset.action === "term-say") {
     event.preventDefault();
@@ -2899,6 +2980,11 @@ document.addEventListener("submit", (event) => {
 
 // Desktop shortcuts: j and k move, Enter opens, Esc closes, S snoozes the selected ask for 1 h. Never inside an input.
 document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape" && terminal.menu && event.target.closest?.(".term")) {
+    terminal.menu = false;
+    paintTerminal(document.getElementById("app"), true);
+    return document.querySelector('[data-action="term-menu"]')?.focus();
+  }
   if (event.key === "Escape" && event.target.id === "term-line") {
     Object.assign(terminal, { typing: false, said: null });
     paintTerminal(document.getElementById("app"), true);
@@ -2908,7 +2994,7 @@ document.addEventListener("keydown", (event) => {
     event.preventDefault();
     return event.target.click();
   }
-  if (addSheet().open || answerSheet().open || event.target.closest("input, textarea, select") || event.metaKey || event.ctrlKey || event.altKey || !state.data) return;
+  if (addSheet().open || answerSheet().open || keyboardSheet().open || event.target.closest("input, textarea, select") || event.metaKey || event.ctrlKey || event.altKey || !state.data) return;
   const rows = [...document.querySelectorAll(".list [href^='/asks/'], .list tr[data-href^='/asks/']")];
   const hrefOf = (row) => row.getAttribute("href") || row.dataset.href;
   const at = rows.findIndex((row) => row.getAttribute("aria-current") === "true");
@@ -2937,6 +3023,10 @@ document.addEventListener("keydown", (event) => {
 // A tap on the scrim, outside the sheet's box, closes it; closing hands focus back to an Add button.
 addSheet().addEventListener("click", (event) => { if (event.target === addSheet()) closeAdd(); });
 answerSheet().addEventListener("click", (event) => { if (event.target === answerSheet()) answerSheet().close(); });
+// A page that goes away gives its keyboard back, so the run's outbox does not wait out the 15 minutes.
+addEventListener("pagehide", () => keyboard.leave());
+keyboardSheet().addEventListener("click", (event) => { if (event.target === keyboardSheet()) keyboardSheet().close(); });
+keyboardSheet().addEventListener("close", () => document.querySelector("#app [data-action='term-menu']")?.focus());
 addSheet().addEventListener("close", () => document.querySelector("#app [data-action='add-open']")?.focus());
 addEventListener("popstate", render);
 for (const query of ["(min-width: 600px)", "(min-width: 1024px)"]) matchMedia(query).addEventListener("change", render);
