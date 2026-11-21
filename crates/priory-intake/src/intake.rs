@@ -21,6 +21,14 @@ use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::time::Duration;
 
 pub const OUTPUT: &str = "factory.intake";
+/// A runner claims a task's key. See `docs/adr/0003-*.md`.
+pub const TASK_CLAIMED: &str = "priory.task.claimed";
+/// A runner says what another runner may do with one of its tasks.
+pub const TASK_HELD: &str = "priory.task.held";
+/// A runner renews its lease.
+pub const RUNNER_ALIVE: &str = "priory.runner.alive";
+/// A person on one runner answers an ask of another.
+pub const ASK_ANSWERED: &str = "priory.ask.answered";
 const LABELED: &str = "github.issues.labeled";
 const OPENED: &str = "github.issues.opened";
 pub const ISSUE_CLOSED: &str = "github.issues.closed";
@@ -52,7 +60,7 @@ type Stream = (String, &'static str);
 type Cursors = BTreeMap<Stream, u64>;
 
 /// The `factory.intake` declaration, shared with `priory request`, which publishes on it too.
-pub(crate) fn output() -> Output {
+pub fn output() -> Output {
     Output::new(OUTPUT)
         .describe("Priory intake: source events and the tasks they request")
         .types([
@@ -83,6 +91,10 @@ pub(crate) fn output() -> Output {
             slack::REPLIED,
             TASK_REQUESTED,
             BASELINE,
+            TASK_CLAIMED,
+            TASK_HELD,
+            RUNNER_ALIVE,
+            ASK_ANSWERED,
         ])
 }
 

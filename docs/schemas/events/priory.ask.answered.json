@@ -1,0 +1,108 @@
+{
+  "$id": "https://raw.githubusercontent.com/maxence-lefebvre/priory/main/docs/schemas/events/priory.ask.answered.json",
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "additionalProperties": false,
+  "definitions": {
+    "AskAnswered": {
+      "additionalProperties": false,
+      "description": "A person answers an ask of another runner, with `priory answer RUNNER:ASK`. Only that runner\napplies it, with the revision check of a local answer.",
+      "properties": {
+        "ask": {
+          "description": "The ask's id on that runner.",
+          "format": "int64",
+          "type": "integer"
+        },
+        "by": {
+          "description": "Where the answer came from: `cli`.",
+          "type": "string"
+        },
+        "revision": {
+          "description": "The question revision the person read.",
+          "format": "int64",
+          "type": "integer"
+        },
+        "run": {
+          "description": "True when the person confirmed that the answer runs the ask's command.",
+          "type": "boolean"
+        },
+        "runner": {
+          "description": "The runner whose ask it answers.",
+          "type": "string"
+        },
+        "text": {
+          "description": "The answer.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "runner",
+        "ask",
+        "revision",
+        "text",
+        "run",
+        "by"
+      ],
+      "type": "object"
+    },
+    "Link": {
+      "additionalProperties": false,
+      "description": "A link for people.",
+      "properties": {
+        "label": {
+          "description": "`issue` or `pull_request`.",
+          "type": "string"
+        },
+        "url": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "label",
+        "url"
+      ],
+      "type": "object"
+    }
+  },
+  "description": "A person answers an ask of another runner, with `priory answer RUNNER:ASK`. Only that runner\napplies it, with the revision check of a local answer.",
+  "properties": {
+    "data": {
+      "$ref": "#/definitions/AskAnswered"
+    },
+    "id": {
+      "description": "A UUIDv5 of the message's name, so a retried publish keeps its id.",
+      "format": "uuid",
+      "type": "string"
+    },
+    "links": {
+      "description": "GitHub and Linear events carry one link to the event's page.",
+      "items": {
+        "$ref": "#/definitions/Link"
+      },
+      "type": "array"
+    },
+    "subject": {
+      "description": "A short line for listings, such as `owner/name#42`.",
+      "type": "string"
+    },
+    "time": {
+      "description": "When the event happened, RFC 3339.",
+      "format": "date-time",
+      "type": "string"
+    },
+    "type": {
+      "const": "priory.ask.answered",
+      "description": "The message type, such as `github.issues.labeled`.",
+      "type": "string"
+    }
+  },
+  "required": [
+    "id",
+    "type",
+    "subject",
+    "time",
+    "data",
+    "links"
+  ],
+  "title": "priory.ask.answered",
+  "type": "object"
+}
