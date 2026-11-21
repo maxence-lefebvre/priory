@@ -259,6 +259,7 @@ fn tasks_since(
         parse_json(task);
         let id = task["id"].as_i64().expect("a task has an id");
         task["stack"] = crate::stack::json(db, id)?;
+        task["relations"] = crate::relate::json(db, id)?;
     }
     Ok(tasks)
 }
@@ -833,6 +834,7 @@ pub fn task(db: &Connection, id: i64) -> rusqlite::Result<Option<Value>> {
     }
     task["asks"] = asks_of(db, Some(id), None, None)?;
     task["stack"] = crate::stack::json(db, id)?;
+    task["relations"] = crate::relate::json(db, id)?;
     for run in task["runs"].as_array_mut().expect("rows are an array") {
         if let Some(tokens) = run["tokens"].as_str() {
             run["tokens"] = serde_json::from_str(tokens).unwrap_or(Value::Null);

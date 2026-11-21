@@ -5376,6 +5376,7 @@ fn the_mcp_server_lists_its_tools() {
             "wait",
             "subscribe",
             "unsubscribe",
+            "relate",
             "compact",
             "tldr",
             "report",
@@ -13453,6 +13454,95 @@ fn reusing_a_pull_request_on_another_base_than_the_branch_below_fails() {
     );
 }
 
+/// Requests a held task with key `cli:<key>` and request `text`, which starts no run.
+fn held_request(setup: &Setup, key: &str, text: &str) {
+    let factory = setup.dir.join("factory");
+    let output = setup.priory(&[
+        "request",
+        factory.to_str().unwrap(),
+        "--workflow",
+        "implement",
+        "--key",
+        key,
+        "--hold",
+        "related only",
+        "--repo",
+        "owner/repo",
+        text,
+    ]);
+    assert!(output.status.success(), "{output:?}");
+}
+
+#[test]
+fn the_relate_tool_records_a_relation_of_the_callers_own_task_only() {
+    let mut setup = Setup::new("relate-tool");
+    held_request(&setup, "login", "Fix the login page");
+    setup.calls(&[json!([
+        { "name": "relate", "arguments": { "kind": "builds-on", "task": 1 } },
+        { "name": "relate", "arguments": { "kind": "fixes", "task": 2 } },
+        { "name": "relate", "arguments": { "kind": "fixes", "task": 1, "from": 1 } },
+        wait(json!({ "type": "time", "until": "1 hour" }))
+    ])]);
+    setup.publish(&requested(42));
+
+    setup.start();
+
+    setup.until("runs", |rows| rows.len() == 1 && rows[0][7] == "asleep");
+    let replies = setup.replies();
+    assert_eq!(
+        reply(&replies[0]),
+        ("task 2 builds-on task 1".to_owned(), false)
+    );
+    assert_eq!(
+        reply(&replies[1]),
+        ("a task does not relate to itself".to_owned(), true)
+    );
+    assert!(reply(&replies[2]).1, "{:?}", replies[2]);
+    let relations = task_json(&setup, "1")["relations"].clone();
+    assert_eq!(relations.as_array().map(Vec::len), Some(1), "{relations}");
+    assert_eq!(
+        [
+            &relations[0]["task"],
+            &relations[0]["kind"],
+            &relations[0]["other"],
+            &relations[0]["by"]
+        ],
+        [&json!(2), &json!("builds-on"), &json!(1), &json!("agent")]
+    );
+}
+
+#[test]
+fn a_request_that_links_a_pull_request_another_task_merged_fixes_that_task() {
+    let setup = asleep_with_a_branch("relate-fixes", serde_json::Value::Null);
+    let mut merged = opened_on(7, "priory/1", "main");
+    merged.kind = "github.pull_request.closed".to_owned();
+    merged.data["merged"] = json!(true);
+    merged.data["github_id"] = json!(470);
+    setup.publish(&opened_on(7, "priory/1", "main"));
+    setup.publish(&merged);
+    setup.until("inbox", |rows| rows.len() == 3);
+    assert_eq!(task_json(&setup, "1")["stack"][0]["state"], "merged");
+
+    held_request(
+        &setup,
+        "login-regression",
+        "Login broke after https://github.com/owner/repo/pull/7, and https://github.com/owner/repo/pull/8 is unrelated.",
+    );
+
+    setup.until("tasks", |rows| rows.len() == 2);
+    let relations = task_json(&setup, "2")["relations"].clone();
+    assert_eq!(relations.as_array().map(Vec::len), Some(1), "{relations}");
+    assert_eq!(
+        [
+            &relations[0]["task"],
+            &relations[0]["kind"],
+            &relations[0]["other"],
+            &relations[0]["by"]
+        ],
+        [&json!(2), &json!("fixes"), &json!(1), &json!("priory")]
+    );
+}
+
 /// A setup whose trigger sets `intervention`, with `extra` lines after it.
 fn intervened(name: &str, workflow: &str, intervention: &str, extra: &str) -> Setup {
     let setup = Setup::with_workflow(name, workflow);
@@ -13702,6 +13792,66 @@ fn a_leads_answer_outside_the_asks_options_is_refused() {
         .expect("one refused call");
     assert_eq!(refused.0, "ask 1 takes one of: sqlite, postgres");
     assert_eq!(asks_json(&setup)["asks"][0]["answer"], json!("sqlite"));
+}
+
+#[test]
+fn a_request_that_links_a_pull_request_a_waiting_task_saw_merged_fixes_that_task() {
+    let mut setup = Setup::new("relate-fixes-wait");
+    setup.calls(&[wait(on_pull_7("pull_request"))]);
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("runs", |rows| rows.len() == 1 && rows[0][7] == "asleep");
+    setup.publish(&closed());
+    setup.until("inbox", |rows| rows.len() == 2);
+
+    held_request(
+        &setup,
+        "login-regression",
+        "Login broke after https://github.com/owner/repo/pull/7.",
+    );
+
+    setup.until("tasks", |rows| rows.len() == 2);
+    let relations = task_json(&setup, "2")["relations"].clone();
+    assert_eq!(
+        [
+            &relations[0]["task"],
+            &relations[0]["kind"],
+            &relations[0]["other"]
+        ],
+        [&json!(2), &json!("fixes"), &json!(1)],
+        "{relations}"
+    );
+}
+
+#[test]
+fn a_request_whose_source_text_is_not_a_string_still_creates_its_task() {
+    let setup = Setup::new("relate-number-text");
+    let source = Message::new(
+        "priory.task.requested.cli",
+        json!({ "text": 42, "person": null, "time": "2026-11-21T09:00:00Z", "repo": "owner/repo" }),
+    )
+    .subject("cli:numbers");
+    let task = Message::new(
+        "factory.task.requested",
+        json!({
+            "workflow": "implement",
+            "key": "cli:numbers",
+            "band": null,
+            "lane": null,
+            "trigger": "cli",
+            "source": source.id.to_string(),
+            "repo": "owner/repo"
+        }),
+    )
+    .subject("cli:numbers");
+    setup.publish(&source);
+    setup.publish(&task);
+
+    let factory = setup.dir.join("factory");
+    let once = setup.priory(&["daemon", factory.to_str().unwrap(), "--once"]);
+
+    assert!(once.status.success(), "{once:?}");
+    assert_eq!(setup.rows("tasks").len(), 1);
 }
 
 #[test]

@@ -12,7 +12,7 @@ use std::collections::BTreeMap;
 use std::io::Write;
 use std::time::Duration;
 
-const VERSION: i64 = 54;
+const VERSION: i64 = 55;
 
 const SCHEMA: &str = "
 CREATE TABLE tasks (
@@ -956,8 +956,26 @@ END;
 PRAGMA user_version = 53;
 ";
 
-// A person's to-dos: desk items with no task or agent attached.
+// How two tasks relate: `task` builds on, fixes, takes up or relates to `other`, as `by` recorded.
 const SCHEMA_54: &str = concat!(
+    "CREATE TABLE IF NOT EXISTS relations (
+  task    INTEGER NOT NULL REFERENCES tasks (id),
+  kind    TEXT NOT NULL CHECK (kind IN ('builds-on', 'fixes', 'takes-up', 'relates')),
+  other   INTEGER NOT NULL REFERENCES tasks (id),
+  by      TEXT NOT NULL,
+  created TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+  PRIMARY KEY (task, kind, other),
+  CHECK (task != other)
+);
+CREATE INDEX IF NOT EXISTS relations_by_other ON relations (other);
+",
+    bumps!("relations"),
+    "PRAGMA user_version = 54;
+"
+);
+
+// A person's to-dos: desk items with no task or agent attached.
+const SCHEMA_55: &str = concat!(
     "CREATE TABLE IF NOT EXISTS todos (
   id      INTEGER PRIMARY KEY AUTOINCREMENT,
   text    TEXT NOT NULL,
@@ -968,7 +986,7 @@ const SCHEMA_54: &str = concat!(
 );
 ",
     bumps!("todos"),
-    "PRAGMA user_version = 54;
+    "PRAGMA user_version = 55;
 "
 );
 
@@ -980,7 +998,7 @@ const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA_26, SCHEMA_27, SCHEMA_28, SCHEMA_29, SCHEMA_30, SCHEMA_31, SCHEMA_32, SCHEMA_33,
     SCHEMA_34, SCHEMA_35, SCHEMA_36, SCHEMA_37, SCHEMA_38, SCHEMA_39, SCHEMA_40, SCHEMA_41,
     SCHEMA_42, SCHEMA_43, SCHEMA_44, SCHEMA_45, SCHEMA_46, SCHEMA_47, SCHEMA_48, SCHEMA_49,
-    SCHEMA_50, SCHEMA_51, SCHEMA_52, SCHEMA_53, SCHEMA_54,
+    SCHEMA_50, SCHEMA_51, SCHEMA_52, SCHEMA_53, SCHEMA_54, SCHEMA_55,
 ];
 
 /// The order the queue starts tasks in: band, then a person's order, then age. A band the factory
@@ -1200,6 +1218,7 @@ pub(crate) fn handle(
             if let Some(hold) = &new.hold {
                 crate::hold::filed(&tx, id, hold, factory)?;
             }
+            crate::relate::created(&tx, id, &new.key, &new.relates)?;
             (Some(id), "created")
         }
         Decision::Keep(id) if route::tick(message, factory) => (
