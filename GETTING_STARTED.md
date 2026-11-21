@@ -263,7 +263,7 @@ When someone labels issue 42 of `owner/name` with `agent`, this happens:
 | ------- | ------------ |
 | `priory desk` | Lists what waits on you: asks, blocked and failed tasks, held tasks, the queue |
 | `priory answer ASK OPTION --revision N` | Answers an ask. `--expected N` is the same flag. `priory answer [DIR] RUNNER:ASK ...` answers another runner's ask (see [runners.md](docs/daemon/runners.md)) |
-| `priory give [DIR] KEY RUNNER` | Moves a task to another runner of a factory of several (see [runners.md](docs/daemon/runners.md)) |
+| `priory give [DIR] KEY RUNNER [--force]` | Moves a task to another runner of a factory of several, once its runner's lease ends or with `--force` (see [runners.md](docs/daemon/runners.md)) |
 | `priory dismiss [--expected N] ASK` | Closes an ask with no answer |
 | `priory deliver ASK (--retry \| --clear)` | Sends a failed answer delivery again, or clears it from the desk |
 | `priory snooze KIND ID --for 2h`, `--until TIME`, `--clear` | Hides a desk item until then, or brings it back |

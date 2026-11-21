@@ -704,6 +704,90 @@ impl Intervention {
     }
 }
 
+/// `scorers/<name>.toml` or `.yaml`: a question that grades one finished run with `pass` or
+/// `fail`. The file name is the scorer's name.
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+#[schemars(title = "scorer")]
+pub struct Scorer {
+    /// What the scorer checks, in one line.
+    pub description: String,
+    /// What it reads: `result`, `diff` or `ask`.
+    pub on: ScoreOn,
+    /// How it answers: `outcome`, `command` or `ask-shape`.
+    pub kind: ScoreKind,
+    /// For `outcome`, the outcomes that pass. For `ask-shape`, what every ask must show: `short`,
+    /// `whatWaits` and `nextAction`.
+    #[serde(default)]
+    pub expect: Vec<String>,
+    /// For `command`, an executable in the factory folder: exit 0 passes, 1 fails, any other
+    /// ending is an error.
+    pub run: Option<PathBuf>,
+    /// For `command`, how long it may run before Priory kills it; 20 minutes when unset.
+    #[serde(default, deserialize_with = "duration")]
+    #[schemars(with = "String", regex(pattern = r"^0*[1-9][0-9]*[smh]$"))]
+    pub timeout: Option<Duration>,
+}
+
+impl Scorer {
+    pub fn timeout(&self) -> Duration {
+        self.timeout.unwrap_or(Duration::from_secs(20 * 60))
+    }
+}
+
+/// What a scorer reads.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, JsonSchema)]
+#[serde(rename_all = "kebab-case")]
+pub enum ScoreOn {
+    /// The run's result: its outcome, summary, evidence and the other fields.
+    Result,
+    /// The result's commit, against the commit the task started from.
+    Diff,
+    /// The asks the run made.
+    Ask,
+}
+
+impl ScoreOn {
+    pub fn name(self) -> &'static str {
+        match self {
+            ScoreOn::Result => "result",
+            ScoreOn::Diff => "diff",
+            ScoreOn::Ask => "ask",
+        }
+    }
+}
+
+/// How a scorer answers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, JsonSchema)]
+#[serde(rename_all = "kebab-case")]
+pub enum ScoreKind {
+    /// Passes a result whose outcome is in `expect`.
+    Outcome,
+    /// Runs `run` in a scratch checkout of the result's commit.
+    Command,
+    /// Passes when every ask shows each part `expect` names.
+    AskShape,
+}
+
+impl ScoreKind {
+    pub fn name(self) -> &'static str {
+        match self {
+            ScoreKind::Outcome => "outcome",
+            ScoreKind::Command => "command",
+            ScoreKind::AskShape => "ask-shape",
+        }
+    }
+}
+
+/// The parts of an ask's shape an `ask-shape` scorer can expect.
+pub const ASK_SHAPE: [&str; 3] = ["short", "whatWaits", "nextAction"];
+
+/// Only a scorer's kind, read before the whole file so a kind not built yet gets its own message.
+#[derive(Deserialize)]
+struct KindOf {
+    kind: Option<String>,
+}
+
 /// `triggers/<name>.toml` or `.yaml`: an event source, its filter and the workflow its events
 /// start. The file name is the trigger's name.
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
@@ -1339,6 +1423,7 @@ pub struct Factory {
     pub workflows: BTreeMap<String, Loaded<Workflow>>,
     pub runners: BTreeMap<String, Loaded<Runner>>,
     pub views: BTreeMap<String, Loaded<View>>,
+    pub scorers: BTreeMap<String, Loaded<Scorer>>,
     /// `prices.toml`: each model's price.
     pub prices: BTreeMap<String, Price>,
     pub lanes: Option<Loaded<Lanes>>,
@@ -1645,6 +1730,24 @@ pub fn load(dir: &Path) -> (Factory, Vec<Problem>) {
     for file in found.config_files("views") {
         if let Some((value, lines)) = found.parse::<View>(&file) {
             found.define(&mut factory.views, stem(&file), &file, value, lines);
+        }
+    }
+    for file in found.config_files("scorers") {
+        let Some((kind, lines)) = found.parse::<KindOf>(&file) else {
+            continue;
+        };
+        if kind.kind.as_deref() == Some("judge") {
+            let file = found.relative(&file);
+            found.problems.push(Problem {
+                file,
+                at: lines.field("kind").map(|line| line.to_string()),
+                message: "kind `judge` is not supported yet: use outcome, command or ask-shape"
+                    .into(),
+            });
+            continue;
+        }
+        if let Some((value, lines)) = found.parse::<Scorer>(&file) {
+            found.define(&mut factory.scorers, stem(&file), &file, value, lines);
         }
     }
     for file in found.config_files("runners") {
@@ -1955,4 +2058,44 @@ fn stem(path: &Path) -> String {
     path.file_stem()
         .map(|stem| stem.to_string_lossy().into_owned())
         .unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use proptest::prelude::*;
+
+    const SCORER: &str =
+        "description = \"Passed.\"\non = \"result\"\nkind = \"outcome\"\nexpect = [\"passed\"]\n";
+
+    fn load_scorer(text: &[u8], case: usize) {
+        let dir = std::env::temp_dir()
+            .join(format!("priory-scorer-{}", std::process::id()))
+            .join(case.to_string());
+        fs::create_dir_all(dir.join("scorers")).unwrap();
+        fs::write(dir.join("factory.toml"), "name = \"demo\"").unwrap();
+        fs::write(dir.join("scorers/any.toml"), text).unwrap();
+        let (factory, _) = load(&dir);
+        crate::rules::check(&factory);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(256))]
+
+        #[test]
+        fn a_scorer_file_of_any_shape_loads_or_is_refused_without_panicking(
+            text in proptest::string::string_regex("[a-z_\\- =\"'\\[\\]{}.,0-9\\n#]{0,200}").unwrap(),
+            at in 0..SCORER.len(),
+            byte in any::<u8>(),
+            cut in 0..SCORER.len(),
+        ) {
+            load_scorer(text.as_bytes(), 0);
+            let mut mutated = SCORER.as_bytes().to_vec();
+            mutated[at] = byte;
+            load_scorer(&mutated, 1);
+            load_scorer(&SCORER.as_bytes()[..cut], 2);
+            load_scorer(format!("{SCORER}{text}").as_bytes(), 3);
+        }
+    }
 }

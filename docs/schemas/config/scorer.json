@@ -1,0 +1,98 @@
+{
+  "$id": "https://raw.githubusercontent.com/maxence-lefebvre/priory/main/docs/schemas/config/scorer.json",
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "additionalProperties": false,
+  "definitions": {
+    "ScoreKind": {
+      "description": "How a scorer answers.",
+      "oneOf": [
+        {
+          "const": "outcome",
+          "description": "Passes a result whose outcome is in `expect`.",
+          "type": "string"
+        },
+        {
+          "const": "command",
+          "description": "Runs `run` in a scratch checkout of the result's commit.",
+          "type": "string"
+        },
+        {
+          "const": "ask-shape",
+          "description": "Passes when every ask shows each part `expect` names.",
+          "type": "string"
+        }
+      ]
+    },
+    "ScoreOn": {
+      "description": "What a scorer reads.",
+      "oneOf": [
+        {
+          "const": "result",
+          "description": "The run's result: its outcome, summary, evidence and the other fields.",
+          "type": "string"
+        },
+        {
+          "const": "diff",
+          "description": "The result's commit, against the commit the task started from.",
+          "type": "string"
+        },
+        {
+          "const": "ask",
+          "description": "The asks the run made.",
+          "type": "string"
+        }
+      ]
+    }
+  },
+  "description": "`scorers/<name>.toml` or `.yaml`: a question that grades one finished run with `pass` or\n`fail`. The file name is the scorer's name.",
+  "properties": {
+    "description": {
+      "description": "What the scorer checks, in one line.",
+      "type": "string"
+    },
+    "expect": {
+      "default": [],
+      "description": "For `outcome`, the outcomes that pass. For `ask-shape`, what every ask must show: `short`,\n`whatWaits` and `nextAction`.",
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "kind": {
+      "allOf": [
+        {
+          "$ref": "#/definitions/ScoreKind"
+        }
+      ],
+      "description": "How it answers: `outcome`, `command` or `ask-shape`."
+    },
+    "on": {
+      "allOf": [
+        {
+          "$ref": "#/definitions/ScoreOn"
+        }
+      ],
+      "description": "What it reads: `result`, `diff` or `ask`."
+    },
+    "run": {
+      "description": "For `command`, an executable in the factory folder: exit 0 passes, 1 fails, any other\nending is an error.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "timeout": {
+      "default": null,
+      "description": "For `command`, how long it may run before Priory kills it; 20 minutes when unset.",
+      "pattern": "^0*[1-9][0-9]*[smh]$",
+      "type": "string"
+    }
+  },
+  "required": [
+    "description",
+    "on",
+    "kind"
+  ],
+  "title": "scorer",
+  "type": "object"
+}

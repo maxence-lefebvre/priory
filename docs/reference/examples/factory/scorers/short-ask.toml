@@ -1,0 +1,5 @@
+#:schema https://raw.githubusercontent.com/maxence-lefebvre/priory/main/docs/schemas/config/scorer.json
+description = "Each ask is short and says what waits."
+on = "ask"
+kind = "ask-shape"
+expect = ["short", "whatWaits", "nextAction"]

@@ -1,0 +1,6 @@
+#:schema https://raw.githubusercontent.com/maxence-lefebvre/priory/main/docs/schemas/config/scorer.json
+description = "The tests pass on the change."
+on = "diff"
+kind = "command"
+run = "scripts/score-gate.sh"  # in the factory folder; exit 0 pass, 1 fail, else error
+timeout = "20m"
