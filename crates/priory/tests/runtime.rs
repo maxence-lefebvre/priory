@@ -13368,7 +13368,7 @@ fn comment_on(pull_request: u64) -> Message {
 }
 
 #[test]
-fn unrouted_events_are_grouped_by_resource_with_their_follow_up_commands() {
+fn unrouted_events_no_task_ever_owned_count_per_source_without_a_tasks_source_event() {
     let mut setup = Setup::new("inbox-unrouted");
     setup.start();
     for pull_request in [7, 8, 7] {
@@ -13383,50 +13383,16 @@ fn unrouted_events_are_grouped_by_resource_with_their_follow_up_commands() {
     let output = setup.priory(&["inbox", "--unrouted", "--json"]);
     assert!(output.status.success(), "{output:?}");
     let listed: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    let groups: Vec<_> = listed["unrouted"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|group| {
-            let seqs: Vec<_> = group["events"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .map(|event| event["seq"].as_i64().unwrap())
-                .collect();
-            (group["resource"].as_str().unwrap().to_owned(), seqs)
-        })
-        .collect();
+    assert_eq!(listed["unrouted"]["owned"], json!([]));
     assert_eq!(
-        groups,
-        [
-            ("github:owner/repo#7".to_owned(), vec![3, 1]),
-            ("github:owner/repo#8".to_owned(), vec![2]),
-        ]
-    );
-    assert_eq!(
-        listed["unrouted"][0]["subscribe"],
-        "priory subscribe TASK github:owner/repo#7"
-    );
-    assert_eq!(
-        listed["unrouted"][0]["request"],
-        "priory request --workflow WORKFLOW --key github:owner/repo#7 TEXT"
+        listed["unrouted"]["other"],
+        json!([{ "source": "github", "events": 3 }])
     );
 
     let output = setup.priory(&["inbox", "--unrouted", "--since", "1"]);
     let text = String::from_utf8(output.stdout).unwrap();
     assert!(output.status.success(), "{text}");
-    assert_eq!(
-        text,
-        "github:owner/repo#7: 1 event\n  \
-         3  github.pull_request.comment  owner/repo#7\n  \
-         priory subscribe TASK github:owner/repo#7\n  \
-         priory request --workflow WORKFLOW --key github:owner/repo#7 TEXT\n\
-         github:owner/repo#8: 1 event\n  \
-         2  github.pull_request.comment  owner/repo#8\n  \
-         priory subscribe TASK github:owner/repo#8\n  \
-         priory request --workflow WORKFLOW --key github:owner/repo#8 TEXT\n"
-    );
+    assert_eq!(text, "No task ever owned: 2 github events.\n");
 }
 
 #[test]

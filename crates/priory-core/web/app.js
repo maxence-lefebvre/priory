@@ -7,6 +7,7 @@ import { linked } from "./links.js";
 import { dossier, refusal } from "./reports.js";
 import { prStack } from "./stack.js";
 import { KINDS, edgeStyle, nodeShape, timeline, ungatedPairs } from "./flows.js";
+import { handled, neverOwned, routeAction, unroutedNote } from "./inbox.js";
 import { actionNote, dueParts, mergeSince, nextLink, progressView, rowAction, sectionInView, sinceGroups } from "./desk.js";
 
 const ICONS = {
@@ -125,6 +126,8 @@ const state = {
   // The task whose action is in flight, each task's last action note, and its unsent say text.
   taskBusy: null,
   taskNotices: new Map(),
+  // The Unrouted view's groups, read when the view opens, and each resource's last subscribe note.
+  unrouted: { groups: null, error: null, loading: false, busy: null, notices: new Map() },
   todoBusy: null,
   todoNotices: new Map(),
   rowBusy: null,
@@ -206,6 +209,7 @@ async function refresh() {
     state.failed = null;
     state.cached = false;
     if (current() === "costs") loadCosts();
+    if (current() === "inbox") loadUnrouted();
     // Ages read in minutes, so an unchanged state needs a new paint once a minute at most.
     if (state.data && snapshot === state.snapshot && !failed && Date.now() - state.rendered < 60000) return keep(), true;
     const before = state.data ? new Set(state.data.asks.filter((ask) => ask.state === "open").map((ask) => ask.id)) : null;
@@ -523,6 +527,90 @@ function deskBody(wide) {
   return { model, views, banner, rows };
 }
 
+// Unrouted (DESIGN.md, Desk): events that reached no task, by resource, each with a way to route the next one.
+async function loadUnrouted() {
+  const view = state.unrouted;
+  if (view.loading || !state.token || !state.data || state.failed) return;
+  view.loading = true;
+  try {
+    const body = await api("/api/inbox?unrouted=1");
+    Object.assign(view, { groups: body.unrouted, revision: body.revision, error: null });
+  } catch (error) {
+    view.error = error.message;
+  }
+  view.loading = false;
+  render();
+}
+
+function unroutedRows() {
+  const view = state.unrouted;
+  if (view.error) return html`<p class="empty">Could not read the unrouted events: ${view.error}. <button class="btn secondary" data-action="retry">Try again</button></p>`;
+  if (!view.groups) {
+    queueMicrotask(loadUnrouted);
+    return html`<p class="empty">Loading the unrouted events…</p>`;
+  }
+  const { owned, other } = view.groups;
+  const rest = neverOwned(other);
+  const restLine = rest ? html`<p class="meta unowned">${rest}</p>` : "";
+  if (!owned.length) return html`<p class="empty">No event of a task's resource went unrouted. An event about an ended task's pull request or issue shows here.</p>${restLine}`;
+  return [...owned.map((group) => {
+    const { task } = group;
+    const busy = view.busy === group.resource ? raw('aria-disabled="true"') : "";
+    const notice = view.notices.get(group.resource);
+    const action = routeAction(task);
+    const route = action === "revive" ? taskActs(task.id, task.state)
+      : action === "request" ? (group.request_text
+        ? html`<button type="button" class="btn secondary" data-action="request-task" data-text="${group.request_text}" data-workflow="${task.workflow}">Request a task</button>`
+        : html`<p class="meta">No new task can take this resource from here: start one from its thread.</p>`)
+        : html`<button type="button" class="btn secondary" data-action="subscribe-task" data-resource="${group.resource}" data-task="${task.id}" ${busy}>Subscribe task ${task.id}</button>`;
+    return html`<section class="ugroup" aria-label="${group.resource}"><p class="l1"><span class="mono">${group.resource}</span><span class="num">${group.events.length}</span></p>
+      <p class="meta">${tile(task.state, "sm")}<a href="/tasks/${task.id}">task ${task.id}</a> ${task.state}, <span class="mono">${task.key}</span></p>
+      <ol class="hist">${group.events.slice(0, 5).map((event) => html`<li>${tile("queued", "sm")}<span><b>${event.type}</b> ${event.subject || ""}${event.line ? html`<span class="meta">${event.line}</span>` : ""}</span>${timeTag(event.time, today(event.time) ? clock(event.time) : date(event.time))}</li>`)}</ol>
+      ${group.events.length > 5 ? html`<p class="meta">and ${group.events.length - 5} older</p>` : ""}
+      <div class="routeform">${route}</div>
+      ${notice ? html`<p class="note" role="status">${notice}</p>` : ""}</section>`;
+  }), restLine];
+}
+
+// The Inbox panel (DESIGN.md, Inbox): its one saved view, Unrouted, counts the events of a task's resources.
+function inboxViews() {
+  const groups = state.unrouted.groups;
+  const count = groups ? groups.owned.reduce((sum, group) => sum + group.events.length, 0) : null;
+  return savedViews([["unrouted", "Unrouted", count, true]], "/inbox");
+}
+
+// Subscribes a task to the resource, as `priory subscribe`, with the revision the page showed.
+async function subscribeTask(resource, task) {
+  const view = state.unrouted;
+  view.busy = resource;
+  render();
+  let reply;
+  try {
+    // The revision the Inbox groups were read at, so a group shown from an older read is refused.
+    reply = await post("/api/subscribe", { task, resource, revision: view.revision });
+  } catch {
+    reply = { status: 0, body: { error: "the connection dropped" } };
+  }
+  view.busy = null;
+  const { status, body } = reply;
+  if (status === 401) return signOut("The daemon refused this token. Paste the current one.");
+  view.notices.set(resource, status === 200 ? `Subscribed: ${body.ok}. Its next event goes to task ${task}.`
+    : status === 409 ? "The state changed since this page loaded. Check the task, then subscribe again."
+      : status === 503 ? "Could not send: no priory daemon runs beside this server. Start priory daemon, then send again."
+        : status === 504 || status === 0 ? "The daemon may have applied this but did not confirm it. Check the task before you send again."
+          : `Could not subscribe: ${body.error || `the server answered ${status}`}.`);
+  render();
+  refresh();
+}
+
+// The Add sheet with the server's text, whose URL keys the new task by the group's resource.
+function requestTask(text, workflow) {
+  state.add.draft.text = text;
+  if (workflow) state.add.draft.workflow = workflow;
+  keepDraft();
+  openAdd();
+}
+
 const olderTasks = () => state.data.older.tasks;
 const listOrEmpty =(rows, empty) => (rows.length ? rows : html`<p class="empty">${empty}</p>`);
 
@@ -540,6 +628,8 @@ function needsMe(model, wide) {
   }
   sections.push(upNext(model), sinceYouLooked());
   if (model.asleep) sections.push(html`<div class="sec"></div><a class="row one" href="/?view=asleep">${tile("asleep")}<span>${model.asleep} tasks asleep on waits</span><span class="num">${model.asleep}</span><span class="chev">${icon("chevron-right", "s15")}</span></a>`);
+  const unrouted = unroutedNote(state.data.desk.counts?.unrouted);
+  if (unrouted) sections.push(html`<a class="row one calm" href="/inbox?view=unrouted">${tile("queued")}<span>${unrouted}</span><span class="num">${state.data.desk.counts.unrouted}</span><span class="chev">${icon("chevron-right", "s15")}</span></a>`);
   if (model.reports.length) sections.push(html`<div class="sec">Reports<span>${model.reports.length}</span></div>${model.reports.map(itemRow)}`);
   return sections;
 }
@@ -892,6 +982,12 @@ function taskSections(task) {
   } else if (task.triage?.length) {
     sections.push(["pr", "Feedback", sect("pr", "workflow", "Feedback", "", triageList(task.triage))]);
   }
+  if (task.inbox?.length) {
+    const shown = task.inbox.slice(0, INBOX_SHOWN);
+    const more = task.inbox.length > INBOX_SHOWN ? html`<p class="meta">Latest ${INBOX_SHOWN} of ${task.inbox.length}. <code>priory task ${task.id}</code> lists every event.</p>` : "";
+    sections.push(["inbox", "Inbox", sect("inbox", "message-text", "Inbox", "newest first", html`<ol class="hist" aria-label="Events routed to this task, newest first">${shown.map((event) =>
+      html`<li>${tile(INBOX_TILES[event.prompt] || (event.outcome === "kept" && event.task === task.id ? "asleep" : "ready"), "sm")}<span><b>${event.type}</b> ${event.subject || ""}<span class="meta">${handled(event, task.id)}</span></span>${timeTag(event.time, today(event.time) ? clock(event.time) : date(event.time))}</li>`)}</ol>${more}`)]);
+  }
   if (task.runs?.length) {
     sections.push(["trace", "Trace", sect("trace", "runs", "Trace", "", html`<ol class="hist">${task.runs.map((run) => {
       const tokens = run.tokens ? Object.values(run.tokens).reduce((sum, count) => sum + (Number(count) || 0), 0) : null;
@@ -901,6 +997,10 @@ function taskSections(task) {
   }
   return sections;
 }
+
+const INBOX_SHOWN = 20;
+// A prompt's state as a tile: delivered, waiting to be typed, being typed, or withdrawn.
+const INBOX_TILES = { confirmed: "done", queued: "queued", attempted: "running", uncertain: "prompt", withdrawn: "dropped" };
 
 const TRIAGE_TILES = { trivial: "ready", "nothing-to-do": "dropped", "persons-call": "ask" };
 
@@ -1825,6 +1925,9 @@ function listPanel(panel, wide) {
       <span class="cnt"><span class="n num">${n}</span><span class="w">${n === 1 ? "ask needs you" : "asks need you"}<span>${countLine(model)}</span></span></span></div>
       ${nextCard(model)}${views}${banner}<div class="scroll">${rows}</div>${wide ? keyHints() : ""}</div>`;
   }
+  if (panel === "inbox") {
+    return html`<div class="list" role="region" aria-label="Inbox"><div class="lhead"><h1>Inbox</h1></div>${inboxViews()}<div class="scroll">${unroutedRows()}</div>${wide ? keyHints() : ""}</div>`;
+  }
   if (panel === "asks") {
     const { views, rows } = asksBody(wide);
     return html`<div class="list" role="region" aria-label="Asks"><div class="lhead"><h1>Asks</h1></div>${views}<div class="scroll">${rows}</div>${wide ? keyHints() : ""}</div>`;
@@ -1941,6 +2044,8 @@ function page() {
     if (selectedAsk()) body = askDetail(selectedAsk(), false);
     else if (here === "desk") body = deskPhone();
     else if (here === "asks") body = asksPhone();
+    else if (here === "inbox") body = html`<div class="top"><h1>Inbox</h1><span class="sp"></span>${connection()}</div>
+      <div class="panel" role="region" aria-label="Inbox"><div class="scroll">${inboxViews()}${unroutedRows()}</div></div>`;
     else if (here === "more") body = morePage();
     else if (taskId) body = taskPage(taskId);
     else if (here === "reports") body = reportsPage(true);
@@ -2049,6 +2154,11 @@ document.addEventListener("click", (event) => {
   if (action === "task-act") return taskAct(target);
   if (action === "todo-done") return markDone(target);
   if (action === "row-act") return rowAct(target);
+  if (action === "request-task") return requestTask(target.dataset.text, target.dataset.workflow);
+  if (action === "subscribe-task") {
+    if (state.unrouted.busy === null) subscribeTask(target.dataset.resource, Number(target.dataset.task));
+    return;
+  }
   if (["pick", "pick-undo", "compose", "compose-cancel", "reply", "resolve", "reopen"].includes(action)) return reportAct(target);
   if (target.dataset.answer !== undefined || ["undo", "options", "write", "dismiss", "snooze", "unsnooze"].includes(action)) return act(target);
   if (action === "mode" || action === "theme") {
