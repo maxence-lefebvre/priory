@@ -657,6 +657,9 @@ textarea { font: 400 16px/22px var(--font-ui); color: var(--text); background: v
 .term .b6 { background: color-mix(in srgb, var(--term-cyan) 30%, transparent); } .term .b7 { background: color-mix(in srgb, var(--term-white) 30%, transparent); }
 .term .bo { font-weight: 500; } .term .fa { opacity: .7; } .term .it { font-style: italic; } .term .ul { text-decoration: underline; }
 .term .rv { background: var(--term-fg); color: var(--term-bg); }
+.term :is(.r0, .r1, .r2, .r3, .r4, .r5, .r6, .r7) { color: var(--term-bg); }
+.term .r0 { background: var(--term-black); } .term .r1 { background: var(--term-red); } .term .r2 { background: var(--term-green); } .term .r3 { background: var(--term-yellow); }
+.term .r4 { background: var(--term-blue); } .term .r5 { background: var(--term-magenta); } .term .r6 { background: var(--term-cyan); } .term .r7 { background: var(--term-white); }
 .term.ended pre span { color: inherit; background: none; }
 .term-type { display: grid; gap: 6px; padding: 8px 8px 10px 12px; border-top: 1px solid color-mix(in srgb, var(--term-dim) 30%, transparent); }
 .term-type form { display: flex; gap: 8px; align-items: center; }

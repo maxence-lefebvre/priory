@@ -30,6 +30,10 @@ static SHAPES: LazyLock<Regex> = LazyLock::new(|| {
     .expect("the secret shapes compile")
 });
 
+static PEM_END: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"-----END [A-Z ]*PRIVATE KEY-----").expect("the PEM end compiles")
+});
+
 /// An SGR colour code, which `capture-pane -e` writes into a row's text and the page draws.
 static SGR: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"\x1b\[[0-9;:]*m").expect("the SGR code compiles"));
@@ -110,6 +114,12 @@ pub fn redact(text: &str, exact: &[String]) -> Option<(String, usize)> {
 /// Where `text` shows a secret shape or one of the `exact` values, overlaps merged, in order.
 fn secret_spans(text: &str, exact: &[&String]) -> Vec<Range<usize>> {
     let mut spans: Vec<Range<usize>> = SHAPES.find_iter(text).map(|found| found.range()).collect();
+    // A key whose start is above the first row: hide everything down to its end.
+    if let Some(end) = PEM_END.find(text)
+        && !text[..end.start()].contains("-----BEGIN ")
+    {
+        spans.push(0..end.end());
+    }
     for secret in exact {
         let mut at = 0;
         while let Some(found) = text[at..].find(secret.as_str()) {
@@ -206,10 +216,12 @@ pub fn plain(row: &str) -> std::borrow::Cow<'_, str> {
     SGR.replace_all(row, "")
 }
 
-/// `screen`, or only its hash and `same` when the client already has it.
+/// `screen`, or only its hash, `same` and its scrollback when the client already has it.
 pub fn reply(screen: Value, have: Option<&str>) -> Value {
     match have {
-        Some(have) if screen["hash"] == have => json!({ "hash": have, "same": true }),
+        Some(have) if screen["hash"] == have => {
+            json!({ "hash": have, "same": true, "scrollback": screen["scrollback"] })
+        }
         _ => screen,
     }
 }
@@ -230,6 +242,21 @@ mod tests {
         assert_eq!(
             redact("a pem\n-----BEGIN RSA PRIVATE KEY-----\nMIIE\nabc", &[]),
             Some(("a pem\n[redacted]\n\n".to_owned(), 1))
+        );
+    }
+
+    #[test]
+    fn a_pem_key_whose_start_is_above_the_rows_hides_every_row_down_to_its_end() {
+        assert_eq!(
+            redact("MIIEpAIB\nabcd\n-----END RSA PRIVATE KEY-----\nafter", &[]),
+            Some(("[redacted]\n\n\nafter".to_owned(), 1))
+        );
+        assert_eq!(
+            redact(
+                "a\n-----BEGIN EC PRIVATE KEY-----\nx\n-----END EC PRIVATE KEY-----\nb",
+                &[]
+            ),
+            Some(("a\n[redacted]\n\n\nb".to_owned(), 1))
         );
     }
 

@@ -111,7 +111,7 @@ reply carries `Cache-Control: no-store`.
 
 | Parameter | Meaning |
 | --------- | ------- |
-| `have` | The `hash` the client holds. When it equals the current one, the reply is `{"hash": "<HASH>", "same": true}` |
+| `have` | The `hash` the client holds. When it equals the current one, the reply is `{"hash": "<HASH>", "same": true, "scrollback": N}` |
 | `history` | Rows of scrollback to send above the screen, 0 by default. The server sends at most 2,000, however many are asked. A value that is not a whole number gets `400` |
 
 | Field | Meaning |

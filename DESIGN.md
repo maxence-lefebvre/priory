@@ -889,8 +889,9 @@ The **lane graph** draws a plan, in the batch page and in a go ask.
   a tmux client. Under 480 px of pane width the buttons show their icon only, with their name as a
   label, and under 400 px the run id hides.
 - SGR colours draw in the eight `--term-*` colours. Bright colours, the 256 palette and RGB take the
-  nearest of the eight. A background is its colour at 30 % over `--term-bg`. Bold, faint, italic,
-  underline and reverse show; any other escape shows as text. An ended run's screen drops its
+  nearest of the eight. A background is its colour at 30 % over `--term-bg`. Reverse video fills the
+  cell with the text's colour, solid, in `--term-bg` text. Bold, faint, italic and underline show;
+  any other escape shows as text. An ended run's screen drops its
   colours with the rest of its text to `--term-dim`.
 - A `[redacted]` in the screen takes `--term-dim` with a dotted underline, whatever its colour.
 - "Load earlier" sits above the screen, a quiet button with the `chevron-up` icon, while tmux holds

@@ -19918,7 +19918,10 @@ fn a_runs_screen_returns_its_rows_blank_ones_kept_its_size_and_a_hash_that_follo
             status,
             serde_json::from_str::<serde_json::Value>(&same).unwrap()
         ),
-        (200, json!({ "hash": hash, "same": true }))
+        (
+            200,
+            json!({ "hash": hash, "same": true, "scrollback": screen["scrollback"] })
+        )
     );
 
     setup.shows("=priory-1:", "\x1b[?25hnew text");

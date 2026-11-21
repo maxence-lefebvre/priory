@@ -181,6 +181,16 @@ test("Load earlier reads 500 more rows a tap up to 2,000, at once, and a new run
   assert.equal(watch.state().more, false);
 });
 
+test("an unchanged screen still brings the scrollback that grew under it", async () => {
+  const { watch, answer, tick } = rig();
+  watch.show(4);
+  await answer({ ...screen(4, "a"), scrollback: 0, earlier: 0 });
+  assert.equal(watch.state().more, false);
+  await tick(1000);
+  await answer({ hash: "a", same: true, scrollback: 40 });
+  assert.deepEqual([watch.state().screen.hash, watch.state().more], ["a", true]);
+});
+
 test("a row splits into text and hidden parts, and markup stays text", () => {
   assert.deepEqual(screenRows(["GH_TOKEN=[redacted] and <script>alert(1)</script>", ""]), [[
     { text: "GH_TOKEN=", cls: "", hidden: false },
@@ -207,7 +217,7 @@ test("colour codes become classes of the eight colours, carried from row to row"
       { text: "x", cls: "f1", hidden: false },
       { text: "y", cls: "f4", hidden: false },
       { text: "z", cls: "f6", hidden: false },
-      { text: "rev", cls: "rv f6", hidden: false },
+      { text: "rev", cls: "r6", hidden: false },
     ],
     [
       { text: "T=", cls: "bo f3", hidden: false },
@@ -225,6 +235,11 @@ test("a dark RGB colour keeps its hue, and a grey falls to black or white", () =
   );
 });
 
+test("reverse video fills with the text's colour, or with the default text colour", () => {
+  const cls = (code) => screenRows([`\x1b[${code}mx`])[0][0].cls;
+  assert.deepEqual(["31;44;7", "7", "1;44;7"].map(cls), ["r1", "rv", "bo rv"]);
+});
+
 test("any text parses: only SGR codes leave it, and classes come from the fixed set", () => {
   let seed = 7;
   const random = (n) => ((seed = (seed * 1103515245 + 12345) % 2147483648), seed % n);
@@ -237,7 +252,7 @@ test("any text parses: only SGR codes leave it, and classes come from the fixed 
     rows.forEach((parts, row) => {
       assert.equal(parts.map((part) => part.text).join(""), lines[row].replace(sgr, ""), JSON.stringify(lines[row]));
       for (const part of parts) {
-        assert.match(part.cls, /^((f[0-7]|b[0-7]|bo|fa|it|ul|rv)( |$))*$/, JSON.stringify(lines[row]));
+        assert.match(part.cls, /^((f[0-7]|b[0-7]|r[0-7]|bo|fa|it|ul|rv)( |$))*$/, JSON.stringify(lines[row]));
         assert.ok(part.text.length > 0);
         if (part.hidden) assert.equal(part.text, "[redacted]");
       }

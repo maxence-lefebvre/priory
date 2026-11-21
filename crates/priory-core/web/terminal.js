@@ -43,6 +43,8 @@ export function screenWatch({ read, changed = () => {}, timer = setTimeout, clea
       if (asked !== generation) return;
       unchanged = reply.same ? unchanged + 1 : 0;
       if (!reply.same) [screen, held] = [reply, rows];
+      // The hash leaves scrollback out, so an unchanged screen still says how much grew above it.
+      else if (reply.scrollback !== undefined) screen = { ...screen, scrollback: reply.scrollback };
       at = now();
       stale = false;
     } catch (error) {
@@ -181,8 +183,13 @@ function apply(style, params) {
   return style;
 }
 
-const classes = ({ flags, fg, bg }) => ["bo", "fa", "it", "ul", "rv"].filter((flag) => flags.has(flag))
-  .concat(fg === null ? [] : [`f${fg}`], bg === null ? [] : [`b${bg}`]).join(" ");
+// Reverse video fills the cell with the text's colour, `r0` to `r7`, or with the default text
+// colour, `rv`; the background it had is dropped.
+function classes({ flags, fg, bg }) {
+  const names = ["bo", "fa", "it", "ul"].filter((flag) => flags.has(flag));
+  if (flags.has("rv")) return names.concat(fg === null ? "rv" : `r${fg}`).join(" ");
+  return names.concat(fg === null ? [] : [`f${fg}`], bg === null ? [] : [`b${bg}`]).join(" ");
+}
 
 /**
  * The screen's rows as parts of text, each with the classes of its SGR style and whether it is a

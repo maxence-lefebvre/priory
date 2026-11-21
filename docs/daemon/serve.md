@@ -180,7 +180,8 @@ it answers, the server replaces with `[redacted]`:
 - strings shaped like a secret: GitHub tokens (`ghp_`, `gho_`, `ghs_`, `ghu_`, `ghr_`,
   `github_pat_`), Anthropic and OpenAI keys (`sk-`), AWS access keys (`AKIA`), Slack tokens
   (`xoxa-`, `xoxb-`, `xoxp-`, `xoxr-`, `xapp-`), Linear keys (`lin_api_`) and PEM private keys,
-  even one cut off at the bottom row.
+  even one cut off at the bottom row. A key whose start lies above the first row sent hides every
+  row down to its end.
 
 The server looks for secrets in the text without its colour codes, so a code inside a secret does
 not split it; a code that sat inside a hidden secret moves after `[redacted]`. A replacement can

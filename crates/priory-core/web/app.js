@@ -1355,13 +1355,15 @@ function terminalBody({ term, task, tmux, end }) {
 
 // Says the pane's line through the task's say verb; a refusal keeps the line, as the task page's Say does.
 async function sayFromPane(task) {
-  const text = terminal.line;
+  const [text, run] = [terminal.line, terminal.run];
   if (terminal.saying || !text.trim()) return;
   terminal.saying = true;
   paintTerminal(document.getElementById("app"), true);
   const said = await sayLine(post, task, text);
-  terminal.saying = false;
   if (said.signOut) return signOut("The daemon refused this token. Paste the current one.");
+  // The pane moved to another run meanwhile: its line and note are not this one's.
+  if (terminal.run !== run) return;
+  terminal.saying = false;
   // Text typed while the line was in flight stays.
   if (said.said && terminal.line === text) terminal.line = "";
   terminal.said = said;
@@ -1376,7 +1378,7 @@ function paintTerminal(app, rendered = false) {
   const { screen, stale, gone, at, more } = watch.state();
   const key = JSON.stringify([screen?.hash, stale, gone, more, stale && Math.round((Date.now() - at) / 1000), terminal.fit, terminal.copied, terminal.typing, innerWidth]);
   if (box.dataset.painted === key && !rendered) return;
-  if (terminal.run !== box.dataset.term) Object.assign(terminal, { run: box.dataset.term, left: 0, typing: false, line: "", said: null });
+  if (terminal.run !== box.dataset.term) Object.assign(terminal, { run: box.dataset.term, left: 0, typing: false, line: "", said: null, saying: false });
   const active = document.activeElement;
   const focused = box.contains(active) ? active.id || active.dataset.action || "pre" : null;
   const caret = active?.id === "term-line" ? [active.selectionStart, active.selectionEnd] : null;
