@@ -12,7 +12,7 @@ use std::collections::BTreeMap;
 use std::io::Write;
 use std::time::Duration;
 
-const VERSION: i64 = 79;
+const VERSION: i64 = 80;
 
 const SCHEMA: &str = "
 CREATE TABLE tasks (
@@ -1448,6 +1448,12 @@ CREATE TABLE IF NOT EXISTS runner (
 "
 );
 
+// The commit a task's worktree was first created from, so a later reader knows where it started.
+const SCHEMA_80: &str = "
+ALTER TABLE tasks ADD COLUMN base_sha TEXT;
+PRAGMA user_version = 80;
+";
+
 /// Each schema change in order: a file at version `n` applies those from index `n` on.
 const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA, SCHEMA_2, SCHEMA_3, SCHEMA_4, SCHEMA_5, SCHEMA_6, SCHEMA_7, SCHEMA_8, SCHEMA_9,
@@ -1459,7 +1465,7 @@ const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA_50, SCHEMA_51, SCHEMA_52, SCHEMA_53, SCHEMA_54, SCHEMA_55, SCHEMA_56, SCHEMA_57,
     SCHEMA_58, SCHEMA_59, SCHEMA_60, SCHEMA_61, SCHEMA_62, SCHEMA_63, SCHEMA_64, SCHEMA_65,
     SCHEMA_66, SCHEMA_67, SCHEMA_68, SCHEMA_69, SCHEMA_70, SCHEMA_71, SCHEMA_72, SCHEMA_73,
-    SCHEMA_74, SCHEMA_75, SCHEMA_76, SCHEMA_77, SCHEMA_78, SCHEMA_79,
+    SCHEMA_74, SCHEMA_75, SCHEMA_76, SCHEMA_77, SCHEMA_78, SCHEMA_79, SCHEMA_80,
 ];
 
 /// The order the queue starts tasks in: band, then a person's order, then age. A band the factory
@@ -1468,6 +1474,20 @@ pub const START_ORDER: &str = "coalesce((SELECT rank FROM bands WHERE bands.name
   (SELECT count(*) FROM bands)), tasks.position IS NULL, tasks.position, tasks.id";
 
 const NOW: &str = "strftime('%Y-%m-%dT%H:%M:%SZ', 'now')";
+
+/// To the millisecond, so a wait's catch-up never takes an event of the prompt's second as later.
+pub(crate) const CONFIRMED: &str = "strftime('%Y-%m-%dT%H:%M:%fZ', 'now')";
+
+/// Stores `base` as the commit the task started from, unless it already has one.
+pub(crate) fn set_base(db: &Connection, task: i64, base: Option<&str>) -> rusqlite::Result<()> {
+    if let Some(base) = base {
+        db.execute(
+            "UPDATE tasks SET base_sha = ?2 WHERE id = ?1 AND base_sha IS NULL",
+            rusqlite::params![task, base],
+        )?;
+    }
+    Ok(())
+}
 
 /// Bumps the revision when a task ended over a day ago left the queue's `ended` list since the
 /// last call at `since`, which no write marks. The first call only notes the time.
@@ -2347,6 +2367,7 @@ pub enum Attach {
 /// A live run's id, tmux session and the harness session its pane is tagged with.
 pub struct Attached {
     pub id: i64,
+    pub task: i64,
     pub tmux: String,
     pub session: String,
 }
@@ -2359,15 +2380,16 @@ pub fn live_run(db: &Connection, target: &Attach) -> Result<Attached, String> {
             id: row.get(0)?,
             tmux: row.get(1)?,
             session: row.get(2)?,
+            task: row.get(3)?,
         })
     };
     match *target {
         Attach::Run(run) => {
             let found = db
                 .query_row(
-                    "SELECT id, tmux, session, ended_as FROM runs WHERE id = ?1",
+                    "SELECT id, tmux, session, task, ended_as FROM runs WHERE id = ?1",
                     [run],
-                    |row| Ok((live(row)?, row.get::<_, Option<String>>(3)?)),
+                    |row| Ok((live(row)?, row.get::<_, Option<String>>(4)?)),
                 )
                 .optional()
                 .map_err(at)?;
@@ -2388,7 +2410,7 @@ pub fn live_run(db: &Connection, target: &Attach) -> Result<Attached, String> {
                 return Err(format!("no task {task}"));
             };
             db.query_row(
-                "SELECT id, tmux, session FROM runs WHERE task = ?1 AND ended IS NULL",
+                "SELECT id, tmux, session, task FROM runs WHERE task = ?1 AND ended IS NULL",
                 [task],
                 live,
             )
@@ -2397,6 +2419,15 @@ pub fn live_run(db: &Connection, target: &Attach) -> Result<Attached, String> {
             .ok_or_else(|| format!("task {task} is {state}, with no live run"))
         }
     }
+}
+
+/// Why the live run `run` shows no pane to the tmux server this process reaches.
+pub fn no_pane(run: &Attached) -> String {
+    format!(
+        "tmux session {} on this tmux server runs no live pane of run {}'s agent; \
+         run attach with the daemon's TMUX and TMUX_TMPDIR",
+        run.tmux, run.id
+    )
 }
 
 /// The rows of `query`, each column as text and `-` for null, tab-separated after `header`.
@@ -3242,7 +3273,7 @@ pub(crate) fn signal(
             {
                 tx.execute(
                     &format!(
-                        "UPDATE outbox SET state = 'confirmed', confirmed = {NOW} WHERE id = ?1"
+                        "UPDATE outbox SET state = 'confirmed', confirmed = {CONFIRMED} WHERE id = ?1"
                     ),
                     [id],
                 )?;
@@ -3362,7 +3393,43 @@ pub(crate) fn uncertain(db: &Connection) -> rusqlite::Result<usize> {
     )
 }
 
-/// Where `priory move` puts a task in its band's person order.
+/// The socket line of `POST /api/tasks/{id}/move`: `{"move": {...}}`, `priory move` with its
+/// `--expected`.
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MoveLine {
+    pub r#move: Move,
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Move {
+    pub task: i64,
+    pub band: Option<String>,
+    pub place: Option<Place>,
+    pub expected: i64,
+}
+
+/// Applies a move line as `priory move` does, and says what moved where. A line with neither a
+/// band nor a place is refused, as the verb's usage is: `move_task` would reset the task's place.
+pub fn move_line(db: &mut Connection, line: Move) -> Result<String, String> {
+    if line.band.is_none() && line.place.is_none() {
+        return Err("move takes a band, a place or both".to_owned());
+    }
+    move_task(
+        db,
+        line.task,
+        line.band.as_deref(),
+        line.place,
+        Some(line.expected),
+    )?;
+    Ok(format!("task {} moved", line.task))
+}
+
+/// Where `priory move` puts a task in its band's person order. A socket line carries it as
+/// `"top"`, `{"before": 7}` or `{"after": 7}`.
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum Place {
     Top,
     Before(i64),
@@ -3467,4 +3534,24 @@ fn moved(
         .map_err(error)?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod move_line_tests {
+    use super::*;
+
+    #[test]
+    fn a_move_line_with_neither_band_nor_place_is_refused_and_changes_nothing() {
+        let mut db = memory();
+        let expected = revision(&db).unwrap();
+        let line: MoveLine = serde_json::from_str(&format!(
+            r#"{{"move": {{"task": 1, "expected": {expected}}}}}"#
+        ))
+        .unwrap();
+
+        let moved = move_line(&mut db, line.r#move);
+
+        assert_eq!(moved, Err("move takes a band, a place or both".to_owned()));
+        assert_eq!(revision(&db).unwrap(), expected);
+    }
 }

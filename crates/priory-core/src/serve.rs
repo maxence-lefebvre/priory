@@ -1,8 +1,8 @@
 //! The HTTP server over the state: `/api` as JSON, with `web` the web view's files, and with a
 //! GitHub webhook its signed deliveries.
 
-use crate::{grades, listing, push, report, sections, snooze, state, todo, tools};
-use priory_factory::factory::{Factory, Price, Trigger};
+use crate::{grades, listing, push, report, screen, sections, snooze, state, todo, tools};
+use priory_factory::factory::{Factory, Price, Terminal, Trigger};
 use priory_intake::intake::{self, Github, LinearWebhook};
 use priory_intake::log;
 use priory_runtime::http::{self, Reply, Request};
@@ -23,6 +23,8 @@ const INDEX: &[u8] = include_bytes!("../web/index.html");
 const WAIT: u64 = 25;
 /// Requests `/api/events` holds at once: half the workers, so listings always find a free one.
 const WAITERS: usize = http::WORKERS / 2;
+/// Screens read at once, so a hung tmux server holds at most this many workers.
+const SNAPSHOTS: usize = 2;
 
 macro_rules! asset {
     ($path:literal, $kind:expr, $source:literal) => {
@@ -53,7 +55,9 @@ const WEB: &[(&str, &str, &[u8])] = &[
     asset!("/inbox.js", JS, "crates/priory-core/web/inbox.js"),
     asset!("/tasks.js", JS, "crates/priory-core/web/tasks.js"),
     asset!("/runs.js", JS, "crates/priory-core/web/runs.js"),
+    asset!("/queue.js", JS, "crates/priory-core/web/queue.js"),
     asset!("/batches.js", JS, "crates/priory-core/web/batches.js"),
+    asset!("/terminal.js", JS, "crates/priory-core/web/terminal.js"),
     asset!("/sw.js", JS, "crates/priory-core/web/sw.js"),
     asset!(
         "/manifest.webmanifest",
@@ -188,6 +192,9 @@ pub fn start(factory: &Factory, listen: SocketAddr) -> Result<Vec<JoinHandle<()>
         })
         .to_string(),
         prices: factory.prices.clone(),
+        terminal: config.terminal,
+        secrets: screen::secrets(&factory.secret_envs()),
+        snapshots: AtomicUsize::new(0),
     });
     let hooks: &[&str] = match (github.is_some(), linear.is_some()) {
         (true, true) => &[GITHUB, LINEAR],
@@ -262,6 +269,11 @@ struct Served {
     /// `GET /api/request`: what the Add control prefills and offers.
     request: String,
     prices: BTreeMap<String, Price>,
+    terminal: Terminal,
+    /// The secret values the terminal hides, read when the server starts.
+    secrets: Vec<String>,
+    /// Screens being read now.
+    snapshots: AtomicUsize,
 }
 
 fn route(
@@ -305,6 +317,12 @@ fn route(
         Ok(db) => db,
         Err(error) => return Reply::error(500, error),
     };
+    if let Some(run) = path
+        .strip_prefix("/api/runs/")
+        .and_then(|rest| rest.strip_suffix("/screen"))
+    {
+        return terminal(db, served, run, query);
+    }
     let read = match path {
         "/api/events" => return events(db, query, waiters),
         "/api/batches" => return batches(db, None),
@@ -428,6 +446,35 @@ fn route(
 }
 
 /// Every batch, or the one `which` names, as `priory batch show --json` prints it.
+/// `GET /api/runs/{id}/screen`: the run's screen, read by at most `SNAPSHOTS` requests at once.
+fn terminal(db: &Connection, served: &Served, run: &str, query: &str) -> Reply {
+    let Ok(run) = run.parse() else {
+        return Reply::error(404, "no such path");
+    };
+    if served.terminal == Terminal::Off {
+        return Reply::error(404, "[serve] terminal = \"off\" serves no screen");
+    }
+    let taken = served.snapshots.fetch_add(1, Ordering::SeqCst);
+    let _slot = Slot(&served.snapshots);
+    if taken >= SNAPSHOTS {
+        return Reply::error(503, "too many screens are being read; retry in a second");
+    }
+    let have = query.split('&').find_map(|pair| pair.strip_prefix("have="));
+    match screen::read(db, &state::Attach::Run(run), &served.secrets) {
+        Ok(shown) => Reply::json(200, screen::reply(shown, have).to_string()),
+        Err(error) => Reply::error(404, &error),
+    }
+}
+
+/// A screen being read, given back when its request ends, even by a panic.
+struct Slot<'a>(&'a AtomicUsize);
+
+impl Drop for Slot<'_> {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
 fn batches(db: &Connection, which: Option<&str>) -> Reply {
     let _snapshot = db.unchecked_transaction();
     match crate::batch::show(db, which) {
@@ -456,6 +503,7 @@ enum Write<'a> {
     Seen,
     Read(i64),
     BatchEdit(&'a str),
+    Move(&'a str),
 }
 
 impl<'a> Write<'a> {
@@ -492,6 +540,12 @@ impl<'a> Write<'a> {
             .and_then(|rest| rest.strip_suffix("/edit"))
         {
             return Some(Write::BatchEdit(batch));
+        }
+        if let Some(task) = path
+            .strip_prefix("/api/tasks/")
+            .and_then(|rest| rest.strip_suffix("/move"))
+        {
+            return Some(Write::Move(task));
         }
         if let Some((task, act)) = path
             .strip_prefix("/api/tasks/")
@@ -532,6 +586,18 @@ struct ActBody {
     text: Option<String>,
     step: Option<String>,
     revision: Option<i64>,
+}
+
+/// What a move takes: the revision the page drew, a band, and at most one place.
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct MoveBody {
+    revision: i64,
+    band: Option<String>,
+    #[serde(default)]
+    top: bool,
+    before: Option<i64>,
+    after: Option<i64>,
 }
 
 #[derive(serde::Deserialize)]
@@ -778,6 +844,30 @@ fn write_line(db: &Connection, write: &Write, body: &[u8]) -> Result<(String, Se
                 expected: body.revision,
             };
             Ok((line(&act), Sent::Task(act.task, act.expected)))
+        }
+        Write::Move(task) => {
+            let body: MoveBody = serde_json::from_slice(body).map_err(bad)?;
+            let place = match (body.top, body.before, body.after) {
+                (false, None, None) => None,
+                (true, None, None) => Some(state::Place::Top),
+                (false, Some(other), None) => Some(state::Place::Before(other)),
+                (false, None, Some(other)) => Some(state::Place::After(other)),
+                _ => return Err(Reply::error(400, "move takes one of top, before and after")),
+            };
+            if place.is_none() && body.band.is_none() {
+                return Err(Reply::error(400, "move takes a band, a place or both"));
+            }
+            let task = task
+                .parse()
+                .map_err(|_| Reply::error(404, &format!("there is no task {task}")))?;
+            let moved = state::Move {
+                task,
+                band: body.band,
+                place,
+                expected: body.revision,
+            };
+            let sent = Sent::Task(task, Some(body.revision));
+            Ok((line(&state::MoveLine { r#move: moved }), sent))
         }
         Write::Subscribe => {
             let subscription: push::Subscription = serde_json::from_slice(body).map_err(bad)?;
@@ -1063,7 +1153,7 @@ fn week_ago() -> Result<Option<String>, Reply> {
 }
 
 /// A query value with its `%XX` escapes and `+` decoded; none when an escape or the UTF-8 is broken.
-fn decode(value: &str) -> Option<String> {
+pub(crate) fn decode(value: &str) -> Option<String> {
     let mut bytes = Vec::with_capacity(value.len());
     let mut rest = value.as_bytes();
     while let Some((&byte, tail)) = rest.split_first() {
@@ -1148,10 +1238,27 @@ fn events(db: &Connection, query: &str, waiters: &AtomicUsize) -> Reply {
 
 #[cfg(test)]
 mod tests {
-    use super::pull_request;
+    use super::{Write, pull_request, write_line};
     use proptest::prelude::*;
 
+    thread_local! {
+        static DB: rusqlite::Connection = crate::state::memory();
+    }
+
     proptest! {
+        #[test]
+        fn a_move_body_becomes_one_move_line_or_is_refused(
+            body in r#"\{("revision": ?[0-9]{1,3}|"band": ?"[a-z]{0,6}"|"top": ?(true|false)|"before": ?[0-9]|"after": ?[0-9]|"x": ?1)(, ?("band": ?"[a-z]{0,6}"|"top": ?(true|false)|"before": ?[0-9]|"after": ?[0-9])){0,3}\}|.{0,40}"#
+        ) {
+            // A move reads nothing, so one migrated state serves every case.
+            let written = DB.with(|db| write_line(db, &Write::Move("2"), body.as_bytes()));
+            if let Ok((line, _)) = written {
+                let line: crate::state::MoveLine = serde_json::from_str(&line).unwrap();
+                prop_assert!(line.r#move.band.is_some() || line.r#move.place.is_some());
+                prop_assert_eq!(line.r#move.task, 2);
+            }
+        }
+
         #[test]
         fn a_pr_parameter_parses_to_the_resource_it_names_or_is_refused(
             text in "(github:)?[a-z./#0-9+-]{0,30}|.{0,40}"

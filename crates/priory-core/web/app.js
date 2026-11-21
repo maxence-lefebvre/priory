@@ -9,9 +9,11 @@ import { prStack } from "./stack.js";
 import { KINDS, edgeStyle, lockBadge, nodeShape, timeline, ungatedPairs } from "./flows.js";
 import { handled, neverOwned, routeAction, unroutedNote } from "./inbox.js";
 import { editBody, issueName, laneLayout, momentWords, stages, successors } from "./batches.js";
+import { rowParts, screenWatch } from "./terminal.js";
 import { actionNote, batchParts, dueParts, mergeSince, nextLink, progressView, rowAction, sectionInView, sinceGroups } from "./desk.js";
 import { TASK_FACETS, TASK_VIEWS, filtered, olderPart, taskViews } from "./tasks.js";
 import { RUN_FACETS, RUN_VIEWS, duration, runState, runViews, tokenText } from "./runs.js";
+import { QUEUE_VIEWS, moveOptions, queueBands, waitReason } from "./queue.js";
 
 const ICONS = {
   check: '<path d="M20 6 9 17l-5-5"/>',
@@ -64,6 +66,10 @@ const ICONS = {
   "trending-up": '<path d="M16 7h6v6"/><path d="m22 7-8.5 8.5-5-5L2 17"/>',
   "trending-down": '<path d="M16 17h6v-6"/><path d="m22 17-8.5-8.5-5 5L2 7"/>',
   "unplug": '<path d="m19 5 3-3"/><path d="m2 22 3-3"/><path d="M6.3 20.3a2.4 2.4 0 0 0 3.4 0L12 18l-6-6-2.3 2.3a2.4 2.4 0 0 0 0 3.4Z"/><path d="M7.5 13.5 10 11"/><path d="M10.5 16.5 13 14"/><path d="m12 6 6 6 2.3-2.3a2.4 2.4 0 0 0 0-3.4l-2.6-2.6a2.4 2.4 0 0 0-3.4 0Z"/>',
+  copy: '<rect width="14" height="14" x="8" y="8" rx="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/>',
+  fit: '<path d="M8 3H5a2 2 0 0 0-2 2v3"/><path d="M21 8V5a2 2 0 0 0-2-2h-3"/><path d="M3 16v3a2 2 0 0 0 2 2h3"/><path d="M16 21h3a2 2 0 0 0 2-2v-3"/>',
+  eye: '<path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/>',
+  shield: '<path d="M20 13c0 5-3.5 7.5-7.7 9a1 1 0 0 1-.6 0C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.2-2.7a1.2 1.2 0 0 1 1.6 0C14.5 3.8 17 5 19 5a1 1 0 0 1 1 1z"/>',
 };
 
 class Raw { constructor(text) { this.text = text; } }
@@ -106,7 +112,7 @@ const PANELS = {
   inbox: ["Inbox", "inbox"], reports: ["Reports", "reports"], queue: ["Queue", "queue"],
   terminal: ["Terminal", "terminal"], workflow: ["Flows", "workflow"], costs: ["Costs", "costs"],
 };
-const CLI = { queue: "priory queue", terminal: "priory attach" };
+const CLI = { terminal: "priory attach" };
 
 // The last listings read and when, kept on this device, so an offline start shows them with their age.
 const kept = JSON.parse(localStorage.getItem("priory.snapshot") || "null");
@@ -142,6 +148,11 @@ const state = {
   todoNotices: new Map(),
   rowBusy: null,
   rowNotices: new Map(),
+  // The task whose Move is in flight, and each task's last Move refusal.
+  moveBusy: null,
+  moveNotices: new Map(),
+  // The task whose Move menu is open, so a redraw keeps it open.
+  moveOpen: null,
   sayDrafts: new Map(),
   // The batch the page or the go ask shows, and the go ask's plan edits: the entry whose menu is open,
   // the drop armed by its first tap, whether an edit is in flight, and what the last one said.
@@ -279,6 +290,7 @@ function signOut(reason) {
   keepTokenForWorker(null);
   // A refresh still in flight must not store what this device just dropped.
   state.refreshes++;
+  watch.stop();
   Object.assign(state, { token: null, data: null, snapshot: null, revision: undefined, signInError: reason, flowsError: null, all: { asks: false, tasks: false, runs: false }, costs: { by: "workflow", loading: false, slow: false, error: null } });
   render();
 }
@@ -1233,7 +1245,7 @@ function taskPage(id) {
     <p class="ctx">${tile(task.state, "sm")}<span class="mono">${task.key}</span><span>${task.state}</span><span>${task.workflow} ${task.step}</span><span>${task.lane || ""}</span><span>${task.band || ""}</span></p>
     <h2 class="question">${autolinked(task.tldr || task.brief?.title || task.brief?.request?.split("\n")[0] || task.key, task.repo)}</h2>
     ${task.reason ? html`<p class="text t-${role(task.state)}">${autolinked(task.reason, task.repo)}</p>` : ""}
-    ${taskActs(task.id, task.state)}${say}</div>${sections}</div>`;
+    ${taskActs(task.id, task.state)}${say}</div>${sections}${terminalSection(task)}</div>`;
 }
 
 // Brief, Plan, PR and Trace, each left out when the task lacks it. Agent text shows with its autolinks.
@@ -1278,6 +1290,112 @@ function taskSections(task) {
     })}</ol>`)]);
   }
   return sections;
+}
+
+// The run's terminal: its screen polled while shown (terminal.js), never kept on this device.
+const watch = screenWatch({
+  read: (run, have) => api(`/api/runs/${run}/screen${have ? `?have=${encodeURIComponent(have)}` : ""}`).catch((error) => {
+    if (error.status === 401) signOut("The daemon refused this token. Paste the current one.");
+    throw error;
+  }),
+  changed: () => paintTerminal(document.getElementById("app")),
+});
+// `left` is the pane's sideways scroll for run `run`, kept while a refresh redraws the task page.
+const terminal = { fit: false, copied: null, run: null, left: 0, onScreen: false };
+
+// The live run, else the run whose last screen this page still holds.
+function terminalRun(task) {
+  const runs = task.runs || [];
+  const kept = watch.state();
+  return runs.findLast((run) => !run.ended) || runs.find((run) => run.id === kept.run && kept.screen) || null;
+}
+
+// An empty box that paintTerminal fills, so a new screen repaints only the pane.
+function terminalSection(task) {
+  const run = terminalRun(task);
+  if (!run) return "";
+  const end = run.ended ? run.end || "moved" : "";
+  return html`<section class="sect" id="terminal"><div class="sh">${icon("terminal", "s15")}Terminal<span class="meta">${stateWord(end || "running")}</span></div>
+    <div class="termbox" data-term="${run.id}" data-task="${task.id}" data-tmux="${run.tmux}" data-end="${end}"></div></section>`;
+}
+
+function terminalBody({ term, task, tmux, end }) {
+  const run = Number(term);
+  const kept = watch.state();
+  const { screen, at, stale, gone } = kept.run === run ? kept : {};
+  const notes = [];
+  if (screen?.redacted) notes.push(["warn", "shield", `${screen.redacted} ${screen.redacted === 1 ? "secret" : "secrets"} hidden on this screen`]);
+  if (stale && !end && !gone) notes.push(["warn", "unplug", screen ? `Reconnecting. Screen from ${clock(new Date(at).toISOString())}, ${Math.round((Date.now() - at) / 1000)} s ago.` : "Reconnecting. The screen could not be read yet."]);
+  if (end) notes.push(["", (STATES[end] || [, "circle-help"])[1], screen ? `Run ${run} ended as ${end}. This is the last screen this page saw.` : `Run ${run} ended as ${end}.`]);
+  else if (gone) notes.push(["warn", "unplug", `This server reads no screen of run ${run}. Run priory screen ${task} on the runner to see why.`]);
+  else if (!screen && !stale) notes.push(["", "clock", "Reading the screen…"]);
+  const rows = screen ? screen.lines.map((line) => html`${rowParts(line).map((part) => (part.hidden ? html`<span class="hid">${part.text}</span>` : part.text))}\n`) : "";
+  const copied = (what, text) => (terminal.copied === what ? "Copied" : text);
+  return html`${notes.map(([kind, name, text]) => html`<p class="note ${kind}" role="status">${icon(name, "s15")}<span>${text}</span></p>`)}
+    <div class="term${terminal.fit ? " fit" : ""}${end ? " ended" : ""}" role="region" aria-label="Terminal of run ${run}">
+      <div class="term-head">${icon("terminal", "s15")}<span class="mono">${tmux}</span><span>run ${run}</span>${end ? tile(end, "sm") : ""}<span class="ro">read-only</span><span class="sp"></span>
+        <button data-action="term-copy" aria-label="Copy screen" ${screen ? "" : raw('aria-disabled="true"')}>${icon("copy", "s15")}<span>${copied("screen", "Copy screen")}</span></button>
+        <button data-action="term-fit" aria-label="Fit" aria-pressed="${String(terminal.fit)}">${icon("fit", "s15")}<span>Fit</span></button>
+        <button data-action="term-attach" aria-label="Copy the attach command" data-task="${task}">${icon("eye", "s15")}<span>${copied("attach", "Attach")}</span></button></div>
+      <pre id="term-screen" tabindex="0" aria-label="Screen${screen ? `, ${screen.width} by ${screen.height}` : ""}">${rows}</pre></div>`;
+}
+
+// Repaints the pane when what it shows changed, or always after a render, keeping its sideways
+// scroll and focus. Fit sizes the text to the pane, between 9 px and the pane's own size.
+function paintTerminal(app, rendered = false) {
+  const box = app?.querySelector("[data-term]");
+  if (!box) return;
+  const { screen, stale, gone, at } = watch.state();
+  const key = JSON.stringify([screen?.hash, stale, gone, stale && Math.round((Date.now() - at) / 1000), terminal.fit, terminal.copied, innerWidth]);
+  if (box.dataset.painted === key && !rendered) return;
+  if (terminal.run !== box.dataset.term) Object.assign(terminal, { run: box.dataset.term, left: 0 });
+  const focused = box.contains(document.activeElement) ? document.activeElement.dataset.action || "pre" : null;
+  box.innerHTML = terminalBody(box.dataset).text;
+  box.dataset.painted = key;
+  const pre = box.querySelector("pre");
+  const own = parseFloat(getComputedStyle(pre).fontSize);
+  const fit = terminal.fit && screen;
+  pre.style.fontSize = fit ? `${Math.min(own, Math.max(9, (pre.clientWidth - 24) / (screen.width * 0.6)))}px` : "";
+  pre.style.lineHeight = fit ? "1.33" : "";
+  pre.scrollLeft = terminal.left;
+  pre.addEventListener("scroll", () => { terminal.left = pre.scrollLeft; });
+  if (focused) (focused === "pre" ? pre : box.querySelector(`[data-action="${focused}"]`))?.focus({ preventScroll: true });
+}
+
+// Polls while a live run's pane is on screen and the page is shown.
+function syncTerminal(app) {
+  const box = app.querySelector("[data-term]");
+  if (!box || box.dataset.end || document.hidden || !state.token || !terminal.onScreen) return watch.hide();
+  watch.show(Number(box.dataset.term));
+}
+
+// Tells syncTerminal whether the pane is on screen; render disconnects the observer.
+function observeTerminal(app) {
+  const box = app.querySelector("[data-term]");
+  terminal.onScreen = false;
+  if (!box) return watch.hide();
+  track(new IntersectionObserver(([entry]) => {
+    terminal.onScreen = entry.isIntersecting;
+    syncTerminal(app);
+  })).observe(box);
+}
+
+function copyTerminal(text, what) {
+  navigator.clipboard?.writeText(text).then(() => {
+    terminal.copied = what;
+    paintTerminal(document.getElementById("app"));
+    setTimeout(() => {
+      terminal.copied = null;
+      paintTerminal(document.getElementById("app"));
+    }, 2000);
+  }, () => {});
+}
+
+// The Terminal panel: each running task, whose page shows its terminal.
+function terminalsPanel() {
+  const running = (state.data?.tasks || []).filter((task) => task.state === "running");
+  if (!running.length) return html`<p class="empty">No agent runs now. A running task's terminal shows here.</p>`;
+  return html`<ol class="hist" aria-label="Running tasks">${running.map((task) => html`<li>${tile("running", "sm")}<a href="/tasks/${task.id}#terminal"><span class="mono">${task.key}</span> ${task.title || ""}</a></li>`)}</ol>`;
 }
 
 const INBOX_SHOWN = 20;
@@ -1968,6 +2086,7 @@ function tabs(current, kind) {
 }
 
 function laterPanel(panel) {
+  if (panel === "terminal") return terminalsPanel();
   const [label] = PANELS[panel];
   return html`<p class="empty">The ${label} panel comes in a later version of the web view. Meanwhile run <code>${CLI[panel]}</code>.</p>`;
 }
@@ -2222,8 +2341,67 @@ function listPanel(panel, wide) {
   return html`<div class="list" role="region" aria-label="${PANELS[panel][0]}"><div class="lhead"><h1>${PANELS[panel][0]}</h1></div>${laterPanel(panel)}</div>`;
 }
 
+// Queue (DESIGN.md, Queue panel): the waiting tasks by band in admission order, why each waits, and
+// a Move menu that sends `priory move` at the revision the page drew.
+function moveMenu(task, bands) {
+  const options = moveOptions(task, bands, state.data.queue.bands, state.data.queue.revision);
+  const busy = state.moveBusy === task.id ? raw('aria-disabled="true"') : "";
+  // A live redraw keeps the menu that is open, and the ids let focus return to it.
+  return html`<details class="move" data-move="${task.id}" ${state.moveOpen === task.id ? raw("open") : ""}><summary id="move-${task.id}" class="btn secondary" aria-label="Move ${task.key}">Move${icon("chevron-down", "s13")}</summary>
+    <div class="pick">${options.map((option, at) => html`<button type="button" id="move-${task.id}-${at}" data-action="move" data-task="${task.id}" data-option="${at}" ${busy}>${option.label}</button>`)}</div></details>`;
+}
+
+const moveNote = (task) => (state.moveNotices.has(task.id) ? html`<p class="note warn" role="status">${icon("circle-x", "s15")}<span>${state.moveNotices.get(task.id)}</span></p>` : "");
+
+function queueListRow(task, bands) {
+  return html`<div class="row qrow" data-href="/tasks/${task.id}">${tile(task.state)}
+    <span class="l1"><span class="num">#${task.band_position}</span><a class="mono" href="/tasks/${task.id}">${task.key}</a><span>${task.state}</span><span class="age">${timeTag(task.since)}</span></span>
+    <span class="l2 r">${task.title || ""}</span><span class="l3 wrap">${waitReason(task, bands)}</span>${moveMenu(task, bands)}${moveNote(task)}</div>`;
+}
+
+function queueTableRow(task, bands) {
+  return html`<tr data-href="/tasks/${task.id}"><td class="r">#${task.band_position}</td><td>${stateWord(task.state)}</td><td class="mono"><a href="/tasks/${task.id}">${task.key}</a></td>
+    <td class="q full"><span>${task.title || ""}</span><span class="why t3">${waitReason(task, bands)}</span>${moveNote(task)}</td><td class="act">${moveMenu(task, bands)}</td></tr>`;
+}
+
+function queueBody(wide) {
+  const { queue } = state.data;
+  const current = listView(QUEUE_VIEWS);
+  const bands = queueBands(queue);
+  const held = queue.waiting.filter((task) => task.state === "held");
+  const waiting = bands.reduce((sum, group) => sum + group.tasks.length, 0);
+  const views = savedViews([["waiting", "Waiting", waiting, current === "waiting"], ["held", "Held", held.length, current === "held"], ["ended", "Last day", queue.ended.length, current === "ended"]], "/queue");
+  if (current === "held") return { views, rows: listOrEmpty(held.map((task) => taskListRow({ ...task, reason: task.reason || "held" })), "No task is held. A task waits here while a person or a condition holds it.") };
+  if (current === "ended") return { views, rows: listOrEmpty(queue.ended.map((task) => taskListRow({ ...task, since: task.ended })), "No task ended in the last day.") };
+  const strip = upNext(deskModel());
+  if (!bands.length) return { views, rows: html`${strip}<p class="empty">The queue is empty. A task waits here for its turn once it is added.</p>` };
+  if (wide) {
+    const groups = bands.map((group) => html`<tr class="grp"><td colspan="5">Band ${group.band}<span>${group.tasks.length}</span></td></tr>${group.tasks.map((task) => queueTableRow(task, bands))}`);
+    return { views, rows: html`${strip}<table class="tbl q"><thead><tr><th class="r">#</th><th>State</th><th>Task</th><th>Title and why it waits</th><th></th></tr></thead><tbody>${groups}</tbody></table>` };
+  }
+  return { views, rows: [strip, ...bands.map((group) => html`<div class="sec">Band ${group.band}<span>${group.tasks.length}</span></div>${group.tasks.map((task) => queueListRow(task, bands))}`)] };
+}
+
+// Sends one Move option of a task, as `priory move --expected`; a refusal shows under the row.
+async function moveTask(target) {
+  if (state.moveBusy !== null) return;
+  const task = state.data.queue.waiting.find((each) => each.id === Number(target.dataset.task));
+  const option = task && moveOptions(task, queueBands(state.data.queue), state.data.queue.bands, state.data.queue.revision)[Number(target.dataset.option)];
+  if (!option) return;
+  state.moveBusy = task.id;
+  render();
+  const { status, body } = await post(`/api/tasks/${task.id}/move`, option.body).catch(() => ({ status: 0, body: { error: "the connection dropped" } }));
+  Object.assign(state, { moveBusy: null, moveOpen: null });
+  if (status === 401) return signOut("The daemon refused this token. Paste the current one.");
+  if (status === 200) state.moveNotices.delete(task.id);
+  else state.moveNotices.set(task.id, actionNote("Move", status, body));
+  render();
+  document.getElementById(`move-${task.id}`)?.focus();
+  refresh();
+}
+
 // Lists whose rows open a page of their own, so they take the whole width, with no drawer.
-const OWN_PAGE_LISTS = { tasks: tasksBody, runs: runsBody };
+const OWN_PAGE_LISTS = { tasks: tasksBody, runs: runsBody, queue: queueBody };
 
 const keyHints = () => html`<div class="keys"><span><kbd>J</kbd><kbd>K</kbd>move</span><span><kbd>Enter</kbd>open</span><span><kbd>Esc</kbd>close</span><span><kbd>N</kbd>add</span></div>`;
 
@@ -2300,6 +2478,8 @@ function render() {
   // A new revision is a new question: a tap armed on the old one must not run it.
   if (state.armed && (!state.token || selectedAsk() !== String(state.armed.id) || askOnScreen()?.revision !== state.armed.revision)) disarm();
   app.innerHTML = page().text;
+  paintTerminal(app, true);
+  observeTerminal(app);
   // A render must not restart the countdown; CSP allows no inline style, so it is set here.
   app.querySelectorAll(".drain").forEach((drain) => {
     const armed = drain.closest(".act") ? state.taskArmed : state.armed;
@@ -2312,8 +2492,8 @@ function render() {
   if (typed && app.querySelector("#token")) app.querySelector("#token").value = typed;
   if (focused) [...app.querySelectorAll(focused)].find((element) => !element.closest("[inert]"))?.focus({ preventScroll: true });
   if (caret !== undefined) app.querySelector(`#${caret[0]}`)?.setSelectionRange(caret[1], caret[2], caret[3]);
-  // A link inside a row, such as its key or batch, goes on its own.
-  for (const row of app.querySelectorAll("[data-href]")) row.addEventListener("click", (event) => { if (!event.target.closest("a")) go(row.dataset.href); });
+  // A link or control inside a row, such as its key, batch or Move menu, acts on its own.
+  for (const row of app.querySelectorAll("[data-href]")) row.addEventListener("click", (event) => { if (!event.target.closest("a, button, details")) go(row.dataset.href); });
   app.querySelectorAll("[data-grow]").forEach((part) => { part.style.flexGrow = part.dataset.grow; });
   drawLanes(app);
   watchSections(app);
@@ -2434,6 +2614,9 @@ document.addEventListener("click", (event) => {
   if (!target) return;
   const action = target.dataset.action;
   if (action === "retry") return refresh();
+  if (action === "term-fit") return (terminal.fit = !terminal.fit), paintTerminal(document.getElementById("app"));
+  if (action === "term-copy") return watch.state().screen && copyTerminal(watch.state().screen.lines.join("\n").trimEnd(), "screen");
+  if (action === "term-attach") return copyTerminal(`priory attach ${target.dataset.task} --read-only`, "attach");
   // A refresh that reaches the daemon reads the costs again.
   if (action === "costs-retry") return (state.costs.error = null), refresh();
   if (action === "add-open") return openAdd();
@@ -2463,6 +2646,7 @@ document.addEventListener("click", (event) => {
   if (action === "batch-edit") return editPlan(target);
   if (action === "todo-done") return markDone(target);
   if (action === "row-act") return rowAct(target);
+  if (action === "move") return moveTask(target);
   if (action === "request-task") return requestTask(target.dataset.text, target.dataset.workflow);
   if (action === "subscribe-task") {
     if (state.unrouted.busy === null) subscribeTask(target.dataset.resource, Number(target.dataset.task));
@@ -2489,6 +2673,14 @@ document.addEventListener("click", (event) => {
     document.querySelector(target.hash)?.scrollIntoView({ behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth" });
   }
 });
+
+// A Move menu's toggle does not bubble, so it is caught on its way down.
+document.addEventListener("toggle", (event) => {
+  if (!event.target.matches?.("details.move")) return;
+  const task = Number(event.target.dataset.move);
+  if (event.target.open) state.moveOpen = task;
+  else if (state.moveOpen === task) state.moveOpen = null;
+}, true);
 
 document.addEventListener("change", (event) => {
   if (event.target.dataset.action !== "costs-by") return;
@@ -2567,6 +2759,10 @@ document.addEventListener("keydown", (event) => {
     if (next) go(hrefOf(next));
   } else if (event.key === "Enter" && at >= 0 && document.activeElement === document.body) {
     go(hrefOf(rows[at]));
+  } else if (event.key === "Escape" && document.querySelector("details.move[open]")) {
+    const menu = document.querySelector("details.move[open]");
+    menu.open = false;
+    menu.querySelector("summary").focus();
   } else if (event.key === "Escape" && selectedAsk()) {
     go(state.listUrl);
   }
@@ -2578,7 +2774,11 @@ answerSheet().addEventListener("click", (event) => { if (event.target === answer
 addSheet().addEventListener("close", () => document.querySelector("#app [data-action='add-open']")?.focus());
 addEventListener("popstate", render);
 for (const query of ["(min-width: 600px)", "(min-width: 1024px)"]) matchMedia(query).addEventListener("change", render);
-document.addEventListener("visibilitychange", () => { if (!document.hidden && state.token) refresh(); });
+addEventListener("resize", () => { if (terminal.fit) paintTerminal(document.getElementById("app")); });
+document.addEventListener("visibilitychange", () => {
+  syncTerminal(document.getElementById("app"));
+  if (!document.hidden && state.token) refresh();
+});
 // Waits on the state's revision; the server answers once it moves, or after 25 s.
 async function follow() {
   for (;;) {
@@ -2589,6 +2789,7 @@ async function follow() {
     let ok;
     try {
       const { revision } = await api(`/api/events?since=${state.revision}`);
+      if (revision !== state.revision) watch.revision();
       ok = revision === state.revision || (await refresh());
     } catch {
       await refresh();

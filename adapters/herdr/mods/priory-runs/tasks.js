@@ -1,0 +1,38 @@
+// The web Tasks panel's pure parts: its saved views and facets. No drawing, no IO.
+
+const ENDED = ["done", "failed", "dropped"];
+
+export const TASK_VIEWS = ["active", "blocked", "ended"];
+
+/** `/api/tasks` in start order as each saved view lists it: ended tasks newest first. @param {any[]} tasks */
+export function taskViews(tasks) {
+  return {
+    active: tasks.filter((task) => !ENDED.includes(task.state)),
+    blocked: tasks.filter((task) => task.state === "blocked"),
+    ended: tasks.filter((task) => ENDED.includes(task.state)).sort((a, b) => b.since.localeCompare(a.since)),
+  };
+}
+
+/**
+ * Each facet's key, label and a task's values, as the Asks list's facets. A task with no lane
+ * shows under `none`. @type {[string, string, (task: any) => string[]][]}
+ */
+export const TASK_FACETS = [
+  ["state", "State", (task) => [task.state]],
+  ["lane", "Lane", (task) => [task.lane ?? "none"]],
+  ["workflow", "Workflow", (task) => [task.workflow]],
+];
+
+/**
+ * The items every picked facet value matches. @template T @param {T[]} items
+ * @param {Map<string, string>} picks @param {[string, string, (item: T) => string[]][]} facets
+ */
+export const filtered = (items, picks, facets = /** @type {any} */ (TASK_FACETS)) =>
+  items.filter((item) => facets.every(([key, , values]) => !picks.has(key) || values(item).includes(/** @type {string} */ (picks.get(key)))));
+
+/**
+ * A list's rows the server left out: `counted` in its view's count, only without a filter since
+ * the server does not count them per facet, and `unloaded`, which loads them in the view that
+ * shows history. @param {{ view: string, history: string, older: number | undefined, picked: boolean }} list
+ */
+export const olderPart = ({ view, history, older = 0, picked }) => ({ counted: picked ? 0 : older, unloaded: view === history ? older : 0 });
