@@ -91,11 +91,58 @@ A `kept` task never moves on its own. A runner cut off from the others keeps its
 going, so a second runner that started them over would run them twice. A task asleep on an ask
 keeps its ask and sessions on its runner, so an answer given elsewhere reaches it there.
 
+## A runner cut off from the log
+
+A daemon that cannot reach its log keeps running. It goes on with its own tasks:
+
+- A run that started goes on, and its turns, results, local asks and answers, and waits work as
+  before. A person answers a local ask with `priory answer` on that machine.
+- No run of a `waiting` task starts, and no code step's action runs while the log says `waiting`.
+  The daemon queues `kept` for the task and starts it only once it reads that back from the log.
+- Each claim, hold and alive message waits in the state file's queue, oldest first. Nothing reaches
+  the other runners until the link is back.
+- The daemon tries the log again 2 seconds after it fails, then waits twice as long after each
+  failure, up to 1 minute.
+
+The log is unreachable when the server cannot be reached, closes the connection, or does not answer
+within the `[log]` `timeout`, 10 seconds by default (see
+[factory.md](../reference/factory.md#log)). A call that waits past that timeout is given up on. Until
+it ends, each later call gives up at once, so a hung link costs the daemon one timeout per try and
+leaves no stack of waiting calls. A refused password or a bad statement is no lost link: the
+daemon stops with that error.
+
+Meanwhile a person sees the desk banner
+`the log is unreachable since <time>: <error>; <n> messages wait to publish`, before the intake's
+banner. It is `intake` in `priory desk --json` and `/api/desk`, so the web Desk and the Herdr Desk
+show it too. On that machine, `priory give` and `priory answer <runner>:<ask>` refuse with
+`the log is unreachable since <time>: try again when it is back`, since this runner's view of the
+owners and asks is as old as its last read. When their own publish gets no answer, they refuse with
+`the log is unreachable: <error>: try again when it is back`.
+
+A daemon that starts while its log is unreachable starts all the same, and connects on a later
+try. `priory add` on a cut-off runner publishes its request to the log, so it fails until the link
+is back.
+
 ## A runner back from away
 
-A daemon reads the log before it starts any run. A task that moved while it was away is dropped
-with the reason `moved to runner <name>: its lease ended`. Answers given meanwhile on other runners
-apply in log order, as below.
+A daemon reads the log before it starts any run and before it publishes what it queued. A task that
+moved while it was away is dropped with the reason `moved to runner <name>: its lease ended`.
+Answers given meanwhile on other runners apply in log order, as below. Then it publishes its queue
+in order. Each queued message keeps its id, so one published twice adds nothing.
+
+## Why no task runs twice
+
+A task runs on two runners only if one runner takes over a task that runs on the other. A takeover
+wins only when both hold:
+
+- the owner's last alive message is 30 minutes or more before the takeover, in log order, and
+- the task is still `waiting` at the takeover's place in the log.
+
+A runner cut off from the log never starts a `waiting` task, since it cannot read its `kept` back.
+So a task that runs there was `kept` on the log before the cut, and no takeover wins it, however
+long the cut lasts. A task that was `waiting` stays unstarted on the cut-off runner, so the runner
+that takes it over runs it first and alone. `priory give` is the one exception: a person moves a
+started task on purpose, as below.
 
 ## Answering another runner's ask
 
@@ -135,11 +182,10 @@ Every runner also refuses a claim for a runner without a runner file.
 
 - On herdr-bus, the runners share the log as one file. On Postgres (see
   [ADR 0002](../adr/0002-a-factory-chooses-herdr-bus-or-postgres-for-its-event-log.md)), it travels
-  between machines. A daemon that cannot reach its log stops with an error, so a runner cut off
-  from it stops too.
+  between machines, and a runner cut off from it keeps going as above.
+- A runner cut off for more than 30 minutes loses its `waiting` tasks to the others, and a request
+  that arrives meanwhile goes to a runner that can read it.
 - A task that moves starts over at its workflow's start. Its old worktree, branch and sessions stay
   on the old runner.
-- A code step's `run` action starts without the `kept` check, so a crash in the second between its
-  start and the next `kept` leaves that task `waiting` on the log.
 - This runner's `priory asks` and desk list only its own asks.
 - Each runner adds one alive message a minute to `factory.intake`.

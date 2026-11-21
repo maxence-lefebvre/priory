@@ -81,10 +81,16 @@ Where the intake publishes its events and the daemon reads them. See
 | --- | ---- | -------- | ------- | ------- | ------- |
 | `backend` | `"herdr-bus"` or `"postgres"` | no | `"herdr-bus"` | The store. `"herdr-bus"` is the SQLite file `HERDR_BUS_DB` names. `"postgres"` is a database several machines share, and needs a `priory` built with `--features postgres` | `"postgres"` |
 | `url_env` | string | no | `"PRIORY_LOG_URL"` | The environment variable that holds the Postgres connection string, a libpq URL such as `postgresql://user:password@host/db`. The file never holds the string itself | `"PRIORY_LOG_URL"` |
+| `timeout` | duration | no | `"10s"` | How long one Postgres call waits on the database before the log counts as unreachable. See [runners.md](../daemon/runners.md#a-runner-cut-off-from-the-log) | `"30s"` |
 
 Priory creates the tables `priory_log_messages` and `priory_log_cursors` on first connect. It uses
 TLS when the server offers it and the machine's root certificates trust it; add `sslmode=require`
 to the URL to refuse a plain connection.
+
+On Postgres, `timeout` bounds the connect, sets the server's `statement_timeout`, and sets
+`tcp_user_timeout` on the socket. TCP keepalives probe a quiet connection after 10 seconds, every
+10 seconds, 3 times. A call that gets no answer within `timeout`, such as over an ssh tunnel that
+hangs, is given up on.
 
 ## `[telemetry]`
 
