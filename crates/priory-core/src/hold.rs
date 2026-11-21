@@ -463,9 +463,7 @@ pub(crate) fn event(tx: &Transaction, resources: &[String]) -> rusqlite::Result<
             "SELECT id, kind, resource FROM holds WHERE released IS NULL AND met IS NOT NULL
              AND kind IN ('issue', 'blockers') AND resource IN (SELECT value FROM json_each(?1))",
         )?
-        .query_map([&listed], |row| {
-            Ok((row.get(0)?, row.get(1)?, row.get(2)?))
-        })?
+        .query_map([&listed], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?
         .collect::<rusqlite::Result<_>>()?;
     for (id, kind, resource) in met {
         let reopened = match kind.as_str() {
