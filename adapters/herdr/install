@@ -1,25 +1,27 @@
 #!/usr/bin/env bash
-# Links each mod in adapters/herdr/mods into Herdr's mods folder, and the layout into its layouts
-# folder: `install [--dry-run]`. It refuses, before linking anything, to replace a file that is not
-# its own link. HERDR_APP_HOME names Herdr's folder, as Herdr reads it.
+# Links each mod in adapters/herdr/mods into Herdr's mods folder, and writes the layout for the
+# `default` view into its layouts folder: `priory views --json | install [--dry-run]`. A dry run
+# prints the links and the layout instead. It refuses, before changing anything, to replace a mod
+# that is not its own link or a priory.json it did not write. HERDR_APP_HOME names Herdr's folder,
+# as Herdr reads it.
 set -euo pipefail
 
 dry_run=false
 case "${1-}" in
   "") ;;
   --dry-run) dry_run=true ;;
-  *) echo "usage: install [--dry-run]" >&2; exit 2 ;;
+  *) echo "usage: priory views --json | install [--dry-run]" >&2; exit 2 ;;
 esac
 
 adapter="$(cd "$(dirname "$0")" && pwd)"
 app="${HERDR_APP_HOME:-$HOME/.config/herdr-app}"
+layout="$app/layouts/priory.json"
 
 sources=() targets=()
 for mod in "$adapter"/mods/*/; do
   mod="${mod%/}"
   sources+=("$mod") targets+=("$app/mods/$(basename "$mod")")
 done
-sources+=("$adapter/layouts/priory.json") targets+=("$app/layouts/priory.json")
 
 for folder in "$app" "$app/mods" "$app/layouts"; do
   if [[ -e "$folder" && ! -d "$folder" ]]; then
@@ -28,6 +30,8 @@ for folder in "$app" "$app/mods" "$app/layouts"; do
   fi
 done
 
+generated="$("$adapter/layout")"
+
 for i in "${!targets[@]}"; do
   target="${targets[$i]}"
   if [[ -e "$target" || -L "$target" ]] && [[ "$(readlink "$target")" != "${sources[$i]}" ]]; then
@@ -35,6 +39,18 @@ for i in "${!targets[@]}"; do
     exit 1
   fi
 done
+# Its own layout is the link an earlier install made, or a file whose root has the frame's id.
+if [[ -L "$layout" ]]; then
+  own=$([[ "$(readlink "$layout")" == "$adapter/layouts/priory.json" ]] && echo true || echo false)
+elif [[ -e "$layout" ]]; then
+  own=$(grep -qx '  "id": "priory-generated",' "$layout" && echo true || echo false)
+else
+  own=true
+fi
+if ! $own; then
+  echo "install: layouts/priory.json is not a layout this adapter wrote; move it away first" >&2
+  exit 1
+fi
 
 for i in "${!targets[@]}"; do
   source="${sources[$i]}" target="${targets[$i]}"
@@ -48,3 +64,13 @@ for i in "${!targets[@]}"; do
     echo "link $target -> $source"
   fi
 done
+
+echo "write $layout"
+if $dry_run; then
+  printf '%s\n' "$generated"
+  exit 0
+fi
+mkdir -p "$app/layouts"
+# Writing through the old link would write into the adapter, so the link goes first.
+if [[ -L "$layout" ]]; then rm -- "$layout"; fi
+printf '%s\n' "$generated" > "$layout"
