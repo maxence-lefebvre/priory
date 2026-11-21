@@ -2581,11 +2581,11 @@ fn open_ask(
             },
         )
         .optional()?;
-    let Some((ask, at, answered, withdrawn)) = found else {
+    let Some((ask, at, answered, withdrawn_reason)) = found else {
         return Ok(Err(format!("there is no ask {id}")));
     };
     let (label, task) = (&ask.label, ask.task.unwrap_or_default());
-    let refused = match withdrawn.as_deref() {
+    let refused = match withdrawn_reason.as_deref() {
         Some("dismissed") => Some(format!("ask {label} was dismissed")),
         Some("sibling-fired") => Some(format!(
             "ask {label} was withdrawn when a wait of its run fired first"

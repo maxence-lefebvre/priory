@@ -7855,6 +7855,7 @@ fn a_woken_run_that_waits_on_another_condition_is_caught_up_on_the_events_of_its
     let (text, error) = reply(&setup.replies()[1]);
     assert!(!error, "{text}");
     assert!(text.starts_with("wait 2 already holds"), "{text}");
+    assert_eq!(withdrawn_reasons(&setup, "waits")[0], "moved-on");
 }
 
 #[test]

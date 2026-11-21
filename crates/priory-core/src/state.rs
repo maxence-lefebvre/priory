@@ -1012,9 +1012,8 @@ CREATE INDEX IF NOT EXISTS asks_by_task ON asks (task);
 PRAGMA user_version = 57;
 ";
 
-// Why an ask or wait was withdrawn, in words. `withdrawn` used to say it with a sentinel: -1
-// dismissed, -2 a sibling fired, 0 a later run moved on, else the generation a revive started. A
-// wait's -2 also meant its run's ask was settled; those read as `sibling-fired`.
+// Why an ask or wait was withdrawn, named from the sentinel `withdrawn` held, now a plain 1.
+// A wait's -2 also meant an answer, dismiss or stack ask, which the old value cannot tell apart.
 const SCHEMA_58: &str = "
 DROP TRIGGER IF EXISTS ask_withdrawn;
 ALTER TABLE asks ADD COLUMN withdrawn_reason TEXT CHECK (withdrawn_reason IN

@@ -314,8 +314,8 @@ fn revisions_withdrawn_waits_and_tasks_ended_before_task_ends_keep_their_times()
         .execute_batch(
             "INSERT INTO runs (id, task, step, tmux, session, started, ended) VALUES
                (1, 1, 'work', 't', 's', '2026-11-16T09:00:00Z', '2026-11-16T11:00:00Z');
-             INSERT INTO waits (task, run, kind, created, withdrawn) VALUES
-               (1, 1, 'checks', '2026-11-16T09:30:00Z', 0);
+             INSERT INTO waits (task, run, kind, created, withdrawn, withdrawn_reason) VALUES
+               (1, 1, 'checks', '2026-11-16T09:30:00Z', 1, 'moved-on');
              UPDATE tasks SET state = 'done' WHERE id = 1;
              UPDATE task_ends SET ended = '2026-11-16T12:00:00.000Z' WHERE task = 1;
              UPDATE asks SET revision = 2, answer = NULL, answered = NULL WHERE id = 2;
