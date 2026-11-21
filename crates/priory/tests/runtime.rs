@@ -17997,3 +17997,83 @@ fn a_split_issue_becomes_one_task_per_part_and_its_events_reach_the_part_that_ru
     );
     assert_eq!(setup.rows("tasks").len(), 4);
 }
+
+fn desk_json(setup: &Setup) -> serde_json::Value {
+    let output = setup.priory(&["desk", "--json"]);
+    assert!(output.status.success(), "{output:?}");
+    serde_json::from_slice(&output.stdout).unwrap()
+}
+
+#[test]
+fn a_going_batch_is_one_desk_line_in_place_of_the_held_tasks_its_edges_hold() {
+    let entries = [
+        entry("e1", "ENG-40", &[]),
+        entry("e2", "ENG-41", &["e1"]),
+        entry("e3", "ENG-42", &["e1"]),
+    ];
+    let mut setup = batched("batch-desk");
+    setup.calls(&[planned(
+        json!({ "title": "Invoice exports", "entries": entries }),
+    )]);
+    batch_add(&setup, &["ENG-40", "ENG-41", "ENG-42"]);
+    setup.start();
+    let go = setup.until("asks", |rows| rows.len() == 1);
+    setup.memory(0);
+    person(&setup, "answer", &[&go[0][0], "go", "--revision", "1"]);
+    setup.until("tasks", |rows| rows.len() == 4);
+    let mut other = requested(42);
+    other.data["hold"] = json!({ "reason": "needs the schema" });
+    setup.publish(&other);
+    setup.until("tasks", |rows| rows.len() == 5);
+
+    let shown = |desk: &serde_json::Value| -> Vec<(String, i64)> {
+        desk["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|item| !["queue", "ask"].contains(&item["kind"].as_str().unwrap()))
+            .map(|item| {
+                (
+                    item["kind"].as_str().unwrap().to_owned(),
+                    item["task"].as_i64().unwrap(),
+                )
+            })
+            .collect()
+    };
+    let desk = desk_json(&setup);
+    assert_eq!(
+        shown(&desk),
+        [("batch".to_owned(), 1), ("held".to_owned(), 5)]
+    );
+    let line = desk["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|item| item["kind"] == "batch")
+        .unwrap();
+    assert_eq!(
+        line["what"],
+        "Invoice exports: 1 queued, 2 planned. Next: tasks 3 and 4 start when task 2 merges."
+    );
+    assert_eq!(
+        (&line["id"], &line["key"]),
+        (&json!(1), &batch_json(&setup, &["1"])["key"])
+    );
+    let ranked = desk["ranked"].as_array().unwrap();
+    assert!(ranked.iter().all(|item| item["kind"] != "batch"), "{desk}");
+
+    person(&setup, "cancel", &["2"]);
+
+    setup.until("asks", |rows| rows.len() == 2);
+    let mut held = shown(&desk_json(&setup));
+    held.sort();
+    assert_eq!(
+        held,
+        [
+            ("batch".to_owned(), 1),
+            ("held".to_owned(), 3),
+            ("held".to_owned(), 4),
+            ("held".to_owned(), 5)
+        ]
+    );
+}

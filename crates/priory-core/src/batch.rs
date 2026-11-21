@@ -1018,6 +1018,66 @@ fn entry_of(db: &Connection, id: i64, at: usize, entry: &Entry) -> rusqlite::Res
     }))
 }
 
+/// The desk's line for going batch `id`: its title, its counts and which entries start next, or
+/// none once it ended.
+pub(crate) fn desk_line(db: &Connection, id: i64) -> rusqlite::Result<Option<String>> {
+    let batch = one(db, id, true)?;
+    if batch["state"] != "going" {
+        return Ok(None);
+    }
+    let counts: Vec<String> = [
+        "merged", "started", "waiting", "queued", "blocked", "planned", "failed", "dropped",
+    ]
+    .iter()
+    .filter_map(|stage| {
+        let count = batch["counts"][stage].as_i64().unwrap_or_default();
+        (count > 0).then(|| format!("{count} {stage}"))
+    })
+    .collect();
+    let mut line = format!(
+        "{}: {}.",
+        batch["title"].as_str().unwrap_or_default(),
+        counts.join(", ")
+    );
+    // The entries whose one unmet edge is on the same task, for the first such task in plan order.
+    let mut next: Vec<(i64, Vec<i64>)> = Vec::new();
+    for entry in batch["entries"].as_array().into_iter().flatten() {
+        let (Some(task), "held") = (
+            entry["task"].as_i64(),
+            entry["state"].as_str().unwrap_or(""),
+        ) else {
+            continue;
+        };
+        let unmet: BTreeSet<i64> = entry["after"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|edge| edge["met"].is_null())
+            .filter_map(|edge| edge["task"].as_i64())
+            .collect();
+        let [on] = unmet.into_iter().collect::<Vec<_>>()[..] else {
+            continue;
+        };
+        match next.iter_mut().find(|(other, _)| *other == on) {
+            Some((_, tasks)) => tasks.push(task),
+            None => next.push((on, vec![task])),
+        }
+    }
+    if let Some((on, tasks)) = next.first() {
+        let named: Vec<String> = tasks.iter().map(i64::to_string).collect();
+        let named: Vec<&str> = named.iter().map(String::as_str).collect();
+        let (tasks, start) = match tasks.len() {
+            1 => ("task", "starts"),
+            _ => ("tasks", "start"),
+        };
+        line.push_str(&format!(
+            " Next: {tasks} {} {start} when task {on} merges.",
+            listed(&named)
+        ));
+    }
+    Ok(Some(line))
+}
+
 /// A close of the plan, with when the planning task's `close` step reported it closed.
 fn closed(db: &Connection, task: i64, close: &Close) -> rusqlite::Result<Value> {
     let key = issue_key(&close.issue);
