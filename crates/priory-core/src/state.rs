@@ -12,7 +12,7 @@ use std::collections::BTreeMap;
 use std::io::Write;
 use std::time::Duration;
 
-const VERSION: i64 = 62;
+const VERSION: i64 = 63;
 
 const SCHEMA: &str = "
 CREATE TABLE tasks (
@@ -1098,6 +1098,13 @@ ALTER TABLE tasks ADD COLUMN merge_risk TEXT;
 PRAGMA user_version = 62;
 ";
 
+// What a plan result proposed: the change to make and why, and how it will be proved.
+const SCHEMA_63: &str = "
+ALTER TABLE tasks ADD COLUMN plan_brief TEXT;
+ALTER TABLE tasks ADD COLUMN verification TEXT;
+PRAGMA user_version = 63;
+";
+
 /// Each schema change in order: a file at version `n` applies those from index `n` on.
 const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA, SCHEMA_2, SCHEMA_3, SCHEMA_4, SCHEMA_5, SCHEMA_6, SCHEMA_7, SCHEMA_8, SCHEMA_9,
@@ -1107,7 +1114,7 @@ const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA_34, SCHEMA_35, SCHEMA_36, SCHEMA_37, SCHEMA_38, SCHEMA_39, SCHEMA_40, SCHEMA_41,
     SCHEMA_42, SCHEMA_43, SCHEMA_44, SCHEMA_45, SCHEMA_46, SCHEMA_47, SCHEMA_48, SCHEMA_49,
     SCHEMA_50, SCHEMA_51, SCHEMA_52, SCHEMA_53, SCHEMA_54, SCHEMA_55, SCHEMA_56, SCHEMA_57,
-    SCHEMA_58, SCHEMA_59, SCHEMA_60, SCHEMA_61, SCHEMA_62,
+    SCHEMA_58, SCHEMA_59, SCHEMA_60, SCHEMA_61, SCHEMA_62, SCHEMA_63,
 ];
 
 /// The order the queue starts tasks in: band, then a person's order, then age. A band the factory

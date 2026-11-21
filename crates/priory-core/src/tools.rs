@@ -247,9 +247,11 @@ fn result(
             optional(arguments, "evidence")?,
             optional(arguments, "commit")?,
             optional(arguments, "reason")?,
+            optional(arguments, "brief")?,
+            optional(arguments, "verification")?,
         ))
     })();
-    let (outcome, summary, evidence, commit, reason) = match fields {
+    let (outcome, summary, evidence, commit, reason, plan_brief, verification) = match fields {
         Ok(fields) => fields,
         Err(error) => return Ok(Err(error)),
     };
@@ -302,6 +304,11 @@ fn result(
         params![
             run.id, run.task, run.step, outcome, summary, evidence, commit, reason, merge_risk
         ],
+    )?;
+    tx.execute(
+        "UPDATE tasks SET plan_brief = coalesce(?2, plan_brief), verification = coalesce(?3, verification)
+         WHERE id = ?1",
+        params![run.task, plan_brief, verification],
     )?;
     if let Some(branches) = branches {
         tx.execute(
@@ -368,6 +375,41 @@ fn merge_risk(outcome: &str, risk: &Value) -> Result<Option<String>, String> {
     let mut stored = lines.clone();
     stored.insert("verdict".to_owned(), outcome.into());
     Ok(Some(Value::Object(stored).to_string()))
+}
+
+/// The task's plan brief and verification, then its latest merge risk, as an ask's Markdown body.
+fn ask_text(tx: &Transaction, task: i64) -> rusqlite::Result<Option<String>> {
+    let parts = [plan_text(tx, task)?, risk_text(tx, task)?];
+    let parts: Vec<_> = parts.into_iter().flatten().collect();
+    Ok((!parts.is_empty()).then(|| parts.join("\n\n")))
+}
+
+/// The brief and verification a plan result proposed, as Markdown, if it has either.
+fn plan_text(tx: &Transaction, task: i64) -> rusqlite::Result<Option<String>> {
+    let (brief, verification): (Option<String>, Option<String>) = tx.query_row(
+        "SELECT plan_brief, verification FROM tasks WHERE id = ?1",
+        [task],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )?;
+    let lines: Vec<_> = [("Brief", brief), ("Verification", verification)]
+        .into_iter()
+        .filter_map(|(label, text)| Some(format!("{label}: {}", text?)))
+        .collect();
+    Ok((!lines.is_empty()).then(|| lines.join("\n\n")))
+}
+
+/// The prompt that entering `step` queues: the step's own, then the verification the plan promised.
+fn entry_prompt(tx: &Transaction, task: i64, step: &Step) -> rusqlite::Result<String> {
+    let verification: Option<String> = tx.query_row(
+        "SELECT verification FROM tasks WHERE id = ?1",
+        [task],
+        |row| row.get(0),
+    )?;
+    let prompt = step_prompt(step);
+    Ok(match verification {
+        Some(verification) => format!("{prompt}\nProve the change with: {verification}"),
+        None => prompt,
+    })
 }
 
 /// The task's latest merge risk as an ask's Markdown body, if it has one.
@@ -1944,12 +1986,13 @@ fn settle(tx: &Transaction, run: &Run, trace: &Trace) -> rusqlite::Result<Option
         trace::ended(tx, trace, run.task, &outcome, Some(run.id))?;
         if gates_plan(tx, run, &outcome, &target, workflows)? {
             tx.execute(
-                "INSERT INTO asks (task, step, kind, question, options) VALUES (?1, ?2, 'step', ?3, ?4)",
+                "INSERT INTO asks (task, step, kind, question, options, text) VALUES (?1, ?2, 'step', ?3, ?4, ?5)",
                 params![
                     run.task,
                     run.step,
                     format!("{}: approve the plan graded {outcome}? {summary}", run.step),
-                    serde_json::to_string(&PLAN_OPTIONS).expect("options serialize")
+                    serde_json::to_string(&PLAN_OPTIONS).expect("options serialize"),
+                    plan_text(tx, run.task)?
                 ],
             )?;
             end(tx, run.id, "asleep")?;
@@ -2422,7 +2465,7 @@ fn enter(
     set_ending(tx, task, Some(step))?;
     match step.decides {
         Decider::Model => {
-            queue_first(tx, task, &step_prompt(step))?;
+            queue_first(tx, task, &entry_prompt(tx, task, step)?)?;
             // An irreversible step starts a new run, whose start checks its approval.
             let carry = |run: &&Run| run.agent == step.agent && step.effect != Effect::Irreversible;
             let Some(run) = from.filter(carry) else {
@@ -2468,7 +2511,7 @@ fn enter(
                     serde_json::to_string(&step.options).expect("options serialize"),
                     lead,
                     command,
-                    risk_text(tx, task)?
+                    ask_text(tx, task)?
                 ],
             )?;
             if let Some(lead) = &lead {
@@ -3466,7 +3509,7 @@ pub(crate) fn approved(
          withdrawn_reason = NULL, question = question || ?2 WHERE id = ?1",
         params![ask, moved],
     )?;
-    unqueue(&tx, task, &step_prompt(at))?;
+    unqueue(&tx, task, &entry_prompt(&tx, task, at)?)?;
     set(&tx, task, "asleep", Some(&approving), None)?;
     tx.commit()?;
     Ok(false)

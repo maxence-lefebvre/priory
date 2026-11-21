@@ -124,6 +124,8 @@ fn tools() -> Value {
                     "summary": text("What you did and why, in a few sentences."),
                     "evidence": text("How you checked it: commands, exits, links."),
                     "commit": text("The full SHA of the commit the result is about, if any, as git rev-parse HEAD prints it."),
+                    "brief": text("For a plan step: what to change and why. Shown to the person approving the plan."),
+                    "verification": text("For a plan step: how the change will be proved, the commands or checks. The next step's prompt names it."),
                     "reason": text("For a red, yellow or green outcome: why, in one line. Defaults to the summary's first line."),
                     "risk": {
                         "type": "object",
