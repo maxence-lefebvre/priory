@@ -1,7 +1,7 @@
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::os::unix::ffi::OsStrExt;
-use std::os::unix::fs::{DirBuilderExt, MetadataExt};
+use std::os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
@@ -475,6 +475,10 @@ pub struct Launch<'a> {
     pub model: Option<&'a str>,
     pub effort: Option<&'a str>,
     pub body: &'a str,
+    /// The factory's instructions, which go before `body`.
+    pub instructions: &'a str,
+    /// The plugin folder that holds the factory's skills, for a harness that loads plugins.
+    pub plugin: Option<&'a Path>,
     /// The run's first prompt, passed as the harness's last argument after `--` rather than pasted.
     pub prompt: Option<&'a str>,
     /// The agent's Claude Code `permissions` settings, merged into Priory's own.
@@ -495,6 +499,19 @@ pub trait Harness {
     fn args(&self, exe: &Path, launch: &Launch) -> Result<Vec<String>, String>;
     /// What a person does once, in `clone`, before the harness runs Priory's hooks there.
     fn trust(&self, exe: &Path, clone: &str) -> String;
+    /// A file the harness reads at start, and its text, which `launch` writes first.
+    fn file(&self, _launch: &Launch) -> Option<(PathBuf, String)> {
+        None
+    }
+}
+
+/// The factory's instructions, then the agent's own prompt.
+fn system_prompt(launch: &Launch) -> String {
+    [launch.instructions, launch.body]
+        .into_iter()
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n\n")
 }
 
 pub struct ClaudeCode;
@@ -515,7 +532,15 @@ impl Harness for ClaudeCode {
         if let Some(effort) = launch.effort {
             args.extend(["--effort".to_owned(), effort.to_owned()]);
         }
-        if !launch.body.is_empty() {
+        if let Some(plugin) = launch.plugin {
+            args.extend(["--plugin-dir".to_owned(), plugin.display().to_string()]);
+        }
+        if let Some((file, _)) = self.file(launch) {
+            args.extend([
+                "--append-system-prompt-file".to_owned(),
+                file.display().to_string(),
+            ]);
+        } else if !launch.body.is_empty() {
             args.extend(["--append-system-prompt".to_owned(), launch.body.to_owned()]);
         }
         // Without the flag, the user's own mode, such as auto, would decide the run's prompts (R7.2).
@@ -530,6 +555,17 @@ impl Harness for ClaudeCode {
 
     fn trust(&self, _exe: &Path, clone: &str) -> String {
         format!("trust the clone once: cd {clone} && claude, accept, exit")
+    }
+
+    /// tmux refuses a command over about 16 KiB, so instructions reach Claude through a file.
+    fn file(&self, launch: &Launch) -> Option<(PathBuf, String)> {
+        (!launch.instructions.is_empty()).then(|| {
+            let name = format!("{}.system.md", launch.session);
+            (
+                launch.home.join("prompts").join(name),
+                system_prompt(launch),
+            )
+        })
     }
 }
 
@@ -569,8 +605,9 @@ impl Harness for Codex {
         if let Some(effort) = launch.effort {
             config.push(("model_reasoning_effort", json!(effort)));
         }
-        if !launch.body.is_empty() {
-            config.push(("developer_instructions", json!(launch.body)));
+        let instructions = system_prompt(launch);
+        if !instructions.is_empty() {
+            config.push(("developer_instructions", json!(instructions)));
         }
         let mut args = match launch.resume {
             Some(thread) => vec!["resume".to_owned(), thread.to_owned()],
@@ -633,10 +670,70 @@ fn codex_hooks(exe: &Path) -> Vec<(&'static str, serde_json::Value)> {
     ]
 }
 
+/// Why a run did not start: one line, the cause first, and the tmux command when it ran one.
+#[derive(Debug)]
+pub struct NotStarted {
+    pub reason: String,
+    pub command: Option<String>,
+}
+
+impl From<String> for NotStarted {
+    fn from(reason: String) -> Self {
+        Self {
+            reason,
+            command: None,
+        }
+    }
+}
+
+/// The socket a tmux client of this process uses: the one `TMUX` names, else
+/// `$TMUX_TMPDIR/tmux-<uid>/default`, with `/tmp` when `TMUX_TMPDIR` is unset.
+fn tmux_socket() -> PathBuf {
+    let set = |name: &str| std::env::var_os(name).filter(|value| !value.is_empty());
+    if let Some(socket) = set("TMUX").and_then(|tmux| {
+        let tmux = tmux.to_string_lossy().into_owned();
+        tmux.split(',').next().map(PathBuf::from)
+    }) {
+        return socket;
+    }
+    let dir = set("TMUX_TMPDIR").map_or_else(|| PathBuf::from("/tmp"), PathBuf::from);
+    dir.join(format!("tmux-{}", uid())).join("default")
+}
+
+/// Refuses a tmux socket path that cannot be bound, before tmux fails on it at the end of a long
+/// error.
+fn tmux_socket_fits(socket: &Path) -> Result<(), String> {
+    let length = socket.as_os_str().len();
+    if length < 108 {
+        return Ok(());
+    }
+    Err(format!(
+        "the tmux socket path {} is {length} bytes, over the 108-byte limit of a Unix socket; set \
+         TMUX_TMPDIR to a shorter folder, such as /tmp",
+        socket.display()
+    ))
+}
+
+/// `stderr` as one line.
+fn one_line(stderr: &str) -> String {
+    let lines: Vec<_> = stderr
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .collect();
+    lines.join("; ")
+}
+
 /// Starts the harness in a detached tmux session, with hooks that report to this daemon. The same
 /// tmux command tags the new pane with the run's session id, so a crash cannot leave it untagged.
-pub fn launch(harness: &dyn Harness, launch: &Launch) -> Result<(), String> {
+pub fn launch(harness: &dyn Harness, launch: &Launch) -> Result<(), NotStarted> {
+    tmux_socket_fits(&tmux_socket())?;
     let exe = exe()?;
+    if let Some((file, text)) = harness.file(launch) {
+        fs::create_dir_all(file.parent().expect("the file has a parent"))
+            .and_then(|()| fs::write(&file, text))
+            .map_err(|error| format!("{}: {error}", file.display()))?;
+    }
     let mut command = tmux();
     command
         .args([
@@ -689,7 +786,61 @@ pub fn launch(harness: &dyn Harness, launch: &Launch) -> Result<(), String> {
         command.arg("--");
     }
     command.args([";", "set-option", "-p", "@priory", launch.session]);
-    run(&mut command).map(drop)
+    let shown = format!("{command:?}");
+    let failed = |reason: String| NotStarted {
+        reason,
+        command: Some(shown.clone()),
+    };
+    let output = fed_within(&mut command, None, command_timeout())
+        .map_err(|error| failed(format!("tmux new-session could not run: {error}")))?
+        .ok_or_else(|| {
+            failed(format!(
+                "tmux new-session timed out after {}s",
+                command_timeout().as_secs()
+            ))
+        })?;
+    if output.status.success() {
+        return Ok(());
+    }
+    let stderr = one_line(&String::from_utf8_lossy(&output.stderr));
+    Err(failed(if stderr.is_empty() {
+        format!("tmux new-session failed with {}", output.status)
+    } else {
+        format!("tmux new-session failed: {stderr}")
+    }))
+}
+
+/// Writes `files`, by their paths inside the plugin, into `<dir>/plugin` unless that folder exists,
+/// and returns it. The files go to a staging folder renamed into place, so a crash never leaves a
+/// half-written plugin for a later run.
+pub fn plugin(dir: &Path, files: &[(PathBuf, &[u8])]) -> Result<PathBuf, String> {
+    let plugin = dir.join("plugin");
+    if plugin.is_dir() {
+        return Ok(plugin);
+    }
+    let name = dir
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned());
+    let staging = dir.with_file_name(format!(
+        ".{}.{}",
+        name.unwrap_or_default(),
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&staging);
+    let written = files
+        .iter()
+        .try_for_each(|(path, bytes)| {
+            let file = staging.join("plugin").join(path);
+            fs::create_dir_all(file.parent().expect("the file has a parent"))?;
+            fs::write(file, bytes)
+        })
+        .and_then(|()| fs::rename(&staging, dir));
+    let _ = fs::remove_dir_all(&staging);
+    match written {
+        Ok(()) => Ok(plugin),
+        Err(_) if plugin.is_dir() => Ok(plugin),
+        Err(error) => Err(format!("{}: {error}", plugin.display())),
+    }
 }
 
 /// The MCP server that serves Priory's tools to the run: `priory mcp --session <id>`.
@@ -966,21 +1117,46 @@ fn uid() -> u32 {
     id.trim().parse().unwrap_or(u32::MAX)
 }
 
-/// Makes `dir` for the socket, readable by its owner only, or refuses one that is not a private
-/// folder of the user `owner`.
-fn private_dir(dir: &Path, owner: u32) -> Result<(), String> {
+/// Why the socket of `home` is not under the runtime directory `run`, if it is not.
+fn fallback_reason(run: Option<&Path>, home: &Path) -> Option<String> {
+    match run {
+        None => Some("XDG_RUNTIME_DIR is not set".to_owned()),
+        Some(run) if !socket_in(Some(run), home).starts_with(run) => Some(format!(
+            "the socket path under XDG_RUNTIME_DIR {} is over the 108-byte limit of a Unix socket",
+            run.display()
+        )),
+        Some(_) => None,
+    }
+}
+
+/// Makes `dir` for the socket, readable by its owner only, and tightens one of the user `owner`
+/// that others can enter. It refuses one that is not a folder or belongs to another user; `why`
+/// says why the socket is there.
+fn private_dir(dir: &Path, owner: u32, why: Option<&str>) -> Result<(), String> {
     let at = |error: std::io::Error| format!("{}: {error}", dir.display());
+    let private = fs::Permissions::from_mode(0o700);
     match fs::DirBuilder::new().mode(0o700).create(dir) {
-        Ok(()) => return Ok(()),
+        // The mode a folder gets on create can be widened by a default ACL on its parent.
+        Ok(()) => return fs::set_permissions(dir, private).map_err(at),
         Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
         Err(error) => return Err(at(error)),
     }
     let found = fs::symlink_metadata(dir).map_err(at)?;
-    if found.is_dir() && found.uid() == owner && found.mode() & 0o077 == 0 {
+    if found.is_dir() && found.uid() == owner {
+        if found.mode() & 0o077 != 0 {
+            fs::set_permissions(dir, private).map_err(at)?;
+        }
         return Ok(());
     }
+    let todo = match why {
+        Some(why) => format!(
+            "the socket falls back here because {why}. Remove the folder, or set XDG_RUNTIME_DIR \
+             to a short folder of your own"
+        ),
+        None => "remove the folder so the daemon can make its own".to_owned(),
+    };
     Err(format!(
-        "{}: not a private folder of this user (owner {}, mode {:o}); remove it or fix it with chmod 700",
+        "{}: not a private folder of this user (owner {}, mode {:o}); {todo}",
         dir.display(),
         found.uid(),
         found.mode() & 0o777
@@ -1018,7 +1194,13 @@ pub fn listen(home: &Path) -> Result<Listening, String> {
         std::thread::sleep(Duration::from_millis(50));
     }
     let path = socket_path(home);
-    private_dir(path.parent().unwrap_or(Path::new("/")), uid())?;
+    let run = std::env::var_os("XDG_RUNTIME_DIR").filter(|run| !run.is_empty());
+    let why = fallback_reason(run.as_deref().map(Path::new), home);
+    private_dir(
+        path.parent().unwrap_or(Path::new("/")),
+        uid(),
+        why.as_deref(),
+    )?;
     // bind creates the file before listen: renamed after, it never refuses a client that saw it.
     let bound = path.with_extension("new");
     let _ = fs::remove_file(&bound);
@@ -1167,13 +1349,63 @@ mod tests {
     fn a_socket_directory_of_another_user_is_refused() {
         let dir = std::env::temp_dir().join(format!("priory-private-{}", std::process::id()));
 
-        assert_eq!(private_dir(&dir, uid()), Ok(()));
-        let refused = private_dir(&dir, uid() + 1).unwrap_err();
+        assert_eq!(private_dir(&dir, uid(), None), Ok(()));
+        let refused = private_dir(&dir, uid() + 1, Some("XDG_RUNTIME_DIR is not set")).unwrap_err();
         fs::remove_dir(&dir).unwrap();
 
         assert!(
             refused.contains("not a private folder of this user"),
             "{refused}"
+        );
+        assert!(
+            refused.contains("falls back here because XDG_RUNTIME_DIR is not set"),
+            "{refused}"
+        );
+    }
+
+    #[test]
+    fn a_socket_directory_of_this_user_that_others_can_enter_is_tightened() {
+        let dir = std::env::temp_dir().join(format!("priory-loose-{}", std::process::id()));
+        fs::create_dir(&dir).unwrap();
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o775)).unwrap();
+
+        let made = private_dir(&dir, uid(), None);
+        let mode = fs::metadata(&dir).unwrap().mode() & 0o777;
+        fs::remove_dir(&dir).unwrap();
+
+        assert_eq!(made, Ok(()));
+        assert_eq!(mode, 0o700);
+    }
+
+    #[test]
+    fn a_tmux_error_becomes_one_line() {
+        let stderr = "error connecting to /tmp/x/default (File name too long)\n\n  more\n";
+
+        assert_eq!(
+            one_line(stderr),
+            "error connecting to /tmp/x/default (File name too long); more"
+        );
+        assert!(tmux_socket_fits(Path::new("/tmp/tmux-1000/default")).is_ok());
+        let long = PathBuf::from("/tmp").join("t".repeat(100)).join("default");
+        assert!(
+            tmux_socket_fits(&long)
+                .unwrap_err()
+                .starts_with("the tmux socket path ")
+        );
+    }
+
+    #[test]
+    fn the_fallback_reason_names_a_runtime_directory_over_the_socket_limit() {
+        let home = std::env::temp_dir();
+        let long = PathBuf::from("/run/").join("u".repeat(90));
+
+        let why = fallback_reason(Some(&long), &home).unwrap();
+
+        assert!(why.contains("over the 108-byte limit"), "{why}");
+        assert!(why.contains(&*long.to_string_lossy()), "{why}");
+        assert_eq!(
+            fallback_reason(Some(Path::new("/run/user/1000")), &home),
+            None
         );
     }
 }

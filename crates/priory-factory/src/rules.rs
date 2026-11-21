@@ -1,7 +1,7 @@
 use crate::factory::{
-    ASK_SHAPE, Agent, Backend, Decider, Effect, Factory, Harness, Intervention, Loaded, OnChange,
-    PermissionMode, Problem, Proof, ScoreKind, ScoreOn, Scorer, Session, Step, Trigger, Until,
-    Workflow,
+    ASK_SHAPE, Agent, Backend, CODEX_PROMPT_LIMIT, Decider, Effect, Factory, Harness, INSTRUCTIONS,
+    Intervention, Loaded, OnChange, PermissionMode, Problem, Proof, ScoreKind, ScoreOn, Scorer,
+    Session, Step, Trigger, Until, Workflow,
 };
 use crate::guard::{NEED_APPROVAL, PERSON, SIGN_IN, UNREADABLE};
 use crate::lanes::{self, Lanes};
@@ -340,7 +340,7 @@ pub fn check(factory: &Factory) -> Vec<Problem> {
         }
     }
     for agent in factory.agents.values() {
-        check_codex(agent, &mut problems);
+        check_codex(factory, agent, &mut problems);
         check_shared(agent, &mut problems);
     }
     for workflow in factory.workflows.values() {
@@ -527,10 +527,19 @@ fn check_shared(agent: &Loaded<Agent>, problems: &mut Vec<Problem>) {
 }
 
 /// Refuses the Claude Code permissions a Codex run cannot apply.
-fn check_codex(agent: &Loaded<Agent>, problems: &mut Vec<Problem>) {
+fn check_codex(factory: &Factory, agent: &Loaded<Agent>, problems: &mut Vec<Problem>) {
     let value = &agent.value;
     if !matches!(value.harness, Harness::Codex) {
         return;
+    }
+    let instructions = factory.instructions();
+    let size = instructions.len() + "\n\n".len() + factory.prompt(value).len();
+    if !instructions.is_empty() && size > CODEX_PROMPT_LIMIT {
+        problems.push(problem(
+            agent,
+            agent.lines.field("harness"),
+            format!("a codex agent takes {INSTRUCTIONS} and its own prompt on its command line, as `developer_instructions`: together they are {size} bytes, over the limit of {CODEX_PROMPT_LIMIT}"),
+        ));
     }
     for (field, set) in [
         ("compactAt", value.compact_at.is_some()),

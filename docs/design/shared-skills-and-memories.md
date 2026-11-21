@@ -165,6 +165,12 @@ does, with a deploy key that reads the kit repository.
 The smallest change that delivers part of R11.1 uses files every runner already has: the factory's
 own `skills/` and `instructions.md`. It adds no fetch, no new message and no new credential.
 
+This slice is built. [skills.md](../daemon/skills.md) describes it. It differs from this section in
+three ways: the plugin folder lives in Priory home, `$PRIORY_HOME/kit/<hash>/plugin/`, beside the
+prompt files, rather than beside the state file; `priory check` also refuses a skill whose `name`
+differs from its folder; and the Codex limit, 8192 bytes, counts the instructions and the agent's
+own prompt together.
+
 1. `priory-factory` loads `skills/<name>/SKILL.md`, checks the frontmatter's `name` and
    `description`, and loads `instructions.md` when present. `priory check` reports a skill without
    them, with its file and line.
