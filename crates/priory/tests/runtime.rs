@@ -18237,3 +18237,197 @@ fn the_batch_endpoints_list_show_and_edit_a_plan_behind_the_token_origin_and_rev
     assert_eq!(after["plan_revision"], 2);
     assert_eq!(after["entries"].as_array().unwrap().len(), 2);
 }
+
+/// An event of pull request `number` of task 2's stack, from `head` onto `base`.
+fn on_stack_2(
+    number: u64,
+    head: &str,
+    base: &str,
+    kind: &str,
+    extra: serde_json::Value,
+) -> Message {
+    let mut message = on_pull(kind, extra);
+    message.data["pull_request"] = json!(number);
+    message.data["head_branch"] = json!(head);
+    message.data["base_branch"] = json!(base);
+    message.subject(format!("owner/repo#{number}"))
+}
+
+#[test]
+fn a_merged_condition_on_a_stack_of_pull_requests_waits_for_every_one_to_merge() {
+    let mut setup = batched_with("batch-stack", WORKFLOW);
+    went(&mut setup, &[wait(on_pull_7("review"))]);
+    setup.until("runs", |rows| rows.len() == 2 && rows[1][7] == "asleep");
+    let commit = setup.commit(2, "part-a.txt");
+    let worktree = setup.dir.join("home/worktrees/owner/repo/2");
+    assert!(
+        git(&worktree)
+            .args(["branch", "priory/2-a", &commit])
+            .status()
+            .unwrap()
+            .success()
+    );
+    let comment = |number| json!({ "body": "noted", "actor": "ana", "github_id": 600 + number });
+    setup.publish(&on_stack_2(
+        6,
+        "priory/2-a",
+        "main",
+        "github.issue_comment.created",
+        comment(6),
+    ));
+    setup.publish(&on_stack_2(
+        7,
+        "priory/2",
+        "priory/2-a",
+        "github.issue_comment.created",
+        comment(7),
+    ));
+    let stacked = || {
+        task_json(&setup, "2")["stack"]
+            .as_array()
+            .map_or(0, Vec::len)
+    };
+    let deadline = Instant::now() + Duration::from_secs(60);
+    while stacked() < 2 {
+        assert!(Instant::now() < deadline, "{}", task_json(&setup, "2"));
+        std::thread::sleep(Duration::from_millis(50));
+    }
+
+    let merge = |number, head, base| {
+        on_stack_2(
+            number,
+            head,
+            base,
+            "github.pull_request.closed",
+            json!({ "merged": true, "github_id": 700 + number }),
+        )
+    };
+    setup.publish(&merge(7, "priory/2", "priory/2-a"));
+    std::thread::sleep(Duration::from_millis(1500));
+    assert_eq!(entry_state(&setup, "3"), "held");
+    setup.publish(&merge(6, "priory/2-a", "main"));
+
+    setup.until("tasks", |rows| {
+        rows.iter().any(|row| row[0] == "3" && row[4] != "held")
+    });
+}
+
+#[test]
+fn a_failed_predecessor_asks_whether_to_release_or_drop_the_entry_that_waits_on_it() {
+    let mut setup = batched("batch-predecessor-failed");
+    let entries = [entry("e1", "ENG-40", &[]), entry("e2", "ENG-41", &["e1"])];
+    setup.calls(&[planned(json!({ "title": "t", "entries": entries }))]);
+    batch_add(&setup, &["ENG-40", "ENG-41"]);
+    setup.start();
+    let go = setup.until("asks", |rows| rows.len() == 1);
+    setup.hold("crash");
+
+    person(&setup, "answer", &[&go[0][0], "go", "--revision", "1"]);
+
+    setup.until("tasks", |rows| {
+        rows.iter().any(|row| row[0] == "2" && row[4] == "failed")
+    });
+    let asks = setup.until("asks", |rows| rows.len() == 1 && rows[0][1] == "3");
+    assert_eq!(
+        asks[0][3],
+        "Task 2 (linear:ENG-40) of batch 1 failed, and task 3 waits on it. Release the task, or drop it?"
+    );
+    person(
+        &setup,
+        "answer",
+        &[&asks[0][0], "release", "--revision", "1"],
+    );
+    setup.until("tasks", |rows| {
+        rows.iter().any(|row| row[0] == "3" && row[4] != "held")
+    });
+}
+
+#[test]
+fn a_predecessors_pull_request_closed_unmerged_asks_about_the_entry_that_waits_on_it() {
+    let mut setup = batched_with("batch-closed-unmerged", WORKFLOW);
+    went(&mut setup, &[wait(on_pull_7("review"))]);
+    setup.until("runs", |rows| rows.len() == 2 && rows[1][7] == "asleep");
+
+    setup.publish(&on_pull_2(
+        "github.pull_request.closed",
+        json!({ "merged": false, "github_id": 400 }),
+    ));
+
+    let asks = setup.until("asks", |rows| rows.iter().any(|row| row[1] == "3"));
+    let ask = asks.iter().find(|row| row[1] == "3").unwrap();
+    assert_eq!(
+        ask[3],
+        "A pull request of task 2 (linear:ENG-40) of batch 1 closed without a merge, and task 3 waits on it. Release the task, or drop it?"
+    );
+    person(&setup, "answer", &[&ask[0], "drop", "--revision", "1"]);
+    assert_eq!(entry_state(&setup, "3"), "dropped");
+}
+
+#[test]
+fn the_batches_starter_closes_the_issues_its_plan_lists_as_done_after_the_go() {
+    let mut setup = Setup::starter("starter-batches", "batches");
+    let close = [json!({ "issue": "ENG-43", "why": "Fixed by #198", "evidence": "#198" })];
+    let closed = json!({ "name": "result", "arguments": {
+        "outcome": "closed", "summary": "Closed ENG-43", "evidence": "ENG-43: closed, fixed by #198"
+    } });
+    setup.calls(&[
+        planned(json!({ "title": "Done already", "entries": [], "close": close })),
+        closed,
+    ]);
+    batch_add(&setup, &["ENG-43"]);
+    setup.start();
+    let go = setup.until("asks", |rows| rows.len() == 1);
+    assert_eq!(
+        go[0][3],
+        "Start batch 1: 0 tasks from 1 issue, and close 1?"
+    );
+
+    person(&setup, "answer", &[&go[0][0], "go", "--revision", "1"]);
+
+    setup.until("tasks", |rows| rows[0][4] == "done");
+    let runs = setup.rows("runs");
+    let steps: Vec<_> = runs.iter().map(|row| &*row[2]).collect();
+    assert_eq!(steps, ["plan", "close"]);
+    let shown = batch_json(&setup, &["1"]);
+    assert_eq!(shown["state"], "ended");
+    assert!(shown["closes"][0]["closed"].is_string(), "{shown}");
+}
+
+#[test]
+fn a_factory_that_gained_a_runner_since_the_plan_refuses_the_start_and_asks_the_go_again() {
+    let (mut setup, ask) = at_the_go(
+        "batch-runners",
+        json!({ "title": "t", "entries": three_entries() }),
+    );
+    setup.crash();
+    fs::create_dir_all(setup.dir.join("factory/runners")).unwrap();
+    for name in ["runner", "two"] {
+        fs::write(
+            setup.dir.join(format!("factory/runners/{name}.toml")),
+            "platform = { os = \"linux\" }",
+        )
+        .unwrap();
+    }
+    setup.start();
+
+    // The crashed daemon's socket file stays until the new one binds its own.
+    let deadline = Instant::now() + Duration::from_secs(60);
+    loop {
+        let answered = setup.priory(&["answer", &ask, "go", "--revision", "1"]);
+        if answered.status.success() {
+            break;
+        }
+        let refused = String::from_utf8_lossy(&answered.stderr).into_owned();
+        assert!(refused.contains("no priory daemon listens"), "{refused}");
+        assert!(Instant::now() < deadline, "{refused}");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+
+    let asks = setup.until("asks", |rows| rows.len() == 1 && rows[0][0] != ask);
+    assert_eq!(
+        asks[0][3],
+        "batches need one runner; this factory has 2. Start batch 1: 3 tasks from 3 issues?"
+    );
+    assert_eq!(setup.rows("tasks").len(), 1);
+    assert_eq!(batch_json(&setup, &["1"])["state"], "asked");
+}
