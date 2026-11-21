@@ -18401,7 +18401,8 @@ fn a_go_on_a_plan_revision_the_ask_did_not_show_is_refused() {
 #[test]
 fn batch_show_prints_each_batch_and_one_with_its_entries_and_closes() {
     let close = [json!({ "issue": "ENG-43", "why": "Fixed by #198", "evidence": "#198" })];
-    let entries = [entry("e1", "ENG-40", &[]), entry("e2", "ENG-41", &["e1"])];
+    let mut entries = [entry("e1", "ENG-40", &[]), entry("e2", "ENG-41", &["e1"])];
+    entries[0]["files"] = json!(["migrations/"]);
     let (setup, ask) = at_the_go(
         "batch-show",
         json!({ "title": "Invoice exports", "entries": entries, "close": close }),
@@ -18431,12 +18432,14 @@ fn batch_show_prints_each_batch_and_one_with_its_entries_and_closes() {
                         "merged": 0, "failed": 0, "dropped": 0 },
             "entries": [
                 { "entry": "e1", "position": 1, "issue": "ENG-40", "part": null, "title": "Do ENG-40",
+                  "files": ["migrations/"],
                   "task": 2, "key": "linear:ENG-40", "state": "queued", "stage": "queued", "after": [] },
                 { "entry": "e2", "position": 2, "issue": "ENG-41", "part": null, "title": "Do ENG-41",
-                  "task": 3, "key": "linear:ENG-41", "state": "held", "stage": "planned",
+                  "files": [], "task": 3, "key": "linear:ENG-41", "state": "held", "stage": "planned",
                   "after": [{ "entry": "e1", "task": 2, "moment": "merged", "met": null }] }
             ],
-            "closes": [{ "issue": "ENG-43", "why": "Fixed by #198", "evidence": "#198", "closed": null }]
+            "closes": [{ "issue": "ENG-43", "why": "Fixed by #198", "evidence": "#198", "closed": null }],
+            "splits": []
         })
     );
     assert_eq!(all["batches"][0]["id"], 1);
