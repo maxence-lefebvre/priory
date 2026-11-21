@@ -88,7 +88,7 @@ state database and never writes a file in the factory.
 - **Acting.** Every button runs a CLI verb: `answer --expected N [--run] -- ASK TEXT`,
   `dismiss --expected N ASK`, `snooze`, `say`, `report pick PICK OPTION --expected N`,
   `report comment ROW --expected N TEXT`, `report reply|resolve|reopen COMMENT`, `seen`,
-  `resume`, `revive`, `todo done`, `hold`, `release`, `move`, `cancel`, `pause`, `unpause` and
+  `resume`, `revive`, `todo done`, `inbox read`, `hold`, `release`, `move`, `cancel`, `pause`, `unpause` and
   `add FACTORY [--workflow W] [--band B] [--lane L] -- TEXT`. An answer always carries the revision the person read, so a
   changed question refuses it (R6.3).
 - **Safety.** `priory.js` passes every value as its own argument, never through a shell, and never

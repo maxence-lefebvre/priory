@@ -195,7 +195,7 @@ judged only on events of its own pull request, as in the table above, with these
 
 | Condition | Effect |
 | --------- | ------ |
-| Green checks at the head | the task sleeps on: a stack is done only once every pull request merged |
+| Green checks at the head | the task sleeps on: a stack is done only once every pull request merged. When this makes every open gate of the stack green, the daemon posts one report from `priory`: `the stack of task 1 (github:owner/repo#42) is green: merge #57 first`, naming the lowest open pull request |
 | `github.pull_request.closed` with `merged` true, and every pull request of the stack merged | marks the task done and starts no run |
 | `github.pull_request.closed` with `merged` true, and open pull requests above it | wakes the agent: `#57 merged; rebase #58 and #59 onto main`, where `main` is the merged pull request's base |
 | `github.pull_request.closed` with `merged` true, and none open above it | the task sleeps on |
@@ -209,7 +209,9 @@ twice: `stack-<task>-closed-<number>` and `stack-<task>-retargeted-<number>`. Fo
 of 3) closed without a merge, and #58 and #59 are based on it. What should the worker do?` The ask
 ends the task's gates. The answer wakes the agent as any answer does, and its next `done` stores
 fresh gates. A person's answer stands: a later event about the same pull request asks nothing
-again.
+again. A dismissal does not stand: when the same pull request still needs a decision at the next
+`done` or gate event, the ask comes back as its next revision. So does an ask that a revive or
+reopen withdrew.
 
 A pull request that replaces a closed one on the same branch takes its place in the stack, and a
 pull request that is open again after a close is open in the stack again.

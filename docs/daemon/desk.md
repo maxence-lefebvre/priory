@@ -78,7 +78,8 @@ characters.
 printed can resume from it. `--json` prints the same entries as JSON.
 
 An unread report shows on the desk as a `report` row. `priory inbox read SEQ` marks it read, and it
-leaves the desk. It is refused for a sequence number that is not a report.
+leaves the desk. It is refused for a sequence number that is not a report. `POST /api/inbox/{seq}/read`
+is its twin, and the Herdr library's `read` runs it.
 
 A systemd unit reports its own failure through `OnFailure=` and a template unit, such as
 `priory-notice@.service`:

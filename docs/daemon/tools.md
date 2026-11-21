@@ -424,6 +424,11 @@ first answer stands. A person's answer or dismissal drops the lead task while it
 with the reason `ask <id> was answered first` or `ask <id> was dismissed`. A lead task already
 running reads the refusal and ends `skipped`. A routed ask sends no push notification.
 
+When the lead task ends `done`, `failed` or `dropped`, or turns `blocked`, without answering, the
+ask returns to the person. It loses its lead and is asked again as its next revision, which sends
+a push notification. Its question gains the reason, such as `Which database? (lead did not answer:
+its task is done)`. A lead that skips ends `done`.
+
 Known limits:
 
 - Each lead task gets its own worktree of the repository, like any task, although the lead only
