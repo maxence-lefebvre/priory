@@ -1,0 +1,132 @@
+# Priory on GitHub
+
+A Chromium extension, for Chrome and Edge, that adds Priory to GitHub's pull request page. On a pull
+request a task holds, a strip under the title shows the task, its state and step, and the asks that
+wait on you. A panel docked at the right answers those asks, says to the task's agent, and asks it to
+update its branch or resolve conflicts. A Guide tab walks you through the agent's review guide and
+asks its quiz.
+
+The extension reads and writes through `priory serve`, with the same token as the web view. The
+Guide needs neither: it reads the pull request's description from GitHub.
+
+## Install it
+
+1. Add the extension's origin to the factory's `factory.toml` and restart the daemon or `priory serve`:
+
+   ```toml
+   [serve]
+   extension_origins = ["chrome-extension://ekngedcpijdeijlmffkeehilmafoikkm"]
+   ```
+
+   The manifest's `key` fixes this id, so it stays the same on every machine and reinstall.
+2. Open `chrome://extensions` (or `edge://extensions`), turn on Developer mode, choose Load
+   unpacked and pick the `adapters/github` folder.
+3. Open a pull request on github.com. The Priory strip appears above its tabs.
+
+After a `git pull`, choose the reload button on the extension's card.
+
+## Sign in
+
+1. Choose Sign in on the strip. The panel opens on its connect form.
+2. Enter the address `priory serve` listens on: `127.0.0.1:7340` on the same machine, or an
+   `https://` address beyond it, such as the one `tailscale serve` gives (see
+   [Use it from a phone](../../GETTING_STARTED.md#use-it-from-a-phone)). Plain `http://` is refused
+   beyond loopback, so the token never travels in clear.
+3. Paste the token: the value of `PRIORY_TOKEN`, or of the variable `[serve] token_env` names.
+4. Choose Connect, and allow the browser to let the extension reach that address.
+
+The panel then reads the task. Sign out is at the bottom of the Task tab. A `401` from the daemon
+signs you out too.
+
+## What it shows
+
+- **The strip**: the owning task, its state and step, and a pill when asks wait on you. On a pull
+  request no active task holds, it says so, with Add a task…. When the daemon is out of reach, it
+  says how old the last read is.
+- **Ask**: the open asks of the task, oldest first, with the web view's order: context, question,
+  recommendation, options, Write an answer, Dismiss and Snooze. An answer waits 4 s with Undo, then
+  goes with the revision you saw. A changed question keeps your draft and says so. Keys 1 to 9 pick
+  an option while the panel has focus.
+- **A command ask**: a tap on an option that runs a command opens the browser's side panel with the
+  command, its folder and its revision. Run it there, within 2 min of the tap. No page can cover
+  the side panel. Run reads the ask again first, and runs only when the daemon, the revision and
+  the command are still the ones shown.
+- **Task**: the workflow grid, Update branch and Resolve conflicts, Say, the runs, and the other
+  tasks on the pull request. The buttons send fixed text with `say` when the task's agent can hear
+  it, and say why not otherwise. Update branch merges the base, so nothing needs a force push.
+- **Guide**: the review guide from the description, and its quiz.
+
+When a write loses its connection, the daemon may have applied it. The panel keeps the draft, says
+so, and clears the warning once a read shows the answer, or when you send again.
+
+## The review guide block
+
+An agent writes the guide into the pull request's description, inside a collapsed block:
+
+````markdown
+<!-- priory-guide -->
+<details><summary>Review guide</summary>
+
+```json
+{"version": 1, "head": "9f3c2e1", "map": ["One line on what the change does."],
+ "steps": [{"title": "Back edges run down a lane", "file": "adapters/herdr/flows.js", "lines": "40-56"}],
+ "quiz": {"pass": 1, "questions": [{"id": "1", "question": "...", "options": ["...", "..."],
+   "answer": "sha256:3f1c9a0e5b7d2c44", "cite": "crates/priory-core/src/flows.rs:88"}]}}
+```
+
+</details>
+<!-- /priory-guide -->
+````
+
+GitHub drops the HTML comments from the page, so the extension finds the block by its summary,
+"Review guide". Agents find it in the raw body by the markers.
+
+| Field | Rule |
+| ----- | ---- |
+| `version` | `1` |
+| `head` | The commit the guide describes, 7 to 40 hex digits |
+| `map` | Up to 4 lines on what the change does |
+| `steps` | Up to 8, each with `title`, `file` and optional `lines`, `N` or `N-M` |
+| `quiz` | Optional. `pass`, then 1 to 4 `questions`, each with `id`, `question`, 2 to 6 `options`, `answer` and optional `cite` |
+| `answer` | `sha256:` and the first 16 hex digits of SHA-256 of `<owner>/<repo>#<n>:<id>:<option>` |
+
+The block stays under 8 KiB, and every string under 500 characters. A score belongs to the pull
+request's head commit and the guide's text: a push or a new guide resets it. The quiz changes
+nothing on GitHub, and anyone can hash the options: it keeps the reviewer honest, nothing more.
+
+## Security model
+
+The extension holds the daemon's token, which can answer, say, cancel and revive. These rules keep
+it out of GitHub's page:
+
+- **Two origins.** The content script runs in GitHub's page. It finds the pull request, places two
+  iframes and reads the guide block. Every daemon call and all agent text live in the iframes,
+  which are extension pages in `chrome-extension://<id>`. A script on github.com cannot read them.
+- **The token** lives in the extension origin's IndexedDB, which content scripts and GitHub's pages
+  cannot open. It is sent only in the `Authorization` header, only to the address you gave, and only
+  on a path under `/api`. It is stored in plain text in the browser profile, as the web view's is.
+- **Origin.** `serve` refuses a `POST` whose `Origin` differs from its `Host`, which an extension
+  page's always does. `[serve] extension_origins` lets this one extension write. A web page cannot
+  send another origin's `Origin`, and the token still guards every call.
+- **CORS.** The extension asks for a host permission for the one address you entered, which lets its
+  pages skip the browser's CORS checks. `serve` needs no CORS headers.
+- **Messages.** The frames talk to the content script with `chrome.tabs.sendMessage`, never
+  `postMessage`, and ignore every message from the page.
+
+What a script on github.com can and cannot do:
+
+| It can | It cannot |
+| ------ | --------- |
+| See that the extension is installed: the iframes are in its DOM | Read the token, the task or the asks |
+| Remove, move or cover the iframes | Call the daemon with the token |
+| Fake a guide block: it is page content anyway, shown as text | Send a write without your taps in the panel |
+
+A hostile page could lay out or cover the iframes so your taps land on an option you did not mean.
+On github.com that needs GitHub itself compromised, and the 4 s Undo shows what was sent. A command
+runs only from the browser's side panel, which no page can cover.
+
+## Tests
+
+`node --test adapters/github/test/*.test.js` runs the tests of the pure parts: the request
+builder, the pull request and guide parsers, the ask state machine and the say routing. They need
+no browser.
