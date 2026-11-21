@@ -72,10 +72,11 @@ pub(crate) fn sorted(
     };
     let (mut own, mut missing) = (Vec::new(), Vec::new());
     // Items typed before the task's last result were that result's to sort, or predate sorting.
-    // An own item written while a run of the task ran is the agent's reply, as routing reads it.
+    // An own item written inside a run of the task is the agent's reply, as routing reads it. A
+    // comment in a run's first or last second may have woken or ended it, so it stays the person's.
     let mut statement = tx.prepare(
         "SELECT inbox.type, inbox.data, EXISTS (SELECT 1 FROM runs WHERE runs.task = ?1
-           AND julianday(inbox.time) >= julianday(runs.started)
+           AND julianday(inbox.time) > julianday(runs.started)
            AND (runs.ended IS NULL OR julianday(inbox.time) < julianday(runs.ended)))
          FROM inbox JOIN outbox ON outbox.id = inbox.outbox
          WHERE inbox.task = ?1 AND outbox.state = 'confirmed'

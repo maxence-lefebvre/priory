@@ -17662,12 +17662,13 @@ fn the_agents_own_reply_written_during_its_run_is_not_recorded_as_feedback() {
     setup.hold("hold-stop");
     setup.start();
     setup.until("runs", |rows| rows.len() == 1);
-    std::thread::sleep(Duration::from_millis(1100));
+    std::thread::sleep(Duration::from_millis(2100));
     setup.release("hold-stop");
     setup.until("runs", |rows| rows[0][7] == "asleep");
     setup.hold("hold-stop");
     // The agent replied from the person's gh account while it ran; the poll reads it later.
-    let during: herdr_bus::Timestamp = setup.rows("runs")[0][5].parse().unwrap();
+    let started: herdr_bus::Timestamp = setup.rows("runs")[0][5].parse().unwrap();
+    let during = herdr_bus::Timestamp::from_second(started.as_second() + 1).unwrap();
     let mut reply = thread_comment_at(802).time(during);
     reply.data["own"] = json!(true);
     setup.publish(&reply);
