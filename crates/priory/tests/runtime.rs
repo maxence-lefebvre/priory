@@ -9079,7 +9079,7 @@ fn a_revive_at_an_irreversible_step_asks_again_though_the_commit_is_the_approved
     assert!(setup.rows("actions").is_empty());
 }
 
-const NUDGE: &str ="Your turn ended without calling wait, ask or result of the priory MCP server. Call one of them: result to end the step, ask to put a question to a person, or wait to sleep until an event.\nEnd this step by calling the result tool of the priory MCP server with one of these outcomes: failed, passed.\n";
+const NUDGE: &str = "Your turn ended without calling wait, ask or result of the priory MCP server. Call one of them: result to end the step, ask to put a question to a person, or wait to sleep until an event.\nEnd this step by calling the result tool of the priory MCP server with one of these outcomes: failed, passed.\n";
 
 #[test]
 fn a_silent_turn_gets_one_nudge_and_a_second_silent_turn_gets_none() {

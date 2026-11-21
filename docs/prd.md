@@ -333,9 +333,10 @@ flowchart TD
 
 An irreversible step needs either a human step that lists it in `approves` on every path that
 reaches it, or `autonomous = "<reason>"` on the step itself. An approval covers one task and the
-commit it was given for. An answer grants the approval when its `next` leads toward the approved
-step. If the task's commit changes before the irreversible step runs, Priory
-asks again.
+commit it was given for, in the task's current generation. An answer grants the approval when its
+`next` leads toward the approved step, and an answer whose command fails grants none. If the task's
+commit changes, or a revive or reopen starts a new generation, before the irreversible step runs,
+Priory asks again.
 
 A trigger's `intervention` can hand a task's other asks to a lead agent (`hands-off`), or add a
 person's approval of every graded plan (`plan`). The lead never answers an ask whose answer lets an
