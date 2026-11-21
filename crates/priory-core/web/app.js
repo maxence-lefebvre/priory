@@ -7,7 +7,7 @@ import { linked } from "./links.js";
 import { dossier, refusal } from "./reports.js";
 import { prStack } from "./stack.js";
 import { KINDS, edgeStyle, lockBadge, nodeShape, timeline, ungatedPairs } from "./flows.js";
-import { handled, neverOwned, routeAction, unroutedNote } from "./inbox.js";
+import { emptyDetail, eventWords, handled, neverOwned, routeAction, unroutedNote } from "./inbox.js";
 import { editBody, issueName, laneLayout, momentWords, stages, successors } from "./batches.js";
 import { actionNote, batchParts, dueParts, mergeSince, nextLink, progressView, rowAction, sectionInView, sinceGroups } from "./desk.js";
 import { TASK_FACETS, TASK_VIEWS, filtered, olderPart, taskViews, triageWords } from "./tasks.js";
@@ -603,7 +603,7 @@ function unroutedRows() {
         : html`<button type="button" class="btn secondary" data-action="subscribe-task" data-resource="${group.resource}" data-task="${task.id}" ${busy}>Subscribe task ${task.id}</button>`;
     return html`<section class="ugroup" aria-label="${group.resource}"><p class="l1"><span class="mono">${group.resource}</span><span class="num">${group.events.length}</span></p>
       <p class="meta">${tile(task.state, "sm")}<a href="/tasks/${task.id}">task ${task.id}</a> ${task.state}, <span class="mono">${task.key}</span></p>
-      <ol class="hist">${group.events.slice(0, 5).map((event) => html`<li>${tile("queued", "sm")}<span><b>${event.type}</b> ${event.subject || ""}${event.line ? html`<span class="meta">${event.line}</span>` : ""}</span>${timeTag(event.time, today(event.time) ? clock(event.time) : date(event.time))}</li>`)}</ol>
+      <ol class="hist">${group.events.slice(0, 5).map((event) => html`<li>${tile("queued", "sm")}<span><b title="${event.type}">${eventWords(event.type)}</b> ${event.subject || ""}${event.line ? html`<span class="meta">${event.line}</span>` : ""}</span>${timeTag(event.time, today(event.time) ? clock(event.time) : date(event.time))}</li>`)}</ol>
       ${group.events.length > 5 ? html`<p class="meta">and ${group.events.length - 5} older</p>` : ""}
       <div class="routeform">${route}</div>
       ${notice ? html`<p class="note" role="status">${notice}</p>` : ""}</section>`;
@@ -1274,7 +1274,7 @@ function taskSections(task) {
     const shown = task.inbox.slice(0, INBOX_SHOWN);
     const more = task.inbox.length > INBOX_SHOWN ? html`<p class="meta">Latest ${INBOX_SHOWN} of ${task.inbox.length}. <code>priory task ${task.id}</code> lists every event.</p>` : "";
     sections.push(["inbox", "Inbox", sect("inbox", "message-text", "Inbox", "newest first", html`<ol class="hist" aria-label="Events routed to this task, newest first">${shown.map((event) =>
-      html`<li>${tile(INBOX_TILES[event.prompt] || (event.outcome === "kept" && event.task === task.id ? "asleep" : "ready"), "sm")}<span><b>${event.type}</b> ${event.subject || ""}<span class="meta">${handled(event, task.id)}</span></span>${timeTag(event.time, today(event.time) ? clock(event.time) : date(event.time))}</li>`)}</ol>${more}`)]);
+      html`<li>${tile(INBOX_TILES[event.prompt] || (event.outcome === "kept" && event.task === task.id ? "asleep" : "ready"), "sm")}<span><b title="${event.type}">${eventWords(event.type)}</b> ${event.subject || ""}<span class="meta">${handled(event, task.id)}</span></span>${timeTag(event.time, today(event.time) ? clock(event.time) : date(event.time))}</li>`)}</ol>${more}`)]);
   }
   if (task.runs?.length) {
     sections.push(["trace", "Trace", sect("trace", "runs", "Trace", "", html`<ol class="hist">${task.runs.map((run) => {
@@ -2292,9 +2292,9 @@ const OWN_PAGE_LISTS = { tasks: tasksBody, runs: runsBody, queue: queueBody };
 
 const keyHints = () => html`<div class="keys"><span><kbd>J</kbd><kbd>K</kbd>move</span><span><kbd>Enter</kbd>open</span><span><kbd>Esc</kbd>close</span><span><kbd>N</kbd>add</span></div>`;
 
-function drawer(wide) {
+function drawer(wide, list) {
   const id = selectedAsk();
-  const body = id ? askDetail(id, wide) : html`<p class="empty">Select an ask to read it here.</p>`;
+  const body = id ? askDetail(id, wide) : html`<p class="empty">${emptyDetail(list)}</p>`;
   return html`<aside class="drawer" aria-label="Ask">${body}</aside>`;
 }
 
@@ -2432,11 +2432,11 @@ function page() {
     return html`${staleStrip()}${top}<div class="${size} no-drawer">${wide ? nav("rail") : ""}<div class="list">${utility}</div></div>${wide ? "" : nav("bar")}`;
   }
   if (OWN_PAGE_LISTS[list]) return html`${staleStrip()}${top}<div class="${size} no-drawer">${wide ? nav("rail") : ""}${listPanel(list, wide)}</div>${wide ? "" : nav("bar")}`;
-  if (!wide) return html`${staleStrip()}${top}<div class="medium">${listPanel(list, false)}${drawer(false)}</div>${nav("bar")}`;
+  if (!wide) return html`${staleStrip()}${top}<div class="medium">${listPanel(list, false)}${drawer(false, list)}</div>${nav("bar")}`;
   const layoutNode = view().layout;
   const plain = layoutNode.tabs?.every((child) => child.panel);
   const main = plain ? listPanel(list, true) : tree(layoutNode, list);
-  return html`${staleStrip()}${top}<div class="wide">${nav("rail")}${main}${drawer(true)}</div>`;
+  return html`${staleStrip()}${top}<div class="wide">${nav("rail")}${main}${drawer(true, list)}</div>`;
 }
 
 const notFound = () => html`<p class="empty">No such page. Go back to the <a class="ghost" href="/">Desk</a>.</p>`;
