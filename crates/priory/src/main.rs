@@ -226,7 +226,7 @@ fn main() -> ExitCode {
 
 fn usage() -> ExitCode {
     eprintln!(
-        "usage: priory --version\n       priory check [DIR] [--explain [--json]]\n       priory draw [DIR] WORKFLOW\n       priory intake [DIR] [--once]\n       priory daemon [DIR] [--once]    --once routes pending events, starts no task and exits\n       priory batch add [DIR] ISSUE... [--repo <owner/name>] [--entries <workflow>] [--band <band>] [--lane <lane>]\n       priory batch show [BATCH] [--json]\n       priory batch edit BATCH --expected REVISION (--drop ENTRY [--with-successors] | --move ENTRY (--top | --before OTHER | --after OTHER) | --moment ENTRY OTHER MOMENT)\n       priory add [DIR] [--workflow <name>] [--band <band>] [--lane <lane>] [--repo <owner/name>] [--intervention plan|hands-off] [--relates KIND:TASK]... <text>\n       priory request [DIR] --workflow <name> --key <key> [--band <band>] [--lane <lane>] [--repo <owner/name>] [--intervention plan|hands-off] [--relates KIND:TASK]... [--hold <reason> [CONDITION]...] <text>\n       priory serve [DIR] [--listen ADDR]\n       priory inbox [--unrouted] [--since SEQ] [--json]\n       priory inbox read SEQ\n       priory post SOURCE LINE\n       priory tasks [--lane <lane>] [--grade red|yellow|green] [--json]\n       priory tasks --graph [TASK] [--mermaid]\n       priory queue [DIR] [--json]\n       priory schedules [DIR] [--json]\n       priory links [DIR] [--json]\n       priory flows [DIR] --json\n       priory views [DIR] --json\n       priory runs [--json]\n       priory outbox\n       priory asks [--all] [--band <band>[,<band>...]]... [--risk <risk>[,<risk>...]]... [--json]\n       priory waits\n       priory actions\n       priory attach (TASK | --run RUN) [--read-only] [--print]\n       priory screen (TASK | --run RUN) [--json]\n       priory desk [--all] [--json] [--person NAME]\n       priory seen [--person NAME] [--at TIME]\n       priory wait --since REV [--timeout D]\n       priory snooze (ask | blocked | failed | prompt) ID (--for DURATION | --until TIME | --clear)\n       priory todo add TEXT [--band B] [--due TIME]\n       priory todo done ID\n       priory todo list [--json]\n       priory trace\n       priory report put TASK FILE|-\n       priory report show [TASK] [--json]\n       priory report list [--json]\n       priory report pick PICK OPTION --expected REVISION\n       priory report comment ROW --expected REVISION TEXT\n       priory report (reply COMMENT TEXT | resolve COMMENT | reopen COMMENT)\n       priory report [DIR] --workflow <name> [--since <instant-or-duration>] [--cost] [--by lane]\n       priory report risk [DIR] [--workflow <name>] [--since <instant-or-duration>] [--json]\n       priory report attention [--since <instant-or-duration>] [--by workflow|lane|kind] [--json]\n       priory costs [DIR] [--since <instant-or-duration>] [--by workflow|agent|model|machine|repo] [--json]\n       priory grades [--since <instant-or-duration>] [--json]\n       priory move TASK [--band <band>] [--top | --before TASK | --after TASK] [--expected REVISION]\n       priory resume TASK\n       priory say TASK TEXT\n       priory pause [REASON]\n       priory unpause\n       priory cancel TASK [--expected REVISION]\n       priory revive TASK [--step STEP]\n       priory hold TASK --reason TEXT [--until TIME] [--after TASK-OR-ISSUE]... [--merge PR]... [--if-closed release|drop|ask] [--blockers] [--expected REVISION]\n       priory release TASK [--expected REVISION]\n       priory task TASK [--json]\n       priory relate TASK builds-on|fixes|takes-up|relates OTHER [--remove]\n       priory subscribe TASK RESOURCE [--expected REVISION]\n       priory unsubscribe TASK RESOURCE\n       priory tldr TASK TEXT\n       priory progress TASK JSON\n       priory search QUERY [--state STATE[,STATE...]] [--limit N]\n       priory gate\n       priory memory [(acquire | lease) [--gb N] [--timeout D] -- COMMAND...]\n       priory answer [--revision N | --expected N] [--run] [--] [DIR] [RUNNER:]ASK OPTION-OR-TEXT\n       priory give [DIR] KEY RUNNER [--force]\n       priory ask ID JSON\n       priory dismiss [--expected N] ASK\n       priory deliver ASK (--retry | --clear)\n       priory mcp --session ID\n       priory mcp --eval LOG [--describe TOOL TEXT]\n       priory eval FILE --budget USD [--case NAME] [--runs N] [--model MODEL]\n       priory hook EVENT"
+        "usage: priory --version\n       priory check [DIR] [--explain [--json]]\n       priory draw [DIR] WORKFLOW\n       priory intake [DIR] [--once]\n       priory daemon [DIR] [--once]    --once routes pending events, starts no task and exits\n       priory batch add [DIR] ISSUE... [--repo <owner/name>] [--entries <workflow>] [--band <band>] [--lane <lane>]\n       priory batch show [BATCH] [--json]\n       priory batch edit BATCH --expected REVISION (--drop ENTRY [--with-successors] | --move ENTRY (--top | --before OTHER | --after OTHER) | --moment ENTRY OTHER MOMENT)\n       priory add [DIR] [--workflow <name>] [--band <band>] [--lane <lane>] [--repo <owner/name>] [--intervention plan|hands-off] [--relates KIND:TASK]... <text>\n       priory request [DIR] --workflow <name> --key <key> [--band <band>] [--lane <lane>] [--repo <owner/name>] [--intervention plan|hands-off] [--relates KIND:TASK]... [--hold <reason> [CONDITION]...] <text>\n       priory serve [DIR] [--listen ADDR]\n       priory inbox [--unrouted] [--since SEQ] [--json]\n       priory inbox read SEQ\n       priory post SOURCE LINE\n       priory tasks [--lane <lane>] [--grade red|yellow|green] [--json]\n       priory tasks --graph [TASK] [--mermaid]\n       priory queue [DIR] [--json]\n       priory schedules [DIR] [--json]\n       priory links [DIR] [--json]\n       priory flows [DIR] --json\n       priory views [DIR] --json\n       priory runs [--json]\n       priory outbox\n       priory asks [--all] [--band <band>[,<band>...]]... [--risk <risk>[,<risk>...]]... [--json]\n       priory waits\n       priory actions\n       priory attach (TASK | --run RUN) [--read-only] [--print]\n       priory screen (TASK | --run RUN) [--json]\n       priory desk [--all] [--json] [--person NAME]\n       priory seen [--person NAME] [--at TIME]\n       priory wait --since REV [--timeout D]\n       priory snooze (ask | blocked | failed | prompt) ID (--for DURATION | --until TIME | --clear)\n       priory todo add TEXT [--band B] [--due TIME]\n       priory todo done ID\n       priory todo list [--json]\n       priory trace\n       priory report put TASK FILE|-\n       priory report show [TASK] [--json]\n       priory report list [--json]\n       priory report pick PICK OPTION --expected REVISION\n       priory report comment ROW --expected REVISION TEXT\n       priory report (reply COMMENT TEXT | resolve COMMENT | reopen COMMENT)\n       priory report [DIR] --workflow <name> [--since <instant-or-duration>] [--cost] [--by lane]\n       priory report risk [DIR] [--workflow <name>] [--since <instant-or-duration>] [--json]\n       priory report attention [--since <instant-or-duration>] [--by workflow|lane|kind] [--json]\n       priory costs [DIR] [--since <instant-or-duration>] [--by workflow|agent|model|machine|repo] [--json]\n       priory grades [--since <instant-or-duration>] [--json]\n       priory move TASK [--band <band>] [--top | --before TASK | --after TASK] [--expected REVISION]\n       priory resume TASK\n       priory say TASK TEXT\n       priory pause [REASON]\n       priory unpause\n       priory cancel TASK [--expected REVISION]\n       priory revive TASK [--step STEP]\n       priory hold TASK --reason TEXT [--until TIME] [--after TASK-OR-ISSUE]... [--merge PR]... [--if-closed release|drop|ask] [--blockers] [--expected REVISION]\n       priory release TASK [--expected REVISION]\n       priory task TASK [--json]\n       priory relate TASK builds-on|fixes|takes-up|relates OTHER [--remove]\n       priory subscribe TASK RESOURCE [--expected REVISION]\n       priory unsubscribe TASK RESOURCE\n       priory tldr TASK TEXT\n       priory progress TASK JSON\n       priory search QUERY [--state STATE[,STATE...]] [--limit N]\n       priory gate\n       priory memory [(acquire | lease) [--gb N] [--timeout D] -- COMMAND...]\n       priory answer [--revision N | --expected N] [--run] [--] [DIR] [RUNNER:]ASK OPTION-OR-TEXT\n       priory give [DIR] KEY RUNNER [--force]\n       priory ask ID JSON\n       priory dismiss [--revision N | --expected N] [DIR] [RUNNER:]ASK\n       priory deliver ASK (--retry | --clear)\n       priory mcp --session ID\n       priory mcp --eval LOG [--describe TOOL TEXT]\n       priory eval FILE --budget USD [--case NAME] [--runs N] [--model MODEL]\n       priory hook EVENT"
     );
     ExitCode::from(2)
 }
@@ -380,7 +380,8 @@ fn screen(args: Vec<String>) -> ExitCode {
         return usage();
     };
     let secrets = priory_core::screen::secrets(&factory::Factory::default().secret_envs());
-    let read = state::open().and_then(|db| priory_core::screen::read(&db, &target, &secrets));
+    let read = state::open().and_then(|db| priory_core::screen::read(&db, &target, &secrets, 0));
+    let colours = std::io::IsTerminal::is_terminal(&std::io::stdout());
     exit(
         "screen",
         read.map(|screen| match json {
@@ -389,7 +390,11 @@ fn screen(args: Vec<String>) -> ExitCode {
                 .as_array()
                 .into_iter()
                 .flatten()
-                .for_each(|line| println!("{}", line.as_str().unwrap_or_default())),
+                .map(|line| line.as_str().unwrap_or_default())
+                .for_each(|line| match colours {
+                    true => println!("{line}"),
+                    false => println!("{}", priory_core::screen::plain(line)),
+                }),
         }),
     )
 }
@@ -1889,10 +1894,59 @@ fn answer(mut args: Vec<String>) -> ExitCode {
         let Some(factory) = load(Path::new(dir)) else {
             return ExitCode::FAILURE;
         };
-        return reply("answer", runners::answer(&factory, runner, &answer));
+        let label = format!("{runner}:{}", answer.ask);
+        let mirrored = match remote_ask(runner, answer.ask, answer.revision) {
+            Ok(mirrored) => mirrored,
+            Err(refused) => return exit("answer", Err(refused)),
+        };
+        // The command runs on the ask's own runner, so the person confirms it knowing where.
+        let runs = mirrored.as_ref().is_some_and(|ask| {
+            ask["command"]["runs"]
+                .as_array()
+                .is_some_and(|runs| runs.iter().any(|option| *option == answer.text))
+        });
+        if runs && !answer.run {
+            return exit(
+                "answer",
+                Err(format!(
+                    "ask {label} runs its command when answered {:?}. Runs on {runner}: answer again with --run to run it",
+                    answer.text
+                )),
+            );
+        }
+        let sent = runners::answer(&factory, runner, &answer).map(|submission| {
+            let on = if runs { format!(" Runs on {runner}.") } else { String::new() };
+            format!(
+                "answer to ask {label} sent to {runner} as submission {submission}: it applies when {runner} reads the log.{on}"
+            )
+        });
+        return reply("answer", sent);
     }
     let line = serde_json::to_string(&answer).expect("an answer serializes");
     send("answer", &line)
+}
+
+/// Another runner's ask as this machine's mirror holds it, refused when the mirror shows it closed
+/// or at another revision. An ask the mirror lacks, or a machine without a state file, goes to its
+/// runner unchecked, which checks it again anyway.
+fn remote_ask(runner: &str, ask: i64, revision: i64) -> Result<Option<serde_json::Value>, String> {
+    let Ok(db) = state::open() else {
+        return Ok(None);
+    };
+    let mirrored = runners::mirrored(&db, runner, ask).map_err(|error| error.to_string())?;
+    if let Some(stale) = mirrored
+        .as_ref()
+        .and_then(|ask| runners::stale(ask, revision))
+    {
+        return Err(stale);
+    }
+    Ok(mirrored)
+}
+
+/// Splits `<runner>:<ask>` when `ask` names no ask of this machine.
+fn remote_id(ask: &str, local: &Result<i64, String>) -> Option<(String, i64)> {
+    let (runner, id) = ask.split_once(':').filter(|_| local.is_err())?;
+    Some((runner.to_owned(), id.parse().ok()?))
 }
 
 fn reply(verb: &str, done: Result<String, String>) -> ExitCode {
@@ -1905,15 +1959,40 @@ fn reply(verb: &str, done: Result<String, String>) -> ExitCode {
     }
 }
 
-/// Sends `priory dismiss [--expected N] ASK` to the daemon, which closes the ask unanswered.
+/// Sends `priory dismiss [--expected N] ASK` to the daemon, which closes the ask unanswered, or
+/// publishes `priory dismiss --revision N [DIR] RUNNER:ASK` for that runner to apply.
 fn dismiss(args: Vec<String>) -> ExitCode {
     let Some((revision, rest)) = revised(args) else {
         return usage();
     };
-    let [ask] = &rest[..] else {
-        return usage();
+    let (dir, ask) = match &rest[..] {
+        [ask] => (".".to_owned(), ask),
+        [dir, ask] => (dir.clone(), ask),
+        _ => return usage(),
     };
-    let dismiss = match ask_id(ask) {
+    let local = ask_id(ask);
+    if let Some((runner, id)) = remote_id(ask, &local) {
+        let Some(revision) = revision else {
+            return exit(
+                "dismiss",
+                Err(format!(
+                    "dismissing ask {ask} of runner {runner} needs --revision N"
+                )),
+            );
+        };
+        let Some(factory) = load(Path::new(&dir)) else {
+            return ExitCode::FAILURE;
+        };
+        let sent = remote_ask(&runner, id, revision)
+            .and_then(|_| runners::dismiss(&factory, &runner, id, revision))
+            .map(|submission| {
+                format!(
+                    "dismiss of ask {runner}:{id} sent to {runner} as submission {submission}: it applies when {runner} reads the log"
+                )
+            });
+        return reply("dismiss", sent);
+    }
+    let dismiss = match local {
         Ok(dismiss) => dismiss,
         Err(error) => return exit("dismiss", Err(error)),
     };

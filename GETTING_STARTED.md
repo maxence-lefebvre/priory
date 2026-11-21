@@ -264,7 +264,7 @@ When someone labels issue 42 of `owner/name` with `agent`, this happens:
 | `priory desk` | Lists what waits on you: asks, blocked and failed tasks, held tasks, the queue |
 | `priory answer ASK OPTION --revision N` | Answers an ask. `--expected N` is the same flag. `priory answer [DIR] RUNNER:ASK ...` answers another runner's ask (see [runners.md](docs/daemon/runners.md)) |
 | `priory give [DIR] KEY RUNNER [--force]` | Moves a task to another runner of a factory of several, once its runner's lease ends or with `--force` (see [runners.md](docs/daemon/runners.md)) |
-| `priory dismiss [--expected N] ASK` | Closes an ask with no answer |
+| `priory dismiss [--expected N] ASK` | Closes an ask with no answer. `priory dismiss --revision N [DIR] RUNNER:ASK` dismisses another runner's ask |
 | `priory deliver ASK (--retry \| --clear)` | Sends a failed answer delivery again, or clears it from the desk |
 | `priory snooze KIND ID --for 2h`, `--until TIME`, `--clear` | Hides a desk item until then, or brings it back |
 | `priory todo add TEXT [--band B] [--due TIME]`, `priory todo done ID`, `priory todo list` | Adds a to-do of your own to the desk, marks it done, or lists them |
@@ -275,7 +275,7 @@ When someone labels issue 42 of `owner/name` with `agent`, this happens:
 | `priory relate TASK KIND OTHER [--remove]` | Records that a task `builds-on`, `fixes`, `takes-up` or `relates` to another, or removes it |
 | `priory task TASK --json` | Prints one task with its brief, plan, pull request, runs and asks |
 | `priory attach TASK [--read-only]` | Attaches your terminal to a task's agent |
-| `priory screen TASK [--json]` | Prints what a task's agent shows now, with secrets hidden |
+| `priory screen TASK [--json]` | Prints what a task's agent shows now, in colour on a terminal, with secrets hidden. The task's page in the web view shows the same screen, with Load earlier for scrollback and Type to say a line to the agent |
 | `priory resume TASK` | Resumes a blocked task |
 | `priory say TASK TEXT` | Sends a task's agent a message, waking it if it sleeps |
 | `priory subscribe TASK RESOURCE [--expected REVISION]`, `priory unsubscribe TASK RESOURCE` | Routes a pull request's, Linear issue's or Slack thread's events to a task until it closes, or stops routing them. Every task already subscribes to its own key, such as the Slack thread that started it. `--expected` refuses the subscribe once the state moved past that revision |
