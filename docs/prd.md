@@ -102,6 +102,7 @@ views/<name>.toml
 lanes.toml                   # or lanes.yaml
 prices.toml                  # or prices.yaml: dollars per million tokens, by model
 skills/<name>/SKILL.md
+instructions.md              # text before every agent's own prompt
 webhooks/  scorers/  benchmarks/
 ```
 

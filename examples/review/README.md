@@ -4,6 +4,8 @@ When someone asks you to review a pull request, in any repository `gh` can read,
 merge risk. Then another agent reads it and the ticket it links to, runs the checks if they are
 cheap, and writes a pending GitHub review.
 Only you see a pending review. You edit it and submit it on GitHub.
+The reviewer writes its inline comments with the skill in `skills/review-comments/`, which Priory
+gives every run as `priory:review-comments`.
 
 ## What it needs
 

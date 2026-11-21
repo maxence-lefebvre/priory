@@ -50,7 +50,7 @@ fn as_version_57(db: &rusqlite::Connection) {
         .unwrap();
     }
     db.execute_batch(
-        "ALTER TABLE deliveries DROP COLUMN cleared; ALTER TABLE snoozes DROP COLUMN ended;
+        "ALTER TABLE runs DROP COLUMN kit_hash; ALTER TABLE deliveries DROP COLUMN cleared; ALTER TABLE snoozes DROP COLUMN ended;
          DROP TRIGGER ask_withdrawn_at; DROP TRIGGER wait_withdrawn_at;
          ALTER TABLE asks DROP COLUMN withdrawn_at; ALTER TABLE waits DROP COLUMN withdrawn_at;
          DROP TRIGGER ask_returns_from_its_lead; DROP TRIGGER push_an_intake_failure;

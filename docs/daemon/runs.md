@@ -26,7 +26,10 @@ Codex). Each step starts its own agent's harness, so one workflow can mix both.
   `session = "shared"` keeps one session across tasks (see Shared sessions).
 - `--model` and `--effort`: the agent's, when it sets them.
 - `--append-system-prompt`: the agent body, the Markdown after its frontmatter, then a blank line and the factory's
-  [writing guide](writing.md) when `factory.toml` sets `writing`.
+  [writing guide](writing.md) when `factory.toml` sets `writing`. With `instructions.md`, the run
+  gets `--append-system-prompt-file` instead, a file with the instructions before that text (see
+  [skills.md](skills.md)).
+- `--plugin-dir`: the factory's skills as a plugin, when it has `skills/` (see [skills.md](skills.md)).
 - `--permission-mode`: the agent's `permissions.defaultMode`, or `manual` when it sets none, whatever
   the user's own settings choose. In `manual` mode, every permission request reaches Priory's deny
   hook (see Health). In `auto` mode, Claude's auto mode decides the run's permission prompts.
@@ -173,7 +176,9 @@ repository's default branch (`git diff origin/HEAD...<branch>`). On each tick, i
 files, the task gets an ordinary hold with the reason `overlaps task N on <files>`. The hold waits
 for the earlier task's open pull request to merge, or, when it has none yet, for that task to end.
 A pull request closed without a merge releases it. `priory release` lets the task go as for any
-hold, and the daemon does not hold it for that earlier task again.
+hold, and the daemon does not hold it for that earlier task again. A stacked batch entry never waits on
+a task it is stacked on, since its branch starts with that task's files (see
+[batches.md](batches.md)).
 
 Set `[queue] overlap = false` in `factory.toml` to turn this off (see
 [factory.md](../reference/factory.md#queue)).

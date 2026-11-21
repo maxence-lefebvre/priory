@@ -7,8 +7,8 @@ use std::path::Path;
 /// Records the files each task's branch changed at the end of its latest run, then holds each
 /// queued or ready task that changes files an earlier, unfinished task changes, until that task's
 /// pull request merges or, with none, the task ends. A person's release of the hold stays final for
-/// that earlier task. Tasks in other repositories never overlap, and a task never waits on one that
-/// waits on it.
+/// that earlier task. Tasks in other repositories never overlap, a task never waits on one that
+/// waits on it, and a stacked batch entry never waits on a task it is stacked on.
 pub(crate) fn tick(db: &mut Connection, factory: &Factory, home: &Path) -> rusqlite::Result<()> {
     if !factory.overlap() {
         return Ok(());
@@ -32,6 +32,11 @@ pub(crate) fn tick(db: &mut Connection, factory: &Factory, home: &Path) -> rusql
                    (SELECT worktree FROM tasks WHERE id = ?1), '/' || ?1, '')
                  AND NOT EXISTS (SELECT 1 FROM holds WHERE holds.task = tasks.id
                    AND holds.target = ?1 AND holds.released IS NULL)
+                 -- A stacked entry's branch starts with the files of every task it is stacked on.
+                 AND id NOT IN (WITH RECURSIVE below (id) AS (
+                     SELECT base_task FROM tasks WHERE id = ?1
+                     UNION SELECT tasks.base_task FROM tasks JOIN below ON tasks.id = below.id
+                   ) SELECT id FROM below WHERE id IS NOT NULL)
                  ORDER BY id",
             )?
             .query_map([task], |row| Ok((row.get(0)?, row.get::<_, String>(1)?)))?
