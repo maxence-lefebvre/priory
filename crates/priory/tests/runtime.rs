@@ -10205,8 +10205,10 @@ fn withholding_handoffs(setup: &Setup) -> (PathBuf, std::sync::mpsc::Receiver<()
     use std::os::unix::net::{UnixListener, UnixStream};
     let home = setup.dir.join("proxy");
     fs::create_dir_all(&home).unwrap();
-    let listener = UnixListener::bind(home.join("priory.sock")).unwrap();
-    let real = setup.dir.join("home/priory.sock");
+    let proxy = priory_runtime::runtime::socket_in(Some(setup.tmux.path()), &home);
+    fs::create_dir_all(proxy.parent().unwrap()).unwrap();
+    let listener = UnixListener::bind(proxy).unwrap();
+    let real = setup.socket();
     let (sender, handoffs) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
         for client in listener.incoming().flatten() {
