@@ -13,6 +13,8 @@ use std::time::Duration;
 const HIDDEN: &str = "[redacted]";
 /// How long tmux may take to show a screen.
 pub const DEADLINE: Duration = Duration::from_secs(2);
+/// The most rows of scrollback a screen shows above its visible rows.
+pub const HISTORY: usize = 2000;
 /// The most a screen's rows may weigh as JSON; past it the top rows are left out.
 const MOST: usize = 256 * 1024;
 
@@ -26,6 +28,14 @@ static SHAPES: LazyLock<Regex> = LazyLock::new(|| {
         r"|xox[abpr]-[A-Za-z0-9-]{10,}|xapp-[A-Za-z0-9-]{10,}|lin_api_[A-Za-z0-9]{20,})",
     ))
     .expect("the secret shapes compile")
+});
+
+/// An SGR colour code, which `capture-pane -e` writes into a row's text and the page draws.
+static SGR: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\x1b\[[0-9;:]*m").expect("the SGR code compiles"));
+/// An OSC 8 link's start or end, the other escape `capture-pane -e` writes; the page shows no links.
+static LINK: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"\x1b\]8;[^\x07\x1b]*(?:\x07|\x1b\\)").expect("the link code compiles")
 });
 
 /// The values of the environment variables `names`, and the parts of each that are secrets on their
@@ -57,26 +67,48 @@ pub fn secrets(names: &[String]) -> Vec<String> {
 }
 
 /// `text` with each of the `exact` values and each secret shape replaced by `[redacted]`, and how
-/// many it replaced. A hidden span keeps its line breaks, so rows stay rows. A value that
-/// `[redacted]` holds cannot be hidden and is skipped. None when a secret still shows after 8 passes.
+/// many it replaced. A hidden span keeps its line breaks, so rows stay rows. Secrets are found in
+/// the text without its SGR colour codes, so a code cannot split one; a code inside a hidden span
+/// moves after it. A value that `[redacted]` holds cannot be hidden and is skipped. None when a
+/// secret still shows after 8 passes.
 pub fn redact(text: &str, exact: &[String]) -> Option<(String, usize)> {
     let exact: Vec<_> = exact
         .iter()
         .filter(|secret| !HIDDEN.contains(secret.as_str()))
         .collect();
-    let (mut text, mut count) = (text.to_owned(), 0);
-    // A replacement can join with its neighbours into a secret again, so repeat until none shows.
-    for _ in 0..8 {
-        let (hidden, found) = redact_once(&text, &exact);
-        if found == 0 {
-            return Some((text, count));
-        }
-        (text, count) = (hidden, count + found);
+    let (mut plain, mut codes, mut at) = (String::new(), Vec::new(), 0);
+    for code in SGR.find_iter(text) {
+        plain.push_str(&text[at..code.start()]);
+        codes.push((plain.len(), code.as_str()));
+        at = code.end();
     }
-    (redact_once(&text, &exact).1 == 0).then_some((text, count))
+    plain.push_str(&text[at..]);
+    let mut count = 0;
+    // A replacement can join with its neighbours into a secret again, so repeat until none shows.
+    for pass in 0..=8 {
+        let spans = secret_spans(&plain, &exact);
+        if spans.is_empty() {
+            let mut out = String::with_capacity(text.len());
+            let mut at = 0;
+            for (offset, code) in &codes {
+                out.push_str(&plain[at..*offset]);
+                out.push_str(code);
+                at = *offset;
+            }
+            out.push_str(&plain[at..]);
+            return Some((out, count));
+        }
+        if pass == 8 {
+            return None;
+        }
+        plain = hide(&plain, &spans, &mut codes);
+        count += spans.len();
+    }
+    unreachable!("the last pass returns")
 }
 
-fn redact_once(text: &str, exact: &[&String]) -> (String, usize) {
+/// Where `text` shows a secret shape or one of the `exact` values, overlaps merged, in order.
+fn secret_spans(text: &str, exact: &[&String]) -> Vec<Range<usize>> {
     let mut spans: Vec<Range<usize>> = SHAPES.find_iter(text).map(|found| found.range()).collect();
     for secret in exact {
         let mut at = 0;
@@ -94,25 +126,47 @@ fn redact_once(text: &str, exact: &[&String]) -> (String, usize) {
             _ => merged.push(span),
         }
     }
+    merged
+}
+
+/// `text` with each of `spans` replaced by `[redacted]` and its line breaks, and each code's offset
+/// moved to match: a code inside a span lands right after its replacement.
+fn hide(text: &str, spans: &[Range<usize>], codes: &mut [(usize, &str)]) -> String {
     let mut out = String::with_capacity(text.len());
-    let mut at = 0;
-    for span in &merged {
+    let (mut at, mut next) = (0, codes.iter_mut().peekable());
+    for span in spans {
+        while let Some(code) = next.next_if(|code| code.0 <= span.start) {
+            code.0 = out.len() + code.0 - at;
+        }
         out.push_str(&text[at..span.start]);
         out.push_str(HIDDEN);
         out.extend(text[span.clone()].matches('\n'));
+        while let Some(code) = next.next_if(|code| code.0 < span.end) {
+            code.0 = out.len();
+        }
         at = span.end;
     }
+    for code in next {
+        code.0 = out.len() + code.0 - at;
+    }
     out.push_str(&text[at..]);
-    (out, merged.len())
+    out
 }
 
-/// The screen of the live run `target` names, with `exact` and the secret shapes hidden, and a hash
-/// of it; or why there is none. `cut` counts the top rows left out to keep it under 256 KiB.
-pub fn read(db: &Connection, target: &state::Attach, exact: &[String]) -> Result<Value, String> {
+/// The screen of the live run `target` names after up to `history` rows of its scrollback, with
+/// `exact` and the secret shapes hidden, its colour codes kept and its links dropped, and a hash of
+/// it; or why there is none. `cut` counts the top rows left out to keep it under 256 KiB.
+pub fn read(
+    db: &Connection,
+    target: &state::Attach,
+    exact: &[String],
+    history: usize,
+) -> Result<Value, String> {
     let run = state::live_run(db, target)?;
-    let snapshot =
-        runtime::snapshot(&run.tmux, &run.session, DEADLINE).ok_or_else(|| state::no_pane(&run))?;
-    let (shown, redacted) = redact(&snapshot.lines.join("\n"), exact)
+    let snapshot = runtime::snapshot(&run.tmux, &run.session, history, DEADLINE)
+        .ok_or_else(|| state::no_pane(&run))?;
+    let rows = LINK.replace_all(&snapshot.lines.join("\n"), "").into_owned();
+    let (shown, redacted) = redact(&rows, exact)
         .ok_or("a secret on this screen stays visible after redaction, so it is not shown")?;
     let mut lines: Vec<&str> = shown.split('\n').collect();
     let mut weight: usize = lines
@@ -130,6 +184,7 @@ pub fn read(db: &Connection, target: &state::Attach, exact: &[String]) -> Result
         "width": snapshot.width,
         "height": snapshot.height,
         "cursor": snapshot.cursor.map(|(x, y)| json!({ "x": x, "y": y })),
+        "earlier": snapshot.earlier.saturating_sub(cut),
         "lines": lines,
         "cut": cut,
         "redacted": redacted,
@@ -139,7 +194,14 @@ pub fn read(db: &Connection, target: &state::Attach, exact: &[String]) -> Result
         .map(|byte| format!("{byte:02x}"))
         .collect();
     screen["hash"] = json!(hash);
+    // Left out of the hash: a clear pushes the screen into scrollback, which a redraw does not change.
+    screen["scrollback"] = json!(snapshot.scrollback);
     Ok(screen)
+}
+
+/// A row without its colour codes.
+pub fn plain(row: &str) -> std::borrow::Cow<'_, str> {
+    SGR.replace_all(row, "")
 }
 
 /// `screen`, or only its hash and `same` when the client already has it.
@@ -169,6 +231,19 @@ mod tests {
         );
     }
 
+    #[test]
+    fn a_secret_split_by_colour_codes_is_hidden_and_the_codes_after_it_stay() {
+        let token = "abcdefghij".to_owned();
+        assert_eq!(
+            redact("T=\x1b[1mabc\x1b[31mdefghij\x1b[0m ok", &[token]),
+            Some(("T=\x1b[1m[redacted]\x1b[31m\x1b[0m ok".to_owned(), 1))
+        );
+        assert_eq!(
+            redact("\x1b[32mghp_\x1b[1mabcdefghijklmnopqrstuvwxyz\x1b[0m", &[]),
+            Some(("\x1b[32m[redacted]\x1b[1m\x1b[0m".to_owned(), 1))
+        );
+    }
+
     proptest! {
         #[test]
         fn redact_never_panics_and_leaves_no_secret_on_screen(
@@ -189,6 +264,32 @@ mod tests {
                 prop_assert!(!shown.contains(secret.as_str()), "{secret:?} in {shown:?}");
             }
             prop_assert_eq!(shown.matches('\n').count(), text.matches('\n').count());
+        }
+
+        #[test]
+        fn colour_codes_anywhere_never_change_what_is_hidden(
+            secret in "[a-z]{8,12}",
+            pieces in prop::collection::vec(".{0,6}|ghp_[a-z]{20}|\\[redacted\\]|\n", 0..10),
+            codes in prop::collection::vec((0usize..200, "\x1b\\[[0-9;]{0,6}m"), 0..8),
+        ) {
+            let mut plain: String = pieces.concat();
+            let middle = plain.char_indices().map(|(at, _)| at).find(|at| *at >= plain.len() / 2).unwrap_or(plain.len());
+            plain.insert_str(middle, &secret);
+            let mut text = plain.clone();
+            for (at, code) in &codes {
+                let at = text.char_indices().map(|(at, _)| at).chain([text.len()]).nth(at % (text.chars().count() + 1)).unwrap_or(0);
+                // Never inside another code, which would make it something else.
+                if super::SGR.find_iter(&text).any(|found| found.start() < at && at < found.end()) {
+                    continue;
+                }
+                text.insert_str(at, code);
+            }
+            let plain = super::SGR.replace_all(&text, "").into_owned();
+            let Some((bare, count)) = redact(&plain, std::slice::from_ref(&secret)) else { return Ok(()) };
+            let (shown, coloured) = redact(&text, std::slice::from_ref(&secret)).expect("the plain text redacts");
+            prop_assert_eq!(super::SGR.replace_all(&shown, "").into_owned(), bare);
+            prop_assert_eq!(coloured, count);
+            prop_assert_eq!(super::SGR.find_iter(&shown).count(), super::SGR.find_iter(&text).count());
         }
     }
 }

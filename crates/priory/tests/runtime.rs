@@ -19936,6 +19936,71 @@ fn a_runs_screen_returns_its_rows_blank_ones_kept_its_size_and_a_hash_that_follo
 }
 
 #[test]
+fn a_runs_screen_keeps_its_colour_codes_drops_links_and_hides_a_secret_a_code_splits() {
+    let setup = Setup::running("screen-colours");
+    let (mut server, address) = serving(&setup, WATCH, &[("TEST_TOKEN", SERVE_TOKEN)]);
+    setup.shows(
+        "=priory-1:",
+        "\x1b[31mred\x1b[0m T=s3cret\x1b[1m-token\x1b[0m end\r\n\x1b]8;;http://x.example\x1b\\link\x1b]8;;\x1b\\ after",
+    );
+
+    let screen = screen_once(&address, |screen| screen_row(screen, 1).ends_with("after"));
+
+    assert_eq!(
+        screen_row(&screen, 0),
+        "\x1b[31mred\x1b[39m T=[redacted]\x1b[1m\x1b[0m end"
+    );
+    assert_eq!(screen_row(&screen, 1), "link after");
+    assert_eq!(screen["redacted"], 1);
+    server.kill().unwrap();
+    server.wait().unwrap();
+}
+
+#[test]
+fn a_runs_screen_takes_earlier_rows_up_to_its_cap_and_hashes_them() {
+    let setup = Setup::running("screen-history");
+    let (mut server, address) = serving(&setup, WATCH, &[("TEST_TOKEN", SERVE_TOKEN)]);
+    // A pane takes the history limit it was made with, so a new one holds more than the cap.
+    setup.tmux_out(&["set-option", "-g", "history-limit", "3000"]);
+    let tagged = setup.tmux_out(&["list-panes", "-s", "-t", "=priory-1:", "-F", "#{pane_id} #{@priory}"]);
+    let (old, tag) = tagged.trim().split_once(' ').unwrap();
+    let new = setup.tmux_out(&[
+        "split-window", "-P", "-F", "#{pane_id}", "-t", old, "seq 1 2600; sleep 600",
+    ]);
+    setup.tmux_out(&["set-option", "-p", "-t", new.trim(), "@priory", tag]);
+    setup.tmux_out(&["kill-pane", "-t", old]);
+    let screen = screen_once(&address, |screen| screen.to_string().contains("\"2600\""));
+    let height = screen["height"].as_u64().unwrap() as usize;
+    assert_eq!(screen["earlier"], 0);
+    assert!(screen["scrollback"].as_u64().unwrap() > 2000, "{}", screen["scrollback"]);
+
+    let (status, body) = http(&address, "GET", "/api/runs/1/screen?history=5", "", "");
+    let five: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!((status, five["earlier"].clone()), (200, json!(5)));
+    assert_eq!(five["lines"].as_array().unwrap()[5..], screen["lines"].as_array().unwrap()[..]);
+    let first: u32 = screen_row(&screen, 0).parse().unwrap();
+    assert_eq!(screen_row(&five, 0), (first - 5).to_string());
+    assert_ne!(five["hash"], screen["hash"]);
+    let (_, same) = http(
+        &address,
+        "GET",
+        &format!("/api/runs/1/screen?history=5&have={}", five["hash"].as_str().unwrap()),
+        "",
+        "",
+    );
+    assert_eq!(serde_json::from_str::<serde_json::Value>(&same).unwrap()["same"], true);
+
+    let (_, body) = http(&address, "GET", "/api/runs/1/screen?history=99999", "", "");
+    let capped: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(capped["earlier"], 2000);
+    assert_eq!(capped["lines"].as_array().unwrap().len(), 2000 + height);
+    let (status, _) = http(&address, "GET", "/api/runs/1/screen?history=many", "", "");
+    assert_eq!(status, 400);
+    server.kill().unwrap();
+    server.wait().unwrap();
+}
+
+#[test]
 fn a_runs_screen_reads_its_tagged_pane_not_the_active_one_and_refuses_a_run_it_cannot_show() {
     let setup = Setup::running("screen-panes");
     let (mut server, address) = serving(&setup, WATCH, &[("TEST_TOKEN", SERVE_TOKEN)]);
