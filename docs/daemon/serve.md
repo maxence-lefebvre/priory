@@ -54,6 +54,11 @@ for writing. An add goes to the daemon on its socket too, but the daemon publish
 transaction: a failure between the two messages leaves only the source event. [serve.md](../reference/serve.md#writes) lists the
 bodies and status codes.
 
+`POST /api/tasks/{id}/move` sets a task's band and its place in the band, as `priory move
+--expected` does. The verb writes the state file itself, but the endpoint sends the daemon a line,
+which applies the same move in one transaction after it checks the revision. The web view's Queue
+panel sends it from each waiting row's Move menu.
+
 `POST /api/seen` records a visit to the desk, as `priory seen --at` does. The verb writes the state
 file itself, but the endpoint sends the daemon a line too, so the server thread keeps the state
 read-only. Without a daemon, the visit gets `503` and the desk shows the same events next time.

@@ -600,3 +600,20 @@ textarea { font: 400 16px/22px var(--font-ui); color: var(--text); background: v
 .ilist li:first-child { border-top: 0; }
 .ilist li .ico { color: var(--text-3); margin-top: 2px; }
 .ilist .mono { color: var(--text); }
+/* Queue: each waiting row's Move menu (DESIGN.md, Queue panel). */
+.row.qrow { grid-template-columns: var(--tile) minmax(0, 1fr) auto; }
+.row.qrow .move { grid-column: 3; grid-row: 1 / 4; align-self: center; }
+.row.qrow .note { grid-column: 2 / 4; }
+.row .l3.wrap { white-space: normal; }
+.move { position: relative; }
+.move > summary { list-style: none; height: var(--control-fine); padding: 0 10px; gap: 4px; font-size: 13.5px; cursor: pointer; }
+.move > summary::-webkit-details-marker { display: none; }
+.move .pick { position: absolute; z-index: 5; right: 0; top: calc(100% + 4px); min-width: 180px; padding: 4px; border-radius: var(--radius-md); background: var(--surface); box-shadow: inset 0 0 0 1px var(--control-line), var(--shadow-sheet); display: grid; }
+.move .pick button { min-height: var(--chip); padding: 0 10px; display: flex; align-items: center; border-radius: var(--radius-sm); font: 400 14px/1 var(--font-ui); color: var(--text); text-align: left; }
+.move .pick button:hover { background: var(--action-soft); }
+.move .pick button[aria-disabled="true"] { color: var(--text-3); }
+.tbl td.act { overflow: visible; text-align: right; }
+.tbl.q th:nth-child(1) { width: 40px; } .tbl.q th:nth-child(2) { width: 96px; } .tbl.q th:nth-child(4) { width: auto; } .tbl.q th:nth-child(5) { width: 110px; }
+@media (pointer: coarse) { .move > summary { height: var(--control); } .move .pick button { min-height: var(--control); } }
+/* An open Move menu on the last rows needs room below them to scroll into view. */
+.scroll:has(.move[open]) { padding-bottom: 280px; }

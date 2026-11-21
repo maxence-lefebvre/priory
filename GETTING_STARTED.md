@@ -319,6 +319,10 @@ the batch. The Runs panel lists the runs of the last 7 days with their agent, mo
 duration and tokens, filtered by outcome, agent or step. `priory tasks` and `priory runs` print the
 same tasks and runs.
 
+The Queue panel, under More on a phone, shows Up next, then each band's waiting tasks in the order
+they start, with why each one waits. Its Move menu moves a task to the top of its band, up or down
+one, or to another band, as `priory move` does. `priory queue` prints the same queue.
+
 A workflow can write a report for you, such as a morning dossier: `priory report show` prints the
 last one. The web view's Reports panel shows it, and takes its picks and row comments as
 `priory report pick` and `priory report comment` do. See [docs/daemon/reports.md](docs/daemon/reports.md).

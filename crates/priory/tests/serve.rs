@@ -3822,7 +3822,10 @@ fn move_through_its_endpoint_does_what_priory_move_does_at_the_revision_the_page
     assert_eq!(topped.0, 200, "{}", topped.1);
     assert_eq!(stale.0, 409, "{}", stale.1);
     assert_eq!(banded.0, 200, "{}", banded.1);
-    assert_eq!(order(), [(json!(1), json!("now")), (json!(2), json!("later"))]);
+    assert_eq!(
+        order(),
+        [(json!(1), json!("now")), (json!(2), json!("later"))]
+    );
     let revision = queue()["revision"].as_i64().unwrap();
     let both = post(
         &address,
