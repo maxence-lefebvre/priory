@@ -266,6 +266,80 @@ first review has no outcome yet.
 `--json` prints one object, which `GET /api/grades` also answers (see
 [the serve reference](../reference/serve.md#grades)).
 
+## Risk
+
+`priory report risk [DIR] [--workflow <name>] [--since <window>] [--json]` estimates R10.6: of the
+tasks that ran an irreversible step, what share got an adverse outcome label within 30 days. It reads
+the factory in `DIR` for each irreversible step and the human steps that approve it, and the
+`factory.step.ended` and `factory.step.labeled` records and pull requests of the state. Nothing
+reads the estimate to answer an ask, skip a step, or order, route or prompt work.
+[risk-estimate.md](../design/risk-estimate.md) explains the model and the choices behind it.
+
+```text
+implement / open-pr: reached 58, caught 4 at its gate, pending 5, unjudged 0, undated 0, open 2, late 1
+horizon 30 days, window 180 days, 3 factory revisions, 2 models
+
+row          judged wrong  5%     median  95%     landed wrong  5%    median  95%
+open-pr      17 of 53      22.8%  32.5%   43.4%   3 of 53       2.6%  6.8%    13.7%
+plan green   13 of 41      21.4%  32.3%   44.6%   2 of 41       2.0%  6.3%    14.2%
+plan yellow  4 of 12, needs 20                    1 of 12, needs 20
+
+adverse trials
+task  outcome       label     happened    evidence
+31    landed wrong  reverted  2026-10-02  https://github.com/example/app/pull/88
+```
+
+Each irreversible step of each workflow is a target. A task reached it at its first
+`factory.step.ended` record of the step. The target's own row holds every task that reached it. A
+conditioned row, such as `plan green`, holds the tasks whose last record of an earlier step before
+the reach had that outcome.
+
+A task is a trial of its rows when its reach lies in the window, is at least 30 days old, and the
+task owned a pull request by the end of those 30 days. Its outcome is the labels whose `happened`
+lies in the 30 days after the reach:
+
+| Outcome | Labels |
+| ------- | ------ |
+| `landed wrong` | `red-after-merge` or `reverted` |
+| `judged wrong` | Those, or `changes-requested`, `closed-unmerged` or `approval-rejected` |
+
+The header counts the tasks that reached the target in the window, then:
+
+| Count | Meaning |
+| ----- | ------- |
+| `caught` | Tasks a human step that approves the target stopped in the window: its answer starts with `reject` or leads to `stop`. They are no trial |
+| `pending` | Reach under 30 days old |
+| `unjudged` | No pull request by the end of the 30 days, so no label can judge the task |
+| `undated` | A label record with no `happened`, written before the field existed |
+| `open` | Trials with a pull request still open on day 30 |
+| `late` | Trials with an adverse label only after the 30 days. They stay out of the estimate |
+
+Each row and outcome is a Beta(1, 1) prior updated by `k` adverse trials of `n`. The row prints
+`k of n`, then the posterior's 5th percentile, median and 95th percentile. Read the 95th as the
+posterior upper bound, under the assumptions below. A row under 20 trials prints `k of n, needs 20`
+and no percentage. `--json` carries the interval at any `n`, with `"shown": false` under 20. The
+30 days and the 20 trials are constants.
+
+`--since` takes what `report --since` takes, and defaults to `180 days`. `--workflow` keeps one
+workflow's targets.
+
+The estimate rests on these assumptions:
+
+1. Labels measure recorded judgements, not wrong work. A bug nobody reverted has no label, and a
+   flaky check on a merge commit labels right work. The adverse trials table lists each one with its
+   evidence.
+2. Trials in a row share one rate. A prompt or model change breaks this, so the report prints the
+   factory revisions and models a target spans.
+3. Trials are independent. Tasks cut from one batch can fail together, which makes the interval too
+   narrow.
+4. 30 days hold what matters. `open` and `late` show what the horizon missed.
+5. A task is one trial per row, however many steps it revisited or pull requests its stack holds.
+6. The trials passed a person's gates. The rates say nothing of work with no gate.
+
+Known limits:
+
+- The `fixes` candidates, `marked-wrong`, `--by lane` and `GET /api/risk` come in later slices.
+
 ## Attention
 
 `priory report attention [--since <window>] [--by workflow|lane|kind] [--json]` measures the PRD's
