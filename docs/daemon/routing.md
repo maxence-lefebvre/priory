@@ -284,3 +284,18 @@ Limits:
   repository stays in the inbox as `outsider`, for a person to read with `priory inbox`. No factory
   setting lets other authors through.
 
+## Feedback on a failed or dropped task
+
+Feedback never reopens a `failed` or `dropped` task: a person stopped it, or its workflow did. When
+a comment or reply lands on the key of the newest task on that key, and that task failed or was
+dropped before the comment was written, the inbox records the comment as `ignored` and posts one
+`priory.report` that names the revive:
+
+```text
+priory: linear:ENG-7 has a new comment; its task 12 dropped: priory revive 12
+```
+
+A Linear issue that never left its view publishes no new `issue.entered`, so this report is how
+"I added the missing criterion" reaches a person. The intake keeps reading that task's key for it
+(see [watches.md](../intake/watches.md)). Priory's own comment posts no report.
+

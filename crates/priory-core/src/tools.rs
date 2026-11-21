@@ -3397,6 +3397,32 @@ pub(crate) fn reopenable(
     .optional()
 }
 
+/// The report a comment in `message` posts when it lands on the own key of the newest task on that
+/// key, which failed or was dropped before the comment was written, with no active task on the key:
+/// nothing reopens such a task, so a person decides whether to revive it.
+pub(crate) fn unheard(
+    tx: &Transaction,
+    message: &herdr_bus::Message,
+) -> rusqlite::Result<Option<String>> {
+    let data = &message.data;
+    let Some(resource) = feedback_on(&message.kind, data).filter(|_| data["own"] != true) else {
+        return Ok(None);
+    };
+    tx.query_row(
+        "SELECT id, state FROM tasks WHERE key = ?1 AND state IN ('failed', 'dropped')
+         AND julianday(?2) >= julianday(changed)
+         AND id = (SELECT max(id) FROM tasks AS newest WHERE newest.key = ?1)",
+        params![resource, message.time.to_string()],
+        |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)),
+    )
+    .optional()
+    .map(|task| {
+        task.map(|(task, state)| {
+            format!("{resource} has a new comment; its task {task} {state}: priory revive {task}")
+        })
+    })
+}
+
 /// Moves the done `task` back, as its next generation, to its workflow's `reopen` step, else the
 /// step that opened its pull request, else its last step, with the feedback of the inbox entry
 /// `seq` as its prompt.

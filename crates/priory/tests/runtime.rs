@@ -10088,6 +10088,33 @@ fn a_comment_kept_during_the_turn_refuses_the_result_until_the_agent_read_it() {
 }
 
 #[test]
+fn a_comment_on_a_dropped_tasks_own_issue_posts_a_report_that_names_its_revive() {
+    let mut setup = Setup::new("dropped-comment");
+    setup.calls(&[result("failed")]);
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == "dropped")
+    });
+    // The comment comes after the task was dropped, to the second.
+    std::thread::sleep(Duration::from_millis(1100));
+
+    setup.publish(&issue_commented(802));
+
+    let inbox = setup.until("inbox", |rows| rows.len() == 4);
+    assert_eq!(inbox[2][4], "ignored", "{inbox:?}");
+    let desk = setup.priory(&["desk"]);
+    let desk = String::from_utf8_lossy(&desk.stdout);
+    assert!(
+        desk.contains(
+            "priory: github:owner/repo#42 has a new comment; its task 1 dropped: priory revive 1"
+        ),
+        "{desk}"
+    );
+    assert_eq!(setup.rows("tasks").len(), 1);
+}
+
+#[test]
 fn a_comment_on_a_done_tasks_issue_reopens_nothing_once_it_unsubscribed_or_the_issue_closed() {
     let closed = Message::new(
         "github.issues.closed",
@@ -10557,6 +10584,26 @@ fn a_thread_the_intake_cannot_read_fails_the_poll_and_reaches_the_desk() {
         ),
         "{desk:?}"
     );
+}
+
+#[test]
+fn the_intake_still_polls_a_dropped_slack_tasks_own_thread() {
+    let mut setup = Setup::new("slack-key-dropped");
+    setup.calls(&[result("failed")]);
+    let key = format!("slack:C0123:{THREAD}");
+    let mut request = requested(42);
+    request.data["key"] = json!(key);
+    setup.publish(&request.subject(&key));
+    setup.start();
+    setup.until("tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == "dropped")
+    });
+    setup.answer_slack(&[]);
+
+    setup.intake();
+
+    let args = fs::read_to_string(setup.dir.join("curl-args")).unwrap_or_default();
+    assert!(args.contains("conversations.replies"), "{args}");
 }
 
 #[test]
