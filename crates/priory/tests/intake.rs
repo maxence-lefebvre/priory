@@ -2942,6 +2942,69 @@ fn a_new_review_request_publishes_the_event_and_creates_its_task() {
     );
 }
 
+/// A review request search answer of `pulls`, out of `total`.
+fn search_page(pulls: std::ops::Range<u64>, total: u64) -> serde_json::Value {
+    let items: Vec<serde_json::Value> = pulls
+        .map(|number| {
+            json!({
+                "number": number,
+                "title": "Tidy the parser",
+                "html_url": format!("https://github.com/acme/app/pull/{number}"),
+                "repository_url": "https://api.github.com/repos/acme/app",
+                "user": { "login": "alice" },
+            })
+        })
+        .collect();
+    json!({ "total_count": total, "incomplete_results": false, "items": items })
+}
+
+#[test]
+fn a_review_request_poll_reads_every_page_of_the_search() {
+    let setup = Setup::reviews("review-pages", &[]);
+    setup.answer(&[
+        (
+            &format!("{REVIEW_SEARCH}&page=2"),
+            search_page(101..151, 150),
+        ),
+        (REVIEW_SEARCH, search_page(1..101, 150)),
+    ]);
+
+    succeeded(&setup.intake());
+
+    let requested = setup
+        .published()
+        .iter()
+        .filter(|stored| stored.message.kind == "github.pull_request.review_requested")
+        .count();
+    assert_eq!(requested, 150);
+}
+
+#[test]
+fn a_review_request_to_a_team_of_the_reviewer_creates_its_task() {
+    let setup = Setup::reviews("review-team", &[]);
+    write(
+        &setup.dir.join("factory/triggers/review.toml"),
+        &format!("{REVIEW_TRIGGER}teams = [\"acme/core\"]\n"),
+    );
+    let team = "search/issues?q=is%3Apr+is%3Aopen+team-review-requested%3Aacme%2Fcore&per_page=100";
+    setup.answer(&[
+        (team, search_page(7..8, 1)),
+        (REVIEW_SEARCH, search_page(0..0, 0)),
+    ]);
+
+    succeeded(&setup.intake());
+
+    let published = setup.published();
+    assert_eq!(
+        kinds(&published),
+        [
+            "github.pull_request.review_requested",
+            "factory.task.requested"
+        ]
+    );
+    assert_eq!(published[1].message.data["key"], REVIEW_KEY);
+}
+
 #[test]
 fn a_review_request_whose_repository_is_not_owner_slash_name_is_dropped() {
     let setup = Setup::reviews("review-bad-repo", &[]);

@@ -116,13 +116,18 @@ URL Slack returns. Nothing listens on the machine. `priory intake --once` opens 
 | ---- | ---------------- |
 | Any envelope | Acknowledges it with its `envelope_id` before anything else, since Slack shows the person an error after 3 seconds. Then hands the payload to a worker. Up to 16 payloads wait; up to 16 more get a "busy" reply, and the rest are dropped |
 | Shortcut (`callback_id` `priory_queue`) | Opens the form with `views.open`. The workflow starts at `[request] workflow`; an empty repository means `triggers/cli.toml`'s; the note starts as the message's text |
-| Form submitted | Queues the task through the same request code as `priory add`, so `check_repo`, workflow and band rules apply. The task's text is the note and a link to the message |
+| Form submitted | Queues the task through the same request code as `priory add`, so `check_repo`, workflow and band rules apply. The task's text is the note and a link to the message. The `priory.task.requested.cli` event's `person` is the Slack user who sent the form, as `<username> (<user id>)` |
 | Reply | Posts an ephemeral message to the shortcut's `response_url`: the task key, "already queued", or why nothing was queued |
 | `disconnect` | Opens a new connection at once. Slack sends one every few hours |
 | A dropped or silent socket, or a connection, handshake or write that takes over 30 seconds | Reconnects after 1 second, doubling to a minute while it keeps failing. A socket silent for 30 seconds gets a ping; one silent for 60 seconds is dropped |
+| `ratelimited` from `apps.connections.open` | Waits the seconds of Slack's `Retry-After` header, up to an hour, then reconnects. The log line says `retrying in <n>s` |
 
-Only the first submission for a thread queues a task. A later one, even with another note, replies
-that the thread is already queued.
+Only the first submission for a thread queues a task while that task is active. A later one, even
+with another note, replies that the thread is already queued. Once the thread's task is done,
+failed or dropped, the next submission queues a new task with the same key, as a task request for a
+key with no active task does (see [routing.md](../daemon/routing.md#outcomes)). The intake counts
+the thread's ended tasks in `PRIORY_DB` to tell the two apart. Without `PRIORY_DB`, a thread is
+queued once.
 
 ### Who can use it
 
@@ -162,7 +167,4 @@ Both tokens go to `curl` on its standard input, and its errors show `<SLACK_APP_
 
 ### Limits
 
-- A thread that was queued once cannot be queued again through the shortcut, even after its task
-  is done.
 - A `response_url` lasts 30 minutes, so a form submitted later queues the task with no reply.
-- A `ratelimited` answer from `apps.connections.open` waits the backoff, not its `Retry-After`.

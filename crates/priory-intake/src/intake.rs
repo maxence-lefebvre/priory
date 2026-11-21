@@ -122,17 +122,22 @@ pub struct Merge {
 /// succeeded, else its errors joined by `; `.
 pub type Outcomes<'a> = [(&'a str, Option<String>)];
 
+/// How many tasks with a key have ended: done, failed or dropped.
+pub type Ended = fn(&str) -> Result<u64, String>;
+
 /// Polls the sources until stopped, or once. `watched` reads the open waits on each poll, so that
 /// the intake polls the Slack threads, Linear issues and pull request repositories they name.
 /// `merged` reads the task pull requests merged since the time it is given, to read their merge
 /// commits' check runs.
 /// `health` records each poll's outcomes at the poll's time.
+/// `ended` lets the Slack shortcut queue a thread again once its task ended.
 pub fn run(
     factory: &Factory,
     once: bool,
     watched: fn() -> Result<Vec<Watch>, String>,
     merged: fn(&str) -> Result<Vec<Merge>, String>,
     health: fn(&Outcomes, Timestamp) -> Result<(), String>,
+    ended: Ended,
 ) -> Result<(), String> {
     priory_runtime::runtime::bound_commands(factory.command_timeout());
     let from = |source: &str| -> Vec<(&str, &Trigger)> {
@@ -181,7 +186,7 @@ pub fn run(
         .transpose()
         .map_err(|error| started("slack", error))?;
     if let Some(settings) = factory.slack_shortcut().filter(|_| !once) {
-        shortcut::start(&factory.dir, settings).map_err(|error| started("slack", error))?;
+        shortcut::start(&factory.dir, settings, ended).map_err(|error| started("slack", error))?;
     }
     // The loop reports a failing read of the waits; here it only costs those repos their cursors.
     let waiting = watched().unwrap_or_default();

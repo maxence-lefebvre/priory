@@ -4,11 +4,14 @@ use crate::log::{self, Log};
 use herdr_bus::{Message, Timestamp};
 use priory_factory::factory::Trigger;
 use serde_json::{Value, json};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 pub(super) const REQUESTED: &str = "github.pull_request.review_requested";
 pub(super) const REMOVED: &str = "github.pull_request.review_request_removed";
 const STREAM: &str = "github.review_requests:";
+/// A search page's size, and how many pages GitHub search returns at most.
+const PAGE: usize = 100;
+const PAGES: u64 = 10;
 
 /// The review requests of each reviewer the triggers name, diffed poll to poll as Linear views are:
 /// each stream's marker holds the pull requests that asked at the last poll, or none while the
@@ -80,7 +83,14 @@ impl<'a> Reviews<'a> {
             .flatten()
             .map(|member| (member_key(member), member.clone()))
             .collect();
-        let mut members = requested(reviewer)?;
+        let teams: BTreeSet<&str> = self
+            .triggers
+            .iter()
+            .filter(|(_, trigger)| trigger.reviewer.as_deref() == Some(reviewer))
+            .flat_map(|(_, trigger)| trigger.teams.iter().flatten())
+            .map(String::as_str)
+            .collect();
+        let mut members = requested(reviewer, &teams)?;
         for (key, member) in &mut members {
             let since = before
                 .get(key)
@@ -153,24 +163,52 @@ fn member_key(member: &Value) -> String {
     )
 }
 
-/// The open pull requests that ask `reviewer` directly for a review, in every repository.
-fn requested(reviewer: &str) -> Result<BTreeMap<String, Value>, String> {
-    // `priory check` keeps a reviewer to letters, digits and dashes, so only `:` needs escaping.
-    let path = format!(
-        "search/issues?q=is%3Apr+is%3Aopen+user-review-requested%3A{reviewer}&per_page=100"
-    );
-    let answer: Value = gh(&path, &[])?;
-    let items = answer["items"]
-        .as_array()
-        .ok_or_else(|| format!("gh api {path}: no items"))?;
-    // shortcut: one page of 100; page through `total_count` if someone ever has more requests.
-    if answer["incomplete_results"] != false || answer["total_count"] != json!(items.len()) {
-        return Err(format!(
-            "gh api {path}: GitHub returned {} of {} results, so the set is unknown",
-            items.len(),
-            answer["total_count"]
-        ));
+/// The open pull requests that ask `reviewer` for a review, directly or through one of `teams`, in
+/// every repository.
+fn requested(reviewer: &str, teams: &BTreeSet<&str>) -> Result<BTreeMap<String, Value>, String> {
+    // `priory check` keeps a reviewer and a team to letters, digits, `-`, `_` and one `/`.
+    let mut members = search(&format!("user-review-requested%3A{reviewer}"))?;
+    for team in teams {
+        let team = team.replace('/', "%2F");
+        members.extend(search(&format!("team-review-requested%3A{team}"))?);
     }
+    Ok(members)
+}
+
+/// The open pull requests a search `qualifier` matches, every page of 100 up to GitHub's 1000.
+fn search(qualifier: &str) -> Result<BTreeMap<String, Value>, String> {
+    let mut members = BTreeMap::new();
+    let mut read = 0;
+    for page in 1..=PAGES {
+        let path =
+            format!("search/issues?q=is%3Apr+is%3Aopen+{qualifier}&per_page={PAGE}&page={page}");
+        let answer: Value = gh(&path, &[])?;
+        let items = answer["items"]
+            .as_array()
+            .ok_or_else(|| format!("gh api {path}: no items"))?;
+        read += items.len();
+        members.extend(pulls(&path, items)?);
+        let complete = answer["incomplete_results"] == false;
+        let total = answer["total_count"].as_u64();
+        if complete && total == Some(read as u64) {
+            return Ok(members);
+        }
+        // A set read short, or changed between pages, is unknown, not smaller.
+        if !complete || items.len() < PAGE || total.is_none_or(|total| read as u64 > total) {
+            return Err(format!(
+                "gh api {path}: GitHub returned {read} of {} results, so the set is unknown",
+                answer["total_count"]
+            ));
+        }
+    }
+    Err(format!(
+        "GitHub search {qualifier}: more than {} results, past what search returns",
+        PAGES * PAGE as u64
+    ))
+}
+
+/// The members a search page's `items` name, each `owner/name#n`.
+fn pulls(path: &str, items: &[Value]) -> Result<Vec<(String, Value)>, String> {
     items
         .iter()
         // A repository that is not `owner/name` could lead a task's worktree out of Priory's home.

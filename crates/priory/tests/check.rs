@@ -1354,6 +1354,26 @@ fn a_review_request_trigger_names_a_reviewer_and_no_repository() {
 }
 
 #[test]
+fn a_review_request_trigger_names_its_teams_as_org_slash_team() {
+    let good = "source = \"github\"\non = \"pull_request.review_requested\"\nreviewer = \"octo-cat\"\nteams = [\"acme/core_team\", \"acme/web-1\"]\nworkflow = \"implement\"\n";
+    let wrong = "source = \"github\"\non = \"pull_request.review_requested\"\nreviewer = \"max\"\nteams = [\"core\", \"acme/a+b\"]\nworkflow = \"implement\"\n";
+    let stray = "source = \"github\"\nrepo = \"owner/name\"\non = \"issues.opened\"\nteams = [\"acme/core\"]\nworkflow = \"implement\"\n";
+    let mut files = with("triggers/agent-label.toml", good);
+    files.push(("triggers/wrong.toml", wrong));
+    files.push(("triggers/stray.toml", stray));
+
+    let outcome = check(&factory("review-teams", &files));
+
+    assert_eq!(outcome.code, 1);
+    assert_eq!(
+        outcome.stderr,
+        "triggers/stray.toml:4: only a GitHub `pull_request.review_requested` trigger names `teams`\n\
+         triggers/wrong.toml:4: team `core` is not `org/team`, a GitHub organization and team slug\n\
+         triggers/wrong.toml:4: team `acme/a+b` is not `org/team`, a GitHub organization and team slug\n"
+    );
+}
+
+#[test]
 fn a_trigger_or_workflow_naming_an_unknown_band_names_its_line() {
     let trigger = format!("{TRIGGER}band = \"someday\"\n");
     let workflow = WORKFLOW.replacen(

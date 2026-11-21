@@ -65,7 +65,10 @@ impl Slack {
             "#!/bin/sh\necho \"$*\" >> '{dir}/args'\ncfg=$(cat)\n\
              call='{dir}/calls/'$(date +%s%N)-$$\nprintf '%s' \"$cfg\" > \"$call.tmp\"; mv \"$call.tmp\" \"$call\"\n\
              case \"$cfg\" in\n\
-             *apps.connections.open*) if [ -e '{dir}/fail-open' ]; then rm '{dir}/fail-open'; \
+             *apps.connections.open*) if [ -e '{dir}/ratelimited' ]; then \
+             echo 'curl: (22) The requested URL returned error: 429' >&2; printf '{{\"ok\":false,\"error\":\"ratelimited\"}}'; \
+             case \"$*\" in *'%header{{retry-after}}'*) printf '\\n30' ;; esac; exit 22; fi; \
+             if [ -e '{dir}/fail-open' ]; then rm '{dir}/fail-open'; \
              echo \"> $(printf %s \"$cfg\" | grep Authorization)\" >&2; echo 'curl: (22) 500' >&2; exit 22; fi; echo '{{\"ok\":true,\"url\":\"ws://127.0.0.1:{port}/link\"}}' ;;\n\
              *views.open*) n=0; while [ -e '{dir}/hold' ] && [ $n -lt 200 ]; do sleep 0.05; n=$((n+1)); done; echo '{{\"ok\":true}}' ;;\n\
              *) echo '{{\"ok\":true}}' ;;\nesac\n",
@@ -256,7 +259,7 @@ fn submission(opened: &Value, user: &str, note: &str) -> Value {
     let view = &opened["view"];
     json!({
         "type": "view_submission",
-        "user": {"id": user},
+        "user": {"id": user, "username": "ana"},
         "view": {
             "callback_id": view["callback_id"],
             "private_metadata": view["private_metadata"],
@@ -332,6 +335,73 @@ fn an_allowed_submission_queues_the_thread_once_and_says_so() {
             format!("This thread is already queued as `{key}`, so nothing was added."),
         ]
     );
+}
+
+#[test]
+fn a_thread_whose_task_ended_is_queued_again_as_the_person_who_asked() {
+    let mut slack = Slack::new("queue-again");
+    slack.start();
+    let mut socket = slack.accept();
+    socket.send(envelope("e1", shortcut(ALLOWED))).unwrap();
+    read(&mut socket);
+    let opened = body(&slack.call("views.open"));
+    let key = format!("slack:{CHANNEL}:{THREAD}");
+    let mut submit = |envelope_id: &str, note: &str, replied: usize| {
+        socket
+            .send(envelope(envelope_id, submission(&opened, ALLOWED, note)))
+            .unwrap();
+        read(&mut socket);
+        wait_for("the reply", || replies(&slack).len() == replied);
+    };
+
+    submit("e2", "Fix the Safari login", 1);
+    // The daemon made the task, and it ended.
+    let db = rusqlite::Connection::open(slack.dir.join("priory.db")).unwrap();
+    db.execute(
+        "INSERT INTO tasks (key, workflow, step, state, trigger, source)
+         VALUES (?1, 'implement', 'implement', 'done', 'cli', 'first')",
+        [&key],
+    )
+    .unwrap();
+    submit("e3", "It broke again", 2);
+    submit("e4", "Still broken", 3);
+
+    let requests = requests(&slack);
+    assert_eq!(requests.len(), 2, "{requests:?}");
+    assert!(requests.iter().all(|request| request["key"] == key));
+    assert_ne!(requests[0]["source"], requests[1]["source"]);
+    assert_eq!(
+        replies(&slack),
+        [
+            format!("Queued as `{key}`."),
+            format!("Queued as `{key}`."),
+            format!("This thread is already queued as `{key}`, so nothing was added."),
+        ]
+    );
+    let persons: Vec<Value> = slack
+        .published()
+        .into_iter()
+        .filter(|stored| stored.message.kind == "priory.task.requested.cli")
+        .map(|stored| stored.message.data["person"].clone())
+        .collect();
+    assert_eq!(
+        persons,
+        [json!("ana (U0ALLOWED)"), json!("ana (U0ALLOWED)")]
+    );
+}
+
+#[test]
+fn a_rate_limited_connection_waits_the_retry_after_slack_sent() {
+    let mut slack = Slack::new("ratelimited");
+    write(&slack.dir.join("ratelimited"), "");
+    slack.start();
+
+    // The intake says how long it waits before it sleeps, so the test never waits those 30 s.
+    let stderr = || fs::read_to_string(slack.dir.join("stderr")).unwrap_or_default();
+    wait_for("the retry", || stderr().contains("retrying in"));
+
+    let stderr = stderr();
+    assert!(stderr.contains("ratelimited\"}; retrying in 30s"), "{stderr}");
 }
 
 #[test]
