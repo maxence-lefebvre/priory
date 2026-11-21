@@ -420,6 +420,8 @@ pub struct Agent {
     pub runner: Option<String>,
     #[serde(default)]
     pub session: Session,
+    /// The context size, in tokens, past which the daemon compacts the conversation between turns.
+    pub compact_at: Option<std::num::NonZeroU64>,
     /// What a runner must have free to admit a run of this agent, in bytes.
     #[serde(default, deserialize_with = "size")]
     #[schemars(

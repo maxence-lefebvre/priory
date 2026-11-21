@@ -67,7 +67,8 @@ run that carries on its process, when no run ended any other way in between.
 ## Compact
 
 An agent asks for a compaction with the `compact` tool (see [tools.md](tools.md)), which queues a
-`/compact` prompt. The daemon types a queued `/compact` like any other prompt, once the run is
+`/compact` prompt. The daemon queues a bare `/compact` itself when a turn ends past the agent's
+`compactAt` (see [sessions.md](sessions.md#compacting-a-long-session)). The daemon types a queued `/compact` like any other prompt, once the run is
 idle, so an answer or a nudge queued before it goes first.
 
 A `/compact` is always typed alone:
@@ -76,6 +77,8 @@ A `/compact` is always typed alone:
   takes it in.
 - A new run's first prompt is never a `/compact`. The task intro and Codex's launch argument skip
   it.
+- A run whose turn ended with an ask or a wait stays live while a `/compact` is queued, so the
+  compaction and its continuation come before the task sleeps.
 
 Typing it marks the run busy and starts its turn, so the step's `timeout` covers the compaction.
 The compaction ends with Claude's `SessionStart` with `source: compact`, or Codex's `PostCompact`.

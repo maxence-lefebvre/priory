@@ -26,12 +26,37 @@ each task starts a new session instead of resuming the shared one.
 
 Known limits:
 
-- A long shared conversation is never compacted by Priory.
+- A long conversation is compacted by Priory only when its agent sets `compactAt` or calls the
+  `compact` tool. See Compacting a long session.
 - Claude stores a session's transcript under its starting directory. Whether `--resume` finds it
   from another task's worktree depends on the Claude version. No test runs a real Claude.
 - Signals and tool calls name the harness session, not the process. The daemon kills a run's tmux
   session before admitting the next task, but a process that survived the kill could still report
   for the run that resumed its session.
+
+## Compacting a long session
+
+An agent's `compactAt` is a context size in tokens, such as `150000`. When a turn ends with the
+conversation's context at or past it, the daemon queues a `/compact`, as the `compact` tool does. It
+types it once the run is idle, then the same continuation line. [outbox.md](outbox.md) describes
+that path under Compact. Unset, Priory never compacts on its own.
+
+The context size is a count, not a fraction of the model's window: Priory does not know each
+model's window.
+
+The daemon reads the size at the turn's `Stop` hook, from the session transcript that the hook names.
+It is the last assistant message's input, cached input, cache writes and output. So the size lags by
+one turn: a turn that passes `compactAt` is compacted after it ends, never during it. Claude can
+still compact a turn itself if it fills the window first.
+
+It compacts once per crossing. After the daemon queues a `/compact`, it queues no other until a
+turn's context reads below `compactAt` again. A compaction that leaves the context above it is not
+repeated. The run keeps that state, so a new run of a shared session can compact once more.
+
+A turn that stores a result is not compacted, since the result may move the task to another
+agent's conversation. The next turn of the same conversation still sees the crossing.
+
+A Codex agent cannot take `compactAt`: Priory reads no Codex tokens (see [codex.md](codex.md)).
 
 ## Attaching to a run
 

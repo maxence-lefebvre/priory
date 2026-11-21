@@ -177,7 +177,7 @@ fn an_unknown_field_names_its_file_and_line() {
     assert_eq!(outcome.code, 1);
     assert_eq!(
         outcome.stderr,
-        "agents/implementer/agent.md:4:1: unknown field `modle`, expected one of description, harness, model, effort, runner, session, memory, disk, mcpServers, permissions\n"
+        "agents/implementer/agent.md:4:1: unknown field `modle`, expected one of description, harness, model, effort, runner, session, compactAt, memory, disk, mcpServers, permissions\n"
     );
 }
 
@@ -220,6 +220,49 @@ fn a_codex_agent_passes_and_its_claude_only_permissions_are_refused_with_their_l
         "agents/implementer/agent.md:5: a codex agent cannot take `permissions.defaultMode = \"plan\"`: use manual, acceptEdits, auto or dontAsk\n\
          agents/implementer/agent.md:5: a codex agent cannot take `permissions.allow`: Codex has no per-tool rules, so its sandbox and approvals follow `defaultMode` alone\n\
          agents/implementer/agent.md:5: a codex agent cannot take `permissions.deny`: Codex has no per-tool rules, so its sandbox and approvals follow `defaultMode` alone\n"
+    );
+}
+
+#[test]
+fn compact_at_takes_a_positive_token_count_on_a_claude_agent_only() {
+    let agent = |harness: &str, compact_at: &str| {
+        format!(
+            "+++\ndescription = \"Leads.\"\nharness = \"{harness}\"\ncompactAt = {compact_at}\n+++\n"
+        )
+    };
+    let outcome = check(&factory(
+        "compact-at",
+        &with(
+            "agents/implementer/agent.md",
+            &agent("claude-code", "150000"),
+        ),
+    ));
+    assert_eq!((outcome.code, outcome.stderr.as_str()), (0, ""));
+
+    for (name, compact_at) in [("zero", "0"), ("negative", "-5"), ("words", "\"lots\"")] {
+        let outcome = check(&factory(
+            &format!("compact-at-{name}"),
+            &with(
+                "agents/implementer/agent.md",
+                &agent("claude-code", compact_at),
+            ),
+        ));
+        assert_eq!(outcome.code, 1, "{compact_at}");
+        assert!(
+            outcome.stderr.starts_with("agents/implementer/agent.md:4:"),
+            "{compact_at}: {}",
+            outcome.stderr
+        );
+    }
+
+    let outcome = check(&factory(
+        "compact-at-codex",
+        &with("agents/implementer/agent.md", &agent("codex", "150000")),
+    ));
+    assert_eq!(outcome.code, 1);
+    assert_eq!(
+        outcome.stderr,
+        "agents/implementer/agent.md:4: a codex agent cannot take `compactAt`: Priory reads no Codex tokens, so it never knows the context size\n"
     );
 }
 

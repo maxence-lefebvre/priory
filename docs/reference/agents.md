@@ -19,6 +19,7 @@ against it, but `priory check` applies the same rules.
 | `effort` | string | no | the harness's default | The harness's reasoning effort | `"high"` |
 | `runner` | string | no | | The runner it runs on, by Tailscale hostname, or `any`. Not read yet: every run starts on the daemon's machine | `"any"` |
 | `session` | `per-task` or `shared` | no | `"per-task"` | `per-task`: one conversation per task. `shared`: one conversation across tasks, such as a lead. See [sessions.md](../daemon/sessions.md) | `"shared"` |
+| `compactAt` | integer | no | | The context size, in tokens, past which the daemon compacts the conversation between turns. Claude Code only. See [sessions.md](../daemon/sessions.md#compacting-a-long-session) | `150000` |
 | `memory` | size | no | | What a runner must have free to admit a run. See [memory-gate.md](../daemon/memory-gate.md) | `"6GB"` |
 | `disk` | size | no | | Disk a run reserves above the runner's floor | `"20GB"` |
 | `mcpServers` | array of strings | no | `[]` | The MCP servers the run gets, by name | `["github"]` |
@@ -50,6 +51,7 @@ model = "sonnet"
 effort = "high"
 runner = "any"
 session = "per-task"           # or "shared": one conversation across tasks
+compactAt = 150000             # compact between turns once the context reaches it
 memory = "6GB"                 # what a runner must have free to admit a run
 disk = "20GB"                  # disk a run reserves above the runner's floor
 mcpServers = ["github"]
@@ -88,6 +90,8 @@ Answer in one short paragraph.
 | `` `bypassPermissions` is not allowed: Priory never skips permission checks `` | `defaultMode = "bypassPermissions"` |
 | `` a codex agent cannot take `permissions.defaultMode = "plan"`: use manual, acceptEdits, auto or dontAsk `` | A Codex agent in plan mode |
 | `` a codex agent cannot take `permissions.allow`: Codex has no per-tool rules, so its sandbox and approvals follow `defaultMode` alone `` | A Codex agent with `allow`. The same for `deny` |
+| `` a codex agent cannot take `compactAt`: Priory reads no Codex tokens, so it never knows the context size `` | A Codex agent with `compactAt` |
+| `invalid value: integer `0`, expected a nonzero u64` | `compactAt = 0`. A negative or non-integer value gets serde's matching message |
 
 Other files name agents too: a workflow's model steps, and `handler`, `[search] tldr` and
 `[sweep] agent` in `factory.toml`. Their pages list those errors.

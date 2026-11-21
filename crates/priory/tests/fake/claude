@@ -15,7 +15,8 @@
 # Each turn n, counted across launches in FAKE_DIR/turns, appends to FAKE_DIR/transcript.jsonl, as
 # Claude's session transcript, one assistant message written as two lines, as Claude writes one per
 # content block, using 100+n input, 10+n output, 1000+n cache read and 50+n cache write tokens.
-# FAKE_DIR/no-transcript skips that write. FAKE_DIR/compact fires SessionStart with source compact
+# A turn that pops a first line N off FAKE_DIR/context writes N input tokens and no others instead, so the
+# session's context is N. FAKE_DIR/no-transcript skips that write. FAKE_DIR/compact fires SessionStart with source compact
 # mid-turn, as Claude does when it compacts the conversation.
 # A typed prompt that starts with /compact is no turn: it fires SessionStart with source compact, as
 # Claude does, or with FAKE_LAZY_START PostCompact, then SessionStart with source compact at the next
@@ -168,8 +169,14 @@ while :; do
   fi
   turn=$(( $(cat "$FAKE_DIR/turns" 2>/dev/null || echo 0) + 1 ))
   echo "$turn" > "$FAKE_DIR/turns"
-  message=$(jq -nc --argjson n "$turn" '{type: "assistant", message: {id: "msg_\($n)", model: "claude-fake-5",
-    usage: {input_tokens: (100 + $n), output_tokens: (10 + $n), cache_read_input_tokens: (1000 + $n), cache_creation_input_tokens: (50 + $n)}}}')
+  context=''
+  if [ -s "$FAKE_DIR/context" ]; then
+    context=$(head -n 1 "$FAKE_DIR/context")
+    sed -i 1d "$FAKE_DIR/context"
+  fi
+  message=$(jq -nc --argjson n "$turn" --arg context "$context" '{type: "assistant", message: {id: "msg_\($n)", model: "claude-fake-5",
+    usage: (if $context == "" then {input_tokens: (100 + $n), output_tokens: (10 + $n), cache_read_input_tokens: (1000 + $n), cache_creation_input_tokens: (50 + $n)}
+      else {input_tokens: ($context | tonumber), output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0} end)}}')
   [ -e "$FAKE_DIR/no-transcript" ] || printf '%s\n%s\n' "$message" "$message" >> "$FAKE_DIR/transcript.jsonl"
   printf '%s' "$turn" > "$FAKE_DIR/submitted"
   [ -e "$FAKE_DIR/compact" ] && hook SessionStart '' compact

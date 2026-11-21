@@ -12,7 +12,7 @@ use std::collections::BTreeMap;
 use std::io::Write;
 use std::time::Duration;
 
-const VERSION: i64 = 47;
+const VERSION: i64 = 48;
 
 const SCHEMA: &str = "
 CREATE TABLE tasks (
@@ -831,6 +831,11 @@ CREATE VIEW IF NOT EXISTS owned AS
 "
 );
 
+// Whether the daemon queued a compaction since the run's context last read below `compactAt`.
+const SCHEMA_48: &str = "ALTER TABLE runs ADD COLUMN crossed INTEGER NOT NULL DEFAULT 0;
+PRAGMA user_version = 48;
+";
+
 /// Each schema change in order: a file at version `n` applies those from index `n` on.
 const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA, SCHEMA_2, SCHEMA_3, SCHEMA_4, SCHEMA_5, SCHEMA_6, SCHEMA_7, SCHEMA_8, SCHEMA_9,
@@ -838,7 +843,7 @@ const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA_18, SCHEMA_19, SCHEMA_20, SCHEMA_21, SCHEMA_22, SCHEMA_23, SCHEMA_24, SCHEMA_25,
     SCHEMA_26, SCHEMA_27, SCHEMA_28, SCHEMA_29, SCHEMA_30, SCHEMA_31, SCHEMA_32, SCHEMA_33,
     SCHEMA_34, SCHEMA_35, SCHEMA_36, SCHEMA_37, SCHEMA_38, SCHEMA_39, SCHEMA_40, SCHEMA_41,
-    SCHEMA_42, SCHEMA_43, SCHEMA_44, SCHEMA_45, SCHEMA_46, SCHEMA_47,
+    SCHEMA_42, SCHEMA_43, SCHEMA_44, SCHEMA_45, SCHEMA_46, SCHEMA_47, SCHEMA_48,
 ];
 
 /// The order the queue starts tasks in: band, then a person's order, then age. A band the factory
@@ -2186,7 +2191,8 @@ pub(crate) fn signal(
         }
         "Stop" => {
             tx.execute("UPDATE runs SET idle = 1, turn = NULL WHERE id = ?1", [run])?;
-            crate::trace::account(&tx, trace, run, signal.transcript.as_deref())?;
+            let context = crate::trace::account(&tx, trace, run, signal.transcript.as_deref())?;
+            crate::tools::overflow(&tx, &signal.session, context, trace.factory)?;
             kill = crate::tools::stop(&tx, &signal.session, trace)?;
             tx.execute("UPDATE runs SET nudgeable = 0 WHERE id = ?1", [run])?;
         }
