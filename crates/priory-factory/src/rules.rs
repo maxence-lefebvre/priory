@@ -1,6 +1,6 @@
 use crate::factory::{
-    Agent, Decider, Effect, Factory, Harness, Intervention, Loaded, PermissionMode, Problem, Proof,
-    Session, Step, Trigger, Until, Workflow,
+    Agent, Backend, Decider, Effect, Factory, Harness, Intervention, Loaded, PermissionMode,
+    Problem, Proof, Session, Step, Trigger, Until, Workflow,
 };
 use crate::guard::{NEED_APPROVAL, PERSON, UNREADABLE};
 use crate::lanes::{self, Lanes};
@@ -65,6 +65,14 @@ pub fn check(factory: &Factory) -> Vec<Problem> {
                 "`gate` is empty".to_owned(),
             ));
         }
+        if !cfg!(feature = "postgres") && settings.value.log.backend == Backend::Postgres {
+            problems.push(problem(
+                settings,
+                settings.lines.field("log"),
+                "[log] backend = \"postgres\" needs a priory built with `--features postgres`"
+                    .to_owned(),
+            ));
+        }
         let search = &settings.value.search;
         if search.model.is_some() && search.command.is_some() {
             problems.push(problem(
@@ -96,6 +104,21 @@ pub fn check(factory: &Factory) -> Vec<Problem> {
                 settings.lines.field("telemetry"),
                 "`headers_env` names the environment variable that holds the headers, such as \
                  OTEL_EXPORTER_OTLP_HEADERS, never the headers themselves"
+                    .to_owned(),
+            ));
+        }
+        if settings
+            .value
+            .log
+            .url_env
+            .as_deref()
+            .is_some_and(|name| !variable(name))
+        {
+            problems.push(problem(
+                settings,
+                settings.lines.field("log"),
+                "`[log] url_env` names the environment variable that holds the connection \
+                 string, such as PRIORY_LOG_URL, never the string itself"
                     .to_owned(),
             ));
         }

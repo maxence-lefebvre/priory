@@ -25,6 +25,13 @@
       },
       "type": "object"
     },
+    "Backend": {
+      "enum": [
+        "herdr-bus",
+        "postgres"
+      ],
+      "type": "string"
+    },
     "CommandGuard": {
       "additionalProperties": false,
       "description": "A shell command that is irreversible: its program, then the first words after its options.",
@@ -53,6 +60,23 @@
         "name",
         "run"
       ],
+      "type": "object"
+    },
+    "EventLog": {
+      "additionalProperties": false,
+      "description": "Where the event log lives: herdr-bus's file on this machine, or a Postgres database that\nseveral machines share.",
+      "properties": {
+        "backend": {
+          "$ref": "#/definitions/Backend"
+        },
+        "url_env": {
+          "description": "The environment variable that holds the Postgres connection string, `PRIORY_LOG_URL`\nunless named: the file never holds the string itself.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
       "type": "object"
     },
     "GithubWebhook": {
@@ -426,6 +450,9 @@
       "default": {},
       "description": "Autolinks, in order: each key a regex, each value an `https://` URL template whose `$1`\nnames the regex's first group. An entry with a built-in link's regex replaces it.",
       "type": "object"
+    },
+    "log": {
+      "$ref": "#/definitions/EventLog"
     },
     "name": {
       "description": "The factory's name.",
