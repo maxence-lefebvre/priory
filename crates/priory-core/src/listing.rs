@@ -35,6 +35,7 @@ fn places() -> String {
 const IRREVERSIBLE: &str = "CASE asks.kind
        WHEN 'step' THEN EXISTS (SELECT 1 FROM irreversible_asks AS gate
          WHERE gate.workflow = tasks.workflow AND gate.step = asks.step)
+         OR coalesce(json_array_length(asks.command, '$.runs') > 0, 0)
        WHEN 'agent' THEN coalesce(json_array_length(asks.command, '$.runs') > 0, 0)
        ELSE 0 END";
 
@@ -46,10 +47,11 @@ fn urgency() -> String {
              OR desk.kind = 'report' AND desk.what LIKE 'intake: %' THEN 'alarm'
            WHEN desk.kind = 'ask' THEN (SELECT CASE WHEN {IRREVERSIBLE} THEN 'irreversible'
                WHEN tasks.key GLOB '*:review:*' THEN 'review'
-               WHEN asks.kind = 'step' THEN 'plan' ELSE 'rest' END
+               WHEN asks.kind = 'step' THEN 'plan' ELSE 'ask' END
              FROM asks LEFT JOIN tasks ON tasks.id = asks.task
              WHERE coalesce(asks.name, asks.id) = desk.id
                AND asks.answer IS NULL AND asks.withdrawn IS NULL)
+           WHEN desk.kind = 'todo' THEN 'todo'
            ELSE 'rest' END AS urgency"
     )
 }
@@ -148,6 +150,9 @@ const DESK: &str = "SELECT 0 AS part, asks.created AS since, 'ask' AS kind,
                SELECT 0, time, 'report', seq, NULL, NULL,
                  subject || ': ' || json_extract(data, '$.line')
                FROM inbox WHERE type = 'priory.report' AND read IS NULL
+               UNION ALL
+               SELECT 0, created, 'todo', id, NULL, NULL,
+                 text || coalesce(', due ' || due, '') FROM todos WHERE done IS NULL
                UNION ALL
                SELECT 1, tasks.changed, 'queue', queue.place, tasks.id, tasks.lane,
                  coalesce(tasks.band, '-') || coalesce(': ' || tasks.reason, '')
@@ -751,7 +756,7 @@ pub(crate) const ALARM: &str = "an alarm: work stopped and waits on a person";
 
 /// The ranking's groups, first to last, each with why its items rank where they do. Irreversible
 /// and review asks share a group.
-const RANKS: [(&str, usize, &str); 5] = [
+const RANKS: [(&str, usize, &str); 7] = [
     ("alarm", 0, ALARM),
     (
         "irreversible",
@@ -760,7 +765,9 @@ const RANKS: [(&str, usize, &str); 5] = [
     ),
     ("review", 1, "it reviews a pull request"),
     ("plan", 2, "it approves a plan"),
-    ("rest", 3, "it waits on a person"),
+    ("ask", 3, "it waits on a person"),
+    ("todo", 4, "a to-do of yours"),
+    ("rest", 5, "it waits on a person"),
 ];
 
 /// What waits on a person, best first: by group in `RANKS`, then oldest first. The queue and
@@ -993,7 +1000,7 @@ fn pull_request(db: &Connection, id: i64) -> rusqlite::Result<Option<Value>> {
 }
 
 /// The rows of `query` as JSON objects keyed by column name.
-fn rows(db: &Connection, query: &str, params: impl Params) -> rusqlite::Result<Value> {
+pub(crate) fn rows(db: &Connection, query: &str, params: impl Params) -> rusqlite::Result<Value> {
     let mut statement = db.prepare(query)?;
     let names: Vec<String> = statement
         .column_names()

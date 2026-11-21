@@ -1,0 +1,26 @@
+#:schema https://raw.githubusercontent.com/maxence-lefebvre/priory/main/docs/schemas/config/workflow.json
+# A runbook: every step is a person's, and no agent runs.
+start = "changelog"
+
+[[steps]]
+id = "changelog"
+decides = "human"
+effect = "none"
+options = ["written", "abort"]
+next = { written = "test", abort = "stop" }
+
+# Answering `run` runs `cargo test` once in the repo target; a failure asks this step again.
+[[steps]]
+id = "test"
+decides = "human"
+effect = "read"
+options = ["run", "skip", "abort"]
+command = { argv = ["cargo", "test"], target = "repo", runs = ["run"] }
+next = { run = "tag", skip = "tag", abort = "stop" }
+
+[[steps]]
+id = "tag"
+decides = "human"
+effect = "none"
+options = ["tagged", "abort"]
+next = { tagged = "done", abort = "stop" }

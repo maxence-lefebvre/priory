@@ -15,6 +15,7 @@
 | `queue` | the task's place in the queue | its band, then its reason when it has one | the task last changed state |
 | `sweep` | the script's run | its command, then `running`, or its status and output, for the open stall | it started |
 | `report` | the report's inbox sequence number | `<source>: <line>`, for an unread report | it was posted |
+| `todo` | the to-do | its text, then `, due <time>` when it has one (see To-dos) | it was added |
 | `retired` | the task | `its worktree was removed to free disk; it resurrects from <branch> when its wait fires` | it retired |
 | `worktree` | the worktree's path | why it stays: see Sweep | `-` |
 
@@ -29,18 +30,36 @@ It lists only asks and prompts of active tasks, holds of held tasks and waiting 
 
 The desk ranks what waits on a person, so a client can show one next thing. `priory desk --json`
 and `/api/desk` carry the ranked items as `ranked` and the first as `next`, or null when nothing
-waits. `priory desk` without `--json` prints neither. The ranking has four groups, first to last:
+waits. `priory desk` without `--json` prints neither. The ranking has six groups, first to last:
 
 | Group | Items | `why` |
 | ----- | ----- | ----- |
 | Alarms | `blocked`, `failed`, an `uncertain` `prompt` or `command`, and an unread `intake` report: a source that fails to poll | `an alarm: work stopped and waits on a person` |
 | Asks that open a door | an ask whose answer lets an irreversible step run (its risk is `irreversible`), and an ask of a task that reviews a pull request, whose key ends in `:review:<login>` | `its answer lets an irreversible step run`, or `it reviews a pull request` |
 | Plans | another ask at a human step, such as `approve-plan` | `it approves a plan` |
-| The rest | every other ask and item: deliveries, holds, sweeps, memory waits, reports and retired tasks | `it waits on a person` |
+| Other asks | every other ask, such as an agent's or an outside one | `it waits on a person` |
+| To-dos | each open to-do | `a to-do of yours` |
+| The rest | every other item: deliveries, holds, sweeps, memory waits, reports and retired tasks | `it waits on a person` |
 
 Each group lists its items oldest first. The queue and the worktrees that stay never rank. A snoozed
 item never ranks, even with `--all`. Each ranked item is the desk item with two more fields: `why`,
 and `title`, the line a notification carries (see [serve.md](serve.md#desktop-notifications)).
+
+## To-dos
+
+A to-do is an item a person owns on the desk, with no task or agent attached.
+
+- `priory todo add TEXT [--band B] [--due TIME]` adds one and prints its id. `TEXT` is one line.
+  `B` is one of the factory's bands. `TIME` is an RFC 3339 time, stored in UTC to the second.
+- `priory todo done ID` marks it done, and it leaves the desk. It is refused for a to-do already
+  done, with `to-do <id> is already done`, and for an id that names none.
+- `priory todo list [--json]` prints every to-do, open ones first: id, text, band, due, created and
+  done.
+
+`add` and `done` go to the daemon over `priory.sock`, as `priory answer` does. `POST /api/todos` and
+`POST /api/todos/{id}/done` are their twins (see [serve.md](../reference/serve.md#writes)). An open
+to-do shows on the desk as a `todo` row and ranks after every ask, before the rest (see The next
+thing). A to-do sends no notification.
 
 ## Reports
 

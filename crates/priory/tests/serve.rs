@@ -3258,6 +3258,58 @@ fn dismiss_and_snooze_through_their_endpoints_do_what_their_cli_verbs_do() {
 }
 
 #[test]
+fn todos_added_and_done_through_their_endpoints_do_what_their_cli_verbs_do() {
+    let mut setup = Setup::new("web-todos", SERVE);
+    setup.seed();
+    let address = setup.start(&["daemon", &setup.factory()]);
+    let desk_todos = || -> Vec<Value> {
+        let desk = json_of(&setup, "desk");
+        desk["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|item| item["kind"] == "todo")
+            .cloned()
+            .collect()
+    };
+
+    let added = post(
+        &address,
+        "/api/todos",
+        "",
+        r#"{"text": "Renew the TLS cert", "band": "today", "due": "2026-12-01T09:00:00Z"}"#,
+    );
+    let todos = desk_todos();
+    let bad_band = post(
+        &address,
+        "/api/todos",
+        "",
+        r#"{"text": "x", "band": "someday"}"#,
+    );
+    let foreign = post(
+        &address,
+        "/api/todos",
+        "Origin: http://evil.example\r\n",
+        r#"{"text": "x"}"#,
+    );
+    let done = post(&address, "/api/todos/1/done", "", "{}");
+    let again = post(&address, "/api/todos/1/done", "", "{}");
+
+    assert_eq!(added, (200, r#"{"ok":"1"}"#.to_owned()));
+    assert_eq!(todos.len(), 1);
+    assert_eq!(
+        todos[0]["what"],
+        "Renew the TLS cert, due 2026-12-01T09:00:00Z"
+    );
+    assert_eq!(bad_band.0, 422, "{}", bad_band.1);
+    assert_eq!(foreign.0, 403, "{}", foreign.1);
+    assert_eq!(done, (200, r#"{"ok":"to-do 1 is done"}"#.to_owned()));
+    assert_eq!(again.0, 422, "{}", again.1);
+    assert!(desk_todos().is_empty());
+    assert_eq!(post(&address, "/api/todos/x/done", "", "{}").0, 405);
+}
+
+#[test]
 fn resume_say_cancel_and_revive_through_their_endpoints_do_what_their_cli_verbs_do() {
     let mut setup = Setup::new("web-act", SERVE);
     setup.seed();

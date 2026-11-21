@@ -4,7 +4,7 @@ import { autolink, prStack, routedMark } from "./priory.js";
 
 const STOPPED = ["blocked", "failed", "prompt", "delivery"];
 const SNOOZABLE = ["ask", "blocked", "failed", "prompt"];
-const RECOMMENDS = /** @type {Record<string, string>} */ ({ blocked: "Resume", prompt: "Resume", failed: "Revive" });
+const RECOMMENDS = /** @type {Record<string, string>} */ ({ blocked: "Resume", prompt: "Resume", failed: "Revive", todo: "Done" });
 
 /** @param {any} item */
 const isSnoozed = (item) => item.snoozed_until != null;
@@ -68,6 +68,7 @@ export function deskModel({ desk, asks: asksListing, tasks: tasksListing, queue 
         : back ? `Back early: ${back.reason}${back.reason === "new revision" && ask ? ` ${ask.revision}` : ""}` : null,
       snooze: SNOOZABLE.includes(item.kind) ? { kind: item.kind, id: item.id } : null,
       snoozed: isSnoozed(item),
+      todo: item.kind === "todo" ? item.id : null,
       task: item.task,
       prs: prStack(task?.stack).label,
       revision: ask?.revision ?? null,
@@ -91,6 +92,7 @@ export function deskModel({ desk, asks: asksListing, tasks: tasksListing, queue 
     note: /** @type {string | null} */ (null),
     snooze: /** @type {{ kind: string, id: number | string } | null} */ (null),
     snoozed: false,
+    todo: /** @type {number | null} */ (null),
     task: task.id,
     prs: prStack(task.stack).label,
     revision: /** @type {number | null} */ (null),
@@ -103,7 +105,8 @@ export function deskModel({ desk, asks: asksListing, tasks: tasksListing, queue 
   const shown = items.filter((item) => !isSnoozed(item));
   const asks = shown.filter((item) => item.kind === "ask");
   const stopped = shown.filter((item) => STOPPED.includes(item.kind));
-  const later = shown.filter((item) => item.kind !== "ask" && item.kind !== "queue" && !STOPPED.includes(item.kind));
+  const todos = shown.filter((item) => item.kind === "todo");
+  const later = shown.filter((item) => !["ask", "queue", "todo"].includes(item.kind) && !STOPPED.includes(item.kind));
   const snoozed = items.filter(isSnoozed);
   const asleep = desk.counts.asleep;
   const inState = (/** @type {string} */ state) => tasks.filter((task) => task.state === state);
@@ -119,6 +122,7 @@ export function deskModel({ desk, asks: asksListing, tasks: tasksListing, queue 
     needs: () => [
       { title: "Asks", note: `${asks.length}, oldest first`, rows: asks.map(itemRow) },
       { title: "Stopped", note: String(stopped.length), rows: stopped.map(itemRow) },
+      { title: "To-dos", note: String(todos.length), rows: todos.map(itemRow) },
       {
         title: "Later",
         note: "no action needed",
@@ -139,7 +143,7 @@ export function deskModel({ desk, asks: asksListing, tasks: tasksListing, queue 
     next: desk.next ? nextThing(desk.next, desk.next.kind === "ask" ? askById.get(desk.next.id) : null, taskById.get(desk.next.task), now, links) : null,
     empty: asks.length || stopped.length ? null : "No open asks. Agents ask here when they need you.",
     views: [
-      { id: "needs", label: "Needs me", count: asks.length + stopped.length },
+      { id: "needs", label: "Needs me", count: asks.length + stopped.length + todos.length },
       { id: "running", label: "Running", count: inState("running").length },
       { id: "asleep", label: "Asleep", count: asleep },
       { id: "snoozed", label: "Snoozed", count: snoozed.length },
@@ -175,6 +179,7 @@ function nextThing(item, ask, task, now, links) {
     ask: isAsk ? item.id : null,
     snooze: SNOOZABLE.includes(item.kind) ? { kind: item.kind, id: item.id } : null,
     revision: ask?.revision ?? null,
+    todo: item.kind === "todo" ? item.id : null,
     task: item.task,
     key: item.key ?? ask?.key ?? null,
     step: item.step,

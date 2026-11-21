@@ -24,6 +24,7 @@ test("the next thing is the desk's next, so an alarm comes before every ask", ()
     ask: null,
     snooze: { kind: "blocked", id: 4 },
     revision: null,
+    todo: null,
     task: 4,
     key: "cli:PRI-55",
     step: "triage",
@@ -43,6 +44,7 @@ test("an ask as the next thing carries its recommendation and its task's progres
     ask: 1,
     snooze: { kind: "ask", id: 1 },
     revision: 1,
+    todo: null,
     task: 1,
     key: "cli:PRI-61",
     step: "approve",
@@ -83,6 +85,18 @@ test("Needs me lists the asks oldest first, then the stopped tasks, then what ne
     ["report", "ci: 1 report to read: merges this week"],
     ["held", "held: waits for the release on Monday"],
   ]);
+});
+
+test("Needs me lists the to-dos after the stopped tasks, each with Done", () => {
+  const todo = { since: "2026-11-20T11:30:00Z", kind: "todo", id: 2, task: null, key: null, step: null, lane: null, what: "Renew the TLS cert, due 2026-12-01T09:00:00Z", generation: null, snoozed_until: null, snoozed_at: null, back_early: null };
+  const desk = { ...data.desk, items: [...data.desk.items, todo] };
+  const model = deskModel({ ...data, desk }, { now });
+  const sections = model.sections("needs");
+  assert.deepEqual(sections.map(({ title }) => title), ["Asks", "Stopped", "To-dos", "Later"]);
+  assert.deepEqual(sections[2].rows.map((row) => [row.kind, row.age, row.text, row.recommends, row.todo, row.snooze]), [
+    ["todo", "30 min", "Renew the TLS cert, due 2026-12-01T09:00:00Z", "Done", 2, null],
+  ]);
+  assert.equal(model.views[0].count, 5);
 });
 
 test("the room and intake banners, Since you looked and Up next come from the desk and the queue", () => {
