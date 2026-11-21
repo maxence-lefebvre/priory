@@ -1,3 +1,4 @@
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -30,11 +31,39 @@ class RewriteTarget(unittest.TestCase):
         self.check("https://lucide.dev", "DESIGN.md", "https://lucide.dev")
         self.check("#log", "docs/reference/factory.md", "#log")
 
-    def test_skips_fenced_code(self):
-        text = "[a](DESIGN.md)\n```md\n[b](DESIGN.md)\n```"
+    def test_keeps_a_query_apart_from_the_path(self):
+        self.check("GETTING_STARTED.md?mode=print#concepts", "README.md", "GETTING_STARTED.md?mode=print#concepts")
+
+    def test_skips_code(self):
+        text = "\n".join([
+            "[a](DESIGN.md) and `[b](DESIGN.md)`",
+            "````md",
+            "```",
+            "[c](DESIGN.md)",
+            "```",
+            "````",
+            "    [d](DESIGN.md)",
+        ])
         out = build.rewrite_links(text, "README.md", PAGES).split("\n")
-        self.assertIn(build.REPO, out[0])
-        self.assertEqual(out[2], "[b](DESIGN.md)")
+        self.assertEqual(out[0], f"[a]({build.REPO}/blob/main/DESIGN.md) and `[b](DESIGN.md)`")
+        self.assertEqual(out[3], "[c](DESIGN.md)")
+        self.assertEqual(out[6], "    [d](DESIGN.md)")
+
+
+class Staging(unittest.TestCase):
+    def test_refuses_a_symlinked_build_folder(self):
+        build_dir = build.SITE / "build"
+        if build_dir.exists() or build_dir.is_symlink():
+            self.skipTest("site/build exists; this test needs a clean checkout")
+        target = Path(tempfile.mkdtemp())
+        build_dir.symlink_to(target)
+        try:
+            with self.assertRaises(SystemExit):
+                build.main()
+            self.assertEqual(list(target.iterdir()), [])
+        finally:
+            build_dir.unlink()
+            target.rmdir()
 
 
 class Chapters(unittest.TestCase):

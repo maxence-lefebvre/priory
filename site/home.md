@@ -57,11 +57,15 @@ A factory is a folder: one agent, one workflow and one trigger to start.
 ### Run it
 
 ```sh
+export PRIORY_DB=~/.local/state/priory-oss/priory.db
 priory intake example
+```
+
+```sh
 priory daemon example
 ```
 
-The intake finds work. The daemon runs one agent per task in tmux and a git worktree.
+Run the intake and the daemon side by side, each in its own terminal with `PRIORY_DB` set. The intake finds work. The daemon runs one agent per task in tmux and a git worktree.
 
 [Run it](GETTING_STARTED.md#5-run-it)
 

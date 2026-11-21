@@ -19,16 +19,25 @@
   labelMode();
 
   // The navigation opens as a full sheet below 900 px.
+  // While it is open, everything it covers is inert, so focus stays in the sheet.
   const navButton = document.getElementById("nav-toggle");
+  const nav = document.getElementById("mdbook-sidebar");
+  const covered = [document.getElementById("mdbook-content"), document.querySelector("footer"), document.querySelector(".toc")];
+  const compact = window.matchMedia("(max-width: 899px)");
   const setNav = (open) => {
     html.classList.toggle("nav-open", open);
+    covered.forEach((el) => { if (el) el.inert = open; });
     navButton.setAttribute("aria-expanded", String(open));
     navButton.setAttribute("aria-label", open ? "Close the navigation" : "Open the navigation");
+    if (open) (nav.querySelector("a.active") || nav.querySelector("a")).focus();
   };
   navButton.addEventListener("click", () => setNav(!html.classList.contains("nav-open")));
   document.addEventListener("keydown", (e) => {
-    if (e.key === "Escape" && html.classList.contains("nav-open")) setNav(false);
+    if (e.key !== "Escape" || !html.classList.contains("nav-open")) return;
+    setNav(false);
+    navButton.focus();
   });
+  compact.addEventListener("change", () => { if (!compact.matches) setNav(false); });
 
   // The search index loads on first focus, without the jump to the top that mdBook's toggle does.
   const searchbar = document.getElementById("mdbook-searchbar");
@@ -42,6 +51,24 @@
       window.scrollTo(0, y);
     });
   }
+
+  // Copy buttons on code blocks.
+  document.querySelectorAll("main pre").forEach((pre) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "iconbtn copy";
+    button.setAttribute("aria-label", "Copy the code");
+    button.innerHTML = '<svg class="i" viewBox="0 0 24 24" aria-hidden="true"><rect width="14" height="14" x="8" y="8" rx="2"></rect><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"></path></svg>';
+    button.addEventListener("click", () => {
+      const say = (label) => {
+        button.setAttribute("aria-label", label);
+        setTimeout(() => button.setAttribute("aria-label", "Copy the code"), 2000);
+      };
+      navigator.clipboard.writeText(pre.querySelector("code").textContent)
+        .then(() => say("Copied"), () => say("Could not copy: the browser blocked the clipboard"));
+    });
+    pre.prepend(button);
+  });
 
   if (html.classList.contains("is-home")) return;
 
@@ -87,22 +114,6 @@
       const required = row.children[2];
       if (required && required.textContent.trim() === "no") required.classList.add("opt");
     });
-  });
-
-  // Copy buttons on code blocks.
-  document.querySelectorAll(".prose pre").forEach((pre) => {
-    const button = document.createElement("button");
-    button.type = "button";
-    button.className = "iconbtn copy";
-    button.setAttribute("aria-label", "Copy the code");
-    button.innerHTML = '<svg class="i" viewBox="0 0 24 24" aria-hidden="true"><rect width="14" height="14" x="8" y="8" rx="2"></rect><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"></path></svg>';
-    button.addEventListener("click", () => {
-      navigator.clipboard.writeText(pre.querySelector("code").textContent).then(() => {
-        button.setAttribute("aria-label", "Copied");
-        setTimeout(() => button.setAttribute("aria-label", "Copy the code"), 2000);
-      });
-    });
-    pre.prepend(button);
   });
 
   // On this page: the h2 and h3 headings, on the right from 1200 px and folded under the title below.

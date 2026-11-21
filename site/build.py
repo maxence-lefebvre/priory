@@ -31,6 +31,9 @@ EXTRA_REFERENCE = ["docs/trace-schema.md"]
 
 LINK = re.compile(r"(!?\[[^\]]*\]\()([^)\s]+)((?:\s+\"[^\"]*\")?\))")
 REF_DEF = re.compile(r"^(\s{0,3}\[[^\]]+\]:\s+)(\S+)(.*)$")
+FENCE = re.compile(r"^ {0,3}(`{3,}|~{3,})")
+INDENTED = re.compile(r"^(    |\t)(?![-*+] |\d+\. )")
+CODE_SPAN = re.compile(r"(`+[^`]*`+)")
 INCLUDE = re.compile(r"<!-- include (\S+) \"([^\"]+)\" -->")
 
 
@@ -85,6 +88,7 @@ def rewrite_target(target, source, pages):
     if re.match(r"^[a-z][a-z0-9+.-]*:", target, re.I) or target.startswith("#"):
         return target
     path, _, fragment = target.partition("#")
+    path, _, query = path.partition("?")
     resolved = (ROOT / Path(source).parent / path).resolve()
     try:
         rel = resolved.relative_to(ROOT).as_posix()
@@ -94,7 +98,7 @@ def rewrite_target(target, source, pages):
         rel = f"{rel}/README.md"
     if rel == "README.md":
         rel = "index.md"
-    suffix = f"#{fragment}" if fragment else ""
+    suffix = (f"?{query}" if query else "") + (f"#{fragment}" if fragment else "")
     copied = rel.startswith("docs/") and resolved.is_file() and not rel.endswith(".md")
     if rel == "index.md" or rel in pages or copied:
         return os.path.relpath(rel, Path(source).parent.as_posix() or ".") + suffix
@@ -103,13 +107,19 @@ def rewrite_target(target, source, pages):
 
 
 def rewrite_links(text, source, pages):
-    out, fenced = [], False
+    """Rewrite link targets outside code: fenced blocks, indented blocks and code spans."""
+    out, fence = [], None
+    swap = lambda m: m[1] + rewrite_target(m[2], source, pages) + m[3]
     for line in text.split("\n"):
-        if line.lstrip().startswith(("```", "~~~")):
-            fenced = not fenced
-        if not fenced:
-            line = LINK.sub(lambda m: m[1] + rewrite_target(m[2], source, pages) + m[3], line)
-            line = REF_DEF.sub(lambda m: m[1] + rewrite_target(m[2], source, pages) + m[3], line)
+        opener = FENCE.match(line)
+        if fence is None and opener:
+            fence = opener[1]
+        elif fence and opener and opener[1][0] == fence[0] and len(opener[1]) >= len(fence) and not line.strip(" `~"):
+            fence = None
+        elif fence is None and not INDENTED.match(line):
+            parts = CODE_SPAN.split(line)
+            parts[::2] = [REF_DEF.sub(swap, LINK.sub(swap, part)) for part in parts[::2]]
+            line = "".join(parts)
         out.append(line)
     return "\n".join(out)
 
@@ -132,6 +142,8 @@ def home(pages):
 
 def main():
     out = SITE / "build" / "src"
+    if any(p.is_symlink() for p in (SITE / "build", out)):
+        sys.exit("build.py: site/build or site/build/src is a symlink; remove it before staging")
     if out.exists():
         shutil.rmtree(out)
     shutil.copytree(ROOT / "docs", out / "docs")
