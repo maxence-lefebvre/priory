@@ -116,3 +116,10 @@ test("a task's time over a day reads in days and hours", () => {
   const [row] = attentionView(attention({ tasks: [task] })).tasks;
   assert.deepEqual([row.wall, row.parts[1].value, row.parts[3].value], ["4 d 18 h", "3 d 14 h", "1 d 4 h"]);
 });
+
+test("the week a day falls in follows the daemon's timezone, not the browser's", () => {
+  // A Paris daemon starts the week on Monday 00:00 local, Sunday 23:00 UTC; this browser runs in UTC.
+  const day = (date) => ({ day: date, ...total(1) });
+  const bars = dayBars(costs(total(1), total(1), { days: [day("2026-11-15"), day("2026-11-16")] }));
+  assert.deepEqual(bars.map((bar) => [bar.day, bar.current]), [["2026-11-15", false], ["2026-11-16", true]]);
+});

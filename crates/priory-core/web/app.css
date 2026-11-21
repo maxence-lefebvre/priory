@@ -465,7 +465,8 @@ textarea { font: 400 16px/22px var(--font-ui); color: var(--text); background: v
 .headline .w { font: 700 var(--type-hero) var(--font-display); font-stretch: var(--display-stretch); padding-bottom: 4px; }
 .headline .w span { display: block; font: 400 var(--type-caption) var(--font-ui); font-stretch: 100%; color: var(--text-3); margin-top: 2px; }
 .sh .by { margin-left: auto; display: inline-flex; gap: 8px; align-items: center; font: 400 var(--type-caption) var(--font-ui); color: var(--text-3); }
-.by select { font: 400 16px var(--font-ui); color: var(--text); background: var(--surface); border: 1px solid var(--control-line); border-radius: var(--radius-md); height: var(--control-fine); padding: 0 8px; }
+.by select { font: 400 16px var(--font-ui); color: var(--text); background: var(--surface); border: 1px solid var(--control-line); border-radius: var(--radius-md); height: var(--control); padding: 0 8px; }
+@media (pointer: fine) { .by select { height: var(--control-fine); } }
 .days { display: grid; gap: 6px; margin: 0; }
 .days svg { overflow: visible; }
 .days .cur rect { fill: var(--text-2); }
@@ -506,3 +507,4 @@ textarea { font: 400 16px/22px var(--font-ui); color: var(--text); background: v
 .days .week { stroke: var(--text-3); stroke-dasharray: 2 3; }
 .days text.wk { fill: var(--text-2); }
 [data-costs] > .scroll > .note.warn { padding: 10px var(--gutter) 0; align-items: center; }
+[data-costs] > .scroll > .note.asof { padding: 6px var(--gutter) 0; }

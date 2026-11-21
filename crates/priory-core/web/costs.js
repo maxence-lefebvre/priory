@@ -29,9 +29,9 @@ const dayName = (/** @type {string} */ day, /** @type {Intl.DateTimeFormatOption
 
 /** One bar per day, scaled to the busiest day, with a sentence for screen readers. @param {any} costs */
 export function dayBars(costs) {
-  // shortcut: reads the window's start in the browser's timezone, which is the daemon's when both run on one machine; send the start's local date from the server if they differ.
-  const start = new Date(costs.current.since);
-  const first = `${start.getFullYear()}-${String(start.getMonth() + 1).padStart(2, "0")}-${String(start.getDate()).padStart(2, "0")}`;
+  // The window starts at the daemon's local midnight, so 12 hours later is still that local date in UTC.
+  // shortcut: wrong for a daemon at UTC+12 or beyond; send the start's local date from the server if one runs there.
+  const first = new Date(Date.parse(costs.current.since) + 12 * 3600000).toISOString().slice(0, 10);
   const max = Math.max(0, ...costs.days.map((/** @type {any} */ day) => day.cost_usd ?? 0));
   return costs.days.map((/** @type {any} */ day) => {
     const cost = day.cost_usd == null ? "no priced tokens" : money(day.cost_usd);

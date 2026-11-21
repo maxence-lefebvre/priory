@@ -239,7 +239,7 @@ function signOut(reason) {
   for (const key of ["priory.token", "priory.snapshot"]) localStorage.removeItem(key);
   // A refresh still in flight must not store what this device just dropped.
   state.refreshes++;
-  Object.assign(state, { token: null, data: null, snapshot: null, revision: undefined, signInError: reason, all: { asks: false, tasks: false } });
+  Object.assign(state, { token: null, data: null, snapshot: null, revision: undefined, signInError: reason, all: { asks: false, tasks: false }, costs: { by: "workflow", loading: false, slow: false, error: null } });
   render();
 }
 
@@ -1008,18 +1008,20 @@ async function loadCosts() {
   const slow = setTimeout(() => { view.slow = true; render(); }, 300);
   try {
     const [costs, attention] = await Promise.all([api(`/api/costs?by=${by}`), api("/api/attention")]);
-    // A sign-out while the read was in flight drops it.
-    if (!state.data) return;
+    // A sign-out while the read was in flight replaced the Costs state and drops this read.
+    if (view !== state.costs) return;
     state.data.spend = { costs, attention, updated: Date.now() };
     view.error = null;
     keep();
   } catch (error) {
+    if (view !== state.costs) return;
     if (error.status === 401) return signOut("The daemon refused this token. Paste the current one.");
     view.error = error instanceof TypeError ? "the connection dropped" : error.message;
   } finally {
     clearTimeout(slow);
     Object.assign(view, { loading: false, slow: false });
   }
+  if (view !== state.costs) return;
   render();
   // The person picked another split while this read was in flight.
   if (!view.error && state.data?.spend?.costs.by !== view.by) loadCosts();
@@ -1034,13 +1036,15 @@ function costsPage(compact) {
   const failed = state.costs.error
     ? html`<p class="note warn" role="alert">${icon("circle-x", "s15")}<span>Could not load costs: ${state.costs.error}. Check that the daemon runs on its runner, then retry.</span><button class="ghost" data-action="costs-retry">Retry</button></p>`
     : "";
+  const asOf = spend && (state.failed || state.costs.error) ? html`<p class="note asof"><span>Costs as read ${timeTag(new Date(spend.updated).toISOString(), date(new Date(spend.updated).toISOString()))}.</span></p>` : "";
   let body;
   if (spend) body = wide ? html`<div class="spend"><div>${costsPart(spend.costs)}</div><div>${attentionPart(spend.attention)}</div></div>` : shown === "costs" ? costsPart(spend.costs) : attentionPart(spend.attention);
   else body = state.costs.slow ? html`<div class="sk" aria-hidden="true"><span></span><span></span><span></span></div>` : "";
-  return html`${head}<div class="panel" role="region" aria-label="Costs" data-costs>${chips}<div class="scroll">${failed}${body}</div></div>`;
+  return html`${head}<div class="panel" role="region" aria-label="Costs" data-costs>${chips}<div class="scroll">${failed}${asOf}${body}</div></div>`;
 }
 
-const deltaLine = (delta) => (delta ? html`<span class="delta">${icon(delta.direction === "down" ? "trending-down" : "trending-up", "s13")}${delta.text}</span>` : html`<span class="delta">No change to show</span>`);
+const TRENDS = { up: "trending-up", down: "trending-down" };
+const deltaLine = (delta) => (delta ? html`<span class="delta">${TRENDS[delta.direction] ? icon(TRENDS[delta.direction], "s13") : ""}${delta.text}</span>` : html`<span class="delta">No change to show</span>`);
 const statTile = (tile) => html`<div class="stat"><span class="lbl">${tile.label}</span><span class="val num">${tile.value}</span>${"delta" in tile ? deltaLine(tile.delta) : html`<span class="delta">${tile.note}</span>`}</div>`;
 
 function costsPart(costs) {
@@ -1727,7 +1731,9 @@ function render() {
   watchSections(app);
   if (app.querySelector("[data-since]")) seen();
   // A render may call this; the read renders again once it ends.
-  if (app.querySelector("[data-costs]") && !state.data.spend && !state.costs.loading && !state.costs.error) setTimeout(loadCosts);
+  const spend = state.data?.spend;
+  const old = !spend || Date.now() - spend.updated > 60000;
+  if (app.querySelector("[data-costs]") && old && !state.failed && !state.costs.loading && !state.costs.error) setTimeout(loadCosts);
   // The sheet lives outside #app; it redraws when the connection drops or comes back under it.
   if (addSheet().open && state.add.shownOffline !== Boolean(state.failed)) renderAdd();
 }
