@@ -4,7 +4,7 @@
 use crate::trace::{self, Trace};
 use herdr_bus::Message;
 use priory_intake::intake::{CHECKED, PASSING, PR_CLOSED, REVIEWED};
-use rusqlite::{Connection, Transaction, params};
+use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use serde_json::{Value, json};
 
 /// The labels that settle a task's outcome, so its grade counts as calibrated.
@@ -72,15 +72,17 @@ pub(crate) fn label(tx: &Transaction, trace: &Trace, message: &Message) -> rusql
     Ok(())
 }
 
-/// Labels `approval-rejected` the task whose human step `answer` ends, when it rejects.
+/// Labels `approval-rejected` the task whose human step `answer` ends, when it rejects: its option
+/// starts with `reject`, or it sends the task to `stop`.
 pub(crate) fn answered(
     tx: &Transaction,
     trace: &Trace,
     task: i64,
     step: &str,
     answer: &str,
+    target: &str,
 ) -> rusqlite::Result<()> {
-    if !answer.to_lowercase().starts_with("reject") {
+    if target != "stop" && !answer.to_lowercase().starts_with("reject") {
         return Ok(());
     }
     trace::labeled(
@@ -158,27 +160,24 @@ fn merged(
     trace::labeled(tx, trace, task, "approved-clean", url)
 }
 
-/// The first head after the first human review of `pull` that differs from the head reviewed, as
-/// evidence of a push after review; none when every later event names the reviewed head.
+/// The merged head of `pull` when it is not the commit of its first human review, as evidence of a
+/// push after that review. Events count by when they happened, not when they arrived.
 fn pushed_after_review(tx: &Transaction, pull: &str) -> rusqlite::Result<Option<String>> {
     tx.query_row(
-        "WITH events AS (
-           SELECT seq, type, json_extract(data, '$.head_sha') AS head,
-             coalesce(json_extract(data, '$.actor'), '') AS actor FROM inbox
-           WHERE 'github:' || json_extract(data, '$.repo') || '#' || json_extract(data, '$.pull_request') = ?1
-           AND json_extract(data, '$.head_sha') IS NOT NULL),
-         reviewed AS (SELECT seq, head FROM events
-           WHERE type = ?2 AND actor NOT LIKE '%[bot]' ORDER BY seq LIMIT 1)
-         SELECT 'pushed ' || events.head || ' after the review of ' || reviewed.head
-         FROM events, reviewed WHERE events.seq > reviewed.seq AND events.head != reviewed.head
-         ORDER BY events.seq LIMIT 1",
-        params![pull, REVIEWED],
+        "WITH events AS (SELECT time, type, data FROM inbox
+           WHERE 'github:' || json_extract(data, '$.repo') || '#' || json_extract(data, '$.pull_request') = ?1),
+         reviewed AS (SELECT coalesce(json_extract(data, '$.commit'), json_extract(data, '$.head_sha')) AS head
+           FROM events WHERE type = ?2 AND coalesce(json_extract(data, '$.actor'), '') NOT LIKE '%[bot]'
+           AND coalesce(json_extract(data, '$.commit'), json_extract(data, '$.head_sha')) IS NOT NULL
+           ORDER BY time LIMIT 1),
+         merged AS (SELECT json_extract(data, '$.head_sha') AS head FROM events
+           WHERE type = ?3 AND json_extract(data, '$.merged') = 1 ORDER BY time DESC LIMIT 1)
+         SELECT 'merged ' || merged.head || ' after the review of ' || reviewed.head
+         FROM reviewed, merged WHERE merged.head != reviewed.head",
+        params![pull, REVIEWED, PR_CLOSED],
         |row| row.get(0),
     )
-    .or_else(|error| match error {
-        rusqlite::Error::QueryReturnedNoRows => Ok(None),
-        error => Err(error),
-    })
+    .optional()
 }
 
 /// The pull requests of `repo` whose merge commit is `head`, with their head branches.
@@ -228,7 +227,8 @@ fn reverts(
         .collect::<rusqlite::Result<_>>()?;
     let url = data["url"].as_str().unwrap_or_default();
     for (reverted, merge_commit, branch) in earlier {
-        let named = merge_commit.is_some_and(|sha| text.contains(&sha.to_lowercase()));
+        let named = text.contains("revert")
+            && merge_commit.is_some_and(|sha| text.contains(&sha.to_lowercase()));
         if !named
             && !mentions(
                 &text,
@@ -275,7 +275,7 @@ pub fn grades(db: &Connection, since: Option<String>) -> Result<Grades, String> 
     let error = |error: rusqlite::Error| error.to_string();
     let mut statement = db
         .prepare(
-            "SELECT tasks.grade, tasks.id, group_concat(json_extract(trace.event, '$.data.label'), ' ')
+            "SELECT tasks.grade, group_concat(json_extract(trace.event, '$.data.label'), ' ')
              FROM tasks LEFT JOIN trace ON trace.type = 'factory.step.labeled'
                AND json_extract(trace.event, '$.data.task') = CAST(tasks.id AS TEXT)
              WHERE tasks.grade IS NOT NULL AND (?1 IS NULL OR tasks.created >= ?1)
@@ -283,7 +283,7 @@ pub fn grades(db: &Connection, since: Option<String>) -> Result<Grades, String> 
         )
         .map_err(error)?;
     let tasks: Vec<(String, Option<String>)> = statement
-        .query_map([&since], |row| Ok((row.get(0)?, row.get(2)?)))
+        .query_map([&since], |row| Ok((row.get(0)?, row.get(1)?)))
         .and_then(Iterator::collect)
         .map_err(error)?;
     let rows = crate::tools::GRADES
@@ -296,7 +296,12 @@ pub fn grades(db: &Connection, since: Option<String>) -> Result<Grades, String> 
                 labels: [0; LABELS.len()],
             };
             for (_, labels) in tasks.iter().filter(|(graded, _)| graded == grade) {
-                let labels: Vec<&str> = labels.as_deref().unwrap_or_default().split(' ').collect();
+                let mut labels: Vec<&str> =
+                    labels.as_deref().unwrap_or_default().split(' ').collect();
+                // A review that arrived after the merge still requested a change.
+                if labels.contains(&"changes-requested") {
+                    labels.retain(|label| *label != "approved-clean");
+                }
                 row.tasks += 1;
                 row.outcomes += i64::from(FINAL.iter().any(|label| labels.contains(label)));
                 for (count, label) in row.labels.iter_mut().zip(LABELS) {

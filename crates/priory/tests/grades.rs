@@ -17,8 +17,8 @@ start = "approve-plan"
 id = "approve-plan"
 decides = "human"
 effect = "none"
-options = ["approved", "rejected"]
-next = { approved = "done", rejected = "stop" }
+options = ["approved", "rejected", "drop"]
+next = { approved = "done", rejected = "stop", drop = "stop" }
 "#;
 
 const OUTPUT: &str = "factory.intake";
@@ -148,13 +148,14 @@ fn on_pull(kind: &str, number: u64, task: u64, head: &str, data: Value) -> Messa
     Message::new(kind, fields).subject(format!("owner/repo#{number}"))
 }
 
+/// A review written on `head`, when the pull request's head was still `head`.
 fn review(number: u64, task: u64, head: &str, state: &str, id: u64) -> Message {
     on_pull(
         "github.pull_request_review.submitted",
         number,
         task,
         head,
-        json!({ "state": state, "actor": "max", "github_id": id, "body": "" }),
+        json!({ "state": state, "actor": "max", "github_id": id, "body": "", "commit": head }),
     )
 }
 
@@ -209,6 +210,8 @@ fn a_requested_change_or_a_push_after_review_is_not_one_shot() {
     setup.task(1, "green");
     setup.task(2, "green");
     setup.task(3, "green");
+    setup.task(4, "green");
+    setup.task(5, "green");
 
     setup.handle(&[
         review(10, 1, "aaa", "changes_requested", 1),
@@ -217,18 +220,31 @@ fn a_requested_change_or_a_push_after_review_is_not_one_shot() {
         merged(20, 2, "ccc", "m20"),
         review(30, 3, "ddd", "approved", 3),
         merged(30, 3, "ddd", "m30"),
+        // A poll reads a review after the push, so it names the new head beside the commit reviewed.
+        on_pull(
+            "github.pull_request_review.submitted",
+            40,
+            4,
+            "ggg",
+            json!({ "state": "commented", "actor": "max", "github_id": 4, "body": "",
+                    "commit": "fff" }),
+        ),
+        merged(40, 4, "ggg", "m40"),
+        // A review that arrives after the merge still requests a change.
+        merged(50, 5, "hhh", "m50"),
+        review(50, 5, "hhh", "changes_requested", 5),
     ]);
 
     let grades = setup.grades_json();
     assert_eq!(
         grades["one_shot"],
-        json!({ "rate": 1.0 / 3.0, "clean": 1, "outcomes": 3, "target": 0.9 })
+        json!({ "rate": 1.0 / 5.0, "clean": 1, "outcomes": 5, "target": 0.9 })
     );
     assert_eq!(
         labels(&grades, "green"),
         [
             ("approved-clean".to_owned(), 1),
-            ("changes-requested".to_owned(), 2)
+            ("changes-requested".to_owned(), 4)
         ]
     );
 }
@@ -238,6 +254,7 @@ fn a_rejected_approval_and_a_close_without_merge_get_their_labels() {
     let setup = Setup::new("rejected");
     setup.task(1, "red");
     setup.task(2, "green");
+    setup.task(3, "red");
     setup.handle(&[on_pull(
         "github.pull_request.closed",
         20,
@@ -264,7 +281,9 @@ fn a_rejected_approval_and_a_close_without_merge_get_their_labels() {
         std::thread::sleep(Duration::from_millis(50));
     };
     succeeded(&answered);
-    while setup.grades_json()["grades"][0]["outcomes"] == 0 && Instant::now() < deadline {
+    // A gate whose answer stops the task rejects too, whatever its option is called.
+    succeeded(&setup.priory(&["answer", "--revision", "1", "3", "drop"]));
+    while setup.grades_json()["grades"][0]["outcomes"] != 2 && Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(50));
     }
     let _ = daemon.kill();
@@ -273,7 +292,7 @@ fn a_rejected_approval_and_a_close_without_merge_get_their_labels() {
     let grades = setup.grades_json();
     assert_eq!(
         labels(&grades, "red"),
-        [("approval-rejected".to_owned(), 1)]
+        [("approval-rejected".to_owned(), 2)]
     );
     assert_eq!(
         labels(&grades, "green"),
@@ -285,7 +304,7 @@ fn a_rejected_approval_and_a_close_without_merge_get_their_labels() {
 #[test]
 fn a_revert_pr_labels_the_original_and_a_failing_check_at_its_merge_commit_too() {
     let setup = Setup::new("reverted");
-    for task in 1..=4 {
+    for task in 1..=5 {
         setup.task(task, "green");
     }
     let revert = |number: u64, title: &str, body: &str| {
@@ -304,11 +323,17 @@ fn a_revert_pr_labels_the_original_and_a_failing_check_at_its_merge_commit_too()
         merged(2, 2, "bbb", "m2"),
         merged(3, 3, "ccc", "m3"),
         merged(25, 4, "ddd", "m25"),
+        merged(5, 5, "eee", "2222222222222222222222222222222222222222"),
         revert(40, "Revert \"Fix 2\"", "Reverts owner/repo#2"),
         revert(
             41,
             "Undo the first fix",
             "This reverts commit 1111111111111111111111111111111111111111.",
+        ),
+        revert(
+            42,
+            "Export layers",
+            "Builds on commit 2222222222222222222222222222222222222222.",
         ),
         on_pull(
             "github.check_run.completed",
@@ -324,11 +349,11 @@ fn a_revert_pr_labels_the_original_and_a_failing_check_at_its_merge_commit_too()
     assert_eq!(
         labels(&grades, "green"),
         [
-            ("approved-clean".to_owned(), 4),
+            ("approved-clean".to_owned(), 5),
             ("red-after-merge".to_owned(), 1),
             ("reverted".to_owned(), 2)
         ],
-        "#25 is not #2"
+        "#25 is not #2, and building on a commit does not revert it"
     );
 }
 

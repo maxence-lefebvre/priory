@@ -231,6 +231,8 @@ pub struct ReviewSubmitted {
     pub state: String,
     /// The review's summary Markdown, as written; empty when the reviewer wrote none.
     pub body: String,
+    /// The commit the review was written on, which `head_sha` passes once a commit is pushed after it.
+    pub commit: Option<String>,
     /// The GitHub login who reviewed.
     pub actor: Option<String>,
     /// Whether the pull request was open when the intake read it; a done task reopens only

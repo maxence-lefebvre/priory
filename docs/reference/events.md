@@ -345,6 +345,7 @@ The pull request fields, and:
 | ----- | ---- | ------- |
 | `state` | string | `approved`, `changes_requested`, `commented` or `dismissed`, at poll time |
 | `body` | string | The review's summary Markdown, as written; empty when the reviewer wrote none |
+| `commit` | string or null | The commit the review was written on; `head_sha` passes it once a commit is pushed after the review |
 | `actor` | string or null | Who reviewed |
 | `open` | boolean | Whether the pull request was open when the intake read it. A done task reopens only for feedback on an open one |
 | `github_id` | integer | GitHub's review id |
@@ -365,6 +366,7 @@ The pull request fields, and:
     "base_branch": "main",
     "state": "approved",
     "body": "Looks good. One nit inline.",
+    "commit": "4b2ee8eb670ba9f77d54d59ab97ced618f024fb9",
     "actor": "octocat",
     "open": true,
     "time": "2026-11-17T16:40:03Z",

@@ -70,6 +70,8 @@ struct Review {
     body: String,
     submitted_at: Option<String>,
     url: String,
+    #[serde(default)]
+    commit: Option<Oid>,
     author: Option<Login>,
 }
 
@@ -158,6 +160,7 @@ pub(super) fn reviews_and_checks<'a>(
             let mut observed = on_pull(REVIEWED, name, review.database_id, time, &review.url);
             observed.data["state"] = json!(review.state.to_lowercase());
             observed.data["body"] = json!(review.body);
+            observed.data["commit"] = json!(review.commit.as_ref().map(|commit| &commit.oid));
             observed.data["actor"] = json!(review.author.as_ref().map(|author| &author.login));
             observed.data["open"] = json!(pull.state == "OPEN");
             reviews.push(observed);
@@ -272,7 +275,7 @@ pub(super) fn reviews_and_checks<'a>(
 }
 
 const PULL_FIELDS: &str = "fragment pull on PullRequest { number headRefName headRefOid baseRefName merged mergeCommit { oid } body state \
-    reviews(last: 50) { nodes { databaseId state body submittedAt url author { login } } } \
+    reviews(last: 50) { nodes { databaseId state body submittedAt url commit { oid } author { login } } } \
     comments(last: 50) { nodes { databaseId body url createdAt author { login __typename } } } \
     updatedAt commits(last: 1) { nodes { commit { statusCheckRollup { contexts(first: 100) { totalCount nodes { \
     __typename ... on CheckRun { databaseId name status conclusion completedAt url checkSuite { app { slug } } } \

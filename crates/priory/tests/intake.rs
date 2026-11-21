@@ -910,6 +910,7 @@ fn a_submitted_review_and_a_completed_check_publish_once() {
             "body": "Ship it.",
             "submittedAt": "2026-11-17T12:00:00Z",
             "url": "https://github.com/owner/repo/pull/43#pullrequestreview-501",
+            "commit": { "oid": "fff000" },
             "author": { "login": "reviewer" }
         },
         { "databaseId": 502, "state": "PENDING", "submittedAt": null, "url": "u", "author": null }
@@ -963,6 +964,7 @@ fn a_submitted_review_and_a_completed_check_publish_once() {
             "base_branch": "main",
             "state": "approved",
             "body": "Ship it.",
+            "commit": "fff000",
             "actor": "reviewer",
             "open": true,
             "time": "2026-11-17T12:00:00Z",
