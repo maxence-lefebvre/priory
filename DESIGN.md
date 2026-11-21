@@ -1284,8 +1284,8 @@ The web's [Tasks panel](#tasks-panel), as a tab in the center stack.
 
 The web's [Runs panel](#runs-panel), as a tab in the center stack.
 
-- Under the 44 px header, the saved views Recent and Live as chips with their counts, then an
-  Outcome, Agent and Step chip each, as in Tasks.
+- Under the 44 px header, the saved views Recent and Live as chips with their counts after the
+  facets, then an Outcome, Agent and Step chip each, as in Tasks.
 - Every row is a run row at every width: the run state's tile, the task key in mono, step, the
   state word in its role's text color and how long ago it started in `--text-3`; the agent and
   model in `--type-small`; then "run 92 · passed · 42 min · 312k tokens" in `--text-3`. A row

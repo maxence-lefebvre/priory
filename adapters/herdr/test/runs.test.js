@@ -30,7 +30,7 @@ test("Recent lists the last week's runs newest first, each with its task, agent,
   assert.match(shown, /Recent 3 Live 1/);
   assert.match(shown, /ENG-244 review running .* reviewer run 93 · 10 min/);
   assert.match(shown, /ENG-212 implement moved .* coder, claude-sonnet-5-5 run 92 · passed · 42 min · 312k tokens/);
-  assert.match(shown, /ENG-219 implement failed .* run 91 · 1 h 5 min/);
+  assert.match(shown, /ENG-219 implement failed Nov 16, 08:00 no agent run 91 · 1 h 5 min/);
   assert.doesNotMatch(shown, /ENG-150/);
 });
 
@@ -47,9 +47,12 @@ test("Live lists only the runs still going", async () => {
 test("the Outcome facet finds a run by how it ended or by its result's outcome", async () => {
   const { drawn } = await runs();
 
+  assert.match(text(drawn()), /Outcome failed 1 moved 1 passed 1 running 1 /, "values A to Z, counted over the week's runs");
+
   press(drawn(), "pick-outcome-passed");
 
   const shown = text(drawn());
+  assert.match(shown, /Recent 1 Live 0/, "the views count the filtered runs");
   assert.match(shown, /ENG-212/);
   assert.doesNotMatch(shown, /ENG-244|ENG-219/);
 });

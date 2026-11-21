@@ -578,7 +578,7 @@ DESIGN.md's "Runs" section holds its visual rules; this section says how it work
 - **Facets.** Outcome, Agent and Step, as the Tasks panel's. Outcome holds both how a run ended
   and its result's outcome, so `moved` and `passed` both find a moved run that passed.
 - **Rows.** Each row shows the run's state tile, task key, step, state and how long ago it
-  started, then its agent and model, then its id, outcome, duration and tokens. Pressing a row
+  started (a date after a day), then its agent and model, or "no agent", then its id, outcome, duration and tokens. Pressing a row
   opens its task in the [Task panel](#the-task-panel), whose History lists the task's runs.
 
 ## The Flows panel
