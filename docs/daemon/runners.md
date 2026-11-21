@@ -102,7 +102,9 @@ publishes the answer on the log of the factory in `DIR`, `.` by default, instead
 this machine's daemon. Only that runner
 applies it, through the same check as a local answer: the first answer to a revision stands, and
 a later one is refused and recorded. A runner that is away applies it when its daemon starts again.
-The ask's id and revision are the ones that runner's `priory asks` prints.
+The ask's id and revision are the ones that runner's `priory asks` prints. An ask of this machine
+whose name is `<runner>:<ask>` is answered here first. `priory answer` refuses a runner without a
+runner file with `runner <runner> has no runner file in runners/`.
 
 ## Giving a task to another runner
 

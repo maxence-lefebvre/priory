@@ -511,6 +511,9 @@ pub fn answer(
     runner: &str,
     answer: &crate::tools::Answer,
 ) -> Result<String, String> {
+    if !factory.runners.contains_key(runner) {
+        return Err(format!("runner {runner} has no runner file in runners/"));
+    }
     let mut data = serde_json::to_value(answer).map_err(|error| error.to_string())?;
     data["runner"] = json!(runner);
     publish(

@@ -1573,13 +1573,17 @@ fn answer(mut args: Vec<String>) -> ExitCode {
         [dir, ask, text] => (dir.as_str(), ask, text),
         _ => return usage(),
     };
-    // Another runner's ask goes through the log; it applies it when it reads it.
-    let remote = ask
-        .split_once(':')
+    // This machine's ask by its number or name, else another runner's, which goes through the log
+    // and applies when that runner reads it.
+    let local = ask_id(ask);
+    let remote = local
+        .is_err()
+        .then(|| ask.split_once(':'))
+        .flatten()
         .and_then(|(runner, id)| Some((runner, id.parse::<i64>().ok()?)));
-    let ask = match remote.map_or_else(|| ask_id(ask), |(_, id)| Ok(id)) {
-        Ok(ask) => ask,
-        Err(error) => return exit("answer", Err(error)),
+    let ask = match (remote, local) {
+        (Some((_, id)), _) | (None, Ok(id)) => id,
+        (None, Err(error)) => return exit("answer", Err(error)),
     };
     let answer = tools::Answer {
         ask,

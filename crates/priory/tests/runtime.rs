@@ -16636,6 +16636,27 @@ fn a_runner_added_to_a_factory_that_had_one_does_not_run_its_finished_requests_a
 }
 
 #[test]
+fn an_answer_to_the_ask_of_a_runner_without_a_runner_file_is_refused() {
+    let b = runner("answer-unknown", "b", None);
+    let factory = b.dir.join("factory");
+
+    let sent = b.priory(&[
+        "answer",
+        factory.to_str().unwrap(),
+        "c:1",
+        "approved",
+        "--revision",
+        "1",
+    ]);
+
+    assert_eq!(
+        String::from_utf8_lossy(&sent.stderr),
+        "priory answer: runner c has no runner file in runners/\n"
+    );
+    assert!(!sent.status.success());
+}
+
+#[test]
 fn a_runners_task_branch_names_the_runner_since_task_ids_overlap_across_runners() {
     let mut a = runner("branch", "a", None);
     a.publish(&requested(1));
