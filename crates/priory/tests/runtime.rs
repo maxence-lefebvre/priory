@@ -15481,6 +15481,31 @@ fn a_comment_on_the_middle_pull_request_wakes_the_task_naming_its_place_in_the_s
 }
 
 #[test]
+fn a_comment_on_a_merged_pull_request_of_an_open_stack_wakes_the_task() {
+    let setup = opened_stack("stack-merged-comment");
+    setup.publish(&merged(9));
+    stays_asleep_after(&setup, 1);
+    let comment = on_stack(
+        9,
+        "github.pull_request.comment",
+        json!({ "actor": "ana", "body": "This drops the BOM, fix it in #8.", "url": "u",
+                "github_id": 901, "open": false }),
+    )
+    .time(herdr_bus::Timestamp::now());
+
+    setup.publish(&comment);
+
+    let outbox = setup.until("outbox", |rows| rows.len() == 2);
+    assert!(
+        outbox[1][4].contains(
+            "ana commented on github:owner/repo#9 (#9, 3 of 3): This drops the BOM, fix it in #8. u"
+        ),
+        "{outbox:?}"
+    );
+    setup.until("runs", |rows| rows.len() == 2);
+}
+
+#[test]
 fn a_stack_whose_every_pull_request_is_green_posts_one_report_naming_the_one_to_merge_first() {
     let setup = opened_stack("stack-green");
     let worktree = setup.dir.join("home/worktrees/owner/repo/1");

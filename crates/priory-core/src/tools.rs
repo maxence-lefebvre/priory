@@ -1257,7 +1257,29 @@ pub(crate) fn event(
             .map(|(repo, number)| route::pull_request(repo, number));
         // Each pull request of a stack has its own gate, which only its events decide.
         if daemon && on.as_deref() != Some(resource.as_str()) {
-            continue;
+            // A merged pull request's gate already fired, so a person's feedback on it fires the
+            // lowest open one, which is this one since gates are visited in id order.
+            let Some(on) = on else {
+                continue;
+            };
+            if !merged_in_stack(tx, task, &on)? {
+                continue;
+            }
+            let place = crate::stack::place(tx, task, &on)?;
+            let said = feedback(&on, place.as_deref(), &kind_of_event, &data)
+                .filter(|_| later || kind_of_event == REVIEWED || data["own"] == false)
+                .filter(|_| !settles(&kind_of_event, &data));
+            let Some(said) = said else {
+                continue;
+            };
+            fire(
+                tx,
+                wait,
+                task,
+                &format!("wait {wait} fired: {said}"),
+                Some(seq),
+            )?;
+            return Ok((true, None));
         }
         // A comment written before the wait, such as the agent's own, wakes nothing.
         let place = crate::stack::place(tx, task, &resource)?;
@@ -1302,6 +1324,16 @@ pub(crate) fn event(
         return Ok((true, None));
     }
     Ok((false, None))
+}
+
+/// Whether `resource` is a merged pull request of the stack of `task`.
+fn merged_in_stack(tx: &Transaction, task: i64, resource: &str) -> rusqlite::Result<bool> {
+    tx.query_row(
+        "SELECT EXISTS (SELECT 1 FROM pull_requests WHERE task = ?1 AND resource = ?2
+           AND state = 'merged')",
+        params![task, resource],
+        |row| row.get(0),
+    )
 }
 
 /// The events of a person's feedback on a pull request.
