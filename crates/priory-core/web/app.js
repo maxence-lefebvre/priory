@@ -892,12 +892,14 @@ function taskSections(task) {
   return sections;
 }
 
+const TRIAGE_TILES = { trivial: "ready", "nothing-to-do": "dropped", "persons-call": "ask" };
+
 // How the agent sorted each review feedback item: trivial, nothing-to-do or persons-call.
 function triageList(triage) {
   if (!triage?.length) return "";
   const label = (item) => item.replace(/^https:\/\/github\.com\//, "");
   const named = (item) => (item.startsWith("https://") ? html`<a class="autolink" href="${item}" rel="noopener noreferrer" target="_blank">${label(item)}</a>` : item);
-  return html`<p class="meta">Feedback, as the agent sorted it</p><ol class="hist" aria-label="Review feedback items">${triage.map((entry) => html`<li><span>${named(entry.item)}</span><span class="tag">${entry.class}</span></li>`)}</ol>`;
+  return html`<p class="meta">Feedback, as the agent sorted it</p><ol class="hist" aria-label="Review feedback items">${triage.map((entry) => html`<li>${tile(TRIAGE_TILES[entry.class] || "queued", "sm")}<span>${named(entry.item)}</span><span>${entry.class}</span></li>`)}</ol>`;
 }
 
 const PULL_TILES = { merged: "done", closed: "dropped" };
