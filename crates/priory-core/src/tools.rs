@@ -1992,7 +1992,7 @@ fn settle(tx: &Transaction, run: &Run, trace: &Trace) -> rusqlite::Result<Option
                     run.step,
                     format!("{}: approve the plan graded {outcome}? {summary}", run.step),
                     serde_json::to_string(&PLAN_OPTIONS).expect("options serialize"),
-                    plan_text(tx, run.task)?
+                    ask_text(tx, run.task)?
                 ],
             )?;
             end(tx, run.id, "asleep")?;
@@ -3506,8 +3506,8 @@ pub(crate) fn approved(
     tx.execute(
         // Asked again, an ask that a revive withdrew belongs to the current generation.
         "UPDATE asks SET revision = revision + 1, answer = NULL, answered = NULL, answered_by = NULL, withdrawn = NULL,
-         withdrawn_reason = NULL, question = question || ?2 WHERE id = ?1",
-        params![ask, moved],
+         withdrawn_reason = NULL, question = question || ?2, text = ?3 WHERE id = ?1",
+        params![ask, moved, ask_text(&tx, task)?],
     )?;
     unqueue(&tx, task, &entry_prompt(&tx, task, at)?)?;
     set(&tx, task, "asleep", Some(&approving), None)?;
