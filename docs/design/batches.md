@@ -19,9 +19,8 @@ its pull request is based on it.
 - **Skip the overlap hold for a stacking pair.** Built: see [runs.md](../daemon/runs.md#overlapping-files).
   The hold skips the tasks an entry stacks on, its parent and that parent's own parents, since the
   entry's branch holds their commits.
-- **Handle the retarget before the merge.** GitHub may send the retarget of the entry's pull request
-  before the close of the parent's. The daemon records the expected base when the close arrives;
-  a retarget seen first, on an entry with several pull requests, could still ask a person.
+- **Handle the retarget before the merge.** Built: see
+  [daemon/batches.md](../daemon/batches.md#the-waiting-condition-and-stacked-entries).
 
 ## Open questions
 

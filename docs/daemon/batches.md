@@ -6,7 +6,7 @@ one go, and the daemon creates one task per entry. Each entry starts once the en
 merged, or, at a `waiting` edge, once its stacking parent waits on its open pull request.
 
 This page describes `merged` and `waiting` moments, stacked entries, edits of a plan, split issues,
-the desk line, the HTTP API and the web view. The rest of stacked entries comes later; see
+the desk line, the HTTP API and the web view. The open questions about batches are in
 [design/batches.md](../design/batches.md).
 
 ## A batch's life
@@ -204,7 +204,8 @@ A `waiting` edge makes a stack across two tasks. The go records the parent as th
 - When the parent's pull request merges, the entry gets the line a task's own stack gets: `#7 merged;
   rebase #8 onto main`. It fires the entry's gate, reaches the entry while it runs, or reopens it
   when its checks already made it `done`. The daemon records the merged one's base as the base of
-  the entry's bottom pull request, so the retarget GitHub makes asks no person.
+  the entry's bottom pull request, so the retarget GitHub makes asks no person. A retarget onto
+  that base that arrives before the parent's close asks no person either.
 
 Once the parent's pull request merged, a stacked entry that has not started yet starts from the
 default branch, and its pull request is based on it.

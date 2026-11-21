@@ -19441,6 +19441,11 @@ fn a_codex_run_gets_the_factorys_instructions_before_its_prompt_and_each_run_rec
 /// A batch over `ENG-40` and `ENG-41` on `OPEN_PR`, `ENG-41` stacked on `ENG-40` at `waiting`, after
 /// task 2 committed `a.txt`, opened pull request 7 and went to sleep on its checks.
 fn stacked_entry(name: &str) -> Setup {
+    stacked_entry_with(name, passed_with_evidence())
+}
+
+/// `stacked_entry`, whose task 3 ends its run with `call`.
+fn stacked_entry_with(name: &str, call: serde_json::Value) -> Setup {
     let mut setup = batched_with(name, OPEN_PR);
     let mut entries = [entry("e1", "ENG-40", &[]), entry("e2", "ENG-41", &["e1"])];
     entries[1]["after"][0]["moment"] = json!("waiting");
@@ -19448,7 +19453,7 @@ fn stacked_entry(name: &str) -> Setup {
     batch_add(&setup, &["ENG-40", "ENG-41"]);
     setup.start();
     let go = setup.until("asks", |rows| rows.len() == 1);
-    setup.calls(&[passed_with_evidence(), passed_with_evidence()]);
+    setup.calls(&[passed_with_evidence(), call]);
     person(&setup, "answer", &[&go[0][0], "go", "--revision", "1"]);
     let asks = setup.until("asks", |rows| rows.iter().any(|row| row[1] == "2"));
     setup.gone("priory-2");
@@ -19660,6 +19665,59 @@ fn the_predecessors_pull_request_merging_wakes_the_waiting_entry_to_rebase_onto_
         "{woke:?}"
     );
     assert!(setup.rows("asks").is_empty());
+}
+
+#[test]
+fn a_retarget_of_a_stacked_entrys_bottom_seen_before_its_predecessors_merge_asks_no_one() {
+    let setup = stacked_entry_with(
+        "batch-waiting-retarget-first",
+        stacked(&["priory/3-a", "priory/3"]),
+    );
+    let asks = setup.until("asks", |rows| rows.iter().any(|row| row[1] == "3"));
+    setup.gone("priory-3");
+    let bottom = setup.commit(3, "b.txt");
+    let worktree = setup.dir.join("home/worktrees/owner/repo/3");
+    assert!(
+        git(&worktree)
+            .args(["branch", "priory/3-a", &bottom])
+            .status()
+            .unwrap()
+            .success()
+    );
+    setup.commit(3, "d.txt");
+    person(&setup, "answer", &[&asks[0][0], "open", "--revision", "1"]);
+    setup.until("tasks", |rows| {
+        rows.iter().any(|row| row[0] == "3" && row[4] == "asleep")
+    });
+
+    // GitHub retargets #8 onto main before the intake sees #7 close.
+    let mut retargeted = on_pull(
+        "github.check_run.completed",
+        json!({
+            "name": "check 1", "conclusion": "success", "github_id": 1, "pending": 1, "failing": 0,
+            "pull_request": 8, "head_branch": "priory/3-a", "head_sha": bottom,
+        }),
+    );
+    retargeted = retargeted.subject("owner/repo#8");
+    setup.publish(&retargeted);
+    setup.publish(&on_pull_2(
+        "github.pull_request.closed",
+        json!({ "merged": true, "github_id": 400 }),
+    ));
+
+    let outbox = setup.until("outbox", |rows| {
+        rows.iter()
+            .any(|row| row[1] == "3" && row[4].contains("merged; rebase"))
+    });
+    let woke = outbox
+        .iter()
+        .find(|row| row[1] == "3" && row[4].contains("merged; rebase"))
+        .unwrap();
+    assert!(
+        woke[4].contains("#7 merged; rebase #8 and #9 onto main"),
+        "{woke:?}"
+    );
+    assert!(setup.rows("asks").is_empty(), "{:?}", setup.rows("asks"));
 }
 
 #[test]

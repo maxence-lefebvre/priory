@@ -1496,7 +1496,11 @@ fn judge(tx: &Transaction, wait: i64, factory: &Factory) -> rusqlite::Result<Fir
         fire(tx, wait, task, &reason, Some(newest.seq))?;
         return Ok((true, None));
     }
-    if let Some(asked) = retargeted(task, &stack, &resource, newest)
+    let expected = match stack.first() {
+        Some(bottom) => expected_base(tx, task, &bottom.base)?,
+        None => None,
+    };
+    if let Some(asked) = retargeted(task, &stack, &resource, newest, expected.as_deref())
         && !answered(tx, &asked.name)?
     {
         return Ok((ask_stack(tx, task, asked)?, None));
@@ -1645,16 +1649,19 @@ fn answered(tx: &Transaction, name: &str) -> rusqlite::Result<bool> {
 }
 
 /// The ask when `resource`, the bottom of `stack`, is now based on another branch than its trunk,
-/// as when someone retargets it by hand: Priory cannot tell where the stack should land.
+/// as when someone retargets it by hand: Priory cannot tell where the stack should land. The
+/// `expected` base, which a stacked task's bottom moves to once its parent's pull request merges,
+/// asks no one, even when the retarget arrives before that merge.
 fn retargeted(
     task: i64,
     stack: &[crate::stack::Pull],
     resource: &str,
     seen: &Seen,
+    expected: Option<&str>,
 ) -> Option<StackAsk> {
     let bottom = stack.first().filter(|_| stack.len() > 1)?;
     let base = seen.data["base_branch"].as_str()?;
-    if bottom.resource != resource || base == bottom.base {
+    if bottom.resource != resource || base == bottom.base || Some(base) == expected {
         return None;
     }
     Some(StackAsk {
@@ -1666,6 +1673,19 @@ fn retargeted(
         ),
         onto: bottom.base.clone(),
     })
+}
+
+/// The base of the pull request that the task `task` stacks on from `branch`, its bottom's base:
+/// where GitHub retargets that bottom once the parent's pull request merges.
+fn expected_base(tx: &Transaction, task: i64, branch: &str) -> rusqlite::Result<Option<String>> {
+    tx.query_row(
+        "SELECT parent.base FROM tasks JOIN pull_requests AS parent
+           ON parent.task = tasks.base_task AND parent.branch = ?2
+         WHERE tasks.id = ?1 ORDER BY parent.created DESC LIMIT 1",
+        params![task, branch],
+        |row| row.get(0),
+    )
+    .optional()
 }
 
 /// The open pull requests above position `at` of `stack`, as `#8`.
