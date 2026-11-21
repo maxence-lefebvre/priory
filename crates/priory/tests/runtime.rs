@@ -6316,6 +6316,49 @@ fn green_checks_leave_a_task_before_a_step_after_the_merge_asleep_and_the_merge_
 }
 
 #[test]
+fn a_merge_that_moves_a_said_run_to_another_agent_kills_its_session_and_starts_the_next_step() {
+    let workflow = AFTER_MERGE.replace(
+        "agent = \"implementer\"\nprompt = \"Watch",
+        "agent = \"reviewer\"\nprompt = \"Watch",
+    );
+    let mut setup = Setup::with_workflow("after-merge-said", &workflow);
+    setup.calls(&[
+        wait(on_pull_7("review")),
+        passed_at("abc0000000000000000000000000000000000000"),
+        serde_json::Value::Null,
+        json!({ "name": "result", "arguments": { "outcome": "quiet", "summary": "all quiet" } }),
+    ]);
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("runs", |rows| rows.len() == 1 && rows[0][7] == "asleep");
+    setup.publish(&reviewed());
+    setup.until("runs", |rows| rows.len() == 2 && rows[1][7] == "asleep");
+    // The person's turn is still going when the pull request merges.
+    setup.hold("hold-stop");
+    assert!(setup.priory(&["say", "1", "Hold on."]).status.success());
+    setup.until("outbox", |_| {
+        setup
+            .typed()
+            .iter()
+            .any(|text| text.starts_with("A person says: Hold on."))
+    });
+    let said = fs::read_to_string(setup.dir.join("fake/pid")).unwrap();
+
+    setup.publish(&closed());
+    setup.release("hold-stop");
+
+    setup.until("tasks", |rows| rows[0][4] == "done");
+    let runs = setup.rows("runs");
+    assert_eq!(runs.len(), 4, "{runs:?}");
+    assert_eq!(runs[3][2], "watch");
+    let alive = Command::new("kill")
+        .args(["-0", said.trim()])
+        .status()
+        .unwrap();
+    assert!(!alive.success(), "the said run's agent {said} still runs");
+}
+
+#[test]
 fn a_merge_with_a_check_still_running_marks_the_task_done() {
     let setup = gated("gate-merged");
     setup.publish(&check(1, 1));

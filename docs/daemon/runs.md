@@ -14,7 +14,8 @@ its ask and the task falls `asleep`, as a move into the step does, so a workflow
 step. A held task gets its ask once its hold releases it.
 
 The daemon creates the worktree, records the run and task as `running`, then starts the agent's
-harness in a detached tmux session named `priory-<task id>`, in the worktree. An agent with
+harness in a detached tmux session named `priory-<task id>`, in the worktree. It first kills a
+session of that name left by an ended run, since the task has no other live run. An agent with
 `harness = "claude-code"` runs `claude` (below). One with `harness = "codex"` runs `codex` (see
 Codex). Each step starts its own agent's harness, so one workflow can mix both.
 `claude` gets:

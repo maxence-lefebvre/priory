@@ -1533,6 +1533,8 @@ fn start(
             lanes: factory.lanes(),
         },
     )?;
+    // The new run is the task's only live one, so a session of this name is an ended run's agent.
+    runtime::kill(&tmux);
     let first = match agent.value.harness {
         Harness::Codex => state::claim(db, run)?,
         Harness::ClaudeCode => None,
