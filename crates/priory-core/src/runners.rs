@@ -646,9 +646,29 @@ pub(crate) fn lapsed(alive: Option<Timestamp>, at: Timestamp) -> bool {
     alive.is_none_or(|alive| at.duration_since(alive) >= LEASE)
 }
 
+/// `message` at the log's own time when the log gives one, so leases compare one clock rather than
+/// each runner's. Only the runners' messages take it: routing reads the others' event times.
+pub(crate) fn clocked(mut message: Message, logged: Option<Timestamp>) -> Message {
+    if let Some(logged) = logged
+        && [ALIVE, CLAIMED, HELD].contains(&message.kind.as_str())
+    {
+        message.time = logged;
+    }
+    message
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_runner_message_takes_the_logs_time_and_an_event_keeps_its_own() {
+        let alive = Message::new(ALIVE, json!({ "runner": "a" })).time(at(0));
+        let request = Message::new("factory.task.requested", json!({})).time(at(0));
+        assert_eq!(clocked(alive.clone(), Some(at(5))).time, at(5));
+        assert_eq!(clocked(alive, None).time, at(0));
+        assert_eq!(clocked(request, Some(at(5))).time, at(0));
+    }
 
     const T0: &str = "2026-11-21T10:00:00Z";
 

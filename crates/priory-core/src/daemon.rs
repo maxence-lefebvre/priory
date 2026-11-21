@@ -1810,7 +1810,8 @@ fn drain(
             return Ok(());
         }
         for delivery in deliveries {
-            let ended = state::handle(db, &delivery.message, trace, counter)?;
+            let message = runners::clocked(delivery.message.clone(), delivery.logged);
+            let ended = state::handle(db, &message, trace, counter)?;
             bus.ack(consumer, &delivery)?;
             ended.inspect(|tmux| runtime::kill(tmux));
         }

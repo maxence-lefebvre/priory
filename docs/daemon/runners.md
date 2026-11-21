@@ -73,6 +73,11 @@ Each daemon publishes `priory.runner.alive` once a minute. A runner's lease ends
 its last alive message. Lease times compare message times in log order, never a reader's clock, so
 every runner agrees on which lease ended at which message.
 
+On Postgres, an alive, claim or held message takes the time the database stored it, so the leases
+compare one clock. On herdr-bus, each message keeps its sender's time, so a takeover compares two
+machines' clocks. Keep the runners' clocks synchronized, with NTP, or a runner whose clock runs
+ahead takes waiting tasks before their lease ends.
+
 When a runner reads its own alive message, it claims each `waiting` key of another runner whose
 lease ended before it. That takeover wins only if the old owner sent no alive message in between
 and the key is still `waiting`. The new owner creates the task from its request.
