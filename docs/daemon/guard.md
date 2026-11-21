@@ -25,6 +25,11 @@ covers them, and `priory check` refuses them in an `autonomous` step's `guard.al
 workflow's. So no call the guard reads merges or approves a pull request without a human step
 that approves the step making it.
 
+`priory-person` covers Priory's own verbs that only a person runs, such as `priory answer`, which
+would let an agent approve its own step. Nothing grants it: `priory check` refuses it in any
+`guard.allow`, so the guard denies it in every run. Those verbs also refuse to run in a shell that
+has `PRIORY_SESSION`, which every run's pane sets.
+
 A call that runs several guarded commands, such as `gh pr merge 12 && git push --force`, needs a yes
 for each one. A call that also moves the branch's commit, such as `git commit -am fix && gh pr
 merge 12`, cannot rely on an approval bound to the commit before it: the guard denies it and tells
@@ -46,18 +51,28 @@ A run with no task step, such as the stall handler, is denied every guarded call
 
 | Guard | Matches |
 | ----- | ------- |
-| `gh-pr-merge` | `gh pr merge`; a `gh api` write to `repos/<owner>/<repo>/pulls/<n>/merge`, or to `graphql` with `mergePullRequest`, `enablePullRequestAutoMerge` or a body read from a file; and MCP tools named `merge_pull_request` |
-| `gh-pr-approve` | `gh pr review` with `--approve` or `-a`; a `gh api` write to a pull request's `reviews` with `event=APPROVE` or a body read from a file; and a `gh api` write to `graphql` with a `PullRequestReview` mutation and `APPROVE` |
+| `gh-pr-merge` | `gh pr merge`; a `gh api` write to `repos/<owner>/<repo>/pulls/<n>/merge` or `repos/<owner>/<repo>/merges`, or to `graphql` with `mergePullRequest`, `enablePullRequestAutoMerge` or a body read from a file; and MCP tools named `merge_pull_request` or `enable_pr_auto_merge` |
+| `gh-pr-approve` | `gh pr review` with `--approve`, or `-a` alone or in a cluster such as `-ab`; a `gh api` write to a pull request's `reviews` with `event=APPROVE` or a body read from a file; a `gh api` write to `graphql` with a `PullRequestReview` mutation and `APPROVE`; and MCP tools named `pull_request_review_write`, `create_pull_request_review`, `create_and_submit_pull_request_review` or `submit_pending_pull_request_review`, whatever review they write, since the guard cannot read their arguments |
 | `gh-pr-comment` | `gh pr comment` |
 | `gh-issue-comment` | `gh issue comment` |
 | `gh-api-write` | `gh api` with a method other than GET, or with a field or `--input`, which make it a POST, other than the merges and approvals above |
-| `git-push-default` | `git push` whose destination is `main`, `master` or `origin/HEAD`'s branch, a push with no refspec from that branch, `--all`, `--branches` and wildcard refspecs |
-| `git-push-force` | `git push` with `--force`, `--force-with-lease`, `-f`, `--mirror`, `--delete`, `-d`, `--prune`, a `+refspec` or a `:branch` deletion |
-| `slack-write` | `curl` to `hooks.slack.com` or `slack.com/api/chat.*`, and `slack chat send` |
-| `linear-write` | `curl` to `api.linear.app` with a body that holds `mutation` or comes from a file, and `linear issue create`, `update`, `delete` or `comment` |
+| `git-push-default` | `git push` whose destination is `main`, `master` or `origin/HEAD`'s branch; a push with no refspec whose `@{push}` or current branch is one of those; `--all`, `--branches` and wildcard refspecs; a push with a `-c` or `--config-env` setting of `push.*`, `branch.*`, `remote.pushDefault` or `remote.<name>.push`; a `gh api` write to `git/refs/heads/<that branch>`; and MCP tools named `push_files`, `create_or_update_file` or `delete_file` |
+| `git-push-force` | `git push` with `--force`, `--force-with-lease`, `-f`, `--mirror`, `--delete`, `-d`, `--prune`, a `+refspec` or a `:branch` deletion; a push while `remote.<name>.mirror` is set, on the command line or in git's config; and a `gh api` `DELETE` of `git/refs/heads/<branch>` or a write to it with `force=true` |
+| `slack-write` | `curl` or `wget` to `hooks.slack.com` or `slack.com/api/chat.*`, and `slack chat send` |
+| `linear-write` | `curl` or `wget` to `api.linear.app` with a body that holds `mutation` or comes from a file, and `linear issue create`, `update`, `delete` or `comment` |
 | `mcp-write` | MCP tools named `add_issue_comment`, `send_message`, `slack_send_message`, `schedule_message`, `slack_schedule_message`, `save_comment`, `create_comment`, `save_issue`, `create_issue` or `update_issue`, on any server but `priory` |
+| `priory-person` | `priory answer`, `dismiss`, `resume`, `revive`, `cancel`, `release`, `hold`, `move`, `say`, `pause`, `unpause`, `snooze`, `seen`, `subscribe`, `unsubscribe` and `report pick`. `priory add`, `request` and `gate` stay open to agents |
+| `unreadable` | A script nested more than 16 levels deep, through `bash -c`, `$(...)`, `eval`, `find -exec` and the like. The guard cannot read it, so the daemon denies it: "too deeply nested for the guard to read". Nothing grants it |
 
-A push to the task's own branch passes, and so do `--help`, `git push --dry-run` and `git push -n`. A factory adds its own guards with `[guard]` in
+An MCP tool's server is the part of its name before the last `__`, so a server named `my__srv`
+cannot hide a tool's name.
+
+A push to the task's own branch passes. A task's branch created since tracking was dropped tracks
+nothing, so a bare `git push` with `push.default = upstream` does not reach the trunk. For an older
+branch that still tracks it, the guard reads the push's destination from `@{push}`. `git push --dry-run`, `git push -n` and a help
+request pass too. A help request is `--help`, or `-h` for `gh` and `git`, after a word that is no
+option and before `--`: in `gh pr merge 12 --body --help` the `--help` is the body, so the merge is
+guarded. A factory adds its own guards with `[guard]` in
 `factory.toml` (see [factory.md](../reference/factory.md#guard)). A factory guard that matches the
 same call as `gh-pr-merge` or `gh-pr-approve`, such as one on `gh pr` or `mcp__github__*`, does not
 rename it: the call keeps its built-in guard.
@@ -71,12 +86,17 @@ The guard parses the command rather than matching its text:
 2. It reads a heredoc body as text, so a pull request body that mentions `git push origin main`
    is not a command. It still reads the `$(...)` and backticks of a body whose delimiter is not
    quoted, and reads the body as a script when a shell on that line reads its stdin, as in
-   `bash <<'EOF'` or `cat <<'EOF' | sh`.
+   `bash <<'EOF'` or `cat <<'EOF' | sh`. A heredoc inside `$(...)` is read the same way, so an
+   apostrophe in its body hides nothing after it. It reads a here-string, and the text `echo` or
+   `printf` pipes, as a script when a shell reads it, as in `bash <<< '...'` or
+   `echo '...' | sh`.
 3. It drops redirections, with their descriptor numbers, such as `2>/dev/null`.
 4. It drops leading `NAME=value` assignments and shell keywords, then unwraps `env`, `sudo`, `doas`,
-   `nice`, `nohup`, `timeout`, `time`, `stdbuf`, `xargs`, `command` and `exec`, with their options.
-   It reads the script that `sh -c`, `bash -c`, `zsh -c`, `env -S` or `eval` runs, `$'...'` quotes
-   included.
+   `nice`, `nohup`, `setsid`, `timeout`, `time`, `stdbuf`, `xargs`, `command` and `exec`, with
+   their options. It reads the script that `sh -c`, `bash -c`, `zsh -c`, `env -S` or `eval` runs,
+   `$'...'` quotes with their `\xHH` and octal escapes decoded to a byte as Bash does, the commands
+   of `find -exec` as well as `find` itself, the
+   body of `function f { ...; }`, and a brace list such as `{gh,pr,merge,12}`.
 5. It names the program by its file name, so `/usr/bin/gh` is `gh`.
 6. It drops options and the values of the options that take one, such as `gh -R` and `git -C`, then
    compares the first words left with each guard.
@@ -85,9 +105,11 @@ A quoted mention, such as `echo 'gh pr merge 12'`, and a search term, such as
 `gh pr list --search merge`, are not calls.
 
 The guard is not a sandbox. It does not see a program named by a variable, such as
-`x=gh; $x pr merge 12`, a script file the agent writes and then runs, or another HTTP client such as
-`wget` or `python`. It stops an agent that reaches for an irreversible tool directly or through a
-wrapper.
+`x=gh; $x pr merge 12`, a script file the agent writes and then runs, another HTTP client such as
+`python`, or a line written straight to the daemon's
+socket, as with `nc`. Nor does it see `priory report reply` run with `PRIORY_SESSION` unset, which
+the daemon stores as a person's reply. It stops an agent that reaches for an irreversible tool
+directly or through a wrapper.
 
 ## The hook and its deadline
 

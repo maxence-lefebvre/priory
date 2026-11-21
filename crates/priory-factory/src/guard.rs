@@ -69,6 +69,28 @@ const TOOLS: &[&str] = &[
     "update_issue",
 ];
 
+/// MCP tools that a command guard covers. The guard cannot read a tool's arguments, so any review
+/// counts as an approval and any file write as a push to the default branch.
+const NAMED_TOOLS: &[(&[&str], &str)] = &[
+    (
+        &["merge_pull_request", "enable_pr_auto_merge"],
+        "gh-pr-merge",
+    ),
+    (
+        &[
+            "pull_request_review_write",
+            "create_pull_request_review",
+            "create_and_submit_pull_request_review",
+            "submit_pending_pull_request_review",
+        ],
+        "gh-pr-approve",
+    ),
+    (
+        &["push_files", "create_or_update_file", "delete_file"],
+        "git-push-default",
+    ),
+];
+
 /// Every built-in guard's name, for `check` and `--explain`.
 pub const BUILT_IN: &[&str] = &[
     "gh-pr-merge",
@@ -81,10 +103,48 @@ pub const BUILT_IN: &[&str] = &[
     "slack-write",
     "linear-write",
     "mcp-write",
+    PERSON,
+    UNREADABLE,
 ];
 
 /// The guards only a person's approval grants: never `autonomous` nor a workflow's `guard.allow`.
 pub const NEED_APPROVAL: &[&str] = &["gh-pr-merge", "gh-pr-approve"];
+
+/// The guard on Priory's own person verbs, which nothing grants to a run.
+pub const PERSON: &str = "priory-person";
+
+/// The guard on a script nested too deep for the guard to read, which nothing grants.
+pub const UNREADABLE: &str = "unreadable";
+
+/// The `priory` verbs only a person runs, as an answer approves a step. `report pick` is one too.
+pub const PERSON_VERBS: &[&str] = &[
+    "answer",
+    "dismiss",
+    "resume",
+    "revive",
+    "cancel",
+    "release",
+    "hold",
+    "move",
+    "say",
+    "pause",
+    "unpause",
+    "snooze",
+    "seen",
+    "subscribe",
+    "unsubscribe",
+];
+
+/// Whether `args`, the arguments after `priory`, run a person verb.
+pub fn person_verb(args: &[String]) -> bool {
+    let mut words = vec!["priory".to_owned()];
+    words.extend_from_slice(args);
+    match positional(&words)[..] {
+        ["report", "pick", ..] => true,
+        [verb, ..] => PERSON_VERBS.contains(&verb),
+        [] => false,
+    }
+}
 
 /// Runs git with these arguments, in the `-C` directory if any, and returns its trimmed output.
 pub type Git<'a> = &'a dyn Fn(Option<&str>, &[&str]) -> Option<String>;
@@ -117,16 +177,15 @@ impl Guards {
 
     /// A factory tool guard is named by its pattern as written, so `guard.allow` can name it.
     fn tool(&self, tool: &str, name: &str) -> Option<Hit> {
-        let (server, short) = name.split_once("__")?;
+        let (server, short) = name.rsplit_once("__")?;
         if server == "priory" {
             return None;
         }
-        if short == "merge_pull_request" {
-            return Some(Hit {
-                guard: "gh-pr-merge".to_owned(),
-                call: tool.to_owned(),
-            });
-        }
+        let built_in = NAMED_TOOLS
+            .iter()
+            .find(|(names, _)| names.contains(&short))
+            .map(|(_, guard)| *guard)
+            .or_else(|| TOOLS.contains(&short).then_some("mcp-write"));
         let added = self
             .tools
             .iter()
@@ -134,10 +193,11 @@ impl Guards {
                 Some(prefix) => tool.starts_with(prefix),
                 None => *pattern == tool,
             });
-        let guard = match added {
-            Some(pattern) => pattern.clone(),
-            None if TOOLS.contains(&short) => "mcp-write".to_owned(),
-            None => return None,
+        let guard = match (built_in, added) {
+            (Some(name), _) if NEED_APPROVAL.contains(&name) => name.to_owned(),
+            (_, Some(pattern)) => pattern.clone(),
+            (Some(name), None) => name.to_owned(),
+            (None, None) => return None,
         };
         Some(Hit {
             guard,
@@ -146,30 +206,35 @@ impl Guards {
     }
 
     fn command(&self, words: &[String], git: Git) -> Option<Hit> {
-        let help = |arg: &String| {
-            arg == "--help" || (arg == "-h" && matches!(words[0].as_str(), "gh" | "git"))
-        };
-        if words[1..].iter().any(help) {
-            return None;
-        }
         let hit = |guard: &str| {
             Some(Hit {
                 guard: guard.to_owned(),
                 call: words.join(" "),
             })
         };
+        if words[0] == TOO_DEEP {
+            return Some(Hit {
+                guard: UNREADABLE.to_owned(),
+                call: format!("a script nested more than {DEPTH} levels deep"),
+            });
+        }
+        if help(words) {
+            return None;
+        }
         let built_in = COMMANDS
             .iter()
             .find(|(_, run, flags)| starts(words, run, flags))
             .map(|(name, _, _)| *name)
             .or_else(|| match words[0].as_str() {
-                "gh" => gh_api(words),
+                "gh" => gh_api(words, git),
                 "git" => git_push(words, git),
-                "curl" => curl(words),
+                "curl" | "wget" => curl(words),
+                "priory" => person_verb(&words[1..]).then_some(PERSON),
                 _ => None,
             });
         // A factory guard must not rename a merge or an approval, which only a person grants.
-        if let Some(name) = built_in.filter(|name| NEED_APPROVAL.contains(name)) {
+        if let Some(name) = built_in.filter(|name| NEED_APPROVAL.contains(name) || *name == PERSON)
+        {
             return hit(name);
         }
         let added = self
@@ -181,6 +246,21 @@ impl Guards {
             None => built_in.and_then(hit),
         }
     }
+}
+
+/// Whether `words` asks for the program's help. A help word after an option may be that option's
+/// value, as pflag and git take it, so it counts only after a word that is no option.
+fn help(words: &[String]) -> bool {
+    let short = matches!(words[0].as_str(), "gh" | "git");
+    words
+        .iter()
+        .take_while(|word| *word != "--")
+        .collect::<Vec<_>>()
+        .windows(2)
+        .any(|pair| {
+            let is_help = pair[1] == "--help" || (short && pair[1] == "-h");
+            is_help && !pair[0].starts_with('-')
+        })
 }
 
 /// Whether `words` runs `run[0]` with positional words starting with the rest of `run`, and holds
@@ -206,9 +286,27 @@ fn starts<S: AsRef<str>>(words: &[String], run: &[S], flags: &[S]) -> bool {
                     || word
                         .strip_prefix(flag)
                         .is_some_and(|rest| rest.starts_with('='))
+                    || clustered(word, flag)
             })
         });
     leads && flagged
+}
+
+/// Whether the short `flag` is a letter in `word`'s cluster, as `-a` in `-ab`. A letter after one
+/// that takes a value is that value's, which the guard cannot tell, so it counts too.
+fn clustered(word: &str, flag: &str) -> bool {
+    let (Some(cluster), Some(letter)) = (word.strip_prefix('-'), flag.strip_prefix('-')) else {
+        return false;
+    };
+    let mut letters = letter.chars();
+    let (Some(letter), None) = (letters.next(), letters.next()) else {
+        return false;
+    };
+    !cluster.starts_with('-')
+        && cluster
+            .chars()
+            .take_while(char::is_ascii_alphanumeric)
+            .any(|c| c == letter)
 }
 
 /// Options of a program that take the next word as their value.
@@ -241,7 +339,7 @@ fn positional(words: &[String]) -> Vec<&str> {
 
 /// `gh api` that writes: a method other than GET, or a field or body, which makes it a POST. A
 /// merge or an approving review is named as such, and so is one whose body Priory cannot read.
-fn gh_api(words: &[String]) -> Option<&'static str> {
+fn gh_api(words: &[String], git: Git) -> Option<&'static str> {
     if positional(words).first() != Some(&"api") {
         return None;
     }
@@ -273,7 +371,7 @@ fn gh_api(words: &[String]) -> Option<&'static str> {
         }
     }
     opaque |= fields.iter().any(|field| field.contains("=@"));
-    let writes = match method {
+    let writes = match &method {
         Some(method) => !method.eq_ignore_ascii_case("GET"),
         None => opaque || !fields.is_empty(),
     };
@@ -281,15 +379,37 @@ fn gh_api(words: &[String]) -> Option<&'static str> {
         return None;
     }
     let endpoint = endpoint.unwrap_or_default();
+    let endpoint = endpoint
+        .split_once("://")
+        .map_or(endpoint.as_str(), |(_, rest)| {
+            rest.split_once('/').map_or("", |(_, path)| path)
+        });
     let endpoint = endpoint.trim_start_matches('/');
+    let endpoint = endpoint.strip_prefix("api/v3/").unwrap_or(endpoint);
     let endpoint = endpoint.split('?').next().unwrap_or_default();
+    let endpoint = if endpoint == "api/graphql" {
+        "graphql"
+    } else {
+        endpoint
+    };
     let parts: Vec<&str> = endpoint.split('/').collect();
     let pull = |tail: &str| {
         matches!(parts.as_slice(), ["repos", _, _, "pulls", number, first, ..]
             if number.parse::<u64>().is_ok() && *first == tail)
     };
-    if pull("merge") {
+    if pull("merge") || matches!(parts.as_slice(), ["repos", _, _, "merges"]) {
         return Some("gh-pr-merge");
+    }
+    if let ["repos", _, _, "git", "refs", "heads", branch @ ..] = parts.as_slice() {
+        let deletes = method
+            .as_deref()
+            .is_some_and(|m| m.eq_ignore_ascii_case("DELETE"));
+        if deletes || fields.iter().any(|field| field == "force=true") {
+            return Some("git-push-force");
+        }
+        if is_default(git, None, &branch.join("/")) {
+            return Some("git-push-default");
+        }
     }
     if pull("reviews") && (opaque || fields.iter().any(|field| field == "event=APPROVE")) {
         return Some("gh-pr-approve");
@@ -350,11 +470,20 @@ pub fn moves_head(command: &str) -> bool {
 /// a wildcard counts as one to the default branch.
 fn git_push(words: &[String], git: Git) -> Option<&'static str> {
     let mut dir = None;
+    let mut configured = false;
+    let mut mirrored = false;
     let mut args = words[1..].iter();
     loop {
         let arg = args.next()?;
         if arg == "-C" {
             dir = args.next().map(String::as_str);
+        } else if arg == "-c" || arg == "--config-env" {
+            let setting = args.next().map_or("", String::as_str);
+            configured |= routes_push(setting);
+            mirrored |= mirrors(setting);
+        } else if let Some(setting) = arg.strip_prefix("--config-env=") {
+            configured |= routes_push(setting);
+            mirrored |= mirrors(setting);
         } else if takes_value("git", arg) {
             args.next();
         } else if !arg.starts_with('-') {
@@ -402,6 +531,13 @@ fn git_push(words: &[String], git: Git) -> Option<&'static str> {
             _ => refspecs.push(arg),
         }
     }
+    let configured_mirror = || {
+        git(dir, &["config", "--get-regexp", r"^remote\..*\.mirror$"])
+            .is_some_and(|lines| lines.lines().any(|line| line.ends_with(" true")))
+    };
+    if mirrored || configured_mirror() {
+        return Some("git-push-force");
+    }
     let refspecs = if remote_given {
         &refspecs[..]
     } else {
@@ -413,12 +549,15 @@ fn git_push(words: &[String], git: Git) -> Option<&'static str> {
     {
         return Some("git-push-force");
     }
-    if every || refspecs.iter().any(|spec| spec.contains('*')) {
+    if configured || every || refspecs.iter().any(|spec| spec.contains('*')) {
         return Some("git-push-default");
     }
     let current = || git(dir, &["symbolic-ref", "--short", "HEAD"]);
     let targets: Vec<String> = if refspecs.is_empty() {
-        current().into_iter().collect()
+        // Git's config, such as `push.default=upstream`, may send it elsewhere than the branch.
+        let destination = git(dir, &["rev-parse", "--abbrev-ref", "@{push}"])
+            .and_then(|push| push.split_once('/').map(|(_, branch)| branch.to_owned()));
+        destination.into_iter().chain(current()).collect()
     } else {
         refspecs
             .iter()
@@ -432,22 +571,48 @@ fn git_push(words: &[String], git: Git) -> Option<&'static str> {
             })
             .collect()
     };
+    targets
+        .iter()
+        .any(|target| is_default(git, dir, target))
+        .then_some("git-push-default")
+}
+
+/// Whether a `-c` or `--config-env` setting can change where a push goes.
+/// Whether a `-c` or `--config-env` setting makes a push mirror its remote, which force-updates and
+/// deletes its branches.
+fn mirrors(setting: &str) -> bool {
+    let key = setting.split('=').next().unwrap_or_default();
+    key.to_ascii_lowercase().starts_with("remote.") && key.to_ascii_lowercase().ends_with(".mirror")
+}
+
+fn routes_push(setting: &str) -> bool {
+    let key = setting
+        .split('=')
+        .next()
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    key.starts_with("push.")
+        || key.starts_with("branch.")
+        || (key.starts_with("remote.") && (key.ends_with(".push") || key.ends_with(".pushurl")))
+        || key == "remote.pushdefault"
+}
+
+/// Whether `branch` is `main`, `master` or the branch `origin/HEAD` names.
+fn is_default(git: Git, dir: Option<&str>, branch: &str) -> bool {
+    if ["main", "master"].contains(&branch) {
+        return true;
+    }
     let origin = git(
         dir,
         &["symbolic-ref", "--short", "refs/remotes/origin/HEAD"],
     );
-    let default = origin
+    origin
         .as_deref()
-        .and_then(|head| head.strip_prefix("origin/"));
-    targets
-        .iter()
-        .any(|target| {
-            ["main", "master"].contains(&target.as_str()) || Some(target.as_str()) == default
-        })
-        .then_some("git-push-default")
+        .and_then(|head| head.strip_prefix("origin/"))
+        == Some(branch)
 }
 
-/// `curl` that posts to Slack's chat or a webhook, or sends Linear a mutation. A body read from a
+/// `curl` or `wget` that posts to Slack's chat or a webhook, or sends Linear a mutation. A body read from a
 /// file or stdin counts as a mutation, since the guard cannot read it.
 fn curl(words: &[String]) -> Option<&'static str> {
     let args = &words[1..];
@@ -470,6 +635,8 @@ fn curl(words: &[String]) -> Option<&'static str> {
         "--json",
         "-F",
         "--form",
+        "--post-data",
+        "--body-data",
     ];
     let mut bodies: Vec<&str> = Vec::new();
     let mut args = args.iter();
@@ -501,9 +668,12 @@ pub fn commands(script: &str) -> Vec<Vec<String>> {
     found
 }
 
+/// The command the splitter records for a script nested past `DEPTH`: no program has this name.
+const TOO_DEEP: &str = "\0too deeply nested for the guard to read";
+
 fn parse(script: &str, depth: usize, found: &mut Vec<Vec<String>>) {
     if depth > DEPTH {
-        return;
+        return found.push(vec![TOO_DEEP.to_owned()]);
     }
     let mut split = Split {
         chars: script.chars().collect(),
@@ -514,6 +684,8 @@ fn parse(script: &str, depth: usize, found: &mut Vec<Vec<String>>) {
         heredocs: Vec::new(),
         redirect: false,
         stdin_shell: false,
+        herestring: false,
+        stdin: Vec::new(),
         found,
     };
     split.run();
@@ -530,6 +702,8 @@ fn substitutions(text: &str, depth: usize, found: &mut Vec<Vec<String>>) {
         heredocs: Vec::new(),
         redirect: false,
         stdin_shell: false,
+        herestring: false,
+        stdin: Vec::new(),
         found,
     };
     while let Some(c) = text.peek(0) {
@@ -564,6 +738,10 @@ struct Split<'a> {
     redirect: bool,
     /// A command on this line is a shell reading its script from stdin, as from a heredoc.
     stdin_shell: bool,
+    /// The next word is a here-string, which a shell would read as its script.
+    herestring: bool,
+    /// Here-strings and the text `echo` or `printf` pipes into this command: a shell's script.
+    stdin: Vec<String>,
     found: &'a mut Vec<Vec<String>>,
 }
 
@@ -581,19 +759,51 @@ impl Split<'_> {
             if std::mem::take(&mut self.redirect) {
                 return;
             }
+            if std::mem::take(&mut self.herestring) {
+                self.stdin.push(word);
+                return;
+            }
             self.words.push(word);
         }
     }
 
     fn end_command(&mut self) {
         self.end_word();
+        if self.words.is_empty() {
+            return;
+        }
         let words = std::mem::take(&mut self.words);
         let before = self.found.len();
         unwrap(&words, self.depth, self.found);
-        self.stdin_shell |= self.found[before..].iter().any(|command| {
+        let shell = self.found[before..].iter().any(|command| {
             SHELLS.contains(&command[0].as_str())
                 && command[1..].iter().all(|arg| arg.starts_with('-'))
         });
+        self.stdin_shell |= shell;
+        for script in std::mem::take(&mut self.stdin) {
+            if shell {
+                parse(&script, self.depth + 1, self.found);
+            }
+        }
+    }
+
+    /// Ends a command whose output a single `|` pipes into the next, keeping what `echo` or
+    /// `printf` prints for it.
+    fn end_piped(&mut self) {
+        self.end_word();
+        // The guard does not format: it reads the format and the arguments joined as scripts.
+        let printed = match self.words.split_first() {
+            Some((program, args)) if program.ends_with("echo") => {
+                let options = args.iter().take_while(|arg| arg.starts_with('-')).count();
+                vec![args[options..].join(" ")]
+            }
+            Some((program, [format, args @ ..])) if program.ends_with("printf") => {
+                vec![format.clone(), args.join(" ")]
+            }
+            _ => Vec::new(),
+        };
+        self.end_command();
+        self.stdin.extend(printed);
     }
 
     fn nested(&mut self, script: &str) {
@@ -624,6 +834,11 @@ impl Split<'_> {
                     while self.peek(0).is_some_and(|c| c != '\n') {
                         self.at += 1;
                     }
+                }
+                '|' if self.peek(0) != Some('|')
+                    && self.at.checked_sub(2).and_then(|at| self.chars.get(at)) != Some(&'|') =>
+                {
+                    self.end_piped()
                 }
                 ';' | '&' | '|' | '(' | ')' => self.end_command(),
                 '<' | '>' => self.redirection(c),
@@ -666,16 +881,46 @@ impl Split<'_> {
 
     /// The rest of a `$'...'` word, with its backslash escapes decoded.
     fn ansi_c_quoted(&mut self) {
-        self.word.get_or_insert_default();
+        let word = self.word.get_or_insert_default();
+        let start = word.len();
         while let Some(c) = self.peek(0) {
             self.at += 1;
             match c {
-                '\'' => return,
+                '\'' => {
+                    // Bash ends the quote's text at a NUL byte.
+                    let word = self.word.get_or_insert_default();
+                    if let Some(nul) = word[start..].find('\0') {
+                        word.truncate(start + nul);
+                    }
+                    return;
+                }
                 '\\' => {
                     let Some(next) = self.peek(0) else {
                         return;
                     };
                     self.at += 1;
+                    let (radix, digits) = match next {
+                        'x' => (16, 2),
+                        '0'..='7' => {
+                            self.at -= 1;
+                            (8, 3)
+                        }
+                        _ => (0, 0),
+                    };
+                    if radix != 0 {
+                        let start = self.at;
+                        while self.at - start < digits
+                            && self.peek(0).is_some_and(|c| c.is_digit(radix))
+                        {
+                            self.at += 1;
+                        }
+                        let code: String = self.chars[start..self.at].iter().collect();
+                        // Bash keeps the low byte of a value past 255, as `\547` is `g`.
+                        if let Ok(value) = u32::from_str_radix(&code, radix) {
+                            self.push(char::from(value as u8));
+                        }
+                        continue;
+                    }
                     self.push(match next {
                         'n' => '\n',
                         't' => '\t',
@@ -698,24 +943,13 @@ impl Split<'_> {
         }
         if c == '<' && self.peek(0) == Some('<') && self.peek(1) != Some('<') {
             self.at += 1;
-            let strip = self.peek(0) == Some('-');
-            if strip {
-                self.at += 1;
-            }
-            while self.peek(0).is_some_and(|c| c == ' ' || c == '\t') {
-                self.at += 1;
-            }
-            let mut delimiter = String::new();
-            let mut quoted = false;
-            while let Some(c) = self.peek(0).filter(|c| !" \t\n;&|()<>".contains(*c)) {
-                if "'\"\\".contains(c) {
-                    quoted = true;
-                } else {
-                    delimiter.push(c);
-                }
-                self.at += 1;
-            }
-            self.heredocs.push((delimiter, strip, quoted));
+            let heredoc = self.heredoc();
+            self.heredocs.push(heredoc);
+            return;
+        }
+        if c == '<' && self.peek(0) == Some('<') {
+            self.at += 2;
+            self.herestring = true;
             return;
         }
         while self.peek(0).is_some_and(|c| "<>&|".contains(c)) {
@@ -735,31 +969,75 @@ impl Split<'_> {
     fn skip_heredocs(&mut self) {
         let script = std::mem::take(&mut self.stdin_shell);
         for (delimiter, strip, quoted) in std::mem::take(&mut self.heredocs) {
-            let mut body = String::new();
-            while self.at < self.chars.len() {
-                let end = self.chars[self.at..]
-                    .iter()
-                    .position(|&c| c == '\n')
-                    .map_or(self.chars.len(), |end| self.at + end);
-                let line: String = self.chars[self.at..end].iter().collect();
-                self.at = (end + 1).min(self.chars.len());
-                let line = if strip {
-                    line.trim_start_matches('\t')
-                } else {
-                    &line
-                };
-                if line == delimiter {
-                    break;
-                }
-                body.push_str(line);
-                body.push('\n');
-            }
+            let body = self.heredoc_body(&delimiter, strip);
             if script {
                 parse(&body, self.depth + 1, self.found);
             } else if !quoted {
                 substitutions(&body, self.depth, self.found);
             }
         }
+    }
+
+    /// Reads a heredoc's operator after `<<`: its delimiter, whether `<<-` strips tabs, and whether
+    /// the delimiter was quoted.
+    fn heredoc(&mut self) -> (String, bool, bool) {
+        let strip = self.peek(0) == Some('-');
+        if strip {
+            self.at += 1;
+        }
+        while self.peek(0).is_some_and(|c| c == ' ' || c == '\t') {
+            self.at += 1;
+        }
+        let mut delimiter = String::new();
+        let mut quoted = false;
+        while let Some(c) = self.peek(0).filter(|c| !" \t\n;&|()<>".contains(*c)) {
+            self.at += 1;
+            match c {
+                '\'' | '"' => {
+                    quoted = true;
+                    while let Some(inner) = self.peek(0) {
+                        self.at += 1;
+                        if inner == c {
+                            break;
+                        }
+                        delimiter.push(inner);
+                    }
+                }
+                '\\' => {
+                    quoted = true;
+                    if let Some(escaped) = self.peek(0) {
+                        delimiter.push(escaped);
+                        self.at += 1;
+                    }
+                }
+                c => delimiter.push(c),
+            }
+        }
+        (delimiter, strip, quoted)
+    }
+
+    /// Reads a heredoc's body lines up to and past its delimiter line.
+    fn heredoc_body(&mut self, delimiter: &str, strip: bool) -> String {
+        let mut body = String::new();
+        while self.at < self.chars.len() {
+            let end = self.chars[self.at..]
+                .iter()
+                .position(|&c| c == '\n')
+                .map_or(self.chars.len(), |end| self.at + end);
+            let line: String = self.chars[self.at..end].iter().collect();
+            self.at = (end + 1).min(self.chars.len());
+            let line = if strip {
+                line.trim_start_matches('\t')
+            } else {
+                &line
+            };
+            if line == delimiter {
+                break;
+            }
+            body.push_str(line);
+            body.push('\n');
+        }
+        body
     }
 
     fn double_quoted(&mut self) {
@@ -809,17 +1087,31 @@ impl Split<'_> {
         inner
     }
 
-    /// The text up to the parenthesis that closes one just read, skipping quoted parentheses.
+    /// The text up to the parenthesis that closes one just read, skipping quoted parentheses and
+    /// heredoc bodies.
     fn balanced(&mut self) -> String {
         let start = self.at;
         let mut depth = 1;
         let mut quote = None;
+        let mut heredocs = Vec::new();
         while let Some(c) = self.peek(0) {
             self.at += 1;
             match (quote, c) {
                 (Some(q), c) if c == q => quote = None,
                 (Some('"'), '\\') | (None, '\\') => self.at += 1,
                 (Some(_), _) => {}
+                (None, '<') if self.peek(0) == Some('<') && self.peek(1) == Some('<') => {
+                    self.at += 2
+                }
+                (None, '<') if self.peek(0) == Some('<') => {
+                    self.at += 1;
+                    heredocs.push(self.heredoc());
+                }
+                (None, '\n') => {
+                    for (delimiter, strip, _) in std::mem::take(&mut heredocs) {
+                        self.heredoc_body(&delimiter, strip);
+                    }
+                }
                 (None, '\'' | '"') => quote = Some(c),
                 (None, '(') => depth += 1,
                 (None, ')') => {
@@ -848,6 +1140,9 @@ const SHELLS: &[&str] = &["sh", "bash", "zsh", "dash", "ksh"];
 /// Strips the assignments, keywords and wrappers in front of `words`' program, then adds the
 /// command, or the commands of the script a shell or `eval` runs.
 fn unwrap(words: &[String], depth: usize, found: &mut Vec<Vec<String>>) {
+    if depth > DEPTH {
+        return found.push(vec![TOO_DEEP.to_owned()]);
+    }
     let mut at = 0;
     while let Some(word) = words.get(at) {
         if assignment(word) || KEYWORDS.contains(&word.as_str()) {
@@ -856,8 +1151,36 @@ fn unwrap(words: &[String], depth: usize, found: &mut Vec<Vec<String>>) {
         }
         let program = word.rsplit('/').next().unwrap_or(word);
         let rest = &words[at + 1..];
+        if let Some(list) = word
+            .strip_prefix('{')
+            .and_then(|word| word.strip_suffix('}'))
+            && list.contains(',')
+        {
+            let expanded: Vec<String> = list
+                .split(',')
+                .map(str::to_owned)
+                .chain(rest.iter().cloned())
+                .collect();
+            return unwrap(&expanded, depth + 1, found);
+        }
         let skip = |values: &[&str]| options(rest, values);
         match program {
+            "function" => at += 2,
+            "find" => {
+                let mut args = rest.iter();
+                while args
+                    .find(|arg| ["-exec", "-execdir", "-ok", "-okdir"].contains(&arg.as_str()))
+                    .is_some()
+                {
+                    let command: Vec<String> = args
+                        .by_ref()
+                        .take_while(|arg| *arg != ";" && *arg != "+")
+                        .cloned()
+                        .collect();
+                    unwrap(&command, depth + 1, found);
+                }
+                break;
+            }
             "env" => {
                 let mut index = 0;
                 while let Some(arg) = rest.get(index) {
@@ -909,7 +1232,7 @@ fn unwrap(words: &[String], depth: usize, found: &mut Vec<Vec<String>>) {
             "command" | "time" => at += 1 + skip(&[]),
             "exec" => at += 1 + skip(&["-a"]),
             "nice" => at += 1 + skip(&["-n"]),
-            "stdbuf" | "nohup" => at += 1 + skip(&[]),
+            "stdbuf" | "nohup" | "setsid" => at += 1 + skip(&[]),
             "xargs" => at += 1 + skip(&["-I", "-n", "-P", "-L", "-d", "-E", "-s", "-a"]),
             "timeout" => at += 2 + skip(&["-s", "-k", "--signal", "--kill-after"]),
             _ if SHELLS.contains(&program) => {
@@ -1347,6 +1670,261 @@ mod tests {
         ] {
             assert_eq!(hit(command), None, "{command}");
         }
+    }
+
+    #[test]
+    fn help_given_as_an_option_value_does_not_exempt_the_command() {
+        for (command, guard) in [
+            ("gh pr merge 7 --squash --body '--help'", "gh-pr-merge"),
+            ("gh pr review 7 --approve --body '--help'", "gh-pr-approve"),
+            ("gh pr merge 12 -t -h", "gh-pr-merge"),
+            ("gh pr merge 12 -- --help", "gh-pr-merge"),
+            ("git push origin HEAD:main -o --help", "git-push-default"),
+            ("git push origin HEAD:main -o -h", "git-push-default"),
+        ] {
+            assert_eq!(hit(command).as_deref(), Some(guard), "{command}");
+        }
+        for command in [
+            "gh pr merge 7 --help",
+            "gh pr merge -h",
+            "gh pr review --body x --help",
+            "git push --help",
+        ] {
+            assert_eq!(hit(command), None, "{command}");
+        }
+    }
+
+    #[test]
+    fn priory_person_verbs_from_an_agent_shell_are_guarded_and_keep_their_name() {
+        let guards = Guards {
+            commands: vec![CommandGuard {
+                name: "priory-any".into(),
+                run: vec!["priory".into()],
+                flags: Vec::new(),
+            }],
+            tools: Vec::new(),
+        };
+        let git = |_: Option<&str>, _: &[&str]| None;
+        for command in [
+            "priory answer 12 approve --revision 1",
+            "priory answer --run -- 12 approve",
+            "env -u PRIORY_SESSION priory dismiss 12",
+            "/usr/local/bin/priory release 7",
+            "priory resume 7",
+            "priory revive 7 --step merge",
+            "priory cancel 7",
+            "priory hold 7 --reason x",
+            "priory move 7 --top",
+            "priory say 7 merge it",
+            "priory report pick 3 skip --expected 2",
+            "priory subscribe 7 github:o/r#12",
+            "priory snooze ask 12 --for 1h",
+            "priory pause",
+        ] {
+            let hits = guards.hits("Bash", Some(command), &git);
+            assert_eq!(hits[0].guard, "priory-person", "{command}");
+        }
+        for command in [
+            "priory report put 7 -",
+            "priory tasks",
+            "priory report reply 3 ok",
+            "priory gate",
+        ] {
+            assert_eq!(hit(command), None, "{command}");
+        }
+    }
+
+    #[test]
+    fn a_push_goes_where_git_config_sends_it() {
+        let git = |_: Option<&str>, args: &[&str]| match args {
+            ["symbolic-ref", "--short", "HEAD"] => Some("priory/1".to_owned()),
+            ["rev-parse", "--abbrev-ref", "@{push}"] => Some("origin/main".to_owned()),
+            _ => None,
+        };
+        let hits = Guards::default().hits("Bash", Some("git push"), &git);
+        assert_eq!(hits[0].guard, "git-push-default");
+        for command in [
+            "git -c push.default=upstream push",
+            "git -c remote.origin.push=HEAD:main push origin",
+            "git --config-env=remote.origin.push=REFSPEC push origin",
+            "git -c branch.priory/1.merge=refs/heads/main push",
+        ] {
+            assert_eq!(
+                hit(command).as_deref(),
+                Some("git-push-default"),
+                "{command}"
+            );
+        }
+        assert_eq!(hit("git -c user.name=x push"), None);
+    }
+
+    #[test]
+    fn functions_expansions_here_strings_pipes_and_exec_are_read() {
+        for command in [
+            "function f { gh pr merge 12; }; f",
+            "function f() { gh pr merge 12; }",
+            "{gh,pr,merge,12}",
+            "bash <<< 'gh pr merge 12'",
+            "echo 'gh pr merge 12' | sh",
+            "printf '%s\\n' 'gh pr merge 12' | bash -s",
+            "$'\\x67h' pr merge 12",
+            "$'\\147h' pr merge 12",
+            "setsid gh pr merge 12",
+            "setsid -f gh pr merge 12",
+            "find . -name x -exec gh pr merge 12 \\;",
+            "cat <<\"E OF\"\ntext\nE OF\ngh pr merge 12",
+        ] {
+            assert_eq!(hit(command).as_deref(), Some("gh-pr-merge"), "{command}");
+        }
+        assert_eq!(
+            hit("wget --post-data 'text=hi' https://hooks.slack.com/services/x").as_deref(),
+            Some("slack-write")
+        );
+        assert_eq!(hit("echo 'gh pr merge 12' | grep merge"), None);
+        assert_eq!(hit("grep x <<< 'gh pr merge 12'"), None);
+    }
+
+    #[test]
+    fn a_script_nested_past_the_limit_is_unreadable_not_passed() {
+        let nested = format!("{}gh pr merge 12{}", "echo $(".repeat(20), ")".repeat(20));
+        let finds = format!("{}echo hi", "find . -exec ".repeat(40));
+        for command in [nested.as_str(), &finds] {
+            assert_eq!(hit(command).as_deref(), Some(UNREADABLE), "{command}");
+        }
+        let shallow = "bash -c 'bash -c \"echo hi\"'";
+        assert_eq!(hit(shallow), None);
+    }
+
+    #[test]
+    fn escaped_delimiters_echo_options_printf_formats_and_bash_bytes_are_read() {
+        for command in [
+            "cat <<E\\ OF\ntext\nE OF\ngh pr merge 12",
+            "printf '%s ' gh pr merge 12 | bash",
+            "echo -n 'gh pr merge 12' | bash",
+            "$'\\547h' pr merge 12",
+            "$'gh\\0ignored' pr merge 12",
+        ] {
+            assert_eq!(hit(command).as_deref(), Some("gh-pr-merge"), "{command:?}");
+        }
+    }
+
+    #[test]
+    fn find_keeps_its_own_guard_and_its_exec_nesting_is_bounded() {
+        let guards = Guards {
+            commands: vec![CommandGuard {
+                name: "find-delete".into(),
+                run: vec!["find".into()],
+                flags: vec!["-delete".into()],
+            }],
+            tools: Vec::new(),
+        };
+        let git = |_: Option<&str>, _: &[&str]| None;
+        let hits = guards.hits("Bash", Some("find . -name x -delete"), &git);
+        assert_eq!(hits[0].guard, "find-delete");
+        let nested = format!("{}gh pr merge 12", "find . -exec ".repeat(5000));
+        guards.hits("Bash", Some(&nested), &git);
+    }
+
+    #[test]
+    fn a_mirror_push_set_on_the_command_line_or_in_config_is_a_force_push() {
+        assert_eq!(
+            hit("git -c remote.origin.mirror=true push origin").as_deref(),
+            Some("git-push-force")
+        );
+        let git = |_: Option<&str>, args: &[&str]| match args {
+            ["config", "--get-regexp", ..] => Some("remote.origin.mirror true".to_owned()),
+            _ => None,
+        };
+        let hits = Guards::default().hits("Bash", Some("git push origin"), &git);
+        assert_eq!(hits[0].guard, "git-push-force");
+    }
+
+    #[test]
+    fn mcp_tools_that_review_push_or_auto_merge_are_guarded() {
+        let git = |_: Option<&str>, _: &[&str]| None;
+        for (tool, guard) in [
+            ("mcp__github__pull_request_review_write", "gh-pr-approve"),
+            ("mcp__github__create_pull_request_review", "gh-pr-approve"),
+            (
+                "mcp__github__submit_pending_pull_request_review",
+                "gh-pr-approve",
+            ),
+            ("mcp__github__enable_pr_auto_merge", "gh-pr-merge"),
+            ("mcp__my__srv__merge_pull_request", "gh-pr-merge"),
+            ("mcp__github__push_files", "git-push-default"),
+            ("mcp__github__create_or_update_file", "git-push-default"),
+            ("mcp__github__delete_file", "git-push-default"),
+        ] {
+            let hits = Guards::default().hits(tool, None, &git);
+            assert_eq!(
+                hits.first().map(|hit| hit.guard.as_str()),
+                Some(guard),
+                "{tool}"
+            );
+        }
+    }
+
+    #[test]
+    fn gh_api_merges_by_url_merge_endpoint_or_ref_update_keep_their_guard() {
+        for (command, guard) in [
+            (
+                "gh api -X PUT https://api.github.com/repos/o/r/pulls/12/merge",
+                "gh-pr-merge",
+            ),
+            (
+                "gh api -X PUT https://ghe.example.com/api/v3/repos/o/r/pulls/12/merge",
+                "gh-pr-merge",
+            ),
+            (
+                "gh api repos/o/r/merges -f base=main -f head=priory/7",
+                "gh-pr-merge",
+            ),
+            (
+                "gh api https://api.github.com/graphql -f query='mutation{mergePullRequest(input:{}){clientMutationId}}'",
+                "gh-pr-merge",
+            ),
+            (
+                "gh api -X PATCH repos/o/r/git/refs/heads/main -f sha=abc",
+                "git-push-default",
+            ),
+            (
+                "gh api -X DELETE repos/o/r/git/refs/heads/priory/1",
+                "git-push-force",
+            ),
+            (
+                "gh api -X PATCH repos/o/r/git/refs/heads/priory/1 -f sha=abc -F force=true",
+                "git-push-force",
+            ),
+        ] {
+            assert_eq!(hit(command).as_deref(), Some(guard), "{command}");
+        }
+        assert_eq!(
+            hit("gh api -X PATCH repos/o/r/git/refs/heads/priory/1 -f sha=abc").as_deref(),
+            Some("gh-api-write")
+        );
+    }
+
+    #[test]
+    fn an_apostrophe_in_a_heredoc_inside_a_substitution_hides_nothing() {
+        let comment = "gh pr comment 12 --body \"$(cat <<'EOF'\nit's done\nEOF\n)\" && gh pr merge 12 --squash";
+        assert_eq!(guards(comment), ["gh-pr-comment", "gh-pr-merge"]);
+        let commit =
+            "git commit -m \"$(cat <<-EOF\n\tdon't\n\tEOF\n)\" && git push origin HEAD:main";
+        assert_eq!(hit(commit).as_deref(), Some("git-push-default"));
+        let ran = "echo \"$(bash <<EOF\ngh pr merge 12\nEOF\n)\"";
+        assert_eq!(hit(ran).as_deref(), Some("gh-pr-merge"));
+    }
+
+    #[test]
+    fn a_short_flag_inside_a_cluster_is_read() {
+        for command in [
+            "gh pr review 12 -ab lgtm",
+            "gh pr review 12 -ba",
+            "gh pr review 12 -ab'looks good'",
+        ] {
+            assert_eq!(hit(command).as_deref(), Some("gh-pr-approve"), "{command}");
+        }
+        assert_eq!(hit("gh pr review 12 -c -b 'all good'"), None);
     }
 
     #[test]
