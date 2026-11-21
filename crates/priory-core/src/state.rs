@@ -12,7 +12,7 @@ use std::collections::BTreeMap;
 use std::io::Write;
 use std::time::Duration;
 
-const VERSION: i64 = 64;
+const VERSION: i64 = 65;
 
 const SCHEMA: &str = "
 CREATE TABLE tasks (
@@ -1133,6 +1133,15 @@ UPDATE waits SET withdrawn_reason = 'asked'
 PRAGMA user_version = 64;
 ";
 
+// `chosen`: a `subscribe` the task asked for, which carries every event even on its own key. An
+// approval's `generation`, so a revive or reopen does not inherit it. An older approval keeps none,
+// since which generation it was given in is unknown, so it is asked again.
+const SCHEMA_65: &str = "
+ALTER TABLE subscriptions ADD COLUMN chosen INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE approvals ADD COLUMN generation INTEGER;
+PRAGMA user_version = 65;
+";
+
 /// Each schema change in order: a file at version `n` applies those from index `n` on.
 const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA, SCHEMA_2, SCHEMA_3, SCHEMA_4, SCHEMA_5, SCHEMA_6, SCHEMA_7, SCHEMA_8, SCHEMA_9,
@@ -1142,7 +1151,7 @@ const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA_34, SCHEMA_35, SCHEMA_36, SCHEMA_37, SCHEMA_38, SCHEMA_39, SCHEMA_40, SCHEMA_41,
     SCHEMA_42, SCHEMA_43, SCHEMA_44, SCHEMA_45, SCHEMA_46, SCHEMA_47, SCHEMA_48, SCHEMA_49,
     SCHEMA_50, SCHEMA_51, SCHEMA_52, SCHEMA_53, SCHEMA_54, SCHEMA_55, SCHEMA_56, SCHEMA_57,
-    SCHEMA_58, SCHEMA_59, SCHEMA_60, SCHEMA_61, SCHEMA_62, SCHEMA_63, SCHEMA_64,
+    SCHEMA_58, SCHEMA_59, SCHEMA_60, SCHEMA_61, SCHEMA_62, SCHEMA_63, SCHEMA_64, SCHEMA_65,
 ];
 
 /// The order the queue starts tasks in: band, then a person's order, then age. A band the factory
@@ -1686,7 +1695,7 @@ fn subscribes(
     tx.query_row(
         "SELECT EXISTS (SELECT 1 FROM subscriptions WHERE task = ?1
            AND resource IN (SELECT value FROM json_each(?2))
-           AND (?3 OR resource IS NOT (SELECT key FROM tasks WHERE id = ?1)))
+           AND (?3 OR chosen OR resource IS NOT (SELECT key FROM tasks WHERE id = ?1)))
          AND NOT EXISTS (SELECT 1 FROM waits WHERE task = ?1 AND fired IS NULL AND withdrawn IS NULL
            AND resource IN (SELECT value FROM json_each(?2)))",
         params![task, resources, OWN_KEY.contains(&kind)],

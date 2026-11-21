@@ -330,7 +330,8 @@ The subscription to the task's own key carries only what people say and closes: 
 review thread comments, a pull request or issue closed, a Linear comment or state change, and a
 Slack reply. A check run, a label or a push on the task's own pull request wakes nothing, since
 each would start a run; the checks gate and waits take those. A subscription made with `subscribe`
-carries every event.
+carries every event, on the task's own key too: `subscribe` to the own key turns its subscription
+into one that carries every event.
 
 `subscribe` is refused while another active task owns the resource: `github:owner/name#57 belongs
 to task 3, not this one`. A done task does not block it: its subscription ends and the active

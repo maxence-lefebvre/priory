@@ -574,7 +574,8 @@ A **command ask** (R6.8) binds one option to a command. Its answer runs the comm
   target folder, the revision it is bound to, and "Runs at most once."
 - It has no undo bar. The first tap arms the option: it turns solid `--emph` with a 3 px
   `--action` ring, reads "Tap again to run" over the option's name and "Cancels in 4 s", and a
-  ring counts the 4 s down. The other options dim. The second tap sends. In the drawer, the
+  ring counts the 4 s down. The other options dim. The second tap sends. A new revision of the ask
+  disarms it, so a second tap never runs a command armed on an older question. In the drawer, the
   option's key pressed twice does the same.
 - While armed, the command block sits right under the armed option, in the options and in the
   sheet, or right above the answer bar when armed there: the command line, its target and
