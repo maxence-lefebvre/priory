@@ -16,6 +16,11 @@ fn text(call: &Call, name: &str) -> Result<Option<String>, String> {
     }
 }
 
+/// The fix task's key: the generation comes before the finding's key, so no two findings collide.
+fn fix_key(task: i64, generation: i64, key: &str) -> String {
+    format!("finding:{task}:{generation}:{key}")
+}
+
 /// The `finding` tool: hands one problem of the live run to a fix task. A finding is one problem
 /// by its key, so the same key in the next run opens no second task, and a key that skipped a run
 /// and returns opens a new one. It does not end the turn.
@@ -62,11 +67,7 @@ pub(crate) fn tool(
         Some((generation, ..)) => (generation + 1, 1, false),
         None => (1, 1, false),
     };
-    let fix = if generation == 1 {
-        format!("finding:{task}:{key}")
-    } else {
-        format!("finding:{task}:{key}:{generation}")
-    };
+    let fix = fix_key(task, generation, &key);
     if streak == 1 {
         let mut body = title.clone();
         if let Some(details) = &details {
@@ -89,16 +90,17 @@ pub(crate) fn tool(
             Err(refused) => return Ok(Err(refused.to_string())),
         }
     }
-    let escalate = streak >= STREAK && !escalated;
-    if escalate {
+    let moved = if streak >= STREAK && !escalated {
         tx.execute(
             "UPDATE tasks SET band = (SELECT name FROM bands WHERE rank =
-               (SELECT rank FROM bands WHERE name = tasks.band) - 1)
+               (SELECT rank FROM bands WHERE name = tasks.band) - 1), position = NULL
              WHERE key = ?1 AND state NOT IN ('done', 'failed', 'dropped')
                AND coalesce((SELECT rank FROM bands WHERE name = tasks.band), 0) > 0",
             [&fix],
-        )?;
-    }
+        )? > 0
+    } else {
+        false
+    };
     tx.execute(
         "INSERT INTO findings (task, key, title, generation, streak, run, escalated)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
@@ -111,11 +113,11 @@ pub(crate) fn tool(
             generation,
             streak,
             run,
-            escalated || escalate
+            escalated || moved
         ],
     )?;
     tx.commit()?;
-    let said = match (streak, escalate) {
+    let said = match (streak, moved) {
         (1, _) => format!("finding {key} opened fix task {fix}"),
         (_, true) => {
             format!("finding {key} was reported {streak} runs in a row, so {fix} moved up a band")
@@ -149,11 +151,7 @@ pub(crate) fn memory(db: &Connection, task: i64) -> rusqlite::Result<Option<Stri
     let lines: Vec<String> = rows
         .into_iter()
         .map(|(key, title, streak, last, generation)| {
-            let fix = if generation == 1 {
-                format!("finding:{task}:{key}")
-            } else {
-                format!("finding:{task}:{key}:{generation}")
-            };
+            let fix = fix_key(task, generation, &key);
             let seen = if last {
                 format!("reported in the last {streak} runs in a row")
             } else {

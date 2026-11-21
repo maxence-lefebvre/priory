@@ -14609,7 +14609,7 @@ fn a_finding_opens_one_fix_task_that_relates_to_the_scan() {
 
     let tasks = setup.until("tasks", |rows| rows.len() == 2);
 
-    let fix = tasks.iter().find(|row| row[1] == "finding:1:disk-full");
+    let fix = tasks.iter().find(|row| row[1] == "finding:1:1:disk-full");
     assert!(
         fix.is_some_and(|row| row[2] == "fix" && row[5] == "today"),
         "{tasks:?}"
@@ -14642,12 +14642,15 @@ fn the_same_finding_next_run_opens_no_task_and_the_next_prompt_remembers_it() {
     setup.until("outbox", |_| wakes(&setup).len() == 1);
     let woken = &wakes(&setup)[0];
     assert!(
-        woken.contains("disk-full: The disk is full (reported in the last 1 runs in a row; fix task finding:1:disk-full)"),
+        woken.contains("disk-full: The disk is full (reported in the last 1 runs in a row; fix task finding:1:1:disk-full)"),
         "{woken}"
     );
     setup.calls_left(0);
     setup.until("runs", |_| setup.replies().len() == 3);
     assert_eq!(setup.rows("tasks").len(), 2);
+    let replies: Vec<_> = setup.replies().iter().map(reply).collect();
+    assert!(replies.iter().all(|(_, error)| !error), "{replies:?}");
+    assert!(replies[2].0.contains("already open"), "{replies:?}");
 }
 
 #[test]
@@ -14668,7 +14671,7 @@ fn a_finding_reported_three_runs_in_a_row_moves_its_fix_task_up_a_band() {
 
     let tasks = setup.until("tasks", |rows| {
         rows.iter()
-            .any(|row| row[1] == "finding:1:disk-full" && row[5] == "now")
+            .any(|row| row[1] == "finding:1:1:disk-full" && row[5] == "now")
     });
 
     assert_eq!(tasks.len(), 2, "{tasks:?}");

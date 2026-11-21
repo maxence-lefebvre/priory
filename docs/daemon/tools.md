@@ -314,12 +314,12 @@ it works in any run, though it is made for the task a `schedule` trigger wakes a
 
 The first call of a key publishes a task request, as `priory request` does, with the factory's
 `[request]` defaults for its workflow and band and the scan's repository. Its key is
-`finding:<scan task>:<key>`, its text is the title and details, and it relates to the scan task
+`finding:<scan task>:1:<key>`, its text is the title and details, and it relates to the scan task
 (see [relations.md](relations.md)). A second call in the same run changes nothing.
 
 Priory remembers each finding by task and key, so a scan that reports the same problem in its next
 run opens no second task. A scan that skips a run has shown the problem gone: if it comes back, the
-finding opens a new task, keyed `finding:<scan task>:<key>:2`, then `:3`.
+finding opens a new task, keyed `finding:<scan task>:2:<key>`, then `:3:<key>`.
 
 #### Run memory
 
@@ -328,7 +328,7 @@ trigger's `prompt`:
 
 ```text
 Findings from your earlier runs. Report a finding again with the same key, and no second fix task opens:
-- disk-full: The disk is full (reported in the last 2 runs in a row; fix task finding:1:disk-full)
+- disk-full: The disk is full (reported in the last 2 runs in a row; fix task finding:1:1:disk-full)
 ```
 
 A finding the last run did not report reads `not reported in the last run, so it looks fixed`. A
