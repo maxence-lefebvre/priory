@@ -76,6 +76,10 @@ Tasks lists every task by saved view and filter, and Runs lists the recent runs 
 
 ![Runs on a phone in dark mode.](docs/images/web-view-runs-390-dark.png)
 
+The queue shows what starts next, each band's waiting tasks in order with why each waits, and a Move menu that reorders them.
+
+![The queue on a 1440 px screen in light mode: Up next with three runs, then the bands today and later, each task with its place, state, key, title, why it waits, and a Move button.](docs/images/web-view-queue-1440-light.png)
+
 Flows draw each workflow and mark who decides each edge and which step is irreversible. Costs show spend, merges and your attention.
 
 ![The implement workflow in Flows on a 1440 px screen in light mode, from implement to approve-pr to open-pr, with model decisions as dashed arrows, human decisions as solid arrows and a padlock on the irreversible step open-pr.](docs/images/web-view-flows-1440-light.png)

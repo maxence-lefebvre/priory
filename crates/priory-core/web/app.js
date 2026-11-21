@@ -12,6 +12,7 @@ import { editBody, issueName, laneLayout, momentWords, stages, successors } from
 import { actionNote, batchParts, dueParts, mergeSince, nextLink, progressView, rowAction, sectionInView, sinceGroups } from "./desk.js";
 import { TASK_FACETS, TASK_VIEWS, filtered, olderPart, taskViews } from "./tasks.js";
 import { RUN_FACETS, RUN_VIEWS, duration, runState, runViews, tokenText } from "./runs.js";
+import { QUEUE_VIEWS, moveOptions, queueBands, waitReason } from "./queue.js";
 
 const ICONS = {
   check: '<path d="M20 6 9 17l-5-5"/>',
@@ -106,7 +107,7 @@ const PANELS = {
   inbox: ["Inbox", "inbox"], reports: ["Reports", "reports"], queue: ["Queue", "queue"],
   terminal: ["Terminal", "terminal"], workflow: ["Flows", "workflow"], costs: ["Costs", "costs"],
 };
-const CLI = { queue: "priory queue", terminal: "priory attach" };
+const CLI = { terminal: "priory attach" };
 
 // The last listings read and when, kept on this device, so an offline start shows them with their age.
 const kept = JSON.parse(localStorage.getItem("priory.snapshot") || "null");
@@ -142,6 +143,11 @@ const state = {
   todoNotices: new Map(),
   rowBusy: null,
   rowNotices: new Map(),
+  // The task whose Move is in flight, and each task's last Move refusal.
+  moveBusy: null,
+  moveNotices: new Map(),
+  // The task whose Move menu is open, so a redraw keeps it open.
+  moveOpen: null,
   sayDrafts: new Map(),
   // The batch the page or the go ask shows, and the go ask's plan edits: the entry whose menu is open,
   // the drop armed by its first tap, whether an edit is in flight, and what the last one said.
@@ -2222,8 +2228,67 @@ function listPanel(panel, wide) {
   return html`<div class="list" role="region" aria-label="${PANELS[panel][0]}"><div class="lhead"><h1>${PANELS[panel][0]}</h1></div>${laterPanel(panel)}</div>`;
 }
 
+// Queue (DESIGN.md, Queue panel): the waiting tasks by band in admission order, why each waits, and
+// a Move menu that sends `priory move` at the revision the page drew.
+function moveMenu(task, bands) {
+  const options = moveOptions(task, bands, state.data.queue.bands, state.data.queue.revision);
+  const busy = state.moveBusy === task.id ? raw('aria-disabled="true"') : "";
+  // A live redraw keeps the menu that is open, and the ids let focus return to it.
+  return html`<details class="move" data-move="${task.id}" ${state.moveOpen === task.id ? raw("open") : ""}><summary id="move-${task.id}" class="btn secondary" aria-label="Move ${task.key}">Move${icon("chevron-down", "s13")}</summary>
+    <div class="pick">${options.map((option, at) => html`<button type="button" id="move-${task.id}-${at}" data-action="move" data-task="${task.id}" data-option="${at}" ${busy}>${option.label}</button>`)}</div></details>`;
+}
+
+const moveNote = (task) => (state.moveNotices.has(task.id) ? html`<p class="note warn" role="status">${icon("circle-x", "s15")}<span>${state.moveNotices.get(task.id)}</span></p>` : "");
+
+function queueListRow(task, bands) {
+  return html`<div class="row qrow" data-href="/tasks/${task.id}">${tile(task.state)}
+    <span class="l1"><span class="num">#${task.band_position}</span><a class="mono" href="/tasks/${task.id}">${task.key}</a><span>${task.state}</span><span class="age">${timeTag(task.since)}</span></span>
+    <span class="l2 r">${task.title || ""}</span><span class="l3 wrap">${waitReason(task, bands)}</span>${moveMenu(task, bands)}${moveNote(task)}</div>`;
+}
+
+function queueTableRow(task, bands) {
+  return html`<tr data-href="/tasks/${task.id}"><td class="r">#${task.band_position}</td><td>${stateWord(task.state)}</td><td class="mono"><a href="/tasks/${task.id}">${task.key}</a></td>
+    <td class="q full"><span>${task.title || ""}</span><span class="why t3">${waitReason(task, bands)}</span>${moveNote(task)}</td><td class="act">${moveMenu(task, bands)}</td></tr>`;
+}
+
+function queueBody(wide) {
+  const { queue } = state.data;
+  const current = listView(QUEUE_VIEWS);
+  const bands = queueBands(queue);
+  const held = queue.waiting.filter((task) => task.state === "held");
+  const waiting = bands.reduce((sum, group) => sum + group.tasks.length, 0);
+  const views = savedViews([["waiting", "Waiting", waiting, current === "waiting"], ["held", "Held", held.length, current === "held"], ["ended", "Last day", queue.ended.length, current === "ended"]], "/queue");
+  if (current === "held") return { views, rows: listOrEmpty(held.map((task) => taskListRow({ ...task, reason: task.reason || "held" })), "No task is held. A task waits here while a person or a condition holds it.") };
+  if (current === "ended") return { views, rows: listOrEmpty(queue.ended.map((task) => taskListRow({ ...task, since: task.ended })), "No task ended in the last day.") };
+  const strip = upNext(deskModel());
+  if (!bands.length) return { views, rows: html`${strip}<p class="empty">The queue is empty. A task waits here for its turn once it is added.</p>` };
+  if (wide) {
+    const groups = bands.map((group) => html`<tr class="grp"><td colspan="5">Band ${group.band}<span>${group.tasks.length}</span></td></tr>${group.tasks.map((task) => queueTableRow(task, bands))}`);
+    return { views, rows: html`${strip}<table class="tbl q"><thead><tr><th class="r">#</th><th>State</th><th>Task</th><th>Title and why it waits</th><th></th></tr></thead><tbody>${groups}</tbody></table>` };
+  }
+  return { views, rows: [strip, ...bands.map((group) => html`<div class="sec">Band ${group.band}<span>${group.tasks.length}</span></div>${group.tasks.map((task) => queueListRow(task, bands))}`)] };
+}
+
+// Sends one Move option of a task, as `priory move --expected`; a refusal shows under the row.
+async function moveTask(target) {
+  if (state.moveBusy !== null) return;
+  const task = state.data.queue.waiting.find((each) => each.id === Number(target.dataset.task));
+  const option = task && moveOptions(task, queueBands(state.data.queue), state.data.queue.bands, state.data.queue.revision)[Number(target.dataset.option)];
+  if (!option) return;
+  state.moveBusy = task.id;
+  render();
+  const { status, body } = await post(`/api/tasks/${task.id}/move`, option.body).catch(() => ({ status: 0, body: { error: "the connection dropped" } }));
+  Object.assign(state, { moveBusy: null, moveOpen: null });
+  if (status === 401) return signOut("The daemon refused this token. Paste the current one.");
+  if (status === 200) state.moveNotices.delete(task.id);
+  else state.moveNotices.set(task.id, actionNote("Move", status, body));
+  render();
+  document.getElementById(`move-${task.id}`)?.focus();
+  refresh();
+}
+
 // Lists whose rows open a page of their own, so they take the whole width, with no drawer.
-const OWN_PAGE_LISTS = { tasks: tasksBody, runs: runsBody };
+const OWN_PAGE_LISTS = { tasks: tasksBody, runs: runsBody, queue: queueBody };
 
 const keyHints = () => html`<div class="keys"><span><kbd>J</kbd><kbd>K</kbd>move</span><span><kbd>Enter</kbd>open</span><span><kbd>Esc</kbd>close</span><span><kbd>N</kbd>add</span></div>`;
 
@@ -2312,8 +2377,8 @@ function render() {
   if (typed && app.querySelector("#token")) app.querySelector("#token").value = typed;
   if (focused) [...app.querySelectorAll(focused)].find((element) => !element.closest("[inert]"))?.focus({ preventScroll: true });
   if (caret !== undefined) app.querySelector(`#${caret[0]}`)?.setSelectionRange(caret[1], caret[2], caret[3]);
-  // A link inside a row, such as its key or batch, goes on its own.
-  for (const row of app.querySelectorAll("[data-href]")) row.addEventListener("click", (event) => { if (!event.target.closest("a")) go(row.dataset.href); });
+  // A link or control inside a row, such as its key, batch or Move menu, acts on its own.
+  for (const row of app.querySelectorAll("[data-href]")) row.addEventListener("click", (event) => { if (!event.target.closest("a, button, details")) go(row.dataset.href); });
   app.querySelectorAll("[data-grow]").forEach((part) => { part.style.flexGrow = part.dataset.grow; });
   drawLanes(app);
   watchSections(app);
@@ -2463,6 +2528,7 @@ document.addEventListener("click", (event) => {
   if (action === "batch-edit") return editPlan(target);
   if (action === "todo-done") return markDone(target);
   if (action === "row-act") return rowAct(target);
+  if (action === "move") return moveTask(target);
   if (action === "request-task") return requestTask(target.dataset.text, target.dataset.workflow);
   if (action === "subscribe-task") {
     if (state.unrouted.busy === null) subscribeTask(target.dataset.resource, Number(target.dataset.task));
@@ -2489,6 +2555,14 @@ document.addEventListener("click", (event) => {
     document.querySelector(target.hash)?.scrollIntoView({ behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth" });
   }
 });
+
+// A Move menu's toggle does not bubble, so it is caught on its way down.
+document.addEventListener("toggle", (event) => {
+  if (!event.target.matches?.("details.move")) return;
+  const task = Number(event.target.dataset.move);
+  if (event.target.open) state.moveOpen = task;
+  else if (state.moveOpen === task) state.moveOpen = null;
+}, true);
 
 document.addEventListener("change", (event) => {
   if (event.target.dataset.action !== "costs-by") return;
@@ -2567,6 +2641,10 @@ document.addEventListener("keydown", (event) => {
     if (next) go(hrefOf(next));
   } else if (event.key === "Enter" && at >= 0 && document.activeElement === document.body) {
     go(hrefOf(rows[at]));
+  } else if (event.key === "Escape" && document.querySelector("details.move[open]")) {
+    const menu = document.querySelector("details.move[open]");
+    menu.open = false;
+    menu.querySelector("summary").focus();
   } else if (event.key === "Escape" && selectedAsk()) {
     go(state.listUrl);
   }

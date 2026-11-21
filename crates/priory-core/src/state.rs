@@ -3362,7 +3362,43 @@ pub(crate) fn uncertain(db: &Connection) -> rusqlite::Result<usize> {
     )
 }
 
-/// Where `priory move` puts a task in its band's person order.
+/// The socket line of `POST /api/tasks/{id}/move`: `{"move": {...}}`, `priory move` with its
+/// `--expected`.
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MoveLine {
+    pub r#move: Move,
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Move {
+    pub task: i64,
+    pub band: Option<String>,
+    pub place: Option<Place>,
+    pub expected: i64,
+}
+
+/// Applies a move line as `priory move` does, and says what moved where. A line with neither a
+/// band nor a place is refused, as the verb's usage is: `move_task` would reset the task's place.
+pub fn move_line(db: &mut Connection, line: Move) -> Result<String, String> {
+    if line.band.is_none() && line.place.is_none() {
+        return Err("move takes a band, a place or both".to_owned());
+    }
+    move_task(
+        db,
+        line.task,
+        line.band.as_deref(),
+        line.place,
+        Some(line.expected),
+    )?;
+    Ok(format!("task {} moved", line.task))
+}
+
+/// Where `priory move` puts a task in its band's person order. A socket line carries it as
+/// `"top"`, `{"before": 7}` or `{"after": 7}`.
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum Place {
     Top,
     Before(i64),
@@ -3467,4 +3503,24 @@ fn moved(
         .map_err(error)?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod move_line_tests {
+    use super::*;
+
+    #[test]
+    fn a_move_line_with_neither_band_nor_place_is_refused_and_changes_nothing() {
+        let mut db = memory();
+        let expected = revision(&db).unwrap();
+        let line: MoveLine = serde_json::from_str(&format!(
+            r#"{{"move": {{"task": 1, "expected": {expected}}}}}"#
+        ))
+        .unwrap();
+
+        let moved = move_line(&mut db, line.r#move);
+
+        assert_eq!(moved, Err("move takes a band, a place or both".to_owned()));
+        assert_eq!(revision(&db).unwrap(), expected);
+    }
 }

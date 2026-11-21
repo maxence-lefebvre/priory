@@ -207,7 +207,8 @@ and the rubric red `--count`.
 - A view file (R8.2) describes the wide layout. On compact screens, each leaf panel becomes a tab
   in the tree's order. The bottom bar shows the first four and a "More" tab for the rest.
 - The default view puts the desk first, then asks, tasks and runs. The queue is a saved view of
-  tasks. Inbox, workflows, reports, costs and terminals sit under "More".
+  the desk on wide screens, and a panel of its own under "More". Inbox, workflows, reports, costs
+  and terminals sit under "More" too.
 - "Asks" names the list of every ask. The PRD's inbox stays the log of events (R3).
 - Panels lay out by their own width with container queries, not by the viewport.
 - Every task, run and ask has its own URL, such as `/asks/42`. A link from a notification opens
@@ -768,8 +769,30 @@ Step. A run's outcome is both its state from the [State tile](#state-tile) table
 live) and its result's outcome, so `moved` and `passed` both find it. Recent
 loads the older runs once the person scrolls to its end. As on Tasks, the rows take the whole width
 and each opens its task's page.
-- Actions live on the task page, not in the row: Resume, Cancel, Revive, Hold, Release, Move. The
-  desk's stopped rows are the one exception, since acting on them is why they are there.
+- Actions live on the task page, not in the row: Resume, Cancel, Revive, Hold, Release, Move. Two
+  exceptions, since acting on them is why they are there: the desk's stopped rows, and the Queue
+  panel's waiting rows, which carry a Move menu.
+
+### Queue panel
+
+What starts next and why. Saved views: Waiting, Held and Last day, each with a count.
+
+- **Waiting** opens with the Up next strip, as on the desk, then one section per band in the
+  factory's band order, leaving out empty bands. Each band lists its queued and ready tasks in
+  admission order. A row shows its place in the band (`#2`), key, state and age, its title, and why
+  it waits in `--text-3`, as a row's third line: the daemon's reason when it has one ("waits: priory is paused"), else
+  "Ready: starts when a runner has room.", "Waits behind ENG-240 in band later.", "Waits behind
+  band today." or "Waits for its turn: first in band today.".
+- Each waiting row ends with a **Move** menu, a `.btn secondary` at `--control-fine` height
+  (`--control` on a coarse pointer). It opens a picker like the facet chips': To the top and Up one
+  when a task is ahead in the band, Down one when one is behind, then To band X for each of the
+  factory's other bands, by name. A tap sends `POST /api/tasks/{id}/move` with the revision the
+  page drew, as `priory move --expected` does. A refused move keeps the row and shows why under
+  it, with the `circle-x` icon in `--warn-text`; a stale revision says to read again.
+- **Held** lists each held task with its hold's reason. **Last day** lists the tasks that ended in
+  the last day. Both use task rows that open the task page.
+- On wide screens Waiting is a table: place, state, key, title with why it waits, and the Move
+  menu, grouped by band.
 
 ### Task detail and workflow grid
 

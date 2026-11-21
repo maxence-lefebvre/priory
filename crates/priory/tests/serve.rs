@@ -3783,6 +3783,96 @@ fn a_report_and_a_held_task_leave_the_desk_through_the_read_and_release_endpoint
 }
 
 #[test]
+fn move_through_its_endpoint_does_what_priory_move_does_at_the_revision_the_page_drew() {
+    let mut setup = Setup::new("web-move", SERVE);
+    setup.seed();
+    succeeded(&setup.priory(&["pause"]));
+    let address = setup.start(&["daemon", &setup.factory()]);
+    let queue = || json_of(&setup, "queue");
+    let order = || -> Vec<(Value, Value)> {
+        queue()["waiting"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|task| (task["id"].clone(), task["band"].clone()))
+            .collect()
+    };
+    let at = |revision: i64, rest: &str| format!(r#"{{"revision": {revision}{rest}}}"#);
+    let revision = queue()["revision"].as_i64().unwrap();
+
+    let topped = post(
+        &address,
+        "/api/tasks/2/move",
+        "",
+        &at(revision, r#", "top": true"#),
+    );
+    let topped_order = order();
+    let stale = post(
+        &address,
+        "/api/tasks/1/move",
+        "",
+        &at(revision, r#", "top": true"#),
+    );
+    let banded = post(
+        &address,
+        "/api/tasks/1/move",
+        "",
+        &at(queue()["revision"].as_i64().unwrap(), r#", "band": "now""#),
+    );
+
+    assert_eq!(topped.0, 200, "{}", topped.1);
+    assert_eq!(
+        topped_order,
+        [(json!(2), json!("later")), (json!(1), json!("later"))]
+    );
+    assert_eq!(stale.0, 409, "{}", stale.1);
+    assert_eq!(banded.0, 200, "{}", banded.1);
+    assert_eq!(
+        order(),
+        [(json!(1), json!("now")), (json!(2), json!("later"))]
+    );
+    let before = post(
+        &address,
+        "/api/tasks/2/move",
+        "",
+        &at(queue()["revision"].as_i64().unwrap(), r#", "before": 1"#),
+    );
+    assert_eq!(before.0, 200, "{}", before.1);
+    assert_eq!(
+        order(),
+        [(json!(2), json!("now")), (json!(1), json!("now"))]
+    );
+    let after = post(
+        &address,
+        "/api/tasks/2/move",
+        "",
+        &at(queue()["revision"].as_i64().unwrap(), r#", "after": 1"#),
+    );
+    assert_eq!(after.0, 200, "{}", after.1);
+    assert_eq!(
+        order(),
+        [(json!(1), json!("now")), (json!(2), json!("now"))]
+    );
+    let revision = queue()["revision"].as_i64().unwrap();
+    let both = post(
+        &address,
+        "/api/tasks/2/move",
+        "",
+        &at(revision, r#", "top": true, "after": 1"#),
+    );
+    let neither = post(&address, "/api/tasks/2/move", "", &at(revision, ""));
+    let no_band = post(
+        &address,
+        "/api/tasks/2/move",
+        "",
+        &at(revision, r#", "band": "someday""#),
+    );
+    assert_eq!(both.0, 400, "{}", both.1);
+    assert_eq!(neither.0, 400, "{}", neither.1);
+    assert_eq!(no_band.0, 422, "{}", no_band.1);
+}
+
+#[test]
 fn resume_say_cancel_and_revive_through_their_endpoints_do_what_their_cli_verbs_do() {
     let mut setup = Setup::new("web-act", SERVE);
     setup.seed();
