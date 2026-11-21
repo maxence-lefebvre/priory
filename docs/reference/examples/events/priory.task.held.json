@@ -1,0 +1,12 @@
+{
+  "id": "0196f1c2-7a3e-7c41-9b2d-5e8f0a1b2c3d",
+  "type": "priory.task.held",
+  "subject": "github:acme/widgets#42",
+  "time": "2026-11-21T10:00:05Z",
+  "data": {
+    "key": "github:acme/widgets#42",
+    "runner": "xps13",
+    "hold": "kept"
+  },
+  "links": []
+}

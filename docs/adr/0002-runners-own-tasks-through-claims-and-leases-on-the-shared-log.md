@@ -1,6 +1,6 @@
 # Runners own tasks through claims and leases on the shared log
 
-Date: 2026-11-21. Status: proposed.
+Date: 2026-11-21. Status: accepted.
 
 ## Context
 
@@ -26,7 +26,7 @@ before.
 
 ### Every runner reads the whole log
 
-Each runner reads `factory.intake` as its own consumer, `priory@<runner>`, and records every
+Each runner reads `factory.intake` as its own consumer, `priory.<runner>`, and records every
 message in its own inbox. Ownership messages go on the same output, so every runner sees requests,
 claims and leases in one order. Each runner computes the same owner for every key from that order,
 with no coordinator.
@@ -108,8 +108,8 @@ trait, as ADR 0001 left them.
 
 ## Consequences
 
-- One migration adds a `claims` table (key, owner, request, hold, hold published) and a `runners`
-  table (name, last alive time).
+- One migration adds a `claims` table (key, owner, request, hold, hold published), a `leases`
+  table (runner, last alive time) and a `sends` table, the messages queued for the log.
 - A runner keeps every started task through any absence. Only tasks that never started move after
   30 minutes, so no task runs on two runners unless a person gives a started one away.
 - A started task on a runner that never comes back waits for `priory give`.

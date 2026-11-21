@@ -25,6 +25,8 @@ Each type has a JSON Schema in [`docs/schemas/events/`](../schemas/events/), nam
 - Slack: [`slack.message.posted`](#slackmessageposted), [`slack.thread.replied`](#slackthreadreplied)
 - Others: [`schedule.fired`](#schedulefired), [`priory.task.requested.cli`](#priorytaskrequestedcli),
   [`factory.task.requested`](#factorytaskrequested), [`factory.intake.baseline`](#factoryintakebaseline)
+- Runners: [`priory.task.claimed`](#priorytaskclaimed), [`priory.task.held`](#priorytaskheld),
+  [`priory.runner.alive`](#prioryrunneralive), [`priory.ask.answered`](#prioryaskanswered)
 
 ## The envelope
 
@@ -1098,6 +1100,129 @@ Schema: [`factory.intake.baseline.json`](../schemas/events/factory.intake.baseli
     "repo": "acme/widgets",
     "stream": "github.issues.labeled",
     "position": 36430795541
+  },
+  "links": []
+}
+```
+
+## Runners
+
+A factory with two or more runner files has its daemons publish these on `factory.intake` too, and
+`priory give` and `priory answer RUNNER:ASK` publish two of them. Every runner reads them all. See
+[runners.md](../daemon/runners.md).
+
+### `priory.task.claimed`
+
+A runner claims a task's key: for a request no runner holds, to take over a waiting task of a
+runner whose lease ended, or because a person gave it the task with `priory give`. The first claim
+in log order that wins a key makes its runner the owner. Subject: the key.
+Schema: [`priory.task.claimed.json`](../schemas/events/priory.task.claimed.json).
+
+| Field | Type | Meaning |
+| ----- | ---- | ------- |
+| `key` | string | The task's key |
+| `runner` | string | The runner that claims it |
+| `request` | UUID string | The `id` of the task request the owner creates the task from |
+| `from` | string, optional | The runner it takes the key from, for a takeover or a gift |
+| `given` | boolean, optional | True when a person gave the task with `priory give` |
+
+<!-- example: events/priory.task.claimed.json -->
+```json
+{
+  "id": "4f8a2c1e-6b3d-5a90-8e7f-1c2d3e4f5a6b",
+  "type": "priory.task.claimed",
+  "subject": "github:acme/widgets#42",
+  "time": "2026-11-21T11:00:00Z",
+  "data": {
+    "key": "github:acme/widgets#42",
+    "runner": "workstation",
+    "request": "ef68a451-bc80-5a71-820f-2fb320bb3a8d",
+    "from": "xps13"
+  },
+  "links": []
+}
+```
+
+### `priory.task.held`
+
+What another runner may do with a task, published by its owner each time it changes. Subject: the
+key. Schema: [`priory.task.held.json`](../schemas/events/priory.task.held.json).
+
+| Field | Type | Meaning |
+| ----- | ---- | ------- |
+| `key` | string | The task's key |
+| `runner` | string | The runner that owns it |
+| `hold` | `waiting`, `kept` or `ended` | `waiting`: no run of it started, so it moves once its runner's lease ends. `kept`: started or asleep, so it stays. `ended`: done, failed or dropped |
+
+<!-- example: events/priory.task.held.json -->
+```json
+{
+  "id": "0196f1c2-7a3e-7c41-9b2d-5e8f0a1b2c3d",
+  "type": "priory.task.held",
+  "subject": "github:acme/widgets#42",
+  "time": "2026-11-21T10:00:05Z",
+  "data": {
+    "key": "github:acme/widgets#42",
+    "runner": "xps13",
+    "hold": "kept"
+  },
+  "links": []
+}
+```
+
+### `priory.runner.alive`
+
+A runner renews its lease, once a minute while its daemon runs. Its lease ends 30 minutes after this
+message's `time`. Subject: the runner.
+Schema: [`priory.runner.alive.json`](../schemas/events/priory.runner.alive.json).
+
+| Field | Type | Meaning |
+| ----- | ---- | ------- |
+| `runner` | string | The runner, named by its hostname |
+
+<!-- example: events/priory.runner.alive.json -->
+```json
+{
+  "id": "9d3b7e21-4c5a-5f68-a1b2-c3d4e5f6a7b8",
+  "type": "priory.runner.alive",
+  "subject": "xps13",
+  "time": "2026-11-21T10:00:00Z",
+  "data": {
+    "runner": "xps13"
+  },
+  "links": []
+}
+```
+
+### `priory.ask.answered`
+
+One message per `priory answer RUNNER:ASK`. Only that runner applies it, with the revision check of
+a local answer. Subject: `<runner>:<ask>`.
+Schema: [`priory.ask.answered.json`](../schemas/events/priory.ask.answered.json).
+
+| Field | Type | Meaning |
+| ----- | ---- | ------- |
+| `runner` | string | The runner whose ask it answers |
+| `ask` | integer | The ask's id on that runner |
+| `revision` | integer | The question revision the person read |
+| `text` | string | The answer |
+| `run` | boolean | `--run`: the person confirmed that the answer runs the ask's command |
+| `by` | string | `cli` |
+
+<!-- example: events/priory.ask.answered.json -->
+```json
+{
+  "id": "0196f1c3-1b2c-7d4e-8f9a-0b1c2d3e4f5a",
+  "type": "priory.ask.answered",
+  "subject": "xps13:7",
+  "time": "2026-11-21T10:20:00Z",
+  "data": {
+    "runner": "xps13",
+    "ask": 7,
+    "revision": 1,
+    "text": "approved",
+    "run": false,
+    "by": "cli"
   },
   "links": []
 }

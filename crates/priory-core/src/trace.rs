@@ -10,6 +10,8 @@ pub struct Trace<'a> {
     pub factory: &'a Factory,
     pub revision: Option<String>,
     pub machine: Option<String>,
+    /// This daemon's runner, when the factory has several and so they own tasks through the log.
+    pub runner: Option<String>,
     pub usage: fn(&Path, u64) -> Option<Usage>,
 }
 

@@ -12,7 +12,7 @@ use std::collections::BTreeMap;
 use std::io::Write;
 use std::time::Duration;
 
-const VERSION: i64 = 63;
+const VERSION: i64 = 64;
 
 const SCHEMA: &str = "
 CREATE TABLE tasks (
@@ -1107,6 +1107,25 @@ ALTER TABLE tasks ADD COLUMN verification TEXT;
 PRAGMA user_version = 63;
 ";
 
+const SCHEMA_64: &str = "
+CREATE TABLE IF NOT EXISTS claims (
+  key       TEXT PRIMARY KEY,
+  runner    TEXT NOT NULL,
+  request   TEXT NOT NULL,
+  hold      TEXT NOT NULL DEFAULT 'waiting',
+  published TEXT
+);
+CREATE TABLE IF NOT EXISTS leases (
+  runner TEXT PRIMARY KEY,
+  alive  INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS sends (
+  id      INTEGER PRIMARY KEY,
+  message TEXT NOT NULL
+);
+PRAGMA user_version = 64;
+";
+
 /// Each schema change in order: a file at version `n` applies those from index `n` on.
 const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA, SCHEMA_2, SCHEMA_3, SCHEMA_4, SCHEMA_5, SCHEMA_6, SCHEMA_7, SCHEMA_8, SCHEMA_9,
@@ -1116,7 +1135,7 @@ const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA_34, SCHEMA_35, SCHEMA_36, SCHEMA_37, SCHEMA_38, SCHEMA_39, SCHEMA_40, SCHEMA_41,
     SCHEMA_42, SCHEMA_43, SCHEMA_44, SCHEMA_45, SCHEMA_46, SCHEMA_47, SCHEMA_48, SCHEMA_49,
     SCHEMA_50, SCHEMA_51, SCHEMA_52, SCHEMA_53, SCHEMA_54, SCHEMA_55, SCHEMA_56, SCHEMA_57,
-    SCHEMA_58, SCHEMA_59, SCHEMA_60, SCHEMA_61, SCHEMA_62, SCHEMA_63,
+    SCHEMA_58, SCHEMA_59, SCHEMA_60, SCHEMA_61, SCHEMA_62, SCHEMA_63, SCHEMA_64,
 ];
 
 /// The order the queue starts tasks in: band, then a person's order, then age. A band the factory
@@ -1240,8 +1259,20 @@ pub(crate) fn handle(
     trace: &crate::trace::Trace,
     counter: Option<&crate::embed::Counter>,
 ) -> Result<Option<String>, Box<dyn std::error::Error>> {
-    let factory = trace.factory;
     let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let kill = handle_in(&tx, message, trace, counter)?;
+    tx.commit()?;
+    Ok(kill)
+}
+
+/// Records `message` in `tx` and routes it, returning the tmux session to kill once it commits.
+pub(crate) fn handle_in(
+    tx: &Transaction,
+    message: &Message,
+    trace: &crate::trace::Trace,
+    counter: Option<&crate::embed::Counter>,
+) -> Result<Option<String>, Box<dyn std::error::Error>> {
+    let factory = trace.factory;
     let seen = tx
         .query_row(
             "SELECT 1 FROM inbox WHERE id = ?1",
@@ -1252,8 +1283,13 @@ pub(crate) fn handle(
     if seen.is_some() {
         return Ok(None);
     }
+    if let Some(me) = trace.runner.as_deref()
+        && let Some(kill) = crate::runners::handle(tx, message, me, trace, counter)?
+    {
+        return Ok(kill);
+    }
     let resources = route::resources(message);
-    claim_pull_request(&tx, message)?;
+    claim_pull_request(tx, message)?;
     // The intake publishes no reopen, so a later event of an open pull request tells it.
     if message.kind != CLOSED && message.data["open"] == true {
         tx.execute(
@@ -1274,13 +1310,13 @@ pub(crate) fn handle(
     }
     // A review event goes to its review task first, even when an older task is keyed by its PR.
     let (keyed, owners) = match (route::requests(message), route::review(message)) {
-        (true, _) => (keyed(&tx, resources.first())?, Vec::new()),
-        (false, Some(review)) => (keyed(&tx, Some(&review))?, owners(&tx, &resources)?),
-        (false, None) => (None, owners(&tx, &resources)?),
+        (true, _) => (keyed(tx, resources.first())?, Vec::new()),
+        (false, Some(review)) => (keyed(tx, Some(&review))?, owners(tx, &resources)?),
+        (false, None) => (None, owners(tx, &resources)?),
     };
     let owner = keyed.as_ref().or(owners.first());
     let reopening = match owner {
-        None => crate::tools::reopenable(&tx, message)?,
+        None => crate::tools::reopenable(tx, message)?,
         Some(_) => None,
     };
     let (task, outcome) = match route::route(message, owner, factory) {
@@ -1334,14 +1370,14 @@ pub(crate) fn handle(
                 )?;
             }
             if let Some(hold) = &new.hold {
-                crate::hold::filed(&tx, id, hold, factory)?;
+                crate::hold::filed(tx, id, hold, factory)?;
             }
-            crate::relate::created(&tx, id, &new.key, &new.relates)?;
+            crate::relate::created(tx, id, &new.key, &new.relates)?;
             (Some(id), "created")
         }
         Decision::Keep(id) if route::tick(message, factory) => (
             Some(id),
-            if wakes(&tx, id, factory)? {
+            if wakes(tx, id, factory)? {
                 "woke"
             } else {
                 "coalesced"
@@ -1370,7 +1406,7 @@ pub(crate) fn handle(
             message.subject.as_deref(),
             &message.data.to_string(),
         );
-        let text = placed(&tx, task, &resources, &text)?;
+        let text = placed(tx, task, &resources, &text)?;
         tx.execute(
             "INSERT INTO outbox (task, text) VALUES (?1, ?2)",
             params![task, text],
@@ -1395,22 +1431,22 @@ pub(crate) fn handle(
         ],
     )?;
     let seq = tx.last_insert_rowid();
-    crate::grades::label(&tx, trace, message)?;
+    crate::grades::label(tx, trace, message)?;
     if message.kind == "linear.view.changed" {
-        crate::post::report(&tx, "linear", &refiltered(&message.data))?;
+        crate::post::report(tx, "linear", &refiltered(&message.data))?;
     }
-    crate::hold::event(&tx, &resources)?;
+    crate::hold::event(tx, &resources)?;
     // The keyed task keeps the event; another task that shares the resource hears it through its
     // wait or its subscription.
     for other in owners.iter().filter(|other| Some(other.id) != task) {
-        if !crate::tools::event(&tx, other.id, seq)? {
-            delivered(&tx, other.id, message, &resources, None, factory)?;
+        if !crate::tools::event(tx, other.id, seq)? {
+            delivered(tx, other.id, message, &resources, None, factory)?;
         }
     }
     match (task, outcome) {
         (Some(task), "kept") => {
-            if !crate::tools::event(&tx, task, seq)?
-                && delivered(&tx, task, message, &resources, Some(seq), factory)?
+            if !crate::tools::event(tx, task, seq)?
+                && delivered(tx, task, message, &resources, Some(seq), factory)?
             {
                 tx.execute("UPDATE inbox SET outcome = 'woke' WHERE seq = ?1", [seq])?;
             }
@@ -1422,11 +1458,11 @@ pub(crate) fn handle(
                 &message.data.to_string(),
             );
             let text = message.data["prompt"].as_str().unwrap_or(&line);
-            let text = match crate::findings::memory(&tx, task)? {
+            let text = match crate::findings::memory(tx, task)? {
                 Some(memory) => format!("{text}\n{memory}"),
                 None => text.to_owned(),
             };
-            crate::tools::wake_on(&tx, task, &text, Some(seq))?;
+            crate::tools::wake_on(tx, task, &text, Some(seq))?;
         }
         (Some(task), "said") => {
             let state: String =
@@ -1436,16 +1472,14 @@ pub(crate) fn handle(
             let text = message.data["text"].as_str().unwrap_or_default();
             let text = format!("{}{text}", crate::tools::SAYS);
             // An agent that cannot hear it yet reads the request with its next prompt instead.
-            if crate::tools::say(&tx, task, &text, &state, &factory.workflows)?.is_err() {
+            if crate::tools::say(tx, task, &text, &state, &factory.workflows)?.is_err() {
                 tx.execute("UPDATE inbox SET outcome = 'kept' WHERE seq = ?1", [seq])?;
-                crate::tools::event(&tx, task, seq)?;
+                crate::tools::event(tx, task, seq)?;
             }
         }
-        (Some(task), "reopened") => crate::tools::reopen(&tx, trace, task, seq)?,
+        (Some(task), "reopened") => crate::tools::reopen(tx, trace, task, seq)?,
         (Some(task), "withdrew") => {
-            let tmux = crate::tools::cancel(&tx, task, "review request removed")?;
-            tx.commit()?;
-            return Ok(tmux);
+            return Ok(crate::tools::cancel(tx, task, "review request removed")?);
         }
         _ => {}
     }
@@ -1456,7 +1490,6 @@ pub(crate) fn handle(
             [resources.first()],
         )?;
     }
-    tx.commit()?;
     Ok(None)
 }
 
@@ -1801,7 +1834,7 @@ pub(crate) fn disk_due(
 }
 
 /// The active task whose own key is `key`: owning the key as a resource is not enough.
-fn keyed(tx: &Transaction, key: Option<&String>) -> rusqlite::Result<Option<Task>> {
+pub(crate) fn keyed(tx: &Transaction, key: Option<&String>) -> rusqlite::Result<Option<Task>> {
     tx.query_row(
         "SELECT id FROM tasks WHERE key = ?1
          AND state NOT IN ('done', 'failed', 'dropped') ORDER BY id LIMIT 1",

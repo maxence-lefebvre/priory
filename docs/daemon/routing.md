@@ -123,6 +123,13 @@ Each inbox entry gets one of these outcomes:
 | Any other, with an active task owning a resource it names | `kept` | that task                   |
 | `factory.task.requested`, no active task  | `created` | a new task, `queued` at its workflow's start |
 | `factory.task.requested`, malformed       | `ignored` | none                                         |
+| A task request whose key no runner holds, with several runners | `claiming` | none until this runner's claim wins (see [runners.md](runners.md)) |
+| A task request whose key another runner holds | `elsewhere` | none                                    |
+| `priory.task.claimed` that wins its key   | `claimed` | the task this runner creates, when it is the new owner |
+| `priory.task.claimed` that loses          | `refused` | none                                         |
+| `priory.task.held` or `priory.runner.alive` | `noted` | none                                         |
+| `priory.ask.answered` for this runner     | `answered`, or `refused` by the revision check | the ask's task, as a local answer moves it |
+| `priory.ask.answered` for another runner  | `elsewhere` | none                                       |
 | Any other                                 | `ignored` | none                                         |
 
 A task request can name a workflow the factory lacks. It still creates its task, `queued` with no

@@ -627,6 +627,70 @@ pub struct TaskRequested {
     pub prompt: Option<Option<String>>,
 }
 
+/// A runner claims a task's key: for a request no runner holds, to take over a waiting task of a
+/// runner whose lease ended, or because a person gave it the task with `priory give`. The first
+/// claim in log order that wins a key makes its runner the owner. Published by daemons of a factory
+/// with several runners, and by `priory give`.
+#[derive(JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct TaskClaimed {
+    /// The task's key, such as `github:owner/name#42`.
+    pub key: String,
+    /// The runner that claims it.
+    pub runner: String,
+    /// The `id` of the task request the owner creates the task from.
+    #[schemars(extend("format" = "uuid"))]
+    pub request: String,
+    /// The runner it takes the key from, for a takeover or a gift.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub from: Option<String>,
+    /// True when a person gave the task with `priory give`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub given: Option<bool>,
+}
+
+/// What another runner may do with a task, as its owner says it each time it changes: `waiting`
+/// (no run of it started, so it moves once its runner's lease ends), `kept` (started or asleep, so
+/// it stays) or `ended` (done, failed or dropped).
+#[derive(JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct TaskHeld {
+    /// The task's key.
+    pub key: String,
+    /// The runner that owns it.
+    pub runner: String,
+    /// `waiting`, `kept` or `ended`.
+    pub hold: String,
+}
+
+/// A runner renews its lease, once a minute while its daemon runs. Its lease ends 30 minutes after
+/// this message's `time`.
+#[derive(JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct RunnerAlive {
+    /// The runner, named by its hostname.
+    pub runner: String,
+}
+
+/// A person answers an ask of another runner, with `priory answer RUNNER:ASK`. Only that runner
+/// applies it, with the revision check of a local answer.
+#[derive(JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct AskAnswered {
+    /// The runner whose ask it answers.
+    pub runner: String,
+    /// The ask's id on that runner.
+    pub ask: i64,
+    /// The question revision the person read.
+    pub revision: i64,
+    /// The answer.
+    pub text: String,
+    /// True when the person confirmed that the answer runs the ask's command.
+    pub run: bool,
+    /// Where the answer came from: `cli`.
+    pub by: String,
+}
+
 /// Where a stream stands after a poll that moved it; a missing marker means the stream is still
 /// in its baseline.
 #[derive(JsonSchema)]

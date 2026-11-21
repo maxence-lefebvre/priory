@@ -7,7 +7,9 @@
 `priory answer <ask> <option-or-text> --revision <n>` sends the answer to the daemon. `--expected`
 is the same flag, and `--` ends the flags, as in `priory answer --expected 2 -- cache.ship ship`.
 The first answer to the ask's revision stands. Refused: an answer to another revision, a second
-answer, or, for a step's ask, a text that is not one of its options.
+answer, or, for a step's ask, a text that is not one of its options. In a factory of several
+runners, `priory answer <runner>:<ask>` answers another runner's ask through the log (see
+[runners.md](runners.md#answering-another-runners-ask)).
 
 `priory dismiss [--expected <n>] <ask>` closes an open ask with no answer. With `--expected`, a
 changed question refuses it, as it refuses an answer. A dismissed ask is withdrawn: an answer to

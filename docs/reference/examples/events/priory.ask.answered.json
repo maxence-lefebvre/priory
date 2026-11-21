@@ -1,0 +1,15 @@
+{
+  "id": "0196f1c3-1b2c-7d4e-8f9a-0b1c2d3e4f5a",
+  "type": "priory.ask.answered",
+  "subject": "xps13:7",
+  "time": "2026-11-21T10:20:00Z",
+  "data": {
+    "runner": "xps13",
+    "ask": 7,
+    "revision": 1,
+    "text": "approved",
+    "run": false,
+    "by": "cli"
+  },
+  "links": []
+}
