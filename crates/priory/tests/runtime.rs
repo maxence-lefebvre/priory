@@ -6414,6 +6414,69 @@ fn a_merge_that_moves_a_said_run_to_another_agent_kills_its_session_and_starts_t
 }
 
 #[test]
+fn a_merge_that_carries_a_said_run_into_the_next_step_queues_only_that_steps_ending() {
+    let mut setup = Setup::with_workflow("after-merge-said-ending", AFTER_MERGE);
+    setup.calls(&[
+        wait(on_pull_7("review")),
+        passed_at("abc0000000000000000000000000000000000000"),
+        serde_json::Value::Null,
+        json!({ "name": "result", "arguments": { "outcome": "quiet", "summary": "all quiet" } }),
+    ]);
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("runs", |rows| rows.len() == 1 && rows[0][7] == "asleep");
+    setup.publish(&reviewed());
+    setup.until("runs", |rows| rows.len() == 2 && rows[1][7] == "asleep");
+    setup.hold("hold-stop");
+    assert!(setup.priory(&["say", "1", "Hold on."]).status.success());
+    setup.until("outbox", |_| {
+        setup
+            .typed()
+            .iter()
+            .any(|text| text.starts_with("A person says: Hold on."))
+    });
+    // The run is busy, so this one stays queued, with the ending of the step the task is at.
+    assert!(setup.priory(&["say", "1", "And this."]).status.success());
+
+    setup.publish(&closed());
+    setup.until("runs", |rows| rows.len() == 4 && rows[3][2] == "watch");
+    setup.release("hold-stop");
+
+    setup.until("tasks", |rows| rows[0][4] == "done");
+    let typed = setup.typed();
+    let watch = typed
+        .iter()
+        .find(|text| text.contains("Watch the release."))
+        .expect("the watch step's prompt was typed");
+    assert!(watch.contains("A person says: And this."), "{watch}");
+    assert!(watch.contains("outcomes: quiet."), "{watch}");
+    assert!(!watch.contains("outcomes: failed, passed"), "{watch}");
+}
+
+#[test]
+fn a_merge_that_marks_a_task_done_ends_its_said_run_and_kills_its_session() {
+    let setup = gated("gate-said-done");
+    setup.calls(&[serde_json::Value::Null]);
+    setup.hold("hold-stop");
+    assert!(setup.priory(&["say", "1", "Hold on."]).status.success());
+    setup.until("outbox", |_| {
+        setup
+            .typed()
+            .iter()
+            .any(|text| text.starts_with("A person says: Hold on."))
+    });
+
+    setup.publish(&closed());
+    setup.until("tasks", |rows| rows[0][4] == "done");
+    setup.release("hold-stop");
+
+    setup.gone("priory-1");
+    let runs = setup.rows("runs");
+    assert_eq!(runs.len(), 3, "{runs:?}");
+    assert_eq!(runs[2][7], "done", "{runs:?}");
+}
+
+#[test]
 fn a_merge_with_a_check_still_running_marks_the_task_done() {
     let setup = gated("gate-merged");
     setup.publish(&check(1, 1));

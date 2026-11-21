@@ -39,6 +39,9 @@ End this step by calling the result tool of the priory MCP server with one of th
 priory.task.requested.cli cli:docs-1 {"person":"max","repo":"owner/name","text":"Fix the typo in the README","time":"2026-11-17T18:00:00Z"}
 ```
 
+When a task enters another step, the daemon removes the old step's ending line from the prompts
+still queued, such as a person's `say`, so a prompt names only the new step's outcomes.
+
 A `ready` task's run starts with only those event lines, or with nothing when no new events exist.
 The prompt that moved or woke the task is already queued.
 
