@@ -235,6 +235,10 @@ If you work in [Herdr](docs/adapters/herdr.md), its Desk panel shows the same de
 panel lists the same asks and answers them through these verbs. `adapters/herdr/install` links
 them into Herdr.
 
+The web view's Desk shows the same desk. It opens on the next thing: the alarm or ask that ranks
+first, with why it ranks there. Under the list, Since you looked shows what happened since your last
+visit, and opening the Desk records the visit as `priory seen` does.
+
 A workflow can write a report for you, such as a morning dossier: `priory report show` prints the
 last one. The web view's Reports panel shows it, and takes its picks and row comments as
 `priory report pick` and `priory report comment` do. See [docs/daemon/reports.md](docs/daemon/reports.md).

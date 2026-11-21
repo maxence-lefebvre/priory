@@ -46,6 +46,7 @@ const WEB: &[(&str, &str, &[u8])] = &[
     file!("/links.js", JS, "crates/priory-core/web/links.js"),
     file!("/reports.js", JS, "crates/priory-core/web/reports.js"),
     file!("/stack.js", JS, "crates/priory-core/web/stack.js"),
+    file!("/desk.js", JS, "crates/priory-core/web/desk.js"),
     file!("/sw.js", JS, "crates/priory-core/web/sw.js"),
     file!(
         "/manifest.webmanifest",
@@ -376,6 +377,7 @@ enum Write<'a> {
     Unsubscribe,
     TodoAdd,
     TodoDone(i64),
+    Seen,
 }
 
 impl<'a> Write<'a> {
@@ -391,6 +393,7 @@ impl<'a> Write<'a> {
             "/api/push/subscribe" => return Some(Write::Subscribe),
             "/api/push/unsubscribe" => return Some(Write::Unsubscribe),
             "/api/todos" => return Some(Write::TodoAdd),
+            "/api/seen" => return Some(Write::Seen),
             _ => {}
         }
         if let Some(id) = path
@@ -475,6 +478,13 @@ struct CommentBody {
 #[derive(serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Empty {}
+
+/// `POST /api/seen`'s body: when the page read the desk it drew, as `priory seen --at`.
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SeenBody {
+    at: jiff::Timestamp,
+}
 
 #[derive(serde::Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -688,6 +698,14 @@ fn write_line(db: &Connection, write: &Write, body: &[u8]) -> Result<(String, Se
             let Empty {} = serde_json::from_slice(body).map_err(bad)?;
             let change = todo::Change::Done(*id);
             Ok((line(&todo::Line { todo: change }), Sent::Nothing))
+        }
+        Write::Seen => {
+            let body: SeenBody = serde_json::from_slice(body).map_err(bad)?;
+            let seen = state::Visit {
+                person: listing::ME.to_owned(),
+                at: body.at,
+            };
+            Ok((line(&state::SeenLine { seen }), Sent::Nothing))
         }
     }
 }

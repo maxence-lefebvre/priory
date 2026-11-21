@@ -546,13 +546,10 @@ fn seen(args: Vec<String>) -> ExitCode {
             _ => return usage(),
         }
     }
-    // Whole seconds, as inbox times are: the desk lists events from the visit's second on, so an
-    // event in that second shows again rather than never.
-    let at: jiff::Timestamp = at.unwrap_or_else(jiff::Timestamp::now);
-    let at = at.strftime("%Y-%m-%dT%H:%M:%SZ").to_string();
+    let at = at.unwrap_or_else(jiff::Timestamp::now);
     let person = person.map_or(listing::ME, String::as_str);
     let done = state::open()
-        .and_then(|db| state::seen(&db, person, &at).map_err(|error| error.to_string()));
+        .and_then(|db| state::seen(&db, person, at).map_err(|error| error.to_string()));
     exit("seen", done.map(|text| println!("{text}")))
 }
 
