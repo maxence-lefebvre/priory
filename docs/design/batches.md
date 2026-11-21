@@ -12,11 +12,8 @@ its pull request is based on it.
 
 ## Stacked entries: what is left
 
-- **Revalidate the parent at the start.** When the `waiting` moment is met, the daemon would record
-  the parent's top pull request, branch and head on the entry, and revalidate them as the run
-  starts. A parent branch that moved in between would refuse the start, and wake no one until a
-  person answers an ask on the hold. Today the entry starts from wherever the parent's branch is,
-  and only a branch that is gone refuses the start.
+- **Revalidate the parent at the start.** Built: see
+  [daemon/batches.md](../daemon/batches.md#the-waiting-condition-and-stacked-entries).
 - **Tell the entry when the parent pushes again.** After feedback, the parent pushes new commits.
   The daemon would queue a line for the entry: `task 31 pushed priory/31 to <sha>; rebase onto it`.
   Today the entry hears only the parent's merge.

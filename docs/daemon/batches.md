@@ -187,8 +187,14 @@ Anything that meets `merged` meets `waiting` too. An entry has at most one `wait
 
 A `waiting` edge makes a stack across two tasks. The go records the parent as the entry's base task.
 
+- When the `waiting` condition is met, the daemon records the parent's open pull request, branch
+  and head on the entry.
 - The entry's worktree starts from the parent's branch, such as `priory/31`, instead of the default
-  branch. If that branch is gone, the start is refused.
+  branch. If that branch is gone, the start is refused. If it moved since the `waiting` moment, the
+  start is refused too: the entry is held, with the reason `held: task 31 moved priory/31 from
+  <old> to <new> before it started, until a person answers`, and asks `Task 31 moved priory/31 from
+  <old> to <new> before task 32 started on it. Release the task to start from <new>, or drop it?`.
+  No one else wakes. `release`, or `priory release`, starts the entry from where the branch is now.
 - The entry's `open-pr` bases its bottom pull request on the parent's branch, while the parent has a
   pull request open from it. Its own stack still fits its own workflow's `max_prs`.
 - When the parent's pull request merges, the entry gets the line a task's own stack gets: `#7 merged;
