@@ -15,6 +15,28 @@
       ],
       "description": "What a hold's `after` waits for: another task to end, or a Linear issue to close."
     },
+    "BatchRequest": {
+      "additionalProperties": false,
+      "description": "The issues a batch's planning task plans, as task keys, and the workflow of its entries' tasks.",
+      "properties": {
+        "entries": {
+          "description": "The workflow each entry's task runs.",
+          "type": "string"
+        },
+        "issues": {
+          "description": "Each issue, `linear:ENG-7` or `github:owner/name#42`.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "issues",
+        "entries"
+      ],
+      "type": "object"
+    },
     "Hold": {
       "additionalProperties": false,
       "description": "Why a task is held, and the conditions that release it once all of them hold. With none, a\nperson does.",
@@ -160,6 +182,17 @@
             "string",
             "null"
           ]
+        },
+        "batch": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/BatchRequest"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The batch a planning task plans, from `priory batch add`."
         },
         "hold": {
           "anyOf": [

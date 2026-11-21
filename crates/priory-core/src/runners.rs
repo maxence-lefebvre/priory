@@ -67,7 +67,12 @@ pub(crate) fn handle(
         CLAIMED => return claimed(tx, message, me, trace, counter).map(Some),
         ANSWERED if text("runner") != me => "elsewhere",
         ANSWERED => {
-            let answer: crate::tools::Answer = serde_json::from_value(message.data.clone())?;
+            // Anyone can publish on the log, so a malformed answer is refused, never fatal.
+            let Ok(answer) = serde_json::from_value::<crate::tools::Answer>(message.data.clone())
+            else {
+                crate::state::record(tx, message, None, "refused", None)?;
+                return Ok(Some(None));
+            };
             let head = |worktree: &std::path::Path, branch: &str| {
                 priory_runtime::runtime::kept_head(
                     &priory_runtime::runtime::home(),
@@ -129,6 +134,7 @@ fn claimed(
         data["runner"].as_str().unwrap_or_default(),
     );
     let given = data["given"] == true;
+    let ended = data["ended"] == true;
     let current = owner(tx, key)?;
     let alive = match &current {
         Some(current) => lease(tx, &current.runner)?,
@@ -168,10 +174,16 @@ fn claimed(
     }
     let seq = crate::state::record(tx, message, None, "claimed", None)?;
     tx.execute(
-        "INSERT INTO claims (key, runner, request, won) VALUES (?1, ?2, ?3, ?4)
+        "INSERT INTO claims (key, runner, request, won, hold) VALUES (?1, ?2, ?3, ?4, ?5)
          ON CONFLICT (key) DO UPDATE SET runner = excluded.runner, request = excluded.request,
-           hold = 'waiting', published = NULL, won = excluded.won",
-        params![key, runner, request, seq],
+           hold = excluded.hold, published = NULL, won = excluded.won",
+        params![
+            key,
+            runner,
+            request,
+            seq,
+            if ended { "ended" } else { "waiting" }
+        ],
     )?;
     // The request, then each later one of the key that no task here took, are this task's.
     let mut pending: Vec<String> = tx
@@ -206,8 +218,9 @@ fn claimed(
             )?;
             continue;
         }
-        // A runner that adopts its own task, or is given it back, already has it.
-        if id == request && crate::state::keyed(tx, Some(&key.to_owned()))?.is_some() {
+        // A runner that adopts its own task, or is given it back, already has it; an ended one
+        // needs none.
+        if id == request && (ended || crate::state::keyed(tx, Some(&key.to_owned()))?.is_some()) {
             continue;
         }
         let Some(request) = stored(tx, id)? else {
@@ -291,7 +304,11 @@ fn renew(tx: &Transaction, runner: &str, time: Timestamp) -> rusqlite::Result<()
     tx.execute(
         "INSERT INTO leases (runner, alive) VALUES (?1, ?2)
          ON CONFLICT (runner) DO UPDATE SET alive = max(alive, excluded.alive)",
-        params![runner, time.as_second()],
+        // Rounded up, so a lease stored in whole seconds never ends before its full length.
+        params![
+            runner,
+            time.as_second() + i64::from(time.subsec_nanosecond() > 0)
+        ],
     )?;
     Ok(())
 }
@@ -444,27 +461,36 @@ pub(crate) fn cleared(db: &mut Connection, me: &str, task: i64) -> rusqlite::Res
 
 /// Claims the keys of this runner's active tasks that no runner holds yet, such as the tasks of a
 /// factory that had one runner before or one it reopened, so that another runner does not claim
-/// them too. Until the claim is read back, admission skips the task.
+/// them too. Until the claim is read back, admission skips the task. A key whose last task ended
+/// before the factory had runners is claimed once as ended, so no runner that reads its request
+/// later runs it again.
 fn adopt(db: &mut Connection, me: &str) -> rusqlite::Result<()> {
     let tx = db.transaction()?;
     let unclaimed = tx
         .prepare(
-            "SELECT tasks.key, inbox.id, tasks.generation FROM tasks
+            "SELECT tasks.key, inbox.id, tasks.generation,
+               tasks.state IN ('done', 'failed', 'dropped') FROM tasks
                JOIN inbox ON inbox.task = tasks.id AND inbox.outcome = 'created'
-             WHERE tasks.state NOT IN ('done', 'failed', 'dropped')
-               AND NOT EXISTS (SELECT 1 FROM claims WHERE claims.key = tasks.key
-                 AND claims.runner = ?1)",
+             WHERE CASE WHEN tasks.state IN ('done', 'failed', 'dropped')
+               THEN tasks.id = (SELECT max(id) FROM tasks AS later WHERE later.key = tasks.key)
+                 AND NOT EXISTS (SELECT 1 FROM claims WHERE claims.key = tasks.key)
+               ELSE NOT EXISTS (SELECT 1 FROM claims WHERE claims.key = tasks.key
+                 AND claims.runner = ?1) END",
         )?
         .query_map([me], |row| {
             Ok((
                 row.get::<_, String>(0)?,
                 row.get::<_, String>(1)?,
                 row.get::<_, i64>(2)?,
+                row.get::<_, bool>(3)?,
             ))
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
-    for (key, request, generation) in unclaimed {
-        let claim = json!({ "key": key, "runner": me, "request": request });
+    for (key, request, generation, ended) in unclaimed {
+        let mut claim = json!({ "key": key, "runner": me, "request": request });
+        if ended {
+            claim["ended"] = json!(true);
+        }
         // A reopened task claims afresh: its first claim's id is on the log already.
         let id = format!("adopt/{request}/{me}/{generation}");
         send(&tx, &stamped(CLAIMED, claim, &id).subject(key))?;
@@ -494,6 +520,9 @@ pub fn answer(
     runner: &str,
     answer: &crate::tools::Answer,
 ) -> Result<String, String> {
+    if !factory.runners.contains_key(runner) {
+        return Err(format!("runner {runner} has no runner file in runners/"));
+    }
     let mut data = serde_json::to_value(answer).map_err(|error| error.to_string())?;
     data["runner"] = json!(runner);
     publish(
@@ -626,9 +655,29 @@ pub(crate) fn lapsed(alive: Option<Timestamp>, at: Timestamp) -> bool {
     alive.is_none_or(|alive| at.duration_since(alive) >= LEASE)
 }
 
+/// `message` at the log's own time when the log gives one, so leases compare one clock rather than
+/// each runner's. Only the runners' messages take it: routing reads the others' event times.
+pub(crate) fn clocked(mut message: Message, logged: Option<Timestamp>) -> Message {
+    if let Some(logged) = logged
+        && [ALIVE, CLAIMED, HELD].contains(&message.kind.as_str())
+    {
+        message.time = logged;
+    }
+    message
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_runner_message_takes_the_logs_time_and_an_event_keeps_its_own() {
+        let alive = Message::new(ALIVE, json!({ "runner": "a" })).time(at(0));
+        let request = Message::new("factory.task.requested", json!({})).time(at(0));
+        assert_eq!(clocked(alive.clone(), Some(at(5))).time, at(5));
+        assert_eq!(clocked(alive, None).time, at(0));
+        assert_eq!(clocked(request, Some(at(5))).time, at(0));
+    }
 
     const T0: &str = "2026-11-21T10:00:00Z";
 

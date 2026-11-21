@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { ARM_MS, UNDO_MS, choose, due, observe, reply, takesText, undo } from "../lib/ask.js";
+import { ARM_MS, UNDO_MS, choose, due, leftUnsent, observe, optionKey, reply, takesText, undo } from "../lib/ask.js";
 
 const ASK = { id: 88, revision: 1, state: "open", options: ["Rename it", "Keep the name"], command: null };
 const COMMAND = { ...ASK, id: 90, options: ["Run it", "Skip"], command: { argv: ["make", "deploy"], target: "staging", runs: ["Run it"] } };
@@ -77,6 +77,37 @@ test("a lost write is outcome-unknown until a read shows the answer, or the pers
   assert.equal(observe(unknown, ASK, NOW), unknown);
   assert.equal(observe(unknown, { ...ASK, state: "answered", answer: "Rename it" }, NOW).phase, "sent");
   assert.equal(choose(unknown, ASK, { option: "Rename it", again: true }, NOW).phase, "waiting");
+});
+
+test("a digit key picks its option only alone: a browser shortcut or a held key picks nothing", () => {
+  const key = (key, extra = {}) => ({ key, ctrlKey: false, metaKey: false, altKey: false, repeat: false, ...extra });
+
+  assert.equal(optionKey(key("2")), 1);
+  assert.equal(optionKey(key("9")), 8);
+  for (const event of [key("2", { ctrlKey: true }), key("2", { metaKey: true }), key("2", { altKey: true }), key("2", { repeat: true }), key("0"), key("a")]) {
+    assert.equal(optionKey(event), -1, JSON.stringify(event));
+  }
+});
+
+test("an answer still waiting on Undo when the page changes comes back unsent, to send or discard", () => {
+  const waiting = choose(null, ASK, { option: "Rename it" }, NOW);
+  const kept = leftUnsent(waiting);
+
+  assert.deepEqual(kept, { ...waiting, phase: "unsent", restored: true, notice: 'Not sent: "Rename it". The page changed before its 4 s Undo passed.' });
+  assert.equal(leftUnsent(kept), kept);
+  assert.equal(leftUnsent(choose(null, ASK, { text: "Rename it to flows_payload" }, NOW)).notice, 'Not sent: "Rename it to flows_payload". The page changed before its 4 s Undo passed.');
+  const again = choose(kept, ASK, { option: "Rename it" }, NOW + 1);
+  assert.equal(again.phase, "waiting");
+  assert.equal(again.restored, undefined);
+});
+
+test("only a waiting answer is kept: one posting, armed, sent or undone is not", () => {
+  const waiting = choose(null, ASK, { option: "Rename it" }, NOW);
+  const posting = due(waiting, NOW + UNDO_MS).draft;
+
+  for (const draft of [null, undo(waiting), posting, reply(posting, { status: 200 }, NOW), choose(null, COMMAND, { option: "Run it" }, NOW)]) {
+    assert.equal(leftUnsent(draft), null, draft?.phase);
+  }
 });
 
 test("a step's ask offers no free text and no dismissal, and an agent's ask does", () => {

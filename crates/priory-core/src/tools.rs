@@ -311,6 +311,11 @@ fn result(
             run.task
         )));
     }
+    if !arguments["batch"].is_null()
+        && let Err(refused) = crate::batch::planned(tx, run.task, &arguments["batch"], &summary)?
+    {
+        return Ok(Err(refused));
+    }
     tx.execute(
         "INSERT INTO results (run, task, step, outcome, summary, evidence, commit_sha, reason, merge_risk, inbox)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, (SELECT max(seq) FROM inbox))",
@@ -1139,12 +1144,16 @@ fn catch_up(tx: &Transaction, task: i64, factory: &Factory) -> rusqlite::Result<
         }
     }
     for seq in candidates {
-        if event(tx, task, seq, factory)? {
+        // A run a merge ends here is the caller's own; the next launch kills its session.
+        if event(tx, task, seq, factory)?.0 {
             return Ok(true);
         }
     }
     Ok(false)
 }
+
+/// Whether a wait fired, and the tmux session of a run its firing ended, to kill once committed.
+pub(crate) type Fired = (bool, Option<String>);
 
 /// Fires the first of the task's open waits that the inbox entry `seq` satisfies, and says whether
 /// one did.
@@ -1153,7 +1162,7 @@ pub(crate) fn event(
     task: i64,
     seq: i64,
     factory: &Factory,
-) -> rusqlite::Result<bool> {
+) -> rusqlite::Result<Fired> {
     let open = tx
         .prepare(
             "SELECT waits.id, waits.kind, waits.resource, waits.head_sha, waits.state,
@@ -1227,7 +1236,7 @@ pub(crate) fn event(
                 &format!("wait {wait} fired: {said}"),
                 Some(seq),
             )?;
-            return Ok(true);
+            return Ok((true, None));
         }
         let wanted = head.as_deref().or(state.as_deref());
         let woken = match &said {
@@ -1249,12 +1258,12 @@ pub(crate) fn event(
             // Another task kept the event and its prompt: this one gets the line in a prompt of its own.
             mark_fired(tx, wait, Some(seq))?;
             wake_on(tx, task, &line, None)?;
-            return Ok(true);
+            return Ok((true, None));
         }
         fire(tx, wait, task, &line, Some(seq))?;
-        return Ok(true);
+        return Ok((true, None));
     }
-    Ok(false)
+    Ok((false, None))
 }
 
 /// The events of a person's feedback on a pull request.
@@ -1392,7 +1401,7 @@ impl Seen {
 /// result that names another head wakes the agent. The newest check at the result's commit then
 /// decides: red wakes the agent, and green with none pending or failing marks the task done. With
 /// no check at the commit, a newest snapshot of no check runs marks it done too.
-fn judge(tx: &Transaction, wait: i64, factory: &Factory) -> rusqlite::Result<bool> {
+fn judge(tx: &Transaction, wait: i64, factory: &Factory) -> rusqlite::Result<Fired> {
     type Gate = (i64, String, Option<String>, Option<i64>, bool);
     let (task, resource, pinned, mark, after): Gate = tx.query_row(
         "SELECT waits.task, waits.resource, waits.head_sha, coalesce(
@@ -1423,7 +1432,7 @@ fn judge(tx: &Transaction, wait: i64, factory: &Factory) -> rusqlite::Result<boo
         }
     }
     let Some(newest) = seen.first() else {
-        return Ok(false);
+        return Ok((false, None));
     };
     let stack = crate::stack::of(tx, task)?;
     let stacked = stack.len() > 1;
@@ -1438,7 +1447,7 @@ fn judge(tx: &Transaction, wait: i64, factory: &Factory) -> rusqlite::Result<boo
         if let Some(asked) = at.filter(|_| stacked).map(|at| stranded(task, &stack, at))
             && !answered(tx, &asked.name)?
         {
-            return ask_stack(tx, task, asked);
+            return Ok((ask_stack(tx, task, asked)?, None));
         }
         let reason = match newest.data["merged"] {
             Value::Bool(false) => format!("wait {wait} fired: {resource} closed without a merge"),
@@ -1447,26 +1456,26 @@ fn judge(tx: &Transaction, wait: i64, factory: &Factory) -> rusqlite::Result<boo
             ),
         };
         fire(tx, wait, task, &reason, Some(newest.seq))?;
-        return Ok(true);
+        return Ok((true, None));
     }
     if let Some(asked) = retargeted(task, &stack, &resource, newest)
         && !answered(tx, &asked.name)?
     {
-        return ask_stack(tx, task, asked);
+        return Ok((ask_stack(tx, task, asked)?, None));
     }
     // A lower pull request of a stack is judged at its newest head, since a restack moves it.
     let commit = pinned.unwrap_or_else(|| newest.head.clone());
     if newest.head != commit {
         // A head seen before the result may be one the agent's commit replaced since.
         if newest.seq <= mark.unwrap_or_default() {
-            return Ok(false);
+            return Ok((false, None));
         }
         let reason = format!(
             "wait {wait} fired: the head of {resource} moved to {}, away from your result's commit {commit}",
             newest.head
         );
         fire(tx, wait, task, &reason, Some(newest.seq))?;
-        return Ok(true);
+        return Ok((true, None));
     }
     let mut checks = seen
         .iter()
@@ -1479,9 +1488,9 @@ fn judge(tx: &Transaction, wait: i64, factory: &Factory) -> rusqlite::Result<boo
     let Some(check) = checks.next().or_else(snapshot) else {
         // A stack's gate at a new head with no check yet is not green any more.
         if stacked {
-            return stack_green(tx, wait, task, false, &stack);
+            return Ok((stack_green(tx, wait, task, false, &stack)?, None));
         }
-        return Ok(false);
+        return Ok((false, None));
     };
     let failing = check.data["failing"].as_u64();
     let red = match failing {
@@ -1502,7 +1511,7 @@ fn judge(tx: &Transaction, wait: i64, factory: &Factory) -> rusqlite::Result<boo
             red.data["conclusion"].as_str().unwrap_or("none"),
         );
         fire(tx, wait, task, &reason, Some(red.seq))?;
-        return Ok(true);
+        return Ok((true, None));
     }
     let green = match check.kind.as_str() {
         CHECK_RUNS => check.data["runs"].as_u64() == Some(0),
@@ -1510,11 +1519,11 @@ fn judge(tx: &Transaction, wait: i64, factory: &Factory) -> rusqlite::Result<boo
     };
     // A stack is done once every pull request merged, so green checks leave it waiting.
     if stacked {
-        return stack_green(tx, wait, task, green, &stack);
+        return Ok((stack_green(tx, wait, task, green, &stack)?, None));
     }
     // A gate before a step that waits for the merge stays open on green checks.
     if !green || after {
-        return Ok(false);
+        return Ok((false, None));
     }
     done(tx, wait, task, check.seq, factory)
 }
@@ -1670,7 +1679,7 @@ fn merged(
     close: &Seen,
     stack: &[crate::stack::Pull],
     factory: &Factory,
-) -> rusqlite::Result<bool> {
+) -> rusqlite::Result<Fired> {
     if stack.iter().all(|pull| pull.state == "merged") {
         return done(tx, wait, task, close.seq, factory);
     }
@@ -1681,24 +1690,24 @@ fn merged(
         .unwrap_or_default();
     if above.is_empty() {
         mark_fired(tx, wait, Some(close.seq))?;
-        return Ok(true);
+        return Ok((true, None));
     }
     let onto = close.data["base_branch"].as_str().unwrap_or("its base");
     let number = resource.rsplit_once('#').map_or("", |(_, number)| number);
     let text = format!("#{number} merged; rebase {} onto {onto}", listed(&above));
     fire(tx, wait, task, &text, Some(close.seq))?;
-    Ok(true)
+    Ok((true, None))
 }
 
 /// Fires the daemon's checks wait `wait` on the event `seq` and marks its task done, or enters
-/// the step the gate waited to enter.
+/// the step the gate waited to enter, ending a run a person's `say` started when that step does.
 fn done(
     tx: &Transaction,
     wait: i64,
     task: i64,
     seq: i64,
     factory: &Factory,
-) -> rusqlite::Result<bool> {
+) -> rusqlite::Result<Fired> {
     mark_fired(tx, wait, Some(seq))?;
     let (workflow, after): (String, Option<String>) = tx.query_row(
         "SELECT tasks.workflow, waits.after FROM waits JOIN tasks ON tasks.id = waits.task
@@ -1708,7 +1717,7 @@ fn done(
     )?;
     let Some(after) = after else {
         set(tx, task, "done", None, None)?;
-        return Ok(true);
+        return Ok((true, None));
     };
     // A person's `say` may have started a run while the task slept on its gate.
     let live: Option<String> = tx
@@ -1722,7 +1731,7 @@ fn done(
         Some(session) => run(tx, &session)?,
         None => None,
     };
-    step_in(
+    let kill = step_in(
         tx,
         task,
         &workflow,
@@ -1732,11 +1741,11 @@ fn done(
         factory,
         false,
     )?;
-    Ok(true)
+    Ok((true, kill))
 }
 
 /// Whether `task` owns a pull request and every one of its stack merged.
-fn all_merged(tx: &Transaction, task: i64) -> rusqlite::Result<bool> {
+pub(crate) fn all_merged(tx: &Connection, task: i64) -> rusqlite::Result<bool> {
     let stack = crate::stack::of(tx, task)?;
     if !stack.is_empty() {
         return Ok(stack.iter().all(|pull| pull.state == "merged"));
@@ -1755,6 +1764,28 @@ fn all_merged(tx: &Transaction, task: i64) -> rusqlite::Result<bool> {
         .optional()?
         .flatten();
     Ok(merged == Some(true))
+}
+
+/// Whether a pull request `task` owns closed without a merge: one of its stack, or its only one.
+pub(crate) fn closed_unmerged(db: &Connection, task: i64) -> rusqlite::Result<bool> {
+    let stack = crate::stack::of(db, task)?;
+    if !stack.is_empty() {
+        return Ok(stack.iter().any(|pull| pull.state == "closed"));
+    }
+    let Some(resource) = pull_request(db, task)? else {
+        return Ok(false);
+    };
+    let merged = db
+        .query_row(
+            "SELECT json_extract(data, '$.merged') FROM inbox WHERE type = ?2
+             AND 'github:' || json_extract(data, '$.repo') || '#' || json_extract(data, '$.pull_request') = ?1
+             ORDER BY seq DESC LIMIT 1",
+            params![resource, CLOSED],
+            |row| row.get::<_, Option<bool>>(0),
+        )
+        .optional()?
+        .flatten();
+    Ok(merged == Some(false))
 }
 
 /// Fires every open time wait whose instant passed and task wait whose task ended.
@@ -2415,7 +2446,7 @@ fn queue_first(tx: &Transaction, task: i64, text: &str) -> rusqlite::Result<i64>
 /// The pull request the task owns: the latest one its actions opened, else the one its latest wait
 /// named, else the latest one opened from its branch, else its key when a pull request event created
 /// it. A review request's task reviews the pull request and does not own it.
-fn pull_request(tx: &Transaction, task: i64) -> rusqlite::Result<Option<String>> {
+pub(crate) fn pull_request(tx: &Connection, task: i64) -> rusqlite::Result<Option<String>> {
     tx.query_row(
         "SELECT resource FROM (
            SELECT pull_request AS resource, 3 AS rank, id AS at FROM actions
@@ -2622,10 +2653,17 @@ fn step_in(
             Ok(None)
         }
         Decider::Human => {
-            let question = if context.is_empty() {
-                target.to_owned()
-            } else {
-                format!("{target}: {context}")
+            let go = crate::batch::go_ask(tx, task)?;
+            // A result's summary is no news on a go; a failed start's error is.
+            let question = match (&go, context.is_empty()) {
+                (Some((asked, _)), _) if context.is_empty() || from.is_some() => asked.clone(),
+                (Some((asked, _)), _) => format!("{context}. {asked}"),
+                (None, true) => target.to_owned(),
+                (None, false) => format!("{target}: {context}"),
+            };
+            let text = match go {
+                Some((_, plan)) => Some(plan),
+                None => ask_text(tx, task)?,
             };
             let command = match step_command(tx, task, step, factory)? {
                 Ok(command) => command,
@@ -2646,7 +2684,7 @@ fn step_in(
                     serde_json::to_string(&step.options).expect("options serialize"),
                     lead,
                     command,
-                    ask_text(tx, task)?
+                    text
                 ],
             )?;
             if let Some(lead) = &lead {
@@ -2790,6 +2828,16 @@ fn answer_in(
             answer.revision,
             answer.text
         )));
+    }
+    if kind == "step"
+        && let Some(task) = task
+    {
+        let target = answered_target(workflows, &workflow, &at, &answer.text);
+        let go = step(workflows, &workflow, &target)
+            .is_some_and(|starts| starts.action.as_deref() == Some("start-batch"));
+        if let Err(refused) = crate::batch::answering(tx, task, go, &answer.by)? {
+            return Ok(Err(refused));
+        }
     }
     tx.execute(
         &format!("UPDATE asks SET answer = ?2, answered = {NOW}, answered_by = ?3 WHERE id = ?1"),
@@ -3993,12 +4041,25 @@ pub(crate) fn performed(
     task: i64,
     workflow: &str,
     at: &Step,
-    mut done: Done,
+    done: Done,
     trace: &Trace,
 ) -> rusqlite::Result<()> {
     let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    performed_in(&tx, task, workflow, at, done, trace)?;
+    tx.commit()
+}
+
+/// As `performed`, in `tx`.
+pub(crate) fn performed_in(
+    tx: &Transaction,
+    task: i64,
+    workflow: &str,
+    at: &Step,
+    mut done: Done,
+    trace: &Trace,
+) -> rusqlite::Result<()> {
     for pull in &done.stack {
-        if let Some(refused) = crate::state::taken(&tx, task, &pull.resource)? {
+        if let Some(refused) = crate::state::taken(tx, task, &pull.resource)? {
             done.status = "failed";
             done.error = Some(refused);
             done.pull_request = None;
@@ -4029,7 +4090,7 @@ pub(crate) fn performed(
             "INSERT OR IGNORE INTO subscriptions (task, resource) VALUES (?1, ?2)",
             params![task, pull.resource],
         )?;
-        crate::stack::record(&tx, task, &pull.resource, &pull.branch, &pull.base)?;
+        crate::stack::record(tx, task, &pull.resource, &pull.branch, &pull.base)?;
     }
     let target = at
         .next
@@ -4037,9 +4098,9 @@ pub(crate) fn performed(
         .cloned()
         .unwrap_or_else(|| format!("{}?{}", at.id, done.status));
     let context = done.error.as_deref().unwrap_or_default();
-    trace::ended(&tx, trace, task, done.status, None)?;
-    enter(&tx, task, workflow, &target, None, context, trace.factory)?;
-    tx.commit()
+    trace::ended(tx, trace, task, done.status, None)?;
+    enter(tx, task, workflow, &target, None, context, trace.factory)?;
+    Ok(())
 }
 
 #[cfg(test)]

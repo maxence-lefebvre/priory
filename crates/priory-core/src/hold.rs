@@ -265,6 +265,100 @@ pub(crate) fn due(tx: &Transaction) -> rusqlite::Result<()> {
     Ok(())
 }
 
+/// Judges every open `merged` condition, a batch entry's edge on another task: it is met once
+/// every pull request of the other task's stack merged, once that task entered a step that waits
+/// for its merge, or once it is done owning no pull request. When it can no longer be met, as the
+/// other task failed, was dropped or saw a pull request close unmerged, it asks a person.
+pub(crate) fn merged(tx: &Transaction, factory: &Factory) -> rusqlite::Result<()> {
+    let open: Vec<(i64, i64, i64, Option<i64>)> = tx
+        .prepare(
+            "SELECT holds.id, holds.task, holds.target, holds.ask
+             FROM holds JOIN tasks ON tasks.id = holds.task
+             WHERE holds.kind = 'merged' AND holds.released IS NULL AND holds.met IS NULL
+             AND tasks.state = 'held' ORDER BY holds.id",
+        )?
+        .query_map([], |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+        })?
+        .collect::<rusqlite::Result<_>>()?;
+    for (id, task, other, ask) in open {
+        let (key, state, workflow, step, batch): (String, String, String, String, i64) = tx
+            .query_row(
+                "SELECT key, state, workflow, step, coalesce(batch, 0) FROM tasks WHERE id = ?1",
+                [other],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                    ))
+                },
+            )?;
+        if let Some(how) = merged_as(tx, factory, other, &state, &workflow, &step)? {
+            meet(tx, id, &how)?;
+            continue;
+        }
+        let lost = match state.as_str() {
+            "failed" | "dropped" => format!("Task {other} ({key}) of batch {batch} {state}"),
+            _ if crate::tools::closed_unmerged(tx, other)? => format!(
+                "A pull request of task {other} ({key}) of batch {batch} closed without a merge"
+            ),
+            _ => continue,
+        };
+        if ask.is_some() {
+            continue;
+        }
+        let question =
+            format!("{lost}, and task {task} waits on it. Release the task, or drop it?");
+        ask_person(tx, id, task, &question)?;
+    }
+    Ok(())
+}
+
+/// Asks a person whether to release or drop `task`, held on the condition `id` that can no
+/// longer be met.
+fn ask_person(tx: &Transaction, id: i64, task: i64, question: &str) -> rusqlite::Result<()> {
+    tx.execute(
+        "INSERT INTO asks (task, step, kind, question, options)
+         SELECT id, step, 'agent', ?2, '[\"release\",\"drop\"]' FROM tasks WHERE id = ?1",
+        params![task, question],
+    )?;
+    tx.execute(
+        "UPDATE holds SET ask = ?2 WHERE id = ?1",
+        params![id, tx.last_insert_rowid()],
+    )
+    .map(drop)
+}
+
+/// How task `other`, in `state` at `step` of `workflow`, has its code merged, if it does.
+fn merged_as(
+    tx: &Transaction,
+    factory: &Factory,
+    other: i64,
+    state: &str,
+    workflow: &str,
+    step: &str,
+) -> rusqlite::Result<Option<String>> {
+    let owned = crate::tools::pull_request(tx, other)?;
+    if owned.is_some() && crate::tools::all_merged(tx, other)? {
+        return Ok(Some(format!("task {other} merged")));
+    }
+    let after_merge = factory
+        .workflows
+        .get(workflow)
+        .and_then(|flow| flow.value.step(step))
+        .is_some_and(|step| step.after == Some(priory_factory::factory::StepAfter::Merged));
+    if after_merge && !["failed", "dropped"].contains(&state) {
+        return Ok(Some(format!("task {other} entered {step} after its merge")));
+    }
+    if owned.is_none() && state == "done" {
+        return Ok(Some(format!("task {other} is done with no pull request")));
+    }
+    Ok(None)
+}
+
 /// A person's release of the held `task`, back to the state it was held from, whatever its
 /// conditions.
 pub(crate) fn release_task(
@@ -442,16 +536,7 @@ fn judge(tx: &Transaction, id: i64) -> rusqlite::Result<()> {
             let question = format!(
                 "Pull request {closed}, and task {task} was held until it merged: {reason}. Release the task, or drop it?"
             );
-            tx.execute(
-                "INSERT INTO asks (task, step, kind, question, options)
-                 SELECT id, step, 'agent', ?2, '[\"release\",\"drop\"]' FROM tasks WHERE id = ?1",
-                params![task, question],
-            )?;
-            tx.execute(
-                "UPDATE holds SET ask = ?2 WHERE id = ?1",
-                params![id, tx.last_insert_rowid()],
-            )
-            .map(drop)
+            ask_person(tx, id, task, &question)
         }
         _ => Ok(()),
     }
@@ -584,12 +669,13 @@ pub(crate) fn answered(tx: &Transaction, id: i64, answer: &str) -> rusqlite::Res
     if answer == "release" {
         return meet(tx, id, "released by a person");
     }
-    let task: i64 = tx.query_row("SELECT task FROM holds WHERE id = ?1", [id], |row| {
-        row.get(0)
-    })?;
-    drop_task(
-        tx,
-        task,
-        "dropped by a person after its pull request closed",
-    )
+    let (task, kind): (i64, String) =
+        tx.query_row("SELECT task, kind FROM holds WHERE id = ?1", [id], |row| {
+            Ok((row.get(0)?, row.get(1)?))
+        })?;
+    let why = match kind.as_str() {
+        "merged" => "dropped by a person after the task it waited on could not merge",
+        _ => "dropped by a person after its pull request closed",
+    };
+    drop_task(tx, task, why)
 }

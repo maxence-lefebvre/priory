@@ -32,6 +32,27 @@
       ],
       "type": "string"
     },
+    "BatchDefaults": {
+      "additionalProperties": false,
+      "description": "What `priory batch add` starts: the planning workflow, and the workflow each entry's task runs.",
+      "properties": {
+        "entries": {
+          "description": "The workflow of each entry's task; the `[request]` workflow when unset.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "workflow": {
+          "description": "The workflow of a batch's planning task. It needs a human step after a model step: the go.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "workflow"
+      ],
+      "type": "object"
+    },
     "CommandGuard": {
       "additionalProperties": false,
       "description": "A shell command that is irreversible: its program, then the first words after its options.",
@@ -417,6 +438,16 @@
       "type": [
         "array",
         "null"
+      ]
+    },
+    "batch": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/BatchDefaults"
+        },
+        {
+          "type": "null"
+        }
       ]
     },
     "command_timeout": {

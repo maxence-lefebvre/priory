@@ -12,7 +12,7 @@ use std::collections::BTreeMap;
 use std::io::Write;
 use std::time::Duration;
 
-const VERSION: i64 = 72;
+const VERSION: i64 = 73;
 
 const SCHEMA: &str = "
 CREATE TABLE tasks (
@@ -1245,6 +1245,59 @@ CREATE TABLE IF NOT EXISTS notified (
 PRAGMA user_version = 72;
 ";
 
+// A batch: its planning task, the issues a person handed over and the plan its result sent. Each
+// entry's task names its batch and entry, and a `merged` hold condition waits on another task's
+// stack to merge.
+const SCHEMA_73: &str = concat!(
+    "CREATE TABLE IF NOT EXISTS batches (
+  id               INTEGER PRIMARY KEY AUTOINCREMENT,
+  key              TEXT NOT NULL,
+  task             INTEGER NOT NULL UNIQUE REFERENCES tasks (id),
+  title            TEXT,
+  repo             TEXT,
+  band             TEXT,
+  lane             TEXT,
+  issues           TEXT NOT NULL,
+  entries_workflow TEXT NOT NULL,
+  state            TEXT NOT NULL DEFAULT 'planning' CHECK (state IN ('planning', 'asked', 'going')),
+  plan             TEXT,
+  plan_revision    INTEGER NOT NULL DEFAULT 0,
+  asked_revision   INTEGER,
+  went             TEXT,
+  went_by          TEXT,
+  created          TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+);
+ALTER TABLE tasks ADD COLUMN batch INTEGER;
+ALTER TABLE tasks ADD COLUMN batch_entry TEXT;
+CREATE TABLE holds_73 (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  task        INTEGER NOT NULL REFERENCES tasks (id),
+  reason      TEXT NOT NULL,
+  kind        TEXT NOT NULL
+                CHECK (kind IN ('person', 'time', 'task', 'merge', 'blockers', 'issue', 'merged')),
+  until       TEXT,
+  target      INTEGER REFERENCES tasks (id),
+  resource    TEXT,
+  if_closed   TEXT CHECK (if_closed IN ('release', 'drop', 'ask')),
+  resume      TEXT NOT NULL CHECK (resume IN ('queued', 'ready')),
+  ask         INTEGER REFERENCES asks (id),
+  created     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+  met         TEXT,
+  met_as      TEXT,
+  released    TEXT,
+  released_as TEXT
+);
+INSERT INTO holds_73 SELECT id, task, reason, kind, until, target, resource, if_closed, resume, ask,
+  created, met, met_as, released, released_as FROM holds;
+DROP TABLE holds;
+ALTER TABLE holds_73 RENAME TO holds;
+CREATE INDEX open_holds ON holds (task) WHERE released IS NULL;
+",
+    bumps!("holds", "batches"),
+    "PRAGMA user_version = 73;
+"
+);
+
 /// Each schema change in order: a file at version `n` applies those from index `n` on.
 const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA, SCHEMA_2, SCHEMA_3, SCHEMA_4, SCHEMA_5, SCHEMA_6, SCHEMA_7, SCHEMA_8, SCHEMA_9,
@@ -1255,7 +1308,7 @@ const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA_42, SCHEMA_43, SCHEMA_44, SCHEMA_45, SCHEMA_46, SCHEMA_47, SCHEMA_48, SCHEMA_49,
     SCHEMA_50, SCHEMA_51, SCHEMA_52, SCHEMA_53, SCHEMA_54, SCHEMA_55, SCHEMA_56, SCHEMA_57,
     SCHEMA_58, SCHEMA_59, SCHEMA_60, SCHEMA_61, SCHEMA_62, SCHEMA_63, SCHEMA_64, SCHEMA_65,
-    SCHEMA_66, SCHEMA_67, SCHEMA_68, SCHEMA_69, SCHEMA_70, SCHEMA_71, SCHEMA_72,
+    SCHEMA_66, SCHEMA_67, SCHEMA_68, SCHEMA_69, SCHEMA_70, SCHEMA_71, SCHEMA_72, SCHEMA_73,
 ];
 
 /// The order the queue starts tasks in: band, then a person's order, then age. A band the factory
@@ -1524,6 +1577,9 @@ pub(crate) fn route_in(
                 crate::hold::filed(tx, id, hold, factory)?;
             }
             crate::relate::created(tx, id, &new.key, &new.relates)?;
+            if let Some(batch) = &new.batch {
+                crate::batch::created(tx, id, &new.key, batch)?;
+            }
             (Some(id), "created")
         }
         Decision::Keep(id) if route::tick(message, factory) => (
@@ -1576,17 +1632,20 @@ pub(crate) fn route_in(
     }
     crate::hold::event(tx, &resources)?;
     // The keyed task keeps the event; another task that shares the resource hears it through its
-    // wait or its subscription.
+    // wait or its subscription. A merge that fires a gate may end a run a person's `say` started.
+    let mut kill = None;
     for other in owners.iter().filter(|other| Some(other.id) != task) {
-        if !crate::tools::event(tx, other.id, seq, factory)? {
+        let (fired, ended) = crate::tools::event(tx, other.id, seq, factory)?;
+        kill = kill.or(ended);
+        if !fired {
             delivered(tx, other.id, message, &resources, None, factory)?;
         }
     }
     match (task, outcome) {
         (Some(task), "kept") => {
-            if !crate::tools::event(tx, task, seq, factory)?
-                && delivered(tx, task, message, &resources, Some(seq), factory)?
-            {
+            let (fired, ended) = crate::tools::event(tx, task, seq, factory)?;
+            kill = kill.or(ended);
+            if !fired && delivered(tx, task, message, &resources, Some(seq), factory)? {
                 tx.execute("UPDATE inbox SET outcome = 'woke' WHERE seq = ?1", [seq])?;
             }
         }
@@ -1624,7 +1683,7 @@ pub(crate) fn route_in(
         }
         (Some(task), "reopened") => crate::tools::reopen(tx, trace, task, seq)?,
         (Some(task), "withdrew") => {
-            return Ok(crate::tools::cancel(tx, task, "review request removed")?);
+            return Ok(crate::tools::cancel(tx, task, "review request removed")?.or(kill));
         }
         _ => {}
     }
@@ -1635,7 +1694,7 @@ pub(crate) fn route_in(
             [resources.first()],
         )?;
     }
-    Ok(None)
+    Ok(kill)
 }
 
 /// Stores `message` in the inbox with the task it went to and its outcome, and returns its seq.
@@ -1915,10 +1974,11 @@ pub(crate) fn irreversible_asks(
 }
 
 /// Fires every time wait whose instant passed and task wait whose task ended.
-pub(crate) fn due(db: &mut Connection) -> rusqlite::Result<()> {
+pub(crate) fn due(db: &mut Connection, factory: &Factory) -> rusqlite::Result<()> {
     let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
     crate::tools::due(&tx)?;
     crate::hold::due(&tx)?;
+    crate::hold::merged(&tx, factory)?;
     tx.commit()
 }
 

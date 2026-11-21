@@ -35,8 +35,9 @@ After a `git pull`, choose the reload button on the extension's card.
 3. Paste the token: the value of `PRIORY_TOKEN`, or of the variable `[serve] token_env` names.
 4. Choose Connect, and allow the browser to let the extension reach that address.
 
-The panel then reads the task. Sign out is at the bottom of the Task tab. A `401` from the daemon
-signs you out too.
+The panel then reads the task. Sign out is at the bottom of the Task tab. It forgets the token and
+everything the extension kept: each pull request's last read, an unsent answer and your quiz
+answers. A `401` from the daemon signs you out too.
 
 ## What it shows
 
@@ -46,15 +47,19 @@ signs you out too.
 - **Ask**: the open asks of the task, oldest first, with the web view's order: context, question,
   recommendation, options, Write an answer, Dismiss and Snooze. A step's ask and a hold's ask take
   only their options, so they show neither Write an answer nor Dismiss. An answer waits 4 s with Undo, then
-  goes with the revision you saw. A changed question keeps your draft and says so. Keys 1 to 9 pick
-  an option while the panel has focus.
+  goes with the revision you saw. Leave the page or close the panel before then, and the panel
+  shows the answer unsent the next time it opens on that pull request, with Send and Discard. A
+  changed question keeps your draft and says so. Keys 1 to 9 pick an option while the panel has
+  focus.
 - **A command ask**: a tap on an option that runs a command opens the browser's side panel with the
   command, its folder and its revision. Run it there, within 2 min of the tap. No page can cover
   the side panel. Run reads the ask again first, and runs only when the daemon, the revision and
   the command are still the ones shown.
 - **Task**: the workflow grid, Update branch and Resolve conflicts, Say, the runs, and the other
   tasks on the pull request. The buttons send fixed text with `say` when the task's agent can hear
-  it, and say why not otherwise. Update branch merges the base, so nothing needs a force push.
+  it, and say why not otherwise. Update branch and Resolve conflicts stay off unless the task owns
+  the pull request's branch, by its key or its stack. Update branch merges the base, so nothing
+  needs a force push.
 - **Guide**: the review guide from the description, and its quiz.
 
 When a write loses its connection, the daemon may have applied it. The panel keeps the draft, says

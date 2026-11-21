@@ -1061,6 +1061,7 @@ Schema: [`factory.task.requested.json`](../schemas/events/factory.task.requested
 | `tldr` | string, optional | `priory request --tldr` |
 | `relates` | array, optional | `priory request` or `priory add --relates`: each `{ "kind", "task" }`, the relation's kind and the other task's id. See [relations.md](../daemon/relations.md) |
 | `intervention` | `plan` or `hands-off`, optional | `priory request` or `priory add --intervention`; the task takes its trigger's when absent |
+| `batch` | object, optional | `priory batch add`: `issues`, the batch's issues as task keys, and `entries`, the workflow of each entry's task. The task it creates plans that batch. See [batches.md](../daemon/batches.md) |
 | `scheduled` | RFC 3339, optional | When the firing was due. Schedule sources only |
 | `prompt` | string or null, optional | The trigger's `prompt`. Schedule sources only |
 
@@ -1134,6 +1135,7 @@ Schema: [`priory.task.claimed.json`](../schemas/events/priory.task.claimed.json)
 | `request` | UUID string | The `id` of the task request the owner creates the task from |
 | `from` | string, optional | The runner it takes the key from, for a takeover or a gift |
 | `given` | boolean, optional | True when a person gave the task with `priory give` |
+| `ended` | boolean, optional | True when the runner's task of the key ended before the factory had runners, so the claim only marks its request as handled |
 
 <!-- example: events/priory.task.claimed.json -->
 ```json

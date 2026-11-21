@@ -20,9 +20,12 @@ wait or both. A `result` after an open ask or wait is refused, as is a second `a
 `wait`. An ask and a wait side by side wake the task on the first answer or event (see An ask
 beside a wait in [waits.md](waits.md)).
 
-### `result(outcome, summary, evidence?, commit?, reason?, branches?, risk?, goal?, testing?, brief?, verification?, feedback?)`
+### `result(outcome, summary, evidence?, commit?, reason?, branches?, risk?, goal?, testing?, brief?, verification?, feedback?, batch?)`
 
 `result` stores the run's result and ends the step. Nothing can change or delete a stored result.
+
+`batch` is a batch's plan, sent by its planning task. The daemon checks it and stores it with the
+batch, or refuses the result with what to fix; [batches.md](batches.md) lists the checks.
 
 The outcome must be a key of the step's `next`, or the error lists the valid outcomes. For a step
 with `next = { passed = "approve-pr", failed = "stop" }`, a call looks like this:
@@ -85,14 +88,17 @@ comment, an issue comment or a Linear comment, and its URL is the event's `url`.
 }
 ```
 
-A result is refused when an item the agent was typed has no class, from this result or an earlier
-one, when `feedback` is not an object of the three classes, or when it sorts an item as
-`persons-call` and no ask of the task names the item's URL in its `question`, `title` or `text`.
-A `result` cannot coexist with an open ask, so the agent asks, reads the answer in its next turn
-and then sends the result. The refusals read:
+A result is refused when an item the agent was typed since the task's last result has no class,
+from this result or an earlier one, when `feedback` is not an object of the three classes, or when
+it sorts an item as `persons-call` and no ask of the task names the item's URL in its `question`,
+`title` or `text`. An item typed to a run before the task's last result was that result's to sort,
+so a later result need not name it. One refusal names every item without a class. A `result`
+cannot coexist with an open ask, so the agent asks, reads the answer in its next turn and then
+sends the result. The refusals read:
 
 ```text
 feedback item https://github.com/owner/name/pull/57#discussion_r803 has no class: feedback must be an object from each item's URL to trivial, nothing-to-do or persons-call
+feedback items https://github.com/owner/name/pull/57#discussion_r803, https://github.com/owner/name/pull/57#discussion_r804 have no class: feedback must be an object from each item's URL to trivial, nothing-to-do or persons-call
 ```
 
 An item written by the login `gh api user` names, the account the intake runs as and so the
@@ -666,7 +672,8 @@ transaction then records the action run and moves the task by `next[status]` (se
 Moving on). A `run` action records itself first and runs in the background (see The `run` action).
 An action that is not built yet blocks the task with `action <name> is not built yet`.
 
-The built-in actions are `open-pr`, `open-issue` and `run`. `open-pr` opens one pull request per
+The built-in actions are `open-pr`, `open-issue`, `run` and `start-batch`. `start-batch` creates a
+batch's tasks and records itself in one transaction; [batches.md](batches.md) describes it. `open-pr` opens one pull request per
 branch of the latest result's `branches`, bottom first, or for the task's branch alone without it.
 For each branch:
 

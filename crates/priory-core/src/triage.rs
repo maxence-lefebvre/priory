@@ -47,8 +47,8 @@ pub(crate) fn any(tx: &Transaction, seqs: &[i64]) -> rusqlite::Result<bool> {
 }
 
 /// The classes a result's `feedback` gives, as pairs of URL and class, or why it is refused: it
-/// must be an object of known classes that names every item the agent was typed and has not sorted,
-/// and each persons-call needs an ask of the task that names it. The person's own items are recorded as persons-calls.
+/// must be an object of known classes that names every item the agent was typed since the task's
+/// last result and has not sorted, and each persons-call needs an ask of the task that names it. The person's own items are recorded as persons-calls.
 pub(crate) fn sorted(
     tx: &Transaction,
     task: i64,
@@ -70,10 +70,12 @@ pub(crate) fn sorted(
         }
         _ => return Ok(Err(invalid.to_owned())),
     };
-    let mut own = Vec::new();
+    let (mut own, mut missing) = (Vec::new(), Vec::new());
+    // Items typed before the task's last result were that result's to sort, or predate sorting.
     let mut statement = tx.prepare(
         "SELECT inbox.type, inbox.data FROM inbox JOIN outbox ON outbox.id = inbox.outbox
          WHERE inbox.task = ?1 AND outbox.state = 'confirmed'
+         AND outbox.run > coalesce((SELECT max(run) FROM results WHERE task = ?1), 0)
          ORDER BY inbox.seq",
     )?;
     let mut rows = statement.query([task])?;
@@ -92,8 +94,18 @@ pub(crate) fn sorted(
             params![task, url],
             |row| row.get(0),
         )?;
-        if !known && !given.contains_key(url) {
-            return Ok(Err(format!("feedback item {url} has no class: {invalid}")));
+        if !known && !given.contains_key(url) && !missing.iter().any(|item| item == url) {
+            missing.push(url.to_owned());
+        }
+    }
+    match missing.as_slice() {
+        [] => {}
+        [url] => return Ok(Err(format!("feedback item {url} has no class: {invalid}"))),
+        urls => {
+            let urls = urls.join(", ");
+            return Ok(Err(format!(
+                "feedback items {urls} have no class: {invalid}"
+            )));
         }
     }
     for (url, class) in &given {
