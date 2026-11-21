@@ -12,7 +12,7 @@ use std::collections::BTreeMap;
 use std::io::Write;
 use std::time::Duration;
 
-const VERSION: i64 = 75;
+const VERSION: i64 = 76;
 
 const SCHEMA: &str = "
 CREATE TABLE tasks (
@@ -1327,6 +1327,24 @@ const SCHEMA_75: &str = concat!(
 "
 );
 
+// A batch entry's ask on a predecessor that failed is withdrawn when that predecessor is revived.
+// SQLite cannot widen a CHECK, so the column is swapped for one that takes the new reason.
+const SCHEMA_76: &str = "
+ALTER TABLE asks ADD COLUMN withdrawn_reason_76 TEXT CHECK (withdrawn_reason_76 IN
+  ('revived', 'moved-on', 'sibling-fired', 'answered-elsewhere', 'dismissed', 'asked',
+   'predecessor-revived'));
+UPDATE asks SET withdrawn_reason_76 = withdrawn_reason;
+DROP TRIGGER ask_withdrawn;
+ALTER TABLE asks DROP COLUMN withdrawn_reason;
+ALTER TABLE asks RENAME COLUMN withdrawn_reason_76 TO withdrawn_reason;
+CREATE TRIGGER ask_withdrawn AFTER UPDATE OF withdrawn ON asks
+  WHEN NEW.withdrawn IS NOT NULL AND NEW.withdrawn IS NOT OLD.withdrawn BEGIN
+  INSERT INTO ask_withdrawals (ask, revision, withdrawn, reason)
+    VALUES (NEW.id, NEW.revision, NEW.withdrawn, NEW.withdrawn_reason);
+END;
+PRAGMA user_version = 76;
+";
+
 /// Each schema change in order: a file at version `n` applies those from index `n` on.
 const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA, SCHEMA_2, SCHEMA_3, SCHEMA_4, SCHEMA_5, SCHEMA_6, SCHEMA_7, SCHEMA_8, SCHEMA_9,
@@ -1338,7 +1356,7 @@ const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA_50, SCHEMA_51, SCHEMA_52, SCHEMA_53, SCHEMA_54, SCHEMA_55, SCHEMA_56, SCHEMA_57,
     SCHEMA_58, SCHEMA_59, SCHEMA_60, SCHEMA_61, SCHEMA_62, SCHEMA_63, SCHEMA_64, SCHEMA_65,
     SCHEMA_66, SCHEMA_67, SCHEMA_68, SCHEMA_69, SCHEMA_70, SCHEMA_71, SCHEMA_72, SCHEMA_73,
-    SCHEMA_74, SCHEMA_75,
+    SCHEMA_74, SCHEMA_75, SCHEMA_76,
 ];
 
 /// The order the queue starts tasks in: band, then a person's order, then age. A band the factory

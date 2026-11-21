@@ -6,7 +6,8 @@ one go, and the daemon creates one task per entry. Each entry starts once the en
 merged.
 
 This page describes `merged` moments, edits of a plan, split issues, the desk line, the HTTP API and
-the web view. Stacked entries (the `waiting` moment) come later.
+the web view. Stacked entries (the `waiting` moment) come later; see
+[design/batches.md](../design/batches.md).
 
 ## A batch's life
 
@@ -66,7 +67,7 @@ writes it. The daemon refuses the result, and the agent reads why:
 | `entry <e> waits on <f>, which comes after it; put <f> first` | An edge to a later entry, since the entries' order is their start order |
 | `` moment `<m>` is not merged or waiting `` | An unknown moment |
 | `` entry <e> waits on <other> at `waiting`, which Priory does not build yet; use merged `` | A stacked entry, not built yet |
-| `<issue> already has task <id> (<state>)` | An active task holds the issue. Leave it out of the plan; never close it |
+| `<issue> already has task <id> (<state>)` | An active task other than the planning task is keyed on the issue. A task that only subscribes to it or waits on it does not count. Leave it out of the plan; never close it |
 | `<issue> is not one of the batch's issues` | An issue the person did not hand over |
 | `issue <issue> is both an entry and a close` | The plan both works and closes an issue |
 | `entry id <e> is used twice` | Duplicate entry ids |
@@ -164,6 +165,17 @@ condition gets its own ask on the desk, with `release` and `drop`: `Task 34 (lin
 batch 4 dropped, and task 36 waits on it. Release the task, or drop it?`. `release` meets that one
 condition, so the entry still waits for its other conditions. `drop` drops that entry, and the
 entries that wait on it get their own asks in turn.
+
+A person who revives the lost task makes each unmet condition on it wait again. In the same
+transaction, the daemon withdraws the open asks of those conditions with the reason
+`predecessor-revived`. If the revived task is lost again, each condition asks again.
+
+When an entry's Linear issue goes Done or Canceled before the entry ran, the issue changed under the
+plan, and its state is no proof of merged code. The daemon holds the entry, or adds to its hold, and
+asks on that hold, with `drop` and `keep`: `ENG-42 is Done outside batch 4. Drop the entry?`. `keep`
+lets the entry wait for its other conditions. `drop` drops it, and the entries that wait on it get
+their own asks. The issue's state meets no condition of the entry's successors, which still follow
+the rules of the `merged` condition above. The daemon asks once per entry.
 
 A person can move, hold, release or cancel an entry like any task. The batch reads its tasks' states
 and keeps no copy.
