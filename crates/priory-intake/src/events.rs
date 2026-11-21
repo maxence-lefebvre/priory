@@ -758,8 +758,28 @@ pub struct AskAnswered {
     pub text: String,
     /// True when the person confirmed that the answer runs the ask's command.
     pub run: bool,
-    /// Where the answer came from: `cli`.
+    /// Where the answer came from: `cli` or `serve`.
     pub by: String,
+    /// The answer's own message id, which the runner's `priory.ask.applied` names.
+    #[schemars(extend("format" = "uuid"))]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub submission: Option<String>,
+}
+
+/// A person dismisses an ask of another runner, with `priory dismiss RUNNER:ASK` or its endpoint.
+/// Only that runner applies it, with the checks of a local dismiss.
+#[derive(JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct AskDismissed {
+    /// The runner whose ask it dismisses.
+    pub runner: String,
+    /// The ask's id on that runner.
+    pub ask: i64,
+    /// The question revision the person read.
+    pub revision: i64,
+    /// The dismiss's own message id, which the runner's `priory.ask.applied` names.
+    #[schemars(extend("format" = "uuid"))]
+    pub submission: String,
 }
 
 /// A runner posts one of its asks each time any part of it that a view shows changes: asked,
@@ -780,6 +800,24 @@ pub struct AskPosted {
     /// The ask as the runner's own `priory asks --json` lists it, with its `state`, `revision`,
     /// `revisions` and `refused`.
     pub listed: serde_json::Value,
+}
+
+/// A runner applied or refused an answer or dismiss that another machine sent to one of its asks.
+#[derive(JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct AskApplied {
+    /// The runner that owns the ask.
+    pub runner: String,
+    /// The ask's id on that runner.
+    pub ask: i64,
+    /// The `id` of the `priory.ask.answered` or `priory.ask.dismissed` message.
+    #[schemars(extend("format" = "uuid"))]
+    pub submission: String,
+    /// `answered`, `dismissed` or `refused`.
+    pub outcome: String,
+    /// Why it was refused.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub why: Option<String>,
 }
 
 /// Where a stream stands after a poll that moved it; a missing marker means the stream is still

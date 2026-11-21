@@ -19741,6 +19741,164 @@ fn another_runners_open_ask_is_listed_with_its_runner_on_the_asks_and_desk_endpo
 }
 
 #[test]
+fn an_answer_sent_to_another_runners_ask_is_accepted_applied_by_its_runner_and_its_outcome_listed()
+{
+    let (a, _b, ask, address) = asked_on_a("remote-answer");
+    let id = format!("a:{ask}");
+    until_ask(&address, &id, |ask| ask["state"] == "open");
+
+    let (status, sent) = runner_http(
+        &address,
+        "POST",
+        &format!("/api/asks/{id}/answer"),
+        r#"{"option": "approved", "revision": 1}"#,
+    );
+
+    assert_eq!(status, 202, "{sent}");
+    assert_eq!(sent["sent"], "a");
+    let submission = sent["submission"].as_str().unwrap().to_owned();
+    let closed = until_ask(&address, &id, |ask| {
+        ask["state"] == "answered" && ask["submissions"][0]["outcome"] == "answered"
+    });
+    assert_eq!(closed["answer"], "approved", "{closed}");
+    assert_eq!(closed["submissions"][0]["submission"], submission.as_str());
+    a.until("tasks", |rows| rows[0][4] == "done");
+}
+
+#[test]
+fn a_stale_answer_to_another_runners_ask_gets_409_and_nothing_is_published() {
+    let (a, _b, ask, address) = asked_on_a("remote-stale");
+    let id = format!("a:{ask}");
+    until_ask(&address, &id, |ask| ask["state"] == "open");
+
+    let (status, refused) = runner_http(
+        &address,
+        "POST",
+        &format!("/api/asks/{id}/answer"),
+        r#"{"option": "approved", "revision": 2}"#,
+    );
+
+    assert_eq!(status, 409, "{refused}");
+    assert_eq!(refused["ask"]["id"], id.as_str(), "{refused}");
+    assert_eq!(
+        refused["error"],
+        format!("ask {id} is at revision 1, not 2"),
+        "{refused}"
+    );
+    assert!(on_log(&a, "priory.ask.answered").is_empty());
+}
+
+#[test]
+fn of_two_answers_to_one_revision_the_first_stands_and_the_other_shows_refused_without_a_new_revision()
+ {
+    let (a, _b, ask, address) = asked_on_a("remote-twice");
+    let id = format!("a:{ask}");
+    until_ask(&address, &id, |ask| ask["state"] == "open");
+    let path = format!("/api/asks/{id}/answer");
+
+    let mut submissions = Vec::new();
+    for option in ["approved", "rejected"] {
+        let body = json!({ "option": option, "revision": 1 }).to_string();
+        let (status, sent) = runner_http(&address, "POST", &path, &body);
+        assert_eq!(status, 202, "{sent}");
+        submissions.push(sent["submission"].as_str().unwrap().to_owned());
+    }
+
+    let closed = until_ask(&address, &id, |ask| {
+        ask["submissions"]
+            .as_array()
+            .is_some_and(|sent| sent.iter().all(|sent| !sent["outcome"].is_null()))
+            && ask["refused"]
+                .as_array()
+                .is_some_and(|refused| !refused.is_empty())
+    });
+    let outcomes: Vec<(&str, &str)> = closed["submissions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|sent| {
+            (
+                sent["text"].as_str().unwrap(),
+                sent["outcome"].as_str().unwrap(),
+            )
+        })
+        .collect();
+    assert!(outcomes.contains(&("approved", "answered")), "{closed}");
+    assert!(outcomes.contains(&("rejected", "refused")), "{closed}");
+    assert_eq!(closed["answer"], "approved", "{closed}");
+    assert_eq!(
+        closed["revision"], 1,
+        "a refusal does not revise the question"
+    );
+    let versions: Vec<i64> = on_log(&a, "priory.ask.posted")
+        .iter()
+        .map(|post| post.data["version"].as_i64().unwrap())
+        .collect();
+    // Asked, answered, then refused: one post can cover changes read in one pass.
+    assert_eq!(versions.last(), Some(&3), "{versions:?}");
+    assert!(versions.is_sorted(), "{versions:?}");
+}
+
+#[test]
+fn an_answer_sent_while_its_runner_is_away_is_applied_once_when_it_starts_again() {
+    let (mut a, _b, ask, address) = asked_on_a("remote-away");
+    let id = format!("a:{ask}");
+    until_ask(&address, &id, |ask| ask["state"] == "open");
+    a.crash();
+
+    let (status, sent) = runner_http(
+        &address,
+        "POST",
+        &format!("/api/asks/{id}/answer"),
+        r#"{"option": "approved", "revision": 1}"#,
+    );
+    assert_eq!(status, 202, "{sent}");
+    let pending = until_ask(&address, &id, |ask| {
+        ask["submissions"]
+            .as_array()
+            .is_some_and(|sent| !sent.is_empty())
+    });
+    assert!(pending["submissions"][0]["outcome"].is_null(), "{pending}");
+    assert_eq!(pending["state"], "open", "{pending}");
+
+    a.start_with(
+        Path::new(env!("CARGO_BIN_EXE_priory")),
+        &[("PRIORY_NOW", T0)],
+    );
+
+    until_ask(&address, &id, |ask| {
+        ask["state"] == "answered" && ask["submissions"][0]["outcome"] == "answered"
+    });
+    assert_eq!(on_log(&a, "priory.ask.applied").len(), 1);
+}
+
+#[test]
+fn a_refused_dismiss_of_another_runners_ask_comes_back_with_the_owners_reason() {
+    let (a, b, ask, address) = asked_on_a("remote-dismiss");
+    let id = format!("a:{ask}");
+    until_ask(&address, &id, |ask| ask["state"] == "open");
+    let factory = b.dir.join("factory");
+
+    let sent = b.priory(&["dismiss", "--revision", "1", factory.to_str().unwrap(), &id]);
+
+    assert!(
+        sent.status.success(),
+        "{}",
+        String::from_utf8_lossy(&sent.stderr)
+    );
+    let refused = until_ask(&address, &id, |ask| {
+        ask["submissions"][0]["outcome"] == "refused"
+    });
+    assert_eq!(refused["submissions"][0]["verb"], "dismiss");
+    assert_eq!(
+        refused["submissions"][0]["why"],
+        format!("ask {ask} moves its task on by its options: answer it instead"),
+        "{refused}"
+    );
+    assert_eq!(a.rows("asks").len(), 1, "the ask stays open on a");
+}
+
+#[test]
 fn a_mirror_keeps_the_highest_version_of_a_post_whatever_order_it_reads_them_in() {
     let mut b = runner("remote-versions", "b", None);
     let post = |version: i64, question: &str| {
@@ -19774,6 +19932,52 @@ fn a_mirror_keeps_the_highest_version_of_a_post_whatever_order_it_reads_them_in(
         .collect();
     assert_eq!(mirrored.len(), 1, "{asks}");
     assert_eq!(mirrored[0]["question"], "newer");
+}
+
+#[test]
+fn a_command_answer_to_another_runners_ask_says_where_it_runs_and_needs_run() {
+    let mut b = runner("remote-command", "b", None);
+    b.publish(&Message::new(
+        "priory.ask.posted",
+        json!({
+            "runner": "a", "ask": 7, "version": 1, "kind": "step",
+            "listed": {
+                "id": 7, "state": "open", "revision": 1, "question": "Deploy?",
+                "command": { "argv": ["deploy"], "dir": ".", "runs": ["approved"] },
+            },
+        }),
+    ));
+    b.publish(&requested(1));
+    b.start_with(
+        Path::new(env!("CARGO_BIN_EXE_priory")),
+        &[("PRIORY_NOW", T0)],
+    );
+    b.until("inbox", |rows| {
+        rows.iter().any(|row| row[1] == "factory.task.requested")
+    });
+    let factory = b.dir.join("factory");
+    let dir = factory.to_str().unwrap();
+
+    let unconfirmed = b.priory(&["answer", "--revision", "1", dir, "a:7", "approved"]);
+    let confirmed = b.priory(&["answer", "--revision", "1", "--run", dir, "a:7", "approved"]);
+
+    assert_eq!(
+        String::from_utf8_lossy(&unconfirmed.stderr),
+        "priory answer: ask a:7 runs its command when answered \"approved\". Runs on a: answer again with --run to run it\n"
+    );
+    assert!(
+        confirmed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&confirmed.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&confirmed.stdout).ends_with("Runs on a.\n"),
+        "{}",
+        String::from_utf8_lossy(&confirmed.stdout)
+    );
+    let sent = on_log(&b, "priory.ask.answered");
+    assert_eq!(sent.len(), 1);
+    assert_eq!(sent[0].data["run"], true);
 }
 
 #[test]
