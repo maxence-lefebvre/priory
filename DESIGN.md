@@ -558,8 +558,8 @@ Trace, History, and Command in the drawer) jumps to each part and marks the one 
 
 A section the task lacks, such as a plan, is left out with its chip.
 
-A **go ask**, the human step of a batch's planning task, reads the batch first. Its chips are Plan,
-Closes and Splits, then Why and History. Plan is the [lane graph](#batch-page-and-lane-graph) with
+A **go ask**, the human step of a batch's planning task, reads the batch first. Its chips start with
+Plan, Closes and Splits, then Why and the task's other sections. Plan is the [lane graph](#batch-page-and-lane-graph) with
 numbered circles and each entry's files, under "Plan, 8 tasks in start order" and the plan revision.
 Closes lists each issue the go closes, with why and its evidence; Splits each split issue, its parts
 and why. The task's own plan result is left out, since the batch plan says the same. While the batch
@@ -569,8 +569,9 @@ Move down and Drop, `.btn secondary` at `--control` height. A move with no neigh
 disabled. Drop on an entry that others start after arms first, as Cancel does on a task: the button
 turns `--emph` with an `--action` ring and reads "Tap again to drop it and ENG-41.2, ENG-42". Each
 edit sends the plan revision the page drew; the plan's `.note` then says the daemon's sentence, such
-as "batch 4 is at plan revision 3", or why it was refused. A step ask takes no free text and no
-Dismiss, so Edit the plan is the only other action, and it never answers.
+as "batch 4 is at plan revision 3", or why it was refused. Edit the plan never answers. The plan
+shows only once it is read for the ask's revision on screen, so a Go never answers a plan the page
+did not show.
 
 **Answer while reading.** On a phone, once the options scroll out of view:
 
@@ -801,6 +802,7 @@ The **lane graph** draws a plan, in the batch page and in a go ask.
   then the task's reason, or its step and age.
 - The node sits in the row's lane: the state tile at 22 px after the go, a numbered 22 px circle on
   `--surface` with a `--control-line` ring before it. Lanes are 18 px apart.
+- After the start words, line 3 names the task's latest pull request, such as "#231 merged", when it has one.
 - An edge runs down its predecessor's lane and turns into the entry's lane just above the entry. A
   single 2 px `--text-3` line is `merged`; a double line, two `--text-2` rails 2 px apart, is
   `waiting`. Each line has a halo in the panel's background. A key line above the graph names both.

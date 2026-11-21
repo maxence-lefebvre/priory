@@ -140,7 +140,7 @@ const state = {
   // The batch the page or the go ask shows, and the go ask's plan edits: the entry whose menu is open,
   // the drop armed by its first tap, whether an edit is in flight, and what the last one said.
   batch: null,
-  planEdit: { open: null, armed: null, busy: false, note: null },
+  planEdit: { at: null, batch: null, open: null, armed: null, busy: false, note: null },
   drafts: new Map(),
   notices: new Map(),
   writing: new Set(),
@@ -841,9 +841,9 @@ function askDetail(id, wide) {
     <h2 class="question">${autolinked(ask.question || ask.title, ask.repo)}</h2>${decided}</div>`;
   // A go ask reads its batch's plan first; the planning task's own plan result says the same.
   const planned = batch ? [
-    ["batchplan", "Plan", html`<section class="sect" id="batchplan"><div class="sh">${icon("layers", "s15")}Plan, ${batch.entries.length} tasks in start order<span class="meta">rev ${batch.plan_revision}</span></div>${laneKey()}${laneGraph(batch, editable)}${state.planEdit.note ? html`<p class="note" role="status">${state.planEdit.note}</p>` : ""}</section>`],
+    ["batchplan", "Plan", html`<section class="sect" id="batchplan"><div class="sh">${icon("layers", "s15")}Plan, ${batch.entries.length} tasks in start order<span class="meta">rev ${batch.plan_revision}</span></div>${laneKey()}${laneGraph(batch, editable)}${planEditOf(batch).note ? html`<p class="note" role="status">${planEditOf(batch).note}</p>` : ""}</section>`],
     ...(batch.closes?.length ? [["closes", "Closes", closesSection(batch)]] : []),
-    ...(batch.splits?.length ? [["splits", "Splits", splitsSection(batch)]] : []),
+    ...(splitsOf(batch).length ? [["splits", "Splits", splitsSection(batch)]] : []),
   ] : [];
   const read = taskSections(taskOf(ask)).filter(([key]) => !batch || key !== "plan");
   const sections = [...planned.map(([key, label]) => [key, label]), ["why", "Why"], ...read.map(([key, label]) => [key, label]), ["history", "History"], ...(ask.command ? [["command", "Command"]] : [])];
@@ -905,30 +905,44 @@ function taskOf(ask) {
 }
 
 // A batch as /api/batches/{id} serves it: by id on its page, by its planning task's key in a go ask.
-// A refresh marks it stale; the last one stays drawn until the new one arrives.
-function batchOf(which) {
+// `version` is the go ask's revision: a plan read for another revision is never drawn beside it, so a
+// Go never answers a plan the page did not show. A refresh marks it stale; a newer read supersedes.
+let batchCalls = 0;
+function batchOf(which, version = null) {
   const kept = state.batch?.which === which ? state.batch : null;
-  if (kept && !kept.stale) return kept.body;
-  state.batch = { which, body: kept?.body ?? null, error: null, stale: false };
+  if (kept && !kept.stale && kept.version === version) return kept.body;
+  const call = ++batchCalls;
+  state.batch = { which, version, call, body: kept?.version === version ? kept.body : null, error: null, stale: false };
   // A batch id or a `batch:YYYY-MM-DD-n` key: path-safe, and the server does not decode the path.
   api(`/api/batches/${which}`).then((body) => {
-    if (state.batch?.which !== which) return;
+    if (state.batch?.call !== call) return;
     state.batch.body = body;
     render();
   }, (error) => {
-    if (state.batch?.which !== which) return;
+    if (state.batch?.call !== call) return;
     state.batch.error = error.message;
     render();
   });
   return state.batch.body;
 }
 
-// The go ask's batch, once the batch names this ask as its go.
+// The go ask's batch, once the batch names this ask as its go, read for this revision of the ask.
 function goBatch(ask) {
   if (!ask.key?.startsWith("batch:")) return null;
-  const batch = batchOf(ask.key);
+  const batch = batchOf(ask.key, ask.revision);
   return batch?.ask === ask.id ? batch : null;
 }
+
+// An open menu or an armed Drop holds for one batch at one plan revision; the last edit's note, for the batch.
+const planEditAt = (batch) => `${batch.id}:${batch.plan_revision}`;
+function planEditOf(batch) {
+  const edit = state.planEdit;
+  if (edit.at === planEditAt(batch)) return edit;
+  return { open: null, armed: null, busy: false, note: edit.batch === batch.id ? edit.note : null };
+}
+
+// The plan's splits as the planner sent them, each kept only when it names an issue.
+const splitsOf = (batch) => (batch.splits || []).filter((split) => typeof split?.issue === "string");
 
 const laneKey = () => html`<p class="key-line"><span class="moment"><i class="mk stack" aria-hidden="true"></i>stacks: starts once the one above waits on review</span><span class="moment"><i class="mk" aria-hidden="true"></i>starts once the one above merges</span></p>`;
 
@@ -937,23 +951,25 @@ const laneKey = () => html`<p class="key-line"><span class="moment"><i class="mk
 function laneGraph(batch, editable) {
   const entries = batch.entries;
   const { rows, lanes, edges } = laneLayout(entries, layout() === "compact" ? 3 : Infinity);
-  const edit = state.planEdit;
+  const edit = planEditOf(batch);
   const items = rows.map(({ entry, lane }, i) => {
     const task = entry.task ? state.data.tasks.find((each) => each.id === entry.task) : null;
     const node = entry.state ? tile(entry.state, "sm") : html`<span class="node num">${i + 1}</span>`;
-    const status = task ? task.reason || [task.step, age(task.since)].filter(Boolean).join(", ") : "";
+    const pr = task?.stack?.at(-1);
+    const status = task ? [pr && `#${pr.number} ${pr.state}`, task.reason || [task.step, age(task.since)].filter(Boolean).join(", ")].filter(Boolean).join(", ") : "";
     const open = editable && edit.open === entry.entry;
-    const after = successors(entries, entry.entry).map((id) => issueName(entries.find((each) => each.entry === id)));
-    const item = (action, glyph, label) => html`<button class="btn secondary" data-action="batch-edit" data-edit="${action}" data-entry="${entry.entry}" aria-disabled="${edit.busy || (action !== "drop" && !editBody(0, entries, entry.entry, action)) ? "true" : "false"}">${icon(glyph, "s15")}${label}</button>`;
-    const armed = edit.armed === entry.entry;
+    const id = (action) => focusId("batch-edit", batch.id, entry.entry, action);
+    const item = (action, glyph, label) => html`<button class="btn secondary" id="${id(action)}" data-action="batch-edit" data-edit="${action}" data-entry="${entry.entry}" aria-disabled="${edit.busy || (action !== "drop" && !editBody(0, entries, entry.entry, action)) ? "true" : "false"}">${icon(glyph, "s15")}${label}</button>`;
+    const armed = open && edit.armed === entry.entry;
+    const after = armed ? successors(entries, entry.entry).map((other) => issueName(entries.find((each) => each.entry === other))) : [];
     return html`<li class="erow ${entry.stage === "dropped" ? "dropped" : ""}" data-lane="${lane}">
       <span class="slot">${node}</span>
       <span class="l1"><span class="mono">${issueName(entry)}</span>${entry.part != null ? html`<span class="tag">split</span>` : ""}${entry.task ? html`<a href="/tasks/${entry.task}">task ${entry.task}</a>` : html`<span>${(entry.files || []).join(", ")}</span>`}${entry.state ? html`<span class="sti t-${role(entry.state)}">${entry.state}</span>` : ""}</span>
       <span class="l2">${entry.title}</span>
       <span class="l3"><span>${momentWords(entry, entries)}</span>${status ? html`<span>${autolinked(status, batch.repo)}</span>` : ""}</span>
-      ${editable ? html`<button class="iconbtn menu" data-action="entry-menu" data-entry="${entry.entry}" aria-expanded="${open ? "true" : "false"}" aria-label="Edit ${issueName(entry)}">${icon("more", "s20")}</button>` : ""}
+      ${editable ? html`<button class="iconbtn menu" id="${id("menu")}" data-action="entry-menu" data-entry="${entry.entry}" aria-expanded="${open ? "true" : "false"}" aria-label="Edit ${issueName(entry)}">${icon("more", "s20")}</button>` : ""}
       ${open ? html`<span class="emenu">${item("up", "arrow-up", "Move up")}${item("down", "arrow-down", "Move down")}${armed
-        ? html`<button class="btn secondary armed" data-action="batch-edit" data-edit="drop" data-entry="${entry.entry}">${icon("minus", "s15")}Tap again to drop it and ${after.join(", ")}</button>`
+        ? html`<button class="btn secondary armed" id="${id("drop")}" data-action="batch-edit" data-edit="drop" data-entry="${entry.entry}">${icon("minus", "s15")}Tap again to drop it and ${after.join(", ")}</button>`
         : item("drop", "minus", "Drop")}</span>` : ""}</li>`;
   });
   return html`<ol class="bgraph" data-lanes="${lanes}" data-edges="${JSON.stringify(edges)}" aria-label="Entries in start order">${items}</ol>`;
@@ -963,7 +979,12 @@ function laneGraph(batch, editable) {
 const LANE = 18, LANE_PAD = 14, NODE_Y = 19;
 function drawLanes(app) {
   for (const graph of app.querySelectorAll(".bgraph")) {
-    const rows = [...graph.children];
+    // Rows reflow without a render, as when the width changes or a font loads.
+    if (!graph.dataset.watched) {
+      graph.dataset.watched = "1";
+      track(new ResizeObserver(() => drawLanes(graph.parentElement))).observe(graph);
+    }
+    const rows = [...graph.querySelectorAll(":scope > li")];
     const lanes = Number(graph.dataset.lanes);
     const x = (row) => LANE_PAD + Number(row.dataset.lane) * LANE;
     const y = (row) => row.offsetTop + NODE_Y;
@@ -994,7 +1015,7 @@ function closesSection(batch) {
 }
 
 function splitsSection(batch) {
-  const splits = batch.splits || [];
+  const splits = splitsOf(batch);
   if (!splits.length) return "";
   const parts = (issue) => batch.entries.filter((entry) => entry.issue === issue).map(issueName).join(", ");
   return html`<section class="sect" id="splits"><div class="sh">${icon("layers", "s15")}Splits ${splits.length} ${splits.length > 1 ? "issues" : "issue"}</div><ol class="ilist">${splits.map((split) => html`<li>${icon("layers", "s15")}<span><span class="mono">${split.issue}</span> into ${parts(split.issue)}. ${autolinked(split.why || "", batch.repo)}</span></li>`)}</ol></section>`;
@@ -1018,8 +1039,9 @@ function batchPage(id) {
 // One tap of an entry's menu. A drop that takes successors with it arms first and names them.
 async function editPlan(target) {
   const batch = state.batch?.body;
+  if (!batch || state.planEdit.at !== planEditAt(batch)) return;
   const edit = state.planEdit;
-  if (!batch || edit.busy || target.getAttribute("aria-disabled") === "true") return;
+  if (edit.busy || target.getAttribute("aria-disabled") === "true") return;
   const { entry, edit: action } = target.dataset;
   if (action === "drop" && successors(batch.entries, entry).length && edit.armed !== entry) return (edit.armed = entry), render();
   const body = editBody(batch.plan_revision, batch.entries, entry, action);
@@ -1028,7 +1050,7 @@ async function editPlan(target) {
   render();
   const { status, body: reply } = await post(`/api/batches/${batch.id}/edit`, body).catch((error) => ({ status: 0, body: { error: error.message } }));
   const note = status === 200 ? reply.ok : status === 409 ? "The plan changed before this edit. Read the new revision and edit again." : writeRefusal(status, reply);
-  state.planEdit = { open: null, armed: null, busy: false, note };
+  state.planEdit = { at: null, batch: batch.id, open: null, armed: null, busy: false, note };
   if (state.batch) state.batch.stale = true;
   render();
   refresh();
@@ -2321,9 +2343,10 @@ document.addEventListener("click", (event) => {
     return render();
   }
   if (action === "task-act") return taskAct(target);
-  if (action === "entry-menu") {
-    const open = state.planEdit.open === target.dataset.entry ? null : target.dataset.entry;
-    Object.assign(state.planEdit, { open, armed: null });
+  if (action === "entry-menu" && state.batch?.body) {
+    const edit = planEditOf(state.batch.body);
+    const open = edit.open === target.dataset.entry ? null : target.dataset.entry;
+    state.planEdit = { ...edit, at: planEditAt(state.batch.body), batch: state.batch.body.id, open, armed: null };
     return render();
   }
   if (action === "batch-edit") return editPlan(target);
