@@ -269,8 +269,8 @@ export default class PrioryDesk extends View {
     const step = STEPS[event.keystroke];
     if (step && rows.length) {
       this.selected = rows[Math.min(rows.length - 1, Math.max(0, index + step))].id;
-    } else if (event.keystroke === "enter" && row?.kind === "ask" && row.snooze && !row.snoozed) {
-      this.answer(row.snooze.id);
+    } else if (event.keystroke === "enter" && row?.ask != null && !row.snoozed) {
+      this.answer(row.ask);
     } else if (event.keystroke === "enter" && row?.id === "asleep") {
       this.view = "asleep";
     } else if (event.keystroke === "s" && row?.snooze) {
@@ -431,6 +431,8 @@ export default class PrioryDesk extends View {
           .child(div().whitespace_normal().text_size(S["type-small"][0]).text_color(row.kind === "ask" ? t.text : reasonColor).child(linked(`text-${row.id}`, row.textSpans)))
           .when(Boolean(note), (el) => el.child(note))
           .when(Boolean(row.routed), (el) => el.child(routed(ui, row.routed)))
+          .when(Boolean(row.runner), (el) => el.child(div().text_size(S["type-caption"][0]).text_color(row.away ? t["warn-text"] : t["text-2"]).child([row.runner, row.away].filter(Boolean).join(", "))))
+          .when(Boolean(row.sent), (el) => el.child(div().text_size(S["type-caption"][0]).text_color(row.sent?.refused ? t["warn-text"] : t["action-text"]).child(row.sent?.text ?? "")))
           .when(Boolean(row.prs), (el) => el.child(div().text_size(S["type-caption"][0]).text_color(t["text-2"]).child(String(row.prs)))))
         .child(div().w(104).flex_none().truncate().text_size(S["type-caption"][0]).text_color(t["text-2"]).child(row.recommends ?? ""))
         .child(div().w(48).flex_none().text_right().text_size(S["type-caption"][0]).text_color(t["text-3"]).child(row.count != null ? String(row.count) : row.age ?? ""))
@@ -441,12 +443,15 @@ export default class PrioryDesk extends View {
             .child(ui.mono(row.key ?? ""))
             .child(div().truncate().text_color(t["text-2"]).child(row.step ?? ""))
             .when(row.kind !== "ask", (el) => el.child(div().text_color(reasonColor).child(row.kind)))
+            .when(Boolean(row.runner), (el) => el.child(div().flex_none().px(5).rounded(S["radius-sm"]).bg(t.raised).font_weight(600).text_color(row.away ? t["warn-text"] : t["text-2"]).child(String(row.runner))))
             .when(Boolean(row.prs), (el) => el.child(div().flex_none().text_color(t["text-2"]).child(String(row.prs))))
             .child(div().flex_1())
             .child(div().flex_none().text_color(t["text-3"]).child(row.count != null ? String(row.count) : row.age ?? "")))
           .child(div().whitespace_normal().max_h(2 * S["type-body"][1]).overflow_hidden().text_size(S["type-body"][0])
             .text_color(row.kind === "ask" ? t.text : reasonColor).child(linked(`text-${row.id}`, row.textSpans)))
-          .when(Boolean(meta), (el) => el.child(div().text_size(S["type-caption"][0]).text_color(t["text-3"]).child(String(meta))))
+          .when(Boolean(row.sent), (el) => el.child(div().text_size(S["type-caption"][0]).text_color(row.sent?.refused ? t["warn-text"] : t["action-text"]).child(row.sent?.text ?? "")))
+          .when(Boolean(row.away) && !row.sent, (el) => el.child(div().text_size(S["type-caption"][0]).text_color(t["warn-text"]).child(`${row.runner} ${row.away}`)))
+          .when(Boolean(meta) && !row.sent, (el) => el.child(div().text_size(S["type-caption"][0]).text_color(t["text-3"]).child(String(meta))))
           .when(Boolean(note), (el) => el.child(note))
           .when(Boolean(row.routed), (el) => el.child(routed(ui, row.routed))));
     return v_flex().id(`row-${row.id}`).px(S["space-2"]).py(S["space-2"]).gap(S["space-2"]).min_h(S["pane-row"]).rounded(S["radius-md"])
@@ -468,7 +473,7 @@ export default class PrioryDesk extends View {
   detail(ui, row) {
     const { t } = ui;
     const item = row.snooze;
-    const ask = row.kind === "ask" && item ? item.id : null;
+    const ask = row.ask;
     const restart = RESTART[row.kind];
     const actions = h_flex().gap(S["space-2"]).flex_wrap()
       .when(ask != null && !row.snoozed, (el) => el.child(ui.button(`answer-${row.id}`, "Answer…", () => this.answer(/** @type {number | string} */ (ask)), { primary: true })))

@@ -1,6 +1,6 @@
 // The Desk panel's view model: Priory's listings in, the count, sections and rows out. No drawing, no IO.
 
-import { autolink, prStack, routedMark } from "./priory.js";
+import { autolink, prStack, routedMark, runnerOf, seenAgo, sentNote } from "./priory.js";
 
 const STOPPED = ["blocked", "failed", "prompt", "delivery"];
 const SNOOZABLE = ["ask", "blocked", "failed", "prompt"];
@@ -89,7 +89,9 @@ export function deskModel({ desk, asks: asksListing, tasks: tasksListing, queue 
       recommends: ask ? ask.recommendation ?? null : RECOMMENDS[item.kind] ?? null,
       note: isSnoozed(item) ? `Snoozed until ${when(item.snoozed_until, now)}`
         : back ? `Back early: ${back.reason}${back.reason === "new revision" && ask ? ` ${ask.revision}` : ""}` : null,
-      snooze: SNOOZABLE.includes(item.kind) ? { kind: item.kind, id: item.id } : null,
+      ask: item.kind === "ask" ? item.id : null,
+      // Snooze stays on its own runner: another runner's ask cannot be snoozed here.
+      snooze: SNOOZABLE.includes(item.kind) && !runnerOf(ask) ? { kind: item.kind, id: item.id } : null,
       snoozed: isSnoozed(item),
       todo: item.kind === "todo" ? item.id : null,
       report: item.kind === "report" ? item.id : null,
@@ -98,6 +100,7 @@ export function deskModel({ desk, asks: asksListing, tasks: tasksListing, queue 
       revision: ask?.revision ?? null,
       progress: progressLines(task?.progress),
       ...(routedMark(item) && { routed: routedMark(item) }),
+      ...(runnerOf(ask) && { runner: runnerOf(ask), away: seenAgo(ask, now, (iso) => age(iso, now)), sent: sentNote(ask) }),
     };
   }
 

@@ -1,7 +1,7 @@
 import { View, div, svg } from "gpui-kit";
 import { h_flex, v_flex, Button, Popover, ScrollHandle, Textarea, TextareaState, TextView } from "gpui-base";
 import { appHome, exec, home as herdrHome, readTextFile, setShared, shared } from "herdr";
-import { follow, priory, spansHtml } from "./priory.js";
+import { follow, priory, runnerOf, spansHtml } from "./priory.js";
 import { FONTS, palette } from "./tokens.js";
 import { ARM_MS, askDetail, asksList, press, refusal, tomorrowAt } from "./view.js";
 
@@ -65,7 +65,7 @@ export default class PrioryAsks extends View {
     this.updated = 0;
     this.width = 420;
     this.view = "open";
-    /** @type {{ command?: boolean, lane?: string, band?: string, risk?: string, task?: string }} */
+    /** @type {{ command?: boolean, lane?: string, band?: string, risk?: string, task?: string, runner?: string }} */
     this.facets = {};
     /** @type {string | number | null} */
     this.selected = null;
@@ -155,7 +155,8 @@ export default class PrioryAsks extends View {
 
   /** Reads the selected ask's task; a task that cannot be read leaves its sections out. */
   async readTask() {
-    const id = this.selectedAsk()?.task;
+    // Another runner's ask names a task of that runner, which this machine cannot read.
+    const id = runnerOf(this.selectedAsk()) ? null : this.selectedAsk()?.task;
     const read = (this.taskReads = (this.taskReads ?? 0) + 1);
     const task = id == null || !this.priory ? null : await this.priory.client.task(id).catch(() => null);
     // Only the latest read lands, so a slower earlier one never replaces it.
@@ -414,7 +415,7 @@ export default class PrioryAsks extends View {
       .when(radius === RADIUS.sm, (el) => el.border(1).border_color(on ? t["action-soft"] : t["control-line"]))
       .hover((s) => s.opacity(0.88)).focus((s) => s.border(2).border_color(t["action-text"]))
       .on_click((_event, cx) => action(cx)).child(label);
-    /** @param {"lane" | "band" | "risk" | "task"} facet @param {string} label */
+    /** @param {"lane" | "band" | "risk" | "task" | "runner"} facet @param {string} label */
     const picker = (facet, label) => {
       const value = this.facets[facet];
       const trigger = Button.new(`facet-${facet}`).h(PANE.chip).px(10).flex().flex_none().items_center().gap(4).rounded(RADIUS.sm)
@@ -443,7 +444,8 @@ export default class PrioryAsks extends View {
         .child(picker("lane", "Lane"))
         .child(picker("band", "Band"))
         .child(picker("risk", "Risk"))
-        .child(picker("task", "Task")));
+        .child(picker("task", "Task"))
+        .when(list.facets.runner.length > 0, (el) => el.child(picker("runner", "Runner"))));
   }
 
   /** @param {Palette} t @param {MenuItem[]} items */
@@ -506,12 +508,15 @@ export default class PrioryAsks extends View {
           .child(div().child(row.step ?? ""))
           .when(row.command, (el) => el.child(this.tag("Command", t)))
           .when(Boolean(row.routed), (el) => el.child(this.tag(row.routed ?? "", t)))
+          .when(Boolean(row.runner), (el) => el.child(this.tag(row.runner ?? "", t)))
           .child(div().flex_1())
           .child(div().whitespace_nowrap().child(row.age)))
         .child(div().whitespace_normal().text_size(TYPE.body[0]).line_height(TYPE.body[1]).font_weight(selected ? 600 : 500).child(row.text))
         .when(Boolean(row.meta), (el) => el.child(h_flex().gap(6).text_size(TYPE.caption[0]).text_color(t["text-3"])
           .child(row.meta?.[0] ?? "").child(div().min_w_0().truncate().font_weight(600).text_color(t["text-2"]).child(row.meta?.[1] ?? ""))
           .when(Boolean(row.by), (el) => el.child(`by ${row.by}`))))
+        .when(Boolean(row.sent), (el) => el.child(div().min_w_0().truncate().text_size(TYPE.caption[0]).text_color(row.sent?.refused ? t["warn-text"] : t["action-text"]).child(row.sent?.text ?? "")))
+        .when(Boolean(row.away) && !row.sent, (el) => el.child(div().text_size(TYPE.caption[0]).text_color(t["warn-text"]).child(`${row.runner} ${row.away}`)))
         .when(Boolean(row.snoozed), (el) => el.child(this.note("clock", row.snoozed ?? "", t["text-3"])))
         .when(Boolean(row.backEarly), (el) => el.child(this.note("rotate-ccw", row.backEarly ?? "", t["action-text"]))));
   }
@@ -547,6 +552,8 @@ export default class PrioryAsks extends View {
           : div().when(index === 0, (el) => el.font_family(this.font.mono).text_color(t["text-2"])).child(word))))
       .child(div().whitespace_normal().font_family(this.font.display).font_weight(700).text_size(TYPE.question[0]).line_height(TYPE.question[1]).child(linked("question", detail.questionSpans)))
       .when(Boolean(detail.routed), (el) => el.child(div().whitespace_normal().text_size(TYPE.small[0]).text_color(t["action-text"]).child(detail.routed ?? "")))
+      .when(Boolean(detail.sent) && !notice, (el) => el.child(div().whitespace_normal().text_size(TYPE.small[0]).text_color(detail.sent?.refused ? t["warn-text"] : t["action-text"])
+        .child(detail.sent?.refused ? `${detail.sent.text}.` : `${detail.sent?.text}. It applies when ${ask.runner} reads the log.`)))
       .when(Boolean(notice), (el) => el.child(div().whitespace_normal().text_size(TYPE.small[0]).text_color(t["warn-text"]).child(notice ?? "")))
       .when(Boolean(detail.decided), (el) => el.child(div().p(12).rounded(RADIUS.md).bg(t.raised).font_weight(600).child(detail.decided ?? "")))
       .when(Boolean(detail.ran), (el) => el.child(this.note("terminal", detail.ran?.text ?? "", detail.ran?.warn ? t["warn-text"] : t["text-2"])))
@@ -558,6 +565,7 @@ export default class PrioryAsks extends View {
       .when(Boolean(this.error) && ask.state === "open", (el) => el.child(this.note("x", "Reconnect to answer.", t["text-2"])))
       .when(Boolean(this.pending && this.pending.id === ask.id), (el) => el.child(this.sending(t)))
       .when(ask.state === "open", (el) => el.child(this.actions(ask, detail, t)))
+      .when(Boolean(detail.elsewhere), (el) => el.child(div().whitespace_normal().text_size(TYPE.small[0]).text_color(t["text-2"]).child(detail.elsewhere ?? "")))
       .when(ask.state === "open" && this.writing.has(ask.id), (el) => el.child(this.composer(ask, t)));
   }
 
@@ -644,7 +652,7 @@ export default class PrioryAsks extends View {
       items.push(["Snooze 1 h", "S", (cx) => this.snooze(ask, { for: "1h" }, cx), "clock"]);
       items.push(["Snooze until tomorrow 09:00", "", (cx) => this.snooze(ask, { until: tomorrowAt(9, Date.now()) }, cx), "clock"]);
     }
-    if (ask.task != null) {
+    if (ask.task != null && !runnerOf(ask)) {
       // The Priory bar opens the Task tab, and the Task panel shows the task.
       items.push(["Open task", "", (cx) => {
         this.popover = null;

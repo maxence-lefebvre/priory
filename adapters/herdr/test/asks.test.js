@@ -81,6 +81,7 @@ test("facets narrow every view and offer each lane and task with its count", () 
     band: [["now", 1], ["later", 1], ["blocker", 2], ["none", 1]],
     risk: [["irreversible", 1], ["red", 1], ["green", 2], ["none", 1]],
     task: [["cli:PRI-docs-1", 1], ["cli:PRI-docs-2", 1], ["cli:PRI-docs-3", 2], ["REL-7", 1]],
+    runner: [],
   });
 });
 
@@ -121,7 +122,7 @@ test("an open command ask's detail puts the decision first, then Why, History an
   assert.deepEqual(detail.command, {
     title: "Command an answer runs",
     words: ["gh", "pr", "merge", "212", "--squash", "--match-head-commit", "a1f3c9e", ""],
-    note: "In /home/me/wt/pri-61 (worktree). Runs on Merge. Bound to revision 2. Runs at most once.",
+    note: "In /home/me/wt/pri-61 (worktree). Runs when answered Merge. Bound to revision 2. Runs at most once.",
   });
   assert.deepEqual(detail.bar, { count: "3 options", option: 0 });
   assert.equal(detail.canSnooze, true);
@@ -366,4 +367,36 @@ test("the Attach menu's Open task opens the ask's task in the Task panel", async
   press(tree, /** @type {string} */ (open));
   assert.equal(herdr.shared.get("priory.task.open").task, ask.task);
   assert.equal(herdr.shared.get("priory.attach"), undefined);
+});
+
+// Another runner's ask as `priory asks --json` lists it: `<runner>:<ask>`, its runner, last_seen and submissions.
+const remote = (fields) => ({
+  ...asks[0], id: "xps13:12", task: 4, runner: "xps13", last_seen: "2026-11-20T20:10:00Z", submissions: [], command: null, ...fields,
+});
+
+test("another runner's row names its runner, says when it was last seen once away, and what became of an answer sent to it", () => {
+  const list = asksList([asks[0], remote({ submissions: [{ verb: "answer", text: "approved", outcome: null }] })], { view: "open", now });
+  const [here, there] = list.sections[0].rows;
+  assert.equal(here.runner, undefined);
+  assert.equal(there.runner, "xps13");
+  assert.equal(there.away, "last seen 40 min ago");
+  assert.deepEqual(there.sent, { text: "Sent to xps13: approved", refused: false });
+  assert.deepEqual(asksList([remote({ last_seen: "2026-11-20T20:49:00Z" })], { view: "open", now }).sections[0].rows[0].away, null);
+});
+
+test("the runner facet narrows to one runner's asks and offers each runner with its count", () => {
+  const all = [{ ...asks[0], runner: "workstation" }, remote(), remote({ id: "laptop:3", runner: "laptop" })];
+  const list = asksList(all, { view: "open", now, facets: { runner: "xps13" } });
+  assert.deepEqual(list.sections[0].rows.map((row) => row.id), ["xps13:12"]);
+  assert.deepEqual(list.facets.runner, [["workstation", 1], ["xps13", 1], ["laptop", 1]]);
+});
+
+test("another runner's command ask names its runner, says the answer goes there, runs its command there and offers no snooze", () => {
+  const command = { argv: ["./deploy", "staging"], dir: "/srv/api", target: "shell", runs: ["approve"] };
+  const detail = askDetail(remote({ id: "laptop:3", runner: "laptop", options: ["approve", "reject"], command, submissions: [{ verb: "answer", text: "reject", outcome: "refused", why: "ask 3 is at revision 2" }] }), { now, armed: null });
+  assert.ok(detail.context.includes("laptop, last seen 40 min ago"));
+  assert.equal(detail.canSnooze, false);
+  assert.equal(detail.command.note, "In /srv/api (shell). Runs on laptop when answered approve. Bound to revision 2. Runs at most once.");
+  assert.deepEqual(detail.sent, { text: "laptop refused reject: ask 3 is at revision 2", refused: true });
+  assert.equal(detail.elsewhere, "This ask belongs to laptop. Your answer goes there through the log, and laptop applies it when it reads it. Snooze stays on laptop.");
 });
