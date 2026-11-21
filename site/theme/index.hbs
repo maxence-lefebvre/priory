@@ -1,0 +1,129 @@
+<!DOCTYPE html>
+<html lang="{{ language }}" data-mode="system"{{#if (eq path "index.md")}} class="is-home"{{/if}}>
+<head>
+<meta charset="utf-8">
+<title>{{#if (eq path "index.md")}}{{ book_title }} docs{{else}}{{ title }}{{/if}}</title>
+<meta name="description" content="{{ description }}">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<link rel="icon" href="{{ path_to_root }}assets/favicon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="{{ path_to_root }}assets/apple-touch-icon.png">
+<link rel="preload" href="{{ path_to_root }}assets/fonts/mona-sans-200-900.woff2" as="font" type="font/woff2" crossorigin>
+{{#each additional_css}}
+<link rel="stylesheet" href="{{ resource this }}">
+{{/each}}
+<script>
+const path_to_root = "{{ path_to_root }}";
+{{#if search_js}}
+window.path_to_searchindex_js = "{{ resource "searchindex.js" }}";
+{{/if}}
+try {
+  const mode = localStorage.getItem("priory-docs-mode");
+  if (mode === "light" || mode === "dark") document.documentElement.dataset.mode = mode;
+} catch (e) {}
+</script>
+<script src="{{ resource "toc.js" }}"></script>
+</head>
+<body>
+<a class="skip" href="#mdbook-content">Skip to the content</a>
+<header class="top">
+  <button class="iconbtn menu" id="nav-toggle" type="button" aria-label="Open the navigation" aria-expanded="false" aria-controls="mdbook-sidebar">
+    <svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 12h16M4 6h16M4 18h16"></path></svg>
+  </button>
+  <a class="brand" href="{{ path_to_root }}index.html">
+    <img class="lk-light" src="{{ path_to_root }}assets/lockup.svg" alt="Priory" width="99" height="24">
+    <img class="lk-dark" src="{{ path_to_root }}assets/lockup-dark.svg" alt="Priory" width="99" height="24">
+    <span>Docs</span>
+  </a>
+  {{#if search_enabled}}
+  <div id="mdbook-search-wrapper" class="search-wrap hidden">
+    <form id="mdbook-searchbar-outer" class="search" role="search">
+      <svg class="i" viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="8"></circle><path d="m21 21-4.3-4.3"></path></svg>
+      <label class="visually-hidden" for="mdbook-searchbar">Search the docs</label>
+      <input type="search" id="mdbook-searchbar" name="searchbar" placeholder="Search the docs" autocomplete="off" aria-controls="mdbook-searchresults-outer" aria-describedby="mdbook-searchresults-header">
+      <kbd aria-hidden="true">/</kbd>
+    </form>
+    <div id="mdbook-searchresults-outer" class="results hidden">
+      <div id="mdbook-searchresults-header" class="results-head" role="status"></div>
+      <ul id="mdbook-searchresults"></ul>
+    </div>
+  </div>
+  {{/if}}
+  <div class="tools">
+    {{#if search_enabled}}
+    <button class="iconbtn search-icon" id="mdbook-search-toggle" type="button" aria-label="Search the docs" aria-expanded="false" aria-controls="mdbook-search-wrapper" aria-keyshortcuts="/ s">
+      <svg class="i" viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="8"></circle><path d="m21 21-4.3-4.3"></path></svg>
+    </button>
+    {{/if}}
+    <button class="iconbtn" id="mode-toggle" type="button" aria-label="Switch to dark mode">
+      <svg class="i to-dark" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"></path></svg>
+      <svg class="i to-light" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4"></circle><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"></path></svg>
+    </button>
+    <a class="iconbtn" href="{{ git_repository_url }}" aria-label="Priory on GitHub">
+      <svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M15 22v-4a4.8 4.8 0 0 0-1-3.5c3 0 6-2 6-5.5.08-1.25-.27-2.48-1-3.5.28-1.15.28-2.35 0-3.5 0 0-1 0-3 1.5-2.64-.5-5.36-.5-8 0C6 2 5 2 5 2c-.3 1.15-.3 2.35 0 3.5A5.4 5.4 0 0 0 4 9c0 3.5 3 5.5 6 5.5-.39.49-.68 1.05-.85 1.65-.17.6-.22 1.23-.15 1.85v4"></path><path d="M9 18c-4.51 2-5-2-7-2"></path></svg>
+    </a>
+  </div>
+</header>
+
+<div class="frame">
+  <nav id="mdbook-sidebar" class="nav" aria-label="Documentation">
+    <mdbook-sidebar-scrollbox class="sidebar-scrollbox"></mdbook-sidebar-scrollbox>
+    <noscript><a href="{{ path_to_root }}toc.html">All pages</a></noscript>
+  </nav>
+
+  <main id="mdbook-content" tabindex="-1">
+    {{#if (eq path "index.md")}}
+    {{{ content }}}
+    {{else}}
+    <div class="crumbs">
+      <a href="{{ path_to_root }}index.html">Docs</a><span aria-hidden="true">/</span><span id="crumb-group"></span>
+      <span class="kind" id="page-kind" hidden></span>
+      {{#if git_repository_edit_url}}
+      <a class="edit" href="{{ git_repository_edit_url }}" rel="edit">
+        <svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M21.17 6.81a1 1 0 0 0-3.99-3.99L3.84 16.17a2 2 0 0 0-.5.83l-1.32 4.35a.5.5 0 0 0 .62.62l4.35-1.32a2 2 0 0 0 .83-.5z"></path></svg>Edit on GitHub
+      </a>
+      {{/if}}
+    </div>
+    <article class="prose">
+      {{{ content }}}
+    </article>
+    <nav class="pager" aria-label="Previous and next page">
+      {{#if previous}}<a rel="prev" href="{{ path_to_root }}{{ previous.link }}"><span>Previous</span>{{ previous.title }}</a>{{else}}<span></span>{{/if}}
+      {{#if next}}<a rel="next" href="{{ path_to_root }}{{ next.link }}"><span>Next</span>{{ next.title }}</a>{{/if}}
+    </nav>
+    {{/if}}
+  </main>
+
+  {{#unless (eq path "index.md")}}
+  <aside class="toc" aria-labelledby="toc-title" hidden>
+    <h2 id="toc-title">On this page</h2>
+    <ul id="toc-list"></ul>
+  </aside>
+  {{/unless}}
+</div>
+
+<footer>
+  <span>Priory is MIT licensed. These pages are built from the Markdown in the repository.</span>
+  <a href="{{ git_repository_url }}">Priory on GitHub</a>
+</footer>
+
+<template id="ribbon"><svg class="rib" viewBox="18 20 4 11" aria-hidden="true"><path d="M18 20h4v11l-2-2.5L18 31Z"></path></svg></template>
+
+{{#if search_js}}
+<script src="{{ resource "elasticlunr.min.js" }}"></script>
+<script src="{{ resource "mark.min.js" }}"></script>
+<script src="{{ resource "searcher.js" }}"></script>
+{{/if}}
+{{#each additional_js}}
+<script src="{{ resource this }}"></script>
+{{/each}}
+{{#if fragment_map}}
+<script>
+document.addEventListener("DOMContentLoaded", function () {
+  const target = ({{{ fragment_map }}})[window.location.hash];
+  if (target) window.location.replace(new URL(target, window.location.href).href);
+});
+</script>
+{{/if}}
+</body>
+</html>

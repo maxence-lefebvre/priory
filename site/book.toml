@@ -1,0 +1,26 @@
+[book]
+title = "Priory"
+description = "Priory runs coding agents, such as Claude Code and Codex, on machines you own."
+language = "en"
+src = "build/src"
+
+[build]
+build-dir = "build/html"
+create-missing = false
+use-default-preprocessors = false
+
+[output.html]
+theme = "theme"
+additional-css = ["theme/site.css"]
+additional-js = ["theme/site.js"]
+git-repository-url = "https://github.com/maxence-lefebvre/priory"
+edit-url-template = "https://github.com/maxence-lefebvre/priory/edit/main/{path}"
+site-url = "/priory/"
+no-section-label = true
+sidebar-header-nav = false
+
+[output.html.print]
+enable = false
+
+[output.html.search]
+enable = true
