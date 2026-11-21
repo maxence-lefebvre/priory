@@ -34,8 +34,14 @@ const TILES = /** @type {Record<string, [string, string | null, string]>} */ ({
 });
 const RESTART = /** @type {Record<string, string>} */ ({ blocked: "Resume", prompt: "Resume", failed: "Revive" });
 const HOUR = { for: "1h" };
-/** Text with its autolinks; plain text stays a plain child. @param {string} id @param {{ text: string, url?: string }[]} spans */
-const linked = (id, spans) => (spans.some((span) => span.url) ? TextView.html(id, spansHtml(spans)) : spans.map((span) => span.text).join(""));
+/**
+ * Text with its autolinks; plain text stays a plain child. Linked text keeps its press, so a link
+ * opens without selecting the row around it.
+ * @param {string} id @param {{ text: string, url?: string }[]} spans
+ */
+const linked = (id, spans) => (spans.some((span) => span.url)
+  ? div().on_mouse_down("left", (/** @type {unknown} */ _event, /** @type {import("gpui-kit").Context} */ cx) => cx.stop_propagation()).child(TextView.html(id, spansHtml(spans)))
+  : spans.map((span) => span.text).join(""));
 const MUTED_TILE = /** @type {[string, string, string]} */ (["tile-muted", "circle-dashed", "text-2"]);
 
 /** @typedef {ReturnType<typeof deskModel>} Model */

@@ -1086,6 +1086,8 @@ Every ask, with the web's ask detail fitted to the pane.
   Trace and History.
 - Once the options scroll out of view, the sticky answer bar shows "3 options", the recommended
   option and the overflow menu.
+- On an ask that belongs to a task, the overflow menu offers Open task, which opens the
+  [Task](#task) panel, and Attach to task.
 
 ### Queue
 
@@ -1148,7 +1150,8 @@ The web's [Flows panel](#flows-panel).
 ### Task
 
 The web's [task detail](#task-detail-and-workflow-grid), cut to what a pane reads, as a tab in the
-center stack. Open task on the Desk and an Up next line open it.
+center stack. Open task on the Desk, in Queue and in the Asks overflow menu, and an Up next line,
+open it.
 
 - A 44 px header with the task's tile at 18 px, its key in mono, its state word in its role's text
   color, and Attach as a secondary button at the right.

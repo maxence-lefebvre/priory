@@ -3809,6 +3809,8 @@ const DEFAULTS: &str = "name = \"demo\"\n\n[serve]\nlisten = \"127.0.0.1:0\"\nto
 #[test]
 fn a_request_through_the_endpoint_queues_the_task_priory_add_does_and_answers_its_key_and_id() {
     let mut setup = Setup::new("web-request", DEFAULTS);
+    // No run starts, so a run's git and tmux commands never hold up the daemon's reply.
+    succeeded(&setup.priory(&["pause"]));
     let address = setup.start(&["daemon", &setup.factory()]);
 
     let (status, body) = post(

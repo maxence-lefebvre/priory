@@ -330,7 +330,8 @@ DESIGN.md's "Herdr adapter" section holds its visual rules; this section says ho
 - **Opened from the Desk.** A new `priory.asks.open` selects its ask, clears the facet chips, and
   moves to All when the current view hides the ask, such as a snoozed one.
 - **Snooze.** "Snooze 1 h" and the overflow menu's "Snooze until tomorrow 09:00" run
-  `priory snooze ask ID`. They show only on an ask that belongs to a task. "Attach to task" asks the
+  `priory snooze ask ID`. They show only on an ask that belongs to a task. On such an ask, the menu's
+  "Open task" opens the task in the [Task panel](#the-task-panel), and "Attach to task" asks the
   Priory bar to attach, as [Attaching](#how-it-reads-and-acts) describes.
 - **Outside asks.** An ask from outside Priory lists and answers like the others, by its name. Its
   command is a string that never runs, so its options answer after the Undo.
@@ -395,7 +396,8 @@ works.
 - **Acting.** An opened waiting row offers Move…, Hold… and Cancel…. Move… runs `priory move`, to
   the top of the band or into any other band of the factory, even an empty one. Hold… asks for a reason and runs
   `priory hold TASK --reason`. A held row offers Release and Cancel…, and a running row Attach and
-  Cancel…. Cancel… asks once more, then runs `priory cancel`. The header's menu runs `priory pause`
+  Cancel…. Every opened row offers Open task, which opens the task in the
+  [Task panel](#the-task-panel). Cancel… asks once more, then runs `priory cancel`. The header's menu runs `priory pause`
   or `priory unpause`. Move, Hold, Release and Cancel send `--expected` with the revision of the
   read the panel drew, so priory refuses them once the queue changed. When a verb fails or is
   refused, the panel says why on the task.
