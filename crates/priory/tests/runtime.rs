@@ -16199,6 +16199,82 @@ fn the_persons_own_review_item_is_not_put_to_the_agent_and_is_recorded_as_a_pers
     assert_eq!(task_json(&setup, "1")["triage"][0]["item"], THREAD_URL);
 }
 
+const GUIDE: &str = "Open every ask with the question.";
+
+fn with_guide(name: &str) -> Setup {
+    let setup = Setup::new(name);
+    fs::write(
+        setup.dir.join("factory/factory.toml"),
+        "name = \"demo\"\nwriting = \"WRITING.md\"",
+    )
+    .unwrap();
+    fs::write(setup.dir.join("factory/WRITING.md"), format!("{GUIDE}\n")).unwrap();
+    setup
+}
+
+fn occurrences(args: &[String], text: &str) -> usize {
+    args.join("\n").matches(text).count()
+}
+
+#[test]
+fn a_claude_run_gets_the_writing_guide_once_after_the_agents_own_prompt() {
+    let mut setup = with_guide("writing-claude");
+    setup.publish(&requested(42));
+
+    setup.start();
+
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 1);
+    let args = launched(&setup);
+    assert_eq!(occurrences(&args, GUIDE), 1, "{args:?}");
+    // The fake logs each argument's lines apart, so the prompt is a flag and three lines.
+    let at = args
+        .iter()
+        .position(|arg| arg == "--append-system-prompt")
+        .unwrap();
+    assert_eq!(
+        args[at + 1..at + 4],
+        ["You implement one issue.", "", GUIDE],
+        "{args:?}"
+    );
+}
+
+#[test]
+fn a_codex_run_gets_the_writing_guide_in_its_developer_instructions_once() {
+    let mut setup = with_guide("writing-codex");
+    fs::write(setup.dir.join("factory/agents/implementer/agent.md"), CODEX).unwrap();
+    setup.publish(&requested(42));
+
+    setup.start();
+
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 1);
+    let args = codex_args(&setup);
+    assert_eq!(occurrences(&args, GUIDE), 1, "{args:?}");
+    assert_eq!(
+        codex_config(&setup)["developer_instructions"],
+        format!("You review one change.\n\n{GUIDE}")
+    );
+}
+
+#[test]
+fn a_factory_with_no_writing_key_launches_with_the_agents_prompt_alone() {
+    let mut setup = Setup::new("writing-none");
+    fs::write(setup.dir.join("factory/WRITING.md"), format!("{GUIDE}\n")).unwrap();
+    setup.publish(&requested(42));
+
+    setup.start();
+
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 1);
+    let args = launched(&setup);
+    assert!(
+        has(
+            &args,
+            ["--append-system-prompt", "You implement one issue."]
+        ),
+        "{args:?}"
+    );
+    assert_eq!(occurrences(&args, GUIDE), 0, "{args:?}");
+}
+
 fn mcp(tool: &str) -> serde_json::Value {
     json!({ "name": tool, "arguments": {} })
 }

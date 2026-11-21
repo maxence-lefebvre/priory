@@ -540,6 +540,13 @@
           "type": "null"
         }
       ]
+    },
+    "writing": {
+      "description": "A writing guide, as a path relative to the factory folder. Priory appends its text to the\nsystem prompt of every agent it starts.",
+      "type": [
+        "string",
+        "null"
+      ]
     }
   },
   "required": [

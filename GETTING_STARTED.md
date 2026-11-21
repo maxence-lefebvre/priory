@@ -155,6 +155,14 @@ Replace the placeholders `owner/repo` and `your-login` in its `triggers/` files,
 `my-factory` in place of `example`, and the starter's workflow, the file name under its
 `workflows/`, in place of `implement`.
 
+### Adopt a writing guide
+
+Seven starters ship a `WRITING.md`, a short guide on how an agent writes asks, reports and results
+for someone who was away, and name it in `factory.toml` with `writing = "WRITING.md"`. Priory
+appends its text to the system prompt of every agent it starts. To use one in your own factory,
+copy the file next to `factory.toml`, edit it to your voice, add the key, and run `priory check`.
+See [writing.md](docs/daemon/writing.md) for what the guide changes.
+
 ## 5. Run it
 
 Priory keeps its state in three places, each named by an environment variable:
