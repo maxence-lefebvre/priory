@@ -79,5 +79,6 @@ The keys of `factory.toml`, workflows and agents are in [docs/reference/](../ref
 - [relations.md](relations.md): how tasks relate, `priory relate`, the relations Priory records
   itself, and `priory tasks --graph`.
 - [search.md](search.md): TL;DRs, the summarizer, `priory search`, and the optional embeddings.
+- [load.md](load.md): the load test, how to rerun it and the limits it measured.
 - [serve.md](serve.md): the HTTP server over the state, its token and its limits.
 - [services.md](services.md): running Priory as systemd user services, and the listing commands.
