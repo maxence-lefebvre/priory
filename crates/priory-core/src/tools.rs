@@ -191,6 +191,10 @@ pub(crate) fn call(
         ("ask" | "wait", ..) if woken(&tx, &run)? => {
             Some("an answer or event for this run is queued: end your turn to read it".to_owned())
         }
+        // A result or ask would end or sleep the task over feedback it has not read yet.
+        ("result" | "ask", ..) if kept(&tx, run.task)? => {
+            Some("feedback for this run is queued: end your turn to read it".to_owned())
+        }
         // Its end would wake the task at whatever step the result moved it to.
         ("result", ..) if commanding(&tx, run.task)? => Some(
             "an answer's command for this task runs: end your turn, and its end wakes the task"
@@ -817,6 +821,23 @@ fn woken(tx: &Transaction, run: &Run) -> rusqlite::Result<bool> {
         params![run.id, run.task],
         |row| row.get(0),
     )
+}
+
+/// Whether a person's feedback the task kept while it ran waits in a queued prompt.
+fn kept(tx: &Transaction, task: i64) -> rusqlite::Result<bool> {
+    let mut statement = tx.prepare(
+        "SELECT inbox.type, inbox.data FROM inbox JOIN outbox ON outbox.id = inbox.outbox
+         WHERE inbox.task = ?1 AND inbox.outcome = 'kept' AND outbox.state = 'queued'",
+    )?;
+    let mut rows = statement.query([task])?;
+    while let Some(row) = rows.next()? {
+        let kind: String = row.get(0)?;
+        let data: Value = serde_json::from_str(&row.get::<_, String>(1)?).unwrap_or_default();
+        if feedback_on(&kind, &data).is_some() && !settles(&kind, &data) && data["own"] != true {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 fn commanding(tx: &Transaction, task: i64) -> rusqlite::Result<bool> {
@@ -2132,7 +2153,7 @@ fn settle(tx: &Transaction, run: &Run, trace: &Trace) -> rusqlite::Result<Option
             set(tx, run.task, "asleep", None, None)?;
             return Ok(Some(Some(run.tmux.clone())));
         }
-        return enter(
+        let tmux = enter(
             tx,
             run.task,
             &run.workflow,
@@ -2140,8 +2161,11 @@ fn settle(tx: &Transaction, run: &Run, trace: &Trace) -> rusqlite::Result<Option
             Some(run),
             &summary,
             trace.factory,
-        )
-        .map(Some);
+        )?;
+        if target == "stop" {
+            stopped(tx, run, &outcome, &summary)?;
+        }
+        return Ok(Some(tmux));
     }
     // A schedule's tick wakes a task with its ask or wait still open: this run sleeps on them again.
     tx.execute(
@@ -2497,6 +2521,30 @@ fn set(
         params![task, state, step, reason],
     )
     .map(drop)
+}
+
+/// Keeps the first line of the summary of the result that stopped the run's task as the task's
+/// reason, and posts it as a report, so the desk shows why the work ended.
+fn stopped(tx: &Transaction, run: &Run, outcome: &str, summary: &str) -> rusqlite::Result<()> {
+    // A tab would split the reason across `priory tasks` columns.
+    let line = summary
+        .lines()
+        .next()
+        .unwrap_or_default()
+        .replace('\t', " ");
+    tx.execute(
+        "UPDATE tasks SET reason = ?2 WHERE id = ?1 AND state = 'dropped'",
+        params![run.task, line],
+    )?;
+    let key: String = tx.query_row("SELECT key FROM tasks WHERE id = ?1", [run.task], |row| {
+        row.get(0)
+    })?;
+    let line = format!(
+        "task {} ({key}) stopped at {}, {outcome}: {line}",
+        run.task, run.step
+    );
+    crate::post::report(tx, "priory", &line)
+        .map_err(|error| rusqlite::Error::ToSqlConversionFailure(error.into()))
 }
 
 /// Moves `task` to `target`: a step id, `done` or `stop`. `from` is the run whose result moved it,
@@ -3452,6 +3500,32 @@ pub(crate) fn reopenable(
         |row| row.get(0),
     )
     .optional()
+}
+
+/// The report a comment in `message` posts when it lands on the own key of the newest task on that
+/// key, which failed or was dropped before the comment was written, with no active task on the key:
+/// nothing reopens such a task, so a person decides whether to revive it.
+pub(crate) fn unheard(
+    tx: &Transaction,
+    message: &herdr_bus::Message,
+) -> rusqlite::Result<Option<String>> {
+    let data = &message.data;
+    let Some(resource) = feedback_on(&message.kind, data).filter(|_| data["own"] != true) else {
+        return Ok(None);
+    };
+    tx.query_row(
+        "SELECT id, state FROM tasks WHERE key = ?1 AND state IN ('failed', 'dropped')
+         AND julianday(?2) >= julianday(changed)
+         AND id = (SELECT max(id) FROM tasks AS newest WHERE newest.key = ?1)",
+        params![resource, message.time.to_string()],
+        |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)),
+    )
+    .optional()
+    .map(|task| {
+        task.map(|(task, state)| {
+            format!("{resource} has a new comment; its task {task} {state}: priory revive {task}")
+        })
+    })
 }
 
 /// Moves the done `task` back, as its next generation, to its workflow's `reopen` step, else the

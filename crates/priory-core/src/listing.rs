@@ -972,8 +972,8 @@ fn parse_back_early(item: &mut Value) {
 /// The person a desk is for when no one is named.
 pub const ME: &str = "me";
 
-/// The trace records, and the inbox entries that reached a task and the reports, after `person`'s
-/// last visit, newest first, at most 50.
+/// The trace records and inbox entries after `person`'s last visit, newest first, at most 50,
+/// without the events no task took.
 fn since_you_looked(db: &Connection, person: &str) -> rusqlite::Result<Value> {
     rows(
         db,
@@ -991,7 +991,8 @@ fn since_you_looked(db: &Connection, person: &str) -> rusqlite::Result<Value> {
                  ELSE type || coalesce(' ' || subject, '') || coalesce(': ' || outcome, '') END,
                1, seq
              FROM inbox WHERE julianday(time) >= (SELECT at FROM visited)
-               AND (task IS NOT NULL OR type = ?2)
+             -- An event no task took would crowd out the rest in a busy repository.
+             AND outcome IS NOT 'ignored'
              ORDER BY julianday(time) DESC, seq DESC LIMIT 50))
          SELECT time, task, (SELECT key FROM tasks WHERE tasks.id = events.task) AS key, what
          FROM events
@@ -1121,19 +1122,6 @@ fn routed_to(db: &Connection, items: &mut [Value]) -> rusqlite::Result<()> {
     Ok(())
 }
 
-/// How many inbox entries after `person`'s last visit reached no task, and are no report and no
-/// request that created one: the entries Since you looked leaves out.
-fn since_no_task(db: &Connection, person: &str) -> rusqlite::Result<i64> {
-    db.query_row(
-        "SELECT count(*) FROM inbox
-         WHERE julianday(time) >= coalesce((SELECT julianday(seen) FROM visits WHERE person = ?1), 0)
-           AND task IS NULL AND type != ?2
-           AND NOT EXISTS (SELECT 1 FROM tasks WHERE tasks.source = inbox.id)",
-        params![person, post::REPORT],
-        |row| row.get(0),
-    )
-}
-
 /// The pause's line, a stalled queue's banner, the intake's banner, the asleep and snoozed counts, what waits on a person, the queue, then
 /// every worktree under `home` that stays and why. The snoozed items show only with `all`. Then
 /// `person`'s last visit and what happened since.
@@ -1188,7 +1176,6 @@ pub fn desk(
         "intake": post::intake_banner(db)?,
         "counts": {
             "asleep": asleep, "snoozed": snoozed, "unrouted": unrouted, "outsider": outsider,
-            "since_no_task": since_no_task(db, person)?,
         },
         "items": items,
         "next": ranked.first(),

@@ -305,20 +305,13 @@ the time to the second, as the inbox does.
 `since_you_looked`, newest first, at most 50. An event in the same second as the visit shows
 again rather than never. `--person NAME` reads that person's visit. Without a
 visit, `since_you_looked` lists the latest 50 events. An event is a trace record or an inbox entry:
-each step that ended, repair, snooze or label, each message the inbox routed to a task, and each
-report. A message that reached no task, such as another person's check run on a watched repository,
-is left out, so a busy repository or workspace cannot push a task's events off the list.
-`counts.since_no_task` counts those messages, without the request that created a task. Each has
+each step that ended, repair, snooze or label, and each message and report the inbox took. A
+message routed to no task, `ignored`, is left out, so a busy repository does not fill the list
+(the Desk counts those as unrouted events, see [Unrouted events](#unrouted-events)). Each has
 its `time`, its `task` and the task's `key`, and `what`: the record's type, step and outcome, the
 message's type, subject and outcome, or a report's `<source>: <line>`. `priory desk` without
 `--json` lists the events after its items, under a `since you looked` header with the columns
-`time`, `task` and `what`, newest first, then, when messages reached no task, one line:
-
-```text
-60 events reached no task since you looked. See them with `priory inbox`.
-```
-
-It prints no `last_visit` and, with no events, no list.
+`time`, `task` and `what`, newest first. It prints no `last_visit` and, with no events, no list.
 
 Reading the desk records no visit, so a client calls `priory seen` once the person has read the
 events. `POST /api/seen` does the same through the daemon, for `me`, at the time its body names (see

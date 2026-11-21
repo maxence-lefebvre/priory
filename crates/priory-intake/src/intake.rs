@@ -86,6 +86,7 @@ pub fn output() -> Output {
             linear::CREATED,
             linear::STATE_CHANGED,
             linear::BLOCKERS,
+            linear::UPDATED,
             linear::COMMENTED,
             slack::POSTED,
             slack::REPLIED,
@@ -259,7 +260,7 @@ pub fn run(
             failed.entry("github").or_default().extend(errors);
         }
         if let Some(linear) = &mut linear {
-            match linear.fetch() {
+            match linear.fetch(&watching) {
                 Ok(polled) => linear.publish_all(bus, polled)?,
                 Err(error) => failed.entry("linear").or_default().push(error),
             }

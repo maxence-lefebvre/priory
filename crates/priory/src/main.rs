@@ -969,10 +969,7 @@ fn listed(verb: &str, mut args: Vec<String>) -> ExitCode {
                     ],
                     &value["items"],
                 );
-                print_since_you_looked(
-                    &value["since_you_looked"],
-                    value["counts"]["since_no_task"].as_u64().unwrap_or(0),
-                );
+                print_since_you_looked(&value["since_you_looked"]);
             }
             _ => {
                 listing::print(
@@ -998,17 +995,13 @@ fn listed(verb: &str, mut args: Vec<String>) -> ExitCode {
     exit(verb, shown)
 }
 
-/// After a blank line, what happened since the person last looked, newest first, when anything did,
-/// then how many events reached no task.
-fn print_since_you_looked(events: &Value, no_task: u64) {
-    let events = events.as_array().map(Vec::as_slice).unwrap_or_default();
-    if events.is_empty() && no_task == 0 {
+/// After a blank line, what happened since the person last looked, newest first, when anything did.
+fn print_since_you_looked(events: &Value) {
+    let Some(events) = events.as_array().filter(|events| !events.is_empty()) else {
         return;
-    }
+    };
     state::emit("");
-    if !events.is_empty() {
-        state::emit("since you looked\ttask\twhat");
-    }
+    state::emit("since you looked\ttask\twhat");
     for event in events {
         let cell = |field: &str| event[field].as_str().unwrap_or("-");
         state::emit(&format!(
@@ -1016,12 +1009,6 @@ fn print_since_you_looked(events: &Value, no_task: u64) {
             cell("time"),
             cell("key"),
             cell("what")
-        ));
-    }
-    if no_task > 0 {
-        let events = if no_task == 1 { "event" } else { "events" };
-        state::emit(&format!(
-            "{no_task} {events} reached no task since you looked. See them with `priory inbox`."
         ));
     }
 }
@@ -1236,6 +1223,10 @@ fn request(args: Vec<String>) -> ExitCode {
     let Some(factory) = load(&dir) else {
         return ExitCode::FAILURE;
     };
+    if let Err(error) = related(request.relates()) {
+        eprintln!("priory request: {error}");
+        return ExitCode::FAILURE;
+    }
     match request::run(&factory, &request, None) {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
@@ -1252,6 +1243,10 @@ fn add(args: Vec<String>) -> ExitCode {
     let Some(factory) = load(&dir) else {
         return ExitCode::FAILURE;
     };
+    if let Err(error) = related(&add.relates) {
+        eprintln!("priory add: {error}");
+        return ExitCode::FAILURE;
+    }
     match request::add(&factory, &add) {
         Ok(key) => {
             println!("{key}");
@@ -1261,6 +1256,18 @@ fn add(args: Vec<String>) -> ExitCode {
             eprintln!("priory add: {error}");
             ExitCode::FAILURE
         }
+    }
+}
+
+/// Refuses `--relates` to a task the state file does not hold, before anything is published.
+fn related(relates: &[request::Relation]) -> Result<(), String> {
+    if relates.is_empty() {
+        return Ok(());
+    }
+    let db = state::open()?;
+    match relate::missing(&db, relates).map_err(|error| error.to_string())? {
+        Some(missing) => Err(missing),
+        None => Ok(()),
     }
 }
 

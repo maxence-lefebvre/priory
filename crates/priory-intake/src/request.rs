@@ -575,6 +575,11 @@ pub fn pull_requests(text: &str) -> Vec<String> {
 }
 
 impl Request {
+    /// How the new task relates to existing ones.
+    pub fn relates(&self) -> &[Relation] {
+        &self.relates
+    }
+
     pub fn key(&self) -> &str {
         &self.key
     }

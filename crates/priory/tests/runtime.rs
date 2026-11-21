@@ -9391,7 +9391,7 @@ fn a_close_that_does_not_say_whether_it_merged_asks_rather_than_drops() {
     assert_eq!(held_as(&setup, "1")[0], "held");
 }
 
-const REVIVED: &str = "A person revived this task as generation 2 after it was dropped. The asks and waits of its earlier generation are withdrawn. Check the worktree, then continue.\nPlan the change.\nEnd this step by calling the result tool of the priory MCP server with one of these outcomes: hopeless, ready, unsure.\n";
+const REVIVED: &str = "A person revived this task as generation 2 after it was dropped: hopeless it. The asks and waits of its earlier generation are withdrawn. Check the worktree, then continue.\nPlan the change.\nEnd this step by calling the result tool of the priory MCP server with one of these outcomes: hopeless, ready, unsure.\n";
 
 #[test]
 fn a_dropped_task_revives_at_its_step_in_its_session_as_generation_2() {
@@ -9490,6 +9490,36 @@ fn an_event_for_the_wait_of_an_earlier_generation_does_not_wake_the_revived_task
     std::thread::sleep(Duration::from_millis(1500));
     assert_eq!(setup.rows("tasks")[0][4], "asleep");
     assert_eq!(setup.rows("runs").len(), 2);
+}
+
+#[test]
+fn a_result_that_stops_the_task_keeps_its_summary_as_the_reason_and_posts_a_report() {
+    let mut setup = Setup::new("stopped-reason");
+    let failed = json!({ "name": "result", "arguments": { "outcome": "failed",
+        "summary": "The issue holds no acceptance criteria.\nAdd them and revive it." } });
+    setup.calls(&[failed]);
+    setup.publish(&requested(42));
+    setup.start();
+
+    let tasks = setup.until("tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == "dropped")
+    });
+
+    assert_eq!(tasks[0][7], "The issue holds no acceptance criteria.");
+    let inbox = setup.priory(&["inbox", "--json"]);
+    let inbox = String::from_utf8_lossy(&inbox.stdout);
+    assert!(
+        inbox.contains(
+            "task 1 (github:owner/repo#42) stopped at implement, failed: The issue holds no acceptance criteria."
+        ),
+        "{inbox}"
+    );
+    let desk = setup.priory(&["desk"]);
+    let desk = String::from_utf8_lossy(&desk.stdout);
+    assert!(
+        desk.contains("priory: task 1 (github:owner/repo#42) stopped"),
+        "{desk}"
+    );
 }
 
 #[test]
@@ -10175,6 +10205,64 @@ fn issue_commented(github_id: u64) -> Message {
 }
 
 #[test]
+fn a_comment_kept_during_the_turn_refuses_the_result_until_the_agent_read_it() {
+    let mut setup = Setup::new("kept-during-turn");
+    let read = json!({ "name": "result", "arguments": { "outcome": "passed", "summary": "passed it",
+                                                      "feedback": { "u": "trivial" } } });
+    setup.calls(&[result("passed"), read]);
+    setup.hold("hold-call");
+    setup.publish(&requested(42));
+    setup.start();
+    setup.written("fake/submitted");
+    setup.publish(&issue_commented(801));
+    setup.until("inbox", |rows| rows.len() == 2 && rows[1][4] == "kept");
+
+    setup.release("hold-call");
+
+    setup.until("tasks", |rows| rows[0][4] == "done");
+    let (text, error) = reply(&setup.replies()[0]);
+    assert!(error, "{text}");
+    assert_eq!(
+        text,
+        "feedback for this run is queued: end your turn to read it"
+    );
+    assert!(
+        setup.typed()[1].contains("\ngithub.issues.comment owner/repo#42 {"),
+        "{:?}",
+        setup.typed()
+    );
+    let (text, error) = reply(&setup.replies()[1]);
+    assert!(!error, "{text}");
+}
+
+#[test]
+fn a_comment_on_a_dropped_tasks_own_issue_posts_a_report_that_names_its_revive() {
+    let mut setup = Setup::new("dropped-comment");
+    setup.calls(&[result("failed")]);
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == "dropped")
+    });
+    // The comment comes after the task was dropped, to the second.
+    std::thread::sleep(Duration::from_millis(1100));
+
+    setup.publish(&issue_commented(802));
+
+    let inbox = setup.until("inbox", |rows| rows.len() == 4);
+    assert_eq!(inbox[2][4], "ignored", "{inbox:?}");
+    let desk = setup.priory(&["desk"]);
+    let desk = String::from_utf8_lossy(&desk.stdout);
+    assert!(
+        desk.contains(
+            "priory: github:owner/repo#42 has a new comment; its task 1 dropped: priory revive 1"
+        ),
+        "{desk}"
+    );
+    assert_eq!(setup.rows("tasks").len(), 1);
+}
+
+#[test]
 fn a_comment_on_a_done_tasks_issue_reopens_nothing_once_it_unsubscribed_or_the_issue_closed() {
     let closed = Message::new(
         "github.issues.closed",
@@ -10524,6 +10612,104 @@ fn a_reply_posted_before_the_wait_wakes_the_task_and_the_bots_own_reply_never_do
     assert!(!args.contains(SLACK_TOKEN), "{args}");
 }
 
+/// The replies the intake published, oldest first.
+fn replies(setup: &Setup) -> Vec<serde_json::Value> {
+    setup
+        .bus()
+        .messages(&herdr_bus::MessageQuery {
+            output: Some(OUTPUT.into()),
+            limit: 100,
+            ..herdr_bus::MessageQuery::default()
+        })
+        .unwrap()
+        .into_iter()
+        .filter(|stored| stored.message.kind == "slack.thread.replied")
+        .inspect(|stored| conform::conforms(&serde_json::to_value(&stored.message).unwrap()))
+        .map(|stored| stored.message.data)
+        .collect()
+}
+
+#[test]
+fn a_slack_reply_names_its_author_by_display_name_asking_slack_once_per_user() {
+    let setup = asleep_on(
+        "slack-actor",
+        json!({ "type": "slack_reply", "channel": "C0123", "thread_ts": THREAD }),
+    );
+    let stored: herdr_bus::Timestamp = setup.rows("waits")[0][5].parse().unwrap();
+    let later = stored.checked_add(Duration::from_secs(1)).unwrap();
+    let mut messages =
+        vec![json!({ "ts": THREAD, "thread_ts": THREAD, "user": "U0PERSON", "text": "first" })];
+    messages.extend([
+        slack_message(&ts(stored), "U0PERSON"),
+        slack_message(&ts(later), "U0PERSON"),
+    ]);
+    setup.answer_curl(&[
+        (
+            "auth.test",
+            json!({ "ok": true, "user_id": "U0BOT", "bot_id": "B0BOT" }),
+        ),
+        (
+            "users.info",
+            json!({ "ok": true, "user": { "id": "U0PERSON", "name": "ana.l",
+                "profile": { "display_name": "Ana", "real_name": "Ana Lima" } } }),
+        ),
+        (
+            "conversations.replies",
+            json!({ "ok": true, "messages": messages, "has_more": false }),
+        ),
+    ]);
+
+    setup.intake();
+
+    let actors: Vec<serde_json::Value> = replies(&setup)
+        .iter()
+        .map(|reply| reply["actor"].clone())
+        .collect();
+    assert_eq!(actors, [json!("Ana"), json!("Ana")]);
+    let args = fs::read_to_string(setup.dir.join("curl-args")).unwrap();
+    assert_eq!(args.matches("users.info").count(), 1, "{args}");
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 2);
+    assert!(
+        setup.typed()[1].contains(r#""actor":"Ana""#),
+        "{:?}",
+        setup.typed()
+    );
+}
+
+#[test]
+fn a_slack_reply_names_its_author_by_id_without_the_users_read_scope() {
+    let setup = asleep_on(
+        "slack-actor-scope",
+        json!({ "type": "slack_reply", "channel": "C0123", "thread_ts": THREAD }),
+    );
+    let stored: herdr_bus::Timestamp = setup.rows("waits")[0][5].parse().unwrap();
+    let mut messages =
+        vec![json!({ "ts": THREAD, "thread_ts": THREAD, "user": "U0PERSON", "text": "first" })];
+    messages.push(slack_message(&ts(stored), "U0PERSON"));
+    setup.answer_curl(&[
+        (
+            "auth.test",
+            json!({ "ok": true, "user_id": "U0BOT", "bot_id": "B0BOT" }),
+        ),
+        (
+            "users.info",
+            json!({ "ok": false, "error": "missing_scope", "needed": "users:read" }),
+        ),
+        (
+            "conversations.replies",
+            json!({ "ok": true, "messages": messages, "has_more": false }),
+        ),
+    ]);
+
+    setup.intake();
+
+    let actors: Vec<serde_json::Value> = replies(&setup)
+        .iter()
+        .map(|reply| reply["actor"].clone())
+        .collect();
+    assert_eq!(actors, [json!("U0PERSON")]);
+}
+
 #[test]
 fn a_reply_in_the_thread_of_a_slack_tasks_key_wakes_the_task_with_no_wait_on_it() {
     let mut setup = Setup::new("slack-key-thread");
@@ -10644,6 +10830,26 @@ fn a_thread_the_intake_cannot_read_fails_the_poll_and_reaches_the_desk() {
         ),
         "{desk:?}"
     );
+}
+
+#[test]
+fn the_intake_still_polls_a_dropped_slack_tasks_own_thread() {
+    let mut setup = Setup::new("slack-key-dropped");
+    setup.calls(&[result("failed")]);
+    let key = format!("slack:C0123:{THREAD}");
+    let mut request = requested(42);
+    request.data["key"] = json!(key);
+    setup.publish(&request.subject(&key));
+    setup.start();
+    setup.until("tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == "dropped")
+    });
+    setup.answer_slack(&[]);
+
+    setup.intake();
+
+    let args = fs::read_to_string(setup.dir.join("curl-args")).unwrap_or_default();
+    assert!(args.contains("conversations.replies"), "{args}");
 }
 
 #[test]
@@ -10833,6 +11039,88 @@ fn a_linear_wait_makes_an_intake_without_linear_triggers_poll_linear_for_its_iss
         "{typed:?}"
     );
     assert!(!typed[1].contains("elsewhere"), "{typed:?}");
+}
+
+/// Linear issue `issue` as the issues stream reads it, with one history entry `change` made now.
+fn linear_edited(issue: &str, change: serde_json::Value) -> serde_json::Value {
+    let now = herdr_bus::Timestamp::now().to_string();
+    let mut entry = json!({ "id": format!("history-{issue}"), "createdAt": now, "actor": { "displayName": "Ana" } });
+    entry
+        .as_object_mut()
+        .unwrap()
+        .extend(change.as_object().unwrap().clone());
+    json!({
+        "id": format!("issue-{issue}"), "identifier": issue, "title": "Export fails on an empty project",
+        "description": format!("{}\n\nSteps follow.", "The export crashes. ".repeat(20)),
+        "url": format!("https://linear.app/acme/issue/{issue}"),
+        "createdAt": "2026-11-17T09:00:00.000Z", "updatedAt": now,
+        "team": { "key": "ENG" }, "project": null, "state": { "name": "In Progress" },
+        "labels": { "nodes": [] }, "creator": { "displayName": "max" },
+        "history": { "nodes": [entry] },
+        "inverseRelations": { "nodes": [], "pageInfo": { "hasNextPage": false } },
+        "relations": { "nodes": [] }
+    })
+}
+
+#[test]
+fn an_edit_of_a_linear_tasks_issue_wakes_it_with_the_changed_fields() {
+    let mut setup = Setup::new("linear-edited");
+    setup.calls(&[wait(json!({ "type": "time", "until": "1 hour" }))]);
+    let mut request = requested(42);
+    request.data["key"] = json!("linear:ENG-7");
+    setup.publish(&request.subject("linear:ENG-7"));
+    setup.start();
+    setup.until("runs", |rows| {
+        rows.first().is_some_and(|row| row[7] == "asleep")
+    });
+    let edit = json!({
+        "fromTitle": "Export fails", "toTitle": "Export fails on an empty project",
+        "updatedDescription": true, "fromPriority": 3, "toPriority": 1
+    });
+    setup.answer_curl(&[
+        (
+            "query Issues",
+            linear_page(
+                "issues",
+                json!([
+                    linear_edited("ENG-8", edit.clone()),
+                    linear_edited("ENG-7", edit)
+                ]),
+            ),
+        ),
+        ("query Comments", linear_page("comments", json!([]))),
+    ]);
+
+    setup.intake();
+
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 2);
+    let typed = setup.typed();
+    assert!(
+        typed[1].starts_with("linear.issue.updated ENG-7 {")
+            && typed[1].contains(r#""changed":["title","description","priority"]"#)
+            && typed[1].contains(r#""title":"Export fails on an empty project""#)
+            && typed[1].contains(r#""description":"The export crashes. "#)
+            && !typed[1].contains("Steps follow."),
+        "{typed:?}"
+    );
+    let updated: Vec<String> = setup
+        .bus()
+        .messages(&herdr_bus::MessageQuery {
+            output: Some(OUTPUT.into()),
+            limit: 100,
+            ..herdr_bus::MessageQuery::default()
+        })
+        .unwrap()
+        .into_iter()
+        .filter(|stored| stored.message.kind == "linear.issue.updated")
+        .inspect(|stored| conform::conforms(&serde_json::to_value(&stored.message).unwrap()))
+        .map(|stored| stored.message.subject.unwrap_or_default())
+        .collect();
+    assert_eq!(
+        updated,
+        ["ENG-7"],
+        "an issue no task watches publishes none"
+    );
 }
 
 #[test]

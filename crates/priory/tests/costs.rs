@@ -183,11 +183,13 @@ fn costs_compare_this_week_from_monday_in_the_local_timezone_with_last_week() {
     assert_eq!(
         [&costs["current"], &costs["previous"]],
         [
-            &json!({ "since": "2026-11-15T23:00:00.000Z", "until": "2026-11-17T11:00:00.000Z",
+            &json!({ "since": "2026-11-15T23:00:00.000Z", "since_day": "2026-11-16",
+                     "until": "2026-11-17T11:00:00.000Z",
                      "cost_usd": 2.0, "tokens": { "input": 1_000_000, "output": 500_000,
                      "cache_read": 0, "cache_write": 0 }, "unpriced": [], "unknown": 0,
                      "merges": 0 }),
-            &json!({ "since": "2026-11-08T23:00:00.000Z", "until": "2026-11-15T23:00:00.000Z",
+            &json!({ "since": "2026-11-08T23:00:00.000Z", "since_day": "2026-11-09",
+                     "until": "2026-11-15T23:00:00.000Z",
                      "cost_usd": 5.0, "tokens": { "input": 3_000_000, "output": 1_000_000,
                      "cache_read": 0, "cache_write": 0 }, "unpriced": [], "unknown": 0,
                      "merges": 0 }),
@@ -226,6 +228,43 @@ fn costs_compare_this_week_from_monday_in_the_local_timezone_with_last_week() {
         "{text}"
     );
     assert!(text.contains("2026-11-15\t$3.000000\t-\t0\n"), "{text}");
+}
+
+#[test]
+fn since_takes_only_an_rfc_3339_instant_or_a_duration() {
+    let setup = Setup::new("since-forms");
+    let factory = setup.factory();
+
+    for since in ["12:00", "2026-11-16", "now", "2461000", "-7 days", "7"] {
+        let output = setup.priory(&["costs", &factory, "--since", since]);
+        assert!(!output.status.success(), "{since} was taken");
+        assert_eq!(
+            String::from_utf8(output.stderr).unwrap(),
+            format!(
+                "priory costs: --since {since:?} is neither an RFC 3339 instant nor a duration such as 7 days\n"
+            )
+        );
+    }
+    for (since, start) in [
+        ("3 days", "2026-11-14T11:00:00.000Z"),
+        ("36h", "2026-11-15T23:00:00.000Z"),
+        ("2026-11-16T00:00:00+01:00", "2026-11-15T23:00:00.000Z"),
+    ] {
+        let costs = setup.costs_json(&["--since", since]);
+        assert_eq!(costs["current"]["since"], start, "{since}");
+    }
+}
+
+#[test]
+fn a_window_names_the_local_date_it_starts_on() {
+    let setup = Setup::new("since-day");
+
+    let costs = setup.costs_json(&[]);
+
+    // Monday 00:00 in Paris is Sunday 23:00 UTC.
+    assert_eq!(costs["current"]["since"], "2026-11-15T23:00:00.000Z");
+    assert_eq!(costs["current"]["since_day"], "2026-11-16");
+    assert_eq!(costs["previous"]["since_day"], "2026-11-09");
 }
 
 #[test]
