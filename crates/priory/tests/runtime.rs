@@ -19053,3 +19053,22 @@ fn an_entrys_issue_closed_outside_the_batch_before_it_starts_asks_to_drop_or_kee
     let shown = batch_json(&setup, &["1"]);
     assert!(shown["entries"][1]["after"][0]["met"].is_null(), "{shown}");
 }
+
+#[test]
+fn a_task_that_only_follows_a_batch_issue_does_not_take_it_from_the_start() {
+    let (setup, ask) = at_the_go(
+        "batch-followed",
+        json!({ "title": "t", "entries": three_entries() }),
+    );
+    let mut other = requested(42);
+    other.data["hold"] = json!({ "reason": "later" });
+    setup.publish(&other);
+    setup.until("tasks", |rows| rows.len() == 2);
+    person(&setup, "subscribe", &["1", "linear:ENG-40"]);
+    person(&setup, "subscribe", &["2", "linear:ENG-41"]);
+
+    person(&setup, "answer", &[&ask, "go", "--revision", "1"]);
+
+    setup.until("tasks", |rows| rows.len() == 5);
+    assert_eq!(batch_json(&setup, &["1"])["state"], "going");
+}

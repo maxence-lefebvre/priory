@@ -67,7 +67,7 @@ writes it. The daemon refuses the result, and the agent reads why:
 | `entry <e> waits on <f>, which comes after it; put <f> first` | An edge to a later entry, since the entries' order is their start order |
 | `` moment `<m>` is not merged or waiting `` | An unknown moment |
 | `` entry <e> waits on <other> at `waiting`, which Priory does not build yet; use merged `` | A stacked entry, not built yet |
-| `<issue> already has task <id> (<state>)` | An active task holds the issue. Leave it out of the plan; never close it |
+| `<issue> already has task <id> (<state>)` | An active task other than the planning task is keyed on the issue. A task that only subscribes to it or waits on it does not count. Leave it out of the plan; never close it |
 | `<issue> is not one of the batch's issues` | An issue the person did not hand over |
 | `issue <issue> is both an entry and a close` | The plan both works and closes an issue |
 | `entry id <e> is used twice` | Duplicate entry ids |
