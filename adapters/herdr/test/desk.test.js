@@ -107,6 +107,7 @@ test("a to-do's due time reads in the panel's local time with a relative hint", 
     const rows = model.sections("needs").find(({ title }) => title === "To-dos").rows;
     assert.deepEqual(rows.map((row) => row.text), ["Renew the TLS cert, due Dec 1, 09:00 (in 11 days)"]);
     assert.equal(dueText("Fix it, due 2026-11-21T14:00:00Z", now), "Fix it, due tomorrow 09:00");
+    assert.equal(dueText("Fix it, due 2026-13-20T20:00:00Z", now), "Fix it, due 2026-13-20T20:00:00Z");
   } finally {
     process.env.TZ = "UTC";
   }

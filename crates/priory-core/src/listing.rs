@@ -810,7 +810,7 @@ pub(crate) fn next(db: &Connection) -> rusqlite::Result<Option<Value>> {
 /// `IRREVERSIBLE`).
 fn acts(db: &Connection, items: &mut [Value]) -> rusqlite::Result<()> {
     let mut asked = db.prepare(
-        "SELECT asks.command, (SELECT gate.lets FROM irreversible_asks AS gate
+        "SELECT asks.command, (SELECT nullif(gate.lets, '') FROM irreversible_asks AS gate
            WHERE gate.workflow = tasks.workflow AND gate.step = asks.step AND asks.kind = 'step')
          FROM asks LEFT JOIN tasks ON tasks.id = asks.task WHERE asks.id = ?1",
     )?;

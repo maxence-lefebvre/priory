@@ -24,8 +24,8 @@ const localDay = (/** @type {number} */ at) => Date.UTC(new Date(at).getFullYear
  */
 export function dueText(what, now) {
   const found = DUE.exec(what);
-  if (!found) return what;
-  const at = Date.parse(found[1]);
+  const at = found ? Date.parse(found[1]) : NaN;
+  if (!found || Number.isNaN(at)) return what;
   const clock = new Date(at).toLocaleTimeString("en", { hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
   const days = localDay(at) - localDay(now);
   const near = { "-1": "yesterday", 0: "today", 1: "tomorrow" }[/** @type {"0"} */ (String(days))];

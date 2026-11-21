@@ -80,4 +80,5 @@ test("a to-do's due time reads in local time with a relative hint, and other tex
   assert.equal(due("2026-11-17T14:00:00Z"), "Renew the TLS cert, due Nov 17, 09:00 (3 days ago)");
   assert.equal(dueText("Renew the cert", now), "Renew the cert");
   assert.equal(dueText("Fix it, due soon", now), "Fix it, due soon");
+  assert.equal(dueText("Fix it, due 2026-13-20T20:00:00Z", now), "Fix it, due 2026-13-20T20:00:00Z");
 });

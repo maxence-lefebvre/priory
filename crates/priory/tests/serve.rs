@@ -823,6 +823,23 @@ fn a_command_ask_says_what_it_runs_and_where() {
 }
 
 #[test]
+fn an_approval_recorded_before_the_step_was_kept_keeps_the_general_why() {
+    let setup = Setup::new("desk-why-upgraded", "name = \"demo\"\n");
+    setup.seed_ranks();
+    let db = rusqlite::Connection::open(setup.dir.join("priory.db")).unwrap();
+    db.execute("UPDATE irreversible_asks SET lets = ''", [])
+        .unwrap();
+
+    let desk = json_of(&setup, "desk");
+
+    assert_eq!(desk["ranked"][2]["id"], 1);
+    assert_eq!(
+        desk["ranked"][2]["why"],
+        "its answer lets an irreversible step run"
+    );
+}
+
+#[test]
 fn an_ask_that_reviews_a_pull_request_ranks_with_the_irreversible_ones() {
     let setup = Setup::new("desk-rank-review", "name = \"demo\"\n");
     setup.seed_ranks();
