@@ -268,6 +268,30 @@ pub fn kept_head(home: &Path, worktree: &Path, branch: &str) -> Option<String> {
     head(&home.join("repos").join(repo), branch)
 }
 
+/// The files `branch` changes against the default branch, read as `kept_head` reads, or `None`
+/// when git cannot say.
+pub fn changed_files(home: &Path, worktree: &Path, branch: &str) -> Option<Vec<String>> {
+    let dir = if worktree.exists() {
+        worktree.to_path_buf()
+    } else {
+        let repo = worktree
+            .parent()?
+            .strip_prefix(home.join("worktrees"))
+            .ok()?;
+        home.join("repos").join(repo)
+    };
+    let range = format!("origin/HEAD...refs/heads/{branch}");
+    run(git(&dir).args(["diff", "--name-only", "-z", &range]))
+        .ok()
+        .map(|names| {
+            names
+                .split('\0')
+                .filter(|name| !name.is_empty())
+                .map(str::to_owned)
+                .collect()
+        })
+}
+
 /// The commit `branch` points to in the repository of `worktree`.
 pub fn head(worktree: &Path, branch: &str) -> Option<String> {
     let commit = format!("refs/heads/{branch}^{{commit}}");

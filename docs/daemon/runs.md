@@ -155,7 +155,28 @@ task under `conditions`, with `met` and `met_as` once it is met.
 Events for a held task are kept for its first run, as for a queued one, and a schedule's tick for it
 is coalesced. `priory cancel` drops a held task and ends its hold.
 
+### Overlapping files
+
+When two active tasks change the same files, they conflict at merge. So the daemon holds the later
+task, the one with the higher id, until the earlier one merges.
+
+At the end of each run, the daemon records the files the task's branch changes against the
+repository's default branch (`git diff origin/HEAD...<branch>`). On each tick, it looks at each
+`queued` or `ready` task. If an earlier task that is not failed or dropped changed any of the same
+files, the task gets an ordinary hold with the reason `overlaps task N on <files>`. The hold waits
+for the earlier task's open pull request to merge, or, when it has none yet, for that task to end.
+A pull request closed without a merge releases it. `priory release` lets the task go as for any
+hold, and the daemon does not hold it for that earlier task again.
+
+Set `[queue] overlap = false` in `factory.toml` to turn this off (see
+[factory.md](../reference/factory.md#queue)).
+
 Known limits:
+
+- Only a task between runs is held: a running task has a process, which a hold would have to kill.
+  A task that overlaps while running is held at its next queued step, if it has one.
+- The files come from the end of a run. Later commits in a running task show at its next run's end.
+
 
 - A pull request closed, reopened and merged later is judged on its newest close only. With
   `drop` or `ask`, the first close already acted.

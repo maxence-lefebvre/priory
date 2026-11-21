@@ -28,6 +28,14 @@ Schema: [`config/factory.json`](../schemas/config/factory.json).
 
 A duration is a whole number followed by `s`, `m` or `h`, such as `"90s"`, `"15m"` or `"2h"`.
 
+## `[queue]`
+
+See [runs.md](../daemon/runs.md#overlapping-files) for how the overlap hold works.
+
+| Key | Type | Required | Default | Meaning | Example |
+| --- | ---- | -------- | ------- | ------- | ------- |
+| `overlap` | boolean | no | `true` | Whether a task waits for an earlier active task whose branch changes the same files | `false` |
+
 ## `[sweep]`
 
 See [sweep.md](../daemon/sweep.md) for what the sweep removes and when the sweeper starts.
@@ -209,6 +217,9 @@ bands = ["blocker", "now", "today", "later"]   # the default bands, highest firs
 handler = "reviewer"                           # reads a stalled run's screen; claude-code only
 stalled = "10m"                                # no hook event and no pane change for this long
 command_timeout = "5m"                         # the limit on one git, gh or tmux command
+
+[queue]
+overlap = true                                 # hold a task whose files overlap an earlier task's
 
 [sweep]
 every = "10m"                                  # the built-in worktree sweep

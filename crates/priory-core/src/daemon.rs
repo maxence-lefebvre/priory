@@ -7,8 +7,8 @@ use crate::state::{self, Admission, NewRun, Signal};
 use crate::tools::{self, Act, Answer, Call, Dismiss, Done, Repair};
 use crate::trace::Trace;
 use crate::{
-    deliver, embed, handler, hold, notify, progress, push, search, sections, stall, subscribe,
-    summary, sweep,
+    deliver, embed, handler, hold, notify, overlap, progress, push, search, sections, stall,
+    subscribe, summary, sweep,
 };
 use priory_factory::factory::{self, Factory, Harness, PermissionMode, Session};
 use priory_intake::intake::OUTPUT;
@@ -229,6 +229,7 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
         }
         start_answers(&mut db, &trace, &home, &mut commands)?;
         commands = run_commands(&mut db, &trace, &home, commands)?;
+        overlap::tick(&mut db, factory, &home)?;
         tend(&mut db, &trace, &share, &home, &scope, &mut commands)?;
         handle_stalls(&mut db, &trace, &home, &mut stalls)?;
         let counter = counting.get(&home);
