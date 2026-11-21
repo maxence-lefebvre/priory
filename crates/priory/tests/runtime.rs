@@ -11436,6 +11436,49 @@ fn a_rate_limited_poll_starts_with_a_different_thread_each_minute() {
     );
 }
 
+#[test]
+fn a_rate_limited_poll_reads_the_thread_of_an_open_wait_before_a_done_tasks_thread() {
+    let mut setup = Setup::new("slack-wait-first");
+    let waited = "1763500009.000100";
+    setup.calls(&[
+        result("passed"),
+        wait(json!({ "type": "slack_reply", "channel": "C0123", "thread_ts": waited })),
+    ]);
+    let key = format!("slack:C0123:{THREAD}");
+    let mut request = requested(42);
+    request.data["key"] = json!(key);
+    setup.publish(&request.subject(&key));
+    setup.start();
+    setup.until("tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == "done")
+    });
+    setup.publish(&requested(43));
+    setup.until("runs", |rows| rows.len() == 2 && rows[1][7] == "asleep");
+    let bin = setup.dir.join("bin");
+    fs::create_dir_all(&bin).unwrap();
+    let auth = json!({ "ok": true, "user_id": "U0BOT", "bot_id": "B0BOT" });
+    // One read a poll: each later call is refused, and every call's thread is logged.
+    let script = format!(
+        "#!/bin/sh\ncat > /dev/null\ncase \"$*\" in\n  *auth.test*) echo '{auth}' ;;\n  *conversations.replies*)\n    \
+         thread=$(echo \"$*\" | sed 's/.*ts=\\([0-9.]*\\).*oldest.*/\\1/')\n    \
+         echo \"$thread\" >> '{dir}/threads'\n    \
+         if [ -e '{dir}/called' ]; then echo '{{\"ok\":false,\"error\":\"ratelimited\"}}'; exit 0; fi\n    \
+         touch '{dir}/called'\n    \
+         echo '{{\"ok\":true,\"has_more\":false,\"messages\":[]}}' ;;\nesac\n",
+        dir = setup.dir.display(),
+    );
+    fs::write(bin.join("curl"), script).unwrap();
+    fs::set_permissions(bin.join("curl"), fs::Permissions::from_mode(0o755)).unwrap();
+
+    for now in ["2026-11-19T10:00:00Z", "2026-11-19T10:01:00Z"] {
+        let _ = fs::remove_file(setup.dir.join("called"));
+        let _ = fs::remove_file(setup.dir.join("threads"));
+        setup.intake_with(&[("PRIORY_NOW", now)]);
+        let threads = fs::read_to_string(setup.dir.join("threads")).unwrap();
+        assert_eq!(threads.lines().next(), Some(waited), "{now}: {threads}");
+    }
+}
+
 /// A Linear GraphQL answer holding `nodes` at `field`.
 fn linear_page(field: &str, nodes: serde_json::Value) -> serde_json::Value {
     json!({ "data": { field: { "nodes": nodes, "pageInfo": { "hasNextPage": false, "endCursor": null } } } })

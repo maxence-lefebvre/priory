@@ -258,11 +258,15 @@ fn watched() -> Result<Vec<intake::Watch>, String> {
     let watched = state::watched(&db).map_err(|error| format!("open waits: {error}"))?;
     watched
         .into_iter()
-        .map(|(resource, since)| {
+        .map(|(resource, since, rank)| {
             let since = since
                 .parse()
                 .map_err(|error| format!("wait on {resource} since `{since}`: {error}"))?;
-            Ok(intake::Watch { resource, since })
+            Ok(intake::Watch {
+                resource,
+                since,
+                rank,
+            })
         })
         .collect()
 }
