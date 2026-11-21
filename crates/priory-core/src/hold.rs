@@ -265,23 +265,31 @@ pub(crate) fn due(tx: &Transaction) -> rusqlite::Result<()> {
     Ok(())
 }
 
-/// Judges every open `merged` condition, a batch entry's edge on another task: it is met once
-/// every pull request of the other task's stack merged, once that task entered a step that waits
-/// for its merge, or once it is done owning no pull request. When it can no longer be met, as the
-/// other task failed, was dropped or saw a pull request close unmerged, it asks a person.
+/// Judges every open `merged` or `waiting` condition, a batch entry's edge on another task.
+/// `merged` is met once every pull request of the other task's stack merged, once that task
+/// entered a step that waits for its merge, or once it is done owning no pull request. `waiting`
+/// is met by those too, and once the other task waits on its open pull request. When a condition
+/// can no longer be met, as the other task failed, was dropped or saw a pull request close
+/// unmerged, it asks a person.
 pub(crate) fn merged(tx: &Transaction, factory: &Factory) -> rusqlite::Result<()> {
-    let open: Vec<(i64, i64, i64, Option<i64>)> = tx
+    let open: Vec<(i64, i64, String, i64, Option<i64>)> = tx
         .prepare(
-            "SELECT holds.id, holds.task, holds.target, holds.ask
+            "SELECT holds.id, holds.task, holds.kind, holds.target, holds.ask
              FROM holds JOIN tasks ON tasks.id = holds.task
-             WHERE holds.kind = 'merged' AND holds.released IS NULL AND holds.met IS NULL
-             AND tasks.state = 'held' ORDER BY holds.id",
+             WHERE holds.kind IN ('merged', 'waiting') AND holds.released IS NULL
+             AND holds.met IS NULL AND tasks.state = 'held' ORDER BY holds.id",
         )?
         .query_map([], |row| {
-            Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+            Ok((
+                row.get(0)?,
+                row.get(1)?,
+                row.get(2)?,
+                row.get(3)?,
+                row.get(4)?,
+            ))
         })?
         .collect::<rusqlite::Result<_>>()?;
-    for (id, task, other, ask) in open {
+    for (id, task, kind, other, ask) in open {
         let (key, state, workflow, step, batch): (String, String, String, String, i64) = tx
             .query_row(
                 "SELECT key, state, workflow, step, coalesce(batch, 0) FROM tasks WHERE id = ?1",
@@ -298,6 +306,10 @@ pub(crate) fn merged(tx: &Transaction, factory: &Factory) -> rusqlite::Result<()
             )?;
         if let Some(how) = merged_as(tx, factory, other, &state, &workflow, &step)? {
             meet(tx, id, &how)?;
+            continue;
+        }
+        if kind == "waiting" && waits_on_pull_request(tx, other, &state)? {
+            meet(tx, id, &format!("task {other} waits on its pull request"))?;
             continue;
         }
         let lost = match state.as_str() {
@@ -330,6 +342,30 @@ fn ask_person(tx: &Transaction, id: i64, task: i64, question: &str) -> rusqlite:
         params![id, tx.last_insert_rowid()],
     )
     .map(drop)
+}
+
+/// Whether task `task`, in `state`, finished its work and waits on its open pull request: done, or
+/// asleep on the gates that `done` or a step after the merge stores.
+pub(crate) fn waits_on_pull_request(
+    db: &Connection,
+    task: i64,
+    state: &str,
+) -> rusqlite::Result<bool> {
+    let open = crate::stack::of(db, task)?
+        .iter()
+        .any(|pull| pull.state == "open");
+    if !open {
+        return Ok(false);
+    }
+    if state == "done" {
+        return Ok(true);
+    }
+    db.query_row(
+        "SELECT ?2 = 'asleep' AND EXISTS (SELECT 1 FROM waits WHERE task = ?1 AND daemon
+           AND fired IS NULL AND withdrawn IS NULL)",
+        params![task, state],
+        |row| row.get(0),
+    )
 }
 
 /// How task `other`, in `state` at `step` of `workflow`, has its code merged, if it does.

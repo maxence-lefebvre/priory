@@ -1734,6 +1734,63 @@ fn merged(
     Ok((true, None))
 }
 
+/// Tells each task stacked on the merged pull request in `close`, the event `seq`, to rebase its
+/// open pull requests onto the merged one's base. A stacked task expects that retarget, so no
+/// person is asked: the line fires its gate, or reaches it while it runs.
+pub(crate) fn restack_stacked(tx: &Transaction, seq: i64, close: &Value) -> rusqlite::Result<()> {
+    let (Some(repo), Some(number), Some(branch)) = (
+        close["repo"].as_str(),
+        close["pull_request"].as_u64(),
+        close["head_branch"].as_str(),
+    ) else {
+        return Ok(());
+    };
+    let resource = route::pull_request(repo, number);
+    let stacked: Vec<(i64, String)> = tx
+        .prepare(
+            "SELECT tasks.id, tasks.state FROM tasks JOIN pull_requests AS base
+               ON base.task = tasks.base_task AND base.resource = ?1
+             WHERE tasks.state NOT IN ('done', 'failed', 'dropped') ORDER BY tasks.id",
+        )?
+        .query_map([&resource], |row| Ok((row.get(0)?, row.get(1)?)))?
+        .collect::<rusqlite::Result<_>>()?;
+    let onto = close["base_branch"].as_str().unwrap_or("its base");
+    for (task, state) in stacked {
+        let stack = crate::stack::of(tx, task)?;
+        if stack.first().is_none_or(|bottom| bottom.base != branch) {
+            continue;
+        }
+        let open: Vec<String> = stack
+            .iter()
+            .filter(|pull| pull.state == "open")
+            .map(|pull| format!("#{}", pull.number()))
+            .collect();
+        if open.is_empty() {
+            continue;
+        }
+        let text = format!("#{number} merged; rebase {} onto {onto}", listed(&open));
+        let gate: Option<i64> = tx
+            .query_row(
+                "SELECT id FROM waits WHERE task = ?1 AND daemon AND fired IS NULL
+                 AND withdrawn IS NULL ORDER BY id LIMIT 1",
+                [task],
+                |row| row.get(0),
+            )
+            .optional()?;
+        match gate {
+            Some(gate) => fire(tx, gate, task, &text, Some(seq))?,
+            None if state == "running" => {
+                tx.execute(
+                    "INSERT INTO outbox (task, text) VALUES (?1, ?2)",
+                    params![task, text],
+                )?;
+            }
+            None => {}
+        }
+    }
+    Ok(())
+}
+
 /// Fires the daemon's checks wait `wait` on the event `seq` and marks its task done, or enters
 /// the step the gate waited to enter. A run a person's `say` started ends when the task is done or
 /// that step does.

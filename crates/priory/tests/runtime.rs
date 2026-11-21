@@ -17813,14 +17813,19 @@ fn a_plan_with_an_unknown_moment_is_refused() {
 }
 
 #[test]
-fn a_plan_with_a_waiting_moment_is_refused_until_stacked_entries_exist() {
+fn a_plan_with_two_waiting_predecessors_for_one_entry_is_refused() {
     let mut entries = three_entries();
-    entries[1]["after"][0]["moment"] = json!("waiting");
+    entries[1] = entry("e2", "ENG-41", &[]);
+    entries[2] = entry("e3", "ENG-43", &["e1", "e2"]);
+    entries[2]["after"][0]["moment"] = json!("waiting");
+    entries[2]["after"][1]["moment"] = json!("waiting");
     assert_eq!(
-        plan_refused("batch-waiting", json!({ "title": "t", "entries": entries })),
+        plan_refused(
+            "batch-two-waiting",
+            json!({ "title": "t", "entries": entries })
+        ),
         (
-            "entry e2 waits on e1 at `waiting`, which Priory does not build yet; use merged"
-                .to_owned(),
+            "entry e3 has 2 waiting predecessors; give it one stacking parent".to_owned(),
             true
         )
     );
@@ -18415,10 +18420,6 @@ fn an_edit_is_refused_and_changes_nothing_when_it_does_not_hold() {
             "entry e2 starts after e1; move e1 before e2",
         ),
         (
-            &["1", "--expected", "1", "--moment", "e2", "e1", "waiting"],
-            "entry e2 waits on e1 at `waiting`, which Priory does not build yet; use merged",
-        ),
-        (
             &["1", "--expected", "1", "--moment", "e2", "e3", "merged"],
             "entry e2 does not wait on e3",
         ),
@@ -18979,4 +18980,100 @@ fn a_failed_part_revives_while_the_next_part_waits_on_it() {
     setup.until("tasks", |rows| {
         rows.iter().any(|row| row[0] == "3" && row[4] != "failed")
     });
+}
+
+/// A batch over `ENG-40` and `ENG-41` on `OPEN_PR`, `ENG-41` stacked on `ENG-40` at `waiting`, after
+/// task 2 committed `a.txt`, opened pull request 7 and went to sleep on its checks.
+fn stacked_entry(name: &str) -> Setup {
+    let mut setup = batched_with(name, OPEN_PR);
+    let mut entries = [entry("e1", "ENG-40", &[]), entry("e2", "ENG-41", &["e1"])];
+    entries[1]["after"][0]["moment"] = json!("waiting");
+    setup.calls(&[planned(json!({ "title": "t", "entries": entries }))]);
+    batch_add(&setup, &["ENG-40", "ENG-41"]);
+    setup.start();
+    let go = setup.until("asks", |rows| rows.len() == 1);
+    setup.calls(&[passed_with_evidence(), passed_with_evidence()]);
+    person(&setup, "answer", &[&go[0][0], "go", "--revision", "1"]);
+    let asks = setup.until("asks", |rows| rows.iter().any(|row| row[1] == "2"));
+    setup.gone("priory-2");
+    setup.commit(2, "a.txt");
+    assert_eq!(entry_state(&setup, "3"), "held");
+    person(&setup, "answer", &[&asks[0][0], "open", "--revision", "1"]);
+    setup.until("tasks", |rows| {
+        rows.iter().any(|row| row[0] == "2" && row[4] == "asleep")
+    });
+    setup
+}
+
+#[test]
+fn a_waiting_entry_starts_from_its_predecessors_branch_once_that_one_sleeps_on_its_pull_request() {
+    let setup = stacked_entry("batch-waiting-start");
+
+    setup.until("asks", |rows| rows.iter().any(|row| row[1] == "3"));
+
+    let worktree = setup.dir.join("home/worktrees/owner/repo/3");
+    assert!(
+        worktree.join("a.txt").exists(),
+        "task 3 did not start from priory/2"
+    );
+    let shown = batch_json(&setup, &["1"]);
+    assert_eq!(shown["entries"][1]["after"][0]["moment"], "waiting");
+    assert!(
+        shown["entries"][1]["after"][0]["met"].is_string(),
+        "{shown}"
+    );
+}
+
+/// `stacked_entry`, after task 3 committed `b.txt` and opened pull request 8.
+fn stacked_entry_opened(name: &str) -> Setup {
+    let setup = stacked_entry(name);
+    let asks = setup.until("asks", |rows| rows.iter().any(|row| row[1] == "3"));
+    setup.gone("priory-3");
+    setup.commit(3, "b.txt");
+    person(&setup, "answer", &[&asks[0][0], "open", "--revision", "1"]);
+    setup.until("tasks", |rows| {
+        rows.iter().any(|row| row[0] == "3" && row[4] == "asleep")
+    });
+    setup
+}
+
+#[test]
+fn a_waiting_entry_bases_its_pull_request_on_its_predecessors_branch() {
+    let setup = stacked_entry_opened("batch-waiting-base");
+
+    let created: Vec<[String; 2]> = setup
+        .gh()
+        .into_iter()
+        .filter(|call| call[..2] == ["pr", "create"])
+        .map(|call| [call[5].clone(), call[7].clone()])
+        .collect();
+    assert_eq!(
+        created,
+        [["main", "priory/2"], ["priory/2", "priory/3"]].map(|call| call.map(str::to_owned))
+    );
+    assert_eq!(batch_json(&setup, &["1"])["entries"][1]["stage"], "waiting");
+}
+
+#[test]
+fn the_predecessors_pull_request_merging_wakes_the_waiting_entry_to_rebase_onto_its_base() {
+    let setup = stacked_entry_opened("batch-waiting-restack");
+
+    setup.publish(&on_pull_2(
+        "github.pull_request.closed",
+        json!({ "merged": true, "github_id": 400 }),
+    ));
+
+    let outbox = setup.until("outbox", |rows| {
+        rows.iter()
+            .any(|row| row[1] == "3" && row[4].contains("merged; rebase"))
+    });
+    let woke = outbox
+        .iter()
+        .find(|row| row[1] == "3" && row[4].contains("merged; rebase"))
+        .unwrap();
+    assert!(
+        woke[4].starts_with("#7 merged; rebase #8 onto main"),
+        "{woke:?}"
+    );
+    assert!(setup.rows("asks").is_empty());
 }
