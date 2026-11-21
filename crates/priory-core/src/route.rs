@@ -41,6 +41,8 @@ pub(crate) struct NewTask {
     pub intervention: Option<priory_factory::factory::Intervention>,
     #[serde(skip)]
     pub lead: Option<String>,
+    #[serde(default)]
+    pub batch: Option<priory_intake::events::BatchRequest>,
 }
 
 /// The resources a message names, which a task may own: a task request's key, a CLI request's

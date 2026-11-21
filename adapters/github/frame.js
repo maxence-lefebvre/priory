@@ -1,11 +1,11 @@
 // The strip, the docked panel and the side panel: every daemon call and all agent text live here.
-import { ARM_MS, UNDO_MS, age, answerBody, answerPath, choose, due, observe, refusal, reply, runsCommand, undo } from "./lib/ask.js";
+import { ARM_MS, UNDO_MS, age, answerBody, answerPath, choose, due, leftUnsent, observe, optionKey, refusal, reply, runsCommand, undo } from "./lib/ask.js";
 import { grade, parseGuide, scoreKey } from "./lib/guide.js";
 import { live } from "./lib/live.js";
 import { parsePr } from "./lib/pr.js";
 import { address, call } from "./lib/request.js";
-import { get, put, remove } from "./lib/store.js";
-import { fixText, sayRoute } from "./lib/task.js";
+import { clear, get, put, remove } from "./lib/store.js";
+import { fixBranch, fixText, sayRoute } from "./lib/task.js";
 
 const params = new URLSearchParams(location.search);
 // command.html is not web-accessible, so no page can embed its Run button.
@@ -130,7 +130,7 @@ async function read(quiet = false) {
   if (seen === S.seen && !S.unreachable) return quiet ? undefined : render();
   Object.assign(S, { seen, holders, task: detail.body, unreachable: false });
   for (const ask of S.task?.asks ?? []) S.draft = observe(S.draft, ask, Date.now());
-  if (S.draft?.phase === "sent" && !S.task?.asks?.some((ask) => ask.id === S.draft.id && ask.state === "open")) S.draft = null;
+  if ((S.draft?.phase === "sent" || S.draft?.restored) && !S.task?.asks?.some((ask) => ask.id === S.draft.id && ask.state === "open")) S.draft = null;
   put(`last:${S.pr.resource}`, { holders, task: S.task, flows: S.flows, readAt: S.readAt });
   wakeAtSnoozeEnd();
   render();
@@ -145,9 +145,9 @@ function wakeAtSnoozeEnd() {
 
 const channel = new BroadcastChannel("priory-events");
 
-/** Forgets the token here, and with `share` in every other frame too. */
+/** Forgets the token and all it read, here and with `share` in every other frame too. */
 async function signedOut(share = true) {
-  await remove("config");
+  await clear();
   S.config = null;
   S.draft = null;
   if (share) channel.postMessage({ signedOut: true });
@@ -360,6 +360,10 @@ function askTab(asks) {
       h("button", { class: "btn ghost", disabled: blocked, onclick: () => snooze(ask, snoozed) }, snoozed ? "Unsnooze" : "Snooze 1 h"),
       draft?.phase === "unknown"
         ? h("button", { class: "btn ghost", onclick: () => (draft.dismiss ? dismiss(ask) : pick(ask, { ...(draft.option === undefined ? { text: draft.text } : { option: draft.option }), again: true })) }, "Send again")
+        : null,
+      draft?.restored
+        ? [h("button", { class: "btn ghost", onclick: () => pick(ask, draft.option === undefined ? { text: draft.text } : { option: draft.option }) }, "Send"),
+          h("button", { class: "btn ghost", onclick: () => { S.draft = null; render(); } }, "Discard")]
         : null),
     draft?.notice ? h("div", { class: "notice", role: "alert" }, draft.notice) : null,
     h("div", { class: "hr" }),
@@ -406,9 +410,7 @@ function taskTab() {
   }
   const task = S.task;
   const route = sayRoute(task, S.flows);
-  const pull = task.stack?.find((entry) => entry.pull_request === S.pr.resource) ?? task.pull_request;
-  const branch = pull?.branch ?? task.branch;
-  const base = pull?.base ?? "main";
+  const fix = fixBranch(task, S.holders?.find((holder) => holder.id === task.id)?.holds, S.pr);
   const canSay = route.enabled && !S.sayBusy && !S.unreachable && !S.sayUnknown;
   const steps = S.flows?.workflows?.find((workflow) => workflow.name === task.workflow)?.steps ?? [];
   const at = steps.findIndex((step) => step.id === task.step);
@@ -420,8 +422,9 @@ function taskTab() {
     h("div", { class: "hr" }),
     h("div", { class: "sect" }, h("h3", {}, "Ask the agent"),
       h("div", { class: "row" },
-        h("button", { class: "btn secondary", disabled: !canSay || !branch, onclick: () => say(fixText("update", branch, base)) }, icon("refresh", "s14"), "Update branch"),
-        h("button", { class: "btn secondary", disabled: !canSay || !branch, onclick: () => say(fixText("conflicts", branch, base)) }, icon("merge", "s14"), "Resolve conflicts")),
+        h("button", { class: "btn secondary", disabled: !canSay || !fix, onclick: () => say(fixText("update", fix.branch, fix.base)) }, icon("refresh", "s14"), "Update branch"),
+        h("button", { class: "btn secondary", disabled: !canSay || !fix, onclick: () => say(fixText("conflicts", fix.branch, fix.base)) }, icon("merge", "s14"), "Resolve conflicts")),
+      fix ? null : h("div", { class: "note" }, icon("lock", "s14"), h("span", {}, `Task ${task.id} does not own this pull request's branch: Update branch and Resolve conflicts stay off.`)),
       h("div", { class: "note" }, icon("corner", "s14"), h("span", {}, S.unreachable ? "Reconnect to say." : route.note))),
     h("form", { class: "field", onsubmit: (event) => { event.preventDefault(); if (S.say.trim()) say(S.say.trim(), true); } },
       h("label", { for: "say" }, "Say to the agent"),
@@ -551,9 +554,19 @@ function outcome(ran) {
 }
 
 
+// An answer waiting on Undo outlives the frame, which a page change removes with its timer.
+let keptDraft = "null";
+function keepDraft() {
+  const kept = leftUnsent(S.draft);
+  if (JSON.stringify(kept) === keptDraft) return;
+  keptDraft = JSON.stringify(kept);
+  (kept ? put(`draft:${S.pr.resource}`, kept) : remove(`draft:${S.pr.resource}`)).catch(() => {});
+}
+
 // A redraw keeps what the person was doing: the focused field, its selection and the scroll.
 function render() {
   if (VIEW === "command") return;
+  if (VIEW === "panel" && S.pr) keepDraft();
   const focused = document.activeElement;
   const { id, selectionStart, selectionEnd } = focused ?? {};
   const scroll = document.querySelector(".body")?.scrollTop ?? 0;
@@ -582,6 +595,7 @@ async function boot() {
   if (!S.pr) return;
   const last = await get(`last:${S.pr.resource}`);
   if (last) Object.assign(S, last, { unreachable: false });
+  if (VIEW === "panel") S.draft = (await get(`draft:${S.pr.resource}`)) ?? null;
   render();
   live((message) => {
     if (message.signedIn) get("config").then((config) => { S.config = config ?? null; read(); });
@@ -593,7 +607,7 @@ async function boot() {
     loadGuide();
     document.addEventListener("keydown", (event) => {
       const ask = S.tab === "ask" ? openAsks()[Math.min(S.index, openAsks().length - 1)] : null;
-      const option = ask?.options[Number(event.key) - 1];
+      const option = ask?.options[optionKey(event)];
       if (option && !event.target.closest("textarea, input") && !S.unreachable) pick(ask, { option });
     });
   }

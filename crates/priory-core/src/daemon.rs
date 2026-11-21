@@ -937,7 +937,7 @@ fn tend(
             runtime::kill(&run.tmux);
         }
     }
-    state::due(db)?;
+    state::due(db, factory)?;
     overlap::tick(db, factory, home)?;
     tools::enter_queued(db, factory)?;
     state::disk_due(db, || room::measure(home).ok().map(|room| room.disk_free))?;
@@ -1126,6 +1126,10 @@ fn act(
     let done = match step.action.as_deref().unwrap_or_default() {
         "open-pr" => open_pr(db, factory, due, head.as_deref())?,
         "open-issue" => open_issue(db, factory, due)?,
+        "start-batch" => {
+            start_batch(db, trace, due, step)?;
+            return Ok(false);
+        }
         "run" => {
             start_command(db, trace, home, due, step, commands)?;
             return Ok(false);
@@ -1138,6 +1142,30 @@ fn act(
     };
     tools::performed(db, due.task, &due.workflow, step, done, trace)?;
     Ok(false)
+}
+
+/// Starts `due`'s batch and records the action in one transaction, so a crash between them never
+/// creates its tasks twice.
+fn start_batch(
+    db: &mut Connection,
+    trace: &Trace,
+    due: &state::Due,
+    step: &factory::Step,
+) -> Result<(), Error> {
+    let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    let done = match crate::batch::start(&tx, due.task, trace.factory)? {
+        Ok(()) => Done {
+            status: "started",
+            pull_request: None,
+            commit: None,
+            error: None,
+            stack: Vec::new(),
+        },
+        Err(error) => failed(error),
+    };
+    tools::performed_in(&tx, due.task, &due.workflow, step, done, trace)?;
+    tx.commit()?;
+    Ok(())
 }
 
 /// Where a removed worktree stands once `restore_worktree` looked at it.
@@ -1533,6 +1561,8 @@ fn start(
             lanes: factory.lanes(),
         },
     )?;
+    // The new run is the task's only live one, so a session of this name is an ended run's agent.
+    runtime::kill(&tmux);
     let first = match agent.value.harness {
         Harness::Codex => state::claim(db, run)?,
         Harness::ClaudeCode => None,

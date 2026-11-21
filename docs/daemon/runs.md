@@ -14,7 +14,8 @@ its ask and the task falls `asleep`, as a move into the step does, so a workflow
 step. A held task gets its ask once its hold releases it.
 
 The daemon creates the worktree, records the run and task as `running`, then starts the agent's
-harness in a detached tmux session named `priory-<task id>`, in the worktree. An agent with
+harness in a detached tmux session named `priory-<task id>`, in the worktree. It first kills a
+session of that name left by an ended run, since the task has no other live run. An agent with
 `harness = "claude-code"` runs `claude` (below). One with `harness = "codex"` runs `codex` (see
 Codex). Each step starts its own agent's harness, so one workflow can mix both.
 `claude` gets:
@@ -155,6 +156,9 @@ A held task has the reason `held: <reason>, <condition> and <condition>`, which 
 the desk show. For example: `held: needs the schema, until github:owner/repo#7 merges, and asks if it
 closes unmerged`. `priory tasks --json`, `priory queue --json` and serve list each condition of a held
 task under `conditions`, with `met` and `met_as` once it is met.
+A batch's entry is held on one `merged` condition per entry it starts after, which no flag sets (see
+[batches.md](batches.md)). Its reason reads `held: batch 4, until task 31 merges`.
+
 Events for a held task are kept for its first run, as for a queued one, and a schedule's tick for it
 is coalesced. `priory cancel` drops a held task and ends its hold.
 

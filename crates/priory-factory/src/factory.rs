@@ -67,6 +67,7 @@ pub struct Settings {
     #[serde(default)]
     pub asks: Asks,
     pub request: Option<RequestDefaults>,
+    pub batch: Option<BatchDefaults>,
     /// Irreversible commands and MCP tools on top of the built-in ones.
     #[serde(default)]
     pub guard: crate::guard::Guards,
@@ -164,6 +165,16 @@ pub struct RequestDefaults {
     pub workflow: String,
     /// The band of a request that names none.
     pub band: Option<String>,
+}
+
+/// What `priory batch add` starts: the planning workflow, and the workflow each entry's task runs.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct BatchDefaults {
+    /// The workflow of a batch's planning task. It needs a human step after a model step: the go.
+    pub workflow: String,
+    /// The workflow of each entry's task; the `[request]` workflow when unset.
+    pub entries: Option<String>,
 }
 
 /// What happens to the answer of an ask: where an agent's ask can run a command, and how an
@@ -1414,6 +1425,11 @@ impl Factory {
     /// The defaults of `priory add`; none makes it need `--workflow`.
     pub fn request(&self) -> Option<&RequestDefaults> {
         self.settings.as_ref()?.value.request.as_ref()
+    }
+
+    /// The `[batch]` table: how `priory batch add` plans batches.
+    pub fn batch(&self) -> Option<&BatchDefaults> {
+        self.settings.as_ref()?.value.batch.as_ref()
     }
 
     /// The HTTP server's settings; none listens nowhere.

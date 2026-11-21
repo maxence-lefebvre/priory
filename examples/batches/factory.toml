@@ -1,0 +1,8 @@
+#:schema https://raw.githubusercontent.com/maxence-lefebvre/priory/main/docs/schemas/config/factory.json
+name = "batches"
+writing = "WRITING.md"
+
+# `priory batch add` plans issues with plan-batch; each entry's task then runs implement.
+[batch]
+workflow = "plan-batch"
+entries = "implement"

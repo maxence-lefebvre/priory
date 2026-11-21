@@ -194,6 +194,31 @@ pub fn check(factory: &Factory) -> Vec<Problem> {
                 problems.push(problem(settings, line, message));
             }
         }
+        if let Some(batch) = &settings.value.batch {
+            let line = settings.lines.field("batch");
+            match factory.workflows.get(&batch.workflow) {
+                None => {
+                    let message = format!("`[batch] workflow` `{}` does not exist", batch.workflow);
+                    problems.push(problem(settings, line, message));
+                }
+                Some(flow) if !has_go(&flow.value) => {
+                    let message = format!(
+                        "`[batch] workflow` `{}` needs a human step after a model step: the go that starts the batch",
+                        batch.workflow
+                    );
+                    problems.push(problem(settings, line, message));
+                }
+                Some(_) => {}
+            }
+            if let Some(entries) = batch
+                .entries
+                .as_ref()
+                .filter(|entries| !factory.workflows.contains_key(*entries))
+            {
+                let message = format!("`[batch] entries` `{entries}` does not exist");
+                problems.push(problem(settings, line, message));
+            }
+        }
         if !owner_name(settings.value.sweep.repo()) {
             problems.push(problem(
                 settings,
@@ -1010,4 +1035,18 @@ fn problem<T>(loaded: &Loaded<T>, line: Option<usize>, message: String) -> Probl
         at: line.map(|line| line.to_string()),
         message,
     }
+}
+
+/// Whether a model step of `workflow` leads straight to a human step, the go a batch's plan needs.
+fn has_go(workflow: &Workflow) -> bool {
+    workflow
+        .steps
+        .iter()
+        .filter(|step| step.decides == Decider::Model)
+        .flat_map(|step| step.next.values())
+        .any(|next| {
+            workflow
+                .step(next)
+                .is_some_and(|step| step.decides == Decider::Human)
+        })
 }

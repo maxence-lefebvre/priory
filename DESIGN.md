@@ -1137,6 +1137,24 @@ center stack. Open task on the Desk and an Up next line open it.
 - **Snooze in the web view.** Snooze is drawn for the Herdr panels. The web asks list shows
   snoozed asks as a section of All; a Snoozed saved view may follow when its slice lands.
 
+## Docs site
+
+The documentation website, built by mdBook from `site/`, uses the Indigo theme, light and dark,
+and this file's type, spacing, radii and copy rules. Its board is the
+[Priory docs site artifact](https://claude.ai/artifact/F15DQy4zmNiRvSPBfJotVM). It reads on its
+own, so it differs from the view:
+
+- **Layout.** A 52 px top bar with the lockup, search and a light or dark toggle. From 1200 px, a
+  264 px navigation on the left, the page at most `--measure` wide, and a 216 px "On this page"
+  list on the right. From 900 px, the list folds under the title. Below 900 px, the navigation and
+  the search open over the page.
+- **The mark.** The top bar shows the lockup. The current heading in "On this page" carries the
+  mark's ribbon in `--action`.
+- **Navigation.** One group per docs folder. The current page is printed in solid `--emph`.
+- **Reference tables.** They scroll in their own box with the key column sticky. Below 900 px, each
+  row stacks into one block: key, type and "yes" when required, then meaning, default and example.
+- **Code** sits on `--term-bg`, dark in both modes, with a copy button.
+
 ## When to change this file
 
 Change `DESIGN.md` and the token files in the same pull request as the code that needs the
