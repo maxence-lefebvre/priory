@@ -11414,6 +11414,11 @@ fn a_finished_task_sends_one_trace_with_a_span_per_run_and_a_span_per_step_under
     let posts = setup.posts();
     for post in &posts {
         assert_eq!(post["url"], "http://127.0.0.1:4318/v1/traces");
+        assert_eq!(
+            post.get("headers"),
+            None,
+            "no headers_env sends no header file"
+        );
         let resource = &post["body"]["resourceSpans"][0]["resource"]["attributes"];
         assert_eq!(attribute(resource, "service.name"), "priory");
         assert_eq!(attribute(resource, "host.name"), "runner");
@@ -11514,6 +11519,77 @@ fn a_run_gets_its_task_and_run_ids_in_otel_resource_attributes_after_the_daemons
         fs::read_to_string(setup.dir.join("fake/otel.log")).unwrap(),
         "OTEL_RESOURCE_ATTRIBUTES=team=core,priory.task.id=1,priory.run.id=1\n"
     );
+}
+
+#[test]
+fn the_exporter_hands_curl_its_headers_in_a_file_and_never_shows_a_value() {
+    let mut setup = Setup::with_workflow("otlp-headers", STEPS);
+    let factory = "name = \"demo\"\n\n[telemetry]\notlp = \"http://127.0.0.1:4318\"\n\
+                   headers_env = \"TEST_OTLP_HEADERS\"\n";
+    fs::write(setup.dir.join("factory/factory.toml"), factory).unwrap();
+    setup.calls(&[result("ready"), result("passed")]);
+    setup.publish(&requested(42));
+    let exe = Path::new(env!("CARGO_BIN_EXE_priory"));
+    let headers = "x-honeycomb-team=s3cret%2Ckey , authorization=Basic%20dXNlcjpz3cret";
+    setup.start_with(exe, &[("TEST_OTLP_HEADERS", headers)]);
+    setup.until("tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == "done")
+    });
+
+    setup.until_spans(5);
+
+    for post in setup.posts() {
+        assert_eq!(
+            post["headers"],
+            "x-honeycomb-team: s3cret,key\nauthorization: Basic dXNlcjpz3cret\n"
+        );
+        assert!(!post["args"].as_str().unwrap().contains("s3cret"), "{post}");
+    }
+    let file = fs::metadata(setup.dir.join("home/otlp-headers")).unwrap();
+    assert_eq!(file.permissions().mode() & 0o777, 0o600);
+    let log = fs::read_to_string(setup.dir.join("daemon.log")).unwrap();
+    assert!(!log.contains("s3cret"), "{log}");
+    let trace = String::from_utf8(setup.priory(&["trace"]).stdout).unwrap();
+    assert!(!trace.contains("s3cret"), "{trace}");
+}
+
+#[test]
+fn the_daemon_refuses_to_start_without_its_otlp_headers() {
+    let setup = Setup::new("otlp-no-headers");
+    let factory = "name = \"demo\"\n\n[telemetry]\notlp = \"http://127.0.0.1:4318\"\n\
+                   headers_env = \"TEST_OTLP_HEADERS\"\n";
+    fs::write(setup.dir.join("factory/factory.toml"), factory).unwrap();
+
+    for value in [None, Some("")] {
+        let mut command = setup.command(env!("CARGO_BIN_EXE_priory"));
+        command.args(["daemon", setup.dir.join("factory").to_str().unwrap()]);
+        match value {
+            None => command.env_remove("TEST_OTLP_HEADERS"),
+            Some(value) => command.env("TEST_OTLP_HEADERS", value),
+        };
+        let output = command.output().unwrap();
+
+        assert!(!output.status.success());
+        assert_eq!(
+            String::from_utf8_lossy(&output.stderr),
+            "priory daemon: TEST_OTLP_HEADERS is unset or empty: set it to the OTLP headers, \
+             as key1=value1,key2=value2\n"
+        );
+    }
+    let mut command = setup.command(env!("CARGO_BIN_EXE_priory"));
+    command.args(["daemon", setup.dir.join("factory").to_str().unwrap()]);
+    let output = command
+        .env("TEST_OTLP_HEADERS", "authorization=s3cret%0Ax-evil: 1")
+        .output()
+        .unwrap();
+
+    assert!(!output.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&output.stderr),
+        "priory daemon: TEST_OTLP_HEADERS: OTLP headers need the form key1=value1,key2=value2 \
+         with URL-encoded values\n"
+    );
+    assert!(setup.posts().is_empty());
 }
 
 /// A task run to `done` through two model steps, its spans sent to `endpoint`.

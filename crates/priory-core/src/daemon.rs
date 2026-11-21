@@ -60,6 +60,8 @@ struct Handling {
 /// The OTLP exporter's send in flight, with the last record it carries, and when it may send again.
 struct Export {
     endpoint: String,
+    /// The file holding the header lines each request carries.
+    headers: Option<std::path::PathBuf>,
     sending: Option<(std::process::Child, otlp::Cursor)>,
     after: Instant,
 }
@@ -105,6 +107,7 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
         eprintln!("priory daemon: notifications are off: {error}");
     }
     let listening = runtime::listen(&home)?;
+    let headers = otlp_headers(factory, &home)?;
     if let Some(config) = factory.serve() {
         crate::serve::start(factory, config.listen)?;
     }
@@ -209,6 +212,7 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
     let mut stalls = Stalls::default();
     let mut export = factory.otlp().map(|endpoint| Export {
         endpoint: endpoint.trim_end_matches('/').to_owned(),
+        headers,
         sending: None,
         after: Instant::now(),
     });
@@ -533,8 +537,8 @@ fn send_spans(
     };
     let body = home.join("otlp.json");
     let url = format!("{}/v1/traces", export.endpoint);
-    let started =
-        std::fs::write(&body, request.to_string()).and_then(|()| runtime::post_json(&url, &body));
+    let started = std::fs::write(&body, request.to_string())
+        .and_then(|()| runtime::post_json(&url, export.headers.as_deref(), &body));
     match started {
         Ok(child) => export.sending = Some((child, cursor)),
         Err(error) => {
@@ -543,6 +547,29 @@ fn send_spans(
         }
     }
     Ok(())
+}
+
+/// Writes the OTLP headers from `[telemetry] headers_env` to a file only this user reads, and
+/// returns its path. Refuses an unset, empty or malformed variable, as a start error.
+fn otlp_headers(factory: &Factory, home: &Path) -> Result<Option<std::path::PathBuf>, String> {
+    use std::io::Write;
+    use std::os::unix::fs::OpenOptionsExt;
+    let Some(name) = factory.otlp_headers_env() else {
+        return Ok(None);
+    };
+    let text = crate::serve::env(name, "the OTLP headers, as key1=value1,key2=value2")?;
+    let lines = otlp::header_lines(&text).map_err(|error| format!("{name}: {error}"))?;
+    let file = home.join("otlp-headers");
+    // A file left by an older daemon keeps its mode, so it is replaced rather than truncated.
+    let _ = std::fs::remove_file(&file);
+    std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(&file)
+        .and_then(|mut out| out.write_all(lines.as_bytes()))
+        .map_err(|error| format!("{}: {error}", file.display()))?;
+    Ok(Some(file))
 }
 
 /// Records the sweep scripts that ended, then starts the scripts of a stall that just opened, for

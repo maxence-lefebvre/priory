@@ -107,10 +107,20 @@ pub fn fed_within(
 
 /// Starts `curl` POSTing the JSON in `body` to `url`, without waiting for it. It prints the HTTP
 /// status on stdout. `curl` gives up after the command timeout, and `--disable` skips a `.curlrc`.
-pub fn post_json(url: &str, body: &Path) -> std::io::Result<std::process::Child> {
-    post(url, body)
-        .args(["--header", "Content-Type: application/json"])
-        .spawn()
+/// Any header lines in the file `headers` go too, so no credential shows in the process list.
+pub fn post_json(
+    url: &str,
+    headers: Option<&Path>,
+    body: &Path,
+) -> std::io::Result<std::process::Child> {
+    let mut command = post(url, body);
+    command.args(["--header", "Content-Type: application/json"]);
+    if let Some(headers) = headers {
+        command
+            .arg("--header")
+            .arg(format!("@{}", headers.display()));
+    }
+    command.spawn()
 }
 
 /// As `post_json`, for a Web Push request: HTTPS only, with the header lines in the file `headers`,

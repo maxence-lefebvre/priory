@@ -1586,3 +1586,24 @@ fn a_hands_off_trigger_with_a_shared_lead_passes() {
     assert_eq!(outcome.stderr, "");
     assert_eq!(outcome.code, 0);
 }
+
+#[test]
+fn telemetry_headers_env_names_a_variable_and_never_holds_the_headers() {
+    let telemetry = "name = \"demo\"\n\n[telemetry]\notlp = \"http://127.0.0.1:4318\"\n";
+    let named = format!("{telemetry}headers_env = \"OTEL_EXPORTER_OTLP_HEADERS\"\n");
+    let pasted = format!("{telemetry}headers_env = \"x-honeycomb-team=s3cret\"\n");
+
+    let ok = check(&factory("headers-env-ok", &with("factory.toml", &named)));
+    let refused = check(&factory(
+        "headers-env-pasted",
+        &with("factory.toml", &pasted),
+    ));
+
+    assert_eq!((ok.code, ok.stderr.as_str()), (0, ""));
+    assert_eq!(refused.code, 1);
+    assert_eq!(
+        refused.stderr,
+        "factory.toml:3: `headers_env` names the environment variable that holds the headers, \
+         such as OTEL_EXPORTER_OTLP_HEADERS, never the headers themselves\n"
+    );
+}

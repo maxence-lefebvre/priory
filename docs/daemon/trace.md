@@ -55,7 +55,14 @@ unless `factory.toml` names the endpoint, and then nothing is sent:
 ```toml
 [telemetry]
 otlp = "http://127.0.0.1:4318"   # spans go to <otlp>/v1/traces as OTLP JSON
+headers_env = "OTEL_EXPORTER_OTLP_HEADERS"   # optional: the variable holding the headers
 ```
+
+A backend that wants a key reads it from a header. `headers_env` names the environment variable that
+holds the headers, as `key1=value1,key2=value2` with URL-encoded values. The daemon reads it once
+when it starts, refuses to start when it is unset, empty or malformed, and writes the header lines
+to `otlp-headers` in its home, readable by its user only. `curl` reads them from that file, so no
+value shows in the process list, the daemon's log or the trace.
 
 A task is one trace, with a root span named `task <key>`, from the task's creation to its end. A
 model step's run is a span named `invoke_agent <agent>` under the root, from the run's start to the
@@ -80,6 +87,9 @@ task id and generation, run id or record id, so sending a record again gives the
 | `gen_ai.operation.name`, `gen_ai.agent.name` | run | `invoke_agent` and the run's agent |
 
 The resource carries `service.name = priory`, `priory.factory` and `host.name`, the machine.
+
+To send to a local ClickStack, Honeycomb or Grafana Cloud, see
+[otel-recipes.md](otel-recipes.md).
 
 Each tick, the daemon sends up to 200 records and 200 task ends past the endpoint's cursors in one request, through
 `curl`, and moves on without waiting for it. `curl` gives up after `command_timeout`. The cursors, in

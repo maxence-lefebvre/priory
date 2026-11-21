@@ -393,3 +393,87 @@ fn attribute(key: &str, value: &Value) -> Option<Value> {
     };
     Some(json!({ "key": key, "value": value }))
 }
+
+/// The header lines `curl --header @file` reads, from OTLP's `key1=value1,key2=value2` with
+/// URL-encoded values. Its errors never quote the text, which holds credentials.
+pub(crate) fn header_lines(text: &str) -> Result<String, String> {
+    let refused = "OTLP headers need the form key1=value1,key2=value2 with URL-encoded values";
+    let mut lines = String::new();
+    for pair in text.split(',').filter(|pair| !pair.trim().is_empty()) {
+        let (key, value) = pair.split_once('=').ok_or(refused)?;
+        let key = key.trim();
+        let value = decode(value.trim()).ok_or(refused)?;
+        let token = |byte: u8| byte.is_ascii_alphanumeric() || b"!#$%&'*+-.^_`|~".contains(&byte);
+        let control = |c: char| c.is_ascii_control() && c != '\t';
+        if key.is_empty() || !key.bytes().all(token) || value.contains(control) {
+            return Err(refused.to_owned());
+        }
+        lines.push_str(&format!("{key}: {value}\n"));
+    }
+    if lines.is_empty() {
+        return Err(refused.to_owned());
+    }
+    Ok(lines)
+}
+
+/// `text` with each `%XX` replaced by its byte, or none for a broken escape or invalid UTF-8.
+fn decode(text: &str) -> Option<String> {
+    let mut bytes = Vec::with_capacity(text.len());
+    let mut rest = text.as_bytes();
+    while let Some((&byte, tail)) = rest.split_first() {
+        rest = tail;
+        if byte != b'%' {
+            bytes.push(byte);
+            continue;
+        }
+        let hex = rest
+            .get(..2)
+            .filter(|hex| hex.iter().all(u8::is_ascii_hexdigit))?;
+        bytes.push(u8::from_str_radix(std::str::from_utf8(hex).ok()?, 16).ok()?);
+        rest = &rest[2..];
+    }
+    String::from_utf8(bytes).ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use proptest::prelude::*;
+
+    #[test]
+    fn pairs_become_header_lines_with_their_values_decoded() {
+        assert_eq!(
+            header_lines(" x-honeycomb-team = a%2Cb ,authorization=Basic%20dTpw,").unwrap(),
+            "x-honeycomb-team: a,b\nauthorization: Basic dTpw\n"
+        );
+    }
+
+    #[test]
+    fn a_pair_that_would_break_the_header_file_is_refused_without_quoting_it() {
+        for text in [
+            "secret",
+            "=secret",
+            "a b=secret",
+            "x/secret=1",
+            "k=secret%0Ax-evil: 1",
+            "k=secret%01",
+            "k=secret%2",
+            " , ",
+        ] {
+            let error = header_lines(text).unwrap_err();
+            assert!(!error.contains("secret"), "{text}: {error}");
+        }
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(512))]
+
+        #[test]
+        fn text_of_any_shape_gives_one_line_per_header_or_is_refused(text in "\\PC{0,200}") {
+            if let Ok(lines) = header_lines(&text) {
+                prop_assert!(lines.lines().all(|line| line.contains(": ")));
+                prop_assert!(!lines.contains('\r'));
+            }
+        }
+    }
+}
