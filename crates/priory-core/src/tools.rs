@@ -1276,6 +1276,10 @@ fn judge(tx: &Transaction, wait: i64) -> rusqlite::Result<bool> {
             .find(|event| event.kind == CHECK_RUNS && event.head == commit)
     };
     let Some(check) = checks.next().or_else(snapshot) else {
+        // A stack's gate at a new head with no check yet is not green any more.
+        if stacked {
+            return stack_green(tx, wait, task, false, &stack);
+        }
         return Ok(false);
     };
     let failing = check.data["failing"].as_u64();

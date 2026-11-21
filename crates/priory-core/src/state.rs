@@ -1983,6 +1983,17 @@ pub(crate) fn admissible<'r>(
                     Ok(measured) => {
                         let short = room::wait(measured, share, promised, need);
                         let reason = short.as_ref().map(|short| short.reason.clone());
+                        // A lead that can never fit never answers: dropping it returns its ask.
+                        if let Some(reason) = reason.as_ref().filter(|_| {
+                            admission.trigger == crate::tools::LEAD_TRIGGER
+                                && !room::fits_ever(measured, share, need)
+                        }) {
+                            db.execute(
+                                "UPDATE tasks SET state = 'dropped', reason = ?2 WHERE id = ?1",
+                                params![admission.task, reason],
+                            )?;
+                            continue;
+                        }
                         // A task that can never fit would hold the queue forever.
                         if short.is_some() && room::fits_ever(measured, share, need) {
                             head = Some(admission.task);

@@ -13446,15 +13446,27 @@ fn a_stack_whose_every_pull_request_is_green_posts_one_report_naming_the_one_to_
             .collect()
     };
 
+    // #7 turns green, then moves to a head no check has run on yet.
+    let mut moved = on_stack(
+        7,
+        "github.pull_request.synchronize",
+        json!({ "github_id": 702 }),
+    );
+    moved.data["head_sha"] = json!(format!("71{}", "0".repeat(38)));
+    let mut green_again = green(7, 703);
+    green_again.data["head_sha"] = moved.data["head_sha"].clone();
     setup.publish(&green(7, 701));
     setup.publish(&green(8, 801));
-    setup.until("inbox", |rows| rows.len() == 3);
-    stays_asleep_after(&setup, 1);
-    assert_eq!(reports(), Vec::<serde_json::Value>::new());
+    setup.publish(&moved);
     setup.publish(&green(9, 901));
     setup.publish(&green(9, 902));
-
     setup.until("inbox", |rows| rows.len() == 6);
+    stays_asleep_after(&setup, 1);
+    assert_eq!(reports(), Vec::<serde_json::Value>::new());
+
+    setup.publish(&green_again);
+
+    setup.until("inbox", |rows| rows.len() == 8);
     stays_asleep_after(&setup, 1);
     assert_eq!(
         reports(),
@@ -13989,12 +14001,13 @@ fn a_hands_off_tasks_command_ask_still_reaches_the_person() {
 #[test]
 fn a_person_who_answers_a_routed_ask_first_drops_its_queued_lead_task() {
     let mut setup = hands_off("hands-off-person-first", STEPS);
-    // The lead never fits, so its task stays queued.
+    // The lead fits only once more memory is free, so its task stays queued.
     let lead = LEAD.replace(
         "session = \"shared\"\n",
-        "session = \"shared\"\nmemory = \"1000GB\"\n",
+        "session = \"shared\"\nmemory = \"8GB\"\n",
     );
     fs::write(setup.dir.join("factory/agents/lead/agent.md"), lead).unwrap();
+    setup.memory(12);
     setup.calls(&[ask()]);
     setup.publish(&requested(42));
     setup.start();
@@ -14101,6 +14114,32 @@ fn a_routed_ask_whose_lead_skips_returns_to_the_person_as_a_new_revision() {
         "Which database? (lead did not answer: its task is done)"
     );
     assert_eq!(setup.rows("tasks")[0][4], "asleep");
+}
+
+#[test]
+fn a_routed_ask_whose_lead_can_never_fit_returns_to_the_person() {
+    let mut setup = hands_off("hands-off-never-fits", WORKFLOW);
+    let lead = LEAD.replace(
+        "session = \"shared\"\n",
+        "session = \"shared\"\nmemory = \"1000GB\"\n",
+    );
+    fs::write(setup.dir.join("factory/agents/lead/agent.md"), lead).unwrap();
+    setup.calls(&[ask()]);
+    setup.publish(&requested(42));
+
+    setup.start();
+
+    setup.until("tasks", |rows| rows.len() == 2 && rows[1][4] == "dropped");
+    let ask = &asks_json(&setup)["asks"][0];
+    assert_eq!(
+        [&ask["state"], &ask["routed_to"], &ask["revision"]],
+        [&json!("open"), &json!(null), &json!(2)],
+        "{ask}"
+    );
+    assert_eq!(
+        ask["question"],
+        "Which database? (lead did not answer: its task is dropped)"
+    );
 }
 
 #[test]
