@@ -103,16 +103,25 @@ pub(crate) fn planned(
 ) -> rusqlite::Result<Result<(), String>> {
     let found = tx
         .query_row(
-            "SELECT id, issues FROM batches WHERE task = ?1",
+            "SELECT id, issues, state FROM batches WHERE task = ?1",
             [task],
-            |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)),
+            |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            },
         )
         .optional()?;
-    let Some((id, issues)) = found else {
+    let Some((id, issues, state)) = found else {
         return Ok(Err(format!(
             "task {task} plans no batch: only `priory batch add` starts one"
         )));
     };
+    if state == "going" {
+        return Ok(Err(format!("batch {id} went already; its plan is fixed")));
+    }
     let issues: Vec<String> = serde_json::from_str(&issues).expect("issues are stored as JSON");
     let plan: Plan = match serde_json::from_value(batch.clone()) {
         Ok(plan) => plan,

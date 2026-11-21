@@ -67,6 +67,7 @@ writes it. The daemon refuses the result, and the agent reads why:
 | `issue <issue> is both an entry and a close` | The plan both works and closes an issue |
 | `entry id <e> is used twice` | Duplicate entry ids |
 | ``task <id> plans no batch: only `priory batch add` starts one`` | A `batch` from a task that no batch request created |
+| `batch <id> went already; its plan is fixed` | A `batch` after the go |
 
 ## The go and the start
 
