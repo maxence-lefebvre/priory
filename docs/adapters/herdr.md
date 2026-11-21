@@ -27,9 +27,6 @@ The adapter lives in `adapters/herdr/` at the repository root, outside the Cargo
 - `adapters/herdr/mods/priory-inbox/`: the Inbox panel. See [The Inbox panel](#the-inbox-panel).
 - `adapters/herdr/mods/priory-tasks/`: the Tasks panel. See [The Tasks panel](#the-tasks-panel).
 - `adapters/herdr/mods/priory-runs/`: the Runs panel. See [The Runs panel](#the-runs-panel).
-- `adapters/herdr/mods/priory-elsewhere/`: the placeholder for a panel that has no mod. Every panel
-  Priory ships has one now, so the layout uses it for none. It names the panel and links to it in
-  the web view.
 - `adapters/herdr/layouts/frame.json`: Herdr's chrome around the view: the sidebar, the top bar
   with the Priory bar, 420 px wide, and Herdr's tab bar, the work body with Herdr's `main` block,
   and the status line.
@@ -101,6 +98,9 @@ its machine has another hash than the factory's views. A layout on another machi
   one folder at a time, then run `install --copy`.
 - A link that already points into this adapter stays as it is. The layout is written again on
   every run.
+- `install` removes what an earlier install made of a mod this adapter no longer ships: a folder
+  that holds `.priory-installed`, or a link into this adapter. It prints `remove` and the path, and
+  `--dry-run` only prints. It leaves every other mod in Herdr's folder alone.
 - Any other file or link at a mod's target stops the script before it changes anything. So does a
   `priory.json` that `install` did not write: a file whose JSON root id is not
   `priory-generated`, alone or with 12 hex digits after a hyphen, or a link elsewhere than to this adapter. Move that file away and run it
@@ -143,11 +143,6 @@ buttons are wider than it. Before it opens the Task tab or a task's terminal, it
 into view. To toggle an aside from the keyboard, bind `layout.toggle:aside-NAME` in Herdr's
 `keys.json`, such as `"layout:priory": { "ctrl-alt-d": "layout.toggle:aside-desk" }`. A
 layout's bindings go under `layout:` and its name, here `priory`.
-
-`priory-elsewhere` reads `web` from the `priory` object of Herdr's `settings.json`, the web view's
-`http` or `https` address, such as `"http://127.0.0.1:7070"`. With it, the placeholder links to
-the panel's page.
-Without it, the placeholder says where to set it.
 
 Herdr writes `gpui-kit.d.ts` and `jsconfig.json` into each mod folder it loads. Through the links,
 they land in your checkout, and Git ignores them.

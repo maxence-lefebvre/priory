@@ -4,7 +4,7 @@
 # and writes the layout for the
 # `default` view into its layouts folder: `priory views --json | install [--copy] [--dry-run]`. It says
 # whether the layout it replaces was built from the same view files. A dry run prints the links and
-# the layout instead. It refuses, before changing anything, to replace a mod
+# the layout instead. It removes its own copy or link of a mod the adapter no longer ships. It refuses, before changing anything, to replace a mod
 # that is not its own link or a priory.json it did not write. HERDR_APP_HOME names Herdr's folder,
 # as Herdr reads it.
 set -euo pipefail
@@ -97,6 +97,19 @@ for i in "${!targets[@]}"; do
     ln -s "$source" "$target"
     echo "link $target -> $source"
   fi
+done
+
+# Removes what an earlier install made of a mod this adapter no longer ships: a copy with the marker, or a link into this adapter.
+shipped=" ${targets[*]} "
+for stale in "$app"/mods/*; do
+  [[ "$shipped" == *" $stale "* ]] && continue
+  if [[ -L "$stale" ]]; then
+    [[ "$(readlink "$stale")" == "$adapter/mods/$(basename "$stale")" ]] || continue
+  elif [[ ! -f "$stale/$marker" ]]; then
+    continue
+  fi
+  echo "remove $stale"
+  $dry_run || rm -rf -- "${stale:?}"
 done
 
 new_id="$(printf '%s' "$generated" | node -e 'console.log(JSON.parse(require("fs").readFileSync(0, "utf8")).id)')"
