@@ -56,10 +56,51 @@ struct Close {
     evidence: Option<String>,
 }
 
-/// The oldest active task that owns an issue, by its key or as a part of it.
-const TAKEN: &str = "SELECT tasks.id, tasks.state FROM owned JOIN tasks ON tasks.id = owned.task
-  WHERE owned.resource = ?1 AND tasks.state NOT IN ('done', 'failed', 'dropped')
-  ORDER BY tasks.id LIMIT 1";
+/// The oldest active task that owns issue `?1` or the key `?2` an entry takes, or that is a batch
+/// part of `?1`, with its key.
+const TAKEN: &str =
+    "SELECT id, state, key FROM tasks WHERE state NOT IN ('done', 'failed', 'dropped')
+  AND (id IN (SELECT task FROM owned WHERE resource IN (?1, ?2))
+    OR batch_entry IS NOT NULL AND substr(key, 1, length(?1) + 1) = ?1 || '.')
+  ORDER BY id LIMIT 1";
+
+/// The key an entry's task takes: its issue's, or for a part of a split issue `<issue>.<part>`.
+fn entry_key(entry: &Entry) -> String {
+    let issue = issue_key(&entry.issue);
+    match entry.part {
+        Some(part) => format!("{issue}.{part}"),
+        None => issue,
+    }
+}
+
+/// The first key of `plan`, an entry's or a close's, that an active task holds, with that task's id
+/// and state.
+fn taken(tx: &Transaction, plan: &Plan) -> rusqlite::Result<Option<(String, i64, String)>> {
+    let entries = plan
+        .entries
+        .iter()
+        .map(|entry| (issue_key(&entry.issue), entry_key(entry)));
+    let closes = plan
+        .close
+        .iter()
+        .map(|close| (issue_key(&close.issue), issue_key(&close.issue)));
+    for (issue, key) in entries.chain(closes) {
+        let found = tx
+            .query_row(TAKEN, [&issue, &key], |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            })
+            .optional()?;
+        if let Some((other, state, theirs)) = found {
+            let named = if theirs == key { key } else { issue };
+            return Ok(Some((named, other, state)));
+        }
+    }
+    Ok(None)
+}
 
 /// Records the batch of the planning task `task`, keyed `key`, that a `priory batch add` request
 /// created.
@@ -135,21 +176,8 @@ pub(crate) fn planned(
     if let Err(refused) = checked(&plan, &issues) {
         return Ok(Err(refused));
     }
-    let named = plan
-        .entries
-        .iter()
-        .map(|entry| &entry.issue)
-        .chain(plan.close.iter().map(|close| &close.issue));
-    for issue in named {
-        let key = issue_key(issue);
-        let active = tx
-            .query_row(TAKEN, [&key], |row| {
-                Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
-            })
-            .optional()?;
-        if let Some((other, state)) = active {
-            return Ok(Err(format!("{key} already has task {other} ({state})")));
-        }
+    if let Some((key, other, state)) = taken(tx, &plan)? {
+        return Ok(Err(format!("{key} already has task {other} ({state})")));
     }
     let title = plan.title.clone().unwrap_or_else(|| summary.to_owned());
     tx.execute(
@@ -450,23 +478,10 @@ pub(crate) fn start(
         return Ok(Err(format!("batch {id} has no plan the go approved")));
     };
     let plan: Plan = serde_json::from_str(&plan).expect("a stored plan parses");
-    let named = plan
-        .entries
-        .iter()
-        .map(|entry| &entry.issue)
-        .chain(plan.close.iter().map(|close| &close.issue));
-    for issue in named {
-        let key = issue_key(issue);
-        let taken = tx
-            .query_row(TAKEN, [&key], |row| {
-                Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
-            })
-            .optional()?;
-        if let Some((other, state)) = taken {
-            return Ok(Err(format!(
-                "{key} has task {other} ({state}) since the plan; drop the entry or the batch"
-            )));
-        }
+    if let Some((key, other, state)) = taken(tx, &plan)? {
+        return Ok(Err(format!(
+            "{key} has task {other} ({state}) since the plan; drop the entry or the batch"
+        )));
     }
     let Some(flow) = factory.workflows.get(&workflow) else {
         return Ok(Err(format!(
@@ -477,10 +492,7 @@ pub(crate) fn start(
     let mut ordered = Vec::new();
     for entry in &plan.entries {
         let issue = issue_key(&entry.issue);
-        let key = match entry.part {
-            Some(part) => format!("{issue}.{part}"),
-            None => issue.clone(),
-        };
+        let key = entry_key(entry);
         let source = uuid::Uuid::new_v4().to_string();
         // An entry takes the planning task's place and who answers its asks.
         tx.execute(
@@ -507,14 +519,12 @@ pub(crate) fn start(
                 created
             ],
         )?;
-        // A part owns its issue too, so the issue's events reach the oldest part still active.
-        for owned in BTreeSet::from([&key, &issue]) {
-            tx.execute(
-                "INSERT INTO owns (task, resource) VALUES (?1, ?2)",
-                params![created, owned],
-            )?;
-        }
-        if let Some(resource) = crate::subscribe::resource(&issue) {
+        tx.execute(
+            "INSERT INTO owns (task, resource) VALUES (?1, ?2)",
+            params![created, key],
+        )?;
+        // A part does not own its issue: `state::owners` hands the issue's events to the oldest part.
+        if let Some(resource) = crate::subscribe::resource(&key).filter(|_| entry.part.is_none()) {
             tx.execute(
                 "INSERT OR IGNORE INTO subscriptions (task, resource) VALUES (?1, ?2)",
                 params![created, resource],
@@ -639,47 +649,65 @@ pub fn apply(db: &mut Connection, request: &EditRequest) -> Result<String, Strin
     edit(db, &request.batch, revision, &change)
 }
 
+/// `POST /api/batches/{id}/edit`'s body, field by field.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct EditBody {
+    revision: i64,
+    drop: Option<String>,
+    with_successors: Option<bool>,
+    #[serde(rename = "move")]
+    moves: Option<String>,
+    top: Option<bool>,
+    before: Option<String>,
+    after: Option<String>,
+    moment: Option<MomentBody>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct MomentBody {
+    entry: String,
+    other: String,
+    moment: String,
+}
+
 /// The edit and expected plan revision a `POST /api/batches/{id}/edit` body names, or why it
-/// names none.
+/// names none: it takes exactly one edit, with only that edit's fields.
 pub fn edit_of(body: &Value) -> Result<(i64, Edit), String> {
-    let text = |field: &str| body[field].as_str().map(str::to_owned);
-    let revision = body["revision"]
-        .as_i64()
-        .ok_or("the body needs `revision`, the plan revision")?;
-    if let Some(entry) = text("drop") {
-        let with_successors = body["with_successors"].as_bool().unwrap_or(false);
-        return Ok((
-            revision,
-            Edit::Drop {
-                entry,
-                with_successors,
-            },
-        ));
-    }
-    if let Some(entry) = text("move") {
-        let place = match (body["top"].as_bool(), text("before"), text("after")) {
-            (Some(true), None, None) => Place::Top,
-            (None, Some(other), None) => Place::Before(other),
-            (None, None, Some(other)) => Place::After(other),
-            _ => return Err("`move` takes one of `top: true`, `before` or `after`".to_owned()),
-        };
-        return Ok((revision, Edit::Move { entry, place }));
-    }
-    let moment = &body["moment"];
-    let field = |name: &str| moment[name].as_str().map(str::to_owned);
-    if let (Some(entry), Some(other), Some(moment)) =
-        (field("entry"), field("other"), field("moment"))
-    {
-        return Ok((
-            revision,
+    let body: EditBody = serde_json::from_value(body.clone()).map_err(|error| error.to_string())?;
+    let placed = (body.top, body.before, body.after);
+    let edit = match (body.drop, body.moves, body.moment) {
+        (Some(entry), None, None) if matches!(placed, (None, None, None)) => Edit::Drop {
+            entry,
+            with_successors: body.with_successors.unwrap_or(false),
+        },
+        (None, Some(entry), None) if body.with_successors.is_none() => {
+            let place = match placed {
+                (Some(true), None, None) => Place::Top,
+                (None, Some(other), None) => Place::Before(other),
+                (None, None, Some(other)) => Place::After(other),
+                _ => return Err("`move` takes one of `top: true`, `before` or `after`".to_owned()),
+            };
+            Edit::Move { entry, place }
+        }
+        (None, None, Some(moment))
+            if body.with_successors.is_none() && matches!(placed, (None, None, None)) =>
+        {
             Edit::Moment {
-                entry,
-                other,
-                moment,
-            },
-        ));
-    }
-    Err("the body needs `drop`, `move`, or `moment` with `entry`, `other` and `moment`".to_owned())
+                entry: moment.entry,
+                other: moment.other,
+                moment: moment.moment,
+            }
+        }
+        _ => {
+            return Err(
+                "the body takes one edit: `drop` with optional `with_successors`, `move` with one of `top: true`, `before` or `after`, or `moment` with `entry`, `other` and `moment`"
+                    .to_owned(),
+            );
+        }
+    };
+    Ok((body.revision, edit))
 }
 
 /// Applies one edit to the plan of the batch `which` names, by id or key, as its next revision,
@@ -1166,6 +1194,41 @@ mod tests {
                 let _ = checked(&plan, &issues);
             }
         }
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(512))]
+
+        #[test]
+        fn an_edit_body_of_any_shape_is_read_or_refused_without_panicking(body in value()) {
+            let _ = edit_of(&body);
+        }
+    }
+
+    #[test]
+    fn an_edit_body_names_exactly_one_edit_with_only_its_own_fields() {
+        let refused = [
+            json!({ "revision": 1, "drop": "e3", "move": "e2", "top": true }),
+            json!({ "revision": 1, "drop": "e3", "with_successors": "yes" }),
+            json!({ "revision": 1, "drop": "e3", "brief": "x" }),
+            json!({ "revision": 1, "drop": "e3", "top": true }),
+            json!({ "revision": 1, "move": "e3", "top": true, "with_successors": true }),
+            json!({ "revision": 1, "move": "e3", "top": false }),
+            json!({ "revision": 1 }),
+        ];
+        for body in refused {
+            assert!(edit_of(&body).is_err(), "{body}");
+        }
+        assert!(matches!(
+            edit_of(&json!({ "revision": 2, "drop": "e3", "with_successors": true })),
+            Ok((
+                2,
+                Edit::Drop {
+                    with_successors: true,
+                    ..
+                }
+            ))
+        ));
     }
 
     #[test]

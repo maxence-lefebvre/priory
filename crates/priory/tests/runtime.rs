@@ -17682,6 +17682,16 @@ fn a_lost_predecessor_asks_once_per_condition_and_each_answer_moves_only_its_tas
         [false, true]
     };
     assert_eq!(met, released);
+    // Its answered ask leaves task 4 held on a batch edge alone, so the batch's row stands for it.
+    let desk = desk_json(&setup);
+    let held: Vec<_> = desk["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|item| item["kind"] == "held")
+        .map(|item| item["task"].clone())
+        .collect();
+    assert!(held.is_empty(), "{desk}");
 }
 
 #[test]
@@ -18432,4 +18442,61 @@ fn a_factory_that_gained_a_runner_since_the_plan_refuses_the_start_and_asks_the_
     );
     assert_eq!(setup.rows("tasks").len(), 1);
     assert_eq!(batch_json(&setup, &["1"])["state"], "asked");
+}
+
+/// A batch over `ENG-40` and `ENG-41`, `ENG-41` split in two parts, the second after the first,
+/// at its go ask.
+fn split_at_the_go(name: &str) -> (Setup, String) {
+    let mut entries = vec![
+        entry("e1", "ENG-40", &[]),
+        entry("e2", "ENG-41", &[]),
+        entry("e3", "ENG-41", &["e2"]),
+    ];
+    entries[1]["part"] = json!(1);
+    entries[2]["part"] = json!(2);
+    let mut setup = batched(name);
+    setup.calls(&[planned(json!({ "title": "t", "entries": entries }))]);
+    batch_add(&setup, &["ENG-40", "ENG-41"]);
+    setup.start();
+    let go = setup.until("asks", |rows| rows.len() == 1);
+    (setup, go[0][0].clone())
+}
+
+#[test]
+fn a_part_key_taken_between_plan_and_go_fails_the_start_and_asks_the_go_again() {
+    let (setup, ask) = split_at_the_go("batch-part-taken");
+    setup.memory(0);
+    let mut other = requested(42);
+    other.data["key"] = json!("linear:ENG-41.1");
+    other.data["hold"] = json!({ "reason": "later" });
+    setup.publish(&other.subject("linear:ENG-41.1"));
+    setup.until("tasks", |rows| rows.len() == 2);
+
+    person(&setup, "answer", &[&ask, "go", "--revision", "1"]);
+
+    let asks = setup.until("asks", |rows| rows.len() == 1 && rows[0][0] != ask);
+    assert!(
+        asks[0][3].starts_with("linear:ENG-41.1 has task 2 (held) since the plan"),
+        "{}",
+        asks[0][3]
+    );
+    assert_eq!(setup.rows("tasks").len(), 2);
+}
+
+#[test]
+fn a_failed_part_revives_while_the_next_part_waits_on_it() {
+    let (setup, ask) = split_at_the_go("batch-part-revive");
+    setup.hold("crash");
+
+    person(&setup, "answer", &[&ask, "go", "--revision", "1"]);
+
+    setup.until("tasks", |rows| {
+        rows.iter().any(|row| row[0] == "3" && row[4] == "failed")
+    });
+    setup.release("crash");
+    let revived = person(&setup, "revive", &["3"]);
+    assert!(!revived.is_empty(), "{revived}");
+    setup.until("tasks", |rows| {
+        rows.iter().any(|row| row[0] == "3" && row[4] != "failed")
+    });
 }
