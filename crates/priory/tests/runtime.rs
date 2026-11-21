@@ -65,7 +65,8 @@ const UNDO_SINCE_SEARCH: &str = "ALTER TABLE tasks DROP COLUMN merge_risk; ALTER
   DROP TRIGGER search_task_created; DROP TRIGGER search_tldr_changed; DROP TRIGGER search_result_stored;
   DROP VIEW task_text; DROP TABLE search; DROP TABLE summaries;
   DROP TABLE embedder; DROP TABLE vectors; ALTER TABLE tasks DROP COLUMN tldr; DROP TABLE dispatches;
-  ALTER TABLE irreversible_asks DROP COLUMN lets;";
+  ALTER TABLE irreversible_asks DROP COLUMN lets;
+  ALTER TABLE tasks DROP COLUMN files; ALTER TABLE tasks DROP COLUMN files_run;";
 
 /// A factory, bus, state, Priory home, origin repository and fake `claude`, all under the test's
 /// own directory, and a tmux server in its own short directory. Dropping it kills the daemon and
@@ -5511,6 +5512,7 @@ fn a_state_file_whose_asks_an_approval_names_upgrades_to_outside_asks() {
          DROP TABLE reports;
          DROP TABLE dispatches;
          ALTER TABLE irreversible_asks DROP COLUMN lets;
+         ALTER TABLE tasks DROP COLUMN files; ALTER TABLE tasks DROP COLUMN files_run;
          DROP TRIGGER ask_withdrawn; ALTER TABLE asks DROP COLUMN withdrawn_reason;
          ALTER TABLE waits DROP COLUMN withdrawn_reason; ALTER TABLE ask_withdrawals DROP COLUMN reason;
          DROP TABLE ask_revisions;
@@ -11419,6 +11421,11 @@ fn a_finished_task_sends_one_trace_with_a_span_per_run_and_a_span_per_step_under
     let posts = setup.posts();
     for post in &posts {
         assert_eq!(post["url"], "http://127.0.0.1:4318/v1/traces");
+        assert_eq!(
+            post.get("headers"),
+            None,
+            "no headers_env sends no header file"
+        );
         let resource = &post["body"]["resourceSpans"][0]["resource"]["attributes"];
         assert_eq!(attribute(resource, "service.name"), "priory");
         assert_eq!(attribute(resource, "host.name"), "runner");
@@ -11519,6 +11526,77 @@ fn a_run_gets_its_task_and_run_ids_in_otel_resource_attributes_after_the_daemons
         fs::read_to_string(setup.dir.join("fake/otel.log")).unwrap(),
         "OTEL_RESOURCE_ATTRIBUTES=team=core,priory.task.id=1,priory.run.id=1\n"
     );
+}
+
+#[test]
+fn the_exporter_hands_curl_its_headers_in_a_file_and_never_shows_a_value() {
+    let mut setup = Setup::with_workflow("otlp-headers", STEPS);
+    let factory = "name = \"demo\"\n\n[telemetry]\notlp = \"http://127.0.0.1:4318\"\n\
+                   headers_env = \"TEST_OTLP_HEADERS\"\n";
+    fs::write(setup.dir.join("factory/factory.toml"), factory).unwrap();
+    setup.calls(&[result("ready"), result("passed")]);
+    setup.publish(&requested(42));
+    let exe = Path::new(env!("CARGO_BIN_EXE_priory"));
+    let headers = "x-honeycomb-team=s3cret%2Ckey , authorization=Basic%20dXNlcjpz3cret";
+    setup.start_with(exe, &[("TEST_OTLP_HEADERS", headers)]);
+    setup.until("tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == "done")
+    });
+
+    setup.until_spans(5);
+
+    for post in setup.posts() {
+        assert_eq!(
+            post["headers"],
+            "x-honeycomb-team: s3cret,key\nauthorization: Basic dXNlcjpz3cret\n"
+        );
+        assert!(!post["args"].as_str().unwrap().contains("s3cret"), "{post}");
+    }
+    let file = fs::metadata(setup.dir.join("home/otlp-headers")).unwrap();
+    assert_eq!(file.permissions().mode() & 0o777, 0o600);
+    let log = fs::read_to_string(setup.dir.join("daemon.log")).unwrap();
+    assert!(!log.contains("s3cret"), "{log}");
+    let trace = String::from_utf8(setup.priory(&["trace"]).stdout).unwrap();
+    assert!(!trace.contains("s3cret"), "{trace}");
+}
+
+#[test]
+fn the_daemon_refuses_to_start_without_its_otlp_headers() {
+    let setup = Setup::new("otlp-no-headers");
+    let factory = "name = \"demo\"\n\n[telemetry]\notlp = \"http://127.0.0.1:4318\"\n\
+                   headers_env = \"TEST_OTLP_HEADERS\"\n";
+    fs::write(setup.dir.join("factory/factory.toml"), factory).unwrap();
+
+    for value in [None, Some("")] {
+        let mut command = setup.command(env!("CARGO_BIN_EXE_priory"));
+        command.args(["daemon", setup.dir.join("factory").to_str().unwrap()]);
+        match value {
+            None => command.env_remove("TEST_OTLP_HEADERS"),
+            Some(value) => command.env("TEST_OTLP_HEADERS", value),
+        };
+        let output = command.output().unwrap();
+
+        assert!(!output.status.success());
+        assert_eq!(
+            String::from_utf8_lossy(&output.stderr),
+            "priory daemon: TEST_OTLP_HEADERS is unset or empty: set it to the OTLP headers, \
+             as key1=value1,key2=value2\n"
+        );
+    }
+    let mut command = setup.command(env!("CARGO_BIN_EXE_priory"));
+    command.args(["daemon", setup.dir.join("factory").to_str().unwrap()]);
+    let output = command
+        .env("TEST_OTLP_HEADERS", "authorization=s3cret%0Ax-evil: 1")
+        .output()
+        .unwrap();
+
+    assert!(!output.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&output.stderr),
+        "priory daemon: TEST_OTLP_HEADERS: OTLP headers need the form key1=value1,key2=value2 \
+         with URL-encoded values\n"
+    );
+    assert!(setup.posts().is_empty());
 }
 
 /// A task run to `done` through two model steps, its spans sent to `endpoint`.
@@ -14777,4 +14855,131 @@ fn a_hands_off_tasks_approval_reaches_the_person_on_a_medium_merge_risk() {
         "{ask}"
     );
     assert_eq!(setup.rows("tasks").len(), 1, "no lead task");
+}
+
+const TWO_MODEL_STEPS: &str = r#"
+start = "implement"
+
+[[steps]]
+id = "implement"
+decides = "model"
+agent = "implementer"
+prompt = "Implement the issue."
+effect = "reversible"
+next = { passed = "check", failed = "stop" }
+
+[[steps]]
+id = "check"
+decides = "model"
+agent = "reviewer"
+prompt = "Check the change."
+effect = "reversible"
+next = { passed = "done", failed = "stop" }
+"#;
+
+/// Task 1 edits `shared.txt` and sits in its `check` run. Task 2 then edits `second` and ends its
+/// `implement` run. Returns once task 2 left `implement`.
+fn overlapping(name: &str, second: &str, factory: &str) -> Setup {
+    overlapping_after(name, second, factory, |_| {})
+}
+
+fn overlapping_after(name: &str, second: &str, factory: &str, first: impl Fn(&Setup)) -> Setup {
+    let mut setup = Setup::with_workflow(name, TWO_MODEL_STEPS);
+    fs::write(setup.dir.join("factory/factory.toml"), factory).unwrap();
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("tasks", |rows| with(rows, 4, "running") == 1);
+    setup.commit(1, "shared.txt");
+    setup.calls(&[passed_with_evidence()]);
+    setup.until("runs", |rows| {
+        rows.len() == 2 && rows[1][2] == "check" && rows[1][6] == "-"
+    });
+    // Task 1's silent turn gets its nudge, which would take the next queued call.
+    setup.until("outbox", |rows| {
+        rows.iter()
+            .any(|row| row[2] == "2" && row[4].starts_with("Your turn ended"))
+    });
+    first(&setup);
+    setup.publish(&requested(43));
+    setup.until("tasks", |rows| with(rows, 4, "running") == 2);
+    setup.commit(2, second);
+    setup.calls(&[passed_with_evidence()]);
+    setup.until("tasks", |rows| {
+        rows.iter()
+            .any(|row| row[0] == "2" && row[3] != "implement")
+    });
+    setup
+}
+
+fn state_of(setup: &Setup, task: &str) -> (String, String) {
+    let tasks = setup.rows("tasks");
+    let row = tasks.iter().find(|row| row[0] == task).unwrap();
+    (row[4].clone(), row[7].clone())
+}
+
+#[test]
+fn a_task_whose_files_overlap_an_earlier_active_task_is_held_until_that_task_ends() {
+    let setup = overlapping("overlap-held", "shared.txt", "name = \"demo\"");
+    setup.until("tasks", |rows| {
+        rows.iter().any(|row| row[0] == "2" && row[4] != "ready")
+    });
+
+    let (state, reason) = state_of(&setup, "2");
+
+    assert_eq!(state, "held");
+    assert!(
+        reason.starts_with("held: overlaps task 1 on shared.txt, until task 1 ends"),
+        "{reason}"
+    );
+}
+
+#[test]
+fn a_task_on_other_files_than_an_earlier_task_is_not_held() {
+    let setup = overlapping("overlap-disjoint", "other.txt", "name = \"demo\"");
+
+    setup.until("tasks", |rows| {
+        rows.iter().any(|row| row[0] == "2" && row[4] == "running")
+    });
+
+    assert_eq!(state_of(&setup, "2").0, "running");
+}
+
+#[test]
+fn a_factory_with_overlap_off_holds_no_task() {
+    let setup = overlapping(
+        "overlap-off",
+        "shared.txt",
+        "name = \"demo\"\n\n[queue]\noverlap = false\n",
+    );
+
+    setup.until("tasks", |rows| {
+        rows.iter().any(|row| row[0] == "2" && row[4] == "running")
+    });
+
+    assert_eq!(state_of(&setup, "2").0, "running");
+}
+
+#[test]
+fn a_task_overlapping_one_with_an_open_pull_request_is_held_until_it_merges() {
+    let setup = overlapping_after("overlap-merge", "shared.txt", "name = \"demo\"", |setup| {
+        let db = rusqlite::Connection::open(setup.dir.join("priory.db")).unwrap();
+        db.execute(
+            "INSERT INTO pull_requests (task, resource, branch, base)
+             VALUES (1, 'github:owner/repo#7', 'priory/1', 'main')",
+            [],
+        )
+        .unwrap();
+    });
+    setup.until("tasks", |rows| {
+        rows.iter().any(|row| row[0] == "2" && row[4] != "ready")
+    });
+
+    let (state, reason) = state_of(&setup, "2");
+
+    assert_eq!(state, "held");
+    assert!(
+        reason.contains("until owner/repo#7 merges")
+            || reason.contains("until github:owner/repo#7 merges"),
+        "{reason}"
+    );
 }

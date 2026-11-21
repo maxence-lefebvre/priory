@@ -12,7 +12,7 @@ use std::collections::BTreeMap;
 use std::io::Write;
 use std::time::Duration;
 
-const VERSION: i64 = 60;
+const VERSION: i64 = 61;
 
 const SCHEMA: &str = "
 CREATE TABLE tasks (
@@ -1069,11 +1069,18 @@ END;
 PRAGMA user_version = 59;
 ";
 
-// A risk step's verdict on the finished change: the result keeps it, and the task its latest.
+// The files a task's branch changed at the end of its latest run, a JSON array, and that run.
 const SCHEMA_60: &str = "
+ALTER TABLE tasks ADD COLUMN files TEXT;
+ALTER TABLE tasks ADD COLUMN files_run INTEGER;
+PRAGMA user_version = 60;
+";
+
+// A risk step's verdict on the finished change: the result keeps it, and the task its latest.
+const SCHEMA_61: &str = "
 ALTER TABLE results ADD COLUMN merge_risk TEXT;
 ALTER TABLE tasks ADD COLUMN merge_risk TEXT;
-PRAGMA user_version = 60;
+PRAGMA user_version = 61;
 ";
 
 /// Each schema change in order: a file at version `n` applies those from index `n` on.
@@ -1085,7 +1092,7 @@ const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA_34, SCHEMA_35, SCHEMA_36, SCHEMA_37, SCHEMA_38, SCHEMA_39, SCHEMA_40, SCHEMA_41,
     SCHEMA_42, SCHEMA_43, SCHEMA_44, SCHEMA_45, SCHEMA_46, SCHEMA_47, SCHEMA_48, SCHEMA_49,
     SCHEMA_50, SCHEMA_51, SCHEMA_52, SCHEMA_53, SCHEMA_54, SCHEMA_55, SCHEMA_56, SCHEMA_57,
-    SCHEMA_58, SCHEMA_59, SCHEMA_60,
+    SCHEMA_58, SCHEMA_59, SCHEMA_60, SCHEMA_61,
 ];
 
 /// The order the queue starts tasks in: band, then a person's order, then age. A band the factory

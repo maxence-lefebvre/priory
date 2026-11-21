@@ -38,6 +38,8 @@ pub struct Settings {
     pub bands: Option<Vec<String>>,
     #[serde(default)]
     pub sweep: Sweep,
+    #[serde(default)]
+    pub queue: Queue,
     /// The agent whose model reads a stalled run's screen; no handler runs without one.
     pub handler: Option<String>,
     /// How long a run goes without a hook event or a change on its pane before it counts as stalled.
@@ -278,6 +280,9 @@ fn secret_env() -> String {
 pub struct Telemetry {
     /// The OTLP/HTTP base URL, such as `http://127.0.0.1:4318`; spans go to its `/v1/traces`.
     pub otlp: String,
+    /// The environment variable that holds the headers each request carries, such as an API key,
+    /// as `key1=value1,key2=value2` with URL-encoded values. Never the headers themselves.
+    pub headers_env: Option<String>,
 }
 
 /// Where the daemon tells a person that the desk's next item changed, besides Web Push.
@@ -349,6 +354,25 @@ pub struct Sweep {
     pub agent: Option<String>,
     /// The repository the sweeper works in and files its issue on, a GitHub `owner/name`.
     pub repo: Option<String>,
+}
+
+/// How the queue orders tasks.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct Queue {
+    /// Whether a task waits for an earlier active task that changes the same files; true when unset.
+    #[serde(default = "on")]
+    pub overlap: bool,
+}
+
+fn on() -> bool {
+    true
+}
+
+impl Default for Queue {
+    fn default() -> Self {
+        Queue { overlap: true }
+    }
 }
 
 impl Sweep {
@@ -1231,6 +1255,12 @@ impl Factory {
         Some(telemetry.otlp.as_str())
     }
 
+    /// The environment variable that holds the OTLP exporter's headers, if it sends any.
+    pub fn otlp_headers_env(&self) -> Option<&str> {
+        let telemetry = self.settings.as_ref()?.value.telemetry.as_ref()?;
+        telemetry.headers_env.as_deref()
+    }
+
     /// Whether the daemon sends desktop notifications.
     pub fn desktop_notifications(&self) -> bool {
         let notify = self
@@ -1335,6 +1365,13 @@ impl Factory {
             .as_ref()?
             .shortcut
             .as_ref()
+    }
+
+    /// Whether a task waits for an earlier active task that changes the same files.
+    pub fn overlap(&self) -> bool {
+        self.settings
+            .as_ref()
+            .is_none_or(|settings| settings.value.queue.overlap)
     }
 
     pub fn bands(&self) -> Vec<&str> {

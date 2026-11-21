@@ -68,6 +68,24 @@ pub fn check(factory: &Factory) -> Vec<Problem> {
         {
             problems.push(problem(settings, settings.lines.field("serve"), message));
         }
+        let variable = |name: &str| {
+            name.starts_with(|first: char| first.is_ascii_alphabetic() || first == '_')
+                && name
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+        };
+        if factory
+            .otlp_headers_env()
+            .is_some_and(|name| !variable(name))
+        {
+            problems.push(problem(
+                settings,
+                settings.lines.field("telemetry"),
+                "`headers_env` names the environment variable that holds the headers, such as \
+                 OTEL_EXPORTER_OTLP_HEADERS, never the headers themselves"
+                    .to_owned(),
+            ));
+        }
         if settings.value.webhooks.is_some() && settings.value.serve.is_none() {
             problems.push(problem(
                 settings,
