@@ -24,8 +24,10 @@ pub fn subscribe(
     if let Some(refused) = refused {
         return Ok(Err(refused));
     }
+    // Chosen, the task's own key carries every event, as the automatic subscription to it does not.
     tx.execute(
-        "INSERT OR IGNORE INTO subscriptions (task, resource) VALUES (?1, ?2)",
+        "INSERT INTO subscriptions (task, resource, chosen) VALUES (?1, ?2, 1)
+         ON CONFLICT (task, resource) DO UPDATE SET chosen = 1",
         params![task, resource],
     )?;
     if state.as_deref() != Some("done") {

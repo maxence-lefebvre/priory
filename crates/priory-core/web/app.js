@@ -1,6 +1,6 @@
 // Priory's web view (DESIGN.md): the frame, the Desk and the Asks, with answering through the CLI's verbs.
 // Agent text is untrusted: every value goes through `html`, which escapes it.
-import { answeredBy, askGroups, routedMark, routedNote, snoozed } from "./asks.js";
+import { ARM_MS, answeredBy, askGroups, routedMark, routedNote, snoozed, stillArmed } from "./asks.js";
 import { SPLITS, attentionView, costTiles, dayBars, money, splitTable } from "./costs.js";
 import { addBody, addOutcome } from "./add.js";
 import { linked } from "./links.js";
@@ -675,7 +675,7 @@ function askDetail(id, wide) {
     ${wide ? html`<a class="iconbtn" href="${back[0]}" aria-label="Close">${icon("x", "s20")}</a>` : ""}</div>`;
   const options = ask.options || [];
   const pending = state.pending?.id === ask.id ? state.pending : null;
-  const armed = state.armed?.id === ask.id ? state.armed.text : null;
+  const armed = state.armed?.id === ask.id && state.armed.revision === ask.revision ? state.armed.text : null;
   const locked = state.failed ? "offline" : null;
   const bound = `Bound to revision ${ask.revision}.`;
   const optionButtons = options.map((option, i) => {
@@ -926,7 +926,6 @@ function ranLine(ran) {
 
 // Writes: each is the twin of a CLI verb, sent with the revision the page showed.
 const UNDO_MS = 4000;
-const ARM_MS = 4000;
 const askOnScreen = () => state.data.asks.find((ask) => String(ask.id) === selectedAsk());
 
 async function post(path, body) {
@@ -959,7 +958,7 @@ function undo() {
 // The first tap on a command option arms it; the second, within 4 s, runs it with no Undo.
 function arm(ask, option) {
   disarm();
-  state.armed = { id: ask.id, text: option, at: Date.now(), timer: setTimeout(() => { state.armed = null; render(); }, ARM_MS) };
+  state.armed = { id: ask.id, revision: ask.revision, text: option, at: Date.now(), timer: setTimeout(() => { state.armed = null; render(); }, ARM_MS) };
   render();
 }
 
@@ -1069,7 +1068,7 @@ function act(target) {
       disarm();
       return answer(ask, option, false);
     }
-    if (state.armed?.id === ask.id && state.armed.text === option) return runCommand(ask, option);
+    if (stillArmed(state.armed, ask, option, Date.now())) return runCommand(ask, option);
     return arm(ask, option);
   }
   const action = target.dataset.action;
@@ -1873,7 +1872,8 @@ function render() {
   const caret = field ? [field.id, field.selectionStart, field.selectionEnd, field.selectionDirection] : undefined;
   state.observers.forEach((observer) => observer.disconnect());
   state.observers = [];
-  if (state.armed && (!state.token || selectedAsk() !== String(state.armed.id))) disarm();
+  // A new revision is a new question: a tap armed on the old one must not run it.
+  if (state.armed && (!state.token || selectedAsk() !== String(state.armed.id) || askOnScreen()?.revision !== state.armed.revision)) disarm();
   app.innerHTML = page().text;
   // A render must not restart the countdown; CSP allows no inline style, so it is set here.
   app.querySelectorAll(".drain").forEach((drain) => {

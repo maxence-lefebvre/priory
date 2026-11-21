@@ -6505,6 +6505,26 @@ fn green_checks_the_agent_already_waited_on_mark_the_task_done_at_its_result() {
 }
 
 #[test]
+fn a_green_check_that_woke_a_subscriber_finishes_its_checks_gate() {
+    let mut setup = Setup::new("gate-woke");
+    setup.calls(&[
+        json!([
+            subscribe("subscribe"),
+            wait(json!({ "type": "time", "until": "1 hour" }))
+        ]),
+        passed_at("abc0000000000000000000000000000000000000"),
+    ]);
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("runs", |rows| rows.len() == 1 && rows[0][7] == "asleep");
+
+    setup.publish(&check(1, 0));
+
+    setup.until("tasks", |rows| rows[0][4] == "done");
+    assert_eq!(setup.rows("runs").len(), 2);
+}
+
+#[test]
 fn a_pull_request_opened_from_the_task_branch_holds_the_task_at_done() {
     let mut setup = Setup::new("gate-branch");
     setup.calls(&[passed_at("abc0000000000000000000000000000000000000")]);
@@ -9032,7 +9052,29 @@ fn a_revive_at_an_irreversible_step_asks_its_withdrawn_approval_again() {
     assert_eq!(actions[0][4], "opened");
 }
 
-const NUDGE: &str = "Your turn ended without calling wait, ask or result of the priory MCP server. Call one of them: result to end the step, ask to put a question to a person, or wait to sleep until an event.\nEnd this step by calling the result tool of the priory MCP server with one of these outcomes: failed, passed.\n";
+#[test]
+fn a_revive_at_an_irreversible_step_asks_again_though_the_commit_is_the_approved_one() {
+    let setup = asked_to_open("revive-same-commit", APPROVE_THEN_POLISH);
+    setup.calls(&[passed_with_evidence()]);
+    setup.hold("hold-stop");
+    assert!(
+        setup
+            .priory(&["answer", "1", "open", "--revision", "1"])
+            .status
+            .success()
+    );
+    setup.written("fake/tools.log");
+    assert!(setup.priory(&["cancel", "1"]).status.success());
+    setup.release("hold-stop");
+
+    let revived = setup.priory(&["revive", "1", "--step", "open-pr"]);
+
+    assert!(revived.status.success(), "{revived:?}");
+    setup.until("asks", |rows| rows.first().is_some_and(|row| row[2] == "2"));
+    assert!(setup.rows("actions").is_empty());
+}
+
+const NUDGE: &str ="Your turn ended without calling wait, ask or result of the priory MCP server. Call one of them: result to end the step, ask to put a question to a person, or wait to sleep until an event.\nEnd this step by calling the result tool of the priory MCP server with one of these outcomes: failed, passed.\n";
 
 #[test]
 fn a_silent_turn_gets_one_nudge_and_a_second_silent_turn_gets_none() {
@@ -9615,6 +9657,31 @@ fn a_check_run_on_a_task_keyed_on_its_pull_request_wakes_nothing_and_a_comment_d
     setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 2);
     assert!(
         setup.typed()[1].starts_with("github.pull_request.comment owner/repo#7 {"),
+        "{:?}",
+        setup.typed()
+    );
+}
+
+#[test]
+fn an_explicit_subscribe_to_the_tasks_own_pull_request_wakes_it_on_a_check_run() {
+    let mut setup = Setup::new("own-key-subscribed");
+    setup.calls(&[json!([
+        subscribe("subscribe"),
+        wait(json!({ "type": "time", "until": "1 hour" }))
+    ])]);
+    setup.publish(&requested(7));
+    setup.start();
+    setup.until("runs", |rows| {
+        rows.first().is_some_and(|row| row[7] == "asleep")
+    });
+    let mut green = check(1, 0);
+    green.data["head_branch"] = json!("feature");
+
+    setup.publish(&green);
+
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 2);
+    assert!(
+        setup.typed()[1].starts_with("github.check_run.completed owner/repo#7 {"),
         "{:?}",
         setup.typed()
     );
