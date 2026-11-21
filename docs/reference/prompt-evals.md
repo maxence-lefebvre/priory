@@ -59,10 +59,12 @@ A TOML file, named `<prompt>.eval.toml` and kept beside the text it tests.
 | --- | ---- | ------- |
 | `tool` | string, optional | A tool of Priory's MCP server whose description each variant replaces. Unset, each variant fills `{prompt}`. |
 | `doc` | path, optional | The doc whose table the command rewrites, relative to this file. |
+| `shape` | bool, optional | Default `false`. When `true`, an `ask` ending names the ask's shape: `short` when its question is one line of at most 25 words, then `whatWaits` and `nextAction` when it filled them. A case then expects `ask short whatWaits nextAction`, or the part it wants. |
 | `[[variants]]` | table list | The texts to compare, in the table's order. |
 | `variants.name` | string | The variant's name in the table, such as `old`. |
 | `variants.text` | string | The variant's text. |
 | `variants.file` | path | Instead of `text`: a file that holds it, relative to this file. Trailing whitespace is dropped. |
+| `variants.system_file` | path, optional | A file whose text goes to the agent's system prompt in every turn of the variant's runs, as Claude's `--append-system-prompt`. It is read relative to this file, and trailing whitespace is dropped. |
 | `[[cases]]` | table list | The situations to run. |
 | `cases.name` | string | The case's name, for the table and `--case`. |
 | `cases.before` | string list, optional | Prompts typed first, one turn each. |

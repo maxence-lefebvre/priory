@@ -52,6 +52,9 @@ pub struct Settings {
     pub command_timeout: Option<Duration>,
     /// The project's gate: the command `priory gate` runs with `sh -c` in a task's worktree.
     pub gate: Option<String>,
+    /// A writing guide, as a path relative to the factory folder. Priory appends its text to the
+    /// system prompt of every agent it starts.
+    pub writing: Option<String>,
     #[serde(default)]
     pub search: Search,
     #[serde(default)]
@@ -1317,6 +1320,8 @@ pub struct Factory {
     pub prices: BTreeMap<String, Price>,
     pub lanes: Option<Loaded<Lanes>>,
     pub settings: Option<Loaded<Settings>>,
+    /// The text of the file `writing` names, as it is on disk.
+    pub writing: Option<String>,
 }
 
 impl Factory {
@@ -1572,6 +1577,18 @@ pub fn load(dir: &Path) -> (Factory, Vec<Problem>) {
     factory.lanes = lanes.remove("lanes");
 
     factory.settings = settings.remove("factory");
+    if let Some(settings) = &factory.settings
+        && let Some(name) = &settings.value.writing
+    {
+        match fs::read_to_string(dir.join(name)) {
+            Ok(text) => factory.writing = Some(text),
+            Err(error) => found.problems.push(Problem {
+                file: settings.file.clone(),
+                at: settings.lines.field("writing").map(|line| line.to_string()),
+                message: format!("`writing` names {name}, which {}", unreadable(&error)),
+            }),
+        }
+    }
     for path in found
         .entries("agents")
         .into_iter()
@@ -1655,6 +1672,16 @@ pub fn load(dir: &Path) -> (Factory, Vec<Problem>) {
         factory.prices = prices;
     }
     (factory, problems)
+}
+
+/// The size past which `priory check` warns that a writing guide crowds every agent's prompt.
+pub const WRITING_LIMIT: usize = 4096;
+
+fn unreadable(error: &io::Error) -> String {
+    match error.kind() {
+        io::ErrorKind::NotFound => "does not exist".to_owned(),
+        _ => format!("cannot be read: {error}"),
+    }
 }
 
 struct Loader<'a> {

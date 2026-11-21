@@ -1,3 +1,4 @@
 #:schema https://raw.githubusercontent.com/maxence-lefebvre/priory/main/docs/schemas/config/factory.json
 name = "bug-investigation"
+writing = "WRITING.md"
 gate = "make test"   # your project's tests, which `priory gate` runs

@@ -1487,7 +1487,7 @@ fn start(
     } else {
         state::resumable(db, admission.task, name)?
     };
-    let definition = definition(&agent.value);
+    let definition = definition(factory, &agent.value);
     let changed = match &resumed {
         Some(session) if shared => {
             state::definition(db, session)?.and_then(|stored| changed(&stored, &definition))
@@ -1552,11 +1552,11 @@ fn start(
         resume: resume.as_deref(),
         prompt: first.as_deref(),
     };
-    Ok(launch(&agent.value, home, scope, &env, &started))
+    Ok(launch(factory, &agent.value, home, scope, &env, &started))
 }
 
 /// What a shared session starts with: digests of its agent's prompt, tools, model and flags.
-fn definition(agent: &factory::Agent) -> serde_json::Value {
+fn definition(factory: &Factory, agent: &factory::Agent) -> serde_json::Value {
     let digest = |part: serde_json::Value| {
         Sha256::digest(part.to_string().as_bytes())[..8]
             .iter()
@@ -1565,7 +1565,7 @@ fn definition(agent: &factory::Agent) -> serde_json::Value {
     };
     let permissions = &agent.permissions;
     serde_json::json!({
-        "prompt": digest(serde_json::json!(agent.body)),
+        "prompt": digest(serde_json::json!(body(factory, agent))),
         "tools": digest(serde_json::json!([
             agent.mcp_servers,
             permissions.allow,
@@ -1592,6 +1592,18 @@ fn changed(stored: &str, definition: &serde_json::Value) -> Option<String> {
     })
 }
 
+/// The agent's instructions, then the factory's writing guide.
+fn body(factory: &Factory, agent: &factory::Agent) -> String {
+    [
+        agent.body.trim_end(),
+        factory.writing.as_deref().unwrap_or("").trim(),
+    ]
+    .into_iter()
+    .filter(|part| !part.is_empty())
+    .collect::<Vec<_>>()
+    .join("\n\n")
+}
+
 /// Where and as what a harness starts.
 struct Started<'a> {
     tmux: &'a str,
@@ -1603,6 +1615,7 @@ struct Started<'a> {
 
 /// Starts `agent`'s harness with the flags every run of it gets, so a resumed session keeps them.
 fn launch(
+    factory: &Factory,
     agent: &factory::Agent,
     home: &Path,
     scope: &[String],
@@ -1620,7 +1633,7 @@ fn launch(
             resume: started.resume,
             model: agent.model.as_deref(),
             effort: agent.effort.as_deref(),
-            body: &agent.body,
+            body: &body(factory, agent),
             prompt: started.prompt,
             permissions,
             permission_mode: agent
@@ -1684,8 +1697,9 @@ fn compact_idle(
             Some("no worktree")
         } else if context.is_none_or(|context| context < limit.get()) {
             Some("small")
-        } else if stored.is_some_and(|stored| changed(&stored, &definition(&agent.value)).is_some())
-        {
+        } else if stored.is_some_and(|stored| {
+            changed(&stored, &definition(trace.factory, &agent.value)).is_some()
+        }) {
             Some("changed")
         } else {
             None
@@ -1702,7 +1716,7 @@ fn compact_idle(
             prompt: None,
         };
         let env: Vec<String> = guard_env(trace.factory).into_iter().collect();
-        if let Err(error) = launch(&agent.value, home, scope, &env, &started) {
+        if let Err(error) = launch(trace.factory, &agent.value, home, scope, &env, &started) {
             eprintln!("priory daemon: compacting {tmux}: {error}");
             idle::end(db, id, "failed")?;
         }

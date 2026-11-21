@@ -221,3 +221,41 @@ fn the_eval_server_serves_priorys_tools_with_one_description_replaced_and_logs_e
     let logged: Value = serde_json::from_str(fs::read_to_string(&log).unwrap().trim()).unwrap();
     assert_eq!(logged, result);
 }
+
+#[test]
+fn eval_gives_a_variants_system_file_to_each_of_its_turns_and_no_other_variant() {
+    let dir = dir("system");
+    fs::write(
+        dir.join("prompt.eval.toml"),
+        r#"
+variants = [{ name = "bare", text = "" }, { name = "guided", text = "", system_file = "guide.md" }]
+
+[[cases]]
+name = "done"
+before = ["Do the step."]
+prompt = "Go."
+expect = "no exit"
+"#,
+    )
+    .unwrap();
+    fs::write(dir.join("guide.md"), "Lead with the question.\n").unwrap();
+
+    let output = eval(&dir, &["prompt.eval.toml", "--runs", "1", "--budget", "1"]);
+
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let args = fs::read_to_string(dir.join("fake/handler-args.log")).unwrap();
+    assert_eq!(
+        args.matches("--append-system-prompt\n").count(),
+        2,
+        "{args}"
+    );
+    assert_eq!(
+        args.matches("Lead with the question.\n").count(),
+        2,
+        "{args}"
+    );
+}

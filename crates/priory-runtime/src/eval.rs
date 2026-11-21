@@ -16,6 +16,10 @@ pub struct Eval {
     pub tool: Option<String>,
     /// The doc whose result table this evaluation rewrites, relative to the file.
     pub doc: Option<PathBuf>,
+    /// Name, in an `ask` ending, the ask's shape: a short question, and which of `whatWaits` and
+    /// `nextAction` it filled.
+    #[serde(default)]
+    pub shape: bool,
     pub variants: Vec<Variant>,
     pub cases: Vec<Case>,
 }
@@ -28,6 +32,11 @@ pub struct Variant {
     pub text: Option<String>,
     /// Instead of `text`, relative to the evaluation file.
     pub file: Option<PathBuf>,
+    /// Set once [`load`] has read `system_file`: appended to the agent's system prompt.
+    #[serde(skip)]
+    pub system: Option<String>,
+    /// A file with the text to append to the agent's system prompt, relative to the evaluation file.
+    pub system_file: Option<PathBuf>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -52,6 +61,8 @@ pub struct Turn<'a> {
     pub dir: &'a Path,
     /// Where the fake MCP server logs the run's tool calls.
     pub log: &'a Path,
+    /// Text for the agent's system prompt, as Claude's `--append-system-prompt`.
+    pub system: Option<&'a str>,
     /// The tool description the fake MCP server replaces, as name and text.
     pub describe: Option<(&'a str, &'a str)>,
     /// The most the turn may spend, in dollars.
@@ -122,8 +133,7 @@ pub fn run(
                 let dir = scratch.join(format!("{c}-{v}-{n}"));
                 fs::create_dir_all(&dir)
                     .map_err(|error| format!("cannot create {}: {error}", dir.display()))?;
-                let text = variant.text.as_deref().unwrap_or_default();
-                let Some(verdict) = one(eval, case, text, &dir, options, &mut report, agent)?
+                let Some(verdict) = one(eval, case, variant, &dir, options, &mut report, agent)?
                 else {
                     break;
                 };
@@ -144,12 +154,13 @@ pub fn run(
 fn one(
     eval: &Eval,
     case: &Case,
-    text: &str,
+    variant: &Variant,
     dir: &Path,
     options: &Options,
     report: &mut Report,
     agent: &mut dyn Agent,
 ) -> Result<Option<String>, String> {
+    let text = variant.text.as_deref().unwrap_or_default();
     let prompt = case.prompt.replace("{prompt}", text);
     let turns = case
         .before
@@ -169,6 +180,7 @@ fn one(
             session: session.as_deref(),
             dir,
             log: &log,
+            system: variant.system.as_deref(),
             describe: eval.tool.as_deref().map(|tool| (tool, text)),
             budget: options.budget - report.spent,
         };
@@ -182,7 +194,7 @@ fn one(
             return Ok(Some(format!("agent error: {error}")));
         }
         session = Some(spent.session);
-        verdict = ending(&log)?;
+        verdict = ending(&log, eval.shape)?;
         if index < case.before.len() && verdict != NO_EXIT {
             return Ok(Some(format!("{verdict} before the prompt")));
         }
@@ -193,7 +205,8 @@ fn one(
 const NO_EXIT: &str = "no exit";
 
 /// The first `result`, `ask` or `wait` call in `log`, with its outcome or condition, or `no exit`.
-fn ending(log: &Path) -> Result<String, String> {
+/// With `shape`, an ask names its [`shape_of`].
+fn ending(log: &Path, shape: bool) -> Result<String, String> {
     let text = match fs::read_to_string(log) {
         Ok(text) => text,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
@@ -205,6 +218,7 @@ fn ending(log: &Path) -> Result<String, String> {
         let arguments = &call["arguments"];
         let detail = match call["name"].as_str().unwrap_or_default() {
             "result" => arguments["outcome"].as_str().unwrap_or("without outcome"),
+            "ask" if shape => &shape_of(arguments),
             "ask" => "",
             "wait" => arguments["on"]["type"].as_str().unwrap_or("any"),
             _ => continue,
@@ -216,6 +230,25 @@ fn ending(log: &Path) -> Result<String, String> {
         );
     }
     Ok(NO_EXIT.to_owned())
+}
+
+/// What an ask's shape shows: `short` when its question is one line of at most 25 words, then the
+/// optional fields it filled, `whatWaits` before `nextAction`.
+fn shape_of(arguments: &Value) -> String {
+    let filled = |field: &&str| {
+        arguments[*field]
+            .as_str()
+            .is_some_and(|text| !text.trim().is_empty())
+    };
+    let short = arguments["question"].as_str().is_some_and(|question| {
+        !question.trim().contains('\n') && question.split_whitespace().count() <= 25
+    });
+    short
+        .then_some("short")
+        .into_iter()
+        .chain(["whatWaits", "nextAction"].iter().copied().filter(filled))
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// Reads the evaluation file at `path`, with each variant's `file` read into its text.
@@ -241,6 +274,12 @@ pub fn load(path: &Path) -> Result<Eval, String> {
     names("cases", eval.cases.iter().map(|case| &case.name).collect())?;
     let dir = path.parent().unwrap_or(Path::new("."));
     for variant in &mut eval.variants {
+        if let Some(file) = &variant.system_file {
+            let file = dir.join(file);
+            let text = fs::read_to_string(&file)
+                .map_err(|error| format!("{}: {error}", file.display()))?;
+            variant.system = Some(text.trim_end().to_owned());
+        }
         match (&variant.text, &variant.file) {
             (Some(_), None) => {}
             (None, Some(file)) => {
@@ -362,6 +401,11 @@ impl Agent for Claude<'_> {
                     .iter()
                     .flat_map(|session| ["--resume", session]),
             )
+            .args(
+                turn.system
+                    .iter()
+                    .flat_map(|system| ["--append-system-prompt", system]),
+            )
             .current_dir(turn.dir);
         for name in crate::runtime::NESTED {
             command.env_remove(name);
@@ -431,12 +475,14 @@ mod tests {
     #[derive(Default)]
     struct Fake {
         prompts: Vec<String>,
+        systems: Vec<Option<String>>,
         fail: bool,
     }
 
     impl Agent for Fake {
         fn turn(&mut self, turn: &Turn) -> Result<Spent, String> {
             self.prompts.push(turn.prompt.to_owned());
+            self.systems.push(turn.system.map(str::to_owned));
             if turn.prompt.contains("clear") {
                 let call = json!({ "name": "result", "arguments": { "outcome": "passed" } });
                 record(turn.log, &call)?;
@@ -499,6 +545,51 @@ mod tests {
         );
         assert!(report.complete);
         assert_eq!(fake.prompts[..2], ["Do the step.", "Go on. End it."]);
+    }
+
+    #[test]
+    fn a_variants_system_file_reaches_every_turn_of_its_runs_and_no_other_variants() {
+        let dir = scratch("system");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("guide.md"), "Lead with the question.\n").unwrap();
+        fs::write(
+            dir.join("a.eval.toml"),
+            r#"
+            variants = [{ name = "bare", text = "" }, { name = "guided", text = "", system_file = "guide.md" }]
+            [[cases]]
+            name = "c"
+            before = ["Set the scene."]
+            prompt = "Go."
+            expect = "no exit"
+            "#,
+        )
+        .unwrap();
+        let eval = load(&dir.join("a.eval.toml")).unwrap();
+        let mut fake = Fake::default();
+        let options = Options {
+            runs: 1,
+            budget: 1.0,
+            case: None,
+        };
+
+        run(&eval, &dir.join("out"), &options, &mut fake).unwrap();
+
+        let guide = Some("Lead with the question.".to_owned());
+        assert_eq!(fake.systems, [None, None, guide.clone(), guide]);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn with_shape_an_ask_ending_names_which_of_what_waits_and_next_action_it_filled() {
+        let dir = scratch("shape");
+        fs::create_dir_all(&dir).unwrap();
+        let log = dir.join("calls.jsonl");
+        let ask = json!({ "name": "ask", "arguments": { "question": "Q?", "nextAction": "Then I ship." } });
+        record(&log, &ask).unwrap();
+
+        assert_eq!(ending(&log, true).unwrap(), "ask short nextAction");
+        assert_eq!(ending(&log, false).unwrap(), "ask");
+        fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
@@ -609,7 +700,7 @@ mod tests {
             let mut text = format!("{call}\n").into_bytes();
             text.extend(junk);
             fs::write(&log, text).unwrap();
-            let _ = ending(&log);
+            let _ = ending(&log, true);
             fs::remove_file(log).unwrap();
         }
 
