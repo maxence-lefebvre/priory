@@ -17,6 +17,8 @@ your machine's Tailscale hostname.
 - The agent never submits, approves or requests changes. Its prompt forbids it, and its permissions
   deny `gh pr review` and `gh pr merge`.
 - The `review` step is `reversible`: a pending review stays invisible and can be deleted.
+- The workflow allows the guard `gh-api-write`, so the agent can create the pending review with
+  `gh api`. A merge or an approval through `gh api` is still denied: it needs an approved step.
 - First, a second agent, `risk`, grades the pull request's merge risk low, medium or high on five
   dimensions, one line each. It reads only: it never comments on or reviews the pull request.
 - `submit` asks you to submit the review on GitHub, then to answer `submitted` or `discarded`.
