@@ -12,7 +12,7 @@ use std::collections::BTreeMap;
 use std::io::Write;
 use std::time::Duration;
 
-const VERSION: i64 = 62;
+const VERSION: i64 = 63;
 
 const SCHEMA: &str = "
 CREATE TABLE tasks (
@@ -1091,11 +1091,18 @@ CREATE TABLE IF NOT EXISTS findings (
 PRAGMA user_version = 61;
 ";
 
+// A risk step's verdict on the finished change: the result keeps it, and the task its latest.
+const SCHEMA_62: &str = "
+ALTER TABLE results ADD COLUMN merge_risk TEXT;
+ALTER TABLE tasks ADD COLUMN merge_risk TEXT;
+PRAGMA user_version = 62;
+";
+
 // Migration 58 named every old wait withdrawn as -2 `sibling-fired`, which also meant an answer, a
 // dismiss or a stack ask. A wait whose run had no fired wait was withdrawn by its run's dismissed or
 // answered ask; a gate of a task none of whose gates fired, by a stack ask. Since 58 every
 // `sibling-fired` wait has a fired sibling, so these rows are old ones only.
-const SCHEMA_62: &str = "
+const SCHEMA_63: &str = "
 UPDATE waits SET withdrawn_reason = CASE
     WHEN EXISTS (SELECT 1 FROM asks WHERE asks.run = waits.run AND asks.withdrawn_reason = 'dismissed')
       THEN 'dismissed'
@@ -1107,7 +1114,7 @@ UPDATE waits SET withdrawn_reason = CASE
 UPDATE waits SET withdrawn_reason = 'asked'
   WHERE withdrawn_reason = 'sibling-fired' AND daemon AND NOT EXISTS (SELECT 1 FROM waits AS
     sibling WHERE sibling.task = waits.task AND sibling.daemon AND sibling.fired IS NOT NULL);
-PRAGMA user_version = 62;
+PRAGMA user_version = 63;
 ";
 
 /// Each schema change in order: a file at version `n` applies those from index `n` on.
@@ -1119,7 +1126,7 @@ const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA_34, SCHEMA_35, SCHEMA_36, SCHEMA_37, SCHEMA_38, SCHEMA_39, SCHEMA_40, SCHEMA_41,
     SCHEMA_42, SCHEMA_43, SCHEMA_44, SCHEMA_45, SCHEMA_46, SCHEMA_47, SCHEMA_48, SCHEMA_49,
     SCHEMA_50, SCHEMA_51, SCHEMA_52, SCHEMA_53, SCHEMA_54, SCHEMA_55, SCHEMA_56, SCHEMA_57,
-    SCHEMA_58, SCHEMA_59, SCHEMA_60, SCHEMA_61, SCHEMA_62,
+    SCHEMA_58, SCHEMA_59, SCHEMA_60, SCHEMA_61, SCHEMA_62, SCHEMA_63,
 ];
 
 /// The order the queue starts tasks in: band, then a person's order, then age. A band the factory

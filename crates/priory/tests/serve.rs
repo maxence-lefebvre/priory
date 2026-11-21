@@ -439,7 +439,7 @@ fn each_endpoint_returns_what_the_cli_shows_and_its_json() {
     let asks = String::from_utf8(setup.priory(&["asks"]).stdout).unwrap();
     assert_eq!(
         asks,
-        "id\ttask\trevision\tquestion\toptions\tsnoozed_until\tback_early\ttitle\ttext\twhat_waits\tnext_action\tcommand\tcoordinator\tkey\trun_id\tsession\n1\t1\t2\tWhich way?\\nPick one.\t[\"left\",\"right\"]\t-\t-\t-\t-\t-\t-\t-\t-\tcli:docs-1\t-\t-\n"
+        "id\ttask\trevision\tquestion\toptions\tsnoozed_until\tback_early\ttitle\ttext\twhat_waits\tnext_action\tcommand\tcoordinator\tkey\trun_id\tsession\tmerge_risk\n1\t1\t2\tWhich way?\\nPick one.\t[\"left\",\"right\"]\t-\t-\t-\t-\t-\t-\t-\t-\tcli:docs-1\t-\t-\t-\n"
     );
     let queue = api(&address, "/api/queue");
     let waiting = &queue["waiting"];
@@ -721,7 +721,7 @@ fn asks_risk_lists_only_the_asks_with_that_risk_and_none_lists_those_with_neithe
     assert!(!output.status.success());
     assert_eq!(
         String::from_utf8_lossy(&output.stderr),
-        "priory asks: risk `grey` is not one of irreversible, red, yellow, green, none\n"
+        "priory asks: risk `grey` is not one of irreversible, high, medium, low, red, yellow, green, none\n"
     );
 }
 

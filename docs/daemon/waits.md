@@ -119,7 +119,7 @@ asks --json`, `/api/asks` and `priory task <id> --json` show it. It is one of:
 
 State files before schema 58 kept the reason as a number in `withdrawn`. The upgrade names it: -1
 is `dismissed`, -2 `sibling-fired`, 0 `moved-on` and a generation `revived`. A wait withdrawn by an
-answer, a dismiss or a stack ask before then also held -2. Schema 62 corrects those where the state
+answer, a dismiss or a stack ask before then also held -2. Schema 63 corrects those where the state
 shows it: a wait whose run had no fired wait becomes `dismissed` when its run's ask was dismissed,
 else `answered-elsewhere` when that ask was answered. A checks gate of a task none of whose gates
 ever fired becomes `asked`. Any other old -2 wait still reads `sibling-fired`.

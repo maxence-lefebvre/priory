@@ -52,7 +52,9 @@ fn as_version_57(db: &rusqlite::Connection) {
     db.execute_batch(
         "DROP TRIGGER ask_returns_from_its_lead; DROP TRIGGER push_an_intake_failure;
          DROP TRIGGER push_an_uncertain_prompt; DROP TRIGGER push_an_uncertain_command;
-         ALTER TABLE waits DROP COLUMN green; ALTER TABLE tasks DROP COLUMN files; ALTER TABLE tasks DROP COLUMN files_run; PRAGMA user_version = 57;",
+         ALTER TABLE waits DROP COLUMN green; ALTER TABLE tasks DROP COLUMN files;
+         ALTER TABLE tasks DROP COLUMN files_run; ALTER TABLE tasks DROP COLUMN merge_risk;
+         ALTER TABLE results DROP COLUMN merge_risk; PRAGMA user_version = 57;",
     )
     .unwrap();
 }
@@ -96,7 +98,7 @@ fn an_upgrade_names_the_reason_each_sentinel_meant() {
         reasons("asks"),
         ["dismissed", "sibling-fired", "moved-on", "revived"]
     );
-    // No wait of its run fired and its run's ask was dismissed, so 62 names the dismiss.
+    // No wait of its run fired and its run's ask was dismissed, so 63 names the dismiss.
     assert_eq!(reasons("waits"), ["dismissed", "moved-on", "revived"]);
     let db = rusqlite::Connection::open(dir.join("priory.db")).unwrap();
     let logged: Vec<String> = db
