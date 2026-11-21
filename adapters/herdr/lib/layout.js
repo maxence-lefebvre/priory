@@ -16,7 +16,7 @@ export const PANELS = {
   costs: { place: "tab", mod: "priory-costs" },
   tasks: { place: "tab" },
   runs: { place: "tab" },
-  inbox: { place: "tab" },
+  inbox: { place: "tab", mod: "priory-inbox" },
   terminal: { place: "main" },
 };
 

@@ -412,7 +412,8 @@ not subscribe to is refused.
 
 `priory subscribe TASK RESOURCE` and `priory unsubscribe TASK RESOURCE` do the same for any task,
 writing the state file directly. They take the resource string, such as `github:owner/name#57`,
-and exit 2 on one they cannot read:
+and exit 2 on one they cannot read. `priory subscribe` also takes `--expected REVISION`, the state
+revision the caller read: once the state moved past it, the subscribe exits 1 and changes nothing.
 
 ```sh
 priory subscribe 7 github:owner/name#57

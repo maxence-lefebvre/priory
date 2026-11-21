@@ -24,8 +24,9 @@ The adapter lives in `adapters/herdr/` at the repository root, outside the Cargo
 - `adapters/herdr/mods/priory-costs/`: the Costs panel. See [The Costs panel](#the-costs-panel).
 - `adapters/herdr/mods/priory-flows/`: the Flows panel. See [The Flows panel](#the-flows-panel).
 - `adapters/herdr/mods/priory-task/`: the Task panel. See [The Task panel](#the-task-panel).
+- `adapters/herdr/mods/priory-inbox/`: the Inbox panel. See [The Inbox panel](#the-inbox-panel).
 - `adapters/herdr/mods/priory-elsewhere/`: the placeholder for a view's panel that has no mod yet:
-  `tasks`, `runs` and `inbox`. It names the panel and links to it in the web view.
+  `tasks` and `runs`. It names the panel and links to it in the web view.
 - `adapters/herdr/layouts/frame.json`: Herdr's chrome around the view: the sidebar, the top bar
   with the Priory bar, 420 px wide, and Herdr's tab bar, the work body with Herdr's `main` block,
   and the status line.
@@ -55,8 +56,9 @@ with Priory's colors keeps a copy of `lib/tokens.js`. The Desk and Queue panels 
 Priory bar keep `lib/layout.js`. A test fails when a copy differs from the
 library. After you change a file in `lib/`, copy it into every mod that carries it.
 
-The Costs and Flows panels keep the web view's own view models: `mods/priory-costs/view.js` is a
-copy of `crates/priory-core/web/costs.js`, and `mods/priory-flows/view.js` of `flows.js`. A test
+The Costs, Flows and Inbox panels keep the web view's own view models: `mods/priory-costs/view.js` is a
+copy of `crates/priory-core/web/costs.js`, `mods/priory-flows/view.js` of `flows.js`, and
+`mods/priory-inbox/view.js` of `inbox.js`. A test
 fails when a copy differs from the web file. After you change one, copy it into its mod. Herdr's
 engine has no `Intl`, so these files format numbers and dates by hand.
 
@@ -114,8 +116,8 @@ panels, and a view that places a panel twice is refused.
 | ----- | -------- | --- |
 | `desk`, `asks`, `queue` | an aside | `priory-desk`, `priory-asks`, `priory-queue` |
 | `reports` | a tab in the center | `priory-bonjour` |
-| `workflow`, `costs` | a tab in the center | `priory-flows`, `priory-costs` |
-| `tasks`, `runs`, `inbox` | a tab in the center | `priory-elsewhere` |
+| `workflow`, `costs`, `inbox` | a tab in the center | `priory-flows`, `priory-costs`, `priory-inbox` |
+| `tasks`, `runs` | a tab in the center | `priory-elsewhere` |
 | `terminal` | the frame's `main` block, where Herdr shows the active tab, which is always in the center | none |
 
 The work body is a row: the center, then each aside in the view's order, then Herdr's own panel.
@@ -185,7 +187,7 @@ state database and never writes a file in the factory.
 - **Acting.** Every button runs a CLI verb: `answer --expected N [--run] -- ASK TEXT`,
   `dismiss --expected N ASK`, `snooze`, `say`, `report pick PICK OPTION --expected N`,
   `report comment ROW --expected N TEXT`, `report reply|resolve|reopen COMMENT`, `seen`,
-  `resume`, `revive`, `todo done`, `inbox read`, `hold`, `release`, `move`, `cancel`, `pause`, `unpause` and
+  `resume`, `revive`, `todo done`, `inbox read`, `subscribe TASK RESOURCE --expected N`, `hold`, `release`, `move`, `cancel`, `pause`, `unpause` and
   `add FACTORY [--workflow W] [--band B] [--lane L] -- TEXT`. An answer always carries the revision the person read, so a
   changed question refuses it (R6.3).
 - **Safety.** `priory.js` passes every value as its own argument, never through a shell, and never
@@ -520,6 +522,27 @@ DESIGN.md's "Costs panel" section holds its visual rules; this section says how 
   chips are disabled.
 - **Attention.** Your minutes per merge, the ask waits and where each task's time went.
 
+## The Inbox panel
+
+`mods/priory-inbox/` is the Inbox panel. The Priory bar opens it as a tab in the center stack.
+DESIGN.md's "Inbox" section holds its visual rules; this section says how it works.
+
+- **Files.** `view.js`, a copy of the web view's `inbox.js`, picks each group's route action and
+  words the line for events no task ever owned. `main.js` reads and draws.
+- **Reading.** The panel reads `priory inbox --unrouted --json` and follows its revision with
+  `priory wait`. Its one view, Unrouted, counts the events of a task's resources.
+- **Groups.** Each resource whose events reached no task shows its newest owner with the owner's
+  state tile, its 5 newest events and how many are older. Pressing the owner opens it in the
+  [Task panel](#the-task-panel). A line under the groups counts the events no task ever owned,
+  per source.
+- **Routing.** Each group has one button, by its owner's state. Subscribe task N runs
+  `priory subscribe N RESOURCE --expected REVISION`, with the revision the panel read, for an
+  active owner. Revive task N runs `priory revive N` for a
+  failed or dropped one. Request a task runs `priory add FACTORY --workflow W -- TEXT` with the
+  group's `request_text` for a done one, so the new task owns the resource. A note under the
+  group says what the verb did, or why priory refused it. One verb runs at a time, and after one
+  succeeds the buttons stay disabled until a read shows its result.
+
 ## The Flows panel
 
 `mods/priory-flows/` is the Flows panel. The Priory bar opens it as a tab in the center stack.
@@ -670,6 +693,11 @@ name: it draws the sections in the order the report gives them.
   [Attention](../reference/serve.md#attention).
 - Flows: `priory flows --json`, the object `/api/flows` serves; see
   [serve.md's Flows](../reference/serve.md#flows).
+
+### Inbox
+
+- `priory inbox --unrouted --json`, the object `/api/inbox?unrouted=1` serves; see
+  [serve.md's Unrouted](../reference/serve.md#unrouted).
 
 ## Writing another adapter
 
