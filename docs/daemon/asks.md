@@ -45,7 +45,8 @@ with its exit status and the tail of its output as `error`. The desk shows a fai
 the asker asks the same ID again, or a person clears or retries it.
 
 `priory deliver ASK --retry` queues the failed latest delivery of `ASK` again, with 5 fresh tries.
-`priory deliver ASK --clear` takes it off the desk and keeps it `failed`; `delivery.cleared` holds
+It refuses a delivery of an older revision than the ask has now, since that answer is stale:
+answer the ask again instead. `priory deliver ASK --clear` takes it off the desk and keeps it `failed`; `delivery.cleared` holds
 when. Both go to the daemon over its socket, and are refused with
 `the delivery of <ask> has not failed` while it is queued, running or delivered.
 

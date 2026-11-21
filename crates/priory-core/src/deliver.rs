@@ -51,20 +51,34 @@ pub enum Act {
 
 /// Queues the failed latest delivery of an ask again with fresh tries, or clears it from the desk.
 pub(crate) fn act(db: &Connection, line: &Line) -> rusqlite::Result<Result<String, String>> {
-    let found: Option<(String, i64, String)> = db
+    let found: Option<(String, i64, String, i64, i64)> = db
         .query_row(
-            "SELECT coalesce(asks.name, asks.id), deliveries.id, deliveries.state
+            "SELECT coalesce(asks.name, asks.id), deliveries.id, deliveries.state,
+               deliveries.revision, asks.revision
              FROM asks JOIN deliveries ON deliveries.ask = asks.id
              WHERE asks.id = ?1 ORDER BY deliveries.id DESC LIMIT 1",
             [line.deliver],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                ))
+            },
         )
         .optional()?;
-    let Some((label, id, state)) = found else {
+    let Some((label, id, state, revision, current)) = found else {
         return Ok(Err(format!("ask {} has no delivery", line.deliver)));
     };
     if state != "failed" {
         return Ok(Err(format!("the delivery of {label} has not failed")));
+    }
+    if matches!(line.act, Act::Retry) && revision != current {
+        return Ok(Err(format!(
+            "the failed delivery of {label} is of revision {revision}, and the ask is at revision {current} now: answer it again"
+        )));
     }
     let (sql, done) = match line.act {
         Act::Retry => (

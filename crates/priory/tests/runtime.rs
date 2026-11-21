@@ -4585,6 +4585,27 @@ fn a_failed_delivery_can_be_cleared_from_the_desk_then_retried() {
 }
 
 #[test]
+fn a_failed_delivery_of_an_older_revision_than_the_ask_has_is_not_retried() {
+    let mut setup = delivering("deliver-retry-stale", "exit 3");
+    setup.start();
+    listening(&setup);
+    setup.priory(&["ask", "cache.ship", &fleet_ask(&["ship", "wait"])]);
+    setup.priory(&["answer", "--expected", "1", "--", "cache.ship", "ship"]);
+    delivery(&setup, "cache.ship", |delivery| {
+        delivery["state"] == "failed"
+    });
+    setup.priory(&["ask", "cache.ship", &fleet_ask(&["ship", "drop"])]);
+
+    let retried = setup.priory(&["deliver", "cache.ship", "--retry"]);
+
+    assert_eq!(
+        String::from_utf8_lossy(&retried.stderr),
+        "priory deliver: the failed delivery of cache.ship is of revision 1, and the ask is at revision 2 now: answer it again\n"
+    );
+    assert_eq!(delivery(&setup, "cache.ship", |_| true)["state"], "failed");
+}
+
+#[test]
 fn a_daemon_restarted_while_a_delivery_runs_waits_for_that_command_and_delivers_once() {
     let mut setup = delivering(
         "deliver-restart",
