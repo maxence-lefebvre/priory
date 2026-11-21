@@ -1,7 +1,7 @@
 import { View, div, svg } from "gpui-kit";
-import { h_flex, v_flex, Button, Popover, ScrollHandle, Textarea, TextareaState } from "gpui-base";
+import { h_flex, v_flex, Button, Popover, ScrollHandle, Textarea, TextareaState, TextView } from "gpui-base";
 import { appHome, exec, home as herdrHome, readTextFile, setShared } from "herdr";
-import { priory } from "./priory.js";
+import { priory, spansHtml } from "./priory.js";
 import { FONTS, palette } from "./tokens.js";
 import { ARM_MS, askDetail, asksList, press, refusal, tomorrowAt } from "./view.js";
 
@@ -35,8 +35,14 @@ async function connect() {
   const home = found.code === 0 ? found.stdout.trim() : "";
   if (!home.startsWith("/")) throw new Error(`No home folder on ${on ?? "this machine"}`);
   if (binary.startsWith("~/")) binary = home + binary.slice(1);
-  return { theme: config.theme ?? "indigo", client: priory({ exec, binary, on, factory: config.factory ?? null }) };
+  const client = priory({ exec, binary, on, factory: config.factory ?? null });
+  // Links are optional: without a factory priory can read, the panel shows its text unlinked.
+  const links = await client.links().then((read) => read.links, () => []);
+  return { theme: config.theme ?? "indigo", client, links };
 }
+
+/** Text with its autolinks; plain text stays a plain child. @param {string} id @param {{ text: string, url?: string }[]} spans */
+const linked = (id, spans) => (spans.some((span) => span.url) ? TextView.html(id, spansHtml(spans)) : spans.map((span) => span.text).join(""));
 
 const message = (/** @type {unknown} */ error) => (error instanceof Error ? error.message : String(error));
 
@@ -47,6 +53,8 @@ export default class PrioryAsks extends View {
     this.priory = null;
     /** @type {{ asks: any[], revision: number } | null} */
     this.data = null;
+    /** @type {{ pattern: string, url: string }[]} */
+    this.links = [];
     /** @type {string | null} */
     this.error = null;
     /** `priory task ID --json` of the selected ask's task: its brief, plan, pull request and runs. */
@@ -94,6 +102,7 @@ export default class PrioryAsks extends View {
       for (;;) {
         try {
           this.priory ??= await connect();
+          this.links = this.priory.links;
           const read = await this.priory.client.asks();
           this.data = read;
           this.updated = Date.now();
@@ -317,7 +326,7 @@ export default class PrioryAsks extends View {
     if (event.is_held && !["j", "k", "up", "down"].includes(event.key)) return;
     // Single keys never fire inside the answer field.
     if (this.typing || event.modifiers?.control || event.modifiers?.platform || event.modifiers?.alt) return;
-    const detail = ask && askDetail(ask, { now: Date.now(), armed: this.armed, task: this.task });
+    const detail = ask && askDetail(ask, { now: Date.now(), armed: this.armed, task: this.task, links: this.links });
     const digit = Number(event.key);
     if (event.key === "j" || event.key === "down") return this.move(1, cx);
     if (event.key === "k" || event.key === "up") return this.move(-1, cx);
@@ -502,14 +511,14 @@ export default class PrioryAsks extends View {
   /** The decide part: context, question, recommendation, options, write an answer and the overflow menu. */
   /** @param {any} ask @param {Palette} t @param {number} now */
   decide(ask, t, now) {
-    const detail = askDetail(ask, { now, armed: this.armed, task: this.task });
+    const detail = askDetail(ask, { now, armed: this.armed, task: this.task, links: this.links });
     const notice = this.notices.get(ask.id);
     return v_flex().gap(10)
       .child(h_flex().flex_wrap().gap(6).items_center().text_size(TYPE.caption[0]).text_color(t["text-3"])
         .child(this.tile(ask.state === "open" ? "ask" : ask.state, t))
         .children(detail.context.map((word, index) => word === "Command" ? this.tag(word, t)
           : div().when(index === 0, (el) => el.font_family(this.font.mono).text_color(t["text-2"])).child(word))))
-      .child(div().whitespace_normal().font_family(this.font.display).font_weight(700).text_size(TYPE.question[0]).line_height(TYPE.question[1]).child(detail.question))
+      .child(div().whitespace_normal().font_family(this.font.display).font_weight(700).text_size(TYPE.question[0]).line_height(TYPE.question[1]).child(linked("question", detail.questionSpans)))
       .when(Boolean(notice), (el) => el.child(div().whitespace_normal().text_size(TYPE.small[0]).text_color(t["warn-text"]).child(notice ?? "")))
       .when(Boolean(detail.decided), (el) => el.child(div().p(12).rounded(RADIUS.md).bg(t.raised).font_weight(600).child(detail.decided ?? "")))
       .when(Boolean(detail.ran), (el) => el.child(this.note("terminal", detail.ran?.text ?? "", detail.ran?.warn ? t["warn-text"] : t["text-2"])))
@@ -648,7 +657,7 @@ export default class PrioryAsks extends View {
 
   /** @param {any} ask @param {Palette} t */
   chips(ask, t) {
-    const detail = askDetail(ask, { now: Date.now(), armed: null, task: this.task });
+    const detail = askDetail(ask, { now: Date.now(), armed: null, task: this.task, links: this.links });
     const current = this.reading ?? (this.width >= PANE.split ? "why" : null);
     return h_flex().flex_none().gap(4).flex_wrap().children(detail.chips.map(([id, label]) =>
       Button.new(`chip-${ask.id}-${id}`).h(PANE.chip).px(10).flex().items_center().rounded(999).selected(current === id)
@@ -664,7 +673,7 @@ export default class PrioryAsks extends View {
 
   /** @param {any} ask @param {string} id @param {Palette} t @param {number} now */
   section(ask, id, t, now) {
-    const detail = askDetail(ask, { now, armed: this.armed, task: this.task });
+    const detail = askDetail(ask, { now, armed: this.armed, task: this.task, links: this.links });
     /** @param {string} icon @param {string} title @param {string} [meta] */
     const head = (icon, title, meta = "") => h_flex().gap(6).items_center().text_size(TYPE.small[0]).font_weight(650)
       .child(svg(ICON(icon)).size(14).text_color(t["text-2"])).child(title).child(div().flex_1())
@@ -711,7 +720,7 @@ export default class PrioryAsks extends View {
     // Agent text is untrusted, so it draws as plain text, never as Markdown or HTML.
     return v_flex().gap(8)
       .child(head("message-text", "What the agent says", detail.why.run ? `run ${detail.why.run}` : ""))
-      .child(div().whitespace_normal().text_size(TYPE.body[0]).line_height("22px").child(detail.why.text))
+      .child(div().whitespace_normal().text_size(TYPE.body[0]).line_height("22px").child(linked("why", detail.why.textSpans)))
       .when(Boolean(detail.why.tradeoff), (el) => el.child(fact("scale", "Trade-off.", detail.why.tradeoff)))
       .when(Boolean(detail.why.whatWaits), (el) => el.child(fact("hourglass", "What waits.", detail.why.whatWaits)));
   }
@@ -728,7 +737,7 @@ export default class PrioryAsks extends View {
   /** From 720 px: the decide part pinned at the top, and the sections scrolling under it. */
   /** @param {any} ask @param {Palette} t @param {number} now */
   drawer(ask, t, now) {
-    const detail = askDetail(ask, { now, armed: this.armed, task: this.task });
+    const detail = askDetail(ask, { now, armed: this.armed, task: this.task, links: this.links });
     return v_flex().flex_1().min_w_0().min_h_0()
       .child(v_flex().id("ask-decide").flex_none().max_h("50%").overflow_y_scrollbar().p(16).gap(12).border_b(1).border_color(t.line)
         .child(this.decide(ask, t, now)).child(this.chips(ask, t)))
@@ -740,7 +749,7 @@ export default class PrioryAsks extends View {
   /** Below 720 px, reading a section: a one-line header, the chips, the section, and the answer bar. */
   /** @param {any} ask @param {Palette} t @param {number} now */
   reader(ask, t, now) {
-    const detail = askDetail(ask, { now, armed: this.armed, task: this.task });
+    const detail = askDetail(ask, { now, armed: this.armed, task: this.task, links: this.links });
     const open = this.rows().filter((row) => row.tile === "ask").map((row) => row.id);
     const at = open.indexOf(ask.id);
     /** @param {string} id @param {string} icon @param {string} label @param {(cx: import("gpui-kit").Context) => void} action @param {boolean} [off] */

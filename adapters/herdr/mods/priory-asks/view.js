@@ -1,5 +1,9 @@
 // The Asks panel's view model: `priory asks --all --json` in, rows and states out. No drawing, no IO.
 
+import { autolink } from "./priory.js";
+
+/** @typedef {{ pattern: string, url: string }[]} Links the rules `priory links` lists */
+
 /** @param {any} ask @param {number} now */
 const snoozed = (ask, now) => ask.state === "open" && !ask.back_early && Date.parse(ask.snoozed_until ?? "") > now;
 const sameDay = (/** @type {string} */ iso, /** @type {number} */ now) => new Date(iso).toDateString() === new Date(now).toDateString();
@@ -193,9 +197,9 @@ function trace(runs, now) {
  * One ask's detail: the decision first, then what to read. `task` is `priory task ID --json` of the
  * ask's task, when it was read: it fills Brief, Plan, PR and Trace.
  * @param {any} ask
- * @param {{ now: number, armed: Armed | null, task?: any }} options
+ * @param {{ now: number, armed: Armed | null, task?: any, links?: Links }} options
  */
-export function askDetail(ask, { now, armed, task = null }) {
+export function askDetail(ask, { now, armed, task = null, links = [] }) {
   const open = ask.state === "open";
   /** @type {string[]} */
   const options = open ? ask.options ?? [] : [];
@@ -207,9 +211,12 @@ export function askDetail(ask, { now, armed, task = null }) {
   const planned = task ? plan(task) : null;
   const pr = pullRequest(task?.pull_request);
   const runs = trace(task?.runs ?? [], now);
+  const question = ask.title || ask.question;
+  const why = ask.text || ask.question;
   return {
     context: [ask.key, ask.step, ask.lane, ask.command ? "Command" : null, age(ask.since, now), `revision ${ask.revision}`].filter(Boolean),
-    question: ask.title || ask.question,
+    question,
+    questionSpans: autolink(question, links, ask.repo ?? null),
     recommendation: ask.recommendation ? { text: `Recommended: ${ask.recommendation}.`, next: ask.next_action } : null,
     options: options.map((/** @type {string} */ label, /** @type {number} */ index) => ({
       index,
@@ -228,7 +235,7 @@ export function askDetail(ask, { now, armed, task = null }) {
     plan: planned,
     pr,
     trace: runs,
-    why: { text: ask.text || ask.question, run: ask.run, tradeoff: ask.tradeoff, whatWaits: ask.what_waits },
+    why: { text: why, textSpans: autolink(why, links, ask.repo ?? null), run: ask.run, tradeoff: ask.tradeoff, whatWaits: ask.what_waits },
     decided: ask.state === "answered" ? `Answered: ${ask.answer}.${ask.answered_at ? ` ${age(ask.answered_at, now)} ago.` : ""}`
       : ask.state === "withdrawn" ? `Withdrawn${ask.withdrawn_why ? `: ${ask.withdrawn_why}` : ""}.` : null,
     ran: ask.ran ? { text: ask.ran.status === "failed" ? `${RAN.failed}: ${ask.ran.error}.` : RAN[ask.ran.status] ?? ask.ran.status, warn: ask.ran.status === "uncertain" } : null,
