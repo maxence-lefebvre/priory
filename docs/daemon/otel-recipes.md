@@ -9,7 +9,8 @@ configuration only: nobody made an account to try them.
 
 ## One limit shapes every recipe
 
-`[telemetry]` has one key, `otlp`, and the daemon sends no header with its request. A hosted backend
+`[telemetry]` has one key, `otlp`, and the daemon sends no authentication header: its request carries
+only `Content-Type`, and `curl` runs with `--disable`, so a `.curlrc` cannot add one. A hosted backend
 wants an API key in a header, and ClickStack answers `401` without its ingestion key. So the recipes
 put an [OpenTelemetry Collector](https://opentelemetry.io/docs/collector/) on 127.0.0.1 between
 Priory and the backend. The collector takes Priory's request and adds the header, which it reads
@@ -79,9 +80,9 @@ and the database in one container. This recipe binds every published port to 127
          exporters: [otlphttp]
    ```
 
-3. Start ClickStack alone, then create its first user. The UI at <http://localhost:8080> does
-   the same. Registration answers `{"status":"success"}`, and the collector inside the container
-   only starts listening after it.
+3. Start ClickStack alone, then create its first user. Step 4 reads the key through the cookie
+   that this command saves. Registration answers `{"status":"success"}`, and the collector inside
+   the container only starts listening after it.
 
    ```sh
    CLICKSTACK_INGESTION_KEY=unset docker compose up -d clickstack
@@ -108,8 +109,8 @@ and the database in one container. This recipe binds every published port to 127
       FROM default.otel_traces ORDER BY Timestamp FORMAT PrettyCompact"
    ```
 
-   A two-step task shows one trace of five spans: the root `task <key>`, and an
-   `invoke_agent <agent>` span and a step span for each step.
+   A task of two model steps, each ended by one run, shows one trace of five spans: the root
+   `task <key>`, and an `invoke_agent <agent>` span and a step span for each step.
 
 7. Remove everything, images and volumes included:
 
@@ -164,9 +165,8 @@ Free plan, as [honeycomb.io/pricing](https://www.honeycomb.io/pricing) shows it:
 
 - Up to 20 million events and 100 million metric data points per month.
 - 2 triggers. Distributed tracing, BubbleUp and OpenTelemetry support are included.
-- The page's retention row and its definition of an event for trace data sit in sections the
-  fetched page did not show. Read them before you size a factory: Priory sends one span for each
-  root, run and step.
+- Check the page's retention row and its definition of an event for trace data before you size a
+  factory. Priory sends one span for each root, run and step.
 
 Sources for the endpoint and header:
 [docs.honeycomb.io/send-data/opentelemetry](https://docs.honeycomb.io/send-data/opentelemetry/).
@@ -177,7 +177,7 @@ This recipe is configuration only.
 
 1. In Grafana Cloud, open the stack's OpenTelemetry tile and generate a token. It shows the OTLP
    endpoint, the instance ID and the token.
-2. Export three variables. `GRAFANA_OTLP_ENDPOINT` is the gateway URL ending in `/otlp`, such as
+2. Export four variables. `GRAFANA_OTLP_ENDPOINT` is the gateway URL ending in `/otlp`, such as
    `https://otlp-gateway-prod-us-east-0.grafana.net/otlp`. `GRAFANA_OTLP_AUTH` is the whole header
    value, built from the instance ID and the token:
 
@@ -229,8 +229,11 @@ Sources for the endpoint and header:
 ## Known limits
 
 - A free tier's limits change. Each figure above was read from the vendor's page on 2026-11-21.
-- A collector that is down for a while does not lose spans: the daemon retries a failed batch every
-  5 seconds. A collector that answers `4xx` for a bad key makes the daemon skip the batch, so check
-  the key before a long run (see [trace.md](trace.md#opentelemetry-export)).
+- While the collector is down, the daemon retries a failed batch every 5 seconds. Once the collector
+  answers `2xx`, Priory counts the batch as sent. What reaches the backend after that is the
+  collector's job, and these configurations keep nothing on disk.
+- A bad key shows up at the collector's exporter, not in Priory's request, so the daemon does not see
+  it. Read the collector's log after the first task (`docker compose logs collector`, or the
+  `docker run` output).
 - Priory has no header setting, so each recipe needs the collector. A `headers_env` key under
   `[telemetry]` would remove it. It is not built.
