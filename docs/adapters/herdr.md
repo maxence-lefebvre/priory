@@ -195,6 +195,12 @@ DESIGN.md's "Herdr adapter" section holds its visual rules; this section says ho
   again. With each read and each new selection, it reads the selected ask's task with
   `priory task ID --json`. When a call fails, it keeps the last list and shows "Reconnecting to priory" with the age
   of its last update, and the options stay disabled until it reconnects.
+- **Routed asks.** An open ask with `routed_to` shows "with <lead>" in its row, and its detail says
+  the lead is answering and that the person can still answer first. An answered ask shows
+  `answered_by` as "by agent:<lead>" or "by a person", in its row, its decided line and the
+  History. The Desk panel shows the same mark under a routed ask's question. The helpers
+  `routedMark`, `routedNote` and `answeredBy` live in `lib/priory.js`, as in the web view's
+  `asks.js`; a test keeps the two word for word.
 - **List.** The saved views are Open, Snoozed, Answered and All, each with its count. The facet
   chips Command, Lane, Band, Risk and Task narrow every view. Band lists the bands in the factory's
   order from the listing's `bands`, and puts an ask with no band, such as an outside ask, under

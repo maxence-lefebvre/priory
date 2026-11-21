@@ -810,17 +810,17 @@ pub struct Workflow {
     pub reopen: Option<String>,
     /// The guarded calls every step of the workflow may make with no approval.
     #[serde(default)]
-    pub guard: WorkflowGuard,
+    pub guard: GuardAllow,
     /// The most pull requests a task's stack may hold: `open-pr` refuses a longer one. No cap
     /// when unset.
     pub max_prs: Option<std::num::NonZeroUsize>,
     pub steps: Vec<Step>,
 }
 
-/// A workflow's `guard` table.
+/// A workflow's or a step's `guard` table.
 #[derive(Debug, Default, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-pub struct WorkflowGuard {
+pub struct GuardAllow {
     /// Guard names, built-in or from `[guard]` in `factory.toml`.
     #[serde(default)]
     pub allow: Vec<String>,
@@ -871,6 +871,9 @@ pub struct Step {
     pub by: BTreeMap<String, By>,
     /// Why an irreversible step may run without a person's approval.
     pub autonomous: Option<String>,
+    /// The guarded calls an irreversible step may make while it is approved or autonomous.
+    #[serde(default)]
+    pub guard: GuardAllow,
     /// How long one turn of a model step, or a `run` action's command, may run before Priory ends
     /// it.
     #[serde(default, deserialize_with = "duration")]

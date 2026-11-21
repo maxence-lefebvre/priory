@@ -1,6 +1,6 @@
 // The Asks panel's view model: `priory asks --all --json` in, rows and states out. No drawing, no IO.
 
-import { autolink, prStack } from "./priory.js";
+import { answeredBy, autolink, prStack, routedMark, routedNote } from "./priory.js";
 
 /** @typedef {{ pattern: string, url: string }[]} Links the rules `priory links` lists */
 
@@ -35,6 +35,8 @@ function row(ask, now) {
       : ask.recommendation ? ["Recommends", ask.recommendation] : null,
     snoozed: snoozed(ask, now) ? `Snoozed until ${when(ask.snoozed_until, now)}` : null,
     backEarly: ask.state === "open" && ask.back_early ? `Back early: ${ask.back_early.reason} ${ask.revision}` : null,
+    ...(routedMark(ask) && { routed: routedMark(ask) }),
+    ...(ask.state === "answered" && answeredBy(ask.answered_by) && { by: answeredBy(ask.answered_by) }),
   };
 }
 
@@ -133,6 +135,12 @@ export function press(ask, index, armed, now) {
   return { arm: { id: ask.id, revision: ask.revision, option: index, at: now } };
 }
 
+/** " by <who>" for the revision the ask's `answered_by` belongs to: the current one. @param {any} ask @param {any} revision */
+const byLine = (ask, revision) => {
+  const by = ask.state === "answered" && revision.revision === ask.revision ? answeredBy(ask.answered_by) : null;
+  return by ? ` by ${by}` : "";
+};
+
 /** Every revision with its answer, every refused answer, and a withdrawal, newest first. @param {any} ask */
 function history(ask) {
   // An ask listed before Priory kept its revisions shows only its current one.
@@ -140,7 +148,7 @@ function history(ask) {
   const dated = [
     ...revisions.flatMap((/** @type {any} */ revision) => [
       { tile: "ask", text: `Asked revision ${revision.revision}${revision.question ? `: ${revision.question}` : ""}`, at: revision.at },
-      ...(revision.answer == null ? [] : [{ tile: "answered", text: `Answered ${revision.answer}`, at: revision.answered_at ?? revision.at }]),
+      ...(revision.answer == null ? [] : [{ tile: "answered", text: `Answered ${revision.answer}${byLine(ask, revision)}`, at: revision.answered_at ?? revision.at }]),
     ]),
     ...(ask.refused ?? []).map((/** @type {any} */ refusal) => ({
       tile: "refused", text: `Refused: ${refusal.answer}, sent for revision ${refusal.revision} from ${refusal.by}: ${refusal.why}`, at: refusal.at,
@@ -239,7 +247,8 @@ export function askDetail(ask, { now, armed, task = null, links = [] }) {
     pr,
     trace: runs,
     why: { text: why, textSpans: autolink(why, links, ask.repo ?? null), run: ask.run, tradeoff: ask.tradeoff, whatWaits: ask.what_waits },
-    decided: ask.state === "answered" ? `Answered: ${ask.answer}.${ask.answered_at ? ` ${age(ask.answered_at, now)} ago.` : ""}`
+    ...(routedNote(ask) && { routed: routedNote(ask) }),
+    decided: ask.state === "answered" ? `Answered: ${ask.answer}.${ask.answered_at ? ` ${age(ask.answered_at, now)} ago.` : ""}${answeredBy(ask.answered_by) ? ` By ${answeredBy(ask.answered_by)}.` : ""}`
       : ask.state === "withdrawn" ? `Withdrawn${ask.withdrawn_why ? `: ${ask.withdrawn_why}` : ""}.` : null,
     ran: ask.ran ? { text: ask.ran.status === "failed" ? `${RAN.failed}: ${ask.ran.error}.` : RAN[ask.ran.status] ?? ask.ran.status, warn: ask.ran.status === "uncertain" } : null,
     history: history(ask),

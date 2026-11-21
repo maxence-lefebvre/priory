@@ -164,8 +164,8 @@ What `priory add` and `POST /api/request` use when a request names no workflow o
 ## `[guard]`
 
 The tool guard denies an irreversible call that no person approved (see
-[guard.md](../daemon/guard.md), which lists the built-in guards). `[guard]` adds guards. A workflow
-lets its steps make a guarded call with `guard.allow` (see
+[guard.md](../daemon/guard.md), which lists the built-in guards). `[guard]` adds guards. A workflow or an
+irreversible step lets its agent make a guarded call with `guard.allow` (see
 [workflows.md](workflows.md#top-level-keys)).
 
 | Key | Type | Required | Default | Meaning | Example |

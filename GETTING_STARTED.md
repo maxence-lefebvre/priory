@@ -110,8 +110,9 @@ who decides it.
 `approve-pr` that approves it. See [workflows.md](docs/reference/workflows.md#irreversible-steps-and-their-gates).
 
 The same rule holds inside a model step. Priory's tool guard denies an agent's irreversible call,
-such as `gh pr merge` or `git push origin main`, unless its step is approved or `autonomous`, and
-tells the agent to `ask`. See [guard.md](docs/daemon/guard.md).
+such as `gh pr merge` or `git push origin main`, and tells the agent to `ask`. The call passes when
+its step names the guard in `guard.allow` and is approved or `autonomous`, or when its workflow's
+`guard.allow` names it. A merge or an approving review needs an approved step. See [guard.md](docs/daemon/guard.md).
 
 ## 4. Pick a starter
 
@@ -310,7 +311,9 @@ only after a person approved it, unless it is marked `autonomous` with a reason.
 
 **Intervention.** A trigger's `intervention` sets how much a person steps in. `plan` makes a person
 approve each graded plan, even a green one. `hands-off` lets a lead agent answer the task's asks in
-your place, but an ask that lets an irreversible step run still comes to you. See
+your place, but an ask that lets an irreversible step run still comes to you. A routed ask shows
+"with <lead>" in the web view and the Herdr panels, you can still answer it first, and an answered
+ask says who answered. See
 [docs/reference/triggers.md](docs/reference/triggers.md#intervention-and-lead).
 
 **Task and run.** A task is one unit of work, from its event to `done`, `failed` or `dropped`. A run
