@@ -1,6 +1,6 @@
 // The Asks panel's view model: `priory asks --all --json` in, rows and states out. No drawing, no IO.
 
-import { autolink } from "./priory.js";
+import { autolink, prStack } from "./priory.js";
 
 /** @typedef {{ pattern: string, url: string }[]} Links the rules `priory links` lists */
 
@@ -167,14 +167,17 @@ function plan(task) {
   return { text: lines.filter(Boolean).join("\n"), from: "progress" };
 }
 
-/** @param {any} pull */
-function pullRequest(pull) {
-  if (!pull) return null;
+/** The task's latest pull request, then its whole stack when it has two or more. @param {any} pull @param {any[]} stack */
+function pullRequest(pull, stack) {
+  const { label, entries } = prStack(stack, pull);
+  // The summary needs the pull request's events; the stack does not.
+  if (!pull) return label ? { title: label, line: null, checks: [], review: null, prs: label, stack: entries } : null;
   return {
     title: `#${pull.number} ${pull.title ?? ""}`.trim(),
     line: `${pull.branch} into ${pull.base}, head ${String(pull.head_sha).slice(0, 7)}, ${pull.state}`,
     checks: pull.checks.map((/** @type {any} */ check) => ({ name: check.name, ok: check.conclusion === "success", text: check.conclusion })),
     review: pull.review,
+    ...(label ? { prs: label, stack: entries } : {}),
   };
 }
 
@@ -209,7 +212,7 @@ export function askDetail(ask, { now, armed, task = null, links = [] }) {
   const groomed = task?.brief?.result;
   const brief = request || groomed ? { request, text: groomed?.summary ?? null, from: groomed ? `${groomed.step}, run ${groomed.run}` : null } : null;
   const planned = task ? plan(task) : null;
-  const pr = pullRequest(task?.pull_request);
+  const pr = pullRequest(task?.pull_request, task?.stack);
   const runs = trace(task?.runs ?? [], now);
   const question = ask.title || ask.question;
   const why = ask.text || ask.question;

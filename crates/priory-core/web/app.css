@@ -304,6 +304,7 @@ textarea { font: 400 16px/22px var(--font-ui); color: var(--text); background: v
   .tbl td:nth-child(1) .sti { font-size: 0; gap: 0; }
 }
 .tbl td.q.full span { display: block; overflow: visible; }
+.tbl td.q span.tag { display: inline-block; margin-bottom: 4px; color: var(--text-2); }
 .opt[aria-disabled="true"]:not(.rec-opt), .abar .btn.secondary[aria-disabled="true"] { color: var(--text-3); }
 .medium.no-drawer, .compact.no-drawer { display: flex; flex-direction: column; }
 @media (pointer: coarse) {
