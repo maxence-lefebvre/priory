@@ -47,6 +47,8 @@ export function priory({ exec, binary = "priory-oss", on = null, factory = null 
     attention: () => read("report", "attention"),
     // Each workflow's steps and edges, with the irreversible steps and the paths to one with no human decision.
     flows: () => read("flows", ...inFactory),
+    // The views as text, since the Priory bar hashes exactly what `priory views --json` prints.
+    views: () => call(["views", ...inFactory, "--json"]),
     // priory wait gives up after 25 s with the same revision; Herdr's exec would stop it at 30 s.
     wait: async (/** @type {number} */ since) => Number(await call(["wait", "--since", String(since)], 60_000)),
     // `run` confirms an answer that runs the ask's command, as the person's second press does.

@@ -248,3 +248,42 @@ test("a refused install removes nothing", () => {
   assert.equal(run.status, 1);
   assert.equal(existsSync(join(app, "mods/priory-gone", MARKER)), true);
 });
+
+const MANY_VIEWS = JSON.stringify({ factory: "demo", views: { default: { layout: { tabs: [{ panel: "desk" }] } }, wide: { layout: { row: [{ panel: "terminal" }, { panel: "costs" }] } } } });
+
+test("writes one layout per view, default as priory.json and each other view as priory-NAME.json", () => {
+  const home = scratch();
+  const run = install(home, MANY_VIEWS);
+  assert.equal(run.status, 0, run.stderr);
+  const layouts = join(home, ".config/herdr-app/layouts");
+  assert.deepEqual(readdirSync(layouts).sort(), ["priory-wide.json", "priory.json"]);
+  const wide = JSON.parse(readFileSync(join(layouts, "priory-wide.json"), "utf8"));
+  assert.equal(wide.id, JSON.parse(readFileSync(join(layouts, "priory.json"), "utf8")).id);
+  assert.match(JSON.stringify(wide), /"priory-costs"/);
+  assert.doesNotMatch(JSON.stringify(wide), /"priory-desk"/);
+});
+
+test("removes its own layout of a view that is gone, and keeps every other layout", () => {
+  const home = scratch();
+  const layouts = join(home, ".config/herdr-app/layouts");
+  assert.equal(install(home, MANY_VIEWS).status, 0);
+  writeFileSync(join(layouts, "priory-mine.json"), JSON.stringify({ id: "mine" }));
+  writeFileSync(join(layouts, "main.json"), JSON.stringify({ id: "priory-generated" }));
+  const dry = install(home, VIEWS, "--dry-run");
+  assert.equal(dry.status, 0, dry.stderr);
+  assert.match(dry.stdout, new RegExp(`^remove ${layouts}/priory-wide.json$`, "m"));
+  assert.equal(existsSync(join(layouts, "priory-wide.json")), true);
+  assert.equal(install(home, VIEWS).status, 0);
+  assert.deepEqual(readdirSync(layouts).sort(), ["main.json", "priory-mine.json", "priory.json"]);
+});
+
+test("refuses a view's layout file it did not write, and writes nothing", () => {
+  const home = scratch();
+  const layouts = join(home, ".config/herdr-app/layouts");
+  mkdirSync(layouts, { recursive: true });
+  writeFileSync(join(layouts, "priory-wide.json"), JSON.stringify({ id: "mine" }));
+  const run = install(home, MANY_VIEWS);
+  assert.equal(run.status, 1);
+  assert.match(run.stderr, /layouts\/priory-wide\.json is not a layout this adapter wrote; move it away first/);
+  assert.deepEqual(readdirSync(layouts), ["priory-wide.json"]);
+});

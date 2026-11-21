@@ -306,8 +306,10 @@ Run `priory` with no arguments to print its usage.
 
 If you work in [Herdr](docs/adapters/herdr.md), its Desk panel shows the same desk, and its Asks
 panel lists the same asks and answers them through these verbs. `priory views --json |
-adapters/herdr/install` links them into Herdr and writes a layout from your `default` view: narrow panels as asides you toggle, wide ones as center tabs, and Herdr's own Files and Changes panels. `priory check`
-warns when that layout was built from other view files. On a Herdr that reads its folder through
+adapters/herdr/install` links them into Herdr and writes a layout from each view, `priory` for
+your `default` view and `priory-NAME` for each other: narrow panels as asides you toggle, wide ones
+as center tabs, and Herdr's own Files and Changes panels. `priory check` warns when those layouts
+were built from other view files, and the Priory bar offers to regenerate them. On a Herdr that reads its folder through
 Syncthing, which carries no links, use `install --copy`.
 
 If you review on GitHub, the [GitHub extension](adapters/github/README.md) shows the task that holds

@@ -8,7 +8,8 @@ no record. A repair appends `factory.task.repaired` instead (see Repair), and a 
 `factory.task.reopened` (see [routing.md](routing.md#feedback-reopens-a-done-task)). A judgement that comes later,
 such as a merge or a revert, appends `factory.step.labeled` (see Outcome labels). Each `priory gate` appends
 `factory.gate.ran`, which a step's `gate-passed` proof reads (see Proofs in
-[tools.md](tools.md#proofs)). `priory report` reads only
+[tools.md](tools.md#proofs)). Each score of `priory score` appends `factory.run.scored` (see
+[score.md](score.md)). `priory report` reads only
 `factory.step.ended`.
 
 Records live in the `trace` table of the state file, one CloudEvents JSON object per row. R9.3 keeps
