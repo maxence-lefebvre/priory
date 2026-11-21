@@ -188,31 +188,12 @@ impl std::fmt::Display for Refused {
 /// Publishes `add` as a request, with the factory's defaults for what it leaves unset, under the
 /// next free key of the day, `cli:<YYYY-MM-DD>-<n>`, and returns that key.
 pub fn add(factory: &Factory, add: &Add) -> Result<String, Refused> {
-    let defaults = factory.request();
-    let workflow = add
-        .workflow
-        .clone()
-        .or_else(|| defaults.map(|defaults| defaults.workflow.clone()))
-        .ok_or_else(|| "the request names no workflow; pass --workflow, or set workflow in factory.toml's [request] table".to_owned())?;
     let (keys, repos) = linked(factory, &add.text);
     let repo = match &repos[..] {
         [first, rest @ ..] if rest.iter().all(|repo| repo == first) => Some(first.clone()),
         _ => None,
     };
-    let request = Request {
-        workflow,
-        key: String::new(),
-        band: add
-            .band
-            .clone()
-            .or_else(|| defaults.and_then(|defaults| defaults.band.clone())),
-        lane: add.lane.clone(),
-        repo: add.repo.clone().or(repo),
-        hold: None,
-        tldr: None,
-        text: add.text.clone(),
-    };
-    check(factory, &request)?;
+    let request = quick(factory, add, repo)?;
     let bus = open()?;
     if let [key] = &keys[..] {
         let source = source(
@@ -236,19 +217,75 @@ pub fn add(factory: &Factory, add: &Add) -> Result<String, Refused> {
     let today = intake::now()?.to_zoned(jiff::tz::TimeZone::system()).date();
     for n in 1.. {
         let key = format!("cli:{today}-{n}");
-        // The key alone names the source event, so the first add to publish it owns the key.
-        let source = source(&request, &key, &format!("{REQUESTED}:add:{key}"));
-        let seq = bus
-            .publish(OUTPUT, &source)
-            .map_err(|error| format!("publish on {OUTPUT}: {error}"))?;
-        let stored = bus.message(seq).map_err(|error| error.to_string())?;
-        if stored.message.data != source.data {
-            continue;
+        if claim(&bus, &request, &key)? {
+            return Ok(key);
         }
-        publish(&bus, &task(&request, &key, &source))?;
-        return Ok(key);
     }
     unreachable!("a day has a free key")
+}
+
+/// Publishes `add` as a request under `key`, such as a Slack thread's `slack:<channel>:<ts>`, with
+/// the factory's defaults for what it leaves unset. Only the first request for a key publishes.
+pub fn add_to(factory: &Factory, add: &Add, key: &str) -> Result<String, Refused> {
+    let request = quick(factory, add, None)?;
+    let bus = open()?;
+    let source = source(&request, key, &format!("{REQUESTED}:add:{key}"));
+    let seq = bus
+        .publish(OUTPUT, &source)
+        .map_err(|error| format!("publish on {OUTPUT}: {error}"))?;
+    let first = bus.message(seq).map_err(|error| error.to_string())?.message;
+    // The task request's id derives from the first source's, so an add that stopped between the
+    // two is completed here, and one that did not keeps its task. Its own time tells them apart.
+    let task = task(&request, key, &first).time(Timestamp::now());
+    let seq = bus
+        .publish(OUTPUT, &task)
+        .map_err(|error| format!("publish on {OUTPUT}: {error}"))?;
+    let stored = bus.message(seq).map_err(|error| error.to_string())?;
+    if stored.message.time != task.time {
+        return Err(Refused::Repeated(key.to_owned()));
+    }
+    Ok(key.to_owned())
+}
+
+/// `add` as a request the factory takes, its repo else `repo`, its workflow and band else the
+/// factory's `[request]` defaults.
+fn quick(factory: &Factory, add: &Add, repo: Option<String>) -> Result<Request, String> {
+    let defaults = factory.request();
+    let workflow = add
+        .workflow
+        .clone()
+        .or_else(|| defaults.map(|defaults| defaults.workflow.clone()))
+        .ok_or_else(|| "the request names no workflow; pass --workflow, or set workflow in factory.toml's [request] table".to_owned())?;
+    let request = Request {
+        workflow,
+        key: String::new(),
+        band: add
+            .band
+            .clone()
+            .or_else(|| defaults.and_then(|defaults| defaults.band.clone())),
+        lane: add.lane.clone(),
+        repo: add.repo.clone().or(repo),
+        hold: None,
+        tldr: None,
+        text: add.text.clone(),
+    };
+    check(factory, &request)?;
+    Ok(request)
+}
+
+/// Publishes `request` under `key` unless another request owns the key: the key alone names the
+/// source event, so the first to publish it owns the key.
+fn claim(bus: &Bus, request: &Request, key: &str) -> Result<bool, String> {
+    let source = source(request, key, &format!("{REQUESTED}:add:{key}"));
+    let seq = bus
+        .publish(OUTPUT, &source)
+        .map_err(|error| format!("publish on {OUTPUT}: {error}"))?;
+    let stored = bus.message(seq).map_err(|error| error.to_string())?;
+    if stored.message.data != source.data {
+        return Ok(false);
+    }
+    publish(bus, &task(request, key, &source))?;
+    Ok(true)
 }
 
 /// The issues and pull requests that GitHub and Linear URLs in `text` name, as task keys, and the

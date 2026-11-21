@@ -155,6 +155,45 @@
       },
       "type": "object"
     },
+    "Slack": {
+      "additionalProperties": false,
+      "description": "Slack features beyond its triggers.",
+      "properties": {
+        "shortcut": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/SlackShortcut"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "SlackShortcut": {
+      "additionalProperties": false,
+      "description": "The \"Queue in Priory\" message shortcut, which the intake receives over Slack's Socket Mode.",
+      "properties": {
+        "token_env": {
+          "default": "SLACK_APP_TOKEN",
+          "description": "The environment variable that holds the app-level token (`xapp-`), never the token itself.",
+          "type": "string"
+        },
+        "users": {
+          "description": "The Slack user ids, such as `U0123ABCD`, allowed to queue a task; the shortcut refuses\neveryone else.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "users"
+      ],
+      "type": "object"
+    },
     "Sweep": {
       "additionalProperties": false,
       "description": "How the daemon frees room: the built-in worktree sweep, the person's scripts, and the sweeper\nagent it starts when they do not free enough.",
@@ -284,6 +323,16 @@
       "anyOf": [
         {
           "$ref": "#/definitions/Serve"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "slack": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/Slack"
         },
         {
           "type": "null"
