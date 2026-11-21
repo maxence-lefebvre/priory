@@ -233,7 +233,7 @@ pub fn start(factory: &Factory, listen: SocketAddr) -> Result<Vec<JoinHandle<()>
 }
 
 /// The value of the environment variable `name`, refused when unset or empty.
-fn env(name: &str, what: &str) -> Result<String, String> {
+pub(crate) fn env(name: &str, what: &str) -> Result<String, String> {
     std::env::var(name)
         .ok()
         .filter(|value| !value.is_empty())

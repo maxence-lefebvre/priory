@@ -315,6 +315,13 @@
       "additionalProperties": false,
       "description": "Where the daemon exports its trace records as OpenTelemetry spans.",
       "properties": {
+        "headers_env": {
+          "description": "The environment variable that holds the headers each request carries, such as an API key,\nas `key1=value1,key2=value2` with URL-encoded values. Never the headers themselves.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "otlp": {
           "description": "The OTLP/HTTP base URL, such as `http://127.0.0.1:4318`; spans go to its `/v1/traces`.",
           "type": "string"
