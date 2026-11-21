@@ -328,6 +328,8 @@ In Indigo and Ink the ask tile and the live tile share a fill; the icon tells th
 An answered or withdrawn ask is not a task state either. In the asks list it takes a muted tile
 with the `check` icon (answered) or the `minus` icon (withdrawn).
 
+A batch is not a task state either. Its desk row takes a muted tile with the `layers` icon.
+
 ### Explorer list
 
 Every list panel (desk, asks, tasks, runs, inbox) is the same explorer over one query.
@@ -376,8 +378,11 @@ The desk is the "Needs me" view. It lists, top to bottom:
    column holds the same buttons, compact. Then **To-dos**: the person's own items, each with
    the `square` tile in the ask role, its text and due time, and a Done button in `.btn
    secondary` that marks it done (`POST /api/todos/{id}/done`). The next thing card offers Done
-   for a to-do. Then **Also waiting**: the desk's other items (held tasks, sweeps, memory waits,
-   retired tasks and worktrees that stay), each with the daemon's sentence. A held task's row carries a
+   for a to-do. Then **Also waiting**: the desk's other items (held tasks, going batches, sweeps,
+   memory waits, retired tasks and worktrees that stay), each with the daemon's sentence. A
+   batch row stands for its entries' held rows. On the phone list, its title and counts are the
+   main line and the `Next: ...` sentence a caption below; the wide table and the Herdr Desk keep the
+   line whole, as board 3 shows. Its key opens the planning task until the batch page exists. A held task's row carries a
    Release button in `.btn secondary`, and a report row under **Reports** a Read button. Release
    sends the revision the page drew (`POST /api/tasks/{id}/release`), Read sends `POST /api/inbox/{seq}/read`.
    A refused action keeps the row and shows why under it, in the row's note.
