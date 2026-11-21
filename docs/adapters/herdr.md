@@ -76,15 +76,27 @@ ssh xps13 priory views --json | adapters/herdr/install   # Priory on another mac
 layout for the `default` view as `layouts/priory.json` in its layouts folder. Herdr's folder is
 `$HERDR_APP_HOME`, or `~/.config/herdr-app`. The links point into your checkout, so a `git pull`
 updates the mods, and Herdr reloads them when their files change. The layout is a file: run
-`install` again after you change a view.
+`install` again after you change a view. Its root id ends in a hash of the views `install` read, such
+as `priory-generated-00bc386a7e08`. `install` says `layout is up to date with the view files` when
+the layout it replaces has the same hash, and `layout was older than the view files, and is
+rewritten` when not. `priory check` warns, and still passes, when the layout in Herdr's folder on
+its machine has another hash than the factory's views. A layout on another machine is not checked.
 
 - `install --dry-run` prints each link it would make, then `write` and the layout, and changes
   nothing.
+- `install --copy` copies each mod folder in place of linking it, and writes `.priory-installed`
+  into the copy, holding the adapter's Git commit (`unknown` outside a checkout). Use it when
+  Herdr's folder reaches another machine through Syncthing, which carries no links, such as a Herdr
+  on Windows. A later `install --copy` replaces a folder that holds that marker, files that left
+  the source included, and a link into this adapter. It stops on any other folder. A plain
+  `install` stops on a copy, so the two never mix. A copy you made by hand, without the marker,
+  is not the script's: mark each one, then run `install --copy`:
+  `for m in ~/.config/herdr-app/mods/priory-*; do git -C adapters/herdr rev-parse HEAD > "$m/.priory-installed"; done`.
 - A link that already points into this adapter stays as it is. The layout is written again on
   every run.
 - Any other file or link at a mod's target stops the script before it changes anything. So does a
   `priory.json` that `install` did not write: a file whose JSON root id is not
-  `priory-generated`, or a link elsewhere than to this adapter. Move that file away and run it
+  `priory-generated` or `priory-generated-` and a hash, or a link elsewhere than to this adapter. Move that file away and run it
   again.
 - Input that is not `priory views --json`, a node or panel Priory does not ship, or a `default`
   view with two `terminal` panels stops the script before it changes anything.
@@ -113,7 +125,10 @@ Each node's id is its path in the tree: the root is `view`, and its second child
 `view-1-0`. When the view has no `terminal` panel, the work body is a row of `main` and the view,
 420 px wide by default, between 280 and 900. Otherwise the view fills the work body. A view
 carries no sizes, so the layout has none beyond these. The shipped `default` view gives one stack
-of eight panels beside `main`. Herdr's own Files and Changes panels are not in it.
+of eight panels beside `main`. Herdr's own Files and Changes panels stay, after the view, in the
+frame's `panel` column, as Herdr's `main` layout has them: hidden until the tab bar opens one, 368
+px wide, with `files` active. The Priory bar lists only the view's stacks, so it has no button for
+them.
 
 The Priory bar shows one button per child of each stack, in the tree's order, labelled with its
 panels. A button selects its child in that stack and in each stack above it, and shows any hidden
@@ -128,6 +143,15 @@ Without it, the placeholder says where to set it.
 
 Herdr writes `gpui-kit.d.ts` and `jsconfig.json` into each mod folder it loads. Through the links,
 they land in your checkout, and Git ignores them.
+
+## Installing for a Herdr on another machine
+
+The mods run on the machine that runs Herdr, and `priory` runs where the `priory` object of
+`settings.json` says: its `machine` is the Herdr machine that runs the program, such as `"xps13"`.
+Copy the mods with `install --copy` on the machine whose folder Syncthing shares, and set `machine`
+in `settings.json`, which Herdr reads from the same folder, to the machine that runs Priory. Without
+`machine`, a mod runs `priory` on the machine Herdr's window runs on, which is the Windows machine
+and has no Priory.
 
 ## How it reads and acts
 

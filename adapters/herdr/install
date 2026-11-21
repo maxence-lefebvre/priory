@@ -1,17 +1,22 @@
 #!/usr/bin/env bash
-# Links each mod in adapters/herdr/mods into Herdr's mods folder, and writes the layout for the
-# `default` view into its layouts folder: `priory views --json | install [--dry-run]`. A dry run
-# prints the links and the layout instead. It refuses, before changing anything, to replace a mod
+# Links each mod in adapters/herdr/mods into Herdr's mods folder (`--copy` copies it instead, for a
+# Herdr that reads the folder through Syncthing to Windows, which carries no links; a copy holds a
+# .priory-installed file with the source commit, and only such a copy is replaced), and writes the layout for the
+# `default` view into its layouts folder: `priory views --json | install [--copy] [--dry-run]`. It says
+# whether the layout it replaces was built from the same view files. A dry run prints the links and
+# the layout instead. It refuses, before changing anything, to replace a mod
 # that is not its own link or a priory.json it did not write. HERDR_APP_HOME names Herdr's folder,
 # as Herdr reads it.
 set -euo pipefail
 
-dry_run=false
-case "${1-}" in
-  "") ;;
-  --dry-run) dry_run=true ;;
-  *) echo "usage: priory views --json | install [--dry-run]" >&2; exit 2 ;;
-esac
+dry_run=false copy=false
+for arg in "$@"; do
+  case "$arg" in
+    --dry-run) dry_run=true ;;
+    --copy) copy=true ;;
+    *) echo "usage: priory views --json | install [--copy] [--dry-run]" >&2; exit 2 ;;
+  esac
+done
 
 adapter="$(cd "$(dirname "$0")" && pwd)"
 app="${HERDR_APP_HOME:-$HOME/.config/herdr-app}"
@@ -32,18 +37,31 @@ done
 
 generated="$("$adapter/layout")"
 
+marker=.priory-installed
 for i in "${!targets[@]}"; do
   target="${targets[$i]}"
-  if [[ -e "$target" || -L "$target" ]] && [[ "$(readlink "$target")" != "${sources[$i]}" ]]; then
-    echo "install: ${target#"$app"/} is not a link to this adapter; move it away first" >&2
+  [[ -e "$target" || -L "$target" ]] || continue
+  [[ -L "$target" && "$(readlink "$target")" == "${sources[$i]}" ]] && continue
+  if [[ -d "$target" && ! -L "$target" && -f "$target/$marker" ]]; then
+    $copy && continue
+    echo "install: ${target#"$app"/} is a copy: run \`install --copy\` again, or move it away first" >&2
     exit 1
   fi
+  if $copy; then
+    echo "install: ${target#"$app"/} is not a link or a copy this adapter made; move it away first" >&2
+  else
+    echo "install: ${target#"$app"/} is not a link to this adapter; move it away first" >&2
+  fi
+  exit 1
 done
-# Its own layout is the link an earlier install made, or a file whose root has the frame's id.
+commit="$(git -C "$adapter" rev-parse HEAD 2>/dev/null || echo unknown)"
+# Its own layout is the link an earlier install made, or a file whose root id starts with the frame's.
+installed_id=""
 if [[ -L "$layout" ]]; then
   own=$([[ "$(readlink "$layout")" == "$adapter/layouts/priory.json" ]] && echo true || echo false)
 elif [[ -f "$layout" ]]; then
-  own=$(node -e 'try { process.exit(JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")).id === "priory-generated" ? 0 : 1) } catch { process.exit(1) }' "$layout" && echo true || echo false)
+  installed_id="$(node -e 'try { console.log(JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")).id ?? "") } catch {}' "$layout")"
+  [[ "$installed_id" == priory-generated || "$installed_id" == priory-generated-* ]] && own=true || own=false
 elif [[ -e "$layout" ]]; then
   own=false
 else
@@ -56,7 +74,15 @@ fi
 
 for i in "${!targets[@]}"; do
   source="${sources[$i]}" target="${targets[$i]}"
-  if [[ -L "$target" ]]; then
+  if $copy; then
+    echo "copy $target <- $source"
+    $dry_run && continue
+    mkdir -p "$(dirname "$target")"
+    # Only a link to this adapter or a folder with the marker gets here, so this removes what an install made.
+    if [[ -L "$target" || -d "$target" ]]; then rm -rf -- "${target:?}"; fi
+    cp -R -- "$source" "$target"
+    printf '%s\n' "$commit" > "$target/$marker"
+  elif [[ -L "$target" ]]; then
     echo "linked already $target"
   elif $dry_run; then
     echo "link $target -> $source"
@@ -67,6 +93,12 @@ for i in "${!targets[@]}"; do
   fi
 done
 
+new_id="$(printf '%s' "$generated" | node -e 'console.log(JSON.parse(require("fs").readFileSync(0, "utf8")).id)')"
+if [[ -n "$installed_id" && "$installed_id" == "$new_id" ]]; then
+  echo "layout is up to date with the view files"
+elif [[ -n "$installed_id" ]]; then
+  echo "layout was older than the view files, and $($dry_run && echo would be || echo is) rewritten"
+fi
 echo "write $layout"
 if $dry_run; then
   printf '%s\n' "$generated"

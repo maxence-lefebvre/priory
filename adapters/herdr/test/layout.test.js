@@ -27,7 +27,7 @@ const block = (id, mod, panel) => ({ id, type: "block", content: { mod, props: {
 test("the default view gives a row of main and one stack of its eight panels, Desk first and active", () => {
   const body = find(layout("default", DEFAULT, FRAME), "work-body");
 
-  assert.deepEqual(body.children.map((child) => child.id), ["main", "view"]);
+  assert.deepEqual(body.children.map((child) => child.id), ["main", "view", "panel"]);
   assert.deepEqual(body.children[0], find(FRAME, "main"));
   assert.deepEqual(body.children[1], {
     id: "view",
@@ -80,7 +80,7 @@ test("the example in views.md gives a row of the Desk and a column of the Queue 
 
   const body = find(layout("default", view, FRAME), "work-body");
 
-  assert.deepEqual(body.children.map((child) => child.id), ["main", "view"]);
+  assert.deepEqual(body.children.map((child) => child.id), ["main", "view", "panel"]);
   assert.deepEqual(body.children[1], {
     id: "view",
     type: "row",
@@ -107,7 +107,7 @@ test("a terminal panel takes the main block's place, and the view fills the work
 
   const body = find(layout("default", view, FRAME), "work-body");
 
-  assert.deepEqual(body.children, [
+  assert.deepEqual(body.children.slice(0, -1), [
     {
       id: "view",
       type: "row",
@@ -138,4 +138,34 @@ test("a node or panel Priory does not ship is refused with the view's name", () 
     [{ tabs: [{ panel: "kanban" }] }, "view night has a panel Priory does not ship: kanban"],
   ];
   for (const [tree, message] of refused) assert.throws(() => layout("night", { layout: tree }, FRAME), { message }, JSON.stringify(tree));
+});
+
+// Herdr's own panel, as Herdr's shipped `main` layout has it: hidden until the tab bar opens it.
+const HERDR_PANEL = {
+  id: "panel",
+  type: "column",
+  hidden: true,
+  size: { px: 368 },
+  min: 280,
+  max: 900,
+  children: [
+    {
+      id: "panel-body",
+      type: "stack",
+      active: "files",
+      children: [
+        { id: "files", type: "block", content: { mod: "files" } },
+        { id: "changes", type: "block", content: { mod: "changes" } },
+      ],
+    },
+  ],
+};
+
+test("Herdr's Files and Changes panels stay in their own hidden stack after the view", () => {
+  const views = [DEFAULT, { layout: { panel: "terminal" } }];
+  for (const view of views) {
+    const body = find(layout("default", view, FRAME), "work-body");
+    assert.deepEqual(body.children.at(-1), HERDR_PANEL, JSON.stringify(view));
+    assert.equal(body.children.filter((child) => child.id === "panel").length, 1);
+  }
 });

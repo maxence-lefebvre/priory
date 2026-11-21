@@ -38,7 +38,8 @@ function panels(name, node) {
 
 /**
  * The frame with its `work-body` laid out as the view: the view's tree beside the frame's `main`
- * block, or around it when the view has a `terminal` panel. Each node's id is its path in the tree.
+ * block, or around it when the view has a `terminal` panel. Herdr's own Files and Changes panel
+ * stays last. Each node's id is its path in the tree.
  * @param {string} name @param {{ layout: any }} view @param {any} frame
  */
 export function layout(name, view, frame) {
@@ -49,7 +50,8 @@ export function layout(name, view, frame) {
   const root = structuredClone(frame);
   const body = pathTo(root, "work-body")?.at(-1);
   const main = pathTo(root, "main")?.at(-1);
-  if (!body || !main) throw new Error("the frame needs a work-body block holding a main block");
+  const herdrPanel = pathTo(root, "panel")?.at(-1);
+  if (!body || !main || !herdrPanel) throw new Error("the frame needs a work-body block holding a main block and Herdr's panel");
   /** @param {any} node @param {string} id @returns {any} */
   const convert = (node, id) => {
     if (node.panel === "terminal") return main;
@@ -61,11 +63,11 @@ export function layout(name, view, frame) {
   };
   const tree = convert(view.layout, "view");
   if (terminals) {
-    body.children = [tree];
+    body.children = [tree, herdrPanel];
     return root;
   }
   // Without a terminal panel, the view sits beside `main` as the hand-written side panel did.
-  body.children = [main, { ...tree, size: { px: 420 }, min: 280, max: 900 }];
+  body.children = [main, { ...tree, size: { px: 420 }, min: 280, max: 900 }, herdrPanel];
   return root;
 }
 

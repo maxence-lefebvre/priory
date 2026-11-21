@@ -7,6 +7,7 @@ use priory_factory::{explain, factory, rules};
 use priory_intake::{intake, request};
 use priory_runtime::{eval, mcp, runtime};
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
@@ -2248,6 +2249,7 @@ fn check(args: Vec<OsString>) -> ExitCode {
             factory::WRITING_LIMIT
         );
     }
+    warn_of_stale_herdr_layout(&factory);
     if explain {
         print_explanation(&factory, json);
         return ExitCode::SUCCESS;
@@ -2260,6 +2262,42 @@ fn check(args: Vec<OsString>) -> ExitCode {
         count(factory.runners.len(), "runner"),
     );
     ExitCode::SUCCESS
+}
+
+/// Warns when the Herdr layout `adapters/herdr/install` wrote on this machine was built from other
+/// view files. The layout's root id ends in the first 12 hex digits of the SHA-256 of the text
+/// `priory views --json` prints. It finds Herdr's folder as Herdr does: `HERDR_APP_HOME`, else
+/// `~/.config/herdr-app`. A layout on another machine is out of reach, so it is not checked.
+fn warn_of_stale_herdr_layout(factory: &factory::Factory) {
+    let Some(app) = std::env::var_os("HERDR_APP_HOME")
+        .map(PathBuf::from)
+        .or_else(|| {
+            std::env::var_os("HOME").map(|home| Path::new(&home).join(".config/herdr-app"))
+        })
+    else {
+        return;
+    };
+    let path = app.join("layouts/priory.json");
+    let Some(id) = std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
+        .and_then(|layout| layout["id"].as_str().map(str::to_owned))
+    else {
+        return;
+    };
+    let Some(built_from) = id.strip_prefix("priory-generated-") else {
+        return;
+    };
+    let hash: String = Sha256::digest(listing::views(factory).to_string().as_bytes())[..6]
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    if built_from != hash {
+        eprintln!(
+            "warning: the Herdr layout {} was built from other view files: run `priory views --json | adapters/herdr/install`",
+            path.display()
+        );
+    }
 }
 
 /// Prints each workflow's irreversible steps with their gates, its paths to one with no human edge,
