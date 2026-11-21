@@ -707,9 +707,23 @@ fn rank(items: &[Value]) -> Vec<Value> {
 
 /// The desk's `next`: what ranks first, if anything waits on a person.
 pub(crate) fn next(db: &Connection) -> rusqlite::Result<Option<Value>> {
-    let items = rows(db, &desk_items(), [])?;
-    let items = items.as_array().expect("rows are an array");
+    let mut items = rows(db, &desk_items(), [])?;
+    let items = items.as_array_mut().expect("rows are an array");
+    routed_to(db, items)?;
     Ok(rank(items).into_iter().next())
+}
+
+/// Gives each `ask` item the lead it is routed to, or null.
+fn routed_to(db: &Connection, items: &mut [Value]) -> rusqlite::Result<()> {
+    let mut routed = db.prepare("SELECT routed FROM asks WHERE id = ?1")?;
+    for item in items.iter_mut().filter(|item| item["kind"] == "ask") {
+        let to = match item["id"].as_i64() {
+            Some(ask) => routed.query_row([ask], |row| row.get::<_, Option<String>>(0))?,
+            None => None,
+        };
+        item["routed_to"] = json!(to);
+    }
+    Ok(())
 }
 
 /// The pause's line, a stalled queue's banner, the intake's banner, the asleep and snoozed counts, what waits on a person, the queue, then
@@ -723,6 +737,7 @@ pub fn desk(db: &Connection, home: &Path, all: bool, person: &str) -> rusqlite::
         .iter()
         .filter(|item| !item["snoozed_until"].is_null())
         .count();
+    routed_to(db, list)?;
     let ranked = rank(list);
     for item in list.iter_mut() {
         let item = item.as_object_mut().expect("rows are objects");
@@ -730,14 +745,6 @@ pub fn desk(db: &Connection, home: &Path, all: bool, person: &str) -> rusqlite::
         item.remove("title");
     }
     list.retain(|item| all || item["snoozed_until"].is_null());
-    let mut routed = db.prepare("SELECT routed FROM asks WHERE id = ?1")?;
-    for item in list.iter_mut().filter(|item| item["kind"] == "ask") {
-        let to = match item["id"].as_i64() {
-            Some(ask) => routed.query_row([ask], |row| row.get::<_, Option<String>>(0))?,
-            None => None,
-        };
-        item["routed_to"] = json!(to);
-    }
     for (path, task, reason) in sweep::stays(db, home)? {
         list.push(json!({
             "since": null, "kind": "worktree", "id": path, "task": task, "key": null,

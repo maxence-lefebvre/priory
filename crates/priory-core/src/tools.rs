@@ -605,7 +605,7 @@ pub fn ask_outside(
         "INSERT INTO asks (kind, name, question, options, recommendation, tradeoff, title, text,
            what_waits, next_action, command, coordinator, key, run_id, session)
          VALUES ('outside', ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
-         ON CONFLICT (name) DO UPDATE SET revision = revision + 1, answer = NULL, answered = NULL,
+         ON CONFLICT (name) DO UPDATE SET revision = revision + 1, answer = NULL, answered = NULL, answered_by = NULL,
            withdrawn = NULL, question = excluded.question, options = excluded.options,
            recommendation = excluded.recommendation, tradeoff = excluded.tradeoff,
            title = excluded.title, text = excluded.text, what_waits = excluded.what_waits,
@@ -1831,7 +1831,7 @@ fn settle(tx: &Transaction, run: &Run, trace: &Trace) -> rusqlite::Result<Option
 pub const LEAD_TRIGGER: &str = "priory/lead";
 
 /// The lead a new ask of `task` at step `at` goes to: a `hands-off` task's lead, unless the ask
-/// runs a command or its answer can let an irreversible step run.
+/// runs a command, its answer can let an irreversible step run, or its step approves one.
 fn lead_of(
     tx: &Transaction,
     task: i64,
@@ -1850,7 +1850,18 @@ fn lead_of(
     let Some(flow) = workflows.get(&workflow) else {
         return Ok(None);
     };
-    if explain::answer_lets_irreversible_run(&flow.value, at) {
+    // A lead no trigger names any more has no workflow to answer in.
+    if lead
+        .as_ref()
+        .is_none_or(|lead| !workflows.contains_key(&lead_workflow(lead)))
+    {
+        return Ok(None);
+    }
+    let approves = flow
+        .value
+        .step(at)
+        .is_some_and(|step| !step.approves.is_empty());
+    if approves || explain::answer_lets_irreversible_run(&flow.value, at) {
         return Ok(None);
     }
     Ok(lead)
@@ -1910,13 +1921,21 @@ fn lead_answer(
     let Some((ask, revision)) = called else {
         return Ok(Ok(()));
     };
+    let text = arguments["summary"].as_str().unwrap_or_default().trim();
+    let options: String = tx.query_row("SELECT options FROM asks WHERE id = ?1", [ask], |row| {
+        row.get(0)
+    })?;
+    let options: Vec<String> = serde_json::from_str(&options).expect("options are stored as JSON");
+    // A person may answer an agent's ask in free text; a lead picks one of its options.
+    if !options.is_empty() && !options.iter().any(|option| option == text) {
+        return Ok(Err(format!(
+            "ask {ask} takes one of: {}",
+            options.join(", ")
+        )));
+    }
     let answer = Answer {
         ask,
-        text: arguments["summary"]
-            .as_str()
-            .unwrap_or_default()
-            .trim()
-            .to_owned(),
+        text: text.to_owned(),
         revision,
         run: false,
         by: format!("agent:{}", run.agent.as_deref().unwrap_or_default()),
@@ -3195,7 +3214,7 @@ pub(crate) fn approved(
     );
     tx.execute(
         // Asked again, an ask that a revive withdrew belongs to the current generation.
-        "UPDATE asks SET revision = revision + 1, answer = NULL, answered = NULL, withdrawn = NULL,
+        "UPDATE asks SET revision = revision + 1, answer = NULL, answered = NULL, answered_by = NULL, withdrawn = NULL,
          question = question || ?2 WHERE id = ?1",
         params![ask, moved],
     )?;

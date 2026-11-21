@@ -6877,6 +6877,10 @@ fn a_commit_made_after_the_approval_asks_again_instead_of_opening() {
     assert_eq!([&tasks[0][3], &tasks[0][4]], ["approve-pr", "asleep"]);
     assert!(setup.rows("actions").is_empty());
     assert!(setup.gh().is_empty());
+    assert_eq!(
+        asks_json(&setup)["asks"][0].get("answered_by"),
+        Some(&json!(null))
+    );
 
     setup.calls(&[passed_with_evidence()]);
     let stale = setup.priory(&["answer", "1", "open", "--revision", "1"]);
@@ -13212,6 +13216,7 @@ fn a_person_who_answers_a_routed_ask_first_drops_its_queued_lead_task() {
         [&item["kind"], &item["routed_to"]],
         [&json!("ask"), &json!("lead")]
     );
+    assert_eq!(desk["next"]["routed_to"], json!("lead"), "{desk}");
     assert!(
         item["what"]
             .as_str()
@@ -13229,4 +13234,80 @@ fn a_person_who_answers_a_routed_ask_first_drops_its_queued_lead_task() {
         ["dropped", "ask 1 was answered first"]
     );
     assert_eq!(asks_json(&setup)["asks"][0]["answered_by"], json!("cli"));
+}
+
+#[test]
+fn a_comment_on_its_issue_does_not_wake_a_plan_task_waiting_for_its_approval() {
+    let mut setup = intervened("plan-comment", GRADED, "plan", "");
+    setup.calls(&[result("green")]);
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == "asleep")
+    });
+
+    setup.publish(&issue_commented(901));
+
+    setup.until("inbox", |rows| {
+        rows.iter().any(|row| row[1] == "github.issues.comment")
+    });
+    std::thread::sleep(Duration::from_millis(1500));
+    let tasks = setup.rows("tasks");
+    assert_eq!([&tasks[0][3], &tasks[0][4]], ["plan", "asleep"]);
+    assert_eq!(setup.rows("runs").len(), 1);
+}
+
+#[test]
+fn a_hands_off_tasks_ask_that_approves_an_irreversible_step_reaches_the_person_even_before_another_human_step()
+ {
+    let workflow = OPEN_PR.replace(
+        "next = { open = \"open-pr\", stop = \"stop\" }",
+        "next = { open = \"confirm\", stop = \"stop\" }",
+    ) + r#"
+[[steps]]
+id = "confirm"
+decides = "human"
+effect = "none"
+options = ["go", "stop"]
+next = { go = "open-pr", stop = "stop" }
+"#;
+    let mut setup = hands_off("hands-off-approves", &workflow);
+    setup.calls(&[passed_with_evidence()]);
+    setup.publish(&requested(42));
+
+    setup.start();
+
+    setup.until("tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == "asleep")
+    });
+    assert_eq!(
+        asks_json(&setup)["asks"][0].get("routed_to"),
+        Some(&json!(null))
+    );
+    assert_eq!(setup.rows("tasks").len(), 1, "no lead task");
+}
+
+#[test]
+fn a_leads_answer_outside_the_asks_options_is_refused() {
+    let mut setup = hands_off("hands-off-off-option", WORKFLOW);
+    setup.calls(&[
+        ask(),
+        json!([answered("mysql"), answered("sqlite")]),
+        result("passed"),
+    ]);
+    setup.publish(&requested(42));
+
+    setup.start();
+
+    setup.until("tasks", |rows| {
+        rows.len() == 2 && rows.iter().all(|row| row[4] == "done")
+    });
+    let refused = setup
+        .replies()
+        .into_iter()
+        .map(|line| reply(&line))
+        .find(|(_, error)| *error)
+        .expect("one refused call");
+    assert_eq!(refused.0, "ask 1 takes one of: sqlite, postgres");
+    assert_eq!(asks_json(&setup)["asks"][0]["answer"], json!("sqlite"));
 }

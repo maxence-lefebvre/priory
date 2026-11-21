@@ -358,7 +358,8 @@ plan: approve the plan graded green? <the result's summary>
 ```
 
 Its options are `approved` and `rejected`. `approved` moves the task to the step its grade leads
-to. `rejected` drops it. A grade that leads to a human step, `done` or `stop` moves on as usual:
+to. `rejected` drops it. Until a person answers, an event on the task's issue, pull request or
+subscriptions is kept for its next run and wakes nothing. A grade that leads to a human step, `done` or `stop` moves on as usual:
 the human step already waits for a person.
 
 ### `hands-off`
@@ -368,9 +369,11 @@ session, instead of the person. These asks still go to the person:
 
 - an ask whose answer can let an irreversible step run before a person decides again, the asks
   that `priory asks --json` marks with the `irreversible` risk;
+- the ask of a human step with `approves`, since its answer grants an approval;
 - an ask whose answer runs a command;
 - the asks the daemon makes itself: a hold's, a stack's, and an approval asked again at a new
-  commit.
+  commit;
+- every ask once no trigger names the task's lead any more, since its workflow is gone.
 
 In the transaction that stores a routed ask, the daemon queues a lead task for it, with the key
 `priory:ask:<ask>:<revision>`, the trigger `priory/lead`, and the asking task's repository, band and
@@ -385,7 +388,9 @@ The lead answers with `result`:
 { "outcome": "answered", "summary": "sqlite" }
 ```
 
-The summary, trimmed, is the answer. It must be one of the options of a step's ask. In the same
+The summary, trimmed, is the answer. When the ask lists options, it must be one of them, or the
+result is refused with `ask <id> takes one of: <options>`. A person can still answer an agent's ask
+in free text. In the same
 transaction the daemon applies it to the ask, as a person's answer would, and records it as
 answered by `agent:<lead>`. The asking task then wakes as after any answer. When the answer is
 refused, for example because the ask is no longer open, the result is refused with the reason, and
