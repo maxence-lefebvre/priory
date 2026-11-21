@@ -235,25 +235,33 @@ fn json_of(setup: &Setup, verb: &str) -> Value {
     serde_json::from_slice(&output.stdout).unwrap()
 }
 
-/// Whether process `pid` holds a listening TCP socket.
-fn listening(pid: u32) -> bool {
+/// Whether process `pid` holds a listening TCP socket, or `None` when this host's `/proc` shows
+/// neither its descriptors nor a TCP table to read them against.
+fn listening(pid: u32) -> Option<bool> {
     let sockets: Vec<String> = fs::read_dir(format!("/proc/{pid}/fd"))
-        .unwrap()
+        .ok()?
         .filter_map(|fd| fs::read_link(fd.ok()?.path()).ok())
         .filter_map(|link| {
             let link = link.to_string_lossy().into_owned();
             Some(link.strip_prefix("socket:[")?.strip_suffix(']')?.to_owned())
         })
         .collect();
-    ["tcp", "tcp6"].iter().any(|table| {
-        fs::read_to_string(format!("/proc/{pid}/net/{table}"))
-            .unwrap()
+    // A kernel built without IPv6 has no tcp6 table, and so no IPv6 socket to listen on.
+    let tables: Vec<String> = ["tcp", "tcp6"]
+        .iter()
+        .filter_map(|table| fs::read_to_string(format!("/proc/{pid}/net/{table}")).ok())
+        .collect();
+    if tables.is_empty() {
+        return None;
+    }
+    Some(tables.iter().any(|table| {
+        table
             .lines()
             .skip(1)
             .map(|line| line.split_whitespace().collect::<Vec<_>>())
             // State 0A is LISTEN; column 9 is the socket's inode.
             .any(|cells| cells[3] == "0A" && sockets.contains(&cells[9].to_owned()))
-    })
+    }))
 }
 
 #[test]
@@ -1743,7 +1751,12 @@ fn the_daemon_listens_nowhere_without_a_serve_table() {
         std::thread::sleep(Duration::from_millis(50));
     }
 
-    assert!(!listening(pid));
+    match listening(pid) {
+        Some(listens) => assert!(!listens),
+        None => eprintln!(
+            "skipped: this host's /proc shows no descriptors or TCP table for process {pid}"
+        ),
+    }
 }
 
 #[test]
