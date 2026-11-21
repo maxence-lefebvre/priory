@@ -24,13 +24,13 @@ export function elsewhere(task, ago) {
 }
 
 /**
- * Each facet's key, label and a task's values, as the Asks list's facets. A task with no lane
- * shows under `none`. @type {[string, string, (task: any) => string[]][]}
+ * Each facet's key, label and a task's values, as the Asks list's facets. A task with no lane, or
+ * another runner's task with no workflow, shows under `none`. @type {[string, string, (task: any) => string[]][]}
  */
 export const TASK_FACETS = [
   ["state", "State", (task) => [task.state ?? "elsewhere"]],
   ["lane", "Lane", (task) => [task.lane ?? "none"]],
-  ["workflow", "Workflow", (task) => [task.workflow]],
+  ["workflow", "Workflow", (task) => [task.workflow ?? "none"]],
 ];
 
 /**

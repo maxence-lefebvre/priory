@@ -155,7 +155,8 @@ export default class PrioryTasks extends View {
 
   /** The desk's task row: key, workflow, step, state and age; the title; lane, band and batch, or the reason. @param {any} task @param {Palette} t @param {number} now */
   row(task, t, now) {
-    const away = elsewhere(task, (iso) => `${age(iso, now)} ago`);
+    // As the web's ago(): "12 min ago", or "on Nov 15, 12:00" past a day.
+    const away = elsewhere(task, (iso) => (/ (min|h)$/.test(age(iso, now)) ? `${age(iso, now)} ago` : `on ${age(iso, now)}`));
     if (away) return this.remoteRow(task, away, t, now);
     const reason = REASONED.includes(task.state) && task.reason;
     const caption = (/** @type {string} */ line, /** @type {string} */ color) => div().min_w_0().truncate().text_size(S["type-caption"][0]).text_color(t[color]).child(line);

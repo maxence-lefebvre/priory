@@ -25,6 +25,7 @@ test("the facets filter by state, lane and workflow, and a task with no lane cou
   assert.deepEqual(TASK_FACETS.map(([key, label]) => [key, label]), [["state", "State"], ["lane", "Lane"], ["workflow", "Workflow"]]);
   assert.deepEqual(ids(filtered(tasks, new Map([["lane", "payments"]]))), [12, 5, 6, 7]);
   assert.deepEqual(ids(filtered(tasks, new Map([["lane", "none"]]))), [10]);
+  assert.deepEqual(filtered([{ id: null, workflow: null }], new Map([["workflow", "none"]])).length, 1, "another runner's task may have no workflow");
   assert.deepEqual(ids(filtered(tasks, new Map([["workflow", "implement"], ["state", "done"]]))), [5]);
   assert.deepEqual(ids(filtered(tasks, new Map())), ids(tasks));
 });

@@ -100,3 +100,16 @@ test("in a factory of several runners a Runner facet marks this runner (here)", 
   press(draw(view, cx), "pick-runner-a");
   assert.match(text(draw(view, cx)), /Active 1 Blocked 0 Ended 0/);
 });
+
+test("another runner's task with no workflow, last seen days ago, still draws, under the workflow none", async () => {
+  herdr.reset();
+  herdr.replies.tasks = { ...fixture, tasks: [...fixture.tasks, { id: null, key: "ENG-301", workflow: null, step: null, state: null, lane: null, band: null, since: "2026-11-15T12:00:00Z", runner: "a", hold: "waiting", last_seen: "2026-11-15T12:00:00Z", title: null }] };
+  const view = new Tasks();
+  const cx = context();
+  view.init({}, cx);
+  await settle();
+
+  const shown = text(draw(view, cx));
+  assert.match(shown, /Workflow groom 1 implement 4 none 1 /);
+  assert.match(shown, /ENG-301 waiting Nov 15, 12:00 ENG-301 On runner a, last seen on Nov 15, 12:00$/);
+});
