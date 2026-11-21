@@ -209,6 +209,7 @@ When someone labels issue 42 of `owner/name` with `agent`, this happens:
 | `priory attach TASK [--read-only]` | Attaches your terminal to a task's agent |
 | `priory resume TASK` | Resumes a blocked task |
 | `priory say TASK TEXT` | Sends a task's agent a message, waking it if it sleeps |
+| `priory subscribe TASK RESOURCE`, `priory unsubscribe TASK RESOURCE` | Routes a pull request's, Linear issue's or Slack thread's events to a task until it closes, or stops routing them |
 | `priory pause [REASON]`, `priory unpause` | Stops new tasks from starting, then lets them start again |
 | `priory cancel TASK [--expected N]` | Drops an active task and ends its run |
 | `priory revive TASK [--step STEP]` | Restarts a failed or dropped task |

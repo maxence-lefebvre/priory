@@ -593,6 +593,20 @@ fn named(kind: &str, on: &Value) -> Result<Named, String> {
     }
 }
 
+/// The resource a `subscribe` or `unsubscribe` condition names: a pull request, a Linear issue or
+/// a Slack thread.
+pub(crate) fn resource(on: &Value) -> Result<String, String> {
+    match on["type"].as_str().unwrap_or_default() {
+        kind @ ("pull_request" | "checks" | "review" | "linear_comment" | "slack_reply") => {
+            named(kind, on).map(|(resource, ..)| resource)
+        }
+        "linear_state" => named("linear_comment", on).map(|(resource, ..)| resource),
+        kind => Err(format!(
+            "cannot subscribe to {kind:?}: subscribe to pull_request, checks, review, linear_comment, linear_state or slack_reply"
+        )),
+    }
+}
+
 /// Stores a wait on each condition of `on` or `any`, and fires the first that already holds: an
 /// event since the agent's last prompt, a passed time or an ended task. The daemon reads the
 /// current states it can afterwards, outside this call (see `readable`).
@@ -2234,9 +2248,9 @@ fn revive(
     }
     let shared = tx
         .query_row(
-            "SELECT owns.resource, tasks.id FROM owns JOIN owns AS mine ON mine.resource = owns.resource
-             JOIN tasks ON tasks.id = owns.task
-             WHERE mine.task = ?1 AND owns.task != ?1 AND tasks.state NOT IN ('done', 'failed', 'dropped')
+            "SELECT owned.resource, tasks.id FROM owned JOIN owned AS mine ON mine.resource = owned.resource
+             JOIN tasks ON tasks.id = owned.task
+             WHERE mine.task = ?1 AND owned.task != ?1 AND tasks.state NOT IN ('done', 'failed', 'dropped')
              ORDER BY tasks.id LIMIT 1",
             [act.task],
             |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)),
@@ -2307,8 +2321,8 @@ pub(crate) fn reopenable(
         return Ok(None);
     }
     tx.query_row(
-        "SELECT tasks.id FROM owns JOIN tasks ON tasks.id = owns.task
-         WHERE owns.resource = ?1 AND tasks.state = 'done'
+        "SELECT tasks.id FROM owned JOIN tasks ON tasks.id = owned.task
+         WHERE owned.resource = ?1 AND tasks.state = 'done'
          AND julianday(?2) >= julianday(tasks.changed)
          AND NOT EXISTS (SELECT 1 FROM inbox WHERE type = ?3
            AND 'github:' || json_extract(data, '$.repo') || '#' || json_extract(data, '$.pull_request') = ?1)

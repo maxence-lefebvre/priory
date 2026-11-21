@@ -709,6 +709,12 @@ pub fn task(db: &Connection, id: i64) -> rusqlite::Result<Option<Value>> {
             "SELECT run, step, outcome, summary, evidence, commit_sha, reason, created
              FROM results WHERE task = ?1 ORDER BY run",
         ),
+        (
+            "subscriptions",
+            "SELECT resource, created FROM subscriptions
+             WHERE task = ?1 AND (SELECT state FROM tasks WHERE id = ?1) NOT IN ('failed', 'dropped')
+             ORDER BY created, resource",
+        ),
     ];
     for (name, query) in lists {
         task[name] = rows(db, query, [id])?;
