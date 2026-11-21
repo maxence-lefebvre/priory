@@ -116,6 +116,11 @@ such as `gh pr merge` or `git push origin main`, and tells the agent to `ask`. T
 its step names the guard in `guard.allow` and is approved or `autonomous`, or when its workflow's
 `guard.allow` names it. A merge or an approving review needs an approved step. See [guard.md](docs/daemon/guard.md).
 
+An outcome can need proof too. Set `gate = "cargo test"` in `factory.toml` and
+`proof = { passed = "gate-passed" }` on the `implement` step. The agent then runs `priory gate`,
+and the daemon refuses `passed` until the gate passed at the branch's head. `priory check --explain`
+lists the outcomes it verifies. See Proofs in [tools.md](docs/daemon/tools.md#proofs).
+
 ## 4. Pick a starter
 
 The repository's `examples/` folder holds ready-made factories. Each one passes `priory check`, and

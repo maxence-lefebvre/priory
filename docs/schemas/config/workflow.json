@@ -47,6 +47,16 @@
       },
       "type": "object"
     },
+    "Proof": {
+      "description": "A check the daemon makes before it accepts a model step's outcome.",
+      "oneOf": [
+        {
+          "const": "gate-passed",
+          "description": "The factory's gate passed at the task's head, run by `priory gate`.",
+          "type": "string"
+        }
+      ]
+    },
     "Step": {
       "additionalProperties": false,
       "description": "One step: who decides its outcome, what it may change, and where each outcome leads.",
@@ -138,6 +148,14 @@
             "string",
             "null"
           ]
+        },
+        "proof": {
+          "additionalProperties": {
+            "$ref": "#/definitions/Proof"
+          },
+          "default": {},
+          "description": "What the daemon checks before it accepts an outcome, by outcome.",
+          "type": "object"
         },
         "run": {
           "description": "The command a `run` action runs with `sh -c`.",

@@ -546,6 +546,52 @@ pub(crate) fn tool_denied(
     append(tx, trace, "factory.tool.denied", &time, data)
 }
 
+/// Appends a `factory.gate.ran` record: `priory gate` ran the factory's gate for `run` of `task`
+/// at `commit`, and it exited `exit` after `duration_ms`.
+pub(crate) fn gate_ran(
+    tx: &Transaction,
+    trace: &Trace,
+    task: i64,
+    run: i64,
+    commit: &str,
+    exit: i32,
+    duration_ms: u64,
+) -> rusqlite::Result<()> {
+    let (workflow, step, key, generation, time): (String, String, String, i64, String) = tx
+        .query_row(
+            "SELECT workflow, step, key, generation, strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+             FROM tasks WHERE id = ?1",
+            [task],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                ))
+            },
+        )?;
+    let mut data = json!({
+        "factory": trace.factory.name,
+        "factory_revision": trace.revision,
+        "workflow": workflow,
+        "task": task.to_string(),
+        "run": run.to_string(),
+        "key": key,
+        "generation": generation,
+        "step": step,
+        "machine": trace.machine,
+        "commit": commit,
+        "exit": exit,
+        "duration_ms": duration_ms,
+    });
+    if let Value::Object(fields) = &mut data {
+        fields.retain(|_, value| !value.is_null());
+    }
+    append(tx, trace, "factory.gate.ran", &time, data)
+}
+
 /// The `source` of every record this factory writes on this machine.
 pub(crate) fn source(trace: &Trace) -> String {
     match &trace.machine {
