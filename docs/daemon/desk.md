@@ -280,7 +280,8 @@ visit, `since_you_looked` lists the latest 50 events. An event is a trace record
 each step that ended, repair, snooze or label, and each message and report the inbox took. Each has
 its `time`, its `task` and the task's `key`, and `what`: the record's type, step and outcome, the
 message's type, subject and outcome, or a report's `<source>: <line>`. `priory desk` without
-`--json` prints neither.
+`--json` lists the events after its items, under a `since you looked` header with the columns
+`time`, `task` and `what`, newest first. It prints no `last_visit` and, with no events, no list.
 
 Reading the desk records no visit, so a client calls `priory seen` once the person has read the
 events. `POST /api/seen` does the same through the daemon, for `me`, at the time its body names (see

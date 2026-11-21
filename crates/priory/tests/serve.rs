@@ -3379,6 +3379,36 @@ fn serve_without_a_daemon_gets_503_on_writes_and_200_on_reads() {
 }
 
 #[test]
+fn a_daemon_that_takes_a_write_but_does_not_reply_gets_504_and_the_state_stays_unread() {
+    let mut setup = Setup::new("web-504", SERVE);
+    setup.asleep_on_ask();
+    let socket =
+        priory_runtime::runtime::socket_in(Some(setup.tmux.path()), &setup.dir.join("home"));
+    fs::create_dir_all(socket.parent().unwrap()).unwrap();
+    let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+    let silent = std::thread::spawn(move || {
+        // Reads the line, then drops the connection with no reply.
+        let (stream, _) = listener.accept().unwrap();
+        BufReader::new(stream)
+            .read_line(&mut String::new())
+            .unwrap();
+    });
+    let address = setup.start(&["serve", &setup.factory()]);
+
+    let (status, body) = post(
+        &address,
+        "/api/snooze",
+        "",
+        r#"{"kind": "ask", "id": 1, "for": "1h"}"#,
+    );
+
+    silent.join().unwrap();
+    assert_eq!(status, 504, "{body}");
+    assert!(body.contains("The daemon may have applied it"), "{body}");
+    assert!(setup.ask()["snoozed_until"].is_null());
+}
+
+#[test]
 fn a_write_body_over_16_kib_gets_413_and_one_not_json_415() {
     let mut setup = Setup::new("web-limits", SERVE);
     setup.asleep_on_ask();
@@ -4443,6 +4473,26 @@ fn desktop_notifications_run_notify_send_once_per_new_top_item_with_its_title_on
             json!(["--", "Deploy the docs?"])
         ]
     );
+}
+
+#[test]
+fn a_restarted_daemon_does_not_notify_the_item_it_already_told() {
+    let mut setup = Setup::new(
+        "notify-restart",
+        &format!("{SERVE}\n[notify]\ndesktop = true\n"),
+    );
+    setup.seed();
+    succeeded(&setup.priory(&["pause"]));
+    setup.start(&["daemon", &setup.factory()]);
+    setup.until_notices(1);
+    let mut server = setup.server.take().unwrap();
+    server.kill().unwrap();
+    server.wait().unwrap();
+
+    setup.start(&["daemon", &setup.factory()]);
+    std::thread::sleep(Duration::from_millis(2500));
+
+    assert_eq!(setup.notices().len(), 1, "{:?}", setup.notices());
 }
 
 #[test]

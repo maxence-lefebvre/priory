@@ -116,3 +116,20 @@ fn two_persons_keep_separate_visits() {
     assert_eq!(setup.looked(&["--person", "bob"]), ["systemd: new"]);
     assert_eq!(setup.looked(&[]), ["systemd: new", "systemd: old"]);
 }
+
+#[test]
+fn the_text_desk_lists_since_you_looked_after_its_items() {
+    let setup = Setup::new("text");
+    setup.post("before");
+    next_second();
+    setup.stdout(&["seen"]);
+    setup.post("after");
+
+    let text = setup.stdout(&["desk"]);
+
+    let (_, since) = text
+        .split_once("since you looked")
+        .unwrap_or_else(|| panic!("no since you looked section:\n{text}"));
+    assert!(since.contains("systemd: after"), "{text}");
+    assert!(!since.contains("systemd: before"), "{text}");
+}

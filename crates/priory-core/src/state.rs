@@ -12,7 +12,7 @@ use std::collections::BTreeMap;
 use std::io::Write;
 use std::time::Duration;
 
-const VERSION: i64 = 69;
+const VERSION: i64 = 70;
 
 const SCHEMA: &str = "
 CREATE TABLE tasks (
@@ -1192,6 +1192,16 @@ const SCHEMA_69: &str = concat!(
 "
 );
 
+// The desk items a desktop notification already told a person, so a restarted daemon tells none twice.
+const SCHEMA_70: &str = "
+CREATE TABLE IF NOT EXISTS notified (
+  kind TEXT NOT NULL,
+  item TEXT NOT NULL,
+  PRIMARY KEY (kind, item)
+);
+PRAGMA user_version = 70;
+";
+
 /// Each schema change in order: a file at version `n` applies those from index `n` on.
 const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA, SCHEMA_2, SCHEMA_3, SCHEMA_4, SCHEMA_5, SCHEMA_6, SCHEMA_7, SCHEMA_8, SCHEMA_9,
@@ -1202,7 +1212,7 @@ const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA_42, SCHEMA_43, SCHEMA_44, SCHEMA_45, SCHEMA_46, SCHEMA_47, SCHEMA_48, SCHEMA_49,
     SCHEMA_50, SCHEMA_51, SCHEMA_52, SCHEMA_53, SCHEMA_54, SCHEMA_55, SCHEMA_56, SCHEMA_57,
     SCHEMA_58, SCHEMA_59, SCHEMA_60, SCHEMA_61, SCHEMA_62, SCHEMA_63, SCHEMA_64, SCHEMA_65,
-    SCHEMA_66, SCHEMA_67, SCHEMA_68, SCHEMA_69,
+    SCHEMA_66, SCHEMA_67, SCHEMA_68, SCHEMA_69, SCHEMA_70,
 ];
 
 /// The order the queue starts tasks in: band, then a person's order, then age. A band the factory
