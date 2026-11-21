@@ -103,6 +103,24 @@ answer or a condition comes, and the first one wins:
 While an answer or a fired wait of the run sits in a queued prompt, a new `ask` or `wait` is
 refused: the agent ends its turn and reads it first.
 
+### Why an ask or wait was withdrawn
+
+A withdrawn ask or wait keeps `withdrawn` set to 1 and names why in `withdrawn_reason`. `priory
+asks --json`, `/api/asks` and `priory task <id> --json` show it. It is one of:
+
+| Reason | On | What withdrew it |
+| ------ | -- | ---------------- |
+| `dismissed` | ask, wait | A person dismissed the ask. Its run's open waits go with it |
+| `answered-elsewhere` | wait | A person answered the ask of the wait's run |
+| `sibling-fired` | ask, wait | Another wait of the same run fired first, or another gate of the stack fired |
+| `moved-on` | ask, wait | A later run of the task called another tool |
+| `revived` | ask, wait | A person revived the task, or feedback reopened it, as its next generation |
+| `asked` | wait | The daemon asked a person about the task's stack, which ends its gates |
+
+State files before schema 58 kept the reason as a number in `withdrawn`. The upgrade names it: -1
+is `dismissed`, -2 `sibling-fired`, 0 `moved-on` and a generation `revived`. A wait withdrawn by an
+answer, a dismiss or a stack ask before then also held -2, so it reads as `sibling-fired`.
+
 A Linear or Slack condition makes the task own `linear:<issue>` or `slack:<channel>:<thread_ts>`, as
 a pull request condition does, and is refused when another active task owns it. It stores the time
 of the agent's last prompt. The wait also takes the events on its resource from then on that the
