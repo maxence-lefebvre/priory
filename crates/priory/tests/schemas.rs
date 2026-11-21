@@ -1,4 +1,6 @@
-use priory_factory::factory::{Agent, Runner, Scorer, Settings, Trigger, View, Workflow};
+use priory_factory::factory::{
+    Agent, MemoryFrontmatter, Runner, Scorer, Settings, Trigger, View, Workflow,
+};
 use priory_intake::events::*;
 use schemars::JsonSchema;
 use schemars::generate::SchemaSettings;
@@ -45,6 +47,7 @@ fn generated() -> Vec<(String, Value)> {
         config::<Runner>("runner"),
         config::<View>("view"),
         config::<Scorer>("scorer"),
+        config::<MemoryFrontmatter>("memory"),
         schema::<priory_core::sections::Report>(SchemaSettings::draft07(), "report.json"),
         event::<IssueLabeled>("github.issues.labeled"),
         event::<IssueOpened>("github.issues.opened"),
