@@ -9,8 +9,9 @@ use std::collections::{BTreeMap, BTreeSet};
 pub(super) const REQUESTED: &str = "github.pull_request.review_requested";
 pub(super) const REMOVED: &str = "github.pull_request.review_request_removed";
 const STREAM: &str = "github.review_requests:";
-/// A search page's size, and how many pages GitHub search returns at most.
+/// A search page's size.
 const PAGE: usize = 100;
+/// How many pages GitHub search returns at most: 1,000 results.
 const PAGES: u64 = 10;
 
 /// The review requests of each reviewer the triggers name, diffed poll to poll as Linear views are:
