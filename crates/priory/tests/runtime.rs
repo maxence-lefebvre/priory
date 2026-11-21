@@ -6603,6 +6603,47 @@ fn a_merge_that_carries_a_said_run_into_the_next_step_queues_only_that_steps_end
 }
 
 #[test]
+fn a_merge_after_a_said_runs_silent_turn_drops_its_nudge_from_the_next_steps_prompt() {
+    let mut setup = Setup::with_workflow("after-merge-said-nudge", AFTER_MERGE);
+    setup.calls(&[
+        wait(on_pull_7("review")),
+        passed_at("abc0000000000000000000000000000000000000"),
+        serde_json::Value::Null,
+        json!({ "name": "result", "arguments": { "outcome": "quiet", "summary": "all quiet" } }),
+    ]);
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("runs", |rows| rows.len() == 1 && rows[0][7] == "asleep");
+    setup.publish(&reviewed());
+    setup.until("runs", |rows| rows.len() == 2 && rows[1][7] == "asleep");
+    setup.hold("hold-stop");
+    assert!(setup.priory(&["say", "1", "Hold on."]).status.success());
+    setup.until("outbox", |_| {
+        setup
+            .typed()
+            .iter()
+            .any(|text| text.starts_with("A person says: Hold on."))
+    });
+    // The merge waits on the log while the silent turn's Stop queues its nudge; the daemon reads
+    // the log before it types again, so the nudge is still queued when the task enters `watch`.
+    setup.publish(&closed());
+    setup.release("hold-stop");
+
+    setup.until("tasks", |rows| rows[0][4] == "done");
+    let typed = setup.typed();
+    let watch = typed
+        .iter()
+        .find(|text| text.contains("Watch the release."))
+        .expect("the watch step's prompt was typed");
+    assert!(
+        !watch.contains("Your last turn ended in text only"),
+        "{watch}"
+    );
+    assert!(!watch.contains("outcomes listed below"), "{watch}");
+    assert!(watch.contains("outcomes: quiet."), "{watch}");
+}
+
+#[test]
 fn a_merge_that_marks_a_task_done_ends_its_said_run_and_kills_its_session() {
     let setup = gated("gate-said-done");
     setup.calls(&[serde_json::Value::Null]);
@@ -19835,6 +19876,164 @@ fn another_runners_open_ask_is_listed_with_its_runner_on_the_asks_and_desk_endpo
 }
 
 #[test]
+fn an_answer_sent_to_another_runners_ask_is_accepted_applied_by_its_runner_and_its_outcome_listed()
+{
+    let (a, _b, ask, address) = asked_on_a("remote-answer");
+    let id = format!("a:{ask}");
+    until_ask(&address, &id, |ask| ask["state"] == "open");
+
+    let (status, sent) = runner_http(
+        &address,
+        "POST",
+        &format!("/api/asks/{id}/answer"),
+        r#"{"option": "approved", "revision": 1}"#,
+    );
+
+    assert_eq!(status, 202, "{sent}");
+    assert_eq!(sent["sent"], "a");
+    let submission = sent["submission"].as_str().unwrap().to_owned();
+    let closed = until_ask(&address, &id, |ask| {
+        ask["state"] == "answered" && ask["submissions"][0]["outcome"] == "answered"
+    });
+    assert_eq!(closed["answer"], "approved", "{closed}");
+    assert_eq!(closed["submissions"][0]["submission"], submission.as_str());
+    a.until("tasks", |rows| rows[0][4] == "done");
+}
+
+#[test]
+fn a_stale_answer_to_another_runners_ask_gets_409_and_nothing_is_published() {
+    let (a, _b, ask, address) = asked_on_a("remote-stale");
+    let id = format!("a:{ask}");
+    until_ask(&address, &id, |ask| ask["state"] == "open");
+
+    let (status, refused) = runner_http(
+        &address,
+        "POST",
+        &format!("/api/asks/{id}/answer"),
+        r#"{"option": "approved", "revision": 2}"#,
+    );
+
+    assert_eq!(status, 409, "{refused}");
+    assert_eq!(refused["ask"]["id"], id.as_str(), "{refused}");
+    assert_eq!(
+        refused["error"],
+        format!("ask {id} is at revision 1, not 2"),
+        "{refused}"
+    );
+    assert!(on_log(&a, "priory.ask.answered").is_empty());
+}
+
+#[test]
+fn of_two_answers_to_one_revision_the_first_stands_and_the_other_shows_refused_without_a_new_revision()
+ {
+    let (a, _b, ask, address) = asked_on_a("remote-twice");
+    let id = format!("a:{ask}");
+    until_ask(&address, &id, |ask| ask["state"] == "open");
+    let path = format!("/api/asks/{id}/answer");
+
+    let mut submissions = Vec::new();
+    for option in ["approved", "rejected"] {
+        let body = json!({ "option": option, "revision": 1 }).to_string();
+        let (status, sent) = runner_http(&address, "POST", &path, &body);
+        assert_eq!(status, 202, "{sent}");
+        submissions.push(sent["submission"].as_str().unwrap().to_owned());
+    }
+
+    let closed = until_ask(&address, &id, |ask| {
+        ask["submissions"]
+            .as_array()
+            .is_some_and(|sent| sent.iter().all(|sent| !sent["outcome"].is_null()))
+            && ask["refused"]
+                .as_array()
+                .is_some_and(|refused| !refused.is_empty())
+    });
+    let outcomes: Vec<(&str, &str)> = closed["submissions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|sent| {
+            (
+                sent["text"].as_str().unwrap(),
+                sent["outcome"].as_str().unwrap(),
+            )
+        })
+        .collect();
+    assert!(outcomes.contains(&("approved", "answered")), "{closed}");
+    assert!(outcomes.contains(&("rejected", "refused")), "{closed}");
+    assert_eq!(closed["answer"], "approved", "{closed}");
+    assert_eq!(
+        closed["revision"], 1,
+        "a refusal does not revise the question"
+    );
+    let versions: Vec<i64> = on_log(&a, "priory.ask.posted")
+        .iter()
+        .map(|post| post.data["version"].as_i64().unwrap())
+        .collect();
+    // Asked, answered, then refused: one post can cover changes read in one pass.
+    assert_eq!(versions.last(), Some(&3), "{versions:?}");
+    assert!(versions.is_sorted(), "{versions:?}");
+}
+
+#[test]
+fn an_answer_sent_while_its_runner_is_away_is_applied_once_when_it_starts_again() {
+    let (mut a, _b, ask, address) = asked_on_a("remote-away");
+    let id = format!("a:{ask}");
+    until_ask(&address, &id, |ask| ask["state"] == "open");
+    a.crash();
+
+    let (status, sent) = runner_http(
+        &address,
+        "POST",
+        &format!("/api/asks/{id}/answer"),
+        r#"{"option": "approved", "revision": 1}"#,
+    );
+    assert_eq!(status, 202, "{sent}");
+    let pending = until_ask(&address, &id, |ask| {
+        ask["submissions"]
+            .as_array()
+            .is_some_and(|sent| !sent.is_empty())
+    });
+    assert!(pending["submissions"][0]["outcome"].is_null(), "{pending}");
+    assert_eq!(pending["state"], "open", "{pending}");
+
+    a.start_with(
+        Path::new(env!("CARGO_BIN_EXE_priory")),
+        &[("PRIORY_NOW", T0)],
+    );
+
+    until_ask(&address, &id, |ask| {
+        ask["state"] == "answered" && ask["submissions"][0]["outcome"] == "answered"
+    });
+    assert_eq!(on_log(&a, "priory.ask.applied").len(), 1);
+}
+
+#[test]
+fn a_refused_dismiss_of_another_runners_ask_comes_back_with_the_owners_reason() {
+    let (a, b, ask, address) = asked_on_a("remote-dismiss");
+    let id = format!("a:{ask}");
+    until_ask(&address, &id, |ask| ask["state"] == "open");
+    let factory = b.dir.join("factory");
+
+    let sent = b.priory(&["dismiss", "--revision", "1", factory.to_str().unwrap(), &id]);
+
+    assert!(
+        sent.status.success(),
+        "{}",
+        String::from_utf8_lossy(&sent.stderr)
+    );
+    let refused = until_ask(&address, &id, |ask| {
+        ask["submissions"][0]["outcome"] == "refused"
+    });
+    assert_eq!(refused["submissions"][0]["verb"], "dismiss");
+    assert_eq!(
+        refused["submissions"][0]["why"],
+        format!("ask {ask} moves its task on by its options: answer it instead"),
+        "{refused}"
+    );
+    assert_eq!(a.rows("asks").len(), 1, "the ask stays open on a");
+}
+
+#[test]
 fn a_mirror_keeps_the_highest_version_of_a_post_whatever_order_it_reads_them_in() {
     let mut b = runner("remote-versions", "b", None);
     let post = |version: i64, question: &str| {
@@ -19868,6 +20067,52 @@ fn a_mirror_keeps_the_highest_version_of_a_post_whatever_order_it_reads_them_in(
         .collect();
     assert_eq!(mirrored.len(), 1, "{asks}");
     assert_eq!(mirrored[0]["question"], "newer");
+}
+
+#[test]
+fn a_command_answer_to_another_runners_ask_says_where_it_runs_and_needs_run() {
+    let mut b = runner("remote-command", "b", None);
+    b.publish(&Message::new(
+        "priory.ask.posted",
+        json!({
+            "runner": "a", "ask": 7, "version": 1, "kind": "step",
+            "listed": {
+                "id": 7, "state": "open", "revision": 1, "question": "Deploy?",
+                "command": { "argv": ["deploy"], "dir": ".", "runs": ["approved"] },
+            },
+        }),
+    ));
+    b.publish(&requested(1));
+    b.start_with(
+        Path::new(env!("CARGO_BIN_EXE_priory")),
+        &[("PRIORY_NOW", T0)],
+    );
+    b.until("inbox", |rows| {
+        rows.iter().any(|row| row[1] == "factory.task.requested")
+    });
+    let factory = b.dir.join("factory");
+    let dir = factory.to_str().unwrap();
+
+    let unconfirmed = b.priory(&["answer", "--revision", "1", dir, "a:7", "approved"]);
+    let confirmed = b.priory(&["answer", "--revision", "1", "--run", dir, "a:7", "approved"]);
+
+    assert_eq!(
+        String::from_utf8_lossy(&unconfirmed.stderr),
+        "priory answer: ask a:7 runs its command when answered \"approved\". Runs on a: answer again with --run to run it\n"
+    );
+    assert!(
+        confirmed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&confirmed.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&confirmed.stdout).ends_with("Runs on a.\n"),
+        "{}",
+        String::from_utf8_lossy(&confirmed.stdout)
+    );
+    let sent = on_log(&b, "priory.ask.answered");
+    assert_eq!(sent.len(), 1);
+    assert_eq!(sent[0].data["run"], true);
 }
 
 #[test]
@@ -20000,7 +20245,10 @@ fn a_runs_screen_returns_its_rows_blank_ones_kept_its_size_and_a_hash_that_follo
             status,
             serde_json::from_str::<serde_json::Value>(&same).unwrap()
         ),
-        (200, json!({ "hash": hash, "same": true }))
+        (
+            200,
+            json!({ "hash": hash, "same": true, "scrollback": screen["scrollback"] })
+        )
     );
 
     setup.shows("=priory-1:", "\x1b[?25hnew text");
@@ -20013,6 +20261,97 @@ fn a_runs_screen_returns_its_rows_blank_ones_kept_its_size_and_a_hash_that_follo
         serde_json::from_slice::<serde_json::Value>(&cli.stdout).unwrap(),
         changed
     );
+    server.kill().unwrap();
+    server.wait().unwrap();
+}
+
+#[test]
+fn a_runs_screen_keeps_its_colour_codes_drops_links_and_hides_a_secret_a_code_splits() {
+    let setup = Setup::running("screen-colours");
+    let (mut server, address) = serving(&setup, WATCH, &[("TEST_TOKEN", SERVE_TOKEN)]);
+    setup.shows(
+        "=priory-1:",
+        "\x1b[31mred\x1b[0m T=s3cret\x1b[1m-token\x1b[0m end\r\n\x1b]8;;http://x.example\x1b\\link\x1b]8;;\x1b\\ after",
+    );
+
+    let screen = screen_once(&address, |screen| screen_row(screen, 1).ends_with("after"));
+
+    assert_eq!(
+        screen_row(&screen, 0),
+        "\x1b[31mred\x1b[39m T=[redacted]\x1b[1m\x1b[0m end"
+    );
+    assert_eq!(screen_row(&screen, 1), "link after");
+    assert_eq!(screen["redacted"], 1);
+    server.kill().unwrap();
+    server.wait().unwrap();
+}
+
+#[test]
+fn a_runs_screen_takes_earlier_rows_up_to_its_cap_and_hashes_them() {
+    let setup = Setup::running("screen-history");
+    let (mut server, address) = serving(&setup, WATCH, &[("TEST_TOKEN", SERVE_TOKEN)]);
+    // A pane takes the history limit it was made with, so a new one holds more than the cap.
+    setup.tmux_out(&["set-option", "-g", "history-limit", "3000"]);
+    let tagged = setup.tmux_out(&[
+        "list-panes",
+        "-s",
+        "-t",
+        "=priory-1:",
+        "-F",
+        "#{pane_id} #{@priory}",
+    ]);
+    let (old, tag) = tagged.trim().split_once(' ').unwrap();
+    let new = setup.tmux_out(&[
+        "split-window",
+        "-P",
+        "-F",
+        "#{pane_id}",
+        "-t",
+        old,
+        "seq 1 2600; sleep 600",
+    ]);
+    setup.tmux_out(&["set-option", "-p", "-t", new.trim(), "@priory", tag]);
+    setup.tmux_out(&["kill-pane", "-t", old]);
+    let screen = screen_once(&address, |screen| screen.to_string().contains("\"2600\""));
+    let height = screen["height"].as_u64().unwrap() as usize;
+    assert_eq!(screen["earlier"], 0);
+    assert!(
+        screen["scrollback"].as_u64().unwrap() > 2000,
+        "{}",
+        screen["scrollback"]
+    );
+
+    let (status, body) = http(&address, "GET", "/api/runs/1/screen?history=5", "", "");
+    let five: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!((status, five["earlier"].clone()), (200, json!(5)));
+    assert_eq!(
+        five["lines"].as_array().unwrap()[5..],
+        screen["lines"].as_array().unwrap()[..]
+    );
+    let first: u32 = screen_row(&screen, 0).parse().unwrap();
+    assert_eq!(screen_row(&five, 0), (first - 5).to_string());
+    assert_ne!(five["hash"], screen["hash"]);
+    let (_, same) = http(
+        &address,
+        "GET",
+        &format!(
+            "/api/runs/1/screen?history=5&have={}",
+            five["hash"].as_str().unwrap()
+        ),
+        "",
+        "",
+    );
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&same).unwrap()["same"],
+        true
+    );
+
+    let (_, body) = http(&address, "GET", "/api/runs/1/screen?history=99999", "", "");
+    let capped: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(capped["earlier"], 2000);
+    assert_eq!(capped["lines"].as_array().unwrap().len(), 2000 + height);
+    let (status, _) = http(&address, "GET", "/api/runs/1/screen?history=many", "", "");
+    assert_eq!(status, 400);
     server.kill().unwrap();
     server.wait().unwrap();
 }

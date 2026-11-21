@@ -52,6 +52,14 @@
   --term-bg: light-dark(#12121A, #0E0E12);
   --term-fg: light-dark(#E4E4EA, #E4E4EA);
   --term-dim: light-dark(#9A9AA3, #9A9AA3);
+  --term-black: light-dark(#8C8C9A, #8C8C9A);
+  --term-red: light-dark(#F28B82, #F28B82);
+  --term-green: light-dark(#81C995, #81C995);
+  --term-yellow: light-dark(#E6C46A, #E6C46A);
+  --term-blue: light-dark(#8AB4F8, #8AB4F8);
+  --term-magenta: light-dark(#C58AF9, #C58AF9);
+  --term-cyan: light-dark(#78D9EC, #78D9EC);
+  --term-white: light-dark(#E4E4EA, #E4E4EA);
   --scrim: light-dark(rgb(11 11 20 / 0.40), rgb(0 0 0 / 0.64));
 }
 
@@ -97,6 +105,14 @@
   --term-bg: light-dark(#0A0A0A, #0A0A0A);
   --term-fg: light-dark(#EDEDED, #EDEDED);
   --term-dim: light-dark(#8F8F8F, #8F8F8F);
+  --term-black: light-dark(#8F8F8F, #8F8F8F);
+  --term-red: light-dark(#FF7B72, #FF7B72);
+  --term-green: light-dark(#7EE787, #7EE787);
+  --term-yellow: light-dark(#E3B341, #E3B341);
+  --term-blue: light-dark(#79C0FF, #79C0FF);
+  --term-magenta: light-dark(#D2A8FF, #D2A8FF);
+  --term-cyan: light-dark(#76E3EA, #76E3EA);
+  --term-white: light-dark(#EDEDED, #EDEDED);
   --scrim: light-dark(rgb(10 10 10 / 0.40), rgb(0 0 0 / 0.66));
 }
 /* Parchment: parchment and iron-gall ink; rubric red marks only what waits on a person; lapis is the action */
@@ -141,6 +157,14 @@
   --term-bg: light-dark(#1E1812, #0F0C08);
   --term-fg: light-dark(#EDE3CC, #EDE3CC);
   --term-dim: light-dark(#A89A7C, #A89A7C);
+  --term-black: light-dark(#A08F74, #A08F74);
+  --term-red: light-dark(#EE8A6E, #EE8A6E);
+  --term-green: light-dark(#A9C77A, #A9C77A);
+  --term-yellow: light-dark(#E5BE5E, #E5BE5E);
+  --term-blue: light-dark(#8FAFD6, #8FAFD6);
+  --term-magenta: light-dark(#CF97C2, #CF97C2);
+  --term-cyan: light-dark(#86C5B5, #86C5B5);
+  --term-white: light-dark(#EDE3CC, #EDE3CC);
   --scrim: light-dark(rgb(36 27 18 / 0.42), rgb(0 0 0 / 0.64));
 }
 
@@ -186,6 +210,14 @@
   --term-bg: light-dark(#121624, #080A10);
   --term-fg: light-dark(#ECE6D8, #ECE6D8);
   --term-dim: light-dark(#9C9584, #9C9584);
+  --term-black: light-dark(#958F80, #958F80);
+  --term-red: light-dark(#E88A7A, #E88A7A);
+  --term-green: light-dark(#9CCB8A, #9CCB8A);
+  --term-yellow: light-dark(#E2C072, #E2C072);
+  --term-blue: light-dark(#8DAEE8, #8DAEE8);
+  --term-magenta: light-dark(#C49AE0, #C49AE0);
+  --term-cyan: light-dark(#7FCCC9, #7FCCC9);
+  --term-white: light-dark(#ECE6D8, #ECE6D8);
   --scrim: light-dark(rgb(28 26 23 / 0.42), rgb(0 0 0 / 0.64));
 }
 

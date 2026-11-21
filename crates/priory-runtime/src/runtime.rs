@@ -1028,17 +1028,22 @@ fn shown(target: &str) -> Vec<String> {
     lines[lines.len().saturating_sub(30)..].to_vec()
 }
 
-/// What a pane shows: its size, its cursor unless hidden, and each row, trailing spaces trimmed.
+/// What a pane shows: its size, its cursor unless hidden, how many rows of scrollback it keeps, and
+/// each row with its SGR colour codes, trailing spaces trimmed: `earlier` rows of scrollback, then
+/// the screen.
 pub struct Snapshot {
     pub width: u16,
     pub height: u16,
     pub cursor: Option<(u16, u16)>,
+    pub scrollback: usize,
+    pub earlier: usize,
     pub lines: Vec<String>,
 }
 
 /// The screen of the live pane of the tmux session `name` that runs the harness session `session`,
-/// read by that pane's id, or none once it is gone or when tmux takes longer than `deadline`.
-pub fn snapshot(name: &str, session: &str, deadline: Duration) -> Option<Snapshot> {
+/// after up to `history` rows of its scrollback, read by that pane's id, or none once it is gone or
+/// when tmux takes longer than `deadline`.
+pub fn snapshot(name: &str, session: &str, history: usize, deadline: Duration) -> Option<Snapshot> {
     let end = std::time::Instant::now() + deadline;
     let within = |command: &mut Command| {
         let left = end.saturating_duration_since(std::time::Instant::now());
@@ -1054,27 +1059,30 @@ pub fn snapshot(name: &str, session: &str, deadline: Duration) -> Option<Snapsho
         "-t",
         &format!("={name}:"),
         "-F",
-        "#{pane_id} #{pane_dead} #{pane_width} #{pane_height} #{cursor_flag} #{cursor_x} #{cursor_y} #{@priory}",
+        "#{pane_id} #{pane_dead} #{pane_width} #{pane_height} #{cursor_flag} #{cursor_x} #{cursor_y} #{history_size} #{@priory}",
     ]))?;
     let (pane, mut snapshot) = tagged_pane(&panes, session)?;
-    let shown = within(tmux().args(["capture-pane", "-p", "-t", pane]))?;
+    snapshot.earlier = history.min(snapshot.scrollback);
+    let start = format!("-{}", snapshot.earlier);
+    let shown = within(tmux().args(["capture-pane", "-p", "-e", "-S", &start, "-t", pane]))?;
     snapshot.lines = shown
         .lines()
         .map(|line| line.trim_end().to_owned())
         .collect();
-    snapshot
-        .lines
-        .resize(usize::from(snapshot.height), String::new());
+    snapshot.lines.resize(
+        snapshot.earlier + usize::from(snapshot.height),
+        String::new(),
+    );
     Some(snapshot)
 }
 
 /// The live pane running the harness session `session` in a `list-panes` listing of id, dead flag,
-/// width, height, cursor flag, cursor x and y, and tag: its id, and its size and cursor unless
-/// hidden, with no rows yet.
+/// width, height, cursor flag, cursor x and y, scrollback rows and tag: its id, its size, its cursor
+/// unless hidden and its scrollback, with no rows yet.
 fn tagged_pane<'a>(panes: &'a str, session: &str) -> Option<(&'a str, Snapshot)> {
     panes.lines().find_map(|line| {
-        let fields: Vec<_> = line.splitn(8, ' ').collect();
-        let [pane, "0", width, height, shown, x, y, tag] = fields[..] else {
+        let fields: Vec<_> = line.splitn(9, ' ').collect();
+        let [pane, "0", width, height, shown, x, y, scrollback, tag] = fields[..] else {
             return None;
         };
         if tag != session {
@@ -1086,6 +1094,7 @@ fn tagged_pane<'a>(panes: &'a str, session: &str) -> Option<(&'a str, Snapshot)>
             _ => return None,
         };
         let (width, height) = (width.parse().ok()?, height.parse().ok()?);
+        let scrollback = scrollback.parse().ok()?;
         let lines = Vec::new();
         Some((
             pane,
@@ -1093,6 +1102,8 @@ fn tagged_pane<'a>(panes: &'a str, session: &str) -> Option<(&'a str, Snapshot)>
                 width,
                 height,
                 cursor,
+                scrollback,
+                earlier: 0,
                 lines,
             },
         ))
@@ -1404,7 +1415,7 @@ mod tests {
 
     #[test]
     fn the_tagged_pane_is_the_live_one_with_the_session_and_its_cursor_shows_only_when_on() {
-        let panes = "%1 0 80 24 1 3 4 other\n%2 1 80 24 1 3 4 s1\n%3 0 120 30 0 9 9 s1\n%4 0 120 30 1 5 6 s1";
+        let panes = "%1 0 80 24 1 3 4 0 other\n%2 1 80 24 1 3 4 0 s1\n%3 0 120 30 0 9 9 0 s1\n%4 0 120 30 1 5 6 0 s1";
         let found = |panes, session| {
             tagged_pane(panes, session)
                 .map(|(pane, shown)| (pane, shown.width, shown.height, shown.cursor))
@@ -1412,17 +1423,22 @@ mod tests {
 
         assert_eq!(found(panes, "s1"), Some(("%3", 120, 30, None)));
         assert_eq!(
-            found("%4 0 120 30 1 5 6 s1", "s1"),
+            found("%4 0 120 30 1 5 6 7 s1", "s1"),
             Some(("%4", 120, 30, Some((5, 6))))
         );
-        assert_eq!(found("%4 0 120 30 2 5 6 s1", "s1"), None);
+        assert_eq!(
+            tagged_pane("%4 0 120 30 1 5 6 1500 s1", "s1").map(|(_, shown)| shown.scrollback),
+            Some(1500)
+        );
+        assert_eq!(found("%4 0 120 30 2 5 6 0 s1", "s1"), None);
+        assert_eq!(found("%4 0 120 30 1 5 6 many s1", "s1"), None);
         assert_eq!(found(panes, "s9"), None);
     }
 
     proptest! {
         #[test]
         fn a_pane_listing_parses_or_is_refused_without_panicking(
-            listing in "(%[0-9]{1,3} [01] [0-9]{1,6} [0-9]{1,6} [0-9] [0-9]{1,6} [0-9]{1,6} s1\n){0,3}|.{0,80}"
+            listing in "(%[0-9]{1,3} [01] [0-9]{1,6} [0-9]{1,6} [0-9] [0-9]{1,6} [0-9]{1,6} [0-9]{1,6} s1\n){0,3}|.{0,80}"
         ) {
             if let Some((pane, ..)) = tagged_pane(&listing, "s1") {
                 prop_assert!(listing.contains(pane));
