@@ -1915,8 +1915,9 @@ fn a_herdr_layout_built_from_other_view_files_warns_and_still_passes() {
     assert_eq!(
         outcome.stderr,
         format!(
-            "warning: the Herdr layout {} was built from other view files: run `priory views --json | adapters/herdr/install`\n",
-            app.join("layouts/priory.json").display()
+            "warning: the Herdr layout {} was built from other view files: run `priory views {} --json | adapters/herdr/install` again, with --copy if you installed copies\n",
+            app.join("layouts/priory.json").display(),
+            dir.display()
         )
     );
 }
@@ -1926,9 +1927,10 @@ fn a_herdr_layout_built_from_these_view_files_or_not_by_priory_passes_quietly() 
     let dir = factory("herdr-fresh", &valid());
     let fresh = herdr_with_layout("fresh", &format!("priory-generated-{}", views_hash(&dir)));
     let foreign = herdr_with_layout("foreign", "mine");
+    let lookalike = herdr_with_layout("lookalike", "priory-generated-custom");
     let missing = Path::new(env!("CARGO_TARGET_TMPDIR")).join("herdr/missing");
 
-    for app in [fresh, foreign, missing] {
+    for app in [fresh, foreign, lookalike, missing] {
         let outcome = check_with_herdr(&dir, &app);
         assert_eq!(
             (outcome.code, outcome.stderr.as_str()),
@@ -1937,4 +1939,19 @@ fn a_herdr_layout_built_from_these_view_files_or_not_by_priory_passes_quietly() 
             app.display()
         );
     }
+}
+
+#[test]
+fn a_herdr_layout_from_before_the_hash_warns() {
+    let dir = factory("herdr-legacy", &valid());
+    let app = herdr_with_layout("legacy", "priory-generated");
+
+    let outcome = check_with_herdr(&dir, &app);
+
+    assert_eq!(outcome.code, 0, "{}", outcome.stderr);
+    assert!(
+        outcome.stderr.contains("was built from other view files"),
+        "{}",
+        outcome.stderr
+    );
 }

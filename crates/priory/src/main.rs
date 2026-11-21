@@ -2249,7 +2249,7 @@ fn check(args: Vec<OsString>) -> ExitCode {
             factory::WRITING_LIMIT
         );
     }
-    warn_of_stale_herdr_layout(&factory);
+    warn_of_stale_herdr_layout(&factory, &dir);
     if explain {
         print_explanation(&factory, json);
         return ExitCode::SUCCESS;
@@ -2265,10 +2265,9 @@ fn check(args: Vec<OsString>) -> ExitCode {
 }
 
 /// Warns when the Herdr layout `adapters/herdr/install` wrote on this machine was built from other
-/// view files. The layout's root id ends in the first 12 hex digits of the SHA-256 of the text
-/// `priory views --json` prints. It finds Herdr's folder as Herdr does: `HERDR_APP_HOME`, else
-/// `~/.config/herdr-app`. A layout on another machine is out of reach, so it is not checked.
-fn warn_of_stale_herdr_layout(factory: &factory::Factory) {
+/// view files: its root id ends in 12 hex digits of the SHA-256 of what `priory views --json`
+/// prints, and an id without them predates the hash. Another machine's layout is not checked.
+fn warn_of_stale_herdr_layout(factory: &factory::Factory, dir: &Path) {
     let Some(app) = std::env::var_os("HERDR_APP_HOME")
         .map(PathBuf::from)
         .or_else(|| {
@@ -2285,17 +2284,20 @@ fn warn_of_stale_herdr_layout(factory: &factory::Factory) {
     else {
         return;
     };
-    let Some(built_from) = id.strip_prefix("priory-generated-") else {
-        return;
-    };
     let hash: String = Sha256::digest(listing::views(factory).to_string().as_bytes())[..6]
         .iter()
         .map(|byte| format!("{byte:02x}"))
         .collect();
-    if built_from != hash {
+    let current = id == format!("priory-generated-{hash}");
+    let ours = id == "priory-generated"
+        || id
+            .strip_prefix("priory-generated-")
+            .is_some_and(|rest| rest.len() == 12 && rest.bytes().all(|b| b.is_ascii_hexdigit()));
+    if ours && !current {
         eprintln!(
-            "warning: the Herdr layout {} was built from other view files: run `priory views --json | adapters/herdr/install`",
-            path.display()
+            "warning: the Herdr layout {} was built from other view files: run `priory views {} --json | adapters/herdr/install` again, with --copy if you installed copies",
+            path.display(),
+            dir.display()
         );
     }
 }

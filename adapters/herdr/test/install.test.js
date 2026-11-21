@@ -189,3 +189,22 @@ test("--copy --dry-run prints each copy and changes nothing", () => {
   assert.match(run.stdout, /^copy /m);
   assert.equal(existsSync(join(home, ".config/herdr-app")), false);
 });
+
+test("owns only the exact root ids this adapter writes", () => {
+  for (const id of ["priory-generated-custom", "priory-generated-", "priory-generated-0123456789abc", 7]) {
+    const home = scratch();
+    const app = join(home, ".config/herdr-app");
+    mkdirSync(join(app, "layouts"), { recursive: true });
+    writeFileSync(join(app, "layouts/priory.json"), JSON.stringify({ id }));
+    const run = install(home, VIEWS, "--dry-run");
+    assert.equal(run.status, 1, String(id));
+    assert.match(run.stderr, /is not a layout this adapter wrote/);
+  }
+});
+
+test("--copy leaves no staging folder behind", () => {
+  const home = scratch();
+  assert.equal(install(home, VIEWS, "--copy").status, 0);
+  assert.equal(install(home, VIEWS, "--copy").status, 0);
+  assert.deepEqual(readdirSync(join(home, ".config/herdr-app/.priory-staging")), []);
+});

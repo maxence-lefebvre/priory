@@ -90,13 +90,14 @@ its machine has another hash than the factory's views. A layout on another machi
   on Windows. A later `install --copy` replaces a folder that holds that marker, files that left
   the source included, and a link into this adapter. It stops on any other folder. A plain
   `install` stops on a copy, so the two never mix. A copy you made by hand, without the marker,
-  is not the script's: mark each one, then run `install --copy`:
-  `for m in ~/.config/herdr-app/mods/priory-*; do git -C adapters/herdr rev-parse HEAD > "$m/.priory-installed"; done`.
+  is not the script's: after you check one is a copy of this adapter, mark it with
+  `git -C adapters/herdr rev-parse HEAD > ~/.config/herdr-app/mods/priory-desk/.priory-installed`,
+  one folder at a time, then run `install --copy`.
 - A link that already points into this adapter stays as it is. The layout is written again on
   every run.
 - Any other file or link at a mod's target stops the script before it changes anything. So does a
   `priory.json` that `install` did not write: a file whose JSON root id is not
-  `priory-generated` or `priory-generated-` and a hash, or a link elsewhere than to this adapter. Move that file away and run it
+  `priory-generated`, alone or with 12 hex digits after a hyphen, or a link elsewhere than to this adapter. Move that file away and run it
   again.
 - Input that is not `priory views --json`, a node or panel Priory does not ship, or a `default`
   view with two `terminal` panels stops the script before it changes anything.
