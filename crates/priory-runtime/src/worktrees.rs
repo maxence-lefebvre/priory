@@ -153,5 +153,11 @@ fn occupied(path: &Path) -> bool {
 /// Removes the worktree and its branch. Git refuses both when anything is left to lose.
 pub fn remove(home: &Path, found: &Found) -> Result<(), String> {
     retire(home, found)?;
-    run(git(&found.clone(home)).args(["branch", "-d", &found.branch()])).map(drop)
+    let clone = found.clone(home);
+    let branch = found.branch();
+    // A task branch tracks nothing, so `-d` alone would judge the merge against the clone's HEAD.
+    let merged =
+        run(git(&clone).args(["merge-base", "--is-ancestor", &branch, "origin/HEAD"])).is_ok();
+    let delete = if merged { "-D" } else { "-d" };
+    run(git(&clone).args(["branch", delete, &branch])).map(drop)
 }
