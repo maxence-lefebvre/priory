@@ -406,3 +406,10 @@ test("a closed ask of another runner still says why it refused the answer sent t
   const detail = askDetail(remote({ state: "answered", answer: "rejected", answered_at: "2026-11-20T20:47:00Z", submissions: [refused] }), { now, armed: null });
   assert.deepEqual(detail.sent, { text: "xps13 refused approved: ask 12 is answered", refused: true });
 });
+
+test("an ask whose answer lets an irreversible step run shows the server's History line, and others none", () => {
+  const line = "History: 4 of 12 tasks through this step were judged wrong within 30 days, 1 after the merge. Too few to estimate.";
+  const gated = { ...asks[0], risk_estimate: { step: "open-pr", trials: 12, line } };
+  assert.equal(askDetail(gated, { now, armed: null }).riskLine, line);
+  assert.equal(askDetail(asks[0], { now, armed: null }).riskLine, null);
+});
