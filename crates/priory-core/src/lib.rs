@@ -1,3 +1,4 @@
+pub mod batch;
 mod command;
 pub mod daemon;
 pub mod deliver;

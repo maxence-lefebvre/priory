@@ -123,6 +123,53 @@ pub(crate) fn tools() -> Value {
         },
         "required": ["type"],
     });
+    let batch = json!({
+        "type": "object",
+        "description": "For a batch's plan step: the plan. Every issue of the batch is in one entry or one close. entries run in this order; each entry starts after the entries in its after merge. Leave out an issue another task already holds.",
+        "properties": {
+            "title": text("The batch's title."),
+            "entries": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "id": text("A short id, unique in the plan, such as e1."),
+                        "issue": text("The issue, such as ENG-40 or owner/name#42."),
+                        "title": text("The task's title."),
+                        "brief": text("The task's request text, in Markdown."),
+                        "files": { "type": "array", "items": { "type": "string" }, "description": "The files or folders you expect it to change." },
+                        "after": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "entry": text("The id of the entry it starts after."),
+                                    "moment": { "enum": ["merged"], "description": "merged: once every pull request of that entry merged." },
+                                    "why": text("Why it waits, in one line."),
+                                },
+                                "required": ["entry", "moment"],
+                            },
+                        },
+                    },
+                    "required": ["id", "issue", "title", "brief"],
+                },
+            },
+            "close": {
+                "type": "array",
+                "description": "Issues already done, which the close step closes.",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "issue": text("The issue."),
+                        "why": text("Why it is done, in one line."),
+                        "evidence": text("A link that proves it, such as the merged pull request."),
+                    },
+                    "required": ["issue", "why"],
+                },
+            },
+        },
+        "required": ["entries"],
+    });
     json!([
         {
             "name": "result",
@@ -161,6 +208,7 @@ pub(crate) fn tools() -> Value {
                         "items": { "type": "string" },
                         "description": "For a stack of pull requests: its branches, bottom first, ending with your task's branch. Name each lower one after it: priory/7-api. open-pr opens one pull request per branch, each based on the one below.",
                     },
+                    "batch": batch,
                 },
                 "required": ["outcome", "summary"],
             },
