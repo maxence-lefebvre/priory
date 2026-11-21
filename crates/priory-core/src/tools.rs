@@ -1369,7 +1369,7 @@ impl Seen {
     }
 }
 
-/// Judges the daemon's checks wait `wait` on every event the inbox kept or ignored about its pull
+/// Judges the daemon's checks wait `wait` on every event the inbox kept, ignored or woke on about its pull
 /// request, so that events the agent already read, or an earlier owner kept, count too. The newest event tells the head: one after the
 /// result that names another head wakes the agent. The newest check at the result's commit then
 /// decides: red wakes the agent, and green with none pending or failing marks the task done. With
@@ -1387,7 +1387,7 @@ fn judge(tx: &Transaction, wait: i64) -> rusqlite::Result<bool> {
     {
         let mut statement = tx.prepare(
             "SELECT seq, type, data FROM inbox
-             WHERE outcome IN ('kept', 'ignored')
+             WHERE outcome IN ('kept', 'ignored', 'woke')
              AND 'github:' || json_extract(data, '$.repo') || '#' || json_extract(data, '$.pull_request') = ?1
              AND (json_extract(data, '$.head_sha') IS NOT NULL OR type = ?2) ORDER BY seq DESC",
         )?;
@@ -3463,7 +3463,8 @@ fn approve(
         .and_then(|(worktree, branch)| head(Path::new(&worktree), &branch));
     for step in approved {
         tx.execute(
-            "INSERT INTO approvals (task, step, ask, revision, commit_sha) VALUES (?1, ?2, ?3, ?4, ?5)",
+            "INSERT INTO approvals (task, step, ask, revision, commit_sha, generation)
+             VALUES (?1, ?2, ?3, ?4, ?5, (SELECT generation FROM tasks WHERE id = ?1))",
             params![task, step, answer.ask, answer.revision, commit],
         )?;
     }
@@ -3471,8 +3472,9 @@ fn approve(
 }
 
 /// Whether the irreversible step `at` may run at the task's commit `head`. With no commit or no
-/// approval, the task blocks. With an approval given at another commit, its ask gets a new revision
-/// and the task sleeps at the approving step until a person answers it again.
+/// approval, the task blocks. With an approval given at another commit or in an earlier generation,
+/// its ask gets a new revision and the task sleeps at the approving step until a person answers it
+/// again.
 pub(crate) fn approved(
     db: &mut Connection,
     task: i64,
@@ -3494,8 +3496,9 @@ pub(crate) fn approved(
     };
     let approval = tx
         .query_row(
-            "SELECT approvals.ask, approvals.commit_sha, asks.step FROM approvals
-             JOIN asks ON asks.id = approvals.ask
+            "SELECT approvals.ask, approvals.commit_sha, asks.step,
+               approvals.generation IS tasks.generation FROM approvals
+             JOIN asks ON asks.id = approvals.ask JOIN tasks ON tasks.id = approvals.task
              WHERE approvals.task = ?1 AND approvals.step = ?2 ORDER BY approvals.id DESC LIMIT 1",
             params![task, at.id],
             |row| {
@@ -3503,23 +3506,28 @@ pub(crate) fn approved(
                     row.get::<_, i64>(0)?,
                     row.get::<_, Option<String>>(1)?,
                     row.get::<_, String>(2)?,
+                    row.get::<_, bool>(3)?,
                 ))
             },
         )
         .optional()?;
-    let Some((ask, commit, approving)) = approval else {
+    let Some((ask, commit, approving, current)) = approval else {
         let reason = format!("step {} is irreversible and no answer approved it", at.id);
         set(&tx, task, "blocked", None, Some(&reason))?;
         tx.commit()?;
         return Ok(false);
     };
-    if commit.as_deref() == Some(head) {
+    if current && commit.as_deref() == Some(head) {
         return Ok(true);
     }
-    let moved = format!(
-        "\nasked again: the branch moved from {} to {head} since this was answered",
-        commit.as_deref().unwrap_or("-"),
-    );
+    let moved = if current {
+        format!(
+            "\nasked again: the branch moved from {} to {head} since this was answered",
+            commit.as_deref().unwrap_or("-"),
+        )
+    } else {
+        "\nasked again: this was answered in an earlier generation of the task, or before Priory kept generations".to_owned()
+    };
     tx.execute(
         // Asked again, an ask that a revive withdrew belongs to the current generation.
         "UPDATE asks SET revision = revision + 1, answer = NULL, answered = NULL, answered_by = NULL, withdrawn = NULL,
@@ -3757,6 +3765,13 @@ fn answer_ran(
         ),
         params![id, outcome, error, stdout, stderr],
     )?;
+    // An approval holds only for the answer whose command ran.
+    if outcome != "done" {
+        tx.execute(
+            "DELETE FROM approvals WHERE ask = ?1 AND revision = ?2",
+            params![ask, revision],
+        )?;
+    }
     if !still {
         return Ok(());
     }

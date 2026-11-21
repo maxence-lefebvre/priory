@@ -122,6 +122,9 @@ An outcome can need proof too. Set `gate = "cargo test"` in `factory.toml` and
 and the daemon refuses `passed` until the gate passed at the branch's head. `priory check --explain`
 lists the outcomes it verifies. See Proofs in [tools.md](docs/daemon/tools.md#proofs).
 
+To play a task through the whole factory with fake agents before a real one runs, follow
+[testing-a-factory.md](docs/testing-a-factory.md).
+
 ## 4. Pick a starter
 
 The repository's `examples/` folder holds ready-made factories. Each one passes `priory check`, and

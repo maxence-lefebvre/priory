@@ -187,8 +187,9 @@ wait on that pull request, pinned to the `commit` of the task's latest result, e
 that `open-pr` pushed after that result. The task sleeps with no process, at that result's step, so
 the agent that made it fixes what the checks find. A task with neither commit is blocked instead.
 
-The daemon judges this wait on every event the inbox kept or ignored about the pull request. That
-includes events the agent already read and those an earlier task kept. It judges when it stores the
+The daemon judges this wait on every event the inbox kept, ignored or woke a task on about the pull
+request. That includes events the agent already read, such as a check that woke it through a
+subscription, and those an earlier task kept. It judges when it stores the
 wait and at each new event:
 
 | Condition                                                                           | Effect                                 |

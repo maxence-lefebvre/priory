@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { answeredBy, askGroups, routedMark, routedNote } from "./asks.js";
+import { answeredBy, askGroups, routedMark, routedNote, stillArmed } from "./asks.js";
 
 const now = Date.parse("2026-11-20T12:00:00Z");
 const ask = (id, fields) => ({ id, state: "open", snoozed_until: null, ...fields });
@@ -36,4 +36,15 @@ test("the detail says the lead is answering and that the first answer stands", (
 
 test("answeredBy names a person for the CLI and the server, the lead as agent:<lead>, and nobody when unrecorded", () => {
   assert.deepEqual(["cli", "serve", "agent:lead", null].map(answeredBy), ["a person", "a person", "agent:lead", null]);
+});
+
+test("an armed command option runs on the second tap only at the revision and within the window it was armed in", () => {
+  const asked = { id: 12, revision: 3 };
+  const armed = { id: 12, revision: 3, text: "approve", at: now };
+
+  assert.equal(stillArmed(armed, asked, "approve", now + 1000), true);
+  assert.equal(stillArmed(armed, { ...asked, revision: 4 }, "approve", now + 1000), false);
+  assert.equal(stillArmed(armed, asked, "approve", now + 4000), false);
+  assert.equal(stillArmed(armed, asked, "reject", now + 1000), false);
+  assert.equal(stillArmed(null, asked, "approve", now), false);
 });

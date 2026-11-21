@@ -41,9 +41,10 @@ const OUTPUT: &str = "factory.intake";
 /// Takes a state file back before schema 28, which added search, 29, which added grades, 30,
 /// which added snoozes, 31, which added read reports, 32, which added the pause, 34, which added
 /// reports of sections, 36, which added deliveries, 37, which added progress, 39, which added run
-/// actions, 40, which added answer actions, 42, which added dispatches, 49, which added task ends, 51, which added a run's crossing of `compactAt`, 53, which added intervention levels, 56, which added the step an irreversible approval lets run, 58, which added withdrawal reasons, and 59, which added green stack gates and returned routed asks, and 61, which added findings. Schema 38's visits
+/// actions, 40, which added answer actions, 42, which added dispatches, 49, which added task ends, 51, which added a run's crossing of `compactAt`, 53, which added intervention levels, 56, which added the step an irreversible approval lets run, 58, which added withdrawal reasons, and 59, which added green stack gates and returned routed asks, 61, which added findings, 62, which added merge risk, 63, which added plan fields, and 65, which added chosen subscriptions and approval generations. Schema 38's visits
 /// table is created only if missing, so it stays.
-const UNDO_SINCE_SEARCH: &str = "ALTER TABLE tasks DROP COLUMN plan_goal; ALTER TABLE tasks DROP COLUMN plan_testing; ALTER TABLE tasks DROP COLUMN plan_brief; ALTER TABLE tasks DROP COLUMN verification;
+const UNDO_SINCE_SEARCH: &str = "ALTER TABLE subscriptions DROP COLUMN chosen; ALTER TABLE approvals DROP COLUMN generation;
+         ALTER TABLE tasks DROP COLUMN plan_goal; ALTER TABLE tasks DROP COLUMN plan_testing; ALTER TABLE tasks DROP COLUMN plan_brief; ALTER TABLE tasks DROP COLUMN verification;
          ALTER TABLE tasks DROP COLUMN merge_risk; ALTER TABLE results DROP COLUMN merge_risk;
          DROP TRIGGER ask_returns_from_its_lead; ALTER TABLE waits DROP COLUMN green;
   DROP TRIGGER ask_withdrawn; ALTER TABLE asks DROP COLUMN withdrawn_reason;
@@ -5508,7 +5509,8 @@ fn a_state_file_whose_asks_an_approval_names_upgrades_to_outside_asks() {
     // The state file as version 32 left it: every ask belongs to a task.
     let db = rusqlite::Connection::open(setup.dir.join("priory.db")).unwrap();
     db.execute_batch(
-        "ALTER TABLE tasks DROP COLUMN plan_goal; ALTER TABLE tasks DROP COLUMN plan_testing; ALTER TABLE tasks DROP COLUMN plan_brief; ALTER TABLE tasks DROP COLUMN verification;
+        "ALTER TABLE subscriptions DROP COLUMN chosen; ALTER TABLE approvals DROP COLUMN generation;
+         ALTER TABLE tasks DROP COLUMN plan_goal; ALTER TABLE tasks DROP COLUMN plan_testing; ALTER TABLE tasks DROP COLUMN plan_brief; ALTER TABLE tasks DROP COLUMN verification;
          ALTER TABLE tasks DROP COLUMN merge_risk; ALTER TABLE results DROP COLUMN merge_risk;
          DROP TRIGGER ask_returns_from_its_lead; ALTER TABLE waits DROP COLUMN green;
          ALTER TABLE tasks DROP COLUMN intervention; ALTER TABLE tasks DROP COLUMN lead;
@@ -6555,6 +6557,26 @@ fn green_checks_the_agent_already_waited_on_mark_the_task_done_at_its_result() {
     let mut setup = Setup::new("gate-seen");
     setup.calls(&[
         wait(on_pull_7("checks")),
+        passed_at("abc0000000000000000000000000000000000000"),
+    ]);
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("runs", |rows| rows.len() == 1 && rows[0][7] == "asleep");
+
+    setup.publish(&check(1, 0));
+
+    setup.until("tasks", |rows| rows[0][4] == "done");
+    assert_eq!(setup.rows("runs").len(), 2);
+}
+
+#[test]
+fn a_green_check_that_woke_a_subscriber_finishes_its_checks_gate() {
+    let mut setup = Setup::new("gate-woke");
+    setup.calls(&[
+        json!([
+            subscribe("subscribe"),
+            wait(json!({ "type": "time", "until": "1 hour" }))
+        ]),
         passed_at("abc0000000000000000000000000000000000000"),
     ]);
     setup.publish(&requested(42));
@@ -9158,6 +9180,57 @@ fn a_revive_at_an_irreversible_step_asks_its_withdrawn_approval_again() {
     assert_eq!(actions[0][4], "opened");
 }
 
+#[test]
+fn a_revive_at_an_irreversible_step_asks_again_though_the_commit_is_the_approved_one() {
+    let setup = asked_to_open("revive-same-commit", APPROVE_THEN_POLISH);
+    setup.calls(&[passed_with_evidence()]);
+    setup.hold("hold-stop");
+    assert!(
+        setup
+            .priory(&["answer", "1", "open", "--revision", "1"])
+            .status
+            .success()
+    );
+    setup.written("fake/tools.log");
+    assert!(setup.priory(&["cancel", "1"]).status.success());
+    setup.release("hold-stop");
+
+    let revived = setup.priory(&["revive", "1", "--step", "open-pr"]);
+
+    assert!(revived.status.success(), "{revived:?}");
+    setup.until("asks", |rows| rows.first().is_some_and(|row| row[2] == "2"));
+    assert!(setup.rows("actions").is_empty());
+}
+
+#[test]
+fn an_approval_stored_before_generations_were_kept_is_asked_again_after_the_upgrade() {
+    let mut setup = asked_to_open("approval-upgrade", APPROVE_THEN_POLISH);
+    setup.calls(&[passed_with_evidence()]);
+    setup.hold("hold-stop");
+    assert!(
+        setup
+            .priory(&["answer", "1", "open", "--revision", "1"])
+            .status
+            .success()
+    );
+    setup.written("fake/tools.log");
+    setup.crash();
+    // The state file as version 64 left it: an approval names no generation.
+    let db = rusqlite::Connection::open(setup.dir.join("priory.db")).unwrap();
+    db.execute_batch(
+        "ALTER TABLE subscriptions DROP COLUMN chosen; ALTER TABLE approvals DROP COLUMN generation;
+         PRAGMA user_version = 64;",
+    )
+    .unwrap();
+    drop(db);
+
+    setup.start();
+    setup.release("hold-stop");
+
+    setup.until("asks", |rows| rows.first().is_some_and(|row| row[2] == "2"));
+    assert!(setup.rows("actions").is_empty());
+}
+
 const NUDGE: &str = "Your turn ended without calling wait, ask or result of the priory MCP server. Call one of them: result to end the step, ask to put a question to a person, or wait to sleep until an event.\nEnd this step by calling the result tool of the priory MCP server with one of these outcomes: failed, passed.\n";
 
 #[test]
@@ -9741,6 +9814,31 @@ fn a_check_run_on_a_task_keyed_on_its_pull_request_wakes_nothing_and_a_comment_d
     setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 2);
     assert!(
         setup.typed()[1].starts_with("github.pull_request.comment owner/repo#7 {"),
+        "{:?}",
+        setup.typed()
+    );
+}
+
+#[test]
+fn an_explicit_subscribe_to_the_tasks_own_pull_request_wakes_it_on_a_check_run() {
+    let mut setup = Setup::new("own-key-subscribed");
+    setup.calls(&[json!([
+        subscribe("subscribe"),
+        wait(json!({ "type": "time", "until": "1 hour" }))
+    ])]);
+    setup.publish(&requested(7));
+    setup.start();
+    setup.until("runs", |rows| {
+        rows.first().is_some_and(|row| row[7] == "asleep")
+    });
+    let mut green = check(1, 0);
+    green.data["head_branch"] = json!("feature");
+
+    setup.publish(&green);
+
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 2);
+    assert!(
+        setup.typed()[1].starts_with("github.check_run.completed owner/repo#7 {"),
         "{:?}",
         setup.typed()
     );
