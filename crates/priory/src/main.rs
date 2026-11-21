@@ -1673,36 +1673,11 @@ fn print_explanation(factory: &factory::Factory, json: bool) {
         .collect();
     let tools = explain::tools(factory);
     if json {
-        let irreversible: Vec<_> = gates
-            .iter()
-            .map(|(name, gate)| {
-                serde_json::json!({
-                    "workflow": name,
-                    "step": gate.step,
-                    "approved_by": gate.approved_by,
-                    "autonomous": gate.autonomous,
-                })
-            })
-            .collect();
-        let paths: Vec<_> = paths
-            .iter()
-            .map(|(name, path)| serde_json::json!({ "workflow": name, "path": path }))
-            .collect();
-        let tools: Vec<_> = tools
-            .iter()
-            .map(|reach| {
-                serde_json::json!({
-                    "agent": reach.agent,
-                    "guard": reach.guard,
-                    "workflow": reach.workflow,
-                    "why": reach.why,
-                })
-            })
-            .collect();
-        state::emit(
-            &serde_json::json!({ "irreversible": irreversible, "paths": paths, "tools": tools })
-                .to_string(),
-        );
+        let mut flows = listing::flows(factory);
+        if let Some(flows) = flows.as_object_mut() {
+            flows.remove("workflows");
+        }
+        state::emit(&flows.to_string());
         return;
     }
     let cell = |text: &str| {

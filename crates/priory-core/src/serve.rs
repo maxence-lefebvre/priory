@@ -163,6 +163,7 @@ pub fn start(factory: &Factory, listen: SocketAddr) -> Result<Vec<JoinHandle<()>
     let served = Arc::new(Served {
         views: serde_json::json!({ "factory": factory.name, "views": factory.views() }).to_string(),
         links: listing::links(factory).to_string(),
+        flows: listing::flows(factory).to_string(),
         schedules: listing::schedule_triggers(factory),
         workflows: factory.workflows.keys().cloned().collect(),
         request: serde_json::json!({
@@ -223,6 +224,7 @@ fn env(name: &str, what: &str) -> Result<String, String> {
 struct Served {
     views: String,
     links: String,
+    flows: String,
     schedules: Vec<(String, Trigger)>,
     workflows: Vec<String>,
     /// `GET /api/request`: what the Add control prefills and offers.
@@ -264,6 +266,7 @@ fn route(
     match path {
         "/api/views" => return Reply::json(200, served.views.clone()),
         "/api/links" => return Reply::json(200, served.links.clone()),
+        "/api/flows" => return Reply::json(200, served.flows.clone()),
         _ => {}
     }
     let db = match db {

@@ -2,6 +2,7 @@
 
 use crate::{post, snooze, stall, state, sweep};
 use jiff::Timestamp;
+use priory_factory::explain;
 use priory_factory::factory::{Factory, Trigger};
 use priory_intake::intake::schedule;
 use rusqlite::types::ValueRef;
@@ -489,6 +490,74 @@ fn asleep(db: &Connection) -> rusqlite::Result<Value> {
 /// The factory's links, as `serve` and `priory links --json` show them.
 pub fn links(factory: &Factory) -> Value {
     json!({ "links": factory.links() })
+}
+
+/// What `priory check --explain --json` prints and `GET /api/flows` serves: the irreversible steps
+/// with their gates, the paths to one with no human decision, the tools reached, and, for the
+/// drawing, each workflow's steps and edges.
+pub fn flows(factory: &Factory) -> Value {
+    let mut irreversible = Vec::new();
+    let mut paths = Vec::new();
+    let mut workflows = Vec::new();
+    for (name, workflow) in &factory.workflows {
+        let workflow = &workflow.value;
+        for gate in explain::gates(workflow) {
+            irreversible.push(json!({
+                "workflow": name,
+                "step": gate.step,
+                "approved_by": gate.approved_by,
+                "autonomous": gate.autonomous,
+            }));
+        }
+        for path in explain::unattended_paths(workflow) {
+            paths.push(json!({ "workflow": name, "path": path }));
+        }
+        let steps: Vec<_> = workflow
+            .steps
+            .iter()
+            .map(|step| {
+                let edges: Vec<_> = step
+                    .next
+                    .iter()
+                    .map(|(outcome, to)| {
+                        json!({ "outcome": outcome, "to": to, "by": step.by(outcome).name() })
+                    })
+                    .collect();
+                let mut value = json!({
+                    "id": step.id,
+                    "decides": step.decides.name(),
+                    "effect": step.effect.name(),
+                    "kind": explain::kind(step),
+                    "edges": edges,
+                });
+                let optional = [
+                    ("agent", step.agent.as_ref().map(|agent| json!(agent))),
+                    ("options", Some(json!(step.options)).filter(|_| !step.options.is_empty())),
+                    ("approves", Some(json!(step.approves)).filter(|_| !step.approves.is_empty())),
+                    ("autonomous", step.autonomous.as_ref().map(|reason| json!(reason))),
+                ];
+                for (key, field) in optional {
+                    if let Some(field) = field {
+                        value[key] = field;
+                    }
+                }
+                value
+            })
+            .collect();
+        workflows.push(json!({ "name": name, "start": workflow.start, "steps": steps }));
+    }
+    let tools: Vec<_> = explain::tools(factory)
+        .iter()
+        .map(|reach| {
+            json!({
+                "agent": reach.agent,
+                "guard": reach.guard,
+                "workflow": reach.workflow,
+                "why": reach.why,
+            })
+        })
+        .collect();
+    json!({ "irreversible": irreversible, "paths": paths, "tools": tools, "workflows": workflows })
 }
 
 /// The factory's schedule triggers by name.
