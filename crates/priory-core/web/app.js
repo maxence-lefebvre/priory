@@ -330,7 +330,7 @@ function itemRow(item) {
   return html`<div class="row">
     ${tile(kind)}
     <span class="l1">${key}<span>${item.step || ""}</span><span>${item.kind}</span>${item.task && item.kind !== "batch" ? prsTag({}, item.task) : ""}<span class="age">${timeTag(item.since)}</span></span>
-    <span class="l2 r t-${role(kind)}">${autolinked(line, null)}</span>${next ? html`<span class="l3">${next}</span>` : ""}${stopped ? taskActs(item.task, item.kind) : rowActs(item)}</div>`;
+    <span class="l2 r t-${role(kind)}">${autolinked(line, null)}</span>${next ? html`<span class="l3">${autolinked(next, null)}</span>` : ""}${stopped ? taskActs(item.task, item.kind) : rowActs(item)}</div>`;
 }
 
 // Read on a report and Release on a held task, the twins of `priory inbox read` and `priory release`.

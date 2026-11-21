@@ -101,6 +101,7 @@ export function actionNote(label, status, body) {
 
 /** A `batch` row's line split into its counts and its `Next: ...` sentence, or null. @param {string} what */
 export function batchParts(what) {
-  const at = what.indexOf(" Next: ");
+  // The daemon's sentence comes last, after a title that may hold the same words.
+  const at = what.lastIndexOf(" Next: ");
   return at < 0 ? { line: what, next: null } : { line: what.slice(0, at), next: what.slice(at + 1) };
 }

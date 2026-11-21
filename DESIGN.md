@@ -380,9 +380,9 @@ The desk is the "Needs me" view. It lists, top to bottom:
    secondary` that marks it done (`POST /api/todos/{id}/done`). The next thing card offers Done
    for a to-do. Then **Also waiting**: the desk's other items (held tasks, going batches, sweeps,
    memory waits, retired tasks and worktrees that stay), each with the daemon's sentence. A
-   batch row stands for its entries' held rows: its title and counts on the main line, and the
-   `Next: ...` sentence below it as a caption. Its key opens the planning task until the batch page
-   exists. A held task's row carries a
+   batch row stands for its entries' held rows. On the phone list, its title and counts are the
+   main line and the `Next: ...` sentence a caption below; the wide table and the Herdr Desk keep the
+   line whole, as board 3 shows. Its key opens the planning task until the batch page exists. A held task's row carries a
    Release button in `.btn secondary`, and a report row under **Reports** a Read button. Release
    sends the revision the page drew (`POST /api/tasks/{id}/release`), Read sends `POST /api/inbox/{seq}/read`.
    A refused action keeps the row and shows why under it, in the row's note.

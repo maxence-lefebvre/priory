@@ -104,4 +104,8 @@ test("a batch line splits into its counts and what starts next, or keeps a line 
     next: "Next: task 36 starts when task 34 merges.",
   });
   assert.deepEqual(batchParts("Invoice exports: 2 started."), { line: "Invoice exports: 2 started.", next: null });
+  assert.deepEqual(batchParts("Ship Next: exports: 1 merged. Next: task 36 starts when task 34 merges."), {
+    line: "Ship Next: exports: 1 merged.",
+    next: "Next: task 36 starts when task 34 merges.",
+  });
 });
