@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { TASK_FACETS, TASK_VIEWS, filtered, olderPart, taskViews } from "./tasks.js";
+import { TASK_FACETS, TASK_VIEWS, filtered, olderPart, taskViews, triageWords } from "./tasks.js";
 
 // `/api/tasks` as the server sends it: in start order, ended tasks in it too.
 const tasks = [
@@ -34,4 +34,10 @@ test("a list's older rows count only without a filter, yet still load in their v
   assert.deepEqual(olderPart({ view: "ended", history: "ended", older: 23, picked: true }), { counted: 0, unloaded: 23 });
   assert.deepEqual(olderPart({ view: "active", history: "ended", older: 23, picked: true }), { counted: 0, unloaded: 0 });
   assert.deepEqual(olderPart({ view: "recent", history: "recent", older: undefined, picked: false }), { counted: 0, unloaded: 0 });
+});
+
+test("a feedback item's class reads in plain words", () => {
+  assert.equal(triageWords("trivial"), "trivial");
+  assert.equal(triageWords("nothing-to-do"), "nothing to do");
+  assert.equal(triageWords("persons-call"), "your call");
 });

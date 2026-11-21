@@ -48,7 +48,7 @@ pub(crate) fn any(tx: &Transaction, seqs: &[i64]) -> rusqlite::Result<bool> {
 
 /// The classes a result's `feedback` gives, as pairs of URL and class, or why it is refused: it
 /// must be an object of known classes that names every item the agent was typed since the task's
-/// last result and has not sorted, and each persons-call needs an ask of the task that names it. The person's own items are recorded as persons-calls.
+/// last result and has not sorted, and each persons-call needs an ask of the task that names it. The person's own items are recorded as persons-calls; the agent's own replies are not recorded.
 pub(crate) fn sorted(
     tx: &Transaction,
     task: i64,
@@ -72,8 +72,13 @@ pub(crate) fn sorted(
     };
     let (mut own, mut missing) = (Vec::new(), Vec::new());
     // Items typed before the task's last result were that result's to sort, or predate sorting.
+    // An own item written inside a run of the task is the agent's reply, as routing reads it. A
+    // comment in a run's first or last second may have woken or ended it, so it stays the person's.
     let mut statement = tx.prepare(
-        "SELECT inbox.type, inbox.data FROM inbox JOIN outbox ON outbox.id = inbox.outbox
+        "SELECT inbox.type, inbox.data, EXISTS (SELECT 1 FROM runs WHERE runs.task = ?1
+           AND julianday(inbox.time) > julianday(runs.started)
+           AND (runs.ended IS NULL OR julianday(inbox.time) < julianday(runs.ended)))
+         FROM inbox JOIN outbox ON outbox.id = inbox.outbox
          WHERE inbox.task = ?1 AND outbox.state = 'confirmed'
          AND outbox.run > coalesce((SELECT max(run) FROM results WHERE task = ?1), 0)
          ORDER BY inbox.seq",
@@ -83,7 +88,9 @@ pub(crate) fn sorted(
         let data: Value = serde_json::from_str(&row.get::<_, String>(1)?).unwrap_or(Value::Null);
         let kind = row.get::<_, String>(0)?;
         if let Some(url) = url(&kind, &data).filter(|_| item(&kind, &data).is_none()) {
-            own.push((url.to_owned(), "persons-call".to_owned()));
+            if !row.get::<_, bool>(2)? {
+                own.push((url.to_owned(), "persons-call".to_owned()));
+            }
             continue;
         }
         let Some(url) = item(&kind, &data) else {

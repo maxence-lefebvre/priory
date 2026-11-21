@@ -17665,6 +17665,33 @@ fn the_persons_own_review_item_is_not_put_to_the_agent_and_is_recorded_as_a_pers
     assert_eq!(task_json(&setup, "1")["triage"][0]["item"], THREAD_URL);
 }
 
+#[test]
+fn the_agents_own_reply_written_during_its_run_is_not_recorded_as_feedback() {
+    let mut setup = Setup::new("triage-agent-reply");
+    setup.calls(&[wait(json!({ "type": "time", "until": "3 seconds" }))]);
+    setup.publish(&requested(42));
+    // The turn lasts past its first second, as a real one does.
+    setup.hold("hold-stop");
+    setup.start();
+    setup.until("runs", |rows| rows.len() == 1);
+    std::thread::sleep(Duration::from_millis(2100));
+    setup.release("hold-stop");
+    setup.until("runs", |rows| rows[0][7] == "asleep");
+    setup.hold("hold-stop");
+    // The agent replied from the person's gh account while it ran; the poll reads it later.
+    let started: herdr_bus::Timestamp = setup.rows("runs")[0][5].parse().unwrap();
+    let during = herdr_bus::Timestamp::from_second(started.as_second() + 1).unwrap();
+    let mut reply = thread_comment_at(802).time(during);
+    reply.data["own"] = json!(true);
+    setup.publish(&reply);
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 2);
+
+    let (text, error) = result_sorting(&setup, serde_json::Value::Null);
+
+    assert!(!error, "{text}");
+    assert_eq!(task_json(&setup, "1")["triage"], json!([]));
+}
+
 const GUIDE: &str = "Open every ask with the question.";
 
 fn with_guide(name: &str) -> Setup {

@@ -45,3 +45,17 @@ export function neverOwned(other) {
   const counts = other.map(({ source, events }) => `${events} ${source} ${events === 1 ? "event" : "events"}`);
   return `No task ever owned: ${counts.join(", ")}.`;
 }
+
+const SOURCES = { github: "GitHub", linear: "Linear", slack: "Slack", factory: "" };
+
+/** An event's type in plain words: `linear.issue.updated` reads "Linear issue updated". */
+export function eventWords(type) {
+  const [source, ...rest] = type.split(".");
+  return [SOURCES[source] ?? source, ...rest].filter(Boolean).join(" ").replaceAll("_", " ");
+}
+
+/** The detail pane's line while nothing is selected, by the panels on screen: events open no detail. */
+export const emptyDetail = (panels) =>
+  panels.includes("inbox") && !panels.some((panel) => ["desk", "asks"].includes(panel))
+    ? "Open an event's task to read what the event did."
+    : "Select an ask to read it here.";
