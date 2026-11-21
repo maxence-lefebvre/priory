@@ -60,7 +60,7 @@ struct Handling {
 /// The OTLP exporter's send in flight, with the last record it carries, and when it may send again.
 struct Export {
     endpoint: String,
-    sending: Option<(std::process::Child, i64)>,
+    sending: Option<(std::process::Child, otlp::Cursor)>,
     after: Instant,
 }
 
@@ -475,10 +475,10 @@ fn send_spans(
     home: &Path,
     export: &mut Export,
 ) -> Result<(), Error> {
-    if let Some((mut child, seq)) = export.sending.take() {
+    if let Some((mut child, cursor)) = export.sending.take() {
         let status = match child.try_wait() {
             Ok(None) => {
-                export.sending = Some((child, seq));
+                export.sending = Some((child, cursor));
                 return Ok(());
             }
             Ok(Some(status)) => status,
@@ -499,12 +499,12 @@ fn send_spans(
         // OTLP/HTTP: a 4xx other than 408 and 429 means the request will never be accepted.
         let rejected = code.starts_with('4') && code != "408" && code != "429";
         if status.success() && code.starts_with('2') {
-            otlp::sent(db, endpoint, seq)?;
+            otlp::sent(db, endpoint, cursor)?;
         } else if status.success() && rejected {
             eprintln!(
                 "priory daemon: {endpoint} rejected spans with HTTP {code}, so they are skipped"
             );
-            otlp::sent(db, endpoint, seq)?;
+            otlp::sent(db, endpoint, cursor)?;
         } else {
             let detail = if status.success() {
                 format!("HTTP {code}")
@@ -518,11 +518,11 @@ fn send_spans(
     if Instant::now() < export.after {
         return Ok(());
     }
-    let Some((seq, request)) = otlp::pending(db, &export.endpoint, trace)? else {
+    let Some((cursor, request)) = otlp::pending(db, &export.endpoint, trace)? else {
         return Ok(());
     };
     let Some(request) = request else {
-        otlp::sent(db, &export.endpoint, seq)?;
+        otlp::sent(db, &export.endpoint, cursor)?;
         return Ok(());
     };
     let body = home.join("otlp.json");
@@ -530,7 +530,7 @@ fn send_spans(
     let started =
         std::fs::write(&body, request.to_string()).and_then(|()| runtime::post_json(&url, &body));
     match started {
-        Ok(child) => export.sending = Some((child, seq)),
+        Ok(child) => export.sending = Some((child, cursor)),
         Err(error) => {
             eprintln!("priory daemon: cannot send spans to {url}: {error}");
             export.after = Instant::now() + EXPORT_RETRY;
