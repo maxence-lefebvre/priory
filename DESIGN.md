@@ -1238,7 +1238,8 @@ The web's [Inbox](#inbox) panel, as a tab in the center stack.
 - The route button sits at the end of the card. Revive and Request a task act on the first press,
   as the Desk's buttons do: Request a task adds the task with the group's text and its task's
   workflow, with no Add card, since that text names the resource the new task must own.
-- The verb's sentence shows under the button in `--text-2`; a refusal says why.
+- The verb's sentence shows under the button in `--text-2`; a refusal says why. Subscribe carries
+  the revision the panel read, as the web's does.
 - While it reads: "Reading the unrouted events…"
 
 ### Tasks

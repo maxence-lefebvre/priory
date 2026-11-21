@@ -188,7 +188,7 @@ state database and never writes a file in the factory.
 - **Acting.** Every button runs a CLI verb: `answer --expected N [--run] -- ASK TEXT`,
   `dismiss --expected N ASK`, `snooze`, `say`, `report pick PICK OPTION --expected N`,
   `report comment ROW --expected N TEXT`, `report reply|resolve|reopen COMMENT`, `seen`,
-  `resume`, `revive`, `todo done`, `inbox read`, `subscribe TASK RESOURCE`, `hold`, `release`, `move`, `cancel`, `pause`, `unpause` and
+  `resume`, `revive`, `todo done`, `inbox read`, `subscribe TASK RESOURCE --expected N`, `hold`, `release`, `move`, `cancel`, `pause`, `unpause` and
   `add FACTORY [--workflow W] [--band B] [--lane L] -- TEXT`. An answer always carries the revision the person read, so a
   changed question refuses it (R6.3).
 - **Safety.** `priory.js` passes every value as its own argument, never through a shell, and never
@@ -537,10 +537,12 @@ DESIGN.md's "Inbox" section holds its visual rules; this section says how it wor
   [Task panel](#the-task-panel). A line under the groups counts the events no task ever owned,
   per source.
 - **Routing.** Each group has one button, by its owner's state. Subscribe task N runs
-  `priory subscribe N RESOURCE` for an active owner. Revive task N runs `priory revive N` for a
+  `priory subscribe N RESOURCE --expected REVISION`, with the revision the panel read, for an
+  active owner. Revive task N runs `priory revive N` for a
   failed or dropped one. Request a task runs `priory add FACTORY --workflow W -- TEXT` with the
   group's `request_text` for a done one, so the new task owns the resource. A note under the
-  group says what the verb did, or why priory refused it. One verb runs at a time.
+  group says what the verb did, or why priory refused it. One verb runs at a time, and after one
+  succeeds the buttons stay disabled until a read shows its result.
 
 ## The Tasks panel
 

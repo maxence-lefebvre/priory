@@ -150,6 +150,14 @@ export const herdr = {
   layout: {},
   /** @type {Record<string, string>} the files readTextFile reads, by path */
   files: {},
+  /** @type {(() => void)[]} the pending waits, which `wake` ends */
+  waiting: [],
+  /** Ends every pending `priory wait` with the next revision, so each panel reads once more. */
+  wake() {
+    const waiting = this.waiting;
+    this.waiting = [];
+    for (const end of waiting) end();
+  },
   reset() {
     this.replies = {};
     this.shared.clear();
@@ -157,13 +165,14 @@ export const herdr = {
     this.argv = [];
     this.layout = {};
     this.files = {};
+    this.waiting = [];
   },
 };
 
-/** Runs priory against `herdr.replies`; `wait` never returns, so a panel reads once. @param {string} _binary @param {string[]} args */
+/** Runs priory against `herdr.replies`; `wait` returns only on `herdr.wake()`, so a panel reads once. @param {string} _binary @param {string[]} args */
 export async function exec(_binary, args) {
   herdr.argv.push(args);
-  if (args[0] === "wait") return new Promise(() => {});
+  if (args[0] === "wait") return new Promise((resolve) => herdr.waiting.push(() => resolve({ code: 0, stdout: String(Number(args[2]) + 1), stderr: "" })));
   const reply = herdr.replies[args[0]];
   if (reply === undefined) return { code: 1, stdout: "", stderr: `priory ${args[0]}: no such thing` };
   return { code: 0, stdout: JSON.stringify(reply), stderr: "" };
