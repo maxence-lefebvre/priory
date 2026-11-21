@@ -445,19 +445,25 @@ function taskTab() {
 const signOut = () => h("div", { class: "end" }, h("button", { class: "btn ghost", onclick: signedOut }, "Sign out"));
 
 
+let guideLoads = 0;
+// Only the latest load publishes, and the guide and its quiz together, so overlapping loads never mix.
 async function loadGuide() {
+  const load = ++guideLoads;
   const read = await chrome.tabs.sendMessage(S.tabId, { type: "guide" }).catch(() => null);
-  if (!read || read.failed) S.guide = { state: "failed" };
-  else if (!read.json) S.guide = { state: "none" };
-  else {
+  let guide = { state: "failed" };
+  let quiz = { answers: {}, result: null, key: null };
+  if (read && !read.failed && !read.json) guide = { state: "none" };
+  if (read?.json) {
     const parsed = parseGuide(read.json);
-    S.guide = parsed.error ? { state: "error", why: parsed.error } : { state: "ok", guide: parsed.guide, json: read.json, head: read.head };
+    guide = parsed.error ? { state: "error", why: parsed.error } : { state: "ok", guide: parsed.guide, json: read.json, head: read.head };
   }
-  if (S.guide.state === "ok" && S.guide.guide.quiz) {
-    S.quiz.key = await scoreKey(S.pr, S.guide.head ?? "unknown", S.guide.json);
-    S.quiz.answers = (await get(S.quiz.key)) ?? {};
-    S.quiz.result = await grade(S.guide.guide, S.pr, S.quiz.answers);
+  if (guide.state === "ok" && guide.guide.quiz) {
+    const key = await scoreKey(S.pr, guide.head ?? "unknown", guide.json);
+    const answers = (await get(key)) ?? {};
+    quiz = { key, answers, result: await grade(guide.guide, S.pr, answers) };
   }
+  if (load !== guideLoads) return;
+  Object.assign(S, { guide, quiz });
   render();
 }
 

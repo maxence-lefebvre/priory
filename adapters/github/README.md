@@ -48,7 +48,9 @@ signs you out too.
   goes with the revision you saw. A changed question keeps your draft and says so. Keys 1 to 9 pick
   an option while the panel has focus.
 - **A command ask**: a tap on an option that runs a command opens the browser's side panel with the
-  command, its folder and its revision. Run it there. No page can cover the side panel.
+  command, its folder and its revision. Run it there, within 2 min of the tap. No page can cover
+  the side panel. Run reads the ask again first, and runs only when the daemon, the revision and
+  the command are still the ones shown.
 - **Task**: the workflow grid, Update branch and Resolve conflicts, Say, the runs, and the other
   tasks on the pull request. The buttons send fixed text with `say` when the task's agent can hear
   it, and say why not otherwise. Update branch merges the base, so nothing needs a force push.
