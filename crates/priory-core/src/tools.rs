@@ -3,7 +3,8 @@ use crate::route;
 use crate::trace::{self, Trace};
 use priory_factory::factory::{Decider, Effect, Factory, Harness, Loaded, Step, Workflow};
 use priory_intake::intake::{
-    CHECK_RUNS, CHECKED, COMMENTED, PASSING, PR_CLOSED as CLOSED, REVIEWED, THREAD_COMMENTED,
+    CHECK_RUNS, CHECKED, COMMENTED, ISSUE_COMMENTED, PASSING, PR_CLOSED as CLOSED, REVIEWED,
+    THREAD_COMMENTED,
 };
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 use serde_json::Value;
@@ -955,6 +956,43 @@ pub(crate) fn event(tx: &Transaction, task: i64, seq: i64) -> rusqlite::Result<b
 
 /// The events of a person's feedback on a pull request.
 const FEEDBACK: [&str; 3] = [REVIEWED, COMMENTED, THREAD_COMMENTED];
+
+/// The resource that feedback of `kind` is on: its pull request for pull request feedback, its
+/// issue, Linear issue or Slack thread for a comment there; none for any other event.
+fn feedback_on(kind: &str, data: &Value) -> Option<String> {
+    let text = |field: &str| data[field].as_str();
+    match kind {
+        _ if FEEDBACK.contains(&kind) => Some(route::pull_request(
+            text("repo")?,
+            data["pull_request"].as_u64()?,
+        )),
+        ISSUE_COMMENTED => Some(route::pull_request(text("repo")?, data["issue"].as_u64()?)),
+        "linear.comment.created" => Some(format!("linear:{}", text("issue")?)),
+        "slack.thread.replied" => {
+            Some(format!("slack:{}:{}", text("channel")?, text("thread_ts")?))
+        }
+        _ => None,
+    }
+}
+
+/// Who said what on `resource`, for the prompt of the done task that feedback of `kind` reopens.
+fn reopened_by(resource: &str, kind: &str, data: &Value) -> String {
+    if let Some(said) = feedback(resource, kind, data) {
+        return said;
+    }
+    let who = data["actor"].as_str().or(data["user"].as_str());
+    let who = who.unwrap_or("a deleted user");
+    let body = data["body"].as_str().or(data["text"].as_str());
+    let first = body.unwrap_or_default().lines().next().unwrap_or_default();
+    let url = data["url"].as_str().unwrap_or_default();
+    let verb = match kind {
+        "slack.thread.replied" => "replied in",
+        _ => "commented on",
+    };
+    format!("{who} {verb} {resource}: {first} {url}")
+        .trim_end()
+        .to_owned()
+}
 
 /// Whether `data` is a review that asks the agent for nothing: an approval or a dismissal.
 fn settles(kind: &str, data: &Value) -> bool {
@@ -2305,22 +2343,19 @@ fn regenerate(tx: &Transaction, task: i64, generation: i64) -> rusqlite::Result<
     .map(drop)
 }
 
-/// The done task that feedback in `message` reopens: the newest that owns its pull request, done
-/// before the feedback was written, with no close of that pull request in the inbox and no active
-/// task on its key.
+/// The done task that feedback in `message` reopens: the newest that owns the pull request, issue,
+/// Linear issue or Slack thread it is on, done before the feedback was written, with no close of
+/// that pull request in the inbox and no active task on its key.
 pub(crate) fn reopenable(
     tx: &Transaction,
     message: &herdr_bus::Message,
 ) -> rusqlite::Result<Option<i64>> {
     let data = &message.data;
-    let (Some(repo), Some(number)) = (data["repo"].as_str(), data["pull_request"].as_u64()) else {
+    let Some(resource) = feedback_on(&message.kind, data) else {
         return Ok(None);
     };
     // A pull request the intake read as closed may reopen nothing before its close arrives.
-    if !FEEDBACK.contains(&message.kind.as_str())
-        || settles(&message.kind, data)
-        || data["open"] == false
-    {
+    if settles(&message.kind, data) || data["open"] == false {
         return Ok(None);
     }
     tx.query_row(
@@ -2332,11 +2367,7 @@ pub(crate) fn reopenable(
          AND NOT EXISTS (SELECT 1 FROM tasks AS other WHERE other.key = tasks.key
            AND other.state NOT IN ('done', 'failed', 'dropped'))
          ORDER BY tasks.id DESC LIMIT 1",
-        params![
-            route::pull_request(repo, number),
-            message.time.to_string(),
-            CLOSED
-        ],
+        params![resource, message.time.to_string(), CLOSED],
         |row| row.get(0),
     )
     .optional()
@@ -2363,10 +2394,7 @@ pub(crate) fn reopen(tx: &Transaction, trace: &Trace, task: i64, seq: i64) -> ru
             },
         )?;
     let data: Value = serde_json::from_str(&data).expect("inbox data is JSON");
-    let resource = route::pull_request(
-        data["repo"].as_str().unwrap_or_default(),
-        data["pull_request"].as_u64().unwrap_or_default(),
-    );
+    let resource = feedback_on(&kind, &data).unwrap_or_default();
     let opened: Option<String> = tx
         .query_row(
             "SELECT results.step FROM actions JOIN results ON results.run = actions.result
@@ -2383,10 +2411,13 @@ pub(crate) fn reopen(tx: &Transaction, trace: &Trace, task: i64, seq: i64) -> ru
     let generation = generation + 1;
     regenerate(tx, task, generation)?;
     enter(tx, task, &workflow, &target, None, "", workflows)?;
-    let said = feedback(&resource, &kind, &data).unwrap_or_default();
+    let said = reopened_by(&resource, &kind, &data);
     let text = format!("Feedback reopened this done task as generation {generation}: {said}");
     wake_on(tx, task, &text, Some(seq))?;
-    trace::reopened(tx, trace, task, &resource)
+    let pull_request = FEEDBACK
+        .contains(&kind.as_str())
+        .then_some(resource.as_str());
+    trace::reopened(tx, trace, task, &resource, pull_request)
 }
 
 /// Ends the live run of `session`, whose tmux session was gone when the daemon started, as `lost`.

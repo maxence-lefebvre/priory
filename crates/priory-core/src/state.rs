@@ -1020,6 +1020,18 @@ pub(crate) fn handle(
                 "INSERT INTO owns (task, resource) VALUES (?1, ?2)",
                 params![id, new.key],
             )?;
+            // Its own issue, pull request or thread wakes it and reopens it once done.
+            if let Some(resource) = crate::subscribe::resource(&new.key) {
+                tx.execute(
+                    "INSERT INTO subscriptions (task, resource) VALUES (?1, ?2)",
+                    params![id, resource],
+                )?;
+                tx.execute(
+                    "DELETE FROM subscriptions WHERE resource = ?2 AND task != ?1
+                     AND task IN (SELECT id FROM tasks WHERE state = 'done')",
+                    params![id, resource],
+                )?;
+            }
             if let Some(hold) = &new.hold {
                 crate::hold::filed(&tx, id, hold, factory)?;
             }

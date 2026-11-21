@@ -1,14 +1,15 @@
 # Slack
 
 The intake turns Slack messages into events: messages posted in a trigger's channel, and replies in
-threads that an agent waits on.
+threads that a task waits on or subscribes to. A task a Slack trigger started subscribes to its own
+thread, so replies under the message that started it reach it.
 
 ## What it watches
 
 | Stream | Reads | Started by |
 | ------ | ----- | ---------- |
 | `slack.channel:<channel>` | `conversations.history` after the position, every page of 200 | a Slack trigger naming the channel |
-| a thread | `conversations.replies` from the wait's time on | an open `slack_reply` wait (see [watches.md](watches.md)) |
+| a thread | `conversations.replies` from the wait's or subscription's time on | an open `slack_reply` wait, or a subscription such as a Slack task's to its own thread (see [watches.md](watches.md)) |
 
 The intake publishes nothing for its own bot's messages, nor for a message with a `subtype`, such
 as a join.
@@ -42,11 +43,12 @@ Their fields and examples are in [events.md](../reference/events.md#slack).
 | Type | One message per |
 | ---- | --------------- |
 | `slack.message.posted` | message posted in a trigger's channel, outside a thread |
-| `slack.thread.replied` | reply in a thread that an open `slack_reply` wait names, posted at or after its agent's last prompt |
+| `slack.thread.replied` | reply in a watched thread, posted at or after the time its watch reads from |
 
 A reply never names a trigger, and its `baseline` is always false. The daemon routes both types to
 the active task owning `slack:<channel>:<thread ts>`: a task a Slack trigger started, or one whose
-wait names the thread.
+wait or subscription names the thread. A reply in the thread of a done task reopens it (see
+[routing.md](../daemon/routing.md#feedback-reopens-a-done-task)).
 
 ## Keys and ids
 

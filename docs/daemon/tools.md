@@ -210,13 +210,17 @@ subscription does not end when one event arrives. Its events reach the task by i
 | ---- | ------------------------ |
 | `running` | is queued as a prompt, read after the current turn |
 | `asleep` at a model step, with no checks gate | wakes it, unless the task has an open wait on the resource, which decides instead. The inbox records `woke` |
-| `done` | reopens it, when it is feedback on a pull request (see [routing.md](routing.md#feedback-reopens-a-done-task)) |
+| `done` | reopens it, when it is a comment or a review that asks for something (see [routing.md](routing.md#feedback-reopens-a-done-task)) |
 
 For example, to hear every review of an upstream pull request while the task works on:
 
 ```json
 { "on": { "type": "pull_request", "repo": "owner/name", "pull_request": 57 } }
 ```
+
+A task subscribes to its own key when it is created, when the key names an issue, a pull request,
+a Linear issue or a Slack thread. So a reply in the Slack thread that started a task wakes it, and a
+comment on its Linear issue reopens it once done.
 
 `subscribe` is refused while another active task owns the resource: `github:owner/name#57 belongs
 to task 3, not this one`. A done task does not block it: its subscription ends and the active

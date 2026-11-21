@@ -5863,6 +5863,7 @@ fn a_done_task_whose_open_pull_request_gets_a_comment_reopens_and_resumes_its_se
     assert_eq!(reopened[0]["data"]["generation"], 2);
     assert_eq!(reopened[0]["data"]["step"], "implement");
     assert_eq!(reopened[0]["data"]["pull_request"], "github:owner/repo#7");
+    assert_eq!(reopened[0]["data"]["resource"], "github:owner/repo#7");
 }
 
 /// A review in `state` by bot, written now.
@@ -9020,7 +9021,9 @@ fn a_comment_on_a_done_tasks_own_issue_or_thread_reopens_it() {
         request.data["key"] = json!(key);
         setup.publish(&request.subject(&key));
         setup.start();
-        setup.until("tasks", |rows| rows.first().is_some_and(|row| row[4] == "done"));
+        setup.until("tasks", |rows| {
+            rows.first().is_some_and(|row| row[4] == "done")
+        });
         // The comment comes after the task was done, to the second.
         std::thread::sleep(Duration::from_millis(1100));
 
@@ -9191,7 +9194,7 @@ fn a_reply_posted_before_the_wait_wakes_the_task_and_the_bots_own_reply_never_do
 }
 
 #[test]
-fn a_reply_in_the_thread_of_a_slack_tasks_key_reaches_the_task_with_no_wait_on_it() {
+fn a_reply_in_the_thread_of_a_slack_tasks_key_wakes_the_task_with_no_wait_on_it() {
     let mut setup = Setup::new("slack-key-thread");
     setup.calls(&[wait(json!({ "type": "time", "until": "1 hour" }))]);
     let key = format!("slack:C0123:{THREAD}");
@@ -9202,15 +9205,16 @@ fn a_reply_in_the_thread_of_a_slack_tasks_key_reaches_the_task_with_no_wait_on_i
     setup.until("runs", |rows| {
         rows.first().is_some_and(|row| row[7] == "asleep")
     });
-    setup.answer_slack(&[slack_message(
-        &ts(herdr_bus::Timestamp::now()),
-        "U0PERSON",
-    )]);
+    setup.answer_slack(&[slack_message(&ts(herdr_bus::Timestamp::now()), "U0PERSON")]);
 
     setup.intake();
 
-    let inbox = setup.until("inbox", |rows| rows.len() == 2);
-    assert_eq!(inbox[1][1..5], ["slack.thread.replied", &format!("C0123:{THREAD}"), "1", "kept"], "{inbox:?}");
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 2);
+    assert!(
+        setup.typed()[1].starts_with(&format!("slack.thread.replied C0123:{THREAD} {{")),
+        "{:?}",
+        setup.typed()
+    );
 }
 
 #[test]
@@ -11558,13 +11562,26 @@ fn the_unsubscribe_tool_ends_the_subscription_without_ending_the_turn() {
     let (text, error) = reply(&setup.replies()[1]);
     assert!(!error, "{text}");
     assert_eq!(text, "task 1 unsubscribed from github:owner/repo#7");
-    assert_eq!(task_json(&setup, "1")["subscriptions"], json!([]));
+    assert_eq!(subscriptions(&setup, "1"), ["github:owner/repo#42"]);
 }
 
 /// `message` from a branch other than the task's, which it owns apart from any subscription.
 fn off_branch(mut message: Message) -> Message {
     message.data["head_branch"] = json!("feature");
     message
+}
+
+/// The resources `task` subscribes to, its own key's among them, sorted.
+fn subscriptions(setup: &Setup, task: &str) -> Vec<String> {
+    let listed = task_json(setup, task)["subscriptions"].clone();
+    let mut resources: Vec<String> = listed
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|row| row["resource"].as_str().unwrap().to_owned())
+        .collect();
+    resources.sort();
+    resources
 }
 
 fn task_json(setup: &Setup, task: &str) -> serde_json::Value {
@@ -11590,9 +11607,11 @@ fn a_subscription_owned_by_another_active_task_is_refused_naming_it() {
         String::from_utf8_lossy(&output.stderr),
         "priory subscribe: github:owner/repo#7 belongs to task 1, not this one\n"
     );
-    let listed = task_json(&setup, "1")["subscriptions"].clone();
-    assert_eq!(listed[0]["resource"], "github:owner/repo#7", "{listed}");
-    assert_eq!(task_json(&setup, "2")["subscriptions"], json!([]));
+    assert_eq!(
+        subscriptions(&setup, "1"),
+        ["github:owner/repo#42", "github:owner/repo#7"]
+    );
+    assert_eq!(subscriptions(&setup, "2"), ["github:owner/repo#43"]);
 }
 
 #[test]
@@ -11610,10 +11629,10 @@ fn a_done_tasks_subscription_yields_to_an_active_task() {
     let output = setup.priory(&["subscribe", "2", "github:owner/repo#07"]);
 
     assert!(output.status.success(), "{output:?}");
-    assert_eq!(task_json(&setup, "1")["subscriptions"], json!([]));
+    assert_eq!(subscriptions(&setup, "1"), ["github:owner/repo#42"]);
     assert_eq!(
-        task_json(&setup, "2")["subscriptions"][0]["resource"],
-        "github:owner/repo#7"
+        subscriptions(&setup, "2"),
+        ["github:owner/repo#43", "github:owner/repo#7"]
     );
     let output = setup.priory(&["unsubscribe", "2", "github:owner/repo#7"]);
     assert!(output.status.success(), "{output:?}");
@@ -11635,7 +11654,7 @@ fn a_closed_pull_request_wakes_its_subscriber_and_ends_its_subscriptions() {
         "{:?}",
         setup.typed()
     );
-    assert_eq!(task_json(&setup, "1")["subscriptions"], json!([]));
+    assert_eq!(subscriptions(&setup, "1"), ["github:owner/repo#42"]);
 }
 
 #[test]
