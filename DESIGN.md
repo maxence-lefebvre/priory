@@ -1102,7 +1102,7 @@ run.
 Priory's panels also ship as Herdr mods (R8.6). A mod renders natively with gpui-kit, in a pane
 beside other panes, with a fine pointer. It keeps this file's structure, tokens, state tiles, copy
 and ask rules. This section lists only what differs, and the panels the adapter ships: Desk, Asks,
-Queue, Bonjour, Costs, Flows, Task and Inbox. Bonjour is also the web view's Reports panel. [`docs/adapters/herdr.md`](docs/adapters/herdr.md) explains where
+Queue, Bonjour, Costs, Flows, Task, Inbox and Tasks. Bonjour is also the web view's Reports panel. [`docs/adapters/herdr.md`](docs/adapters/herdr.md) explains where
 the adapter lives, how it reads and acts, and the data each panel needs. The approved boards are in
 `~/shared/priory-round-6/` on the author's machine.
 
@@ -1288,6 +1288,20 @@ The web's [Inbox](#inbox) panel, as a tab in the center stack.
 - The verb's sentence shows under the button in `--text-2`; a refusal says why. Subscribe carries
   the revision the panel read, as the web's does.
 - While it reads: "Reading the unrouted events…"
+
+### Tasks
+
+The web's [Tasks panel](#tasks-panel), as a tab in the center stack.
+
+- Under the 44 px header, the saved views Active, Blocked and Ended as chips with their counts
+  after the facets, then a State, Lane and Workflow chip each, whose menu lists every task's
+  values A to Z with counts, as on the web.
+- Every row is the desk's task row at every width: tile, key in mono, workflow, step, the state
+  word in its role's text color and the age in `--text-3`; the title in `--type-small`; then lane
+  and band in `--text-3`, or the reason in its role's text color, then `batch N`. A row opens the
+  [Task](#task) panel.
+- The batch tag is text: Herdr has no batch panel yet.
+- While it reads: "Reading the tasks…"
 
 ### Open questions
 

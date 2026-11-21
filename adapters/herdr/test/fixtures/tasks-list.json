@@ -1,0 +1,10 @@
+{
+  "revision": 57,
+  "tasks": [
+    { "id": 1, "key": "ENG-201", "workflow": "implement", "step": "merge", "state": "done", "band": "now", "lane": "payments", "reason": null, "since": "2026-11-16T09:00:00Z", "title": "Add invoice numbers", "batch": null },
+    { "id": 2, "key": "ENG-244", "workflow": "implement", "step": "review", "state": "running", "band": "now", "lane": "payments", "reason": null, "since": "2026-11-17T11:42:00Z", "title": "Rate-limit the checkout webhook", "batch": null },
+    { "id": 3, "key": "ENG-239", "workflow": "implement", "step": "implement", "state": "held", "band": "later", "lane": "payments", "reason": "waits for ENG-201 to merge", "since": "2026-11-17T08:00:00Z", "title": "Export invoices as CSV", "batch": 1 },
+    { "id": 4, "key": "ENG-250", "workflow": "groom", "step": "triage", "state": "blocked", "band": "today", "lane": null, "reason": "needs a person: the spec is empty", "since": "2026-11-17T10:00:00Z", "title": "Tidy the backlog", "batch": null },
+    { "id": 5, "key": "ENG-199", "workflow": "implement", "step": "implement", "state": "failed", "band": "now", "lane": "payments", "reason": "tests failed twice", "since": "2026-11-17T07:00:00Z", "title": "Retry invoice emails", "batch": null }
+  ]
+}
