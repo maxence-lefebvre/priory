@@ -1635,3 +1635,36 @@ fn telemetry_headers_env_names_a_variable_and_never_holds_the_headers() {
          such as OTEL_EXPORTER_OTLP_HEADERS, never the headers themselves\n"
     );
 }
+
+#[test]
+fn a_postgres_log_needs_a_build_with_the_postgres_feature() {
+    let herdr = "name = \"demo\"\n[log]\nbackend = \"herdr-bus\"\n";
+    let postgres = "name = \"demo\"\n[log]\nbackend = \"postgres\"\nurl_env = \"PRIORY_LOG_URL\"\n";
+    let herdr = check(&factory("log-herdr", &with("factory.toml", herdr)));
+    let postgres = check(&factory("log-postgres", &with("factory.toml", postgres)));
+
+    assert_eq!((herdr.code, herdr.stderr.as_str()), (0, ""));
+    let refused = "factory.toml:2: [log] backend = \"postgres\" needs a priory built with `--features postgres`\n";
+    let expected = if cfg!(feature = "postgres") {
+        (0, "")
+    } else {
+        (1, refused)
+    };
+    assert_eq!((postgres.code, postgres.stderr.as_str()), expected);
+}
+
+#[test]
+fn a_log_url_env_names_a_variable_never_the_url() {
+    let toml = "name = \"demo\"\n[log]\nurl_env = \"postgresql://user:secret@host/db\"\n";
+
+    let outcome = check(&factory("log-url", &with("factory.toml", toml)));
+
+    assert_eq!(
+        (outcome.code, outcome.stderr.as_str()),
+        (
+            1,
+            "factory.toml:2: `[log] url_env` names the environment variable that holds the \
+             connection string, such as PRIORY_LOG_URL, never the string itself\n"
+        )
+    );
+}

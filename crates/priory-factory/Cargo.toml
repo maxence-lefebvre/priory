@@ -16,3 +16,7 @@ toml.workspace = true
 
 [dev-dependencies]
 proptest.workspace = true
+
+[features]
+# Lets `priory check` accept `[log] backend = "postgres"`; priory-intake's feature turns it on.
+postgres = []

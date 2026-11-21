@@ -54,6 +54,8 @@ pub struct Settings {
     pub gate: Option<String>,
     #[serde(default)]
     pub search: Search,
+    #[serde(default)]
+    pub log: EventLog,
     pub telemetry: Option<Telemetry>,
     pub notify: Option<Notify>,
     pub serve: Option<Serve>,
@@ -328,6 +330,33 @@ pub struct Search {
     pub model: Option<String>,
     /// A command that reads text on stdin and prints a JSON array of floats, instead of `model`.
     pub command: Option<String>,
+}
+
+/// Where the event log lives: herdr-bus's file on this machine, or a Postgres database that
+/// several machines share.
+#[derive(Debug, Default, Clone, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct EventLog {
+    #[serde(default)]
+    pub backend: Backend,
+    /// The environment variable that holds the Postgres connection string, `PRIORY_LOG_URL`
+    /// unless named: the file never holds the string itself.
+    pub url_env: Option<String>,
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Deserialize, JsonSchema)]
+#[serde(rename_all = "kebab-case")]
+pub enum Backend {
+    #[default]
+    HerdrBus,
+    Postgres,
+}
+
+impl EventLog {
+    /// The environment variable that holds the Postgres connection string.
+    pub fn url_env(&self) -> &str {
+        self.url_env.as_deref().unwrap_or("PRIORY_LOG_URL")
+    }
 }
 
 /// The embedding model when `[search]` names neither a model nor a command.
@@ -1282,6 +1311,17 @@ impl Factory {
         self.settings
             .as_ref()
             .map_or(&BUILT_IN, |settings| &settings.value.sweep)
+    }
+
+    /// The factory's `[log]` table, or herdr-bus's file.
+    pub fn log(&self) -> &EventLog {
+        static BUILT_IN: EventLog = EventLog {
+            backend: Backend::HerdrBus,
+            url_env: None,
+        };
+        self.settings
+            .as_ref()
+            .map_or(&BUILT_IN, |settings| &settings.value.log)
     }
 
     /// The factory's `[search]` table, or keyword search with no summarizer.
