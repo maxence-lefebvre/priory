@@ -66,6 +66,7 @@ See [trace.md](../daemon/trace.md) and, for backends, [otel-recipes.md](../daemo
 | Key | Type | Required | Default | Meaning | Example |
 | --- | ---- | -------- | ------- | ------- | ------- |
 | `otlp` | string | yes | | The OTLP/HTTP base URL. Spans go to its `/v1/traces` | `"http://127.0.0.1:4318"` |
+| `headers_env` | string | no | no headers | The environment variable that holds the headers each request carries, as `key1=value1,key2=value2` with URL-encoded values. The daemon refuses to start when it is unset, empty or malformed. `priory check` refuses a value that is not a variable name | `"OTEL_EXPORTER_OTLP_HEADERS"` |
 
 ## `[notify]`
 
@@ -226,6 +227,7 @@ model = "sentence-transformers/all-MiniLM-L6-v2"
 
 [telemetry]
 otlp = "http://127.0.0.1:4318"                 # spans go to its /v1/traces
+headers_env = "OTEL_EXPORTER_OTLP_HEADERS"     # the variable holding the headers, such as a key
 
 [serve]
 listen = "127.0.0.1:7340"                      # loopback only, unless public = true
