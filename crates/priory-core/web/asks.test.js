@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { ASK_VIEWS, answeredBy, askGroups, routedMark, routedNote, sheetTitle, shownGroups, snoozeShortcut, stillArmed, writeNote } from "./asks.js";
+import { ASK_VIEWS, answeredBy, askGroups, routedMark, routedNote, shownGroups, snoozeShortcut, stillArmed, writeNote } from "./asks.js";
 
 const now = Date.parse("2026-11-20T12:00:00Z");
 const ask = (id, fields) => ({ id, state: "open", snoozed_until: null, ...fields });
@@ -65,10 +65,6 @@ test("the S key snoozes an open ask of a task for 1 h, and nothing else", () => 
   assert.deepEqual(snoozeShortcut(ask(4, { task: 7, snoozed_until: "2026-11-20T11:00:00Z" }), now), { kind: "ask", id: 4, for: "1h" });
   assert.equal(snoozeShortcut(ask(5, { task: 7, state: "answered" }), now), null);
   assert.equal(snoozeShortcut(undefined, now), null);
-});
-
-test("the answer sheet is titled with the ask and its revision", () => {
-  assert.deepEqual(sheetTitle({ id: 42, revision: 3 }), { title: "Answer ask #42", note: "revision 3" });
 });
 
 test("a refused ask write says why, and a 504 or a dropped connection says to check the ask before sending again", () => {

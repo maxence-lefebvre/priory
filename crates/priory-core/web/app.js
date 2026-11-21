@@ -1,6 +1,6 @@
 // Priory's web view (DESIGN.md): the frame, the Desk and the Asks, with answering through the CLI's verbs.
 // Agent text is untrusted: every value goes through `html`, which escapes it.
-import { ARM_MS, ASK_VIEWS, answeredBy, askGroups, routedMark, routedNote, sheetTitle, shownGroups, snoozeShortcut, snoozed, stillArmed, writeNote } from "./asks.js";
+import { ARM_MS, ASK_VIEWS, answeredBy, askGroups, routedMark, routedNote, shownGroups, snoozeShortcut, snoozed, stillArmed, writeNote } from "./asks.js";
 import { SPLITS, attentionView, costTiles, dayBars, money, splitTable } from "./costs.js";
 import { addBody, addOutcome } from "./add.js";
 import { linked } from "./links.js";
@@ -1443,18 +1443,19 @@ const answerSheet = () => document.getElementById("answer");
 
 function openSheet() {
   if (!askOnScreen()) return;
-  answerSheet().showModal();
   renderSheet();
+  answerSheet().showModal();
 }
 
 // Closes itself once the ask is gone, answered, or its answer is sending.
 function renderSheet() {
   const sheet = answerSheet();
-  const ask = askOnScreen();
+  const ask = state.data && askOnScreen();
   if (!ask || ask.state !== "open" || state.pending) return sheet.close();
-  const { title, note } = sheetTitle(ask);
-  sheet.innerHTML = html`<div class="shead"><h2 id="answer-title">${title}<small>${note}</small></h2><button class="iconbtn" data-action="sheet-close" aria-label="Close">${icon("x", "s20")}</button></div>
+  const focused = document.activeElement?.closest?.("#answer") ? focusKey(document.activeElement) : null;
+  sheet.innerHTML = html`<div class="shead"><h2 id="answer-title">Answer ask #${ask.id}<small>revision ${ask.revision}</small></h2><button class="iconbtn" data-action="sheet-close" aria-label="Close">${icon("x", "s20")}</button></div>
     <div class="opts" role="group" aria-label="Options">${optionList(ask, false)}</div>`.text;
+  if (focused) sheet.querySelector(focused)?.focus();
 }
 
 function chip(name, label, value, values, none) {

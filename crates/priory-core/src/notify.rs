@@ -49,14 +49,25 @@ pub(crate) fn tick(db: &Connection, desktop: &mut Desktop) -> rusqlite::Result<(
         .spawn();
     match run {
         Ok(child) => desktop.running.push(child),
-        Err(error) if error.kind() == ErrorKind::NotFound => {
-            if !std::mem::replace(&mut desktop.missing, true) {
+        Err(error) => {
+            // A launch that failed told nobody: forget the item so a fixed `notify-send` tells it.
+            forget(db, &next)?;
+            if error.kind() != ErrorKind::NotFound {
+                eprintln!("priory daemon: notify-send: {error}");
+            } else if !std::mem::replace(&mut desktop.missing, true) {
                 eprintln!(
                     "priory daemon: desktop notifications are off: notify-send is not on PATH"
                 );
             }
         }
-        Err(error) => eprintln!("priory daemon: notify-send: {error}"),
     }
+    Ok(())
+}
+
+fn forget(db: &Connection, next: &serde_json::Value) -> rusqlite::Result<()> {
+    db.execute(
+        "DELETE FROM notified WHERE kind = ?1 AND item = ?2",
+        [next["kind"].to_string(), next["id"].to_string()],
+    )?;
     Ok(())
 }

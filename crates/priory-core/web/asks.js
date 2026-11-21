@@ -7,9 +7,6 @@ export const shownGroups = (view) => (view === "all" ? ["open", "snoozed", "answ
 export const snoozeShortcut = (ask, now) =>
   ask?.state === "open" && ask.task && !snoozed(ask, now) ? { kind: "ask", id: ask.id, for: "1h" } : null;
 
-/** The answer sheet's heading. @param {any} ask */
-export const sheetTitle = (ask) => ({ title: `Answer ask #${ask.id}`, note: `revision ${ask.revision}` });
-
 export const snoozed = (ask, now) => ask.state === "open" && Boolean(ask.snoozed_until) && Date.parse(ask.snoozed_until) > now;
 
 // The asks list's groups. An ask snoozed past `now` leaves Open for Snoozed (DESIGN.md, Snooze).
