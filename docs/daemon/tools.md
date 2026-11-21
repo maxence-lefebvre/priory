@@ -305,8 +305,15 @@ subscription does not end when one event arrives. Its events reach the task by i
 An event the task keeps that was written while it ran, from the start of its first run up to the
 second its last run ended, wakes nothing and fires no gate: it is most likely the agent's own
 comment or state change. Its next wake carries it. An event another task keeps is not held back,
-since no later wake would carry it. Priory cannot tell the agent's own comment by its author,
-since agents usually post with the person's own Linear, GitHub or Slack user token.
+since no later wake would carry it.
+
+A GitHub comment or review whose `own` is `false` is exempt: the intake knows another login wrote
+it, so it wakes the task and fires the gate whenever it was written. `own` compares the author with
+the login that `gh api user` names, which a worker's `gh` posts as too. The poll and the webhook
+each ask `gh` once per process, and `own` is absent when that ask failed, until the process
+restarts. When agents post with
+the person's own GitHub account, every comment of that account is `own`, and the time rule above
+still applies to it. Linear and Slack events have no `own`.
 
 For example, to hear every review of an upstream pull request while the task works on:
 
@@ -587,8 +594,10 @@ with the reason `ask <id> was answered first` or `ask <id> was dismissed`. A lea
 running reads the refusal and ends `skipped`. A routed ask sends no push notification.
 
 When the lead task ends `done`, `failed` or `dropped`, or turns `blocked`, without answering, the
-ask returns to the person. It loses its lead and is asked again as its next revision, which sends
-a push notification. Its question gains the reason, such as `Which database? (lead did not answer:
+ask returns to the person. A lead task that turns `blocked`, on a timeout, a permission prompt or
+a lost run, is `dropped` at once, with the blocking reason, since no resume could answer the ask
+any more. The ask loses its lead and is asked again as its next revision, which sends a push
+notification. Its question gains the reason, such as `Which database? (lead did not answer:
 its task is done)`. A lead that skips ends `done`.
 
 Known limits:

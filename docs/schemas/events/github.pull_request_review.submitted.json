@@ -32,6 +32,13 @@
             "null"
           ]
         },
+        "association": {
+          "description": "GitHub's `author_association` of the author, such as `OWNER`, `COLLABORATOR` or `NONE`.\nFeedback from anyone but the owner, a member or a collaborator reaches no task.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "base_branch": {
           "description": "The branch the pull request merges into.",
           "type": [
@@ -74,6 +81,13 @@
             "null"
           ]
         },
+        "head_repo": {
+          "description": "The head branch's repository, `owner/name`, which differs from `repo` for a fork; absent\nwhen the event does not say, as for a check run or a deleted fork.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "head_sha": {
           "description": "The head commit; for a check, the commit it ran on.",
           "type": [
@@ -84,6 +98,13 @@
         "open": {
           "description": "Whether the pull request was open when the intake read it; a done task reopens only\nfor feedback on an open one.",
           "type": "boolean"
+        },
+        "own": {
+          "description": "Whether the login `gh api user` names wrote it, the login a worker posts as; absent while\n`gh` cannot say. A comment another login wrote wakes its task even when it was written\nduring the agent's turn.",
+          "type": [
+            "boolean",
+            "null"
+          ]
         },
         "pull_request": {
           "description": "The pull request number.",

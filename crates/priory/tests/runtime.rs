@@ -41,7 +41,7 @@ const OUTPUT: &str = "factory.intake";
 /// Takes a state file back before schema 28, which added search, 29, which added grades, 30,
 /// which added snoozes, 31, which added read reports, 32, which added the pause, 34, which added
 /// reports of sections, 36, which added deliveries, 37, which added progress, 39, which added run
-/// actions, 40, which added answer actions, 42, which added dispatches, 49, which added task ends, 51, which added a run's crossing of `compactAt`, 53, which added intervention levels, 56, which added the step an irreversible approval lets run, 58, which added withdrawal reasons, and 59, which added green stack gates and returned routed asks, 61, which added findings, 62, which added merge risk, 63, which added plan fields, and 64, which added chosen subscriptions and approval generations. Schema 38's visits
+/// actions, 40, which added answer actions, 42, which added dispatches, 49, which added task ends, 51, which added a run's crossing of `compactAt`, 53, which added intervention levels, 56, which added the step an irreversible approval lets run, 58, which added withdrawal reasons, and 59, which added green stack gates and returned routed asks, 61, which added findings, 62, which added merge risk, 63, which added plan fields, and 65, which added chosen subscriptions and approval generations. Schema 38's visits
 /// table is created only if missing, so it stays.
 const UNDO_SINCE_SEARCH: &str = "ALTER TABLE subscriptions DROP COLUMN chosen; ALTER TABLE approvals DROP COLUMN generation;
          ALTER TABLE tasks DROP COLUMN plan_goal; ALTER TABLE tasks DROP COLUMN plan_testing; ALTER TABLE tasks DROP COLUMN plan_brief; ALTER TABLE tasks DROP COLUMN verification;
@@ -6049,6 +6049,34 @@ fn gated_at(name: &str, commit: &str) -> Setup {
 }
 
 #[test]
+fn a_persons_comment_written_during_the_agents_last_turn_fires_the_checks_gate() {
+    let mut setup = Setup::new("gate-comment-during-turn");
+    setup.calls(&[
+        wait(on_pull_7("review")),
+        passed_at("abc0000000000000000000000000000000000000"),
+    ]);
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("runs", |rows| rows.len() == 1 && rows[0][7] == "asleep");
+    // The turn lasts past its first second, as a real one does.
+    setup.hold("hold-stop");
+    setup.publish(&reviewed());
+    setup.until("runs", |rows| rows.len() == 2);
+    std::thread::sleep(Duration::from_millis(1100));
+    setup.release("hold-stop");
+    setup.until("waits", |rows| rows.iter().any(|row| row[3] == "checks"));
+    setup.until("tasks", |rows| rows[0][4] == "asleep");
+    // A person commented while the agent worked; the poll reads it after the run ended.
+    let during: herdr_bus::Timestamp = setup.rows("runs")[1][5].parse().unwrap();
+    let mut comment = commented().time(during);
+    comment.data["own"] = json!(false);
+
+    setup.publish(&comment);
+
+    setup.until("runs", |rows| rows.len() == 3);
+}
+
+#[test]
 fn a_result_commit_in_capitals_matches_the_same_head_in_lower_case() {
     let setup = gated_at("gate-capitals", "ABC0000000000000000000000000000000000000");
 
@@ -6290,6 +6318,25 @@ fn a_comment_on_the_merged_pull_request_of_a_done_task_reopens_nothing() {
     setup.publish(&commented());
 
     setup.until("inbox", |rows| rows.len() == 4);
+    std::thread::sleep(Duration::from_millis(1500));
+    assert_eq!(setup.rows("tasks")[0][4], "done");
+    assert_eq!(setup.rows("runs").len(), 2);
+}
+
+#[test]
+fn a_comment_from_someone_outside_the_repository_reopens_nothing_and_stays_in_the_inbox() {
+    let setup = gated("reopen-outsider");
+    setup.publish(&check(1, 0));
+    setup.until("tasks", |rows| rows[0][4] == "done");
+    std::thread::sleep(Duration::from_millis(1100));
+    let mut stranger = commented();
+    stranger.data["association"] = json!("NONE");
+
+    setup.publish(&stranger);
+
+    let inbox = setup.until("inbox", |rows| rows.len() == 4);
+    assert_eq!(inbox[3][1], "github.pull_request.comment");
+    assert!(inbox[3].contains(&"outsider".to_owned()), "{inbox:?}");
     std::thread::sleep(Duration::from_millis(1500));
     assert_eq!(setup.rows("tasks")[0][4], "done");
     assert_eq!(setup.rows("runs").len(), 2);
@@ -7407,6 +7454,19 @@ impl Setup {
 
     fn worktree(&self, task: u64) -> PathBuf {
         self.dir.join(format!("home/worktrees/owner/repo/{task}"))
+    }
+
+    /// Makes `branches` in task 1's worktree, as its worker does before it pushes a stack.
+    fn made(&self, branches: &[&str]) {
+        for branch in branches {
+            let made = Command::new("git")
+                .arg("-C")
+                .arg(self.worktree(1))
+                .args(["branch", branch])
+                .output()
+                .unwrap();
+            assert!(made.status.success(), "{made:?}");
+        }
     }
 
     fn clone(&self) -> PathBuf {
@@ -8546,6 +8606,29 @@ fn a_hold_on_a_merge_and_a_linear_issue_releases_once_both_are_met_in_either_ord
 }
 
 #[test]
+fn a_met_issue_condition_is_met_no_more_once_its_issue_reopens() {
+    let setup = queued_without_room("hold-issue-met-reopened");
+    person(
+        &setup,
+        "hold",
+        &["1", "--reason", "a", "--merge", "7", "--after", "ENG-7"],
+    );
+    setup.publish(&moved_to_done("ENG-7"));
+    setup.publish(&linear_event(
+        "linear.issue.state_changed",
+        "ENG-7",
+        json!({ "linear_id": "ENG-7-reopened", "from": "Done", "to": "In Progress" }),
+    ));
+    setup.until("inbox", |rows| rows.len() == 3);
+
+    setup.publish(&closed_7(true, 400));
+
+    setup.until("inbox", |rows| rows.len() == 4);
+    std::thread::sleep(Duration::from_millis(1100));
+    assert_eq!(held_as(&setup, "1")[0], "held");
+}
+
+#[test]
 fn a_hold_after_a_linear_issue_already_done_releases_the_task_at_once() {
     let mut setup = Setup::new("hold-issue-done");
     setup.memory(0);
@@ -9132,11 +9215,11 @@ fn an_approval_stored_before_generations_were_kept_is_asked_again_after_the_upgr
     );
     setup.written("fake/tools.log");
     setup.crash();
-    // The state file as version 63 left it: an approval names no generation.
+    // The state file as version 64 left it: an approval names no generation.
     let db = rusqlite::Connection::open(setup.dir.join("priory.db")).unwrap();
     db.execute_batch(
         "ALTER TABLE subscriptions DROP COLUMN chosen; ALTER TABLE approvals DROP COLUMN generation;
-         PRAGMA user_version = 63;",
+         PRAGMA user_version = 64;",
     )
     .unwrap();
     drop(db);
@@ -12365,7 +12448,7 @@ fn a_pick_at_a_stale_revision_is_refused_and_changes_nothing() {
 }
 
 #[test]
-fn a_pick_option_that_requests_a_task_creates_it_and_fills_applied() {
+fn a_pick_option_that_requests_a_task_creates_it_and_fills_applied_with_what_it_requested() {
     let requests = json!({ "Take": {
         "workflow": "implement", "key": "fnd-2409", "text": "Fix the DWARF pause", "repo": "owner/repo"
     } });
@@ -12380,7 +12463,10 @@ fn a_pick_option_that_requests_a_task_creates_it_and_fills_applied() {
     let pick = &shown(&setup)["sections"][0]["rows"][0]["pick"];
     assert_eq!(
         [&pick["chosen"], &pick["applied"]],
-        ["Take", "requested task cli:fnd-2409"]
+        [
+            "Take",
+            "requested task cli:fnd-2409 in workflow implement on owner/repo, the cli trigger's intervention: Fix the DWARF pause"
+        ]
     );
 }
 
@@ -12520,7 +12606,10 @@ fn a_chosen_pick_whose_request_the_bus_refused_publishes_it_when_the_daemon_star
     let pick = &shown(&setup)["sections"][0]["rows"][0]["pick"];
     assert_eq!(
         [&pick["chosen"], &pick["applied"]],
-        ["Take", "requested task cli:fnd-2409"]
+        [
+            "Take",
+            "requested task cli:fnd-2409 in workflow implement on owner/repo, the cli trigger's intervention: Fix the DWARF pause"
+        ]
     );
 }
 
@@ -13069,6 +13158,28 @@ fn a_pull_request_on_another_tasks_branch_is_not_claimed() {
         subscriptions(&setup, "2"),
         ["github:owner/repo#43", "github:owner/repo#7"]
     );
+}
+
+#[test]
+fn a_pull_request_from_a_branch_the_task_never_made_or_from_a_fork_is_not_claimed() {
+    let mut setup = Setup::new("claim-stranger");
+    setup.calls(&[wait(json!({ "type": "time", "until": "1 hour" }))]);
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("runs", |rows| rows.len() == 1 && rows[0][7] == "asleep");
+    let mut named_alike = on_pull("github.pull_request.opened", json!({}));
+    named_alike.data["head_branch"] = json!("priory/1-x");
+    let mut forked = on_pull("github.pull_request.opened", json!({}));
+    forked.data["pull_request"] = json!(8);
+    forked.data["head_branch"] = json!("priory/1");
+    forked.data["head_repo"] = json!("stranger/repo");
+
+    setup.publish(&named_alike);
+    setup.publish(&forked);
+
+    setup.until("inbox", |rows| rows.len() == 3);
+    assert_eq!(subscriptions(&setup, "1"), ["github:owner/repo#42"]);
+    assert_eq!(task_json(&setup, "1")["stack"], json!([]));
 }
 
 #[test]
@@ -14012,6 +14123,7 @@ fn a_stack_the_worker_opened_itself_is_claimed_bottom_first() {
     setup.publish(&requested(42));
     setup.start();
     setup.until("runs", |rows| rows.len() == 1 && rows[0][7] == "asleep");
+    setup.made(&["priory/1-api", "priory/1-other"]);
     let opened = |number: u64, head: &str, base: &str| {
         let mut message = on_stack(
             number,
@@ -14044,6 +14156,7 @@ fn a_comment_on_a_claimed_stack_reaches_the_running_task_naming_the_place() {
     setup.publish(&requested(42));
     setup.start();
     setup.until("runs", |rows| rows.len() == 1 && rows[0][7] == "asleep");
+    setup.made(&STACK[..2]);
     setup.publish(&on_stack(
         7,
         "github.pull_request.opened",
@@ -14104,6 +14217,7 @@ fn asleep_with_a_branch(name: &str, then: serde_json::Value) -> Setup {
     setup.publish(&requested(42));
     setup.start();
     setup.until("runs", |rows| rows.len() == 1 && rows[0][7] == "asleep");
+    setup.made(&["priory/1-a", "priory/1-b"]);
     setup
 }
 
@@ -14196,6 +14310,7 @@ fn a_dismissed_stack_ask_is_asked_again_as_a_new_revision_when_the_task_reaches_
     setup.publish(&requested(42));
     setup.start();
     setup.until("runs", |rows| rows.len() == 1 && rows[0][7] == "asleep");
+    setup.made(&["priory/1-a"]);
     let mut closed = opened_on(7, "priory/1-a", "main");
     closed.kind = "github.pull_request.closed".to_owned();
     closed.data["merged"] = json!(false);
@@ -14674,6 +14789,32 @@ fn a_routed_ask_whose_lead_skips_returns_to_the_person_as_a_new_revision() {
         "Which database? (lead did not answer: its task is done)"
     );
     assert_eq!(setup.rows("tasks")[0][4], "asleep");
+}
+
+#[test]
+fn a_lead_task_that_blocks_is_dropped_as_its_ask_returns_to_the_person() {
+    let mut setup = hands_off("hands-off-blocked", WORKFLOW);
+    setup.hold("undecided");
+    setup.calls(&[
+        ask(),
+        json!({ "name": "Bash", "arguments": { "command": "rm -rf /" } }),
+    ]);
+    setup.publish(&requested(42));
+
+    setup.start();
+
+    let tasks = setup.until("tasks", |rows| {
+        rows.len() == 2 && !["queued", "ready", "running"].contains(&rows[1][4].as_str())
+    });
+    assert_eq!(tasks[1][4], "dropped", "{tasks:?}");
+    let ask = &asks_json(&setup)["asks"][0];
+    assert_eq!(
+        [&ask["state"], &ask["routed_to"], &ask["revision"]],
+        [&json!("open"), &json!(null), &json!(2)],
+        "{ask}"
+    );
+    let resumed = setup.priory(&["resume", "2"]);
+    assert!(!resumed.status.success(), "{resumed:?}");
 }
 
 #[test]

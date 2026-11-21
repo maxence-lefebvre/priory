@@ -1197,7 +1197,7 @@ pub(crate) fn event(tx: &Transaction, task: i64, seq: i64) -> rusqlite::Result<b
         // A comment written before the wait, such as the agent's own, wakes nothing.
         let place = crate::stack::place(tx, task, &resource)?;
         let said = feedback(&resource, place.as_deref(), &kind_of_event, &data)
-            .filter(|_| later || kind_of_event == REVIEWED);
+            .filter(|_| later || kind_of_event == REVIEWED || data["own"] == false);
         if daemon {
             let Some(said) = said.filter(|_| !settles(&kind_of_event, &data)) else {
                 return judge(tx, wait);
