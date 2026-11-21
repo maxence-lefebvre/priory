@@ -9,6 +9,7 @@ Each listing returns the same JSON as
 the CLI command with `--json`, with the state's `revision`, an integer, read in the same
 transaction. A listing that is an object has a `revision` field. A listing that is a list comes as
 `{"revision": N, "<name>": [...]}`, where `<name>` is `inbox` or `tasks`.
+`/api/costs` is a report rather than a listing: it has no `revision`.
 
 `/api/asks` and `/api/tasks` leave out the rows that closed over a week ago, and add `older`, the
 number they left out: see [Asks](#asks) and [Tasks](#tasks). `?all=1` returns every row, as the CLI
@@ -27,6 +28,7 @@ does, with every count in `older` at 0. Their rows match the CLI's JSON only wit
 | `/api/links` | `priory links --json` | an object: [Links](#links) |
 | `/api/reports/latest` | `priory report show --json` | the [report](#report) written last |
 | `/api/reports/{task}` | `priory report show TASK --json` | the task's [report](#report) |
+| `/api/costs?since=WINDOW&by=SPLIT` | `priory costs --json --since WINDOW --by SPLIT` | an object: [Costs](#costs) |
 | `/api/events?since=REV` | `priory wait --since REV` | `{"revision": N}` once it differs from `REV`. See [below](#apievents) |
 | `/api/push/key` | | `{"key": "<base64url>"}`, the daemon's VAPID public key. See [Notifications](#notifications) |
 | `POST /api/asks/{id}/answer` | `priory answer ID TEXT --revision N` | `{"ok": "<what the CLI prints>"}`. See [Writes](#writes) |
@@ -54,7 +56,7 @@ or a reason, is untrusted: render it as text.
 | ---- | ---- |
 | `200` | The endpoint answered |
 | `202` | A signed webhook delivery was taken: published, or dropped on purpose |
-| `400` | The request does not parse, or its target does not start with `/`; `/api/events` lacks `since` or has a parameter out of range; `/api/desk` has a parameter other than `person`, or a broken escape; `/api/asks` has a parameter other than `band`, `risk` and `all=1`, a band the factory does not have, or a risk other than the five [below](#asks); `/api/tasks` has a parameter other than `all=1`; a write's body is not the shape [below](#writes); for a webhook, it sends two `Content-Length`, or its payload lacks a field its event needs |
+| `400` | The request does not parse, or its target does not start with `/`; `/api/events` lacks `since` or has a parameter out of range; `/api/desk` has a parameter other than `person`, or a broken escape; `/api/asks` has a parameter other than `band`, `risk` and `all=1`, a band the factory does not have, or a risk other than the five [below](#asks); `/api/tasks` has a parameter other than `all=1`; `/api/costs` has a parameter other than `since` and `by`, a broken escape, a `since` that cannot form a window (see [trace.md](../daemon/trace.md#costs)), or a `by` other than the five [below](#costs); a write's body is not the shape [below](#writes); for a webhook, it sends two `Content-Length`, or its payload lacks a field its event needs |
 | `401` | The token is missing or wrong on a path under `/api`; for a webhook, the signature is |
 | `403` | A `POST` carries an `Origin` whose host and port differ from its `Host`, such as a page on another site |
 | `404` | No such path, task, report, ask or web view file |
@@ -243,8 +245,20 @@ Every task in start order. Without `all=1`, the tasks still going and the tasks 
 has `id`, `key`, `workflow`, `step`, `state`, `band`, `lane`, `reason`, `position` (its place in
 the queue from 1, or null), `generation`, `retired`, `tldr`, `since`
 (when the task last changed state), `grade` (`red`, `yellow`, `green` or null), `grade_reason`,
-`progress` and `conditions`, a held task's [conditions](#conditions) or null. See Grades in
+`progress`, `conditions`, a held task's [conditions](#conditions) or null, and `stack`. See Grades in
 [tools.md](../daemon/tools.md#grades).
+
+`stack` lists the pull requests the task opened or claimed, bottom first, each based on the one
+before it (see [Stacks in routing.md](../daemon/routing.md#stacks)). It is empty when the task has
+none. Each entry:
+
+| Field | Type | Meaning |
+| ----- | ---- | ------- |
+| `pull_request` | string | The resource, such as `github:owner/name#58` |
+| `number` | integer | The pull request's number |
+| `branch` | string | Its head branch |
+| `base` | string | Its base branch: the trunk for the bottom one, the branch below for the others |
+| `state` | string | `open`, `merged` or `closed`, from the intake's close events |
 
 `progress` is null until the task's agent or a person publishes one. Then it is an object with any
 of `goal`, `acceptanceCriteria` (each `{ "id", "description", "required" }`), `latestChange` and
@@ -322,6 +336,29 @@ A held task lists each condition of its hold, in the order it was given, under `
 | `met` | When the condition was met, or null |
 | `met_as` | How it was met, such as `task 9 is done` or `ENG-7 is Done`, or null |
 
+
+## Costs
+
+`/api/costs` prices from the `prices.toml` of the factory `serve` runs, read when it starts. Both
+parameters are optional: `since` takes an RFC 3339 instant or a duration such as `30 days`, and `by`
+one of `workflow` (the default), `agent`, `model`, `machine` and `repo`. See
+[trace.md](../daemon/trace.md#costs) for the windows and what each dimension reads.
+
+| Field | Value |
+| ----- | ----- |
+| `by` | The split's dimension |
+| `current`, `previous` | The two windows: `since` and `until`, then a [total](#cost-total) and `merges` |
+| `days` | One entry per local day of either window with a record or a merge, oldest first: `day` (`YYYY-MM-DD`), a [total](#cost-total) and `merges` |
+| `split` | One entry per value of the current window's records, sorted: the value under the dimension's name, such as `"model": "claude-opus-5-5"`, and a [total](#cost-total) |
+
+### Cost total
+
+| Field | Value |
+| ----- | ----- |
+| `cost_usd` | The dollars of the priced tokens. Null when no record was priced and some were unpriced or had no tokens |
+| `tokens` | Every counted token: `input`, `output`, `cache_read` and `cache_write` |
+| `unpriced` | Each model with no price: `model` and its `tokens` |
+| `unknown` | The records with no `tokens`: model steps, handler calls and summarizer calls |
 
 ## Views
 

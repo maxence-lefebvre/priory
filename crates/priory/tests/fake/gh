@@ -2,19 +2,20 @@
 # A stand-in for the GitHub CLI's pull request and issue commands. Appends each call's arguments, as a JSON
 # array, to FAKE_DIR/gh.log. FAKE_DIR/open-pr holds the number `pr list` reports as open, and
 # FAKE_DIR/gh-fail makes `pr create` fail and FAKE_DIR/gh-hang makes it hang. FAKE_DIR/issues holds what `issue list` prints.
-# FAKE_DIR/pr-state holds the state `pr view` prints, OPEN by default.
+# FAKE_DIR/pr-state holds the state `pr view` prints, OPEN by default. `pr create` numbers its pull
+# requests 7, 8, 9 and on, in order.
 set -u
 jq -nc '$ARGS.positional' --args -- "$@" >> "$FAKE_DIR/gh.log"
 case "$1 $2" in
   "pr list")
-    if [ -e "$FAKE_DIR/open-pr" ]; then echo "[{\"number\":$(cat "$FAKE_DIR/open-pr")}]"; else echo '[]'; fi ;;
+    if [ -e "$FAKE_DIR/open-pr" ]; then echo "[{\"number\":$(cat "$FAKE_DIR/open-pr"),\"baseRefName\":\"main\"}]"; else echo '[]'; fi ;;
   "pr view")
     if [ -e "$FAKE_DIR/pr-state" ]; then cat "$FAKE_DIR/pr-state"; else echo OPEN; fi ;;
   "pr create")
     # A helper that ignores TERM and keeps stdout open, as a stuck credential helper can.
     if [ -e "$FAKE_DIR/gh-hang" ]; then (trap '' TERM; sleep 60) & sleep 60; fi
     if [ -e "$FAKE_DIR/gh-fail" ]; then echo 'pull request create failed: GraphQL: denied' >&2; exit 1; fi
-    echo 'https://github.com/owner/repo/pull/7' ;;
+    echo "https://github.com/owner/repo/pull/$((6 + $(grep -c '^\["pr","create"' "$FAKE_DIR/gh.log")))" ;;
   "issue list")
     if [ -e "$FAKE_DIR/issues" ]; then cat "$FAKE_DIR/issues"; else echo '[]'; fi ;;
   "issue create")

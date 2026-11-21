@@ -751,6 +751,9 @@ pub struct Workflow {
     /// The guarded calls every step of the workflow may make with no approval.
     #[serde(default)]
     pub guard: WorkflowGuard,
+    /// The most pull requests a task's stack may hold: `open-pr` refuses a longer one. No cap
+    /// when unset.
+    pub max_prs: Option<std::num::NonZeroUsize>,
     pub steps: Vec<Step>,
 }
 
@@ -973,7 +976,7 @@ fn percent<'de, D: serde::Deserializer<'de>>(input: D) -> Result<Option<f64>, D:
 }
 
 /// Dollars per million tokens of each kind, for one model.
-#[derive(Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Price {
     #[serde(deserialize_with = "dollars")]
