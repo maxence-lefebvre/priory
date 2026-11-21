@@ -28,6 +28,18 @@ platform = { os = "linux", arch = "x86_64" }
 agents = { cpu = "50%", memory = "60%" }   # a laptop in use; omit for 90% of each
 ```
 
+## Several runners
+
+With two or more runner files, each task is owned by one runner at a time. The daemon is the
+runner named by its machine's hostname, and refuses to start on a machine with no runner file:
+
+```text
+this machine, `<hostname>`, has no runner file in runners/, and the factory has several runners
+```
+
+A task that never started moves to another runner 30 minutes after its runner's last alive
+message. `priory give [DIR] KEY RUNNER` moves any other. See [runners.md](../daemon/runners.md).
+
 ## Errors from `priory check`
 
 | Message | Cause |

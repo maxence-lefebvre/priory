@@ -226,7 +226,8 @@ When someone labels issue 42 of `owner/name` with `agent`, this happens:
 | Command | What it does |
 | ------- | ------------ |
 | `priory desk` | Lists what waits on you: asks, blocked and failed tasks, held tasks, the queue |
-| `priory answer ASK OPTION --revision N` | Answers an ask. `--expected N` is the same flag |
+| `priory answer ASK OPTION --revision N` | Answers an ask. `--expected N` is the same flag. `priory answer [DIR] RUNNER:ASK ...` answers another runner's ask (see [runners.md](docs/daemon/runners.md)) |
+| `priory give [DIR] KEY RUNNER` | Moves a task to another runner of a factory of several (see [runners.md](docs/daemon/runners.md)) |
 | `priory dismiss [--expected N] ASK` | Closes an ask with no answer |
 | `priory snooze KIND ID --for 2h`, `--until TIME`, `--clear` | Hides a desk item until then, or brings it back |
 | `priory todo add TEXT [--band B] [--due TIME]`, `priory todo done ID`, `priory todo list` | Adds a to-do of your own to the desk, marks it done, or lists them |
@@ -254,6 +255,11 @@ Run `priory` with no arguments to print its usage.
 If you work in [Herdr](docs/adapters/herdr.md), its Desk panel shows the same desk, and its Asks
 panel lists the same asks and answers them through these verbs. `adapters/herdr/install` links
 them into Herdr.
+
+If you review on GitHub, the [GitHub extension](adapters/github/README.md) shows the task that holds
+a pull request on its page, answers its asks, says to its agent, and walks you through the agent's
+review guide. Load `adapters/github/` unpacked in Chrome or Edge, and add its origin to
+[`[serve] extension_origins`](docs/reference/factory.md#serve).
 
 The web view's Desk shows the same desk. It opens on the next thing: the alarm or ask that ranks
 first, with why it ranks there. Under the list, Since you looked shows what happened since your last

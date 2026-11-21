@@ -76,6 +76,13 @@ origin then matches `Host`. The token still stops it: the web view keeps the tok
 storage of its own origin, which a rebound page cannot read. Keep it that way: never add cookie
 auth.
 
+A browser extension's page writes from its own origin, such as `chrome-extension://<id>`, which
+never matches `Host`. `[serve] extension_origins` lists the extension origins that may write
+anyway, each exactly. A web page cannot send another origin's `Origin`, so the list keeps the
+rule's point, and the token still guards every call. The extension reaches the server with a host
+permission instead of CORS, so the server still answers no preflight.
+[adapters/github/README.md](../../adapters/github/README.md) is the extension that needs it.
+
 ## Beyond this machine
 
 `listen` must be a loopback address, such as `127.0.0.1` or `::1`, unless `[serve]` sets

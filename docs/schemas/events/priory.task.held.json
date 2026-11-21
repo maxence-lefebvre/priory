@@ -1,0 +1,91 @@
+{
+  "$id": "https://raw.githubusercontent.com/maxence-lefebvre/priory/main/docs/schemas/events/priory.task.held.json",
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "additionalProperties": false,
+  "definitions": {
+    "Link": {
+      "additionalProperties": false,
+      "description": "A link for people.",
+      "properties": {
+        "label": {
+          "description": "`issue` or `pull_request`.",
+          "type": "string"
+        },
+        "url": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "label",
+        "url"
+      ],
+      "type": "object"
+    },
+    "TaskHeld": {
+      "additionalProperties": false,
+      "description": "What another runner may do with a task, as its owner says it each time it changes: `waiting`\n(no run of it started, so it moves once its runner's lease ends), `kept` (started or asleep, so\nit stays) or `ended` (done, failed or dropped).",
+      "properties": {
+        "hold": {
+          "description": "`waiting`, `kept` or `ended`.",
+          "type": "string"
+        },
+        "key": {
+          "description": "The task's key.",
+          "type": "string"
+        },
+        "runner": {
+          "description": "The runner that owns it.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "key",
+        "runner",
+        "hold"
+      ],
+      "type": "object"
+    }
+  },
+  "description": "What another runner may do with a task, as its owner says it each time it changes: `waiting`\n(no run of it started, so it moves once its runner's lease ends), `kept` (started or asleep, so\nit stays) or `ended` (done, failed or dropped).",
+  "properties": {
+    "data": {
+      "$ref": "#/definitions/TaskHeld"
+    },
+    "id": {
+      "description": "A UUIDv5 of the message's name, so a retried publish keeps its id.",
+      "format": "uuid",
+      "type": "string"
+    },
+    "links": {
+      "description": "GitHub and Linear events carry one link to the event's page.",
+      "items": {
+        "$ref": "#/definitions/Link"
+      },
+      "type": "array"
+    },
+    "subject": {
+      "description": "A short line for listings, such as `owner/name#42`.",
+      "type": "string"
+    },
+    "time": {
+      "description": "When the event happened, RFC 3339.",
+      "format": "date-time",
+      "type": "string"
+    },
+    "type": {
+      "const": "priory.task.held",
+      "description": "The message type, such as `github.issues.labeled`.",
+      "type": "string"
+    }
+  },
+  "required": [
+    "id",
+    "type",
+    "subject",
+    "time",
+    "data",
+    "links"
+  ],
+  "title": "priory.task.held",
+  "type": "object"
+}

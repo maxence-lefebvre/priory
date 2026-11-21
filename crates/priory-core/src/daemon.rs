@@ -2,6 +2,7 @@ use crate::memory::{self, Gate};
 use crate::otlp;
 use crate::room::Share;
 use crate::route;
+use crate::runners;
 use crate::snooze::{self, Snooze};
 use crate::state::{self, Admission, NewRun, Signal};
 use crate::tools::{self, Act, Answer, Call, Dismiss, Done, Repair};
@@ -11,7 +12,7 @@ use crate::{
     subscribe, summary, sweep,
 };
 use priory_factory::factory::{self, Factory, Harness, PermissionMode, Session};
-use priory_intake::intake::OUTPUT;
+use priory_intake::intake::{self, OUTPUT};
 use priory_intake::log::{self, Log};
 use priory_runtime::runtime::{self, Launch, Line};
 use priory_runtime::script::{self, Script};
@@ -23,7 +24,6 @@ use std::path::Path;
 use std::sync::mpsc::RecvTimeoutError;
 use std::time::{Duration, Instant};
 
-const CONSUMER: &str = "priory";
 // shortcut: polls the bus file; switch to herdr-bus-client's notify with the systemd service.
 const EVERY: Duration = Duration::from_secs(1);
 /// How often the daemon removes the worktrees of ended tasks.
@@ -92,14 +92,18 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
         counter: None,
         tried: None,
     };
+    let machine = room::hostname();
     let trace = Trace {
         factory,
         revision: runtime::revision(&factory.dir),
-        machine: room::hostname(),
+        runner: runners::runner(factory, machine.as_deref())?,
+        machine,
         usage: transcript::usage,
     };
+    let consumer = runners::consumer(trace.runner.as_deref());
     if once {
-        drain(&*bus, &mut db, &trace, counting.get(&home))?;
+        drain(&*bus, &consumer, &mut db, &trace, counting.get(&home))?;
+        runners::flush(&db, &*bus)?;
         return Ok(());
     }
     // Without its key the daemon sends no notification, but still runs tasks.
@@ -226,8 +230,14 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
     let mut reads = Reads::default();
     let every = factory.sweep().every.unwrap_or(SWEEP);
     let mut swept: Option<Instant> = None;
+    let mut alive = None;
     loop {
-        drain(&*bus, &mut db, &trace, counting.get(&home))?;
+        // A runner back from away reads the log, and so drops the tasks that moved, before any run.
+        drain(&*bus, &consumer, &mut db, &trace, counting.get(&home))?;
+        if let Some(me) = &trace.runner {
+            runners::tick(&mut db, me, intake::now()?, &mut alive)?;
+            runners::flush(&db, &*bus)?;
+        }
         while let Ok(line) = listening.lines.try_recv() {
             apply(&mut db, line, &trace, counting.get(&home))?;
         }
@@ -681,7 +691,15 @@ fn add(
             (key, Some(error))
         }
     };
-    drain(&*log::open(trace.factory.log())?, db, trace, counter)?;
+    let log = log::open(trace.factory.log())?;
+    drain(
+        &*log,
+        &runners::consumer(trace.runner.as_deref()),
+        db,
+        trace,
+        counter,
+    )?;
+    runners::flush(db, &*log)?;
     let tx = db.transaction()?;
     let id = state::owner(&tx, std::slice::from_ref(&key))?.map(|task| task.id);
     drop(tx);
@@ -909,9 +927,18 @@ fn tend(
         // Measured again after each start, since its clone and worktree take disk.
         let measured = OnceCell::new();
         let room = || measured.get_or_init(|| room::measure(home));
-        let Some(admission) = state::admissible(db, factory, share, room)? else {
+        let Some(admission) = state::admissible(db, factory, trace.runner.as_deref(), share, room)?
+        else {
             break;
         };
+        if let Some(me) = &trace.runner {
+            match runners::cleared(db, me, admission.task)? {
+                Some(true) => {}
+                Some(false) => continue,
+                // Its claim is not on the log yet: the next tick tries again.
+                None => break,
+            }
+        }
         if let Err(reason) = start(db, factory, home, scope, &admission)? {
             state::block(db, trace, admission.task, "failed", &reason)?;
         }
@@ -1556,18 +1583,19 @@ fn harness(harness: &Harness) -> &'static dyn runtime::Harness {
 
 fn drain(
     bus: &dyn Log,
+    consumer: &str,
     db: &mut Connection,
     trace: &Trace,
     counter: Option<&embed::Counter>,
 ) -> Result<(), Error> {
     loop {
-        let deliveries = bus.read(CONSUMER, OUTPUT, 100)?;
+        let deliveries = bus.read(consumer, OUTPUT, 100)?;
         if deliveries.is_empty() {
             return Ok(());
         }
         for delivery in deliveries {
             let ended = state::handle(db, &delivery.message, trace, counter)?;
-            bus.ack(CONSUMER, &delivery)?;
+            bus.ack(consumer, &delivery)?;
             ended.inspect(|tmux| runtime::kill(tmux));
         }
     }

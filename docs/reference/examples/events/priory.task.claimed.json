@@ -1,0 +1,13 @@
+{
+  "id": "4f8a2c1e-6b3d-5a90-8e7f-1c2d3e4f5a6b",
+  "type": "priory.task.claimed",
+  "subject": "github:acme/widgets#42",
+  "time": "2026-11-21T11:00:00Z",
+  "data": {
+    "key": "github:acme/widgets#42",
+    "runner": "workstation",
+    "request": "ef68a451-bc80-5a71-820f-2fb320bb3a8d",
+    "from": "xps13"
+  },
+  "links": []
+}

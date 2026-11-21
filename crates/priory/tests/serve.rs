@@ -1083,6 +1083,82 @@ fn the_tasks_endpoint_leaves_out_tasks_ended_over_a_week_ago_unless_asked_for_al
 }
 
 #[test]
+fn the_tasks_endpoint_finds_each_active_task_holding_a_pull_request_and_how_it_holds_it() {
+    let mut setup = Setup::new("tasks-pr", SERVE);
+    let db = setup.db();
+    let task = |id: i64, key: &str, state: &str| {
+        db.execute(
+            "INSERT INTO tasks (id, key, workflow, step, state, lane, trigger, source)
+             VALUES (?1, ?2, 'implement', 'implement', ?3, 'none/misc', 'cli', 'cli-' || ?1)",
+            rusqlite::params![id, key, state],
+        )
+        .unwrap();
+    };
+    task(1, "github:owner/repo#7", "asleep");
+    task(9, "cli:docs-9", "running");
+    task(3, "cli:docs-3", "asleep");
+    task(4, "cli:docs-4", "ready");
+    task(5, "github:owner/repo:pulls/7:review:ana", "asleep");
+    task(6, "cli:docs-6", "done");
+    task(7, "github:owner/repo#70", "asleep");
+    task(8, "github:owner/repo:pulls/70:review:ana", "asleep");
+    task(10, "cli:docs-10", "asleep");
+    db.execute_batch(
+        "INSERT INTO owns (task, resource) VALUES (1, 'github:owner/repo#7'),
+           (9, 'github:owner/repo#7'), (3, 'github:owner/repo#7'), (7, 'github:owner/repo#70'),
+           (10, 'github:owner/repo#7');
+         INSERT INTO pull_requests (task, resource, branch, base)
+           VALUES (9, 'github:owner/repo#7', 'priory/9', 'main');
+         INSERT INTO runs (task, step, tmux, session) VALUES (3, 'implement', 'priory-3', 's3');
+         INSERT INTO waits (task, run, kind, resource) VALUES
+           (3, (SELECT max(id) FROM runs), 'review', 'github:owner/repo#7');
+         INSERT INTO subscriptions (task, resource) VALUES (1, 'github:owner/repo#7'),
+           (4, 'github:owner/repo#7'), (6, 'github:owner/repo#7'), (7, 'github:owner/repo#70');",
+    )
+    .unwrap();
+    let address = setup.start(&["serve", &setup.factory()]);
+
+    let found = api(&address, "/api/tasks?pr=github%3Aowner%2Frepo%237");
+
+    let holds: Vec<(i64, Value, Value)> = found["tasks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|task| {
+            (
+                task["id"].as_i64().unwrap(),
+                task["state"].clone(),
+                task["holds"].clone(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        holds,
+        [
+            (1, json!("asleep"), json!(["key", "subscription"])),
+            (9, json!("running"), json!(["stack"])),
+            (3, json!("asleep"), json!(["wait"])),
+            (4, json!("ready"), json!(["subscription"])),
+            (5, json!("asleep"), json!(["review"])),
+            (10, json!("asleep"), json!(["owns"])),
+        ]
+    );
+    assert!(found["revision"].is_i64(), "{found}");
+    assert_eq!(
+        api(&address, "/api/tasks?pr=github%3Aowner%2Frepo%23999")["tasks"],
+        json!([])
+    );
+    for bad in [
+        "linear:ENG-7",
+        "github%3Aowner%237",
+        "github%3Aowner%2Frepo%23x",
+    ] {
+        let (status, body) = get(&address, &format!("/api/tasks?pr={bad}"), Some(TOKEN));
+        assert_eq!(status, 400, "{bad}: {body}");
+    }
+}
+
+#[test]
 fn a_task_endpoint_returns_its_runs_steps_asks_waits_results_and_tldr() {
     let mut setup = Setup::new("task", SERVE);
     setup.seed();
@@ -3205,6 +3281,82 @@ fn a_wrong_token_gets_401_and_a_foreign_origin_403_and_neither_changes_anything(
         body,
     );
     assert_eq!(own.0, 200, "{}", own.1);
+}
+
+const EXTENSION: &str = "chrome-extension://abcdefghijklmnopabcdefghijklmnop";
+
+#[test]
+fn an_extension_origin_writes_only_when_serve_lists_it_and_still_needs_the_token() {
+    let listed = format!("{SERVE}extension_origins = [\"{EXTENSION}\"]\n");
+    let mut setup = Setup::new("web-extension", &listed);
+    setup.asleep_on_ask();
+    let address = setup.start(&["daemon", &setup.factory()]);
+    let before = setup.ask();
+    let body = r#"{"option": "left", "revision": 2}"#;
+    let origin = format!("Origin: {EXTENSION}\r\n");
+
+    let other = post(
+        &address,
+        "/api/asks/1/answer",
+        "Origin: chrome-extension://ponmlkjihgfedcbaponmlkjihgfedcba\r\n",
+        body,
+    );
+    let tokenless = raw(
+        &address,
+        &format!(
+            "POST /api/asks/1/answer HTTP/1.1\r\nHost: {address}\r\n{origin}\
+             Content-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
+            body.len()
+        ),
+    );
+
+    assert_eq!(other.0, 403, "{}", other.1);
+    assert_eq!(tokenless.0, 401, "{}", tokenless.1);
+    assert_eq!(setup.ask(), before);
+    let listed = post(&address, "/api/asks/1/answer", &origin, body);
+    assert_eq!(listed.0, 200, "{}", listed.1);
+}
+
+#[test]
+fn an_extension_origin_cannot_write_when_serve_lists_none() {
+    let mut setup = Setup::new("web-extension-unlisted", SERVE);
+    setup.asleep_on_ask();
+    let address = setup.start(&["daemon", &setup.factory()]);
+    let before = setup.ask();
+
+    let (status, body) = post(
+        &address,
+        "/api/asks/1/answer",
+        &format!("Origin: {EXTENSION}\r\n"),
+        r#"{"option": "left", "revision": 2}"#,
+    );
+
+    assert_eq!(status, 403, "{body}");
+    assert_eq!(setup.ask(), before);
+}
+
+#[test]
+fn check_refuses_an_extension_origin_that_is_not_an_exact_extension_origin() {
+    for bad in ["https://github.com", "chrome-extension://abc/", "*"] {
+        let setup = Setup::new(
+            "extension-check",
+            "name = \"demo\"\n\n[serve]\nlisten = \"127.0.0.1:0\"\ntoken_env = \"TEST_TOKEN\"\n",
+        );
+        fs::write(
+            setup.dir.join("factory/factory.toml"),
+            format!("name = \"demo\"\n[serve]\nextension_origins = [\"{bad}\"]\n"),
+        )
+        .unwrap();
+        let output = setup.priory(&["check", &setup.factory()]);
+        assert!(!output.status.success(), "{bad} passed check");
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains(&format!(
+                "`[serve] extension_origins` {bad} is not a Chromium extension's origin"
+            )),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
 }
 
 #[test]
