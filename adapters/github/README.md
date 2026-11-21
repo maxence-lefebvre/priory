@@ -35,8 +35,9 @@ After a `git pull`, choose the reload button on the extension's card.
 3. Paste the token: the value of `PRIORY_TOKEN`, or of the variable `[serve] token_env` names.
 4. Choose Connect, and allow the browser to let the extension reach that address.
 
-The panel then reads the task. Sign out is at the bottom of the Task tab. A `401` from the daemon
-signs you out too.
+The panel then reads the task. Sign out is at the bottom of the Task tab. It forgets the token and
+everything the extension kept: each pull request's last read, an unsent answer and your quiz
+answers. A `401` from the daemon signs you out too.
 
 ## What it shows
 

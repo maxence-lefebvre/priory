@@ -4,7 +4,7 @@ import { grade, parseGuide, scoreKey } from "./lib/guide.js";
 import { live } from "./lib/live.js";
 import { parsePr } from "./lib/pr.js";
 import { address, call } from "./lib/request.js";
-import { get, put, remove } from "./lib/store.js";
+import { clear, get, put, remove } from "./lib/store.js";
 import { fixBranch, fixText, sayRoute } from "./lib/task.js";
 
 const params = new URLSearchParams(location.search);
@@ -145,9 +145,9 @@ function wakeAtSnoozeEnd() {
 
 const channel = new BroadcastChannel("priory-events");
 
-/** Forgets the token here, and with `share` in every other frame too. */
+/** Forgets the token and all it read, here and with `share` in every other frame too. */
 async function signedOut(share = true) {
-  await remove("config");
+  await clear();
   S.config = null;
   S.draft = null;
   if (share) channel.postMessage({ signedOut: true });
