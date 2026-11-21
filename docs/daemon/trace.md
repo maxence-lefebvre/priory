@@ -133,7 +133,8 @@ review	changes	1	2	50.0%
 
 A visit reaches its step when it ends there or while an active task sits at it, so outcome rates for
 a step with tasks in progress add up to under 100 %. `--since` takes an RFC 3339 instant or a duration
-such as `7 days` (the default), counted back from now. `--by lane` splits counts by the task's current
+such as `7 days` (the default), `36h` or `P2W`, counted back from now. Any other text, such as a bare
+date or a clock time, is refused. `--by lane` splits counts by the task's current
 lane and adds a leading `lane` column. It does not combine with `--cost`.
 
 `--cost` prints each task's tokens and cost instead, per step, then in total. Prices come from
@@ -203,7 +204,6 @@ Known limits:
 - Prices apply at report time, as for `report --cost`.
 - A merge counts only once its webhook or poll stored the closed event.
 - A pull request a task only subscribed to does not count: its subscription ends when it closes.
-- `--since` also takes what SQLite reads as a time, such as `12:00`, which is noon on 2000-01-01.
 
 ## Outcome labels
 
