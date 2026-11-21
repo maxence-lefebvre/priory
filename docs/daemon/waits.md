@@ -27,6 +27,9 @@ prompts.
 
 ## Waits
 
+A wait ends with the first event that fires it. To hear every event on a resource without ending
+the turn, a task subscribes instead (see `subscribe` in [tools.md](tools.md#subscribeon-and-unsubscribeon)).
+
 `wait(on)` names one condition in `on.type`. `wait(any)` names a list of them, and the task wakes
 on the first that fires. Each condition fires the wait on:
 

@@ -5065,7 +5065,16 @@ fn the_mcp_server_lists_its_tools() {
     assert_eq!(
         names,
         [
-            "result", "ask", "wait", "compact", "tldr", "report", "search", "progress"
+            "result",
+            "ask",
+            "wait",
+            "subscribe",
+            "unsubscribe",
+            "compact",
+            "tldr",
+            "report",
+            "search",
+            "progress"
         ]
     );
     let on = &replies[1]["result"]["tools"][2]["inputSchema"]["properties"]["on"];
@@ -11439,6 +11448,241 @@ fn a_pick_on_a_task_at_a_step_no_agent_runs_is_refused_and_records_nothing() {
         shown["sections"][0]["rows"][0]["pick"]["chosen"],
         serde_json::Value::Null
     );
+}
+
+fn subscribe(tool: &str) -> serde_json::Value {
+    json!({ "name": tool, "arguments": { "on": on_pull_7("pull_request") } })
+}
+
+/// Task 1, subscribed to pull request 7 through the tool, asleep on a time wait an hour away.
+fn subscribed(name: &str) -> Setup {
+    let mut setup = Setup::new(name);
+    setup.calls(&[json!([
+        subscribe("subscribe"),
+        wait(json!({ "type": "time", "until": "1 hour" }))
+    ])]);
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("runs", |rows| rows.len() == 1 && rows[0][7] == "asleep");
+    setup
+}
+
+#[test]
+fn a_comment_on_a_subscribed_pull_request_wakes_the_asleep_task() {
+    let setup = subscribed("subscribe-wake");
+    let (text, error) = reply(&setup.replies()[0]);
+    assert!(!error, "{text}");
+    assert_eq!(text, "task 1 subscribes to github:owner/repo#7");
+
+    setup.publish(&commented());
+
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 2);
+    let typed = setup.typed();
+    assert!(
+        typed[1].starts_with("github.pull_request.comment owner/repo#7 {"),
+        "{typed:?}"
+    );
+}
+
+#[test]
+fn a_comment_on_a_subscribed_pull_request_is_queued_while_the_task_runs() {
+    let mut setup = Setup::new("subscribe-running");
+    setup.calls(&[subscribe("subscribe")]);
+    setup.hold("hold-stop");
+    setup.publish(&requested(42));
+    setup.start();
+    setup.written("fake/tools.log");
+
+    setup.publish(&off_branch(commented()));
+
+    let outbox = setup.until("outbox", |rows| rows.len() == 2);
+    assert_eq!(outbox[1][3], "queued");
+    assert!(
+        outbox[1][4].starts_with("github.pull_request.comment owner/repo#7 {"),
+        "{outbox:?}"
+    );
+    setup.release("hold-stop");
+}
+
+#[test]
+fn a_comment_on_a_subscribed_pull_request_reopens_the_done_task() {
+    let mut setup = Setup::new("subscribe-done");
+    setup.calls(&[json!([subscribe("subscribe"), result("passed")])]);
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == "done")
+    });
+    std::thread::sleep(Duration::from_millis(1100));
+
+    setup.publish(&commented());
+
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 2);
+    let typed = setup.typed();
+    assert!(
+        typed[1].starts_with(
+            "Feedback reopened this done task as generation 2: ana commented on github:owner/repo#7: One more thing. u"
+        ),
+        "{typed:?}"
+    );
+}
+
+#[test]
+fn an_unsubscribed_pull_request_no_longer_wakes_the_task() {
+    let setup = subscribed("unsubscribe");
+    let output = setup.priory(&["unsubscribe", "1", "github:owner/repo#7"]);
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "task 1 unsubscribed from github:owner/repo#7\n"
+    );
+
+    setup.publish(&off_branch(commented()));
+
+    let inbox = setup.until("inbox", |rows| rows.len() == 2);
+    assert_eq!(inbox[1][4], "ignored");
+    stays_asleep_after(&setup, 1);
+}
+
+#[test]
+fn the_unsubscribe_tool_ends_the_subscription_without_ending_the_turn() {
+    let mut setup = Setup::new("unsubscribe-tool");
+    setup.calls(&[json!([
+        subscribe("subscribe"),
+        subscribe("unsubscribe"),
+        wait(json!({ "type": "time", "until": "1 hour" }))
+    ])]);
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("runs", |rows| rows.len() == 1 && rows[0][7] == "asleep");
+
+    let (text, error) = reply(&setup.replies()[1]);
+    assert!(!error, "{text}");
+    assert_eq!(text, "task 1 unsubscribed from github:owner/repo#7");
+    assert_eq!(task_json(&setup, "1")["subscriptions"], json!([]));
+}
+
+/// `message` from a branch other than the task's, which it owns apart from any subscription.
+fn off_branch(mut message: Message) -> Message {
+    message.data["head_branch"] = json!("feature");
+    message
+}
+
+fn task_json(setup: &Setup, task: &str) -> serde_json::Value {
+    let output = setup.priory(&["task", task, "--json"]);
+    assert!(output.status.success());
+    serde_json::from_slice(&output.stdout).unwrap()
+}
+
+#[test]
+fn a_subscription_owned_by_another_active_task_is_refused_naming_it() {
+    let mut setup = Setup::new("subscribe-refused");
+    setup.publish(&requested(42));
+    setup.publish(&requested(43));
+    setup.start();
+    setup.until("tasks", |rows| rows.len() == 2);
+    let subscribe = |task: &str| setup.priory(&["subscribe", task, "github:owner/repo#7"]);
+    assert!(subscribe("1").status.success());
+
+    let output = subscribe("2");
+
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(
+        String::from_utf8_lossy(&output.stderr),
+        "priory subscribe: github:owner/repo#7 belongs to task 1, not this one\n"
+    );
+    let listed = task_json(&setup, "1")["subscriptions"].clone();
+    assert_eq!(listed[0]["resource"], "github:owner/repo#7", "{listed}");
+    assert_eq!(task_json(&setup, "2")["subscriptions"], json!([]));
+}
+
+#[test]
+fn a_done_tasks_subscription_yields_to_an_active_task() {
+    let mut setup = Setup::new("subscribe-yields");
+    setup.calls(&[json!([subscribe("subscribe"), result("passed")])]);
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == "done")
+    });
+    setup.publish(&requested(43));
+    setup.until("tasks", |rows| rows.len() == 2);
+
+    let output = setup.priory(&["subscribe", "2", "github:owner/repo#07"]);
+
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(task_json(&setup, "1")["subscriptions"], json!([]));
+    assert_eq!(
+        task_json(&setup, "2")["subscriptions"][0]["resource"],
+        "github:owner/repo#7"
+    );
+    let output = setup.priory(&["unsubscribe", "2", "github:owner/repo#7"]);
+    assert!(output.status.success(), "{output:?}");
+    std::thread::sleep(Duration::from_millis(1100));
+    setup.publish(&off_branch(commented()));
+    let inbox = setup.until("inbox", |rows| rows.len() == 3);
+    assert_eq!(inbox[2][4], "ignored", "the yielded task reopens no more");
+}
+
+#[test]
+fn a_closed_pull_request_wakes_its_subscriber_and_ends_its_subscriptions() {
+    let setup = subscribed("subscribe-closed");
+
+    setup.publish(&off_branch(closed()));
+
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 2);
+    assert!(
+        setup.typed()[1].starts_with("github.pull_request.closed owner/repo#7 {"),
+        "{:?}",
+        setup.typed()
+    );
+    assert_eq!(task_json(&setup, "1")["subscriptions"], json!([]));
+}
+
+#[test]
+fn a_subscriber_hears_events_that_the_task_keyed_by_the_pull_request_takes() {
+    let setup = subscribed("subscribe-secondary");
+    setup.publish(&requested(7));
+    setup.until("tasks", |rows| rows.len() == 2);
+
+    setup.publish(&off_branch(commented()));
+
+    let inbox = setup.until("inbox", |rows| rows.len() == 3);
+    assert_eq!(inbox[2][3..5], ["2", "kept"]);
+    setup.until("outbox", |rows| {
+        rows.iter()
+            .filter(|row| row[1] == "1" && row[3] == "confirmed")
+            .count()
+            >= 2
+    });
+}
+
+#[test]
+fn subscribe_refuses_a_resource_it_cannot_name() {
+    let setup = Setup::new("subscribe-unknown");
+
+    let output = setup.priory(&["subscribe", "1", "owner/repo#7"]);
+
+    assert_eq!(output.status.code(), Some(2));
+    assert_eq!(
+        String::from_utf8_lossy(&output.stderr),
+        "priory subscribe: `owner/repo#7` is not a resource: name github:owner/name#7, linear:ENG-7 or slack:C0123:1763500000.000100\n"
+    );
+}
+
+#[test]
+fn an_open_wait_on_a_subscribed_pull_request_decides_which_events_wake_the_task() {
+    let mut setup = Setup::new("subscribe-wait");
+    let mut on = on_pull_7("checks");
+    on["head_sha"] = json!("def0000000000000000000000000000000000000");
+    setup.calls(&[json!([subscribe("subscribe"), wait(on)])]);
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("runs", |rows| rows.len() == 1 && rows[0][7] == "asleep");
+
+    setup.publish(&off_branch(check(1, 0)));
+
+    setup.until("inbox", |rows| rows.len() == 2);
+    stays_asleep_after(&setup, 1);
 }
 
 #[test]
