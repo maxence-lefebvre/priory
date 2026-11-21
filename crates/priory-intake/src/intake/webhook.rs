@@ -310,3 +310,90 @@ fn unhex(hex: &[u8]) -> Option<Vec<u8>> {
         .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).ok()?, 16).ok())
         .collect()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::intake::fuzz::json_value;
+    use proptest::prelude::*;
+
+    fn github() -> Github {
+        let trigger = serde_json::from_value(
+            json!({ "source": "github", "repo": "o/r", "on": "issues.labeled", "workflow": "w" }),
+        )
+        .unwrap();
+        Github {
+            secret: "s".to_owned(),
+            triggers: vec![("t".to_owned(), trigger)],
+            repos: BTreeSet::from(["o/r".to_owned()]),
+        }
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(512))]
+
+        #[test]
+        fn a_delivery_of_any_shape_is_observed_or_refused_without_panicking(
+            event in prop_oneof![
+                Just("issues"), Just("pull_request"), Just("pull_request_review"),
+                Just("issue_comment"), Just("pull_request_review_comment"), Just("ping"),
+            ],
+            action in prop_oneof![
+                Just("opened"), Just("labeled"), Just("closed"), Just("submitted"),
+                Just("created"), Just("deleted"),
+            ],
+            fields in proptest::collection::vec(json_value(), 8),
+            repository in prop_oneof![Just(json!({ "full_name": "o/r" })), json_value()],
+        ) {
+            let [issue, pull, review, comment, label, sender, user, extra] = <[Value; 8]>::try_from(fields).unwrap();
+            let payload = json!({
+                "action": action, "repository": repository, "issue": issue, "pull_request": pull,
+                "review": review, "comment": comment, "label": label,
+                "sender": sender, "user": user, "extra": extra,
+            });
+            let body = payload.to_string();
+            if let Ok(Some(observed)) = github().observe(event, &payload, body.as_bytes()) {
+                let _ = observed.message(&[]);
+            }
+        }
+
+        #[test]
+        fn a_valid_delivery_with_one_field_replaced_is_observed_or_refused_without_panicking(
+            event in prop_oneof![Just("pull_request"), Just("issues"), Just("pull_request_review")],
+            field in prop_oneof![
+                Just("id"), Just("number"), Just("html_url"), Just("title"), Just("created_at"),
+                Just("state"), Just("user"), Just("head"), Just("body"), Just("merged"),
+            ],
+            replacement in json_value(),
+            action in prop_oneof![Just("opened"), Just("closed"), Just("submitted"), Just("labeled")],
+        ) {
+            let node = json!({
+                "id": 7, "number": 3, "html_url": "https://github.com/o/r/pull/3", "title": "t",
+                "created_at": "2026-01-01T00:00:00Z", "updated_at": "2026-01-01T00:00:00Z",
+                "closed_at": "2026-01-01T00:00:00Z", "submitted_at": "2026-01-01T00:00:00Z",
+                "state": "open", "user": { "login": "u" }, "merged": true, "body": "b",
+                "head": { "ref": "h", "sha": "s" }, "base": { "ref": "main" },
+            });
+            let mut changed = node.clone();
+            changed[field] = replacement;
+            let payload = json!({
+                "action": action, "repository": { "full_name": "o/r" }, "sender": { "login": "u" },
+                "label": { "name": "l" }, "issue": changed, "pull_request": changed,
+                "review": changed, "comment": changed,
+            });
+            let body = payload.to_string();
+            if let Ok(Some(observed)) = github().observe(event, &payload, body.as_bytes()) {
+                let _ = observed.message(&[]);
+            }
+        }
+
+        #[test]
+        fn any_signature_text_is_unhexed_or_refused_without_panicking(
+            text in proptest::collection::vec(any::<u8>(), 0..200),
+        ) {
+            if let Some(bytes) = unhex(&text) {
+                prop_assert_eq!(hex(&bytes).into_bytes(), text.to_ascii_lowercase());
+            }
+        }
+    }
+}

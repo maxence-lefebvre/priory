@@ -651,3 +651,70 @@ pub(crate) fn id(name: &str) -> Uuid {
     );
     Uuid::new_v5(&namespace, name.as_bytes())
 }
+
+#[cfg(test)]
+pub(crate) mod fuzz {
+    use proptest::prelude::*;
+    use serde_json::{Value, json};
+
+    fn key() -> impl Strategy<Value = String> {
+        prop_oneof![
+            "[a-z_]{1,8}",
+            proptest::sample::select(vec![
+                "inverseRelations",
+                "pageInfo",
+                "hasNextPage",
+                "nodes",
+                "type",
+                "issue",
+                "state",
+                "identifier",
+                "created_at",
+                "updated_at",
+                "closed_at",
+                "submitted_at",
+                "private_metadata",
+                "html_url",
+                "id",
+                "number",
+                "title",
+                "user",
+                "login",
+                "body",
+                "labels",
+                "name",
+                "head",
+                "base",
+                "ref",
+                "sha",
+                "merged",
+                "repository",
+            ])
+            .prop_map(str::to_owned),
+        ]
+    }
+
+    /// Any JSON value, leaning on the keys, strings and numbers the mappers read.
+    pub(crate) fn json_value() -> impl Strategy<Value = Value> {
+        let leaf = prop_oneof![
+            Just(Value::Null),
+            any::<bool>().prop_map(Value::from),
+            any::<u64>().prop_map(Value::from),
+            any::<i64>().prop_map(Value::from),
+            any::<f64>().prop_map(|number| json!(number)),
+            Just(json!("2026-01-01T00:00:00Z")),
+            Just(json!("open")),
+            Just(json!("https://github.com/o/r/pull/1")),
+            "\\PC{0,40}".prop_map(Value::from),
+            proptest::collection::vec(any::<char>(), 0..400)
+                .prop_map(|chars| Value::from(chars.into_iter().collect::<String>())),
+        ];
+        leaf.prop_recursive(6, 64, 6, |inner| {
+            prop_oneof![
+                proptest::collection::vec(inner.clone(), 0..5).prop_map(Value::Array),
+                proptest::collection::vec((key(), inner), 0..5)
+                    .prop_map(|pairs| Value::Object(pairs.into_iter().collect())),
+            ]
+        })
+    }
+}

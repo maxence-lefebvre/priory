@@ -389,4 +389,64 @@ mod tests {
         }
         assert_eq!(status(address, "/fine"), "200");
     }
+
+    use proptest::prelude::*;
+
+    const VALID: &[u8] = b"POST /hook?x=1 HTTP/1.1\r\nHost: h\r\nAuthorization: Bearer t\r\nContent-Length: 4\r\n\r\nbody";
+
+    /// What a client sends: raw bytes, or a valid request cut, spliced or padded.
+    fn wire() -> impl Strategy<Value = Vec<u8>> {
+        prop_oneof![
+            proptest::collection::vec(any::<u8>(), 0..2048),
+            (
+                0..VALID.len(),
+                proptest::collection::vec(any::<u8>(), 0..64)
+            )
+                .prop_map(|(cut, junk)| [&VALID[..cut], &junk[..], &VALID[cut..]].concat()),
+            (0..VALID.len()).prop_map(|cut| VALID[..cut].to_vec()),
+            (1..20_000usize)
+                .prop_map(|n| [&b"GET /"[..], &vec![b'a'; n], b" HTTP/1.1\r\n\r\n"].concat()),
+            (1..60usize).prop_map(|n| [
+                &b"GET / HTTP/1.1\r\n"[..],
+                &b"A: b\r\n".repeat(n),
+                b"\r\n"
+            ]
+            .concat()),
+        ]
+    }
+
+    /// One server for every case: `serve` starts workers that never end.
+    static SERVER: std::sync::LazyLock<std::net::SocketAddr> = std::sync::LazyLock::new(|| {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        serve(
+            listener,
+            "t".to_owned(),
+            &["/hook"],
+            |_| false,
+            || |_: &Request| Reply::json(200, "{}".to_owned()),
+        )
+        .unwrap();
+        address
+    });
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(96))]
+
+        #[test]
+        fn any_bytes_get_a_status_but_never_a_500_and_leave_every_worker_serving(bytes in wire()) {
+            let address = *SERVER;
+            let mut stream = TcpStream::connect(address).unwrap();
+            stream.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+            let _ = stream.write_all(&bytes);
+            let _ = stream.shutdown(Shutdown::Write);
+            let mut response = Vec::new();
+            let _ = stream.read_to_end(&mut response);
+            prop_assert!(response.starts_with(b"HTTP/1.1 "), "no status line");
+            prop_assert!(!response.starts_with(b"HTTP/1.1 500"), "a panic inside Priory");
+            for _ in 0..WORKERS {
+                prop_assert_eq!(status(address, "/fine"), "200");
+            }
+        }
+    }
 }

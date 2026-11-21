@@ -19,6 +19,9 @@ AGENTS.md](AGENTS.md#verify) and fix every failure. CI runs the same checks on e
 - Give each test that starts tmux a `TmuxDir` from `crates/priory/tests/tmux_dir` as its
   `TMUX_TMPDIR`. It keeps the socket under `/tmp`, short wherever the worktree lives, and dropping
   it kills every process that inherited it, even when the test panics.
+- Cover each parser of outside text (JSON, request heads, shell commands) with a `proptest` test
+  that feeds it random and mutated input and asserts it returns or refuses without panicking.
+  `proptest` is a dev-dependency only. Keep each test to a few seconds in a debug build.
 - Write a comment only for a reason the code cannot show, in one line.
 - Before you write generic logic (parsing, validation, graphs, retries, CLI, time), search
   crates.io for a maintained crate that does it, and use it when it fits.

@@ -531,3 +531,50 @@ fn publish(bus: &dyn Log, message: &Message) -> Result<(), String> {
         .map(|_| ())
         .map_err(|error| format!("publish on {OUTPUT}: {error}"))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use proptest::prelude::*;
+
+    fn arguments() -> impl Strategy<Value = Vec<String>> {
+        let word = prop_oneof![
+            Just("--workflow".to_owned()),
+            Just("--key".to_owned()),
+            Just("--hold".to_owned()),
+            Just("--until".to_owned()),
+            Just("--after".to_owned()),
+            Just("--merge".to_owned()),
+            Just("--relates".to_owned()),
+            Just("--if-closed".to_owned()),
+            Just("--intervention".to_owned()),
+            Just("--blockers".to_owned()),
+            Just("--".to_owned()),
+            Just("99999999999999999999".to_owned()),
+            "\\PC{0,30}",
+            "[a-z./#:-]{0,3000}",
+        ];
+        proptest::collection::vec(word, 0..12)
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(512))]
+
+        #[test]
+        fn command_line_arguments_parse_or_are_refused_without_panicking(args in arguments()) {
+            let _ = parse(args.clone());
+            let _ = parse_add(args);
+        }
+
+        #[test]
+        fn urls_in_any_text_are_read_without_panicking(
+            text in prop_oneof![
+                "\\PC{0,300}",
+                "(https://|github.com|/pull/|/issues/|linear.app|/issue/|[0-9]|[ .,;:!?#()<>\\[\\]\"'`/é💥]){0,60}",
+            ],
+        ) {
+            pull_requests(&text);
+            linked(&Factory::default(), &text);
+        }
+    }
+}
