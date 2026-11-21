@@ -7,7 +7,7 @@ import { linked } from "./links.js";
 import { dossier, refusal } from "./reports.js";
 import { prStack } from "./stack.js";
 import { KINDS, edgeStyle, nodeShape, timeline, ungatedPairs } from "./flows.js";
-import { mergeSince, nextLink, progressView, sectionInView, sinceGroups } from "./desk.js";
+import { dueText, mergeSince, nextLink, progressView, sectionInView, sinceGroups } from "./desk.js";
 
 const ICONS = {
   check: '<path d="M20 6 9 17l-5-5"/>',
@@ -324,12 +324,14 @@ function itemRow(item) {
     <span class="l2 r t-${role(kind)}">${autolinked(item.what, null)}</span>${stopped ? taskActs(item.task, item.kind) : ""}</div>`;
 }
 
+const itemText = (item) => (item.kind === "todo" ? dueText(item.what, Date.now()) : item.what);
+
 // A person's to-do: its text and due time, and Done, the twin of `priory todo done`.
 function todoRow(item) {
   return html`<div class="row">
     ${tile("todo")}
     <span class="l1"><span>to-do</span><span class="age">${timeTag(item.since)}</span></span>
-    <span class="l2 r">${autolinked(item.what, null)}</span>${todoDone(item.id)}</div>`;
+    <span class="l2 r">${autolinked(itemText(item), null)}</span>${todoDone(item.id)}</div>`;
 }
 
 // `place` keeps the next thing card's button apart from the row's, so focus returns to the one tapped.
@@ -437,7 +439,7 @@ function nextCard(model) {
   if (!item) return "";
   const ask = item.kind === "ask" ? state.data.asks.find((each) => String(each.id) === String(item.id)) : null;
   const task = state.data.tasks.find((each) => each.id === item.task);
-  const text = ask ? ask.title || ask.question : ["blocked", "failed"].includes(item.kind) && task?.reason ? task.reason : item.what;
+  const text = ask ? ask.title || ask.question : ["blocked", "failed"].includes(item.kind) && task?.reason ? task.reason : itemText(item);
   const kind = ["prompt", "command"].includes(item.kind) ? "prompt" : item.kind === "report" ? "lost" : item.kind;
   const href = nextLink(item);
   const verb = ask ? "Answer…" : href?.startsWith("#") ? "See the banner" : "Open task";
@@ -512,7 +514,7 @@ function deskTable(model, selected) {
     <td>${stateWord(item.kind === "prompt" ? "prompt" : item.kind)}</td><td class="mono">${["blocked", "failed"].includes(item.kind) ? html`<a href="/tasks/${item.task}">${item.key || ""}</a>` : item.key || ""}</td><td>${item.step || ""}</td>
     <td class="q full t-${role(item.kind)}">${item.task ? prsTag({}, item.task) : ""}<span>${item.what}</span></td><td class="recw">${["blocked", "failed"].includes(item.kind) ? taskActs(item.task, item.kind) : ""}</td><td class="r">${timeTag(item.since)}</td></tr>`;
   const todoLine = (item) => html`<tr>
-    <td>${stateWord("todo")}</td><td class="mono"></td><td></td><td class="q full"><span>${item.what}</span></td><td class="recw">${todoDone(item.id)}</td><td class="r">${timeTag(item.since)}</td></tr>`;
+    <td>${stateWord("todo")}</td><td class="mono"></td><td></td><td class="q full"><span>${itemText(item)}</span></td><td class="recw">${todoDone(item.id)}</td><td class="r">${timeTag(item.since)}</td></tr>`;
   const group = (title, count) => html`<tr class="grp"><td colspan="6">${title}<span>${count}</span></td></tr>`;
   return html`<table class="tbl">
     <thead><tr><th>State</th><th>Task</th><th>Step</th><th>Waits on you</th><th>Recommends</th><th class="r">Age</th></tr></thead>

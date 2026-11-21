@@ -15,7 +15,7 @@
 | `queue` | the task's place in the queue | its band, then its reason when it has one | the task last changed state |
 | `sweep` | the script's run | its command, then `running`, or its status and output, for the open stall | it started |
 | `report` | the report's inbox sequence number | `<source>: <line>`, for an unread report | it was posted |
-| `todo` | the to-do | its text, then `, due <time>` when it has one (see To-dos) | it was added |
+| `todo` | the to-do | its text, then `, due <time>` when it has one (see To-dos). `priory desk` prints the time in UTC; the web and Herdr Desks show it in local time | it was added |
 | `retired` | the task | `its worktree was removed to free disk; it resurrects from <branch> when its wait fires` | it retired |
 | `worktree` | the worktree's path | why it stays: see Sweep | `-` |
 
@@ -35,7 +35,7 @@ waits. `priory desk` without `--json` prints neither. The ranking has six groups
 | Group | Items | `why` |
 | ----- | ----- | ----- |
 | Alarms | `blocked`, `failed`, an `uncertain` `prompt` or `command`, and an unread `intake` report: a source that fails to poll | `an alarm: work stopped and waits on a person` |
-| Asks that open a door | an ask whose answer lets an irreversible step run (its risk is `irreversible`), and an ask of a task that reviews a pull request, whose key ends in `:review:<login>` | `its answer lets an irreversible step run`, or `it reviews a pull request` |
+| Asks that open a door | an ask whose answer lets an irreversible step run (its risk is `irreversible`), and an ask of a task that reviews a pull request, whose key ends in `:review:<login>` | ``it runs `<argv[0]>` in <target>`` for an ask that runs a command (see [tools.md](tools.md#commands-an-answer-runs)), ``it lets step `<step>` run`` for another ask that approves an irreversible step, or `it reviews a pull request` |
 | Plans | another ask at a human step, such as `approve-plan` | `it approves a plan` |
 | Other asks | every other ask, such as an agent's or an outside one | `it waits on a person` |
 | To-dos | each open to-do | `a to-do of yours` |
@@ -60,6 +60,10 @@ A to-do is an item a person owns on the desk, with no task or agent attached.
 `POST /api/todos/{id}/done` are their twins (see [serve.md](../reference/serve.md#writes)). An open
 to-do shows on the desk as a `todo` row and ranks after every ask, before the rest (see The next
 thing). A to-do sends no notification.
+
+The web Desk and the Herdr Desk show a to-do's due time in the viewer's local time, with a hint:
+`due today 15:00`, `due tomorrow 09:00`, `due yesterday 09:00`, or `due Dec 1, 09:00 (in 11 days)` and
+`due Nov 17, 09:00 (3 days ago)` further out. The JSON and the CLI keep the RFC 3339 UTC time.
 
 ## Reports
 

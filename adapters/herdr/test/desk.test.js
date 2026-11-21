@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { deskModel, mergeSince, tomorrowAt } from "../mods/priory-desk/view.js";
+import { deskModel, dueText, mergeSince, tomorrowAt } from "../mods/priory-desk/view.js";
 
 process.env.TZ = "UTC";
 
@@ -94,9 +94,22 @@ test("Needs me lists the to-dos after the stopped tasks, each with Done", () => 
   const sections = model.sections("needs");
   assert.deepEqual(sections.map(({ title }) => title), ["Asks", "Stopped", "To-dos", "Later"]);
   assert.deepEqual(sections[2].rows.map((row) => [row.kind, row.age, row.text, row.recommends, row.todo, row.snooze]), [
-    ["todo", "30 min", "Renew the TLS cert, due 2026-12-01T09:00:00Z", "Done", 2, null],
+    ["todo", "30 min", "Renew the TLS cert, due Dec 1, 09:00 (in 11 days)", "Done", 2, null],
   ]);
   assert.equal(model.views[0].count, 5);
+});
+
+test("a to-do's due time reads in the panel's local time with a relative hint", () => {
+  process.env.TZ = "America/New_York";
+  try {
+    const todo = { since: "2026-11-20T11:30:00Z", kind: "todo", id: 2, task: null, key: null, step: null, lane: null, what: "Renew the TLS cert, due 2026-12-01T14:00:00Z", generation: null, snoozed_until: null, snoozed_at: null, back_early: null };
+    const model = deskModel({ ...data, desk: { ...data.desk, items: [...data.desk.items, todo] } }, { now });
+    const rows = model.sections("needs").find(({ title }) => title === "To-dos").rows;
+    assert.deepEqual(rows.map((row) => row.text), ["Renew the TLS cert, due Dec 1, 09:00 (in 11 days)"]);
+    assert.equal(dueText("Fix it, due 2026-11-21T14:00:00Z", now), "Fix it, due tomorrow 09:00");
+  } finally {
+    process.env.TZ = "UTC";
+  }
 });
 
 test("the room and intake banners, Since you looked and Up next come from the desk and the queue", () => {

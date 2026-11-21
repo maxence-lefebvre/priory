@@ -787,7 +787,8 @@ fn rank(items: &[Value]) -> Vec<Value> {
             let mut item = item.clone();
             let object = item.as_object_mut().expect("rows are objects");
             object.remove("urgency");
-            object.insert("why".to_owned(), json!(why));
+            let acts = object.remove("acts").filter(|acts| !acts.is_null());
+            object.insert("why".to_owned(), acts.unwrap_or(json!(why)));
             Some((*group, item))
         })
         .collect();
@@ -800,7 +801,40 @@ pub(crate) fn next(db: &Connection) -> rusqlite::Result<Option<Value>> {
     let mut items = rows(db, &desk_items(), [])?;
     let items = items.as_array_mut().expect("rows are an array");
     routed_to(db, items)?;
+    acts(db, items)?;
     Ok(rank(items).into_iter().next())
+}
+
+/// Gives each `ask` item `acts`: what its answer does, when it runs a command or lets an
+/// irreversible step run, or null. The command's `runs` is non-empty for an ask that runs one (see
+/// `IRREVERSIBLE`).
+fn acts(db: &Connection, items: &mut [Value]) -> rusqlite::Result<()> {
+    let mut asked = db.prepare(
+        "SELECT asks.command, (SELECT gate.lets FROM irreversible_asks AS gate
+           WHERE gate.workflow = tasks.workflow AND gate.step = asks.step AND asks.kind = 'step')
+         FROM asks LEFT JOIN tasks ON tasks.id = asks.task WHERE asks.id = ?1",
+    )?;
+    for item in items.iter_mut().filter(|item| item["kind"] == "ask") {
+        let (command, lets) = match item["id"].as_i64() {
+            Some(ask) => asked.query_row([ask], |row| Ok((row.get(0)?, row.get(1)?)))?,
+            None => (None::<String>, None::<String>),
+        };
+        item["acts"] = command
+            .and_then(|command| serde_json::from_str::<Value>(&command).ok())
+            .filter(|command| {
+                command["runs"]
+                    .as_array()
+                    .is_some_and(|runs| !runs.is_empty())
+            })
+            .and_then(|command| {
+                let program = command["argv"][0].as_str()?;
+                let target = command["target"].as_str().unwrap_or("worktree");
+                Some(json!(format!("it runs `{program}` in {target}")))
+            })
+            .or_else(|| lets.map(|step| json!(format!("it lets step `{step}` run"))))
+            .unwrap_or(Value::Null);
+    }
+    Ok(())
 }
 
 /// Gives each `ask` item the lead it is routed to, or null.
@@ -828,10 +862,12 @@ pub fn desk(db: &Connection, home: &Path, all: bool, person: &str) -> rusqlite::
         .filter(|item| !item["snoozed_until"].is_null())
         .count();
     routed_to(db, list)?;
+    acts(db, list)?;
     let ranked = rank(list);
     for item in list.iter_mut() {
         let item = item.as_object_mut().expect("rows are objects");
         item.remove("urgency");
+        item.remove("acts");
         item.remove("title");
     }
     list.retain(|item| all || item["snoozed_until"].is_null());

@@ -52,3 +52,23 @@ export function sectionInView({ tops, scrollTop, height, scrollHeight, bar }) {
   if (scrollTop + height >= scrollHeight - 1) return tops.length - 1;
   return Math.max(tops.length ? 0 : -1, tops.findLastIndex((top) => top <= scrollTop + bar));
 }
+
+const DUE = /, due (\d{4}-\d\d-\d\dT[\d:]+Z)$/;
+const localDay = (/** @type {number} */ at) => Date.UTC(new Date(at).getFullYear(), new Date(at).getMonth(), new Date(at).getDate()) / 86_400_000;
+
+/**
+ * A to-do's text with its `, due <RFC 3339 UTC>` ending in local time and a relative hint: a clock
+ * time today, tomorrow or yesterday, else a date and a count of days. Other text is returned as is.
+ * @param {string} what @param {number} now
+ */
+export function dueText(what, now) {
+  const found = DUE.exec(what);
+  if (!found) return what;
+  const at = Date.parse(found[1]);
+  const clock = new Date(at).toLocaleTimeString("en", { hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
+  const days = localDay(at) - localDay(now);
+  const near = { "-1": "yesterday", 0: "today", 1: "tomorrow" }[/** @type {"0"} */ (String(days))];
+  const day = new Date(at).toLocaleString("en", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
+  const hint = days > 0 ? `in ${days} days` : `${-days} days ago`;
+  return `${what.slice(0, found.index)}, due ${near ? `${near} ${clock}` : `${day} (${hint})`}`;
+}
