@@ -29,6 +29,23 @@ export function unroutedNote(count) {
   return `${count} ${count === 1 ? "event" : "events"} reached no task in the last 24 hours`;
 }
 
+/**
+ * What routes an owned group's next event, by its owner's state: revive a failed or dropped task,
+ * request a new one after a done task, else subscribe the active one.
+ * @param {{ state: string }} task
+ */
+export function routeAction(task) {
+  if (["failed", "dropped"].includes(task.state)) return "revive";
+  return task.state === "done" ? "request" : "subscribe";
+}
+
+/** The line for the events no task ever owned, one count per source, or "" with none. */
+export function neverOwned(other) {
+  if (!other.length) return "";
+  const counts = other.map(({ source, events }) => `${events} ${source} ${events === 1 ? "event" : "events"}`);
+  return `No task ever owned: ${counts.join(", ")}.`;
+}
+
 /** The Add sheet's text for a task that owns `resource`: a GitHub URL keys the task by it. */
 export function requestText(resource) {
   const github = /^github:([^/]+\/[^#]+)#(\d+)$/.exec(resource);

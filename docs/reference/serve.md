@@ -223,19 +223,26 @@ line as `line`, and, once read, when it was read as `read`. Both are null on a m
 
 ## Unrouted
 
-The events that reached no task and changed nothing, grouped by the first resource each names (see
-[routing.md](../daemon/routing.md#events-that-reach-no-task)). The group with the newest event comes
-first. `priory inbox --unrouted --since SEQ` keeps the events after sequence number `SEQ`.
+The events that reached no task and changed nothing (see
+[routing.md](../daemon/routing.md#events-that-reach-no-task)), as an object `unrouted` with two
+arrays. `priory inbox --unrouted --since SEQ` keeps the events after sequence number `SEQ`.
+
+`owned` groups the events whose first resource a task owned or subscribed to, in any state, one
+group per resource, the group with the newest event first:
 
 | Field | Type | Meaning |
 | ----- | ---- | ------- |
 | `resource` | string | The resource, such as `github:owner/name#7` |
-| `events` | array | Its events, newest first: `seq`, `type`, `subject`, `time` |
-| `subscribe` | string | `priory subscribe TASK <resource>`: the command that routes its next event to a task |
-| `request` | string | `priory request --workflow WORKFLOW --key <resource> TEXT`: the command that creates a task for it |
+| `task` | object | The newest task that owned it: `id`, `key`, `state`, `workflow` |
+| `events` | array | Its events, newest first: `seq`, `type`, `subject`, `time`, and `line`, the first line of its body, text or title, or null |
+| `follow_up` | string | The command that routes its next event: `priory revive ID` for a failed or dropped task, `priory request --workflow WORKFLOW --key RESOURCE 'Follow up on RESOURCE'` with the task's workflow for a done one, else `priory subscribe ID RESOURCE` |
 
-Without `--json`, `priory inbox --unrouted` prints each group as its resource and event count, one
-line per event, then the two commands.
+`other` counts the rest, the events no task ever owned, per source (the resource's prefix, such as
+`github` or `slack`), most first: `source` and `events`.
+
+Without `--json`, `priory inbox --unrouted` prints each owned group as its resource, event count
+and task, one line per event, then its follow-up, and last one line such as `No task ever owned: 2
+github events, 1 linear event.`
 
 ## Asks
 

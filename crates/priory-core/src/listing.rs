@@ -226,27 +226,71 @@ pub fn inbox(db: &Connection, since: i64) -> rusqlite::Result<Value> {
     )
 }
 
-/// The events after sequence number `since` that reached no task and changed nothing, grouped by
-/// the resource each names first, newest first, with the commands that would route the next one.
+/// The events after sequence number `since` that reached no task and changed nothing. `owned`
+/// groups them by the resource each names first, newest first, when a task owned or subscribed to
+/// it: with that task and the command that routes the next event. `other` counts the rest per
+/// source, since no task ever owned them.
 pub fn unrouted(db: &Connection, since: i64) -> rusqlite::Result<Value> {
-    let mut groups: Vec<(String, Vec<Value>)> = Vec::new();
+    let mut owned: Vec<(String, Value, Vec<Value>)> = Vec::new();
+    let mut other: Vec<(String, usize)> = Vec::new();
     for (resource, event) in unrouted_events(db, since, None)? {
-        match groups.iter_mut().find(|(named, _)| *named == resource) {
-            Some((_, events)) => events.push(event),
-            None => groups.push((resource, vec![event])),
+        if let Some((_, _, events)) = owned.iter_mut().find(|(named, ..)| *named == resource) {
+            events.push(event);
+            continue;
+        }
+        if let Some(task) = owner(db, &resource)? {
+            owned.push((resource, task, vec![event]));
+            continue;
+        }
+        let source = resource.split(':').next().unwrap_or_default().to_owned();
+        match other.iter_mut().find(|(named, _)| *named == source) {
+            Some((_, count)) => *count += 1,
+            None => other.push((source, 1)),
         }
     }
-    Ok(groups
+    other.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    let owned: Vec<Value> = owned
         .into_iter()
-        .map(|(resource, events)| {
-            json!({
-                "resource": resource,
-                "events": events,
-                "subscribe": format!("priory subscribe TASK {resource}"),
-                "request": format!("priory request --workflow WORKFLOW --key {resource} TEXT"),
-            })
+        .map(|(resource, task, events)| {
+            let follow_up = follow_up(&task, &resource);
+            json!({ "resource": resource, "task": task, "events": events, "follow_up": follow_up })
         })
-        .collect())
+        .collect();
+    let other: Vec<Value> = other
+        .into_iter()
+        .map(|(source, events)| json!({ "source": source, "events": events }))
+        .collect();
+    Ok(json!({ "unrouted": { "owned": owned, "other": other } }))
+}
+
+/// The newest task that owned or subscribed to `resource`, in any state.
+fn owner(db: &Connection, resource: &str) -> rusqlite::Result<Option<Value>> {
+    db.query_row(
+        "SELECT id, key, state, workflow FROM tasks
+         WHERE id = (SELECT max(task) FROM owned WHERE resource = ?1)",
+        [resource],
+        |row| {
+            Ok(json!({
+                "id": row.get::<_, i64>(0)?, "key": row.get::<_, String>(1)?,
+                "state": row.get::<_, String>(2)?, "workflow": row.get::<_, String>(3)?,
+            }))
+        },
+    )
+    .optional()
+}
+
+/// The command that routes `resource`'s next event, given its owner: revive a failed or dropped
+/// one, request a new task of the same workflow after a done one, else subscribe the active one.
+fn follow_up(task: &Value, resource: &str) -> String {
+    let id = &task["id"];
+    match task["state"].as_str().unwrap_or_default() {
+        "failed" | "dropped" => format!("priory revive {id}"),
+        "done" => format!(
+            "priory request --workflow {} --key {resource} 'Follow up on {resource}'",
+            task["workflow"].as_str().unwrap_or_default()
+        ),
+        _ => format!("priory subscribe {id} {resource}"),
+    }
 }
 
 /// Each unrouted event after `since`, and within `window` (from, to) when given, newest first,
@@ -278,9 +322,13 @@ fn unrouted_events(
         let Some(resource) = crate::route::resources(&message).into_iter().next() else {
             continue;
         };
+        let said = ["body", "text", "title"]
+            .iter()
+            .find_map(|field| message.data[field].as_str())
+            .and_then(|text| text.lines().find(|line| !line.trim().is_empty()));
         let event = json!({
             "seq": row.get::<_, i64>(0)?, "type": kind, "subject": subject,
-            "time": row.get::<_, String>(3)?,
+            "time": row.get::<_, String>(3)?, "line": said,
         });
         events.push((resource, event));
     }
@@ -1041,7 +1089,10 @@ pub fn desk(
         |row| row.get(0),
     )?;
     let day_ago = (now - jiff::SignedDuration::from_hours(24)).to_string();
-    let unrouted = unrouted_events(db, 0, Some((&day_ago, &now.to_string())))?.len();
+    let mut unrouted = 0;
+    for (resource, _) in unrouted_events(db, 0, Some((&day_ago, &now.to_string())))? {
+        unrouted += usize::from(owner(db, &resource)?.is_some());
+    }
     Ok(json!({
         "paused": state::pause_banner(db)?,
         "banner": stall::banner(db)?,

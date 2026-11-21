@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { handled, unroutedNote, requestText } from "./inbox.js";
+import { handled, unroutedNote, requestText, routeAction, neverOwned } from "./inbox.js";
 
 const event = (fields) => ({ seq: 4, type: "github.pull_request.comment", subject: "o/r#7", time: "2026-11-21T09:00:00Z", task: 1, outcome: "kept", prompt: null, wait: null, ...fields });
 
@@ -24,4 +24,16 @@ test("a request for a GitHub resource carries its URL, so the new task owns it",
   assert.equal(requestText("github:owner/repo#7"), "https://github.com/owner/repo/issues/7");
   assert.equal(requestText("linear:ENG-7"), "linear:ENG-7");
   assert.equal(requestText("slack:C0123:1763500000.000100"), "slack:C0123:1763500000.000100");
+});
+
+test("an owned group's action follows its owner, as priory inbox --unrouted prints it", () => {
+  assert.equal(routeAction({ state: "dropped" }), "revive");
+  assert.equal(routeAction({ state: "failed" }), "revive");
+  assert.equal(routeAction({ state: "done" }), "request");
+  assert.equal(routeAction({ state: "asleep" }), "subscribe");
+});
+
+test("events no task ever owned read as one count per source", () => {
+  assert.equal(neverOwned([]), "");
+  assert.equal(neverOwned([{ source: "github", events: 2 }, { source: "linear", events: 1 }]), "No task ever owned: 2 github events, 1 linear event.");
 });

@@ -159,6 +159,8 @@ export default class PrioryTask extends View {
           .when(Boolean(pr?.checks), (el) => el.child(div().text_size(S["type-caption"][0]).text_color(t["text-3"]).child(pr?.checks ?? "")))))
         .children(task.stack.map((pull) => line(`pull-${pull.number}`, pull.state === "merged" ? "done" : pull.state === "closed" ? "dropped" : pull.next ? "ready" : "queued",
           `#${pull.number} ${pull.branch} into ${pull.base}`, pull.next ? `${pull.state}, next to merge` : pull.state)))))
+      .when(task.inbox.length > 0, (el) => el.child(v_flex().gap(S["space-1"]).child(heading("Inbox", task.inboxTotal))
+        .children(task.inbox.map((event) => line(`event-${event.id}`, event.tile, event.text, event.note)))))
       .when(task.history.length > 0, (el) => el.child(v_flex().gap(S["space-1"]).child(heading("History", task.history.length))
         .children(task.history.map((run) => line(`run-${run.id}`, run.tile, run.text, run.when)))));
   }

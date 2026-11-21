@@ -1708,26 +1708,43 @@ fn asking_session() -> Option<String> {
 
 /// Sets a task's TL;DR by hand.
 /// Prints `priory task TASK --json`: the body `/api/tasks/TASK` returns.
-/// Prints each group of `priory inbox --unrouted`: its resource, its events and the two commands
-/// that would route its next event.
-fn print_unrouted(groups: &serde_json::Value) {
-    for group in groups.as_array().into_iter().flatten() {
-        let events = group["events"].as_array().map_or(0, Vec::len);
-        let plural = if events == 1 { "" } else { "s" };
+/// Prints `priory inbox --unrouted`: each group of a resource a task owned, with that task, its
+/// events and the command that routes the next one, then one count per source for the rest.
+fn print_unrouted(unrouted: &serde_json::Value) {
+    let events = |count: u64, what: &str| {
+        format!("{count} {what}event{}", if count == 1 { "" } else { "s" })
+    };
+    for group in unrouted["owned"].as_array().into_iter().flatten() {
+        let task = &group["task"];
         println!(
-            "{}: {events} event{plural}",
-            group["resource"].as_str().unwrap_or_default()
+            "{}: {}, task {} {}",
+            group["resource"].as_str().unwrap_or_default(),
+            events(group["events"].as_array().map_or(0, Vec::len) as u64, ""),
+            task["id"],
+            task["state"].as_str().unwrap_or_default()
         );
         for event in group["events"].as_array().into_iter().flatten() {
             println!(
-                "  {}  {}  {}",
+                "  {}  {}  {}  {}",
                 event["seq"],
                 event["type"].as_str().unwrap_or_default(),
-                event["subject"].as_str().unwrap_or("-")
+                event["subject"].as_str().unwrap_or("-"),
+                event["line"].as_str().unwrap_or("")
             );
         }
-        println!("  {}", group["subscribe"].as_str().unwrap_or_default());
-        println!("  {}", group["request"].as_str().unwrap_or_default());
+        println!("  {}", group["follow_up"].as_str().unwrap_or_default());
+    }
+    let other: Vec<String> = unrouted["other"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|source| {
+            let source_name = format!("{} ", source["source"].as_str().unwrap_or_default());
+            events(source["events"].as_u64().unwrap_or(0), &source_name)
+        })
+        .collect();
+    if !other.is_empty() {
+        println!("No task ever owned: {}.", other.join(", "));
     }
 }
 

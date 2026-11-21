@@ -184,12 +184,21 @@ An event is unrouted when its outcome is `ignored`, no task took it, and it is n
 of a task that its request created. Such an event concerned no active task, so it changed nothing.
 An event that names no resource is not listed, since no task could own it.
 
-`priory inbox --unrouted [--since SEQ]` and `/api/inbox?unrouted=1` group these events by the first
-resource each names (see [serve.md](../reference/serve.md#unrouted)). Each group prints the two
-commands that would route its next event: `priory subscribe TASK RESOURCE` gives it to an existing
-task, and `priory request --workflow WORKFLOW --key RESOURCE TEXT` creates one. The web Desk's
-Unrouted view does both from a phone: `POST /api/subscribe`, and the Add sheet. The Desk counts the
-unrouted events of the last 24 hours (see [desk.md](desk.md#unrouted-events)).
+Most unrouted events are noise: another person's pull request, a Slack message no trigger matched.
+The ones that matter are about a resource a task owned and that task has ended, such as a review on
+a done task's merged pull request. So `priory inbox --unrouted [--since SEQ]` and
+`/api/inbox?unrouted=1` split them (see [serve.md](../reference/serve.md#unrouted)):
+
+- Events whose first resource a task owned or subscribed to, in any state, are grouped by that
+  resource, with the newest such task and the command that routes the next event: `priory revive
+  ID` when the task failed or was dropped, `priory request` with the task's workflow and the
+  resource as its key when it is done, since a done task cannot be revived, and `priory subscribe
+  ID RESOURCE` when it is still active.
+- The rest, which no task ever owned, are one count per source.
+
+The web Inbox panel's Unrouted view offers the same actions from a phone: Revive, the Add sheet, or
+`POST /api/subscribe`. The Desk counts only the first kind, over the last 24 hours (see
+[desk.md](desk.md#unrouted-events)).
 
 ## What a kept message does
 

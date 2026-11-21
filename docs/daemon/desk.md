@@ -28,7 +28,8 @@ It lists only asks and prompts of active tasks, holds of held tasks and waiting 
 
 ## Unrouted events
 
-When events reached no task in the last 24 hours, `priory desk` prints one line before its rows:
+When events about a task's resource reached no task in the last 24 hours, because that task had
+ended, `priory desk` prints one line before its rows. Events no task ever owned are not counted:
 
 ```text
 3 events reached no task in the last 24 hours. See them with `priory inbox --unrouted`.

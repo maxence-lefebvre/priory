@@ -7,7 +7,7 @@ import { linked } from "./links.js";
 import { dossier, refusal } from "./reports.js";
 import { prStack } from "./stack.js";
 import { KINDS, edgeStyle, nodeShape, timeline, ungatedPairs } from "./flows.js";
-import { handled, requestText, unroutedNote } from "./inbox.js";
+import { handled, neverOwned, requestText, routeAction, unroutedNote } from "./inbox.js";
 import { actionNote, dueParts, mergeSince, nextLink, progressView, rowAction, sectionInView, sinceGroups } from "./desk.js";
 
 const ICONS = {
@@ -209,7 +209,7 @@ async function refresh() {
     state.failed = null;
     state.cached = false;
     if (current() === "costs") loadCosts();
-    if (current() === "desk" && deskView() === "unrouted") loadUnrouted();
+    if (current() === "inbox") loadUnrouted();
     // Ages read in minutes, so an unchanged state needs a new paint once a minute at most.
     if (state.data && snapshot === state.snapshot && !failed && Date.now() - state.rendered < 60000) return keep(), true;
     const before = state.data ? new Set(state.data.asks.filter((ask) => ask.state === "open").map((ask) => ask.id)) : null;
@@ -438,7 +438,7 @@ function runRow(run) {
 }
 
 // Desk
-const DESK_VIEWS = ["needs", "running", "queue", "asleep", "unrouted", "all"];
+const DESK_VIEWS = ["needs", "running", "queue", "asleep", "all"];
 // While an ask is open, the list keeps the view it was opened from.
 const listSearch = () => (selectedAsk() ? new URL(state.listUrl, location.origin).search : location.search);
 
@@ -513,7 +513,6 @@ function deskBody(wide) {
     ["running", "Running", model.running.length, current === "running"],
     ...(wide ? [["queue", "Queue", model.queue.length, current === "queue"]] : []),
     ["asleep", "Asleep", model.asleep, current === "asleep"],
-    ...(wide || current === "unrouted" ? [["unrouted", "Unrouted", null, current === "unrouted"]] : []),
     ["all", "All", wide ? model.tasks.length + olderTasks() : null, current === "all"],
   ], "/");
   const banner = [[model.banner, "hard-drive"], [model.intake, "unplug"]]
@@ -523,7 +522,6 @@ function deskBody(wide) {
   if (current === "running") rows = model.running.length ? model.running.map(runRow) : html`<p class="empty">No run is live. Runs show here while an agent works.</p>`;
   else if (current === "queue") rows = listOrEmpty(model.queue.map(taskRow), html`The queue is empty. A task waits here for its turn; see <code>priory queue</code>.`);
   else if (current === "asleep") rows = listOrEmpty(model.asleepTasks.map(asleepRow), "No task is asleep. A task sleeps here while it waits on an event.");
-  else if (current === "unrouted") rows = unroutedRows();
   else if (current === "all") rows = model.tasks.length || olderTasks() ? [...model.tasks.map(taskRow), olderRow("tasks", olderTasks(), false)] : listOrEmpty([], html`No tasks yet. Add one with the + button, or run <code>priory add</code>.`);
   else rows = needsMe(model, wide);
   return { model, views, banner, rows };
@@ -551,19 +549,32 @@ function unroutedRows() {
     queueMicrotask(loadUnrouted);
     return html`<p class="empty">Loading the unrouted events…</p>`;
   }
-  if (!view.groups.length) return html`<p class="empty">Every event reached a task. An event no task owns shows here.</p>`;
-  return view.groups.map((group) => {
+  const { owned, other } = view.groups;
+  const rest = neverOwned(other);
+  const restLine = rest ? html`<p class="meta unowned">${rest}</p>` : "";
+  if (!owned.length) return html`<p class="empty">No event of a task's resource went unrouted. An event about an ended task's pull request or issue shows here.</p>${restLine}`;
+  return [...owned.map((group) => {
+    const { task } = group;
     const busy = view.busy === group.resource ? raw('aria-disabled="true"') : "";
     const notice = view.notices.get(group.resource);
+    const action = routeAction(task);
+    const route = action === "revive" ? taskActs(task.id, task.state)
+      : action === "request" ? html`<button type="button" class="btn secondary" data-action="request-task" data-resource="${group.resource}" data-workflow="${task.workflow}">Request a task</button>`
+        : html`<button type="button" class="btn secondary" data-action="subscribe-task" data-resource="${group.resource}" data-task="${task.id}" ${busy}>Subscribe task ${task.id}</button>`;
     return html`<section class="ugroup" aria-label="${group.resource}"><p class="l1"><span class="mono">${group.resource}</span><span class="num">${group.events.length}</span></p>
-      <ol class="hist">${group.events.slice(0, 5).map((event) => html`<li>${tile("queued", "sm")}<span><b>${event.type}</b> ${event.subject || ""}</span>${timeTag(event.time, today(event.time) ? clock(event.time) : date(event.time))}</li>`)}</ol>
+      <p class="meta">${tile(task.state, "sm")}<a href="/tasks/${task.id}">task ${task.id}</a> ${task.state}, <span class="mono">${task.key}</span></p>
+      <ol class="hist">${group.events.slice(0, 5).map((event) => html`<li>${tile("queued", "sm")}<span><b>${event.type}</b> ${event.subject || ""}${event.line ? html`<span class="meta">${event.line}</span>` : ""}</span>${timeTag(event.time, today(event.time) ? clock(event.time) : date(event.time))}</li>`)}</ol>
       ${group.events.length > 5 ? html`<p class="meta">and ${group.events.length - 5} older</p>` : ""}
-      <form class="routeform" data-action="subscribe" data-resource="${group.resource}"><label class="sr" for="sub-${group.events[0].seq}">Task number</label>
-        <input id="sub-${group.events[0].seq}" name="task" inputmode="numeric" pattern="[0-9]+" autocomplete="off" placeholder="Task" required>
-        <button class="btn secondary" ${busy}>Subscribe a task</button>
-        <button type="button" class="btn secondary" data-action="request-task" data-resource="${group.resource}">Request a task</button></form>
+      <div class="routeform">${route}</div>
       ${notice ? html`<p class="note" role="status">${notice}</p>` : ""}</section>`;
-  });
+  }), restLine];
+}
+
+// The Inbox panel (DESIGN.md, Inbox): its one saved view, Unrouted, counts the events of a task's resources.
+function inboxViews() {
+  const groups = state.unrouted.groups;
+  const count = groups ? groups.owned.reduce((sum, group) => sum + group.events.length, 0) : null;
+  return savedViews([["unrouted", "Unrouted", count, true]], "/inbox");
 }
 
 // Subscribes a task to the resource, as `priory subscribe`, with the revision the page showed.
@@ -590,8 +601,9 @@ async function subscribeTask(resource, task) {
 }
 
 // The Add sheet, its text naming the resource, so the new task's key is it where Priory can tell.
-function requestTask(resource) {
+function requestTask(resource, workflow) {
   state.add.draft.text = requestText(resource);
+  if (workflow) state.add.draft.workflow = workflow;
   keepDraft();
   openAdd();
 }
@@ -614,7 +626,7 @@ function needsMe(model, wide) {
   sections.push(upNext(model), sinceYouLooked());
   if (model.asleep) sections.push(html`<div class="sec"></div><a class="row one" href="/?view=asleep">${tile("asleep")}<span>${model.asleep} tasks asleep on waits</span><span class="num">${model.asleep}</span><span class="chev">${icon("chevron-right", "s15")}</span></a>`);
   const unrouted = unroutedNote(state.data.desk.counts?.unrouted);
-  if (unrouted) sections.push(html`<a class="row one calm" href="/?view=unrouted">${tile("queued")}<span>${unrouted}</span><span class="num">${state.data.desk.counts.unrouted}</span><span class="chev">${icon("chevron-right", "s15")}</span></a>`);
+  if (unrouted) sections.push(html`<a class="row one calm" href="/inbox?view=unrouted">${tile("queued")}<span>${unrouted}</span><span class="num">${state.data.desk.counts.unrouted}</span><span class="chev">${icon("chevron-right", "s15")}</span></a>`);
   if (model.reports.length) sections.push(html`<div class="sec">Reports<span>${model.reports.length}</span></div>${model.reports.map(itemRow)}`);
   return sections;
 }
@@ -961,7 +973,7 @@ function taskSections(task) {
     const shown = task.inbox.slice(0, INBOX_SHOWN);
     const more = task.inbox.length > INBOX_SHOWN ? html`<p class="meta">Latest ${INBOX_SHOWN} of ${task.inbox.length}. <code>priory task ${task.id}</code> lists every event.</p>` : "";
     sections.push(["inbox", "Inbox", sect("inbox", "message-text", "Inbox", "newest first", html`<ol class="hist" aria-label="Events routed to this task, newest first">${shown.map((event) =>
-      html`<li>${tile(INBOX_TILES[event.prompt] || (event.outcome === "kept" ? "asleep" : "ready"), "sm")}<span><b>${event.type}</b> ${event.subject || ""}<span class="meta">${handled(event, task.id)}</span></span>${timeTag(event.time, today(event.time) ? clock(event.time) : date(event.time))}</li>`)}</ol>${more}`)]);
+      html`<li>${tile(INBOX_TILES[event.prompt] || (event.outcome === "kept" && event.task === task.id ? "asleep" : "ready"), "sm")}<span><b>${event.type}</b> ${event.subject || ""}<span class="meta">${handled(event, task.id)}</span></span>${timeTag(event.time, today(event.time) ? clock(event.time) : date(event.time))}</li>`)}</ol>${more}`)]);
   }
   if (task.runs?.length) {
     sections.push(["trace", "Trace", sect("trace", "runs", "Trace", "", html`<ol class="hist">${task.runs.map((run) => {
@@ -1892,6 +1904,9 @@ function listPanel(panel, wide) {
       <span class="cnt"><span class="n num">${n}</span><span class="w">${n === 1 ? "ask needs you" : "asks need you"}<span>${countLine(model)}</span></span></span></div>
       ${nextCard(model)}${views}${banner}<div class="scroll">${rows}</div>${wide ? keyHints() : ""}</div>`;
   }
+  if (panel === "inbox") {
+    return html`<div class="list" role="region" aria-label="Inbox"><div class="lhead"><h1>Inbox</h1></div>${inboxViews()}<div class="scroll">${unroutedRows()}</div>${wide ? keyHints() : ""}</div>`;
+  }
   if (panel === "asks") {
     const { views, rows } = asksBody(wide);
     return html`<div class="list" role="region" aria-label="Asks"><div class="lhead"><h1>Asks</h1></div>${views}<div class="scroll">${rows}</div>${wide ? keyHints() : ""}</div>`;
@@ -2007,6 +2022,8 @@ function page() {
     if (selectedAsk()) body = askDetail(selectedAsk(), false);
     else if (here === "desk") body = deskPhone();
     else if (here === "asks") body = asksPhone();
+    else if (here === "inbox") body = html`<div class="top"><h1>Inbox</h1><span class="sp"></span>${connection()}</div>
+      <div class="panel" role="region" aria-label="Inbox"><div class="scroll">${inboxViews()}${unroutedRows()}</div></div>`;
     else if (here === "more") body = morePage();
     else if (taskId) body = taskPage(taskId);
     else if (here === "reports") body = reportsPage(true);
@@ -2114,7 +2131,11 @@ document.addEventListener("click", (event) => {
   if (action === "task-act") return taskAct(target);
   if (action === "todo-done") return markDone(target);
   if (action === "row-act") return rowAct(target);
-  if (action === "request-task") return requestTask(target.dataset.resource);
+  if (action === "request-task") return requestTask(target.dataset.resource, target.dataset.workflow);
+  if (action === "subscribe-task") {
+    if (state.unrouted.busy === null) subscribeTask(target.dataset.resource, Number(target.dataset.task));
+    return;
+  }
   if (["pick", "pick-undo", "compose", "compose-cancel", "reply", "resolve", "reopen"].includes(action)) return reportAct(target);
   if (target.dataset.answer !== undefined || ["undo", "options", "write", "dismiss", "snooze", "unsnooze"].includes(action)) return act(target);
   if (action === "mode" || action === "theme") {
@@ -2173,12 +2194,6 @@ document.addEventListener("submit", (event) => {
   if (event.target.dataset.action === "remark") {
     event.preventDefault();
     return submitRemark();
-  }
-  if (event.target.dataset.action === "subscribe") {
-    event.preventDefault();
-    const task = Number(new FormData(event.target).get("task"));
-    if (Number.isInteger(task) && task > 0 && state.unrouted.busy === null) subscribeTask(event.target.dataset.resource, task);
-    return;
   }
   if (event.target.dataset.action === "say") {
     event.preventDefault();

@@ -363,9 +363,7 @@ The desk is the "Needs me" view. It lists, top to bottom:
    ask's recommendation on at most two lines. One button opens what answers it: Answer… (primary) for an ask, Open
    task (secondary) for a task's item, and See the banner for a failing intake, which scrolls to
    the intake banner. On wide screens the card is at most 440 px wide. With no `next` it hides.
-3. **Saved views**: Needs me, Running, Asleep, All on a phone; Queue and Unrouted join them on wide
-   screens. On a phone the Unrouted row below opens Unrouted, and its chip shows while it is open.
-   Unrouted shows no count: its list holds every unrouted event, not only the last day's.
+3. **Saved views**: Needs me, Running, Asleep, All on a phone; Queue joins them on wide screens.
 4. **Room banners** (R4.3): a `--warn-text` edge on `--surface`, the `hard-drive` or
    `memory-stick` icon, and the daemon's sentence: what is short, by how much, since when, and
    the waiting task. The intake banner looks the same with the `unplug` icon: which source fails
@@ -397,18 +395,8 @@ The desk is the "Needs me" view. It lists, top to bottom:
    the task page.
 10. **Unrouted**: when events reached no task in the last 24 hours, one calm row under Asleep,
    "3 events reached no task in the last 24 hours", with the `queued` tile and the count, that
-   opens the Unrouted view. It never ranks and never takes an alarm color.
+   opens the [Inbox](#inbox) panel's Unrouted view. It never ranks and never takes an alarm color.
 11. Reports waiting for review, when there are any.
-
-The **Unrouted** view lists `/api/inbox?unrouted=1`, one group per resource, newest first. A group
-shows the resource in mono with its event count, its 5 newest events as history rows (`queued`
-tile, type in bold, subject, time), and "and 3 older" past that. Under them, one row: a task number
-input, **Subscribe a task** (`.btn secondary`, `POST /api/subscribe` with the revision the page
-drew) and **Request a task** (`.btn secondary`), which opens the [Add](#add) sheet with a GitHub
-resource's URL as its text, so the new task's key is that resource. The daemon's sentence shows
-under the row, as a desk action's note does. With none: "Every event reached a task. An event no
-task owns shows here."
-
 On a phone, the **Answer capsule** floats above the tab bar: a full-width `--action` button,
 `--capsule` (54 px) tall, `--capsule-gap` above the tab bar, with `--radius-full` and
 `--shadow-float`, labelled "Answer 3 asks". It opens the detail of the ask that ranks first (see `docs/daemon/desk.md`, The next thing). A fade from
@@ -422,6 +410,23 @@ selected row.
 - A round [Add](#add) button, `--capsule` wide and tall, sits at the right of the capsule with
   `--space-2` between them. It stays where the capsule hides. It takes `--surface` with a
   `--control-line` edge and `--action-text`, so the capsule stays the one primary action.
+
+### Inbox
+
+The Inbox panel, in the rail and under More on a phone, is an [explorer list](#explorer-list) with
+one saved view, **Unrouted**, which counts the events of a task's resources it lists. It lists the
+`owned` groups of `/api/inbox?unrouted=1`, one per resource, newest first. A group shows the
+resource in mono with its event count, then its task as a caption line: state tile, "task 12"
+linking to the task page, state and key. Then its 5 newest events as history rows (`queued` tile,
+type in bold, subject, the event's first line in `--text-2` under them, time), and "and 3 older"
+past that. Under them, the one action that routes the next event, by the task's state: the task
+page's **Revive** (armed, as there) for a failed or dropped task; **Request a task** for a done
+one, which opens the [Add](#add) sheet with the task's workflow and a GitHub resource's URL as its
+text, so the new task's key is that resource; **Subscribe task 12** for an active one (`POST
+/api/subscribe` with the revision the page drew). The daemon's sentence shows under the row, as a
+desk action's note does. A last `--text-2` line counts the events no task ever owned: "No task
+ever owned: 41 github events, 6 slack events." With no owned group: "No event of a task's resource
+went unrouted. An event about an ended task's pull request or issue shows here."
 
 ### Add
 
@@ -740,7 +745,8 @@ open Priory window when there is one.
   1.5 px `--danger-text` edge and the `lock` icon.
 - **Inbox**, after the pull request: the events routed to the task, newest first, at most 20, as
   history rows. Each shows a tile for its prompt (`done` delivered, `queued` still queued, `running`
-  being typed, `prompt` unconfirmed, `dropped` withdrawn, `asleep` kept for the next run), the type
+  being typed, `prompt` unconfirmed, `dropped` withdrawn, `asleep` kept for the next run, `ready`
+  otherwise), the type
   in bold and the subject, then what it did under them in `--text-2`, worded as `priory task ID`
   prints it: "kept, still queued" or "woke, delivered as prompt, fired wait 3". Past 20, a note
   says "Latest 20 of 57. `priory task 7` lists every event."
@@ -1049,7 +1055,7 @@ stack.
 
 1. **Count** in `--type-pane-count`, as the web desk's: "2 asks need you. Oldest waits 42 min. 1
    stopped. 2 snoozed. 3 events reached no task in 24 h." The last sentence shows only when the
-   count is above zero. Herdr has no task view, so the task Inbox is web and CLI only.
+   count is above zero. The Unrouted view stays on the web page and in `priory inbox --unrouted`.
 2. **The next thing**: a card on `--surface` with the desk's `next`: an alarm or the ask that ranks
    first, why it ranks first, its recommendation, and the buttons Answer… (primary, for an ask),
    Open task, Attach and Snooze 1 h. Answer… opens the
@@ -1144,9 +1150,10 @@ center stack. Open task on the Desk and an Up next line open it.
   color, and Attach as a secondary button at the right.
 - The title in `--type-pane-question`, then the workflow, step, lane and band in `--text-2`, then
   the reason in its role's text color.
-- Asks, Pull request and History, each a caption heading with its count, then rows with an 18 px
-  tile and a `--type-small` line over a `--text-3` caption, split by hairlines. History lists the
-  last 10 runs, newest first.
+- Asks, Pull request, Inbox and History, each a caption heading with its count, then rows with an
+  18 px tile and a `--type-small` line over a `--text-3` caption, split by hairlines. Inbox lists
+  the latest 20 events routed to the task, newest first, with the web's tiles and wording and the
+  time in the caption: "kept, still queued · 11:50". History lists the last 10 runs, newest first.
 - With no task opened: "Open a task from the Desk to see it here." While it reads: "Reading task
   7…"
 - The actions, Say, Progress and the workflow grid stay on the web page for now.
