@@ -1,0 +1,36 @@
+# The nudge after a silent turn (docs/daemon/signals.md#nudge). Each case's first turn is a step
+# prompt without its ending line, so the agent ends it in text, as a silent turn does. The prompt
+# under test follows, with the step's ending line, as the daemon types it.
+doc = "../../../docs/daemon/signals.md"
+
+[[variants]]
+name = "old"
+file = "nudge.txt"
+
+[[variants]]
+name = "new"
+text = """Your last turn ended in text only, so Priory cannot tell what comes next. Pick the one tool of the priory MCP server that fits, and call it to end this turn:
+- ask, when a person must decide or answer something before the step can finish. Do not call result with a guessed outcome instead.
+- wait, when you wait on something outside you, such as a pull request's checks, a review or a time.
+- result, only when the step is finished, with one of the outcomes listed below."""
+
+[[cases]]
+name = "finished"
+before = ["""You are on the review step of task 12. Read this change and say in two sentences whether it is correct.
+
+    -fn area(w: u32, h: u32) -> u32 { w + h }
+    +fn area(w: u32, h: u32) -> u32 { w * h }"""]
+prompt = "{prompt}\nEnd this step by calling the result tool of the priory MCP server with one of these outcomes: failed, passed."
+expect = "result passed"
+
+[[cases]]
+name = "needs-a-person"
+before = ["You are on the implement step of task 14: rename the configuration key `timeout` to `deadline`. Two programs outside this repository read the key, and nothing says whether the old key must keep working as an alias, which only the product owner can decide. Before you change anything, say in three sentences what you would do."]
+prompt = "{prompt}\nEnd this step by calling the result tool of the priory MCP server with one of these outcomes: done, failed."
+expect = "ask"
+
+[[cases]]
+name = "waiting-on-checks"
+before = ["You are on the land step of task 15. You pushed the branch priory/15-fix and opened pull request 88 in acme/shop. Its checks are running and take about 20 minutes, and the step lands the pull request once they pass. Say in one sentence what remains."]
+prompt = "{prompt}\nEnd this step by calling the result tool of the priory MCP server with one of these outcomes: landed, failed."
+expect = "wait checks"

@@ -1921,7 +1921,8 @@ pub(crate) fn stop(
     Ok(None)
 }
 
-const NUDGE: &str = "Your turn ended without calling wait, ask or result of the priory MCP server. Call one of them: result to end the step, ask to put a question to a person, or wait to sleep until an event.";
+/// Measure a change to it first: `priory eval crates/priory-core/src/nudge.eval.toml`.
+const NUDGE: &str = include_str!("nudge.txt");
 
 /// Queues one nudge, ahead of any queued event, after a silent turn that Priory typed.
 fn nudge(tx: &Transaction, run: i64, task: i64) -> rusqlite::Result<()> {
@@ -1935,8 +1936,8 @@ fn nudge(tx: &Transaction, run: i64, task: i64) -> rusqlite::Result<()> {
         return Ok(());
     }
     let text = match ending {
-        Some(ending) => format!("{NUDGE}\n{ending}"),
-        None => NUDGE.to_owned(),
+        Some(ending) => format!("{}\n{ending}", NUDGE.trim_end()),
+        None => NUDGE.trim_end().to_owned(),
     };
     let id = queue_first(tx, task, &text)?;
     tx.execute("UPDATE outbox SET nudge = 1 WHERE id = ?1", [id])
