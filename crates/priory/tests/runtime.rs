@@ -20857,7 +20857,7 @@ fn an_expired_returned_or_replaced_grant_is_refused_and_each_end_is_recorded() {
 
     let expired = take_keyboard(&address);
     db.execute(
-        "UPDATE keyboard_grants SET ends = '2020-01-01T00:00:00Z'",
+        "UPDATE keyboard_grants SET ends = strftime('%Y-%m-%dT%H:%M:%SZ', 'now', '-1 second')",
         [],
     )
     .unwrap();
@@ -20971,7 +20971,7 @@ fn the_outbox_types_nothing_into_a_run_whose_keyboard_a_person_holds() {
 
 #[test]
 fn every_keys_endpoint_is_404_unless_the_terminal_types_and_behind_the_token_and_origin() {
-    let (setup, mut server, address) = Setup::typing("keys-gated");
+    let (mut setup, mut server, address) = Setup::typing("keys-gated");
     let secret = take_keyboard(&address);
     let paths = [
         ("/api/runs/1/keyboard", json!({ "revision": 0 })),
@@ -21010,19 +21010,40 @@ fn every_keys_endpoint_is_404_unless_the_terminal_types_and_behind_the_token_and
         let serve = format!("{WATCH}terminal = \"{terminal}\"\n");
         let (mut server, address) = serving(&setup, &serve, &[("TEST_TOKEN", SERVE_TOKEN)]);
         for (path, body) in &paths {
-            assert_eq!(
-                http(&address, "POST", path, "", &body.to_string()).0,
-                404,
-                "{terminal} {path}"
-            );
-            assert_eq!(
-                http(&address, "GET", path, "", "").0,
-                404,
-                "{terminal} {path}"
-            );
+            for method in ["POST", "GET", "PUT"] {
+                let body = if method == "POST" {
+                    body.to_string()
+                } else {
+                    String::new()
+                };
+                let status = http(&address, method, path, "", &body).0;
+                assert_eq!(status, 404, "{terminal} {method} {path}");
+            }
         }
         server.kill().unwrap();
         server.wait().unwrap();
+    }
+
+    // The daemon reads its own factory: no longer "type", it ends the open grant.
+    setup.crash();
+    setup.start_with(
+        Path::new(env!("CARGO_BIN_EXE_priory")),
+        &[("TEST_TOKEN", SERVE_TOKEN)],
+    );
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        let returned: Vec<_> = setup
+            .trace()
+            .into_iter()
+            .filter(|record| record["type"] == "factory.terminal.returned")
+            .map(|record| record["data"]["reason"].clone())
+            .collect();
+        if !returned.is_empty() {
+            assert_eq!(returned, [json!("terminal not \"type\"")]);
+            break;
+        }
+        assert!(Instant::now() < deadline, "the daemon kept the grant");
+        std::thread::sleep(Duration::from_millis(100));
     }
 }
 
@@ -21043,7 +21064,16 @@ fn taking_the_keyboard_records_its_label_and_no_record_or_log_holds_the_secret()
     );
     let secret = grant["secret"].as_str().unwrap();
     assert_eq!(secret.len(), 32);
-    keys(&address, secret, "r", json!({ "key": "C-c" }));
+    let pressed = keys(&address, secret, "r", json!({ "key": "C-c" }));
+    assert_eq!(pressed, (200, json!({ "outcome": "sent" })));
+    // A line serve would never build, holding typed text: the daemon refuses it without logging it.
+    let mut socket = std::os::unix::net::UnixStream::connect(setup.socket()).unwrap();
+    let malformed = json!({ "keys": { "run": 1, "hash": "h", "request": "m",
+        "input": { "text": "typed-pass-sentinel" }, "extra": 1 } });
+    std::io::Write::write_all(&mut socket, format!("{malformed}\n").as_bytes()).unwrap();
+    let mut reply = String::new();
+    std::io::Read::read_to_string(&mut socket, &mut reply).unwrap();
+    assert!(reply.contains("unreadable line"), "{reply}");
     let missing = post(
         &address,
         "/api/runs/9/keyboard",
@@ -21060,8 +21090,11 @@ fn taking_the_keyboard_records_its_label_and_no_record_or_log_holds_the_secret()
     assert_eq!(taken["data"]["grant"], json!(grant["grant"].to_string()));
     let db = fs::read(setup.dir.join("priory.db")).unwrap();
     let wal = fs::read(setup.dir.join("priory.db-wal")).unwrap_or_default();
+    let daemon_log = fs::read_to_string(setup.dir.join("daemon.log")).unwrap();
+    assert!(!daemon_log.contains("typed-pass-sentinel"), "{daemon_log}");
     let logs = [
-        fs::read_to_string(setup.dir.join("daemon.log")).unwrap(),
+        daemon_log,
+        fs::read_to_string(setup.dir.join("serve.log")).unwrap(),
         String::from_utf8_lossy(&db).into_owned(),
         String::from_utf8_lossy(&wal).into_owned(),
         setup.trace().iter().map(ToString::to_string).collect(),

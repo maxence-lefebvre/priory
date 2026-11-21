@@ -941,7 +941,11 @@ fn take(
             Ok((replied(reply), None))
         }
         Err(error) => {
-            eprintln!("priory daemon: dropped line {line:?}: {error}");
+            // Never the line: a keys line holds what a person typed, maybe a password.
+            eprintln!(
+                "priory daemon: dropped a line of {} bytes: {error}",
+                line.len()
+            );
             Ok((replied(Err(format!("unreadable line: {error}"))), None))
         }
     }

@@ -298,10 +298,13 @@ fn route(
     method: &str,
     path: &str,
 ) -> Reply {
+    let (path, query) = path.split_once('?').unwrap_or((path, ""));
+    if Typing::of(path).is_some() && served.terminal != Terminal::Type {
+        return Reply::error(404, NOT_TYPING);
+    }
     if method != "GET" {
         return Reply::error(405, "only GET is served");
     }
-    let (path, query) = path.split_once('?').unwrap_or((path, ""));
     if path == "/api/request" {
         return Reply::json(200, served.request.clone());
     }
@@ -310,9 +313,6 @@ fn route(
             Some(key) => Reply::json(200, serde_json::json!({ "key": key }).to_string()),
             None => Reply::error(503, "no key yet: start `priory daemon` once to make it"),
         };
-    }
-    if Typing::of(path).is_some() && served.terminal != Terminal::Type {
-        return Reply::error(404, NOT_TYPING);
     }
     if Write::of(path).is_some() || Typing::of(path).is_some() {
         return Reply {

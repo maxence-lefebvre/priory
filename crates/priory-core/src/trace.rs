@@ -661,7 +661,7 @@ pub(crate) fn terminal(
 ) -> rusqlite::Result<()> {
     let (task, workflow, step, key, generation, time): (i64, String, String, String, i64, String) =
         tx.query_row(
-            "SELECT tasks.id, tasks.workflow, tasks.step, tasks.key, tasks.generation, strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+            "SELECT tasks.id, tasks.workflow, runs.step, tasks.key, tasks.generation, strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
              FROM runs JOIN tasks ON tasks.id = runs.task WHERE runs.id = ?1",
             [run],
             |row| {

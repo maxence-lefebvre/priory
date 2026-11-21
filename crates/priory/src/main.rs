@@ -358,12 +358,17 @@ fn attach(args: Vec<String>) -> ExitCode {
         };
         let line = serde_json::to_string(&issued).expect("a socket line serializes");
         // tmux owns the session, so a person attaches even when nothing can record it.
-        match runtime::call(&runtime::home(), &line, runtime::REPLY) {
+        let recorded = runtime::call(&runtime::home(), &line, runtime::REPLY).and_then(|reply| {
+            serde_json::from_str::<Result<String, String>>(&reply)
+                .map_err(|_| format!("unreadable reply {reply:?}"))?
+                .map(drop)
+        });
+        match recorded {
             Err(error) if error.starts_with(runtime::NO_DAEMON) => {
                 eprintln!("priory attach: not recorded: no priory daemon listens; attaching anyway")
             }
             Err(error) => eprintln!("priory attach: not recorded: {error}"),
-            Ok(_) => {}
+            Ok(()) => {}
         }
     }
     if print {

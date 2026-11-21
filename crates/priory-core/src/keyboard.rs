@@ -188,7 +188,9 @@ pub(crate) fn give_back(
 fn open(db: &Connection, held: &Held) -> rusqlite::Result<Result<i64, String>> {
     let found: Option<(i64, Option<String>)> = db
         .query_row(
-            "SELECT id, why FROM keyboard_grants WHERE run = ?1 AND hash = ?2",
+            "SELECT id, CASE WHEN why IS NULL AND julianday(ends) <= julianday('now')
+               THEN 'expired' ELSE why END
+             FROM keyboard_grants WHERE run = ?1 AND hash = ?2",
             params![held.run, held.hash],
             |row| Ok((row.get(0)?, row.get(1)?)),
         )
@@ -269,6 +271,8 @@ pub(crate) fn keys(
         });
     let (outcome, error) = match &sent {
         Ok(()) => ("sent", None),
+        // A tmux client killed at its deadline may have sent already.
+        Err(error) if error.contains("timed out after") => ("uncertain", Some(error.as_str())),
         Err(error) => ("failed", Some(error.as_str())),
     };
     let tx = db.transaction()?;

@@ -152,9 +152,9 @@ it needs the token, passes the Origin rule and reaches the daemon on its socket.
   `400`. The daemon pastes it into the pane without pressing Enter.
 - `key` is one of `Enter`, `Escape`, `Tab`, `BTab`, `Up`, `Down`, `Left`, `Right`, `PageUp`,
   `PageDown`, `C-c`, `C-d`, `y`, `n` and `1` to `9`. Anything else gets `400`.
-- A repeated `request` gets the first outcome and sends nothing. `uncertain` means the daemon
-  stopped between storing the request and its outcome: it may have reached the pane, and it is
-  never sent again.
+- A repeated `request` gets the first outcome and sends nothing, even once the grant ended.
+  `uncertain` means the daemon stopped between storing the request and its outcome, or tmux did
+  not answer within the command timeout: it may have reached the pane, and it is never sent again.
 - A secret of an expired, returned or replaced grant gets `403`, naming why it ended. A run that
   ended gets `404`, and a stale `revision` `409`.
 

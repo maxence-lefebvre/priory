@@ -398,8 +398,8 @@ holds the text typed or the grant's secret.
 | `request`  | keys                   | yes      | The request id the page picked |
 | `input`    | keys                   | yes      | `text`, or the key's name, such as `Escape` |
 | `length`   | keys                   | no       | The text's length in characters, for `text` only |
-| `outcome`  | keys                   | yes      | `sent`, `failed`, or `uncertain` when the daemon stopped between storing the request and its outcome |
-| `error`    | keys                   | no       | Why a `failed` request failed |
+| `outcome`  | keys                   | yes      | `sent`, `failed`, or `uncertain` when the daemon stopped between storing the request and its outcome, or tmux timed out |
+| `error`    | keys                   | no       | Why a `failed` or timed out request did not send |
 | `printed`  | attach_issued          | yes      | Whether attach printed the command rather than ran it |
 
 ## Spans
