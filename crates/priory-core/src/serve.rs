@@ -1,7 +1,7 @@
 //! The HTTP server over the state: `/api` as JSON, with `web` the web view's files, and with a
 //! GitHub webhook its signed deliveries.
 
-use crate::{listing, sections, snooze, state, tools};
+use crate::{listing, push, sections, snooze, state, tools};
 use herdr_bus::Bus;
 use priory_factory::factory::{Factory, Trigger};
 use priory_intake::intake::{self, Github};
@@ -44,6 +44,24 @@ const WEB: &[(&str, &str, &[u8])] = &[
     file!("/add.js", JS, "crates/priory-core/web/add.js"),
     file!("/links.js", JS, "crates/priory-core/web/links.js"),
     file!("/reports.js", JS, "crates/priory-core/web/reports.js"),
+    file!("/sw.js", JS, "crates/priory-core/web/sw.js"),
+    file!(
+        "/manifest.webmanifest",
+        "application/manifest+json",
+        "crates/priory-core/web/manifest.webmanifest"
+    ),
+    file!("/icon-192.png", "image/png", "design/logo/icon-192.png"),
+    file!("/icon-512.png", "image/png", "design/logo/icon-512.png"),
+    file!(
+        "/icon-maskable-192.png",
+        "image/png",
+        "design/logo/icon-maskable-192.png"
+    ),
+    file!(
+        "/icon-maskable-512.png",
+        "image/png",
+        "design/logo/icon-maskable-512.png"
+    ),
     file!("/app.css", CSS, "crates/priory-core/web/app.css"),
     file!("/tokens/structure.css", CSS, "design/tokens/structure.css"),
     file!("/tokens/themes.css", CSS, "design/tokens/themes.css"),
@@ -113,8 +131,8 @@ const WEB: &[(&str, &str, &[u8])] = &[
 
 /// Agent text reaches the page, so the page runs and loads only its own files.
 const WEB_HEADERS: &str = "Content-Security-Policy: default-src 'none'; script-src 'self'; \
-    style-src 'self'; font-src 'self'; img-src 'self'; connect-src 'self'; base-uri 'none'; \
-    form-action 'none'; frame-ancestors 'none'\r\nX-Content-Type-Options: nosniff\r\n\
+    style-src 'self'; font-src 'self'; img-src 'self'; connect-src 'self'; manifest-src 'self'; \
+    worker-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'\r\nX-Content-Type-Options: nosniff\r\n\
     Referrer-Policy: no-referrer\r\n";
 
 /// Listens on `listen` and serves the state from a pool of threads, each with its own read-only
@@ -222,6 +240,12 @@ fn route(
     let (path, query) = path.split_once('?').unwrap_or((path, ""));
     if path == "/api/request" {
         return Reply::json(200, served.request.clone());
+    }
+    if path == "/api/push/key" {
+        return match push::public_key(home) {
+            Some(key) => Reply::json(200, serde_json::json!({ "key": key }).to_string()),
+            None => Reply::error(503, "no key yet: start `priory daemon` once to make it"),
+        };
     }
     if Write::of(path).is_some() {
         return Reply {
@@ -342,6 +366,8 @@ enum Write<'a> {
     Comment(sections::Remark),
     Pick,
     Act(&'a str, &'a str),
+    Subscribe,
+    Unsubscribe,
 }
 
 impl<'a> Write<'a> {
@@ -354,6 +380,8 @@ impl<'a> Write<'a> {
             "/api/reports/reply" => return Some(Write::Comment(sections::Remark::Reply)),
             "/api/reports/resolve" => return Some(Write::Comment(sections::Remark::Resolve)),
             "/api/reports/reopen" => return Some(Write::Comment(sections::Remark::Reopen)),
+            "/api/push/subscribe" => return Some(Write::Subscribe),
+            "/api/push/unsubscribe" => return Some(Write::Unsubscribe),
             _ => {}
         }
         if let Some((task, act)) = path
@@ -426,6 +454,12 @@ struct CommentBody {
     comment: Option<i64>,
     text: Option<String>,
     revision: Option<i64>,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Unsubscribe {
+    endpoint: String,
 }
 
 /// Sends a write to the daemon on its socket, as the CLI verb does; this thread never writes the
@@ -612,6 +646,18 @@ fn write_line(db: &Connection, write: &Write, body: &[u8]) -> Result<(String, Se
                 expected: body.revision,
             };
             Ok((line(&act), Sent::Task(act.task, act.expected)))
+        }
+        Write::Subscribe => {
+            let subscription: push::Subscription = serde_json::from_slice(body).map_err(bad)?;
+            let change = push::Change::Subscribe(subscription);
+            Ok((line(&push::Line { push: change }), Sent::Nothing))
+        }
+        Write::Unsubscribe => {
+            let gone: Unsubscribe = serde_json::from_slice(body).map_err(bad)?;
+            let change = push::Change::Unsubscribe {
+                endpoint: gone.endpoint,
+            };
+            Ok((line(&push::Line { push: change }), Sent::Nothing))
         }
     }
 }

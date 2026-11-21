@@ -607,6 +607,39 @@ Settings, then Appearance. It holds:
 - Each preview renders the real desk component with the theme's attributes, not a picture, so it
   can never drift from the theme.
 
+### Notifications screen
+
+Settings, then Notifications, reached from More on a phone and from the Appearance screen on wide
+screens. It turns Web Push on or off for this device. It holds:
+
+1. A screen title, "Notifications", in `--type-screen`.
+2. One sentence in `--text-2`: "Get a notification on this device when an agent asks you
+   something, or when a task is blocked or failed. It shows the ask's title and opens the ask. A
+   snoozed item sends nothing."
+3. A status note, a `role="status"` line, when there is something to say:
+
+   | Status      | Note |
+   | ----------- | ---- |
+   | on          | `check`: "On for this device." |
+   | unconfirmed | "On in this browser, but the daemon did not confirm it. Check that the daemon runs, then reload the page." |
+   | blocked     | "Notifications are blocked for this site. Allow them in the browser's site settings, then come back." |
+   | install     | iOS Safari outside the Home Screen: "On iPhone and iPad, only Priory on the Home Screen can get notifications. Tap Share, then Add to Home Screen, and open Priory from there." |
+   | insecure    | "Notifications need HTTPS. Open Priory at its https address, such as the one tailscale serve gives, or at localhost on this machine." |
+   | unsupported | "This browser cannot get notifications from a web page." |
+
+4. One button: "Turn on notifications", primary, while they are off; "Turn off notifications",
+   secondary, while they are on or unconfirmed. The permission prompt opens only from this tap,
+   as iOS requires. A failure shows a `--warn-text` alert: "Could not turn on notifications: why.
+   Check that the daemon runs, then try again."
+5. "Install Priory", secondary, only when the browser offers to install the view, with the note
+   "Installing opens Priory in its own window, so notifications reach it with no tab open."
+
+The view never asks for the permission on its own: no banner and no prompt at load.
+
+A notification's title is "Priory". Its text is the ask's title, `task <key> asks at <step>` for an
+ask without one, or `task <key> <state>` for a task that turned blocked or failed, and nothing else. Tapping it opens the ask or the task, in an
+open Priory window when there is one.
+
 ### Task row and run row
 
 - **Phone**: rows as on the desk. Line 2 is workflow and step, lane, band and age; a `blocked`,
@@ -783,6 +816,8 @@ run.
 - Sentence case for everything. No uppercase labels.
 - Plain English, short sentences, active voice, no em dashes.
 - Agent text appears as the agent wrote it, as text. Links in it show their host.
+- A notification carries one line a stranger could read on the lock screen: the ask's title, or a
+  task's key and state. Never a brief, plan, option, command or answer.
 
 ## Herdr adapter
 

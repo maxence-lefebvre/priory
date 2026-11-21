@@ -106,7 +106,23 @@ pub fn fed_within(
 /// Starts `curl` POSTing the JSON in `body` to `url`, without waiting for it. It prints the HTTP
 /// status on stdout. `curl` gives up after the command timeout, and `--disable` skips a `.curlrc`.
 pub fn post_json(url: &str, body: &Path) -> std::io::Result<std::process::Child> {
-    Command::new("curl")
+    post(url, body)
+        .args(["--header", "Content-Type: application/json"])
+        .spawn()
+}
+
+/// As `post_json`, for a Web Push request: HTTPS only, with the header lines in the file `headers`,
+/// so no credential shows in the process list.
+pub fn post_push(url: &str, headers: &Path, body: &Path) -> std::io::Result<std::process::Child> {
+    post(url, body)
+        .args(["--proto", "=https", "--header"])
+        .arg(format!("@{}", headers.display()))
+        .spawn()
+}
+
+fn post(url: &str, body: &Path) -> Command {
+    let mut command = Command::new("curl");
+    command
         .args([
             "--disable",
             "--silent",
@@ -122,17 +138,13 @@ pub fn post_json(url: &str, body: &Path) -> std::io::Result<std::process::Child>
             "--max-time",
         ])
         .arg(command_timeout().as_secs().max(1).to_string())
-        .args([
-            "--header",
-            "Content-Type: application/json",
-            "--data-binary",
-        ])
+        .arg("--data-binary")
         .arg(format!("@{}", body.display()))
         .arg(url)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
+        .stderr(Stdio::piped());
+    command
 }
 
 /// Runs `command` and returns its stdout, or an error naming it with its stderr.
