@@ -18127,10 +18127,16 @@ fn a_lost_predecessor_asks_once_per_condition_and_each_answer_moves_only_its_tas
     batch_add(&setup, &["ENG-40", "ENG-41", "ENG-42", "ENG-43"]);
     setup.start();
     let go = setup.until("asks", |rows| rows.len() == 1);
-    setup.calls(&[result("failed")]);
+    // The root that starts first is lost; the other sleeps, so it never runs out of calls.
+    let later = wait(json!({ "type": "time", "until": "1 hour" }));
+    setup.calls(&[result("failed"), later]);
     person(&setup, "answer", &[&go[0][0], "go", "--revision", "1"]);
 
-    let tasks = setup.until("tasks", |rows| rows.iter().any(|row| row[4] == "dropped"));
+    let tasks = setup.until("tasks", |rows| {
+        let roots = rows.iter().filter(|row| ["2", "3"].contains(&row[0].as_str()));
+        let states: Vec<_> = roots.map(|row| row[4].as_str()).collect();
+        states.contains(&"dropped") && states.contains(&"asleep")
+    });
     let lost = tasks.iter().find(|row| row[4] == "dropped").unwrap();
     let (lost, key) = (&lost[0], &lost[1]);
     let asks = setup.until("asks", |rows| rows.len() == 2);
