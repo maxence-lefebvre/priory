@@ -181,7 +181,15 @@ impl Github {
                 data["github_id"] = Value::Null;
                 match kind {
                     PR_LABELED => data["label"] = payload["label"]["name"].clone(),
-                    PR_CLOSED => data["merged"] = pull["merged"].clone(),
+                    PR_CLOSED => {
+                        data["merged"] = pull["merged"].clone();
+                        // GitHub names a test merge commit on an unmerged pull request too.
+                        data["merge_commit"] = match pull["merged"] == true {
+                            true => pull["merge_commit_sha"].clone(),
+                            false => Value::Null,
+                        };
+                        data["body"] = json!(pull["body"].as_str().unwrap_or_default());
+                    }
                     _ => {}
                 }
                 (kind, signed(), data)

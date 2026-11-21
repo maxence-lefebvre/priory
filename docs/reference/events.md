@@ -301,6 +301,8 @@ The pull request fields, and:
 | ----- | ---- | ------- |
 | `title` | string | The title when the intake polled |
 | `merged` | boolean or null | Whether this close merged it: it is merged and this is its last close the poll read |
+| `merge_commit` | string or null | The commit the merge made on the base branch; null unless `merged` |
+| `body` | string | The description when the intake read it; empty when it has none |
 | `actor` | string or null | Who closed it |
 | `github_id` | integer or null | GitHub's issue event id; null from a webhook |
 
@@ -320,6 +322,8 @@ The pull request fields, and:
     "base_branch": "main",
     "title": "Handle an empty project in export",
     "merged": true,
+    "merge_commit": "9c1d0e7a52b4f3e8d6a1c0b9f2e4d7a8b3c6e1f0",
+    "body": "An export of a project with no layers wrote nothing. It now writes an empty file.",
     "actor": "octocat",
     "time": "2026-11-17T17:36:14Z",
     "github_id": 36429719781,

@@ -43,6 +43,10 @@
           "description": "True when the event came from the first poll of its stream.",
           "type": "boolean"
         },
+        "body": {
+          "description": "The pull request description when the intake read it; empty when it has none.",
+          "type": "string"
+        },
         "delivery": {
           "description": "The `X-GitHub-Delivery` of the webhook delivery that reported it; absent when a poll did.\nGitHub does not sign it.",
           "type": [
@@ -68,6 +72,13 @@
         },
         "head_sha": {
           "description": "The head commit; for a check, the commit it ran on.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "merge_commit": {
+          "description": "The commit the merge made on the base branch; null unless `merged`.",
           "type": [
             "string",
             "null"
@@ -120,6 +131,8 @@
         "base_branch",
         "title",
         "merged",
+        "merge_commit",
+        "body",
         "actor",
         "github_id",
         "time",

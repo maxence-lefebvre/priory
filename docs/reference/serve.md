@@ -9,7 +9,7 @@ Each listing returns the same JSON as
 the CLI command with `--json`, with the state's `revision`, an integer, read in the same
 transaction. A listing that is an object has a `revision` field. A listing that is a list comes as
 `{"revision": N, "<name>": [...]}`, where `<name>` is `inbox` or `tasks`.
-`/api/costs` is a report rather than a listing: it has no `revision`.
+`/api/costs` and `/api/grades` are reports rather than listings: they have no `revision`.
 
 `/api/asks` and `/api/tasks` leave out the rows that closed over a week ago, and add `older`, the
 number they left out: see [Asks](#asks) and [Tasks](#tasks). `?all=1` returns every row, as the CLI
@@ -29,6 +29,7 @@ does, with every count in `older` at 0. Their rows match the CLI's JSON only wit
 | `/api/reports/latest` | `priory report show --json` | the [report](#report) written last |
 | `/api/reports/{task}` | `priory report show TASK --json` | the task's [report](#report) |
 | `/api/costs?since=WINDOW&by=SPLIT` | `priory costs --json --since WINDOW --by SPLIT` | an object: [Costs](#costs) |
+| `/api/grades?since=WINDOW` | `priory grades --json --since WINDOW` | an object: [Grades](#grades) |
 | `/api/events?since=REV` | `priory wait --since REV` | `{"revision": N}` once it differs from `REV`. See [below](#apievents) |
 | `/api/push/key` | | `{"key": "<base64url>"}`, the daemon's VAPID public key. See [Notifications](#notifications) |
 | `POST /api/asks/{id}/answer` | `priory answer ID TEXT --revision N` | `{"ok": "<what the CLI prints>"}`. See [Writes](#writes) |
@@ -56,7 +57,7 @@ or a reason, is untrusted: render it as text.
 | ---- | ---- |
 | `200` | The endpoint answered |
 | `202` | A signed webhook delivery was taken: published, or dropped on purpose |
-| `400` | The request does not parse, or its target does not start with `/`; `/api/events` lacks `since` or has a parameter out of range; `/api/desk` has a parameter other than `person`, or a broken escape; `/api/asks` has a parameter other than `band`, `risk` and `all=1`, a band the factory does not have, or a risk other than the five [below](#asks); `/api/tasks` has a parameter other than `all=1`; `/api/costs` has a parameter other than `since` and `by`, a broken escape, a `since` that cannot form a window (see [trace.md](../daemon/trace.md#costs)), or a `by` other than the five [below](#costs); a write's body is not the shape [below](#writes); for a webhook, it sends two `Content-Length`, or its payload lacks a field its event needs |
+| `400` | The request does not parse, or its target does not start with `/`; `/api/events` lacks `since` or has a parameter out of range; `/api/desk` has a parameter other than `person`, or a broken escape; `/api/asks` has a parameter other than `band`, `risk` and `all=1`, a band the factory does not have, or a risk other than the five [below](#asks); `/api/tasks` has a parameter other than `all=1`; `/api/costs` has a parameter other than `since` and `by`, a broken escape, a `since` that cannot form a window (see [trace.md](../daemon/trace.md#costs)), or a `by` other than the five [below](#costs); `/api/grades` has a parameter other than `since`, a broken escape, or a `since` that does not parse; a write's body is not the shape [below](#writes); for a webhook, it sends two `Content-Length`, or its payload lacks a field its event needs |
 | `401` | The token is missing or wrong on a path under `/api`; for a webhook, the signature is |
 | `403` | A `POST` carries an `Origin` whose host and port differ from its `Host`, such as a page on another site |
 | `404` | No such path, task, report, ask or web view file |
@@ -359,6 +360,18 @@ one of `workflow` (the default), `agent`, `model`, `machine` and `repo`. See
 | `tokens` | Every counted token: `input`, `output`, `cache_read` and `cache_write` |
 | `unpriced` | Each model with no price: `model` and its `tokens` |
 | `unknown` | The records with no `tokens`: model steps, handler calls and summarizer calls |
+
+## Grades
+
+`/api/grades` takes an optional `since`, an RFC 3339 instant or a duration such as `30 days`, and
+counts the tasks created since then; without it, every graded task. See
+[trace.md](../daemon/trace.md#grades) for what each label means.
+
+| Field | Value |
+| ----- | ----- |
+| `since` | The window's start as an instant, or null |
+| `one_shot` | Green's headline: `clean`, its `approved-clean` tasks; `outcomes`, its tasks with a final outcome; `rate`, `clean` over `outcomes`, or null with none; and `target`, `0.9` |
+| `grades` | One entry per grade, `red`, `yellow` then `green`: `grade`; `tasks`, its tasks; `outcomes`, those with a final outcome; and `labels`, an object with each of the six labels as a key, each `{"count": N, "share": S}`, where `share` is `count` over `outcomes`, or null with none |
 
 ## Views
 

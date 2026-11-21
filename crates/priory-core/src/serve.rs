@@ -1,7 +1,7 @@
 //! The HTTP server over the state: `/api` as JSON, with `web` the web view's files, and with a
 //! GitHub webhook its signed deliveries.
 
-use crate::{listing, push, report, sections, snooze, state, tools};
+use crate::{grades, listing, push, report, sections, snooze, state, tools};
 use herdr_bus::Bus;
 use priory_factory::factory::{Factory, Price, Trigger};
 use priory_intake::intake::{self, Github};
@@ -341,6 +341,7 @@ fn route(
         },
         "/api/reports/latest" => listing::revised(db, "report", |db| sections::show(db, None)),
         "/api/costs" => return costs(db, &served.prices, query),
+        "/api/grades" => return grades(db, query),
         _ => match (
             path.strip_prefix("/api/tasks/").map(str::parse),
             path.strip_prefix("/api/reports/").map(str::parse),
@@ -769,6 +770,35 @@ fn costs(db: &Connection, prices: &BTreeMap<String, Price>, query: &str) -> Repl
     };
     match report::costs(db, prices, &window, &by) {
         Ok(costs) => Reply::json(200, costs.json().to_string()),
+        Err(error) => Reply::error(500, &error),
+    }
+}
+
+/// `GET /api/grades?since=WINDOW`: what `priory grades --json` prints.
+fn grades(db: &Connection, query: &str) -> Reply {
+    let mut since = None;
+    for pair in query.split('&').filter(|pair| !pair.is_empty()) {
+        let Some(("since", value)) = pair.split_once('=') else {
+            return Reply::error(400, "grades takes since=WINDOW");
+        };
+        let Some(value) = decode(value) else {
+            return Reply::error(400, "since is not percent-encoded UTF-8");
+        };
+        since = Some(value);
+    }
+    let now = match intake::now() {
+        Ok(now) => now.to_string(),
+        Err(error) => return Reply::error(500, &error),
+    };
+    let since = match since
+        .map(|since| report::start(db, &since, &now))
+        .transpose()
+    {
+        Ok(since) => since,
+        Err(refusal) => return Reply::error(400, &refusal),
+    };
+    match grades::grades(db, since) {
+        Ok(grades) => Reply::json(200, grades.json().to_string()),
         Err(error) => Reply::error(500, &error),
     }
 }

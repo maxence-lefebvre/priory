@@ -16,12 +16,21 @@ pub(super) struct Pull {
     pub(super) head_ref_oid: String,
     pub(super) base_ref_name: String,
     pub(super) merged: bool,
+    #[serde(default)]
+    pub(super) merge_commit: Option<Oid>,
+    #[serde(default)]
+    pub(super) body: String,
     state: String,
     updated_at: String,
     reviews: Nodes<Review>,
     #[serde(default)]
     comments: Nodes<Comment>,
     commits: Nodes<Commit>,
+}
+
+#[derive(Deserialize)]
+pub(super) struct Oid {
+    pub(super) oid: String,
 }
 
 #[derive(Deserialize)]
@@ -262,7 +271,7 @@ pub(super) fn reviews_and_checks<'a>(
     (reviews, checks)
 }
 
-const PULL_FIELDS: &str = "fragment pull on PullRequest { number headRefName headRefOid baseRefName merged state \
+const PULL_FIELDS: &str = "fragment pull on PullRequest { number headRefName headRefOid baseRefName merged mergeCommit { oid } body state \
     reviews(last: 50) { nodes { databaseId state body submittedAt url author { login } } } \
     comments(last: 50) { nodes { databaseId body url createdAt author { login __typename } } } \
     updatedAt commits(last: 1) { nodes { commit { statusCheckRollup { contexts(first: 100) { totalCount nodes { \

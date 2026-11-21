@@ -438,6 +438,69 @@ pub(crate) fn reopened(
     append(tx, trace, "factory.task.reopened", &time, data)
 }
 
+/// Appends a `factory.step.labeled` record that judges `task` with `label`, once per task and label.
+/// It names the record of the step that graded the task, when one did, and its grade.
+pub(crate) fn labeled(
+    tx: &Transaction,
+    trace: &Trace,
+    task: i64,
+    label: &str,
+    evidence: &str,
+) -> rusqlite::Result<()> {
+    let known = tx
+        .query_row(
+            "SELECT 1 FROM trace WHERE type = 'factory.step.labeled'
+             AND json_extract(event, '$.data.task') = ?1 AND json_extract(event, '$.data.label') = ?2",
+            params![task.to_string(), label],
+            |_| Ok(()),
+        )
+        .optional()?;
+    if known.is_some() {
+        return Ok(());
+    }
+    let (workflow, key, generation, grade, time): (String, String, i64, Option<String>, String) =
+        tx.query_row(
+            "SELECT workflow, key, generation, grade, strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+             FROM tasks WHERE id = ?1",
+            [task],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                ))
+            },
+        )?;
+    let step_event: Option<String> = tx
+        .query_row(
+            "SELECT id FROM trace WHERE type = 'factory.step.ended'
+             AND json_extract(event, '$.data.task') = ?1
+             AND json_extract(event, '$.data.grade') IS NOT NULL ORDER BY seq DESC LIMIT 1",
+            [task.to_string()],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let mut data = json!({
+        "factory": trace.factory.name,
+        "factory_revision": trace.revision,
+        "workflow": workflow,
+        "task": task.to_string(),
+        "key": key,
+        "generation": generation,
+        "machine": trace.machine,
+        "step_event": step_event,
+        "grade": grade,
+        "label": label,
+        "evidence": evidence,
+    });
+    if let Value::Object(fields) = &mut data {
+        fields.retain(|_, value| !value.is_null());
+    }
+    append(tx, trace, "factory.step.labeled", &time, data)
+}
+
 /// The `source` of every record this factory writes on this machine.
 pub(crate) fn source(trace: &Trace) -> String {
     match &trace.machine {

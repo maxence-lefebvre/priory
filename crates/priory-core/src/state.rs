@@ -1211,6 +1211,7 @@ pub(crate) fn handle(
         ],
     )?;
     let seq = tx.last_insert_rowid();
+    crate::grades::label(&tx, trace, message)?;
     if message.kind == "linear.view.changed" {
         crate::post::report(&tx, "linear", &refiltered(&message.data))?;
     }

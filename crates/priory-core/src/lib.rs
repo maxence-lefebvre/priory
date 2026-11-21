@@ -2,6 +2,7 @@ mod command;
 pub mod daemon;
 mod deliver;
 pub mod embed;
+pub mod grades;
 mod handler;
 mod hold;
 pub mod listing;

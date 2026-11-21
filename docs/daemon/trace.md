@@ -5,7 +5,8 @@ task on, as [the trace schema](../trace-schema.md) defines it. A model step ends
 result, a human step with its answer, a code step with its action's status (the record's
 `outcome`). A run that ends otherwise, such as blocked, lost or cancelled, ends no step and appends
 no record. A repair appends `factory.task.repaired` instead (see Repair), and a reopen appends
-`factory.task.reopened` (see [routing.md](routing.md#feedback-reopens-a-done-task)). `priory report` reads only
+`factory.task.reopened` (see [routing.md](routing.md#feedback-reopens-a-done-task)). A judgement that comes later,
+such as a merge or a revert, appends `factory.step.labeled` (see Outcome labels). `priory report` reads only
 `factory.step.ended`.
 
 Records live in the `trace` table of the state file, one CloudEvents JSON object per row. R9.3 keeps
@@ -42,7 +43,6 @@ Known limits:
   turns.
 - A step using two models, such as an agent whose model changed between runs, records the last one.
   `--cost` prices all its tokens at that model's price.
-- `factory.step.labeled` is not written yet.
 - `factory_revision` names the last commit, even with uncommitted changes.
 
 ## OpenTelemetry export
@@ -192,3 +192,58 @@ Known limits:
 - A merge counts only once its webhook or poll stored the closed event.
 - A pull request a task only subscribed to does not count: its subscription ends when it closes.
 - `--since` also takes what SQLite reads as a time, such as `12:00`, which is noon on 2000-01-01.
+
+## Outcome labels
+
+The daemon appends a `factory.step.labeled` record when an event judges a task, in the transaction
+that stores the event or the answer. It names the record of the step that graded the task, when one
+did, and the task's grade. A task gets each label once.
+
+A task's pull requests are those of its stack (see [tools.md](tools.md)) and those whose head is a
+branch it owns. A pull request that only names the task's key, as a review task's does, is not its.
+A review whose author ends in `[bot]` does not count as a human review.
+
+| Label | When |
+| ----- | ---- |
+| `approved-clean` | The last open pull request of the task merged, no human review requested changes on any of them, and no head changed after a pull request's first human review |
+| `changes-requested` | A human review requested changes on one of its pull requests; or, as its last one merged, a stored event of one of them named another head than its first human review did, so a commit came after the review |
+| `approval-rejected` | A person answered one of its human steps with an option that starts with `reject`, such as `rejected` |
+| `closed-unmerged` | One of its pull requests closed without merging |
+| `red-after-merge` | A check run on the merge commit of one of its merged pull requests completed with a conclusion other than `success`, `neutral` or `skipped` |
+| `reverted` | A later pull request of the same repository merged, and its title or body names the merge commit of one of the task's, as `git revert` writes, or says `Reverts owner/name#N`, as GitHub's revert button writes |
+
+The first four are final: a task with one of them has an outcome its grade can be compared with.
+`red-after-merge` and `reverted` can come later, on top of `approved-clean`.
+
+Known limits:
+
+- The intake reads check runs only on pull requests' head commits, so it does not see a check on a
+  merge commit on the default branch yet, and `red-after-merge` comes only from a merge commit that
+  is also a pull request's head.
+- A head change counts only when an event of the pull request stored after the review names the
+  new head, such as a check run or the close.
+- A task whose pull request closed unmerged and whose next one merged clean has both
+  `closed-unmerged` and `approved-clean`.
+
+## Grades
+
+`priory grades [--since <window>] [--json]` compares each grade with its tasks' outcome labels. It
+counts the tasks with a grade, created since `--since`, which takes what `report --since` takes, or
+every graded task without it. A task counts under its grade now.
+
+```
+green one-shot: 50.0% (1 of 2), target 90%
+
+grade	tasks	outcomes	approved-clean	changes-requested	approval-rejected	closed-unmerged	red-after-merge	reverted
+red	0	0	0 (-)	0 (-)	0 (-)	0 (-)	0 (-)	0 (-)
+yellow	1	1	1 (100.0%)	0 (0.0%)	0 (0.0%)	0 (0.0%)	0 (0.0%)	0 (0.0%)
+green	2	2	1 (50.0%)	1 (50.0%)	0 (0.0%)	0 (0.0%)	0 (0.0%)	0 (0.0%)
+```
+
+The headline is green's one-shot rate: its `approved-clean` tasks over its tasks with a final
+outcome, against the 90 % target. `outcomes` counts the tasks with a final outcome, and each label's
+share is its count over them; `-` when there are none. A task still waiting for its pull request's
+first review has no outcome yet.
+
+`--json` prints one object, which `GET /api/grades` also answers (see
+[the serve reference](../reference/serve.md#grades)).

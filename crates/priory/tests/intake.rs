@@ -866,6 +866,9 @@ fn a_labeled_pull_request_requests_a_task_only_for_a_matching_label() {
 #[test]
 fn a_merged_pull_request_publishes_closed_with_merged() {
     let setup = Setup::baseline("pr-merged");
+    let mut merged = pull(43, true, json!([]), json!([]));
+    merged["mergeCommit"] = json!({ "oid": "def456" });
+    merged["body"] = json!("Reverts owner/repo#7");
     setup.answer(&[
         (
             EVENTS_PATH,
@@ -874,7 +877,7 @@ fn a_merged_pull_request_publishes_closed_with_merged() {
                 pull_event(102, 43, "merged", None),
             ]),
         ),
-        (PULLS, pulls(&[pull(43, true, json!([]), json!([]))])),
+        (PULLS, pulls(&[merged])),
     ]);
 
     succeeded(&setup.intake());
@@ -890,6 +893,10 @@ fn a_merged_pull_request_publishes_closed_with_merged() {
             &data["github_id"]
         ),
         (&json!(43), &json!(true), &json!("max"), &json!(103))
+    );
+    assert_eq!(
+        (&data["merge_commit"], &data["body"]),
+        (&json!("def456"), &json!("Reverts owner/repo#7"))
     );
 }
 
