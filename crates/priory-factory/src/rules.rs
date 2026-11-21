@@ -82,6 +82,31 @@ pub fn check(factory: &Factory) -> Vec<Problem> {
         {
             problems.push(problem(settings, settings.lines.field("links"), refused));
         }
+        let shortcut = settings
+            .value
+            .slack
+            .as_ref()
+            .and_then(|slack| slack.shortcut.as_ref());
+        if let Some(shortcut) = shortcut {
+            let line = settings.lines.field("slack");
+            if shortcut.users.is_empty() {
+                let message = "`[slack.shortcut] users` is empty, so nobody could use the shortcut";
+                problems.push(problem(settings, line, message.to_owned()));
+            }
+            let slack_id = |user: &String| {
+                user.len() > 1
+                    && user.starts_with(['U', 'W'])
+                    && user
+                        .chars()
+                        .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit())
+            };
+            for user in shortcut.users.iter().filter(|user| !slack_id(user)) {
+                let message = format!(
+                    "`[slack.shortcut] users` `{user}` is not a Slack user id such as U0123ABCD"
+                );
+                problems.push(problem(settings, line, message));
+            }
+        }
         if let Some(request) = &settings.value.request {
             let line = settings.lines.field("request");
             if !factory.workflows.contains_key(&request.workflow) {

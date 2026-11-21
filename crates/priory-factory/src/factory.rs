@@ -53,6 +53,7 @@ pub struct Settings {
     pub telemetry: Option<Telemetry>,
     pub serve: Option<Serve>,
     pub webhooks: Option<Webhooks>,
+    pub slack: Option<Slack>,
     #[serde(default)]
     pub asks: Asks,
     pub request: Option<RequestDefaults>,
@@ -224,6 +225,29 @@ pub struct GithubWebhook {
     /// The environment variable that holds the webhook's secret, never the secret itself.
     #[serde(default = "secret_env")]
     pub secret_env: String,
+}
+
+/// Slack features beyond its triggers.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct Slack {
+    pub shortcut: Option<SlackShortcut>,
+}
+
+/// The "Queue in Priory" message shortcut, which the intake receives over Slack's Socket Mode.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SlackShortcut {
+    /// The environment variable that holds the app-level token (`xapp-`), never the token itself.
+    #[serde(default = "app_token_env")]
+    pub token_env: String,
+    /// The Slack user ids, such as `U0123ABCD`, allowed to queue a task; the shortcut refuses
+    /// everyone else.
+    pub users: Vec<String>,
+}
+
+fn app_token_env() -> String {
+    "SLACK_APP_TOKEN".to_owned()
 }
 
 fn secret_env() -> String {
@@ -1162,6 +1186,17 @@ impl Factory {
             .webhooks
             .as_ref()?
             .github
+            .as_ref()
+    }
+
+    /// The Slack message shortcut's settings; none takes no shortcut.
+    pub fn slack_shortcut(&self) -> Option<&SlackShortcut> {
+        self.settings
+            .as_ref()?
+            .value
+            .slack
+            .as_ref()?
+            .shortcut
             .as_ref()
     }
 

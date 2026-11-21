@@ -3,7 +3,7 @@
 The HTTP server's endpoints and the JSON they return. [serve.md](../daemon/serve.md) explains where
 the server runs, its token and its limits.
 
-Every endpoint takes `GET`, except the eight [writes](#writes) and `POST /hooks/github`, which take
+Every endpoint takes `GET`, except the [writes](#writes) and `POST /hooks/github`, which take
 `POST`. Each one under `/api` needs `Authorization: Bearer <token>`; the web view's files do not.
 Each listing returns the same JSON as
 the CLI command with `--json`, with the state's `revision`, an integer, read in the same
@@ -36,7 +36,8 @@ does, with every count in `older` at 0. Their rows match the CLI's JSON only wit
 | `POST /api/tasks/{id}/revive` | `priory revive ID [--step STEP]` | as above |
 | `POST /api/tasks/{id}/cancel` | `priory cancel ID [--expected N]` | as above |
 | `POST /api/tasks/{id}/say` | `priory say ID TEXT` | as above |
-| `POST /api/reports/comment` | `priory report comment ROW --expected N TEXT` | `{"ok": "<what the CLI prints>"}` |
+| `POST /api/reports/pick` | `priory report pick PICK OPTION --expected N` | `{"ok": "<what the CLI prints>"}` |
+| `POST /api/reports/comment` | `priory report comment ROW --expected N TEXT` | as above |
 | `POST /api/reports/reply` | `priory report reply COMMENT TEXT` | as above |
 | `POST /api/reports/resolve` | `priory report resolve COMMENT` | as above |
 | `POST /api/reports/reopen` | `priory report reopen COMMENT` | as above |
@@ -58,7 +59,7 @@ or a reason, is untrusted: render it as text.
 | `404` | No such path, task, report, ask or web view file |
 | `405` | `POST` on a path that reads, or `GET` on a write. The `Allow` header names the method |
 | `408` | The request sent no byte within 1 second, or took over 5 seconds in all |
-| `409` | A write names an ask whose revision moved or that closed. The body adds the ask as `/api/asks` lists it. Or `/api/request` repeats a text already sent for the same linked issue. Or a cancel's `revision` is no longer the state's |
+| `409` | A write names an ask whose revision moved or that closed. The body adds the ask as `/api/asks` lists it. Or `/api/request` repeats a text already sent for the same linked issue. Or a cancel's `revision` is no longer the state's. Or a pick's report moved past its `revision`, or another choice took the pick |
 | `411` | A `POST` has no `Content-Length`, or uses `Transfer-Encoding` |
 | `413` | A `GET` has a body; a write's body is over 16 KiB; a webhook's is over 1 MiB |
 | `415` | A write's `Content-Type` is not `application/json` |
@@ -100,6 +101,7 @@ application/json` and a JSON body of at most 16 KiB with exactly the fields belo
 | `POST /api/tasks/{id}/revive` | optionally `step`, a string: the step to restart at, as `--step` |
 | `POST /api/tasks/{id}/cancel` | optionally `revision`, an integer: the state's revision the client showed, as `--expected`. A newer state gets `409` |
 | `POST /api/tasks/{id}/say` | `text`, a string: what the task's agent hears |
+| `POST /api/reports/pick` | `pick`, the pick's id, `option`, one of its options, and `revision`, the report's revision the client showed |
 | `POST /api/reports/comment` | `row`, the row's id, `text`, a string, and `revision`, the report's revision the client showed. A comment verb takes `text` only with `comment` and `reply`, and `revision` only with `comment` |
 | `POST /api/reports/reply` | `comment`, an integer, and `text`, a string |
 | `POST /api/reports/resolve`, `POST /api/reports/reopen` | `comment`, an integer |
@@ -118,9 +120,9 @@ curl -X POST http://127.0.0.1:7340/api/asks/42/answer -H "Authorization: Bearer 
 | `200` `{"ok": "ask 42 answered"}` | The daemon applied it |
 | `200` `{"key": "cli:2026-11-20-1", "id": 7}` | For `/api/request`: the daemon published the request and task `id` holds `key`. `id` is `null` when no task took the key |
 | `409` `{"error", "ask"}` | The ask's revision is no longer the one sent, or it was answered, dismissed or withdrawn. `ask` is its current state |
-| `409` `{"error"}` | A cancel's `revision` is no longer the state's |
+| `409` `{"error"}` | A cancel's `revision` is no longer the state's. Or a pick's report is at another revision than the one sent, or the pick already has a choice: read the report again |
 | `409` `{"error", "key", "id"}` | For `/api/request`: the same text already went to `key`, so nothing was added. `id` is the active task that holds `key`, or `null` |
-| `404`, `422` `{"error"}` | The ask or task is gone, or the daemon refused for another reason, such as a resume of a task that is not blocked, a say to a task with no run yet, or a comment on a stale report revision. `error` is the CLI's sentence |
+| `404`, `422` `{"error"}` | The ask, task or pick is gone, or the daemon refused for another reason, such as a resume of a task that is not blocked, a say to a task with no run yet, or a comment on a stale report revision. `error` is the CLI's sentence |
 | `503` `{"error"}` | No daemon listens on the socket, so nothing was sent. Reads keep working |
 | `504` `{"error"}` | The daemon took the line but did not reply within 10 seconds. It may have applied it: read the state before you retry |
 
@@ -358,7 +360,7 @@ With `web = true`, the server sends these without the token:
 
 | Path | Type |
 | ---- | ---- |
-| `/boot.js`, `/app.js`, `/asks.js`, `/links.js` | `text/javascript; charset=utf-8` |
+| `/boot.js`, `/app.js`, `/asks.js`, `/add.js`, `/links.js`, `/reports.js` | `text/javascript; charset=utf-8` |
 | `/app.css`, `/tokens/structure.css`, `/tokens/themes.css` | `text/css; charset=utf-8` |
 | `/fonts/<file>.woff2` | `font/woff2` |
 | `/favicon.ico`, `/favicon.svg`, `/apple-touch-icon.png` | the image's type |

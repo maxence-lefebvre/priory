@@ -19,6 +19,7 @@ Schema: [`config/factory.json`](../schemas/config/factory.json).
 | `telemetry` | table | no | no export | Where trace records go. See [`[telemetry]`](#telemetry) | |
 | `serve` | table | no | nothing listens | The HTTP server over the factory's state. See [`[serve]`](#serve) | |
 | `webhooks` | table | no | no webhook is taken | The signed webhooks the server takes. Needs `[serve]`. See [`[webhooks.github]`](#webhooksgithub) | |
+| `slack` | table | no | no Slack shortcut | The Slack message shortcut. See [`[slack.shortcut]`](#slackshortcut) | |
 | `asks` | table | no | answers are only stored | What happens to the answer of an ask from outside Priory. See [`[asks]`](#asks) | |
 | `links` | table of strings | no | the built-in `#n` link | Autolinks, each a regex and a URL template. See [`[links]`](#links) | |
 | `request` | table | no | `priory add` needs `--workflow` | The defaults of `priory add` and `POST /api/request`. See [`[request]`](#request) | |
@@ -90,6 +91,18 @@ for the endpoint. With this table, the server takes GitHub deliveries at `POST /
 
 `priory serve` and `priory daemon` refuse to start while that variable is unset or empty.
 
+## `[slack.shortcut]`
+
+See [slack.md](../intake/slack.md#message-shortcut) for what the shortcut does and how to set up
+its Slack app. With this table, `priory intake` holds a Socket Mode connection to Slack.
+
+| Key | Type | Required | Default | Meaning | Example |
+| --- | ---- | -------- | ------- | ------- | ------- |
+| `token_env` | string | no | `"SLACK_APP_TOKEN"` | The environment variable that holds the app-level token (`xapp-`). Never the token itself | `"PRIORY_SLACK_APP_TOKEN"` |
+| `users` | array of strings | yes | | The Slack user ids allowed to queue a task. Slack's profile menu shows yours under "Copy member ID" | `["U0123ABCD"]` |
+
+`priory intake` refuses to start while that variable or `SLACK_BOT_TOKEN` is unset or empty.
+
 ## `[asks]`
 
 See [asks.md](../daemon/asks.md) for when the daemon runs the `deliver` command and how it retries,
@@ -120,7 +133,7 @@ text Priory stores never changes.
 | Replacing a built-in link | An entry with the built-in link's exact regex replaces it |
 | Order | The factory's entries in file order, then each built-in link no entry replaced. Where two regexes match, the match that starts first wins, then the rule listed first |
 | Linear | No source names a Linear workspace, so Linear keys get no built-in link. Add the first line of the example above, with your workspace's name in place of `acme`. It links keys such as `ENG-123` |
-| Where links show | The web view's ask (its question and its text), its task page (its title, reason, brief and plan), its desk rows, reports included, and its task rows. The [Herdr adapter](../adapters/herdr.md)'s panels link the same text. `priory links --json` and `GET /api/links` list the rules. CLI text output stays plain |
+| Where links show | The web view's ask (its question and its text), its task page (its title, reason, brief and plan), its desk rows, reports included, its task rows, and the keys and text of its Reports panel's rows. The [Herdr adapter](../adapters/herdr.md)'s panels link the same text. `priory links --json` and `GET /api/links` list the rules. CLI text output stays plain |
 
 The web view runs each regex as a JavaScript regex with the `u` flag. A regex that JavaScript
 refuses, such as one with an inline flag like `(?i)`, links nothing there; `priory check` does not
@@ -201,6 +214,8 @@ band = "today"                                 # its band without --band
 | `` `[sweep] repo` needs to be `owner/name` `` | `[sweep] repo` is not a GitHub `owner/name`, such as a path or a name of `..` |
 | `` `[serve] listen` <address> is beyond this machine: set `public = true` to serve it `` | `listen` is not a loopback address and `public` is not set |
 | `` `[webhooks]` needs a `[serve]` table to listen on `` | `[webhooks]` is set without `[serve]` |
+| `` `[slack.shortcut] users` is empty, so nobody could use the shortcut `` | `users = []` |
+| `` `[slack.shortcut] users` `<id>` is not a Slack user id such as U0123ABCD `` | A `users` entry that is not `U` or `W` then capital letters and digits, such as a display name |
 | `` `[links]` `<regex>` is not a regex: <reason> `` | A `[links]` key the regex crate refuses |
 | `` `[links]` `<regex>` names group $<n>, but the regex has <m> groups `` | A template names a group past the regex's last one |
 | `` `[links]` `<regex>` links to `<url>`: a link starts with `https://` `` | A template that is not an `https://` URL |
