@@ -481,6 +481,8 @@ pub struct Launch<'a> {
     pub instructions: &'a str,
     /// The plugin folder that holds the factory's skills, for a harness that loads plugins.
     pub plugin: Option<&'a Path>,
+    /// The folder that holds the factory's memories, which the run reads outside its worktree.
+    pub memories: Option<&'a Path>,
     /// The run's first prompt, passed as the harness's last argument after `--` rather than pasted.
     pub prompt: Option<&'a str>,
     /// The agent's Claude Code `permissions` settings, merged into Priory's own.
@@ -536,6 +538,9 @@ impl Harness for ClaudeCode {
         }
         if let Some(plugin) = launch.plugin {
             args.extend(["--plugin-dir".to_owned(), plugin.display().to_string()]);
+        }
+        if let Some(memories) = launch.memories {
+            args.extend(["--add-dir".to_owned(), memories.display().to_string()]);
         }
         if let Some((file, _)) = self.file(launch) {
             args.extend([
@@ -813,12 +818,18 @@ pub fn launch(harness: &dyn Harness, launch: &Launch) -> Result<(), NotStarted> 
 }
 
 /// Writes `files`, by their paths inside the plugin, into `<dir>/plugin` unless that folder exists,
-/// and returns it. The files go to a staging folder renamed into place, so a crash never leaves a
-/// half-written plugin for a later run.
+/// and returns it.
 pub fn plugin(dir: &Path, files: &[(PathBuf, &[u8])]) -> Result<PathBuf, String> {
-    let plugin = dir.join("plugin");
-    if plugin.is_dir() {
-        return Ok(plugin);
+    write_once(dir, "plugin", files)
+}
+
+/// Writes `files`, by their paths inside `folder`, into `<dir>/<folder>` unless that folder exists,
+/// and returns it. The files go to a staging folder renamed into place, so a crash never leaves a
+/// half-written snapshot for a later run.
+pub fn write_once(dir: &Path, folder: &str, files: &[(PathBuf, &[u8])]) -> Result<PathBuf, String> {
+    let target = dir.join(folder);
+    if target.is_dir() {
+        return Ok(target);
     }
     let name = dir
         .file_name()
@@ -832,16 +843,16 @@ pub fn plugin(dir: &Path, files: &[(PathBuf, &[u8])]) -> Result<PathBuf, String>
     let written = files
         .iter()
         .try_for_each(|(path, bytes)| {
-            let file = staging.join("plugin").join(path);
+            let file = staging.join(folder).join(path);
             fs::create_dir_all(file.parent().expect("the file has a parent"))?;
             fs::write(file, bytes)
         })
         .and_then(|()| fs::rename(&staging, dir));
     let _ = fs::remove_dir_all(&staging);
     match written {
-        Ok(()) => Ok(plugin),
-        Err(_) if plugin.is_dir() => Ok(plugin),
-        Err(error) => Err(format!("{}: {error}", plugin.display())),
+        Ok(()) => Ok(target),
+        Err(_) if target.is_dir() => Ok(target),
+        Err(error) => Err(format!("{}: {error}", target.display())),
     }
 }
 
