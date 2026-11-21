@@ -352,6 +352,56 @@ the gate ran, and `time` is when it ended.
 | `exit`        | yes      | The gate's exit code; `-1` when a signal killed it               |
 | `duration_ms` | yes      | How long the gate ran                                            |
 
+## `factory.terminal.taken`, `factory.terminal.returned`, `factory.terminal.keys` and `factory.terminal.attach_issued`
+
+A person took a run's keyboard, a grant of it ended, a text or key went to its pane under one, or
+`priory attach` issued a command that can type (see
+[A run's keyboard](daemon/serve.md#a-runs-keyboard) and
+[sessions.md](daemon/sessions.md#attaching-to-a-run)). Each shares `factory`, `factory_revision`,
+`workflow`, `task`, `key`, `generation`, `step` and `machine` with `factory.step.ended`. No record
+holds the text typed or the grant's secret.
+
+```json
+{
+  "specversion": "1.0",
+  "id": "0196f1d6-0000-7000-8000-000000000009",
+  "source": "factory://example/xps13",
+  "type": "factory.terminal.keys",
+  "time": "2026-11-21T10:05:02Z",
+  "datacontenttype": "application/json",
+  "data": {
+    "factory": "example",
+    "factory_revision": "999daf0",
+    "workflow": "implement",
+    "task": "0196f1b0-0000-7000-8000-000000000001",
+    "run": "0196f1b0-0000-7000-8000-000000000002",
+    "key": "github:example/app#42",
+    "generation": 1,
+    "step": "implement",
+    "machine": "xps13",
+    "grant": "3",
+    "request": "r7",
+    "input": "text",
+    "length": 12,
+    "outcome": "sent"
+  }
+}
+```
+
+| Field      | Record                 | Required | Meaning |
+| ---------- | ---------------------- | -------- | ------- |
+| `run`      | all                    | yes      | The run whose pane it concerns |
+| `grant`    | taken, returned, keys  | yes      | The grant's public id |
+| `label`    | taken                  | yes      | The first 64 bytes of the taking page's `User-Agent`. Anyone can set it |
+| `ends`     | taken                  | yes      | When the grant ends unless something ends it first |
+| `reason`   | returned               | yes      | `expired`, `returned`, `replaced`, `run ended` or `terminal not "type"` |
+| `request`  | keys                   | yes      | The request id the page picked |
+| `input`    | keys                   | yes      | `text`, or the key's name, such as `Escape` |
+| `length`   | keys                   | no       | The text's length in characters, for `text` only |
+| `outcome`  | keys                   | yes      | `sent`, `failed`, or `uncertain` when the daemon stopped between storing the request and its outcome |
+| `error`    | keys                   | no       | Why a `failed` request failed |
+| `printed`  | attach_issued          | yes      | Whether attach printed the command rather than ran it |
+
 ## Spans
 
 A factory that exports OpenTelemetry spans (Priory does: see

@@ -12,7 +12,7 @@ use std::collections::BTreeMap;
 use std::io::Write;
 use std::time::Duration;
 
-const VERSION: i64 = 80;
+const VERSION: i64 = 81;
 
 const SCHEMA: &str = "
 CREATE TABLE tasks (
@@ -1454,6 +1454,35 @@ ALTER TABLE tasks ADD COLUMN base_sha TEXT;
 PRAGMA user_version = 80;
 ";
 
+// A person's hold on a run's keyboard, by the hash of its secret, and each input sent under one: a
+// row with no outcome is one whose send a crash may have cut, so it is never sent again.
+const SCHEMA_81: &str = concat!(
+    "CREATE TABLE IF NOT EXISTS keyboard_grants (
+  id      INTEGER PRIMARY KEY AUTOINCREMENT,
+  run     INTEGER NOT NULL REFERENCES runs (id),
+  hash    TEXT NOT NULL UNIQUE,
+  label   TEXT NOT NULL,
+  started TEXT NOT NULL,
+  ends    TEXT NOT NULL,
+  ended   TEXT,
+  why     TEXT
+);
+CREATE INDEX IF NOT EXISTS keyboard_grants_open ON keyboard_grants (run) WHERE ended IS NULL;
+CREATE TABLE IF NOT EXISTS keyboard_keys (
+  grant_id INTEGER NOT NULL REFERENCES keyboard_grants (id),
+  request  TEXT NOT NULL,
+  input    TEXT NOT NULL,
+  length   INTEGER,
+  outcome  TEXT,
+  error    TEXT,
+  PRIMARY KEY (grant_id, request)
+);
+",
+    bumps!("keyboard_grants"),
+    "PRAGMA user_version = 81;
+"
+);
+
 /// Each schema change in order: a file at version `n` applies those from index `n` on.
 const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA, SCHEMA_2, SCHEMA_3, SCHEMA_4, SCHEMA_5, SCHEMA_6, SCHEMA_7, SCHEMA_8, SCHEMA_9,
@@ -1465,7 +1494,7 @@ const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA_50, SCHEMA_51, SCHEMA_52, SCHEMA_53, SCHEMA_54, SCHEMA_55, SCHEMA_56, SCHEMA_57,
     SCHEMA_58, SCHEMA_59, SCHEMA_60, SCHEMA_61, SCHEMA_62, SCHEMA_63, SCHEMA_64, SCHEMA_65,
     SCHEMA_66, SCHEMA_67, SCHEMA_68, SCHEMA_69, SCHEMA_70, SCHEMA_71, SCHEMA_72, SCHEMA_73,
-    SCHEMA_74, SCHEMA_75, SCHEMA_76, SCHEMA_77, SCHEMA_78, SCHEMA_79, SCHEMA_80,
+    SCHEMA_74, SCHEMA_75, SCHEMA_76, SCHEMA_77, SCHEMA_78, SCHEMA_79, SCHEMA_80, SCHEMA_81,
 ];
 
 /// The order the queue starts tasks in: band, then a person's order, then age. A band the factory
@@ -3309,7 +3338,8 @@ fn pasted(prompt: &str) -> &str {
 /// Marks the oldest queued prompt of an idle live run `attempted` and the run busy, in one
 /// transaction, before anything is typed. A task with an attempted or uncertain prompt gets none
 /// while the process it went to may still hold its text: its run is live, as a run carried into the
-/// next step takes over the prompts of the run it continues.
+/// next step takes over the prompts of the run it continues. A run whose keyboard a person holds
+/// gets none until the grant ends.
 pub(crate) fn attempt(db: &mut Connection) -> rusqlite::Result<Option<(String, String, String)>> {
     let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
     let next = tx
@@ -3320,6 +3350,8 @@ pub(crate) fn attempt(db: &mut Connection) -> rusqlite::Result<Option<(String, S
                SELECT 1 FROM outbox AS open JOIN runs AS typed ON typed.id = open.run
                WHERE open.task = runs.task AND open.state IN ('attempted', 'uncertain')
                AND typed.ended IS NULL)
+             AND NOT EXISTS (SELECT 1 FROM keyboard_grants AS held WHERE held.run = runs.id
+               AND held.ended IS NULL AND julianday(held.ends) > julianday('now'))
              ORDER BY outbox.id LIMIT 1",
             [],
             |row| {

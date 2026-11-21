@@ -339,14 +339,33 @@ fn attach(args: Vec<String>) -> ExitCode {
     let Some(target) = target else {
         return usage();
     };
-    let command = match state::open()
+    let (run, command) = match state::open()
         .and_then(|db| state::live_run(&db, &target))
         .and_then(|run| {
-            runtime::attach(&run.tmux, &run.session, read_only).ok_or_else(|| state::no_pane(&run))
+            runtime::attach(&run.tmux, &run.session, read_only)
+                .map(|command| (run.id, command))
+                .ok_or_else(|| state::no_pane(&run))
         }) {
-        Ok(command) => command,
+        Ok(found) => found,
         Err(error) => return exit("attach", Err(error)),
     };
+    if !read_only {
+        let issued = priory_core::keyboard::AttachLine {
+            attach_issued: priory_core::keyboard::Attach {
+                run,
+                printed: print,
+            },
+        };
+        let line = serde_json::to_string(&issued).expect("a socket line serializes");
+        // tmux owns the session, so a person attaches even when nothing can record it.
+        match runtime::call(&runtime::home(), &line, runtime::REPLY) {
+            Err(error) if error.starts_with(runtime::NO_DAEMON) => {
+                eprintln!("priory attach: not recorded: no priory daemon listens; attaching anyway")
+            }
+            Err(error) => eprintln!("priory attach: not recorded: {error}"),
+            Ok(_) => {}
+        }
+    }
     if print {
         let quoted: Vec<_> = command.iter().map(|word| shell_word(word)).collect();
         println!("{}", quoted.join(" "));

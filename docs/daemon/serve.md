@@ -193,6 +193,40 @@ shows. A factory that does not want that sets [`[serve] terminal = "off"`](../re
 tmux can hang. So each screen has its own 2 second deadline, and at most 2 are read at once,
 which leaves workers for other requests however tmux behaves.
 
+## A run's keyboard
+
+With [`[serve] terminal = "type"`](../reference/factory.md#serve), a person can type into a live
+run's pane from the web view: answer a menu or a harness dialog, or press Escape or `C-c` to
+interrupt a turn. Say stays the way to send words, since it waits for the run to be idle. Keys go
+in now, whatever the agent is doing. Under `"watch"`, the default, and `"off"`, every
+[keyboard endpoint](../reference/serve.md#keyboard) gets `404`, and `priory attach` stays the way
+to type.
+
+- **A grant.** `POST /api/runs/{id}/keyboard` stores a grant of the run's keyboard for 15 minutes,
+  with a label, the first 64 bytes of the `User-Agent`, and appends `factory.terminal.taken`. The
+  server makes a 128-bit secret and sends it to that page only; the daemon, its socket and the
+  state see only its hash. A grant ends at its end, when its run ends, on
+  `/keyboard/return`, on a new grant for the run, and once the daemon's factory no longer says
+  `"type"`. Each end appends `factory.terminal.returned` with why. A grant survives a restart.
+- **Keys.** `POST /api/runs/{id}/keys` sends one text or one key from a fixed list. Text is pasted
+  through `load-buffer` from stdin and a bracketed `paste-buffer`, without Enter, so no part of it
+  is an argument tmux could read as a key or a command. A key goes through `send-keys` by its
+  name. The target is always the pane the daemon resolves from the run's tag. The daemon stores the
+  request before it sends and its outcome after, with one `factory.terminal.keys` record that holds
+  the kind of input and the text's length, never the text. A repeated request id gets the first
+  outcome. A request a crash cut before its outcome becomes `uncertain` when the daemon starts, and
+  is never sent again.
+- **The outbox waits.** While a grant is open, the outbox types nothing into that run, and `say`
+  queues as usual. Once the grant ends, the outbox types at the run's next idle point. Text the
+  person typed and did not submit still sits in the agent's input box then, so give the keyboard
+  back with the box empty.
+
+Keys from a person are not tool calls, so the tool guard never reads them. Claude Code's `!` bash
+mode, a shell the pane fell back to, and slash commands such as `/permissions` all reach past it.
+Taking the keyboard gives the device what `priory attach` gives a person at a shell on the runner.
+The grant, its records and its 15 minute end make that visible; they do not make it safe. Any
+token holder can take a grant.
+
 ## Webhooks
 
 With [`[webhooks.github]`](../reference/factory.md#webhooksgithub), the server also takes signed

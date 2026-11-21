@@ -1,7 +1,9 @@
 //! The HTTP server over the state: `/api` as JSON, with `web` the web view's files, and with a
 //! GitHub webhook its signed deliveries.
 
-use crate::{grades, listing, push, report, screen, sections, snooze, state, todo, tools};
+use crate::{
+    grades, keyboard, listing, push, report, screen, sections, snooze, state, todo, tools,
+};
 use priory_factory::factory::{Factory, Price, Terminal, Trigger};
 use priory_intake::intake::{self, Github, LinearWebhook};
 use priory_intake::log;
@@ -234,7 +236,7 @@ pub fn start(factory: &Factory, listen: SocketAddr) -> Result<Vec<JoinHandle<()>
             {
                 linear.receive(bus, request)
             }
-            _ if request.method == "POST" => write(&db, &home, request),
+            _ if request.method == "POST" => write(&db, &home, &served, request),
             _ => route(
                 &db,
                 &home,
@@ -298,7 +300,10 @@ fn route(
             None => Reply::error(503, "no key yet: start `priory daemon` once to make it"),
         };
     }
-    if Write::of(path).is_some() {
+    if Typing::of(path).is_some() && served.terminal != Terminal::Type {
+        return Reply::error(404, NOT_TYPING);
+    }
+    if Write::of(path).is_some() || Typing::of(path).is_some() {
         return Reply {
             headers: "Allow: POST\r\n",
             ..Reply::error(405, "only POST is served")
@@ -668,11 +673,21 @@ struct Unsubscribe {
 
 /// Sends a write to the daemon on its socket, as the CLI verb does; this thread never writes the
 /// state. A refusal re-reads the ask to tell a stale or closed ask (`409`) from a refused one.
-fn write(db: &Result<Connection, String>, home: &Path, request: &Request) -> Reply {
+fn write(
+    db: &Result<Connection, String>,
+    home: &Path,
+    served: &Served,
+    request: &Request,
+) -> Reply {
     let path = request.path.split('?').next().unwrap_or_default();
-    let Some(write) = Write::of(path) else {
+    let typing = Typing::of(path);
+    if typing.is_some() && served.terminal != Terminal::Type {
+        return Reply::error(404, NOT_TYPING);
+    }
+    let write = Write::of(path);
+    if write.is_none() && typing.is_none() {
         return Reply::error(405, "only GET is served");
-    };
+    }
     let json = request
         .header("content-type")
         .and_then(|value| std::str::from_utf8(value).ok())
@@ -685,27 +700,19 @@ fn write(db: &Result<Connection, String>, home: &Path, request: &Request) -> Rep
         Ok(db) => db,
         Err(error) => return Reply::error(500, error),
     };
+    if let Some((run, typing)) = typing {
+        return type_in(db, home, request, run, typing);
+    }
+    let Some(write) = write else {
+        return Reply::error(405, "only GET is served");
+    };
     let (line, sent) = match write_line(db, &write, request.body) {
         Ok(line) => line,
         Err(reply) => return reply,
     };
-    let reply = match runtime::call(home, &line, runtime::REPLY) {
+    let reply = match send(home, &line) {
         Ok(reply) => reply,
-        // Only a refused connection proves the line never reached the daemon.
-        Err(error) if error.starts_with(runtime::NO_DAEMON) => {
-            return Reply::error(
-                503,
-                &format!("{error}. Start `priory daemon` to write; reads still work"),
-            );
-        }
-        Err(error) => {
-            return Reply::error(
-                504,
-                &format!(
-                    "{error}. The daemon may have applied it: read the state before you retry"
-                ),
-            );
-        }
+        Err(reply) => return reply,
     };
     match serde_json::from_str::<Result<String, String>>(&reply) {
         // A repeated text names the task it reached, with the reason nothing was added.
@@ -718,6 +725,177 @@ fn write(db: &Result<Connection, String>, home: &Path, request: &Request) -> Rep
         Ok(Err(refused)) => refusal(db, sent, &refused),
         Err(error) => Reply::error(500, &format!("unreadable reply {reply:?}: {error}")),
     }
+}
+
+/// Sends `line` to the daemon on its socket and returns its reply: `503` when no daemon listens,
+/// `504` when the reply never came.
+fn send(home: &Path, line: &str) -> Result<String, Reply> {
+    match runtime::call(home, line, runtime::REPLY) {
+        Ok(reply) => Ok(reply),
+        // Only a refused connection proves the line never reached the daemon.
+        Err(error) if error.starts_with(runtime::NO_DAEMON) => Err(Reply::error(
+            503,
+            &format!("{error}. Start `priory daemon` to write; reads still work"),
+        )),
+        Err(error) => Err(Reply::error(
+            504,
+            &format!("{error}. The daemon may have applied it: read the state before you retry"),
+        )),
+    }
+}
+
+const NOT_TYPING: &str = "[serve] terminal is not \"type\", so no one takes a run's keyboard";
+
+/// A path that types into a run's pane, served only under `[serve] terminal = "type"`.
+#[derive(Clone, Copy)]
+enum Typing {
+    Take,
+    Return,
+    Keys,
+}
+
+impl Typing {
+    fn of(path: &str) -> Option<(&str, Typing)> {
+        let (run, rest) = path.strip_prefix("/api/runs/")?.split_once('/')?;
+        let typing = match rest {
+            "keyboard" => Typing::Take,
+            "keyboard/return" => Typing::Return,
+            "keys" => Typing::Keys,
+            _ => return None,
+        };
+        Some((run, typing))
+    }
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TakeBody {
+    revision: i64,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ReturnBody {
+    secret: String,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct KeysBody {
+    secret: String,
+    request: String,
+    text: Option<String>,
+    key: Option<String>,
+}
+
+/// Takes or gives back run `run`'s keyboard, or sends it keys, through the daemon. The page's
+/// secret is made and hashed here, so the daemon, its socket and the state only see the hash.
+fn type_in(db: &Connection, home: &Path, request: &Request, run: &str, typing: Typing) -> Reply {
+    let Ok(run) = run.parse::<i64>() else {
+        return Reply::error(404, "no such path");
+    };
+    let bad = |error: serde_json::Error| Reply::error(400, &error.to_string());
+    let (mut secret, mut revision) = (None, None);
+    let line = match typing {
+        Typing::Take => {
+            let body: TakeBody = match serde_json::from_slice(request.body) {
+                Ok(body) => body,
+                Err(error) => return bad(error),
+            };
+            let made = match new_secret() {
+                Ok(made) => made,
+                Err(error) => return Reply::error(500, &error),
+            };
+            let label = request
+                .header("user-agent")
+                .map(|agent| String::from_utf8_lossy(agent).into_owned())
+                .unwrap_or_default();
+            let mut end = label.len().min(64);
+            while !label.is_char_boundary(end) {
+                end -= 1;
+            }
+            let take = keyboard::Take {
+                run,
+                revision: body.revision,
+                label: label[..end].to_owned(),
+                hash: keyboard::hash(&made),
+            };
+            secret = Some(made);
+            revision = Some(body.revision);
+            line(&keyboard::TakeLine { keyboard: take })
+        }
+        Typing::Return => {
+            let body: ReturnBody = match serde_json::from_slice(request.body) {
+                Ok(body) => body,
+                Err(error) => return bad(error),
+            };
+            let held = keyboard::Held {
+                run,
+                hash: keyboard::hash(&body.secret),
+            };
+            line(&keyboard::ReturnLine {
+                keyboard_return: held,
+            })
+        }
+        Typing::Keys => {
+            let body: KeysBody = match serde_json::from_slice(request.body) {
+                Ok(body) => body,
+                Err(error) => return bad(error),
+            };
+            let input = match (body.text, body.key) {
+                (Some(text), None) => keyboard::Input::Text(text),
+                (None, Some(key)) => keyboard::Input::Key(key),
+                _ => return Reply::error(400, "send one of text and key"),
+            };
+            if let Err(refused) =
+                keyboard::check(&input).and_then(|()| keyboard::check_request(&body.request))
+            {
+                return Reply::error(400, &refused);
+            }
+            let keys = keyboard::Keys {
+                run,
+                hash: keyboard::hash(&body.secret),
+                request: body.request,
+                input,
+            };
+            line(&keyboard::KeysLine { keys })
+        }
+    };
+    let reply = match send(home, &line) {
+        Ok(reply) => reply,
+        Err(reply) => return reply,
+    };
+    match serde_json::from_str::<Result<String, String>>(&reply) {
+        Ok(Ok(done)) => match (typing, secret) {
+            (Typing::Take, Some(secret)) => {
+                let mut grant: serde_json::Value = serde_json::from_str(&done).unwrap_or_default();
+                grant["secret"] = serde_json::json!(secret);
+                Reply::json(200, grant.to_string())
+            }
+            (Typing::Keys, _) => Reply::json(200, done),
+            _ => Reply::json(200, serde_json::json!({ "ok": done }).to_string()),
+        },
+        Ok(Err(refused)) => {
+            let live = state::live_run(db, &state::Attach::Run(run));
+            let stale = revision.is_some_and(|sent| state::revision(db).is_ok_and(|at| at != sent));
+            match (live, stale) {
+                (Err(_), _) => Reply::error(404, &refused),
+                (_, true) => Reply::error(409, &refused),
+                _ => Reply::error(403, &refused),
+            }
+        }
+        Err(error) => Reply::error(500, &format!("unreadable reply {reply:?}: {error}")),
+    }
+}
+
+/// 128 random bits as hex, from the kernel.
+fn new_secret() -> Result<String, String> {
+    use std::io::Read;
+    let mut bytes = [0u8; 16];
+    std::fs::File::open("/dev/urandom")
+        .and_then(|mut random| random.read_exact(&mut bytes))
+        .map_err(|error| format!("read /dev/urandom: {error}"))?;
+    Ok(bytes.iter().map(|byte| format!("{byte:02x}")).collect())
 }
 
 /// The revision a write was made on, which tells a stale write from a refused one.

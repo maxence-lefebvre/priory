@@ -651,6 +651,48 @@ pub(crate) fn source(trace: &Trace) -> String {
     }
 }
 
+/// Appends a `factory.terminal.*` record of `kind` for `run`, with `fields` beside its task's.
+pub(crate) fn terminal(
+    tx: &Transaction,
+    trace: &Trace,
+    kind: &str,
+    run: i64,
+    fields: Value,
+) -> rusqlite::Result<()> {
+    let (task, workflow, step, key, generation, time): (i64, String, String, String, i64, String) =
+        tx.query_row(
+            "SELECT tasks.id, tasks.workflow, tasks.step, tasks.key, tasks.generation, strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+             FROM runs JOIN tasks ON tasks.id = runs.task WHERE runs.id = ?1",
+            [run],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                ))
+            },
+        )?;
+    let mut data = json!({
+        "factory": trace.factory.name,
+        "factory_revision": trace.revision,
+        "workflow": workflow,
+        "task": task.to_string(),
+        "key": key,
+        "generation": generation,
+        "step": step,
+        "run": run.to_string(),
+        "machine": trace.machine,
+    });
+    if let (Value::Object(data), Value::Object(fields)) = (&mut data, fields) {
+        data.extend(fields);
+        data.retain(|_, value| !value.is_null());
+    }
+    append(tx, trace, kind, &time, data)
+}
+
 /// Appends one CloudEvents record of `kind` to the trace.
 fn append(
     tx: &Transaction,

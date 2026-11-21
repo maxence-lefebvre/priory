@@ -1155,13 +1155,25 @@ pub fn clone_of(worktree: &Path) -> Option<PathBuf> {
 /// Pastes `text` into `pane` as one bracketed paste, then presses Enter. tmux reads the text from
 /// stdin, so none of it is taken for key names.
 pub fn type_text(pane: &str, text: &str) -> Result<(), String> {
+    paste(pane, text)?;
+    press(pane, "Enter")
+}
+
+/// Pastes `text` into `pane` as one bracketed paste, read from stdin so no part of it is an
+/// argument tmux could take for a key name or a command.
+pub fn paste(pane: &str, text: &str) -> Result<(), String> {
     let buffer = format!("priory{pane}");
     fed(
         tmux().args(["load-buffer", "-b", &buffer, "-"]),
         Some(text.as_bytes().to_vec()),
     )?;
     run(tmux().args(["paste-buffer", "-p", "-d", "-b", &buffer, "-t", pane]))?;
-    run(tmux().args(["send-keys", "-t", pane, "Enter"]))?;
+    Ok(())
+}
+
+/// Presses the key tmux names `key`, such as `Enter` or `C-c`, in `pane`.
+pub fn press(pane: &str, key: &str) -> Result<(), String> {
+    run(tmux().args(["send-keys", "-t", pane, key]))?;
     Ok(())
 }
 

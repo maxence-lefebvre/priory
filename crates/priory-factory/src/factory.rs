@@ -213,7 +213,8 @@ pub struct Serve {
     /// `chrome-extension://<id>`. They still send the token.
     #[serde(default)]
     pub extension_origins: Vec<String>,
-    /// Whether a token holder may watch a run's terminal, its screen with known secrets hidden.
+    /// Whether a token holder may watch a run's terminal, its screen with known secrets hidden, and
+    /// type into it.
     #[serde(default)]
     pub terminal: Terminal,
     /// More environment variables whose values the terminal hides, besides the factory's secrets.
@@ -230,6 +231,8 @@ pub enum Terminal {
     Watch,
     /// Serve no screen.
     Off,
+    /// Watch, and let a person take a run's keyboard and type into its pane.
+    Type,
 }
 
 fn listen() -> SocketAddr {

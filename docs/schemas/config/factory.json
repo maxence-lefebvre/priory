@@ -304,7 +304,7 @@
               "$ref": "#/definitions/Terminal"
             }
           ],
-          "description": "Whether a token holder may watch a run's terminal, its screen with known secrets hidden."
+          "description": "Whether a token holder may watch a run's terminal, its screen with known secrets hidden, and\ntype into it."
         },
         "token_env": {
           "default": "PRIORY_TOKEN",
@@ -430,6 +430,11 @@
         {
           "const": "off",
           "description": "Serve no screen.",
+          "type": "string"
+        },
+        {
+          "const": "type",
+          "description": "Watch, and let a person take a run's keyboard and type into its pane.",
           "type": "string"
         }
       ]
