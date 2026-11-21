@@ -17447,6 +17447,20 @@ fn a_persons_call_without_an_open_ask_naming_it_is_refused() {
 }
 
 #[test]
+fn a_persons_call_whose_ask_the_person_dismissed_is_accepted() {
+    let setup = woken_by_feedback("triage-dismissed");
+    let sorted =
+        json!({ REVIEW_URL: "persons-call", THREAD_URL: "trivial", OTHER_URL: "nothing-to-do" });
+    ask_about(&setup, &[REVIEW_URL]);
+    let dismissed = setup.priory(&["dismiss", "--expected", "1", "1"]);
+    assert!(dismissed.status.success(), "{dismissed:?}");
+
+    let (text, error) = result_sorting(&setup, sorted);
+
+    assert!(!error, "{text}");
+}
+
+#[test]
 fn the_persons_own_review_item_is_not_put_to_the_agent_and_is_recorded_as_a_persons_call() {
     let mut setup = Setup::new("triage-own");
     setup.calls(&[wait(json!({ "type": "time", "until": "3 seconds" }))]);
