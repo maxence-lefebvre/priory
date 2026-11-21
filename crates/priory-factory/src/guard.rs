@@ -104,6 +104,7 @@ pub const BUILT_IN: &[&str] = &[
     "linear-write",
     "mcp-write",
     PERSON,
+    UNREADABLE,
 ];
 
 /// The guards only a person's approval grants: never `autonomous` nor a workflow's `guard.allow`.
@@ -111,6 +112,9 @@ pub const NEED_APPROVAL: &[&str] = &["gh-pr-merge", "gh-pr-approve"];
 
 /// The guard on Priory's own person verbs, which nothing grants to a run.
 pub const PERSON: &str = "priory-person";
+
+/// The guard on a script nested too deep for the guard to read, which nothing grants.
+pub const UNREADABLE: &str = "unreadable";
 
 /// The `priory` verbs only a person runs, as an answer approves a step. `report pick` is one too.
 pub const PERSON_VERBS: &[&str] = &[
@@ -202,15 +206,21 @@ impl Guards {
     }
 
     fn command(&self, words: &[String], git: Git) -> Option<Hit> {
-        if help(words) {
-            return None;
-        }
         let hit = |guard: &str| {
             Some(Hit {
                 guard: guard.to_owned(),
                 call: words.join(" "),
             })
         };
+        if words[0] == TOO_DEEP {
+            return Some(Hit {
+                guard: UNREADABLE.to_owned(),
+                call: format!("a script nested more than {DEPTH} levels deep"),
+            });
+        }
+        if help(words) {
+            return None;
+        }
         let built_in = COMMANDS
             .iter()
             .find(|(_, run, flags)| starts(words, run, flags))
@@ -658,9 +668,12 @@ pub fn commands(script: &str) -> Vec<Vec<String>> {
     found
 }
 
+/// The command the splitter records for a script nested past `DEPTH`: no program has this name.
+const TOO_DEEP: &str = "\0too deeply nested for the guard to read";
+
 fn parse(script: &str, depth: usize, found: &mut Vec<Vec<String>>) {
     if depth > DEPTH {
-        return;
+        return found.push(vec![TOO_DEEP.to_owned()]);
     }
     let mut split = Split {
         chars: script.chars().collect(),
@@ -1128,7 +1141,7 @@ const SHELLS: &[&str] = &["sh", "bash", "zsh", "dash", "ksh"];
 /// command, or the commands of the script a shell or `eval` runs.
 fn unwrap(words: &[String], depth: usize, found: &mut Vec<Vec<String>>) {
     if depth > DEPTH {
-        return;
+        return found.push(vec![TOO_DEEP.to_owned()]);
     }
     let mut at = 0;
     while let Some(word) = words.get(at) {
@@ -1769,6 +1782,17 @@ mod tests {
         );
         assert_eq!(hit("echo 'gh pr merge 12' | grep merge"), None);
         assert_eq!(hit("grep x <<< 'gh pr merge 12'"), None);
+    }
+
+    #[test]
+    fn a_script_nested_past_the_limit_is_unreadable_not_passed() {
+        let nested = format!("{}gh pr merge 12{}", "echo $(".repeat(20), ")".repeat(20));
+        let finds = format!("{}echo hi", "find . -exec ".repeat(40));
+        for command in [nested.as_str(), &finds] {
+            assert_eq!(hit(command).as_deref(), Some(UNREADABLE), "{command}");
+        }
+        let shallow = "bash -c 'bash -c \"echo hi\"'";
+        assert_eq!(hit(shallow), None);
     }
 
     #[test]

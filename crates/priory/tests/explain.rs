@@ -379,6 +379,22 @@ fn no_workflow_or_step_grants_priorys_person_verbs() {
 }
 
 #[test]
+fn no_workflow_grants_a_script_the_guard_cannot_read() {
+    let workflow = DOCS.replace("git-push-default", "unreadable");
+
+    let outcome = priory(
+        &["check"],
+        &factory("allow-unreadable", &[("docs", &workflow)]),
+    );
+
+    assert_eq!(outcome.code, 1);
+    assert_eq!(
+        outcome.stderr,
+        "workflows/docs.toml:2: `guard.allow` names `unreadable`, which the guard cannot read, so nothing may grant it\n"
+    );
+}
+
+#[test]
 fn a_step_allows_only_guards_that_exist_and_only_when_irreversible() {
     let docs = DOCS
         .replace(

@@ -61,7 +61,8 @@ A run with no task step, such as the stall handler, is denied every guarded call
 | `slack-write` | `curl` or `wget` to `hooks.slack.com` or `slack.com/api/chat.*`, and `slack chat send` |
 | `linear-write` | `curl` or `wget` to `api.linear.app` with a body that holds `mutation` or comes from a file, and `linear issue create`, `update`, `delete` or `comment` |
 | `mcp-write` | MCP tools named `add_issue_comment`, `send_message`, `slack_send_message`, `schedule_message`, `slack_schedule_message`, `save_comment`, `create_comment`, `save_issue`, `create_issue` or `update_issue`, on any server but `priory` |
-| `priory-person` | `priory answer`, `dismiss`, `resume`, `revive`, `cancel`, `release`, `hold`, `move`, `say`, `pause`, `unpause`, `snooze`, `seen`, `subscribe`, `unsubscribe` and `report pick` |
+| `priory-person` | `priory answer`, `dismiss`, `resume`, `revive`, `cancel`, `release`, `hold`, `move`, `say`, `pause`, `unpause`, `snooze`, `seen`, `subscribe`, `unsubscribe` and `report pick`. `priory add`, `request` and `gate` stay open to agents |
+| `unreadable` | A script nested more than 16 levels deep, through `bash -c`, `$(...)`, `eval`, `find -exec` and the like. The guard cannot read it, so the daemon denies it: "too deeply nested for the guard to read". Nothing grants it |
 
 An MCP tool's server is the part of its name before the last `__`, so a server named `my__srv`
 cannot hide a tool's name.
@@ -105,7 +106,7 @@ A quoted mention, such as `echo 'gh pr merge 12'`, and a search term, such as
 
 The guard is not a sandbox. It does not see a program named by a variable, such as
 `x=gh; $x pr merge 12`, a script file the agent writes and then runs, another HTTP client such as
-`python`, a script nested more than 16 levels deep, or a line written straight to the daemon's
+`python`, or a line written straight to the daemon's
 socket, as with `nc`. Nor does it see `priory report reply` run with `PRIORY_SESSION` unset, which
 the daemon stores as a person's reply. It stops an agent that reaches for an irreversible tool
 directly or through a wrapper.

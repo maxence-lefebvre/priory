@@ -13210,6 +13210,23 @@ fn a_merge_in_a_step_no_person_approved_is_denied_however_it_is_wrapped() {
     }
 }
 
+#[test]
+fn a_script_too_deeply_nested_for_the_guard_to_read_is_denied() {
+    let mut setup = Setup::new("guard-deep");
+    let deep = format!("{}echo hi{}", "echo $(".repeat(20), ")".repeat(20));
+    setup.calls(&[json!([bash(&deep)])]);
+    setup.publish(&requested(42));
+
+    setup.start();
+
+    let replies = setup.replied(1);
+    let reason = guard_denied(&replies[0]).unwrap_or_else(|| panic!("{}", replies[0]));
+    assert!(
+        reason.contains("too deeply nested for the guard to read"),
+        "{reason}"
+    );
+}
+
 const MERGE: &str = r#"
 start = "implement"
 

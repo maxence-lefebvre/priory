@@ -19,7 +19,7 @@ Schema: [`config/workflow.json`](../schemas/config/workflow.json).
 | `band` | string | no | the last band | The band of its tasks when neither their request nor their trigger sets one | `"today"` |
 | `reopen` | string | no | the step that opened the pull request | The model step a done task goes back to when its open pull request gets feedback (see [routing.md](../daemon/routing.md#feedback-reopens-a-done-task)) | `"implement"` |
 | `max_prs` | integer, at least 1 | no | no cap | The most pull requests a task's stack may hold. `open-pr` fails with more branches (see [tools.md](../daemon/tools.md#code-steps)) | `3` |
-| `guard` | table | no | none allowed | `allow`: the guards whose calls every step of the workflow may make with no approval, built-in or from `[guard]`. It cannot name `gh-pr-merge`, `gh-pr-approve` or `priory-person`. See [guard.md](../daemon/guard.md) | `{ allow = ["git-push-default"] }` |
+| `guard` | table | no | none allowed | `allow`: the guards whose calls every step of the workflow may make with no approval, built-in or from `[guard]`. It cannot name `gh-pr-merge`, `gh-pr-approve`, `priory-person` or `unreadable`. See [guard.md](../daemon/guard.md) | `{ allow = ["git-push-default"] }` |
 | `steps` | array of tables | yes | | The steps, in any order | see below |
 
 ## Step keys
@@ -41,7 +41,7 @@ Schema: [`config/workflow.json`](../schemas/config/workflow.json).
 | `by` | table of `code`, `model`, `human` or `asleep` | no | the step's `decides` | Who decides an outcome's edge, where it differs from the step's decider | `{ passed = "asleep" }` |
 | `proof` | table of `gate-passed` | no | none: every outcome is the agent's word | Model steps only. The proof the daemon checks before it accepts an outcome, by outcome. `gate-passed`: the factory's [`gate`](factory.md#top-level-keys) passed at the head of the task's branch. See Proofs in [tools.md](../daemon/tools.md#proofs) | `{ passed = "gate-passed" }` |
 | `autonomous` | string | no | | Why an irreversible step may run without a person's approval | `"it only labels issues"` |
-| `guard` | table | no | none allowed | Irreversible model steps only. `allow`: the guards whose calls the step's agent may make while the step is approved at the task's commit or `autonomous`. An `autonomous` step cannot name `gh-pr-merge` or `gh-pr-approve`, and no step can name `priory-person`. See [guard.md](../daemon/guard.md) | `{ allow = ["gh-pr-comment"] }` |
+| `guard` | table | no | none allowed | Irreversible model steps only. `allow`: the guards whose calls the step's agent may make while the step is approved at the task's commit or `autonomous`. An `autonomous` step cannot name `gh-pr-merge` or `gh-pr-approve`, and no step can name `priory-person` or `unreadable`. See [guard.md](../daemon/guard.md) | `{ allow = ["gh-pr-comment"] }` |
 
 The outcomes of a step come from:
 
@@ -243,4 +243,5 @@ Errors about one step start with `` step `<id>`: `` and point at the step's line
 | `` `guard.allow` names `<name>`, which only a person's approval grants, so only an irreversible step may name it `` | A workflow's `guard.allow` names `gh-pr-merge` or `gh-pr-approve` |
 | `` step `<id>`: `guard.allow` names `<name>`, which only a person's approval grants, and the step is `autonomous` `` | An `autonomous` step's `guard.allow` names `gh-pr-merge` or `gh-pr-approve` |
 | `` `guard.allow` names `priory-person`, which only a person runs, so nothing may grant it `` | A workflow's or a step's `guard.allow` names `priory-person` |
+| `` `guard.allow` names `unreadable`, which the guard cannot read, so nothing may grant it `` | A workflow's or a step's `guard.allow` names `unreadable` |
 | `` step `<id>`: `guard.allow` grants nothing on a step that is not an irreversible model step `` | `guard.allow` on a step that is not an irreversible model step |
