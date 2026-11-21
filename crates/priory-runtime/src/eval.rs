@@ -234,7 +234,7 @@ fn ending(log: &Path, shape: bool) -> Result<String, String> {
 
 /// What an ask's shape shows: `short` when its question is one line of at most 25 words, then the
 /// optional fields it filled, `whatWaits` before `nextAction`.
-fn shape_of(arguments: &Value) -> String {
+pub fn shape_of(arguments: &Value) -> String {
     let filled = |field: &&str| {
         arguments[*field]
             .as_str()
