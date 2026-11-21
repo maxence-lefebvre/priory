@@ -1113,7 +1113,7 @@ fn the_first_prompt_is_the_step_prompt_and_the_task_events_typed_once_and_confir
     assert!(lines[3].contains(r#""label":"it's \"urgent\"; C-c Enter""#));
     std::thread::sleep(Duration::from_millis(1500));
     assert_eq!(setup.typed().len(), 2, "the silent turn gets one nudge");
-    assert!(setup.typed()[1].starts_with("Your turn ended"));
+    assert!(setup.typed()[1].starts_with("Your last turn ended"));
 }
 
 #[test]
@@ -1133,7 +1133,7 @@ fn an_event_kept_while_the_run_is_running_is_typed_after_the_next_stop() {
     setup.release("hold-stop");
     setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 2);
     let typed = setup.typed();
-    assert!(typed[1].starts_with("Your turn ended"), "{typed:?}");
+    assert!(typed[1].starts_with("Your last turn ended"), "{typed:?}");
     assert!(
         typed[1].contains("\ngithub.issues.labeled owner/repo#42 {"),
         "{typed:?}"
@@ -1271,7 +1271,7 @@ fn a_queued_answer_and_its_nudge_are_typed_before_the_compact_asked_ahead_of_the
         typed[1].starts_with("Answer to ask 1 (revision 1): sqlite\n"),
         "{typed:?}"
     );
-    assert!(typed[2].starts_with("Your turn ended"), "{typed:?}");
+    assert!(typed[2].starts_with("Your last turn ended"), "{typed:?}");
     assert_eq!(typed[3], "/compact the plan\n", "{typed:?}");
     assert!(
         typed[4].starts_with(
@@ -1493,7 +1493,7 @@ fn a_restarted_daemon_reattaches_to_its_run_and_types_nothing_twice() {
     setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 3);
     assert_eq!(setup.rows("runs"), runs);
     let typed = setup.typed();
-    assert!(typed[1].starts_with("Your turn ended"), "{typed:?}");
+    assert!(typed[1].starts_with("Your last turn ended"), "{typed:?}");
     assert!(typed[2].starts_with("github.issues.labeled"), "{typed:?}");
     assert_eq!(
         typed
@@ -8118,7 +8118,7 @@ fn a_firing_while_the_task_runs_is_coalesced_and_not_typed() {
     std::thread::sleep(Duration::from_millis(1500));
     let typed = setup.typed();
     assert_eq!(typed.len(), 2, "{typed:?}");
-    assert!(typed[1].starts_with("Your turn ended"), "{typed:?}");
+    assert!(typed[1].starts_with("Your last turn ended"), "{typed:?}");
     assert!(!typed[1].contains("09:00"), "{typed:?}");
 }
 
@@ -9305,7 +9305,7 @@ fn an_approval_stored_before_generations_were_kept_is_asked_again_after_the_upgr
     assert!(setup.rows("actions").is_empty());
 }
 
-const NUDGE: &str = "Your turn ended without calling wait, ask or result of the priory MCP server. Call one of them: result to end the step, ask to put a question to a person, or wait to sleep until an event.\nEnd this step by calling the result tool of the priory MCP server with one of these outcomes: failed, passed.\n";
+const NUDGE: &str = "Your last turn ended in text only, so Priory cannot tell what comes next. Pick the one tool of the priory MCP server that fits, and call it to end this turn:\n- ask, when a person must decide or answer something before the step can finish. Do not call result with a guessed outcome instead.\n- wait, when you wait on something outside you, such as a pull request's checks, a review or a time.\n- result, only when the step is finished, with one of the outcomes listed below.\nEnd this step by calling the result tool of the priory MCP server with one of these outcomes: failed, passed.\n";
 
 #[test]
 fn a_silent_turn_gets_one_nudge_and_a_second_silent_turn_gets_none() {
@@ -15527,7 +15527,7 @@ fn overlapping_after(name: &str, second: &str, factory: &str, first: impl Fn(&Se
     // Task 1's silent turn gets its nudge, which would take the next queued call.
     setup.until("outbox", |rows| {
         rows.iter()
-            .any(|row| row[2] == "2" && row[4].starts_with("Your turn ended"))
+            .any(|row| row[2] == "2" && row[4].starts_with("Your last turn ended"))
     });
     first(&setup);
     setup.publish(&requested(43));

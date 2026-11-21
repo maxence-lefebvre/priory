@@ -1,1 +1,4 @@
-Your turn ended without calling wait, ask or result of the priory MCP server. Call one of them: result to end the step, ask to put a question to a person, or wait to sleep until an event.
+Your last turn ended in text only, so Priory cannot tell what comes next. Pick the one tool of the priory MCP server that fits, and call it to end this turn:
+- ask, when a person must decide or answer something before the step can finish. Do not call result with a guessed outcome instead.
+- wait, when you wait on something outside you, such as a pull request's checks, a review or a time.
+- result, only when the step is finished, with one of the outcomes listed below.
