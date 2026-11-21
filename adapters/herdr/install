@@ -100,9 +100,8 @@ for i in "${!targets[@]}"; do
 done
 
 # Removes what an earlier install made of a mod this adapter no longer ships: a copy with the marker, or a link into this adapter.
-shipped=" ${targets[*]} "
 for stale in "$app"/mods/*; do
-  [[ "$shipped" == *" $stale "* ]] && continue
+  [[ -d "$adapter/mods/$(basename "$stale")" ]] && continue
   if [[ -L "$stale" ]]; then
     [[ "$(readlink "$stale")" == "$adapter/mods/$(basename "$stale")" ]] || continue
   elif [[ ! -f "$stale/$marker" ]]; then

@@ -237,3 +237,14 @@ test("removes its own link to a mod the adapter no longer ships, and keeps a lin
   assert.equal(lstatSync(join(app, "mods/priory-gone"), { throwIfNoEntry: false }), undefined);
   assert.equal(readlinkSync(join(app, "mods/elsewhere-gone")), join(home, "priory-gone"));
 });
+
+test("a refused install removes nothing", () => {
+  const home = scratch();
+  const app = join(home, ".config/herdr-app");
+  mkdirSync(join(app, "mods/priory-gone"), { recursive: true });
+  writeFileSync(join(app, "mods/priory-gone", MARKER), "abc\n");
+  mkdirSync(join(app, "mods", MODS[0]));
+  const run = install(home, VIEWS, "--copy");
+  assert.equal(run.status, 1);
+  assert.equal(existsSync(join(app, "mods/priory-gone", MARKER)), true);
+});
