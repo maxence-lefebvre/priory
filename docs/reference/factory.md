@@ -161,7 +161,7 @@ and [tools.md](../daemon/tools.md#commands-an-answer-runs) for the commands an a
 
 | Key | Type | Required | Default | Meaning | Example |
 | --- | ---- | -------- | ------- | ------- | ------- |
-| `deliver` | string | no | none: an answer is only stored | The command that delivers an outside ask's answer or dismissal to the session that asked, relative to the factory folder | `"adapters/herdr/deliver"` |
+| `deliver` | string | no | none: an answer is only stored | The command that delivers an outside ask's answer or dismissal to the session that asked, relative to the factory folder. `priory check` refuses one that is not an executable file | `"adapters/herdr/deliver"` |
 | `targets` | table of strings | no | none: only `worktree` | The folders, by name, where an answer can run an agent's ask command besides the task's worktree, relative to the factory folder or absolute | `{ ops = "../ops" }` |
 
 ## `[links]`
@@ -310,6 +310,8 @@ band = "today"                                 # its band without --band
 | `` `factory` is also defined in factory.toml `` | Both `factory.toml` and `factory.yaml` exist |
 | `` `bands` needs at least one band, each named once `` | `bands` is empty or names a band twice |
 | `` the sweeper agent `<name>` does not exist `` | `[sweep] agent` names no folder under `agents/` |
+| `` `[asks] deliver`: <path> is not a file in the factory folder `` | `deliver` names no file under the factory folder |
+| `` `[asks] deliver`: <path> is not executable: chmod +x it `` | The `deliver` file has no execute bit |
 | `` [log] backend = "postgres" needs a priory built with `--features postgres` `` | `[log] backend = "postgres"` in a build without the Postgres adapter |
 | `` `[log] url_env` names the environment variable that holds the connection string, such as PRIORY_LOG_URL, never the string itself `` | `url_env` is not a variable name, such as a pasted URL |
 | `` the handler agent `<name>` does not exist `` | `handler` names no agent |

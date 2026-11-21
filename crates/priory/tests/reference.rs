@@ -28,11 +28,25 @@ fn files(root: &Path, dir: &Path) -> BTreeSet<String> {
     found
 }
 
+/// Copies the example factory to `to`, with the `deliver` script its `factory.toml` names, which
+/// the reference pages do not show.
+fn example_factory(to: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+    let _ = fs::remove_dir_all(to);
+    copy(&examples().join("factory"), to);
+    let deliver = to.join("bin/deliver");
+    fs::create_dir_all(deliver.parent().unwrap()).unwrap();
+    fs::write(&deliver, "#!/bin/sh\n").unwrap();
+    fs::set_permissions(&deliver, fs::Permissions::from_mode(0o755)).unwrap();
+}
+
 #[test]
 fn the_example_factory_passes_check() {
+    let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join("reference-example");
+    example_factory(&dir);
     let output = Command::new(env!("CARGO_BIN_EXE_priory"))
         .arg("check")
-        .arg(examples().join("factory"))
+        .arg(&dir)
         .output()
         .unwrap();
     assert!(
@@ -125,8 +139,7 @@ fn the_config_schemas_accept_the_values_the_loader_accepts() {
     let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join("reference-edge");
     let mut disagree = Vec::new();
     for (file, schema, text) in cases.into_iter().chain(shares).chain(sizes) {
-        let _ = fs::remove_dir_all(&dir);
-        copy(&examples().join("factory"), &dir);
+        example_factory(&dir);
         fs::create_dir_all(dir.join(file).parent().unwrap()).unwrap();
         fs::write(dir.join(file), &text).unwrap();
         let loads = Command::new(env!("CARGO_BIN_EXE_priory"))

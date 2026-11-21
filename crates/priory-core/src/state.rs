@@ -1209,8 +1209,32 @@ ALTER TABLE shared_sessions ADD COLUMN definition TEXT;
 PRAGMA user_version = 70;
 ";
 
-// shortcut: 71 is held for parallel work; replace it with its own when it lands.
-const SCHEMA_71: &str = "PRAGMA user_version = 71;";
+// When a person cleared a failed delivery from the desk with `priory deliver --clear`, and when
+// the daemon saw a snooze end, so it traces each end once. Snoozes already over count as seen.
+// When an ask or wait was withdrawn, stamped by trigger at every write that withdraws one, and
+// backfilled from the withdrawal log. `withdrawn` stays: about 60 queries still test it for null.
+const SCHEMA_71: &str = "
+ALTER TABLE deliveries ADD COLUMN cleared TEXT;
+ALTER TABLE snoozes ADD COLUMN ended TEXT;
+UPDATE snoozes SET ended = coalesce(back, until)
+  WHERE back IS NOT NULL OR until <= strftime('%Y-%m-%dT%H:%M:%SZ', 'now');
+ALTER TABLE asks ADD COLUMN withdrawn_at TEXT;
+ALTER TABLE waits ADD COLUMN withdrawn_at TEXT;
+UPDATE asks SET withdrawn_at = (SELECT max(created) FROM ask_withdrawals WHERE ask = asks.id)
+  WHERE withdrawn IS NOT NULL;
+CREATE TRIGGER ask_withdrawn_at AFTER UPDATE OF withdrawn ON asks
+  WHEN NEW.withdrawn IS NOT OLD.withdrawn BEGIN
+  UPDATE asks SET withdrawn_at = CASE WHEN NEW.withdrawn IS NOT NULL
+    THEN strftime('%Y-%m-%dT%H:%M:%SZ', 'now') END WHERE id = NEW.id;
+END;
+CREATE TRIGGER wait_withdrawn_at AFTER UPDATE OF withdrawn ON waits
+  WHEN NEW.withdrawn IS NOT OLD.withdrawn BEGIN
+  UPDATE waits SET withdrawn_at = CASE WHEN NEW.withdrawn IS NOT NULL
+    THEN strftime('%Y-%m-%dT%H:%M:%SZ', 'now') END WHERE id = NEW.id;
+END;
+PRAGMA user_version = 71;
+";
+
 
 // A batch: its planning task, the issues a person handed over and the plan its result sent. Each
 // entry's task names its batch and entry, and a `merged` hold condition waits on another task's
@@ -1284,6 +1308,23 @@ pub const START_ORDER: &str = "coalesce((SELECT rank FROM bands WHERE bands.name
   (SELECT count(*) FROM bands)), tasks.position IS NULL, tasks.position, tasks.id";
 
 const NOW: &str = "strftime('%Y-%m-%dT%H:%M:%SZ', 'now')";
+
+/// Bumps the revision when a task ended over a day ago left the queue's `ended` list since the
+/// last call at `since`, which no write marks. The first call only notes the time.
+pub(crate) fn age_queue(db: &Connection, since: &mut Option<String>) -> rusqlite::Result<()> {
+    let now: String = db.query_row(&format!("SELECT {NOW}"), [], |row| row.get(0))?;
+    if let Some(since) = since {
+        db.execute(
+            "UPDATE revision SET value = value + 1 WHERE EXISTS (SELECT 1 FROM tasks
+               WHERE state IN ('done', 'failed', 'dropped')
+                 AND changed < strftime('%Y-%m-%dT%H:%M:%SZ', ?2, '-1 day')
+                 AND changed >= strftime('%Y-%m-%dT%H:%M:%SZ', ?1, '-1 day'))",
+            params![*since, now],
+        )?;
+    }
+    *since = Some(now);
+    Ok(())
+}
 
 pub(crate) struct Task {
     pub id: i64,

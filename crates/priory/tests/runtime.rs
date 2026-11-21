@@ -41,9 +41,12 @@ const OUTPUT: &str = "factory.intake";
 /// Takes a state file back before schema 28, which added search, 29, which added grades, 30,
 /// which added snoozes, 31, which added read reports, 32, which added the pause, 34, which added
 /// reports of sections, 36, which added deliveries, 37, which added progress, 39, which added run
-/// actions, 40, which added answer actions, 42, which added dispatches, 49, which added task ends, 51, which added a run's crossing of `compactAt`, 53, which added intervention levels, 56, which added the step an irreversible approval lets run, 58, which added withdrawal reasons, and 59, which added green stack gates and returned routed asks, 61, which added findings, 62, which added merge risk, 63, which added plan fields, 65, which added chosen subscriptions and approval generations, 66, which added the step a gate enters after the merge, and 70, which added idle compactions and session definitions. Schema 38's visits
+/// actions, 40, which added answer actions, 42, which added dispatches, 49, which added task ends, 51, which added a run's crossing of `compactAt`, 53, which added intervention levels, 56, which added the step an irreversible approval lets run, 58, which added withdrawal reasons, and 59, which added green stack gates and returned routed asks, 61, which added findings, 62, which added merge risk, 63, which added plan fields, 65, which added chosen subscriptions and approval generations, 66, which added the step a gate enters after the merge, 70, which added idle compactions and session definitions, and 71, which added cleared deliveries, ended snoozes and withdrawal times. Schema 38's visits
 /// table is created only if missing, so it stays.
-const UNDO_SINCE_SEARCH: &str = "ALTER TABLE tasks DROP COLUMN batch; ALTER TABLE tasks DROP COLUMN batch_entry; DROP TABLE idle_compactions; ALTER TABLE shared_sessions DROP COLUMN definition; DROP INDEX todos_open_connector; ALTER TABLE todos DROP COLUMN connector; ALTER TABLE waits DROP COLUMN after; ALTER TABLE subscriptions DROP COLUMN chosen; ALTER TABLE approvals DROP COLUMN generation;
+const UNDO_SINCE_SEARCH: &str = "ALTER TABLE deliveries DROP COLUMN cleared; ALTER TABLE snoozes DROP COLUMN ended;
+         DROP TRIGGER ask_withdrawn_at; DROP TRIGGER wait_withdrawn_at;
+         ALTER TABLE asks DROP COLUMN withdrawn_at; ALTER TABLE waits DROP COLUMN withdrawn_at;
+         ALTER TABLE tasks DROP COLUMN batch; ALTER TABLE tasks DROP COLUMN batch_entry; DROP TABLE idle_compactions; ALTER TABLE shared_sessions DROP COLUMN definition; DROP INDEX todos_open_connector; ALTER TABLE todos DROP COLUMN connector; ALTER TABLE waits DROP COLUMN after; ALTER TABLE subscriptions DROP COLUMN chosen; ALTER TABLE approvals DROP COLUMN generation;
          ALTER TABLE tasks DROP COLUMN plan_goal; ALTER TABLE tasks DROP COLUMN plan_testing; ALTER TABLE tasks DROP COLUMN plan_brief; ALTER TABLE tasks DROP COLUMN verification;
          ALTER TABLE tasks DROP COLUMN merge_risk; ALTER TABLE results DROP COLUMN merge_risk;
          DROP TRIGGER ask_returns_from_its_lead; ALTER TABLE waits DROP COLUMN green;
@@ -3521,6 +3524,60 @@ fn a_snoozed_ask_leaves_the_desk_and_asks_until_its_time_while_the_task_stays_as
     assert_eq!(setup.rows("asks").len(), 1);
 }
 
+/// The trace records of `kind`, oldest first.
+fn traced(setup: &Setup, kind: &str) -> Vec<serde_json::Value> {
+    String::from_utf8(setup.priory(&["trace"]).stdout)
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+        .filter(|event| event["type"] == kind)
+        .collect()
+}
+
+/// Polls the trace until it holds a record of `kind`, and returns the first.
+fn until_traced(setup: &Setup, kind: &str) -> serde_json::Value {
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        if let Some(event) = traced(setup, kind).into_iter().next() {
+            return event;
+        }
+        assert!(Instant::now() < deadline, "no {kind} record");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+#[test]
+fn a_snooze_ending_at_its_time_bumps_the_revision_and_is_traced() {
+    let setup = asleep_on_an_ask("snooze-ends");
+    let snoozed = setup.priory(&["snooze", "ask", "1", "--for", "4s"]);
+    assert!(snoozed.status.success(), "{snoozed:?}");
+    let json: serde_json::Value =
+        serde_json::from_slice(&setup.priory(&["asks", "--json"]).stdout).unwrap();
+    let revision = json["revision"].as_i64().unwrap().to_string();
+    let idle = setup.priory(&["wait", "--since", &revision, "--timeout", "1s"]);
+    assert_eq!(
+        String::from_utf8_lossy(&idle.stdout),
+        format!("{revision}\n")
+    );
+
+    let woke = setup.priory(&["wait", "--since", &revision, "--timeout", "30s"]);
+
+    assert_ne!(
+        String::from_utf8_lossy(&woke.stdout),
+        format!("{revision}\n")
+    );
+    let json: serde_json::Value =
+        serde_json::from_slice(&setup.priory(&["asks", "--json"]).stdout).unwrap();
+    assert!(json["asks"][0]["snoozed_until"].is_null(), "{json}");
+    let ended = traced(&setup, "factory.task.snooze_ended");
+    assert_eq!(
+        ended[0]["data"]["item"],
+        json!({ "kind": "ask", "id": "1" })
+    );
+    assert_eq!(ended[0]["data"]["reason"], "time");
+    assert!(traced(&setup, "factory.task.unsnoozed").is_empty());
+}
+
 #[test]
 fn clearing_a_snooze_brings_the_ask_back_and_the_trace_records_both() {
     let setup = asleep_on_an_ask("snooze-clear");
@@ -4476,6 +4533,52 @@ fn a_failing_deliver_command_is_retried_with_a_backoff_then_its_failure_shows_on
             "cache.ship",
             "the answer did not reach cache-worker after 5 tries: exit 3: hc is down"
         ]
+    );
+}
+
+#[test]
+fn a_failed_delivery_can_be_cleared_from_the_desk_then_retried() {
+    let mut setup = delivering(
+        "deliver-retry",
+        "[ -e \"$FAKE_DIR/up\" ] || { echo 'hc is down' >&2; exit 3; }",
+    );
+    setup.start();
+    listening(&setup);
+    setup.priory(&["ask", "cache.ship", &fleet_ask(&["ship", "wait"])]);
+    setup.priory(&["answer", "--expected", "1", "--", "cache.ship", "ship"]);
+    delivery(&setup, "cache.ship", |delivery| {
+        delivery["state"] == "failed"
+    });
+    let early = setup.priory(&["deliver", "cache.ship", "--retry", "--clear"]);
+    assert!(!early.status.success(), "{early:?}");
+
+    let cleared = setup.priory(&["deliver", "cache.ship", "--clear"]);
+
+    assert_eq!(
+        String::from_utf8_lossy(&cleared.stdout),
+        "the delivery of cache.ship is cleared from the desk\n"
+    );
+    assert!(setup.rows("desk").iter().all(|item| item[1] != "delivery"));
+    let failed = delivery(&setup, "cache.ship", |_| true);
+    assert_eq!(failed["state"], "failed");
+    assert!(failed["cleared"].is_string(), "{failed}");
+    fs::write(setup.dir.join("fake/up"), "").unwrap();
+
+    let retried = setup.priory(&["deliver", "cache.ship", "--retry"]);
+
+    assert_eq!(
+        String::from_utf8_lossy(&retried.stdout),
+        "the delivery of cache.ship is queued again\n"
+    );
+    let done = delivery(&setup, "cache.ship", |delivery| {
+        delivery["state"] == "delivered"
+    });
+    assert_eq!(done["tries"], 1);
+    assert_eq!(delivered(&setup).len(), 6);
+    let again = setup.priory(&["deliver", "cache.ship", "--retry"]);
+    assert_eq!(
+        String::from_utf8_lossy(&again.stderr),
+        "priory deliver: the delivery of cache.ship has not failed\n"
     );
 }
 
@@ -5516,7 +5619,10 @@ fn a_state_file_whose_asks_an_approval_names_upgrades_to_outside_asks() {
     // The state file as version 32 left it: every ask belongs to a task.
     let db = rusqlite::Connection::open(setup.dir.join("priory.db")).unwrap();
     db.execute_batch(
-        "DROP TABLE idle_compactions; ALTER TABLE shared_sessions DROP COLUMN definition;
+        "ALTER TABLE deliveries DROP COLUMN cleared; ALTER TABLE snoozes DROP COLUMN ended;
+         DROP TRIGGER ask_withdrawn_at; DROP TRIGGER wait_withdrawn_at;
+         ALTER TABLE asks DROP COLUMN withdrawn_at; ALTER TABLE waits DROP COLUMN withdrawn_at;
+         DROP TABLE idle_compactions; ALTER TABLE shared_sessions DROP COLUMN definition;
          ALTER TABLE subscriptions DROP COLUMN chosen; ALTER TABLE approvals DROP COLUMN generation;
          ALTER TABLE tasks DROP COLUMN plan_goal; ALTER TABLE tasks DROP COLUMN plan_testing; ALTER TABLE tasks DROP COLUMN plan_brief; ALTER TABLE tasks DROP COLUMN verification;
          ALTER TABLE tasks DROP COLUMN merge_risk; ALTER TABLE results DROP COLUMN merge_risk;
@@ -7283,6 +7389,8 @@ fn a_new_revision_of_a_snoozed_ask_brings_it_back_early() {
     let json = &json["asks"];
     assert_eq!(json[0]["back_early"]["reason"], "new revision", "{json}");
     assert!(json[0]["snoozed_until"].is_null(), "{json}");
+    let ended = until_traced(&setup, "factory.task.snooze_ended");
+    assert_eq!(ended["data"]["reason"], "new revision");
 }
 
 #[test]
@@ -9429,7 +9537,10 @@ fn an_approval_stored_before_generations_were_kept_is_asked_again_after_the_upgr
     // The state file as version 64 left it: an approval names no generation.
     let db = rusqlite::Connection::open(setup.dir.join("priory.db")).unwrap();
     db.execute_batch(
-        "ALTER TABLE tasks DROP COLUMN batch; ALTER TABLE tasks DROP COLUMN batch_entry; DROP TABLE idle_compactions; ALTER TABLE shared_sessions DROP COLUMN definition; DROP INDEX todos_open_connector; ALTER TABLE todos DROP COLUMN connector; ALTER TABLE waits DROP COLUMN after;
+        "ALTER TABLE deliveries DROP COLUMN cleared; ALTER TABLE snoozes DROP COLUMN ended;
+         DROP TRIGGER ask_withdrawn_at; DROP TRIGGER wait_withdrawn_at;
+         ALTER TABLE asks DROP COLUMN withdrawn_at; ALTER TABLE waits DROP COLUMN withdrawn_at;
+         ALTER TABLE tasks DROP COLUMN batch; ALTER TABLE tasks DROP COLUMN batch_entry; DROP TABLE idle_compactions; ALTER TABLE shared_sessions DROP COLUMN definition; DROP INDEX todos_open_connector; ALTER TABLE todos DROP COLUMN connector; ALTER TABLE waits DROP COLUMN after;
          ALTER TABLE subscriptions DROP COLUMN chosen; ALTER TABLE approvals DROP COLUMN generation;
          PRAGMA user_version = 64;",
     )

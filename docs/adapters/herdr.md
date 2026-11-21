@@ -126,7 +126,7 @@ Herdr Desk: the count, the next thing, the room and intake banners, the saved vi
 
 - **What it reads.** `desk --all --json`, `asks --all --json`, `tasks --json` and
   `queue FACTORY --json`, read together, then again after each `priory wait`, even one that ends
-  with the same revision: a snooze ends by the clock, which no revision records. `--all` keeps the
+  with the same revision, so it also catches changes that raise no revision, such as a worktree item following the disk. `--all` keeps the
   snoozed items for the Snoozed view; the panel leaves them out of everything else.
 - **The count** counts the open asks that are not snoozed, then the oldest wait, the stopped items
   (`blocked`, `failed`, `prompt` and `delivery`) and `counts.snoozed`.
@@ -470,8 +470,8 @@ waiting: snoozing changes what a person sees, never what the daemon does. `prior
 - Every ask with its `state` (`open`, `answered`, `withdrawn`), `revision`, `question`,
   `options`, `recommendation`, `tradeoff`, and for a command ask the command line, its target and
   the revision it is bound to (R6.8).
-- An answered ask adds `answer`, `answered_by` and `answered_at`; a withdrawn one adds `withdrawn_reason` and
-  `withdrawn_why`, the reason in words that the view shows.
+- An answered ask adds `answer`, `answered_by` and `answered_at`; a withdrawn one adds `withdrawn_reason`,
+  `withdrawn_why`, the reason in words that the view shows, and `withdrawn_at`.
 - The detail adds the agent's text and the run that asked, `what_waits` and `next_action`, and
   the ask's `revisions` and `refused` for its history. `priory task ID --json` adds the task's
   `brief`, `plan`, `pull_request` and `runs`.
