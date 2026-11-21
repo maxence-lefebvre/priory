@@ -13299,6 +13299,35 @@ fn the_task_inbox_shows_a_kept_event_still_queued_then_delivered_as_prompt() {
 }
 
 #[test]
+fn priory_task_prints_the_task_and_its_inbox_section() {
+    let setup = subscribed("task-text");
+    setup.publish(&commented());
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 2);
+
+    let output = setup.priory(&["task", "1"]);
+
+    let text = String::from_utf8(output.stdout).unwrap();
+    assert!(output.status.success(), "{text}");
+    let lines: Vec<&str> = text.lines().collect();
+    assert_eq!(lines[0], "task 1  github:owner/repo#42", "{text}");
+    assert!(lines[1].starts_with("workflow implement, step "), "{text}");
+    assert_eq!(lines[2..4], ["", "Inbox"], "{text}");
+    assert!(
+        lines[4].starts_with("  2  ")
+            && lines[4].ends_with(
+                "  github.pull_request.comment  owner/repo#7  woke, delivered as prompt"
+            ),
+        "{text}"
+    );
+    assert!(
+        lines[5].starts_with("  1  ")
+            && lines[5].ends_with("  factory.task.requested  github:owner/repo#42  created"),
+        "{text}"
+    );
+    assert_eq!(lines.len(), 6, "{text}");
+}
+
+#[test]
 fn the_task_inbox_shows_the_event_that_woke_the_task() {
     let setup = subscribed("inbox-woke");
 
@@ -13423,7 +13452,7 @@ fn comment_on(pull_request: u64) -> Message {
 }
 
 #[test]
-fn unrouted_events_are_grouped_by_resource_with_their_follow_up_commands() {
+fn unrouted_events_no_task_ever_owned_count_per_source_without_a_tasks_source_event() {
     let mut setup = Setup::new("inbox-unrouted");
     setup.start();
     for pull_request in [7, 8, 7] {
@@ -13438,50 +13467,16 @@ fn unrouted_events_are_grouped_by_resource_with_their_follow_up_commands() {
     let output = setup.priory(&["inbox", "--unrouted", "--json"]);
     assert!(output.status.success(), "{output:?}");
     let listed: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    let groups: Vec<_> = listed["unrouted"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|group| {
-            let seqs: Vec<_> = group["events"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .map(|event| event["seq"].as_i64().unwrap())
-                .collect();
-            (group["resource"].as_str().unwrap().to_owned(), seqs)
-        })
-        .collect();
+    assert_eq!(listed["unrouted"]["owned"], json!([]));
     assert_eq!(
-        groups,
-        [
-            ("github:owner/repo#7".to_owned(), vec![3, 1]),
-            ("github:owner/repo#8".to_owned(), vec![2]),
-        ]
-    );
-    assert_eq!(
-        listed["unrouted"][0]["subscribe"],
-        "priory subscribe TASK github:owner/repo#7"
-    );
-    assert_eq!(
-        listed["unrouted"][0]["request"],
-        "priory request --workflow WORKFLOW --key github:owner/repo#7 TEXT"
+        listed["unrouted"]["other"],
+        json!([{ "source": "github", "events": 3 }])
     );
 
     let output = setup.priory(&["inbox", "--unrouted", "--since", "1"]);
     let text = String::from_utf8(output.stdout).unwrap();
     assert!(output.status.success(), "{text}");
-    assert_eq!(
-        text,
-        "github:owner/repo#7: 1 event\n  \
-         3  github.pull_request.comment  owner/repo#7\n  \
-         priory subscribe TASK github:owner/repo#7\n  \
-         priory request --workflow WORKFLOW --key github:owner/repo#7 TEXT\n\
-         github:owner/repo#8: 1 event\n  \
-         2  github.pull_request.comment  owner/repo#8\n  \
-         priory subscribe TASK github:owner/repo#8\n  \
-         priory request --workflow WORKFLOW --key github:owner/repo#8 TEXT\n"
-    );
+    assert_eq!(text, "No task ever owned: 2 github events.\n");
 }
 
 #[test]
@@ -13659,6 +13654,73 @@ fn a_subscriber_hears_events_that_the_task_keyed_by_the_pull_request_takes() {
             .count()
             >= 2
     });
+}
+
+#[test]
+fn an_event_a_subscription_delivered_to_a_second_task_is_in_that_tasks_inbox() {
+    let setup = subscribed("inbox-secondary");
+    setup.publish(&requested(7));
+    setup.until("tasks", |rows| rows.len() == 2);
+
+    setup.publish(&off_branch(commented()));
+
+    setup.until("outbox", |rows| {
+        rows.iter()
+            .filter(|row| row[1] == "1" && row[3] == "confirmed")
+            .count()
+            >= 2
+    });
+    let inbox = &task_json(&setup, "1")["inbox"][0];
+    assert_eq!(
+        [
+            &inbox["type"],
+            &inbox["task"],
+            &inbox["outcome"],
+            &inbox["prompt"]
+        ],
+        [
+            &json!("github.pull_request.comment"),
+            &json!(2),
+            &json!("woke"),
+            &json!("confirmed")
+        ],
+        "{inbox}"
+    );
+}
+
+#[test]
+fn an_event_a_subscription_delivered_to_a_running_second_task_shows_its_queued_prompt() {
+    let mut setup = Setup::new("inbox-secondary-running");
+    setup.calls(&[subscribe("subscribe")]);
+    setup.hold("hold-stop");
+    setup.publish(&requested(42));
+    setup.start();
+    setup.written("fake/tools.log");
+    setup.publish(&requested(7));
+    setup.until("tasks", |rows| rows.len() == 2);
+
+    setup.publish(&off_branch(commented()));
+
+    setup.until("outbox", |rows| {
+        rows.iter().filter(|row| row[1] == "1").count() == 2
+    });
+    let inbox = &task_json(&setup, "1")["inbox"][0];
+    assert_eq!(
+        [
+            &inbox["type"],
+            &inbox["task"],
+            &inbox["outcome"],
+            &inbox["prompt"]
+        ],
+        [
+            &json!("github.pull_request.comment"),
+            &json!(2),
+            &json!("kept"),
+            &json!("queued")
+        ],
+        "{inbox}"
+    );
+    setup.release("hold-stop");
 }
 
 #[test]
