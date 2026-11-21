@@ -27,7 +27,8 @@ Each type has a JSON Schema in [`docs/schemas/events/`](../schemas/events/), nam
 - Others: [`schedule.fired`](#schedulefired), [`priory.task.requested.cli`](#priorytaskrequestedcli),
   [`factory.task.requested`](#factorytaskrequested), [`factory.intake.baseline`](#factoryintakebaseline)
 - Runners: [`priory.task.claimed`](#priorytaskclaimed), [`priory.task.held`](#priorytaskheld),
-  [`priory.runner.alive`](#prioryrunneralive), [`priory.ask.answered`](#prioryaskanswered)
+  [`priory.runner.alive`](#prioryrunneralive), [`priory.ask.answered`](#prioryaskanswered),
+  [`priory.ask.posted`](#prioryaskposted)
 
 ## The envelope
 
@@ -1281,6 +1282,55 @@ Schema: [`priory.ask.answered.json`](../schemas/events/priory.ask.answered.json)
     "text": "approved",
     "run": false,
     "by": "cli"
+  },
+  "links": []
+}
+```
+
+### `priory.ask.posted`
+
+A runner posts one of its asks each time any part of it that a view shows changes: asked, revised,
+answered, refused, dismissed or withdrawn. Every other runner keeps the post with the highest
+`version` and lists the ask as `<runner>:<ask>`. An ask closed before the runner first posted is
+never posted. Subject: `<runner>:<ask>`.
+Schema: [`priory.ask.posted.json`](../schemas/events/priory.ask.posted.json).
+
+| Field | Type | Meaning |
+| ----- | ---- | ------- |
+| `runner` | string | The runner that owns the ask |
+| `ask` | integer | The ask's id on that runner |
+| `version` | integer | Raised by every change the post shows. A refused answer raises it, never the question's `revision` |
+| `kind` | `step`, `agent` or `outside` | Who asked: a human step, an agent, or a session Priory did not start |
+| `listed` | object | The ask as the runner's own `priory asks --json` lists it. See [serve.md](serve.md#asks) |
+
+<!-- example: events/priory.ask.posted.json -->
+```json
+{
+  "id": "a3c81f5d-29e4-5b07-9c6a-d1e2f3a4b5c6",
+  "type": "priory.ask.posted",
+  "subject": "xps13:7",
+  "time": "2026-11-21T10:00:02Z",
+  "data": {
+    "runner": "xps13",
+    "ask": 7,
+    "version": 1,
+    "kind": "step",
+    "listed": {
+      "id": 7,
+      "task": 3,
+      "key": "github:acme/widgets#42",
+      "step": "approve",
+      "state": "open",
+      "revision": 1,
+      "question": "approve",
+      "options": [
+        "approved",
+        "rejected"
+      ],
+      "since": "2026-11-21T10:00:01Z",
+      "revisions": [],
+      "refused": []
+    }
   },
   "links": []
 }

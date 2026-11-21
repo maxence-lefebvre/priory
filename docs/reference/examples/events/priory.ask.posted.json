@@ -1,0 +1,29 @@
+{
+  "id": "a3c81f5d-29e4-5b07-9c6a-d1e2f3a4b5c6",
+  "type": "priory.ask.posted",
+  "subject": "xps13:7",
+  "time": "2026-11-21T10:00:02Z",
+  "data": {
+    "runner": "xps13",
+    "ask": 7,
+    "version": 1,
+    "kind": "step",
+    "listed": {
+      "id": 7,
+      "task": 3,
+      "key": "github:acme/widgets#42",
+      "step": "approve",
+      "state": "open",
+      "revision": 1,
+      "question": "approve",
+      "options": [
+        "approved",
+        "rejected"
+      ],
+      "since": "2026-11-21T10:00:01Z",
+      "revisions": [],
+      "refused": []
+    }
+  },
+  "links": []
+}

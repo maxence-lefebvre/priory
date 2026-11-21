@@ -104,6 +104,7 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
         usage: transcript::usage,
     };
     let consumer = runners::consumer(trace.runner.as_deref());
+    runners::name(&db, trace.runner.as_deref())?;
     if once {
         drain(&*bus, &consumer, &mut db, &trace, counting.get(&home))?;
         runners::flush(&db, &*bus)?;

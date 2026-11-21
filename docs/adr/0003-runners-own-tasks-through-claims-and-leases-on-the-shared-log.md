@@ -118,8 +118,8 @@ trait, as ADR 0001 left them.
 - A started task on a runner that never comes back waits for `priory give`.
 - A given task starts over, so work its old runner had not pushed is not carried.
 - A daemon that cannot reach its log keeps its tasks going: see the amendment below.
-- Another runner's asks are not listed on this runner's desk. A person needs the ask's runner and
-  id to answer it. Listing them is R8.5's work.
+- Every runner posts its asks on the log, and every desk lists them all, as R8.5 asks. See
+  [runners.md](../daemon/runners.md#every-runners-asks).
 - Heartbeats add one message per runner per minute to `factory.intake`.
 
 ## Amendment: a runner rides out a lost log
