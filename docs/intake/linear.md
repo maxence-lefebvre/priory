@@ -8,12 +8,14 @@ created, state changes, comments, and blockers that change.
 | Stream | Reads | Started by |
 | ------ | ----- | ---------- |
 | `linear.view:<view>` | every issue of the view | a `linear.view` trigger naming the view |
-| `linear.issues` | issues updated since the position, archived ones included, with their last 50 history entries and the issues they block | any Linear trigger, or an open wait on a Linear issue |
+| `linear.issues` | issues updated since the position, archived ones included, with their last 50 history entries and the issues they block | any Linear trigger, or an open wait or a subscription on a Linear issue |
 | `linear.comments` | comments created since the position | the same as `linear.issues` |
 
 The issues and comments streams cover the whole workspace, whatever the triggers start on. So a
 task gets its issue's comments and state changes even when its trigger only watches a view. An open
-wait on a Linear issue starts them too (see [watches.md](watches.md)).
+wait or a subscription on a Linear issue starts them too (see [watches.md](watches.md)). A task
+keyed on a Linear issue subscribes to it, so a comment there reopens the task once done (see
+[routing.md](../daemon/routing.md#feedback-reopens-a-done-task)).
 
 ## Trigger
 

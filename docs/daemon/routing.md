@@ -27,7 +27,7 @@ A task gets its resources at these moments:
 
 | When | Resource | Example |
 | ---- | -------- | ------- |
-| The task is created | its trigger key | `github:owner/name#42`, `linear:ENG-7`, `cli:docs-1` |
+| The task is created | its trigger key, and a subscription to it when the key names an issue, a pull request, a Linear issue or a Slack thread | `github:owner/name#42`, `linear:ENG-7`, `cli:docs-1` |
 | Its first run starts | its branch | `github:owner/name@priory/3` |
 | A wait of its names a pull request | that pull request | `github:owner/name#57` |
 | A wait of its names a Linear issue or a Slack thread | that issue or thread | `linear:ENG-7`, `slack:C0123:1763500000.000100` |
@@ -137,7 +137,9 @@ What happens to a `kept` message depends on the task's state:
   [waits.md](waits.md)). An asleep task wakes. A ready, blocked or held task keeps its state, and
   its next run gets the prompt.
 - If the task subscribes to a resource the message names and has no open wait on it, an asleep
-  task at a model step wakes with it, and the outcome becomes `woke`. Another active task that subscribes to
+  task at a model step wakes with it, and the outcome becomes `woke`. The subscription to the task's
+  own key takes only feedback and closes (see [tools.md](tools.md#subscribeon-and-unsubscribeon)).
+  Another active task that subscribes to
   it gets it too: a prompt of its own while it runs, or a wake while it sleeps (see
   [tools.md](tools.md#subscribeon-and-unsubscribeon)).
 - Any other kept message waits for the task's next run, which reads it in its first prompt.
@@ -166,14 +168,23 @@ checks gate. So firings never stack up.
 
 ## Feedback reopens a done task
 
-Feedback is a `github.pull_request_review.submitted`, `github.pull_request.comment` or
-`github.pull_request_review_comment` event. A review whose `state` is `approved` or `dismissed`
-asks for nothing, so it is not feedback here. When no active task owns a resource it names, it
-reopens the newest done task that:
+Feedback is one of these events:
 
-- owns its pull request, through `open-pr`, a claim, a subscription or a wait;
+- on a pull request: `github.pull_request_review.submitted`, `github.pull_request.comment` or
+  `github.pull_request_review_comment`. A review whose `state` is `approved` or `dismissed` asks
+  for nothing, so it is not feedback here;
+- on an issue: `github.issues.comment`;
+- on a Linear issue: `linear.comment.created`;
+- in a Slack thread: `slack.thread.replied`.
+
+When no active task owns a resource it names, it reopens the newest done task that:
+
+- owns the pull request it is on, as its key, through `open-pr`, a claim, a wait or a
+  subscription; or, for a comment on an issue, a Linear issue or a Slack thread, subscribes to it,
+  as every task does to its own key until it unsubscribes;
 - became done at or before the feedback's `time`, to the second;
-- has no `github.pull_request.closed` event of that pull request in the inbox, merged or not, and
+- has no `github.pull_request.closed` or `github.issues.closed` event of that pull request or issue
+  in the inbox, merged or not, and
   the feedback's `open` is true, so a close the intake publishes after it reopens nothing;
 - shares its key with no active task.
 
@@ -184,6 +195,8 @@ prompt is one line, then the event's own line:
 
 ```text
 Feedback reopened this done task as generation 2: ana commented on github:owner/name#57: Can you split this? https://github.com/owner/name/pull/57#issuecomment-701
+Feedback reopened this done task as generation 2: Ana commented on linear:ENG-7: Still broken. https://linear.app/acme/issue/ENG-7
+Feedback reopened this done task as generation 2: U0123 replied in slack:C0123:1763500000.000100: Still broken.
 ```
 
 The task is `ready`, so its next run resumes the session of the step's agent. The daemon appends a
@@ -192,6 +205,8 @@ The task is `ready`, so its next run resumes the session of the step's agent. Th
 Limits:
 
 - A pull request closed and reopened on GitHub keeps its close in the inbox, so it reopens nothing.
+- The intake hears a done task's Linear issue or Slack thread only while something watches it,
+  such as the subscription to its key (see [watches.md](../intake/watches.md)).
 - The intake publishes no bot's comment, and only feedback after the task was done reopens it. A
   person who comments as the same GitHub account Priory acts as reopens it like anyone else.
 
