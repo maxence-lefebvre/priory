@@ -4,6 +4,7 @@ bands = ["blocker", "now", "today", "later"]   # the default bands, highest firs
 handler = "reviewer"                           # reads a stalled run's screen; claude-code only
 stalled = "10m"                                # no hook event and no pane change for this long
 command_timeout = "5m"                         # the limit on one git, gh or tmux command
+gate = "cargo test"                            # what `priory gate` runs in a worktree
 
 [sweep]
 every = "10m"                                  # the built-in worktree sweep

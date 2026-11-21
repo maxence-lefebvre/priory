@@ -68,8 +68,8 @@ The keys of `factory.toml`, workflows and agents are in [docs/reference/](../ref
 - [desk.md](desk.md): `priory desk`, reports and `priory post`, resume, cancel, revive, snooze, say,
   pause, and `priory seen` for Since you looked.
 - [sweep.md](sweep.md): worktree removal, retiring asleep tasks, sweep scripts and the sweeper.
-- [tools.md](tools.md): the MCP tools, moving between steps, code steps, the `run` action and
-  approvals.
+- [tools.md](tools.md): the MCP tools, proofs and `priory gate`, moving between steps, code steps,
+  the `run` action and approvals.
 - [waits.md](waits.md): asks and answers, wait conditions, and the checks gate before `done`.
 - [asks.md](asks.md): delivering an outside ask's answer to the session that asked.
 - [outbox.md](outbox.md): prompt states and how the daemon types a prompt.

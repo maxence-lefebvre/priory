@@ -9,6 +9,7 @@ agent = "fixer"
 prompt = "Find the failed checks on the default branch and on open pull requests. Pick one that needs a fix, find its cause, fix it, and commit. Your result's first line becomes the pull request title. End with clear when no failure needs a fix."
 effect = "reversible"
 next = { fixed = "approve-pr", clear = "done" }
+proof = { fixed = "gate-passed" }
 
 [[steps]]
 id = "approve-pr"

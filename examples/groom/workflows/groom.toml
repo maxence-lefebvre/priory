@@ -32,14 +32,23 @@ decides = "model"
 agent = "reviewer"
 prompt = "Review the committed change against .priory/brief.md. Write each finding to .priory/review.md and end with fix, or end with clean."
 effect = "reversible"
-next = { clean = "describe", fix = "implement" }
+next = { clean = "risk", fix = "implement" }
 
-# open-pr takes the latest result as the pull request's title and body, not the review's verdict.
+# A fresh agent grades the finished change, so the person sees its risk before the diff.
+[[steps]]
+id = "risk"
+decides = "model"
+agent = "risk"
+prompt = "Grade the merge risk of the committed change low, medium or high."
+effect = "reversible"
+next = { low = "describe", medium = "describe", high = "describe" }
+
+# open-pr takes the latest result as the pull request's title and body, not a verdict.
 [[steps]]
 id = "describe"
 decides = "model"
 agent = "implementer"
-prompt = "Describe the pull request in your result: its title on the first line, then what changed and how you tested it."
+prompt = "Describe the pull request in your result: its title on the first line, then what changed, how you tested it, and the merge risk in .priory/risk.md."
 effect = "reversible"
 next = { described = "open-pr" }
 
@@ -47,9 +56,9 @@ next = { described = "open-pr" }
 id = "implement-green"
 decides = "model"
 agent = "implementer"
-prompt = "Implement the brief, run the tests, and commit. Your result's first line becomes the pull request title."
+prompt = "Implement the brief, run the tests, and commit."
 effect = "reversible"
-next = { passed = "open-pr", failed = "stop" }
+next = { passed = "risk", failed = "stop" }
 
 # A person reviews every pull request before it merges, and nothing here merges.
 [[steps]]

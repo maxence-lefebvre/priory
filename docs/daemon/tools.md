@@ -20,7 +20,7 @@ wait or both. A `result` after an open ask or wait is refused, as is a second `a
 `wait`. An ask and a wait side by side wake the task on the first answer or event (see An ask
 beside a wait in [waits.md](waits.md)).
 
-### `result(outcome, summary, evidence?, commit?, reason?, branches?)`
+### `result(outcome, summary, evidence?, commit?, reason?, branches?, risk?)`
 
 `result` stores the run's result and ends the step. Nothing can change or delete a stored result.
 
@@ -43,6 +43,8 @@ capitals is stored in lower case.
 
 The `open-pr` action titles its pull request with the first line of `summary` (see Code steps
 below).
+
+An outcome that the step's `proof` names is refused until its proof holds. See Proofs below.
 
 `branches`, optional, asks `open-pr` for a stack of pull requests: their branches, bottom first,
 each based on the one before it. The last one must be the task's own branch, and each lower one is
@@ -67,6 +69,57 @@ stays in the step's result and in its `factory.step.ended` record, which carries
 
 `priory tasks` prints the grade and its reason in the `grade` and `grade_reason` columns, and
 `priory tasks --grade green` lists only the green tasks.
+
+#### Merge risk
+
+A grade is a forecast made before the work. A merge risk is a verdict on the finished change, given
+by a risk step: a model step whose result carries `risk` and whose outcome, `low`, `medium` or
+`high`, is the verdict. Give it its own agent, not
+the implementer, so the verdict is a fresh look at the diff.
+
+Its result carries `risk`, one line per dimension, each starting with its level:
+
+```json
+{
+  "outcome": "medium",
+  "summary": "Merge risk medium",
+  "risk": {
+    "ask": "low: does what the issue asks, nothing more",
+    "blast_radius": "medium: every task listing reads the new column",
+    "verification": "low: a test covers each new branch",
+    "rollback": "medium: the migration adds a column a revert leaves behind",
+    "detection": "low: the listing tests fail on a wrong value"
+  }
+}
+```
+
+| Dimension | Asks |
+| --------- | ---- |
+| `ask` | Does the change do what was asked, and nothing else? |
+| `blast_radius` | How much breaks if the change is wrong? |
+| `verification` | How well do the tests and checks prove it works? |
+| `rollback` | How costly is it to undo once merged? |
+| `detection` | Would a failure be noticed soon? |
+
+The outcome must be the highest level of the five lines. Each line is its level, a colon, a space
+and why, with no tab or line break. `risk` with another outcome, a missing or extra dimension, and a
+line of another shape are refused with:
+
+```text
+risk must be an object with one line per dimension, ask, blast_radius, verification, rollback, detection, each its level, a colon and why, on one line
+outcome low must be the highest level of risk's lines: medium
+risk needs a low, medium or high outcome: its verdict
+```
+
+A `low`, `medium` or `high` outcome without `risk` is a plain outcome and stores no verdict.
+
+The result keeps the verdict as `merge_risk`, and the task takes the latest one as its own
+`merge_risk`: `verdict` and the five lines (see [Task in
+detail](../reference/serve.md#task-in-detail)). Every ask of the task carries it: `priory asks
+--json` gives it as `merge_risk` and adds the verdict to the ask's `risk`, so `priory asks --risk
+low` lists the asks of tasks graded low. `priory asks` prints the five lines in its last column,
+`merge_risk`. A human step's ask also takes the verdict and the five lines as its `text`, which the
+web view and a routed ask's lead read.
 
 ### `ask(question, options, recommendation, tradeoff, title?, text?, whatWaits?, nextAction?, command?)`
 
@@ -389,6 +442,48 @@ task's report and keeps the choices already made. It does not end the turn. `pri
 itself from the state file, without the daemon. A pick or a comment on a row arrives as the next
 prompt; the agent answers a comment with `priory report reply`. See [reports.md](reports.md).
 
+#### Proofs
+
+An outcome is the agent's word, unless the step names a proof for it. A step's `proof` table lists
+the outcomes the daemon checks before it stores them (see [workflows.md](../reference/workflows.md#step-keys)).
+Priory knows one proof, `gate-passed`: the factory's `gate` passed at the head of the task's branch.
+
+The agent runs the gate from its pane, in any folder:
+
+```sh
+priory gate
+```
+
+`priory gate` asks the daemon for the factory's `gate`, the run's worktree and the head of the
+task's branch. It runs the gate with `sh -c` in the worktree, with its output on the terminal. Then
+it sends the commit and the exit code to the daemon, which appends a `factory.gate.ran` record to the
+trace (see [trace-schema.md](../trace-schema.md#factorygateran)). `priory gate` exits with the
+gate's exit code, or 1 when a signal killed the gate or the daemon did not record the run.
+
+`priory gate` runs nothing and exits 1 outside a run's pane, where `PRIORY_SESSION` is unset, in a
+factory with no `gate`, and in a worktree whose checked-out commit is not the head of its branch,
+since the gate would test another commit than the one it records. It records nothing either when
+the worktree moves to another commit while the gate runs.
+
+A step with a proof ends its prompt with a line that names the outcomes to prove. When the agent
+sends a proved outcome, the daemon reads the task's gate runs in the trace and refuses the result,
+telling the agent why, when:
+
+- no gate ran for the task:
+  `outcome passed needs a gate that passed at the head <sha>, and no gate ran for task 7: run `priory gate` in the worktree, then send the result again`
+- the last gate run at the head failed: `..., and the last gate run at it exited 1: ...`
+- the gate ran only at other commits: `..., and the last gate run for task 7 was at another commit, <sha>: ...`
+
+The agent fixes what it must, runs `priory gate` again and sends the result again. Outcomes the
+`proof` table does not name are stored as before.
+
+Known limits:
+
+- A proof checks that the agent ran the gate, not that it could not lie. An agent can write to the
+  daemon's socket itself.
+- The gate runs at the branch's head commit, with any uncommitted change in the worktree. A change
+  left uncommitted after the gate passed does not refuse the outcome.
+
 ## Moving on
 
 When the run's turn ends, its `Stop` moves the task by its result to `next[outcome]`:
@@ -441,7 +536,8 @@ session, instead of the person. These asks still go to the person:
 
 - an ask whose answer can let an irreversible step run before a person decides again, the asks
   that `priory asks --json` marks with the `irreversible` risk;
-- the ask of a human step with `approves`, since its answer grants an approval;
+- the ask of a human step with `approves`, since its answer grants an approval, even after a `low`
+  [merge risk](#merge-risk);
 - an ask whose answer runs a command;
 - the asks the daemon makes itself: a hold's, a stack's, and an approval asked again at a new
   commit;

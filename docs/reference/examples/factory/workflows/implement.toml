@@ -25,6 +25,7 @@ agent = "implementer"
 prompt = "Implement the plan and run the tests."
 effect = "reversible"
 next = { passed = "approve-pr", failed = "stop" }
+proof = { passed = "gate-passed" }  # the daemon checks the gate passed at the head
 
 [[steps]]
 id = "approve-pr"

@@ -1,4 +1,4 @@
-use crate::factory::{By, Decider, Effect, Factory, Harness, Step, Workflow};
+use crate::factory::{By, Decider, Effect, Factory, Harness, Proof, Step, Workflow};
 use std::collections::BTreeSet;
 
 /// A guarded call an agent can make with no human decision, in a workflow, and why.
@@ -67,6 +67,19 @@ pub struct Gate {
     pub step: String,
     pub approved_by: Vec<String>,
     pub autonomous: Option<String>,
+}
+
+/// Each outcome of the workflow that the daemon verifies, as (step, outcome, proof).
+pub fn proofs(workflow: &Workflow) -> Vec<(&str, &str, Proof)> {
+    workflow
+        .steps
+        .iter()
+        .flat_map(|step| {
+            step.proof
+                .iter()
+                .map(|(outcome, proof)| (step.id.as_str(), outcome.as_str(), *proof))
+        })
+        .collect()
 }
 
 pub fn gates(workflow: &Workflow) -> Vec<Gate> {

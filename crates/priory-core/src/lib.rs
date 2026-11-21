@@ -16,6 +16,7 @@ mod otlp;
 mod overlap;
 pub mod post;
 pub mod progress;
+pub mod proof;
 mod push;
 pub mod relate;
 pub mod report;
