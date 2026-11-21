@@ -5,7 +5,8 @@ same view files as an adapter." It builds nothing. It holds the model, the first
 its tests, the slices after it, and the open questions with a recommendation for each.
 
 The first slice is built, with each recommendation taken: [herdr.md](../adapters/herdr.md#the-layout)
-describes it. It differs in one place: `adapters/herdr/layout` prints the layout, and only
+describes it. Its placement differs from the tables below: a map in `layout.js` puts narrow panels in
+asides and wide ones in center tabs, and a view's nesting only orders them. It also differs here: `adapters/herdr/layout` prints the layout, and only
 `install` writes it.
 
 ## What exists today

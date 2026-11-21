@@ -193,7 +193,9 @@ fn asks_query() -> String {
      (SELECT json_group_array(json_object('revision', revision, 'answer', answer, 'by', by,
         'why', why, 'at', created))
       FROM (SELECT * FROM ask_refusals WHERE ask = asks.id ORDER BY id)) AS refused,
-     {IRREVERSIBLE} AS irreversible, tasks.merge_risk, tasks.grade, {}
+     {IRREVERSIBLE} AS irreversible, tasks.merge_risk, tasks.grade,
+     asks.kind != 'step' AND NOT EXISTS (SELECT 1 FROM holds
+       WHERE holds.ask = asks.id AND holds.released IS NULL) AS free_text, {}
    FROM asks LEFT JOIN tasks ON tasks.id = asks.task
    LEFT JOIN snoozes ON snoozes.kind = 'ask' AND snoozes.item = asks.id
    WHERE (?1 IS NULL OR asks.task = ?1) AND (?2 IS NULL OR asks.id = ?2)
@@ -238,6 +240,7 @@ pub fn inbox(db: &Connection, since: i64) -> rusqlite::Result<Value> {
 /// groups them by the resource each names first, newest first, when a task owned or subscribed to
 /// it: with that task and the command that routes the next event. `other` counts the rest per
 /// source, since no task ever owned them.
+/// `outsider` lists the comments and reviews from outside the repository, newest first.
 pub fn unrouted(db: &Connection, since: i64) -> rusqlite::Result<Value> {
     let mut owned: Vec<(String, Value, Vec<Value>)> = Vec::new();
     let mut other: Vec<(String, usize)> = Vec::new();
@@ -272,7 +275,28 @@ pub fn unrouted(db: &Connection, since: i64) -> rusqlite::Result<Value> {
         .into_iter()
         .map(|(source, events)| json!({ "source": source, "events": events }))
         .collect();
-    Ok(json!({ "unrouted": { "owned": owned, "other": other } }))
+    Ok(json!({
+        "unrouted": { "owned": owned, "other": other },
+        "outsider": outsider_events(db, since, None)?,
+    }))
+}
+
+/// Each comment or review after `since`, and within `window` (from, to) when given, from someone
+/// outside the repository, newest first, with who wrote it.
+fn outsider_events(
+    db: &Connection,
+    since: i64,
+    window: Option<(&str, &str)>,
+) -> rusqlite::Result<Value> {
+    let (from, to) = window.unzip();
+    rows(
+        db,
+        "SELECT seq, type, subject, time, json_extract(data, '$.actor') AS actor FROM inbox
+         WHERE outcome = 'outsider' AND seq > ?1
+           AND (?2 IS NULL OR julianday(time) BETWEEN julianday(?2) AND julianday(?3))
+         ORDER BY seq DESC",
+        params![since, from, to],
+    )
 }
 
 /// The newest task that owned or subscribed to `resource`, in any state.
@@ -616,6 +640,8 @@ fn asks_of(
             .chain(object.remove("grade").filter(Value::is_string))
             .collect();
         object.insert("risk".to_owned(), risk.into());
+        let free_text = object["free_text"].as_i64() == Some(1);
+        object.insert("free_text".to_owned(), free_text.into());
     }
     Ok(asks)
 }
@@ -1154,15 +1180,21 @@ pub fn desk(
         |row| row.get(0),
     )?;
     let day_ago = (now - jiff::SignedDuration::from_hours(24)).to_string();
+    let day = (day_ago.as_str(), now.to_string());
     let mut unrouted = 0;
-    for (resource, _) in unrouted_events(db, 0, Some((&day_ago, &now.to_string())))? {
+    for (resource, _) in unrouted_events(db, 0, Some((day.0, &day.1)))? {
         unrouted += usize::from(owner(db, &resource)?.is_some());
     }
+    let outsider = outsider_events(db, 0, Some((day.0, &day.1)))?
+        .as_array()
+        .map_or(0, Vec::len);
     Ok(json!({
         "paused": state::pause_banner(db)?,
         "banner": stall::banner(db)?,
         "intake": post::intake_banner(db)?,
-        "counts": { "asleep": asleep, "snoozed": snoozed, "unrouted": unrouted },
+        "counts": {
+            "asleep": asleep, "snoozed": snoozed, "unrouted": unrouted, "outsider": outsider,
+        },
         "items": items,
         "next": ranked.first(),
         "ranked": ranked,

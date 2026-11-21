@@ -112,6 +112,10 @@ fn priory(args: &[&str], dir: &Path) -> Outcome {
     let output = Command::new(env!("CARGO_BIN_EXE_priory"))
         .args(args)
         .arg(dir)
+        .env(
+            "HERDR_APP_HOME",
+            Path::new(env!("CARGO_TARGET_TMPDIR")).join("no-herdr"),
+        )
         .output()
         .unwrap();
     Outcome {

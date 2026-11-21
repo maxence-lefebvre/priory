@@ -5,6 +5,9 @@ export const ARM_MS = 4000;
 
 const BUSY = new Set(["waiting", "posting"]);
 
+/** Whether an ask takes free text and a dismissal: a step's or a hold's ask takes only its options. @param {any} ask */
+export const takesText = (ask) => ask?.free_text !== false;
+
 /** Whether answering `option` runs the ask's command. */
 export const runsCommand = (ask, option) => typeof ask.command === "object" && Boolean(ask.command?.runs?.includes(option));
 

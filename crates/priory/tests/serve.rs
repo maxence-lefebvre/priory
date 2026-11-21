@@ -455,7 +455,7 @@ fn each_endpoint_returns_what_the_cli_shows_and_its_json() {
     assert_eq!(queue["running"], json!([]));
     assert_eq!(
         api(&address, "/api/desk")["counts"],
-        json!({ "asleep": 0, "snoozed": 0, "unrouted": 0 })
+        json!({ "asleep": 0, "snoozed": 0, "unrouted": 0, "outsider": 0 })
     );
     let desk = api(&address, "/api/desk");
     assert_eq!(desk["banner"], Value::Null);
@@ -4307,6 +4307,19 @@ fn base64(text: &Value) -> Vec<u8> {
     Base64::decode_vec(text.as_str().unwrap()).unwrap()
 }
 
+/// A notification's payload without its `id`, once the id is the time the notification was queued
+/// and its queue row, which names nothing a lock screen shows.
+fn without_id(mut payload: Value) -> Value {
+    let id = payload
+        .as_object_mut()
+        .and_then(|fields| fields.remove("id"))
+        .expect("each notification carries an id");
+    let (queued, row) = id.as_str().unwrap().split_once('/').unwrap();
+    assert!(queued.parse::<jiff::Timestamp>().is_ok(), "{id}");
+    assert!(row.parse::<u64>().is_ok(), "{id}");
+    payload
+}
+
 #[test]
 fn a_new_ask_pushes_one_notification_per_subscription_with_only_its_title_and_url() {
     let mut setup = Setup::new("push-ask", SERVE);
@@ -4341,7 +4354,7 @@ fn a_new_ask_pushes_one_notification_per_subscription_with_only_its_title_and_ur
             &laptop
         };
         let plain = decrypt(&base64(&push["body"]), key, auth);
-        let payload: Value = serde_json::from_slice(&plain).unwrap();
+        let payload = without_id(serde_json::from_slice(&plain).unwrap());
         assert_eq!(
             payload,
             json!({ "title": "Merge the docs fix?", "url": format!("/asks/{ask}") })
@@ -4503,7 +4516,10 @@ fn a_failing_intake_and_an_uncertain_prompt_push_an_alarm_with_only_a_title_and_
     let payloads: Vec<Value> = pushes
         .iter()
         .map(|push| {
-            serde_json::from_slice(&decrypt(&base64(&push["body"]), &phone.0, &phone.1)).unwrap()
+            without_id(
+                serde_json::from_slice(&decrypt(&base64(&push["body"]), &phone.0, &phone.1))
+                    .unwrap(),
+            )
         })
         .collect();
     assert_eq!(
@@ -5394,6 +5410,49 @@ fn unrouted_events_split_into_ended_owners_with_their_follow_up_and_a_count_per_
     );
     let (status, _) = get(&address, "/api/inbox?unrouted=2", Some(TOKEN));
     assert_eq!(status, 400);
+}
+
+#[test]
+fn an_outsider_comment_is_counted_on_the_desk_and_listed_as_a_group_of_its_own() {
+    let setup = Setup::new("desk-outsider", SERVE);
+    let message = herdr_bus::Message::new(
+        "github.pull_request.comment",
+        json!({
+            "repo": "owner/repo", "pull_request": 7, "actor": "stranger",
+            "association": "NONE", "body": "Looks wrong.",
+        }),
+    )
+    .subject("owner/repo#7")
+    .time("2026-11-17T11:00:00Z".parse().unwrap());
+    setup.bus().publish("factory.intake", &message).unwrap();
+    succeeded(&setup.priory(&["daemon", &setup.factory(), "--once"]));
+
+    let desk = json_of(&setup, "desk");
+    let output = setup.priory(&["inbox", "--unrouted", "--json"]);
+    succeeded(&output);
+    let unrouted: Value = serde_json::from_slice(&output.stdout).unwrap();
+    let text = setup.priory(&["desk"]);
+    succeeded(&text);
+    let text = String::from_utf8(text.stdout).unwrap();
+    let listed = setup.priory(&["inbox", "--unrouted"]);
+    succeeded(&listed);
+    let listed = String::from_utf8(listed.stdout).unwrap();
+
+    assert_eq!(desk["counts"]["outsider"], 1);
+    assert_eq!(desk["counts"]["unrouted"], 0);
+    assert_eq!(unrouted["unrouted"], json!({ "owned": [], "other": [] }));
+    assert_eq!(unrouted["outsider"][0]["subject"], "owner/repo#7");
+    assert_eq!(unrouted["outsider"][0]["actor"], "stranger");
+    assert!(
+        text.starts_with(
+            "1 comment from outside the repository came in the last 24 hours. See it with `priory inbox --unrouted`.\n"
+        ),
+        "{text}"
+    );
+    assert!(
+        listed.starts_with("from outside the repository: 1 event\n"),
+        "{listed}"
+    );
 }
 
 #[test]

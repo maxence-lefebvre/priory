@@ -340,6 +340,11 @@ test("an ask the Desk opens with priory.asks.open opens here, in a view that sho
   assert.equal(panel.selected, 1);
 });
 
+test("a step's ask offers no free text and no dismissal, and an agent's ask does", () => {
+  assert.equal(askDetail({ ...asks[0], free_text: false }, { now, armed: null }).takesText, false);
+  assert.equal(askDetail({ ...asks[0], free_text: true }, { now, armed: null }).takesText, true);
+});
+
 test("the Attach menu's Open task opens the ask's task in the Task panel", async () => {
   const { context, draw, find, herdr, press, settle } = await import("./kit.js");
   const { default: Asks } = await import("../mods/priory-asks/main.js");
