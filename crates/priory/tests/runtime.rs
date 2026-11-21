@@ -19601,6 +19601,44 @@ fn a_waiting_entry_bases_its_pull_request_on_its_predecessors_branch() {
 }
 
 #[test]
+fn the_predecessor_pushing_again_wakes_the_waiting_entry_to_rebase_onto_the_new_head() {
+    let setup = stacked_entry_opened("batch-waiting-pushed");
+
+    let head = setup.commit(2, "c.txt");
+    let worktree = setup.dir.join("home/worktrees/owner/repo/2");
+    assert!(
+        git(&worktree)
+            .env("GIT_CONFIG_COUNT", "1")
+            .env(
+                "GIT_CONFIG_KEY_0",
+                format!(
+                    "url.file://{}/.insteadOf",
+                    setup.dir.join("origin").display()
+                ),
+            )
+            .env("GIT_CONFIG_VALUE_0", "https://github.com/")
+            .args(["push", "-q", "origin", "priory/2"])
+            .status()
+            .unwrap()
+            .success()
+    );
+
+    let line = format!("task 2 pushed priory/2 to {head}; rebase onto it");
+    let outbox = setup.until("outbox", |rows| {
+        rows.iter()
+            .any(|row| row[1] == "3" && row[4].contains(&line))
+    });
+    assert_eq!(
+        outbox
+            .iter()
+            .filter(|row| row[1] == "3" && row[4].contains("pushed priory/2"))
+            .count(),
+        1,
+        "{outbox:?}"
+    );
+}
+
+#[test]
 fn the_predecessors_pull_request_merging_wakes_the_waiting_entry_to_rebase_onto_its_base() {
     let setup = stacked_entry_opened("batch-waiting-restack");
 

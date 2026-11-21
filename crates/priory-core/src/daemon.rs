@@ -966,6 +966,7 @@ fn tend(
         runtime::kept_head(home, Path::new(worktree), branch)
     })?;
     overlap::tick(db, factory, home)?;
+    crate::stacked::pushed(db, trace, home)?;
     tools::enter_queued(db, factory)?;
     state::disk_due(db, || room::measure(home).ok().map(|room| room.disk_free))?;
     memory::reclaim(db)?;

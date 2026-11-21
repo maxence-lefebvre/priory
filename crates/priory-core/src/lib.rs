@@ -34,6 +34,7 @@ pub mod sections;
 pub mod serve;
 pub mod snooze;
 mod stack;
+mod stacked;
 pub mod stall;
 pub mod state;
 pub mod subscribe;

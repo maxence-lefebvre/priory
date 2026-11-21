@@ -14,9 +14,8 @@ its pull request is based on it.
 
 - **Revalidate the parent at the start.** Built: see
   [daemon/batches.md](../daemon/batches.md#the-waiting-condition-and-stacked-entries).
-- **Tell the entry when the parent pushes again.** After feedback, the parent pushes new commits.
-  The daemon would queue a line for the entry: `task 31 pushed priory/31 to <sha>; rebase onto it`.
-  Today the entry hears only the parent's merge.
+- **Tell the entry when the parent pushes again.** Built: see
+  [daemon/batches.md](../daemon/batches.md#the-waiting-condition-and-stacked-entries).
 - **Skip the overlap hold for a stacking pair.** The overlap hold ([runs.md](../daemon/runs.md),
   Overlapping files) would skip an entry and its stacking parent, and only them. Otherwise it can
   hold the entry until its parent merges, since both change the same files. The overlap hold sees
