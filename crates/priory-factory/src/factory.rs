@@ -558,6 +558,12 @@ pub struct Agent {
     pub session: Session,
     /// The context size, in tokens, past which the daemon compacts the conversation between turns.
     pub compact_at: Option<std::num::NonZeroU64>,
+    /// The context size, in tokens, past which the daemon compacts a shared session left idle
+    /// for 55 minutes, before its prompt cache expires. Unset, it never compacts an idle session.
+    pub idle_compact_at: Option<std::num::NonZeroU64>,
+    /// What a resumed shared session does when the agent changed since it started.
+    #[serde(default)]
+    pub on_change: OnChange,
     /// What a runner must have free to admit a run of this agent, in bytes.
     #[serde(default, deserialize_with = "size")]
     #[schemars(
@@ -655,6 +661,16 @@ pub enum Session {
     #[default]
     PerTask,
     Shared,
+}
+
+/// `tell`: a resumed shared session's first prompt names what changed in its agent. `fresh`: the
+/// task starts a new session instead.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Deserialize, JsonSchema)]
+#[serde(rename_all = "kebab-case")]
+pub enum OnChange {
+    #[default]
+    Tell,
+    Fresh,
 }
 
 /// Who answers a task's asks. Unset, every ask goes to a person.

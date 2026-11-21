@@ -177,7 +177,7 @@ fn an_unknown_field_names_its_file_and_line() {
     assert_eq!(outcome.code, 1);
     assert_eq!(
         outcome.stderr,
-        "agents/implementer/agent.md:4:1: unknown field `modle`, expected one of description, harness, model, effort, runner, session, compactAt, memory, disk, mcpServers, connectorSignIn, permissions\n"
+        "agents/implementer/agent.md:4:1: unknown field `modle`, expected one of description, harness, model, effort, runner, session, compactAt, idleCompactAt, onChange, memory, disk, mcpServers, connectorSignIn, permissions\n"
     );
 }
 
@@ -264,6 +264,59 @@ fn compact_at_takes_a_positive_token_count_on_a_claude_agent_only() {
         outcome.stderr,
         "agents/implementer/agent.md:4: a codex agent cannot take `compactAt`: Priory reads no Codex tokens, so it never knows the context size\n"
     );
+}
+
+#[test]
+fn idle_compact_at_and_on_change_need_a_shared_claude_agent() {
+    let agent = |harness: &str, session: &str, key: &str| {
+        format!(
+            "+++\ndescription = \"Leads.\"\nharness = \"{harness}\"\nsession = \"{session}\"\n{key}\n+++\n"
+        )
+    };
+    let shared = agent(
+        "claude-code",
+        "shared",
+        "idleCompactAt = 60000\nonChange = \"fresh\"",
+    );
+    let outcome = check(&factory(
+        "idle-shared",
+        &with("agents/implementer/agent.md", &shared),
+    ));
+    assert_eq!((outcome.code, outcome.stderr.as_str()), (0, ""));
+
+    for (name, harness, session, key, refusal) in [
+        (
+            "idle-per-task",
+            "claude-code",
+            "per-task",
+            "idleCompactAt = 60000",
+            "agents/implementer/agent.md:5: `idleCompactAt` needs `session = \"shared\"`: only a shared session is resumed across tasks\n",
+        ),
+        (
+            "fresh-per-task",
+            "claude-code",
+            "per-task",
+            "onChange = \"fresh\"",
+            "agents/implementer/agent.md:5: `onChange` needs `session = \"shared\"`: only a shared session is resumed across tasks\n",
+        ),
+        (
+            "idle-codex",
+            "codex",
+            "shared",
+            "idleCompactAt = 60000",
+            "agents/implementer/agent.md:5: a codex agent cannot take `idleCompactAt`: Priory reads no Codex tokens, so it never knows the context size\n",
+        ),
+    ] {
+        let outcome = check(&factory(
+            name,
+            &with("agents/implementer/agent.md", &agent(harness, session, key)),
+        ));
+        assert_eq!(
+            (outcome.code, outcome.stderr.as_str()),
+            (1, refusal),
+            "{name}"
+        );
+    }
 }
 
 #[test]

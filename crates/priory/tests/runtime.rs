@@ -41,9 +41,9 @@ const OUTPUT: &str = "factory.intake";
 /// Takes a state file back before schema 28, which added search, 29, which added grades, 30,
 /// which added snoozes, 31, which added read reports, 32, which added the pause, 34, which added
 /// reports of sections, 36, which added deliveries, 37, which added progress, 39, which added run
-/// actions, 40, which added answer actions, 42, which added dispatches, 49, which added task ends, 51, which added a run's crossing of `compactAt`, 53, which added intervention levels, 56, which added the step an irreversible approval lets run, 58, which added withdrawal reasons, and 59, which added green stack gates and returned routed asks, 61, which added findings, 62, which added merge risk, 63, which added plan fields, 65, which added chosen subscriptions and approval generations, and 66, which added the step a gate enters after the merge. Schema 38's visits
+/// actions, 40, which added answer actions, 42, which added dispatches, 49, which added task ends, 51, which added a run's crossing of `compactAt`, 53, which added intervention levels, 56, which added the step an irreversible approval lets run, 58, which added withdrawal reasons, and 59, which added green stack gates and returned routed asks, 61, which added findings, 62, which added merge risk, 63, which added plan fields, 65, which added chosen subscriptions and approval generations, 66, which added the step a gate enters after the merge, and 70, which added idle compactions and session definitions. Schema 38's visits
 /// table is created only if missing, so it stays.
-const UNDO_SINCE_SEARCH: &str = "ALTER TABLE tasks DROP COLUMN batch; ALTER TABLE tasks DROP COLUMN batch_entry; DROP INDEX todos_open_connector; ALTER TABLE todos DROP COLUMN connector; ALTER TABLE waits DROP COLUMN after; ALTER TABLE subscriptions DROP COLUMN chosen; ALTER TABLE approvals DROP COLUMN generation;
+const UNDO_SINCE_SEARCH: &str = "ALTER TABLE tasks DROP COLUMN batch; ALTER TABLE tasks DROP COLUMN batch_entry; DROP TABLE idle_compactions; ALTER TABLE shared_sessions DROP COLUMN definition; DROP INDEX todos_open_connector; ALTER TABLE todos DROP COLUMN connector; ALTER TABLE waits DROP COLUMN after; ALTER TABLE subscriptions DROP COLUMN chosen; ALTER TABLE approvals DROP COLUMN generation;
          ALTER TABLE tasks DROP COLUMN plan_goal; ALTER TABLE tasks DROP COLUMN plan_testing; ALTER TABLE tasks DROP COLUMN plan_brief; ALTER TABLE tasks DROP COLUMN verification;
          ALTER TABLE tasks DROP COLUMN merge_risk; ALTER TABLE results DROP COLUMN merge_risk;
          DROP TRIGGER ask_returns_from_its_lead; ALTER TABLE waits DROP COLUMN green;
@@ -5516,7 +5516,8 @@ fn a_state_file_whose_asks_an_approval_names_upgrades_to_outside_asks() {
     // The state file as version 32 left it: every ask belongs to a task.
     let db = rusqlite::Connection::open(setup.dir.join("priory.db")).unwrap();
     db.execute_batch(
-        "ALTER TABLE subscriptions DROP COLUMN chosen; ALTER TABLE approvals DROP COLUMN generation;
+        "DROP TABLE idle_compactions; ALTER TABLE shared_sessions DROP COLUMN definition;
+         ALTER TABLE subscriptions DROP COLUMN chosen; ALTER TABLE approvals DROP COLUMN generation;
          ALTER TABLE tasks DROP COLUMN plan_goal; ALTER TABLE tasks DROP COLUMN plan_testing; ALTER TABLE tasks DROP COLUMN plan_brief; ALTER TABLE tasks DROP COLUMN verification;
          ALTER TABLE tasks DROP COLUMN merge_risk; ALTER TABLE results DROP COLUMN merge_risk;
          DROP TRIGGER ask_returns_from_its_lead; ALTER TABLE waits DROP COLUMN green;
@@ -7930,6 +7931,136 @@ fn an_agent_turned_back_to_per_task_starts_new_sessions_rather_than_resume_the_s
     );
 }
 
+/// A setup whose shared implementer is compacted once idle at a context of 5000 tokens.
+fn idle_compacted(name: &str) -> Setup {
+    let setup = shared(name);
+    let lead = LEAD.replace(
+        "session = \"shared\"\n",
+        "session = \"shared\"\nidleCompactAt = 5000\n",
+    );
+    fs::write(setup.dir.join("factory/agents/implementer/agent.md"), lead).unwrap();
+    setup
+}
+
+impl Setup {
+    /// Makes every run look as if its last hook arrived `minutes` ago.
+    fn idle_for(&self, minutes: u32) {
+        let db = rusqlite::Connection::open(self.dir.join("priory.db")).unwrap();
+        db.execute(
+            &format!("UPDATE runs SET signaled = strftime('%Y-%m-%dT%H:%M:%SZ', 'now', '-{minutes} minutes')"),
+            [],
+        )
+        .unwrap();
+    }
+
+    fn until_compactions(&self, count: usize) {
+        let deadline = Instant::now() + Duration::from_secs(60);
+        while self.compactions() < count {
+            assert!(
+                Instant::now() < deadline,
+                "typed: {:?}\ndaemon: {}",
+                self.typed(),
+                fs::read_to_string(self.dir.join("daemon.log")).unwrap_or_default()
+            );
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+}
+
+#[test]
+fn an_idle_shared_session_past_idle_compact_at_is_compacted_once_before_its_cache_expires() {
+    let mut setup = idle_compacted("idle-compact");
+    setup.contexts(&[6000]);
+    setup.calls(&[result("passed")]);
+    setup.publish(&requested(42));
+    setup.start();
+    let runs = setup.until("runs", |rows| with(rows, 7, "done") == 1);
+
+    setup.idle_for(56);
+
+    setup.until_compactions(1);
+    assert!(has(&launched(&setup), ["--resume", &runs[0][4]]));
+    setup.gone("priory-idle-implementer");
+    std::thread::sleep(Duration::from_millis(1500));
+    assert_eq!(setup.compactions(), 1, "{:?}", setup.typed());
+}
+
+#[test]
+fn a_busy_shared_session_is_not_compacted_however_long_its_turn() {
+    let mut setup = idle_compacted("idle-compact-busy");
+    setup.contexts(&[6000]);
+    setup.calls(&[result("passed")]);
+    setup.hold("hold-stop");
+    setup.publish(&requested(42));
+    setup.start();
+    setup.written("fake/submitted");
+
+    setup.idle_for(56);
+
+    std::thread::sleep(Duration::from_millis(2500));
+    assert_eq!(setup.compactions(), 0, "{:?}", setup.typed());
+    setup.release("hold-stop");
+    setup.until("runs", |rows| with(rows, 7, "done") == 1);
+}
+
+#[test]
+fn a_resumed_shared_session_hears_once_that_its_agent_prompt_changed() {
+    let mut setup = shared("definition-drift");
+    setup.calls(&[result("passed"), result("passed"), result("passed")]);
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("runs", |rows| with(rows, 7, "done") == 1);
+    setup.crash();
+    let lead = LEAD.replace(
+        "You implement one issue.",
+        "You implement one issue, test first.",
+    );
+    fs::write(setup.dir.join("factory/agents/implementer/agent.md"), lead).unwrap();
+
+    setup.publish(&requested(43));
+    setup.start();
+    setup.until("runs", |rows| with(rows, 7, "done") == 2);
+    setup.publish(&requested(44));
+    setup.until("runs", |rows| with(rows, 7, "done") == 3);
+
+    let changed = "Your agent definition changed since this conversation started: its prompt.";
+    let typed = setup.typed();
+    assert_eq!(typed[1].lines().next(), Some(changed), "{typed:?}");
+    assert!(typed[2].starts_with("This is task 3"), "{typed:?}");
+    assert_eq!(
+        typed
+            .iter()
+            .filter(|prompt| prompt.contains(changed))
+            .count(),
+        1,
+        "{typed:?}"
+    );
+}
+
+#[test]
+fn a_shared_agent_that_asks_for_a_fresh_session_on_change_starts_one() {
+    let mut setup = shared("definition-fresh");
+    let lead = LEAD.replace(
+        "session = \"shared\"\n",
+        "session = \"shared\"\nonChange = \"fresh\"\n",
+    );
+    fs::write(setup.dir.join("factory/agents/implementer/agent.md"), &lead).unwrap();
+    setup.calls(&[result("passed"), result("passed")]);
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("runs", |rows| with(rows, 7, "done") == 1);
+    setup.crash();
+    let lead = lead.replace("+++\nYou", "model = \"opus\"\n+++\nYou");
+    fs::write(setup.dir.join("factory/agents/implementer/agent.md"), lead).unwrap();
+
+    setup.publish(&requested(43));
+    setup.start();
+
+    let runs = setup.until("runs", |rows| with(rows, 7, "done") == 2);
+    assert_ne!(runs[0][4], runs[1][4]);
+    assert!(!launched(&setup).contains(&"--resume".to_owned()));
+}
+
 #[test]
 fn a_listing_exits_quietly_when_its_reader_closes_the_pipe() {
     let setup = Setup::new("closed-pipe");
@@ -9298,7 +9429,7 @@ fn an_approval_stored_before_generations_were_kept_is_asked_again_after_the_upgr
     // The state file as version 64 left it: an approval names no generation.
     let db = rusqlite::Connection::open(setup.dir.join("priory.db")).unwrap();
     db.execute_batch(
-        "ALTER TABLE tasks DROP COLUMN batch; ALTER TABLE tasks DROP COLUMN batch_entry; DROP INDEX todos_open_connector; ALTER TABLE todos DROP COLUMN connector; ALTER TABLE waits DROP COLUMN after;
+        "ALTER TABLE tasks DROP COLUMN batch; ALTER TABLE tasks DROP COLUMN batch_entry; DROP TABLE idle_compactions; ALTER TABLE shared_sessions DROP COLUMN definition; DROP INDEX todos_open_connector; ALTER TABLE todos DROP COLUMN connector; ALTER TABLE waits DROP COLUMN after;
          ALTER TABLE subscriptions DROP COLUMN chosen; ALTER TABLE approvals DROP COLUMN generation;
          PRAGMA user_version = 64;",
     )
