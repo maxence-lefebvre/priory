@@ -356,6 +356,7 @@ mod tests {
         fn a_shortcut_payload_of_any_shape_gets_a_form_without_panicking(payload in json_value()) {
             form(&Factory::default(), &payload);
             super::metadata(&payload);
+            person(&payload);
         }
 
         #[test]

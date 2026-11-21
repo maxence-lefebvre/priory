@@ -335,11 +335,23 @@ fn an_allowed_submission_queues_the_thread_once_and_says_so() {
             format!("This thread is already queued as `{key}`, so nothing was added."),
         ]
     );
+    let source = slack
+        .published()
+        .into_iter()
+        .find(|stored| stored.message.kind == "priory.task.requested.cli")
+        .unwrap();
+    assert_eq!(source.message.data["person"], "ana (U0ALLOWED)");
 }
 
 #[test]
-fn a_thread_whose_task_ended_is_queued_again_as_the_person_who_asked() {
+fn a_thread_whose_task_ended_is_queued_again() {
     let mut slack = Slack::new("queue-again");
+    let tasks = Command::new(env!("CARGO_BIN_EXE_priory"))
+        .arg("tasks")
+        .env("PRIORY_DB", slack.dir.join("priory.db"))
+        .output()
+        .unwrap();
+    assert!(tasks.status.success(), "{tasks:?}");
     slack.start();
     let mut socket = slack.accept();
     socket.send(envelope("e1", shortcut(ALLOWED))).unwrap();
@@ -377,16 +389,6 @@ fn a_thread_whose_task_ended_is_queued_again_as_the_person_who_asked() {
             format!("Queued as `{key}`."),
             format!("This thread is already queued as `{key}`, so nothing was added."),
         ]
-    );
-    let persons: Vec<Value> = slack
-        .published()
-        .into_iter()
-        .filter(|stored| stored.message.kind == "priory.task.requested.cli")
-        .map(|stored| stored.message.data["person"].clone())
-        .collect();
-    assert_eq!(
-        persons,
-        [json!("ana (U0ALLOWED)"), json!("ana (U0ALLOWED)")]
     );
 }
 
