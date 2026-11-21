@@ -17217,11 +17217,16 @@ fn a_person_gives_a_started_task_to_another_runner_which_starts_it_over_and_its_
         })
     });
     let factory = b.dir.join("factory");
-    let give = |runner: &str| {
+    let give = |runner: &str, flags: &[&str]| {
         let dir = factory.to_str().unwrap();
-        b.priory(&["give", dir, "github:owner/repo#1", runner])
+        b.command(exe.to_str().unwrap())
+            .env("PRIORY_NOW", AN_HOUR_LATER)
+            .args(["give", dir, "github:owner/repo#1", runner])
+            .args(flags)
+            .output()
+            .unwrap()
     };
-    let given = give("b");
+    let given = give("b", &[]);
     assert_eq!(
         String::from_utf8_lossy(&given.stdout),
         "github:owner/repo#1 given to runner b: b takes it and a drops it as each reads the log\n",
@@ -17233,18 +17238,19 @@ fn a_person_gives_a_started_task_to_another_runner_which_starts_it_over_and_its_
     a.start_with(exe, &[("PRIORY_NOW", AN_HOUR_LATER)]);
     let tasks = a.until("tasks", |rows| rows[0][4] == "dropped");
     assert_eq!(tasks.len(), 1);
-    let refused = give("b");
+    let refused = give("b", &[]);
     assert_eq!(
         String::from_utf8_lossy(&refused.stderr),
         "priory give: runner b holds github:owner/repo#1 already\n"
     );
-    let unknown = give("c");
+    let unknown = give("c", &[]);
     assert_eq!(
         String::from_utf8_lossy(&unknown.stderr),
         "priory give: runner c has no runner file in runners/\n"
     );
 
-    let back = give("a");
+    // b, alive at this hour, holds a live lease.
+    let back = give("a", &["--force"]);
     assert!(
         back.status.success(),
         "{}",
@@ -17253,6 +17259,58 @@ fn a_person_gives_a_started_task_to_another_runner_which_starts_it_over_and_its_
     let tasks = a.until("tasks", |rows| rows.len() == 2 && rows[1][4] == "asleep");
     assert_eq!(tasks[0][4], "dropped", "{tasks:?}");
     b.until("tasks", |rows| rows[0][4] == "dropped");
+}
+
+#[test]
+fn a_person_gives_a_task_whose_owner_may_still_run_it_only_with_force() {
+    let mut a = runner("give-live", "a", None);
+    let mut b = runner("give-live", "b", Some(&a));
+    let mut asked = requested(1);
+    asked.data["workflow"] = json!("approve");
+    a.publish(&asked);
+    let exe = Path::new(env!("CARGO_BIN_EXE_priory"));
+    a.start_with(exe, &[("PRIORY_NOW", T0)]);
+    a.until("asks", |rows| rows.len() == 1);
+    logged(
+        &a,
+        "priory.task.held",
+        json!({ "key": "github:owner/repo#1", "runner": "a", "hold": "kept" }),
+    );
+
+    b.start_with(exe, &[("PRIORY_NOW", "2026-11-21T10:10:00Z")]);
+    b.until("inbox", |rows| {
+        rows.iter().any(|row| {
+            row.contains(&"priory.runner.alive".to_owned()) && row.contains(&"b".to_owned())
+        })
+    });
+    let factory = b.dir.join("factory");
+    let give = |now: &str, flags: &[&str]| {
+        let dir = factory.to_str().unwrap();
+        b.command(exe.to_str().unwrap())
+            .env("PRIORY_NOW", now)
+            .args(["give", dir, "github:owner/repo#1", "b"])
+            .args(flags)
+            .output()
+            .unwrap()
+    };
+    let refused = give("2026-11-21T10:29:59Z", &[]);
+    assert_eq!(
+        String::from_utf8_lossy(&refused.stderr),
+        "priory give: runner a's lease lasts until 2026-11-21T10:30:00Z, and a may still run \
+         github:owner/repo#1: give it then, or pass --force\n"
+    );
+    std::thread::sleep(Duration::from_secs(2));
+    assert!(b.rows("tasks").is_empty(), "nothing moved");
+    assert_eq!(a.rows("tasks")[0][4], "asleep");
+
+    let forced = give("2026-11-21T10:10:00Z", &["--force"]);
+    assert!(
+        forced.status.success(),
+        "{}",
+        String::from_utf8_lossy(&forced.stderr)
+    );
+    b.until("asks", |rows| rows.len() == 1);
+    a.until("tasks", |rows| rows[0][4] == "dropped");
 }
 
 #[test]

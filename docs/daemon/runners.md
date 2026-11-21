@@ -141,8 +141,8 @@ wins only when both hold:
 A runner cut off from the log never starts a `waiting` task, since it cannot read its `kept` back.
 So a task that runs there was `kept` on the log before the cut, and no takeover wins it, however
 long the cut lasts. A task that was `waiting` stays unstarted on the cut-off runner, so the runner
-that takes it over runs it first and alone. `priory give` is the one exception: a person moves a
-started task on purpose, as below.
+that takes it over runs it first and alone. `priory give --force` is the one exception: a person
+moves a task whose owner may still run it, on purpose, as below.
 
 ## Answering another runner's ask
 
@@ -161,17 +161,29 @@ runner file with `runner <runner> has no runner file in runners/`.
 ## Giving a task to another runner
 
 ```sh
-priory give [DIR] <key> <runner>
+priory give [DIR] <key> <runner> [--force]
 ```
 
 publishes a claim of the key for `<runner>` on the log of the factory in `DIR`, `.` by default, from
-the runner that owns it, whatever the hold and the lease. Use it to move a started task off a runner that will not come back. It prints
+the runner that owns it, whatever the hold. Use it to move a started task off a runner that will
+not come back. It prints
 `<key> given to runner <runner>: <runner> takes it and <owner> drops it as each reads the log`.
+
+While the owner's lease is live, its last alive message less than 30 minutes before this
+machine's clock, `priory give` refuses:
+
+```text
+runner <owner>'s lease lasts until <time>, and <owner> may still run <key>: give it then, or pass --force
+```
+
+A runner cut off from the log goes on running its started tasks, so a task given then runs on two
+runners until the old one reads the claim. Wait until the lease ends, or pass `--force` when the
+owner is down for good or you accept the overlap.
 
 Each runner acts when it reads the claim. The new owner starts the task over from its request. The
 old owner ends its live run and drops its copy with the reason `given to runner <runner>`. If the
-old runner was only cut off, its run went on until then, so giving a started task trades that
-overlap for progress. A task can be given back to a runner that had it before.
+old runner was only cut off, its run went on until then, so `--force` trades that overlap for
+progress. A task can be given back to a runner that had it before.
 
 `priory give` reads this machine's state file to find the owner. It refuses with
 `no runner holds <key>` for a key no runner holds or whose task ended, with

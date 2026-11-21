@@ -541,8 +541,15 @@ pub fn answer(
     ))
 }
 
-/// Publishes a claim that gives the task of `key` to `runner`, from the runner that owns it.
-pub fn give(factory: &Factory, db: &Connection, key: &str, runner: &str) -> Result<String, String> {
+/// Publishes a claim that gives the task of `key` to `runner`, from the runner that owns it. While
+/// the owner's lease is live it may be cut off and still running the task, so only `force` gives it.
+pub fn give(
+    factory: &Factory,
+    db: &Connection,
+    key: &str,
+    runner: &str,
+    force: bool,
+) -> Result<String, String> {
     if !factory.runners.contains_key(runner) {
         return Err(format!("runner {runner} has no runner file in runners/"));
     }
@@ -566,6 +573,22 @@ pub fn give(factory: &Factory, db: &Connection, key: &str, runner: &str) -> Resu
     };
     if from == runner {
         return Err(format!("runner {runner} holds {key} already"));
+    }
+    let alive = db
+        .query_row(
+            "SELECT alive FROM leases WHERE runner = ?1",
+            [&from],
+            |row| row.get::<_, i64>(0),
+        )
+        .optional()
+        .map_err(|error| error.to_string())?
+        .and_then(|second| Timestamp::from_second(second).ok());
+    let now = intake::now()?;
+    if let Some(alive) = alive.filter(|alive| !force && !lapsed(Some(*alive), now)) {
+        return Err(format!(
+            "runner {from}'s lease lasts until {}, and {from} may still run {key}: give it then, or pass --force",
+            alive + LEASE
+        ));
     }
     let claim =
         json!({ "key": key, "runner": runner, "request": request, "from": from, "given": true });
