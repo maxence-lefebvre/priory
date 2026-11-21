@@ -64,7 +64,8 @@ const UNDO_SINCE_SEARCH: &str = "DROP TRIGGER ask_returns_from_its_lead; ALTER T
   DROP TRIGGER search_task_created; DROP TRIGGER search_tldr_changed; DROP TRIGGER search_result_stored;
   DROP VIEW task_text; DROP TABLE search; DROP TABLE summaries;
   DROP TABLE embedder; DROP TABLE vectors; ALTER TABLE tasks DROP COLUMN tldr; DROP TABLE dispatches;
-  ALTER TABLE irreversible_asks DROP COLUMN lets;";
+  ALTER TABLE irreversible_asks DROP COLUMN lets;
+  ALTER TABLE tasks DROP COLUMN files; ALTER TABLE tasks DROP COLUMN files_run;";
 
 /// A factory, bus, state, Priory home, origin repository and fake `claude`, all under the test's
 /// own directory, and a tmux server in its own short directory. Dropping it kills the daemon and
@@ -5506,6 +5507,7 @@ fn a_state_file_whose_asks_an_approval_names_upgrades_to_outside_asks() {
          DROP TABLE reports;
          DROP TABLE dispatches;
          ALTER TABLE irreversible_asks DROP COLUMN lets;
+         ALTER TABLE tasks DROP COLUMN files; ALTER TABLE tasks DROP COLUMN files_run;
          DROP TRIGGER ask_withdrawn; ALTER TABLE asks DROP COLUMN withdrawn_reason;
          ALTER TABLE waits DROP COLUMN withdrawn_reason; ALTER TABLE ask_withdrawals DROP COLUMN reason;
          DROP TABLE ask_revisions;
@@ -14636,4 +14638,131 @@ fn a_daemon_refuses_a_socket_directory_that_others_can_enter() {
     let log = fs::read_to_string(setup.dir.join("daemon.log")).unwrap();
     assert!(!status.success(), "{log}");
     assert!(log.contains("not a private folder of this user"), "{log}");
+}
+
+const TWO_MODEL_STEPS: &str = r#"
+start = "implement"
+
+[[steps]]
+id = "implement"
+decides = "model"
+agent = "implementer"
+prompt = "Implement the issue."
+effect = "reversible"
+next = { passed = "check", failed = "stop" }
+
+[[steps]]
+id = "check"
+decides = "model"
+agent = "reviewer"
+prompt = "Check the change."
+effect = "reversible"
+next = { passed = "done", failed = "stop" }
+"#;
+
+/// Task 1 edits `shared.txt` and sits in its `check` run. Task 2 then edits `second` and ends its
+/// `implement` run. Returns once task 2 left `implement`.
+fn overlapping(name: &str, second: &str, factory: &str) -> Setup {
+    overlapping_after(name, second, factory, |_| {})
+}
+
+fn overlapping_after(name: &str, second: &str, factory: &str, first: impl Fn(&Setup)) -> Setup {
+    let mut setup = Setup::with_workflow(name, TWO_MODEL_STEPS);
+    fs::write(setup.dir.join("factory/factory.toml"), factory).unwrap();
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("tasks", |rows| with(rows, 4, "running") == 1);
+    setup.commit(1, "shared.txt");
+    setup.calls(&[passed_with_evidence()]);
+    setup.until("runs", |rows| {
+        rows.len() == 2 && rows[1][2] == "check" && rows[1][6] == "-"
+    });
+    // Task 1's silent turn gets its nudge, which would take the next queued call.
+    setup.until("outbox", |rows| {
+        rows.iter()
+            .any(|row| row[2] == "2" && row[4].starts_with("Your turn ended"))
+    });
+    first(&setup);
+    setup.publish(&requested(43));
+    setup.until("tasks", |rows| with(rows, 4, "running") == 2);
+    setup.commit(2, second);
+    setup.calls(&[passed_with_evidence()]);
+    setup.until("tasks", |rows| {
+        rows.iter()
+            .any(|row| row[0] == "2" && row[3] != "implement")
+    });
+    setup
+}
+
+fn state_of(setup: &Setup, task: &str) -> (String, String) {
+    let tasks = setup.rows("tasks");
+    let row = tasks.iter().find(|row| row[0] == task).unwrap();
+    (row[4].clone(), row[7].clone())
+}
+
+#[test]
+fn a_task_whose_files_overlap_an_earlier_active_task_is_held_until_that_task_ends() {
+    let setup = overlapping("overlap-held", "shared.txt", "name = \"demo\"");
+    setup.until("tasks", |rows| {
+        rows.iter().any(|row| row[0] == "2" && row[4] != "ready")
+    });
+
+    let (state, reason) = state_of(&setup, "2");
+
+    assert_eq!(state, "held");
+    assert!(
+        reason.starts_with("held: overlaps task 1 on shared.txt, until task 1 ends"),
+        "{reason}"
+    );
+}
+
+#[test]
+fn a_task_on_other_files_than_an_earlier_task_is_not_held() {
+    let setup = overlapping("overlap-disjoint", "other.txt", "name = \"demo\"");
+
+    setup.until("tasks", |rows| {
+        rows.iter().any(|row| row[0] == "2" && row[4] == "running")
+    });
+
+    assert_eq!(state_of(&setup, "2").0, "running");
+}
+
+#[test]
+fn a_factory_with_overlap_off_holds_no_task() {
+    let setup = overlapping(
+        "overlap-off",
+        "shared.txt",
+        "name = \"demo\"\n\n[queue]\noverlap = false\n",
+    );
+
+    setup.until("tasks", |rows| {
+        rows.iter().any(|row| row[0] == "2" && row[4] == "running")
+    });
+
+    assert_eq!(state_of(&setup, "2").0, "running");
+}
+
+#[test]
+fn a_task_overlapping_one_with_an_open_pull_request_is_held_until_it_merges() {
+    let setup = overlapping_after("overlap-merge", "shared.txt", "name = \"demo\"", |setup| {
+        let db = rusqlite::Connection::open(setup.dir.join("priory.db")).unwrap();
+        db.execute(
+            "INSERT INTO pull_requests (task, resource, branch, base)
+             VALUES (1, 'github:owner/repo#7', 'priory/1', 'main')",
+            [],
+        )
+        .unwrap();
+    });
+    setup.until("tasks", |rows| {
+        rows.iter().any(|row| row[0] == "2" && row[4] != "ready")
+    });
+
+    let (state, reason) = state_of(&setup, "2");
+
+    assert_eq!(state, "held");
+    assert!(
+        reason.contains("until owner/repo#7 merges")
+            || reason.contains("until github:owner/repo#7 merges"),
+        "{reason}"
+    );
 }

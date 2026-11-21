@@ -114,6 +114,18 @@
       },
       "type": "object"
     },
+    "Queue": {
+      "additionalProperties": false,
+      "description": "How the queue orders tasks.",
+      "properties": {
+        "overlap": {
+          "default": true,
+          "description": "Whether a task waits for an earlier active task that changes the same files; true when unset.",
+          "type": "boolean"
+        }
+      },
+      "type": "object"
+    },
     "RequestDefaults": {
       "additionalProperties": false,
       "description": "What `priory add` and `POST /api/request` use when a request names no workflow or band.",
@@ -421,6 +433,9 @@
           "type": "null"
         }
       ]
+    },
+    "queue": {
+      "$ref": "#/definitions/Queue"
     },
     "request": {
       "anyOf": [
