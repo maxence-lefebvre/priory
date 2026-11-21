@@ -780,7 +780,7 @@ What starts next and why. Saved views: Waiting, Held and Last day, each with a c
 - **Waiting** opens with the Up next strip, as on the desk, then one section per band in the
   factory's band order, leaving out empty bands. Each band lists its queued and ready tasks in
   admission order. A row shows its place in the band (`#2`), key, state and age, its title, and why
-  it waits in `--text-2`: the daemon's reason when it has one ("waits: priory is paused"), else
+  it waits in `--text-3`, as a row's third line: the daemon's reason when it has one ("waits: priory is paused"), else
   "Ready: starts when a runner has room.", "Waits behind ENG-240 in band later.", "Waits behind
   band today." or "Waits for its turn: first in band today.".
 - Each waiting row ends with a **Move** menu, a `.btn secondary` at `--control-fine` height

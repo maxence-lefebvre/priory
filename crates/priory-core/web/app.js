@@ -146,6 +146,8 @@ const state = {
   // The task whose Move is in flight, and each task's last Move refusal.
   moveBusy: null,
   moveNotices: new Map(),
+  // The task whose Move menu is open, so a redraw keeps it open.
+  moveOpen: null,
   sayDrafts: new Map(),
   // The batch the page or the go ask shows, and the go ask's plan edits: the entry whose menu is open,
   // the drop armed by its first tap, whether an edit is in flight, and what the last one said.
@@ -2231,8 +2233,9 @@ function listPanel(panel, wide) {
 function moveMenu(task, bands) {
   const options = moveOptions(task, bands, state.data.queue.bands, state.data.queue.revision);
   const busy = state.moveBusy === task.id ? raw('aria-disabled="true"') : "";
-  return html`<details class="move"><summary class="btn secondary" aria-label="Move ${task.key}">Move${icon("chevron-down", "s13")}</summary>
-    <div class="pick">${options.map((option, at) => html`<button type="button" data-action="move" data-task="${task.id}" data-option="${at}" ${busy}>${option.label}</button>`)}</div></details>`;
+  // A live redraw keeps the menu that is open, and the ids let focus return to it.
+  return html`<details class="move" data-move="${task.id}" ${state.moveOpen === task.id ? raw("open") : ""}><summary id="move-${task.id}" class="btn secondary" aria-label="Move ${task.key}">Move${icon("chevron-down", "s13")}</summary>
+    <div class="pick">${options.map((option, at) => html`<button type="button" id="move-${task.id}-${at}" data-action="move" data-task="${task.id}" data-option="${at}" ${busy}>${option.label}</button>`)}</div></details>`;
 }
 
 const moveNote = (task) => (state.moveNotices.has(task.id) ? html`<p class="note warn" role="status">${icon("circle-x", "s15")}<span>${state.moveNotices.get(task.id)}</span></p>` : "");
@@ -2275,11 +2278,12 @@ async function moveTask(target) {
   state.moveBusy = task.id;
   render();
   const { status, body } = await post(`/api/tasks/${task.id}/move`, option.body).catch(() => ({ status: 0, body: { error: "the connection dropped" } }));
-  state.moveBusy = null;
+  Object.assign(state, { moveBusy: null, moveOpen: null });
   if (status === 401) return signOut("The daemon refused this token. Paste the current one.");
   if (status === 200) state.moveNotices.delete(task.id);
   else state.moveNotices.set(task.id, actionNote("Move", status, body));
   render();
+  document.getElementById(`move-${task.id}`)?.focus();
   refresh();
 }
 
@@ -2552,6 +2556,14 @@ document.addEventListener("click", (event) => {
   }
 });
 
+// A Move menu's toggle does not bubble, so it is caught on its way down.
+document.addEventListener("toggle", (event) => {
+  if (!event.target.matches?.("details.move")) return;
+  const task = Number(event.target.dataset.move);
+  if (event.target.open) state.moveOpen = task;
+  else if (state.moveOpen === task) state.moveOpen = null;
+}, true);
+
 document.addEventListener("change", (event) => {
   if (event.target.dataset.action !== "costs-by") return;
   state.costs.by = event.target.value;
@@ -2629,6 +2641,10 @@ document.addEventListener("keydown", (event) => {
     if (next) go(hrefOf(next));
   } else if (event.key === "Enter" && at >= 0 && document.activeElement === document.body) {
     go(hrefOf(rows[at]));
+  } else if (event.key === "Escape" && document.querySelector("details.move[open]")) {
+    const menu = document.querySelector("details.move[open]");
+    menu.open = false;
+    menu.querySelector("summary").focus();
   } else if (event.key === "Escape" && selectedAsk()) {
     go(state.listUrl);
   }

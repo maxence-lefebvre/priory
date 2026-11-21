@@ -803,9 +803,9 @@ fn write_line(db: &Connection, write: &Write, body: &[u8]) -> Result<(String, Se
             let body: MoveBody = serde_json::from_slice(body).map_err(bad)?;
             let place = match (body.top, body.before, body.after) {
                 (false, None, None) => None,
-                (true, None, None) => Some(state::MovePlace::Top),
-                (false, Some(other), None) => Some(state::MovePlace::Before(other)),
-                (false, None, Some(other)) => Some(state::MovePlace::After(other)),
+                (true, None, None) => Some(state::Place::Top),
+                (false, Some(other), None) => Some(state::Place::Before(other)),
+                (false, None, Some(other)) => Some(state::Place::After(other)),
                 _ => return Err(Reply::error(400, "move takes one of top, before and after")),
             };
             if place.is_none() && body.band.is_none() {
@@ -1192,10 +1192,27 @@ fn events(db: &Connection, query: &str, waiters: &AtomicUsize) -> Reply {
 
 #[cfg(test)]
 mod tests {
-    use super::pull_request;
+    use super::{Write, pull_request, write_line};
     use proptest::prelude::*;
 
+    thread_local! {
+        static DB: rusqlite::Connection = crate::state::memory();
+    }
+
     proptest! {
+        #[test]
+        fn a_move_body_becomes_one_move_line_or_is_refused(
+            body in r#"\{("revision": ?[0-9]{1,3}|"band": ?"[a-z]{0,6}"|"top": ?(true|false)|"before": ?[0-9]|"after": ?[0-9]|"x": ?1)(, ?("band": ?"[a-z]{0,6}"|"top": ?(true|false)|"before": ?[0-9]|"after": ?[0-9])){0,3}\}|.{0,40}"#
+        ) {
+            // A move reads nothing, so one migrated state serves every case.
+            let written = DB.with(|db| write_line(db, &Write::Move("2"), body.as_bytes()));
+            if let Ok((line, _)) = written {
+                let line: crate::state::MoveLine = serde_json::from_str(&line).unwrap();
+                prop_assert!(line.r#move.band.is_some() || line.r#move.place.is_some());
+                prop_assert_eq!(line.r#move.task, 2);
+            }
+        }
+
         #[test]
         fn a_pr_parameter_parses_to_the_resource_it_names_or_is_refused(
             text in "(github:)?[a-z./#0-9+-]{0,30}|.{0,40}"

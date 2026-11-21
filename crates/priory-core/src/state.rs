@@ -3311,37 +3311,30 @@ pub struct MoveLine {
 pub struct Move {
     pub task: i64,
     pub band: Option<String>,
-    pub place: Option<MovePlace>,
+    pub place: Option<Place>,
     pub expected: i64,
 }
 
-/// `Place` as the socket line carries it: `"top"`, `{"before": 7}` or `{"after": 7}`.
-#[derive(serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum MovePlace {
-    Top,
-    Before(i64),
-    After(i64),
-}
-
-/// Applies a move line as `priory move` does, and says what moved where.
-pub fn move_line(db: &mut Connection, line: &Move) -> Result<String, String> {
-    let place = line.place.as_ref().map(|place| match place {
-        MovePlace::Top => Place::Top,
-        MovePlace::Before(task) => Place::Before(*task),
-        MovePlace::After(task) => Place::After(*task),
-    });
+/// Applies a move line as `priory move` does, and says what moved where. A line with neither a
+/// band nor a place is refused, as the verb's usage is: `move_task` would reset the task's place.
+pub fn move_line(db: &mut Connection, line: Move) -> Result<String, String> {
+    if line.band.is_none() && line.place.is_none() {
+        return Err("move takes a band, a place or both".to_owned());
+    }
     move_task(
         db,
         line.task,
         line.band.as_deref(),
-        place,
+        line.place,
         Some(line.expected),
     )?;
     Ok(format!("task {} moved", line.task))
 }
 
-/// Where `priory move` puts a task in its band's person order.
+/// Where `priory move` puts a task in its band's person order. A socket line carries it as
+/// `"top"`, `{"before": 7}` or `{"after": 7}`.
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum Place {
     Top,
     Before(i64),
@@ -3446,4 +3439,24 @@ fn moved(
         .map_err(error)?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod move_line_tests {
+    use super::*;
+
+    #[test]
+    fn a_move_line_with_neither_band_nor_place_is_refused_and_changes_nothing() {
+        let mut db = memory();
+        let expected = revision(&db).unwrap();
+        let line: MoveLine = serde_json::from_str(&format!(
+            r#"{{"move": {{"task": 1, "expected": {expected}}}}}"#
+        ))
+        .unwrap();
+
+        let moved = move_line(&mut db, line.r#move);
+
+        assert_eq!(moved, Err("move takes a band, a place or both".to_owned()));
+        assert_eq!(revision(&db).unwrap(), expected);
+    }
 }
