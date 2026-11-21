@@ -67,7 +67,9 @@ run that carries on its process, when no run ended any other way in between.
 ## Compact
 
 An agent asks for a compaction with the `compact` tool (see [tools.md](tools.md)), which queues a
-`/compact` prompt. The daemon types a queued `/compact` like any other prompt, once the run is
+`/compact` prompt. The daemon queues a bare `/compact` itself when a turn ends past the agent's
+`compactAt` (see [sessions.md](sessions.md#compacting-a-long-session)). Then the run's ask or wait
+settles at the next `Stop`, after the compaction, so the task sleeps only once it is typed. The daemon types a queued `/compact` like any other prompt, once the run is
 idle, so an answer or a nudge queued before it goes first.
 
 A `/compact` is always typed alone:
