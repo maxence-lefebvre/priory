@@ -214,20 +214,16 @@ fn a_runner_cut_off_from_its_log_finishes_its_turn_and_takes_an_answer_from_else
     let answered = b.priory(&["answer", dir, &ask, "approved", "--revision", "1"]);
     assert!(answered.status.success(), "{}", stderr(&answered));
     std::thread::sleep(Duration::from_secs(3));
-    assert_eq!(
-        a.rows("tasks")[0][4],
-        "asleep",
-        "the answer waits on the log"
-    );
+    assert_eq!(a.own_tasks()[0][4], "asleep", "the answer waits on the log");
 
     link.set(Link::Up);
-    let tasks = a.until("tasks", |rows| rows[0][4] == "done");
+    let tasks = a.until_own_tasks(|rows| rows[0][4] == "done");
     assert_eq!(tasks.len(), 1);
     let ended = json!({ "key": KEY, "runner": "a", "hold": "ended" });
     database.logged(&a, "priory.task.held", ended);
     until_unreachable(&a, false);
     assert_eq!(a.rows("runs").len(), 1, "the task ran once, on a");
-    assert!(b.rows("runs").is_empty() && b.rows("tasks").is_empty());
+    assert!(b.rows("runs").is_empty() && b.own_tasks().is_empty());
 }
 
 #[test]
@@ -248,7 +244,7 @@ fn a_runner_whose_link_hangs_keeps_answering_its_own_asks_and_publishes_once_it_
     until_unreachable(&a, true);
     let answered = a.priory(&["answer", &asks[0][0], "approved", "--revision", "1"]);
     assert!(answered.status.success(), "{}", stderr(&answered));
-    a.within(10, "tasks", |rows| rows[0][4] == "done");
+    a.within_own_tasks(10, |rows| rows[0][4] == "done");
     assert!(alive(&mut a));
 
     link.set(Link::Up);
@@ -283,7 +279,7 @@ fn a_task_that_never_started_on_a_cut_off_runner_moves_once_its_lease_ends_and_r
     // Room on `a` again, while it still cannot read the log: it starts nothing, and says why.
     a.memory(60);
     let claiming = "waits for its claim to reach the log";
-    a.until("tasks", |rows| rows[0][7] == claiming);
+    a.until_own_tasks(|rows| rows[0][7] == claiming);
     let tasks = a.priory(&["tasks", "--json"]);
     let tasks: serde_json::Value = serde_json::from_slice(&tasks.stdout).unwrap();
     assert_eq!(tasks["tasks"][0]["reason"], claiming, "{tasks}");
@@ -294,7 +290,7 @@ fn a_task_that_never_started_on_a_cut_off_runner_moves_once_its_lease_ends_and_r
     assert!(alive(&mut a));
 
     link.set(Link::Up);
-    let tasks = a.until("tasks", |rows| rows[0][4] == "dropped");
+    let tasks = a.until_own_tasks(|rows| rows[0][4] == "dropped");
     assert_eq!(tasks.len(), 1);
     assert!(a.rows("runs").is_empty(), "the task ran once, on b");
     assert_eq!(b.rows("runs").len(), 1);
@@ -327,7 +323,7 @@ fn a_code_step_whose_kept_never_comes_back_holds_no_later_tasks_action() {
     }
     a.start_as(Path::new(env!("CARGO_BIN_EXE_priory")));
 
-    let tasks = a.until("tasks", |rows| rows.len() == 2 && rows[1][4] == "done");
+    let tasks = a.until_own_tasks(|rows| rows.len() == 2 && rows[1][4] == "done");
     assert_eq!(tasks[0][1], "github:owner/repo#1");
     assert_eq!(tasks[0][4], "queued");
     assert_eq!(tasks[0][7], "waits for its claim to reach the log");
@@ -375,7 +371,7 @@ fn a_given_task_s_run_ends_even_when_the_ack_of_the_gift_is_lost() {
     });
     database.publish(&Message::new("priory.task.claimed", gift).subject(KEY));
 
-    a.until("tasks", |rows| rows[0][4] == "dropped");
+    a.until_own_tasks(|rows| rows[0][4] == "dropped");
     until_unreachable(&a, true);
     let deadline = Instant::now() + Duration::from_secs(10);
     while sessions().contains("priory-1") {

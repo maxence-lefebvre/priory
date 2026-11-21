@@ -18,7 +18,8 @@ priory report put TASK -        # the report on stdin
 
 Both check the shape first and refuse a bad one with the reason, storing nothing. Each write
 replaces the task's report and raises its revision by one. A write keeps the choice already made on
-each pick, by pick id, whatever `chosen` it carries.
+each pick, by pick id, whatever `chosen` it carries, and keeps its `applied` when the write leaves
+`applied` empty.
 
 `docs/schemas/report.json` is the JSON Schema of the shape. In short:
 
@@ -76,6 +77,15 @@ It prints the task's report, or without `TASK` the report written last. `--json`
 with two more fields, `task` and `revision`, as `GET /api/reports/latest` and
 `GET /api/reports/{task}` return it ([serve endpoints](../reference/serve.md)).
 
+```sh
+priory report list [--json]
+```
+
+It lists every task's report, newest first: its task, date, greeting and when it was written
+(`put`). Priory keeps the latest report of each task, so a workflow that runs each morning in a new
+task leaves one report per morning. `--json` prints `{"revision": STATE, "reports": [...]}`, as
+`GET /api/reports` returns it. The Reports panel's older and newer arrows walk this list.
+
 ## Pick an option
 
 ```sh
@@ -86,7 +96,8 @@ The daemon finds the report that holds the pick and records `OPTION` as its `cho
 the pick when:
 
 - the report is at another revision than `REVISION`, as an answer to a stale ask is refused;
-- the pick already has a choice: the first one stands;
+- the pick's choice is already `OPTION`, or the workflow already applied its choice (`applied` is
+  set): an applied choice stands;
 - `OPTION` is not one of the pick's options.
 
 A recorded pick raises the report's revision. The daemon tells the report's agent with one line,
@@ -100,8 +111,20 @@ The person picked Take on 2026-11-20_sentry_fnd-2409 in your report: apply it, t
 
 The workflow applies the choice and writes the report again with `applied` set.
 
+Until then, a person can change the choice with the same verb and another option, at the report's
+current revision. The daemon records the new choice and tells the agent with this line instead:
+
+```text
+The person changed their pick on 2026-11-20_sentry_fnd-2409 in your report from Take to Later: apply Later instead, then write the report again with the pick's applied filled.
+```
+
+A pick whose option requests a task fills `applied` at once, so that choice cannot change. When
+the agent writes `applied` for the old choice after a change, the choice stands with that text
+until the change's line reaches the agent and it writes the report again.
+
 `POST /api/reports/pick` sends the same pick from the web view ([serve endpoints](../reference/serve.md#writes)).
-It answers `409` when the report moved past the revision sent or the pick already has a choice.
+It answers `409` when the report moved past the revision sent, or the pick already holds that
+choice or an applied one.
 
 ## Comment on a row
 

@@ -512,6 +512,10 @@ fn tasks_since(
         task["stack"] = crate::stack::json(db, id)?;
         task["relations"] = crate::relate::json(db, id)?;
     }
+    // Another runner's task carries no lane or grade of its own, so a filter keeps this runner's.
+    if lane.is_none() && grade.is_none() {
+        crate::runners::with_remote_tasks(db, &mut tasks)?;
+    }
     Ok(tasks)
 }
 
