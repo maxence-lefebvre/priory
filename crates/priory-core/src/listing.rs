@@ -854,7 +854,8 @@ fn parse_back_early(item: &mut Value) {
 /// The person a desk is for when no one is named.
 pub const ME: &str = "me";
 
-/// The trace records and inbox entries after `person`'s last visit, newest first, at most 50.
+/// The trace records and inbox entries after `person`'s last visit, newest first, at most 50,
+/// without the events no task took.
 fn since_you_looked(db: &Connection, person: &str) -> rusqlite::Result<Value> {
     rows(
         db,
@@ -872,6 +873,8 @@ fn since_you_looked(db: &Connection, person: &str) -> rusqlite::Result<Value> {
                  ELSE type || coalesce(' ' || subject, '') || coalesce(': ' || outcome, '') END,
                1, seq
              FROM inbox WHERE julianday(time) >= (SELECT at FROM visited)
+             -- An event no task took would crowd out the rest in a busy repository.
+             AND outcome IS NOT 'ignored'
              ORDER BY julianday(time) DESC, seq DESC LIMIT 50))
          SELECT time, task, (SELECT key FROM tasks WHERE tasks.id = events.task) AS key, what
          FROM events
