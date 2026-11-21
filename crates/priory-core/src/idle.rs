@@ -8,8 +8,6 @@ const CACHE: i64 = 60;
 const AFTER: i64 = 55;
 /// How long an idle compaction may take before the daemon kills it.
 const WITHIN: &str = "10 minutes";
-/// How long a compaction may wait for its `SessionStart`: later, the cache may be gone before `/compact`.
-const LATE: i64 = CACHE - AFTER;
 const NOW: &str = "strftime('%Y-%m-%dT%H:%M:%SZ', 'now')";
 
 /// A shared session idle long enough to compact.
@@ -92,7 +90,8 @@ pub(crate) fn tmux_sessions(db: &Connection) -> rusqlite::Result<Vec<String>> {
 pub(crate) fn live(db: &Connection) -> rusqlite::Result<Vec<Live>> {
     let mut statement = db.prepare(&format!(
         "SELECT id, session, tmux, ready AND typed IS NULL,
-           typed IS NULL AND started <= strftime('%Y-%m-%dT%H:%M:%SZ', 'now', '-{LATE} minutes'),
+           typed IS NULL AND (SELECT max(signaled) FROM runs WHERE runs.session = idle_compactions.session)
+             <= strftime('%Y-%m-%dT%H:%M:%SZ', 'now', '-{CACHE} minutes'),
            started <= strftime('%Y-%m-%dT%H:%M:%SZ', 'now', '-{WITHIN}')
          FROM idle_compactions WHERE ended IS NULL"
     ))?;

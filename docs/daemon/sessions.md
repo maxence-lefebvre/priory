@@ -93,8 +93,8 @@ The daemon reads the context size from the session's transcript, as for `compact
 
 1. resumes the session in a tmux session named `priory-idle-<agent>`, in the worktree of its last
    run, with the same flags as the agent's runs, so the resume can reuse the cached conversation,
-2. types `/compact` once Claude's `SessionStart` arrives, unless 5 minutes passed since the launch:
-   then the cache may be gone, and it kills the tmux session instead,
+2. types `/compact` once Claude's `SessionStart` arrives, unless the hour since the session's last
+   hook has passed: then the cache may be gone, and it kills the tmux session instead,
 3. kills the tmux session at the `SessionStart` with `source: compact`.
 
 It decides once per idle stretch. It skips a session below `idleCompactAt`, one whose last
