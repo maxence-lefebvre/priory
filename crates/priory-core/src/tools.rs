@@ -3466,7 +3466,7 @@ pub(crate) fn approved(
             commit.as_deref().unwrap_or("-"),
         )
     } else {
-        "\nasked again: the task was revived or reopened since this was answered".to_owned()
+        "\nasked again: this was answered in an earlier generation of the task, or before Priory kept generations".to_owned()
     };
     tx.execute(
         // Asked again, an ask that a revive withdrew belongs to the current generation.

@@ -1099,11 +1099,11 @@ PRAGMA user_version = 62;
 ";
 
 // `chosen`: a `subscribe` the task asked for, which carries every event even on its own key. An
-// approval's `generation`, so a revive or reopen does not inherit it.
+// approval's `generation`, so a revive or reopen does not inherit it. An older approval keeps none,
+// since which generation it was given in is unknown, so it is asked again.
 const SCHEMA_63: &str = "
 ALTER TABLE subscriptions ADD COLUMN chosen INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE approvals ADD COLUMN generation INTEGER;
-UPDATE approvals SET generation = (SELECT generation FROM tasks WHERE tasks.id = approvals.task);
 PRAGMA user_version = 63;
 ";
 

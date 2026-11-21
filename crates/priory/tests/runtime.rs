@@ -9090,6 +9090,35 @@ fn a_revive_at_an_irreversible_step_asks_again_though_the_commit_is_the_approved
     assert!(setup.rows("actions").is_empty());
 }
 
+#[test]
+fn an_approval_stored_before_generations_were_kept_is_asked_again_after_the_upgrade() {
+    let mut setup = asked_to_open("approval-upgrade", APPROVE_THEN_POLISH);
+    setup.calls(&[passed_with_evidence()]);
+    setup.hold("hold-stop");
+    assert!(
+        setup
+            .priory(&["answer", "1", "open", "--revision", "1"])
+            .status
+            .success()
+    );
+    setup.written("fake/tools.log");
+    setup.crash();
+    // The state file as version 62 left it: an approval names no generation.
+    let db = rusqlite::Connection::open(setup.dir.join("priory.db")).unwrap();
+    db.execute_batch(
+        "ALTER TABLE subscriptions DROP COLUMN chosen; ALTER TABLE approvals DROP COLUMN generation;
+         PRAGMA user_version = 62;",
+    )
+    .unwrap();
+    drop(db);
+
+    setup.start();
+    setup.release("hold-stop");
+
+    setup.until("asks", |rows| rows.first().is_some_and(|row| row[2] == "2"));
+    assert!(setup.rows("actions").is_empty());
+}
+
 const NUDGE: &str = "Your turn ended without calling wait, ask or result of the priory MCP server. Call one of them: result to end the step, ask to put a question to a person, or wait to sleep until an event.\nEnd this step by calling the result tool of the priory MCP server with one of these outcomes: failed, passed.\n";
 
 #[test]
