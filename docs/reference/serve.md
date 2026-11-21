@@ -238,8 +238,20 @@ Every task in start order. Without `all=1`, the tasks still going and the tasks 
 has `id`, `key`, `workflow`, `step`, `state`, `band`, `lane`, `reason`, `position` (its place in
 the queue from 1, or null), `generation`, `retired`, `tldr`, `since`
 (when the task last changed state), `grade` (`red`, `yellow`, `green` or null), `grade_reason`,
-`progress` and `conditions`, a held task's [conditions](#conditions) or null. See Grades in
+`progress`, `conditions`, a held task's [conditions](#conditions) or null, and `stack`. See Grades in
 [tools.md](../daemon/tools.md#grades).
+
+`stack` lists the pull requests the task opened or claimed, bottom first, each based on the one
+before it (see [Stacks in routing.md](../daemon/routing.md#stacks)). It is empty when the task has
+none. Each entry:
+
+| Field | Type | Meaning |
+| ----- | ---- | ------- |
+| `pull_request` | string | The resource, such as `github:owner/name#58` |
+| `number` | integer | The pull request's number |
+| `branch` | string | Its head branch |
+| `base` | string | Its base branch: the trunk for the bottom one, the branch below for the others |
+| `state` | string | `open`, `merged` or `closed`, from the intake's close events |
 
 `progress` is null until the task's agent or a person publishes one. Then it is an object with any
 of `goal`, `acceptanceCriteria` (each `{ "id", "description", "required" }`), `latestChange` and

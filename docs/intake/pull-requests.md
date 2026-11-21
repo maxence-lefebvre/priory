@@ -1,7 +1,9 @@
 # Pull requests
 
 The intake publishes eight pull request events. Each names the pull request and its branches, so a
-consumer can route it to the task that owns the pull request or branch.
+consumer can route it to the task that owns the pull request or branch. The daemon also reads its
+`base_branch` to claim a stack a worker opened itself, and to tell when a stack's bottom pull
+request was retargeted (see [Stacks in routing.md](../daemon/routing.md#stacks)).
 
 ## What it watches
 

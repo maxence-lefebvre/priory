@@ -194,7 +194,9 @@ When someone labels issue 42 of `owner/name` with `agent`, this happens:
    current commit.
 6. The `open-pr` code step pushes the branch and opens a pull request. The task waits, with no
    process, until the pull request's checks finish. Green checks mark it done. A red check wakes
-   the agent with the failure, in the same conversation, so it can fix it.
+   the agent with the failure, in the same conversation, so it can fix it. An agent can split a
+   large change into a stack of pull requests with the `branches` field of its result; a stack is
+   done once every pull request merged (see [Stacks](docs/daemon/routing.md#stacks)).
 
 ## Day to day
 
