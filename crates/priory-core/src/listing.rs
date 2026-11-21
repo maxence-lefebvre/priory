@@ -133,11 +133,16 @@ const DESK: &str = "SELECT 0 AS part, asks.created AS since, 'ask' AS kind,
                  AND hold.released IS NULL)
                  AND (tasks.batch_entry IS NULL OR EXISTS (SELECT 1 FROM holds AS hold
                    WHERE hold.task = holds.task AND hold.released IS NULL
-                   AND (hold.kind != 'merged' OR EXISTS (SELECT 1 FROM asks WHERE asks.id = hold.ask
+                   AND (hold.kind NOT IN ('merged', 'waiting') OR EXISTS (SELECT 1 FROM asks WHERE asks.id = hold.ask
                      AND asks.answer IS NULL AND asks.withdrawn IS NULL))))
                UNION ALL
                SELECT 0, batches.went, 'batch', batches.id, batches.task, tasks.lane, batches.title
                FROM batches JOIN tasks ON tasks.id = batches.task WHERE batches.went IS NOT NULL
+                 AND (tasks.state NOT IN ('done', 'failed', 'dropped') OR EXISTS (SELECT 1
+                   FROM tasks AS entry LEFT JOIN pull_requests ON pull_requests.task = entry.id
+                   WHERE entry.batch = batches.id AND entry.id != batches.task
+                   AND (entry.state NOT IN ('done', 'failed', 'dropped')
+                     OR pull_requests.state = 'open')))
                UNION ALL
                SELECT 0, sweeps.started, 'sweep', sweeps.id, stalls.task, tasks.lane,
                  sweeps.script || ': ' || coalesce(sweeps.status
@@ -175,7 +180,8 @@ fn asks_query() -> String {
      asks.withdrawn_reason, asks.withdrawn_at,
      CASE asks.withdrawn_reason WHEN 'sibling-fired' THEN 'a wait of its run fired first'
        WHEN 'moved-on' THEN 'a later run called another tool'
-       WHEN 'revived' THEN 'its task was revived' ELSE asks.withdrawn_reason END AS withdrawn_why,
+       WHEN 'revived' THEN 'its task was revived'
+       WHEN 'predecessor-revived' THEN 'the task it waits on was revived' ELSE asks.withdrawn_reason END AS withdrawn_why,
      asks.revision, asks.question, asks.options, asks.recommendation, asks.tradeoff, asks.answer,
      asks.answered AS answered_at, asks.answered_by, asks.routed AS routed_to, asks.created AS since, asks.title, asks.text,
      asks.what_waits, asks.next_action, asks.command, asks.coordinator, asks.run_id, asks.session,

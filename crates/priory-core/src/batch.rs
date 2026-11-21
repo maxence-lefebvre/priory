@@ -56,12 +56,12 @@ struct Close {
     evidence: Option<String>,
 }
 
-/// The oldest active task that owns issue `?1` or the key `?2` an entry takes, or that is a batch
-/// part of `?1`, with its key.
+/// The oldest active task other than the planning task `?3` keyed on issue `?1` or the key `?2` an
+/// entry takes, or that is a batch part of `?1`, with its key. A task that only follows or waits on
+/// the issue does not take it.
 const TAKEN: &str =
-    "SELECT id, state, key FROM tasks WHERE state NOT IN ('done', 'failed', 'dropped')
-  AND (id IN (SELECT task FROM owned WHERE resource IN (?1, ?2))
-    OR batch_entry IS NOT NULL AND substr(key, 1, length(?1) + 1) = ?1 || '.')
+    "SELECT id, state, key FROM tasks WHERE state NOT IN ('done', 'failed', 'dropped') AND id != ?3
+  AND (key IN (?1, ?2) OR batch_entry IS NOT NULL AND substr(key, 1, length(?1) + 1) = ?1 || '.')
   ORDER BY id LIMIT 1";
 
 /// The key an entry's task takes: its issue's, or for a part of a split issue `<issue>.<part>`.
@@ -75,7 +75,11 @@ fn entry_key(entry: &Entry) -> String {
 
 /// The first key of `plan`, an entry's or a close's, that an active task holds, with that task's id
 /// and state.
-fn taken(tx: &Transaction, plan: &Plan) -> rusqlite::Result<Option<(String, i64, String)>> {
+fn taken(
+    tx: &Transaction,
+    plan: &Plan,
+    planning: i64,
+) -> rusqlite::Result<Option<(String, i64, String)>> {
     let entries = plan
         .entries
         .iter()
@@ -86,7 +90,7 @@ fn taken(tx: &Transaction, plan: &Plan) -> rusqlite::Result<Option<(String, i64,
         .map(|close| (issue_key(&close.issue), issue_key(&close.issue)));
     for (issue, key) in entries.chain(closes) {
         let found = tx
-            .query_row(TAKEN, [&issue, &key], |row| {
+            .query_row(TAKEN, params![issue, key, planning], |row| {
                 Ok((
                     row.get::<_, i64>(0)?,
                     row.get::<_, String>(1)?,
@@ -176,7 +180,7 @@ pub(crate) fn planned(
     if let Err(refused) = checked(&plan, &issues) {
         return Ok(Err(refused));
     }
-    if let Some((key, other, state)) = taken(tx, &plan)? {
+    if let Some((key, other, state)) = taken(tx, &plan, task)? {
         return Ok(Err(format!("{key} already has task {other} ({state})")));
     }
     let title = plan.title.clone().unwrap_or_else(|| summary.to_owned());
@@ -206,15 +210,8 @@ fn checked(plan: &Plan, issues: &[String]) -> Result<(), String> {
             return Err(format!("{key} is not one of the batch's issues"));
         }
         for edge in &entry.after {
-            match edge.moment.as_str() {
-                "merged" => {}
-                "waiting" => {
-                    return Err(format!(
-                        "entry {} waits on {} at `waiting`, which Priory does not build yet; use merged",
-                        entry.id, edge.entry
-                    ));
-                }
-                other => return Err(format!("moment `{other}` is not merged or waiting")),
+            if !["merged", "waiting"].contains(&edge.moment.as_str()) {
+                return Err(format!("moment `{}` is not merged or waiting", edge.moment));
             }
             if !ids.contains(edge.entry.as_str()) {
                 return Err(format!(
@@ -222,6 +219,13 @@ fn checked(plan: &Plan, issues: &[String]) -> Result<(), String> {
                     entry.id, edge.entry
                 ));
             }
+        }
+        let stacking = entry.after.iter().filter(|edge| edge.moment == "waiting");
+        if let count @ 2.. = stacking.count() {
+            return Err(format!(
+                "entry {} has {count} waiting predecessors; give it one stacking parent",
+                entry.id
+            ));
         }
         let parts = worked.entry(key.clone()).or_default();
         if parts.contains(&entry.part) && entry.part.is_some() {
@@ -478,7 +482,7 @@ pub(crate) fn start(
         return Ok(Err(format!("batch {id} has no plan the go approved")));
     };
     let plan: Plan = serde_json::from_str(&plan).expect("a stored plan parses");
-    if let Some((key, other, state)) = taken(tx, &plan)? {
+    if let Some((key, other, state)) = taken(tx, &plan, task)? {
         return Ok(Err(format!(
             "{key} has task {other} ({state}) since the plan; drop the entry or the batch"
         )));
@@ -551,7 +555,8 @@ pub(crate) fn start(
     Ok(Ok(()))
 }
 
-/// Holds the new task `task` on one `merged` condition per edge in `after`.
+/// Holds the new task `task` on one condition per edge in `after`, at the edge's moment, and
+/// records a `waiting` edge's task as the one it stacks on.
 fn held(
     tx: &Transaction,
     batch: i64,
@@ -567,10 +572,17 @@ fn held(
     for edge in after {
         let other = tasks[edge.entry.as_str()];
         tx.execute(
-            "INSERT INTO holds (task, reason, kind, target, resume)
-             VALUES (?1, ?2, 'merged', ?3, 'queued')",
-            params![task, reason, other],
+            "INSERT INTO holds (task, reason, kind, target, resume) VALUES (?1, ?2, ?3, ?4, 'queued')",
+            params![task, reason, edge.moment, other],
         )?;
+        if edge.moment == "waiting" {
+            tx.execute(
+                "UPDATE tasks SET base_task = ?2 WHERE id = ?1",
+                params![task, other],
+            )?;
+            texts.push(format!("until task {other} waits on its pull request"));
+            continue;
+        }
         texts.push(format!("until task {other} merges"));
     }
     tx.execute(
@@ -1025,6 +1037,7 @@ fn entry_of(db: &Connection, id: i64, at: usize, entry: &Entry) -> rusqlite::Res
             "dropped" => "dropped",
             _ if crate::tools::all_merged(db, *own)? => "merged",
             "done" if crate::tools::pull_request(db, *own)?.is_none() => "merged",
+            state if crate::hold::waits_on_pull_request(db, *own, state)? => "waiting",
             _ => "started",
         },
     };
@@ -1034,9 +1047,9 @@ fn entry_of(db: &Connection, id: i64, at: usize, entry: &Entry) -> rusqlite::Res
             Some((own, ..)) => db
                 .query_row(
                     "SELECT holds.met FROM holds JOIN tasks ON tasks.id = holds.target
-                     WHERE holds.task = ?1 AND holds.kind = 'merged' AND tasks.batch_entry = ?2
+                     WHERE holds.task = ?1 AND holds.kind = ?3 AND tasks.batch_entry = ?2
                      ORDER BY holds.id DESC LIMIT 1",
-                    params![own, edge.entry],
+                    params![own, edge.entry, edge.moment],
                     |row| row.get::<_, Option<String>>(0),
                 )
                 .optional()?
