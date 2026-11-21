@@ -182,7 +182,7 @@ async function post() {
 
 // The run happens in the browser's side panel, which no page can cover.
 function openCommand(ask, option) {
-  const path = `command.html?mode=${MODE}&ask=${encodeURIComponent(ask.id)}&task=${S.task.id}&revision=${ask.revision}&option=${encodeURIComponent(option)}`;
+  const path = `command.html?mode=${MODE}&at=${Date.now()}&ask=${encodeURIComponent(ask.id)}&task=${S.task.id}&revision=${ask.revision}&option=${encodeURIComponent(option)}`;
   chrome.sidePanel.setOptions({ tabId: S.tabId, path, enabled: true });
   chrome.sidePanel.open({ tabId: S.tabId }).catch(() => {});
   setTimeout(() => {
@@ -201,16 +201,16 @@ async function write(path, body) {
 }
 
 // A lost say keeps Say off until the person sends it again or checks the task: a resend would queue it twice.
-async function say(text, keep) {
+async function say(text, keep, task = S.task.id) {
   if (S.sayBusy) return;
   S.sayBusy = true;
   S.sayNotice = null;
   S.sayUnknown = null;
   render();
-  const refused = await write(`/api/tasks/${S.task.id}/say`, { text });
+  const refused = await write(`/api/tasks/${task}/say`, { text });
   S.sayBusy = false;
   S.sayNotice = refused?.[1] ?? null;
-  if (refused?.[0] === "unknown") S.sayUnknown = text;
+  if (refused?.[0] === "unknown") S.sayUnknown = { task, text };
   if (!refused && keep) S.say = "";
   await read();
 }
@@ -260,7 +260,7 @@ function panel() {
     S.config && S.task ? h("a", { class: "btn icon", title: `Open task ${S.task.id} in Priory`, href: `${S.config.origin}/tasks/${S.task.id}`, target: "_blank", rel: "noreferrer" }, icon("ext")) : null,
     h("button", { class: "btn icon", title: "Close", onclick: () => send("close") }, icon("x")));
   const nav = h("nav", { class: "tabs", role: "tablist" }, tabs.map(([id, label, count]) =>
-    h("button", { role: "tab", "aria-selected": String(S.tab === id), onclick: () => { S.tab = id; render(); } }, label, count ? h("span", { class: "badge" }, count) : null)));
+    h("button", { role: "tab", "aria-selected": String(S.tab === id), onclick: () => { S.tab = id; if (id === "guide") loadGuide(); render(); } }, label, count ? h("span", { class: "badge" }, count) : null)));
   const stale = S.config && S.unreachable
     ? h("div", { class: "stale" }, icon("unplug", "s14"), S.readAt ? `Priory unreachable. Showing what it said ${age(new Date(S.readAt).toISOString(), Date.now())} ago.` : "Priory unreachable.",
       h("button", { class: "btn secondary", onclick: () => read() }, "Retry"))
@@ -430,7 +430,7 @@ function taskTab() {
     S.sayNotice ? h("div", { class: "notice", role: "alert" }, S.sayNotice) : null,
     S.sayUnknown
       ? h("div", { class: "lowrow" },
-        h("button", { class: "btn ghost", onclick: () => say(S.sayUnknown) }, "Send again"),
+        h("button", { class: "btn ghost", onclick: () => say(S.sayUnknown.text, false, S.sayUnknown.task) }, "Send again"),
         h("button", { class: "btn ghost", onclick: () => { S.sayUnknown = null; S.sayNotice = null; render(); } }, "It reached the task"))
       : null,
     h("div", { class: "hr" }),
@@ -502,6 +502,9 @@ function quiz({ pass, questions }, head) {
 }
 
 
+// How long the side panel's Run stays good after the tap in the page.
+const TAP_MS = 2 * 60 * 1000;
+
 async function commandView() {
   const id = params.get("ask");
   const revision = Number(params.get("revision"));
@@ -515,10 +518,17 @@ async function commandView() {
   if (ask.state !== "open" || ask.revision !== revision || !runsCommand(ask, option)) {
     return shell(h("div", { class: "notice" }, `The question changed since the tap. Read revision ${ask.revision} in the panel and answer again.`));
   }
+  const shown = { origin: S.config.origin, command: JSON.stringify(ask.command) };
+  // Run checks again what this view showed: the same daemon, the same open revision, the same command.
   const run = async (button) => {
     button.disabled = true;
     S.config = (await get("config")) ?? null;
-    if (!S.config) return document.body.replaceChildren(await commandView());
+    const fresh = S.config?.origin === shown.origin ? (await api(`/api/tasks/${ask.task}`)).body?.asks?.find((candidate) => candidate.id === ask.id) : null;
+    const same = fresh?.state === "open" && fresh.revision === revision && JSON.stringify(fresh.command) === shown.command;
+    if (!same) return document.body.replaceChildren(await commandView());
+    if (Date.now() - Number(params.get("at")) > TAP_MS) {
+      return document.querySelector(".body").append(h("div", { class: "notice", role: "alert" }, "This tap is over 2 min old. Tap the option in the panel again."));
+    }
     const result = await api(answerPath(ask.id), answerBody({ option, revision }, true));
     const notice = result.status === 200 ? null : refusal(result, Date.now())[1];
     document.body.replaceChildren(await commandView());
@@ -552,6 +562,11 @@ function render() {
 async function boot() {
   S.config = (await get("config")) ?? null;
   if (VIEW === "command") {
+    channel.addEventListener("message", async (event) => {
+      if (!event.data.signedOut) return;
+      S.config = null;
+      document.body.replaceChildren(await commandView());
+    });
     document.body.replaceChildren(await commandView());
     return;
   }
