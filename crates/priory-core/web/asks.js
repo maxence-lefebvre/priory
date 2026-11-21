@@ -19,3 +19,10 @@ export const routedNote = (ask) => (routedMark(ask) ? `${ask.routed_to} is answe
 
 /** Who answered, as the views say it: a person, or `agent:<lead>`. Null when unrecorded. @param {string | null | undefined} by */
 export const answeredBy = (by) => (!by ? null : by.startsWith("agent:") ? by : "a person");
+
+// How long a first tap on a command option stays armed for the second.
+export const ARM_MS = 4000;
+
+/** Whether `armed` still arms `option` of this revision of the ask, as the Herdr panel's `press` does. */
+export const stillArmed = (armed, ask, option, now) =>
+  armed != null && armed.id === ask.id && armed.revision === ask.revision && armed.text === option && now - armed.at < ARM_MS;

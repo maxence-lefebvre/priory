@@ -1,6 +1,10 @@
 #:schema https://raw.githubusercontent.com/maxence-lefebvre/priory/main/docs/schemas/config/workflow.json
 start = "risk"
 
+# The reviewer writes its pending review with a `gh api` POST, which the guard reads as
+# gh-api-write. Merges and approvals stay gh-pr-merge and gh-pr-approve, which this list cannot grant.
+guard = { allow = ["gh-api-write"] }
+
 # Another agent grades the pull request first. Its verdict shows on the submit ask, and the
 # review's result, which names the pending review, stays the latest.
 [[steps]]

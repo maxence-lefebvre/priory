@@ -13,6 +13,7 @@ config page gives a field table, a complete example and the errors `priory check
 | [views.md](views.md) | `views/<name>.toml`: the web view's layouts |
 | [serve.md](serve.md) | `priory serve` and the JSON of its endpoints and of the listings' `--json` |
 | [events.md](events.md) | Every message type on `factory.intake`, with an example payload |
+| [e2e-scenarios.md](e2e-scenarios.md) | The scenario file of the end-to-end factory test |
 
 The examples are files of a complete factory in [`examples/factory/`](examples/factory/), and the
 example payloads are in [`examples/events/`](examples/events/). A test runs `priory check` on that

@@ -121,6 +121,7 @@ pub(crate) fn decide(
             let approved: Option<Option<String>> = db
                 .query_row(
                     "SELECT commit_sha FROM approvals WHERE task = ?1 AND step = ?2
+                     AND generation IS (SELECT generation FROM tasks WHERE id = ?1)
                      ORDER BY id DESC LIMIT 1",
                     params![run.task, run.step],
                     |row| row.get(0),
