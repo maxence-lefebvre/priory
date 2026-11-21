@@ -187,8 +187,10 @@ An event that names no resource is not listed, since no task could own it.
 `priory inbox --unrouted [--since SEQ]` and `/api/inbox?unrouted=1` group these events by the first
 resource each names (see [serve.md](../reference/serve.md#unrouted)). Each group prints the two
 commands that would route its next event: `priory subscribe TASK RESOURCE` gives it to an existing
-task, and `priory request --workflow WORKFLOW --key RESOURCE TEXT` creates one. The Desk counts the
-unrouted events of the last 24 hours (see [desk.md](desk.md#unrouted-events)).
+task, and `priory request --workflow WORKFLOW --key RESOURCE TEXT` creates one. They then list the
+`outsider` events as a group of their own, with each one's author, and no command, since no task
+takes them. The Desk counts the unrouted events and the `outsider` events of the last 24 hours, each
+in its own line (see [desk.md](desk.md#unrouted-events)).
 
 ## What a kept message does
 
@@ -280,6 +282,6 @@ Limits:
   person who comments as the same GitHub account Priory acts as reopens it like anyone else.
 - Only feedback from someone with write access to the repository reopens or wakes a task: GitHub's
   `author_association` must be `OWNER`, `MEMBER` or `COLLABORATOR`. A stranger's comment on a public
-  repository stays in the inbox as `outsider`, for a person to read with `priory inbox`. No factory
-  setting lets other authors through.
+  repository stays in the inbox as `outsider`, for a person to read with `priory inbox
+  --unrouted`. The Desk counts them. No factory setting lets other authors through.
 

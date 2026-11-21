@@ -19,7 +19,7 @@ does, with every count in `older` at 0. Their rows match the CLI's JSON only wit
 | -------- | --- | ------- |
 | `/api/desk?person=NAME` | `priory desk --json --person NAME` | an object: [Desk](#desk) |
 | `/api/inbox` | `priory inbox --json` | `inbox`: an array of [inbox messages](#inbox) |
-| `/api/inbox?unrouted=1` | `priory inbox --unrouted --json` | `unrouted`: an array of [unrouted groups](#unrouted) |
+| `/api/inbox?unrouted=1` | `priory inbox --unrouted --json` | `unrouted`: an array of [unrouted groups](#unrouted), and `outsider`: the comments from outside the repository |
 | `/api/asks?band=BAND&risk=RISK&all=1` | `priory asks --json --band BAND --risk RISK` | an object: `asks`, an array of [asks](#asks), `bands` and `older` |
 | `/api/tasks?all=1` | `priory tasks --json` | `tasks`: an array of [tasks](#tasks), and `older` |
 | `/api/tasks?pr=RESOURCE` | | `tasks`: the active tasks that hold a pull request. See [Tasks that hold a pull request](#tasks-that-hold-a-pull-request) |
@@ -189,6 +189,7 @@ gets `400`.
 | `counts.asleep` | integer | Tasks asleep on a wait |
 | `counts.snoozed` | integer | Items snoozed now, which `items` leaves out |
 | `counts.unrouted` | integer | [Unrouted](#unrouted) events from the 24 hours before now (`PRIORY_NOW` when set). See [desk.md](../daemon/desk.md#unrouted-events) |
+| `counts.outsider` | integer | The comments and reviews from outside the repository in the 24 hours before now (`PRIORY_NOW` when set). See [desk.md](../daemon/desk.md#unrouted-events) |
 | `counts.since_no_task` | integer | The inbox entries from the second of `last_visit` on that reached no task, which `since_you_looked` leaves out. A report and a request that created a task do not count. See [desk.md](../daemon/desk.md#since-you-looked) |
 | `items` | array | What waits on a person, then the queue, then worktrees that stay. `priory desk --all --json` keeps the snoozed items |
 | `next` | object or null | The item that ranks first, as in `ranked`; null when nothing waits on a person |
@@ -234,8 +235,13 @@ first. `priory inbox --unrouted --since SEQ` keeps the events after sequence num
 | `subscribe` | string | `priory subscribe TASK <resource>`: the command that routes its next event to a task |
 | `request` | string | `priory request --workflow WORKFLOW --key <resource> TEXT`: the command that creates a task for it |
 
+`outsider` lists the comments and reviews from someone outside the repository, newest first: `seq`,
+`type`, `subject`, `time` and `actor`. No task takes them, so they come with no command (see
+[routing.md](../daemon/routing.md#events-that-reach-no-task)).
+
 Without `--json`, `priory inbox --unrouted` prints each group as its resource and event count, one
-line per event, then the two commands.
+line per event, then the two commands. Then it prints the outsider events as a group of their own,
+`from outside the repository: N events`, one line per event with its author.
 
 ## Asks
 

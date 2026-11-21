@@ -37,6 +37,15 @@ When events reached no task in the last 24 hours, `priory desk` prints one line 
 It is a count, not an alarm: nothing ranks for it. `priory desk --json` carries it as
 `counts.unrouted`, 0 when there are none. See [routing.md](routing.md#events-that-reach-no-task).
 
+A comment or review from someone outside the repository is not unrouted: its outcome is
+`outsider`. When some came in the last 24 hours, `priory desk` prints one more line:
+
+```text
+2 comments from outside the repository came in the last 24 hours. See them with `priory inbox --unrouted`.
+```
+
+`priory desk --json` carries it as `counts.outsider`, 0 when there are none.
+
 ## The next thing
 
 The desk ranks what waits on a person, so a client can show one next thing. `priory desk --json`

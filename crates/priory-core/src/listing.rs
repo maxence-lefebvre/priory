@@ -229,7 +229,9 @@ pub fn inbox(db: &Connection, since: i64) -> rusqlite::Result<Value> {
 }
 
 /// The events after sequence number `since` that reached no task and changed nothing, grouped by
-/// the resource each names first, newest first, with the commands that would route the next one.
+/// the resource each names first, newest first, with the commands that would route the next one,
+/// as `unrouted`; and the comments and reviews from outside the repository, newest first, as
+/// `outsider`.
 pub fn unrouted(db: &Connection, since: i64) -> rusqlite::Result<Value> {
     let mut groups: Vec<(String, Vec<Value>)> = Vec::new();
     for (resource, event) in unrouted_events(db, since, None)? {
@@ -238,7 +240,7 @@ pub fn unrouted(db: &Connection, since: i64) -> rusqlite::Result<Value> {
             None => groups.push((resource, vec![event])),
         }
     }
-    Ok(groups
+    let groups: Vec<Value> = groups
         .into_iter()
         .map(|(resource, events)| {
             json!({
@@ -248,7 +250,26 @@ pub fn unrouted(db: &Connection, since: i64) -> rusqlite::Result<Value> {
                 "request": format!("priory request --workflow WORKFLOW --key {resource} TEXT"),
             })
         })
-        .collect())
+        .collect();
+    Ok(json!({ "unrouted": groups, "outsider": outsider_events(db, since, None)? }))
+}
+
+/// Each comment or review after `since`, and within `window` (from, to) when given, from someone
+/// outside the repository, newest first, with who wrote it.
+fn outsider_events(
+    db: &Connection,
+    since: i64,
+    window: Option<(&str, &str)>,
+) -> rusqlite::Result<Value> {
+    let (from, to) = window.unzip();
+    rows(
+        db,
+        "SELECT seq, type, subject, time, json_extract(data, '$.actor') AS actor FROM inbox
+         WHERE outcome = 'outsider' AND seq > ?1
+           AND (?2 IS NULL OR julianday(time) BETWEEN julianday(?2) AND julianday(?3))
+         ORDER BY seq DESC",
+        params![since, from, to],
+    )
 }
 
 /// Each unrouted event after `since`, and within `window` (from, to) when given, newest first,
@@ -1060,13 +1081,17 @@ pub fn desk(
         |row| row.get(0),
     )?;
     let day_ago = (now - jiff::SignedDuration::from_hours(24)).to_string();
-    let unrouted = unrouted_events(db, 0, Some((&day_ago, &now.to_string())))?.len();
+    let day = (day_ago.as_str(), now.to_string());
+    let unrouted = unrouted_events(db, 0, Some((day.0, &day.1)))?.len();
+    let outsider = outsider_events(db, 0, Some((day.0, &day.1)))?
+        .as_array()
+        .map_or(0, Vec::len);
     Ok(json!({
         "paused": state::pause_banner(db)?,
         "banner": stall::banner(db)?,
         "intake": post::intake_banner(db)?,
         "counts": {
-            "asleep": asleep, "snoozed": snoozed, "unrouted": unrouted,
+            "asleep": asleep, "snoozed": snoozed, "unrouted": unrouted, "outsider": outsider,
             "since_no_task": since_no_task(db, person)?,
         },
         "items": items,

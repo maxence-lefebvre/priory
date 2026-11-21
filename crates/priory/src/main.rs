@@ -863,6 +863,7 @@ fn listed(verb: &str, mut args: Vec<String>) -> ExitCode {
         }
         if unrouted {
             print_unrouted(&value[name]);
+            print_outsider(&value["outsider"]);
             return Ok(());
         }
         let rows = &value[verb];
@@ -940,6 +941,16 @@ fn listed(verb: &str, mut args: Vec<String>) -> ExitCode {
                     let events = if unrouted == 1 { "event" } else { "events" };
                     state::emit(&format!(
                         "{unrouted} {events} reached no task in the last 24 hours. See them with `priory inbox --unrouted`."
+                    ));
+                }
+                if let Some(outsider) = value["counts"]["outsider"].as_u64().filter(|n| *n > 0) {
+                    let (comments, them) = if outsider == 1 {
+                        ("comment", "it")
+                    } else {
+                        ("comments", "them")
+                    };
+                    state::emit(&format!(
+                        "{outsider} {comments} from outside the repository came in the last 24 hours. See {them} with `priory inbox --unrouted`."
                     ));
                 }
                 listing::print(
@@ -1772,6 +1783,28 @@ fn print_unrouted(groups: &serde_json::Value) {
         }
         println!("  {}", group["subscribe"].as_str().unwrap_or_default());
         println!("  {}", group["request"].as_str().unwrap_or_default());
+    }
+}
+
+/// Prints the comments and reviews from outside the repository as a group of their own: its count
+/// and one line per event, with who wrote it. No command routes them: they reach no task.
+fn print_outsider(events: &serde_json::Value) {
+    let Some(events) = events.as_array().filter(|events| !events.is_empty()) else {
+        return;
+    };
+    let plural = if events.len() == 1 { "" } else { "s" };
+    println!(
+        "from outside the repository: {} event{plural}",
+        events.len()
+    );
+    for event in events {
+        println!(
+            "  {}  {}  {}  {}",
+            event["seq"],
+            event["type"].as_str().unwrap_or_default(),
+            event["subject"].as_str().unwrap_or("-"),
+            event["actor"].as_str().unwrap_or("-")
+        );
     }
 }
 
