@@ -211,7 +211,11 @@ moved head. One that the intake reports after the result does, since the daemon 
 a head moved back.
 
 The `result` tool refuses an outcome that leads to `done` without `commit` when the task owns a pull
-request.
+request that has not merged yet.
+
+A step with `after = "merged"` stores the same gates when the task reaches it. Green checks then
+leave the task asleep, and the merge that would mark it done enters that step instead. See [Steps
+after the merge](../reference/workflows.md#steps-after-the-merge).
 
 ### A stack of pull requests
 

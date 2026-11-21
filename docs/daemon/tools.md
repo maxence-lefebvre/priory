@@ -36,8 +36,8 @@ with `next = { passed = "approve-pr", failed = "stop" }`, a call looks like this
 }
 ```
 
-An outcome that leads to `done` needs `commit` when the task owns a pull request (see Done and
-checks in [waits.md](waits.md)). `commit`, like a checks wait's `head_sha`, must be a full SHA,
+An outcome that leads to `done` needs `commit` when the task owns a pull request that has not
+merged yet (see Done and checks in [waits.md](waits.md)). `commit`, like a checks wait's `head_sha`, must be a full SHA,
 because GitHub names pull request heads by their full SHA. An abbreviated SHA is refused. A SHA in
 capitals is stored in lower case.
 

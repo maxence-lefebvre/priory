@@ -41,9 +41,9 @@ const OUTPUT: &str = "factory.intake";
 /// Takes a state file back before schema 28, which added search, 29, which added grades, 30,
 /// which added snoozes, 31, which added read reports, 32, which added the pause, 34, which added
 /// reports of sections, 36, which added deliveries, 37, which added progress, 39, which added run
-/// actions, 40, which added answer actions, 42, which added dispatches, 49, which added task ends, 51, which added a run's crossing of `compactAt`, 53, which added intervention levels, 56, which added the step an irreversible approval lets run, 58, which added withdrawal reasons, and 59, which added green stack gates and returned routed asks, 61, which added findings, 62, which added merge risk, 63, which added plan fields, and 65, which added chosen subscriptions and approval generations. Schema 38's visits
+/// actions, 40, which added answer actions, 42, which added dispatches, 49, which added task ends, 51, which added a run's crossing of `compactAt`, 53, which added intervention levels, 56, which added the step an irreversible approval lets run, 58, which added withdrawal reasons, and 59, which added green stack gates and returned routed asks, 61, which added findings, 62, which added merge risk, 63, which added plan fields, 65, which added chosen subscriptions and approval generations, and 66, which added the step a gate enters after the merge. Schema 38's visits
 /// table is created only if missing, so it stays.
-const UNDO_SINCE_SEARCH: &str = "ALTER TABLE subscriptions DROP COLUMN chosen; ALTER TABLE approvals DROP COLUMN generation;
+const UNDO_SINCE_SEARCH: &str = "ALTER TABLE waits DROP COLUMN after; ALTER TABLE subscriptions DROP COLUMN chosen; ALTER TABLE approvals DROP COLUMN generation;
          ALTER TABLE tasks DROP COLUMN plan_goal; ALTER TABLE tasks DROP COLUMN plan_testing; ALTER TABLE tasks DROP COLUMN plan_brief; ALTER TABLE tasks DROP COLUMN verification;
          ALTER TABLE tasks DROP COLUMN merge_risk; ALTER TABLE results DROP COLUMN merge_risk;
          DROP TRIGGER ask_returns_from_its_lead; ALTER TABLE waits DROP COLUMN green;
@@ -5530,6 +5530,7 @@ fn a_state_file_whose_asks_an_approval_names_upgrades_to_outside_asks() {
          DROP TABLE findings;
          DROP TRIGGER ask_withdrawn; ALTER TABLE asks DROP COLUMN withdrawn_reason;
          ALTER TABLE waits DROP COLUMN withdrawn_reason; ALTER TABLE ask_withdrawals DROP COLUMN reason;
+         ALTER TABLE waits DROP COLUMN after;
          DROP TABLE ask_revisions;
          DROP TABLE ask_refusals;
          PRAGMA legacy_alter_table = ON;
@@ -6143,6 +6144,59 @@ fn green_checks_at_the_result_commit_mark_the_task_done_and_start_no_run() {
     assert_eq!(setup.rows("runs").len(), 2);
     assert_eq!(setup.typed().len(), 2, "{:?}", setup.typed());
     assert!(setup.rows("waits").is_empty());
+}
+
+const AFTER_MERGE: &str = r#"
+start = "implement"
+
+[[steps]]
+id = "implement"
+decides = "model"
+agent = "implementer"
+prompt = "Implement the issue."
+effect = "reversible"
+next = { passed = "watch", failed = "stop" }
+
+[[steps]]
+id = "watch"
+after = "merged"
+decides = "model"
+agent = "implementer"
+prompt = "Watch the release."
+effect = "read"
+next = { quiet = "done" }
+"#;
+
+#[test]
+fn green_checks_leave_a_task_before_a_step_after_the_merge_asleep_and_the_merge_enters_it() {
+    let mut setup = Setup::with_workflow("after-merge", AFTER_MERGE);
+    setup.calls(&[
+        wait(on_pull_7("review")),
+        passed_at("abc0000000000000000000000000000000000000"),
+        json!({ "name": "result", "arguments": { "outcome": "quiet", "summary": "all quiet" } }),
+    ]);
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("runs", |rows| rows.len() == 1 && rows[0][7] == "asleep");
+    setup.publish(&reviewed());
+    setup.until("runs", |rows| rows.len() == 2 && rows[1][7] != "-");
+
+    setup.publish(&check(1, 0));
+    stays_asleep_after(&setup, 2);
+    setup.publish(&closed());
+
+    setup.until("tasks", |rows| rows[0][4] == "done");
+    let runs = setup.rows("runs");
+    assert_eq!(runs.len(), 3, "{runs:?}");
+    assert_eq!(runs[2][2], "watch");
+    assert!(
+        setup
+            .typed()
+            .iter()
+            .any(|text| text.contains("Watch the release.")),
+        "{:?}",
+        setup.typed()
+    );
 }
 
 #[test]
@@ -9218,7 +9272,8 @@ fn an_approval_stored_before_generations_were_kept_is_asked_again_after_the_upgr
     // The state file as version 64 left it: an approval names no generation.
     let db = rusqlite::Connection::open(setup.dir.join("priory.db")).unwrap();
     db.execute_batch(
-        "ALTER TABLE subscriptions DROP COLUMN chosen; ALTER TABLE approvals DROP COLUMN generation;
+        "ALTER TABLE waits DROP COLUMN after;
+         ALTER TABLE subscriptions DROP COLUMN chosen; ALTER TABLE approvals DROP COLUMN generation;
          PRAGMA user_version = 64;",
     )
     .unwrap();
