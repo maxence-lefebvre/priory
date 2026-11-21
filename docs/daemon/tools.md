@@ -288,8 +288,8 @@ priory progress 7 '{"nextAction": "Wait for CI"}'
 
 `report` stores the task's report: ordered sections of rows, some with a pick. It replaces the
 task's report and keeps the choices already made. It does not end the turn. `priory mcp` answers it
-itself from the state file, without the daemon. A pick arrives as the next prompt. See
-[reports.md](reports.md).
+itself from the state file, without the daemon. A pick or a comment on a row arrives as the next
+prompt; the agent answers a comment with `priory report reply`. See [reports.md](reports.md).
 
 ## Moving on
 

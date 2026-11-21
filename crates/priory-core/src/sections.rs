@@ -56,7 +56,8 @@ pub struct Row {
     pub time: Option<String>,
     #[serde(default)]
     pub pick: Option<Pick>,
-    /// Always empty: comments on rows come in a later version.
+    /// Empty in a write: Priory fills it with the row's comment threads, oldest first. A row
+    /// needs an `id` to take comments.
     #[serde(default)]
     #[schemars(length(max = 0))]
     pub comments: Vec<Value>,
@@ -107,7 +108,7 @@ fn check(report: &Report) -> Result<(), String> {
         for row in &section.rows {
             if !row.comments.is_empty() {
                 return Err(format!(
-                    "section {:?}: comments must be empty; they come in a later version",
+                    "section {:?}: comments must be empty; Priory fills them with the row's threads",
                     section.id
                 ));
             }
@@ -225,12 +226,57 @@ pub fn show(db: &Connection, task: Option<i64>) -> rusqlite::Result<Option<Value
             },
         )
         .optional()?;
-    Ok(found.map(|(task, revision, text)| {
-        let mut report: Value = serde_json::from_str(&text).expect("a report is stored as JSON");
-        report["task"] = task.into();
-        report["revision"] = revision.into();
-        report
-    }))
+    found
+        .map(|(task, revision, text)| {
+            let mut report: Value =
+                serde_json::from_str(&text).expect("a report is stored as JSON");
+            report["task"] = task.into();
+            report["revision"] = revision.into();
+            threads(db, report)
+        })
+        .transpose()
+}
+
+/// `report` with each row's `comments` filled with its threads, oldest first.
+fn threads(db: &Connection, mut report: Value) -> rusqlite::Result<Value> {
+    let mut by_row: HashMap<String, Vec<Value>> = HashMap::new();
+    let mut statement = db.prepare(
+        "SELECT id, row, reply_to, author, text, created, resolved FROM row_comments
+         WHERE task = ?1 ORDER BY id",
+    )?;
+    let mut rows = statement.query([report["task"].as_i64()])?;
+    while let Some(found) = rows.next()? {
+        let comment = serde_json::json!({
+            "id": found.get::<_, i64>(0)?,
+            "author": found.get::<_, String>(3)?,
+            "text": found.get::<_, String>(4)?,
+            "created": found.get::<_, String>(5)?,
+        });
+        let thread = by_row.entry(found.get(1)?).or_default();
+        match found.get::<_, Option<i64>>(2)? {
+            Some(root) => {
+                let root = thread.iter_mut().find(|thread| thread["id"] == root);
+                let root = root.expect("a reply's thread is older than the reply");
+                root["replies"]
+                    .as_array_mut()
+                    .expect("a thread has replies")
+                    .push(comment);
+            }
+            None => {
+                let mut comment = comment;
+                comment["resolved"] = found.get::<_, bool>(6)?.into();
+                comment["replies"] = serde_json::json!([]);
+                thread.push(comment);
+            }
+        }
+    }
+    let sections = report["sections"].as_array_mut().into_iter().flatten();
+    for row in sections.flat_map(|section| section["rows"].as_array_mut().into_iter().flatten()) {
+        if let Some(threads) = row["id"].as_str().and_then(|id| by_row.get(id)) {
+            row["comments"] = threads.clone().into();
+        }
+    }
+    Ok(report)
 }
 
 /// The `report` tool, which `priory mcp` answers itself: stores the report in `arguments` as the
@@ -360,6 +406,157 @@ pub(crate) fn pick(
             "{recorded}, but {error}; the daemon publishes it again when it starts"
         )),
     })
+}
+
+/// What a comment line does: a new thread on a row, a reply in a thread, or a thread's resolve or
+/// reopen.
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum Remark {
+    Comment,
+    Reply,
+    Resolve,
+    Reopen,
+}
+
+/// A comment line, as `priory report comment|reply|resolve|reopen` sends it on the socket.
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Comment {
+    pub comment: Remark,
+    /// The row's id for a new thread, else a comment's id.
+    pub on: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
+    /// The report's revision the person saw, when they send one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected: Option<i64>,
+    /// The run session of the agent that sends it, from `PRIORY_SESSION`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session: Option<String>,
+}
+
+/// Applies a comment line to the report that holds its row: the written last of those that have
+/// a row with that id. A comment or reply from anyone but a live run of the report's own task
+/// tells its agent, as `priory say` does, and is refused when `say` would refuse it.
+pub(crate) fn comment(
+    db: &mut Connection,
+    comment: &Comment,
+    factory: &priory_factory::factory::Factory,
+) -> rusqlite::Result<Result<String, String>> {
+    let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let found = match comment.comment {
+        Remark::Comment => tx
+            .query_row(
+                "SELECT reports.task, reports.revision, tasks.state, NULL, 0
+                 FROM reports JOIN tasks ON tasks.id = reports.task
+                 WHERE EXISTS (SELECT 1 FROM json_each(reports.report, '$.sections') AS section,
+                   json_each(section.value, '$.rows') AS row
+                   WHERE json_extract(row.value, '$.id') = ?1)
+                 ORDER BY reports.put DESC, reports.task DESC LIMIT 1",
+                [&comment.on],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, comment.on.clone())),
+            )
+            .optional()?
+            .ok_or_else(|| format!("no report has the row {}", comment.on)),
+        _ => tx
+            .query_row(
+                "SELECT reports.task, reports.revision, tasks.state, root.id, root.resolved, root.row
+                 FROM row_comments AS remark
+                 JOIN row_comments AS root ON root.id = coalesce(remark.reply_to, remark.id)
+                 JOIN reports ON reports.task = remark.task JOIN tasks ON tasks.id = remark.task
+                 WHERE remark.id = ?1",
+                [comment.on.parse::<i64>().unwrap_or(-1)],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?)),
+            )
+            .optional()?
+            .ok_or_else(|| format!("there is no comment {}", comment.on)),
+    };
+    let (task, revision, state, root, resolved, row): (
+        i64,
+        i64,
+        String,
+        Option<i64>,
+        bool,
+        String,
+    ) = match found {
+        Ok(found) => found,
+        Err(error) => return Ok(Err(error)),
+    };
+    if let Some(expected) = comment.expected.filter(|expected| *expected != revision) {
+        return Ok(Err(format!(
+            "task {task}'s report is at revision {revision}, not {expected}"
+        )));
+    }
+    let revised = revision + 1;
+    let done = match (comment.comment, root) {
+        (Remark::Resolve | Remark::Reopen, Some(root)) => {
+            let resolve = comment.comment == Remark::Resolve;
+            tx.execute(
+                "UPDATE row_comments SET resolved = ?2 WHERE id = ?1",
+                params![root, resolve],
+            )?;
+            let now = if resolve { "resolved" } else { "open" };
+            format!("thread {root} is {now} at revision {revised}")
+        }
+        (Remark::Resolve | Remark::Reopen, None) => unreachable!("a new thread is a comment"),
+        (_, root) => {
+            let Some(text) = comment
+                .text
+                .as_deref()
+                .filter(|text| !text.trim().is_empty())
+            else {
+                return Ok(Err("a comment needs a text".to_owned()));
+            };
+            if resolved {
+                return Ok(Err(format!(
+                    "thread {} is resolved: reopen it to reply",
+                    root.unwrap_or_default()
+                )));
+            }
+            let agent: bool = tx.query_row(
+                "SELECT EXISTS (SELECT 1 FROM runs WHERE task = ?1 AND ended IS NULL AND session = ?2)",
+                params![task, comment.session],
+                |row| row.get(0),
+            )?;
+            let id: i64 = tx.query_row(
+                "INSERT INTO row_comments (task, row, reply_to, author, text)
+                 VALUES (?1, ?2, ?3, ?4, ?5) RETURNING id",
+                params![
+                    task,
+                    row,
+                    root,
+                    if agent { "agent" } else { "person" },
+                    text
+                ],
+                |row| row.get(0),
+            )?;
+            let thread = root.unwrap_or(id);
+            if !agent {
+                let wrote = match root {
+                    None => format!("commented on row {row}"),
+                    Some(root) => format!("replied in thread {root} on row {row}"),
+                };
+                let line = format!(
+                    "The person {wrote} in your report (reply with `priory report reply {thread} TEXT`): {text}"
+                );
+                if let Err(error) = crate::tools::say(&tx, task, &line, &state, &factory.workflows)?
+                {
+                    return Ok(Err(format!("row {row}: {error}")));
+                }
+            }
+            match root {
+                None => format!("comment {id} on row {row} at revision {revised}"),
+                Some(root) => format!("reply {id} in thread {root} at revision {revised}"),
+            }
+        }
+    };
+    tx.execute(
+        "UPDATE reports SET revision = revision + 1 WHERE task = ?1",
+        [task],
+    )?;
+    tx.commit()?;
+    Ok(Ok(done))
 }
 
 /// Publishes the pending dispatch of `only`, or every one, under its pick's id, so publishing one

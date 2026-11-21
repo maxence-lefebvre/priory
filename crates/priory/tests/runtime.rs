@@ -11876,3 +11876,153 @@ fn a_done_tasks_branch_stops_being_polled_once_its_pull_request_closed() {
 
     assert_eq!(setup.api_calls(), 0);
 }
+
+#[test]
+fn a_comment_on_a_row_stores_shows_as_a_thread_and_wakes_the_task_with_one_line() {
+    let setup = asleep_on_a_report("report-comment", &bonjour(serde_json::Value::Null));
+
+    let commented = setup.priory(&[
+        "report",
+        "comment",
+        "fnd-2409",
+        "--expected",
+        "1",
+        "Check the release branch first",
+    ]);
+
+    assert!(commented.status.success(), "{commented:?}");
+    assert_eq!(
+        String::from_utf8_lossy(&commented.stdout),
+        "comment 1 on row fnd-2409 at revision 2\n"
+    );
+    let shown = shown(&setup);
+    assert_eq!(shown["revision"], 2);
+    let thread = &shown["sections"][0]["rows"][0]["comments"][0];
+    assert_eq!(
+        [
+            &thread["id"],
+            &thread["author"],
+            &thread["text"],
+            &thread["resolved"]
+        ],
+        [
+            &json!(1),
+            &json!("person"),
+            &json!("Check the release branch first"),
+            &json!(false)
+        ]
+    );
+    assert!(
+        thread["created"]
+            .as_str()
+            .is_some_and(|at| at.ends_with('Z')),
+        "{thread}"
+    );
+    assert_eq!(thread["replies"], json!([]));
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 3);
+    assert_eq!(
+        setup.typed()[2].lines().next(),
+        Some(
+            "The person commented on row fnd-2409 in your report (reply with `priory report reply 1 TEXT`): Check the release branch first"
+        )
+    );
+}
+
+#[test]
+fn a_reply_by_the_tasks_own_agent_is_stored_and_does_not_wake_the_task() {
+    let setup = asleep_on_a_report("report-agent-reply", &bonjour(serde_json::Value::Null));
+    setup.hold("hold-stop");
+    let commented = setup.priory(&["report", "comment", "fnd-2409", "--expected", "1", "Why?"]);
+    assert!(commented.status.success(), "{commented:?}");
+    let runs = setup.until("runs", |rows| rows.iter().any(|row| row[6] == "-"));
+    let session = runs.iter().find(|row| row[6] == "-").unwrap()[4].clone();
+    let prompts = setup.rows("outbox").len();
+
+    let replied = setup
+        .command(env!("CARGO_BIN_EXE_priory"))
+        .env("PRIORY_SESSION", &session)
+        .args(["report", "reply", "1", "Because the release is cut today"])
+        .output()
+        .unwrap();
+
+    assert!(replied.status.success(), "{replied:?}");
+    assert_eq!(
+        String::from_utf8_lossy(&replied.stdout),
+        "reply 2 in thread 1 at revision 3\n"
+    );
+    let replies = &shown(&setup)["sections"][0]["rows"][0]["comments"][0]["replies"];
+    assert_eq!(
+        [
+            &replies[0]["id"],
+            &replies[0]["author"],
+            &replies[0]["text"]
+        ],
+        [
+            &json!(2),
+            &json!("agent"),
+            &json!("Because the release is cut today")
+        ]
+    );
+    assert_eq!(setup.rows("outbox").len(), prompts);
+    setup.release("hold-stop");
+}
+
+#[test]
+fn resolve_and_reopen_change_the_threads_state_and_a_resolved_thread_takes_no_reply() {
+    let setup = asleep_on_a_report("report-resolve", &bonjour(serde_json::Value::Null));
+    let commented = setup.priory(&["report", "comment", "fnd-2409", "--expected", "1", "Why?"]);
+    assert!(commented.status.success(), "{commented:?}");
+    let resolved =
+        |setup: &Setup| shown(setup)["sections"][0]["rows"][0]["comments"][0]["resolved"].clone();
+
+    let resolve = setup.priory(&["report", "resolve", "1"]);
+
+    assert_eq!(
+        String::from_utf8_lossy(&resolve.stdout),
+        "thread 1 is resolved at revision 3\n"
+    );
+    assert_eq!(resolved(&setup), true);
+    let refused = setup.priory(&["report", "reply", "1", "One more thing"]);
+    assert_eq!(
+        String::from_utf8_lossy(&refused.stderr),
+        "priory report reply: thread 1 is resolved: reopen it to reply\n"
+    );
+    let reopen = setup.priory(&["report", "reopen", "1"]);
+    assert_eq!(
+        String::from_utf8_lossy(&reopen.stdout),
+        "thread 1 is open at revision 4\n"
+    );
+    assert_eq!(resolved(&setup), false);
+}
+
+#[test]
+fn a_comment_at_a_stale_revision_is_refused_and_stores_nothing() {
+    let setup = asleep_on_a_report("report-comment-stale", &bonjour(serde_json::Value::Null));
+
+    let stale = setup.priory(&["report", "comment", "fnd-2409", "--expected", "7", "Why?"]);
+
+    assert!(!stale.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&stale.stderr),
+        "priory report comment: task 1's report is at revision 1, not 7\n"
+    );
+    let shown = shown(&setup);
+    assert_eq!(shown["revision"], 1);
+    assert_eq!(shown["sections"][0]["rows"][0]["comments"], json!([]));
+    assert_eq!(setup.rows("tasks")[0][4], "asleep");
+}
+
+#[test]
+fn rows_that_share_an_id_in_two_sections_share_their_threads() {
+    let mut report = bonjour(serde_json::Value::Null);
+    report["sections"][1]["rows"] = json!([{ "id": "fnd-2409", "text": "Moved to review" }]);
+    let setup = asleep_on_a_report("report-shared-row", &report);
+
+    let commented = setup.priory(&["report", "comment", "fnd-2409", "--expected", "1", "Why?"]);
+
+    assert!(commented.status.success(), "{commented:?}");
+    let shown = shown(&setup);
+    let first = &shown["sections"][0]["rows"][0]["comments"];
+    assert_eq!(first[0]["text"], "Why?");
+    assert_eq!(&shown["sections"][1]["rows"][0]["comments"], first);
+}
