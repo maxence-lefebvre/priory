@@ -3,7 +3,8 @@
 The daemon removes worktrees of ended tasks. It sweeps when it starts, when a stall short of disk
 starts, and every 10 minutes after, or every `[sweep] every`, not on every tick. A sweep fetches
 `origin` into each clone with a worktree, refreshes `origin/HEAD`, then checks each folder
-`worktrees/<owner>/<name>/<id>`. A clone whose fetch failed is skipped until the next sweep.
+`worktrees/<owner>/<name>/<id>`, or `<runner>-<id>` with several runners. A clone whose fetch
+failed is skipped until the next sweep.
 
 It removes a folder and its branch `priory/<id>` only when all checks hold:
 

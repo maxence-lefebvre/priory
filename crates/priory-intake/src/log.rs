@@ -1,6 +1,6 @@
 //! The event log: what the intake publishes on and the daemon reads, whatever stores it.
 
-use herdr_bus::{Bus, Message, Output, Seq, Start, Stored};
+use herdr_bus::{Bus, Message, Output, Seq, Start, Stored, Timestamp};
 use priory_factory::factory::{Backend, EventLog};
 
 #[cfg(feature = "postgres")]
@@ -15,6 +15,9 @@ pub struct Delivery {
     pub output: String,
     pub seq: Seq,
     pub message: Message,
+    /// When the log stored the message, if one clock stamps every message, as a Postgres server
+    /// does. herdr-bus stamps each with its publisher's clock, so it gives none.
+    pub logged: Option<Timestamp>,
 }
 
 /// An append-only log of outputs, each a sequence of messages, with a cursor per consumer.
@@ -99,6 +102,7 @@ impl Log for Bus {
                 output: delivery.output,
                 seq: delivery.seq,
                 message: delivery.message,
+                logged: None,
             })
             .collect();
         if !full || !ours.is_empty() || limit == 0 {
@@ -130,6 +134,7 @@ impl Log for Bus {
                 output: stored.output,
                 seq: stored.seq,
                 message: stored.message,
+                logged: None,
             })
             .collect())
     }

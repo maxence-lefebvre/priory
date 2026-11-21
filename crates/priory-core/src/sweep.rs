@@ -11,7 +11,12 @@ struct Entry {
 fn assess(db: &Connection, home: &Path) -> rusqlite::Result<Vec<Entry>> {
     let mut entries = Vec::new();
     for found in worktrees::found(home) {
-        let task = found.name.parse::<i64>().ok();
+        // With runners the folder is `<runner>-<task>`.
+        let task = found
+            .name
+            .rsplit('-')
+            .next()
+            .and_then(|id| id.parse::<i64>().ok());
         let task = task
             .map(|id| {
                 db.query_row(

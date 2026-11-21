@@ -208,14 +208,15 @@ pub fn check_repo(repo: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// The task's worktree on `priory/<task>`, from the default branch of Priory's own clone of `repo`
-/// (`owner/name`). The clone has no checkout: a person trusts it once in Claude, and its worktrees
-/// inherit that trust. A worktree of that clone left on that branch by an interrupted start is reused.
-pub fn worktree(home: &Path, repo: &str, task: i64) -> Result<(PathBuf, String), String> {
+/// The task's worktree folder `name` on `priory/<name>`, from the default branch of Priory's own
+/// clone of `repo` (`owner/name`). The clone has no checkout: a person trusts it once in Claude, and
+/// its worktrees inherit that trust. A worktree of that clone left on that branch by an interrupted
+/// start is reused.
+pub fn worktree(home: &Path, repo: &str, name: &str) -> Result<(PathBuf, String), String> {
     check_repo(repo)?;
     let clone = home.join("repos").join(repo);
-    let branch = format!("priory/{task}");
-    let path = home.join("worktrees").join(repo).join(task.to_string());
+    let branch = format!("priory/{name}");
+    let path = home.join("worktrees").join(repo).join(name);
     if !clone.exists() {
         // A clone interrupted before the rename leaves only the partial directory, which is replaced.
         // It lives apart from `repos`, where `<name>.partial` can be another repository's clone.
