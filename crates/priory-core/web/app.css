@@ -206,6 +206,7 @@ a.autolink { color: var(--action-text); text-decoration: underline; text-underli
 .writeform .btn { justify-self: end; }
 textarea { font: 400 16px/22px var(--font-ui); color: var(--text); background: var(--surface); border: 1px solid var(--control-line); border-radius: var(--radius-md); padding: 10px 12px; width: 100%; resize: vertical; }
 .sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+.routednote { display: flex; gap: 6px; align-items: baseline; color: var(--action-text); font: 600 var(--type-small) var(--font-ui); }
 .warnline { color: var(--warn-text); font: 600 var(--type-small) var(--font-ui); }
 .sending { flex: none; display: flex; align-items: center; gap: 12px; background: var(--bar); border-top: 1px solid var(--line); padding: 8px var(--gutter) calc(8px + env(safe-area-inset-bottom)); min-height: var(--answer-bar); font: 400 var(--type-small) var(--font-ui); }
 .sending .btn { margin-left: auto; }

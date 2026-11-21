@@ -279,3 +279,37 @@ test("a stack shows in PR even before the latest pull request has events to summ
   assert.equal(detail.pr.title, "2 PRs");
   assert.deepEqual(detail.pr.stack.map((each) => [each.number, each.next]), [[211, true], [212, false]]);
 });
+
+const lead = (fields) => ({ ...asks[0], routed_to: "lead", ...fields });
+
+test("an open ask routed to a lead says it is with the lead, and an unrouted ask has no such mark", () => {
+  const [routed, plain] = asksList([lead(), asks[4]], { view: "open", now }).sections[0].rows;
+  assert.equal(routed.routed, "with lead");
+  assert.equal("routed" in plain, false);
+});
+
+test("an answered row names who answered, a person or the lead", () => {
+  const answered = (by) => ({ ...lead({ state: "answered", answer: "Merge", answered_at: "2026-11-20T20:00:00Z", answered_by: by }) });
+  const rows = asksList([answered("agent:lead"), { ...answered("cli"), id: 9 }, { ...answered(null), id: 10 }], { view: "answered", now }).sections.flatMap((section) => section.rows);
+  assert.deepEqual(rows.map((row) => [row.by, row.routed]), [["agent:lead", undefined], ["a person", undefined], [undefined, undefined]]);
+});
+
+test("a routed ask's detail says the lead is answering and that the person can answer first", () => {
+  const detail = askDetail(lead(), { now, armed: null });
+  assert.equal(detail.routed, "lead is answering. You can still answer first: the first answer stands.");
+  assert.equal("routed" in askDetail(asks[4], { now, armed: null }), false);
+});
+
+test("an answered ask's detail and history say who answered", () => {
+  const ask = lead({
+    state: "answered", answer: "Merge", answered_at: "2026-11-20T20:00:00Z", answered_by: "agent:lead", revision: 2,
+    revisions: [
+      { revision: 1, question: "q", at: "2026-11-20T10:00:00Z", answer: "Wait", answered_at: "2026-11-20T11:00:00Z" },
+      { revision: 2, question: "q", at: "2026-11-20T12:00:00Z", answer: "Merge", answered_at: "2026-11-20T20:00:00Z" },
+    ],
+  });
+  const detail = askDetail(ask, { now, armed: null });
+  assert.match(detail.decided, /^Answered: Merge\. 50 min ago\. By agent:lead\.$/);
+  assert.deepEqual(detail.history.filter((entry) => entry.tile === "answered").map((entry) => entry.text), ["Answered Merge by agent:lead", "Answered Wait"]);
+  assert.equal("routed" in detail, false);
+});
