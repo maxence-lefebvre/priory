@@ -2784,6 +2784,7 @@ fn step_in(
         return finish("blocked");
     };
     drop_ending(tx, task)?;
+    drop_nudge(tx, task)?;
     set_ending(tx, task, Some(step))?;
     match step.decides {
         Decider::Model => {
@@ -3994,6 +3995,32 @@ fn drop_ending(tx: &Transaction, task: i64) -> rusqlite::Result<()> {
             tx.execute(
                 "UPDATE outbox SET text = ?2 WHERE id = ?1",
                 params![id, kept.join("\n")],
+            )?;
+        }
+    }
+    Ok(())
+}
+
+/// Removes a queued nudge from the task's prompts, as before it enters another step: it asks for
+/// the old step's outcomes, and the new step's prompt says how to end it.
+fn drop_nudge(tx: &Transaction, task: i64) -> rusqlite::Result<()> {
+    let queued = tx
+        .prepare("SELECT id, text FROM outbox WHERE task = ?1 AND state = 'queued' AND nudge = 1")?
+        .query_map([task], |row| {
+            Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    for (id, text) in queued {
+        let Some(rest) = text.strip_prefix(NUDGE.trim_end()) else {
+            continue;
+        };
+        let rest = rest.trim_start_matches('\n');
+        if rest.is_empty() {
+            tx.execute("DELETE FROM outbox WHERE id = ?1", [id])?;
+        } else {
+            tx.execute(
+                "UPDATE outbox SET text = ?2, nudge = 0 WHERE id = ?1",
+                params![id, rest],
             )?;
         }
     }

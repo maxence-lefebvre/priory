@@ -40,7 +40,8 @@ priory.task.requested.cli cli:docs-1 {"person":"max","repo":"owner/name","text":
 ```
 
 When a task enters another step, the daemon removes the old step's ending line from the prompts
-still queued, such as a person's `say`, so a prompt names only the new step's outcomes.
+still queued, such as a person's `say`, so a prompt names only the new step's outcomes. It removes a
+queued nudge too, since the nudge asks for the old step's outcomes.
 
 A `ready` task's run starts with only those event lines, or with nothing when no new events exist.
 The prompt that moved or woke the task is already queued.
