@@ -649,6 +649,7 @@ fn apply(
 enum Input {
     Guard(crate::guard::Line),
     Todo(crate::todo::Line),
+    Deliver(deliver::Line),
     Add(AddLine),
     Signal(Signal),
     Call(Call),
@@ -805,6 +806,7 @@ fn take(
             replied(crate::todo::change(db, &line, trace.factory)?),
             None,
         )),
+        Ok(Input::Deliver(line)) => Ok((replied(deliver::act(db, &line)?), None)),
         Ok(Input::Add(line)) => Ok((replied(add(db, &line.add, trace, counter)?), None)),
         Ok(Input::Signal(signal)) => Ok(("ok".to_owned(), state::signal(db, &signal, trace)?)),
         Ok(Input::Call(call)) if call.tool == "progress" => {

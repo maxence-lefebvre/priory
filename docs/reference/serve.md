@@ -255,7 +255,7 @@ an object: `answered` and `withdrawn`, the number of each left out, within `band
 | `answer`, `answered_at` | string or null | The answer and when it came |
 | `answered_by` | string or null | Who answered: `cli`, `serve`, or `agent:<lead>` for a lead's answer. Null when unanswered, or answered before Priory recorded it |
 | `routed_to` | string or null | The lead the ask is routed to, which answers it in the person's place, or null for a person. See [tools.md](../daemon/tools.md#hands-off) |
-| `delivery` | object or null | The latest delivery of an outside ask's answer or dismissal to its session: `state` (`queued`, `running`, `delivered` or `failed`), `revision`, `tries`, `error` and `since`. Null when nothing was delivered. See [asks.md](../daemon/asks.md) |
+| `delivery` | object or null | The latest delivery of an outside ask's answer or dismissal to its session: `state` (`queued`, `running`, `delivered` or `failed`), `revision`, `tries`, `error`, `since` and `cleared`, when a person cleared a failed one from the desk with `priory deliver --clear`. Null when nothing was delivered. See [asks.md](../daemon/asks.md) |
 | `since` | string | When the agent asked |
 | `revisions` | array | Every revision of the question, oldest first: `revision`, `question`, `options`, `recommendation`, `text`, `at`, when it was asked, and `answer` and `answered_at`, the answer that revision took, or null. An ask stored before Priory kept revisions lists only its current one, dated when the ask was first asked |
 | `refused` | array | Every answer the daemon refused, oldest first: `revision`, the one the answer was sent for, `answer`, `by` (`cli` or `serve`), `why`, the CLI's error, and `at` |

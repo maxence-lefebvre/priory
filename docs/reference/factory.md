@@ -159,7 +159,7 @@ and [tools.md](../daemon/tools.md#commands-an-answer-runs) for the commands an a
 
 | Key | Type | Required | Default | Meaning | Example |
 | --- | ---- | -------- | ------- | ------- | ------- |
-| `deliver` | string | no | none: an answer is only stored | The command that delivers an outside ask's answer or dismissal to the session that asked, relative to the factory folder | `"adapters/herdr/deliver"` |
+| `deliver` | string | no | none: an answer is only stored | The command that delivers an outside ask's answer or dismissal to the session that asked, relative to the factory folder. `priory check` refuses one that is not an executable file | `"adapters/herdr/deliver"` |
 | `targets` | table of strings | no | none: only `worktree` | The folders, by name, where an answer can run an agent's ask command besides the task's worktree, relative to the factory folder or absolute | `{ ops = "../ops" }` |
 
 ## `[links]`

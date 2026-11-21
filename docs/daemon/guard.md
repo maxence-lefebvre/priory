@@ -61,7 +61,7 @@ A run with no task step, such as the stall handler, is denied every guarded call
 | `slack-write` | `curl` or `wget` to `hooks.slack.com` or `slack.com/api/chat.*`, and `slack chat send` |
 | `linear-write` | `curl` or `wget` to `api.linear.app` with a body that holds `mutation` or comes from a file, and `linear issue create`, `update`, `delete` or `comment` |
 | `mcp-write` | MCP tools named `add_issue_comment`, `send_message`, `slack_send_message`, `schedule_message`, `slack_schedule_message`, `save_comment`, `create_comment`, `save_issue`, `create_issue` or `update_issue`, on any server but `priory` |
-| `priory-person` | `priory answer`, `dismiss`, `resume`, `revive`, `cancel`, `release`, `hold`, `move`, `say`, `pause`, `unpause`, `snooze`, `seen`, `subscribe`, `unsubscribe` and `report pick`. `priory add`, `request` and `gate` stay open to agents |
+| `priory-person` | `priory answer`, `dismiss`, `deliver`, `resume`, `revive`, `cancel`, `release`, `hold`, `move`, `say`, `pause`, `unpause`, `snooze`, `seen`, `subscribe`, `unsubscribe` and `report pick`. `priory add`, `request` and `gate` stay open to agents |
 | `unreadable` | A script nested more than 16 levels deep, through `bash -c`, `$(...)`, `eval`, `find -exec` and the like. The guard cannot read it, so the daemon denies it: "too deeply nested for the guard to read". Nothing grants it |
 
 An MCP tool's server is the part of its name before the last `__`, so a server named `my__srv`

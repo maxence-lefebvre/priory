@@ -4480,6 +4480,52 @@ fn a_failing_deliver_command_is_retried_with_a_backoff_then_its_failure_shows_on
 }
 
 #[test]
+fn a_failed_delivery_can_be_cleared_from_the_desk_then_retried() {
+    let mut setup = delivering(
+        "deliver-retry",
+        "[ -e \"$FAKE_DIR/up\" ] || { echo 'hc is down' >&2; exit 3; }",
+    );
+    setup.start();
+    listening(&setup);
+    setup.priory(&["ask", "cache.ship", &fleet_ask(&["ship", "wait"])]);
+    setup.priory(&["answer", "--expected", "1", "--", "cache.ship", "ship"]);
+    delivery(&setup, "cache.ship", |delivery| {
+        delivery["state"] == "failed"
+    });
+    let early = setup.priory(&["deliver", "cache.ship", "--retry", "--clear"]);
+    assert!(!early.status.success(), "{early:?}");
+
+    let cleared = setup.priory(&["deliver", "cache.ship", "--clear"]);
+
+    assert_eq!(
+        String::from_utf8_lossy(&cleared.stdout),
+        "the delivery of cache.ship is cleared from the desk\n"
+    );
+    assert!(setup.rows("desk").iter().all(|item| item[1] != "delivery"));
+    let failed = delivery(&setup, "cache.ship", |_| true);
+    assert_eq!(failed["state"], "failed");
+    assert!(failed["cleared"].is_string(), "{failed}");
+    fs::write(setup.dir.join("fake/up"), "").unwrap();
+
+    let retried = setup.priory(&["deliver", "cache.ship", "--retry"]);
+
+    assert_eq!(
+        String::from_utf8_lossy(&retried.stdout),
+        "the delivery of cache.ship is queued again\n"
+    );
+    let done = delivery(&setup, "cache.ship", |delivery| {
+        delivery["state"] == "delivered"
+    });
+    assert_eq!(done["tries"], 1);
+    assert_eq!(delivered(&setup).len(), 6);
+    let again = setup.priory(&["deliver", "cache.ship", "--retry"]);
+    assert_eq!(
+        String::from_utf8_lossy(&again.stderr),
+        "priory deliver: the delivery of cache.ship has not failed\n"
+    );
+}
+
+#[test]
 fn a_daemon_restarted_while_a_delivery_runs_waits_for_that_command_and_delivers_once() {
     let mut setup = delivering(
         "deliver-restart",

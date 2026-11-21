@@ -103,7 +103,8 @@ const DESK: &str = "SELECT 0 AS part, asks.created AS since, 'ask' AS kind,
                  'the answer did not reach ' || asks.session || ' after ' || deliveries.tries
                    || ' tries: ' || coalesce(deliveries.error, '')
                FROM deliveries JOIN asks ON asks.id = deliveries.ask
-               WHERE deliveries.state = 'failed' AND deliveries.revision = asks.revision
+               WHERE deliveries.state = 'failed' AND deliveries.cleared IS NULL
+                 AND deliveries.revision = asks.revision
                  AND deliveries.id = (SELECT max(id) FROM deliveries AS later
                    WHERE later.ask = deliveries.ask)
                UNION ALL
@@ -172,7 +173,7 @@ fn asks_query() -> String {
      asks.answered AS answered_at, asks.answered_by, asks.routed AS routed_to, asks.created AS since, asks.title, asks.text,
      asks.what_waits, asks.next_action, asks.command, asks.coordinator, asks.run_id, asks.session,
      (SELECT json_object('state', state, 'revision', revision, 'tries', tries, 'error', error,
-        'since', coalesce(ended, created))
+        'since', coalesce(ended, created), 'cleared', cleared)
       FROM deliveries WHERE deliveries.ask = asks.id ORDER BY id DESC LIMIT 1) AS delivery,
      (SELECT json_object('status', status, 'revision', revision, 'error', error, 'stdout', stdout,
         'stderr', stderr)
