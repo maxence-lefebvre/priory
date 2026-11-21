@@ -41,7 +41,7 @@ const OUTPUT: &str = "factory.intake";
 /// Takes a state file back before schema 28, which added search, 29, which added grades, 30,
 /// which added snoozes, 31, which added read reports, 32, which added the pause, 34, which added
 /// reports of sections, 36, which added deliveries, 37, which added progress, 39, which added run
-/// actions, 40, which added answer actions, 42, which added dispatches, and 48, which added a run's
+/// actions, 40, which added answer actions, 42, which added dispatches, and 49, which added a run's
 /// crossing of `compactAt`. Schema 38's visits table is created only if missing, so it stays.
 const UNDO_SINCE_SEARCH: &str = "ALTER TABLE runs DROP COLUMN crossed; ALTER TABLE actions DROP COLUMN ask;
   ALTER TABLE actions DROP COLUMN revision; ALTER TABLE actions DROP COLUMN command; ALTER TABLE actions DROP COLUMN generation;

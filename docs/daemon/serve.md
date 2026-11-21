@@ -79,6 +79,15 @@ auth.
 network is the factory owner's choice for each machine. The server speaks plain HTTP: put it behind
 a TLS proxy before it leaves the machine.
 
+A phone needs that proxy for more than privacy. A browser offers a service worker and Web Push only
+on a secure origin: `https://`, or `localhost` on the machine itself. On a tailnet,
+`tailscale serve` is such a proxy. It gives the machine an `https://<machine>.<tailnet>.ts.net`
+address with a certificate, accepts connections from the tailnet only, and forwards them to
+`127.0.0.1`. The daemon keeps listening on loopback, with no `public = true`.
+[GETTING_STARTED.md](../../GETTING_STARTED.md#use-it-from-a-phone) has the steps. The server
+compares `Origin` with `Host` and not the scheme, so the proxy, which keeps `Host`, passes the
+Origin rule.
+
 ## Waiting for a change
 
 The state carries a revision, a number that every committed change to the tasks, asks, runs, waits,
@@ -138,3 +147,50 @@ for the token once, keeps it in the browser's local storage, and sends it on eve
 a `401` brings the sign-in back. A strict Content-Security-Policy lets the page load only its own
 files, and the page shows agent text as text. The view's layout comes from the factory's
 [views](../reference/views.md). Its Add control reads the defaults from `GET /api/request` and queues the task through `POST /api/request`, as `priory add` does. Its Reports panel reads `GET /api/reports/latest`, and picks and comments through the [report writes](../reference/serve.md#writes), as the `priory report` verbs do. With `web = false`, every path outside `/api` gets `404`.
+
+The view is installable as an app. `manifest.webmanifest` names it and its icons, and the service
+worker `/sw.js` keeps a copy of the page's own files, so the view starts with no connection. The
+worker never stores an `/api` reply. The page keeps its last listings in local storage instead, and
+paints them on an offline start under the "Reconnecting" strip with their age. Signing out of the
+device clears them.
+
+## Notifications
+
+A browser can get a notification when an agent asks something or a task stops, with the page
+closed. The person turns them on in the view's Settings, under Notifications, on each device. The
+browser then subscribes with the daemon's public key, and the page sends the subscription to
+`POST /api/push/subscribe`. Like every write, it needs the token, passes the Origin rule, and
+reaches the daemon on its socket; the daemon stores it in the state. The page sends it again the
+first time the Notifications screen opens after the page loads, so a daemon that lost it, such as
+with a new state file, gets it back, and a subscription the daemon refuses is dropped from the
+browser too.
+
+The daemon makes its key pair once, in [Priory home](home.md#push-keys). A trigger in the state
+queues a notification in the same transaction as the change, and only while a browser subscribes:
+
+- for a new ask, from a step, an agent or outside, and for an ask asked again, such as an
+  approval whose branch moved;
+- for a task that turns `blocked` or `failed`, an alarm.
+
+The daemon sends the queue one notification at a time. Before it sends one, it reads the item
+again, and sends nothing when the ask closed, the task left that state, or a person snoozed it.
+A queue left by a stopped daemon goes out when the next one starts.
+
+Each notification carries the ask's title, or the task's key and step or state, and the path that
+opens it, `/asks/<id>` or `/tasks/<id>`. It never carries the question, which can quote a result's
+summary, nor a brief, plan, option, command or answer: the push service and the phone's lock screen
+see only that line. The
+payload is encrypted for the browser, so the push service cannot read it either.
+
+The daemon posts to the push service with `curl`, as the OTLP exporter does, with HTTPS only and
+the header lines in a file of its own, so the signed token does not show in the process list. A
+push service that answers `404` or `410` has dropped the subscription, and the daemon removes it.
+Any other failure is logged and not retried: the desk still shows the item. The daemon posts only
+to the push services that browsers use, Apple's, Google's, Mozilla's and Microsoft's, so a
+subscription cannot aim it at this machine or its network. A daemon that cannot make or read its
+key logs it, sends no notification, and runs tasks as usual. A daemon stopped mid-send can send
+that notification again on its next start.
+
+On iPhone and iPad, only a view added to the Home Screen can subscribe, and it asks only after a
+tap. The Notifications screen says so in Safari. Android and desktop browsers subscribe from a tab
+or from the installed app.
