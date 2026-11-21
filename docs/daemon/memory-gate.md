@@ -13,8 +13,11 @@ duration such as `90s`, `15m` or `2h`.
    leaves out the promise of its own task's run, which would otherwise wait for itself. A grant
    that does not fit holds back every grant behind it, even a smaller one that fits, so a large
    build is never starved.
-3. The command polls the daemon every 250 ms. Once its grant is held, it runs the command with its
-   own working directory, environment and terminal, and hands the grant to the command's process.
+3. The command polls the daemon every 250 ms. Once its grant is held, it starts a shell that waits
+   for a go-ahead, hands the grant to that shell's process, and only then lets the shell run the
+   command with `acquire`'s own working directory, environment and terminal. The shell becomes the
+   command, so the grant follows it. An `acquire` that dies before the hand-off closes the shell's
+   go-ahead pipe, and the command never runs.
 4. When the command exits, however it exits, the grant is released. `acquire` exits with the
    command's code, or 128 plus the killing signal.
 

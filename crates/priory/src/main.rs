@@ -1194,17 +1194,7 @@ fn acquire(args: &[OsString], lease: bool) -> ExitCode {
     let status = if lease {
         leased(program, rest)
     } else {
-        Command::new(program)
-            .args(rest)
-            .spawn()
-            .and_then(|mut child| {
-                // The command holds the grant from here, so it keeps its memory if this process dies.
-                let _ = gate(&Gate::Run {
-                    grant,
-                    pid: child.id(),
-                });
-                child.wait()
-            })
+        held(program, rest, grant)
     };
     if let Err(error) = gate(&Gate::Release { grant }) {
         eprintln!(
@@ -1224,6 +1214,43 @@ fn acquire(args: &[OsString], lease: bool) -> ExitCode {
             ExitCode::from(127)
         }
     }
+}
+
+/// Runs a command that holds `grant` from before it starts: a shell waits for a go-ahead on a pipe,
+/// the daemon takes its pid, and only then it execs the command. A holder that dies first closes
+/// the pipe, so the command never runs without its grant.
+fn held(
+    program: &OsString,
+    rest: &[OsString],
+    grant: i64,
+) -> std::io::Result<std::process::ExitStatus> {
+    use std::io::Write;
+    use std::os::fd::AsRawFd;
+    let (reader, mut writer) = std::io::pipe()?;
+    // The shell opens the pipe's read end through /proc, which keeps the command's stdin as it was.
+    let wait = format!(
+        "read -r _ <\"/proc/$PPID/fd/{}\" && exec \"$@\"",
+        reader.as_raw_fd()
+    );
+    let mut child = Command::new("sh")
+        .args(["-c", &wait, "sh"])
+        .arg(program)
+        .args(rest)
+        .spawn()?;
+    let taken = gate(&Gate::Run {
+        grant,
+        pid: child.id(),
+    });
+    if let Err(error) = taken {
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err(std::io::Error::other(format!(
+            "the daemon did not take the command: {error}"
+        )));
+    }
+    writer.write_all(b"\n")?;
+    drop(writer);
+    child.wait()
 }
 
 /// Runs a leased command in the process group of a guard that stops the group once its pipe from

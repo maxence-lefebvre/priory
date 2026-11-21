@@ -10196,6 +10196,65 @@ fn a_grant_is_released_when_its_command_fails_or_is_killed_or_its_holder_dies() 
 }
 
 #[test]
+fn a_holder_killed_before_the_daemon_takes_the_command_leaves_no_command_running_without_a_grant() {
+    let mut setup = Setup::new("gate-window");
+    setup.start();
+    listening(&setup);
+    setup.hold("hold-a");
+    let daemon = setup.daemon.as_ref().unwrap().id().to_string();
+    let signal = |signal: &str, pid: &str| {
+        assert!(
+            Command::new("kill")
+                .args([signal, pid])
+                .status()
+                .unwrap()
+                .success()
+        );
+    };
+    let mut holder = acquire(&setup, "8", &held("a"));
+    let grants = || {
+        rusqlite::Connection::open(setup.dir.join("priory.db"))
+            .and_then(|db| {
+                db.query_row("SELECT count(*) FROM grants", [], |row| {
+                    row.get::<_, i64>(0)
+                })
+            })
+            .unwrap_or(0)
+    };
+    let deadline = Instant::now() + Duration::from_secs(60);
+    while grants() == 0 {
+        assert!(Instant::now() < deadline, "the grant never appeared");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    // A stopped daemon cannot take the command's pid, which holds the holder in the window.
+    signal("-STOP", &daemon);
+    let children = format!("/proc/{0}/task/{0}/children", holder.id());
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while fs::read_to_string(&children).map_or(true, |children| children.trim().is_empty()) {
+        if Instant::now() > deadline {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    holder.kill().unwrap();
+    holder.wait().unwrap();
+    signal("-CONT", &daemon);
+
+    let deadline = Instant::now() + Duration::from_secs(60);
+    while grants() != 0 {
+        assert!(Instant::now() < deadline, "the grant never went");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    std::thread::sleep(Duration::from_millis(500));
+    let started = order(&setup);
+    setup.release("hold-a");
+    assert!(
+        started.is_empty(),
+        "the command ran with no grant behind it: {started:?}"
+    );
+}
+
+#[test]
 fn without_a_daemon_the_command_fails_fast_and_never_runs() {
     let setup = Setup::new("gate-no-daemon");
 
