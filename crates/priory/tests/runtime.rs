@@ -10900,13 +10900,22 @@ fn a_reply_posted_before_the_wait_wakes_the_task_and_the_bots_own_reply_never_do
     // The instant the wait counts replies from: the agent's last prompt, before the intake polls.
     let stored = wait_since(&setup);
     let before_prompt = stored.checked_sub(Duration::from_secs(3600)).unwrap();
+    // A reply counts once the wait is stored, which the state keeps to the second: one after it does.
+    let created: herdr_bus::Timestamp = rusqlite::Connection::open(setup.dir.join("priory.db"))
+        .unwrap()
+        .query_row("SELECT created FROM waits ORDER BY id LIMIT 1", [], |row| {
+            row.get::<_, String>(0)
+        })
+        .unwrap()
+        .parse()
+        .unwrap();
     let old = slack_message(&ts(before_prompt), "U0PERSON");
     let mine = slack_message(&ts(herdr_bus::Timestamp::now()), "U0BOT");
     setup.answer_slack(&[old.clone(), mine.clone()]);
 
     setup.intake();
     stays_asleep(&setup);
-    let person = stored;
+    let person = created.checked_add(Duration::from_secs(1)).unwrap();
     setup.answer_slack(&[old, slack_message(&ts(person), "U0PERSON"), mine]);
     setup.intake();
 
