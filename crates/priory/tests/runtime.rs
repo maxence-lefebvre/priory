@@ -43,7 +43,7 @@ const OUTPUT: &str = "factory.intake";
 /// reports of sections, 36, which added deliveries, 37, which added progress, 39, which added run
 /// actions, 40, which added answer actions, 42, which added dispatches, 49, which added task ends, 51, which added a run's crossing of `compactAt`, 53, which added intervention levels, 56, which added the step an irreversible approval lets run, 58, which added withdrawal reasons, and 59, which added green stack gates and returned routed asks, 61, which added findings, 62, which added merge risk, 63, which added plan fields, 65, which added chosen subscriptions and approval generations, and 66, which added the step a gate enters after the merge. Schema 38's visits
 /// table is created only if missing, so it stays.
-const UNDO_SINCE_SEARCH: &str = "DROP INDEX todos_open_connector; ALTER TABLE todos DROP COLUMN connector; ALTER TABLE waits DROP COLUMN after; ALTER TABLE subscriptions DROP COLUMN chosen; ALTER TABLE approvals DROP COLUMN generation;
+const UNDO_SINCE_SEARCH: &str = "ALTER TABLE tasks DROP COLUMN batch; ALTER TABLE tasks DROP COLUMN batch_entry; DROP INDEX todos_open_connector; ALTER TABLE todos DROP COLUMN connector; ALTER TABLE waits DROP COLUMN after; ALTER TABLE subscriptions DROP COLUMN chosen; ALTER TABLE approvals DROP COLUMN generation;
          ALTER TABLE tasks DROP COLUMN plan_goal; ALTER TABLE tasks DROP COLUMN plan_testing; ALTER TABLE tasks DROP COLUMN plan_brief; ALTER TABLE tasks DROP COLUMN verification;
          ALTER TABLE tasks DROP COLUMN merge_risk; ALTER TABLE results DROP COLUMN merge_risk;
          DROP TRIGGER ask_returns_from_its_lead; ALTER TABLE waits DROP COLUMN green;
@@ -5533,7 +5533,7 @@ fn a_state_file_whose_asks_an_approval_names_upgrades_to_outside_asks() {
          DROP TABLE findings;
          DROP TRIGGER ask_withdrawn; ALTER TABLE asks DROP COLUMN withdrawn_reason;
          ALTER TABLE waits DROP COLUMN withdrawn_reason; ALTER TABLE ask_withdrawals DROP COLUMN reason;
-         DROP INDEX todos_open_connector; ALTER TABLE todos DROP COLUMN connector; ALTER TABLE waits DROP COLUMN after;
+         ALTER TABLE tasks DROP COLUMN batch; ALTER TABLE tasks DROP COLUMN batch_entry; DROP INDEX todos_open_connector; ALTER TABLE todos DROP COLUMN connector; ALTER TABLE waits DROP COLUMN after;
          DROP TABLE ask_revisions;
          DROP TABLE ask_refusals;
          PRAGMA legacy_alter_table = ON;
@@ -9294,7 +9294,7 @@ fn an_approval_stored_before_generations_were_kept_is_asked_again_after_the_upgr
     // The state file as version 64 left it: an approval names no generation.
     let db = rusqlite::Connection::open(setup.dir.join("priory.db")).unwrap();
     db.execute_batch(
-        "DROP INDEX todos_open_connector; ALTER TABLE todos DROP COLUMN connector; ALTER TABLE waits DROP COLUMN after;
+        "ALTER TABLE tasks DROP COLUMN batch; ALTER TABLE tasks DROP COLUMN batch_entry; DROP INDEX todos_open_connector; ALTER TABLE todos DROP COLUMN connector; ALTER TABLE waits DROP COLUMN after;
          ALTER TABLE subscriptions DROP COLUMN chosen; ALTER TABLE approvals DROP COLUMN generation;
          PRAGMA user_version = 64;",
     )
@@ -16211,4 +16211,309 @@ fn a_connector_call_a_guard_denies_leaves_its_desk_item_open() {
     let replies = setup.replied(3);
     assert!(guard_denied(&replies[2]).is_some(), "{}", replies[2]);
     assert_eq!(sign_in_rows(&setup).len(), 1);
+}
+
+const PLAN_BATCH: &str = r#"
+start = "plan"
+
+[[steps]]
+id = "plan"
+decides = "model"
+agent = "implementer"
+effect = "read"
+prompt = "Plan these issues into a batch."
+next = { planned = "go" }
+
+[[steps]]
+id = "go"
+decides = "human"
+effect = "none"
+options = ["go", "drop"]
+approves = ["start"]
+next = { go = "start", drop = "stop" }
+
+[[steps]]
+id = "start"
+decides = "code"
+action = "start-batch"
+effect = "irreversible"
+next = { started = "done", failed = "go" }
+"#;
+
+/// A factory whose `[batch]` plans with `plan-batch` and starts entries on `implement`.
+fn batched(name: &str) -> Setup {
+    let setup = Setup::new(name);
+    let factory = setup.dir.join("factory");
+    fs::write(
+        factory.join("factory.toml"),
+        "name = \"demo\"\n\n[batch]\nworkflow = \"plan-batch\"\nentries = \"implement\"\n",
+    )
+    .unwrap();
+    fs::write(factory.join("workflows/plan-batch.toml"), PLAN_BATCH).unwrap();
+    setup
+}
+
+/// Runs `priory batch add` on `issues` in `owner/repo`.
+fn batch_add(setup: &Setup, issues: &[&str]) {
+    let factory = setup.dir.join("factory");
+    let factory = factory.to_str().unwrap();
+    let args = [&["add", factory][..], issues, &["--repo", "owner/repo"]].concat();
+    person(setup, "batch", &args);
+}
+
+/// The planner's result with `batch` as its plan.
+fn planned(batch: serde_json::Value) -> serde_json::Value {
+    json!({ "name": "result", "arguments": { "outcome": "planned", "summary": "Invoice exports", "batch": batch } })
+}
+
+/// An entry of a plan, waiting on `after` to merge.
+fn entry(id: &str, issue: &str, after: &[&str]) -> serde_json::Value {
+    let after: Vec<_> = after
+        .iter()
+        .map(|other| json!({ "entry": other, "moment": "merged" }))
+        .collect();
+    json!({ "id": id, "issue": issue, "title": format!("Do {issue}"), "brief": format!("Fix {issue}."), "after": after })
+}
+
+/// Plans `ENG-40`, `ENG-41` and `ENG-43` with `batch`, and returns the reply to the result.
+fn plan_refused(name: &str, batch: serde_json::Value) -> (String, bool) {
+    let mut setup = batched(name);
+    setup.calls(&[planned(batch)]);
+    batch_add(&setup, &["ENG-40", "ENG-41", "ENG-43"]);
+    setup.start();
+    setup.written("fake/tools.log");
+    reply(&setup.replies()[0])
+}
+
+fn three_entries() -> Vec<serde_json::Value> {
+    vec![
+        entry("e1", "ENG-40", &[]),
+        entry("e2", "ENG-41", &["e1"]),
+        entry("e3", "ENG-43", &["e1"]),
+    ]
+}
+
+#[test]
+fn a_plan_that_leaves_an_issue_out_is_refused() {
+    let entries = &three_entries()[..2];
+    assert_eq!(
+        plan_refused("batch-left-out", json!({ "title": "t", "entries": entries })),
+        (
+            "issue linear:ENG-43 of the batch is in no entry and no close".to_owned(),
+            true
+        )
+    );
+}
+
+#[test]
+fn a_plan_with_one_issue_in_two_entries_is_refused() {
+    let mut entries = three_entries();
+    entries.push(entry("e4", "ENG-43", &[]));
+    assert_eq!(
+        plan_refused("batch-twice", json!({ "title": "t", "entries": entries })),
+        (
+            "issue linear:ENG-43 is in two entries; give them parts".to_owned(),
+            true
+        )
+    );
+}
+
+#[test]
+fn a_plan_with_a_dangling_edge_is_refused() {
+    let mut entries = three_entries();
+    entries[2] = entry("e3", "ENG-43", &["e9"]);
+    assert_eq!(
+        plan_refused("batch-dangling", json!({ "title": "t", "entries": entries })),
+        (
+            "entry e3 waits on e9, which the plan does not have".to_owned(),
+            true
+        )
+    );
+}
+
+#[test]
+fn a_plan_with_a_loop_is_refused() {
+    let mut entries = three_entries();
+    entries[0] = entry("e1", "ENG-40", &["e2"]);
+    assert_eq!(
+        plan_refused("batch-loop", json!({ "title": "t", "entries": entries })),
+        ("the plan has a loop: e1, e2, e1".to_owned(), true)
+    );
+}
+
+#[test]
+fn a_plan_with_an_unknown_moment_is_refused() {
+    let mut entries = three_entries();
+    entries[1]["after"][0]["moment"] = json!("reviewed");
+    assert_eq!(
+        plan_refused("batch-moment", json!({ "title": "t", "entries": entries })),
+        (
+            "moment `reviewed` is not merged or waiting".to_owned(),
+            true
+        )
+    );
+}
+
+#[test]
+fn a_plan_with_a_waiting_moment_is_refused_until_stacked_entries_exist() {
+    let mut entries = three_entries();
+    entries[1]["after"][0]["moment"] = json!("waiting");
+    assert_eq!(
+        plan_refused("batch-waiting", json!({ "title": "t", "entries": entries })),
+        (
+            "entry e2 waits on e1 at `waiting`, which Priory does not build yet; use merged".to_owned(),
+            true
+        )
+    );
+}
+
+#[test]
+fn a_plan_that_splits_an_issue_is_refused_until_splits_exist() {
+    let mut entries = three_entries();
+    entries[1]["part"] = json!(1);
+    assert_eq!(
+        plan_refused("batch-part", json!({ "title": "t", "entries": entries })),
+        (
+            "entry e2 is part 1 of linear:ENG-41; Priory does not split issues yet".to_owned(),
+            true
+        )
+    );
+}
+
+#[test]
+fn a_plan_naming_an_issue_an_active_task_holds_is_refused() {
+    let mut setup = batched("batch-taken");
+    let mut other = requested(42);
+    other.data["key"] = json!("linear:ENG-41");
+    other.data["hold"] = json!({ "reason": "later" });
+    setup.publish(&other.subject("linear:ENG-41"));
+    setup.calls(&[planned(
+        json!({ "title": "t", "entries": three_entries() }),
+    )]);
+    batch_add(&setup, &["ENG-40", "ENG-41", "ENG-43"]);
+    setup.start();
+    setup.written("fake/tools.log");
+
+    assert_eq!(
+        reply(&setup.replies()[0]),
+        ("linear:ENG-41 already has task 1 (held)".to_owned(), true)
+    );
+}
+
+#[test]
+fn a_plan_naming_an_issue_the_person_did_not_hand_over_is_refused() {
+    let mut entries = three_entries();
+    entries.push(entry("e4", "ENG-99", &[]));
+    assert_eq!(
+        plan_refused("batch-foreign", json!({ "title": "t", "entries": entries })),
+        (
+            "linear:ENG-99 is not one of the batch's issues".to_owned(),
+            true
+        )
+    );
+}
+
+#[test]
+fn a_plan_that_both_works_and_closes_an_issue_is_refused() {
+    let close = [json!({ "issue": "ENG-43", "why": "done", "evidence": "#1" })];
+    assert_eq!(
+        plan_refused(
+            "batch-both",
+            json!({ "title": "t", "entries": three_entries(), "close": close })
+        ),
+        (
+            "issue linear:ENG-43 is both an entry and a close".to_owned(),
+            true
+        )
+    );
+}
+
+#[test]
+fn a_plan_with_an_entry_id_used_twice_is_refused() {
+    let mut entries = three_entries();
+    entries[2]["id"] = json!("e2");
+    entries[2]["after"] = json!([]);
+    assert_eq!(
+        plan_refused("batch-ids", json!({ "title": "t", "entries": entries })),
+        ("entry id e2 is used twice".to_owned(), true)
+    );
+}
+
+/// A batch planned over `ENG-40`, `ENG-41` and `ENG-43`, with no room to start an entry, at its go
+/// ask, whose id it returns.
+fn at_the_go(name: &str, batch: serde_json::Value) -> (Setup, String) {
+    let mut setup = batched(name);
+    setup.calls(&[planned(batch)]);
+    batch_add(&setup, &["ENG-40", "ENG-41", "ENG-43"]);
+    setup.start();
+    let asks = setup.until("asks", |rows| rows.len() == 1);
+    setup.memory(0);
+    (setup, asks[0][0].clone())
+}
+
+fn batch_json(setup: &Setup, args: &[&str]) -> serde_json::Value {
+    let output = setup.priory(&[&["batch", "show"], args, &["--json"]].concat());
+    assert!(output.status.success(), "{output:?}");
+    serde_json::from_slice(&output.stdout).unwrap()
+}
+
+#[test]
+fn a_go_creates_one_task_per_entry_in_plan_order_with_its_holds_and_relations() {
+    let close = [json!({ "issue": "ENG-43", "why": "Fixed by #198", "evidence": "#198" })];
+    let entries = [
+        entry("e1", "ENG-40", &[]),
+        entry("e2", "ENG-41", &["e1"]),
+    ];
+    let (setup, ask) = at_the_go(
+        "batch-go",
+        json!({ "title": "Invoice exports", "entries": entries, "close": close }),
+    );
+    let asks = setup.rows("asks");
+    assert_eq!(
+        asks[0][3],
+        "Start batch 1: 2 tasks from 3 issues, and close 1?"
+    );
+
+    person(&setup, "answer", &[&ask, "go", "--revision", "1"]);
+
+    let mut tasks = setup.until("tasks", |rows| rows.len() == 3);
+    tasks.sort_by_key(|row| row[0].parse::<i64>().unwrap());
+    let shown: Vec<_> = tasks
+        .iter()
+        .map(|row| [&*row[0], &row[2], &row[4], &row[7], &row[8]])
+        .collect();
+    assert_eq!(
+        shown,
+        [
+            ["1", "plan-batch", "done", "-", "-"],
+            [
+                "2",
+                "implement",
+                "queued",
+                "waits for room: 0.0 GB of memory free, needs 4.0 GB and keeps 6.4 GB free",
+                "1"
+            ],
+            ["3", "implement", "held", "held: batch 1, until task 2 merges", "-"],
+        ]
+    );
+    assert_eq!([&tasks[1][1], &tasks[2][1]], ["linear:ENG-40", "linear:ENG-41"]);
+    let graph = person(&setup, "tasks", &["--graph", "3"]);
+    assert!(graph.contains("builds-on"), "{graph}");
+    let shown = batch_json(&setup, &["1"]);
+    assert_eq!(shown["state"], "going");
+    assert_eq!(shown["entries"][1]["after"][0]["task"], 2);
+}
+
+#[test]
+fn a_drop_creates_no_task_and_ends_the_batch_dropped() {
+    let (setup, ask) = at_the_go(
+        "batch-drop",
+        json!({ "title": "t", "entries": three_entries() }),
+    );
+
+    person(&setup, "answer", &[&ask, "drop", "--revision", "1"]);
+
+    let tasks = setup.until("tasks", |rows| rows[0][4] == "dropped");
+    assert_eq!(tasks.len(), 1);
+    assert_eq!(batch_json(&setup, &["1"])["state"], "dropped");
 }

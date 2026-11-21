@@ -6,7 +6,7 @@ use priory_core::{
 use priory_factory::{explain, factory, rules};
 use priory_intake::{intake, request};
 use priory_runtime::{eval, mcp, runtime};
-use serde_json::Value;
+use serde_json::{Value, json};
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
@@ -1181,6 +1181,33 @@ fn batch(args: Vec<String>) -> ExitCode {
             };
             let added = request::add_batch(&factory, &batch).map_err(|error| error.to_string());
             exit("batch add", added.map(|key| println!("{key}")))
+        }
+        Some((verb, rest)) if verb == "show" => {
+            let (json, which): (Vec<&String>, Vec<&String>) =
+                rest.iter().partition(|arg| *arg == "--json");
+            let which = match which[..] {
+                [] => None,
+                [which] if !which.starts_with("--") => Some(which.as_str()),
+                _ => return usage(),
+            };
+            let shown = state::open()
+                .and_then(|db| priory_core::batch::show(&db, which))
+                .map(|shown| match (json.is_empty(), which) {
+                    (false, _) => state::emit(&shown.to_string()),
+                    (true, None) => listing::print(
+                        &["id", "key", "state", "title", "repo", "band", "went"],
+                        &shown["batches"],
+                    ),
+                    (true, Some(_)) => {
+                        listing::print(&["id", "key", "state", "title", "repo"], &json!([shown]));
+                        listing::print(
+                            &["entry", "position", "issue", "task", "state", "stage"],
+                            &shown["entries"],
+                        );
+                        listing::print(&["issue", "why", "closed"], &shown["closes"]);
+                    }
+                });
+            exit("batch show", shown)
         }
         _ => usage(),
     }
