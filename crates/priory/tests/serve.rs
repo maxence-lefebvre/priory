@@ -1364,7 +1364,13 @@ fn a_task_endpoint_shows_its_brief_plan_pull_request_and_each_runs_tokens() {
         (2, "github.check_run.completed", pr("test", "failure")),
         (3, "github.check_run.completed", pr("test", "success")),
         (4, "github.check_run.completed", pr("lint", "success")),
-        (5, "github.pull_request_review.submitted", pr("", "")),
+        // A review the intake read without the pull request's branches.
+        (5, "github.pull_request_review.submitted", {
+            let mut review = pr("", "");
+            review["head_branch"] = Value::Null;
+            review["base_branch"] = Value::Null;
+            review
+        }),
         // A check run on the commit before the head, completing late.
         (6, "github.check_run.completed", {
             let mut late = pr("test", "failure");
@@ -1399,6 +1405,8 @@ fn a_task_endpoint_shows_its_brief_plan_pull_request_and_each_runs_tokens() {
     assert_eq!(pull["title"], "Fix the docs");
     assert_eq!(pull["state"], "open");
     assert_eq!(pull["head_sha"], "abc");
+    assert_eq!(pull["branch"], "docs-1");
+    assert_eq!(pull["base"], "main");
     assert_eq!(pull["review"], "approved");
     assert_eq!(
         pull["checks"],

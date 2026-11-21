@@ -1399,16 +1399,25 @@ fn pull_request(db: &Connection, id: i64) -> rusqlite::Result<Option<Value>> {
            ON inbox.subject = pr.subject
            WHERE inbox.type LIKE 'github.pull_request%' OR inbox.type LIKE 'github.check_run%'),
          head AS (SELECT data FROM events
-           ORDER BY type LIKE 'github.pull_request%' DESC, seq DESC LIMIT 1)
+           ORDER BY type LIKE 'github.pull_request%' DESC, seq DESC LIMIT 1),
+         -- An event can come without the branches, so each takes the newest event that has it.
+         known AS (SELECT
+           (SELECT json_extract(data, '$.head_branch') FROM events
+            WHERE json_extract(data, '$.head_branch') IS NOT NULL
+            ORDER BY type LIKE 'github.pull_request%' DESC, seq DESC LIMIT 1) AS branch,
+           (SELECT json_extract(data, '$.base_branch') FROM events
+            WHERE json_extract(data, '$.base_branch') IS NOT NULL
+            ORDER BY type LIKE 'github.pull_request%' DESC, seq DESC LIMIT 1) AS base,
+           (SELECT json_extract(data, '$.head_sha') FROM events
+            WHERE json_extract(data, '$.head_sha') IS NOT NULL
+            ORDER BY type LIKE 'github.pull_request%' DESC, seq DESC LIMIT 1) AS head_sha)
          SELECT json_extract(head.data, '$.repo') AS repo,
            json_extract(head.data, '$.pull_request') AS number,
            (SELECT json_extract(data, '$.title') FROM events
             WHERE json_extract(data, '$.title') IS NOT NULL ORDER BY seq DESC LIMIT 1) AS title,
            'https://github.com/' || json_extract(head.data, '$.repo') || '/pull/'
              || json_extract(head.data, '$.pull_request') AS url,
-           json_extract(head.data, '$.head_branch') AS branch,
-           json_extract(head.data, '$.base_branch') AS base,
-           json_extract(head.data, '$.head_sha') AS head_sha,
+           known.branch, known.base, known.head_sha,
            coalesce((SELECT CASE WHEN json_extract(data, '$.merged') THEN 'merged' ELSE 'closed' END
              FROM events WHERE type = 'github.pull_request.closed' ORDER BY seq DESC LIMIT 1),
              'open') AS state,
@@ -1419,9 +1428,9 @@ fn pull_request(db: &Connection, id: i64) -> rusqlite::Result<Option<Value>> {
                 json_extract(data, '$.conclusion') AS conclusion, time,
                 row_number() OVER (PARTITION BY json_extract(data, '$.name') ORDER BY seq DESC) AS nth
               FROM events WHERE type = 'github.check_run.completed'
-                AND json_extract(data, '$.head_sha') = json_extract(head.data, '$.head_sha'))
+                AND json_extract(data, '$.head_sha') = known.head_sha)
             WHERE nth = 1 ORDER BY name) AS checks
-         FROM head",
+         FROM head, known",
         [id],
     )?;
     let Some(mut pull) = found.as_array().and_then(|rows| rows.first()).cloned() else {
