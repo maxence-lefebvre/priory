@@ -97,14 +97,17 @@ impl Play {
             .unwrap();
         assert!(copied.success(), "cp {}", factory.display());
         for (path, content) in self.table("files") {
-            assert!(
-                !path.starts_with('/') && !path.split('/').any(|part| part == ".."),
-                "{path} leaves the factory copy"
-            );
-            let file = match path.strip_prefix("~/") {
-                Some(home) => self.dir.join("home").join(home),
-                None => self.factory().join(path),
+            let (root, relative) = match path.strip_prefix("~/") {
+                Some(home) => (self.dir.join("home"), home),
+                None => (self.factory(), path.as_str()),
             };
+            assert!(
+                Path::new(relative)
+                    .components()
+                    .all(|part| matches!(part, std::path::Component::Normal(_))),
+                "{path} leaves the factory copy and the test's home"
+            );
+            let file = root.join(relative);
             write(
                 &file,
                 content.as_str().expect("a file's content is a string"),
