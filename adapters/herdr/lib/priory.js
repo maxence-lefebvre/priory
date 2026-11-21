@@ -44,6 +44,11 @@ export function priory({ exec, binary = "priory-oss", on = null, factory = null 
       when?.for ? ["--for", when.for] : when?.until ? ["--until", when.until] : ["--clear"])]),
     say: (/** @type {Id} */ task, /** @type {string} */ text) => call(["say", String(task), text]),
     pick: (/** @type {string} */ pick, /** @type {string} */ option, /** @type {number} */ revision) => call(["report", "pick", pick, option, "--expected", String(revision)]),
+    // A comment starts a thread on a row, by the row's own id; reply, resolve and reopen name a comment.
+    comment: (/** @type {string} */ row, /** @type {string} */ text, /** @type {number} */ revision) => call(["report", "comment", row, "--expected", String(revision), text]),
+    reply: (/** @type {Id} */ comment, /** @type {string} */ text) => call(["report", "reply", String(comment), text]),
+    resolve: (/** @type {Id} */ comment) => call(["report", "resolve", String(comment)]),
+    reopen: (/** @type {Id} */ comment) => call(["report", "reopen", String(comment)]),
     seen: ({ at = /** @type {string | null} */ (null) } = {}) => call(["seen", ...(at ? ["--at", at] : [])]),
     resume: (/** @type {Id} */ task) => call(["resume", String(task)]),
     revive: (/** @type {Id} */ task) => call(["revive", String(task)]),

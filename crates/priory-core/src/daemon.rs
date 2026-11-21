@@ -595,8 +595,8 @@ fn apply(
 }
 
 /// What arrives on the socket: a hook's signal, a run's tool call, a person's answer, desk action
-/// or snooze, a pick on a report, a task's progress, a memory gate message, a quick request, or a
-/// browser that turns notifications on or off.
+/// or snooze, a pick or a comment on a report, a task's progress, a memory gate message, a quick
+/// request, or a browser that turns notifications on or off.
 #[derive(serde::Deserialize)]
 #[serde(untagged)]
 enum Input {
@@ -608,6 +608,7 @@ enum Input {
     Act(Act),
     Snooze(Snooze),
     Choice(sections::Choice),
+    Comment(sections::Comment),
     Progress(progress::Put),
     Gate(Gate),
     Push(push::Line),
@@ -760,6 +761,10 @@ fn take(
         Ok(Input::Choice(choice)) => {
             Ok((replied(sections::pick(db, &choice, trace.factory)?), None))
         }
+        Ok(Input::Comment(comment)) => Ok((
+            replied(sections::comment(db, &comment, trace.factory)?),
+            None,
+        )),
         Ok(Input::Progress(put)) => Ok((replied(progress::put(db, &put, trace)?), None)),
         Ok(Input::Push(line)) => Ok((replied(push::change(db, &line)?), None)),
         Ok(Input::Gate(gate)) => {

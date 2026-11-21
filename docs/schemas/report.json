@@ -212,7 +212,7 @@
       "properties": {
         "comments": {
           "default": [],
-          "description": "Always empty: comments on rows come in a later version.",
+          "description": "Empty in a write: Priory fills it with the row's comment threads, oldest first. A row\nneeds an `id` to take comments.",
           "items": true,
           "maxItems": 0,
           "type": "array"
