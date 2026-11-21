@@ -798,7 +798,8 @@ What starts next and why. Saved views: Waiting, Held and Last day, each with a c
 
 ### Task detail and workflow grid
 
-- Context line: task key in mono, the task's state tile and word, workflow, lane, band.
+- Context line: task key in mono, the task's state tile and word, workflow, lane, band, and
+  "batch 4" linking to the batch page when the task is a batch's entry or planning task.
 - Title in `--type-task`, then the task's reason in its role's text color.
 - **Actions**, in `.btn secondary`: Resume and Cancel for a blocked task, Revive for a failed or
   dropped one, Cancel for any other active task. Cancel and Revive arm on the first tap, as a
@@ -831,8 +832,9 @@ What starts next and why. Saved views: Waiting, Held and Last day, each with a c
 
 ### Batch page and lane graph
 
-The batch page, `/batches/<id>`, opens from the desk's batch row. On a phone it sits under the Desk
-tab with a back link to the Desk; on wide screens it fills the list, as the task page does.
+The batch page, `/batches/<id>`, opens from the desk's batch row and from the task page of each of
+its tasks. On a phone it sits under the Tasks tab with a back link to the Tasks panel; on wide
+screens it fills the list, as the task page does.
 
 - Context line: the batch tile, the planning task's key in mono, which opens the task, the batch's
   state, lane, "went 5 h ago by max" and "plan rev 2".

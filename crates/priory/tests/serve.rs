@@ -1114,6 +1114,19 @@ fn the_tasks_endpoint_gives_each_task_its_title_and_batch() {
 }
 
 #[test]
+fn a_task_endpoint_names_the_batch_of_a_batch_entry() {
+    let mut setup = Setup::new("task-batch", SERVE);
+    setup.seed();
+    let db = rusqlite::Connection::open(setup.dir.join("priory.db")).unwrap();
+    db.execute("UPDATE tasks SET batch = 4 WHERE id = 2", [])
+        .unwrap();
+    let address = setup.start(&["serve", &setup.factory()]);
+
+    assert_eq!(api(&address, "/api/tasks/2")["batch"], 4);
+    assert_eq!(api(&address, "/api/tasks/1")["batch"], Value::Null);
+}
+
+#[test]
 fn the_runs_endpoint_lists_the_runs_of_the_last_week_newest_first_with_outcome_model_and_tokens() {
     let mut setup = Setup::new("runs", SERVE);
     setup.seed();
