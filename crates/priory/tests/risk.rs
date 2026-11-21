@@ -504,3 +504,211 @@ fn a_row_shows_percentages_from_20_trials_and_since_leaves_out_older_reaches() {
     let since: Value = serde_json::from_str(&since).unwrap();
     assert_eq!(since["targets"][1]["rows"][0]["trials"], 19);
 }
+
+impl Setup {
+    /// `priory label` on this factory with `args` after the task and `wrong`.
+    fn label(&self, task: u64, args: &[&str]) -> Output {
+        let task = task.to_string();
+        self.priory(&[&["label", &self.factory(), &task, "wrong"][..], args].concat())
+    }
+
+    /// Marks `task` wrong with the evidence of pull request 50, as of `days` days ago.
+    fn mark(&self, task: u64, days: i64) {
+        let happened = ago(days);
+        let output = self.label(
+            task,
+            &[
+                "--evidence",
+                "https://github.com/owner/repo/pull/50",
+                "--happened",
+                &happened,
+            ],
+        );
+        succeeded(&output);
+        assert_eq!(
+            String::from_utf8_lossy(&output.stdout),
+            format!("task {task} marked wrong: https://github.com/owner/repo/pull/50\n")
+        );
+    }
+}
+
+#[test]
+fn a_mark_on_a_task_with_no_pull_request_leaves_it_unjudged() {
+    let setup = Setup::new("mark-unjudged", 1);
+    setup.reached(1, 40);
+    setup.mark(1, 35);
+
+    let target = setup.target("open-pr");
+    assert_eq!(target["unjudged"], 1);
+    assert_eq!(counts(&row(&target, "open-pr", None)), (0, 0, 0));
+    assert_eq!(target["adverse"], json!([]));
+}
+
+#[test]
+fn a_mark_is_landed_wrong_only_once_a_pull_request_of_the_task_merged_by_its_date() {
+    let setup = Setup::new("mark-merged", 3);
+    for task in 1..=3 {
+        setup.reached(task, 40);
+    }
+    setup.handle(&[
+        opened(1, 1, 40),
+        on_pull(
+            "github.pull_request.closed",
+            1,
+            1,
+            38,
+            json!({ "merged": false }),
+        ),
+        opened(2, 2, 40),
+        merged(2, 2, 38),
+        opened(3, 3, 40),
+        merged(3, 3, 30),
+    ]);
+    setup.mark(1, 35);
+    setup.mark(2, 35);
+    // Task 3 merged after the date its mark names.
+    setup.mark(3, 35);
+
+    let target = setup.target("open-pr");
+    assert_eq!(counts(&row(&target, "open-pr", None)), (3, 3, 1));
+    let adverse: Vec<_> = target["adverse"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|adverse| {
+            (
+                adverse["task"].as_str().unwrap(),
+                adverse["outcome"].as_str().unwrap(),
+                adverse["label"].as_str().unwrap(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        adverse,
+        [
+            ("1", "judged wrong", "closed-unmerged"),
+            ("2", "landed wrong", "marked-wrong"),
+            ("3", "judged wrong", "marked-wrong"),
+        ]
+    );
+    assert_eq!(
+        target["adverse"][1]["evidence"],
+        "https://github.com/owner/repo/pull/50"
+    );
+}
+
+#[test]
+fn a_mark_on_a_pull_request_that_never_merged_is_judged_wrong_only() {
+    let setup = Setup::new("mark-open", 1);
+    setup.reached(1, 40);
+    setup.handle(&[opened(1, 1, 40)]);
+    setup.mark(1, 20);
+
+    let target = setup.target("open-pr");
+    assert_eq!(counts(&row(&target, "open-pr", None)), (1, 1, 0));
+    assert_eq!(counts(&row(&target, "plan", Some("green"))), (1, 1, 0));
+    assert_eq!(target["adverse"][0]["outcome"], "judged wrong");
+}
+
+#[test]
+fn a_cleared_mark_counts_nowhere_and_a_new_mark_after_it_counts() {
+    let setup = Setup::new("mark-cleared", 1);
+    setup.reached(1, 40);
+    setup.handle(&[opened(1, 1, 40), merged(1, 1, 38)]);
+    setup.mark(1, 30);
+    let cleared = setup.label(1, &["--clear"]);
+    succeeded(&cleared);
+    assert_eq!(
+        String::from_utf8_lossy(&cleared.stdout),
+        "task 1 is no longer marked wrong\n"
+    );
+
+    let target = setup.target("open-pr");
+    assert_eq!(counts(&row(&target, "open-pr", None)), (1, 0, 0));
+    assert_eq!(target["adverse"], json!([]));
+
+    let again = setup.label(1, &["--clear"]);
+    assert_eq!(again.status.code(), Some(1));
+    assert_eq!(
+        String::from_utf8_lossy(&again.stderr),
+        "priory label: task 1 is not marked wrong\n"
+    );
+
+    // The same mark again, after the clear, counts.
+    setup.mark(1, 30);
+    let target = setup.target("open-pr");
+    assert_eq!(counts(&row(&target, "open-pr", None)), (1, 1, 1));
+}
+
+#[test]
+fn a_fixes_relation_is_a_candidate_until_a_person_marks_the_task_it_fixes() {
+    let setup = Setup::new("candidates", 2);
+    setup.reached(1, 40);
+    setup.handle(&[opened(1, 1, 40), merged(1, 1, 38)]);
+    setup.sql(
+        "INSERT INTO relations (task, kind, other, by) VALUES (2, 'fixes', 1, 'priory')",
+        &[],
+    );
+
+    let target = setup.target("open-pr");
+    assert_eq!(
+        target["candidates"],
+        json!([{ "task": "1", "fixed_by": "2", "by": "priory" }])
+    );
+    let text = setup.report(&[]);
+    let text = &text[text.find("implement / open-pr").unwrap()..];
+    let lines: Vec<_> = text.lines().collect();
+    let at = lines
+        .iter()
+        .position(|line| *line == "candidates: `fixes` relations a person has not marked")
+        .unwrap();
+    assert_eq!(
+        lines[at + 1..at + 3],
+        ["task  fixed by  recorded by", "1     2         priory"]
+    );
+    assert_eq!(
+        setup.target("merge-pr")["candidates"],
+        json!([]),
+        "task 1 never reached merge-pr"
+    );
+
+    setup.mark(1, 20);
+    assert_eq!(setup.target("open-pr")["candidates"], json!([]));
+}
+
+#[test]
+fn a_mark_refuses_a_missing_task_evidence_that_is_no_url_and_a_date_after_now() {
+    let setup = Setup::new("mark-refused", 1);
+    let refused = |task: u64, args: &[&str]| {
+        let output = setup.label(task, args);
+        assert_eq!(output.status.code(), Some(1), "{args:?}");
+        String::from_utf8(output.stderr).unwrap()
+    };
+    assert_eq!(
+        refused(9, &["--evidence", "https://example.com/pull/1"]),
+        "priory label: no task 9\n"
+    );
+    assert_eq!(
+        refused(1, &["--evidence", "reverted by hand"]),
+        "priory label: --evidence \"reverted by hand\" is not a URL: name the issue, pull request or commit that shows the task was wrong\n"
+    );
+    assert_eq!(
+        refused(
+            1,
+            &[
+                "--evidence",
+                "https://example.com/pull/1",
+                "--happened",
+                "2026-12-01"
+            ]
+        ),
+        "priory label: --happened 2026-12-01 is after now\n"
+    );
+    for args in [
+        &["--clear", "--evidence", "https://example.com/pull/1"][..],
+        &["--happened", "2026-11-01"],
+        &[],
+    ] {
+        assert_eq!(setup.label(1, args).status.code(), Some(2), "{args:?}");
+    }
+}

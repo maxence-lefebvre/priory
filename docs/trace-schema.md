@@ -266,8 +266,8 @@ task's grade when it was labeled. A task no step graded has no `step_event`.
 
 | Field        | Required | Meaning                                                              |
 | ------------ | -------- | -------------------------------------------------------------------- |
-| `label`      | yes      | One of the outcome labels                                            |
-| `evidence`   | yes      | The event's URL, or the human step and its answer                    |
+| `label`      | yes      | One of the outcome labels, or `marked-wrong` from `priory label`     |
+| `evidence`   | yes      | The event's URL, the human step and its answer, or a mark's URL      |
 | `happened`   | no       | When the event the label reads happened. The record's `time` is when Priory wrote it. A record written before this field has none |
 
 ```json
@@ -282,6 +282,33 @@ task's grade when it was labeled. A task no step graded has no `step_event`.
     "label": "reverted",
     "evidence": "https://github.com/example/app/pull/57",
     "happened": "2026-11-18T08:47:30Z"
+  }
+}
+```
+
+## `factory.step.unlabeled`
+
+A person ran `priory label TASK wrong --clear`. It withdraws every `factory.step.labeled` record of
+the task and label written before it, whenever their `happened` lies, so `priory report risk` reads
+none of them. A record of the same label after it counts again. Its `time` is when the person
+cleared the mark. Its `data` holds `factory`, `factory_revision`, `workflow`, `task`, `key`,
+`generation` and `machine` as above.
+
+| Field   | Required | Meaning                                  |
+| ------- | -------- | ---------------------------------------- |
+| `label` | yes      | The label withdrawn: `marked-wrong`      |
+
+```json
+{
+  "specversion": "1.0",
+  "id": "0196f1d0-0000-7000-8000-000000000004",
+  "source": "factory://example/xps13",
+  "type": "factory.step.unlabeled",
+  "time": "2026-11-19T10:15:00Z",
+  "data": {
+    "workflow": "implement",
+    "task": "27",
+    "label": "marked-wrong"
   }
 }
 ```
