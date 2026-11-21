@@ -9,6 +9,7 @@ mod guard;
 mod handler;
 mod hold;
 mod idle;
+pub mod keyboard;
 mod kit;
 pub mod link;
 pub mod listing;
