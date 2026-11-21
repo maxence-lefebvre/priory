@@ -364,6 +364,32 @@ fn start_must_name_a_step() {
 }
 
 #[test]
+fn max_prs_must_be_a_positive_number() {
+    let outcome = workflow_with(
+        "max-prs-zero",
+        "start = \"implement\"",
+        "start = \"implement\"\nmax_prs = 0",
+    );
+
+    assert_eq!(outcome.code, 1);
+    assert_eq!(
+        outcome.stderr,
+        "workflows/implement.toml:3:11: invalid value: integer `0`, expected a nonzero usize\n"
+    );
+}
+
+#[test]
+fn a_workflow_with_max_prs_passes() {
+    let outcome = workflow_with(
+        "max-prs",
+        "start = \"implement\"",
+        "start = \"implement\"\nmax_prs = 3",
+    );
+
+    assert_eq!(outcome.code, 0, "{}", outcome.stderr);
+}
+
+#[test]
 fn reopen_must_name_a_model_step() {
     let outcome = workflow_with(
         "reopen",

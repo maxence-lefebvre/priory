@@ -125,6 +125,11 @@ fn tools() -> Value {
                     "evidence": text("How you checked it: commands, exits, links."),
                     "commit": text("The full SHA of the commit the result is about, if any, as git rev-parse HEAD prints it."),
                     "reason": text("For a red, yellow or green outcome: why, in one line. Defaults to the summary's first line."),
+                    "branches": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "For a stack of pull requests: its branches, bottom first, ending with your task's branch. Name each lower one after it: priory/7-api. open-pr opens one pull request per branch, each based on the one below.",
+                    },
                 },
                 "required": ["outcome", "summary"],
             },

@@ -747,6 +747,9 @@ pub struct Workflow {
     /// The model step a done task goes back to when its open pull request gets feedback; by
     /// default, the step that opened the pull request.
     pub reopen: Option<String>,
+    /// The most pull requests a task's stack may hold: `open-pr` refuses a longer one. No cap
+    /// when unset.
+    pub max_prs: Option<std::num::NonZeroUsize>,
     pub steps: Vec<Step>,
 }
 
