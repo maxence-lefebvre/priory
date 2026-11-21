@@ -2331,8 +2331,12 @@ fn check(args: Vec<OsString>) -> ExitCode {
         print_explanation(&factory, json);
         return ExitCode::SUCCESS;
     }
+    let scorers = match factory.scorers.len() {
+        0 => String::new(),
+        n => format!(", {}", count(n, "scorer")),
+    };
     println!(
-        "ok: {}, {}, {}, {}",
+        "ok: {}, {}, {}, {}{scorers}",
         count(factory.agents.len(), "agent"),
         count(factory.triggers.len(), "trigger"),
         count(factory.workflows.len(), "workflow"),

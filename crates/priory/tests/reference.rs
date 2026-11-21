@@ -183,6 +183,8 @@ fn every_example_config_matches_its_schema() {
             "workflows" => "workflow",
             "runners" => "runner",
             "views" => "view",
+            "scorers" => "scorer",
+            "scripts" => continue,
             other => panic!("no schema for {other}"),
         };
         let value: serde_json::Value = match file.rsplit_once('.').unwrap().1 {
