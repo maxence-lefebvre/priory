@@ -347,6 +347,7 @@ pub(crate) fn tick(
     now: Timestamp,
     said: &mut Option<i64>,
 ) -> rusqlite::Result<()> {
+    adopt(db, me)?;
     let tx = db.transaction()?;
     let minute = now.as_second().div_euclid(60);
     if *said != Some(minute) {
@@ -434,8 +435,9 @@ pub(crate) fn cleared(db: &mut Connection, me: &str, task: i64) -> rusqlite::Res
 }
 
 /// Claims the keys of this runner's active tasks that no runner holds yet, such as the tasks of a
-/// factory that had one runner before, so that another runner does not claim them too.
-pub(crate) fn adopt(db: &mut Connection, me: &str) -> rusqlite::Result<()> {
+/// factory that had one runner before or one it reopened, so that another runner does not claim
+/// them too. Until the claim is read back, admission skips the task.
+fn adopt(db: &mut Connection, me: &str) -> rusqlite::Result<()> {
     let tx = db.transaction()?;
     let unclaimed = tx
         .prepare(

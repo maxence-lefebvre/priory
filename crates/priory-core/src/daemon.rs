@@ -231,9 +231,6 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
     let every = factory.sweep().every.unwrap_or(SWEEP);
     let mut swept: Option<Instant> = None;
     let mut alive = None;
-    if let Some(me) = &trace.runner {
-        runners::adopt(&mut db, me)?;
-    }
     loop {
         // A runner back from away reads the log, and so drops the tasks that moved, before any run.
         drain(&*bus, &consumer, &mut db, &trace, counting.get(&home))?;
@@ -930,7 +927,8 @@ fn tend(
         // Measured again after each start, since its clone and worktree take disk.
         let measured = OnceCell::new();
         let room = || measured.get_or_init(|| room::measure(home));
-        let Some(admission) = state::admissible(db, factory, share, room)? else {
+        let Some(admission) = state::admissible(db, factory, trace.runner.as_deref(), share, room)?
+        else {
             break;
         };
         if let Some(me) = &trace.runner {

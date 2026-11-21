@@ -18,10 +18,11 @@ this machine, `<hostname>`, has no runner file in runners/, and the factory has 
 
 A factory with one runner file or none works as before: its one daemon owns every task.
 
-When a factory that had one runner gets a second, the first runner's daemon claims the keys of its
-active tasks when it starts. Start it before the new runner's daemon. If the new runner's claim of
-one of those keys lands first, the first runner drops its copy, and the task starts over on the new
-runner.
+A daemon claims the key of each active task of its own that no runner holds, such as a task from
+before the factory got its second runner, or one that feedback reopened. It starts no run of that
+task until it reads its claim back. When a factory that had one runner gets a second, start the
+first runner's daemon first. If the new runner's claim of one of those keys lands first, the first
+runner drops its copy, and the task starts over on the new runner.
 
 ## Every runner reads the whole log
 
@@ -123,6 +124,8 @@ a runner file.
   on the old runner.
 - A code step's `run` action starts without the `kept` check, so a crash in the second between its
   start and the next `kept` leaves that task `waiting` on the log.
+- A task whose own claim loses, because a claim of an older request of its key won first, stays
+  queued on its runner and never runs there.
 - `priory give` checks that the runner it names was heard from, not that it still has a runner
   file. A claim for a runner without one is refused when each runner reads it.
 - This runner's `priory asks` and desk list only its own asks.

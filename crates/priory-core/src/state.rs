@@ -2114,19 +2114,22 @@ pub(crate) struct Admission {
 pub(crate) fn admissible<'r>(
     db: &Connection,
     factory: &Factory,
+    runner: Option<&str>,
     share: &Share,
     room: impl Fn() -> &'r Result<Room, String>,
 ) -> rusqlite::Result<Option<Admission>> {
     let mut statement = db.prepare(&format!(
         "SELECT id, workflow, step, trigger, state = 'queued', repo FROM tasks
              WHERE state IN ('queued', 'ready')
-             -- Its runner said it keeps it, and starts it once it reads that back from the log.
-             AND NOT EXISTS (SELECT 1 FROM claims WHERE claims.key = tasks.key
-               AND claims.hold = 'waiting' AND claims.published = 'kept')
+             -- With several runners, only a task whose key the log gives this one, and not one
+             -- whose `kept` it waits to read back.
+             AND (?1 IS NULL OR EXISTS (SELECT 1 FROM claims WHERE claims.key = tasks.key
+               AND claims.runner = ?1
+               AND NOT (claims.hold = 'waiting' AND claims.published IS 'kept')))
              ORDER BY {START_ORDER}"
     ))?;
     let queued = statement
-        .query_map([], |row| {
+        .query_map([runner], |row| {
             Ok(Admission {
                 task: row.get(0)?,
                 workflow: row.get(1)?,
