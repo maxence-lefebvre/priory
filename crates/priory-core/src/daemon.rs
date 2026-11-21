@@ -696,6 +696,7 @@ enum Input {
     Seen(state::SeenLine),
     Read(crate::post::ReadLine),
     BatchEdit(crate::batch::EditLine),
+    Move(state::MoveLine),
 }
 
 /// `POST /api/request`'s line: `{"add": {...}}`.
@@ -846,6 +847,7 @@ fn take(
         Ok(Input::BatchEdit(line)) => {
             Ok((replied(crate::batch::apply(db, &line.batch_edit)), None))
         }
+        Ok(Input::Move(line)) => Ok((replied(state::move_line(db, &line.r#move)), None)),
         Ok(Input::Deliver(line)) => Ok((replied(deliver::act(db, &line)?), None)),
         Ok(Input::Add(line)) => Ok((replied(add(db, &line.add, trace, counter)?), None)),
         Ok(Input::Signal(signal)) => Ok(("ok".to_owned(), state::signal(db, &signal, trace)?)),

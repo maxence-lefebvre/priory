@@ -3298,6 +3298,49 @@ pub(crate) fn uncertain(db: &Connection) -> rusqlite::Result<usize> {
     )
 }
 
+/// The socket line of `POST /api/tasks/{id}/move`: `{"move": {...}}`, `priory move` with its
+/// `--expected`.
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MoveLine {
+    pub r#move: Move,
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Move {
+    pub task: i64,
+    pub band: Option<String>,
+    pub place: Option<MovePlace>,
+    pub expected: i64,
+}
+
+/// `Place` as the socket line carries it: `"top"`, `{"before": 7}` or `{"after": 7}`.
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum MovePlace {
+    Top,
+    Before(i64),
+    After(i64),
+}
+
+/// Applies a move line as `priory move` does, and says what moved where.
+pub fn move_line(db: &mut Connection, line: &Move) -> Result<String, String> {
+    let place = line.place.as_ref().map(|place| match place {
+        MovePlace::Top => Place::Top,
+        MovePlace::Before(task) => Place::Before(*task),
+        MovePlace::After(task) => Place::After(*task),
+    });
+    move_task(
+        db,
+        line.task,
+        line.band.as_deref(),
+        place,
+        Some(line.expected),
+    )?;
+    Ok(format!("task {} moved", line.task))
+}
+
 /// Where `priory move` puts a task in its band's person order.
 pub enum Place {
     Top,
