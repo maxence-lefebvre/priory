@@ -1,0 +1,107 @@
+//! Why an ask or wait was withdrawn, kept in `withdrawn_reason` and backfilled from the sentinel
+//! values `withdrawn` held before version 58.
+
+use serde_json::Value;
+use std::path::{Path, PathBuf};
+use std::process::{Command, Output};
+
+fn scratch(name: &str) -> PathBuf {
+    let dir = Path::new(env!("CARGO_TARGET_TMPDIR"))
+        .join("withdrawn")
+        .join(name);
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    dir
+}
+
+fn priory(dir: &Path, args: &[&str]) -> Output {
+    let output = Command::new(env!("CARGO_BIN_EXE_priory"))
+        .args(args)
+        .env("PRIORY_DB", dir.join("priory.db"))
+        .env("PRIORY_HOME", dir.join("home"))
+        .env("HERDR_BUS_DB", dir.join("bus.db"))
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    output
+}
+
+/// Sets the state file back to version 57: `withdrawn` holds the reason as a sentinel.
+fn as_version_57(db: &rusqlite::Connection) {
+    let added: bool = db
+        .query_row(
+            "SELECT count(*) FROM pragma_table_info('asks') WHERE name = 'withdrawn_reason'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    if added {
+        db.execute_batch(
+            "DROP TRIGGER ask_withdrawn;
+             ALTER TABLE asks DROP COLUMN withdrawn_reason;
+             ALTER TABLE waits DROP COLUMN withdrawn_reason;
+             ALTER TABLE ask_withdrawals DROP COLUMN reason;
+             CREATE TRIGGER ask_withdrawn AFTER UPDATE OF withdrawn ON asks
+               WHEN NEW.withdrawn IS NOT NULL AND NEW.withdrawn IS NOT OLD.withdrawn BEGIN
+               INSERT INTO ask_withdrawals (ask, revision, withdrawn)
+                 VALUES (NEW.id, NEW.revision, NEW.withdrawn);
+             END;",
+        )
+        .unwrap();
+    }
+    db.execute_batch("PRAGMA user_version = 57;").unwrap();
+}
+
+#[test]
+fn an_upgrade_names_the_reason_each_sentinel_meant() {
+    let dir = scratch("upgrade");
+    priory(&dir, &["tasks"]);
+    let db = rusqlite::Connection::open(dir.join("priory.db")).unwrap();
+    as_version_57(&db);
+    db.execute_batch(
+        "INSERT INTO tasks (id, key, workflow, step, state, lane, trigger, source)
+           VALUES (1, 'issue-1', 'implement', 'work', 'asleep', 'lane', 'cli', 'cli-1');
+         INSERT INTO runs (id, task, step, tmux, session) VALUES (1, 1, 'work', 't', 's');
+         INSERT INTO asks (id, task, run, step, kind, question, options, created) VALUES
+           (1, 1, 1, 'work', 'agent', 'A?', '[]', '2026-11-16T09:00:00Z'),
+           (2, 1, 1, 'work', 'agent', 'B?', '[]', '2026-11-16T09:00:00Z'),
+           (3, 1, 1, 'work', 'agent', 'C?', '[]', '2026-11-16T09:00:00Z'),
+           (4, 1, 1, 'work', 'agent', 'D?', '[]', '2026-11-16T09:00:00Z');
+         UPDATE asks SET withdrawn = CASE id WHEN 1 THEN -1 WHEN 2 THEN -2 WHEN 3 THEN 0 ELSE 2 END;
+         INSERT INTO waits (task, run, kind, created, withdrawn) VALUES
+           (1, 1, 'checks', '2026-11-16T09:00:00Z', -2),
+           (1, 1, 'checks', '2026-11-16T09:00:00Z', 0),
+           (1, 1, 'checks', '2026-11-16T09:00:00Z', 2);",
+    )
+    .unwrap();
+    drop(db);
+
+    let task: Value =
+        serde_json::from_slice(&priory(&dir, &["task", "1", "--json"]).stdout).unwrap();
+
+    let reasons = |list: &str| -> Vec<Value> {
+        task[list]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|row| row["withdrawn_reason"].clone())
+            .collect()
+    };
+    assert_eq!(
+        reasons("asks"),
+        ["dismissed", "sibling-fired", "moved-on", "revived"]
+    );
+    assert_eq!(reasons("waits"), ["sibling-fired", "moved-on", "revived"]);
+    let db = rusqlite::Connection::open(dir.join("priory.db")).unwrap();
+    let logged: Vec<String> = db
+        .prepare("SELECT reason FROM ask_withdrawals ORDER BY ask")
+        .unwrap()
+        .query_map([], |row| row.get(0))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    assert_eq!(
+        logged,
+        ["dismissed", "sibling-fired", "moved-on", "revived"]
+    );
+}

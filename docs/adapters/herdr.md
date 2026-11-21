@@ -421,7 +421,8 @@ waiting: snoozing changes what a person sees, never what the daemon does. `prior
 - Every ask with its `state` (`open`, `answered`, `withdrawn`), `revision`, `question`,
   `options`, `recommendation`, `tradeoff`, and for a command ask the command line, its target and
   the revision it is bound to (R6.8).
-- An answered ask adds `answer`, `answered_by` and `answered_at`; a withdrawn one adds why.
+- An answered ask adds `answer`, `answered_by` and `answered_at`; a withdrawn one adds `withdrawn_reason` and
+  `withdrawn_why`, the reason in words that the view shows.
 - The detail adds the agent's text and the run that asked, `what_waits` and `next_action`, and
   the ask's `revisions` and `refused` for its history. `priory task ID --json` adds the task's
   `brief`, `plan`, `pull_request` and `runs`.

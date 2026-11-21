@@ -175,8 +175,8 @@ carries that line as `paused`.
 task starts at generation 1. The revive goes to the daemon over its socket and, in one
 transaction:
 
-1. Withdraws every open ask and wait of the task, recording the new generation on each, and marks
-   its queued prompts `withdrawn`.
+1. Withdraws every open ask and wait of the task with the reason `revived`, and marks its queued
+   prompts `withdrawn`.
 2. Raises the task's generation by one.
 3. Enters the step it ended on, or `<step>`, as a move into it would (see Moving on): a model step
    makes the task `ready` with its prompt queued, a human step asks again, and a code step makes it
@@ -199,8 +199,9 @@ next run adds it back from the branch (see Priory home). A revive straight into 
 `open-pr`, adds it back before the action runs.
 
 A withdrawn ask or wait stays in the state file but counts as closed. An answer to one is refused with
-`ask <id> was withdrawn when task <task> was revived as generation <n>`, or with `ask <id> was
-withdrawn when a later run of task <task> called another tool` (see Routing). An event for a withdrawn wait
+`ask <id> was withdrawn when task <task> was revived`, or with `ask <id> was withdrawn when a later
+run of task <task> called another tool` (see Routing). [Why an ask or wait was
+withdrawn](waits.md#why-an-ask-or-wait-was-withdrawn) lists every reason. An event for a withdrawn wait
 fires nothing, and the task keeps it like any event that matches no wait, for the next run to read.
 `priory asks`, `priory waits` and the desk leave withdrawn ones out. A new run never takes over a
 withdrawn ask or wait.
