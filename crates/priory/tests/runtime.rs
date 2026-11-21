@@ -14805,6 +14805,224 @@ fn a_hands_off_tasks_approval_reaches_the_person_even_on_a_low_merge_risk() {
     assert_eq!(setup.rows("tasks").len(), 1, "no lead task");
 }
 
+const PROVED: &str = r#"
+start = "implement"
+
+[[steps]]
+id = "implement"
+decides = "model"
+agent = "implementer"
+prompt = "Implement the issue."
+effect = "reversible"
+next = { passed = "done", failed = "stop" }
+proof = { passed = "gate-passed" }
+"#;
+
+impl Setup {
+    /// Task 1 at a step whose `passed` needs a passing gate, its agent held before it sends
+    /// `outcome`.
+    fn proving(name: &str, gate: &str, outcome: &str) -> Self {
+        let mut setup = Setup::with_workflow(name, PROVED);
+        let factory = format!("name = \"demo\"\ngate = {gate:?}\n");
+        fs::write(setup.dir.join("factory/factory.toml"), factory).unwrap();
+        setup.calls(&[result(outcome)]);
+        setup.hold("hold-call");
+        setup.publish(&requested(42));
+        setup.start();
+        setup.written("fake/submitted");
+        setup
+    }
+
+    /// Runs `priory gate` as the agent of task 1 would, from its pane.
+    fn gate(&self) -> Exit {
+        let session = &self.rows("runs")[0][4];
+        self.command(env!("CARGO_BIN_EXE_priory"))
+            .env("PRIORY_SESSION", session)
+            .arg("gate")
+            .output()
+            .unwrap()
+    }
+
+    /// Lets the held agent send its result and returns the reply.
+    fn proved(&self) -> (String, bool) {
+        self.release("hold-call");
+        self.written("fake/tools.log");
+        reply(&self.replies()[0])
+    }
+
+    fn head(&self) -> String {
+        let worktree = self.dir.join("home/worktrees/owner/repo/1");
+        let head = git(&worktree).args(["rev-parse", "HEAD"]).output().unwrap();
+        String::from_utf8(head.stdout).unwrap().trim().to_owned()
+    }
+}
+
+#[test]
+fn an_outcome_that_needs_a_passing_gate_is_refused_with_no_gate_run() {
+    let setup = Setup::proving("proof-none", "true", "passed");
+
+    let (text, error) = setup.proved();
+
+    assert!(error, "{text}");
+    assert_eq!(
+        text,
+        format!(
+            "outcome passed needs a gate that passed at the head {}, and no gate ran for task 1: run `priory gate` in the worktree, then send the result again",
+            setup.head()
+        )
+    );
+}
+
+#[test]
+fn an_outcome_whose_gate_passed_at_the_head_is_accepted_and_the_trace_keeps_the_gate_run() {
+    let setup = Setup::proving("proof-passed", "test -e README.md", "passed");
+    assert_eq!(
+        setup.typed()[0],
+        format!(
+            "{} Before outcome passed, run `priory gate` in the worktree: Priory takes it only once the gate passed at the head commit.\n",
+            prompted("Implement the issue.", "failed, passed")
+        )
+    );
+
+    let gate = setup.gate();
+
+    assert!(
+        gate.status.success(),
+        "{}",
+        String::from_utf8_lossy(&gate.stderr)
+    );
+    let (text, error) = setup.proved();
+    assert!(!error, "{text}");
+    let trace = setup.priory(&["trace"]);
+    let ran: Vec<serde_json::Value> = String::from_utf8(trace.stdout)
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .filter(|record: &serde_json::Value| record["type"] == "factory.gate.ran")
+        .collect();
+    assert_eq!(ran.len(), 1, "{ran:?}");
+    assert_eq!(
+        [
+            &ran[0]["data"]["task"],
+            &ran[0]["data"]["step"],
+            &ran[0]["data"]["commit"],
+            &ran[0]["data"]["exit"]
+        ],
+        [
+            &json!("1"),
+            &json!("implement"),
+            &json!(setup.head()),
+            &json!(0)
+        ]
+    );
+}
+
+#[test]
+fn an_outcome_whose_last_gate_run_failed_is_refused_with_its_exit() {
+    let setup = Setup::proving("proof-failed", "exit 3", "passed");
+
+    let gate = setup.gate();
+
+    assert_eq!(gate.status.code(), Some(3));
+    let (text, error) = setup.proved();
+    assert!(error, "{text}");
+    assert_eq!(
+        text,
+        format!(
+            "outcome passed needs a gate that passed at the head {}, and the last gate run at it exited 3: run `priory gate` in the worktree, then send the result again",
+            setup.head()
+        )
+    );
+}
+
+#[test]
+fn an_outcome_whose_gate_passed_at_an_older_commit_is_refused() {
+    let setup = Setup::proving("proof-older", "true", "passed");
+    assert!(setup.gate().status.success());
+    let older = setup.head();
+    let worktree = setup.dir.join("home/worktrees/owner/repo/1");
+    let committed = git(&worktree)
+        .args([
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@t",
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            "more",
+        ])
+        .status()
+        .unwrap();
+    assert!(committed.success());
+
+    let (text, error) = setup.proved();
+
+    assert!(error, "{text}");
+    assert_eq!(
+        text,
+        format!(
+            "outcome passed needs a gate that passed at the head {}, and the last gate run for task 1 was at another commit, {older}: run `priory gate` in the worktree, then send the result again",
+            setup.head()
+        )
+    );
+}
+
+#[test]
+fn an_outcome_with_no_proof_is_accepted_with_no_gate_run() {
+    let setup = Setup::proving("proof-unasked", "false", "failed");
+
+    let (text, error) = setup.proved();
+
+    assert!(!error, "{text}");
+    assert_eq!(
+        text,
+        "result stored: the task moves to stop when this turn ends"
+    );
+}
+
+#[test]
+fn a_gate_in_a_worktree_away_from_the_branch_head_runs_nothing_and_records_nothing() {
+    let setup = Setup::proving("proof-detached", "touch ran", "passed");
+    let worktree = setup.dir.join("home/worktrees/owner/repo/1");
+    let head = setup.head();
+    for args in [
+        &[
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@t",
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            "more",
+        ][..],
+        &["checkout", "-q", "--detach", &head],
+    ] {
+        assert!(git(&worktree).args(args).status().unwrap().success());
+    }
+
+    let gate = setup.gate();
+
+    assert_eq!(gate.status.code(), Some(1));
+    assert_eq!(
+        String::from_utf8_lossy(&gate.stderr),
+        format!(
+            "priory gate: the worktree is at {head}, not at the head of its branch, {}: check out the branch, then run it again\n",
+            git(&worktree)
+                .args(["rev-parse", "priory/1"])
+                .output()
+                .map(|out| String::from_utf8(out.stdout).unwrap().trim().to_owned())
+                .unwrap()
+        )
+    );
+    assert!(!worktree.join("ran").exists());
+    let (text, error) = setup.proved();
+    assert!(error && text.contains("no gate ran for task 1"), "{text}");
+}
+
 const TWO_MODEL_STEPS: &str = r#"
 start = "implement"
 

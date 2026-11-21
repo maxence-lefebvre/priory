@@ -482,6 +482,7 @@ web view's Flows panel. The server reads it when it starts.
 | `irreversible` | array of objects | Each irreversible step: `workflow`, `step`, `approved_by` (the human steps that approve it) and `autonomous` (its reason, or `null`) |
 | `paths` | array of objects | Each path from `start` to an irreversible step that follows no `human` edge: `workflow` and `path`, an array of step ids |
 | `tools` | array of objects | Each guarded call an agent can make with no human decision: `agent`, `guard`, `workflow` and `why` |
+| `proofs` | array of objects | Each outcome the daemon verifies before it accepts it: `workflow`, `step`, `outcome` and `proof` |
 | `workflows` | array of objects | Each workflow by name: `name`, `start` and `steps` |
 
 A step has `id`, `decides`, `effect`, `kind`, `edges` and, when the step sets them, `agent`,
@@ -505,6 +506,7 @@ Each of a step's `edges`, in outcome order, has `outcome`, `to` (a step id, `don
   "irreversible": [{ "workflow": "implement", "step": "open-pr", "approved_by": ["approve-pr"], "autonomous": null }],
   "paths": [],
   "tools": [],
+  "proofs": [],
   "workflows": [{
     "name": "implement",
     "start": "open-pr",

@@ -39,6 +39,7 @@ Schema: [`config/workflow.json`](../schemas/config/workflow.json).
 | `run` | string | `run` actions | | The command a `run` action runs with `sh -c` | `"scripts/poll.sh"` |
 | `next` | table of strings | yes | | Each outcome and where it leads: a step id, `done` or `stop` | `{ passed = "done", failed = "stop" }` |
 | `by` | table of `code`, `model`, `human` or `asleep` | no | the step's `decides` | Who decides an outcome's edge, where it differs from the step's decider | `{ passed = "asleep" }` |
+| `proof` | table of `gate-passed` | no | none: every outcome is the agent's word | Model steps only. The proof the daemon checks before it accepts an outcome, by outcome. `gate-passed`: the factory's [`gate`](factory.md#top-level-keys) passed at the head of the task's branch. See Proofs in [tools.md](../daemon/tools.md#proofs) | `{ passed = "gate-passed" }` |
 | `autonomous` | string | no | | Why an irreversible step may run without a person's approval | `"it only labels issues"` |
 | `guard` | table | no | none allowed | Irreversible model steps only. `allow`: the guards whose calls the step's agent may make while the step is approved at the task's commit or `autonomous`. An `autonomous` step cannot name `gh-pr-merge` or `gh-pr-approve`. See [guard.md](../daemon/guard.md) | `{ allow = ["gh-pr-comment"] }` |
 
@@ -95,6 +96,7 @@ agent = "implementer"
 prompt = "Implement the plan and run the tests."
 effect = "reversible"
 next = { passed = "approve-pr", failed = "stop" }
+proof = { passed = "gate-passed" }  # the daemon checks the gate passed at the head
 
 [[steps]]
 id = "approve-pr"
@@ -155,7 +157,7 @@ step as an ask.
 
 ## Irreversible steps and their gates
 
-`priory check --explain [DIR]` runs the checks, then prints three tab-separated tables:
+`priory check --explain [DIR]` runs the checks, then prints four tab-separated tables:
 
 - each irreversible step of each workflow with its gate: the human steps that approve it, or
   `autonomous:` and its reason;
@@ -163,7 +165,8 @@ step as an ask.
 - per agent, each guarded call it can make with no human decision (see
   [guard.md](../daemon/guard.md)): the guards a workflow it runs a model step of allows, the
   guards an `autonomous` irreversible model step it runs names in `guard.allow`, and `mcp-write` and `[guard]` tools for
-  a Codex agent with MCP servers, since Codex may run MCP calls without the guard's hook.
+  a Codex agent with MCP servers, since Codex may run MCP calls without the guard's hook;
+- each outcome the daemon verifies before it accepts it, with its `proof`.
 
 For the example above and a workflow `triage` whose autonomous `label` step follows `read`:
 
@@ -176,6 +179,9 @@ workflow	path with no human decision
 triage	read -> label
 
 agent	guard	workflow	why
+
+workflow	step	outcome	proof
+implement	implement	passed	gate-passed
 ```
 
 A workflow `docs` with `guard = { allow = ["git-push-default"] }` and a model step run by `writer`
@@ -191,7 +197,8 @@ workflow's steps and edges added, and the web view's Flows panel draws them:
     { "workflow": "triage", "step": "label", "approved_by": [], "autonomous": "it only labels issues" }
   ],
   "paths": [{ "workflow": "triage", "path": ["read", "label"] }],
-  "tools": []
+  "tools": [],
+  "proofs": [{ "workflow": "implement", "step": "implement", "outcome": "passed", "proof": "gate-passed" }]
 }
 ```
 
@@ -225,6 +232,9 @@ Errors about one step start with `` step `<id>`: `` and point at the step's line
 | `` command runs `<option>`, which is not an option `` | A `runs` entry the step does not offer |
 | `` `next` is empty `` | A step with no outcome |
 | `` `by` has outcome `<outcome>`, which is not in `next` `` | `by` names an outcome the step does not have |
+| `` only a model step has a `proof` `` | `proof` on a human or code step |
+| `` `proof` has outcome `<outcome>`, which is not in `next` `` | `proof` names an outcome the step does not have |
+| `` `proof` names `gate-passed`, and factory.toml sets no `gate` `` | A step needs the gate, and the factory has none |
 | `` outcome `<outcome>` leads to `<target>`, which is not a step, `done` or `stop` `` | A `next` target that does not exist |
 | `no path from start reaches it` | No chain of `next` from `start` reaches the step |
 | `` approves `<id>`, which is not an irreversible step `` | `approves` names a missing or reversible step |

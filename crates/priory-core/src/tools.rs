@@ -218,7 +218,7 @@ pub(crate) fn call(
                 .to_owned(),
         ),
         "result" => match lead_answer(&tx, &run, &call.arguments, trace, head)? {
-            Ok(()) => result(&tx, &run, &call.arguments, workflows)?,
+            Ok(()) => result(&tx, &run, &call.arguments, workflows, head)?,
             Err(refused) => Err(refused),
         },
         "ask" => ask(&tx, &run, &call.arguments, factory)?,
@@ -238,6 +238,7 @@ fn result(
     run: &Run,
     arguments: &Value,
     workflows: &Workflows,
+    head: &dyn Fn(&Path, &str) -> Option<String>,
 ) -> rusqlite::Result<Result<String, String>> {
     let fields = (|| {
         Ok::<_, String>((
@@ -283,6 +284,9 @@ fn result(
             valid.join(", ")
         )));
     };
+    if let Some(refused) = crate::proof::refused(tx, run.task, step, &outcome, head)? {
+        return Ok(Err(refused));
+    }
     if next == "done"
         && commit.is_none()
         && let Some(resource) = pull_request(tx, run.task)?
@@ -3501,9 +3505,17 @@ pub fn backfill_endings(db: &mut Connection, workflows: &Workflows) -> rusqlite:
 /// The line that tells a model step's agent how to end the step.
 pub(crate) fn ending(step: &Step) -> String {
     let outcomes: Vec<_> = step.next.keys().map(String::as_str).collect();
-    format!(
+    let end = format!(
         "End this step by calling the result tool of the priory MCP server with one of these outcomes: {}.",
         outcomes.join(", ")
+    );
+    let proved: Vec<_> = step.proof.keys().map(String::as_str).collect();
+    if proved.is_empty() {
+        return end;
+    }
+    format!(
+        "{end} Before outcome {}, run `priory gate` in the worktree: Priory takes it only once the gate passed at the head commit.",
+        proved.join(" or ")
     )
 }
 
