@@ -5,8 +5,8 @@ hands the issues over with `priory batch add`. The planning task's agent plans t
 one go, and the daemon creates one task per entry. Each entry starts once the entries it needs have
 merged.
 
-This page describes the first slice: `merged` moments only, from the CLI. Edits of a plan, split
-issues, stacked entries and the web view come later.
+This page describes `merged` moments, edits of a plan, split issues, the desk line and the HTTP API.
+Stacked entries (the `waiting` moment) and the web view's batch page come later.
 
 ## A batch's life
 
@@ -20,11 +20,13 @@ issues, stacked entries and the web view come later.
    and close 1?`, and its text lists the entries in order, each with its edges, files and brief,
    then the closes. The batch is
    `asked`.
-4. `go` marks the batch `going` in the transaction that stores the answer. The `start-batch` code
+4. Before the go, a person can edit the plan with `priory batch edit` (see Editing a plan). Each edit
+   makes a new plan revision and asks the go again.
+5. `go` marks the batch `going` in the transaction that stores the answer. The `start-batch` code
    step then creates the entries' tasks. `drop` ends the planning task at `stop`, the batch
    `dropped`, and creates no task.
-5. In `examples/batches/`, a `close` model step then closes the issues the plan lists as done.
-6. The batch is `ended` once its planning task and every entry ended.
+6. In `examples/batches/`, a `close` model step then closes the issues the plan lists as done.
+7. The batch is `ended` once its planning task and every entry ended.
 
 The go approves the batch: its tasks, their order and the closes. It approves no entry's pull
 request: each entry still meets its own workflow's gates.
@@ -57,19 +59,74 @@ writes it. The daemon refuses the result, and the agent reads why:
 | Error | Cause |
 | ----- | ----- |
 | `issue <issue> of the batch is in no entry and no close` | An issue left out |
-| `issue <issue> is in two entries; give them parts` | One issue in two entries |
+| `issue <issue> is in two entries; give them parts` | One issue in two entries, not each with a `part` |
+| `issue <issue> has part <n> twice` | Two entries with the same part of one issue |
 | `entry <e> waits on <other>, which the plan does not have` | A dangling edge |
 | `the plan has a loop: <e>, <f>, <e>` | A cycle |
 | `entry <e> waits on <f>, which comes after it; put <f> first` | An edge to a later entry, since the entries' order is their start order |
 | `` moment `<m>` is not merged or waiting `` | An unknown moment |
 | `` entry <e> waits on <other> at `waiting`, which Priory does not build yet; use merged `` | A stacked entry, not built yet |
-| `entry <e> is part <n> of <issue>; Priory does not split issues yet` | A split issue, not built yet |
 | `<issue> already has task <id> (<state>)` | An active task holds the issue. Leave it out of the plan; never close it |
 | `<issue> is not one of the batch's issues` | An issue the person did not hand over |
 | `issue <issue> is both an entry and a close` | The plan both works and closes an issue |
 | `entry id <e> is used twice` | Duplicate entry ids |
 | ``task <id> plans no batch: only `priory batch add` starts one`` | A `batch` from a task that no batch request created |
 | `batch <id> went already; its plan is fixed` | A `batch` after the go |
+
+## Split issues
+
+An issue can be split across several entries, each with its own `part`, a number:
+
+```json
+{ "id": "e2", "issue": "ENG-41", "part": 1, "title": "Export invoices as CSV", "brief": "..." },
+{ "id": "e3", "issue": "ENG-41", "part": 2, "title": "Export invoices as PDF", "brief": "...",
+  "after": [{ "entry": "e2", "moment": "merged" }] }
+```
+
+The plan may say why in `splits`: `[{ "issue": "ENG-41", "why": "..." }]`. At the go, each part's
+task is keyed `<issue>.<part>`, such as `linear:ENG-41.1`, and owns that key's events. An event on
+the issue itself, such as a comment on `linear:ENG-41`, reaches the oldest part still active, and
+only that part; once it ends, the next. A task request on the issue joins that part instead of
+starting a second task, as it joins a task keyed by the issue. A task that holds the issue or a part
+key since the plan fails the start, as for an unsplit issue.
+
+## Editing a plan
+
+```sh
+priory batch edit BATCH --expected REVISION --drop ENTRY [--with-successors]
+priory batch edit BATCH --expected REVISION --move ENTRY (--top | --before OTHER | --after OTHER)
+priory batch edit BATCH --expected REVISION --moment ENTRY OTHER MOMENT
+```
+
+`BATCH` is a batch id or its key. `REVISION` is the plan revision the person saw, as `priory batch
+show` prints it. One edit changes the plan while its go ask is open:
+
+- `--drop` takes an entry out of the plan. An issue that no entry or close names any more leaves the
+  batch. With `--with-successors`, it drops every entry that starts after it too, directly or not.
+- `--move` changes the entry's place in the start order.
+- `--moment` sets the moment of the edge from `ENTRY` to `OTHER`. Until stacked entries exist, the
+  plan checks refuse every moment but `merged`.
+
+The edit stores the next plan revision, and asks the go again as the ask's next revision, with the
+new plan in its question and text: `batch 1 is at plan revision 2`. A go sent on the earlier
+revision is refused, as `priory answer` refuses any answer to an old revision. The edited plan
+passes the same checks as a planner's plan.
+
+`priory batch edit` refuses, and changes nothing:
+
+| Error | Cause |
+| ----- | ----- |
+| `the plan of batch <id> is at revision <current>, not <REVISION>` | A stale `--expected` |
+| `batch <id> is <state>; only an asked batch takes edits` | Before the plan, after the go, or dropped |
+| `no entry <e> in batch <id>` | An unknown entry |
+| `entry <e> has successors <f> and <g>; drop them first or add --with-successors` | A drop of an entry others start after |
+| `entry <e> starts after <other>; move it after <other>` | A move of `<e>` before an entry it starts after |
+| `entry <f> starts after <e>; move <e> before <f>` | A move of `<e>` after an entry that starts after it |
+| `entry <e> cannot move next to itself` | `--before` or `--after` the entry itself |
+| `entry <e> does not wait on <other>` | A `--moment` on an edge the plan does not have |
+| a plan check's error | An edit whose plan the checks above refuse |
+
+`POST /api/batches/{id}/edit` is its twin (see [serve.md](../reference/serve.md#writes)).
 
 ## The go and the start
 
@@ -78,7 +135,7 @@ refused: `the plan of batch <id> is at revision <n>, not <m>; answer its new ask
 
 `start-batch` creates, in one transaction with its own action record:
 
-1. One task per entry, in plan order, keyed by its issue. It runs the batch's entries workflow, in
+1. One task per entry, in plan order, keyed by its issue, or by its part key for a split issue. It runs the batch's entries workflow, in
    the planning task's band, lane and repository. Its request text is the entry's brief, from a
    `priory.batch.entry` source event in the inbox.
 2. One `merged` hold condition per edge, on the other entry's task. An entry with no edge is
@@ -111,6 +168,12 @@ entries that wait on it get their own asks in turn.
 A person can move, hold, release or cancel an entry like any task. The batch reads its tasks' states
 and keeps no copy.
 
+## On the desk
+
+A going batch is one `batch` row under Also waiting, in place of its entries' held rows: its title,
+its counts, and which entries start next. An entry held on a condition with an open ask keeps its own
+row. See [desk.md](desk.md#batches).
+
 ## `priory batch show`
 
 ```sh
@@ -138,7 +201,8 @@ key, and shows that batch, its entries and its closes. `--json` prints:
 }
 ```
 
-The list has `revision` and `batches`, each batch without `entries` and `closes`.
+The list has `revision` and `batches`, each batch without `entries` and `closes`. `GET /api/batches`
+and `GET /api/batches/{id}` return the same JSON (see [serve.md](../reference/serve.md)).
 
 `state` is `planning`, `asked`, `going`, `ended` or `dropped`. An entry's `stage` is the batch's
 word for its task: `planned` (no task yet, or held), `queued`, `blocked`, `started`, `merged`,

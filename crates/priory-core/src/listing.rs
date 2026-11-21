@@ -42,7 +42,7 @@ const IRREVERSIBLE: &str = "CASE asks.kind
 /// A desk item's group in the ranking (see `RANKS`), null for the queue.
 fn urgency() -> String {
     format!(
-        "CASE WHEN desk.part = 1 THEN NULL
+        "CASE WHEN desk.part = 1 OR desk.kind = 'batch' THEN NULL
            WHEN desk.kind IN ('blocked', 'failed', 'prompt', 'command')
              OR desk.kind = 'report' AND desk.what LIKE 'intake: %' THEN 'alarm'
            WHEN desk.kind = 'ask' THEN (SELECT CASE WHEN {IRREVERSIBLE} THEN 'irreversible'
@@ -131,6 +131,13 @@ const DESK: &str = "SELECT 0 AS part, asks.created AS since, 'ask' AS kind,
                WHERE holds.released IS NULL AND tasks.state = 'held' AND holds.id = (
                  SELECT min(id) FROM holds AS hold WHERE hold.task = holds.task
                  AND hold.released IS NULL)
+                 AND (tasks.batch_entry IS NULL OR EXISTS (SELECT 1 FROM holds AS hold
+                   WHERE hold.task = holds.task AND hold.released IS NULL
+                   AND (hold.kind != 'merged' OR EXISTS (SELECT 1 FROM asks WHERE asks.id = hold.ask
+                     AND asks.answer IS NULL AND asks.withdrawn IS NULL))))
+               UNION ALL
+               SELECT 0, batches.went, 'batch', batches.id, batches.task, tasks.lane, batches.title
+               FROM batches JOIN tasks ON tasks.id = batches.task WHERE batches.went IS NOT NULL
                UNION ALL
                SELECT 0, sweeps.started, 'sweep', sweeps.id, stalls.task, tasks.lane,
                  sweeps.script || ': ' || coalesce(sweeps.status
@@ -1115,6 +1122,11 @@ pub fn desk(
     let mut items = rows(db, &desk_items(), [])?;
     let list = items.as_array_mut().expect("rows are an array");
     list.iter_mut().for_each(parse_back_early);
+    for item in list.iter_mut().filter(|item| item["kind"] == "batch") {
+        let id = item["id"].as_i64().expect("a batch's id is a number");
+        item["what"] = json!(crate::batch::desk_line(db, id)?);
+    }
+    list.retain(|item| item["kind"] != "batch" || !item["what"].is_null());
     let snoozed = list
         .iter()
         .filter(|item| !item["snoozed_until"].is_null())

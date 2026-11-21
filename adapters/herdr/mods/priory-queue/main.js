@@ -531,7 +531,7 @@ export default class PrioryQueue extends View {
           .child("A higher band starts first. Inside a band, the order you set with the grip or Shift J and Shift K wins, then the oldest first."))));
   }
 
-  /** Move…, Hold… or Release, Cancel…, and Attach for a live run. @param {Row} row @param {Palette} t */
+  /** Move…, Hold… or Release, Attach for a live run, Open task and Cancel…. @param {Row} row @param {Palette} t */
   actions(row, t) {
     const off = this.acting || Boolean(this.error);
     /** @param {string} id @param {string} icon @param {string} label @param {(cx: import("gpui-kit").Context) => void} action */
@@ -565,6 +565,10 @@ export default class PrioryQueue extends View {
         setShared("priory.attach", { task, at: Date.now() });
         cx.notify();
       })))
+      .child(button("open", "arrow-right", "Open task", (cx) => {
+        setShared("priory.task.open", { task, at: Date.now() });
+        cx.notify();
+      }))
       .when(waiting || row.tile === "held" || row.tile === "running", (el) => el.child(popover("cancel", "x", "Cancel…", v_flex().w(260).p(10).gap(8).rounded(RADIUS.md).bg(t.surface).border(1).border_color(t["control-line"])
         .child(div().whitespace_normal().text_size(TYPE.small[0]).child(`Cancel ${row.key}? Its run stops and the task ends as dropped.`))
         .child(Button.new(`cancel-confirm-${task}`).h(PANE.control).px(12).flex().items_center().rounded(RADIUS.card).bg(t["tile-danger"]).text_color(t["on-tile"])

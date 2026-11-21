@@ -38,7 +38,7 @@ pub(crate) fn consumer(runner: Option<&str>) -> String {
     runner.map_or_else(|| "priory".to_owned(), |runner| format!("priory.{runner}"))
 }
 
-/// Handles `message` when ownership decides it, and returns the tmux session to kill. `None` leaves
+/// Handles `message` when ownership decides it, and returns the tmux sessions to kill. `None` leaves
 /// it to routing.
 pub(crate) fn handle(
     tx: &Transaction,
@@ -46,7 +46,7 @@ pub(crate) fn handle(
     me: &str,
     trace: &Trace,
     counter: Option<&crate::embed::Counter>,
-) -> Result<Option<Option<String>>, Error> {
+) -> Result<Option<Vec<String>>, Error> {
     let text = |field: &str| message.data[field].as_str().unwrap_or_default();
     let outcome = match message.kind.as_str() {
         ALIVE => {
@@ -77,7 +77,7 @@ pub(crate) fn handle(
             let Ok(answer) = serde_json::from_value::<crate::tools::Answer>(message.data.clone())
             else {
                 crate::state::record(tx, message, None, "refused", None)?;
-                return Ok(Some(None));
+                return Ok(Some(Vec::new()));
             };
             let head = |worktree: &std::path::Path, branch: &str| {
                 priory_runtime::runtime::kept_head(
@@ -98,7 +98,7 @@ pub(crate) fn handle(
         _ => return Ok(None),
     };
     crate::state::record(tx, message, None, outcome, None)?;
-    Ok(Some(None))
+    Ok(Some(Vec::new()))
 }
 
 /// Keeps another runner's post of an ask when it is newer than the one held.
@@ -195,7 +195,7 @@ fn claimed(
     me: &str,
     trace: &Trace,
     counter: Option<&crate::embed::Counter>,
-) -> Result<Option<String>, Error> {
+) -> Result<Vec<String>, Error> {
     let data = &message.data;
     let (key, runner) = (
         data["key"].as_str().unwrap_or_default(),
@@ -232,13 +232,15 @@ fn claimed(
         crate::state::record(tx, message, None, "refused", None)?;
         // A copy here whose own claim lost can never run: the log gives its key to another runner.
         let Some(owner) = current.filter(|current| runner == me && current.runner != me) else {
-            return Ok(None);
+            return Ok(Vec::new());
         };
         let Some(task) = crate::state::keyed(tx, Some(&key.to_owned()))? else {
-            return Ok(None);
+            return Ok(Vec::new());
         };
         let reason = format!("owned by runner {}", owner.runner);
-        return Ok(crate::tools::cancel(tx, task.id, &reason)?);
+        return Ok(crate::tools::cancel(tx, task.id, &reason)?
+            .into_iter()
+            .collect());
     }
     let seq = crate::state::record(tx, message, None, "claimed", None)?;
     tx.execute(
@@ -264,7 +266,7 @@ fn claimed(
         .query_map([key, request], |row| row.get(0))?
         .collect::<rusqlite::Result<_>>()?;
     pending.insert(0, request.to_owned());
-    let mut kill = None;
+    let mut kill = Vec::new();
     // Any copy of the task here stops, so the key runs on one runner only.
     if runner != me
         && let Some(task) = crate::state::keyed(tx, Some(&key.to_owned()))?
@@ -276,7 +278,7 @@ fn claimed(
         } else {
             format!("claimed by runner {runner}")
         };
-        kill = crate::tools::cancel(tx, task.id, &reason)?;
+        kill.extend(crate::tools::cancel(tx, task.id, &reason)?);
     }
     for id in &pending {
         if runner != me {
@@ -294,7 +296,7 @@ fn claimed(
         let Some(request) = stored(tx, id)? else {
             continue;
         };
-        kill = kill.or(crate::state::route_in(tx, &request, trace, counter)?);
+        kill.extend(crate::state::route_in(tx, &request, trace, counter)?);
     }
     if runner == me {
         let task = crate::state::keyed(tx, Some(&key.to_owned()))?.map(|task| task.id);
