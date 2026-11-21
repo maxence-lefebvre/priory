@@ -45,16 +45,22 @@ The context size is a count, not a fraction of the model's window: Priory does n
 model's window.
 
 The daemon reads the size at the turn's `Stop` hook, from the session transcript that the hook names.
-It is the last assistant message's input, cached input, cache writes and output. So the size lags by
+It is the input, cached input, cache writes and output of the last message the model wrote. An
+error message Claude writes itself, marked `<synthetic>`, does not count. So the size lags by
 one turn: a turn that passes `compactAt` is compacted after it ends, never during it. Claude can
 still compact a turn itself if it fills the window first.
 
 It compacts once per crossing. After the daemon queues a `/compact`, it queues no other until a
-turn's context reads below `compactAt` again. A compaction that leaves the context above it is not
-repeated. The run keeps that state, so a new run of a shared session can compact once more.
+turn's context reads below `compactAt` again. Every run of the session shares that state, so a
+compaction that leaves the context above `compactAt` is not repeated, even after the task sleeps
+and wakes.
 
-A turn that stores a result is not compacted, since the result may move the task to another
-agent's conversation. The next turn of the same conversation still sees the crossing.
+The turn that queues the `/compact` settles its ask or wait at the next `Stop`, after the compaction
+and its continuation. So a lead that ends every turn with an ask or a wait is still compacted before
+it sleeps.
+
+A turn that stores a result is compacted only if the next step carries on in the same process. A
+result that moves the task to another conversation leaves the crossing to the session's next turn.
 
 A Codex agent cannot take `compactAt`: Priory reads no Codex tokens (see [codex.md](codex.md)).
 

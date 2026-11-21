@@ -1199,7 +1199,7 @@ fn a_result_after_a_compact_in_the_same_turn_is_refused_so_the_compact_reaches_i
 }
 
 #[test]
-fn a_compact_asked_beside_an_ask_is_typed_before_the_task_sleeps_on_the_ask() {
+fn a_queued_answer_and_its_nudge_are_typed_before_the_compact_asked_ahead_of_them() {
     let mut setup = Setup::with_workflow("compact-answer", STEPS);
     setup.calls(&[compact("the plan")]);
     setup.hold("hold-stop");
@@ -1217,17 +1217,18 @@ fn a_compact_asked_beside_an_ask_is_typed_before_the_task_sleeps_on_the_ask() {
     let answered = setup.priory(&["answer", "1", "sqlite", "--revision", "1"]);
 
     assert!(answered.status.success(), "{answered:?}");
-    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 4);
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 5);
     let typed = setup.typed();
-    assert_eq!(typed[1], "/compact the plan\n", "{typed:?}");
     assert!(
-        typed[2].starts_with(
-            "Priory compacted this conversation, as you asked. You are on task 1, at step plan."
-        ),
+        typed[1].starts_with("Answer to ask 1 (revision 1): sqlite\n"),
         "{typed:?}"
     );
+    assert!(typed[2].starts_with("Your turn ended"), "{typed:?}");
+    assert_eq!(typed[3], "/compact the plan\n", "{typed:?}");
     assert!(
-        typed[3].starts_with("Answer to ask 1 (revision 1): sqlite\n"),
+        typed[4].starts_with(
+            "Priory compacted this conversation, as you asked. You are on task 1, at step plan."
+        ),
         "{typed:?}"
     );
 }
@@ -1282,15 +1283,11 @@ fn a_session_past_compact_at_gets_one_compaction_once_idle_then_the_continuation
 
     setup.start();
 
-    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 4);
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 3);
     let typed = setup.typed();
+    assert_eq!(typed[1], "/compact\n", "{typed:?}");
     assert!(
-        typed[1].starts_with("Your turn ended"),
-        "the nudge goes first: {typed:?}"
-    );
-    assert_eq!(typed[2], "/compact\n", "{typed:?}");
-    assert!(
-        typed[3].starts_with(CONTINUED.lines().next().unwrap()),
+        typed[2].starts_with(CONTINUED.lines().next().unwrap()),
         "{typed:?}"
     );
     std::thread::sleep(Duration::from_millis(1500));
@@ -1337,6 +1334,46 @@ fn a_turn_past_compact_at_that_asks_is_compacted_before_the_task_sleeps() {
 }
 
 #[test]
+fn a_new_run_of_the_session_does_not_compact_again_while_the_context_stays_over() {
+    let mut setup = Setup::with_workflow("auto-compact-wake", STEPS);
+    setup.compact_at(5000, &[6000, 7000, 7000]);
+    setup.calls(&[ask()]);
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == "asleep")
+    });
+
+    let answered = setup.priory(&["answer", "1", "sqlite", "--revision", "1"]);
+
+    assert!(answered.status.success(), "{answered:?}");
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 4);
+    std::thread::sleep(Duration::from_millis(1500));
+    assert_eq!(setup.rows("runs").len(), 2);
+    assert_eq!(setup.compactions(), 1, "{:?}", setup.typed());
+}
+
+#[test]
+fn a_result_carried_into_the_next_step_compacts_there() {
+    let mut setup = Setup::with_workflow("auto-compact-result", STEPS);
+    setup.compact_at(5000, &[6000, 6000]);
+    setup.calls(&[result("ready")]);
+    setup.publish(&requested(42));
+
+    setup.start();
+
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 5);
+    let typed = setup.typed();
+    assert_eq!(setup.compactions(), 1, "{typed:?}");
+    assert!(
+        typed.iter().any(|prompt| prompt.starts_with(
+            "Priory compacted this conversation, as you asked. You are on task 1, at step implement."
+        )),
+        "{typed:?}"
+    );
+}
+
+#[test]
 fn a_turn_past_compact_at_is_not_compacted_until_it_ends() {
     let mut setup = Setup::new("auto-compact-busy");
     setup.compact_at(5000, &[6000]);
@@ -1355,10 +1392,10 @@ fn a_turn_past_compact_at_is_not_compacted_until_it_ends() {
 
 #[test]
 fn a_session_is_compacted_again_only_after_its_context_reads_below_compact_at() {
-    // Turns: the intro, its nudge, the continuation after the compaction, its nudge.
+    // Turns: the intro, the continuation after the compaction, its nudge.
     for (name, contexts, prompts, compactions) in [
-        ("auto-compact-stays-over", [6000, 6000, 7000, 7000], 5, 1),
-        ("auto-compact-crosses-again", [6000, 6000, 1000, 6000], 8, 2),
+        ("auto-compact-stays-over", [6000, 7000, 7000], 4, 1),
+        ("auto-compact-crosses-again", [6000, 1000, 6000], 7, 2),
     ] {
         let mut setup = Setup::new(name);
         setup.compact_at(5000, &contexts);
@@ -5266,7 +5303,7 @@ fn a_state_file_whose_asks_an_approval_names_upgrades_to_outside_asks() {
     // The state file as version 32 left it: every ask belongs to a task.
     let db = rusqlite::Connection::open(setup.dir.join("priory.db")).unwrap();
     db.execute_batch(
-        "ALTER TABLE actions DROP COLUMN ask; ALTER TABLE actions DROP COLUMN revision;
+        "ALTER TABLE runs DROP COLUMN crossed; ALTER TABLE actions DROP COLUMN ask; ALTER TABLE actions DROP COLUMN revision;
          ALTER TABLE actions DROP COLUMN command; ALTER TABLE actions DROP COLUMN generation;
          ALTER TABLE actions DROP COLUMN stdout; ALTER TABLE actions DROP COLUMN stderr;
          ALTER TABLE actions DROP COLUMN pid; ALTER TABLE actions DROP COLUMN pid_started;

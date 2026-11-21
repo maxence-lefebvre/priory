@@ -250,7 +250,7 @@ cannot type `/compact` itself, since only typed input reaches its harness. A Cod
 
 A task holds at most one queued compact, so a second call is refused. `result` is refused too until
 the compact is typed, because a result could move the task to another agent's conversation first.
-`ask` and `wait` may follow it in the same turn: the compact is typed before the task sleeps on them.
+`ask` and `wait` resume the same conversation, so the compact follows their answer or event.
 Compacting is described under Compact in [outbox.md](outbox.md).
 
 ### `tldr(text)` and `search(query, states?, limit?)`

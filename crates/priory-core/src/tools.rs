@@ -300,16 +300,16 @@ fn compact(
 }
 
 /// Queues `/compact` once per crossing when the session's `context`, read at a `Stop`, reaches its
-/// agent's `compactAt`. A turn that stored a result is skipped: the task may move to another
-/// conversation, and the next turn's `Stop` still sees the crossing.
+/// agent's `compactAt`, and says whether it did. Every run of the session shares the crossing. A run
+/// with a result is skipped, since the result may move the task to another conversation.
 pub(crate) fn overflow(
     tx: &Transaction,
     session: &str,
     context: Option<u64>,
     factory: &Factory,
-) -> rusqlite::Result<()> {
+) -> rusqlite::Result<bool> {
     let Some((run, context)) = run(tx, session)?.zip(context) else {
-        return Ok(());
+        return Ok(false);
     };
     let Some(limit) = run
         .agent
@@ -317,27 +317,27 @@ pub(crate) fn overflow(
         .and_then(|agent| factory.agents.get(agent))
         .and_then(|agent| agent.value.compact_at)
     else {
-        return Ok(());
+        return Ok(false);
     };
     if context < limit.get() {
-        return tx
-            .execute("UPDATE runs SET crossed = 0 WHERE id = ?1", [run.id])
-            .map(drop);
+        tx.execute("UPDATE runs SET crossed = 0 WHERE session = ?1", [session])?;
+        return Ok(false);
     }
     let skip: bool = tx.query_row(
-        "SELECT crossed OR EXISTS (SELECT 1 FROM results WHERE run = ?1) FROM runs WHERE id = ?1",
-        [run.id],
+        "SELECT (SELECT max(crossed) FROM runs WHERE session = ?2)
+         OR EXISTS (SELECT 1 FROM results WHERE run = ?1)",
+        params![run.id, session],
         |row| row.get(0),
     )?;
     if skip || compact_queued(tx, run.task)? {
-        return Ok(());
+        return Ok(false);
     }
     tx.execute(
         "INSERT INTO outbox (task, text, compact) VALUES (?1, '/compact', 1)",
         [run.task],
     )?;
-    tx.execute("UPDATE runs SET crossed = 1 WHERE id = ?1", [run.id])
-        .map(drop)
+    tx.execute("UPDATE runs SET crossed = 1 WHERE session = ?1", [session])?;
+    Ok(true)
 }
 
 /// Ends a `/compact` Priory typed into `run`; a compaction it did not type changes nothing.
@@ -1512,8 +1512,7 @@ fn settle(tx: &Transaction, run: &Run, trace: &Trace) -> rusqlite::Result<Option
             |_| Ok(()),
         )
         .optional()?;
-    // A run that slept now would never type its compact: each new run's first prompt skips it.
-    if said.is_some() || compact_queued(tx, run.task)? {
+    if said.is_some() {
         return Ok(None);
     }
     end(tx, run.id, "asleep")?;

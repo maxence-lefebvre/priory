@@ -2226,8 +2226,12 @@ pub(crate) fn signal(
         "Stop" => {
             tx.execute("UPDATE runs SET idle = 1, turn = NULL WHERE id = ?1", [run])?;
             let context = crate::trace::account(&tx, trace, run, signal.transcript.as_deref())?;
-            crate::tools::overflow(&tx, &signal.session, context, trace.factory)?;
-            kill = crate::tools::stop(&tx, &signal.session, trace)?;
+            // The run settles its ask or wait at the next Stop, so a sleeping run never misses its
+            // compact. A result carried into the next step on this process compacts there.
+            if !crate::tools::overflow(&tx, &signal.session, context, trace.factory)? {
+                kill = crate::tools::stop(&tx, &signal.session, trace)?;
+                crate::tools::overflow(&tx, &signal.session, context, trace.factory)?;
+            }
             tx.execute("UPDATE runs SET nudgeable = 0 WHERE id = ?1", [run])?;
         }
         "UserPromptSubmit" => {
