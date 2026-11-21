@@ -291,9 +291,29 @@ pub fn add(factory: &Factory, add: &Add) -> Result<String, Refused> {
 /// Publishes `add` as a request under `key`, such as a Slack thread's `slack:<channel>:<ts>`, with
 /// the factory's defaults for what it leaves unset. Only the first request for a key publishes.
 pub fn add_to(factory: &Factory, add: &Add, key: &str) -> Result<String, Refused> {
+    add_as(factory, add, key, 0, None)
+}
+
+/// As `add_to`, once `ended` tasks with `key` have ended, and from `person` rather than `$USER`.
+/// Only the first request for a key and a count of ended tasks publishes, so a key whose task
+/// ended takes a new one.
+pub fn add_as(
+    factory: &Factory,
+    add: &Add,
+    key: &str,
+    ended: u64,
+    person: Option<&str>,
+) -> Result<String, Refused> {
     let request = quick(factory, add, None)?;
     let bus = open(factory)?;
-    let source = source(&request, key, &format!("{REQUESTED}:add:{key}"));
+    let name = match ended {
+        0 => format!("{REQUESTED}:add:{key}"),
+        ended => format!("{REQUESTED}:add:{key}:ended:{ended}"),
+    };
+    let mut source = source(&request, key, &name);
+    if let Some(person) = person {
+        source.data["person"] = json!(person);
+    }
     let seq = bus
         .publish(OUTPUT, &source)
         .map_err(|error| format!("publish on {OUTPUT}: {error}"))?;

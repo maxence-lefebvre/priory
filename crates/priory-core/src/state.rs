@@ -12,7 +12,7 @@ use std::collections::BTreeMap;
 use std::io::Write;
 use std::time::Duration;
 
-const VERSION: i64 = 71;
+const VERSION: i64 = 72;
 
 const SCHEMA: &str = "
 CREATE TABLE tasks (
@@ -1235,6 +1235,16 @@ END;
 PRAGMA user_version = 71;
 ";
 
+// The desk items a desktop notification already told a person, so a restarted daemon tells none twice.
+const SCHEMA_72: &str = "
+CREATE TABLE IF NOT EXISTS notified (
+  kind TEXT NOT NULL,
+  item TEXT NOT NULL,
+  PRIMARY KEY (kind, item)
+);
+PRAGMA user_version = 72;
+";
+
 /// Each schema change in order: a file at version `n` applies those from index `n` on.
 const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA, SCHEMA_2, SCHEMA_3, SCHEMA_4, SCHEMA_5, SCHEMA_6, SCHEMA_7, SCHEMA_8, SCHEMA_9,
@@ -1245,7 +1255,7 @@ const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA_42, SCHEMA_43, SCHEMA_44, SCHEMA_45, SCHEMA_46, SCHEMA_47, SCHEMA_48, SCHEMA_49,
     SCHEMA_50, SCHEMA_51, SCHEMA_52, SCHEMA_53, SCHEMA_54, SCHEMA_55, SCHEMA_56, SCHEMA_57,
     SCHEMA_58, SCHEMA_59, SCHEMA_60, SCHEMA_61, SCHEMA_62, SCHEMA_63, SCHEMA_64, SCHEMA_65,
-    SCHEMA_66, SCHEMA_67, SCHEMA_68, SCHEMA_69, SCHEMA_70, SCHEMA_71,
+    SCHEMA_66, SCHEMA_67, SCHEMA_68, SCHEMA_69, SCHEMA_70, SCHEMA_71, SCHEMA_72,
 ];
 
 /// The order the queue starts tasks in: band, then a person's order, then age. A band the factory
@@ -1910,6 +1920,15 @@ pub(crate) fn due(db: &mut Connection) -> rusqlite::Result<()> {
     crate::tools::due(&tx)?;
     crate::hold::due(&tx)?;
     tx.commit()
+}
+
+/// How many tasks with `key` ended: done, failed or dropped.
+pub fn ended(db: &Connection, key: &str) -> rusqlite::Result<u64> {
+    db.query_row(
+        "SELECT count(*) FROM tasks WHERE key = ?1 AND state IN ('done', 'failed', 'dropped')",
+        [key],
+        |row| row.get::<_, i64>(0).map(i64::unsigned_abs),
+    )
 }
 
 /// The resource and the agent's last prompt of each open wait that the intake polls for, then the

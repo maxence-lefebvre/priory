@@ -222,7 +222,7 @@ the desk's `next` (see [desk.md](desk.md#the-next-thing)). When that item is an 
 daemon has not told yet, it runs `notify-send -- <title>`, with the same title as a Web Push
 notification and nothing else. It runs the command with arguments, never through a shell. A snoozed
 item never ranks, so it never notifies. Each item notifies once; the daemon keeps that record in
-memory, so a restarted daemon tells the current next item once more. When `notify-send` is not on
+the state file's `notified` table, so a restarted daemon does not tell an item again. When `notify-send` is not on
 `PATH`, the daemon logs it once and carries on.
 
 On iPhone and iPad, only a view added to the Home Screen can subscribe, and it asks only after a

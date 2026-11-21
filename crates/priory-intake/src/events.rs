@@ -607,7 +607,8 @@ pub struct ScheduleFired {
 pub struct CliRequested {
     /// The request, as typed.
     pub text: String,
-    /// `$USER`; null when it is unset.
+    /// `$USER`, or the Slack user who sent the shortcut's form as `<username> (<user id>)`; null when
+    /// `$USER` is unset.
     pub person: Option<String>,
     /// When the command ran, RFC 3339.
     #[schemars(extend("format" = "date-time"))]

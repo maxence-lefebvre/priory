@@ -47,7 +47,9 @@ fn main() -> ExitCode {
                 _ => return usage(),
             };
             let run = if verb == "intake" {
-                |factory: &factory::Factory, once| intake::run(factory, once, watched, merged, health)
+                |factory: &factory::Factory, once| {
+                    intake::run(factory, once, watched, merged, health, ended)
+                }
             } else {
                 daemon::run
             };
@@ -253,6 +255,16 @@ fn merged(since: &str) -> Result<Vec<intake::Merge>, String> {
     }
     let db = state::open()?;
     state::merges(&db, since).map_err(|error| format!("merged pull requests: {error}"))
+}
+
+/// How many tasks with `key` ended, from `PRIORY_DB`; none when the intake runs without a state
+/// file.
+fn ended(key: &str) -> Result<u64, String> {
+    if std::env::var_os("PRIORY_DB").is_none() {
+        return Ok(0);
+    }
+    let db = state::open()?;
+    state::ended(&db, key).map_err(|error| format!("tasks with key {key}: {error}"))
 }
 
 /// Records each intake source's poll in the state, when the intake has one.
@@ -944,6 +956,7 @@ fn listed(verb: &str, mut args: Vec<String>) -> ExitCode {
                     ],
                     &value["items"],
                 );
+                print_since_you_looked(&value["since_you_looked"]);
             }
             _ => {
                 listing::print(
@@ -967,6 +980,24 @@ fn listed(verb: &str, mut args: Vec<String>) -> ExitCode {
         Ok(())
     });
     exit(verb, shown)
+}
+
+/// After a blank line, what happened since the person last looked, newest first, when anything did.
+fn print_since_you_looked(events: &Value) {
+    let Some(events) = events.as_array().filter(|events| !events.is_empty()) else {
+        return;
+    };
+    state::emit("");
+    state::emit("since you looked\ttask\twhat");
+    for event in events {
+        let cell = |field: &str| event[field].as_str().unwrap_or("-");
+        state::emit(&format!(
+            "{}\t{}\t{}",
+            cell("time"),
+            cell("key"),
+            cell("what")
+        ));
+    }
 }
 
 /// After a blank line, each asleep task with what its waits wait on and since when, when one is.

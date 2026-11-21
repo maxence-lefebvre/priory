@@ -146,6 +146,9 @@ lists the outcomes it verifies. See Proofs in [tools.md](docs/daemon/tools.md#pr
 To play a task through the whole factory with fake agents before a real one runs, follow
 [testing-a-factory.md](docs/testing-a-factory.md).
 
+To run one factory on two machines that share one event log, follow
+[adding-a-second-machine.md](docs/adding-a-second-machine.md).
+
 ## 4. Pick a starter
 
 The repository's `examples/` folder holds ready-made factories. Each one passes `priory check`, and
@@ -291,7 +294,12 @@ review guide. Load `adapters/github/` unpacked in Chrome or Edge, and add its or
 
 The web view's Desk shows the same desk. It opens on the next thing: the alarm or ask that ranks
 first, with why it ranks there. Under the list, Since you looked shows what happened since your last
-visit, and opening the Desk records the visit as `priory seen` does.
+visit, and opening the Desk records the visit as `priory seen` does. `priory desk` prints the same
+events after its list.
+
+The web view's Asks panel has the saved views Open, Snoozed, Answered and All. A snoozed ask leaves
+Open and waits in Snoozed. On a phone, once the options scroll out of view, the answer bar's
+"N options" opens a sheet with every option. On a desktop, `S` snoozes the selected ask for 1 h.
 
 A workflow can write a report for you, such as a morning dossier: `priory report show` prints the
 last one. The web view's Reports panel shows it, and takes its picks and row comments as

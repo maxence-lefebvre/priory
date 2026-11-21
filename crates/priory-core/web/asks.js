@@ -1,3 +1,12 @@
+export const ASK_VIEWS = ["open", "snoozed", "answered", "all"];
+
+/** The groups of `askGroups` a saved view lists, in order. @param {string} view */
+export const shownGroups = (view) => (view === "all" ? ["open", "snoozed", "answered", "withdrawn"] : [view]);
+
+/** The `POST /api/snooze` body of the S key: 1 h on an open ask of a task, else null. @param {any} ask @param {number} now */
+export const snoozeShortcut = (ask, now) =>
+  ask?.state === "open" && ask.task && !snoozed(ask, now) ? { kind: "ask", id: ask.id, for: "1h" } : null;
+
 export const snoozed = (ask, now) => ask.state === "open" && Boolean(ask.snoozed_until) && Date.parse(ask.snoozed_until) > now;
 
 // The asks list's groups. An ask snoozed past `now` leaves Open for Snoozed (DESIGN.md, Snooze).
@@ -26,3 +35,18 @@ export const ARM_MS = 4000;
 /** Whether `armed` still arms `option` of this revision of the ask, as the Herdr panel's `press` does. */
 export const stillArmed = (armed, ask, option, now) =>
   armed != null && armed.id === ask.id && armed.revision === ask.revision && armed.text === option && now - armed.at < ARM_MS;
+
+/**
+ * Why an ask write did not apply, for the note on the ask. @param {number} status @param {any} body
+ * @param {(iso: string) => string} ago a time as the page says its age
+ */
+export function writeNote(status, body, ago) {
+  const fresh = body?.ask;
+  if (status === 409 && fresh) {
+    if (fresh.state === "open") return `The question changed. Read revision ${fresh.revision} and answer again.`;
+    return fresh.state === "answered" ? `Already answered ${ago(fresh.answered_at)} ago: ${fresh.answer}.` : `Withdrawn: ${fresh.withdrawn_why}.`;
+  }
+  if (status === 503) return "Could not send: no priory daemon runs beside this server. Start priory daemon, then send again.";
+  if (status === 504 || status === 0) return "The daemon may have applied this but did not confirm it. Check the ask's state before you send again.";
+  return `Could not send: ${body?.error || `the server answered ${status}`}.`;
+}

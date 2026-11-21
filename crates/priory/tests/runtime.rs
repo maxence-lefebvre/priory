@@ -260,6 +260,8 @@ impl Setup {
             // The desk's stall banner, before its header, has no tab.
             .skip_while(|line| !line.contains('\t'))
             .skip(1)
+            // The desk's Since you looked list follows its rows after a blank line.
+            .take_while(|line| args[0] != "desk" || !line.is_empty())
             .map(|line| line.split('\t').map(str::to_owned).collect())
             .collect()
     }
@@ -16467,6 +16469,52 @@ fn a_runner_away_for_an_hour_keeps_its_asked_task_and_its_answer_and_loses_only_
     assert!(a.rows("runs").is_empty(), "a never ran task 2");
     let runs = b.rows("runs");
     assert_eq!(runs.len(), 2, "{runs:?}");
+}
+
+#[test]
+fn a_takeover_waits_the_whole_lease_after_an_alive_message_sent_partway_through_a_second() {
+    let mut a = runner("lease-second", "a", None);
+    let mut b = runner("lease-second", "b", Some(&a));
+    a.publish(&requested(1));
+    a.memory(0);
+    let exe = Path::new(env!("CARGO_BIN_EXE_priory"));
+    a.start_with(exe, &[("PRIORY_NOW", "2026-11-21T10:00:00.900Z")]);
+    logged(
+        &a,
+        "priory.task.held",
+        json!({ "key": "github:owner/repo#1", "runner": "a", "hold": "waiting" }),
+    );
+    a.crash();
+
+    // 29 minutes 59.6 seconds after a's last alive message: its lease still runs.
+    b.start_with(exe, &[("PRIORY_NOW", "2026-11-21T10:30:00.500Z")]);
+    b.until("inbox", |rows| {
+        rows.iter()
+            .any(|row| row[1] == "priory.runner.alive" && row[2] == "b")
+    });
+    b.crash();
+    b.start_with(exe, &[("PRIORY_NOW", "2026-11-21T10:31:00Z")]);
+    logged(
+        &b,
+        "priory.task.claimed",
+        json!({ "key": "github:owner/repo#1", "runner": "b", "from": "a" }),
+    );
+
+    let takeovers: Vec<String> = b
+        .bus()
+        .messages(&herdr_bus::MessageQuery {
+            output: Some(OUTPUT.into()),
+            limit: 1000,
+            ..herdr_bus::MessageQuery::default()
+        })
+        .unwrap()
+        .into_iter()
+        .filter(|stored| {
+            stored.message.kind == "priory.task.claimed" && stored.message.data["from"] == "a"
+        })
+        .map(|stored| stored.message.time.to_string())
+        .collect();
+    assert_eq!(takeovers, ["2026-11-21T10:31:00Z"]);
 }
 
 #[test]

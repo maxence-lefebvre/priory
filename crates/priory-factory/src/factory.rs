@@ -699,6 +699,8 @@ pub struct Trigger {
     pub on: String,
     /// The GitHub login whose review requests a `pull_request.review_requested` trigger polls.
     pub reviewer: Option<String>,
+    /// The GitHub teams, as `org/team`, whose review requests start tasks for `reviewer` too.
+    pub teams: Option<Vec<String>>,
     /// The saved Linear view a `linear.view` trigger reads: its id, or the slug id ending its URL.
     pub view: Option<String>,
     /// The Slack channel id a `slack` trigger reads, such as `C0123`.
