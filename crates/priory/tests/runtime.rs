@@ -20579,3 +20579,152 @@ fn a_screen_is_never_cached_needs_the_token_and_terminal_off_serves_none() {
     server.kill().unwrap();
     server.wait().unwrap();
 }
+
+const RELEASE_DAY: &str = "---\nname: release-day\ndescription: When releases go out.\n---\nReleases go out on Tuesdays.\n";
+const GATE_COST: &str = "+++\nname = \"gate-cost\"\ndescription = \"How long the gate takes.\"\n+++\nThe gate takes about four minutes.\n";
+
+impl Setup {
+    /// Gives the factory two memories, `release-day` and `gate-cost`.
+    fn memories(&self) {
+        let memories = self.dir.join("factory/memories");
+        fs::create_dir_all(&memories).unwrap();
+        fs::write(memories.join("release-day.md"), RELEASE_DAY).unwrap();
+        fs::write(memories.join("gate-cost.md"), GATE_COST).unwrap();
+    }
+}
+
+/// The memory index a run gets for the two memories `Setup::memories` writes, in `folder`.
+fn memory_index(folder: &str) -> String {
+    format!(
+        "# Memories\n\nThe factory's memories are in {folder}, one fact per file. Read a memory's \
+         file when its description fits your task. Never edit these files: a memory changes only \
+         through a pull request to the factory.\n\n- gate-cost.md: How long the gate takes.\n\
+         - release-day.md: When releases go out."
+    )
+}
+
+#[test]
+fn a_claude_run_gets_an_index_of_the_factorys_memories_and_reads_their_files_from_its_snapshot() {
+    let mut setup = Setup::new("memories-claude");
+    setup.memories();
+    setup.publish(&requested(42));
+
+    setup.start();
+
+    let args = setup.claude_args(0);
+    let folder = PathBuf::from(arg(&args, "--add-dir").expect("--add-dir"));
+    assert!(
+        folder.starts_with(setup.dir.join("home/kit")) && folder.ends_with("memories"),
+        "{}",
+        folder.display()
+    );
+    assert_eq!(
+        tree(&folder),
+        tree(&setup.dir.join("factory/memories")),
+        "byte for byte"
+    );
+    let system = arg(&args, "--append-system-prompt-file").expect("--append-system-prompt-file");
+    assert_eq!(
+        fs::read_to_string(&system).unwrap(),
+        format!(
+            "{}\n\nYou implement one issue.",
+            memory_index(&folder.display().to_string())
+        )
+    );
+    assert_eq!(
+        arg(&args, "--plugin-dir"),
+        None,
+        "the factory has no skills"
+    );
+    let kit = setup.rows("runs")[0][8].clone();
+    assert_eq!(kit.len(), 32, "a run records the memories it got");
+
+    fs::write(
+        setup.dir.join("factory/memories/release-day.md"),
+        RELEASE_DAY.replace("Tuesdays", "Wednesdays"),
+    )
+    .unwrap();
+    setup.crash();
+    setup.start();
+    setup.publish(&requested(43));
+
+    let args = setup.claude_args(1);
+    let changed = PathBuf::from(arg(&args, "--add-dir").expect("--add-dir"));
+    assert_ne!(changed, folder, "a changed memory gets its own snapshot");
+    assert!(
+        fs::read_to_string(folder.join("release-day.md"))
+            .unwrap()
+            .contains("Tuesdays"),
+        "an earlier run's snapshot stays as it was"
+    );
+    assert_ne!(setup.rows("runs")[1][8], kit);
+}
+
+#[test]
+fn a_codex_run_gets_the_memory_index_in_its_developer_instructions() {
+    let mut setup = Setup::with_workflow("memories-codex", TWO_AGENTS);
+    fs::write(setup.dir.join("factory/agents/reviewer/agent.md"), CODEX).unwrap();
+    setup.memories();
+    setup.calls(&[result("passed"), result("approved")]);
+    setup.publish(&requested(42));
+
+    setup.start();
+
+    setup.until("tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == "done")
+    });
+    let config = codex_config(&setup);
+    let instructions = config["developer_instructions"].as_str().unwrap();
+    let folder = instructions
+        .split_once("memories are in ")
+        .and_then(|(_, rest)| rest.split_once(", one fact"))
+        .map(|(folder, _)| folder)
+        .unwrap_or_else(|| panic!("no folder in {instructions}"));
+    assert!(
+        Path::new(folder).starts_with(setup.dir.join("home/kit")),
+        "{folder}"
+    );
+    assert_eq!(
+        tree(Path::new(folder)),
+        tree(&setup.dir.join("factory/memories"))
+    );
+    assert_eq!(
+        instructions,
+        format!("{}\n\nYou review one change.", memory_index(folder))
+    );
+    let runs = setup.rows("runs");
+    assert_eq!(
+        runs[0][8], runs[1][8],
+        "without skills, both harnesses get the same memories"
+    );
+}
+
+#[test]
+fn each_runner_gives_its_runs_the_memories_of_its_own_factory_checkout() {
+    let mut a = runner("memories", "a", None);
+    let mut b = runner("memories", "b", Some(&a));
+    a.memories();
+    b.memories();
+    let exe = Path::new(env!("CARGO_BIN_EXE_priory"));
+    a.publish(&requested(1));
+    a.start_with(exe, &[("PRIORY_NOW", T0)]);
+    let on_a = a.claude_args(0);
+    a.crash();
+
+    b.publish(&requested(2));
+    b.start_with(exe, &[("PRIORY_NOW", T0)]);
+    let on_b = b.claude_args(0);
+
+    let (folder_a, folder_b) = (
+        PathBuf::from(arg(&on_a, "--add-dir").unwrap()),
+        PathBuf::from(arg(&on_b, "--add-dir").unwrap()),
+    );
+    assert!(folder_a.starts_with(a.dir.join("home/kit")), "{folder_a:?}");
+    assert!(folder_b.starts_with(b.dir.join("home/kit")), "{folder_b:?}");
+    assert_eq!(tree(&folder_a), tree(&folder_b));
+    assert_eq!(
+        a.rows("runs")[0][8],
+        b.rows("runs")[0][8],
+        "the same memories give the same hash on every runner"
+    );
+}
