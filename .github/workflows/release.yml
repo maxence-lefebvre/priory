@@ -1,0 +1,132 @@
+name: Release
+
+# A pushed `v*` tag builds and publishes a GitHub Release. A manual run, or a pull request that
+# changes the release files, builds and checks the same assets as CI artifacts and publishes nothing.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+  pull_request:
+    paths: [.github/workflows/release.yml, install.sh]
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  version:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Refuse a tag that differs from the workspace version
+        run: |
+          test "$(grep -c '^version = ' Cargo.toml)" -eq 1
+          version="$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml)"
+          echo "Workspace version: $version"
+          if [ "$GITHUB_REF_TYPE" = tag ] && [ "$GITHUB_REF_NAME" != "v$version" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME differs from the workspace version $version"
+            exit 1
+          fi
+
+  build:
+    needs: version
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-musl
+            runner: ubuntu-24.04
+          - target: aarch64-unknown-linux-musl
+            runner: ubuntu-24.04-arm
+          - target: aarch64-apple-darwin
+            runner: macos-15
+    runs-on: ${{ matrix.runner }}
+    env:
+      TARGET: ${{ matrix.target }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install the pinned toolchain and the target
+        run: |
+          rustup show active-toolchain || rustup toolchain install
+          rustup target add "$TARGET"
+      - name: Install the musl C toolchain for the bundled SQLite and ring
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update && sudo apt-get install -y musl-tools
+          echo "CC_$(echo "$TARGET" | tr - _)=musl-gcc" >> "$GITHUB_ENV"
+      - run: cargo build --release --locked -p priory --target "$TARGET"
+      - name: Stage the binary and its checksum
+        run: |
+          mkdir dist
+          cp "target/$TARGET/release/priory" "dist/priory-$TARGET"
+          cd dist
+          shasum -a 256 "priory-$TARGET" > "priory-$TARGET.sha256"
+          cat "priory-$TARGET.sha256"
+      - name: Check that the Linux binary is static and checks the examples in a clean container
+        if: runner.os == 'Linux'
+        run: |
+          file "dist/priory-$TARGET"
+          linked="$(ldd "dist/priory-$TARGET" 2>&1 || true)"
+          echo "ldd: $linked"
+          echo "$linked" | grep -qE 'statically linked|not a dynamic executable'
+          docker run --rm --network none \
+            -v "$PWD/dist/priory-$TARGET:/usr/local/bin/priory:ro" \
+            -v "$PWD/examples:/examples:ro" \
+            alpine:3.22 sh -euc 'priory --version; for dir in /examples/*/; do priory check "$dir"; echo "checked $dir"; done'
+      - name: Install through install.sh from the staged files
+        run: |
+          PRIORY_RELEASE_URL="file://$PWD/dist" sh install.sh --prefix "$RUNNER_TEMP/prefix"
+          "$RUNNER_TEMP/prefix/bin/priory" --version
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: priory-${{ matrix.target }}
+          path: dist/
+          if-no-files-found: error
+
+  adapters:
+    needs: version
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Pack the Herdr adapter and the GitHub extension
+        run: |
+          mkdir dist
+          tar -czf dist/priory-herdr.tar.gz -C adapters --exclude=herdr/test herdr
+          (cd adapters/github && zip -qr ../../dist/priory-github-extension.zip . -x 'test/*' package.json)
+          cd dist
+          for asset in priory-herdr.tar.gz priory-github-extension.zip; do
+            sha256sum "$asset" > "$asset.sha256"
+          done
+          cat ./*.sha256
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: priory-adapters
+          path: dist/
+          if-no-files-found: error
+
+  release:
+    if: github.event_name == 'push' && github.ref_type == 'tag'
+    needs: [build, adapters]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          ls -l dist
+          gh release create "$GITHUB_REF_NAME" dist/* --repo "$GITHUB_REPOSITORY" --verify-tag \
+            --title "Priory $GITHUB_REF_NAME" --generate-notes
