@@ -259,7 +259,8 @@ pub fn worktree(home: &Path, repo: &str, task: i64) -> Result<(PathBuf, String),
     run(git(&clone).args(["fetch", "--quiet", "origin"]))?;
     run(git(&clone).args(["remote", "set-head", "origin", "--auto"]))?;
     run(git(&clone)
-        .args(["worktree", "add", "--quiet", "-b", &branch])
+        // Tracking the trunk would let a bare `git push` with `push.default=upstream` land on it.
+        .args(["worktree", "add", "--quiet", "--no-track", "-b", &branch])
         .arg(&path)
         .arg("origin/HEAD"))?;
     Ok((path, branch))

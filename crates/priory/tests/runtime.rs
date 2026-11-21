@@ -523,6 +523,15 @@ fn a_queued_task_at_a_model_step_gets_a_worktree_a_tmux_session_and_a_run() {
         .output()
         .unwrap();
     assert_eq!(String::from_utf8(branch.stdout).unwrap(), "priory/1\n");
+    let upstream = git(&worktree)
+        .args(["rev-parse", "--abbrev-ref", "priory/1@{upstream}"])
+        .output()
+        .unwrap();
+    assert!(
+        !upstream.status.success(),
+        "a bare push with push.default=upstream would reach {}",
+        String::from_utf8_lossy(&upstream.stdout)
+    );
     assert!(worktree.join("README.md").is_file());
     let args = fs::read_to_string(setup.dir.join("fake/args.log")).unwrap();
     let args: Vec<_> = args.lines().collect();
