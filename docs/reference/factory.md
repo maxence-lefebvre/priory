@@ -17,6 +17,7 @@ Schema: [`config/factory.json`](../schemas/config/factory.json).
 | `gate` | string | no | none: no step can name the `gate-passed` proof | The project's check, such as its tests. `priory gate` runs it with `sh -c` in a task's worktree. See Proofs in [tools.md](../daemon/tools.md#proofs) | `"cargo test"` |
 | `sweep` | table | no | the built-in worktree sweep alone | How the daemon frees room. See [`[sweep]`](#sweep) | |
 | `search` | table | no | keyword search, no summarizer | How tasks are found. See [`[search]`](#search) | |
+| `log` | table | no | herdr-bus's file on this machine | Where the event log lives. See [`[log]`](#log) | |
 | `telemetry` | table | no | no export | Where trace records go. See [`[telemetry]`](#telemetry) | |
 | `notify` | table | no | no desktop notification | Notifications besides Web Push. See [`[notify]`](#notify) | |
 | `serve` | table | no | nothing listens | The HTTP server over the factory's state. See [`[serve]`](#serve) | |
@@ -67,6 +68,21 @@ See [search.md](../daemon/search.md).
 | `embeddings` | boolean | no | `false` | Whether search compares embeddings as well as keywords | `true` |
 | `model` | string | no | `"sentence-transformers/all-MiniLM-L6-v2"` | The embedding model Priory runs in process, a Hugging Face repository | |
 | `command` | string | no | | A command that reads text on stdin and prints a JSON array of floats, instead of `model` | `"./embed.sh"` |
+
+## `[log]`
+
+Where the intake publishes its events and the daemon reads them. See
+[routing.md](../daemon/routing.md) and
+[ADR 0002](../adr/0002-a-factory-chooses-herdr-bus-or-postgres-for-its-event-log.md).
+
+| Key | Type | Required | Default | Meaning | Example |
+| --- | ---- | -------- | ------- | ------- | ------- |
+| `backend` | `"herdr-bus"` or `"postgres"` | no | `"herdr-bus"` | The store. `"herdr-bus"` is the SQLite file `HERDR_BUS_DB` names. `"postgres"` is a database several machines share, and needs a `priory` built with `--features postgres` | `"postgres"` |
+| `url_env` | string | no | `"PRIORY_LOG_URL"` | The environment variable that holds the Postgres connection string, a libpq URL such as `postgresql://user:password@host/db`. The file never holds the string itself | `"PRIORY_LOG_URL"` |
+
+Priory creates the tables `priory_log_messages` and `priory_log_cursors` on first connect. It uses
+TLS when the server offers it and the machine's root certificates trust it; add `sslmode=require`
+to the URL to refuse a plain connection.
 
 ## `[telemetry]`
 
@@ -272,6 +288,8 @@ band = "today"                                 # its band without --band
 | `` `factory` is also defined in factory.toml `` | Both `factory.toml` and `factory.yaml` exist |
 | `` `bands` needs at least one band, each named once `` | `bands` is empty or names a band twice |
 | `` the sweeper agent `<name>` does not exist `` | `[sweep] agent` names no folder under `agents/` |
+| `` [log] backend = "postgres" needs a priory built with `--features postgres` `` | `[log] backend = "postgres"` in a build without the Postgres adapter |
+| `` `[log] url_env` names the environment variable that holds the connection string, such as PRIORY_LOG_URL, never the string itself `` | `url_env` is not a variable name, such as a pasted URL |
 | `` the handler agent `<name>` does not exist `` | `handler` names no agent |
 | `` the handler agent `<name>` needs harness = "claude-code" `` | `handler` names a Codex agent |
 | `` the summarizer agent `<name>` does not exist `` | `[search] tldr` names no agent |

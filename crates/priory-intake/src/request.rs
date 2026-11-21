@@ -258,7 +258,7 @@ pub fn add(factory: &Factory, add: &Add) -> Result<String, Refused> {
         _ => None,
     };
     let request = quick(factory, add, repo)?;
-    let bus = open()?;
+    let bus = open(factory)?;
     if let [key] = &keys[..] {
         let source = source(
             &request,
@@ -292,7 +292,7 @@ pub fn add(factory: &Factory, add: &Add) -> Result<String, Refused> {
 /// the factory's defaults for what it leaves unset. Only the first request for a key publishes.
 pub fn add_to(factory: &Factory, add: &Add, key: &str) -> Result<String, Refused> {
     let request = quick(factory, add, None)?;
-    let bus = open()?;
+    let bus = open(factory)?;
     let source = source(&request, key, &format!("{REQUESTED}:add:{key}"));
     let seq = bus
         .publish(OUTPUT, &source)
@@ -486,7 +486,7 @@ pub fn run(factory: &Factory, request: &Request, nonce: Option<&str>) -> Result<
     };
     let source = source(request, &key, &name);
     let task = task(request, &key, &source);
-    let bus = open()?;
+    let bus = open(factory)?;
     for message in [source, task] {
         publish(&*bus, &message)?;
     }
@@ -541,8 +541,8 @@ fn task(request: &Request, key: &str, source: &Message) -> Message {
         .time(source.time)
 }
 
-fn open() -> Result<Box<dyn Log>, String> {
-    let bus = log::open().map_err(|error| error.to_string())?;
+fn open(factory: &Factory) -> Result<Box<dyn Log>, String> {
+    let bus = log::open(factory.log()).map_err(|error| error.to_string())?;
     bus.declare(&intake::output())
         .map_err(|error| error.to_string())?;
     Ok(bus)

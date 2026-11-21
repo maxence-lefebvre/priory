@@ -1,6 +1,10 @@
 //! The event log: what the intake publishes on and the daemon reads, whatever stores it.
 
 use herdr_bus::{Bus, Message, Output, Seq, Start, Stored};
+use priory_factory::factory::{Backend, EventLog};
+
+#[cfg(feature = "postgres")]
+pub mod postgres;
 
 pub type Error = Box<dyn std::error::Error>;
 pub type Result<T, E = Error> = std::result::Result<T, E>;
@@ -32,9 +36,26 @@ pub trait Log {
     fn ack(&self, consumer: &str, delivery: &Delivery) -> Result<()>;
 }
 
-/// The machine's log: herdr-bus's SQLite file.
-pub fn open() -> Result<Box<dyn Log>> {
-    Ok(Box::new(Bus::open_default()?))
+/// The log the factory's `[log]` table names: herdr-bus's SQLite file on this machine unless it
+/// names Postgres.
+pub fn open(log: &EventLog) -> Result<Box<dyn Log>> {
+    match log.backend {
+        Backend::HerdrBus => Ok(Box::new(Bus::open_default()?)),
+        Backend::Postgres => open_postgres(log.url_env()),
+    }
+}
+
+#[cfg(feature = "postgres")]
+fn open_postgres(url_env: &str) -> Result<Box<dyn Log>> {
+    let url = std::env::var(url_env).map_err(|_| {
+        format!("[log] backend = \"postgres\" reads its connection string from ${url_env}, which is not set")
+    })?;
+    Ok(Box::new(postgres::Postgres::connect(&url)?))
+}
+
+#[cfg(not(feature = "postgres"))]
+fn open_postgres(_url_env: &str) -> Result<Box<dyn Log>> {
+    Err("[log] backend = \"postgres\" needs a priory built with `--features postgres`".into())
 }
 
 impl Log for Bus {

@@ -20,7 +20,9 @@ priory
 
 The last command prints the usage. To install the binary instead, `cargo install --path
 crates/priory` puts `priory` in `~/.cargo/bin`. The in-process embedding model for search sits
-behind a cargo feature: `cargo build --release --features model`.
+behind a cargo feature: `cargo build --release --features model`. So does the Postgres event log,
+which lets several machines share one log: `--features postgres`, then `[log]` in
+[`factory.toml`](docs/reference/factory.md#log).
 
 ## 2. Write a factory
 
@@ -161,7 +163,7 @@ Priory keeps its state in three places, each named by an environment variable:
 | Variable       | Holds                                                         | Default                          |
 | -------------- | ------------------------------------------------------------- | -------------------------------- |
 | `PRIORY_DB`    | The daemon's SQLite state: tasks, runs, asks, waits, results  | none: the daemon refuses to start |
-| `HERDR_BUS_DB` | The [herdr-bus](https://github.com/flupke/herdr-bus) file the intake publishes to | `~/.local/share/herdr-bus/bus.db` |
+| `HERDR_BUS_DB` | The [herdr-bus](https://github.com/flupke/herdr-bus) file the intake publishes to, unless `[log]` names Postgres | `~/.local/share/herdr-bus/bus.db` |
 | `PRIORY_HOME`  | Clones and worktrees; it names the daemon's socket            | `~/.local/state/priory-oss`      |
 
 Run the intake and the daemon side by side, each pointed at the factory folder:
