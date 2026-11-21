@@ -13537,7 +13537,7 @@ fn an_agreed_pick_changes_until_the_workflow_applies_it_and_wakes_the_task_with_
         shown(&setup)["sections"][0]["rows"][0]["pick"]["chosen"],
         "Later"
     );
-    // The woken agent can get other prompts, such as a nudge, around the change's line.
+    // A nudge queued before the change can share its prompt, so the line need not come first.
     let line = format!(
         "The person changed their pick on {PICK} in your report from Take to Later: apply Later instead, then write the report again with the pick's applied filled."
     );
@@ -13545,7 +13545,7 @@ fn an_agreed_pick_changes_until_the_workflow_applies_it_and_wakes_the_task_with_
     while !setup
         .typed()
         .iter()
-        .any(|typed| typed.lines().next() == Some(line.as_str()))
+        .any(|typed| typed.lines().any(|typed| typed == line))
     {
         assert!(Instant::now() < deadline, "{:?}", setup.typed());
         std::thread::sleep(Duration::from_millis(50));
