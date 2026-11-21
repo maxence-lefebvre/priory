@@ -10,14 +10,15 @@ comment on an issue. Other issue events, such as `mentioned`, are not published.
 | label added | the repository's `issues/events`, newest first | `github.issues.labeled` |
 | issue opened | the repository's `issues` list, newest first by creation | `github.issues.opened` |
 | issue closed | the repository's `issues/events`, newest first | `github.issues.labeled` |
-| comment by a person | the repository's `issues/comments`, newest 100 | `github.pull_request_review.submitted` |
+| comment by a person | the repository's `issues/comments`, newest 100 | `github.issues.labeled` |
 
 GitHub's issue events list has no `opened` event, so `opened` comes from the issues list. Polling,
 baselines and API cost are in [github-polling.md](github-polling.md).
 
 A comment on a pull request's conversation is in the same `issues/comments` list. The intake skips it
 there, since the pull request's own query publishes it (see [pull-requests.md](pull-requests.md)).
-It skips a bot's comment too.
+It skips a bot's comment too. Comments and closes publish together, oldest first, so a comment
+written after a close never arrives before it.
 
 The close and the comments start no task: no trigger takes them. They reach the active task that
 owns the issue, such as one whose key is `github:owner/name#42` (see

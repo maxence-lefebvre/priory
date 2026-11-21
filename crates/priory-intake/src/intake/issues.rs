@@ -91,7 +91,7 @@ pub(super) fn fetch_repo(repo: &str, cursors: &Cursors) -> Result<Vec<Polled>, S
             data,
         }
     };
-    let labeled = events
+    let mut labeled: Vec<Observed> = events
         .iter()
         .filter_map(|event| {
             let pull_request = event.issue.pull_request.is_some();
@@ -178,13 +178,13 @@ pub(super) fn fetch_repo(repo: &str, cursors: &Cursors) -> Result<Vec<Polled>, S
         let (Some(number), false) = (number, on_pull || found["user"]["type"] == "Bot") else {
             continue;
         };
-        reviews.push(Observed {
+        labeled.push(Observed {
             kind: ISSUE_COMMENTED,
             name: format!("github:{repo}:issues/comments:{}", found["id"]),
             repo: repo.to_string(),
             number,
             label: None,
-            baseline: cursor(REVIEWED).is_none(),
+            baseline: cursor(LABELED).is_none(),
             data: json!({
                 "repo": repo,
                 "issue": number,
@@ -196,6 +196,8 @@ pub(super) fn fetch_repo(repo: &str, cursors: &Cursors) -> Result<Vec<Polled>, S
             }),
         });
     }
+    // With the issue events, oldest first: a close then a comment never publish the other way round.
+    labeled.sort_by_key(|event| event.data["time"].as_str().unwrap_or_default().to_owned());
     let order = |event: &Observed| {
         let time = event.data["time"].as_str().unwrap_or_default().to_owned();
         (time, event.data["github_id"].as_u64())

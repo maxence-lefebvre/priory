@@ -1151,6 +1151,8 @@ fn a_comment_on_an_issue_and_its_close_publish_once_for_the_issue_and_bots_none(
     closed["event"] = json!("closed");
     closed["label"] = json!(null);
     closed["created_at"] = json!("2026-11-17T12:30:00Z");
+    let mut after_close = issue_comment(904, 42, "issues", "User");
+    after_close["created_at"] = json!("2026-11-17T12:45:00Z");
     setup.answer(&[
         (EVENTS_PATH, json!([closed])),
         (
@@ -1159,6 +1161,7 @@ fn a_comment_on_an_issue_and_its_close_publish_once_for_the_issue_and_bots_none(
                 issue_comment(903, 42, "issues", "Bot"),
                 // Pull request comments come with the pull request's own query.
                 issue_comment(902, 43, "pull", "User"),
+                after_close,
                 issue_comment(901, 42, "issues", "User"),
             ]),
         ),
@@ -1168,10 +1171,16 @@ fn a_comment_on_an_issue_and_its_close_publish_once_for_the_issue_and_bots_none(
     succeeded(&setup.intake());
 
     let published = setup.published();
+    // Oldest first with the close, so a comment after the close never arrives before it.
     assert_eq!(
         kinds(&published[1..]),
-        ["github.issues.comment", "github.issues.closed"]
+        [
+            "github.issues.comment",
+            "github.issues.closed",
+            "github.issues.comment"
+        ]
     );
+    assert_eq!(published[3].message.data["github_id"], 904);
     assert_eq!(
         published[1].message.subject.as_deref(),
         Some("owner/repo#42")

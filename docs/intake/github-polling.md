@@ -23,9 +23,9 @@ A polled repository has four streams, each named after a type:
 
 | Stream | Reads | Holds | Position |
 | ------ | ----- | ----- | -------- |
-| `github.issues.labeled` | `issues/events`, newest first | issue and pull request `labeled` and `closed` | issue event id |
+| `github.issues.labeled` | `issues/events`, newest first; REST: `issues/comments`, newest 100 | issue and pull request `labeled` and `closed`, issue comments | issue event id |
 | `github.issues.opened` | `issues`, newest first by creation | issue and pull request `opened` | number |
-| `github.pull_request_review.submitted` | GraphQL: every open pull request, and every pull request a new event above names; REST: `pulls/comments` and `issues/comments`, newest 100 each | reviews, comments, review thread comments and issue comments | review id |
+| `github.pull_request_review.submitted` | GraphQL: every open pull request, and every pull request a new event above names; REST: `pulls/comments`, newest 100 | reviews, comments and review thread comments | review id |
 | `github.check_run.completed` | the same query | check runs on each pull request's head commit, and their snapshots | check run id |
 
 ## Baseline
