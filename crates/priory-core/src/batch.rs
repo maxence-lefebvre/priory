@@ -618,6 +618,27 @@ pub enum Place {
     After(String),
 }
 
+/// `POST /api/batches/{id}/edit`'s socket line: `{"batch_edit": {"batch": ..., "body": ...}}`.
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct EditLine {
+    pub batch_edit: EditRequest,
+}
+
+/// The batch an edit names, by id or key, and the endpoint's body.
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct EditRequest {
+    pub batch: String,
+    pub body: Value,
+}
+
+/// Applies the edit `request` names, as `priory batch edit` does.
+pub fn apply(db: &mut Connection, request: &EditRequest) -> Result<String, String> {
+    let (revision, change) = edit_of(&request.body)?;
+    edit(db, &request.batch, revision, &change)
+}
+
 /// The edit and expected plan revision a `POST /api/batches/{id}/edit` body names, or why it
 /// names none.
 pub fn edit_of(body: &Value) -> Result<(i64, Edit), String> {

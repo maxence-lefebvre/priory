@@ -18139,3 +18139,101 @@ fn a_going_batch_is_one_desk_line_in_place_of_the_held_tasks_its_edges_hold() {
         ]
     );
 }
+
+const SERVE_TOKEN: &str = "s3cret-token";
+
+/// `priory serve` on `setup`'s factory, beside its daemon, and the address it listens on.
+fn served(setup: &Setup) -> (Child, String) {
+    let factory = setup.dir.join("factory/factory.toml");
+    let settings = fs::read_to_string(&factory).unwrap();
+    fs::write(
+        &factory,
+        format!("{settings}\n[serve]\nlisten = \"127.0.0.1:0\"\ntoken_env = \"TEST_TOKEN\"\n"),
+    )
+    .unwrap();
+    let mut child = setup
+        .command(env!("CARGO_BIN_EXE_priory"))
+        .args(["serve", setup.dir.join("factory").to_str().unwrap()])
+        .env("TEST_TOKEN", SERVE_TOKEN)
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut stderr = std::io::BufReader::new(child.stderr.take().unwrap());
+    loop {
+        let mut line = String::new();
+        assert!(
+            std::io::BufRead::read_line(&mut stderr, &mut line).unwrap() > 0,
+            "priory serve exited"
+        );
+        if let Some(address) = line.trim().strip_prefix("priory: serving on http://") {
+            std::thread::spawn(move || std::io::copy(&mut stderr, &mut std::io::sink()));
+            return (child, address.to_owned());
+        }
+    }
+}
+
+/// Sends `request` to `address` with the token unless `token` is false, and returns the status and
+/// body.
+fn http(address: &str, method: &str, path: &str, extra: &str, body: &str) -> (u16, String) {
+    use std::io::{Read, Write};
+    let mut stream = std::net::TcpStream::connect(address).unwrap();
+    let auth = if extra.contains("Authorization") {
+        String::new()
+    } else {
+        format!("Authorization: Bearer {SERVE_TOKEN}\r\n")
+    };
+    write!(
+        stream,
+        "{method} {path} HTTP/1.1\r\nHost: {address}\r\n{auth}{extra}Content-Type: application/json\r\n\
+         Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    )
+    .unwrap();
+    let mut response = String::new();
+    stream.read_to_string(&mut response).unwrap();
+    let status = response[9..12].parse().unwrap();
+    let body = response.split_once("\r\n\r\n").map_or("", |(_, body)| body);
+    (status, body.to_owned())
+}
+
+#[test]
+fn the_batch_endpoints_list_show_and_edit_a_plan_behind_the_token_origin_and_revision() {
+    let (setup, _) = at_the_go(
+        "batch-api",
+        json!({ "title": "t", "entries": three_entries() }),
+    );
+    let (mut server, address) = served(&setup);
+    let drop = json!({ "revision": 1, "drop": "e3" }).to_string();
+    let edit = |extra: &str, body: &str| http(&address, "POST", "/api/batches/1/edit", extra, body);
+
+    let listed = http(&address, "GET", "/api/batches", "", "");
+    let shown = http(&address, "GET", "/api/batches/1", "", "");
+    let missing = http(&address, "GET", "/api/batches/9", "", "");
+    let wrong = edit("Authorization: Bearer nope\r\n", &drop);
+    let foreign = edit("Origin: http://evil.example\r\n", &drop);
+    let bad = edit("", r#"{"revision": 1}"#);
+    let stale = edit("", &json!({ "revision": 2, "drop": "e3" }).to_string());
+    let refused = edit("", &json!({ "revision": 1, "drop": "e1" }).to_string());
+    let edited = edit("", &drop);
+    let after = http(&address, "GET", "/api/batches/1", "", "");
+    server.kill().unwrap();
+    server.wait().unwrap();
+
+    let json = |reply: &(u16, String)| -> serde_json::Value {
+        assert_eq!(reply.0, 200, "{}", reply.1);
+        serde_json::from_str(&reply.1).unwrap()
+    };
+    let listed = json(&listed);
+    assert!(listed["revision"].is_i64(), "{listed}");
+    assert_eq!(listed["batches"][0]["state"], "asked");
+    assert_eq!(json(&shown)["entries"].as_array().unwrap().len(), 3);
+    let statuses = [&missing, &wrong, &foreign, &bad, &stale, &refused].map(|reply| reply.0);
+    assert_eq!(statuses, [404, 401, 403, 400, 409, 422], "{refused:?}");
+    assert_eq!(
+        json(&edited),
+        json!({ "ok": "batch 1 is at plan revision 2" })
+    );
+    let after = json(&after);
+    assert_eq!(after["plan_revision"], 2);
+    assert_eq!(after["entries"].as_array().unwrap().len(), 2);
+}
