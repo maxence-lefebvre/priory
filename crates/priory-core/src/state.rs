@@ -1778,8 +1778,8 @@ pub fn watched(db: &Connection) -> rusqlite::Result<Vec<(String, String)>> {
            JOIN tasks ON tasks.id = owns.task
            WHERE owns.resource GLOB 'github:*@*' AND (tasks.state NOT IN ('done', 'failed', 'dropped')
              OR (tasks.state = 'done' AND julianday('now') - julianday(tasks.changed) < 10.0 / 1440
-               AND NOT EXISTS (SELECT 1 FROM inbox WHERE owns.resource = 'github:'
-                 || json_extract(inbox.data, '$.repo') || '@' || json_extract(inbox.data, '$.head_branch'))))
+               AND NOT EXISTS (SELECT 1 FROM inbox WHERE inbox.outcome != 'outsider' AND owns.resource =
+                 'github:' || json_extract(inbox.data, '$.repo') || '@' || json_extract(inbox.data, '$.head_branch'))))
          ) ORDER BY source, id",
     )?
     .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?

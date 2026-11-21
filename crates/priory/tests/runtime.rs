@@ -12329,7 +12329,7 @@ fn a_pick_option_that_requests_a_task_creates_it_and_fills_applied_with_what_it_
         [&pick["chosen"], &pick["applied"]],
         [
             "Take",
-            "requested task cli:fnd-2409 in workflow implement on owner/repo: Fix the DWARF pause"
+            "requested task cli:fnd-2409 in workflow implement on owner/repo, the cli trigger's intervention: Fix the DWARF pause"
         ]
     );
 }
@@ -12472,7 +12472,7 @@ fn a_chosen_pick_whose_request_the_bus_refused_publishes_it_when_the_daemon_star
         [&pick["chosen"], &pick["applied"]],
         [
             "Take",
-            "requested task cli:fnd-2409 in workflow implement on owner/repo: Fix the DWARF pause"
+            "requested task cli:fnd-2409 in workflow implement on owner/repo, the cli trigger's intervention: Fix the DWARF pause"
         ]
     );
 }

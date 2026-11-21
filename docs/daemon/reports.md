@@ -165,11 +165,13 @@ A pick's `requests` maps an option to a task request, with the fields of `priory
 ```
 
 `workflow`, `key` and `text` are required; `band`, `lane`, `repo`, `tldr` and `hold` are optional.
-Picking that option records the choice, sets `applied` to what it requested, such as `requested
-task cli:fnd-2409 in workflow implement on owner/repo: Fix the DWARF pause`, and keeps the
-request as a pending dispatch, all in one transaction. The daemon then publishes the request, as
-`priory request` does, and wakes no task. Its ids hold the pick's id, so a later pick of the same
-key and text requests another task, and publishing one pick twice adds nothing.
+Picking that option records the choice, sets `applied` to what it requested: its key, workflow,
+repository, intervention, any hold as JSON, and text. For the option above that reads `requested
+task cli:FND-2409 in workflow fix on owner/repo, the cli trigger's intervention: Fix the DWARF
+pause`. It keeps the request as a pending dispatch, all in one transaction. The daemon then
+publishes the request, as `priory request` does, and wakes no task. Its ids hold the pick's id,
+so a later pick of the same key and text requests another task, and publishing one pick twice
+adds nothing.
 
 When the publish fails, the pick stays recorded and `priory report pick` exits with the error. The
 daemon publishes every pending dispatch again when it starts, so a crash after the choice never

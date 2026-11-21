@@ -424,15 +424,17 @@ impl Request {
             .repo
             .as_deref()
             .unwrap_or("the cli trigger's repository");
-        let intervention = self.intervention.map_or(String::new(), |intervention| {
-            format!(", {}", intervention.as_str())
+        let intervention = self
+            .intervention
+            .map_or("the cli trigger's", |intervention| intervention.as_str());
+        let hold = self.hold.as_ref().map_or(String::new(), |hold| {
+            format!(
+                ", held {}",
+                serde_json::to_string(hold).expect("a hold serializes")
+            )
         });
-        let hold = self
-            .hold
-            .as_ref()
-            .map_or(String::new(), |hold| format!(", held: {}", hold.reason));
         format!(
-            "task cli:{} in workflow {} on {repo}{intervention}{hold}: {}",
+            "task cli:{} in workflow {} on {repo}, {intervention} intervention{hold}: {}",
             self.key, self.workflow, self.text
         )
     }

@@ -5,16 +5,14 @@ use std::process::Command;
 
 const PAGE: usize = 100;
 
-static VIEWER: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+static VIEWER: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
 
-/// The login `gh` runs as, which a worker's `gh` posts as too. Asked once per process, and again
-/// after a failed ask.
+/// The login `gh` runs as, which a worker's `gh` posts as too. Asked once per process, by the
+/// first caller while the others wait; a failed ask stays failed until the process restarts.
 pub(super) fn viewer() -> Option<&'static str> {
-    if let Some(login) = VIEWER.get() {
-        return Some(login);
-    }
-    let login: Login = gh("user", &[]).ok()?;
-    Some(VIEWER.get_or_init(|| login.login))
+    VIEWER
+        .get_or_init(|| gh::<Login>("user", &[]).ok().map(|login| login.login))
+        .as_deref()
 }
 
 #[derive(Deserialize)]

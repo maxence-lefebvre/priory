@@ -297,7 +297,8 @@ since no later wake would carry it.
 A GitHub comment or review whose `own` is `false` is exempt: the intake knows another login wrote
 it, so it wakes the task and fires the gate whenever it was written. `own` compares the author with
 the login that `gh api user` names, which a worker's `gh` posts as too. The poll and the webhook
-each ask `gh` once per process, and `own` is absent while `gh` cannot say. When agents post with
+each ask `gh` once per process, and `own` is absent when that ask failed, until the process
+restarts. When agents post with
 the person's own GitHub account, every comment of that account is `own`, and the time rule above
 still applies to it. Linear and Slack events have no `own`.
 
