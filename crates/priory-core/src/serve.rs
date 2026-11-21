@@ -142,6 +142,7 @@ pub fn start(factory: &Factory, listen: SocketAddr) -> Result<Vec<JoinHandle<()>
         views: serde_json::json!({ "factory": factory.name, "views": factory.views() }).to_string(),
         links: listing::links(factory).to_string(),
         schedules: listing::schedule_triggers(factory),
+        workflows: factory.workflows.keys().cloned().collect(),
         request: serde_json::json!({
             "workflow": factory.request().map(|defaults| &defaults.workflow),
             "band": factory.request().and_then(|defaults| defaults.band.as_ref()),
@@ -200,6 +201,7 @@ struct Served {
     views: String,
     links: String,
     schedules: Vec<(String, Trigger)>,
+    workflows: Vec<String>,
     /// `GET /api/request`: what the Add control prefills and offers.
     request: String,
 }
@@ -305,7 +307,7 @@ fn route(
         },
         "/api/queue" => match intake::now() {
             Ok(now) => listing::revised(db, "queue", |db| {
-                listing::queue(db, &served.schedules, now).map(Some)
+                listing::queue(db, &served.schedules, &served.workflows, now).map(Some)
             }),
             Err(error) => return Reply::error(500, &error),
         },

@@ -1,7 +1,7 @@
 import { View, div, svg } from "gpui-kit";
-import { h_flex, v_flex, Button, Input, InputState, Popover } from "gpui-base";
+import { h_flex, v_flex, Button, Input, InputState, Popover, TextView } from "gpui-base";
 import { appHome, exec, home as herdrHome, readTextFile, setShared } from "herdr";
-import { priory } from "./priory.js";
+import { priory, spansHtml } from "./priory.js";
 import { addChoices } from "./add.js";
 import { AddForm } from "./add-form.js";
 import { FONTS, palette } from "./tokens.js";
@@ -50,8 +50,14 @@ async function connect() {
   const home = found.code === 0 ? found.stdout.trim() : "";
   if (!home.startsWith("/")) throw new Error(`No home folder on ${on ?? "this machine"}`);
   if (binary.startsWith("~/")) binary = home + binary.slice(1);
-  return { theme: config.theme ?? "indigo", client: priory({ exec, binary, on, factory: config.factory ?? null }) };
+  const client = priory({ exec, binary, on, factory: config.factory ?? null });
+  // Links are optional: without a factory priory can read, the panel shows its text unlinked.
+  const links = await client.links().then((read) => read.links, () => []);
+  return { theme: config.theme ?? "indigo", client, links };
 }
+
+/** Text with its autolinks; plain text stays a plain child. @param {string} id @param {{ text: string, url?: string }[]} spans */
+const linked = (id, spans) => (spans.some((span) => span.url) ? TextView.html(id, spansHtml(spans)) : spans.map((span) => span.text).join(""));
 
 const message = (/** @type {unknown} */ error) => (error instanceof Error ? error.message : String(error));
 
@@ -62,6 +68,8 @@ export default class PrioryQueue extends View {
     this.priory = null;
     /** @type {any} `priory queue --json` */
     this.data = null;
+    /** @type {{ pattern: string, url: string }[]} */
+    this.links = [];
     /** @type {number | null} the revision of the read the last frame drew */
     this.drawn = null;
     /** @type {import("./view.js").Room} */
@@ -111,6 +119,7 @@ export default class PrioryQueue extends View {
       for (;;) {
         try {
           this.priory ??= await connect();
+          this.links = this.priory.links;
           if (await this.read()) this.error = null;
           cx.notify();
           await this.priory.client.wait(this.data.revision);
@@ -146,7 +155,7 @@ export default class PrioryQueue extends View {
   }
 
   list(now = Date.now()) {
-    return queueList(this.data ?? { waiting: [], running: [], ended: [], up_next: [] }, { view: this.view, now, room: this.room, facets: this.facets });
+    return queueList(this.data ?? { waiting: [], running: [], ended: [], up_next: [] }, { view: this.view, now, room: this.room, links: this.links, facets: this.facets });
   }
 
   /** @returns {Row[]} */
@@ -500,7 +509,9 @@ export default class PrioryQueue extends View {
       .when(wide, (el) => el
         .child(h_flex().flex_wrap().gap(6).items_center().text_size(TYPE.caption[0]).text_color(t["text-3"])
           .child(this.tile(row.tile, t)).child(div().font_family(this.font.mono).text_color(t["text-2"]).child(row.key)).child(row.step).child(row.tile))
-        .child(div().whitespace_normal().font_family(this.font.display).font_weight(700).text_size(TYPE.title[0]).line_height(TYPE.title[1]).child(row.title ?? row.key)))
+        .child(div().whitespace_normal().font_family(this.font.display).font_weight(700).text_size(TYPE.title[0]).line_height(TYPE.title[1]).child(row.title ? linked(`title-${row.id}`, row.titleSpans) : row.key)))
+      // The compact row truncates its title in a button, so the opened detail repeats a title that links.
+      .when(!wide && row.titleSpans?.some((span) => span.url), (el) => el.child(div().whitespace_normal().child(linked(`title-${row.id}`, row.titleSpans))))
       .when(Boolean(row.why) && wide, (el) => el.child(v_flex().p(12).gap(6).rounded(RADIUS.md).border(1).border_color(row.why.tone === "warn" ? t["warn-text"] : t.line)
         .child(div().whitespace_normal().child(row.why.text))
         .children((row.conditions ?? []).map((/** @type {{ text: string, met: boolean }} */ item) => this.condition(item, t)))))
