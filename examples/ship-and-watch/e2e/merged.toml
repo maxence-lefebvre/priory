@@ -1,0 +1,48 @@
+# A change ships, merges, is watched on its cadence, and its announcement posts once a person
+# approves it. Run it with `cargo test -p priory --test factory_e2e`; see docs/testing-a-factory.md.
+
+[request]
+trigger = "ship-label"
+key = "github:owner/repo#42"
+
+[[turns]]   # implement
+calls = [{ name = "result", arguments = { outcome = "passed", summary = "Add the widget\nIt draws a box. cargo test passes." } }]
+
+[[turns]]   # watch, once the pull request merged: the first look, then sleep 2 seconds
+calls = [{ name = "wait", arguments = { on = { type = "time", until = "2 seconds" } } }]
+
+[[turns]]   # watch: the time wait woke it for its second look
+calls = [{ name = "wait", arguments = { on = { type = "time", until = "2 seconds" } } }]
+
+[[turns]]   # watch: the window passed
+calls = [{ name = "result", arguments = { outcome = "quiet", summary = "Three looks over the window: no new errors" } }]
+
+[[turns]]   # draft: posting before the approval is denied
+calls = [
+  { name = "Bash", arguments = { command = "curl -X POST https://slack.com/api/chat.postMessage -d text=early" } },
+  { name = "result", arguments = { outcome = "drafted", summary = "The widget now draws a box." } },
+]
+
+[[turns]]   # announce, after the approval
+calls = [
+  { name = "Bash", arguments = { command = "curl -X POST https://slack.com/api/chat.postMessage -d text=approved" } },
+  { name = "result", arguments = { outcome = "posted", summary = "Posted the announcement" } },
+]
+
+# open-pr opens pull request 7, then the task sleeps on its checks at implement, the step whose
+# result opened it. Green checks alone leave it there: only the merge moves it on to watch.
+[[events]]
+at = "implement"
+type = "github.pull_request.closed"
+subject = "owner/repo#7"
+data = { repo = "owner/repo", pull_request = 7, head_branch = "priory/1", head_sha = "{head}", base_branch = "main", merged = true, github_id = 400 }
+
+[[events]]
+at = "approve-announcement"
+answer = "post"
+
+[expect]
+path = ["implement:passed", "open-pr:opened", "watch:quiet", "draft:drafted", "approve-announcement:post", "announce:posted"]
+state = "done"
+denied = ["text=early"]
+allowed = ["text=approved"]

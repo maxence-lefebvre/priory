@@ -88,6 +88,17 @@
             "null"
           ]
         },
+        "after": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/StepAfter"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "What the task waits for before it enters the step: `merged`, every pull request it owns."
+        },
         "agent": {
           "description": "The agent that runs a model step.",
           "type": [
@@ -206,6 +217,16 @@
         "next"
       ],
       "type": "object"
+    },
+    "StepAfter": {
+      "description": "What a step waits for before the task enters it.",
+      "oneOf": [
+        {
+          "const": "merged",
+          "description": "Every pull request of the task's stack merged.",
+          "type": "string"
+        }
+      ]
     },
     "StepCommand": {
       "additionalProperties": false,

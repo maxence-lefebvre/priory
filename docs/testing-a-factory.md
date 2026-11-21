@@ -75,7 +75,8 @@ To keep a result, redirect the output to a file:
 ```
 
 Without the two variables, the ignored test plays `examples/groom` with its green scenario. CI
-plays that scenario and `examples/review/e2e/pending.toml`, so the harness itself stays covered.
+plays that scenario, `examples/review/e2e/pending.toml` and `examples/ship-and-watch/e2e/merged.toml`,
+so the harness itself stays covered.
 
 ## 3. Read a failure
 
