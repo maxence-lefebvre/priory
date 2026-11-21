@@ -142,6 +142,8 @@ pub const PERSON_VERBS: &[&str] = &[
     "seen",
     "subscribe",
     "unsubscribe",
+    "give",
+    "eval",
 ];
 
 /// Whether `args`, the arguments after `priory`, run a person verb.
@@ -1735,6 +1737,8 @@ mod tests {
             "priory subscribe 7 github:o/r#12",
             "priory snooze ask 12 --for 1h",
             "priory pause",
+            "priory give github:o/r#12 b",
+            "priory eval prompts/review.md",
         ] {
             let hits = guards.hits("Bash", Some(command), &git);
             assert_eq!(hits[0].guard, "priory-person", "{command}");

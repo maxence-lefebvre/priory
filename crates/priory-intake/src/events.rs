@@ -691,6 +691,10 @@ pub struct TaskClaimed {
     /// True when a person gave the task with `priory give`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub given: Option<bool>,
+    /// True when the runner's task of the key ended before the factory had runners, so the claim
+    /// only marks its request as handled.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ended: Option<bool>,
 }
 
 /// What another runner may do with a task, as its owner says it each time it changes: `waiting`

@@ -16741,6 +16741,102 @@ fn a_runner_that_joins_late_reads_a_finished_task_without_running_it_again() {
 }
 
 #[test]
+fn a_runner_added_to_a_factory_that_had_one_does_not_run_its_finished_requests_again() {
+    let mut a = runner("joined", "a", None);
+    let mut b = runner("joined", "b", Some(&a));
+    let runners = a.dir.join("factory/runners");
+    let later = a.dir.join("runners-later");
+    fs::rename(&runners, &later).unwrap();
+    let exe = Path::new(env!("CARGO_BIN_EXE_priory"));
+    a.calls(&[result("passed")]);
+    a.publish(&requested(1));
+    a.start_with(exe, &[("PRIORY_NOW", T0)]);
+    a.until("tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == "done")
+    });
+    a.crash();
+
+    fs::rename(&later, &runners).unwrap();
+    a.start_with(exe, &[("PRIORY_NOW", T0)]);
+    logged(&a, "priory.runner.alive", json!({ "runner": "a" }));
+    b.start_with(exe, &[("PRIORY_NOW", T0)]);
+    b.until("inbox", |rows| {
+        rows.iter().any(|row| {
+            row.contains(&"priory.runner.alive".to_owned()) && row.contains(&"b".to_owned())
+        })
+    });
+
+    assert!(
+        b.rows("tasks").is_empty(),
+        "b does not run the request a finished before it had runners"
+    );
+}
+
+#[test]
+fn a_malformed_answer_for_this_runner_is_refused_and_the_daemon_goes_on() {
+    let mut a = runner("answer-malformed", "a", None);
+    a.publish(&Message::new(
+        "priory.ask.answered",
+        json!({ "runner": "a", "ask": "one" }),
+    ));
+    a.publish(&requested(1));
+
+    a.start_with(
+        Path::new(env!("CARGO_BIN_EXE_priory")),
+        &[("PRIORY_NOW", T0)],
+    );
+
+    let inbox = a.until("inbox", |rows| {
+        rows.iter().any(|row| row[1] == "factory.task.requested")
+    });
+    let answered: Vec<&str> = inbox
+        .iter()
+        .filter(|row| row[1] == "priory.ask.answered")
+        .map(|row| row[4].as_str())
+        .collect();
+    assert_eq!(answered, ["refused"], "{inbox:?}");
+}
+
+#[test]
+fn an_answer_to_the_ask_of_a_runner_without_a_runner_file_is_refused() {
+    let b = runner("answer-unknown", "b", None);
+    let factory = b.dir.join("factory");
+
+    let sent = b.priory(&[
+        "answer",
+        factory.to_str().unwrap(),
+        "c:1",
+        "approved",
+        "--revision",
+        "1",
+    ]);
+
+    assert_eq!(
+        String::from_utf8_lossy(&sent.stderr),
+        "priory answer: runner c has no runner file in runners/\n"
+    );
+    assert!(!sent.status.success());
+}
+
+#[test]
+fn a_runners_task_branch_names_the_runner_since_task_ids_overlap_across_runners() {
+    let mut a = runner("branch", "a", None);
+    a.publish(&requested(1));
+    a.start_with(
+        Path::new(env!("CARGO_BIN_EXE_priory")),
+        &[("PRIORY_NOW", T0)],
+    );
+    a.until("tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == "running")
+    });
+
+    let task = task_json(&a, "1");
+    assert_eq!(task["branch"], "priory/a-1", "{task}");
+    let worktree = a.dir.join("home/worktrees/owner/repo/a-1");
+    assert!(worktree.is_dir(), "{}", worktree.display());
+}
+
+#[test]
 fn a_copy_reopened_on_a_runner_whose_key_another_runner_owns_drops_with_the_owner_named() {
     let mut a = runner("reopen-elsewhere", "a", None);
     let mut b = runner("reopen-elsewhere", "b", Some(&a));

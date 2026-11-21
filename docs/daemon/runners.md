@@ -21,9 +21,16 @@ A factory with one runner file or none works as before: its one daemon owns ever
 A daemon claims the key of each active task of its own whose key it does not hold, such as a task
 from before the factory got its second runner, or one that feedback reopened. It starts no run of
 that task until it reads its claim back. When that claim loses, because the log gives the key to
-another runner, the daemon drops its copy with the reason `owned by runner <name>`. When a factory that had one runner gets a second, start the
-first runner's daemon first. If the new runner's claim of one of those keys lands first, the first
-runner drops its copy, and the task starts over on the new runner.
+another runner, the daemon drops its copy with the reason `owned by runner <name>`.
+
+The daemon also claims, once, the key of each task of its own that ended before the factory had
+runners, with `ended` set. A new runner reads every old request of the log, and claims it. That
+claim comes after the ended one in the log, so it loses, and the new runner does not run a finished
+task again.
+
+When a factory that had one runner gets a second, start the first runner's daemon first. If the new
+runner's claim of one of those keys lands first, the first runner drops its copy, and the task
+starts over on the new runner. A finished task runs again there.
 
 ## Every runner reads the whole log
 
@@ -66,6 +73,11 @@ Each daemon publishes `priory.runner.alive` once a minute. A runner's lease ends
 its last alive message. Lease times compare message times in log order, never a reader's clock, so
 every runner agrees on which lease ended at which message.
 
+On Postgres, an alive, claim or held message takes the time the database stored it, so the leases
+compare one clock. On herdr-bus, each message keeps its sender's time, so a takeover compares two
+machines' clocks. Keep the runners' clocks synchronized, with NTP, or a runner whose clock runs
+ahead takes waiting tasks before their lease ends.
+
 When a runner reads its own alive message, it claims each `waiting` key of another runner whose
 lease ended before it. That takeover wins only if the old owner sent no alive message in between
 and the key is still `waiting`. The new owner creates the task from its request.
@@ -95,7 +107,9 @@ publishes the answer on the log of the factory in `DIR`, `.` by default, instead
 this machine's daemon. Only that runner
 applies it, through the same check as a local answer: the first answer to a revision stands, and
 a later one is refused and recorded. A runner that is away applies it when its daemon starts again.
-The ask's id and revision are the ones that runner's `priory asks` prints.
+The ask's id and revision are the ones that runner's `priory asks` prints. An ask of this machine
+whose name is `<runner>:<ask>` is answered here first. `priory answer` refuses a runner without a
+runner file with `runner <runner> has no runner file in runners/`.
 
 ## Giving a task to another runner
 

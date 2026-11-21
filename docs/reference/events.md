@@ -1135,6 +1135,7 @@ Schema: [`priory.task.claimed.json`](../schemas/events/priory.task.claimed.json)
 | `request` | UUID string | The `id` of the task request the owner creates the task from |
 | `from` | string, optional | The runner it takes the key from, for a takeover or a gift |
 | `given` | boolean, optional | True when a person gave the task with `priory give` |
+| `ended` | boolean, optional | True when the runner's task of the key ended before the factory had runners, so the claim only marks its request as handled |
 
 <!-- example: events/priory.task.claimed.json -->
 ```json

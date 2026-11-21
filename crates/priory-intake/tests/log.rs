@@ -117,6 +117,7 @@ impl Log for Memory {
                 output: stored.output.clone(),
                 seq: stored.seq,
                 message: stored.message.clone(),
+                logged: None,
             })
             .collect())
     }
@@ -426,6 +427,23 @@ fn a_postgres_log_opens_the_database_its_url_variable_names() {
     assert_eq!(
         read.iter().map(|delivery| delivery.seq).collect::<Vec<_>>(),
         [seq]
+    );
+}
+
+#[cfg(feature = "postgres")]
+#[test]
+fn postgres_stamps_each_delivery_with_the_servers_clock_not_the_publishers() {
+    let Some(store) = Postgres::new("clock") else {
+        return;
+    };
+    let log = declared(&store);
+    let skewed = event(1).time("2000-01-01T00:00:00Z".parse().unwrap());
+    log.publish(OUTPUT, &skewed).unwrap();
+    let delivery = log.read("daemon", OUTPUT, 1).unwrap().remove(0);
+    let logged = delivery.logged.unwrap();
+    assert!(
+        (logged.as_second() - Timestamp::now().as_second()).abs() < 300,
+        "{logged}"
     );
 }
 
