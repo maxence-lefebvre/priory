@@ -43,7 +43,7 @@ const OUTPUT: &str = "factory.intake";
 /// reports of sections, 36, which added deliveries, 37, which added progress, 39, which added run
 /// actions, 40, which added answer actions, 42, which added dispatches, 49, which added task ends, 51, which added a run's crossing of `compactAt`, 53, which added intervention levels, 56, which added the step an irreversible approval lets run, 58, which added withdrawal reasons, and 59, which added green stack gates and returned routed asks, 61, which added findings, 62, which added merge risk, 63, which added plan fields, 65, which added chosen subscriptions and approval generations, 66, which added the step a gate enters after the merge, 70, which added idle compactions and session definitions, and 71, which added cleared deliveries, ended snoozes and withdrawal times. Schema 38's visits
 /// table is created only if missing, so it stays.
-const UNDO_SINCE_SEARCH: &str = "ALTER TABLE deliveries DROP COLUMN cleared; ALTER TABLE snoozes DROP COLUMN ended;
+const UNDO_SINCE_SEARCH: &str = "ALTER TABLE runs DROP COLUMN kit_hash; ALTER TABLE deliveries DROP COLUMN cleared; ALTER TABLE snoozes DROP COLUMN ended;
          DROP TRIGGER ask_withdrawn_at; DROP TRIGGER wait_withdrawn_at;
          ALTER TABLE asks DROP COLUMN withdrawn_at; ALTER TABLE waits DROP COLUMN withdrawn_at;
          ALTER TABLE tasks DROP COLUMN batch; ALTER TABLE tasks DROP COLUMN batch_entry; DROP TABLE idle_compactions; ALTER TABLE shared_sessions DROP COLUMN definition; DROP INDEX todos_open_connector; ALTER TABLE todos DROP COLUMN connector; ALTER TABLE waits DROP COLUMN after; ALTER TABLE subscriptions DROP COLUMN chosen; ALTER TABLE approvals DROP COLUMN generation;
@@ -5646,7 +5646,7 @@ fn a_state_file_whose_asks_an_approval_names_upgrades_to_outside_asks() {
     // The state file as version 32 left it: every ask belongs to a task.
     let db = rusqlite::Connection::open(setup.dir.join("priory.db")).unwrap();
     db.execute_batch(
-        "ALTER TABLE deliveries DROP COLUMN cleared; ALTER TABLE snoozes DROP COLUMN ended;
+        "ALTER TABLE runs DROP COLUMN kit_hash; ALTER TABLE deliveries DROP COLUMN cleared; ALTER TABLE snoozes DROP COLUMN ended;
          DROP TRIGGER ask_withdrawn_at; DROP TRIGGER wait_withdrawn_at;
          ALTER TABLE asks DROP COLUMN withdrawn_at; ALTER TABLE waits DROP COLUMN withdrawn_at;
          DROP TABLE idle_compactions; ALTER TABLE shared_sessions DROP COLUMN definition;
@@ -9629,7 +9629,7 @@ fn an_approval_stored_before_generations_were_kept_is_asked_again_after_the_upgr
     // The state file as version 64 left it: an approval names no generation.
     let db = rusqlite::Connection::open(setup.dir.join("priory.db")).unwrap();
     db.execute_batch(
-        "ALTER TABLE deliveries DROP COLUMN cleared; ALTER TABLE snoozes DROP COLUMN ended;
+        "ALTER TABLE runs DROP COLUMN kit_hash; ALTER TABLE deliveries DROP COLUMN cleared; ALTER TABLE snoozes DROP COLUMN ended;
          DROP TRIGGER ask_withdrawn_at; DROP TRIGGER wait_withdrawn_at;
          ALTER TABLE asks DROP COLUMN withdrawn_at; ALTER TABLE waits DROP COLUMN withdrawn_at;
          ALTER TABLE tasks DROP COLUMN batch; ALTER TABLE tasks DROP COLUMN batch_entry; DROP TABLE idle_compactions; ALTER TABLE shared_sessions DROP COLUMN definition; DROP INDEX todos_open_connector; ALTER TABLE todos DROP COLUMN connector; ALTER TABLE waits DROP COLUMN after;
@@ -17883,14 +17883,31 @@ impl Setup {
         fs::write(skill.join("templates/notes.md"), b"## Changes\n\xff\n").unwrap();
     }
 
-    /// The value after `flag` in the fake `claude`'s latest arguments.
-    fn claude_arg(&self, flag: &str) -> Option<String> {
-        let args = fs::read_to_string(self.dir.join("fake/args.log")).unwrap();
-        let args: Vec<&str> = args.lines().collect();
-        args.windows(2)
-            .find(|pair| pair[0] == flag)
-            .map(|pair| pair[1].to_owned())
+    /// The fake `claude`'s arguments once it started the session in row `run` of `priory runs`.
+    fn claude_args(&self, run: usize) -> Vec<String> {
+        let runs = self.until("runs", |rows| rows.len() > run);
+        let session = format!("\n{}\n", runs[run][4]);
+        let file = self.dir.join("fake/args.log");
+        let deadline = Instant::now() + Duration::from_secs(20);
+        loop {
+            let args = fs::read_to_string(&file).unwrap_or_default();
+            if format!("\n{args}").contains(&session) {
+                return args.lines().map(str::to_owned).collect();
+            }
+            assert!(
+                Instant::now() < deadline,
+                "no launch of {session} in {args}"
+            );
+            std::thread::sleep(Duration::from_millis(50));
+        }
     }
+}
+
+/// The value after `flag` in `args`.
+fn arg(args: &[String], flag: &str) -> Option<String> {
+    args.windows(2)
+        .find(|pair| pair[0] == flag)
+        .map(|pair| pair[1].clone())
 }
 
 /// Every file under `dir`, by its path inside it, as bytes.
@@ -17923,8 +17940,9 @@ fn a_claude_run_gets_the_factorys_skills_as_a_plugin_and_long_instructions_throu
 
     setup.start();
 
-    let runs = setup.until("runs", |rows| rows.len() == 1);
-    let plugin = PathBuf::from(setup.claude_arg("--plugin-dir").expect("--plugin-dir"));
+    let args = setup.claude_args(0);
+    let runs = setup.rows("runs");
+    let plugin = PathBuf::from(arg(&args, "--plugin-dir").expect("--plugin-dir"));
     assert!(
         plugin.starts_with(setup.dir.join("home/kit")),
         "{}",
@@ -17937,14 +17955,12 @@ fn a_claude_run_gets_the_factorys_skills_as_a_plugin_and_long_instructions_throu
     let skill = setup.dir.join("factory/skills/release-notes");
     let copied: Vec<_> = tree(&plugin.join("skills/release-notes"));
     assert_eq!(copied, tree(&skill), "byte for byte");
-    let system = setup
-        .claude_arg("--append-system-prompt-file")
-        .expect("--append-system-prompt-file");
+    let system = arg(&args, "--append-system-prompt-file").expect("--append-system-prompt-file");
     assert_eq!(
         fs::read_to_string(&system).unwrap(),
         format!("{}\n\nYou implement one issue.", instructions.trim())
     );
-    assert_eq!(setup.claude_arg("--append-system-prompt"), None);
+    assert_eq!(arg(&args, "--append-system-prompt"), None);
     let kit = runs[0][8].clone();
     assert_eq!(kit.len(), 32, "{runs:?}");
     let written = fs::metadata(plugin.join(".claude-plugin/plugin.json"))
@@ -17954,10 +17970,14 @@ fn a_claude_run_gets_the_factorys_skills_as_a_plugin_and_long_instructions_throu
 
     setup.publish(&requested(43));
 
-    let runs = setup.until("runs", |rows| rows.len() == 2);
-    assert_eq!(runs[1][8], kit, "the same skills and instructions");
+    let args = setup.claude_args(1);
     assert_eq!(
-        setup.claude_arg("--plugin-dir"),
+        setup.rows("runs")[1][8],
+        kit,
+        "the same skills and instructions"
+    );
+    assert_eq!(
+        arg(&args, "--plugin-dir"),
         Some(plugin.display().to_string())
     );
     let again = fs::metadata(plugin.join(".claude-plugin/plugin.json"))

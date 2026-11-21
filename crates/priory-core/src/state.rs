@@ -12,7 +12,7 @@ use std::collections::BTreeMap;
 use std::io::Write;
 use std::time::Duration;
 
-const VERSION: i64 = 75;
+const VERSION: i64 = 76;
 
 const SCHEMA: &str = "
 CREATE TABLE tasks (
@@ -1314,10 +1314,14 @@ const SCHEMA_74: &str = concat!(
 "
 );
 
+// Held by another pull request: merge that one first and take its SCHEMA_75 in place of this one.
+const SCHEMA_75: &str = "PRAGMA user_version = 75;
+";
+
 // A hash of the factory's skills and instructions that a run got, so two runners whose factory
 // checkouts differ show it (R11.1).
-const SCHEMA_75: &str = "ALTER TABLE runs ADD COLUMN kit_hash TEXT;
-PRAGMA user_version = 75;
+const SCHEMA_76: &str = "ALTER TABLE runs ADD COLUMN kit_hash TEXT;
+PRAGMA user_version = 76;
 ";
 
 /// Each schema change in order: a file at version `n` applies those from index `n` on.
@@ -1331,7 +1335,7 @@ const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA_50, SCHEMA_51, SCHEMA_52, SCHEMA_53, SCHEMA_54, SCHEMA_55, SCHEMA_56, SCHEMA_57,
     SCHEMA_58, SCHEMA_59, SCHEMA_60, SCHEMA_61, SCHEMA_62, SCHEMA_63, SCHEMA_64, SCHEMA_65,
     SCHEMA_66, SCHEMA_67, SCHEMA_68, SCHEMA_69, SCHEMA_70, SCHEMA_71, SCHEMA_72, SCHEMA_73,
-    SCHEMA_74, SCHEMA_75,
+    SCHEMA_74, SCHEMA_75, SCHEMA_76,
 ];
 
 /// The order the queue starts tasks in: band, then a person's order, then age. A band the factory
