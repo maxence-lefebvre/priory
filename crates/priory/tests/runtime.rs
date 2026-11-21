@@ -16636,6 +16636,31 @@ fn a_runner_added_to_a_factory_that_had_one_does_not_run_its_finished_requests_a
 }
 
 #[test]
+fn a_malformed_answer_for_this_runner_is_refused_and_the_daemon_goes_on() {
+    let mut a = runner("answer-malformed", "a", None);
+    a.publish(&Message::new(
+        "priory.ask.answered",
+        json!({ "runner": "a", "ask": "one" }),
+    ));
+    a.publish(&requested(1));
+
+    a.start_with(
+        Path::new(env!("CARGO_BIN_EXE_priory")),
+        &[("PRIORY_NOW", T0)],
+    );
+
+    let inbox = a.until("inbox", |rows| {
+        rows.iter().any(|row| row[1] == "factory.task.requested")
+    });
+    let answered: Vec<&str> = inbox
+        .iter()
+        .filter(|row| row[1] == "priory.ask.answered")
+        .map(|row| row[4].as_str())
+        .collect();
+    assert_eq!(answered, ["refused"], "{inbox:?}");
+}
+
+#[test]
 fn an_answer_to_the_ask_of_a_runner_without_a_runner_file_is_refused() {
     let b = runner("answer-unknown", "b", None);
     let factory = b.dir.join("factory");

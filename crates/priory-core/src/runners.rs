@@ -67,7 +67,12 @@ pub(crate) fn handle(
         CLAIMED => return claimed(tx, message, me, trace, counter).map(Some),
         ANSWERED if text("runner") != me => "elsewhere",
         ANSWERED => {
-            let answer: crate::tools::Answer = serde_json::from_value(message.data.clone())?;
+            // Anyone can publish on the log, so a malformed answer is refused, never fatal.
+            let Ok(answer) = serde_json::from_value::<crate::tools::Answer>(message.data.clone())
+            else {
+                crate::state::record(tx, message, None, "refused", None)?;
+                return Ok(Some(None));
+            };
             let head = |worktree: &std::path::Path, branch: &str| {
                 priory_runtime::runtime::kept_head(
                     &priory_runtime::runtime::home(),
