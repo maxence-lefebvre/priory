@@ -455,7 +455,7 @@ fn each_endpoint_returns_what_the_cli_shows_and_its_json() {
     assert_eq!(queue["running"], json!([]));
     assert_eq!(
         api(&address, "/api/desk")["counts"],
-        json!({ "asleep": 0, "snoozed": 0, "unrouted": 0 })
+        json!({ "asleep": 0, "snoozed": 0, "unrouted": 0, "outsider": 0 })
     );
     let desk = api(&address, "/api/desk");
     assert_eq!(desk["banner"], Value::Null);
@@ -5394,6 +5394,49 @@ fn unrouted_events_split_into_ended_owners_with_their_follow_up_and_a_count_per_
     );
     let (status, _) = get(&address, "/api/inbox?unrouted=2", Some(TOKEN));
     assert_eq!(status, 400);
+}
+
+#[test]
+fn an_outsider_comment_is_counted_on_the_desk_and_listed_as_a_group_of_its_own() {
+    let setup = Setup::new("desk-outsider", SERVE);
+    let message = herdr_bus::Message::new(
+        "github.pull_request.comment",
+        json!({
+            "repo": "owner/repo", "pull_request": 7, "actor": "stranger",
+            "association": "NONE", "body": "Looks wrong.",
+        }),
+    )
+    .subject("owner/repo#7")
+    .time("2026-11-17T11:00:00Z".parse().unwrap());
+    setup.bus().publish("factory.intake", &message).unwrap();
+    succeeded(&setup.priory(&["daemon", &setup.factory(), "--once"]));
+
+    let desk = json_of(&setup, "desk");
+    let output = setup.priory(&["inbox", "--unrouted", "--json"]);
+    succeeded(&output);
+    let unrouted: Value = serde_json::from_slice(&output.stdout).unwrap();
+    let text = setup.priory(&["desk"]);
+    succeeded(&text);
+    let text = String::from_utf8(text.stdout).unwrap();
+    let listed = setup.priory(&["inbox", "--unrouted"]);
+    succeeded(&listed);
+    let listed = String::from_utf8(listed.stdout).unwrap();
+
+    assert_eq!(desk["counts"]["outsider"], 1);
+    assert_eq!(desk["counts"]["unrouted"], 0);
+    assert_eq!(unrouted["unrouted"], json!({ "owned": [], "other": [] }));
+    assert_eq!(unrouted["outsider"][0]["subject"], "owner/repo#7");
+    assert_eq!(unrouted["outsider"][0]["actor"], "stranger");
+    assert!(
+        text.starts_with(
+            "1 comment from outside the repository came in the last 24 hours. See it with `priory inbox --unrouted`.\n"
+        ),
+        "{text}"
+    );
+    assert!(
+        listed.starts_with("from outside the repository: 1 event\n"),
+        "{listed}"
+    );
 }
 
 #[test]

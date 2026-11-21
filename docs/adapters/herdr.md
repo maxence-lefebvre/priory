@@ -321,7 +321,8 @@ DESIGN.md's "Herdr adapter" section holds its visual rules; this section says ho
 - **Answering.** An option answers after a 4 s Undo, with `priory answer --expected N`. An option
   that runs the ask's command arms on the first press, shows the command word by word under it,
   and runs on a second press within 4 s, with `--run`. "Write an answer…" sends free text the same
-  way. Dismiss runs `priory dismiss` at once.
+  way. Dismiss runs `priory dismiss` at once. A step's ask and a hold's ask take only their
+  options, so they offer neither "Write an answer…", its `w` key, nor Dismiss.
 - **Refused answers.** When a verb fails, the panel reads the asks again and says why on the ask:
   the question changed to another revision, someone else answered, the ask was withdrawn, or the
   CLI's error. When the ask has left the view, the reason shows in a strip under the header

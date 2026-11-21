@@ -211,6 +211,10 @@ The web Inbox panel's Unrouted view offers the same actions from a phone: Revive
 `POST /api/subscribe`. The Desk counts only the first kind, over the last 24 hours (see
 [desk.md](desk.md#unrouted-events)).
 
+A comment or review from outside the repository is not unrouted: its outcome is `outsider`. The
+same listing shows these events as a group of their own, `outsider`, with each one's author and no
+command, since no task takes them. The Desk counts those of the last 24 hours in a line of its own.
+
 ## What a kept message does
 
 What happens to a `kept` message depends on the task's state:
@@ -303,8 +307,8 @@ Limits:
   person who comments as the same GitHub account Priory acts as reopens it like anyone else.
 - Only feedback from someone with write access to the repository reopens or wakes a task: GitHub's
   `author_association` must be `OWNER`, `MEMBER` or `COLLABORATOR`. A stranger's comment on a public
-  repository stays in the inbox as `outsider`, for a person to read with `priory inbox`. No factory
-  setting lets other authors through.
+  repository stays in the inbox as `outsider`, for a person to read with `priory inbox
+  --unrouted`. The Desk counts them. No factory setting lets other authors through.
 
 ## Feedback on a failed or dropped task
 

@@ -19,7 +19,7 @@ does, with every count in `older` at 0. Their rows match the CLI's JSON only wit
 | -------- | --- | ------- |
 | `/api/desk?person=NAME` | `priory desk --json --person NAME` | an object: [Desk](#desk) |
 | `/api/inbox` | `priory inbox --json` | `inbox`: an array of [inbox messages](#inbox) |
-| `/api/inbox?unrouted=1` | `priory inbox --unrouted --json` | `unrouted`: an array of [unrouted groups](#unrouted) |
+| `/api/inbox?unrouted=1` | `priory inbox --unrouted --json` | `unrouted`: the [unrouted groups](#unrouted), and `outsider`: the comments from outside the repository |
 | `/api/asks?band=BAND&risk=RISK&all=1` | `priory asks --json --band BAND --risk RISK` | an object: `asks`, an array of [asks](#asks), `bands` and `older` |
 | `/api/tasks?all=1` | `priory tasks --json` | `tasks`: an array of [tasks](#tasks), and `older` |
 | `/api/tasks?pr=RESOURCE` | | `tasks`: the active tasks that hold a pull request. See [Tasks that hold a pull request](#tasks-that-hold-a-pull-request) |
@@ -107,7 +107,7 @@ application/json` and a JSON body of at most 16 KiB with exactly the fields belo
 
 | Endpoint | Body |
 | -------- | ---- |
-| `POST /api/asks/{id}/answer` | `revision`, an integer, and one of `option` or `text`, a string. Both become the answer: a step's ask takes only one of its options. `run`, a boolean, default `false`: `true` confirms an answer that runs the ask's command, as `priory answer --run` does. Without it, that answer gets `422` |
+| `POST /api/asks/{id}/answer` | `revision`, an integer, and one of `option` or `text`, a string. Both become the answer: a step's ask takes only one of its options, or `OPTION: NOTE` (see [waits.md](../daemon/waits.md#asks-and-answers)). `run`, a boolean, default `false`: `true` confirms an answer that runs the ask's command, as `priory answer --run` does. Without it, that answer gets `422` |
 | `POST /api/asks/{id}/dismiss` | `revision`, an integer |
 | `POST /api/snooze` | `kind` (`ask`, `blocked`, `failed` or `prompt`) and `id`, an integer, then one of: `for`, a duration such as `1h`; `until`, an RFC 3339 time; or `"clear": true` |
 | `POST /api/request` | `text`, a string, then optionally `workflow`, `band`, `lane` and `repo`, strings, and `intervention`, `plan` or `hands-off`. What it leaves unset comes from `[request]` and the URLs in `text`, as for [`priory add`](../intake/cli.md#priory-add) |
@@ -194,6 +194,7 @@ gets `400`.
 | `counts.asleep` | integer | Tasks asleep on a wait |
 | `counts.snoozed` | integer | Items snoozed now, which `items` leaves out |
 | `counts.unrouted` | integer | [Unrouted](#unrouted) events from the 24 hours before now (`PRIORY_NOW` when set). See [desk.md](../daemon/desk.md#unrouted-events) |
+| `counts.outsider` | integer | The comments and reviews from outside the repository in the 24 hours before now (`PRIORY_NOW` when set). See [desk.md](../daemon/desk.md#unrouted-events) |
 | `items` | array | What waits on a person, then the queue, then worktrees that stay. `priory desk --all --json` keeps the snoozed items |
 | `next` | object or null | The item that ranks first, as in `ranked`; null when nothing waits on a person |
 | `ranked` | array | What waits on a person, best first, without the snoozed items: each a desk item with `why`, why it ranks there, and `title`, the line a notification carries. See [desk.md](../daemon/desk.md#the-next-thing) |
@@ -242,12 +243,17 @@ group per resource, the group with the newest event first:
 | `follow_up` | string or null | The command that routes its next event, each argument shell-quoted: `priory revive ID` for a failed or dropped task, `priory add --workflow WORKFLOW 'TEXT'` with the task's workflow and `request_text` for a done one, else `priory subscribe ID RESOURCE`. Null for a done task's resource that `request_text` cannot name, such as a Slack thread |
 | `request_text` | string or null | For a GitHub or Linear resource, the text of a new task keyed by it: `Follow up on URL after event SEQ`, the issue's URL, which `priory add` turns into the resource as key, and the newest event's sequence number, so each follow-up is a new request |
 
+`outsider`, beside `unrouted`, lists the comments and reviews from someone outside the repository,
+newest first: `seq`, `type`, `subject`, `time` and `actor`. No task takes them, so they come with
+no command.
+
 `other` counts the rest, the events no task ever owned, per source (the resource's prefix, such as
 `github` or `slack`), most first: `source` and `events`.
 
 Without `--json`, `priory inbox --unrouted` prints each owned group as its resource, event count
 and task, one line per event, then its follow-up, and last one line such as `No task ever owned: 2
-github events, 1 linear event.`
+github events, 1 linear event.` Then it prints the outsider events as a group of their own,
+`from outside the repository: N events`, one line per event with its author.
 
 ## Asks
 
@@ -279,6 +285,7 @@ an object: `answered` and `withdrawn`, the number of each left out, within `band
 | `revision` | integer | The question's revision. `priory answer` and `priory dismiss` take it |
 | `question` | string | The question |
 | `options` | array of strings | The options |
+| `free_text` | boolean | Whether the ask takes free text and a dismissal. False for a step's ask and a hold's ask, which take only their options |
 | `recommendation`, `tradeoff` | string or null | What the agent recommends, and the trade-off |
 | `title`, `text` | string or null | The ask's title and its Markdown body. A human step's ask has the task's [merge risk](../daemon/tools.md#merge-risk) as its body, when it has one |
 | `what_waits`, `next_action` | string or null | What waits on the answer, and what the agent does next |
