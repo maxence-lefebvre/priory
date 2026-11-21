@@ -3343,6 +3343,35 @@ fn up_next_lists_the_next_three_runs_queued_held_or_scheduled_in_time_order() {
 }
 
 #[test]
+fn up_next_says_a_queued_task_waits_for_its_own_reason_before_its_place() {
+    let mut setup = Setup::new("up-next-reason", SERVE);
+    setup.seed();
+    let db = rusqlite::Connection::open(setup.dir.join("priory.db")).unwrap();
+    db.execute(
+        "UPDATE tasks SET reason = 'waits for its claim to reach the log' WHERE id = 1",
+        [],
+    )
+    .unwrap();
+    let factory = setup.factory();
+
+    let queue = setup.json_at("2026-11-17T12:00:00Z", &["queue", &factory, "--json"]);
+
+    let whys: Vec<&Value> = queue["up_next"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|entry| &entry["why"])
+        .collect();
+    assert_eq!(
+        whys,
+        [
+            &json!("waits for its claim to reach the log"),
+            &json!("queue position 2")
+        ]
+    );
+}
+
+#[test]
 fn up_next_lists_each_firing_of_a_keyless_schedule_and_none_of_a_held_one() {
     let setup = Setup::new("up-next-firings", SERVE);
     setup.schedule(

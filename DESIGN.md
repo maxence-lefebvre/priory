@@ -1252,7 +1252,8 @@ What runs next and why.
 - Then Running, the bands in order (Blocker, Now, Today, Later, or the factory's names), Held with
   each hold's reason, and Last day, folded.
 - Each waiting row shows its position in its band and why it has not started, in its role's text
-  color. A grip in a fixed trailing lane, and `Shift J` and `Shift K`, reorder a band.
+  color. A task with its own wait reason, such as "Waits for its claim to reach the log.", says
+  that reason, in its row and in Up next, where "on room" is left out. A grip in a fixed trailing lane, and `Shift J` and `Shift K`, reorder a band.
 - An opened row offers Move…, Hold… and Cancel…, and Open task.
 
 ### Bonjour
