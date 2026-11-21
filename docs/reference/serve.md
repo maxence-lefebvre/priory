@@ -38,7 +38,7 @@ does, with every count in `older` at 0. Their rows match the CLI's JSON only wit
 | `/api/costs?since=WINDOW&by=SPLIT` | `priory costs --json --since WINDOW --by SPLIT` | an object: [Costs](#costs) |
 | `/api/grades?since=WINDOW` | `priory grades --json --since WINDOW` | an object: [Grades](#grades) |
 | `/api/attention?since=WINDOW&by=SPLIT` | `priory report attention --json --since WINDOW --by SPLIT` | an object: [Attention](#attention) |
-| `/api/runs/{id}/screen?have=HASH` | `priory screen --run ID --json` | the run's screen, with secrets hidden. See [Run screen](#run-screen) |
+| `/api/runs/{id}/screen?have=HASH&history=N` | `priory screen --run ID --json` | the run's screen in colour, after up to 2,000 rows of scrollback, with secrets hidden. See [Run screen](#run-screen) |
 | `/api/events?since=REV` | `priory wait --since REV` | `{"revision": N}` once it differs from `REV`. See [below](#apievents) |
 | `/api/push/key` | | `{"key": "<base64url>"}`, the daemon's VAPID public key. See [Notifications](#notifications) |
 | `POST /api/asks/{id}/answer` | `priory answer ID TEXT --revision N` | `{"ok": "<what the CLI prints>"}`. See [Writes](#writes) |
@@ -71,7 +71,7 @@ or a reason, is untrusted: render it as text.
 | ---- | ---- |
 | `200` | The endpoint answered |
 | `202` | A signed webhook delivery was taken: published, or dropped on purpose |
-| `400` | The request does not parse, or its target does not start with `/`; `/api/events` lacks `since` or has a parameter out of range; `/api/desk` has a parameter other than `person`, or a broken escape; `/api/asks` has a parameter other than `band`, `risk` and `all=1`, a band the factory does not have, or a risk other than the eight [below](#asks); `/api/tasks` has a parameter other than `all=1`, or a `pr` that is not a pull request such as `github:owner/repo#7`; `/api/runs` has a parameter other than `all=1`; `/api/costs` has a parameter other than `since` and `by`, a broken escape, a `since` that cannot form a window (see [trace.md](../daemon/trace.md#costs)), or a `by` other than the five [below](#costs); `/api/grades` has a parameter other than `since`, a broken escape, or a `since` that does not parse; `/api/attention` has the same faults, with a `by` other than the three [below](#attention); a write's body is not the shape [below](#writes); for a webhook, it sends two `Content-Length`, or its payload lacks a field its event needs |
+| `400` | The request does not parse, or its target does not start with `/`; `/api/events` lacks `since` or has a parameter out of range; `/api/desk` has a parameter other than `person`, or a broken escape; `/api/asks` has a parameter other than `band`, `risk` and `all=1`, a band the factory does not have, or a risk other than the eight [below](#asks); `/api/tasks` has a parameter other than `all=1`, or a `pr` that is not a pull request such as `github:owner/repo#7`; `/api/runs` has a parameter other than `all=1`; a run screen's `history` is not a whole number; `/api/costs` has a parameter other than `since` and `by`, a broken escape, a `since` that cannot form a window (see [trace.md](../daemon/trace.md#costs)), or a `by` other than the five [below](#costs); `/api/grades` has a parameter other than `since`, a broken escape, or a `since` that does not parse; `/api/attention` has the same faults, with a `by` other than the three [below](#attention); a write's body is not the shape [below](#writes); for a webhook, it sends two `Content-Length`, or its payload lacks a field its event needs |
 | `401` | The token is missing or wrong on a path under `/api`; for a webhook, the signature is |
 | `403` | A `POST` carries an `Origin` whose host and port differ from its `Host`, such as a page on another site, and that is not one of [`[serve] extension_origins`](factory.md#serve) |
 | `404` | No such path, task, report, ask, batch or web view file; a run screen whose run ended, whose pane this server cannot find or read within 2 seconds, or that holds a secret redaction cannot hide; any run screen with `[serve] terminal = "off"` |
@@ -106,25 +106,31 @@ prints `N` the same way, and waits 25 seconds by default. `D` is a duration such
 ## Run screen
 
 `/api/runs/{id}/screen` returns what the run's agent pane shows now, read with tmux's
-`capture-pane`. [serve.md](../daemon/serve.md#a-runs-screen) explains what it hides and why. The
+`capture-pane -e`. [serve.md](../daemon/serve.md#a-runs-screen) explains what it hides and why. The
 reply carries `Cache-Control: no-store`.
+
+| Parameter | Meaning |
+| --------- | ------- |
+| `have` | The `hash` the client holds. When it equals the current one, the reply is `{"hash": "<HASH>", "same": true, "scrollback": N}` |
+| `history` | Rows of scrollback to send above the screen, 0 by default. The server sends at most 2,000, however many are asked. A value that is not a whole number gets `400` |
 
 | Field | Meaning |
 | ----- | ------- |
 | `run`, `task` | The run and its task |
 | `width`, `height` | The pane's size, in columns and rows |
-| `cursor` | `{"x", "y"}`, from the top left at 0, or `null` when the cursor is hidden |
-| `lines` | The screen, one string per row, `height` of them, blank rows kept and trailing spaces trimmed, with each secret replaced by `[redacted]` |
+| `cursor` | `{"x", "y"}`, on the screen from the top left at 0, or `null` when the cursor is hidden |
+| `lines` | `earlier` rows of scrollback, then the screen's `height` rows, blank rows kept and trailing spaces trimmed, with each secret replaced by `[redacted]`. Each row keeps tmux's SGR colour codes (`ESC [ … m`); the style carries from one row to the next. tmux's hyperlink codes are dropped |
+| `earlier` | How many rows of scrollback `lines` starts with: `history`, or fewer when tmux keeps fewer |
 | `cut` | How many top rows the server left out to keep `lines` under 256 KiB of JSON, 0 on a usual screen |
 | `redacted` | How many secrets the server replaced |
 | `hash` | 16 hex digits, a hash of the fields above after redaction. A hidden value never changes it |
+| `scrollback` | How many rows of scrollback tmux keeps for the pane. The hash leaves it out |
 
-With `?have=HASH` equal to the current `hash`, the reply is `{"hash": "<HASH>", "same": true}`.
-
-`priory screen (TASK | --run RUN) [--json]` prints the same screen, as rows of text or, with
-`--json`, as this object. It hides the values of the default secret variables, such as
-`PRIORY_TOKEN`, from its own environment, and the secret shapes. Like the endpoint, it gives tmux
-2 seconds.
+`priory screen (TASK | --run RUN) [--json]` prints the same screen, with no scrollback, as rows of
+text or, with `--json`, as this object. Its rows keep their colours on a terminal and drop them
+when the output goes to a file or a pipe. It hides the values of the default secret variables,
+such as `PRIORY_TOKEN`, from its own environment, and the secret shapes. Like the endpoint, it
+gives tmux 2 seconds.
 
 ## Writes
 
@@ -157,8 +163,16 @@ application/json` and a JSON body of at most 16 KiB with exactly the fields belo
 | `POST /api/todos/{id}/done` | `{}`, as `priory todo done`. A to-do already done gets `422` |
 | `POST /api/seen` | `at`, an RFC 3339 time: the visit to the desk to record for `me`, as `priory seen --at` records it, to the second |
 
-In `/api/asks/{id}`, `{id}` is the ask's `id` as `/api/asks` lists it: its number, or an outside
-ask's name, and `revision` is the ask's `revision` the client showed. In `/api/tasks/{id}`, `{id}` is
+In `/api/asks/{id}`, `{id}` is the ask's `id` as `/api/asks` lists it: its number, an outside
+ask's name, or `<runner>:<ask>` for another runner's ask, and `revision` is the ask's `revision` the
+client showed.
+
+A write to another runner's ask is not applied here. The server checks it against that runner's last
+post: an ask the post shows closed or at another revision gets `409` with the ask, and an answer that
+runs the ask's command without `run: true` gets `422`, whose error says `Runs on <runner>`. Otherwise
+it publishes the write on the log for that runner and replies `202`. The runner applies it when it
+reads the log, even after time away, and the ask's `submissions` then show the outcome. See
+[runners.md](../daemon/runners.md#every-runners-asks). In `/api/tasks/{id}`, `{id}` is
 the task's number.
 
 ```sh
@@ -169,12 +183,13 @@ curl -X POST http://127.0.0.1:7340/api/asks/42/answer -H "Authorization: Bearer 
 | Reply | When |
 | ----- | ---- |
 | `200` `{"ok": "ask 42 answered"}` | The daemon applied it |
+| `202` `{"sent": "xps13", "submission": "<id>"}` | For another runner's ask: the write is on the log for that runner, which applies it when it reads it. `submission` names it in the ask's `submissions` |
 | `200` `{"key": "cli:2026-11-20-1", "id": 7}` | For `/api/request`: the daemon published the request and task `id` holds `key`. `id` is `null` when no task took the key |
 | `409` `{"error", "ask"}` | The ask's revision is no longer the one sent, or it was answered, dismissed or withdrawn. `ask` is its current state |
 | `409` `{"error"}` | A cancel's or a move's `revision` is no longer the state's. Or a pick's report is at another revision than the one sent, or the pick already has a choice: read the report again |
 | `409` `{"error", "key", "id"}` | For `/api/request`: the same text already went to `key`, so nothing was added. `id` is the active task that holds `key`, or `null` |
 | `404`, `422` `{"error"}` | The ask, task or pick is gone, or the daemon refused for another reason, such as a resume of a task that is not blocked, a say to a task with no run yet, or a comment on a stale report revision. `error` is the CLI's sentence |
-| `503` `{"error"}` | No daemon listens on the socket, so nothing was sent. Reads keep working |
+| `503` `{"error"}` | No daemon listens on the socket, or the log cannot be reached for another runner's ask, so nothing was sent. Reads keep working |
 | `504` `{"error"}` | The daemon took the line but did not reply within 10 seconds. It may have applied it: read the state before you retry |
 
 ## `POST /hooks/github`
@@ -331,6 +346,7 @@ an object: `answered` and `withdrawn`, the number of each left out, within `band
 | `snoozed_until`, `snoozed_at`, `back_early` | | The ask's [snooze](#snooze) |
 | `runner` | string, absent with one runner | In a factory of several runners, the runner that owns the ask |
 | `last_seen` | string or null | Another runner's ask only: when its runner was last alive, from its last `priory.runner.alive` |
+| `submissions` | array | Another runner's ask only: every answer and dismiss sent to it from any machine, oldest first: `submission`, `verb` (`answer` or `dismiss`), `revision`, `text`, `sent`, then `outcome` (`answered`, `dismissed` or `refused`), `why` and `applied`, null until its runner applied it |
 
 In a factory of several runners, `asks` also lists every other runner's asks from their last
 [`priory.ask.posted`](events.md#prioryaskposted), with `<runner>:<ask>` as `id`. Their `task` is the
@@ -477,7 +493,7 @@ And these objects:
 | ----- | ---- | ------- |
 | `brief` | object | `title` and `request`, the request's title and text, each null when it has none, and `result`, the latest result of a step named `groom`, or null |
 | `plan` | object or null | The latest result of a step named `plan`. A result has `run`, `step`, `outcome`, `summary`, `evidence`, `commit_sha` and `created`. When it is null, `progress` holds the plan the agent published |
-| `pull_request` | object or null | The latest pull request the task owns that has stored GitHub events: `repo`, `number`, `title`, `url`, `branch`, `base`, `head_sha`, `state` (`open`, `closed` or `merged`; a reopened pull request stays `closed`, since the intake publishes no reopen event), `review` (the latest review's state, or null) and `checks`, the latest conclusion of each check run on the head: `name`, `conclusion` and `at` |
+| `pull_request` | object or null | The latest pull request the task owns that has stored GitHub events: `repo`, `number`, `title`, `url`, `branch`, `base`, `head_sha` (each from the newest event that carries it), `state` (`open`, `closed` or `merged`; a reopened pull request stays `closed`, since the intake publishes no reopen event), `review` (the latest review's state, or null) and `checks`, the latest conclusion of each check run on the head: `name`, `conclusion` and `at` |
 
 ## Queue
 

@@ -3,10 +3,11 @@
 use crate::trace::Trace;
 use herdr_bus::Message;
 use jiff::{SignedDuration, Timestamp};
-use priory_factory::factory::Factory;
+use priory_factory::factory::{EventLog, Factory};
 use priory_intake::intake::{
-    self, ASK_ANSWERED as ANSWERED, ASK_POSTED as POSTED, OUTPUT, RUNNER_ALIVE as ALIVE,
-    TASK_CLAIMED as CLAIMED, TASK_HELD as HELD,
+    self, ASK_ANSWERED as ANSWERED, ASK_APPLIED as APPLIED, ASK_DISMISSED as DISMISSED,
+    ASK_POSTED as POSTED, OUTPUT, RUNNER_ALIVE as ALIVE, TASK_CLAIMED as CLAIMED,
+    TASK_HELD as HELD,
 };
 use priory_intake::log::Log;
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
@@ -71,24 +72,16 @@ pub(crate) fn handle(
             }
             "noted"
         }
-        ANSWERED if text("runner") != me => "elsewhere",
-        ANSWERED => {
-            // Anyone can publish on the log, so a malformed answer is refused, never fatal.
-            let Ok(answer) = serde_json::from_value::<crate::tools::Answer>(message.data.clone())
-            else {
-                crate::state::record(tx, message, None, "refused", None)?;
-                return Ok(Some(Vec::new()));
-            };
-            let head = |worktree: &std::path::Path, branch: &str| {
-                priory_runtime::runtime::kept_head(
-                    &priory_runtime::runtime::home(),
-                    worktree,
-                    branch,
-                )
-            };
-            match crate::tools::answer_in_tx(tx, &answer, trace, &head)? {
-                Ok(_) => "answered",
-                Err(_) => "refused",
+        APPLIED => {
+            outcome(tx, message)?;
+            "noted"
+        }
+        ANSWERED | DISMISSED => {
+            submitted(tx, message)?;
+            if text("runner") != me {
+                "elsewhere"
+            } else {
+                apply(tx, message, me, trace)?
             }
         }
         _ if crate::route::requests(message) => match requested(tx, message, me)? {
@@ -99,6 +92,119 @@ pub(crate) fn handle(
     };
     crate::state::record(tx, message, None, outcome, None)?;
     Ok(Some(Vec::new()))
+}
+
+/// Applies an answer or dismiss another machine sent to an ask of this runner, and queues its
+/// outcome for the log, so the sender learns what became of it.
+fn apply(
+    tx: &Transaction,
+    message: &Message,
+    me: &str,
+    trace: &Trace,
+) -> Result<&'static str, Error> {
+    let submission = submission(message);
+    let ask = message.data["ask"].as_i64();
+    // Anyone can publish on the log, so a malformed write is refused, never fatal.
+    let applied = if message.kind == ANSWERED {
+        match serde_json::from_value::<crate::tools::Answer>(message.data.clone()) {
+            Ok(answer) => {
+                let head = |worktree: &std::path::Path, branch: &str| {
+                    priory_runtime::runtime::kept_head(
+                        &priory_runtime::runtime::home(),
+                        worktree,
+                        branch,
+                    )
+                };
+                crate::tools::answer_in_tx(tx, &answer, trace, &head)?.map(|_| "answered")
+            }
+            Err(error) => Err(format!("a malformed answer: {error}")),
+        }
+    } else {
+        let dismiss = crate::tools::Dismiss {
+            dismiss: ask.unwrap_or_default(),
+            revision: message.data["revision"].as_i64(),
+        };
+        match ask {
+            Some(_) => {
+                crate::tools::dismiss_in_tx(tx, &dismiss, trace.factory)?.map(|_| "dismissed")
+            }
+            None => Err("a malformed dismiss: it names no ask".to_owned()),
+        }
+    };
+    if let Some(ask) = ask {
+        let (outcome, why) = match &applied {
+            Ok(outcome) => (*outcome, None),
+            Err(why) => ("refused", Some(why.as_str())),
+        };
+        let data = json!({
+            "runner": me, "ask": ask, "submission": submission, "outcome": outcome, "why": why,
+        });
+        let id = format!("applied/{submission}");
+        send(
+            tx,
+            &stamped(APPLIED, data, &id).subject(format!("{me}:{ask}")),
+        )?;
+    }
+    Ok(match applied {
+        Ok(outcome) => outcome,
+        Err(_) => "refused",
+    })
+}
+
+/// The id a sender knows its answer or dismiss by: the one it put in the message, else the
+/// message's own, as an answer sent before submissions existed carries.
+fn submission(message: &Message) -> String {
+    message.data["submission"]
+        .as_str()
+        .map_or_else(|| message.id.to_string(), str::to_owned)
+}
+
+/// Records an answer or dismiss sent to another runner's ask, pending until that runner applies it.
+fn submitted(tx: &Transaction, message: &Message) -> rusqlite::Result<()> {
+    let data = &message.data;
+    let (Some(runner), Some(ask)) = (data["runner"].as_str(), data["ask"].as_i64()) else {
+        return Ok(());
+    };
+    let verb = if message.kind == ANSWERED {
+        "answer"
+    } else {
+        "dismiss"
+    };
+    tx.execute(
+        "INSERT OR IGNORE INTO remote_submissions (submission, runner, ask, revision, verb, text, sent)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        params![
+            submission(message),
+            runner,
+            ask,
+            data["revision"].as_i64(),
+            verb,
+            data["text"].as_str(),
+            message.time.to_string()
+        ],
+    )?;
+    Ok(())
+}
+
+/// Records what the owner made of a submission.
+fn outcome(tx: &Transaction, message: &Message) -> rusqlite::Result<()> {
+    let data = &message.data;
+    let outcome = data["outcome"].as_str();
+    if !matches!(outcome, Some("answered" | "dismissed" | "refused")) {
+        return Ok(());
+    }
+    tx.execute(
+        "UPDATE remote_submissions SET outcome = ?2, why = ?3, applied = ?4
+         WHERE submission = ?1 AND runner = ?5 AND outcome IS NULL",
+        params![
+            data["submission"].as_str(),
+            outcome,
+            data["why"].as_str(),
+            message.time.to_string(),
+            data["runner"].as_str()
+        ],
+    )?;
+    Ok(())
 }
 
 /// Keeps another runner's post of an ask when it is newer than the one held.
@@ -619,6 +725,85 @@ pub(crate) fn flush(db: &Connection, log: &dyn Log) -> Result<(), Error> {
     Ok(())
 }
 
+/// Another runner's ask `ask` as this runner's mirror holds it, listed as `asks` lists it.
+pub fn mirrored(db: &Connection, runner: &str, ask: i64) -> rusqlite::Result<Option<Value>> {
+    let found = db
+        .query_row(
+            "SELECT data FROM remote_asks WHERE runner = ?1 AND ask = ?2",
+            params![runner, ask],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?;
+    let Some(data) = found else {
+        return Ok(None);
+    };
+    let Ok(listed) = serde_json::from_str::<Value>(&data) else {
+        return Ok(None);
+    };
+    Ok(Some(remote_row(db, runner, ask, listed)?))
+}
+
+/// Why the mirror refuses a write at `revision` to `ask`, as a local ask refuses it: closed, or
+/// at another revision. Only the owner's check decides; this one catches most stale answers early.
+pub fn stale(ask: &Value, revision: i64) -> Option<String> {
+    let id = ask["id"].as_str().unwrap_or_default();
+    match ask["state"].as_str() {
+        Some("open") if ask["revision"] == revision => None,
+        Some("open") => Some(format!(
+            "ask {id} is at revision {}, not {revision}",
+            ask["revision"]
+        )),
+        Some(state) => Some(format!("ask {id} is {state}")),
+        None => Some(format!("ask {id} has no state")),
+    }
+}
+
+/// Publishes a person's answer to ask `answer.ask` of runner `runner`, which applies it when it
+/// reads it. Returns the submission id that runner's `priory.ask.applied` names.
+pub fn answer(
+    factory: &Factory,
+    runner: &str,
+    answer: &crate::tools::Answer,
+) -> Result<String, String> {
+    known(factory, runner)?;
+    let data = serde_json::to_value(answer).map_err(|error| error.to_string())?;
+    submit(factory.log(), ANSWERED, runner, answer.ask, data)
+}
+
+/// Publishes a person's dismiss of ask `ask` of runner `runner`, read at `revision`.
+pub fn dismiss(factory: &Factory, runner: &str, ask: i64, revision: i64) -> Result<String, String> {
+    known(factory, runner)?;
+    let data = json!({ "ask": ask, "revision": revision });
+    submit(factory.log(), DISMISSED, runner, ask, data)
+}
+
+fn known(factory: &Factory, runner: &str) -> Result<(), String> {
+    if factory.runners.contains_key(runner) {
+        return Ok(());
+    }
+    Err(format!("runner {runner} has no runner file in runners/"))
+}
+
+/// Publishes a write to another runner's ask, with its own message id as its submission.
+pub fn submit(
+    log: &EventLog,
+    kind: &str,
+    runner: &str,
+    ask: i64,
+    mut data: Value,
+) -> Result<String, String> {
+    // A machine with no state file of its own runs no daemon to say whether it reaches the log.
+    if let Ok(db) = crate::state::read_only() {
+        crate::link::refuse_while_unreachable(&db)?;
+    }
+    let mut message = Message::new(kind, json!({})).subject(format!("{runner}:{ask}"));
+    data["runner"] = json!(runner);
+    data["submission"] = json!(message.id.to_string());
+    message.data = data;
+    publish(log, &message)?;
+    Ok(message.id.to_string())
+}
+
 /// Records which runner this state file belongs to, or that the factory has one runner only.
 pub(crate) fn name(db: &Connection, me: Option<&str>) -> rusqlite::Result<()> {
     match me {
@@ -638,8 +823,8 @@ pub fn me(db: &Connection) -> rusqlite::Result<Option<String>> {
         .optional()
 }
 
-/// A mirrored ask as the listings show it: `<runner>:<ask>` as its id, its runner, and when that
-/// runner was last seen alive.
+/// A mirrored ask as the listings show it: `<runner>:<ask>` as its id, its runner, when that
+/// runner was last seen alive, and the writes sent to it from any machine with their outcome.
 /// Its `task` stays the task's id on its own runner.
 fn remote_row(
     db: &Connection,
@@ -650,6 +835,12 @@ fn remote_row(
     listed["id"] = json!(format!("{runner}:{ask}"));
     listed["runner"] = json!(runner);
     listed["last_seen"] = json!(last_seen(db, runner)?);
+    listed["submissions"] = crate::listing::rows(
+        db,
+        "SELECT submission, verb, revision, text, sent, outcome, why, applied
+         FROM remote_submissions WHERE runner = ?1 AND ask = ?2 ORDER BY sent, submission",
+        params![runner, ask],
+    )?;
     Ok(listed)
 }
 
@@ -813,31 +1004,6 @@ pub(crate) fn remote_desk_items(db: &Connection) -> rusqlite::Result<Vec<Value>>
     Ok(items)
 }
 
-/// Publishes a person's answer to ask `ask` of runner `runner`, which applies it when it reads it.
-pub fn answer(
-    factory: &Factory,
-    runner: &str,
-    answer: &crate::tools::Answer,
-) -> Result<String, String> {
-    if !factory.runners.contains_key(runner) {
-        return Err(format!("runner {runner} has no runner file in runners/"));
-    }
-    // A machine with no state file of its own runs no daemon to say whether it reaches the log.
-    if let Ok(db) = crate::state::read_only() {
-        crate::link::refuse_while_unreachable(&db)?;
-    }
-    let mut data = serde_json::to_value(answer).map_err(|error| error.to_string())?;
-    data["runner"] = json!(runner);
-    publish(
-        factory,
-        &Message::new(ANSWERED, data).subject(format!("{runner}:{}", answer.ask)),
-    )?;
-    Ok(format!(
-        "answer to ask {} of runner {runner} sent: it applies when {runner} reads the log",
-        answer.ask
-    ))
-}
-
 /// Publishes a claim that gives the task of `key` to `runner`, from the runner that owns it. While
 /// the owner's lease is live it may be cut off and still running the task, so only `force` gives it.
 pub fn give(
@@ -889,14 +1055,14 @@ pub fn give(
     }
     let claim =
         json!({ "key": key, "runner": runner, "request": request, "from": from, "given": true });
-    publish(factory, &Message::new(CLAIMED, claim).subject(key))?;
+    publish(factory.log(), &Message::new(CLAIMED, claim).subject(key))?;
     Ok(format!(
         "{key} given to runner {runner}: {runner} takes it and {from} drops it as each reads the log"
     ))
 }
 
-fn publish(factory: &Factory, message: &Message) -> Result<(), String> {
-    let log = priory_intake::log::open(factory.log()).map_err(|error| error.to_string())?;
+fn publish(log: &EventLog, message: &Message) -> Result<(), String> {
+    let log = priory_intake::log::open(log).map_err(|error| error.to_string())?;
     log.declare(&intake::output())
         .map_err(|error| error.to_string())?;
     log.publish(OUTPUT, &message.clone().time(intake::now()?))

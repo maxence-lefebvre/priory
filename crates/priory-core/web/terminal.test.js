@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { screenWatch, rowParts } from "./terminal.js";
+import { sayLine, screenWatch, screenRows } from "./terminal.js";
 
 // A clock the test moves by hand, and a server whose replies the test releases one by one.
 function rig() {
@@ -8,7 +8,7 @@ function rig() {
   const asked = [];
   let now = 0;
   const watch = screenWatch({
-    read: (run, have) => new Promise((resolve, reject) => asked.push({ run, have, resolve, reject })),
+    read: (run, have, history) => new Promise((resolve, reject) => asked.push({ run, have, history, resolve, reject })),
     timer: (fn, ms) => { const timer = { fn, at: now + ms }; timers.push(timer); return timer; },
     clear: (timer) => { const i = timers.indexOf(timer); if (i >= 0) timers.splice(i, 1); },
     now: () => now,
@@ -135,13 +135,129 @@ test("the watch keeps no screen in local storage", async () => {
   delete globalThis.localStorage;
 });
 
+test("Say sends the trimmed line to the task's say verb, clears it when said and keeps it when refused", async () => {
+  const sent = [];
+  const replies = [
+    { status: 200, body: { ok: "task 7 will hear it" } },
+    { status: 400, body: { error: "task 7 is at step review, which no agent runs" } },
+    { status: 503, body: { error: "no daemon" } },
+    { status: 401, body: {} },
+  ];
+  const post = async (path, body) => {
+    sent.push([path, body]);
+    const reply = replies.shift();
+    if (!reply) throw new Error("the connection dropped");
+    return reply;
+  };
+  assert.equal(await sayLine(post, 7, "   "), null);
+  assert.deepEqual(sent, []);
+  assert.deepEqual(await sayLine(post, 7, "  rerun clippy  "), { said: true, note: "Said: task 7 will hear it. The agent reads it once its run is idle." });
+  assert.deepEqual(sent, [["/api/tasks/7/say", { text: "rerun clippy" }]]);
+  assert.deepEqual(await sayLine(post, 7, "x"), { said: false, note: "Could not say: task 7 is at step review, which no agent runs." });
+  assert.deepEqual(await sayLine(post, 7, "x"), { said: false, note: "Could not say: no priory daemon runs beside this server. Start priory daemon, then send again." });
+  assert.deepEqual(await sayLine(post, 7, "x"), { said: false, signOut: true });
+  assert.deepEqual(await sayLine(post, 7, "x"), { said: false, note: "The daemon may have queued this but did not confirm it. Check the task before you send again." });
+});
+
+test("Load earlier reads 500 more rows a tap up to 2,000, at once, and a new run starts at none", async () => {
+  const { watch, asked, answer, tick } = rig();
+  watch.show(4);
+  assert.equal(asked[0].history, 0);
+  await answer({ ...screen(4, "a"), scrollback: 3000, earlier: 0 });
+  assert.equal(watch.state().more, true);
+  watch.earlier();
+  assert.deepEqual([asked.length, asked[1].history, asked[1].have], [2, 500, null]);
+  await answer({ ...screen(4, "b"), scrollback: 3000, earlier: 500 });
+  for (let i = 0; i < 4; i++) {
+    watch.earlier();
+    await answer({ ...screen(4, `c${i}`), scrollback: 3000, earlier: Math.min(2000, 1000 + 500 * i) });
+  }
+  assert.deepEqual(asked.slice(2).map(({ history }) => history), [1000, 1500, 2000, 2000]);
+  assert.equal(watch.state().more, false);
+  watch.show(5);
+  await tick(1000);
+  assert.deepEqual([asked.at(-1).run, asked.at(-1).history], [5, 0]);
+  await answer({ ...screen(5, "d"), scrollback: 0, earlier: 0 });
+  assert.equal(watch.state().more, false);
+});
+
+test("an unchanged screen still brings the scrollback that grew under it", async () => {
+  const { watch, answer, tick } = rig();
+  watch.show(4);
+  await answer({ ...screen(4, "a"), scrollback: 0, earlier: 0 });
+  assert.equal(watch.state().more, false);
+  await tick(1000);
+  await answer({ hash: "a", same: true, scrollback: 40 });
+  assert.deepEqual([watch.state().screen.hash, watch.state().more], ["a", true]);
+});
+
 test("a row splits into text and hidden parts, and markup stays text", () => {
-  assert.deepEqual(rowParts("GH_TOKEN=[redacted] and <script>alert(1)</script>"), [
-    { text: "GH_TOKEN=", hidden: false },
-    { text: "[redacted]", hidden: true },
-    { text: " and <script>alert(1)</script>", hidden: false },
+  assert.deepEqual(screenRows(["GH_TOKEN=[redacted] and <script>alert(1)</script>", ""]), [[
+    { text: "GH_TOKEN=", cls: "", hidden: false },
+    { text: "[redacted]", cls: "", hidden: true },
+    { text: " and <script>alert(1)</script>", cls: "", hidden: false },
+  ], []]);
+});
+
+test("colour codes become classes of the eight colours, carried from row to row", () => {
+  const rows = screenRows([
+    "\x1b[1m\x1b[31mred\x1b[39m bold \x1b[4;92;44mgreen",
+    "still\x1b[0m plain \x1b[38;5;196mx\x1b[38;2;20;20;230my\x1b[38:5:6mz\x1b[7mrev\x1b[27;22;24m",
+    "\x1b[1;33mT=[redacted]\x1b[0m \x1b[2Jmove\x1b[5A",
   ]);
-  assert.deepEqual(rowParts(""), []);
+  assert.deepEqual(rows, [
+    [
+      { text: "red", cls: "bo f1", hidden: false },
+      { text: " bold ", cls: "bo", hidden: false },
+      { text: "green", cls: "bo ul f2 b4", hidden: false },
+    ],
+    [
+      { text: "still", cls: "bo ul f2 b4", hidden: false },
+      { text: " plain ", cls: "", hidden: false },
+      { text: "x", cls: "f1", hidden: false },
+      { text: "y", cls: "f4", hidden: false },
+      { text: "z", cls: "f6", hidden: false },
+      { text: "rev", cls: "r6", hidden: false },
+    ],
+    [
+      { text: "T=", cls: "bo f3", hidden: false },
+      { text: "[redacted]", cls: "bo f3", hidden: true },
+      { text: " \x1b[2Jmove\x1b[5A", cls: "", hidden: false },
+    ],
+  ]);
+});
+
+test("a dark RGB colour keeps its hue, and a grey falls to black or white", () => {
+  const cls = (code) => screenRows([`\x1b[${code}mx`])[0][0].cls;
+  assert.deepEqual(
+    ["48;2;80;20;20", "48;2;20;80;30", "38;2;215;119;87", "38;2;153;153;153", "38;2;60;60;60", "38;5;52"].map(cls),
+    ["b1", "b2", "f3", "f7", "f0", "f1"],
+  );
+});
+
+test("reverse video fills with the text's colour, or with the default text colour", () => {
+  const cls = (code) => screenRows([`\x1b[${code}mx`])[0][0].cls;
+  assert.deepEqual(["31;44;7", "7", "1;44;7"].map(cls), ["r1", "rv", "bo rv"]);
+});
+
+test("any text parses: only SGR codes leave it, and classes come from the fixed set", () => {
+  let seed = 7;
+  const random = (n) => ((seed = (seed * 1103515245 + 12345) % 2147483648), seed % n);
+  const bits = ["\x1b[", "\x1b", "[", "m", ";", ":", "38", "48", "5", "2", "255", "999", "0", "1", "7", "9", "<b>", "&", "é", "[redacted]", "\n", " "];
+  const sgr = /\x1b\[[0-9;:]*m/g;
+  for (let i = 0; i < 3000; i++) {
+    const lines = Array.from({ length: 1 + random(3) }, () => Array.from({ length: random(16) }, () => bits[random(bits.length)]).join(""));
+    const rows = screenRows(lines);
+    assert.equal(rows.length, lines.length);
+    rows.forEach((parts, row) => {
+      assert.equal(parts.map((part) => part.text).join(""), lines[row].replace(sgr, ""), JSON.stringify(lines[row]));
+      for (const part of parts) {
+        assert.match(part.cls, /^((f[0-7]|b[0-7]|r[0-7]|bo|fa|it|ul|rv)( |$))*$/, JSON.stringify(lines[row]));
+        assert.ok(part.text.length > 0);
+        if (part.hidden) assert.equal(part.text, "[redacted]");
+      }
+    });
+  }
 });
 
 test("a reply asked before a sign-out or a switch away and back is dropped", async () => {

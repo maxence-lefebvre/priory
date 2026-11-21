@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { TASK_FACETS, TASK_VIEWS, elsewhere, filtered, olderPart, taskViews } from "./tasks.js";
+import { TASK_FACETS, TASK_VIEWS, elsewhere, filtered, olderPart, taskViews, triageWords } from "./tasks.js";
 
 // `/api/tasks` as the server sends it: in start order, ended tasks in it too.
 const tasks = [
@@ -44,4 +44,10 @@ test("another runner's task shows in Active, under the state elsewhere, with its
   assert.equal(elsewhere(remote, (iso) => (iso === remote.last_seen ? "12 min ago" : "?")), "On runner a, last seen 12 min ago");
   assert.equal(elsewhere({ ...remote, last_seen: null }, () => "?"), "On runner a, never seen alive");
   assert.equal(elsewhere({ ...tasks[0], runner: "b", hold: "kept" }, () => "?"), null);
+});
+
+test("a feedback item's class reads in plain words", () => {
+  assert.equal(triageWords("trivial"), "trivial");
+  assert.equal(triageWords("nothing-to-do"), "nothing to do");
+  assert.equal(triageWords("persons-call"), "your call");
 });

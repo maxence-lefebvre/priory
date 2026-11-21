@@ -2152,3 +2152,133 @@ fn instructions_within_the_codex_limit_pass_for_a_codex_agent() {
 
     assert_eq!((outcome.code, outcome.stderr.as_str()), (0, ""));
 }
+
+const MEMORY: &str = "---\nname: release-day\ndescription: When releases go out.\n---\nReleases go out on Tuesdays, never on a Friday.\n";
+
+#[test]
+fn a_factory_with_memories_passes_and_counts_its_memories() {
+    let mut files = valid();
+    files.push(("memories/release-day.md", MEMORY));
+    files.push((
+        "memories/gate-cost.md",
+        "+++\nname = \"gate-cost\"\ndescription = \"How long the gate takes.\"\n+++\nThe gate takes about four minutes.\n",
+    ));
+
+    let outcome = check(&factory("memories-valid", &files));
+
+    assert_eq!((outcome.code, outcome.stderr.as_str()), (0, ""));
+    assert_eq!(
+        outcome.stdout,
+        "ok: 1 agent, 1 trigger, 1 workflow, 1 runner, 2 memories\n"
+    );
+}
+
+/// The stderr of `priory check` on the valid factory with `files` added, which must fail.
+fn memory_problems(name: &str, added: &[(&str, &str)]) -> String {
+    let mut files = valid();
+    files.extend_from_slice(added);
+    let outcome = check(&factory(name, &files));
+    assert_eq!(outcome.code, 1, "{}", outcome.stderr);
+    outcome.stderr
+}
+
+#[test]
+fn a_memory_without_a_description_fails_the_check_with_its_file_and_line() {
+    let stderr = memory_problems(
+        "memory-no-description",
+        &[(
+            "memories/release-day.md",
+            "---\nname: release-day\n---\nTuesdays.\n",
+        )],
+    );
+
+    assert!(
+        stderr
+            .starts_with("memories/release-day.md:1: a memory's frontmatter needs a `description`"),
+        "{stderr}"
+    );
+}
+
+#[test]
+fn a_memory_named_unlike_its_file_fails_the_check_on_its_name_line() {
+    let stderr = memory_problems("memory-misnamed", &[("memories/release.md", MEMORY)]);
+
+    assert!(
+        stderr.starts_with(
+            "memories/release.md:2: `name` is `release-day`, but the memory's file is memories/release.md"
+        ),
+        "{stderr}"
+    );
+}
+
+#[test]
+fn a_memory_over_the_size_limit_fails_the_check_with_its_size() {
+    let long = format!(
+        "---\nname: release-day\ndescription: When releases go out.\n---\n{}\n",
+        "Tuesdays. ".repeat(500)
+    );
+
+    let stderr = memory_problems("memory-long", &[("memories/release-day.md", &long)]);
+
+    assert!(
+        stderr.starts_with(&format!(
+            "memories/release-day.md:1: a memory holds one fact in at most 4096 bytes: this file is {} bytes",
+            long.len()
+        )),
+        "{stderr}"
+    );
+}
+
+#[test]
+fn a_file_in_memories_that_is_not_a_named_markdown_file_fails_the_check() {
+    let stderr = memory_problems(
+        "memory-bad-names",
+        &[
+            ("memories/Release_Day.md", MEMORY),
+            ("memories/notes.txt", "Tuesdays.\n"),
+            ("memories/old/release-day.md", MEMORY),
+        ],
+    );
+
+    for line in [
+        "memories/Release_Day.md:1: a memory's file is named <name>.md, with lowercase letters, digits and hyphens",
+        "memories/notes.txt: memories/ holds only <name>.md files, one memory each",
+        "memories/old: memories/ holds only <name>.md files, one memory each",
+    ] {
+        assert!(stderr.contains(line), "{line} in {stderr}");
+    }
+}
+
+#[test]
+fn the_memory_index_counts_toward_the_codex_limit() {
+    let description = "d".repeat(3000);
+    let memories: Vec<(String, String)> = ["one", "two", "three"]
+        .map(|name| {
+            (
+                format!("memories/{name}.md"),
+                format!("---\nname: {name}\ndescription: {description}\n---\nA fact.\n"),
+            )
+        })
+        .into();
+    let mut files: Vec<(&str, &str)> = valid();
+    files[1] = (
+        "agents/implementer/agent.md",
+        "+++\ndescription = \"Implements one task.\"\nharness = \"codex\"\n+++\nMake the smallest correct change.\n",
+    );
+    files.extend(
+        memories
+            .iter()
+            .map(|(file, text)| (file.as_str(), text.as_str())),
+    );
+
+    let outcome = check(&factory("codex-memory-index", &files));
+
+    assert_eq!(outcome.code, 1, "{}", outcome.stderr);
+    assert!(
+        outcome.stderr.starts_with(
+            "agents/implementer/agent.md:3: a codex agent takes instructions.md, the memory index and its own prompt on its command line"
+        ),
+        "{}",
+        outcome.stderr
+    );
+}
