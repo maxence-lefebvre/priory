@@ -198,8 +198,12 @@ test("the older and newer arrows show the report written before or after the one
   const { panel, view, press, find, settle, text, herdr } = await mounted({ report: reports });
   assert.equal(find(view(), "report-newer").calls.disabled?.[0], true);
 
+  // A new thread names its row by id, which the newest report holding it takes, so only the newest
+  // report offers Comment.
+  assert.ok(find(view(), 'comment-["sentry","fnd-2413"]'));
   press(view(), "report-older");
   await settle();
+  assert.equal(find(view(), 'comment-["sentry","fnd-2413"]'), null);
 
   assert.match(text(view()), /Nov 19/);
   assert.match(text(view()), /Bonjour again/);

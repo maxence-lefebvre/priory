@@ -927,7 +927,7 @@ sits under More.
   applies it, a ghost Change button ends the line: it reopens the control with the choice solid,
   "Pick another option to change it." and Keep Take, and a new option goes through the same Undo.
 - **Threads** follow the Bonjour rules, with Reply and Resolve as ghost buttons in the card. A row
-  with an id ends with a Comment ghost button. It opens the comment field under the row, with
+  with an id ends with a Comment ghost button, on the newest report only: an older one takes replies. It opens the comment field under the row, with
   Cancel and Comment. Reply opens the same field, with "Replying in thread 3" above it.
 
 | State | What shows |

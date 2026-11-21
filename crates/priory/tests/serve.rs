@@ -4276,6 +4276,8 @@ fn the_pick_endpoint_records_a_choice_and_tells_a_stale_one_by_409() {
     assert!(reply.contains("already Later"), "{reply}");
     let (changed, reply) = pick("Take", 2);
     assert_eq!(changed, 200, "{reply}");
+    let (unknown, reply) = pick("Maybe", 3);
+    assert_eq!(unknown, 422, "{reply}");
     assert_eq!(
         api(&address, "/api/reports/latest")["report"]["sections"][0]["rows"][0]["pick"]["chosen"],
         "Take"

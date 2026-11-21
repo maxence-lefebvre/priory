@@ -232,8 +232,7 @@ async function refresh() {
     const read = new Date().toISOString().replace(/\.\d+Z$/, "Z");
     const shown = api(state.reportShown == null ? "/api/reports/latest" : `/api/reports/${state.reportShown}`)
       .catch((error) => (error.status === 404 ? null : Promise.reject(error)));
-    // The arrows are optional: a server without the list leaves them off.
-    const listed = api("/api/reports").then((read) => read.reports, () => []);
+    const listed = api("/api/reports").then((read) => read.reports);
     const [desk, asksList, queue, tasksList, runsList, report, reports] = await Promise.all([...["/api/desk", full("asks"), "/api/queue", full("tasks"), full("runs")].map(api), shown, listed]);
     // A later call, such as the one that loads older rows, supersedes this one.
     if (call !== state.refreshes) return true;
@@ -1798,11 +1797,13 @@ function reportThread(row, thread) {
     <p class="racts"><button id="reply-${thread.id}" class="ghost" data-action="reply" data-row="${row.id}" data-comment="${thread.id}" aria-disabled="${off}">Reply</button><button id="resolve-${thread.id}" class="ghost" data-action="resolve" data-row="${row.id}" data-comment="${thread.id}" aria-disabled="${off}">Resolve</button></p></div>`;
 }
 
-// A row without its own id takes no comments.
+// A row without its own id takes no comments. Priory gives a row id's new thread to the newest
+// report holding it, so an older report takes replies only.
 function reportCompose(row) {
   if (!row.target) return "";
   const compose = state.compose?.row === row.id && state.compose.task === state.data.report.report.task ? state.compose : null;
   const off = state.failed ? "true" : "false";
+  if (!compose && state.reportShown != null) return "";
   if (!compose) return html`<p class="racts"><button id="${focusId("compose", row.id)}" class="ghost" data-action="compose" data-row="${row.id}" aria-disabled="${off}">${icon("message-text", "s15")}Comment</button></p>`;
   const verb = compose.replyTo == null ? "Comment" : "Reply";
   return html`<form class="writeform rcompose" data-action="remark">${compose.replyTo == null ? "" : html`<p class="note">Replying in thread ${compose.replyTo}</p>`}
@@ -1871,7 +1872,7 @@ async function sendPick(pending) {
   if (status === 401) return signOut("The daemon refused this token. Paste the current one.");
   await refresh();
   if (status === 200) return render();
-  const fresh = status === 409 ? state.data.report : null;
+  const fresh = status === 409 && state.data.report?.report.task === pending.task ? state.data.report : null;
   noteRow(pending.row, `${pending.option}: ${writeRefusal(status, body, () => refusal(pending, fresh, body.error))}`, pending.task);
   render();
 }
@@ -1915,7 +1916,7 @@ async function submitRemark() {
   const sent = state.compose;
   const row = sent?.task === state.data.report?.report.task && reportRowOf(sent.row);
   const text = sent?.text.trim();
-  if (!row?.target || !text || state.remarking) return;
+  if (!row?.target || !text || state.remarking || (sent.replyTo == null && state.reportShown != null)) return;
   // Text typed while it was in flight stays as the next draft.
   const done = () => { if (state.compose === sent && sent.text.trim() === text) state.compose = null; };
   await remark(row.id, ...(sent.replyTo == null

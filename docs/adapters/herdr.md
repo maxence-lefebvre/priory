@@ -493,7 +493,8 @@ its visual rules; this section says how it works.
   text, with Reply and Resolve; a resolved one folds to one line with Reopen. The selected row, when
   it has an id, ends with a comment field; a pick card offers Comment to select it. Comment runs
   `priory report comment ROW --expected REVISION TEXT` with the report's revision the person read,
-  and Reply runs `priory report reply`. A refused comment says why under the row and keeps the text
+  and Reply runs `priory report reply`. Priory gives a row id's new thread to the newest report that
+  holds the row, so an older report offers Reply, Resolve and Reopen but no new thread. A refused comment says why under the row and keeps the text
   in the field. Rows that share an id share their threads.
 - **Keys.** `J` and `K` move between rows, `N` goes to the next pick, `1` to `9` press an option of
   the selected pick, and `Esc` undoes a pick still waiting out its Undo.

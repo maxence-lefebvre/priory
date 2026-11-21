@@ -149,7 +149,10 @@ export default class PrioryBonjour extends View {
         // The arrows are optional: a priory without `report list` leaves them off.
         this.list = await client.reports().then((read) => read.reports, () => []);
         try {
-          this.accept(await client.report(this.shown));
+          // An arrow pressed while this read was in flight decides what shows.
+          const asked = this.shown;
+          const read = await client.report(asked);
+          if (this.shown === asked) this.accept(read);
         } catch (error) {
           if (!message(error).endsWith(NO_REPORT)) throw error;
           this.accept(null);
@@ -295,11 +298,11 @@ export default class PrioryBonjour extends View {
         /** @type {Read | null} */
         let fresh = null;
         try {
-          fresh = await client?.report() ?? null;
+          fresh = await client?.report(pending.task) ?? null;
         } catch {
           fresh = null;
         }
-        if (fresh) this.accept(fresh);
+        if (fresh?.report.task === this.data?.report.task) this.accept(fresh);
         const notice = refusal(pending, fresh, message(error));
         const model = this.model();
         if (model && this.rows(model).some((row) => row.id === pending.row)) this.notices.set(pending.row, notice);
@@ -326,7 +329,7 @@ export default class PrioryBonjour extends View {
     const model = this.model();
     const row = model && this.rows(model).find((candidate) => candidate.id === this.selected);
     const text = this.draft.value().trim();
-    if (!model || !row?.target || !text) return;
+    if (!model || !row || !text || (this.replyTo == null && !this.threadable(row))) return;
     const [task, target, replyTo, revision] = [model.task, row.target, this.replyTo, model.revision];
     this.remark(row, (client) => (replyTo == null ? client.comment(target, text, revision) : client.reply(replyTo, text)), cx, () => {
       // The person may have moved on or typed more while it was in flight.
@@ -540,8 +543,17 @@ export default class PrioryBonjour extends View {
         }
         const row = item[1];
         return v_flex().max_w(DOCUMENT).child(row.pick ? this.pick(model, row, t) : this.line(model, row, t))
-          .when(row.threads.length > 0 || (row.id === this.selected && row.target != null), (el) => el.child(this.threads(model, row, t)));
+          .when(row.threads.length > 0 || (row.id === this.selected && (this.threadable(row) || this.replyTo != null)), (el) => el.child(this.threads(model, row, t)));
       }));
+  }
+
+  /**
+   * Whether a row takes a new thread: Priory gives a row id's comment to the newest report holding
+   * it, so only the newest report, which the panel follows, takes one.
+   * @param {Row} row
+   */
+  threadable(row) {
+    return row.target != null && this.shown == null;
   }
 
   /** @param {Row} row @param {Palette} t */
@@ -588,7 +600,7 @@ export default class PrioryBonjour extends View {
     const selected = row.id === this.selected;
     const notice = this.notices.get(row.id);
     // A pick card selects nothing on a press, so a row with an id offers Comment to reach the field.
-    const commentable = !selected && row.target != null;
+    const commentable = !selected && this.threadable(row);
     const reopened = pick.state === "agreed" && this.changing === row.id;
     if (pick.state !== "open" && !reopened) {
       return v_flex().w_full().px(S["space-3"]).py(6).gap(S["space-1"]).rounded(S["radius-md"]).border(1).border_color(t.line).bg(selected ? t["action-soft"] : t.bg)
@@ -640,7 +652,7 @@ export default class PrioryBonjour extends View {
   /** A row's threads under it, a resolved one folded to one line, then the comment field on the selected row. */
   /** @param {Dossier} model @param {Row} row @param {Palette} t */
   threads(model, row, t) {
-    const selected = row.id === this.selected && row.target != null;
+    const selected = row.id === this.selected && (this.threadable(row) || this.replyTo != null);
     const notice = row.pick ? undefined : this.notices.get(row.id);
     return v_flex().pl(S["pane-tile"] + 10 + S["space-2"]).pt(S["space-1"]).pb(S["space-2"]).gap(S["space-2"])
       .children(row.threads.map((thread) => {

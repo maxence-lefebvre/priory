@@ -13418,11 +13418,19 @@ fn an_agreed_pick_changes_until_the_workflow_applies_it_and_wakes_the_task_with_
         shown(&setup)["sections"][0]["rows"][0]["pick"]["chosen"],
         "Later"
     );
-    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 4);
-    assert_eq!(
-        setup.typed()[3].lines().next(),
-        Some(format!("The person changed their pick on {PICK} in your report from Take to Later: apply Later instead, then write the report again with the pick's applied filled.").as_str())
+    // The woken agent can get other prompts, such as a nudge, around the change's line.
+    let line = format!(
+        "The person changed their pick on {PICK} in your report from Take to Later: apply Later instead, then write the report again with the pick's applied filled."
     );
+    let deadline = Instant::now() + Duration::from_secs(60);
+    while !setup
+        .typed()
+        .iter()
+        .any(|typed| typed.lines().next() == Some(line.as_str()))
+    {
+        assert!(Instant::now() < deadline, "{:?}", setup.typed());
+        std::thread::sleep(Duration::from_millis(50));
+    }
     let same = setup.priory(&["report", "pick", PICK, "Later", "--expected", "3"]);
     assert_eq!(
         String::from_utf8_lossy(&same.stderr),
