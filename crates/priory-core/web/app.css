@@ -628,6 +628,7 @@ textarea { font: 400 16px/22px var(--font-ui); color: var(--text); background: v
 .term-head .ro { font: 600 11px/14px var(--font-ui); padding: 1px 6px; border-radius: var(--radius-sm); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--term-dim) 50%, transparent); }
 .term-head .sp { flex: 1; }
 .term-head button { font: 600 13px/1 var(--font-ui); color: var(--term-fg); min-height: 36px; min-width: 36px; padding: 0 8px; border-radius: var(--radius-sm); display: inline-flex; gap: 6px; align-items: center; justify-content: center; }
+@media (pointer: coarse) { .term-head button { min-height: var(--control); min-width: var(--control); } }
 .term-head button[aria-pressed="true"] { background: color-mix(in srgb, var(--term-fg) 14%, transparent); }
 .term-head button[aria-disabled="true"] { color: var(--term-dim); }
 .term-head button:focus-visible { outline-color: var(--term-fg); }

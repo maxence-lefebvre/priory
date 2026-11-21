@@ -143,3 +143,24 @@ test("a row splits into text and hidden parts, and markup stays text", () => {
   ]);
   assert.deepEqual(rowParts(""), []);
 });
+
+test("a reply asked before a sign-out or a switch away and back is dropped", async () => {
+  const { watch, asked, answer } = rig();
+  watch.show(4);
+  watch.stop();
+  watch.show(4);
+  asked[0].resolve(screen(4, "old"));
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(watch.state().screen, null);
+  await answer(screen(4, "new"));
+  assert.equal(watch.state().screen.hash, "new");
+});
+
+test("a revision during a read polls again as soon as the read ends", async () => {
+  const { watch, asked, answer } = rig();
+  watch.show(4);
+  watch.revision();
+  assert.equal(asked.length, 1);
+  await answer(screen(4, "a"));
+  assert.equal(asked.length, 2);
+});

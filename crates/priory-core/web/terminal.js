@@ -14,6 +14,9 @@ const CALM_AFTER = 10;
  */
 export function screenWatch({ read, changed = () => {}, timer = setTimeout, clear = clearTimeout, now = Date.now }) {
   let run = null, shown = false, flying = false, handle = null, unchanged = 0;
+  // A new run or a sign-out starts a new generation; a reply for an older one is dropped.
+  // `again` asks for a read as soon as the one in flight ends.
+  let generation = 0, again = false;
   // `at` is when the screen was read; `stale` that the last read failed; `gone` that the run has no screen any more.
   let screen = null, at = null, stale = false, gone = false;
 
@@ -24,36 +27,42 @@ export function screenWatch({ read, changed = () => {}, timer = setTimeout, clea
 
   async function poll() {
     if (run === null || !shown || gone || flying) return;
-    const asked = run;
+    const asked = generation;
     clear(handle);
     handle = null;
     flying = true;
+    again = false;
     try {
-      const reply = await read(asked, screen?.hash ?? null);
-      if (asked !== run) return;
+      const reply = await read(run, screen?.hash ?? null);
+      if (asked !== generation) return;
       unchanged = reply.same ? unchanged + 1 : 0;
       if (!reply.same) screen = reply;
       at = now();
       stale = false;
     } catch (error) {
-      if (asked !== run) return;
-      if (error.status === 401) run = screen = at = null;
+      if (asked !== generation) return;
+      if (error.status === 401) forget();
       else if (error.status === 404) gone = true;
       else stale = true;
     } finally {
       flying = false;
-      if (asked === run) later();
-      else poll();
+      if (asked !== generation || again) poll();
+      else later();
       changed();
     }
+  }
+
+  function forget() {
+    generation++;
+    run = screen = at = null;
   }
 
   return {
     /** Shows run `next`'s screen, and polls it from now on. */
     show(next) {
       if (next !== run) {
+        forget();
         run = next;
-        screen = at = null;
         unchanged = 0;
         stale = gone = false;
       }
@@ -70,12 +79,13 @@ export function screenWatch({ read, changed = () => {}, timer = setTimeout, clea
     /** The state moved: read again now. */
     revision() {
       unchanged = 0;
+      again = flying;
       poll();
     },
     /** Signed out: forget the screen. */
     stop() {
       this.hide();
-      run = screen = at = null;
+      forget();
     },
     state: () => ({ run, screen, at, stale, gone }),
   };

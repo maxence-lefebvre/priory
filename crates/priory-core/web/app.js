@@ -1294,10 +1294,14 @@ function taskSections(task) {
 
 // The run's terminal: its screen polled while shown (terminal.js), never kept on this device.
 const watch = screenWatch({
-  read: (run, have) => api(`/api/runs/${run}/screen${have ? `?have=${encodeURIComponent(have)}` : ""}`),
+  read: (run, have) => api(`/api/runs/${run}/screen${have ? `?have=${encodeURIComponent(have)}` : ""}`).catch((error) => {
+    if (error.status === 401) signOut("The daemon refused this token. Paste the current one.");
+    throw error;
+  }),
   changed: () => paintTerminal(document.getElementById("app")),
 });
-const terminal = { fit: false, copied: null };
+// `left` is the pane's sideways scroll for run `run`, kept while a refresh redraws the task page.
+const terminal = { fit: false, copied: null, run: null, left: 0, onScreen: false };
 
 // The live run, else the run whose last screen this page still holds.
 function terminalRun(task) {
@@ -1321,10 +1325,10 @@ function terminalBody({ term, task, tmux, end }) {
   const { screen, at, stale, gone } = kept.run === run ? kept : {};
   const notes = [];
   if (screen?.redacted) notes.push(["warn", "shield", `${screen.redacted} ${screen.redacted === 1 ? "secret" : "secrets"} hidden on this screen`]);
-  if (stale && screen && !end && !gone) notes.push(["warn", "unplug", `Reconnecting. Screen from ${clock(new Date(at).toISOString())}, ${Math.round((Date.now() - at) / 1000)} s ago.`]);
+  if (stale && !end && !gone) notes.push(["warn", "unplug", screen ? `Reconnecting. Screen from ${clock(new Date(at).toISOString())}, ${Math.round((Date.now() - at) / 1000)} s ago.` : "Reconnecting. The screen could not be read yet."]);
   if (end) notes.push(["", (STATES[end] || [, "circle-help"])[1], screen ? `Run ${run} ended as ${end}. This is the last screen this page saw.` : `Run ${run} ended as ${end}.`]);
   else if (gone) notes.push(["warn", "unplug", `This server reads no screen of run ${run}. Run priory screen ${task} on the runner to see why.`]);
-  else if (!screen) notes.push(["", "clock", "Reading the screen…"]);
+  else if (!screen && !stale) notes.push(["", "clock", "Reading the screen…"]);
   const rows = screen ? screen.lines.map((line) => html`${rowParts(line).map((part) => (part.hidden ? html`<span class="hid">${part.text}</span>` : part.text))}\n`) : "";
   const copied = (what, text) => (terminal.copied === what ? "Copied" : text);
   return html`${notes.map(([kind, name, text]) => html`<p class="note ${kind}" role="status">${icon(name, "s15")}<span>${text}</span></p>`)}
@@ -1333,34 +1337,47 @@ function terminalBody({ term, task, tmux, end }) {
         <button data-action="term-copy" aria-label="Copy screen" ${screen ? "" : raw('aria-disabled="true"')}>${icon("copy", "s15")}<span>${copied("screen", "Copy screen")}</span></button>
         <button data-action="term-fit" aria-label="Fit" aria-pressed="${String(terminal.fit)}">${icon("fit", "s15")}<span>Fit</span></button>
         <button data-action="term-attach" aria-label="Copy the attach command" data-task="${task}">${icon("eye", "s15")}<span>${copied("attach", "Attach")}</span></button></div>
-      <pre tabindex="0" aria-label="Screen${screen ? `, ${screen.width} by ${screen.height}` : ""}">${rows}</pre></div>`;
+      <pre id="term-screen" tabindex="0" aria-label="Screen${screen ? `, ${screen.width} by ${screen.height}` : ""}">${rows}</pre></div>`;
 }
 
-// Repaints the pane when what it shows changed, keeping its sideways scroll and focus.
-function paintTerminal(app, left) {
+// Repaints the pane when what it shows changed, or always after a render, keeping its sideways
+// scroll and focus. Fit sizes the text to the pane, between 9 px and the pane's own size.
+function paintTerminal(app, rendered = false) {
   const box = app?.querySelector("[data-term]");
   if (!box) return;
   const { screen, stale, gone, at } = watch.state();
-  const key = JSON.stringify([screen?.hash, stale, gone, stale && Math.round((Date.now() - at) / 1000), terminal]);
-  if (box.dataset.painted === key && left === undefined) return;
-  const before = box.querySelector("pre");
-  const scroll = left ?? before?.scrollLeft ?? 0;
+  const key = JSON.stringify([screen?.hash, stale, gone, stale && Math.round((Date.now() - at) / 1000), terminal.fit, terminal.copied, innerWidth]);
+  if (box.dataset.painted === key && !rendered) return;
+  if (terminal.run !== box.dataset.term) Object.assign(terminal, { run: box.dataset.term, left: 0 });
   const focused = box.contains(document.activeElement) ? document.activeElement.dataset.action || "pre" : null;
   box.innerHTML = terminalBody(box.dataset).text;
   box.dataset.painted = key;
   const pre = box.querySelector("pre");
+  const own = parseFloat(getComputedStyle(pre).fontSize);
   const fit = terminal.fit && screen;
-  pre.style.fontSize = fit ? `${Math.max(9, (pre.clientWidth - 24) / (screen.width * 0.6))}px` : "";
+  pre.style.fontSize = fit ? `${Math.min(own, Math.max(9, (pre.clientWidth - 24) / (screen.width * 0.6)))}px` : "";
   pre.style.lineHeight = fit ? "1.33" : "";
-  pre.scrollLeft = scroll;
+  pre.scrollLeft = terminal.left;
+  pre.addEventListener("scroll", () => { terminal.left = pre.scrollLeft; });
   if (focused) (focused === "pre" ? pre : box.querySelector(`[data-action="${focused}"]`))?.focus({ preventScroll: true });
 }
 
 // Polls while a live run's pane is on screen and the page is shown.
 function syncTerminal(app) {
   const box = app.querySelector("[data-term]");
-  if (!box || box.dataset.end || document.hidden || !state.token) return watch.hide();
+  if (!box || box.dataset.end || document.hidden || !state.token || !terminal.onScreen) return watch.hide();
   watch.show(Number(box.dataset.term));
+}
+
+// Tells syncTerminal whether the pane is on screen; render disconnects the observer.
+function observeTerminal(app) {
+  const box = app.querySelector("[data-term]");
+  terminal.onScreen = false;
+  if (!box) return watch.hide();
+  track(new IntersectionObserver(([entry]) => {
+    terminal.onScreen = entry.isIntersecting;
+    syncTerminal(app);
+  })).observe(box);
 }
 
 function copyTerminal(text, what) {
@@ -2460,10 +2477,9 @@ function render() {
   state.observers = [];
   // A new revision is a new question: a tap armed on the old one must not run it.
   if (state.armed && (!state.token || selectedAsk() !== String(state.armed.id) || askOnScreen()?.revision !== state.armed.revision)) disarm();
-  const termLeft = app.querySelector("[data-term] pre")?.scrollLeft ?? 0;
   app.innerHTML = page().text;
-  paintTerminal(app, termLeft);
-  syncTerminal(app);
+  paintTerminal(app, true);
+  observeTerminal(app);
   // A render must not restart the countdown; CSP allows no inline style, so it is set here.
   app.querySelectorAll(".drain").forEach((drain) => {
     const armed = drain.closest(".act") ? state.taskArmed : state.armed;
@@ -2758,6 +2774,7 @@ answerSheet().addEventListener("click", (event) => { if (event.target === answer
 addSheet().addEventListener("close", () => document.querySelector("#app [data-action='add-open']")?.focus());
 addEventListener("popstate", render);
 for (const query of ["(min-width: 600px)", "(min-width: 1024px)"]) matchMedia(query).addEventListener("change", render);
+addEventListener("resize", () => { if (terminal.fit) paintTerminal(document.getElementById("app")); });
 document.addEventListener("visibilitychange", () => {
   syncTerminal(document.getElementById("app"));
   if (!document.hidden && state.token) refresh();
