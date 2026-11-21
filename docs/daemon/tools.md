@@ -195,7 +195,8 @@ the factory names a `deliver` command, the daemon then delivers the answer or th
 
 `wait` stores a wait on one condition, `on`, or on a list of them, `any`. A call takes one of the
 two. The agent then ends its turn and sleeps with no process. The event that satisfies a condition
-arrives as its next prompt, and the other conditions are withdrawn. For example, to sleep until a
+arrives as its next prompt, and the other conditions are withdrawn with the reason `sibling-fired`
+([withdrawal reasons](waits.md#why-an-ask-or-wait-was-withdrawn)). For example, to sleep until a
 pull request's checks finish:
 
 ```json

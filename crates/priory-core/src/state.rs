@@ -12,7 +12,7 @@ use std::collections::BTreeMap;
 use std::io::Write;
 use std::time::Duration;
 
-const VERSION: i64 = 58;
+const VERSION: i64 = 59;
 
 const SCHEMA: &str = "
 CREATE TABLE tasks (
@@ -1012,12 +1012,35 @@ CREATE INDEX IF NOT EXISTS asks_by_task ON asks (task);
 PRAGMA user_version = 57;
 ";
 
+// Why an ask or wait was withdrawn, named from the sentinel `withdrawn` held, now a plain 1.
+// A wait's -2 also meant an answer, dismiss or stack ask, which the old value cannot tell apart.
+const SCHEMA_58: &str = "
+DROP TRIGGER IF EXISTS ask_withdrawn;
+ALTER TABLE asks ADD COLUMN withdrawn_reason TEXT CHECK (withdrawn_reason IN
+  ('revived', 'moved-on', 'sibling-fired', 'answered-elsewhere', 'dismissed', 'asked'));
+ALTER TABLE waits ADD COLUMN withdrawn_reason TEXT CHECK (withdrawn_reason IN
+  ('revived', 'moved-on', 'sibling-fired', 'answered-elsewhere', 'dismissed', 'asked'));
+ALTER TABLE ask_withdrawals ADD COLUMN reason TEXT;
+UPDATE asks SET withdrawn_reason = CASE withdrawn WHEN -1 THEN 'dismissed' WHEN -2 THEN 'sibling-fired'
+  WHEN 0 THEN 'moved-on' ELSE 'revived' END, withdrawn = 1 WHERE withdrawn IS NOT NULL;
+UPDATE waits SET withdrawn_reason = CASE withdrawn WHEN -1 THEN 'dismissed' WHEN -2 THEN 'sibling-fired'
+  WHEN 0 THEN 'moved-on' ELSE 'revived' END, withdrawn = 1 WHERE withdrawn IS NOT NULL;
+UPDATE ask_withdrawals SET reason = CASE withdrawn WHEN -1 THEN 'dismissed' WHEN -2 THEN 'sibling-fired'
+  WHEN 0 THEN 'moved-on' ELSE 'revived' END, withdrawn = 1;
+CREATE TRIGGER ask_withdrawn AFTER UPDATE OF withdrawn ON asks
+  WHEN NEW.withdrawn IS NOT NULL AND NEW.withdrawn IS NOT OLD.withdrawn BEGIN
+  INSERT INTO ask_withdrawals (ask, revision, withdrawn, reason)
+    VALUES (NEW.id, NEW.revision, NEW.withdrawn, NEW.withdrawn_reason);
+END;
+PRAGMA user_version = 58;
+";
+
 // A routed ask whose lead task ends or blocks without answering returns to the person: it loses
 // its lead and is asked again as its next revision, which pushes it. Every alarm the desk ranks
 // pushes too: an intake failure, an uncertain prompt and an uncertain command, with the desk kind
 // in `push_queue.state`. A stack's gate records whether its checks are green, so the daemon tells
 // once when the whole stack is.
-const SCHEMA_58: &str = "
+const SCHEMA_59: &str = "
 ALTER TABLE waits ADD COLUMN green INTEGER;
 CREATE TRIGGER IF NOT EXISTS ask_returns_from_its_lead AFTER UPDATE OF state ON tasks
   WHEN NEW.trigger = 'priory/lead' AND NEW.state IN ('done', 'failed', 'dropped', 'blocked')
@@ -1043,7 +1066,7 @@ CREATE TRIGGER IF NOT EXISTS push_an_uncertain_command AFTER UPDATE OF status ON
   AND EXISTS (SELECT 1 FROM push_subscriptions) BEGIN
   INSERT INTO push_queue (kind, item, state) VALUES ('alarm', NEW.id, 'command');
 END;
-PRAGMA user_version = 58;
+PRAGMA user_version = 59;
 ";
 
 /// Each schema change in order: a file at version `n` applies those from index `n` on.
@@ -1055,7 +1078,7 @@ const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA_34, SCHEMA_35, SCHEMA_36, SCHEMA_37, SCHEMA_38, SCHEMA_39, SCHEMA_40, SCHEMA_41,
     SCHEMA_42, SCHEMA_43, SCHEMA_44, SCHEMA_45, SCHEMA_46, SCHEMA_47, SCHEMA_48, SCHEMA_49,
     SCHEMA_50, SCHEMA_51, SCHEMA_52, SCHEMA_53, SCHEMA_54, SCHEMA_55, SCHEMA_56, SCHEMA_57,
-    SCHEMA_58,
+    SCHEMA_58, SCHEMA_59,
 ];
 
 /// The order the queue starts tasks in: band, then a person's order, then age. A band the factory

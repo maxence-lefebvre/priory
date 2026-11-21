@@ -200,16 +200,15 @@ pub(crate) fn call(
     if let Some(refused) = refused {
         return Ok(Err(refused));
     }
-    // 0 is no generation: the run moves on from the asks and waits of earlier runs. A refused
-    // call rolls this back.
+    // The run moves on from the asks and waits of earlier runs. A refused call rolls this back.
     tx.execute(
-        "UPDATE asks SET withdrawn = 0 WHERE task = ?1 AND run IS NOT NULL AND run != ?2
-         AND answer IS NULL AND withdrawn IS NULL",
+        "UPDATE asks SET withdrawn = 1, withdrawn_reason = 'moved-on' WHERE task = ?1
+         AND run IS NOT NULL AND run != ?2 AND answer IS NULL AND withdrawn IS NULL",
         params![run.task, run.id],
     )?;
     tx.execute(
-        "UPDATE waits SET withdrawn = 0 WHERE task = ?1 AND run != ?2 AND fired IS NULL
-         AND withdrawn IS NULL AND NOT daemon",
+        "UPDATE waits SET withdrawn = 1, withdrawn_reason = 'moved-on' WHERE task = ?1 AND run != ?2
+         AND fired IS NULL AND withdrawn IS NULL AND NOT daemon",
         params![run.task, run.id],
     )?;
     let stored = match call.tool.as_str() {
@@ -606,7 +605,7 @@ pub fn ask_outside(
            what_waits, next_action, command, coordinator, key, run_id, session)
          VALUES ('outside', ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
          ON CONFLICT (name) DO UPDATE SET revision = revision + 1, answer = NULL, answered = NULL, answered_by = NULL,
-           withdrawn = NULL, question = excluded.question, options = excluded.options,
+           withdrawn = NULL, withdrawn_reason = NULL, question = excluded.question, options = excluded.options,
            recommendation = excluded.recommendation, tradeoff = excluded.tradeoff,
            title = excluded.title, text = excluded.text, what_waits = excluded.what_waits,
            next_action = excluded.next_action, command = excluded.command,
@@ -647,10 +646,11 @@ pub fn ask_named(db: &Connection, name: &str) -> Result<i64, String> {
 fn woken(tx: &Transaction, run: &Run) -> rusqlite::Result<bool> {
     tx.query_row(
         "SELECT (EXISTS (SELECT 1 FROM waits WHERE run = ?1 AND fired IS NOT NULL)
-           OR EXISTS (SELECT 1 FROM asks WHERE run = ?1 AND (answer IS NOT NULL OR withdrawn = ?3)))
+           OR EXISTS (SELECT 1 FROM asks WHERE run = ?1
+             AND (answer IS NOT NULL OR withdrawn_reason = 'dismissed')))
          AND EXISTS (SELECT 1 FROM outbox WHERE task = ?2 AND state = 'queued')
          OR EXISTS (SELECT 1 FROM actions WHERE task = ?2 AND action = 'answer' AND ended IS NULL)",
-        params![run.id, run.task, DISMISSED],
+        params![run.id, run.task],
         |row| row.get(0),
     )
 }
@@ -1445,13 +1445,15 @@ fn ask_stack(tx: &Transaction, task: i64, asked: StackAsk) -> rusqlite::Result<b
         "INSERT INTO asks (task, step, kind, name, question, options)
          SELECT id, step, 'agent', ?2, ?3, ?4 FROM tasks WHERE id = ?1
          ON CONFLICT (name) DO UPDATE SET revision = revision + 1, withdrawn = NULL,
+           withdrawn_reason = NULL,
            step = excluded.step, question = excluded.question, options = excluded.options
          WHERE withdrawn IS NOT NULL AND answer IS NULL",
         params![task, asked.name, asked.question, options],
     )?;
     tx.execute(
-        "UPDATE waits SET withdrawn = ?2 WHERE task = ?1 AND daemon AND fired IS NULL AND withdrawn IS NULL",
-        params![task, BEATEN],
+        "UPDATE waits SET withdrawn = 1, withdrawn_reason = 'asked' WHERE task = ?1 AND daemon
+         AND fired IS NULL AND withdrawn IS NULL",
+        [task],
     )?;
     Ok(true)
 }
@@ -1607,17 +1609,15 @@ fn fire(
     if mark_fired(tx, wait, seq)? {
         // The other gates of a stack end with this wake: the next `done` stores fresh ones.
         tx.execute(
-            "UPDATE waits SET withdrawn = ?2 WHERE task = ?3 AND daemon AND fired IS NULL
-             AND withdrawn IS NULL AND (SELECT daemon FROM waits WHERE id = ?1)",
-            params![wait, BEATEN, task],
+            "UPDATE waits SET withdrawn = 1, withdrawn_reason = 'sibling-fired' WHERE task = ?2
+             AND daemon AND fired IS NULL AND withdrawn IS NULL
+             AND (SELECT daemon FROM waits WHERE id = ?1)",
+            params![wait, task],
         )?;
         wake_on(tx, task, text, seq)?;
     }
     Ok(())
 }
-
-/// `withdrawn` for the other conditions and the ask of a run when one of them came first.
-const BEATEN: i64 = -2;
 
 /// Marks `wait` fired on the event `seq`, unless it fired or was withdrawn already, and withdraws
 /// the other open waits and the open ask of its run. Says whether it fired now.
@@ -1632,24 +1632,26 @@ fn mark_fired(tx: &Transaction, wait: i64, seq: Option<i64>) -> rusqlite::Result
         return Ok(false);
     }
     tx.execute(
-        "UPDATE waits SET withdrawn = ?2 WHERE id != ?1 AND fired IS NULL AND withdrawn IS NULL
-         AND NOT daemon AND run = (SELECT run FROM waits WHERE id = ?1 AND NOT daemon)",
-        params![wait, BEATEN],
+        "UPDATE waits SET withdrawn = 1, withdrawn_reason = 'sibling-fired' WHERE id != ?1
+         AND fired IS NULL AND withdrawn IS NULL AND NOT daemon
+         AND run = (SELECT run FROM waits WHERE id = ?1 AND NOT daemon)",
+        [wait],
     )?;
     tx.execute(
-        "UPDATE asks SET withdrawn = ?2 WHERE answer IS NULL AND withdrawn IS NULL
-         AND run = (SELECT run FROM waits WHERE id = ?1 AND NOT daemon)",
-        params![wait, BEATEN],
+        "UPDATE asks SET withdrawn = 1, withdrawn_reason = 'sibling-fired' WHERE answer IS NULL
+         AND withdrawn IS NULL AND run = (SELECT run FROM waits WHERE id = ?1 AND NOT daemon)",
+        [wait],
     )?;
     Ok(true)
 }
 
-/// Withdraws the open waits of the run that stored the ask `ask`, now that a person settled it.
-fn withdraw_waits(tx: &Transaction, ask: i64) -> rusqlite::Result<()> {
+/// Withdraws the open waits of the run that stored the ask `ask`, now that a person settled it as
+/// `reason` says.
+fn withdraw_waits(tx: &Transaction, ask: i64, reason: &str) -> rusqlite::Result<()> {
     tx.execute(
-        "UPDATE waits SET withdrawn = ?2 WHERE fired IS NULL AND withdrawn IS NULL AND NOT daemon
-         AND run = (SELECT run FROM asks WHERE id = ?1)",
-        params![ask, BEATEN],
+        "UPDATE waits SET withdrawn = 1, withdrawn_reason = ?2 WHERE fired IS NULL
+         AND withdrawn IS NULL AND NOT daemon AND run = (SELECT run FROM asks WHERE id = ?1)",
+        params![ask, reason],
     )
     .map(drop)
 }
@@ -2460,7 +2462,7 @@ fn answer_in(
                 head,
             )?;
         }
-        withdraw_waits(tx, answer.ask)?;
+        withdraw_waits(tx, answer.ask, "answered-elsewhere")?;
         tx.execute(
             "INSERT INTO actions (task, step, action, status, ask, revision, command, generation)
              VALUES (?1, ?2, 'answer', 'running', ?3, ?4, ?5,
@@ -2517,7 +2519,7 @@ fn answer_in(
         crate::grades::answered(tx, trace, task, &at, &answer.text, &target)?;
         enter(tx, task, &workflow, &target, None, "", trace.factory)?;
     } else {
-        withdraw_waits(tx, answer.ask)?;
+        withdraw_waits(tx, answer.ask, "answered-elsewhere")?;
         wake(
             tx,
             task,
@@ -2608,7 +2610,7 @@ fn open_ask(
         .query_row(
             "SELECT coalesce(asks.name, CAST(asks.id AS TEXT)), asks.task, asks.kind, coalesce(asks.step, ''),
                asks.revision, asks.options, asks.answer, coalesce(tasks.workflow, ''),
-               coalesce(tasks.state, ''), asks.withdrawn, asks.command
+               coalesce(tasks.state, ''), asks.withdrawn_reason, asks.command
              FROM asks LEFT JOIN tasks ON tasks.id = asks.task WHERE asks.id = ?1",
             [id],
             |row| {
@@ -2625,26 +2627,27 @@ fn open_ask(
                     },
                     row.get::<_, i64>(4)?,
                     row.get::<_, Option<String>>(6)?,
-                    row.get::<_, Option<i64>>(9)?,
+                    row.get::<_, Option<String>>(9)?,
                 ))
             },
         )
         .optional()?;
-    let Some((ask, at, answered, withdrawn)) = found else {
+    let Some((ask, at, answered, withdrawn_reason)) = found else {
         return Ok(Err(format!("there is no ask {id}")));
     };
     let (label, task) = (&ask.label, ask.task.unwrap_or_default());
-    let refused = match withdrawn {
-        Some(DISMISSED) => Some(format!("ask {label} was dismissed")),
-        Some(BEATEN) => Some(format!(
+    let refused = match withdrawn_reason.as_deref() {
+        Some("dismissed") => Some(format!("ask {label} was dismissed")),
+        Some("sibling-fired") => Some(format!(
             "ask {label} was withdrawn when a wait of its run fired first"
         )),
-        Some(0) => Some(format!(
+        Some("moved-on") => Some(format!(
             "ask {label} was withdrawn when a later run of task {task} called another tool"
         )),
-        Some(generation) => Some(format!(
-            "ask {label} was withdrawn when task {task} was revived as generation {generation}"
+        Some("revived") => Some(format!(
+            "ask {label} was withdrawn when task {task} was revived"
         )),
+        Some(reason) => Some(format!("ask {label} was withdrawn: {reason}")),
         None if ["done", "failed", "dropped"].contains(&ask.state.as_str()) => {
             Some(format!("task {task} is {}", ask.state))
         }
@@ -2660,9 +2663,6 @@ fn open_ask(
     }
     Ok(Ok(ask))
 }
-
-/// `asks.withdrawn` for an ask a person dismissed. 0 and a generation are the other reasons.
-const DISMISSED: i64 = -1;
 
 /// A person's `priory dismiss`: it closes an open ask with no answer, at `revision` if given.
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -2690,10 +2690,10 @@ pub(crate) fn dismiss(
         )));
     }
     tx.execute(
-        "UPDATE asks SET withdrawn = ?2 WHERE id = ?1",
-        params![dismiss.dismiss, DISMISSED],
+        "UPDATE asks SET withdrawn = 1, withdrawn_reason = 'dismissed' WHERE id = ?1",
+        [dismiss.dismiss],
     )?;
-    withdraw_waits(&tx, dismiss.dismiss)?;
+    withdraw_waits(&tx, dismiss.dismiss, "dismissed")?;
     drop_lead(&tx, dismiss.dismiss, &format!("ask {label} was dismissed"))?;
     crate::deliver::queue(&tx, dismiss.dismiss, None, factory)?;
     if let Some(task) = ask.task {
@@ -2985,12 +2985,14 @@ fn revive(
 /// earlier ones so that no late answer or event reaches it.
 fn regenerate(tx: &Transaction, task: i64, generation: i64) -> rusqlite::Result<()> {
     tx.execute(
-        "UPDATE asks SET withdrawn = ?2 WHERE task = ?1 AND answer IS NULL AND withdrawn IS NULL",
-        [task, generation],
+        "UPDATE asks SET withdrawn = 1, withdrawn_reason = 'revived' WHERE task = ?1
+         AND answer IS NULL AND withdrawn IS NULL",
+        [task],
     )?;
     tx.execute(
-        "UPDATE waits SET withdrawn = ?2 WHERE task = ?1 AND fired IS NULL AND withdrawn IS NULL",
-        [task, generation],
+        "UPDATE waits SET withdrawn = 1, withdrawn_reason = 'revived' WHERE task = ?1
+         AND fired IS NULL AND withdrawn IS NULL",
+        [task],
     )?;
     tx.execute(
         "UPDATE outbox SET state = 'withdrawn' WHERE task = ?1 AND state = 'queued'",
@@ -3331,7 +3333,7 @@ pub(crate) fn approved(
     tx.execute(
         // Asked again, an ask that a revive withdrew belongs to the current generation.
         "UPDATE asks SET revision = revision + 1, answer = NULL, answered = NULL, answered_by = NULL, withdrawn = NULL,
-         question = question || ?2 WHERE id = ?1",
+         withdrawn_reason = NULL, question = question || ?2 WHERE id = ?1",
         params![ask, moved],
     )?;
     unqueue(&tx, task, &step_prompt(at))?;

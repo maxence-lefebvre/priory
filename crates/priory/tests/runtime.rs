@@ -41,9 +41,11 @@ const OUTPUT: &str = "factory.intake";
 /// Takes a state file back before schema 28, which added search, 29, which added grades, 30,
 /// which added snoozes, 31, which added read reports, 32, which added the pause, 34, which added
 /// reports of sections, 36, which added deliveries, 37, which added progress, 39, which added run
-/// actions, 40, which added answer actions, 42, which added dispatches, 49, which added task ends, 51, which added a run's crossing of `compactAt`, 53, which added intervention levels, 56, which added the step an irreversible approval lets run, and 58, which added green stack gates and returned routed asks. Schema 38's visits
+/// actions, 40, which added answer actions, 42, which added dispatches, 49, which added task ends, 51, which added a run's crossing of `compactAt`, 53, which added intervention levels, 56, which added the step an irreversible approval lets run, 58, which added withdrawal reasons, and 59, which added green stack gates and returned routed asks. Schema 38's visits
 /// table is created only if missing, so it stays.
 const UNDO_SINCE_SEARCH: &str = "DROP TRIGGER ask_returns_from_its_lead; ALTER TABLE waits DROP COLUMN green;
+  DROP TRIGGER ask_withdrawn; ALTER TABLE asks DROP COLUMN withdrawn_reason;
+  ALTER TABLE waits DROP COLUMN withdrawn_reason; ALTER TABLE ask_withdrawals DROP COLUMN reason;
   DROP TRIGGER push_a_new_ask; ALTER TABLE asks DROP COLUMN routed;
   ALTER TABLE asks DROP COLUMN answered_by; ALTER TABLE tasks DROP COLUMN intervention;
   ALTER TABLE tasks DROP COLUMN lead; ALTER TABLE runs DROP COLUMN crossed; DROP TRIGGER task_created; DROP TRIGGER task_ended; DROP TRIGGER task_restarted;
@@ -4236,6 +4238,20 @@ fn an_outside_ask_takes_an_answer_or_a_dismiss_only_at_its_current_revision() {
         "ask cache.notes dismissed\n"
     );
     assert!(setup.rows("asks").is_empty());
+    let notes = |setup: &Setup| {
+        let asks: serde_json::Value =
+            serde_json::from_slice(&setup.priory(&["asks", "--all", "--json"]).stdout).unwrap();
+        asks["asks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|ask| ask["id"] == "cache.notes")
+            .unwrap()["withdrawn_reason"]
+            .clone()
+    };
+    assert_eq!(notes(&setup), "dismissed");
+    setup.priory(&["ask", "cache.notes", &fleet_ask(&["later"])]);
+    assert_eq!(notes(&setup), serde_json::Value::Null);
 }
 
 #[test]
@@ -5490,6 +5506,8 @@ fn a_state_file_whose_asks_an_approval_names_upgrades_to_outside_asks() {
          DROP TABLE reports;
          DROP TABLE dispatches;
          ALTER TABLE irreversible_asks DROP COLUMN lets;
+         DROP TRIGGER ask_withdrawn; ALTER TABLE asks DROP COLUMN withdrawn_reason;
+         ALTER TABLE waits DROP COLUMN withdrawn_reason; ALTER TABLE ask_withdrawals DROP COLUMN reason;
          DROP TABLE ask_revisions;
          DROP TABLE ask_refusals;
          PRAGMA legacy_alter_table = ON;
@@ -7814,6 +7832,7 @@ fn a_woken_run_can_wait_on_something_else_and_so_withdraws_the_ask_it_took_over(
         String::from_utf8_lossy(&answer.stderr),
         "priory answer: ask 1 was withdrawn when a later run of task 1 called another tool\n"
     );
+    assert_eq!(withdrawn_reasons(&setup, "asks"), ["moved-on"]);
 }
 
 #[test]
@@ -7838,6 +7857,7 @@ fn a_woken_run_that_waits_on_another_condition_is_caught_up_on_the_events_of_its
     let (text, error) = reply(&setup.replies()[1]);
     assert!(!error, "{text}");
     assert!(text.starts_with("wait 2 already holds"), "{text}");
+    assert_eq!(withdrawn_reasons(&setup, "waits")[0], "moved-on");
 }
 
 #[test]
@@ -8789,8 +8809,9 @@ fn an_answer_to_the_ask_of_an_earlier_generation_is_refused() {
     assert!(!answered.status.success());
     assert_eq!(
         String::from_utf8_lossy(&answered.stderr),
-        "priory answer: ask 1 was withdrawn when task 1 was revived as generation 2\n"
+        "priory answer: ask 1 was withdrawn when task 1 was revived\n"
     );
+    assert_eq!(withdrawn_reasons(&setup, "asks"), ["revived"]);
     assert!(setup.rows("asks").is_empty());
     assert_eq!(setup.rows("tasks")[0][4], "running");
 }
@@ -8811,6 +8832,7 @@ fn an_event_for_the_wait_of_an_earlier_generation_does_not_wake_the_revived_task
     });
     setup.gone("priory-1");
     assert!(setup.rows("waits").is_empty());
+    assert_eq!(withdrawn_reasons(&setup, "waits"), ["revived"]);
     let asked: Vec<_> = setup
         .rows("desk")
         .into_iter()
@@ -8998,6 +9020,7 @@ fn a_revive_at_an_irreversible_step_asks_its_withdrawn_approval_again() {
     assert!(revived.status.success(), "{revived:?}");
     let asks = setup.until("asks", |rows| rows.first().is_some_and(|row| row[2] == "3"));
     assert_eq!(asks[0][..2], ["1", "1"]);
+    assert_eq!(withdrawn_reasons(&setup, "asks"), [serde_json::Value::Null]);
     setup.calls(&[passed_with_evidence()]);
     let answered = setup.priory(&["answer", "1", "open", "--revision", "3"]);
     assert!(answered.status.success(), "{answered:?}");
@@ -9211,6 +9234,10 @@ fn a_wait_on_a_merge_or_a_linear_state_wakes_on_the_first_and_withdraws_the_othe
         "{typed:?}"
     );
     assert_eq!(setup.rows("waits"), Vec::<Vec<String>>::new());
+    assert_eq!(
+        withdrawn_reasons(&setup, "waits"),
+        [serde_json::Value::Null, json!("sibling-fired")]
+    );
 }
 
 #[test]
@@ -9276,6 +9303,25 @@ fn an_answer_beside_a_wait_wakes_the_task_and_withdraws_the_wait() {
     std::thread::sleep(Duration::from_millis(1500));
     assert_eq!(setup.rows("waits"), Vec::<Vec<String>>::new());
     assert_eq!(setup.typed().len(), 2, "{:?}", setup.typed());
+    assert_eq!(withdrawn_reasons(&setup, "waits"), ["answered-elsewhere"]);
+}
+
+#[test]
+fn a_dismiss_beside_a_wait_withdraws_both_as_dismissed() {
+    let mut setup = Setup::new("dismiss-and-wait");
+    setup.calls(&[json!([ask(), wait(on_pull_7("pull_request"))])]);
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("runs", |rows| {
+        rows.first().is_some_and(|row| row[7] == "asleep")
+    });
+    fs::write(setup.dir.join("fake/hold-call"), "").unwrap();
+
+    let dismissed = setup.priory(&["dismiss", "1"]);
+
+    assert!(dismissed.status.success(), "{dismissed:?}");
+    assert_eq!(withdrawn_reasons(&setup, "asks"), ["dismissed"]);
+    assert_eq!(withdrawn_reasons(&setup, "waits"), ["dismissed"]);
 }
 
 #[test]
@@ -9299,6 +9345,7 @@ fn an_event_beside_an_ask_wakes_the_task_and_a_late_answer_is_refused() {
             .contains("ask 1 was withdrawn when a wait of its run fired first"),
         "{answered:?}"
     );
+    assert_eq!(withdrawn_reasons(&setup, "asks"), ["sibling-fired"]);
     assert_eq!(setup.rows("asks"), Vec::<Vec<String>>::new());
     assert_eq!(setup.typed().len(), 2, "{:?}", setup.typed());
 }
@@ -12319,6 +12366,16 @@ fn task_json(setup: &Setup, task: &str) -> serde_json::Value {
     serde_json::from_slice(&output.stdout).unwrap()
 }
 
+/// The `withdrawn_reason` of each of task 1's `asks` or `waits`, in order.
+fn withdrawn_reasons(setup: &Setup, list: &str) -> Vec<serde_json::Value> {
+    task_json(setup, "1")[list]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|row| row["withdrawn_reason"].clone())
+        .collect()
+}
+
 #[test]
 fn a_subscription_owned_by_another_active_task_is_refused_naming_it() {
     let mut setup = Setup::new("subscribe-refused");
@@ -13392,6 +13449,11 @@ fn the_bottom_pull_request_merging_wakes_the_task_to_restack_the_rest() {
         woke[4].starts_with("#7 merged; rebase #8 and #9 onto main\\n"),
         "{woke:?}"
     );
+    let gates: Vec<_> = withdrawn_reasons(&setup, "waits")
+        .into_iter()
+        .filter(|reason| !reason.is_null())
+        .collect();
+    assert_eq!(gates, ["sibling-fired", "sibling-fired"]);
 }
 
 #[test]
@@ -13539,6 +13601,11 @@ fn a_bottom_pull_request_retargeted_off_the_trunk_asks_a_person() {
     );
     assert_eq!(ask["options"], json!(["restack onto main", "stop"]));
     stays_asleep_after(&setup, 1);
+    let gates: Vec<_> = withdrawn_reasons(&setup, "waits")
+        .into_iter()
+        .filter(|reason| !reason.is_null())
+        .collect();
+    assert_eq!(gates, ["asked", "asked", "asked"]);
 }
 
 #[test]

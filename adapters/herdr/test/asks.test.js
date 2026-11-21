@@ -68,7 +68,7 @@ test("Answered splits today from earlier, newest first, and All adds the snoozed
     ["Answered today", [3]],
     ["Withdrawn", [4]],
   ]);
-  assert.deepEqual([all[2].rows[0].tile, all[2].rows[0].meta], ["withdrawn", ["Withdrawn", "revived as generation 2"]]);
+  assert.deepEqual([all[2].rows[0].tile, all[2].rows[0].meta], ["withdrawn", ["Withdrawn", "its task was revived"]]);
 });
 
 test("facets narrow every view and offer each lane and task with its count", () => {
@@ -136,8 +136,8 @@ test("a closed ask shows what happened and offers no buttons", () => {
     { tile: "ask", text: "Asked revision 1", time: "09:00" },
   ]);
   const withdrawn = askDetail(asks[3], { now, armed: null });
-  assert.equal(withdrawn.decided, "Withdrawn: revived as generation 2.");
-  assert.deepEqual(withdrawn.history[0], { tile: "withdrawn", text: "Withdrawn: revived as generation 2", time: "" });
+  assert.equal(withdrawn.decided, "Withdrawn: its task was revived.");
+  assert.deepEqual(withdrawn.history[0], { tile: "withdrawn", text: "Withdrawn: its task was revived", time: "" });
 });
 
 test("an answer that ran the command shows how it went", () => {

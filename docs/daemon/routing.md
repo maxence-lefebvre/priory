@@ -167,7 +167,7 @@ ends its turn:
 - If the run reaches `Stop` with no result, it takes over the task's open asks and agent waits, so
   the task sleeps on them again.
 - If the run calls `result`, `ask` or `wait` instead, it moves on. The call withdraws the open asks
-  and agent waits of earlier runs.
+  and agent waits of earlier runs with the reason `moved-on`.
 
 When a firing finds the task in any other state, the inbox records it as `coalesced` and nothing is
 typed. That covers a running task, a task asleep at a human step, and a task asleep on the daemon's

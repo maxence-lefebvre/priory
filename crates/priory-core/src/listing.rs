@@ -164,9 +164,10 @@ fn asks_query() -> String {
      coalesce(tasks.key, asks.key) AS key, asks.step, tasks.lane, tasks.band, tasks.repo, asks.run,
      CASE WHEN asks.withdrawn IS NOT NULL THEN 'withdrawn'
        WHEN asks.answer IS NOT NULL THEN 'answered' ELSE 'open' END AS state,
-     CASE asks.withdrawn WHEN -1 THEN 'dismissed' WHEN -2 THEN 'a wait of its run fired first'
-       WHEN 0 THEN 'a later run called another tool'
-       ELSE 'revived as generation ' || asks.withdrawn END AS withdrawn_why,
+     asks.withdrawn_reason,
+     CASE asks.withdrawn_reason WHEN 'sibling-fired' THEN 'a wait of its run fired first'
+       WHEN 'moved-on' THEN 'a later run called another tool'
+       WHEN 'revived' THEN 'its task was revived' ELSE asks.withdrawn_reason END AS withdrawn_why,
      asks.revision, asks.question, asks.options, asks.recommendation, asks.tradeoff, asks.answer,
      asks.answered AS answered_at, asks.answered_by, asks.routed AS routed_to, asks.created AS since, asks.title, asks.text,
      asks.what_waits, asks.next_action, asks.command, asks.coordinator, asks.run_id, asks.session,
@@ -962,7 +963,8 @@ pub fn task(db: &Connection, id: i64) -> rusqlite::Result<Option<Value>> {
         ),
         (
             "waits",
-            "SELECT id, run, kind, resource, until, target, created, fired, withdrawn
+            "SELECT id, run, kind, resource, until, target, created, fired, withdrawn,
+               withdrawn_reason
              FROM waits WHERE task = ?1 ORDER BY id",
         ),
         (
