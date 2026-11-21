@@ -523,6 +523,10 @@ pub fn answer(
     if !factory.runners.contains_key(runner) {
         return Err(format!("runner {runner} has no runner file in runners/"));
     }
+    // A machine with no state file of its own runs no daemon to say whether it reaches the log.
+    if let Ok(db) = crate::state::read_only() {
+        crate::link::refuse_while_unreachable(&db)?;
+    }
     let mut data = serde_json::to_value(answer).map_err(|error| error.to_string())?;
     data["runner"] = json!(runner);
     publish(
@@ -540,6 +544,7 @@ pub fn give(factory: &Factory, db: &Connection, key: &str, runner: &str) -> Resu
     if !factory.runners.contains_key(runner) {
         return Err(format!("runner {runner} has no runner file in runners/"));
     }
+    crate::link::refuse_while_unreachable(db)?;
     let owned = db
         .query_row(
             "SELECT runner, request, hold FROM claims WHERE key = ?1",
@@ -574,7 +579,12 @@ fn publish(factory: &Factory, message: &Message) -> Result<(), String> {
         .map_err(|error| error.to_string())?;
     log.publish(OUTPUT, &message.clone().time(intake::now()?))
         .map(|_| ())
-        .map_err(|error| format!("publish on {OUTPUT}: {error}"))
+        .map_err(|error| {
+            if priory_intake::log::unreachable(&*error) {
+                return format!("{error}: try again when it is back");
+            }
+            format!("publish on {OUTPUT}: {error}")
+        })
 }
 
 /// What another runner may do with a task, as its owner last published it.

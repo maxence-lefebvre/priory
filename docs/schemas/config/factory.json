@@ -90,6 +90,12 @@
         "backend": {
           "$ref": "#/definitions/Backend"
         },
+        "timeout": {
+          "default": null,
+          "description": "How long one Postgres call may wait on the database before the log counts as unreachable;\n10 seconds when unset.",
+          "pattern": "^0*[1-9][0-9]*[smh]$",
+          "type": "string"
+        },
         "url_env": {
           "description": "The environment variable that holds the Postgres connection string, `PRIORY_LOG_URL`\nunless named: the file never holds the string itself.",
           "type": [

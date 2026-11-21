@@ -125,16 +125,12 @@ added this guide.
 
 - Every user of the second machine can reach `127.0.0.1:PORT` there, since loopback is shared.
   Only the password keeps them out, so generate it.
-- When the tunnel closes, the second daemon stops within seconds with
-  `priory daemon: error connecting to server`, as [runners.md](daemon/runners.md#limits) says. It
-  does not start again by itself. Start it once the tunnel is back: it reads what it missed, and a
-  request it missed stays with the runner that claimed it. A supervisor that restarts it, such as
-  a systemd user service with `Restart=on-failure`, brings it back once the link returns, but it
-  does not run while the link is down.
-- When the link hangs without closing, as a frozen tunnel does, the second daemon waits with it:
-  it publishes no alive message and handles nothing until the link returns, then carries on. The
-  run froze the tunnel for two minutes. A longer hang ends the lease after 30 minutes, and its
-  never-started tasks move.
+- When the tunnel closes or hangs, the second daemon keeps its started tasks going and shows
+  `the log is unreachable since <time>` on its desk, as
+  [runners.md](daemon/runners.md#a-runner-cut-off-from-the-log) says. It catches up once the
+  tunnel is back: a request it missed stays with the runner that claimed it. A hung tunnel costs
+  the daemon the `[log]` `timeout` on each try, at most once a minute.
+- A cut longer than 30 minutes ends the second runner's lease, and its never-started tasks move.
 - This machine holds the log. When it is down, both runners stop.
 - A runner's tasks move only 30 minutes after its last alive message, and only those that never
   started. Use `priory give` to move one sooner.

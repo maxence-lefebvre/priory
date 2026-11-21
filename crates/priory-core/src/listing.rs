@@ -1137,10 +1137,14 @@ pub fn desk(
     for (resource, _) in unrouted_events(db, 0, Some((&day_ago, &now.to_string())))? {
         unrouted += usize::from(owner(db, &resource)?.is_some());
     }
+    let outside = [crate::link::banner(db)?, post::intake_banner(db)?]
+        .into_iter()
+        .flatten()
+        .reduce(|log, intake| format!("{log}; {intake}"));
     Ok(json!({
         "paused": state::pause_banner(db)?,
         "banner": stall::banner(db)?,
-        "intake": post::intake_banner(db)?,
+        "intake": outside,
         "counts": { "asleep": asleep, "snoozed": snoozed, "unrouted": unrouted },
         "items": items,
         "next": ranked.first(),

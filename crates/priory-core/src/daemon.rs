@@ -1,4 +1,5 @@
 use crate::idle;
+use crate::link::Link;
 use crate::memory::{self, Gate};
 use crate::otlp;
 use crate::room::Share;
@@ -241,12 +242,19 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
     let mut swept: Option<Instant> = None;
     let mut alive = None;
     let mut aged = None;
+    let mut link = Link::default();
     loop {
-        // A runner back from away reads the log, and so drops the tasks that moved, before any run.
-        drain(&*bus, &consumer, &mut db, &trace, counting.get(&home))?;
+        // A runner back from away reads the log, and so drops the tasks that moved, before any run
+        // and before it publishes what it queued meanwhile.
+        let drained = link
+            .due()
+            .then(|| drain(&*bus, &consumer, &mut db, &trace, counting.get(&home)));
         if let Some(me) = &trace.runner {
             runners::tick(&mut db, me, intake::now()?, &mut alive)?;
-            runners::flush(&db, &*bus)?;
+        }
+        if let Some(drained) = drained {
+            let tried = drained.and_then(|()| runners::flush(&db, &*bus));
+            link.tried(&db, tried)?;
         }
         while let Ok(line) = listening.lines.try_recv() {
             apply(&mut db, line, &trace, counting.get(&home))?;
@@ -708,14 +716,12 @@ fn add(
         }
     };
     let log = log::open(trace.factory.log())?;
-    drain(
-        &*log,
-        &runners::consumer(trace.runner.as_deref()),
-        db,
-        trace,
-        counter,
-    )?;
-    runners::flush(db, &*log)?;
+    let consumer = runners::consumer(trace.runner.as_deref());
+    // A request the log took but did not hand back yet: the loop takes it in once the log answers.
+    match drain(&*log, &consumer, db, trace, counter).and_then(|()| runners::flush(db, &*log)) {
+        Err(error) if !log::unreachable(&*error) => return Err(error),
+        _ => {}
+    }
     let tx = db.transaction()?;
     let id = state::owner(&tx, std::slice::from_ref(&key))?.map(|task| task.id);
     drop(tx);
@@ -1101,6 +1107,12 @@ fn act(
     commands: &mut Vec<(i64, Script)>,
     due: &state::Due,
 ) -> Result<bool, Error> {
+    // A code step's action is a start like a run's: it waits until the log says this runner keeps it.
+    if let Some(me) = &trace.runner
+        && runners::cleared(db, me, due.task)? != Some(true)
+    {
+        return Ok(false);
+    }
     let factory = trace.factory;
     let step = factory.workflows[&due.workflow]
         .value

@@ -46,9 +46,10 @@ jobs:
       - name: Install tmux for the runtime tests
         run: command -v tmux || (sudo apt-get update && sudo apt-get install -y tmux)
       - run: cargo test --workspace
-      - name: Run the event log contract suite and check on Postgres
+      - name: Run the event log contract suite, check and the partition tests on Postgres
         env:
           PRIORY_TEST_POSTGRES_URL: postgresql://priory:priory@127.0.0.1:5432/priory?sslmode=disable
         run: |
           cargo test -p priory-intake --features postgres --test log
           cargo test -p priory --features postgres --test check
+          cargo test -p priory --features postgres --test runtime partition::

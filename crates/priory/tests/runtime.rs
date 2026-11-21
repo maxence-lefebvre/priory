@@ -1,4 +1,8 @@
 mod conform;
+#[cfg(feature = "postgres")]
+mod partition;
+#[cfg(feature = "postgres")]
+mod proxy;
 mod tmux_dir;
 
 use herdr_bus::{Bus, Message, Output};
@@ -82,6 +86,8 @@ struct Setup {
     bus: PathBuf,
     daemon: Option<Child>,
     tmux: TmuxDir,
+    /// The Postgres log's URL, for a factory whose `[log]` names Postgres.
+    log_url: Option<String>,
 }
 
 impl Setup {
@@ -97,6 +103,7 @@ impl Setup {
             dir,
             daemon: None,
             tmux,
+            log_url: None,
         };
         let _ = fs::remove_dir_all(&setup.dir);
         let files = [
@@ -190,6 +197,9 @@ impl Setup {
                 ),
             )
             .env("GIT_CONFIG_VALUE_0", "https://github.com/");
+        if let Some(url) = &self.log_url {
+            command.env("PRIORY_LOG_URL", url);
+        }
         command
     }
 
