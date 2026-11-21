@@ -1026,8 +1026,8 @@ fn the_asks_endpoint_leaves_out_asks_closed_over_a_week_ago_unless_asked_for_all
              '2026-11-01T08:00:00Z'),
            (1, 'implement', 'agent', 'Recent?', '[]', 'no', '2026-11-15T09:00:00Z',
              '2026-11-01T08:00:00Z');
-         INSERT INTO asks (task, step, kind, question, options, withdrawn, created)
-           VALUES (1, 'implement', 'agent', 'Gone?', '[]', -1, '2026-11-02T08:00:00Z');",
+         INSERT INTO asks (task, step, kind, question, options, withdrawn, withdrawn_reason, created)
+           VALUES (1, 'implement', 'agent', 'Gone?', '[]', 1, 'dismissed', '2026-11-02T08:00:00Z');",
     )
     .unwrap();
     let address = setup.start(&["serve", &setup.factory()]);
