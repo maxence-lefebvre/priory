@@ -240,53 +240,80 @@ fn positional(words: &[String]) -> Vec<&str> {
 }
 
 /// `gh api` that writes: a method other than GET, or a field or body, which makes it a POST. A
-/// merge or an approving review is named as such.
+/// merge or an approving review is named as such, and so is one whose body Priory cannot read.
 fn gh_api(words: &[String]) -> Option<&'static str> {
     if positional(words).first() != Some(&"api") {
         return None;
     }
     let mut method = None;
-    let mut body = false;
+    let mut fields = Vec::new();
+    let mut opaque = false;
+    let mut endpoint = None;
+    let mut api = false;
     let mut args = words[1..].iter();
     while let Some(arg) = args.next() {
         let (option, attached) = match arg.split_once('=') {
             Some((option, value)) if arg.starts_with("--") => (option, Some(value.to_owned())),
             _ => (arg.as_str(), None),
         };
+        let mut value = || attached.clone().or_else(|| args.next().cloned());
         match option {
-            "-X" | "--method" => method = attached.or_else(|| args.next().cloned()),
-            "-f" | "-F" | "--field" | "--raw-field" | "--input" => body = true,
+            "-X" | "--method" => method = value(),
+            "-f" | "-F" | "--field" | "--raw-field" => fields.extend(value()),
+            "--input" => opaque = true,
+            "-R" | "--repo" | "-H" | "--header" | "-q" | "--jq" | "-t" | "--template"
+            | "--hostname" | "-p" | "--preview" | "--cache" => drop(value()),
             _ if arg.starts_with("-X") && arg.len() > 2 => method = Some(arg[2..].to_owned()),
-            _ if (arg.starts_with("-f") || arg.starts_with("-F")) && arg.len() > 2 => body = true,
-            _ => {}
+            _ if (arg.starts_with("-f") || arg.starts_with("-F")) && arg.len() > 2 => {
+                fields.push(arg[2..].to_owned())
+            }
+            _ if arg.starts_with('-') => {}
+            _ if !api => api = true,
+            _ => endpoint = endpoint.or_else(|| Some(arg.clone())),
         }
     }
+    opaque |= fields.iter().any(|field| field.contains("=@"));
     let writes = match method {
         Some(method) => !method.eq_ignore_ascii_case("GET"),
-        None => body,
+        None => opaque || !fields.is_empty(),
     };
     if !writes {
         return None;
     }
-    let text = words.join(" ");
+    let endpoint = endpoint.unwrap_or_default();
+    let endpoint = endpoint.trim_start_matches('/');
+    let endpoint = endpoint.split('?').next().unwrap_or_default();
+    let parts: Vec<&str> = endpoint.split('/').collect();
     let pull = |tail: &str| {
-        words.iter().any(|word| {
-            let parts: Vec<&str> = word.trim_start_matches('/').split('/').collect();
-            matches!(parts.as_slice(), ["repos", _, _, "pulls", number, first, ..]
-                if number.parse::<u64>().is_ok() && *first == tail)
-        })
+        matches!(parts.as_slice(), ["repos", _, _, "pulls", number, first, ..]
+            if number.parse::<u64>().is_ok() && *first == tail)
     };
-    if pull("merge")
-        || text.contains("mergePullRequest")
-        || text.contains("enablePullRequestAutoMerge")
-    {
+    let text = fields.join(" ");
+    if pull("merge") {
         return Some("gh-pr-merge");
     }
-    let graphql = words.iter().any(|word| word == "graphql");
-    if text.contains("APPROVE") && (pull("reviews") || graphql) {
+    if pull("reviews") && (opaque || fields.iter().any(|field| field == "event=APPROVE")) {
         return Some("gh-pr-approve");
     }
+    if endpoint == "graphql" {
+        if opaque
+            || text.contains("mergePullRequest")
+            || text.contains("enablePullRequestAutoMerge")
+        {
+            return Some("gh-pr-merge");
+        }
+        if text.contains("PullRequestReview") && approves(&text) {
+            return Some("gh-pr-approve");
+        }
+    }
     Some("gh-api-write")
+}
+
+/// Whether `text` holds the word `APPROVE`, not `APPROVED`.
+fn approves(text: &str) -> bool {
+    text.match_indices("APPROVE").any(|(at, word)| {
+        !text[at + word.len()..].starts_with(|c: char| c.is_ascii_alphanumeric() || c == '_')
+    })
 }
 
 /// Whether `command` also runs a git command that moves the branch's commit, so an approval given
@@ -1096,6 +1123,53 @@ mod tests {
         );
         assert_eq!(guard("mcp__priory__send_message", None), None);
         assert_eq!(guard("mcp__github__get_pull_request", None), None);
+    }
+
+    #[test]
+    fn gh_api_names_a_merge_or_an_approval_by_its_endpoint_and_operation() {
+        let cases = [
+            (
+                "gh api -X PUT /repos/o/r/pulls/12/merge?x=1",
+                Some("gh-pr-merge"),
+            ),
+            ("gh api repos/o/r/pulls/12/merge", None),
+            (
+                "gh api repos/o/r/pulls/12/reviews -f event=APPROVE",
+                Some("gh-pr-approve"),
+            ),
+            (
+                "gh api repos/o/r/pulls/12/reviews/9/events -F event=APPROVE",
+                Some("gh-pr-approve"),
+            ),
+            (
+                "gh api repos/o/r/pulls/12/reviews --input review.json",
+                Some("gh-pr-approve"),
+            ),
+            (
+                "gh api repos/o/r/pulls/12/reviews -f event=COMMENT -f body=ok",
+                Some("gh-api-write"),
+            ),
+            (
+                "gh api /graphql -f query='mutation { submitPullRequestReview(input: {event: APPROVE}) { clientMutationId } }'",
+                Some("gh-pr-approve"),
+            ),
+            (
+                "gh api graphql -f query='mutation { enablePullRequestAutoMerge(input: {}) { clientMutationId } }'",
+                Some("gh-pr-merge"),
+            ),
+            ("gh api graphql --input merge.json", Some("gh-pr-merge")),
+            (
+                "gh api graphql -f query='{ search(query: \"review:approved\") { issueCount } }' -f states=APPROVED",
+                Some("gh-api-write"),
+            ),
+            (
+                "gh api repos/o/r/issues/1/comments -f body='Use mergePullRequest with event APPROVE'",
+                Some("gh-api-write"),
+            ),
+        ];
+        for (command, guard) in cases {
+            assert_eq!(hit(command).as_deref(), guard, "{command}");
+        }
     }
 
     #[test]

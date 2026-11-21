@@ -22,8 +22,8 @@ no guarded call beyond its workflow's list.
 
 `gh-pr-merge` and `gh-pr-approve` need a person's approval: an `autonomous` step's grant never
 covers them, and `priory check` refuses them in an `autonomous` step's `guard.allow` and in a
-workflow's. So nothing merges or approves a pull request without a human step that approves the
-step doing it.
+workflow's. So no call the guard reads merges or approves a pull request without a human step
+that approves the step making it.
 
 A call that runs several guarded commands, such as `gh pr merge 12 && git push --force`, needs a yes
 for each one. A call that also moves the branch's commit, such as `git commit -am fix && gh pr
@@ -46,8 +46,8 @@ A run with no task step, such as the stall handler, is denied every guarded call
 
 | Guard | Matches |
 | ----- | ------- |
-| `gh-pr-merge` | `gh pr merge`, a `gh api` write to `repos/<owner>/<repo>/pulls/<n>/merge` or one that holds `mergePullRequest` or `enablePullRequestAutoMerge`, and MCP tools named `merge_pull_request` |
-| `gh-pr-approve` | `gh pr review` with `--approve` or `-a`, and a `gh api` write that holds `APPROVE` to a pull request's `reviews` or to `graphql` |
+| `gh-pr-merge` | `gh pr merge`; a `gh api` write to `repos/<owner>/<repo>/pulls/<n>/merge`, or to `graphql` with `mergePullRequest`, `enablePullRequestAutoMerge` or a body read from a file; and MCP tools named `merge_pull_request` |
+| `gh-pr-approve` | `gh pr review` with `--approve` or `-a`; a `gh api` write to a pull request's `reviews` with `event=APPROVE` or a body read from a file; and a `gh api` write to `graphql` with a `PullRequestReview` mutation and `APPROVE` |
 | `gh-pr-comment` | `gh pr comment` |
 | `gh-issue-comment` | `gh issue comment` |
 | `gh-api-write` | `gh api` with a method other than GET, or with a field or `--input`, which make it a POST, other than the merges and approvals above |
