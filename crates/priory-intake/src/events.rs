@@ -205,6 +205,10 @@ pub struct PullRequestClosed {
     pub title: String,
     /// Whether this close merged it: the pull request is merged and this is its last close.
     pub merged: Option<bool>,
+    /// The commit the merge made on the base branch; null unless `merged`.
+    pub merge_commit: Option<String>,
+    /// The pull request description when the intake read it; empty when it has none.
+    pub body: String,
     /// The GitHub login who closed it.
     pub actor: Option<String>,
     /// GitHub's issue event id; null from a webhook, whose payload lacks it.
@@ -227,6 +231,8 @@ pub struct ReviewSubmitted {
     pub state: String,
     /// The review's summary Markdown, as written; empty when the reviewer wrote none.
     pub body: String,
+    /// The commit the review was written on, which `head_sha` passes once a commit is pushed after it.
+    pub commit: Option<String>,
     /// The GitHub login who reviewed.
     pub actor: Option<String>,
     /// Whether the pull request was open when the intake read it; a done task reopens only

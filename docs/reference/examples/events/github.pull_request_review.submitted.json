@@ -12,6 +12,7 @@
     "base_branch": "main",
     "state": "approved",
     "body": "Looks good. One nit inline.",
+    "commit": "4b2ee8eb670ba9f77d54d59ab97ced618f024fb9",
     "actor": "octocat",
     "open": true,
     "time": "2026-11-17T16:40:03Z",

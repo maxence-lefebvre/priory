@@ -116,6 +116,11 @@ pub(super) fn fetch_repo(repo: &str, cursors: &Cursors) -> Result<Vec<Polled>, S
                 let last = last_close.get(&event.issue.number) == Some(&event.id);
                 let pull = pulls.get(&event.issue.number);
                 observed.data["merged"] = json!(pull.map(|pull| pull.merged && last));
+                let merged = pull.filter(|pull| pull.merged && last);
+                observed.data["merge_commit"] = json!(
+                    merged.and_then(|pull| pull.merge_commit.as_ref().map(|commit| &commit.oid))
+                );
+                observed.data["body"] = json!(pull.map_or("", |pull| pull.body.as_str()));
             } else if kind != ISSUE_CLOSED {
                 observed.label = event.label.as_ref().map(|label| label.name.clone());
                 observed.data["label"] = json!(observed.label);
