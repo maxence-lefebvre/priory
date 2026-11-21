@@ -69,6 +69,21 @@
       ],
       "type": "object"
     },
+    "Intervention": {
+      "description": "Who answers a task's asks. Unset, every ask goes to a person.",
+      "oneOf": [
+        {
+          "const": "plan",
+          "description": "A person approves the plan: a grading step's result waits for an answer before the task\nmoves on, even for a green grade.",
+          "type": "string"
+        },
+        {
+          "const": "hands-off",
+          "description": "The trigger's `lead` answers asks in the person's place, except an ask whose answer lets an\nirreversible step run and an ask whose answer runs a command.",
+          "type": "string"
+        }
+      ]
+    },
     "OneOrMany_After": {
       "anyOf": [
         {
@@ -167,6 +182,17 @@
               "type": "null"
             }
           ]
+        },
+        "intervention": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/Intervention"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Who answers the task's asks; `triggers/cli.toml`'s when unset."
         },
         "key": {
           "description": "The task's key, which Priory prefixes with `cli:`.",

@@ -12,7 +12,7 @@ use std::collections::BTreeMap;
 use std::io::Write;
 use std::time::Duration;
 
-const VERSION: i64 = 52;
+const VERSION: i64 = 53;
 
 const SCHEMA: &str = "
 CREATE TABLE tasks (
@@ -942,6 +942,20 @@ END;
 PRAGMA user_version = 52;
 ";
 
+// A task's intervention level and lead, the lead an ask is routed to, and who answered an ask. An
+// ask routed to a lead pushes no notification.
+const SCHEMA_53: &str = "ALTER TABLE tasks ADD COLUMN intervention TEXT;
+ALTER TABLE tasks ADD COLUMN lead TEXT;
+ALTER TABLE asks ADD COLUMN routed TEXT;
+ALTER TABLE asks ADD COLUMN answered_by TEXT;
+DROP TRIGGER IF EXISTS push_a_new_ask;
+CREATE TRIGGER push_a_new_ask AFTER INSERT ON asks
+  WHEN NEW.answer IS NULL AND NEW.routed IS NULL AND EXISTS (SELECT 1 FROM push_subscriptions) BEGIN
+  INSERT INTO push_queue (kind, item, revision) VALUES ('ask', NEW.id, NEW.revision);
+END;
+PRAGMA user_version = 53;
+";
+
 /// Each schema change in order: a file at version `n` applies those from index `n` on.
 const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA, SCHEMA_2, SCHEMA_3, SCHEMA_4, SCHEMA_5, SCHEMA_6, SCHEMA_7, SCHEMA_8, SCHEMA_9,
@@ -950,7 +964,7 @@ const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA_26, SCHEMA_27, SCHEMA_28, SCHEMA_29, SCHEMA_30, SCHEMA_31, SCHEMA_32, SCHEMA_33,
     SCHEMA_34, SCHEMA_35, SCHEMA_36, SCHEMA_37, SCHEMA_38, SCHEMA_39, SCHEMA_40, SCHEMA_41,
     SCHEMA_42, SCHEMA_43, SCHEMA_44, SCHEMA_45, SCHEMA_46, SCHEMA_47, SCHEMA_48, SCHEMA_49,
-    SCHEMA_50, SCHEMA_51, SCHEMA_52,
+    SCHEMA_50, SCHEMA_51, SCHEMA_52, SCHEMA_53,
 ];
 
 /// The order the queue starts tasks in: band, then a person's order, then age. A band the factory
@@ -1125,8 +1139,8 @@ pub(crate) fn handle(
         Decision::Create(new) => {
             tx.execute(
                 "INSERT INTO tasks
-                   (key, workflow, step, state, band, lane, team, project, lane_derived, trigger, source, repo, entered, tldr)
-                 VALUES (?1, ?2, ?3, 'queued', ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), ?12)",
+                   (key, workflow, step, state, band, lane, team, project, lane_derived, trigger, source, repo, entered, tldr, intervention, lead)
+                 VALUES (?1, ?2, ?3, 'queued', ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), ?12, ?13, ?14)",
                 params![
                     new.key,
                     new.workflow,
@@ -1143,7 +1157,9 @@ pub(crate) fn handle(
                         .as_deref()
                         .map(str::trim)
                         .filter(|tldr| !tldr.is_empty())
-                        .map(|tldr| crate::search::fit(tldr, counter))
+                        .map(|tldr| crate::search::fit(tldr, counter)),
+                    new.intervention.map(|intervention| intervention.as_str()),
+                    new.lead
                 ],
             )?;
             let id = tx.last_insert_rowid();
@@ -1351,12 +1367,14 @@ fn claim_pull_request(tx: &Transaction, message: &Message) -> rusqlite::Result<(
 }
 
 /// Whether `task` sleeps where an event can wake it: asleep at a model step, with no daemon's
-/// checks gate, since a human step or a gate has no agent turn to wake.
+/// checks gate and no `plan` approval open, since a human step or a gate has no agent turn to wake.
 fn wakes(tx: &Transaction, task: i64, factory: &Factory) -> rusqlite::Result<bool> {
     let asleep_at: Option<(String, String)> = tx
         .query_row(
             "SELECT workflow, step FROM tasks WHERE id = ?1 AND state = 'asleep'
-             AND NOT EXISTS (SELECT 1 FROM waits WHERE task = ?1 AND fired IS NULL AND withdrawn IS NULL AND daemon)",
+             AND NOT EXISTS (SELECT 1 FROM waits WHERE task = ?1 AND fired IS NULL AND withdrawn IS NULL AND daemon)
+             AND NOT EXISTS (SELECT 1 FROM asks WHERE task = ?1 AND kind = 'step'
+               AND answer IS NULL AND withdrawn IS NULL)",
             [task],
             |row| Ok((row.get(0)?, row.get(1)?)),
         )
