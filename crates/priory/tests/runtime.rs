@@ -41,9 +41,10 @@ const OUTPUT: &str = "factory.intake";
 /// Takes a state file back before schema 28, which added search, 29, which added grades, 30,
 /// which added snoozes, 31, which added read reports, 32, which added the pause, 34, which added
 /// reports of sections, 36, which added deliveries, 37, which added progress, 39, which added run
-/// actions, 40, which added answer actions, 42, which added dispatches, 49, which added task ends, 51, which added a run's crossing of `compactAt`, 53, which added intervention levels, 56, which added the step an irreversible approval lets run, and 58, which added withdrawal reasons. Schema 38's visits
+/// actions, 40, which added answer actions, 42, which added dispatches, 49, which added task ends, 51, which added a run's crossing of `compactAt`, 53, which added intervention levels, 56, which added the step an irreversible approval lets run, 58, which added withdrawal reasons, and 59, which added green stack gates and returned routed asks. Schema 38's visits
 /// table is created only if missing, so it stays.
-const UNDO_SINCE_SEARCH: &str = "DROP TRIGGER ask_withdrawn; ALTER TABLE asks DROP COLUMN withdrawn_reason;
+const UNDO_SINCE_SEARCH: &str = "DROP TRIGGER ask_returns_from_its_lead; ALTER TABLE waits DROP COLUMN green;
+  DROP TRIGGER ask_withdrawn; ALTER TABLE asks DROP COLUMN withdrawn_reason;
   ALTER TABLE waits DROP COLUMN withdrawn_reason; ALTER TABLE ask_withdrawals DROP COLUMN reason;
   DROP TRIGGER push_a_new_ask; ALTER TABLE asks DROP COLUMN routed;
   ALTER TABLE asks DROP COLUMN answered_by; ALTER TABLE tasks DROP COLUMN intervention;
@@ -5491,7 +5492,8 @@ fn a_state_file_whose_asks_an_approval_names_upgrades_to_outside_asks() {
     // The state file as version 32 left it: every ask belongs to a task.
     let db = rusqlite::Connection::open(setup.dir.join("priory.db")).unwrap();
     db.execute_batch(
-        "ALTER TABLE tasks DROP COLUMN intervention; ALTER TABLE tasks DROP COLUMN lead;
+        "DROP TRIGGER ask_returns_from_its_lead; ALTER TABLE waits DROP COLUMN green;
+         ALTER TABLE tasks DROP COLUMN intervention; ALTER TABLE tasks DROP COLUMN lead;
          ALTER TABLE runs DROP COLUMN crossed; DROP TRIGGER task_created; DROP TRIGGER task_ended; DROP TRIGGER task_restarted;
          DROP TABLE task_ends; ALTER TABLE exports DROP COLUMN ended; ALTER TABLE tasks DROP COLUMN created;
          ALTER TABLE actions DROP COLUMN ask; ALTER TABLE actions DROP COLUMN revision;
@@ -13475,6 +13477,68 @@ fn a_comment_on_the_middle_pull_request_wakes_the_task_naming_its_place_in_the_s
 }
 
 #[test]
+fn a_stack_whose_every_pull_request_is_green_posts_one_report_naming_the_one_to_merge_first() {
+    let setup = opened_stack("stack-green");
+    let worktree = setup.dir.join("home/worktrees/owner/repo/1");
+    let top = git(&worktree)
+        .args(["rev-parse", "priory/1"])
+        .output()
+        .unwrap();
+    let top = String::from_utf8(top.stdout).unwrap().trim().to_owned();
+    let green = |number: u64, github_id: u64| {
+        let mut message = on_stack(
+            number,
+            "github.check_run.completed",
+            json!({ "name": "ci", "conclusion": "success", "github_id": github_id, "pending": 0, "failing": 0 }),
+        );
+        if number == 9 {
+            message.data["head_sha"] = json!(top);
+        }
+        message
+    };
+    let reports = || -> Vec<serde_json::Value> {
+        let desk = setup.priory(&["desk", "--json"]);
+        let desk: serde_json::Value = serde_json::from_slice(&desk.stdout).unwrap();
+        desk["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|item| item["kind"] == "report")
+            .map(|item| item["what"].clone())
+            .collect()
+    };
+
+    // #7 turns green, then moves to a head no check has run on yet.
+    let mut moved = on_stack(
+        7,
+        "github.pull_request.synchronize",
+        json!({ "github_id": 702 }),
+    );
+    moved.data["head_sha"] = json!(format!("71{}", "0".repeat(38)));
+    let mut green_again = green(7, 703);
+    green_again.data["head_sha"] = moved.data["head_sha"].clone();
+    setup.publish(&green(7, 701));
+    setup.publish(&green(8, 801));
+    setup.publish(&moved);
+    setup.publish(&green(9, 901));
+    setup.publish(&green(9, 902));
+    setup.until("inbox", |rows| rows.len() == 6);
+    stays_asleep_after(&setup, 1);
+    assert_eq!(reports(), Vec::<serde_json::Value>::new());
+
+    setup.publish(&green_again);
+
+    setup.until("inbox", |rows| rows.len() == 8);
+    stays_asleep_after(&setup, 1);
+    assert_eq!(
+        reports(),
+        [json!(
+            "priory: the stack of task 1 (github:owner/repo#42) is green: merge #7 first"
+        )]
+    );
+}
+
+#[test]
 fn the_bottom_pull_request_closed_without_a_merge_asks_a_person_once() {
     let setup = opened_stack("stack-closed");
     let closed = |github_id: u64| {
@@ -13724,6 +13788,44 @@ fn reaching_done_with_a_closed_pull_request_no_one_decided_on_asks_instead() {
 }
 
 #[test]
+fn a_dismissed_stack_ask_is_asked_again_as_a_new_revision_when_the_task_reaches_done_again() {
+    let commit = "abc0000000000000000000000000000000000000";
+    let mut setup = Setup::new("stack-asked-again");
+    setup.calls(&[
+        wait(json!({ "type": "time", "until": "1 hour" })),
+        passed_at(commit),
+        passed_at(commit),
+    ]);
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("runs", |rows| rows.len() == 1 && rows[0][7] == "asleep");
+    let mut closed = opened_on(7, "priory/1-a", "main");
+    closed.kind = "github.pull_request.closed".to_owned();
+    closed.data["merged"] = json!(false);
+    closed.data["github_id"] = json!(470);
+    setup.publish(&opened_on(7, "priory/1-a", "main"));
+    setup.publish(&opened_on(8, "priory/1", "priory/1-a"));
+    setup.publish(&closed);
+    setup.until("asks", |rows| rows.len() == 1);
+
+    let dismissed = setup.priory(&["dismiss", "stack-1-closed-7"]);
+
+    assert!(dismissed.status.success(), "{dismissed:?}");
+    setup.until("runs", |rows| rows.len() == 3 && rows[2][7] == "asleep");
+    let shown = setup.priory(&["asks", "--json"]);
+    let shown: serde_json::Value = serde_json::from_slice(&shown.stdout).unwrap();
+    let open: Vec<_> = shown["asks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|ask| ask["state"] == "open")
+        .collect();
+    assert_eq!(open.len(), 1, "{shown}");
+    assert_eq!(open[0]["id"], "stack-1-closed-7");
+    assert_eq!(open[0]["revision"], 2);
+}
+
+#[test]
 fn reusing_a_pull_request_on_another_base_than_the_branch_below_fails() {
     let setup = asked_to_open_stack("stack-reused-base", OPEN_PR, &["priory/1-a", "priory/1"]);
     // Every head already has pull request 5 open, on main.
@@ -13966,12 +14068,13 @@ fn a_hands_off_tasks_command_ask_still_reaches_the_person() {
 #[test]
 fn a_person_who_answers_a_routed_ask_first_drops_its_queued_lead_task() {
     let mut setup = hands_off("hands-off-person-first", STEPS);
-    // The lead never fits, so its task stays queued.
+    // The lead fits only once more memory is free, so its task stays queued.
     let lead = LEAD.replace(
         "session = \"shared\"\n",
-        "session = \"shared\"\nmemory = \"1000GB\"\n",
+        "session = \"shared\"\nmemory = \"8GB\"\n",
     );
     fs::write(setup.dir.join("factory/agents/lead/agent.md"), lead).unwrap();
+    setup.memory(12);
     setup.calls(&[ask()]);
     setup.publish(&requested(42));
     setup.start();
@@ -14053,6 +14156,57 @@ next = { go = "open-pr", stop = "stop" }
         Some(&json!(null))
     );
     assert_eq!(setup.rows("tasks").len(), 1, "no lead task");
+}
+
+#[test]
+fn a_routed_ask_whose_lead_skips_returns_to_the_person_as_a_new_revision() {
+    let mut setup = hands_off("hands-off-skipped", WORKFLOW);
+    setup.calls(&[
+        ask(),
+        json!({ "name": "result", "arguments": { "outcome": "skipped", "summary": "Not mine." } }),
+    ]);
+    setup.publish(&requested(42));
+
+    setup.start();
+
+    setup.until("tasks", |rows| rows.len() == 2 && rows[1][4] == "done");
+    let ask = &asks_json(&setup)["asks"][0];
+    assert_eq!(
+        [&ask["state"], &ask["routed_to"], &ask["revision"]],
+        [&json!("open"), &json!(null), &json!(2)],
+        "{ask}"
+    );
+    assert_eq!(
+        ask["question"],
+        "Which database? (lead did not answer: its task is done)"
+    );
+    assert_eq!(setup.rows("tasks")[0][4], "asleep");
+}
+
+#[test]
+fn a_routed_ask_whose_lead_can_never_fit_returns_to_the_person() {
+    let mut setup = hands_off("hands-off-never-fits", WORKFLOW);
+    let lead = LEAD.replace(
+        "session = \"shared\"\n",
+        "session = \"shared\"\nmemory = \"1000GB\"\n",
+    );
+    fs::write(setup.dir.join("factory/agents/lead/agent.md"), lead).unwrap();
+    setup.calls(&[ask()]);
+    setup.publish(&requested(42));
+
+    setup.start();
+
+    setup.until("tasks", |rows| rows.len() == 2 && rows[1][4] == "dropped");
+    let ask = &asks_json(&setup)["asks"][0];
+    assert_eq!(
+        [&ask["state"], &ask["routed_to"], &ask["revision"]],
+        [&json!("open"), &json!(null), &json!(2)],
+        "{ask}"
+    );
+    assert_eq!(
+        ask["question"],
+        "Which database? (lead did not answer: its task is dropped)"
+    );
 }
 
 #[test]

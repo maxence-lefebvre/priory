@@ -209,6 +209,12 @@ export default class PrioryDesk extends View {
     this.act(cx, "mark it done", (client) => client.todoDone(todo));
   }
 
+  // Read for a report, as `priory inbox read`, so its row leaves the desk.
+  /** @param {import("gpui-kit").Context} cx @param {number} seq */
+  read(cx, seq) {
+    this.act(cx, "mark it read", (client) => client.read(seq));
+  }
+
   // The Asks panel is the one place to answer: open the ask there.
   /** @param {number | string} ask */
   answer(ask) {
@@ -449,6 +455,7 @@ export default class PrioryDesk extends View {
     const actions = h_flex().gap(S["space-2"]).flex_wrap()
       .when(ask != null && !row.snoozed, (el) => el.child(ui.button(`answer-${row.id}`, "Answer…", () => this.answer(/** @type {number | string} */ (ask)), { primary: true })))
       .when(row.todo != null, (el) => el.child(ui.button(`done-${row.id}`, "Done", (_e, cx) => this.done(cx, /** @type {number} */ (row.todo)), { disabled: this.busy })))
+      .when(row.report != null, (el) => el.child(ui.button(`read-${row.id}`, "Read", (_e, cx) => this.read(cx, /** @type {number} */ (row.report)), { disabled: this.busy })))
       .when(Boolean(restart) && row.task != null, (el) => el.child(ui.button(`restart-${row.id}`, restart, (_e, cx) => this.restart(cx, row), { disabled: this.busy })))
       .when(row.task != null, (el) => el.child(ui.button(`attach-${row.id}`, "Attach", () => this.attach(/** @type {number} */ (row.task)))))
       .when(Boolean(item), (el) => el

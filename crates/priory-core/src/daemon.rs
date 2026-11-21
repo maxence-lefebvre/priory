@@ -606,7 +606,7 @@ fn apply(
 
 /// What arrives on the socket: a hook's signal, a run's tool call, a person's answer, desk action
 /// or snooze, a pick or a comment on a report, a task's progress, a memory gate message, a quick
-/// request, a browser that turns notifications on or off, or a visit to the desk.
+/// request, a browser that turns notifications on or off, a visit to the desk, or a report read.
 #[derive(serde::Deserialize)]
 #[serde(untagged)]
 enum Input {
@@ -625,6 +625,7 @@ enum Input {
     Gate(Gate),
     Push(push::Line),
     Seen(state::SeenLine),
+    Read(crate::post::ReadLine),
 }
 
 /// `POST /api/request`'s line: `{"add": {...}}`.
@@ -795,6 +796,10 @@ fn take(
         )),
         Ok(Input::Progress(put)) => Ok((replied(progress::put(db, &put, trace)?), None)),
         Ok(Input::Push(line)) => Ok((replied(push::change(db, &line)?), None)),
+        Ok(Input::Read(line)) => Ok((
+            replied(crate::post::read(db, line.read).map(|()| format!("{} read", line.read))),
+            None,
+        )),
         Ok(Input::Seen(line)) => Ok((
             replied(Ok(state::seen(db, &line.seen.person, line.seen.at)?)),
             None,

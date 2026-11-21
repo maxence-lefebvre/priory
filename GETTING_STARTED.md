@@ -295,7 +295,7 @@ and only your tailnet can connect. It assumes Tailscale runs on the machine and 
 5. Under More, then Notifications, tap Turn on notifications, and allow them.
 
 A new ask now shows its title on the phone, or its task and step, and tapping it opens the ask. A task that turns blocked
-or failed shows `task <key> <state>`. A snoozed item sends nothing. Turn notifications off on the
+or failed shows `task <key> <state>`, and a failing intake shows `the intake fails to poll <source>`. A snoozed item sends nothing. Turn notifications off on the
 same screen.
 
 On the machine that runs the daemon, `[notify] desktop = true` in `factory.toml` shows the same
@@ -323,7 +323,7 @@ only after a person approved it, unless it is marked `autonomous` with a reason.
 approve each graded plan, even a green one. `hands-off` lets a lead agent answer the task's asks in
 your place, but an ask that lets an irreversible step run still comes to you. A routed ask shows
 "with <lead>" in the web view and the Herdr panels, you can still answer it first, and an answered
-ask says who answered. See
+ask says who answered. When the lead ends without answering, the ask comes back to you. See
 [docs/reference/triggers.md](docs/reference/triggers.md#intervention-and-lead).
 
 **Task and run.** A task is one unit of work, from its event to `done`, `failed` or `dropped`. A run
