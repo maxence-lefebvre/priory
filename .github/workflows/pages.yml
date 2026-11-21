@@ -33,7 +33,9 @@ jobs:
           curl -sSfLo lychee.tar.gz "https://github.com/lycheeverse/lychee/releases/download/$LYCHEE_VERSION/lychee-x86_64-unknown-linux-musl.tar.gz"
           printf '%s  mdbook.tar.gz\n%s  lychee.tar.gz\n' "$MDBOOK_SHA256" "$LYCHEE_SHA256" | sha256sum -c -
           tar -xzf mdbook.tar.gz -C bin
-          tar -xzf lychee.tar.gz -C bin
+          mkdir lychee && tar -xzf lychee.tar.gz -C lychee
+          find lychee -type f -name lychee -exec mv {} bin/ \;
+          bin/mdbook --version && bin/lychee --version
           echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
       - name: Test the staging script
         run: python3 -m unittest discover -s site -p 'test_*.py'
