@@ -2,7 +2,7 @@
 //! ask or an alarm, and nothing else, as Web Push sends.
 
 use crate::listing;
-use rusqlite::Connection;
+use rusqlite::{Connection, OptionalExtension};
 use std::io::ErrorKind;
 use std::process::{Child, Command, Stdio};
 
@@ -29,7 +29,7 @@ pub(crate) fn tick(db: &Connection, desktop: &mut Desktop) -> rusqlite::Result<(
     }
     let told = db.execute(
         "INSERT OR IGNORE INTO notified (kind, item) VALUES (?1, ?2)",
-        [next["kind"].to_string(), next["id"].to_string()],
+        [next["kind"].to_string(), told_as(db, &next)?],
     )?;
     if told == 0 {
         return Ok(());
@@ -67,7 +67,33 @@ pub(crate) fn tick(db: &Connection, desktop: &mut Desktop) -> rusqlite::Result<(
 fn forget(db: &Connection, next: &serde_json::Value) -> rusqlite::Result<()> {
     db.execute(
         "DELETE FROM notified WHERE kind = ?1 AND item = ?2",
-        [next["kind"].to_string(), next["id"].to_string()],
+        [next["kind"].to_string(), told_as(db, next)?],
     )?;
     Ok(())
+}
+
+/// The `notified` item of `next`: its id and its ask's revision, or the time it came on the desk,
+/// so an ask asked again or a task blocked again is told again, as Web Push tells it.
+fn told_as(db: &Connection, next: &serde_json::Value) -> rusqlite::Result<String> {
+    let id = &next["id"];
+    let when = if next["kind"] == "ask" {
+        let revision: Option<i64> = match id {
+            serde_json::Value::Number(number) => db.query_row(
+                "SELECT revision FROM asks WHERE id = ?1 AND name IS NULL",
+                [number.as_i64()],
+                |row| row.get(0),
+            ),
+            _ => db.query_row(
+                "SELECT revision FROM asks WHERE name = ?1",
+                [id.as_str()],
+                |row| row.get(0),
+            ),
+        }
+        .optional()?
+        .flatten();
+        revision.map(|revision| revision.to_string())
+    } else {
+        next["since"].as_str().map(str::to_owned)
+    };
+    Ok(format!("{id}@{}", when.unwrap_or_default()))
 }

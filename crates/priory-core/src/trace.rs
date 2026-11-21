@@ -474,26 +474,17 @@ pub(crate) fn reopened(
     append(tx, trace, "factory.task.reopened", &time, data)
 }
 
-/// Appends a `factory.step.labeled` record that judges `task` with `label`, once per task and label.
-/// It names the record of the step that graded the task, when one did, and its grade.
+/// Appends a `factory.step.labeled` record that judges `task` with `label`, once per task, label and
+/// source event: `happened`, when the event happened, else now, and `evidence`. It names the record
+/// of the step that graded the task, when one did, and its grade.
 pub(crate) fn labeled(
     tx: &Transaction,
     trace: &Trace,
     task: i64,
     label: &str,
     evidence: &str,
+    happened: Option<&str>,
 ) -> rusqlite::Result<()> {
-    let known = tx
-        .query_row(
-            "SELECT 1 FROM trace WHERE type = 'factory.step.labeled'
-             AND json_extract(event, '$.data.task') = ?1 AND json_extract(event, '$.data.label') = ?2",
-            params![task.to_string(), label],
-            |_| Ok(()),
-        )
-        .optional()?;
-    if known.is_some() {
-        return Ok(());
-    }
     let (workflow, key, generation, grade, time): (String, String, i64, Option<String>, String) =
         tx.query_row(
             "SELECT workflow, key, generation, grade, strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
@@ -509,6 +500,20 @@ pub(crate) fn labeled(
                 ))
             },
         )?;
+    let happened = happened.unwrap_or(&time);
+    let known = tx
+        .query_row(
+            "SELECT 1 FROM trace WHERE type = 'factory.step.labeled'
+             AND json_extract(event, '$.data.task') = ?1 AND json_extract(event, '$.data.label') = ?2
+             AND json_extract(event, '$.data.evidence') = ?3
+             AND json_extract(event, '$.data.happened') = ?4",
+            params![task.to_string(), label, evidence, happened],
+            |_| Ok(()),
+        )
+        .optional()?;
+    if known.is_some() {
+        return Ok(());
+    }
     let step_event: Option<String> = tx
         .query_row(
             "SELECT id FROM trace WHERE type = 'factory.step.ended'
@@ -530,6 +535,7 @@ pub(crate) fn labeled(
         "grade": grade,
         "label": label,
         "evidence": evidence,
+        "happened": happened,
     });
     if let Value::Object(fields) = &mut data {
         fields.retain(|_, value| !value.is_null());

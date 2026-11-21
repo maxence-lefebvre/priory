@@ -681,3 +681,57 @@ fn a_stack_is_one_shot_once_every_pull_request_merged_with_no_push_after_review(
         ]
     );
 }
+
+#[test]
+fn each_review_that_requests_changes_is_its_own_record_with_when_it_happened() {
+    let setup = Setup::new("per-event");
+    setup.task(1, "green");
+    let on = |message: Message, time: &str| message.time(time.parse().unwrap());
+
+    setup.handle(&[
+        on(
+            review(10, 1, "aaa", "changes_requested", 1),
+            "2026-10-01T10:00:00Z",
+        ),
+        on(
+            review(10, 1, "bbb", "changes_requested", 2),
+            "2026-10-05T10:00:00Z",
+        ),
+        merged_on(10, 1, "bbb", "m10", "2026-10-06T10:00:00Z"),
+    ]);
+    // The same event stored twice is still one source event.
+    setup.handle(&[on(
+        review(10, 1, "bbb", "changes_requested", 2),
+        "2026-10-05T10:00:00Z",
+    )]);
+
+    let happened: Vec<(String, String)> = setup
+        .db()
+        .prepare(
+            "SELECT json_extract(event, '$.data.label'), json_extract(event, '$.data.happened')
+             FROM trace WHERE type = 'factory.step.labeled' ORDER BY seq",
+        )
+        .unwrap()
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    assert_eq!(
+        happened,
+        [
+            (
+                "changes-requested".to_owned(),
+                "2026-10-01T10:00:00Z".to_owned()
+            ),
+            (
+                "changes-requested".to_owned(),
+                "2026-10-05T10:00:00Z".to_owned()
+            ),
+        ]
+    );
+    assert_eq!(
+        labels(&setup.grades_json(), "green"),
+        [("changes-requested".to_owned(), 1)],
+        "grades counts a task once per label"
+    );
+}

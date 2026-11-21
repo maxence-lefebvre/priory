@@ -189,9 +189,9 @@ a.autolink { color: var(--action-text); text-decoration: underline; text-underli
 .fact { display: grid; grid-template-columns: 18px 1fr; gap: 8px; font: 400 var(--type-small) var(--font-ui); color: var(--text-2); }
 .fact .ico { margin-top: 2px; color: var(--text-3); }
 .fact b { color: var(--text); font-weight: 650; }
-.hist li { display: grid; grid-template-columns: 22px 1fr auto; gap: 10px; padding: 9px 0; border-top: 1px solid var(--line); font: 400 var(--type-small) var(--font-ui); color: var(--text-2); }
+.hist li { display: grid; grid-template-columns: 22px minmax(0, 1fr) auto; gap: 10px; padding: 9px 0; border-top: 1px solid var(--line); font: 400 var(--type-small) var(--font-ui); color: var(--text-2); }
 .hist li:first-child { border-top: 0; }
-.hist li b { color: var(--text); font-weight: 600; }
+.hist li b { color: var(--text); font-weight: 600; overflow-wrap: anywhere; }
 .hist li time { font: 400 12px/20px var(--font-mono); color: var(--text-3); }
 .abar { flex: none; background: var(--bar); border-top: 1px solid var(--line); padding: 8px var(--gutter) calc(8px + env(safe-area-inset-bottom)); display: grid; grid-template-columns: auto 1fr; gap: var(--space-2); }
 .abar .btn { height: 48px; border-radius: var(--radius-card); }

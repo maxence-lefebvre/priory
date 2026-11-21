@@ -27,6 +27,19 @@ next = { approved = "done", rejected = "stop" }
 
 const KEY: &str = "github:owner/repo#1";
 
+/// A workflow whose one code step runs `echo found` and ends.
+const POLL: &str = r#"
+start = "poll"
+
+[[steps]]
+id = "poll"
+decides = "code"
+action = "run"
+run = "echo found"
+effect = "reversible"
+next = { found = "done", running = "done", ok = "done", failed = "stop" }
+"#;
+
 /// A schema of its own in the test database, dropped when dropped.
 struct Database {
     url: String,
@@ -71,6 +84,12 @@ impl Database {
 
     fn publish(&self, message: &Message) {
         self.log().publish(OUTPUT, message).unwrap();
+    }
+
+    /// Runs `sql` in this test's schema.
+    fn execute(&self, sql: &str) {
+        let mut client = client::Client::connect(&self.url(&self.url), client::NoTls).unwrap();
+        client.batch_execute(sql).unwrap();
     }
 
     /// Waits until the log holds a message of `kind` whose data has every field of `fields`.
@@ -261,9 +280,13 @@ fn a_task_that_never_started_on_a_cut_off_runner_moves_once_its_lease_ends_and_r
     let takeover = json!({ "key": KEY, "runner": "b", "from": "a" });
     database.logged(&b, "priory.task.claimed", takeover);
     b.until("asks", |rows| rows.len() == 1);
-    // Room on `a` again, while it still cannot read the log: it starts nothing.
+    // Room on `a` again, while it still cannot read the log: it starts nothing, and says why.
     a.memory(60);
-    std::thread::sleep(Duration::from_secs(3));
+    let claiming = "waits for its claim to reach the log";
+    a.until("tasks", |rows| rows[0][7] == claiming);
+    let tasks = a.priory(&["tasks", "--json"]);
+    let tasks: serde_json::Value = serde_json::from_slice(&tasks.stdout).unwrap();
+    assert_eq!(tasks["tasks"][0]["reason"], claiming, "{tasks}");
     assert!(
         a.rows("runs").is_empty(),
         "a starts no task the log may have moved"
@@ -275,4 +298,89 @@ fn a_task_that_never_started_on_a_cut_off_runner_moves_once_its_lease_ends_and_r
     assert_eq!(tasks.len(), 1);
     assert!(a.rows("runs").is_empty(), "the task ran once, on b");
     assert_eq!(b.rows("runs").len(), 1);
+}
+
+#[test]
+fn a_code_step_whose_kept_never_comes_back_holds_no_later_tasks_action() {
+    let Some(database) = Database::new("uncleared") else {
+        return;
+    };
+    let (mut a, _link) = runner_on(&database, "uncleared", "a");
+    fs::write(a.dir.join("factory/workflows/poll.toml"), POLL).unwrap();
+    // The log turns the first task's `kept` into `waiting`, as a link lost right after it would
+    // leave it unread: that task waits for good, and the later one must not wait behind it.
+    database.log();
+    database.execute(
+        r#"CREATE FUNCTION unkept() RETURNS trigger AS $$ BEGIN
+             IF NEW.message LIKE '%"key":"github:owner/repo#1"%' THEN
+               NEW.message := replace(NEW.message, '"hold":"kept"', '"hold":"waiting"');
+             END IF;
+             RETURN NEW;
+           END $$ LANGUAGE plpgsql;
+           CREATE TRIGGER unkept BEFORE INSERT ON priory_log_messages
+             FOR EACH ROW EXECUTE FUNCTION unkept()"#,
+    );
+    for issue in [1, 2] {
+        let mut request = requested(issue);
+        request.data["workflow"] = json!("poll");
+        database.publish(&request);
+    }
+    a.start_as(Path::new(env!("CARGO_BIN_EXE_priory")));
+
+    let tasks = a.until("tasks", |rows| rows.len() == 2 && rows[1][4] == "done");
+    assert_eq!(tasks[0][1], "github:owner/repo#1");
+    assert_eq!(tasks[0][4], "queued");
+    assert_eq!(tasks[0][7], "waits for its claim to reach the log");
+    assert_eq!(
+        a.rows("actions").len(),
+        1,
+        "only the later task's action ran"
+    );
+}
+
+#[test]
+fn a_given_task_s_run_ends_even_when_the_ack_of_the_gift_is_lost() {
+    let Some(database) = Database::new("ack") else {
+        return;
+    };
+    let (mut a, _link) = runner_on(&database, "ack", "a");
+    let request = work(1);
+    database.publish(&request);
+    a.hold("hold-call");
+    a.calls(&[result("passed")]);
+    a.start_as(Path::new(env!("CARGO_BIN_EXE_priory")));
+    let kept = json!({ "key": KEY, "runner": "a", "hold": "kept" });
+    database.logged(&a, "priory.task.held", kept);
+    a.written("fake/submitted");
+    let sessions = || {
+        let listed = a.tmux(&["list-sessions", "-F", "#{session_name}"]);
+        String::from_utf8_lossy(&listed.stdout).into_owned()
+    };
+    assert!(sessions().contains("priory-1"), "{}", sessions());
+
+    // Acking the gift fails as a lost link does, every time.
+    database.execute(
+        r#"CREATE FUNCTION lose_ack() RETURNS trigger AS $$ BEGIN
+             IF EXISTS (SELECT 1 FROM priory_log_messages
+                        WHERE seq = NEW.seq AND message LIKE '%"given":true%') THEN
+               RAISE EXCEPTION 'the link dropped' USING ERRCODE = '08006';
+             END IF;
+             RETURN NEW;
+           END $$ LANGUAGE plpgsql;
+           CREATE TRIGGER lose_ack BEFORE INSERT OR UPDATE ON priory_log_cursors
+             FOR EACH ROW EXECUTE FUNCTION lose_ack()"#,
+    );
+    let gift = json!({
+        "key": KEY, "runner": "b", "request": request.id.to_string(), "from": "a", "given": true,
+    });
+    database.publish(&Message::new("priory.task.claimed", gift).subject(KEY));
+
+    a.until("tasks", |rows| rows[0][4] == "dropped");
+    until_unreachable(&a, true);
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while sessions().contains("priory-1") {
+        assert!(Instant::now() < deadline, "the run's session still runs");
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    assert!(alive(&mut a), "a's daemon rides out the lost ack");
 }
