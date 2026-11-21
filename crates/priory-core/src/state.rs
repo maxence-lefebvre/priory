@@ -12,7 +12,7 @@ use std::collections::BTreeMap;
 use std::io::Write;
 use std::time::Duration;
 
-const VERSION: i64 = 68;
+const VERSION: i64 = 69;
 
 const SCHEMA: &str = "
 CREATE TABLE tasks (
@@ -1176,6 +1176,22 @@ CREATE UNIQUE INDEX IF NOT EXISTS todos_open_connector ON todos (connector)
 PRAGMA user_version = 68;
 ";
 
+// The class a result gave each review feedback item of a task, named by its URL.
+const SCHEMA_69: &str = concat!(
+    "CREATE TABLE IF NOT EXISTS feedback_triage (
+  task    INTEGER NOT NULL REFERENCES tasks (id),
+  item    TEXT NOT NULL,
+  class   TEXT NOT NULL CHECK (class IN ('trivial', 'nothing-to-do', 'persons-call')),
+  run     INTEGER NOT NULL REFERENCES runs (id),
+  created TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+  PRIMARY KEY (task, item)
+);
+",
+    bumps!("feedback_triage"),
+    "PRAGMA user_version = 69;
+"
+);
+
 /// Each schema change in order: a file at version `n` applies those from index `n` on.
 const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA, SCHEMA_2, SCHEMA_3, SCHEMA_4, SCHEMA_5, SCHEMA_6, SCHEMA_7, SCHEMA_8, SCHEMA_9,
@@ -1186,7 +1202,7 @@ const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA_42, SCHEMA_43, SCHEMA_44, SCHEMA_45, SCHEMA_46, SCHEMA_47, SCHEMA_48, SCHEMA_49,
     SCHEMA_50, SCHEMA_51, SCHEMA_52, SCHEMA_53, SCHEMA_54, SCHEMA_55, SCHEMA_56, SCHEMA_57,
     SCHEMA_58, SCHEMA_59, SCHEMA_60, SCHEMA_61, SCHEMA_62, SCHEMA_63, SCHEMA_64, SCHEMA_65,
-    SCHEMA_66, SCHEMA_67, SCHEMA_68,
+    SCHEMA_66, SCHEMA_67, SCHEMA_68, SCHEMA_69,
 ];
 
 /// The order the queue starts tasks in: band, then a person's order, then age. A band the factory
@@ -1471,7 +1487,10 @@ pub(crate) fn route_in(
             message.subject.as_deref(),
             &message.data.to_string(),
         );
-        let text = placed(tx, task, &resources, &text)?;
+        let mut text = placed(tx, task, &resources, &text)?;
+        if crate::triage::item(&message.kind, &message.data).is_some() {
+            text = format!("{text}\n{}", crate::triage::RULE);
+        }
         tx.execute(
             "INSERT INTO outbox (task, text) VALUES (?1, ?2)",
             params![task, text],
@@ -2602,6 +2621,9 @@ pub(crate) fn start(db: &mut Connection, run: &NewRun) -> rusqlite::Result<i64> 
                 &row.get::<_, String>(3)?,
             ));
         }
+    }
+    if crate::triage::any(&tx, &events)? {
+        text = format!("{text}\n{}", crate::triage::RULE);
     }
     if !text.is_empty() {
         tx.execute(
