@@ -1268,7 +1268,7 @@ The web's [Inbox](#inbox) panel, as a tab in the center stack.
 
 ### Tasks
 
-The web's Tasks panel, as a tab in the center stack.
+The web's [Tasks panel](#tasks-panel), as a tab in the center stack.
 
 - Under the 44 px header, the saved views Active, Blocked and Ended as chips with their counts,
   then a State, Lane and Workflow chip each, whose menu lists the view's values with counts.
