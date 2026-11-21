@@ -1,6 +1,6 @@
 // Priory's web view (DESIGN.md): the frame, the Desk and the Asks, with answering through the CLI's verbs.
 // Agent text is untrusted: every value goes through `html`, which escapes it.
-import { ARM_MS, ASK_VIEWS, answeredBy, askGroups, routedMark, routedNote, shownGroups, snoozeShortcut, snoozed, stillArmed, takesText, writeNote } from "./asks.js";
+import { ARM_MS, ASK_VIEWS, answeredBy, askGroups, routedMark, routedNote, runnerOf, seenAgo, sentNote, shownGroups, snoozeShortcut, snoozed, stillArmed, takesText, writeNote } from "./asks.js";
 import { SPLITS, attentionView, costTiles, dayBars, money, splitTable } from "./costs.js";
 import { addBody, addOutcome } from "./add.js";
 import { linked } from "./links.js";
@@ -343,6 +343,17 @@ const openAsks = () => deskModel().open;
 const listedAsks = () => faceted(openAsks(), facetPicks());
 
 const routedTag = (ask) => routedMark(ask) ? html`<span class="tag routed">${routedMark(ask)}</span>` : "";
+// Only another runner's ask carries its runner. A phone row's tag keeps the name, in warn text while
+// the runner is away, and says "last seen" on line 3.
+const runnerTag = (ask, full = true) => {
+  const away = seenAgo(ask, Date.now(), age);
+  if (!runnerOf(ask)) return "";
+  return full ? html`<span class="tag runner">${runnerOf(ask)}${away ? `, ${away}` : ""}</span>` : html`<span class="tag runner ${away ? "t-warn" : ""}">${runnerOf(ask)}</span>`;
+};
+const sentLine = (ask) => {
+  const note = sentNote(ask);
+  return note ? html`<span class="${note.refused ? "t-warn" : "t-action"}">${note.text}</span>` : "";
+};
 const byLine = (ask) => answeredBy(ask.answered_by) ? ` by ${answeredBy(ask.answered_by)}` : "";
 
 // Rows
@@ -353,15 +364,16 @@ function askRow(ask, current) {
     : ask.state === "withdrawn"
       ? html`<span>Withdrawn${ask.withdrawn_why ? `: ${ask.withdrawn_why}` : ""}</span>`
       : snoozed(ask, Date.now()) ? html`<span>${icon("clock", "s15")}${snoozedUntil(ask)}</span>`
+        : sentNote(ask) ? sentLine(ask)
         : ask.recommendation ? html`<span>Recommends <b>${ask.recommendation}</b></span>` : html`<span>${options.length} options</span>`;
   const when = ask.state === "answered" && ask.answered_at
     ? timeTag(ask.answered_at, today(ask.answered_at) ? clock(ask.answered_at) : age(ask.answered_at))
     : timeTag(ask.since);
   return html`<a class="row ${ask.state !== "open" ? "past" : ""}" href="/asks/${ask.id}" aria-current="${current ? "true" : "false"}">
     ${tile(ask.state === "open" ? "ask" : ask.state)}
-    <span class="l1"><span class="mono">${ask.key}</span><span>${ask.step}</span>${ask.command ? html`<span class="tag">Command</span>` : ""}${routedTag(ask)}<span class="age">${when}</span></span>
+    <span class="l1"><span class="mono">${ask.key}</span><span>${ask.step}</span>${ask.command ? html`<span class="tag">Command</span>` : ""}${runnerTag(ask, false)}${routedTag(ask)}<span class="age">${when}</span></span>
     <span class="l2">${ask.title || ask.question}</span>
-    <span class="l3">${line3}</span>
+    <span class="l3">${ask.state === "open" && !sentNote(ask) && seenAgo(ask, Date.now(), age) ? html`<span class="t-warn">${runnerOf(ask)} ${seenAgo(ask, Date.now(), age)}</span>` : ""}${line3}</span>
     <span class="chev">${icon("chevron-right", "s15")}</span></a>`;
 }
 
@@ -544,7 +556,7 @@ function nextCard(model) {
   const verb = ask ? "Answer…" : href?.startsWith("#") ? "See the banner" : "Open task";
   const button = item.kind === "todo" ? todoDone(item.id, "next") : href ? html`<a class="btn ${ask ? "primary" : "secondary"}" href="${href}">${verb}</a>` : "";
   return html`<section class="next" aria-label="The next thing"><p class="l1">${tile(kind, "sm")}<span class="mono">${item.key || ""}</span><span>${item.step || ""}</span><span class="age">${timeTag(item.since)}</span></p>
-    <p class="q">${item.kind === "todo" ? todoText(item) : autolinked(text, ask?.repo || task?.repo)}</p>${ask && routedMark(ask) ? html`<p class="why t-live">${routedMark(ask)}</p>` : ""}<p class="why t-${role(kind)}">${item.why}</p>
+    <p class="q">${item.kind === "todo" ? todoText(item) : autolinked(text, ask?.repo || task?.repo)}</p>${ask && routedMark(ask) ? html`<p class="why t-live">${routedMark(ask)}</p>` : ""}${runnerOf(ask) ? html`<p class="why">${runnerTag(ask)} ${sentLine(ask)}</p>` : ""}<p class="why t-${role(kind)}">${item.why}</p>
     ${ask?.recommendation ? html`<p class="rec">${icon("corner-down-right", "s15")}<span>${ask.recommendation}</span></p>` : ""}
     ${button}</section>`;
 }
@@ -692,9 +704,6 @@ function needsMe(model, wide) {
 }
 
 function deskTable(model, selected) {
-  const askLine = (ask) => html`<tr data-href="/asks/${ask.id}" aria-current="${String(ask.id) === selected ? "true" : "false"}">
-    <td>${stateWord("ask")}</td><td class="mono">${ask.key}</td><td>${ask.step}</td><td class="q"><span>${ask.title || ask.question}</span>${routedTag(ask)}</td>
-    <td class="recw">${ask.recommendation || ""}</td><td class="r">${timeTag(ask.since)}</td></tr>`;
   const itemLine = (item) => html`<tr>
     <td>${stateWord(item.kind === "prompt" ? "prompt" : item.kind)}</td><td class="mono">${item.kind === "batch" ? html`<a href="/batches/${item.id}">${item.key || ""}</a>` : ["blocked", "failed"].includes(item.kind) ? html`<a href="/tasks/${item.task}">${item.key || ""}</a>` : item.key || ""}</td><td>${item.step || ""}</td>
     <td class="q full t-${role(item.kind)}">${item.task ? prsTag({}, item.task) : ""}<span>${item.what}</span></td><td class="recw">${["blocked", "failed"].includes(item.kind) ? taskActs(item.task, item.kind) : rowActs(item)}</td><td class="r">${timeTag(item.since)}</td></tr>`;
@@ -703,7 +712,7 @@ function deskTable(model, selected) {
   const group = (title, count) => html`<tr class="grp"><td colspan="6">${title}<span>${count}</span></td></tr>`;
   return html`<table class="tbl">
     <thead><tr><th>State</th><th>Task</th><th>Step</th><th>Waits on you</th><th>Recommends</th><th class="r">Age</th></tr></thead>
-    <tbody>${model.open.map(askLine)}
+    <tbody>${model.open.map((ask) => askTableRow(ask, selected))}
     ${model.stopped.length ? [group("Stopped", model.stopped.length), model.stopped.map(itemLine)] : ""}
     ${model.todos.length ? [group("To-dos", model.todos.length), model.todos.map(todoLine)] : ""}
     ${model.other.length ? [group("Also waiting", model.other.length), model.other.map(itemLine)] : ""}
@@ -729,8 +738,8 @@ function askTableRow(ask, selected) {
   const answered = ask.state === "answered";
   const when = answered && ask.answered_at ? timeTag(ask.answered_at, today(ask.answered_at) ? clock(ask.answered_at) : age(ask.answered_at)) : timeTag(ask.since);
   return html`<tr data-href="/asks/${ask.id}" aria-current="${String(ask.id) === selected ? "true" : "false"}">
-    <td>${stateWord(ask.state === "open" ? "ask" : ask.state)}</td><td class="mono">${ask.key}</td><td>${ask.step}</td><td class="q"><span>${ask.title || ask.question}</span>${routedTag(ask)}</td>
-    <td class="recw">${answered ? ask.answer + byLine(ask) : ask.state === "withdrawn" ? ask.withdrawn_why || "" : snoozed(ask, Date.now()) ? snoozedUntil(ask) : ask.recommendation || ""}</td><td class="r">${when}</td></tr>`;
+    <td>${stateWord(ask.state === "open" ? "ask" : ask.state)}</td><td class="mono">${ask.key}</td><td>${ask.step}</td><td class="q"><span>${ask.title || ask.question}</span>${runnerTag(ask)}${routedTag(ask)}</td>
+    <td class="recw">${answered ? ask.answer + byLine(ask) : ask.state === "withdrawn" ? ask.withdrawn_why || "" : snoozed(ask, Date.now()) ? snoozedUntil(ask) : sentNote(ask) ? sentLine(ask) : ask.recommendation || ""}</td><td class="r">${when}</td></tr>`;
 }
 
 // Each facet's key, label, an ask's values and the order the picker offers them. An ask with no
@@ -738,7 +747,10 @@ function askTableRow(ask, selected) {
 const FACETS = [
   ["band", "Band", (ask) => [ask.band ?? "none"], () => [...(state.data.bands || []), "none"]],
   ["risk", "Risk", (ask) => (ask.risk?.length ? ask.risk : ["none"]), () => ["irreversible", "high", "medium", "low", "red", "yellow", "green", "none"]],
+  ["runner", "Runner", (ask) => [ask.runner ?? "none"], null, (name) => (state.data.asks.some((ask) => ask.runner === name && !runnerOf(ask)) ? `${name} (here)` : name)],
 ];
+// The Runner facet shows only in a factory of several runners, where every ask names one.
+const shownFacets = () => FACETS.filter(([key]) => key !== "runner" || state.data.asks.some((ask) => ask.runner));
 const facetPicks = (facets = FACETS) => {
   const search = new URLSearchParams(listSearch());
   return new Map(facets.map(([key]) => [key, search.get(key)]).filter(([, value]) => value));
@@ -747,7 +759,7 @@ const faceted = (asks, picks) => filtered(asks, picks, FACETS);
 const facetQuery = (picks) => [...picks].map(([key, value]) => `&${key}=${encodeURIComponent(value)}`).join("");
 
 // A facet chip of the list at `base` over `items`; a facet with no order offers its values A to Z.
-function facet(view, picks, [key, label, values, order], base = "/asks", items = state.data.asks) {
+function facet(view, picks, [key, label, values, order, named = (name) => name], base = "/asks", items = state.data.asks) {
   const others = new Map([...picks].filter(([other]) => other !== key));
   const picked = picks.get(key);
   if (picked) return html`<a class="facet" aria-current="true" href="${base}?view=${view}${facetQuery(others)}" aria-label="${label}: ${picked}. Clear">${picked}${icon("x", "s13")}</a>`;
@@ -755,7 +767,7 @@ function facet(view, picks, [key, label, values, order], base = "/asks", items =
   for (const item of items) for (const value of values(item)) counts.set(value, (counts.get(value) || 0) + 1);
   const offered = [...counts].sort(([a], [b]) => (order ? order().indexOf(a) - order().indexOf(b) : a.localeCompare(b)));
   return html`<details class="facet"><summary aria-label="Filter by ${key}">${label}${icon("chevron-down", "s13")}</summary>
-    <div class="pick">${offered.map(([name, count]) => html`<a href="${base}?view=${view}${facetQuery(others)}&${key}=${encodeURIComponent(name)}">${name}<span class="num">${count}</span></a>`)}</div></details>`;
+    <div class="pick">${offered.map(([name, count]) => html`<a href="${base}?view=${view}${facetQuery(others)}&${key}=${encodeURIComponent(name)}">${named(name)}<span class="num">${count}</span></a>`)}</div></details>`;
 }
 
 // The saved view the URL names, else the list's first.
@@ -868,7 +880,7 @@ function asksBody(wide) {
     ["answered", "Answered", total.answered, current === "answered"],
     ["all", "All", total.all, current === "all"],
   ], "/asks", facetQuery(picks));
-  const facets = html`<div class="facets" aria-label="Facets">${FACETS.map((spec) => facet(current, picks, spec))}</div>`;
+  const facets = html`<div class="facets" aria-label="Facets">${shownFacets().map((spec) => facet(current, picks, spec))}</div>`;
   const selected = selectedAsk();
   const section = (title, list, note, count = list.length) => {
     if (!count) return "";
@@ -902,7 +914,7 @@ function optionList(ask, wide) {
   const pending = state.pending?.id === ask.id ? state.pending : null;
   const armed = state.armed?.id === ask.id && state.armed.revision === ask.revision ? state.armed.text : null;
   const locked = lockOf(ask);
-  const bound = `Bound to revision ${ask.revision}.`;
+  const bound = `${runnerOf(ask) ? `Runs on ${runnerOf(ask)}. ` : ""}Bound to revision ${ask.revision}.`;
   return (ask.options || []).map((option, i) => {
     const recommended = option === ask.recommendation;
     const runs = runsCommand(ask, option);
@@ -942,7 +954,7 @@ function askDetail(id, wide) {
   const armed = state.armed?.id === ask.id && state.armed.revision === ask.revision ? state.armed.text : null;
   const batch = goBatch(ask);
   const locked = lockOf(ask);
-  const bound = `Bound to revision ${ask.revision}.`;
+  const bound = `${runnerOf(ask) ? `Runs on ${runnerOf(ask)}. ` : ""}Bound to revision ${ask.revision}.`;
   const optionButtons = optionList(ask, wide);
   const notice = state.notices.get(ask.id);
   const lockedNote = locked === "offline" ? html`<p class="note" id="answer-locked">${icon("unplug", "s15")}<span>Reconnect to answer.</span></p>`
@@ -954,7 +966,7 @@ function askDetail(id, wide) {
     ? html`<form class="writeform" data-action="send-text"><label class="sr" for="draft">Your answer</label><textarea id="draft" name="text" rows="3">${state.drafts.get(ask.id) || ""}</textarea><button class="btn primary" ${pending ? raw('aria-disabled="true"') : ""}>Send</button></form>`
     : html`<button class="ghost write" data-action="write" aria-disabled="${locked || pending ? "true" : "false"}">${icon("pencil", "s15")}Write an answer</button>`;
   const busy = pending ? "true" : "false";
-  const snoozeButtons = !ask.task || locked === "offline"
+  const snoozeButtons = !ask.task || runnerOf(ask) || locked === "offline"
     ? ""
     : ask.snoozed_until
       ? html`<button class="ghost" data-action="unsnooze" aria-disabled="${busy}">Unsnooze</button>`
@@ -962,13 +974,21 @@ function askDetail(id, wide) {
   const editable = Boolean(batch) && ask.state === "open" && batch.state === "asked" && !locked;
   const editPlanLink = editable ? html`<a class="ghost" href="#batchplan">${icon("pencil", "s15")}Edit the plan</a>` : "";
   const more = html`<div class="more">${editPlanLink}${write}${locked || !takesText(ask) ? "" : html`<button class="ghost" data-action="dismiss" aria-disabled="${busy}">Dismiss</button>`}${snoozeButtons}</div>`;
+  const owner = runnerOf(ask);
+  const away = seenAgo(ask, Date.now(), age);
+  const sent = sentNote(ask);
+  // A closed ask still says why its runner refused an answer sent to it.
+  const sentShown = !sent || notice || (ask.state !== "open" && !sent.refused) ? "" : sent.refused
+    ? html`<p class="warnline" role="status">${sent.text}.</p>`
+    : html`<p class="routednote" role="status">${icon("corner-down-right", "s15")}<span>${sent.text}. It applies when ${owner} reads the log.${away ? ` ${owner} was ${away}.` : ""}</span></p>`;
+  const elsewhere = owner ? html`<p class="note">${icon("corner-down-right", "s15")}<span>This ask belongs to ${owner}. Your answer goes there through the log, and ${owner} applies it when it reads it. Snooze stays on ${owner}.</span></p>` : "";
   const decided = ask.state !== "open"
-    ? html`${notice ? html`<p class="warnline" role="status">${notice}</p>` : ""}<div class="rec">${ask.state === "answered" ? html`<span><b>Answered: ${ask.answer}.</b> ${ask.answered_at ? age(ask.answered_at) + " ago" : ""}${byLine(ask) ? ` By ${answeredBy(ask.answered_by)}.` : ""}</span>` : html`<span><b>Withdrawn${ask.withdrawn_why ? `: ${ask.withdrawn_why}` : ""}.</b></span>`}</div>${ranLine(ask.ran)}`
-    : html`${notice ? html`<p class="warnline" role="status">${notice}</p>` : ""}${routedNote(ask) ? html`<p class="routednote">${icon("corner-down-right", "s15")}${routedNote(ask)}</p>` : ""}${ask.recommendation ? html`<div class="rec"><span><b>Recommended: ${ask.recommendation}.</b></span>
+    ? html`${notice ? html`<p class="warnline" role="status">${notice}</p>` : ""}${sentShown}<div class="rec">${ask.state === "answered" ? html`<span><b>Answered: ${ask.answer}.</b> ${ask.answered_at ? age(ask.answered_at) + " ago" : ""}${byLine(ask) ? ` By ${answeredBy(ask.answered_by)}.` : ""}</span>` : html`<span><b>Withdrawn${ask.withdrawn_why ? `: ${ask.withdrawn_why}` : ""}.</b></span>`}</div>${ranLine(ask.ran)}`
+    : html`${notice ? html`<p class="warnline" role="status">${notice}</p>` : ""}${sentShown}${routedNote(ask) ? html`<p class="routednote">${icon("corner-down-right", "s15")}${routedNote(ask)}</p>` : ""}${ask.recommendation ? html`<div class="rec"><span><b>Recommended: ${ask.recommendation}.</b></span>
         ${ask.next_action ? html`<span class="then">${icon("corner-down-right", "s15")}<span>${ask.next_action}</span></span>` : ""}</div>` : ""}
-      <div class="opts" role="group" aria-label="Options">${optionButtons}</div>${lockedNote}${more}`;
+      <div class="opts" role="group" aria-label="Options">${optionButtons}</div>${lockedNote}${more}${elsewhere}`;
   const top = html`<div class="ask">
-    <a class="ctx" href="${ask.task ? `/tasks/${ask.task}` : "/asks"}">${wide ? "" : tile("ask", "sm")}<span class="mono">${ask.key}</span><span>${ask.step}</span><span>${ask.lane || ""}</span>${ask.command ? html`<span class="tag">Command</span>` : ""}${wide ? "" : html`<span>${timeTag(ask.since)}</span><span>revision ${ask.revision}</span>`}</a>
+    <a class="ctx" href="${ask.task && !owner ? `/tasks/${ask.task}` : "/asks"}">${wide ? "" : tile("ask", "sm")}<span class="mono">${ask.key}</span><span>${ask.step}</span><span>${ask.lane || ""}</span>${ask.command ? html`<span class="tag">Command</span>` : ""}${runnerTag(ask)}${wide ? "" : html`<span>${timeTag(ask.since)}</span><span>revision ${ask.revision}</span>`}</a>
     <h2 class="question">${autolinked(ask.question || ask.title, ask.repo)}</h2>${decided}</div>`;
   // A go ask reads its batch's plan first; the planning task's own plan result says the same.
   const planned = batch ? [
@@ -987,7 +1007,7 @@ function askDetail(id, wide) {
     ? html`<section class="sect" id="command"><div class="sh">${icon("terminal", "s15")}Command the asker attached</div>
       <div class="cmd"><span class="mono">$ ${ask.command}</span><small>Priory stores this command and never runs it: the ask came from outside Priory.</small></div></section>`
     : html`<section class="sect" id="command"><div class="sh">${icon("terminal", "s15")}Command an answer runs</div>
-      ${commandBlock(ask, `Runs on ${ask.command.runs.join(", ")}. ${bound} Runs at most once.`)}</section>`;
+      ${commandBlock(ask, `${owner ? `Runs on ${owner} when` : "Runs when"} answered ${ask.command.runs.join(" or ")}. Bound to revision ${ask.revision}. Runs at most once.`)}</section>`;
   // Every revision and refused answer, newest first; an ask listed before Priory kept them shows its current revision.
   const dated = [
     ...(ask.revisions || [{ revision: ask.revision, at: ask.since, answer: ask.answer, answered_at: ask.answered_at }]).flatMap((revision) => [
@@ -1020,7 +1040,7 @@ function askDetail(id, wide) {
 
 // The ask's task as /api/tasks/{id} serves it, read once per ask and again after each refresh.
 function taskOf(ask) {
-  if (!ask.task) return null;
+  if (!ask.task || runnerOf(ask)) return null;
   if (state.task?.id === ask.task) return state.task.body;
   state.task = { id: ask.task, body: null };
   api(`/api/tasks/${ask.task}`).then((body) => {
@@ -1061,13 +1081,15 @@ function batchOf(which, version = null) {
 // this revision, so a Go never answers a plan the page did not show.
 function lockOf(ask) {
   if (state.failed) return "offline";
+  if (runnerOf(ask)) return null;
   const read = state.batch?.which === ask.key && state.batch.version === ask.revision && state.batch.body;
   return ask.state === "open" && ask.key?.startsWith("batch:") && !read ? "plan" : null;
 }
 
 // The go ask's batch, once the batch names this ask as its go, read for this revision of the ask.
 function goBatch(ask) {
-  if (!ask.key?.startsWith("batch:")) return null;
+  // Another runner's batch lives on that runner; this server cannot read its plan.
+  if (!ask.key?.startsWith("batch:") || runnerOf(ask)) return null;
   const batch = batchOf(ask.key, ask.revision);
   return batch?.ask === ask.id ? batch : null;
 }
@@ -1262,7 +1284,7 @@ async function taskWrite(task, act, body) {
 // A task's page: its state, reason, actions, a box to say something to its agent, then its brief,
 // plan, pull request and trace.
 function taskPage(id) {
-  const back = html`<div class="top"><a class="back" href="/">${icon("chevron-left", "s22")}Desk</a></div>`;
+  const back = html`<div class="top"><a class="back" href="/tasks">${icon("chevron-left", "s22")}Tasks</a></div>`;
   const task = taskOf({ task: id });
   if (!task) {
     const failed = state.task?.error;
@@ -1581,7 +1603,7 @@ async function write(ask, path, body, draft) {
     reply = { status: 0, body: { error: "the connection dropped" } };
   }
   const { status, body: answered } = reply;
-  if (status === 200) {
+  if (status === 200 || status === 202) {
     state.drafts.delete(ask.id);
     state.writing.delete(ask.id);
     state.notices.delete(ask.id);
@@ -1597,7 +1619,7 @@ async function write(ask, path, body, draft) {
   }
   const fresh = answered.ask;
   if (status === 409 && fresh) state.data.asks = state.data.asks.map((candidate) => (candidate.id === fresh.id ? fresh : candidate));
-  state.notices.set(ask.id, writeNote(status, answered, age));
+  state.notices.set(ask.id, writeNote(status, answered, age, ask));
   if (status === 504 || status === 0) refresh();
   return false;
 }

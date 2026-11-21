@@ -14,6 +14,9 @@ slice with its tests, the slices after it, and the open questions with a recomme
   and `reverted` ([trace.md](../daemon/trace.md#outcome-labels)). Each is a `factory.step.labeled`
   record, written once per task and label: a second review that requests changes writes nothing.
   Its `time` is when Priory wrote it, not when the event happened.
+- A person marks a task's work wrong with `priory label TASK wrong --evidence URL`, a
+  `marked-wrong` label that `priory report risk` reads and `priory grades` leaves out
+  ([label.md](../reference/label.md)).
 - `priory grades` compares each grade with those labels, for the tasks that have a grade. It prints
   counts and shares, with no interval.
 - `priory check --explain` lists each irreversible step with its gate, and every path that reaches
@@ -60,7 +63,8 @@ A task is a trial of its rows when both of these hold:
 
 The 30 days are a fixed horizon. A trial's outcome is what happened in the 30 days after its reach,
 by the time each event happened, and nothing that happens later changes it. An event that Priory
-stores late still counts on the day it happened, and so does a mark a person clears. So every trial was watched for the
+stores late still counts on the day it happened. A mark a person clears counts nowhere, whenever
+they clear it: the clear says the mark was a mistake, not that something happened. So every trial was watched for the
 same time, a fast bad label and a slow clean one enter the count on the same day, and an old
 trial has no more chances to turn bad than a new one. An adverse label that happened after the
 horizon shows in a `late` count, beside the estimate and not in it.
@@ -93,7 +97,7 @@ The labels need two small additions:
 | -------- | --- | ----- |
 | `factory.step.labeled` gains `happened`, the time of the event that the label reads | The horizon counts by when an event happened. A record written before the field has no known date, so its task is `undated` and no trial: its write time would misplace a late event | First |
 | One record per task, label and source event, in place of one per task and label. `priory grades` still counts a task once per label | A task with two irreversible steps needs the label that happened after each. Today a `changes-requested` before the second step hides one after it | First |
-| `marked-wrong`: a person runs `priory label TASK wrong --evidence URL [--happened DATE]`, and `--clear` appends a record that withdraws it | Most bad merges are fixed forward, not reverted, and no event names them | Later |
+| `marked-wrong`: a person runs `priory label TASK wrong --evidence URL [--happened DATE]`, and `--clear` appends a `factory.step.unlabeled` record that withdraws it | Most bad merges are fixed forward, not reverted, and no event names them | Built, later slice 1 |
 
 A `fixes` relation is not a label. Priory records one whenever a request links a merged pull
 request, and an agent can write such a request. So `priory report risk` lists the `fixes` relations
@@ -284,10 +288,11 @@ Tests, through the CLI as `crates/priory/tests/grades.rs` does:
 
 ## Later slices
 
-1. `priory label TASK wrong --evidence URL`, its `--clear`, the `marked-wrong` label, and the
+1. Built. `priory label TASK wrong --evidence URL`, its `--clear`, the `marked-wrong` label, and the
    candidates table. The verb joins the `priory-person` guard, so no run can call it. Tests cover a
    mark on a task with no pull request, which stays `unjudged`, a mark on a task whose pull request
    never merged, which is `judged wrong` only, and a cleared mark.
+   [label.md](../reference/label.md) and [trace.md](../daemon/trace.md#risk) describe it.
 2. The ask's `risk_estimate` and its line in the web view, the Herdr adapter and `priory asks`.
    The web view part starts from a reviewed design, as `AGENTS.md` asks.
 3. The columns of `priory check --explain`, `priory flows` and the Flows panels.

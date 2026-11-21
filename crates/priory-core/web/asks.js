@@ -3,9 +3,9 @@ export const ASK_VIEWS = ["open", "snoozed", "answered", "all"];
 /** The groups of `askGroups` a saved view lists, in order. @param {string} view */
 export const shownGroups = (view) => (view === "all" ? ["open", "snoozed", "answered", "withdrawn"] : [view]);
 
-/** The `POST /api/snooze` body of the S key: 1 h on an open ask of a task, else null. @param {any} ask @param {number} now */
+/** The `POST /api/snooze` body of the S key: 1 h on an open ask of a task here, else null. @param {any} ask @param {number} now */
 export const snoozeShortcut = (ask, now) =>
-  ask?.state === "open" && ask.task && !snoozed(ask, now) ? { kind: "ask", id: ask.id, for: "1h" } : null;
+  ask?.state === "open" && ask.task && !runnerOf(ask) && !snoozed(ask, now) ? { kind: "ask", id: ask.id, for: "1h" } : null;
 
 export const snoozed = (ask, now) => ask.state === "open" && Boolean(ask.snoozed_until) && Date.parse(ask.snoozed_until) > now;
 
@@ -26,6 +26,36 @@ export const routedMark = (ask) => (ask?.routed_to && (ask.state ?? "open") === 
 /** What an open ask's detail says of its lead, else null. @param {any} ask */
 export const routedNote = (ask) => (routedMark(ask) ? `${ask.routed_to} is answering. You can still answer first: the first answer stands.` : null);
 
+/** The runner of another runner's ask, which alone lists `submissions`, else null. @param {any} ask */
+export const runnerOf = (ask) => (Array.isArray(ask?.submissions) ? ask.runner : null);
+
+// How long a runner may be quiet before its asks say when it was last seen: alive messages come once a minute.
+const AWAY_MS = 3 * 60 * 1000;
+
+/**
+ * "last seen <age> ago" for another runner's ask whose runner is away, else null.
+ * @param {any} ask @param {number} now @param {(iso: string) => string} ago
+ */
+export function seenAgo(ask, now, ago) {
+  if (!runnerOf(ask)) return null;
+  if (!ask.last_seen) return "never seen";
+  return now - Date.parse(ask.last_seen) > AWAY_MS ? `last seen ${ago(ask.last_seen)} ago` : null;
+}
+
+/**
+ * What became of the latest answer or dismiss sent to another runner's ask, while it waits or once
+ * refused, else null: an applied one shows in the ask itself. @param {any} ask
+ */
+export function sentNote(ask) {
+  const runner = runnerOf(ask);
+  const last = runner ? ask.submissions.at(-1) : null;
+  if (!last) return null;
+  const what = last.verb === "dismiss" ? "the dismiss" : last.text;
+  if (last.outcome === "refused") return { text: `${runner} refused ${what}: ${last.why}`, refused: true };
+  if (last.outcome) return null;
+  return { text: last.verb === "dismiss" ? `Dismiss sent to ${runner}` : `Sent to ${runner}: ${last.text}`, refused: false };
+}
+
 /** Who answered, as the views say it: a person, or `agent:<lead>`. Null when unrecorded. @param {string | null | undefined} by */
 export const answeredBy = (by) => (!by ? null : by.startsWith("agent:") ? by : "a person");
 
@@ -41,14 +71,15 @@ export const stillArmed = (armed, ask, option, now) =>
 
 /**
  * Why an ask write did not apply, for the note on the ask. @param {number} status @param {any} body
- * @param {(iso: string) => string} ago a time as the page says its age
+ * @param {(iso: string) => string} ago a time as the page says its age @param {any} [ask] the ask written to
  */
-export function writeNote(status, body, ago) {
+export function writeNote(status, body, ago, ask) {
   const fresh = body?.ask;
   if (status === 409 && fresh) {
     if (fresh.state === "open") return `The question changed. Read revision ${fresh.revision} and answer again.`;
     return fresh.state === "answered" ? `Already answered ${ago(fresh.answered_at)} ago: ${fresh.answer}.` : `Withdrawn: ${fresh.withdrawn_why}.`;
   }
+  if (status === 503 && runnerOf(ask)) return `Could not send: ${body?.error}.`;
   if (status === 503) return "Could not send: no priory daemon runs beside this server. Start priory daemon, then send again.";
   if (status === 504 || status === 0) return "The daemon may have applied this but did not confirm it. Check the ask's state before you send again.";
   return `Could not send: ${body?.error || `the server answered ${status}`}.`;

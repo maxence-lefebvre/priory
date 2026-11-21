@@ -15,6 +15,7 @@ fn a_person_verb_refuses_inside_a_run() {
         &["give", "github:owner/repo#1", "b"],
         &["eval", "prompts/review.md"],
         &["report", "pick", "3", "skip", "--expected", "2"],
+        &["label", "7", "wrong", "--clear"],
     ] {
         let output = Command::new(env!("CARGO_BIN_EXE_priory"))
             .args(args)

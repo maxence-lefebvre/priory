@@ -317,3 +317,27 @@ test("a press on a row's link opens the link and leaves the selection where it w
   press(draw(panel, cx), "row-ask:2");
   assert.equal(panel.selected, "ask:2");
 });
+
+test("another runner's ask names its runner and when it was last seen, says what an answer sent to it became, and offers no snooze", () => {
+  const since = new Date(now - 30 * 60_000).toISOString();
+  const item = { kind: "ask", id: "xps13:12", task: null, key: "ENG-260", step: "approve-pr", since, what: "Merge?", runner: "xps13", last_seen: new Date(now - 40 * 60_000).toISOString(), snoozed_until: null };
+  const ask = { id: "xps13:12", task: 4, key: "ENG-260", question: "Merge?", options: ["approved"], revision: 1, runner: "xps13", last_seen: item.last_seen, submissions: [{ verb: "answer", text: "approved", outcome: null }] };
+  const model = deskModel({ ...data, desk: { ...data.desk, items: [item] }, asks: { ...data.asks, asks: [ask] } }, { now });
+  const [row] = model.sections("needs").flatMap((section) => section.rows);
+
+  assert.equal(row.ask, "xps13:12");
+  assert.equal(row.runner, "xps13");
+  assert.equal(row.away, "last seen 40 min ago");
+  assert.deepEqual(row.sent, { text: "Sent to xps13: approved", refused: false });
+  assert.equal(row.snooze, null);
+});
+
+test("another runner's ask as the next thing names its runner and offers no snooze", () => {
+  const item = { kind: "ask", id: "xps13:12", task: null, key: "ENG-260", step: "approve-pr", since: new Date(now - 60_000).toISOString(), what: "Merge?", why: "oldest ask", runner: "xps13", last_seen: null, snoozed_until: null };
+  const ask = { id: "xps13:12", task: 4, key: "ENG-260", question: "Merge?", options: ["approved"], revision: 1, runner: "xps13", last_seen: null, submissions: [] };
+  const model = deskModel({ ...data, desk: { ...data.desk, items: [item], next: item }, asks: { ...data.asks, asks: [ask] } }, { now });
+
+  assert.equal(model.next.snooze, null);
+  assert.equal(model.next.runner, "xps13");
+  assert.equal(model.next.away, "never seen");
+});

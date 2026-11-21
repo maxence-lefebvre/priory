@@ -176,8 +176,47 @@ export const routedMark = (ask) => (ask?.routed_to && (ask.state ?? "open") === 
 /** What an open ask's detail says of its lead, else null. @param {any} ask */
 export const routedNote = (ask) => (routedMark(ask) ? `${ask.routed_to} is answering. You can still answer first: the first answer stands.` : null);
 
+/** The runner of another runner's ask, which alone lists `submissions`, else null. @param {any} ask */
+export const runnerOf = (ask) => (Array.isArray(ask?.submissions) ? ask.runner : null);
+
+// How long a runner may be quiet before its asks say when it was last seen: alive messages come once a minute.
+const AWAY_MS = 3 * 60 * 1000;
+
+/**
+ * "last seen <age> ago" for another runner's ask whose runner is away, else null.
+ * @param {any} ask @param {number} now @param {(iso: string) => string} ago
+ */
+export function seenAgo(ask, now, ago) {
+  if (!runnerOf(ask)) return null;
+  if (!ask.last_seen) return "never seen";
+  return now - Date.parse(ask.last_seen) > AWAY_MS ? `last seen ${ago(ask.last_seen)} ago` : null;
+}
+
+/**
+ * What became of the latest answer or dismiss sent to another runner's ask, while it waits or once
+ * refused, else null: an applied one shows in the ask itself. @param {any} ask
+ */
+export function sentNote(ask) {
+  const runner = runnerOf(ask);
+  const last = runner ? ask.submissions.at(-1) : null;
+  if (!last) return null;
+  const what = last.verb === "dismiss" ? "the dismiss" : last.text;
+  if (last.outcome === "refused") return { text: `${runner} refused ${what}: ${last.why}`, refused: true };
+  if (last.outcome) return null;
+  return { text: last.verb === "dismiss" ? `Dismiss sent to ${runner}` : `Sent to ${runner}: ${last.text}`, refused: false };
+}
+
 /** Who answered, as the views say it: a person, or `agent:<lead>`. Null when unrecorded. @param {string | null | undefined} by */
 export const answeredBy = (by) => (!by ? null : by.startsWith("agent:") ? by : "a person");
+
+// Copied from crates/priory-core/web/inbox.js; a test keeps the two the same.
+const SOURCES = { github: "GitHub", linear: "Linear", slack: "Slack", factory: "" };
+
+/** An event's type in plain words: `linear.issue.updated` reads "Linear issue updated". */
+export function eventWords(type) {
+  const [source, ...rest] = type.split(".");
+  return [SOURCES[source] ?? source, ...rest].filter(Boolean).join(" ").replaceAll("_", " ");
+}
 
 /**
  * A task's `stack` for the views; one pull request keeps the single PR look. Only `latest`, the

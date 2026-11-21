@@ -193,3 +193,13 @@ test("an opened row's Open task opens the task in the Task panel", async () => {
   assert.equal(herdr.shared.get("priory.task.open").task, task);
   assert.equal(herdr.shared.get("priory.attach"), undefined);
 });
+
+test("a queued task with its own wait reason says that reason, in its row and in Up next", () => {
+  const claiming = "waits for its claim to reach the log";
+  const waiting = queue.waiting.map((task) => (task.position === 1 && task.band_position === 1 && task.key === "cli:PRI-72" ? { ...task, reason: claiming } : task));
+  const upNextReason = queue.up_next.map((next, at) => (at === 0 ? { ...next, why: claiming } : next));
+  const reasoned = { ...queue, waiting, up_next: upNextReason };
+  const [first] = queueList(reasoned, { view: "next", now }).sections[1].rows;
+  assert.deepEqual(first.why, { text: "Waits for its claim to reach the log.", tone: "muted" });
+  assert.deepEqual(upNext(reasoned, now)[0], { task: 3, when: "now", sub: "", label: "cli:PRI-72", title: upNext(queue, now)[0].title, why: "Waits for its claim to reach the log." });
+});

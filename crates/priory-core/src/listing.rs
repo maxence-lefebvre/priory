@@ -936,9 +936,15 @@ fn up_next(
     let mut next: Vec<(Timestamp, Value)> = Vec::new();
     for row in waiting.as_array().into_iter().flatten() {
         if let Some(position) = row["position"].as_i64() {
-            let why = match (position, row["band_position"].as_i64()) {
-                (1, _) => "first in the queue".to_owned(),
-                (_, Some(1)) => "a band above it".to_owned(),
+            // A queued task's reason, such as waiting for room or its claim, says why it has not started.
+            let why = match (
+                row["reason"].as_str(),
+                position,
+                row["band_position"].as_i64(),
+            ) {
+                (Some(reason), _, _) => reason.to_owned(),
+                (None, 1, _) => "first in the queue".to_owned(),
+                (None, _, Some(1)) => "a band above it".to_owned(),
                 _ => format!("queue position {position}"),
             };
             next.push((
