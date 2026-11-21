@@ -193,17 +193,24 @@ pub fn start(factory: &Factory, listen: SocketAddr) -> Result<Vec<JoinHandle<()>
     };
     let waiters = Arc::new(AtomicUsize::new(0));
     let public = |path: &str| !path.starts_with("/api") && !path.starts_with("/hooks");
+    let event_log = factory.log().clone();
     let workers = http::serve(listener, token, hooks, public, move || {
         let db = state::read_only();
         let waiters = Arc::clone(&waiters);
         let home = runtime::home();
         let served = served.clone();
-        let github = github
-            .clone()
-            .map(|github| (github, log::open().map_err(|error| error.to_string())));
-        let linear = linear
-            .clone()
-            .map(|linear| (linear, log::open().map_err(|error| error.to_string())));
+        let github = github.clone().map(|github| {
+            (
+                github,
+                log::open(&event_log).map_err(|error| error.to_string()),
+            )
+        });
+        let linear = linear.clone().map(|linear| {
+            (
+                linear,
+                log::open(&event_log).map_err(|error| error.to_string()),
+            )
+        });
         move |request: &Request| match (&github, &linear) {
             (Some((github, bus)), _)
                 if request.method == "POST" && request.path.split('?').next() == Some(GITHUB) =>

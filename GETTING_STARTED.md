@@ -20,7 +20,9 @@ priory
 
 The last command prints the usage. To install the binary instead, `cargo install --path
 crates/priory` puts `priory` in `~/.cargo/bin`. The in-process embedding model for search sits
-behind a cargo feature: `cargo build --release --features model`.
+behind a cargo feature: `cargo build --release --features model`. So does the Postgres event log,
+which lets several machines share one log: `--features postgres`, then `[log]` in
+[`factory.toml`](docs/reference/factory.md#log).
 
 ## 2. Write a factory
 
@@ -160,7 +162,7 @@ Priory keeps its state in three places, each named by an environment variable:
 | Variable       | Holds                                                         | Default                          |
 | -------------- | ------------------------------------------------------------- | -------------------------------- |
 | `PRIORY_DB`    | The daemon's SQLite state: tasks, runs, asks, waits, results  | none: the daemon refuses to start |
-| `HERDR_BUS_DB` | The [herdr-bus](https://github.com/flupke/herdr-bus) file the intake publishes to | `~/.local/share/herdr-bus/bus.db` |
+| `HERDR_BUS_DB` | The [herdr-bus](https://github.com/flupke/herdr-bus) file the intake publishes to, unless `[log]` names Postgres | `~/.local/share/herdr-bus/bus.db` |
 | `PRIORY_HOME`  | Clones and worktrees; it names the daemon's socket            | `~/.local/state/priory-oss`      |
 
 Run the intake and the daemon side by side, each pointed at the factory folder:
@@ -223,8 +225,8 @@ When someone labels issue 42 of `owner/name` with `agent`, this happens:
 | Command | What it does |
 | ------- | ------------ |
 | `priory desk` | Lists what waits on you: asks, blocked and failed tasks, held tasks, the queue |
-| `priory answer ASK OPTION --revision N` | Answers an ask. `--expected N` is the same flag. `RUNNER:ASK` answers another runner's ask (see [runners.md](docs/daemon/runners.md)) |
-| `priory give KEY RUNNER` | Moves a task to another runner of a factory of several (see [runners.md](docs/daemon/runners.md)) |
+| `priory answer ASK OPTION --revision N` | Answers an ask. `--expected N` is the same flag. `priory answer [DIR] RUNNER:ASK ...` answers another runner's ask (see [runners.md](docs/daemon/runners.md)) |
+| `priory give [DIR] KEY RUNNER` | Moves a task to another runner of a factory of several (see [runners.md](docs/daemon/runners.md)) |
 | `priory dismiss [--expected N] ASK` | Closes an ask with no answer |
 | `priory snooze KIND ID --for 2h`, `--until TIME`, `--clear` | Hides a desk item until then, or brings it back |
 | `priory todo add TEXT [--band B] [--due TIME]`, `priory todo done ID`, `priory todo list` | Adds a to-do of your own to the desk, marks it done, or lists them |

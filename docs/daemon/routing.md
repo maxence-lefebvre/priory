@@ -18,10 +18,13 @@ So each message changes the state exactly once:
 
 The daemon and the intake reach the bus through the `Log` trait in `priory-intake`. The trait
 names what the guarantees above need: publishing that drops a repeated id, reading past a named
-consumer's cursor, and an ack that moves that cursor. Today herdr-bus's SQLite file implements it.
-A contract test suite in `crates/priory-intake/tests/log.rs` runs against every implementation, so
-a second store, such as Postgres, keeps these guarantees. See
-[ADR 0001](../adr/0001-the-intake-and-the-daemon-reach-the-event-log-through-one-log-trait.md).
+consumer's cursor, and an ack that moves that cursor. Two stores implement it: herdr-bus's SQLite
+file, the default, and a Postgres database that several machines share. The factory's
+[`[log]`](../reference/factory.md#log) table picks one. A contract test suite in
+`crates/priory-intake/tests/log.rs` runs against every implementation, so both keep these
+guarantees. See
+[ADR 0001](../adr/0001-the-intake-and-the-daemon-reach-the-event-log-through-one-log-trait.md) and
+[ADR 0002](../adr/0002-a-factory-chooses-herdr-bus-or-postgres-for-its-event-log.md).
 
 `priory inbox` lists every entry, with the task it went to and its outcome.
 

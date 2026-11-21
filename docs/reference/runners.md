@@ -38,7 +38,7 @@ this machine, `<hostname>`, has no runner file in runners/, and the factory has 
 ```
 
 A task that never started moves to another runner 30 minutes after its runner's last alive
-message. `priory give KEY RUNNER` moves any other. See [runners.md](../daemon/runners.md).
+message. `priory give [DIR] KEY RUNNER` moves any other. See [runners.md](../daemon/runners.md).
 
 ## Errors from `priory check`
 

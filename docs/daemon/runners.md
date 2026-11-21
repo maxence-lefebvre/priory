@@ -4,7 +4,7 @@ A factory can span several machines, each a runner with its own file in `runners
 owned by one runner at a time, which places its runs. This page explains how the runners agree on
 owners through the log, what happens while one is away, and how a person moves a task. The decision
 and its alternatives are in
-[ADR 0002](../adr/0002-runners-own-tasks-through-claims-and-leases-on-the-shared-log.md).
+[ADR 0003](../adr/0003-runners-own-tasks-through-claims-and-leases-on-the-shared-log.md).
 
 ## When ownership applies
 
@@ -87,10 +87,11 @@ apply in log order, as below.
 ## Answering another runner's ask
 
 ```sh
-priory answer <runner>:<ask> <option-or-text> --revision <n>
+priory answer [DIR] <runner>:<ask> <option-or-text> --revision <n>
 ```
 
-publishes the answer on the log instead of sending it to this machine's daemon. Only that runner
+publishes the answer on the log of the factory in `DIR`, `.` by default, instead of sending it to
+this machine's daemon. Only that runner
 applies it, through the same check as a local answer: the first answer to a revision stands, and
 a later one is refused and recorded. A runner that is away applies it when its daemon starts again.
 The ask's id and revision are the ones that runner's `priory asks` prints.
@@ -98,11 +99,11 @@ The ask's id and revision are the ones that runner's `priory asks` prints.
 ## Giving a task to another runner
 
 ```sh
-priory give <key> <runner>
+priory give [DIR] <key> <runner>
 ```
 
-publishes a claim of the key for `<runner>`, from the runner that owns it, whatever the hold and the
-lease. Use it to move a started task off a runner that will not come back. It prints
+publishes a claim of the key for `<runner>` on the log of the factory in `DIR`, `.` by default, from
+the runner that owns it, whatever the hold and the lease. Use it to move a started task off a runner that will not come back. It prints
 `<key> given to runner <runner>: <runner> takes it and <owner> drops it as each reads the log`.
 
 Each runner acts when it reads the claim. The new owner starts the task over from its request. The
@@ -112,21 +113,20 @@ overlap for progress. A task can be given back to a runner that had it before.
 
 `priory give` reads this machine's state file to find the owner. It refuses with
 `no runner holds <key>` for a key no runner holds or whose task ended, with
-`runner <runner> holds <key> already`, and with `runner <runner> never said it is alive on the log`
-for a runner this machine never heard from. Every runner also refuses a claim for a runner without
-a runner file.
+`runner <runner> holds <key> already`, and with `runner <runner> has no runner file in runners/`.
+Every runner also refuses a claim for a runner without a runner file.
 
 ## Limits
 
-- The log is herdr-bus's SQLite file, so the runners share it as one file. A daemon that cannot
-  reach its log stops with an error. Riding out a network partition needs a networked log adapter.
+- On herdr-bus, the runners share the log as one file. On Postgres (see
+  [ADR 0002](../adr/0002-a-factory-chooses-herdr-bus-or-postgres-for-its-event-log.md)), it travels
+  between machines. A daemon that cannot reach its log stops with an error, so a runner cut off
+  from it stops too.
 - A task that moves starts over at its workflow's start. Its old worktree, branch and sessions stay
   on the old runner.
 - A code step's `run` action starts without the `kept` check, so a crash in the second between its
   start and the next `kept` leaves that task `waiting` on the log.
 - A task whose own claim loses, because a claim of an older request of its key won first, stays
   queued on its runner and never runs there.
-- `priory give` checks that the runner it names was heard from, not that it still has a runner
-  file. A claim for a runner without one is refused when each runner reads it.
 - This runner's `priory asks` and desk list only its own asks.
 - Each runner adds one alive message a minute to `factory.intake`.

@@ -78,7 +78,7 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
     runtime::bound_commands(factory.command_timeout());
     let mut db = state::open()?;
     tools::backfill_endings(&mut db, &factory.workflows)?;
-    let bus = log::open()?;
+    let bus = log::open(factory.log())?;
     state::bands(&mut db, &factory.bands())?;
     state::irreversible_asks(&mut db, &factory.workflows)?;
     for error in sections::dispatch(&db, factory, None)? {
@@ -691,7 +691,7 @@ fn add(
             (key, Some(error))
         }
     };
-    let log = log::open()?;
+    let log = log::open(trace.factory.log())?;
     drain(
         &*log,
         &runners::consumer(trace.runner.as_deref()),

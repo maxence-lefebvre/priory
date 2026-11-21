@@ -475,10 +475,17 @@ pub(crate) fn flush(db: &Connection, log: &dyn Log) -> Result<(), Error> {
 }
 
 /// Publishes a person's answer to ask `ask` of runner `runner`, which applies it when it reads it.
-pub fn answer(runner: &str, answer: &crate::tools::Answer) -> Result<String, String> {
+pub fn answer(
+    factory: &Factory,
+    runner: &str,
+    answer: &crate::tools::Answer,
+) -> Result<String, String> {
     let mut data = serde_json::to_value(answer).map_err(|error| error.to_string())?;
     data["runner"] = json!(runner);
-    publish(&Message::new(ANSWERED, data).subject(format!("{runner}:{}", answer.ask)))?;
+    publish(
+        factory,
+        &Message::new(ANSWERED, data).subject(format!("{runner}:{}", answer.ask)),
+    )?;
     Ok(format!(
         "answer to ask {} of runner {runner} sent: it applies when {runner} reads the log",
         answer.ask
@@ -486,7 +493,10 @@ pub fn answer(runner: &str, answer: &crate::tools::Answer) -> Result<String, Str
 }
 
 /// Publishes a claim that gives the task of `key` to `runner`, from the runner that owns it.
-pub fn give(db: &Connection, key: &str, runner: &str) -> Result<String, String> {
+pub fn give(factory: &Factory, db: &Connection, key: &str, runner: &str) -> Result<String, String> {
+    if !factory.runners.contains_key(runner) {
+        return Err(format!("runner {runner} has no runner file in runners/"));
+    }
     let owned = db
         .query_row(
             "SELECT runner, request, hold FROM claims WHERE key = ?1",
@@ -507,25 +517,16 @@ pub fn give(db: &Connection, key: &str, runner: &str) -> Result<String, String> 
     if from == runner {
         return Err(format!("runner {runner} holds {key} already"));
     }
-    let known = db
-        .query_row("SELECT 1 FROM leases WHERE runner = ?1", [runner], |_| {
-            Ok(())
-        })
-        .optional()
-        .map_err(|error| error.to_string())?;
-    if known.is_none() {
-        return Err(format!("runner {runner} never said it is alive on the log"));
-    }
     let claim =
         json!({ "key": key, "runner": runner, "request": request, "from": from, "given": true });
-    publish(&Message::new(CLAIMED, claim).subject(key))?;
+    publish(factory, &Message::new(CLAIMED, claim).subject(key))?;
     Ok(format!(
         "{key} given to runner {runner}: {runner} takes it and {from} drops it as each reads the log"
     ))
 }
 
-fn publish(message: &Message) -> Result<(), String> {
-    let log = priory_intake::log::open().map_err(|error| error.to_string())?;
+fn publish(factory: &Factory, message: &Message) -> Result<(), String> {
+    let log = priory_intake::log::open(factory.log()).map_err(|error| error.to_string())?;
     log.declare(&intake::output())
         .map_err(|error| error.to_string())?;
     log.publish(OUTPUT, &message.clone().time(intake::now()?))

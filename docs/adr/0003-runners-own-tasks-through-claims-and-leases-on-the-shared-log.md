@@ -117,9 +117,9 @@ trait, as ADR 0001 left them.
   30 minutes, so no task runs on two runners unless a person gives a started one away.
 - A started task on a runner that never comes back waits for `priory give`.
 - A given task starts over, so work its old runner had not pushed is not carried.
-- Today the log is herdr-bus's file on one machine, so a disconnect can only be a stopped daemon.
-  A daemon that cannot reach its log stops with an error. Riding out a real network partition
-  needs the networked adapters of R9.4.
+- A daemon that cannot reach its log stops with an error, so a runner cut off from a Postgres log
+  stops instead of riding out the partition. On herdr-bus, the runners share one file, so a
+  disconnect can only be a stopped daemon.
 - Another runner's asks are not listed on this runner's desk. A person needs the ask's runner and
   id to answer it. Listing them is R8.5's work.
 - Heartbeats add one message per runner per minute to `factory.intake`.

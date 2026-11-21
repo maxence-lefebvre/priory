@@ -15750,8 +15750,10 @@ fn a_runner_away_for_an_hour_keeps_its_asked_task_and_its_answer_and_loses_only_
 
     b.start_with(exe, &[("PRIORY_NOW", AN_HOUR_LATER)]);
     let ask = format!("a:{}", asks[0][0]);
+    let factory = b.dir.join("factory");
     for answer in ["approved", "rejected"] {
-        let sent = b.priory(&["answer", &ask, answer, "--revision", "1"]);
+        let dir = factory.to_str().unwrap();
+        let sent = b.priory(&["answer", dir, &ask, answer, "--revision", "1"]);
         assert!(
             sent.status.success(),
             "{}",
@@ -15817,7 +15819,12 @@ fn a_person_gives_a_started_task_to_another_runner_which_starts_it_over_and_its_
             row.contains(&"priory.runner.alive".to_owned()) && row.contains(&"b".to_owned())
         })
     });
-    let given = b.priory(&["give", "github:owner/repo#1", "b"]);
+    let factory = b.dir.join("factory");
+    let give = |runner: &str| {
+        let dir = factory.to_str().unwrap();
+        b.priory(&["give", dir, "github:owner/repo#1", runner])
+    };
+    let given = give("b");
     assert_eq!(
         String::from_utf8_lossy(&given.stdout),
         "github:owner/repo#1 given to runner b: b takes it and a drops it as each reads the log\n",
@@ -15829,18 +15836,18 @@ fn a_person_gives_a_started_task_to_another_runner_which_starts_it_over_and_its_
     a.start_with(exe, &[("PRIORY_NOW", AN_HOUR_LATER)]);
     let tasks = a.until("tasks", |rows| rows[0][4] == "dropped");
     assert_eq!(tasks.len(), 1);
-    let refused = b.priory(&["give", "github:owner/repo#1", "b"]);
+    let refused = give("b");
     assert_eq!(
         String::from_utf8_lossy(&refused.stderr),
         "priory give: runner b holds github:owner/repo#1 already\n"
     );
-    let unknown = b.priory(&["give", "github:owner/repo#1", "c"]);
+    let unknown = give("c");
     assert_eq!(
         String::from_utf8_lossy(&unknown.stderr),
-        "priory give: runner c never said it is alive on the log\n"
+        "priory give: runner c has no runner file in runners/\n"
     );
 
-    let back = b.priory(&["give", "github:owner/repo#1", "a"]);
+    let back = give("a");
     assert!(
         back.status.success(),
         "{}",
