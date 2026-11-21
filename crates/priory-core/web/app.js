@@ -2405,9 +2405,9 @@ const OWN_PAGE_LISTS = { tasks: tasksBody, runs: runsBody, queue: queueBody };
 
 const keyHints = () => html`<div class="keys"><span><kbd>J</kbd><kbd>K</kbd>move</span><span><kbd>Enter</kbd>open</span><span><kbd>Esc</kbd>close</span><span><kbd>N</kbd>add</span></div>`;
 
-function drawer(wide, list) {
+function drawer(wide, panels) {
   const id = selectedAsk();
-  const body = id ? askDetail(id, wide) : html`<p class="empty">${emptyDetail(list)}</p>`;
+  const body = id ? askDetail(id, wide) : html`<p class="empty">${emptyDetail(panels)}</p>`;
   return html`<aside class="drawer" aria-label="Ask">${body}</aside>`;
 }
 
@@ -2547,11 +2547,11 @@ function page() {
     return html`${staleStrip()}${top}<div class="${size} no-drawer">${wide ? nav("rail") : ""}<div class="list">${utility}</div></div>${wide ? "" : nav("bar")}`;
   }
   if (OWN_PAGE_LISTS[list]) return html`${staleStrip()}${top}<div class="${size} no-drawer">${wide ? nav("rail") : ""}${listPanel(list, wide)}</div>${wide ? "" : nav("bar")}`;
-  if (!wide) return html`${staleStrip()}${top}<div class="medium">${listPanel(list, false)}${drawer(false, list)}</div>${nav("bar")}`;
+  if (!wide) return html`${staleStrip()}${top}<div class="medium">${listPanel(list, false)}${drawer(false, [list])}</div>${nav("bar")}`;
   const layoutNode = view().layout;
   const plain = layoutNode.tabs?.every((child) => child.panel);
   const main = plain ? listPanel(list, true) : tree(layoutNode, list);
-  return html`${staleStrip()}${top}<div class="wide">${nav("rail")}${main}${drawer(true, list)}</div>`;
+  return html`${staleStrip()}${top}<div class="wide">${nav("rail")}${main}${drawer(true, plain ? [list] : leaves(layoutNode))}</div>`;
 }
 
 const notFound = () => html`<p class="empty">No such page. Go back to the <a class="ghost" href="/">Desk</a>.</p>`;

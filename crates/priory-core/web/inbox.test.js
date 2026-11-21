@@ -41,7 +41,8 @@ test("an event's type reads in plain words", () => {
 });
 
 test("the empty detail pane beside the Inbox names an event, not an ask", () => {
-  assert.equal(emptyDetail("inbox"), "Open an event's task to read what the event did.");
-  assert.equal(emptyDetail("desk"), "Select an ask to read it here.");
-  assert.equal(emptyDetail("asks"), "Select an ask to read it here.");
+  assert.equal(emptyDetail(["inbox"]), "Open an event's task to read what the event did.");
+  assert.equal(emptyDetail(["inbox", "terminal"]), "Open an event's task to read what the event did.");
+  assert.equal(emptyDetail(["desk"]), "Select an ask to read it here.");
+  assert.equal(emptyDetail(["inbox", "asks"]), "Select an ask to read it here.");
 });

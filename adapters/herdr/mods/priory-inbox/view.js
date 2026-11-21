@@ -54,5 +54,8 @@ export function eventWords(type) {
   return [SOURCES[source] ?? source, ...rest].filter(Boolean).join(" ").replaceAll("_", " ");
 }
 
-/** The detail pane's line while nothing is selected: the Inbox lists events, which open no detail. */
-export const emptyDetail = (list) => (list === "inbox" ? "Open an event's task to read what the event did." : "Select an ask to read it here.");
+/** The detail pane's line while nothing is selected, by the panels on screen: events open no detail. */
+export const emptyDetail = (panels) =>
+  panels.includes("inbox") && !panels.some((panel) => ["desk", "asks"].includes(panel))
+    ? "Open an event's task to read what the event did."
+    : "Select an ask to read it here.";

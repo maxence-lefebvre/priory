@@ -1378,11 +1378,12 @@ fn a_task_endpoint_shows_its_brief_plan_pull_request_and_each_runs_tokens() {
         (2, "github.check_run.completed", pr("test", "failure")),
         (3, "github.check_run.completed", pr("test", "success")),
         (4, "github.check_run.completed", pr("lint", "success")),
-        // A review the intake read without the pull request's branches.
+        // A review the intake read without the pull request's branches and head.
         (5, "github.pull_request_review.submitted", {
             let mut review = pr("", "");
             review["head_branch"] = Value::Null;
             review["base_branch"] = Value::Null;
+            review["head_sha"] = Value::Null;
             review
         }),
         // A check run on the commit before the head, completing late.
