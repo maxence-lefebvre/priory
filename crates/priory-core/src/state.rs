@@ -12,7 +12,7 @@ use std::collections::BTreeMap;
 use std::io::Write;
 use std::time::Duration;
 
-const VERSION: i64 = 74;
+const VERSION: i64 = 76;
 
 const SCHEMA: &str = "
 CREATE TABLE tasks (
@@ -1314,6 +1314,73 @@ const SCHEMA_74: &str = concat!(
 "
 );
 
+// Version 75 is held by another pull request; this slot keeps the numbering until it lands.
+const SCHEMA_75: &str = "PRAGMA user_version = 75;";
+
+// Every runner's asks on every desk: each ask's `version`, raised by every change its post shows,
+// and the version it last posted; the asks other runners posted; the answers and dismisses sent
+// to another runner's ask, with what became of each; and the runner this file belongs to, which
+// the listings name on its own rows. Asks closed before count as posted.
+const SCHEMA_76: &str = concat!(
+    "CREATE TABLE IF NOT EXISTS ask_versions (
+  ask     INTEGER PRIMARY KEY,
+  version INTEGER NOT NULL,
+  posted  INTEGER
+);
+INSERT OR IGNORE INTO ask_versions (ask, version, posted)
+  SELECT id, 1, CASE WHEN answer IS NOT NULL OR withdrawn IS NOT NULL THEN 1 END FROM asks;
+CREATE TRIGGER IF NOT EXISTS ask_version_asked AFTER INSERT ON asks BEGIN
+  INSERT OR IGNORE INTO ask_versions (ask, version) VALUES (NEW.id, 1);
+END;
+CREATE TRIGGER IF NOT EXISTS ask_version_revised AFTER UPDATE OF revision ON asks
+  WHEN NEW.revision IS NOT OLD.revision BEGIN
+  INSERT INTO ask_versions (ask, version) VALUES (NEW.id, 2)
+    ON CONFLICT (ask) DO UPDATE SET version = version + 1;
+END;
+CREATE TRIGGER IF NOT EXISTS ask_version_answered AFTER UPDATE OF answer ON asks
+  WHEN NEW.answer IS NOT OLD.answer BEGIN
+  INSERT INTO ask_versions (ask, version) VALUES (NEW.id, 2)
+    ON CONFLICT (ask) DO UPDATE SET version = version + 1;
+END;
+CREATE TRIGGER IF NOT EXISTS ask_version_withdrawn AFTER UPDATE OF withdrawn ON asks
+  WHEN NEW.withdrawn IS NOT OLD.withdrawn BEGIN
+  INSERT INTO ask_versions (ask, version) VALUES (NEW.id, 2)
+    ON CONFLICT (ask) DO UPDATE SET version = version + 1;
+END;
+CREATE TRIGGER IF NOT EXISTS ask_version_refused AFTER INSERT ON ask_refusals BEGIN
+  INSERT INTO ask_versions (ask, version) VALUES (NEW.ask, 2)
+    ON CONFLICT (ask) DO UPDATE SET version = version + 1;
+END;
+CREATE TABLE IF NOT EXISTS remote_asks (
+  runner  TEXT NOT NULL,
+  ask     INTEGER NOT NULL,
+  version INTEGER NOT NULL,
+  data    TEXT NOT NULL,
+  PRIMARY KEY (runner, ask)
+);
+CREATE TABLE IF NOT EXISTS remote_submissions (
+  submission TEXT PRIMARY KEY,
+  runner     TEXT NOT NULL,
+  ask        INTEGER NOT NULL,
+  revision   INTEGER,
+  verb       TEXT NOT NULL CHECK (verb IN ('answer', 'dismiss')),
+  text       TEXT,
+  sent       TEXT NOT NULL,
+  outcome    TEXT CHECK (outcome IN ('answered', 'dismissed', 'refused')),
+  why        TEXT,
+  applied    TEXT
+);
+CREATE INDEX IF NOT EXISTS remote_submissions_by_ask ON remote_submissions (runner, ask);
+CREATE TABLE IF NOT EXISTS runner (
+  id   INTEGER PRIMARY KEY CHECK (id = 1),
+  name TEXT NOT NULL
+);
+",
+    bumps!("remote_asks", "remote_submissions"),
+    "PRAGMA user_version = 76;
+"
+);
+
 /// Each schema change in order: a file at version `n` applies those from index `n` on.
 const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA, SCHEMA_2, SCHEMA_3, SCHEMA_4, SCHEMA_5, SCHEMA_6, SCHEMA_7, SCHEMA_8, SCHEMA_9,
@@ -1325,7 +1392,7 @@ const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA_50, SCHEMA_51, SCHEMA_52, SCHEMA_53, SCHEMA_54, SCHEMA_55, SCHEMA_56, SCHEMA_57,
     SCHEMA_58, SCHEMA_59, SCHEMA_60, SCHEMA_61, SCHEMA_62, SCHEMA_63, SCHEMA_64, SCHEMA_65,
     SCHEMA_66, SCHEMA_67, SCHEMA_68, SCHEMA_69, SCHEMA_70, SCHEMA_71, SCHEMA_72, SCHEMA_73,
-    SCHEMA_74,
+    SCHEMA_74, SCHEMA_75, SCHEMA_76,
 ];
 
 /// The order the queue starts tasks in: band, then a person's order, then age. A band the factory

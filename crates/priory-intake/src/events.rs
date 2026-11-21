@@ -762,6 +762,26 @@ pub struct AskAnswered {
     pub by: String,
 }
 
+/// A runner posts one of its asks each time any part of it that a view shows changes: asked,
+/// revised, answered, refused, dismissed or withdrawn. Every other runner keeps the post with the
+/// highest `version` and lists the ask as `<runner>:<ask>`.
+#[derive(JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct AskPosted {
+    /// The runner that owns the ask.
+    pub runner: String,
+    /// The ask's id on that runner.
+    pub ask: i64,
+    /// Raised by every change the post shows. A refused answer raises it, never the question's
+    /// `revision`.
+    pub version: i64,
+    /// `step`, `agent` or `outside`: who asked.
+    pub kind: String,
+    /// The ask as the runner's own `priory asks --json` lists it, with its `state`, `revision`,
+    /// `revisions` and `refused`.
+    pub listed: serde_json::Value,
+}
+
 /// Where a stream stands after a poll that moved it; a missing marker means the stream is still
 /// in its baseline.
 #[derive(JsonSchema)]

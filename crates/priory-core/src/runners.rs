@@ -5,12 +5,12 @@ use herdr_bus::Message;
 use jiff::{SignedDuration, Timestamp};
 use priory_factory::factory::Factory;
 use priory_intake::intake::{
-    self, ASK_ANSWERED as ANSWERED, OUTPUT, RUNNER_ALIVE as ALIVE, TASK_CLAIMED as CLAIMED,
-    TASK_HELD as HELD,
+    self, ASK_ANSWERED as ANSWERED, ASK_POSTED as POSTED, OUTPUT, RUNNER_ALIVE as ALIVE,
+    TASK_CLAIMED as CLAIMED, TASK_HELD as HELD,
 };
 use priory_intake::log::Log;
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
-use serde_json::json;
+use serde_json::{Value, json};
 use uuid::Uuid;
 
 /// How long a runner's lease lasts past its last alive message.
@@ -65,6 +65,12 @@ pub(crate) fn handle(
             "noted"
         }
         CLAIMED => return claimed(tx, message, me, trace, counter).map(Some),
+        POSTED => {
+            if text("runner") != me {
+                mirror(tx, message)?;
+            }
+            "noted"
+        }
         ANSWERED if text("runner") != me => "elsewhere",
         ANSWERED => {
             // Anyone can publish on the log, so a malformed answer is refused, never fatal.
@@ -93,6 +99,68 @@ pub(crate) fn handle(
     };
     crate::state::record(tx, message, None, outcome, None)?;
     Ok(Some(None))
+}
+
+/// Keeps another runner's post of an ask when it is newer than the one held.
+fn mirror(tx: &Transaction, message: &Message) -> rusqlite::Result<()> {
+    let data = &message.data;
+    let (Some(runner), Some(ask), Some(version)) = (
+        data["runner"].as_str(),
+        data["ask"].as_i64(),
+        data["version"].as_i64(),
+    ) else {
+        return Ok(());
+    };
+    let mut listed = data["listed"].clone();
+    if !listed.is_object() {
+        return Ok(());
+    }
+    listed["kind"] = data["kind"].clone();
+    tx.execute(
+        "INSERT INTO remote_asks (runner, ask, version, data) VALUES (?1, ?2, ?3, ?4)
+         ON CONFLICT (runner, ask) DO UPDATE SET version = excluded.version, data = excluded.data
+         WHERE excluded.version > remote_asks.version",
+        params![runner, ask, version, listed.to_string()],
+    )?;
+    Ok(())
+}
+
+/// Queues a post of each ask of this runner whose version moved past the one it posted last.
+fn post(tx: &Transaction, me: &str, now: Timestamp) -> rusqlite::Result<()> {
+    let moved = tx
+        .prepare(
+            "SELECT ask_versions.ask, ask_versions.version,
+               CASE WHEN asks.task IS NULL THEN 'outside' ELSE asks.kind END
+             FROM ask_versions JOIN asks ON asks.id = ask_versions.ask
+             WHERE ask_versions.posted IS NULL OR ask_versions.posted < ask_versions.version
+             ORDER BY ask_versions.ask",
+        )?
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, String>(2)?,
+            ))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    for (ask, version, kind) in moved {
+        let Some(listed) = crate::listing::ask(tx, ask)? else {
+            continue;
+        };
+        let data = json!({
+            "runner": me, "ask": ask, "version": version, "kind": kind, "listed": listed,
+        });
+        let id = format!("post/{me}/{ask}/{version}");
+        let posted = stamped(POSTED, data, &id)
+            .subject(format!("{me}:{ask}"))
+            .time(now);
+        send(tx, &posted)?;
+        tx.execute(
+            "UPDATE ask_versions SET posted = ?2 WHERE ask = ?1",
+            params![ask, version],
+        )?;
+    }
+    Ok(())
 }
 
 /// A request for a key no local task has: routed when this runner owns the key, else claimed.
@@ -399,6 +467,7 @@ pub(crate) fn tick(
             ))
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
+    post(&tx, me, now)?;
     for (key, hold, published) in changed {
         // A task reserved to start stays kept until it starts.
         let hold = match (published.as_deref(), hold) {
@@ -512,6 +581,143 @@ pub(crate) fn flush(db: &Connection, log: &dyn Log) -> Result<(), Error> {
         db.execute("DELETE FROM sends WHERE id = ?1", [id])?;
     }
     Ok(())
+}
+
+/// Records which runner this state file belongs to, or that the factory has one runner only.
+pub(crate) fn name(db: &Connection, me: Option<&str>) -> rusqlite::Result<()> {
+    match me {
+        Some(me) => db.execute(
+            "INSERT INTO runner (id, name) VALUES (1, ?1)
+             ON CONFLICT (id) DO UPDATE SET name = excluded.name WHERE name IS NOT excluded.name",
+            [me],
+        )?,
+        None => db.execute("DELETE FROM runner", [])?,
+    };
+    Ok(())
+}
+
+/// The runner this state file belongs to, in a factory of several.
+pub(crate) fn me(db: &Connection) -> rusqlite::Result<Option<String>> {
+    db.query_row("SELECT name FROM runner WHERE id = 1", [], |row| row.get(0))
+        .optional()
+}
+
+/// A mirrored ask as the listings show it: `<runner>:<ask>` as its id, its runner, and when that
+/// runner was last seen alive.
+/// Its `task` stays the task's id on its own runner.
+fn remote_row(
+    db: &Connection,
+    runner: &str,
+    ask: i64,
+    mut listed: Value,
+) -> rusqlite::Result<Value> {
+    listed["id"] = json!(format!("{runner}:{ask}"));
+    listed["runner"] = json!(runner);
+    listed["last_seen"] = json!(
+        db.query_row(
+            "SELECT alive FROM leases WHERE runner = ?1",
+            [runner],
+            |row| { row.get::<_, i64>(0) }
+        )
+        .optional()?
+        .and_then(|second| Timestamp::from_second(second).ok())
+        .map(|at| at.to_string())
+    );
+    Ok(listed)
+}
+
+/// Every mirrored ask, open or closed since `since` when given, oldest first.
+fn remote_rows(db: &Connection, since: Option<&str>) -> rusqlite::Result<Vec<Value>> {
+    let mirrored = db
+        .prepare("SELECT runner, ask, data FROM remote_asks ORDER BY runner, ask")?
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, String>(2)?,
+            ))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    let mut rows = Vec::new();
+    for (runner, ask, data) in mirrored {
+        let Ok(listed) = serde_json::from_str::<Value>(&data) else {
+            continue;
+        };
+        let closed = ["answered_at", "withdrawn_at", "since"]
+            .into_iter()
+            .find_map(|field| listed[field].as_str());
+        let shown = listed["state"] == "open"
+            || since.is_none_or(|since| closed.is_some_and(|closed| closed >= since));
+        if shown {
+            rows.push(remote_row(db, &runner, ask, listed)?);
+        }
+    }
+    rows.sort_by(|a, b| a["since"].as_str().cmp(&b["since"].as_str()));
+    Ok(rows)
+}
+
+/// In a factory of several runners, names this runner on each of `asks` and adds the asks other
+/// runners posted, open or closed since `since`.
+pub(crate) fn with_remote_asks(
+    db: &Connection,
+    asks: &mut Value,
+    since: Option<&str>,
+) -> rusqlite::Result<()> {
+    let (Some(me), Some(list)) = (me(db)?, asks.as_array_mut()) else {
+        return Ok(());
+    };
+    for ask in list.iter_mut() {
+        ask["runner"] = json!(me);
+    }
+    list.extend(remote_rows(db, since)?);
+    Ok(())
+}
+
+/// The desk items of other runners' open asks, ranked as a local ask of the same kind would be.
+pub(crate) fn remote_desk_items(db: &Connection) -> rusqlite::Result<Vec<Value>> {
+    if me(db)?.is_none() {
+        return Ok(Vec::new());
+    }
+    let mut items = Vec::new();
+    for ask in remote_rows(db, None)? {
+        if ask["state"] != "open" {
+            continue;
+        }
+        let risk = ask["risk"].as_array().cloned().unwrap_or_default();
+        let key = ask["key"].as_str();
+        let urgency = if risk.contains(&json!("irreversible")) {
+            "irreversible"
+        } else if key.is_some_and(|key| key.contains(":review:")) {
+            "review"
+        } else if ask["kind"] == "step" {
+            "plan"
+        } else {
+            "ask"
+        };
+        let routed = ask["routed_to"]
+            .as_str()
+            .map(|to| format!("routed to {to}: "))
+            .unwrap_or_default();
+        let what = format!(
+            "{routed}{} {}",
+            ask["question"].as_str().unwrap_or_default(),
+            ask["options"]
+        );
+        let title = ask["title"].as_str().map(str::to_owned).unwrap_or_else(|| {
+            match (key, ask["step"].as_str()) {
+                (Some(key), Some(step)) => format!("task {key} asks at {step}"),
+                _ => format!("ask {}", ask["id"].as_str().unwrap_or_default()),
+            }
+        });
+        items.push(json!({
+            "since": ask["since"], "kind": "ask", "id": ask["id"], "task": null, "key": key,
+            "step": ask["step"], "lane": ask["lane"], "what": what, "routed_to": ask["routed_to"],
+            "generation": null,
+            "snoozed_until": null, "snoozed_at": null, "back_early": null, "title": title,
+            "urgency": urgency, "runner": ask["runner"], "last_seen": ask["last_seen"],
+        }));
+    }
+    Ok(items)
 }
 
 /// Publishes a person's answer to ask `ask` of runner `runner`, which applies it when it reads it.

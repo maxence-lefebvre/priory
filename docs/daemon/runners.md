@@ -39,10 +39,10 @@ message in the same order. Each keeps only its own tasks in its own state file, 
 source event of a task that another runner owns finds no task here and is recorded as `ignored`,
 while the owner routes it as [routing.md](routing.md) says.
 
-The runners publish four more message types on the same output, which
+The runners publish five more message types on the same output, which
 [events.md](../reference/events.md#runners) lists: `priory.task.claimed`, `priory.task.held`,
-`priory.runner.alive` and `priory.ask.answered`. The daemon stores each claim, hold and alive
-message in its state file before it publishes it, so a crash between the two publishes it at the
+`priory.runner.alive`, `priory.ask.posted` and `priory.ask.answered`. The daemon stores each claim,
+hold, alive and post message in its state file before it publishes it, so a crash between the two publishes it at the
 next start. A message published twice adds nothing, because the log keeps the first message of
 each id. `priory answer` and `priory give` publish straight to the log.
 
@@ -97,6 +97,24 @@ A daemon reads the log before it starts any run. A task that moved while it was 
 with the reason `moved to runner <name>: its lease ended`. Answers given meanwhile on other runners
 apply in log order, as below.
 
+## Every runner's asks
+
+Each runner posts its asks on the log, as `priory.ask.posted`, each time any part of one that a view
+shows changes: asked, revised, answered, refused, dismissed or withdrawn. Every other runner keeps
+the latest post of each ask, so `priory asks`, `priory desk`, `/api/asks`, `/api/desk` and the web
+view list every runner's asks, mixed in the usual order. Another runner's ask has the id
+`<runner>:<ask>`, its `runner`, and `last_seen`, when that runner was last alive. Asks of this
+runner carry its `runner` too.
+
+A post carries a `version`, apart from the question's `revision`. A refused answer changes the ask
+without revising the question, and an answer closes it at the same revision, so only the version
+orders posts. A runner keeps the post with the highest version, so a post read twice, or late,
+changes nothing. The daemon stores each post in its state file before it publishes it, as it does a
+claim.
+
+A runner that is away keeps its asks listed, with its last alive time. An answer to one, given with
+`priory answer` as below, applies when that runner reads the log again.
+
 ## Answering another runner's ask
 
 ```sh
@@ -141,5 +159,7 @@ Every runner also refuses a claim for a runner without a runner file.
   on the old runner.
 - A code step's `run` action starts without the `kept` check, so a crash in the second between its
   start and the next `kept` leaves that task `waiting` on the log.
-- This runner's `priory asks` and desk list only its own asks.
+- Each ask change adds one post to `factory.intake`.
+- Snoozes stay on their machine: another runner's ask cannot be snoozed here.
+- A machine without a runner file runs no daemon, so it has no copy of the asks to serve.
 - Each runner adds one alive message a minute to `factory.intake`.
