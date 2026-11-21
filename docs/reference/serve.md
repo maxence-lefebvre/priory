@@ -19,6 +19,7 @@ does, with every count in `older` at 0. Their rows match the CLI's JSON only wit
 | -------- | --- | ------- |
 | `/api/desk?person=NAME` | `priory desk --json --person NAME` | an object: [Desk](#desk) |
 | `/api/inbox` | `priory inbox --json` | `inbox`: an array of [inbox messages](#inbox) |
+| `/api/inbox?unrouted=1` | `priory inbox --unrouted --json` | `unrouted`: an array of [unrouted groups](#unrouted) |
 | `/api/asks?band=BAND&risk=RISK&all=1` | `priory asks --json --band BAND --risk RISK` | an object: `asks`, an array of [asks](#asks), `bands` and `older` |
 | `/api/tasks?all=1` | `priory tasks --json` | `tasks`: an array of [tasks](#tasks), and `older` |
 | `/api/tasks?pr=RESOURCE` | | `tasks`: the active tasks that hold a pull request. See [Tasks that hold a pull request](#tasks-that-hold-a-pull-request) |
@@ -187,6 +188,7 @@ gets `400`.
 | `intake` | string or null | The intake banner: `the intake has not polled since <time>: ...` when no source polled in the last 5 minutes, else `the intake fails to poll <source> since <time>: <error>` for each failing source, joined by `; `. Null while every source polls. See [desk.md](../daemon/desk.md#intake-banner) |
 | `counts.asleep` | integer | Tasks asleep on a wait |
 | `counts.snoozed` | integer | Items snoozed now, which `items` leaves out |
+| `counts.unrouted` | integer | [Unrouted](#unrouted) events from the 24 hours before now (`PRIORY_NOW` when set). See [desk.md](../daemon/desk.md#unrouted-events) |
 | `items` | array | What waits on a person, then the queue, then worktrees that stay. `priory desk --all --json` keeps the snoozed items |
 | `next` | object or null | The item that ranks first, as in `ranked`; null when nothing waits on a person |
 | `ranked` | array | What waits on a person, best first, without the snoozed items: each a desk item with `why`, why it ranks there, and `title`, the line a notification carries. See [desk.md](../daemon/desk.md#the-next-thing) |
@@ -217,6 +219,22 @@ Each item:
 Each message and report, oldest first: `seq`, `type`, `subject`, `task`, `outcome`, `time`, `line`
 and `read`. A report has the type `priory.report`, its source as `subject`, the outcome `report`, its
 line as `line`, and, once read, when it was read as `read`. Both are null on a message.
+
+## Unrouted
+
+The events that reached no task and changed nothing, grouped by the first resource each names (see
+[routing.md](../daemon/routing.md#events-that-reach-no-task)). The group with the newest event comes
+first. `priory inbox --unrouted --since SEQ` keeps the events after sequence number `SEQ`.
+
+| Field | Type | Meaning |
+| ----- | ---- | ------- |
+| `resource` | string | The resource, such as `github:owner/name#7` |
+| `events` | array | Its events, newest first: `seq`, `type`, `subject`, `time` |
+| `subscribe` | string | `priory subscribe TASK <resource>`: the command that routes its next event to a task |
+| `request` | string | `priory request --workflow WORKFLOW --key <resource> TEXT`: the command that creates a task for it |
+
+Without `--json`, `priory inbox --unrouted` prints each group as its resource and event count, one
+line per event, then the two commands.
 
 ## Asks
 
@@ -343,7 +361,7 @@ The fields of [Tasks](#tasks), plus `repo`, `branch`, `intervention` (`plan`, `h
 `lead` (the agent that answers a `hands-off` task's asks, or null), `merge_risk` (as in
 [Asks](#asks)), `plan_goal`, `plan_testing`, `plan_brief` and `verification` (what the latest result that gave
 them sent as its `goal`, `testing`, `brief` and `verification`, else null; see [`result`](../daemon/tools.md#resultoutcome-summary-evidence-commit-reason-branches-risk-goal-testing-brief-verification-feedback)),
-and these arrays, oldest first:
+and these arrays, oldest first unless the table says otherwise:
 
 | Field | Each entry |
 | ----- | ---------- |
@@ -353,6 +371,7 @@ and these arrays, oldest first:
 | `waits` | `id`, `run`, `kind`, `resource`, `until`, `target`, `created`, `fired`, `withdrawn` (1 once withdrawn, else null), `withdrawn_reason` (see [withdrawal reasons](../daemon/waits.md#why-an-ask-or-wait-was-withdrawn)), `withdrawn_at` (when, in UTC; null for a wait withdrawn before Priory kept the time) |
 | `results` | `run`, `step`, `outcome`, `summary`, `evidence`, `commit_sha`, `reason`, `merge_risk` (a risk step's verdict and lines, else null), `created` |
 | `subscriptions` | `resource`, `created`: what the task subscribes to now. Empty once it fails or is dropped |
+| `inbox` | Every event routed to the task, newest first: its source event, the events routing gave it and those that fired one of its waits. Each has `seq`, `type`, `subject`, `time`, `task` (the task routing gave it, or null), `outcome` (as [routing](../daemon/routing.md#outcomes) recorded it), `prompt` (the state of this task's prompt that carries the event: `queued`, `attempted`, `uncertain`, `confirmed`, `withdrawn`, or null when none does) and `wait` (the id of this task's wait it fired, or null). See [The task's inbox](../daemon/routing.md#the-tasks-inbox) |
 | `triage` | `item` (a feedback item's URL), `class` (`trivial`, `nothing-to-do` or `persons-call`), `run` (the run whose result sorted it), `created`: how the agent sorted each review feedback item, in the order it first did. See [Review feedback](../daemon/tools.md#review-feedback) |
 
 And these objects:
