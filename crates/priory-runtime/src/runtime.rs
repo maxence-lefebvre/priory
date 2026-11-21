@@ -544,7 +544,10 @@ fn codex_hooks(exe: &Path) -> Vec<(&'static str, serde_json::Value)> {
         ("hooks.PostCompact", signal("PostCompact")),
         (
             "hooks.PreToolUse",
-            hook(respond(ASK_INSTEAD), Some("^request_user_input$")),
+            json!([
+                hook(respond(ASK_INSTEAD), Some("^request_user_input$"))[0],
+                guard(&quoted, None),
+            ]),
         ),
         ("hooks.PermissionRequest", hook(respond(DENY), None)),
     ]
@@ -626,6 +629,20 @@ fn quote(exe: &Path) -> String {
     format!("'{}'", exe.display().to_string().replace('\'', r"'\''"))
 }
 
+/// The hook group that asks Priory's tool guard about each call `matcher` matches. Its timeout
+/// stays well above the hook's own deadline, since a hook Claude kills lets the call through.
+fn guard(quoted: &str, matcher: Option<&str>) -> serde_json::Value {
+    let mut group = json!({ "hooks": [{
+        "type": "command",
+        "command": format!("{quoted} hook PreToolUse"),
+        "timeout": 30,
+    }] });
+    if let Some(matcher) = matcher {
+        group["matcher"] = matcher.into();
+    }
+    group
+}
+
 const ASK_INSTEAD: &str = r#"{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"Priory runs this session unattended. Call the ask tool of the priory MCP server instead."}}"#;
 
 const DENY: &str = r#"{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"deny","message":"Priory runs this session unattended and never approves a permission prompt, so it denied this one. Go on without it. If the task cannot go on without it, call the ask or result tool of the priory MCP server."}}}"#;
@@ -648,10 +665,13 @@ fn settings(exe: &Path, permissions: &serde_json::Value) -> String {
     let mut hooks = hooks;
     hooks.insert(
         "PreToolUse".to_owned(),
-        json!([{
-            "matcher": "AskUserQuestion",
-            "hooks": [{ "type": "command", "command": format!("printf '%s' '{ASK_INSTEAD}'") }],
-        }]),
+        json!([
+            {
+                "matcher": "AskUserQuestion",
+                "hooks": [{ "type": "command", "command": format!("printf '%s' '{ASK_INSTEAD}'") }],
+            },
+            guard(&quoted, Some("Bash|mcp__.*")),
+        ]),
     );
     hooks.insert(
         "PermissionRequest".to_owned(),
@@ -916,12 +936,16 @@ pub fn replay(
     }
 }
 
+/// How long a verb waits for the daemon's reply to its line.
+pub const REPLY: Duration = Duration::from_secs(10);
+
 /// How `call`'s error starts when no daemon took the line, so it was never sent.
 pub const NO_DAEMON: &str = "no priory daemon listens on";
 
-/// Sends one line to the daemon and returns its reply. Nothing is spooled: with no daemon, it fails.
-pub fn call(home: &Path, line: &str) -> Result<String, String> {
-    let wait = Some(Duration::from_secs(10));
+/// Sends one line to the daemon and returns its reply within about `wait`. Nothing is spooled:
+/// with no daemon, it fails.
+pub fn call(home: &Path, line: &str, wait: Duration) -> Result<String, String> {
+    let wait = Some(wait);
     let path = socket(home);
     let mut stream = UnixStream::connect(&path)
         .map_err(|error| format!("{NO_DAEMON} {}: {error}", path.display()))?;

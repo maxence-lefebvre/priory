@@ -1093,7 +1093,7 @@ fn leased(program: &OsString, rest: &[OsString]) -> std::io::Result<std::process
 /// Sends `gate` to the daemon and returns its reply.
 fn gate(gate: &Gate) -> Result<String, String> {
     let line = serde_json::to_string(gate).expect("a gate message serializes");
-    runtime::call(&runtime::home(), &line).and_then(|reply| {
+    runtime::call(&runtime::home(), &line, runtime::REPLY).and_then(|reply| {
         serde_json::from_str::<Result<String, String>>(&reply)
             .map_err(|error| format!("unreadable reply {reply:?}: {error}"))?
     })
@@ -1450,7 +1450,7 @@ fn act(act: &str, mut args: Vec<String>, hold: Option<factory::Hold>) -> ExitCod
 
 /// Sends `line` to the daemon and prints its reply.
 fn send(verb: &str, line: &str) -> ExitCode {
-    let reply = runtime::call(&runtime::home(), line).and_then(|reply| {
+    let reply = runtime::call(&runtime::home(), line, runtime::REPLY).and_then(|reply| {
         serde_json::from_str::<Result<String, String>>(&reply)
             .map_err(|error| format!("unreadable reply {reply:?}: {error}"))?
     });
@@ -1521,6 +1521,7 @@ fn print_explanation(factory: &factory::Factory, json: bool) {
                 .map(move |path| (name, path))
         })
         .collect();
+    let tools = explain::tools(factory);
     if json {
         let irreversible: Vec<_> = gates
             .iter()
@@ -1537,8 +1538,20 @@ fn print_explanation(factory: &factory::Factory, json: bool) {
             .iter()
             .map(|(name, path)| serde_json::json!({ "workflow": name, "path": path }))
             .collect();
+        let tools: Vec<_> = tools
+            .iter()
+            .map(|reach| {
+                serde_json::json!({
+                    "agent": reach.agent,
+                    "guard": reach.guard,
+                    "workflow": reach.workflow,
+                    "why": reach.why,
+                })
+            })
+            .collect();
         state::emit(
-            &serde_json::json!({ "irreversible": irreversible, "paths": paths }).to_string(),
+            &serde_json::json!({ "irreversible": irreversible, "paths": paths, "tools": tools })
+                .to_string(),
         );
         return;
     }
@@ -1565,6 +1578,17 @@ fn print_explanation(factory: &factory::Factory, json: bool) {
     for (name, path) in &paths {
         state::emit(&format!("{}\t{}", cell(name), cell(&path.join(" -> "))));
     }
+    state::emit("");
+    state::emit("agent\tguard\tworkflow\twhy");
+    for reach in &tools {
+        state::emit(&format!(
+            "{}\t{}\t{}\t{}",
+            cell(&reach.agent),
+            cell(&reach.guard),
+            cell(&reach.workflow),
+            cell(&reach.why)
+        ));
+    }
 }
 
 fn draw(dir: &Path, workflow: &std::ffi::OsStr) -> ExitCode {
@@ -1589,9 +1613,106 @@ fn count(n: usize, noun: &str) -> String {
     }
 }
 
+/// How long the tool guard waits for the daemon before it denies the call.
+const GUARD_WAIT: Duration = Duration::from_secs(5);
+
+/// The `PreToolUse` hook: lets a call no guard matches through, and asks the daemon about one that
+/// matches. Anything but the daemon's yes denies, since a hook that fails lets the call through.
+fn guard() {
+    let deny = |reason: &str| {
+        let output = serde_json::json!({ "hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "permissionDecision": "deny",
+            "permissionDecisionReason": reason,
+        } });
+        println!("{output}");
+    };
+    let input: Value = match serde_json::from_reader(std::io::stdin()) {
+        Ok(input) => input,
+        Err(error) => {
+            return deny(&format!(
+                "Priory's tool guard could not read this call ({error}), so it denied it."
+            ));
+        }
+    };
+    let guards: priory_factory::guard::Guards = match std::env::var("PRIORY_GUARD") {
+        Ok(json) if !json.is_empty() => match serde_json::from_str(&json) {
+            Ok(guards) => guards,
+            Err(error) => {
+                return deny(&format!(
+                    "Priory's tool guard could not read PRIORY_GUARD ({error}), so it denied this call."
+                ));
+            }
+        },
+        _ => Default::default(),
+    };
+    let tool = input["tool_name"].as_str().unwrap_or_default();
+    let command = match &input["tool_input"]["command"] {
+        Value::String(command) => Some(command.clone()),
+        Value::Array(words) => Some(
+            words
+                .iter()
+                .map(|word| {
+                    format!(
+                        "'{}'",
+                        word.as_str().unwrap_or_default().replace('\'', r"'\''")
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(" "),
+        ),
+        _ => None,
+    };
+    let cwd = input["cwd"].as_str().map(PathBuf::from);
+    let git = |dir: Option<&str>, args: &[&str]| {
+        let mut git = Command::new("git");
+        if let Some(cwd) = &cwd {
+            git.current_dir(cwd);
+        }
+        if let Some(dir) = dir {
+            git.args(["-C", dir]);
+        }
+        let output = git
+            .args(args)
+            .output()
+            .ok()
+            .filter(|output| output.status.success())?;
+        Some(String::from_utf8_lossy(&output.stdout).trim().to_owned())
+    };
+    let Some(hit) = guards.hit(tool, command.as_deref(), &git) else {
+        return;
+    };
+    let session = std::env::var("PRIORY_SESSION")
+        .ok()
+        .filter(|id| !id.is_empty())
+        .or_else(|| input["session_id"].as_str().map(str::to_owned))
+        .unwrap_or_default();
+    let line = serde_json::json!({ "guard": {
+        "session": session, "guard": hit.guard, "call": hit.call, "tool": tool,
+    } });
+    let reply = runtime::call(&runtime::home(), &line.to_string(), GUARD_WAIT).and_then(|reply| {
+        serde_json::from_str::<Result<String, String>>(&reply)
+            .map_err(|error| format!("unreadable reply {reply:?}: {error}"))
+    });
+    match reply {
+        Ok(Ok(_)) => {}
+        Ok(Err(reason)) => deny(&reason),
+        Err(error) => deny(&format!(
+            "Priory denied `{}`: it is irreversible (guard `{}`) and the daemon did not confirm an approval within {}s ({error}). Call the ask tool of the priory MCP server if a person must do or approve it.",
+            hit.call,
+            hit.guard,
+            GUARD_WAIT.as_secs()
+        )),
+    }
+}
+
 /// Reports a harness hook to the daemon: `event`, with the session and prompt from the hook's JSON
 /// on stdin. A run's pane sets `PRIORY_SESSION`; a stdin session apart from it is the harness's own.
 fn hook(event: &str) -> ExitCode {
+    if event == "PreToolUse" {
+        guard();
+        return ExitCode::SUCCESS;
+    }
     let input: serde_json::Value = match serde_json::from_reader(std::io::stdin()) {
         Ok(input) => input,
         Err(error) => {

@@ -126,6 +126,21 @@
         "next"
       ],
       "type": "object"
+    },
+    "WorkflowGuard": {
+      "additionalProperties": false,
+      "description": "A workflow's `guard` table.",
+      "properties": {
+        "allow": {
+          "default": [],
+          "description": "Guard names, built-in or from `[guard]` in `factory.toml`.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "type": "object"
     }
   },
   "description": "`workflows/<name>.toml` or `.yaml`: the typed steps a task goes through. The file name is the\nworkflow's name.",
@@ -136,6 +151,14 @@
         "string",
         "null"
       ]
+    },
+    "guard": {
+      "allOf": [
+        {
+          "$ref": "#/definitions/WorkflowGuard"
+        }
+      ],
+      "description": "The guarded calls every step of the workflow may make with no approval."
     },
     "reopen": {
       "description": "The model step a done task goes back to when its open pull request gets feedback; by\ndefault, the step that opened the pull request.",
